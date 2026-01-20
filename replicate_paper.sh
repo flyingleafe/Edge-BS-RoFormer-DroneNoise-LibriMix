@@ -297,82 +297,11 @@ step_dataset() {
 }
 
 # ============================================================================
-# STEP 3: Train Models
+# STEP 3: Train Models (individual model training functions)
 # ============================================================================
 
-# Get number of available NVIDIA GPUs
-get_num_gpus() {
-    if command -v nvidia-smi &> /dev/null; then
-        nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l
-    else
-        echo "0"
-    fi
-}
-
-# Generate training command for a model
-# Arguments: model_name model_type config_path gpu_id
-generate_train_cmd() {
-    local model_name="$1"
-    local model_type="$2"
-    local config_path="$3"
-    local gpu_id="$4"
-
-    echo "cd ${PROJECT_DIR} && \
-source ${PROJECT_DIR}/.venv/bin/activate 2>/dev/null || source ${PROJECT_DIR}/venv/bin/activate 2>/dev/null || true && \
-python train.py \
-    --model_type ${model_type} \
-    --config_path \"${config_path}\" \
-    --results_path \"${RESULTS_DIR}/${model_name}\" \
-    --data_path \"${TRAIN_PATH}\" \
-    --valid_path \"${VALID_PATH}\" \
-    --dataset_type 1 \
-    --device_ids ${gpu_id} \
-    --num_workers 4 \
-    --metrics si_sdr sdr \
-    --metric_for_scheduler si_sdr && \
-echo 'Training complete for ${model_name}' || echo 'Training FAILED for ${model_name}'"
-}
-
-# Run training in a tmux session
-# Arguments: session_name command
-run_in_tmux() {
-    local session_name="$1"
-    local cmd="$2"
-
-    # Kill existing session if it exists
-    tmux kill-session -t "${session_name}" 2>/dev/null || true
-
-    # Create new detached session and run command
-    tmux new-session -d -s "${session_name}" "${cmd}"
-    log_info "Started tmux session: ${session_name}"
-}
-
-# Wait for tmux sessions to complete
-# Arguments: session_names (space-separated)
-wait_for_tmux_sessions() {
-    local sessions=("$@")
-    local all_done=false
-
-    log_info "Waiting for training sessions to complete..."
-    log_info "You can attach to any session with: tmux attach -t <session_name>"
-    log_info "Sessions: ${sessions[*]}"
-
-    while [ "$all_done" = false ]; do
-        all_done=true
-        for session in "${sessions[@]}"; do
-            if tmux has-session -t "${session}" 2>/dev/null; then
-                all_done=false
-            fi
-        done
-        if [ "$all_done" = false ]; then
-            sleep 30
-        fi
-    done
-}
-
-step_train() {
-    log_info "=== Step 3: Training models ==="
-
+# Common training setup
+train_setup() {
     cd "${PROJECT_DIR}"
     activate_venv
 
@@ -384,136 +313,126 @@ step_train() {
     fi
 
     mkdir -p "${RESULTS_DIR}"
+}
 
-    # Common training parameters from paper (Section 4.1.2):
-    # - Optimizer: AdamW
-    # - Initial LR: 5.0e-4
-    # - LR Schedule: ReduceLROnPlateau (factor=0.95, patience=2)
-    # - Batch size: 12
-    # - Early stopping patience: 30 epochs
-    # - 200 steps per epoch
+# Train Edge-BS-RoFormer (proposed method)
+step_train_rope() {
+    log_info "=== Training Edge-BS-RoFormer (RoPE) ==="
+    train_setup
 
-    # Detect available GPUs
-    NUM_GPUS=$(get_num_gpus)
-    log_info "Detected ${NUM_GPUS} GPU(s)"
-
-    # Define training jobs: name|model_type|config_path|checkpoint_path
-    declare -a TRAINING_JOBS=()
-
-    if [ ! -f "${RESULTS_DIR}/edge_bs_roformer/best_model.ckpt" ]; then
-        TRAINING_JOBS+=("edge_bs_roformer|edge_bs_rof|configs/3_FA_RoPE(64).yaml")
-    else
+    if [ -f "${RESULTS_DIR}/edge_bs_roformer/best_model.ckpt" ]; then
         log_success "Edge-BS-RoFormer already trained"
-    fi
-
-    if [ ! -f "${RESULTS_DIR}/dcunet/best_model.ckpt" ]; then
-        TRAINING_JOBS+=("dcunet|dcunet|configs/5_Baseline_dcunet.yaml")
-    else
-        log_success "DCUNet already trained"
-    fi
-
-    if [ ! -f "${RESULTS_DIR}/dptnet/best_model.ckpt" ]; then
-        TRAINING_JOBS+=("dptnet|dptnet|configs/7_Baseline_dptnet.yaml")
-    else
-        log_success "DPTNet already trained"
-    fi
-
-    if [ ! -f "${RESULTS_DIR}/htdemucs/best_model.ckpt" ]; then
-        TRAINING_JOBS+=("htdemucs|htdemucs|configs/8_Baseline_htdemucs.yaml")
-    else
-        log_success "HTDemucs already trained"
-    fi
-
-    # Check if there are any jobs to run
-    if [ ${#TRAINING_JOBS[@]} -eq 0 ]; then
-        log_success "All models already trained"
         return 0
     fi
 
-    log_info "Jobs to run: ${#TRAINING_JOBS[@]}"
+    log_info "Training Edge-BS-RoFormer (proposed method)..."
+    python train.py \
+        --model_type edge_bs_rof \
+        --config_path "configs/3_FA_RoPE(64).yaml" \
+        --results_path "${RESULTS_DIR}/edge_bs_roformer" \
+        --data_path "${TRAIN_PATH}" \
+        --valid_path "${VALID_PATH}" \
+        --dataset_type 1 \
+        --device_ids 0 \
+        --num_workers 4 \
+        --metrics si_sdr sdr \
+        --metric_for_scheduler si_sdr
 
-    # Single GPU or no GPU: run sequentially
-    if [ "${NUM_GPUS}" -le 1 ]; then
-        log_info "Running training jobs sequentially on GPU 0..."
+    log_success "Edge-BS-RoFormer training complete"
+}
 
-        for job in "${TRAINING_JOBS[@]}"; do
-            IFS='|' read -r model_name model_type config_path <<< "$job"
-            log_info "Training ${model_name}..."
+# Train DCUNet baseline
+step_train_dcunet() {
+    log_info "=== Training DCUNet ==="
+    train_setup
 
-            python train.py \
-                --model_type "${model_type}" \
-                --config_path "${config_path}" \
-                --results_path "${RESULTS_DIR}/${model_name}" \
-                --data_path "${TRAIN_PATH}" \
-                --valid_path "${VALID_PATH}" \
-                --dataset_type 1 \
-                --device_ids 0 \
-                --num_workers 4 \
-                --metrics si_sdr sdr \
-                --metric_for_scheduler si_sdr
-
-            log_success "${model_name} training complete"
-        done
-
-    # Multiple GPUs: run in parallel using tmux
-    else
-        log_info "Running training jobs in parallel across ${NUM_GPUS} GPUs using tmux..."
-
-        # Check if tmux is available
-        if ! command -v tmux &> /dev/null; then
-            log_warning "tmux not found, falling back to sequential training"
-            log_warning "Install tmux for parallel training: sudo apt install tmux"
-
-            for job in "${TRAINING_JOBS[@]}"; do
-                IFS='|' read -r model_name model_type config_path <<< "$job"
-                log_info "Training ${model_name}..."
-
-                python train.py \
-                    --model_type "${model_type}" \
-                    --config_path "${config_path}" \
-                    --results_path "${RESULTS_DIR}/${model_name}" \
-                    --data_path "${TRAIN_PATH}" \
-                    --valid_path "${VALID_PATH}" \
-                    --dataset_type 1 \
-                    --device_ids 0 \
-                    --num_workers 4 \
-                    --metrics si_sdr sdr \
-                    --metric_for_scheduler si_sdr
-
-                log_success "${model_name} training complete"
-            done
-        else
-            # Distribute jobs across GPUs
-            declare -a TMUX_SESSIONS=()
-            local gpu_idx=0
-
-            for job in "${TRAINING_JOBS[@]}"; do
-                IFS='|' read -r model_name model_type config_path <<< "$job"
-
-                local session_name="train_${model_name}"
-                local cmd=$(generate_train_cmd "${model_name}" "${model_type}" "${config_path}" "${gpu_idx}")
-
-                run_in_tmux "${session_name}" "${cmd}"
-                TMUX_SESSIONS+=("${session_name}")
-
-                # Cycle through available GPUs
-                gpu_idx=$(( (gpu_idx + 1) % NUM_GPUS ))
-            done
-
-            # Wait for all training sessions to complete
-            wait_for_tmux_sessions "${TMUX_SESSIONS[@]}"
-
-            # Verify training completed successfully
-            for job in "${TRAINING_JOBS[@]}"; do
-                IFS='|' read -r model_name model_type config_path <<< "$job"
-                if [ -f "${RESULTS_DIR}/${model_name}/best_model.ckpt" ]; then
-                    log_success "${model_name} training complete"
-                else
-                    log_warning "${model_name} training may have failed - checkpoint not found"
-                fi
-            done
-        fi
+    if [ -f "${RESULTS_DIR}/dcunet/best_model.ckpt" ]; then
+        log_success "DCUNet already trained"
+        return 0
     fi
+
+    log_info "Training DCUNet baseline..."
+    python train.py \
+        --model_type dcunet \
+        --config_path "configs/5_Baseline_dcunet.yaml" \
+        --results_path "${RESULTS_DIR}/dcunet" \
+        --data_path "${TRAIN_PATH}" \
+        --valid_path "${VALID_PATH}" \
+        --dataset_type 1 \
+        --device_ids 0 \
+        --num_workers 4 \
+        --metrics si_sdr sdr \
+        --metric_for_scheduler si_sdr
+
+    log_success "DCUNet training complete"
+}
+
+# Train DPTNet baseline
+step_train_dptnet() {
+    log_info "=== Training DPTNet ==="
+    train_setup
+
+    if [ -f "${RESULTS_DIR}/dptnet/best_model.ckpt" ]; then
+        log_success "DPTNet already trained"
+        return 0
+    fi
+
+    log_info "Training DPTNet baseline..."
+    python train.py \
+        --model_type dptnet \
+        --config_path "configs/7_Baseline_dptnet.yaml" \
+        --results_path "${RESULTS_DIR}/dptnet" \
+        --data_path "${TRAIN_PATH}" \
+        --valid_path "${VALID_PATH}" \
+        --dataset_type 1 \
+        --device_ids 0 \
+        --num_workers 4 \
+        --metrics si_sdr sdr \
+        --metric_for_scheduler si_sdr
+
+    log_success "DPTNet training complete"
+}
+
+# Train HTDemucs baseline
+step_train_htdemucs() {
+    log_info "=== Training HTDemucs ==="
+    train_setup
+
+    if [ -f "${RESULTS_DIR}/htdemucs/best_model.ckpt" ]; then
+        log_success "HTDemucs already trained"
+        return 0
+    fi
+
+    log_info "Training HTDemucs baseline..."
+    python train.py \
+        --model_type htdemucs \
+        --config_path "configs/8_Baseline_htdemucs.yaml" \
+        --results_path "${RESULTS_DIR}/htdemucs" \
+        --data_path "${TRAIN_PATH}" \
+        --valid_path "${VALID_PATH}" \
+        --dataset_type 1 \
+        --device_ids 0 \
+        --num_workers 4 \
+        --metrics si_sdr sdr \
+        --metric_for_scheduler si_sdr
+
+    log_success "HTDemucs training complete"
+}
+
+# Train all models sequentially
+step_train() {
+    log_info "=== Step 3: Training all models sequentially ==="
+    log_info "For parallel training on multiple GPUs, run each model separately:"
+    log_info "  ./replicate_paper.sh train_rope     # Edge-BS-RoFormer"
+    log_info "  ./replicate_paper.sh train_dcunet   # DCUNet"
+    log_info "  ./replicate_paper.sh train_dptnet   # DPTNet"
+    log_info "  ./replicate_paper.sh train_htdemucs # HTDemucs"
+    echo ""
+
+    step_train_rope
+    step_train_dcunet
+    step_train_dptnet
+    step_train_htdemucs
 
     log_success "All model training complete"
 }
@@ -604,17 +523,27 @@ print_usage() {
     echo "Usage: $0 [step]"
     echo ""
     echo "Steps:"
-    echo "  setup    - Set up Python environment with uv"
-    echo "  download - Download source datasets (LibriSpeech + DroneAudioDataset)"
-    echo "  dataset  - Create DN-LM dataset from source datasets"
-    echo "  train    - Train all models (Edge-BS-RoFormer + baselines)"
-    echo "  eval     - Evaluate trained models"
-    echo "  all      - Run all steps (default)"
+    echo "  setup         - Set up Python environment with uv"
+    echo "  download      - Download source datasets (LibriSpeech + DroneAudioDataset)"
+    echo "  dataset       - Create DN-LM dataset from source datasets"
+    echo "  train         - Train all models sequentially"
+    echo "  train_rope    - Train Edge-BS-RoFormer only (proposed method)"
+    echo "  train_dcunet  - Train DCUNet baseline only"
+    echo "  train_dptnet  - Train DPTNet baseline only"
+    echo "  train_htdemucs- Train HTDemucs baseline only"
+    echo "  eval          - Evaluate trained models"
+    echo "  all           - Run all steps (default)"
     echo ""
     echo "Examples:"
-    echo "  $0           # Run all steps"
-    echo "  $0 download  # Only download datasets"
-    echo "  $0 train     # Only train models"
+    echo "  $0                # Run all steps"
+    echo "  $0 download       # Only download datasets"
+    echo "  $0 train          # Train all models sequentially"
+    echo ""
+    echo "Parallel training (run in separate tmux windows):"
+    echo "  tmux new -s rope    '$0 train_rope'"
+    echo "  tmux new -s dcunet  '$0 train_dcunet'"
+    echo "  tmux new -s dptnet  '$0 train_dptnet'"
+    echo "  tmux new -s htdemucs '$0 train_htdemucs'"
 }
 
 main() {
@@ -637,6 +566,18 @@ main() {
             ;;
         train)
             step_train
+            ;;
+        train_rope)
+            step_train_rope
+            ;;
+        train_dcunet)
+            step_train_dcunet
+            ;;
+        train_dptnet)
+            step_train_dptnet
+            ;;
+        train_htdemucs)
+            step_train_htdemucs
             ;;
         eval)
             step_eval
