@@ -99,7 +99,7 @@ step_setup() {
 
         # Install dependencies
         log_info "Installing dependencies with uv..."
-        uv pip install -r requirements.txt
+        uv sync
 
         log_success "Environment setup complete with uv"
     else
