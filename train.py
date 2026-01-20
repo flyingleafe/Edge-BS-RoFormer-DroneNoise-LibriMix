@@ -7,8 +7,12 @@ import random
 import argparse
 from tqdm.auto import tqdm
 import os
+from dotenv import load_dotenv
 import torch
 import wandb
+
+# Load environment variables from .env file
+load_dotenv()
 import numpy as np
 import auraloss
 import torch.nn as nn
@@ -135,11 +139,14 @@ def wandb_init(args: argparse.Namespace, config: Dict, device_ids: List[int], ba
     - Recording training process
     - Visualizing training metrics
     - Saving experiment configuration
+
+    API key is taken from --wandb_key argument or WANDB_API_KEY environment variable.
     """
-    if args.wandb_key is None or args.wandb_key.strip() == '':
+    wandb_key = args.wandb_key if args.wandb_key else os.environ.get('WANDB_API_KEY', '')
+    if wandb_key is None or wandb_key.strip() == '':
         wandb.init(mode='disabled')
     else:
-        wandb.login(key=args.wandb_key)
+        wandb.login(key=wandb_key)
         wandb.init(project='msst', config={'config': config, 'args': args, 'device_ids': device_ids, 'batch_size': batch_size })
 
 

@@ -4,4 +4,5 @@ data/
 wandb/
 results/
 .direnv/
+.env
 *.xml

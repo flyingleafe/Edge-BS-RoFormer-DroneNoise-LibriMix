@@ -29,4 +29,5 @@ dependencies = [
     "torchaudio==2.6.0",
     "tqdm==4.67.1",
     "wandb==0.19.11",
+    "python-dotenv==1.0.1",
 ]
