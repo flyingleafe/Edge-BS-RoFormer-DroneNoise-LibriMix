@@ -110,15 +110,13 @@ class Attend(nn.Module):
             default_scale = q.shape[-1] ** -0.5  # Default scaling factor, typically 1/sqrt(feature_dimension)
             q = q * (self.scale / default_scale)  # Adjust q by custom scale ratio
 
-        # Select attention configuration based on whether tensor is on CUDA (CUDA config or CPU config)
-        config = self.cuda_config if is_cuda else self.cpu_config
-
-        # Use PyTorch 2.0's scaled_dot_product_attention to execute Flash Attention with specified configuration
-        with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.  # Apply dropout during training, disable during inference
-            )
+        # Use PyTorch's scaled_dot_product_attention with automatic kernel selection
+        # This allows PyTorch to choose the best available kernel (flash, math, or memory efficient)
+        # based on input tensor properties and hardware capabilities
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0.  # Apply dropout during training, disable during inference
+        )
 
         return out
 
