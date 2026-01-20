@@ -1,7 +1,7 @@
 # coding: utf-8
 __author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
 
-# 导入必要的库
+# Import necessary libraries
 import argparse
 import numpy as np
 import torch
@@ -19,31 +19,31 @@ import loralib as lora
 
 def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaConf]:
     """
-    根据模型类型从指定路径加载配置文件
-    
-    参数:
+    Load configuration file from specified path based on model type.
+
+    Args:
     ----------
     model_type : str
-        模型类型 (如 'htdemucs', 'mdx23c' 等)
+        Model type (e.g., 'htdemucs', 'mdx23c', etc.)
     config_path : str
-        YAML或OmegaConf配置文件的路径
-        
-    返回:
+        Path to YAML or OmegaConf configuration file
+
+    Returns:
     -------
     config : Any
-        加载的配置对象,可能是OmegaConf或ConfigDict格式
-        
-    异常:
+        Loaded configuration object, can be OmegaConf or ConfigDict format
+
+    Raises:
     ------
-    FileNotFoundError: 配置文件不存在时抛出
-    ValueError: 加载配置文件出错时抛出
+    FileNotFoundError: When configuration file does not exist
+    ValueError: When error occurs loading configuration file
     """
     try:
         with open(config_path, 'r') as f:
-            # htdemucs模型使用OmegaConf格式配置
+            # htdemucs model uses OmegaConf format configuration
             if model_type == 'htdemucs':
                 config = OmegaConf.load(config_path)
-            # 其他模型使用yaml格式配置
+            # Other models use yaml format configuration
             else:
                 config = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
             return config
@@ -55,99 +55,99 @@ def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaCon
 
 def get_model_from_config(model_type: str, config_path: str) -> Tuple:
     """
-    根据模型类型和配置文件加载对应的模型
-    
-    参数:
+    Load corresponding model based on model type and configuration file.
+
+    Args:
     ----------
     model_type : str
-        模型类型 (如 'mdx23c', 'htdemucs', 'scnet' 等)
+        Model type (e.g., 'mdx23c', 'htdemucs', 'scnet', etc.)
     config_path : str
-        配置文件路径(YAML或OmegaConf格式)
-        
-    返回:
+        Path to configuration file (YAML or OmegaConf format)
+
+    Returns:
     -------
     model : nn.Module or None
-        根据model_type初始化的模型实例
+        Model instance initialized based on model_type
     config : Any
-        用于初始化模型的配置对象
-        
-    异常:
+        Configuration object used to initialize model
+
+    Raises:
     ------
-    ValueError: 未知的model_type或模型初始化错误时抛出
+    ValueError: When unknown model_type or model initialization error
     """
 
     config = load_config(model_type, config_path)
 
-    # 根据不同的模型类型加载对应的模型架构
+    # Load corresponding model architecture based on model type
     if model_type == 'mdx23c':
-        # MDX23C模型 - 使用TFC-TDF网络架构
+        # MDX23C model - uses TFC-TDF network architecture
         from models.mdx23c_tfc_tdf_v3 import TFC_TDF_net
         model = TFC_TDF_net(config)
     elif model_type == 'htdemucs':
-        # HTDemucs模型 - 基于Demucs的高质量音源分离模型
+        # HTDemucs model - high-quality source separation model based on Demucs
         from models.demucs4ht import get_model
         model = get_model(config)
     elif model_type == 'segm_models':
-        # 分割模型 - 用于音频分割任务
+        # Segmentation model - for audio segmentation tasks
         from models.segm_models import Segm_Models_Net
         model = Segm_Models_Net(config)
     elif model_type == 'torchseg':
-        # TorchSeg模型 - PyTorch实现的分割模型
+        # TorchSeg model - PyTorch implementation of segmentation model
         from models.torchseg_models import Torchseg_Net
         model = Torchseg_Net(config)
     elif model_type == 'mel_band_roformer':
-        # 基于Mel频带的Roformer模型
+        # Mel band-based Roformer model
         from models.edge_bs_rof import MelBandRoformer
         model = MelBandRoformer(**dict(config.model))
     elif model_type == 'edge_bs_rof':
-        # 基础Roformer模型
+        # Base Roformer model
         from models.edge_bs_rof import BSRoformer
         model = BSRoformer(**dict(config.model))
     elif model_type == 'swin_upernet':
-        # Swin Transformer + UperNet架构
+        # Swin Transformer + UperNet architecture
         from models.upernet_swin_transformers import Swin_UperNet_Model
         model = Swin_UperNet_Model(config)
     elif model_type == 'bandit':
-        # Bandit模型 - 多掩码多源带分离RNN
+        # Bandit model - Multi-mask multi-source band split RNN
         from models.bandit.core.model import MultiMaskMultiSourceBandSplitRNNSimple
         model = MultiMaskMultiSourceBandSplitRNNSimple(**config.model)
     elif model_type == 'bandit_v2':
-        # Bandit V2模型 - 改进版本
+        # Bandit V2 model - improved version
         from models.bandit_v2.bandit import Bandit
         model = Bandit(**config.kwargs)
     elif model_type == 'scnet_unofficial':
-        # 非官方SCNet实现
+        # Unofficial SCNet implementation
         from models.scnet_unofficial import SCNet
         model = SCNet(**config.model)
     elif model_type == 'scnet':
-        # 官方SCNet实现
+        # Official SCNet implementation
         from models.scnet import SCNet
         model = SCNet(**config.model)
     elif model_type == 'apollo':
-        # Apollo模型 - Look2Hear框架中的模型
+        # Apollo model - model from Look2Hear framework
         from models.look2hear.models import BaseModel
         model = BaseModel.apollo(**config.model)
     elif model_type == 'bs_mamba2':
-        # BS-Mamba2模型 - 基于Mamba架构的分离器
+        # BS-Mamba2 model - separator based on Mamba architecture
         from models.ts_bs_mamba2 import Separator
         model = Separator(**config.model)
     elif model_type == 'experimental_mdx23c_stht':
-        # 实验性MDX23C模型 - 带STHT的TFC-TDF网络
+        # Experimental MDX23C model - TFC-TDF network with STHT
         from models.mdx23c_tfc_tdf_v3_with_STHT import TFC_TDF_net
         model = TFC_TDF_net(config)
     elif model_type == 'dcunet':
-        # DCUNet模型
+        # DCUNet model
         from models.dcunet import DCUNet
         model = DCUNet(config)
     elif model_type == 'dprnn':
-        # DPRNN模型 - 基于深度循环神经网络的音源分离模型
+        # DPRNN model - source separation model based on deep recurrent neural network
         from models.dprnn.dprnn import DPRNN
         model = DPRNN(config)
     elif model_type == 'dptnet':
-        # DPTNet模型 - 基于双路径变换网络的音源分离模型
+        # DPTNet model - source separation model based on dual-path transformer network
         from models.dptnet.dpt_net import DPTNet
         model = DPTNet(config)
-        
+
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -157,22 +157,22 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
 
 def read_audio_transposed(path: str, instr: str = None, skip_err: bool = False) -> Tuple[np.ndarray, int]:
     """
-    读取音频文件并进行转置处理
-    
-    参数:
+    Read audio file and transpose it.
+
+    Args:
     ----------
     path : str
-        音频文件路径
+        Path to audio file
     skip_err: bool
-        是否跳过错误
+        Whether to skip errors
     instr: str
-        乐器名称
-        
-    返回:
+        Instrument name
+
+    Returns:
     -------
     Tuple[np.ndarray, int]
-        - 转置后的音频数据,形状为(channels, length)
-        - 采样率(如44100)
+        - Transposed audio data with shape (channels, length)
+        - Sample rate (e.g., 44100)
     """
 
     try:
@@ -184,7 +184,7 @@ def read_audio_transposed(path: str, instr: str = None, skip_err: bool = False) 
         else:
             raise RuntimeError(f"Error reading the file at {path}: {e}")
     else:
-        # 单声道音频转为二维数组
+        # Convert mono audio to 2D array
         if len(mix.shape) == 1:
             mix = np.expand_dims(mix, axis=-1)
         return mix.T, sr
@@ -192,42 +192,42 @@ def read_audio_transposed(path: str, instr: str = None, skip_err: bool = False) 
 
 def normalize_audio(audio: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
     """
-    对音频信号进行归一化处理
-    
-    参数:
+    Normalize audio signal.
+
+    Args:
     ----------
     audio : np.ndarray
-        输入音频数组,形状为(channels, time)或(time,)
-        
-    返回:
+        Input audio array with shape (channels, time) or (time,)
+
+    Returns:
     -------
     tuple[np.ndarray, dict[str, float]]
-        - 归一化后的音频数组
-        - 包含均值和标准差的字典
+        - Normalized audio array
+        - Dictionary containing mean and standard deviation
     """
 
-    # 计算单声道信号
+    # Compute mono signal
     mono = audio.mean(0)
-    # 计算均值和标准差
+    # Compute mean and standard deviation
     mean, std = mono.mean(), mono.std()
     return (audio - mean) / std, {"mean": mean, "std": std}
 
 
 def denormalize_audio(audio: np.ndarray, norm_params: Dict[str, float]) -> np.ndarray:
     """
-    对归一化的音频信号进行反归一化
-    
-    参数:
+    Denormalize a normalized audio signal.
+
+    Args:
     ----------
     audio : np.ndarray
-        归一化后的音频数组
+        Normalized audio array
     norm_params : dict[str, float]
-        包含均值和标准差的字典
-        
-    返回:
+        Dictionary containing mean and standard deviation
+
+    Returns:
     -------
     np.ndarray
-        反归一化后的音频数组
+        Denormalized audio array
     """
 
     return audio * norm_params["std"] + norm_params["mean"]
@@ -242,35 +242,35 @@ def apply_tta(
         model_type: str
 ) -> Dict[str, torch.Tensor]:
     """
-    应用测试时数据增强(TTA)进行音源分离
-    
-    通过对输入混音进行通道反转和极性反转等增强,
-    然后对所有增强结果取平均来提高分离效果
-    
-    参数:
+    Apply test-time augmentation (TTA) for source separation.
+
+    Improves separation quality by applying augmentations like channel inversion
+    and polarity inversion to the input mixture, then averaging all augmented results.
+
+    Args:
     ----------
     config : Any
-        模型配置对象
+        Model configuration object
     model : torch.nn.Module
-        训练好的模型
+        Trained model
     mix : torch.Tensor
-        混音音频张量(channels, time)
+        Mixture audio tensor (channels, time)
     waveforms_orig : Dict[str, torch.Tensor]
-        原始分离波形字典
+        Original separated waveforms dictionary
     device : torch.device
-        运行设备(CPU/CUDA)
+        Computing device (CPU/CUDA)
     model_type : str
-        模型类型
-        
-    返回:
+        Model type
+
+    Returns:
     -------
     Dict[str, torch.Tensor]
-        应用TTA后更新的分离波形字典
+        Updated separated waveforms dictionary after applying TTA
     """
-    # 创建增强:通道反转和极性反转
+    # Create augmentations: channel inversion and polarity inversion
     track_proc_list = [mix[::-1].copy(), -1.0 * mix.copy()]
 
-    # 处理每个增强后的混音
+    # Process each augmented mixture
     for i, augmented_mix in enumerate(track_proc_list):
         waveforms = demix(config, model, augmented_mix, device, model_type=model_type)
         for el in waveforms:
@@ -279,7 +279,7 @@ def apply_tta(
             else:
                 waveforms_orig[el] -= waveforms[el]
 
-    # 对所有增强结果取平均
+    # Average all augmented results
     for el in waveforms_orig:
         waveforms_orig[el] /= len(track_proc_list) + 1
 
@@ -288,26 +288,26 @@ def apply_tta(
 
 def _getWindowingArray(window_size: int, fade_size: int) -> torch.Tensor:
     """
-    生成带有线性淡入淡出的窗口数组
-    
-    参数:
+    Generate window array with linear fade-in and fade-out.
+
+    Args:
     ----------
     window_size : int
-        窗口总大小
+        Total window size
     fade_size : int
-        淡入淡出区域的大小
-        
-    返回:
+        Size of fade-in/fade-out region
+
+    Returns:
     -------
     torch.Tensor
-        生成的窗口数组,形状为(window_size,)
+        Generated window array with shape (window_size,)
     """
 
-    # 生成淡入淡出序列
+    # Generate fade-in and fade-out sequences
     fadein = torch.linspace(0, 1, fade_size)
     fadeout = torch.linspace(1, 0, fade_size)
 
-    # 创建窗口并应用淡入淡出
+    # Create window and apply fade-in/fade-out
     window = torch.ones(window_size)
     window[-fade_size:] = fadeout
     window[:fade_size] = fadein
@@ -323,49 +323,49 @@ def demix(
         pbar: bool = False
 ) -> Tuple[List[Dict[str, np.ndarray]], np.ndarray]:
     """
-    统一的音源分离函数,支持多种处理模式
-    
-    使用重叠窗口分块处理的方式进行高效无伪影的分离
-    
-    参数:
+    Unified source separation function supporting multiple processing modes.
+
+    Uses overlapping window chunk processing for efficient artifact-free separation.
+
+    Args:
     ----------
     config : ConfigDict
-        音频和推理设置配置
+        Audio and inference settings configuration
     model : torch.nn.Module
-        训练好的分离模型
+        Trained separation model
     mix : torch.Tensor
-        输入混音张量(channels, time)
+        Input mixture tensor (channels, time)
     device : torch.device
-        计算设备
+        Computing device
     model_type : str
-        模型类型,如"demucs"等
+        Model type, e.g., "demucs"
     pbar : bool
-        是否显示进度条
-        
-    返回:
+        Whether to show progress bar
+
+    Returns:
     -------
     Union[Dict[str, np.ndarray], np.ndarray]
-        - 多乐器时返回乐器到分离音频的映射字典
-        - 单乐器时返回分离的音频数组
+        - Dictionary mapping instruments to separated audio when multiple instruments
+        - Separated audio array when single instrument
     """
 
     mix = torch.tensor(mix, dtype=torch.float32)
 
-    # 根据模型类型选择处理模式
+    # Select processing mode based on model type
     if model_type == 'htdemucs':
         mode = 'demucs'
     else:
         mode = 'generic'
-        
-    # 根据模式设置处理参数
+
+    # Set processing parameters based on mode
     if mode == 'demucs':
-        # Demucs模式参数
+        # Demucs mode parameters
         chunk_size = config.training.samplerate * config.training.segment
         num_instruments = len(config.training.instruments)
         num_overlap = config.inference.num_overlap
         step = chunk_size // num_overlap
     else:
-        # 通用模式参数
+        # Generic mode parameters
         chunk_size = config.audio.chunk_size
         num_instruments = len(prefer_target_instrument(config))
         num_overlap = config.inference.num_overlap
@@ -375,7 +375,7 @@ def demix(
         border = chunk_size - step
         length_init = mix.shape[-1]
         windowing_array = _getWindowingArray(chunk_size, fade_size)
-        # 添加边界填充
+        # Add boundary padding
         if length_init > 2 * border and border > 0:
             mix = nn.functional.pad(mix, (border, border), mode="reflect")
 
@@ -385,7 +385,7 @@ def demix(
 
     with torch.cuda.amp.autocast(enabled=use_amp):
         with torch.inference_mode():
-            # 初始化结果和计数器张量
+            # Initialize result and counter tensors
             req_shape = (num_instruments,) + mix.shape
             result = torch.zeros(req_shape, dtype=torch.float32)
             counter = torch.zeros(req_shape, dtype=torch.float32)
@@ -397,9 +397,9 @@ def demix(
                 total=mix.shape[1], desc="Processing audio chunks", leave=False
             ) if pbar else None
 
-            # 分块处理音频
+            # Process audio in chunks
             while i < mix.shape[1]:
-                # 提取并填充音频块
+                # Extract and pad audio chunk
                 part = mix[:, i:i + chunk_size].to(device)
                 chunk_len = part.shape[-1]
                 if mode == "generic" and chunk_len > chunk_size // 2:
@@ -412,19 +412,19 @@ def demix(
                 batch_locations.append((i, chunk_len))
                 i += step
 
-                # 处理满足batch_size的批次
+                # Process batch when batch_size is reached
                 if len(batch_data) >= batch_size or i >= mix.shape[1]:
                     arr = torch.stack(batch_data, dim=0)
                     x = model(arr)
 
                     if mode == "generic":
                         window = windowing_array.clone()
-                        if i - step == 0:  # 第一块不需要淡入
+                        if i - step == 0:  # First chunk doesn't need fade-in
                             window[:fade_size] = 1
-                        elif i >= mix.shape[1]:  # 最后一块不需要淡出
+                        elif i >= mix.shape[1]:  # Last chunk doesn't need fade-out
                             window[-fade_size:] = 1
 
-                    # 将处理结果加入总结果
+                    # Add processed results to total result
                     for j, (start, seg_len) in enumerate(batch_locations):
                         if mode == "generic":
                             result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu() * window[..., :seg_len]
@@ -442,17 +442,17 @@ def demix(
             if progress_bar:
                 progress_bar.close()
 
-            # 计算最终估计源
+            # Compute final estimated sources
             estimated_sources = result / counter
             estimated_sources = estimated_sources.cpu().numpy()
             np.nan_to_num(estimated_sources, copy=False, nan=0.0)
 
-            # 移除通用模式的填充
+            # Remove padding for generic mode
             if mode == "generic":
                 if length_init > 2 * border and border > 0:
                     estimated_sources = estimated_sources[..., border:-border]
 
-    # 返回结果
+    # Return results
     if mode == "demucs":
         instruments = config.training.instruments
     else:
@@ -468,17 +468,17 @@ def demix(
 
 def prefer_target_instrument(config: ConfigDict) -> List[str]:
     """
-    根据配置返回目标乐器列表
-    
-    参数:
+    Return target instrument list based on configuration.
+
+    Args:
     ----------
     config : ConfigDict
-        包含乐器列表或目标乐器的配置对象
-        
-    返回:
+        Configuration object containing instrument list or target instrument
+
+    Returns:
     -------
     List[str]
-        目标乐器列表
+        Target instrument list
     """
     if getattr(config.training, 'target_instrument', None):
         return [config.training.target_instrument]
@@ -488,43 +488,43 @@ def prefer_target_instrument(config: ConfigDict) -> List[str]:
 
 def load_not_compatible_weights(model: torch.nn.Module, weights: str, verbose: bool = False) -> None:
     """
-    加载不完全兼容的权重到模型中
-    
-    参数:
+    Load partially compatible weights into model.
+
+    Args:
     ----------
-    model: 目标PyTorch模型
-    weights: 权重文件路径
-    verbose: 是否打印详细信息
+    model: Target PyTorch model
+    weights: Path to weights file
+    verbose: Whether to print detailed information
     """
 
     new_model = model.state_dict()
     old_model = torch.load(weights)
     if 'state' in old_model:
-        # htdemucs权重加载修复
+        # htdemucs weight loading fix
         old_model = old_model['state']
     if 'state_dict' in old_model:
-        # apollo权重加载修复
+        # apollo weight loading fix
         old_model = old_model['state_dict']
 
-    # 遍历新模型的每一层
+    # Iterate through each layer of new model
     for el in new_model:
         if el in old_model:
             if verbose:
                 print(f'Match found for {el}!')
             if new_model[el].shape == old_model[el].shape:
-                # 形状相同直接复制
+                # Same shape, directly copy
                 if verbose:
                     print('Action: Just copy weights!')
                 new_model[el] = old_model[el]
             else:
-                # 处理形状不同的情况
+                # Handle different shape case
                 if len(new_model[el].shape) != len(old_model[el].shape):
                     if verbose:
                         print('Action: Different dimension! Too lazy to write the code... Skip it')
                 else:
                     if verbose:
                         print(f'Shape is different: {tuple(new_model[el].shape)} != {tuple(old_model[el].shape)}')
-                    # 处理不同形状的权重
+                    # Handle weights with different shapes
                     ln = len(new_model[el].shape)
                     max_shape = []
                     slices_old = []
@@ -550,16 +550,16 @@ def load_not_compatible_weights(model: torch.nn.Module, weights: str, verbose: b
 
 def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = 'cpu') -> None:
     """
-    加载LoRA权重到模型中
-    
-    参数:
+    Load LoRA weights into model.
+
+    Args:
     ----------
     model : Module
-        目标PyTorch模型
+        Target PyTorch model
     lora_path : str
-        LoRA检查点文件路径
+        Path to LoRA checkpoint file
     device : str
-        加载权重的设备
+        Device to load weights to
     """
     lora_state_dict = torch.load(lora_path, map_location=device)
     model.load_state_dict(lora_state_dict, strict=False)
@@ -567,13 +567,13 @@ def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = 'cpu
 
 def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type_='train') -> None:
     """
-    加载模型的起始检查点
-    
-    参数:
+    Load starting checkpoint for model.
+
+    Args:
     ----------
-    args: 包含检查点路径的命令行参数
-    model: 要加载检查点的PyTorch模型
-    type_: 加载权重的方式
+    args: Command line arguments containing checkpoint path
+    model: PyTorch model to load checkpoint into
+    type_: Method of loading weights
     """
 
     print(f'Start from checkpoint: {args.start_check_point}')
@@ -586,10 +586,10 @@ def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type
         device='cpu'
         if args.model_type in ['htdemucs', 'apollo']:
             state_dict = torch.load(args.start_check_point, map_location=device, weights_only=False)
-            # htdemucs预训练模型修复
+            # htdemucs pretrained model fix
             if 'state' in state_dict:
                 state_dict = state_dict['state']
-            # apollo预训练模型修复
+            # apollo pretrained model fix
             if 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']
         else:
@@ -603,40 +603,40 @@ def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type
 
 def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
     """
-    将模型中的特定层替换为LoRA扩展版本
-    
-    参数:
+    Replace specific layers in model with LoRA extended versions.
+
+    Args:
     ----------
     config : Dict[str, Any]
-        包含LoRA参数的配置
+        Configuration containing LoRA parameters
     model : nn.Module
-        要替换层的原始模型
-        
-    返回:
+        Original model with layers to replace
+
+    Returns:
     -------
     nn.Module
-        替换层后的模型
+        Model with replaced layers
     """
 
     if 'lora' not in config:
         raise ValueError("Configuration must contain the 'lora' key with parameters for LoRA.")
 
-    replaced_layers = 0  # 替换层计数器
+    replaced_layers = 0  # Replaced layer counter
 
-    # 遍历模型的所有模块
+    # Iterate through all model modules
     for name, module in model.named_modules():
         hierarchy = name.split('.')
         layer_name = hierarchy[-1]
 
-        # 检查是否为目标替换层
+        # Check if this is a target layer for replacement
         if isinstance(module, nn.Linear):
             try:
-                # 获取父模块
+                # Get parent module
                 parent_module = model
                 for submodule_name in hierarchy[:-1]:
                     parent_module = getattr(parent_module, submodule_name)
 
-                # 用LoRA层替换原始层
+                # Replace original layer with LoRA layer
                 setattr(
                     parent_module,
                     layer_name,
@@ -662,25 +662,25 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
 
 def draw_spectrogram(waveform, sample_rate, length, output_file):
     """
-    绘制音频波形的频谱图
-    
-    参数:
+    Draw spectrogram of audio waveform.
+
+    Args:
     ----------
-    waveform: 音频波形数据
-    sample_rate: 采样率
-    length: 绘制长度
-    output_file: 输出文件路径
+    waveform: Audio waveform data
+    sample_rate: Sample rate
+    length: Length to draw
+    output_file: Output file path
     """
     import librosa.display
 
-    # 截取所需部分的频谱图
+    # Extract required portion of spectrogram
     x = waveform[:int(length * sample_rate), :]
-    # 对单声道信号进行短时傅里叶变换
+    # Apply short-time Fourier transform to mono signal
     X = librosa.stft(x.mean(axis=-1))
-    # 将幅度谱转换为dB刻度的频谱图
+    # Convert amplitude spectrum to dB-scaled spectrogram
     Xdb = librosa.amplitude_to_db(np.abs(X), ref=np.max)
     fig, ax = plt.subplots()
-    # 显示频谱图
+    # Display spectrogram
     img = librosa.display.specshow(
         Xdb,
         cmap='plasma',

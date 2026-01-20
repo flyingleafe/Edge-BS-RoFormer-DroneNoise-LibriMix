@@ -57,7 +57,7 @@ class HTDemucs(nn.Module):
     def __init__(
         self,
         sources,
-        target_instrument=None,  # 新增参数
+        target_instrument=None,  # New parameter
         # Channels
         audio_channels=2,
         channels=48,
@@ -692,9 +692,9 @@ class HTDemucs(nn.Module):
         x = xt + x
         if length_pre_pad:
             x = x[..., :length_pre_pad]
-        
-        target_idx = self.sources.index(self.target_instrument)  # 获取 'vocals' 的索引
-        x = x[:, target_idx:target_idx+1, :, :]  # 选择目标源，形状 [B, 1, C, T]
+
+        target_idx = self.sources.index(self.target_instrument)  # Get the index of 'vocals'
+        x = x[:, target_idx:target_idx+1, :, :]  # Select target source, shape [B, 1, C, T]
 
         # print("Output shape:", x.shape)
         return x
@@ -716,5 +716,3 @@ def get_model(args):
     kw = OmegaConf.to_container(getattr(args, args.model), resolve=True)
     model = klass(**extra, **kw)
     return model
-
-

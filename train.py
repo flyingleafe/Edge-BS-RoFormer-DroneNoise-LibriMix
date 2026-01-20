@@ -2,7 +2,7 @@
 __author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
 __version__ = '1.0.4'
 
-# 导入必要的库
+# Import necessary libraries
 import random
 import argparse
 from tqdm.auto import tqdm
@@ -21,13 +21,13 @@ import torch.nn.functional as F
 from typing import List, Tuple, Dict, Union, Callable
 import shutil
 
-# 导入自定义模块
-from dataset import MSSDataset  # 音源分离数据集类
-from utils import get_model_from_config  # 从配置文件获取模型
-from valid import valid_multi_gpu, valid  # 验证函数
+# Import custom modules
+from dataset import MSSDataset  # Music source separation dataset class
+from utils import get_model_from_config  # Load model from config file
+from valid import valid_multi_gpu, valid  # Validation functions
 
 from utils import bind_lora_to_model, load_start_checkpoint
-import loralib as lora  # LoRA低秩适应
+import loralib as lora  # LoRA (Low-Rank Adaptation)
 
 import warnings
 
@@ -36,16 +36,16 @@ warnings.filterwarnings("ignore")
 
 def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
     """
-    解析命令行参数,用于配置模型、数据集和训练参数
-    
-    主要参数包括:
-    - model_type: 选择使用的模型类型(mdx23c/htdemucs等)
-    - config_path: 配置文件路径
-    - data_path: 训练数据路径
-    - dataset_type: 数据集类型(1-4)
-    - device_ids: GPU设备ID
-    - metrics: 评估指标列表
-    - train_lora: 是否使用LoRA训练
+    Parse command line arguments for configuring model, dataset, and training parameters.
+
+    Main arguments include:
+    - model_type: Model type to use (mdx23c/htdemucs, etc.)
+    - config_path: Path to configuration file
+    - data_path: Training data path
+    - dataset_type: Dataset type (1-4)
+    - device_ids: GPU device IDs
+    - metrics: List of evaluation metrics
+    - train_lora: Whether to use LoRA training
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default='mdx23c',
@@ -93,13 +93,13 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
 
 def manual_seed(seed: int) -> None:
     """
-    设置随机种子以确保实验可重复性
-    
-    包括:
-    - Python random库
+    Set random seed to ensure experiment reproducibility.
+
+    Includes:
+    - Python random library
     - NumPy
-    - PyTorch CPU和GPU
-    - CUDA后端
+    - PyTorch CPU and GPU
+    - CUDA backend
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -112,12 +112,12 @@ def manual_seed(seed: int) -> None:
 
 def initialize_environment(seed: int, results_path: str) -> None:
     """
-    初始化训练环境
-    
-    包括:
-    - 设置随机种子
-    - 配置PyTorch设置
-    - 创建结果保存目录
+    Initialize training environment.
+
+    Includes:
+    - Setting random seed
+    - Configuring PyTorch settings
+    - Creating results directory
     """
     manual_seed(seed)
     torch.backends.cudnn.deterministic = False
@@ -129,12 +129,12 @@ def initialize_environment(seed: int, results_path: str) -> None:
 
 def wandb_init(args: argparse.Namespace, config: Dict, device_ids: List[int], batch_size: int) -> None:
     """
-    初始化wandb日志系统
-    
-    用于:
-    - 记录训练过程
-    - 可视化训练指标
-    - 保存实验配置
+    Initialize wandb logging system.
+
+    Used for:
+    - Recording training process
+    - Visualizing training metrics
+    - Saving experiment configuration
     """
     if args.wandb_key is None or args.wandb_key.strip() == '':
         wandb.init(mode='disabled')
@@ -145,12 +145,12 @@ def wandb_init(args: argparse.Namespace, config: Dict, device_ids: List[int], ba
 
 def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> DataLoader:
     """
-    准备训练数据
-    
-    主要步骤:
-    1. 创建MSSDataset实例
-    2. 配置DataLoader参数
-    3. 返回训练数据加载器
+    Prepare training data.
+
+    Main steps:
+    1. Create MSSDataset instance
+    2. Configure DataLoader parameters
+    3. Return training data loader
     """
     trainset = MSSDataset(
         config,
@@ -172,12 +172,12 @@ def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> Dat
 
 def initialize_model_and_device(model: torch.nn.Module, device_ids: List[int]) -> Tuple[Union[torch.device, str], torch.nn.Module]:
     """
-    初始化模型并分配到合适的设备
-    
-    处理:
-    1. 单GPU/多GPU配置
-    2. CPU回退支持
-    3. DataParallel并行处理
+    Initialize model and assign to appropriate device.
+
+    Handles:
+    1. Single GPU/multi-GPU configuration
+    2. CPU fallback support
+    3. DataParallel processing
     """
     if torch.cuda.is_available():
         if len(device_ids) <= 1:
@@ -196,15 +196,15 @@ def initialize_model_and_device(model: torch.nn.Module, device_ids: List[int]) -
 
 def get_optimizer(config: ConfigDict, model: torch.nn.Module) -> torch.optim.Optimizer:
     """
-    根据配置初始化优化器
-    
-    支持的优化器:
-    - Adam: 自适应矩估计
-    - AdamW: 权重衰减的Adam
-    - RAdam: 修正的Adam
-    - RMSprop: 均方根传播
-    - Prodigy: 新型优化器
-    - SGD: 随机梯度下降
+    Initialize optimizer based on configuration.
+
+    Supported optimizers:
+    - Adam: Adaptive moment estimation
+    - AdamW: Adam with weight decay
+    - RAdam: Rectified Adam
+    - RMSprop: Root mean square propagation
+    - Prodigy: Novel optimizer
+    - SGD: Stochastic gradient descent
     """
     optim_params = dict()
     if 'optimizer' in config:
@@ -239,16 +239,16 @@ def get_optimizer(config: ConfigDict, model: torch.nn.Module) -> torch.optim.Opt
 
 def masked_loss(y_: torch.Tensor, y: torch.Tensor, q: float, coarse: bool = True) -> torch.Tensor:
     """
-    计算带掩码的损失函数
-    
-    实现:
-    1. 计算MSE损失
-    2. 基于分位数生成掩码
-    3. 应用掩码得到最终损失
-    
-    形状:
-    - y_: [音轨数, batch大小, 通道数, 音频长度]
-    - y: 同y_
+    Compute masked loss function.
+
+    Implementation:
+    1. Compute MSE loss
+    2. Generate mask based on quantile
+    3. Apply mask to get final loss
+
+    Shapes:
+    - y_: [num_stems, batch_size, channels, audio_length]
+    - y: same as y_
     """
     loss = torch.nn.MSELoss(reduction='none')(y_, y).transpose(0, 1)
     if coarse:
@@ -262,15 +262,15 @@ def masked_loss(y_: torch.Tensor, y: torch.Tensor, q: float, coarse: bool = True
 
 def multistft_loss(y: torch.Tensor, y_: torch.Tensor, loss_multistft: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]) -> torch.Tensor:
     """
-    计算多分辨率STFT损失
-    
-    用于:
-    - 频域和时域的联合优化
-    - 改善音频重建质量
-    
-    支持:
-    - 4D张量(标准模型)
-    - 3D张量(Apollo等模型)
+    Compute multi-resolution STFT loss.
+
+    Used for:
+    - Joint optimization in frequency and time domains
+    - Improving audio reconstruction quality
+
+    Supports:
+    - 4D tensors (standard models)
+    - 3D tensors (Apollo and similar models)
     """
     if len(y_.shape) == 4:
         y1_ = torch.reshape(y_, (y_.shape[0], y_.shape[1] * y_.shape[2], y_.shape[3]))
@@ -286,16 +286,16 @@ def multistft_loss(y: torch.Tensor, y_: torch.Tensor, loss_multistft: Callable[[
 
 def choice_loss(args: argparse.Namespace, config: ConfigDict) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     """
-    选择合适的损失函数
-    
-    支持的损失函数组合:
+    Select appropriate loss function.
+
+    Supported loss function combinations:
     1. MultiSTFT + MSE + L1
     2. MultiSTFT + MSE
     3. MultiSTFT + L1
-    4. 仅MultiSTFT
+    4. MultiSTFT only
     5. MSE + L1
-    6. 仅MSE
-    7. 仅L1
+    6. MSE only
+    7. L1 only
     8. Masked Loss
     """
     if args.use_multistft_loss:
@@ -331,12 +331,12 @@ def choice_loss(args: argparse.Namespace, config: ConfigDict) -> Callable[[torch
 
 def normalize_batch(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    对批次数据进行标准化
-    
-    步骤:
-    1. 计算均值
-    2. 计算标准差
-    3. 应用标准化
+    Normalize batch data.
+
+    Steps:
+    1. Compute mean
+    2. Compute standard deviation
+    3. Apply normalization
     """
     mean = x.mean()
     std = x.std()
@@ -351,20 +351,20 @@ def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.N
                     gradient_accumulation_steps: int, train_loader: torch.utils.data.DataLoader,
                     multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]) -> None:
     """
-    训练模型一个epoch
-    
-    主要步骤:
-    1. 数据预处理和标准化
-    2. 前向传播
-    3. 损失计算
-    4. 反向传播
-    5. 梯度累积和优化器更新
-    6. 指标记录
-    
-    特殊处理:
-    - 自动混合精度训练
-    - 梯度裁剪
-    - 不同模型架构的特殊处理
+    Train model for one epoch.
+
+    Main steps:
+    1. Data preprocessing and normalization
+    2. Forward pass
+    3. Loss computation
+    4. Backward pass
+    5. Gradient accumulation and optimizer update
+    6. Metric logging
+
+    Special handling:
+    - Automatic mixed precision training
+    - Gradient clipping
+    - Special handling for different model architectures
     """
     model.train().to(device)
     print(f'Train epoch: {epoch} Learning rate: {optimizer.param_groups[0]["lr"]}')
@@ -416,11 +416,11 @@ def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.N
 def save_weights(args: argparse.Namespace, store_path_prefix: str, model: torch.nn.Module, device_ids: List[int],
                  train_lora: bool, epoch: int, metric_value: float, is_early_stop: bool) -> None:
     """
-    保存模型权重
-    支持:
-    - 普通模型权重保存
-    - LoRA权重保存
-    - 多GPU模型权重保存
+    Save model weights.
+    Supports:
+    - Standard model weight saving
+    - LoRA weight saving
+    - Multi-GPU model weight saving
     """
     if train_lora:
         suffix = f'_{args.model_type}_ep_{epoch}_{args.metric_for_scheduler}_{metric_value:.4f}.ckpt'
@@ -447,24 +447,24 @@ def compute_epoch_metrics(model: torch.nn.Module, args: argparse.Namespace, conf
                           device: torch.device, device_ids: List[int], epoch: int,
                           scheduler: torch.optim.lr_scheduler._LRScheduler, best_metric: float) -> Tuple[float, float]:
     """
-    计算并记录当前epoch的评估指标
-    
-    主要功能:
-    1. 验证模型性能
-    2. 调整学习率
-    3. 记录wandb日志
+    Compute and log evaluation metrics for current epoch.
+
+    Main functions:
+    1. Validate model performance
+    2. Adjust learning rate
+    3. Log to wandb
     """
     if torch.cuda.is_available() and len(device_ids) > 1:
         metrics_avg = valid_multi_gpu(model, args, config, args.device_ids, verbose=False)
     else:
         metrics_avg = valid(model, args, config, device, verbose=False)
-    
-    # 判断是否需要保存模型
+
+    # Check if model needs to be saved
     current_metric = metrics_avg[args.metric_for_scheduler]
     if current_metric > best_metric:
         best_metric = current_metric
         save_weights(args, args.results_path, model, device_ids, args.train_lora, epoch, current_metric, is_early_stop=False)
-    
+
     scheduler.step(current_metric)
     wandb.log({'metric_main': current_metric})
     for metric_name in metrics_avg:
@@ -474,25 +474,25 @@ def compute_epoch_metrics(model: torch.nn.Module, args: argparse.Namespace, conf
 
 def train_model(args: argparse.Namespace) -> None:
     """
-    模型训练的主函数
-    
-    完整训练流程:
-    1. 参数解析和环境初始化
-    2. 模型和数据准备
-    3. 优化器和损失函数配置
-    4. 训练循环
-       - 每个epoch的训练
-       - 验证和指标计算
-       - 模型保存
-       - 学习率调整
-    5. wandb日志记录
-    
-    支持特性:
-    - 多GPU训练
-    - 混合精度训练
-    - LoRA微调
-    - 断点续训
-    - 多种评估指标
+    Main function for model training.
+
+    Complete training pipeline:
+    1. Argument parsing and environment initialization
+    2. Model and data preparation
+    3. Optimizer and loss function configuration
+    4. Training loop
+       - Training for each epoch
+       - Validation and metric computation
+       - Model saving
+       - Learning rate adjustment
+    5. Wandb logging
+
+    Supported features:
+    - Multi-GPU training
+    - Mixed precision training
+    - LoRA fine-tuning
+    - Resume from checkpoint
+    - Multiple evaluation metrics
     """
     args = parse_args(args)
 
@@ -531,7 +531,7 @@ def train_model(args: argparse.Namespace) -> None:
     multi_loss = choice_loss(args, config)
     scaler = GradScaler()
 
-    # 读取早停配置
+    # Read early stopping configuration
     early_stop = getattr(config.training, 'early_stop', {})
     early_stop_enabled = early_stop.get('enabled', False)
     early_stop_patience = early_stop.get('patience', 5)
@@ -558,16 +558,16 @@ def train_model(args: argparse.Namespace) -> None:
                         use_amp, scaler, gradient_accumulation_steps, train_loader, multi_loss)
         current_metric, best_metric = compute_epoch_metrics(model, args, config, device, device_ids, epoch, scheduler, best_metric)
         if early_stop_enabled:
-            # 如果本 epoch 指标没有刷新 best_metric，则累计计数；否则重置连续无提升计数
+            # If this epoch's metric doesn't improve best_metric, increment counter; otherwise reset
             if current_metric < best_metric:
                 no_improvement_count += 1
             else:
                 no_improvement_count = 0
-            # 如果连续无提升达到设定值，则提前停止训练
+            # If no improvement for consecutive epochs reaches threshold, stop training early
             if no_improvement_count >= early_stop_patience:
                 print(f"Early stopping: {metric_for_early_stop} has not improved for {early_stop_patience} consecutive epochs.")
                 save_weights(args, args.results_path, model, device_ids, args.train_lora, epoch, current_metric, is_early_stop=True)
                 break
 
 if __name__ == "__main__":
-    train_model(None)   
+    train_model(None)

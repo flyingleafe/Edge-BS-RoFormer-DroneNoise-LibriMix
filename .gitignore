@@ -1,4 +1,7 @@
 *.pyc
 datasets/
+data/
 wandb/
 results/
+.direnv/
+*.xml

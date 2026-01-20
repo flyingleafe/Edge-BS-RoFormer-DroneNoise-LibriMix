@@ -1,7 +1,7 @@
 # coding: utf-8
 __author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
 
-# 导入所需的库
+# Import required libraries
 import argparse
 import time
 import os
@@ -23,16 +23,16 @@ warnings.filterwarnings("ignore")
 
 def logging(logs: List[str], text: str, verbose_logging: bool = False) -> None:
     """
-    记录验证过程中的日志信息
-    
-    参数:
+    Log information during validation process.
+
+    Args:
     ----------
     store_dir : str
-        存储日志的目录,如果为空则不存储
-    logs : List[str] 
-        存储日志的列表
+        Directory to store logs, if empty then don't store
+    logs : List[str]
+        List to store logs
     text : str
-        需要记录的文本信息
+        Text information to log
     """
 
     print(text)
@@ -42,14 +42,14 @@ def logging(logs: List[str], text: str, verbose_logging: bool = False) -> None:
 
 def write_results_in_file(store_dir: str, logs: List[str]) -> None:
     """
-    将验证结果写入文件
-    
-    参数:
+    Write validation results to file.
+
+    Args:
     ----------
     store_dir : str
-        结果文件的存储目录
+        Directory to store result file
     results : List[str]
-        需要写入文件的结果列表
+        List of results to write to file
     """
     with open(f'{store_dir}/results.txt', 'w') as out:
         for item in logs:
@@ -63,23 +63,23 @@ def get_mixture_paths(
     extension: str
 ) -> List[str]:
     """
-    获取待验证的混合音频文件路径
-    
-    参数:
+    Get paths to mixture audio files for validation.
+
+    Args:
     ----------
     valid_path : List[str]
-        验证数据集的目录列表
+        List of validation dataset directories
     verbose : bool
-        是否打印详细信息
+        Whether to print detailed information
     config : ConfigDict
-        配置对象,包含推理参数如重叠数和批大小
+        Configuration object containing inference parameters like overlap count and batch size
     extension : str
-        音频文件扩展名
-        
-    返回:
+        Audio file extension
+
+    Returns:
     -------
     List[str]
-        混合音频文件路径列表
+        List of mixture audio file paths
     """
     try:
         valid_path = args.valid_path
@@ -110,22 +110,22 @@ def update_metrics_and_pbar(
         verbose: bool = False
 ) -> None:
     """
-    更新评估指标和进度条
-    
-    参数:
+    Update evaluation metrics and progress bar.
+
+    Args:
     ----------
     track_metrics : Dict
-        当前音轨的评估指标字典
+        Evaluation metrics dictionary for current track
     all_metrics : Dict
-        所有音轨的评估指标汇总字典
+        Aggregated evaluation metrics dictionary for all tracks
     instr : str
-        当前处理的乐器名称
+        Name of current instrument being processed
     pbar_dict : Dict
-        进度条显示的指标字典
+        Dictionary of metrics to display in progress bar
     mixture_paths : tqdm
-        进度条对象
+        Progress bar object
     verbose : bool
-        是否打印详细信息
+        Whether to print detailed information
     """
     for metric_name, metric_value in track_metrics.items():
         if verbose:
@@ -150,44 +150,44 @@ def process_audio_files(
     is_tqdm: bool = True
 ) -> Dict[str, Dict[str, List[float]]]:
     """
-    处理音频文件并进行源分离评估
-    
-    参数:
+    Process audio files and perform source separation evaluation.
+
+    Args:
     ----------
     mixture_paths : List[str]
-        混合音频文件路径列表
+        List of mixture audio file paths
     model : torch.nn.Module
-        训练好的源分离模型
+        Trained source separation model
     args : Any
-        包含用户指定选项的参数对象
+        Argument object containing user-specified options
     config : Any
-        包含模型和处理参数的配置对象
+        Configuration object containing model and processing parameters
     device : torch.device
-        运行设备(CPU或CUDA)
+        Computing device (CPU or CUDA)
     verbose : bool
-        是否打印详细日志
+        Whether to print detailed logs
     is_tqdm : bool
-        是否显示进度条
-        
-    返回:
+        Whether to show progress bar
+
+    Returns:
     -------
     Dict[str, Dict[str, List[float]]]
-        评估指标的嵌套字典,外层key为指标名称,内层key为乐器名称
+        Nested dictionary of evaluation metrics, outer key is metric name, inner key is instrument name
     """
-    # 获取目标乐器列表
+    # Get target instrument list
     instruments = prefer_target_instrument(config)
 
-    # 获取测试时增强(TTA)设置
+    # Get test-time augmentation (TTA) settings
     use_tta = getattr(args, 'use_tta', False)
-    # 获取文件存储目录
+    # Get file storage directory
     store_dir = getattr(args, 'store_dir', '')
-    # 获取音频编码格式
+    # Get audio encoding format
     if 'extension' in config['inference']:
         extension = config['inference']['extension']
     else:
         extension = getattr(args, 'extension', 'wav')
 
-    # 初始化评估指标字典
+    # Initialize evaluation metrics dictionary
     all_metrics = {
         metric: {instr: [] for instr in config.training.instruments}
         for metric in args.metrics
@@ -196,15 +196,15 @@ def process_audio_files(
     if is_tqdm:
         mixture_paths = tqdm(mixture_paths)
 
-    # 遍历处理每个混合音频文件
+    # Process each mixture audio file
     for path in mixture_paths:
         start_time = time.time()
-        # 读取混合音频
+        # Read mixture audio
         mix, sr = read_audio_transposed(path)
         mix_orig = mix.copy()
         folder = os.path.dirname(path)
 
-        # 重采样到目标采样率
+        # Resample to target sample rate
         if 'sample_rate' in config.audio:
             if sr != config.audio['sample_rate']:
                 orig_length = mix.shape[-1]
@@ -216,50 +216,50 @@ def process_audio_files(
             folder_name = os.path.abspath(folder)
             print(f'Song: {folder_name} Shape: {mix.shape}')
 
-        # 音频归一化
+        # Audio normalization
         if 'normalize' in config.inference:
             if config.inference['normalize'] is True:
                 mix, norm_params = normalize_audio(mix)
 
-        # 使用模型进行源分离
+        # Perform source separation using model
         waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type)
 
-        # 应用测试时增强
+        # Apply test-time augmentation
         if use_tta:
             waveforms_orig = apply_tta(config, model, mix, waveforms_orig, device, args.model_type)
 
         pbar_dict = {}
 
-        # 对每个乐器分别计算评估指标
+        # Calculate evaluation metrics for each instrument
         for instr in instruments:
             if verbose:
                 print(f"Instr: {instr}")
 
-            # 读取原始乐器音轨作为参考
+            # Read original instrument track as reference
             if instr != 'other' or config.training.other_fix is False:
                 track, sr1 = read_audio_transposed(f"{folder}/{instr}.{extension}", instr, skip_err=True)
                 if track is None:
                     continue
             else:
-                # 如果是other轨道,需要从vocals轨道计算
+                # For 'other' track, compute from vocals track
                 track, sr1 = read_audio_transposed(f"{folder}/vocals.{extension}")
                 track = mix_orig - track
 
             estimates = waveforms_orig[instr]
 
-            # 重采样到原始采样率
+            # Resample to original sample rate
             if 'sample_rate' in config.audio:
                 if sr != config.audio['sample_rate']:
                     estimates = librosa.resample(estimates, orig_sr=config.audio['sample_rate'], target_sr=sr,
                                                  res_type='kaiser_best')
                     estimates = librosa.util.fix_length(estimates, size=orig_length)
 
-            # 反归一化
+            # Denormalize
             if 'normalize' in config.inference:
                 if config.inference['normalize'] is True:
                     estimates = denormalize_audio(estimates, norm_params)
 
-            # 保存分离结果
+            # Save separation results
             if store_dir:
                 os.makedirs(store_dir, exist_ok=True)
                 out_wav_name = f"{store_dir}/{os.path.basename(folder)}_{instr}.wav"
@@ -270,7 +270,7 @@ def process_audio_files(
                     out_img_name_orig = f"{store_dir}/{os.path.basename(folder)}_{instr}_orig.jpg"
                     draw_spectrogram(track.T, sr, args.draw_spectro, out_img_name_orig)
 
-            # 计算评估指标
+            # Calculate evaluation metrics
             track_metrics = get_metrics(
                 args.metrics,
                 track,
@@ -279,7 +279,7 @@ def process_audio_files(
                 device=device,
             )
 
-            # 更新评估指标和进度条
+            # Update evaluation metrics and progress bar
             update_metrics_and_pbar(
                 track_metrics,
                 all_metrics,
@@ -303,27 +303,27 @@ def compute_metric_avg(
     start_time: float
 ) -> Dict[str, float]:
     """
-    计算并记录每个乐器的平均评估指标
-    
-    参数:
+    Compute and log average evaluation metrics for each instrument.
+
+    Args:
     ----------
     store_dir : str
-        日志存储目录
+        Log storage directory
     args : dict
-        参数字典
+        Arguments dictionary
     instruments : List[str]
-        乐器列表
+        List of instruments
     config : ConfigDict
-        配置字典
+        Configuration dictionary
     all_metrics : Dict[str, Dict[str, List[float]]]
-        所有评估指标的字典
+        Dictionary of all evaluation metrics
     start_time : float
-        开始时间
-        
-    返回:
+        Start time
+
+    Returns:
     -------
     Dict[str, float]
-        所有乐器的平均评估指标
+        Average evaluation metrics for all instruments
     """
 
     logs = []
@@ -336,7 +336,7 @@ def compute_metric_avg(
     logging(logs, text=f"Num overlap: {config.inference.num_overlap}", verbose_logging=verbose_logging)
 
     metric_avg = {}
-    # 计算每个乐器的评估指标均值和标准差
+    # Compute mean and standard deviation of metrics for each instrument
     for instr in instruments:
         for metric_name in all_metrics:
             metric_values = np.array(all_metrics[metric_name][instr])
@@ -348,8 +348,8 @@ def compute_metric_avg(
             if metric_name not in metric_avg:
                 metric_avg[metric_name] = 0.0
             metric_avg[metric_name] += mean_val
-    
-    # 计算所有乐器的平均指标
+
+    # Compute average metrics across all instruments
     for metric_name in all_metrics:
         metric_avg[metric_name] /= len(instruments)
 
@@ -372,45 +372,45 @@ def valid(
     verbose: bool = False
 ) -> dict:
     """
-    在单个设备上验证模型
-    
-    参数:
+    Validate model on a single device.
+
+    Args:
     ----------
     model : torch.nn.Module
-        源分离模型
+        Source separation model
     args : Namespace
-        命令行参数
+        Command line arguments
     config : dict
-        配置字典
+        Configuration dictionary
     device : torch.device
-        运行设备
+        Computing device
     verbose : bool
-        是否打印详细信息
-        
-    返回:
+        Whether to print detailed information
+
+    Returns:
     -------
     dict
-        所有乐器的平均评估指标
+        Average evaluation metrics for all instruments
     """
 
     start_time = time.time()
     model.eval().to(device)
 
-    # 获取存储目录
+    # Get storage directory
     store_dir = getattr(args, 'store_dir', '')
-    # 获取音频编码格式
+    # Get audio encoding format
     if 'extension' in config['inference']:
         extension = config['inference']['extension']
     else:
         extension = getattr(args, 'extension', 'wav')
 
-    # 获取所有混合音频文件路径
+    # Get all mixture audio file paths
     all_mixtures_path = get_mixture_paths(args, verbose, config, extension)
-    # 处理音频文件并计算评估指标
+    # Process audio files and compute evaluation metrics
     all_metrics = process_audio_files(all_mixtures_path, model, args, config, device, verbose, not verbose)
     instruments = prefer_target_instrument(config)
 
-    # 计算平均评估指标
+    # Compute average evaluation metrics
     return compute_metric_avg(store_dir, args, instruments, config, all_metrics, start_time)
 
 
@@ -425,33 +425,33 @@ def validate_in_subprocess(
     return_dict
 ) -> None:
     """
-    在子进程中执行验证,支持多进程并行处理
-    
-    参数:
+    Execute validation in subprocess, supporting multi-process parallel processing.
+
+    Args:
     ----------
     proc_id : int
-        进程ID
+        Process ID
     queue : torch.multiprocessing.Queue
-        用于接收混合音频文件路径的队列
+        Queue for receiving mixture audio file paths
     all_mixtures_path : List[str]
-        所有混合音频文件路径
+        All mixture audio file paths
     model : torch.nn.Module
-        源分离模型
+        Source separation model
     args : dict
-        参数字典
+        Arguments dictionary
     config : ConfigDict
-        配置对象
+        Configuration object
     device : str
-        运行设备
+        Computing device
     return_dict : torch.multiprocessing.Manager().dict
-        用于存储每个进程结果的共享字典
+        Shared dictionary for storing results from each process
     """
 
     m1 = model.eval().to(device)
     if proc_id == 0:
         progress_bar = tqdm(total=len(all_mixtures_path))
 
-    # 初始化评估指标字典
+    # Initialize evaluation metrics dictionary
     all_metrics = {
         metric: {instr: [] for instr in config.training.instruments}
         for metric in args.metrics
@@ -459,7 +459,7 @@ def validate_in_subprocess(
 
     while True:
         current_step, path = queue.get()
-        if path is None:  # 检查结束标记
+        if path is None:  # Check for end marker
             break
         single_metrics = process_audio_files([path], m1, args, config, device, False, False)
         pbar_dict = {}
@@ -485,29 +485,29 @@ def run_parallel_validation(
     return_dict
 ) -> None:
     """
-    运行多进程并行验证
-    
-    参数:
+    Run multi-process parallel validation.
+
+    Args:
     ----------
     verbose : bool
-        是否打印详细信息
+        Whether to print detailed information
     all_mixtures_path : List[str]
-        所有混合音频文件路径
+        All mixture audio file paths
     config : ConfigDict
-        配置对象
+        Configuration object
     model : torch.nn.Module
-        源分离模型
+        Source separation model
     device_ids : List[int]
-        GPU设备ID列表
+        List of GPU device IDs
     args : dict
-        参数字典
+        Arguments dictionary
     return_dict
-        用于存储所有进程结果的共享字典
+        Shared dictionary for storing results from all processes
     """
 
     model = model.to('cpu')
     try:
-        # 对于多GPU训练提取单个模型
+        # Extract single model for multi-GPU training
         model = model.module
     except:
         pass
@@ -515,7 +515,7 @@ def run_parallel_validation(
     queue = torch.multiprocessing.Queue()
     processes = []
 
-    # 为每个设备创建一个进程
+    # Create a process for each device
     for i, device in enumerate(device_ids):
         if torch.cuda.is_available():
             device = f'cuda:{device}'
@@ -527,14 +527,14 @@ def run_parallel_validation(
         )
         p.start()
         processes.append(p)
-    
-    # 向队列中添加任务
+
+    # Add tasks to queue
     for i, path in enumerate(all_mixtures_path):
         queue.put((i, path))
-    # 添加结束标记
+    # Add end markers
     for _ in range(len(device_ids)):
         queue.put((None, None))
-    # 等待所有进程完成
+    # Wait for all processes to complete
     for p in processes:
         p.join()
 
@@ -549,47 +549,47 @@ def valid_multi_gpu(
     verbose: bool = False
 ) -> Dict[str, float]:
     """
-    在多个GPU上执行验证
-    
-    参数:
+    Execute validation on multiple GPUs.
+
+    Args:
     ----------
     model : torch.nn.Module
-        源分离模型
+        Source separation model
     args : dict
-        参数字典
+        Arguments dictionary
     config : ConfigDict
-        配置对象
+        Configuration object
     device_ids : List[int]
-        GPU设备ID列表
+        List of GPU device IDs
     verbose : bool
-        是否打印详细信息
-        
-    返回:
+        Whether to print detailed information
+
+    Returns:
     -------
     Dict[str, float]
-        每个评估指标的平均值
+        Average value for each evaluation metric
     """
 
     start_time = time.time()
 
-    # 获取存储目录
+    # Get storage directory
     store_dir = getattr(args, 'store_dir', '')
-    # 获取音频编码格式
+    # Get audio encoding format
     if 'extension' in config['inference']:
         extension = config['inference']['extension']
     else:
         extension = getattr(args, 'extension', 'wav')
 
-    # 获取所有混合音频文件路径
+    # Get all mixture audio file paths
     all_mixtures_path = get_mixture_paths(args, verbose, config, extension)
 
-    # 创建共享字典存储结果
+    # Create shared dictionary to store results
     return_dict = torch.multiprocessing.Manager().dict()
 
-    # 运行并行验证
+    # Run parallel validation
     run_parallel_validation(verbose, all_mixtures_path, config, model, device_ids, args, return_dict)
 
-    # 合并所有进程的结果
+    # Merge results from all processes
     all_metrics = dict()
     for metric in args.metrics:
         all_metrics[metric] = dict()
@@ -600,23 +600,23 @@ def valid_multi_gpu(
 
     instruments = prefer_target_instrument(config)
 
-    # 计算平均评估指标
+    # Compute average evaluation metrics
     return compute_metric_avg(store_dir, args, instruments, config, all_metrics, start_time)
 
 
 def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
     """
-    解析命令行参数
-    
-    参数:
+    Parse command line arguments.
+
+    Args:
     ----------
     dict_args: Dict
-        命令行参数字典,如果为None则从sys.argv解析
-        
-    返回:
+        Command line arguments dictionary, if None then parse from sys.argv
+
+    Returns:
     -------
     argparse.Namespace
-        解析后的参数对象
+        Parsed arguments object
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default='mdx23c',
@@ -655,12 +655,12 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
 
 def check_validation(dict_args):
     """
-    执行验证的主函数
-    
-    参数:
+    Main function for executing validation.
+
+    Args:
     ----------
     dict_args
-        命令行参数字典
+        Command line arguments dictionary
     """
     args = parse_args(dict_args)
     torch.backends.cudnn.benchmark = True
@@ -668,17 +668,17 @@ def check_validation(dict_args):
         torch.multiprocessing.set_start_method('spawn')
     except Exception as e:
         pass
-    
-    # 获取模型和配置
+
+    # Get model and configuration
     model, config = get_model_from_config(args.model_type, args.config_path)
 
-    # 加载检查点
+    # Load checkpoint
     if args.start_check_point:
         load_start_checkpoint(args, model, type_='valid')
 
     print(f"Instruments: {config.training.instruments}")
 
-    # 设置运行设备
+    # Set computing device
     device_ids = args.device_ids
     if torch.cuda.is_available():
         device = torch.device(f'cuda:{device_ids[0]}')
@@ -686,7 +686,7 @@ def check_validation(dict_args):
         device = 'cpu'
         print('CUDA is not available. Run validation on CPU. It will be very slow...')
 
-    # 根据设备数量选择验证方式
+    # Choose validation method based on device count
     if torch.cuda.is_available() and len(device_ids) > 1:
         valid_multi_gpu(model, args, config, device_ids, verbose=False)
     else:

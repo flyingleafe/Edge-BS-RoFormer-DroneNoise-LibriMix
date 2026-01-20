@@ -11,29 +11,29 @@ audio:
 model: dptnet
 
 training:
-  batch_size: 12  # 每个批次的样本数量
-  gradient_accumulation_steps: 1  # 梯度累积的步数
-  grad_clip: 0  # 梯度裁剪的阈值
-  instruments:  # 训练中使用的乐器
-    - vocals  # 人声
-    - noise  # 噪声
-  lr: 5.0e-4  # 学习率
-  patience: 2  # 学习率调度的耐心值
-  reduce_factor: 0.95  # 学习率衰减因子
-  target_instrument: vocals  # 目标乐器
-  num_epochs: 1000  # 训练的轮数
-  num_steps: 200  # 每个epoch的步数
-  q: 0.95  # 量化参数
-  coarse_loss_clip: true  # 是否对粗损失进行裁剪
-  ema_momentum: 0.999  # 指数移动平均的动量
-  optimizer: adamw  # 优化器类型
-  other_fix: false  # 其他修正标志
-  use_amp: false  # 是否使用自动混合精度
-  early_stop:  # 提前停止配置
-    enabled: true  # 是否启用提前停止
-    patience: 30  # 提前停止的耐心值
-    metric: "si-sdr"  # 用于提前停止的指标
+  batch_size: 12  # Number of samples per batch
+  gradient_accumulation_steps: 1  # Gradient accumulation steps
+  grad_clip: 0  # Gradient clipping threshold
+  instruments:  # Instruments used in training
+    - vocals  # Vocals
+    - noise  # Noise
+  lr: 5.0e-4  # Learning rate
+  patience: 2  # Learning rate scheduler patience
+  reduce_factor: 0.95  # Learning rate reduction factor
+  target_instrument: vocals  # Target instrument
+  num_epochs: 1000  # Number of training epochs
+  num_steps: 200  # Steps per epoch
+  q: 0.95  # Quantile parameter
+  coarse_loss_clip: true  # Whether to clip coarse loss
+  ema_momentum: 0.999  # Exponential moving average momentum
+  optimizer: adamw  # Optimizer type
+  other_fix: false  # Other fix flag
+  use_amp: false  # Whether to use automatic mixed precision
+  early_stop:  # Early stopping configuration
+    enabled: true  # Whether to enable early stopping
+    patience: 30  # Early stopping patience
+    metric: "si-sdr"  # Metric for early stopping
 
 inference:
-  batch_size: 10           # 每个批次的样本数量
-  num_overlap: 4           # 重叠的数量
+  batch_size: 10           # Number of samples per batch
+  num_overlap: 4           # Number of overlaps

@@ -33,7 +33,7 @@ def overlap_and_add(signal, frame_step):
 
     subframe_signal = signal.reshape(*outer_dimensions, -1, subframe_length)
 
-    # 直接在 signal 的设备上创建 frame
+    # Create frame directly on the signal's device
     frame = torch.arange(0, output_subframes, device=signal.device).unfold(0, subframes_per_frame, subframe_step)
     frame = frame.long()
     frame = frame.contiguous().view(-1)

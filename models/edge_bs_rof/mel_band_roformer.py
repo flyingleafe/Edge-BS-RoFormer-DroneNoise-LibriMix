@@ -19,45 +19,45 @@ from einops.layers.torch import Rearrange
 from librosa import filters
 
 
-# 辅助函数
+# Helper functions
 
 def exists(val):
-    # 检查值是否存在(不为None)
+    # Check if value exists (is not None)
     return val is not None
 
 
 def default(v, d):
-    # 如果v存在则返回v,否则返回默认值d
+    # If v exists return v, otherwise return default value d
     return v if exists(v) else d
 
 
 def pack_one(t, pattern):
-    # 将单个张量按pattern打包
+    # Pack a single tensor according to pattern
     return pack([t], pattern)
 
 
 def unpack_one(t, ps, pattern):
-    # 将打包的张量按pattern解包为单个张量
+    # Unpack a packed tensor according to pattern to single tensor
     return unpack(t, ps, pattern)[0]
 
 
 def pad_at_dim(t, pad, dim=-1, value=0.):
-    # 在指定维度上进行填充
+    # Pad at specified dimension
     dims_from_right = (- dim - 1) if dim < 0 else (t.ndim - dim - 1)
     zeros = ((0, 0) * dims_from_right)
     return F.pad(t, (*zeros, *pad), value=value)
 
 
 def l2norm(t):
-    # L2范数归一化
+    # L2 norm normalization
     return F.normalize(t, dim=-1, p=2)
 
 
-# 归一化层
+# Normalization layers
 
 class RMSNorm(Module):
     """
-    RMS归一化层,用于替代LayerNorm,计算更快且效果相当
+    RMS normalization layer, faster computation than LayerNorm with similar performance
     """
     def __init__(self, dim):
         super().__init__()
@@ -68,12 +68,12 @@ class RMSNorm(Module):
         return F.normalize(x, dim=-1) * self.scale * self.gamma
 
 
-# 注意力机制相关模块
+# Attention mechanism related modules
 
 class FeedForward(Module):
     """
-    前馈神经网络,包含两个线性层和一个GELU激活函数
-    用于Transformer中的FFN部分
+    Feed-forward neural network, contains two linear layers and a GELU activation function
+    Used for FFN part in Transformer
     """
     def __init__(
             self,
@@ -98,12 +98,12 @@ class FeedForward(Module):
 
 class Attention(Module):
     """
-    多头注意力机制,支持旋转位置编码
-    包含:
-    - 多头投影
-    - 注意力计算
-    - 门控机制
-    - 输出投影
+    Multi-head attention mechanism, supports rotary positional encoding
+    Contains:
+    - Multi-head projection
+    - Attention computation
+    - Gating mechanism
+    - Output projection
     """
     def __init__(
             self,
@@ -153,8 +153,8 @@ class Attention(Module):
 
 class LinearAttention(Module):
     """
-    线性注意力机制,来自论文https://arxiv.org/abs/2106.09681
-    通过线性变换来近似标准注意力,计算复杂度从O(n^2)降到O(n)
+    Linear attention mechanism, from paper https://arxiv.org/abs/2106.09681
+    Approximates standard attention through linear transformation, reduces complexity from O(n^2) to O(n)
     """
 
     @beartype
@@ -208,11 +208,11 @@ class LinearAttention(Module):
 
 class Transformer(Module):
     """
-    Transformer编码器,由多层注意力层和前馈网络组成
-    支持:
-    - 标准注意力或线性注意力
-    - 旋转位置编码
-    - Flash Attention加速
+    Transformer encoder, composed of multiple attention layers and feed-forward networks
+    Supports:
+    - Standard attention or linear attention
+    - Rotary positional encoding
+    - Flash Attention acceleration
     """
     def __init__(
             self,
@@ -255,12 +255,12 @@ class Transformer(Module):
         return self.norm(x)
 
 
-# 频带分割模块
+# Band splitting module
 
 class BandSplit(Module):
     """
-    将输入按频带分割并映射到指定维度
-    用于将STFT结果分割成多个频带进行处理
+    Split input by frequency bands and map to specified dimension
+    Used to split STFT results into multiple bands for processing
     """
     @beartype
     def __init__(
@@ -299,7 +299,7 @@ def MLP(
         activation=nn.Tanh
 ):
     """
-    多层感知机,用于特征变换
+    Multi-layer perceptron, used for feature transformation
     """
     dim_hidden = default(dim_hidden, dim_in)
 
@@ -321,8 +321,8 @@ def MLP(
 
 class MaskEstimator(Module):
     """
-    掩码估计器,用于估计每个频带的分离掩码
-    包含多个MLP,每个MLP负责一个频带的掩码估计
+    Mask estimator, used to estimate separation mask for each frequency band
+    Contains multiple MLPs, each MLP handles mask estimation for one frequency band
     """
     @beartype
     def __init__(
@@ -359,24 +359,24 @@ class MaskEstimator(Module):
         return torch.cat(outs, dim=-1)
 
 
-# 主模型
+# Main model
 
 class MelBandRoformer(Module):
     """
-    基于Mel频带和Roformer的音源分离模型
-    
-    主要组件:
-    1. STFT变换将音频转换到频域
-    2. Mel滤波器组将频谱分成多个频带
-    3. 多层Transformer编码器处理时间和频率维度的特征
-    4. 掩码估计器为每个源生成分离掩码
-    5. ISTFT重建分离后的音频
-    
-    特点:
-    - 支持单声道和立体声
-    - 支持多源分离
-    - 使用旋转位置编码
-    - 支持多分辨率STFT损失
+    Mel-band and Roformer-based audio source separation model
+
+    Main components:
+    1. STFT transform converts audio to frequency domain
+    2. Mel filter bank divides spectrum into multiple bands
+    3. Multi-layer Transformer encoder processes time and frequency dimension features
+    4. Mask estimator generates separation mask for each source
+    5. ISTFT reconstructs separated audio
+
+    Features:
+    - Supports mono and stereo
+    - Supports multi-source separation
+    - Uses rotary positional encoding
+    - Supports multi-resolution STFT loss
     """
 
     @beartype
@@ -397,7 +397,7 @@ class MelBandRoformer(Module):
             ff_dropout=0.1,
             flash_attn=True,
             dim_freqs_in=1025,
-            sample_rate=44100,  # 采样率,用于mel滤波器组
+            sample_rate=44100,  # Sample rate, used for mel filter bank
             stft_n_fft=2048,
             stft_hop_length=512,
             stft_win_length=2048,
@@ -409,7 +409,7 @@ class MelBandRoformer(Module):
             multi_stft_hop_size=147,
             multi_stft_normalized=False,
             multi_stft_window_fn: Callable = torch.hann_window,
-            match_input_audio_length=False,  # 是否将输出长度匹配输入
+            match_input_audio_length=False,  # Whether to match output length to input
             mlp_expansion_factor=4,
             use_torch_checkpoint=False,
             skip_connection=False,
@@ -433,7 +433,7 @@ class MelBandRoformer(Module):
             flash_attn=flash_attn
         )
 
-        # 时间和频率维度的旋转位置编码
+        # Rotary positional encoding for time and frequency dimensions
         time_rotary_embed = RotaryEmbedding(dim=dim_head)
         freq_rotary_embed = RotaryEmbedding(dim=dim_head)
 
@@ -460,13 +460,13 @@ class MelBandRoformer(Module):
 
         freqs = torch.stft(torch.randn(1, 4096), **self.stft_kwargs, window=torch.ones(stft_n_fft), return_complex=True).shape[1]
 
-        # 创建mel滤波器组
+        # Create mel filter bank
         mel_filter_bank_numpy = filters.mel(sr=sample_rate, n_fft=stft_n_fft, n_mels=num_bands)
         mel_filter_bank = torch.from_numpy(mel_filter_bank_numpy)
         mel_filter_bank[0][0] = 1.
         mel_filter_bank[-1, -1] = 1.
 
-        # 二值化mel滤波器组
+        # Binarize mel filter bank
         freqs_per_band = mel_filter_bank > 0
         assert freqs_per_band.any(dim=0).all(), 'all frequencies need to be covered by all bands for now'
 
@@ -487,7 +487,7 @@ class MelBandRoformer(Module):
         self.register_buffer('num_freqs_per_band', num_freqs_per_band, persistent=False)
         self.register_buffer('num_bands_per_freq', num_bands_per_freq, persistent=False)
 
-        # 频带分割和掩码估计器
+        # Band splitting and mask estimator
         freqs_per_bands_with_complex = tuple(2 * f * self.audio_channels for f in num_freqs_per_band.tolist())
 
         self.band_split = BandSplit(
@@ -507,7 +507,7 @@ class MelBandRoformer(Module):
 
             self.mask_estimators.append(mask_estimator)
 
-        # 多分辨率STFT损失相关参数
+        # Multi-resolution STFT loss related parameters
         self.multi_stft_resolution_loss_weight = multi_stft_resolution_loss_weight
         self.multi_stft_resolutions_window_sizes = multi_stft_resolutions_window_sizes
         self.multi_stft_n_fft = stft_n_fft
@@ -527,16 +527,16 @@ class MelBandRoformer(Module):
             return_loss_breakdown=False
     ):
         """
-        前向传播过程
-        
-        输入:
-        - raw_audio: 原始音频 [batch, channel, time]
-        - target: 目标分离音频(训练时) [batch, stems, channel, time]
-        - return_loss_breakdown: 是否返回损失明细
-        
-        输出:
-        - 无target时: 分离后的音频
-        - 有target时: 总损失(或损失明细)
+        Forward propagation process
+
+        Input:
+        - raw_audio: Raw audio [batch, channel, time]
+        - target: Target separated audio (during training) [batch, stems, channel, time]
+        - return_loss_breakdown: Whether to return loss breakdown
+
+        Output:
+        - Without target: Separated audio
+        - With target: Total loss (or loss breakdown)
         """
 
         device = raw_audio.device
@@ -551,7 +551,7 @@ class MelBandRoformer(Module):
         assert (not self.stereo and channels == 1) or (
                     self.stereo and channels == 2), 'stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)'
 
-        # STFT变换
+        # STFT transform
         raw_audio, batch_audio_channel_packed_shape = pack_one(raw_audio, '* t')
 
         stft_window = self.stft_window_fn(device=device)
@@ -561,23 +561,23 @@ class MelBandRoformer(Module):
 
         stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, '* f t c')
 
-        # 合并立体声/单声道到频率维度
+        # Merge stereo/mono to frequency dimension
         stft_repr = rearrange(stft_repr,'b s f t c -> b (f s) t c')
 
-        # 索引所有频带的频率
+        # Index frequencies for all bands
         batch_arange = torch.arange(batch, device=device)[..., None]
         x = stft_repr[batch_arange, self.freq_indices]
 
-        # 将复数(实部和虚部)折叠到频率维度
+        # Fold complex (real and imaginary) to frequency dimension
         x = rearrange(x, 'b f t c -> b t (f c)')
 
-        # 频带分割
+        # Band splitting
         if self.use_torch_checkpoint:
             x = checkpoint(self.band_split, x, use_reentrant=False)
         else:
             x = self.band_split(x)
 
-        # 轴向/层次化注意力处理
+        # Axial/hierarchical attention processing
         store = [None] * len(self.layers)
         for i, transformer_block in enumerate(self.layers):
 
@@ -594,11 +594,11 @@ class MelBandRoformer(Module):
                 time_transformer, freq_transformer = transformer_block
 
             if self.skip_connection:
-                # 累加之前的特征
+                # Accumulate previous features
                 for j in range(i):
                     x = x + store[j]
 
-            # 时间维度注意力
+            # Time dimension attention
             x = rearrange(x, 'b t f d -> b f t d')
             x, ps = pack([x], '* t d')
 
@@ -609,7 +609,7 @@ class MelBandRoformer(Module):
 
             x, = unpack(x, ps, '* t d')
 
-            # 频率维度注意力
+            # Frequency dimension attention
             x = rearrange(x, 'b f t d -> b t f d')
             x, ps = pack([x], '* f d')
 
@@ -623,7 +623,7 @@ class MelBandRoformer(Module):
             if self.skip_connection:
                 store[i] = x
 
-        # 估计分离掩码
+        # Estimate separation masks
         num_stems = len(self.mask_estimators)
         if self.use_torch_checkpoint:
             masks = torch.stack([checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators], dim=1)
@@ -631,25 +631,25 @@ class MelBandRoformer(Module):
             masks = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
         masks = rearrange(masks, 'b n t (f c) -> b n f t c', c=2)
 
-        # 调制频率表示
+        # Modulate frequency representation
         stft_repr = rearrange(stft_repr, 'b f t c -> b 1 f t c')
 
-        # 复数乘法
+        # Complex multiplication
         stft_repr = torch.view_as_complex(stft_repr)
         masks = torch.view_as_complex(masks)
         masks = masks.type(stft_repr.dtype)
 
-        # 对重叠频率的估计掩码取平均
+        # Average estimated masks for overlapping frequencies
         scatter_indices = repeat(self.freq_indices, 'f -> b n f t', b=batch, n=num_stems, t=stft_repr.shape[-1])
         stft_repr_expanded_stems = repeat(stft_repr, 'b 1 ... -> b n ...', n=num_stems)
         masks_summed = torch.zeros_like(stft_repr_expanded_stems).scatter_add_(2, scatter_indices, masks)
         denom = repeat(self.num_bands_per_freq, 'f -> (f r) 1', r=channels)
         masks_averaged = masks_summed / denom.clamp(min=1e-8)
 
-        # 用估计的掩码调制STFT表示
+        # Modulate STFT representation with estimated mask
         stft_repr = stft_repr * masks_averaged
 
-        # ISTFT重建
+        # ISTFT reconstruction
         stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
         recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False,
                                   length=istft_length)
@@ -658,7 +658,7 @@ class MelBandRoformer(Module):
         if num_stems == 1:
             recon_audio = rearrange(recon_audio, 'b 1 s t -> b s t')
 
-        # 如果有目标,计算训练损失
+        # If target provided, compute training loss
         if not exists(target):
             return recon_audio
 
@@ -668,12 +668,12 @@ class MelBandRoformer(Module):
         if target.ndim == 2:
             target = rearrange(target, '... t -> ... 1 t')
 
-        target = target[..., :recon_audio.shape[-1]]  # 保护against istft的长度损失
+        target = target[..., :recon_audio.shape[-1]]  # Protect against istft length loss
 
-        # L1损失
+        # L1 loss
         loss = F.l1_loss(recon_audio, target)
 
-        # 多分辨率STFT损失
+        # Multi-resolution STFT loss
         multi_stft_resolution_loss = 0.
 
         for window_size in self.multi_stft_resolutions_window_sizes:

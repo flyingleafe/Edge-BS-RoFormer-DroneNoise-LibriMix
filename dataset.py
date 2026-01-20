@@ -1,7 +1,7 @@
 # coding: utf-8
 __author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
 
-# 导入必要的库
+# Import necessary libraries
 import os
 import random
 import numpy as np
@@ -13,38 +13,38 @@ import itertools
 import multiprocessing
 from tqdm.auto import tqdm
 from glob import glob
-import audiomentations as AU  # 音频增强库
-import pedalboard as PB      # 音频效果处理库
+import audiomentations as AU  # Audio augmentation library
+import pedalboard as PB      # Audio effects processing library
 import warnings
 warnings.filterwarnings("ignore")
 
 
 def load_chunk(path, length, chunk_size, offset=None):
     """
-    加载音频片段
+    Load audio chunk.
     Args:
-        path: 音频文件路径
-        length: 音频总长度
-        chunk_size: 需要加载的片段大小
-        offset: 起始位置偏移量
+        path: Audio file path
+        length: Total audio length
+        chunk_size: Size of chunk to load
+        offset: Starting position offset
     Returns:
-        音频数据,shape为(channels, chunk_size)
+        Audio data with shape (channels, chunk_size)
     """
     if chunk_size <= length:
-        # 如果片段大小小于音频长度,随机选择一个位置开始读取
+        # If chunk size is less than audio length, randomly select a position to start reading
         if offset is None:
             offset = np.random.randint(length - chunk_size + 1)
         x = sf.read(path, dtype='float32', start=offset, frames=chunk_size)[0]
     else:
-        # 如果片段大小大于音频长度,需要进行补零
+        # If chunk size is greater than audio length, need to pad with zeros
         x = sf.read(path, dtype='float32')[0]
         if len(x.shape) == 1:
-            # 单声道情况
+            # Mono case
             pad = np.zeros((chunk_size - length))
         else:
             pad = np.zeros([chunk_size - length, x.shape[-1]])
         x = np.concatenate([x, pad], axis=0)
-    # 单声道转双声道
+    # Convert mono to stereo
     if len(x.shape) == 1:
         x = np.expand_dims(x, axis=1)
     return x.T
@@ -52,14 +52,14 @@ def load_chunk(path, length, chunk_size, offset=None):
 
 def get_track_set_length(params):
     """
-    获取一组音轨的长度
+    Get the length of a set of tracks.
     Args:
-        params: 包含路径、乐器列表和文件类型的元组
+        params: Tuple containing path, instrument list, and file types
     Returns:
-        路径和最短音轨长度
+        Path and minimum track length
     """
     path, instruments, file_types = params
-    # 检查所有乐器音轨的长度(可能不同)
+    # Check length of all instrument tracks (may differ)
     lengths_arr = []
     for instr in instruments:
         length = -1
@@ -79,13 +79,13 @@ def get_track_set_length(params):
             lengths_arr.min(),
             lengths_arr.max())
         )
-    # 使用最短长度以避免溢出
+    # Use minimum length to avoid overflow
     return path, lengths_arr.min()
 
 
-# 用于多进程处理
+# For multiprocessing
 def get_track_length(params):
-    """获取单个音轨的长度"""
+    """Get length of a single track"""
     path = params
     length = len(sf.read(path)[0])
     return (path, length)
@@ -93,36 +93,36 @@ def get_track_length(params):
 
 class MSSDataset(torch.utils.data.Dataset):
     """
-    音乐源分离数据集类
-    支持多种数据集格式:
-    - type 1: 每个文件夹包含所有乐器的音轨
-    - type 2: 每个乐器有独立的文件夹
-    - type 3: 使用CSV文件组织的数据集
-    - type 4: 与type 1类似,但保证音轨对齐
+    Music source separation dataset class.
+    Supports multiple dataset formats:
+    - type 1: Each folder contains tracks for all instruments
+    - type 2: Each instrument has its own folder
+    - type 3: Dataset organized using CSV files
+    - type 4: Similar to type 1, but ensures track alignment
     """
     def __init__(self, config, data_path, metadata_path="metadata.pkl", dataset_type=1, batch_size=None, verbose=True):
         """
-        初始化数据集
+        Initialize dataset.
         Args:
-            config: 配置对象,包含训练参数
-            data_path: 数据集路径
-            metadata_path: 元数据缓存路径
-            dataset_type: 数据集类型(1-4)
-            batch_size: 批次大小
-            verbose: 是否打印详细信息
+            config: Configuration object containing training parameters
+            data_path: Dataset path
+            metadata_path: Metadata cache path
+            dataset_type: Dataset type (1-4)
+            batch_size: Batch size
+            verbose: Whether to print detailed information
         """
         self.verbose = verbose
         self.config = config
-        self.dataset_type = dataset_type 
+        self.dataset_type = dataset_type
         self.data_path = data_path
-        self.instruments = instruments = config.training.instruments  # 需要分离的乐器列表
+        self.instruments = instruments = config.training.instruments  # List of instruments to separate
         if batch_size is None:
             batch_size = config.training.batch_size
         self.batch_size = batch_size
-        self.file_types = ['wav', 'flac']  # 支持的音频格式
+        self.file_types = ['wav', 'flac']  # Supported audio formats
         self.metadata_path = metadata_path
 
-        # 音频增强设置
+        # Audio augmentation settings
         self.aug = False
         if 'augmentations' in config:
             if config['augmentations'].enable is True:
@@ -133,10 +133,10 @@ class MSSDataset(torch.utils.data.Dataset):
             if self.verbose:
                 print('There is no augmentations block in config. Augmentations disabled for training...')
 
-        # 加载或生成元数据
+        # Load or generate metadata
         metadata = self.get_metadata()
 
-        # 检查数据集是否有效
+        # Check if dataset is valid
         if self.dataset_type in [1, 4]:
             if len(metadata) > 0:
                 if self.verbose:
@@ -149,21 +149,21 @@ class MSSDataset(torch.utils.data.Dataset):
                 if self.verbose:
                     print('Found tracks for {} in dataset: {}'.format(instr, len(metadata[instr])))
         self.metadata = metadata
-        self.chunk_size = config.audio.chunk_size  # 音频片段大小
-        self.min_mean_abs = config.audio.min_mean_abs  # 最小平均绝对值(用于过滤静音片段)
+        self.chunk_size = config.audio.chunk_size  # Audio chunk size
+        self.min_mean_abs = config.audio.min_mean_abs  # Minimum mean absolute value (for filtering silent chunks)
 
     def __len__(self):
-        """返回数据集大小"""
+        """Return dataset size"""
         return self.config.training.num_steps * self.batch_size
 
     def read_from_metadata_cache(self, track_paths, instr=None):
         """
-        从缓存中读取元数据
+        Read metadata from cache.
         Args:
-            track_paths: 音轨路径列表
-            instr: 乐器名称
+            track_paths: List of track paths
+            instr: Instrument name
         Returns:
-            未缓存的路径列表和已缓存的元数据
+            List of uncached paths and cached metadata
         """
         metadata = []
         if os.path.isfile(self.metadata_path):
@@ -176,7 +176,7 @@ class MSSDataset(torch.utils.data.Dataset):
         if instr:
             old_metadata = old_metadata[instr]
 
-        # 只重新读取未缓存的音轨
+        # Only re-read uncached tracks
         track_paths_set = set(track_paths)
         for old_path, file_size in old_metadata:
             if old_path in track_paths_set:
@@ -189,11 +189,11 @@ class MSSDataset(torch.utils.data.Dataset):
 
     def get_metadata(self):
         """
-        获取或生成数据集的元数据
+        Get or generate dataset metadata.
         Returns:
-            元数据字典或列表,包含音轨路径和长度信息
+            Metadata dictionary or list containing track paths and length information
         """
-        # 设置多进程数量
+        # Set number of processes
         read_metadata_procs = multiprocessing.cpu_count()
         if 'read_metadata_procs' in self.config['training']:
             read_metadata_procs = int(self.config['training']['read_metadata_procs'])
@@ -205,9 +205,9 @@ class MSSDataset(torch.utils.data.Dataset):
                 '\nCollecting metadata for', str(self.data_path),
             )
 
-        # 处理不同类型的数据集
+        # Handle different dataset types
         if self.dataset_type in [1, 4]:
-            # 类型1和4:每个文件夹包含所有乐器的音轨
+            # Type 1 and 4: Each folder contains tracks for all instruments
             track_paths = []
             if type(self.data_path) == list:
                 for tp in self.data_path:
@@ -221,7 +221,7 @@ class MSSDataset(torch.utils.data.Dataset):
             track_paths = [path for path in track_paths if os.path.basename(path)[0] != '.' and os.path.isdir(path)]
             track_paths, metadata = self.read_from_metadata_cache(track_paths, None)
 
-            # 单进程或多进程处理
+            # Single process or multi-process handling
             if read_metadata_procs <= 1:
                 for path in tqdm(track_paths):
                     track_path, track_length = get_track_set_length((path, self.instruments, self.file_types))
@@ -239,7 +239,7 @@ class MSSDataset(torch.utils.data.Dataset):
                 p.close()
 
         elif self.dataset_type == 2:
-            # 类型2:每个乐器有独立的文件夹
+            # Type 2: Each instrument has its own folder
             metadata = dict()
             for instr in self.instruments:
                 metadata[instr] = []
@@ -264,7 +264,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         metadata[instr].append(out)
 
         elif self.dataset_type == 3:
-            # 类型3:使用CSV文件组织的数据集
+            # Type 3: Dataset organized using CSV files
             import pandas as pd
             if type(self.data_path) != list:
                 data_path = [self.data_path]
@@ -303,18 +303,18 @@ class MSSDataset(torch.utils.data.Dataset):
             print('Unknown dataset type: {}. Must be 1, 2, 3 or 4'.format(self.dataset_type))
             exit()
 
-        # 保存元数据缓存
+        # Save metadata cache
         pickle.dump(metadata, open(self.metadata_path, 'wb'))
         return metadata
 
     def load_source(self, metadata, instr):
         """
-        加载单个音源
+        Load a single audio source.
         Args:
-            metadata: 元数据
-            instr: 乐器名称
+            metadata: Metadata
+            instr: Instrument name
         Returns:
-            加载的音频数据张量
+            Loaded audio data tensor
         """
         while True:
             if self.dataset_type in [1, 4]:
@@ -336,24 +336,24 @@ class MSSDataset(torch.utils.data.Dataset):
                     print('Error: {} Path: {}'.format(e, track_path))
                     source = np.zeros((2, self.chunk_size), dtype=np.float32)
 
-            # 过滤掉静音片段
+            # Filter out silent chunks
             if np.abs(source).mean() >= self.min_mean_abs:
                 break
-        # 应用音频增强
+        # Apply audio augmentation
         if self.aug:
             source = self.augm_data(source, instr)
         return torch.tensor(source, dtype=torch.float32)
 
     def load_random_mix(self):
         """
-        随机加载混合音频
+        Load random audio mixture.
         Returns:
-            包含所有乐器音轨的张量
+            Tensor containing all instrument tracks
         """
         res = []
         for instr in self.instruments:
             s1 = self.load_source(self.metadata, instr)
-            # Mixup增强
+            # Mixup augmentation
             if self.aug:
                 if 'mixup' in self.config['augmentations']:
                     if self.config['augmentations'].mixup:
@@ -363,7 +363,7 @@ class MSSDataset(torch.utils.data.Dataset):
                                 s2 = self.load_source(self.metadata, instr)
                                 mixup.append(s2)
                         mixup = torch.stack(mixup, dim=0)
-                        # 随机调整音量
+                        # Random volume adjustment
                         loud_values = np.random.uniform(
                             low=self.config.augmentations.loudness_min,
                             high=self.config.augmentations.loudness_max,
@@ -378,9 +378,9 @@ class MSSDataset(torch.utils.data.Dataset):
 
     def load_aligned_data(self):
         """
-        加载对齐的音频数据(用于数据集类型4)
+        Load aligned audio data (for dataset type 4).
         Returns:
-            对齐的音频数据张量
+            Aligned audio data tensor
         """
         track_path, track_length = random.choice(self.metadata)
         attempts = 10
@@ -421,12 +421,12 @@ class MSSDataset(torch.utils.data.Dataset):
 
     def augm_data(self, source, instr):
         """
-        对音频数据进行增强
+        Apply augmentation to audio data.
         Args:
-            source: 源音频数据
-            instr: 乐器名称
+            source: Source audio data
+            instr: Instrument name
         Returns:
-            增强后的音频数据
+            Augmented audio data
         """
         source_shape = source.shape
         applied_augs = []
@@ -435,34 +435,34 @@ class MSSDataset(torch.utils.data.Dataset):
         else:
             augs = dict()
 
-        # 添加乐器特定的增强
+        # Add instrument-specific augmentations
         if instr in self.config['augmentations']:
             for el in self.config['augmentations'][instr]:
                 augs[el] = self.config['augmentations'][instr][el]
 
-        # 应用各种音频增强
-        # 1. 通道交换
+        # Apply various audio augmentations
+        # 1. Channel shuffle
         if 'channel_shuffle' in augs:
             if augs['channel_shuffle'] > 0:
                 if random.uniform(0, 1) < augs['channel_shuffle']:
                     source = source[::-1].copy()
                     applied_augs.append('channel_shuffle')
-        
-        # 2. 随机反转
+
+        # 2. Random inverse
         if 'random_inverse' in augs:
             if augs['random_inverse'] > 0:
                 if random.uniform(0, 1) < augs['random_inverse']:
                     source = source[:, ::-1].copy()
                     applied_augs.append('random_inverse')
-        
-        # 3. 随机极性(乘-1)
+
+        # 3. Random polarity (multiply by -1)
         if 'random_polarity' in augs:
             if augs['random_polarity'] > 0:
                 if random.uniform(0, 1) < augs['random_polarity']:
                     source = -source.copy()
                     applied_augs.append('random_polarity')
-        
-        # 4. 音高偏移
+
+        # 4. Pitch shift
         if 'pitch_shift' in augs:
             if augs['pitch_shift'] > 0:
                 if random.uniform(0, 1) < augs['pitch_shift']:
@@ -473,8 +473,8 @@ class MSSDataset(torch.utils.data.Dataset):
                     )
                     source = apply_aug(samples=source, sample_rate=44100)
                     applied_augs.append('pitch_shift')
-        
-        # 5. 七段参数均衡器
+
+        # 5. Seven band parametric equalizer
         if 'seven_band_parametric_eq' in augs:
             if augs['seven_band_parametric_eq'] > 0:
                 if random.uniform(0, 1) < augs['seven_band_parametric_eq']:
@@ -485,8 +485,8 @@ class MSSDataset(torch.utils.data.Dataset):
                     )
                     source = apply_aug(samples=source, sample_rate=44100)
                     applied_augs.append('seven_band_parametric_eq')
-        
-        # 6. tanh失真
+
+        # 6. Tanh distortion
         if 'tanh_distortion' in augs:
             if augs['tanh_distortion'] > 0:
                 if random.uniform(0, 1) < augs['tanh_distortion']:
@@ -497,8 +497,8 @@ class MSSDataset(torch.utils.data.Dataset):
                     )
                     source = apply_aug(samples=source, sample_rate=44100)
                     applied_augs.append('tanh_distortion')
-        
-        # 7. MP3压缩
+
+        # 7. MP3 compression
         if 'mp3_compression' in augs:
             if augs['mp3_compression'] > 0:
                 if random.uniform(0, 1) < augs['mp3_compression']:
@@ -510,8 +510,8 @@ class MSSDataset(torch.utils.data.Dataset):
                     )
                     source = apply_aug(samples=source, sample_rate=44100)
                     applied_augs.append('mp3_compression')
-        
-        # 8. 高斯噪声
+
+        # 8. Gaussian noise
         if 'gaussian_noise' in augs:
             if augs['gaussian_noise'] > 0:
                 if random.uniform(0, 1) < augs['gaussian_noise']:
@@ -522,8 +522,8 @@ class MSSDataset(torch.utils.data.Dataset):
                     )
                     source = apply_aug(samples=source, sample_rate=44100)
                     applied_augs.append('gaussian_noise')
-        
-        # 9. 时间拉伸
+
+        # 9. Time stretch
         if 'time_stretch' in augs:
             if augs['time_stretch'] > 0:
                 if random.uniform(0, 1) < augs['time_stretch']:
@@ -536,11 +536,11 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = apply_aug(samples=source, sample_rate=44100)
                     applied_augs.append('time_stretch')
 
-        # 修复形状
+        # Fix shape
         if source_shape != source.shape:
             source = source[..., :source_shape[-1]]
 
-        # 10. 混响效果
+        # 10. Reverb effect
         if 'pedalboard_reverb' in augs:
             if augs['pedalboard_reverb'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_reverb']:
@@ -575,7 +575,7 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_reverb')
 
-        # 11. 合唱效果
+        # 11. Chorus effect
         if 'pedalboard_chorus' in augs:
             if augs['pedalboard_chorus'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_chorus']:
@@ -609,7 +609,7 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_chorus')
 
-        # 12. 相位器效果
+        # 12. Phaser effect
         if 'pedalboard_phazer' in augs:
             if augs['pedalboard_phazer'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_phazer']:
@@ -643,11 +643,11 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_phazer')
 
-        # 13. 失真效果 - 用于增加音频的失真和过载效果,增强音频的表现力
+        # 13. Distortion effect - adds distortion and overdrive to audio, enhances expressiveness
         if 'pedalboard_distortion' in augs:
             if augs['pedalboard_distortion'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_distortion']:
-                    # 控制失真的强度,单位为分贝
+                    # Control distortion intensity in decibels
                     drive_db = random.uniform(
                         augs['pedalboard_distortion_drive_db_min'],
                         augs['pedalboard_distortion_drive_db_max'],
@@ -658,11 +658,11 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_distortion')
 
-        # 14. 音高偏移效果 - 改变音频的音高,增加数据多样性
+        # 14. Pitch shift effect - changes audio pitch, increases data diversity
         if 'pedalboard_pitch_shift' in augs:
             if augs['pedalboard_pitch_shift'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_pitch_shift']:
-                    # 控制音高偏移的半音数量
+                    # Control pitch shift in semitones
                     semitones = random.uniform(
                         augs['pedalboard_pitch_shift_semitones_min'],
                         augs['pedalboard_pitch_shift_semitones_max'],
@@ -673,11 +673,11 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_pitch_shift')
 
-        # 重采样效果 - 通过改变采样率来模拟不同质量的音频
+        # Resample effect - simulates different audio quality by changing sample rate
         if 'pedalboard_resample' in augs:
             if augs['pedalboard_resample'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_resample']:
-                    # 目标采样率,用于模拟不同采样率下的音频特征
+                    # Target sample rate, simulates audio characteristics at different sample rates
                     target_sample_rate = random.uniform(
                         augs['pedalboard_resample_target_sample_rate_min'],
                         augs['pedalboard_resample_target_sample_rate_max'],
@@ -688,11 +688,11 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_resample')
 
-        # 位深度压缩效果 - 通过降低位深度来模拟低质量音频
+        # Bit depth reduction effect - simulates low quality audio by reducing bit depth
         if 'pedalboard_bitcrash' in augs:
             if augs['pedalboard_bitcrash'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_bitcrash']:
-                    # 控制位深度,数值越小音质越差
+                    # Control bit depth, smaller value means lower quality
                     bit_depth = random.uniform(
                         augs['pedalboard_bitcrash_bit_depth_min'],
                         augs['pedalboard_bitcrash_bit_depth_max'],
@@ -703,11 +703,11 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_bitcrash')
 
-        # MP3压缩效果 - 模拟MP3压缩对音频的影响
+        # MP3 compression effect - simulates MP3 compression impact on audio
         if 'pedalboard_mp3_compressor' in augs:
             if augs['pedalboard_mp3_compressor'] > 0:
                 if random.uniform(0, 1) < augs['pedalboard_mp3_compressor']:
-                    # VBR(可变比特率)压缩质量,影响MP3压缩程度
+                    # VBR (variable bit rate) compression quality, affects MP3 compression level
                     vbr_quality = random.uniform(
                         augs['pedalboard_mp3_compressor_pedalboard_mp3_compressor_min'],
                         augs['pedalboard_mp3_compressor_pedalboard_mp3_compressor_max'],
@@ -718,33 +718,33 @@ class MSSDataset(torch.utils.data.Dataset):
                     source = board(source, 44100)
                     applied_augs.append('pedalboard_mp3_compressor')
 
-        # 返回经过数据增强的音频源
+        # Return augmented audio source
         return source
 
     def __getitem__(self, index):
-        # 根据数据集类型加载数据
+        # Load data based on dataset type
         if self.dataset_type in [1, 2, 3]:
-            res = self.load_random_mix()  # 随机混合加载
+            res = self.load_random_mix()  # Random mix loading
         else:
-            res = self.load_aligned_data()  # 加载对齐数据
+            res = self.load_aligned_data()  # Load aligned data
 
-        # 对每个音轨随机调整响度
+        # Randomly adjust loudness for each track
         if self.aug:
             if 'loudness' in self.config['augmentations']:
                 if self.config['augmentations']['loudness']:
-                    # 为每个音轨生成随机响度值
+                    # Generate random loudness values for each track
                     loud_values = np.random.uniform(
                         low=self.config['augmentations']['loudness_min'],
                         high=self.config['augmentations']['loudness_max'],
                         size=(len(res),)
                     )
                     loud_values = torch.tensor(loud_values, dtype=torch.float32)
-                    res *= loud_values[:, None, None]  # 应用响度调整
+                    res *= loud_values[:, None, None]  # Apply loudness adjustment
 
-        # 将所有音轨混合成一个混音
+        # Mix all tracks into one mixture
         mix = res.sum(0)
 
-        # 对混音进行MP3压缩增强
+        # Apply MP3 compression augmentation to mixture
         if self.aug:
             if 'mp3_compression_on_mixture' in self.config['augmentations']:
                 apply_aug = AU.Mp3Compression(
@@ -756,15 +756,15 @@ class MSSDataset(torch.utils.data.Dataset):
                 mix_conv = mix.cpu().numpy().astype(np.float32)
                 required_shape = mix_conv.shape
                 mix = apply_aug(samples=mix_conv, sample_rate=44100)
-                # 如果压缩后音频长度变化,进行裁剪
+                # If audio length changes after compression, trim
                 if mix.shape != required_shape:
                     mix = mix[..., :required_shape[-1]]
                 mix = torch.tensor(mix, dtype=torch.float32)
 
-        # 如果指定了目标乐器(用于roformer模型),只返回该乐器的音轨和混音
+        # If target instrument is specified (for roformer models), only return that instrument's track and mixture
         if self.config.training.target_instrument is not None:
             index = self.config.training.instruments.index(self.config.training.target_instrument)
             return res[index], mix
 
-        # 返回所有音轨和混音
+        # Return all tracks and mixture
         return res, mix

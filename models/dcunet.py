@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class CConv2d(nn.Module):
-    """复数卷积层"""
+    """Complex Convolutional Layer"""
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
         super().__init__()
         self.real_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -13,47 +13,47 @@ class CConv2d(nn.Module):
 
     def forward(self, x):
         """
-        输入x: (batch, channels, freq, time, 2)
-        输出: (batch, channels, freq, time, 2)
+        Input x: (batch, channels, freq, time, 2)
+        Output: (batch, channels, freq, time, 2)
         """
-        # 分离实部和虚部
+        # Separate real and imaginary parts
         x_real, x_im = x[..., 0], x[..., 1]
-        
-        # 应用卷积
+
+        # Apply convolution
         c_real = self.real_conv(x_real) - self.im_conv(x_im)
         c_im = self.im_conv(x_real) + self.real_conv(x_im)
-        
-        # 合并实部和虚部
+
+        # Combine real and imaginary parts
         return torch.stack([c_real, c_im], dim=-1)
 
 class CConvTranspose2d(nn.Module):
-    """复数转置卷积层"""
+    """Complex Transpose Convolutional Layer"""
     def __init__(self, in_channels, out_channels, kernel_size, stride, output_padding=0, padding=0):
         super().__init__()
-        self.real_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, 
+        self.real_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
                                            stride, padding, output_padding)
-        self.im_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, 
+        self.im_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
                                          stride, padding, output_padding)
         nn.init.xavier_uniform_(self.real_convt.weight)
         nn.init.xavier_uniform_(self.im_convt.weight)
 
     def forward(self, x):
         """
-        输入x: (batch, channels, freq, time, 2)
-        输出: (batch, channels, freq, time, 2)
+        Input x: (batch, channels, freq, time, 2)
+        Output: (batch, channels, freq, time, 2)
         """
-        # 分离实部和虚部
+        # Separate real and imaginary parts
         x_real, x_im = x[..., 0], x[..., 1]
-        
-        # 应用转置卷积
+
+        # Apply transpose convolution
         ct_real = self.real_convt(x_real) - self.im_convt(x_im)
         ct_im = self.im_convt(x_real) + self.real_convt(x_im)
-        
-        # 合并实部和虚部
+
+        # Combine real and imaginary parts
         return torch.stack([ct_real, ct_im], dim=-1)
 
 class CBatchNorm2d(nn.Module):
-    """复数批归一化"""
+    """Complex Batch Normalization"""
     def __init__(self, num_features):
         super().__init__()
         self.real_bn = nn.BatchNorm2d(num_features)
@@ -61,21 +61,21 @@ class CBatchNorm2d(nn.Module):
 
     def forward(self, x):
         """
-        输入x: (batch, channels, freq, time, 2)
-        输出: (batch, channels, freq, time, 2)
+        Input x: (batch, channels, freq, time, 2)
+        Output: (batch, channels, freq, time, 2)
         """
-        # 分离实部和虚部
+        # Separate real and imaginary parts
         x_real, x_im = x[..., 0], x[..., 1]
-        
-        # 应用批归一化
+
+        # Apply batch normalization
         x_real = self.real_bn(x_real)
         x_im = self.im_bn(x_im)
-        
-        # 合并实部和虚部
+
+        # Combine real and imaginary parts
         return torch.stack([x_real, x_im], dim=-1)
 
 class Encoder(nn.Module):
-    """编码器模块"""
+    """Encoder Module"""
     def __init__(self, in_channels, out_channels, kernel, stride, padding):
         super().__init__()
         self.cconv = CConv2d(in_channels, out_channels, kernel, stride, padding)
@@ -88,7 +88,7 @@ class Encoder(nn.Module):
         return self.act(x)
 
 class Decoder(nn.Module):
-    """解码器模块"""
+    """Decoder Module"""
     def __init__(self, in_channels, out_channels, kernel, stride, output_padding, padding, last_layer=False):
         super().__init__()
         self.cconvt = CConvTranspose2d(in_channels, out_channels, kernel, stride, output_padding, padding)
@@ -108,7 +108,7 @@ class Decoder(nn.Module):
         return x
 
 class STFTProcessor(nn.Module):
-    """STFT处理模块 与其他模型保持统一接口"""
+    """STFT Processing Module with unified interface for compatibility with other models"""
     def __init__(self, config):
         super().__init__()
         self.n_fft = config['audio']['n_fft']
@@ -118,82 +118,82 @@ class STFTProcessor(nn.Module):
 
     def transform(self, x):
         """
-        输入x: (batch, channels, time)
-        输出: (batch, 1, freq, time, 2)
+        Input x: (batch, channels, time)
+        Output: (batch, 1, freq, time, 2)
         """
         if __name__ == "__main__":
-            print(f"STFT输入形状: {x.shape}")
-        x = x.squeeze(1)  # 移除通道维度
+            print(f"STFT input shape: {x.shape}")
+        x = x.squeeze(1)  # Remove channel dimension
         if __name__ == "__main__":
-            print(f"移除通道维度后: {x.shape}")
-        
-        # 执行STFT
+            print(f"After removing channel dimension: {x.shape}")
+
+        # Perform STFT
         X = torch.stft(x, n_fft=self.n_fft, hop_length=self.hop_length,
                       window=self.window.to(x.device), return_complex=True,
                       normalized=True)
         if __name__ == "__main__":
-            print(f"STFT后: {X.shape}")
-        
-        # 转换为实数表示并调整维度
+            print(f"After STFT: {X.shape}")
+
+        # Convert to real representation and adjust dimensions
         X = torch.view_as_real(X)  # (batch, freq, time, 2)
         if __name__ == "__main__":
-            print(f"转为实数表示后: {X.shape}")
-        X = X.unsqueeze(1)  # 添加通道维度 (batch, 1, freq, time, 2)
+            print(f"After converting to real representation: {X.shape}")
+        X = X.unsqueeze(1)  # Add channel dimension (batch, 1, freq, time, 2)
         if __name__ == "__main__":
-            print(f"添加通道维度后: {X.shape}")
-        
+            print(f"After adding channel dimension: {X.shape}")
+
         return X
 
     def inverse(self, X):
         """
-        输入X: (batch, 1, freq, time, 2)
-        输出: (batch, channels=1, time)
+        Input X: (batch, 1, freq, time, 2)
+        Output: (batch, channels=1, time)
         """
         if __name__ == "__main__":
-            print(f"ISTFT输入形状: {X.shape}")
-        # 调整维度以适配ISTFT
-        X = X.squeeze(1)  # 移除通道维度 (batch, freq, time, 2)
+            print(f"ISTFT input shape: {X.shape}")
+        # Adjust dimensions for ISTFT compatibility
+        X = X.squeeze(1)  # Remove channel dimension (batch, freq, time, 2)
         if __name__ == "__main__":
-            print(f"移除通道维度后: {X.shape}")
+            print(f"After removing channel dimension: {X.shape}")
         X = torch.view_as_complex(X)
         if __name__ == "__main__":
-            print(f"转为复数后: {X.shape}")
-        
+            print(f"After converting to complex: {X.shape}")
+
         x = torch.istft(X, n_fft=self.n_fft, hop_length=self.hop_length,
                        window=self.window.to(X.device), normalized=True)
         if __name__ == "__main__":
-            print(f"ISTFT后: {x.shape}")
-        
-        x = x.unsqueeze(1)  # 添加通道维度 (batch, 1, time)
+            print(f"After ISTFT: {x.shape}")
+
+        x = x.unsqueeze(1)  # Add channel dimension (batch, 1, time)
         if __name__ == "__main__":
-            print(f"添加通道维度后: {x.shape}")
+            print(f"After adding channel dimension: {x.shape}")
         return x
 
 class DCUNet(nn.Module):
-    """深度复数U-Net主模型"""
+    """Deep Complex U-Net Main Model"""
     def __init__(self, config):
         super().__init__()
-        # 添加STFT处理器
+        # Add STFT processor
         self.stft = STFTProcessor(config)
-        
-        # 调整输入输出通道
-        self.input_channels = 1  # 修改为1，因为复数通道在最后一维
+
+        # Adjust input/output channels
+        self.input_channels = 1  # Set to 1, since complex channels are in the last dimension
         self.output_channels = config['audio']['num_channels']
-        
-        # 固定参数（根据原始论文实现）
+
+        # Fixed parameters (based on original paper implementation)
         self.n_fft = config['audio']['n_fft']
         self.hop_length = config['audio']['hop_length']
-        
-        # 编码器 - 修改第一个Encoder的输入通道为1
+
+        # Encoder - Modified first Encoder input channels to 1
         self.encoders = nn.ModuleList([
-            Encoder(1, 45, (7,5), (2,2), padding=(3,2)),  # 修改输入通道为1并添加padding
+            Encoder(1, 45, (7,5), (2,2), padding=(3,2)),  # Modified input channels to 1 and added padding
             Encoder(45, 90, (7,5), (2,2), padding=(3,2)),
             Encoder(90, 90, (5,3), (2,2), padding=(2,1)),
             Encoder(90, 90, (5,3), (2,2), padding=(2,1)),
             Encoder(90, 90, (5,3), (2,1), padding=(2,1))
         ])
-        
-        # 解码器
+
+        # Decoder
         self.decoders = nn.ModuleList([
             Decoder(90, 90, (5,3), (2,1), output_padding=(0,0), padding=(2,1)),
             Decoder(180, 90, (5,3), (2,2), output_padding=(0,0), padding=(2,1)),
@@ -204,33 +204,33 @@ class DCUNet(nn.Module):
 
     def forward(self, x):
         """
-        输入x: (batch, channels, time)
-        输出: (batch, instruments=1, channels=1, time)
+        Input x: (batch, channels, time)
+        Output: (batch, instruments=1, channels=1, time)
         """
         if __name__ == "__main__":
-            print("\n----- 开始前向传播 -----")
-            print(f"输入形状: {x.shape}")
-        
-        # STFT变换
+            print("\n----- Starting forward pass -----")
+            print(f"Input shape: {x.shape}")
+
+        # STFT transform
         X = self.stft.transform(x)  # (batch, 1, freq, time, 2)
         if __name__ == "__main__":
-            print(f"\n----- 编码器过程 -----")
-            print(f"STFT后形状: {X.shape}")
-        
-        # 编码过程
+            print(f"\n----- Encoder process -----")
+            print(f"Shape after STFT: {X.shape}")
+
+        # Encoding process
         encoder_features = []
         current = X
-        
+
         for i, encoder in enumerate(self.encoders):
             current = encoder(current)
             if i < len(self.encoders) - 1:
                 encoder_features.append(current)
             if __name__ == "__main__":
-                print(f"编码器{i+1}输出: {current.shape}")
-        
+                print(f"Encoder {i+1} output: {current.shape}")
+
         if __name__ == "__main__":
-            print(f"\n----- 解码器过程 -----")
-        # 解码过程
+            print(f"\n----- Decoder process -----")
+        # Decoding process
         for i, decoder in enumerate(self.decoders):
             if i == 0:
                 current = decoder(current)
@@ -238,33 +238,33 @@ class DCUNet(nn.Module):
                 skip_connection = encoder_features[-(i)]
                 current = decoder(torch.cat([current, skip_connection], dim=1))
             if __name__ == "__main__":
-                print(f"解码器{i+1}输出: {current.shape}")
-        
-        # 调整维度以匹配X进行掩码操作
+                print(f"Decoder {i+1} output: {current.shape}")
+
+        # Adjust dimensions to match X for mask operation
         output = current * X
         if __name__ == "__main__":
-            print(f"\n掩码后形状: {output.shape}")
-        
-        # ISTFT变换
+            print(f"\nShape after masking: {output.shape}")
+
+        # ISTFT transform
         output = self.stft.inverse(output)  # (batch, 1, time)
-        # 调整维度 (batch, instruments=1, channels=1, time)
+        # Adjust dimensions (batch, instruments=1, channels=1, time)
         output = output.unsqueeze(1)
         if __name__ == "__main__":
-            print(f"最终输出形状: {output.shape}")
-            print("----- 前向传播结束 -----\n")
-        
+            print(f"Final output shape: {output.shape}")
+            print("----- Forward pass complete -----\n")
+
         return output
 
-# ---------------------- 简单测试用例 ----------------------
+# ---------------------- Simple test case ----------------------
 if __name__ == "__main__":
-    # 模拟配置
+    # Simulated configuration
     config = {
         "audio": {
-            "chunk_size": 131584,  # 仅用于生成测试输入
+            "chunk_size": 131584,  # Only used for generating test input
             "dim_f": 1024,
             "hop_length": 512,
             "n_fft": 2048,
-            "num_channels": 1,     # 这里请设为1，保证与单声道 STFT 逻辑匹配
+            "num_channels": 1,     # Set to 1 to match mono STFT logic
             "sample_rate": 16000,
         },
         "training": {
@@ -272,23 +272,23 @@ if __name__ == "__main__":
         }
     }
 
-    # 初始化模型
+    # Initialize model
     model = DCUNet(config)
-    print("模型结构:")
+    print("Model structure:")
     print(model)
 
-    # 创建测试输入: (batch_size, 1, time)
+    # Create test input: (batch_size, 1, time)
     batch_size = config["training"]["batch_size"]
-    channels   = config["audio"]["num_channels"]  # 通常设为1
+    channels   = config["audio"]["num_channels"]  # Usually set to 1
     time_len   = config["audio"]["chunk_size"]
     x = torch.randn(batch_size, channels, time_len)
 
-    # 前向传播
-    print("\n进行前向传播...")
+    # Forward pass
+    print("\nPerforming forward pass...")
     output = model(x)
 
-    # 输出形状
-    print("\n输出形状:", output.shape)
-    # 打印模型参数数量
+    # Output shape
+    print("\nOutput shape:", output.shape)
+    # Print total model parameters
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"\n模型参数总量: {total_params}")
+    print(f"\nTotal model parameters: {total_params}")

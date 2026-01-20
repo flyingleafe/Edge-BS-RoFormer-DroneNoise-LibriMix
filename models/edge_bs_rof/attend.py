@@ -1,160 +1,160 @@
-from functools import wraps  # 导入wraps装饰器，用于保留被装饰函数的原始元数据（如函数名、文档字符串等）
-from packaging import version  # 从packaging库中导入version模块，用于版本号的比较操作
-from collections import namedtuple  # 从collections模块中导入namedtuple，用于创建具名元组，以便后续存储配置数据
+from functools import wraps  # Import wraps decorator to preserve decorated function's original metadata (e.g., function name, docstring)
+from packaging import version  # Import version module from packaging library for version comparison operations
+from collections import namedtuple  # Import namedtuple from collections module to create named tuples for storing configuration data
 
-import os  # 导入操作系统接口模块，便于后续获取系统信息（例如判断操作系统类型）
-import torch  # 导入PyTorch库，用于张量计算和深度学习操作
-from torch import nn, einsum  # 从torch中导入神经网络模块nn和Einstein求和函数einsum，用于简洁地表达张量运算
-import torch.nn.functional as F  # 导入torch.nn.functional模块，提供各种函数式神经网络操作（如softmax、卷积等）
+import os  # Import OS interface module for system information (e.g., detecting OS type)
+import torch  # Import PyTorch library for tensor computation and deep learning operations
+from torch import nn, einsum  # Import neural network module nn and Einstein summation function einsum for concise tensor operations
+import torch.nn.functional as F  # Import torch.nn.functional module providing various functional neural network operations (e.g., softmax, convolution)
 
-from einops import rearrange, reduce  # 从einops库中导入rearrange和reduce函数，用于对张量进行灵活的形状重排和降维操作
+from einops import rearrange, reduce  # Import rearrange and reduce functions from einops library for flexible tensor shape manipulation and reduction
 
-# 常量定义区域
+# Constants definition section
 
-# 定义FlashAttentionConfig具名元组，该元组包含三个布尔型的配置参数：
-# enable_flash: 是否启用Flash Attention（加速版注意力计算）
-# enable_math: 是否使用数学计算方式实现注意力
-# enable_mem_efficient: 是否启用内存优化策略
+# Define FlashAttentionConfig named tuple containing three boolean configuration parameters:
+# enable_flash: Whether to enable Flash Attention (accelerated attention computation)
+# enable_math: Whether to use mathematical computation for attention
+# enable_mem_efficient: Whether to enable memory optimization strategy
 FlashAttentionConfig = namedtuple('FlashAttentionConfig', ['enable_flash', 'enable_math', 'enable_mem_efficient'])
 
-# 辅助函数定义
+# Helper function definitions
 
 def exists(val):
-    # 检查传入的变量是否存在（即不为None）
+    # Check if the input variable exists (i.e., is not None)
     return val is not None
 
 def default(v, d):
-    # 如果变量v存在，则返回v；否则返回默认值d
+    # If variable v exists, return v; otherwise return default value d
     return v if exists(v) else d
 
 def once(fn):
-    # 装饰器：确保被装饰的函数fn只会被调用一次，避免重复执行（例如避免多次打印提示信息）
+    # Decorator: ensures the decorated function fn is called only once, avoiding repeated execution (e.g., preventing multiple print messages)
     called = False
     @wraps(fn)
     def inner(x):
         nonlocal called
         if called:
-            # 若函数已调用过，则直接返回，不再执行
+            # If function has already been called, return directly without execution
             return
-        called = True  # 标记该函数已被调用
-        return fn(x)   # 调用原始函数fn
+        called = True  # Mark that the function has been called
+        return fn(x)   # Call the original function fn
     return inner
 
-# 创建一个仅输出一次信息的print函数，用于防止重复打印相同提示
+# Create a print function that only outputs once, to prevent duplicate messages
 print_once = once(print)
 
-# 注意力机制核心类实现
+# Core attention mechanism class implementation
 class Attend(nn.Module):
     """
-    Attend类实现了注意力机制的核心功能，支持两种计算方式：
-      1. 标准点积注意力（dot-product attention）
-      2. Flash Attention（优化版注意力计算），这种方式可以大幅降低内存消耗并加速计算，
-         不过需要PyTorch 2.0或更高版本的支持。
-         
-    参数说明：
-      dropout - 在注意力计算中使用的dropout比率，用于随机丢弃部分注意力权重防止过拟合
-      flash   - 布尔标志，指示是否启用Flash Attention优化模式
-      scale   - 注意力分数的缩放因子，若未指定，默认使用1/sqrt(d)（其中d为特征维度）
+    The Attend class implements the core attention mechanism functionality, supporting two computation methods:
+      1. Standard dot-product attention
+      2. Flash Attention (optimized attention computation), which can significantly reduce memory consumption and speed up computation,
+         but requires PyTorch 2.0 or higher.
+
+    Parameters:
+      dropout - The dropout ratio used in attention computation, for randomly dropping some attention weights to prevent overfitting
+      flash   - Boolean flag indicating whether to enable Flash Attention optimization mode
+      scale   - Scaling factor for attention scores; if not specified, defaults to 1/sqrt(d) (where d is the feature dimension)
     """
     def __init__(
         self,
-        dropout = 0.,      # 注意力机制中的Dropout丢弃比率
-        flash = False,     # 是否启用Flash Attention优化计算模式
-        scale = None       # 注意力分数的缩放因子，若为None，则在计算中使用默认的1/sqrt(d)
+        dropout = 0.,      # Dropout ratio in attention mechanism
+        flash = False,     # Whether to enable Flash Attention optimized computation mode
+        scale = None       # Scaling factor for attention scores; if None, uses default 1/sqrt(d) in computation
     ):
-        super().__init__()  # 初始化父类nn.Module
-        self.scale = scale  # 存储缩放因子
-        self.dropout = dropout  # 存储Dropout比率
-        self.attn_dropout = nn.Dropout(dropout)  # 基于给定的dropout比率创建Dropout层，用于后续对注意力权重的随机丢弃
+        super().__init__()  # Initialize parent class nn.Module
+        self.scale = scale  # Store scaling factor
+        self.dropout = dropout  # Store Dropout ratio
+        self.attn_dropout = nn.Dropout(dropout)  # Create Dropout layer based on given dropout ratio for random dropping of attention weights
 
-        self.flash = flash  # 存储是否启用Flash Attention的标志
-        # 若启用Flash Attention，则要求当前PyTorch版本至少为2.0，否则会触发断言错误
+        self.flash = flash  # Store whether Flash Attention is enabled
+        # If Flash Attention is enabled, require PyTorch version at least 2.0, otherwise trigger assertion error
         assert not (flash and version.parse(torch.__version__) < version.parse('2.0.0')), 'in order to use flash attention, you must be using pytorch 2.0 or above'
 
-        # 设置默认的CPU注意力配置，所有配置参数均为True
+        # Set default CPU attention configuration, all parameters set to True
         self.cpu_config = FlashAttentionConfig(True, True, True)
-        # 初始化CUDA配置参数为None，后续将根据CUDA设备属性进行设置
+        # Initialize CUDA configuration to None, will be set later based on CUDA device properties
         self.cuda_config = None
 
-        # 如果没有可用的CUDA设备或没有启用Flash Attention，则无需进一步设置CUDA相关配置，直接返回
+        # If no CUDA device available or Flash Attention not enabled, no need to set CUDA configuration, return directly
         if not torch.cuda.is_available() or not flash:
             return
 
-        # 获取当前CUDA设备的属性，用于判断GPU的计算能力
+        # Get current CUDA device properties to determine GPU compute capability
         device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
-        # 构造GPU设备的版本号，包括major和minor，用于比较计算能力（例如8.0）
+        # Construct GPU device version number including major and minor for comparing compute capability (e.g., 8.0)
         device_version = version.parse(f'{device_properties.major}.{device_properties.minor}')
 
         if device_version >= version.parse('8.0'):
             if os.name == 'nt':
-                # 如果在Windows操作系统上运行，即使GPU计算能力>=8.0，也选择使用数学计算或内存优化的注意力（不启用Flash Attention）
+                # If running on Windows OS, even with GPU compute capability >= 8.0, use math or memory efficient attention (not enabling Flash Attention)
                 print_once('Windows OS detected, using math or mem efficient attention if input tensor is on cuda')
                 self.cuda_config = FlashAttentionConfig(False, True, True)
             else:
-                # 非Windows系统且GPU计算能力>=8.0的情况下，启用Flash Attention以充分利用硬件加速
+                # Non-Windows system with GPU compute capability >= 8.0, enable Flash Attention to fully utilize hardware acceleration
                 print_once('GPU Compute Capability equal or above 8.0, using flash attention if input tensor is on cuda')
                 self.cuda_config = FlashAttentionConfig(True, False, False)
         else:
-            # 若GPU计算能力低于8.0，则使用数学计算或内存优化的注意力方式，避免Flash Attention可能不兼容的问题
+            # If GPU compute capability below 8.0, use math or memory efficient attention to avoid potential Flash Attention incompatibility
             print_once('GPU Compute Capability below 8.0, using math or mem efficient attention if input tensor is on cuda')
             self.cuda_config = FlashAttentionConfig(False, True, True)
 
     def flash_attn(self, q, k, v):
-        """实现Flash Attention的优化计算方法"""
-        # 解包查询向量q的形状，并获取注意力头的数量、查询序列长度等信息，
-        # 同时从键向量k获取key序列长度，并检测张量是否处于CUDA上以及所属设备
+        """Implements optimized Flash Attention computation method"""
+        # Unpack query vector q's shape and get number of attention heads, query sequence length, etc.
+        # Also get key sequence length from key vector k, and detect if tensor is on CUDA and its device
         _, heads, q_len, _, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device
 
-        # 如果用户自定义了缩放因子，则需要对查询向量q进行缩放调整
+        # If user specified custom scaling factor, adjust query vector q accordingly
         if exists(self.scale):
-            default_scale = q.shape[-1] ** -0.5  # 默认的缩放因子，通常为1/sqrt(特征维度)
-            q = q * (self.scale / default_scale)  # 按自定义比例调整q
+            default_scale = q.shape[-1] ** -0.5  # Default scaling factor, typically 1/sqrt(feature_dimension)
+            q = q * (self.scale / default_scale)  # Adjust q by custom scale ratio
 
-        # 根据当前张量是否在CUDA上，选择对应的注意力配置（CUDA配置或CPU配置）
+        # Select attention configuration based on whether tensor is on CUDA (CUDA config or CPU config)
         config = self.cuda_config if is_cuda else self.cpu_config
 
-        # 利用PyTorch 2.0中的scaled_dot_product_attention在指定的配置下执行Flash Attention计算
+        # Use PyTorch 2.0's scaled_dot_product_attention to execute Flash Attention with specified configuration
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
             out = F.scaled_dot_product_attention(
                 q, k, v,
-                dropout_p=self.dropout if self.training else 0.  # 在训练阶段应用dropout，推理时则关闭
+                dropout_p=self.dropout if self.training else 0.  # Apply dropout during training, disable during inference
             )
 
         return out
 
     def forward(self, q, k, v):
         """
-        前向传播函数，计算注意力输出。
-        使用Einstein求和约定，其中各维度的含义如下：
-          b - 批次大小 (batch size)
-          h - 注意力头数 (heads)
-          n, i, j - 序列相关维度（例如查询和键的序列长度）
-          d - 特征维度 (feature dimension)
-        参数：
-          q - 查询向量（query）
-          k - 键向量（key）
-          v - 值向量（value）
+        Forward propagation function, computes attention output.
+        Uses Einstein summation convention where dimension meanings are:
+          b - batch size
+          h - number of heads
+          n, i, j - sequence-related dimensions (e.g., query and key sequence lengths)
+          d - feature dimension
+        Parameters:
+          q - query vector
+          k - key vector
+          v - value vector
         """
-        # 获取查询和键的序列长度，并确定查询所在的设备
+        # Get query and key sequence lengths, and determine device of query
         q_len, k_len, device = q.shape[-2], k.shape[-2], q.device
 
-        # 如果未提供自定义的缩放因子，则使用默认值1/sqrt(特征维度)
+        # If custom scaling factor not provided, use default value 1/sqrt(feature_dimension)
         scale = default(self.scale, q.shape[-1] ** -0.5)
 
-        # 当启用Flash Attention模式时，调用flash_attn函数获得注意力输出
+        # When Flash Attention mode is enabled, call flash_attn function to get attention output
         if self.flash:
             return self.flash_attn(q, k, v)
 
-        # 计算标准点积注意力的相似度分数：
-        # 利用爱因斯坦求和约定对查询q和键k的向量进行内积运算，并乘以缩放因子
+        # Compute standard dot-product attention similarity scores:
+        # Use Einstein summation to compute inner product of query q and key k vectors, multiply by scaling factor
         sim = einsum(f"b h i d, b h j d -> b h i j", q, k) * scale
 
-        # 对相似度分数应用softmax归一化，得到注意力权重
+        # Apply softmax normalization to similarity scores to get attention weights
         attn = sim.softmax(dim=-1)
-        # 使用Dropout层对注意力权重进行随机丢弃，以防止过拟合
+        # Use Dropout layer to randomly drop attention weights to prevent overfitting
         attn = self.attn_dropout(attn)
 
-        # 使用爱因斯坦求和约定，根据归一化的注意力权重对值向量v进行加权求和，生成输出
+        # Use Einstein summation to compute weighted sum of value vector v using normalized attention weights
         out = einsum(f"b h i j, b h j d -> b h i d", attn, v)
 
         return out
