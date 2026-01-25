@@ -28,6 +28,8 @@ dependencies = [
     "torch-log-wmse==0.3.0",
     "torchaudio==2.6.0",
     "tqdm==4.67.1",
-    "wandb==0.19.11",
+    "wandb>=0.22.3",
     "python-dotenv==1.0.1",
+    "demucs>=4.0.1",
+    "openpyxl>=3.1.5",
 ]

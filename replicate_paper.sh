@@ -333,12 +333,38 @@ step_train_rope() {
         --data_path "${TRAIN_PATH}" \
         --valid_path "${VALID_PATH}" \
         --dataset_type 1 \
-        --device_ids 0 \
+        --device_ids 0 1 \
         --num_workers 4 \
         --metrics si_sdr sdr \
         --metric_for_scheduler si_sdr
 
     log_success "Edge-BS-RoFormer training complete"
+}
+
+# Train Edge-BS-RoFormer smaller variant (48 dim)
+step_train_rope_smaller() {
+    log_info "=== Training Edge-BS-RoFormer (RoPE 48) ==="
+    train_setup
+
+    if [ -f "${RESULTS_DIR}/edge_bs_roformer_smaller/best_model.ckpt" ]; then
+        log_success "Edge-BS-RoFormer (smaller) already trained"
+        return 0
+    fi
+
+    log_info "Training Edge-BS-RoFormer smaller variant..."
+    python train.py \
+        --model_type edge_bs_rof \
+        --config_path "configs/3_FA_RoPE(48).yaml" \
+        --results_path "${RESULTS_DIR}/edge_bs_roformer_smaller" \
+        --data_path "${TRAIN_PATH}" \
+        --valid_path "${VALID_PATH}" \
+        --dataset_type 1 \
+        --device_ids 0 1 \
+        --num_workers 4 \
+        --metrics si_sdr sdr \
+        --metric_for_scheduler si_sdr
+
+    log_success "Edge-BS-RoFormer (smaller) training complete"
 }
 
 # Train DCUNet baseline
@@ -528,6 +554,7 @@ print_usage() {
     echo "  dataset       - Create DN-LM dataset from source datasets"
     echo "  train         - Train all models sequentially"
     echo "  train_rope    - Train Edge-BS-RoFormer only (proposed method)"
+    echo "  train_rope_smaller - Train Edge-BS-RoFormer smaller (48 dim)"
     echo "  train_dcunet  - Train DCUNet baseline only"
     echo "  train_dptnet  - Train DPTNet baseline only"
     echo "  train_htdemucs- Train HTDemucs baseline only"
@@ -569,6 +596,9 @@ main() {
             ;;
         train_rope)
             step_train_rope
+            ;;
+        train_rope_smaller)
+            step_train_rope_smaller
             ;;
         train_dcunet)
             step_train_dcunet

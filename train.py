@@ -147,7 +147,7 @@ def wandb_init(args: argparse.Namespace, config: Dict, device_ids: List[int], ba
         wandb.init(mode='disabled')
     else:
         wandb.login(key=wandb_key)
-        wandb.init(project='msst', config={'config': config, 'args': args, 'device_ids': device_ids, 'batch_size': batch_size })
+        wandb.init(entity='flyingleafe', project='msst', config={'config': config, 'args': args, 'device_ids': device_ids, 'batch_size': batch_size })
 
 
 def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> DataLoader:
