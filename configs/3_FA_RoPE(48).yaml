@@ -1,5 +1,5 @@
 audio:
-  chunk_size: 131584      # Audio chunk size
+  chunk_size: 16000      # Audio chunk size
   dim_f: 1024            # Frequency dimension size
   dim_t: 515             # Time dimension size
   hop_length: 512        # STFT hop length
