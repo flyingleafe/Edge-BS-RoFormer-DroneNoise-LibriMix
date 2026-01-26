@@ -103,7 +103,7 @@ model:
   multi_stft_normalized: False # Whether to normalize multi-resolution STFT output
 
 training:
-  batch_size: 6  # Number of samples per batch
+  batch_size: 12  # Number of samples per batch
   gradient_accumulation_steps: 1  # Gradient accumulation steps
   grad_clip: 0  # Gradient clipping threshold
   instruments:  # Instruments used in training

@@ -5,6 +5,7 @@ from collections import namedtuple  # Import namedtuple from collections module 
 import os  # Import OS interface module for system information (e.g., detecting OS type)
 import torch  # Import PyTorch library for tensor computation and deep learning operations
 from torch import nn, einsum  # Import neural network module nn and Einstein summation function einsum for concise tensor operations
+from torch.nn.attention import SDPBackend, sdpa_kernel
 import torch.nn.functional as F  # Import torch.nn.functional module providing various functional neural network operations (e.g., softmax, convolution)
 
 from einops import rearrange, reduce  # Import rearrange and reduce functions from einops library for flexible tensor shape manipulation and reduction
@@ -110,13 +111,20 @@ class Attend(nn.Module):
             default_scale = q.shape[-1] ** -0.5  # Default scaling factor, typically 1/sqrt(feature_dimension)
             q = q * (self.scale / default_scale)  # Adjust q by custom scale ratio
 
+        config = self.cuda_config if is_cuda else self.cpu_config
+        backend = SDPBackend.FLASH_ATTENTION if config.enable_flash \
+            else SDPBackend.MATH if config.enable_math \
+            else SDPBackend.EFFICIENT_ATTENTION if config.enable_mem_efficient \
+            else SDPBackend.MATH
+
         # Use PyTorch's scaled_dot_product_attention with automatic kernel selection
         # This allows PyTorch to choose the best available kernel (flash, math, or memory efficient)
         # based on input tensor properties and hardware capabilities
-        out = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.dropout if self.training else 0.  # Apply dropout during training, disable during inference
-        )
+        with sdpa_kernel(backend):
+            out = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.dropout if self.training else 0.  # Apply dropout during training, disable during inference
+            )
 
         return out
 
