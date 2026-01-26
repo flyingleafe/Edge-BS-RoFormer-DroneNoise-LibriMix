@@ -26,7 +26,7 @@ training:
   coarse_loss_clip: true  # Whether to clip coarse loss, may be used for training stability
   ema_momentum: 0.999  # Exponential moving average momentum, used for model parameter smoothing
   other_fix: false  # Whether to fix "other" stem processing, for multi-song datasets
-  use_amp: false  # Whether to use automatic mixed precision (float16), speeds up training and reduces memory
+  use_amp: true  # Whether to use automatic mixed precision (float16), speeds up training and reduces memory
   early_stop:  # Early stopping configuration
     enabled: true  # Whether to enable early stopping
     patience: 30  # Early stopping patience

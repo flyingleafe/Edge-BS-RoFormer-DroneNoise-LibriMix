@@ -333,7 +333,7 @@ step_train_rope() {
         --data_path "${TRAIN_PATH}" \
         --valid_path "${VALID_PATH}" \
         --dataset_type 1 \
-        --device_ids 0 1 \
+        --device_ids 0 \
         --num_workers 4 \
         --metrics si_sdr sdr \
         --metric_for_scheduler si_sdr
@@ -359,7 +359,7 @@ step_train_rope_smaller() {
         --data_path "${TRAIN_PATH}" \
         --valid_path "${VALID_PATH}" \
         --dataset_type 1 \
-        --device_ids 0 1 \
+        --device_ids 0 \
         --num_workers 4 \
         --metrics si_sdr sdr \
         --metric_for_scheduler si_sdr

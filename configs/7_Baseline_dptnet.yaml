@@ -28,7 +28,7 @@ training:
   ema_momentum: 0.999  # Exponential moving average momentum
   optimizer: adamw  # Optimizer type
   other_fix: false  # Other fix flag
-  use_amp: false  # Whether to use automatic mixed precision
+  use_amp: true  # Whether to use automatic mixed precision
   early_stop:  # Early stopping configuration
     enabled: true  # Whether to enable early stopping
     patience: 30  # Early stopping patience

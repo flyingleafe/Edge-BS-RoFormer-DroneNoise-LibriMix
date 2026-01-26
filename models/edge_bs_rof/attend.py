@@ -112,10 +112,18 @@ class Attend(nn.Module):
             q = q * (self.scale / default_scale)  # Adjust q by custom scale ratio
 
         config = self.cuda_config if is_cuda else self.cpu_config
-        backend = SDPBackend.FLASH_ATTENTION if config.enable_flash \
-            else SDPBackend.MATH if config.enable_math \
-            else SDPBackend.EFFICIENT_ATTENTION if config.enable_mem_efficient \
-            else SDPBackend.MATH
+        
+        # Flash Attention requires float16 or bfloat16 - fall back to MATH for float32
+        is_half_precision = q.dtype in (torch.float16, torch.bfloat16)
+        
+        if config.enable_flash and is_half_precision:
+            backend = SDPBackend.FLASH_ATTENTION
+        elif config.enable_mem_efficient:
+            backend = SDPBackend.EFFICIENT_ATTENTION
+        elif config.enable_math:
+            backend = SDPBackend.MATH
+        else:
+            backend = SDPBackend.MATH
 
         # Use PyTorch's scaled_dot_product_attention with automatic kernel selection
         # This allows PyTorch to choose the best available kernel (flash, math, or memory efficient)
