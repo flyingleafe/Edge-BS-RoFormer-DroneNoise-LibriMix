@@ -109,7 +109,7 @@ class DiffusionBufferModel(nn.Module):
             hop_length=self.hop_length,
             win_length=self.win_length,
             window=self.stft_window.to(wave.device),
-            center=False,
+            center=True,
             return_complex=True,
         )
 
@@ -120,7 +120,7 @@ class DiffusionBufferModel(nn.Module):
             hop_length=self.hop_length,
             win_length=self.win_length,
             window=self.stft_window.to(spec.device),
-            center=False,
+            center=True,
             length=length,
         )
 
@@ -136,9 +136,9 @@ class DiffusionBufferModel(nn.Module):
         mag = torch.pow(torch.clamp(mag, min=1e-12) / self.comp_beta, 1.0 / self.comp_alpha)
         return torch.polar(mag, phase)
 
-    def _make_time_map(self, t_vals: torch.Tensor, frames: int) -> torch.Tensor:
+    def _make_time_map(self, t_vals: torch.Tensor, frames: int, freq: int) -> torch.Tensor:
         batch, bsz = t_vals.shape
-        t_map = torch.zeros((batch, 1, 1, frames), device=t_vals.device)
+        t_map = torch.zeros((batch, 1, freq, frames), device=t_vals.device)
         t_map[..., -bsz:] = t_vals.view(batch, 1, 1, bsz)
         return t_map
 
@@ -174,18 +174,19 @@ class DiffusionBufferModel(nn.Module):
         t_rand, _ = torch.sort(t_rand, dim=1)
         t_vals = torch.cat([torch.full((batch, 1), self.t_eps, device=y.device), t_rand], dim=1)
 
-        sigma = self._sigma(t_vals).view(batch, 1, 1, bsz)
+        sigma = self._sigma(t_vals).view(batch, 1, bsz)
         z = _complex_randn((batch, y.shape[1], bsz), device=y.device)
 
         y_last = y[..., -bsz:]
         s_last = s[..., -bsz:]
-        t_vals_broadcast = t_vals.view(batch, 1, 1, bsz)
+        t_vals_broadcast = t_vals.view(batch, 1, bsz)
         mu = (1.0 - t_vals_broadcast) * s_last + t_vals_broadcast * y_last
 
         v = s.clone()
         v[..., -bsz:] = mu + sigma * z
 
-        t_map = self._make_time_map(t_vals, frames)
+        freq = y.shape[1]
+        t_map = self._make_time_map(t_vals, frames, freq)
         score = self._score(v, y, t_map)
         score_last = score[..., -bsz:]
 
@@ -204,31 +205,45 @@ class DiffusionBufferModel(nn.Module):
         if bsz < 1:
             raise ValueError("Buffer size must be at least 1.")
 
+        freq = y.shape[1]
         t_schedule = torch.linspace(self.t_eps, self.t_max, bsz, device=y.device).unsqueeze(0).repeat(batch, 1)
-        sigma_schedule = self._sigma(t_schedule).view(batch, 1, 1, bsz)
-        t_map = self._make_time_map(t_schedule, frames)
+        sigma_schedule = self._sigma(t_schedule).view(batch, 1, bsz)
+        t_map = self._make_time_map(t_schedule, frames, freq)
 
         v = torch.zeros_like(y)
-        output = y.clone()
+        output = torch.zeros_like(y)
 
-        t_vals = t_schedule.view(batch, 1, 1, bsz)
+        t_vals = t_schedule.view(batch, 1, bsz)
         g_vals = self._g(t_vals)
         dt = torch.zeros(bsz, device=y.device)
         dt[0] = -t_schedule[:, 0].mean()
         dt[1:] = (t_schedule[:, :-1] - t_schedule[:, 1:]).mean(dim=0)
-        dt = dt.view(1, 1, 1, bsz)
+        dt = dt.view(1, 1, bsz)
+
+        # Get sigma for the last buffer position [batch, 1] for broadcasting
+        sigma_last = sigma_schedule[:, :, -1]  # [batch, 1]
 
         for k in range(frames):
             v = torch.roll(v, shifts=-1, dims=-1)
-            noise = _complex_randn((batch, y.shape[1]), device=y.device)
-            v[..., -1] = y[..., k] + sigma_schedule[..., -1].squeeze(-1) * noise
+            noise = _complex_randn((batch, freq), device=y.device)
+            v[..., -1] = y[..., k] + sigma_last * noise
 
             score = self._score(v, y, t_map)
             score_last = score[..., -bsz:]
             score_last_c = _channels_to_complex(score_last)
 
             v_last = v[..., -bsz:]
-            y_last = y[..., -bsz:]
+            # Get the observation window corresponding to the current buffer position
+            # Buffer at step k contains frames [max(0, k-bsz+1), ..., k]
+            start_idx = max(0, k - bsz + 1)
+            end_idx = k + 1
+            y_window = y[..., start_idx:end_idx]
+            # Pad with zeros on the left if we're at the beginning
+            if y_window.shape[-1] < bsz:
+                pad_size = bsz - y_window.shape[-1]
+                y_window = F.pad(y_window, (pad_size, 0), mode='constant', value=0)
+            y_last = y_window
+            
             f = (y_last - v_last) / torch.clamp(1.0 - t_vals, min=1e-6)
             v_last = v_last + (-f + (g_vals ** 2) * score_last_c) * dt
             v[..., -bsz:] = v_last
@@ -236,6 +251,13 @@ class DiffusionBufferModel(nn.Module):
             out_index = k - bsz + 1
             if out_index >= 0:
                 output[..., out_index] = v[..., -bsz]
+
+        # Handle the last (bsz-1) frames that weren't written in the main loop
+        # These are the frames still in the buffer at the end
+        for i in range(1, bsz):
+            out_index = frames - bsz + i
+            if out_index < frames:
+                output[..., out_index] = v[..., -bsz + i]
 
         output = self._decompress(output)
         wave = self._istft(output, length=length)
