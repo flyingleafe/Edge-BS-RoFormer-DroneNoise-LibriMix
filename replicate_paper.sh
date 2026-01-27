@@ -464,17 +464,21 @@ step_train() {
 }
 
 # ============================================================================
-# STEP 4: Evaluate Models
+# STEP 4: Evaluate Models (individual model evaluation functions)
 # ============================================================================
-step_eval() {
-    log_info "=== Step 4: Evaluating models ==="
 
+# Common evaluation setup
+eval_setup() {
     cd "${PROJECT_DIR}"
     activate_venv
-
     mkdir -p "${RESULTS_DIR}/evaluation"
+}
 
-    # --- Evaluate Edge-BS-RoFormer ---
+# Evaluate Edge-BS-RoFormer (proposed method)
+step_eval_rope() {
+    log_info "=== Evaluating Edge-BS-RoFormer (RoPE) ==="
+    eval_setup
+
     if [ -f "${RESULTS_DIR}/edge_bs_roformer/best_model.ckpt" ]; then
         log_info "Evaluating Edge-BS-RoFormer..."
         python final_valid.py \
@@ -489,8 +493,13 @@ step_eval() {
     else
         log_warning "Edge-BS-RoFormer checkpoint not found, skipping evaluation"
     fi
+}
 
-    # --- Evaluate DCUNet ---
+# Evaluate DCUNet baseline
+step_eval_dcunet() {
+    log_info "=== Evaluating DCUNet ==="
+    eval_setup
+
     if [ -f "${RESULTS_DIR}/dcunet/best_model.ckpt" ]; then
         log_info "Evaluating DCUNet..."
         python final_valid.py \
@@ -505,8 +514,13 @@ step_eval() {
     else
         log_warning "DCUNet checkpoint not found, skipping evaluation"
     fi
+}
 
-    # --- Evaluate DPTNet ---
+# Evaluate DPTNet baseline
+step_eval_dptnet() {
+    log_info "=== Evaluating DPTNet ==="
+    eval_setup
+
     if [ -f "${RESULTS_DIR}/dptnet/best_model.ckpt" ]; then
         log_info "Evaluating DPTNet..."
         python final_valid.py \
@@ -521,8 +535,13 @@ step_eval() {
     else
         log_warning "DPTNet checkpoint not found, skipping evaluation"
     fi
+}
 
-    # --- Evaluate HTDemucs ---
+# Evaluate HTDemucs baseline
+step_eval_htdemucs() {
+    log_info "=== Evaluating HTDemucs ==="
+    eval_setup
+
     if [ -f "${RESULTS_DIR}/htdemucs/best_model.ckpt" ]; then
         log_info "Evaluating HTDemucs..."
         python final_valid.py \
@@ -537,8 +556,47 @@ step_eval() {
     else
         log_warning "HTDemucs checkpoint not found, skipping evaluation"
     fi
+}
 
-    log_success "Evaluation complete"
+# Evaluate Diffusion Buffer model
+step_eval_diffusion() {
+    log_info "=== Evaluating Diffusion Buffer ==="
+    eval_setup
+
+    if [ -f "${RESULTS_DIR}/diffusion_buffer_bbed/best_model.ckpt" ]; then
+        log_info "Evaluating Diffusion Buffer..."
+        python final_valid.py \
+            --model_type diffusion_buffer \
+            --config_path "configs/9_Diffusion_Buffer_BBED.yaml" \
+            --start_check_point "${RESULTS_DIR}/diffusion_buffer_bbed/best_model.ckpt" \
+            --valid_path "${VALID_PATH}" \
+            --store_dir "${RESULTS_DIR}/evaluation" \
+            --device_ids 0 \
+            --metrics si_sdr sdr pesq stoi
+        log_success "Diffusion Buffer evaluation complete"
+    else
+        log_warning "Diffusion Buffer checkpoint not found, skipping evaluation"
+    fi
+}
+
+# Evaluate all models sequentially
+step_eval() {
+    log_info "=== Step 4: Evaluating all models sequentially ==="
+    log_info "For parallel evaluation, run each model separately:"
+    log_info "  ./replicate_paper.sh eval_rope      # Edge-BS-RoFormer"
+    log_info "  ./replicate_paper.sh eval_dcunet    # DCUNet"
+    log_info "  ./replicate_paper.sh eval_dptnet    # DPTNet"
+    log_info "  ./replicate_paper.sh eval_htdemucs   # HTDemucs"
+    log_info "  ./replicate_paper.sh eval_diffusion # Diffusion Buffer"
+    echo ""
+
+    step_eval_rope
+    step_eval_dcunet
+    step_eval_dptnet
+    step_eval_htdemucs
+    step_eval_diffusion
+
+    log_success "All model evaluations complete"
     log_info "Results saved to ${RESULTS_DIR}/evaluation/"
 }
 
@@ -558,19 +616,32 @@ print_usage() {
     echo "  train_dcunet  - Train DCUNet baseline only"
     echo "  train_dptnet  - Train DPTNet baseline only"
     echo "  train_htdemucs- Train HTDemucs baseline only"
-    echo "  eval          - Evaluate trained models"
+    echo "  eval          - Evaluate all trained models sequentially"
+    echo "  eval_rope     - Evaluate Edge-BS-RoFormer only"
+    echo "  eval_dcunet   - Evaluate DCUNet baseline only"
+    echo "  eval_dptnet   - Evaluate DPTNet baseline only"
+    echo "  eval_htdemucs - Evaluate HTDemucs baseline only"
+    echo "  eval_diffusion - Evaluate Diffusion Buffer model only"
     echo "  all           - Run all steps (default)"
     echo ""
     echo "Examples:"
     echo "  $0                # Run all steps"
     echo "  $0 download       # Only download datasets"
     echo "  $0 train          # Train all models sequentially"
+    echo "  $0 eval           # Evaluate all models sequentially"
     echo ""
     echo "Parallel training (run in separate tmux windows):"
     echo "  tmux new -s rope    '$0 train_rope'"
     echo "  tmux new -s dcunet  '$0 train_dcunet'"
     echo "  tmux new -s dptnet  '$0 train_dptnet'"
     echo "  tmux new -s htdemucs '$0 train_htdemucs'"
+    echo ""
+    echo "Parallel evaluation (run in separate tmux windows):"
+    echo "  tmux new -s eval_rope      '$0 eval_rope'"
+    echo "  tmux new -s eval_dcunet    '$0 eval_dcunet'"
+    echo "  tmux new -s eval_dptnet    '$0 eval_dptnet'"
+    echo "  tmux new -s eval_htdemucs  '$0 eval_htdemucs'"
+    echo "  tmux new -s eval_diffusion  '$0 eval_diffusion'"
 }
 
 main() {
@@ -611,6 +682,21 @@ main() {
             ;;
         eval)
             step_eval
+            ;;
+        eval_rope)
+            step_eval_rope
+            ;;
+        eval_dcunet)
+            step_eval_dcunet
+            ;;
+        eval_dptnet)
+            step_eval_dptnet
+            ;;
+        eval_htdemucs)
+            step_eval_htdemucs
+            ;;
+        eval_diffusion)
+            step_eval_diffusion
             ;;
         all)
             step_setup
