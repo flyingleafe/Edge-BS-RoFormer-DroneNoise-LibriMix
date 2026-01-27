@@ -1,5 +1,6 @@
 *.pyc
 datasets/
+slides/
 data/
 wandb/
 results/

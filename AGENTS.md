@@ -35,6 +35,7 @@ This script:
 - Opening `analyze_results.ipynb`
 - Running any result analysis scripts
 - Generating plots or reports from evaluation data
+- Using `generate_comparison.py` for presentation figures
 
 ### Training Workflow
 
@@ -90,6 +91,7 @@ Edge-BS-RoFormer-DroneNoise-LibriMix/
 ├── valid.py                   # Validation during training
 ├── final_valid.py             # Final evaluation script
 ├── analyze_results.ipynb      # Result analysis notebook
+├── generate_comparison.py     # Generate comparison plots and tables (agentic)
 ├── sync_results.sh            # Sync results from vast-server
 └── replicate_paper.sh         # One-click replication script
 ```
@@ -117,6 +119,36 @@ Model configurations are in `configs/`:
 1. **First**: Run `./sync_results.sh` to get latest results
 2. Open `analyze_results.ipynb`
 3. Ensure notebook points to `results/evaluation/`
+
+### Generating Comparison Plots and Tables
+
+For presentation preparation, use `generate_comparison.py` to create comparison plots and tables:
+
+```bash
+# Compare specific models
+python generate_comparison.py --models Edge-BS-RoFormer DCUNet --output_dir presentations/fig1
+
+# Compare all models
+python generate_comparison.py --models all --output_dir results/comparison
+```
+
+**Agent Skill**: See `.cursor/skills/generate-model-comparisons/SKILL.md` for detailed usage patterns and examples. This skill enables flexible model subset selection for different presentation contexts (e.g., "make one plot with this set of models compared and another with this one").
+
+### Generating Slidev Presentations
+
+For creating complete presentations, use the Slidev presentation generation skill:
+
+```bash
+# The agent will guide you through creating slides based on your description
+# It automatically uses generate_comparison.py for results slides
+# And creates mermaid diagrams for approach/explanation slides
+```
+
+**Agent Skill**: See `.cursor/skills/generate-slidev-presentation/SKILL.md` for detailed instructions. This skill:
+- Generates Slidev presentations from user slide descriptions
+- Creates approach/explanation slides with mermaid diagrams
+- Generates results slides using `generate_comparison.py`
+- Handles audio sample slides with spectrograms
 
 ### Debugging Training
 
