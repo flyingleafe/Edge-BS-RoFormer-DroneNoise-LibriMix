@@ -53,7 +53,7 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default='mdx23c',
-                        help="One of mdx23c, htdemucs, segm_models, mel_band_roformer, edge_bs_rof, swin_upernet, bandit")
+                        help="One of mdx23c, htdemucs, segm_models, mel_band_roformer, edge_bs_rof, swin_upernet, bandit, diffusion_buffer")
     parser.add_argument("--config_path", type=str, help="path to config file")
     parser.add_argument("--start_check_point", type=str, default='', help="Initial checkpoint to start training")
     parser.add_argument("--results_path", type=str,
@@ -389,7 +389,7 @@ def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.N
             x, y = normalize_batch(x, y)
 
         with torch.cuda.amp.autocast(enabled=use_amp):
-            if args.model_type in ['mel_band_roformer', 'edge_bs_rof']:
+            if args.model_type in ['mel_band_roformer', 'edge_bs_rof', 'diffusion_buffer']:
                 # loss is computed in forward pass
                 loss = model(x, y)
                 if isinstance(device_ids, (list, tuple)):

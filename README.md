@@ -154,6 +154,22 @@ python train.py \
     --metric_for_scheduler si_sdr
 ```
 
+### Train Diffusion Buffer (BBED)
+
+```bash
+python train.py \
+    --model_type diffusion_buffer \
+    --config_path configs/9_Diffusion_Buffer_BBED.yaml \
+    --results_path results/diffusion_buffer_bbed \
+    --data_path datasets/DN-LM/train \
+    --valid_path datasets/DN-LM/valid \
+    --dataset_type 1 \
+    --device_ids 0 \
+    --num_workers 4 \
+    --metrics si_sdr sdr \
+    --metric_for_scheduler si_sdr
+```
+
 ### Train Baseline Models
 
 ```bash
@@ -200,6 +216,20 @@ python train.py \
 | Early Stopping | 30 epochs patience |
 | Precision | FP32 |
 
+### Training Configuration (Diffusion Buffer, BBED)
+
+Config file: `configs/9_Diffusion_Buffer_BBED.yaml`
+
+| Parameter | Value |
+|-----------|-------|
+| Optimizer | Adam |
+| Initial LR | 1.0×10⁻⁴ |
+| Batch Size | 32 |
+| EMA Decay | 0.999 |
+| Epochs | 250 |
+| Chunk Frames (K) | 128 |
+| STFT Window/Hop | 510 / 256 (periodic Hann) |
+
 ## Evaluation
 
 ```bash
@@ -241,6 +271,7 @@ python final_valid.py \
 Edge-BS-RoFormer-DroneNoise-LibriMix/
 ├── configs/                    # Model configuration files
 │   ├── 3_FA_RoPE(64).yaml     # Edge-BS-RoFormer config
+│   ├── 9_Diffusion_Buffer_BBED.yaml # Diffusion Buffer (BBED) config
 │   ├── 5_Baseline_dcunet.yaml # DCUNet config
 │   ├── 7_Baseline_dptnet.yaml # DPTNet config
 │   └── 8_Baseline_htdemucs.yaml # HTDemucs config

@@ -147,6 +147,10 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
         # DPTNet model - source separation model based on dual-path transformer network
         from models.dptnet.dpt_net import DPTNet
         model = DPTNet(config)
+    elif model_type == 'diffusion_buffer':
+        # Diffusion Buffer (BBED) model
+        from models.diffusion_buffer import DiffusionBufferModel
+        model = DiffusionBufferModel(config)
 
 
     else:

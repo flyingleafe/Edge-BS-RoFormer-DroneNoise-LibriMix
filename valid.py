@@ -621,7 +621,7 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default='mdx23c',
                         help="One of mdx23c, htdemucs, segm_models, mel_band_roformer,"
-                             " edge_bs_rof, swin_upernet, bandit")
+                             " edge_bs_rof, swin_upernet, bandit, diffusion_buffer")
     parser.add_argument("--config_path", type=str, help="Path to config file")
     parser.add_argument("--start_check_point", type=str, default='', help="Initial checkpoint"
                                                                           " to valid weights")
