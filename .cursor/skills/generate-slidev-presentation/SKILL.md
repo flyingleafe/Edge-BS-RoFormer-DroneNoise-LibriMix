@@ -67,13 +67,13 @@ For results slides:
    ```bash
    # Sync results first
    ./sync_results.sh
-   
+
    # Generate comparison plots
    python generate_comparison.py \
        --models <selected_models> \
        --output_dir slides/assets/comparison_<slide_number> \
        --plot_name comparison.png
-   
+
    # If audio samples requested
    python generate_comparison.py \
        --models <selected_models> \
@@ -299,7 +299,7 @@ slides/
 - **Model names**: Use exact names: Edge-BS-RoFormer, DCUNet, DPTNet, HTDemucs, Diffusion-Buffer-BBED
 - **Sample IDs**: Use 5-digit format (00000, 00001, etc.)
 - **Slidev installation**: User needs Slidev installed (`npm install -g @slidev/cli`)
-- **Running presentation**: `slidev slides.md` in the slides directory
+- **Running presentation**: `slidev slides.md` in the slides directory. To run and visually inspect slides (e.g. with browser MCP), use the **examine-presentation-slides** skill.
 - **Mermaid support**: Slidev has built-in mermaid support, use ` ```mermaid` code blocks
 
 ## Error Handling

@@ -26,7 +26,7 @@ Evaluation results are stored on `vast-server` and must be synced locally before
 ```
 
 This script:
-- Syncs results from `vast-server:Edge-BS-RoFormer-DroneNoise-LibriMix/results/evaluation` 
+- Syncs results from `vast-server:Edge-BS-RoFormer-DroneNoise-LibriMix/results/evaluation`
 - To local `results/evaluation`
 - Uses rsync with progress display
 - Verifies SSH connectivity before syncing
@@ -149,6 +149,15 @@ For creating complete presentations, use the Slidev presentation generation skil
 - Creates approach/explanation slides with mermaid diagrams
 - Generates results slides using `generate_comparison.py`
 - Handles audio sample slides with spectrograms
+
+### Visually Examining Presentation Slides
+
+To run a Slidev presentation and inspect how it looks (e.g. with browser MCP):
+
+**Agent Skill**: See `.cursor/skills/examine-presentation-slides/SKILL.md`. This skill:
+- Starts Slidev so it stays running in non-TTY/background (via pseudo-TTY)
+- Uses cursor-ide-browser or user-playwright MCP to open the deck, take screenshots, and step through slides
+- Use when the user wants to "see how the presentation looks" or visually check slides
 
 ### Debugging Training
 
