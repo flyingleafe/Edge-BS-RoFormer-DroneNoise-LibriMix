@@ -21,6 +21,12 @@ from typing import Callable, NoReturn
 import yaml
 
 from create_dataset import create_dataset as create_dataset_impl
+from data_utils import (
+    build_local_hf_dataset_from_splits,
+    collect_audio_files,
+    download_hf_dataset_splits,
+    prepare_zenodo_drone_noises,
+)
 from final_valid import check_validation
 from train import train_model
 
@@ -34,7 +40,6 @@ DATASETS_DIR = PROJECT_DIR / "datasets"
 RESULTS_DIR = PROJECT_DIR / "results"
 
 LIBRISPEECH_DIR = DATA_DIR / "librispeech"
-DRONE_AUDIO_DIR = DATA_DIR / "drone_audio"
 DNLM_DIR = DATASETS_DIR / "DN-LM"
 
 LIBRISPEECH_URL = "https://www.openslr.org/resources/12/train-clean-100.tar.gz"
@@ -42,7 +47,10 @@ LIBRISPEECH_ARCHIVE_NAME = "train-clean-100.tar.gz"
 LIBRISPEECH_EXTRACTED = LIBRISPEECH_DIR / "LibriSpeech" / "train-clean-100"
 LIBRISPEECH_MIN_ARCHIVE_BYTES = 1_000_000_000  # ~1 GB, incomplete otherwise
 
-DRONE_AUDIO_REPO = "https://github.com/saraalemadi/DroneAudioDataset.git"
+DRONE_AUDIO_HF_DATASET = "geronimobasso/drone-audio-detection-samples"
+ZENODO_DRONE_NOISES_URL = "https://zenodo.org/records/4553667/files/all_drone_noises.zip?download=1"
+ZENODO_DRONE_NOISES_DIR = DATA_DIR / "zenodo_drone_noises"
+ZENODO_DRONE_HF_DIR = ZENODO_DRONE_NOISES_DIR / "hf_dataset"
 
 TRAIN_PATH = DNLM_DIR / "train"
 VALID_PATH = DNLM_DIR / "valid"
@@ -275,18 +283,32 @@ def step_download() -> None:
         else:
             log_success("LibriSpeech already extracted")
 
-    # DroneAudioDataset
-    log_info("Checking DroneAudioDataset...")
-    wav_count = count_files(DRONE_AUDIO_DIR, "*.wav") + count_files(DRONE_AUDIO_DIR, "*.WAV")
-    if DRONE_AUDIO_DIR.exists() and wav_count > 0:
-        log_success(f"DroneAudioDataset already downloaded ({wav_count} WAV files found)")
-    else:
-        log_info("Cloning DroneAudioDataset from GitHub...")
-        check_command("git")
-        if DRONE_AUDIO_DIR.exists():
-            shutil.rmtree(DRONE_AUDIO_DIR)
-        run(["git", "clone", DRONE_AUDIO_REPO, str(DRONE_AUDIO_DIR)])
-        log_success("DroneAudioDataset cloned successfully")
+    log_info("Using Hugging Face drone audio dataset (label=1 for drone sounds)")
+    log_info(f"  Dataset: {DRONE_AUDIO_HF_DATASET}")
+    log_info("Downloading Hugging Face drone dataset splits (full, train, test)...")
+    try:
+        download_hf_dataset_splits(DRONE_AUDIO_HF_DATASET, splits=("train", "test"))
+    except Exception as exc:
+        fail(f"Failed to download Hugging Face dataset: {exc}")
+
+    log_info("Downloading Zenodo drone noises dataset...")
+    extract_dir, split_dirs = prepare_zenodo_drone_noises(
+        DATA_DIR, url=ZENODO_DRONE_NOISES_URL, extracted_dirname="zenodo_drone_noises"
+    )
+    split_counts = {
+        split: len(collect_audio_files(path)) for split, path in split_dirs.items()
+    }
+    for split, count in split_counts.items():
+        log_info(f"  Zenodo {split} split: {count} audio files")
+
+    log_info("Building local Hugging Face dataset from Zenodo splits...")
+    try:
+        build_local_hf_dataset_from_splits(
+            split_dirs, ZENODO_DRONE_HF_DIR, sample_rate=DATASET_SAMPLE_RATE
+        )
+    except Exception as exc:
+        fail(f"Failed to build local HF dataset: {exc}")
+    log_success(f"Local HF dataset ready at {ZENODO_DRONE_HF_DIR}")
 
     log_success("All source datasets ready")
 
@@ -325,28 +347,22 @@ def step_dataset() -> None:
         fail(
             f"LibriSpeech not found at {LIBRISPEECH_EXTRACTED}. Run: python replicate_paper.py download"
         )
-    if not DRONE_AUDIO_DIR.exists():
-        fail(
-            f"DroneAudioDataset not found at {DRONE_AUDIO_DIR}. Run: python replicate_paper.py download"
-        )
-
     speech_count = count_files(LIBRISPEECH_EXTRACTED, "*.flac")
-    noise_count = count_files(DRONE_AUDIO_DIR, "*.wav") + count_files(DRONE_AUDIO_DIR, "*.WAV")
-    if noise_count == 0:
-        noise_count = count_files(DRONE_AUDIO_DIR, "*.mp3") + count_files(DRONE_AUDIO_DIR, "*.ogg")
     if speech_count == 0:
         fail(f"No speech files (*.flac) in {LIBRISPEECH_EXTRACTED}")
-    if noise_count == 0:
-        fail(f"No noise/audio files in {DRONE_AUDIO_DIR}")
 
-    log_info(f"Found {speech_count} speech files and {noise_count} noise files")
+    log_info(f"Found {speech_count} speech files")
+    log_info(f"Using Hugging Face noise source: {DRONE_AUDIO_HF_DATASET} (label=1)")
     log_info("Creating DN-LM dataset (this may take a while)...")
     log_info(f"  Training samples: {DATASET_TRAIN_SAMPLES}")
     log_info(f"  Validation samples: {DATASET_VALID_SAMPLES}")
     log_info("  SNR range: -30 to 0 dB")
 
     speech_dir = str(LIBRISPEECH_EXTRACTED)
-    noise_dir = str(DRONE_AUDIO_DIR)
+    noise_dir = [
+        f"hf:{DRONE_AUDIO_HF_DATASET}",
+        f"hf-local:{ZENODO_DRONE_HF_DIR}",
+    ]
     output_dir = str(DNLM_DIR)
     snr_range = (DATASET_SNR_MIN, DATASET_SNR_MAX)
 
