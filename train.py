@@ -3,6 +3,7 @@ __author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
 __version__ = '1.0.4'
 
 # Import necessary libraries
+import json
 import random
 import argparse
 from tqdm.auto import tqdm
@@ -22,8 +23,9 @@ from torch.cuda.amp.grad_scaler import GradScaler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from ml_collections import ConfigDict
 import torch.nn.functional as F
-from typing import List, Tuple, Dict, Union, Callable
+from typing import List, Tuple, Dict, Union, Callable, Optional
 import shutil
+import soundfile as sf
 
 # Import custom modules
 from dataset import MSSDataset  # Music source separation dataset class
@@ -402,28 +404,191 @@ def _tensor_to_audio_numpy(t: torch.Tensor) -> np.ndarray:
     return np.asarray(a, dtype=np.float32)
 
 
+# SNR categories for wandb audio sample selection (DN-LM metadata: input_snr in dB)
+# light: 0 or -5 dB, medium: -10 or -15 dB, heavy: -25 or -30 dB
+SNR_CATEGORIES = {
+    'light': (-5, 0),    # inclusive [min, max] dB
+    'medium': (-15, -10),
+    'heavy': (-30, -25),
+}
+
+
+def load_snr_metadata(data_path: Union[str, List[str]]) -> Optional[Dict[str, float]]:
+    """
+    Load sample_id -> input_snr from DN-LM metadata.json if present.
+    data_path: training or validation root (e.g. 'datasets/DN-LM/train' or list of one).
+    Returns dict sample_id -> input_snr, or None if no metadata.
+    """
+    roots = [data_path] if isinstance(data_path, str) else list(data_path)
+    for root in roots:
+        meta_path = os.path.join(root, 'metadata.json')
+        if not os.path.isfile(meta_path):
+            continue
+        try:
+            with open(meta_path) as f:
+                data = json.load(f)
+            # Format: { "train": [ {"id": "...", "input_snr": ...}, ... ] } or { "valid": ... }
+            for key in ('train', 'valid'):
+                if key in data and isinstance(data[key], list):
+                    return {item['id']: item['input_snr'] for item in data[key] if 'id' in item and 'input_snr' in item}
+            return None
+        except Exception:
+            return None
+    return None
+
+
+def select_sample_ids_by_snr(
+    metadata: Dict[str, float],
+    seed: int = 0,
+) -> List[Tuple[str, str, float]]:
+    """
+    Select one sample_id per SNR category (light, medium, heavy).
+    Returns list of (sample_id, category_name, snr_value); length 0--3.
+    """
+    rng = random.Random(seed)
+    selected: List[Tuple[str, str, float]] = []
+    for cat_name, (min_db, max_db) in SNR_CATEGORIES.items():
+        candidates = [(sid, snr) for sid, snr in metadata.items() if min_db <= snr <= max_db and np.isfinite(snr)]
+        if not candidates:
+            continue
+        sid, snr = rng.choice(candidates)
+        selected.append((sid, cat_name, float(snr)))
+    return selected
+
+
+def load_sample_audio_from_folder(
+    root: str,
+    sample_id: str,
+    target_file: str = 'vocals',
+    target_sr: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load mixture and target for one DN-LM sample from root/sample_id/.
+    Returns (mix, target) as float32 numpy (samples,) or (channels, samples) to match model.
+    """
+    folder = os.path.join(root, sample_id)
+    mix_path = os.path.join(folder, 'mixture.wav')
+    tgt_path = os.path.join(folder, f'{target_file}.wav')
+    if not os.path.isfile(mix_path) or not os.path.isfile(tgt_path):
+        raise FileNotFoundError(f"Missing {mix_path} or {tgt_path}")
+    mix, sr_m = sf.read(mix_path, dtype='float32')
+    tgt, sr_t = sf.read(tgt_path, dtype='float32')
+    if mix.ndim == 1:
+        mix = mix[np.newaxis, :]
+    if tgt.ndim == 1:
+        tgt = tgt[np.newaxis, :]
+    # (samples, channels) -> (channels, samples)
+    mix = np.ascontiguousarray(mix.T)
+    tgt = np.ascontiguousarray(tgt.T)
+    if target_sr and (sr_m != target_sr or sr_t != target_sr):
+        import librosa
+        # librosa.resample expects (n_channels, n_samples) or (n_samples,); resamples along last axis
+        if sr_m != target_sr:
+            mix = librosa.resample(mix, orig_sr=sr_m, target_sr=target_sr, res_type='kaiser_best')
+            if mix.ndim == 1:
+                mix = mix[np.newaxis, :]
+        if sr_t != target_sr:
+            tgt = librosa.resample(tgt, orig_sr=sr_t, target_sr=target_sr, res_type='kaiser_best')
+            if tgt.ndim == 1:
+                tgt = tgt[np.newaxis, :]
+    return mix, tgt
+
+
+def collect_audio_triples_by_snr(
+    model: torch.nn.Module,
+    args: argparse.Namespace,
+    config: ConfigDict,
+    device: torch.device,
+    data_path: Union[str, List[str]],
+    epoch: int,
+    target_file: str = 'vocals',
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray, np.ndarray]], List[str], int]:
+    """
+    Select 3 samples by SNR category (light, medium, heavy), run model, return triples and captions.
+    Returns (triples, captions, sample_rate). If metadata or samples missing, returns ([], [], sr).
+    """
+    sample_rate = get_sample_rate(config)
+    roots = [data_path] if isinstance(data_path, str) else list(data_path)
+    if not roots:
+        return [], [], sample_rate
+    root = roots[0]
+    metadata = load_snr_metadata(data_path)
+    if not metadata:
+        return [], [], sample_rate
+    # Fixed seed so the same 3 samples are selected every epoch (stable evolution in wandb)
+    selected = select_sample_ids_by_snr(metadata, seed=0)
+    if not selected:
+        return [], [], sample_rate
+    triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    captions: List[str] = []
+    normalize = getattr(config.training, 'normalize', False)
+    model.eval()
+    with torch.no_grad():
+        for sample_id, cat_name, snr_val in selected:
+            try:
+                mix, tgt = load_sample_audio_from_folder(root, sample_id, target_file=target_file, target_sr=sample_rate)
+            except FileNotFoundError:
+                continue
+            # (C, T) -> (1, C, T)
+            x = torch.from_numpy(mix).float().unsqueeze(0).to(device)
+            y_np = tgt
+            if mix.shape[0] == 1:
+                y_np_1d = np.squeeze(y_np)
+            else:
+                y_np_1d = np.mean(y_np, axis=0)
+            if normalize:
+                mean, std = x.mean().item(), x.std().item()
+                if std != 0:
+                    x = (x - mean) / std
+            out = get_model_output(model, x, args)
+            inp_1d = np.squeeze(mix) if mix.shape[0] == 1 else np.mean(mix, axis=0)
+            out_1d = _tensor_to_audio_numpy(out[0])
+            triples.append((np.asarray(inp_1d, dtype=np.float32), np.asarray(y_np_1d, dtype=np.float32), out_1d))
+            captions.append(f'{cat_name} {snr_val:+.1f} dB')
+    model.train()
+    return triples, captions, sample_rate
+
+
 def log_audio_triples_to_wandb(
     prefix: str,
     triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
     sample_rate: int,
     epoch: int,
+    captions: Optional[List[str]] = None,
+    output_only: bool = False,
 ) -> None:
-    """Log (input, target, output) audio triples to wandb. Each triple is 3 arrays; triples has length 2."""
+    """
+    Log audio to wandb.
+    - output_only=False (epoch 0): log input, target, and output for each sample.
+    - output_only=True (epoch > 0): log only output for each sample (same keys so evolution is comparable).
+    """
     if not triples:
         return
-    log_dict = {}
+    log_dict = {'epoch': epoch}
     for idx, (inp, tgt, out) in enumerate(triples):
-        log_dict[f'{prefix}/sample_{idx}/input'] = wandb.Audio(inp, sample_rate=sample_rate, caption=f'input {idx}')
-        log_dict[f'{prefix}/sample_{idx}/target'] = wandb.Audio(tgt, sample_rate=sample_rate, caption=f'target {idx}')
-        log_dict[f'{prefix}/sample_{idx}/output'] = wandb.Audio(out, sample_rate=sample_rate, caption=f'output {idx}')
-    log_dict['epoch'] = epoch
+        cap = captions[idx] if captions and idx < len(captions) else f'sample_{idx}'
+        if not output_only:
+            log_dict[f'{prefix}/sample_{idx}/input'] = wandb.Audio(inp, sample_rate=sample_rate, caption=f'input {cap}')
+            log_dict[f'{prefix}/sample_{idx}/target'] = wandb.Audio(tgt, sample_rate=sample_rate, caption=f'target {cap}')
+        log_dict[f'{prefix}/sample_{idx}/output'] = wandb.Audio(out, sample_rate=sample_rate, caption=f'output {cap}')
     wandb.log(log_dict)
 
 
-def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.Namespace, optimizer: torch.optim.Optimizer,
-                    device: torch.device, device_ids: List[int], epoch: int, use_amp: bool, scaler: torch.cuda.amp.GradScaler,
-                    gradient_accumulation_steps: int, train_loader: torch.utils.data.DataLoader,
-                    multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]) -> None:
+def train_one_epoch(
+    model: torch.nn.Module,
+    config: ConfigDict,
+    args: argparse.Namespace,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    device_ids: List[int],
+    epoch: int,
+    use_amp: bool,
+    scaler: torch.cuda.amp.GradScaler,
+    gradient_accumulation_steps: int,
+    train_loader: torch.utils.data.DataLoader,
+    multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    audio_logging_cache: Optional[Dict[str, Optional[Tuple[List[np.ndarray], List[np.ndarray], int]]]] = None,
+) -> None:
     """
     Train model for one epoch.
 
@@ -448,6 +613,17 @@ def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.N
     normalize = getattr(config.training, 'normalize', False)
     sample_rate = get_sample_rate(config)
     train_audio_triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    train_audio_captions: Optional[List[str]] = None
+
+    # Prefer 3 samples by SNR (light / medium / heavy) when DN-LM metadata exists (stable: same samples every epoch)
+    target_file = getattr(config.training, 'target_instrument', None) or 'vocals'
+    train_triples_snr, train_captions_snr, _ = collect_audio_triples_by_snr(
+        model, args, config, device, args.data_path, epoch, target_file=target_file
+    )
+    if train_triples_snr:
+        train_audio_triples = train_triples_snr
+        train_audio_captions = train_captions_snr
+    # Epoch > 0 and fallback was used at epoch 0: we'll run model on cached inputs at end of epoch (after training)
 
     pbar = tqdm(train_loader)
     for i, (batch, mixes) in enumerate(pbar):
@@ -468,18 +644,25 @@ def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.N
                 y_ = model(x)
                 loss = multi_loss(y_, y)
 
-        # Collect 2 training sample triples (input, target, output) on first batch for wandb
-        if i == 0 and x.shape[0] >= 2:
+        # Fallback: collect 3 training sample triples from first batch when no SNR metadata (epoch 0 only)
+        if not train_audio_triples and epoch == 0 and i == 0 and x.shape[0] >= 3:
             with torch.no_grad():
                 model.eval()
-                x_slice = x[:2]
+                x_slice = x[:3]
                 out_slice = get_model_output(model, x_slice, args)
                 model.train()
-            for k in range(min(2, out_slice.shape[0])):
+            for k in range(min(3, out_slice.shape[0])):
                 inp_k = _tensor_to_audio_numpy(x_slice[k])
                 tgt_k = _tensor_to_audio_numpy(y[k])
                 out_k = _tensor_to_audio_numpy(out_slice[k])
                 train_audio_triples.append((inp_k, tgt_k, out_k))
+            # Cache inputs/targets so same samples are used for output-only logging in later epochs
+            if audio_logging_cache is not None:
+                audio_logging_cache['train'] = (
+                    [t[0] for t in train_audio_triples],
+                    [t[1] for t in train_audio_triples],
+                    sample_rate,
+                )
 
         loss /= gradient_accumulation_steps
         scaler.scale(loss).backward()
@@ -501,8 +684,25 @@ def train_one_epoch(model: torch.nn.Module, config: ConfigDict, args: argparse.N
     print(f'Training loss: {loss_val / total}')
     wandb.log({'train_loss': loss_val / total, 'epoch': epoch, 'learning_rate': optimizer.param_groups[0]['lr']})
 
+    # Epoch > 0 and fallback was used at epoch 0: run model on cached inputs (after training) and log outputs only
+    if epoch > 0 and audio_logging_cache and audio_logging_cache.get('train') is not None and not train_audio_triples:
+        cached_inp, cached_tgt, sample_rate = audio_logging_cache['train']
+        model.eval()
+        train_audio_triples = []
+        with torch.no_grad():
+            for inp_k, tgt_k in zip(cached_inp, cached_tgt):
+                x = torch.from_numpy(inp_k).float().unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, T)
+                out = get_model_output(model, x, args)
+                out_k = _tensor_to_audio_numpy(out[0])
+                train_audio_triples.append((inp_k, tgt_k, out_k))
+        model.train()
+        train_audio_captions = None
+
     if train_audio_triples:
-        log_audio_triples_to_wandb('audio_samples/train', train_audio_triples, sample_rate, epoch)
+        log_audio_triples_to_wandb(
+            'audio_samples/train', train_audio_triples, sample_rate, epoch,
+            captions=train_audio_captions, output_only=(epoch > 0),
+        )
 
 
 def save_weights(args: argparse.Namespace, store_path_prefix: str, model: torch.nn.Module, device_ids: List[int],
@@ -569,29 +769,61 @@ def collect_and_log_valid_audio(
     args: argparse.Namespace,
     config: ConfigDict,
     device: torch.device,
-    valid_loader: torch.utils.data.DataLoader,
+    valid_loader: Optional[torch.utils.data.DataLoader],
     epoch: int,
+    audio_logging_cache: Optional[Dict[str, Optional[Tuple[List[np.ndarray], List[np.ndarray], int]]]] = None,
 ) -> None:
-    """Get 2 validation sample triples (input, target, output) and log them to wandb."""
+    """Get 3 validation sample triples by SNR (light/medium/heavy) or from loader; log to wandb. Stable selection; output-only after epoch 0."""
     sample_rate = get_sample_rate(config)
-    model.eval()
+    target_file = getattr(config.training, 'target_instrument', None) or 'vocals'
     triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    with torch.no_grad():
-        for batch, mixes in valid_loader:
-            x = mixes.to(device)
-            y = batch.to(device)
-            if getattr(config.training, 'normalize', False):
-                x, y = normalize_batch(x, y)
-            out = get_model_output(model, x, args)
-            for k in range(min(2, x.shape[0])):
-                inp_k = _tensor_to_audio_numpy(x[k])
-                tgt_k = _tensor_to_audio_numpy(y[k])
-                out_k = _tensor_to_audio_numpy(out[k]) if out.shape[0] > k else _tensor_to_audio_numpy(out[0])
+    captions: Optional[List[str]] = None
+
+    # Epoch > 0 and fallback was used at epoch 0: run model on cached inputs, log outputs only
+    if epoch > 0 and audio_logging_cache and audio_logging_cache.get('valid') is not None:
+        cached_inp, cached_tgt, sample_rate = audio_logging_cache['valid']
+        model.eval()
+        with torch.no_grad():
+            for inp_k, tgt_k in zip(cached_inp, cached_tgt):
+                x = torch.from_numpy(inp_k).float().unsqueeze(0).unsqueeze(0).to(device)
+                out = get_model_output(model, x, args)
+                out_k = _tensor_to_audio_numpy(out[0])
                 triples.append((inp_k, tgt_k, out_k))
-            break
-    model.train()
+        model.train()
+    # Prefer 3 samples by SNR when DN-LM metadata exists (stable: same samples every epoch)
+    elif getattr(args, 'valid_path', None):
+        triples, captions, sample_rate = collect_audio_triples_by_snr(
+            model, args, config, device, args.valid_path, epoch, target_file=target_file
+        )
+    # Fallback: take up to 3 from first batch of valid_loader (epoch 0 only)
+    elif valid_loader is not None and epoch == 0:
+        model.eval()
+        with torch.no_grad():
+            for batch, mixes in valid_loader:
+                x = mixes.to(device)
+                y = batch.to(device)
+                if getattr(config.training, 'normalize', False):
+                    x, y = normalize_batch(x, y)
+                out = get_model_output(model, x, args)
+                for k in range(min(3, x.shape[0])):
+                    inp_k = _tensor_to_audio_numpy(x[k])
+                    tgt_k = _tensor_to_audio_numpy(y[k])
+                    out_k = _tensor_to_audio_numpy(out[k]) if out.shape[0] > k else _tensor_to_audio_numpy(out[0])
+                    triples.append((inp_k, tgt_k, out_k))
+                if audio_logging_cache is not None and triples:
+                    audio_logging_cache['valid'] = (
+                        [t[0] for t in triples],
+                        [t[1] for t in triples],
+                        sample_rate,
+                    )
+                break
+        model.train()
+
     if triples:
-        log_audio_triples_to_wandb('audio_samples/valid', triples, sample_rate, epoch)
+        log_audio_triples_to_wandb(
+            'audio_samples/valid', triples, sample_rate, epoch,
+            captions=captions, output_only=(epoch > 0),
+        )
 
 
 def train_model(args: argparse.Namespace) -> None:
@@ -627,7 +859,7 @@ def train_model(args: argparse.Namespace) -> None:
     wandb_init(args, config, device_ids, batch_size)
 
     train_loader = prepare_data(config, args, batch_size)
-    valid_loader = prepare_valid_data(config, args, batch_size=2)
+    valid_loader = prepare_valid_data(config, args, batch_size=3)
 
     if args.start_check_point:
         load_start_checkpoint(args, model, type_='train')
@@ -676,12 +908,15 @@ def train_model(args: argparse.Namespace) -> None:
 
     print(f'Train for: {config.training.num_epochs} epochs')
 
+    # Cache (input, target) for train/valid when using fallback (no SNR metadata) so same samples are logged every epoch
+    audio_logging_cache: Dict[str, Optional[Tuple[List[np.ndarray], List[np.ndarray], int]]] = {'train': None, 'valid': None}
+
     for epoch in range(config.training.num_epochs):
         train_one_epoch(model, config, args, optimizer, device, device_ids, epoch,
-                        use_amp, scaler, gradient_accumulation_steps, train_loader, multi_loss)
+                        use_amp, scaler, gradient_accumulation_steps, train_loader, multi_loss, audio_logging_cache)
         current_metric, best_metric = compute_epoch_metrics(model, args, config, device, device_ids, epoch, scheduler, best_metric)
         if valid_loader is not None:
-            collect_and_log_valid_audio(model, args, config, device, valid_loader, epoch)
+            collect_and_log_valid_audio(model, args, config, device, valid_loader, epoch, audio_logging_cache)
         if early_stop_enabled:
             # If this epoch's metric doesn't improve best_metric, increment counter; otherwise reset
             if current_metric < best_metric:

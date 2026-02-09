@@ -39,12 +39,18 @@ This script:
 
 ### Training Workflow
 
-Use `replicate_paper.sh` for complete replication:
+Use `replicate_paper.sh` or `replicate_paper.py` for complete replication:
 
 ```bash
+# Shell script
 ./replicate_paper.sh all        # Full replication
 ./replicate_paper.sh train      # Train all models
 ./replicate_paper.sh eval       # Evaluate models
+
+# Python (equivalent)
+python replicate_paper.py all
+python replicate_paper.py train
+python replicate_paper.py eval
 ```
 
 Individual model training:
@@ -93,7 +99,8 @@ Edge-BS-RoFormer-DroneNoise-LibriMix/
 ├── analyze_results.ipynb      # Result analysis notebook
 ├── generate_comparison.py     # Generate comparison plots and tables (agentic)
 ├── sync_results.sh            # Sync results from vast-server
-└── replicate_paper.sh         # One-click replication script
+├── replicate_paper.sh         # One-click replication (shell)
+└── replicate_paper.py         # One-click replication (Python)
 ```
 
 ## Configuration Files
@@ -111,7 +118,7 @@ Model configurations are in `configs/`:
 
 1. Implement model in `models/`
 2. Create config file in `configs/`
-3. Add training command to `replicate_paper.sh`
+3. Add training command to `replicate_paper.sh` / `replicate_paper.py`
 4. Update evaluation scripts if needed
 
 ### Analyzing Results
@@ -169,7 +176,7 @@ To run a Slidev presentation and inspect how it looks (e.g. with browser MCP):
 
 - **Always sync results before analysis**: Use `sync_results.sh` first
 - **Config files**: YAML format, model-specific parameters
-- **Dataset**: Must be created locally using `create_dataset.py` or `replicate_paper.sh dataset`
+- **Dataset**: Must be created locally using `create_dataset.py` or `replicate_paper.py dataset`
 - **Results location**: Local training results in `results/`, evaluation results synced from `vast-server`
 - **SSH access**: Requires `vast-server` to be accessible via SSH
 - **Python environment**: Uses Python 3.12+, requires CUDA-capable GPU for training
