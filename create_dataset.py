@@ -21,6 +21,7 @@ import librosa
 from glob import glob
 from tqdm import tqdm
 from pathlib import Path
+from torchcodec.decoders import AudioDecoder
 
 
 HF_DATASET_PREFIX = "hf:"
@@ -46,10 +47,17 @@ def load_audio(path, target_sr=16000, mono=True):
 def load_audio_from_hf_item(item, target_sr=16000, mono=True):
     """Load audio from a Hugging Face dataset item."""
     audio = item.get("audio")
-    if not isinstance(audio, dict) or "array" not in audio:
-        raise ValueError("Hugging Face item does not contain audio array")
-    data = np.asarray(audio["array"], dtype=np.float32)
-    sr = audio.get("sampling_rate", target_sr)
+   
+    if isinstance(audio, AudioDecoder):
+        samples = audio.get_all_samples()
+        data = samples.data.numpy()
+        sr = samples.sample_rate
+
+    else:
+        if not isinstance(audio, dict) or "array" not in audio:
+            raise ValueError("Hugging Face item does not contain audio array")
+        data = np.asarray(audio["array"], dtype=np.float32)
+        sr = audio.get("sampling_rate", target_sr)
 
     # Convert to mono if needed
     if mono and len(data.shape) > 1:

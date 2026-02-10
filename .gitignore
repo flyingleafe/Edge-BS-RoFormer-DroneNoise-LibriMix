@@ -9,3 +9,4 @@ results/
 *.xml
 
 drones-with-speeds.md
+.ipynb_checkpoints/

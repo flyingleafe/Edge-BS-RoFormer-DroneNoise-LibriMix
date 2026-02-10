@@ -24,9 +24,9 @@ dependencies = [
     "rotary-embedding-torch==0.8.6",
     "soundfile==0.13.1",
     "thop==0.1.1.post2209072238",
-    "torch==2.6.0",
+    "torch==2.7",
     "torch-log-wmse==0.3.0",
-    "torchaudio==2.6.0",
+    "torchaudio==2.7",
     "tqdm==4.67.1",
     "wandb[media]>=0.22.3",
     "python-dotenv==1.0.1",
@@ -38,4 +38,5 @@ dependencies = [
     "jupyter>=1.1.1",
     "seaborn>=0.13.2",
     "datasets>=4.5.0",
+    "torchcodec==0.5",
 ]

@@ -29,7 +29,7 @@ training:
   use_amp: true  # Whether to use automatic mixed precision (float16), speeds up training and reduces memory
   early_stop:  # Early stopping configuration
     enabled: true  # Whether to enable early stopping
-    patience: 30  # Early stopping patience
+    patience: 5  # Early stopping patience
     metric: "si-sdr"  # Metric for early stopping
 
 augmentations:

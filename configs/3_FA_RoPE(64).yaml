@@ -103,6 +103,7 @@ model:
   multi_stft_normalized: False # Whether to normalize multi-resolution STFT output
 
 training:
+  num_gpus: 2
   batch_size: 6  # Number of samples per batch
   gradient_accumulation_steps: 1  # Gradient accumulation steps
   grad_clip: 0  # Gradient clipping threshold
@@ -123,7 +124,7 @@ training:
   use_amp: true  # Whether to use automatic mixed precision
   early_stop:  # Early stopping configuration
     enabled: true  # Whether to enable early stopping
-    patience: 40  # Early stopping patience
+    patience: 5  # Early stopping patience
     metric: "si-sdr"  # Metric for early stopping
 
 inference:
