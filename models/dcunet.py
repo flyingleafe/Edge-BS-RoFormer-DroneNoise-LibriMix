@@ -337,6 +337,7 @@ class DCUNet(nn.Module):
         rps: (batch, num_rotors, time_rps) or None for baseline behaviour.
         Output: (batch, instruments=1, channels=1, time)
         """
+        input_length = x.shape[-1]  # Store original length for output padding
         X = self.stft.transform(x)
         B, _, F, T, _ = X.shape
         encoder_features = []
@@ -388,10 +389,43 @@ class DCUNet(nn.Module):
                 current = decoder(current)
             else:
                 skip = encoder_features[-i]
+                # Match dimensions between current and skip (crop the larger one)
+                min_f = min(current.shape[2], skip.shape[2])
+                min_t = min(current.shape[3], skip.shape[3])
+                if current.shape[2] != min_f or current.shape[3] != min_t:
+                    current = current[:, :, :min_f, :min_t, :]
+                if skip.shape[2] != min_f or skip.shape[3] != min_t:
+                    skip = skip[:, :, :min_f, :min_t, :]
                 current = decoder(torch.cat([current, skip], dim=1))
 
+        # Pad or crop output to match input spectrogram dimensions
+        if current.shape[2] != F or current.shape[3] != T:
+            # Pad if output is smaller, crop if larger
+            pad_f = F - current.shape[2]
+            pad_t = T - current.shape[3]
+            if pad_f > 0 or pad_t > 0:
+                # Pad with zeros: (last_dim_pad, ..., first_dim_pad)
+                # Shape is (B, C, F, T, 2), pad T (dim 3) and F (dim 2)
+                current = torch.nn.functional.pad(current, (0, 0, 0, max(0, pad_t), 0, max(0, pad_f)))
+            if pad_f < 0 or pad_t < 0:
+                # Crop if larger
+                current = current[:, :, :F, :T, :]
         output = current * X
         output = self.stft.inverse(output)
+
+        # Ensure output length matches input length
+        output_length = output.shape[-1]
+        if output_length != input_length:
+            import warnings
+            warnings.warn(
+                f"DCUNet output length mismatch: output={output_length}, input={input_length}, "
+                f"diff={output_length - input_length}. Consider adjusting chunk_size."
+            )
+            if output_length < input_length:
+                output = torch.nn.functional.pad(output, (0, input_length - output_length))
+            else:
+                output = output[..., :input_length]
+
         output = output.unsqueeze(1)
         return output
 

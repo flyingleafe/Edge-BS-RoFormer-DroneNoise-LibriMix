@@ -221,7 +221,7 @@ def initialize_model_and_device(model: torch.nn.Module, device_ids: List[int]) -
             device = torch.device(f'cuda:{device_ids[0]}')
             model = nn.DataParallel(model, device_ids=device_ids).to(device)
     else:
-        device = 'cpu'
+        device = torch.device('cpu')
         model = model.to(device)
         print("CUDA is not available. Running on CPU.")
 

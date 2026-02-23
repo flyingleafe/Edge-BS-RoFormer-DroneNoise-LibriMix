@@ -307,18 +307,33 @@ class MSSDataset(torch.utils.data.Dataset):
         pickle.dump(metadata, open(self.metadata_path, 'wb'))
         return metadata
 
-    def load_source(self, metadata, instr):
+    def load_source(self, metadata, instr, track_path_hint=None):
         """
         Load a single audio source.
         Args:
             metadata: Metadata
             instr: Instrument name
+            track_path_hint: Optional specific track path to use (for RPS alignment)
         Returns:
             Loaded audio data tensor
         """
         while True:
             if self.dataset_type in [1, 4]:
-                track_path, track_length = random.choice(metadata)
+                if track_path_hint is not None:
+                    # Use the specified track path (for loading all instruments from same sample)
+                    track_path = track_path_hint
+                    track_length = self.chunk_size  # Assume sufficient length
+                    # Find actual length from metadata if available
+                    for tp, tl in metadata:
+                        if tp == track_path:
+                            track_length = tl
+                            break
+                else:
+                    track_path, track_length = random.choice(metadata)
+
+                # Store for RPS loading
+                self._last_sample_path = track_path
+
                 for extension in self.file_types:
                     path_to_audio_file = track_path + '/{}.{}'.format(instr, extension)
                     if os.path.isfile(path_to_audio_file):
@@ -330,6 +345,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         break
             else:
                 track_path, track_length = random.choice(metadata[instr])
+                self._last_sample_path = None  # Not applicable for type 2/3
                 try:
                     source = load_chunk(track_path, track_length, self.chunk_size)
                 except Exception as e:
@@ -351,10 +367,22 @@ class MSSDataset(torch.utils.data.Dataset):
             Tensor containing all instrument tracks
         """
         res = []
+
+        # When load_rps is enabled, all instruments must come from the same sample
+        # to ensure RPS alignment
+        load_rps = getattr(self.config, "load_rps", False)
+        if load_rps and self.dataset_type in [1, 4]:
+            # Pick a single sample path for all instruments
+            track_path, _ = random.choice(self.metadata)
+            self._last_sample_path = track_path
+        else:
+            track_path = None
+            self._last_sample_path = None
+
         for instr in self.instruments:
-            s1 = self.load_source(self.metadata, instr)
-            # Mixup augmentation
-            if self.aug:
+            s1 = self.load_source(self.metadata, instr, track_path_hint=track_path)
+            # Mixup augmentation (disabled when load_rps to maintain alignment)
+            if self.aug and not load_rps:
                 if 'mixup' in self.config['augmentations']:
                     if self.config['augmentations'].mixup:
                         mixup = [s1]
@@ -761,15 +789,42 @@ class MSSDataset(torch.utils.data.Dataset):
                     mix = mix[..., :required_shape[-1]]
                 mix = torch.tensor(mix, dtype=torch.float32)
 
-        # Optional RPS (rotor speed) placeholder for DCUNet RPS variants: return zeros when use_rps is set
+        # Optional RPS (rotor speed) for DCUNet RPS variants
         use_rps = getattr(self.config, "use_rps", False)
+        load_rps = getattr(self.config, "load_rps", False)
         num_rotors = getattr(self.config, "num_rotors", 4)
+
         if use_rps and num_rotors > 0:
-            rps_placeholder = torch.zeros((num_rotors, mix.shape[-1]), dtype=torch.float32)
+            # Target RPS length for batching (pad/truncate to this length)
+            # Default: 1000 samples (~1 second at ~1000Hz motor rate)
+            rps_length = getattr(self.config, "rps_length", 1000)
+
+            if load_rps and hasattr(self, '_last_sample_path') and self._last_sample_path is not None:
+                # Load real RPS from file
+                rps_path = os.path.join(self._last_sample_path, "rps.npy")
+                if os.path.exists(rps_path):
+                    rps_data = np.load(rps_path)  # (4, n_motor_samples)
+                    # Pad or truncate to fixed length for batching
+                    current_len = rps_data.shape[1]
+                    if current_len < rps_length:
+                        # Pad with last value (repeat edge)
+                        pad_width = rps_length - current_len
+                        rps_data = np.pad(rps_data, ((0, 0), (0, pad_width)), mode='edge')
+                    elif current_len > rps_length:
+                        # Truncate
+                        rps_data = rps_data[:, :rps_length]
+                    rps_tensor = torch.tensor(rps_data, dtype=torch.float32)
+                else:
+                    # Fallback to zeros if file doesn't exist
+                    rps_tensor = torch.zeros((num_rotors, rps_length), dtype=torch.float32)
+            else:
+                # Placeholder zeros (no RPS file available)
+                rps_tensor = torch.zeros((num_rotors, rps_length), dtype=torch.float32)
+
             if self.config.training.target_instrument is not None:
                 index = self.config.training.instruments.index(self.config.training.target_instrument)
-                return res[index], mix, rps_placeholder
-            return res, mix, rps_placeholder
+                return res[index], mix, rps_tensor
+            return res, mix, rps_tensor
 
         # If target instrument is specified (for roformer models), only return that instrument's track and mixture
         if self.config.training.target_instrument is not None:
