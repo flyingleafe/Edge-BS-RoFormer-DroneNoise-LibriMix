@@ -324,7 +324,8 @@ def demix(
         mix: torch.Tensor,
         device: torch.device,
         model_type: str,
-        pbar: bool = False
+        pbar: bool = False,
+        rps: Union[torch.Tensor, np.ndarray, None] = None,
 ) -> Tuple[List[Dict[str, np.ndarray]], np.ndarray]:
     """
     Unified source separation function supporting multiple processing modes.
@@ -396,10 +397,13 @@ def demix(
 
             i = 0
             batch_data = []
+            batch_rps = []
             batch_locations = []
             progress_bar = tqdm(
                 total=mix.shape[1], desc="Processing audio chunks", leave=False
             ) if pbar else None
+
+            use_rps = rps is not None and getattr(model, "use_rps", False)
 
             # Process audio in chunks
             while i < mix.shape[1]:
@@ -413,13 +417,25 @@ def demix(
                 part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
 
                 batch_data.append(part)
+                if use_rps:
+                    rps_t = torch.as_tensor(rps, dtype=torch.float32, device=device)
+                    if rps_t.dim() == 2:
+                        part_rps = rps_t[:, i:i + chunk_size].unsqueeze(0)
+                    else:
+                        part_rps = rps_t[:, :, i:i + chunk_size]
+                    part_rps = nn.functional.pad(part_rps, (0, chunk_size - part_rps.shape[-1]), mode="constant", value=0)
+                    batch_rps.append(part_rps)
                 batch_locations.append((i, chunk_len))
                 i += step
 
                 # Process batch when batch_size is reached
                 if len(batch_data) >= batch_size or i >= mix.shape[1]:
                     arr = torch.stack(batch_data, dim=0)
-                    x = model(arr)
+                    if use_rps and batch_rps:
+                        arr_rps = torch.cat(batch_rps, dim=0)
+                        x = model(arr, rps=arr_rps)
+                    else:
+                        x = model(arr)
 
                     if mode == "generic":
                         window = windowing_array.clone()
@@ -438,6 +454,8 @@ def demix(
                             counter[..., start:start + seg_len] += 1.0
 
                     batch_data.clear()
+                    if use_rps:
+                        batch_rps.clear()
                     batch_locations.clear()
 
                 if progress_bar:

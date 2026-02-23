@@ -7,3 +7,5 @@ results/
 .direnv/
 .env
 *.xml
+
+drones-with-speeds.md

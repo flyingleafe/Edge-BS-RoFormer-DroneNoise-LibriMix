@@ -389,10 +389,12 @@ def get_sample_rate(config: ConfigDict) -> int:
     return 16000
 
 
-def get_model_output(model: torch.nn.Module, x: torch.Tensor, args: argparse.Namespace) -> torch.Tensor:
+def get_model_output(model: torch.nn.Module, x: torch.Tensor, args: argparse.Namespace, rps=None) -> torch.Tensor:
     """Run model inference (no target) and return predicted audio. Handles edge_bs_rof/diffusion_buffer vs others."""
     if args.model_type in ['mel_band_roformer', 'edge_bs_rof', 'diffusion_buffer']:
         return model(x)
+    if args.model_type == 'dcunet' and getattr(model, 'use_rps', False) and rps is not None:
+        return model(x, rps=rps)
     return model(x)
 
 
@@ -626,7 +628,13 @@ def train_one_epoch(
     # Epoch > 0 and fallback was used at epoch 0: we'll run model on cached inputs at end of epoch (after training)
 
     pbar = tqdm(train_loader)
-    for i, (batch, mixes) in enumerate(pbar):
+    for i, data in enumerate(pbar):
+        if len(data) == 3:
+            batch, mixes, rps = data
+            rps = rps.to(device) if rps is not None else None
+        else:
+            batch, mixes = data
+            rps = None
         x = mixes.to(device)  # mixture
         y = batch.to(device)
 
@@ -641,7 +649,10 @@ def train_one_epoch(
                     # If it's multiple GPUs sum partial loss
                     loss = loss.mean()
             else:
-                y_ = model(x)
+                if args.model_type == 'dcunet' and getattr(model, 'use_rps', False) and rps is not None:
+                    y_ = model(x, rps=rps)
+                else:
+                    y_ = model(x)
                 loss = multi_loss(y_, y)
 
         # Fallback: collect 3 training sample triples from first batch when no SNR metadata (epoch 0 only)
@@ -799,12 +810,18 @@ def collect_and_log_valid_audio(
     elif valid_loader is not None and epoch == 0:
         model.eval()
         with torch.no_grad():
-            for batch, mixes in valid_loader:
+            for data in valid_loader:
+                if len(data) == 3:
+                    batch, mixes, rps = data
+                    rps = rps.to(device) if rps is not None else None
+                else:
+                    batch, mixes = data
+                    rps = None
                 x = mixes.to(device)
                 y = batch.to(device)
                 if getattr(config.training, 'normalize', False):
                     x, y = normalize_batch(x, y)
-                out = get_model_output(model, x, args)
+                out = get_model_output(model, x, args, rps=rps)
                 for k in range(min(3, x.shape[0])):
                     inp_k = _tensor_to_audio_numpy(x[k])
                     tgt_k = _tensor_to_audio_numpy(y[k])

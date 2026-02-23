@@ -761,6 +761,16 @@ class MSSDataset(torch.utils.data.Dataset):
                     mix = mix[..., :required_shape[-1]]
                 mix = torch.tensor(mix, dtype=torch.float32)
 
+        # Optional RPS (rotor speed) placeholder for DCUNet RPS variants: return zeros when use_rps is set
+        use_rps = getattr(self.config, "use_rps", False)
+        num_rotors = getattr(self.config, "num_rotors", 4)
+        if use_rps and num_rotors > 0:
+            rps_placeholder = torch.zeros((num_rotors, mix.shape[-1]), dtype=torch.float32)
+            if self.config.training.target_instrument is not None:
+                index = self.config.training.instruments.index(self.config.training.target_instrument)
+                return res[index], mix, rps_placeholder
+            return res, mix, rps_placeholder
+
         # If target instrument is specified (for roformer models), only return that instrument's track and mixture
         if self.config.training.target_instrument is not None:
             index = self.config.training.instruments.index(self.config.training.target_instrument)
