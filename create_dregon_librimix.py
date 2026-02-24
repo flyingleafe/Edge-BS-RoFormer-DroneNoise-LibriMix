@@ -122,7 +122,7 @@ def load_dregon_noise_records(
     dataset = load_dregon_dataset(
         dregon_dir.parent,
         splits=["in_flight_noise"],
-        download=False,
+        download=True,
     )
     geometry = get_geometry(dregon_dir)
 
@@ -255,7 +255,7 @@ def create_dregon_librimix(
 
     # Load DREGON records
     cache_dir = dregon_dir / ".cache"
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     records = load_dregon_noise_records(dregon_dir, sample_rate, cache_dir)
 
     if len(records) == 0:

@@ -33,6 +33,7 @@ class RotorEncoder(nn.Module):
         self.num_rotors = num_rotors
         self.out_channels = out_channels
         padding = kernel_size // 2  # same length
+        self.input_bn = nn.BatchNorm1d(num_rotors)
         self.conv1 = nn.Conv1d(num_rotors, out_channels, kernel_size, padding=padding)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
         self.act = nn.ReLU()
@@ -45,6 +46,7 @@ class RotorEncoder(nn.Module):
         """
         if rps.dim() == 2:
             rps = rps.unsqueeze(1)  # (B, 1, time_rps)
+        rps = self.input_bn(rps)
         x = self.act(self.conv1(rps))
         x = self.act(self.conv2(x))   # (B, 64, time)
         if target_length is not None and x.size(-1) != target_length:
@@ -152,6 +154,9 @@ class Decoder(nn.Module):
             x = self.cbn(x)
             x = self.act(x)
         else:
+            # Compute phase and magnitude in float32 for numerical stability
+            # under AMP (float16), where eps < 6e-5 is rounded to 0 causing NaN
+            x = x.float()
             m_phase = x / (torch.abs(x) + 1e-8)
             m_mag = torch.tanh(torch.abs(x))
             x = m_phase * m_mag
@@ -367,12 +372,15 @@ class DCUNet(nn.Module):
 
         if self.use_rps and rps is not None:
             if self.rps_fusion == "bottleneck":
-                rotor_feat = self.rotor_encoder(rps)
-                rotor_feat = rotor_feat.mean(dim=-1)
-                proj = self.rps_bottleneck_proj(rotor_feat)
+                # Run RPS pathway in float32 to avoid float16 overflow
+                # (rotor activations can be large before BN fully converges)
+                with torch.amp.autocast('cuda', enabled=False):
+                    rotor_feat = self.rotor_encoder(rps.float())
+                    rotor_feat = rotor_feat.mean(dim=-1)
+                    proj = self.rps_bottleneck_proj(rotor_feat)
                 C = current.shape[1]
                 proj = proj.view(B, C, 2)
-                current = current + proj.unsqueeze(2).unsqueeze(3)
+                current = current.float() + proj.unsqueeze(2).unsqueeze(3)
             elif self.rps_fusion == "gru":
                 T_b = current.shape[3]
                 rotor_feat = self.rotor_encoder(rps, target_length=T_b)

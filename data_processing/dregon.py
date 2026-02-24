@@ -52,10 +52,10 @@ DOWNLOAD_URLS = {
     "silent-flight_whitenoise-low_room1": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=341",
     # Noise-only recordings
     "free-flight_nosource_room1": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=314",
-    "free-flight_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=346",
-    "hovering_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=352",
-    "updown_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=358",
-    "rectangle_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=364",
+    "free-flight_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=350",
+    "hovering_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=355",
+    "updown_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=360",
+    "rectangle_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=365",
     "spinning_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=370",
 }
 
@@ -517,7 +517,13 @@ def _download_file(url: str, dest: Path, desc: str | None = None) -> Path:
 
 
 def _unpack_zip(zip_path: Path, dest_dir: Path) -> Path:
-    """Unpack a zip file if not already unpacked."""
+    """Unpack a zip file if not already unpacked.
+
+    Some DREGON download IDs serve raw files (e.g. WAV) instead of a zip
+    archive. When that happens the file is placed directly in dest_dir with
+    an appropriate extension (detected from magic bytes).
+    """
+    import shutil
     import zipfile
 
     marker = dest_dir / ".unzipped"
@@ -527,8 +533,19 @@ def _unpack_zip(zip_path: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     print(f"Extracting {zip_path.name}...")
 
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dest_dir)
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(dest_dir)
+    except zipfile.BadZipFile:
+        # Server returned a raw file instead of a zip archive.
+        # Detect format from magic bytes and copy to dest_dir.
+        with open(zip_path, "rb") as f:
+            magic = f.read(4)
+        ext = ".wav" if magic == b"RIFF" else zip_path.suffix
+        dest_file = dest_dir / (zip_path.stem + ext)
+        if not dest_file.exists():
+            shutil.copy2(zip_path, dest_file)
+        print(f"  (not a zip; placed as raw file {dest_file.name})")
 
     marker.write_text("ok", encoding="utf-8")
     return dest_dir
@@ -636,8 +653,12 @@ def download_dregon_dataset(
             continue  # Already downloaded
 
         zip_path = dregon_dir / f"DREGON_{recording_id}.zip"
-        _download_file(url, zip_path, f"recording {recording_id}")
-        _unpack_zip(zip_path, recording_dir)
+        try:
+            _download_file(url, zip_path, f"recording {recording_id}")
+            _unpack_zip(zip_path, recording_dir)
+        except Exception as e:
+            print(f"Warning: failed to download {recording_id}: {e}")
+            continue
 
     # Download motor recordings
     motors_dir = dregon_dir / "DREGON_individual_motors_recordings"
@@ -880,8 +901,8 @@ def load_dregon_dataset(
     data_dir = Path(data_dir)
     dregon_dir = data_dir / "DREGON"
 
-    # Download if needed
-    if download and not dregon_dir.exists():
+    # Download if needed (inner helpers are idempotent: they skip existing files)
+    if download:
         download_dregon_dataset(data_dir)
 
     # Discover all recordings
