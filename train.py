@@ -394,7 +394,7 @@ def get_model_output(model: torch.nn.Module, x: torch.Tensor, args: argparse.Nam
     """Run model inference (no target) and return predicted audio. Handles edge_bs_rof/diffusion_buffer vs others."""
     if args.model_type in ['mel_band_roformer', 'edge_bs_rof', 'diffusion_buffer']:
         return model(x)
-    if args.model_type == 'dcunet' and getattr(model, 'use_rps', False) and rps is not None:
+    if args.model_type in ('dcunet', 'dccrn') and getattr(model, 'use_rps', False) and rps is not None:
         return model(x, rps=rps)
     return model(x)
 
@@ -650,7 +650,7 @@ def train_one_epoch(
                     # If it's multiple GPUs sum partial loss
                     loss = loss.mean()
             else:
-                if args.model_type == 'dcunet' and getattr(model, 'use_rps', False) and rps is not None:
+                if args.model_type in ('dcunet', 'dccrn') and getattr(model, 'use_rps', False) and rps is not None:
                     y_ = model(x, rps=rps)
                 else:
                     y_ = model(x)

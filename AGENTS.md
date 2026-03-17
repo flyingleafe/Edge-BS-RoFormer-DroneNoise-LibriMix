@@ -22,7 +22,7 @@ This repository contains the official implementation and the DroneNoise-LibriMix
 Evaluation results are stored on `vast-server` and must be synced locally before analysis:
 
 ```bash
-./sync_results.sh
+direnv exec . ./sync_results.sh
 ```
 
 This script:
@@ -42,21 +42,21 @@ This script:
 Use `replicate_paper.sh` or `replicate_paper.py` for complete replication:
 
 ```bash
-# Shell script
-./replicate_paper.sh all        # Full replication
-./replicate_paper.sh train      # Train all models
-./replicate_paper.sh eval       # Evaluate models
+# Shell script (run in project env via direnv)
+direnv exec . ./replicate_paper.sh all   # Full replication
+direnv exec . ./replicate_paper.sh train # Train all models
+direnv exec . ./replicate_paper.sh eval  # Evaluate models
 
 # Python (equivalent)
-python replicate_paper.py all
-python replicate_paper.py train
-python replicate_paper.py eval
+direnv exec . python replicate_paper.py all
+direnv exec . python replicate_paper.py train
+direnv exec . python replicate_paper.py eval
 ```
 
 Individual model training:
 
 ```bash
-python train.py \
+direnv exec . python train.py \
     --model_type edge_bs_rof \
     --config_path configs/3_FA_RoPE\(64\).yaml \
     --results_path results/edge_bs_roformer \
@@ -69,7 +69,7 @@ python train.py \
 ### Evaluation Workflow
 
 ```bash
-python final_valid.py \
+direnv exec . python final_valid.py \
     --model_type edge_bs_rof \
     --config_path configs/3_FA_RoPE\(64\).yaml \
     --start_check_point results/edge_bs_roformer/best_model.ckpt \
@@ -123,7 +123,7 @@ Model configurations are in `configs/`:
 
 ### Analyzing Results
 
-1. **First**: Run `./sync_results.sh` to get latest results
+1. **First**: Run `direnv exec . ./sync_results.sh` to get latest results
 2. Open `analyze_results.ipynb`
 3. Ensure notebook points to `results/evaluation/`
 
@@ -133,10 +133,10 @@ For presentation preparation, use `generate_comparison.py` to create comparison 
 
 ```bash
 # Compare specific models
-python generate_comparison.py --models Edge-BS-RoFormer DCUNet --output_dir presentations/fig1
+direnv exec . python generate_comparison.py --models Edge-BS-RoFormer DCUNet --output_dir presentations/fig1
 
 # Compare all models
-python generate_comparison.py --models all --output_dir results/comparison
+direnv exec . python generate_comparison.py --models all --output_dir results/comparison
 ```
 
 **Agent Skill**: See `.cursor/skills/generate-model-comparisons/SKILL.md` for detailed usage patterns and examples. This skill enables flexible model subset selection for different presentation contexts (e.g., "make one plot with this set of models compared and another with this one").

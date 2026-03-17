@@ -1,0 +1,58 @@
+# DCCRN baseline (no RPS) on DREGON-LibriMix
+# 6-layer encoder (channels 32->512), 2-layer bidirectional GRU (256 hidden)
+#
+# Reference: Hu et al., "DCCRN", Interspeech 2020
+# Architecture: Gulli et al., "Enhancing drone audition with rotor-conditioned deep models" (EURASIP 2025)
+
+audio:
+  chunk_size: 131584  # ~8.2 seconds at 16kHz
+  dim_f: 1024
+  dim_t: 254
+  hop_length: 512
+  n_fft: 2048
+  num_channels: 1
+  sample_rate: 16000
+  min_mean_abs: 0.000
+
+run_name: "DCCRN baseline (DREGON)"
+
+model: dccrn
+use_rps: false
+load_rps: false
+dccrn_gru_hidden: 256
+dccrn_gru_layers: 2
+
+training:
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  grad_clip: 0
+  data_path:
+    - "datasets/DREGON-LM/train"
+  valid_path:
+    - "datasets/DREGON-LM/valid"
+  instruments:
+    - vocals
+    - noise
+  lr: 3.0e-4
+  patience: 2
+  reduce_factor: 0.95
+  target_instrument: vocals
+  num_epochs: 1000
+  num_steps: 200
+  q: 0.95
+  coarse_loss_clip: true
+  ema_momentum: 0.999
+  optimizer: adamw
+  other_fix: false
+  use_amp: true
+  early_stop:
+    enabled: true
+    patience: 30
+    metric: "si-sdr"
+
+augmentations:
+  enable: false
+
+inference:
+  batch_size: 4
+  num_overlap: 4

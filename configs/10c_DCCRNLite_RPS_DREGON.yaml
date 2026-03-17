@@ -1,0 +1,61 @@
+# RPS-DCCRNLite on DREGON-LibriMix
+# 4-layer encoder (channels 16->128), 1-layer bidirectional GRU (128 hidden)
+# GRU-based rotor fusion: rotor features concatenated before bottleneck GRU
+# Lightweight variant optimized for embedded UAV deployment
+#
+# Reference: Gulli et al., "Enhancing drone audition with rotor-conditioned deep models" (EURASIP 2025)
+
+audio:
+  chunk_size: 131584  # ~8.2 seconds at 16kHz
+  dim_f: 1024
+  dim_t: 254
+  hop_length: 512
+  n_fft: 2048
+  num_channels: 1
+  sample_rate: 16000
+  min_mean_abs: 0.000
+
+run_name: "RPS-DCCRNLite (DREGON)"
+
+model: dccrn
+use_rps: true
+load_rps: true
+rps_length: 8500
+dccrn_lite: true
+dccrn_gru_hidden: 128
+num_rotors: 4
+
+training:
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  grad_clip: 0
+  data_path:
+    - "datasets/DREGON-LM/train"
+  valid_path:
+    - "datasets/DREGON-LM/valid"
+  instruments:
+    - vocals
+    - noise
+  lr: 3.0e-4
+  patience: 2
+  reduce_factor: 0.95
+  target_instrument: vocals
+  num_epochs: 1000
+  num_steps: 200
+  q: 0.95
+  coarse_loss_clip: true
+  ema_momentum: 0.999
+  optimizer: adamw
+  other_fix: false
+  use_amp: true
+  early_stop:
+    enabled: true
+    patience: 30
+    metric: "si-sdr"
+
+augmentations:
+  enable: false
+
+inference:
+  batch_size: 4
+  num_overlap: 4

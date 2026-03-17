@@ -139,6 +139,10 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
         # DCUNet model
         from models.dcunet import DCUNet
         model = DCUNet(config)
+    elif model_type == 'dccrn':
+        # DCCRN model - Deep Complex Convolution Recurrent Network
+        from models.dccrn import DCCRN
+        model = DCCRN(config)
     elif model_type == 'dprnn':
         # DPRNN model - source separation model based on deep recurrent neural network
         from models.dprnn.dprnn import DPRNN
