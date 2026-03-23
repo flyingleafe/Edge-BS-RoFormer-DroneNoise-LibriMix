@@ -87,6 +87,37 @@ def compute_per_snr(results, metadata):
     return per_snr
 
 
+def find_eval_excel(eval_dir):
+    """Find the per-sample Excel file in a job results directory."""
+    import glob
+    patterns = [
+        os.path.join(eval_dir, "eval", "samples", "*_validation.xlsx"),
+        os.path.join(eval_dir, "eval", "*_validation.xlsx"),
+    ]
+    for pat in patterns:
+        matches = glob.glob(pat)
+        if matches:
+            return matches[0]
+    return None
+
+
+def compute_per_snr_from_excel(excel_path):
+    """Compute per-SNR stats directly from the per-sample Excel file."""
+    import pandas as pd
+    df = pd.read_excel(excel_path)
+    df["snr_level"] = df["Input_SNR"].apply(nearest_snr_level)
+
+    per_snr = {}
+    for level in SNR_LEVELS:
+        subset = df[df["snr_level"] == level]
+        per_snr[level] = {"n": len(subset)}
+        for m in METRICS:
+            vals = subset[m].dropna().values
+            per_snr[level][m] = np.mean(vals) if len(vals) > 0 else float("nan")
+            per_snr[level][f"{m}_std"] = np.std(vals) if len(vals) > 0 else float("nan")
+    return per_snr
+
+
 def find_eval_log(eval_dir):
     """Find the eval stdout log in a job results directory."""
     candidates = [
@@ -96,7 +127,7 @@ def find_eval_log(eval_dir):
     for c in candidates:
         if os.path.exists(c):
             return c
-    raise FileNotFoundError(f"No eval log found in {eval_dir}. Tried: {candidates}")
+    return None
 
 
 def plot_comparison(model_data, output_path):
@@ -150,15 +181,24 @@ def main():
     if len(args.models) != len(args.eval_dirs):
         parser.error("--models and --eval-dirs must have the same number of arguments")
 
-    metadata = load_metadata(args.dataset)
-    print(f"Loaded metadata for {len(metadata)} samples")
+    metadata = None  # loaded lazily if needed
 
     model_data = {}
     for name, eval_dir in zip(args.models, args.eval_dirs):
-        log_path = find_eval_log(eval_dir)
-        results = parse_eval_log(log_path)
-        print(f"{name}: parsed {len(results)} samples from {log_path}")
-        per_snr = compute_per_snr(results, metadata)
+        excel_path = find_eval_excel(eval_dir)
+        if excel_path:
+            print(f"{name}: reading per-sample data from {excel_path}")
+            per_snr = compute_per_snr_from_excel(excel_path)
+        else:
+            log_path = find_eval_log(eval_dir)
+            if log_path is None:
+                raise FileNotFoundError(f"No Excel or log found in {eval_dir}")
+            if metadata is None:
+                metadata = load_metadata(args.dataset)
+                print(f"Loaded metadata for {len(metadata)} samples")
+            results = parse_eval_log(log_path)
+            print(f"{name}: parsed {len(results)} samples from {log_path}")
+            per_snr = compute_per_snr(results, metadata)
         model_data[name] = per_snr
 
     plot_comparison(model_data, args.output)
