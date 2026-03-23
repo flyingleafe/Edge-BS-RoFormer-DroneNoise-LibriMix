@@ -146,3 +146,98 @@ def test_run_job_training_failure(mock_run, tracker, storage, job_setup, tmp_res
     job = tracker.get_job(job_id)
     assert job.state == JobState.FAILED
     assert "OOM" in (job.error_category or "")
+
+
+def test_extract_metrics_with_estoi():
+    stdout = "Metric avg estoi       : 0.7890\nMetric avg si_sdr      : 6.5\n"
+    metrics, incomplete = extract_metrics(stdout)
+    assert metrics["estoi"] == pytest.approx(0.789)
+    assert not incomplete
+
+
+def test_build_eval_args_with_metrics():
+    from postdoc.experiment import build_eval_args
+    args = build_eval_args(
+        experiment={"model": {"type": "dcunet"}},
+        resolved_config=Path("/tmp/config.yaml"),
+        checkpoint_path=Path("/tmp/best.ckpt"),
+        valid_path=[Path("/tmp/valid")],
+        store_dir=Path("/tmp/eval"),
+        device_ids=[0],
+        metrics=["estoi", "si_sdr", "pesq"],
+    )
+    assert "--metrics" in args
+    idx = args.index("--metrics")
+    assert args[idx + 1:idx + 4] == ["estoi", "si_sdr", "pesq"]
+
+
+def test_build_eval_args_without_metrics():
+    from postdoc.experiment import build_eval_args
+    args = build_eval_args(
+        experiment={"model": {"type": "dcunet"}},
+        resolved_config=Path("/tmp/config.yaml"),
+        checkpoint_path=Path("/tmp/best.ckpt"),
+        valid_path=[Path("/tmp/valid")],
+        store_dir=Path("/tmp/eval"),
+        device_ids=[0],
+    )
+    assert "--metrics" not in args
+
+
+@patch("postdoc.run_job.subprocess.run")
+def test_run_job_eval_only(mock_run, tracker, storage, job_setup, tmp_results_dir):
+    job_id, exp, resolved = job_setup
+    exp["eval_only"] = True
+    exp["eval"] = {"metrics": ["estoi", "si_sdr", "pesq"]}
+
+    # Create a fake checkpoint
+    ckpt = tmp_results_dir / "fake_best.ckpt"
+    ckpt.write_bytes(b"fake")
+
+    eval_result = MagicMock()
+    eval_result.returncode = 0
+    eval_result.stdout = "Metric avg si_sdr      : 7.5\nMetric avg pesq        : 2.8\nMetric avg estoi       : 0.85\n"
+    eval_result.stderr = ""
+
+    mock_run.return_value = eval_result  # Only one subprocess call (no training)
+
+    run_job(
+        tracker=tracker,
+        storage=storage,
+        job_id=job_id,
+        experiment=exp,
+        resolved_config=resolved,
+        data_path=[Path("/fake/data")],
+        valid_path=[Path("/fake/valid")],
+        device_ids=[0],
+        start_checkpoint=ckpt,
+    )
+
+    job = tracker.get_job(job_id)
+    assert job.state == JobState.DONE
+    assert job.metrics["si_sdr"] == pytest.approx(7.5)
+    assert job.metrics["pesq"] == pytest.approx(2.8)
+    assert job.metrics["estoi"] == pytest.approx(0.85)
+    assert mock_run.call_count == 1  # Only eval, no training
+
+
+@patch("postdoc.run_job.subprocess.run")
+def test_run_job_eval_only_no_checkpoint_fails(mock_run, tracker, storage, job_setup, tmp_results_dir):
+    job_id, exp, resolved = job_setup
+    exp["eval_only"] = True
+
+    run_job(
+        tracker=tracker,
+        storage=storage,
+        job_id=job_id,
+        experiment=exp,
+        resolved_config=resolved,
+        data_path=[Path("/fake/data")],
+        valid_path=[Path("/fake/valid")],
+        device_ids=[0],
+    )
+
+    job = tracker.get_job(job_id)
+    assert job.state == JobState.FAILED
+    assert "NoCheckpoint" in (job.error_category or "")
+    mock_run.assert_not_called()
