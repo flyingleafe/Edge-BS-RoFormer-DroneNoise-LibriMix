@@ -56,30 +56,56 @@ class RotorEncoder(nn.Module):
 
 class RPSPredictionHead(nn.Module):
     """
-    Auxiliary head that predicts per-frame RPS from encoder bottleneck features.
-    Takes complex-valued bottleneck (B, C, F_b, T_b, 2) and outputs (B, num_rotors, T_b).
+    FPN-style auxiliary head that predicts per-STFT-frame RPS from all encoder levels.
+
+    At each encoder level: pool over frequency, project to common dim.
+    Bottom-up merge: upsample coarser levels and add to finer ones.
+    Final prediction upsampled to target_t (STFT frame count).
+    Output: (B, num_rotors, target_t).
     """
-    def __init__(self, bottleneck_channels: int, bottleneck_freq: int, num_rotors: int = 4):
+    def __init__(self, encoder_channels: list[int], target_t: int, common_dim: int = 64, num_rotors: int = 4):
         super().__init__()
-        # Flatten C * F_b * 2 (real+imag) per time step, pool then predict
-        flat_dim = bottleneck_channels * bottleneck_freq * 2
+        self.target_t = target_t
+        # Per-level: pool freq, project to common_dim via 1x1 conv
+        self.level_projs = nn.ModuleList()
+        for ch in encoder_channels:
+            self.level_projs.append(nn.Conv1d(ch * 2, common_dim, 1))  # *2 for real+imag
+
+        # Prediction head on merged features
         self.head = nn.Sequential(
-            nn.Linear(flat_dim, 128),
+            nn.Conv1d(common_dim, common_dim, kernel_size=5, padding=2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(128, num_rotors),
+            nn.Conv1d(common_dim, num_rotors, kernel_size=1),
         )
 
-    def forward(self, bottleneck: torch.Tensor) -> torch.Tensor:
+    def forward(self, encoder_features: list[torch.Tensor]) -> torch.Tensor:
         """
-        bottleneck: (B, C, F_b, T_b, 2) complex bottleneck features.
-        Returns: (B, num_rotors, T_b)
+        encoder_features: list of (B, C_i, F_i, T_i, 2) from each encoder level,
+                          ordered finest-to-coarsest (level 0 = finest).
+        Returns: (B, num_rotors, target_t)
         """
-        B, C, F_b, T_b, _ = bottleneck.shape
-        # (B, T_b, C*F_b*2)
-        flat = bottleneck.permute(0, 3, 1, 2, 4).reshape(B, T_b, -1)
-        pred = self.head(flat)  # (B, T_b, num_rotors)
-        return pred.permute(0, 2, 1)  # (B, num_rotors, T_b)
+        # Pool over frequency and flatten real/imag for each level
+        level_feats = []
+        for feat, proj in zip(encoder_features, self.level_projs):
+            B, C, F_i, T_i, _ = feat.shape
+            # (B, C*2, T_i) — pool freq, concat real+imag
+            pooled = feat.mean(dim=2)  # (B, C, T_i, 2)
+            pooled = pooled.reshape(B, C * 2, T_i)
+            level_feats.append(proj(pooled))  # (B, common_dim, T_i)
+
+        # Bottom-up merge: coarsest → finest
+        merged = level_feats[-1]  # start from coarsest
+        for i in range(len(level_feats) - 2, -1, -1):
+            finer = level_feats[i]
+            merged = F.interpolate(merged, size=finer.shape[-1], mode="linear", align_corners=False)
+            merged = merged + finer
+
+        # Upsample to target STFT frame rate
+        if merged.shape[-1] != self.target_t:
+            merged = F.interpolate(merged, size=self.target_t, mode="linear", align_corners=False)
+
+        return self.head(merged)  # (B, num_rotors, target_t)
 
 
 class CConv2d(nn.Module):
@@ -364,27 +390,14 @@ class DCUNet(nn.Module):
                     )
                     self.rps_hierarchical_projs.append(nn.Linear(64, c * 2))
 
-        # Auxiliary RPS prediction head (predicts RPS from encoder bottleneck)
+        # Auxiliary RPS prediction head (hierarchical, uses all encoder levels)
         self.predict_rps = _get_rps_config(config).get("predict_rps", False) or config.get("predict_rps", False)
         self.rps_prediction_head = None
         if self.predict_rps:
-            # Compute bottleneck freq dimension
-            freq = self.n_fft // 2 + 1
-            for _, _, _, (sf, _), _ in enc_spec:
-                freq = (freq + 2 * 3 - 7) // sf + 1 if sf == 2 else freq  # approximate
-            # Simpler: run a dummy through encoder strides
-            freq = self.n_fft // 2 + 1
-            # Encoder layers have padding specified in enc_spec
-            paddings = [(3, 2), (3, 2), (2, 1), (2, 1), (2, 1)]
-            kernels = [(7, 5), (7, 5), (5, 3), (5, 3), (5, 3)]
-            strides = [(2, 2), (2, 2), (2, 2), (2, 2), (2, 1)]
-            if self.num_encoder_layers == 6:
-                paddings.append((2, 1))
-                kernels.append((5, 3))
-                strides.append((2, 1))
-            for (kf, _), (sf, _), (pf, _) in zip(kernels, strides, paddings):
-                freq = (freq + 2 * pf - kf) // sf + 1
-            self.rps_prediction_head = RPSPredictionHead(bottleneck_ch, freq, self.num_rotors)
+            enc_channels = [oc for _, oc, _, _, _ in enc_spec]  # [45, 90, 90, 90, 90, ...]
+            chunk_size = config["audio"]["chunk_size"]
+            target_t = stft_time_frames(chunk_size, self.hop_length, self.n_fft)
+            self.rps_prediction_head = RPSPredictionHead(enc_channels, target_t, num_rotors=self.num_rotors)
 
     def forward(self, x, rps=None):
         """
@@ -420,10 +433,11 @@ class DCUNet(nn.Module):
             if i < len(self.encoders) - 1:
                 encoder_features.append(current)
 
-        # Auxiliary RPS prediction from encoder bottleneck (before RPS fusion)
+        # Auxiliary RPS prediction from all encoder levels (before RPS fusion)
         rps_pred = None
         if self.predict_rps and self.rps_prediction_head is not None:
-            rps_pred = self.rps_prediction_head(current)
+            all_encoder_feats = encoder_features + [current]  # finest to coarsest
+            rps_pred = self.rps_prediction_head(all_encoder_feats)
 
         if self.use_rps and rps is not None:
             if self.rps_fusion == "bottleneck":

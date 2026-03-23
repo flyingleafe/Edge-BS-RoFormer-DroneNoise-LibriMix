@@ -271,12 +271,16 @@ class DCCRN(nn.Module):
                         last_layer=is_last)
             )
 
-        # Auxiliary RPS prediction head
+        # Auxiliary RPS prediction head (hierarchical, uses all encoder levels)
         self.predict_rps = _get_config_val(config, "predict_rps", False)
         self.rps_prediction_head = None
         if self.predict_rps:
+            chunk_size = config["audio"]["chunk_size"]
+            hop_length = config["audio"]["hop_length"]
+            n_fft = config["audio"]["n_fft"]
+            target_t = (chunk_size - n_fft) // hop_length + 1
             self.rps_prediction_head = RPSPredictionHead(
-                bottleneck_ch, self._bottleneck_freq, self.num_rotors
+                encoder_channels, target_t, num_rotors=self.num_rotors
             )
 
     def forward(self, x, rps=None):
@@ -300,10 +304,11 @@ class DCCRN(nn.Module):
         # Bottleneck: (B, C, F_b, T_b, 2)
         _, C, F_b, T_b, _ = current.shape
 
-        # Auxiliary RPS prediction from encoder bottleneck (before RPS fusion)
+        # Auxiliary RPS prediction from all encoder levels (before RPS fusion)
         rps_pred = None
         if self.predict_rps and self.rps_prediction_head is not None:
-            rps_pred = self.rps_prediction_head(current)
+            all_encoder_feats = encoder_features + [current]  # finest to coarsest
+            rps_pred = self.rps_prediction_head(all_encoder_feats)
 
         # Flatten for GRU: (B, T_b, C*F_b*2)
         gru_in = current.permute(0, 3, 1, 2, 4).reshape(B, T_b, C * F_b * 2)

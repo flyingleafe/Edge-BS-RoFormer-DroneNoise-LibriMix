@@ -1,7 +1,6 @@
 # DCUNet with RPS conditioning + auxiliary RPS prediction on DREGON-LibriMix
 # Encoder learns to predict RPS (auxiliary task) while decoder uses ground-truth RPS
-#
-# Based on: 7a_DCUNet_RPS_DREGON.yaml + predict_rps auxiliary head
+# rps_aux_weight=0.5 calibrated so aux gradient is ~20% of main gradient
 
 audio:
   chunk_size: 131584
@@ -48,7 +47,7 @@ training:
   patience: 2
   q: 0.95
   reduce_factor: 0.95
-  rps_aux_weight: 0.1
+  rps_aux_weight: 0.5
   target_instrument: vocals
   use_amp: true
   valid_path:
