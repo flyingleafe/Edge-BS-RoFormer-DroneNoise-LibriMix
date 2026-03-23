@@ -338,9 +338,16 @@ def process_audio_files(
         if device.type == 'cuda':
             torch.cuda.reset_peak_memory_stats()
 
+        # Load RPS data if model uses rotor conditioning
+        rps = None
+        if getattr(model, 'use_rps', False):
+            rps_path = os.path.join(folder, 'rps.npy')
+            if os.path.exists(rps_path):
+                rps = np.load(rps_path)
+
         # Record inference start time
         inference_start = time.time()
-        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type)
+        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type, rps=rps)
         inference_end = time.time()
         duration = mix.shape[-1] / sr  # Calculate audio duration (seconds)
         rtf = (inference_end - inference_start) / duration  # Calculate RTF = inference time / audio duration

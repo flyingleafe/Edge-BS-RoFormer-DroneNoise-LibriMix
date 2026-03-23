@@ -221,8 +221,15 @@ def process_audio_files(
             if config.inference['normalize'] is True:
                 mix, norm_params = normalize_audio(mix)
 
+        # Load RPS data if model uses rotor conditioning
+        rps = None
+        if getattr(model, 'use_rps', False):
+            rps_path = os.path.join(folder, 'rps.npy')
+            if os.path.exists(rps_path):
+                rps = np.load(rps_path)
+
         # Perform source separation using model
-        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type)
+        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type, rps=rps)
 
         # Apply test-time augmentation
         if use_tta:
