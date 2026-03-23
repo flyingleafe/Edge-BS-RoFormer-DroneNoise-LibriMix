@@ -515,6 +515,67 @@ def compute_metric_avg(
     return metric_avg
 
 
+_SNR_LEVELS = [-30, -25, -20, -15, -10, -5, 0]
+
+def _nearest_snr_level(snr):
+    """Round SNR to nearest discrete level."""
+    return min(_SNR_LEVELS, key=lambda l: abs(snr - l))
+
+def compute_per_snr_summary(results_data, metrics, store_dir=None):
+    """Compute and print per-SNR-bin mean metrics, and optionally save CSV."""
+    if not results_data or not any(r.get('Input_SNR') is not None for r in results_data):
+        return
+
+    # Group by nearest SNR level
+    from collections import defaultdict
+    bins = defaultdict(list)
+    for row in results_data:
+        if row.get('Input_SNR') is None:
+            continue
+        level = _nearest_snr_level(row['Input_SNR'])
+        bins[level].append(row)
+
+    metric_names = [m for m in metrics if m not in ('sdr',)]  # skip sdr, keep the requested ones
+    if not metric_names:
+        metric_names = ['si_sdr']  # fallback
+
+    # Print header
+    header = f"{'SNR':>6}"
+    for m in metric_names:
+        header += f" | {m:>10}"
+    header += f" | {'N':>4}"
+    print("\n--- Per-SNR Summary ---")
+    print(header)
+    print("-" * len(header))
+
+    rows_for_csv = []
+    for level in sorted(bins.keys()):
+        samples = bins[level]
+        row_str = f"{level:>6}"
+        csv_row = {"snr_level": level, "n_samples": len(samples)}
+        for m in metric_names:
+            vals = [r[m] for r in samples if r.get(m) is not None and not np.isnan(r[m])]
+            mean_val = np.mean(vals) if vals else float('nan')
+            row_str += f" | {mean_val:>10.4f}"
+            csv_row[m] = round(float(mean_val), 4) if vals else None
+        row_str += f" | {len(samples):>4}"
+        print(row_str)
+        rows_for_csv.append(csv_row)
+
+    # Save CSV if store_dir provided
+    if store_dir:
+        import csv as csv_mod
+        parent_dir = os.path.dirname(store_dir)
+        csv_path = os.path.join(parent_dir, os.path.basename(store_dir) + "_per_snr.csv")
+        os.makedirs(parent_dir, exist_ok=True)
+        fieldnames = ["snr_level"] + metric_names + ["n_samples"]
+        with open(csv_path, "w", newline="") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows_for_csv)
+        print(f"Per-SNR summary saved to {csv_path}")
+
+
 def valid(
     model: torch.nn.Module,
     args,
@@ -590,6 +651,9 @@ def valid(
             df.drop(columns=['instrument'], inplace=True)
         df.to_excel(excel_path, index=False)
         print(f"Validation results saved to {excel_path}")
+
+    # Per-SNR summary
+    compute_per_snr_summary(results_data, args.metrics, store_dir)
 
     # Continue with existing code
     instruments = prefer_target_instrument(config)
