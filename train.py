@@ -661,19 +661,22 @@ def train_one_epoch(
             with torch.no_grad():
                 model.eval()
                 x_slice = x[:3]
-                out_slice = get_model_output(model, x_slice, args)
+                rps_slice = rps[:3] if rps is not None else None
+                out_slice = get_model_output(model, x_slice, args, rps=rps_slice)
                 model.train()
             for k in range(min(3, out_slice.shape[0])):
                 inp_k = _tensor_to_audio_numpy(x_slice[k])
                 tgt_k = _tensor_to_audio_numpy(y[k])
                 out_k = _tensor_to_audio_numpy(out_slice[k])
                 train_audio_triples.append((inp_k, tgt_k, out_k))
-            # Cache inputs/targets so same samples are used for output-only logging in later epochs
+            # Cache inputs/targets/rps so same samples are used for output-only logging in later epochs
             if audio_logging_cache is not None:
+                cached_rps = [rps_slice[k].cpu().numpy() for k in range(rps_slice.shape[0])] if rps_slice is not None else None
                 audio_logging_cache['train'] = (
                     [t[0] for t in train_audio_triples],
                     [t[1] for t in train_audio_triples],
                     sample_rate,
+                    cached_rps,
                 )
 
         loss /= gradient_accumulation_steps
@@ -698,13 +701,16 @@ def train_one_epoch(
 
     # Epoch > 0 and fallback was used at epoch 0: run model on cached inputs (after training) and log outputs only
     if epoch > 0 and audio_logging_cache and audio_logging_cache.get('train') is not None and not train_audio_triples:
-        cached_inp, cached_tgt, sample_rate = audio_logging_cache['train']
+        cache_entry = audio_logging_cache['train']
+        cached_inp, cached_tgt, sample_rate = cache_entry[0], cache_entry[1], cache_entry[2]
+        cached_rps_list = cache_entry[3] if len(cache_entry) > 3 else None
         model.eval()
         train_audio_triples = []
         with torch.no_grad():
-            for inp_k, tgt_k in zip(cached_inp, cached_tgt):
+            for idx, (inp_k, tgt_k) in enumerate(zip(cached_inp, cached_tgt)):
                 x = torch.from_numpy(inp_k).float().unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, T)
-                out = get_model_output(model, x, args)
+                rps_k = torch.from_numpy(cached_rps_list[idx]).float().unsqueeze(0).to(device) if cached_rps_list is not None else None
+                out = get_model_output(model, x, args, rps=rps_k)
                 out_k = _tensor_to_audio_numpy(out[0])
                 train_audio_triples.append((inp_k, tgt_k, out_k))
         model.train()
@@ -793,12 +799,15 @@ def collect_and_log_valid_audio(
 
     # Epoch > 0 and fallback was used at epoch 0: run model on cached inputs, log outputs only
     if epoch > 0 and audio_logging_cache and audio_logging_cache.get('valid') is not None:
-        cached_inp, cached_tgt, sample_rate = audio_logging_cache['valid']
+        cache_entry = audio_logging_cache['valid']
+        cached_inp, cached_tgt, sample_rate = cache_entry[0], cache_entry[1], cache_entry[2]
+        cached_rps_list = cache_entry[3] if len(cache_entry) > 3 else None
         model.eval()
         with torch.no_grad():
-            for inp_k, tgt_k in zip(cached_inp, cached_tgt):
+            for idx, (inp_k, tgt_k) in enumerate(zip(cached_inp, cached_tgt)):
                 x = torch.from_numpy(inp_k).float().unsqueeze(0).unsqueeze(0).to(device)
-                out = get_model_output(model, x, args)
+                rps_k = torch.from_numpy(cached_rps_list[idx]).float().unsqueeze(0).to(device) if cached_rps_list is not None else None
+                out = get_model_output(model, x, args, rps=rps_k)
                 out_k = _tensor_to_audio_numpy(out[0])
                 triples.append((inp_k, tgt_k, out_k))
         model.train()
@@ -829,10 +838,12 @@ def collect_and_log_valid_audio(
                     out_k = _tensor_to_audio_numpy(out[k]) if out.shape[0] > k else _tensor_to_audio_numpy(out[0])
                     triples.append((inp_k, tgt_k, out_k))
                 if audio_logging_cache is not None and triples:
+                    cached_rps = [rps[k].cpu().numpy() for k in range(min(3, rps.shape[0]))] if rps is not None else None
                     audio_logging_cache['valid'] = (
                         [t[0] for t in triples],
                         [t[1] for t in triples],
                         sample_rate,
+                        cached_rps,
                     )
                 break
         model.train()

@@ -1,0 +1,13 @@
+# Train + Eval: DCCRN baseline on DREGON-LM
+model:
+  type: dccrn
+  base_config: configs/10a_DCCRN_baseline_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+eval:
+  metrics: [estoi, si_sdr, pesq]
+
+wandb:
+  tags: [dccrn, baseline, dregon]
