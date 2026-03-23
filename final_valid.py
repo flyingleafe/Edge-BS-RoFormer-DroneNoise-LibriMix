@@ -74,9 +74,9 @@ def calculate_pesq(ref, est, orig_sr):
     return score
 
 # Calculate STOI metric function
-def calculate_stoi(ref, est, orig_sr):
+def calculate_stoi(ref, est, orig_sr, extended=False):
     """
-    Calculate Short-Time Objective Intelligibility (STOI) metric.
+    Calculate Short-Time Objective Intelligibility (STOI or ESTOI) metric.
 
     Parameters:
     ----------
@@ -86,11 +86,13 @@ def calculate_stoi(ref, est, orig_sr):
         Estimated audio signal
     orig_sr : int
         Original sample rate
+    extended : bool
+        If True, compute ESTOI instead of STOI
 
     Returns:
     -------
     float
-        STOI score, range [0, 1], higher is better
+        STOI/ESTOI score, range [0, 1], higher is better
     """
     # If 2D array, convert to mono
     if ref.ndim == 2:
@@ -110,12 +112,11 @@ def calculate_stoi(ref, est, orig_sr):
     est = librosa.resample(est, orig_sr=orig_sr, target_sr=target_sr)
 
     try:
-        # Calculate STOI score (extended=False uses original STOI algorithm)
-        score = stoi(ref, est, target_sr, extended=False)
+        score = stoi(ref, est, target_sr, extended=extended)
     except Exception as e:
-        print(f"[DEBUG] STOI calculation failed: {e}")
+        metric_name = "ESTOI" if extended else "STOI"
+        print(f"[DEBUG] {metric_name} calculation failed: {e}")
         score = np.nan
-
     return score
 
 def write_results_in_file(store_dir: str, logs: List[str]) -> None:
@@ -299,6 +300,8 @@ def process_audio_files(
     # If stoi not in metrics, add to all_metrics
     if 'stoi' not in all_metrics:
         all_metrics['stoi'] = {instr: [] for instr in config.training.instruments}
+    if 'estoi' not in all_metrics and 'estoi' in args.metrics:
+        all_metrics['estoi'] = {instr: [] for instr in config.training.instruments}
 
     if is_tqdm:
         mixture_paths = tqdm(mixture_paths)
@@ -406,6 +409,11 @@ def process_audio_files(
             track_metrics['stoi'] = stoi_score
             all_metrics['stoi'][instr].append(stoi_score)
 
+            if 'estoi' in args.metrics:
+                estoi_score = calculate_stoi(track, estimates, sr, extended=True)
+                track_metrics['estoi'] = estoi_score
+                all_metrics['estoi'][instr].append(estoi_score)
+
             # Collect validation metrics data for each instrument to results_data
             row = {
                 'ID': sample_id,
@@ -415,6 +423,7 @@ def process_audio_files(
                 'l1_freq': track_metrics.get('l1_freq', None),
                 'pesq': track_metrics.get('pesq', None),
                 'stoi': stoi_score,
+                'estoi': track_metrics.get('estoi', None),
                 'RTF': rtf,
                 'FLOPs_G': model_flops,
                 'GPU_Mem_MB': mem_usage
@@ -809,7 +818,7 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
                         "While this triples the runtime, it reduces noise and slightly improves prediction quality.")
     parser.add_argument("--metrics", nargs='+', type=str, default=["sdr"],
                         choices=['sdr', 'l1_freq', 'si_sdr', 'neg_log_wmse', 'aura_stft', 'aura_mrstft', 'bleedless',
-                                 'fullness', 'pesq', 'stoi'], help='List of metrics to use.')
+                                 'fullness', 'pesq', 'stoi', 'estoi'], help='List of metrics to use.')
     parser.add_argument("--lora_checkpoint", type=str, default='', help="Initial checkpoint to LoRA weights")
 
     if dict_args is not None:
