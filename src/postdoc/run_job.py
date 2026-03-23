@@ -65,53 +65,67 @@ def run_job(
     start_checkpoint: Path | None = None,
 ) -> None:
     results_root = Path(storage.job_root_path(job_id))
-    train_results = results_root / "training"
-    train_results.mkdir(parents=True, exist_ok=True)
+    eval_only = experiment.get("eval_only", False)
     eval_results = results_root / "eval"
     eval_results.mkdir(parents=True, exist_ok=True)
 
-    # Training
-    tracker.update_state(job_id, JobState.TRAINING)
-    train_args = build_train_args(
-        experiment, resolved_config,
-        results_path=train_results,
-        data_path=data_path,
-        valid_path=valid_path,
-        device_ids=device_ids,
-        start_checkpoint=start_checkpoint,
-    )
-    train_result = subprocess.run(
-        [sys.executable, "train.py", *train_args],
-        capture_output=True, text=True,
-    )
-    storage.put(job_id, PurePosixPath("training/logs/stdout.txt"), train_result.stdout.encode())
-    storage.put(job_id, PurePosixPath("training/logs/stderr.txt"), train_result.stderr.encode())
+    if eval_only:
+        if start_checkpoint is None:
+            tracker.update_state(
+                job_id, JobState.FAILED,
+                error_category="NoCheckpoint",
+                error_message="eval_only=true but no checkpoint provided",
+            )
+            return
+        checkpoint = start_checkpoint
+    else:
+        # Training
+        train_results = results_root / "training"
+        train_results.mkdir(parents=True, exist_ok=True)
 
-    if train_result.returncode != 0:
-        tracker.update_state(
-            job_id, JobState.FAILED,
-            error_category=classify_error(train_result.stderr),
-            error_message=train_result.stderr[-2000:] if train_result.stderr else "",
+        tracker.update_state(job_id, JobState.TRAINING)
+        train_args = build_train_args(
+            experiment, resolved_config,
+            results_path=train_results,
+            data_path=data_path,
+            valid_path=valid_path,
+            device_ids=device_ids,
+            start_checkpoint=start_checkpoint,
         )
-        return
+        train_result = subprocess.run(
+            [sys.executable, "train.py", *train_args],
+            capture_output=True, text=True,
+        )
+        storage.put(job_id, PurePosixPath("training/logs/stdout.txt"), train_result.stdout.encode())
+        storage.put(job_id, PurePosixPath("training/logs/stderr.txt"), train_result.stderr.encode())
 
-    # Eval
+        if train_result.returncode != 0:
+            tracker.update_state(
+                job_id, JobState.FAILED,
+                error_category=classify_error(train_result.stderr),
+                error_message=train_result.stderr[-2000:] if train_result.stderr else "",
+            )
+            return
+
+        checkpoint = find_best_checkpoint(train_results / "checkpoints")
+        if checkpoint is None:
+            tracker.update_state(
+                job_id, JobState.FAILED,
+                error_category="NoCheckpoint",
+                error_message="No checkpoint found after training",
+            )
+            return
+
+    # Eval (shared path for both modes)
     tracker.update_state(job_id, JobState.EVAL)
-    checkpoint = find_best_checkpoint(train_results / "checkpoints")
-    if checkpoint is None:
-        tracker.update_state(
-            job_id, JobState.FAILED,
-            error_category="NoCheckpoint",
-            error_message="No checkpoint found after training",
-        )
-        return
-
+    eval_metrics = experiment.get("eval", {}).get("metrics")
     eval_args = build_eval_args(
         experiment, resolved_config,
         checkpoint_path=checkpoint,
         valid_path=valid_path,
         store_dir=eval_results / "samples",
         device_ids=device_ids,
+        metrics=eval_metrics,
     )
     eval_result = subprocess.run(
         [sys.executable, "final_valid.py", *eval_args],
@@ -155,6 +169,8 @@ if __name__ == "__main__":
     manifest = _json.loads(Path(cli_args.manifest).read_text())
     ctx = create_context(config_path=Path(manifest["postdoc_config"]))
 
+    start_ckpt = manifest.get("start_checkpoint")
+
     try:
         run_job(
             tracker=ctx.tracker,
@@ -165,6 +181,7 @@ if __name__ == "__main__":
             data_path=[Path(p) for p in manifest["data_path"]],
             valid_path=[Path(p) for p in manifest["valid_path"]],
             device_ids=manifest["device_ids"],
+            start_checkpoint=Path(start_ckpt) if start_ckpt else None,
         )
     finally:
         ctx.scheduler._release_gpu(manifest["job_id"])

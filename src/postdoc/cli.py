@@ -63,6 +63,11 @@ def job_submit(
         resolved = job_dir / "config.yaml"
         resolve_config(exp, resolved)
 
+        # Resolve checkpoint for eval-only jobs
+        start_checkpoint = exp.get("checkpoint")
+        if start_checkpoint:
+            start_checkpoint = str(Path(start_checkpoint).resolve())
+
         # Resolve dataset paths
         data_dir = Path(ctx.config.local.data_dir)
         dataset_name = exp.get("dataset", {}).get("name", "")
@@ -84,6 +89,7 @@ def job_submit(
             "data_path": data_paths,
             "valid_path": valid_paths,
             "device_ids": [0],
+            "start_checkpoint": start_checkpoint,
         }
         manifest_path = job_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
