@@ -1,0 +1,56 @@
+# DCUNet with RPS conditioning + auxiliary RPS prediction on DREGON-LibriMix
+# Encoder learns to predict RPS (auxiliary task) while decoder uses ground-truth RPS
+#
+# Based on: 7a_DCUNet_RPS_DREGON.yaml + predict_rps auxiliary head
+
+audio:
+  chunk_size: 131584
+  dim_f: 1024
+  dim_t: 254
+  hop_length: 512
+  min_mean_abs: 0.0
+  n_fft: 2048
+  num_channels: 1
+  sample_rate: 16000
+augmentations:
+  enable: false
+dcunet_num_encoder_layers: 5
+dcunet_rps_fusion: bottleneck
+inference:
+  batch_size: 4
+  num_overlap: 4
+load_rps: true
+model: dcunet
+num_rotors: 4
+predict_rps: true
+rps_length: 8500
+run_name: DCUNet+RPS+PredRPS (DREGON)
+training:
+  batch_size: 8
+  coarse_loss_clip: true
+  data_path:
+  - datasets/DREGON-LM/train
+  early_stop:
+    enabled: true
+    metric: si-sdr
+    patience: 30
+  ema_momentum: 0.999
+  grad_clip: 0
+  gradient_accumulation_steps: 1
+  instruments:
+  - vocals
+  - noise
+  lr: 0.0005
+  num_epochs: 1000
+  num_steps: 200
+  optimizer: adamw
+  other_fix: false
+  patience: 2
+  q: 0.95
+  reduce_factor: 0.95
+  rps_aux_weight: 0.1
+  target_instrument: vocals
+  use_amp: true
+  valid_path:
+  - datasets/DREGON-LM/valid
+use_rps: true
