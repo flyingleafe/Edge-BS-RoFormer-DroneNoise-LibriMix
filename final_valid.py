@@ -549,6 +549,9 @@ def valid(
 
     # Load metadata and convert to dictionary keyed by id
     metadata_path = os.path.join(args.valid_path[0], "metadata.json")
+    if not os.path.exists(metadata_path):
+        # metadata.json may be at the dataset root (parent of valid/)
+        metadata_path = os.path.join(os.path.dirname(args.valid_path[0]), "metadata.json")
     with open(metadata_path, 'r') as f:
         metadata_json = json.load(f)
     # If json contains "valid" key, convert to dictionary
