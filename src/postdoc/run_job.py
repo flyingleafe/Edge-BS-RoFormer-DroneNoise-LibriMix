@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+from postdoc.experiment import build_train_args, build_eval_args
+from postdoc.interfaces.storage import StorageBackend
+from postdoc.interfaces.tracker import JobTracker, JobState
+
+
+_METRIC_AVG_PATTERN = re.compile(r"Metric avg\s+([\w_]+)\s*:\s*([\d.eE+-]+)")
+_INSTR_PATTERN = re.compile(r"Instr\s+\w+\s+([\w_]+):\s*([\d.eE+-]+)")
+
+
+def extract_metrics(stdout: str) -> tuple[dict, bool]:
+    metrics = {}
+    for match in _METRIC_AVG_PATTERN.finditer(stdout):
+        name = match.group(1).strip()
+        metrics[name] = float(match.group(2))
+    if not metrics:
+        for match in _INSTR_PATTERN.finditer(stdout):
+            name = match.group(1).strip()
+            metrics[name] = float(match.group(2))
+    incomplete = len(metrics) == 0
+    return metrics, incomplete
+
+
+def find_best_checkpoint(checkpoint_dir: Path) -> Path | None:
+    if not checkpoint_dir.exists():
+        return None
+    ckpts = list(checkpoint_dir.glob("*.ckpt"))
+    if not ckpts:
+        return None
+    best = [c for c in ckpts if "best" in c.name.lower()]
+    if best:
+        return best[0]
+    ckpts.sort()
+    return ckpts[-1]
+
+
+def classify_error(stderr: str) -> str:
+    stderr_lower = stderr.lower()
+    if "cuda out of memory" in stderr_lower or "oom" in stderr_lower:
+        return "OOM"
+    if "nan" in stderr_lower and ("loss" in stderr_lower or "grad" in stderr_lower):
+        return "NaN"
+    if "filenotfounderror" in stderr_lower or "no such file" in stderr_lower:
+        return "DataLoading"
+    if "cuda" in stderr_lower or "cudnn" in stderr_lower:
+        return "CUDA"
+    return "Unknown"
+
+
+def run_job(
+    tracker: JobTracker,
+    storage: StorageBackend,
+    job_id: str,
+    experiment: dict,
+    resolved_config: Path,
+    data_path: list[Path],
+    valid_path: list[Path],
+    device_ids: list[int],
+    start_checkpoint: Path | None = None,
+) -> None:
+    results_root = Path(storage.job_root_path(job_id))
+    train_results = results_root / "training"
+    train_results.mkdir(parents=True, exist_ok=True)
+    eval_results = results_root / "eval"
+    eval_results.mkdir(parents=True, exist_ok=True)
+
+    # Training
+    tracker.update_state(job_id, JobState.TRAINING)
+    train_args = build_train_args(
+        experiment, resolved_config,
+        results_path=train_results,
+        data_path=data_path,
+        valid_path=valid_path,
+        device_ids=device_ids,
+        start_checkpoint=start_checkpoint,
+    )
+    train_result = subprocess.run(
+        [sys.executable, "train.py", *train_args],
+        capture_output=True, text=True,
+    )
+    storage.put(job_id, PurePosixPath("training/logs/stdout.txt"), train_result.stdout.encode())
+    storage.put(job_id, PurePosixPath("training/logs/stderr.txt"), train_result.stderr.encode())
+
+    if train_result.returncode != 0:
+        tracker.update_state(
+            job_id, JobState.FAILED,
+            error_category=classify_error(train_result.stderr),
+            error_message=train_result.stderr[-2000:] if train_result.stderr else "",
+        )
+        return
+
+    # Eval
+    tracker.update_state(job_id, JobState.EVAL)
+    checkpoint = find_best_checkpoint(train_results / "checkpoints")
+    if checkpoint is None:
+        tracker.update_state(
+            job_id, JobState.FAILED,
+            error_category="NoCheckpoint",
+            error_message="No checkpoint found after training",
+        )
+        return
+
+    eval_args = build_eval_args(
+        experiment, resolved_config,
+        checkpoint_path=checkpoint,
+        valid_path=valid_path,
+        store_dir=eval_results / "samples",
+        device_ids=device_ids,
+    )
+    eval_result = subprocess.run(
+        [sys.executable, "final_valid.py", *eval_args],
+        capture_output=True, text=True,
+    )
+    storage.put(job_id, PurePosixPath("eval/logs/stdout.txt"), eval_result.stdout.encode())
+    storage.put(job_id, PurePosixPath("eval/logs/stderr.txt"), eval_result.stderr.encode())
+
+    if eval_result.returncode != 0:
+        tracker.update_state(
+            job_id, JobState.FAILED,
+            error_category=classify_error(eval_result.stderr),
+            error_message=eval_result.stderr[-2000:] if eval_result.stderr else "",
+        )
+        return
+
+    # Metrics
+    metrics, incomplete = extract_metrics(eval_result.stdout)
+    tracker.set_metrics(job_id, metrics, incomplete)
+    storage.put_json(job_id, PurePosixPath("eval/metrics.json"), metrics)
+
+    # Done
+    meta = {
+        "job_id": job_id,
+        "experiment_name": experiment.get("model", {}).get("type", "unknown"),
+        "metrics_incomplete": incomplete,
+    }
+    storage.put_json(job_id, PurePosixPath("meta.json"), meta)
+    tracker.update_state(job_id, JobState.DONE)
+
+
+if __name__ == "__main__":
+    import argparse
+    import json as _json
+    from postdoc.context import create_context
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", required=True)
+    cli_args = parser.parse_args()
+
+    manifest = _json.loads(Path(cli_args.manifest).read_text())
+    ctx = create_context(config_path=Path(manifest["postdoc_config"]))
+
+    try:
+        run_job(
+            tracker=ctx.tracker,
+            storage=ctx.storage,
+            job_id=manifest["job_id"],
+            experiment=manifest["experiment"],
+            resolved_config=Path(manifest["resolved_config"]),
+            data_path=[Path(p) for p in manifest["data_path"]],
+            valid_path=[Path(p) for p in manifest["valid_path"]],
+            device_ids=manifest["device_ids"],
+        )
+    finally:
+        ctx.scheduler._release_gpu(manifest["job_id"])
+        ctx.scheduler.drain_queue(ctx.tracker)
+        ctx.tracker.close()
