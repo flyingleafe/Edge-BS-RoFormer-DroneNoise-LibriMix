@@ -92,18 +92,21 @@ def run_job(
             device_ids=device_ids,
             start_checkpoint=start_checkpoint,
         )
-        train_result = subprocess.run(
-            [sys.executable, "train.py", *train_args],
-            capture_output=True, text=True,
-        )
-        storage.put(job_id, PurePosixPath("training/logs/stdout.txt"), train_result.stdout.encode())
-        storage.put(job_id, PurePosixPath("training/logs/stderr.txt"), train_result.stderr.encode())
+        train_stdout = Path(storage.job_root_path(job_id)) / "training" / "logs" / "stdout.txt"
+        train_stderr = Path(storage.job_root_path(job_id)) / "training" / "logs" / "stderr.txt"
+        train_stdout.parent.mkdir(parents=True, exist_ok=True)
+        with open(train_stdout, "w") as out_f, open(train_stderr, "w") as err_f:
+            train_result = subprocess.run(
+                [sys.executable, "train.py", *train_args],
+                stdout=out_f, stderr=err_f,
+            )
 
         if train_result.returncode != 0:
+            stderr_text = train_stderr.read_text()
             tracker.update_state(
                 job_id, JobState.FAILED,
-                error_category=classify_error(train_result.stderr),
-                error_message=train_result.stderr[-2000:] if train_result.stderr else "",
+                error_category=classify_error(stderr_text),
+                error_message=stderr_text[-2000:] if stderr_text else "",
             )
             return
 
@@ -127,23 +130,26 @@ def run_job(
         device_ids=device_ids,
         metrics=eval_metrics,
     )
-    eval_result = subprocess.run(
-        [sys.executable, "final_valid.py", *eval_args],
-        capture_output=True, text=True,
-    )
-    storage.put(job_id, PurePosixPath("eval/logs/stdout.txt"), eval_result.stdout.encode())
-    storage.put(job_id, PurePosixPath("eval/logs/stderr.txt"), eval_result.stderr.encode())
+    eval_stdout = eval_results / "logs" / "stdout.txt"
+    eval_stderr = eval_results / "logs" / "stderr.txt"
+    eval_stdout.parent.mkdir(parents=True, exist_ok=True)
+    with open(eval_stdout, "w") as out_f, open(eval_stderr, "w") as err_f:
+        eval_result = subprocess.run(
+            [sys.executable, "final_valid.py", *eval_args],
+            stdout=out_f, stderr=err_f,
+        )
 
     if eval_result.returncode != 0:
+        stderr_text = eval_stderr.read_text()
         tracker.update_state(
             job_id, JobState.FAILED,
-            error_category=classify_error(eval_result.stderr),
-            error_message=eval_result.stderr[-2000:] if eval_result.stderr else "",
+            error_category=classify_error(stderr_text),
+            error_message=stderr_text[-2000:] if stderr_text else "",
         )
         return
 
     # Metrics
-    metrics, incomplete = extract_metrics(eval_result.stdout)
+    metrics, incomplete = extract_metrics(eval_stdout.read_text())
     tracker.set_metrics(job_id, metrics, incomplete)
     storage.put_json(job_id, PurePosixPath("eval/metrics.json"), metrics)
 

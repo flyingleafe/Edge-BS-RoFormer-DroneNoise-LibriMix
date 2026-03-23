@@ -16,17 +16,31 @@ def integration_ctx(sample_postdoc_yaml):
     ctx.tracker.close()
 
 
+def _make_subprocess_side_effect(results):
+    """Create a side_effect for subprocess.run that writes to stdout/stderr file handles."""
+    call_idx = [0]
+    def side_effect(cmd, **kwargs):
+        idx = call_idx[0]
+        call_idx[0] += 1
+        returncode, stdout_text, stderr_text = results[idx]
+        stdout_fh = kwargs.get("stdout")
+        stderr_fh = kwargs.get("stderr")
+        if stdout_fh and stdout_text:
+            stdout_fh.write(stdout_text)
+        if stderr_fh and stderr_text:
+            stderr_fh.write(stderr_text)
+        return MagicMock(returncode=returncode)
+    return side_effect
+
+
 @patch("postdoc.run_job.subprocess.run")
 def test_full_pipeline(mock_run, integration_ctx, sample_experiment_yaml):
     ctx = integration_ctx
 
-    train_result = MagicMock(returncode=0, stdout="training done", stderr="")
-    eval_result = MagicMock(
-        returncode=0,
-        stdout="Instr vocals sdr: 10.5 (Std: 1.0)\nInstr vocals si_sdr: 9.2 (Std: 0.8)\nMetric avg sdr         : 10.5000\nMetric avg si_sdr      : 9.2000\nMetric avg pesq        : 2.8000\nMetric avg stoi        : 0.9100\n",
-        stderr="",
-    )
-    mock_run.side_effect = [train_result, eval_result]
+    mock_run.side_effect = _make_subprocess_side_effect([
+        (0, "training done", ""),
+        (0, "Instr vocals sdr: 10.5 (Std: 1.0)\nInstr vocals si_sdr: 9.2 (Std: 0.8)\nMetric avg sdr         : 10.5000\nMetric avg si_sdr      : 9.2000\nMetric avg pesq        : 2.8000\nMetric avg stoi        : 0.9100\n", ""),
+    ])
 
     exp = load_experiment(sample_experiment_yaml)
     job_id = ctx.tracker.create_job("integration-test", exp, "exp/integration", "abc123")
@@ -59,8 +73,11 @@ def test_full_pipeline(mock_run, integration_ctx, sample_experiment_yaml):
     assert job.metrics["pesq"] == pytest.approx(2.8)
     assert job.metrics["stoi"] == pytest.approx(0.91)
 
-    assert ctx.storage.exists(job_id, PurePosixPath("training/logs/stdout.txt"))
-    assert ctx.storage.exists(job_id, PurePosixPath("eval/logs/stdout.txt"))
+    # Logs are now written directly to disk by run_job, not via storage.put
+    train_log = Path(ctx.config.local.results_dir) / job_id / "training" / "logs" / "stdout.txt"
+    eval_log = Path(ctx.config.local.results_dir) / job_id / "eval" / "logs" / "stdout.txt"
+    assert train_log.exists()
+    assert eval_log.exists()
     assert ctx.storage.exists(job_id, PurePosixPath("eval/metrics.json"))
     assert ctx.storage.exists(job_id, PurePosixPath("meta.json"))
 
@@ -76,11 +93,9 @@ def test_full_pipeline(mock_run, integration_ctx, sample_experiment_yaml):
 def test_full_pipeline_training_failure(mock_run, integration_ctx, sample_experiment_yaml):
     ctx = integration_ctx
 
-    train_result = MagicMock(
-        returncode=1, stdout="",
-        stderr="RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB",
-    )
-    mock_run.return_value = train_result
+    mock_run.side_effect = _make_subprocess_side_effect([
+        (1, "", "RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB"),
+    ])
 
     exp = load_experiment(sample_experiment_yaml)
     job_id = ctx.tracker.create_job("fail-test", exp, "exp/fail", "def456")
@@ -101,8 +116,10 @@ def test_full_pipeline_training_failure(mock_run, integration_ctx, sample_experi
     assert job.state == JobState.FAILED
     assert job.error_category == "OOM"
     assert "CUDA out of memory" in job.error_message
-    assert not ctx.storage.exists(job_id, PurePosixPath("eval/logs/stdout.txt"))
-    assert ctx.storage.exists(job_id, PurePosixPath("training/logs/stderr.txt"))
+    eval_log = Path(ctx.config.local.results_dir) / job_id / "eval" / "logs" / "stdout.txt"
+    train_err = Path(ctx.config.local.results_dir) / job_id / "training" / "logs" / "stderr.txt"
+    assert not eval_log.exists()
+    assert train_err.exists()
 
 
 def test_queuing_when_no_capacity(integration_ctx, sample_experiment_yaml):

@@ -84,21 +84,31 @@ def test_find_best_checkpoint_prefers_best_prefix(tmp_path):
     assert "best" in best.name
 
 
+def _make_subprocess_side_effect(results):
+    """Create a side_effect for subprocess.run that writes to stdout/stderr file handles."""
+    call_idx = [0]
+    def side_effect(cmd, **kwargs):
+        idx = call_idx[0]
+        call_idx[0] += 1
+        returncode, stdout_text, stderr_text = results[idx]
+        stdout_fh = kwargs.get("stdout")
+        stderr_fh = kwargs.get("stderr")
+        if stdout_fh and stdout_text:
+            stdout_fh.write(stdout_text)
+        if stderr_fh and stderr_text:
+            stderr_fh.write(stderr_text)
+        return MagicMock(returncode=returncode)
+    return side_effect
+
+
 @patch("postdoc.run_job.subprocess.run")
 def test_run_job_success(mock_run, tracker, storage, job_setup, tmp_results_dir):
     job_id, exp, resolved = job_setup
 
-    train_result = MagicMock()
-    train_result.returncode = 0
-    train_result.stdout = ""
-    train_result.stderr = ""
-
-    eval_result = MagicMock()
-    eval_result.returncode = 0
-    eval_result.stdout = "Metric avg sdr         : 8.0000\nMetric avg si_sdr      : 7.5000\n"
-    eval_result.stderr = ""
-
-    mock_run.side_effect = [train_result, eval_result]
+    mock_run.side_effect = _make_subprocess_side_effect([
+        (0, "", ""),  # training
+        (0, "Metric avg sdr         : 8.0000\nMetric avg si_sdr      : 7.5000\n", ""),  # eval
+    ])
 
     ckpt_dir = tmp_results_dir / job_id / "training" / "checkpoints"
     ckpt_dir.mkdir(parents=True)
@@ -125,12 +135,9 @@ def test_run_job_success(mock_run, tracker, storage, job_setup, tmp_results_dir)
 def test_run_job_training_failure(mock_run, tracker, storage, job_setup, tmp_results_dir):
     job_id, exp, resolved = job_setup
 
-    train_result = MagicMock()
-    train_result.returncode = 1
-    train_result.stdout = ""
-    train_result.stderr = "RuntimeError: CUDA out of memory"
-
-    mock_run.return_value = train_result
+    mock_run.side_effect = _make_subprocess_side_effect([
+        (1, "", "RuntimeError: CUDA out of memory"),  # training fails
+    ])
 
     run_job(
         tracker=tracker,
@@ -194,12 +201,9 @@ def test_run_job_eval_only(mock_run, tracker, storage, job_setup, tmp_results_di
     ckpt = tmp_results_dir / "fake_best.ckpt"
     ckpt.write_bytes(b"fake")
 
-    eval_result = MagicMock()
-    eval_result.returncode = 0
-    eval_result.stdout = "Metric avg si_sdr      : 7.5\nMetric avg pesq        : 2.8\nMetric avg estoi       : 0.85\n"
-    eval_result.stderr = ""
-
-    mock_run.return_value = eval_result  # Only one subprocess call (no training)
+    mock_run.side_effect = _make_subprocess_side_effect([
+        (0, "Metric avg si_sdr      : 7.5\nMetric avg pesq        : 2.8\nMetric avg estoi       : 0.85\n", ""),
+    ])
 
     run_job(
         tracker=tracker,
