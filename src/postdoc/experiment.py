@@ -57,8 +57,9 @@ def build_eval_args(
     valid_path: list[Path],
     store_dir: Path,
     device_ids: list[int],
+    metrics: list[str] | None = None,
 ) -> list[str]:
-    return [
+    args = [
         "--model_type", experiment["model"]["type"],
         "--config_path", str(resolved_config),
         "--start_check_point", str(checkpoint_path),
@@ -66,6 +67,9 @@ def build_eval_args(
         "--store_dir", str(store_dir),
         "--device_ids", *[str(d) for d in device_ids],
     ]
+    if metrics:
+        args.extend(["--metrics", *metrics])
+    return args
 
 
 def _set_nested(d: dict, keys: list[str], value) -> None:
