@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.dcunet import RPSPredictionHead
+
 
 class CConv2d(nn.Module):
     """Complex Convolutional Layer"""
@@ -269,6 +271,14 @@ class DCCRN(nn.Module):
                         last_layer=is_last)
             )
 
+        # Auxiliary RPS prediction head
+        self.predict_rps = _get_config_val(config, "predict_rps", False)
+        self.rps_prediction_head = None
+        if self.predict_rps:
+            self.rps_prediction_head = RPSPredictionHead(
+                bottleneck_ch, self._bottleneck_freq, self.num_rotors
+            )
+
     def forward(self, x, rps=None):
         """
         Input x: (batch, channels, time)
@@ -289,6 +299,11 @@ class DCCRN(nn.Module):
 
         # Bottleneck: (B, C, F_b, T_b, 2)
         _, C, F_b, T_b, _ = current.shape
+
+        # Auxiliary RPS prediction from encoder bottleneck (before RPS fusion)
+        rps_pred = None
+        if self.predict_rps and self.rps_prediction_head is not None:
+            rps_pred = self.rps_prediction_head(current)
 
         # Flatten for GRU: (B, T_b, C*F_b*2)
         gru_in = current.permute(0, 3, 1, 2, 4).reshape(B, T_b, C * F_b * 2)
@@ -333,6 +348,8 @@ class DCCRN(nn.Module):
                 output = output[..., :input_length]
 
         output = output.unsqueeze(1)
+        if rps_pred is not None:
+            return output, rps_pred
         return output
 
 

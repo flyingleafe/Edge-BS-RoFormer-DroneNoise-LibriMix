@@ -440,6 +440,9 @@ def demix(
                         x = model(arr, rps=arr_rps)
                     else:
                         x = model(arr)
+                    # Discard auxiliary outputs (e.g. rps_pred)
+                    if isinstance(x, tuple):
+                        x = x[0]
 
                     if mode == "generic":
                         window = windowing_array.clone()

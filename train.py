@@ -395,8 +395,13 @@ def get_model_output(model: torch.nn.Module, x: torch.Tensor, args: argparse.Nam
     if args.model_type in ['mel_band_roformer', 'edge_bs_rof', 'diffusion_buffer']:
         return model(x)
     if args.model_type in ('dcunet', 'dccrn') and getattr(model, 'use_rps', False) and rps is not None:
-        return model(x, rps=rps)
-    return model(x)
+        out = model(x, rps=rps)
+    else:
+        out = model(x)
+    # Discard auxiliary outputs (e.g. rps_pred) if model returns a tuple
+    if isinstance(out, tuple):
+        out = out[0]
+    return out
 
 
 def _tensor_to_audio_numpy(t: torch.Tensor) -> np.ndarray:
@@ -651,10 +656,22 @@ def train_one_epoch(
                     loss = loss.mean()
             else:
                 if args.model_type in ('dcunet', 'dccrn') and getattr(model, 'use_rps', False) and rps is not None:
-                    y_ = model(x, rps=rps)
+                    model_out = model(x, rps=rps)
                 else:
-                    y_ = model(x)
+                    model_out = model(x)
+                # Handle auxiliary RPS prediction output
+                if isinstance(model_out, tuple):
+                    y_, rps_pred = model_out
+                else:
+                    y_, rps_pred = model_out, None
                 loss = multi_loss(y_, y)
+                # Auxiliary RPS prediction loss
+                if rps_pred is not None and rps is not None:
+                    rps_target = F.interpolate(
+                        rps.float(), size=rps_pred.shape[-1], mode="linear", align_corners=False
+                    )
+                    rps_aux_weight = getattr(config.training, 'rps_aux_weight', 0.1)
+                    loss = loss + rps_aux_weight * F.mse_loss(rps_pred, rps_target)
 
         # Fallback: collect 3 training sample triples from first batch when no SNR metadata (epoch 0 only)
         if not train_audio_triples and epoch == 0 and i == 0 and x.shape[0] >= 3:
