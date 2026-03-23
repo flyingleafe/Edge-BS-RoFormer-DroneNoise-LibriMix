@@ -56,6 +56,10 @@ training:
   target_instrument: vocals
   num_epochs: 1000
   num_steps: 200
+  data_path:
+    - datasets/test-dataset/train
+  valid_path:
+    - datasets/test-dataset/valid
   q: 0.95
   coarse_loss_clip: true
   ema_momentum: 0.999

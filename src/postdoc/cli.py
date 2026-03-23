@@ -68,18 +68,17 @@ def job_submit(
         if start_checkpoint:
             start_checkpoint = str(Path(start_checkpoint).resolve())
 
-        # Resolve dataset paths
-        data_dir = Path(ctx.config.local.data_dir)
-        dataset_name = exp.get("dataset", {}).get("name", "")
-        if isinstance(dataset_name, list):
-            data_paths = [str(data_dir / n) for n in dataset_name]
-        elif dataset_name:
-            data_paths = [str(data_dir / dataset_name)]
-        else:
-            typer.echo(f"ERROR: No dataset.name in {exp_path}")
-            raise typer.Exit(1)
+        # Resolve dataset paths from the resolved config
+        import yaml as _yaml
+        with open(resolved) as _f:
+            _resolved_cfg = _yaml.safe_load(_f)
+        training_cfg = _resolved_cfg.get("training", {})
+        data_paths = training_cfg.get("data_path", [])
+        valid_paths = training_cfg.get("valid_path", data_paths)
 
-        valid_paths = data_paths  # same as data paths by default
+        if not data_paths:
+            typer.echo(f"ERROR: No training.data_path in resolved config for {exp_path}")
+            raise typer.Exit(1)
 
         manifest = {
             "job_id": job_id,
