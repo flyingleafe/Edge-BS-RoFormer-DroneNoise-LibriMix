@@ -1,0 +1,16 @@
+# Eval-only: DCUNet baseline on DREGON-LM valid split
+eval_only: true
+checkpoint: results/dcunet_baseline_dregon/model_dcunet_ep_119_sdr_1.2846.ckpt
+
+model:
+  type: dcunet
+  base_config: configs/7b_DCUNet_baseline_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+eval:
+  metrics: [estoi, si_sdr, pesq]
+
+wandb:
+  tags: [eval, dcunet, baseline, dregon]
