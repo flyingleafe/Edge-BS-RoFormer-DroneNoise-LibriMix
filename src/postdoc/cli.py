@@ -165,18 +165,25 @@ def job_logs(
     backend: str | None = _backend_option,
 ):
     ctx = _get_ctx(backend)
+    results_dir = Path(ctx.config.local.results_dir)
     for phase in ["training", "eval"]:
         for stream in ["stderr", "stdout"]:
             log_path = PurePosixPath(f"{phase}/logs/{stream}.txt")
-            if ctx.storage.exists(job_id, log_path):
+            # Try reading directly from disk first (live logs), then storage
+            disk_path = results_dir / job_id / phase / "logs" / f"{stream}.txt"
+            if disk_path.exists():
+                data = disk_path.read_text(errors="replace")
+            elif ctx.storage.exists(job_id, log_path):
                 data = ctx.storage.get(job_id, log_path).decode(errors="replace")
-                if data.strip():
-                    typer.echo(f"--- {phase}/{stream} ---")
-                    if tail:
-                        lines = data.strip().split("\n")
-                        typer.echo("\n".join(lines[-50:]))
-                    else:
-                        typer.echo(data)
+            else:
+                continue
+            if data.strip():
+                typer.echo(f"--- {phase}/{stream} ---")
+                if tail:
+                    lines = data.strip().split("\n")
+                    typer.echo("\n".join(lines[-50:]))
+                else:
+                    typer.echo(data)
 
 
 @job_app.command("cancel")

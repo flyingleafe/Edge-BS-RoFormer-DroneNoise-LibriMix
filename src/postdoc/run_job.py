@@ -97,7 +97,7 @@ def run_job(
         train_stdout.parent.mkdir(parents=True, exist_ok=True)
         with open(train_stdout, "w") as out_f, open(train_stderr, "w") as err_f:
             train_result = subprocess.run(
-                [sys.executable, "train.py", *train_args],
+                [sys.executable, "-u", "train.py", *train_args],
                 stdout=out_f, stderr=err_f,
             )
 
@@ -135,7 +135,7 @@ def run_job(
     eval_stdout.parent.mkdir(parents=True, exist_ok=True)
     with open(eval_stdout, "w") as out_f, open(eval_stderr, "w") as err_f:
         eval_result = subprocess.run(
-            [sys.executable, "final_valid.py", *eval_args],
+            [sys.executable, "-u", "final_valid.py", *eval_args],
             stdout=out_f, stderr=err_f,
         )
 
