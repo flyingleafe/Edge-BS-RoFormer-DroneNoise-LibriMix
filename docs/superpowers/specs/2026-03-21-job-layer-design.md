@@ -307,21 +307,34 @@ postdoc results sync                          # pull latest results from R2 into
 
 ### Package Structure
 
+Uses the same abstract interface architecture defined in `2026-03-23-job-layer-v0.1-local.md`. The cloud backend implements `StorageBackend`, `Scheduler`, and uses the shared `JobTracker`.
+
 ```
 src/postdoc/
   __init__.py
-  cli.py                  # Click/Typer CLI entry point
-  config.py               # Load and validate postdoc.yaml
-  experiment.py            # Parse experiment YAMLs, merge configs
-  skypilot.py              # SkyPilot task compilation and submission
-  lifecycle.py             # Job state machine and transitions
-  results.py               # R2 sync, local DB, metrics extraction
-  cost.py                  # Cost estimation (basic for now)
-  db.py                    # SQLite operations
-  r2.py                    # R2 client (boto3 with S3-compatible endpoint)
+  cli.py                    # Typer CLI entry point
+  config.py                 # Load and validate postdoc.yaml
+  context.py                # PostdocContext, create_context() factory
+  experiment.py             # Parse experiment YAMLs, merge configs
+  run_job.py                # Shared job execution logic (backend-agnostic)
+  cost.py                   # Cost estimation (basic for now)
+  interfaces/
+    __init__.py
+    storage.py              # StorageBackend ABC
+    scheduler.py            # Scheduler ABC
+    tracker.py              # JobTracker (SQLite), JobState, JobRecord
+  backends/
+    local/
+      __init__.py
+      storage.py            # LocalStorage(StorageBackend)
+      scheduler.py          # LocalScheduler(Scheduler)
+    cloud/
+      __init__.py
+      storage.py            # R2Storage(StorageBackend)
+      scheduler.py          # SkyPilotScheduler(Scheduler)
 ```
 
-Installed as `postdoc` entry point via `pyproject.toml`.
+Installed as `postdoc` entry point via `pyproject.toml`. Backend is selected via `postdoc.yaml`, `POSTDOC_BACKEND` env var, or `--backend` CLI flag.
 
 ### Batch Submit Behavior
 
