@@ -102,6 +102,11 @@ class JobTracker:
             sets.append(f"{ts_col} = ?")
             vals.append(datetime.now(timezone.utc).isoformat())
 
+        # When resuming from FAILED, clear error fields
+        if state in (JobState.SUBMITTED, JobState.QUEUED, JobState.TRAINING):
+            sets.extend(["error_category = ?", "error_message = ?", "failed_at = ?"])
+            vals.extend([None, None, None])
+
         for k, v in fields.items():
             if k == "gpu_ids":
                 sets.append("gpu_ids = ?")

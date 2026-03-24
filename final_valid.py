@@ -273,8 +273,20 @@ def process_audio_files(
     channels = 2 if stereo else 1
     dummy_input = torch.randn(1, channels, segment_length).to(device)
 
-    flops, _ = profile(model, inputs=(dummy_input,), verbose=False)
-    model_flops = flops / 1e9  # Giga FLOPs
+    # Build dummy RPS input for RPS-conditioned models so profile() doesn't crash
+    profile_inputs = (dummy_input,)
+    use_rps = config.get('use_rps', False) or config.get('load_rps', False)
+    if use_rps:
+        rps_length = config.get('rps_length', 8500)
+        num_rotors = config.get('num_rotors', 4)
+        dummy_rps = torch.randn(1, num_rotors, rps_length).to(device)
+        profile_inputs = (dummy_input, dummy_rps)
+
+    try:
+        flops, _ = profile(model, inputs=profile_inputs, verbose=False)
+        model_flops = flops / 1e9  # Giga FLOPs
+    except Exception:
+        model_flops = 0.0  # Skip FLOPs counting if profile fails
     model.to(device)
 
     # Initialize results collection list

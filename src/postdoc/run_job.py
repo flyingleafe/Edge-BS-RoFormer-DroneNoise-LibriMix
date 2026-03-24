@@ -63,6 +63,8 @@ def run_job(
     valid_path: list[Path],
     device_ids: list[int],
     start_checkpoint: Path | None = None,
+    is_resume: bool = False,
+    wandb_run_id: str | None = None,
 ) -> None:
     results_root = Path(storage.job_root_path(job_id))
     eval_only = experiment.get("eval_only", False)
@@ -91,15 +93,24 @@ def run_job(
             valid_path=valid_path,
             device_ids=device_ids,
             start_checkpoint=start_checkpoint,
+            wandb_run_id=wandb_run_id,
         )
         train_stdout = Path(storage.job_root_path(job_id)) / "training" / "logs" / "stdout.txt"
         train_stderr = Path(storage.job_root_path(job_id)) / "training" / "logs" / "stderr.txt"
         train_stdout.parent.mkdir(parents=True, exist_ok=True)
-        with open(train_stdout, "w") as out_f, open(train_stderr, "w") as err_f:
+        open_mode = "a" if is_resume else "w"
+        with open(train_stdout, open_mode) as out_f, open(train_stderr, open_mode) as err_f:
             train_result = subprocess.run(
                 [sys.executable, "-u", "train.py", *train_args],
                 stdout=out_f, stderr=err_f,
             )
+
+        # Pick up wandb run ID written by train.py and store in tracker
+        wandb_id_file = train_results / "wandb_run_id.txt"
+        if wandb_id_file.exists():
+            stored_wandb_id = wandb_id_file.read_text().strip()
+            if stored_wandb_id:
+                tracker.update_state(job_id, JobState.TRAINING, wandb_run_id=stored_wandb_id)
 
         if train_result.returncode != 0:
             stderr_text = train_stderr.read_text()
@@ -110,7 +121,7 @@ def run_job(
             )
             return
 
-        checkpoint = find_best_checkpoint(train_results / "checkpoints")
+        checkpoint = find_best_checkpoint(train_results)
         if checkpoint is None:
             tracker.update_state(
                 job_id, JobState.FAILED,
@@ -176,6 +187,8 @@ if __name__ == "__main__":
     ctx = create_context(config_path=Path(manifest["postdoc_config"]))
 
     start_ckpt = manifest.get("start_checkpoint")
+    is_resume = manifest.get("is_resume", False)
+    wandb_run_id = manifest.get("wandb_run_id")
 
     try:
         run_job(
@@ -188,6 +201,8 @@ if __name__ == "__main__":
             valid_path=[Path(p) for p in manifest["valid_path"]],
             device_ids=manifest["device_ids"],
             start_checkpoint=Path(start_ckpt) if start_ckpt else None,
+            is_resume=is_resume,
+            wandb_run_id=wandb_run_id,
         )
     finally:
         ctx.scheduler._release_gpu(manifest["job_id"])

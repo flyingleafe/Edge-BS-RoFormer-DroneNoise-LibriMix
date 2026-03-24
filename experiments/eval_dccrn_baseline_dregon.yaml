@@ -1,0 +1,16 @@
+# Eval-only: DCCRN baseline on DREGON-LM valid split
+eval_only: true
+checkpoint: results/02b92aae2f89/training/best_model.ckpt
+
+model:
+  type: dccrn
+  base_config: configs/10a_DCCRN_baseline_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+eval:
+  metrics: [estoi, si_sdr, pesq]
+
+wandb:
+  tags: [eval, dccrn, baseline, dregon]

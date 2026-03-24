@@ -35,6 +35,7 @@ def build_train_args(
     valid_path: list[Path],
     device_ids: list[int],
     start_checkpoint: Path | None = None,
+    wandb_run_id: str | None = None,
 ) -> list[str]:
     args = [
         "--model_type", experiment["model"]["type"],
@@ -47,6 +48,8 @@ def build_train_args(
         args.extend(["--valid_path", *[str(p) for p in valid_path]])
     if start_checkpoint:
         args.extend(["--start_check_point", str(start_checkpoint)])
+    if wandb_run_id:
+        args.extend(["--wandb_run_id", wandb_run_id])
     return args
 
 

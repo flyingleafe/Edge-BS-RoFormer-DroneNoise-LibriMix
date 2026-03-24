@@ -186,6 +186,82 @@ def job_logs(
                     typer.echo(data)
 
 
+@job_app.command("resume")
+def job_resume(
+    job_id: str = typer.Argument(..., help="Job ID to resume"),
+    override: list[str] | None = typer.Option(None, "--set", help="Config overrides as key=value (dot notation)"),
+    backend: str | None = _backend_option,
+):
+    """Resume a failed or cancelled job from its latest checkpoint."""
+    import yaml as _yaml
+    from postdoc.run_job import find_best_checkpoint
+
+    ctx = _get_ctx(backend)
+    try:
+        job = ctx.tracker.get_job(job_id)
+    except KeyError:
+        typer.echo(f"Job not found: {job_id}")
+        raise typer.Exit(1)
+
+    if job.state not in (JobState.FAILED,):
+        typer.echo(f"Cannot resume job in state '{job.state.value}'. Only failed jobs can be resumed.")
+        raise typer.Exit(1)
+
+    results_dir = Path(ctx.config.local.results_dir)
+    train_dir = results_dir / job_id / "training"
+    checkpoint = find_best_checkpoint(train_dir)
+    if checkpoint is None:
+        typer.echo(f"No checkpoint found in {train_dir}")
+        raise typer.Exit(1)
+
+    # Apply config overrides if any
+    resolved = results_dir / job_id / "config.yaml"
+    if override:
+        from postdoc.experiment import _set_nested
+        with open(resolved) as f:
+            cfg = _yaml.safe_load(f)
+        for item in override:
+            key, _, value = item.partition("=")
+            # Try to parse as number/bool
+            try:
+                value = int(value)
+            except ValueError:
+                try:
+                    value = float(value)
+                except ValueError:
+                    if value.lower() in ("true", "false"):
+                        value = value.lower() == "true"
+            _set_nested(cfg, key.strip().split("."), value)
+        with open(resolved, "w") as f:
+            _yaml.dump(cfg, f, default_flow_style=False)
+        typer.echo(f"Updated config: {', '.join(override)}")
+
+    # Retrieve wandb_run_id from the job record (if previously stored)
+    wandb_run_id = job.wandb_run_id
+
+    # Update manifest for resume
+    manifest_path = results_dir / job_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["start_checkpoint"] = str(checkpoint)
+    manifest["is_resume"] = True
+    if wandb_run_id:
+        manifest["wandb_run_id"] = wandb_run_id
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    # Resubmit
+    try:
+        result = ctx.scheduler.submit(job_id, resolved, manifest["experiment"])
+        ctx.tracker.update_state(
+            job_id, JobState.SUBMITTED,
+            process_handle=result.process_handle,
+            gpu_ids=result.gpu_ids,
+        )
+        typer.echo(f"Resumed job {job_id} from {checkpoint.name} on GPU {result.gpu_ids}")
+    except NoCapacityError:
+        ctx.tracker.update_state(job_id, JobState.QUEUED)
+        typer.echo(f"Queued job {job_id} for resume — no free GPUs")
+
+
 @job_app.command("cancel")
 def job_cancel(
     job_id: str = typer.Argument(..., help="Job ID"),

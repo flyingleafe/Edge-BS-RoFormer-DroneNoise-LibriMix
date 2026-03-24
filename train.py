@@ -80,6 +80,7 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
     parser.add_argument("--metric_for_scheduler", default="sdr",
                         choices=['sdr', 'l1_freq', 'si_sdr', 'neg_log_wmse', 'aura_stft', 'aura_mrstft', 'bleedless',
                                  'fullness'], help='Metric which will be used for scheduler.')
+    parser.add_argument("--wandb_run_id", type=str, default='', help="Existing wandb run ID to resume logging into")
     parser.add_argument("--train_lora", action='store_true', help="Train with LoRA")
     parser.add_argument("--lora_checkpoint", type=str, default='', help="Initial checkpoint to LoRA weights")
 
@@ -150,7 +151,20 @@ def wandb_init(args: argparse.Namespace, config: Dict, device_ids: List[int], ba
     else:
         wandb.login(key=wandb_key)
         run_name = config.get('run_name') or None
-        wandb.init(entity='flyingleafe', project='msst', name=run_name, config={'config': config, 'args': args, 'device_ids': device_ids, 'batch_size': batch_size })
+        wandb_run_id = getattr(args, 'wandb_run_id', '') or None
+        init_kwargs: Dict = dict(
+            entity='flyingleafe', project='msst', name=run_name,
+            config={'config': config, 'args': args, 'device_ids': device_ids, 'batch_size': batch_size},
+        )
+        if wandb_run_id:
+            init_kwargs['id'] = wandb_run_id
+            init_kwargs['resume'] = 'must'
+        wandb.init(**init_kwargs)
+
+    # Write run ID to results dir so the job runner can pick it up
+    if wandb.run is not None and wandb.run.id and hasattr(args, 'results_path') and args.results_path:
+        run_id_path = Path(args.results_path) / "wandb_run_id.txt"
+        run_id_path.write_text(wandb.run.id)
 
 
 def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> DataLoader:
