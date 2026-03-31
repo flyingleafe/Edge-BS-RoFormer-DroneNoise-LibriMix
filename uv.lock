@@ -20,6 +20,38 @@ wheels = [
 ]
 
 [[package]]
+name = "aggdraw"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/bf/4876fb82a906e9303392235e9fe382130b649c0ee4faa7fdb25596c26dff/aggdraw-1.4.1.tar.gz", hash = "sha256:e21d6b77afeeffa259b898d652295757fd35f15a9e11a24823c0d7ca63385c83", size = 263051, upload-time = "2025-12-03T16:33:17.818Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/9d/4f73105194f79cbd60e972eebcd7891cfa2b59ad61697bae62f025c2e016/aggdraw-1.4.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:ca9ddba3ac158bfddb60958a1901f0cc001dc54ce0ab456bb37a2ff8840fc3b8", size = 485351, upload-time = "2025-12-03T16:32:48.474Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/90/948386313d4b30d54baa17e1b0e6d09180cdaf2881422d8f80ab651b27c5/aggdraw-1.4.1-cp312-cp312-macosx_14_0_x86_64.whl", hash = "sha256:95952ff55f4ebec1f3ad56956e26765b87f94cf8cad22995bd35e8d3ef04f4a2", size = 520583, upload-time = "2025-12-03T16:32:50.083Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/5d/d307eac839b7ed3ca75c1afb14076bff2b74b1ba4a5fe51733095e5b05b3/aggdraw-1.4.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:78f28751c4c85e90224182fc92d144b1378e21447415ffb29fa0567736459bcf", size = 1014932, upload-time = "2025-12-03T16:32:51.639Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/35/061711e2958aa4e773145ec592b3f445bb0d2d9b3b5c22673813b9230fc9/aggdraw-1.4.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8d7cf582e9bfee6bc6ddd35c4b59431de42d16a8c6d1d8c1a9bfebe81563a0c1", size = 1029490, upload-time = "2025-12-03T16:32:53.534Z" },
+    { url = "https://files.pythonhosted.org/packages/44/1b/4169f561f88ee7c514673172f1c5625af62face5469bbd230a5d6453d068/aggdraw-1.4.1-cp312-cp312-win_amd64.whl", hash = "sha256:1d2be7c3acfc47866041886c849a1812ffe6bb95d9fc853eae1034ada86d8f32", size = 47358, upload-time = "2025-12-03T16:32:54.888Z" },
+    { url = "https://files.pythonhosted.org/packages/70/65/dca9e522892931ce2d24d753ae0442b6a6f39450448475525df90120ae0a/aggdraw-1.4.1-cp312-cp312-win_arm64.whl", hash = "sha256:f666ffbf8c2352f0c4d4f25f4da33f41e55fc694f2263e5f891fd4cda5723b65", size = 38248, upload-time = "2025-12-03T16:32:56.121Z" },
+    { url = "https://files.pythonhosted.org/packages/10/a4/07cf81144acc427005f689c6a14defc5419119d1b635538a2188b5031e11/aggdraw-1.4.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:be8f16417b134d2a231efd487e1ecd2362d33dc3a91cbc427117c36d5bc83717", size = 485330, upload-time = "2025-12-03T16:32:57.359Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/72/7b6e843528d99d670cca4fb93b8b531d1b9b087cad007bbe4a7e080bb33b/aggdraw-1.4.1-cp313-cp313-macosx_14_0_x86_64.whl", hash = "sha256:77aa364320db385d757595f206ba726201268d774941f77c97bd5a2c1911c0af", size = 520563, upload-time = "2025-12-03T16:32:58.614Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/b7/affc8295ca18b98027e59eec943296bc45d4c242b9c6d6e9ffb35a2d2654/aggdraw-1.4.1-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9b5e2cba305dd738f948eb75f668ac5db80d291e2054ffe326ec947850eb85e5", size = 1014991, upload-time = "2025-12-03T16:32:59.772Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/aa/04bb2b6ac8e82c04b29205f0df12bedd1d4e1a55986c9f0ce10b6c0bf662/aggdraw-1.4.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:150f8a359ff16ba3d930ee95b0563cd06f03a5ff46650d2d0ca678ce1ce586cc", size = 1029477, upload-time = "2025-12-03T16:33:01.165Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/3d/192425568971d7b79ccbb28fa8613d5787878d8f002d29d497e54e6198b0/aggdraw-1.4.1-cp313-cp313-win_amd64.whl", hash = "sha256:a746d521c21855348446036797c0174b5947621b1a76ff849f4fbcfec37973f9", size = 47343, upload-time = "2025-12-03T16:33:02.215Z" },
+    { url = "https://files.pythonhosted.org/packages/66/39/2682d92963201f00f196fdff9530d51614fe9b5991e4b61ac649722ca1f3/aggdraw-1.4.1-cp313-cp313-win_arm64.whl", hash = "sha256:eba61c51f16ee097793b1e67dc3b83090e4582f063706b7f2d6afbf6ee854be3", size = 38235, upload-time = "2025-12-03T16:33:03.114Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/e4/17b3832e683e3bc957834df68e1d80ec1adfcf223ebd277e13034e7f123d/aggdraw-1.4.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:fed7bbd047efa63a246c513c59f068d351f62a07461d37cc2305e9502f359ec5", size = 485325, upload-time = "2025-12-03T16:33:04.103Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/33/c2ac205aa8123227e86afec0956940f8b4f8739fd64052d48661c030299f/aggdraw-1.4.1-cp314-cp314-macosx_14_0_x86_64.whl", hash = "sha256:e47e6a5340127cfe70f441f6821c24e248b6911460d149a891e9569fe139833e", size = 520576, upload-time = "2025-12-03T16:33:05.425Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/e4/0d50e126a7e0fea3ef8eafe82f3addd255bb9e2955c43d8e2c6183e8a443/aggdraw-1.4.1-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:898027887607842532ff6635c3c253212665270e95b8616326246f0505db6422", size = 1014621, upload-time = "2025-12-03T16:33:06.73Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/8d/2ebea795b868f25f5d3f27895866d596a25fb8e9f742b10058c23d238f84/aggdraw-1.4.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e1cb31c40145adbb34d0830bfcd15ab668426538dac4e11b18b803289fa1033f", size = 1029268, upload-time = "2025-12-03T16:33:08.422Z" },
+    { url = "https://files.pythonhosted.org/packages/72/72/69f86def3a3d5e754937c226997fc131d6c2ac5a967682447f3e920fce33/aggdraw-1.4.1-cp314-cp314-win_amd64.whl", hash = "sha256:7c5f4314144abb1ebbb7af1e70fad4742e07303ee4cefde90a06d3313baba81e", size = 48959, upload-time = "2025-12-03T16:33:09.417Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/b0/16d44c1778b09e22efca7cdaa77296221690799e4b0a45185a66c8d01537/aggdraw-1.4.1-cp314-cp314-win_arm64.whl", hash = "sha256:2d3b3a83c11521f0c118c35e82b3eafc6eba274cba23580b8e889d913de0d3b4", size = 39937, upload-time = "2025-12-03T16:33:10.21Z" },
+    { url = "https://files.pythonhosted.org/packages/be/4e/57ab208c13f7d605ff4c9f57f83b17358544ad05d564e64af2efb6afb1b7/aggdraw-1.4.1-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:61f6fc11200c7a3fed0907fef4f6f8bcae900605a4fa320aa5bcd3b40eb3a619", size = 485755, upload-time = "2025-12-03T16:33:11.177Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/15/9f99ed2ee67c15dc43a9f3c0c3ae15e51641b642a3edfca17c14016626e8/aggdraw-1.4.1-cp314-cp314t-macosx_14_0_x86_64.whl", hash = "sha256:96a411be593ad7cada3bcd0ec6f7c8e3c522a7df4d40121a17cfadf2c379a1f3", size = 521136, upload-time = "2025-12-03T16:33:12.325Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/91/dda5f1e7535ff988fb0e8e21d83f26befa30524b23b4bffbff2af38e4b42/aggdraw-1.4.1-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bc19beac0b84260aa2ca807b861881a2382af9319127da59d6ac6ad6c07a102c", size = 1022773, upload-time = "2025-12-03T16:33:13.636Z" },
+    { url = "https://files.pythonhosted.org/packages/84/fc/e960aedba069949a022675311e086acf6316a7c820fb9ba03524fcb1bfc1/aggdraw-1.4.1-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:27ad13f7c88a01ba50954e0a036de7211f2f79822bffd9d078d8d5603a956083", size = 1036828, upload-time = "2025-12-03T16:33:14.882Z" },
+    { url = "https://files.pythonhosted.org/packages/94/07/a5737fbceae13c127d6dd352592c1d1b3d88e3bda818efba23f2d9a1a0d2/aggdraw-1.4.1-cp314-cp314t-win_amd64.whl", hash = "sha256:3fa04a12b355e1697719369289d6e87f7b8eddeadf0bc27e3a0561162daf45eb", size = 49772, upload-time = "2025-12-03T16:33:15.936Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/c3/92f79733ec52f2d64a7ba88c14c5c21ad30347b335e06b4b7004414ed06d/aggdraw-1.4.1-cp314-cp314t-win_arm64.whl", hash = "sha256:8016cf9d04b18060ec40da6040a467fd5001e2c6b7496b18503db96d0c8e9d4a", size = 40327, upload-time = "2025-12-03T16:33:16.847Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -808,7 +840,12 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "nnviz" },
     { name = "pytest" },
+    { name = "torchlens" },
+    { name = "torchsummary" },
+    { name = "torchviz" },
+    { name = "visualtorch" },
 ]
 
 [package.metadata]
@@ -851,7 +888,14 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+dev = [
+    { name = "nnviz" },
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "torchlens" },
+    { name = "torchsummary" },
+    { name = "torchviz" },
+    { name = "visualtorch" },
+]
 
 [[package]]
 name = "einops"
@@ -1073,6 +1117,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/df/b5/59d16470a1f0dfe8c793f9ef56fd3826093fc52b3bd96d6b9d6c26c7e27b/gitpython-3.1.46.tar.gz", hash = "sha256:400124c7d0ef4ea03f7310ac2fbf7151e09ff97f2a3288d64a440c584a29c37f", size = 215371, upload-time = "2026-01-01T15:37:32.073Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/09/e21df6aef1e1ffc0c816f0522ddc3f6dcded766c3261813131c78a704470/gitpython-3.1.46-py3-none-any.whl", hash = "sha256:79812ed143d9d25b6d176a10bb511de0f9c67b1fa641d82097b0ab90398a2058", size = 208620, upload-time = "2026-01-01T15:37:30.574Z" },
+]
+
+[[package]]
+name = "graphviz"
+version = "0.21"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/b3/3ac91e9be6b761a4b30d66ff165e54439dcd48b83f4e20d644867215f6ca/graphviz-0.21.tar.gz", hash = "sha256:20743e7183be82aaaa8ad6c93f8893c923bd6658a04c32ee115edb3c8a835f78", size = 200434, upload-time = "2025-06-15T09:35:05.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/4c/e0ce1ef95d4000ebc1c11801f9b944fa5910ecc15b5e351865763d8657f8/graphviz-0.21-py3-none-any.whl", hash = "sha256:54f33de9f4f911d7e84e4191749cac8cc5653f815b06738c54db9a15ab8b1e42", size = 47300, upload-time = "2025-06-15T09:35:04.433Z" },
 ]
 
 [[package]]
@@ -2182,6 +2235,24 @@ wheels = [
 ]
 
 [[package]]
+name = "nnviz"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "pygraphviz" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "typer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/19/2f/4eb515fd4d4e55a762b025e39634d76a2929161cbf52dbade5e2f0134b92/nnviz-1.0.0.tar.gz", hash = "sha256:5c322c8e13516451c9d7132faccb8d8eaed161c5153310994e6cb4dc0fc92aec", size = 28248, upload-time = "2023-06-17T11:33:30.735Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/7c/1512ea98102ea1de74ff9d3016327f41fd1e73cfab89416427278d3cc103/nnviz-1.0.0-py3-none-any.whl", hash = "sha256:6e421369f9a4500903c8c9750d699149d1d54f4ac1b3130686f63d3e75e8457c", size = 33544, upload-time = "2023-06-17T11:33:29.186Z" },
+]
+
+[[package]]
 name = "notebook"
 version = "7.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3047,6 +3118,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pygraphviz"
+version = "1.14"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/ca/823d5c74a73d6b8b08e1f5aea12468ef334f0732c65cbb18df2a7f285c87/pygraphviz-1.14.tar.gz", hash = "sha256:c10df02377f4e39b00ae17c862f4ee7e5767317f1c6b2dfd04cea6acc7fc2bea", size = 106003, upload-time = "2024-09-29T18:31:12.471Z" }
+
+[[package]]
 name = "pyparsing"
 version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3853,6 +3930,69 @@ wheels = [
 ]
 
 [[package]]
+name = "torchlens"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "graphviz" },
+    { name = "ipython" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "torch" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/33/eb37639cc05e3aeea1e16e7af594841f8bf850383514ee755d2e1379322c/torchlens-1.0.1.tar.gz", hash = "sha256:42b602324dbd93054359bd1f3c6ec34242d44f611b977914a3eea6250980f332", size = 343393, upload-time = "2026-03-23T01:31:50.87Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/2c/c47fba67eae2b10246fcd3654804e331b1960dd23eaab1ae543fec67de13/torchlens-1.0.1-py3-none-any.whl", hash = "sha256:867f70c42b4c518ce4a76935550ad1a3abfa9d100fe8ff9647d880e9bb6f138e", size = 275638, upload-time = "2026-03-23T01:31:49.245Z" },
+]
+
+[[package]]
+name = "torchsummary"
+version = "1.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/64/aa68ef646bcccab489cac2a85d366559df7d9d24406dbbf3344703cbe33f/torchsummary-1.5.1.tar.gz", hash = "sha256:981bf689e22e0cf7f95c746002f20a24ad26aa6b9d861134a14bc6ce92230590", size = 3749, upload-time = "2018-09-26T05:07:30.226Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/18/1474d06f721b86e6a9b9d7392ad68bed711a02f3b61ac43f13c719db50a6/torchsummary-1.5.1-py3-none-any.whl", hash = "sha256:10f41d1743fb918f83293f13183f532ab1bb8f6639a1b89e5f8592ec1919a976", size = 2826, upload-time = "2018-09-26T05:07:28.635Z" },
+]
+
+[[package]]
+name = "torchvision"
+version = "0.22.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/ea/887d1d61cf4431a46280972de665f350af1898ce5006cd046326e5d0a2f2/torchvision-0.22.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:31c3165418fe21c3d81fe3459e51077c2f948801b8933ed18169f54652796a0f", size = 1947826, upload-time = "2025-04-23T14:41:59.188Z" },
+    { url = "https://files.pythonhosted.org/packages/72/ef/21f8b6122e13ae045b8e49658029c695fd774cd21083b3fa5c3f9c5d3e35/torchvision-0.22.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:8f116bc82e0c076e70ba7776e611ed392b9666aa443662e687808b08993d26af", size = 2514571, upload-time = "2025-04-23T14:41:53.458Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/48/5f7617f6c60d135f86277c53f9d5682dfa4e66f4697f505f1530e8b69fb1/torchvision-0.22.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:ce4dc334ebd508de2c534817c9388e928bc2500cf981906ae8d6e2ca3bf4727a", size = 7446522, upload-time = "2025-04-23T14:41:34.9Z" },
+    { url = "https://files.pythonhosted.org/packages/99/94/a015e93955f5d3a68689cc7c385a3cfcd2d62b84655d18b61f32fb04eb67/torchvision-0.22.0-cp312-cp312-win_amd64.whl", hash = "sha256:24b8c9255c209ca419cc7174906da2791c8b557b75c23496663ec7d73b55bebf", size = 1716664, upload-time = "2025-04-23T14:41:58.019Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/2a/9b34685599dcb341d12fc2730055155623db7a619d2415a8d31f17050952/torchvision-0.22.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ece17995857dd328485c9c027c0b20ffc52db232e30c84ff6c95ab77201112c5", size = 1947823, upload-time = "2025-04-23T14:41:39.956Z" },
+    { url = "https://files.pythonhosted.org/packages/77/77/88f64879483d66daf84f1d1c4d5c31ebb08e640411139042a258d5f7dbfe/torchvision-0.22.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:471c6dd75bb984c6ebe4f60322894a290bf3d4b195e769d80754f3689cd7f238", size = 2471592, upload-time = "2025-04-23T14:41:54.991Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/82/2f813eaae7c1fae1f9d9e7829578f5a91f39ef48d6c1c588a8900533dd3d/torchvision-0.22.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:2b839ac0610a38f56bef115ee5b9eaca5f9c2da3c3569a68cc62dbcc179c157f", size = 7446333, upload-time = "2025-04-23T14:41:36.603Z" },
+    { url = "https://files.pythonhosted.org/packages/58/19/ca7a4f8907a56351dfe6ae0a708f4e6b3569b5c61d282e3e7f61cf42a4ce/torchvision-0.22.0-cp313-cp313-win_amd64.whl", hash = "sha256:4ada1c08b2f761443cd65b7c7b4aec9e2fc28f75b0d4e1b1ebc9d3953ebccc4d", size = 1716693, upload-time = "2025-04-23T14:41:41.031Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/a7/f43e9c8d13118b4ffbaebea664c9338ab20fa115a908125afd2238ff16e7/torchvision-0.22.0-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:cdc96daa4658b47ce9384154c86ed1e70cba9d972a19f5de6e33f8f94a626790", size = 2137621, upload-time = "2025-04-23T14:41:51.427Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/9a/2b59f5758ba7e3f23bc84e16947493bbce97392ec6d18efba7bdf0a3b10e/torchvision-0.22.0-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:753d3c84eeadd5979a33b3b73a25ecd0aa4af44d6b45ed2c70d44f5e0ac68312", size = 2476555, upload-time = "2025-04-23T14:41:38.357Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/40/a7bc2ab9b1e56d10a7fd9ae83191bb425fa308caa23d148f1c568006e02c/torchvision-0.22.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:b30e3ed29e4a61f7499bca50f57d8ebd23dfc52b14608efa17a534a55ee59a03", size = 7617924, upload-time = "2025-04-23T14:41:42.709Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/7b/30d423bdb2546250d719d7821aaf9058cc093d165565b245b159c788a9dd/torchvision-0.22.0-cp313-cp313t-win_amd64.whl", hash = "sha256:e5d680162694fac4c8a374954e261ddfb4eb0ce103287b0f693e4e9c579ef957", size = 1638621, upload-time = "2025-04-23T14:41:46.06Z" },
+]
+
+[[package]]
+name = "torchviz"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "graphviz" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/80/a84e0e8877630262c3f4c8d2e7fd0647c6751afeca301cfc04a1b65ac820/torchviz-0.0.3.tar.gz", hash = "sha256:2e95f2fea7a31ec9549f2d6bbf446d75aeb6a9880fcf13e7dd843fdcdb4a3725", size = 5705, upload-time = "2024-12-02T02:46:54.671Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/06/bea648249802b65282414caf5e7bc94fcb6e5a3e311b537845417d19edb9/torchviz-0.0.3-py3-none-any.whl", hash = "sha256:5eab98d17cbe8a54727cfa6a527681cff613430fff8fc68f52302ca5fa26cdf1", size = 5708, upload-time = "2024-12-02T02:46:52.838Z" },
+]
+
+[[package]]
 name = "tornado"
 version = "6.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3988,6 +4128,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c7/24/5f1b3bdffd70275f6661c76461e25f024d5a38a46f04aaca912426a2b1d3/urllib3-2.6.3.tar.gz", hash = "sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed", size = 435556, upload-time = "2026-01-07T16:24:43.925Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/39/08/aaaad47bc4e9dc8c725e68f9d04865dbcb2052843ff09c97b08904852d84/urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4", size = 131584, upload-time = "2026-01-07T16:24:42.685Z" },
+]
+
+[[package]]
+name = "visualtorch"
+version = "0.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aggdraw" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2d/09/2c42a3d9c531ee794f235d6eb0a8e49d2b92adf7c6009932349913b2dfb1/visualtorch-0.2.4.tar.gz", hash = "sha256:662e32040533cbbf389cfd12e0a95799f0cf16612bac5eea149e6028bbb36812", size = 17507, upload-time = "2025-06-23T22:19:52.905Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/0f/504fcec35cc8eaf959364482e1dc2b061b279f49fbd0bab0d4df2742ddee/visualtorch-0.2.4-py3-none-any.whl", hash = "sha256:b84e9115204d3a4d1c2d054f85cdcc7ae0e154ece18340622e6ea832736c442c", size = 19965, upload-time = "2025-06-23T22:19:51.734Z" },
 ]
 
 [[package]]

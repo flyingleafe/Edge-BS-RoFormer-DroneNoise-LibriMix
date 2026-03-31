@@ -54,7 +54,12 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "nnviz",
     "pytest>=9.0.2",
+    "torchlens",
+    "torchsummary",
+    "torchviz",
+    "visualtorch",
 ]
 
 [tool.hatch.build.targets.wheel]
