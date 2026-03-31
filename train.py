@@ -770,8 +770,9 @@ def save_weights(args: argparse.Namespace, store_path_prefix: str, model: torch.
         else:
             store_path = os.path.join(store_path_prefix, f'model{suffix}')
         torch.save(lora.lora_state_dict(model), store_path)
-        best_model_path = os.path.join(store_path_prefix, "best_model.ckpt")
-        shutil.copy(store_path, best_model_path)
+        if not is_early_stop:
+            best_model_path = os.path.join(store_path_prefix, "best_model.ckpt")
+            shutil.copy(store_path, best_model_path)
     else:
         state_dict = model.state_dict() if len(device_ids) <= 1 else model.module.state_dict()
         suffix = f'_{args.model_type}_ep_{epoch}_{args.metric_for_scheduler}_{metric_value:.4f}.ckpt'
@@ -780,8 +781,9 @@ def save_weights(args: argparse.Namespace, store_path_prefix: str, model: torch.
         else:
             store_path = os.path.join(store_path_prefix, f'model{suffix}')
         torch.save(state_dict, store_path)
-        best_model_path = os.path.join(store_path_prefix, "best_model.ckpt")
-        shutil.copy(store_path, best_model_path)
+        if not is_early_stop:
+            best_model_path = os.path.join(store_path_prefix, "best_model.ckpt")
+            shutil.copy(store_path, best_model_path)
 
 
 def compute_epoch_metrics(model: torch.nn.Module, args: argparse.Namespace, config: ConfigDict,

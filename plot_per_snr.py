@@ -93,6 +93,7 @@ def find_eval_excel(eval_dir):
     patterns = [
         os.path.join(eval_dir, "eval", "samples", "*_validation.xlsx"),
         os.path.join(eval_dir, "eval", "*_validation.xlsx"),
+        os.path.join(eval_dir, "*_validation.xlsx"),
     ]
     for pat in patterns:
         matches = glob.glob(pat)
