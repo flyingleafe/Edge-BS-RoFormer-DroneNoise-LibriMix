@@ -44,6 +44,12 @@ def build_train_args(
         "--data_path", *[str(p) for p in data_path],
         "--device_ids", *[str(d) for d in device_ids],
     ]
+    if experiment.get("training", False):
+        training_cfg = experiment["training"]
+        if training_cfg.get("metrics", False):
+            args.extend(["--metrics", *training_cfg["metrics"]])
+        if training_cfg.get("metric_for_scheduler", False):
+            args.extend(["--metric_for_scheduler", training_cfg["metric_for_scheduler"]])
     if valid_path:
         args.extend(["--valid_path", *[str(p) for p in valid_path]])
     if start_checkpoint:

@@ -5,5 +5,9 @@ model:
 dataset:
   name: DREGON-LM
 
+training:
+  metrics: [neg_mse]
+  metric_for_scheduler: neg_mse
+
 wandb:
   tags: [rps-predictor, rps-only, dregon]
