@@ -1,0 +1,10 @@
+# Train: DCUNet encoder + RPSPredictionHead, RPS-only on DREGON-LM
+model:
+  type: dcunet
+  base_config: configs/11a_DCUNet_RPSOnly_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+wandb:
+  tags: [dcunet, rps-only, dregon]

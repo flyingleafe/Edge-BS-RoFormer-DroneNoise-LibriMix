@@ -1,0 +1,9 @@
+model:
+  type: rps_predictor
+  base_config: configs/11c_RPSPredictor_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+wandb:
+  tags: [rps-predictor, rps-only, dregon]

@@ -1,0 +1,10 @@
+# Train: DCCRN encoder + RPSPredictionHead, RPS-only on DREGON-LM
+model:
+  type: dccrn
+  base_config: configs/11b_DCCRN_RPSOnly_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+wandb:
+  tags: [dccrn, rps-only, dregon]

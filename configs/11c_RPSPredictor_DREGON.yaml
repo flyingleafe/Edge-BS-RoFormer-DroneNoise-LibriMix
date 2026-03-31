@@ -1,0 +1,47 @@
+audio:
+  chunk_size: 131584
+  dim_f: 1024
+  dim_t: 254
+  hop_length: 512
+  min_mean_abs: 0.0
+  n_fft: 2048
+  num_channels: 1
+  sample_rate: 16000
+augmentations:
+  enable: false
+inference:
+  batch_size: 4
+  num_overlap: 4
+load_rps: true
+model: rps_predictor
+num_rotors: 4
+rps_length: 8500
+run_name: RPSPredictor (DREGON)
+training:
+  batch_size: 8
+  coarse_loss_clip: true
+  data_path:
+  - datasets/DREGON-LM/train
+  early_stop:
+    enabled: true
+    metric: neg_mse
+    patience: 30
+  ema_momentum: 0.999
+  grad_clip: 0
+  gradient_accumulation_steps: 1
+  instruments:
+  - vocals
+  - noise
+  lr: 0.0005
+  num_epochs: 1000
+  num_steps: 200
+  optimizer: adamw
+  other_fix: false
+  patience: 2
+  q: 0.95
+  reduce_factor: 0.95
+  rps_loss_only: true
+  target_instrument: vocals
+  use_amp: true
+  valid_path:
+  - datasets/DREGON-LM/valid
