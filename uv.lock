@@ -840,6 +840,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "jupyter" },
     { name = "nnviz" },
     { name = "pytest" },
     { name = "torchlens" },
@@ -889,6 +890,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "jupyter", specifier = ">=1.1.1" },
     { name = "nnviz" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "torchlens" },

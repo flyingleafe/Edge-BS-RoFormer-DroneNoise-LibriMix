@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import glob as _glob
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -329,3 +331,303 @@ def results_compare(
             val = j.metrics.get(key) if j.metrics else None
             row += f"{val:<14.4f}" if val is not None else f"{'N/A':<14}"
         typer.echo(row)
+
+
+# ---------------------------------------------------------------------------
+# infer command
+# ---------------------------------------------------------------------------
+
+@app.command(
+    "infer",
+    help=(
+        "Run inference with a trained model on audio files.\n"
+        "\n"
+        "  Usage:\n"
+        "    postdoc infer [experiment id | model name] --checkpoint [epoch|filename|best|latest]\n"
+        "              --input [directory | file | glob] --output [dir | file]\n"
+        "\n"
+        "  Examples:\n"
+        "    postdoc infer a1b2c3d4 --checkpoint best --input audio.wav --output out/\n"
+        "    postdoc infer dcunet --checkpoint 50 --input '*.wav' --output results/\n"
+        "    postdoc infer edge_bs_rof --checkpoint latest --input dir/ --output out.wav"
+    ),
+)
+def infer(
+    experiment: str = typer.Argument(
+        ...,
+        help="Job ID or model name (fuzzy matched against job names in DB)",
+    ),
+    checkpoint: str = typer.Option(
+        "best",
+        "--checkpoint", "-c",
+        help="Checkpoint: epoch number, filename, 'best', or 'latest'",
+    ),
+    input: str = typer.Option(
+        ...,
+        "--input", "-i",
+        help="Input: directory, single file path, or glob pattern (quote it)",
+    ),
+    output: str = typer.Option(
+        ...,
+        "--output", "-o",
+        help="Output directory or file (use with single input)",
+    ),
+    device: int = typer.Option(0, "--device", "-d", help="GPU device ID"),
+    backend: str | None = _backend_option,
+    rps_file: str | None = typer.Option(
+        None,
+        "--rps-file",
+        help="Path to .npy file with RPS data (shape: [4, samples]), overrides audio input name",
+    ),
+):
+    """
+    Run inference with a trained model on audio files.
+
+    Resolves EXPERIMENT by exact job ID first, then fuzzy matches against job names.
+    Checkpoint: epoch number, filename, 'best' (default), or 'latest'.
+    Input: directory, single file path, or glob pattern (quote it).
+    Output: directory for multiple inputs, or output file for single input.
+    Audio -> .wav, RPS predictions -> .npy.
+    Output filename: {basename}_out.{ext}
+    """
+    import yaml as _yaml
+    import numpy as np
+    import torch
+    import soundfile as sf
+    from utils import (
+        get_model_from_config,
+        demix,
+        load_start_checkpoint,
+        read_audio_transposed,
+    )
+    from argparse import Namespace
+    from pathlib import Path as _Path
+
+    ctx = _get_ctx(backend)
+    results_dir = _Path(ctx.config.local.results_dir)
+
+    # ------------------------------------------------------------------
+    # 1. Resolve experiment -> job record + resolved config + checkpoint
+    # ------------------------------------------------------------------
+    job = None
+    # Try exact job ID match
+    try:
+        job = ctx.tracker.get_job(experiment)
+    except KeyError:
+        pass
+
+    if job is None:
+        # Fuzzy match: search job names containing the query (case-insensitive)
+        query = experiment.lower()
+        candidates = ctx.tracker.list_jobs(limit=200)
+        matches = [
+            j for j in candidates
+            if query in j.experiment_name.lower() or query in j.job_id.lower()
+        ]
+        if not matches:
+            typer.echo(f"No job found matching: {experiment}")
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            typer.echo(f"Multiple matches for '{experiment}':")
+            for m in matches:
+                typer.echo(f"  {m.job_id}  {m.experiment_name}  [{m.state.value}]")
+            typer.echo("Use job ID for a unique match.")
+            raise typer.Exit(1)
+        job = matches[0]
+
+    job_id = job.job_id
+    typer.echo(f"Using job: {job_id} ({job.experiment_name})")
+
+    # Load resolved config
+    resolved_config_path = results_dir / job_id / "config.yaml"
+    if not resolved_config_path.exists():
+        typer.echo(f"Resolved config not found: {resolved_config_path}")
+        raise typer.Exit(1)
+    with open(resolved_config_path) as f:
+        config = _yaml.safe_load(f)
+
+    model_type = config.get("model", {}).get("model") or config.get("model", {}).get("type")
+    if not model_type:
+        # Fallback: look in experiment config_snapshot
+        model_type = job.config_snapshot.get("model", {}).get("type")
+    if not model_type:
+        typer.echo("Could not determine model type from config.")
+        raise typer.Exit(1)
+
+    # ------------------------------------------------------------------
+    # 2. Resolve checkpoint
+    # ------------------------------------------------------------------
+    train_dir = results_dir / job_id / "training"
+    if not train_dir.exists():
+        typer.echo(f"Training directory not found: {train_dir}")
+        raise typer.Exit(1)
+
+    ckpt_files = list(train_dir.glob("*.ckpt"))
+    if not ckpt_files:
+        typer.echo(f"No checkpoints found in {train_dir}")
+        raise typer.Exit(1)
+
+    # Parse checkpoint selector
+    ckpt_path: _Path | None = None
+    ckpt_lc = checkpoint.lower()
+    if ckpt_lc == "best":
+        candidates_ = [c for c in ckpt_files if "best" in c.name.lower()]
+        if candidates_:
+            ckpt_path = candidates_[0]
+        else:
+            typer.echo("No 'best' checkpoint found, using latest.")
+            ckpt_lc = "latest"
+    if ckpt_lc == "latest":
+        ckpt_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        ckpt_path = ckpt_files[0]
+    else:
+        # Try as epoch number
+        epoch_match = re.match(r"^(\d+)$", checkpoint)
+        if epoch_match:
+            epoch_num = int(epoch_match.group(1))
+            candidates_ = [
+                c for c in ckpt_files
+                if re.search(rf"epoch[_-]?{epoch_num}[^\d]", c.name, re.IGNORECASE)
+                or re.search(rf"e[_-]?{epoch_num}[^\d]", c.name, re.IGNORECASE)
+            ]
+            if candidates_:
+                ckpt_path = candidates_[0]
+            else:
+                # Try matching just the number anywhere in name
+                for c in ckpt_files:
+                    if str(epoch_num) in c.stem:
+                        ckpt_path = c
+                        break
+        else:
+            # Treat as exact filename (or partial)
+            for c in ckpt_files:
+                if checkpoint in c.name:
+                    ckpt_path = c
+                    break
+
+    if ckpt_path is None:
+        typer.echo(f"Checkpoint not found: {checkpoint}")
+        typer.echo("Available: " + ", ".join(c.name for c in ckpt_files))
+        raise typer.Exit(1)
+
+    typer.echo(f"Using checkpoint: {ckpt_path.name}")
+
+    # ------------------------------------------------------------------
+    # 3. Resolve input files
+    # ------------------------------------------------------------------
+    input_path = _Path(input)
+    if input_path.is_dir():
+        audio_files = sorted(_glob.glob(str(input_path / "*.wav"))) + sorted(_glob.glob(str(input_path / "*.flac")))
+        if not audio_files:
+            typer.echo(f"No .wav or .flac files found in {input_path}")
+            raise typer.Exit(1)
+    elif _glob.has_magic(input):
+        audio_files = sorted(_glob.glob(input))
+        if not audio_files:
+            typer.echo(f"No files match glob pattern: {input}")
+            raise typer.Exit(1)
+    elif input_path.is_file():
+        audio_files = [str(input_path)]
+    else:
+        typer.echo(f"Input not found: {input}")
+        raise typer.Exit(1)
+
+    typer.echo(f"Processing {len(audio_files)} file(s)...")
+
+    # ------------------------------------------------------------------
+    # 4. Resolve output
+    # ------------------------------------------------------------------
+    output_path = _Path(output)
+    if len(audio_files) > 1 and output_path.is_file():
+        typer.echo("Multiple input files but output is a file. Using output as directory.")
+        output_path = output_path.parent
+    if output_path.is_file() and len(audio_files) > 1:
+        typer.echo("Multiple input files but output is a file. Will write to parent directory.")
+        output_path = output_path.parent
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # 5. Load model
+    # ------------------------------------------------------------------
+    base_config = results_dir / job_id / "config.yaml"
+    device_obj = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
+    typer.echo(f"Device: {device_obj}")
+
+    model, cfg = get_model_from_config(model_type, str(base_config))
+    model = model.to(device_obj)
+
+    # Build fake args for load_start_checkpoint
+    fake_args = Namespace(
+        start_check_point=str(ckpt_path),
+        model_type=model_type,
+        lora_checkpoint=None,
+    )
+    load_start_checkpoint(fake_args, model, type_="infer")
+    model.eval()
+
+    use_rps = config.get("use_rps", False)
+    predict_rps = config.get("predict_rps", False)
+    typer.echo(f"Model: {model_type}  |  RPS conditioning: {use_rps}  |  RPS prediction head: {predict_rps}")
+
+    # ------------------------------------------------------------------
+    # 6. Run inference
+    # ------------------------------------------------------------------
+    from ml_collections import ConfigDict
+    cfg_obj = cfg if isinstance(cfg, ConfigDict) else ConfigDict(cfg)
+
+    for audio_path_str in audio_files:
+        audio_path = _Path(audio_path_str)
+        stem = audio_path.stem
+
+        # Determine RPS path
+        rps_path: _Path | None = None
+        if rps_file:
+            rps_path = _Path(rps_file)
+        elif use_rps or predict_rps:
+            # Try same stem with .npy
+            candidate = audio_path.with_suffix(".npy")
+            if candidate.exists():
+                rps_path = candidate
+            else:
+                typer.echo(f"  [WARN] RPS file not found for {stem}, skipping RPS.")
+
+        # Load RPS if needed
+        rps_data = None
+        if rps_path and rps_path.exists():
+            rps_data = np.load(str(rps_path))
+            typer.echo(f"  Loaded RPS: {rps_path.name} shape={rps_data.shape}")
+
+        # Load audio
+        mix, sr = read_audio_transposed(str(audio_path))
+        mix_tensor = torch.from_numpy(mix).float()
+
+        typer.echo(f"  Processing: {audio_path.name}  ({mix.shape[-1]/sr:.2f}s)")
+
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=getattr(cfg_obj.training, "use_amp", True)):
+            result = demix(
+                cfg_obj,
+                model,
+                mix_tensor,
+                device_obj,
+                model_type=model_type,
+                rps=rps_data,
+            )
+
+        # result: dict[str, np.ndarray] or np.ndarray (demucs single instrument)
+        if isinstance(result, dict):
+            for instr, audio in result.items():
+                out_wav = output_path / f"{stem}_out_{instr}.wav"
+                sf.write(str(out_wav), audio.T, sr)
+                typer.echo(f"    -> {out_wav.name}")
+        else:
+            out_wav = output_path / f"{stem}_out.wav"
+            sf.write(str(out_wav), result.T, sr)
+            typer.echo(f"    -> {out_wav.name}")
+
+        # Save RPS data if provided (for models with RPS conditioning)
+        if rps_data is not None:
+            out_rps = output_path / f"{stem}_out_rps.npy"
+            np.save(str(out_rps), rps_data)
+            typer.echo(f"    -> {out_rps.name}")
+
+    typer.echo(f"\nDone. Outputs in: {output_path}")
