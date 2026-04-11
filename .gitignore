@@ -11,3 +11,6 @@ results/
 drones-with-speeds.md
 .ipynb_checkpoints/
 .claude/worktrees/
+
+# Trello project config (may contain workspace names)
+.trello
