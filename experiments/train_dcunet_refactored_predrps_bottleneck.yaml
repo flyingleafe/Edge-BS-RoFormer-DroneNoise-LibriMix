@@ -5,6 +5,11 @@
 model:
   type: dcunet_refactored
   base_config: configs/13a_DCUNetRefactored_PredRPS_bottleneck.yaml
+  overrides:
+    training.data_path:
+      - "datasets/DREGON-LM/train"
+    training.valid_path:
+      - "datasets/DREGON-LM/valid"
 
 dataset:
   name: DREGON-LM
