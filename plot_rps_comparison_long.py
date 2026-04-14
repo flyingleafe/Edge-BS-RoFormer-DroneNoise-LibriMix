@@ -28,8 +28,10 @@ def plot_sample_comparison(sample_dir, output_dir):
     dcunet_pred = dcunet_pred[:, :min_len]
     dccrn_pred = dccrn_pred[:, :min_len]
     
-    # Time axis (assuming ~929 Hz RPS sampling rate)
-    t = np.arange(min_len) / 929.0  # seconds
+    # Time axis - calculate from actual duration
+    # Audio is 8 seconds, RPS is subsampled proportionally
+    duration = 8.0  # seconds
+    t = np.linspace(0, duration, min_len)  # seconds
     
     # Colors for rotors
     rotor_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
