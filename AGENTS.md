@@ -46,10 +46,14 @@ harmonic-noise-suppression/
 │   ├── 10b_DCCRN_RPS_DREGON.yaml  # DCCRN + RPS (DREGON-LM)
 │   ├── 10c_DCCRNLite_RPS_DREGON.yaml # DCCRNLite + RPS
 │   ├── 10d_DCCRN_RPS_PredRPS_DREGON.yaml # DCCRN + RPS + auxiliary RPS pred
+│   ├── 12a_DCUNetRefactored_baseline.yaml # DCUNetRefactored baseline (no RPS)
+│   ├── 12b_DCUNetRefactored_decoder_bottleneck.yaml # Decoder bottleneck RPS fusion
+│   ├── 12c_DCUNetRefactored_decoder_hierarchical.yaml # Decoder hierarchical RPS fusion
 │   └── test_cpu_dregon_*.yaml     # CPU test configs
 ├── models/                         # Model implementations
 │   ├── edge_bs_rof/               # Edge-BS-RoFormer (band-split RoPE transformer)
 │   ├── dcunet.py                  # DCUNet + RPS conditioning + RPSPredictionHead
+│   ├── dcunet_refactored.py       # DCUNetRefactored with separate Encoder/Decoder
 │   ├── dccrn.py                   # DCCRN (complex conv recurrent) + RPS conditioning
 │   ├── dptnet/                    # DPTNet baseline
 │   ├── demucs4ht.py               # HTDemucs baseline
@@ -120,11 +124,23 @@ Model type keys used in `train.py --model_type` and config files (defined in `ut
 |-----|-------|-------|
 | `edge_bs_rof` | Edge-BS-RoFormer (BSRoformer) | Band-split RoPE transformer (Paper 1 proposed) |
 | `mel_band_roformer` | MelBandRoformer | Mel-band variant of roformer |
-| `dcunet` | DCUNet | Deep Complex U-Net, supports RPS conditioning |
-| `dccrn` | DCCRN | Deep Complex Conv Recurrent Network, supports RPS |
+| `dcunet` | DCUNet | Deep Complex U-Net (original), supports RPS conditioning |
+| `dcunet_refactored` | DCUNetRefactored | DCUNet with separate Encoder/Decoder, **decoder-only RPS** |
+| `dccrn` | DCCRN | Deep Complex Conv Recurrent Network (original), supports RPS |
+| `dccrn_refactored` | DCCRNRefactored | DCCRN with separate Encoder/Decoder, **decoder-only RPS** |
 | `dptnet` | DPTNet | Dual-path transformer |
 | `htdemucs` | HTDemucs | Hybrid transformer Demucs |
 | `diffusion_buffer` | DiffusionBufferModel | BBED diffusion-based enhancement |
+
+### Refactored Models (DCUNetRefactored, DCCRNRefactored)
+
+The refactored models (`models/dcunet_refactored.py`) have separate `EncoderModule` and `DecoderModule` classes:
+- **Encoder**: Clean feature extraction (no RPS input)
+- **Decoder**: Receives RPS data for conditioning
+
+Two decoder RPS fusion strategies:
+- `decoder_rps_fusion: bottleneck` — RPS injected at start of decoder
+- `decoder_rps_fusion: hierarchical` — RPS injected at multiple decoder levels
 
 ## Datasets
 

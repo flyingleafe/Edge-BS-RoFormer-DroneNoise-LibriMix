@@ -150,15 +150,27 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
 
         model = TFC_TDF_net(config)
     elif model_type == "dcunet":
-        # DCUNet model
+        # DCUNet model (original implementation)
         from models.dcunet import DCUNet
 
         model = DCUNet(config)
+    elif model_type == "dcunet_refactored":
+        # Refactored DCUNet with separate Encoder/Decoder modules
+        # RPS conditioning is decoder-side only
+        from models.dcunet_refactored import DCUNetRefactored
+
+        model = DCUNetRefactored(config)
     elif model_type == "dccrn":
-        # DCCRN model - Deep Complex Convolution Recurrent Network
+        # DCCRN model - Deep Complex Convolution Recurrent Network (original)
         from models.dccrn import DCCRN
 
         model = DCCRN(config)
+    elif model_type == "dccrn_refactored":
+        # Refactored DCCRN with separate Encoder/Decoder modules
+        # RPS conditioning is decoder-side only
+        from models.dcunet_refactored import DCCRNRefactored
+
+        model = DCCRNRefactored(config)
     elif model_type == "rps_predictor":
         # Standalone RPS predictor (real-valued encoder on log-mag spectrograms)
         from train_rps_predictor import RPSPredictor
