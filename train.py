@@ -545,8 +545,10 @@ def get_model_output(
     """Run model inference (no target) and return predicted audio. Handles edge_bs_rof/diffusion_buffer vs others."""
     if args.model_type in ["mel_band_roformer", "edge_bs_rof", "diffusion_buffer"]:
         return model(x)
+    # Handle original and refactored DCUNet/DCCRN with RPS
+    rps_models = ("dcunet", "dccrn", "dcunet_refactored", "dccrn_refactored")
     if (
-        args.model_type in ("dcunet", "dccrn")
+        args.model_type in rps_models
         and getattr(model, "use_rps", False)
         and rps is not None
     ):
@@ -849,7 +851,7 @@ def train_one_epoch(
                     rps_pred = model(x.squeeze(1))
                     y_ = None
                 elif (
-                    args.model_type in ("dcunet", "dccrn")
+                    args.model_type in ("dcunet", "dccrn", "dcunet_refactored", "dccrn_refactored")
                     and getattr(model, "use_rps", False)
                     and rps is not None
                 ):

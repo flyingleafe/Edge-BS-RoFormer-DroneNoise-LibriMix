@@ -870,9 +870,12 @@ class MSSDataset(torch.utils.data.Dataset):
         num_rotors = getattr(self.config, "num_rotors", 4)
 
         if (use_rps or load_rps) and num_rotors > 0:
-            # Target RPS length for batching (pad/truncate to this length)
-            # Default: 1000 samples (~1 second at ~1000Hz motor rate)
-            rps_length = getattr(self.config, "rps_length", 1000)
+            # Resample RPS to match STFT time frames (same as train_rps_predictor.py)
+            # This ensures proper alignment between audio and RPS
+            n_fft = getattr(self.config.audio, 'n_fft', 2048)
+            hop_length = getattr(self.config.audio, 'hop_length', 512)
+            # Number of STFT time frames (matching torch.stft behavior)
+            n_stft_frames = mix.shape[-1] // hop_length + 1
 
             if (
                 load_rps
@@ -883,26 +886,17 @@ class MSSDataset(torch.utils.data.Dataset):
                 rps_path = os.path.join(self._last_sample_path, "rps.npy")
                 if os.path.exists(rps_path):
                     rps_data = np.load(rps_path)  # (4, n_motor_samples)
-                    # Pad or truncate to fixed length for batching
-                    current_len = rps_data.shape[1]
-                    if current_len < rps_length:
-                        # Pad with last value (repeat edge)
-                        pad_width = rps_length - current_len
-                        rps_data = np.pad(
-                            rps_data, ((0, 0), (0, pad_width)), mode="edge"
-                        )
-                    elif current_len > rps_length:
-                        # Truncate
-                        rps_data = rps_data[:, :rps_length]
-                    rps_tensor = torch.tensor(rps_data, dtype=torch.float32)
+                    rps_tensor = torch.from_numpy(rps_data).float().unsqueeze(0)  # (1, 4, n_motor_samples)
+                    # Resample RPS to match STFT time frames via linear interpolation
+                    rps_tensor = F.interpolate(
+                        rps_tensor, size=n_stft_frames, mode="linear", align_corners=False
+                    ).squeeze(0)  # (4, n_stft_frames)
                 else:
                     # Fallback to zeros if file doesn't exist
-                    rps_tensor = torch.zeros(
-                        (num_rotors, rps_length), dtype=torch.float32
-                    )
+                    rps_tensor = torch.zeros((num_rotors, n_stft_frames), dtype=torch.float32)
             else:
                 # Placeholder zeros (no RPS file available)
-                rps_tensor = torch.zeros((num_rotors, rps_length), dtype=torch.float32)
+                rps_tensor = torch.zeros((num_rotors, n_stft_frames), dtype=torch.float32)
 
             if self.config.training.target_instrument is not None:
                 index = self.config.training.instruments.index(

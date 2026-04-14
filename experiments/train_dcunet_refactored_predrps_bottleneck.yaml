@@ -1,0 +1,17 @@
+# Experiment: DCUNetRefactored with Decoder Bottleneck RPS + PredRPS
+# Multi-task learning: audio enhancement + auxiliary RPS prediction
+# Uses decoder-side RPS fusion (not encoder-side)
+
+model:
+  type: dcunet_refactored
+  base_config: configs/13a_DCUNetRefactored_PredRPS_bottleneck.yaml
+
+dataset:
+  name: DREGON-LM
+
+run:
+  max_duration: 24h
+  checkpoint_interval: 1h
+
+wandb:
+  tags: [dcunet_refactored, PredRPS, decoder_bottleneck, multi_task]

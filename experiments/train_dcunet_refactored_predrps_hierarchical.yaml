@@ -1,0 +1,17 @@
+# Experiment: DCUNetRefactored with Decoder Hierarchical RPS + PredRPS
+# Multi-task learning: audio enhancement + auxiliary RPS prediction
+# Uses decoder-side hierarchical RPS fusion (injected at multiple decoder levels)
+
+model:
+  type: dcunet_refactored
+  base_config: configs/13b_DCUNetRefactored_PredRPS_hierarchical.yaml
+
+dataset:
+  name: DREGON-LM
+
+run:
+  max_duration: 24h
+  checkpoint_interval: 1h
+
+wandb:
+  tags: [dcunet_refactored, PredRPS, decoder_hierarchical, multi_task]
