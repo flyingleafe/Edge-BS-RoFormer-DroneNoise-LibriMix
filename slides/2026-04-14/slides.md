@@ -22,349 +22,158 @@ mdc: true
 
 ---
 
-# Motivation: Why Predict Rotor Speed?
+# Why This Experiment
 
-## Rotor Per-Second (RPS) Conditioning
-
-```mermaid
-flowchart LR
-    A[Noisy Speech<br/>with Drone Noise] --> B[Multi-rotor UAV<br/>4 Rotors]
-    B --> C[Rotor Speed<br/>≈ 929 Hz]
-    C --> D[Harmonic<br/>Noise Pattern]
-    D --> E[Speech<br/>Enhancement]
-    
-    F[RPS Signal] --> |Conditions| E
-```
-
-**Key insight**: Drone noise harmonics depend directly on rotor speed. Providing RPS as a conditioning signal helps models better separate speech from noise.
+- Multi-task training (`denoising + RPS prediction`) was much worse than baseline.
+- Question: is RPS prediction itself broken for `DCUNet` / `DCCRN` encoders?
+- So we isolated pure RPS prediction and compared against `SimpleConv`.
 
 ---
 
-# RPS Prediction Models Evaluated
+# What I Have Been Doing
 
-## Three Architectures Compared
-
-```mermaid
-graph TD
-    subgraph SimpleConv
-        A1[Log-Mag<br/>Spectrogram] --> B1[Real Conv2D<br/>45 ch]
-        B1 --> C1[Blocks<br/>128-256-512]
-        C1 --> D1[FPN Head<br/>4 RPS]
-    end
-    
-    subgraph DCUNet
-        A2[Complex<br/>Spectrogram] --> B2[ComplexConv<br/>Encoder]
-        B2 --> C2[Complex<br/>UNet Blocks]
-        C2 --> D2[FPN Head<br/>4 RPS]
-    end
-    
-    subgraph DCCRN
-        A3[Complex<br/>Spectrogram] --> B3[ComplexConv<br/>+ LSTM]
-        B3 --> C3[DCCRN<br/>Blocks]
-        C3 --> D3[FPN Head<br/>4 RPS]
-    end
-```
+- RPS prediction with `DCUNet` / `DCCRN` encoders vs `SimpleConv` baseline
+- Goal: identify architectural limitations affecting motor-speed prediction
+- In parallel: debug and restart multi-task experiments (`WIP`)
 
 ---
 
-# Evaluation Results: Metrics Comparison
+# RPS Predictor Architectures
 
-## 5 Random Validation Samples from DREGON-LM
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 10px;">
+  <div style="border: 1px solid #c8c87a; border-radius: 8px; padding: 10px;">
+    <div style="font-size: 0.85em; font-weight: 600; margin-bottom: 8px;">SimpleConv</div>
+    <div style="font-size: 0.8em; line-height: 1.35;">
+      Log-Mag STFT<br/>
+      ↓<br/>
+      Real Conv Blocks<br/>
+      ↓<br/>
+      FPN Head<br/>
+      ↓<br/>
+      4-Rotor RPS
+    </div>
+  </div>
+  <div style="border: 1px solid #c8c87a; border-radius: 8px; padding: 10px;">
+    <div style="font-size: 0.85em; font-weight: 600; margin-bottom: 8px;">DCUNet Encoder + RPS Head</div>
+    <div style="font-size: 0.8em; line-height: 1.35;">
+      Complex STFT<br/>
+      ↓<br/>
+      DCUNet Encoder<br/>
+      ↓<br/>
+      FPN Head<br/>
+      ↓<br/>
+      4-Rotor RPS
+    </div>
+  </div>
+  <div style="border: 1px solid #c8c87a; border-radius: 8px; padding: 10px;">
+    <div style="font-size: 0.85em; font-weight: 600; margin-bottom: 8px;">DCCRN Encoder + RPS Head</div>
+    <div style="font-size: 0.8em; line-height: 1.35;">
+      Complex STFT<br/>
+      ↓<br/>
+      DCCRN Encoder<br/>
+      ↓<br/>
+      FPN Head<br/>
+      ↓<br/>
+      4-Rotor RPS
+    </div>
+  </div>
+</div>
 
-![Summary Metrics](assets/rps_comparison/summary_metrics.png)
+---
+
+<div style="font-size: 80%;">
+
+# Metrics (5 Validation Samples)
+
+<img src="./assets/rps_comparison/summary_metrics.png" style="max-height: 20vh; width: auto; margin: 0 auto; display: block;" />
 
 | Model | RMSE ↓ | MAE ↓ | R² ↑ |
 |-------|--------|-------|------|
-| **simple_conv** | **1.52** | **1.17** | **0.84** |
-| dcunet | 2.20 | 1.75 | 0.67 |
-| dccrn | 2.16 | 1.69 | 0.68 |
-
-**Finding**: SimpleConv baseline outperforms complex encoder models!
-
----
-
-# Evaluation Results: Time Series Comparison
-
-## RPS Predictions vs Ground Truth
-
-![RPS Time Series](assets/rps_comparison/rps_timeseries.png)
-
-**Observation**: All models capture the general trend, but SimpleConv has less variance in predictions.
-
----
-
-# Sample-by-Sample Performance
-
-## Individual Sample Metrics
-
-<div class="grid grid-cols-3 gap-4">
-
-<div>
-
-### Sample 00114
-| Model | MAE |
-|-------|-----|
-| SimpleConv | 1.04 |
-| DCUNet | 1.38 |
-| DCCRN | 1.40 |
-
-</div>
-
-<div>
-
-### Sample 00025
-| Model | MAE |
-|-------|-----|
-| SimpleConv | 1.32 |
-| DCUNet | 2.11 |
-| DCCRN | 2.19 |
-
-</div>
-
-<div>
-
-### Sample 00250
-| Model | MAE |
-|-------|-----|
-| SimpleConv | 0.92 |
-| DCUNet | 1.38 |
-| DCCRN | 1.15 |
-
-</div>
+| **SimpleConv** | **1.63** | **1.16** | **0.82** |
+| DCUNet | 2.62 | 1.69 | 0.56 |
+| DCCRN | 2.46 | 1.54 | 0.61 |
 
 </div>
 
 ---
 
-# Why Does SimpleConv Outperform?
-
-## Analysis
-
-```mermaid
-flowchart LR
-    A[Complex Encoders] --> B[Multi-task Dilution<br/>Audio Enhancement<br/>+ RPS Prediction]
-    A --> C[Overfitting to<br/>Speech Enhancement]
-    A --> D[Complex Convolutions<br/>Harder to Optimize]
-    
-    E[SimpleConv] --> F[Single-task Focus<br/>RPS Prediction Only]
-    E --> G[Real-valued Conv<br/>Easier Optimization]
-```
-
-**Hypotheses**:
-1. Complex models are optimized for speech enhancement, not RPS prediction
-2. Multi-task learning dilutes RPS prediction performance
-3. Real-valued convolutions may be easier to optimize for this task
-
----
-
-# New Architecture: Refactored Models
-
-## Decoder-Only RPS Injection
-
-```mermaid
-flowchart TB
-    subgraph Encoder
-        A[Input Audio] --> B[Complex Conv<br/>Encoder]
-        B --> C[Multi-scale<br/>Features]
-        C --> D[Shared<br/>Encoder]
-    end
-    
-    subgraph Decoder
-        E[RPS<br/>Input] --> F[RotorEncoder<br/>4→64 dim]
-        F --> G[Decoder<br/>+ RPS Fusion]
-        C --> G
-        G --> H[Enhanced<br/>Audio Output]
-    end
-    
-    subgraph PredictionHead
-        C --> I[FPN-style<br/>RPS Head]
-        I --> J[Predicted<br/>RPS]
-    end
-```
-
-**Key change**: RPS conditioning is now **decoder-side only**, not encoder-side.
-
----
-
-# Decoder RPS Fusion Strategies
-
-## Bottleneck vs Hierarchical
-
-```mermaid
-flowchart LR
-    subgraph Bottleneck
-        A[Encoder Output] --> B[RPS Features]
-        B --> C[Inject at<br/>Bottleneck]
-        C --> D[Full Decoder]
-    end
-    
-    subgraph Hierarchical
-        E[Encoder Output] --> F[RPS Features]
-        F --> G[Inject at<br/>Level 1]
-        F --> H[Inject at<br/>Level 2]
-        F --> I[Inject at<br/>Level 3]
-        G --> J[Decoder]
-        H --> J
-        I --> J
-    end
-```
-
-- **Bottleneck**: Single injection point at start of decoder
-- **Hierarchical**: Distributed injection at multiple decoder levels
-
----
-
-# Multi-Task Learning Setup
-
-## Auxiliary RPS Prediction with FPN Head
-
-```mermaid
-flowchart TD
-    A[Input Audio] --> B[Encoder]
-    B --> C[Multi-scale Features]
-    C --> D[Decoder<br/>+ RPS]
-    D --> E[Enhanced Audio]
-    
-    C --> F[FPN Head]
-    F --> G[Predicted RPS]
-    
-    G --> H[Loss = L_audio + λ × L_rps]
-    H --> I[Total Loss]
-```
-
-**Configuration**:
-- `predict_rps: true`
-- `rps_aux_weight: 0.1`
-- λ = 0.1 (auxiliary loss weight)
-
----
-
-# Current Training Experiments
-
-## Running on Vast-Server GPUs
-
-| Job ID | Model | Strategy | GPU | Status |
-|--------|-------|----------|-----|--------|
-| 3b21a556e127 | DCUNetRefactored | Bottleneck | 0 | Training |
-| 2d3a2c6bcaa5 | DCUNetRefactored | Hierarchical | 1 | Training |
-| 8d03823364d9 | DCCRNRefactored | Bottleneck | - | Queued |
-| 25922d874184 | DCCRNRefactored | Hierarchical | - | Queued |
-
-**Dataset**: DREGON-LM (DREGON + LibriMix)
-- 6000 training samples, 8.224s each
-- Real motor telemetry from DREGON dataset
-
----
-
-# Experiment Configuration
-
-## Config Files Created
-
-```
-configs/
-├── 13a_DCUNetRefactored_PredRPS_bottleneck.yaml
-├── 13b_DCUNetRefactored_PredRPS_hierarchical.yaml
-├── 13c_DCCRNRefactored_PredRPS_bottleneck.yaml
-└── 13d_DCCRNRefactored_PredRPS_hierarchical.yaml
-```
-
-**Key settings**:
-- `use_rps: true` (decoder-side only)
-- `predict_rps: true` (auxiliary RPS prediction)
-- `rps_aux_weight: 0.1`
-- `dcunet_rps_fusion: bottleneck` / `hierarchical`
-
----
-
-# Visualizations: Sample Plots
-
-## Spectrogram + RPS Time Series
-
-<div class="grid grid-cols-2 gap-4">
-
-<div>
-
-### Sample 00114
-
-![Sample 00114](assets/rps_comparison/sample_00114_plot.png)
-
-</div>
-
-<div>
-
-### Sample 00025
-
-![Sample 00025](assets/rps_comparison/sample_00025_plot.png)
-
-</div>
-
+<div style="font-size: 80%;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start;">
+    <div>
+      <div style="font-size: 0.85em; margin-bottom: 6px;">sample_00000</div>
+      <img src="./assets/rps_comparison/sample_00000_plot.png" style="max-height: 40vh; width: auto; margin: 0 auto; display: block;" />
+    </div>
+    <div>
+      <div style="font-size: 0.85em; margin-bottom: 6px;">sample_00149</div>
+      <img src="./assets/rps_comparison/sample_00149_plot.png" style="max-height: 40vh; width: auto; margin: 0 auto; display: block;" />
+    </div>
+  </div>
 </div>
 
 ---
 
-# Visualizations: More Samples
-
-## Samples 00250 and 00281
-
-<div class="grid grid-cols-2 gap-4">
-
-<div>
-
-### Sample 00250
-
-![Sample 00250](assets/rps_comparison/sample_00250_plot.png)
-
+<div style="font-size: 80%;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start;">
+    <div>
+      <div style="font-size: 0.85em; margin-bottom: 6px;">sample_00449</div>
+      <img src="./assets/rps_comparison/sample_00449_plot.png" style="max-height: 40vh; width: auto; margin: 0 auto; display: block;" />
+    </div>
+    <div>
+      <div style="font-size: 0.85em; margin-bottom: 6px;">sample_00599</div>
+      <img src="./assets/rps_comparison/sample_00599_plot.png" style="max-height: 40vh; width: auto; margin: 0 auto; display: block;" />
+    </div>
+  </div>
 </div>
 
-<div>
+---
 
-### Sample 00281
+# Main Result
 
-![Sample 00281](assets/rps_comparison/sample_00281_plot.png)
+- `DCUNet` / `DCCRN` encoders with attached RPS heads are worse than `SimpleConv`
+- This supports the hypothesis that these encoder setups are not ideal for RPS prediction
 
-</div>
+---
 
+# Critical Issues Found in Initial Multi-Task Setup
+
+- Ground-truth RPS was injected at the **encoder** while the encoder also predicted RPS
+- This made the auxiliary prediction objective partially meaningless
+- RPS output was not normalized
+- RPS loss dominated encoder updates and destabilized training dynamics
+
+---
+
+# Why We Restarted Multi-Task Experiments
+
+- The RPS predictor comparison gave a real signal: architecture matters
+- But the first multi-task setup had severe confounders
+- We fixed those issues and relaunched experiments (`WIP`)
+- Detailed multi-task results will follow later
+
+---
+
+# Current Training Dynamics (Restarted Multi-Task)
+
+<div style="font-size: 80%;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start;">
+    <img src="/@fs/home/flyingleafe/.cursor/projects/home-flyingleafe-Research-PhD-projects-harmonic-noise-suppression/assets/image-34e12723-7a58-480e-835a-1bfce252c71e.png" style="max-height: 42vh; width: auto; margin: 0 auto; display: block;" />
+    <img src="/@fs/home/flyingleafe/.cursor/projects/home-flyingleafe-Research-PhD-projects-harmonic-noise-suppression/assets/image-3b697345-700c-4d0f-bc24-f7632684f77d.png" style="max-height: 42vh; width: auto; margin: 0 auto; display: block;" />
+  </div>
+  <div style="margin-top: 10px; text-align: left;">
+    - `DCCRN (RPS+denoising, debugged)` appears on track to at least match the DREGON baseline.<br/>
+    - `DCUNet (RPS+denoising, debugged)` still appears to underperform and likely needs further architectural/debugging work.
+  </div>
 </div>
 
 ---
 
 # Next Steps
 
-## Planned Work
+- Progress has been bad last month: I still had issues to finish up on the job I'm leaving
+- But we have 1.5 months more for more focused research due to interruption extension
+- Experimental directions to tackle before 18 May (arrival to London, end of extended interruption):
+  - Still, diffusion models
+  - Transformer architectures replacing convolutional architectures
+  - Achieve good results separately on RPS prediction and on noise generation; then try to combine obtained RPS predictor and noise generator into the denoising model
 
-1. **Wait for training completion** (24h max duration)
-2. **Evaluate refactored models** on DREGON-LM validation set
-3. **Compare with baselines**:
-   - DCUNet baseline (no RPS)
-   - DCUNet with encoder-side RPS (old approach)
-4. **Analyze RPS prediction accuracy** from auxiliary head
-5. **Final evaluation** with metrics: SI-SDR, PESQ, STOI, ESTOI
-
----
-
-# Summary
-
-## Key Takeaways
-
-✅ **RPS prediction evaluation completed** for 3 models on 5 samples
-
-✅ **SimpleConv outperforms complex models** in RPS prediction:
-- RMSE: 1.52 vs 2.20/2.16
-- R²: 0.84 vs 0.67/0.68
-
-✅ **Refactored DCUNet/DCCRN** with decoder-only RPS injection
-
-✅ **4 training experiments submitted** via postdoc
-
-⏳ **Training in progress** — results expected soon
-
----
-
-# Thank You
-
-## Questions?
-
-**Project**: Harmonic Noise Suppression  
-**Date**: April 14, 2026  
-**Contact**: flyingleafe
-
+Main issue is lack of continuous worktime spent on research still. There has not been a full day which I could entirely spend thinking about the research yet. Expectation of good progress in such a regime was incorrect. I spend too much time debugging experiment issues due to using AI for quick implementation, negating speed-ups from AI use.
