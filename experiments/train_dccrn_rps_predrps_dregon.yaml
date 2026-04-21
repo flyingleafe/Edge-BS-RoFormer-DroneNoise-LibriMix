@@ -1,0 +1,13 @@
+# Train + Eval: DCCRN+RPS with auxiliary RPS prediction on DREGON-LM
+model:
+  type: dccrn
+  base_config: configs/10d_DCCRN_RPS_PredRPS_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+eval:
+  metrics: [estoi, si_sdr, pesq]
+
+wandb:
+  tags: [dccrn, rps, predrps, dregon]

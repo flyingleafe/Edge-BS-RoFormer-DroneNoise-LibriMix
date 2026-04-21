@@ -1,0 +1,53 @@
+# Refactored DCCRN with Decoder Hierarchical RPS Fusion + Auxiliary RPS Prediction
+# RPS is injected at multiple decoder levels (decoder-only RPS)
+# Multi-task learning: main loss for audio + auxiliary loss for RPS prediction
+
+audio:
+  chunk_size: 131584
+  dim_f: 1024
+  dim_t: 515
+  hop_length: 512
+  n_fft: 2048
+  num_channels: 1
+  sample_rate: 16000
+  min_mean_abs: 0.000
+
+model: dccrn_refactored
+use_rps: true
+load_rps: true
+rps_length: 8500  # ~8.5s at ~1000Hz native motor rate
+decoder_rps_fusion: hierarchical  # Decoder-side RPS fusion at multiple levels
+num_rotors: 4
+predict_rps: true  # Enable auxiliary RPS prediction head
+
+training:
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  grad_clip: 0
+  instruments:
+    - vocals
+    - noise
+  lr: 5.0e-4
+  patience: 2
+  reduce_factor: 0.95
+  target_instrument: vocals
+  num_epochs: 1000
+  num_steps: 200
+  q: 0.95
+  coarse_loss_clip: true
+  ema_momentum: 0.999
+  optimizer: adamw
+  other_fix: false
+  use_amp: true
+  rps_aux_weight: 0.1  # Weight for auxiliary RPS prediction loss
+  early_stop:
+    enabled: true
+    patience: 10
+    metric: "si-sdr"
+
+augmentations:
+  enable: false  # Disable augmentations to preserve RPS alignment
+
+inference:
+  batch_size: 4
+  num_overlap: 4

@@ -1,0 +1,16 @@
+# Eval-only: DCUNet+RPS on DREGON-LM valid split
+eval_only: true
+checkpoint: results/dcunet_rps_dregon/model_dcunet_ep_124_sdr_1.2997.ckpt
+
+model:
+  type: dcunet
+  base_config: configs/7a_DCUNet_RPS_DREGON.yaml
+
+dataset:
+  name: DREGON-LM
+
+eval:
+  metrics: [estoi, si_sdr, pesq]
+
+wandb:
+  tags: [eval, dcunet, rps, dregon]

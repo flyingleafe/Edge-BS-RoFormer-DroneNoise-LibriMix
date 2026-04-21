@@ -15,7 +15,7 @@ set -e  # Exit on error
 # ============================================================================
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_HOST="vast-server"
-REMOTE_PATH="Edge-BS-RoFormer-DroneNoise-LibriMix/results/evaluation"
+REMOTE_PATH="harmonic-noise-suppression/results/evaluation"
 LOCAL_PATH="${PROJECT_DIR}/results/evaluation"
 
 # Colors for output
@@ -51,30 +51,30 @@ main() {
     log_info "Syncing evaluation results from ${REMOTE_HOST}..."
     log_info "Remote path: ${REMOTE_HOST}:${REMOTE_PATH}"
     log_info "Local path: ${LOCAL_PATH}"
-    
+
     # Create local directory if it doesn't exist
     mkdir -p "${LOCAL_PATH}"
-    
+
     # Test SSH connection
     log_info "Testing SSH connection to ${REMOTE_HOST}..."
     if ! ssh -o ConnectTimeout=5 "${REMOTE_HOST}" "echo 'Connection successful'" > /dev/null 2>&1; then
         log_error "Cannot connect to ${REMOTE_HOST}. Please check your SSH configuration."
         exit 1
     fi
-    
+
     # Check if remote path exists
     log_info "Checking if remote path exists..."
     if ! ssh "${REMOTE_HOST}" "test -d ${REMOTE_PATH}" 2>/dev/null; then
         log_error "Remote path does not exist: ${REMOTE_HOST}:${REMOTE_PATH}"
         exit 1
     fi
-    
+
     # Perform rsync
     log_info "Starting rsync..."
     rsync -avz --progress \
         "${REMOTE_HOST}:${REMOTE_PATH}/" \
         "${LOCAL_PATH}/"
-    
+
     if [ $? -eq 0 ]; then
         log_success "Results synced successfully!"
         log_info "Local results available at: ${LOCAL_PATH}"

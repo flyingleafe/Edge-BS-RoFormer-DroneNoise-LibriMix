@@ -74,9 +74,9 @@ def calculate_pesq(ref, est, orig_sr):
     return score
 
 # Calculate STOI metric function
-def calculate_stoi(ref, est, orig_sr):
+def calculate_stoi(ref, est, orig_sr, extended=False):
     """
-    Calculate Short-Time Objective Intelligibility (STOI) metric.
+    Calculate Short-Time Objective Intelligibility (STOI or ESTOI) metric.
 
     Parameters:
     ----------
@@ -86,11 +86,13 @@ def calculate_stoi(ref, est, orig_sr):
         Estimated audio signal
     orig_sr : int
         Original sample rate
+    extended : bool
+        If True, compute ESTOI instead of STOI
 
     Returns:
     -------
     float
-        STOI score, range [0, 1], higher is better
+        STOI/ESTOI score, range [0, 1], higher is better
     """
     # If 2D array, convert to mono
     if ref.ndim == 2:
@@ -110,12 +112,11 @@ def calculate_stoi(ref, est, orig_sr):
     est = librosa.resample(est, orig_sr=orig_sr, target_sr=target_sr)
 
     try:
-        # Calculate STOI score (extended=False uses original STOI algorithm)
-        score = stoi(ref, est, target_sr, extended=False)
+        score = stoi(ref, est, target_sr, extended=extended)
     except Exception as e:
-        print(f"[DEBUG] STOI calculation failed: {e}")
+        metric_name = "ESTOI" if extended else "STOI"
+        print(f"[DEBUG] {metric_name} calculation failed: {e}")
         score = np.nan
-
     return score
 
 def write_results_in_file(store_dir: str, logs: List[str]) -> None:
@@ -272,8 +273,20 @@ def process_audio_files(
     channels = 2 if stereo else 1
     dummy_input = torch.randn(1, channels, segment_length).to(device)
 
-    flops, _ = profile(model, inputs=(dummy_input,), verbose=False)
-    model_flops = flops / 1e9  # Giga FLOPs
+    # Build dummy RPS input for RPS-conditioned models so profile() doesn't crash
+    profile_inputs = (dummy_input,)
+    use_rps = config.get('use_rps', False) or config.get('load_rps', False)
+    if use_rps:
+        rps_length = config.get('rps_length', 8500)
+        num_rotors = config.get('num_rotors', 4)
+        dummy_rps = torch.randn(1, num_rotors, rps_length).to(device)
+        profile_inputs = (dummy_input, dummy_rps)
+
+    try:
+        flops, _ = profile(model, inputs=profile_inputs, verbose=False)
+        model_flops = flops / 1e9  # Giga FLOPs
+    except Exception:
+        model_flops = 0.0  # Skip FLOPs counting if profile fails
     model.to(device)
 
     # Initialize results collection list
@@ -299,6 +312,8 @@ def process_audio_files(
     # If stoi not in metrics, add to all_metrics
     if 'stoi' not in all_metrics:
         all_metrics['stoi'] = {instr: [] for instr in config.training.instruments}
+    if 'estoi' not in all_metrics and 'estoi' in args.metrics:
+        all_metrics['estoi'] = {instr: [] for instr in config.training.instruments}
 
     if is_tqdm:
         mixture_paths = tqdm(mixture_paths)
@@ -335,9 +350,16 @@ def process_audio_files(
         if device.type == 'cuda':
             torch.cuda.reset_peak_memory_stats()
 
+        # Load RPS data if model uses rotor conditioning
+        rps = None
+        if getattr(model, 'use_rps', False):
+            rps_path = os.path.join(folder, 'rps.npy')
+            if os.path.exists(rps_path):
+                rps = np.load(rps_path)
+
         # Record inference start time
         inference_start = time.time()
-        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type)
+        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type, rps=rps)
         inference_end = time.time()
         duration = mix.shape[-1] / sr  # Calculate audio duration (seconds)
         rtf = (inference_end - inference_start) / duration  # Calculate RTF = inference time / audio duration
@@ -406,6 +428,11 @@ def process_audio_files(
             track_metrics['stoi'] = stoi_score
             all_metrics['stoi'][instr].append(stoi_score)
 
+            if 'estoi' in args.metrics:
+                estoi_score = calculate_stoi(track, estimates, sr, extended=True)
+                track_metrics['estoi'] = estoi_score
+                all_metrics['estoi'][instr].append(estoi_score)
+
             # Collect validation metrics data for each instrument to results_data
             row = {
                 'ID': sample_id,
@@ -415,6 +442,7 @@ def process_audio_files(
                 'l1_freq': track_metrics.get('l1_freq', None),
                 'pesq': track_metrics.get('pesq', None),
                 'stoi': stoi_score,
+                'estoi': track_metrics.get('estoi', None),
                 'RTF': rtf,
                 'FLOPs_G': model_flops,
                 'GPU_Mem_MB': mem_usage
@@ -506,6 +534,67 @@ def compute_metric_avg(
     return metric_avg
 
 
+_SNR_LEVELS = [-30, -25, -20, -15, -10, -5, 0]
+
+def _nearest_snr_level(snr):
+    """Round SNR to nearest discrete level."""
+    return min(_SNR_LEVELS, key=lambda l: abs(snr - l))
+
+def compute_per_snr_summary(results_data, metrics, store_dir=None):
+    """Compute and print per-SNR-bin mean metrics, and optionally save CSV."""
+    if not results_data or not any(r.get('Input_SNR') is not None for r in results_data):
+        return
+
+    # Group by nearest SNR level
+    from collections import defaultdict
+    bins = defaultdict(list)
+    for row in results_data:
+        if row.get('Input_SNR') is None:
+            continue
+        level = _nearest_snr_level(row['Input_SNR'])
+        bins[level].append(row)
+
+    metric_names = [m for m in metrics if m not in ('sdr',)]  # skip sdr, keep the requested ones
+    if not metric_names:
+        metric_names = ['si_sdr']  # fallback
+
+    # Print header
+    header = f"{'SNR':>6}"
+    for m in metric_names:
+        header += f" | {m:>10}"
+    header += f" | {'N':>4}"
+    print("\n--- Per-SNR Summary ---")
+    print(header)
+    print("-" * len(header))
+
+    rows_for_csv = []
+    for level in sorted(bins.keys()):
+        samples = bins[level]
+        row_str = f"{level:>6}"
+        csv_row = {"snr_level": level, "n_samples": len(samples)}
+        for m in metric_names:
+            vals = [r[m] for r in samples if r.get(m) is not None and not np.isnan(r[m])]
+            mean_val = np.mean(vals) if vals else float('nan')
+            row_str += f" | {mean_val:>10.4f}"
+            csv_row[m] = round(float(mean_val), 4) if vals else None
+        row_str += f" | {len(samples):>4}"
+        print(row_str)
+        rows_for_csv.append(csv_row)
+
+    # Save CSV if store_dir provided
+    if store_dir:
+        import csv as csv_mod
+        parent_dir = os.path.dirname(store_dir)
+        csv_path = os.path.join(parent_dir, os.path.basename(store_dir) + "_per_snr.csv")
+        os.makedirs(parent_dir, exist_ok=True)
+        fieldnames = ["snr_level"] + metric_names + ["n_samples"]
+        with open(csv_path, "w", newline="") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows_for_csv)
+        print(f"Per-SNR summary saved to {csv_path}")
+
+
 def valid(
     model: torch.nn.Module,
     args,
@@ -540,6 +629,9 @@ def valid(
 
     # Load metadata and convert to dictionary keyed by id
     metadata_path = os.path.join(args.valid_path[0], "metadata.json")
+    if not os.path.exists(metadata_path):
+        # metadata.json may be at the dataset root (parent of valid/)
+        metadata_path = os.path.join(os.path.dirname(args.valid_path[0]), "metadata.json")
     with open(metadata_path, 'r') as f:
         metadata_json = json.load(f)
     # If json contains "valid" key, convert to dictionary
@@ -578,6 +670,9 @@ def valid(
             df.drop(columns=['instrument'], inplace=True)
         df.to_excel(excel_path, index=False)
         print(f"Validation results saved to {excel_path}")
+
+    # Per-SNR summary
+    compute_per_snr_summary(results_data, args.metrics, store_dir)
 
     # Continue with existing code
     instruments = prefer_target_instrument(config)
@@ -809,7 +904,7 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
                         "While this triples the runtime, it reduces noise and slightly improves prediction quality.")
     parser.add_argument("--metrics", nargs='+', type=str, default=["sdr"],
                         choices=['sdr', 'l1_freq', 'si_sdr', 'neg_log_wmse', 'aura_stft', 'aura_mrstft', 'bleedless',
-                                 'fullness', 'pesq', 'stoi'], help='List of metrics to use.')
+                                 'fullness', 'pesq', 'stoi', 'estoi'], help='List of metrics to use.')
     parser.add_argument("--lora_checkpoint", type=str, default='', help="Initial checkpoint to LoRA weights")
 
     if dict_args is not None:

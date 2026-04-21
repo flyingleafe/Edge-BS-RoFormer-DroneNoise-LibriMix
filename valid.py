@@ -1,5 +1,5 @@
 # coding: utf-8
-__author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
+__author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import required libraries
 import argparse
@@ -13,8 +13,19 @@ import soundfile as sf
 from tqdm.auto import tqdm
 from ml_collections import ConfigDict
 from typing import Tuple, Dict, List, Union
-from utils import demix, get_model_from_config, prefer_target_instrument, draw_spectrogram
-from utils import normalize_audio, denormalize_audio, apply_tta, read_audio_transposed, load_start_checkpoint
+from utils import (
+    demix,
+    get_model_from_config,
+    prefer_target_instrument,
+    draw_spectrogram,
+)
+from utils import (
+    normalize_audio,
+    denormalize_audio,
+    apply_tta,
+    read_audio_transposed,
+    load_start_checkpoint,
+)
 from metrics import get_metrics
 import warnings
 
@@ -51,16 +62,13 @@ def write_results_in_file(store_dir: str, logs: List[str]) -> None:
     results : List[str]
         List of results to write to file
     """
-    with open(f'{store_dir}/results.txt', 'w') as out:
+    with open(f"{store_dir}/results.txt", "w") as out:
         for item in logs:
             out.write(item + "\n")
 
 
 def get_mixture_paths(
-    args,
-    verbose: bool,
-    config: ConfigDict,
-    extension: str
+    args, verbose: bool, config: ConfigDict, extension: str
 ) -> List[str]:
     """
     Get paths to mixture audio files for validation.
@@ -84,7 +92,7 @@ def get_mixture_paths(
     try:
         valid_path = args.valid_path
     except Exception as e:
-        print('No valid path in args')
+        print("No valid path in args")
         raise e
 
     all_mixtures_path = []
@@ -92,22 +100,24 @@ def get_mixture_paths(
         part = sorted(glob.glob(f"{path}/*/mixture.{extension}"))
         if len(part) == 0:
             if verbose:
-                print(f'No validation data found in: {path}')
+                print(f"No validation data found in: {path}")
         all_mixtures_path += part
     if verbose:
-        print(f'Total mixtures: {len(all_mixtures_path)}')
-        print(f'Overlap: {config.inference.num_overlap} Batch size: {config.inference.batch_size}')
+        print(f"Total mixtures: {len(all_mixtures_path)}")
+        print(
+            f"Overlap: {config.inference.num_overlap} Batch size: {config.inference.batch_size}"
+        )
 
     return all_mixtures_path
 
 
 def update_metrics_and_pbar(
-        track_metrics: Dict,
-        all_metrics: Dict,
-        instr: str,
-        pbar_dict: Dict,
-        mixture_paths: Union[List[str], tqdm],
-        verbose: bool = False
+    track_metrics: Dict,
+    all_metrics: Dict,
+    instr: str,
+    pbar_dict: Dict,
+    mixture_paths: Union[List[str], tqdm],
+    verbose: bool = False,
 ) -> None:
     """
     Update evaluation metrics and progress bar.
@@ -131,7 +141,7 @@ def update_metrics_and_pbar(
         if verbose:
             print(f"Metric {metric_name:11s} value: {metric_value:.4f}")
         all_metrics[metric_name][instr].append(metric_value)
-        pbar_dict[f'{metric_name}_{instr}'] = metric_value
+        pbar_dict[f"{metric_name}_{instr}"] = metric_value
 
     if mixture_paths is not None:
         try:
@@ -147,7 +157,7 @@ def process_audio_files(
     config,
     device: torch.device,
     verbose: bool = False,
-    is_tqdm: bool = True
+    is_tqdm: bool = True,
 ) -> Dict[str, Dict[str, List[float]]]:
     """
     Process audio files and perform source separation evaluation.
@@ -178,14 +188,14 @@ def process_audio_files(
     instruments = prefer_target_instrument(config)
 
     # Get test-time augmentation (TTA) settings
-    use_tta = getattr(args, 'use_tta', False)
+    use_tta = getattr(args, "use_tta", False)
     # Get file storage directory
-    store_dir = getattr(args, 'store_dir', '')
+    store_dir = getattr(args, "store_dir", "")
     # Get audio encoding format
-    if 'extension' in config['inference']:
-        extension = config['inference']['extension']
+    if "extension" in config["inference"]:
+        extension = config["inference"]["extension"]
     else:
-        extension = getattr(args, 'extension', 'wav')
+        extension = getattr(args, "extension", "wav")
 
     # Initialize evaluation metrics dictionary
     all_metrics = {
@@ -205,28 +215,46 @@ def process_audio_files(
         folder = os.path.dirname(path)
 
         # Resample to target sample rate
-        if 'sample_rate' in config.audio:
-            if sr != config.audio['sample_rate']:
+        if "sample_rate" in config.audio:
+            if sr != config.audio["sample_rate"]:
                 orig_length = mix.shape[-1]
                 if verbose:
-                    print(f'Warning: sample rate is different. In config: {config.audio["sample_rate"]} in file {path}: {sr}')
-                mix = librosa.resample(mix, orig_sr=sr, target_sr=config.audio['sample_rate'], res_type='kaiser_best')
+                    print(
+                        f"Warning: sample rate is different. In config: {config.audio['sample_rate']} in file {path}: {sr}"
+                    )
+                mix = librosa.resample(
+                    mix,
+                    orig_sr=sr,
+                    target_sr=config.audio["sample_rate"],
+                    res_type="kaiser_best",
+                )
 
         if verbose:
             folder_name = os.path.abspath(folder)
-            print(f'Song: {folder_name} Shape: {mix.shape}')
+            print(f"Song: {folder_name} Shape: {mix.shape}")
 
         # Audio normalization
-        if 'normalize' in config.inference:
-            if config.inference['normalize'] is True:
+        if "normalize" in config.inference:
+            if config.inference["normalize"] is True:
                 mix, norm_params = normalize_audio(mix)
 
+        # Load RPS data if model uses rotor conditioning
+        rps = None
+        if getattr(model, "use_rps", False):
+            rps_path = os.path.join(folder, "rps.npy")
+            if os.path.exists(rps_path):
+                rps = np.load(rps_path)
+
         # Perform source separation using model
-        waveforms_orig = demix(config, model, mix.copy(), device, model_type=args.model_type)
+        waveforms_orig = demix(
+            config, model, mix.copy(), device, model_type=args.model_type, rps=rps
+        )
 
         # Apply test-time augmentation
         if use_tta:
-            waveforms_orig = apply_tta(config, model, mix, waveforms_orig, device, args.model_type)
+            waveforms_orig = apply_tta(
+                config, model, mix, waveforms_orig, device, args.model_type
+            )
 
         pbar_dict = {}
 
@@ -236,8 +264,10 @@ def process_audio_files(
                 print(f"Instr: {instr}")
 
             # Read original instrument track as reference
-            if instr != 'other' or config.training.other_fix is False:
-                track, sr1 = read_audio_transposed(f"{folder}/{instr}.{extension}", instr, skip_err=True)
+            if instr != "other" or config.training.other_fix is False:
+                track, sr1 = read_audio_transposed(
+                    f"{folder}/{instr}.{extension}", instr, skip_err=True
+                )
                 if track is None:
                     continue
             else:
@@ -248,26 +278,32 @@ def process_audio_files(
             estimates = waveforms_orig[instr]
 
             # Resample to original sample rate
-            if 'sample_rate' in config.audio:
-                if sr != config.audio['sample_rate']:
-                    estimates = librosa.resample(estimates, orig_sr=config.audio['sample_rate'], target_sr=sr,
-                                                 res_type='kaiser_best')
+            if "sample_rate" in config.audio:
+                if sr != config.audio["sample_rate"]:
+                    estimates = librosa.resample(
+                        estimates,
+                        orig_sr=config.audio["sample_rate"],
+                        target_sr=sr,
+                        res_type="kaiser_best",
+                    )
                     estimates = librosa.util.fix_length(estimates, size=orig_length)
 
             # Denormalize
-            if 'normalize' in config.inference:
-                if config.inference['normalize'] is True:
+            if "normalize" in config.inference:
+                if config.inference["normalize"] is True:
                     estimates = denormalize_audio(estimates, norm_params)
 
             # Save separation results
             if store_dir:
                 os.makedirs(store_dir, exist_ok=True)
                 out_wav_name = f"{store_dir}/{os.path.basename(folder)}_{instr}.wav"
-                sf.write(out_wav_name, estimates.T, sr, subtype='FLOAT')
+                sf.write(out_wav_name, estimates.T, sr, subtype="FLOAT")
                 if args.draw_spectro > 0:
                     out_img_name = f"{store_dir}/{os.path.basename(folder)}_{instr}.jpg"
                     draw_spectrogram(estimates.T, sr, args.draw_spectro, out_img_name)
-                    out_img_name_orig = f"{store_dir}/{os.path.basename(folder)}_{instr}_orig.jpg"
+                    out_img_name_orig = (
+                        f"{store_dir}/{os.path.basename(folder)}_{instr}_orig.jpg"
+                    )
                     draw_spectrogram(track.T, sr, args.draw_spectro, out_img_name_orig)
 
             # Calculate evaluation metrics
@@ -283,9 +319,10 @@ def process_audio_files(
             update_metrics_and_pbar(
                 track_metrics,
                 all_metrics,
-                instr, pbar_dict,
+                instr,
+                pbar_dict,
                 mixture_paths=mixture_paths,
-                verbose=verbose
+                verbose=verbose,
             )
 
         if verbose:
@@ -300,7 +337,7 @@ def compute_metric_avg(
     instruments: List[str],
     config: ConfigDict,
     all_metrics: Dict[str, Dict[str, List[float]]],
-    start_time: float
+    start_time: float,
 ) -> Dict[str, float]:
     """
     Compute and log average evaluation metrics for each instrument.
@@ -333,7 +370,11 @@ def compute_metric_avg(
     else:
         verbose_logging = False
 
-    logging(logs, text=f"Num overlap: {config.inference.num_overlap}", verbose_logging=verbose_logging)
+    logging(
+        logs,
+        text=f"Num overlap: {config.inference.num_overlap}",
+        verbose_logging=verbose_logging,
+    )
 
     metric_avg = {}
     # Compute mean and standard deviation of metrics for each instrument
@@ -344,7 +385,11 @@ def compute_metric_avg(
             mean_val = metric_values.mean()
             std_val = metric_values.std()
 
-            logging(logs, text=f"Instr {instr} {metric_name}: {mean_val:.4f} (Std: {std_val:.4f})", verbose_logging=verbose_logging)
+            logging(
+                logs,
+                text=f"Instr {instr} {metric_name}: {mean_val:.4f} (Std: {std_val:.4f})",
+                verbose_logging=verbose_logging,
+            )
             if metric_name not in metric_avg:
                 metric_avg[metric_name] = 0.0
             metric_avg[metric_name] += mean_val
@@ -355,8 +400,16 @@ def compute_metric_avg(
 
     if len(instruments) > 1:
         for metric_name in metric_avg:
-            logging(logs, text=f'Metric avg {metric_name:11s}: {metric_avg[metric_name]:.4f}', verbose_logging=verbose_logging)
-    logging(logs, text=f"Elapsed time: {time.time() - start_time:.2f} sec", verbose_logging=verbose_logging)
+            logging(
+                logs,
+                text=f"Metric avg {metric_name:11s}: {metric_avg[metric_name]:.4f}",
+                verbose_logging=verbose_logging,
+            )
+    logging(
+        logs,
+        text=f"Elapsed time: {time.time() - start_time:.2f} sec",
+        verbose_logging=verbose_logging,
+    )
 
     if store_dir:
         write_results_in_file(store_dir, logs)
@@ -364,12 +417,155 @@ def compute_metric_avg(
     return metric_avg
 
 
+def valid_rps_only(
+    model: torch.nn.Module,
+    args,
+    config: ConfigDict,
+    device: torch.device,
+    verbose: bool = False,
+) -> dict:
+    """
+    Validate RPS-only model: compute RPS prediction metrics (MSE, neg_mse, R²).
+
+    Instead of speech enhancement metrics, this evaluates how well the model's
+    RPSPredictionHead predicts rotor speeds from noisy audio features.
+
+    Returns dict with keys: 'rps_mse', 'neg_mse', 'rps_mae', 'rps_r2'
+    The 'neg_mse' key (= -MSE) is compatible with ReduceLROnPlateau('max') scheduler.
+    """
+    import torch.nn.functional as F
+
+    start_time = time.time()
+    model.eval().to(device)
+
+    all_mixtures_path = get_mixture_paths(
+        args,
+        verbose,
+        config,
+        getattr(config.inference, "extension", "wav")
+        if hasattr(config, "inference")
+        else "wav",
+    )
+
+    chunk_size = config.audio.chunk_size
+    rps_length = getattr(config, "rps_length", None)
+    sample_rate = config.audio.sample_rate
+
+    all_mse = []
+    all_mae = []
+
+    # Collect all target RPS to compute global mean for R²
+    all_rps_preds = []
+    all_rps_targets = []
+
+    with torch.no_grad():
+        pbar = tqdm(all_mixtures_path, disable=not verbose)
+        for path in pbar:
+            folder = os.path.dirname(path)
+
+            # Load mixture audio
+            mix, sr = read_audio_transposed(path)
+            if sr != sample_rate:
+                mix = librosa.resample(
+                    mix, orig_sr=sr, target_sr=sample_rate, res_type="kaiser_best"
+                )
+
+            # Load RPS
+            rps_path = os.path.join(folder, "rps.npy")
+            if not os.path.exists(rps_path):
+                if verbose:
+                    print(f"Skipping {folder}: no rps.npy")
+                continue
+            rps_np = np.load(rps_path)  # (4, rps_samples)
+
+            # Truncate/pad mix to chunk_size
+            if mix.shape[-1] > chunk_size:
+                mix = mix[..., :chunk_size]
+            elif mix.shape[-1] < chunk_size:
+                mix = np.pad(mix, ((0, 0), (0, chunk_size - mix.shape[-1])))
+
+            # Truncate/pad RPS to rps_length
+            if rps_length is not None:
+                if rps_np.shape[-1] > rps_length:
+                    rps_np = rps_np[..., :rps_length]
+                elif rps_np.shape[-1] < rps_length:
+                    rps_np = np.pad(
+                        rps_np, ((0, 0), (0, rps_length - rps_np.shape[-1]))
+                    )
+
+            # To tensors
+            mix_t = torch.from_numpy(mix).float().unsqueeze(0).to(device)  # (1, C, T)
+            rps_t = (
+                torch.from_numpy(rps_np).float().unsqueeze(0).to(device)
+            )  # (1, 4, rps_len)
+
+            # Forward pass
+            if args.model_type == "rps_predictor":
+                # RPSPredictor: input (B, T) mono audio, output (B, 4, T_stft)
+                rps_pred = model(mix_t.squeeze(1))
+            else:
+                model_out = model(mix_t, rps=rps_t)
+                if isinstance(model_out, tuple):
+                    _, rps_pred = model_out
+                else:
+                    continue  # No RPS prediction output
+
+            if rps_pred is None:
+                continue
+
+            # Interpolate target RPS to match prediction length
+            rps_target = F.interpolate(
+                rps_t.float(),
+                size=rps_pred.shape[-1],
+                mode="linear",
+                align_corners=False,
+            )
+
+            # Compute per-sample metrics
+            mse = F.mse_loss(rps_pred, rps_target).item()
+            mae = torch.mean(torch.abs(rps_pred - rps_target)).item()
+
+            all_mse.append(mse)
+            all_mae.append(mae)
+            all_rps_preds.append(rps_pred.cpu())
+            all_rps_targets.append(rps_target.cpu())
+
+    # Aggregate metrics
+    if len(all_mse) == 0:
+        print("WARNING: No valid RPS samples found for validation")
+        return {"rps_mse": 999.0, "neg_mse": -999.0, "rps_mae": 999.0, "rps_r2": -999.0}
+
+    avg_mse = np.mean(all_mse)
+    avg_mae = np.mean(all_mae)
+
+    # Global R²: pool all predictions and targets
+    all_preds_cat = torch.cat(all_rps_preds, dim=0)  # (N, 4, T)
+    all_targets_cat = torch.cat(all_rps_targets, dim=0)
+    ss_res = torch.sum((all_targets_cat - all_preds_cat) ** 2).item()
+    ss_tot = torch.sum((all_targets_cat - all_targets_cat.mean()) ** 2).item()
+    r2 = 1.0 - ss_res / (ss_tot + 1e-8)
+
+    elapsed = time.time() - start_time
+    if verbose:
+        print(
+            f"RPS Validation: MSE={avg_mse:.4f}, MAE={avg_mae:.4f}, R²={r2:.4f} ({elapsed:.1f}s)"
+        )
+
+    model.train()
+    return {
+        "rps_mse": avg_mse,
+        "neg_mse": -avg_mse,  # Higher is better — compatible with scheduler 'max' mode
+        "rps_mae": avg_mae,
+        "rps_r2": r2,
+    }
+
+
 def valid(
     model: torch.nn.Module,
     args,
     config: ConfigDict,
     device: torch.device,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> dict:
     """
     Validate model on a single device.
@@ -397,21 +593,25 @@ def valid(
     model.eval().to(device)
 
     # Get storage directory
-    store_dir = getattr(args, 'store_dir', '')
+    store_dir = getattr(args, "store_dir", "")
     # Get audio encoding format
-    if 'extension' in config['inference']:
-        extension = config['inference']['extension']
+    if "extension" in config["inference"]:
+        extension = config["inference"]["extension"]
     else:
-        extension = getattr(args, 'extension', 'wav')
+        extension = getattr(args, "extension", "wav")
 
     # Get all mixture audio file paths
     all_mixtures_path = get_mixture_paths(args, verbose, config, extension)
     # Process audio files and compute evaluation metrics
-    all_metrics = process_audio_files(all_mixtures_path, model, args, config, device, verbose, not verbose)
+    all_metrics = process_audio_files(
+        all_mixtures_path, model, args, config, device, verbose, not verbose
+    )
     instruments = prefer_target_instrument(config)
 
     # Compute average evaluation metrics
-    return compute_metric_avg(store_dir, args, instruments, config, all_metrics, start_time)
+    return compute_metric_avg(
+        store_dir, args, instruments, config, all_metrics, start_time
+    )
 
 
 def validate_in_subprocess(
@@ -422,7 +622,7 @@ def validate_in_subprocess(
     args,
     config: ConfigDict,
     device: str,
-    return_dict
+    return_dict,
 ) -> None:
     """
     Execute validation in subprocess, supporting multi-process parallel processing.
@@ -461,13 +661,17 @@ def validate_in_subprocess(
         current_step, path = queue.get()
         if path is None:  # Check for end marker
             break
-        single_metrics = process_audio_files([path], m1, args, config, device, False, False)
+        single_metrics = process_audio_files(
+            [path], m1, args, config, device, False, False
+        )
         pbar_dict = {}
         for instr in config.training.instruments:
             for metric_name in all_metrics:
                 all_metrics[metric_name][instr] += single_metrics[metric_name][instr]
                 if len(single_metrics[metric_name][instr]) > 0:
-                    pbar_dict[f"{metric_name}_{instr}"] = f"{single_metrics[metric_name][instr][0]:.4f}"
+                    pbar_dict[f"{metric_name}_{instr}"] = (
+                        f"{single_metrics[metric_name][instr][0]:.4f}"
+                    )
         if proc_id == 0:
             progress_bar.update(current_step - progress_bar.n)
             progress_bar.set_postfix(pbar_dict)
@@ -482,7 +686,7 @@ def run_parallel_validation(
     model: torch.nn.Module,
     device_ids: List[int],
     args,
-    return_dict
+    return_dict,
 ) -> None:
     """
     Run multi-process parallel validation.
@@ -505,7 +709,7 @@ def run_parallel_validation(
         Shared dictionary for storing results from all processes
     """
 
-    model = model.to('cpu')
+    model = model.to("cpu")
     try:
         # Extract single model for multi-GPU training
         model = model.module
@@ -518,12 +722,21 @@ def run_parallel_validation(
     # Create a process for each device
     for i, device in enumerate(device_ids):
         if torch.cuda.is_available():
-            device = f'cuda:{device}'
+            device = f"cuda:{device}"
         else:
-            device = 'cpu'
+            device = "cpu"
         p = torch.multiprocessing.Process(
             target=validate_in_subprocess,
-            args=(i, queue, all_mixtures_path, model, args, config, device, return_dict)
+            args=(
+                i,
+                queue,
+                all_mixtures_path,
+                model,
+                args,
+                config,
+                device,
+                return_dict,
+            ),
         )
         p.start()
         processes.append(p)
@@ -546,7 +759,7 @@ def valid_multi_gpu(
     args,
     config: ConfigDict,
     device_ids: List[int],
-    verbose: bool = False
+    verbose: bool = False,
 ) -> Dict[str, float]:
     """
     Execute validation on multiple GPUs.
@@ -573,12 +786,12 @@ def valid_multi_gpu(
     start_time = time.time()
 
     # Get storage directory
-    store_dir = getattr(args, 'store_dir', '')
+    store_dir = getattr(args, "store_dir", "")
     # Get audio encoding format
-    if 'extension' in config['inference']:
-        extension = config['inference']['extension']
+    if "extension" in config["inference"]:
+        extension = config["inference"]["extension"]
     else:
-        extension = getattr(args, 'extension', 'wav')
+        extension = getattr(args, "extension", "wav")
 
     # Get all mixture audio file paths
     all_mixtures_path = get_mixture_paths(args, verbose, config, extension)
@@ -587,7 +800,9 @@ def valid_multi_gpu(
     return_dict = torch.multiprocessing.Manager().dict()
 
     # Run parallel validation
-    run_parallel_validation(verbose, all_mixtures_path, config, model, device_ids, args, return_dict)
+    run_parallel_validation(
+        verbose, all_mixtures_path, config, model, device_ids, args, return_dict
+    )
 
     # Merge results from all processes
     all_metrics = dict()
@@ -601,7 +816,9 @@ def valid_multi_gpu(
     instruments = prefer_target_instrument(config)
 
     # Compute average evaluation metrics
-    return compute_metric_avg(store_dir, args, instruments, config, all_metrics, start_time)
+    return compute_metric_avg(
+        store_dir, args, instruments, config, all_metrics, start_time
+    )
 
 
 def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
@@ -619,28 +836,72 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
         Parsed arguments object
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_type", type=str, default='mdx23c',
-                        help="One of mdx23c, htdemucs, segm_models, mel_band_roformer,"
-                             " edge_bs_rof, swin_upernet, bandit, diffusion_buffer")
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default="mdx23c",
+        help="One of mdx23c, htdemucs, segm_models, mel_band_roformer,"
+        " edge_bs_rof, swin_upernet, bandit, diffusion_buffer",
+    )
     parser.add_argument("--config_path", type=str, help="Path to config file")
-    parser.add_argument("--start_check_point", type=str, default='', help="Initial checkpoint"
-                                                                          " to valid weights")
+    parser.add_argument(
+        "--start_check_point",
+        type=str,
+        default="",
+        help="Initial checkpoint to valid weights",
+    )
     parser.add_argument("--valid_path", nargs="+", type=str, help="Validate path")
-    parser.add_argument("--store_dir", type=str, default="", help="Path to store results as wav file")
-    parser.add_argument("--draw_spectro", type=float, default=0,
-                        help="If --store_dir is set then code will generate spectrograms for resulted stems as well."
-                             " Value defines for how many seconds os track spectrogram will be generated.")
-    parser.add_argument("--device_ids", nargs='+', type=int, default=0, help='List of gpu ids')
-    parser.add_argument("--num_workers", type=int, default=0, help="Dataloader num_workers")
-    parser.add_argument("--pin_memory", action='store_true', help="Dataloader pin_memory")
-    parser.add_argument("--extension", type=str, default='wav', help="Choose extension for validation")
-    parser.add_argument("--use_tta", action='store_true',
-                        help="Flag adds test time augmentation during inference (polarity and channel inverse)."
-                        "While this triples the runtime, it reduces noise and slightly improves prediction quality.")
-    parser.add_argument("--metrics", nargs='+', type=str, default=["sdr"],
-                        choices=['sdr', 'l1_freq', 'si_sdr', 'neg_log_wmse', 'aura_stft', 'aura_mrstft', 'bleedless',
-                                 'fullness'], help='List of metrics to use.')
-    parser.add_argument("--lora_checkpoint", type=str, default='', help="Initial checkpoint to LoRA weights")
+    parser.add_argument(
+        "--store_dir", type=str, default="", help="Path to store results as wav file"
+    )
+    parser.add_argument(
+        "--draw_spectro",
+        type=float,
+        default=0,
+        help="If --store_dir is set then code will generate spectrograms for resulted stems as well."
+        " Value defines for how many seconds os track spectrogram will be generated.",
+    )
+    parser.add_argument(
+        "--device_ids", nargs="+", type=int, default=0, help="List of gpu ids"
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=0, help="Dataloader num_workers"
+    )
+    parser.add_argument(
+        "--pin_memory", action="store_true", help="Dataloader pin_memory"
+    )
+    parser.add_argument(
+        "--extension", type=str, default="wav", help="Choose extension for validation"
+    )
+    parser.add_argument(
+        "--use_tta",
+        action="store_true",
+        help="Flag adds test time augmentation during inference (polarity and channel inverse)."
+        "While this triples the runtime, it reduces noise and slightly improves prediction quality.",
+    )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        type=str,
+        default=["sdr"],
+        choices=[
+            "sdr",
+            "l1_freq",
+            "si_sdr",
+            "neg_log_wmse",
+            "aura_stft",
+            "aura_mrstft",
+            "bleedless",
+            "fullness",
+        ],
+        help="List of metrics to use.",
+    )
+    parser.add_argument(
+        "--lora_checkpoint",
+        type=str,
+        default="",
+        help="Initial checkpoint to LoRA weights",
+    )
 
     if dict_args is not None:
         args = parser.parse_args([])
@@ -665,7 +926,7 @@ def check_validation(dict_args):
     args = parse_args(dict_args)
     torch.backends.cudnn.benchmark = True
     try:
-        torch.multiprocessing.set_start_method('spawn')
+        torch.multiprocessing.set_start_method("spawn")
     except Exception as e:
         pass
 
@@ -674,17 +935,17 @@ def check_validation(dict_args):
 
     # Load checkpoint
     if args.start_check_point:
-        load_start_checkpoint(args, model, type_='valid')
+        load_start_checkpoint(args, model, type_="valid")
 
     print(f"Instruments: {config.training.instruments}")
 
     # Set computing device
     device_ids = args.device_ids
     if torch.cuda.is_available():
-        device = torch.device(f'cuda:{device_ids[0]}')
+        device = torch.device(f"cuda:{device_ids[0]}")
     else:
-        device = 'cpu'
-        print('CUDA is not available. Run validation on CPU. It will be very slow...')
+        device = "cpu"
+        print("CUDA is not available. Run validation on CPU. It will be very slow...")
 
     # Choose validation method based on device count
     if torch.cuda.is_available() and len(device_ids) > 1:

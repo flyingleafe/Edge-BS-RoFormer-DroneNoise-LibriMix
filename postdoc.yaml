@@ -1,0 +1,8 @@
+backend: local
+local:
+  gpus: 2
+  results_dir: results
+  data_dir: datasets
+wandb:
+  project: harmonic-noise-suppression
+  entity: flyingleafe

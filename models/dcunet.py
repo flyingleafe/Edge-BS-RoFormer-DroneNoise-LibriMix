@@ -54,6 +54,60 @@ class RotorEncoder(nn.Module):
         return x
 
 
+class RPSPredictionHead(nn.Module):
+    """
+    FPN-style auxiliary head that predicts per-STFT-frame RPS from all encoder levels.
+
+    At each encoder level: pool over frequency, project to common dim.
+    Bottom-up merge: upsample coarser levels and add to finer ones.
+    Final prediction upsampled to target_t (STFT frame count).
+    Output: (B, num_rotors, target_t).
+    """
+    def __init__(self, encoder_channels: list[int], target_t: int, common_dim: int = 64, num_rotors: int = 4):
+        super().__init__()
+        self.target_t = target_t
+        # Per-level: pool freq, project to common_dim via 1x1 conv
+        self.level_projs = nn.ModuleList()
+        for ch in encoder_channels:
+            self.level_projs.append(nn.Conv1d(ch * 2, common_dim, 1))  # *2 for real+imag
+
+        # Prediction head on merged features
+        self.head = nn.Sequential(
+            nn.Conv1d(common_dim, common_dim, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Conv1d(common_dim, num_rotors, kernel_size=1),
+        )
+
+    def forward(self, encoder_features: list[torch.Tensor]) -> torch.Tensor:
+        """
+        encoder_features: list of (B, C_i, F_i, T_i, 2) from each encoder level,
+                          ordered finest-to-coarsest (level 0 = finest).
+        Returns: (B, num_rotors, target_t)
+        """
+        # Pool over frequency and flatten real/imag for each level
+        level_feats = []
+        for feat, proj in zip(encoder_features, self.level_projs):
+            B, C, F_i, T_i, _ = feat.shape
+            # (B, C*2, T_i) — pool freq, concat real+imag
+            pooled = feat.mean(dim=2)  # (B, C, T_i, 2)
+            pooled = pooled.reshape(B, C * 2, T_i)
+            level_feats.append(proj(pooled))  # (B, common_dim, T_i)
+
+        # Bottom-up merge: coarsest → finest
+        merged = level_feats[-1]  # start from coarsest
+        for i in range(len(level_feats) - 2, -1, -1):
+            finer = level_feats[i]
+            merged = F.interpolate(merged, size=finer.shape[-1], mode="linear", align_corners=False)
+            merged = merged + finer
+
+        # Upsample to target STFT frame rate
+        if merged.shape[-1] != self.target_t:
+            merged = F.interpolate(merged, size=self.target_t, mode="linear", align_corners=False)
+
+        return self.head(merged)  # (B, num_rotors, target_t)
+
+
 class CConv2d(nn.Module):
     """Complex Convolutional Layer"""
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
@@ -336,6 +390,15 @@ class DCUNet(nn.Module):
                     )
                     self.rps_hierarchical_projs.append(nn.Linear(64, c * 2))
 
+        # Auxiliary RPS prediction head (hierarchical, uses all encoder levels)
+        self.predict_rps = _get_rps_config(config).get("predict_rps", False) or config.get("predict_rps", False)
+        self.rps_prediction_head = None
+        if self.predict_rps:
+            enc_channels = [oc for _, oc, _, _, _ in enc_spec]  # [45, 90, 90, 90, 90, ...]
+            chunk_size = config["audio"]["chunk_size"]
+            target_t = stft_time_frames(chunk_size, self.hop_length, self.n_fft)
+            self.rps_prediction_head = RPSPredictionHead(enc_channels, target_t, num_rotors=self.num_rotors)
+
     def forward(self, x, rps=None):
         """
         Input x: (batch, channels, time)
@@ -369,6 +432,12 @@ class DCUNet(nn.Module):
                 current = current + h
             if i < len(self.encoders) - 1:
                 encoder_features.append(current)
+
+        # Auxiliary RPS prediction from all encoder levels (before RPS fusion)
+        rps_pred = None
+        if self.predict_rps and self.rps_prediction_head is not None:
+            all_encoder_feats = encoder_features + [current]  # finest to coarsest
+            rps_pred = self.rps_prediction_head(all_encoder_feats)
 
         if self.use_rps and rps is not None:
             if self.rps_fusion == "bottleneck":
@@ -435,6 +504,8 @@ class DCUNet(nn.Module):
                 output = output[..., :input_length]
 
         output = output.unsqueeze(1)
+        if rps_pred is not None:
+            return output, rps_pred
         return output
 
 

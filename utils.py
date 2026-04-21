@@ -1,5 +1,5 @@
 # coding: utf-8
-__author__ = 'Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/'
+__author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import necessary libraries
 import argparse
@@ -39,9 +39,9 @@ def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaCon
     ValueError: When error occurs loading configuration file
     """
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             # htdemucs model uses OmegaConf format configuration
-            if model_type == 'htdemucs':
+            if model_type == "htdemucs":
                 config = OmegaConf.load(config_path)
             # Other models use yaml format configuration
             else:
@@ -79,83 +79,122 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
     config = load_config(model_type, config_path)
 
     # Load corresponding model architecture based on model type
-    if model_type == 'mdx23c':
+    if model_type == "mdx23c":
         # MDX23C model - uses TFC-TDF network architecture
         from models.mdx23c_tfc_tdf_v3 import TFC_TDF_net
+
         model = TFC_TDF_net(config)
-    elif model_type == 'htdemucs':
+    elif model_type == "htdemucs":
         # HTDemucs model - high-quality source separation model based on Demucs
         from models.demucs4ht import get_model
+
         model = get_model(config)
-    elif model_type == 'segm_models':
+    elif model_type == "segm_models":
         # Segmentation model - for audio segmentation tasks
         from models.segm_models import Segm_Models_Net
+
         model = Segm_Models_Net(config)
-    elif model_type == 'torchseg':
+    elif model_type == "torchseg":
         # TorchSeg model - PyTorch implementation of segmentation model
         from models.torchseg_models import Torchseg_Net
+
         model = Torchseg_Net(config)
-    elif model_type == 'mel_band_roformer':
+    elif model_type == "mel_band_roformer":
         # Mel band-based Roformer model
         from models.edge_bs_rof import MelBandRoformer
+
         model = MelBandRoformer(**dict(config.model))
-    elif model_type == 'edge_bs_rof':
+    elif model_type == "edge_bs_rof":
         # Base Roformer model
         from models.edge_bs_rof import BSRoformer
+
         model = BSRoformer(**dict(config.model))
-    elif model_type == 'swin_upernet':
+    elif model_type == "swin_upernet":
         # Swin Transformer + UperNet architecture
         from models.upernet_swin_transformers import Swin_UperNet_Model
+
         model = Swin_UperNet_Model(config)
-    elif model_type == 'bandit':
+    elif model_type == "bandit":
         # Bandit model - Multi-mask multi-source band split RNN
         from models.bandit.core.model import MultiMaskMultiSourceBandSplitRNNSimple
+
         model = MultiMaskMultiSourceBandSplitRNNSimple(**config.model)
-    elif model_type == 'bandit_v2':
+    elif model_type == "bandit_v2":
         # Bandit V2 model - improved version
         from models.bandit_v2.bandit import Bandit
+
         model = Bandit(**config.kwargs)
-    elif model_type == 'scnet_unofficial':
+    elif model_type == "scnet_unofficial":
         # Unofficial SCNet implementation
         from models.scnet_unofficial import SCNet
+
         model = SCNet(**config.model)
-    elif model_type == 'scnet':
+    elif model_type == "scnet":
         # Official SCNet implementation
         from models.scnet import SCNet
+
         model = SCNet(**config.model)
-    elif model_type == 'apollo':
+    elif model_type == "apollo":
         # Apollo model - model from Look2Hear framework
         from models.look2hear.models import BaseModel
+
         model = BaseModel.apollo(**config.model)
-    elif model_type == 'bs_mamba2':
+    elif model_type == "bs_mamba2":
         # BS-Mamba2 model - separator based on Mamba architecture
         from models.ts_bs_mamba2 import Separator
+
         model = Separator(**config.model)
-    elif model_type == 'experimental_mdx23c_stht':
+    elif model_type == "experimental_mdx23c_stht":
         # Experimental MDX23C model - TFC-TDF network with STHT
         from models.mdx23c_tfc_tdf_v3_with_STHT import TFC_TDF_net
+
         model = TFC_TDF_net(config)
-    elif model_type == 'dcunet':
-        # DCUNet model
+    elif model_type == "dcunet":
+        # DCUNet model (original implementation)
         from models.dcunet import DCUNet
+
         model = DCUNet(config)
-    elif model_type == 'dccrn':
-        # DCCRN model - Deep Complex Convolution Recurrent Network
+    elif model_type == "dcunet_refactored":
+        # Refactored DCUNet with separate Encoder/Decoder modules
+        # RPS conditioning is decoder-side only
+        from models.dcunet_refactored import DCUNetRefactored
+
+        model = DCUNetRefactored(config)
+    elif model_type == "dccrn":
+        # DCCRN model - Deep Complex Convolution Recurrent Network (original)
         from models.dccrn import DCCRN
+
         model = DCCRN(config)
-    elif model_type == 'dprnn':
+    elif model_type == "dccrn_refactored":
+        # Refactored DCCRN with separate Encoder/Decoder modules
+        # RPS conditioning is decoder-side only
+        from models.dcunet_refactored import DCCRNRefactored
+
+        model = DCCRNRefactored(config)
+    elif model_type == "rps_predictor":
+        # Standalone RPS predictor (real-valued encoder on log-mag spectrograms)
+        from train_rps_predictor import RPSPredictor
+
+        model = RPSPredictor(
+            n_fft=config.audio.n_fft,
+            hop_length=config.audio.hop_length,
+            num_rotors=getattr(config, "num_rotors", 4),
+        )
+    elif model_type == "dprnn":
         # DPRNN model - source separation model based on deep recurrent neural network
         from models.dprnn.dprnn import DPRNN
+
         model = DPRNN(config)
-    elif model_type == 'dptnet':
+    elif model_type == "dptnet":
         # DPTNet model - source separation model based on dual-path transformer network
         from models.dptnet.dpt_net import DPTNet
+
         model = DPTNet(config)
-    elif model_type == 'diffusion_buffer':
+    elif model_type == "diffusion_buffer":
         # Diffusion Buffer (BBED) model
         from models.diffusion_buffer import DiffusionBufferModel
-        model = DiffusionBufferModel(config)
 
+        model = DiffusionBufferModel(config)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -163,7 +202,9 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
     return model, config
 
 
-def read_audio_transposed(path: str, instr: str = None, skip_err: bool = False) -> Tuple[np.ndarray, int]:
+def read_audio_transposed(
+    path: str, instr: str = None, skip_err: bool = False
+) -> Tuple[np.ndarray, int]:
     """
     Read audio file and transpose it.
 
@@ -242,12 +283,12 @@ def denormalize_audio(audio: np.ndarray, norm_params: Dict[str, float]) -> np.nd
 
 
 def apply_tta(
-        config,
-        model: torch.nn.Module,
-        mix: torch.Tensor,
-        waveforms_orig: Dict[str, torch.Tensor],
-        device: torch.device,
-        model_type: str
+    config,
+    model: torch.nn.Module,
+    mix: torch.Tensor,
+    waveforms_orig: Dict[str, torch.Tensor],
+    device: torch.device,
+    model_type: str,
 ) -> Dict[str, torch.Tensor]:
     """
     Apply test-time augmentation (TTA) for source separation.
@@ -323,13 +364,13 @@ def _getWindowingArray(window_size: int, fade_size: int) -> torch.Tensor:
 
 
 def demix(
-        config: ConfigDict,
-        model: torch.nn.Module,
-        mix: torch.Tensor,
-        device: torch.device,
-        model_type: str,
-        pbar: bool = False,
-        rps: Union[torch.Tensor, np.ndarray, None] = None,
+    config: ConfigDict,
+    model: torch.nn.Module,
+    mix: torch.Tensor,
+    device: torch.device,
+    model_type: str,
+    pbar: bool = False,
+    rps: Union[torch.Tensor, np.ndarray, None] = None,
 ) -> Tuple[List[Dict[str, np.ndarray]], np.ndarray]:
     """
     Unified source separation function supporting multiple processing modes.
@@ -361,13 +402,13 @@ def demix(
     mix = torch.tensor(mix, dtype=torch.float32)
 
     # Select processing mode based on model type
-    if model_type == 'htdemucs':
-        mode = 'demucs'
+    if model_type == "htdemucs":
+        mode = "demucs"
     else:
-        mode = 'generic'
+        mode = "generic"
 
     # Set processing parameters based on mode
-    if mode == 'demucs':
+    if mode == "demucs":
         # Demucs mode parameters
         chunk_size = config.training.samplerate * config.training.segment
         num_instruments = len(config.training.instruments)
@@ -390,7 +431,7 @@ def demix(
 
     batch_size = config.inference.batch_size
 
-    use_amp = getattr(config.training, 'use_amp', True)
+    use_amp = getattr(config.training, "use_amp", True)
 
     with torch.cuda.amp.autocast(enabled=use_amp):
         with torch.inference_mode():
@@ -403,31 +444,40 @@ def demix(
             batch_data = []
             batch_rps = []
             batch_locations = []
-            progress_bar = tqdm(
-                total=mix.shape[1], desc="Processing audio chunks", leave=False
-            ) if pbar else None
+            progress_bar = (
+                tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False)
+                if pbar
+                else None
+            )
 
             use_rps = rps is not None and getattr(model, "use_rps", False)
 
             # Process audio in chunks
             while i < mix.shape[1]:
                 # Extract and pad audio chunk
-                part = mix[:, i:i + chunk_size].to(device)
+                part = mix[:, i : i + chunk_size].to(device)
                 chunk_len = part.shape[-1]
                 if mode == "generic" and chunk_len > chunk_size // 2:
                     pad_mode = "reflect"
                 else:
                     pad_mode = "constant"
-                part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
+                part = nn.functional.pad(
+                    part, (0, chunk_size - chunk_len), mode=pad_mode, value=0
+                )
 
                 batch_data.append(part)
                 if use_rps:
                     rps_t = torch.as_tensor(rps, dtype=torch.float32, device=device)
                     if rps_t.dim() == 2:
-                        part_rps = rps_t[:, i:i + chunk_size].unsqueeze(0)
+                        part_rps = rps_t[:, i : i + chunk_size].unsqueeze(0)
                     else:
-                        part_rps = rps_t[:, :, i:i + chunk_size]
-                    part_rps = nn.functional.pad(part_rps, (0, chunk_size - part_rps.shape[-1]), mode="constant", value=0)
+                        part_rps = rps_t[:, :, i : i + chunk_size]
+                    part_rps = nn.functional.pad(
+                        part_rps,
+                        (0, chunk_size - part_rps.shape[-1]),
+                        mode="constant",
+                        value=0,
+                    )
                     batch_rps.append(part_rps)
                 batch_locations.append((i, chunk_len))
                 i += step
@@ -437,9 +487,19 @@ def demix(
                     arr = torch.stack(batch_data, dim=0)
                     if use_rps and batch_rps:
                         arr_rps = torch.cat(batch_rps, dim=0)
+                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                        if rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                            arr_rps = arr_rps / float(rps_norm_scale)
                         x = model(arr, rps=arr_rps)
                     else:
                         x = model(arr)
+                    # Discard auxiliary outputs (e.g. rps_pred); de-normalize if present
+                    if isinstance(x, tuple):
+                        rps_pred = x[1]
+                        x = x[0]
+                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                        if rps_pred is not None and rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                            rps_pred = rps_pred * float(rps_norm_scale)
 
                     if mode == "generic":
                         window = windowing_array.clone()
@@ -451,11 +511,17 @@ def demix(
                     # Add processed results to total result
                     for j, (start, seg_len) in enumerate(batch_locations):
                         if mode == "generic":
-                            result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu() * window[..., :seg_len]
-                            counter[..., start:start + seg_len] += window[..., :seg_len]
+                            result[..., start : start + seg_len] += (
+                                x[j, ..., :seg_len].cpu() * window[..., :seg_len]
+                            )
+                            counter[..., start : start + seg_len] += window[
+                                ..., :seg_len
+                            ]
                         else:
-                            result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu()
-                            counter[..., start:start + seg_len] += 1.0
+                            result[..., start : start + seg_len] += x[
+                                j, ..., :seg_len
+                            ].cpu()
+                            counter[..., start : start + seg_len] += 1.0
 
                     batch_data.clear()
                     if use_rps:
@@ -506,13 +572,15 @@ def prefer_target_instrument(config: ConfigDict) -> List[str]:
     List[str]
         Target instrument list
     """
-    if getattr(config.training, 'target_instrument', None):
+    if getattr(config.training, "target_instrument", None):
         return [config.training.target_instrument]
     else:
         return config.training.instruments
 
 
-def load_not_compatible_weights(model: torch.nn.Module, weights: str, verbose: bool = False) -> None:
+def load_not_compatible_weights(
+    model: torch.nn.Module, weights: str, verbose: bool = False
+) -> None:
     """
     Load partially compatible weights into model.
 
@@ -525,38 +593,44 @@ def load_not_compatible_weights(model: torch.nn.Module, weights: str, verbose: b
 
     new_model = model.state_dict()
     old_model = torch.load(weights)
-    if 'state' in old_model:
+    if "state" in old_model:
         # htdemucs weight loading fix
-        old_model = old_model['state']
-    if 'state_dict' in old_model:
+        old_model = old_model["state"]
+    if "state_dict" in old_model:
         # apollo weight loading fix
-        old_model = old_model['state_dict']
+        old_model = old_model["state_dict"]
 
     # Iterate through each layer of new model
     for el in new_model:
         if el in old_model:
             if verbose:
-                print(f'Match found for {el}!')
+                print(f"Match found for {el}!")
             if new_model[el].shape == old_model[el].shape:
                 # Same shape, directly copy
                 if verbose:
-                    print('Action: Just copy weights!')
+                    print("Action: Just copy weights!")
                 new_model[el] = old_model[el]
             else:
                 # Handle different shape case
                 if len(new_model[el].shape) != len(old_model[el].shape):
                     if verbose:
-                        print('Action: Different dimension! Too lazy to write the code... Skip it')
+                        print(
+                            "Action: Different dimension! Too lazy to write the code... Skip it"
+                        )
                 else:
                     if verbose:
-                        print(f'Shape is different: {tuple(new_model[el].shape)} != {tuple(old_model[el].shape)}')
+                        print(
+                            f"Shape is different: {tuple(new_model[el].shape)} != {tuple(old_model[el].shape)}"
+                        )
                     # Handle weights with different shapes
                     ln = len(new_model[el].shape)
                     max_shape = []
                     slices_old = []
                     slices_new = []
                     for i in range(ln):
-                        max_shape.append(max(new_model[el].shape[i], old_model[el].shape[i]))
+                        max_shape.append(
+                            max(new_model[el].shape[i], old_model[el].shape[i])
+                        )
                         slices_old.append(slice(0, old_model[el].shape[i]))
                         slices_new.append(slice(0, new_model[el].shape[i]))
                     slices_old = tuple(slices_old)
@@ -568,13 +642,13 @@ def load_not_compatible_weights(model: torch.nn.Module, weights: str, verbose: b
                     new_model[el] = max_matrix[slices_new]
         else:
             if verbose:
-                print(f'Match not found for {el}!')
-    model.load_state_dict(
-        new_model
-    )
+                print(f"Match not found for {el}!")
+    model.load_state_dict(new_model)
 
 
-def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = 'cpu') -> None:
+def load_lora_weights(
+    model: torch.nn.Module, lora_path: str, device: str = "cpu"
+) -> None:
     """
     Load LoRA weights into model.
 
@@ -591,7 +665,9 @@ def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = 'cpu
     model.load_state_dict(lora_state_dict, strict=False)
 
 
-def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type_='train') -> None:
+def load_start_checkpoint(
+    args: argparse.Namespace, model: torch.nn.Module, type_="train"
+) -> None:
     """
     Load starting checkpoint for model.
 
@@ -602,24 +678,28 @@ def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type
     type_: Method of loading weights
     """
 
-    print(f'Start from checkpoint: {args.start_check_point}')
-    if type_ in ['train']:
+    print(f"Start from checkpoint: {args.start_check_point}")
+    if type_ in ["train"]:
         if 1:
             load_not_compatible_weights(model, args.start_check_point, verbose=False)
         else:
             model.load_state_dict(torch.load(args.start_check_point))
     else:
-        device='cpu'
-        if args.model_type in ['htdemucs', 'apollo']:
-            state_dict = torch.load(args.start_check_point, map_location=device, weights_only=False)
+        device = "cpu"
+        if args.model_type in ["htdemucs", "apollo"]:
+            state_dict = torch.load(
+                args.start_check_point, map_location=device, weights_only=False
+            )
             # htdemucs pretrained model fix
-            if 'state' in state_dict:
-                state_dict = state_dict['state']
+            if "state" in state_dict:
+                state_dict = state_dict["state"]
             # apollo pretrained model fix
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
         else:
-            state_dict = torch.load(args.start_check_point, map_location=device, weights_only=True)
+            state_dict = torch.load(
+                args.start_check_point, map_location=device, weights_only=True
+            )
         model.load_state_dict(state_dict)
 
     if args.lora_checkpoint:
@@ -644,14 +724,16 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
         Model with replaced layers
     """
 
-    if 'lora' not in config:
-        raise ValueError("Configuration must contain the 'lora' key with parameters for LoRA.")
+    if "lora" not in config:
+        raise ValueError(
+            "Configuration must contain the 'lora' key with parameters for LoRA."
+        )
 
     replaced_layers = 0  # Replaced layer counter
 
     # Iterate through all model modules
     for name, module in model.named_modules():
-        hierarchy = name.split('.')
+        hierarchy = name.split(".")
         layer_name = hierarchy[-1]
 
         # Check if this is a target layer for replacement
@@ -670,8 +752,8 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
                         in_features=module.in_features,
                         out_features=module.out_features,
                         bias=module.bias is not None,
-                        **config['lora']
-                    )
+                        **config["lora"],
+                    ),
                 )
                 replaced_layers += 1
 
@@ -679,7 +761,9 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
                 print(f"Error replacing layer {name}: {e}")
 
     if replaced_layers == 0:
-        print("Warning: No layers were replaced. Check the model structure and configuration.")
+        print(
+            "Warning: No layers were replaced. Check the model structure and configuration."
+        )
     else:
         print(f"Number of layers replaced with LoRA: {replaced_layers}")
 
@@ -700,7 +784,7 @@ def draw_spectrogram(waveform, sample_rate, length, output_file):
     import librosa.display
 
     # Extract required portion of spectrogram
-    x = waveform[:int(length * sample_rate), :]
+    x = waveform[: int(length * sample_rate), :]
     # Apply short-time Fourier transform to mono signal
     X = librosa.stft(x.mean(axis=-1))
     # Convert amplitude spectrum to dB-scaled spectrogram
@@ -708,14 +792,9 @@ def draw_spectrogram(waveform, sample_rate, length, output_file):
     fig, ax = plt.subplots()
     # Display spectrogram
     img = librosa.display.specshow(
-        Xdb,
-        cmap='plasma',
-        sr=sample_rate,
-        x_axis='time',
-        y_axis='linear',
-        ax=ax
+        Xdb, cmap="plasma", sr=sample_rate, x_axis="time", y_axis="linear", ax=ax
     )
-    ax.set(title='File: ' + os.path.basename(output_file))
+    ax.set(title="File: " + os.path.basename(output_file))
     fig.colorbar(img, ax=ax, format="%+2.f dB")
     if output_file is not None:
         plt.savefig(output_file)

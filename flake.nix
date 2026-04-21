@@ -22,6 +22,9 @@
             # Additional libraries commonly needed by Python packages
             zlib
             libffi
+            # Graphviz for pygraphviz
+            graphviz
+            pkg-config
           ];
 
           shellHook = ''
@@ -30,7 +33,8 @@
             fi
             source .venv/bin/activate
             # Set LD_LIBRARY_PATH to find C++ standard library and other native libraries
-            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib:${pkgs.graphviz}/lib:$LD_LIBRARY_PATH"
+            export PKG_CONFIG_PATH="${pkgs.graphviz}/lib/pkgconfig:$PKG_CONFIG_PATH"
             echo "Python $(python --version) with uv $(uv --version)"
           '';
         };
