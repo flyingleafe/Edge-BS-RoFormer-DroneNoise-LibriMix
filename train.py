@@ -539,6 +539,18 @@ def get_sample_rate(config: ConfigDict) -> int:
     return 16000
 
 
+def maybe_normalize_rps(
+    rps: Optional[torch.Tensor], config
+) -> Optional[torch.Tensor]:
+    """Divide RPS by rps_norm_scale if configured (training-time normalization)."""
+    if rps is None:
+        return None
+    scale = getattr(config, "rps_norm_scale", None)
+    if scale is not None and float(scale) != 1.0:
+        return rps / float(scale)
+    return rps
+
+
 def get_model_output(
     model: torch.nn.Module, x: torch.Tensor, args: argparse.Namespace, rps=None
 ) -> torch.Tensor:
@@ -824,6 +836,7 @@ def train_one_epoch(
         if len(data) == 3:
             batch, mixes, rps = data
             rps = rps.to(device) if rps is not None else None
+            rps = maybe_normalize_rps(rps, config)
         else:
             batch, mixes = data
             rps = None
@@ -978,6 +991,7 @@ def train_one_epoch(
                     if cached_rps_list is not None
                     else None
                 )
+                rps_k = maybe_normalize_rps(rps_k, config)
                 out = get_model_output(model, x, args, rps=rps_k)
                 out_k = _tensor_to_audio_numpy(out[0])
                 train_audio_triples.append((inp_k, tgt_k, out_k))
@@ -1129,6 +1143,7 @@ def collect_and_log_valid_audio(
                     if cached_rps_list is not None
                     else None
                 )
+                rps_k = maybe_normalize_rps(rps_k, config)
                 out = get_model_output(model, x, args, rps=rps_k)
                 out_k = _tensor_to_audio_numpy(out[0])
                 triples.append((inp_k, tgt_k, out_k))
@@ -1146,6 +1161,7 @@ def collect_and_log_valid_audio(
                 if len(data) == 3:
                     batch, mixes, rps = data
                     rps = rps.to(device) if rps is not None else None
+                    rps = maybe_normalize_rps(rps, config)
                 else:
                     batch, mixes = data
                     rps = None

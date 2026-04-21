@@ -19,6 +19,7 @@ rps_length: 8500  # ~8.5s at ~1000Hz native motor rate
 decoder_rps_fusion: bottleneck  # Decoder-side RPS fusion at bottleneck
 num_rotors: 4
 predict_rps: true  # Enable auxiliary RPS prediction head
+rps_norm_scale: 100.0  # Normalize RPS values during training; de-normalize for inference output
 
 training:
   batch_size: 8
@@ -31,7 +32,7 @@ training:
   patience: 2
   reduce_factor: 0.95
   target_instrument: vocals
-  num_epochs: 1000
+  num_epochs: 150
   num_steps: 200
   q: 0.95
   coarse_loss_clip: true
@@ -41,9 +42,7 @@ training:
   use_amp: true
   rps_aux_weight: 0.1  # Weight for auxiliary RPS prediction loss
   early_stop:
-    enabled: true
-    patience: 10
-    metric: "si-sdr"
+    enabled: false
 
 augmentations:
   enable: false  # Disable augmentations to preserve RPS alignment

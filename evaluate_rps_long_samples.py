@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 # Import models from train_rps_predictor
 sys.path.insert(0, str(Path(__file__).parent))
-from train_rps_predictor import SimpleConv, DCUNetEncRPS, DCCRNEncRPS, DCCRNLiteEncRPS
+from train_rps_predictor import SimpleConv, DCUNetEncRPS, DCCRNEncRPS
 
 # Configuration
 SAMPLE_RATE = 16000
@@ -33,8 +33,6 @@ def load_model(model_path, model_type, device):
         model = DCUNetEncRPS()
     elif model_type == "dccrn":
         model = DCCRNEncRPS()
-    elif model_type == "dccrn_lite":
-        model = DCCRNLiteEncRPS()
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -52,7 +50,7 @@ def predict_rps(model, audio, device):
     """Predict RPS from audio."""
     with torch.no_grad():
         audio = audio.to(device)
-        pred = model(audio)
+        pred = model(audio.squeeze(0))
         return pred.cpu()
 
 def compute_metrics(pred, target):

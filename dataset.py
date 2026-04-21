@@ -888,7 +888,7 @@ class MSSDataset(torch.utils.data.Dataset):
                     rps_data = np.load(rps_path)  # (4, n_motor_samples)
                     rps_tensor = torch.from_numpy(rps_data).float().unsqueeze(0)  # (1, 4, n_motor_samples)
                     # Resample RPS to match STFT time frames via linear interpolation
-                    rps_tensor = F.interpolate(
+                    rps_tensor = torch.nn.functional.interpolate(
                         rps_tensor, size=n_stft_frames, mode="linear", align_corners=False
                     ).squeeze(0)  # (4, n_stft_frames)
                 else:

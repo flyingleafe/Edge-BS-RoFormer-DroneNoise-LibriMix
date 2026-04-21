@@ -487,12 +487,19 @@ def demix(
                     arr = torch.stack(batch_data, dim=0)
                     if use_rps and batch_rps:
                         arr_rps = torch.cat(batch_rps, dim=0)
+                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                        if rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                            arr_rps = arr_rps / float(rps_norm_scale)
                         x = model(arr, rps=arr_rps)
                     else:
                         x = model(arr)
-                    # Discard auxiliary outputs (e.g. rps_pred)
+                    # Discard auxiliary outputs (e.g. rps_pred); de-normalize if present
                     if isinstance(x, tuple):
+                        rps_pred = x[1]
                         x = x[0]
+                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                        if rps_pred is not None and rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                            rps_pred = rps_pred * float(rps_norm_scale)
 
                     if mode == "generic":
                         window = windowing_array.clone()
