@@ -194,6 +194,7 @@ git submodule update --init --recursive 2>/dev/null || true
 
 # uv sync: fast no-op when lockfile unchanged.
 echo "[postdoc-job] syncing venv"
+export PATH="/root/.local/bin:$REPO_DIR/.venv/bin:$PATH"
 uv sync --no-dev 2>&1 | tail -5 || true
 
 # dvc pull
@@ -201,10 +202,6 @@ if ls *.dvc datasets/*.dvc >/dev/null 2>&1; then
   echo "[postdoc-job] pulling datasets"
   uv run dvc pull 2>&1 | tail -20 || echo "WARNING: dvc pull failed"
 fi
-
-echo "[postdoc-job] activating venv"
-# shellcheck disable=SC1091
-export PATH="/root/.local/bin:$REPO_DIR/.venv/bin:$PATH"
 
 echo "[postdoc-job] running: {cmd}"
 echo "[postdoc-job] started at $(date -Iseconds)"
@@ -228,6 +225,90 @@ def _next_job_id(user: str, host: str, postdoc_dir: str) -> int:
         return int(subprocess.check_output(cmd, text=True).strip())
     except subprocess.CalledProcessError:
         return 1
+
+
+def _write_and_launch(job_id: int, name: str, sha: str, cmd: str,
+                      gpus: int, gpu_mask: list[int], log_path: str,
+                      job_dir: str, job_json_path: str,
+                      job_script: str,
+                      user: str, host: str) -> tuple[int, str]:
+    """Write job dir + run.sh + job.json on server, then nohup it."""
+
+    # Use a single Python heredoc on the server to avoid all quote issues
+    setup_py = _SetupPy(
+        job_dir=job_dir,
+        job_json={
+            "id": job_id,
+            "name": name,
+            "sha": sha,
+            "cmd": cmd,
+            "gpus": gpus,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "status": "running",
+            "pid": None,
+            "gpu_mask": gpu_mask,
+            "log_path": log_path,
+        },
+        run_script=job_script,
+    ).render()
+
+    subprocess.run(
+        _ssh_base(user, host) + [f"python3 - << 'PYEOF'\n{setup_py}\nPYEOF"],
+        check=True,
+    )
+
+    # Launch nohup, capture PID
+    launch_script = (
+        f"cd {job_dir} && "
+        f"nohup bash run.sh >> {log_path} 2>&1 & "
+        f"echo $! > {job_dir}/pid.txt && "
+        f"echo PID:$(cat {job_dir}/pid.txt)"
+    )
+    out = subprocess.check_output(
+        _ssh_base(user, host) + [f"bash -c {launch_script!r}"],
+        text=True,
+    )
+
+    # Extract PID and update job.json
+    pid_match = re.search(r'PID:(\d+)', out)
+    if pid_match:
+        pid = int(pid_match.group(1))
+        pid_py = (
+            f"import json, pathlib; "
+            f"d=json.loads(pathlib.Path({job_json_path!r}).read_text()); "
+            f"d['pid']={pid}; "
+            f"json.dump(d, pathlib.Path({job_json_path!r}).open('w'))"
+        )
+        subprocess.run(_ssh_base(user, host) + [f"python3 -c {pid_py!r}"], check=True)
+    return job_id, "running"
+
+
+class _SetupPy:
+    """Render a server-side Python setup script for one job (avoids quote hell)."""
+
+    def __init__(self, job_dir: str, job_json: dict, run_script: str):
+        self._job_dir = job_dir
+        self._job_json = job_json
+        self._run_script = run_script
+
+    def render(self) -> str:
+        return "\n".join([
+            "import json, os",
+            f"os.makedirs({self._job_dir!r}, exist_ok=True)",
+            f"with open({self._job_json_path!r}, 'w') as f:",
+            f"    json.dump({self._job_json!r}, f)",
+            f"with open({self._run_sh_path!r}, 'w') as f:",
+            f"    f.write({self._run_script!r})",
+            f"os.chmod({self._run_sh_path!r}, 0o755)",
+        ])
+
+    @property
+    def _job_json_path(self) -> str:
+        return f"{self._job_dir}/job.json"
+
+    @property
+    def _run_sh_path(self) -> str:
+        return f"{self._job_dir}/run.sh"
 
 
 def submit_direct(
@@ -263,70 +344,13 @@ def submit_direct(
     available = free_gpus(user=user, host=host)
 
     if len(available) >= gpus:
-        # Run now — allocate GPUs and launch
         gpu_mask = available[:gpus]
-        gpu_env = " ".join(map(str, gpu_mask))
-
         job_script = _render_job_script(job_id, name, sha, cmd, gpu_mask,
                                         log_path, repo_dir)
-
-        started_at = datetime.now(timezone.utc).isoformat()
-        job_json = {
-            "id": job_id,
-            "name": name,
-            "sha": sha,
-            "cmd": cmd,
-            "gpus": gpus,
-            "started_at": started_at,
-            "status": "running",
-            "pid": None,
-            "gpu_mask": gpu_mask,
-            "log_path": log_path,
-        }
-
-        # Write job dir + job.json via a server-side bash script
-        setup_lines = [
-            f"mkdir -p {job_dir}",
-            f"python3 -c {json.dumps(json.dumps(job_json))!r} > {job_json_path}",
-            f"cat > {job_dir}/run.sh << 'SHEOF'\n{job_script}\nSHEOF",
-            f"chmod +x {job_dir}/run.sh",
-        ]
-        subprocess.run(
-            _ssh_base(user, host) + ["bash -c '" + " && ".join(setup_lines) + "'"],
-            check=True,
+        return _write_and_launch(
+            job_id, name, sha, cmd, gpus, gpu_mask, log_path,
+            job_dir, job_json_path, job_script, user, host,
         )
-
-        # Launch nohup, capture PID
-        launch_script = (
-            f"cd {job_dir} && "
-            f"nohup bash run.sh >> {log_path} 2>&1 & "
-            f"echo $! > {job_dir}/pid.txt && "
-            f"echo PID:$(cat {job_dir}/pid.txt)"
-        )
-        out = subprocess.check_output(
-            _ssh_base(user, host) + [f"bash -c {launch_script!r}"],
-            text=True,
-        )
-
-        # Extract PID and update job.json
-        pid_match = re.search(r'PID:(\d+)', out)
-        if pid_match:
-            pid = int(pid_match.group(1))
-            updater = (
-                f"python3 -c "
-                f"{json.dumps(json.dumps(pid))!r} "
-                f"> /dev/null && "
-                f"import json, pathlib; "
-                f"d=json.load(open('{job_json_path}')); "
-                f"d['pid']={pid}; "
-                f"json.dump(d, open('{job_json_path}','w'))"
-            )
-            subprocess.run(
-                _ssh_base(user, host) + [updater],
-                check=True,
-            )
-        return job_id, "running"
-
     else:
         # Queue — write to FIFO
         job_desc = {
@@ -376,8 +400,8 @@ def read_logs(name_and_id: str,
 
 
 def cancel_job(name_and_id: str,
-               user: str = DEFAULT_SERVER_USER,
-               host: str = DEFAULT_SERVER_HOST) -> bool:
+              user: str = DEFAULT_SERVER_USER,
+              host: str = DEFAULT_SERVER_HOST) -> bool:
     """Kill the job's process and mark it cancelled.
 
     Returns True if the job was cancelled, False if it wasn't running.
