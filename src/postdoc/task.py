@@ -103,8 +103,14 @@ echo "[postdoc job] running: {command_label}"
 """
 
 
+# Host path on vast-server holding the credentials the pod needs for
+# `git fetch` from origin (and ssh hostkeys). Mounted read-only at /root/.ssh
+# inside the pod so both host-root and pod-root use the same keys.
+HOST_SSH_DIR = os.environ.get("POSTDOC_HOST_SSH_DIR", "/root/.ssh")
+
+
 def _pod_config_with_hostpath(host_path: str, mount_path: str) -> dict[str, Any]:
-    """Inject a hostPath volume + volumeMount + runAsUser=0 into the pod spec."""
+    """Inject hostPath volumes (project + ~/.ssh) and runAsUser=0 into the pod spec."""
     return {
         "ssh": {
             "pod_config": {
@@ -114,6 +120,8 @@ def _pod_config_with_hostpath(host_path: str, mount_path: str) -> dict[str, Any]
                         {
                             "volumeMounts": [
                                 {"mountPath": mount_path, "name": "project"},
+                                {"mountPath": "/root/.ssh",
+                                 "name": "ssh-creds", "readOnly": True},
                             ],
                         }
                     ],
@@ -121,7 +129,11 @@ def _pod_config_with_hostpath(host_path: str, mount_path: str) -> dict[str, Any]
                         {
                             "name": "project",
                             "hostPath": {"path": host_path, "type": "Directory"},
-                        }
+                        },
+                        {
+                            "name": "ssh-creds",
+                            "hostPath": {"path": HOST_SSH_DIR, "type": "Directory"},
+                        },
                     ],
                 }
             }

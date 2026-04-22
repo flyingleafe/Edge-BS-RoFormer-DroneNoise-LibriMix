@@ -10,13 +10,16 @@ FAKE_URL = "git@github.com:user/repo.git"
 def test_bootstrap_has_hostpath_mount():
     t = build_bootstrap_task()
     pod = t["config"]["ssh"]["pod_config"]["spec"]
-    # Exactly one hostPath volume mounted into exactly one mountPath.
-    vol = pod["volumes"][0]
-    assert vol["hostPath"]["path"].endswith("/harmonic-noise-suppression")
-    assert vol["hostPath"]["type"] == "Directory"
-    vm = pod["containers"][0]["volumeMounts"][0]
-    assert vm["mountPath"] == vol["hostPath"]["path"]
-    assert vm["name"] == vol["name"] == "project"
+    vols = {v["name"]: v for v in pod["volumes"]}
+    mounts = {m["name"]: m for m in pod["containers"][0]["volumeMounts"]}
+    # Project hostPath: repo mounted same-path, read-write.
+    assert vols["project"]["hostPath"]["path"].endswith("/harmonic-noise-suppression")
+    assert vols["project"]["hostPath"]["type"] == "Directory"
+    assert mounts["project"]["mountPath"] == vols["project"]["hostPath"]["path"]
+    # SSH creds hostPath: ~root/.ssh from host mounted into /root/.ssh in pod, read-only.
+    assert vols["ssh-creds"]["hostPath"]["path"].endswith("/.ssh")
+    assert mounts["ssh-creds"]["mountPath"] == "/root/.ssh"
+    assert mounts["ssh-creds"].get("readOnly") is True
 
 
 def test_bootstrap_runs_as_root():
