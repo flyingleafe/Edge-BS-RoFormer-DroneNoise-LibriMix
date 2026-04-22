@@ -38,7 +38,7 @@ import typer
 import yaml
 
 from postdoc import git_state, infer as infer_mod
-from postdoc import direct
+from postdoc import direct as direct_mod
 from postdoc import cloud as cloud_mod
 
 # ------------------------------------------------------------------ #
@@ -261,7 +261,7 @@ def cmd_submit(
         backend = "direct"
     else:
         try:
-            available = direct.free_gpus(user=user, host=host)
+            available = direct_mod.free_gpus(user=user, host=host)
             backend = "direct" if len(available) >= gpus else "cloud"
         except Exception:
             backend = "cloud"
@@ -277,7 +277,7 @@ def cmd_submit(
 
     if backend == "direct":
         try:
-            job_id, status = direct.submit_direct(
+            job_id, status = direct_mod.submit_direct(
                 name=job_name,
                 sha=snap["sha"],
                 cmd=command,
@@ -324,7 +324,7 @@ def cmd_list(
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),
 ):
     """List all jobs (direct backend from vast-server)."""
-    jobs = direct.list_jobs(user=user, host=host)
+    jobs = direct_mod.list_jobs(user=user, host=host)
     if not jobs:
         typer.echo("No jobs found.")
         return
@@ -402,7 +402,7 @@ def cmd_cancel(
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),
 ):
     """Kill the job process and mark it cancelled."""
-    ok = direct.cancel_job(name_and_id, user=user, host=host)
+    ok = direct_mod.cancel_job(name_and_id, user=user, host=host)
     if ok:
         typer.echo(f"[postdoc] cancelled {name_and_id}")
     else:
@@ -430,7 +430,7 @@ def cmd_check(
     """Check GPU availability on vast-server."""
     typer.echo(f"[postdoc] probing GPUs on {user}@{host}...")
     try:
-        gpus = direct.probe_gpus(user=user, host=host)
+        gpus = direct_mod.probe_gpus(user=user, host=host)
         free = [g for g in gpus if g.memory_used_mib < 500]
         typer.echo(f"[postdoc] {len(gpus)} GPUs total, {len(free)} free:")
         for g in gpus:
