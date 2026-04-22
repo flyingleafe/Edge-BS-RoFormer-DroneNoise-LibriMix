@@ -72,7 +72,7 @@ See `docs/skypilot/README.md`. Short version:
 |---|---|---|
 | `POSTDOC_SSH_POOL` | `vast-server` | Default pool name for new submits |
 | `POSTDOC_DEFAULT_GPUS` | `1` | Default `--gpus` |
-| `POSTDOC_REPO_DIR` | `~/.postdoc/repo` | Path on the remote where the repo is checked out |
+| `POSTDOC_REPO_DIR` | `~/harmonic-noise-suppression` | Path on the remote where the repo is checked out (reuses the pre-existing clone on vast-server) |
 
 ## Gotchas
 
@@ -83,6 +83,7 @@ See `docs/skypilot/README.md`. Short version:
 - **`setup` is a fresh shell.** No `.bashrc`/`.env` auto-loads. Pass env vars via `postdoc submit -e KEY=VAL`.
 - **First submit is slow.** `sky ssh up` installs k3s; the first managed-job launch spins up the jobs controller. Subsequent submissions are fast.
 - **`infer` is a local tool.** It takes a *path to a run directory* (containing `config.yaml` + `training/*.ckpt`). Runs don't live locally by default under SkyPilot — pull from wandb or rsync first.
+- **`git reset --hard` clobbers the server checkout.** `POSTDOC_REPO_DIR` defaults to `~/harmonic-noise-suppression` on vast-server — the same directory you'd `cd` into for manual work. **Do not leave uncommitted edits there.** Every submit wipes them (by design: the remote reflects the pushed SHA exactly).
 - **No watcher-agent yet.** The "companion agent that edits code on failure" idea lives as a TODO. SkyPilot's managed-job auto-recovery handles the transient-failure baseline meanwhile.
 
 ## Not covered here

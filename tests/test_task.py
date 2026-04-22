@@ -15,7 +15,8 @@ def test_build_task_envs_contain_git_info():
     t = _minimal()
     assert t["envs"]["POSTDOC_GIT_SHA"] == FAKE_SHA
     assert t["envs"]["POSTDOC_GIT_URL"] == FAKE_URL
-    assert t["envs"]["POSTDOC_REPO_DIR"].endswith("/.postdoc/repo")
+    # Default repo dir matches the existing vast-server convention.
+    assert t["envs"]["POSTDOC_REPO_DIR"] == "~/harmonic-noise-suppression"
 
 
 def test_build_task_resources_default():

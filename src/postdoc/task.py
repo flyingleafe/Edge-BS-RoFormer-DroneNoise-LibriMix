@@ -20,7 +20,9 @@ import yaml
 
 DEFAULT_POOL = os.environ.get("POSTDOC_SSH_POOL", "vast-server")
 DEFAULT_GPUS = int(os.environ.get("POSTDOC_DEFAULT_GPUS", "1"))
-DEFAULT_REPO_DIR = os.environ.get("POSTDOC_REPO_DIR", "~/.postdoc/repo")
+# Default path of the project checkout on the remote. Matches the existing
+# vast-server convention so we reuse the clone that's already there.
+DEFAULT_REPO_DIR = os.environ.get("POSTDOC_REPO_DIR", "~/harmonic-noise-suppression")
 
 
 # Setup: install uv, clone/fetch repo, hard-reset to the submitted SHA,

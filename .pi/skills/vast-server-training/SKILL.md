@@ -130,4 +130,4 @@ Managed-job logs live on the vast-server controller and are retrievable with `po
 - First-ever `postdoc submit` on a fresh vast-server is slow — spins up the jobs controller + clones the repo + `uv sync` from cold. After that, fast.
 - `--detach` is the default. Re-attach to logs anytime with `postdoc logs <id>`.
 - Two GPUs means two concurrent jobs max. Further submits queue automatically.
-- `~/.postdoc/repo` on the server is a shared checkout across all postdoc jobs. Fine because each job does `git reset --hard` before running, but don't hand-edit files in there.
+- `~/harmonic-noise-suppression` on the server **is** the postdoc checkout. Every submit runs `git reset --hard <SHA>` there. **Do not leave uncommitted edits in that directory on vast-server** — they'll be wiped by the next submit. For manual hacking, clone somewhere else (e.g. `~/scratch/hns-debug`).

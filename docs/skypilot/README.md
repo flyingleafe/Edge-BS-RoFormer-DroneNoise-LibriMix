@@ -98,7 +98,7 @@ resources:
 envs:
   POSTDOC_GIT_SHA:  <your HEAD sha>
   POSTDOC_GIT_URL:  git@github.com:you/repo.git
-  POSTDOC_REPO_DIR: ~/.postdoc/repo
+  POSTDOC_REPO_DIR: ~/harmonic-noise-suppression   # reuses the existing clone on vast-server
 setup: |
   # install uv if missing
   command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
