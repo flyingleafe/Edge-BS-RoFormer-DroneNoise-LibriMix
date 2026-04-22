@@ -25,6 +25,16 @@
             # Graphviz for pygraphviz
             graphviz
             pkg-config
+            # Required by SkyPilot's Kubernetes/SSH-node-pool bootstrap:
+            #   - socat + nc: portforward networking mode needs both.
+            #     Use netcat-gnu (not plain `netcat`/libressl) — SkyPilot runs
+            #     `nc -h` and treats non-zero exit as "not installed";
+            #     libressl's nc exits 1 on -h, GNU netcat exits 0.
+            #   - kubectl: SkyPilot installs k3s on SSH nodes and talks to it
+            #     via kubectl.
+            socat
+            netcat-gnu
+            kubectl
           ];
 
           shellHook = ''

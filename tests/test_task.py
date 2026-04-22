@@ -1,70 +1,94 @@
-from postdoc.task import build_task
+from postdoc.task import build_bootstrap_task, build_exec_task
 
 
 FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
 FAKE_URL = "git@github.com:user/repo.git"
 
 
-def _minimal(**overrides):
-    kw = dict(command="python train.py --x 1", git_sha=FAKE_SHA, git_url=FAKE_URL)
-    kw.update(overrides)
-    return build_task(**kw)
+# ---------- bootstrap -------------------------------------------------------
+
+def test_bootstrap_has_hostpath_mount():
+    t = build_bootstrap_task()
+    pod = t["config"]["ssh"]["pod_config"]["spec"]
+    # Exactly one hostPath volume mounted into exactly one mountPath.
+    vol = pod["volumes"][0]
+    assert vol["hostPath"]["path"].endswith("/harmonic-noise-suppression")
+    assert vol["hostPath"]["type"] == "Directory"
+    vm = pod["containers"][0]["volumeMounts"][0]
+    assert vm["mountPath"] == vol["hostPath"]["path"]
+    assert vm["name"] == vol["name"] == "project"
 
 
-def test_build_task_envs_contain_git_info():
-    t = _minimal()
+def test_bootstrap_runs_as_root():
+    t = build_bootstrap_task()
+    sec = t["config"]["ssh"]["pod_config"]["spec"]["securityContext"]
+    assert sec["runAsUser"] == 0
+
+
+def test_bootstrap_requests_cluster_gpus():
+    t = build_bootstrap_task(gpus=2)
+    assert t["resources"]["accelerators"] == ":2"
+
+
+def test_bootstrap_passes_pool():
+    t = build_bootstrap_task(pool="vast-server")
+    assert t["resources"]["infra"] == "ssh/vast-server"
+
+
+def test_bootstrap_setup_installs_uv_and_syncs():
+    t = build_bootstrap_task()
+    s = t["setup"]
+    assert "astral.sh/uv/install.sh" in s
+    assert "uv sync" in s
+
+
+# ---------- exec ------------------------------------------------------------
+
+def _exec(**kw):
+    base = dict(command="python train.py", git_sha=FAKE_SHA, git_url=FAKE_URL)
+    base.update(kw)
+    return build_exec_task(**base)
+
+
+def test_exec_envs_contain_git_info():
+    t = _exec()
     assert t["envs"]["POSTDOC_GIT_SHA"] == FAKE_SHA
     assert t["envs"]["POSTDOC_GIT_URL"] == FAKE_URL
-    # Default repo dir matches the existing vast-server convention.
-    assert t["envs"]["POSTDOC_REPO_DIR"] == "~/harmonic-noise-suppression"
+    assert t["envs"]["POSTDOC_REPO_DIR"].endswith("/harmonic-noise-suppression")
 
 
-def test_build_task_resources_default():
-    t = _minimal()
-    assert t["resources"]["infra"].startswith("ssh/")
-    # SkyPilot "any GPU, N count" spec.
+def test_exec_resources_only_accelerators_no_infra():
+    """sky exec ignores infra; we must not set it."""
+    t = _exec()
+    assert "infra" not in t["resources"]
     assert t["resources"]["accelerators"] == ":1"
 
 
-def test_build_task_zero_gpus_drops_accelerators():
-    t = _minimal(gpus=0)
-    assert "accelerators" not in t["resources"]
+def test_exec_no_setup_or_workdir():
+    t = _exec()
+    # These are properties of the cluster, not of the exec'd job.
+    assert "setup" not in t
+    assert "workdir" not in t
+    assert "config" not in t
 
 
-def test_build_task_overrides():
-    t = _minimal(
-        name="foo",
-        gpus=4,
-        pool="other-pool",
-        repo_dir="/srv/repo",
-        envs={"WANDB_MODE": "online", "FOO": "bar"},
-    )
-    assert t["name"] == "foo"
-    assert t["resources"]["accelerators"] == ":4"
-    assert t["resources"]["infra"] == "ssh/other-pool"
-    assert t["envs"]["POSTDOC_REPO_DIR"] == "/srv/repo"
-    assert t["envs"]["WANDB_MODE"] == "online"
-    assert t["envs"]["FOO"] == "bar"
-    # Git envs still present.
-    assert t["envs"]["POSTDOC_GIT_SHA"] == FAKE_SHA
-
-
-def test_setup_pins_sha_and_runs_uv_sync():
-    t = _minimal()
-    setup = t["setup"]
-    assert 'git reset --hard "$POSTDOC_GIT_SHA"' in setup
-    assert "uv sync" in setup
-    assert "curl -LsSf https://astral.sh/uv/install.sh" in setup
-
-
-def test_run_activates_venv_and_runs_command():
-    t = _minimal(command="python train.py")
+def test_exec_run_pins_sha_and_syncs():
+    t = _exec()
     run = t["run"]
+    assert 'git reset --hard "$POSTDOC_GIT_SHA"' in run
+    assert "uv sync" in run
     assert "source .venv/bin/activate" in run
-    assert 'cd "$POSTDOC_REPO_DIR"' in run
+    assert "dvc pull" in run
     assert run.rstrip().endswith("python train.py")
 
 
-def test_setup_pulls_dvc():
-    t = _minimal()
-    assert "dvc pull" in t["setup"]
+def test_exec_gpus_zero_drops_accelerators():
+    t = _exec(gpus=0)
+    assert "accelerators" not in t["resources"]
+
+
+def test_exec_env_overrides_merge():
+    t = _exec(envs={"WANDB_MODE": "online"})
+    assert t["envs"]["WANDB_MODE"] == "online"
+    # Git envs still there.
+    assert t["envs"]["POSTDOC_GIT_SHA"] == FAKE_SHA

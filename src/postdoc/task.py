@@ -1,13 +1,20 @@
-"""SkyPilot task-YAML generator (git-native mode).
+"""SkyPilot task YAML generators.
 
-Every postdoc task:
-  1. Clones (or updates) the project repo on the remote to a pinned SHA that
-     was just pushed from the local machine. No rsync; git is the transport.
-  2. Runs `uv sync` in the repo root so the environment matches the lockfile.
-  3. Pulls DVC-tracked datasets.
-  4. Runs the user's shell command inside the uv-managed venv.
+Two task shapes:
 
-Schema reference: https://docs.skypilot.co/en/latest/reference/yaml-spec.html
+1. **Bootstrap** (`build_bootstrap_task`) — used by `postdoc cluster-up`.
+   Launches a long-lived cluster on the SSH node pool. The pod mounts the
+   repo directory from the host (`hostPath`) so that all subsequent jobs
+   share one clone, one `.venv`, one `datasets/`, one `results/` etc.
+
+2. **Exec** (`build_exec_task`) — used by `postdoc submit`. A short script
+   that `git reset --hard`s the shared repo to the pushed SHA, `uv sync`s,
+   and runs the user's command. Submitted with `sky exec`, so no cluster
+   spin-up, no rsync, no re-download.
+
+Schema refs:
+  YAML: https://docs.skypilot.co/en/latest/reference/yaml-spec.html
+  SSH pod_config: https://docs.skypilot.co/en/stable/reservations/existing-machines.html
 """
 from __future__ import annotations
 
@@ -19,76 +26,126 @@ import yaml
 
 
 DEFAULT_POOL = os.environ.get("POSTDOC_SSH_POOL", "vast-server")
-DEFAULT_GPUS = int(os.environ.get("POSTDOC_DEFAULT_GPUS", "1"))
-# Default path of the project checkout on the remote. Matches the existing
-# vast-server convention so we reuse the clone that's already there.
-DEFAULT_REPO_DIR = os.environ.get("POSTDOC_REPO_DIR", "~/harmonic-noise-suppression")
+DEFAULT_CLUSTER_GPUS = int(os.environ.get("POSTDOC_CLUSTER_GPUS", "2"))
+DEFAULT_JOB_GPUS = int(os.environ.get("POSTDOC_DEFAULT_GPUS", "1"))
+# Path on the host that is mounted into the pod at the same path. Must exist
+# on the host. Reuses the existing vast-server clone so datasets/ + results/
+# + .venv are shared across all jobs on the cluster.
+DEFAULT_REPO_DIR = os.environ.get("POSTDOC_REPO_DIR", "/root/harmonic-noise-suppression")
 
 
-# Setup: install uv, clone/fetch repo, hard-reset to the submitted SHA,
-# uv sync, dvc pull. Idempotent; safe to re-run across jobs.
-SETUP_TEMPLATE = """\
+BOOTSTRAP_SETUP = """\
 set -eo pipefail
-echo "[postdoc setup] SHA=$POSTDOC_GIT_SHA  URL=$POSTDOC_GIT_URL  DIR=$POSTDOC_REPO_DIR"
-
-# 1. Ensure uv is available.
+echo "[postdoc cluster] bootstrap starting at $(date -Iseconds)"
+# Install uv into the pod once per cluster lifecycle.
 if ! command -v uv >/dev/null 2>&1; then
-  echo "[postdoc setup] installing uv"
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
-
-# 2. Clone repo if missing.
-mkdir -p "$(dirname "$POSTDOC_REPO_DIR")"
-if [ ! -d "$POSTDOC_REPO_DIR/.git" ]; then
-  echo "[postdoc setup] cloning $POSTDOC_GIT_URL"
-  git clone "$POSTDOC_GIT_URL" "$POSTDOC_REPO_DIR"
-fi
-
-# 3. Fetch + hard-reset to the pinned SHA. Fetches all refs so that
-#    refs/postdoc/<sha> (used for detached HEAD submits) resolves.
 cd "$POSTDOC_REPO_DIR"
-git fetch --all --prune --tags
-git fetch origin "+refs/postdoc/*:refs/postdoc/*" 2>/dev/null || true
-git reset --hard "$POSTDOC_GIT_SHA"
-git submodule update --init --recursive 2>/dev/null || true
-echo "[postdoc setup] repo at $(git rev-parse HEAD)"
-
-# 4. Install project env (fast no-op when lockfile unchanged).
+# Fast-forward the mounted checkout (no-op if nothing to fetch).
+git fetch --all --prune --tags 2>&1 | tail -3 || true
+# Pre-sync the venv so the first submit doesn't pay that cost.
 uv sync
-
-# 5. Pull DVC-tracked datasets if any are referenced.
-if ls *.dvc datasets/*.dvc >/dev/null 2>&1; then
-  uv run dvc pull 2>&1 | tail -20 || echo "WARNING: dvc pull failed; job may lack data"
-fi
-echo "[postdoc setup] done"
+echo "[postdoc cluster] bootstrap done"
 """
 
-# Run: re-export PATH, cd into repo, activate uv venv, exec user command.
-RUN_TEMPLATE = """\
+BOOTSTRAP_RUN = """\
+echo "[postdoc cluster] up; pod ready for sky exec"
+sleep 10
+"""
+
+
+EXEC_SCRIPT = """\
 set -eo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 cd "$POSTDOC_REPO_DIR"
+
+echo "[postdoc job] swapping code to $POSTDOC_GIT_SHA"
+git fetch origin 2>&1 | tail -3
+# Also fetch the refs/postdoc/* namespace for detached-HEAD submits.
+git fetch origin "+refs/postdoc/*:refs/postdoc/*" 2>/dev/null || true
+git reset --hard "$POSTDOC_GIT_SHA"
+git submodule update --init --recursive 2>/dev/null || true
+echo "[postdoc job] repo at $(git rev-parse --short HEAD)"
+
+# uv sync: fast no-op when lockfile unchanged.
+uv sync 2>&1 | tail -5 || true
+
+# DVC pull: fetch datasets referenced by .dvc pointers that aren't cached.
+if ls *.dvc datasets/*.dvc >/dev/null 2>&1; then
+  uv run dvc pull 2>&1 | tail -20 || echo "WARNING: dvc pull failed; job may lack data"
+fi
+
 # shellcheck disable=SC1091
 source .venv/bin/activate
-echo "[postdoc run] $(git rev-parse --short HEAD) :: {command_label}"
+echo "[postdoc job] running: {command_label}"
 {command}
 """
 
 
-def build_task(
+def _pod_config_with_hostpath(host_path: str, mount_path: str) -> dict[str, Any]:
+    """Inject a hostPath volume + volumeMount + runAsUser=0 into the pod spec."""
+    return {
+        "ssh": {
+            "pod_config": {
+                "spec": {
+                    "securityContext": {"runAsUser": 0, "fsGroup": 0},
+                    "containers": [
+                        {
+                            "volumeMounts": [
+                                {"mountPath": mount_path, "name": "project"},
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "project",
+                            "hostPath": {"path": host_path, "type": "Directory"},
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+
+def build_bootstrap_task(
+    *,
+    pool: str = DEFAULT_POOL,
+    gpus: int = DEFAULT_CLUSTER_GPUS,
+    repo_dir: str = DEFAULT_REPO_DIR,
+) -> dict[str, Any]:
+    """Task for `sky launch -c postdoc` — brings up the shared cluster."""
+    task: dict[str, Any] = {
+        "name": "postdoc-cluster",
+        "resources": {"infra": f"ssh/{pool}"},
+        "envs": {"POSTDOC_REPO_DIR": repo_dir},
+        "setup": BOOTSTRAP_SETUP,
+        "run": BOOTSTRAP_RUN,
+        "config": _pod_config_with_hostpath(repo_dir, repo_dir),
+    }
+    if gpus:
+        task["resources"]["accelerators"] = f":{gpus}"
+    return task
+
+
+def build_exec_task(
     command: str,
     *,
     git_sha: str,
     git_url: str,
     name: str | None = None,
-    gpus: int = DEFAULT_GPUS,
-    pool: str = DEFAULT_POOL,
+    gpus: int = DEFAULT_JOB_GPUS,
     repo_dir: str = DEFAULT_REPO_DIR,
     envs: dict[str, str] | None = None,
-    extra_resources: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a SkyPilot task dict that checks out ``git_sha`` on the remote."""
+    """Task for `sky exec postdoc` — runs one job on the shared cluster.
+
+    Note: `sky exec` ignores `resources.infra` / `setup` / `workdir` /
+    `config` (those are set by the cluster). Only `name`, `envs`, `run`, and
+    accelerator requirements are meaningful.
+    """
     base_envs = {
         "POSTDOC_GIT_SHA": git_sha,
         "POSTDOC_GIT_URL": git_url,
@@ -97,26 +154,37 @@ def build_task(
     if envs:
         base_envs.update(envs)
 
-    # Keep the run script tidy: label is a short echo, command runs verbatim.
     label = command.replace("\n", " ")[:120]
-    run_script = RUN_TEMPLATE.format(command=command, command_label=label)
+    run_script = EXEC_SCRIPT.format(command=command, command_label=label)
 
     task: dict[str, Any] = {}
     if name:
         task["name"] = name
-    task["resources"] = {"infra": f"ssh/{pool}"}
+    task["resources"] = {}
     if gpus:
-        # SkyPilot syntax: ":N" means "any GPU type, N count".
-        # `*:N` is invalid here — SkyPilot treats accelerators strings as regex.
         task["resources"]["accelerators"] = f":{gpus}"
-    if extra_resources:
-        task["resources"].update(extra_resources)
     task["envs"] = base_envs
-    task["setup"] = SETUP_TEMPLATE
     task["run"] = run_script
     return task
 
 
+class _LiteralDumper(yaml.SafeDumper):
+    """yaml.SafeDumper that emits multi-line strings as ``|`` block scalars."""
+
+
+def _str_representer(dumper: yaml.Dumper, data: str):
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_LiteralDumper.add_representer(str, _str_representer)
+
+
 def dump_task_yaml(task: dict[str, Any], path: Path) -> Path:
-    path.write_text(yaml.safe_dump(task, sort_keys=False))
+    path.write_text(yaml.dump(task, Dumper=_LiteralDumper, sort_keys=False))
     return path
+
+
+def task_to_yaml(task: dict[str, Any]) -> str:
+    """Readable YAML of a task dict (multiline strings as block scalars)."""
+    return yaml.dump(task, Dumper=_LiteralDumper, sort_keys=False)
