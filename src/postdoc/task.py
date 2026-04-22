@@ -54,6 +54,10 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
+# The repo is bind-mounted from the host where it's owned by root; the pod
+# process is also root but git's "dubious ownership" safeguard trips anyway
+# across the bind-mount. Whitelist the path once for the pod's root user.
+git config --global --add safe.directory "$POSTDOC_REPO_DIR"
 cd "$POSTDOC_REPO_DIR"
 # Fast-forward the mounted checkout (no-op if nothing to fetch).
 git fetch --all --prune --tags 2>&1 | tail -3 || true
