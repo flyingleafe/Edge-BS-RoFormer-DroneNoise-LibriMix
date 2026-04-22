@@ -179,6 +179,7 @@ set -eo pipefail
 export CUDA_VISIBLE_DEVICES="{gpu_env}"
 export POSTDOC_JOB_ID="{job_id}"
 export POSTDOC_JOB_NAME="{name}"
+export POSTDOC_GIT_SHA="{sha}"
 
 REPO_DIR="{repo_dir}"
 LOG_FILE="{log_path}"
