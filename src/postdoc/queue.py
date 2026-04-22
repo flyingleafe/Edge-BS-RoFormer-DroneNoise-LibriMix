@@ -144,7 +144,7 @@ fi
 
 echo "[postdoc-job] activating venv"
 # shellcheck disable=SC1091
-source .venv/bin/activate
+export PATH="/root/.local/bin:$REPO_DIR/.venv/bin:$PATH"
 
 echo "[postdoc-job] running: {cmd}"
 echo "[postdoc-job] started at $(date -Iseconds)"

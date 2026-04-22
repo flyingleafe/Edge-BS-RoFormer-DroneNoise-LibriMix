@@ -132,7 +132,7 @@ def cmd_queue_start(
          "tmux new-session -d -s postdoc-queue "
          "'source ~/.bashrc 2>/dev/null; "
          "cd ~/harmonic-noise-suppression && "
-         "postdoc-runner'"],
+         "/root/harmonic-noise-suppression/.venv/bin/postdoc-runner'"],
         check=True,
     )
 
