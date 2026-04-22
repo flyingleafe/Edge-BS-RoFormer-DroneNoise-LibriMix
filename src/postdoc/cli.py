@@ -125,7 +125,10 @@ def cmd_cluster_up(
         dump_task_yaml(task, Path(tf.name))
         task_path = Path(tf.name)
     try:
-        _run_sky(["launch", "-y", "-c", CLUSTER_NAME, str(task_path)])
+        # --detach-run: return after job submission; don't tail logs (which
+        # would trigger a spurious FileNotFoundError when the log file isn't
+        # yet created by the remote runtime).
+        _run_sky(["launch", "-y", "--detach-run", "-c", CLUSTER_NAME, str(task_path)])
     finally:
         task_path.unlink(missing_ok=True)
 
@@ -238,7 +241,7 @@ def _cluster_up_inline() -> None:
         dump_task_yaml(task, Path(tf.name))
         task_path = Path(tf.name)
     try:
-        _run_sky(["launch", "-y", "-c", CLUSTER_NAME, str(task_path)])
+        _run_sky(["launch", "-y", "--detach-run", "-c", CLUSTER_NAME, str(task_path)])
     finally:
         task_path.unlink(missing_ok=True)
 

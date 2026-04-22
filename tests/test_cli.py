@@ -21,7 +21,8 @@ def test_cluster_up_calls_sky_launch(fake_sky):
     r = runner.invoke(app, ["cluster-up"])
     assert r.exit_code == 0, r.output
     sky = [c for c in fake_sky.calls if c and c[0] == "sky"][-1]
-    assert sky[:4] == ["sky", "launch", "-y", "-c"]
+    assert sky[:3] == ["sky", "launch", "-y"]
+    assert "--detach-run" in sky
     assert "postdoc" in sky
     assert sky[-1].endswith(".sky.yaml")
 
