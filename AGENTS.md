@@ -47,7 +47,7 @@ Route to the right skill (table below), execute, and close with `record-and-reme
 | `generate-model-comparisons` | Publication-ready plots/tables from eval results |
 | `generate-slidev-presentation` | Academic presentations with mermaid + result figures |
 | `examine-presentation-slides` | Start Slidev and visually inspect slides |
-| `vast-server-training` | Run training on remote GPU via tmux |
+| `vast-server-training` | Run training on remote GPU (via `postdoc submit` / SkyPilot) |
 
 ## Directory Map
 
@@ -57,7 +57,7 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 |-----------|---------|-------------|
 | `models/` | Model implementations | Model type keys, RPS conditioning, adding new models |
 | `configs/` | YAML config files for model variants | Naming conventions, config structure |
-| `src/postdoc/` | Experiment orchestration CLI | Job submission, GPU scheduling, lifecycle |
+| `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
 | `experiments/` | Experiment YAML definitions | Format, creating new experiments |
 | `data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM creation scripts |
 | `notebooks/` | Jupyter notebooks for analysis | Result analysis, data exploration |
@@ -71,8 +71,20 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 - **Model types**: Registered in `utils.py:get_model_from_config()` — see `models/AGENTS.md` for full table
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `models/AGENTS.md`
-- **Experiment running**: `postdoc job submit` or direct `train.py` — see `run-experiment` skill
+- **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
 - **Results**: Always `./sync_results.sh` before analysis
+
+## Philosophy (earned, do not relitigate)
+
+1. **Off-the-shelf first.** Before building infra (schedulers, runners, trackers, queues, sync tools), name ≥2 existing tools and state why each is rejected. The default failure mode here is producing code when a mature tool exists — invoke `research-before-build` at the *start* of any design task, not only before the closing artifact.
+
+2. **Jobs are shell commands.** A runner runs a command on a GPU, captures logs, restarts on failure. Structured inputs (experiment YAMLs, hyperparam sweeps, configs) are the *training script's* concern via its own flags. We do not invent DSLs for what shell already does.
+
+3. **Bespoke code goes where it's novel.** For this project the novel part is *an agent that watches training, fixes bugs, and resumes automatically*. Queueing, GPU allocation, env setup, retries, multi-cloud orchestration — delegate to mature tools. LOC we own is a liability, not an achievement.
+
+4. **Rewrites interrogate interfaces first, implementations second.** On any rewrite, the old input/output shape is the first thing to question. Preserving it "because it was there" is the default LLM mistake. Ask what the interface *should* be in a world without legacy.
+
+5. **Propose alternatives at the top decision level.** When sketching architecture, list choices at the highest fork (tool A vs tool B vs bespoke) *before* optimizing within any one of them. Debate is only useful at the level where the decision actually lives.
 
 ## Rules
 

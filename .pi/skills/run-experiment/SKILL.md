@@ -19,18 +19,25 @@ Complete workflow for running ML experiments in this repository.
    - Model type registered? → Check `models/AGENTS.md` for valid keys
    - RPS needed? → Ensure `load_rps: true` in config
 
-3. **Create experiment definition.**
-   - Postdoc YAML in `experiments/` → see `experiments/AGENTS.md` for format
-   - Or use direct `train.py` command → see `models/AGENTS.md` for model-specific commands
+3. **Compose the training command.**
+   - Pick the right `--model_type` — see `models/AGENTS.md`.
+   - Pick the right `--config` — see `configs/AGENTS.md`.
+   - The entire command is what you submit; there is **no `postdoc`-specific YAML format**. If you have a reusable group of flags, write a shell script under `scripts/` and submit that.
 
-4. **Execute.**
-   - **Postdoc** (recommended): `postdoc job submit experiments/<name>.yaml`
-   - **Direct**: `python train.py --model_type <key> --config_path <path> ...`
-   - **Remote GPU**: See `vast-server-training` skill
+4. **Submit.**
+   ```bash
+   postdoc submit python train.py --model_type <key> --config configs/<name>.yaml [--results_dir ...] [other flags...]
+   ```
+   Optional: `-n <name>` (job name), `--gpus N`, `--dry-run` (inspect task YAML), `-e KEY=VAL` (env vars), `-f <task.sky.yaml>` (full task spec).
 
-5. **Monitor.** `postdoc job status <id>` or `postdoc job logs <id> --tail`
+   See `vast-server-training` skill for the full CLI surface and `docs/skypilot/README.md` for setup.
 
-6. **Evaluate.** `python final_valid.py ...` or postdoc eval experiment.
+5. **Monitor.** `postdoc list`, `postdoc logs <job-id> -f`, `postdoc status <job-id>`, `postdoc dashboard`.
+
+6. **Evaluate.** Submit a second job for eval, or chain train + eval in one shell script and submit that script.
+   ```bash
+   postdoc submit bash -c 'python train.py ... && python final_valid.py ...'
+   ```
 
 7. **Analyze results.**
    - `./sync_results.sh` first (mandatory)

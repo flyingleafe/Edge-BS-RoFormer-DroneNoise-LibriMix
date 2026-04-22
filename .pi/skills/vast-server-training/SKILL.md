@@ -1,99 +1,133 @@
+---
+name: vast-server-training
+description: Run training on the vast-server GPU host via `postdoc submit` (SkyPilot managed jobs). Use when launching, monitoring, or cancelling training jobs on the remote GPU host.
+---
+
 # Vast-Server Training
 
-Run training scripts on the vast-server GPU machine using tmux sessions.
+All training runs on vast-server. `postdoc submit <shell-command>` is the universal interface — it wraps `sky jobs launch` on the `ssh/vast-server` node pool.
 
-## Prerequisites
+**Every submit is git-native**: the local working tree must be clean, the HEAD is pushed to `origin`, and the server runs `git reset --hard <SHA>` + `uv sync` before executing the command. Uncommitted changes do NOT make it to the server. See `src/postdoc/AGENTS.md` for details.
 
-- SSH access: `ssh vast-server` (configured in `~/.ssh/config`)
-- Project synced at `~/harmonic-noise-suppression/` on vast-server
-- Code must be pushed to git first (if local changes need to reach server)
+## One-time setup
 
-## Steps
-
-### 1. Sync local code to server (if needed)
+If `postdoc check` fails or shows the pool unregistered:
 
 ```bash
-git push origin <branch>
-ssh vast-server "cd ~/harmonic-noise-suppression && git pull"
+mkdir -p ~/.sky
+cp docs/skypilot/ssh_node_pools.yaml.example ~/.sky/ssh_node_pools.yaml
+postdoc pool-up     # wraps `sky ssh up` — installs k3s + sky runtime on vast-server
+postdoc check
 ```
 
-Note: if the server can't pull from github directly, the code must already be present on the server.
-
-### 2. Start a training run
-
-Use tmux to keep the job running after disconnecting.
+Also verify the server can pull the repo:
 
 ```bash
-ssh vast-server "cd ~/harmonic-noise-suppression && tmux new-session -d -s <SESSION_NAME> '<COMMAND> 2>&1 | tee <LOG_PATH>'"
+ssh vast-server "git ls-remote $(git remote get-url origin) HEAD"
 ```
 
-- Pick a descriptive `<SESSION_NAME>` (e.g. `dcunet_rps`, `dccrn_rps`)
-- Use `--device cuda:0` or `--device cuda:1` to select GPU
-- Always `tee` into a log file under `results/` for later inspection
+If that fails, configure git auth on the server (SSH key with repo access, or deploy key) before submitting.
 
-### 3. Check that training started correctly
+See `docs/skypilot/README.md` for the fuller walkthrough.
+
+## Daily workflow
 
 ```bash
-ssh vast-server "tmux capture-pane -t <SESSION_NAME> -p | tail -20"
+# Make sure your changes are committed first.
+git add -A && git commit -m "what you're about to run"
+
+# Submit — preflight pushes HEAD, server checks out that SHA and uv syncs.
+postdoc submit python train.py --model_type dccrn --config configs/dccrn_dregon.yaml
+
+# Name it, and request 2 GPUs:
+postdoc submit -n dccrn-dregon --gpus 2 python train.py ...
+
+# Iterate fast without committing (NOT RECOMMENDED for real runs — the server
+# will run HEAD, NOT your uncommitted edits):
+postdoc submit --dirty python quick_test.py
+
+# Already pushed by hand / CI? Skip the push:
+postdoc submit --skip-push python train.py ...
+
+# Peek at the generated task YAML without launching (still runs preflight+push):
+postdoc submit --dry-run python train.py ...
+
+# Pass env vars:
+postdoc submit -e WANDB_MODE=online python train.py ...
+
+# For complex specs (file_mounts, multi-step setup), write a task YAML and
+# bypass the git wrapper:
+postdoc submit -f my_task.sky.yaml
+
+# List jobs (queued + running); --all adds finished:
+postdoc list
+postdoc list --all
+
+# Stream logs for a job:
+postdoc logs <job-id>
+
+# Controller/scheduler logs (why wasn't my job picked up?):
+postdoc logs <job-id> --controller
+
+# Cancel:
+postdoc cancel <job-id>          # or: postdoc cancel --all -y
+
+# Drop into a shell on the host (not a job — just ssh):
+postdoc ssh
+
+# Web UI (jobs + infra + GPU utilisation):
+postdoc dashboard
 ```
 
-Or attach to watch live:
+## What `postdoc submit` actually does
+
+1. **Local preflight**: verify clean tree, `git push origin HEAD:refs/heads/<branch>` (or `refs/postdoc/<sha>` if detached). Fail loudly on dirty tree or non-ff push.
+2. Generates a SkyPilot task YAML with `infra: ssh/vast-server`, an `envs:` block with `POSTDOC_GIT_SHA` / `POSTDOC_GIT_URL` / `POSTDOC_REPO_DIR`, a setup step that clones (or reuses) the repo + `git reset --hard $SHA` + `uv sync` + `dvc pull`, and your command wrapped by `cd $REPO_DIR && source .venv/bin/activate`.
+3. `sky jobs launch -y --detach-run <task.yaml>` — queues as a managed job.
+
+SkyPilot handles queueing, log capture, auto-recovery on controller restart.
+
+## Working with experiment configs
+
+The experiment YAMLs in `experiments/` are **inputs to the training script's `--config` flag**, not to `postdoc`. Pattern:
 
 ```bash
-ssh -t vast-server "tmux attach -t <SESSION_NAME>"
+postdoc submit python train.py \
+    --model_type dccrn \
+    --config configs/dccrn_dregon.yaml \
+    --results_dir results/dccrn_dregon
 ```
 
-Detach with `Ctrl+B, D`.
-
-### 4. Monitor training progress
+If a group of runs shares a setup, write a one-line shell script in the repo (`./scripts/run_dccrn.sh` etc.) and submit it:
 
 ```bash
-ssh vast-server "tail -5 ~/harmonic-noise-suppression/<LOG_PATH>"
+postdoc submit ./scripts/run_dccrn.sh
 ```
 
-### 5. List running tmux sessions
+Do **not** reintroduce an experiment-YAML mode inside `postdoc`. Structure is the script's concern.
+
+## Raw-ssh fallback (rare)
+
+Only for ad-hoc debugging that doesn't need queueing or logging:
 
 ```bash
-ssh vast-server "tmux list-sessions"
+postdoc ssh
+# then inside:
+nvidia-smi
+tail -f results/.../train.log
 ```
 
-### 6. Kill a training run if needed
-
-```bash
-ssh vast-server "tmux kill-session -t <SESSION_NAME>"
-```
-
-## Common training commands
-
-### train_rps_predictor.py
-
-```bash
-# DCUNet encoder RPS on GPU 0
-tmux new-session -d -s dcunet_rps 'python train_rps_predictor.py --model dcunet_enc_rps --device cuda:0 2>&1 | tee results/rps_predictor_comparison/dcunet_enc_rps.log'
-
-# DCCRN encoder RPS on GPU 1
-tmux new-session -d -s dccrn_rps 'python train_rps_predictor.py --model dccrn_enc_rps --device cuda:1 2>&1 | tee results/rps_predictor_comparison/dccrn_enc_rps.log'
-
-# SimpleConv baseline
-tmux new-session -d -s simple_conv_rps 'python train_rps_predictor.py --model simple_conv --device cuda:0 2>&1 | tee results/rps_predictor_comparison/simple_conv.log'
-
-# DCCRNLite
-tmux new-session -d -s dccrn_lite_rps 'python train_rps_predictor.py --model dccrn_lite_rps --device cuda:1 2>&1 | tee results/rps_predictor_comparison/dccrn_lite_rps.log'
-
-# Train all models sequentially
-tmux new-session -d -s rps_all 'python train_rps_predictor.py --train_all --device cuda:0 2>&1 | tee results/rps_predictor_comparison/all.log'
-```
-
-### Training via postdoc
-
-```bash
-postdoc job submit experiments/<experiment>.yaml
-postdoc job status <job_id>
-postdoc job logs <job_id> --tail
-```
+Anything that should be reproducible or survive disconnection → use `postdoc submit`.
 
 ## Syncing results back
 
-```bash
-./sync_results.sh
-```
+Managed-job logs live on the vast-server controller and are retrievable with `postdoc logs`. Checkpoints flow through wandb artifacts (see `docs/data-and-artifacts.md`). Datasets via DVC. The legacy `./sync_results.sh` is still available if you need a full rsync.
+
+## Gotchas
+
+- **Dirty tree blocks submit.** This is the feature, not a bug. If you're iterating, `git commit` between tries (cheap commits are fine; use `--amend` to squash later). `--dirty` is an emergency escape that does NOT ship uncommitted code.
+- **Non-fast-forward push blocks submit.** `git fetch && git rebase origin/<branch>` and retry.
+- First-ever `postdoc submit` on a fresh vast-server is slow — spins up the jobs controller + clones the repo + `uv sync` from cold. After that, fast.
+- `--detach` is the default. Re-attach to logs anytime with `postdoc logs <id>`.
+- Two GPUs means two concurrent jobs max. Further submits queue automatically.
+- `~/.postdoc/repo` on the server is a shared checkout across all postdoc jobs. Fine because each job does `git reset --hard` before running, but don't hand-edit files in there.

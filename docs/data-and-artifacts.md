@@ -58,12 +58,12 @@ Every subsequent `dvc add` on the same dataset dir produces a new content hash
 
 ```bash
 git pull                           # get the latest .dvc pointers
-postdoc job submit experiments/train_X.yaml
-# → [dvc] pulling missing datasets: ['datasets/DREGON-LM.dvc']
-# → Submitted job abc123 ...
+postdoc submit python train.py --model_type dccrn --config configs/dccrn.yaml
+# SkyPilot rsyncs the workdir, runs setup (pip install -e . + dvc pull),
+# then starts the training command as a managed job.
 ```
 
-The `postdoc job submit` preflight automatically runs `dvc pull` for any
+The `postdoc submit` setup step automatically runs `dvc pull` for any
 dataset that is missing locally but has a `.dvc` file in the repo. At
 training end, the best checkpoint is automatically logged as a wandb
 artifact (aliased `best` and `latest`).

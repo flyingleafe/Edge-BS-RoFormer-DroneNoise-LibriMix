@@ -13,3 +13,6 @@ drones-with-speeds.md
 
 # Trello project config (may contain workspace names)
 .trello
+
+# postdoc runtime state (runs, worktrees, FIFO, logs)
+.postdoc/
