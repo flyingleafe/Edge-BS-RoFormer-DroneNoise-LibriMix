@@ -217,7 +217,7 @@ def _next_job_id(user: str, host: str, postdoc_dir: str) -> int:
     script = (
         "import glob, os; "
         "dirs = glob.glob('/root/.postdoc/jobs/*/'); "
-        "ids = [int(os.path.basename(d).split('__')[1]) for d in dirs] "
+        "ids = [int(os.path.basename(d.rstrip('/')).split('__')[1]) for d in dirs] "
         "if dirs else [0]; print(max(ids) + 1)"
     )
     cmd = _ssh_base(user, host) + [f"python3 -c {script!r}"]
