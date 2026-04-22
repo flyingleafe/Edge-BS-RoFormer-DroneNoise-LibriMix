@@ -22,7 +22,8 @@ def test_build_task_envs_contain_git_info():
 def test_build_task_resources_default():
     t = _minimal()
     assert t["resources"]["infra"].startswith("ssh/")
-    assert t["resources"]["accelerators"] == "*:1"
+    # SkyPilot "any GPU, N count" spec.
+    assert t["resources"]["accelerators"] == ":1"
 
 
 def test_build_task_zero_gpus_drops_accelerators():
@@ -39,7 +40,7 @@ def test_build_task_overrides():
         envs={"WANDB_MODE": "online", "FOO": "bar"},
     )
     assert t["name"] == "foo"
-    assert t["resources"]["accelerators"] == "*:4"
+    assert t["resources"]["accelerators"] == ":4"
     assert t["resources"]["infra"] == "ssh/other-pool"
     assert t["envs"]["POSTDOC_REPO_DIR"] == "/srv/repo"
     assert t["envs"]["WANDB_MODE"] == "online"

@@ -106,7 +106,9 @@ def build_task(
         task["name"] = name
     task["resources"] = {"infra": f"ssh/{pool}"}
     if gpus:
-        task["resources"]["accelerators"] = f"*:{gpus}"
+        # SkyPilot syntax: ":N" means "any GPU type, N count".
+        # `*:N` is invalid here — SkyPilot treats accelerators strings as regex.
+        task["resources"]["accelerators"] = f":{gpus}"
     if extra_resources:
         task["resources"].update(extra_resources)
     task["envs"] = base_envs
