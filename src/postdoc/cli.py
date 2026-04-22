@@ -119,7 +119,7 @@ def cmd_queue_start(
     r = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
          "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped"],
-        capture=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if "running" in r.stdout:
         typer.echo("[postdoc] queue already running in tmux postdoc-queue")
@@ -140,7 +140,7 @@ def cmd_queue_start(
     r2 = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
          "tmux has-session -t postdoc-queue 2>/dev/null && echo ok || echo fail"],
-        capture=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if "ok" in r2.stdout:
         typer.echo("[postdoc] queue started")
@@ -172,7 +172,7 @@ def cmd_queue_status(
     r = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
          "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped"],
-        capture=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     status = "running" if "running" in r.stdout else "stopped"
     typer.echo(f"[postdoc] queue: {status}")
@@ -350,7 +350,7 @@ def cmd_status(
     r = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
          f"cat {job_dir}/job.json 2>/dev/null || echo null"],
-        capture=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     import json
     try:
@@ -389,7 +389,7 @@ def cmd_logs(
         r = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
              f"tail -{lines} {job_dir}/log.txt"],
-            capture=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         typer.echo(r.stdout or "")
 
