@@ -46,6 +46,7 @@ dependencies = [
 
 [project.scripts]
 postdoc = "postdoc.cli:main"
+postdoc-runner = "postdoc.queue:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
