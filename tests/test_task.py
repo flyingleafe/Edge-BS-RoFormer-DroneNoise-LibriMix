@@ -39,7 +39,7 @@ def test_bootstrap_setup_installs_uv_and_syncs():
     t = build_bootstrap_task()
     s = t["setup"]
     assert "astral.sh/uv/install.sh" in s
-    assert "uv sync" in s
+    assert "uv sync --no-dev" in s
 
 
 # ---------- exec ------------------------------------------------------------
@@ -78,7 +78,7 @@ def test_exec_run_pins_sha_and_syncs():
     t = _exec()
     run = t["run"]
     assert 'git reset --hard "$POSTDOC_GIT_SHA"' in run
-    assert "uv sync" in run
+    assert "uv sync --no-dev" in run
     assert "source .venv/bin/activate" in run
     assert "dvc pull" in run
     assert run.rstrip().endswith("python train.py")

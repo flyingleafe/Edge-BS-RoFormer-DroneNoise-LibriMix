@@ -58,7 +58,10 @@ cd "$POSTDOC_REPO_DIR"
 # Fast-forward the mounted checkout (no-op if nothing to fetch).
 git fetch --all --prune --tags 2>&1 | tail -3 || true
 # Pre-sync the venv so the first submit doesn't pay that cost.
-uv sync
+# --no-dev skips the dev group (jupyter/nnviz/torchlens/etc.) — those
+# need system-level build deps (libgraphviz-dev etc.) not present in
+# the SkyPilot pod and not needed for training.
+uv sync --no-dev
 echo "[postdoc cluster] bootstrap done"
 """
 
@@ -82,7 +85,7 @@ git submodule update --init --recursive 2>/dev/null || true
 echo "[postdoc job] repo at $(git rev-parse --short HEAD)"
 
 # uv sync: fast no-op when lockfile unchanged.
-uv sync 2>&1 | tail -5 || true
+uv sync --no-dev 2>&1 | tail -5 || true
 
 # DVC pull: fetch datasets referenced by .dvc pointers that aren't cached.
 if ls *.dvc datasets/*.dvc >/dev/null 2>&1; then
