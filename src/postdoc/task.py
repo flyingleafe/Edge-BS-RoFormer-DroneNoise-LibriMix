@@ -28,10 +28,22 @@ import yaml
 DEFAULT_POOL = os.environ.get("POSTDOC_SSH_POOL", "vast-server")
 DEFAULT_CLUSTER_GPUS = int(os.environ.get("POSTDOC_CLUSTER_GPUS", "2"))
 DEFAULT_JOB_GPUS = int(os.environ.get("POSTDOC_DEFAULT_GPUS", "1"))
+# GPU type that SkyPilot sees on the pool. Run `sky gpus list --infra ssh`
+# to discover it. `:N` (any type) is invalid in task YAML — SkyPilot mangles
+# it into the synthetic instance-name and crashes; the type must be concrete.
+DEFAULT_GPU_TYPE = os.environ.get("POSTDOC_GPU_TYPE", "RTX4070-TI")
 # Path on the host that is mounted into the pod at the same path. Must exist
 # on the host. Reuses the existing vast-server clone so datasets/ + results/
 # + .venv are shared across all jobs on the cluster.
 DEFAULT_REPO_DIR = os.environ.get("POSTDOC_REPO_DIR", "/root/harmonic-noise-suppression")
+
+
+def _accelerator_spec(gpus: int, gpu_type: str) -> str | None:
+    """Return the SkyPilot accelerators string, or None for no GPU."""
+    if not gpus:
+        return None
+    return f"{gpu_type}:{gpus}"
+
 
 
 BOOTSTRAP_SETUP = """\
@@ -114,6 +126,7 @@ def build_bootstrap_task(
     *,
     pool: str = DEFAULT_POOL,
     gpus: int = DEFAULT_CLUSTER_GPUS,
+    gpu_type: str = DEFAULT_GPU_TYPE,
     repo_dir: str = DEFAULT_REPO_DIR,
 ) -> dict[str, Any]:
     """Task for `sky launch -c postdoc` — brings up the shared cluster."""
@@ -125,8 +138,9 @@ def build_bootstrap_task(
         "run": BOOTSTRAP_RUN,
         "config": _pod_config_with_hostpath(repo_dir, repo_dir),
     }
-    if gpus:
-        task["resources"]["accelerators"] = f":{gpus}"
+    acc = _accelerator_spec(gpus, gpu_type)
+    if acc:
+        task["resources"]["accelerators"] = acc
     return task
 
 
@@ -137,6 +151,7 @@ def build_exec_task(
     git_url: str,
     name: str | None = None,
     gpus: int = DEFAULT_JOB_GPUS,
+    gpu_type: str = DEFAULT_GPU_TYPE,
     repo_dir: str = DEFAULT_REPO_DIR,
     envs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -161,8 +176,9 @@ def build_exec_task(
     if name:
         task["name"] = name
     task["resources"] = {}
-    if gpus:
-        task["resources"]["accelerators"] = f":{gpus}"
+    acc = _accelerator_spec(gpus, gpu_type)
+    if acc:
+        task["resources"]["accelerators"] = acc
     task["envs"] = base_envs
     task["run"] = run_script
     return task

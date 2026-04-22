@@ -26,8 +26,8 @@ def test_bootstrap_runs_as_root():
 
 
 def test_bootstrap_requests_cluster_gpus():
-    t = build_bootstrap_task(gpus=2)
-    assert t["resources"]["accelerators"] == ":2"
+    t = build_bootstrap_task(gpus=2, gpu_type="H100")
+    assert t["resources"]["accelerators"] == "H100:2"
 
 
 def test_bootstrap_passes_pool():
@@ -61,7 +61,9 @@ def test_exec_resources_only_accelerators_no_infra():
     """sky exec ignores infra; we must not set it."""
     t = _exec()
     assert "infra" not in t["resources"]
-    assert t["resources"]["accelerators"] == ":1"
+    # Default GPU type for vast-server; count from DEFAULT_JOB_GPUS=1.
+    assert t["resources"]["accelerators"].endswith(":1")
+    assert ":" in t["resources"]["accelerators"]
 
 
 def test_exec_no_setup_or_workdir():

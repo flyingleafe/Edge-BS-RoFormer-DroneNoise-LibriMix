@@ -79,7 +79,8 @@ def test_submit_dry_run_prints_yaml_no_sky_exec(fake_sky, fake_git):
     sky_calls = [c for c in fake_sky.calls if c and c[0] == "sky"]
     assert not [c for c in sky_calls if len(c) >= 2 and c[1] == "exec"]
     # YAML has no infra (sky exec ignores it) but does have accelerators + git envs.
-    assert "accelerators: :1" in r.output
+    assert "accelerators:" in r.output
+    assert ":1" in r.output
     assert "POSTDOC_GIT_SHA" in r.output
     assert "git reset --hard" in r.output
     assert "infra:" not in r.output
