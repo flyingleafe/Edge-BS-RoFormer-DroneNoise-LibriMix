@@ -1,0 +1,7 @@
+[core]
+    remote = r2
+    analytics = false
+[cache]
+    type = "reflink,hardlink,symlink,copy"
+['remote "r2"']
+    url = s3://hns-research

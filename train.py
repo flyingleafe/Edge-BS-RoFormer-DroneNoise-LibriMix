@@ -1344,6 +1344,24 @@ def train_model(args: argparse.Namespace) -> None:
                 )
                 break
 
+    # Publish the best checkpoint as a wandb artifact so downstream analysis
+    # (e.g. comparison notebooks on the laptop) can pull it via run.use_artifact.
+    # See docs/data-and-artifacts.md. Silent no-op if wandb is disabled.
+    _log_best_checkpoint_artifact(args, best_metric)
+
+
+def _log_best_checkpoint_artifact(args, best_metric: float) -> None:
+    best_ckpt = Path(args.results_path) / "best_model.ckpt"
+    if wandb.run is None or wandb.run.disabled or not best_ckpt.exists():
+        return
+    artifact = wandb.Artifact(
+        name=f"model-{wandb.run.id}",
+        type="model",
+        metadata={"best_metric": float(best_metric), "model_type": args.model_type},
+    )
+    artifact.add_file(str(best_ckpt))
+    wandb.log_artifact(artifact, aliases=["best", "latest"])
+
 
 if __name__ == "__main__":
     train_model(None)

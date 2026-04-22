@@ -27,6 +27,32 @@ def _get_ctx(backend: str | None = None) -> PostdocContext:
     return create_context(config_path=Path("postdoc.yaml"), backend=backend)
 
 
+def _ensure_datasets_present(paths: list[str]) -> None:
+    """If a dataset path is missing locally but tracked by DVC, run ``dvc pull``.
+
+    Looks for a ``.dvc`` file next to each referenced dataset top-level directory
+    (e.g. ``datasets/DREGON-LM.dvc``). Silent no-op when no ``.dvc`` file exists.
+    """
+    targets: set[str] = set()
+    for p in paths:
+        pth = Path(p)
+        # Dataset top-level dir, e.g. 'datasets/DREGON-LM' from 'datasets/DREGON-LM/train'.
+        if len(pth.parts) < 2:
+            continue
+        top = Path(*pth.parts[:2])
+        if top.exists():
+            continue
+        dvc_file = Path(f"{top}.dvc")
+        if dvc_file.exists():
+            targets.add(str(dvc_file))
+    if not targets:
+        return
+    typer.echo(f"[dvc] pulling missing datasets: {sorted(targets)}")
+    rc = subprocess.run(["dvc", "pull", *sorted(targets)]).returncode
+    if rc != 0:
+        typer.echo("WARNING: dvc pull failed; the job may fail to find its data.")
+
+
 def _get_git_info() -> tuple[str, str]:
     branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -81,6 +107,9 @@ def job_submit(
         if not data_paths:
             typer.echo(f"ERROR: No training.data_path in resolved config for {exp_path}")
             raise typer.Exit(1)
+
+        # Auto-pull any DVC-tracked datasets missing locally. See docs/data-and-artifacts.md.
+        _ensure_datasets_present(data_paths + valid_paths)
 
         manifest = {
             "job_id": job_id,
