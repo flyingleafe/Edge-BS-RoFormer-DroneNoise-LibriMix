@@ -1,6 +1,6 @@
 ---
 name: run-experiment
-description: End-to-end ML experiment workflow: configuration, training, evaluation, and result analysis. Use when the user wants to train a model, run evaluation, or orchestrate an experiment.
+description: End-to-end ML experiment workflow - configuration, training, evaluation, and result analysis. Use when the user wants to train a model, run evaluation, or orchestrate an experiment.
 ---
 
 # Run an Experiment

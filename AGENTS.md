@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Suppress harmonic noise from rotating equipment (drones, motors) in speech recordings at ultra-low SNR (0 to −30 dB). Achieve SOTA results. Publish papers.
+Speech enhancement under harmonic noise from rotating sources, at ultra-low SNR (0 to −30 dB). Drones are an instrumented case study; the method targets rotating-source noise generally (C1).
 
-**Current focus**: Paper 2 — RPS-conditioned speech enhancement on DREGON-LM dataset.
+**See [`GOALS.md`](./GOALS.md)** at project root for the durable goal statement, constraints (C1–C8), deadline structure, and the live portfolio of experimental bets. Read it at the start of any non-trivial research push.
 
 ## The Bootstrap
 
@@ -72,6 +72,7 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `models/AGENTS.md`
 - **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
+- **Playwright (browser automation)**: Installed via `python312Packages.playwright` + `playwright-driver.browsers` in `flake.nix`. The nixpkgs package shadows any `uv`-installed version via `PYTHONPATH` ordering. Uses NixOS-patched Chromium/headless_shell — no `playwright install` needed. Env vars `PLAYWRIGHT_BROWSERS_PATH` and `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` are set in the shell hook.
 - **Results**: Always `./sync_results.sh` before analysis
 
 ## Philosophy (earned, do not relitigate)
@@ -85,6 +86,8 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 4. **Rewrites interrogate interfaces first, implementations second.** On any rewrite, the old input/output shape is the first thing to question. Preserving it "because it was there" is the default LLM mistake. Ask what the interface *should* be in a world without legacy.
 
 5. **Propose alternatives at the top decision level.** When sketching architecture, list choices at the highest fork (tool A vs tool B vs bespoke) *before* optimizing within any one of them. Debate is only useful at the level where the decision actually lives.
+
+6. **Decompose before prescribing.** When a goal or stakeholder opinion arrives, resist the urge to immediately produce an implementation plan. Ask "what would it mean to achieve this?" (verify) and "what would it take?" (decompose) repeatedly until you have a specification. Only then plan. Builder bias is real — especially in LLMs.
 
 ## Rules
 

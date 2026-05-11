@@ -127,7 +127,7 @@ class SimpleConv(nn.Module):
         )
         mag = X.abs()
         mag = torch.log1p(mag)
-        mag = mag.unsqueeze(0).unsqueeze(1)  # (B, 1, F, T)
+        mag = mag.unsqueeze(1)  # (B, 1, F, T)
 
         h = mag
         for block in self.encoder:
@@ -249,7 +249,7 @@ class DCUNetEncRPS(nn.Module):
             window=self.window, return_complex=True, normalized=True,
         )
         X = torch.view_as_real(X)  # (B, F, T, 2)
-        X = X.unsqueeze(0).unsqueeze(1)  # (B, 1, F, T, 2)
+        X = X.unsqueeze(1)  # (B, 1, F, T, 2)
 
         # Forward through encoder, collect features
         encoder_features = []
@@ -320,7 +320,7 @@ class DCCRNEncRPS(nn.Module):
             window=self.window, return_complex=True, normalized=True,
         )
         X = torch.view_as_real(X)  # (B, F, T, 2)
-        X = X.unsqueeze(0).unsqueeze(1)  # (B, 1, F, T, 2)
+        X = X.unsqueeze(1)  # (B, 1, F, T, 2)
 
         # Forward through encoder, collect features
         encoder_features = []

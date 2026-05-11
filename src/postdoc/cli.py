@@ -374,7 +374,7 @@ def cmd_status(
 def cmd_logs(
     name_and_id: str = typer.Argument(...,
                                       help="<name>__<id>, e.g. dccrn__42"),
-    follow: bool = typer.Option(True, "--follow/--no-follow", "-f"),
+    follow: bool = typer.Option(False, "--follow/--no-follow", "-f"),
     lines: int = typer.Option(50, "--lines", "-n"),
     host: str = typer.Option(DEFAULT_POSTDOC_HOST, "--host"),
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),

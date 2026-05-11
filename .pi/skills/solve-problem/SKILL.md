@@ -13,6 +13,12 @@ Structured loop for attacking any open-ended task in this repository.
 
 1. **Define the problem.** One or two sentences: the gap between current state and desired state. **State it without project jargon** — if it sounds generic, it probably is, and a tool exists.
 
+   Then **decompose before prescribing.** Ask repeatedly:
+   - *"What would it mean to achieve this goal?"* (what is the verification procedure?)
+   - *"What would it take to achieve it?"* (what are the open questions?)
+   
+   Repeat until you have a verifiable specification and a clear decomposition. Only then form a plan or delegate to sub-tasks. Never jump from goal → implementation without this step.
+
 2. **Research-before-build gate (MANDATORY for non-trivial tasks).** Run the
    user-wide `research-before-build` skill. Do not skip. Do not rationalize
    skipping. Concretely: if you are about to write >200 LOC, create new
@@ -45,3 +51,4 @@ Structured loop for attacking any open-ended task in this repository.
 - **Prefer composition.** Can existing models/skills/tools be composed, or does something new need to be built? Default: composition. Custom build is a last resort that needs justification.
 - **A scaffolding stub is not a directive.** If you find `NotImplementedError` or a `# TODO` in someone else's code, first question whether the scaffold should exist at all, not just how to fill it in.
 - **Surface tradeoffs, don't silently downgrade.** If the user asked for X and you're about to do X' because X is hard, say so first.
+- **Never jump from opinion → implementation plan.** When a stakeholder gives feedback or a goal, decompose by asking "what would it mean?" and "what would it take?" until you have verifiable sub-goals. Prescribing a sprint before knowing the gap is builder bias.

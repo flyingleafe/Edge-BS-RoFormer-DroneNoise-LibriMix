@@ -132,7 +132,7 @@ def list_jobs(user: str = DEFAULT_SERVER_USER,
         "  if not os.path.isfile(jf): continue; "
         "  try: "
         "    d2 = json.load(open(jf)); "
-        "    bn = os.path.basename(d); "
+        "    bn = os.path.basename(d.rstrip('/')); "
         "    parts = bn.rsplit('__', 1); "
         "    d2['name'] = d2.get('name', parts[0] if len(parts) == 2 else bn); "
         "    jobs.append(d2); "

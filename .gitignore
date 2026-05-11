@@ -11,6 +11,9 @@ drones-with-speeds.md
 .ipynb_checkpoints/
 .claude/worktrees/
 
+.venv/
+node_modules/
+
 # Trello project config (may contain workspace names)
 .trello
 

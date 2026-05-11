@@ -35,6 +35,12 @@
             socat
             netcat-gnu
             kubectl
+            # Playwright browser automation — python package + NixOS-provided browsers.
+            # The nixpkgs python package is patched to use store paths for the node
+            # driver, so it works on NixOS without nix-ld.  playwright-driver.browsers
+            # includes chromium + headless_shell (required by default launch()).
+            python312Packages.playwright
+            playwright-driver.browsers
           ];
 
           shellHook = ''
@@ -45,6 +51,10 @@
             # Set LD_LIBRARY_PATH to find C++ standard library and other native libraries
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib:${pkgs.graphviz}/lib:$LD_LIBRARY_PATH"
             export PKG_CONFIG_PATH="${pkgs.graphviz}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            # Point Playwright at the NixOS-provided browsers (chromium, headless_shell, ffmpeg).
+            export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+            # Skip host-requirements validation — NixOS browsers are already patched.
+            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
             echo "Python $(python --version) with uv $(uv --version)"
           '';
         };
