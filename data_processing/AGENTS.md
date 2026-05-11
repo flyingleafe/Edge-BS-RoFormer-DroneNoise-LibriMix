@@ -11,9 +11,23 @@ Dataset creation and preprocessing is a separate concern from model training. Ra
 | File | Purpose |
 |------|---------|
 | `dregon.py` | DREGON dataset loading, RPS processing, and DREGON-LM creation utilities |
+| `michaels.py` | Michael's drone-noise dataset (DJI WAVs + flight-controller CSVs in `data/new-drone-noises/`). `MichaelsRecord` is duck-type compatible with `DREGONRecord` (`audio`, `audio_timestamps`, `motors`, `slice_by_time`). Handles per-file CSV-vs-audio time-offset alignment. |
+| `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's. Each item: RPS upsampled to audio rate + matched recorded noise. Use `build_noise_rps_datasets(...)` to get train/val with held-out per-recording time tails. |
 | `__init__.py` | Package init |
 
 ## Datasets
+
+### Michael's drone noise + RPS
+
+Files in `data/new-drone-noises/`:
+- `103_2.wav` + `FLY103.csv` (offset −0.94 s, valid window 12–100 s)
+- `108_2.wav` + `FLY108.csv` (offset −0.40 s, valid window 9–88 s)
+
+The CSV columns `Motor:Speed:{RFront,LFront,LBack,RBack}` log motor RPM at
+~30 Hz; the loader divides by 60 to match DREGON's RPS units (Hz). Audio is
+resampled to the requested `sample_rate` (default 16 kHz). Empirical
+time-offsets between the WAV and CSV timelines come from the legacy
+`drone_audition` repo and are stored in `michaels.MICHAELS_FILES`.
 
 ### DN-LM (DroneNoise-LibriMix) — Paper 1
 

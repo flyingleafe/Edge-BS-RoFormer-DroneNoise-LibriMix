@@ -20,6 +20,20 @@ Central place for model architecture code. Each model is either a single file or
 | `htdemucs` | HTDemucs | `demucs4ht.py` | No |
 | `diffusion_buffer` | DiffusionBufferModel | `diffusion_buffer.py` | No |
 
+### Generative models (RPS → noise)
+
+Live in `models/generative/` — not enhancement models; not registered in
+`utils.py:get_model_from_config()`. Used by `train_noise_gen.py` to learn a
+physical model of drone propeller noise from rotor-speed telemetry.
+See `models/generative/AGENTS.md` for details.
+
+| Class | Purpose |
+|-------|---------|
+| `DroneNoiseGen` | Per-rotor harmonic oscillator bank (sinusoidal synthesis from RPS) |
+| `DroneNoisePlusFilterGen` | `DroneNoiseGen` + RPS-conditioned filtered-noise residual |
+| `HarmonicTransformModule` | VP-transform (variable-phasor harmonic analysis/synthesis) |
+| `MultiScaleSTFT` | DDSP-style multi-scale spectral loss |
+
 ## RPS Conditioning Architecture
 
 ### RotorEncoder (shared, in `dcunet.py`)

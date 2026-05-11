@@ -1,0 +1,55 @@
+# Sinusoidal + filtered-noise drone-noise generator.
+# Model: harmonic-oscillator-bank synth (PropellerNoiseGen per rotor) + RPS-conditioned
+# per-frame filter producing filtered white noise residual.
+# Trained against real recorded drone noise from DREGON + Michael's set.
+
+model:
+  n_motors: 4
+  n_harmonics: 50
+  use_basis_gain: true
+  # Filter network: produces per-frame magnitude response for the filtered-noise branch
+  filter_n_freqs: 65      # uniform grid 0..Nyquist
+  filter_n_frames: 64     # ~250 Hz frame rate for 1 s chunk @ 16 kHz
+  filter_hidden: 64
+  filter_n_layers: 3
+
+audio:
+  sample_rate: 16000
+  chunk_size: 16000       # 1 s
+
+data:
+  # Either path can be null/omitted to skip that source.
+  dregon_dir: data/DREGON
+  michaels_dir: data/new-drone-noises
+  cache_dir: data/DREGON/.cache
+  val_pct: 0.1            # last 10% of each recording held out for validation
+  channel_policy: first   # 'first' or 'random'
+  # If non-null, normalise RPS by this value before feeding the filter network.
+  # The harmonic synth still receives raw Hz. Default ~100 keeps inputs <=1.
+  filter_rps_scale: 100.0
+
+loss:
+  # Multi-scale STFT (DDSP-style)
+  n_ffts: [2048, 1024, 512, 256, 128]
+  log_weight: 1.0
+  loss_type: L1
+  # Optional separate loss weight on the harmonic-only branch (against the
+  # full target). 0 disables. >0 encourages the harmonic generator to fit
+  # the target on its own — useful for diagnostic separation.
+  harmonic_branch_weight: 0.0
+
+training:
+  epochs: 200
+  batch_size: 16
+  lr: 1e-3
+  scheduler_patience: 10
+  scheduler_factor: 0.5
+  early_stop_patience: 30
+  num_workers: 4
+  train_samples_per_epoch: 4096
+  val_samples_per_epoch: 512
+  seed: 42
+  grad_clip: 1.0
+  use_amp: false          # complex FFTs in DSP don't always like fp16
+  # Where to put checkpoints; the runner adds a per-run subdir below
+  log_dir: results/noise_gen

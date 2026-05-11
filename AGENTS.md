@@ -64,7 +64,7 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 | `docs/` | Design docs and debugging guides | Postdoc specs, training loop docs, R2 sync (`docs/data-and-artifacts.md`) |
 | `tests/` | Postdoc system tests | Test structure, running tests |
 
-Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `metrics.py`, `utils.py`, etc. See code comments for details.
+Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `metrics.py`, `utils.py`, `train_noise_gen.py` (sinusoidal+filter drone-noise generator trained on DREGON+Michael's), etc. See code comments for details.
 
 ## Key Facts
 
