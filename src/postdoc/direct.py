@@ -192,6 +192,15 @@ git fetch origin "+refs/postdoc/*:refs/postdoc/*" 2>/dev/null || true
 git reset --hard "$POSTDOC_GIT_SHA"
 git submodule update --init --recursive 2>/dev/null || true
 
+# Load .env (AWS_*, WANDB_API_KEY, R2_ACCOUNT_ID, AWS_DEFAULT_REGION) into the
+# shell so subprocess invocations of `dvc`, `aws`, etc. see them. Python code
+# also calls `load_dotenv()` itself, but `uv run dvc pull` below does not.
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+fi
+
 # uv sync: fast no-op when lockfile unchanged.
 echo "[postdoc-job] syncing venv"
 export PATH="/root/.local/bin:$REPO_DIR/.venv/bin:$PATH"

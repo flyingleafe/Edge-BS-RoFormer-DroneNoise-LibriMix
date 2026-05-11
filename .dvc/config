@@ -4,4 +4,6 @@
 [cache]
     type = "reflink,hardlink,symlink,copy"
 ['remote "r2"']
-    url = s3://hns-research
+    url = s3://ml-data/datasets
+    # NB: the R2 region is set via the AWS_DEFAULT_REGION=auto env var
+    # (see .env / .envrc). The `region` option here is ignored by dvc-s3.

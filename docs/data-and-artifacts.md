@@ -6,12 +6,12 @@ Single page. Read once, bookmark, move on.
 
 | Thing                | Tool              | Where                                   |
 |----------------------|-------------------|-----------------------------------------|
-| Datasets (raw/processed) | **DVC** + R2 remote | `s3://hns-research/` + `.dvc` files in git |
+| Datasets (raw/processed) | **DVC** + R2 remote | `s3://ml-data/datasets/` + `.dvc` files in git |
 | Checkpoints          | **wandb Artifacts** | wandb servers, linked to the training run |
 | Metrics / logs / run metadata | wandb (already in use) | wandb |
 | Eval audio samples   | local `results/<job>/eval/`; push to wandb or R2 manually if needed | |
 
-One bucket (`hns-research`), one Cloudflare account.
+One bucket (`ml-data`, prefix `datasets/`), one Cloudflare account.
 
 ## One-time setup per machine
 
@@ -21,16 +21,26 @@ uv sync
 
 # 2. Put credentials in .env (never committed).
 cp .env.example .env
-# edit: fill AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, WANDB_API_KEY
+# edit: fill AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, R2_ACCOUNT_ID,
+#       WANDB_API_KEY, and keep AWS_DEFAULT_REGION=auto (R2 rejects real
+#       AWS region names; only "auto" works).
 
 # 3. Point DVC at your R2 endpoint (gitignored via .dvc/config.local).
 dvc remote modify --local r2 endpointurl \
     "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 # 4. Sanity check.
-dvc remote list                 # should show 'r2 s3://hns-research (default)'
-dvc pull --dry-run              # should connect without errors
+dvc remote list                 # should show 'r2 s3://ml-data/datasets (default)'
+dvc status --cloud              # should connect without errors
 ```
+
+On the laptop, `direnv` loads `.env` automatically (see `.envrc`). On the
+GPU server, the per-job `run.sh` template `set -a; . ./.env; set +a`s it
+before invoking `dvc pull` or your command — see `src/postdoc/direct.py`.
+
+> **Gotcha**: `.dvc/config` has a `region` field, but **dvc-s3 ignores it**.
+> The region must come from the `AWS_DEFAULT_REGION` env var (= `auto` for
+> R2). Hence the entry in `.env`.
 
 ## Workflow
 
