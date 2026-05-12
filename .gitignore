@@ -1,6 +1,12 @@
 *.pyc
-datasets/
-data/
+# data/ and datasets/ contents are tracked by DVC; only the .dvc pointer files
+# and the DVC-managed nested .gitignore files live in git.
+/data/*
+!/data/.gitignore
+!/data/*.dvc
+/datasets/*
+!/datasets/.gitignore
+!/datasets/*.dvc
 wandb/
 results/
 .direnv/
