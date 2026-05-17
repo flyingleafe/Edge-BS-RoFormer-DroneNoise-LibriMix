@@ -1,0 +1,26 @@
+# papers/
+
+Self-contained paper drafts. Each subdirectory is one paper.
+
+| Directory | Status | What it is |
+|-----------|--------|------------|
+| `rps-from-drone-sound/` | draft (May 2026) | Short paper on audio-only rotor speed estimation. Uses only locally-stored results; builds with `latexmk` via the project flake. |
+
+## Conventions
+
+- **One paper per subdirectory.** Each has `main.tex`, `refs.bib`, `Makefile`,
+  `make_figures.py`, `figures/`, and a `README.md` describing scope, build
+  steps, and data provenance.
+- **No fresh experiments at paper-build time.** Figures and tables are
+  regenerated from existing results in `../results/` (and other already-
+  produced artifacts). If a paper needs a new number, run the experiment
+  separately via `postdoc submit` and let the result land in `../results/`
+  before regenerating figures.
+- **LaTeX toolchain comes from the flake.** `nix develop` provides
+  `pdflatex`, `latexmk`, `biber`, and IEEEtran via a custom `texlive.combine`
+  on top of `scheme-medium`. Do not introduce a TeX-from-pip or per-paper
+  toolchain.
+- **Honesty over polish.** Where a number is from a 5-clip subset, say so.
+  Where a ratio is computed against a level-matched baseline rather than the
+  headline number, say that in-text. The supervisor reviews drafts; quiet
+  glossing over caveats wastes a review cycle.

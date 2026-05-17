@@ -1,0 +1,38 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.synctex(busy)
+*.toc
+*.lof
+*.lot
+*.idx
+*.ind
+*.ilg
+*.acn
+*.acr
+*.alg
+*.glg
+*.glo
+*.gls
+*.ist
+*.nav
+*.snm
+*.vrb
+*.xdv
+
+# Compiled PDF output (keep figures/*.pdf as generated assets)
+main.pdf
+**/main.pdf
+
+# Python virtual environments
+.venv/
+__pycache__/
+*.pyc

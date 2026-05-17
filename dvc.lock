@@ -1,0 +1,29 @@
+schema: '2.0'
+stages:
+  dregon-lm:
+    cmd: .venv/bin/python create_dregon_librimix.py
+    deps:
+    - path: create_dregon_librimix.py
+      hash: md5
+      md5: abe52c3ab36d3b7adc616b2c896dfd41
+      size: 13865
+    - path: data/DREGON
+      hash: md5
+      md5: 8180528f98a1969fcb9a3f7254b6a9b6.dir
+      size: 3052689087
+      nfiles: 334
+    - path: data/librispeech/LibriSpeech/train-clean-100
+      hash: md5
+      md5: 9931d25aad46c5545ae622d1f0081a2b.dir
+      size: 6617556511
+      nfiles: 29124
+    - path: data_processing/dregon.py
+      hash: md5
+      md5: 58250352b2eb838665ddbd184cf6a200
+      size: 42429
+    outs:
+    - path: datasets/DREGON-LM
+      hash: md5
+      md5: 7c638a0deabad98308e979aeaff79142.dir
+      size: 738568826
+      nfiles: 26401

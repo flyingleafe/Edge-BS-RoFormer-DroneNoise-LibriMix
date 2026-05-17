@@ -41,6 +41,19 @@
             # includes chromium + headless_shell (required by default launch()).
             python312Packages.playwright
             playwright-driver.browsers
+            # LaTeX toolchain for building the papers/ directory.
+            # scheme-medium does NOT include IEEEtran; use a custom combination that
+            # extends scheme-medium with IEEEtran and a few useful extras.
+            (texlive.combine {
+              inherit (texlive)
+                scheme-medium
+                ieeetran
+                biblatex
+                biber
+                cm-super
+                cmap
+                latexmk;
+            })
           ];
 
           shellHook = ''

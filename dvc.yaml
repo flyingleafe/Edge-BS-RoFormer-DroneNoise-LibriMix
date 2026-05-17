@@ -1,0 +1,10 @@
+stages:
+  dregon-lm:
+    cmd: .venv/bin/python create_dregon_librimix.py
+    deps:
+      - create_dregon_librimix.py
+      - data_processing/dregon.py
+      - data/DREGON
+      - data/librispeech/LibriSpeech/train-clean-100
+    outs:
+      - datasets/DREGON-LM
