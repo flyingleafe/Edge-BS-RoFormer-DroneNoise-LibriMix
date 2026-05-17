@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,22 +125,25 @@ def _ensure_postdoc_dir(user: str = DEFAULT_SERVER_USER,
 def list_jobs(user: str = DEFAULT_SERVER_USER,
               host: str = DEFAULT_SERVER_HOST) -> list[JobInfo]:
     """List all jobs by reading /root/.postdoc/jobs/*/job.json."""
-    script = (
-        "import glob, json, os, sys; "
-        "jobs = []; "
-        "for d in sorted(glob.glob('/root/.postdoc/jobs/*/')): "
-        "  jf = os.path.join(d, 'job.json'); "
-        "  if not os.path.isfile(jf): continue; "
-        "  try: "
-        "    d2 = json.load(open(jf)); "
-        "    bn = os.path.basename(d.rstrip('/')); "
-        "    parts = bn.rsplit('__', 1); "
-        "    d2['name'] = d2.get('name', parts[0] if len(parts) == 2 else bn); "
-        "    jobs.append(d2); "
-        "  except: pass; "
-        "print(json.dumps(jobs))"
-    )
-    cmd = _ssh_base(user, host) + [f"python3 -c {script!r}"]
+    # Use a heredoc to avoid Python one-liner limitations with for-loops.
+    script = textwrap.dedent("""
+        import glob, json, os
+        jobs = []
+        for d in sorted(glob.glob('/root/.postdoc/jobs/*/')):
+            jf = os.path.join(d, 'job.json')
+            if not os.path.isfile(jf):
+                continue
+            try:
+                d2 = json.load(open(jf))
+                bn = os.path.basename(d.rstrip('/'))
+                parts = bn.rsplit('__', 1)
+                d2['name'] = d2.get('name', parts[0] if len(parts) == 2 else bn)
+                jobs.append(d2)
+            except Exception:
+                pass
+        print(json.dumps(jobs))
+    """).strip()
+    cmd = _ssh_base(user, host) + [f"python3 << 'PYEOF'\n{script}\nPYEOF"]
     try:
         out = subprocess.check_output(cmd, text=True)
     except subprocess.CalledProcessError:
