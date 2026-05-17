@@ -171,9 +171,32 @@ def list_jobs(user: str = DEFAULT_SERVER_USER,
 
 def _render_job_script(job_id: int, name: str, sha: str, cmd: str,
                        gpu_mask: list[int], log_path: str,
-                       repo_dir: str = DEFAULT_REPO_DIR) -> str:
-    """Return the bash script that runs one job inside the job dir."""
+                       repo_dir: str = DEFAULT_REPO_DIR,
+                       no_sync: bool = False) -> str:
+    """Return the bash script that runs one job inside the job dir.
+
+    no_sync=True skips `git fetch / reset --hard` and `dvc pull`.
+    Use when datasets are already on the server and you don't want
+    in-flight DVC state clobbered (e.g. during an active `dvc push`).
+    """
     gpu_env = " ".join(map(str, gpu_mask))
+
+    if no_sync:
+        sync_block = "echo \"[postdoc-job] --no-sync: skipping git fetch/reset and dvc pull\""
+    else:
+        sync_block = f"""\
+echo "[postdoc-job] fetching code at $POSTDOC_GIT_SHA"
+git fetch origin 2>&1 | tail -3 || true
+git fetch origin "+refs/postdoc/*:refs/postdoc/*" 2>/dev/null || true
+git reset --hard "$POSTDOC_GIT_SHA"
+git submodule update --init --recursive 2>/dev/null || true
+
+# dvc pull
+if ls *.dvc datasets/*.dvc >/dev/null 2>&1; then
+  echo "[postdoc-job] pulling datasets"
+  uv run dvc pull 2>&1 | tail -20 || echo "WARNING: dvc pull failed"
+fi"""
+
     return f"""\
 set -eo pipefail
 export CUDA_VISIBLE_DEVICES="{gpu_env}"
@@ -186,11 +209,7 @@ LOG_FILE="{log_path}"
 
 cd "$REPO_DIR"
 
-echo "[postdoc-job] fetching code at $POSTDOC_GIT_SHA"
-git fetch origin 2>&1 | tail -3 || true
-git fetch origin "+refs/postdoc/*:refs/postdoc/*" 2>/dev/null || true
-git reset --hard "$POSTDOC_GIT_SHA"
-git submodule update --init --recursive 2>/dev/null || true
+{sync_block}
 
 # Load .env (AWS_*, WANDB_API_KEY, R2_ACCOUNT_ID, AWS_DEFAULT_REGION) into the
 # shell so subprocess invocations of `dvc`, `aws`, etc. see them. Python code
@@ -205,12 +224,6 @@ fi
 echo "[postdoc-job] syncing venv"
 export PATH="/root/.local/bin:$REPO_DIR/.venv/bin:$PATH"
 uv sync --no-dev 2>&1 | tail -5 || true
-
-# dvc pull
-if ls *.dvc datasets/*.dvc >/dev/null 2>&1; then
-  echo "[postdoc-job] pulling datasets"
-  uv run dvc pull 2>&1 | tail -20 || echo "WARNING: dvc pull failed"
-fi
 
 echo "[postdoc-job] running: {cmd}"
 echo "[postdoc-job] started at $(date -Iseconds)"
@@ -330,6 +343,7 @@ def submit_direct(
     host: str = DEFAULT_SERVER_HOST,
     repo_dir: str = DEFAULT_REPO_DIR,
     postdoc_dir: str = DEFAULT_POSTDOC_DIR,
+    no_sync: bool = False,
 ) -> tuple[int, str]:
     """Submit a job via direct SSH.
 
@@ -355,7 +369,7 @@ def submit_direct(
     if len(available) >= gpus:
         gpu_mask = available[:gpus]
         job_script = _render_job_script(job_id, name, sha, cmd, gpu_mask,
-                                        log_path, repo_dir)
+                                        log_path, repo_dir, no_sync=no_sync)
         return _write_and_launch(
             job_id, name, sha, cmd, gpus, gpu_mask, log_path,
             job_dir, job_json_path, job_script, user, host,

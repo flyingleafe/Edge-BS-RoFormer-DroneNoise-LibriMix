@@ -191,6 +191,12 @@ def cmd_submit(
     remote: str = typer.Option("origin", "--remote"),
     allow_dirty: bool = typer.Option(False, "--dirty"),
     skip_push: bool = typer.Option(False, "--skip-push"),
+    no_sync: bool = typer.Option(
+        False, "--no-sync",
+        help="Skip git fetch/reset and dvc pull on the server. "
+             "Use when data is already present and you don't want "
+             "in-flight DVC state clobbered (implies --skip-push)."
+    ),
     env: list[str] | None = typer.Option(None, "--env", "-e"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     direct: bool = typer.Option(False, "--direct",
@@ -275,6 +281,9 @@ def cmd_submit(
     job_id: int | None = None
     status: str = ""
 
+    if no_sync:
+        skip_push = True
+
     if backend == "direct":
         try:
             job_id, status = direct_mod.submit_direct(
@@ -284,6 +293,7 @@ def cmd_submit(
                 gpus=gpus,
                 user=user,
                 host=host,
+                no_sync=no_sync,
             )
         except Exception as e:
             typer.echo(f"[postdoc] direct submit failed: {e}", err=True)
