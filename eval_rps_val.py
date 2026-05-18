@@ -48,6 +48,8 @@ def run_inference(args):
 
     all_mse, all_mae_frame, all_mae_clip, all_r2 = [], [], [], []
 
+    per_sample_metrics = []
+
     t0 = time.time()
     with torch.no_grad():
         for i, sample_dir in enumerate(ds.samples):
@@ -81,7 +83,7 @@ def run_inference(args):
             all_mae_frame.append(mae_frame)
             all_mae_clip.append(mae_clip)
 
-            # Save prediction
+            # Save prediction + ground truth at STFT frame rate
             sample_name = os.path.basename(sample_dir)
             out_dir = os.path.join(args.output_dir, sample_name)
             os.makedirs(out_dir, exist_ok=True)
@@ -89,6 +91,20 @@ def run_inference(args):
                 os.path.join(out_dir, "predicted_rps.npy"),
                 rps_pred.cpu().float().numpy(),
             )
+            np.save(
+                os.path.join(out_dir, "ground_truth_rps.npy"),
+                rps_target_t.cpu().float().numpy(),
+            )
+
+            r2_i = (1.0 - ss_res_i / ss_tot_i) if ss_tot_i > 1e-6 else None
+            per_sample_metrics.append({
+                "sample": sample_name,
+                "mse": mse,
+                "mae_frame": mae_frame,
+                "mae_clip": mae_clip,
+                "ss_tot": ss_tot_i,
+                "r2": r2_i,
+            })
 
             if (i + 1) % 100 == 0:
                 print(f"  {i+1}/{len(ds)}  running MAE/clip={np.mean(all_mae_clip):.3f}")
@@ -126,6 +142,10 @@ def run_inference(args):
     metrics_path = os.path.join(args.output_dir, "metrics.json")
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
+
+    per_sample_path = os.path.join(args.output_dir, "per_sample_metrics.json")
+    with open(per_sample_path, "w") as f:
+        json.dump(per_sample_metrics, f, indent=2)
 
     print(f"\nDone in {elapsed:.1f}s")
     print(f"MSE={mean_mse:.4f}  RMSE={mean_mse**0.5:.3f}  MAE/clip={mean_mae_clip:.3f}")
