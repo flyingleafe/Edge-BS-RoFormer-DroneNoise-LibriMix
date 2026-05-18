@@ -46,9 +46,7 @@ def run_inference(args):
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    all_mse, all_mae_frame, all_mae_clip = [], [], []
-    ss_res_total, ss_tot_total = 0.0, 0.0
-    n_frames_total = 0
+    all_mse, all_mae_frame, all_mae_clip, all_r2 = [], [], [], []
 
     t0 = time.time()
     with torch.no_grad():
@@ -70,14 +68,18 @@ def run_inference(args):
             mae_frame = (rps_pred - rps_target_t).abs().mean().item()
             mae_clip = ((rps_pred - rps_target_t).mean(dim=-1).abs()).mean().item()
 
+            # Per-sample R²: use each sample's own mean as baseline.
+            # This measures within-sample temporal tracking quality, which is
+            # what matters — between-sample variance (different drones at
+            # different speeds) is trivially explained and should not inflate R².
+            ss_res_i = ((rps_pred - rps_target_t) ** 2).sum().item()
+            ss_tot_i = ((rps_target_t - rps_target_t.mean()) ** 2).sum().item()
+            if ss_tot_i > 1e-6:  # skip degenerate constant-RPS samples
+                all_r2.append(1.0 - ss_res_i / ss_tot_i)
+
             all_mse.append(mse)
             all_mae_frame.append(mae_frame)
             all_mae_clip.append(mae_clip)
-
-            # R² accumulators
-            ss_res_total += ((rps_pred - rps_target_t) ** 2).sum().item()
-            ss_tot_total += ((rps_target_t - rps_target_t.mean()) ** 2).sum().item()
-            n_frames_total += T
 
             # Save prediction
             sample_name = os.path.basename(sample_dir)
@@ -96,18 +98,28 @@ def run_inference(args):
     mean_mse = float(np.mean(all_mse))
     mean_mae_frame = float(np.mean(all_mae_frame))
     mean_mae_clip = float(np.mean(all_mae_clip))
-    r2 = float(1 - ss_res_total / ss_tot_total)
+    # Macro-averaged per-sample R²: mean of per-sample R² values.
+    # Each sample's baseline is its own mean RPS, so this measures
+    # within-sample temporal tracking quality only.
+    r2_mean   = float(np.mean(all_r2))
+    r2_median = float(np.median(all_r2))
+    r2_std    = float(np.std(all_r2))
+    n_degenerate = len(all_mse) - len(all_r2)
 
     metrics = {
         "model": args.model,
         "checkpoint": args.checkpoint,
         "data_dir": args.data_dir,
         "n_samples": len(ds),
+        "n_r2_valid": len(all_r2),
+        "n_r2_degenerate": n_degenerate,
         "mse": mean_mse,
         "rmse": mean_mse ** 0.5,
         "mae_frame": mean_mae_frame,
         "mae_clip": mean_mae_clip,
-        "r2": r2,
+        "r2_mean": r2_mean,
+        "r2_median": r2_median,
+        "r2_std": r2_std,
         "elapsed_s": round(elapsed, 1),
     }
 
@@ -116,7 +128,10 @@ def run_inference(args):
         json.dump(metrics, f, indent=2)
 
     print(f"\nDone in {elapsed:.1f}s")
-    print(f"MSE={mean_mse:.4f}  RMSE={mean_mse**0.5:.3f}  MAE/clip={mean_mae_clip:.3f}  R²={r2:.4f}")
+    print(f"MSE={mean_mse:.4f}  RMSE={mean_mse**0.5:.3f}  MAE/clip={mean_mae_clip:.3f}")
+    print(f"R² (per-sample, n={len(all_r2)}): mean={r2_mean:.4f}  median={r2_median:.4f}  std={r2_std:.4f}")
+    if n_degenerate:
+        print(f"  ({n_degenerate} samples skipped — constant RPS, SS_tot≈0)")
     print(f"Metrics saved to {metrics_path}")
 
 

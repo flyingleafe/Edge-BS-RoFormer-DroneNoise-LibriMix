@@ -381,10 +381,17 @@ def evaluate(model, loader, device, dataset_len):
     ct = all_targets.mean(dim=2)
     mae_clip = (cp - ct).abs().mean().item()
 
-    # R²
-    ss_res = ((all_preds - all_targets) ** 2).sum()
-    ss_tot = ((all_targets - all_targets.mean()) ** 2).sum()
-    r2 = (1 - ss_res / ss_tot).item()
+    # Macro-averaged per-sample R²: compute R² per sample using each
+    # sample's own mean as the baseline, then average. This measures
+    # within-sample temporal tracking quality without inflating the
+    # metric with between-sample RPS variance.
+    r2_per_sample = []
+    for pred_i, tgt_i in zip(all_preds, all_targets):
+        ss_res_i = ((pred_i - tgt_i) ** 2).sum()
+        ss_tot_i = ((tgt_i - tgt_i.mean()) ** 2).sum()
+        if ss_tot_i > 1e-6:
+            r2_per_sample.append((1 - ss_res_i / ss_tot_i).item())
+    r2 = float(torch.tensor(r2_per_sample).mean()) if r2_per_sample else float('nan')
 
     return {
         "mse": mse,
