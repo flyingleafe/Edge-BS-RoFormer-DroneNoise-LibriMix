@@ -391,14 +391,17 @@ def evaluate(model, loader, device, dataset_len):
         ss_tot_i = ((tgt_i - tgt_i.mean()) ** 2).sum()
         if ss_tot_i > 1e-6:
             r2_per_sample.append((1 - ss_res_i / ss_tot_i).item())
-    r2 = float(torch.tensor(r2_per_sample).mean()) if r2_per_sample else float('nan')
+    r2_arr = torch.tensor(r2_per_sample) if r2_per_sample else torch.tensor([float('nan')])
+    r2_mean   = float(r2_arr.mean())
+    r2_median = float(r2_arr.median())
 
     return {
         "mse": mse,
         "mae_frame": mae_frame,
         "mae_per_rotor": mae_per_rotor.tolist(),
         "mae_clip": mae_clip,
-        "r2": r2,
+        "r2": r2_mean,
+        "r2_median": r2_median,
     }
 
 

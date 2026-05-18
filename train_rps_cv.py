@@ -79,8 +79,8 @@ def train_fold(fold_idx, train_indices, val_indices, dataset, args, device):
 
     t0 = time.time()
     print(f"{'Epoch':>5}  {'TrainMSE':>10}  {'ValMSE':>10}  "
-          f"{'MAE/clip':>9}  {'R²mean':>8}  {'R²med':>7}  {'LR':>9}")
-    print("-" * 65)
+          f"{'MAE/clip':>9}  {'R²mean':>8}  {'R²med':>8}  {'LR':>9}")
+    print("-" * 70)
 
     for epoch in range(1, args.epochs + 1):
         # ── train ──────────────────────────────────────────────────────
@@ -111,17 +111,18 @@ def train_fold(fold_idx, train_indices, val_indices, dataset, args, device):
             torch.save(model.state_dict(), best_path)
 
         epoch_log.append({
-            "epoch":          epoch,
-            "train_mse":      round(train_mse, 6),
-            "val_mse":        round(m["mse"], 6),
-            "val_mae_frame":  round(m["mae_frame"], 6),
-            "val_mae_clip":   round(m["mae_clip"], 6),
-            "val_r2_mean":    round(m["r2"], 6),       # macro per-sample mean
-            "lr":             lr,
+            "epoch":           epoch,
+            "train_mse":       round(train_mse, 6),
+            "val_mse":         round(m["mse"], 6),
+            "val_mae_frame":   round(m["mae_frame"], 6),
+            "val_mae_clip":    round(m["mae_clip"], 6),
+            "val_r2_mean":     round(m["r2"], 6),
+            "val_r2_median":   round(m.get("r2_median", float('nan')), 6),
+            "lr":              lr,
         })
 
         print(f"{epoch:5d}  {train_mse:10.4f}  {m['mse']:10.4f}  "
-              f"{m['mae_clip']:9.3f}  {m['r2']:8.4f}  {lr:9.1e}")
+              f"{m['mae_clip']:9.3f}  {m['r2']:8.4f}  {m.get('r2_median', float('nan')):8.4f}  {lr:9.1e}")
 
     elapsed = time.time() - t0
     print(f"\nFold {fold_idx} done in {elapsed/60:.1f} min  "
