@@ -25,3 +25,6 @@ node_modules/
 
 # postdoc runtime state (runs, worktrees, FIFO, logs)
 .postdoc/
+
+# nix build result
+result

@@ -29,10 +29,12 @@
 *.xdv
 
 # Compiled PDF output (keep figures/*.pdf as generated assets)
-main.pdf
-**/main.pdf
+*.pdf
 
 # Python virtual environments
 .venv/
 __pycache__/
 *.pyc
+
+# Other
+*.zip

@@ -46,13 +46,22 @@
             # extends scheme-medium with IEEEtran and a few useful extras.
             (texlive.combine {
               inherit (texlive)
-                scheme-medium
+                scheme-full
                 ieeetran
                 biblatex
                 biber
                 cm-super
                 cmap
-                latexmk;
+                latexmk
+                # QD_2026.cls requirements not in scheme-medium
+                footmisc
+                moresize
+                diagbox
+                eepic
+                apacite
+                nimbus15
+                anyfontsize
+                appendix;
             })
           ];
 

@@ -103,8 +103,15 @@ def _load_sample(sample_id: str):
     audio, sr = sf.read(base / "mixture.wav")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
-    gt = np.load(base / "ground_truth_rps.npy")     # (4, T_gt)
-    pred = np.load(base / "simple_conv_rps.npy")    # (4, T_pred)
+    gt_raw = np.load(base / "ground_truth_rps.npy")   # (4, T_gt)  native ~950 Hz
+    pred   = np.load(base / "simple_conv_rps.npy")    # (4, T_pred) STFT grid
+    # Linearly interpolate GT onto the prediction time grid so that
+    # ground-truth and predicted traces are directly comparable.
+    gt = np.zeros_like(pred)
+    x_old = np.linspace(0, 1, gt_raw.shape[1])
+    x_new = np.linspace(0, 1, pred.shape[1])
+    for r in range(4):
+        gt[r] = np.interp(x_new, x_old, gt_raw[r])
     return audio.astype(np.float32), sr, gt, pred
 
 
@@ -143,9 +150,9 @@ def fig_qualitative_examples(sample_ids=("sample_00000", "sample_00149", "sample
         t_gt = np.linspace(0, duration, gt.shape[1])
         t_pred = np.linspace(0, duration, pred.shape[1])
         for r in range(4):
-            ax.plot(t_gt, gt[r], "-", color=ROTOR_COLORS[r], lw=1.0, alpha=0.9,
+            ax.plot(t_gt,   gt[r],   ":",  color=ROTOR_COLORS[r], lw=0.5, alpha=0.55,
                     label=f"GT R{r+1}" if col == 0 else None)
-            ax.plot(t_pred, pred[r], "--", color=ROTOR_COLORS[r], lw=1.0, alpha=0.9,
+            ax.plot(t_pred, pred[r], "-",  color=ROTOR_COLORS[r], lw=0.5, alpha=0.75,
                     label=f"pred R{r+1}" if col == 0 else None)
         ax.set_xlabel("time [s]")
         if col == 0:
@@ -154,8 +161,8 @@ def fig_qualitative_examples(sample_ids=("sample_00000", "sample_00149", "sample
 
     # Compact legend below; reserve space so it does not overlap x-labels
     legend_handles = [
-        plt.Line2D([0], [0], color="black", lw=1.0, ls="-", label="ground truth"),
-        plt.Line2D([0], [0], color="black", lw=1.0, ls="--", label="predicted"),
+        plt.Line2D([0], [0], color="black", lw=0.5, ls=":",  alpha=0.55, label="ground truth"),
+        plt.Line2D([0], [0], color="black", lw=0.5, ls="-",  alpha=0.75, label="predicted"),
     ] + [
         plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r]) for r in range(4)
     ]

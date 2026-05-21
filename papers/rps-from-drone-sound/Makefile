@@ -7,7 +7,10 @@ BIB = refs
 .PHONY: pdf figures clean veryclean
 
 pdf: figures
-	latexmk -pdf -interaction=nonstopmode -halt-on-error $(DOC).tex
+	pdflatex -interaction=nonstopmode $(DOC).tex
+	bibtex $(DOC)
+	pdflatex -interaction=nonstopmode $(DOC).tex
+	pdflatex -interaction=nonstopmode $(DOC).tex
 
 figures:
 	cd ../.. && python papers/rps-from-drone-sound/make_figures.py
