@@ -58,17 +58,18 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 | `models/` | Model implementations | Model type keys, RPS conditioning, adding new models |
 | `configs/` | YAML config files for model variants | Naming conventions, config structure |
 | `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
+| `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py`, plus the `utils.data` time-series algebra (audio + telemetry) | See `src/utils/AGENTS.md` and `src/utils/data/AGENTS.md` |
 | `experiments/` | Experiment YAML definitions | Format, creating new experiments |
 | `data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM creation scripts |
 | `notebooks/` | Jupyter notebooks for analysis | Result analysis, data exploration |
 | `docs/` | Design docs and debugging guides | Postdoc specs, training loop docs, R2 sync (`docs/data-and-artifacts.md`) |
 | `tests/` | Postdoc system tests | Test structure, running tests |
 
-Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `metrics.py`, `utils.py`, `train_noise_gen.py` (sinusoidal+filter drone-noise generator trained on DREGON+Michael's), etc. See code comments for details.
+Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `metrics.py`, `train_noise_gen.py` (sinusoidal+filter drone-noise generator trained on DREGON+Michael's), etc. See code comments for details. (The former root-level `utils.py` is now `src/utils/__init__.py` — `from utils import ...` keeps working.)
 
 ## Key Facts
 
-- **Model types**: Registered in `utils.py:get_model_from_config()` — see `models/AGENTS.md` for full table
+- **Model types**: Registered in `utils.get_model_from_config()` (now at `src/utils/__init__.py`) — see `models/AGENTS.md` for full table
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `models/AGENTS.md`
 - **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
