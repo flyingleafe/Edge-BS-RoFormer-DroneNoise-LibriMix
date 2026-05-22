@@ -11,11 +11,6 @@ available results from this repository.
   mixture (LibriSpeech + DREGON noise, SNR in `[-30, 0]` dB), reaching
   R² = 0.95, MAE = 0.56 rev/s, MSE = 5.15 (rev/s)² on the held-out validation
   set.
-- **Comparison.** Larger complex-valued encoders adapted from DCUNet and DCCRN
-  are *better* on the in-distribution subset (MSE 3.10 / 2.63 vs 6.84) but
-  *worse* on out-of-distribution high-SNR free-flight recordings (factors of
-  3–5 vs 1.2 for SimpleConv). The simpler model is more robust to distribution
-  shift; the in-distribution ranking reverses out of distribution.
 - **Framing.** This is a passive acoustic monitoring paper, *not* a
   speech-enhancement paper. Downstream uses (flight-state inference,
   payload/fault diagnostics, source separation, SE conditioning) are listed
@@ -69,8 +64,6 @@ fetch is needed:
 | `fig_qualitative_combined.pdf` | `../../results/rps_eval_specific_samples/sample_{00000,00149,00599}/` (mixture WAVs and `*_rps.npy` predictions). |
 | `fig_highsnr_per_sample.pdf` | `../../results/rps_high_snr_analysis.json` (10 free-flight clips from `DREGON_free-flight_speech-high_room1`). |
 
-Table II uses aggregate metrics from
-`../../results/rps_eval_specific_samples/evaluation_results.json`.
 Headline metrics (R² = 0.95, MAE = 0.56, MSE = 5.15) are the best validation
 epoch from `training_log.csv`.
 
@@ -83,11 +76,7 @@ These are stated in the paper but worth being explicit about for review:
 2. **Validation overlap.** DREGON-LM splits at the clip level, not the flight
    level, so train and val share underlying flights. The high-SNR free-flight
    eval is the cleanest evidence we have against trivial memorisation.
-3. **Subset comparison.** Table II's three-way comparison uses 5 clips with
-   matched input normalisation, because that is the only place we have
-   apples-to-apples predictions stored locally for all three models. A
-   full 600-clip three-way comparison is a natural follow-up.
-4. **Outlier handling in the high-SNR analysis.** The 10th clip
+3. **Outlier handling in the high-SNR analysis.** The 10th clip
    (`t ≈ 38.6 s`) is a drone-landing phase (RPS → 0) not represented in
    training data; we treat it explicitly as a distribution-shift failure mode
    and report the mean over the other 9 clips.
