@@ -14,7 +14,7 @@ run_exp() {
     echo "[GPU $gpu] Training: $model -> $save_dir"
     CUDA_VISIBLE_DEVICES="$gpu" python train_rps_predictor.py \
         --model "$model" \
-        --device "cuda:$gpu" \
+        --device "cuda:0" \
         --epochs 200 \
         --patience 15 \
         --batch_size 16 \
