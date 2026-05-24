@@ -748,6 +748,129 @@ class SimpleConvSENext(nn.Module):
 # ─── Model factory / registry ────────────────────────────────────────────────
 
 
+# ─── Variant 8: SimpleConvMagPhaseBiGRU (mag + phase input, BiGRU head) ─────
+
+
+class SimpleConvMagPhaseBiGRU(nn.Module):
+    """
+    Uses log-magnitude, cos(phase) and sin(phase) as 3 input channels.
+    Phase provides temporal structure complementary to magnitude.
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.register_buffer("window", torch.hann_window(n_fft))
+
+        self.encoder = nn.ModuleList()
+        enc_spec = [
+            (3, 45, (7, 5), (2, 1), (3, 2)),
+            (45, 90, (7, 5), (2, 1), (3, 2)),
+            (90, 90, (5, 3), (2, 1), (2, 1)),
+            (90, 90, (5, 3), (2, 1), (2, 1)),
+            (90, 90, (5, 3), (2, 1), (2, 1)),
+        ]
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(
+                nn.Sequential(
+                    nn.Conv2d(ic, oc, k, stride=s, padding=p),
+                    nn.BatchNorm2d(oc),
+                    nn.LeakyReLU(0.2),
+                )
+            )
+
+        self.head = BiGRUHead(90, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+
+        X = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            return_complex=True,
+            normalized=True,
+        )
+        mag = X.abs()
+        mag = torch.log1p(mag)
+        phase = torch.angle(X)
+        phase_cos = torch.cos(phase)
+        phase_sin = torch.sin(phase)
+        # Stack as 2 channels: (B, 2, F, T)
+        features = torch.stack([mag, phase_cos, phase_sin], dim=1)
+
+        h = features
+        for block in self.encoder:
+            h = block(h)
+
+        h = h.mean(dim=2)
+        return self.head(h)
+
+
+# ─── Variant 9: SimpleConvBiGRUV2 (deeper encoder + BiGRU) ───────────────────
+
+
+class SimpleConvBiGRUV2(nn.Module):
+    """Deeper/wider encoder (6 blocks, 128 ch) + BiGRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.register_buffer("window", torch.hann_window(n_fft))
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(
+                nn.Sequential(
+                    nn.Conv2d(ic, oc, k, stride=s, padding=p),
+                    nn.BatchNorm2d(oc),
+                    nn.LeakyReLU(0.2),
+                )
+            )
+
+        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+
+        X = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            return_complex=True,
+            normalized=True,
+        )
+        mag = X.abs()
+        mag = torch.log1p(mag)
+        mag = mag.unsqueeze(1)
+
+        h = mag
+        for block in self.encoder:
+            h = block(h)
+
+        h = h.mean(dim=2)
+        return self.head(h)
+
+
+# ─── Model factory / registry ────────────────────────────────────────────────
+
+
 RPS_MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
@@ -755,6 +878,8 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,
     "simple_conv_bigru": SimpleConvBiGRU,
+    "simple_conv_bigru_v2": SimpleConvBiGRUV2,
+    "simple_conv_magphase_bigru": SimpleConvMagPhaseBiGRU,
     "simple_conv_attn_pool": SimpleConvAttnPool,
     "simple_conv_se_next": SimpleConvSENext,
 }

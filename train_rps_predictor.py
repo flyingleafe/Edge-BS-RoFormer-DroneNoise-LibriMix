@@ -358,6 +358,8 @@ MODEL_REGISTRY = {
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,
     "simple_conv_bigru": SimpleConvBiGRU,
+    "simple_conv_bigru_v2": SimpleConvBiGRUV2,
+    "simple_conv_magphase_bigru": SimpleConvMagPhaseBiGRU,
     "simple_conv_attn_pool": SimpleConvAttnPool,
     "simple_conv_se_next": SimpleConvSENext,
     "dcunet_enc_rps": DCUNetEncRPS,
@@ -497,6 +499,13 @@ def train_model(model_name, args):
             with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
                 loss = F.mse_loss(rps_pred, rps_target)
+                if args.smoothness_weight > 0:
+                    # Second-order finite difference for smoothness
+                    # (B, 4, T) -> diff along time
+                    diff1 = rps_pred[:, :, 1:] - rps_pred[:, :, :-1]
+                    diff2 = diff1[:, :, 1:] - diff1[:, :, :-1]
+                    smoothness = diff2.pow(2).mean()
+                    loss = loss + args.smoothness_weight * smoothness
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -566,6 +575,8 @@ def main():
     parser.add_argument("--save_path", default="results/rps_predictor_comparison")
     parser.add_argument("--n_fft", type=int, default=2048)
     parser.add_argument("--hop_length", type=int, default=512)
+    parser.add_argument("--smoothness_weight", type=float, default=0.0,
+                        help="Weight for temporal smoothness loss (second-order diff)")
     args = parser.parse_args()
 
     os.makedirs(args.save_path, exist_ok=True)
