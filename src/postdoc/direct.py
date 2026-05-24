@@ -62,7 +62,8 @@ DEFAULT_REPO_DIR = "/root/harmonic-noise-suppression"
 
 def _ssh_base(user: str = DEFAULT_SERVER_USER,
               host: str = DEFAULT_SERVER_HOST) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", f"{user}@{host}"]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60",
+            "-o", "ServerAliveCountMax=3", "-n", f"{user}@{host}"]
 
 
 # ------------------------------------------------------------------ #
@@ -286,7 +287,7 @@ def _write_and_launch(job_id: int, name: str, sha: str, cmd: str,
     # Launch nohup, capture PID
     launch_script = (
         f"cd {job_dir} && "
-        f"nohup bash run.sh >> {log_path} 2>&1 & "
+        f"nohup bash run.sh >> {log_path} 2>&1 </dev/null & "
         f"echo $! > {job_dir}/pid.txt && "
         f"echo PID:$(cat {job_dir}/pid.txt)"
     )
