@@ -39,6 +39,8 @@ from models.rps_predictor import (
     SimpleConvTCN,
     SimpleConvMultiScale,
     SimpleConvBiGRU,
+    SimpleConvBiGRUV2,
+    SimpleConvMagPhaseBiGRU,
     SimpleConvAttnPool,
     SimpleConvSENext,
     get_rps_model,
