@@ -63,7 +63,7 @@ DEFAULT_REPO_DIR = "/root/harmonic-noise-suppression"
 def _ssh_base(user: str = DEFAULT_SERVER_USER,
               host: str = DEFAULT_SERVER_HOST) -> list[str]:
     return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60",
-            "-o", "ServerAliveCountMax=3", "-n", f"{user}@{host}"]
+            "-o", "ServerAliveCountMax=3", f"{user}@{host}"]
 
 
 # ------------------------------------------------------------------ #
@@ -292,7 +292,7 @@ def _write_and_launch(job_id: int, name: str, sha: str, cmd: str,
         f"echo PID:$(cat {job_dir}/pid.txt)"
     )
     out = subprocess.check_output(
-        _ssh_base(user, host) + [f"bash -c {launch_script!r}"],
+        _ssh_base(user, host) + ["-n", f"bash -c {launch_script!r}"],
         text=True,
     )
 
