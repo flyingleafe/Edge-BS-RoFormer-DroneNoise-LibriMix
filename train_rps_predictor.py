@@ -555,7 +555,7 @@ def main():
     parser.add_argument("--model", type=str, default="simple_conv",
                        choices=list(MODEL_REGISTRY.keys()))
     parser.add_argument("--train_all", action="store_true")
-    parser.add_argument("--device", default="cuda:1")
+    parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=16)

@@ -91,6 +91,10 @@ class FrequencyAttentionPool(nn.Module):
 
     def __init__(self, channels: int, num_heads: int = 4):
         super().__init__()
+        if channels % num_heads != 0:
+            raise ValueError(
+                f"channels ({channels}) must be divisible by num_heads ({num_heads})"
+            )
         self.channels = channels
         self.num_heads = num_heads
         self.query = nn.Linear(channels, channels)
@@ -648,7 +652,7 @@ class SimpleConvAttnPool(nn.Module):
                 )
             )
 
-        self.freq_pool = FrequencyAttentionPool(90, num_heads=4)
+        self.freq_pool = FrequencyAttentionPool(90, num_heads=3)
         self.head = nn.Sequential(
             nn.Conv1d(90, 64, kernel_size=5, padding=2),
             nn.ReLU(),
