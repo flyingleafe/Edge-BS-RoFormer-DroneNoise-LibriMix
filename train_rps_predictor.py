@@ -31,6 +31,22 @@ import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
 
+# Import new model variants
+from models.rps_predictor import (
+    SimpleConv,
+    SimpleConvV2,
+    SimpleConvWide,
+    SimpleConvTCN,
+    SimpleConvMultiScale,
+    SimpleConvBiGRU,
+    SimpleConvAttnPool,
+    SimpleConvSENext,
+    get_rps_model,
+)
+
+# Alias for utils.py compatibility
+RPSPredictor = SimpleConv
+
 
 # ─── Dataset ──────────────────────────────────────────────────────────────────
 
@@ -337,6 +353,13 @@ class DCCRNEncRPS(nn.Module):
 
 MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
+    "simple_conv_v2": SimpleConvV2,
+    "simple_conv_wide": SimpleConvWide,
+    "simple_conv_tcn": SimpleConvTCN,
+    "simple_conv_multiscale": SimpleConvMultiScale,
+    "simple_conv_bigru": SimpleConvBiGRU,
+    "simple_conv_attn_pool": SimpleConvAttnPool,
+    "simple_conv_se_next": SimpleConvSENext,
     "dcunet_enc_rps": DCUNetEncRPS,
     "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
     "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
