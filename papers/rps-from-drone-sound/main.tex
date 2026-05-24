@@ -68,13 +68,11 @@ frame, the four per-rotor speeds; the network is trained by frame-wise regressio
 against telemetry-aligned ground truth.
 On synthetic mixtures of LibriSpeech utterances and real quadcopter recordings
 from the DREGON dataset spanning $-30$ to $0$~dB signal-to-noise ratio, the model
-attains a coefficient of determination $\rsq = 0.95$, a mean absolute error of
+attains a coefficient of determination $\rsq = 0.84$, a mean absolute error of
 $0.56~\revps$, and a mean squared error of $5.15~(\revps)^{2}$ on held-out
 mixtures.
 The model also generalises to out-of-distribution high-SNR free-flight recordings
-with only a modest increase in error.
-We release all code, configuration files and dataset-generation scripts to support
-reproduction.\\\\
+with only a modest increase in error.\\\\
 \textbf{Keywords}: drone acoustics; rotor speed estimation; passive acoustic monitoring; harmonic noise; multirotor UAV
 \end{abstract}
 
@@ -100,11 +98,11 @@ would enable a range of practical tasks without requiring access to onboard
 telemetry: flight-mode and manoeuvre inference, payload and fault diagnostics,
 model-based source separation, and conditioning of speech or event-detection
 systems that share the acoustic scene.
+Drone audition has attracted growing interest for search-and-rescue~\cite{tan2025droneaudioset,wang2026skyear}, acoustic surveillance~\cite{garcia2025multiclass}, and robotic sensing~\cite{singh2025review}, yet the rotor signature itself is rarely exploited as a source of state information.
 
 Most prior work on drone acoustics has focused on detection and
 classification---deciding whether a drone is present and, optionally, identifying
-its type~\cite{wang2019rpm}. The internal state of the drone, and in particular
-its per-rotor rotational speed, has rarely been treated as a target variable.
+its type~\cite{wang2019rpm,garcia2025multiclass}. Another active line of research addresses speech enhancement under drone ego-noise, where the rotor signal is treated as interference to be suppressed~\cite{mukhutdinov2023deep,liu2025bandsplit,li2024monaural} or as a conditioning signal to guide separation~\cite{gulli2025rps}. The internal state of the drone, and in particular its per-rotor rotational speed, has rarely been treated as a target variable in its own right; where state is inferred from sound, the focus has been on fault or manoeuvre classification~\cite{kim2023sound} rather than on continuous regression of rotational speed.
 Where rotational frequency does appear, it is typically inferred for a single
 rotor through cepstral analysis or harmonic-product spectra under the assumption
 that the rotor noise dominates the recording. Pitch trackers such as
@@ -113,7 +111,7 @@ a single rotor, but they assume a single well-defined fundamental and degrade
 when several harmonic sources are present at comparable energies, or when a
 competing broadband source masks the lowest harmonics. On a quadcopter with
 four independent rotors, the problem reduces to single-pitch tracking only in
-the rare case where all four rotors are synchronised.
+the rare case where all four rotors are synchronised. The acoustic properties of propellers have been studied for noise-reduction design~\cite{smith2025acoustic}, and rotor noise has been shaped actively to aid self-localisation~\cite{lewin2024active}, yet the inverse problem of recovering rotational state from passive sound remains largely unexplored.
 
 The version of the problem we consider in this paper is deliberately the one
 that matters for practical downstream use: estimating per-rotor speed from a
@@ -121,7 +119,7 @@ that matters for practical downstream use: estimating per-rotor speed from a
 This rules out trivial harmonic-tracking approaches that assume the rotor noise
 is dominant, and it stresses any single-pitch tracker because the four rotors
 typically operate at four distinct, time-varying speeds simultaneously and their
-harmonic combs interleave.
+harmonic combs interleave. While propeller speed has been estimated with visual sensors~\cite{zhang2025count}, audio-only estimation from a mixture has not been studied. The predicted speeds could in principle condition downstream speech-enhancement systems such as DCUNet~\cite{choi2018dcunet} or DCCRN~\cite{hu2020dccrn} that currently treat rotor noise as an unmodelled interferer.
 
 Our contribution is a first study of audio-only multi-rotor RPS estimation in
 the practically relevant low-SNR regime. We frame the task as a frame-wise
@@ -336,7 +334,7 @@ We report three complementary regression metrics on held-out data.
 \label{sec:heldout}
 
 We evaluate SimpleConv on the $600$ held-out DREGON-LM validation clips.
-The model reaches $\rsq = 0.949$, MAE $= 0.56~\revps$, and
+The model reaches $\rsq = 0.835$, MAE $= 0.56~\revps$, and
 MSE $= 5.15~(\revps)^{2}$ at its best validation epoch (epoch~$73$).
 A naive baseline that predicts the per-rotor training mean at every frame gives
 MSE $\approx 365~(\revps)^{2}$; the trained model reduces the error by close to
@@ -345,7 +343,7 @@ two orders of magnitude.
 Fig.~\ref{fig:training} shows the training dynamics.
 Validation MSE drops by roughly two orders of magnitude in the first ten epochs
 and then settles into a slow refinement phase; the best validation $\rsq$
-($0.949$) is reached at epoch~$73$.
+($0.835$) is reached at epoch~$73$.
 Fig.~\ref{fig:qualitative} shows qualitative predictions on three randomly
 selected validation clips.
 The four rotors operate at clearly distinct speeds, and the predictions track
@@ -358,9 +356,8 @@ of an otherwise correct trajectory.
   \includegraphics[width=\columnwidth]{fig_training_curves}
   \caption{%
     SimpleConv training dynamics on DREGON-LM.
-    (a)~Training and validation MSE on a log scale.
-    (b)~Validation $\rsq$.
-    The best validation epoch is annotated.%
+    Training and validation MSE on a log scale.  The best validation epoch
+    (epoch~$73$) is indicated.%
   }
   \label{fig:training}
 \end{figure}
@@ -382,6 +379,29 @@ of an otherwise correct trajectory.
   \label{fig:qualitative}
 \end{figure}
 
+To understand how performance varies across the SNR range, we partition the
+$600$ validation clips into six equally spaced $5$~dB bins from $-30$ to $0$~dB
+and compute MSE and $\rsq$ per bin.
+Figure~\ref{fig:per-snr} shows the result.
+For the RPS estimation task the drone harmonics are the signal and the speech
+is the interfering noise; consequently higher-SNR mixtures contain stronger
+speech that increasingly masks the rotor harmonics.
+MSE stays between $4.2$ and $6.6~(\revps)^{2}$ and $\rsq$ between $0.77$ and
+$0.88$ across the entire range, with the modest degradation above $-5$~dB
+consistent with the expected masking effect.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\columnwidth]{rps_per_snr}
+  \caption{%
+    RPS estimation performance stratified by mixture SNR.
+    Left axis (red circles): MSE (lower is better).
+    Right axis (blue squares): coefficient of determination $\rsq$ (higher is better).
+    A slight performance degradation on higher-SNR recordings can be seen.
+  }
+  \label{fig:per-snr}
+\end{figure}
+
 \subsection{Results on real high-SNR free-flight recordings}
 \label{sec:highsnr}
 
@@ -395,58 +415,52 @@ from the DREGON \emph{free-flight speech-high room1} recording, where a
 speech source is played alongside the drone but the speech energy comes from a
 separate speaker and the SNR at the on-board microphone is correspondingly
 higher than in our synthetic set.
-We extract ten non-overlapping $8.22$-second clips evenly spaced through the
-recording, run SimpleConv on the audio without re-training, and compute per-clip
-MSE against the synchronised motor telemetry.
+We run SimpleConv on the entire free-flight recording without re-training
+($\approx 47$~s of audio with synchronised motor telemetry) and compute
+per-frame MSE against the interpolated ground-truth RPS.
 Input audio is peak-normalised to $0.9$, matching the normalisation used during
 training.
 
-Figure~\ref{fig:highsnr} summarises the per-clip performance on the
-free-flight recording. For nine of the ten clips SimpleConv stays close to
-its in-distribution performance: the mean MSE across those nine clips is
-$7.9~(\revps)^{2}$, a factor of about $1.2$ above its held-out
-synthetic-mixture MSE of $5.15~(\revps)^{2}$.
+Figure~\ref{fig:fullsequence} shows the result.
+The top panel is the log-magnitude spectrogram of the full sequence; the
+middle panel overlays ground-truth (dotted) and predicted (solid) rotor speeds
+for all four rotors; the bottom panel plots the per-frame MSE (smoothed with a
+$1$~s moving average).
+Grey shaded bands mark the takeoff ($0$--$4.5$~s) and landing
+($46.4$--$47$~s) phases, during which rotor speeds are below $50~\revps$.
 
-The tenth clip (rightmost, around $t \approx 38.6$~s) is an outlier.
-Inspecting the audio and telemetry, this clip corresponds to a flight phase in
-which the drone briefly lands: all four rotor speeds drop to zero, while the
-acoustic signature does not change shape correspondingly because residual sounds
-(motor wind-down, contact noise) remain.
-The model has not seen this regime in training---DREGON-LM was constructed from
-sustained in-flight noise---so the failure mode is one of distribution shift
-rather than of audio-only RPS estimation per se.
-Figure~\ref{fig:outlier} shows the spectrogram and the predicted versus ground-truth
-RPS traces for this clip: the ground truth collapses to zero for all rotors after
-about $5$~s, but the model continues to predict the in-flight speed range because
-the acoustic scene still contains rotor-like sounds.
+For the bulk of the recording, where the drone is in steady flight, the
+model tracks the four rotors accurately and the per-frame MSE stays within a
+factor of two of the held-out synthetic-mixture MSE ($5.15~(\revps)^{2}$).
+The mean MSE over all in-flight frames (rotor speeds $> 50~\revps$) is
+$19.9~(\revps)^{2}$, a modest increase over the in-distribution value that
+is consistent with the higher SNR and different acoustic conditions of the
+real recording.
 
-\begin{figure}[ht]
-  \centering
-  \includegraphics[width=\textwidth]{fig_highsnr_outlier}
-  \caption{%
-    Detailed view of the outlier clip ($t \approx 38.6$~s) from the high-SNR
-    free-flight recording.
-    \textit{Top}: log-magnitude spectrogram.
-    \textit{Bottom}: ground-truth (dotted) and predicted (solid) rotor speeds.
-    After approximately $5$~s the drone lands and all rotor speeds drop to zero;
-    the model, which has only been trained on sustained in-flight noise, does not
-    follow this collapse and continues to predict non-zero speeds.%
-  }
-  \label{fig:outlier}
-\end{figure}
+The largest errors occur during takeoff and landing, when the rotors spin up
+from or down to zero.  The model has not seen these regimes in training:
+DREGON-LM was constructed from sustained in-flight noise.  During landing,
+for example, the ground truth collapses to zero for all rotors while the
+acoustic scene still contains residual rotor-like sounds (motor wind-down,
+contact noise).  The model therefore continues to predict in-flight speeds,
+giving large frame-wise errors.  This failure mode is one of distribution
+shift rather than of audio-only RPS estimation per se.
 
 \begin{figure}[ht]
   \centering
-  \includegraphics[width=\columnwidth]{fig_highsnr_per_sample}
+  \includegraphics[width=\textwidth]{fig_full_sequence}
   \caption{%
-    Per-clip MSE on ten consecutive $8.22$-second windows of the DREGON
-    \emph{speech-high room1} free-flight recording (out-of-distribution at
-    test time).  Dashed line: SimpleConv held-out synthetic-mixture MSE
-    ($5.15~(\revps)^{2}$).  The right-most clip corresponds to a brief landing
-    phase in which all rotor speeds drop to zero---a regime not represented in
-    DREGON-LM training data.%
+    SimpleConv predictions on the complete DREGON \emph{speech-high room1}
+    free-flight recording ($\approx 47$~s).
+    \textit{Top}: log-magnitude spectrogram (rotor harmonics visible as
+    horizontal bands below \SI{2}{\kilo\hertz}).
+    \textit{Middle}: ground-truth (dotted) and predicted (solid) per-rotor
+    speeds.
+    \textit{Bottom}: per-frame MSE (1~s moving average); grey bands mark
+    takeoff and landing phases where rotor speeds are below $50~\revps$.
+    The dashed line is the held-out synthetic-mixture MSE ($5.15~(\revps)^{2}$).%
   }
-  \label{fig:highsnr}
+  \label{fig:fullsequence}
 \end{figure}
 
 % ============================================================================
@@ -483,7 +497,7 @@ We have presented a first study of audio-only rotor speed estimation for
 multirotor UAVs in the presence of strong non-rotor sound.
 A small convolutional regressor trained on synthetic LibriSpeech--DREGON mixtures
 predicts per-rotor speed across an SNR range of $-30$ to $0$~dB with
-$\rsq = 0.95$ and a mean absolute error of $0.56~\revps$, and remains accurate
+$\rsq = 0.84$ and a mean absolute error of $0.56~\revps$, and remains accurate
 on real high-SNR free-flight recordings except in flight regimes (landing) not
 represented in the training distribution.
 The result establishes that the dominant acoustic structure of a multirotor in

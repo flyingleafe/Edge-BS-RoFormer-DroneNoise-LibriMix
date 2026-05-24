@@ -28,8 +28,9 @@
 *.vrb
 *.xdv
 
-# Compiled PDF output (keep figures/*.pdf as generated assets)
+# Compiled PDF output
 *.pdf
+*.png
 
 # Python virtual environments
 .venv/

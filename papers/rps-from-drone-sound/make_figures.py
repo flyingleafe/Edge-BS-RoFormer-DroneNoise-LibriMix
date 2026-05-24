@@ -8,7 +8,7 @@ Figures produced:
 - fig_training_curves.pdf      — train/val MSE + R² vs epoch (SimpleConv)
 - fig_qualitative_<id>.pdf     — spectrogram + ground-truth + predicted RPS for selected samples
 - fig_qualitative_combined.pdf — three-panel composite of qualitative samples
-- fig_highsnr_per_sample.pdf   — per-sample MSE on out-of-distribution high-SNR clips
+- fig_full_sequence.pdf        — full-sequence spectrogram + RPS + MSE on real high-SNR recording
 
 Run from project root inside the nix dev shell:
     python papers/rps-from-drone-sound/make_figures.py
@@ -68,34 +68,15 @@ def fig_training_curves() -> None:
     csv_path = ROOT / "results/rps_predictor/rps_predictor/training_log.csv"
     df = pd.read_csv(csv_path)
 
-    fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.4))
+    fig, ax = plt.subplots(1, 1, figsize=(6.8, 2.4))
 
     # MSE — log scale, clip top so the catastrophic epoch 1 doesn't dominate
-    ax = axes[0]
     ax.plot(df["epoch"], df["train_mse"], "-", lw=1.2, label="Train", color="#1f77b4")
     ax.plot(df["epoch"], df["val_mse"], "-", lw=1.2, label="Validation", color="#d62728")
     ax.set_yscale("log")
     ax.set_xlabel("Epoch")
     ax.set_ylabel(r"MSE  $[(\mathrm{rev/s})^2]$")
-    ax.set_title("(a) Training and validation MSE")
     ax.legend(frameon=False, loc="upper right")
-
-    # R^2 — linear, mark best
-    ax = axes[1]
-    ax.plot(df["epoch"], df["r2"], "-", lw=1.2, color="#2ca02c")
-    best = df.loc[df["val_mse"].idxmin()]
-    ax.axhline(best["r2"], ls="--", lw=0.8, color="gray")
-    ax.annotate(
-        f"best $R^2={best['r2']:.3f}$ @ ep.{int(best['epoch'])}",
-        xy=(best["epoch"], best["r2"]),
-        xytext=(0.55, 0.18), textcoords="axes fraction",
-        arrowprops=dict(arrowstyle="-", lw=0.6, color="gray"),
-        fontsize=8,
-    )
-    ax.set_ylim(-0.2, 1.0)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel(r"Validation $R^2$")
-    ax.set_title("(b) Validation coefficient of determination")
 
     out = FIG_DIR / "fig_training_curves.pdf"
     fig.tight_layout()
@@ -143,10 +124,12 @@ def fig_qualitative_examples(sample_ids=("sample_00000", "sample_00149", "sample
             np.lib.stride_tricks.sliding_window_view(audio, n_fft)[::hop] *
             np.hanning(n_fft), axis=-1))
         log_mag = np.log1p(spec.T)
+        vmin = np.percentile(log_mag, 2)
+        vmax = np.percentile(log_mag, 99)
         ax.imshow(
             log_mag, origin="lower", aspect="auto",
             extent=[0, duration, 0, sr / 2 / 1000],
-            cmap="magma",
+            cmap="hot", vmin=vmin, vmax=vmax,
         )
         ax.set_ylim(0, 4)  # focus on lowest 4 kHz where harmonics live
         ax.set_ylabel("freq [kHz]" if col == 0 else "")
@@ -181,8 +164,11 @@ def fig_qualitative_examples(sample_ids=("sample_00000", "sample_00149", "sample
 
     out = FIG_DIR / "fig_qualitative_combined.pdf"
     fig.savefig(out, bbox_inches="tight")
+    # Also save PNG for quick visual inspection
+    png_out = out.with_suffix(".png")
+    fig.savefig(png_out, bbox_inches="tight", dpi=200)
+    print("wrote", out, "and", png_out)
     plt.close(fig)
-    print("wrote", out)
 
 
 # -----------------------------------------------------------------------------
@@ -332,10 +318,12 @@ def fig_highsnr_outlier() -> None:
         np.lib.stride_tricks.sliding_window_view(audio_np, n_fft)[::hop] *
         np.hanning(n_fft), axis=-1))
     log_mag = np.log1p(spec.T)
+    vmin = np.percentile(log_mag, 2)
+    vmax = np.percentile(log_mag, 99)
     ax.imshow(
         log_mag, origin="lower", aspect="auto",
         extent=[0, duration, 0, TARGET_SR / 2 / 1000],
-        cmap="magma",
+        cmap="hot", vmin=vmin, vmax=vmax,
     )
     ax.set_ylim(0, 4)
     ax.set_ylabel("freq [kHz]")
@@ -369,12 +357,124 @@ def fig_highsnr_outlier() -> None:
 
     out = FIG_DIR / "fig_highsnr_outlier.pdf"
     fig.savefig(out, bbox_inches="tight")
+    # Also save PNG for quick visual inspection
+    png_out = out.with_suffix(".png")
+    fig.savefig(png_out, bbox_inches="tight", dpi=200)
+    print("wrote", out, "and", png_out)
     plt.close(fig)
-    print("wrote", out)
+
+
+# -----------------------------------------------------------------------------
+# Fig. 5 — Full-sequence high-SNR recording: spectrogram + RPS + MSE over time
+# -----------------------------------------------------------------------------
+def fig_full_sequence() -> None:
+    """Load pre-computed full-sequence predictions and render the 3-panel figure.
+
+    Requires `python analyze_rps_full_sequence.py` to have been run first.
+    """
+    out_dir = ROOT / "results/rps_full_sequence"
+    if not (out_dir / "rps_pred.npy").exists():
+        print("WARNING: results/rps_full_sequence/ not found — skipping fig_full_sequence")
+        return
+
+    audio_np = np.load(out_dir / "audio_16k.npy")
+    rps_pred = np.load(out_dir / "rps_pred.npy")
+    rps_gt = np.load(out_dir / "rps_gt_stft.npy")
+    mse_per_frame = np.load(out_dir / "mse_per_frame.npy")
+
+    duration = len(audio_np) / 16000
+    t_stft = np.linspace(0, duration, rps_gt.shape[1])
+
+    # Smooth MSE trace (1-second moving average)
+    hop = 512
+    sr = 16000
+    frame_dur = hop / sr
+    w = max(1, int(1.0 / frame_dur))
+    kernel = np.ones(w) / w
+    mse_smooth = np.convolve(mse_per_frame, kernel, mode="same")
+
+    # Identify low-RPS regions for highlighting
+    low_rps = np.all(rps_gt < 50, axis=0)
+    transitions = np.diff(low_rps.astype(int))
+    low_starts = np.where(transitions == 1)[0] + 1
+    low_ends = np.where(transitions == -1)[0]
+    if low_rps[0]:
+        low_starts = np.r_[0, low_starts]
+    if low_rps[-1]:
+        low_ends = np.r_[low_ends, len(low_rps) - 1]
+
+    fig, axes = plt.subplots(
+        3, 1, figsize=(7.1, 6.0),
+        gridspec_kw={"height_ratios": [1.2, 1.0, 0.8], "hspace": 0.35}
+    )
+
+    # ── Panel 1: spectrogram ──
+    ax = axes[0]
+    n_fft = 2048
+    spec = np.abs(np.fft.rfft(
+        np.lib.stride_tricks.sliding_window_view(audio_np, n_fft)[::hop] *
+        np.hanning(n_fft), axis=-1))
+    log_mag = np.log1p(spec.T)
+    vmin = np.percentile(log_mag, 2)
+    vmax = np.percentile(log_mag, 99)
+    ax.imshow(
+        log_mag, origin="lower", aspect="auto",
+        extent=[0, duration, 0, 16000 / 2 / 1000],
+        cmap="hot", vmin=vmin, vmax=vmax,
+    )
+    ax.set_ylim(0, 4)
+    ax.set_ylabel("freq [kHz]")
+    ax.set_title("DREGON free-flight speech-high (full sequence)")
+    ax.set_xticklabels([])
+    ax.grid(False)
+    for s, e in zip(low_starts, low_ends):
+        ax.axvspan(t_stft[s], t_stft[e], color="gray", alpha=0.12, lw=0)
+
+    # ── Panel 2: rotor speeds ──
+    ax = axes[1]
+    for r in range(4):
+        ax.plot(t_stft, rps_gt[r], ":", color=ROTOR_COLORS[r], lw=0.5, alpha=0.55)
+        ax.plot(t_stft, rps_pred[r], "-", color=ROTOR_COLORS[r], lw=0.5, alpha=0.75)
+    for s, e in zip(low_starts, low_ends):
+        ax.axvspan(t_stft[s], t_stft[e], color="gray", alpha=0.12, lw=0)
+    legend_handles = [
+        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),
+        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),
+    ] + [
+        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r]) for r in range(4)
+    ]
+    ax.legend(handles=legend_handles, loc="lower center", frameon=False,
+              fontsize=7, ncol=3, columnspacing=0.8,
+              bbox_to_anchor=(0.5, -0.02))
+    ax.set_ylabel("rotor speed [rev/s]")
+    ax.set_xlim(0, duration)
+    ax.set_xticklabels([])
+
+    # ── Panel 3: MSE over time ──
+    ax = axes[2]
+    for s, e in zip(low_starts, low_ends):
+        ax.axvspan(t_stft[s], t_stft[e], color="gray", alpha=0.12, lw=0)
+    ax.plot(t_stft, mse_smooth, "-", color="#d62728", lw=0.8)
+    ax.fill_between(t_stft, mse_smooth, alpha=0.15, color="#d62728")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel(r"MSE  $[(\mathrm{rev/s})^2]$")
+    ax.set_xlim(0, duration)
+    if mse_smooth.max() / (mse_smooth[mse_smooth > 0].min() + 1e-8) > 10:
+        ax.set_yscale("log")
+    ax.axhline(5.15, ls="--", lw=0.8, color="#444", alpha=0.7,
+               label="held-out synthetic, MSE = 5.15")
+    ax.legend(frameon=False, loc="upper center", fontsize=7,
+              bbox_to_anchor=(0.5, 1.02))
+
+    out = FIG_DIR / "fig_full_sequence.pdf"
+    fig.savefig(out, bbox_inches="tight")
+    png_out = out.with_suffix(".png")
+    fig.savefig(png_out, bbox_inches="tight", dpi=200)
+    print("wrote", out, "and", png_out)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
     fig_training_curves()
     fig_qualitative_examples()
-    fig_highsnr_per_sample()
-    fig_highsnr_outlier()
+    fig_full_sequence()
