@@ -1,3 +1,8 @@
+---
+name: improve-plot-visibility
+description: How to look at the generated plots, assess their quality, and improve them.
+---
+
 # Improve Plot Visibility
 
 When a figure's key features are hard to see (e.g., faint lines, low contrast, vague structures), systematically test visualization parameters and verify the result.
