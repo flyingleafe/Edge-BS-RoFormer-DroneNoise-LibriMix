@@ -8,7 +8,7 @@ class Farassat1ASolver:
     """Time-domain FWH acoustic propagation using Farassat Formulation 1A.
 
     Implements the loading-noise terms for compact surface sources:
-    
+
         4π p'(x,t) = Σ  [ 1/c0 · Ḟ_r/(r(1-M_r)²)
                         + F_r/(r²(1-M_r)²)
                         + 1/c0 · F_r(r·Ṁ_r + c0(M_r - M²))/(r²(1-M_r)³) ]_ret
@@ -35,6 +35,11 @@ class Farassat1ASolver:
 
         Solves  τ + |x - y(τ)|/c0 = t  for each source-observer-time triplet.
 
+        Handles ambiguity when y_func returns y [N_t, 3] (ambiguous:
+        could be 1 source with N_t times, or N_t sources with 1 time).
+        Convention: if y.shape[0] == t.shape[0] and y.dim()==2, treat as
+        single source (N_sources=1).
+
         Args:
             t: Observer times, shape [N_t].
             x_observer: Observer position, shape [3] or [N_obs, 3].
@@ -55,8 +60,25 @@ class Farassat1ASolver:
                 tau_guess = t - R0 / self.c0  # [N_t]
                 with torch.no_grad():
                     y_test = y_func(tau_guess)
+                    y_dim = y_test.dim()
+
+                if y_dim == 1:
+                    # y_test is [3] -> single source
+                    N_sources = 1
+                    tau = tau_guess.unsqueeze(0)  # [1, N_t]
+                elif y_dim == 2:
+                    n_first = y_test.shape[0]
+                    if n_first == t.shape[0]:
+                        # y.shape[0] == t.shape[0]: interpret as single source, N_sources=1
+                        N_sources = 1
+                        tau = tau_guess.unsqueeze(0)  # [1, N_t]
+                    else:
+                        # y.shape = [n_sources, N_t] with n_sources != N_t
+                        N_sources = n_first
+                        tau = tau_guess.unsqueeze(0).expand(N_sources, -1)  # [N_sources, N_t]
+                else:
                     N_sources = y_test.shape[0]
-                tau = tau_guess.unsqueeze(0).expand(N_sources, -1)
+                    tau = tau_guess.unsqueeze(0).expand(N_sources, -1)
             else:
                 N_obs = x_observer.shape[0]
                 R0 = torch.norm(x_observer, dim=-1)  # [N_obs]
@@ -69,6 +91,9 @@ class Farassat1ASolver:
                 tau = tau_guess.unsqueeze(0).expand(N_sources, -1, -1)
         else:
             tau = tau_guess.clone()
+            # If tau is 1D, it's a single source
+            if tau.dim() == 1:
+                tau = tau.unsqueeze(0)  # [1, N_t]
 
         for _ in range(max_iter):
             y = y_func(tau)  # [..., N_t, 3]
