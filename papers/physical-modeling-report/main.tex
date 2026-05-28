@@ -1,0 +1,351 @@
+\documentclass{QD_2026}
+\makeatletter
+\setlength\@fptop{0pt}
+\makeatother
+
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{amsfonts, amssymb}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\sisetup{detect-all}
+\graphicspath{{figures/}}
+
+% Macros
+\newcommand\bemt  {\textsf{BEMT}}
+\newcommand\vlm   {\textsf{VLM}}
+\newcommand\fwh   {\textsf{FWH}}
+% Additional macros defined inline
+
+\begin{document}
+
+%% Header image on first page
+\begin{figure}[t!]
+  \centering
+  \includegraphics[keepaspectratio,width=0.55\textwidth]{QD2026_logo_cropped.pdf}
+\end{figure}
+\hfill\hfill
+
+\title{Physical Rotor Noise Modelling: BEMT vs Vortex Lattice Method}
+\QDsession{UAS/UAM Noise Modelling}
+
+\providecommand\email[1]{\texttt{#1}}
+\author{
+  \textbf{Dmitrii Mukhutdinov}\email{d.mukhutdinov@qmul.ac.uk}
+  \and
+  \textbf{Lin Wang} \email{lin.wang@qmul.ac.uk}
+  \\School of Electronic Engineering and Computer Science\\
+  Queen Mary University of London, United Kingdom
+}
+
+\maketitle
+\author{}
+
+%==============================================================================
+\section{Introduction}
+%==============================================================================
+
+Rotors on multirotor drones generate acoustic noise dominated by tonal harmonics
+at the \emph{blade passage frequency} $BPF = B \times \Omega$, where $B$ is the
+number of blades and $\Omega$ the rotor angular speed in rad/s.
+These harmonics encode the rotor geometry and operating conditions.
+Two aerodynamic models are widely used to compute the blade forces:
+%
+\begin{enumerate}
+  \item \textbf{Blade Element Momentum Theory (BEMT)}: a quasi-analytical strip
+    approach combining 2-D airfoil polars with momentum conservation.
+  \item \textbf{Vortex Lattice Method (VLM)}: a potential-flow model using
+    bound and trailing vortices via the Biot--Savart law.
+    More physically faithful and differentiable end-to-end.
+\end{enumerate}
+%
+This report compares the acoustic spectra produced by BEMT and VLM against
+real motor recordings from the DREGON dataset~\cite{strauss2018dregon},
+benchmarks their single-GPU speed, and presents both methods
+pedagogically.
+
+%==============================================================================
+\section{Blade Element Momentum Theory (BEMT)}
+\label{sec:bemt}
+%==============================================================================
+
+BEMT slices the blade into $N_r$ radial strips and treats each as an
+independent 2-D airfoil in steady local flow.
+
+At radius $r$, the blade tip speed is $U_y = \Omega r$ and the inflow
+speed is $v_\infty$ (downwash in hover, freestream in flight).
+The local speed and inflow angle are:
+%
+\begin{equation}
+  V(r) = \sqrt{v_\infty^2 + (\Omega r)^2}, \qquad
+  \phi(r) = \arctan\frac{v_\infty}{\Omega r}.
+\end{equation}
+%
+The angle of attack is $\alpha = \theta(r) - \phi$, where $\theta(r)$ is the
+geometric twist.  Thin-airfoil theory gives lift and drag per unit span:
+%
+\begin{equation}
+  \ellis(r) = \tfrac12\rho V^2\,c(r)\,C_\ell(\alpha), \qquad
+  D(r)     = \tfrac12\rho V^2\,c(r)\,C_d(\alpha).
+\end{equation}
+%
+Forces are resolved in the rotor disk frame (radial, tangential, thrust):
+%
+\begin{equation}
+  F_x^{\mathrm{disk}} = D\cos\phi - \ellis\sin\phi, \qquad
+  F_y^{\mathrm{disk}} = D\sin\phi + \ellis\cos\phi, \qquad
+  F_z^{\mathrm{disk}} = 0.
+\end{equation}
+%
+In hover ($\phi\approx 0$): $F_y \approx \ellis$ (thrust/lift),
+$F_x \approx D$ (drag), $F_z = 0$ (thin-airfoil assumption: no out-of-plane force).
+
+\textbf{Assumptions and limitations:}
+the strips are independent (no blade-to-blade interaction);
+wake is modelled as uniform (no tip-vortex model);
+steady (no dynamic stall);
+most accurate at midspan.
+
+%==============================================================================
+\section{Vortex Lattice Method (VLM)}
+\label{sec:vlm}
+%==============================================================================
+
+VLM represents each blade as a horseshoe vortex: a bound vortex of circulation
+$\Gamma$ running hub-to-tip, with two semi-infinite trailing vortices
+extending downstream.
+
+The Kutta--Joukowski theorem gives lift per unit span:
+%
+\begin{equation}
+  L' = \rho\,U \times \Gamma \quad\Longrightarrow\quad
+  \Gamma = \frac{L'}{\rho U}.
+\end{equation}
+%
+A vortex particle of circulation $\Gamma_i$ at position $\mathbf{y}_i$ induces
+velocity at field point $\mathbf{x}$ via the Biot--Savart law:
+%
+\begin{equation}
+  \label{eq:biotsavart}
+  \mathbf{v}(\mathbf{x}) = \frac{\Gamma_i}{4\pi}
+    \frac{\mathbf{r}_i\times d\boldsymbol\ell_i}
+         {(|\mathbf{r}_i|^2+\epsilon^2)^{3/2}},
+  \qquad \mathbf{r}_i = \mathbf{x}-\mathbf{y}_i,
+\end{equation}
+%
+where $\epsilon$ is a regularisation (core) radius.
+
+\textbf{Key property:} The Biot--Savart law uses only matmul, cross-product,
+and normalisation --- all natively differentiable in PyTorch autograd.
+This makes the VLM force-to-pressure chain fully end-to-end differentiable,
+which is the decisive advantage for inverse design.
+
+%==============================================================================
+\section{Acoustic Propagation: Ffowcs--Williams Hawkings (FWH)}
+\label{sec:fwh}
+%==============================================================================
+
+The FWH equation rewrites the compressible Navier--Stokes equations as a wave
+equation driven by surface integrals.  For a compact source of force
+$\mathbf{F}(t)$ at retarded time $\tau$, Farassat Formulation 1A gives:
+%
+\begin{equation}
+  \label{eq:farassat1a}
+  4\pi\,p'(\mathbf{x},t) =
+    \frac{1}{c_0}\,
+    \frac{\hat{\mathbf{r}}\cdot\dot\mathbf{F}}
+         {r\,(1-M_r)^2}\Bigg|_\tau
+    + \frac{\hat{\mathbf{r}}\cdot\mathbf{F}}
+           {r^2\,(1-M_r)^2}\Bigg|_\tau ,
+\end{equation}
+%
+where $\hat{\mathbf{r}}$ is the unit vector from source to observer,
+$r=|\mathbf{x}-\mathbf{y}|$, and $M_r = \mathbf{v}\cdot\hat{\mathbf{r}}/c_0$
+is the Mach number projection.  The total pressure is summed over all
+strips and blades:
+%
+\begin{equation}
+  p'(\mathbf{x},t) = \sum_{i=1}^{N_r}\sum_{b=1}^{B} p'_{ib}(\mathbf{x},t).
+\end{equation}
+
+The pipeline is: blade geometry $\to$ aerodynamic forces (BEMT or VLM)
+$\to$ retarded time $\tau$ (Newton--Raphson on
+$t - \tau - |\mathbf{x}-\mathbf{y}(\tau)|/c_0 = 0$) $\to$ observer
+pressure $p'(\mathbf{x},t)$.
+
+%==============================================================================
+\section{Results}
+%==============================================================================
+
+\textbf{Setup.}  2-blade rotor, $R=\SI{0.152}{m}$,
+APC~\SI{10\times7}{} chord distribution, linear twist
+$\theta(r)=15^\circ(1-r/R)$.
+RPM sweep: $50$, $70$, $90\,\SI{}{rev/s}$ (constant-speed hover).
+Dataset: DREGON individual motor recordings, 4 motors $\times$ 3 RPMs,
+12 samples of $\SI{5}{s}$ each.
+Microphone: DREGON linear 8-channel array, channel 0.
+%
+Spectral metrics: (i) normalised MSE of zero-mean PSDs (lower = better);
+(ii) Pearson $r$ of normalised PSDs ($r=1$: identical harmonic structure).
+
+%-----------------------------------------------------------------------------
+\subsection{Spectral accuracy}
+%-----------------------------------------------------------------------------
+
+\begin{figure}[t!]
+  \centering
+  \includegraphics[width=0.48\textwidth]{fig_spectra_all_bpfs.pdf}
+  \caption{
+    BEMT (dashed) and VLM (dotted) simulated spectra vs.\ DREGON real
+    recordings (solid gray).  Both models reproduce the BPF harmonics
+    exactly (determined by kinematics $B\times\Omega$).
+    The dominant gap is the broadband noise floor in real recordings,
+    which neither inviscid potential-flow model captures.}
+  \label{fig:spectra_all}
+\end{figure}
+
+Figure~\ref{fig:spectra_all} shows spectra for all 12 motor/RPM combinations.
+Figure~\ref{fig:mse_by_rpm} shows spectral distance from the real recording.
+
+Both methods give MSE $\approx 40$--$\SI{45}{dB}$ and Pearson
+$r\approx0.75$ against real recordings.  This gap is entirely attributable to
+the broadband motor/ESC noise floor in the real recordings (see
+Section~\ref{sec:gaps}), not to differences between the two models.
+
+A critical finding is that VLM and BEMT produce \emph{near-identical}
+acoustic waveforms (Pearson $r=0.9996$, RMS SPL difference
+$<0.04\,\mathrm{dB}$).  This is not a numerical coincidence ---
+it follows from the physics:
+%
+\begin{enumerate}
+  \item VLM uses $\Gamma = L'/(\rho U)$ (Kutta--Joukowski), which
+    recovers exactly the same section lift as thin-airfoil BEMT for the same
+    angle of attack (verified: max relative difference $<10^{-4}$).
+  \item Both feed the same lift into the Farassat-1A FWH integral.
+    The only algorithmic difference is that BEMT solves the retarded time
+    jointly over all $N_r=30$ strips, while VLM solves it strip-by-strip;
+    the two solutions differ by $<0.04\,\mathrm{dB}$.
+\end{enumerate}
+%
+An initial run with $n_t=200$ (effective sample rate $\SI{40}{Hz}$,
+Nyquist $=$\SI{20}{Hz} vs BPF $\approx$\SI{180}{Hz}) produced an
+apparent \SI{1.4}{dB} MSE advantage for BEMT --- a resampling artefact
+caused by complete harmonic aliasing.  With $n_t=2000$
+(Nyquist $>\!$BPF), the VLM--BEMT MSE collapses to $0.04\,\mathrm{dB}^2$.
+
+\begin{figure}[t!]
+  \centering
+  \includegraphics[width=0.45\textwidth]{fig_mse_by_rpm.pdf}
+  \caption{
+    Spectral distance (normalised MSE, lower = better) from real recording,
+    by RPM.  Both BEMT and VLM are within $\approx 2\,$dB of each other.
+    Error bars: $\pm 1$ standard deviation over the four motors.}
+  \label{fig:mse_by_rpm}
+\end{figure}
+
+\begin{figure}[t!]
+  \centering
+  \includegraphics[width=0.45\textwidth]{fig_correlation_by_rpm.pdf}
+  \caption{
+    Spectral shape correlation (Pearson $r$, higher = better) to real recording.
+    Both models give $r\approx 0.75$ across all RPMs (dashed line: $r=0.80$).}
+  \label{fig:corr_by_rpm}
+\end{figure}
+
+\clearpage
+
+\begin{figure}[t!]
+  \centering
+  \includegraphics[width=0.45\textwidth]{fig_speed_benchmark.pdf}
+  \caption{
+    Single-GPU wall-clock time per call (50-run average, $N_t=200$,
+    RTX 4070 Ti, PyTorch 2.7+cu126).
+    VLM is $6.7\times$ faster than BEMT per call.}
+  \label{fig:speed}
+\end{figure}
+
+%-----------------------------------------------------------------------------
+\subsection{Benchmark: speed on single GPU}
+%-----------------------------------------------------------------------------
+
+Table~\ref{tab:benchmark} and Figure~\ref{fig:speed} summarise timing.
+VLM is consistently faster because it processes each strip independently
+(single-source retarded-time Newton solves are cheap), while BEMT's
+joint solver requires $N_r\times N_t$ Newton steps per call.
+
+\begin{table}[t!]
+  \centering
+  \caption{Single-GPU wall-clock time per acoustic call
+    (mean over 50 runs, $N_t = 200$, RTX 4070 Ti, PyTorch 2.7+cu126).}
+  \label{tab:benchmark}
+  \begin{tabular}{lSS[table-format=4.1]S[table-format=2.2]}
+    \toprule
+    Method & \multicolumn{2}{c}{Time [ms]} & {Rate [calls/s]} & {Ratio} \\
+           & {per call}                  & (est. per step)            &           \\
+    \midrule
+    BEMT    & 3361 & 16.8 & 0.30 & 1.00 \\
+    VLM     &  515 &  2.6 & 1.94 & 0.15 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+%==============================================================================
+\section{Discussion and Conclusions}
+%==============================================================================
+
+\subsection{Why neither model matches real recordings}
+\label{sec:gaps}
+The $r\approx0.75$ correlation gap is entirely caused by the
+broadband noise floor in real single-motor recordings:
+%
+\begin{itemize}
+  \item Motor and ESC electronic noise (dominant above $\sim$\SI{500}{Hz}).
+  \item Trailing-edge and tip-vortex turbulent boundary-layer noise.
+  \item Recording microphone self-noise and room reflections.
+  \item Multi-rotor acoustic coupling (four motors on a quadcopter, not one).
+\end{itemize}
+%
+Neither BEMT nor VLM models any of these: both are inviscid potential-flow
+models with an ideal vortex wake, producing only the deterministic tonal
+harmonics at $BPF = B\times\Omega$.  Turbulent broadband noise requires
+either a turbulence model (e.g.\ DES) or a full Navier--Stokes solver
+(e.g.\ Lattice-Boltzmann via Lettuce).
+
+\subsection{VLM vs BEMF: identical waveforms, different speed}
+\label{sec:bemt_vs_vlm}
+VLM and BEMT generate near-identical acoustic pressure waveforms
+(Pearson $r=0.9996$, RMS SPL difference $<0.04\,\mathrm{dB}$).
+This follows from the physics: VLM's Kutta--Joukowski circulation
+$\Gamma = L'/(\rho U)$ recovers exactly the same section lift as thin-airfoil
+BEMT for the same angle of attack; both feed the same lift into the
+Farassat-1A integral; the only difference is the retarded-time solver
+(joint vs strip-by-strip), which introduces negligible numerical noise.
+
+Wake modelling does not add broadband noise: standard VLM uses clean
+vortex filaments (potential flow, no viscosity); turbulent broadband noise
+requires a turbulence model or Navier--Stokes solver.
+
+\subsection{Recommendation for this project}
+VLM is the preferred model because:
+%
+\begin{enumerate}
+  \item \textbf{Speed.}  $6.7\times$ faster per call on a single GPU.
+  \item \textbf{Differentiability.}  Full end-to-end autograd chain
+    ($c(r),\theta(r)\to\Gamma\to F\to p$) via PyTorch native operations
+    (matmul, cross, norm).
+  \item \textbf{Spectral accuracy.}  Identical to BEMT on tonal harmonics;
+    neither captures broadband noise.
+\end{enumerate}
+%
+BEMT is retained as a fast prototyping tool and validation baseline.
+
+%==============================================================================
+\section*{Acknowledgments}
+%==============================================================================
+
+DREGON dataset: \url{http://dregon.inria.fr}.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}
