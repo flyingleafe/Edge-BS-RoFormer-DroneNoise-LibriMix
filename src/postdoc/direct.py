@@ -14,6 +14,7 @@ Server state layout (on vast-server at /root/.postdoc/):
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import subprocess
@@ -234,9 +235,12 @@ def submit_direct(
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     fifo_payload = json.dumps(job_desc)
+    payload_b64 = base64.b64encode(fifo_payload.encode()).decode()
     subprocess.run(
-        _ssh_base(user, host) +
-        [f"python3 -c {json.dumps(fifo_payload)!r} >> {postdoc_dir}/queue.fifo"],
+        _ssh_base(user, host) + [
+            f"python3 -c 'import base64; print(base64.b64decode(\"{payload_b64}\").decode())' "
+            f">> {postdoc_dir}/queue.fifo"
+        ],
         check=True,
     )
     return job_id, "queued"
