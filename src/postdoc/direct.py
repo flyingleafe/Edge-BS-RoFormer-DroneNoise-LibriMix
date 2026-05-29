@@ -219,8 +219,12 @@ def submit_direct(
     log_path = f"{job_dir}/log.txt"
     job_json_path = f"{job_dir}/job.json"
 
-    # Probe free GPUs
-    available = free_gpus(user=user, host=host)
+    # Create placeholder dir immediately so _next_job_id never reuses this ID
+    # for a concurrent submit. The daemon will overwrite with real contents.
+    subprocess.run(
+        _ssh_base(user, host) + [f"mkdir -p {job_dir}"],
+        check=True,
+    )
 
     # Always queue — let the daemon handle launching locally.
     # Direct SSH launch is flaky: nohup + backgrounding over SSH often
