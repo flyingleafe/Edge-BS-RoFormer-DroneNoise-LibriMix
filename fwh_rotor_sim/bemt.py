@@ -96,7 +96,7 @@ class BEMTAerodynamics:
                                      torch.deg2rad(torch.tensor(20.0)))
 
         # Airfoil coefficients
-        cl, cd = self.airfool(alpha) if hasattr(self, 'airfool') else self.airfoil(alpha)
+        cl, cd = self.airfoil(alpha)
 
         # Sectional lift and drag per unit span (N/m)
         q = 0.5 * self.rho * U ** 2

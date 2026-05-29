@@ -24,10 +24,15 @@ Methods implemented
 4. matched_filter_tracker – harmonic-comb template correlation.  Templates are
                        built for a dense RPS grid; the best match per frame is
                        extracted greedily.
+5. nmf_tracker       – semi-supervised NMF with a fixed harmonic-comb
+                       dictionary.  The magnitude spectrogram is factorised
+                       as V ≈ W·H; the four strongest activations per frame
+                       give the rotor-speed estimates.  This is a true
+                       multi-pitch method (no greedy suppression step).
 
-All multi-rotor methods share the same ``_greedy_multi_rotor`` helper, which
-iteratively finds the best RPS, builds a suppression mask around its harmonics,
-and re-runs the search on the masked spectrum.
+Methods 2–4 share the same ``_greedy_multi_rotor`` helper, which iteratively
+finds the best RPS, builds a suppression mask around its harmonics, and re-runs
+the search on the masked spectrum.
 """
 
 from __future__ import annotations
@@ -387,6 +392,108 @@ def matched_filter_tracker(
     """
     specs, _ = _frame_spectra(audio)
     return _greedy_multi_rotor(specs, _matched_filter_rps_estimate, n_rotors)
+
+
+# ===========================================================================
+# 5. Semi-supervised NMF with harmonic-comb dictionary
+# ===========================================================================
+
+_NMF_RPS_GRID: np.ndarray | None = None
+_NMF_W: np.ndarray | None = None
+
+
+def _build_nmf_dictionary(
+    n_freqs: int,
+    sr: int = SR,
+    rps_min: float = RPS_MIN,
+    rps_max: float = RPS_MAX,
+    step: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build a fixed NMF dictionary of Gaussian harmonic-comb spectral templates.
+
+    Returns
+    -------
+    rps_grid : ndarray, shape (n_atoms,)
+    W : ndarray, shape (n_freqs, n_atoms)
+        Each column is a unit-norm spectral template with Gaussian peaks
+        centred at the harmonic frequencies of the corresponding RPS.
+    """
+    global _NMF_RPS_GRID, _NMF_W
+    if _NMF_W is not None and _NMF_W.shape[0] == n_freqs:
+        return _NMF_RPS_GRID, _NMF_W
+
+    rps_grid = np.arange(rps_min, rps_max + step, step)
+    n_atoms = len(rps_grid)
+    freq_bins = np.arange(n_freqs) * sr / N_FFT
+
+    W = np.zeros((n_freqs, n_atoms), dtype=np.float64)
+    for i, rps in enumerate(rps_grid):
+        freqs = _rps_to_harmonic_freqs(rps)
+        for f in freqs:
+            # Gaussian peak: σ ≈ 2 Hz (~4 FFT bins at 16 kHz / 2048)
+            sigma = 2.0 * N_FFT / sr
+            W[:, i] += np.exp(-0.5 * ((freq_bins - f) / sigma) ** 2)
+
+    # Normalise columns to unit L2
+    col_norms = np.linalg.norm(W, axis=0, keepdims=True)
+    W = W / np.where(col_norms > 1e-12, col_norms, 1.0)
+
+    _NMF_RPS_GRID = rps_grid
+    _NMF_W = W
+    return rps_grid, W
+
+
+def nmf_tracker(
+    audio: np.ndarray,
+    sr: int = SR,
+    n_rotors: int = N_ROTORS,
+    n_iter: int = 30,
+) -> np.ndarray:
+    """
+    Semi-supervised NMF with a fixed harmonic-comb dictionary.
+
+    The magnitude spectrogram ``V`` is factorised as ``V ≈ W·H`` where ``W``
+    is a bank of Gaussian harmonic-comb templates (one column per candidate
+    RPS) and ``H`` is learned via multiplicative updates.  For each frame
+    the ``n_rotors`` strongest activations are taken as the rotor-speed
+    estimates.  This is a true multi-pitch method: all four rotors are
+    estimated jointly, with no greedy suppression step.
+
+    Parameters
+    ----------
+    audio : ndarray, shape (n_samples,)
+    sr    : int, default 16000
+    n_rotors : int, default 4
+    n_iter : int, default 30
+        Number of multiplicative-update iterations.
+
+    Returns
+    -------
+    preds : ndarray, shape (n_rotors, n_frames)
+    """
+    V = np.abs(librosa.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH, center=True))
+    n_freqs, n_frames = V.shape
+
+    rps_grid, W = _build_nmf_dictionary(n_freqs, sr)
+    n_atoms = len(rps_grid)
+
+    # Warm-start H with the non-negative least-squares solution
+    H_init = np.linalg.lstsq(W, V.astype(np.float64), rcond=None)[0]
+    H = np.maximum(H_init, 0.0)
+
+    eps = 1e-9
+    for _ in range(n_iter):
+        WH = W @ H + eps
+        H *= (W.T @ V.astype(np.float64)) / (W.T @ WH + eps)
+
+    # Extract top-n_rotors per frame (sort descending by activation)
+    preds = np.zeros((n_rotors, n_frames), dtype=np.float32)
+    for t in range(n_frames):
+        top_idx = np.argsort(H[:, t])[-n_rotors:][::-1]
+        preds[:, t] = rps_grid[top_idx].astype(np.float32)
+
+    return preds
 
 
 # ===========================================================================
