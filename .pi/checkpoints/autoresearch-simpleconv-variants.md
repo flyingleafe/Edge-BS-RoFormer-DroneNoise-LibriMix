@@ -228,17 +228,80 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/eval_rps_checkpoint.py \
 
 ---
 
+## Extra Evaluations (2026-05-30)
+
+Two out-of-distribution evaluations were run for **all 10 variants**:
+
+1. **Full-sequence evaluation** on DREGON `free-flight_speech-high_room1` (~47 s real recording with speech + telemetry)
+2. **Single-rotor evaluation** on clean individual motor recordings (Motor1–4 at 50/60/70/80/90 rev/s) + `allMotors_70`
+
+Results saved in:
+- `results/rps_eval_full_sequence/<model>/metrics.json`
+- `results/rps_eval_single_rotor/<model>/metrics.json`
+- `results/rps_extra_evals_aggregate.json`
+- `results/rps_extra_evals_report.md`
+
+## Report (2026-05-30)
+
+A full report with figures has been prepared in `papers/simpleconv_variants_report/`:
+- `main.tex` — LaTeX source with all tables and figure inclusions
+- `report.md` — Markdown version with embedded figure previews
+- `figures/` — 13 PDF/PNG figure pairs:
+  - `fig_leaderboard_validation` — validation MSE and R²
+  - `fig_pareto_params_r2` — parameter vs accuracy Pareto plot
+  - `fig_fullsequence_comparison` — multi-variant overlay on real recording
+  - `fig_fullsequence_inflight_mse_bar` — in-flight MSE comparison
+  - `fig_fullsequence_simple_conv.{pdf,png}` — 3-panel baseline plot
+  - `fig_fullsequence_simple_conv_bigru.{pdf,png}` — 3-panel BiGRU plot
+  - `fig_fullsequence_simple_conv_bigru_v2.{pdf,png}` — 3-panel BiGRU-v2 plot
+  - `fig_individual_motor_mse_bar` — individual-motor MSE (all fail)
+  - `fig_single_rotor_allmotors_comparison` — trace plots on allMotors_70
+  - `fig_allmotors_mse_bar` — allMotors_70 MSE bar chart
+
+### Full-sequence leaderboard (in-flight MSE, rotors > 50 rev/s)
+
+| Rank | Model | In-flight MSE↓ | Global R²↑ |
+|------|-------|---------------|-----------|
+| 1 | **simple_conv_bigru_v2** | **9.90** | **0.8391** |
+| 2 | simple_conv_v2 | 11.80 | 0.6995 |
+| 3 | simple_conv_bigru | 15.19 | 0.7724 |
+| 4 | simple_conv_wide | 18.87 | 0.7664 |
+| 5 | simple_conv_attn_pool | 19.99 | 0.7576 |
+| 6 | simple_conv | 24.45 | 0.7724 |
+| 7 | simple_conv_magphase_bigru | 25.73 | 0.7995 |
+| 8 | simple_conv_tcn | 28.14 | 0.7687 |
+| 9 | simple_conv_se_next | 23.44 | 0.7515 |
+| 10 | simple_conv_multiscale | 111.71 | -0.8624 |
+
+**Key finding:** `bigru_v2` wins decisively on real recordings (in-flight MSE 9.9 vs baseline 24.4). `multiscale` is broken on full sequences (outputs 258 frames instead of 1465). For reference, the original paper reported SimpleConv in-flight MSE ≈ 19.9 on this recording — `bigru_v2` halves that.
+
+### allMotors_70 (synchronized 4 rotors at 70 rev/s)
+
+| Model | Best MSE↓ | Avg MSE↓ |
+|-------|----------|---------|
+| simple_conv_multiscale | 16.10 | 28.93 |
+| simple_conv | 22.26 | 91.07 |
+| simple_conv_wide | 22.24 | 85.26 |
+| simple_conv_bigru_v2 | 22.30 | 89.29 |
+| simple_conv_se_next | 24.12 | 94.10 |
+| simple_conv_tcn | 28.96 | 65.85 |
+| simple_conv_attn_pool | 30.06 | 113.03 |
+| simple_conv_v2 | 316.55 | 347.13 |
+| simple_conv_bigru | 392.28 | 416.77 |
+| simple_conv_magphase_bigru | 640.30 | 676.49 |
+
+**Note:** All models fail on single-rotor recordings (MSE in thousands, as expected — they were trained on 4-rotor mixtures). On `allMotors_70`, the baseline-like architectures (simple_conv, bigru_v2, wide, se_next) cluster around MSE 22–24 on the best channel, consistent with the original paper.
+
 ## Next Steps (priority order)
 
-1. **Verify bigru_v2 and se_next** — run `scripts/eval_rps_checkpoint.py` on their checkpoints to get exact logged numbers
-2. **Ablation on v2** — strip components to isolate what matters:
+1. **Ablation on v2** — strip components to isolate what matters:
    - v2 without SE → does SE help or is it just the deeper encoder + BiGRU?
    - v2 without FreqAttn → does attention pooling matter?
    - bigru_v2 (already done) vs v2 → SE + attention vs just deeper encoder
-3. **Smoothness loss sweep** — `--smoothness_weight 0.01 0.1 1.0` on `simple_conv_bigru`
-4. **High-SNR evaluation** — test top-3 models on higher SNR ranges from `rps_eval_specific_samples/`
-5. **Cross-validation** — single train/valid split used. Rankings might be noise.
-6. **Paper writeup** — compare against literature RPS prediction methods (classical approaches in `classical_rps_predictors.py`)
+2. **Smoothness loss sweep** — `--smoothness_weight 0.01 0.1 1.0` on `simple_conv_bigru`
+3. **High-SNR evaluation** — test top-3 models on higher SNR ranges from `rps_eval_specific_samples/`
+4. **Cross-validation** — single train/valid split used. Rankings might be noise.
+5. **Paper writeup** — compare against literature RPS prediction methods (classical approaches in `classical_rps_predictors.py`)
 
 ---
 

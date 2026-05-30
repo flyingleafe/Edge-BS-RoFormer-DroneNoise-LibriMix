@@ -63,6 +63,8 @@
                 anyfontsize
                 appendix;
             })
+            # for looking at resulting pdfs
+            poppler-utils
           ];
 
           shellHook = ''
