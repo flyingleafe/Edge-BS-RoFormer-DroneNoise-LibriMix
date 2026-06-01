@@ -431,10 +431,15 @@ def wandb_init(args: argparse.Namespace, model_name: str) -> None:
 # ─── Evaluation ──────────────────────────────────────────────────────────────
 
 
-def evaluate(model, loader, device, dataset_len):
-    """Run model on dataloader, return per-frame and per-clip metrics."""
+def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
+    """Run model on dataloader, return per-frame and per-clip metrics.
+    
+    When pit_eval=True, uses permutation-invariant MSE for the primary loss
+    (matching PIT training), while also reporting standard metrics.
+    """
     model.eval()
-    total_loss = 0.0
+    total_pit_loss = 0.0
+    total_std_loss = 0.0
     all_preds, all_targets = [], []
 
     with torch.no_grad():
@@ -442,15 +447,18 @@ def evaluate(model, loader, device, dataset_len):
             audio, rps_target = audio.to(device), rps_target.to(device)
             with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
-                loss = F.mse_loss(rps_pred, rps_target)
-            total_loss += loss.item() * audio.size(0)
+                pit_loss = pit_mse_loss(rps_pred, rps_target)
+                std_loss = F.mse_loss(rps_pred, rps_target)
+            total_pit_loss += pit_loss.item() * audio.size(0)
+            total_std_loss += std_loss.item() * audio.size(0)
             all_preds.append(rps_pred.cpu())
             all_targets.append(rps_target.cpu())
 
     all_preds = torch.cat(all_preds)
     all_targets = torch.cat(all_targets)
 
-    mse = total_loss / dataset_len
+    pit_mse_val = total_pit_loss / dataset_len
+    std_mse_val = total_std_loss / dataset_len
     mae_frame = (all_preds - all_targets).abs().mean().item()
     mae_per_rotor = (all_preds - all_targets).abs().mean(dim=(0, 2))
 
@@ -474,7 +482,8 @@ def evaluate(model, loader, device, dataset_len):
     r2_median = float(r2_arr.median())
 
     return {
-        "mse": mse,
+        "mse": pit_mse_val,       # primary metric (PIT-aware if pit_eval=True)
+        "std_mse": std_mse_val,   # fixed-order MSE for reference
         "mae_frame": mae_frame,
         "mae_per_rotor": mae_per_rotor.tolist(),
         "mae_clip": mae_clip,
@@ -539,8 +548,8 @@ def train_model(model_name, args):
     epochs_no_improve = 0
     best_path = os.path.join(args.save_path, f"best_{model_name}.pt")
 
-    print(f"\n{'Epoch':>5} {'Train MSE':>10} {'Val MSE':>10} {'MAE/frame':>10} {'MAE/clip':>10} {'R²':>8} {'LR':>10}")
-    print("-" * 65)
+    print(f"\n{'Epoch':>5} {'Train MSE':>10} {'Val PIT':>10} {'Val Std':>10} {'MAE/f':>8} {'MAE/c':>8} {'R²':>8} {'LR':>10}")
+    print("-" * 75)
 
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
@@ -575,14 +584,15 @@ def train_model(model_name, args):
         scheduler.step(val_mse)
         lr = optimizer.param_groups[0]["lr"]
 
-        print(f"{epoch:5d} {train_mse:10.4f} {val_mse:10.4f} {metrics['mae_frame']:10.2f} {metrics['mae_clip']:10.2f} {metrics['r2']:8.4f} {lr:10.1e}")
+        print(f"{epoch:5d} {train_mse:10.4f} {val_mse:10.4f} {metrics['std_mse']:10.4f} {metrics['mae_frame']:8.2f} {metrics['mae_clip']:8.2f} {metrics['r2']:8.4f} {lr:10.1e}")
 
         # WandB logging
         if wandb.run is not None and not wandb.run.disabled:
             wandb.log({
                 "epoch": epoch,
                 "train/mse": train_mse,
-                "val/mse": val_mse,
+                "val/pit_mse": val_mse,
+                "val/std_mse": metrics["std_mse"],
                 "val/mae_frame": metrics["mae_frame"],
                 "val/mae_clip": metrics["mae_clip"],
                 "val/r2": metrics["r2"],
@@ -610,9 +620,9 @@ def train_model(model_name, args):
     model.load_state_dict(torch.load(best_path, weights_only=True))
     m = evaluate(model, valid_loader, device, len(valid_ds))
 
-    print(f"\nPer-frame: MSE={m['mse']:.4f} (RMSE={m['mse']**0.5:.2f}), MAE={m['mae_frame']:.2f}, R²={m['r2']:.4f}")
+    print(f"\nPer-frame: PIT MSE={m['mse']:.4f} (RMSE={m['mse']**0.5:.2f}), Std MSE={m['std_mse']:.4f}, MAE={m['mae_frame']:.2f}, R²={m['r2']:.4f}")
     print(f"Per-clip:   MAE={m['mae_clip']:.2f}")
-    print(f"Improvement over naive: {(1 - m['mse']/naive_mse)*100:.1f}%")
+    print(f"Improvement over naive (PIT): {(1 - m['mse']/naive_mse)*100:.1f}%")
 
     return {
         "model": model_name,
