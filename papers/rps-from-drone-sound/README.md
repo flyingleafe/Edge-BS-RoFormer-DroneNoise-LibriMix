@@ -9,13 +9,8 @@ available results from this repository.
 - **Headline result.** A lightweight convolutional regressor predicts per-frame
   rotor speed for all four rotors of a DREGON quadcopter from a single-channel
   mixture (LibriSpeech + DREGON noise, SNR in `[-30, 0]` dB), reaching
-  R² = 0.95, MAE = 0.56 rev/s, MSE = 5.15 (rev/s)² on the held-out validation
+  R² = 0.84, MAE = 0.56 rev/s, MSE = 5.15 (rev/s)² on the held-out validation
   set.
-- **Comparison.** Larger complex-valued encoders adapted from DCUNet and DCCRN
-  are *better* on the in-distribution subset (MSE 3.10 / 2.63 vs 6.84) but
-  *worse* on out-of-distribution high-SNR free-flight recordings (factors of
-  3–5 vs 1.2 for SimpleConv). The simpler model is more robust to distribution
-  shift; the in-distribution ranking reverses out of distribution.
 - **Framing.** This is a passive acoustic monitoring paper, *not* a
   speech-enhancement paper. Downstream uses (flight-state inference,
   payload/fault diagnostics, source separation, SE conditioning) are listed
@@ -67,12 +62,11 @@ fetch is needed:
 |--------|--------|
 | `fig_training_curves.pdf` | `../../results/rps_predictor/rps_predictor/training_log.csv` (SimpleConv standalone training). |
 | `fig_qualitative_combined.pdf` | `../../results/rps_eval_specific_samples/sample_{00000,00149,00599}/` (mixture WAVs and `*_rps.npy` predictions). |
-| `fig_highsnr_per_sample.pdf` | `../../results/rps_high_snr_analysis.json` (10 free-flight clips from `DREGON_free-flight_speech-high_room1`). |
+| `fig_full_sequence.pdf` | `../../results/rps_full_sequence/` (full-sequence predictions on `DREGON_free-flight_speech-high_room1`). |
 
-Table II uses aggregate metrics from
-`../../results/rps_eval_specific_samples/evaluation_results.json`.
-Headline metrics (R² = 0.95, MAE = 0.56, MSE = 5.15) are the best validation
-epoch from `training_log.csv`.
+Headline metrics (R² = 0.84, MAE = 0.56, MSE = 5.15) are the best validation
+epoch from `training_log.csv` (the per-sample full-set R² is 0.835; the CSV
+records batch-level R² which peaks at 0.949).
 
 ## Known caveats
 
@@ -82,12 +76,11 @@ These are stated in the paper but worth being explicit about for review:
    (DREGON drone). Cross-airframe generalisation is untested.
 2. **Validation overlap.** DREGON-LM splits at the clip level, not the flight
    level, so train and val share underlying flights. The high-SNR free-flight
-   eval is the cleanest evidence we have against trivial memorisation.
-3. **Subset comparison.** Table II's three-way comparison uses 5 clips with
-   matched input normalisation, because that is the only place we have
-   apples-to-apples predictions stored locally for all three models. A
-   full 600-clip three-way comparison is a natural follow-up.
-4. **Outlier handling in the high-SNR analysis.** The 10th clip
-   (`t ≈ 38.6 s`) is a drone-landing phase (RPS → 0) not represented in
-   training data; we treat it explicitly as a distribution-shift failure mode
-   and report the mean over the other 9 clips.
+   eval on the full recording is the cleanest evidence we have against trivial
+   memorisation.
+3. **Takeoff and landing in the high-SNR recording.** The free-flight recording
+   includes takeoff and landing phases (rotor speeds below $50~\mathrm{rev/s}$)
+   not represented in DREGON-LM training data. These are highlighted as grey
+   bands in Fig.~\ref{fig:fullsequence} and dominate the global MSE; the
+   in-flight MSE ($19.9~(\mathrm{rev/s})^2$) is a fairer comparison with the
+   held-out synthetic value ($5.15~(\mathrm{rev/s})^2$).

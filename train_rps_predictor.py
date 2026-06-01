@@ -31,6 +31,24 @@ import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
 
+# Import new model variants
+from models.rps_predictor import (
+    SimpleConv,
+    SimpleConvV2,
+    SimpleConvWide,
+    SimpleConvTCN,
+    SimpleConvMultiScale,
+    SimpleConvBiGRU,
+    SimpleConvBiGRUV2,
+    SimpleConvMagPhaseBiGRU,
+    SimpleConvAttnPool,
+    SimpleConvSENext,
+    get_rps_model,
+)
+
+# Alias for utils.py compatibility
+RPSPredictor = SimpleConv
+
 
 # ─── Dataset ──────────────────────────────────────────────────────────────────
 
@@ -69,72 +87,6 @@ class DREGONRPSDataset(Dataset):
         ).squeeze(0)  # (4, n_frames)
 
         return audio, rps
-
-
-# ─── Model: SimpleConv (baseline) ─────────────────────────────────────────────
-
-
-class SimpleConv(nn.Module):
-    """
-    Lightweight CNN on log-magnitude spectrograms for RPS prediction.
-    Architecture mirrors DCUNet encoder but uses real-valued convolutions.
-    """
-
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4):
-        super().__init__()
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-        self.num_rotors = num_rotors
-        self.register_buffer("window", torch.hann_window(n_fft))
-
-        # Real-valued encoder (mirrors DCUNet channel sizes)
-        self.encoder = nn.ModuleList()
-        enc_spec = [
-            (1, 45, (7, 5), (2, 1), (3, 2)),  # → (B,45, 513, T)
-            (45, 90, (7, 5), (2, 1), (3, 2)),  # → (B,90, 257, T)
-            (90, 90, (5, 3), (2, 1), (2, 1)),  # → (B,90, 129, T)
-            (90, 90, (5, 3), (2, 1), (2, 1)),  # → (B,90,  65, T)
-            (90, 90, (5, 3), (2, 1), (2, 1)),  # → (B,90,  33, T)
-        ]
-        for ic, oc, k, s, p in enc_spec:
-            self.encoder.append(
-                nn.Sequential(
-                    nn.Conv2d(ic, oc, k, stride=s, padding=p),
-                    nn.BatchNorm2d(oc),
-                    nn.LeakyReLU(0.2),
-                )
-            )
-
-        # Prediction head: pool freq → (B, 4, T)
-        self.head = nn.Sequential(
-            nn.Conv1d(90, 64, kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Conv1d(64, num_rotors, kernel_size=1),
-        )
-
-    def forward(self, audio):
-        """
-        audio: (B, samples) raw mono waveform at 16 kHz.
-        Returns: (B, 4, T_stft) predicted RPS per STFT frame.
-        """
-        if audio.dim() == 3:
-            audio = audio.squeeze(1)
-
-        X = torch.stft(
-            audio, n_fft=self.n_fft, hop_length=self.hop_length,
-            window=self.window, return_complex=True, normalized=True,
-        )
-        mag = X.abs()
-        mag = torch.log1p(mag)
-        mag = mag.unsqueeze(1)  # (B, 1, F, T)
-
-        h = mag
-        for block in self.encoder:
-            h = block(h)
-
-        h = h.mean(dim=2)  # pool frequency (B, 90, T)
-        return self.head(h)
 
 
 # ─── Model: DCUNet Enc + RPS Head ────────────────────────────────────────────
@@ -337,6 +289,15 @@ class DCCRNEncRPS(nn.Module):
 
 MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
+    "simple_conv_v2": SimpleConvV2,
+    "simple_conv_wide": SimpleConvWide,
+    "simple_conv_tcn": SimpleConvTCN,
+    "simple_conv_multiscale": SimpleConvMultiScale,
+    "simple_conv_bigru": SimpleConvBiGRU,
+    "simple_conv_bigru_v2": SimpleConvBiGRUV2,
+    "simple_conv_magphase_bigru": SimpleConvMagPhaseBiGRU,
+    "simple_conv_attn_pool": SimpleConvAttnPool,
+    "simple_conv_se_next": SimpleConvSENext,
     "dcunet_enc_rps": DCUNetEncRPS,
     "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
     "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
@@ -474,6 +435,13 @@ def train_model(model_name, args):
             with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
                 loss = F.mse_loss(rps_pred, rps_target)
+                if args.smoothness_weight > 0:
+                    # Second-order finite difference for smoothness
+                    # (B, 4, T) -> diff along time
+                    diff1 = rps_pred[:, :, 1:] - rps_pred[:, :, :-1]
+                    diff2 = diff1[:, :, 1:] - diff1[:, :, :-1]
+                    smoothness = diff2.pow(2).mean()
+                    loss = loss + args.smoothness_weight * smoothness
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -532,7 +500,7 @@ def main():
     parser.add_argument("--model", type=str, default="simple_conv",
                        choices=list(MODEL_REGISTRY.keys()))
     parser.add_argument("--train_all", action="store_true")
-    parser.add_argument("--device", default="cuda:1")
+    parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=16)
@@ -543,6 +511,8 @@ def main():
     parser.add_argument("--save_path", default="results/rps_predictor_comparison")
     parser.add_argument("--n_fft", type=int, default=2048)
     parser.add_argument("--hop_length", type=int, default=512)
+    parser.add_argument("--smoothness_weight", type=float, default=0.0,
+                        help="Weight for temporal smoothness loss (second-order diff)")
     args = parser.parse_args()
 
     os.makedirs(args.save_path, exist_ok=True)

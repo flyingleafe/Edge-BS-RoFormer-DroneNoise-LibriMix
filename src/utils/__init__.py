@@ -794,7 +794,8 @@ def draw_spectrogram(waveform, sample_rate, length, output_file):
     img = librosa.display.specshow(
         Xdb, cmap="plasma", sr=sample_rate, x_axis="time", y_axis="linear", ax=ax
     )
-    ax.set(title="File: " + os.path.basename(output_file))
+    if output_file is not None:
+        ax.set(title="File: " + os.path.basename(output_file))
     fig.colorbar(img, ax=ax, format="%+2.f dB")
     if output_file is not None:
         plt.savefig(output_file)

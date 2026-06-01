@@ -1,0 +1,20 @@
+/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression/scripts/generate_variant_report_figures.py:218: UserWarning: This figure includes Axes that are not compatible with tight_layout, so results might be incorrect.
+  plt.tight_layout()
+/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression/scripts/generate_variant_report_figures.py:320: UserWarning: This figure includes Axes that are not compatible with tight_layout, so results might be incorrect.
+  plt.tight_layout()
+/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression/scripts/generate_variant_report_figures.py:320: UserWarning: This figure includes Axes that are not compatible with tight_layout, so results might be incorrect.
+  plt.tight_layout()
+/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression/scripts/generate_variant_report_figures.py:320: UserWarning: This figure includes Axes that are not compatible with tight_layout, so results might be incorrect.
+  plt.tight_layout()
+Saved fig_leaderboard_validation
+Saved fig_pareto_params_r2
+Saved fig_fullsequence_comparison
+Saved fig_fullsequence_simple_conv
+Saved fig_fullsequence_simple_conv_bigru
+Saved fig_fullsequence_simple_conv_bigru_v2
+Saved fig_single_rotor_allmotors_comparison
+Saved fig_allmotors_mse_bar
+Saved fig_fullsequence_inflight_mse_bar
+Saved fig_individual_motor_mse_bar
+
+All figures generated.

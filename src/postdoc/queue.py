@@ -205,7 +205,7 @@ def run_one(job_json: dict[str, Any]) -> None:
     pid_path = f"{job_dir}/pid.txt"
     launch = (
         f"cd {job_dir} && "
-        f"nohup bash run.sh >> {log_path} 2>&1 & "
+        f"nohup bash run.sh >> {log_path} 2>&1 </dev/null & "
         f"echo $! > {pid_path} && "
         f"python3 -c \""
         f"import json, pathlib; "

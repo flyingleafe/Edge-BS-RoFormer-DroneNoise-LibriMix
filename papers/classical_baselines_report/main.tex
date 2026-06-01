@@ -1,0 +1,399 @@
+\def\sampleids{SAMPLE_00000,SAMPLE_00001,SAMPLE_00002,SAMPLE_00005,SAMPLE_00008}
+\def\samplefigdir{figures/}
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{geometry}
+\geometry{a4paper, left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{siunitx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\graphicspath{{figures/}}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+\sisetup{detect-all}
+
+\newcommand{\rps}{\ensuremath{\mathrm{RPS}}}
+\newcommand{\revps}{\ensuremath{\mathrm{rev}/\mathrm{s}}}
+\newcommand{\rsq}{\ensuremath{R^{2}}}
+
+\title{\textbf{Classical baselines for multi-rotor \rps{} estimation}\\
+  \large Why they fail and by how much}
+\author{Dmitrii Mukhutdinov}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% ============================================================================
+\section{Classical methods we tried}
+% ============================================================================
+
+The task is to recover four per-rotor speeds from a single-channel mixture of
+speech + drone noise at very low SNR ($-30$ to $0$~dB).  Before training a
+neural network it is worth checking whether standard signal-processing methods
+can do the job.  We picked four well-known single-pitch estimators and extended
+each to the multi-rotor case with the same greedy suppression procedure.
+
+\paragraph{PYIN.} The probabilistic YIN tracker from \texttt{librosa}.  It is
+a single-$f_0$ method; we run it with a wide frequency range $[50, 400]$~Hz to
+capture both the motor rotation frequency and the blade-passage frequency, then
+divide by the blade count ($b=2$) when necessary.  Because PYIN can only track
+one source, we replicate its single output for all four rotors.
+
+\paragraph{Cepstral analysis.} For each STFT frame we compute the real
+cepstrum $c = \mathcal{F}^{-1}\{\log|\mathcal{F}\{\mathbf{s}\}|\}$ and search
+for the strongest peak in the quefrency band that maps to the plausible
+\rps{} range $[50, 150]$~\revps.  The quefrency peak is converted back to
+frequency via $f = f_s / q$ and then to rotor speed $\rho = f / b$.
+
+\paragraph{Harmonic Product Spectrum (HPS).} The spectrum is multiplied with
+downsampled copies of itself:
+\begin{equation}
+  P_{\text{HPS}}[k] = |S[k]| \cdot |S[2k]| \cdot |S[3k]| \cdot |S[4k]|.
+\end{equation}
+The peak of $P_{\text{HPS}}$ in the band $[b\rho_{\min}, b\rho_{\max}]$
+gives the blade-passage frequency; dividing by $b$ yields the rotor speed.
+
+\paragraph{Matched-filter bank.} We build a dense grid of candidate rotor
+speeds $\rho \in \{50, 50.5, \dots, 150\}$~\revps{} and, for each candidate,
+a binary comb template with narrow windows around its first 15 harmonics.  The
+template that maximises the cosine similarity with the magnitude spectrum is
+taken as the estimate.
+
+\paragraph{NMF with harmonic dictionary.}  Semi-supervised non-negative matrix
+factorisation: the magnitude spectrogram $\mathbf{V}$ is factorised as
+$\mathbf{V} \approx \mathbf{W}\mathbf{H}$ where $\mathbf{W}$ is a fixed
+dictionary of Gaussian harmonic-comb spectral templates (one column per
+candidate RPS, same grid as the matched filter).  $\mathbf{H}$ is learned via
+multiplicative updates; for each frame the four strongest activations are
+taken as the rotor-speed estimates.  This is a true multi-pitch method---there
+is no greedy suppression step.
+
+All methods share the same constants: $f_s = \SI{16}{\kilo\hertz}$,
+$N=2048$, $H=512$, blade count $b=2$, and 15 harmonics.
+
+% ============================================================================
+\section{The greedy multi-rotor extension}
+% ============================================================================
+
+The first four methods estimate \emph{one} rotor speed per frame.  To get
+four estimates we use the same greedy suppression scheme for all of them:
+
+\begin{algorithm}[H]
+\caption{Greedy multi-rotor extractor}
+\label{alg:greedy}
+\begin{algorithmic}[1]
+\Require Frame spectra $\mathbf{S} \in \mathbb{R}^{T \times F}$,
+  single-rotor estimator $\mathcal{E}$,
+  rotors $R=4$,
+  suppression half-width $w=3$ bins
+\Ensure $\hat{\mathbf{R}} \in \mathbb{R}^{R \times T}$
+\For{$t = 1 \dots T$}
+  \State $\mathbf{s} \gets \mathbf{S}[t,:]$\qquad\Comment{copy}
+  \For{$r = 1 \dots R$}
+    \State $\hat{\rho}_{r,t} \gets \mathcal{E}(\mathbf{s})$
+    \For{$h = 1 \dots 15$}
+      \State $k_h \gets \text{round}(h \, b \, \hat{\rho}_{r,t} \, N / f_s)$
+      \State $\mathbf{s}[k_h-w \;\dots\; k_h+w] \gets 0$
+    \EndFor
+  \EndFor
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+This is simple, deterministic, and wrong in several ways.  Hard zeroing removes
+not only the target rotor but also overlapping speech energy and sidebands from
+other rotors, so the spectrum gets progressively more damaged for the second,
+third and fourth rotors.  Each frame is processed independently, so there is no
+temporal continuity.  And the first rotor always gets the cleanest spectrum while
+the others fight for scraps.  These are not implementation bugs; they are
+structural limitations that any single-pitch method extended this way will hit.
+
+% ============================================================================
+\section{Learned baseline for comparison}
+% ============================================================================
+
+SimpleConv is a small CNN ($\approx$1~M parameters) that maps the
+log-magnitude STFT of the mixture directly to four per-rotor speed traces via
+frame-wise regression.  It has no explicit harmonic model, no suppression step,
+and no hand-designed peak picking.  The encoder is five 2-D conv blocks that
+downsample frequency while keeping time intact; a spatial mean pools the
+remaining frequency bins and a two-layer 1-D conv head outputs four channels.  It
+is trained end-to-end on DREGON-LM by MSE against telemetry-aligned ground
+truth.  See the architecture table in the main paper if you care about the exact
+layer dimensions; for this report the only thing that matters is that it is a
+plain neural network that learns the mapping from data.
+
+% ============================================================================
+\section{Results}
+% ============================================================================
+
+\subsection{Numbers}
+
+Table~\ref{tab:summary} shows mean and standard deviation across the 10
+DREGON-LM test samples.  The classical methods are not just worse---they are
+\emph{two to three orders of magnitude} worse.
+
+\begin{table}[ht]
+  \centering
+  \caption{Aggregate metrics on 10 test samples.}
+  \label{tab:summary}
+  \small
+  \input{figures/table_summary}
+\end{table}
+
+NMF is the best classical method (MSE~$615$), roughly $86\times$ worse than
+SimpleConv but clearly ahead of the greedy single-pitch methods
+($870$--$1380$).  Cepstral and matched-filter are $193\times$ and
+$187\times$ worse.  The \rsq{} values are deep negative, which means even
+the best classical predictions are worse than predicting the per-sample mean.
+In other words, these methods do not just fail to track the rotors; they
+actively make things worse.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.85\textwidth]{fig_bar_mse}
+  \caption{Mean MSE on a log scale.  Error bars are $\pm$1 std.}
+  \label{fig:bar}
+\end{figure}
+
+Table~\ref{tab:per_sample} breaks it down per sample.  SimpleConv stays below
+$40$ on every single clip.  The classical methods never drop below $160$ and
+routinely exceed $1000$.
+
+\begin{table}[ht]
+  \centering
+  \caption{Per-sample MSE [(rev/s)$^2$].}
+  \label{tab:per_sample}
+  \small
+  \input{figures/table_per_sample}
+\end{table}
+
+\subsection{What the predictions actually look like}
+
+Mean RPS is misleading because the four rotors move independently and the mean
+can be flat even when individual rotors are wrong.  Figures~\ref{fig:page00}
+to~\ref{fig:page05} show the per-rotor predictions for individual samples.
+Each page is one sample: spectrogram on top, then six per-rotor panels (one
+per method).  Dotted lines are ground truth; solid lines are predictions.
+Rotor colours are consistent across all panels.
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_page_sample_00000}
+  \caption{Sample~00000 -- the easy case.  SimpleConv tracks all four rotors
+    closely; the classical methods are essentially flat or random.}
+  \label{fig:page00}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_page_sample_00002}
+  \caption{Sample~00002 -- a harder clip where SimpleConv MSE rises to $38$
+    but still remains two orders of magnitude below the classical methods.}
+  \label{fig:page02}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_page_sample_00005}
+  \caption{Sample~00005 -- one of the few clips where PYIN finds voiced frames.
+    It still tracks only one periodicity and replicates it for all four rotors.}
+  \label{fig:page05}
+\end{figure}
+
+A few things are immediately obvious from the plots:
+
+\begin{itemize}
+  \item \textbf{SimpleConv} actually follows the four dotted traces.  It is not
+    perfect---there is some overshoot and occasional mixing of rotors---but the
+    solid lines are clearly correlated with the ground truth.
+  \item \textbf{PYIN} returns a single trace replicated four times.  When it
+    finds voiced frames it locks onto whatever is strongest in the mixture,
+    which may be speech or a single rotor, and ignores the other three.
+  \item \textbf{Cepstral, HPS, and Matched Filter} were at least extended with
+    greedy suppression, but the second, third and fourth estimates are driven by
+    random spectral peaks because hard bin zeroing is too destructive.
+  \item \textbf{NMF} (bottom panel) does better than the greedy methods: its
+    traces sometimes follow the correct rotor for a few frames before losing
+    track.  But it still drifts and confuses rotors when harmonics overlap.
+\end{itemize}
+
+% ============================================================================
+\section{Why they fail}
+% ============================================================================
+
+The main reason is embarrassingly obvious: four of the five methods are not
+multi-pitch estimators.
+
+Cepstral analysis, HPS, and the matched-filter bank are all single-pitch
+algorithms.  They are designed to find one dominant periodicity in a spectrum.
+To make them handle four rotors we added a greedy extension that finds the
+strongest pitch, suppresses its harmonics by zeroing out bins, and repeats.
+This is not how multi-pitch estimation works in the literature; it is a crude
+hack that we tried because it was easy to implement.  The problem is that
+zeroing a few bins around a harmonic is highly destructive: it removes not only
+the target rotor but also overlapping speech formants, sidebands from other
+rotors, and any rotor energy that has leaked beyond the narrow suppression
+window.  By the time we search for the third or fourth rotor, the spectrum is
+so mangled that the estimate is essentially noise.
+
+PYIN is even worse off because we did not even attempt the greedy adaptation.
+It is a single-$f_0$ tracker; we just run it once per frame and replicate the
+single output four times.  Of course it cannot resolve four independently
+varying rotors.
+
+NMF is different: it is a true multi-pitch method.  It jointly decomposes the
+spectrum into four harmonic combs without hard suppression.  Yet it still
+fails, albeit by a smaller margin (MSE~$615$ vs $870$--$1380$ for the greedy
+methods).  Why?  Overlapping harmonics from four rotors create ambiguity in
+the dictionary: many atoms have similar harmonic patterns, so the multiplicative
+updates spread energy across neighbouring candidates.  Speech adds non-harmonic
+energy that NMF tries to explain with the same harmonic dictionary, creating
+spurious activations.  And without a temporal model, the frame-wise
+factorisation can flip which activation is assigned to which rotor from one
+frame to the next.  NMF improves on the greedy single-pitch hack, but the
+multi-pitch + speech problem is still too hard for a classical spectral
+decomposition with no learned temporal structure.
+
+% ============================================================================
+\section{Sanity check: what happens without speech and with only one rotor?}
+% ============================================================================
+
+So far the classical methods look useless.  But remember they are
+single-pitch estimators, and DREGON-LM is a multi-pitch + speech mixture.
+Before writing them off completely, we checked how they behave on the original
+DREGON individual-motor recordings: clean recordings of a single rotor
+running at constant speed (no speech, no other rotors).  We trimmed the start
+and end transients and evaluated the \emph{single-pitch} versions of each
+method---no greedy suppression, no multi-rotor hack.
+
+The results are summarised in Table~\ref{tab:single_rotor} and
+Figure~\ref{fig:single_rotor_scatter}.  PYIN and the matched filter are
+essentially perfect on most of these clips (MAE below $2$~\revps{} when they
+detect a periodicity).  Even cepstral analysis and HPS, while noisier, stay
+within $5$--$10$~\revps{} of the target.  NMF is mixed: on some motors it is
+accurate to within a few rev/s, but on others it locks onto the wrong harmonic
+or a spurious spectral peak and drifts far from the target.  The single-pitch
+methods are not broken; they are simply solving the wrong problem on DREGON-LM.
+
+\begin{table}[ht]
+  \centering
+  \caption{Mean MSE / MAE on clean single-rotor recordings (single-pitch
+    methods, no greedy suppression).  SimpleConv is shown as the best rotor
+    and averaged over all four outputs.}
+  \label{tab:single_rotor}
+  \small
+  \input{figures/table_single_rotor_summary}
+\end{table}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.7\textwidth]{fig_single_rotor_scatter}
+  \caption{Mean predicted RPS vs target RPS on clean single-rotor recordings.
+    Classical single-pitch methods cluster around the diagonal; SimpleConv
+    predicts random low values because it has never seen a single-rotor input.}
+  \label{fig:single_rotor_scatter}
+\end{figure}
+
+The really interesting result, however, is SimpleConv.  On DREGON-LM it
+tracks all four rotor speeds quite accurately, so it is not simply
+memorising chunks of training audio; it generalises to unseen mixtures.
+On single-rotor recordings, though, it fails: all four channels predict
+roughly the same low value ($10$--$50$~\revps{} instead of the true
+$50$--$90$), so the four dotted lines in
+Figures~\ref{fig:single_rotor_set1} and \ref{fig:single_rotor_set2}
+overlap perfectly.  The network has clearly learned that there should be
+four rotors and that their speeds should differ and vary over time.  When
+presented with a single constant rotor, it cannot reconcile that with its
+internal model of the problem, and all four channels collapse to the same
+confused estimate.
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_single_rotor_set1}
+  \caption{Predictions on clean single-rotor recordings (Motors~1 at 50, 70,
+    90~\revps).  Classical single-pitch methods track the constant target well.
+    SimpleConv outputs four channels (dotted lines), but on single-rotor input
+    all four collapse to the same wrong value, so the four dotted lines overlap
+    perfectly.  The solid line is their mean (identical to each channel), and
+    one channel is shown bold to mark the ``best'' channel (they are all equal).}
+  \label{fig:single_rotor_set1}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_single_rotor_set2}
+  \caption{Predictions on clean single-rotor recordings (Motors~4 at 50, 70,
+    90~\revps).  Same pattern as Figure~\ref{fig:single_rotor_set1}: all four
+    SimpleConv channels output the same wrong value, so the dotted lines overlap.}
+  \label{fig:single_rotor_set2}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_single_rotor_allmotors}
+  \caption{Predictions on the four-rotor synchronized recording (allMotors\_70).
+    Classical methods struggle with multiple overlapping combs.  SimpleConv
+    dotted = four channels, solid = mean, bold = best channel; the four outputs
+    are now clustered near the true speed because the input matches training.}
+  \label{fig:single_rotor_allmotors}
+\end{figure}
+
+On the four-rotor synchronized recording (allMotors\_70,
+Figure~\ref{fig:single_rotor_allmotors}) SimpleConv performs much better
+($\approx 75$--$83$~\revps{} vs target $70$).  The input now contains four
+rotors, which matches the network's structural expectation; the absence of
+speech is apparently less important than the presence of the expected number
+of rotors.
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+
+On the DREGON-LM test set (multi-pitch + speech, low SNR) the classical
+baselines fail by two to three orders of magnitude versus a 1-M-parameter
+CNN.  The four single-pitch methods (PYIN, cepstral, HPS, matched filter)
+are forced into a multi-pitch task with a crude greedy suppression hack that
+wipes out useful information.  NMF, a true multi-pitch method, improves on
+the greedy approaches (MSE~$615$ vs $870$--$1380$) but is still
+$86\times$ worse than SimpleConv and produces drifting, confused traces.
+
+On clean single-rotor recordings the same classical methods are accurate to
+within a few rev/s.  They are not broken; the multi-pitch task is simply
+harder than they were built for.
+
+SimpleConv shows the reverse.  It tracks the four rotor speeds accurately
+on DREGON-LM, so it is doing more than memorising training chunks; it
+generalises to new mixtures.  Yet on single-rotor recordings all four
+channels collapse to the same wrong number ($10$--$50$~\revps{} instead of
+$50$--$90$).  The fact that they all emit the same value is telling: the
+network has learned that there should be four rotors with different,
+varying speeds, and when that structure is absent it cannot produce a
+meaningful estimate.  On the four-rotor recording (allMotors\_70) it
+recovers speeds close to the target ($\approx 75$--$83$ vs $70$), because
+the input now matches the expected four-rotor structure.
+
+Bottom line: even a proper multi-pitch classical method (NMF with harmonic
+priors) cannot solve this task reliably at low SNR.  SimpleConv succeeds
+because it has learned the specific structure of the problem (four rotors,
+variable speeds, mixed with speech).  It is not a general rotor-speed
+estimator, and its single-rotor failure shows it is relying on structural
+expectations rather than on independent per-rotor harmonic analysis.
+
+\end{document}
