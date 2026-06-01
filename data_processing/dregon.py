@@ -21,6 +21,7 @@ from typing import Literal, TypedDict
 import numpy as np
 import scipy.io
 import soundfile as sf
+from scipy.ndimage import median_filter
 
 # =============================================================================
 # Constants
@@ -1219,3 +1220,76 @@ def get_constant_rps_for_motor_recording(
         rps[:, :] = motor_speed
 
     return rps
+
+
+def _find_step_artifact_length(command: np.ndarray) -> int:
+    """Detect initial constant-value logging artifact and return its length.
+
+    Some DREGON recordings start with a block of bit-identical command values
+    (stale flight-controller initialization data) before the real signal begins.
+    All four motors change at the same sample index when the real data starts.
+
+    Returns the number of leading samples to discard, or 0 if no artifact.
+    """
+    n_samples = len(command)
+    if n_samples < 2:
+        return 0
+
+    # Find how long the first sample's value is repeated exactly.
+    # Use motor 0 as reference; all motors change at the same index.
+    init_val = command[0, 0]
+    if init_val < 30.0:  # Step artifacts always start at high values (>60 Hz)
+        return 0
+
+    n_same = 0
+    for j in range(n_samples):
+        if command[j, 0] == init_val:
+            n_same += 1
+        else:
+            break
+
+    # Require at least 100 identical samples (~0.1 s) to confirm it's an artifact
+    if n_same >= 100:
+        return n_same
+    return 0
+
+
+def clean_command_spikes(
+    command: np.ndarray,
+    kernel: int = 21,
+) -> np.ndarray:
+    """Clean DREGON commanded rotor speeds by removing known artifacts.
+
+    Two artifacts are removed:
+
+    1. **Step artifact** — some recordings start with a block of bit-identical
+       high command values (stale FC initialization data, 0.6–3.1 s long).
+       These are zeroed out.
+
+    2. **Takeoff spikes** — during the real ramp-up the command oscillates
+       between a smooth lower envelope (the real target) and short upward
+       spikes. A median filter removes these impulsive outliers.
+
+    Applied per-motor (operates along axis 0 independently for each column).
+
+    Args:
+        command: (n_samples, 4) array of commanded rotor speeds (RPS, Hz)
+        kernel: Median filter kernel size along time axis (odd int, default 21).
+                 At the ~929 Hz DREGON motor rate this covers ~23 ms — enough
+                 to remove 1–3 sample spike bursts while preserving genuine
+                 speed changes.
+
+    Returns:
+        (n_samples, 4) cleaned command array, same shape and dtype as input.
+    """
+    cleaned = command.copy()
+
+    # Step 1: remove step artifact (zero out the constant-initial-value block)
+    n_step = _find_step_artifact_length(command)
+    if n_step > 0:
+        cleaned[:n_step] = 0.0
+
+    # Step 2: remove takeoff spikes via median filter
+    cleaned = median_filter(cleaned, size=(kernel, 1), mode="reflect")
+
+    return cleaned
