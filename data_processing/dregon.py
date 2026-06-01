@@ -663,7 +663,7 @@ def download_dregon_dataset(
 
     # Download motor recordings
     motors_dir = dregon_dir / "DREGON_individual_motors_recordings"
-    if not motors_dir.exists() or not any(motors_dir.glob("*.wav")):
+    if not motors_dir.exists() or not any(motors_dir.rglob("*.wav")):
         zip_path = dregon_dir / "motors.zip"
         _download_file(DOWNLOAD_URLS["motors"], zip_path, "motor recordings")
         _unpack_zip(zip_path, motors_dir)
@@ -814,7 +814,7 @@ def discover_recordings(dregon_dir: Path) -> list[DREGONSampleDict]:
     # Discover motor recordings
     motors_dir = dregon_dir / "DREGON_individual_motors_recordings"
     if motors_dir.exists():
-        for wav_file in motors_dir.glob("*.wav"):
+        for wav_file in motors_dir.rglob("*.wav"):
             motor_id, motor_speed = _parse_motor_filename(wav_file.name)
 
             sample: DREGONSampleDict = {

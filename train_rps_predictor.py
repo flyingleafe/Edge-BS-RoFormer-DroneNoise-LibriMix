@@ -21,6 +21,7 @@ Output: (B, 4, T_stft) predicted RPS per STFT frame
 
 import argparse
 import glob
+import itertools
 import os
 import time
 
@@ -29,6 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
+import wandb
 from torch.utils.data import DataLoader, Dataset
 
 # Import new model variants
@@ -311,6 +313,121 @@ def get_model(model_name, n_fft=2048, hop_length=512, num_rotors=4):
     return MODEL_REGISTRY[model_name](n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)
 
 
+# ─── PIT (Permutation-Invariant) MSE Loss ───────────────────────────────────
+
+# Pre-compute all permutations of 4 rotors (4! = 24)
+_ROTOR_PERMS = torch.tensor(
+    list(itertools.permutations(range(4))), dtype=torch.long
+)  # (24, 4)
+
+
+def pairwise_mse(est: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """
+    Compute pairwise MSE between each estimated and target rotor.
+
+    Args:
+        est: (B, 4, T) predicted RPS
+        target: (B, 4, T) ground-truth RPS
+
+    Returns:
+        (B, 4, 4) pairwise MSE matrix where [b, i, j] = MSE(est[b,i], target[b,j])
+    """
+    # est: (B, 4, T) -> (B, 4, 1, T)
+    # target: (B, 4, T) -> (B, 1, 4, T)
+    # diff: (B, 4, 4, T)
+    diff = est.unsqueeze(2) - target.unsqueeze(1)
+    return diff.pow(2).mean(dim=-1)  # (B, 4, 4)
+
+
+def pit_mse_loss(
+    est: torch.Tensor,
+    target: torch.Tensor,
+    perms: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Permutation-invariant MSE loss for RPS prediction.
+
+    Finds the best 1-to-1 matching between predicted and target rotors
+    by minimizing total MSE over all 4! = 24 permutations.
+
+    Args:
+        est: (B, 4, T) predicted RPS
+        target: (B, 4, T) ground-truth RPS
+        perms: Pre-computed permutation tensor (24, 4). If None, computes on-the-fly.
+
+    Returns:
+        Scalar loss (mean over batch of best-permutation MSE).
+    """
+    if perms is None:
+        perms = _ROTOR_PERMS.to(est.device)
+    elif perms.device != est.device:
+        perms = perms.to(est.device)
+
+    # Pairwise MSE matrix: (B, 4, 4)
+    pw = pairwise_mse(est, target)
+
+    # For each permutation, sum the pairwise losses along the matched pairs
+    # pw: (B, 4, 4), perms: (P, 4) -> gather: (B, P, 4)
+    # For perm p = [j0, j1, j2, j3], loss = pw[b, 0, j0] + pw[b, 1, j1] + ...
+    # More efficient: index with perms
+    B = pw.size(0)
+    P = perms.size(0)
+
+    # Gather: for each batch and permutation, collect pw[b, src_idx, tgt_idx]
+    src_idx = torch.arange(4, device=pw.device).view(1, 1, 4)  # (1, 1, 4)
+    tgt_idx = perms.view(1, P, 4)  # (1, P, 4)
+
+    # Advanced indexing: pw[b, src_idx, tgt_idx]
+    # pw: (B, 4, 4), want (B, P, 4)
+    b_idx = torch.arange(B, device=pw.device).view(B, 1, 1)  # (B, 1, 1)
+    perm_losses = pw[b_idx, src_idx, tgt_idx]  # (B, P, 4)
+    perm_losses = perm_losses.sum(dim=-1)  # (B, P)
+
+    # Best permutation per batch element
+    best_loss, _ = perm_losses.min(dim=1)  # (B,) — sum of 4 pairwise MSEs
+    # Normalize by n_rotors so PIT loss is comparable to standard per-element MSE
+    return best_loss.mean() / 4.0
+
+
+# ─── WandB Initialization ────────────────────────────────────────────────────
+
+
+def wandb_init(args: argparse.Namespace, model_name: str) -> None:
+    """Initialize WandB logging for RPS prediction project."""
+    wandb_key = getattr(args, "wandb_key", "") or os.environ.get("WANDB_API_KEY", "")
+    if not wandb_key or wandb_key.strip() == "":
+        wandb.init(mode="disabled")
+        return
+
+    wandb.login(key=wandb_key)
+    run_name = f"{model_name}_DREGON-LM-V2"
+    init_kwargs = dict(
+        entity="flyingleafe",
+        project="rps-prediction",
+        name=run_name,
+        config={
+            "model": model_name,
+            "data_root": args.data_root,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay,
+            "pit_loss": args.pit_loss,
+            "smoothness_weight": args.smoothness_weight,
+            "n_fft": args.n_fft,
+            "hop_length": args.hop_length,
+        },
+    )
+    wandb.init(**init_kwargs)
+
+    # Write run ID to save path
+    if wandb.run is not None and wandb.run.id:
+        run_id_path = os.path.join(args.save_path, "wandb_run_id.txt")
+        os.makedirs(args.save_path, exist_ok=True)
+        with open(run_id_path, "w") as f:
+            f.write(wandb.run.id)
+
+
 # ─── Evaluation ──────────────────────────────────────────────────────────────
 
 
@@ -434,7 +551,10 @@ def train_model(model_name, args):
             optimizer.zero_grad()
             with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
-                loss = F.mse_loss(rps_pred, rps_target)
+                if args.pit_loss:
+                    loss = pit_mse_loss(rps_pred, rps_target)
+                else:
+                    loss = F.mse_loss(rps_pred, rps_target)
                 if args.smoothness_weight > 0:
                     # Second-order finite difference for smoothness
                     # (B, 4, T) -> diff along time
@@ -456,6 +576,19 @@ def train_model(model_name, args):
         lr = optimizer.param_groups[0]["lr"]
 
         print(f"{epoch:5d} {train_mse:10.4f} {val_mse:10.4f} {metrics['mae_frame']:10.2f} {metrics['mae_clip']:10.2f} {metrics['r2']:8.4f} {lr:10.1e}")
+
+        # WandB logging
+        if wandb.run is not None and not wandb.run.disabled:
+            wandb.log({
+                "epoch": epoch,
+                "train/mse": train_mse,
+                "val/mse": val_mse,
+                "val/mae_frame": metrics["mae_frame"],
+                "val/mae_clip": metrics["mae_clip"],
+                "val/r2": metrics["r2"],
+                "val/r2_median": metrics["r2_median"],
+                "lr": lr,
+            })
 
         if val_mse < best_val_loss:
             best_val_loss = val_mse
@@ -507,8 +640,13 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--grad_clip", type=float, default=5.0)
-    parser.add_argument("--data_root", default="datasets/DREGON-LM")
+    parser.add_argument("--data_root", default="datasets/DREGON-LM-V2")
     parser.add_argument("--save_path", default="results/rps_predictor_comparison")
+    parser.add_argument("--pit_loss", action="store_true", default=True,
+                        help="Use permutation-invariant MSE loss (default: True)")
+    parser.add_argument("--no_pit_loss", action="store_false", dest="pit_loss",
+                        help="Disable permutation-invariant loss")
+    parser.add_argument("--wandb_key", type=str, default="", help="WandB API key")
     parser.add_argument("--n_fft", type=int, default=2048)
     parser.add_argument("--hop_length", type=int, default=512)
     parser.add_argument("--smoothness_weight", type=float, default=0.0,
@@ -520,11 +658,17 @@ def main():
 
     if args.train_all:
         for model_name in MODEL_REGISTRY.keys():
+            wandb_init(args, model_name)
             result = train_model(model_name, args)
             results[model_name] = result
+            if wandb.run is not None:
+                wandb.finish()
     else:
+        wandb_init(args, args.model)
         result = train_model(args.model, args)
         results[args.model] = result
+        if wandb.run is not None:
+            wandb.finish()
 
     # Summary
     if len(results) > 1:
