@@ -1,0 +1,7 @@
+{
+  "recording": "free-flight_speech-high_room1",
+  "model": "v3_simpleconv",
+  "mean_mse": 274.1060485839844,
+  "median_mse": 32.560977935791016,
+  "max_mse": 4925.30859375
+}

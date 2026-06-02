@@ -1,0 +1,360 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{geometry}
+\geometry{a4paper, left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{siunitx}
+
+\graphicspath{{figures/}}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+\sisetup{detect-all}
+
+\newcommand{\rps}{\ensuremath{\mathrm{RPS}}}
+\newcommand{\revps}{\ensuremath{\mathrm{rev}/\mathrm{s}}}
+\newcommand{\rsq}{\ensuremath{R^{2}}}
+
+\title{\textbf{DREGON-LM-V2: A Harder Evaluation for Multi-Rotor \rps{} Prediction}\\
+  \large Cross-evaluation of old checkpoints and new V3 models}
+\author{Dmitrii Mukhutdinov}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% ============================================================================
+\section{Why a new dataset?}
+% ============================================================================
+
+The original DREGON-LM dataset (Papers~1 and~2) is not great. Three reasons:
+
+\begin{enumerate}
+  \item \textbf{Train/validation overlap.} Both splits come from the same
+    recordings, so a model can just memorise room acoustics and motor
+    signatures instead of actually learning to predict RPS.
+  \item \textbf{Short clips.} 0.82~seconds $\approx$ 26 STFT frames. Not
+    enough temporal context for recurrent heads to do anything useful.
+  \item \textbf{One microphone only.} Eight microphones exist in DREGON; we
+    used one. Spatial diversity was ignored.
+\end{enumerate}
+
+DREGON-LM-V2 fixes all of this. We re-train on V2 (call them \emph{V3}
+checkpoints) and cross-evaluate every model on both the old and the new
+validation set. If a model was only good because it memorised the old split,
+we will know.
+
+% ============================================================================
+\section{What changed in V2}
+% ============================================================================
+
+\paragraph{Sources.} Same ingredients: DREGON (eight channels, four motors)
+and Librispeech. The recipe is different:
+\begin{itemize}
+  \item Pick one of the eight microphones per sample. Spatial diversity.
+  \item Mix speech at $-30$ to $0$~dB SNR.
+  \item Use \emph{commanded} motor speeds (flight-controller setpoints)
+    instead of measured telemetry. Cleaner ground truth, no alignment headaches.
+\end{itemize}
+
+\paragraph{Duration.} 3 seconds (48000 samples at 16~kHz) = $\sim$94 STFT
+frames. More than 3$\times$ the old length. Recurrent heads can actually
+breathe now.
+
+\paragraph{Train/valid split.} Recording-level, zero overlap. Train on 6
+\texttt{in\_flight\_nosource} recordings; validate on two completely
+unseen \texttt{free-flight} recordings. No memorisation possible.
+
+\paragraph{Synthetic clips.} About 20\% of training samples are synthesised
+by mixing individual motor recordings at constant speed. The idea was sound:
+force the model to learn actual pitch tracking instead of just predicting
+rough in-flight statistics. The execution was heavy-handed---20\% is too
+much, and the model learns to default to ``predict the mean'' whenever it
+is uncertain. More on this later.
+
+\paragraph{Stats.} 6000 train + 600 valid, 2.2~GB. Old dataset stays where
+it is; we are not touching it.
+
+% ============================================================================
+\section{Training setup}
+% ============================================================================
+
+Two new models trained on V2 (the \textbf{V3} checkpoints):
+
+\begin{itemize}
+  \item \textbf{V3 SimpleConv} (baseline): 5 encoder blocks, global average
+    pool + 1-D conv head. 538~K params.
+  \item \textbf{V3 BiGRU-v2} (best from the architecture sweep): 6 blocks,
+    squeeze--excitation, BiGRU head. 1.44~M params.
+\end{itemize}
+
+Standard recipe: STFT $(N=2048, H=512)$ at 16~kHz, AdamW ($10^{-3}$, weight
+decay $10^{-4}$), ReduceLROnPlateau, early stopping (patience~30).
+\textbf{PIT loss} because the four rotor outputs are unordered---we try all
+$4! = 24$ permutations and backprop the cheapest one. Batch size 96 (up from
+16 in the first V2 run) because why not.
+
+We also keep the \textbf{OLD} checkpoints (trained on the original
+DREGON-LM) around for comparison: OLD SimpleConv and OLD BiGRU-v2.
+
+% ============================================================================
+\section{Cross-evaluation results}
+% ============================================================================
+
+Every model is tested on \emph{both} the old validation set (1-second clips,
+measured RPS, train/val overlap) and the V2 validation set (3-second clips,
+command RPS, zero overlap). Metrics are \textbf{PIT-MSE}.
+
+Table~\ref{tab:cross} and Figure~\ref{fig:cross} tell the story.
+
+\begin{table}[ht]
+  \centering
+  \caption{Cross-evaluation PIT-MSE [(rev/s)$^2$] and degradation.}
+  \label{tab:cross}
+  \small
+  \input{figures/table_cross_eval}
+\end{table}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{fig_cross_eval}
+  \caption{Old models look amazing on the old set (blue) and die on V2
+    (orange). V3 models are worse on the old set but far more robust on V2.}
+  \label{fig:cross}
+\end{figure}
+
+\textbf{Old models were cheating.} OLD BiGRU-v2 scores PIT-MSE 2.7 on the
+old validation set---then explodes to 327 on V2. That is a
+$\mathbf{123\times}$ degradation. OLD SimpleConv goes from 5.2 to 331.9
+($63\times$). The old validation split is not a generalisation test; it is
+a memorisation test. The models learned recording-specific signatures, not
+RPS prediction.
+
+\textbf{V3 models actually generalise.} V3 BiGRU-v2 degrades only
+$4.7\times$ (15.3 $\to$ 71.1) and V3 SimpleConv only $2.2\times$
+(66.8 $\to$ 148.1). The absolute V2 numbers are still higher than the old
+inflated ones, but the \emph{relative} robustness is what matters.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.7\textwidth]{fig_degradation}
+  \caption{Degradation factor: old models collapse; V3 models degrade
+    modestly.}
+  \label{fig:degradation}
+\end{figure}
+
+% ============================================================================
+\section{Why old models fail on V2}
+% ============================================================================
+
+Three reasons, all tied to the old dataset being too easy:
+
+\textbf{Memorisation.} Old train and validation come from the same
+recordings. A model can just learn the room, the microphone position, and
+the characteristic motor speeds of each recording. With 0.82-second clips,
+predicting the per-recording mean RPS is already pretty good.
+
+V2 removes all three cheats: different recordings for validation, all eight
+microphones, and 3-second clips with actual temporal trajectories.
+
+\textbf{Command vs measured RPS.} V2 uses flight-controller setpoints
+instead of measured telemetry. Setpoints are smoother but noisier around
+transitions, and they lag the physical rotor speed by a variable amount.
+Harder target.
+
+\textbf{Temporal context.} 3~seconds = $\sim$94 STFT frames. The model
+must follow a trajectory, not guess a scalar. OLD BiGRU-v2 (trained on
+1-second clips) scores 327 on V2; V3 BiGRU-v2 (trained on 3-second clips)
+scores 71. Context matters.
+
+% ============================================================================
+\section{PIT vs standard MSE: does the model know which rotor is which?}
+% ============================================================================
+
+PIT loss hides the permutation problem during training. But we can expose it
+by comparing PIT-MSE (best permutation) against standard MSE (fixed channel
+order).
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.65\textwidth]{fig_pit_std_gap}
+  \caption{Std-MSE excess over PIT-MSE on V2 valid. Big gap = the model
+    has no idea which rotor is which.}
+  \label{fig:gap}
+\end{figure}
+
+V3 SimpleConv: 38\% gap (PIT 148 vs Std 205). Without a recurrent head,
+the CNN cannot keep rotors in consistent channels. V3 BiGRU-v2: only 4\%
+gap (71 vs 74). The BiGRU learns a stable temporal ordering. This confirms
+the architecture-sweep finding: temporal heads are not optional for
+multi-rotor outputs.
+
+% ============================================================================
+\section{Per-channel analysis on V2}
+% ============================================================================
+
+Old dataset always uses channel~0. Do old models get a ``home-field''
+advantage on ch0?
+
+\begin{table}[ht]
+  \centering
+  \caption{PIT-MSE on V2 valid, split by microphone channel.}
+  \label{tab:channel}
+  \small
+  \input{figures/table_per_channel}
+\end{table}
+
+Yes. OLD models are 15--38\% better on ch0 than on the other seven
+channels. V3 models shrink this to 9--19\%, because they trained on all
+eight. Even on ch0 alone, V3 BiGRU-v2 beats OLD BiGRU-v2 by $3.7\times$
+(66.2 vs 247.2).
+
+% ============================================================================
+\section{In-flight recordings with source signals}
+% ============================================================================
+
+We also evaluate all four checkpoints on two real in-flight recordings that
+contain an additional source signal (speech or white noise) mixed with the
+drone noise.  In the raw DREGON files the motor-telemetry stream starts
+several seconds after the audio stream and ends before it, so we crop the
+audio to the exact motor-timestamp range and interpolate the commanded RPS
+to the STFT frame rate of the cropped audio.  Table~\ref{tab:inflight}
+reports mean PIT-MSE over the full aligned sequence.
+
+\begin{table}[ht]
+  \centering
+  \caption{In-flight mean PIT-MSE [(rev/s)$^2$] on aligned full-sequence data.}
+  \label{tab:inflight}
+  \small
+  \begin{tabular}{lcccc}
+    \toprule
+    & OLD SimpleConv & OLD BiGRU-v2 & V3 SimpleConv & V3 BiGRU-v2 \\
+    \midrule
+    speech-high  & 224.6 & 199.9 & 274.1 & 277.3 \\
+    whitenoise-high & 87.7 & 104.0 & 123.8 & 323.0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The old checkpoints---trained on V1, which included in-flight segments and
+used measured motor speeds---generalise surprisingly well to in-flight
+recordings with source signals (MSE 88--225).  In contrast, the V3
+checkpoints---trained exclusively on the static V2 dataset with commanded
+speeds---show notably higher error, especially V3 BiGRU-v2 on whitenoise-high
+(MSE 323).
+
+The constant-speed synthetic clips were added on purpose: the idea was to
+force the model to learn actual pitch tracking instead of just predicting
+rough in-flight statistics. The intuition was sound---but 20\% is too
+much. The model learns the shortcut: when in doubt, predict the mean.
+
+On a synthetic constant-speed validation sample, V3 BiGRU-v2 prediction
+std is $\sim$0.05~rev/s while ground-truth std is $\sim$1.2~rev/s. That
+is a 20$\times$ variance suppression. You can see it in
+Figures~\ref{fig:inflight-speech-v3} and~\ref{fig:inflight-whitenoise-v3}:
+the V3 traces are suspiciously smooth and miss transients.
+
+Fix for V2: keep the synthetic idea, but (1) drop the proportion to maybe
+5\%, and (2) time-stretch the individual motor recordings before mixing so
+that rotor speeds actually vary within each synthetic clip. Otherwise the
+V3 checkpoints look good on paper but fail in the real world.
+
+Full-sequence 3-panel plots below. Top = spectrogram; middle = per-rotor
+RPS (dotted = ground truth, solid = prediction); bottom = per-frame MSE.
+Error is mostly at spin-up ($t < 5$~s); once rotors stabilise the tracking
+is decent.
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_fullseq_free-flight_speech-high_room1_old_bigru-v2}
+  \caption{Full-sequence evaluation on \texttt{free-flight\_speech-high\_room1}
+    ($\sim$47~s).  OLD BiGRU-v2 (trained on V1 with in-flight data) tracks the
+    four rotors accurately; error is mainly concentrated at spin-up.}
+  \label{fig:inflight-speech-old}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_fullseq_free-flight_speech-high_room1_v3_bigru-v2}
+  \caption{Same recording, V3 BiGRU-v2 (trained on static V2 only).
+    Steady-flight tracking is comparable, but spin-up error is larger
+    (mean MSE 277 vs 200).}
+  \label{fig:inflight-speech-v3}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_fullseq_free-flight_whitenoise-high_room1_old_bigru-v2}
+  \caption{Full-sequence evaluation on \texttt{free-flight\_whitenoise-high\_room1}
+    ($\sim$52~s).  OLD BiGRU-v2 again shows strong tracking (mean MSE 104).}
+  \label{fig:inflight-whitenoise-old}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{fig_fullseq_free-flight_whitenoise-high_room1_v3_bigru-v2}
+  \caption{Same recording, V3 BiGRU-v2.  The model under-estimates rotor
+    speeds during spin-up and shows larger drift in steady flight
+    (mean MSE 323 vs 104).}
+  \label{fig:inflight-whitenoise-v3}
+\end{figure}
+
+% ============================================================================
+\section{V3 training dynamics}
+% ============================================================================
+
+Figure~\ref{fig:v3train} shows the training curves. Both models overfit
+after early epochs; early stopping keeps the best validation checkpoint.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{fig_v3_training_curves}
+  \caption{Train MSE keeps dropping; validation MSE plateaus. The task is
+    genuinely hard, not a convergence issue.}
+  \label{fig:v3train}
+\end{figure}
+
+V3 SimpleConv: 52 epochs, stops at val PIT-MSE 148.1. V3 BiGRU-v2: 44
+epochs, stops at 71.1. Same pattern as the first V2 run: train goes down,
+validation stays flat. The task is hard.
+
+% ============================================================================
+\section{Why $R^2$ is useless here}
+% ============================================================================
+
+$R^2$ comes out as $-10^4$. Not because predictions are bad---because many
+V2 samples have near-constant RPS ($\sigma < 1$~rev/s over 3~seconds), so
+the baseline variance is basically zero and the ratio explodes. We just
+report MSE and MAE.
+
+% ============================================================================
+\section{Bottom line}
+% ============================================================================
+
+DREGON-LM-V2 is harder and cleaner than V1. The old dataset's validation
+scores (MSE 2--5) were a mirage; old checkpoints degrade $63$--$123\times$
+on V2. V3 checkpoints degrade only $2.2$--$4.7\times$.
+
+But V2 has a self-inflicted wound. The constant-speed synthetic clips were
+added with good intentions---force the model to track pitch, not just
+statistics---but at 20\% they become a shortcut. V3 models learn to predict
+the mean; on real in-flight data they underperform the old models (MSE
+124--323 vs 88--225).
+
+BiGRU-v2 is still the best architecture (PIT-MSE 71.1 on V2 valid vs 148.1
+for SimpleConv). The fix is simple: rebuild V2 with fewer constant-speed
+synthetic clips, and time-stretch the individual motors so that speeds vary
+within each synthetic sample. Then we can trust the V3 numbers.
+
+\end{document}

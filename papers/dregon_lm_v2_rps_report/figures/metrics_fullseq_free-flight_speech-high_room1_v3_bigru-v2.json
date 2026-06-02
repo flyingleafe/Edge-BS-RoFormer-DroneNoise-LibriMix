@@ -1,0 +1,7 @@
+{
+  "recording": "free-flight_speech-high_room1",
+  "model": "v3_bigru-v2",
+  "mean_mse": 277.3011779785156,
+  "median_mse": 4.104925632476807,
+  "max_mse": 5047.732421875
+}

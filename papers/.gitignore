@@ -29,8 +29,8 @@
 *.xdv
 
 # Compiled PDF output
-*.pdf
-*.png
+**.pdf
+**.png
 
 # Python virtual environments
 .venv/

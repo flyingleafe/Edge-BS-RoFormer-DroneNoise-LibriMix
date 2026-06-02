@@ -1,0 +1,7 @@
+{
+  "recording": "free-flight_whitenoise-high_room1",
+  "model": "v3_bigru-v2",
+  "mean_mse": 322.9954528808594,
+  "median_mse": 4.514126300811768,
+  "max_mse": 5024.9736328125
+}
