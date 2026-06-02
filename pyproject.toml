@@ -58,6 +58,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.100",
+    "ipympl>=0.10.0",
     "jupyter>=1.1.1",
     "nnviz",
     "pytest>=9.0.2",
@@ -68,4 +70,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/postdoc"]
+packages = ["src/postdoc", "src/utils"]
