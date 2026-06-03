@@ -56,7 +56,7 @@ def time_frame(draw) -> TimeFrame:
         ),
         dtype=np.float64,
     )
-    es = EventSeries(timestamps=ev_ts, values=ev_vals, t_start=t0, t_end=t1)
+    es = EventSeries.from_events(ev_ts, values=ev_vals, t_start=t0, t_end=t1)
 
     # A segment series.
     k = draw(st.integers(min_value=0, max_value=3))
@@ -168,18 +168,22 @@ def test_merge_key_collision_raises():
         tf1.merge(tf2)
 
 
-def test_merge_domain_mismatch_raises():
+def test_merge_different_domains():
     tf1 = _toy_frame(t0=0.0)
     tf2 = _toy_frame(t0=2.0)
-    with pytest.raises(IncompatibleSeriesError):
-        tf1.merge(tf2)
+    merged = tf1.merge(tf2, overwrite=True)
+    assert merged.t_start == pytest.approx(0.0)
+    assert merged.t_end == pytest.approx(3.0)
+    assert set(merged.keys()) == {"audio", "rps"}
 
 
-def test_concat_requires_same_keys():
-    tf1 = _toy_frame(t0=0.0, dur=1.0)
-    tf2 = _toy_frame(t0=1.0, dur=1.0).drop(["rps"])
-    with pytest.raises(IncompatibleSeriesError):
-        tf1.concat(tf2)
+def test_with_track_expands_domain():
+    tf = _toy_frame(t0=0.0, dur=1.0)
+    late = UniformSeries.from_samples(np.zeros(5), sr=10.0, t_start=5.0)
+    extended = tf.with_track("late", late)
+    assert extended.t_start == pytest.approx(0.0)
+    assert extended.t_end == pytest.approx(5.5)
+    assert "late" in extended
 
 
 def test_slice_outside_domain_raises():
@@ -188,7 +192,69 @@ def test_slice_outside_domain_raises():
         tf.slice(-0.5, 0.5)
 
 
-def test_track_with_wrong_domain_raises():
+def test_track_domain_need_not_match_frame():
     us = UniformSeries.from_samples(np.zeros(10), sr=10.0, t_start=0.0)  # [0, 1)
-    with pytest.raises(ValueError):
-        TimeFrame(tracks={"audio": us}, t_start=0.0, t_end=2.0)
+    # Frame domain larger than track — allowed.
+    tf = TimeFrame(tracks={"audio": us}, t_start=0.0, t_end=2.0)
+    assert tf.t_start == 0.0
+    assert tf.t_end == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Shift
+# ---------------------------------------------------------------------------
+
+def test_shift():
+    tf = _toy_frame(t0=10.0)
+    shifted = tf.shift(5.0)
+    assert shifted.t_start == pytest.approx(15.0)
+    assert shifted.t_end == pytest.approx(16.0)
+    assert shifted["audio"].t_start == pytest.approx(15.0)
+    t0, v0 = shifted["rps"][0]
+    assert t0 == pytest.approx(15.1)
+    assert v0 == pytest.approx(1.0)
+
+
+def test_shift_roundtrip():
+    tf = _toy_frame(t0=3.0)
+    assert tf.shift(7.0).shift(-7.0).equal(tf)
+
+
+# ---------------------------------------------------------------------------
+# Concat with heterogeneous tracks / gaps
+# ---------------------------------------------------------------------------
+
+def test_concat_allows_different_keys():
+    tf1 = _toy_frame(t0=0.0, dur=1.0)
+    tf2 = _toy_frame(t0=1.0, dur=1.0).drop(["rps"])
+    joined = tf1.concat(tf2)
+    assert "audio" in joined
+    assert "rps" in joined
+    assert joined.t_start == pytest.approx(0.0)
+    assert joined.t_end == pytest.approx(2.0)
+
+
+def test_concat_with_gap():
+    tf1 = _toy_frame(t0=0.0, dur=1.0)
+    tf2 = _toy_frame(t0=3.0, dur=1.0)
+    joined = tf1.concat(tf2)
+    assert joined.t_start == pytest.approx(0.0)
+    assert joined.t_end == pytest.approx(2.0)
+    # Both audio tracks should be present and aligned.
+    audio = joined["audio"]
+    assert audio.t_start == pytest.approx(0.0)
+    assert audio.t_end == pytest.approx(2.0)
+
+
+def test_slice_heterogeneous_domains():
+    us = UniformSeries.from_samples(np.arange(10.0), sr=10.0, t_start=0.0)
+    es = EventSeries.from_events(
+        np.array([0.2, 0.5]), np.array([1.0, 2.0]), t_start=0.2, t_end=0.6,
+    )
+    tf = TimeFrame.from_tracks({"audio": us, "rps": es})
+    # Slice across the whole hull [0.0, 1.0).
+    sliced = tf.slice(0.0, 1.0)
+    assert "audio" in sliced
+    assert "rps" in sliced
+    assert sliced["audio"].t_start == pytest.approx(0.0)
+    assert sliced["rps"].t_start == pytest.approx(0.2)

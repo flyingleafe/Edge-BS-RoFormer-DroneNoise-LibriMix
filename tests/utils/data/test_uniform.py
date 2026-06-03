@@ -113,12 +113,35 @@ def test_concat_rejects_rate_mismatch():
         a.concat(b)
 
 
-def test_concat_rejects_seam_mismatch():
+# ---------------------------------------------------------------------------
+# Shift
+# ---------------------------------------------------------------------------
+
+def test_shift_preserves_samples():
+    us = UniformSeries.from_samples(np.arange(10.0), sr=10.0, t_start=0.0)
+    shifted = us.shift(5.0)
+    assert shifted.t_start == pytest.approx(5.0)
+    assert shifted.t_end == pytest.approx(6.0)
+    assert shifted.t_first_edge == pytest.approx(5.0)
+    assert np.array_equal(shifted.samples, us.samples)
+
+
+def test_shift_roundtrip():
+    us = UniformSeries.from_samples(np.arange(10.0), sr=10.0, t_start=3.0)
+    assert us.shift(7.0).shift(-7.0).equal(us)
+
+
+# ---------------------------------------------------------------------------
+# Concat with auto-shift (gap allowed)
+# ---------------------------------------------------------------------------
+
+def test_concat_across_gap():
     a = UniformSeries.from_samples(np.arange(10.0), sr=10.0, t_start=0.0)
-    b = UniformSeries.from_samples(np.arange(10.0), sr=10.0, t_start=2.0)  # seam should be 1.0
-    from utils.data import IncompatibleSeriesError
-    with pytest.raises(IncompatibleSeriesError):
-        a.concat(b)
+    b = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=2.0)
+    joined = a.concat(b)
+    assert joined.t_start == pytest.approx(0.0)
+    assert joined.t_end == pytest.approx(1.5)
+    assert joined.n_samples == 15
 
 
 # ---------------------------------------------------------------------------

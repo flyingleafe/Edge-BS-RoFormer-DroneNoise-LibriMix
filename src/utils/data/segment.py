@@ -14,7 +14,7 @@ collision is negligible in practice but users may pass explicit ids.
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -160,6 +160,18 @@ class SegmentSeries(TimeSeries):
             t_start=float(t_a), t_end=float(t_b),
         )
 
+    # ------------------------------------------------------------------ shift
+    def shift(self, t_delta: float) -> "SegmentSeries":
+        if t_delta == 0.0:
+            return self
+        return replace(
+            self,
+            t_start=self.t_start + t_delta,
+            t_end=self.t_end + t_delta,
+            starts=self.starts + t_delta,
+            ends=self.ends + t_delta,
+        )
+
     # ------------------------------------------------------------------ concat
     def concat(
         self, other: "SegmentSeries",
@@ -167,12 +179,13 @@ class SegmentSeries(TimeSeries):
     ) -> "SegmentSeries":
         if not isinstance(other, SegmentSeries):
             raise IncompatibleSeriesError(f"cannot concat SegmentSeries with {type(other).__name__}")
-        if not tclose(self.t_end, other.t_start, atol=atol, rtol=rtol):
-            raise IncompatibleSeriesError(
-                f"seam mismatch: self.t_end={self.t_end} other.t_start={other.t_start}"
-            )
         if (self.values is None) != (other.values is None):
             raise IncompatibleSeriesError("one has values, the other does not")
+
+        # Auto-shift other so its timeline aligns with self.t_end.
+        delta = self.t_end - other.t_start
+        other = other.shift(delta)
+
         seam = self.t_end
         seam_atol = max(atol, t_atol_at(seam))
 

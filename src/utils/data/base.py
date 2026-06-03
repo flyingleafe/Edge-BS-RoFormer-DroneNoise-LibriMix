@@ -4,7 +4,9 @@ Every track in a `TimeFrame` is a `TimeSeries`: a value with a declared
 half-open time domain `[t_start, t_end)` (in seconds), supporting
 
 * `slice(t_a, t_b)` — restrict the declared domain
-* `concat(other)`   — glue along time at a shared seam
+* `concat(other)`   — glue along time at a shared seam (auto-shifts `other`)
+* `shift(t_delta)`  — change all time anchors by `t_delta` (cheap, O(1) for
+  series that store relative timestamps)
 
 The single invariant we promise (and test) is:
 
@@ -44,10 +46,18 @@ class TimeSeries(ABC):
 
     @abstractmethod
     def concat(self, other: "TimeSeries") -> "TimeSeries":
-        """Glue along time. Requires `self.t_end ≈ other.t_start`.
+        """Glue along time. `other` is automatically shifted so that its
+        `t_start` aligns with `self.t_end`; no exact seam match is required.
 
         Subclasses must also reject incompatible parameters (sample rate,
         value dtype/shape, etc.).
+        """
+
+    @abstractmethod
+    def shift(self, t_delta: float) -> "TimeSeries":
+        """Return a new series whose entire timeline is moved by `t_delta`.
+
+        Must be cheap (ideally O(1)) where possible.
         """
 
     @abstractmethod

@@ -84,8 +84,38 @@ def test_unrelated_segments_meeting_at_seam_are_not_merged():
     assert list(joined.ends) == [0.5, 0.8]
 
 
-def test_concat_rejects_seam_mismatch():
+# ---------------------------------------------------------------------------
+# Shift
+# ---------------------------------------------------------------------------
+
+def test_shift():
+    ss = SegmentSeries.from_segments(
+        np.array([0.2, 0.5]), np.array([0.5, 0.8]),
+        t_start=0.0, t_end=1.0,
+    )
+    shifted = ss.shift(10.0)
+    assert shifted.t_start == pytest.approx(10.0)
+    assert shifted.t_end == pytest.approx(11.0)
+    assert list(shifted.starts) == pytest.approx([10.2, 10.5])
+    assert list(shifted.ends) == pytest.approx([10.5, 10.8])
+
+
+def test_shift_roundtrip():
+    ss = SegmentSeries.from_segments(
+        np.array([0.2]), np.array([0.5]), t_start=0.0, t_end=1.0,
+    )
+    assert ss.shift(5.0).shift(-5.0).equal(ss)
+
+
+# ---------------------------------------------------------------------------
+# Concat with auto-shift (gap allowed)
+# ---------------------------------------------------------------------------
+
+def test_concat_across_gap():
     a = SegmentSeries.from_segments(np.array([0.0]), np.array([0.3]), t_start=0.0, t_end=1.0)
     b = SegmentSeries.from_segments(np.array([2.0]), np.array([2.3]), t_start=2.0, t_end=3.0)
-    with pytest.raises(IncompatibleSeriesError):
-        a.concat(b)
+    joined = a.concat(b)
+    assert joined.t_start == pytest.approx(0.0)
+    assert joined.t_end == pytest.approx(2.0)
+    assert list(joined.starts) == pytest.approx([0.0, 1.0])
+    assert list(joined.ends) == pytest.approx([0.3, 1.3])

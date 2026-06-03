@@ -159,6 +159,17 @@ class UniformSeries(TimeSeries):
             t_end=float(t_b),
         )
 
+    # ------------------------------------------------------------------ shift
+    def shift(self, t_delta: float) -> "UniformSeries":
+        if t_delta == 0.0:
+            return self
+        return replace(
+            self,
+            t_first_edge=self.t_first_edge + t_delta,
+            t_start=self.t_start + t_delta,
+            t_end=self.t_end + t_delta,
+        )
+
     # ------------------------------------------------------------------ concat
     def concat(
         self, other: "UniformSeries",
@@ -168,14 +179,14 @@ class UniformSeries(TimeSeries):
             raise IncompatibleSeriesError(f"cannot concat UniformSeries with {type(other).__name__}")
         if not tclose(self.sr, other.sr, atol=0.0, rtol=1e-12):
             raise IncompatibleSeriesError(f"sample rates differ: {self.sr} vs {other.sr}")
-        if not tclose(self.t_end, other.t_start, atol=atol, rtol=rtol):
-            raise IncompatibleSeriesError(
-                f"seam mismatch: self.t_end={self.t_end} other.t_start={other.t_start}"
-            )
         if self.samples.shape[1:] != other.samples.shape[1:]:
             raise IncompatibleSeriesError(
                 f"channel shapes differ: {self.samples.shape[1:]} vs {other.samples.shape[1:]}"
             )
+
+        # Auto-shift other so its t_start aligns with self.t_end.
+        delta = self.t_end - other.t_start
+        other = other.shift(delta)
 
         sr = self.sr
         # Compute grid offset in *sample-index space* to avoid catastrophic

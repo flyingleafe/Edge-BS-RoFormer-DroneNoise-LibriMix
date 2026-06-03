@@ -1,20 +1,19 @@
-"""`TimeFrame` — column-keyed container of aligned time series.
+"""`TimeFrame` — column-keyed container of time series.
 
-A `TimeFrame` holds a dict of named `TimeSeries` tracks all sharing the same
-declared half-open interval `[t_start, t_end)`. It is dict-like across tracks
-and time-sliceable as a whole.
+A `TimeFrame` holds a dict of named `TimeSeries` tracks. Tracks may have
+independent time domains; the frame's own declared domain is the **hull**
+(min `t_start`, max `t_end`) of its contents, or an explicitly provided
+superset.
 
 Operations
 ~~~~~~~~~~
 * Column-wise (DataFrame side):  `tf[key]`, `tf.drop(...)`, `tf.select(...)`,
   `tf.merge(other)`.
 * Time-wise (array side):  `tf.slice(t_a, t_b)`, `tf.concat(other)`,
-  `tf + other`.
+  `tf + other`, `tf.shift(t_delta)`.
 
 Invariants
 ~~~~~~~~~~
-* Every track satisfies `track.t_start == tf.t_start` and
-  `track.t_end == tf.t_end` (within tolerance).
 * `tf.slice(a, b).concat(tf.slice(b, c)) == tf.slice(a, c)`.
 """
 from __future__ import annotations
@@ -28,7 +27,7 @@ from .base import DomainError, IncompatibleSeriesError, TimeSeries
 
 @dataclass(frozen=True, eq=False)
 class TimeFrame:
-    """Dict-like container of aligned `TimeSeries`."""
+    """Dict-like container of `TimeSeries` tracks with heterogeneous domains."""
 
     tracks: dict[str, TimeSeries] = field(default_factory=dict)
     t_start: float = 0.0
@@ -37,18 +36,20 @@ class TimeFrame:
     def __post_init__(self) -> None:
         if self.t_end < self.t_start:
             raise ValueError(f"t_end ({self.t_end}) < t_start ({self.t_start})")
-        lo_atol = t_atol_at(self.t_start)
-        hi_atol = t_atol_at(self.t_end)
         for name, track in self.tracks.items():
             if not isinstance(track, TimeSeries):
                 raise TypeError(f"track {name!r} is not a TimeSeries")
-            if not (
-                tclose(track.t_start, self.t_start, atol=lo_atol)
-                and tclose(track.t_end, self.t_end, atol=hi_atol)
-            ):
+        # Frame domain must cover the hull of all tracks.
+        if self.tracks:
+            hull_start = min(tr.t_start for tr in self.tracks.values())
+            hull_end = max(tr.t_end for tr in self.tracks.values())
+            if self.t_start > hull_start + t_atol_at(hull_start):
                 raise ValueError(
-                    f"track {name!r} domain [{track.t_start}, {track.t_end}) "
-                    f"!= frame domain [{self.t_start}, {self.t_end})"
+                    f"frame t_start ({self.t_start}) is after hull start ({hull_start})"
+                )
+            if self.t_end < hull_end - t_atol_at(hull_end):
+                raise ValueError(
+                    f"frame t_end ({self.t_end}) is before hull end ({hull_end})"
                 )
 
     @classmethod
@@ -58,16 +59,14 @@ class TimeFrame:
         t_start: float | None = None,
         t_end: float | None = None,
     ) -> "TimeFrame":
-        """Build a frame, inferring the domain from the tracks if not given.
-
-        When inferring, every track must agree on `(t_start, t_end)`.
-        """
+        """Build a frame, inferring the hull domain from the tracks if not given."""
         if t_start is None or t_end is None:
             if not tracks:
                 raise ValueError("cannot infer domain from empty tracks dict")
-            ref = next(iter(tracks.values()))
-            t_start = ref.t_start if t_start is None else t_start
-            t_end = ref.t_end if t_end is None else t_end
+            hull_start = min(tr.t_start for tr in tracks.values())
+            hull_end = max(tr.t_end for tr in tracks.values())
+            t_start = hull_start if t_start is None else t_start
+            t_end = hull_end if t_end is None else t_end
         return cls(tracks=dict(tracks), t_start=float(t_start), t_end=float(t_end))
 
     # ------------------------------------------------------------------ dict-like
@@ -109,34 +108,39 @@ class TimeFrame:
         return replace(self, tracks={k: v for k, v in self.tracks.items() if k not in keys})
 
     def with_track(self, name: str, track: TimeSeries) -> "TimeFrame":
-        """Return a new frame with `name` mapped to `track` (must share domain)."""
-        if not (
-            tclose(track.t_start, self.t_start, atol=t_atol_at(self.t_start))
-            and tclose(track.t_end, self.t_end, atol=t_atol_at(self.t_end))
-        ):
-            raise ValueError(
-                f"track domain [{track.t_start}, {track.t_end}) != frame domain "
-                f"[{self.t_start}, {self.t_end})"
-            )
-        return replace(self, tracks={**self.tracks, name: track})
+        """Return a new frame with `name` mapped to `track`, expanding the hull domain."""
+        new_t_start = min(self.t_start, track.t_start)
+        new_t_end = max(self.t_end, track.t_end)
+        return replace(
+            self,
+            tracks={**self.tracks, name: track},
+            t_start=new_t_start,
+            t_end=new_t_end,
+        )
 
     def merge(self, other: "TimeFrame", overwrite: bool = False) -> "TimeFrame":
-        """Column-wise union of two frames sharing the same time domain."""
-        if not (
-            tclose(self.t_start, other.t_start, atol=t_atol_at(self.t_start))
-            and tclose(self.t_end, other.t_end, atol=t_atol_at(self.t_end))
-        ):
-            raise IncompatibleSeriesError(
-                f"domain mismatch: [{self.t_start}, {self.t_end}) "
-                f"vs [{other.t_start}, {other.t_end})"
-            )
+        """Column-wise union of two frames. Domains may differ; result hull is used."""
         if not overwrite:
             collisions = set(self.tracks) & set(other.tracks)
             if collisions:
                 raise ValueError(f"key collisions: {sorted(collisions)} (pass overwrite=True)")
-        return replace(self, tracks={**self.tracks, **other.tracks})
+        new_tracks = {**self.tracks, **other.tracks}
+        new_t_start = min(self.t_start, other.t_start)
+        new_t_end = max(self.t_end, other.t_end)
+        return TimeFrame(tracks=new_tracks, t_start=new_t_start, t_end=new_t_end)
 
     # ------------------------------------------------------------------ time ops
+    def shift(self, t_delta: float) -> "TimeFrame":
+        if t_delta == 0.0:
+            return self
+        new_tracks = {name: tr.shift(t_delta) for name, tr in self.tracks.items()}
+        return replace(
+            self,
+            tracks=new_tracks,
+            t_start=self.t_start + t_delta,
+            t_end=self.t_end + t_delta,
+        )
+
     def slice(self, t_a: float, t_b: float) -> "TimeFrame":
         lo_atol = t_atol_at(self.t_start)
         hi_atol = t_atol_at(self.t_end)
@@ -147,26 +151,35 @@ class TimeFrame:
             )
         t_a = max(t_a, self.t_start)
         t_b = min(t_b, self.t_end)
-        new_tracks = {name: tr.slice(t_a, t_b) for name, tr in self.tracks.items()}
+        new_tracks: dict[str, TimeSeries] = {}
+        for name, tr in self.tracks.items():
+            a_eff = max(t_a, tr.t_start)
+            b_eff = min(t_b, tr.t_end)
+            seam_atol = t_atol_at(max(abs(a_eff), abs(b_eff)))
+            # Include tracks that overlap or just touch the slice interval.
+            if a_eff <= b_eff + seam_atol:
+                new_tracks[name] = tr.slice(a_eff, b_eff)
         return TimeFrame(tracks=new_tracks, t_start=float(t_a), t_end=float(t_b))
 
     def concat(
         self, other: "TimeFrame",
         atol: float = DEFAULT_ATOL, rtol: float = DEFAULT_RTOL,
     ) -> "TimeFrame":
-        if not tclose(self.t_end, other.t_start, atol=atol, rtol=rtol):
-            raise IncompatibleSeriesError(
-                f"seam mismatch: self.t_end={self.t_end} other.t_start={other.t_start}"
-            )
-        if set(self.tracks) != set(other.tracks):
-            raise IncompatibleSeriesError(
-                f"track sets differ: {sorted(set(self.tracks) ^ set(other.tracks))}"
-            )
-        new_tracks = {
-            name: self.tracks[name].concat(other.tracks[name])
-            for name in self.tracks
-        }
-        return TimeFrame(tracks=new_tracks, t_start=self.t_start, t_end=other.t_end)
+        """Glue along time. Track sets may differ; missing tracks are carried over.
+        `other` is shifted so that its domain aligns with `self.t_end`.
+        """
+        delta = self.t_end - other.t_start
+        union_keys = set(self.tracks) | set(other.tracks)
+        new_tracks: dict[str, TimeSeries] = {}
+        for name in union_keys:
+            if name in self.tracks and name in other.tracks:
+                new_tracks[name] = self.tracks[name].concat(other.tracks[name].shift(delta))
+            elif name in self.tracks:
+                new_tracks[name] = self.tracks[name]
+            else:
+                new_tracks[name] = other.tracks[name].shift(delta)
+        new_t_end = self.t_end + other.duration
+        return TimeFrame(tracks=new_tracks, t_start=self.t_start, t_end=new_t_end)
 
     def __add__(self, other: "TimeFrame") -> "TimeFrame":
         return self.concat(other)

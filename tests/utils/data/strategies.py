@@ -80,7 +80,8 @@ def event_series(draw, max_m: int = 32) -> EventSeries:
         ),
         dtype=np.float64,
     )
-    return EventSeries(timestamps=ts, values=vals, t_start=t_start, t_end=t_end)
+    # from_events normalises absolute timestamps to relative storage.
+    return EventSeries.from_events(ts, values=vals, t_start=t_start, t_end=t_end)
 
 
 @st.composite

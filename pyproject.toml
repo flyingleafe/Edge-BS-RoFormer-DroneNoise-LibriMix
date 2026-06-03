@@ -70,4 +70,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/postdoc", "src/utils"]
+packages = ["src/postdoc", "src/utils", "data_processing"]
