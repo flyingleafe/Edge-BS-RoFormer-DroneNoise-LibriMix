@@ -58,7 +58,8 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 | `models/` | Model implementations | Model type keys, RPS conditioning, adding new models |
 | `configs/` | YAML config files for model variants | Naming conventions, config structure |
 | `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
-| `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py`, plus the `utils.data` time-series algebra (audio + telemetry) | See `src/utils/AGENTS.md` and `src/utils/data/AGENTS.md` |
+| `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py` | See `src/utils/AGENTS.md` for layout |
+| `src/utils/data/` | **Fixed‑point time‑series algebra** for audio, telemetry, and any aligned data. Use this for manipulating audio with co‑recorded signals (RPS, IMU, VAD). Four frozen container types with a uniform `slice`/`concat`/`shift` algebra, exact int64‑tick storage. | **Always read `src/utils/data/AGENTS.md` before any task touching audio, media, or timeseries data.** Full API reference at [`src/utils/data/API.md`](src/utils/data/API.md). |
 | `experiments/` | Experiment YAML definitions | Format, creating new experiments |
 | `data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM creation scripts |
 | `notebooks/` | Jupyter notebooks for analysis | Result analysis, data exploration |

@@ -3,12 +3,19 @@
 A `SegmentSeries` stores segments `[t_begin, t_end)` with optional payloads.
 Segments are sorted by `t_begin` and may overlap each other arbitrarily.
 
+Storage model
+-------------
+Following the library-wide invariant, `starts` and `ends` are stored as int64
+tick counts **relative to `t_start_ticks`**.  Absolute interval bounds are
+available via `abs_starts` / `abs_ends` (float seconds) or `abs_starts_ticks` /
+`abs_ends_ticks` (int64 ticks).  `__getitem__` returns absolute float seconds.
+
 Slicing at a point `t_cut` *splits* any straddling segment into two halves
-that share an identity tag (`ids`). Concat at a matching seam re-merges
+that share an identity tag (`ids`).  Concat at a matching seam re-merges
 segments whose `ids` agree.
 
 The identity tag is the algebraic marker that lets `slice(a,b) ⊕ slice(b,c)
-== slice(a,c)` hold exactly. Auto-generated ids are 62-bit random integers;
+== slice(a,c)` hold exactly.  Auto-generated ids are 62-bit random integers;
 collision is negligible in practice but users may pass explicit ids.
 """
 from __future__ import annotations
@@ -19,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from ._floats import DEFAULT_ATOL, DEFAULT_RTOL, t_atol_at, tclose
+from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_array_to_ticks, secs_to_ticks, ticks_to_secs
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
 
 
@@ -36,42 +43,44 @@ class SegmentSeries(TimeSeries):
 
     Parameters
     ----------
-    starts, ends : np.ndarray, shape (M,)
-        `starts[i] < ends[i]` for all i. Sorted by `starts`.
+    starts, ends : np.ndarray, shape (M,), dtype int64
+        Interval bounds **relative to `t_start_ticks`** (int64 ticks).
+        `starts[i] < ends[i]`, sorted by `starts`.
     values : np.ndarray | None
-        Shape `(M, ...)` payload (e.g. labels). Optional.
+        Shape ``(M, …)`` payload (e.g. labels).  Optional.
     ids : np.ndarray, shape (M,), dtype int64
-        Identity tags. Segments with identical ids are treated as the same
+        Identity tags.  Segments with identical ids are treated as the same
         underlying segment when concatenating at a seam.
-    t_start, t_end : float
-        Declared domain. All segments must lie inside.
+    t_start_ticks : int
+        Absolute domain-start anchor (int64 ticks).
+    dur_ticks : int
+        Declared domain duration (int64 ticks).
     """
 
     starts: np.ndarray = field(repr=False)
     ends: np.ndarray = field(repr=False)
     values: np.ndarray | None = field(repr=False, default=None)
     ids: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]
-    t_start: float = 0.0
-    t_end: float = 0.0
+    t_start_ticks: int = 0
+    dur_ticks: int = 0
 
     def __post_init__(self) -> None:
-        s = np.asarray(self.starts, dtype=np.float64)
-        e = np.asarray(self.ends, dtype=np.float64)
-        object.__setattr__(self, "starts", s)
-        object.__setattr__(self, "ends", e)
+        s = np.asarray(self.starts, dtype=np.int64)
+        e = np.asarray(self.ends, dtype=np.int64)
         if s.shape != e.shape or s.ndim != 1:
             raise ValueError("starts and ends must be 1-D and same shape")
-        if not np.all(e > s):
+        if s.size and not np.all(e > s):
             raise ValueError("each segment must have end > start")
         if s.size and not np.all(np.diff(s) >= 0):
-            # Sort if needed (silent fix-up is friendlier than raising).
             order = np.argsort(s, kind="stable")
-            object.__setattr__(self, "starts", s[order])
-            object.__setattr__(self, "ends", e[order])
+            s = s[order]
+            e = e[order]
             if self.values is not None:
                 object.__setattr__(self, "values", np.asarray(self.values)[order])
             if self.ids is not None:
                 object.__setattr__(self, "ids", np.asarray(self.ids)[order])
+        object.__setattr__(self, "starts", s)
+        object.__setattr__(self, "ends", e)
         if self.ids is None:
             object.__setattr__(self, "ids", _new_ids(s.shape[0]))
         else:
@@ -84,16 +93,17 @@ class SegmentSeries(TimeSeries):
             if v.shape[0] != s.shape[0]:
                 raise ValueError("values.shape[0] must equal M")
             object.__setattr__(self, "values", v)
-        if self.t_end < self.t_start:
-            raise ValueError(f"t_end ({self.t_end}) < t_start ({self.t_start})")
+        if self.dur_ticks < 0:
+            raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
         if s.size:
-            lo_atol = t_atol_at(self.t_start)
-            hi_atol = t_atol_at(self.t_end)
-            if s[0] < self.t_start - lo_atol:
-                raise ValueError(f"segment starts before t_start ({s[0]} < {self.t_start})")
-            if e.max() > self.t_end + hi_atol:
-                raise ValueError(f"segment ends after t_end ({e.max()} > {self.t_end})")
+            if s[0] < 0:
+                raise ValueError("segment starts before t_start (relative < 0)")
+            if e.max() > self.dur_ticks:
+                raise ValueError(
+                    f"segment ends after t_end (relative {e.max()} > dur {self.dur_ticks})"
+                )
 
+    # ---- constructors ---------------------------------------------------
     @classmethod
     def from_segments(
         cls,
@@ -101,55 +111,116 @@ class SegmentSeries(TimeSeries):
         ends: np.ndarray,
         values: np.ndarray | None = None,
         ids: np.ndarray | None = None,
-        t_start: float | None = None,
-        t_end: float | None = None,
+        *,
+        t_start: float | int | None = None,
+        t_end: float | int | None = None,
     ) -> "SegmentSeries":
-        s = np.asarray(starts, dtype=np.float64)
-        e = np.asarray(ends, dtype=np.float64)
+        """Build from absolute times (float seconds or int ticks)."""
+        s = np.asarray(starts)
+        e = np.asarray(ends)
+        if np.issubdtype(s.dtype, np.floating):
+            s_ticks = secs_array_to_ticks(s)
+        else:
+            s_ticks = s.astype(np.int64)
+        if np.issubdtype(e.dtype, np.floating):
+            e_ticks = secs_array_to_ticks(e)
+        else:
+            e_ticks = e.astype(np.int64)
         if t_start is None:
-            t_start = float(s.min()) if s.size else 0.0
+            t0 = int(s_ticks.min()) if s_ticks.size else 0
+        elif isinstance(t_start, (int, np.integer)):
+            t0 = int(t_start)
+        else:
+            t0 = secs_to_ticks(float(t_start))
+        rel_s = s_ticks - t0
+        rel_e = e_ticks - t0
         if t_end is None:
-            t_end = float(e.max()) if e.size else float(t_start)
+            dur = int(rel_e.max()) if rel_e.size else 0
+        elif isinstance(t_end, (int, np.integer)):
+            dur = int(t_end) - t0
+        else:
+            dur = secs_to_ticks(float(t_end)) - t0
         return cls(
-            starts=s, ends=e, values=values, ids=ids,
-            t_start=float(t_start), t_end=float(t_end),
+            starts=rel_s, ends=rel_e, values=values, ids=ids,
+            t_start_ticks=t0, dur_ticks=dur,
         )
 
-    # ------------------------------------------------------------------ shape
+    @classmethod
+    def from_ticks(
+        cls,
+        starts: np.ndarray,
+        ends: np.ndarray,
+        values: np.ndarray | None = None,
+        ids: np.ndarray | None = None,
+        *,
+        t_start: int = 0,
+        dur: int,
+    ) -> "SegmentSeries":
+        """Build from relative int64 ticks."""
+        rs = np.asarray(starts, dtype=np.int64)
+        re = np.asarray(ends, dtype=np.int64)
+        return cls(
+            starts=rs, ends=re, values=values, ids=ids,
+            t_start_ticks=int(t_start), dur_ticks=int(dur),
+        )
+
+    # ---- domain properties (seconds) ------------------------------------
+    @property
+    def t_start(self) -> float:
+        return ticks_to_secs(self.t_start_ticks)
+
+    @property
+    def t_end(self) -> float:
+        return ticks_to_secs(self.t_start_ticks + self.dur_ticks)
+
+    @property
+    def t_end_ticks(self) -> int:
+        return self.t_start_ticks + self.dur_ticks
+
+    # ---- array accessors ------------------------------------------------
+    @property
+    def abs_starts(self) -> np.ndarray:
+        return (self.starts + self.t_start_ticks).astype(np.float64) / TICKS_PER_SECOND
+
+    @property
+    def abs_ends(self) -> np.ndarray:
+        return (self.ends + self.t_start_ticks).astype(np.float64) / TICKS_PER_SECOND
+
+    @property
+    def abs_starts_ticks(self) -> np.ndarray:
+        return self.starts + self.t_start_ticks
+
+    @property
+    def abs_ends_ticks(self) -> np.ndarray:
+        return self.ends + self.t_start_ticks
+
+    # ---- shape ----------------------------------------------------------
     def __len__(self) -> int:
         return int(self.starts.shape[0])
 
     def __getitem__(self, i: Any):
+        s = ticks_to_secs(int(self.starts[i]) + self.t_start_ticks)
+        e = ticks_to_secs(int(self.ends[i]) + self.t_start_ticks)
         if self.values is None:
-            return float(self.starts[i]), float(self.ends[i]), int(self.ids[i])
-        return (
-            float(self.starts[i]), float(self.ends[i]),
-            self.values[i], int(self.ids[i]),
-        )
+            return s, e, int(self.ids[i])
+        return s, e, self.values[i], int(self.ids[i])
 
-    # ------------------------------------------------------------------ slice
-    def slice(self, t_a: float, t_b: float) -> "SegmentSeries":
-        lo_atol = t_atol_at(self.t_start)
-        hi_atol = t_atol_at(self.t_end)
-        ab_atol = t_atol_at(max(abs(t_a), abs(t_b)))
-        if t_a < self.t_start - lo_atol or t_b > self.t_end + hi_atol or t_a > t_b + ab_atol:
+    # ---- slice ----------------------------------------------------------
+    def slice(self, t_a: float | int, t_b: float | int) -> "SegmentSeries":
+        a_tick = _c_to_ticks(t_a) if not isinstance(t_a, int) else t_a
+        b_tick = _c_to_ticks(t_b) if not isinstance(t_b, int) else t_b
+        t0 = self.t_start_ticks
+        dur = self.dur_ticks
+        if a_tick < t0 or b_tick > t0 + dur or a_tick > b_tick:
             raise DomainError(
-                f"slice({t_a}, {t_b}) outside [{self.t_start}, {self.t_end}]"
+                f"slice({a_tick}, {b_tick}) outside [{t0}, {t0 + dur}] (ticks)"
             )
-        # Slicing exactly at a domain boundary uses atol slack (mirrors
-        # __post_init__). Interior cuts remain strict.
-        at_left = t_a == self.t_start
-        at_right = t_b == self.t_end
-        s, e = self.starts, self.ends
-        # Keep segments whose intervals intersect [t_a, t_b).
-        keep = (e > t_a) & (s < t_b)
-        clip_lo = self.t_start - lo_atol if at_left else t_a
-        clip_hi = self.t_end + hi_atol if at_right else t_b
-        ns = np.clip(s[keep], clip_lo, None)
-        ne = np.clip(e[keep], None, clip_hi)
-        # Drop degenerate (zero-width) after clipping — but this shouldn't happen
-        # given `end > start` and the intersection mask, except at exact-boundary
-        # contact which is excluded by the strict inequalities above.
+        ra = a_tick - t0
+        rb = b_tick - t0
+        s, e = self.starts, self.ends  # relative int64
+        keep = (e > ra) & (s < rb)
+        ns = np.clip(s[keep], ra, None) - ra
+        ne = np.clip(e[keep], None, rb) - ra
         nonzero = ne > ns
         ns = ns[nonzero]
         ne = ne[nonzero]
@@ -157,64 +228,56 @@ class SegmentSeries(TimeSeries):
         nids = self.ids[keep][nonzero]
         return SegmentSeries(
             starts=ns, ends=ne, values=nv, ids=nids,
-            t_start=float(t_a), t_end=float(t_b),
+            t_start_ticks=a_tick, dur_ticks=rb - ra,
         )
 
-    # ------------------------------------------------------------------ shift
-    def shift(self, t_delta: float) -> "SegmentSeries":
-        if t_delta == 0.0:
+    # ---- shift ----------------------------------------------------------
+    def shift(self, t_delta: float | int) -> "SegmentSeries":
+        dt = _c_to_ticks(t_delta) if not isinstance(t_delta, int) else t_delta
+        if dt == 0:
             return self
-        return replace(
-            self,
-            t_start=self.t_start + t_delta,
-            t_end=self.t_end + t_delta,
-            starts=self.starts + t_delta,
-            ends=self.ends + t_delta,
-        )
+        return replace(self, t_start_ticks=self.t_start_ticks + dt)
 
-    # ------------------------------------------------------------------ concat
-    def concat(
-        self, other: "SegmentSeries",
-        atol: float = DEFAULT_ATOL, rtol: float = DEFAULT_RTOL,
-    ) -> "SegmentSeries":
+    # ---- concat ---------------------------------------------------------
+    def concat(self, other: "SegmentSeries") -> "SegmentSeries":
         if not isinstance(other, SegmentSeries):
-            raise IncompatibleSeriesError(f"cannot concat SegmentSeries with {type(other).__name__}")
+            raise IncompatibleSeriesError(
+                f"cannot concat SegmentSeries with {type(other).__name__}"
+            )
         if (self.values is None) != (other.values is None):
             raise IncompatibleSeriesError("one has values, the other does not")
 
-        # Auto-shift other so its timeline aligns with self.t_end.
-        delta = self.t_end - other.t_start
-        other = other.shift(delta)
+        # other is glued so its t_start lands at self.t_end.
+        self_dur = self.dur_ticks
+        other_dur = other.dur_ticks
+        o_starts = other.starts + int(self_dur)
+        o_ends = other.ends + int(self_dur)
 
-        seam = self.t_end
-        seam_atol = max(atol, t_atol_at(seam))
-
-        # Find pairs to merge: id present in self ending at seam AND in other starting at seam.
+        # Find pairs to merge: id present in self ending at seam AND in
+        # other starting at seam.
+        seam = self_dur  # relative to self.t_start_ticks
         left_at_seam = {
             int(self.ids[i]): i
-            for i in np.where(np.isclose(self.ends, seam, atol=seam_atol, rtol=rtol))[0]
+            for i in np.where(self.ends == seam)[0]
         }
         right_at_seam = {
             int(other.ids[j]): j
-            for j in np.where(np.isclose(other.starts, seam, atol=seam_atol, rtol=rtol))[0]
+            for j in np.where(o_starts == seam)[0]
         }
         merge_ids = set(left_at_seam) & set(right_at_seam)
 
-        # Build the merged arrays.
-        # Step 1: extend left rows whose id is in merge_ids by the matching right end.
         new_left_ends = self.ends.copy()
         for mid in merge_ids:
             i = left_at_seam[mid]
             j = right_at_seam[mid]
-            new_left_ends[i] = other.ends[j]
+            new_left_ends[i] = o_ends[j]
 
-        # Step 2: drop matched rows from the right.
         right_keep = np.ones(len(other), dtype=bool)
         for mid in merge_ids:
             right_keep[right_at_seam[mid]] = False
 
-        new_starts = np.concatenate([self.starts, other.starts[right_keep]])
-        new_ends = np.concatenate([new_left_ends, other.ends[right_keep]])
+        new_starts = np.concatenate([self.starts, o_starts[right_keep]])
+        new_ends = np.concatenate([new_left_ends, o_ends[right_keep]])
         new_ids = np.concatenate([self.ids, other.ids[right_keep]])
         if self.values is None:
             new_vals = None
@@ -223,22 +286,31 @@ class SegmentSeries(TimeSeries):
 
         return SegmentSeries(
             starts=new_starts, ends=new_ends, values=new_vals, ids=new_ids,
-            t_start=self.t_start, t_end=other.t_end,
+            t_start_ticks=self.t_start_ticks, dur_ticks=self_dur + other_dur,
         )
 
+    # ---- interpolation -------------------------------------------------
+    def interpolate(
+        self, times, *, kind: str = "linear", fill: str = "clamp",
+    ) -> "np.ndarray":  # type: ignore[name-defined]
+        """Segment series have no point-wise values; raises TypeError."""
+        raise TypeError(
+            "SegmentSeries does not support interpolate; "
+            "use .contains(times) or .overlap() for interval queries"
+        )
+
+    # ---- equality -------------------------------------------------------
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, SegmentSeries):
             return False
         if not (
-            tclose(self.t_start, other.t_start, atol=t_atol_at(self.t_start))
-            and tclose(self.t_end, other.t_end, atol=t_atol_at(self.t_end))
+            self.t_start_ticks == other.t_start_ticks
+            and self.dur_ticks == other.dur_ticks
         ):
             return False
-        # Use rtol-only comparison to absorb ulp at Unix-magnitude anchors.
-        if not (
-            np.allclose(self.starts, other.starts, atol=DEFAULT_ATOL, rtol=1e-12)
-            and np.allclose(self.ends, other.ends, atol=DEFAULT_ATOL, rtol=1e-12)
-        ):
+        if not np.array_equal(self.starts, other.starts):
+            return False
+        if not np.array_equal(self.ends, other.ends):
             return False
         if not np.array_equal(self.ids, other.ids):
             return False

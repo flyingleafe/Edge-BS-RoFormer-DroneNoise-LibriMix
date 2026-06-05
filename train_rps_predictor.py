@@ -83,7 +83,15 @@ class DREGONRPSDataset(Dataset):
         # Number of STFT frames (center=True default)
         n_frames = audio.shape[0] // self.hop_length + 1
 
-        # Resample RPS to STFT time grid via linear interpolation
+        # Resample RPS to STFT time grid by *shape-stretch* (endpoint-to-endpoint).
+        # GOTCHA: this ignores real timestamps and is only correct because here
+        # audio and rps.npy are co-extensive (DREGON-LM slices both to the same
+        # span). It silently misaligns when motor/audio spans differ (e.g. the
+        # free-flight take: motor ~47s vs audio ~53s) — there, timestamp-based
+        # np.interp(stft_times, motor_times, rps) is required. The eval/plot
+        # refactor standardizes on the timestamp method (utils.data). These
+        # training targets use shape-stretch; the two agree only sub-frame on
+        # DREGON-LM. See .pi/plans/rps-eval-plot-refactor-plan.md §Alignment.
         rps = F.interpolate(
             rps.unsqueeze(0), size=n_frames, mode="linear", align_corners=False
         ).squeeze(0)  # (4, n_frames)

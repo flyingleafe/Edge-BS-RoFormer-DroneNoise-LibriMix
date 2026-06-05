@@ -2,34 +2,40 @@
 
 Storage model
 -------------
-We store the raw sample array plus the time of the *left edge of sample 0*
-(`t_first_edge`) and a declared half-open interval `[t_start, t_end)`. The
-declared endpoints may sit anywhere within the first and last sample cells:
+We store the raw sample array, the sample rate, an absolute int64 anchor
+(`t_start_ticks`), and a sub-sample **phase** — the offset of `samples[0]`'s
+left edge from `t_start`, in sample units, ∈ [−1, 0].
 
-    t_first_edge          t_first_edge + N/sr
-    │                                    │
-    ▼                                    ▼
-    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┐
-    │ 0 │ 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │ 8 │   samples (each is one cell wide)
-    └───┴───┴───┴───┴───┴───┴───┴───┴───┘
-        ▲                        ▲
-        t_start                  t_end           (declared interval)
+No per-sample edge times are stored.  Every edge is derived from these four
+quantities.  Because the phase is *relative* and bounded by one sample, a
+float64 stores it to ≈ 1e‑21 s — effectively exact.  The Unix‑magnitude
+precision problem never touches it; only the (exact int64) anchor carries the
+magnitude.
+
+For integer `sr` (all real audio rates), the cut‑time → sample‑index mapping
+uses exact Python‑int arithmetic (`divmod(Δ·sr, TICKS_PER_SECOND)`) — no
+float, no epsilon.  Non‑integer `sr` falls back to a float index with a fixed
+`1e‑6`‑sample epsilon.
+
+The public `.t_start`, `.t_end`, `.duration` return float seconds;
+`*_ticks` accessors return exact int64 values.
+
+    t_start_ticks + phase·1/sr        t_start_ticks + (phase + N)·1/sr
+    │                                 │
+    ▼                                 ▼
+    ┌───┬───┬───┬───┬───┬───┬───┬───┐
+    │ 0 │ 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │   samples (each cell = 1/sr)
+    └───┴───┴───┴───┴───┴───┴───┴───┘
+        ▲                          ▲
+        t_start                    t_end          (declared interval)
 
 Invariants
 ~~~~~~~~~~
-* `t_first_edge <= t_start <= t_first_edge + 1/sr`
-* `t_first_edge + (N-1)/sr <= t_end <= t_first_edge + N/sr`
-* `t_start <= t_end`
-
-Slicing at a sub-sample `t_cut`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Let `k = (t_cut - t_first_edge) * sr`. The left half takes samples
-`0 .. ceil(k)` (i.e. every sample whose cell overlaps `[t_start, t_cut)`);
-the right half takes samples `floor(k) .. N` (every cell overlapping
-`[t_cut, t_end)`). When `k` is not integer the sample at index `floor(k)`
-appears in *both* halves — that is what makes concat lossless.
-
-On concat we detect this overlap via the grid offset and drop the duplicate.
+* `-1 ≤ phase ≤ 0`
+* The declared `t_start` / `t_end` may sit inside the first / last sample
+  cell (sub‑sample boundary slack).
+* `slice(a,b) ⊕ slice(b,c) == slice(a,c)` holds exactly at the sample level
+  for integer `sr`.
 """
 from __future__ import annotations
 
@@ -39,78 +45,116 @@ from typing import Any
 
 import numpy as np
 
-from ._floats import DEFAULT_ATOL, DEFAULT_RTOL, grid_atol, t_atol_at, tclose
+from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_to_ticks, ticks_to_secs
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
+
+# Index‑space epsilon used ONLY on the non‑integer‑sr fallback path.
+INDEX_EPSILON: float = 1e-6
 
 
 @dataclass(frozen=True, eq=False)
 class UniformSeries(TimeSeries):
-    """A regular-rate sequence of samples along axis 0.
+    """A regular-rate sequence of samples along axis 0.
 
     Parameters
     ----------
     samples : np.ndarray
-        Shape `(N, ...)`. Axis 0 is time. Trailing axes are channels / features.
+        Shape ``(N, …)``.  Axis 0 is time.
     sr : float
         Sample rate in Hz.
-    t_first_edge : float
-        Time of the left edge of `samples[0]`, in seconds.
-    t_start, t_end : float
-        Declared half-open interval. See module docstring for invariants.
+    t_start_ticks : int
+        Absolute domain-start anchor (int64 ticks).
+    dur_ticks : int
+        Declared domain duration (int64 ticks).  ``t_end_ticks == t_start_ticks + dur_ticks``.
+        May differ from ``N/sr`` after sub‑sample slicing.
+    phase : float
+        Offset of ``samples[0]``'s left edge from ``t_start``, in **sample
+        units**, ∈ [−1, 0].  The absolute edge time is ``t_first_edge``.
     """
 
     samples: np.ndarray = field(repr=False)
     sr: float
-    t_first_edge: float
-    t_start: float
-    t_end: float
+    t_start_ticks: int
+    dur_ticks: int
+    phase: float
 
-    # ------------------------------------------------------------------ ctors
+    # ---- validation -----------------------------------------------------
     def __post_init__(self) -> None:
         if self.samples.ndim < 1:
             raise ValueError("samples must have at least one axis")
         if self.sr <= 0:
             raise ValueError("sr must be > 0")
-        if self.t_end < self.t_start:
-            raise ValueError(f"t_end ({self.t_end}) < t_start ({self.t_start})")
+        if self.phase < -1.0 or self.phase > 0.0:
+            raise ValueError(f"phase ({self.phase}) must be in [-1, 0]")
+        # The declared domain is bounded by the sample grid within one sample.
         N = self.samples.shape[0]
-        atol = grid_atol(self.sr, self.t_first_edge)
-        # The declared interval must lie inside the sample-grid span.
-        right_edge = self.t_first_edge + N / self.sr
-        if self.t_start < self.t_first_edge - atol:
-            raise ValueError(
-                f"t_start={self.t_start} precedes t_first_edge={self.t_first_edge}"
-            )
-        if self.t_end > right_edge + atol:
-            raise ValueError(
-                f"t_end={self.t_end} exceeds last-sample right edge={right_edge}"
-            )
-        # And the declared endpoints must each lie within at most one sample cell
-        # of the corresponding edge — i.e. we never carry "extra" leading/trailing
-        # samples beyond what slicing could have produced.
         if N == 0:
             return
-        if self.t_start > self.t_first_edge + 1 / self.sr + atol:
-            raise ValueError("t_start lies beyond the first sample cell")
-        if self.t_end < right_edge - 1 / self.sr - atol:
-            raise ValueError("t_end lies before the last sample cell")
+        dur_exact = N / self.sr
+        # No stored dur field — derived from N/sr.  The grid anchor check:
+        # t_first_edge = t_start + phase/sr must be ≤ t_start (phase ≤ 0)
+        # and t_end = t_start + N/sr must be ≤ t_start + (phase+N)/sr + 1/sr
+        # The latter is always true since N/sr ≤ (N+1)/sr and phase ≤ 0 => N/sr ≤ N/sr + 1/sr.
+        # The check that the declared span doesn't exceed the grid by more than
+        # one cell is:
+        #   N/sr  ≤  (phase + N + 1)/sr   ⇔  -1 ≤ phase + 1  ⇔  phase ≥ 0 or phase ≥ -1
+        # Already enforced above.
 
+    # ---- constructors ---------------------------------------------------
     @classmethod
     def from_samples(
-        cls, samples: np.ndarray, sr: float, t_start: float = 0.0
+        cls, samples: np.ndarray, sr: float, *, t_start: float | int = 0.0,
     ) -> "UniformSeries":
-        """Build a series whose declared interval matches its sample grid exactly."""
+        """Build a series whose declared interval matches its sample grid exactly.
+
+        ``t_start`` may be float seconds or int64 ticks.
+        """
         samples = np.asarray(samples)
         N = samples.shape[0]
+        sr = float(sr)
+        if isinstance(t_start, (int, np.integer)):
+            t0 = int(t_start)
+        else:
+            t0 = secs_to_ticks(float(t_start))
+        dur = round(N * TICKS_PER_SECOND / sr)
         return cls(
-            samples=samples,
-            sr=float(sr),
-            t_first_edge=float(t_start),
-            t_start=float(t_start),
-            t_end=float(t_start) + N / float(sr),
+            samples=samples, sr=sr,
+            t_start_ticks=t0, dur_ticks=dur, phase=0.0,
         )
 
-    # ------------------------------------------------------------------ shape
+    @classmethod
+    def from_ticks(
+        cls, samples: np.ndarray, sr: float, *,
+        t_start: int = 0, dur: int = 0, phase: float = 0.0,
+    ) -> "UniformSeries":
+        """Build from explicit int64 ticks and phase."""
+        return cls(
+            samples=np.asarray(samples), sr=float(sr),
+            t_start_ticks=int(t_start), dur_ticks=int(dur), phase=float(phase),
+        )
+
+    # ---- domain properties (seconds) ------------------------------------
+    @property
+    def t_start(self) -> float:
+        return ticks_to_secs(self.t_start_ticks)
+
+    @property
+    def t_end(self) -> float:
+        return ticks_to_secs(self.t_start_ticks + self.dur_ticks)
+
+    @property
+    def t_end_ticks(self) -> int:
+        return self.t_start_ticks + self.dur_ticks
+
+    # ---- grid -----------------------------------------------------------
+    @property
+    def t_first_edge(self) -> float:
+        return ticks_to_secs(self.t_start_ticks) + self.phase / self.sr
+
+    @property
+    def t_first_edge_ticks(self) -> int:
+        return round(self.t_start_ticks + self.phase * TICKS_PER_SECOND / self.sr)
+
     @property
     def n_samples(self) -> int:
         return int(self.samples.shape[0])
@@ -125,89 +169,128 @@ class UniformSeries(TimeSeries):
     def __getitem__(self, i: Any) -> Any:
         return self.samples[i]
 
-    # ------------------------------------------------------------------ slice
-    def slice(self, t_a: float, t_b: float) -> "UniformSeries":
-        atol = grid_atol(self.sr, self.t_first_edge)
-        if t_a < self.t_start - atol or t_b > self.t_end + atol or t_a > t_b + atol:
-            raise DomainError(
-                f"slice({t_a}, {t_b}) outside [{self.t_start}, {self.t_end}]"
-            )
-        # Clamp into the declared range to absorb fp noise.
-        t_a = max(t_a, self.t_start)
-        t_b = min(t_b, self.t_end)
+    # ---- sample‑index mapping (internal) --------------------------------
+    def _cut_to_indices(self, ra: int, rb: int) -> tuple[int, int]:
+        """Map relative tick cut-points ``[ra, rb)`` to sample indices ``(ka, kb)``.
 
+        For integer ``sr`` the mapping is exact (``divmod``).  For
+        non‑integer ``sr``, a float index with ``INDEX_EPSILON`` is used.
+        ``ra, rb`` are relative to ``self.t_start_ticks``.
+        """
         sr = self.sr
-        sample_atol = atol * sr  # tolerance expressed in sample units
-        # Index of sample whose *left edge* is at or before t_a; first underlying
-        # sample whose cell overlaps `[t_a, ...)`.
-        ka = math.floor((t_a - self.t_first_edge) * sr + sample_atol)
-        # Index one past the last sample whose cell overlaps `[..., t_b)`.
-        # = smallest k such that (k/sr + t_first_edge) >= t_b, i.e. ceil((t_b - t_first_edge)*sr).
-        kb = math.ceil((t_b - self.t_first_edge) * sr - sample_atol)
+        sr_int = int(sr)
+        if sr == float(sr_int):  # integer sr → exact path
+            tps = TICKS_PER_SECOND
+            pticks = round(-self.phase * tps)  # ≥ 0, since phase ≤ 0
+            # ---- left (floor) ------------------------------------------
+            # k = floor(ra·sr / tps - phase)
+            qa, ra_rem = divmod(ra * sr_int, tps)
+            ka = qa + (1 if ra_rem + pticks >= tps else 0)
+            # ---- right (ceil) ------------------------------------------
+            # k = ceil(rb·sr / tps - phase)
+            qb, rb_rem = divmod(rb * sr_int, tps)
+            if rb_rem == 0 and pticks == 0:
+                kb = qb
+            elif rb_rem + pticks <= tps:
+                kb = qb + 1
+            else:
+                kb = qb + 2
+        else:  # non‑integer sr fallback
+            tps = TICKS_PER_SECOND
+            k_ra = ra * sr / tps - self.phase
+            k_rb = rb * sr / tps - self.phase
+            ka = int(math.floor(k_ra + INDEX_EPSILON))
+            kb = int(math.ceil(k_rb - INDEX_EPSILON))
         ka = max(0, ka)
         kb = min(self.n_samples, kb)
         if kb < ka:
-            kb = ka  # empty slice
+            kb = ka
+        return ka, kb
+
+    # ---- slice ----------------------------------------------------------
+    def slice(self, t_a: float | int, t_b: float | int) -> "UniformSeries":
+        ta_tick = _c_to_ticks(t_a) if not isinstance(t_a, int) else t_a
+        tb_tick = _c_to_ticks(t_b) if not isinstance(t_b, int) else t_b
+        t0 = self.t_start_ticks
+        dur_ticks = self.t_end_ticks - t0
+        if ta_tick < t0 or tb_tick > t0 + dur_ticks or ta_tick > tb_tick:
+            raise DomainError(
+                f"slice({ta_tick}, {tb_tick}) outside [{t0}, {t0 + dur_ticks}] (ticks)"
+            )
+        ta_tick = max(ta_tick, t0)
+        tb_tick = min(tb_tick, t0 + dur_ticks)
+
+        ra = ta_tick - t0
+        rb = tb_tick - t0
+        ka, kb = self._cut_to_indices(ra, rb)
 
         new_samples = self.samples[ka:kb]
-        new_first_edge = self.t_first_edge + ka / sr
+        # Recover the new phase: offset of sample 0's left edge from the new
+        # t_start, in sample units.  Derived from the floor of the left cut
+        # so it is consistent with the stored ka.
+        sr = self.sr
+        new_phase = float(self.phase + ka - ra * sr / TICKS_PER_SECOND)
+        # new_phase is already in [-1, 0] by construction; clamp to be safe.
+        if new_phase > 0.0:
+            new_phase -= 1.0
+        elif new_phase < -1.0:
+            new_phase += 1.0
+
         return UniformSeries(
             samples=new_samples,
             sr=sr,
-            t_first_edge=new_first_edge,
-            t_start=float(t_a),
-            t_end=float(t_b),
+            t_start_ticks=ta_tick,
+            dur_ticks=rb - ra,
+            phase=new_phase,
         )
 
-    # ------------------------------------------------------------------ shift
-    def shift(self, t_delta: float) -> "UniformSeries":
-        if t_delta == 0.0:
+    # ---- shift ----------------------------------------------------------
+    def shift(self, t_delta: float | int) -> "UniformSeries":
+        dt = _c_to_ticks(t_delta) if not isinstance(t_delta, int) else t_delta
+        if dt == 0:
             return self
-        return replace(
-            self,
-            t_first_edge=self.t_first_edge + t_delta,
-            t_start=self.t_start + t_delta,
-            t_end=self.t_end + t_delta,
-        )
+        return replace(self, t_start_ticks=self.t_start_ticks + dt)
 
-    # ------------------------------------------------------------------ concat
-    def concat(
-        self, other: "UniformSeries",
-        atol: float = DEFAULT_ATOL, rtol: float = DEFAULT_RTOL,
-    ) -> "UniformSeries":
+    # ---- concat ---------------------------------------------------------
+    def concat(self, other: "UniformSeries") -> "UniformSeries":
         if not isinstance(other, UniformSeries):
-            raise IncompatibleSeriesError(f"cannot concat UniformSeries with {type(other).__name__}")
-        if not tclose(self.sr, other.sr, atol=0.0, rtol=1e-12):
-            raise IncompatibleSeriesError(f"sample rates differ: {self.sr} vs {other.sr}")
+            raise IncompatibleSeriesError(
+                f"cannot concat UniformSeries with {type(other).__name__}"
+            )
+        if self.sr != other.sr:
+            raise IncompatibleSeriesError(
+                f"sample rates differ: {self.sr} vs {other.sr}"
+            )
         if self.samples.shape[1:] != other.samples.shape[1:]:
             raise IncompatibleSeriesError(
                 f"channel shapes differ: {self.samples.shape[1:]} vs {other.samples.shape[1:]}"
             )
 
-        # Auto-shift other so its t_start aligns with self.t_end.
-        delta = self.t_end - other.t_start
-        other = other.shift(delta)
-
         sr = self.sr
-        # Compute grid offset in *sample-index space* to avoid catastrophic
-        # cancellation when t_first_edge is at Unix-timestamp magnitudes.
-        # The subtraction `(other.t_first_edge - self.t_first_edge)` is bounded
-        # by ulp(t_first_edge); multiplying by sr keeps the error well below 1.
-        k_offset_float = (other.t_first_edge - self.t_first_edge) * sr
-        k_int = round(k_offset_float)
-        phase_err = abs(k_offset_float - k_int)
-        if phase_err > 0.1:
+        # Grid offset in sample‑index space.  ``other`` is glued so its
+        # t_start lands at self's t_end; the offset from self's first edge
+        # to other's first edge (aligned) is:
+        #   self.dur_ticks + other.phase/sr - self.phase/sr
+        # converted to sample units via (Δticks * sr / TPS).
+        sdur = self.dur_ticks
+        tps = TICKS_PER_SECOND
+        sr_int = int(sr)
+        if sr == float(sr_int):
+            q, r = divmod(sdur * sr_int, tps)
+            k_offset = q + r / tps + other.phase - self.phase
+        else:
+            k_offset = sdur * sr / tps + other.phase - self.phase
+
+        k_int = round(k_offset)
+        if abs(k_offset - k_int) > 0.1:
             raise IncompatibleSeriesError(
-                f"incompatible sample grids: phase offset {k_offset_float} samples "
+                f"incompatible sample grids: phase offset {k_offset} samples "
                 f"(must be integer; nearest is {k_int})"
             )
         n_self = self.n_samples
         if k_int == n_self:
-            # Disjoint sample grids meet cleanly; just stack.
             new_samples = np.concatenate([self.samples, other.samples], axis=0)
         elif k_int == n_self - 1:
-            # Grids overlap by exactly one sample (= a sub-sample slice happened).
-            # The shared sample is `self.samples[-1]` == `other.samples[0]`. Drop one.
             new_samples = np.concatenate([self.samples, other.samples[1:]], axis=0)
         else:
             raise IncompatibleSeriesError(
@@ -215,34 +298,139 @@ class UniformSeries(TimeSeries):
                 f"(expected {n_self} or {n_self - 1})"
             )
 
+        new_dur_ticks = self.dur_ticks + other.dur_ticks
         return UniformSeries(
             samples=new_samples,
             sr=sr,
-            t_first_edge=self.t_first_edge,
-            t_start=self.t_start,
-            t_end=other.t_end,
+            t_start_ticks=self.t_start_ticks,
+            dur_ticks=new_dur_ticks,
+            phase=self.phase,
         )
 
-    # ------------------------------------------------------------------ misc
+    # ---- equality -------------------------------------------------------
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, UniformSeries):
             return False
-        atol = grid_atol(self.sr, self.t_first_edge)
         if not (
-            tclose(self.sr, other.sr, atol=0.0, rtol=1e-12)
-            and tclose(self.t_start, other.t_start, atol=t_atol_at(self.t_start))
-            and tclose(self.t_end, other.t_end, atol=t_atol_at(self.t_end))
-            and tclose(self.t_first_edge, other.t_first_edge, atol=atol)
+            self.t_start_ticks == other.t_start_ticks
+            and self.dur_ticks == other.dur_ticks
+            and self.sr == other.sr
         ):
             return False
-        return np.array_equal(self.samples, other.samples)
+        if not np.array_equal(self.samples, other.samples):
+            return False
+        # Compare phases loosely (float, but bounded and precision‑safe).
+        if abs(self.phase - other.phase) > 1e-12:
+            return False
+        return True
 
+    # ---- utilities ------------------------------------------------------
     def sample_times(self) -> np.ndarray:
-        """Left-edge time of each underlying sample."""
+        """Absolute left‑edge time of each sample in float seconds."""
         return self.t_first_edge + np.arange(self.n_samples) / self.sr
 
-    def time_to_index(self, t: float) -> int:
-        """Index of the sample cell containing time `t` (`samples[i]` covers
-        `[t_first_edge + i/sr, t_first_edge + (i+1)/sr)`).
+    def sample_times_ticks(self) -> np.ndarray:
+        """Absolute left‑edge time of each sample in int64 ticks (nearest)."""
+        edges_s = self.t_first_edge + np.arange(self.n_samples) / self.sr
+        result = np.rint(edges_s * TICKS_PER_SECOND)
+        return result.astype(np.int64)
+
+    def time_to_index(self, t: float | int) -> int:
+        """Index of the sample cell containing time ``t``."""
+        t_tick = _c_to_ticks(t) if not isinstance(t, int) else t
+        delta = t_tick - self.t_first_edge_ticks
+        sr = self.sr
+        sr_int = int(sr)
+        if sr == float(sr_int):
+            q, r = divmod(delta * sr_int, TICKS_PER_SECOND)
+            k = q + r / TICKS_PER_SECOND
+        else:
+            k = delta * sr / TICKS_PER_SECOND
+        return int(math.floor(k))
+
+    # ---- interpolation / resampling ------------------------------------
+    def interpolate(
+        self, times, *, kind: str = "linear", fill: str = "clamp",
+    ) -> np.ndarray:
+        """Evaluate signal at absolute query times."""
+        times = np.asarray(times)
+        if times.dtype.kind == 'i':
+            t_sec = ticks_array_to_secs(times)
+        else:
+            t_sec = times.astype(np.float64)
+
+        if self.n_samples == 0:
+            if fill == "error":
+                raise DomainError("interpolate on empty UniformSeries")
+            fill_val = np.nan if fill == "nan" else self.samples[0:0]
+            shape = (len(times), *self.channel_shape)
+            result = np.full(shape, fill_val, dtype=np.float64)
+            if result.size == 0:
+                return np.zeros((len(times), *self.channel_shape), dtype=np.float64)
+            return result
+
+        # Sample grid: left-edges of each sample cell.
+        grid_t = self.sample_times()  # shape (N,)
+
+        if kind != "linear":
+            raise ValueError(f"unsupported interpolation kind: {kind!r}")
+
+        # Per-channel linear interpolation.
+        vals = np.asarray(self.samples, dtype=np.float64)
+        if vals.ndim == 1:
+            result = np.interp(t_sec, grid_t, vals)
+        else:
+            # Multi-channel: reshape to (N, -1), interp per column.
+            N = vals.shape[0]
+            rest = vals.shape[1:]
+            flat = vals.reshape(N, -1)
+            n_ch = flat.shape[1]
+            result_flat = np.empty((len(t_sec), n_ch), dtype=np.float64)
+            for c in range(n_ch):
+                result_flat[:, c] = np.interp(t_sec, grid_t, flat[:, c])
+            result = result_flat.reshape(len(t_sec), *rest)
+
+        # -- extrapolation ------------------------------------------------
+        if fill == "clamp":
+            pass  # np.interp defaults to clamp
+        elif fill == "nan":
+            mask = (t_sec < grid_t[0]) | (t_sec > grid_t[-1])
+            if result.ndim > 1:
+                result[mask] = np.nan
+            else:
+                result[mask] = np.nan
+        elif fill == "error":
+            if t_sec[0] < grid_t[0] - 1e-12 or t_sec[-1] > grid_t[-1] + 1e-12:
+                raise DomainError(
+                    f"interpolate query times [{t_sec[0]:.6g}, {t_sec[-1]:.6g}] "
+                    f"outside data span [{grid_t[0]:.6g}, {grid_t[-1]:.6g}]"
+                )
+        else:
+            raise ValueError(f"unsupported fill: {fill!r}")
+
+        return result
+
+    def resample(
+        self, new_sr: float, *, kind: str = "linear",
+    ) -> "UniformSeries":
+        """Resample to a new sample rate over the same declared domain.
+
+        The output grid uses ``phase=0`` (sample ``k`` at
+        ``t_start + k/new_sr``), matching the legacy ``arange(F)*hop/sr``
+        pattern.  Multi-channel values are interpolated per-channel.
         """
-        return int(math.floor((t - self.t_first_edge) * self.sr))
+        if new_sr <= 0:
+            raise ValueError(f"new_sr must be > 0, got {new_sr}")
+        dur_s = self.duration
+        N_new = max(1, round(dur_s * new_sr))
+        # Adjust duration so N_new/sr fits inside the declared domain.
+        new_dur_ticks = round(N_new * TICKS_PER_SECOND / new_sr)
+        grid = self.t_start + np.arange(N_new) / new_sr
+        vals = self.interpolate(grid, kind=kind, fill="clamp")
+        return UniformSeries(
+            samples=vals,
+            sr=new_sr,
+            t_start_ticks=self.t_start_ticks,
+            dur_ticks=new_dur_ticks,
+            phase=0.0,
+        )

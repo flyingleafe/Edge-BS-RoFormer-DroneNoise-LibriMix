@@ -1,4 +1,4 @@
-"""Invariants for `SegmentSeries`."""
+"""Invariants for `SegmentSeries` — exact int64 tick storage."""
 from __future__ import annotations
 
 import numpy as np
@@ -7,25 +7,17 @@ from hypothesis import given, settings, strategies as st
 
 from utils.data import IncompatibleSeriesError, SegmentSeries
 
-from .strategies import segment_series
+from .strategies import cut_points_ticks, segment_series
 
 
 @st.composite
-def _cuts(draw, ss: SegmentSeries, k: int):
-    raw = sorted(
-        draw(
-            st.lists(
-                st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
-                min_size=k, max_size=k,
-            )
-        )
-    )
-    return [ss.t_start + f * (ss.t_end - ss.t_start) for f in raw]
+def _cuts(draw, ss: SegmentSeries, k: int) -> list[int]:
+    return draw(cut_points_ticks(ss.t_start_ticks, ss.t_end_ticks, k))
 
 
 @given(segment_series())
 def test_slice_identity(ss):
-    assert ss.slice(ss.t_start, ss.t_end).equal(ss)
+    assert ss.slice(ss.t_start_ticks, ss.t_end_ticks).equal(ss)
 
 
 @settings(max_examples=200)
@@ -40,7 +32,7 @@ def test_slice_concat_no_op(ss, data):
 @given(segment_series(), st.data())
 def test_many_cuts_rejoin(ss, data):
     k = data.draw(st.integers(min_value=2, max_value=6))
-    pts = [ss.t_start, *data.draw(_cuts(ss, k)), ss.t_end]
+    pts = [ss.t_start_ticks, *data.draw(_cuts(ss, k)), ss.t_end_ticks]
     parts = [ss.slice(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
     joined = parts[0]
     for p in parts[1:]:
@@ -49,39 +41,44 @@ def test_many_cuts_rejoin(ss, data):
 
 
 def test_splitting_a_straddling_segment():
-    # One segment [0.2, 0.8); cut at 0.5.
-    ss = SegmentSeries.from_segments(
-        np.array([0.2]), np.array([0.8]), ids=np.array([42], dtype=np.int64),
-        t_start=0.0, t_end=1.0,
+    # One segment [200M, 800M] ns (0.2s .. 0.8s); cut at 500M ns (0.5s).
+    dur = 1_000_000_000  # 1 s
+    ss = SegmentSeries.from_ticks(
+        np.array([200_000_000], dtype=np.int64),
+        np.array([800_000_000], dtype=np.int64),
+        ids=np.array([42], dtype=np.int64),
+        t_start=0, dur=dur,
     )
-    left = ss.slice(0.0, 0.5)
-    right = ss.slice(0.5, 1.0)
-    assert len(left) == 1 and left.ends[0] == 0.5
-    assert len(right) == 1 and right.starts[0] == 0.5
+    left = ss.slice(0, 500_000_000)
+    right = ss.slice(500_000_000, dur)
+    assert len(left) == 1 and left.ends[0] == 500_000_000
+    assert len(right) == 1 and right.starts[0] == 0  # relative to right.t_start
+    assert right.abs_starts_ticks[0] == 500_000_000
     assert int(left.ids[0]) == int(right.ids[0]) == 42
-    # Re-merge on concat.
     rejoined = left.concat(right)
     assert len(rejoined) == 1
-    assert rejoined.starts[0] == 0.2
-    assert rejoined.ends[0] == 0.8
+    assert rejoined.abs_starts_ticks[0] == 200_000_000
+    assert rejoined.abs_ends_ticks[0] == 800_000_000
 
 
 def test_unrelated_segments_meeting_at_seam_are_not_merged():
-    # Two distinct segments that happen to touch at t=0.5 — no shared id.
-    a = SegmentSeries.from_segments(
-        np.array([0.2]), np.array([0.5]),
+    # Two distinct segments that touch at t=0.5s — no shared id.
+    a = SegmentSeries.from_ticks(
+        np.array([200_000_000], dtype=np.int64),
+        np.array([500_000_000], dtype=np.int64),
         ids=np.array([1], dtype=np.int64),
-        t_start=0.0, t_end=0.5,
+        t_start=0, dur=500_000_000,
     )
-    b = SegmentSeries.from_segments(
-        np.array([0.5]), np.array([0.8]),
+    b = SegmentSeries.from_ticks(
+        np.array([0], dtype=np.int64),
+        np.array([300_000_000], dtype=np.int64),
         ids=np.array([2], dtype=np.int64),
-        t_start=0.5, t_end=1.0,
+        t_start=500_000_000, dur=500_000_000,
     )
     joined = a.concat(b)
     assert len(joined) == 2
-    assert list(joined.starts) == [0.2, 0.5]
-    assert list(joined.ends) == [0.5, 0.8]
+    assert list(joined.abs_starts_ticks) == [200_000_000, 500_000_000]
+    assert list(joined.abs_ends_ticks) == [500_000_000, 800_000_000]
 
 
 # ---------------------------------------------------------------------------
@@ -89,22 +86,27 @@ def test_unrelated_segments_meeting_at_seam_are_not_merged():
 # ---------------------------------------------------------------------------
 
 def test_shift():
-    ss = SegmentSeries.from_segments(
-        np.array([0.2, 0.5]), np.array([0.5, 0.8]),
-        t_start=0.0, t_end=1.0,
+    ss = SegmentSeries.from_ticks(
+        np.array([200_000_000, 500_000_000], dtype=np.int64),
+        np.array([500_000_000, 800_000_000], dtype=np.int64),
+        t_start=0, dur=1_000_000_000,
     )
-    shifted = ss.shift(10.0)
-    assert shifted.t_start == pytest.approx(10.0)
-    assert shifted.t_end == pytest.approx(11.0)
-    assert list(shifted.starts) == pytest.approx([10.2, 10.5])
-    assert list(shifted.ends) == pytest.approx([10.5, 10.8])
+    shifted = ss.shift(10_000_000_000)
+    assert shifted.t_start_ticks == 10_000_000_000
+    assert shifted.t_end_ticks == 11_000_000_000
+    # Relative storage unchanged.
+    assert list(shifted.starts) == [200_000_000, 500_000_000]
+    assert list(shifted.abs_starts_ticks) == [10_200_000_000, 10_500_000_000]
+    assert list(shifted.abs_ends_ticks) == [10_500_000_000, 10_800_000_000]
 
 
 def test_shift_roundtrip():
-    ss = SegmentSeries.from_segments(
-        np.array([0.2]), np.array([0.5]), t_start=0.0, t_end=1.0,
+    ss = SegmentSeries.from_ticks(
+        np.array([200_000_000], dtype=np.int64),
+        np.array([500_000_000], dtype=np.int64),
+        t_start=0, dur=1_000_000_000,
     )
-    assert ss.shift(5.0).shift(-5.0).equal(ss)
+    assert ss.shift(5_000_000_000).shift(-5_000_000_000).equal(ss)
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +114,18 @@ def test_shift_roundtrip():
 # ---------------------------------------------------------------------------
 
 def test_concat_across_gap():
-    a = SegmentSeries.from_segments(np.array([0.0]), np.array([0.3]), t_start=0.0, t_end=1.0)
-    b = SegmentSeries.from_segments(np.array([2.0]), np.array([2.3]), t_start=2.0, t_end=3.0)
+    a = SegmentSeries.from_ticks(
+        np.array([0], dtype=np.int64),
+        np.array([300_000_000], dtype=np.int64),
+        t_start=0, dur=1_000_000_000,
+    )
+    b = SegmentSeries.from_ticks(
+        np.array([0], dtype=np.int64),
+        np.array([300_000_000], dtype=np.int64),
+        t_start=2_000_000_000, dur=1_000_000_000,
+    )
     joined = a.concat(b)
-    assert joined.t_start == pytest.approx(0.0)
-    assert joined.t_end == pytest.approx(2.0)
-    assert list(joined.starts) == pytest.approx([0.0, 1.0])
-    assert list(joined.ends) == pytest.approx([0.3, 1.3])
+    assert joined.t_start_ticks == 0
+    assert joined.t_end_ticks == 2_000_000_000
+    assert list(joined.abs_starts_ticks) == [0, 1_000_000_000]
+    assert list(joined.abs_ends_ticks) == [300_000_000, 1_300_000_000]

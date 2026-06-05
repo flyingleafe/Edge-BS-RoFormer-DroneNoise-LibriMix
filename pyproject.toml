@@ -48,9 +48,13 @@ dependencies = [
 [project.scripts]
 postdoc = "postdoc.cli:main"
 postdoc-runner = "postdoc.queue:main"
+evaluate-rps = "tasks.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: full-dataset inference (skip by default)",
+]
 
 [build-system]
 requires = ["hatchling"]

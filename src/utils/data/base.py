@@ -3,17 +3,24 @@
 Every track in a `TimeFrame` is a `TimeSeries`: a value with a declared
 half-open time domain `[t_start, t_end)` (in seconds), supporting
 
-* `slice(t_a, t_b)` — restrict the declared domain
+* `slice(t_a, t_b)` — restrict the declared domain (accepts float seconds or
+  int64 ticks)
 * `concat(other)`   — glue along time at a shared seam (auto-shifts `other`)
-* `shift(t_delta)`  — change all time anchors by `t_delta` (cheap, O(1) for
-  series that store relative timestamps)
+* `shift(t_delta)`  — change all time anchors by `t_delta` (O(1); accepts
+  float seconds or int64 ticks)
 
 The single invariant we promise (and test) is:
 
     self.slice(a, b).concat(self.slice(b, c)) == self.slice(a, c)
 
 for any `t_start <= a <= b <= c <= t_end`. Equality is defined by each
-concrete subclass via `equal()`; the default `__eq__` delegates there.
+concrete subclass via `equal()` (exact on ticks); the default `__eq__`
+delegates there.
+
+Time is stored as **int64 tick counts** at a fixed `TICKS_PER_SECOND`
+(nanoseconds).  Public accessors (`.t_start`, `.t_end`, `.duration`) return
+float seconds; `*_ticks` accessors return exact int64 values for exact
+round-trips.
 """
 from __future__ import annotations
 
@@ -21,27 +28,37 @@ from abc import ABC, abstractmethod
 
 
 class TimeSeries(ABC):
-    """A value with a declared half-open time interval `[t_start, t_end)`."""
+    """A value with a declared half-open time interval `[t_start, t_end)`.
 
-    # Required by every subclass (frozen dataclass field).
-    t_start: float
-    t_end: float
+    Subclasses implement these as properties (float seconds / int ticks).
+    """
 
-    # -- domain -----------------------------------------------------------
+    # -- domain (seconds; float) -----------------------------------------
+    @property
+    @abstractmethod
+    def t_start(self) -> float: ...
+
+    @property
+    @abstractmethod
+    def t_end(self) -> float: ...
+
     @property
     def duration(self) -> float:
         return float(self.t_end - self.t_start)
 
-    def contains_time(self, t: float) -> bool:
-        return self.t_start <= t < self.t_end
+    # -- NOTE: `*_ticks` accessors are part of every concrete subclass's
+    #    API but are NOT declared here — they are stored as dataclass
+    #    fields and a base-class @property would be misinterpreted as a
+    #    field default by @dataclass.
 
     # -- core algebra (subclass) ------------------------------------------
     @abstractmethod
-    def slice(self, t_a: float, t_b: float) -> "TimeSeries":
+    def slice(self, t_a: float | int, t_b: float | int) -> "TimeSeries":
         """Return the restriction to `[t_a, t_b)`.
 
         Requires `self.t_start <= t_a <= t_b <= self.t_end`.
         `slice(t_start, t_end)` must return an equal series.
+        Arguments accept float seconds or int64 ticks.
         """
 
     @abstractmethod
@@ -54,15 +71,41 @@ class TimeSeries(ABC):
         """
 
     @abstractmethod
-    def shift(self, t_delta: float) -> "TimeSeries":
+    def shift(self, t_delta: float | int) -> "TimeSeries":
         """Return a new series whose entire timeline is moved by `t_delta`.
 
-        Must be cheap (ideally O(1)) where possible.
+        O(1).  Accepts float seconds or int64 ticks.
         """
 
     @abstractmethod
+    def interpolate(
+        self, times, *, kind: str = "linear", fill: str = "clamp",
+    ) -> "np.ndarray":  # type: ignore[name-defined]
+        """Evaluate the signal value(s) at absolute query times.
+
+        Parameters
+        ----------
+        times : np.ndarray | list[float] | list[int]
+            Query times — float seconds or int64 ticks.
+        kind : str
+            Interpolation kind.  ``"linear"`` only for now (matches legacy
+            ``np.interp`` canon).
+        fill : str
+            Extrapolation policy for query times outside the data span:
+            ``"clamp"`` (default) — hold endpoint values;
+            ``"nan"`` — NaN outside;
+            ``"error"`` — raise ``DomainError``.
+
+        Returns
+        -------
+        values : np.ndarray
+            Shape ``(len(times), *value_shape)``.
+        """
+        ...
+
+    @abstractmethod
     def equal(self, other: "TimeSeries") -> bool:
-        """Structural equality, modulo float tolerance on time fields."""
+        """Structural equality — exact (no tolerance)."""
 
     # -- operators / dunders ----------------------------------------------
     def __add__(self, other: "TimeSeries") -> "TimeSeries":
