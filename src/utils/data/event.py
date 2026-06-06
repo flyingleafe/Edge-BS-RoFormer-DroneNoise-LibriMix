@@ -158,14 +158,9 @@ class EventSeries(TimeSeries):
         return self.t_start_ticks + self.dur_ticks
 
     @property
-    def timestamp(self) -> np.ndarray:
+    def timestamps(self) -> np.ndarray:
         """Relative event times as float seconds."""
         return ticks_array_to_secs(self.timestamp_ticks)
-
-    @property
-    def timestamps(self) -> np.ndarray:
-        """Backward-compatible alias for ``timestamp_ticks``."""
-        return self.timestamp_ticks
 
     # ---- array accessors ------------------------------------------------
     @property

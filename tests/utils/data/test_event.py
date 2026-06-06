@@ -51,8 +51,8 @@ def test_events_at_cut_go_right():
     t_cut = t0 + 500_000_000  # at the second event
     left = es.slice(t0, t_cut)
     right = es.slice(t_cut, t0 + dur)
-    assert list(left.timestamps) == [0]
-    assert list(right.timestamps) == [0, 400_000_000]
+    assert list(left.timestamp_ticks) == [0]
+    assert list(right.timestamp_ticks) == [0, 400_000_000]
     assert left.concat(right).equal(es)
 
 
@@ -106,7 +106,7 @@ def test_shift_changes_t_start():
     assert shifted.t_start_ticks == 10_000_000_000
     assert shifted.t_end_ticks == 11_000_000_000
     # Relative timestamps unchanged by shift.
-    assert np.array_equal(shifted.timestamps, es.timestamps)
+    assert np.array_equal(shifted.timestamp_ticks, es.timestamp_ticks)
     # Absolute via __getitem__.
     t0, v0 = shifted[0]
     assert t0 == pytest.approx(10.0)
