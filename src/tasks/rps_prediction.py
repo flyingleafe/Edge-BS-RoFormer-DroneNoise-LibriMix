@@ -98,11 +98,23 @@ def load_predictor(spec: Any) -> RPSPredictor:
     s = spec.strip()
 
     # Classical baselines.
-    classical = _CLASSICAL_NAMES
-    if s in classical:
+    # Canonical short-name → module attribute mapping
+    _CLASSICAL_ATTR = {
+        "pyin": "pyin_single_f0",
+        "cepstral": "cepstral_tracker",
+        "hps": "hps_tracker",
+        "matched_filter": "matched_filter_tracker",
+        "nmf": "nmf_tracker",
+        "pyin_single_f0": "pyin_single_f0",
+        "cepstral_tracker": "cepstral_tracker",
+        "hps_tracker": "hps_tracker",
+        "matched_filter_tracker": "matched_filter_tracker",
+        "nmf_tracker": "nmf_tracker",
+    }
+    if s in _CLASSICAL_ATTR:
         import importlib
         mod = importlib.import_module("classical_rps_predictors")
-        fn = getattr(mod, s)
+        fn = getattr(mod, _CLASSICAL_ATTR[s])
         if hasattr(fn, "predict"):
             return fn
         return _ClassicalPredictor(fn, s)
@@ -181,16 +193,24 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
     meta_path = root.parent / "dregon_lm_metadata.json"
     if not meta_path.is_file():
         meta_path = root / "metadata.json"
+    if not meta_path.is_file():
+        meta_path = Path("results/rps_predictor_comparison/dregon_lm_metadata.json")
     if meta_path.is_file():
         with open(meta_path) as f:
-            metadata = json.load(f)
-    # Also check a legacy location.
-    if not metadata:
-        # Try results/rps_predictor_comparison/dregon_lm_metadata.json
-        alt = Path("results/rps_predictor_comparison/dregon_lm_metadata.json")
-        if alt.is_file():
-            with open(alt) as f:
-                metadata = json.load(f)
+            raw_meta = json.load(f)
+        # Handle nested formats: {"train": [...], "valid": [...]} or flat list.
+        if isinstance(raw_meta, dict):
+            # Try the dataset split key matching the directory name.
+            split_name = root.name  # e.g. "valid" or "train"
+            if split_name in raw_meta and isinstance(raw_meta[split_name], list):
+                metadata = {e["id"]: e for e in raw_meta[split_name]}
+            else:
+                # Check if direct sample dict.
+                first_val = next(iter(raw_meta.values()))
+                if isinstance(first_val, dict) and "input_snr" in first_val:
+                    metadata = raw_meta
+        elif isinstance(raw_meta, list):
+            metadata = {e.get("id", e.get("sample", "")): e for e in raw_meta}
 
     import torchaudio
 

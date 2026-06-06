@@ -31,25 +31,25 @@ class EventSeries(TimeSeries):
 
     Parameters
     ----------
-    timestamps : np.ndarray, shape (M,), dtype int64
+    timestamp_ticks : np.ndarray, shape (M,), dtype int64
         Event times relative to `t_start_ticks` (int64 ticks).
     values : np.ndarray | None
-        Shape `(M, ...)` payload, aligned to `timestamps`.
+        Shape `(M, ...)` payload, aligned to `timestamp_ticks`.
     t_start_ticks : int
         Absolute domain-start anchor (int64 ticks).
     dur_ticks : int
         Declared domain duration (int64 ticks).  `t_end_ticks == t_start_ticks + dur_ticks`.
     """
 
-    timestamps: np.ndarray = field(repr=False)
+    timestamp_ticks: np.ndarray = field(repr=False)
     values: np.ndarray | None = field(repr=False, default=None)
     t_start_ticks: int = 0
     dur_ticks: int = 0
 
     # ---- validation -----------------------------------------------------
     def __post_init__(self) -> None:
-        ts = np.asarray(self.timestamps, dtype=np.int64)
-        object.__setattr__(self, "timestamps", ts)
+        ts = np.asarray(self.timestamp_ticks, dtype=np.int64)
+        object.__setattr__(self, "timestamp_ticks", ts)
         if ts.ndim != 1:
             raise ValueError("timestamps must be 1-D")
         if self.values is not None:
@@ -138,7 +138,7 @@ class EventSeries(TimeSeries):
         __post_init__ conversion.
         """
         self = object.__new__(cls)
-        object.__setattr__(self, "timestamps", np.asarray(timestamps, dtype=np.int64))
+        object.__setattr__(self, "timestamp_ticks", np.asarray(timestamps, dtype=np.int64))
         object.__setattr__(self, "values", values)
         object.__setattr__(self, "t_start_ticks", int(t_start_ticks))
         object.__setattr__(self, "dur_ticks", int(dur_ticks))
@@ -157,23 +157,33 @@ class EventSeries(TimeSeries):
     def t_end_ticks(self) -> int:
         return self.t_start_ticks + self.dur_ticks
 
+    @property
+    def timestamp(self) -> np.ndarray:
+        """Relative event times as float seconds."""
+        return ticks_array_to_secs(self.timestamp_ticks)
+
+    @property
+    def timestamps(self) -> np.ndarray:
+        """Backward-compatible alias for ``timestamp_ticks``."""
+        return self.timestamp_ticks
+
     # ---- array accessors ------------------------------------------------
     @property
     def abs_timestamps(self) -> np.ndarray:
         """Absolute event times as float seconds."""
-        return ticks_array_to_secs(self.timestamps + self.t_start_ticks)
+        return ticks_array_to_secs(self.timestamp_ticks + self.t_start_ticks)
 
     @property
     def abs_timestamps_ticks(self) -> np.ndarray:
         """Absolute event times as int64 ticks."""
-        return self.timestamps + self.t_start_ticks
+        return self.timestamp_ticks + self.t_start_ticks
 
     # ---- shape ----------------------------------------------------------
     def __len__(self) -> int:
-        return int(self.timestamps.shape[0])
+        return int(self.timestamp_ticks.shape[0])
 
     def __getitem__(self, i: Any):
-        t = ticks_to_secs(int(self.timestamps[i]) + self.t_start_ticks)
+        t = ticks_to_secs(int(self.timestamp_ticks[i]) + self.t_start_ticks)
         if self.values is None:
             return t
         return t, self.values[i]
@@ -193,7 +203,7 @@ class EventSeries(TimeSeries):
 
         ra = a_tick - ta  # relative to self.t_start_ticks
         rb = b_tick - ta
-        ts = self.timestamps  # already relative int64
+        ts = self.timestamp_ticks  # already relative int64
         lo = int(np.searchsorted(ts, ra, side="left"))
         hi = int(np.searchsorted(ts, rb, side="left"))  # half-open at right
         new_ts = ts[lo:hi] - ra  # rebase to new t_start = a_tick
@@ -206,7 +216,7 @@ class EventSeries(TimeSeries):
         if dt == 0:
             return self
         return EventSeries._from_relative(
-            self.timestamps, self.values,
+            self.timestamp_ticks, self.values,
             self.t_start_ticks + dt, self.dur_ticks,
         )
 
@@ -229,7 +239,7 @@ class EventSeries(TimeSeries):
         # just its relative timestamps + self's duration.
         self_dur = self.dur_ticks
         other_dur = other.dur_ticks
-        new_ts = np.concatenate([self.timestamps, other.timestamps + int(self_dur)])
+        new_ts = np.concatenate([self.timestamp_ticks, other.timestamp_ticks + int(self_dur)])
         new_t_start = self.t_start_ticks
         new_dur = self_dur + other_dur
         new_vals: np.ndarray | None
@@ -248,7 +258,7 @@ class EventSeries(TimeSeries):
             and self.dur_ticks == other.dur_ticks
         ):
             return False
-        if not np.array_equal(self.timestamps, other.timestamps):
+        if not np.array_equal(self.timestamp_ticks, other.timestamp_ticks):
             return False
         if (self.values is None) != (other.values is None):
             return False

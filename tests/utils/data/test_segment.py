@@ -51,8 +51,8 @@ def test_splitting_a_straddling_segment():
     )
     left = ss.slice(0, 500_000_000)
     right = ss.slice(500_000_000, dur)
-    assert len(left) == 1 and left.ends[0] == 500_000_000
-    assert len(right) == 1 and right.starts[0] == 0  # relative to right.t_start
+    assert len(left) == 1 and left.ends_ticks[0] == 500_000_000
+    assert len(right) == 1 and right.starts_ticks[0] == 0  # relative to right.t_start
     assert right.abs_starts_ticks[0] == 500_000_000
     assert int(left.ids[0]) == int(right.ids[0]) == 42
     rejoined = left.concat(right)
@@ -95,7 +95,7 @@ def test_shift():
     assert shifted.t_start_ticks == 10_000_000_000
     assert shifted.t_end_ticks == 11_000_000_000
     # Relative storage unchanged.
-    assert list(shifted.starts) == [200_000_000, 500_000_000]
+    assert list(shifted.starts_ticks) == [200_000_000, 500_000_000]
     assert list(shifted.abs_starts_ticks) == [10_200_000_000, 10_500_000_000]
     assert list(shifted.abs_ends_ticks) == [10_500_000_000, 10_800_000_000]
 

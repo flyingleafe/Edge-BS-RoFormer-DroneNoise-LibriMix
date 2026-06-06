@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_array_to_ticks, secs_to_ticks, ticks_to_secs
+from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_array_to_ticks, secs_to_ticks, ticks_array_to_secs, ticks_to_secs
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
 
 
@@ -43,9 +43,9 @@ class SegmentSeries(TimeSeries):
 
     Parameters
     ----------
-    starts, ends : np.ndarray, shape (M,), dtype int64
+    starts_ticks, ends_ticks : np.ndarray, shape (M,), dtype int64
         Interval bounds **relative to `t_start_ticks`** (int64 ticks).
-        `starts[i] < ends[i]`, sorted by `starts`.
+        `starts_ticks[i] < ends_ticks[i]`, sorted by `starts_ticks`.
     values : np.ndarray | None
         Shape ``(M, …)`` payload (e.g. labels).  Optional.
     ids : np.ndarray, shape (M,), dtype int64
@@ -57,16 +57,16 @@ class SegmentSeries(TimeSeries):
         Declared domain duration (int64 ticks).
     """
 
-    starts: np.ndarray = field(repr=False)
-    ends: np.ndarray = field(repr=False)
+    starts_ticks: np.ndarray = field(repr=False)
+    ends_ticks: np.ndarray = field(repr=False)
     values: np.ndarray | None = field(repr=False, default=None)
     ids: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]
     t_start_ticks: int = 0
     dur_ticks: int = 0
 
     def __post_init__(self) -> None:
-        s = np.asarray(self.starts, dtype=np.int64)
-        e = np.asarray(self.ends, dtype=np.int64)
+        s = np.asarray(self.starts_ticks, dtype=np.int64)
+        e = np.asarray(self.ends_ticks, dtype=np.int64)
         if s.shape != e.shape or s.ndim != 1:
             raise ValueError("starts and ends must be 1-D and same shape")
         if s.size and not np.all(e > s):
@@ -79,8 +79,8 @@ class SegmentSeries(TimeSeries):
                 object.__setattr__(self, "values", np.asarray(self.values)[order])
             if self.ids is not None:
                 object.__setattr__(self, "ids", np.asarray(self.ids)[order])
-        object.__setattr__(self, "starts", s)
-        object.__setattr__(self, "ends", e)
+        object.__setattr__(self, "starts_ticks", s)
+        object.__setattr__(self, "ends_ticks", e)
         if self.ids is None:
             object.__setattr__(self, "ids", _new_ids(s.shape[0]))
         else:
@@ -141,7 +141,7 @@ class SegmentSeries(TimeSeries):
         else:
             dur = secs_to_ticks(float(t_end)) - t0
         return cls(
-            starts=rel_s, ends=rel_e, values=values, ids=ids,
+            starts_ticks=rel_s, ends_ticks=rel_e, values=values, ids=ids,
             t_start_ticks=t0, dur_ticks=dur,
         )
 
@@ -160,9 +160,19 @@ class SegmentSeries(TimeSeries):
         rs = np.asarray(starts, dtype=np.int64)
         re = np.asarray(ends, dtype=np.int64)
         return cls(
-            starts=rs, ends=re, values=values, ids=ids,
+            starts_ticks=rs, ends_ticks=re, values=values, ids=ids,
             t_start_ticks=int(t_start), dur_ticks=int(dur),
         )
+
+    @property
+    def starts(self) -> np.ndarray:
+        """Relative start times as float seconds."""
+        return ticks_array_to_secs(self.starts_ticks)
+
+    @property
+    def ends(self) -> np.ndarray:
+        """Relative end times as float seconds."""
+        return ticks_array_to_secs(self.ends_ticks)
 
     # ---- domain properties (seconds) ------------------------------------
     @property
@@ -180,27 +190,27 @@ class SegmentSeries(TimeSeries):
     # ---- array accessors ------------------------------------------------
     @property
     def abs_starts(self) -> np.ndarray:
-        return (self.starts + self.t_start_ticks).astype(np.float64) / TICKS_PER_SECOND
+        return (self.starts_ticks + self.t_start_ticks).astype(np.float64) / TICKS_PER_SECOND
 
     @property
     def abs_ends(self) -> np.ndarray:
-        return (self.ends + self.t_start_ticks).astype(np.float64) / TICKS_PER_SECOND
+        return (self.ends_ticks + self.t_start_ticks).astype(np.float64) / TICKS_PER_SECOND
 
     @property
     def abs_starts_ticks(self) -> np.ndarray:
-        return self.starts + self.t_start_ticks
+        return self.starts_ticks + self.t_start_ticks
 
     @property
     def abs_ends_ticks(self) -> np.ndarray:
-        return self.ends + self.t_start_ticks
+        return self.ends_ticks + self.t_start_ticks
 
     # ---- shape ----------------------------------------------------------
     def __len__(self) -> int:
-        return int(self.starts.shape[0])
+        return int(self.starts_ticks.shape[0])
 
     def __getitem__(self, i: Any):
-        s = ticks_to_secs(int(self.starts[i]) + self.t_start_ticks)
-        e = ticks_to_secs(int(self.ends[i]) + self.t_start_ticks)
+        s = ticks_to_secs(int(self.starts_ticks[i]) + self.t_start_ticks)
+        e = ticks_to_secs(int(self.ends_ticks[i]) + self.t_start_ticks)
         if self.values is None:
             return s, e, int(self.ids[i])
         return s, e, self.values[i], int(self.ids[i])
@@ -217,7 +227,7 @@ class SegmentSeries(TimeSeries):
             )
         ra = a_tick - t0
         rb = b_tick - t0
-        s, e = self.starts, self.ends  # relative int64
+        s, e = self.starts_ticks, self.ends_ticks  # relative int64
         keep = (e > ra) & (s < rb)
         ns = np.clip(s[keep], ra, None) - ra
         ne = np.clip(e[keep], None, rb) - ra
@@ -227,7 +237,7 @@ class SegmentSeries(TimeSeries):
         nv = None if self.values is None else self.values[keep][nonzero]
         nids = self.ids[keep][nonzero]
         return SegmentSeries(
-            starts=ns, ends=ne, values=nv, ids=nids,
+            starts_ticks=ns, ends_ticks=ne, values=nv, ids=nids,
             t_start_ticks=a_tick, dur_ticks=rb - ra,
         )
 
@@ -250,15 +260,15 @@ class SegmentSeries(TimeSeries):
         # other is glued so its t_start lands at self.t_end.
         self_dur = self.dur_ticks
         other_dur = other.dur_ticks
-        o_starts = other.starts + int(self_dur)
-        o_ends = other.ends + int(self_dur)
+        o_starts = other.starts_ticks + int(self_dur)
+        o_ends = other.ends_ticks + int(self_dur)
 
         # Find pairs to merge: id present in self ending at seam AND in
         # other starting at seam.
         seam = self_dur  # relative to self.t_start_ticks
         left_at_seam = {
             int(self.ids[i]): i
-            for i in np.where(self.ends == seam)[0]
+            for i in np.where(self.ends_ticks == seam)[0]
         }
         right_at_seam = {
             int(other.ids[j]): j
@@ -266,7 +276,7 @@ class SegmentSeries(TimeSeries):
         }
         merge_ids = set(left_at_seam) & set(right_at_seam)
 
-        new_left_ends = self.ends.copy()
+        new_left_ends = self.ends_ticks.copy()
         for mid in merge_ids:
             i = left_at_seam[mid]
             j = right_at_seam[mid]
@@ -276,7 +286,7 @@ class SegmentSeries(TimeSeries):
         for mid in merge_ids:
             right_keep[right_at_seam[mid]] = False
 
-        new_starts = np.concatenate([self.starts, o_starts[right_keep]])
+        new_starts = np.concatenate([self.starts_ticks, o_starts[right_keep]])
         new_ends = np.concatenate([new_left_ends, o_ends[right_keep]])
         new_ids = np.concatenate([self.ids, other.ids[right_keep]])
         if self.values is None:
@@ -285,7 +295,7 @@ class SegmentSeries(TimeSeries):
             new_vals = np.concatenate([self.values, other.values[right_keep]])  # type: ignore[arg-type]
 
         return SegmentSeries(
-            starts=new_starts, ends=new_ends, values=new_vals, ids=new_ids,
+            starts_ticks=new_starts, ends_ticks=new_ends, values=new_vals, ids=new_ids,
             t_start_ticks=self.t_start_ticks, dur_ticks=self_dur + other_dur,
         )
 
@@ -308,9 +318,9 @@ class SegmentSeries(TimeSeries):
             and self.dur_ticks == other.dur_ticks
         ):
             return False
-        if not np.array_equal(self.starts, other.starts):
+        if not np.array_equal(self.starts_ticks, other.starts_ticks):
             return False
-        if not np.array_equal(self.ends, other.ends):
+        if not np.array_equal(self.ends_ticks, other.ends_ticks):
             return False
         if not np.array_equal(self.ids, other.ids):
             return False

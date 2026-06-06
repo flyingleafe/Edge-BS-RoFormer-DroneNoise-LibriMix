@@ -57,6 +57,11 @@ class TimeFrame:
 
     # ---- construction ---------------------------------------------------
     def __post_init__(self) -> None:
+        # Normalize tags to a plain dict (never None).
+        if self.tags is None:
+            object.__setattr__(self, "tags", {})
+        elif not isinstance(self.tags, dict):
+            object.__setattr__(self, "tags", dict(self.tags))
         if self.dur_ticks < 0:
             raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
         for name, track in self.tracks.items():
@@ -100,7 +105,7 @@ class TimeFrame:
         object.__setattr__(self, "tracks", local_tracks)
         object.__setattr__(self, "t_start_ticks", int(t_start_ticks))
         object.__setattr__(self, "dur_ticks", int(dur_ticks))
-        object.__setattr__(self, "tags", dict(tags) if tags is not None else {})
+        object.__setattr__(self, "tags", dict(tags or {}))
         return self
 
     def _abs(self) -> dict[str, TimeSeries]:
@@ -129,7 +134,7 @@ class TimeFrame:
         t0 = _c_to_ticks(t_start) if not isinstance(t_start, int) else t_start
         te = _c_to_ticks(t_end) if not isinstance(t_end, int) else t_end
         return cls(tracks=dict(tracks), t_start_ticks=t0, dur_ticks=te - t0,
-                   tags=tags)
+                   tags=tags if tags is not None else {})
 
     # ---- domain properties (seconds) ------------------------------------
     @property
@@ -284,12 +289,12 @@ class TimeFrame:
         for name in union_keys:
             if name in self_abs and name in other_abs:
                 new_tracks[name] = self_abs[name].concat(
-                    other_abs[name].shift(delta)
+                    other_abs[name].shift(delta - other.t_start_ticks)
                 )
             elif name in self_abs:
                 new_tracks[name] = self_abs[name]
             else:
-                new_tracks[name] = other_abs[name].shift(delta)
+                new_tracks[name] = other_abs[name].shift(delta - other.t_start_ticks)
         # Merge tags: equality on shared keys, union on disjoint ones.
         new_tags = dict(self.tags)
         for k, v in other.tags.items():

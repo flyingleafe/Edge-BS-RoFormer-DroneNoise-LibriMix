@@ -49,6 +49,7 @@ dependencies = [
 postdoc = "postdoc.cli:main"
 postdoc-runner = "postdoc.queue:main"
 evaluate-rps = "tasks.cli:main"
+make-plot = "utils.plots.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

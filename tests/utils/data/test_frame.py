@@ -55,7 +55,7 @@ def time_frame(draw) -> TimeFrame:
             )
         )
         ev_ts_ticks = np.array(
-            [int(t0 + f * dur_ticks) for f in fracs], dtype=np.int64,
+            [t0 + int(f * dur_ticks) for f in fracs], dtype=np.int64,
         )
         ev_vals = np.asarray(
             draw(
@@ -80,11 +80,11 @@ def time_frame(draw) -> TimeFrame:
             )
         )
         starts = np.array(
-            [int(t0 + seg_fracs[2 * i] * dur_ticks) for i in range(k)],
+            [t0 + int(seg_fracs[2 * i] * dur_ticks) for i in range(k)],
             dtype=np.int64,
         )
         ends = np.array(
-            [int(t0 + seg_fracs[2 * i + 1] * dur_ticks) for i in range(k)],
+            [t0 + int(seg_fracs[2 * i + 1] * dur_ticks) for i in range(k)],
             dtype=np.int64,
         )
         keep = ends > starts
@@ -121,6 +121,15 @@ def test_slice_identity(tf):
 def test_slice_concat_no_op(tf, data):
     [a, b, c] = data.draw(_cuts(tf, 3))
     assert tf.slice(a, b).concat(tf.slice(b, c)).equal(tf.slice(a, c))
+
+
+@given(time_frame())
+def test_slice_concat_across_full_domain(tf):
+    """Explicit boundary invariant: slice(t0,t1).concat(slice(t1,t2)) == slice(t0,t2)."""
+    t0 = tf.t_start_ticks
+    t2 = tf.t_end_ticks
+    t1 = (t0 + t2) // 2
+    assert tf.slice(t0, t1).concat(tf.slice(t1, t2)).equal(tf.slice(t0, t2))
 
 
 @settings(max_examples=80, suppress_health_check=[HealthCheck.too_slow])

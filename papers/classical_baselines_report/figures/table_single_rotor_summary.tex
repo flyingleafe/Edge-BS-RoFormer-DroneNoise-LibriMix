@@ -1,13 +1,14 @@
-\begin{tabular}{lcc}
+\begin{tabular}{lcccc}
 \toprule
-Method & Mean MSE & Mean MAE \\
+ & \multicolumn{2}{c}{mse} & \multicolumn{2}{c}{mae} \\
+ & mean & std & mean & std \\
+method &  &  &  &  \\
 \midrule
-PYIN & 240.8 & 6.2 \\
-Cepstral & 742.7 & 15.1 \\
-HPS & 1149.5 & 20.7 \\
-Matched Filter & 168.2 & 6.9 \\
-NMF & 599.7 & 11.5 \\
-SimpleConv (best rotor) & 2027.3 & 41.1 \\
-SimpleConv (avg over 4) & 2078.2 & 42.0 \\
+SimpleConv & 2953.38 & 1388.15 & 52.54 & 13.31 \\
+PYIN & 208.58 & 639.66 & 5.73 & 13.08 \\
+Cepstral & 1074.10 & 543.18 & 30.00 & 9.65 \\
+HPS & 451.90 & 368.16 & 16.52 & 7.05 \\
+Matched Filter & 767.51 & 733.46 & 23.35 & 13.04 \\
+NMF & 735.71 & 824.34 & 20.63 & 14.10 \\
 \bottomrule
 \end{tabular}

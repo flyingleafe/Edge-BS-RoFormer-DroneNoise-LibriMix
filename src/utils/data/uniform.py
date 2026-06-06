@@ -160,6 +160,16 @@ class UniformSeries(TimeSeries):
         return int(self.samples.shape[0])
 
     @property
+    def timestamp(self) -> np.ndarray:
+        """Absolute sample times as float seconds."""
+        return self.sample_times()
+
+    @property
+    def timestamp_ticks(self) -> np.ndarray:
+        """Absolute sample times as int64 ticks (nearest)."""
+        return self.sample_times_ticks()
+
+    @property
     def channel_shape(self) -> tuple[int, ...]:
         return tuple(self.samples.shape[1:])
 
