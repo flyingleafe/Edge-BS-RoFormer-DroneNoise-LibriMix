@@ -191,13 +191,13 @@ def test_interpolate_midpoint():
 def test_interpolate_multichannel():
     es = EventSeries.from_events(
         np.array([0.0, 0.5, 1.0]),
-        values=np.array([[1., 10.], [2., 20.], [3., 30.]]),
+        values=np.array([[1., 2., 3.], [10., 20., 30.]]),
         t_start=0.0, t_end=1.0,
     )
     vals = es.interpolate(np.array([0.25, 0.75]))
     assert vals.shape == (2, 2)
-    np.testing.assert_allclose(vals[0], [1.5, 15.], atol=1e-12)
-    np.testing.assert_allclose(vals[1], [2.5, 25.], atol=1e-12)
+    np.testing.assert_allclose(vals[0], [1.5, 2.5], atol=1e-12)
+    np.testing.assert_allclose(vals[1], [15., 25.], atol=1e-12)
 
 
 def test_interpolate_clamp_extrap():

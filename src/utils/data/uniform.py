@@ -59,7 +59,7 @@ class UniformSeries(TimeSeries):
     Parameters
     ----------
     samples : np.ndarray
-        Shape ``(N, …)``.  Axis 0 is time.
+        Shape ``(…, N)``.  Axis ‑1 is time.
     sr : float
         Sample rate in Hz.
     t_start_ticks : int
@@ -87,7 +87,7 @@ class UniformSeries(TimeSeries):
         if self.phase < -1.0 or self.phase > 0.0:
             raise ValueError(f"phase ({self.phase}) must be in [-1, 0]")
         # The declared domain is bounded by the sample grid within one sample.
-        N = self.samples.shape[0]
+        N = self.samples.shape[-1]
         if N == 0:
             return
         dur_exact = N / self.sr
@@ -110,7 +110,7 @@ class UniformSeries(TimeSeries):
         ``t_start`` may be float seconds or int64 ticks.
         """
         samples = np.asarray(samples)
-        N = samples.shape[0]
+        N = samples.shape[-1]
         sr = float(sr)
         if isinstance(t_start, (int, np.integer)):
             t0 = int(t_start)
@@ -157,27 +157,31 @@ class UniformSeries(TimeSeries):
 
     @property
     def n_samples(self) -> int:
-        return int(self.samples.shape[0])
+        return int(self.samples.shape[-1])
 
     @property
     def timestamps(self) -> np.ndarray:
         """Absolute sample times as float seconds."""
-        return self.sample_times()
+        return self.sample_times() - self.t_first_edge
     
     @property
     def timestamp_ticks(self) -> np.ndarray:
         """Absolute sample times as int64 ticks (nearest)."""
-        return self.sample_times_ticks()
+        return self.sample_times_ticks() - self.t_start_ticks
 
     @property
     def channel_shape(self) -> tuple[int, ...]:
-        return tuple(self.samples.shape[1:])
+        return tuple(self.samples.shape[:-1])
+
+    @property
+    def values(self) -> np.ndarray:
+        return self.samples
 
     def __len__(self) -> int:
         return self.n_samples
 
     def __getitem__(self, i: Any) -> Any:
-        return self.samples[i]
+        return self.samples[..., i]
 
     # ---- sample‑index mapping (internal) --------------------------------
     def _cut_to_indices(self, ra: int, rb: int) -> tuple[int, int]:
@@ -234,7 +238,7 @@ class UniformSeries(TimeSeries):
         rb = tb_tick - t0
         ka, kb = self._cut_to_indices(ra, rb)
 
-        new_samples = self.samples[ka:kb]
+        new_samples = self.samples[..., ka:kb]
         # Recover the new phase: offset of sample 0's left edge from the new
         # t_start, in sample units.  Derived from the floor of the left cut
         # so it is consistent with the stored ka.
@@ -271,9 +275,9 @@ class UniformSeries(TimeSeries):
             raise IncompatibleSeriesError(
                 f"sample rates differ: {self.sr} vs {other.sr}"
             )
-        if self.samples.shape[1:] != other.samples.shape[1:]:
+        if self.samples.shape[:-1] != other.samples.shape[:-1]:
             raise IncompatibleSeriesError(
-                f"channel shapes differ: {self.samples.shape[1:]} vs {other.samples.shape[1:]}"
+                f"channel shapes differ: {self.samples.shape[:-1]} vs {other.samples.shape[:-1]}"
             )
 
         sr = self.sr
@@ -299,9 +303,9 @@ class UniformSeries(TimeSeries):
             )
         n_self = self.n_samples
         if k_int == n_self:
-            new_samples = np.concatenate([self.samples, other.samples], axis=0)
+            new_samples = np.concatenate([self.samples, other.samples], axis=-1)
         elif k_int == n_self - 1:
-            new_samples = np.concatenate([self.samples, other.samples[1:]], axis=0)
+            new_samples = np.concatenate([self.samples, other.samples[..., 1:]], axis=-1)
         else:
             raise IncompatibleSeriesError(
                 f"incompatible sample grids: integer offset {k_int} "
@@ -372,11 +376,11 @@ class UniformSeries(TimeSeries):
         if self.n_samples == 0:
             if fill == "error":
                 raise DomainError("interpolate on empty UniformSeries")
-            fill_val = np.nan if fill == "nan" else self.samples[0:0]
-            shape = (len(times), *self.channel_shape)
+            fill_val = np.nan if fill == "nan" else self.samples.flat[0:0]
+            shape = (*self.channel_shape, len(times))
             result = np.full(shape, fill_val, dtype=np.float64)
             if result.size == 0:
-                return np.zeros((len(times), *self.channel_shape), dtype=np.float64)
+                return np.zeros((*self.channel_shape, len(times)), dtype=np.float64)
             return result
 
         # Sample grid: left-edges of each sample cell.
@@ -390,15 +394,15 @@ class UniformSeries(TimeSeries):
         if vals.ndim == 1:
             result = np.interp(t_sec, grid_t, vals)
         else:
-            # Multi-channel: reshape to (N, -1), interp per column.
-            N = vals.shape[0]
-            rest = vals.shape[1:]
-            flat = vals.reshape(N, -1)
-            n_ch = flat.shape[1]
-            result_flat = np.empty((len(t_sec), n_ch), dtype=np.float64)
+            # Multi-channel: reshape to (-1, N), interp per row.
+            N = vals.shape[-1]
+            rest = vals.shape[:-1]
+            flat = vals.reshape(-1, N)
+            n_ch = flat.shape[0]
+            result_flat = np.empty((n_ch, len(t_sec)), dtype=np.float64)
             for c in range(n_ch):
-                result_flat[:, c] = np.interp(t_sec, grid_t, flat[:, c])
-            result = result_flat.reshape(len(t_sec), *rest)
+                result_flat[c, :] = np.interp(t_sec, grid_t, flat[c, :])
+            result = result_flat.reshape(*rest, len(t_sec))
 
         # -- extrapolation ------------------------------------------------
         if fill == "clamp":

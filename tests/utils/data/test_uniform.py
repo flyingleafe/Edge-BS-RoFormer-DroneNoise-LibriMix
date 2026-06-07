@@ -152,7 +152,7 @@ def test_concat_across_gap():
 # ---------------------------------------------------------------------------
 
 def test_multichannel_slice_concat():
-    samples = np.random.RandomState(0).randn(100, 4).astype(np.float32)
+    samples = np.random.RandomState(0).randn(4, 100).astype(np.float32)
     us = UniformSeries.from_samples(samples, sr=100.0, t_start=10_000_000_000)
     a = us.slice(10_000_000_000, 10_370_000_000)
     b = us.slice(10_370_000_000, 10_830_000_000)
@@ -176,12 +176,12 @@ def test_interpolate_midpoint():
 
 
 def test_interpolate_multichannel():
-    vals = np.array([[0., 10.], [2., 8.], [4., 6.]])  # (3, 2)
+    vals = np.array([[0., 2., 4.], [10., 8., 6.]])  # (2, 3)
     us = UniformSeries.from_samples(vals, sr=3.0, t_start=0)
     result = us.interpolate(np.array([0.5]))
-    assert result.shape == (1, 2)
+    assert result.shape == (2, 1)
     np.testing.assert_allclose(result[0, 0], 3.0, atol=1e-12)
-    np.testing.assert_allclose(result[0, 1], 7.0, atol=1e-12)
+    np.testing.assert_allclose(result[1, 0], 7.0, atol=1e-12)
 
 
 def test_interpolate_clamp_extrap():

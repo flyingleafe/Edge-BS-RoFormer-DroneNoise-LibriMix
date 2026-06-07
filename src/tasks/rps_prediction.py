@@ -251,7 +251,7 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
 
         rps_es = EventSeries.from_events(
             timestamps=motor_times,
-            values=rps_raw.T,  # (M, R) — values[0] is shape (R,)
+            values=rps_raw,  # (R, M)
             t_start=0.0,
             t_end=audio_dur_s,
         )
@@ -374,7 +374,7 @@ def _align_stft_timestamps(
     """
     n_frames = len(audio) // HOP + 1
     frame_times = np.arange(n_frames) * HOP / sr
-    return rps_es.interpolate(frame_times).T  # (R, F)
+    return rps_es.interpolate(frame_times)  # (R, F)
 
 
 def _align_shape_stretch(

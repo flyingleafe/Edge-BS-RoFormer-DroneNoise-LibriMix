@@ -181,7 +181,7 @@ class EventSeries(TimeSeries):
         t = ticks_to_secs(int(self.timestamp_ticks[i]) + self.t_start_ticks)
         if self.values is None:
             return t
-        return t, self.values[i]
+        return t, self.values[..., i]
 
     # ---- slice ----------------------------------------------------------
     def slice(self, t_a: float | int, t_b: float | int) -> "EventSeries":
@@ -202,7 +202,7 @@ class EventSeries(TimeSeries):
         lo = int(np.searchsorted(ts, ra, side="left"))
         hi = int(np.searchsorted(ts, rb, side="left"))  # half-open at right
         new_ts = ts[lo:hi] - ra  # rebase to new t_start = a_tick
-        new_vals = None if self.values is None else self.values[lo:hi]
+        new_vals = None if self.values is None else self.values[..., lo:hi]
         return EventSeries._from_relative(new_ts, new_vals, a_tick, rb - ra)
 
     # ---- shift ----------------------------------------------------------
@@ -287,7 +287,7 @@ class EventSeries(TimeSeries):
             if fill == "error":
                 raise DomainError("interpolate on empty EventSeries")
             fill_val = np.nan if fill == "nan" else 0.0
-            shape = (len(times), *vals.shape[1:])
+            shape = (*vals.shape[:-1], len(times))
             return np.full(shape, fill_val, dtype=np.float64)
 
         if kind != "linear":
@@ -296,14 +296,14 @@ class EventSeries(TimeSeries):
         if vals.ndim == 1:
             result = np.interp(t_sec, ev_t, vals)
         else:
-            M = vals.shape[0]
-            rest = vals.shape[1:]
-            flat = vals.reshape(M, -1)
-            n_ch = flat.shape[1]
-            result_flat = np.empty((len(t_sec), n_ch), dtype=np.float64)
+            M = vals.shape[-1]
+            rest = vals.shape[:-1]
+            flat = vals.reshape(-1, M)
+            n_ch = flat.shape[0]
+            result_flat = np.empty((n_ch, len(t_sec)), dtype=np.float64)
             for c in range(n_ch):
-                result_flat[:, c] = np.interp(t_sec, ev_t, flat[:, c])
-            result = result_flat.reshape(len(t_sec), *rest)
+                result_flat[c, :] = np.interp(t_sec, ev_t, flat[c, :])
+            result = result_flat.reshape(*rest, len(t_sec))
 
         # -- extrapolation ------------------------------------------------
         if fill == "clamp":

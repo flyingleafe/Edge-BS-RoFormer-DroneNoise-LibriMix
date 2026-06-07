@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate 3-panel plot: spectrogram + SimpleConv RPS + BiGRU-v2 RPS for one DREGON-LM valid sample."""
 
+import sys
 import glob
 import os
 import random
@@ -10,6 +11,10 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 import matplotlib.pyplot as plt
+from pathlib import Path
+
+PROJECT_ROOT = Path.cwd().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.rps_predictor import SimpleConv, SimpleConvBiGRUV2
 
@@ -18,10 +23,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_FFT = 2048
 HOP_LENGTH = 512
 NUM_ROTORS = 4
-DATA_DIR = "datasets/DREGON-LM/valid"
-SIMPLECONV_CKPT = "results/rps_exp_simple_conv/best_simple_conv.pt"
-BIGRU_V2_CKPT = "results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt"
-OUT_PATH = "slides/2026-06-02-rps-progress/assets/sample_comparison.png"
+DATA_DIR = PROJECT_ROOT / "datasets/DREGON-LM/valid"
+SIMPLECONV_CKPT = PROJECT_ROOT / "results/rps_exp_simple_conv/best_simple_conv.pt"
+BIGRU_V2_CKPT = PROJECT_ROOT / "results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt"
+OUT_PATH = PROJECT_ROOT / "slides/2026-06-02-rps-progress/assets/sample_comparison_tmp.png"
 SEED = 42
 
 # ─── Pick a random valid sample ─────────────────────────────────────────────
@@ -31,7 +36,8 @@ samples = sorted(
     if os.path.isfile(os.path.join(d, "mixture.wav"))
     and os.path.isfile(os.path.join(d, "rps.npy"))
 )
-sample_dir = random.choice(samples)
+# sample_dir = random.choice(samples)
+sample_dir = DATA_DIR / 'sample_00004'
 print(f"Using sample: {sample_dir}")
 
 # ─── Load audio & ground-truth RPS ──────────────────────────────────────────
@@ -61,10 +67,12 @@ for name, model in models.items():
 
 # ─── Run inference ───────────────────────────────────────────────────────────
 audio_batch = audio.unsqueeze(0).to(DEVICE)  # (1, samples)
+print(audio_batch.shape)
 predictions = {}
 with torch.no_grad():
     for name, model in models.items():
         pred = model(audio_batch)  # (1, 4, T)
+        print(pred)
         predictions[name] = pred.squeeze(0).cpu().numpy()  # (4, T)
 
 # ─── Build 3-panel figure ───────────────────────────────────────────────────
