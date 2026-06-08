@@ -2,6 +2,7 @@
 
 Removes dependency on `env.settings` — everything is parameterized.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -10,10 +11,10 @@ import torch.nn.functional as F
 from einops import rearrange
 from scipy import fftpack
 
-
 # ---------------------------------------------------------------------------
 # Tensor helpers
 # ---------------------------------------------------------------------------
+
 
 def torch_float32(x):
     if isinstance(x, torch.Tensor):
@@ -63,12 +64,13 @@ def get_fft_size(frame_size: int, ir_size: int, power_of_2: bool = True) -> int:
     convolved_frame_size = ir_size + frame_size - 1
     if power_of_2:
         return int(2 ** np.ceil(np.log2(convolved_frame_size)))
-    return int(fftpack.helper.next_fast_len(convolved_frame_size))
+    return int(fftpack.helper.next_fast_len(convolved_frame_size))  # pyright: ignore[reportOptionalCall]
 
 
 # ---------------------------------------------------------------------------
 # Safe math
 # ---------------------------------------------------------------------------
+
 
 def safe_divide(numerator, denominator, eps=1e-7):
     safe_denominator = torch.where(denominator == 0.0, eps, denominator)
@@ -92,6 +94,7 @@ def log10(x, eps=1e-5):
 # ---------------------------------------------------------------------------
 # Frequency/amplitude scales
 # ---------------------------------------------------------------------------
+
 
 def midi_to_hz(notes):
     notes = torch_float32(notes)
@@ -128,6 +131,11 @@ def hz_to_unit(hz, hz_min, hz_max, clip=False):
 # Activations
 # ---------------------------------------------------------------------------
 
+
 def exp_sigmoid(x, exponent=10.0, max_value=2.0, threshold=1e-7):
     """Exponentiated Sigmoid pointwise nonlinearity (DDSP)."""
-    return max_value * torch.sigmoid(x) ** torch.log(torch.tensor(exponent, device=x.device, dtype=x.dtype)) + threshold
+    return (
+        max_value
+        * torch.sigmoid(x) ** torch.log(torch.tensor(exponent, device=x.device, dtype=x.dtype))
+        + threshold
+    )

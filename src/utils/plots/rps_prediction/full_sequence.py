@@ -1,5 +1,6 @@
 # src/utils/plots/rps_prediction/full_sequence.py
 """3-panel full-sequence plot: spectrogram + GT-vs-pred + per-frame MSE."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,10 +11,9 @@ import numpy as np
 import torch
 
 from tasks.rps_prediction import (
-    RPSPredictor,
-    SR_AUDIO,
-    N_FFT,
     HOP,
+    N_FFT,
+    SR_AUDIO,
 )
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
@@ -68,7 +68,9 @@ def plot_full_sequence(
         low_ends = np.r_[low_ends, len(low_rps) - 1]
 
     fig, axes = plt.subplots(
-        3, 1, figsize=figsize,
+        3,
+        1,
+        figsize=figsize,
         gridspec_kw={"height_ratios": [1.2, 1.0, 0.8], "hspace": 0.35},
     )
 
@@ -76,17 +78,25 @@ def plot_full_sequence(
     ax = axes[0]
     window = torch.hann_window(N_FFT)
     X = torch.stft(
-        torch.from_numpy(audio).float(), n_fft=N_FFT, hop_length=HOP,
-        window=window, return_complex=True, normalized=True,
+        torch.from_numpy(audio).float(),
+        n_fft=N_FFT,
+        hop_length=HOP,
+        window=window,
+        return_complex=True,
+        normalized=True,
     )
     S = torch.abs(X).numpy()
     log_mag = np.log1p(S.T)
     vmin = np.percentile(log_mag, 2)
     vmax = np.percentile(log_mag, 99)
     ax.imshow(
-        log_mag, origin="lower", aspect="auto",
+        log_mag,
+        origin="lower",
+        aspect="auto",
         extent=[0, duration, 0, sr / 2 / 1000],
-        cmap="hot", vmin=vmin, vmax=vmax,
+        cmap="hot",
+        vmin=vmin,
+        vmax=vmax,
     )
     ax.set_ylim(0, 4)
     ax.set_ylabel("freq [kHz]")
@@ -100,19 +110,18 @@ def plot_full_sequence(
     ax = axes[1]
     T = min(rps_gt.shape[1], rps_pred.shape[1])
     for r in range(4):
-        ax.plot(t_stft[:T], rps_gt[r, :T], ":", color=ROTOR_COLORS[r],
-                lw=0.5, alpha=0.55)
-        ax.plot(t_stft[:T], rps_pred[r, :T], "-", color=ROTOR_COLORS[r],
-                lw=0.5, alpha=0.75)
+        ax.plot(t_stft[:T], rps_gt[r, :T], ":", color=ROTOR_COLORS[r], lw=0.5, alpha=0.55)
+        ax.plot(t_stft[:T], rps_pred[r, :T], "-", color=ROTOR_COLORS[r], lw=0.5, alpha=0.75)
     for s, e in zip(low_starts, low_ends):
         ax.axvspan(t_stft[s], t_stft[e], color="gray", alpha=0.12, lw=0)
     ax.set_ylabel("rotor speed [rev/s]")
     ax.legend(
         handles=[
-            plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="GT"),
-            plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),
+            plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="GT"),  # pyright: ignore[reportPrivateImportUsage]
+            plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),  # pyright: ignore[reportPrivateImportUsage]
         ],
-        loc="upper right", fontsize=6,
+        loc="upper right",
+        fontsize=6,
     )
     ax.grid(True, alpha=0.2, lw=0.5)
 
@@ -128,8 +137,7 @@ def plot_full_sequence(
     ax.fill_between(t_stft[:T], mse_trace, alpha=0.4, color="C0")
     ax.plot(t_stft[:T], mse_trace, color="C0", lw=0.8)
     for s, e in zip(low_starts, low_ends):
-        ax.axvspan(t_stft[s], min(t_stft[e], t_stft[T - 1]),
-                   color="gray", alpha=0.12, lw=0)
+        ax.axvspan(t_stft[s], min(t_stft[e], t_stft[T - 1]), color="gray", alpha=0.12, lw=0)
     ax.set_ylabel("MSE")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.2, lw=0.5)

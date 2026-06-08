@@ -333,8 +333,9 @@ def _plot_sample_page(sample, predictors, sid):
             ax.set_xticklabels([])
 
     legend_elements = [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=1.5, label=f"R{r + 1}") for r in range(4)
-    ] + [plt.Line2D([0], [0], color="#333333", linestyle=":", lw=1.2, label="GT")]
+        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=1.5, label=f"R{r + 1}")
+        for r in range(4)  # pyright: ignore[reportPrivateImportUsage]
+    ] + [plt.Line2D([0], [0], color="#333333", linestyle=":", lw=1.2, label="GT")]  # pyright: ignore[reportPrivateImportUsage]
     fig.legend(
         handles=legend_elements,
         loc="lower center",

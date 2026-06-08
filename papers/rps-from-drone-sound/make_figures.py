@@ -167,10 +167,11 @@ def fig_qualitative_examples():
         ax.set_xlim(0, dur)
 
     legend_handles = [
-        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),
-        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),
+        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),  # pyright: ignore[reportPrivateImportUsage]
+        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),  # pyright: ignore[reportPrivateImportUsage]
     ] + [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r]) for r in range(4)
+        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r])
+        for r in range(4)  # pyright: ignore[reportPrivateImportUsage]
     ]
     fig.subplots_adjust(bottom=0.20)
     fig.legend(
@@ -335,10 +336,11 @@ def fig_highsnr_outlier():
     ax.set_xlim(0, dur)
 
     legend_handles = [
-        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),
-        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),
+        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),  # pyright: ignore[reportPrivateImportUsage]
+        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),  # pyright: ignore[reportPrivateImportUsage]
     ] + [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r]) for r in range(4)
+        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r])
+        for r in range(4)  # pyright: ignore[reportPrivateImportUsage]
     ]
     fig.subplots_adjust(bottom=0.20)
     fig.legend(

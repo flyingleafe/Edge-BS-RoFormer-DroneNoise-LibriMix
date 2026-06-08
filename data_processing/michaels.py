@@ -344,10 +344,12 @@ def extract_noise_chunk_with_rps(
     sliced = record.slice_by_time(start_sec, start_sec + duration_sec)
 
     audio = sliced.audio[:, channel] if sliced.audio.ndim > 1 else sliced.audio
-    rps = sliced.motors.measured.T  # (4, n_motor_samples)
+    rps = (
+        sliced.motors.measured.T
+    )  # (4, n_motor_samples)  # pyright: ignore[reportOptionalMemberAccess]
 
-    if len(sliced.motors.timestamps) > 1:
-        motor_sr = 1.0 / float(np.median(np.diff(sliced.motors.timestamps)))
+    if len(sliced.motors.timestamps) > 1:  # pyright: ignore[reportOptionalMemberAccess]
+        motor_sr = 1.0 / float(np.median(np.diff(sliced.motors.timestamps)))  # pyright: ignore[reportOptionalMemberAccess]
     else:
         motor_sr = 30.0  # DJI motor log is typically ~30 Hz
 

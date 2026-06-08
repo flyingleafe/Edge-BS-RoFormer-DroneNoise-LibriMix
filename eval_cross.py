@@ -112,7 +112,7 @@ for tag, ds, indices in [("old", old_ds, old_indices), ("v2", new_ds, new_indice
 
         # Inference from all models
         for model_name, model in loaded_models.items():
-            with torch.no_grad(), torch.amp.autocast("cuda"):
+            with torch.no_grad(), torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
                 pred = model(audio).cpu().squeeze(0)  # (4, T)
             np.save(out_dir / f"rps_pred_{model_name}.npy", pred.numpy())
 
@@ -203,7 +203,7 @@ for sample in all_samples:
             all_targets_rps.append(rps_chunk.numpy())
 
         for model_name, model in loaded_models.items():
-            with torch.no_grad(), torch.amp.autocast("cuda"):
+            with torch.no_grad(), torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
                 pred = model(chunk).cpu().squeeze(0)
             all_preds[model_name].append(pred.numpy())
 

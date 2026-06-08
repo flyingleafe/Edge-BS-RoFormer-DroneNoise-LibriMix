@@ -1,7 +1,8 @@
 """Plotting utilities for rotor geometry and acoustic results."""
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
 from .geometry import Blade, Rotor
 
 
@@ -99,9 +100,7 @@ def plot_blade_geometry(
     ax_t = ax_c.twinx()
 
     (l_c,) = ax_c.plot(r * 1000, c * 1000, color=fill_color, lw=2, label="Chord (mm)")
-    (l_t,) = ax_t.plot(
-        r * 1000, np.rad2deg(theta), "C1", lw=2, label="Twist (deg)"
-    )
+    (l_t,) = ax_t.plot(r * 1000, np.rad2deg(theta), "C1", lw=2, label="Twist (deg)")
 
     ax_c.set_xlabel("Radius (mm)")
     ax_c.set_ylabel("Chord (mm)", color=fill_color)
@@ -177,7 +176,7 @@ def plot_rotor_top_view(
     # Hub circle
     hub_r = float(blade.r_hub)
     if hub_r > 0:
-        hub = plt.Circle((0, 0), hub_r, color="gray", alpha=0.5)
+        hub = plt.Circle((0, 0), hub_r, color="gray", alpha=0.5)  # pyright: ignore[reportPrivateImportUsage]
         ax.add_patch(hub)
 
     ax.set_aspect("equal", adjustable="box")

@@ -333,7 +333,7 @@ class EventSeries(TimeSeries):
         t_start: float | int | None = None,
         t_end: float | int | None = None,
         kind: str = "linear",
-    ) -> UniformSeries:
+    ) -> UniformSeries:  # pyright: ignore[reportUndefinedVariable]
         """Convert this event series to a uniformly-sampled ``UniformSeries``
         at sample rate ``sr``.
 

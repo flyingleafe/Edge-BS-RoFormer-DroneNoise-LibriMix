@@ -198,7 +198,7 @@ class DCUNetEncRPS(nn.Module):
         for ic, oc, k, s, p in enc_spec:
             self.encoders.append(
                 nn.Sequential(
-                    DCUNetCConv(ic, oc, k, s, p),
+                    DCUNetCConv(ic, oc, k, s, p),  # pyright: ignore[reportArgumentType]
                     DCUNetCBN(oc),
                     nn.LeakyReLU(0.2),
                 )
@@ -221,7 +221,7 @@ class DCUNetEncRPS(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=self.window,  # pyright: ignore[reportArgumentType]
             return_complex=True,
             normalized=True,
         )
@@ -276,7 +276,7 @@ class DCCRNEncRPS(nn.Module):
         for ic, oc in zip(in_channels, encoder_channels):
             self.encoders.append(
                 nn.Sequential(
-                    DCCRN_CConv(ic, oc, enc_kernel, enc_stride, enc_padding),
+                    DCCRN_CConv(ic, oc, enc_kernel, enc_stride, enc_padding),  # pyright: ignore[reportArgumentType]
                     DCCRN_CBN(oc),
                     nn.LeakyReLU(0.2),
                 )
@@ -298,7 +298,7 @@ class DCCRNEncRPS(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=self.window,  # pyright: ignore[reportArgumentType]
             return_complex=True,
             normalized=True,
         )
@@ -445,7 +445,7 @@ def wandb_init(args: argparse.Namespace, model_name: str) -> None:
             "hop_length": args.hop_length,
         },
     )
-    wandb.init(**init_kwargs)
+    wandb.init(**init_kwargs)  # pyright: ignore[reportArgumentType]
 
     # Write run ID to save path
     if wandb.run is not None and wandb.run.id:
@@ -495,7 +495,7 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
         for audio, rps_target in loader:
             audio, rps_target = audio.to(device), rps_target.to(device)
             audio, rps_target, C = _flatten_channels(audio, rps_target)
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast("cuda"):  # pyright: ignore[reportArgumentType, reportPrivateImportUsage]
                 rps_pred = model(audio)
                 pit_loss = pit_mse_loss(rps_pred, rps_target)
                 std_loss = F.mse_loss(rps_pred, rps_target)
@@ -590,7 +590,7 @@ def train_model(model_name, args):
         factor=0.5,
         patience=5,
     )
-    scaler = torch.amp.GradScaler("cuda")
+    scaler = torch.amp.GradScaler("cuda")  # pyright: ignore[reportPrivateImportUsage]
 
     # Naive baseline
     print("Computing naive baseline...")
@@ -625,7 +625,7 @@ def train_model(model_name, args):
             # Flatten multichannel batch: (B, C, T) → (B*C, T)
             audio, rps_target, _C = _flatten_channels(audio, rps_target)
             optimizer.zero_grad()
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
                 rps_pred = model(audio)
                 if args.pit_loss:
                     loss = pit_mse_loss(rps_pred, rps_target)

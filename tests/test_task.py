@@ -1,11 +1,11 @@
 from postdoc.task import build_bootstrap_task, build_exec_task
 
-
 FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
 FAKE_URL = "git@github.com:user/repo.git"
 
 
 # ---------- bootstrap -------------------------------------------------------
+
 
 def test_bootstrap_has_hostpath_mount():
     t = build_bootstrap_task()
@@ -46,6 +46,7 @@ def test_bootstrap_setup_installs_uv_and_syncs():
 
 
 # ---------- exec ------------------------------------------------------------
+
 
 def _exec(**kw):
     base = dict(command="python train.py", git_sha=FAKE_SHA, git_url=FAKE_URL)
@@ -97,3 +98,28 @@ def test_exec_env_overrides_merge():
     assert t["envs"]["WANDB_MODE"] == "online"
     # Git envs still there.
     assert t["envs"]["POSTDOC_GIT_SHA"] == FAKE_SHA
+
+
+def test_exec_with_name_includes_name_field():
+    t = build_exec_task("python train.py", git_sha=FAKE_SHA, git_url=FAKE_URL, name="my-job")
+    assert t["name"] == "my-job"
+
+
+def test_dump_task_yaml_writes_multiline_as_block_scalar(tmp_path):
+    from postdoc.task import build_bootstrap_task, dump_task_yaml
+
+    t = build_bootstrap_task()
+    p = tmp_path / "task.yaml"
+    result = dump_task_yaml(t, p)
+    assert result == p
+    content = p.read_text()
+    assert "|-" in content or "|" in content  # block scalar for multiline strings
+
+
+def test_task_to_yaml_returns_string():
+    from postdoc.task import build_exec_task, task_to_yaml
+
+    t = build_exec_task("echo hello", git_sha=FAKE_SHA, git_url=FAKE_URL)
+    yml = task_to_yaml(t)
+    assert isinstance(yml, str)
+    assert "echo hello" in yml

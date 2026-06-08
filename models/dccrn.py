@@ -7,6 +7,7 @@ from models.dcunet import RPSPredictionHead
 
 class CConv2d(nn.Module):
     """Complex Convolutional Layer"""
+
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
         super().__init__()
         self.real_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -27,12 +28,15 @@ class CConv2d(nn.Module):
 
 class CConvTranspose2d(nn.Module):
     """Complex Transpose Convolutional Layer"""
+
     def __init__(self, in_channels, out_channels, kernel_size, stride, output_padding=0, padding=0):
         super().__init__()
-        self.real_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
-                                           stride, padding, output_padding)
-        self.im_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
-                                         stride, padding, output_padding)
+        self.real_convt = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size, stride, padding, output_padding
+        )
+        self.im_convt = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size, stride, padding, output_padding
+        )
         nn.init.xavier_uniform_(self.real_convt.weight)
         nn.init.xavier_uniform_(self.im_convt.weight)
 
@@ -49,6 +53,7 @@ class CConvTranspose2d(nn.Module):
 
 class CBatchNorm2d(nn.Module):
     """Complex Batch Normalization"""
+
     def __init__(self, num_features):
         super().__init__()
         self.real_bn = nn.BatchNorm2d(num_features)
@@ -67,6 +72,7 @@ class CBatchNorm2d(nn.Module):
 
 class Encoder(nn.Module):
     """Encoder Module"""
+
     def __init__(self, in_channels, out_channels, kernel, stride, padding):
         super().__init__()
         self.cconv = CConv2d(in_channels, out_channels, kernel, stride, padding)
@@ -81,9 +87,14 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     """Decoder Module"""
-    def __init__(self, in_channels, out_channels, kernel, stride, output_padding, padding, last_layer=False):
+
+    def __init__(
+        self, in_channels, out_channels, kernel, stride, output_padding, padding, last_layer=False
+    ):
         super().__init__()
-        self.cconvt = CConvTranspose2d(in_channels, out_channels, kernel, stride, output_padding, padding)
+        self.cconvt = CConvTranspose2d(
+            in_channels, out_channels, kernel, stride, output_padding, padding
+        )
         self.cbn = CBatchNorm2d(out_channels) if not last_layer else None
         self.act = nn.LeakyReLU() if not last_layer else None
         self.last_layer = last_layer
@@ -91,8 +102,8 @@ class Decoder(nn.Module):
     def forward(self, x):
         x = self.cconvt(x)
         if not self.last_layer:
-            x = self.cbn(x)
-            x = self.act(x)
+            x = self.cbn(x)  # pyright: ignore[reportOptionalCall]
+            x = self.act(x)  # pyright: ignore[reportOptionalCall]
         else:
             x = x.float()
             m_phase = x / (torch.abs(x) + 1e-8)
@@ -103,18 +114,24 @@ class Decoder(nn.Module):
 
 class STFTProcessor(nn.Module):
     """STFT Processing Module"""
+
     def __init__(self, config):
         super().__init__()
-        self.n_fft = config['audio']['n_fft']
-        self.hop_length = config['audio']['hop_length']
+        self.n_fft = config["audio"]["n_fft"]
+        self.hop_length = config["audio"]["hop_length"]
         self.window = torch.hann_window(self.n_fft)
 
     def transform(self, x):
         """Input: (batch, channels, time) -> Output: (batch, 1, freq, time, 2)"""
         x = x.squeeze(1)
-        X = torch.stft(x, n_fft=self.n_fft, hop_length=self.hop_length,
-                       window=self.window.to(x.device), return_complex=True,
-                       normalized=True)
+        X = torch.stft(
+            x,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window.to(x.device),
+            return_complex=True,
+            normalized=True,
+        )
         X = torch.view_as_real(X)
         X = X.unsqueeze(1)
         return X
@@ -123,14 +140,20 @@ class STFTProcessor(nn.Module):
         """Input: (batch, 1, freq, time, 2) -> Output: (batch, 1, time)"""
         X = X.squeeze(1)
         X = torch.view_as_complex(X)
-        x = torch.istft(X, n_fft=self.n_fft, hop_length=self.hop_length,
-                        window=self.window.to(X.device), normalized=True)
+        x = torch.istft(
+            X,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window.to(X.device),
+            normalized=True,
+        )
         x = x.unsqueeze(1)
         return x
 
 
 class RotorEncoder(nn.Module):
     """Encodes rotor RPS time series via two 1D convs. Output: (B, 64, target_length)."""
+
     def __init__(self, num_rotors, out_channels=64, kernel_size=3):
         super().__init__()
         padding = kernel_size // 2
@@ -184,6 +207,7 @@ class DCCRN(nn.Module):
     RPS-informed variants, rotor features are concatenated with the encoded
     spectrogram before the GRU.
     """
+
     def __init__(self, config):
         super().__init__()
         self.stft = STFTProcessor(config)
@@ -264,11 +288,17 @@ class DCCRN(nn.Module):
             else:
                 in_ch = dec_out[i - 1] * 2  # prev decoder output + skip
             out_ch = dec_out[i]
-            is_last = (i == len(dec_out) - 1)
+            is_last = i == len(dec_out) - 1
             self.decoders.append(
-                Decoder(in_ch, out_ch, dec_kernel, dec_stride,
-                        output_padding=dec_output_padding, padding=dec_padding,
-                        last_layer=is_last)
+                Decoder(
+                    in_ch,
+                    out_ch,
+                    dec_kernel,
+                    dec_stride,
+                    output_padding=dec_output_padding,
+                    padding=dec_padding,
+                    last_layer=is_last,
+                )
             )
 
         # Auxiliary RPS prediction head (hierarchical, uses all encoder levels)
@@ -315,7 +345,9 @@ class DCCRN(nn.Module):
 
         # Concatenate rotor features before GRU (Gulli et al. RPS-DCCRN)
         if self.use_rps and rps is not None:
-            rotor_feat = self.rotor_encoder(rps, target_length=T_b)  # (B, 64, T_b)
+            rotor_feat = self.rotor_encoder(
+                rps, target_length=T_b
+            )  # (B, 64, T_b)  # pyright: ignore[reportOptionalCall]
             rotor_feat = rotor_feat.permute(0, 2, 1)  # (B, T_b, 64)
             gru_in = torch.cat([gru_in, rotor_feat], dim=-1)
 

@@ -120,8 +120,8 @@ def compute_per_snr_from_excel(excel_path):
         per_snr[level] = {"n": len(subset)}
         for m in METRICS:
             vals = subset[m].dropna().values
-            per_snr[level][m] = np.mean(vals) if len(vals) > 0 else float("nan")
-            per_snr[level][f"{m}_std"] = np.std(vals) if len(vals) > 0 else float("nan")
+            per_snr[level][m] = np.mean(vals) if len(vals) > 0 else float("nan")  # pyright: ignore[reportCallIssue]
+            per_snr[level][f"{m}_std"] = np.std(vals) if len(vals) > 0 else float("nan")  # pyright: ignore[reportCallIssue]
     return per_snr
 
 
@@ -141,7 +141,7 @@ def plot_comparison(model_data, output_path):
     """Create 3-panel comparison plot."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    colors = plt.cm.tab10.colors
+    colors = plt.cm.tab10.colors  # pyright: ignore[reportAttributeAccessIssue]
     markers = ["o", "s", "^", "D", "v", "<", ">", "p"]
 
     for ax_idx, metric in enumerate(METRICS):

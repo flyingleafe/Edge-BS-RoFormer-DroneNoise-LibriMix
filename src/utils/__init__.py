@@ -1,37 +1,35 @@
-# coding: utf-8
 __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import necessary libraries
 import argparse
+import os
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
+
+import loralib as lora
+import matplotlib.pyplot as plt
 import numpy as np
+import soundfile as sf
 import torch
 import torch.nn as nn
-import yaml
-import os
-import soundfile as sf
-import matplotlib.pyplot as plt
-from ml_collections import ConfigDict
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
-from typing import Dict, List, Tuple, Any, Union
-import loralib as lora
 
 
-def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaConf]:
+def load_config(model_type: str, config_path: str) -> DictConfig:
     """
-    Load configuration file from specified path based on model type.
+    Load configuration file from specified path.
 
     Args:
     ----------
     model_type : str
         Model type (e.g., 'htdemucs', 'mdx23c', etc.)
     config_path : str
-        Path to YAML or OmegaConf configuration file
+        Path to YAML configuration file
 
     Returns:
     -------
-    config : Any
-        Loaded configuration object, can be OmegaConf or ConfigDict format
+    DictConfig
+        Loaded OmegaConf DictConfig object
 
     Raises:
     ------
@@ -39,21 +37,17 @@ def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaCon
     ValueError: When error occurs loading configuration file
     """
     try:
-        with open(config_path, "r") as f:
-            # htdemucs model uses OmegaConf format configuration
-            if model_type == "htdemucs":
-                config = OmegaConf.load(config_path)
-            # Other models use yaml format configuration
-            else:
-                config = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
-            return config
+        cfg = OmegaConf.load(config_path)
+        if not isinstance(cfg, DictConfig):
+            raise ValueError(f"Expected a mapping config, got {type(cfg).__name__}")
+        return cfg
     except FileNotFoundError:
         raise FileNotFoundError(f"Configuration file not found at {config_path}")
     except Exception as e:
         raise ValueError(f"Error loading configuration: {e}")
 
 
-def get_model_from_config(model_type: str, config_path: str) -> Tuple:
+def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module, DictConfig]:
     """
     Load corresponding model based on model type and configuration file.
 
@@ -203,8 +197,8 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
 
 
 def read_audio_transposed(
-    path: str, instr: str = None, skip_err: bool = False
-) -> Tuple[np.ndarray, int]:
+    path: str, instr: str | None = None, skip_err: bool = False
+) -> tuple[np.ndarray, int] | tuple[None, None]:
     """
     Read audio file and transpose it.
 
@@ -239,7 +233,7 @@ def read_audio_transposed(
         return mix.T, sr
 
 
-def normalize_audio(audio: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+def normalize_audio(audio: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
     """
     Normalize audio signal.
 
@@ -262,7 +256,7 @@ def normalize_audio(audio: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
     return (audio - mean) / std, {"mean": mean, "std": std}
 
 
-def denormalize_audio(audio: np.ndarray, norm_params: Dict[str, float]) -> np.ndarray:
+def denormalize_audio(audio: np.ndarray, norm_params: dict[str, float]) -> np.ndarray:
     """
     Denormalize a normalized audio signal.
 
@@ -283,13 +277,13 @@ def denormalize_audio(audio: np.ndarray, norm_params: Dict[str, float]) -> np.nd
 
 
 def apply_tta(
-    config,
-    model: torch.nn.Module,
+    config: DictConfig,
+    model: nn.Module,
     mix: torch.Tensor,
-    waveforms_orig: Dict[str, torch.Tensor],
+    waveforms_orig: dict[str, np.ndarray],
     device: torch.device,
     model_type: str,
-) -> Dict[str, torch.Tensor]:
+) -> dict[str, np.ndarray]:
     """
     Apply test-time augmentation (TTA) for source separation.
 
@@ -317,16 +311,19 @@ def apply_tta(
         Updated separated waveforms dictionary after applying TTA
     """
     # Create augmentations: channel inversion and polarity inversion
-    track_proc_list = [mix[::-1].copy(), -1.0 * mix.copy()]
+    track_proc_list: list[torch.Tensor] = [mix.flip(0), -1.0 * mix]
 
     # Process each augmented mixture
     for i, augmented_mix in enumerate(track_proc_list):
         waveforms = demix(config, model, augmented_mix, device, model_type=model_type)
+        if not isinstance(waveforms, dict):
+            continue
         for el in waveforms:
+            wav: np.ndarray = waveforms[el]
             if i == 0:
-                waveforms_orig[el] += waveforms[el][::-1].copy()
+                waveforms_orig[el] = waveforms_orig[el] + wav[::-1].copy()
             else:
-                waveforms_orig[el] -= waveforms[el]
+                waveforms_orig[el] = waveforms_orig[el] - wav
 
     # Average all augmented results
     for el in waveforms_orig:
@@ -364,14 +361,14 @@ def _getWindowingArray(window_size: int, fade_size: int) -> torch.Tensor:
 
 
 def demix(
-    config: ConfigDict,
-    model: torch.nn.Module,
+    config: DictConfig,
+    model: nn.Module,
     mix: torch.Tensor,
     device: torch.device,
     model_type: str,
     pbar: bool = False,
-    rps: Union[torch.Tensor, np.ndarray, None] = None,
-) -> Tuple[List[Dict[str, np.ndarray]], np.ndarray]:
+    rps: torch.Tensor | np.ndarray | None = None,
+) -> dict[str, np.ndarray] | np.ndarray:
     """
     Unified source separation function supporting multiple processing modes.
 
@@ -408,17 +405,19 @@ def demix(
         mode = "generic"
 
     # Set processing parameters based on mode
+    fade_size: int = 0
+    border: int = 0
     if mode == "demucs":
         # Demucs mode parameters
-        chunk_size = config.training.samplerate * config.training.segment
-        num_instruments = len(config.training.instruments)
-        num_overlap = config.inference.num_overlap
+        chunk_size = cast(int, config.training.samplerate * config.training.segment)
+        num_instruments = cast(int, len(config.training.instruments))
+        num_overlap = cast(int, config.inference.num_overlap)
         step = chunk_size // num_overlap
     else:
         # Generic mode parameters
-        chunk_size = config.audio.chunk_size
-        num_instruments = len(prefer_target_instrument(config))
-        num_overlap = config.inference.num_overlap
+        chunk_size = cast(int, config.audio.chunk_size)
+        num_instruments = cast(int, len(prefer_target_instrument(config)))
+        num_overlap = cast(int, config.inference.num_overlap)
 
         fade_size = chunk_size // 10
         step = chunk_size // num_overlap
@@ -440,7 +439,7 @@ def demix(
             result = torch.zeros(req_shape, dtype=torch.float32)
             counter = torch.zeros(req_shape, dtype=torch.float32)
 
-            i = 0
+            i: int = 0
             batch_data = []
             batch_rps = []
             batch_locations = []
@@ -461,9 +460,7 @@ def demix(
                     pad_mode = "reflect"
                 else:
                     pad_mode = "constant"
-                part = nn.functional.pad(
-                    part, (0, chunk_size - chunk_len), mode=pad_mode, value=0
-                )
+                part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
 
                 batch_data.append(part)
                 if use_rps:
@@ -498,7 +495,11 @@ def demix(
                         rps_pred = x[1]
                         x = x[0]
                         rps_norm_scale = getattr(config, "rps_norm_scale", None)
-                        if rps_pred is not None and rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                        if (
+                            rps_pred is not None
+                            and rps_norm_scale is not None
+                            and float(rps_norm_scale) != 1.0
+                        ):
                             rps_pred = rps_pred * float(rps_norm_scale)
 
                     if mode == "generic":
@@ -514,13 +515,9 @@ def demix(
                             result[..., start : start + seg_len] += (
                                 x[j, ..., :seg_len].cpu() * window[..., :seg_len]
                             )
-                            counter[..., start : start + seg_len] += window[
-                                ..., :seg_len
-                            ]
+                            counter[..., start : start + seg_len] += window[..., :seg_len]
                         else:
-                            result[..., start : start + seg_len] += x[
-                                j, ..., :seg_len
-                            ].cpu()
+                            result[..., start : start + seg_len] += x[j, ..., :seg_len].cpu()
                             counter[..., start : start + seg_len] += 1.0
 
                     batch_data.clear()
@@ -558,7 +555,7 @@ def demix(
         return ret_data
 
 
-def prefer_target_instrument(config: ConfigDict) -> List[str]:
+def prefer_target_instrument(config: DictConfig) -> list[str]:
     """
     Return target instrument list based on configuration.
 
@@ -614,9 +611,7 @@ def load_not_compatible_weights(
                 # Handle different shape case
                 if len(new_model[el].shape) != len(old_model[el].shape):
                     if verbose:
-                        print(
-                            "Action: Different dimension! Too lazy to write the code... Skip it"
-                        )
+                        print("Action: Different dimension! Too lazy to write the code... Skip it")
                 else:
                     if verbose:
                         print(
@@ -628,9 +623,7 @@ def load_not_compatible_weights(
                     slices_old = []
                     slices_new = []
                     for i in range(ln):
-                        max_shape.append(
-                            max(new_model[el].shape[i], old_model[el].shape[i])
-                        )
+                        max_shape.append(max(new_model[el].shape[i], old_model[el].shape[i]))
                         slices_old.append(slice(0, old_model[el].shape[i]))
                         slices_new.append(slice(0, new_model[el].shape[i]))
                     slices_old = tuple(slices_old)
@@ -646,9 +639,7 @@ def load_not_compatible_weights(
     model.load_state_dict(new_model)
 
 
-def load_lora_weights(
-    model: torch.nn.Module, lora_path: str, device: str = "cpu"
-) -> None:
+def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = "cpu") -> None:
     """
     Load LoRA weights into model.
 
@@ -665,9 +656,7 @@ def load_lora_weights(
     model.load_state_dict(lora_state_dict, strict=False)
 
 
-def load_start_checkpoint(
-    args: argparse.Namespace, model: torch.nn.Module, type_="train"
-) -> None:
+def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type_="train") -> None:
     """
     Load starting checkpoint for model.
 
@@ -687,9 +676,7 @@ def load_start_checkpoint(
     else:
         device = "cpu"
         if args.model_type in ["htdemucs", "apollo"]:
-            state_dict = torch.load(
-                args.start_check_point, map_location=device, weights_only=False
-            )
+            state_dict = torch.load(args.start_check_point, map_location=device, weights_only=False)
             # htdemucs pretrained model fix
             if "state" in state_dict:
                 state_dict = state_dict["state"]
@@ -697,9 +684,7 @@ def load_start_checkpoint(
             if "state_dict" in state_dict:
                 state_dict = state_dict["state_dict"]
         else:
-            state_dict = torch.load(
-                args.start_check_point, map_location=device, weights_only=True
-            )
+            state_dict = torch.load(args.start_check_point, map_location=device, weights_only=True)
         model.load_state_dict(state_dict)
 
     if args.lora_checkpoint:
@@ -707,7 +692,7 @@ def load_start_checkpoint(
         load_lora_weights(model, args.lora_checkpoint)
 
 
-def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
+def bind_lora_to_model(config: DictConfig, model: nn.Module) -> nn.Module:
     """
     Replace specific layers in model with LoRA extended versions.
 
@@ -725,9 +710,7 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
     """
 
     if "lora" not in config:
-        raise ValueError(
-            "Configuration must contain the 'lora' key with parameters for LoRA."
-        )
+        raise ValueError("Configuration must contain the 'lora' key with parameters for LoRA.")
 
     replaced_layers = 0  # Replaced layer counter
 
@@ -761,9 +744,7 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
                 print(f"Error replacing layer {name}: {e}")
 
     if replaced_layers == 0:
-        print(
-            "Warning: No layers were replaced. Check the model structure and configuration."
-        )
+        print("Warning: No layers were replaced. Check the model structure and configuration.")
     else:
         print(f"Number of layers replaced with LoRA: {replaced_layers}")
 

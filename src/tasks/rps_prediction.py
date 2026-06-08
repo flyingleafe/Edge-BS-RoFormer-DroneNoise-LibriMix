@@ -126,7 +126,7 @@ def load_predictor(spec: Any) -> RPSPredictor:
         return _ModelPredictor(model)
 
     raise ValueError(
-        f"Unknown predictor spec {s!r}.  Expected 'Type@ckpt.pt' or one of {sorted(classical)}."
+        f"Unknown predictor spec {s!r}.  Expected 'Type@ckpt.pt' or one of {sorted(_CLASSICAL_ATTR)}."
     )
 
 
@@ -541,7 +541,7 @@ def evaluate(
             if snr_tag is not None:
                 row["input_snr"] = snr_tag
             if per_ch_snr is not None and ch < len(per_ch_snr):
-                row["input_snr_channel"] = per_ch_snr[ch]
+                row["input_snr_channel"] = per_ch_snr[ch]  # pyright: ignore[reportIndexIssue]
 
             per_sample.append(row)
             all_mse.append(mse)

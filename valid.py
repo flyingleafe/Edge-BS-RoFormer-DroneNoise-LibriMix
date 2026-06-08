@@ -1,38 +1,36 @@
-# coding: utf-8
 __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import required libraries
 import argparse
-import time
-import os
 import glob
-import torch
+import os
+import time
+import warnings
+
 import librosa
 import numpy as np
 import soundfile as sf
+import torch
+from omegaconf import DictConfig
 from tqdm.auto import tqdm
-from ml_collections import ConfigDict
-from typing import Tuple, Dict, List, Union
-from utils import (
-    demix,
-    get_model_from_config,
-    prefer_target_instrument,
-    draw_spectrogram,
-)
-from utils import (
-    normalize_audio,
-    denormalize_audio,
-    apply_tta,
-    read_audio_transposed,
-    load_start_checkpoint,
-)
+
 from metrics import get_metrics
-import warnings
+from utils import (
+    apply_tta,
+    demix,
+    denormalize_audio,
+    draw_spectrogram,
+    get_model_from_config,
+    load_start_checkpoint,
+    normalize_audio,
+    prefer_target_instrument,
+    read_audio_transposed,
+)
 
 warnings.filterwarnings("ignore")
 
 
-def logging(logs: List[str], text: str, verbose_logging: bool = False) -> None:
+def logging(logs: list[str], text: str, verbose_logging: bool = False) -> None:
     """
     Log information during validation process.
 
@@ -51,7 +49,7 @@ def logging(logs: List[str], text: str, verbose_logging: bool = False) -> None:
         logs.append(text)
 
 
-def write_results_in_file(store_dir: str, logs: List[str]) -> None:
+def write_results_in_file(store_dir: str, logs: list[str]) -> None:
     """
     Write validation results to file.
 
@@ -67,9 +65,7 @@ def write_results_in_file(store_dir: str, logs: List[str]) -> None:
             out.write(item + "\n")
 
 
-def get_mixture_paths(
-    args, verbose: bool, config: ConfigDict, extension: str
-) -> List[str]:
+def get_mixture_paths(args, verbose: bool, config: DictConfig, extension: str) -> list[str]:
     """
     Get paths to mixture audio files for validation.
 
@@ -79,7 +75,7 @@ def get_mixture_paths(
         List of validation dataset directories
     verbose : bool
         Whether to print detailed information
-    config : ConfigDict
+    config : DictConfig
         Configuration object containing inference parameters like overlap count and batch size
     extension : str
         Audio file extension
@@ -104,19 +100,17 @@ def get_mixture_paths(
         all_mixtures_path += part
     if verbose:
         print(f"Total mixtures: {len(all_mixtures_path)}")
-        print(
-            f"Overlap: {config.inference.num_overlap} Batch size: {config.inference.batch_size}"
-        )
+        print(f"Overlap: {config.inference.num_overlap} Batch size: {config.inference.batch_size}")
 
     return all_mixtures_path
 
 
 def update_metrics_and_pbar(
-    track_metrics: Dict,
-    all_metrics: Dict,
+    track_metrics: dict,
+    all_metrics: dict,
     instr: str,
-    pbar_dict: Dict,
-    mixture_paths: Union[List[str], tqdm],
+    pbar_dict: dict,
+    mixture_paths: list[str] | tqdm,
     verbose: bool = False,
 ) -> None:
     """
@@ -145,20 +139,20 @@ def update_metrics_and_pbar(
 
     if mixture_paths is not None:
         try:
-            mixture_paths.set_postfix(pbar_dict)
+            mixture_paths.set_postfix(pbar_dict)  # pyright: ignore[reportAttributeAccessIssue]
         except Exception:
             pass
 
 
 def process_audio_files(
-    mixture_paths: List[str],
+    mixture_paths: list[str],
     model: torch.nn.Module,
     args,
     config,
     device: torch.device,
     verbose: bool = False,
     is_tqdm: bool = True,
-) -> Dict[str, Dict[str, List[float]]]:
+) -> dict[str, dict[str, list[float]]]:
     """
     Process audio files and perform source separation evaluation.
 
@@ -199,19 +193,22 @@ def process_audio_files(
 
     # Initialize evaluation metrics dictionary
     all_metrics = {
-        metric: {instr: [] for instr in config.training.instruments}
-        for metric in args.metrics
+        metric: {instr: [] for instr in config.training.instruments} for metric in args.metrics
     }
 
     if is_tqdm:
-        mixture_paths = tqdm(mixture_paths)
+        path_iter = tqdm(mixture_paths, desc="Processing")
+    else:
+        path_iter = mixture_paths
 
     # Process each mixture audio file
-    for path in mixture_paths:
+    for path in path_iter:
         start_time = time.time()
         # Read mixture audio
         mix, sr = read_audio_transposed(path)
-        mix_orig = mix.copy()
+        if mix is None or sr is None:
+            continue
+        mix_orig: np.ndarray = mix.copy()
         folder = os.path.dirname(path)
 
         # Resample to target sample rate
@@ -246,14 +243,15 @@ def process_audio_files(
                 rps = np.load(rps_path)
 
         # Perform source separation using model
+        mix_tensor = torch.from_numpy(mix.copy())
         waveforms_orig = demix(
-            config, model, mix.copy(), device, model_type=args.model_type, rps=rps
+            config, model, mix_tensor, device, model_type=args.model_type, rps=rps
         )
 
         # Apply test-time augmentation
-        if use_tta:
+        if use_tta and isinstance(waveforms_orig, dict):
             waveforms_orig = apply_tta(
-                config, model, mix, waveforms_orig, device, args.model_type
+                config, model, mix_tensor, waveforms_orig, device, args.model_type
             )
 
         pbar_dict = {}
@@ -301,9 +299,7 @@ def process_audio_files(
                 if args.draw_spectro > 0:
                     out_img_name = f"{store_dir}/{os.path.basename(folder)}_{instr}.jpg"
                     draw_spectrogram(estimates.T, sr, args.draw_spectro, out_img_name)
-                    out_img_name_orig = (
-                        f"{store_dir}/{os.path.basename(folder)}_{instr}_orig.jpg"
-                    )
+                    out_img_name_orig = f"{store_dir}/{os.path.basename(folder)}_{instr}_orig.jpg"
                     draw_spectrogram(track.T, sr, args.draw_spectro, out_img_name_orig)
 
             # Calculate evaluation metrics
@@ -334,11 +330,11 @@ def process_audio_files(
 def compute_metric_avg(
     store_dir: str,
     args,
-    instruments: List[str],
-    config: ConfigDict,
-    all_metrics: Dict[str, Dict[str, List[float]]],
+    instruments: list[str],
+    config: DictConfig,
+    all_metrics: dict[str, dict[str, list[float]]],
     start_time: float,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Compute and log average evaluation metrics for each instrument.
 
@@ -350,7 +346,7 @@ def compute_metric_avg(
         Arguments dictionary
     instruments : List[str]
         List of instruments
-    config : ConfigDict
+    config : DictConfig
         Configuration dictionary
     all_metrics : Dict[str, Dict[str, List[float]]]
         Dictionary of all evaluation metrics
@@ -420,7 +416,7 @@ def compute_metric_avg(
 def valid_rps_only(
     model: torch.nn.Module,
     args,
-    config: ConfigDict,
+    config: DictConfig,
     device: torch.device,
     verbose: bool = False,
 ) -> dict:
@@ -442,9 +438,7 @@ def valid_rps_only(
         args,
         verbose,
         config,
-        getattr(config.inference, "extension", "wav")
-        if hasattr(config, "inference")
-        else "wav",
+        getattr(config.inference, "extension", "wav") if hasattr(config, "inference") else "wav",
     )
 
     chunk_size = config.audio.chunk_size
@@ -465,6 +459,8 @@ def valid_rps_only(
 
             # Load mixture audio
             mix, sr = read_audio_transposed(path)
+            if mix is None or sr is None:
+                continue
             if sr != sample_rate:
                 mix = librosa.resample(
                     mix, orig_sr=sr, target_sr=sample_rate, res_type="kaiser_best"
@@ -489,15 +485,11 @@ def valid_rps_only(
                 if rps_np.shape[-1] > rps_length:
                     rps_np = rps_np[..., :rps_length]
                 elif rps_np.shape[-1] < rps_length:
-                    rps_np = np.pad(
-                        rps_np, ((0, 0), (0, rps_length - rps_np.shape[-1]))
-                    )
+                    rps_np = np.pad(rps_np, ((0, 0), (0, rps_length - rps_np.shape[-1])))
 
             # To tensors
             mix_t = torch.from_numpy(mix).float().unsqueeze(0).to(device)  # (1, C, T)
-            rps_t = (
-                torch.from_numpy(rps_np).float().unsqueeze(0).to(device)
-            )  # (1, 4, rps_len)
+            rps_t = torch.from_numpy(rps_np).float().unsqueeze(0).to(device)  # (1, 4, rps_len)
 
             # Forward pass
             if args.model_type == "rps_predictor":
@@ -547,9 +539,7 @@ def valid_rps_only(
 
     elapsed = time.time() - start_time
     if verbose:
-        print(
-            f"RPS Validation: MSE={avg_mse:.4f}, MAE={avg_mae:.4f}, R²={r2:.4f} ({elapsed:.1f}s)"
-        )
+        print(f"RPS Validation: MSE={avg_mse:.4f}, MAE={avg_mae:.4f}, R²={r2:.4f} ({elapsed:.1f}s)")
 
     model.train()
     return {
@@ -563,7 +553,7 @@ def valid_rps_only(
 def valid(
     model: torch.nn.Module,
     args,
-    config: ConfigDict,
+    config: DictConfig,
     device: torch.device,
     verbose: bool = False,
 ) -> dict:
@@ -609,19 +599,17 @@ def valid(
     instruments = prefer_target_instrument(config)
 
     # Compute average evaluation metrics
-    return compute_metric_avg(
-        store_dir, args, instruments, config, all_metrics, start_time
-    )
+    return compute_metric_avg(store_dir, args, instruments, config, all_metrics, start_time)
 
 
 def validate_in_subprocess(
     proc_id: int,
     queue: torch.multiprocessing.Queue,
-    all_mixtures_path: List[str],
+    all_mixtures_path: list[str],
     model: torch.nn.Module,
     args,
-    config: ConfigDict,
-    device: str,
+    config: DictConfig,
+    device: torch.device,
     return_dict,
 ) -> None:
     """
@@ -639,7 +627,7 @@ def validate_in_subprocess(
         Source separation model
     args : dict
         Arguments dictionary
-    config : ConfigDict
+    config : DictConfig
         Configuration object
     device : str
         Computing device
@@ -653,17 +641,14 @@ def validate_in_subprocess(
 
     # Initialize evaluation metrics dictionary
     all_metrics = {
-        metric: {instr: [] for instr in config.training.instruments}
-        for metric in args.metrics
+        metric: {instr: [] for instr in config.training.instruments} for metric in args.metrics
     }
 
     while True:
         current_step, path = queue.get()
         if path is None:  # Check for end marker
             break
-        single_metrics = process_audio_files(
-            [path], m1, args, config, device, False, False
-        )
+        single_metrics = process_audio_files([path], m1, args, config, device, False, False)
         pbar_dict = {}
         for instr in config.training.instruments:
             for metric_name in all_metrics:
@@ -681,10 +666,10 @@ def validate_in_subprocess(
 
 def run_parallel_validation(
     verbose: bool,
-    all_mixtures_path: List[str],
-    config: ConfigDict,
+    all_mixtures_path: list[str],
+    config: DictConfig,
     model: torch.nn.Module,
-    device_ids: List[int],
+    device_ids: list[int],
     args,
     return_dict,
 ) -> None:
@@ -697,7 +682,7 @@ def run_parallel_validation(
         Whether to print detailed information
     all_mixtures_path : List[str]
         All mixture audio file paths
-    config : ConfigDict
+    config : DictConfig
         Configuration object
     model : torch.nn.Module
         Source separation model
@@ -712,7 +697,7 @@ def run_parallel_validation(
     model = model.to("cpu")
     try:
         # Extract single model for multi-GPU training
-        model = model.module
+        model = model.module  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
     except:
         pass
 
@@ -724,7 +709,7 @@ def run_parallel_validation(
         if torch.cuda.is_available():
             device = f"cuda:{device}"
         else:
-            device = "cpu"
+            device = torch.device("cpu")
         p = torch.multiprocessing.Process(
             target=validate_in_subprocess,
             args=(
@@ -757,10 +742,10 @@ def run_parallel_validation(
 def valid_multi_gpu(
     model: torch.nn.Module,
     args,
-    config: ConfigDict,
-    device_ids: List[int],
+    config: DictConfig,
+    device_ids: list[int],
     verbose: bool = False,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Execute validation on multiple GPUs.
 
@@ -770,7 +755,7 @@ def valid_multi_gpu(
         Source separation model
     args : dict
         Arguments dictionary
-    config : ConfigDict
+    config : DictConfig
         Configuration object
     device_ids : List[int]
         List of GPU device IDs
@@ -816,12 +801,10 @@ def valid_multi_gpu(
     instruments = prefer_target_instrument(config)
 
     # Compute average evaluation metrics
-    return compute_metric_avg(
-        store_dir, args, instruments, config, all_metrics, start_time
-    )
+    return compute_metric_avg(store_dir, args, instruments, config, all_metrics, start_time)
 
 
-def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
+def parse_args(dict_args: dict | None) -> argparse.Namespace:
     """
     Parse command line arguments.
 
@@ -861,15 +844,9 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
         help="If --store_dir is set then code will generate spectrograms for resulted stems as well."
         " Value defines for how many seconds os track spectrogram will be generated.",
     )
-    parser.add_argument(
-        "--device_ids", nargs="+", type=int, default=0, help="List of gpu ids"
-    )
-    parser.add_argument(
-        "--num_workers", type=int, default=0, help="Dataloader num_workers"
-    )
-    parser.add_argument(
-        "--pin_memory", action="store_true", help="Dataloader pin_memory"
-    )
+    parser.add_argument("--device_ids", nargs="+", type=int, default=0, help="List of gpu ids")
+    parser.add_argument("--num_workers", type=int, default=0, help="Dataloader num_workers")
+    parser.add_argument("--pin_memory", action="store_true", help="Dataloader pin_memory")
     parser.add_argument(
         "--extension", type=str, default="wav", help="Choose extension for validation"
     )
@@ -927,7 +904,7 @@ def check_validation(dict_args):
     torch.backends.cudnn.benchmark = True
     try:
         torch.multiprocessing.set_start_method("spawn")
-    except Exception as e:
+    except Exception:
         pass
 
     # Get model and configuration
@@ -944,7 +921,7 @@ def check_validation(dict_args):
     if torch.cuda.is_available():
         device = torch.device(f"cuda:{device_ids[0]}")
     else:
-        device = "cpu"
+        device = torch.device("cpu")
         print("CUDA is not available. Run validation on CPU. It will be very slow...")
 
     # Choose validation method based on device count

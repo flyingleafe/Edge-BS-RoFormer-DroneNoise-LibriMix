@@ -1,23 +1,21 @@
+import math  # Added for PositionalEncoding
 from functools import partial
 
-import math  # Added for PositionalEncoding
 import torch
-from torch import nn, einsum, Tensor
-from torch.nn import Module, ModuleList
 import torch.nn.functional as F
-
-from models.edge_bs_rof.attend import Attend
+from beartype import beartype
+from beartype.typing import Callable, Optional, Tuple
+from einops import pack, rearrange, unpack
+from einops.layers.torch import Rearrange
+from rotary_embedding_torch import RotaryEmbedding
+from torch import nn
+from torch.nn import Module, ModuleList
 from torch.utils.checkpoint import checkpoint
 
-from beartype.typing import Tuple, Optional, List, Callable
-from beartype import beartype
-
-from rotary_embedding_torch import RotaryEmbedding
-
-from einops import rearrange, pack, unpack
-from einops.layers.torch import Rearrange
+from models.edge_bs_rof.attend import Attend
 
 # Helper functions
+
 
 def exists(val):
     """
@@ -69,6 +67,7 @@ def unpack_one(t, ps, pattern):
 
 # Normalization layers
 
+
 def l2norm(t):
     """
     Apply L2 normalization to input tensor
@@ -77,7 +76,7 @@ def l2norm(t):
     Returns:
         Normalized tensor
     """
-    return F.normalize(t, dim = -1, p = 2)
+    return F.normalize(t, dim=-1, p=2)
 
 
 class RMSNorm(Module):
@@ -88,9 +87,10 @@ class RMSNorm(Module):
     Args:
         dim: Dimension size for normalization
     """
+
     def __init__(self, dim):
         super().__init__()
-        self.scale = dim ** 0.5
+        self.scale = dim**0.5
         self.gamma = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
@@ -105,6 +105,7 @@ class PositionalEncoding(Module):
         dim: Encoding dimension
         max_seq_len: Maximum sequence length
     """
+
     def __init__(self, dim, max_seq_len=1000):
         super().__init__()
         position = torch.arange(max_seq_len).unsqueeze(1)
@@ -112,16 +113,17 @@ class PositionalEncoding(Module):
         pe = torch.zeros(max_seq_len, dim)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
         """
         x: [batch_size, seq_len, dim]
         """
-        return x + self.pe[:x.size(1), :].unsqueeze(0)
+        return x + self.pe[: x.size(1), :].unsqueeze(0)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
 
 # Attention mechanism related modules
+
 
 class FeedForward(Module):
     """
@@ -133,12 +135,8 @@ class FeedForward(Module):
         mult: Hidden layer dimension expansion multiplier
         dropout: Dropout ratio
     """
-    def __init__(
-            self,
-            dim,
-            mult=4,
-            dropout=0.
-    ):
+
+    def __init__(self, dim, mult=4, dropout=0.0):
         super().__init__()
         dim_inner = int(dim * mult)
         self.net = nn.Sequential(
@@ -147,7 +145,7 @@ class FeedForward(Module):
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(dim_inner, dim),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -168,19 +166,20 @@ class Attention(Module):
         flash: Whether to use Flash Attention optimization
         use_rotary_pos: Whether to use rotary positional encoding
     """
+
     def __init__(
-            self,
-            dim,
-            heads=8,
-            dim_head=64,
-            dropout=0.,
-            rotary_embed=None,
-            flash=True,
-            use_rotary_pos=False
+        self,
+        dim,
+        heads=8,
+        dim_head=64,
+        dropout=0.0,
+        rotary_embed=None,
+        flash=True,
+        use_rotary_pos=False,
     ):
         super().__init__()
         self.heads = heads
-        self.scale = dim_head ** -0.5
+        self.scale = dim_head**-0.5
         dim_inner = heads * dim_head
 
         self.rotary_embed = rotary_embed  # Rotary positional encoding
@@ -189,35 +188,34 @@ class Attention(Module):
         self.attend = Attend(flash=flash, dropout=dropout)  # Core attention computation module
 
         self.norm = RMSNorm(dim)
-        self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=False)  # Linear layer for generating Query(Q), Key(K), Value(V)
+        self.to_qkv = nn.Linear(
+            dim, dim_inner * 3, bias=False
+        )  # Linear layer for generating Query(Q), Key(K), Value(V)
 
         self.to_gates = nn.Linear(dim, heads)  # Linear layer for generating attention gate weights
 
-        self.to_out = nn.Sequential(
-            nn.Linear(dim_inner, dim, bias=False),
-            nn.Dropout(dropout)
-        )
+        self.to_out = nn.Sequential(nn.Linear(dim_inner, dim, bias=False), nn.Dropout(dropout))
 
     def forward(self, x):
         x = self.norm(x)
 
         # Generate Q,K,V and rearrange dimensions
-        q, k, v = rearrange(self.to_qkv(x), 'b n (qkv h d) -> qkv b h n d', qkv=3, h=self.heads)
+        q, k, v = rearrange(self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads)
 
         # Apply rotary positional encoding
         if self.use_rotary_pos and exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q)
-            k = self.rotary_embed.rotate_queries_or_keys(k)
+            q = self.rotary_embed.rotate_queries_or_keys(q)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            k = self.rotary_embed.rotate_queries_or_keys(k)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
         # Compute attention
         out = self.attend(q, k, v)
 
         # Apply gating mechanism
         gates = self.to_gates(x)
-        out = out * rearrange(gates, 'b n h -> b h n 1').sigmoid()
+        out = out * rearrange(gates, "b n h -> b h n 1").sigmoid()
 
         # Output projection
-        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
 
 
@@ -237,46 +235,32 @@ class LinearAttention(Module):
     """
 
     @beartype
-    def __init__(
-            self,
-            *,
-            dim,
-            dim_head=32,
-            heads=8,
-            scale=8,
-            flash=False,
-            dropout=0.
-    ):
+    def __init__(self, *, dim, dim_head=32, heads=8, scale=8, flash=False, dropout=0.0):
         super().__init__()
         dim_inner = dim_head * heads  # Calculate inner dimension
-        self.norm = RMSNorm(dim)      # Layer normalization
+        self.norm = RMSNorm(dim)  # Layer normalization
 
         # Linear transformation and dimension rearrangement for generating Q,K,V
         self.to_qkv = nn.Sequential(
             nn.Linear(dim, dim_inner * 3, bias=False),  # Linear projection to Q,K,V space
-            Rearrange('b n (qkv h d) -> qkv b h d n', qkv=3, h=heads)  # Rearrange dimensions for multi-head attention
+            Rearrange(
+                "b n (qkv h d) -> qkv b h d n", qkv=3, h=heads
+            ),  # Rearrange dimensions for multi-head attention
         )
 
         # Learnable temperature parameter for scaling attention scores
         self.temperature = nn.Parameter(torch.ones(heads, 1, 1))
 
         # Attention computation module
-        self.attend = Attend(
-            scale=scale,
-            dropout=dropout,
-            flash=flash
-        )
+        self.attend = Attend(scale=scale, dropout=dropout, flash=flash)
 
         # Output projection layer
         self.to_out = nn.Sequential(
-            Rearrange('b h d n -> b n (h d)'),  # Rearrange dimensions
-            nn.Linear(dim_inner, dim, bias=False)  # Linear projection back to original dimension
+            Rearrange("b h d n -> b n (h d)"),  # Rearrange dimensions
+            nn.Linear(dim_inner, dim, bias=False),  # Linear projection back to original dimension
         )
 
-    def forward(
-            self,
-            x
-    ):
+    def forward(self, x):
         x = self.norm(x)  # Input normalization
 
         # Generate Q,K,V vectors
@@ -313,22 +297,23 @@ class Transformer(Module):
         use_rotary_pos: Whether to use rotary positional encoding (RoPE)
         max_seq_len: Maximum sequence length
     """
+
     def __init__(
-            self,
-            *,
-            dim,
-            depth,
-            dim_head=64,
-            heads=8,
-            attn_dropout=0.,
-            ff_dropout=0.,
-            ff_mult=4,
-            norm_output=True,
-            rotary_embed=None,
-            flash_attn=True,
-            linear_attn=False,
-            use_rotary_pos=False,  # Whether to use rotary positional encoding
-            max_seq_len=1000       # Maximum sequence length
+        self,
+        *,
+        dim,
+        depth,
+        dim_head=64,
+        heads=8,
+        attn_dropout=0.0,
+        ff_dropout=0.0,
+        ff_mult=4,
+        norm_output=True,
+        rotary_embed=None,
+        flash_attn=True,
+        linear_attn=False,
+        use_rotary_pos=False,  # Whether to use rotary positional encoding
+        max_seq_len=1000,  # Maximum sequence length
     ):
         super().__init__()
         self.layers = ModuleList([])  # Store all layers
@@ -345,27 +330,35 @@ class Transformer(Module):
         for _ in range(depth):
             if linear_attn:
                 # Use linear attention layer
-                attn = LinearAttention(dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout, flash=flash_attn)
+                attn = LinearAttention(
+                    dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout, flash=flash_attn
+                )
             else:
                 # Use standard attention layer
-                attn = Attention(dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout,
-                                 rotary_embed=rotary_embed, flash=flash_attn, use_rotary_pos=use_rotary_pos)
+                attn = Attention(
+                    dim=dim,
+                    dim_head=dim_head,
+                    heads=heads,
+                    dropout=attn_dropout,
+                    rotary_embed=rotary_embed,
+                    flash=flash_attn,
+                    use_rotary_pos=use_rotary_pos,
+                )
             # Each layer contains attention module and feed-forward network
-            self.layers.append(ModuleList([
-                attn,
-                FeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout)
-            ]))
+            self.layers.append(
+                ModuleList([attn, FeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout)])
+            )
 
         # Output normalization layer
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 
     def forward(self, x):
         if not self.use_rotary_pos:
-            x = self.positional_encoding(x)
+            x = self.positional_encoding(x)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
         # Pass through each layer sequentially with residual connections
-        for attn, ff in self.layers:
+        for attn, ff in self.layers:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
             x = attn(x) + x  # Attention layer + residual
-            x = ff(x) + x    # Feed-forward network + residual
+            x = ff(x) + x  # Feed-forward network + residual
 
         return self.norm(x)  # Output normalization
 
@@ -382,6 +375,7 @@ class BandSplit(Module):
                     For example, if dim_inputs=(a, b, c), it means the last dimension of input tensor is split into a, b, c parts,
                     corresponding to three bands respectively.
     """
+
     @beartype
     def __init__(self, dim, dim_inputs: Tuple[int, ...]):
         super().__init__()
@@ -394,8 +388,8 @@ class BandSplit(Module):
             # 1. First use RMSNorm to normalize input data, stabilizing numerical distribution;
             # 2. Then use nn.Linear layer to map input from original dimension dim_in to target dimension dim.
             net = nn.Sequential(
-                RMSNorm(dim_in),   # Normalize current band input
-                nn.Linear(dim_in, dim)  # Linear transformation to map input to target dimension
+                RMSNorm(dim_in),  # Normalize current band input
+                nn.Linear(dim_in, dim),  # Linear transformation to map input to target dimension
             )
             # Add the constructed network to ModuleList
             self.to_features.append(net)
@@ -444,10 +438,10 @@ def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh):
 
     # Build each layer: add linear layers sequentially, add activation function after non-final layers
     for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:])):
-        is_last = (ind == (len(dims) - 2))  # Check if current layer is the last
+        is_last = ind == (len(dims) - 2)  # Check if current layer is the last
 
         # Add linear mapping layer: transform input from layer_dim_in to layer_dim_out
-        net.append(nn.Linear(layer_dim_in, layer_dim_out))
+        net.append(nn.Linear(layer_dim_in, layer_dim_out))  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
         # If not the last layer, add activation function to introduce non-linearity
         if not is_last:
@@ -463,6 +457,7 @@ class MaskEstimator(Module):
     This module uses multi-layer perceptron and GLU gating mechanism to process input features,
     estimating the audio separation mask for each frequency band.
     """
+
     @beartype
     def __init__(self, dim, dim_inputs: Tuple[int, ...], depth, mlp_expansion_factor=4):
         super().__init__()
@@ -477,8 +472,7 @@ class MaskEstimator(Module):
             # a. Use MLP to map input from dim to (dim_in * 2) dimension,
             # b. Apply nn.GLU gating operation on last dimension to enhance mapping complexity
             mlp = nn.Sequential(
-                MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth),
-                nn.GLU(dim=-1)
+                MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth), nn.GLU(dim=-1)
             )
             self.to_freqs.append(mlp)
 
@@ -509,14 +503,68 @@ class MaskEstimator(Module):
 # Defines the number of frequencies contained in each band, providing multi-scale frequency resolution info,
 # e.g., the first 24 bands each contain 2 frequencies, subsequent bands have increasing numbers.
 DEFAULT_FREQS_PER_BANDS = (
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    12, 12, 12, 12, 12, 12, 12, 12,
-    24, 24, 24, 24, 24, 24, 24, 24,
-    48, 48, 48, 48, 48, 48, 48, 48,
-    128, 129,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    12,
+    12,
+    12,
+    12,
+    12,
+    12,
+    12,
+    12,
+    24,
+    24,
+    24,
+    24,
+    24,
+    24,
+    24,
+    24,
+    48,
+    48,
+    48,
+    48,
+    48,
+    48,
+    48,
+    48,
+    128,
+    129,
 )
 
 
@@ -530,38 +578,46 @@ class BSRoformer(Module):
 
     @beartype
     def __init__(
-            self,
-            dim,                        # Model's base feature dimension
-            *,
-            depth,                      # Number of Transformer layers
-            stereo=False,               # Whether to process stereo audio (True=stereo, 2 channels; False=mono, 1 channel)
-            num_stems=1,                # Number of audio sources to separate (e.g., single or multiple speakers)
-            time_transformer_depth=2,   # Depth of Transformer module for processing time info
-            freq_transformer_depth=2,   # Depth of Transformer module for processing frequency info
-            linear_transformer_depth=0, # Depth of linear attention module (0 means not used)
-            freqs_per_bands: Tuple[int, ...] = DEFAULT_FREQS_PER_BANDS,  # Frequency count configuration per band
-            dim_head=64,                # Dimension of each head in multi-head attention
-            heads=8,                    # Number of Transformer attention heads
-            attn_dropout=0.,            # Dropout probability in attention layers
-            ff_dropout=0.,              # Dropout probability in feed-forward layers (MLP)
-            flash_attn=True,            # Whether to use flash attention to speed up attention computation
-            dim_freqs_in=1025,          # Number of frequencies from STFT (typically determined by STFT params)
-            stft_n_fft=2048,            # FFT window size for STFT
-            stft_hop_length=512,        # STFT hop length (interval between frames)
-            stft_win_length=2048,       # STFT window length
-            stft_normalized=False,      # Whether to normalize STFT results
-            stft_window_fn: Optional[Callable] = None,  # Method for generating STFT window function
-            mask_estimator_depth=2,     # Transformer depth in mask estimator
-            multi_stft_resolution_loss_weight=1.,  # Weight for multi-resolution STFT loss
-            multi_stft_resolutions_window_sizes: Tuple[int, ...] = (4096, 2048, 1024, 512, 256),  # Window size config for multi-resolution
-            multi_stft_hop_size=147,    # Hop length for multi-resolution STFT
-            multi_stft_normalized=False,  # Whether to normalize multi-resolution STFT
-            multi_stft_window_fn: Callable = torch.hann_window,  # Multi-resolution STFT window function, default Hann window
-            mlp_expansion_factor=4,     # MLP expansion factor, controls hidden layer width
-            use_torch_checkpoint=False, # Whether to use torch checkpoint to reduce intermediate memory usage
-            skip_connection=False,      # Whether to use skip connections (residual) between Transformer modules
-            use_rotary_pos=False,       # Whether to use rotary positional encoding (RoPE)
-            max_seq_len=1000            # Maximum sequence length
+        self,
+        dim,  # Model's base feature dimension
+        *,
+        depth,  # Number of Transformer layers
+        stereo=False,  # Whether to process stereo audio (True=stereo, 2 channels; False=mono, 1 channel)
+        num_stems=1,  # Number of audio sources to separate (e.g., single or multiple speakers)
+        time_transformer_depth=2,  # Depth of Transformer module for processing time info
+        freq_transformer_depth=2,  # Depth of Transformer module for processing frequency info
+        linear_transformer_depth=0,  # Depth of linear attention module (0 means not used)
+        freqs_per_bands: Tuple[
+            int, ...
+        ] = DEFAULT_FREQS_PER_BANDS,  # Frequency count configuration per band
+        dim_head=64,  # Dimension of each head in multi-head attention
+        heads=8,  # Number of Transformer attention heads
+        attn_dropout=0.0,  # Dropout probability in attention layers
+        ff_dropout=0.0,  # Dropout probability in feed-forward layers (MLP)
+        flash_attn=True,  # Whether to use flash attention to speed up attention computation
+        dim_freqs_in=1025,  # Number of frequencies from STFT (typically determined by STFT params)
+        stft_n_fft=2048,  # FFT window size for STFT
+        stft_hop_length=512,  # STFT hop length (interval between frames)
+        stft_win_length=2048,  # STFT window length
+        stft_normalized=False,  # Whether to normalize STFT results
+        stft_window_fn: Optional[Callable] = None,  # Method for generating STFT window function
+        mask_estimator_depth=2,  # Transformer depth in mask estimator
+        multi_stft_resolution_loss_weight=1.0,  # Weight for multi-resolution STFT loss
+        multi_stft_resolutions_window_sizes: Tuple[int, ...] = (
+            4096,
+            2048,
+            1024,
+            512,
+            256,
+        ),  # Window size config for multi-resolution
+        multi_stft_hop_size=147,  # Hop length for multi-resolution STFT
+        multi_stft_normalized=False,  # Whether to normalize multi-resolution STFT
+        multi_stft_window_fn: Callable = torch.hann_window,  # Multi-resolution STFT window function, default Hann window
+        mlp_expansion_factor=4,  # MLP expansion factor, controls hidden layer width
+        use_torch_checkpoint=False,  # Whether to use torch checkpoint to reduce intermediate memory usage
+        skip_connection=False,  # Whether to use skip connections (residual) between Transformer modules
+        use_rotary_pos=False,  # Whether to use rotary positional encoding (RoPE)
+        max_seq_len=1000,  # Maximum sequence length
     ):
         super().__init__()  # Initialize parent class Module
 
@@ -587,7 +643,7 @@ class BSRoformer(Module):
             flash_attn=flash_attn,
             norm_output=False,  # Output not normalized, handled by final_norm
             use_rotary_pos=use_rotary_pos,
-            max_seq_len=max_seq_len
+            max_seq_len=max_seq_len,
         )
 
         # Initialize rotary positional encoders for time and frequency axes to provide position info to Transformer
@@ -599,14 +655,26 @@ class BSRoformer(Module):
             tran_modules = []
             if linear_transformer_depth > 0:
                 # If linear Transformer layers are specified, add linear attention module
-                tran_modules.append(Transformer(depth=linear_transformer_depth, linear_attn=True, **transformer_kwargs))
+                tran_modules.append(
+                    Transformer(
+                        depth=linear_transformer_depth, linear_attn=True, **transformer_kwargs
+                    )
+                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
             # Add Transformer for time dimension to capture temporal correlations
             tran_modules.append(
-                Transformer(depth=time_transformer_depth, rotary_embed=time_rotary_embed, **transformer_kwargs)
+                Transformer(
+                    depth=time_transformer_depth,
+                    rotary_embed=time_rotary_embed,
+                    **transformer_kwargs,
+                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
             )
             # Add Transformer for frequency dimension to capture frequency correlations
             tran_modules.append(
-                Transformer(depth=freq_transformer_depth, rotary_embed=freq_rotary_embed, **transformer_kwargs)
+                Transformer(
+                    depth=freq_transformer_depth,
+                    rotary_embed=freq_rotary_embed,
+                    **transformer_kwargs,
+                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
             )
             # Wrap current layer's module list as ModuleList and add to overall layers
             self.layers.append(nn.ModuleList(tran_modules))
@@ -619,27 +687,31 @@ class BSRoformer(Module):
             n_fft=stft_n_fft,
             hop_length=stft_hop_length,
             win_length=stft_win_length,
-            normalized=stft_normalized
+            normalized=stft_normalized,
         )
 
         # Set STFT window function generator, use default torch.hann_window if not provided, with fixed window length
-        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
+        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
         # Calculate number of frequencies after STFT by applying STFT to random signal
-        freqs = torch.stft(torch.randn(1, 4096), **self.stft_kwargs, window=torch.ones(stft_win_length), return_complex=True).shape[1]
+        freqs = torch.stft(
+            torch.randn(1, 4096),
+            **self.stft_kwargs,
+            window=torch.ones(stft_win_length),
+            return_complex=True,
+        ).shape[1]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
         # Ensure band configuration has at least two bands, and total frequencies equals STFT output frequencies
         assert len(freqs_per_bands) > 1
-        assert sum(freqs_per_bands) == freqs, f'Band count must equal frequency count {freqs} from STFT settings, but got {sum(freqs_per_bands)}'
+        assert sum(freqs_per_bands) == freqs, (
+            f"Band count must equal frequency count {freqs} from STFT settings, but got {sum(freqs_per_bands)}"
+        )
 
         # Process for complex data representation and audio channels, multiply each band's frequency count by 2 (real and imaginary) and audio channels
         freqs_per_bands_with_complex = tuple(2 * f * self.audio_channels for f in freqs_per_bands)
 
         # Initialize band split module to divide input spectrum data into multiple preset bands
-        self.band_split = BandSplit(
-            dim=dim,
-            dim_inputs=freqs_per_bands_with_complex
-        )
+        self.band_split = BandSplit(dim=dim, dim_inputs=freqs_per_bands_with_complex)
 
         # Build mask estimator for each source, used to estimate each source's mask
         self.mask_estimators = nn.ModuleList([])
@@ -661,15 +733,14 @@ class BSRoformer(Module):
 
         # Configure other multi-resolution STFT parameters like hop length and normalization options
         self.multi_stft_kwargs = dict(
-            hop_length=multi_stft_hop_size,
-            normalized=multi_stft_normalized
+            hop_length=multi_stft_hop_size, normalized=multi_stft_normalized
         )
 
     def forward(
-            self,
-            raw_audio,  # Input raw time-domain audio, shape can be [b, t] or [b, s, t]
-            target=None,  # Target audio, used for computing loss during training
-            return_loss_breakdown=False  # Whether to return loss breakdown components
+        self,
+        raw_audio,  # Input raw time-domain audio, shape can be [b, t] or [b, s, t]
+        target=None,  # Target audio, used for computing loss during training
+        return_loss_breakdown=False,  # Whether to return loss breakdown components
     ):
         """
         Forward propagation process
@@ -690,33 +761,43 @@ class BSRoformer(Module):
 
         # If input audio is 2D, it's missing channel dimension, so expand it (e.g., [b, t] -> [b, 1, t])
         if raw_audio.ndim == 2:
-            raw_audio = rearrange(raw_audio, 'b t -> b 1 t')
+            raw_audio = rearrange(raw_audio, "b t -> b 1 t")
 
         channels = raw_audio.shape[1]  # Get number of input audio channels
         # Check if input channels match model configuration: mono should be 1 channel, stereo should be 2 channels
-        assert (not self.stereo and channels == 1) or (self.stereo and channels == 2), 'Stereo setting must match input audio channels'
+        assert (not self.stereo and channels == 1) or (self.stereo and channels == 2), (
+            "Stereo setting must match input audio channels"
+        )
 
         # Apply STFT transform to convert time-domain audio to frequency domain for processing
-        raw_audio, batch_audio_channel_packed_shape = pack_one(raw_audio, '* t')
-        stft_window = self.stft_window_fn(device=device)  # Create STFT window function based on device
+        raw_audio, batch_audio_channel_packed_shape = pack_one(raw_audio, "* t")
+        stft_window = self.stft_window_fn(
+            device=device
+        )  # Create STFT window function based on device
 
         # Execute STFT operation, use try/except for MacOS MPS platform compatibility
         try:
-            stft_repr = torch.stft(raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True)
+            stft_repr = torch.stft(
+                raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True
+            )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
         except:
-            stft_repr = torch.stft(raw_audio.cpu() if x_is_mps else raw_audio, **self.stft_kwargs,
-                                   window=stft_window.cpu() if x_is_mps else stft_window, return_complex=True).to(device)
+            stft_repr = torch.stft(
+                raw_audio.cpu() if x_is_mps else raw_audio,
+                **self.stft_kwargs,  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                window=stft_window.cpu() if x_is_mps else stft_window,
+                return_complex=True,
+            ).to(device)
         # Convert complex STFT output to real tensor (last dimension is real and imaginary parts)
         stft_repr = torch.view_as_real(stft_repr)
 
         # Restore original packed shape of STFT output
-        stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, '* f t c')
+        stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, "* f t c")
 
         # Merge different audio channels (e.g., stereo's two channels) with frequency axis for combined processing
-        stft_repr = rearrange(stft_repr, 'b s f t c -> b (f s) t c')
+        stft_repr = rearrange(stft_repr, "b s f t c -> b (f s) t c")
 
         # Adjust tensor shape so time axis becomes first dimension, convenient for Transformer processing
-        x = rearrange(stft_repr, 'b f t c -> b t (f c)')
+        x = rearrange(stft_repr, "b f t c -> b t (f c)")
 
         # Split spectrum data into multiple preset bands through band split module
         if self.use_torch_checkpoint:
@@ -725,47 +806,49 @@ class BSRoformer(Module):
             x = self.band_split(x)
 
         # Enter multi-layer Transformer modules for axial (time/frequency) attention processing
-        store = [None] * len(self.layers)  # Store each layer's output (used if skip connection enabled)
+        store = [None] * len(
+            self.layers
+        )  # Store each layer's output (used if skip connection enabled)
         for i, transformer_block in enumerate(self.layers):
-            if len(transformer_block) == 3:
+            if len(transformer_block) == 3:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
                 # If current layer has three sub-modules, it contains linear attention module
-                linear_transformer, time_transformer, freq_transformer = transformer_block
+                linear_transformer, time_transformer, freq_transformer = transformer_block  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
                 # Pack x with shape info for later shape restoration
-                x, ft_ps = pack([x], 'b * d')
+                x, ft_ps = pack([x], "b * d")
                 if self.use_torch_checkpoint:
                     # Use checkpoint mechanism to save memory
                     x = checkpoint(linear_transformer, x, use_reentrant=False)
                 else:
                     x = linear_transformer(x)
                 # Unpack to restore original shape
-                x, = unpack(x, ft_ps, 'b * d')
+                (x,) = unpack(x, ft_ps, "b * d")
             else:
                 # Otherwise current layer only contains time and frequency Transformers
-                time_transformer, freq_transformer = transformer_block
+                time_transformer, freq_transformer = transformer_block  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
             if self.skip_connection:
                 # If skip connection enabled, accumulate previous layers' outputs to current output
                 for j in range(i):
-                    x = x + store[j]
+                    x = x + store[j]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
             # Apply Transformer on time dimension: swap dimensions so time dimension is in proper position
-            x = rearrange(x, 'b t f d -> b f t d')
-            x, ps = pack([x], '* t d')
+            x = rearrange(x, "b t f d -> b f t d")
+            x, ps = pack([x], "* t d")
             if self.use_torch_checkpoint:
                 x = checkpoint(time_transformer, x, use_reentrant=False)
             else:
                 x = time_transformer(x)
-            x, = unpack(x, ps, '* t d')
+            (x,) = unpack(x, ps, "* t d")
 
             # Apply Transformer on frequency dimension: rearrange dimensions with frequency as target
-            x = rearrange(x, 'b f t d -> b t f d')
-            x, ps = pack([x], '* f d')
+            x = rearrange(x, "b f t d -> b t f d")
+            x, ps = pack([x], "* f d")
             if self.use_torch_checkpoint:
                 x = checkpoint(freq_transformer, x, use_reentrant=False)
             else:
                 x = freq_transformer(x)
-            x, = unpack(x, ps, '* f d')
+            (x,) = unpack(x, ps, "* f d")
 
             if self.skip_connection:
                 # Save current layer output for subsequent skip connections
@@ -779,14 +862,16 @@ class BSRoformer(Module):
 
         # Estimate separation mask for each source, using checkpoint (if enabled) to reduce memory usage
         if self.use_torch_checkpoint:
-            mask = torch.stack([checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators], dim=1)
+            mask = torch.stack(
+                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators], dim=1
+            )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
         else:
             mask = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
         # Adjust mask tensor shape, decompose last dimension into frequency and complex (real, imaginary) parts
-        mask = rearrange(mask, 'b n t (f c) -> b n f t c', c=2)
+        mask = rearrange(mask, "b n t (f c) -> b n f t c", c=2)
 
         # Add source dimension to original STFT representation for subsequent modulation
-        stft_repr = rearrange(stft_repr, 'b f t c -> b 1 f t c')
+        stft_repr = rearrange(stft_repr, "b f t c -> b 1 f t c")
 
         # Convert real form of original STFT and mask to complex form for frequency domain operations
         stft_repr = torch.view_as_complex(stft_repr)
@@ -796,19 +881,33 @@ class BSRoformer(Module):
         stft_repr = stft_repr * mask
 
         # Adjust separated spectrum shape for inverse STFT, restoring independent dimensions for each source and audio channel
-        stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
+        stft_repr = rearrange(stft_repr, "b n (f s) t -> (b n s) f t", s=self.audio_channels)
 
         # Execute inverse STFT to convert frequency-domain data back to time-domain audio, considering MacOS MPS compatibility
         try:
-            recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False, length=raw_audio.shape[-1])
+            recon_audio = torch.istft(
+                stft_repr,
+                **self.stft_kwargs,
+                window=stft_window,
+                return_complex=False,
+                length=raw_audio.shape[-1],
+            )
         except:
-            recon_audio = torch.istft(stft_repr.cpu() if x_is_mps else stft_repr, **self.stft_kwargs, window=stft_window.cpu() if x_is_mps else stft_window, return_complex=False, length=raw_audio.shape[-1]).to(device)
+            recon_audio = torch.istft(
+                stft_repr.cpu() if x_is_mps else stft_repr,
+                **self.stft_kwargs,
+                window=stft_window.cpu() if x_is_mps else stft_window,
+                return_complex=False,
+                length=raw_audio.shape[-1],
+            ).to(device)
         # Adjust inverse transformed audio shape to separate multiple sources and channels
-        recon_audio = rearrange(recon_audio, '(b n s) t -> b n s t', s=self.audio_channels, n=num_stems)
+        recon_audio = rearrange(
+            recon_audio, "(b n s) t -> b n s t", s=self.audio_channels, n=num_stems
+        )
 
         # If only one source, remove source dimension
         if num_stems == 1:
-            recon_audio = rearrange(recon_audio, 'b 1 s t -> b s t')
+            recon_audio = rearrange(recon_audio, "b 1 s t -> b s t")
 
         # If no target audio provided, directly return reconstructed audio
         if not exists(target):
@@ -816,20 +915,20 @@ class BSRoformer(Module):
 
         # When model separates multiple sources, check target audio dimensions (4D with first dim matching source count)
         if self.num_stems > 1:
-            assert target.ndim == 4 and target.shape[1] == self.num_stems
+            assert target.ndim == 4 and target.shape[1] == self.num_stems  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
         # If target audio is only 2D, expand to 3D (add source dimension)
-        if target.ndim == 2:
-            target = rearrange(target, '... t -> ... 1 t')
+        if target.ndim == 2:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            target = rearrange(target, "... t -> ... 1 t")
 
         # Truncate target audio time length to match inverse STFT generated audio length
-        target = target[..., :recon_audio.shape[-1]]
+        target = target[..., : recon_audio.shape[-1]]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
 
         # Compute base L1 loss to measure absolute difference between reconstructed and target audio
         loss = F.l1_loss(recon_audio, target)
 
         # Initialize multi-resolution STFT loss to capture subtle errors at different frequency resolutions
-        multi_stft_resolution_loss = 0.
+        multi_stft_resolution_loss = 0.0
         for window_size in self.multi_stft_resolutions_window_sizes:
             # Configure STFT parameters for current window size, ensure FFT length is not smaller than window size
             res_stft_kwargs = dict(
@@ -840,13 +939,15 @@ class BSRoformer(Module):
                 **self.multi_stft_kwargs,
             )
             # Apply STFT transform to both reconstructed and target audio
-            recon_Y = torch.stft(rearrange(recon_audio, '... s t -> (... s) t'), **res_stft_kwargs)
-            target_Y = torch.stft(rearrange(target, '... s t -> (... s) t'), **res_stft_kwargs)
+            recon_Y = torch.stft(rearrange(recon_audio, "... s t -> (... s) t"), **res_stft_kwargs)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            target_Y = torch.stft(rearrange(target, "... s t -> (... s) t"), **res_stft_kwargs)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
             # Accumulate L1 loss across resolutions
             multi_stft_resolution_loss = multi_stft_resolution_loss + F.l1_loss(recon_Y, target_Y)
 
         # Multiply multi-resolution STFT loss by preset weight and add to base L1 loss for total loss
-        weighted_multi_resolution_loss = multi_stft_resolution_loss * self.multi_stft_resolution_loss_weight
+        weighted_multi_resolution_loss = (
+            multi_stft_resolution_loss * self.multi_stft_resolution_loss_weight
+        )
         total_loss = loss + weighted_multi_resolution_loss
 
         # If detailed loss breakdown not needed, directly return total loss

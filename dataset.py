@@ -1,21 +1,20 @@
-# coding: utf-8
 __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import necessary libraries
-import os
-import random
-import numpy as np
-import torch
-import soundfile as sf
-import pickle
-import time
 import itertools
 import multiprocessing
-from tqdm.auto import tqdm
-from glob import glob
-import audiomentations as AU  # Audio augmentation library
-import pedalboard as PB  # Audio effects processing library
+import os
+import pickle
+import random
 import warnings
+from glob import glob
+
+import audiomentations as AU  # Audio augmentation library
+import numpy as np
+import pedalboard as PB  # Audio effects processing library
+import soundfile as sf
+import torch
+from tqdm.auto import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -41,7 +40,7 @@ def load_chunk(path, length, chunk_size, offset=None):
         x = sf.read(path, dtype="float32")[0]
         if len(x.shape) == 1:
             # Mono case
-            pad = np.zeros((chunk_size - length))
+            pad = np.zeros(chunk_size - length)
         else:
             pad = np.zeros([chunk_size - length, x.shape[-1]])
         x = np.concatenate([x, pad], axis=0)
@@ -65,20 +64,18 @@ def get_track_set_length(params):
     for instr in instruments:
         length = -1
         for extension in file_types:
-            path_to_audio_file = path + "/{}.{}".format(instr, extension)
+            path_to_audio_file = path + f"/{instr}.{extension}"
             if os.path.isfile(path_to_audio_file):
                 length = len(sf.read(path_to_audio_file)[0])
                 break
         if length == -1:
-            print('Cant find file "{}" in folder {}'.format(instr, path))
+            print(f'Cant find file "{instr}" in folder {path}')
             continue
         lengths_arr.append(length)
     lengths_arr = np.array(lengths_arr)
     if lengths_arr.min() != lengths_arr.max():
         print(
-            "Warning: lengths of stems are different for path: {}. ({} != {})".format(
-                path, lengths_arr.min(), lengths_arr.max()
-            )
+            f"Warning: lengths of stems are different for path: {path}. ({lengths_arr.min()} != {lengths_arr.max()})"
         )
     # Use minimum length to avoid overflow
     return path, lengths_arr.min()
@@ -154,18 +151,14 @@ class MSSDataset(torch.utils.data.Dataset):
         if self.dataset_type in [1, 4]:
             if len(metadata) > 0:
                 if self.verbose:
-                    print("Found tracks in dataset: {}".format(len(metadata)))
+                    print(f"Found tracks in dataset: {len(metadata)}")
             else:
                 print("No tracks found for training. Check paths you provided!")
                 exit()
         else:
             for instr in self.instruments:
                 if self.verbose:
-                    print(
-                        "Found tracks for {} in dataset: {}".format(
-                            instr, len(metadata[instr])
-                        )
-                    )
+                    print(f"Found tracks for {instr} in dataset: {len(metadata[instr])}")
         self.metadata = metadata
         self.chunk_size = config.audio.chunk_size  # Audio chunk size
         self.min_mean_abs = (
@@ -188,7 +181,7 @@ class MSSDataset(torch.utils.data.Dataset):
         metadata = []
         if os.path.isfile(self.metadata_path):
             if self.verbose:
-                print("Found metadata cache file: {}".format(self.metadata_path))
+                print(f"Found metadata cache file: {self.metadata_path}")
             old_metadata = pickle.load(open(self.metadata_path, "rb"))
         else:
             return track_paths, metadata
@@ -204,7 +197,7 @@ class MSSDataset(torch.utils.data.Dataset):
                 track_paths_set.remove(old_path)
         track_paths = list(track_paths_set)
         if len(metadata) > 0:
-            print("Old metadata was used for {} tracks.".format(len(metadata)))
+            print(f"Old metadata was used for {len(metadata)} tracks.")
         return track_paths, metadata
 
     def get_metadata(self):
@@ -236,11 +229,7 @@ class MSSDataset(torch.utils.data.Dataset):
                 for tp in self.data_path:
                     tracks_for_folder = sorted(glob(tp + "/*"))
                     if len(tracks_for_folder) == 0:
-                        print(
-                            "Warning: no tracks found in folder '{}'. Please check it!".format(
-                                tp
-                            )
-                        )
+                        print(f"Warning: no tracks found in folder '{tp}'. Please check it!")
                     track_paths += tracks_for_folder
             else:
                 track_paths += sorted(glob(self.data_path + "/*"))
@@ -283,19 +272,17 @@ class MSSDataset(torch.utils.data.Dataset):
                 track_paths = []
                 if type(self.data_path) == list:
                     for tp in self.data_path:
-                        track_paths += sorted(glob(tp + "/{}/*.wav".format(instr)))
-                        track_paths += sorted(glob(tp + "/{}/*.flac".format(instr)))
+                        track_paths += sorted(glob(tp + f"/{instr}/*.wav"))
+                        track_paths += sorted(glob(tp + f"/{instr}/*.flac"))
                 else:
                     track_paths += sorted(
-                        glob(self.data_path + "/{}/*.wav".format(instr))
+                        glob(self.data_path + f"/{instr}/*.wav")  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage, reportOperatorIssue]
                     )
                     track_paths += sorted(
-                        glob(self.data_path + "/{}/*.flac".format(instr))
+                        glob(self.data_path + f"/{instr}/*.flac")  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage, reportOperatorIssue]
                     )
 
-                track_paths, metadata[instr] = self.read_from_metadata_cache(
-                    track_paths, instr
-                )
+                track_paths, metadata[instr] = self.read_from_metadata_cache(track_paths, instr)
 
                 if read_metadata_procs <= 1:
                     for path in tqdm(track_paths):
@@ -303,9 +290,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         metadata[instr].append((path, length))
                 else:
                     p = multiprocessing.Pool(processes=read_metadata_procs)
-                    for out in tqdm(
-                        p.imap(get_track_length, track_paths), total=len(track_paths)
-                    ):
+                    for out in tqdm(p.imap(get_track_length, track_paths), total=len(track_paths)):
                         metadata[instr].append(out)
 
         elif self.dataset_type == 3:
@@ -318,41 +303,35 @@ class MSSDataset(torch.utils.data.Dataset):
             metadata = dict()
             for i in range(len(self.data_path)):
                 if self.verbose:
-                    print("Reading tracks from: {}".format(self.data_path[i]))
+                    print(f"Reading tracks from: {self.data_path[i]}")
                 df = pd.read_csv(self.data_path[i])
 
                 skipped = 0
                 for instr in self.instruments:
                     part = df[df["instrum"] == instr].copy()
-                    print("Tracks found for {}: {}".format(instr, len(part)))
+                    print(f"Tracks found for {instr}: {len(part)}")
                 for instr in self.instruments:
                     part = df[df["instrum"] == instr].copy()
                     metadata[instr] = []
-                    track_paths = list(part["path"].values)
-                    track_paths, metadata[instr] = self.read_from_metadata_cache(
-                        track_paths, instr
-                    )
+                    track_paths = list(part["path"].values)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
+                    track_paths, metadata[instr] = self.read_from_metadata_cache(track_paths, instr)
 
                     for path in tqdm(track_paths):
                         if not os.path.isfile(path):
-                            print("Cant find track: {}".format(path))
+                            print(f"Cant find track: {path}")
                             skipped += 1
                             continue
                         try:
                             length = len(sf.read(path)[0])
                         except:
-                            print("Problem with path: {}".format(path))
+                            print(f"Problem with path: {path}")
                             skipped += 1
                             continue
                         metadata[instr].append((path, length))
                 if skipped > 0:
-                    print("Missing tracks: {} from {}".format(skipped, len(df)))
+                    print(f"Missing tracks: {skipped} from {len(df)}")
         else:
-            print(
-                "Unknown dataset type: {}. Must be 1, 2, 3 or 4".format(
-                    self.dataset_type
-                )
-            )
+            print(f"Unknown dataset type: {self.dataset_type}. Must be 1, 2, 3 or 4")
             exit()
 
         # Save metadata cache
@@ -387,14 +366,12 @@ class MSSDataset(torch.utils.data.Dataset):
                 self._last_sample_path = track_path
 
                 for extension in self.file_types:
-                    path_to_audio_file = track_path + "/{}.{}".format(instr, extension)
+                    path_to_audio_file = track_path + f"/{instr}.{extension}"
                     if os.path.isfile(path_to_audio_file):
                         try:
-                            source = load_chunk(
-                                path_to_audio_file, track_length, self.chunk_size
-                            )
+                            source = load_chunk(path_to_audio_file, track_length, self.chunk_size)
                         except Exception as e:
-                            print("Error: {} Path: {}".format(e, path_to_audio_file))
+                            print(f"Error: {e} Path: {path_to_audio_file}")
                             source = np.zeros((2, self.chunk_size), dtype=np.float32)
                         break
             else:
@@ -403,7 +380,7 @@ class MSSDataset(torch.utils.data.Dataset):
                 try:
                     source = load_chunk(track_path, track_length, self.chunk_size)
                 except Exception as e:
-                    print("Error: {} Path: {}".format(e, track_path))
+                    print(f"Error: {e} Path: {track_path}")
                     source = np.zeros((2, self.chunk_size), dtype=np.float32)
 
             # Filter out silent chunks
@@ -475,7 +452,7 @@ class MSSDataset(torch.utils.data.Dataset):
             silent_chunks = 0
             for i in self.instruments:
                 for extension in self.file_types:
-                    path_to_audio_file = track_path + "/{}.{}".format(i, extension)
+                    path_to_audio_file = track_path + f"/{i}.{extension}"
                     if os.path.isfile(path_to_audio_file):
                         try:
                             source = load_chunk(
@@ -485,7 +462,7 @@ class MSSDataset(torch.utils.data.Dataset):
                                 offset=common_offset,
                             )
                         except Exception as e:
-                            print("Error: {} Path: {}".format(e, path_to_audio_file))
+                            print(f"Error: {e} Path: {path_to_audio_file}")
                             source = np.zeros((2, self.chunk_size), dtype=np.float32)
                         break
                 res.append(source)
@@ -651,7 +628,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_reverb_width_min"],
                         augs["pedalboard_reverb_width_max"],
                     )
-                    board = PB.Pedalboard(
+                    board = PB.Pedalboard(  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                         [
                             PB.Reverb(
                                 room_size=room_size,  # 0.1 - 0.9
@@ -690,7 +667,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_chorus_mix_min"],
                         augs["pedalboard_chorus_mix_max"],
                     )
-                    board = PB.Pedalboard(
+                    board = PB.Pedalboard(  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                         [
                             PB.Chorus(
                                 rate_hz=rate_hz,
@@ -728,7 +705,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_phazer_mix_min"],
                         augs["pedalboard_phazer_mix_max"],
                     )
-                    board = PB.Pedalboard(
+                    board = PB.Pedalboard(  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                         [
                             PB.Phaser(
                                 rate_hz=rate_hz,
@@ -751,7 +728,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_distortion_drive_db_min"],
                         augs["pedalboard_distortion_drive_db_max"],
                     )
-                    board = PB.Pedalboard(
+                    board = PB.Pedalboard(  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                         [
                             PB.Distortion(
                                 drive_db=drive_db,
@@ -770,7 +747,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_pitch_shift_semitones_min"],
                         augs["pedalboard_pitch_shift_semitones_max"],
                     )
-                    board = PB.Pedalboard([PB.PitchShift(semitones=semitones)])
+                    board = PB.Pedalboard([PB.PitchShift(semitones=semitones)])  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                     source = board(source, 44100)
                     applied_augs.append("pedalboard_pitch_shift")
 
@@ -783,7 +760,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_resample_target_sample_rate_min"],
                         augs["pedalboard_resample_target_sample_rate_max"],
                     )
-                    board = PB.Pedalboard(
+                    board = PB.Pedalboard(  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                         [PB.Resample(target_sample_rate=target_sample_rate)]
                     )
                     source = board(source, 44100)
@@ -798,7 +775,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_bitcrash_bit_depth_min"],
                         augs["pedalboard_bitcrash_bit_depth_max"],
                     )
-                    board = PB.Pedalboard([PB.Bitcrush(bit_depth=bit_depth)])
+                    board = PB.Pedalboard([PB.Bitcrush(bit_depth=bit_depth)])  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                     source = board(source, 44100)
                     applied_augs.append("pedalboard_bitcrash")
 
@@ -811,7 +788,7 @@ class MSSDataset(torch.utils.data.Dataset):
                         augs["pedalboard_mp3_compressor_pedalboard_mp3_compressor_min"],
                         augs["pedalboard_mp3_compressor_pedalboard_mp3_compressor_max"],
                     )
-                    board = PB.Pedalboard([PB.MP3Compressor(vbr_quality=vbr_quality)])
+                    board = PB.Pedalboard([PB.MP3Compressor(vbr_quality=vbr_quality)])  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportPrivateImportUsage]
                     source = board(source, 44100)
                     applied_augs.append("pedalboard_mp3_compressor")
 
@@ -851,9 +828,7 @@ class MSSDataset(torch.utils.data.Dataset):
                     max_bitrate=self.config["augmentations"][
                         "mp3_compression_on_mixture_bitrate_max"
                     ],
-                    backend=self.config["augmentations"][
-                        "mp3_compression_on_mixture_backend"
-                    ],
+                    backend=self.config["augmentations"]["mp3_compression_on_mixture_backend"],
                     p=self.config["augmentations"]["mp3_compression_on_mixture"],
                 )
                 mix_conv = mix.cpu().numpy().astype(np.float32)
@@ -872,8 +847,8 @@ class MSSDataset(torch.utils.data.Dataset):
         if (use_rps or load_rps) and num_rotors > 0:
             # Resample RPS to match STFT time frames (same as train_rps_predictor.py)
             # This ensures proper alignment between audio and RPS
-            n_fft = getattr(self.config.audio, 'n_fft', 2048)
-            hop_length = getattr(self.config.audio, 'hop_length', 512)
+            n_fft = getattr(self.config.audio, "n_fft", 2048)
+            hop_length = getattr(self.config.audio, "hop_length", 512)
             # Number of STFT time frames (matching torch.stft behavior)
             n_stft_frames = mix.shape[-1] // hop_length + 1
 
@@ -886,7 +861,9 @@ class MSSDataset(torch.utils.data.Dataset):
                 rps_path = os.path.join(self._last_sample_path, "rps.npy")
                 if os.path.exists(rps_path):
                     rps_data = np.load(rps_path)  # (4, n_motor_samples)
-                    rps_tensor = torch.from_numpy(rps_data).float().unsqueeze(0)  # (1, 4, n_motor_samples)
+                    rps_tensor = (
+                        torch.from_numpy(rps_data).float().unsqueeze(0)
+                    )  # (1, 4, n_motor_samples)
                     # Resample RPS to match STFT time frames via linear interpolation
                     rps_tensor = torch.nn.functional.interpolate(
                         rps_tensor, size=n_stft_frames, mode="linear", align_corners=False
@@ -907,9 +884,7 @@ class MSSDataset(torch.utils.data.Dataset):
 
         # If target instrument is specified (for roformer models), only return that instrument's track and mixture
         if self.config.training.target_instrument is not None:
-            index = self.config.training.instruments.index(
-                self.config.training.target_instrument
-            )
+            index = self.config.training.instruments.index(self.config.training.target_instrument)
             return res[index], mix
 
         # Return all tracks and mixture

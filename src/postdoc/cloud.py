@@ -15,17 +15,15 @@ Usage:
 The cloud backend ignores vast-server GPU availability entirely. It lets
 SkyPilot handle resource allocation and provisioning.
 """
+
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 # ------------------------------------------------------------------ #
 # constants
@@ -62,14 +60,16 @@ def _sky_available() -> bool:
     return shutil.which("sky") is not None
 
 
-def _run_sky(args: list[str], *, check: bool = True,
-             capture: bool = False) -> subprocess.CompletedProcess:
+def _run_sky(
+    args: list[str], *, check: bool = True, capture: bool = False
+) -> subprocess.CompletedProcess:
     if not _sky_available():
         raise RuntimeError("sky CLI not found. Run `sky check` first.")
     cmd = ["sky", *args]
     if capture:
-        return subprocess.run(cmd, check=check, text=True,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(
+            cmd, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
     return subprocess.run(cmd, check=check)
 
 
@@ -182,23 +182,20 @@ def submit_cloud(
         cmd=cmd,
     )
 
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".sky.yaml", delete=False
-    ) as tf:
+    with tempfile.NamedTemporaryFile("w", suffix=".sky.yaml", delete=False) as tf:
         tf.write(task_yaml)
         task_path = Path(tf.name)
 
     try:
         r = _run_sky(
-            ["jobs", "launch", "-y", "--detach-run",
-             "-n", name, str(task_path)],
+            ["jobs", "launch", "-y", "--detach-run", "-n", name, str(task_path)],
             capture=True,
         )
     finally:
         task_path.unlink(missing_ok=True)
 
     # Parse job ID from output: "Job ID: <id>"
-    match = re.search(r'Job ID:\s*(\d+)', r.stdout or "")
+    match = re.search(r"Job ID:\s*(\d+)", r.stdout or "")
     if not match:
         raise RuntimeError(f"Could not parse job ID from sky output:\n{r.stdout}")
     job_id = int(match.group(1))
@@ -218,20 +215,22 @@ def list_jobs_cloud() -> list[CloudJobInfo]:
     for line in (r.stdout or "").splitlines()[2:]:  # skip header lines
         if not line.strip():
             continue
-        parts = re.split(r'\s{2,}', line.strip())
+        parts = re.split(r"\s{2,}", line.strip())
         if len(parts) < 3:
             continue
         try:
-            jobs.append(CloudJobInfo(
-                id=int(parts[0]),
-                name=parts[1],
-                status=parts[2],
-                sha="",
-                cmd="",
-                gpus=0,
-                cloud=cloud,
-                region=region,
-            ))
+            jobs.append(
+                CloudJobInfo(
+                    id=int(parts[0]),
+                    name=parts[1],
+                    status=parts[2],
+                    sha="",
+                    cmd="",
+                    gpus=0,
+                    cloud=cloud,  # pyright: ignore[reportUndefinedVariable]
+                    region=region,  # pyright: ignore[reportUndefinedVariable]
+                )
+            )
         except ValueError:
             continue
     return jobs

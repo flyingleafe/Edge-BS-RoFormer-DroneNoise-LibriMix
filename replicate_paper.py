@@ -795,7 +795,7 @@ def main() -> None:
         if args.step == "train_eval_all":
             step_train_eval_all(args.models)
         elif args.step == "train" or args.step.startswith("train_"):
-            step_fn(device_ids)
+            step_fn(device_ids)  # pyright: ignore[reportCallIssue]
         else:
             step_fn()
 

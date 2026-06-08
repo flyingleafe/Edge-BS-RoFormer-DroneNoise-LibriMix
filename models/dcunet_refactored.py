@@ -13,6 +13,8 @@ This design allows training encoder-only baselines and adding decoder RPS later,
 which is useful for analyzing where RPS helps most in the pipeline.
 """
 
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,7 +28,7 @@ def stft_time_frames(audio_length: int, hop_length: int, n_fft: int) -> int:
 def encoder_time_lengths(n_stft_time: int, encoder_strides: list) -> list:
     """Time dimension at each encoder level."""
     lengths = [n_stft_time]
-    for (_, stride_t) in encoder_strides:
+    for _, stride_t in encoder_strides:
         lengths.append((lengths[-1] + 1) // stride_t)
     return lengths
 
@@ -34,7 +36,7 @@ def encoder_time_lengths(n_stft_time: int, encoder_strides: list) -> list:
 def decoder_time_lengths(bottleneck_time: int, decoder_strides: list) -> list:
     """Time dimension at each decoder level (starting from bottleneck)."""
     lengths = [bottleneck_time]
-    for (_, stride_t) in decoder_strides:
+    for _, stride_t in decoder_strides:
         lengths.append(lengths[-1] * stride_t)
     return lengths
 
@@ -43,8 +45,10 @@ def decoder_time_lengths(bottleneck_time: int, decoder_strides: list) -> list:
 # Complex Convolutional Building Blocks
 # =============================================================================
 
+
 class CConv2d(nn.Module):
     """Complex Convolutional Layer."""
+
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
         super().__init__()
         self.real_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -62,12 +66,15 @@ class CConv2d(nn.Module):
 
 class CConvTranspose2d(nn.Module):
     """Complex Transpose Convolutional Layer."""
+
     def __init__(self, in_channels, out_channels, kernel_size, stride, output_padding=0, padding=0):
         super().__init__()
-        self.real_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
-                                              stride, padding, output_padding)
-        self.im_convt = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
-                                           stride, padding, output_padding)
+        self.real_convt = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size, stride, padding, output_padding
+        )
+        self.im_convt = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size, stride, padding, output_padding
+        )
         nn.init.xavier_uniform_(self.real_convt.weight)
         nn.init.xavier_uniform_(self.im_convt.weight)
 
@@ -81,6 +88,7 @@ class CConvTranspose2d(nn.Module):
 
 class CBatchNorm2d(nn.Module):
     """Complex Batch Normalization."""
+
     def __init__(self, num_features):
         super().__init__()
         self.real_bn = nn.BatchNorm2d(num_features)
@@ -98,11 +106,13 @@ class CBatchNorm2d(nn.Module):
 # Rotor/RPS Encoder (shared by encoder-side and decoder-side RPS fusion)
 # =============================================================================
 
+
 class RotorEncoder(nn.Module):
     """
     Encodes rotor RPS time series via two 1D convolutions.
     Output: (B, 64, target_length) when target_length is set, else (B, 64, T).
     """
+
     def __init__(self, num_rotors: int, out_channels: int = 64, kernel_size: int = 3):
         super().__init__()
         self.num_rotors = num_rotors
@@ -115,7 +125,7 @@ class RotorEncoder(nn.Module):
         nn.init.xavier_uniform_(self.conv1.weight)
         nn.init.xavier_uniform_(self.conv2.weight)
 
-    def forward(self, rps: torch.Tensor, target_length: int = None) -> torch.Tensor:
+    def forward(self, rps: torch.Tensor, target_length: int | None = None) -> torch.Tensor:
         """
         Args:
             rps: (B, num_rotors, time_rps) or (B, time_rps) [then unsqueeze(1)]
@@ -137,11 +147,15 @@ class RotorEncoder(nn.Module):
 # RPS Prediction Head (auxiliary task, uses encoder features)
 # =============================================================================
 
+
 class RPSPredictionHead(nn.Module):
     """
     FPN-style auxiliary head that predicts per-STFT-frame RPS from all encoder levels.
     """
-    def __init__(self, encoder_channels: list[int], target_t: int, common_dim: int = 64, num_rotors: int = 4):
+
+    def __init__(
+        self, encoder_channels: list[int], target_t: int, common_dim: int = 64, num_rotors: int = 4
+    ):
         super().__init__()
         self.target_t = target_t
         self.level_projs = nn.ModuleList()
@@ -185,8 +199,10 @@ class RPSPredictionHead(nn.Module):
 # Encoder Module (standalone, no RPS input)
 # =============================================================================
 
+
 class Encoder(nn.Module):
     """Single encoder layer: complex conv -> complex BN -> LeakyReLU."""
+
     def __init__(self, in_channels, out_channels, kernel, stride, padding):
         super().__init__()
         self.cconv = CConv2d(in_channels, out_channels, kernel, stride, padding)
@@ -211,6 +227,7 @@ class EncoderModule(nn.Module):
         features: intermediate encoder outputs (skip connections)
         bottleneck: final bottleneck features after all encoder layers
     """
+
     def __init__(self, in_channels: int, layer_specs: list):
         """
         Args:
@@ -263,6 +280,7 @@ class EncoderModule(nn.Module):
 # Decoder RPS Fusion Modules
 # =============================================================================
 
+
 class DecoderBottleneckRPSFusion(nn.Module):
     """
     Decoder-side RPS fusion at bottleneck level.
@@ -271,9 +289,14 @@ class DecoderBottleneckRPSFusion(nn.Module):
     Design: RPS → RotorEncoder → project to match bottleneck channels → ADD.
     This allows RPS to modulate the reconstruction path directly.
     """
-    def __init__(self, num_rotors: int, rps_channels: int, target_channels: int, kernel_size: int = 3):
+
+    def __init__(
+        self, num_rotors: int, rps_channels: int, target_channels: int, kernel_size: int = 3
+    ):
         super().__init__()
-        self.rotor_encoder = RotorEncoder(num_rotors, out_channels=rps_channels, kernel_size=kernel_size)
+        self.rotor_encoder = RotorEncoder(
+            num_rotors, out_channels=rps_channels, kernel_size=kernel_size
+        )
         # Project RPS features to match complex feature channels: rps_channels -> C*2
         self.rps_proj = nn.Conv1d(rps_channels, target_channels * 2, kernel_size=1)
         self.num_rotors = num_rotors
@@ -314,6 +337,7 @@ class DecoderHierarchicalRPSFusion(nn.Module):
 
     This allows RPS to help at multiple scales of reconstruction.
     """
+
     def __init__(self, num_rotors: int, decoder_input_channels: list, rps_channels: int = 64):
         """
         Args:
@@ -335,8 +359,12 @@ class DecoderHierarchicalRPSFusion(nn.Module):
             # Project (B, rps_channels, T) -> (B, C*2, T)
             self.level_projs.append(nn.Conv1d(rps_channels, ch * 2, kernel_size=1))
 
-    def forward(self, decoder_features: list[torch.Tensor], rps: torch.Tensor,
-                decoder_time_lengths: list[int]) -> list[torch.Tensor]:
+    def forward(
+        self,
+        decoder_features: list[torch.Tensor],
+        rps: torch.Tensor,
+        decoder_time_lengths: list[int],
+    ) -> list[torch.Tensor]:
         """
         Args:
             decoder_features: list of (B, C_i, F_i, T_i, 2) from each decoder level
@@ -352,7 +380,9 @@ class DecoderHierarchicalRPSFusion(nn.Module):
 
         # Encode RPS at the coarsest time resolution
         coarsest_t = decoder_time_lengths[-1]
-        rps_encoded = self.rotor_encoder(rps, target_length=coarsest_t)  # (B, rps_channels, T_coarse)
+        rps_encoded = self.rotor_encoder(
+            rps, target_length=coarsest_t
+        )  # (B, rps_channels, T_coarse)
 
         fused_features = []
         for i, (feat, proj) in enumerate(zip(decoder_features, self.level_projs)):
@@ -367,7 +397,9 @@ class DecoderHierarchicalRPSFusion(nn.Module):
             # Project RPS to decoder channel dimension
             rps_proj = proj(rps_level.permute(0, 2, 1))  # (B, T_f, C*2)
             rps_proj = rps_proj.permute(0, 2, 1).unsqueeze(2)  # (B, C*2, 1, T_f)
-            rps_proj = rps_proj.reshape(B, C_f, 2, F_f, T_f).permute(0, 1, 3, 4, 2)  # (B, C, F, T, 2)
+            rps_proj = rps_proj.reshape(B, C_f, 2, F_f, T_f).permute(
+                0, 1, 3, 4, 2
+            )  # (B, C, F, T, 2)
 
             fused_feat = feat.float() + rps_proj
             fused_features.append(fused_feat)
@@ -379,21 +411,26 @@ class DecoderHierarchicalRPSFusion(nn.Module):
 # Decoder Module (standalone, supports RPS fusion)
 # =============================================================================
 
+
 class Decoder(nn.Module):
     """Single decoder layer: complex transposed conv -> complex BN -> LeakyReLU."""
-    def __init__(self, in_channels, out_channels, kernel, stride, output_padding, padding, last_layer=False):
+
+    def __init__(
+        self, in_channels, out_channels, kernel, stride, output_padding, padding, last_layer=False
+    ):
         super().__init__()
-        self.cconvt = CConvTranspose2d(in_channels, out_channels, kernel, stride,
-                                       output_padding, padding)
+        self.cconvt = CConvTranspose2d(
+            in_channels, out_channels, kernel, stride, output_padding, padding
+        )
         self.cbn = CBatchNorm2d(out_channels) if not last_layer else None
         self.act = nn.LeakyReLU() if not last_layer else None
         self.last_layer = last_layer
 
     def forward(self, x):
-        x = self.cconvt(x)
+        x = self.cconvt(x)  # pyright: ignore[reportOptionalCall]
         if not self.last_layer:
-            x = self.cbn(x)
-            x = self.act(x)
+            x = self.cbn(x)  # pyright: ignore[reportOptionalCall]
+            x = self.act(x)  # pyright: ignore[reportOptionalCall]
         else:
             x = x.float()
             m_phase = x / (torch.abs(x) + 1e-8)
@@ -401,14 +438,14 @@ class Decoder(nn.Module):
             x = m_phase * m_mag
         return x
 
-    def forward_with_rps_inject(self, x, rps_inject):
+    def forward_with_rps_inject(self, x, rps_inject):  # pyright: ignore[reportOptionalCall]
         """Forward with RPS injection after transposed conv."""
-        x = self.cconvt(x)
+        x = self.cconvt(x)  # pyright: ignore[reportOptionalCall]
         # rps_inject should have shape matching x after transposed conv
         x = x + rps_inject
         if not self.last_layer:
-            x = self.cbn(x)
-            x = self.act(x)
+            x = self.cbn(x)  # pyright: ignore[reportOptionalCall]
+            x = self.act(x)  # pyright: ignore[reportOptionalCall]
         else:
             x = x.float()
             m_phase = x / (torch.abs(x) + 1e-8)
@@ -430,8 +467,15 @@ class DecoderModule(nn.Module):
         strides: (freq_stride, time_stride) per layer
         features: intermediate decoder outputs
     """
-    def __init__(self, bottleneck_channels: int, layer_specs: list,
-                 num_rotors: int = 4, rps_fusion: str = None, rps_channels: int = 64):
+
+    def __init__(
+        self,
+        bottleneck_channels: int,
+        layer_specs: list,
+        num_rotors: int = 4,
+        rps_fusion: str | None = None,
+        rps_channels: int = 64,
+    ):
         """
         Args:
             bottleneck_channels: channels at bottleneck (input to decoder)
@@ -484,13 +528,13 @@ class DecoderModule(nn.Module):
         # RPS fusion modules
         self.rps_fusion_module = None
         self.decoder_input_channels = []  # Store for debugging
-        if rps_fusion == 'bottleneck':
+        if rps_fusion == "bottleneck":
             # Bottleneck fusion: inject RPS at first decoder level (matching bottleneck channels)
             self.rps_fusion_module = DecoderBottleneckRPSFusion(
                 num_rotors, rps_channels, bottleneck_channels
             )
             self.decoder_input_channels = [bottleneck_channels]
-        elif rps_fusion == 'hierarchical':
+        elif rps_fusion == "hierarchical":
             # Hierarchical fusion: inject RPS at multiple levels
             # Track input channels for each level:
             # Level 0: bottleneck_channels (before first decoder)
@@ -503,8 +547,9 @@ class DecoderModule(nn.Module):
                 num_rotors, decoder_input_channels, rps_channels
             )
 
-    def forward(self, bottleneck: torch.Tensor, skip_connections: list,
-                rps: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, bottleneck: torch.Tensor, skip_connections: list, rps: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Args:
             bottleneck: (B, C_bottleneck, F_b, T_b, 2) features from encoder
@@ -517,12 +562,20 @@ class DecoderModule(nn.Module):
         decoder_features = []
 
         # First layer: no skip connection
-        if self.rps_fusion == 'bottleneck' and rps is not None and self.rps_fusion_module is not None:
+        if (
+            self.rps_fusion == "bottleneck"
+            and rps is not None
+            and self.rps_fusion_module is not None
+        ):
             # For bottleneck fusion: inject RPS BEFORE transposed conv
             # This matches input channels (bottleneck_channels)
             rps_inject = self._compute_bottleneck_rps(current, rps)
             current = current + rps_inject
-        elif self.rps_fusion == 'hierarchical' and rps is not None and self.rps_fusion_module is not None:
+        elif (
+            self.rps_fusion == "hierarchical"
+            and rps is not None
+            and self.rps_fusion_module is not None
+        ):
             # For hierarchical fusion at level 0: inject RPS before transposed conv
             rps_inject = self._compute_hierarchical_rps(current, rps, 0)
             current = current + rps_inject
@@ -545,7 +598,11 @@ class DecoderModule(nn.Module):
             current = torch.cat([current, skip], dim=1)
 
             # Hierarchical RPS injection at this level (BEFORE transposed conv)
-            if self.rps_fusion == 'hierarchical' and rps is not None and self.rps_fusion_module is not None:
+            if (
+                self.rps_fusion == "hierarchical"
+                and rps is not None
+                and self.rps_fusion_module is not None
+            ):
                 rps_inject = self._compute_hierarchical_rps(current, rps, i)
                 current = current + rps_inject
 
@@ -561,27 +618,28 @@ class DecoderModule(nn.Module):
         Output: RPS injection of same shape
         """
         B, C, F, T, _ = x.shape
-        rps_feat = self.rps_fusion_module.rotor_encoder(rps, target_length=T)  # (B, 64, T)
+        rps_feat = self.rps_fusion_module.rotor_encoder(rps, target_length=T)  # pyright: ignore[reportOptionalMemberAccess]
         # Conv1d: (B, 64, T) -> (B, C*2, T)
-        rps_proj = self.rps_fusion_module.rps_proj(rps_feat)  # (B, C*2, T)
+        rps_proj = self.rps_fusion_module.rps_proj(rps_feat)  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
         # Reshape to (B, C, 2, T) then permute to (B, C, T, 2)
         rps_proj = rps_proj.reshape(B, C, 2, T).permute(0, 1, 3, 2)  # (B, C, T, 2)
         # Broadcast to (B, C, F, T, 2)
         rps_proj = rps_proj.unsqueeze(2).expand(-1, -1, F, -1, -1)
         return rps_proj
 
-    def _compute_hierarchical_rps(self, x: torch.Tensor, rps: torch.Tensor,
-                                   level: int) -> torch.Tensor:
+    def _compute_hierarchical_rps(
+        self, x: torch.Tensor, rps: torch.Tensor, level: int
+    ) -> torch.Tensor:
         """
         Compute RPS injection for hierarchical fusion at given level.
         Input: (B, C_in, F, T, 2) - input to decoder layer (after skip concat for level > 0)
         Output: RPS injection of same shape
         """
         B, C, F, T, _ = x.shape
-        rps_feat = self.rps_fusion_module.rotor_encoder(rps, target_length=T)  # (B, 64, T)
-        proj = self.rps_fusion_module.level_projs[level]
+        rps_feat = self.rps_fusion_module.rotor_encoder(rps, target_length=T)  # pyright: ignore[reportOptionalMemberAccess]
+        proj = self.rps_fusion_module.level_projs[level]  # pyright: ignore[reportOptionalMemberAccess, reportOptionalSubscript, reportIndexIssue]
         # Conv1d: (B, 64, T) -> (B, C*2, T)
-        rps_proj = proj(rps_feat)  # (B, C*2, T)
+        rps_proj = proj(rps_feat)  # pyright: ignore[reportOptionalCall, reportCallIssue]
         # Reshape to (B, C, 2, T) then permute to (B, C, T, 2)
         rps_proj = rps_proj.reshape(B, C, 2, T).permute(0, 1, 3, 2)  # (B, C, T, 2)
         # Broadcast to (B, C, F, T, 2)
@@ -593,20 +651,27 @@ class DecoderModule(nn.Module):
 # STFT Processor
 # =============================================================================
 
+
 class STFTProcessor(nn.Module):
     """STFT Processing Module."""
+
     def __init__(self, config):
         super().__init__()
-        self.n_fft = config['audio']['n_fft']
-        self.hop_length = config['audio']['hop_length']
+        self.n_fft = config["audio"]["n_fft"]
+        self.hop_length = config["audio"]["hop_length"]
         self.window = torch.hann_window(self.n_fft)
 
     def transform(self, x):
         """Input: (B, 1, time) -> Output: (B, 1, freq, time, 2)"""
         x = x.squeeze(1)
-        X = torch.stft(x, n_fft=self.n_fft, hop_length=self.hop_length,
-                       window=self.window.to(x.device), return_complex=True,
-                       normalized=True)
+        X = torch.stft(
+            x,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window.to(x.device),
+            return_complex=True,
+            normalized=True,
+        )
         X = torch.view_as_real(X)
         X = X.unsqueeze(1)
         return X
@@ -615,8 +680,13 @@ class STFTProcessor(nn.Module):
         """Input: (B, 1, freq, time, 2) -> Output: (B, 1, time)"""
         X = X.squeeze(1)
         X = torch.view_as_complex(X)
-        x = torch.istft(X, n_fft=self.n_fft, hop_length=self.hop_length,
-                        window=self.window.to(X.device), normalized=True)
+        x = torch.istft(
+            X,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window.to(X.device),
+            normalized=True,
+        )
         x = x.unsqueeze(1)
         return x
 
@@ -624,6 +694,7 @@ class STFTProcessor(nn.Module):
 # =============================================================================
 # Refactored DCUNet
 # =============================================================================
+
 
 def _get_rps_config(config) -> dict:
     """Read RPS-related options from config (top-level or under 'model')."""
@@ -634,8 +705,10 @@ def _get_rps_config(config) -> dict:
     return {
         "use_rps": get("use_rps") or m_get("use_rps", False),
         # New decoder-specific RPS fusion options
-        "decoder_rps_fusion": get("decoder_rps_fusion") or m_get("decoder_rps_fusion", "bottleneck"),
-        "dcunet_num_encoder_layers": get("dcunet_num_encoder_layers") or m_get("dcunet_num_encoder_layers", 5),
+        "decoder_rps_fusion": get("decoder_rps_fusion")
+        or m_get("decoder_rps_fusion", "bottleneck"),
+        "dcunet_num_encoder_layers": get("dcunet_num_encoder_layers")
+        or m_get("dcunet_num_encoder_layers", 5),
         "num_rotors": get("num_rotors") or m_get("num_rotors", 4),
         "predict_rps": get("predict_rps") or m_get("predict_rps", False),
     }
@@ -657,6 +730,7 @@ class DCUNetRefactored(nn.Module):
     - Analyzing where RPS helps (encoder vs decoder)
     - Decoupled encoder/decoder architecture
     """
+
     def __init__(self, config):
         super().__init__()
         self.stft = STFTProcessor(config)
@@ -710,10 +784,11 @@ class DCUNetRefactored(nn.Module):
 
         # Build standalone decoder module (with RPS fusion if enabled)
         self.decoder = DecoderModule(
-            bottleneck_ch, dec_spec,
+            bottleneck_ch,
+            dec_spec,
             num_rotors=self.num_rotors,
             rps_fusion=self.decoder_rps_fusion if self.use_rps else None,
-            rps_channels=64
+            rps_channels=64,
         )
 
         # Auxiliary RPS prediction head
@@ -726,7 +801,9 @@ class DCUNetRefactored(nn.Module):
                 enc_channels, target_t, num_rotors=self.num_rotors
             )
 
-    def forward(self, x: torch.Tensor, rps: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, rps: torch.Tensor | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, Any]:
         """
         Args:
             x: (B, 1, time) audio input
@@ -757,9 +834,9 @@ class DCUNetRefactored(nn.Module):
             pad_f = F - decoded.shape[2]
             pad_t = T - decoded.shape[3]
             if pad_f > 0 or pad_t > 0:
-                decoded = F.pad(decoded, (0, 0, 0, max(0, pad_t), 0, max(0, pad_f)))
+                decoded = F.pad(decoded, (0, 0, 0, max(0, pad_t), 0, max(0, pad_f)))  # pyright: ignore[reportAttributeAccessIssue]
             if pad_f < 0 or pad_t < 0:
-                decoded = decoded[:, :, :F, :T, :]
+                decoded = decoded[:, :, :F, :T, :]  # pyright: ignore[reportAttributeAccessIssue]
 
         # Apply mask and inverse STFT
         output = decoded * X
@@ -768,7 +845,7 @@ class DCUNetRefactored(nn.Module):
         # Ensure output length matches input
         if output.shape[-1] != input_length:
             if output.shape[-1] < input_length:
-                output = F.pad(output, (0, input_length - output.shape[-1]))
+                output = F.pad(output, (0, input_length - output.shape[-1]))  # pyright: ignore[reportAttributeAccessIssue]
             else:
                 output = output[..., :input_length]
 
@@ -783,6 +860,7 @@ class DCUNetRefactored(nn.Module):
 # DCCRN Refactored (same pattern)
 # =============================================================================
 
+
 class DCCRNRefactored(nn.Module):
     """
     Refactored Deep Complex Convolution Recurrent Network with DECODER-side RPS conditioning.
@@ -794,6 +872,7 @@ class DCCRNRefactored(nn.Module):
       1. 'bottleneck': RPS injected after GRU projection
       2. 'hierarchical': RPS injected at multiple decoder levels
     """
+
     def __init__(self, config):
         super().__init__()
         self.stft = STFTProcessor(config)
@@ -861,15 +940,17 @@ class DCCRNRefactored(nn.Module):
         dec_out = list(reversed([1] + encoder_channels[:-1]))
         dec_spec = []
         for i, out_ch in enumerate(dec_out):
-            is_last = (i == len(dec_out) - 1)
-            dec_spec.append((0, out_ch, dec_kernel, dec_stride,
-                            dec_output_padding, dec_padding, is_last))
+            is_last = i == len(dec_out) - 1
+            dec_spec.append(
+                (0, out_ch, dec_kernel, dec_stride, dec_output_padding, dec_padding, is_last)
+            )
 
         self.decoder = DecoderModule(
-            bottleneck_ch, dec_spec,
+            bottleneck_ch,
+            dec_spec,
             num_rotors=self.num_rotors,
             rps_fusion=self.decoder_rps_fusion if self.use_rps else None,
-            rps_channels=64
+            rps_channels=64,
         )
 
         # Note: DCCRN has GRU in the bottleneck, so decoder receives GRU output
@@ -884,7 +965,9 @@ class DCCRNRefactored(nn.Module):
                 encoder_channels, target_t, num_rotors=self.num_rotors
             )
 
-    def forward(self, x: torch.Tensor, rps: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, rps: torch.Tensor | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, Any]:
         """
         Args:
             x: (B, 1, time) audio input
@@ -920,7 +1003,7 @@ class DCCRNRefactored(nn.Module):
             pad_f = F_stft - decoded.shape[2]
             pad_t = T - decoded.shape[3]
             if pad_f > 0 or pad_t > 0:
-                decoded = F.pad(decoded, (0, 0, 0, max(0, pad_t), 0, max(0, pad_f)))
+                decoded = F.pad(decoded, (0, 0, 0, max(0, pad_t), 0, max(0, pad_f)))  # pyright: ignore[reportAttributeAccessIssue]
             if pad_f < 0 or pad_t < 0:
                 decoded = decoded[:, :, :F_stft, :T, :]
 
@@ -931,7 +1014,7 @@ class DCCRNRefactored(nn.Module):
         # Ensure output length
         if output.shape[-1] != input_length:
             if output.shape[-1] < input_length:
-                output = F.pad(output, (0, input_length - output.shape[-1]))
+                output = F.pad(output, (0, input_length - output.shape[-1]))  # pyright: ignore[reportAttributeAccessIssue]
             else:
                 output = output[..., :input_length]
 
@@ -961,7 +1044,7 @@ def _get_config_val(config, key, default=None):
 # =============================================================================
 
 if __name__ == "__main__":
-    config = {
+    config: dict[str, Any] = {
         "audio": {
             "chunk_size": 131584,
             "dim_f": 1024,

@@ -10,6 +10,7 @@ Takes a path to a *run directory* that contains a `config.yaml` and a
 Optionally, an `experiment.yaml` alongside `config.yaml` pins the model type;
 otherwise we infer it from `config['model']['model']`.
 """
+
 from __future__ import annotations
 
 import glob as _glob
@@ -78,15 +79,15 @@ def infer_cmd(
     device: int = 0,
     rps_file: str | None = None,
 ) -> None:
-    import yaml as _yaml
     import numpy as np
-    import torch
     import soundfile as sf
+    import torch
+    import yaml as _yaml
     from ml_collections import ConfigDict
 
     from utils import (
-        get_model_from_config,
         demix,
+        get_model_from_config,
         load_start_checkpoint,
         read_audio_transposed,
     )
@@ -119,7 +120,9 @@ def infer_cmd(
     # Resolve inputs
     ipath = Path(input)
     if ipath.is_dir():
-        audio_files = sorted(_glob.glob(str(ipath / "*.wav"))) + sorted(_glob.glob(str(ipath / "*.flac")))
+        audio_files = sorted(_glob.glob(str(ipath / "*.wav"))) + sorted(
+            _glob.glob(str(ipath / "*.flac"))
+        )
     elif _glob.has_magic(input):
         audio_files = sorted(_glob.glob(input))
     elif ipath.is_file():
@@ -177,14 +180,19 @@ def infer_cmd(
 
         mix, sr = read_audio_transposed(str(audio_path))
         mix_tensor = torch.from_numpy(mix).float()
-        typer.echo(f"  {audio_path.name}  ({mix.shape[-1]/sr:.2f}s)")
+        typer.echo(f"  {audio_path.name}  ({mix.shape[-1] / sr:.2f}s)")  # pyright: ignore[reportOptionalMemberAccess]
 
-        with torch.no_grad(), torch.cuda.amp.autocast(
-            enabled=getattr(cfg_obj.training, "use_amp", True)
+        with (
+            torch.no_grad(),
+            torch.cuda.amp.autocast(enabled=getattr(cfg_obj.training, "use_amp", True)),
         ):
             result = demix(
-                cfg_obj, model, mix_tensor, device_obj,
-                model_type=model_type, rps=rps_data,
+                cfg_obj,
+                model,
+                mix_tensor,
+                device_obj,
+                model_type=model_type,
+                rps=rps_data,
             )
         if isinstance(result, dict):
             for instr, audio in result.items():

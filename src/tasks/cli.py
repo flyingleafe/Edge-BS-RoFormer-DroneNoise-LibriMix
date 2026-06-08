@@ -3,19 +3,19 @@
 All substance lives in ``tasks.rps_prediction``; this file is a command-line
 veneer with argument parsing and output formatting.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 
 from tasks.rps_prediction import (
+    EvalResult,
+    evaluate,
     load_input_set,
     load_predictor,
-    evaluate,
-    EvalResult,
 )
 
 app = typer.Typer(
@@ -28,29 +28,38 @@ _OUTPUT_FORMATS = {"json", "tex"}
 
 
 @app.callback(invoke_without_command=True)
-def main(
+def main(  # pyright: ignore[reportRedeclaration]
     input_set: str = typer.Option(
-        ..., "--input-set", "-i",
+        ...,
+        "--input-set",
+        "-i",
         help="Path to DREGON-LM dataset directory (e.g. datasets/DREGON-LM/valid).",
     ),
     models: list[str] = typer.Option(
-        ..., "--model", "-m",
+        ...,
+        "--model",
+        "-m",
         help="Model spec: 'Type@/path/to/ckpt.pt' or classical name ('cepstral', 'hps', 'pyin', 'nmf', 'matched_filter'). Repeat for multi-model comparison.",
     ),
-    output: Optional[Path] = typer.Option(
-        None, "--output", "-o",
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
         help="Path for JSON metrics output.",
     ),
-    tex: Optional[Path] = typer.Option(
-        None, "--tex",
+    tex: Path | None = typer.Option(
+        None,
+        "--tex",
         help="Path for LaTeX table output (per-SNR stratification).",
     ),
     alignment: str = typer.Option(
-        "stft_timestamps", "--alignment",
+        "stft_timestamps",
+        "--alignment",
         help="GT alignment strategy: 'stft_timestamps' (canon) or 'shape_stretch' (legacy).",
     ),
     verbose: bool = typer.Option(
-        True, "--verbose/--quiet",
+        True,
+        "--verbose/--quiet",
         help="Print progress.",
     ),
 ) -> None:

@@ -78,7 +78,7 @@ def train_fold(fold_idx, train_indices, val_indices, dataset, args, device):
         factor=0.5,
         patience=5,
     )
-    scaler = torch.amp.GradScaler("cuda")
+    scaler = torch.amp.GradScaler("cuda")  # pyright: ignore[reportPrivateImportUsage]
 
     best_val_mse = float("inf")
     best_path = os.path.join(args.output_dir, f"fold_{fold_idx}_best.pt")
@@ -98,7 +98,7 @@ def train_fold(fold_idx, train_indices, val_indices, dataset, args, device):
         for audio, rps_target in train_loader:
             audio, rps_target = audio.to(device), rps_target.to(device)
             optimizer.zero_grad()
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
                 rps_pred = model(audio)
                 loss = F.mse_loss(rps_pred, rps_target)
             scaler.scale(loss).backward()

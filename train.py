@@ -1,47 +1,50 @@
-# coding: utf-8
 __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 __version__ = "1.0.4"
 
 # Import necessary libraries
-import json
-import random
 import argparse
-from tqdm.auto import tqdm
+import json
 import os
+import random
 from pathlib import Path
-from dotenv import load_dotenv
+
 import torch
 import wandb
+from dotenv import load_dotenv
+from tqdm.auto import tqdm
 
 # Load environment variables from .env file
 load_dotenv()
-import numpy as np
-import auraloss
-import torch.nn as nn
-from torch.optim import Adam, AdamW, SGD, RAdam, RMSprop
-from torch.utils.data import DataLoader
-from torch.cuda.amp.grad_scaler import GradScaler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from ml_collections import ConfigDict
-import torch.nn.functional as F
-from typing import List, Tuple, Dict, Union, Callable, Optional
 import shutil
+import warnings
+from collections.abc import Callable
+from typing import Any, cast
+
+import auraloss
+import loralib as lora  # LoRA (Low-Rank Adaptation)
+import numpy as np
 import soundfile as sf
+import torch.nn as nn
+import torch.nn.functional as F
+from omegaconf import DictConfig
+from torch.cuda.amp.grad_scaler import GradScaler
+from torch.optim import SGD, Adam, AdamW, RAdam, RMSprop
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader
 
 # Import custom modules
 from dataset import MSSDataset  # Music source separation dataset class
-from utils import get_model_from_config  # Load model from config file
-from valid import valid_multi_gpu, valid, valid_rps_only  # Validation functions
-
-from utils import bind_lora_to_model, load_start_checkpoint
-import loralib as lora  # LoRA (Low-Rank Adaptation)
-
-import warnings
+from utils import (
+    bind_lora_to_model,
+    get_model_from_config,  # Load model from config file
+    load_start_checkpoint,
+)
+from valid import valid, valid_multi_gpu, valid_rps_only  # Validation functions
 
 warnings.filterwarnings("ignore")
 
 
-def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
+def parse_args(dict_args: dict | None) -> argparse.Namespace:
     """
     Parse command line arguments for configuring model, dataset, and training parameters.
 
@@ -91,29 +94,19 @@ def parse_args(dict_args: Union[Dict, None]) -> argparse.Namespace:
         type=str,
         help="validation data paths. You can provide several folders.",
     )
-    parser.add_argument(
-        "--num_workers", type=int, default=0, help="dataloader num_workers"
-    )
-    parser.add_argument(
-        "--pin_memory", action="store_true", help="dataloader pin_memory"
-    )
+    parser.add_argument("--num_workers", type=int, default=0, help="dataloader num_workers")
+    parser.add_argument("--pin_memory", action="store_true", help="dataloader pin_memory")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
-    parser.add_argument(
-        "--device_ids", nargs="+", type=int, default=[0], help="list of gpu ids"
-    )
+    parser.add_argument("--device_ids", nargs="+", type=int, default=[0], help="list of gpu ids")
     parser.add_argument(
         "--use_multistft_loss",
         action="store_true",
         help="Use MultiSTFT Loss (from auraloss package)",
     )
-    parser.add_argument(
-        "--use_mse_loss", action="store_true", help="Use default MSE loss"
-    )
+    parser.add_argument("--use_mse_loss", action="store_true", help="Use default MSE loss")
     parser.add_argument("--use_l1_loss", action="store_true", help="Use L1 loss")
     parser.add_argument("--wandb_key", type=str, default="", help="wandb API Key")
-    parser.add_argument(
-        "--pre_valid", action="store_true", help="Run validation before training"
-    )
+    parser.add_argument("--pre_valid", action="store_true", help="Run validation before training")
     parser.add_argument(
         "--metrics",
         nargs="+",
@@ -208,13 +201,13 @@ def initialize_environment(seed: int, results_path: str) -> None:
     torch.backends.cudnn.deterministic = False
     try:
         torch.multiprocessing.set_start_method("spawn")
-    except Exception as e:
+    except Exception:
         pass
     os.makedirs(results_path, exist_ok=True)
 
 
 def wandb_init(
-    args: argparse.Namespace, config: Dict, device_ids: List[int], batch_size: int
+    args: argparse.Namespace, config: DictConfig, device_ids: list[int], batch_size: int
 ) -> None:
     """
     Initialize wandb logging system.
@@ -226,16 +219,14 @@ def wandb_init(
 
     API key is taken from --wandb_key argument or WANDB_API_KEY environment variable.
     """
-    wandb_key = (
-        args.wandb_key if args.wandb_key else os.environ.get("WANDB_API_KEY", "")
-    )
+    wandb_key = args.wandb_key if args.wandb_key else os.environ.get("WANDB_API_KEY", "")
     if wandb_key is None or wandb_key.strip() == "":
         wandb.init(mode="disabled")
     else:
         wandb.login(key=wandb_key)
         run_name = config.get("run_name") or None
         wandb_run_id = getattr(args, "wandb_run_id", "") or None
-        init_kwargs: Dict = dict(
+        init_kwargs: dict = dict(
             entity="flyingleafe",
             project="msst",
             name=run_name,
@@ -262,7 +253,7 @@ def wandb_init(
         run_id_path.write_text(wandb.run.id)
 
 
-def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> DataLoader:
+def prepare_data(config: DictConfig, args: argparse.Namespace, batch_size: int) -> DataLoader:
     """
     Prepare training data.
 
@@ -275,9 +266,7 @@ def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> Dat
         config,
         args.data_path,
         batch_size=batch_size,
-        metadata_path=os.path.join(
-            args.results_path, f"metadata_{args.dataset_type}.pkl"
-        ),
+        metadata_path=os.path.join(args.results_path, f"metadata_{args.dataset_type}.pkl"),
         dataset_type=args.dataset_type,
     )
 
@@ -292,8 +281,8 @@ def prepare_data(config: Dict, args: argparse.Namespace, batch_size: int) -> Dat
 
 
 def prepare_valid_data(
-    config: Dict, args: argparse.Namespace, batch_size: int = 2
-) -> Union[DataLoader, None]:
+    config: DictConfig, args: argparse.Namespace, batch_size: int = 2
+) -> DataLoader | None:
     """
     Prepare validation data loader for audio sample logging.
 
@@ -306,9 +295,7 @@ def prepare_valid_data(
         config,
         args.valid_path,
         batch_size=batch_size,
-        metadata_path=os.path.join(
-            args.results_path, f"valid_metadata_{args.dataset_type}.pkl"
-        ),
+        metadata_path=os.path.join(args.results_path, f"valid_metadata_{args.dataset_type}.pkl"),
         dataset_type=args.dataset_type,
     )
     return DataLoader(
@@ -321,8 +308,8 @@ def prepare_valid_data(
 
 
 def initialize_model_and_device(
-    model: torch.nn.Module, device_ids: List[int]
-) -> Tuple[Union[torch.device, str], torch.nn.Module]:
+    model: torch.nn.Module, device_ids: list[int]
+) -> tuple[torch.device, torch.nn.Module]:
     """
     Initialize model and assign to appropriate device.
 
@@ -346,7 +333,7 @@ def initialize_model_and_device(
     return device, model
 
 
-def get_optimizer(config: ConfigDict, model: torch.nn.Module) -> torch.optim.Optimizer:
+def get_optimizer(config: DictConfig, model: torch.nn.Module) -> torch.optim.Optimizer:
     """
     Initialize optimizer based on configuration.
 
@@ -380,9 +367,7 @@ def get_optimizer(config: ConfigDict, model: torch.nn.Module) -> torch.optim.Opt
     elif name_optimizer == "adamw8bit":
         import bitsandbytes as bnb
 
-        optimizer = bnb.optim.AdamW8bit(
-            model.parameters(), lr=config.training.lr, **optim_params
-        )
+        optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=config.training.lr, **optim_params)
     elif name_optimizer == "sgd":
         print("Use SGD optimizer")
         optimizer = SGD(model.parameters(), lr=config.training.lr, **optim_params)
@@ -392,9 +377,7 @@ def get_optimizer(config: ConfigDict, model: torch.nn.Module) -> torch.optim.Opt
     return optimizer
 
 
-def masked_loss(
-    y_: torch.Tensor, y: torch.Tensor, q: float, coarse: bool = True
-) -> torch.Tensor:
+def masked_loss(y_: torch.Tensor, y: torch.Tensor, q: float, coarse: bool = True) -> torch.Tensor:
     """
     Compute masked loss function.
 
@@ -413,7 +396,7 @@ def masked_loss(
     loss = loss.reshape(loss.shape[0], -1)
     L = loss.detach()
     quantile = torch.quantile(L, q, interpolation="linear", dim=1, keepdim=True)
-    mask = L < quantile
+    mask = quantile > L
     return (loss * mask).mean()
 
 
@@ -448,7 +431,7 @@ def multistft_loss(
 
 
 def choice_loss(
-    args: argparse.Namespace, config: ConfigDict
+    args: argparse.Namespace, config: DictConfig
 ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     """
     Select appropriate loss function.
@@ -470,7 +453,7 @@ def choice_loss(
 
         if args.use_mse_loss and args.use_l1_loss:
 
-            def multi_loss(y_, y):
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
                 return (
                     (multistft_loss(y_, y, loss_multistft) / 1000)
                     + nn.MSELoss()(y_, y)
@@ -478,40 +461,39 @@ def choice_loss(
                 )
         elif args.use_mse_loss:
 
-            def multi_loss(y_, y):
-                return (multistft_loss(y_, y, loss_multistft) / 1000) + nn.MSELoss()(
-                    y_, y
-                )
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
+                return (multistft_loss(y_, y, loss_multistft) / 1000) + nn.MSELoss()(y_, y)
         elif args.use_l1_loss:
 
-            def multi_loss(y_, y):
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
                 return (multistft_loss(y_, y, loss_multistft) / 1000) + F.l1_loss(y_, y)
         else:
 
-            def multi_loss(y_, y):
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
                 return multistft_loss(y_, y, loss_multistft) / 1000
     elif args.use_mse_loss:
         if args.use_l1_loss:
 
-            def multi_loss(y_, y):
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
                 return nn.MSELoss()(y_, y) + F.l1_loss(y_, y)
         else:
-            multi_loss = nn.MSELoss()
+            _mse_loss = nn.MSELoss()
+            multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = (
+                lambda y_, y: _mse_loss(y_, y)
+            )  # pyright: ignore[reportAssignmentType, reportRedeclaration]
     elif args.use_l1_loss:
-        multi_loss = F.l1_loss
+        multi_loss = F.l1_loss  # pyright: ignore[reportAssignmentType]
     else:
+        _q: float = cast(float, config.training.q)
+        _coarse: bool = cast(bool, config.training.coarse_loss_clip)
 
-        def multi_loss(y_, y):
-            return masked_loss(
-                y_, y, q=config.training.q, coarse=config.training.coarse_loss_clip
-            )
+        def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
+            return masked_loss(y_, y, q=_q, coarse=_coarse)
 
     return multi_loss
 
 
-def normalize_batch(
-    x: torch.Tensor, y: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def normalize_batch(x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Normalize batch data.
 
@@ -528,20 +510,16 @@ def normalize_batch(
     return x, y
 
 
-def get_sample_rate(config: ConfigDict) -> int:
+def get_sample_rate(config: DictConfig) -> int:
     """Get audio sample rate from config (audio.sample_rate, audio.samplerate, or 16000)."""
     if hasattr(config, "audio"):
-        sr = getattr(config.audio, "sample_rate", None) or getattr(
-            config.audio, "samplerate", None
-        )
+        sr = getattr(config.audio, "sample_rate", None) or getattr(config.audio, "samplerate", None)
         if sr is not None:
             return int(sr)
     return 16000
 
 
-def maybe_normalize_rps(
-    rps: Optional[torch.Tensor], config
-) -> Optional[torch.Tensor]:
+def maybe_normalize_rps(rps: torch.Tensor | None, config) -> torch.Tensor | None:
     """Divide RPS by rps_norm_scale if configured (training-time normalization)."""
     if rps is None:
         return None
@@ -559,11 +537,7 @@ def get_model_output(
         return model(x)
     # Handle original and refactored DCUNet/DCCRN with RPS
     rps_models = ("dcunet", "dccrn", "dcunet_refactored", "dccrn_refactored")
-    if (
-        args.model_type in rps_models
-        and getattr(model, "use_rps", False)
-        and rps is not None
-    ):
+    if args.model_type in rps_models and getattr(model, "use_rps", False) and rps is not None:
         out = model(x, rps=rps)
     else:
         out = model(x)
@@ -590,7 +564,7 @@ SNR_CATEGORIES = {
 }
 
 
-def load_snr_metadata(data_path: Union[str, List[str]]) -> Optional[Dict[str, float]]:
+def load_snr_metadata(data_path: str | list[str]) -> dict[str, float] | None:
     """
     Load sample_id -> input_snr from DN-LM metadata.json if present.
     data_path: training or validation root (e.g. 'datasets/DN-LM/train' or list of one).
@@ -619,15 +593,15 @@ def load_snr_metadata(data_path: Union[str, List[str]]) -> Optional[Dict[str, fl
 
 
 def select_sample_ids_by_snr(
-    metadata: Dict[str, float],
+    metadata: dict[str, float],
     seed: int = 0,
-) -> List[Tuple[str, str, float]]:
+) -> list[tuple[str, str, float]]:
     """
     Select one sample_id per SNR category (light, medium, heavy).
     Returns list of (sample_id, category_name, snr_value); length 0--3.
     """
     rng = random.Random(seed)
-    selected: List[Tuple[str, str, float]] = []
+    selected: list[tuple[str, str, float]] = []
     for cat_name, (min_db, max_db) in SNR_CATEGORIES.items():
         candidates = [
             (sid, snr)
@@ -645,8 +619,8 @@ def load_sample_audio_from_folder(
     root: str,
     sample_id: str,
     target_file: str = "vocals",
-    target_sr: Optional[int] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    target_sr: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Load mixture and target for one DN-LM sample from root/sample_id/.
     Returns (mix, target) as float32 numpy (samples,) or (channels, samples) to match model.
@@ -670,15 +644,11 @@ def load_sample_audio_from_folder(
 
         # librosa.resample expects (n_channels, n_samples) or (n_samples,); resamples along last axis
         if sr_m != target_sr:
-            mix = librosa.resample(
-                mix, orig_sr=sr_m, target_sr=target_sr, res_type="kaiser_best"
-            )
+            mix = librosa.resample(mix, orig_sr=sr_m, target_sr=target_sr, res_type="kaiser_best")
             if mix.ndim == 1:
                 mix = mix[np.newaxis, :]
         if sr_t != target_sr:
-            tgt = librosa.resample(
-                tgt, orig_sr=sr_t, target_sr=target_sr, res_type="kaiser_best"
-            )
+            tgt = librosa.resample(tgt, orig_sr=sr_t, target_sr=target_sr, res_type="kaiser_best")
             if tgt.ndim == 1:
                 tgt = tgt[np.newaxis, :]
     return mix, tgt
@@ -687,12 +657,12 @@ def load_sample_audio_from_folder(
 def collect_audio_triples_by_snr(
     model: torch.nn.Module,
     args: argparse.Namespace,
-    config: ConfigDict,
+    config: DictConfig,
     device: torch.device,
-    data_path: Union[str, List[str]],
+    data_path: str | list[str],
     epoch: int,
     target_file: str = "vocals",
-) -> Tuple[List[Tuple[np.ndarray, np.ndarray, np.ndarray]], List[str], int]:
+) -> tuple[list[tuple[np.ndarray, np.ndarray, np.ndarray]], list[str], int]:
     """
     Select 3 samples by SNR category (light, medium, heavy), run model, return triples and captions.
     Returns (triples, captions, sample_rate). If metadata or samples missing, returns ([], [], sr).
@@ -709,8 +679,8 @@ def collect_audio_triples_by_snr(
     selected = select_sample_ids_by_snr(metadata, seed=0)
     if not selected:
         return [], [], sample_rate
-    triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    captions: List[str] = []
+    triples: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    captions: list[str] = []
     normalize = getattr(config.training, "normalize", False)
     model.eval()
     with torch.no_grad():
@@ -749,10 +719,10 @@ def collect_audio_triples_by_snr(
 
 def log_audio_triples_to_wandb(
     prefix: str,
-    triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    triples: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
     sample_rate: int,
     epoch: int,
-    captions: Optional[List[str]] = None,
+    captions: list[str] | None = None,
     output_only: bool = False,
 ) -> None:
     """
@@ -762,7 +732,7 @@ def log_audio_triples_to_wandb(
     """
     if not triples:
         return
-    log_dict = {"epoch": epoch}
+    log_dict: dict[str, Any] = {"epoch": epoch}
     for idx, (inp, tgt, out) in enumerate(triples):
         cap = captions[idx] if captions and idx < len(captions) else f"sample_{idx}"
         if not output_only:
@@ -780,20 +750,21 @@ def log_audio_triples_to_wandb(
 
 def train_one_epoch(
     model: torch.nn.Module,
-    config: ConfigDict,
+    config: DictConfig,
     args: argparse.Namespace,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    device_ids: List[int],
+    device_ids: list[int],
     epoch: int,
     use_amp: bool,
     scaler: torch.cuda.amp.GradScaler,
     gradient_accumulation_steps: int,
     train_loader: torch.utils.data.DataLoader,
     multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
-    audio_logging_cache: Optional[
-        Dict[str, Optional[Tuple[List[np.ndarray], List[np.ndarray], int]]]
-    ] = None,
+    audio_logging_cache: dict[
+        str, tuple[list[np.ndarray], list[np.ndarray], int, list[np.ndarray] | None] | None
+    ]
+    | None = None,
 ) -> None:
     """
     Train model for one epoch.
@@ -818,8 +789,8 @@ def train_one_epoch(
 
     normalize = getattr(config.training, "normalize", False)
     sample_rate = get_sample_rate(config)
-    train_audio_triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    train_audio_captions: Optional[List[str]] = None
+    train_audio_triples: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    train_audio_captions: list[str] | None = None
 
     # Prefer 3 samples by SNR (light / medium / heavy) when DN-LM metadata exists (stable: same samples every epoch)
     target_file = getattr(config.training, "target_instrument", None) or "vocals"
@@ -883,17 +854,17 @@ def train_one_epoch(
                         "rps_loss_only requires predict_rps=true and RPS data"
                     )
                     rps_target = F.interpolate(
-                        rps.float(),
+                        rps.float(),  # pyright: ignore[reportArgumentType]
                         size=rps_pred.shape[-1],
                         mode="linear",
                         align_corners=False,
                     )
                     loss = F.mse_loss(rps_pred, rps_target)
                 else:
-                    loss = multi_loss(y_, y)
+                    loss = multi_loss(y_, y)  # pyright: ignore[reportArgumentType]
                     if rps_pred is not None and rps is not None:
                         rps_target = F.interpolate(
-                            rps.float(),
+                            rps.float(),  # pyright: ignore[reportArgumentType]
                             size=rps_pred.shape[-1],
                             mode="linear",
                             align_corners=False,
@@ -969,13 +940,13 @@ def train_one_epoch(
         and audio_logging_cache.get("train") is not None
         and not train_audio_triples
     ):
-        cache_entry = audio_logging_cache["train"]
+        cache_entry = audio_logging_cache["train"]  # pyright: ignore[reportOptionalSubscript]
         cached_inp, cached_tgt, sample_rate = (
-            cache_entry[0],
-            cache_entry[1],
-            cache_entry[2],
+            cache_entry[0],  # pyright: ignore[reportOptionalSubscript]
+            cache_entry[1],  # pyright: ignore[reportOptionalSubscript]
+            cache_entry[2],  # pyright: ignore[reportOptionalSubscript]
         )
-        cached_rps_list = cache_entry[3] if len(cache_entry) > 3 else None
+        cached_rps_list = cache_entry[3] if len(cache_entry) > 3 else None  # pyright: ignore[reportOptionalSubscript, reportArgumentType]
         model.eval()
         train_audio_triples = []
         with torch.no_grad():
@@ -984,10 +955,7 @@ def train_one_epoch(
                     torch.from_numpy(inp_k).float().unsqueeze(0).unsqueeze(0).to(device)
                 )  # (1, 1, T)
                 rps_k = (
-                    torch.from_numpy(cached_rps_list[idx])
-                    .float()
-                    .unsqueeze(0)
-                    .to(device)
+                    torch.from_numpy(cached_rps_list[idx]).float().unsqueeze(0).to(device)
                     if cached_rps_list is not None
                     else None
                 )
@@ -1013,7 +981,7 @@ def save_weights(
     args: argparse.Namespace,
     store_path_prefix: str,
     model: torch.nn.Module,
-    device_ids: List[int],
+    device_ids: list[int],
     train_lora: bool,
     epoch: int,
     metric_value: float,
@@ -1027,7 +995,9 @@ def save_weights(
     - Multi-GPU model weight saving
     """
     if train_lora:
-        suffix = f"_{args.model_type}_ep_{epoch}_{args.metric_for_scheduler}_{metric_value:.4f}.ckpt"
+        suffix = (
+            f"_{args.model_type}_ep_{epoch}_{args.metric_for_scheduler}_{metric_value:.4f}.ckpt"
+        )
         if is_early_stop:
             store_path = os.path.join(store_path_prefix, f"early_stop{suffix}")
         else:
@@ -1038,9 +1008,11 @@ def save_weights(
             shutil.copy(store_path, best_model_path)
     else:
         state_dict = (
-            model.state_dict() if len(device_ids) <= 1 else model.module.state_dict()
+            model.state_dict() if len(device_ids) <= 1 else model.module.state_dict()  # pyright: ignore[reportAttributeAccessIssue]
         )
-        suffix = f"_{args.model_type}_ep_{epoch}_{args.metric_for_scheduler}_{metric_value:.4f}.ckpt"
+        suffix = (
+            f"_{args.model_type}_ep_{epoch}_{args.metric_for_scheduler}_{metric_value:.4f}.ckpt"
+        )
         if is_early_stop:
             store_path = os.path.join(store_path_prefix, f"early_stop{suffix}")
         else:
@@ -1054,13 +1026,13 @@ def save_weights(
 def compute_epoch_metrics(
     model: torch.nn.Module,
     args: argparse.Namespace,
-    config: ConfigDict,
+    config: DictConfig,
     device: torch.device,
-    device_ids: List[int],
+    device_ids: list[int],
     epoch: int,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | torch.optim.lr_scheduler.ReduceLROnPlateau,
     best_metric: float,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """
     Compute and log evaluation metrics for current epoch.
 
@@ -1073,9 +1045,7 @@ def compute_epoch_metrics(
     if rps_loss_only:
         metrics_avg = valid_rps_only(model, args, config, device, verbose=False)
     elif torch.cuda.is_available() and len(device_ids) > 1:
-        metrics_avg = valid_multi_gpu(
-            model, args, config, args.device_ids, verbose=False
-        )
+        metrics_avg = valid_multi_gpu(model, args, config, args.device_ids, verbose=False)
     else:
         metrics_avg = valid(model, args, config, device, verbose=False)
 
@@ -1094,7 +1064,7 @@ def compute_epoch_metrics(
             is_early_stop=False,
         )
 
-    scheduler.step(current_metric)
+    scheduler.step(current_metric)  # pyright: ignore[reportArgumentType]
     wandb.log({"metric_main": current_metric})
     for metric_name in metrics_avg:
         wandb.log({f"metric_{metric_name}": metrics_avg[metric_name]})
@@ -1104,42 +1074,36 @@ def compute_epoch_metrics(
 def collect_and_log_valid_audio(
     model: torch.nn.Module,
     args: argparse.Namespace,
-    config: ConfigDict,
+    config: DictConfig,
     device: torch.device,
-    valid_loader: Optional[torch.utils.data.DataLoader],
+    valid_loader: torch.utils.data.DataLoader | None,
     epoch: int,
-    audio_logging_cache: Optional[
-        Dict[str, Optional[Tuple[List[np.ndarray], List[np.ndarray], int]]]
-    ] = None,
+    audio_logging_cache: dict[
+        str, tuple[list[np.ndarray], list[np.ndarray], int, list[np.ndarray] | None] | None
+    ]
+    | None = None,
 ) -> None:
     """Get 3 validation sample triples by SNR (light/medium/heavy) or from loader; log to wandb. Stable selection; output-only after epoch 0."""
     sample_rate = get_sample_rate(config)
     target_file = getattr(config.training, "target_instrument", None) or "vocals"
-    triples: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    captions: Optional[List[str]] = None
+    triples: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    captions: list[str] | None = None
 
     # Epoch > 0 and fallback was used at epoch 0: run model on cached inputs, log outputs only
-    if (
-        epoch > 0
-        and audio_logging_cache
-        and audio_logging_cache.get("valid") is not None
-    ):
-        cache_entry = audio_logging_cache["valid"]
+    if epoch > 0 and audio_logging_cache and audio_logging_cache.get("valid") is not None:
+        cache_entry = audio_logging_cache["valid"]  # pyright: ignore[reportOptionalSubscript]
         cached_inp, cached_tgt, sample_rate = (
-            cache_entry[0],
-            cache_entry[1],
-            cache_entry[2],
+            cache_entry[0],  # pyright: ignore[reportOptionalSubscript]
+            cache_entry[1],  # pyright: ignore[reportOptionalSubscript]
+            cache_entry[2],  # pyright: ignore[reportOptionalSubscript]
         )
-        cached_rps_list = cache_entry[3] if len(cache_entry) > 3 else None
+        cached_rps_list = cache_entry[3] if len(cache_entry) > 3 else None  # pyright: ignore[reportOptionalSubscript, reportArgumentType]
         model.eval()
         with torch.no_grad():
             for idx, (inp_k, tgt_k) in enumerate(zip(cached_inp, cached_tgt)):
                 x = torch.from_numpy(inp_k).float().unsqueeze(0).unsqueeze(0).to(device)
                 rps_k = (
-                    torch.from_numpy(cached_rps_list[idx])
-                    .float()
-                    .unsqueeze(0)
-                    .to(device)
+                    torch.from_numpy(cached_rps_list[idx]).float().unsqueeze(0).to(device)
                     if cached_rps_list is not None
                     else None
                 )
@@ -1205,7 +1169,7 @@ def collect_and_log_valid_audio(
         )
 
 
-def train_model(args: argparse.Namespace) -> None:
+def train_model(args: argparse.Namespace | None = None) -> None:
     """
     Main function for model training.
 
@@ -1227,7 +1191,7 @@ def train_model(args: argparse.Namespace) -> None:
     - Resume from checkpoint
     - Multiple evaluation metrics
     """
-    args = parse_args(args)
+    args = parse_args(vars(args) if args is not None else None)
 
     initialize_environment(args.seed, args.results_path)
     model, config = get_model_from_config(args.model_type, args.config_path)
@@ -1256,9 +1220,7 @@ def train_model(args: argparse.Namespace) -> None:
             valid(model, args, config, device, verbose=True)
 
     optimizer = get_optimizer(config, model)
-    gradient_accumulation_steps = int(
-        getattr(config.training, "gradient_accumulation_steps", 1)
-    )
+    gradient_accumulation_steps = int(getattr(config.training, "gradient_accumulation_steps", 1))
 
     # Reduce LR if no metric improvements for several epochs
     scheduler = ReduceLROnPlateau(
@@ -1294,8 +1256,9 @@ def train_model(args: argparse.Namespace) -> None:
     print(f"Train for: {config.training.num_epochs} epochs")
 
     # Cache (input, target) for train/valid when using fallback (no SNR metadata) so same samples are logged every epoch
-    audio_logging_cache: Dict[
-        str, Optional[Tuple[List[np.ndarray], List[np.ndarray], int]]
+    audio_logging_cache: dict[
+        str,
+        tuple[list[np.ndarray], list[np.ndarray], int, list[np.ndarray] | None] | None,
     ] = {"train": None, "valid": None}
 
     for epoch in range(config.training.num_epochs):
@@ -1364,4 +1327,4 @@ def _log_best_checkpoint_artifact(args, best_metric: float) -> None:
 
 
 if __name__ == "__main__":
-    train_model(None)
+    train_model()

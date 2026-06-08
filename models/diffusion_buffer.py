@@ -1,6 +1,3 @@
-import math
-from typing import Tuple
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,7 +11,7 @@ def _channels_to_complex(x: torch.Tensor) -> torch.Tensor:
     return torch.complex(x[:, 0], x[:, 1])
 
 
-def _complex_randn(shape: Tuple[int, ...], device: torch.device) -> torch.Tensor:
+def _complex_randn(shape: tuple[int, ...], device: torch.device) -> torch.Tensor:
     return torch.complex(torch.randn(shape, device=device), torch.randn(shape, device=device))
 
 
@@ -76,10 +73,12 @@ class DiffusionBufferModel(nn.Module):
 
     def _build_sigma_table(self, steps: int = 2048) -> None:
         t_grid = torch.linspace(0.0, self.t_max, steps)
-        g = self.sde_c * (self.sde_k ** t_grid)
+        g = self.sde_c * (self.sde_k**t_grid)
         denom = (1.0 - t_grid).clamp(min=1e-6)
-        integrand = (g ** 2) / (denom ** 2)
-        integral = torch.cumsum((integrand[:-1] + integrand[1:]) * (t_grid[1:] - t_grid[:-1]) * 0.5, dim=0)
+        integrand = (g**2) / (denom**2)
+        integral = torch.cumsum(
+            (integrand[:-1] + integrand[1:]) * (t_grid[1:] - t_grid[:-1]) * 0.5, dim=0
+        )
         integral = torch.cat([torch.zeros(1), integral], dim=0)
         sigma_sq = ((1.0 - t_grid) ** 2) * integral
         sigma = torch.sqrt(torch.clamp(sigma_sq, min=1e-12))
@@ -89,18 +88,18 @@ class DiffusionBufferModel(nn.Module):
     def _sigma(self, t: torch.Tensor) -> torch.Tensor:
         t = torch.clamp(t, 0.0, self.t_max)
         t_flat = t.reshape(-1)
-        idx = torch.searchsorted(self.sigma_t_grid, t_flat, right=False)
+        idx = torch.searchsorted(self.sigma_t_grid, t_flat, right=False)  # pyright: ignore[reportCallIssue]
         idx = torch.clamp(idx, 1, self.sigma_t_grid.numel() - 1)
-        t0 = self.sigma_t_grid[idx - 1]
-        t1 = self.sigma_t_grid[idx]
-        s0 = self.sigma_table[idx - 1]
-        s1 = self.sigma_table[idx]
+        t0 = self.sigma_t_grid[idx - 1]  # pyright: ignore[reportIndexIssue]
+        t1 = self.sigma_t_grid[idx]  # pyright: ignore[reportIndexIssue]
+        s0 = self.sigma_table[idx - 1]  # pyright: ignore[reportIndexIssue]
+        s1 = self.sigma_table[idx]  # pyright: ignore[reportIndexIssue]
         w = (t_flat - t0) / (t1 - t0 + 1e-12)
         sigma = s0 + w * (s1 - s0)
         return sigma.reshape(t.shape).to(t.device)
 
     def _g(self, t: torch.Tensor) -> torch.Tensor:
-        return self.sde_c * (self.sde_k ** t)
+        return self.sde_c * (self.sde_k**t)
 
     def _stft(self, wave: torch.Tensor) -> torch.Tensor:
         return torch.stft(
@@ -170,7 +169,9 @@ class DiffusionBufferModel(nn.Module):
         if bsz < 1:
             raise ValueError("Buffer size must be at least 1.")
 
-        t_rand = torch.rand((batch, bsz - 1), device=y.device) * (self.t_max - self.t_eps) + self.t_eps
+        t_rand = (
+            torch.rand((batch, bsz - 1), device=y.device) * (self.t_max - self.t_eps) + self.t_eps
+        )
         t_rand, _ = torch.sort(t_rand, dim=1)
         t_vals = torch.cat([torch.full((batch, 1), self.t_eps, device=y.device), t_rand], dim=1)
 
@@ -206,7 +207,11 @@ class DiffusionBufferModel(nn.Module):
             raise ValueError("Buffer size must be at least 1.")
 
         freq = y.shape[1]
-        t_schedule = torch.linspace(self.t_eps, self.t_max, bsz, device=y.device).unsqueeze(0).repeat(batch, 1)
+        t_schedule = (
+            torch.linspace(self.t_eps, self.t_max, bsz, device=y.device)
+            .unsqueeze(0)
+            .repeat(batch, 1)
+        )
         sigma_schedule = self._sigma(t_schedule).view(batch, 1, bsz)
         t_map = self._make_time_map(t_schedule, frames, freq)
 
@@ -241,11 +246,11 @@ class DiffusionBufferModel(nn.Module):
             # Pad with zeros on the left if we're at the beginning
             if y_window.shape[-1] < bsz:
                 pad_size = bsz - y_window.shape[-1]
-                y_window = F.pad(y_window, (pad_size, 0), mode='constant', value=0)
+                y_window = F.pad(y_window, (pad_size, 0), mode="constant", value=0)
             y_last = y_window
-            
+
             f = (y_last - v_last) / torch.clamp(1.0 - t_vals, min=1e-6)
-            v_last = v_last + (-f + (g_vals ** 2) * score_last_c) * dt
+            v_last = v_last + (-f + (g_vals**2) * score_last_c) * dt
             v[..., -bsz:] = v_last
 
             out_index = k - bsz + 1

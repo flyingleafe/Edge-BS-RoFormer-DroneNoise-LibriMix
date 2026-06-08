@@ -1,28 +1,17 @@
+import math
+from fractions import Fraction
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from functools import partial
-
-import numpy as np
-import torch
-import json
-from omegaconf import OmegaConf
-from demucs.demucs import Demucs
-from demucs.hdemucs import HDemucs
-
-import math
-from openunmix.filtering import wiener
-from torch import nn
-from torch.nn import functional as F
-from fractions import Fraction
-from einops import rearrange
-
-from demucs.transformer import CrossTransformerEncoder
-
-from demucs.demucs import rescale_module
+from demucs.demucs import Demucs, rescale_module
+from demucs.hdemucs import HDecLayer, HDemucs, HEncLayer, MultiWrap, ScaledEmbedding, pad1d
+from demucs.spec import ispectro, spectro
 from demucs.states import capture_init
-from demucs.spec import spectro, ispectro
-from demucs.hdemucs import pad1d, ScaledEmbedding, HEncLayer, MultiWrap, HDecLayer
+from demucs.transformer import CrossTransformerEncoder
+from einops import rearrange
+from omegaconf import OmegaConf
+from openunmix.filtering import wiener
 
 
 class HTDemucs(nn.Module):
@@ -309,17 +298,10 @@ class HTDemucs(nn.Module):
                 chout_z = max(chout, chout_z)
                 chout = chout_z
 
-            enc = HEncLayer(
-                chin_z, chout_z, dconv=dconv_mode & 1, context=context_enc, **kw
-            )
+            enc = HEncLayer(chin_z, chout_z, dconv=dconv_mode & 1, context=context_enc, **kw)
             if freq:
                 tenc = HEncLayer(
-                    chin,
-                    chout,
-                    dconv=dconv_mode & 1,
-                    context=context_enc,
-                    empty=last_freq,
-                    **kwt
+                    chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt
                 )
                 self.tencoder.append(tenc)
 
@@ -334,12 +316,7 @@ class HTDemucs(nn.Module):
                 if self.num_subbands > 1:
                     chin_z *= self.num_subbands
             dec = HDecLayer(
-                chout_z,
-                chin_z,
-                dconv=dconv_mode & 2,
-                last=index == 0,
-                context=context,
-                **kw_dec
+                chout_z, chin_z, dconv=dconv_mode & 2, last=index == 0, context=context, **kw_dec
             )
             if multi:
                 dec = MultiWrap(dec, multi_freqs)
@@ -351,7 +328,7 @@ class HTDemucs(nn.Module):
                     empty=last_freq,
                     last=index == 0,
                     context=context,
-                    **kwt
+                    **kwt,
                 )
                 self.tdecoder.insert(0, tdec)
             self.decoder.insert(0, dec)
@@ -366,9 +343,7 @@ class HTDemucs(nn.Module):
                 else:
                     freqs //= stride
             if index == 0 and freq_emb:
-                self.freq_emb = ScaledEmbedding(
-                    freqs, chin_z, smooth=emb_smooth, scale=emb_scale
-                )
+                self.freq_emb = ScaledEmbedding(freqs, chin_z, smooth=emb_smooth, scale=emb_scale)
                 self.freq_emb_scale = freq_emb
 
         if rescale:
@@ -377,15 +352,9 @@ class HTDemucs(nn.Module):
         transformer_channels = channels * growth ** (depth - 1)
         if bottom_channels:
             self.channel_upsampler = nn.Conv1d(transformer_channels, bottom_channels, 1)
-            self.channel_downsampler = nn.Conv1d(
-                bottom_channels, transformer_channels, 1
-            )
-            self.channel_upsampler_t = nn.Conv1d(
-                transformer_channels, bottom_channels, 1
-            )
-            self.channel_downsampler_t = nn.Conv1d(
-                bottom_channels, transformer_channels, 1
-            )
+            self.channel_downsampler = nn.Conv1d(bottom_channels, transformer_channels, 1)
+            self.channel_upsampler_t = nn.Conv1d(transformer_channels, bottom_channels, 1)
+            self.channel_downsampler_t = nn.Conv1d(bottom_channels, transformer_channels, 1)
 
             transformer_channels = bottom_channels
 
@@ -445,7 +414,7 @@ class HTDemucs(nn.Module):
 
         z = spectro(x, nfft, hl)[..., :-1, :]
         assert z.shape[-1] == le + 4, (z.shape, x.shape, le)
-        z = z[..., 2: 2 + le]
+        z = z[..., 2 : 2 + le]
         return z
 
     def _ispec(self, z, length=None, scale=0):
@@ -455,7 +424,7 @@ class HTDemucs(nn.Module):
         pad = hl // 2 * 3
         le = hl * int(math.ceil(length / hl)) + 2 * pad
         x = ispectro(z, hl, length=le)
-        x = x[..., pad: pad + length]
+        x = x[..., pad : pad + length]
         return x
 
     def _magnitude(self, z):
@@ -529,8 +498,8 @@ class HTDemucs(nn.Module):
         training_length = int(self.segment * self.samplerate)
         if training_length < length:
             raise ValueError(
-                    f"Given length {length} is longer than "
-                    f"training length {training_length}")
+                f"Given length {length} is longer than training length {training_length}"
+            )
         return training_length
 
     def cac2cws(self, x):
@@ -614,7 +583,7 @@ class HTDemucs(nn.Module):
                 # add frequency embedding to allow for non equivariant convolutions
                 # over the frequency axis.
                 frs = torch.arange(x.shape[-2], device=x.device)
-                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x)  # pyright: ignore[reportOptionalCall]
                 x = x + self.freq_emb_scale * emb
 
             saved.append(x)
@@ -694,7 +663,7 @@ class HTDemucs(nn.Module):
             x = x[..., :length_pre_pad]
 
         target_idx = self.sources.index(self.target_instrument)  # Get the index of 'vocals'
-        x = x[:, target_idx:target_idx+1, :, :]  # Select target source, shape [B, 1, C, T]
+        x = x[:, target_idx : target_idx + 1, :, :]  # Select target source, shape [B, 1, C, T]
 
         # print("Output shape:", x.shape)
         return x
@@ -702,17 +671,17 @@ class HTDemucs(nn.Module):
 
 def get_model(args):
     extra = {
-        'sources': list(args.training.instruments),
-        'audio_channels': args.training.channels,
-        'samplerate': args.training.samplerate,
+        "sources": list(args.training.instruments),
+        "audio_channels": args.training.channels,
+        "samplerate": args.training.samplerate,
         # 'segment': args.model_segment or 4 * args.dset.segment,
-        'segment': args.training.segment,
+        "segment": args.training.segment,
     }
     klass = {
-        'demucs': Demucs,
-        'hdemucs': HDemucs,
-        'htdemucs': HTDemucs,
+        "demucs": Demucs,
+        "hdemucs": HDemucs,
+        "htdemucs": HTDemucs,
     }[args.model]
     kw = OmegaConf.to_container(getattr(args, args.model), resolve=True)
-    model = klass(**extra, **kw)
+    model = klass(**extra, **kw)  # pyright: ignore[reportCallIssue]
     return model

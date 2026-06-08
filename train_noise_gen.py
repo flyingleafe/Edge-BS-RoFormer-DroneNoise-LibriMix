@@ -23,11 +23,11 @@ Optional flags:
     --wandb-project <name>    # enables wandb logging
     --resume <ckpt>           # resume from a checkpoint
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 
@@ -35,29 +35,35 @@ import numpy as np
 import torch
 import torch.optim as optim
 import yaml
-from ml_collections import ConfigDict
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from data_processing.noise_rps_dataset import build_noise_rps_datasets
 from models.generative import DroneNoisePlusFilterGen, MultiScaleSTFT
 
-
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--config", type=str, default="configs/noise_gen.yaml")
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
-    p.add_argument("--wandb-project", type=str, default=None,
-                   help="If set, enables wandb logging under the given project.")
+    p.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None,
+        help="If set, enables wandb logging under the given project.",
+    )
     p.add_argument("--wandb-run-name", type=str, default=None)
-    p.add_argument("--resume", type=str, default=None,
-                   help="Path to a checkpoint to resume from.")
-    p.add_argument("--run-name", type=str, default=None,
-                   help="Run subdirectory name (default: timestamp).")
+    p.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
+    p.add_argument(
+        "--run-name", type=str, default=None, help="Run subdirectory name (default: timestamp)."
+    )
     return p.parse_args()
 
 
@@ -71,7 +77,8 @@ def pick_device(arg: str) -> torch.device:
 # Build pieces
 # ---------------------------------------------------------------------------
 
-def build_dataloaders(cfg: ConfigDict) -> tuple[DataLoader, DataLoader, ConfigDict]:
+
+def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader, DictConfig]:
     train_ds, val_ds = build_noise_rps_datasets(
         dregon_dir=cfg.data.get("dregon_dir"),
         michaels_dir=cfg.data.get("michaels_dir"),
@@ -88,19 +95,27 @@ def build_dataloaders(cfg: ConfigDict) -> tuple[DataLoader, DataLoader, ConfigDi
 
     n_workers = int(cfg.training.num_workers)
     train_dl = DataLoader(
-        train_ds, batch_size=cfg.training.batch_size,
-        num_workers=n_workers, pin_memory=True, shuffle=False, drop_last=True,
+        train_ds,
+        batch_size=cfg.training.batch_size,
+        num_workers=n_workers,
+        pin_memory=True,
+        shuffle=False,
+        drop_last=True,
         persistent_workers=n_workers > 0,
     )
     val_dl = DataLoader(
-        val_ds, batch_size=cfg.training.batch_size,
-        num_workers=n_workers, pin_memory=True, shuffle=False, drop_last=False,
+        val_ds,
+        batch_size=cfg.training.batch_size,
+        num_workers=n_workers,
+        pin_memory=True,
+        shuffle=False,
+        drop_last=False,
         persistent_workers=n_workers > 0,
     )
     return train_dl, val_dl, cfg
 
 
-def build_model(cfg: ConfigDict) -> DroneNoisePlusFilterGen:
+def build_model(cfg: DictConfig) -> DroneNoisePlusFilterGen:
     return DroneNoisePlusFilterGen(
         n_motors=cfg.model.n_motors,
         n_harmonics=cfg.model.n_harmonics,
@@ -113,7 +128,7 @@ def build_model(cfg: ConfigDict) -> DroneNoisePlusFilterGen:
     )
 
 
-def build_loss(cfg: ConfigDict) -> MultiScaleSTFT:
+def build_loss(cfg: DictConfig) -> MultiScaleSTFT:
     return MultiScaleSTFT(
         n_ffts=list(cfg.loss.n_ffts),
         log_weight=cfg.loss.log_weight,
@@ -124,6 +139,7 @@ def build_loss(cfg: ConfigDict) -> MultiScaleSTFT:
 # ---------------------------------------------------------------------------
 # Train / eval loops
 # ---------------------------------------------------------------------------
+
 
 def _move_batch(batch: dict, device: torch.device) -> dict:
     return {
@@ -152,8 +168,16 @@ def _forward_loss(
 
 
 def train_one_epoch(
-    model, loss_fn, optimizer, dl, device, cfg, epoch, *,
-    wandb=None, grad_clip: float | None = None,
+    model,
+    loss_fn,
+    optimizer,
+    dl,
+    device,
+    cfg,
+    epoch,
+    *,
+    wandb=None,
+    grad_clip: float | None = None,
 ):
     model.train()
     total_loss = 0.0
@@ -164,7 +188,10 @@ def train_one_epoch(
         b = _move_batch(batch, device)
         optimizer.zero_grad()
         loss, logs = _forward_loss(
-            model, loss_fn, b["rps"], b["audio"],
+            model,
+            loss_fn,
+            b["rps"],
+            b["audio"],
             harmonic_branch_weight=cfg.loss.get("harmonic_branch_weight", 0.0),
         )
         loss.backward()
@@ -177,7 +204,9 @@ def train_one_epoch(
         n += b["audio"].shape[0]
         pbar.set_postfix(loss=f"{logs['loss']:.3f}")
         if wandb is not None:
-            wandb.log({"train/loss_step": logs["loss"], **{k: v for k, v in logs.items() if k != "loss"}})
+            wandb.log(
+                {"train/loss_step": logs["loss"], **{k: v for k, v in logs.items() if k != "loss"}}
+            )
     avg = total_loss / max(n, 1)
     out = {"train/loss": avg}
     if h_loss_total:
@@ -194,7 +223,10 @@ def validate(model, loss_fn, dl, device, cfg) -> dict:
     for batch in tqdm(dl, desc="val", leave=False):
         b = _move_batch(batch, device)
         loss, logs = _forward_loss(
-            model, loss_fn, b["rps"], b["audio"],
+            model,
+            loss_fn,
+            b["rps"],
+            b["audio"],
             harmonic_branch_weight=cfg.loss.get("harmonic_branch_weight", 0.0),
         )
         total_loss += logs["loss"] * b["audio"].shape[0]
@@ -212,12 +244,13 @@ def validate(model, loss_fn, dl, device, cfg) -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     args = parse_args()
     device = pick_device(args.device)
 
     with open(args.config) as f:
-        cfg = ConfigDict(yaml.safe_load(f))
+        cfg = DictConfig(OmegaConf.load(f))
 
     torch.manual_seed(cfg.training.seed)
     np.random.seed(cfg.training.seed)
@@ -236,6 +269,7 @@ def main():
     wandb_run = None
     if args.wandb_project:
         import wandb
+
         wandb_run = wandb.init(
             project=args.wandb_project,
             name=args.wandb_run_name or run_name,
@@ -246,8 +280,10 @@ def main():
     # Data
     print("[data] building datasets...")
     train_dl, val_dl, _ = build_dataloaders(cfg)
-    print(f"[data] train sources: {len(train_dl.dataset.records)}, val sources: {len(val_dl.dataset.records)}")
-    print(f"[data] train samples/epoch: {len(train_dl.dataset)}, val: {len(val_dl.dataset)}")
+    print(
+        f"[data] train sources: {len(train_dl.dataset.records)}, val sources: {len(val_dl.dataset.records)}"
+    )  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+    print(f"[data] train samples/epoch: {len(train_dl.dataset)}, val: {len(val_dl.dataset)}")  # pyright: ignore[reportArgumentType]
 
     # Model
     print("[model] building DroneNoisePlusFilterGen...")
@@ -281,8 +317,15 @@ def main():
     for epoch in range(start_epoch, cfg.training.epochs):
         t0 = time.time()
         tlogs = train_one_epoch(
-            model, loss_fn, optimizer, train_dl, device, cfg, epoch,
-            wandb=wandb_run, grad_clip=grad_clip,
+            model,
+            loss_fn,
+            optimizer,
+            train_dl,
+            device,
+            cfg,
+            epoch,
+            wandb=wandb_run,
+            grad_clip=grad_clip,
         )
         vlogs = validate(model, loss_fn, val_dl, device, cfg)
         dt = time.time() - t0
@@ -290,8 +333,7 @@ def main():
         msg += f"  lr={optimizer.param_groups[0]['lr']:.2e}  dt={dt:.1f}s"
         print(msg)
         if wandb_run is not None:
-            wandb_run.log({**tlogs, **vlogs, "epoch": epoch,
-                           "lr": optimizer.param_groups[0]["lr"]})
+            wandb_run.log({**tlogs, **vlogs, "epoch": epoch, "lr": optimizer.param_groups[0]["lr"]})
 
         scheduler.step(vlogs["val/loss"])
 
