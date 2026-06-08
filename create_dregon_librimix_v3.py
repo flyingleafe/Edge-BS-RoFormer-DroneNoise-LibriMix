@@ -12,7 +12,9 @@ DREGON-LM-V3: Simpler version of DREGON-LM-V2.
 Reuses create_dregon_librimix.py's load_dregon_noise_records for cached loading.
 """
 
-import argparse, json, os, random, sys
+import argparse
+import json
+import random
 from glob import glob
 from pathlib import Path
 
@@ -21,11 +23,10 @@ import soundfile as sf
 from tqdm import tqdm
 
 from create_dregon_librimix import (
-    load_dregon_noise_records,
-    SAMPLE_RATE,
     MOTOR_SAMPLE_RATE,
-    NUM_ROTORS,
+    SAMPLE_RATE,
     load_audio,
+    load_dregon_noise_records,
 )
 
 # Override duration for V3
@@ -47,8 +48,8 @@ def normalize_audio(audio):
 
 
 def mix_at_snr(speech, noise, snr_db):
-    sp_rms = np.sqrt(np.mean(speech ** 2)) + 1e-10
-    ns_rms = np.sqrt(np.mean(noise ** 2)) + 1e-10
+    sp_rms = np.sqrt(np.mean(speech**2)) + 1e-10
+    ns_rms = np.sqrt(np.mean(noise**2)) + 1e-10
     target_ns_rms = sp_rms / (10 ** (snr_db / 20))
     noise_scaled = noise * (target_ns_rms / ns_rms)
     mixture = speech + noise_scaled
@@ -56,8 +57,8 @@ def mix_at_snr(speech, noise, snr_db):
 
 
 def calculate_snr(signal, noise):
-    sp = np.mean(signal ** 2) + 1e-10
-    ns = np.mean(noise ** 2) + 1e-10
+    sp = np.mean(signal**2) + 1e-10
+    ns = np.mean(noise**2) + 1e-10
     return 10 * np.log10(sp / ns)
 
 
@@ -67,8 +68,12 @@ def resample_rps(rps_motor, n_target, motor_rate=MOTOR_SAMPLE_RATE):
     n_src = rps_motor.shape[1]
     src_idx = np.linspace(0, n_src - 1, n_src)
     tgt_idx = np.linspace(0, n_src - 1, n_target)
-    return np.array([np.interp(tgt_idx, src_idx, rps_motor[i]).astype(np.float32)
-                     for i in range(rps_motor.shape[0])])
+    return np.array(
+        [
+            np.interp(tgt_idx, src_idx, rps_motor[i]).astype(np.float32)
+            for i in range(rps_motor.shape[0])
+        ]
+    )
 
 
 def get_random_chunk(tf, duration_sec=SAMPLE_DURATION):
@@ -91,7 +96,7 @@ def get_random_chunk(tf, duration_sec=SAMPLE_DURATION):
         rps_chunk = command.copy()  # (num_motors, num_motor_samples)
     else:
         start_sample = random.randint(0, len(audio) - target_samples)
-        chunk = audio[start_sample:start_sample + target_samples].copy()
+        chunk = audio[start_sample : start_sample + target_samples].copy()
         motor_start = int(start_sample / SAMPLE_RATE * MOTOR_SAMPLE_RATE)
         motor_end = motor_start + motor_target
         motor_end = min(motor_end, command.shape[-1])
@@ -139,8 +144,10 @@ def main():
 
     # ── Training ──
     TRAIN_IDS = [
-        "free-flight_nosource_room2", "hovering_nosource_room2",
-        "updown_nosource_room2", "rectangle_nosource_room2",
+        "free-flight_nosource_room2",
+        "hovering_nosource_room2",
+        "updown_nosource_room2",
+        "rectangle_nosource_room2",
         "spinning_nosource_room2",
     ]
     print(f"\nLoading training: {TRAIN_IDS}")
@@ -151,6 +158,7 @@ def main():
 
     # Pre-clean command spikes for all records (avoid repeated work)
     from data_processing.dregon import clean_command_spikes
+
     for tf in tqdm(valid_records + train_records, desc="Cleaning commands"):
         motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
         motor_es = tf[motor_key]
@@ -197,13 +205,15 @@ def main():
             sf.write(sample_dir / "mixture.wav", mixture, SAMPLE_RATE)
             np.save(sample_dir / "rps.npy", rps)
 
-            metadata_list.append({
-                "id": sample_id,
-                "input_snr": float(actual_snr),
-                "target_snr": float(snr),
-                "speech_source": Path(random.choice(speech_files)).name,
-                "noise_source": tf.tags["recording_id"],
-            })
+            metadata_list.append(
+                {
+                    "id": sample_id,
+                    "input_snr": float(actual_snr),
+                    "target_snr": float(snr),
+                    "speech_source": Path(random.choice(speech_files)).name,
+                    "noise_source": tf.tags["recording_id"],
+                }
+            )
 
         meta_path = output_dir / "metadata.json"
         all_meta = json.load(open(meta_path)) if meta_path.exists() else {}

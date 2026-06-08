@@ -22,6 +22,7 @@ CSV columns used
   - IMU_ATTI(0):accelX / accelY / accelZ
   - IMU_ATTI(0):gyroX  / gyroY  / gyroZ
 """
+
 from __future__ import annotations
 
 import csv
@@ -142,7 +143,9 @@ def load_external_timeframe(
 
     tracks: dict = {
         "audio": UniformSeries.from_samples(
-            audio.astype(np.float32), sr, t_start=t_start,
+            audio.astype(np.float32),
+            sr,
+            t_start=t_start,
         ),
     }
 
@@ -153,16 +156,22 @@ def load_external_timeframe(
 
     # EventSeries values are time-last (..., M).
     tracks["motors_measured"] = EventSeries.from_events(
-        csv_time, values=motor_rps.T, t_start=t_start,  # (4, M)
+        csv_time,
+        values=motor_rps.T,
+        t_start=t_start,  # (4, M)
     )
 
     # ── IMU (optional) ─────────────────────────────────────────────────
     if "accel" in csv_data:
         tracks["imu_accel"] = EventSeries.from_events(
-            csv_time, values=csv_data["accel"].T, t_start=t_start,
+            csv_time,
+            values=csv_data["accel"].T,
+            t_start=t_start,
         )
         tracks["imu_gyro"] = EventSeries.from_events(
-            csv_time, values=csv_data["gyro"].T, t_start=t_start,
+            csv_time,
+            values=csv_data["gyro"].T,
+            t_start=t_start,
         )
 
     # ── tags ───────────────────────────────────────────────────────────
@@ -207,10 +216,6 @@ def load_all_external_timeframes(
         frames.append(tf)
         audio_dur = tf["audio"].duration
         n_motor = len(tf["motors_measured"]) if "motors_measured" in tf else 0
-        n_ch = tf['audio'].samples.shape[0] if tf['audio'].samples.ndim > 1 else 1
-        print(
-            f"  Loaded {rec_id}: {audio_dur:.1f}s, "
-            f"{n_ch}ch, "
-            f"{n_motor} motor samples"
-        )
+        n_ch = tf["audio"].samples.shape[0] if tf["audio"].samples.ndim > 1 else 1
+        print(f"  Loaded {rec_id}: {audio_dur:.1f}s, {n_ch}ch, {n_motor} motor samples")
     return frames

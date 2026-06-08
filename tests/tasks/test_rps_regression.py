@@ -10,7 +10,6 @@ import itertools
 import json
 
 # Ensure src/ is on the path (pytest 9.x isolated-import behaviour).
-import sys as _sys
 from pathlib import Path
 from typing import Any
 
@@ -111,13 +110,15 @@ def test_eval_runs_and_produces_well_formed_output():
     # ── Per-sample numeric closeness ──────────────────────────────────
     golden_rows = load_golden_per_sample()
     golden_by_sample = {r["sample"]: r for r in golden_rows}
-    assert len(golden_rows) == _N_SAMPLES, \
+    assert len(golden_rows) == _N_SAMPLES, (
         f"golden has {len(golden_rows)} rows, expected {_N_SAMPLES}"
+    )
     for row in rows:
         g = golden_by_sample[row["sample"]]
         for key in ("mse", "mae_frame", "mae_clip", "ss_tot", "r2"):
-            assert np.isclose(row[key], g[key], rtol=1e-4, atol=1e-4), \
+            assert np.isclose(row[key], g[key], rtol=1e-4, atol=1e-4), (
                 f"{row['sample']}.{key}: got {row[key]:.6f}, golden {g[key]:.6f}"
+            )
 
 
 # ── Aggregate smoke test ─────────────────────────────────────────────────
@@ -156,11 +157,15 @@ def test_aggregate_structure():
     g_mae_frame = float(np.mean([r["mae_frame"] for r in golden_rows]))
     g_mae_clip = float(np.mean([r["mae_clip"] for r in golden_rows]))
     g_r2 = float(np.mean([r["r2"] for r in golden_rows]))
-    assert np.isclose(agg["mse"], g_mse, rtol=1e-4, atol=1e-4), \
+    assert np.isclose(agg["mse"], g_mse, rtol=1e-4, atol=1e-4), (
         f"agg MSE: got {agg['mse']:.6f}, golden {g_mse:.6f}"
-    assert np.isclose(agg["mae_frame"], g_mae_frame, rtol=1e-4, atol=1e-4), \
+    )
+    assert np.isclose(agg["mae_frame"], g_mae_frame, rtol=1e-4, atol=1e-4), (
         f"agg MAE frame: got {agg['mae_frame']:.6f}, golden {g_mae_frame:.6f}"
-    assert np.isclose(agg["mae_clip"], g_mae_clip, rtol=1e-4, atol=1e-4), \
+    )
+    assert np.isclose(agg["mae_clip"], g_mae_clip, rtol=1e-4, atol=1e-4), (
         f"agg MAE clip: got {agg['mae_clip']:.6f}, golden {g_mae_clip:.6f}"
-    assert np.isclose(agg["r2_mean"], g_r2, rtol=1e-4, atol=1e-4), \
+    )
+    assert np.isclose(agg["r2_mean"], g_r2, rtol=1e-4, atol=1e-4), (
         f"agg R²: got {agg['r2_mean']:.6f}, golden {g_r2:.6f}"
+    )

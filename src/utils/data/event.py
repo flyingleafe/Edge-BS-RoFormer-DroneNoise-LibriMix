@@ -7,6 +7,7 @@ An `EventSeries` stores timestamps as int64 tick counts **relative to
 This makes `shift` O(1): only the scalar `t_start_ticks` anchor moves.
 All time comparisons are exact (== on ints).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -81,7 +82,7 @@ class EventSeries(TimeSeries):
         *,
         t_start: float | int | None = None,
         t_end: float | int | None = None,
-    ) -> "EventSeries":
+    ) -> EventSeries:
         """Build from absolute timestamps (float seconds or int ticks).
 
         ``t_start`` / ``t_end`` are inferred from the first/last event if
@@ -122,7 +123,7 @@ class EventSeries(TimeSeries):
         *,
         t_start: int = 0,
         dur: int,
-    ) -> "EventSeries":
+    ) -> EventSeries:
         """Build from relative int64 ticks and explicit domain."""
         rel_ts = np.asarray(timestamps, dtype=np.int64)
         return cls._from_relative(rel_ts, values, int(t_start), int(dur))
@@ -134,7 +135,7 @@ class EventSeries(TimeSeries):
         values: np.ndarray | None,
         t_start_ticks: int,
         dur_ticks: int,
-    ) -> "EventSeries":
+    ) -> EventSeries:
         """Fast-path: timestamps already relative int64 ticks.  Bypasses
         __post_init__ conversion.
         """
@@ -185,15 +186,13 @@ class EventSeries(TimeSeries):
         return t, self.values[..., i]
 
     # ---- slice ----------------------------------------------------------
-    def slice(self, t_a: float | int, t_b: float | int) -> "EventSeries":
+    def slice(self, t_a: float | int, t_b: float | int) -> EventSeries:
         a_tick = _c_to_ticks(t_a) if not isinstance(t_a, int) else t_a
         b_tick = _c_to_ticks(t_b) if not isinstance(t_b, int) else t_b
         ta = self.t_start_ticks
         dur = self.dur_ticks
         if a_tick < ta or b_tick > ta + dur or a_tick > b_tick:
-            raise DomainError(
-                f"slice({a_tick}, {b_tick}) outside [{ta}, {ta + dur}] (ticks)"
-            )
+            raise DomainError(f"slice({a_tick}, {b_tick}) outside [{ta}, {ta + dur}] (ticks)")
         a_tick = max(a_tick, ta)
         b_tick = min(b_tick, ta + dur)
 
@@ -207,21 +206,21 @@ class EventSeries(TimeSeries):
         return EventSeries._from_relative(new_ts, new_vals, a_tick, rb - ra)
 
     # ---- shift ----------------------------------------------------------
-    def shift(self, t_delta: float | int) -> "EventSeries":
+    def shift(self, t_delta: float | int) -> EventSeries:
         dt = _c_to_ticks(t_delta) if not isinstance(t_delta, int) else t_delta
         if dt == 0:
             return self
         return EventSeries._from_relative(
-            self.timestamp_ticks, self.values,
-            self.t_start_ticks + dt, self.dur_ticks,
+            self.timestamp_ticks,
+            self.values,
+            self.t_start_ticks + dt,
+            self.dur_ticks,
         )
 
     # ---- concat ---------------------------------------------------------
-    def concat(self, other: "EventSeries") -> "EventSeries":
+    def concat(self, other: EventSeries) -> EventSeries:
         if not isinstance(other, EventSeries):
-            raise IncompatibleSeriesError(
-                f"cannot concat EventSeries with {type(other).__name__}"
-            )
+            raise IncompatibleSeriesError(f"cannot concat EventSeries with {type(other).__name__}")
         if (self.values is None) != (other.values is None):
             raise IncompatibleSeriesError("one has values, the other does not")
         if self.values is not None and other.values is not None:
@@ -249,10 +248,7 @@ class EventSeries(TimeSeries):
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, EventSeries):
             return False
-        if not (
-            self.t_start_ticks == other.t_start_ticks
-            and self.dur_ticks == other.dur_ticks
-        ):
+        if not (self.t_start_ticks == other.t_start_ticks and self.dur_ticks == other.dur_ticks):
             return False
         if not np.array_equal(self.timestamp_ticks, other.timestamp_ticks):
             return False
@@ -264,7 +260,11 @@ class EventSeries(TimeSeries):
 
     # ---- interpolation / resampling ------------------------------------
     def interpolate(
-        self, times, *, kind: str = "linear", fill: str = "clamp",
+        self,
+        times,
+        *,
+        kind: str = "linear",
+        fill: str = "clamp",
     ) -> np.ndarray:
         """Evaluate signal at absolute query times by interpolating between
         event values.
@@ -275,7 +275,7 @@ class EventSeries(TimeSeries):
             raise ValueError("cannot interpolate EventSeries with no values")
 
         times = np.asarray(times)
-        if times.dtype.kind == 'i':
+        if times.dtype.kind == "i":
             t_sec = ticks_array_to_secs(times)
         else:
             t_sec = times.astype(np.float64)
@@ -333,7 +333,7 @@ class EventSeries(TimeSeries):
         t_start: float | int | None = None,
         t_end: float | int | None = None,
         kind: str = "linear",
-    ) -> "UniformSeries":
+    ) -> UniformSeries:
         """Convert this event series to a uniformly-sampled ``UniformSeries``
         at sample rate ``sr``.
 

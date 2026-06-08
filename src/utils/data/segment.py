@@ -18,6 +18,7 @@ The identity tag is the algebraic marker that lets `slice(a,b) ⊕ slice(b,c)
 == slice(a,c)` hold exactly.  Auto-generated ids are 62-bit random integers;
 collision is negligible in practice but users may pass explicit ids.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -26,15 +27,20 @@ from typing import Any
 
 import numpy as np
 
-from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_array_to_ticks, secs_to_ticks, ticks_array_to_secs, ticks_to_secs
+from ._ticks import (
+    TICKS_PER_SECOND,
+    _c_to_ticks,
+    secs_array_to_ticks,
+    secs_to_ticks,
+    ticks_array_to_secs,
+    ticks_to_secs,
+)
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
 
 
 def _new_ids(n: int) -> np.ndarray:
     """Return `n` random 62-bit positive int64 ids."""
-    return np.array(
-        [secrets.randbits(62) for _ in range(n)], dtype=np.int64
-    )
+    return np.array([secrets.randbits(62) for _ in range(n)], dtype=np.int64)
 
 
 @dataclass(frozen=True, eq=False)
@@ -114,7 +120,7 @@ class SegmentSeries(TimeSeries):
         *,
         t_start: float | int | None = None,
         t_end: float | int | None = None,
-    ) -> "SegmentSeries":
+    ) -> SegmentSeries:
         """Build from absolute times (float seconds or int ticks)."""
         s = np.asarray(starts)
         e = np.asarray(ends)
@@ -141,8 +147,12 @@ class SegmentSeries(TimeSeries):
         else:
             dur = secs_to_ticks(float(t_end)) - t0
         return cls(
-            starts_ticks=rel_s, ends_ticks=rel_e, values=values, ids=ids,
-            t_start_ticks=t0, dur_ticks=dur,
+            starts_ticks=rel_s,
+            ends_ticks=rel_e,
+            values=values,
+            ids=ids,
+            t_start_ticks=t0,
+            dur_ticks=dur,
         )
 
     @classmethod
@@ -155,13 +165,17 @@ class SegmentSeries(TimeSeries):
         *,
         t_start: int = 0,
         dur: int,
-    ) -> "SegmentSeries":
+    ) -> SegmentSeries:
         """Build from relative int64 ticks."""
         rs = np.asarray(starts, dtype=np.int64)
         re = np.asarray(ends, dtype=np.int64)
         return cls(
-            starts_ticks=rs, ends_ticks=re, values=values, ids=ids,
-            t_start_ticks=int(t_start), dur_ticks=int(dur),
+            starts_ticks=rs,
+            ends_ticks=re,
+            values=values,
+            ids=ids,
+            t_start_ticks=int(t_start),
+            dur_ticks=int(dur),
         )
 
     @property
@@ -216,15 +230,13 @@ class SegmentSeries(TimeSeries):
         return s, e, self.values[..., i], int(self.ids[i])
 
     # ---- slice ----------------------------------------------------------
-    def slice(self, t_a: float | int, t_b: float | int) -> "SegmentSeries":
+    def slice(self, t_a: float | int, t_b: float | int) -> SegmentSeries:
         a_tick = _c_to_ticks(t_a) if not isinstance(t_a, int) else t_a
         b_tick = _c_to_ticks(t_b) if not isinstance(t_b, int) else t_b
         t0 = self.t_start_ticks
         dur = self.dur_ticks
         if a_tick < t0 or b_tick > t0 + dur or a_tick > b_tick:
-            raise DomainError(
-                f"slice({a_tick}, {b_tick}) outside [{t0}, {t0 + dur}] (ticks)"
-            )
+            raise DomainError(f"slice({a_tick}, {b_tick}) outside [{t0}, {t0 + dur}] (ticks)")
         ra = a_tick - t0
         rb = b_tick - t0
         s, e = self.starts_ticks, self.ends_ticks  # relative int64
@@ -237,19 +249,23 @@ class SegmentSeries(TimeSeries):
         nv = None if self.values is None else self.values[..., keep][..., nonzero]
         nids = self.ids[keep][nonzero]
         return SegmentSeries(
-            starts_ticks=ns, ends_ticks=ne, values=nv, ids=nids,
-            t_start_ticks=a_tick, dur_ticks=rb - ra,
+            starts_ticks=ns,
+            ends_ticks=ne,
+            values=nv,
+            ids=nids,
+            t_start_ticks=a_tick,
+            dur_ticks=rb - ra,
         )
 
     # ---- shift ----------------------------------------------------------
-    def shift(self, t_delta: float | int) -> "SegmentSeries":
+    def shift(self, t_delta: float | int) -> SegmentSeries:
         dt = _c_to_ticks(t_delta) if not isinstance(t_delta, int) else t_delta
         if dt == 0:
             return self
         return replace(self, t_start_ticks=self.t_start_ticks + dt)
 
     # ---- concat ---------------------------------------------------------
-    def concat(self, other: "SegmentSeries") -> "SegmentSeries":
+    def concat(self, other: SegmentSeries) -> SegmentSeries:
         if not isinstance(other, SegmentSeries):
             raise IncompatibleSeriesError(
                 f"cannot concat SegmentSeries with {type(other).__name__}"
@@ -266,14 +282,8 @@ class SegmentSeries(TimeSeries):
         # Find pairs to merge: id present in self ending at seam AND in
         # other starting at seam.
         seam = self_dur  # relative to self.t_start_ticks
-        left_at_seam = {
-            int(self.ids[i]): i
-            for i in np.where(self.ends_ticks == seam)[0]
-        }
-        right_at_seam = {
-            int(other.ids[j]): j
-            for j in np.where(o_starts == seam)[0]
-        }
+        left_at_seam = {int(self.ids[i]): i for i in np.where(self.ends_ticks == seam)[0]}
+        right_at_seam = {int(other.ids[j]): j for j in np.where(o_starts == seam)[0]}
         merge_ids = set(left_at_seam) & set(right_at_seam)
 
         new_left_ends = self.ends_ticks.copy()
@@ -295,14 +305,22 @@ class SegmentSeries(TimeSeries):
             new_vals = np.concatenate([self.values, other.values[..., right_keep]], axis=-1)  # type: ignore[arg-type]
 
         return SegmentSeries(
-            starts_ticks=new_starts, ends_ticks=new_ends, values=new_vals, ids=new_ids,
-            t_start_ticks=self.t_start_ticks, dur_ticks=self_dur + other_dur,
+            starts_ticks=new_starts,
+            ends_ticks=new_ends,
+            values=new_vals,
+            ids=new_ids,
+            t_start_ticks=self.t_start_ticks,
+            dur_ticks=self_dur + other_dur,
         )
 
     # ---- interpolation -------------------------------------------------
     def interpolate(
-        self, times, *, kind: str = "linear", fill: str = "clamp",
-    ) -> "np.ndarray":  # type: ignore[name-defined]
+        self,
+        times,
+        *,
+        kind: str = "linear",
+        fill: str = "clamp",
+    ) -> np.ndarray:  # type: ignore[name-defined]
         """Segment series have no point-wise values; raises TypeError."""
         raise TypeError(
             "SegmentSeries does not support interpolate; "
@@ -313,10 +331,7 @@ class SegmentSeries(TimeSeries):
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, SegmentSeries):
             return False
-        if not (
-            self.t_start_ticks == other.t_start_ticks
-            and self.dur_ticks == other.dur_ticks
-        ):
+        if not (self.t_start_ticks == other.t_start_ticks and self.dur_ticks == other.dur_ticks):
             return False
         if not np.array_equal(self.starts_ticks, other.starts_ticks):
             return False

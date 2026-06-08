@@ -30,22 +30,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
-import wandb
 from torch.utils.data import DataLoader, Dataset
+
+import wandb
 
 # Import new model variants
 from models.rps_predictor import (
     SimpleConv,
-    SimpleConvV2,
-    SimpleConvWide,
-    SimpleConvTCN,
-    SimpleConvMultiScale,
+    SimpleConvAttnPool,
     SimpleConvBiGRU,
     SimpleConvBiGRUV2,
     SimpleConvMagPhaseBiGRU,
-    SimpleConvAttnPool,
+    SimpleConvMultiScale,
     SimpleConvSENext,
-    get_rps_model,
+    SimpleConvTCN,
+    SimpleConvV2,
+    SimpleConvWide,
 )
 
 # Alias for utils.py compatibility
@@ -82,9 +82,7 @@ class DREGONRPSDataset(Dataset):
             audio = audio[0]  # (T,)
         # else: (C, T) — channels stay
 
-        rps = torch.from_numpy(
-            np.load(os.path.join(d, "rps.npy"))
-        ).float()  # (4, rps_T)
+        rps = torch.from_numpy(np.load(os.path.join(d, "rps.npy"))).float()  # (4, rps_T)
 
         # Number of STFT frames — use last dim so (C, T) and (T,) both work.
         n_frames = audio.shape[-1] // self.hop_length + 1
@@ -121,7 +119,10 @@ class RPSPredictionHead(nn.Module):
     FPN-style auxiliary head that predicts per-STFT-frame RPS from all encoder levels.
     Faithfully replicated from models/dcunet.py.
     """
-    def __init__(self, encoder_channels: list[int], target_t: int, common_dim: int = 64, num_rotors: int = 4):
+
+    def __init__(
+        self, encoder_channels: list[int], target_t: int, common_dim: int = 64, num_rotors: int = 4
+    ):
         super().__init__()
         self.target_t = target_t
         self.level_projs = nn.ModuleList()
@@ -144,7 +145,7 @@ class RPSPredictionHead(nn.Module):
         level_feats = []
         for feat, proj in zip(encoder_features, self.level_projs):
             B, C, F_i, T_i, _ = feat.shape
-            pooled = feat.mean(dim=2)       # (B, C, T_i, 2)
+            pooled = feat.mean(dim=2)  # (B, C, T_i, 2)
             pooled = pooled.reshape(B, C * 2, T_i)
             level_feats.append(proj(pooled))  # (B, common_dim, T_i)
 
@@ -153,7 +154,9 @@ class RPSPredictionHead(nn.Module):
         for i in range(len(level_feats) - 2, -1, -1):
             finer = level_feats[i]
             if merged.shape[-1] != finer.shape[-1]:
-                merged = F.interpolate(merged, size=finer.shape[-1], mode="linear", align_corners=False)
+                merged = F.interpolate(
+                    merged, size=finer.shape[-1], mode="linear", align_corners=False
+                )
             merged = merged + finer
 
         # Upsample to target STFT frame rate
@@ -168,6 +171,7 @@ class DCUNetEncRPS(nn.Module):
     DCUNet encoder (complex conv) + RPSPredictionHead for standalone RPS prediction.
     Faithfully replicates the encoder architecture from models/dcunet.py.
     """
+
     def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, num_layers=5):
         super().__init__()
         self.n_fft = n_fft
@@ -176,7 +180,8 @@ class DCUNetEncRPS(nn.Module):
         self.register_buffer("window", torch.hann_window(n_fft))
 
         # Import complex conv components from dcunet
-        from models.dcunet import CConv2d as DCUNetCConv, CBatchNorm2d as DCUNetCBN
+        from models.dcunet import CBatchNorm2d as DCUNetCBN
+        from models.dcunet import CConv2d as DCUNetCConv
 
         # DCUNet encoder spec — faithful copy from models/dcunet.py
         enc_spec = [
@@ -213,8 +218,12 @@ class DCUNetEncRPS(nn.Module):
 
         # STFT → complex tensor (B, F, T, 2)
         X = torch.stft(
-            audio, n_fft=self.n_fft, hop_length=self.hop_length,
-            window=self.window, return_complex=True, normalized=True,
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            return_complex=True,
+            normalized=True,
         )
         X = torch.view_as_real(X)  # (B, F, T, 2)
         X = X.unsqueeze(1)  # (B, 1, F, T, 2)
@@ -238,6 +247,7 @@ class DCCRNEncRPS(nn.Module):
     Faithfully replicates the encoder architecture from models/dccrn.py.
     Supports lite variant with fewer layers and channels.
     """
+
     def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, lite=False):
         super().__init__()
         self.n_fft = n_fft
@@ -247,7 +257,8 @@ class DCCRNEncRPS(nn.Module):
         self.register_buffer("window", torch.hann_window(n_fft))
 
         # Import complex conv components from dccrn
-        from models.dccrn import CConv2d as DCCRN_CConv, CBatchNorm2d as DCCRN_CBN
+        from models.dccrn import CBatchNorm2d as DCCRN_CBN
+        from models.dccrn import CConv2d as DCCRN_CConv
 
         if lite:
             encoder_channels = [16, 32, 64, 128]
@@ -284,8 +295,12 @@ class DCCRNEncRPS(nn.Module):
 
         # STFT → complex tensor (B, F, T, 2)
         X = torch.stft(
-            audio, n_fft=self.n_fft, hop_length=self.hop_length,
-            window=self.window, return_complex=True, normalized=True,
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            return_complex=True,
+            normalized=True,
         )
         X = torch.view_as_real(X)  # (B, F, T, 2)
         X = X.unsqueeze(1)  # (B, 1, F, T, 2)
@@ -330,9 +345,7 @@ def get_model(model_name, n_fft=2048, hop_length=512, num_rotors=4):
 # ─── PIT (Permutation-Invariant) MSE Loss ───────────────────────────────────
 
 # Pre-compute all permutations of 4 rotors (4! = 24)
-_ROTOR_PERMS = torch.tensor(
-    list(itertools.permutations(range(4))), dtype=torch.long
-)  # (24, 4)
+_ROTOR_PERMS = torch.tensor(list(itertools.permutations(range(4))), dtype=torch.long)  # (24, 4)
 
 
 def pairwise_mse(est: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -517,13 +530,13 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
         ss_tot_i = ((tgt_i - tgt_i.mean()) ** 2).sum()
         if ss_tot_i > 1e-6:
             r2_per_sample.append((1 - ss_res_i / ss_tot_i).item())
-    r2_arr = torch.tensor(r2_per_sample) if r2_per_sample else torch.tensor([float('nan')])
-    r2_mean   = float(r2_arr.mean())
+    r2_arr = torch.tensor(r2_per_sample) if r2_per_sample else torch.tensor([float("nan")])
+    r2_mean = float(r2_arr.mean())
     r2_median = float(r2_arr.median())
 
     return {
-        "mse": pit_mse_val,       # primary metric (PIT-aware if pit_eval=True)
-        "std_mse": std_mse_val,   # fixed-order MSE for reference
+        "mse": pit_mse_val,  # primary metric (PIT-aware if pit_eval=True)
+        "std_mse": std_mse_val,  # fixed-order MSE for reference
         "mae_frame": mae_frame,
         "mae_per_rotor": mae_per_rotor.tolist(),
         "mae_clip": mae_clip,
@@ -545,17 +558,23 @@ def train_model(model_name, args):
     # Data
     train_ds = DREGONRPSDataset(os.path.join(args.data_root, "train"), n_fft, hop)
     valid_ds = DREGONRPSDataset(os.path.join(args.data_root, "valid"), n_fft, hop)
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Model: {model_name}")
     print(f"Train: {len(train_ds)} samples | Valid: {len(valid_ds)} samples")
 
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=4, pin_memory=True,
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
     )
     valid_loader = DataLoader(
-        valid_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=4, pin_memory=True,
+        valid_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
     )
 
     # Model
@@ -566,7 +585,10 @@ def train_model(model_name, args):
     # Optimizer / scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5,
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=5,
     )
     scaler = torch.amp.GradScaler("cuda")
 
@@ -588,7 +610,9 @@ def train_model(model_name, args):
     epochs_no_improve = 0
     best_path = os.path.join(args.save_path, f"best_{model_name}.pt")
 
-    print(f"\n{'Epoch':>5} {'Train MSE':>10} {'Val PIT':>10} {'Val Std':>10} {'MAE/f':>8} {'MAE/c':>8} {'R²':>8} {'LR':>10}")
+    print(
+        f"\n{'Epoch':>5} {'Train MSE':>10} {'Val PIT':>10} {'Val Std':>10} {'MAE/f':>8} {'MAE/c':>8} {'R²':>8} {'LR':>10}"
+    )
     print("-" * 75)
 
     t0 = time.time()
@@ -628,21 +652,25 @@ def train_model(model_name, args):
         scheduler.step(val_mse)
         lr = optimizer.param_groups[0]["lr"]
 
-        print(f"{epoch:5d} {train_mse:10.4f} {val_mse:10.4f} {metrics['std_mse']:10.4f} {metrics['mae_frame']:8.2f} {metrics['mae_clip']:8.2f} {metrics['r2']:8.4f} {lr:10.1e}")
+        print(
+            f"{epoch:5d} {train_mse:10.4f} {val_mse:10.4f} {metrics['std_mse']:10.4f} {metrics['mae_frame']:8.2f} {metrics['mae_clip']:8.2f} {metrics['r2']:8.4f} {lr:10.1e}"
+        )
 
         # WandB logging
         if wandb.run is not None and not wandb.run.disabled:
-            wandb.log({
-                "epoch": epoch,
-                "train/mse": train_mse,
-                "val/pit_mse": val_mse,
-                "val/std_mse": metrics["std_mse"],
-                "val/mae_frame": metrics["mae_frame"],
-                "val/mae_clip": metrics["mae_clip"],
-                "val/r2": metrics["r2"],
-                "val/r2_median": metrics["r2_median"],
-                "lr": lr,
-            })
+            wandb.log(
+                {
+                    "epoch": epoch,
+                    "train/mse": train_mse,
+                    "val/pit_mse": val_mse,
+                    "val/std_mse": metrics["std_mse"],
+                    "val/mae_frame": metrics["mae_frame"],
+                    "val/mae_clip": metrics["mae_clip"],
+                    "val/r2": metrics["r2"],
+                    "val/r2_median": metrics["r2_median"],
+                    "lr": lr,
+                }
+            )
 
         if val_mse < best_val_loss:
             best_val_loss = val_mse
@@ -658,15 +686,17 @@ def train_model(model_name, args):
     print(f"\nTraining time: {elapsed / 60:.1f} min")
 
     # Final evaluation
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"FINAL EVALUATION — {model_name}")
-    print("="*60)
+    print("=" * 60)
     model.load_state_dict(torch.load(best_path, weights_only=True))
     m = evaluate(model, valid_loader, device, len(valid_ds))
 
-    print(f"\nPer-frame: PIT MSE={m['mse']:.4f} (RMSE={m['mse']**0.5:.2f}), Std MSE={m['std_mse']:.4f}, MAE={m['mae_frame']:.2f}, R²={m['r2']:.4f}")
+    print(
+        f"\nPer-frame: PIT MSE={m['mse']:.4f} (RMSE={m['mse'] ** 0.5:.2f}), Std MSE={m['std_mse']:.4f}, MAE={m['mae_frame']:.2f}, R²={m['r2']:.4f}"
+    )
     print(f"Per-clip:   MAE={m['mae_clip']:.2f}")
-    print(f"Improvement over naive (PIT): {(1 - m['mse']/naive_mse)*100:.1f}%")
+    print(f"Improvement over naive (PIT): {(1 - m['mse'] / naive_mse) * 100:.1f}%")
 
     return {
         "model": model_name,
@@ -684,8 +714,9 @@ def train_model(model_name, args):
 
 def main():
     parser = argparse.ArgumentParser(description="Train RPS prediction models")
-    parser.add_argument("--model", type=str, default="simple_conv",
-                       choices=list(MODEL_REGISTRY.keys()))
+    parser.add_argument(
+        "--model", type=str, default="simple_conv", choices=list(MODEL_REGISTRY.keys())
+    )
     parser.add_argument("--train_all", action="store_true")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--epochs", type=int, default=200)
@@ -696,22 +727,34 @@ def main():
     parser.add_argument("--grad_clip", type=float, default=5.0)
     parser.add_argument("--data_root", default="datasets/DREGON-LM-V2")
     parser.add_argument("--save_path", default="results/rps_predictor_comparison")
-    parser.add_argument("--pit_loss", action="store_true", default=True,
-                        help="Use permutation-invariant MSE loss (default: True)")
-    parser.add_argument("--no_pit_loss", action="store_false", dest="pit_loss",
-                        help="Disable permutation-invariant loss")
+    parser.add_argument(
+        "--pit_loss",
+        action="store_true",
+        default=True,
+        help="Use permutation-invariant MSE loss (default: True)",
+    )
+    parser.add_argument(
+        "--no_pit_loss",
+        action="store_false",
+        dest="pit_loss",
+        help="Disable permutation-invariant loss",
+    )
     parser.add_argument("--wandb_key", type=str, default="", help="WandB API key")
     parser.add_argument("--n_fft", type=int, default=2048)
     parser.add_argument("--hop_length", type=int, default=512)
-    parser.add_argument("--smoothness_weight", type=float, default=0.0,
-                        help="Weight for temporal smoothness loss (second-order diff)")
+    parser.add_argument(
+        "--smoothness_weight",
+        type=float,
+        default=0.0,
+        help="Weight for temporal smoothness loss (second-order diff)",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.save_path, exist_ok=True)
     results = {}
 
     if args.train_all:
-        for model_name in MODEL_REGISTRY.keys():
+        for model_name in MODEL_REGISTRY:
             wandb_init(args, model_name)
             result = train_model(model_name, args)
             results[model_name] = result
@@ -726,19 +769,28 @@ def main():
 
     # Summary
     if len(results) > 1:
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("COMPARISON SUMMARY")
-        print("="*70)
+        print("=" * 70)
         print(f"{'Model':<20} {'MSE':>10} {'RMSE':>8} {'MAE/clip':>10} {'R²':>8} {'vs Naive':>10}")
-        print("-"*70)
+        print("-" * 70)
         for name, r in sorted(results.items(), key=lambda x: x[1]["r2"], reverse=True):
-            improvement = (1 - r["mse"]/r["naive_mse"])*100
-            print(f"{name:<20} {r['mse']:>10.4f} {r['mse']**0.5:>8.2f} {r['mae_clip']:>10.2f} {r['r2']:>8.4f} {improvement:>9.1f}%")
+            improvement = (1 - r["mse"] / r["naive_mse"]) * 100
+            print(
+                f"{name:<20} {r['mse']:>10.4f} {r['mse'] ** 0.5:>8.2f} {r['mae_clip']:>10.2f} {r['r2']:>8.4f} {improvement:>9.1f}%"
+            )
 
         import json
+
         with open(os.path.join(args.save_path, "comparison_results.json"), "w") as f:
-            json.dump({k: {kk: vv for kk, vv in v.items() if kk not in ['preds', 'targets']} 
-                      for k, v in results.items()}, f, indent=2)
+            json.dump(
+                {
+                    k: {kk: vv for kk, vv in v.items() if kk not in ["preds", "targets"]}
+                    for k, v in results.items()
+                },
+                f,
+                indent=2,
+            )
 
 
 if __name__ == "__main__":

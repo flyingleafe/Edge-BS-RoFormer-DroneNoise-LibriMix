@@ -17,6 +17,8 @@ results/
 drones-with-speeds.md
 .ipynb_checkpoints/
 .claude/worktrees/
+.worktrees/**
+!.worktrees/.gitkeep
 
 .venv/
 node_modules/

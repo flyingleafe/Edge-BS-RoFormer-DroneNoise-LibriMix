@@ -18,10 +18,9 @@ Each recording is loaded as a `TimeFrame` with tracks:
 All time-series are aligned to a common absolute time base (Unix timestamps),
 so ``tf.slice(t_a, t_b)`` simultaneously cuts every track.
 """
+
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 import urllib.request
 from pathlib import Path
@@ -72,9 +71,7 @@ DOWNLOAD_URLS = {
 
 # -- split definitions -------------------------------------------------------
 
-SplitName = Literal[
-    "in_flight_source", "in_flight_noise", "noise_free", "motor", "clean_source"
-]
+SplitName = Literal["in_flight_source", "in_flight_noise", "noise_free", "motor", "clean_source"]
 
 SPLIT_RECORDINGS: dict[SplitName, list[str]] = {
     "in_flight_source": [
@@ -172,8 +169,12 @@ def _parse_recording_id(recording_id: str) -> dict[str, str | None]:
     }
     for part in parts:
         if part in {
-            "free-flight", "hovering", "updown", "rectangle",
-            "spinning", "silent-flight",
+            "free-flight",
+            "hovering",
+            "updown",
+            "rectangle",
+            "spinning",
+            "silent-flight",
         }:
             result["flight_type"] = part
         elif part.startswith("room"):
@@ -259,18 +260,25 @@ def discover_recordings(dregon_dir: Path) -> list[dict]:
     if motors_dir.exists():
         for wav_file in motors_dir.rglob("*.wav"):
             motor_id, motor_speed = _parse_motor_filename(wav_file.name)
-            samples.append({
-                "recording_id": f"motor_{wav_file.stem}",
-                "split": "motor",
-                "flight_type": None, "source_type": None,
-                "source_level": None, "room": None,
-                "motor_id": motor_id, "motor_speed": motor_speed,
-                "audio_path": str(wav_file),
-                "audiots_path": None, "imu_path": None,
-                "motors_path": None, "sourcepos_path": None,
-                "mic_positions_path": str(mic_pos_path),
-                "rotor_positions_path": rotor_pos_path,
-            })
+            samples.append(
+                {
+                    "recording_id": f"motor_{wav_file.stem}",
+                    "split": "motor",
+                    "flight_type": None,
+                    "source_type": None,
+                    "source_level": None,
+                    "room": None,
+                    "motor_id": motor_id,
+                    "motor_speed": motor_speed,
+                    "audio_path": str(wav_file),
+                    "audiots_path": None,
+                    "imu_path": None,
+                    "motors_path": None,
+                    "sourcepos_path": None,
+                    "mic_positions_path": str(mic_pos_path),
+                    "rotor_positions_path": rotor_pos_path,
+                }
+            )
 
     # Clean source recordings
     clean_dir = dregon_dir / "clean_sources"
@@ -280,19 +288,25 @@ def discover_recordings(dregon_dir: Path) -> list[dict]:
             if not src_dir.exists():
                 continue
             for wav_file in src_dir.rglob("*.wav"):
-                samples.append({
-                    "recording_id": f"clean_{source_type}_{wav_file.stem}",
-                    "split": "clean_source",
-                    "flight_type": None,
-                    "source_type": source_type.rstrip("s"),
-                    "source_level": None, "room": None,
-                    "motor_id": None, "motor_speed": None,
-                    "audio_path": str(wav_file),
-                    "audiots_path": None, "imu_path": None,
-                    "motors_path": None, "sourcepos_path": None,
-                    "mic_positions_path": str(mic_pos_path),
-                    "rotor_positions_path": rotor_pos_path,
-                })
+                samples.append(
+                    {
+                        "recording_id": f"clean_{source_type}_{wav_file.stem}",
+                        "split": "clean_source",
+                        "flight_type": None,
+                        "source_type": source_type.rstrip("s"),
+                        "source_level": None,
+                        "room": None,
+                        "motor_id": None,
+                        "motor_speed": None,
+                        "audio_path": str(wav_file),
+                        "audiots_path": None,
+                        "imu_path": None,
+                        "motors_path": None,
+                        "sourcepos_path": None,
+                        "mic_positions_path": str(mic_pos_path),
+                        "rotor_positions_path": rotor_pos_path,
+                    }
+                )
 
     return samples
 
@@ -313,7 +327,9 @@ def download_dregon_dataset(
         ed = dregon_dir / "emitted_signals"
         ed.mkdir(exist_ok=True)
         _download_file(DOWNLOAD_URLS["emitted_speech"], ed / "2min_TIMIT.wav", "emitted speech")
-        _download_file(DOWNLOAD_URLS["emitted_whitenoise"], ed / "2min_white_noise.wav", "emitted whitenoise")
+        _download_file(
+            DOWNLOAD_URLS["emitted_whitenoise"], ed / "2min_white_noise.wav", "emitted whitenoise"
+        )
 
     if download_clean_sources:
         cd = dregon_dir / "clean_sources"
@@ -323,7 +339,12 @@ def download_dregon_dataset(
             _unpack_zip(zp, cd / st)
 
     for rid, url in DOWNLOAD_URLS.items():
-        if rid in ("micPos.txt", "emitted_speech", "emitted_whitenoise", "motors") or rid.startswith("clean_"):
+        if rid in (
+            "micPos.txt",
+            "emitted_speech",
+            "emitted_whitenoise",
+            "motors",
+        ) or rid.startswith("clean_"):
             continue
         rd = dregon_dir / f"DREGON_{rid}"
         if rd.exists() and any(rd.glob("*.wav")):
@@ -373,9 +394,7 @@ def get_geometry(dregon_dir: Path) -> tuple[np.ndarray, np.ndarray]:
         offset = np.array([0.0115, 0.0, 0.1915])
         rotor_pos = np.zeros((4, 3))
         for i, angle in enumerate(angles):
-            rotor_pos[i] = [r * np.cos(np.radians(angle)),
-                            r * np.sin(np.radians(angle)),
-                            0.1915]
+            rotor_pos[i] = [r * np.cos(np.radians(angle)), r * np.sin(np.radians(angle)), 0.1915]
         rotor_pos += offset
 
     return mic_pos, rotor_pos
@@ -428,7 +447,9 @@ def load_timeframe(
         mic_pos, rotor_pos = geometry
     else:
         mic_pp = Path(sample["mic_positions_path"])
-        mic_pos = _parse_mic_positions_txt(mic_pp) if mic_pp.suffix == ".txt" else np.loadtxt(mic_pp)
+        mic_pos = (
+            _parse_mic_positions_txt(mic_pp) if mic_pp.suffix == ".txt" else np.loadtxt(mic_pp)
+        )
         rotor_pos = _load_rotor_positions(sample["rotor_positions_path"])
 
     # --- audio ---------------------------------------------------------------
@@ -469,11 +490,15 @@ def load_timeframe(
         if has_measured:
             measured = ms["measured"][0, 0].astype(np.float32)  # (M, 4)
             tracks["motors_measured"] = EventSeries.from_events(
-                motor_ts, values=measured.T, t_start=t0,  # (4, M)
+                motor_ts,
+                values=measured.T,
+                t_start=t0,  # (4, M)
             )
         command = ms["command"][0, 0].astype(np.float32)  # (M, 4)
         tracks["motors_command"] = EventSeries.from_events(
-            motor_ts, values=command.T, t_start=t0,  # (4, M)
+            motor_ts,
+            values=command.T,
+            t_start=t0,  # (4, M)
         )
 
     # --- IMU -----------------------------------------------------------------
@@ -489,11 +514,13 @@ def load_timeframe(
     if sample.get("sourcepos_path"):
         sp = scipy.io.loadmat(sample["sourcepos_path"])["source_position"]
         sp_ts = sp["timestamps"][0, 0].flatten().astype(np.float64)
-        sp_vals = np.column_stack([
-            sp["azimuth"][0, 0].flatten(),
-            sp["elevation"][0, 0].flatten(),
-            sp["distance"][0, 0].flatten(),
-        ]).astype(np.float32)  # (M, 3)
+        sp_vals = np.column_stack(
+            [
+                sp["azimuth"][0, 0].flatten(),
+                sp["elevation"][0, 0].flatten(),
+                sp["distance"][0, 0].flatten(),
+            ]
+        ).astype(np.float32)  # (M, 3)
         tracks["source_position"] = EventSeries.from_events(sp_ts, values=sp_vals.T, t_start=t0)
 
     # --- tags ----------------------------------------------------------------
@@ -516,7 +543,10 @@ def load_timeframe(
     }
 
     return TimeFrame.from_tracks(
-        tracks, t_start=t0, tags=tags, global_data=global_data,
+        tracks,
+        t_start=t0,
+        tags=tags,
+        global_data=global_data,
     )
 
 

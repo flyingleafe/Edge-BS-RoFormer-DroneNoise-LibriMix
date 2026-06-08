@@ -13,6 +13,7 @@ This format is ready for `models.generative.DroneNoisePlusFilterGen`:
   generator(rps_audio_rate.unsqueeze(0)) -> {'audio': pred, ...}
   loss(pred, audio_target.unsqueeze(0))
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,13 +27,13 @@ from torch.utils.data import Dataset
 
 from utils.data import TimeFrame
 
-from . import michaels as M
 from . import dregon as D
-
+from . import michaels as M
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def upsample_rps_to_audio_rate(
     rps: np.ndarray,
@@ -68,30 +69,30 @@ def upsample_rps_to_audio_rate(
 # Unified record wrapper (DREGON → TimeFrame; Michael's → MichaelsRecord)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _ChunkSource:
-    record: object         # TimeFrame | MichaelsRecord
-    origin: str            # "dregon" | "michaels"
-    n_channels: int        # number of usable audio channels
+    record: object  # TimeFrame | MichaelsRecord
+    origin: str  # "dregon" | "michaels"
+    n_channels: int  # number of usable audio channels
     duration: float
 
 
 def _wrap_dregon(tf: TimeFrame) -> _ChunkSource:
     audio = tf["audio"]
     n_ch = audio.samples.shape[0] if audio.samples.ndim > 1 else 1
-    return _ChunkSource(record=tf, origin="dregon", n_channels=n_ch,
-                        duration=audio.duration)
+    return _ChunkSource(record=tf, origin="dregon", n_channels=n_ch, duration=audio.duration)
 
 
-def _wrap_michaels(record: "M.MichaelsRecord") -> _ChunkSource:
+def _wrap_michaels(record: M.MichaelsRecord) -> _ChunkSource:
     n_ch = record.audio.shape[1] if record.audio.ndim > 1 else 1
-    return _ChunkSource(record=record, origin="michaels", n_channels=n_ch,
-                        duration=record.duration)
+    return _ChunkSource(record=record, origin="michaels", n_channels=n_ch, duration=record.duration)
 
 
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
+
 
 class NoiseRPSDataset(Dataset):
     """In-memory chunkable dataset of drone-noise audio + aligned RPS.
@@ -151,7 +152,9 @@ class NoiseRPSDataset(Dataset):
     def __len__(self):
         return self.samples_per_epoch
 
-    def _extract_chunk(self, src: _ChunkSource) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _extract_chunk(
+        self, src: _ChunkSource
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Returns (audio [T], rps_motor_rate [4, M], audio_ts [T], motor_ts [M])."""
         rec = src.record
         # Random channel within record
@@ -176,8 +179,7 @@ class NoiseRPSDataset(Dataset):
             start = float(self.rng.uniform(rel_lo, rel_hi))
 
             # Slice both audio and motors simultaneously.
-            sliced = tf.slice(audio_start + start,
-                              audio_start + start + self._chunk_duration_sec)
+            sliced = tf.slice(audio_start + start, audio_start + start + self._chunk_duration_sec)
 
             audio_us = sliced["audio"]
             # UniformSeries stores (channels, N) — axis 0 = channels, axis -1 = time
@@ -187,7 +189,11 @@ class NoiseRPSDataset(Dataset):
             motor_es = sliced["motors_measured"]
             motor_ts = motor_es.abs_timestamps  # float seconds
             # EventSeries values are already time-last (4, M).
-            rps = motor_es.values if motor_es.values is not None else np.zeros((4, 0), dtype=np.float32)
+            rps = (
+                motor_es.values
+                if motor_es.values is not None
+                else np.zeros((4, 0), dtype=np.float32)
+            )
         else:  # michaels
             # Same logic as before, using MichaelsRecord API.
             rec_m: M.MichaelsRecord = rec
@@ -215,10 +221,13 @@ class NoiseRPSDataset(Dataset):
             pad = self.chunk_size - len(audio)
             dt = 1.0 / self.sample_rate
             audio = np.concatenate([audio, np.zeros(pad, dtype=audio.dtype)])
-            audio_ts = np.concatenate(
-                [audio_ts, audio_ts[-1] + dt * np.arange(1, pad + 1)]
-            )
-        return audio.astype(np.float32), rps.astype(np.float32), audio_ts.astype(np.float64), motor_ts.astype(np.float64)
+            audio_ts = np.concatenate([audio_ts, audio_ts[-1] + dt * np.arange(1, pad + 1)])
+        return (
+            audio.astype(np.float32),
+            rps.astype(np.float32),
+            audio_ts.astype(np.float64),
+            motor_ts.astype(np.float64),
+        )
 
     def __getitem__(self, idx: int):
         # idx is ignored — we pick a record randomly.
@@ -254,6 +263,7 @@ class NoiseRPSDataset(Dataset):
 # ---------------------------------------------------------------------------
 # Convenience loaders
 # ---------------------------------------------------------------------------
+
 
 def load_dregon_noise_sources(
     dregon_dir: str | Path,
@@ -353,11 +363,19 @@ def build_noise_rps_datasets(
                 val_sources.append(_wrap_michaels(val_rec))
 
     train_ds = NoiseRPSDataset(
-        train_sources, chunk_size=chunk_size, sample_rate=sample_rate,
-        samples_per_epoch=train_samples, seed=seed, **dataset_kwargs,
+        train_sources,
+        chunk_size=chunk_size,
+        sample_rate=sample_rate,
+        samples_per_epoch=train_samples,
+        seed=seed,
+        **dataset_kwargs,
     )
     val_ds = NoiseRPSDataset(
-        val_sources, chunk_size=chunk_size, sample_rate=sample_rate,
-        samples_per_epoch=val_samples, seed=seed + 1, **dataset_kwargs,
+        val_sources,
+        chunk_size=chunk_size,
+        sample_rate=sample_rate,
+        samples_per_epoch=val_samples,
+        seed=seed + 1,
+        **dataset_kwargs,
     )
     return train_ds, val_ds

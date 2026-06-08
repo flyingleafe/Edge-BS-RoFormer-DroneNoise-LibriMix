@@ -5,19 +5,16 @@ that ``evaluate-rps`` calls.
 
 See .pi/plans/rps-eval-plot-refactor-plan.md for the full architecture.
 """
+
 from __future__ import annotations
 
 import json
-import os
 import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from numbers import Real
 from pathlib import Path
 from typing import (
     Any,
-    Iterable,
-    Iterator,
-    Mapping,
     Protocol,
     runtime_checkable,
 )
@@ -43,6 +40,7 @@ DEVICE: str = "cpu"  # evaluation default
 
 
 # ── Predictor protocol ────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class RPSPredictor(Protocol):
@@ -71,6 +69,7 @@ class RPSPredictor(Protocol):
 
 # ── Predictor factory ─────────────────────────────────────────────────────
 
+
 def load_predictor(spec: Any) -> RPSPredictor:
     """Return an ``RPSPredictor`` from a spec string or object.
 
@@ -91,9 +90,7 @@ def load_predictor(spec: Any) -> RPSPredictor:
         return _ModelPredictor(spec)
 
     if not isinstance(spec, str):
-        raise TypeError(
-            f"load_predictor expects str or RPSPredictor, got {type(spec).__name__}"
-        )
+        raise TypeError(f"load_predictor expects str or RPSPredictor, got {type(spec).__name__}")
 
     s = spec.strip()
 
@@ -113,6 +110,7 @@ def load_predictor(spec: Any) -> RPSPredictor:
     }
     if s in _CLASSICAL_ATTR:
         import importlib
+
         mod = importlib.import_module("classical_rps_predictors")
         fn = getattr(mod, _CLASSICAL_ATTR[s])
         if hasattr(fn, "predict"):
@@ -122,16 +120,17 @@ def load_predictor(spec: Any) -> RPSPredictor:
     # Learned model: Type@ckpt.
     if "@" in s and not s.startswith("@"):
         from tasks.checkpoints import load_model
+
         model = load_model(s, device=DEVICE)
         return _ModelPredictor(model)
 
     raise ValueError(
-        f"Unknown predictor spec {s!r}.  "
-        f"Expected 'Type@ckpt.pt' or one of {sorted(classical)}."
+        f"Unknown predictor spec {s!r}.  Expected 'Type@ckpt.pt' or one of {sorted(classical)}."
     )
 
 
 # ── Internal predictor wrappers ───────────────────────────────────────────
+
 
 class _ModelPredictor:
     """Wrap a learned ``nn.Module`` to satisfy ``RPSPredictor``."""
@@ -164,13 +163,21 @@ class _ClassicalPredictor:
 
 
 _CLASSICAL_NAMES = {
-    "cepstral", "hps", "pyin", "matched_filter", "nmf",
-    "pyin_single_f0", "cepstral_tracker", "hps_tracker",
-    "matched_filter_tracker", "nmf_tracker",
+    "cepstral",
+    "hps",
+    "pyin",
+    "matched_filter",
+    "nmf",
+    "pyin_single_f0",
+    "cepstral_tracker",
+    "hps_tracker",
+    "matched_filter_tracker",
+    "nmf_tracker",
 }
 
 
 # ── Input-set loader ──────────────────────────────────────────────────────
+
 
 def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
     """Load a DREGON-LM-style dataset as ``Iterable[TimeFrame]``.
@@ -232,9 +239,7 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
         # Load audio.
         waveform, file_sr = torchaudio.load(str(wav_path))
         if file_sr != SR_AUDIO:
-            raise ValueError(
-                f"Expected {SR_AUDIO} Hz audio, got {file_sr} in {wav_path}"
-            )
+            raise ValueError(f"Expected {SR_AUDIO} Hz audio, got {file_sr} in {wav_path}")
         if waveform.shape[0] == 1:
             audio = waveform.squeeze(0).numpy().astype(np.float32)  # (T,) mono
         else:
@@ -243,9 +248,7 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
         # Load motor RPS.
         rps_raw = np.load(str(rps_path)).astype(np.float64)  # (R, M)
         if rps_raw.ndim != 2 or rps_raw.shape[0] != N_ROTORS:
-            raise ValueError(
-                f"Expected RPS shape (4, M), got {rps_raw.shape} in {rps_path}"
-            )
+            raise ValueError(f"Expected RPS shape (4, M), got {rps_raw.shape} in {rps_path}")
 
         # Build RPS as EventSeries: timestamps at motor rate, co-extensive
         # with audio.  The legacy motor_sample_rate is per-sample and varies.
@@ -292,6 +295,7 @@ def _find_meta_entry(metadata: dict, sid: str) -> dict | None:
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────
+
 
 @dataclass
 class EvalResult:
@@ -362,15 +366,20 @@ class EvalResult:
             type="eval",
         )
         with art.new_file("metrics.json") as f:
-            json.dump({
-                "aggregate": self.aggregate,
-                "per_sample": self.per_sample,
-                "per_snr": per_snr_rows,
-            }, f, indent=2)
+            json.dump(
+                {
+                    "aggregate": self.aggregate,
+                    "per_sample": self.per_sample,
+                    "per_snr": per_snr_rows,
+                },
+                f,
+                indent=2,
+            )
         run.log_artifact(art)
 
 
 # ── GT alignment strategies ──────────────────────────────────────────────
+
 
 def _audio_len(audio: np.ndarray) -> int:
     """Number of time samples regardless of whether audio is (T,) or (C, T)."""
@@ -378,7 +387,10 @@ def _audio_len(audio: np.ndarray) -> int:
 
 
 def _align_stft_timestamps(
-    audio: np.ndarray, rps_es: EventSeries, *, sr: float = SR_AUDIO,
+    audio: np.ndarray,
+    rps_es: EventSeries,
+    *,
+    sr: float = SR_AUDIO,
 ) -> np.ndarray:
     """Align GT RPS onto the exact STFT frame grid via timestamp canon (A).
 
@@ -391,7 +403,10 @@ def _align_stft_timestamps(
 
 
 def _align_shape_stretch(
-    audio: np.ndarray, rps_es: EventSeries, *, sr: float = SR_AUDIO,
+    audio: np.ndarray,
+    rps_es: EventSeries,
+    *,
+    sr: float = SR_AUDIO,
 ) -> np.ndarray:
     """Align GT RPS by endpoint-to-endpoint shape-stretch (legacy method B).
 
@@ -400,18 +415,21 @@ def _align_shape_stretch(
     audio spans match (DREGON-LM); misaligns on free-flight etc.
     """
     import torch.nn.functional as F
+
     if rps_es.values is None:
         raise ValueError("RPS EventSeries has no values — cannot shape-stretch")
     raw_rps = np.asarray(rps_es.values, dtype=np.float64)  # (R, M) — time-last
     n_frames = _audio_len(audio) // HOP + 1
     # Torch F.interpolate: (B, C, L) -> (B, C, N)
     t = torch.from_numpy(raw_rps).unsqueeze(0)  # (1, R, M)
-    result = F.interpolate(t.float(), size=n_frames, mode='linear',
-                           align_corners=False).squeeze(0)  # (R, n_frames)
+    result = F.interpolate(t.float(), size=n_frames, mode="linear", align_corners=False).squeeze(
+        0
+    )  # (R, n_frames)
     return result.numpy()
 
 
 # ── Primary entry: evaluate ───────────────────────────────────────────────
+
 
 def evaluate(
     predictor: RPSPredictor | str,
@@ -454,8 +472,9 @@ def evaluate(
     elif alignment == "shape_stretch":
         _align_gt = _align_shape_stretch
     else:
-        raise ValueError(f"Unknown alignment {alignment!r}; expected "
-                         f"'stft_timestamps' or 'shape_stretch'")
+        raise ValueError(
+            f"Unknown alignment {alignment!r}; expected 'stft_timestamps' or 'shape_stretch'"
+        )
 
     per_sample: list[dict] = []
     all_mse: list[float] = []
@@ -467,9 +486,7 @@ def evaluate(
     n = 0
     for frame in samples:
         if "audio" not in frame or "rps" not in frame:
-            raise KeyError(
-                f"TimeFrame missing required tracks 'audio' and 'rps'"
-            )
+            raise KeyError("TimeFrame missing required tracks 'audio' and 'rps'")
 
         audio_us = frame["audio"]
         rps_es = frame["rps"]
@@ -565,8 +582,12 @@ def evaluate(
 # ── Per-SNR stratification ────────────────────────────────────────────────
 
 _SNR_BINS = [
-    (-30, -25), (-25, -20), (-20, -15), (-15, -10),
-    (-10, -5), (-5, 0),
+    (-30, -25),
+    (-25, -20),
+    (-20, -15),
+    (-15, -10),
+    (-10, -5),
+    (-5, 0),
 ]
 
 

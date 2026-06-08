@@ -2,30 +2,47 @@
 """Cross-evaluation: old vs V3 checkpoints on OLD and V2 validation sets,
 plus sample-level inference and in-flight recording inference."""
 
-import json, os, random, torch, numpy as np
+import json
+import os
+import random
 from pathlib import Path
-from torch.utils.data import DataLoader, Subset
 
-from train_rps_predictor import (
-    evaluate, get_model, DREGONRPSDataset, pit_mse_loss, pairwise_mse,
-)
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+
 from data_processing.dregon import (
-    get_geometry,
     clean_command_spikes,
+    get_geometry,
+)
+from train_rps_predictor import (
+    DREGONRPSDataset,
+    evaluate,
+    get_model,
+    pairwise_mse,
+    pit_mse_loss,
 )
 
-device = 'cuda:0'
-OUT = Path('results/rps_cross_eval')
+device = "cuda:0"
+OUT = Path("results/rps_cross_eval")
 OUT.mkdir(parents=True, exist_ok=True)
-(OUT / 'samples').mkdir(exist_ok=True)
+(OUT / "samples").mkdir(exist_ok=True)
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
 MODELS = [
-    ('old_simple_conv', 'simple_conv', 'results/rps_exp_simple_conv/best_simple_conv.pt'),
-    ('old_bigru_v2', 'simple_conv_bigru_v2', 'results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt'),
-    ('v3_simple_conv', 'simple_conv', 'results/rps_predictor_v3/simple_conv/best_simple_conv.pt'),
-    ('v3_bigru_v2', 'simple_conv_bigru_v2', 'results/rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt'),
+    ("old_simple_conv", "simple_conv", "results/rps_exp_simple_conv/best_simple_conv.pt"),
+    (
+        "old_bigru_v2",
+        "simple_conv_bigru_v2",
+        "results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt",
+    ),
+    ("v3_simple_conv", "simple_conv", "results/rps_predictor_v3/simple_conv/best_simple_conv.pt"),
+    (
+        "v3_bigru_v2",
+        "simple_conv_bigru_v2",
+        "results/rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt",
+    ),
 ]
 
 loaded_models = {}
@@ -39,24 +56,24 @@ for name, mtype, ckpt in MODELS:
 
 # ── Part 1: Full validation set metrics ─────────────────────────────────────
 
-old_ds = DREGONRPSDataset('datasets/DREGON-LM/valid')
-new_ds = DREGONRPSDataset('datasets/DREGON-LM-V2/valid')
+old_ds = DREGONRPSDataset("datasets/DREGON-LM/valid")
+new_ds = DREGONRPSDataset("datasets/DREGON-LM-V2/valid")
 
 all_metrics = {}
-for ds_name, ds in [('OLD_valid', old_ds), ('V2_valid', new_ds)]:
+for ds_name, ds in [("OLD_valid", old_ds), ("V2_valid", new_ds)]:
     loader = DataLoader(ds, batch_size=32, shuffle=False, num_workers=4)
     for model_name, model in loaded_models.items():
         m = evaluate(model, loader, device, len(ds), pit_eval=True)
-        key = f'{model_name}__{ds_name}'
+        key = f"{model_name}__{ds_name}"
         all_metrics[key] = {
-            'pit_mse': float(m['mse']),
-            'std_mse': float(m['std_mse']),
-            'mae_frame': float(m['mae_frame']),
-            'mae_clip': float(m['mae_clip']),
+            "pit_mse": float(m["mse"]),
+            "std_mse": float(m["std_mse"]),
+            "mae_frame": float(m["mae_frame"]),
+            "mae_clip": float(m["mae_clip"]),
         }
         print(f"  {key}: PIT_MSE={m['mse']:.2f}")
 
-with open(OUT / 'validation_metrics.json', 'w') as f:
+with open(OUT / "validation_metrics.json", "w") as f:
     json.dump(all_metrics, f, indent=2)
 print(f"Saved validation metrics to {OUT / 'validation_metrics.json'}")
 
@@ -68,11 +85,11 @@ new_indices = random.sample(range(len(new_ds)), 5)
 
 import soundfile as sf
 
-for tag, ds, indices in [('old', old_ds, old_indices), ('v2', new_ds, new_indices)]:
+for tag, ds, indices in [("old", old_ds, old_indices), ("v2", new_ds, new_indices)]:
     for idx in indices:
         sample_dir = ds.samples[idx]
         sample_id = os.path.basename(sample_dir)
-        out_dir = OUT / 'samples' / f'{tag}_{sample_id}'
+        out_dir = OUT / "samples" / f"{tag}_{sample_id}"
         out_dir.mkdir(exist_ok=True)
 
         audio, rps_target = ds[idx]
@@ -80,25 +97,22 @@ for tag, ds, indices in [('old', old_ds, old_indices), ('v2', new_ds, new_indice
         rps_target = rps_target.numpy()
 
         # Save ground truth
-        np.save(out_dir / 'rps_target.npy', rps_target)
-        sf.write(out_dir / 'mixture.wav', audio.cpu().squeeze().numpy(), 16000)
-        sf.write(out_dir / 'vocals.wav',
-                 sf.read(os.path.join(sample_dir, 'vocals.wav'))[0], 16000)
-        sf.write(out_dir / 'noise.wav',
-                 sf.read(os.path.join(sample_dir, 'noise.wav'))[0], 16000)
+        np.save(out_dir / "rps_target.npy", rps_target)
+        sf.write(out_dir / "mixture.wav", audio.cpu().squeeze().numpy(), 16000)
+        sf.write(out_dir / "vocals.wav", sf.read(os.path.join(sample_dir, "vocals.wav"))[0], 16000)
+        sf.write(out_dir / "noise.wav", sf.read(os.path.join(sample_dir, "noise.wav"))[0], 16000)
 
         # Inference from all models
         for model_name, model in loaded_models.items():
-            with torch.no_grad():
-                with torch.amp.autocast('cuda'):
-                    pred = model(audio).cpu().squeeze(0)  # (4, T)
-            np.save(out_dir / f'rps_pred_{model_name}.npy', pred.numpy())
+            with torch.no_grad(), torch.amp.autocast("cuda"):
+                pred = model(audio).cpu().squeeze(0)  # (4, T)
+            np.save(out_dir / f"rps_pred_{model_name}.npy", pred.numpy())
 
             # Compute PIT MSE for this sample
-            pw = pairwise_mse(pred.unsqueeze(0),
-                            torch.from_numpy(rps_target).unsqueeze(0))
-            best = float('inf')
+            pw = pairwise_mse(pred.unsqueeze(0), torch.from_numpy(rps_target).unsqueeze(0))
+            best = float("inf")
             import itertools
+
             for perm in itertools.permutations(range(4)):
                 loss = sum(pw[0, j, perm[j]].item() for j in range(4))
                 if loss < best:
@@ -107,12 +121,12 @@ for tag, ds, indices in [('old', old_ds, old_indices), ('v2', new_ds, new_indice
 
             # Save per-sample metrics JSON
             metrics_sample = {
-                'sample_id': sample_id,
-                'dataset': tag,
-                'model': model_name,
-                'pit_mse': pit_mse_sample,
+                "sample_id": sample_id,
+                "dataset": tag,
+                "model": model_name,
+                "pit_mse": pit_mse_sample,
             }
-            with open(out_dir / f'metrics_{model_name}.json', 'w') as f:
+            with open(out_dir / f"metrics_{model_name}.json", "w") as f:
                 json.dump(metrics_sample, f, indent=2)
 
 print(f"Saved sample inferences to {OUT / 'samples'}/")
@@ -120,21 +134,20 @@ print(f"Saved sample inferences to {OUT / 'samples'}/")
 # ── Part 3: In-flight recording inference ───────────────────────────────────
 
 # Load speech-high and whitenoise-high recordings
-from data_processing.dregon import load_timeframe, discover_recordings
-from utils.data import TimeFrame
+from data_processing.dregon import discover_recordings, load_timeframe
 
-dregon_dir = Path('data/DREGON')
+dregon_dir = Path("data/DREGON")
 geometry = get_geometry(dregon_dir)
 
 # Discover recordings in the in_flight_source split
 all_samples = discover_recordings(dregon_dir)
-target_ids = {'free-flight_speech-high_room1', 'free-flight_whitenoise-high_room1'}
+target_ids = {"free-flight_speech-high_room1", "free-flight_whitenoise-high_room1"}
 
 for sample in all_samples:
-    if sample['recording_id'] not in target_ids:
+    if sample["recording_id"] not in target_ids:
         continue
 
-    rid = sample['recording_id']
+    rid = sample["recording_id"]
     print(f"\nProcessing in-flight recording: {rid}")
 
     tf = load_timeframe(sample, geometry=geometry, target_sr=16000)
@@ -169,7 +182,7 @@ for sample in all_samples:
     window_starts = []
 
     for start_sample in range(0, len(audio_full) - window_samples + 1, hop_samples):
-        chunk = audio_full[start_sample:start_sample + window_samples].to(device)
+        chunk = audio_full[start_sample : start_sample + window_samples].to(device)
         chunk = chunk.unsqueeze(0)  # (1, samples)
 
         # RPS target for this window
@@ -177,42 +190,40 @@ for sample in all_samples:
             n_frames = chunk.shape[1] // hop + 1
             # Resample RPS to match
             rps_chunk = torch.nn.functional.interpolate(
-                rps_full.unsqueeze(0),
-                size=n_frames, mode='linear', align_corners=False
+                rps_full.unsqueeze(0), size=n_frames, mode="linear", align_corners=False
             ).squeeze(0)
             all_targets_rps.append(rps_chunk.numpy())
 
         for model_name, model in loaded_models.items():
-            with torch.no_grad():
-                with torch.amp.autocast('cuda'):
-                    pred = model(chunk).cpu().squeeze(0)
+            with torch.no_grad(), torch.amp.autocast("cuda"):
+                pred = model(chunk).cpu().squeeze(0)
             all_preds[model_name].append(pred.numpy())
 
         window_starts.append(start_sample / 16000.0)
 
     # Save concatenated predictions
-    out_dir = OUT / 'inflight' / rid
+    out_dir = OUT / "inflight" / rid
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for model_name in loaded_models:
         preds_stacked = np.stack(all_preds[model_name], axis=0)  # (n_windows, 4, T)
-        np.save(out_dir / f'rps_pred_{model_name}.npy', preds_stacked)
+        np.save(out_dir / f"rps_pred_{model_name}.npy", preds_stacked)
 
     if rps_full is not None and len(all_targets_rps) > 0:
         targets_stacked = np.stack(all_targets_rps, axis=0)
-        np.save(out_dir / 'rps_target.npy', targets_stacked)
+        np.save(out_dir / "rps_target.npy", targets_stacked)
 
     # Save metadata
     meta_inflight = {
-        'recording_id': rid,
-        'duration': float(total_duration),
-        'channel': ch,
-        'window_duration': 3.0,
-        'hop_duration': 1.5,
-        'n_windows': len(window_starts),
-        'window_starts': window_starts,
+        "recording_id": rid,
+        "duration": float(total_duration),
+        "channel": ch,
+        "window_duration": 3.0,
+        "hop_duration": 1.5,
+        "n_windows": len(window_starts),
+        "window_starts": window_starts,
     }
-    with open(out_dir / 'metadata.json', 'w') as f:
+    with open(out_dir / "metadata.json", "w") as f:
         json.dump(meta_inflight, f, indent=2)
 
     # Per-window PIT MSE metrics
@@ -230,13 +241,13 @@ for sample in all_samples:
                 pit_mses.append(loss)
 
             inflight_metrics[model_name] = {
-                'mean_pit_mse': float(np.mean(pit_mses)),
-                'median_pit_mse': float(np.median(pit_mses)),
-                'min_pit_mse': float(np.min(pit_mses)),
-                'max_pit_mse': float(np.max(pit_mses)),
+                "mean_pit_mse": float(np.mean(pit_mses)),
+                "median_pit_mse": float(np.median(pit_mses)),
+                "min_pit_mse": float(np.min(pit_mses)),
+                "max_pit_mse": float(np.max(pit_mses)),
             }
 
-        with open(out_dir / 'window_metrics.json', 'w') as f:
+        with open(out_dir / "window_metrics.json", "w") as f:
             json.dump(inflight_metrics, f, indent=2)
         print(f"  Inflight metrics: {inflight_metrics}")
 

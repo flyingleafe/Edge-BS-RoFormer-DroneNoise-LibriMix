@@ -1,4 +1,3 @@
-# coding: utf-8
 """
 DREGON-LibriMix Dataset Synthesis Script (v2)
 
@@ -30,7 +29,6 @@ from data_processing.dregon import (
     clean_command_spikes,
     get_geometry,
     load_dregon_timeframes,
-    load_timeframe,
 )
 from utils.data import TimeFrame, UniformSeries
 
@@ -95,8 +93,8 @@ def adjust_length(audio: np.ndarray, target_length: int) -> np.ndarray:
 
 def calculate_snr(speech: np.ndarray, noise: np.ndarray) -> float:
     """Calculate Signal-to-Noise Ratio in dB."""
-    speech_power = np.sum(speech ** 2)
-    noise_power = np.sum(noise ** 2)
+    speech_power = np.sum(speech**2)
+    noise_power = np.sum(noise**2)
 
     if noise_power == 0:
         return float("inf")
@@ -115,8 +113,8 @@ def mix_at_snr(
     Returns:
         Tuple of (mixture, scaled_speech, scaled_noise)
     """
-    speech_power = np.sum(speech ** 2)
-    noise_power = np.sum(noise ** 2)
+    speech_power = np.sum(speech**2)
+    noise_power = np.sum(noise**2)
 
     if noise_power > 0 and speech_power > 0:
         target_noise_power = speech_power / (10 ** (target_snr / 10))
@@ -148,9 +146,9 @@ def generate_white_noise(length: int, snr_db: float, speech: np.ndarray) -> np.n
     Returns:
         speech + white_noise mixed at target SNR
     """
-    speech_power = np.sum(speech ** 2)
+    speech_power = np.sum(speech**2)
     noise = np.random.randn(length).astype(np.float32)
-    noise_power = np.sum(noise ** 2)
+    noise_power = np.sum(noise**2)
 
     if noise_power > 0 and speech_power > 0:
         target_noise_power = speech_power / (10 ** (snr_db / 10))
@@ -198,8 +196,7 @@ def load_dregon_noise_records(
     # Filter by recording_ids if given
     if recording_ids is not None:
         rid_set = set(recording_ids)
-        all_frames = [tf for tf in all_frames
-                      if tf.tags.get("recording_id", "") in rid_set]
+        all_frames = [tf for tf in all_frames if tf.tags.get("recording_id", "") in rid_set]
 
     # Expand each channel into a separate single-channel TimeFrame
     result: list[TimeFrame] = []
@@ -213,9 +210,11 @@ def load_dregon_noise_records(
         n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1
         for ch in range(n_channels):
             # Create single-channel audio UniformSeries
-            ch_samples = audio_us.samples[ch:ch + 1, :]  # (1, N)
+            ch_samples = audio_us.samples[ch : ch + 1, :]  # (1, N)
             ch_audio = UniformSeries.from_samples(
-                ch_samples, audio_us.sr, t_start=audio_us.t_start,
+                ch_samples,
+                audio_us.sr,
+                t_start=audio_us.t_start,
             )
             # Build new TimeFrame with single-channel audio + same other tracks
             new_tracks = {"audio": ch_audio}
@@ -225,7 +224,9 @@ def load_dregon_noise_records(
             new_tags = dict(tf.tags)
             new_tags["recording_id"] = f"{new_tags['recording_id']}_ch{ch}"
             ch_tf = TimeFrame.from_tracks(
-                new_tracks, t_start=tf.t_start, tags=new_tags,
+                new_tracks,
+                t_start=tf.t_start,
+                tags=new_tags,
                 global_data=tf.global_data,
             )
             result.append(ch_tf)
@@ -257,8 +258,8 @@ def _find_inflight_window(
     if motor_es.values is None:
         return motor_es.t_start, motor_es.t_end
     cleaned = clean_command_spikes(motor_es.values.copy())  # (4, M)
-    ts = motor_es.abs_timestamps                            # (M,)
-    in_flight = np.all(cleaned > min_motor_rps, axis=0)    # (M,) bool
+    ts = motor_es.abs_timestamps  # (M,)
+    in_flight = np.all(cleaned > min_motor_rps, axis=0)  # (M,) bool
     idxs = np.where(in_flight)[0]
     if len(idxs) == 0:
         raise ValueError(
@@ -316,8 +317,7 @@ def extract_noise_chunk_with_command_rps(
     if valid_duration < duration_sec:
         rec_id = tf.tags.get("recording_id", "?")
         raise ValueError(
-            f"Record {rec_id} has insufficient overlap: "
-            f"{valid_duration:.1f}s < {duration_sec}s"
+            f"Record {rec_id} has insufficient overlap: {valid_duration:.1f}s < {duration_sec}s"
         )
 
     # Random start time within valid range (absolute time)
@@ -494,10 +494,11 @@ def create_motor_combo_sample(
         summed_audio += segment
 
     # Normalize SPL per channel (at native rate)
-    target_rms = mean_single_rms_per_ch[channel] + (
-        allm_rms_per_ch[channel] - mean_single_rms_per_ch[channel]
-    ) * (num_motors - 1) / 3.0
-    actual_rms = float(np.sqrt(np.mean(summed_audio ** 2)))
+    target_rms = (
+        mean_single_rms_per_ch[channel]
+        + (allm_rms_per_ch[channel] - mean_single_rms_per_ch[channel]) * (num_motors - 1) / 3.0
+    )
+    actual_rms = float(np.sqrt(np.mean(summed_audio**2)))
     if actual_rms > 1e-10:
         summed_audio = summed_audio * (target_rms / actual_rms)
 
@@ -563,8 +564,7 @@ def load_dregon_multichannel_records(
 
     if recording_ids is not None:
         rid_set = set(recording_ids)
-        all_frames = [tf for tf in all_frames
-                      if tf.tags.get("recording_id", "") in rid_set]
+        all_frames = [tf for tf in all_frames if tf.tags.get("recording_id", "") in rid_set]
 
     result: list[TimeFrame] = []
     for tf in all_frames:
@@ -656,7 +656,7 @@ def adjust_length_mc(audio: np.ndarray, target_length: int) -> np.ndarray:
     current = audio.shape[-1]
     if current > target_length:
         start = np.random.randint(0, current - target_length + 1)
-        return audio[:, start:start + target_length]
+        return audio[:, start : start + target_length]
     if current < target_length:
         return np.pad(audio, ((0, 0), (0, target_length - current)), mode="constant")
     return audio
@@ -715,11 +715,13 @@ def create_dregon_librimix_multichannel(
 
     if split == "train":
         noise_records = load_dregon_multichannel_records(
-            dregon_dir, splits=TRAIN_NOISE_SPLITS,
+            dregon_dir,
+            splits=TRAIN_NOISE_SPLITS,
         )
     else:
         noise_records = load_dregon_multichannel_records(
-            dregon_dir, recording_ids=VALID_NOISE_RECORDING_IDS,
+            dregon_dir,
+            recording_ids=VALID_NOISE_RECORDING_IDS,
         )
     if len(noise_records) == 0:
         raise ValueError("No valid DREGON records with motor data found")
@@ -737,7 +739,9 @@ def create_dregon_librimix_multichannel(
         for _ in range(20):
             try:
                 noise, rps, noise_meta = extract_multichannel_noise_chunk(
-                    record, duration_sec=sample_duration, min_motor_rps=min_motor_rps,
+                    record,
+                    duration_sec=sample_duration,
+                    min_motor_rps=min_motor_rps,
                 )
                 break
             except ValueError:
@@ -753,7 +757,9 @@ def create_dregon_librimix_multichannel(
         # --- Per-channel source (speech or white noise) ---
         def _draw_source(force_wn: bool = False) -> np.ndarray:
             """Return a normalised 1-D source signal."""
-            if force_wn or (source_white_noise_prob > 0 and random.random() < source_white_noise_prob):
+            if force_wn or (
+                source_white_noise_prob > 0 and random.random() < source_white_noise_prob
+            ):
                 src = np.random.randn(target_length).astype(np.float32)
             else:
                 src = load_audio(random.choice(speech_files), target_sr=sample_rate, mono=True)
@@ -777,9 +783,7 @@ def create_dregon_librimix_multichannel(
                     generate_white_noise(target_length, white_noise_snr, speech)
                 )
             target_snr = float(np.random.uniform(snr_range[0], snr_range[1]))
-            mixture, speech_scaled, noise_scaled = mix_at_snr(
-                speech, noise[ch], target_snr
-            )
+            mixture, speech_scaled, noise_scaled = mix_at_snr(speech, noise[ch], target_snr)
             mix_ch.append(mixture)
             voc_ch.append(speech_scaled)
             noi_ch.append(noise_scaled)
@@ -795,22 +799,24 @@ def create_dregon_librimix_multichannel(
         sf.write(sample_dir / "mixture.wav", mixture_mc, sample_rate)
         np.save(sample_dir / "rps.npy", rps)
 
-        metadata_list.append({
-            "id": sample_id,
-            "n_channels": int(C),
-            "input_snr_per_channel": [float(s) for s in per_channel_snr],
-            "input_snr": float(np.mean(per_channel_snr)),
-            "speech_per_channel": speech_per_channel,
-            "source_white_noise_prob": source_white_noise_prob,
-            "noise_source": noise_meta["recording_id"],
-            "noise_start_time": noise_meta.get("start_time", 0.0),
-            "motor_sample_rate": noise_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
-            "rps_shape": list(rps.shape),
-        })
+        metadata_list.append(
+            {
+                "id": sample_id,
+                "n_channels": int(C),
+                "input_snr_per_channel": [float(s) for s in per_channel_snr],
+                "input_snr": float(np.mean(per_channel_snr)),
+                "speech_per_channel": speech_per_channel,
+                "source_white_noise_prob": source_white_noise_prob,
+                "noise_source": noise_meta["recording_id"],
+                "noise_start_time": noise_meta.get("start_time", 0.0),
+                "motor_sample_rate": noise_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
+                "rps_shape": list(rps.shape),
+            }
+        )
 
     metadata_path = output_dir / "metadata.json"
     if metadata_path.exists():
-        with open(metadata_path, "r") as f:
+        with open(metadata_path) as f:
             all_metadata = json.load(f)
     else:
         all_metadata = {}
@@ -900,9 +906,7 @@ def create_dregon_librimix(
     print(f"Loaded {len(noise_records)} noise records ({total_noise_duration:.1f}s total)")
 
     # Identify unique base recordings (strip _chN suffix) for reporting
-    base_recordings = set(
-        tf.tags["recording_id"].rsplit("_ch", 1)[0] for tf in noise_records
-    )
+    base_recordings = set(tf.tags["recording_id"].rsplit("_ch", 1)[0] for tf in noise_records)
     print(f"  Unique base recordings: {sorted(base_recordings)}")
 
     # --- Load motor WAVs for synthetic combos (train only) ---
@@ -943,7 +947,7 @@ def create_dregon_librimix(
         sample_dir.mkdir(exist_ok=True)
 
         # Decide sample type: motor combo or in-flight noise
-        is_motor_combo = (idx < num_motor_combo_samples)
+        is_motor_combo = idx < num_motor_combo_samples
 
         if is_motor_combo:
             # --- Synthetic motor combo ---
@@ -968,7 +972,9 @@ def create_dregon_librimix(
             for attempt in range(20):
                 try:
                     noise, rps, noise_meta = extract_noise_chunk_with_command_rps(
-                        record, duration_sec=sample_duration, channel=ch,
+                        record,
+                        duration_sec=sample_duration,
+                        channel=ch,
                         min_motor_rps=min_motor_rps,
                     )
                     break
@@ -1012,9 +1018,7 @@ def create_dregon_librimix(
                 "speech_source": str(Path(speech_path).name),
                 "noise_source": noise_source_id,
                 "noise_start_time": noise_meta.get("start_time", 0.0),
-                "motor_sample_rate": noise_meta.get(
-                    "motor_sample_rate", MOTOR_SAMPLE_RATE
-                ),
+                "motor_sample_rate": noise_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
                 "rps_shape": list(rps.shape),
                 "is_motor_combo": is_motor_combo,
             }
@@ -1023,7 +1027,7 @@ def create_dregon_librimix(
     # --- Save metadata ---
     metadata_path = output_dir / "metadata.json"
     if metadata_path.exists():
-        with open(metadata_path, "r") as f:
+        with open(metadata_path) as f:
             all_metadata = json.load(f)
     else:
         all_metadata = {}
@@ -1104,7 +1108,9 @@ def create_dregon_real_valid(
         for _ in range(20):
             try:
                 audio, rps, chunk_meta = extract_multichannel_noise_chunk(
-                    record, duration_sec=sample_duration, min_motor_rps=min_motor_rps,
+                    record,
+                    duration_sec=sample_duration,
+                    min_motor_rps=min_motor_rps,
                 )
                 break
             except ValueError:
@@ -1126,17 +1132,19 @@ def create_dregon_real_valid(
         else:
             source_type = "unknown"
 
-        metadata_list.append({
-            "id": sample_id,
-            "recording_id": rid,
-            "source_type": source_type,
-            "start_time": chunk_meta.get("start_time", 0.0),
-            "duration": sample_duration,
-            "n_channels": int(audio.shape[0]),
-            "motor_sample_rate": chunk_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
-            "rps_shape": list(rps.shape),
-            "is_real_recording": True,
-        })
+        metadata_list.append(
+            {
+                "id": sample_id,
+                "recording_id": rid,
+                "source_type": source_type,
+                "start_time": chunk_meta.get("start_time", 0.0),
+                "duration": sample_duration,
+                "n_channels": int(audio.shape[0]),
+                "motor_sample_rate": chunk_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
+                "rps_shape": list(rps.shape),
+                "is_real_recording": True,
+            }
+        )
 
     metadata_path = output_dir / "metadata.json"
     existing: dict = {}
@@ -1230,7 +1238,7 @@ def main():
         "--multichannel",
         action="store_true",
         help="Produce full 8-channel samples (channel axis = minibatch) instead "
-             "of per-channel-expanded mono samples",
+        "of per-channel-expanded mono samples",
     )
     parser.add_argument(
         "--speech_per_channel",
@@ -1243,17 +1251,17 @@ def main():
         type=float,
         default=0.0,
         help="Only sample from the in-flight window: the time range where all 4 "
-             "rotors exceed this RPS threshold (after cleaning). Uses "
-             "motors_measured when available (catches actual spindown), otherwise "
-             "motors_command. Recommended: 30.0 to exclude takeoff/landing. "
-             "0.0 disables (default, backward-compat).",
+        "rotors exceed this RPS threshold (after cleaning). Uses "
+        "motors_measured when available (catches actual spindown), otherwise "
+        "motors_command. Recommended: 30.0 to exclude takeoff/landing. "
+        "0.0 disables (default, backward-compat).",
     )
     parser.add_argument(
         "--source_white_noise_prob",
         type=float,
         default=0.0,
         help="(multichannel) probability of using white noise AS the target source "
-             "INSTEAD OF a LibriSpeech utterance (0.0 = always speech)",
+        "INSTEAD OF a LibriSpeech utterance (0.0 = always speech)",
     )
     parser.add_argument(
         "--white_noise_prob",
@@ -1271,8 +1279,8 @@ def main():
         "--real_valid",
         action="store_true",
         help="Create the valid split from real DREGON in_flight_source recordings "
-             "(no mixing — mixture = raw recording). Uses --valid_duration and "
-             "--valid_recording_ids. Incompatible with the mono pipeline.",
+        "(no mixing — mixture = raw recording). Uses --valid_duration and "
+        "--valid_recording_ids. Incompatible with the mono pipeline.",
     )
     parser.add_argument(
         "--valid_duration",
@@ -1285,7 +1293,7 @@ def main():
         type=str,
         default="",
         help="(--real_valid) comma-separated recording IDs to use; "
-             f"defaults to: {','.join(REAL_VALID_RECORDING_IDS)}",
+        f"defaults to: {','.join(REAL_VALID_RECORDING_IDS)}",
     )
 
     args = parser.parse_args()

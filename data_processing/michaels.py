@@ -20,6 +20,7 @@ the noise+RPS chunk extractor — i.e. `audio`, `audio_timestamps`, `motors`,
 `sample_rate`, `recording_id`, `slice_by_time(start_sec, end_sec)`. So the
 same `extract_noise_chunk_with_rps` function works on both.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -28,18 +29,19 @@ from pathlib import Path
 import librosa
 import numpy as np
 import pandas as pd
-import soundfile as sf
 
 # ---- local MotorData (was imported from .dregon; now self-contained) ----------
+
 
 @dataclass(frozen=True)
 class MotorData:
     """Motor telemetry time series (duck-type)."""
-    timestamps: np.ndarray  # (M,) Unix timestamps
-    measured: np.ndarray    # (M, 4) measured rotor speeds (Hz)
-    command: np.ndarray     # (M, 4) commanded rotor speeds (Hz)
 
-    def slice_by_time(self, start_time: float, end_time: float) -> "MotorData":
+    timestamps: np.ndarray  # (M,) Unix timestamps
+    measured: np.ndarray  # (M, 4) measured rotor speeds (Hz)
+    command: np.ndarray  # (M, 4) commanded rotor speeds (Hz)
+
+    def slice_by_time(self, start_time: float, end_time: float) -> MotorData:
         mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
         return MotorData(
             timestamps=self.timestamps[mask],
@@ -59,14 +61,15 @@ class MotorData:
 MICHAELS_FILES = [
     ("103_2.wav", "FLY103.csv", -0.94, 12.0, 100.0),
     ("108_2.wav", "FLY108.csv", -0.40, 9.0, 88.0),
-    ("124.wav",   "FLY124.csv", -20.63, 33.0, 105.0),
-    ("125.wav",   "FLY125.csv", -26.27, 17.0, 170.0),
+    ("124.wav", "FLY124.csv", -20.63, 33.0, 105.0),
+    ("125.wav", "FLY125.csv", -26.27, 17.0, 170.0),
 ]
 
 
 # ---------------------------------------------------------------------------
 # Record class (DREGONRecord-compatible subset)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class MichaelsRecord:
@@ -85,7 +88,7 @@ class MichaelsRecord:
 
     recording_id: str
     split: str = "in_flight_noise"  # always
-    audio: np.ndarray = field(repr=False, default=None)         # (n_samples, n_channels)
+    audio: np.ndarray = field(repr=False, default=None)  # (n_samples, n_channels)
     audio_timestamps: np.ndarray = field(repr=False, default=None)  # (n_samples,)
     motors: MotorData | None = None
     sample_rate: int = 44100
@@ -93,9 +96,9 @@ class MichaelsRecord:
     # Source paths (for traceability)
     wav_path: str | None = None
     csv_path: str | None = None
-    time_offset: float = 0.0   # csv-time shift applied
-    l_s: float = 0.0           # used valid-range start (sec, rel to record start)
-    r_s: float = 0.0           # used valid-range end   (sec, rel to record start)
+    time_offset: float = 0.0  # csv-time shift applied
+    l_s: float = 0.0  # used valid-range start (sec, rel to record start)
+    r_s: float = 0.0  # used valid-range end   (sec, rel to record start)
 
     @property
     def duration(self) -> float:
@@ -113,7 +116,7 @@ class MichaelsRecord:
     def end_time(self) -> float:
         return float(self.audio_timestamps[-1])
 
-    def slice_by_time(self, start_sec: float, end_sec: float) -> "MichaelsRecord":
+    def slice_by_time(self, start_sec: float, end_sec: float) -> MichaelsRecord:
         """Slice all time series by *relative* time (0 == record start)."""
         abs_start = self.start_time + start_sec
         abs_end = self.start_time + end_sec
@@ -121,9 +124,7 @@ class MichaelsRecord:
         end_idx = int(np.searchsorted(self.audio_timestamps, abs_end, side="right"))
         new_audio = self.audio[start_idx:end_idx]
         new_audio_ts = self.audio_timestamps[start_idx:end_idx]
-        new_motors = (
-            self.motors.slice_by_time(abs_start, abs_end) if self.motors else None
-        )
+        new_motors = self.motors.slice_by_time(abs_start, abs_end) if self.motors else None
         return replace(
             self,
             audio=new_audio,
@@ -135,6 +136,7 @@ class MichaelsRecord:
 # ---------------------------------------------------------------------------
 # Loader
 # ---------------------------------------------------------------------------
+
 
 def _load_raw(
     wav_path: Path,
@@ -227,7 +229,7 @@ def load_michaels_record(
     motors = MotorData(
         timestamps=ts,
         measured=motor_rps.T,  # (M_motor, 4) — DREGON convention
-        command=motor_rps.T,   # no command logged here; reuse measured
+        command=motor_rps.T,  # no command logged here; reuse measured
     )
 
     # Audio shape: (n_samples, n_channels)
@@ -281,7 +283,8 @@ def load_all_michaels_records(
         if not (wav_p.exists() and csv_p.exists()):
             continue
         rec = load_michaels_record(
-            wav_p, csv_p,
+            wav_p,
+            csv_p,
             time_offset=t_off,
             sample_rate=sample_rate,
             valid_l_s=l_s,
@@ -295,6 +298,7 @@ def load_all_michaels_records(
 # ---------------------------------------------------------------------------
 # Noise + RPS chunk extraction (DREGON-API-compatible)
 # ---------------------------------------------------------------------------
+
 
 def extract_noise_chunk_with_rps(
     record: MichaelsRecord,
