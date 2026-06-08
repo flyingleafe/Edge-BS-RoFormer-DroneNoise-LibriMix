@@ -142,9 +142,13 @@ class _ModelPredictor:
 
     @torch.no_grad()
     def predict(self, audio: np.ndarray, sr: float = SR_AUDIO) -> np.ndarray:
-        waveform = torch.from_numpy(np.asarray(audio, dtype=np.float32))
-        waveform = waveform.unsqueeze(0).to(self._device)  # (1, T)
-        out = self._model(waveform).squeeze(0)             # (R, F)
+        t = torch.from_numpy(np.asarray(audio, dtype=np.float32)).to(self._device)
+        if t.dim() == 1:
+            # Mono (T,) → (1, T) → model → (1, R, F) → (R, F)
+            out = self._model(t.unsqueeze(0)).squeeze(0)
+        else:
+            # Multichannel (C, T) → model treats C as batch → (C, R, F)
+            out = self._model(t)
         return out.cpu().numpy()
 
 
@@ -227,11 +231,14 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
 
         # Load audio.
         waveform, file_sr = torchaudio.load(str(wav_path))
-        audio = waveform.squeeze(0).numpy().astype(np.float32)  # (T,)
         if file_sr != SR_AUDIO:
             raise ValueError(
                 f"Expected {SR_AUDIO} Hz audio, got {file_sr} in {wav_path}"
             )
+        if waveform.shape[0] == 1:
+            audio = waveform.squeeze(0).numpy().astype(np.float32)  # (T,) mono
+        else:
+            audio = waveform.numpy().astype(np.float32)  # (C, T) multichannel
 
         # Load motor RPS.
         rps_raw = np.load(str(rps_path)).astype(np.float64)  # (R, M)
@@ -365,14 +372,20 @@ class EvalResult:
 
 # ── GT alignment strategies ──────────────────────────────────────────────
 
+def _audio_len(audio: np.ndarray) -> int:
+    """Number of time samples regardless of whether audio is (T,) or (C, T)."""
+    return int(audio.shape[-1])
+
+
 def _align_stft_timestamps(
     audio: np.ndarray, rps_es: EventSeries, *, sr: float = SR_AUDIO,
 ) -> np.ndarray:
     """Align GT RPS onto the exact STFT frame grid via timestamp canon (A).
 
-    Returns ``(n_rotors, n_frames)`` numpy array.
+    Returns ``(n_rotors, n_frames)`` numpy array.  Works for mono (T,) and
+    multichannel (C, T) audio — only the time length matters.
     """
-    n_frames = len(audio) // HOP + 1
+    n_frames = _audio_len(audio) // HOP + 1
     frame_times = np.arange(n_frames) * HOP / sr
     return rps_es.interpolate(frame_times)  # (R, F)
 
@@ -389,10 +402,10 @@ def _align_shape_stretch(
     import torch.nn.functional as F
     if rps_es.values is None:
         raise ValueError("RPS EventSeries has no values — cannot shape-stretch")
-    raw_rps = np.asarray(rps_es.values, dtype=np.float64)  # (M, R)
-    n_frames = len(audio) // HOP + 1
+    raw_rps = np.asarray(rps_es.values, dtype=np.float64)  # (R, M) — time-last
+    n_frames = _audio_len(audio) // HOP + 1
     # Torch F.interpolate: (B, C, L) -> (B, C, N)
-    t = torch.from_numpy(raw_rps.T).unsqueeze(0)  # (1, R, M)
+    t = torch.from_numpy(raw_rps).unsqueeze(0)  # (1, R, M)
     result = F.interpolate(t.float(), size=n_frames, mode='linear',
                            align_corners=False).squeeze(0)  # (R, n_frames)
     return result.numpy()
@@ -466,56 +479,62 @@ def evaluate(
         if not isinstance(rps_es, EventSeries):
             raise TypeError(f"rps track must be EventSeries, got {type(rps_es).__name__}")
 
-        audio = audio_us.samples  # (T,) np.ndarray
+        audio = audio_us.samples  # (T,) or (C, T)
         sr = audio_us.sr
+        sid = frame.tags.get("id", f"sample_{n:05d}")
+        snr_tag = frame.tags.get("input_snr", None)
+        per_ch_snr = frame.tags.get("input_snr_per_channel", None)
 
-        # Predict.
-        pred = predictor.predict(audio, sr=sr)  # (R, F_pred)
+        # Predict: (R, F) for mono, (C, R, F) for multichannel.
+        pred = predictor.predict(audio, sr=sr)
 
-        # Align GT onto the predicted frame grid.
+        # Align GT RPS onto the predicted frame grid (shared across channels).
         gt = _align_gt(audio, rps_es, sr=sr)  # (R, F_gt)
 
-        # Crop to min length (±1 frame non-issue).
-        F_pred = pred.shape[-1]
-        F_gt = gt.shape[-1]
-        F = min(F_pred, F_gt)
+        # Normalise to the same number of frames.
+        F = min(pred.shape[-1], gt.shape[-1])
         pred = pred[..., :F]
         gt = gt[..., :F]
 
-        # Per-sample metrics.
-        mse = float(np.mean((pred - gt) ** 2))
-        mae_frame = float(np.mean(np.abs(pred - gt)))
-        mae_clip = float(np.mean(np.abs(pred.mean(axis=-1) - gt.mean(axis=-1))))
+        # Expand mono pred to (1, R, F) so the channel loop is uniform.
+        if pred.ndim == 2:
+            pred = pred[np.newaxis]  # (1, R, F)
+        C = pred.shape[0]
 
-        # Per-sample R² (macro — each sample's own mean as baseline).
-        ss_res = float(np.sum((pred - gt) ** 2))
-        ss_tot = float(np.sum((gt - gt.mean()) ** 2))
-        r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-6 else None
+        for ch in range(C):
+            p_ch = pred[ch]  # (R, F)
 
-        sid = frame.tags.get("id", f"sample_{n:05d}")
+            mse = float(np.mean((p_ch - gt) ** 2))
+            mae_frame = float(np.mean(np.abs(p_ch - gt)))
+            mae_clip = float(np.mean(np.abs(p_ch.mean(axis=-1) - gt.mean(axis=-1))))
+            ss_res = float(np.sum((p_ch - gt) ** 2))
+            ss_tot = float(np.sum((gt - gt.mean()) ** 2))
+            r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-6 else None
 
-        row = {
-            "sample": sid,
-            "mse": mse,
-            "mae_frame": mae_frame,
-            "mae_clip": mae_clip,
-            "ss_tot": ss_tot,
-            "r2": r2,
-        }
-        # Carry SNR tag if present.
-        if "input_snr" in frame.tags:
-            row["input_snr"] = frame.tags["input_snr"]
-        per_sample.append(row)
+            row: dict = {
+                "sample": sid,
+                "channel": ch,
+                "mse": mse,
+                "mae_frame": mae_frame,
+                "mae_clip": mae_clip,
+                "ss_tot": ss_tot,
+                "r2": r2,
+            }
+            if snr_tag is not None:
+                row["input_snr"] = snr_tag
+            if per_ch_snr is not None and ch < len(per_ch_snr):
+                row["input_snr_channel"] = per_ch_snr[ch]
 
-        all_mse.append(mse)
-        all_mae_frame.append(mae_frame)
-        all_mae_clip.append(mae_clip)
-        if r2 is not None:
-            all_r2.append(r2)
+            per_sample.append(row)
+            all_mse.append(mse)
+            all_mae_frame.append(mae_frame)
+            all_mae_clip.append(mae_clip)
+            if r2 is not None:
+                all_r2.append(r2)
 
         n += 1
         if verbose and n % 100 == 0:
-            print(f"  {n} samples  running MAE/clip={np.mean(all_mae_clip):.3f}")
+            print(f"  {n} samples ({n * C} rows)  running MAE/clip={np.mean(all_mae_clip):.3f}")
 
     elapsed = time.time() - t0
     if verbose and n > 0:
@@ -523,6 +542,7 @@ def evaluate(
 
     agg = {
         "n_samples": n,
+        "n_rows": len(per_sample),  # n_samples * n_channels
         "n_r2_valid": len(all_r2),
         "mse": float(np.mean(all_mse)) if all_mse else 0.0,
         "rmse": float(np.sqrt(np.mean(all_mse))) if all_mse else 0.0,

@@ -24,6 +24,15 @@ from utils.data import (
 )
 ```
 
+### Axis convention (load-bearing invariant)
+
+**The time/event axis is ALWAYS the LAST axis.** `UniformSeries.samples` is
+`(channels, N)`; `EventSeries.values` is `(..., M)`; `SegmentSeries.values` is
+`(..., M)`. `M`/`N` (the time count) is `shape[-1]` everywhere. Construct
+multi-dimensional payloads accordingly — e.g. 4-rotor RPS is `(4, M)`, **not**
+`(M, 4)`. Slicing/`__getitem__`/`interpolate` all index the last axis; storing
+`(M, K)` silently slices the wrong axis (this caused a real `(M, 0)` bug).
+
 All four container types are **frozen dataclasses** with a uniform algebra:
 
 | Method / property | Meaning |
@@ -97,7 +106,7 @@ with a fixed `1e‑6`‑sample epsilon.
 | `uniform.py` | `UniformSeries` — sample‑grid model with sub‑sample `phase` |
 | `event.py` | `EventSeries` — sorted point timestamps + optional values |
 | `segment.py` | `SegmentSeries` — half‑open intervals; split‑and‑rejoin via `ids` |
-| `frame.py` | `TimeFrame` — dict‑keyed container; column ops + time ops |
+| `frame.py` | `TimeFrame` — dict‑keyed container; column ops + time ops; carries `tags` (scalar metadata) and `global_data` (array metadata — mic/rotor positions etc.) |
 | `_floats.py` | **legacy** — kept for reference but unused by the library |
 
 ## Tests
@@ -116,3 +125,12 @@ with a fixed `1e‑6`‑sample epsilon.
 Strategies draw int64 tick anchors (both small and Unix‑magnitude ~1.6e18)
 and construct series via `from_ticks` / `from_events` with int arguments to
 guarantee exactness.
+
+## TimeFrame metadata
+
+Two levels of non‑temporal metadata:
+* **`tags`** — `Mapping[str, Hashable]`. Scalar‑only (recording_id, split, …).
+  Equality‑checked on shared keys at `concat`/`merge`; preserved under all ops.
+* **`global_data`** — `Mapping[str, Any]`. Pytree of numpy arrays for geometry
+  data (mic_positions, rotor_positions, …). Same merge semantics as tags
+  (equality on shared keys via numpy‑aware comparison).

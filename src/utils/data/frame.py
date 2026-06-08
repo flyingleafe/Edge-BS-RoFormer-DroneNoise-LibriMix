@@ -31,7 +31,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Hashable, Iterable, Iterator
+from typing import Any, Hashable, Iterable, Iterator
+
+import numpy as np
 
 from ._ticks import _c_to_ticks, ticks_to_secs
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
@@ -54,6 +56,7 @@ class TimeFrame:
     t_start_ticks: int = 0
     dur_ticks: int = 0
     tags: Mapping[str, Hashable] = field(default_factory=dict)
+    global_data: Mapping[str, Any] = field(default_factory=dict)
 
     # ---- construction ---------------------------------------------------
     def __post_init__(self) -> None:
@@ -62,6 +65,11 @@ class TimeFrame:
             object.__setattr__(self, "tags", {})
         elif not isinstance(self.tags, dict):
             object.__setattr__(self, "tags", dict(self.tags))
+        # Normalize global_data to a plain dict (never None).
+        if self.global_data is None:
+            object.__setattr__(self, "global_data", {})
+        elif not isinstance(self.global_data, dict):
+            object.__setattr__(self, "global_data", dict(self.global_data))
         if self.dur_ticks < 0:
             raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
         for name, track in self.tracks.items():
@@ -97,6 +105,7 @@ class TimeFrame:
         t_start_ticks: int,
         dur_ticks: int,
         tags: Mapping[str, Hashable] | None = None,
+        global_data: Mapping[str, Any] | None = None,
     ) -> "TimeFrame":
         """Build a frame from tracks already stored frame-local.  Bypasses
         re-basing and validation — internal use.
@@ -106,6 +115,7 @@ class TimeFrame:
         object.__setattr__(self, "t_start_ticks", int(t_start_ticks))
         object.__setattr__(self, "dur_ticks", int(dur_ticks))
         object.__setattr__(self, "tags", dict(tags or {}))
+        object.__setattr__(self, "global_data", dict(global_data or {}))
         return self
 
     def _abs(self) -> dict[str, TimeSeries]:
@@ -122,6 +132,7 @@ class TimeFrame:
         t_start: float | int | None = None,
         t_end: float | int | None = None,
         tags: Mapping[str, Hashable] | None = None,
+        global_data: Mapping[str, Any] | None = None,
     ) -> "TimeFrame":
         """Build a frame, inferring the hull domain from the tracks if not given."""
         if t_start is None or t_end is None:
@@ -134,7 +145,8 @@ class TimeFrame:
         t0 = _c_to_ticks(t_start) if not isinstance(t_start, int) else t_start
         te = _c_to_ticks(t_end) if not isinstance(t_end, int) else t_end
         return cls(tracks=dict(tracks), t_start_ticks=t0, dur_ticks=te - t0,
-                   tags=tags if tags is not None else {})
+                   tags=tags if tags is not None else {},
+                   global_data=global_data if global_data is not None else {})
 
     # ---- domain properties (seconds) ------------------------------------
     @property
@@ -188,7 +200,7 @@ class TimeFrame:
             raise KeyError(f"missing tracks: {missing}")
         return TimeFrame._from_local(
             {k: self.tracks[k] for k in keys}, self.t_start_ticks, self.dur_ticks,
-            tags=self.tags,
+            tags=self.tags, global_data=self.global_data,
         )
 
     def drop(self, keys: Iterable[str]) -> "TimeFrame":
@@ -196,6 +208,7 @@ class TimeFrame:
         return TimeFrame._from_local(
             {k: v for k, v in self.tracks.items() if k not in keys},
             self.t_start_ticks, self.dur_ticks, tags=self.tags,
+            global_data=self.global_data,
         )
 
     def with_track(self, name: str, track: TimeSeries) -> "TimeFrame":
@@ -209,6 +222,7 @@ class TimeFrame:
             t_start_ticks=new_t_start,
             dur_ticks=new_t_end - new_t_start,
             tags=self.tags,
+            global_data=self.global_data,
         )
 
     def merge(self, other: "TimeFrame", overwrite: bool = False) -> "TimeFrame":
@@ -237,9 +251,20 @@ class TimeFrame:
                     )
             else:
                 new_tags[k] = v
+        # Merge global_data (equality check on shared keys).
+        new_global = dict(self.global_data)
+        for k, v in other.global_data.items():
+            if k in new_global:
+                if not _global_leaf_equal(new_global[k], v):
+                    raise IncompatibleSeriesError(
+                        f"global_data {k!r} conflict on merge"
+                    )
+            else:
+                new_global[k] = v
         return TimeFrame(
             tracks=new_tracks, t_start_ticks=new_t_start,
             dur_ticks=new_t_end - new_t_start, tags=new_tags,
+            global_data=new_global,
         )
 
     # ---- time ops -------------------------------------------------------
@@ -248,7 +273,8 @@ class TimeFrame:
         if dt == 0:
             return self
         return TimeFrame._from_local(
-            dict(self.tracks), self.t_start_ticks + dt, self.dur_ticks, tags=self.tags,
+            dict(self.tracks), self.t_start_ticks + dt, self.dur_ticks,
+            tags=self.tags, global_data=self.global_data,
         )
 
     def slice(self, t_a: float | int, t_b: float | int) -> "TimeFrame":
@@ -272,6 +298,7 @@ class TimeFrame:
         return TimeFrame(
             tracks=new_tracks, t_start_ticks=ta_tick,
             dur_ticks=tb_tick - ta_tick, tags=self.tags,
+            global_data=self.global_data,
         )
 
     def concat(self, other: "TimeFrame") -> "TimeFrame":
@@ -305,10 +332,21 @@ class TimeFrame:
                     )
             else:
                 new_tags[k] = v
+        # Merge global_data: equality on shared keys, union on disjoint ones.
+        new_global = dict(self.global_data)
+        for k, v in other.global_data.items():
+            if k in new_global:
+                if not _global_leaf_equal(new_global[k], v):
+                    raise IncompatibleSeriesError(
+                        f"global_data {k!r} conflict on concat"
+                    )
+            else:
+                new_global[k] = v
         return TimeFrame(
             tracks=new_tracks, t_start_ticks=self.t_start_ticks,
             dur_ticks=self.dur_ticks + other.dur_ticks,
             tags=new_tags,
+            global_data=new_global,
         )
 
     def __add__(self, other: "TimeFrame") -> "TimeFrame":
@@ -329,6 +367,8 @@ class TimeFrame:
                 return False
         if dict(self.tags) != dict(other.tags):
             return False
+        if not _global_equal(self.global_data, other.global_data):
+            return False
         return True
 
     def __eq__(self, other: object) -> bool:  # type: ignore[override]
@@ -338,3 +378,23 @@ class TimeFrame:
 
     def __hash__(self) -> int:
         return id(self)
+
+
+# ---- global_data helpers ----------------------------------------------------
+
+
+def _global_leaf_equal(a: Any, b: Any) -> bool:
+    """Compare two global_data leaves, handling numpy arrays."""
+    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+        return a.shape == b.shape and bool(np.all(a == b))
+    return a == b
+
+
+def _global_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Compare two global_data dicts."""
+    if a.keys() != b.keys():
+        return False
+    for k in a:
+        if not _global_leaf_equal(a[k], b[k]):
+            return False
+    return True

@@ -24,6 +24,8 @@ import torch
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
+from utils.data import TimeFrame
+
 from . import michaels as M
 from . import dregon as D
 
@@ -63,25 +65,28 @@ def upsample_rps_to_audio_rate(
 
 
 # ---------------------------------------------------------------------------
-# Unified record wrapper (so DREGON + Michael's look the same downstream)
+# Unified record wrapper (DREGON → TimeFrame; Michael's → MichaelsRecord)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _ChunkSource:
-    record: object         # DREGONRecord | MichaelsRecord
+    record: object         # TimeFrame | MichaelsRecord
     origin: str            # "dregon" | "michaels"
     n_channels: int        # number of usable audio channels
     duration: float
 
 
-def _wrap_dregon(record: "D.DREGONRecord") -> _ChunkSource:
-    n_ch = record.audio.shape[1] if record.audio.ndim > 1 else 1
-    return _ChunkSource(record=record, origin="dregon", n_channels=n_ch, duration=record.duration)
+def _wrap_dregon(tf: TimeFrame) -> _ChunkSource:
+    audio = tf["audio"]
+    n_ch = audio.samples.shape[0] if audio.samples.ndim > 1 else 1
+    return _ChunkSource(record=tf, origin="dregon", n_channels=n_ch,
+                        duration=audio.duration)
 
 
 def _wrap_michaels(record: "M.MichaelsRecord") -> _ChunkSource:
     n_ch = record.audio.shape[1] if record.audio.ndim > 1 else 1
-    return _ChunkSource(record=record, origin="michaels", n_channels=n_ch, duration=record.duration)
+    return _ChunkSource(record=record, origin="michaels", n_channels=n_ch,
+                        duration=record.duration)
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +151,8 @@ class NoiseRPSDataset(Dataset):
     def __len__(self):
         return self.samples_per_epoch
 
-    def _extract_chunk(self, src: _ChunkSource) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns (audio [T], rps_motor_rate [4, M], audio_ts [T])."""
+    def _extract_chunk(self, src: _ChunkSource) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Returns (audio [T], rps_motor_rate [4, M], audio_ts [T], motor_ts [M])."""
         rec = src.record
         # Random channel within record
         if self.channel_policy == "random" and src.n_channels > 1:
@@ -156,31 +161,35 @@ class NoiseRPSDataset(Dataset):
             ch = 0
 
         if src.origin == "dregon":
-            # Use NoiseSegment-like inline extraction (don't re-import the heavy
-            # function from create_dregon_librimix.py).
-            audio_start = rec.audio_timestamps[0]
-            audio_end = rec.audio_timestamps[-1]
-            motor_start = rec.motors.timestamps[0]
-            motor_end = rec.motors.timestamps[-1]
+            # rec is a TimeFrame — use native slice + track access.
+            tf: TimeFrame = rec
+            # Compute valid time window (intersection of audio and motor domains).
+            audio_start = tf["audio"].t_start
+            audio_end = tf["audio"].t_end
+            motor_track = tf["motors_measured"]
+            motor_start = motor_track.t_start
+            motor_end = motor_track.t_end
             valid_start = max(audio_start, motor_start)
             valid_end = min(audio_end, motor_end)
             rel_lo = valid_start - audio_start
             rel_hi = valid_end - audio_start - self._chunk_duration_sec
             start = float(self.rng.uniform(rel_lo, rel_hi))
-            sliced = rec.slice_by_time(start, start + self._chunk_duration_sec)
-            audio = sliced.audio[:, ch] if sliced.audio.ndim > 1 else sliced.audio
-            rps = sliced.motors.measured.T  # (4, M)
-            motor_ts = sliced.motors.timestamps
-            audio_ts = sliced.audio_timestamps
+
+            # Slice both audio and motors simultaneously.
+            sliced = tf.slice(audio_start + start,
+                              audio_start + start + self._chunk_duration_sec)
+
+            audio_us = sliced["audio"]
+            # UniformSeries stores (channels, N) — axis 0 = channels, axis -1 = time
+            audio = audio_us.samples[ch, :] if audio_us.samples.ndim > 1 else audio_us.samples
+            audio_ts = audio_us.sample_times()
+
+            motor_es = sliced["motors_measured"]
+            motor_ts = motor_es.abs_timestamps  # float seconds
+            # EventSeries values are already time-last (4, M).
+            rps = motor_es.values if motor_es.values is not None else np.zeros((4, 0), dtype=np.float32)
         else:  # michaels
-            audio, rps, _ = M.extract_noise_chunk_with_rps(
-                rec, duration_sec=self._chunk_duration_sec, channel=ch
-            )
-            # Re-extract slice for motor/audio ts (we need them for interpolation)
-            # The same RNG was consumed inside M.extract_noise_chunk_with_rps (it
-            # uses np.random not self.rng) — for reproducibility we re-do the
-            # extraction here using self.rng:
-            # Override: compute the slice ourselves so RNG is consistent.
+            # Same logic as before, using MichaelsRecord API.
             rec_m: M.MichaelsRecord = rec
             audio_start = rec_m.audio_timestamps[0]
             audio_end = rec_m.audio_timestamps[-1]
@@ -251,21 +260,22 @@ def load_dregon_noise_sources(
     sample_rate: int,
     cache_dir: str | Path | None = None,
 ) -> list[_ChunkSource]:
-    """Load all DREGON `in_flight_noise` recordings with motor data."""
+    """Load all DREGON `in_flight_noise` recordings with motor data.
+
+    Uses the new TimeFrame-native loader.
+    """
     dregon_dir = Path(dregon_dir)
-    cache_dir = Path(cache_dir) if cache_dir else None
-    dataset = D.load_dregon_dataset(dregon_dir.parent, splits=["in_flight_noise"], download=False)
-    geometry = D.get_geometry(dregon_dir)
+    frames = D.load_dregon_timeframes(
+        dregon_dir.parent,
+        splits=["in_flight_noise"],
+        target_sr=sample_rate,
+        download=False,
+    )
     sources: list[_ChunkSource] = []
-    if "in_flight_noise" not in dataset:
-        return sources
-    for sample in dataset["in_flight_noise"]:
-        rec = D.load_record_from_sample(sample, geometry=geometry)
-        if rec.motors is None:
+    for tf in frames:
+        if "motors_measured" not in tf:
             continue
-        if sample_rate != rec.sample_rate:
-            rec = rec.resample_audio(sample_rate, cache_dir=cache_dir)
-        sources.append(_wrap_dregon(rec))
+        sources.append(_wrap_dregon(tf))
     return sources
 
 
@@ -307,7 +317,7 @@ def build_noise_rps_datasets(
         train_samples / val_samples: virtual epoch sizes.
         val_pct: fraction of each recording held out at the end for validation.
         seed: RNG seed.
-        cache_dir: where to cache resampled DREGON audio.
+        cache_dir: where to cache resampled DREGON audio (kept for API compat).
         **dataset_kwargs: forwarded to `NoiseRPSDataset` (e.g. rps_normalize).
     """
     sources: list[_ChunkSource] = []
@@ -322,18 +332,25 @@ def build_noise_rps_datasets(
     train_sources: list[_ChunkSource] = []
     val_sources: list[_ChunkSource] = []
     for src in sources:
-        rec = src.record
         cut = src.duration * (1.0 - val_pct)
-        # Train slice: 0..cut
-        train_rec = rec.slice_by_time(0.0, cut)
-        # Val slice: cut..end
-        val_rec = rec.slice_by_time(cut, src.duration)
 
-        wrap = _wrap_dregon if src.origin == "dregon" else _wrap_michaels
-        if train_rec.duration >= chunk_size / sample_rate:
-            train_sources.append(wrap(train_rec))
-        if val_rec.duration >= chunk_size / sample_rate:
-            val_sources.append(wrap(val_rec))
+        if src.origin == "dregon":
+            tf: TimeFrame = src.record
+            # Train: slice(0, cut)  |  Val: slice(cut, end)
+            train_tf = tf.slice(tf.t_start, tf.t_start + cut)
+            val_tf = tf.slice(tf.t_start + cut, tf.t_end)
+            if train_tf["audio"].duration >= chunk_size / sample_rate:
+                train_sources.append(_wrap_dregon(train_tf))
+            if val_tf["audio"].duration >= chunk_size / sample_rate:
+                val_sources.append(_wrap_dregon(val_tf))
+        else:
+            rec = src.record
+            train_rec = rec.slice_by_time(0.0, cut)
+            val_rec = rec.slice_by_time(cut, src.duration)
+            if train_rec.duration >= chunk_size / sample_rate:
+                train_sources.append(_wrap_michaels(train_rec))
+            if val_rec.duration >= chunk_size / sample_rate:
+                val_sources.append(_wrap_michaels(val_rec))
 
     train_ds = NoiseRPSDataset(
         train_sources, chunk_size=chunk_size, sample_rate=sample_rate,

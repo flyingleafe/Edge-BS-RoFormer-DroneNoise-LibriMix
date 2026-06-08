@@ -53,6 +53,7 @@ make-plot = "utils.plots.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--import-mode=importlib"
 markers = [
     "slow: full-dataset inference (skip by default)",
 ]
@@ -68,6 +69,7 @@ dev = [
     "jupyter>=1.1.1",
     "nnviz",
     "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
     "torchlens",
     "torchsummary",
     "torchviz",
@@ -75,4 +77,33 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/postdoc", "src/utils", "data_processing"]
+packages = ["src/postdoc", "src/utils", "src/tasks", "data_processing"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",  "W",  # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "SIM",      # flake8-simplify
+]
+ignore = [
+    "E501",   # line-length handled by formatter
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip() without explicit strict= parameter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["utils", "postdoc", "tasks", "data_processing"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+exclude = [".venv", "node_modules", ".postdoc", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
+reportMissingImports = false
+reportMissingTypeStubs = false

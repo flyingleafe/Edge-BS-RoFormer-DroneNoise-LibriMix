@@ -102,7 +102,7 @@ at extreme anchors).
 | Field | Type | Meaning |
 |-------|------|---------|
 | `timestamps` | `np.ndarray` | int64 ticks, **relative to `t_start`** |
-| `values` | `np.ndarray \| None` | shape `(M, …)` payload |
+| `values` | `np.ndarray \| None` | shape `(…, M)` payload — **event axis is ALWAYS the LAST axis** (`M` = number of events) |
 | `t_start` | `int` | absolute anchor (int64 ticks) |
 | `dur` | `int` | declared duration (int64 ticks) |
 
@@ -147,7 +147,7 @@ es.equal(other)      → bool          # exact timestamps ==, dur ==, t_start ==
 |-------|------|---------|
 | `starts` | `np.ndarray` | int64 ticks, **relative to `t_start`** |
 | `ends` | `np.ndarray` | int64 ticks, **relative to `t_start`** |
-| `values` | `np.ndarray \| None` | shape `(M, …)` payload |
+| `values` | `np.ndarray \| None` | shape `(…, M)` payload — **segment axis is ALWAYS the LAST axis** (`M` = number of segments); `ids` stay 1‑D `(M,)` |
 | `ids` | `np.ndarray` | int64 identity tags (62‑bit random, or explicit) |
 | `t_start` | `int` | absolute anchor |
 | `dur` | `int` | declared duration |
@@ -198,6 +198,8 @@ ss.equal(other)      → bool            # exact int arrays; ids match
 | `tracks` | `dict[str, TimeSeries]` | series stored **frame‑relative** (t_start relative to frame) |
 | `t_start` | `int` | absolute anchor (int64 ticks) |
 | `dur` | `int` | declared duration |
+| `tags` | `Mapping[str, Hashable]` | scalar metadata (recording_id, split, …) — preserved by all ops, equality-checked on concat/merge |
+| `global_data` | `Mapping[str, Any]` | pytree of numpy arrays for non‑temporal metadata (mic_positions, rotor_positions, …) — same merge semantics as tags |
 
 The raw `tracks` dict is internal; all public accessors re‑base to absolute time.
 
@@ -211,12 +213,13 @@ The raw `tracks` dict is internal; all public accessors re‑base to absolute ti
 ### Constructors
 
 ```python
-TimeFrame.from_tracks(tracks, *, t_start=None, t_end=None) → TimeFrame
-TimeFrame.from_ticks(tracks, *, t_start, dur)              → TimeFrame
+TimeFrame.from_tracks(tracks, *, t_start=None, t_end=None,
+                      tags=None, global_data=None) → TimeFrame
 ```
 
 Hull (`t_start`/`t_end`) inferred from track domains if not given. Constructor
-re‑bases tracks to frame‑relative via `shift(−t_start)`.
+re‑bases tracks to frame‑relative via `shift(−t_start)`. `tags` and `global_data`
+are optional mappings carried through all ops.
 
 ### Dict‑like accessors (return absolute series)
 

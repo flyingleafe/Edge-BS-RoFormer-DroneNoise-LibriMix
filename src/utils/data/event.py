@@ -34,7 +34,8 @@ class EventSeries(TimeSeries):
     timestamp_ticks : np.ndarray, shape (M,), dtype int64
         Event times relative to `t_start_ticks` (int64 ticks).
     values : np.ndarray | None
-        Shape `(M, ...)` payload, aligned to `timestamp_ticks`.
+        Shape ``(..., M)`` payload — the event/time axis is ALWAYS the LAST
+        axis, aligned to ``timestamp_ticks`` (length ``M``).
     t_start_ticks : int
         Absolute domain-start anchor (int64 ticks).
     dur_ticks : int
@@ -55,9 +56,9 @@ class EventSeries(TimeSeries):
         if self.values is not None:
             vals = np.asarray(self.values)
             object.__setattr__(self, "values", vals)
-            if vals.shape[0] != ts.shape[0]:
+            if vals.shape[-1] != ts.shape[0]:
                 raise ValueError(
-                    f"values.shape[0]={vals.shape[0]} != len(timestamps)={ts.shape[0]}"
+                    f"values.shape[-1]={vals.shape[-1]} != len(timestamps)={ts.shape[0]}"
                 )
         if self.dur_ticks < 0:
             raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
@@ -224,9 +225,9 @@ class EventSeries(TimeSeries):
         if (self.values is None) != (other.values is None):
             raise IncompatibleSeriesError("one has values, the other does not")
         if self.values is not None and other.values is not None:
-            if self.values.shape[1:] != other.values.shape[1:]:
+            if self.values.shape[:-1] != other.values.shape[:-1]:
                 raise IncompatibleSeriesError(
-                    f"value shapes differ: {self.values.shape[1:]} vs {other.values.shape[1:]}"
+                    f"value shapes differ: {self.values.shape[:-1]} vs {other.values.shape[:-1]}"
                 )
 
         # Glue other so its t_start lands at self.t_end.  Both store relative
@@ -241,7 +242,7 @@ class EventSeries(TimeSeries):
         if self.values is None:
             new_vals = None
         else:
-            new_vals = np.concatenate([self.values, other.values])  # type: ignore[arg-type]
+            new_vals = np.concatenate([self.values, other.values], axis=-1)  # type: ignore[arg-type]
         return EventSeries._from_relative(new_ts, new_vals, new_t_start, new_dur)
 
     # ---- equality -------------------------------------------------------
@@ -281,7 +282,7 @@ class EventSeries(TimeSeries):
 
         # Event times in float seconds.
         ev_t = self.abs_timestamps  # shape (M,)
-        vals = np.asarray(self.values, dtype=np.float64)  # (M, ...)
+        vals = np.asarray(self.values, dtype=np.float64)  # (..., M)
 
         if len(ev_t) == 0:
             if fill == "error":

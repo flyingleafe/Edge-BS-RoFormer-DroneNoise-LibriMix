@@ -47,7 +47,7 @@ class SegmentSeries(TimeSeries):
         Interval bounds **relative to `t_start_ticks`** (int64 ticks).
         `starts_ticks[i] < ends_ticks[i]`, sorted by `starts_ticks`.
     values : np.ndarray | None
-        Shape ``(M, …)`` payload (e.g. labels).  Optional.
+        Shape ``(…, M)`` payload (e.g. labels) — segment axis is ALWAYS LAST.  Optional.
     ids : np.ndarray, shape (M,), dtype int64
         Identity tags.  Segments with identical ids are treated as the same
         underlying segment when concatenating at a seam.
@@ -76,7 +76,7 @@ class SegmentSeries(TimeSeries):
             s = s[order]
             e = e[order]
             if self.values is not None:
-                object.__setattr__(self, "values", np.asarray(self.values)[order])
+                object.__setattr__(self, "values", np.asarray(self.values)[..., order])
             if self.ids is not None:
                 object.__setattr__(self, "ids", np.asarray(self.ids)[order])
         object.__setattr__(self, "starts_ticks", s)
@@ -90,8 +90,8 @@ class SegmentSeries(TimeSeries):
             object.__setattr__(self, "ids", ids)
         if self.values is not None:
             v = np.asarray(self.values)
-            if v.shape[0] != s.shape[0]:
-                raise ValueError("values.shape[0] must equal M")
+            if v.shape[-1] != s.shape[0]:
+                raise ValueError("values.shape[-1] must equal M")
             object.__setattr__(self, "values", v)
         if self.dur_ticks < 0:
             raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
@@ -213,7 +213,7 @@ class SegmentSeries(TimeSeries):
         e = ticks_to_secs(int(self.ends_ticks[i]) + self.t_start_ticks)
         if self.values is None:
             return s, e, int(self.ids[i])
-        return s, e, self.values[i], int(self.ids[i])
+        return s, e, self.values[..., i], int(self.ids[i])
 
     # ---- slice ----------------------------------------------------------
     def slice(self, t_a: float | int, t_b: float | int) -> "SegmentSeries":
@@ -234,7 +234,7 @@ class SegmentSeries(TimeSeries):
         nonzero = ne > ns
         ns = ns[nonzero]
         ne = ne[nonzero]
-        nv = None if self.values is None else self.values[keep][nonzero]
+        nv = None if self.values is None else self.values[..., keep][..., nonzero]
         nids = self.ids[keep][nonzero]
         return SegmentSeries(
             starts_ticks=ns, ends_ticks=ne, values=nv, ids=nids,
@@ -292,7 +292,7 @@ class SegmentSeries(TimeSeries):
         if self.values is None:
             new_vals = None
         else:
-            new_vals = np.concatenate([self.values, other.values[right_keep]])  # type: ignore[arg-type]
+            new_vals = np.concatenate([self.values, other.values[..., right_keep]], axis=-1)  # type: ignore[arg-type]
 
         return SegmentSeries(
             starts_ticks=new_starts, ends_ticks=new_ends, values=new_vals, ids=new_ids,

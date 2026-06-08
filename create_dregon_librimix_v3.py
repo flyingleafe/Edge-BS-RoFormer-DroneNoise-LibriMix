@@ -71,25 +71,32 @@ def resample_rps(rps_motor, n_target, motor_rate=MOTOR_SAMPLE_RATE):
                      for i in range(rps_motor.shape[0])])
 
 
-def get_random_chunk(record, duration_sec=SAMPLE_DURATION):
-    audio = record.audio.squeeze()
-    command = record._cleaned_command  # (num_motor_samples, num_motors)
+def get_random_chunk(tf, duration_sec=SAMPLE_DURATION):
+    """Extract random audio chunk + motor RPS from a TimeFrame.
+
+    Args:
+        tf: TimeFrame with "audio" and "motors_command" (or "motors_measured") tracks,
+            and a ``_cleaned_command`` attribute (pre-computed numpy array).
+    Returns:
+        (audio_chunk, rps_chunk) where audio is (target_samples,) and rps is (4, motor_target).
+    """
+    audio = tf["audio"].samples.squeeze()  # (n_samples,)
+    command = tf._cleaned_command  # (num_motors, num_motor_samples) — time-last
 
     target_samples = int(duration_sec * SAMPLE_RATE)
     motor_target = int(duration_sec * MOTOR_SAMPLE_RATE)
 
     if len(audio) <= target_samples:
         chunk = audio.copy()
-        # Pad audio only — keep all available command
-        rps_chunk = command.T.copy()  # (num_motors, num_motor_samples)
+        rps_chunk = command.copy()  # (num_motors, num_motor_samples)
     else:
         start_sample = random.randint(0, len(audio) - target_samples)
         chunk = audio[start_sample:start_sample + target_samples].copy()
         motor_start = int(start_sample / SAMPLE_RATE * MOTOR_SAMPLE_RATE)
         motor_end = motor_start + motor_target
-        motor_end = min(motor_end, command.shape[0])
+        motor_end = min(motor_end, command.shape[-1])
         motor_start = max(0, motor_end - motor_target)
-        rps_chunk = command[motor_start:motor_end, :].T.copy()  # (num_motors, motor_target)
+        rps_chunk = command[:, motor_start:motor_end].copy()  # (num_motors, motor_target)
     return chunk, rps_chunk
 
 
@@ -144,8 +151,13 @@ def main():
 
     # Pre-clean command spikes for all records (avoid repeated work)
     from data_processing.dregon import clean_command_spikes
-    for r in tqdm(valid_records + train_records, desc="Cleaning commands"):
-        r._cleaned_command = clean_command_spikes(r.motors.command.copy())
+    for tf in tqdm(valid_records + train_records, desc="Cleaning commands"):
+        motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
+        motor_es = tf[motor_key]
+        if motor_es.values is not None:
+            tf._cleaned_command = clean_command_spikes(motor_es.values.copy())  # (4, M)
+        else:
+            tf._cleaned_command = np.zeros((4, 0), dtype=np.float32)
 
     for split, records, num_samples in [
         ("train", train_records, args.num_train),
@@ -155,7 +167,7 @@ def main():
         split_dir.mkdir(parents=True, exist_ok=True)
         metadata_list = []
 
-        total_dur = sum(r.audio.shape[0] / SAMPLE_RATE for r in records)
+        total_dur = sum(tf["audio"].duration for tf in records)
         print(f"\nGenerating {split} ({num_samples}, from {total_dur:.0f}s audio)")
 
         for idx in tqdm(range(num_samples)):
@@ -163,8 +175,8 @@ def main():
             sample_dir = split_dir / sample_id
             sample_dir.mkdir(exist_ok=True)
 
-            record = random.choice(records)
-            noise_chunk, rps_motor = get_random_chunk(record)
+            tf = random.choice(records)
+            noise_chunk, rps_motor = get_random_chunk(tf)
 
             n_frames = TARGET_LENGTH // 512 + 1
             rps = resample_rps(rps_motor, n_frames)
@@ -190,7 +202,7 @@ def main():
                 "input_snr": float(actual_snr),
                 "target_snr": float(snr),
                 "speech_source": Path(random.choice(speech_files)).name,
-                "noise_source": record.recording_id,
+                "noise_source": tf.tags["recording_id"],
             })
 
         meta_path = output_dir / "metadata.json"

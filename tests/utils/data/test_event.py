@@ -145,14 +145,15 @@ def test_concat_across_gap():
 
 
 def test_concat_rejects_value_shape_mismatch():
+    # Values are time-last (..., M); 1 event => last axis length 1.
     a = EventSeries.from_ticks(
         np.array([100_000_000], dtype=np.int64),
-        np.array([[1.0, 2.0]]),
+        np.array([[1.0], [2.0]]),  # payload (2,), M=1
         t_start=0, dur=1_000_000_000,
     )
     b = EventSeries.from_ticks(
         np.array([100_000_000], dtype=np.int64),
-        np.array([[1.0, 2.0, 3.0]]),
+        np.array([[1.0], [2.0], [3.0]]),  # payload (3,), M=1
         t_start=1_000_000_000, dur=1_000_000_000,
     )
     with pytest.raises(IncompatibleSeriesError):
@@ -160,6 +161,23 @@ def test_concat_rejects_value_shape_mismatch():
 
 
 # ── Interpolation / interpolate_uniform ──────────────────────────────────
+
+def test_slice_multidim_values_is_time_last():
+    # Regression: 4-rotor RPS stored (4, M); slice must cut the M (last) axis
+    # and keep all 4 channels — not silently produce (4, 0).
+    M = 10
+    ts = np.arange(M, dtype=np.int64) * 100_000_000  # 0,0.1,...,0.9 s
+    vals = np.stack([np.arange(M), np.arange(M) + 100,
+                     np.arange(M) + 200, np.arange(M) + 300]).astype(np.float64)  # (4, M)
+    es = EventSeries.from_ticks(ts, vals, t_start=0, dur=1_000_000_000)
+    sl = es.slice(300_000_000, 700_000_000)  # events at 0.3,0.4,0.5,0.6
+    assert sl.values.shape == (4, 4)
+    np.testing.assert_array_equal(sl.values[:, 0], [3, 103, 203, 303])
+    _, v = es[2]
+    np.testing.assert_array_equal(v, [2, 102, 202, 302])
+    rejoined = es.slice(0, 300_000_000).concat(es.slice(300_000_000, 1_000_000_000))
+    assert rejoined.equal(es)
+
 
 def test_interpolate_no_values_raises():
     es = EventSeries.from_ticks(

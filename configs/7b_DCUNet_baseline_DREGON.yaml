@@ -4,7 +4,7 @@
 # Baseline for comparison with RPS-conditioned model
 
 audio:
-  chunk_size: 131584  # ~8.2 seconds at 16kHz
+  chunk_size: 131584 # ~8.2 seconds at 16kHz
   dim_f: 1024
   dim_t: 254
   hop_length: 512
@@ -49,7 +49,7 @@ training:
     metric: "si-sdr"
 
 augmentations:
-  enable: false  # Keep same as RPS version for fair comparison
+  enable: false # Keep same as RPS version for fair comparison
 
 inference:
   batch_size: 4

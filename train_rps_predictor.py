@@ -74,14 +74,20 @@ class DREGONRPSDataset(Dataset):
     def __getitem__(self, idx):
         d = self.samples[idx]
         audio, _sr = torchaudio.load(os.path.join(d, "mixture.wav"))
-        audio = audio[0]  # mono  (samples,)
+        # audio: (C, T) from torchaudio.
+        # - Mono (C=1): squeeze to (T,) for backward compatibility.
+        # - Multichannel (C>1): keep (C, T) so the training loop can treat
+        #   channels as additional batch items.
+        if audio.shape[0] == 1:
+            audio = audio[0]  # (T,)
+        # else: (C, T) — channels stay
 
         rps = torch.from_numpy(
             np.load(os.path.join(d, "rps.npy"))
         ).float()  # (4, rps_T)
 
-        # Number of STFT frames (center=True default)
-        n_frames = audio.shape[0] // self.hop_length + 1
+        # Number of STFT frames — use last dim so (C, T) and (T,) both work.
+        n_frames = audio.shape[-1] // self.hop_length + 1
 
         # Resample RPS to STFT time grid by *shape-stretch* (endpoint-to-endpoint).
         # GOTCHA: this ignores real timestamps and is only correct because here
@@ -439,34 +445,60 @@ def wandb_init(args: argparse.Namespace, model_name: str) -> None:
 # ─── Evaluation ──────────────────────────────────────────────────────────────
 
 
+def _flatten_channels(audio: torch.Tensor, rps: torch.Tensor):
+    """Flatten a multichannel batch into a flat batch for RPS models.
+
+    Args:
+        audio:  (B, T) or (B, C, T)
+        rps:    (B, 4, F)
+
+    Returns:
+        audio_flat: (B*C, T)  — C=1 for mono batches (no-op)
+        rps_flat:   (B*C, 4, F)
+        C:          number of channels (1 for mono)
+    """
+    if audio.dim() == 2:  # (B, T) — mono
+        return audio, rps, 1
+    B, C, T = audio.shape
+    audio_flat = audio.reshape(B * C, T)
+    # Broadcast RPS across channels: (B,4,F) → (B,C,4,F) → (B*C,4,F)
+    rps_flat = rps.unsqueeze(1).expand(B, C, -1, -1).reshape(B * C, rps.shape[1], rps.shape[2])
+    return audio_flat, rps_flat, C
+
+
 def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
     """Run model on dataloader, return per-frame and per-clip metrics.
-    
-    When pit_eval=True, uses permutation-invariant MSE for the primary loss
-    (matching PIT training), while also reporting standard metrics.
+
+    Handles both mono (T,) and multichannel (C, T) samples transparently.
+    When pit_eval=True, uses permutation-invariant MSE for the primary loss.
     """
     model.eval()
     total_pit_loss = 0.0
     total_std_loss = 0.0
     all_preds, all_targets = [], []
+    total_items = 0  # count B*C items, not just B
 
     with torch.no_grad():
         for audio, rps_target in loader:
             audio, rps_target = audio.to(device), rps_target.to(device)
+            audio, rps_target, C = _flatten_channels(audio, rps_target)
             with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
                 pit_loss = pit_mse_loss(rps_pred, rps_target)
                 std_loss = F.mse_loss(rps_pred, rps_target)
-            total_pit_loss += pit_loss.item() * audio.size(0)
-            total_std_loss += std_loss.item() * audio.size(0)
+            n = audio.size(0)
+            total_pit_loss += pit_loss.item() * n
+            total_std_loss += std_loss.item() * n
+            total_items += n
             all_preds.append(rps_pred.cpu())
             all_targets.append(rps_target.cpu())
 
     all_preds = torch.cat(all_preds)
     all_targets = torch.cat(all_targets)
 
-    pit_mse_val = total_pit_loss / dataset_len
-    std_mse_val = total_std_loss / dataset_len
+    # Divide by actual number of processed items (B*C), not dataset_len (B).
+    pit_mse_val = total_pit_loss / total_items
+    std_mse_val = total_std_loss / total_items
     mae_frame = (all_preds - all_targets).abs().mean().item()
     mae_per_rotor = (all_preds - all_targets).abs().mean(dim=(0, 2))
 
@@ -563,8 +595,11 @@ def train_model(model_name, args):
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_loss_sum = 0.0
+        train_items = 0
         for audio, rps_target in train_loader:
             audio, rps_target = audio.to(device), rps_target.to(device)
+            # Flatten multichannel batch: (B, C, T) → (B*C, T)
+            audio, rps_target, _C = _flatten_channels(audio, rps_target)
             optimizer.zero_grad()
             with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
@@ -585,8 +620,9 @@ def train_model(model_name, args):
             scaler.step(optimizer)
             scaler.update()
             train_loss_sum += loss.item() * audio.size(0)
+            train_items += audio.size(0)
 
-        train_mse = train_loss_sum / len(train_ds)
+        train_mse = train_loss_sum / train_items
         metrics = evaluate(model, valid_loader, device, len(valid_ds))
         val_mse = metrics["mse"]
         scheduler.step(val_mse)

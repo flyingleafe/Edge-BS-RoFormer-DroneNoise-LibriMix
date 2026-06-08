@@ -30,7 +30,25 @@ import numpy as np
 import pandas as pd
 import soundfile as sf
 
-from .dregon import MotorData
+# ---- local MotorData (was imported from .dregon; now self-contained) ----------
+
+@dataclass(frozen=True)
+class MotorData:
+    """Motor telemetry time series (duck-type)."""
+    timestamps: np.ndarray  # (M,) Unix timestamps
+    measured: np.ndarray    # (M, 4) measured rotor speeds (Hz)
+    command: np.ndarray     # (M, 4) commanded rotor speeds (Hz)
+
+    def slice_by_time(self, start_time: float, end_time: float) -> "MotorData":
+        mask = (self.timestamps >= start_time) & (self.timestamps <= end_time)
+        return MotorData(
+            timestamps=self.timestamps[mask],
+            measured=self.measured[mask],
+            command=self.command[mask],
+        )
+
+    def __len__(self) -> int:
+        return len(self.timestamps)
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from train_rps_predictor import (
     evaluate, get_model, DREGONRPSDataset, pit_mse_loss, pairwise_mse,
 )
 from data_processing.dregon import (
-    load_dregon_dataset, load_record_from_sample, get_geometry,
+    get_geometry,
     clean_command_spikes,
 )
 
@@ -120,41 +120,40 @@ print(f"Saved sample inferences to {OUT / 'samples'}/")
 # ── Part 3: In-flight recording inference ───────────────────────────────────
 
 # Load speech-high and whitenoise-high recordings
-from data_processing.dregon import load_dregon_dataset
+from data_processing.dregon import load_timeframe, discover_recordings
+from utils.data import TimeFrame
 
-ds_dregon = load_dregon_dataset(
-    'data', splits=['in_flight_source'], download=False
-)
-geometry = get_geometry(Path('data/DREGON'))
+dregon_dir = Path('data/DREGON')
+geometry = get_geometry(dregon_dir)
 
-# Filter for speech-high and whitenoise-high
-target_ids = ['free-flight_speech-high_room1', 'free-flight_whitenoise-high_room1']
+# Discover recordings in the in_flight_source split
+all_samples = discover_recordings(dregon_dir)
+target_ids = {'free-flight_speech-high_room1', 'free-flight_whitenoise-high_room1'}
 
-for sample in ds_dregon['in_flight_source']:
+for sample in all_samples:
     if sample['recording_id'] not in target_ids:
         continue
 
     rid = sample['recording_id']
     print(f"\nProcessing in-flight recording: {rid}")
 
-    record = load_record_from_sample(sample, geometry=geometry)
-    # Resample to 16 kHz
-    if record.sample_rate != 16000:
-        record = record.resample_audio(16000,
-                                       cache_dir=Path('data/DREGON/.cache'))
+    tf = load_timeframe(sample, geometry=geometry, target_sr=16000)
 
-    n_channels = record.audio.shape[1] if record.audio.ndim > 1 else 1
-    total_duration = record.duration
+    audio_us = tf["audio"]
+    # UniformSeries stores (channels, N) — axis 0 = channels
+    n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1
+    total_duration = audio_us.duration
     print(f"  Duration: {total_duration:.1f}s, channels: {n_channels}")
 
-    # Use channel 0 for simplicity (single channel for old models)
+    # Use channel 0 for simplicity
     ch = 0
-    audio_full = record.audio[:, ch] if record.audio.ndim > 1 else record.audio
+    audio_full = audio_us.samples[ch, :] if audio_us.samples.ndim > 1 else audio_us.samples
     audio_full = torch.from_numpy(audio_full.astype(np.float32))
 
     # Extract command RPS (cleaned) for ground truth
-    if record.motors is not None:
-        command = record.motors.command.copy()
+    motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
+    if motor_key in tf:
+        command = tf[motor_key].values.copy()
         command_cleaned = clean_command_spikes(command)
         rps_full = torch.from_numpy(command_cleaned.T.astype(np.float32))  # (4, T_motor)
     else:

@@ -1,12 +1,12 @@
 """
-External Drone Recording Loader
+External Drone Recording Loader — TimeFrame-native.
 
 Loads drone noise recordings with DJI flight-log CSVs (FLY*.csv) and
-multi-channel WAV audio into DREGONRecord objects, making them compatible
-with the existing DREGON data processing pipeline.
+multi-channel WAV audio into `TimeFrame` objects, making them compatible
+with the DREGON data processing pipeline.
 
-Expected directory layout
-─────────────────────────
+Expected directory layout::
+
     data_root/
         recording_1/
             124.wav          # 8-ch, 44100 Hz
@@ -22,22 +22,15 @@ CSV columns used
   - IMU_ATTI(0):accelX / accelY / accelZ
   - IMU_ATTI(0):gyroX  / gyroY  / gyroZ
 """
-
 from __future__ import annotations
 
 import csv
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
-from data_processing.dregon import (
-    DREGONRecord,
-    DREGONSampleDict,
-    IMUData,
-    MotorData,
-)
+from utils.data import EventSeries, TimeFrame, UniformSeries
 
 # Column names in DJI flight-log CSVs
 _TIME_COL = "Clock:offsetTime"
@@ -60,7 +53,6 @@ _GYRO_COLS = [
 
 
 def _find_col_indices(header: list[str], names: list[str]) -> list[int]:
-    """Map column names to indices; raise if any is missing."""
     lookup = {name: i for i, name in enumerate(header)}
     indices = []
     for name in names:
@@ -70,15 +62,10 @@ def _find_col_indices(header: list[str], names: list[str]) -> list[int]:
     return indices
 
 
-def parse_dji_csv(csv_path: str | Path) -> dict[str, np.ndarray]:
-    """
-    Parse a DJI flight-log CSV and return aligned arrays.
+def _parse_dji_csv(csv_path: str | Path) -> dict[str, np.ndarray]:
+    """Parse a DJI flight-log CSV, return aligned arrays.
 
-    Returns dict with keys:
-        time       – (N,) seconds from offsetTime=0
-        motor_rps  – (N, 4) rotor speeds in revolutions per second
-        accel      – (N, 3) acceleration in m/s²  (or None)
-        gyro       – (N, 3) angular velocity in rad/s (or None)
+    Returns dict with keys: ``time``, ``motor_rps``, ``accel``, ``gyro``.
     """
     csv_path = Path(csv_path)
 
@@ -89,7 +76,6 @@ def parse_dji_csv(csv_path: str | Path) -> dict[str, np.ndarray]:
         time_idx = _find_col_indices(header, [_TIME_COL])[0]
         speed_idxs = _find_col_indices(header, _MOTOR_SPEED_COLS)
 
-        # IMU columns are optional (may be absent or empty)
         try:
             accel_idxs = _find_col_indices(header, _ACCEL_COLS)
             gyro_idxs = _find_col_indices(header, _GYRO_COLS)
@@ -124,26 +110,21 @@ def parse_dji_csv(csv_path: str | Path) -> dict[str, np.ndarray]:
     return result
 
 
-def load_external_recording(
+def load_external_timeframe(
     wav_path: str | Path,
     csv_path: str | Path,
     recording_id: str | None = None,
-) -> DREGONRecord:
-    """
-    Load an external drone recording as a DREGONRecord.
+) -> TimeFrame:
+    """Load an external drone recording as a ``TimeFrame``.
 
-    Alignment assumption: ``Clock:offsetTime = 0`` corresponds to audio
-    sample 0.  Negative offset times are before the audio starts.
-
-    Parameters
-    ----------
-    wav_path : path to multi-channel WAV
-    csv_path : path to DJI flight-log CSV
-    recording_id : identifier string (defaults to WAV stem)
+    Alignment assumption: ``Clock:offsetTime = 0`` → audio sample 0.
 
     Returns
     -------
-    DREGONRecord fully compatible with DREGON slicing / resampling API.
+    TimeFrame
+        Tracks: ``"audio"``, ``"motors_measured"``, and optionally
+        ``"imu_accel"``, ``"imu_gyro"``.
+        Tags: ``recording_id``, ``split``, ``flight_type``.
     """
     wav_path = Path(wav_path)
     csv_path = Path(csv_path)
@@ -151,64 +132,54 @@ def load_external_recording(
         recording_id = wav_path.stem
 
     # ── audio ──────────────────────────────────────────────────────────
-    audio, sr = sf.read(str(wav_path))  # (n_samples, n_channels) or (n_samples,)
+    audio, sr = sf.read(str(wav_path))  # (N,) or (N, n_ch)
     if audio.ndim == 1:
-        audio = audio[:, np.newaxis]
-    n_samples = audio.shape[0]
+        audio = audio[np.newaxis, :]  # → (1, N)  (axis -1 = time)
+    else:
+        audio = audio.T  # (n_ch, N)
 
-    # Synthetic timestamps: offsetTime=0 → sample 0
-    audio_timestamps = np.arange(n_samples, dtype=np.float64) / sr
+    t_start = 0.0
+
+    tracks: dict = {
+        "audio": UniformSeries.from_samples(
+            audio.astype(np.float32), sr, t_start=t_start,
+        ),
+    }
 
     # ── CSV telemetry ──────────────────────────────────────────────────
-    csv_data = parse_dji_csv(csv_path)
-    csv_time = csv_data["time"]  # may start negative
-    motor_rps = csv_data["motor_rps"]  # (N, 4) already RPS
+    csv_data = _parse_dji_csv(csv_path)
+    csv_time = csv_data["time"]  # may start negative — EventSeries handles that
+    motor_rps = csv_data["motor_rps"]  # (M, 4)
 
-    # Build MotorData with timestamps relative to audio (== offsetTime)
-    motors = MotorData(
-        timestamps=csv_time,
-        measured=motor_rps,
-        command=motor_rps,  # no separate command channel in DJI logs
+    # EventSeries values are time-last (..., M).
+    tracks["motors_measured"] = EventSeries.from_events(
+        csv_time, values=motor_rps.T, t_start=t_start,  # (4, M)
     )
 
     # ── IMU (optional) ─────────────────────────────────────────────────
-    imu = None
     if "accel" in csv_data:
-        imu = IMUData(
-            timestamps=csv_time,
-            angular_velocity=csv_data["gyro"],
-            acceleration=csv_data["accel"],
+        tracks["imu_accel"] = EventSeries.from_events(
+            csv_time, values=csv_data["accel"].T, t_start=t_start,
+        )
+        tracks["imu_gyro"] = EventSeries.from_events(
+            csv_time, values=csv_data["gyro"].T, t_start=t_start,
         )
 
-    # ── geometry (placeholder – no mic/rotor position data available) ──
-    mic_positions = np.zeros((8, 3), dtype=np.float64)
-    rotor_positions = np.zeros((4, 3), dtype=np.float64)
+    # ── tags ───────────────────────────────────────────────────────────
+    tags = {
+        "recording_id": recording_id,
+        "split": "in_flight_noise",
+        "flight_type": "free-flight",
+        "sample_rate": int(sr),
+    }
 
-    return DREGONRecord(
-        recording_id=recording_id,
-        split="in_flight_noise",
-        mic_positions=mic_positions,
-        rotor_positions=rotor_positions,
-        audio=audio,
-        audio_timestamps=audio_timestamps,
-        flight_type="free-flight",
-        source_type=None,
-        source_level=None,
-        room=None,
-        motor_id=None,
-        motor_speed=None,
-        sample_rate=sr,
-        imu=imu,
-        motors=motors,
-        source_position=None,
-    )
+    return TimeFrame.from_tracks(tracks, t_start=t_start, tags=tags)
 
 
 def discover_external_recordings(
     data_root: str | Path,
 ) -> list[tuple[Path, Path, str]]:
-    """
-    Discover (wav_path, csv_path, recording_id) triples under *data_root*.
+    """Discover (wav_path, csv_path, recording_id) triples under *data_root*.
 
     Searches for directories containing exactly one .wav and one FLY*.csv.
     """
@@ -225,17 +196,21 @@ def discover_external_recordings(
     return results
 
 
-def load_all_external_recordings(
+def load_all_external_timeframes(
     data_root: str | Path,
-) -> list[DREGONRecord]:
-    """Load every external recording found under *data_root*."""
+) -> list[TimeFrame]:
+    """Load every external recording found under *data_root* as TimeFrame."""
     triples = discover_external_recordings(data_root)
-    records = []
+    frames = []
     for wav_path, csv_path, rec_id in triples:
-        rec = load_external_recording(wav_path, csv_path, recording_id=rec_id)
-        records.append(rec)
+        tf = load_external_timeframe(wav_path, csv_path, recording_id=rec_id)
+        frames.append(tf)
+        audio_dur = tf["audio"].duration
+        n_motor = len(tf["motors_measured"]) if "motors_measured" in tf else 0
+        n_ch = tf['audio'].samples.shape[0] if tf['audio'].samples.ndim > 1 else 1
         print(
-            f"  Loaded {rec_id}: {rec.duration:.1f}s, {rec.n_channels}ch, "
-            f"{len(rec.motors)} motor samples"
+            f"  Loaded {rec_id}: {audio_dur:.1f}s, "
+            f"{n_ch}ch, "
+            f"{n_motor} motor samples"
         )
-    return records
+    return frames
