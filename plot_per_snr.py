@@ -8,10 +8,12 @@ import re
 from collections import defaultdict
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from utils.paths import get_datasets_path, get_results_path
 
 SNR_LEVELS = [-30, -25, -20, -15, -10, -5, 0]
 METRICS = ["si_sdr", "estoi", "pesq"]
@@ -22,7 +24,9 @@ def nearest_snr_level(snr):
     return min(SNR_LEVELS, key=lambda l: abs(snr - l))
 
 
-def load_metadata(dataset_path="datasets/DREGON-LM"):
+def load_metadata(dataset_path=None):
+    if dataset_path is None:
+        dataset_path = str(get_datasets_path("DREGON-LM"))
     meta_path = os.path.join(dataset_path, "metadata.json")
     with open(meta_path) as f:
         meta = json.load(f)
@@ -90,6 +94,7 @@ def compute_per_snr(results, metadata):
 def find_eval_excel(eval_dir):
     """Find the per-sample Excel file in a job results directory."""
     import glob
+
     patterns = [
         os.path.join(eval_dir, "eval", "samples", "*_validation.xlsx"),
         os.path.join(eval_dir, "eval", "*_validation.xlsx"),
@@ -105,6 +110,7 @@ def find_eval_excel(eval_dir):
 def compute_per_snr_from_excel(excel_path):
     """Compute per-SNR stats directly from the per-sample Excel file."""
     import pandas as pd
+
     df = pd.read_excel(excel_path)
     df["snr_level"] = df["Input_SNR"].apply(nearest_snr_level)
 
@@ -149,9 +155,17 @@ def plot_comparison(model_data, output_path):
             color = colors[model_idx % len(colors)]
             marker = markers[model_idx % len(markers)]
 
-            ax.errorbar(x, y, yerr=yerr, label=model_name,
-                       marker=marker, color=color, capsize=3,
-                       linewidth=1.5, markersize=6)
+            ax.errorbar(
+                x,
+                y,
+                yerr=yerr,
+                label=model_name,
+                marker=marker,
+                color=color,
+                capsize=3,
+                linewidth=1.5,
+                markersize=6,
+            )
 
         ax.set_xlabel("Mixture SNR (dB)")
         ax.set_ylabel(METRIC_LABELS[metric])
@@ -169,14 +183,21 @@ def plot_comparison(model_data, output_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Plot per-SNR metric comparison")
-    parser.add_argument("--models", nargs="+", required=True,
-                       help="Model display names")
-    parser.add_argument("--eval-dirs", nargs="+", required=True,
-                       help="Evaluation result directories (same order as --models)")
-    parser.add_argument("--dataset", default="datasets/DREGON-LM",
-                       help="Dataset path for metadata")
-    parser.add_argument("--output", default="results/evaluation/per_snr_comparison.png",
-                       help="Output plot path")
+    parser.add_argument("--models", nargs="+", required=True, help="Model display names")
+    parser.add_argument(
+        "--eval-dirs",
+        nargs="+",
+        required=True,
+        help="Evaluation result directories (same order as --models)",
+    )
+    parser.add_argument(
+        "--dataset", default=str(get_datasets_path("DREGON-LM")), help="Dataset path for metadata"
+    )
+    parser.add_argument(
+        "--output",
+        default=str(get_results_path("evaluation/per_snr_comparison.png")),
+        help="Output plot path",
+    )
     args = parser.parse_args()
 
     if len(args.models) != len(args.eval_dirs):

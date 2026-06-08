@@ -31,6 +31,7 @@ from data_processing.dregon import (
     load_dregon_timeframes,
 )
 from utils.data import TimeFrame, UniformSeries
+from utils.paths import get_data_path, get_datasets_path
 
 # =============================================================================
 # Constants
@@ -1171,19 +1172,19 @@ def main():
     parser.add_argument(
         "--speech_dir",
         type=Path,
-        default=Path("data/librispeech/LibriSpeech/train-clean-100"),
+        default=get_data_path("librispeech/LibriSpeech/train-clean-100"),
         help="Path to LibriSpeech directory",
     )
     parser.add_argument(
         "--dregon_dir",
         type=Path,
-        default=Path("data/DREGON"),
+        default=get_data_path("DREGON"),
         help="Path to DREGON dataset directory",
     )
     parser.add_argument(
         "--output_dir",
         type=Path,
-        default=Path("datasets/DREGON-LM"),
+        default=get_datasets_path("DREGON-LM"),
         help="Output directory for the dataset",
     )
     parser.add_argument(

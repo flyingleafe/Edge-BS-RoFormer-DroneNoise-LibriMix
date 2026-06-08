@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """Generate 3-panel plot using V3 checkpoints on the SAME sample as the V1/V2 plot."""
 
-import glob
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-import matplotlib.pyplot as plt
 
 from models.rps_predictor import SimpleConv, SimpleConvBiGRUV2
+from utils.paths import get_datasets_path, get_results_path
 
 # ─── Config ─────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_FFT = 2048
 HOP_LENGTH = 512
 NUM_ROTORS = 4
-DATA_DIR = "datasets/DREGON-LM/valid"
-SIMPLECONV_CKPT = "results/rps_predictor_v3/simple_conv/best_simple_conv.pt"
-BIGRU_V2_CKPT = "results/rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt"
+DATA_DIR = str(get_datasets_path("DREGON-LM/valid"))
+SIMPLECONV_CKPT = str(get_results_path("rps_predictor_v3/simple_conv/best_simple_conv.pt"))
+BIGRU_V2_CKPT = str(
+    get_results_path("rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt")
+)
 OUT_PATH = "slides/2026-06-02-rps-progress/assets/sample_comparison_v3.png"
 SAMPLE_NAME = "sample_00114"  # same sample as V1/V2 plot
 
@@ -67,7 +69,9 @@ time = np.arange(n_frames) * HOP_LENGTH / sr
 
 # -- Panel 1: Spectrogram --
 window = torch.hann_window(N_FFT)
-X = torch.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH, window=window, return_complex=True, normalized=True)
+X = torch.stft(
+    audio, n_fft=N_FFT, hop_length=HOP_LENGTH, window=window, return_complex=True, normalized=True
+)
 Sxx = torch.abs(X).numpy()
 
 ax1 = axes[0]
@@ -86,8 +90,21 @@ ax1.set_ylim(0, 4000)
 ax2 = axes[1]
 colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
 for r in range(NUM_ROTORS):
-    ax2.plot(time, rps_gt[r].numpy(), color=colors[r], linestyle="--", alpha=0.7, label=f"GT R{r+1}" if r == 0 else "")
-    ax2.plot(time, predictions["SimpleConv"][r], color=colors[r], linestyle="-", label=f"Pred R{r+1}" if r == 0 else "")
+    ax2.plot(
+        time,
+        rps_gt[r].numpy(),
+        color=colors[r],
+        linestyle="--",
+        alpha=0.7,
+        label=f"GT R{r + 1}" if r == 0 else "",
+    )
+    ax2.plot(
+        time,
+        predictions["SimpleConv"][r],
+        color=colors[r],
+        linestyle="-",
+        label=f"Pred R{r + 1}" if r == 0 else "",
+    )
 ax2.set_ylabel("RPS (Hz)")
 ax2.set_title("V3 SimpleConv Predictions vs Ground Truth")
 ax2.legend(loc="upper right", ncol=2, fontsize=8)

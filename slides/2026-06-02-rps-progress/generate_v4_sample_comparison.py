@@ -3,12 +3,13 @@
 
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torchaudio
-import matplotlib.pyplot as plt
 
 from models.rps_predictor import SimpleConv, SimpleConvBiGRUV2
+from utils.paths import get_results_path
 
 # ─── Config ─────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -18,9 +19,11 @@ NUM_ROTORS = 4
 SR = 16000
 
 # Same sample as slide 8
-SAMPLE_DIR = "results/rps_cross_eval/samples/v2_sample_00558"
-SIMPLECONV_CKPT = "results/rps_predictor_v4_2.5pct/simple_conv/best_simple_conv.pt"
-BIGRU_V2_CKPT = "results/rps_predictor_v4_2.5pct/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt"
+SAMPLE_DIR = str(get_results_path("rps_cross_eval/samples/v2_sample_00558"))
+SIMPLECONV_CKPT = str(get_results_path("rps_predictor_v4_2.5pct/simple_conv/best_simple_conv.pt"))
+BIGRU_V2_CKPT = str(
+    get_results_path("rps_predictor_v4_2.5pct/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt")
+)
 OUT_PATH = "slides/2026-06-02-rps-progress/assets/sample_comparison_v4.png"
 
 # ─── Load audio & ground-truth RPS ─────────────────────────────────────────
@@ -60,14 +63,17 @@ fig.patch.set_facecolor("white")
 
 # Panel 1: Spectrogram
 window = torch.hann_window(N_FFT)
-X = torch.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH, window=window,
-               return_complex=True, normalized=True)
+X = torch.stft(
+    audio, n_fft=N_FFT, hop_length=HOP_LENGTH, window=window, return_complex=True, normalized=True
+)
 Sxx = torch.abs(X).numpy()
 
 ax1 = axes[0]
 ax1.imshow(
     20 * np.log10(Sxx + 1e-10),
-    aspect="auto", origin="lower", cmap="magma",
+    aspect="auto",
+    origin="lower",
+    cmap="magma",
     extent=[time[0], time[-1], 0, SR // 2],
 )
 ax1.set_ylabel("Frequency (Hz)")
@@ -78,10 +84,21 @@ ax1.set_ylim(0, 4000)
 ax2 = axes[1]
 colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
 for r in range(NUM_ROTORS):
-    ax2.plot(time, rps_gt[r].numpy(), color=colors[r], linestyle="--", alpha=0.7,
-             label=f"GT R{r+1}" if r == 0 else "")
-    ax2.plot(time, predictions["SimpleConv"][r], color=colors[r], linestyle="-",
-             label=f"Pred R{r+1}" if r == 0 else "")
+    ax2.plot(
+        time,
+        rps_gt[r].numpy(),
+        color=colors[r],
+        linestyle="--",
+        alpha=0.7,
+        label=f"GT R{r + 1}" if r == 0 else "",
+    )
+    ax2.plot(
+        time,
+        predictions["SimpleConv"][r],
+        color=colors[r],
+        linestyle="-",
+        label=f"Pred R{r + 1}" if r == 0 else "",
+    )
 ax2.set_ylabel("RPS (Hz)")
 ax2.set_title("V4 (2.5% synth) SimpleConv Predictions vs Ground Truth")
 ax2.legend(loc="upper right", ncol=2, fontsize=8)

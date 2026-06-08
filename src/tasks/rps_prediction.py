@@ -28,6 +28,7 @@ from utils.data import (
     TimeFrame,
     UniformSeries,
 )
+from utils.paths import get_results_path
 
 # ── Constants ─────────────────────────────────────────────────────────────
 
@@ -205,7 +206,7 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
     if not meta_path.is_file():
         meta_path = root / "metadata.json"
     if not meta_path.is_file():
-        meta_path = Path("results/rps_predictor_comparison/dregon_lm_metadata.json")
+        meta_path = get_results_path("rps_predictor_comparison/dregon_lm_metadata.json")
     if meta_path.is_file():
         with open(meta_path) as f:
             raw_meta = json.load(f)

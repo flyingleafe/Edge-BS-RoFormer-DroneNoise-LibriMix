@@ -30,9 +30,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
-from torch.utils.data import DataLoader, Dataset
-
 import wandb
+from torch.utils.data import DataLoader, Dataset
 
 # Import new model variants
 from models.rps_predictor import (
@@ -47,6 +46,7 @@ from models.rps_predictor import (
     SimpleConvV2,
     SimpleConvWide,
 )
+from utils.paths import get_datasets_path, get_results_path
 
 # Alias for utils.py compatibility
 RPSPredictor = SimpleConv
@@ -725,8 +725,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--grad_clip", type=float, default=5.0)
-    parser.add_argument("--data_root", default="datasets/DREGON-LM-V2")
-    parser.add_argument("--save_path", default="results/rps_predictor_comparison")
+    parser.add_argument("--data_root", default=str(get_datasets_path("DREGON-LM-V2")))
+    parser.add_argument("--save_path", default=str(get_results_path("rps_predictor_comparison")))
     parser.add_argument(
         "--pit_loss",
         action="store_true",

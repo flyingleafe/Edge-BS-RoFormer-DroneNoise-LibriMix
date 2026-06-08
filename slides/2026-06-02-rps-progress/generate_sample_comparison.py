@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Generate 3-panel plot: spectrogram + SimpleConv RPS + BiGRU-v2 RPS for one DREGON-LM valid sample."""
 
-import sys
 import glob
 import os
 import random
+import sys
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-import matplotlib.pyplot as plt
-from pathlib import Path
+
+from utils.paths import get_datasets_path, get_results_path
 
 PROJECT_ROOT = Path.cwd().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -23,21 +25,21 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_FFT = 2048
 HOP_LENGTH = 512
 NUM_ROTORS = 4
-DATA_DIR = PROJECT_ROOT / "datasets/DREGON-LM/valid"
-SIMPLECONV_CKPT = PROJECT_ROOT / "results/rps_exp_simple_conv/best_simple_conv.pt"
-BIGRU_V2_CKPT = PROJECT_ROOT / "results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt"
+DATA_DIR = get_datasets_path("DREGON-LM/valid")
+SIMPLECONV_CKPT = get_results_path("rps_exp_simple_conv/best_simple_conv.pt")
+BIGRU_V2_CKPT = get_results_path("rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt")
 OUT_PATH = PROJECT_ROOT / "slides/2026-06-02-rps-progress/assets/sample_comparison_tmp.png"
 SEED = 42
 
 # ─── Pick a random valid sample ─────────────────────────────────────────────
 random.seed(SEED)
 samples = sorted(
-    d for d in glob.glob(os.path.join(DATA_DIR, "sample_*"))
-    if os.path.isfile(os.path.join(d, "mixture.wav"))
-    and os.path.isfile(os.path.join(d, "rps.npy"))
+    d
+    for d in glob.glob(os.path.join(DATA_DIR, "sample_*"))
+    if os.path.isfile(os.path.join(d, "mixture.wav")) and os.path.isfile(os.path.join(d, "rps.npy"))
 )
 # sample_dir = random.choice(samples)
-sample_dir = DATA_DIR / 'sample_00004'
+sample_dir = DATA_DIR / "sample_00004"
 print(f"Using sample: {sample_dir}")
 
 # ─── Load audio & ground-truth RPS ──────────────────────────────────────────
@@ -83,7 +85,9 @@ time = np.arange(n_frames) * HOP_LENGTH / sr  # seconds
 
 # -- Panel 1: Spectrogram --
 window = torch.hann_window(N_FFT)
-X = torch.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH, window=window, return_complex=True, normalized=True)
+X = torch.stft(
+    audio, n_fft=N_FFT, hop_length=HOP_LENGTH, window=window, return_complex=True, normalized=True
+)
 Sxx = torch.abs(X).numpy()
 
 ax1 = axes[0]
@@ -102,8 +106,21 @@ ax1.set_ylim(0, 4000)
 ax2 = axes[1]
 colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3"]
 for r in range(NUM_ROTORS):
-    ax2.plot(time, rps_gt[r].numpy(), color=colors[r], linestyle="--", alpha=0.7, label=f"GT R{r+1}" if r == 0 else "")
-    ax2.plot(time, predictions["SimpleConv"][r], color=colors[r], linestyle="-", label=f"Pred R{r+1}" if r == 0 else "")
+    ax2.plot(
+        time,
+        rps_gt[r].numpy(),
+        color=colors[r],
+        linestyle="--",
+        alpha=0.7,
+        label=f"GT R{r + 1}" if r == 0 else "",
+    )
+    ax2.plot(
+        time,
+        predictions["SimpleConv"][r],
+        color=colors[r],
+        linestyle="-",
+        label=f"Pred R{r + 1}" if r == 0 else "",
+    )
 ax2.set_ylabel("RPS (Hz)")
 ax2.set_title("SimpleConv Predictions vs Ground Truth")
 ax2.legend(loc="upper right", ncol=2, fontsize=8)

@@ -10,7 +10,6 @@ import itertools
 import json
 
 # Ensure src/ is on the path (pytest 9.x isolated-import behaviour).
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -22,14 +21,14 @@ from tasks.rps_prediction import (
     load_input_set,
     load_predictor,
 )
+from utils.paths import get_datasets_path, get_results_path
 
-# ── Paths (relative to repo root) ────────────────────────────────────────
+# ── Paths (relative to DATA_ROOT) ─────────────────────────────────────────
 
-_REPO = Path(__file__).resolve().parents[2]
-_GOLDEN_DIR = _REPO / "results/rps_predictor_comparison"
+_GOLDEN_DIR = get_results_path("rps_predictor_comparison")
 _GOLDEN_PER_SAMPLE = _GOLDEN_DIR / "val_inference/per_sample_metrics_10.json"
-_GOLDEN_SIMPLE_CONV_CKPT = _REPO / "results/rps_exp_simple_conv/best_simple_conv.pt"
-_DREGON_VALID = _REPO / "datasets/DREGON-LM/valid"
+_GOLDEN_SIMPLE_CONV_CKPT = get_results_path("rps_exp_simple_conv/best_simple_conv.pt")
+_DREGON_VALID = get_datasets_path("DREGON-LM/valid")
 
 # ── Test-sized subset ────────────────────────────────────────────────────
 

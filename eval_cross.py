@@ -5,7 +5,6 @@ plus sample-level inference and in-flight recording inference."""
 import json
 import os
 import random
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -22,26 +21,35 @@ from train_rps_predictor import (
     pairwise_mse,
     pit_mse_loss,
 )
+from utils.paths import get_data_path, get_datasets_path, get_results_path
 
 device = "cuda:0"
-OUT = Path("results/rps_cross_eval")
+OUT = get_results_path("rps_cross_eval")
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "samples").mkdir(exist_ok=True)
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
 MODELS = [
-    ("old_simple_conv", "simple_conv", "results/rps_exp_simple_conv/best_simple_conv.pt"),
+    (
+        "old_simple_conv",
+        "simple_conv",
+        str(get_results_path("rps_exp_simple_conv/best_simple_conv.pt")),
+    ),
     (
         "old_bigru_v2",
         "simple_conv_bigru_v2",
-        "results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt",
+        str(get_results_path("rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt")),
     ),
-    ("v3_simple_conv", "simple_conv", "results/rps_predictor_v3/simple_conv/best_simple_conv.pt"),
+    (
+        "v3_simple_conv",
+        "simple_conv",
+        str(get_results_path("rps_predictor_v3/simple_conv/best_simple_conv.pt")),
+    ),
     (
         "v3_bigru_v2",
         "simple_conv_bigru_v2",
-        "results/rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt",
+        str(get_results_path("rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt")),
     ),
 ]
 
@@ -56,8 +64,8 @@ for name, mtype, ckpt in MODELS:
 
 # ── Part 1: Full validation set metrics ─────────────────────────────────────
 
-old_ds = DREGONRPSDataset("datasets/DREGON-LM/valid")
-new_ds = DREGONRPSDataset("datasets/DREGON-LM-V2/valid")
+old_ds = DREGONRPSDataset(str(get_datasets_path("DREGON-LM/valid")))
+new_ds = DREGONRPSDataset(str(get_datasets_path("DREGON-LM-V2/valid")))
 
 all_metrics = {}
 for ds_name, ds in [("OLD_valid", old_ds), ("V2_valid", new_ds)]:
@@ -136,7 +144,7 @@ print(f"Saved sample inferences to {OUT / 'samples'}/")
 # Load speech-high and whitenoise-high recordings
 from data_processing.dregon import discover_recordings, load_timeframe
 
-dregon_dir = Path("data/DREGON")
+dregon_dir = get_data_path("DREGON")
 geometry = get_geometry(dregon_dir)
 
 # Discover recordings in the in_flight_source split
