@@ -512,12 +512,27 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
     # Divide by actual number of processed items (B*C), not dataset_len (B).
     pit_mse_val = total_pit_loss / total_items
     std_mse_val = total_std_loss / total_items
-    mae_frame = (all_preds - all_targets).abs().mean().item()
-    mae_per_rotor = (all_preds - all_targets).abs().mean(dim=(0, 2))
+
+    # ---- Reorder targets to PIT-optimal rotor matching for fixed-order metrics ----
+    # R², MAE, and per-clip MAE compare rotors in order; with PIT loss the model
+    # may learn any permutation.  We find the best 1-to-1 matching and reorder
+    # targets so every fixed-order metric uses the PIT-optimal pairing.
+    if pit_eval:
+        _, best_idx = pit_mse_loss(all_preds, all_targets, return_indices=True)
+        best_perms = _ROTOR_PERMS.to(all_preds.device)[best_idx]  # (B, 4)
+        # best_perms[b, i] = which target rotor matches predicted rotor i
+        all_targets_matched = torch.gather(
+            all_targets, 1, best_perms.unsqueeze(-1).expand(-1, -1, all_targets.shape[-1])
+        )
+    else:
+        all_targets_matched = all_targets
+
+    mae_frame = (all_preds - all_targets_matched).abs().mean().item()
+    mae_per_rotor = (all_preds - all_targets_matched).abs().mean(dim=(0, 2))
 
     # Per-clip (time-averaged)
     cp = all_preds.mean(dim=2)
-    ct = all_targets.mean(dim=2)
+    ct = all_targets_matched.mean(dim=2)
     mae_clip = (cp - ct).abs().mean().item()
 
     # Macro-averaged per-sample R²: compute R² per sample using each
@@ -525,7 +540,7 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
     # within-sample temporal tracking quality without inflating the
     # metric with between-sample RPS variance.
     r2_per_sample = []
-    for pred_i, tgt_i in zip(all_preds, all_targets):
+    for pred_i, tgt_i in zip(all_preds, all_targets_matched):
         ss_res_i = ((pred_i - tgt_i) ** 2).sum()
         ss_tot_i = ((tgt_i - tgt_i.mean()) ** 2).sum()
         if ss_tot_i > 1e-6:
