@@ -370,7 +370,8 @@ def pit_mse_loss(
     est: torch.Tensor,
     target: torch.Tensor,
     perms: torch.Tensor | None = None,
-) -> torch.Tensor:
+    return_indices: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Permutation-invariant MSE loss for RPS prediction.
 
@@ -380,10 +381,13 @@ def pit_mse_loss(
     Args:
         est: (B, 4, T) predicted RPS
         target: (B, 4, T) ground-truth RPS
-        perms: Pre-computed permutation tensor (24, 4). If None, computes on-the-fly.
+        perms: Pre-computed permutation tensor (P, 4). If None, uses _ROTOR_PERMS.
+        return_indices: If True, also return the best permutation index per
+            batch element (so callers can recover the full permutation for
+            other metrics like MAE / R²).
 
     Returns:
-        Scalar loss (mean over batch of best-permutation MSE).
+        Scalar loss, or (loss, best_perm_idx) with shape (B,) if return_indices.
     """
     if perms is None:
         perms = _ROTOR_PERMS.to(est.device)
@@ -395,25 +399,21 @@ def pit_mse_loss(
 
     # For each permutation, sum the pairwise losses along the matched pairs
     # pw: (B, 4, 4), perms: (P, 4) -> gather: (B, P, 4)
-    # For perm p = [j0, j1, j2, j3], loss = pw[b, 0, j0] + pw[b, 1, j1] + ...
-    # More efficient: index with perms
     B = pw.size(0)
     P = perms.size(0)
 
-    # Gather: for each batch and permutation, collect pw[b, src_idx, tgt_idx]
     src_idx = torch.arange(4, device=pw.device).view(1, 1, 4)  # (1, 1, 4)
     tgt_idx = perms.view(1, P, 4)  # (1, P, 4)
-
-    # Advanced indexing: pw[b, src_idx, tgt_idx]
-    # pw: (B, 4, 4), want (B, P, 4)
     b_idx = torch.arange(B, device=pw.device).view(B, 1, 1)  # (B, 1, 1)
     perm_losses = pw[b_idx, src_idx, tgt_idx]  # (B, P, 4)
     perm_losses = perm_losses.sum(dim=-1)  # (B, P)
 
     # Best permutation per batch element
-    best_loss, _ = perm_losses.min(dim=1)  # (B,) — sum of 4 pairwise MSEs
-    # Normalize by n_rotors so PIT loss is comparable to standard per-element MSE
-    return best_loss.mean() / 4.0
+    best_loss, best_idx = perm_losses.min(dim=1)  # (B,)
+    loss = best_loss.mean() / 4.0
+    if return_indices:
+        return loss, best_idx  # best_idx indexes into perms
+    return loss
 
 
 # ─── WandB Initialization ────────────────────────────────────────────────────

@@ -1,0 +1,300 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{geometry}
+\geometry{a4paper, left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{siunitx}
+
+\graphicspath{{figures/}}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+\sisetup{detect-all}
+
+\newcommand{\rps}{\ensuremath{\mathrm{RPS}}}
+\newcommand{\revps}{\ensuremath{\mathrm{rev}/\mathrm{s}}}
+\newcommand{\rsq}{\ensuremath{R^{2}}}
+
+\title{\textbf{Channel-Generalization Failure in Learned \rps{} Prediction}\\
+  \large RPS predictors trained on DREGON-LM do not generalise across microphone positions}
+\author{Dmitrii Mukhutdinov}
+\date{2026-06-08}
+
+\begin{document}
+\maketitle
+
+% ============================================================================
+\section*{Abstract}
+% ============================================================================
+
+We evaluate two \rps{}-prediction models (SimpleConv, SimpleConvV2) trained on DREGON-LM
+on a new multichannel validation set spanning three free-flight recordings and all
+8 microphone channels. Both models exhibit severe channel-dependent performance
+degradation: edge-microphone MSE is 3--10$\times$ higher than the reference microphone,
+and overall \rsq{} is near zero (SimpleConv barely beats the mean baseline, V2 is
+slightly worse). Permutation-invariant evaluation (allowing the model to swap motor
+assignments) recovers only 0.5--2.0\% of the error, confirming that the failure is
+genuine misprediction, not motor confusion.
+
+% ============================================================================
+\section{Motivation}
+% ============================================================================
+
+\rps{} (rotations per second) prediction from drone audio is a core building block
+for telemetry-free speech enhancement under harmonic noise. Previous work
+(SimpleConv, SimpleConvV2) trained and evaluated on DREGON-LM with the implicit
+assumption that microphone position does not matter --- any channel should yield
+similar \rps{} estimates.
+
+We test this assumption directly: take trained models, evaluate them on the
+\emph{same flight recording} but through \emph{different microphones}, and measure
+the variance.
+
+% ============================================================================
+\section{Dataset: DREGON-LM-V4/valid}
+% ============================================================================
+
+A 19-sample, 8-channel, 8-second validation set extracted from the DREGON
+corpus. \textbf{No synthetic mixing} --- each sample is a raw 8-channel recording clip
+(mixture = drone noise + optionally co-recorded speech or whitenoise).
+
+\begin{table}[ht]
+  \centering
+  \caption{Recordings in the validation set.}
+  \label{tab:dataset}
+  \small
+  \begin{tabular}{lccp{4.5cm}}
+    \toprule
+    Recording & Duration (in-flight) & Clips & Source type \\
+    \midrule
+    \texttt{free-flight\_nosource\_room1} & 59.8~s & 7 & Pure drone noise \\
+    \texttt{free-flight\_speech-low\_room1} & 50.7~s & 6 & Drone + co-recorded speech \\
+    \texttt{free-flight\_whitenoise-low\_room1} & 49.9~s & 6 & Drone + co-recorded whitenoise \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Takeoff and landing are excluded via a \texttt{min\_motor\_rps=30.0} threshold.
+All 8 microphones are preserved (each sample is $(128000, 8)$ at 16~kHz).
+Samples are strictly non-overlapping within each recording.
+Ground-truth \rps{} from \texttt{motors\_command} (cleaned) is shared across channels.
+
+The dataset was created with \texttt{create\_dregon\_librimix.py} (new \texttt{--max\_non\_overlapping} flag).
+
+% ============================================================================
+\section{Models}
+% ============================================================================
+
+\begin{table}[ht]
+  \centering
+  \caption{Models evaluated.}
+  \label{tab:models}
+  \small
+  \begin{tabular}{llp{7cm}}
+    \toprule
+    Model & Checkpoint & Architecture \\
+    \midrule
+    SimpleConv & \texttt{results/rps\_exp\_simple\_conv/} & 4 conv blocks (64$\to$128), global avg pool + 2-layer 1-D conv head \\
+    SimpleConvV2 & \texttt{results/rps\_exp\_v2/} & 6 conv blocks (128), BiGRU temporal head, SE blocks \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Both trained on synthesised DREGON-LM (6000 train, 1~s clips, $-30$ to $0$~dB SNR,
+multichannel with independent speech per channel). Training uses regular MSE
+loss (no PIT).
+
+% ============================================================================
+\section{Results}
+% ============================================================================
+
+\subsection{Per-recording, per-channel MSE}
+
+\begin{table}[ht]
+  \centering
+  \caption{SimpleConv per-channel MSE (overall MSE=35.49, MAE=2.89, \rsq=$0.07$).}
+  \label{tab:simpleconv}
+  \small
+  \begin{tabular}{lcccccccc}
+    \toprule
+    Recording & ch~0 & ch~1 & ch~2 & ch~3 & ch~4 & ch~5 & ch~6 & ch~7 \\
+    \midrule
+    nosource & 3.7 & 101.3 & 28.8 & 13.1 & 10.9 & 51.8 & 39.1 & 65.8 \\
+    speech-low & 10.7 & 77.1 & 26.0 & 10.4 & 11.8 & 43.7 & 37.8 & 37.7 \\
+    whitenoise-low & 16.5 & 78.2 & 32.1 & 12.8 & 16.2 & 47.0 & 37.9 & 36.3 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[ht]
+  \centering
+  \caption{SimpleConvV2 per-channel MSE (overall MSE=40.28, MAE=1.76, \rsq=$-0.10$).}
+  \label{tab:simpleconvv2}
+  \small
+  \begin{tabular}{lcccccccc}
+    \toprule
+    Recording & ch~0 & ch~1 & ch~2 & ch~3 & ch~4 & ch~5 & ch~6 & ch~7 \\
+    \midrule
+    nosource & 0.4 & 3.2 & 3.5 & 87.3 & 3.5 & 2.2 & 25.7 & 44.8 \\
+    speech-low & 9.7 & 11.1 & 12.4 & 176.3 & 14.8 & 11.4 & 11.4 & 137.6 \\
+    whitenoise-low & 3.1 & 9.3 & 4.8 & 398.3 & 4.7 & 2.9 & 4.2 & 9.6 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.55\textwidth]{mic_array}
+  \caption{DREGON microphone array geometry. Mic~0 (orange dot, near centre) and
+    mic~4 (green dot, bottom) share the same $Z$ coordinate (both at $-0.041$~m),
+    placing them on the same face of the array. The large numbers 1--4 at the top
+    mark the rotor positions (red wireframe), not microphones. The models were
+    trained exclusively on channel~0.}
+  \label{fig:mic-array}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{mse_bars}
+  \caption{Per-channel MSE averaged over all non-overlapping 8~s clips per recording
+    and channel. Green bar: channel~0 (the training microphone); red bars: all others.
+    Top row: SimpleConv; bottom row: SimpleConvV2.}
+  \label{fig:mse-bars}
+\end{figure}
+
+Key observations:
+\begin{itemize}
+  \item \textbf{Channel asymmetry is massive.} Channel~0 (the training mic) consistently
+    outperforms edge channels (1, 7) by 3--10$\times$ in MSE.
+  \item \textbf{Channel~4 is good because it shares the same $Z$ coordinate as channel~0.}
+    Both mic~0 and mic~4 are at $Z = -0.041$~m (the lower face of the array), while
+    mics~1, 3, 5, 7 are at $Z = +0.041$~m (the upper face). Being on the same face
+    means mic~4 observes the drone from the same vertical distance as the training
+    mic, giving very similar signal statistics. The models have not seen channel~4
+    during training either.
+  \item \textbf{SimpleConvV2 is worse overall} despite being a more sophisticated
+    architecture --- it overfits training mic positions more aggressively.
+  \item \textbf{V2 has catastrophic outliers} (ch~3 on \texttt{whitenoise-low}: MSE=398.3;
+    ch~3 on \texttt{speech-low}: MSE=176.3), suggesting unstable predictions on
+    certain channel$\times$recording combinations.
+  \item \textbf{Source type matters.} \texttt{nosource} (pure drone) is easier than
+    \texttt{speech-low} (drone + co-recorded speech) --- the speech source acts as
+    interference for \rps{} estimation.
+\end{itemize}
+
+\subsection{Permutation-invariant evaluation (PIT)}
+
+To check whether the error is due to \textbf{motor swapping} (predicting correct
+\rps{} values but assigned to wrong rotor indices), we re-evaluate with PIT:
+for each channel, try all $4! = 24$ rotor permutations and pick the one that
+minimises MSE, using the project's canonical \texttt{pit\_mse\_loss} implementation.
+
+\begin{table}[ht]
+  \centering
+  \caption{PIT evaluation summary.}
+  \label{tab:pit}
+  \small
+  \begin{tabular}{lcccp{3.5cm}}
+    \toprule
+    Model & MSE (no PIT) & MSE (PIT) & $\Delta$ & Interpretation \\
+    \midrule
+    SimpleConv & 35.49 & 34.77 & $-2.0$\% & Negligible benefit \\
+    SimpleConvV2 & 40.28 & 40.07 & $-0.5$\% & Negligible benefit \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{mse_bars_pit}
+  \caption{Same as Figure~\ref{fig:mse-bars} but with PIT (permutation-invariant) MSE.
+    The bars are visually unchanged --- PIT recovers only 0.5--2.0\% of the error,
+    confirming that motor swapping is not the primary failure mode.}
+  \label{fig:mse-bars-pit}
+\end{figure}
+
+PIT recovers almost nothing --- \textbf{motor swapping is not the primary failure
+mode.} The models genuinely mispredict \rps{} values on unseen channels.
+A few individual channels benefit more (SimpleConv \texttt{nosource} ch~0:
+$-16.8$\%, ch~4: $-9.0$\%; \texttt{speech-low} ch~0: $-10.1$\%, ch~4: $-10.3$\%),
+suggesting slight motor confusion on cleaner signals, but the overall effect is minor.
+
+\subsection{Per-channel prediction traces}
+
+To show the failure visually, we select two clips where both models perform
+well on channel~0 and plot the full 8-channel prediction traces. Predictions
+are PIT-permuted per channel so the plotted lines align with the ground-truth
+rotor indices.
+
+\paragraph{Nosource sample} (\texttt{sample\_00014}, 25.37~s into \texttt{free-flight\_nosource\_room1}):
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=0.95\textwidth,height=0.88\textheight,keepaspectratio]{sample_nosource_simpleconv}
+  \caption{SimpleConv on \texttt{sample\_00014} (nosource). ch~0 and ch~4 track the GT
+    closely (MAE=1.13, 2.05); ch~1, ch~5, ch~6, ch~7 drift significantly from the
+    true rotor speeds (MAE=7.06, 5.54, 6.03, 4.26).}
+  \label{fig:nosource-sc}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=0.95\textwidth,height=0.88\textheight,keepaspectratio]{sample_nosource_simpleconv_v2}
+  \caption{SimpleConvV2 on the same sample. ch~0--ch~2, ch~4--ch~6 are excellent
+    (MAE~$<0.5$), but ch~3 collapses to a single intermediate value (MAE=13.2) and
+    ch~7 shows a severe drop at $\sim$5.5~s (MAE=8.40). The V2 model overfits training
+    channels so aggressively that some channels are near-perfect while others
+    catastrophically fail.}
+  \label{fig:nosource-v2}
+\end{figure}
+
+\paragraph{Speech sample} (\texttt{sample\_00002}, 25.80~s into \texttt{free-flight\_speech-low\_room1}):
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=0.95\textwidth,height=0.88\textheight,keepaspectratio]{sample_speech_simpleconv}
+  \caption{SimpleConv on \texttt{sample\_00002} (speech). ch~0 and ch~4 are good
+    (MAE=1.93, 1.73); ch~1 is catastrophic (MAE=9.25); ch~3 is surprisingly good
+    (MAE=1.66).}
+  \label{fig:speech-sc}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=0.95\textwidth,height=0.88\textheight,keepaspectratio]{sample_speech_simpleconv_v2}
+  \caption{SimpleConvV2 on the same speech sample. ch~3 is poor
+    (MAE=4.46) and ch~7 is catastrophic (MAE=7.01). The speech interference
+    causes a general degradation across all channels compared to the nosource
+    sample.}
+  \label{fig:speech-v2}
+\end{figure}
+
+% ============================================================================
+\section{Data and reproducibility}
+% ============================================================================
+
+\begin{itemize}
+  \item \textbf{Dataset:} \texttt{datasets/DREGON-LM-V4/valid} (19 samples, 8-channel WAV + RPS NPY).
+    Created by \texttt{create\_dregon\_librimix.py --max\_non\_overlapping}.
+  \item \textbf{Evaluation results:} \texttt{results/dregon\_v4\_eval/eval.json} (no PIT) and
+    \texttt{eval\_pit.json} (PIT). Generated by \texttt{evaluate-rps -i ... -m ... --pit}.
+  \item \textbf{Code changes:}
+    \begin{itemize}
+      \item \texttt{src/tasks/rps\_prediction.py} --- tag propagation from metadata to per\_sample rows;
+      \item \texttt{create\_dregon\_librimix.py} --- \texttt{--max\_non\_overlapping} flag;
+      \item \texttt{train\_rps\_predictor.py} --- \texttt{return\_indices} on \texttt{pit\_mse\_loss}.
+    \end{itemize}
+\end{itemize}
+
+\end{document}

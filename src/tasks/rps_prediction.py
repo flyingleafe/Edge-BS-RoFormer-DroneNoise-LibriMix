@@ -205,6 +205,8 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
     if not meta_path.is_file():
         meta_path = root / "metadata.json"
     if not meta_path.is_file():
+        meta_path = root.parent / "metadata.json"
+    if not meta_path.is_file():
         meta_path = Path("results/rps_predictor_comparison/dregon_lm_metadata.json")
     if meta_path.is_file():
         with open(meta_path) as f:
@@ -254,7 +256,8 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
         # with audio.  The legacy motor_sample_rate is per-sample and varies.
         # Derive it from the audio duration — the RPS array covers the same
         # time span.
-        audio_dur_s = len(audio) / file_sr  # type: ignore[operator]
+        # For multichannel audio is (C, T), so use last dimension.
+        audio_dur_s = audio.shape[-1] / file_sr
         M = rps_raw.shape[1]
         motor_sr = M / audio_dur_s if audio_dur_s > 0 else 1000.0
         motor_times = np.arange(M) / motor_sr  # float seconds
@@ -268,14 +271,22 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
 
         audio_us = UniformSeries.from_samples(audio, sr=file_sr, t_start=0.0)
 
-        # Build tags.
+        # Build tags — propagate ALL metadata fields so downstream
+        # analysis (per-recording, per-source-type, etc.) works without
+        # needing to re-read metadata.json.
         tags: dict[str, Any] = {"id": sid}
         meta_entry = metadata.get(sid) or _find_meta_entry(metadata, sid)
         if meta_entry:
-            if "input_snr" in meta_entry:
-                tags["input_snr"] = float(meta_entry["input_snr"])
-            if "recording_id" in meta_entry:
-                tags["recording_id"] = meta_entry["recording_id"]
+            for k, v in meta_entry.items():
+                if k == "id":
+                    continue
+                # Cast known numeric tags.
+                if k in ("input_snr", "motor_sample_rate", "start_time", "duration", "n_channels"):
+                    tags[k] = float(v) if not isinstance(v, (float, int)) else v
+                elif k in ("rps_shape",):
+                    tags[k] = v  # list
+                else:
+                    tags[k] = v
 
         yield TimeFrame.from_tracks(
             {"audio": audio_us, "rps": rps_es},
@@ -438,6 +449,7 @@ def evaluate(
     model_spec: str = "",
     input_set_label: str = "",
     alignment: str = "stft_timestamps",
+    pit: bool = False,
     verbose: bool = True,
 ) -> EvalResult:
     """Run inference + compute metrics on an input set.
@@ -453,6 +465,11 @@ def evaluate(
         Human-readable label for the predictor (for logging).
     input_set_label : str
         Label for the input set (for logging).
+    pit : bool
+        If True, evaluate with permutation-invariant alignment: for each
+        channel, try all 4! = 24 rotor permutations of the GT and pick the
+        one that minimises MSE.  This reveals how much error is motor-swapping
+        vs genuine misprediction.
     verbose : bool
         Print progress.
 
@@ -499,7 +516,6 @@ def evaluate(
         audio = audio_us.samples  # (T,) or (C, T)
         sr = audio_us.sr
         sid = frame.tags.get("id", f"sample_{n:05d}")
-        snr_tag = frame.tags.get("input_snr", None)
         per_ch_snr = frame.tags.get("input_snr_per_channel", None)
 
         # Predict: (R, F) for mono, (C, R, F) for multichannel.
@@ -521,11 +537,24 @@ def evaluate(
         for ch in range(C):
             p_ch = pred[ch]  # (R, F)
 
-            mse = float(np.mean((p_ch - gt) ** 2))
-            mae_frame = float(np.mean(np.abs(p_ch - gt)))
-            mae_clip = float(np.mean(np.abs(p_ch.mean(axis=-1) - gt.mean(axis=-1))))
-            ss_res = float(np.sum((p_ch - gt) ** 2))
-            ss_tot = float(np.sum((gt - gt.mean()) ** 2))
+            if pit:
+                # Use the project's canonical PIT implementation.
+                from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
+
+                p_t = torch.from_numpy(np.asarray(p_ch, dtype=np.float32)).unsqueeze(0)  # (1, 4, F)
+                g_t = torch.from_numpy(np.asarray(gt, dtype=np.float32)).unsqueeze(0)  # (1, 4, F)
+                _, best_idx = pit_mse_loss(p_t, g_t, perms=_ROTOR_PERMS, return_indices=True)
+                best_perm = _ROTOR_PERMS[best_idx[0]].tolist()  # e.g. [0, 2, 1, 3]
+                gt_ch = gt[best_perm]  # (R, F)
+            else:
+                best_perm = None
+                gt_ch = gt
+
+            mse = float(np.mean((p_ch - gt_ch) ** 2))
+            mae_frame = float(np.mean(np.abs(p_ch - gt_ch)))
+            mae_clip = float(np.mean(np.abs(p_ch.mean(axis=-1) - gt_ch.mean(axis=-1))))
+            ss_res = float(np.sum((p_ch - gt_ch) ** 2))
+            ss_tot = float(np.sum((gt_ch - gt_ch.mean()) ** 2))
             r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-6 else None
 
             row: dict = {
@@ -537,8 +566,13 @@ def evaluate(
                 "ss_tot": ss_tot,
                 "r2": r2,
             }
-            if snr_tag is not None:
-                row["input_snr"] = snr_tag
+            if pit and best_perm is not None:
+                row["pit_perm"] = list(best_perm)
+            # Propagate ALL frame tags (recording_id, source_type, etc.) to
+            # every per-sample row so aggregations don't need metadata.json.
+            for tag_key, tag_val in frame.tags.items():
+                if tag_key not in ("id",):
+                    row[tag_key] = tag_val
             if per_ch_snr is not None and ch < len(per_ch_snr):
                 row["input_snr_channel"] = per_ch_snr[ch]
 

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 import matplotlib.figure
 import matplotlib.pyplot as plt
@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torchaudio
 
-from tasks.rps_prediction import HOP, N_FFT, SR_AUDIO, RPSPredictor
+from tasks.rps_prediction import HOP, N_FFT
 from utils.data import TimeFrame
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
@@ -125,9 +125,7 @@ def plot_sample_comparison(
         ax_gt = fig.add_subplot(gs[n_spec_rows], sharex=ax_first)
         sid = sample.tags.get("id", "")
         for r, color in enumerate(ROTOR_COLORS):
-            ax_gt.plot(
-                frame_times, gt[r], color=color, linewidth=2, label=f"Rotor {r + 1}"
-            )
+            ax_gt.plot(frame_times, gt[r], color=color, linewidth=2, label=f"Rotor {r + 1}")
         ax_gt.set_ylabel("RPS")
         ax_gt.set_title(f"Ground Truth — {sid}")
         ax_gt.legend(loc="upper right", ncol=4, fontsize=8)
@@ -161,9 +159,7 @@ def plot_sample_comparison(
     return fig
 
 
-def _plot_spectrogram(
-    ax, audio: np.ndarray, sr: float, t_start: float, dur: float
-) -> None:
+def _plot_spectrogram(ax, audio: np.ndarray, sr: float, t_start: float, dur: float) -> None:
     """Draw log-magnitude spectrogram up to 4 kHz."""
     window = torch.hann_window(N_FFT)
     X = torch.stft(
@@ -176,9 +172,7 @@ def _plot_spectrogram(
     S = torch.abs(X).numpy()
     times = np.linspace(t_start, t_start + dur, S.shape[-1])
     freqs = np.linspace(0, sr / 2, S.shape[0])
-    im = ax.pcolormesh(
-        times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma"
-    )
+    im = ax.pcolormesh(times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma")
     ax.set_ylabel("Freq (Hz)")
     ax.set_title("Input Spectrogram")
     # plt.colorbar(im, ax=ax, label="dB")
@@ -194,7 +188,8 @@ def _load_sample(path: str) -> TimeFrame:
     audio = waveform.squeeze(0).numpy().astype(np.float32)
     rps_raw = np.load(str(d / "rps.npy")).astype(np.float64)
     M = rps_raw.shape[1]
-    dur_s = len(audio) / file_sr
+    # waveform is (C, T) for multi-channel — use last dim for duration
+    dur_s = waveform.shape[-1] / file_sr
     motor_sr = M / dur_s if dur_s > 0 else 1000.0
     motor_times = np.arange(M) / motor_sr
 
