@@ -55,7 +55,8 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 
 | Directory | Purpose | Key details |
 |-----------|---------|-------------|
-| `models/` | Model implementations | Model type keys, RPS conditioning, adding new models |
+| `src/models/` | Model implementations + pluggable spectral front-ends | Model type keys, RPS conditioning, adding new models; front-end system; see `src/models/AGENTS.md` |
+| `src/tasks/` | Task interface definitions (what a model must implement for each ML task) | RPS prediction, speech enhancement; see `src/tasks/AGENTS.md` |
 | `configs/` | YAML config files for model variants | Naming conventions, config structure |
 | `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
 | `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py` | See `src/utils/AGENTS.md` for layout |
@@ -70,9 +71,9 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 
 ## Key Facts
 
-- **Model types**: Registered in `utils.get_model_from_config()` (now at `src/utils/__init__.py`) — see `models/AGENTS.md` for full table
+- **Model types**: Registered in `utils.get_model_from_config()` (now at `src/utils/__init__.py`) — see `src/models/AGENTS.md` for full table
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
-- **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `models/AGENTS.md`
+- **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `src/models/AGENTS.md`
 - **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
 - **Playwright (browser automation)**: Installed via `python312Packages.playwright` + `playwright-driver.browsers` in `flake.nix`. The nixpkgs package shadows any `uv`-installed version via `PYTHONPATH` ordering. Uses NixOS-patched Chromium/headless_shell — no `playwright install` needed. Env vars `PLAYWRIGHT_BROWSERS_PATH` and `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` are set in the shell hook.
 - **Results**: Always `./sync_results.sh` before analysis
