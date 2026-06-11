@@ -804,7 +804,7 @@ class BSRoformer(Module):
         try:
             stft_repr = torch.stft(
                 raw_audio,
-                **self.stft_kwargs,
+                **self.stft_kwargs,  # type: ignore[arg-type]
                 window=stft_window,
                 return_complex=True,  # type: ignore[arg-type]
             )
@@ -882,8 +882,8 @@ class BSRoformer(Module):
         # Estimate separation mask for each source, using checkpoint (if enabled) to reduce memory usage
         if self.use_torch_checkpoint:
             mask = torch.stack(
-                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators],
-                dim=1,  # type: ignore[arg-type]
+                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators],  # type: ignore[arg-type]
+                dim=1,
             )
         else:
             mask = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)

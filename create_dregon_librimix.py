@@ -941,8 +941,6 @@ def create_dregon_librimix(
                 f"4-motor RMS={am_rms.mean():.6f}"
             )
 
-    num_samples - num_motor_combo_samples
-
     # --- Generate samples ---
     metadata_list = []
 

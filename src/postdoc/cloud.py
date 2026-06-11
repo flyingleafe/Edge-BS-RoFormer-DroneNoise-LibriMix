@@ -47,7 +47,7 @@ class CloudJobInfo:
     cmd: str
     gpus: int
     status: str
-    cloud: str
+    cloud: str | None
     region: str | None
 
 

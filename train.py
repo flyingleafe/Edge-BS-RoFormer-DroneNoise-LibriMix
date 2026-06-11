@@ -473,7 +473,7 @@ def choice_loss(
     elif args.use_mse_loss:
         if args.use_l1_loss:
 
-            def multi_loss(y_, y):
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor) -> torch.Tensor:  # pyright: ignore[reportRedeclaration]
                 return nn.MSELoss()(y_, y) + F.l1_loss(y_, y)
         else:
             _mse_loss = nn.MSELoss()

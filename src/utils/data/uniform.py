@@ -91,7 +91,6 @@ class UniformSeries(TimeSeries):
         N = self.samples.shape[-1]
         if N == 0:
             return
-        N / self.sr
         # No stored dur field — derived from N/sr.  The grid anchor check:
         # t_first_edge = t_start + phase/sr must be ≤ t_start (phase ≤ 0)
         # and t_end = t_start + N/sr must be ≤ t_start + (phase+N)/sr + 1/sr
