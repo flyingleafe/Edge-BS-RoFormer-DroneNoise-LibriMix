@@ -83,11 +83,11 @@ class MultiF0RPSPredictor(nn.Module):
             frontend = build_frontend(
                 "hcqt",
                 phase=True,
-                harmonics=list(range(1, n_harmonics + 1)),
                 **frontend_kwargs,
             )
         self.frontend = frontend
-        # Infer n_harmonics: if phase front-end → C=2H, else C=H
+        # Infer n_harmonics: if phase front-end → C=2H, else C=H.
+        # Also read actual harmonics from the frontend for the freq grid.
         uses_phase = getattr(frontend, "use_phase", True)
         self.n_harmonics = frontend.out_channels // 2 if uses_phase else frontend.out_channels
 
