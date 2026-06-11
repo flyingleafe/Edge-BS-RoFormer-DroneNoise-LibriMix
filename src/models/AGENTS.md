@@ -11,6 +11,7 @@ src/models/
   __init__.py           (none — namespace package)
   frontends/            Pluggable spectral front-ends
   multif0/              Multi-F0 HCQT + CNN (Cuesta et al. ISMIR 2020)
+  basic_pitch/          Basic Pitch note transcription, PyTorch port (Bittner et al. ICASSP 2022)
   rps_predictor.py      SimpleConv* family + DCUNet/DCCRN encoders (RPS)
   dcunet.py             DCUNet (speech enhancement)
   dccrn.py              DCCRN
