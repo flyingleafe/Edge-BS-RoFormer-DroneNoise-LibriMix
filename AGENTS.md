@@ -48,6 +48,28 @@ Route to the right skill (table below), execute, and close with `record-and-reme
 | `generate-slidev-presentation` | Academic presentations with mermaid + result figures |
 | `examine-presentation-slides` | Start Slidev and visually inspect slides |
 | `vast-server-training` | Run training on remote GPU (via `postdoc submit` / SkyPilot) |
+| `reimplement-model` | Port a paper model into the project framework |
+| `create-dregon-dataset` | (Re)create any DREGON-LM dataset variant |
+| `improve-plot-visibility` | Inspect and improve generated plots |
+| `load-real-propeller-geometry` | Load real propeller chord/twist into the FWH simulator |
+
+## Task Routing — where to look first
+
+The Skills table routes by *action*; the Directory Map routes by *location*. This table routes by *intent* — given what you're trying to do, which skill to invoke and which `AGENTS.md` / files to read **before** touching code. Always read the linked doc first; subdirectory `AGENTS.md` is truth (Rule 3).
+
+| If the task is… | Skill | Read first |
+|-----------------|-------|------------|
+| **Manipulating audio / telemetry / any aligned signal** (loading, slicing, concat, shifting RPS/IMU/VAD alongside audio) | — | `src/utils/data/AGENTS.md` + [`src/utils/data/API.md`](src/utils/data/API.md). The fixed-point timeseries algebra is the substrate for *all* media work. |
+| **Creating or processing a dataset** (DREGON-LM, DN-LM, mixing, RPS extraction) | `create-dregon-dataset` | `data_processing/AGENTS.md` (recording inventory, variants, canonical command, gotchas); loaders `data_processing/dregon.py`, `michaels.py`; root scripts `create_dregon_librimix.py`, `create_dataset.py`. |
+| **Loading data into a training loop** (Dataset/wiring, multichannel flattening) | — | `data_processing/AGENTS.md` § "Multichannel Training & Evaluation Wiring" (`DREGONRPSDataset`, `NoiseRPSDataset`, `_flatten_channels`) + `src/utils/data/AGENTS.md`. |
+| **Implementing / reimplementing a model** (need examples + the interface contract) | `reimplement-model` | `src/tasks/AGENTS.md` **first** (the contract the model must satisfy) → `src/models/AGENTS.md` (registry, RPS support, "Adding a front-end"). Example impls to mirror: `src/models/dcunet_refactored.py`, `src/models/multif0/`, `src/models/rps_predictor.py`. |
+| **Adding a spectral front-end** | — | `src/models/AGENTS.md` § "Spectral front-ends" / "Adding a new front-end". |
+| **RPS conditioning** (RotorEncoder, fusion, predictor interface) | — | `src/models/AGENTS.md` + `src/tasks/rps-prediction/AGENTS.md`. |
+| **Running an experiment** (train / eval / orchestrate) | `run-experiment` (`vast-server-training` for remote GPU) | `experiments/AGENTS.md`, `configs/AGENTS.md`, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`. |
+| **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `generate_comparison.py`. |
+| **Producing a presentation / slides** | `generate-slidev-presentation`, then `examine-presentation-slides` | `slides/`; results figures via `generate_comparison.py`. |
+| **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `fwh_rotor_sim/AGENTS.md`. |
+| **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (DVC + W&B artifacts; rsync fallback). |
 
 ## Directory Map
 

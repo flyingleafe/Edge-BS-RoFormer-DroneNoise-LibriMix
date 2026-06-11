@@ -97,6 +97,8 @@
                 anyfontsize
                 appendix;
             })
+	    # easier latex for easier docs
+	    typst
             # for looking at resulting pdfs
             poppler-utils
 	    # unavoidable js
