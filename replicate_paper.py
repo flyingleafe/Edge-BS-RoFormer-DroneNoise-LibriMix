@@ -445,18 +445,20 @@ def _train_one(model_key: str, device_ids: list[int] | None) -> None:
         return
     log_info(f"Training {results_subdir_with_hash} (commit: {commit_hash}, gpus: {num_gpus})...")
     train_model(
-        {
-            "model_type": model_type,
-            "config_path": str(config_path),
-            "results_path": str(results_path),
-            "data_path": [str(TRAIN_PATH)],
-            "valid_path": [str(VALID_PATH)],
-            "dataset_type": 1,
-            "device_ids": device_ids,
-            "num_workers": 4,
-            "metrics": ["si_sdr", "sdr"],
-            "metric_for_scheduler": "si_sdr",
-        }
+        argparse.Namespace(
+            **{  # type: ignore[arg-type]
+                "model_type": model_type,
+                "config_path": str(config_path),
+                "results_path": str(results_path),
+                "data_path": [str(TRAIN_PATH)],
+                "valid_path": [str(VALID_PATH)],
+                "dataset_type": 1,
+                "device_ids": device_ids,
+                "num_workers": 4,
+                "metrics": ["si_sdr", "sdr"],
+                "metric_for_scheduler": "si_sdr",
+            }
+        )
     )
     log_success(f"{results_subdir_with_hash} training complete")
 

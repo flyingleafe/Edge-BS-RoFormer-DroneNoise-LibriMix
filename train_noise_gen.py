@@ -281,9 +281,9 @@ def main():
     print("[data] building datasets...")
     train_dl, val_dl, _ = build_dataloaders(cfg)
     print(
-        f"[data] train sources: {len(train_dl.dataset.records)}, val sources: {len(val_dl.dataset.records)}"
-    )  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
-    print(f"[data] train samples/epoch: {len(train_dl.dataset)}, val: {len(val_dl.dataset)}")  # pyright: ignore[reportArgumentType]
+        f"[data] train sources: {len(getattr(train_dl.dataset, 'records', []))}, "
+        f"val sources: {len(getattr(val_dl.dataset, 'records', []))}"
+    )
 
     # Model
     print("[model] building DroneNoisePlusFilterGen...")

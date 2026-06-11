@@ -1,5 +1,6 @@
 import math  # Added for PositionalEncoding
 from functools import partial
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -8,7 +9,7 @@ from beartype.typing import Callable, Optional, Tuple
 from einops import pack, rearrange, unpack
 from einops.layers.torch import Rearrange
 from rotary_embedding_torch import RotaryEmbedding
-from torch import nn
+from torch import Tensor, nn
 from torch.nn import Module, ModuleList
 from torch.utils.checkpoint import checkpoint
 
@@ -119,7 +120,7 @@ class PositionalEncoding(Module):
         """
         x: [batch_size, seq_len, dim]
         """
-        return x + self.pe[: x.size(1), :].unsqueeze(0)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        return x + cast(Tensor, self.pe)[: x.size(1), :].unsqueeze(0)
 
 
 # Attention mechanism related modules
@@ -204,8 +205,8 @@ class Attention(Module):
 
         # Apply rotary positional encoding
         if self.use_rotary_pos and exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-            k = self.rotary_embed.rotate_queries_or_keys(k)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            q = cast(RotaryEmbedding, self.rotary_embed).rotate_queries_or_keys(q)
+            k = cast(RotaryEmbedding, self.rotary_embed).rotate_queries_or_keys(k)
 
         # Compute attention
         out = self.attend(q, k, v)
@@ -354,9 +355,11 @@ class Transformer(Module):
 
     def forward(self, x):
         if not self.use_rotary_pos:
-            x = self.positional_encoding(x)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            assert self.positional_encoding is not None
+            x = self.positional_encoding(x)
         # Pass through each layer sequentially with residual connections
-        for attn, ff in self.layers:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        for block in self.layers:
+            attn, ff = cast(tuple[nn.Module, nn.Module], block)
             x = attn(x) + x  # Attention layer + residual
             x = ff(x) + x  # Feed-forward network + residual
 
@@ -441,7 +444,7 @@ def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh):
         is_last = ind == (len(dims) - 2)  # Check if current layer is the last
 
         # Add linear mapping layer: transform input from layer_dim_in to layer_dim_out
-        net.append(nn.Linear(layer_dim_in, layer_dim_out))  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        net.append(nn.Linear(layer_dim_in, layer_dim_out))  # type: ignore[arg-type]
 
         # If not the last layer, add activation function to introduce non-linearity
         if not is_last:
@@ -576,7 +579,7 @@ class BSRoformer(Module):
     Can separate multiple audio sources
     """
 
-    @beartype
+    # @beartype would confuse pyright with OmegaConf float→int; conversions in body
     def __init__(
         self,
         dim,  # Model's base feature dimension
@@ -619,12 +622,32 @@ class BSRoformer(Module):
         use_rotary_pos=False,  # Whether to use rotary positional encoding (RoPE)
         max_seq_len=1000,  # Maximum sequence length
     ):
-        super().__init__()  # Initialize parent class Module
+        super().__init__()
 
-        # Determine audio channels based on stereo parameter, stereo=2 channels, mono=1 channel
+        # Normalize OmegaConf types: config values arrive as float, need int/bool
+        depth = int(depth)
+        dim_head = int(dim_head)
+        heads = int(heads)
+        time_transformer_depth = int(time_transformer_depth)
+        freq_transformer_depth = int(freq_transformer_depth)
+        linear_transformer_depth = int(linear_transformer_depth)
+        mask_estimator_depth = int(mask_estimator_depth)
+        stft_n_fft = int(stft_n_fft)
+        stft_hop_length = int(stft_hop_length)
+        stft_win_length = int(stft_win_length)
+        max_seq_len = int(max_seq_len)
+        flash_attn = bool(flash_attn)
+        use_rotary_pos = bool(use_rotary_pos)
+        stft_normalized = bool(stft_normalized)
+        skip_connection = bool(skip_connection)
+        use_torch_checkpoint = bool(use_torch_checkpoint)
+        num_stems = int(num_stems)
+        ff_mult = int(mlp_expansion_factor)
+
+        # Determine audio channels based on stereo parameter
         self.stereo = stereo
         self.audio_channels = 2 if stereo else 1
-        self.num_stems = num_stems  # Store number of sources to separate
+        self.num_stems = num_stems
         self.use_torch_checkpoint = use_torch_checkpoint
         self.skip_connection = skip_connection
         self.use_rotary_pos = use_rotary_pos
@@ -657,24 +680,26 @@ class BSRoformer(Module):
                 # If linear Transformer layers are specified, add linear attention module
                 tran_modules.append(
                     Transformer(
-                        depth=linear_transformer_depth, linear_attn=True, **transformer_kwargs
+                        depth=linear_transformer_depth,
+                        linear_attn=True,
+                        **transformer_kwargs,  # type: ignore[arg-type]
                     )
-                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                )
             # Add Transformer for time dimension to capture temporal correlations
             tran_modules.append(
                 Transformer(
                     depth=time_transformer_depth,
                     rotary_embed=time_rotary_embed,
-                    **transformer_kwargs,
-                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                    **transformer_kwargs,  # type: ignore[arg-type]
+                )
             )
             # Add Transformer for frequency dimension to capture frequency correlations
             tran_modules.append(
                 Transformer(
                     depth=freq_transformer_depth,
                     rotary_embed=freq_rotary_embed,
-                    **transformer_kwargs,
-                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                    **transformer_kwargs,  # type: ignore[arg-type]
+                )
             )
             # Wrap current layer's module list as ModuleList and add to overall layers
             self.layers.append(nn.ModuleList(tran_modules))
@@ -691,15 +716,15 @@ class BSRoformer(Module):
         )
 
         # Set STFT window function generator, use default torch.hann_window if not provided, with fixed window length
-        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # type: ignore[arg-type]
 
         # Calculate number of frequencies after STFT by applying STFT to random signal
         freqs = torch.stft(
             torch.randn(1, 4096),
-            **self.stft_kwargs,
+            **self.stft_kwargs,  # type: ignore[arg-type]
             window=torch.ones(stft_win_length),
             return_complex=True,
-        ).shape[1]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        ).shape[1]
 
         # Ensure band configuration has at least two bands, and total frequencies equals STFT output frequencies
         assert len(freqs_per_bands) > 1
@@ -778,12 +803,15 @@ class BSRoformer(Module):
         # Execute STFT operation, use try/except for MacOS MPS platform compatibility
         try:
             stft_repr = torch.stft(
-                raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True
-            )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                raw_audio,
+                **self.stft_kwargs,
+                window=stft_window,
+                return_complex=True,  # type: ignore[arg-type]
+            )
         except:
             stft_repr = torch.stft(
                 raw_audio.cpu() if x_is_mps else raw_audio,
-                **self.stft_kwargs,  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                **self.stft_kwargs,  # type: ignore[arg-type]
                 window=stft_window.cpu() if x_is_mps else stft_window,
                 return_complex=True,
             ).to(device)
@@ -810,29 +838,21 @@ class BSRoformer(Module):
             self.layers
         )  # Store each layer's output (used if skip connection enabled)
         for i, transformer_block in enumerate(self.layers):
-            if len(transformer_block) == 3:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-                # If current layer has three sub-modules, it contains linear attention module
-                linear_transformer, time_transformer, freq_transformer = transformer_block  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            if len(cast(ModuleList, transformer_block)) == 3:
+                linear_transformer, time_transformer, freq_transformer = cast(
+                    ModuleList, transformer_block
+                )
 
-                # Pack x with shape info for later shape restoration
                 x, ft_ps = pack([x], "b * d")
                 if self.use_torch_checkpoint:
-                    # Use checkpoint mechanism to save memory
                     x = checkpoint(linear_transformer, x, use_reentrant=False)
                 else:
                     x = linear_transformer(x)
-                # Unpack to restore original shape
                 (x,) = unpack(x, ft_ps, "b * d")
             else:
-                # Otherwise current layer only contains time and frequency Transformers
-                time_transformer, freq_transformer = transformer_block  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                time_transformer, freq_transformer = cast(ModuleList, transformer_block)
 
-            if self.skip_connection:
-                # If skip connection enabled, accumulate previous layers' outputs to current output
-                for j in range(i):
-                    x = x + store[j]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-
-            # Apply Transformer on time dimension: swap dimensions so time dimension is in proper position
+            # Apply Transformer on time dimension
             x = rearrange(x, "b t f d -> b f t d")
             x, ps = pack([x], "* t d")
             if self.use_torch_checkpoint:
@@ -841,7 +861,7 @@ class BSRoformer(Module):
                 x = time_transformer(x)
             (x,) = unpack(x, ps, "* t d")
 
-            # Apply Transformer on frequency dimension: rearrange dimensions with frequency as target
+            # Apply Transformer on frequency dimension
             x = rearrange(x, "b f t d -> b t f d")
             x, ps = pack([x], "* f d")
             if self.use_torch_checkpoint:
@@ -851,10 +871,9 @@ class BSRoformer(Module):
             (x,) = unpack(x, ps, "* f d")
 
             if self.skip_connection:
-                # Save current layer output for subsequent skip connections
+                for j in range(i):
+                    x = x + cast(Tensor, store[j])  # type: ignore[operator]
                 store[i] = x
-
-        # Final normalization on all Transformer layer outputs
         x = self.final_norm(x)
 
         # Record actual number of sources used, i.e., number of mask estimators
@@ -863,8 +882,9 @@ class BSRoformer(Module):
         # Estimate separation mask for each source, using checkpoint (if enabled) to reduce memory usage
         if self.use_torch_checkpoint:
             mask = torch.stack(
-                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators], dim=1
-            )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators],
+                dim=1,  # type: ignore[arg-type]
+            )
         else:
             mask = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
         # Adjust mask tensor shape, decompose last dimension into frequency and complex (real, imaginary) parts
@@ -913,16 +933,15 @@ class BSRoformer(Module):
         if not exists(target):
             return recon_audio
 
-        # When model separates multiple sources, check target audio dimensions (4D with first dim matching source count)
-        if self.num_stems > 1:
-            assert target.ndim == 4 and target.shape[1] == self.num_stems  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        assert target is not None
 
-        # If target audio is only 2D, expand to 3D (add source dimension)
-        if target.ndim == 2:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        if self.num_stems > 1:
+            assert target.ndim == 4 and target.shape[1] == self.num_stems
+
+        if target.ndim == 2:
             target = rearrange(target, "... t -> ... 1 t")
 
-        # Truncate target audio time length to match inverse STFT generated audio length
-        target = target[..., : recon_audio.shape[-1]]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        target = target[..., : recon_audio.shape[-1]]
 
         # Compute base L1 loss to measure absolute difference between reconstructed and target audio
         loss = F.l1_loss(recon_audio, target)
@@ -939,9 +958,8 @@ class BSRoformer(Module):
                 **self.multi_stft_kwargs,
             )
             # Apply STFT transform to both reconstructed and target audio
-            recon_Y = torch.stft(rearrange(recon_audio, "... s t -> (... s) t"), **res_stft_kwargs)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-            target_Y = torch.stft(rearrange(target, "... s t -> (... s) t"), **res_stft_kwargs)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-            # Accumulate L1 loss across resolutions
+            recon_Y = torch.stft(rearrange(recon_audio, "... s t -> (... s) t"), **res_stft_kwargs)  # type: ignore[arg-type]
+            target_Y = torch.stft(rearrange(target, "... s t -> (... s) t"), **res_stft_kwargs)  # type: ignore[arg-type]
             multi_stft_resolution_loss = multi_stft_resolution_loss + F.l1_loss(recon_Y, target_Y)
 
         # Multiply multi-resolution STFT loss by preset weight and add to base L1 loss for total loss

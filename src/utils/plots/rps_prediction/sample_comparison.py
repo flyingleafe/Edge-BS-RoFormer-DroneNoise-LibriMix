@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, cast
 
 import matplotlib.figure
 import matplotlib.pyplot as plt
@@ -11,8 +11,8 @@ import numpy as np
 import torch
 import torchaudio
 
-from tasks.rps_prediction import HOP, N_FFT, SR_AUDIO, RPSPredictor
-from utils.data import TimeFrame
+from tasks.rps_prediction import HOP, N_FFT
+from utils.data import EventSeries, TimeFrame, UniformSeries
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
@@ -55,6 +55,7 @@ def plot_sample_comparison(
         raise ValueError("One of sample or sample_path is required")
 
     if sample is None:
+        assert sample_path is not None
         sample = _load_sample(sample_path)
 
     if preds is None:
@@ -63,8 +64,8 @@ def plot_sample_comparison(
     if show_separate_gt is None:
         show_separate_gt = len(preds) == 0
 
-    audio_us = sample["audio"]
-    rps_es = sample["rps"]
+    audio_us = cast(UniformSeries, sample["audio"])
+    rps_es = cast(EventSeries, sample["rps"])
     audio = np.asarray(audio_us.samples, dtype=np.float32)
     sr = audio_us.sr
 
@@ -125,9 +126,7 @@ def plot_sample_comparison(
         ax_gt = fig.add_subplot(gs[n_spec_rows], sharex=ax_first)
         sid = sample.tags.get("id", "")
         for r, color in enumerate(ROTOR_COLORS):
-            ax_gt.plot(
-                frame_times, gt[r], color=color, linewidth=2, label=f"Rotor {r + 1}"
-            )
+            ax_gt.plot(frame_times, gt[r], color=color, linewidth=2, label=f"Rotor {r + 1}")
         ax_gt.set_ylabel("RPS")
         ax_gt.set_title(f"Ground Truth — {sid}")
         ax_gt.legend(loc="upper right", ncol=4, fontsize=8)
@@ -161,9 +160,7 @@ def plot_sample_comparison(
     return fig
 
 
-def _plot_spectrogram(
-    ax, audio: np.ndarray, sr: float, t_start: float, dur: float
-) -> None:
+def _plot_spectrogram(ax, audio: np.ndarray, sr: float, t_start: float, dur: float) -> None:
     """Draw log-magnitude spectrogram up to 4 kHz."""
     window = torch.hann_window(N_FFT)
     X = torch.stft(
@@ -176,9 +173,7 @@ def _plot_spectrogram(
     S = torch.abs(X).numpy()
     times = np.linspace(t_start, t_start + dur, S.shape[-1])
     freqs = np.linspace(0, sr / 2, S.shape[0])
-    im = ax.pcolormesh(
-        times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma"
-    )
+    im = ax.pcolormesh(times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma")
     ax.set_ylabel("Freq (Hz)")
     ax.set_title("Input Spectrogram")
     # plt.colorbar(im, ax=ax, label="dB")

@@ -1,14 +1,20 @@
 """Blade Element Momentum Theory aerodynamics."""
 
+from collections.abc import Callable
+
 import torch
-from typing import Callable
 
 
 class ThinAirfoilPolar:
     """Simple airfoil polar using thin-airfoil + parabolic drag."""
 
-    def __init__(self, a0: float = 2 * torch.pi, alpha0_deg: float = 0.0,
-                 cd0: float = 0.01, cd_induced_factor: float = 0.0):
+    def __init__(
+        self,
+        a0: float = 2 * torch.pi,
+        alpha0_deg: float = 0.0,
+        cd0: float = 0.01,
+        cd_induced_factor: float = 0.0,
+    ):
         """
         Args:
             a0: Lift curve slope (dCl/dα). Default 2π for thin airfoil.
@@ -24,7 +30,7 @@ class ThinAirfoilPolar:
     def __call__(self, alpha: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return Cl, Cd for given angle of attack (rad)."""
         cl = self.a0 * (alpha - self.alpha0)
-        cd = self.cd0 + self.k * cl ** 2
+        cd = self.cd0 + self.k * cl**2
         return cl, cd
 
 
@@ -38,7 +44,7 @@ class BEMTAerodynamics:
     def __init__(
         self,
         rho: float = 1.225,
-        airfoil: Callable = None,
+        airfoil: Callable | None = None,
         max_iter: int = 20,
         tol: float = 1e-6,
     ):
@@ -51,7 +57,7 @@ class BEMTAerodynamics:
         self,
         blade,
         Omega: torch.Tensor,
-        v_induced: torch.Tensor = None,
+        v_induced: torch.Tensor | None = None,
         advance_ratio: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute force on each blade strip.
@@ -85,21 +91,22 @@ class BEMTAerodynamics:
             U_P = U_P + Omega * blade.R * advance_ratio
 
         # Resultant velocity and inflow angle
-        U = torch.sqrt(U_T ** 2 + U_P ** 2)
+        U = torch.sqrt(U_T**2 + U_P**2)
         phi = torch.atan2(U_P, U_T)  # angle between disk plane and U
 
         # Angle of attack
         alpha = theta - phi
 
         # Clamp alpha to avoid stall (thin airfoil valid ~ ±15°)
-        alpha = torch.clamp(alpha, torch.deg2rad(torch.tensor(-20.0)),
-                                     torch.deg2rad(torch.tensor(20.0)))
+        alpha = torch.clamp(
+            alpha, torch.deg2rad(torch.tensor(-20.0)), torch.deg2rad(torch.tensor(20.0))
+        )
 
         # Airfoil coefficients
         cl, cd = self.airfoil(alpha)
 
         # Sectional lift and drag per unit span (N/m)
-        q = 0.5 * self.rho * U ** 2
+        q = 0.5 * self.rho * U**2
         L_prime = q * c * cl  # lift per span
         D_prime = q * c * cd  # drag per span
 
@@ -122,11 +129,17 @@ class BEMTAerodynamics:
         dF_y = L_prime * torch.sin(phi) - D_prime * torch.cos(phi)
         dF_z = L_prime * torch.cos(phi) + D_prime * torch.sin(phi)
 
-        F_local = torch.stack([
-            torch.zeros_like(dF_y),
-            dF_y,
-            dF_z,
-        ], dim=-1) * dr[:, None]  # multiply by span to get total force on strip
+        F_local = (
+            torch.stack(
+                [
+                    torch.zeros_like(dF_y),
+                    dF_y,
+                    dF_z,
+                ],
+                dim=-1,
+            )
+            * dr[:, None]
+        )  # multiply by span to get total force on strip
 
         return F_local, dT, dQ
 
@@ -146,7 +159,7 @@ class BEMTAerodynamics:
         Returns:
             Induced velocity (m/s, positive downward).
         """
-        A = torch.pi * blade.R ** 2
+        A = torch.pi * blade.R**2
         # T = 2 * rho * A * v_i^2  (momentum theory for hover)
         v_i = torch.sqrt(total_thrust / (2 * self.rho * A))
         return v_i

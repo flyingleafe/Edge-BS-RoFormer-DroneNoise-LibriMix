@@ -11,13 +11,13 @@ Usage
   RPS shaped `[B, n_motors, T]` (Hz, i.e. revolutions per second) at the
   AUDIO sample rate and per-rotor phase shifts `[B, n_motors]`.
 """
+
 from __future__ import annotations
 
 import torch
 from torch import nn
 
 from .dsp import harmonic_oscillator_bank
-
 
 EPS = 1e-8
 
@@ -31,9 +31,7 @@ class PolynomialRegression(nn.Module):
         self.bias = nn.Parameter(torch.randn(1)) if bias else None
 
     def forward(self, x):
-        inp = torch.stack(
-            [x ** i for i in torch.arange(1, self.poly_coeffs.shape[0] + 1)], dim=-1
-        )
+        inp = torch.stack([x**i for i in torch.arange(1, self.poly_coeffs.shape[0] + 1)], dim=-1)
         out = torch.matmul(inp, self.poly_coeffs.unsqueeze(-1)).squeeze(-1)
         if self.bias is not None:
             out = out + self.bias
@@ -59,15 +57,11 @@ class PropellerNoiseGen(nn.Module):
         super().__init__()
         self.sample_rate = sample_rate
         self.n_harmonics = n_harmonics
-        self.basis_gain_function = (
-            PolynomialRegression(2, bias=False) if use_basis_gain else None
-        )
+        self.basis_gain_function = PolynomialRegression(2, bias=False) if use_basis_gain else None
         self.harmonic_gain_corrections = nn.Parameter(torch.randn(n_harmonics))
         # First harmonic's phase is fixed to phase_shift; corrections apply to
         # harmonics 2..N relative to that reference.
-        self.harmonic_phase_corrections = nn.Parameter(
-            torch.randn(n_harmonics - 1) * 0.001
-        )
+        self.harmonic_phase_corrections = nn.Parameter(torch.randn(n_harmonics - 1) * 0.001)
 
     def forward(self, speed_rps: torch.Tensor, phase_shift: torch.Tensor):
         """
@@ -81,8 +75,12 @@ class PropellerNoiseGen(nn.Module):
         assert speed_rps.device == phase_shift.device
 
         # Per-harmonic initial phases: k * phase_shift + per-harmonic correction
-        coeffs = torch.arange(1, self.n_harmonics + 1, device=speed_rps.device, dtype=speed_rps.dtype)
-        phase_corrections = torch.zeros(self.n_harmonics, device=speed_rps.device, dtype=speed_rps.dtype)
+        coeffs = torch.arange(
+            1, self.n_harmonics + 1, device=speed_rps.device, dtype=speed_rps.dtype
+        )
+        phase_corrections = torch.zeros(
+            self.n_harmonics, device=speed_rps.device, dtype=speed_rps.dtype
+        )
         phase_corrections[1:] = self.harmonic_phase_corrections
 
         harmonic_phase_shifts = (
@@ -149,4 +147,6 @@ class DroneNoiseGen(nn.Module):
         propeller_outputs = self.propeller(speed_rps, phase_shifts)
         # [B, n_motors, T_audio]  ->  [B, T_audio]
         coeffs = torch.exp(self.log_motor_coeffs)  # [n_motors]
-        return (coeffs.view(*([1] * (propeller_outputs.dim() - 2)), -1, 1) * propeller_outputs).sum(-2)
+        return (coeffs.view(*([1] * (propeller_outputs.dim() - 2)), -1, 1) * propeller_outputs).sum(
+            -2
+        )

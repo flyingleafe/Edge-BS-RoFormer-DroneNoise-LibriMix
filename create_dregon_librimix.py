@@ -19,6 +19,7 @@ import json
 import random
 from glob import glob
 from pathlib import Path
+from typing import cast
 
 import librosa
 import numpy as np
@@ -30,7 +31,7 @@ from data_processing.dregon import (
     get_geometry,
     load_dregon_timeframes,
 )
-from utils.data import TimeFrame, UniformSeries
+from utils.data import EventSeries, TimeFrame, TimeSeries, UniformSeries
 from utils.paths import get_data_path, get_datasets_path
 
 # =============================================================================
@@ -205,29 +206,26 @@ def load_dregon_noise_records(
         if "motors_measured" not in tf and "motors_command" not in tf:
             print(f"Warning: {tf.tags.get('recording_id', '?')} has no motor data, skipping")
             continue
-
-        audio_us = tf["audio"]
+        audio_us = cast(UniformSeries, tf["audio"])
         # UniformSeries stores (channels, N) — axis 0 = channels
-        n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1
         for ch in range(n_channels):
             # Create single-channel audio UniformSeries
-            ch_samples = audio_us.samples[
-                ch : ch + 1, :
-            ]  # (1, N)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+            ch_samples = audio_us.samples[ch : ch + 1, :]  # (1, N)
             ch_audio = UniformSeries.from_samples(
                 ch_samples,
-                audio_us.sr,  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                audio_us.sr,
                 t_start=audio_us.t_start,
             )
             # Build new TimeFrame with single-channel audio + same other tracks
-            new_tracks = {"audio": ch_audio}
+            new_tracks: dict[str, TimeSeries] = {"audio": ch_audio}
             for key in tf.keys():
                 if key != "audio":
-                    new_tracks[key] = tf[key]  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                    new_tracks[key] = tf[key]
             new_tags = dict(tf.tags)
             new_tags["recording_id"] = f"{new_tags['recording_id']}_ch{ch}"
             ch_tf = TimeFrame.from_tracks(
-                new_tracks,  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                new_tracks,
                 t_start=tf.t_start,
                 tags=new_tags,
                 global_data=tf.global_data,
@@ -257,13 +255,11 @@ def _find_inflight_window(
 
     Raises ``ValueError`` if no in-flight window can be found.
     """
-    motor_es = tf[motor_key]
-    if motor_es.values is None:  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    motor_es = cast(EventSeries, tf[motor_key])
+    if motor_es.values is None:
         return motor_es.t_start, motor_es.t_end
-    cleaned = clean_command_spikes(
-        motor_es.values.copy()
-    )  # (4, M)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-    ts = motor_es.abs_timestamps  # (M,)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    cleaned = clean_command_spikes(motor_es.values.copy())  # (4, M)
+    ts = motor_es.abs_timestamps  # (M,)
     in_flight = np.all(cleaned > min_motor_rps, axis=0)  # (M,) bool
     idxs = np.where(in_flight)[0]
     if len(idxs) == 0:
@@ -306,8 +302,8 @@ def extract_noise_chunk_with_command_rps(
     # fall back to measured when command is absent.
     rps_key = "motors_command" if "motors_command" in tf else "motors_measured"
 
-    audio_us = tf["audio"]
-    detect_es = tf[detect_key]
+    audio_us = cast(UniformSeries, tf["audio"])
+    detect_es = cast(EventSeries, tf[detect_key])
 
     valid_start = max(audio_us.t_start, detect_es.t_start)
     valid_end = min(audio_us.t_end, detect_es.t_end)
@@ -333,18 +329,19 @@ def extract_noise_chunk_with_command_rps(
 
     # Extract mono audio from specified channel
     # UniformSeries stores (channels, N) — axis 0 = channels
-    audio_samples = sliced["audio"].samples  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    audio_sliced = cast(UniformSeries, sliced["audio"])
+    audio_samples = audio_sliced.samples
     audio = audio_samples[channel, :] if audio_samples.ndim > 1 else audio_samples
 
-    motor_es_sliced = sliced[rps_key]
-    if motor_es_sliced.values is not None:  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-        command = motor_es_sliced.values.copy()  # (4, M) — time-last  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    motor_es_sliced = cast(EventSeries, sliced[rps_key])
+    if motor_es_sliced.values is not None:
+        command = motor_es_sliced.values.copy()  # (4, M) — time-last
         rps = clean_command_spikes(command).astype(np.float32)  # (4, M)
     else:
         rps = np.zeros((4, 0), dtype=np.float32)
 
     # Estimate motor sample rate
-    motor_ts = motor_es_sliced.abs_timestamps  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    motor_ts = motor_es_sliced.abs_timestamps
     if len(motor_ts) > 1:
         motor_sr = 1.0 / np.median(np.diff(motor_ts.astype(np.float64)))
     else:
@@ -352,7 +349,7 @@ def extract_noise_chunk_with_command_rps(
 
     metadata = {
         "recording_id": tf.tags.get("recording_id", ""),
-        "start_time": start_sec - audio_start,  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportUndefinedVariable]
+        "start_time": start_sec - audio_us.t_start,
         "duration": duration_sec,
         "motor_sample_rate": float(motor_sr),
         "channel": channel,
@@ -628,19 +625,20 @@ def extract_multichannel_noise_chunk(
     sliced = tf.slice(start_sec, start_sec + duration_sec)
 
     # Keep all channels: UniformSeries stores (channels, N)
-    audio_samples = sliced["audio"].samples  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    audio_sliced = cast(UniformSeries, sliced["audio"])
+    audio_samples = audio_sliced.samples
     if audio_samples.ndim == 1:
         audio_samples = audio_samples[np.newaxis, :]
     audio = audio_samples.astype(np.float32)  # (C, N)
 
-    motor_es_sliced = sliced[rps_key]
-    if motor_es_sliced.values is not None:  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    motor_es_sliced = cast(EventSeries, sliced[rps_key])
+    if motor_es_sliced.values is not None:
         # EventSeries values are time-last (4, M); clean_command_spikes keeps shape
-        rps = clean_command_spikes(motor_es_sliced.values.copy()).astype(np.float32)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+        rps = clean_command_spikes(motor_es_sliced.values.copy()).astype(np.float32)
     else:
         rps = np.zeros((4, 0), dtype=np.float32)
 
-    motor_ts = motor_es_sliced.abs_timestamps  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    motor_ts = motor_es_sliced.abs_timestamps
     if len(motor_ts) > 1:
         motor_sr = 1.0 / np.median(np.diff(motor_ts.astype(np.float64)))
     else:
@@ -911,7 +909,9 @@ def create_dregon_librimix(
     print(f"Loaded {len(noise_records)} noise records ({total_noise_duration:.1f}s total)")
 
     # Identify unique base recordings (strip _chN suffix) for reporting
-    base_recordings = set(tf.tags["recording_id"].rsplit("_ch", 1)[0] for tf in noise_records)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+    base_recordings = set(
+        cast(str, tf.tags["recording_id"]).rsplit("_ch", 1)[0] for tf in noise_records
+    )
     print(f"  Unique base recordings: {sorted(base_recordings)}")
 
     # --- Load motor WAVs for synthetic combos (train only) ---
@@ -956,9 +956,10 @@ def create_dregon_librimix(
 
         if is_motor_combo:
             # --- Synthetic motor combo ---
+            assert motor_wavs is not None and motors_dir is not None
             noise, rps, noise_meta = create_motor_combo_sample(
-                motor_wavs,  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
-                motors_dir=motors_dir,  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand]
+                motor_wavs,
+                motors_dir=motors_dir,
                 duration_sec=sample_duration,
                 target_sr=sample_rate,
             )

@@ -4,12 +4,12 @@ Dispatches to registered plot functions by dotted name::
 
     make-plot --type=rps_prediction.sample_comparison --sample=<path> ...
 """
+
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
-from typing import Optional
 import json
+from pathlib import Path
 
 import typer
 
@@ -25,32 +25,46 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def main(
     plot_type: str = typer.Option(
-        ..., "--type", "-t",
+        ...,
+        "--type",
+        "-t",
         help="Plot type dotted name (rps_prediction.sample_comparison, ...).",
     ),
-    sample: Optional[str] = typer.Option(
-        None, "--sample",
+    sample: str | None = typer.Option(
+        None,
+        "--sample",
         help="Path to a sample directory for per-sample plots.",
     ),
-    results: Optional[str] = typer.Option(
-        None, "--results",
+    results: str | None = typer.Option(
+        None,
+        "--results",
         help="Path to eval results JSON (from evaluate-rps) for result-based plots.",
     ),
-    log_paths: Optional[list[str]] = typer.Option(
-        None, "--log", "-l",
+    log_paths: list[str] | None = typer.Option(
+        None,
+        "--log",
+        "-l",
         help="Path(s) to training_log.csv for training curves.",
     ),
-    models: Optional[list[str]] = typer.Option(
-        None, "--model", "-m",
+    models: list[str] | None = typer.Option(
+        None,
+        "--model",
+        "-m",
         help="Name(s) for the legend (repeatable).",
     ),
-    output: Optional[Path] = typer.Option(
-        None, "--output", "-o",
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
         help="Output path (PNG or PDF).  Default: <type>.pdf",
     ),
-    metric: str = typer.Option("mse", "--metric", help="Metric for summary plots (mse, mae_frame, mae_clip, r2)."),
+    metric: str = typer.Option(
+        "mse", "--metric", help="Metric for summary plots (mse, mae_frame, mae_clip, r2)."
+    ),
     list_types: bool = typer.Option(
-        False, "--list", help="List available plot types and exit.",
+        False,
+        "--list",
+        help="List available plot types and exit.",
     ),
 ) -> None:
     """Dispatch to a registered plot function."""
@@ -76,14 +90,19 @@ def main(
         # If the results JSON has a standard structure, unwrap it.
         if isinstance(data, dict) and "results" in data:
             from tasks.rps_prediction import EvalResult
+
             # Reconstruct EvalResult list (lightweight — metrics only).
             result_objects = []
             for i, agg in enumerate(data.get("results", [])):
-                per_sample_data = data.get("per_sample", [[]])[i] if i < len(data.get("per_sample", [])) else []
+                per_sample_data = (
+                    data.get("per_sample", [[]])[i] if i < len(data.get("per_sample", [])) else []
+                )
                 r = EvalResult(
                     per_sample=per_sample_data,
                     aggregate=agg,
-                    model_spec=data.get("models", ["?"])[i] if i < len(data.get("models", ["?"])) else "?",
+                    model_spec=data.get("models", ["?"])[i]
+                    if i < len(data.get("models", ["?"]))
+                    else "?",
                     input_set_label=data.get("input_set", ""),
                 )
                 result_objects.append(r)
@@ -105,6 +124,7 @@ def main(
     fig.savefig(str(out), dpi=150, bbox_inches="tight")
     typer.echo(f"Wrote {out}")
     import matplotlib.pyplot as plt
+
     plt.close(fig)
 
 

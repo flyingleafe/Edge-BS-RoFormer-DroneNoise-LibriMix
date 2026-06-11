@@ -240,7 +240,7 @@ def test_resample_phase_zero():
 
 def test_init_rejects_0d_samples():
     with pytest.raises(ValueError, match="at least one axis"):
-        UniformSeries(samples=np.float64(5.0), sr=10.0, t_start_ticks=0, dur_ticks=100, phase=0.0)
+        UniformSeries(samples=np.float64(5.0), sr=10.0, t_start_ticks=0, dur_ticks=100, phase=0.0)  # type: ignore[arg-type]
 
 
 def test_init_rejects_nonpositive_sr():

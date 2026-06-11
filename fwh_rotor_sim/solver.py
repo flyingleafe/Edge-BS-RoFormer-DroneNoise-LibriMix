@@ -1,10 +1,13 @@
 """High-level FWH rotor acoustic solver."""
 
+from collections.abc import Callable
+from typing import Any, cast
+
 import torch
-from typing import Callable
-from .geometry import Rotor
+
 from .bemt import BEMTAerodynamics
 from .fwh import Farassat1ASolver
+from .geometry import Rotor
 
 
 class FWHRotorSolver:
@@ -18,8 +21,8 @@ class FWHRotorSolver:
         rotor: Rotor,
         c0: float = 343.0,
         rho0: float = 1.225,
-        airfoil=None,
-        source_dt: float = None,
+        airfoil: Any = None,
+        source_dt: float | None = None,
     ):
         """
         Args:
@@ -37,7 +40,11 @@ class FWHRotorSolver:
         self.fwh = Farassat1ASolver(c0=c0, rho0=rho0)
         self.source_dt = source_dt
 
-    def _integrate_azimuth(self, tau: torch.Tensor, Omega: Callable) -> torch.Tensor:
+    def _integrate_azimuth(
+        self,
+        tau: torch.Tensor,
+        Omega: Callable[[torch.Tensor], torch.Tensor] | float | torch.Tensor,
+    ) -> torch.Tensor:
         """Integrate Omega(tau) to get azimuth angle psi."""
         # If Omega is constant or tensor, analytic
         if isinstance(Omega, (int, float, torch.Tensor)):
@@ -73,7 +80,7 @@ class FWHRotorSolver:
         psi = torch.nn.functional.interpolate(
             psi_grid.view(1, 1, -1),
             size=tau.numel(),
-            mode='linear',
+            mode="linear",
             align_corners=True,
         ).view(-1)
         return psi
@@ -81,7 +88,7 @@ class FWHRotorSolver:
     def _compute_source_quantities(
         self,
         tau: torch.Tensor,
-        Omega_val: torch.Tensor,
+        Omega_val: float | torch.Tensor,
         blade_idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute position, velocity, force, and force derivative for one blade.
@@ -113,7 +120,7 @@ class FWHRotorSolver:
         psi = Omega_val * tau + phi_b  # [N_t]
 
         # Positions and velocities
-        y = blade.panel_positions(psi)        # [N_r, N_t, 3]
+        y = blade.panel_positions(psi)  # [N_r, N_t, 3]
         v = blade.panel_velocities(psi, Omega_val)  # [N_r, N_t, 3]
 
         # Forces: BEMT in local frame, then rotate to ground frame
@@ -156,7 +163,7 @@ class FWHRotorSolver:
         self,
         x_observer: torch.Tensor,
         t: torch.Tensor,
-        Omega: Callable,
+        Omega: Callable[[torch.Tensor], torch.Tensor] | float | torch.Tensor,
     ) -> torch.Tensor:
         """Compute acoustic pressure time history at observer(s).
 
@@ -174,53 +181,56 @@ class FWHRotorSolver:
         if x_observer.dim() == 1:
             p_total = torch.zeros_like(t)
         else:
-            p_total = torch.zeros(
-                x_observer.shape[0], t.shape[0], dtype=t.dtype, device=t.device
-            )
+            p_total = torch.zeros(x_observer.shape[0], t.shape[0], dtype=t.dtype, device=t.device)
 
         for b in range(self.rotor.B):
             # Source functions for this blade
+            # Omega is always float|Tensor when called through these closures
+            _O = cast(float | torch.Tensor, Omega)
+
             def y_func(tau):
-                return self._compute_source_quantities(tau, Omega, b)[0]
+                return self._compute_source_quantities(tau, _O, b)[0]
 
             def v_func(tau):
-                return self._compute_source_quantities(tau, Omega, b)[1]
+                return self._compute_source_quantities(tau, _O, b)[1]
 
             def F_func(tau):
-                return self._compute_source_quantities(tau, Omega, b)[2]
+                return self._compute_source_quantities(tau, _O, b)[2]
 
             def Fdot_func(tau):
-                return self._compute_source_quantities(tau, Omega, b)[3]
+                return self._compute_source_quantities(tau, _O, b)[3]
 
             # Mach derivative (only needed for term 3)
             def Mdot_func(tau):
                 # M = v/c0, Mdot = vdot/c0
                 # vdot = Omega_dot × y + Omega × v
                 # For constant Omega: vdot = Omega × v = -Omega^2 * y_perp
-                _, v, _, _ = self._compute_source_quantities(tau, Omega, b)
+                _, v, _, _ = self._compute_source_quantities(tau, _O, b)
                 if isinstance(Omega, (int, float, torch.Tensor)) and (
                     not isinstance(Omega, torch.Tensor) or Omega.dim() == 0
                 ):
                     Omega_val = float(Omega)
                     # vdot_x = -Omega^2 * y_x, vdot_y = -Omega^2 * y_y
                     y = y_func(tau)
-                    vdot = -Omega_val ** 2 * y
+                    vdot = -(Omega_val**2) * y
                     vdot[..., 2] = 0.0
                 else:
                     # Variable Omega: approximate numerically
                     dt = 1e-6
-                    _, v_plus, _, _ = self._compute_source_quantities(
-                        tau + dt, Omega, b
-                    )
-                    _, v_minus, _, _ = self._compute_source_quantities(
-                        tau - dt, Omega, b
-                    )
+                    _, v_plus, _, _ = self._compute_source_quantities(tau + dt, _O, b)
+                    _, v_minus, _, _ = self._compute_source_quantities(tau - dt, _O, b)
                     vdot = (v_plus - v_minus) / (2 * dt)
                 return vdot / self.c0
 
             p_blade = self.fwh.compute_pressure(
-                t, x_observer, y_func, v_func, F_func, Fdot_func,
-                Mdot_func=Mdot_func, include_term3=True,
+                t,
+                x_observer,
+                y_func,
+                v_func,
+                F_func,
+                Fdot_func,
+                Mdot_func=Mdot_func,
+                include_term3=True,
             )
             p_total += p_blade
 

@@ -97,12 +97,12 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
         # Mel band-based Roformer model
         from models.edge_bs_rof import MelBandRoformer
 
-        model = MelBandRoformer(**dict(config.model))
+        model = MelBandRoformer(**OmegaConf.to_container(config.model, resolve=True))  # type: ignore[arg-type]
     elif model_type == "edge_bs_rof":
         # Base Roformer model
         from models.edge_bs_rof import BSRoformer
 
-        model = BSRoformer(**dict(config.model))
+        model = BSRoformer(**OmegaConf.to_container(config.model, resolve=True))  # type: ignore[arg-type]
     elif model_type == "swin_upernet":
         # Swin Transformer + UperNet architecture
         from models.upernet_swin_transformers import Swin_UperNet_Model
@@ -147,7 +147,7 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
         # DCUNet model (original implementation)
         from models.dcunet import DCUNet
 
-        model = DCUNet(config)
+        model = DCUNet(cast(dict[str, Any], OmegaConf.to_container(config, resolve=True)))
     elif model_type == "dcunet_refactored":
         # Refactored DCUNet with separate Encoder/Decoder modules
         # RPS conditioning is decoder-side only
@@ -432,114 +432,111 @@ def demix(
 
     use_amp = getattr(config.training, "use_amp", True)
 
-    with torch.cuda.amp.autocast(enabled=use_amp):
-        with torch.inference_mode():
-            # Initialize result and counter tensors
-            req_shape = (num_instruments,) + mix.shape
-            result = torch.zeros(req_shape, dtype=torch.float32)
-            counter = torch.zeros(req_shape, dtype=torch.float32)
+    with torch.cuda.amp.autocast(enabled=use_amp), torch.inference_mode():
+        # Initialize result and counter tensors
+        req_shape = (num_instruments,) + mix.shape
+        result = torch.zeros(req_shape, dtype=torch.float32)
+        counter = torch.zeros(req_shape, dtype=torch.float32)
 
-            i: int = 0
-            batch_data = []
-            batch_rps = []
-            batch_locations = []
-            progress_bar = (
-                tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False)
-                if pbar
-                else None
-            )
+        i: int = 0
+        batch_data = []
+        batch_rps = []
+        batch_locations = []
+        progress_bar = (
+            tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+        )
 
-            use_rps = rps is not None and getattr(model, "use_rps", False)
+        use_rps = rps is not None and getattr(model, "use_rps", False)
 
-            # Process audio in chunks
-            while i < mix.shape[1]:
-                # Extract and pad audio chunk
-                part = mix[:, i : i + chunk_size].to(device)
-                chunk_len = part.shape[-1]
-                if mode == "generic" and chunk_len > chunk_size // 2:
-                    pad_mode = "reflect"
+        # Process audio in chunks
+        while i < mix.shape[1]:
+            # Extract and pad audio chunk
+            part = mix[:, i : i + chunk_size].to(device)
+            chunk_len = part.shape[-1]
+            if mode == "generic" and chunk_len > chunk_size // 2:
+                pad_mode = "reflect"
+            else:
+                pad_mode = "constant"
+            part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
+
+            batch_data.append(part)
+            if use_rps:
+                rps_t = torch.as_tensor(rps, dtype=torch.float32, device=device)
+                if rps_t.dim() == 2:
+                    part_rps = rps_t[:, i : i + chunk_size].unsqueeze(0)
                 else:
-                    pad_mode = "constant"
-                part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
+                    part_rps = rps_t[:, :, i : i + chunk_size]
+                part_rps = nn.functional.pad(
+                    part_rps,
+                    (0, chunk_size - part_rps.shape[-1]),
+                    mode="constant",
+                    value=0,
+                )
+                batch_rps.append(part_rps)
+            batch_locations.append((i, chunk_len))
+            i += step
 
-                batch_data.append(part)
-                if use_rps:
-                    rps_t = torch.as_tensor(rps, dtype=torch.float32, device=device)
-                    if rps_t.dim() == 2:
-                        part_rps = rps_t[:, i : i + chunk_size].unsqueeze(0)
-                    else:
-                        part_rps = rps_t[:, :, i : i + chunk_size]
-                    part_rps = nn.functional.pad(
-                        part_rps,
-                        (0, chunk_size - part_rps.shape[-1]),
-                        mode="constant",
-                        value=0,
-                    )
-                    batch_rps.append(part_rps)
-                batch_locations.append((i, chunk_len))
-                i += step
+            # Process batch when batch_size is reached
+            if len(batch_data) >= batch_size or i >= mix.shape[1]:
+                arr = torch.stack(batch_data, dim=0)
+                if use_rps and batch_rps:
+                    arr_rps = torch.cat(batch_rps, dim=0)
+                    rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                    if rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                        arr_rps = arr_rps / float(rps_norm_scale)
+                    x = model(arr, rps=arr_rps)
+                else:
+                    x = model(arr)
+                # Discard auxiliary outputs (e.g. rps_pred); de-normalize if present
+                if isinstance(x, tuple):
+                    rps_pred = x[1]
+                    x = x[0]
+                    rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                    if (
+                        rps_pred is not None
+                        and rps_norm_scale is not None
+                        and float(rps_norm_scale) != 1.0
+                    ):
+                        rps_pred = rps_pred * float(rps_norm_scale)
 
-                # Process batch when batch_size is reached
-                if len(batch_data) >= batch_size or i >= mix.shape[1]:
-                    arr = torch.stack(batch_data, dim=0)
-                    if use_rps and batch_rps:
-                        arr_rps = torch.cat(batch_rps, dim=0)
-                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
-                        if rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
-                            arr_rps = arr_rps / float(rps_norm_scale)
-                        x = model(arr, rps=arr_rps)
-                    else:
-                        x = model(arr)
-                    # Discard auxiliary outputs (e.g. rps_pred); de-normalize if present
-                    if isinstance(x, tuple):
-                        rps_pred = x[1]
-                        x = x[0]
-                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
-                        if (
-                            rps_pred is not None
-                            and rps_norm_scale is not None
-                            and float(rps_norm_scale) != 1.0
-                        ):
-                            rps_pred = rps_pred * float(rps_norm_scale)
+                if mode == "generic":
+                    window = windowing_array.clone()
+                    if i - step == 0:  # First chunk doesn't need fade-in
+                        window[:fade_size] = 1
+                    elif i >= mix.shape[1]:  # Last chunk doesn't need fade-out
+                        window[-fade_size:] = 1
 
+                # Add processed results to total result
+                for j, (start, seg_len) in enumerate(batch_locations):
                     if mode == "generic":
-                        window = windowing_array.clone()
-                        if i - step == 0:  # First chunk doesn't need fade-in
-                            window[:fade_size] = 1
-                        elif i >= mix.shape[1]:  # Last chunk doesn't need fade-out
-                            window[-fade_size:] = 1
+                        result[..., start : start + seg_len] += (
+                            x[j, ..., :seg_len].cpu() * window[..., :seg_len]
+                        )
+                        counter[..., start : start + seg_len] += window[..., :seg_len]
+                    else:
+                        result[..., start : start + seg_len] += x[j, ..., :seg_len].cpu()
+                        counter[..., start : start + seg_len] += 1.0
 
-                    # Add processed results to total result
-                    for j, (start, seg_len) in enumerate(batch_locations):
-                        if mode == "generic":
-                            result[..., start : start + seg_len] += (
-                                x[j, ..., :seg_len].cpu() * window[..., :seg_len]
-                            )
-                            counter[..., start : start + seg_len] += window[..., :seg_len]
-                        else:
-                            result[..., start : start + seg_len] += x[j, ..., :seg_len].cpu()
-                            counter[..., start : start + seg_len] += 1.0
-
-                    batch_data.clear()
-                    if use_rps:
-                        batch_rps.clear()
-                    batch_locations.clear()
-
-                if progress_bar:
-                    progress_bar.update(step)
+                batch_data.clear()
+                if use_rps:
+                    batch_rps.clear()
+                batch_locations.clear()
 
             if progress_bar:
-                progress_bar.close()
+                progress_bar.update(step)
 
-            # Compute final estimated sources
-            estimated_sources = result / counter
-            estimated_sources = estimated_sources.cpu().numpy()
-            np.nan_to_num(estimated_sources, copy=False, nan=0.0)
+        if progress_bar:
+            progress_bar.close()
 
-            # Remove padding for generic mode
-            if mode == "generic":
-                if length_init > 2 * border and border > 0:
-                    estimated_sources = estimated_sources[..., border:-border]
+        # Compute final estimated sources
+        estimated_sources = result / counter
+        estimated_sources = estimated_sources.cpu().numpy()
+        np.nan_to_num(estimated_sources, copy=False, nan=0.0)
+
+        # Remove padding for generic mode
+        if mode == "generic":
+            if length_init > 2 * border and border > 0:
+                estimated_sources = estimated_sources[..., border:-border]
 
     # Return results
     if mode == "demucs":

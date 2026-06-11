@@ -1,4 +1,5 @@
 from functools import partial
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -8,7 +9,7 @@ from einops import pack, rearrange, reduce, repeat, unpack
 from einops.layers.torch import Rearrange
 from librosa import filters
 from rotary_embedding_torch import RotaryEmbedding
-from torch import nn
+from torch import Tensor, nn
 from torch.nn import Module, ModuleList
 from torch.utils.checkpoint import checkpoint
 
@@ -124,8 +125,8 @@ class Attention(Module):
         q, k, v = rearrange(self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads)
 
         if exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
-            k = self.rotary_embed.rotate_queries_or_keys(k)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+            q = cast(RotaryEmbedding, self.rotary_embed).rotate_queries_or_keys(q)
+            k = cast(RotaryEmbedding, self.rotary_embed).rotate_queries_or_keys(k)
 
         out = self.attend(q, k, v)
 
@@ -223,7 +224,8 @@ class Transformer(Module):
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 
     def forward(self, x):
-        for attn, ff in self.layers:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        for block in self.layers:
+            attn, ff = cast(tuple[nn.Module, nn.Module], block)
             x = attn(x) + x
             x = ff(x) + x
 
@@ -273,7 +275,7 @@ def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh):
     for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:])):
         is_last = ind == (len(dims) - 2)
 
-        net.append(nn.Linear(layer_dim_in, layer_dim_out))  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        net.append(nn.Linear(layer_dim_in, layer_dim_out))  # type: ignore[arg-type]
 
         if is_last:
             continue
@@ -375,12 +377,30 @@ class MelBandRoformer(Module):
     ):
         super().__init__()
 
+        # Normalize OmegaConf types: config values arrive as float, need int/bool
+        depth = int(depth)
+        dim_head = int(dim_head)
+        heads = int(heads)
+        time_transformer_depth = int(time_transformer_depth)
+        freq_transformer_depth = int(freq_transformer_depth)
+        linear_transformer_depth = int(linear_transformer_depth)
+        num_bands = int(num_bands)
+        mask_estimator_depth = int(mask_estimator_depth)
+        stft_n_fft = int(stft_n_fft)
+        stft_hop_length = int(stft_hop_length)
+        stft_win_length = int(stft_win_length)
+        flash_attn = bool(flash_attn)
+        stft_normalized = bool(stft_normalized)
+        skip_connection = bool(skip_connection)
+        use_torch_checkpoint = bool(use_torch_checkpoint)
+        match_input_audio_length = bool(match_input_audio_length)
+        num_stems = int(num_stems)
+
         self.stereo = stereo
         self.audio_channels = 2 if stereo else 1
         self.num_stems = num_stems
         self.use_torch_checkpoint = use_torch_checkpoint
         self.skip_connection = skip_connection
-
         self.layers = ModuleList([])
 
         transformer_kwargs = dict(
@@ -401,26 +421,28 @@ class MelBandRoformer(Module):
             if linear_transformer_depth > 0:
                 tran_modules.append(
                     Transformer(
-                        depth=linear_transformer_depth, linear_attn=True, **transformer_kwargs
+                        depth=linear_transformer_depth,
+                        linear_attn=True,
+                        **transformer_kwargs,  # type: ignore[arg-type]
                     )
-                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+                )
             tran_modules.append(
                 Transformer(
                     depth=time_transformer_depth,
                     rotary_embed=time_rotary_embed,
-                    **transformer_kwargs,
-                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+                    **transformer_kwargs,  # type: ignore[arg-type]
+                )
             )
             tran_modules.append(
                 Transformer(
                     depth=freq_transformer_depth,
                     rotary_embed=freq_rotary_embed,
-                    **transformer_kwargs,
-                )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+                    **transformer_kwargs,  # type: ignore[arg-type]
+                )
             )
             self.layers.append(nn.ModuleList(tran_modules))
 
-        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # type: ignore[arg-type]
 
         self.stft_kwargs = dict(
             n_fft=stft_n_fft,
@@ -431,10 +453,10 @@ class MelBandRoformer(Module):
 
         freqs = torch.stft(
             torch.randn(1, 4096),
-            **self.stft_kwargs,
+            **self.stft_kwargs,  # type: ignore[arg-type]
             window=torch.ones(stft_n_fft),
             return_complex=True,
-        ).shape[1]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        ).shape[1]
 
         # Create mel filter bank
         mel_filter_bank_numpy = filters.mel(sr=sample_rate, n_fft=stft_n_fft, n_mels=num_bands)
@@ -529,8 +551,11 @@ class MelBandRoformer(Module):
         stft_window = self.stft_window_fn(device=device)
 
         stft_repr = torch.stft(
-            raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True
-        )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+            raw_audio,
+            **self.stft_kwargs,
+            window=stft_window,
+            return_complex=True,  # type: ignore[arg-type]
+        )
         stft_repr = torch.view_as_real(stft_repr)
 
         stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, "* f t c")
@@ -540,7 +565,7 @@ class MelBandRoformer(Module):
 
         # Index frequencies for all bands
         batch_arange = torch.arange(batch, device=device)[..., None]
-        x = stft_repr[batch_arange, self.freq_indices]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        x = stft_repr[batch_arange, cast(Tensor, self.freq_indices)]
 
         # Fold complex (real and imaginary) to frequency dimension
         x = rearrange(x, "b f t c -> b t (f c)")
@@ -554,8 +579,10 @@ class MelBandRoformer(Module):
         # Axial/hierarchical attention processing
         store = [None] * len(self.layers)
         for i, transformer_block in enumerate(self.layers):
-            if len(transformer_block) == 3:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
-                linear_transformer, time_transformer, freq_transformer = transformer_block  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+            if len(cast(ModuleList, transformer_block)) == 3:
+                linear_transformer, time_transformer, freq_transformer = cast(
+                    ModuleList, transformer_block
+                )
 
                 x, ft_ps = pack([x], "b * d")
                 if self.use_torch_checkpoint:
@@ -564,12 +591,12 @@ class MelBandRoformer(Module):
                     x = linear_transformer(x)
                 (x,) = unpack(x, ft_ps, "b * d")
             else:
-                time_transformer, freq_transformer = transformer_block  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+                time_transformer, freq_transformer = cast(ModuleList, transformer_block)
 
             if self.skip_connection:
                 # Accumulate previous features
                 for j in range(i):
-                    x = x + store[j]  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+                    x = x + cast(Tensor, store[j])  # type: ignore[operator]
 
             # Time dimension attention
             x = rearrange(x, "b t f d -> b f t d")
@@ -600,8 +627,9 @@ class MelBandRoformer(Module):
         num_stems = len(self.mask_estimators)
         if self.use_torch_checkpoint:
             masks = torch.stack(
-                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators], dim=1
-            )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+                [checkpoint(fn, x, use_reentrant=False) for fn in self.mask_estimators],
+                dim=1,  # type: ignore[arg-type]
+            )
         else:
             masks = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
         masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
@@ -616,14 +644,18 @@ class MelBandRoformer(Module):
 
         # Average estimated masks for overlapping frequencies
         scatter_indices = repeat(
-            self.freq_indices, "f -> b n f t", b=batch, n=num_stems, t=stft_repr.shape[-1]
+            cast(Tensor, self.freq_indices),
+            "f -> b n f t",
+            b=batch,
+            n=num_stems,
+            t=stft_repr.shape[-1],
         )
         stft_repr_expanded_stems = repeat(stft_repr, "b 1 ... -> b n ...", n=num_stems)
         masks_summed = torch.zeros_like(stft_repr_expanded_stems).scatter_add_(
             2, scatter_indices, masks
-        )  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
-        denom = repeat(self.num_bands_per_freq, "f -> (f r) 1", r=channels)
-        masks_averaged = masks_summed / denom.clamp(min=1e-8)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue, reportCallIssue]
+        )
+        denom = repeat(cast(Tensor, self.num_bands_per_freq), "f -> (f r) 1", r=channels)
+        masks_averaged = masks_summed / denom.clamp(min=1e-8)
 
         # Modulate STFT representation with estimated mask
         stft_repr = stft_repr * masks_averaged
@@ -648,15 +680,15 @@ class MelBandRoformer(Module):
         if not exists(target):
             return recon_audio
 
-        if self.num_stems > 1:
-            assert target.ndim == 4 and target.shape[1] == self.num_stems  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        assert target is not None
 
-        if target.ndim == 2:  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        if self.num_stems > 1:
+            assert target.ndim == 4 and target.shape[1] == self.num_stems
+
+        if target.ndim == 2:
             target = rearrange(target, "... t -> ... 1 t")
 
-        target = target[
-            ..., : recon_audio.shape[-1]
-        ]  # Protect against istft length loss  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+        target = target[..., : recon_audio.shape[-1]]  # Protect against istft length loss
 
         # L1 loss
         loss = F.l1_loss(recon_audio, target)
@@ -673,8 +705,8 @@ class MelBandRoformer(Module):
                 **self.multi_stft_kwargs,
             )
 
-            recon_Y = torch.stft(rearrange(recon_audio, "... s t -> (... s) t"), **res_stft_kwargs)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
-            target_Y = torch.stft(rearrange(target, "... s t -> (... s) t"), **res_stft_kwargs)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAttributeAccessIssue]
+            recon_Y = torch.stft(rearrange(recon_audio, "... s t -> (... s) t"), **res_stft_kwargs)  # type: ignore[arg-type]
+            target_Y = torch.stft(rearrange(target, "... s t -> (... s) t"), **res_stft_kwargs)  # type: ignore[arg-type]
 
             multi_stft_resolution_loss = multi_stft_resolution_loss + F.l1_loss(recon_Y, target_Y)
 

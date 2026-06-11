@@ -311,7 +311,7 @@ def create_audio_comparison_plots(model_names, sample_ids, audio_dir, output_dir
 
         for model_name in model_names:
             audio, sr = load_audio_file(audio_dir, model_name, sample_id)
-            if audio is not None:
+            if audio is not None and sr is not None:
                 audio_data[model_name] = audio
                 sample_rates[model_name] = sr
                 print(f"  ✓ Loaded {model_name}: {len(audio) / sr:.2f}s @ {sr}Hz")

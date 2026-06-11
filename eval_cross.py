@@ -5,6 +5,7 @@ plus sample-level inference and in-flight recording inference."""
 import json
 import os
 import random
+from typing import cast
 
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ from train_rps_predictor import (
     pairwise_mse,
     pit_mse_loss,
 )
+from utils.data import EventSeries, UniformSeries
 from utils.paths import get_data_path, get_datasets_path, get_results_path
 
 device = "cuda:0"
@@ -160,7 +162,7 @@ for sample in all_samples:
 
     tf = load_timeframe(sample, geometry=geometry, target_sr=16000)
 
-    audio_us = tf["audio"]
+    audio_us = cast(UniformSeries, tf["audio"])
     # UniformSeries stores (channels, N) — axis 0 = channels
     n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1
     total_duration = audio_us.duration
@@ -174,9 +176,13 @@ for sample in all_samples:
     # Extract command RPS (cleaned) for ground truth
     motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
     if motor_key in tf:
-        command = tf[motor_key].values.copy()
-        command_cleaned = clean_command_spikes(command)
-        rps_full = torch.from_numpy(command_cleaned.T.astype(np.float32))  # (4, T_motor)
+        motor_es = cast(EventSeries, tf[motor_key])
+        if motor_es.values is not None:
+            command = motor_es.values.copy()
+            command_cleaned = clean_command_spikes(command)
+            rps_full = torch.from_numpy(command_cleaned.T.astype(np.float32))  # (4, T_motor)
+        else:
+            rps_full = None
     else:
         rps_full = None
 

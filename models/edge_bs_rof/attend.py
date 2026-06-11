@@ -134,22 +134,24 @@ class Attend(nn.Module):
         _, heads, q_len, _, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device
 
         # If user specified custom scaling factor, adjust query vector q accordingly
-        if exists(self.scale):
+        if self.scale is not None:
             default_scale = (
                 q.shape[-1] ** -0.5
             )  # Default scaling factor, typically 1/sqrt(feature_dimension)
-            q = q * (self.scale / default_scale)  # Adjust q by custom scale ratio
+            scale = self.scale
+            q = q * (scale / default_scale)  # Adjust q by custom scale ratio
 
         config = self.cuda_config if is_cuda else self.cpu_config
+        assert config is not None
 
         # Flash Attention requires float16 or bfloat16 - fall back to MATH for float32
         is_half_precision = q.dtype in (torch.float16, torch.bfloat16)
 
-        if config.enable_flash and is_half_precision:  # pyright: ignore[reportOptionalMemberAccess]
+        if config.enable_flash and is_half_precision:
             backend = SDPBackend.FLASH_ATTENTION
-        elif config.enable_mem_efficient:  # pyright: ignore[reportOptionalMemberAccess]
+        elif config.enable_mem_efficient:
             backend = SDPBackend.EFFICIENT_ATTENTION
-        elif config.enable_math:  # pyright: ignore[reportOptionalMemberAccess]
+        elif config.enable_math:
             backend = SDPBackend.MATH
         else:
             backend = SDPBackend.MATH
@@ -185,8 +187,7 @@ class Attend(nn.Module):
         # Get query and key sequence lengths, and determine device of query
         q_len, k_len, device = q.shape[-2], k.shape[-2], q.device
 
-        # If custom scaling factor not provided, use default value 1/sqrt(feature_dimension)
-        scale = default(self.scale, q.shape[-1] ** -0.5)
+        scale = self.scale if self.scale is not None else q.shape[-1] ** -0.5
 
         # When Flash Attention mode is enabled, call flash_attn function to get attention output
         if self.flash:

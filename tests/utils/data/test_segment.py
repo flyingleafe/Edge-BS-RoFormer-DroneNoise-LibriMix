@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pytest
 from hypothesis import given, settings
@@ -258,7 +260,7 @@ def test_concat_rejects_non_segment_series():
     ss = SegmentSeries.from_segments(np.array([0.2]), np.array([0.4]), t_start=0.0, t_end=1.0)
     us = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=0)
     with pytest.raises(IncompatibleSeriesError, match="cannot concat"):
-        ss.concat(us)
+        ss.concat(us)  # type: ignore[arg-type]
 
 
 def test_concat_rejects_one_has_values_one_does_not():
@@ -359,7 +361,7 @@ def test_getitem_with_values_returns_4_tuple():
         t_start_ticks=1_000_000_000,
         dur_ticks=100,
     )
-    s, e, v, i = ss[0]
+    s, e, v, i = cast(tuple, ss[0])
     # start time = t_start + ticks_to_secs(10)
     assert s == pytest.approx(1.0 + 10 / 1e9, rel=1e-9)
     assert e == pytest.approx(1.0 + 20 / 1e9, rel=1e-9)

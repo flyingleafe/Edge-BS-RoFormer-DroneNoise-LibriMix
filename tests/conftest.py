@@ -1,6 +1,5 @@
 import pytest
 
-
 FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
 FAKE_URL = "git@github.com:user/repo.git"
 
@@ -9,15 +8,24 @@ FAKE_URL = "git@github.com:user/repo.git"
 def fake_git(monkeypatch):
     """Monkeypatch `postdoc.git_state.snapshot` so CLI tests don't shell out to git."""
     from postdoc import git_state
+
     calls: list[tuple[str, dict]] = []
 
     def _snapshot(*, cwd=None, allow_dirty=False, skip_push=False, remote="origin"):
-        calls.append(("snapshot", {
-            "cwd": cwd, "allow_dirty": allow_dirty,
-            "skip_push": skip_push, "remote": remote,
-        }))
+        calls.append(
+            (
+                "snapshot",
+                {
+                    "cwd": cwd,
+                    "allow_dirty": allow_dirty,
+                    "skip_push": skip_push,
+                    "remote": remote,
+                },
+            )
+        )
         return {
-            "sha": FAKE_SHA, "url": FAKE_URL,
+            "sha": FAKE_SHA,
+            "url": FAKE_URL,
             "branch": "main",
             "refspec": "HEAD:refs/heads/main",
             "dirty": "True" if allow_dirty else "False",
@@ -57,9 +65,11 @@ def fake_sky(monkeypatch):
         return _Result(rc=rc, stdout=stdout)
 
     import subprocess
+
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     import shutil
+
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
     class FakeSky:

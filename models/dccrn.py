@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -102,8 +104,10 @@ class Decoder(nn.Module):
     def forward(self, x):
         x = self.cconvt(x)
         if not self.last_layer:
-            x = self.cbn(x)  # pyright: ignore[reportOptionalCall]
-            x = self.act(x)  # pyright: ignore[reportOptionalCall]
+            assert self.cbn is not None
+            assert self.act is not None
+            x = self.cbn(x)
+            x = self.act(x)
         else:
             x = x.float()
             m_phase = x / (torch.abs(x) + 1e-8)
@@ -345,9 +349,8 @@ class DCCRN(nn.Module):
 
         # Concatenate rotor features before GRU (Gulli et al. RPS-DCCRN)
         if self.use_rps and rps is not None:
-            rotor_feat = self.rotor_encoder(
-                rps, target_length=T_b
-            )  # (B, 64, T_b)  # pyright: ignore[reportOptionalCall]
+            assert self.rotor_encoder is not None
+            rotor_feat = self.rotor_encoder(rps, target_length=T_b)  # (B, 64, T_b)
             rotor_feat = rotor_feat.permute(0, 2, 1)  # (B, T_b, 64)
             gru_in = torch.cat([gru_in, rotor_feat], dim=-1)
 
@@ -392,7 +395,7 @@ class DCCRN(nn.Module):
 
 # ---------------------- Simple test case ----------------------
 if __name__ == "__main__":
-    config = {
+    config: dict[str, Any] = {
         "audio": {
             "chunk_size": 131584,
             "dim_f": 1024,

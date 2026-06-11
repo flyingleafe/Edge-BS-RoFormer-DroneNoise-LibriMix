@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -246,7 +248,7 @@ def test_shift():
     shifted = tf.shift(5_000_000_000)
     assert shifted.t_start_ticks == 15_000_000_000
     assert shifted.t_end_ticks == 16_000_000_000
-    assert shifted["audio"].t_start_ticks == 15_000_000_000
+    assert cast(Any, shifted["audio"]).t_start_ticks == 15_000_000_000
     t0, v0 = shifted["rps"][0]  # pyright: ignore[reportIndexIssue]
     assert t0 == pytest.approx(15.1)
     assert v0 == pytest.approx(1.0)
@@ -278,7 +280,7 @@ def test_concat_with_gap():
     joined = tf1.concat(tf2)
     assert joined.t_start_ticks == 0
     assert joined.t_end_ticks == 2_000_000_000
-    audio = joined["audio"]
+    audio = cast(Any, joined["audio"])
     assert audio.t_start_ticks == 0
     assert audio.t_end_ticks == 2_000_000_000
 
@@ -295,8 +297,8 @@ def test_slice_heterogeneous_domains():
     sliced = tf.slice(0, 1_000_000_000)
     assert "audio" in sliced
     assert "rps" in sliced
-    assert sliced["audio"].t_start_ticks == 0
-    assert sliced["rps"].t_start_ticks == 200_000_000
+    assert cast(Any, sliced["audio"]).t_start_ticks == 0
+    assert cast(Any, sliced["rps"]).t_start_ticks == 200_000_000
 
 
 # ── TimeFrame.tags ────────────────────────────────────────────────────────
@@ -389,7 +391,7 @@ def test_init_rejects_negative_dur_ticks():
 
 def test_init_rejects_non_timeseries_track():
     with pytest.raises(TypeError, match="not a TimeSeries"):
-        TimeFrame(tracks={"bad": 42}, t_start_ticks=0, dur_ticks=100)
+        TimeFrame(tracks={"bad": 42}, t_start_ticks=0, dur_ticks=100)  # type: ignore[arg-type]
 
 
 def test_init_rejects_t_start_after_hull_start():
@@ -406,13 +408,13 @@ def test_init_rejects_t_end_before_hull_end():
 
 def test_init_normalises_none_tags_to_empty_dict():
     us = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=0)
-    tf = TimeFrame(tracks={"audio": us}, t_start_ticks=0, dur_ticks=500_000_000, tags=None)
+    tf = TimeFrame(tracks={"audio": us}, t_start_ticks=0, dur_ticks=500_000_000, tags=None)  # type: ignore[arg-type]
     assert tf.tags == {}
 
 
 def test_init_normalises_none_global_data_to_empty_dict():
     us = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=0)
-    tf = TimeFrame(tracks={"audio": us}, t_start_ticks=0, dur_ticks=500_000_000, global_data=None)
+    tf = TimeFrame(tracks={"audio": us}, t_start_ticks=0, dur_ticks=500_000_000, global_data=None)  # type: ignore[arg-type]
     assert tf.global_data == {}
 
 
@@ -444,14 +446,14 @@ def test_iter_yields_keys():
 def test_values_returns_abs_tracks():
     tf = _toy_frame(t0=1_000_000_000)
     for tr in tf.values():
-        assert tr.t_start_ticks >= 1_000_000_000
+        assert cast(Any, tr).t_start_ticks >= 1_000_000_000
 
 
 def test_items_returns_abs_tracks():
     tf = _toy_frame(t0=1_000_000_000)
     for name, tr in tf.items():
         assert name in {"audio", "rps"}
-        assert tr.t_start_ticks >= 1_000_000_000
+        assert cast(Any, tr).t_start_ticks >= 1_000_000_000
 
 
 def test_contains_key():

@@ -50,7 +50,7 @@ def test_evaluate_missing_audio_track():
     tf = TimeFrame.from_tracks({"rps": es})  # no "audio"
     p = FakePredictor()
     with pytest.raises(KeyError, match="audio"):
-        evaluate(p, [tf], verbose=False)
+        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
 
 
 def test_evaluate_missing_rps_track():
@@ -64,7 +64,7 @@ def test_evaluate_missing_rps_track():
     tf = TimeFrame.from_tracks({"audio": us})  # no "rps"
     p = FakePredictor()
     with pytest.raises(KeyError, match="rps"):
-        evaluate(p, [tf], verbose=False)
+        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
 
 
 def test_evaluate_audio_not_uniform_series():
@@ -79,7 +79,7 @@ def test_evaluate_audio_not_uniform_series():
     tf = TimeFrame.from_tracks({"audio": es, "rps": rps_es})
     p = FakePredictor()
     with pytest.raises(TypeError, match="UniformSeries"):
-        evaluate(p, [tf], verbose=False)
+        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
 
 
 def test_evaluate_rps_not_event_series():
@@ -93,7 +93,7 @@ def test_evaluate_rps_not_event_series():
     tf = TimeFrame.from_tracks({"audio": us, "rps": us})  # rps is UniformSeries
     p = FakePredictor()
     with pytest.raises(TypeError, match="EventSeries"):
-        evaluate(p, [tf], verbose=False)
+        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
 
 
 def test_evaluate_with_unknown_alignment():
@@ -108,7 +108,7 @@ def test_evaluate_with_unknown_alignment():
     tf = TimeFrame.from_tracks({"audio": us, "rps": es})
     p = FakePredictor()
     with pytest.raises(ValueError, match="Unknown alignment"):
-        evaluate(p, [tf], alignment="bogus", verbose=False)
+        evaluate(p, [tf], alignment="bogus", verbose=False)  # type: ignore[arg-type]
 
 
 def test_align_shape_stretch_no_values_raises():

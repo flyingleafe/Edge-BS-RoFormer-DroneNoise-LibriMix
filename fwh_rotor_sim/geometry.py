@@ -1,8 +1,8 @@
 """Rotor geometry definitions and panel generation."""
 
+from collections.abc import Callable
+
 import torch
-import torch.nn as nn
-from typing import Union, Callable
 
 
 class Blade:
@@ -15,8 +15,8 @@ class Blade:
     def __init__(
         self,
         radius: float,
-        chord: Union[float, Callable[[torch.Tensor], torch.Tensor]],
-        twist_deg: Union[float, Callable[[torch.Tensor], torch.Tensor]],
+        chord: float | Callable[[torch.Tensor], torch.Tensor],
+        twist_deg: float | Callable[[torch.Tensor], torch.Tensor],
         hub_radius: float = 0.0,
         n_radial: int = 50,
     ):
@@ -52,11 +52,14 @@ class Blade:
         #   y: chordwise (in blade section plane)
         #   z: normal to blade surface (thickness direction)
         # For compact chord, each strip acts as a point source at its center.
-        self.y0 = torch.stack([
-            self.r,
-            torch.zeros_like(self.r),
-            torch.zeros_like(self.r),
-        ], dim=-1)  # [n_radial, 3]
+        self.y0 = torch.stack(
+            [
+                self.r,
+                torch.zeros_like(self.r),
+                torch.zeros_like(self.r),
+            ],
+            dim=-1,
+        )  # [n_radial, 3]
 
         # Panel area (one side): chord × span
         self.dS = self.c * self.dr  # [n_radial]
@@ -129,8 +132,7 @@ class Blade:
         return torch.stack([vx, vy, vz], dim=-1)
 
     def __repr__(self):
-        return (f"Blade(R={self.R:.3f}m, n_r={self.n_radial}, "
-                f"theta_tip={self.theta_deg[-1]:.1f}deg)")
+        return f"Blade(R={self.R:.3f}m, n_r={self.n_radial}, theta_tip={self.theta_deg[-1]:.1f}deg)"
 
 
 class Rotor:
@@ -151,8 +153,9 @@ class Rotor:
 
     @property
     def disk_area(self) -> float:
-        return torch.pi * self.blade.R ** 2
+        return torch.pi * self.blade.R**2
 
     def __repr__(self):
-        return (f"Rotor(B={self.B}, blade={self.blade}, "
-                f"tilt={torch.rad2deg(self.shaft_tilt):.1f}deg)")
+        return (
+            f"Rotor(B={self.B}, blade={self.blade}, tilt={torch.rad2deg(self.shaft_tilt):.1f}deg)"
+        )

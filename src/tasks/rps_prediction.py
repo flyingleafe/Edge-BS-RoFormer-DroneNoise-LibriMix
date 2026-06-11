@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import (
     Any,
     Protocol,
+    cast,
     runtime_checkable,
 )
 
@@ -501,7 +502,8 @@ def evaluate(
         sr = audio_us.sr
         sid = frame.tags.get("id", f"sample_{n:05d}")
         snr_tag = frame.tags.get("input_snr", None)
-        per_ch_snr = frame.tags.get("input_snr_per_channel", None)
+        _per_ch_raw = frame.tags.get("input_snr_per_channel", None)
+        per_ch_snr = cast(list[float], _per_ch_raw) if _per_ch_raw is not None else None
 
         # Predict: (R, F) for mono, (C, R, F) for multichannel.
         pred = predictor.predict(audio, sr=sr)

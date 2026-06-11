@@ -179,7 +179,7 @@ class EventSeries(TimeSeries):
     def __len__(self) -> int:
         return int(self.timestamp_ticks.shape[0])
 
-    def __getitem__(self, i: Any):
+    def __getitem__(self, i: Any) -> float | tuple[float, np.ndarray[Any, Any]]:
         t = ticks_to_secs(int(self.timestamp_ticks[i]) + self.t_start_ticks)
         if self.values is None:
             return t
@@ -256,7 +256,8 @@ class EventSeries(TimeSeries):
             return False
         if self.values is None:
             return True
-        return np.array_equal(self.values, other.values)
+        assert other.values is not None  # parity checked above
+        return bool(np.array_equal(self.values, other.values))
 
     # ---- interpolation / resampling ------------------------------------
     def interpolate(

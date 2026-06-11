@@ -88,8 +88,8 @@ class MichaelsRecord:
 
     recording_id: str
     split: str = "in_flight_noise"  # always
-    audio: np.ndarray = field(repr=False, default=None)  # (n_samples, n_channels)
-    audio_timestamps: np.ndarray = field(repr=False, default=None)  # (n_samples,)
+    audio: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]  # (n_samples, n_channels)
+    audio_timestamps: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]  # (n_samples,)
     motors: MotorData | None = None
     sample_rate: int = 44100
 
@@ -169,7 +169,7 @@ def _load_raw(
     wav_duration = wav.shape[-1] / sample_rate
     keep = (small[t_col] >= time_offset) & (small[t_col] <= wav_duration + time_offset)
     small = small[keep]
-    ts = small[t_col].values.astype(np.float64)
+    ts = np.asarray(small[t_col], dtype=np.float64)
 
     # If CSV starts later than time_offset, trim the front of the wav.
     if ts[0] > time_offset:
@@ -184,7 +184,7 @@ def _load_raw(
         wav = wav[:, :keep_samples]
 
     # RPM -> RPS
-    motor_rps = small[speed_cols].values.T.astype(np.float32) / 60.0  # (4, M)
+    motor_rps = np.asarray(small[speed_cols]).T.astype(np.float32) / 60.0  # (4, M)
     return wav, ts, motor_rps
 
 
@@ -343,13 +343,12 @@ def extract_noise_chunk_with_rps(
 
     sliced = record.slice_by_time(start_sec, start_sec + duration_sec)
 
+    assert sliced.motors is not None
     audio = sliced.audio[:, channel] if sliced.audio.ndim > 1 else sliced.audio
-    rps = (
-        sliced.motors.measured.T
-    )  # (4, n_motor_samples)  # pyright: ignore[reportOptionalMemberAccess]
+    rps = sliced.motors.measured.T  # (4, n_motor_samples)
 
-    if len(sliced.motors.timestamps) > 1:  # pyright: ignore[reportOptionalMemberAccess]
-        motor_sr = 1.0 / float(np.median(np.diff(sliced.motors.timestamps)))  # pyright: ignore[reportOptionalMemberAccess]
+    if len(sliced.motors.timestamps) > 1:
+        motor_sr = 1.0 / float(np.median(np.diff(sliced.motors.timestamps)))
     else:
         motor_sr = 30.0  # DJI motor log is typically ~30 Hz
 

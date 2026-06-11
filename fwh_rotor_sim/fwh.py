@@ -1,14 +1,16 @@
 """Farassat 1A formulation of the Ffowcs-Williams Hawkings equation."""
 
+from collections.abc import Callable
+from typing import cast
+
 import torch
-from typing import Callable
 
 
 class Farassat1ASolver:
     """Time-domain FWH acoustic propagation using Farassat Formulation 1A.
 
     Implements the loading-noise terms for compact surface sources:
-    
+
         4π p'(x,t) = Σ  [ 1/c0 · Ḟ_r/(r(1-M_r)²)
                         + F_r/(r²(1-M_r)²)
                         + 1/c0 · F_r(r·Ṁ_r + c0(M_r - M²))/(r²(1-M_r)³) ]_ret
@@ -27,7 +29,7 @@ class Farassat1ASolver:
         x_observer: torch.Tensor,
         y_func: Callable,
         v_func: Callable,
-        tau_guess: torch.Tensor = None,
+        tau_guess: torch.Tensor | None = None,
         max_iter: int = 8,
         tol: float = 1e-12,
     ) -> torch.Tensor:
@@ -56,7 +58,7 @@ class Farassat1ASolver:
                 with torch.no_grad():
                     y_test = y_func(tau_guess)
                     N_sources = y_test.shape[0]
-                tau = tau_guess.unsqueeze(0).expand(N_sources, -1)
+                tau = cast(torch.Tensor, tau_guess).unsqueeze(0).expand(N_sources, -1)
             else:
                 N_obs = x_observer.shape[0]
                 R0 = torch.norm(x_observer, dim=-1)  # [N_obs]
@@ -64,12 +66,11 @@ class Farassat1ASolver:
                 with torch.no_grad():
                     # y_func only needs a 1D tau to determine N_sources;
                     # passing [N_obs, N_t] would create ambiguous batch dims.
-                    y_test = y_func(tau_guess[0])
+                    y_test = y_func(cast(torch.Tensor, tau_guess)[0])
                     N_sources = y_test.shape[0]
-                tau = tau_guess.unsqueeze(0).expand(N_sources, -1, -1)
+                tau = cast(torch.Tensor, tau_guess).unsqueeze(0).expand(N_sources, -1, -1)
         else:
-            tau = tau_guess.clone()
-
+            tau = cast(torch.Tensor, tau_guess).clone()
         for _ in range(max_iter):
             y = y_func(tau)  # [..., N_t, 3]
             v = v_func(tau)  # [..., N_t, 3]
@@ -80,9 +81,7 @@ class Farassat1ASolver:
                 # x_observer: [N_obs, 3] -> [1, N_obs, 1, ..., 3]
                 # y is [N_sources, N_obs, N_t, 3] (or more batch dims)
                 n_trailing = max(0, y.dim() - 3)
-                r_vec = x_observer.view(
-                    1, x_observer.shape[0], *([1] * n_trailing), 3
-                ) - y
+                r_vec = x_observer.view(1, x_observer.shape[0], *([1] * n_trailing), 3) - y
             r = torch.norm(r_vec, dim=-1)  # [..., N_t]
             r_hat = r_vec / (r[..., None] + 1e-20)  # [..., N_t, 3]
 
@@ -111,7 +110,7 @@ class Farassat1ASolver:
         v_func: Callable,
         F_func: Callable,
         Fdot_func: Callable,
-        Mdot_func: Callable = None,
+        Mdot_func: Callable | None = None,
         include_term3: bool = True,
     ) -> torch.Tensor:
         """Compute acoustic pressure at observer from surface sources.
@@ -152,12 +151,12 @@ class Farassat1ASolver:
         # Mach numbers
         M = v / self.c0
         M_r = torch.sum(M * r_hat, dim=-1)
-        M_sq = torch.sum(M ** 2, dim=-1)
+        M_sq = torch.sum(M**2, dim=-1)
 
         # Doppler factor
         denom = 1.0 - M_r
-        denom2 = denom ** 2
-        denom3 = denom ** 3
+        denom2 = denom**2
+        denom3 = denom**3
 
         # Projections
         F_r = torch.sum(F * r_hat, dim=-1)
@@ -168,15 +167,13 @@ class Farassat1ASolver:
         term1 = Fdot_r / (self.c0 * r * denom2 + 1e-20)
 
         # Term 2: steady loading (near-field decay)
-        term2 = (F_r - F_M) / (r ** 2 * denom2 + 1e-20)
+        term2 = (F_r - F_M) / (r**2 * denom2 + 1e-20)
 
         # Term 3: acceleration / thickness correction
         if include_term3 and Mdot_func is not None:
             Mdot = Mdot_func(tau_ret)
             Mdot_r = torch.sum(Mdot * r_hat, dim=-1)
-            term3 = F_r * (r * Mdot_r + self.c0 * (M_r - M_sq)) / (
-                self.c0 * r ** 2 * denom3 + 1e-20
-            )
+            term3 = F_r * (r * Mdot_r + self.c0 * (M_r - M_sq)) / (self.c0 * r**2 * denom3 + 1e-20)
         else:
             term3 = 0.0
 

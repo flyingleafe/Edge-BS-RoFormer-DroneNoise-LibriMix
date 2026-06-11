@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pytest
 from hypothesis import given, settings
@@ -64,13 +66,13 @@ def test_getitem_returns_float_seconds():
         t_start=10_000_000_000,
         dur=2_000_000_000,
     )
-    t0, v0 = es[0]
+    t0, v0 = cast(tuple, es[0])
     assert t0 == pytest.approx(10.0)
     assert v0 == pytest.approx(1.0)
-    t1, v1 = es[1]
+    t1, v1 = cast(tuple, es[1])
     assert t1 == pytest.approx(10.5)
     assert v1 == pytest.approx(2.0)
-    t2, v2 = es[2]
+    t2, v2 = cast(tuple, es[2])
     assert t2 == pytest.approx(11.0)
     assert v2 == pytest.approx(3.0)
 
@@ -117,10 +119,10 @@ def test_shift_changes_t_start():
     # Relative timestamps unchanged by shift.
     assert np.array_equal(shifted.timestamp_ticks, es.timestamp_ticks)
     # Absolute via __getitem__.
-    t0, v0 = shifted[0]
+    t0, v0 = cast(tuple, shifted[0])
     assert t0 == pytest.approx(10.0)
     assert v0 == pytest.approx(1.0)
-    t1, v1 = shifted[1]
+    t1, v1 = cast(tuple, shifted[1])
     assert t1 == pytest.approx(10.5)
     assert v1 == pytest.approx(2.0)
 
@@ -192,7 +194,7 @@ def test_slice_multidim_values_is_time_last():
     sl = es.slice(300_000_000, 700_000_000)  # events at 0.3,0.4,0.5,0.6
     assert sl.values.shape == (4, 4)  # pyright: ignore[reportOptionalMemberAccess]
     np.testing.assert_array_equal(sl.values[:, 0], [3, 103, 203, 303])  # pyright: ignore[reportOptionalSubscript]
-    _, v = es[2]
+    _, v = cast(tuple, es[2])
     np.testing.assert_array_equal(v, [2, 102, 202, 302])
     rejoined = es.slice(0, 300_000_000).concat(es.slice(300_000_000, 1_000_000_000))
     assert rejoined.equal(es)
@@ -464,7 +466,7 @@ def test_concat_rejects_non_event_series():
     es = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=0.0, t_end=0.5)
     us = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=0)
     with pytest.raises(IncompatibleSeriesError, match="cannot concat"):
-        es.concat(us)
+        es.concat(us)  # type: ignore[arg-type]
 
 
 def test_concat_rejects_one_has_values_one_does_not():

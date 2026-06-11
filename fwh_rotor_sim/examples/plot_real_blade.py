@@ -8,10 +8,11 @@ Data sources:
 - UIUC Propeller Database (m-selig.ae.illinois.edu/props/)
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 import sys
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -111,9 +112,11 @@ def make_blade_from_data(r_chord, chord, r_twist, twist_deg, radius, hub_radius)
     We create callable functions that interpolate the tabulated data,
     then pass them to Blade().
     """
+
     def chord_fn(r):
         # r is a torch tensor; interpolate using numpy then convert back
         import torch
+
         if isinstance(r, torch.Tensor):
             r_np = r.detach().cpu().numpy()
             c_np = np.interp(r_np, r_chord, chord)
@@ -122,6 +125,7 @@ def make_blade_from_data(r_chord, chord, r_twist, twist_deg, radius, hub_radius)
 
     def twist_fn(r):
         import torch
+
         if isinstance(r, torch.Tensor):
             r_np = r.detach().cpu().numpy()
             t_np = np.interp(r_np, r_twist, twist_deg)
@@ -165,7 +169,8 @@ def plot_comparison_with_uiuc():
     ax.fill(
         np.concatenate([le_x, te_x[::-1]]),
         np.concatenate([le_y, te_y[::-1]]),
-        color="C0", alpha=0.3,
+        color="C0",
+        alpha=0.3,
     )
     ax.plot(le_x, le_y, "k-", lw=0.8)
     ax.plot(te_x, te_y, "k-", lw=0.8)

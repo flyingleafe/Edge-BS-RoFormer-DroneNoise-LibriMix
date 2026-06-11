@@ -18,8 +18,10 @@ Usage from project root:
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import matplotlib
+from matplotlib.lines import Line2D
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -34,6 +36,7 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
 
 from tasks.rps_prediction import load_predictor
+from utils.data import UniformSeries
 from utils.plots.rps_prediction import PLOT_TYPES
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
@@ -107,8 +110,9 @@ def fig_qualitative_examples():
 
     for col, sid in enumerate(sample_ids):
         sample = all_samples[sid]
-        audio = np.asarray(sample["audio"].samples, dtype=np.float32)
-        sr = sample["audio"].sr
+        audio_us = cast(UniformSeries, sample["audio"])
+        audio = np.asarray(audio_us.samples, dtype=np.float32)
+        sr = audio_us.sr
         dur = len(audio) / sr
 
         # Spectrogram
@@ -167,12 +171,9 @@ def fig_qualitative_examples():
         ax.set_xlim(0, dur)
 
     legend_handles = [
-        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),  # pyright: ignore[reportPrivateImportUsage]
-        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),  # pyright: ignore[reportPrivateImportUsage]
-    ] + [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r])
-        for r in range(4)  # pyright: ignore[reportPrivateImportUsage]
-    ]
+        Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),
+        Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),
+    ] + [Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r]) for r in range(4)]
     fig.subplots_adjust(bottom=0.20)
     fig.legend(
         handles=legend_handles,
@@ -336,12 +337,9 @@ def fig_highsnr_outlier():
     ax.set_xlim(0, dur)
 
     legend_handles = [
-        plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),  # pyright: ignore[reportPrivateImportUsage]
-        plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),  # pyright: ignore[reportPrivateImportUsage]
-    ] + [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r])
-        for r in range(4)  # pyright: ignore[reportPrivateImportUsage]
-    ]
+        Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="ground truth"),
+        Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),
+    ] + [Line2D([0], [0], color=ROTOR_COLORS[r], lw=2.0, label=ROTOR_LABELS[r]) for r in range(4)]
     fig.subplots_adjust(bottom=0.20)
     fig.legend(
         handles=legend_handles,

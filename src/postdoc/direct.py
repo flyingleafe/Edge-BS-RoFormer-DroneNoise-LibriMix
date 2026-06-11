@@ -12,6 +12,7 @@ Server state layout (on vast-server at /root/.postdoc/):
 
     queue.fifo          ← named pipe; submit writes job json here
 """
+
 from __future__ import annotations
 
 import base64
@@ -20,9 +21,7 @@ import re
 import subprocess
 import textwrap
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from datetime import UTC, datetime
 
 # ------------------------------------------------------------------ #
 # types
@@ -61,10 +60,17 @@ DEFAULT_POSTDOC_DIR = "/root/.postdoc"
 DEFAULT_REPO_DIR = "/root/harmonic-noise-suppression"
 
 
-def _ssh_base(user: str = DEFAULT_SERVER_USER,
-              host: str = DEFAULT_SERVER_HOST) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60",
-            "-o", "ServerAliveCountMax=3", f"{user}@{host}"]
+def _ssh_base(user: str = DEFAULT_SERVER_USER, host: str = DEFAULT_SERVER_HOST) -> list[str]:
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=60",
+        "-o",
+        "ServerAliveCountMax=3",
+        f"{user}@{host}",
+    ]
 
 
 # ------------------------------------------------------------------ #
@@ -72,9 +78,9 @@ def _ssh_base(user: str = DEFAULT_SERVER_USER,
 # ------------------------------------------------------------------ #
 
 
-def probe_gpus(*,
-               user: str = DEFAULT_SERVER_USER,
-               host: str = DEFAULT_SERVER_HOST) -> list[GPUInfo]:
+def probe_gpus(
+    *, user: str = DEFAULT_SERVER_USER, host: str = DEFAULT_SERVER_HOST
+) -> list[GPUInfo]:
     """Return GPU info for all GPUs on the server.
 
     Calls `nvidia-smi --query-gpu=...` over SSH and parses output.
@@ -87,23 +93,23 @@ def probe_gpus(*,
     out = subprocess.check_output(cmd, text=True)
     gpus = []
     for line in out.strip().splitlines():
-        idx, used, total, util = re.split(r'\s*,\s*', line.strip())
-        gpus.append(GPUInfo(
-            index=int(idx),
-            memory_used_mib=int(used),
-            memory_total_mib=int(total),
-            utilization=int(util),
-        ))
+        idx, used, total, util = re.split(r"\s*,\s*", line.strip())
+        gpus.append(
+            GPUInfo(
+                index=int(idx),
+                memory_used_mib=int(used),
+                memory_total_mib=int(total),
+                utilization=int(util),
+            )
+        )
     return gpus
 
 
-def free_gpus(*,
-              user: str = DEFAULT_SERVER_USER,
-              host: str = DEFAULT_SERVER_HOST,
-              threshold_mib: int = 500) -> list[int]:
+def free_gpus(
+    *, user: str = DEFAULT_SERVER_USER, host: str = DEFAULT_SERVER_HOST, threshold_mib: int = 500
+) -> list[int]:
     """GPU indices with < threshold_mib memory used."""
-    return [g.index for g in probe_gpus(user=user, host=host)
-            if g.memory_used_mib < threshold_mib]
+    return [g.index for g in probe_gpus(user=user, host=host) if g.memory_used_mib < threshold_mib]
 
 
 # ------------------------------------------------------------------ #
@@ -111,21 +117,21 @@ def free_gpus(*,
 # ------------------------------------------------------------------ #
 
 
-def _ensure_postdoc_dir(user: str = DEFAULT_SERVER_USER,
-                        host: str = DEFAULT_SERVER_HOST) -> None:
+def _ensure_postdoc_dir(user: str = DEFAULT_SERVER_USER, host: str = DEFAULT_SERVER_HOST) -> None:
     """Create /root/.postdoc/ and jobs/ on the server if they don't exist."""
     subprocess.run(
-        _ssh_base(user, host) +
-        ["bash -c '"
-         "mkdir -p /root/.postdoc/jobs && "
-         "[ -p /root/.postdoc/queue.fifo ] || mkfifo /root/.postdoc/queue.fifo"
-         "'"],
+        _ssh_base(user, host)
+        + [
+            "bash -c '"
+            "mkdir -p /root/.postdoc/jobs && "
+            "[ -p /root/.postdoc/queue.fifo ] || mkfifo /root/.postdoc/queue.fifo"
+            "'"
+        ],
         check=True,
     )
 
 
-def list_jobs(user: str = DEFAULT_SERVER_USER,
-              host: str = DEFAULT_SERVER_HOST) -> list[JobInfo]:
+def list_jobs(user: str = DEFAULT_SERVER_USER, host: str = DEFAULT_SERVER_HOST) -> list[JobInfo]:
     """List all jobs by reading /root/.postdoc/jobs/*/job.json."""
     # Use a heredoc to avoid Python one-liner limitations with for-loops.
     script = textwrap.dedent("""
@@ -156,24 +162,27 @@ def list_jobs(user: str = DEFAULT_SERVER_USER,
         return []
     jobs = []
     for d in data:
-        jobs.append(JobInfo(
-            id=d["id"],
-            name=d.get("name", ""),
-            sha=d.get("sha", ""),
-            cmd=d.get("cmd", ""),
-            gpus=d.get("gpus", 0),
-            started_at=d.get("started_at", ""),
-            status=d.get("status", ""),
-            pid=d.get("pid"),
-            gpu_mask=d.get("gpu_mask"),
-            log_path=d.get("log_path", ""),
-        ))
+        jobs.append(
+            JobInfo(
+                id=d["id"],
+                name=d.get("name", ""),
+                sha=d.get("sha", ""),
+                cmd=d.get("cmd", ""),
+                gpus=d.get("gpus", 0),
+                started_at=d.get("started_at", ""),
+                status=d.get("status", ""),
+                pid=d.get("pid"),
+                gpu_mask=d.get("gpu_mask"),
+                log_path=d.get("log_path", ""),
+            )
+        )
     return jobs
 
 
 # ------------------------------------------------------------------ #
 # submit
 # ------------------------------------------------------------------ #
+
 
 def _next_job_id(user: str, host: str, postdoc_dir: str) -> int:
     script = (
@@ -236,12 +245,13 @@ def submit_direct(
         "cmd": cmd,
         "gpus": gpus,
         "log_path": log_path,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
     }
     fifo_payload = json.dumps(job_desc)
     payload_b64 = base64.b64encode(fifo_payload.encode()).decode()
     subprocess.run(
-        _ssh_base(user, host) + [
+        _ssh_base(user, host)
+        + [
             f"python3 -c 'import base64; print(base64.b64decode(\"{payload_b64}\").decode())' "
             f">> {postdoc_dir}/queue.fifo"
         ],
@@ -255,12 +265,14 @@ def submit_direct(
 # ------------------------------------------------------------------ #
 
 
-def read_logs(name_and_id: str,
-              *,
-              user: str = DEFAULT_SERVER_USER,
-              host: str = DEFAULT_SERVER_HOST,
-              follow: bool = False,
-              lines: int = 50) -> str:
+def read_logs(
+    name_and_id: str,
+    *,
+    user: str = DEFAULT_SERVER_USER,
+    host: str = DEFAULT_SERVER_HOST,
+    follow: bool = False,
+    lines: int = 50,
+) -> str:
     """Tail (or cat) the log file for a job.
 
     name_and_id: "<sanitized_name>__<job_id>", e.g. "dccrn__42"
@@ -278,9 +290,9 @@ def read_logs(name_and_id: str,
 # ------------------------------------------------------------------ #
 
 
-def cancel_job(name_and_id: str,
-              user: str = DEFAULT_SERVER_USER,
-              host: str = DEFAULT_SERVER_HOST) -> bool:
+def cancel_job(
+    name_and_id: str, user: str = DEFAULT_SERVER_USER, host: str = DEFAULT_SERVER_HOST
+) -> bool:
     """Kill the job's process and mark it cancelled.
 
     Returns True if the job was cancelled, False if it wasn't running.
@@ -299,8 +311,7 @@ def cancel_job(name_and_id: str,
 
     killed = False
     if pid is not None:
-        subprocess.run(_ssh_base(user, host) + [f"kill {pid} 2>/dev/null; echo ok"],
-                       check=False)
+        subprocess.run(_ssh_base(user, host) + [f"kill {pid} 2>/dev/null; echo ok"], check=False)
         killed = True
 
     # Mark cancelled

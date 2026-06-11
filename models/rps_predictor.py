@@ -15,10 +15,12 @@ Variants:
 """
 
 import math
+from typing import cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from torch import Tensor
 
 # ─── Utilities ───────────────────────────────────────────────────────────────
 
@@ -92,9 +94,7 @@ class FrequencyAttentionPool(nn.Module):
     def __init__(self, channels: int, num_heads: int = 4):
         super().__init__()
         if channels % num_heads != 0:
-            raise ValueError(
-                f"channels ({channels}) must be divisible by num_heads ({num_heads})"
-            )
+            raise ValueError(f"channels ({channels}) must be divisible by num_heads ({num_heads})")
         self.channels = channels
         self.num_heads = num_heads
         self.query = nn.Linear(channels, channels)
@@ -137,11 +137,17 @@ class TCNHead(nn.Module):
         super().__init__()
         layers = []
         for i in range(num_layers):
-            dilation = 2 ** i
+            dilation = 2**i
             padding = (kernel_size - 1) * dilation // 2
             layers.append(
                 nn.Sequential(
-                    nn.Conv1d(in_ch if i == 0 else hidden_ch, hidden_ch, kernel_size, padding=padding, dilation=dilation),
+                    nn.Conv1d(
+                        in_ch if i == 0 else hidden_ch,
+                        hidden_ch,
+                        kernel_size,
+                        padding=padding,
+                        dilation=dilation,
+                    ),
                     nn.BatchNorm1d(hidden_ch),
                     nn.ReLU(inplace=True),
                     nn.Dropout(dropout),
@@ -248,9 +254,7 @@ class MultiScaleFusionHead(nn.Module):
 
         # Upsample to target STFT frame rate
         if merged.shape[-1] != self.target_t:
-            merged = F.interpolate(
-                merged, size=self.target_t, mode="linear", align_corners=False
-            )
+            merged = F.interpolate(merged, size=self.target_t, mode="linear", align_corners=False)
 
         merged = self.merge_conv(merged)
         return self.proj(merged)  # (B, num_rotors, target_t)
@@ -306,7 +310,7 @@ class SimpleConv(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -351,9 +355,7 @@ class SimpleConvV2(nn.Module):
         ]
         self.encoder = nn.ModuleList()
         for ic, oc, k, s, p in enc_spec:
-            self.encoder.append(
-                ResidualConvBlock2d(ic, oc, k, s, p, use_se=True)
-            )
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
         self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
         self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
@@ -366,7 +368,7 @@ class SimpleConvV2(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -431,7 +433,7 @@ class SimpleConvWide(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -488,7 +490,7 @@ class SimpleConvTCN(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -549,7 +551,7 @@ class SimpleConvMultiScale(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -606,7 +608,7 @@ class SimpleConvBiGRU(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -668,7 +670,7 @@ class SimpleConvAttnPool(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -707,9 +709,7 @@ class SimpleConvSENext(nn.Module):
         ]
         self.encoder = nn.ModuleList()
         for ic, oc, k, s, p in enc_spec:
-            self.encoder.append(
-                ResidualConvBlock2d(ic, oc, k, s, p, use_se=True)
-            )
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
         self.head = nn.Sequential(
             nn.Conv1d(128, 128, kernel_size=5, padding=2),
@@ -729,7 +729,7 @@ class SimpleConvSENext(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -791,7 +791,7 @@ class SimpleConvMagPhaseBiGRU(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -852,7 +852,7 @@ class SimpleConvBiGRUV2(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,
+            window=cast(Tensor, self.window),
             return_complex=True,
             normalized=True,
         )
@@ -890,6 +890,4 @@ def get_rps_model(model_name, n_fft=2048, hop_length=512, num_rotors=4):
         raise ValueError(
             f"Unknown model: {model_name}. Available: {list(RPS_MODEL_REGISTRY.keys())}"
         )
-    return RPS_MODEL_REGISTRY[model_name](
-        n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors
-    )
+    return RPS_MODEL_REGISTRY[model_name](n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)

@@ -88,12 +88,16 @@ class DiffusionBufferModel(nn.Module):
     def _sigma(self, t: torch.Tensor) -> torch.Tensor:
         t = torch.clamp(t, 0.0, self.t_max)
         t_flat = t.reshape(-1)
-        idx = torch.searchsorted(self.sigma_t_grid, t_flat, right=False)  # pyright: ignore[reportCallIssue]
-        idx = torch.clamp(idx, 1, self.sigma_t_grid.numel() - 1)
-        t0 = self.sigma_t_grid[idx - 1]  # pyright: ignore[reportIndexIssue]
-        t1 = self.sigma_t_grid[idx]  # pyright: ignore[reportIndexIssue]
-        s0 = self.sigma_table[idx - 1]  # pyright: ignore[reportIndexIssue]
-        s1 = self.sigma_table[idx]  # pyright: ignore[reportIndexIssue]
+        sigma_t_grid = self.sigma_t_grid
+        sigma_table = self.sigma_table
+        assert isinstance(sigma_t_grid, torch.Tensor)
+        assert isinstance(sigma_table, torch.Tensor)
+        idx = torch.searchsorted(sigma_t_grid, t_flat, right=False)
+        idx = torch.clamp(idx, 1, int(sigma_t_grid.numel()) - 1)
+        t0 = sigma_t_grid[idx - 1]
+        t1 = sigma_t_grid[idx]
+        s0 = sigma_table[idx - 1]
+        s1 = sigma_table[idx]
         w = (t_flat - t0) / (t1 - t0 + 1e-12)
         sigma = s0 + w * (s1 - s0)
         return sigma.reshape(t.shape).to(t.device)
@@ -102,23 +106,27 @@ class DiffusionBufferModel(nn.Module):
         return self.sde_c * (self.sde_k**t)
 
     def _stft(self, wave: torch.Tensor) -> torch.Tensor:
+        stft_window = self.stft_window
+        assert isinstance(stft_window, torch.Tensor)
         return torch.stft(
             wave,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
-            window=self.stft_window.to(wave.device),
+            window=stft_window.to(wave.device),
             center=True,
             return_complex=True,
         )
 
     def _istft(self, spec: torch.Tensor, length: int) -> torch.Tensor:
+        stft_window = self.stft_window
+        assert isinstance(stft_window, torch.Tensor)
         return torch.istft(
             spec,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
-            window=self.stft_window.to(spec.device),
+            window=stft_window.to(spec.device),
             center=True,
             length=length,
         )
@@ -152,7 +160,7 @@ class DiffusionBufferModel(nn.Module):
             return audio
         return audio.mean(dim=1)
 
-    def forward(self, mix: torch.Tensor, target: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, mix: torch.Tensor, target: torch.Tensor | None = None) -> torch.Tensor:
         if target is not None:
             return self._forward_train(mix, target)
         return self._forward_infer(mix)

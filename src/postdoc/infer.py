@@ -187,7 +187,7 @@ def infer_cmd(
             torch.cuda.amp.autocast(enabled=getattr(cfg_obj.training, "use_amp", True)),
         ):
             result = demix(
-                cfg_obj,
+                cfg_obj,  # type: ignore[arg-type]
                 model,
                 mix_tensor,
                 device_obj,

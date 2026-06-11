@@ -187,8 +187,8 @@ def plot_rotor_top_view(
 
     # Symmetric limits
     lim = float(blade.R) * 1.1
-    ax.set_xlim([-lim, lim])
-    ax.set_ylim([-lim, lim])
+    ax.set_xlim((-lim, lim))
+    ax.set_ylim((-lim, lim))
 
     plt.tight_layout()
     return fig, ax

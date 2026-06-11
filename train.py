@@ -473,14 +473,12 @@ def choice_loss(
                 return multistft_loss(y_, y, loss_multistft) / 1000
     elif args.use_mse_loss:
         if args.use_l1_loss:
-
-            def multi_loss(y_: torch.Tensor, y: torch.Tensor):  # pyright: ignore[reportRedeclaration]
-                return nn.MSELoss()(y_, y) + F.l1_loss(y_, y)
+            multi_loss = lambda y_, y: nn.MSELoss()(y_, y) + F.l1_loss(y_, y)
         else:
             _mse_loss = nn.MSELoss()
-            multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = (
+            multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = (  # pyright: ignore[reportRedeclaration]
                 lambda y_, y: _mse_loss(y_, y)
-            )  # pyright: ignore[reportAssignmentType, reportRedeclaration]
+            )
     elif args.use_l1_loss:
         multi_loss = F.l1_loss  # pyright: ignore[reportAssignmentType]
     else:

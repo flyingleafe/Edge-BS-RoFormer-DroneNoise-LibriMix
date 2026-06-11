@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+from matplotlib.lines import Line2D
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -155,11 +156,10 @@ def part_a_tables(results: dict[str, EvalResult]) -> None:
         )
     df_latex = pd.DataFrame(latex_rows)
     df_latex.set_index("method", inplace=True)
-
     tex = df_latex.to_latex(
         escape=True,
         column_format="lccc",
-        header=["MSE", "MAE", r"$R^2$"],
+        header=("MSE", "MAE", r"$R^2$"),  # type: ignore[arg-type]
     )
     path = FIG_DIR / "table_summary.tex"
     with open(path, "w") as f:
@@ -333,9 +333,8 @@ def _plot_sample_page(sample, predictors, sid):
             ax.set_xticklabels([])
 
     legend_elements = [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=1.5, label=f"R{r + 1}")
-        for r in range(4)  # pyright: ignore[reportPrivateImportUsage]
-    ] + [plt.Line2D([0], [0], color="#333333", linestyle=":", lw=1.2, label="GT")]  # pyright: ignore[reportPrivateImportUsage]
+        Line2D([0], [0], color=ROTOR_COLORS[r], lw=1.5, label=f"R{r + 1}") for r in range(4)
+    ] + [Line2D([0], [0], color="#333333", linestyle=":", lw=1.2, label="GT")]
     fig.legend(
         handles=legend_elements,
         loc="lower center",
@@ -345,7 +344,7 @@ def _plot_sample_page(sample, predictors, sid):
         bbox_to_anchor=(0.5, -0.01),
     )
 
-    plt.tight_layout(rect=[0, 0.02, 1, 1])
+    plt.tight_layout(rect=(0, 0.02, 1, 1))
     return fig
 
 
@@ -500,8 +499,8 @@ def part_b_figures(results: list[dict]) -> None:
 
     # --- Bar chart of MSE ---
     methods = METHODS[1:]  # exclude simple_conv for classical comparison
-    means = [df[f"{m}"].apply(lambda x: x["mse"]).mean() for m in methods]
-    stds = [df[f"{m}"].apply(lambda x: x["mse"]).std() for m in methods]
+    means = [float(df[f"{m}"].apply(lambda x: x["mse"]).mean()) for m in methods]
+    stds = [float(df[f"{m}"].apply(lambda x: x["mse"]).std()) for m in methods]
 
     fig, ax = plt.subplots(figsize=(6, 3.5))
     x = np.arange(len(methods))

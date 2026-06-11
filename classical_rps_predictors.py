@@ -37,14 +37,11 @@ the search on the masked spectrum.
 
 from __future__ import annotations
 
-import warnings
-from typing import Callable
+from collections.abc import Callable
 
 import librosa
 import numpy as np
-from numpy.fft import fft, ifft, rfft
-from scipy.interpolate import interp1d
-from scipy.signal import find_peaks
+from numpy.fft import ifft
 
 # ---------------------------------------------------------------------------
 # Constants shared with the learned model
@@ -52,12 +49,12 @@ from scipy.signal import find_peaks
 SR = 16_000
 N_FFT = 2048
 HOP_LENGTH = 512
-N_BLADES = 2                     # DREGON quadcopter
+N_BLADES = 2  # DREGON quadcopter
 N_ROTORS = 4
-N_HARMONICS = 15                   # number of harmonics used in comb templates
-RPS_MIN = 50.0                     # rev/s
-RPS_MAX = 150.0                    # rev/s
-HARM_BW_BINS = 3                   # suppression half-width around each harmonic
+N_HARMONICS = 15  # number of harmonics used in comb templates
+RPS_MIN = 50.0  # rev/s
+RPS_MAX = 150.0  # rev/s
+HARM_BW_BINS = 3  # suppression half-width around each harmonic
 
 
 def _stft_frame_count(audio_len: int) -> int:
@@ -89,10 +86,8 @@ def _frame_spectra(audio: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     specs = np.abs(
         librosa.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH, center=True)
-    ).T          # -> (n_frames, n_freqs)
-    times = librosa.frames_to_time(
-        np.arange(specs.shape[0]), sr=SR, hop_length=HOP_LENGTH
-    )
+    ).T  # -> (n_frames, n_freqs)
+    times = librosa.frames_to_time(np.arange(specs.shape[0]), sr=SR, hop_length=HOP_LENGTH)
     return specs, times
 
 
@@ -159,6 +154,7 @@ def _greedy_multi_rotor(
 # 1. Single-f0 tracker (librosa.pyin)
 # ===========================================================================
 
+
 def pyin_single_f0(audio: np.ndarray, sr: int = SR) -> np.ndarray:
     """
     Single-f0 tracking with librosa.pyin.
@@ -216,6 +212,7 @@ def pyin_single_f0(audio: np.ndarray, sr: int = SR) -> np.ndarray:
 # 2. Cepstral analysis
 # ===========================================================================
 
+
 def _cepstral_rps_estimate(spec_frame: np.ndarray) -> float:
     """
     Estimate one RPS from a single-frame magnitude spectrum via cepstrum.
@@ -239,7 +236,7 @@ def _cepstral_rps_estimate(spec_frame: np.ndarray) -> float:
     if q_max <= q_min:
         return (RPS_MIN + RPS_MAX) / 2.0
 
-    search_region = cepstrum[q_min:q_max + 1]
+    search_region = cepstrum[q_min : q_max + 1]
     peak_idx = int(np.argmax(search_region))
     q_peak = q_min + peak_idx
     if q_peak == 0:
@@ -250,9 +247,7 @@ def _cepstral_rps_estimate(spec_frame: np.ndarray) -> float:
     return float(np.clip(rps, RPS_MIN, RPS_MAX))
 
 
-def cepstral_tracker(
-    audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS
-) -> np.ndarray:
+def cepstral_tracker(audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS) -> np.ndarray:
     """
     Greedy multi-rotor cepstral RPS tracker.
 
@@ -267,6 +262,7 @@ def cepstral_tracker(
 # ===========================================================================
 # 3. Harmonic Product Spectrum (HPS)
 # ===========================================================================
+
 
 def _hps_spectrum(spec_frame: np.ndarray, max_downsample: int = 4) -> np.ndarray:
     """
@@ -299,7 +295,7 @@ def _hps_rps_estimate(spec_frame: np.ndarray) -> float:
     if f_max_bin <= f_min_bin:
         return (RPS_MIN + RPS_MAX) / 2.0
 
-    search_region = hps[f_min_bin:f_max_bin + 1]
+    search_region = hps[f_min_bin : f_max_bin + 1]
     peak_idx = int(np.argmax(search_region))
     f0_bin = f_min_bin + peak_idx
     f0 = f0_bin * SR / N_FFT
@@ -307,9 +303,7 @@ def _hps_rps_estimate(spec_frame: np.ndarray) -> float:
     return float(np.clip(rps, RPS_MIN, RPS_MAX))
 
 
-def hps_tracker(
-    audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS
-) -> np.ndarray:
+def hps_tracker(audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS) -> np.ndarray:
     """
     Greedy multi-rotor Harmonic Product Spectrum tracker.
     """
@@ -347,7 +341,7 @@ def _build_templates(
     rps_grid = np.arange(rps_min, rps_max + step, step)
     templates = np.zeros((len(rps_grid), n_freqs), dtype=np.float32)
     for i, rps in enumerate(rps_grid):
-        freqs = _rps_to_harmonic_freqs(rps)
+        freqs = _rps_to_harmonic_freqs(float(rps))
         for f in freqs:
             cb = _freq_to_bin(f)
             if cb < 0 or cb >= n_freqs:
@@ -380,9 +374,7 @@ def _matched_filter_rps_estimate(spec_frame: np.ndarray) -> float:
     return float(rps_grid[best_idx])
 
 
-def matched_filter_tracker(
-    audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS
-) -> np.ndarray:
+def matched_filter_tracker(audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS) -> np.ndarray:
     """
     Greedy multi-rotor matched-filter-bank tracker.
 
@@ -421,6 +413,7 @@ def _build_nmf_dictionary(
     """
     global _NMF_RPS_GRID, _NMF_W
     if _NMF_W is not None and _NMF_W.shape[0] == n_freqs:
+        assert _NMF_RPS_GRID is not None
         return _NMF_RPS_GRID, _NMF_W
 
     rps_grid = np.arange(rps_min, rps_max + step, step)
@@ -429,7 +422,7 @@ def _build_nmf_dictionary(
 
     W = np.zeros((n_freqs, n_atoms), dtype=np.float64)
     for i, rps in enumerate(rps_grid):
-        freqs = _rps_to_harmonic_freqs(rps)
+        freqs = _rps_to_harmonic_freqs(float(rps))
         for f in freqs:
             # Gaussian peak: σ ≈ 2 Hz (~4 FFT bins at 16 kHz / 2048)
             sigma = 2.0 * N_FFT / sr
@@ -500,9 +493,8 @@ def nmf_tracker(
 # Convenience: evaluate any classical predictor against ground truth
 # ===========================================================================
 
-def evaluate_predictions(
-    preds: np.ndarray, target: np.ndarray
-) -> dict[str, float]:
+
+def evaluate_predictions(preds: np.ndarray, target: np.ndarray) -> dict[str, float]:
     """
     Compute scalar regression metrics.
 

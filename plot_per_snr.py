@@ -119,9 +119,9 @@ def compute_per_snr_from_excel(excel_path):
         subset = df[df["snr_level"] == level]
         per_snr[level] = {"n": len(subset)}
         for m in METRICS:
-            vals = subset[m].dropna().values
-            per_snr[level][m] = np.mean(vals) if len(vals) > 0 else float("nan")  # pyright: ignore[reportCallIssue]
-            per_snr[level][f"{m}_std"] = np.std(vals) if len(vals) > 0 else float("nan")  # pyright: ignore[reportCallIssue]
+            vals = subset[m].dropna().values  # type: ignore[attr-defined]
+            per_snr[level][m] = np.mean(vals) if len(vals) > 0 else float("nan")  # type: ignore[arg-type]
+            per_snr[level][f"{m}_std"] = np.std(vals) if len(vals) > 0 else float("nan")  # type: ignore[arg-type]
     return per_snr
 
 

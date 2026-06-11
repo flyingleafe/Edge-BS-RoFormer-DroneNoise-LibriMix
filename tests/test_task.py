@@ -51,7 +51,7 @@ def test_bootstrap_setup_installs_uv_and_syncs():
 def _exec(**kw):
     base = dict(command="python train.py", git_sha=FAKE_SHA, git_url=FAKE_URL)
     base.update(kw)
-    return build_exec_task(**base)
+    return build_exec_task(**base)  # type: ignore[arg-type]
 
 
 def test_exec_envs_contain_git_info():

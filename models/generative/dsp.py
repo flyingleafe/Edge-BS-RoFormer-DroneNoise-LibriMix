@@ -4,18 +4,18 @@ DSP primitives ported from drone_audition.dsp.
 Self-contained — no dependency on `env.settings`. Every function that needs
 a sample rate accepts one as an explicit argument.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .math_utils import get_fft_size, overlap_and_add, signal_frame
-
 
 # ---------------------------------------------------------------------------
 # Phase / oscillator banks
 # ---------------------------------------------------------------------------
+
 
 def harmonic_freq_series(freq: torch.Tensor, n_harmonics: int):
     """Make N harmonics from a fundamental-frequency series.
@@ -79,6 +79,7 @@ def harmonic_oscillator_bank(freqs, amps, sr: int = 16000, **kwargs):
 # Filtered noise (DDSP-style frequency-domain FIR)
 # ---------------------------------------------------------------------------
 
+
 def crop_and_compensate_delay(audio, audio_size, ir_size, padding, delay_compensation):
     if padding == "valid":
         crop_size = ir_size + audio_size - 1
@@ -129,12 +130,21 @@ def apply_window_to_impulse_response(impulse_response, window_size=0, causal=Fal
     ir_size = int(impulse_response.shape[-1])
     if window_size <= 0 or window_size > ir_size:
         window_size = ir_size
-    window = torch.hann_window(window_size, device=impulse_response.device, dtype=impulse_response.dtype)
+    window = torch.hann_window(
+        window_size, device=impulse_response.device, dtype=impulse_response.dtype
+    )
 
     padding = ir_size - window_size
     if padding > 0:
         half_idx = (window_size + 1) // 2
-        window = torch.cat([window[half_idx:], torch.zeros([padding], device=window.device, dtype=window.dtype), window[:half_idx]], dim=0)
+        window = torch.cat(
+            [
+                window[half_idx:],
+                torch.zeros([padding], device=window.device, dtype=window.dtype),
+                window[:half_idx],
+            ],
+            dim=0,
+        )
     else:
         window = torch.fft.fftshift(window, dim=-1)
 
@@ -145,7 +155,8 @@ def apply_window_to_impulse_response(impulse_response, window_size=0, causal=Fal
         first_half_start = (ir_size - (half_idx - 1)) + 1
         second_half_end = half_idx + 1
         impulse_response = torch.cat(
-            [impulse_response[..., first_half_start:], impulse_response[..., :second_half_end]], dim=-1
+            [impulse_response[..., first_half_start:], impulse_response[..., :second_half_end]],
+            dim=-1,
         )
     else:
         impulse_response = torch.fft.fftshift(impulse_response, dim=-1)
@@ -154,9 +165,7 @@ def apply_window_to_impulse_response(impulse_response, window_size=0, causal=Fal
 
 def frequency_impulse_response(magnitudes, window_size=0):
     """Get windowed IRs from a magnitude-only frequency response (zero phase)."""
-    magnitudes = torch.view_as_complex(
-        torch.stack([magnitudes, torch.zeros_like(magnitudes)], -1)
-    )
+    magnitudes = torch.view_as_complex(torch.stack([magnitudes, torch.zeros_like(magnitudes)], -1))
     impulse_response = torch.fft.irfft(magnitudes)
     return apply_window_to_impulse_response(impulse_response, window_size)
 

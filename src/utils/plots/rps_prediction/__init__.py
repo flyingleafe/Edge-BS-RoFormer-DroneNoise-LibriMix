@@ -8,11 +8,11 @@ Each plot function is registered by a dotted name::
 
 from utils.plots import register as _register
 
+from .full_sequence import plot_full_sequence
+from .per_snr import plot_per_snr
 from .sample_comparison import plot_sample_comparison
 from .summary_metrics import plot_summary_metrics
-from .per_snr import plot_per_snr
 from .training_curves import plot_training_curves
-from .full_sequence import plot_full_sequence
 
 PLOT_TYPES = {
     "rps_prediction.sample_comparison": plot_sample_comparison,

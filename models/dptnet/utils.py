@@ -7,6 +7,7 @@ import torch
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+
 def overlap_and_add(signal, frame_step):
     """Reconstructs a signal from a framed representation.
 
@@ -34,7 +35,9 @@ def overlap_and_add(signal, frame_step):
     subframe_signal = signal.reshape(*outer_dimensions, -1, subframe_length)
 
     # Create frame directly on the signal's device
-    frame = torch.arange(0, output_subframes, device=signal.device).unfold(0, subframes_per_frame, subframe_step)
+    frame = torch.arange(0, output_subframes, device=signal.device).unfold(
+        0, subframes_per_frame, subframe_step
+    )
     frame = frame.long()
     frame = frame.contiguous().view(-1)
 
@@ -42,6 +45,7 @@ def overlap_and_add(signal, frame_step):
     result.index_add_(-2, frame, subframe_signal)
     result = result.view(*outer_dimensions, -1)
     return result
+
 
 def remove_pad(inputs, inputs_lengths):
     """
@@ -56,8 +60,8 @@ def remove_pad(inputs, inputs_lengths):
     if dim == 3:
         C = inputs.size(1)
     for input, length in zip(inputs, inputs_lengths):
-        if dim == 3: # [B, C, T]
-            results.append(input[:,:length].view(C, -1).cpu().numpy())
+        if dim == 3:  # [B, C, T]
+            results.append(input[:, :length].view(C, -1).cpu().numpy())
         elif dim == 2:  # [B, T]
             results.append(input[:length].view(-1).cpu().numpy())
     return results

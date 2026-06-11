@@ -1,9 +1,10 @@
 """Validation tests for the FWH rotor simulator."""
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-from fwh_rotor_sim import Blade, Rotor, FWHRotorSolver
+
+from fwh_rotor_sim import Blade, FWHRotorSolver, Rotor
 
 
 def test_stationary_dipole():
@@ -23,6 +24,7 @@ def test_stationary_dipole():
 
     # We'll test via a direct FWH call with prescribed dipole
     from fwh_rotor_sim.fwh import Farassat1ASolver
+
     fwh = Farassat1ASolver(c0=343.0)
 
     omega = 2 * torch.pi * 100  # 100 Hz
@@ -63,8 +65,9 @@ def test_stationary_dipole():
             return torch.zeros(1, tau.shape[0], 3)
         return torch.zeros(tau.shape[0], tau.shape[1], 3)
 
-    p_num = fwh.compute_pressure(t, x_obs, y_func, v_func, F_func, Fdot_func,
-                                  Mdot_func=Mdot_func, include_term3=False)
+    p_num = fwh.compute_pressure(
+        t, x_obs, y_func, v_func, F_func, Fdot_func, Mdot_func=Mdot_func, include_term3=False
+    )
 
     # Analytic: p'(t) = (1/4πr) (r̂ · ṗ(t-r/c))
     tau_analytic = t - r / 343.0
@@ -132,7 +135,7 @@ def test_hovering_rotor():
     print(f"Spectral peak at {peak_freq.item():.1f} Hz (expected ~{bpf:.1f} Hz)")
 
     # SPL (dB re 20 μPa)
-    prms = torch.sqrt(torch.mean(p ** 2))
+    prms = torch.sqrt(torch.mean(p**2))
     spl = 20 * torch.log10(prms / 20e-6)
     print(f"SPL: {spl.item():.1f} dB")
 
@@ -191,10 +194,13 @@ def _test_multi_observer_core(dtype=torch.float32):
     solver = FWHRotorSolver(rotor, c0=343.0, rho0=1.225)
 
     # Two observers at different positions
-    x_obs_multi = torch.tensor([
-        [1.0, 0.0, 0.0],   # observer 0: in-plane
-        [0.0, 0.0, -1.0],  # observer 1: on-axis below
-    ], dtype=dtype)
+    x_obs_multi = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],  # observer 0: in-plane
+            [0.0, 0.0, -1.0],  # observer 1: on-axis below
+        ],
+        dtype=dtype,
+    )
 
     Omega = torch.tensor(2 * torch.pi * 5000 / 60, dtype=dtype)
     T_rev = 2 * torch.pi / Omega
@@ -259,35 +265,35 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
     ax = axes[0, 0]
-    ax.plot(t[:500], p_num[:500], label='Numeric')
-    ax.plot(t[:500], p_analytic[:500], '--', label='Analytic', alpha=0.7)
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Pressure (Pa)')
-    ax.set_title('Stationary Dipole Validation')
+    ax.plot(t[:500], p_num[:500], label="Numeric")
+    ax.plot(t[:500], p_analytic[:500], "--", label="Analytic", alpha=0.7)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Pressure (Pa)")
+    ax.set_title("Stationary Dipole Validation")
     ax.legend()
     ax.grid(True)
 
     ax = axes[0, 1]
     ax.plot(t_rot, p_rot)
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Pressure (Pa)')
-    ax.set_title('Hovering Rotor Pressure Signal')
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Pressure (Pa)")
+    ax.set_title("Hovering Rotor Pressure Signal")
     ax.grid(True)
 
     ax = axes[1, 0]
     ax.semilogy(freqs[:100], psd[:100])
-    ax.set_xlabel('Frequency (Hz)')
-    ax.set_ylabel('PSD')
-    ax.set_title('Rotor Noise Spectrum')
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("PSD")
+    ax.set_title("Rotor Noise Spectrum")
     ax.grid(True)
 
     ax = axes[1, 1]
     ax.plot(t_var, p_var)
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Pressure (Pa)')
-    ax.set_title('Variable Speed Rotor')
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Pressure (Pa)")
+    ax.set_title("Variable Speed Rotor")
     ax.grid(True)
 
     plt.tight_layout()
-    plt.savefig('/tmp/fwh_validation.png', dpi=150)
+    plt.savefig("/tmp/fwh_validation.png", dpi=150)
     print("\nPlot saved to /tmp/fwh_validation.png")

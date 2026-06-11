@@ -1,5 +1,6 @@
 import math
 from fractions import Fraction
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -298,10 +299,15 @@ class HTDemucs(nn.Module):
                 chout_z = max(chout, chout_z)
                 chout = chout_z
 
-            enc = HEncLayer(chin_z, chout_z, dconv=dconv_mode & 1, context=context_enc, **kw)
+            enc = HEncLayer(chin_z, chout_z, dconv=bool(dconv_mode & 1), context=context_enc, **kw)
             if freq:
                 tenc = HEncLayer(
-                    chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt
+                    chin,
+                    chout,
+                    dconv=bool(dconv_mode & 1),
+                    context=context_enc,
+                    empty=last_freq,
+                    **kwt,
                 )
                 self.tencoder.append(tenc)
 
@@ -316,7 +322,12 @@ class HTDemucs(nn.Module):
                 if self.num_subbands > 1:
                     chin_z *= self.num_subbands
             dec = HDecLayer(
-                chout_z, chin_z, dconv=dconv_mode & 2, last=index == 0, context=context, **kw_dec
+                chout_z,
+                chin_z,
+                dconv=bool(dconv_mode & 2),
+                last=index == 0,
+                context=context,
+                **kw_dec,
             )
             if multi:
                 dec = MultiWrap(dec, multi_freqs)
@@ -324,7 +335,7 @@ class HTDemucs(nn.Module):
                 tdec = HDecLayer(
                     chout,
                     chin,
-                    dconv=dconv_mode & 2,
+                    dconv=bool(dconv_mode & 2),
                     empty=last_freq,
                     last=index == 0,
                     context=context,
@@ -583,7 +594,8 @@ class HTDemucs(nn.Module):
                 # add frequency embedding to allow for non equivariant convolutions
                 # over the frequency axis.
                 frs = torch.arange(x.shape[-2], device=x.device)
-                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x)  # pyright: ignore[reportOptionalCall]
+                assert self.freq_emb is not None
+                emb = cast(nn.Module, self.freq_emb)(frs).t()[None, :, :, None].expand_as(x)
                 x = x + self.freq_emb_scale * emb
 
             saved.append(x)
@@ -670,7 +682,7 @@ class HTDemucs(nn.Module):
 
 
 def get_model(args):
-    extra = {
+    extra: dict[str, Any] = {
         "sources": list(args.training.instruments),
         "audio_channels": args.training.channels,
         "samplerate": args.training.samplerate,
@@ -682,6 +694,8 @@ def get_model(args):
         "hdemucs": HDemucs,
         "htdemucs": HTDemucs,
     }[args.model]
-    kw = OmegaConf.to_container(getattr(args, args.model), resolve=True)
-    model = klass(**extra, **kw)  # pyright: ignore[reportCallIssue]
+    kw_container = OmegaConf.to_container(getattr(args, args.model), resolve=True)
+    assert isinstance(kw_container, dict)
+    kw = cast(dict[str, Any], kw_container)
+    model = klass(**extra, **kw)
     return model

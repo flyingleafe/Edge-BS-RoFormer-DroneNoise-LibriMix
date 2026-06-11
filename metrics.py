@@ -341,8 +341,8 @@ def bleed_full(
     from torchaudio.transforms import AmplitudeToDB
 
     # Convert to torch tensors
-    reference = torch.from_numpy(reference).float().to(device)  # pyright: ignore[reportAssignmentType]
-    estimate = torch.from_numpy(estimate).float().to(device)  # pyright: ignore[reportAssignmentType]
+    ref_t = torch.from_numpy(reference).float().to(device)
+    est_t = torch.from_numpy(estimate).float().to(device)
 
     # Create Hann window
     window = torch.hann_window(n_fft).to(device)
@@ -350,21 +350,21 @@ def bleed_full(
     # Compute STFT using Hann window
     D1 = torch.abs(
         torch.stft(
-            reference,
+            ref_t,
             n_fft=n_fft,
             hop_length=hop_length,
             window=window,
-            return_complex=True,  # pyright: ignore[reportArgumentType]
+            return_complex=True,
             pad_mode="constant",
         )
     )
     D2 = torch.abs(
         torch.stft(
-            estimate,
+            est_t,
             n_fft=n_fft,
             hop_length=hop_length,
             window=window,
-            return_complex=True,  # pyright: ignore[reportArgumentType]
+            return_complex=True,
             pad_mode="constant",
         )
     )

@@ -18,8 +18,9 @@ Modules
 - `harmonic_transform` : `HarmonicTransformModule` (VP-transform for analysis/synthesis)
 - `losses`             : `MultiScaleSTFT` (DDSP-style multi-scale spectral loss)
 """
-from .harmonic_noise_gen import PropellerNoiseGen, DroneNoiseGen
-from .filtered_noise import FilteredNoiseSynth, RPSFilterNet, DroneNoisePlusFilterGen
+
+from .filtered_noise import DroneNoisePlusFilterGen, FilteredNoiseSynth, RPSFilterNet
+from .harmonic_noise_gen import DroneNoiseGen, PropellerNoiseGen
 from .losses import MultiScaleSTFT
 
 __all__ = [

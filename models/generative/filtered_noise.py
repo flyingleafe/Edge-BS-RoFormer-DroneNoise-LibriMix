@@ -9,6 +9,7 @@ rate, producing per-frame filter magnitudes for the noise synth.
 `DroneNoisePlusFilterGen` combines `DroneNoiseGen` (harmonic) with
 `FilteredNoiseSynth` (residual) into the full sinusoidal+filter generator.
 """
+
 from __future__ import annotations
 
 import torch
@@ -30,7 +31,9 @@ class FilteredNoiseSynth(nn.Module):
     """
 
     def forward(self, filter_mags: torch.Tensor, audio_shape: tuple) -> torch.Tensor:
-        noise = torch.rand(audio_shape, device=filter_mags.device, dtype=filter_mags.dtype) * 2.0 - 1.0
+        noise = (
+            torch.rand(audio_shape, device=filter_mags.device, dtype=filter_mags.dtype) * 2.0 - 1.0
+        )
         return frequency_filter(noise, filter_mags)
 
 
@@ -136,10 +139,12 @@ class DroneNoisePlusFilterGen(nn.Module):
         phase_shifts: torch.Tensor | None = None,
     ) -> dict:
         B, M, T = rps_audio_rate.shape
-        assert M == self.n_motors, f"expected {self.n_motors} rotors, got {M}"
+        assert self.n_motors == M, f"expected {self.n_motors} rotors, got {M}"
 
         if phase_shifts is None:
-            phase_shifts = torch.zeros(B, M, device=rps_audio_rate.device, dtype=rps_audio_rate.dtype)
+            phase_shifts = torch.zeros(
+                B, M, device=rps_audio_rate.device, dtype=rps_audio_rate.dtype
+            )
 
         harmonic = self.harmonic_gen(rps_audio_rate, phase_shifts)  # [B, T]
 
