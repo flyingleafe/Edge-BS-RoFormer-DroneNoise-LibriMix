@@ -144,12 +144,7 @@ class _ModelPredictor:
     @torch.no_grad()
     def predict(self, audio: np.ndarray, sr: float = SR_AUDIO) -> np.ndarray:
         t = torch.from_numpy(np.asarray(audio, dtype=np.float32)).to(self._device)
-        if t.dim() == 1:
-            # Mono (T,) → (1, T) → model → (1, R, F) → (R, F)
-            out = self._model(t.unsqueeze(0)).squeeze(0)
-        else:
-            # Multichannel (C, T) → model treats C as batch → (C, R, F)
-            out = self._model(t)
+        out = self._model(t.unsqueeze(0)).squeeze(0) if t.dim() == 1 else self._model(t)
         return out.cpu().numpy()
 
 

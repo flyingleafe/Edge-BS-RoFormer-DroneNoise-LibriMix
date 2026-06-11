@@ -7,6 +7,7 @@ Dispatches to registered plot functions by dotted name::
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 from pathlib import Path
@@ -131,10 +132,8 @@ def main(
 def _import_plot_packages() -> None:
     """Import known plot sub-packages to trigger registration."""
     for mod_name in ["utils.plots.rps_prediction"]:
-        try:
+        with contextlib.suppress(ImportError):
             importlib.import_module(mod_name)
-        except ImportError:
-            pass
 
 
 if __name__ == "__main__":

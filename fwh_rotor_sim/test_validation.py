@@ -20,7 +20,7 @@ def test_stationary_dipole():
 
     # Override: set blade force manually as a harmonic dipole
     # This is a hack to test the FWH kernel without full rotor aerodynamics
-    solver = FWHRotorSolver(rotor, c0=343.0)
+    FWHRotorSolver(rotor, c0=343.0)
 
     # We'll test via a direct FWH call with prescribed dipole
     from fwh_rotor_sim.fwh import Farassat1ASolver

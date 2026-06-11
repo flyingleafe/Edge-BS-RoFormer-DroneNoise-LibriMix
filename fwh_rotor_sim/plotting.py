@@ -112,7 +112,7 @@ def plot_blade_geometry(
 
     # Combined legend
     lines = [l_c, l_t]
-    labels = [l.get_label() for l in lines]
+    labels = [line.get_label() for line in lines]
     ax_c.legend(lines, labels, loc="upper right")
 
     plt.tight_layout()
@@ -158,7 +158,7 @@ def plot_rotor_top_view(
         cos_p, sin_p = np.cos(phi), np.sin(phi)
 
         # Rotate each point around z-axis by blade offset phi
-        def _rot(x, y):
+        def _rot(x, y, cos_p=cos_p, sin_p=sin_p):
             return cos_p * x - sin_p * y, sin_p * x + cos_p * y
 
         le_x, le_y = _rot(le_x_body, le_y_body)

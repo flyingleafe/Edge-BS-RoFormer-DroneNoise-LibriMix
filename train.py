@@ -15,31 +15,32 @@ from tqdm.auto import tqdm
 
 # Load environment variables from .env file
 load_dotenv()
-import shutil
-import warnings
-from collections.abc import Callable
-from typing import Any, cast
+import contextlib  # noqa: E402
+import shutil  # noqa: E402
+import warnings  # noqa: E402
+from collections.abc import Callable  # noqa: E402
+from typing import Any, cast  # noqa: E402
 
-import auraloss
-import loralib as lora  # LoRA (Low-Rank Adaptation)
-import numpy as np
-import soundfile as sf
-import torch.nn as nn
-import torch.nn.functional as F
-from omegaconf import DictConfig
-from torch.cuda.amp.grad_scaler import GradScaler
-from torch.optim import SGD, Adam, AdamW, RAdam, RMSprop
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
+import auraloss  # noqa: E402
+import loralib as lora  # LoRA (Low-Rank Adaptation)  # noqa: E402
+import numpy as np  # noqa: E402
+import soundfile as sf  # noqa: E402
+import torch.nn as nn  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+from omegaconf import DictConfig  # noqa: E402
+from torch.cuda.amp.grad_scaler import GradScaler  # noqa: E402
+from torch.optim import SGD, Adam, AdamW, RAdam, RMSprop  # noqa: E402
+from torch.optim.lr_scheduler import ReduceLROnPlateau  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
 
 # Import custom modules
-from dataset import MSSDataset  # Music source separation dataset class
-from utils import (
+from dataset import MSSDataset  # Music source separation dataset class  # noqa: E402
+from utils import (  # noqa: E402
     bind_lora_to_model,
     get_model_from_config,  # Load model from config file
     load_start_checkpoint,
 )
-from valid import valid, valid_multi_gpu, valid_rps_only  # Validation functions
+from valid import valid, valid_multi_gpu, valid_rps_only  # Validation functions  # noqa: E402
 
 warnings.filterwarnings("ignore")
 
@@ -199,10 +200,8 @@ def initialize_environment(seed: int, results_path: str) -> None:
     """
     manual_seed(seed)
     torch.backends.cudnn.deterministic = False
-    try:
+    with contextlib.suppress(Exception):
         torch.multiprocessing.set_start_method("spawn")
-    except Exception:
-        pass
     os.makedirs(results_path, exist_ok=True)
 
 
@@ -473,12 +472,14 @@ def choice_loss(
                 return multistft_loss(y_, y, loss_multistft) / 1000
     elif args.use_mse_loss:
         if args.use_l1_loss:
-            multi_loss = lambda y_, y: nn.MSELoss()(y_, y) + F.l1_loss(y_, y)
+
+            def multi_loss(y_, y):
+                return nn.MSELoss()(y_, y) + F.l1_loss(y_, y)
         else:
             _mse_loss = nn.MSELoss()
-            multi_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = (  # pyright: ignore[reportRedeclaration]
-                lambda y_, y: _mse_loss(y_, y)
-            )
+
+            def multi_loss(y_: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+                return _mse_loss(y_, y)
     elif args.use_l1_loss:
         multi_loss = F.l1_loss  # pyright: ignore[reportAssignmentType]
     else:
@@ -692,10 +693,7 @@ def collect_audio_triples_by_snr(
             # (C, T) -> (1, C, T)
             x = torch.from_numpy(mix).float().unsqueeze(0).to(device)
             y_np = tgt
-            if mix.shape[0] == 1:
-                y_np_1d = np.squeeze(y_np)
-            else:
-                y_np_1d = np.mean(y_np, axis=0)
+            y_np_1d = np.squeeze(y_np) if mix.shape[0] == 1 else np.mean(y_np, axis=0)
             if normalize:
                 mean, std = x.mean().item(), x.std().item()
                 if std != 0:

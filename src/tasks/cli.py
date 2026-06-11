@@ -163,7 +163,7 @@ def _write_tex_table(path: Path, results: list[EvalResult]) -> None:
         f.write("\n".join(lines) + "\n")
 
 
-def main() -> None:
+def main() -> None:  # noqa: F811
     app()
 
 

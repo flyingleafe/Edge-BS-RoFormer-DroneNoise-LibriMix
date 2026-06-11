@@ -10,10 +10,10 @@ Plot functions have signature::
 
     fn(*, samples=None, result=None, models=None, ax=None, **style) -> Figure
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import matplotlib.figure
 
@@ -38,9 +38,7 @@ def get_plot_fn(name: str) -> PlotFn:
         return _PLOT_TYPES[name]
     except KeyError:
         known = sorted(_PLOT_TYPES)
-        raise ValueError(
-            f"Unknown plot type {name!r}. Known: {known}"
-        ) from None
+        raise ValueError(f"Unknown plot type {name!r}. Known: {known}") from None
 
 
 def list_plot_types() -> list[str]:

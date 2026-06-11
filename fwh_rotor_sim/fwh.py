@@ -60,7 +60,7 @@ class Farassat1ASolver:
                     N_sources = y_test.shape[0]
                 tau = cast(torch.Tensor, tau_guess).unsqueeze(0).expand(N_sources, -1)
             else:
-                N_obs = x_observer.shape[0]
+                x_observer.shape[0]
                 R0 = torch.norm(x_observer, dim=-1)  # [N_obs]
                 tau_guess = t - R0[:, None] / self.c0  # [N_obs, N_t]
                 with torch.no_grad():

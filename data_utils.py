@@ -37,10 +37,7 @@ def unpack_zip(zip_path: Path, dest_dir: Path) -> Path:
 
 
 def _has_audio_files(directory: Path) -> bool:
-    for ext in AUDIO_EXTENSIONS:
-        if any(directory.rglob(f"*{ext}")):
-            return True
-    return False
+    return any(any(directory.rglob(f"*{ext}")) for ext in AUDIO_EXTENSIONS)
 
 
 def find_split_dirs(

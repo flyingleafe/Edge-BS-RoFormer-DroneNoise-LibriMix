@@ -98,7 +98,7 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
         model = factory(n_fft=2048, hop_length=512, num_rotors=4)
     else:
         try:
-            from utils import get_model_from_config
+            from utils import get_model_from_config  # noqa: F401
 
             # For suppression models we need a fake config; this is a
             # transitional path — when extended checkpoints land, the

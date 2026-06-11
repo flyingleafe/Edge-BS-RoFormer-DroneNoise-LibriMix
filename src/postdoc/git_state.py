@@ -4,6 +4,7 @@ Every submitted job runs at an explicit commit SHA that has been pushed to the
 origin remote. The remote host then `git fetch` + `git reset --hard <SHA>` to
 reproduce the tree bit-for-bit. No rsync, no "works on my laptop".
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -17,12 +18,13 @@ class GitError(RuntimeError):
 def _run(*args: str, cwd: Path | None = None) -> str:
     try:
         return subprocess.check_output(
-            list(args), text=True, stderr=subprocess.PIPE, cwd=cwd,
+            list(args),
+            text=True,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
         ).strip()
     except subprocess.CalledProcessError as e:
-        raise GitError(
-            f"`{' '.join(args)}` failed (rc={e.returncode}):\n{e.stderr.strip()}"
-        ) from e
+        raise GitError(f"`{' '.join(args)}` failed (rc={e.returncode}):\n{e.stderr.strip()}") from e
 
 
 def in_git_repo(cwd: Path | None = None) -> bool:
@@ -62,15 +64,14 @@ def push_head(remote: str = "origin", cwd: Path | None = None) -> str:
     """
     branch = current_branch(cwd=cwd)
     sha = head_sha(cwd=cwd)
-    if branch is None:
-        refspec = f"HEAD:refs/postdoc/{sha}"
-    else:
-        refspec = f"HEAD:refs/heads/{branch}"
+    refspec = f"HEAD:refs/postdoc/{sha}" if branch is None else f"HEAD:refs/heads/{branch}"
     try:
         subprocess.run(
             ["git", "push", remote, refspec],
-            check=True, cwd=cwd,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            check=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
         )
     except subprocess.CalledProcessError as e:
         raise GitError(
@@ -82,8 +83,9 @@ def push_head(remote: str = "origin", cwd: Path | None = None) -> str:
     return refspec
 
 
-def snapshot(cwd: Path | None = None, *, allow_dirty: bool, skip_push: bool,
-             remote: str = "origin") -> dict[str, str]:
+def snapshot(
+    cwd: Path | None = None, *, allow_dirty: bool, skip_push: bool, remote: str = "origin"
+) -> dict[str, str]:
     """Preflight bundle used by `postdoc submit`.
 
     Returns ``{sha, url, branch_or_detached, refspec}``. Raises on dirty tree
@@ -100,8 +102,5 @@ def snapshot(cwd: Path | None = None, *, allow_dirty: bool, skip_push: bool,
     sha = head_sha(cwd=cwd)
     url = remote_url(remote, cwd=cwd)
     branch = current_branch(cwd=cwd) or f"(detached:{sha[:8]})"
-    if skip_push:
-        refspec = "(push skipped)"
-    else:
-        refspec = push_head(remote, cwd=cwd)
+    refspec = "(push skipped)" if skip_push else push_head(remote, cwd=cwd)
     return {"sha": sha, "url": url, "branch": branch, "refspec": refspec, "dirty": str(dirty)}

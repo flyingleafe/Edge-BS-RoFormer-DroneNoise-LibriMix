@@ -93,7 +93,7 @@ random.seed(42)
 old_indices = random.sample(range(len(old_ds)), 5)
 new_indices = random.sample(range(len(new_ds)), 5)
 
-import soundfile as sf
+import soundfile as sf  # noqa: E402
 
 for tag, ds, indices in [("old", old_ds, old_indices), ("v2", new_ds, new_indices)]:
     for idx in indices:
@@ -144,7 +144,7 @@ print(f"Saved sample inferences to {OUT / 'samples'}/")
 # ── Part 3: In-flight recording inference ───────────────────────────────────
 
 # Load speech-high and whitenoise-high recordings
-from data_processing.dregon import discover_recordings, load_timeframe
+from data_processing.dregon import discover_recordings, load_timeframe  # noqa: E402
 
 dregon_dir = get_data_path("DREGON")
 geometry = get_geometry(dregon_dir)

@@ -151,8 +151,6 @@ def test_cancel_job_cloud(monkeypatch):
 
 
 def test_logs_job_cloud_no_follow(monkeypatch):
-    calls = []
-
     class _Result:
         returncode = 0
         stdout = "log output"

@@ -2,6 +2,7 @@ __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import required libraries
 import argparse
+import contextlib
 import glob
 import os
 import time
@@ -94,9 +95,8 @@ def get_mixture_paths(args, verbose: bool, config: DictConfig, extension: str) -
     all_mixtures_path = []
     for path in valid_path:
         part = sorted(glob.glob(f"{path}/*/mixture.{extension}"))
-        if len(part) == 0:
-            if verbose:
-                print(f"No validation data found in: {path}")
+        if len(part) == 0 and verbose:
+            print(f"No validation data found in: {path}")
         all_mixtures_path += part
     if verbose:
         print(f"Total mixtures: {len(all_mixtures_path)}")
@@ -138,10 +138,8 @@ def update_metrics_and_pbar(
         pbar_dict[f"{metric_name}_{instr}"] = metric_value
 
     if mixture_paths is not None:
-        try:
+        with contextlib.suppress(Exception):
             mixture_paths.set_postfix(pbar_dict)  # pyright: ignore[reportAttributeAccessIssue]
-        except Exception:
-            pass
 
 
 def process_audio_files(
@@ -196,10 +194,7 @@ def process_audio_files(
         metric: {instr: [] for instr in config.training.instruments} for metric in args.metrics
     }
 
-    if is_tqdm:
-        path_iter = tqdm(mixture_paths, desc="Processing")
-    else:
-        path_iter = mixture_paths
+    path_iter = tqdm(mixture_paths, desc="Processing") if is_tqdm else mixture_paths
 
     # Process each mixture audio file
     for path in path_iter:
@@ -212,28 +207,26 @@ def process_audio_files(
         folder = os.path.dirname(path)
 
         # Resample to target sample rate
-        if "sample_rate" in config.audio:
-            if sr != config.audio["sample_rate"]:
-                orig_length = mix.shape[-1]
-                if verbose:
-                    print(
-                        f"Warning: sample rate is different. In config: {config.audio['sample_rate']} in file {path}: {sr}"
-                    )
-                mix = librosa.resample(
-                    mix,
-                    orig_sr=sr,
-                    target_sr=config.audio["sample_rate"],
-                    res_type="kaiser_best",
+        if "sample_rate" in config.audio and sr != config.audio["sample_rate"]:
+            orig_length = mix.shape[-1]
+            if verbose:
+                print(
+                    f"Warning: sample rate is different. In config: {config.audio['sample_rate']} in file {path}: {sr}"
                 )
+            mix = librosa.resample(
+                mix,
+                orig_sr=sr,
+                target_sr=config.audio["sample_rate"],
+                res_type="kaiser_best",
+            )
 
         if verbose:
             folder_name = os.path.abspath(folder)
             print(f"Song: {folder_name} Shape: {mix.shape}")
 
         # Audio normalization
-        if "normalize" in config.inference:
-            if config.inference["normalize"] is True:
-                mix, norm_params = normalize_audio(mix)
+        if "normalize" in config.inference and config.inference["normalize"] is True:
+            mix, norm_params = normalize_audio(mix)
 
         # Load RPS data if model uses rotor conditioning
         rps = None
@@ -276,20 +269,17 @@ def process_audio_files(
             estimates = waveforms_orig[instr]
 
             # Resample to original sample rate
-            if "sample_rate" in config.audio:
-                if sr != config.audio["sample_rate"]:
-                    estimates = librosa.resample(
-                        estimates,
-                        orig_sr=config.audio["sample_rate"],
-                        target_sr=sr,
-                        res_type="kaiser_best",
-                    )
-                    estimates = librosa.util.fix_length(estimates, size=orig_length)
-
+            if "sample_rate" in config.audio and sr != config.audio["sample_rate"]:
+                estimates = librosa.resample(
+                    estimates,
+                    orig_sr=config.audio["sample_rate"],
+                    target_sr=sr,
+                    res_type="kaiser_best",
+                )
+                estimates = librosa.util.fix_length(estimates, size=orig_length)
             # Denormalize
-            if "normalize" in config.inference:
-                if config.inference["normalize"] is True:
-                    estimates = denormalize_audio(estimates, norm_params)
+            if "normalize" in config.inference and config.inference["normalize"] is True:
+                estimates = denormalize_audio(estimates, norm_params)
 
             # Save separation results
             if store_dir:
@@ -695,21 +685,16 @@ def run_parallel_validation(
     """
 
     model = model.to("cpu")
-    try:
+    with contextlib.suppress(AttributeError):
         # Extract single model for multi-GPU training
         model = model.module  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
-    except:
-        pass
 
     queue = torch.multiprocessing.Queue()
     processes = []
 
     # Create a process for each device
     for i, device in enumerate(device_ids):
-        if torch.cuda.is_available():
-            device = f"cuda:{device}"
-        else:
-            device = torch.device("cpu")
+        device = f"cuda:{device}" if torch.cuda.is_available() else torch.device("cpu")
         p = torch.multiprocessing.Process(
             target=validate_in_subprocess,
             args=(
@@ -902,10 +887,8 @@ def check_validation(dict_args):
     """
     args = parse_args(dict_args)
     torch.backends.cudnn.benchmark = True
-    try:
+    with contextlib.suppress(Exception):
         torch.multiprocessing.set_start_method("spawn")
-    except Exception:
-        pass
 
     # Get model and configuration
     model, config = get_model_from_config(args.model_type, args.config_path)

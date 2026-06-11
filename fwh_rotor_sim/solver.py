@@ -188,20 +188,20 @@ class FWHRotorSolver:
             # Omega is always float|Tensor when called through these closures
             _O = cast(float | torch.Tensor, Omega)
 
-            def y_func(tau):
+            def y_func(tau, _O=_O, b=b):
                 return self._compute_source_quantities(tau, _O, b)[0]
 
-            def v_func(tau):
+            def v_func(tau, _O=_O, b=b):
                 return self._compute_source_quantities(tau, _O, b)[1]
 
-            def F_func(tau):
+            def F_func(tau, _O=_O, b=b):
                 return self._compute_source_quantities(tau, _O, b)[2]
 
-            def Fdot_func(tau):
+            def Fdot_func(tau, _O=_O, b=b):
                 return self._compute_source_quantities(tau, _O, b)[3]
 
             # Mach derivative (only needed for term 3)
-            def Mdot_func(tau):
+            def Mdot_func(tau, _O=_O, b=b):
                 # M = v/c0, Mdot = vdot/c0
                 # vdot = Omega_dot × y + Omega × v
                 # For constant Omega: vdot = Omega × v = -Omega^2 * y_perp

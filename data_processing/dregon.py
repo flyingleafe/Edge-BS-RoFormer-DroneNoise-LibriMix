@@ -181,10 +181,9 @@ def _parse_recording_id(recording_id: str) -> dict[str, str | None]:
             result["room"] = part
         elif "-" in part and part not in ("free-flight", "silent-flight"):
             subparts = part.split("-")
-            if len(subparts) == 2:
-                if subparts[0] in ("speech", "whitenoise"):
-                    result["source_type"] = subparts[0]
-                    result["source_level"] = subparts[1]
+            if len(subparts) == 2 and subparts[0] in ("speech", "whitenoise"):
+                result["source_type"] = subparts[0]
+                result["source_level"] = subparts[1]
         elif part == "nosource":
             result["source_type"] = None
     return result
@@ -454,10 +453,7 @@ def load_timeframe(
 
     # --- audio ---------------------------------------------------------------
     audio, sr = sf.read(sample["audio_path"])  # (N,) or (N, n_ch)
-    if audio.ndim == 1:
-        audio = audio[np.newaxis, :]  # → (1, N)  (axis -1 = time)
-    else:
-        audio = audio.T  # (n_ch, N)  (axis -1 = time)
+    audio = audio[np.newaxis, :] if audio.ndim == 1 else audio.T  # (n_ch, N), axis -1 = time
 
     # Resample if requested.  ``audio`` is (n_ch, N) with time on axis=-1, so
     # resample along axis=-1 directly — do NOT transpose, or librosa resamples

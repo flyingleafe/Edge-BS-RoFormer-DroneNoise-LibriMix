@@ -210,7 +210,7 @@ def make_detailed(outpath):
     prev = "input"
 
     # ── Encoder blocks ──
-    for i, (ch_in, ch_out, kern, f_out) in enumerate(encoder_blocks):
+    for i, (_ch_in, ch_out, kern, f_out) in enumerate(encoder_blocks):
         h = F_HEIGHTS[i + 1]
         cw = ch_w[ch_out]
 
@@ -386,7 +386,7 @@ def make_compact(outpath):
     prev = "input"
 
     # ── Encoder blocks (banded: Conv2D|BN+LReLU) ──
-    for i, (ch_in, ch_out, kern, f_out) in enumerate(encoder_blocks):
+    for i, (_ch_in, ch_out, kern, f_out) in enumerate(encoder_blocks):
         h = F_HEIGHTS[i + 1]
         cw = ch_w[ch_out]
         blk = f"blk{i + 1}"

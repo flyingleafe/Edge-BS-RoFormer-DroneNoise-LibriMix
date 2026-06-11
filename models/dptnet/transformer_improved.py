@@ -12,7 +12,7 @@ from torch.nn.modules.rnn import LSTM
 
 class TransformerEncoderLayer(Module):
     def __init__(self, d_model, nhead, hidden_size, dim_feedforward, dropout, activation="relu"):
-        super(TransformerEncoderLayer, self).__init__()
+        super().__init__()
         self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
 
         # Implementation of improved part
@@ -30,7 +30,7 @@ class TransformerEncoderLayer(Module):
     def __setstate__(self, state):
         if "activation" not in state:
             state["activation"] = F.relu
-        super(TransformerEncoderLayer, self).__setstate__(state)
+        super().__setstate__(state)
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
         # type: (Tensor, Optional[Tensor], Optional[Tensor]) -> Tensor  # pyright: ignore[reportUndefinedVariable]

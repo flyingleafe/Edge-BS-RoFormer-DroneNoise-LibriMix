@@ -18,8 +18,8 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from fwh_rotor_sim.geometry import Blade, Rotor
-from fwh_rotor_sim.plotting import plot_blade_geometry, plot_rotor_top_view
+from fwh_rotor_sim.geometry import Blade, Rotor  # noqa: E402
+from fwh_rotor_sim.plotting import plot_blade_geometry, plot_rotor_top_view  # noqa: E402
 
 
 def load_apc_10x7():
@@ -194,7 +194,7 @@ def plot_comparison_with_uiuc():
     ax_c.tick_params(axis="y", labelcolor="C0")
     ax_t.tick_params(axis="y", labelcolor="C1")
     lines = [l_c, l_t]
-    labels = [l.get_label() for l in lines]
+    labels = [line.get_label() for line in lines]
     ax_c.legend(lines, labels, loc="upper right")
 
     # Panel 3: Tabulated raw data (like UIUC plot)
@@ -210,7 +210,7 @@ def plot_comparison_with_uiuc():
     ax_c2.tick_params(axis="y", labelcolor="C0")
     ax_t2.tick_params(axis="y", labelcolor="C1")
     lines2 = [l_c2, l_t2]
-    labels2 = [l.get_label() for l in lines2]
+    labels2 = [line.get_label() for line in lines2]
     ax_c2.legend(lines2, labels2, loc="upper right")
 
     plt.tight_layout()

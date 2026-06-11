@@ -30,14 +30,14 @@ import torchaudio
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tasks.rps_prediction import (
+from tasks.rps_prediction import (  # noqa: E402
     EvalResult,
     evaluate,
     load_input_set,
     load_predictor,
 )
-from utils.paths import get_data_path, get_datasets_path, get_results_path
-from utils.plots.rps_prediction import PLOT_TYPES
+from utils.paths import get_data_path, get_datasets_path, get_results_path  # noqa: E402
+from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -582,10 +582,7 @@ def part_b_figures(results: list[dict]) -> None:
             for name in METHODS:
                 pred = predictors[name].predict(audio, sr=SR)
                 if pred.ndim == 2:
-                    if name == "simple_conv":
-                        pred = pred.mean(axis=0)
-                    else:
-                        pred = pred[0]
+                    pred = pred.mean(axis=0) if name == "simple_conv" else pred[0]
                 tp = np.linspace(0, dur, len(pred))
                 ax.plot(
                     tp,

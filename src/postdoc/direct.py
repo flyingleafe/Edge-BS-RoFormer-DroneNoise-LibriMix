@@ -226,7 +226,6 @@ def submit_direct(
 
     job_dir = f"{postdoc_dir}/jobs/{name}__{job_id}"
     log_path = f"{job_dir}/log.txt"
-    job_json_path = f"{job_dir}/job.json"
 
     # Create placeholder dir immediately so _next_job_id never reuses this ID
     # for a concurrent submit. The daemon will overwrite with real contents.

@@ -106,7 +106,7 @@ class HTDemucs(nn.Module):
         t_sin_random_shift=0,
         t_cape_mean_normalize=True,
         t_cape_augment=True,
-        t_cape_glob_loc_scale=[5000.0, 1.0, 1.4],
+        t_cape_glob_loc_scale=None,
         t_sparse_self_attn=False,
         t_sparse_cross_attn=False,
         t_mask_type="diag",
@@ -213,6 +213,8 @@ class HTDemucs(nn.Module):
             use_train_segment: (bool) if True, the actual size that is used during the
                 training is used during inference.
         """
+        if t_cape_glob_loc_scale is None:
+            t_cape_glob_loc_scale = [5000.0, 1.0, 1.4]
         super().__init__()
         self.num_subbands = num_subbands
         self.cac = cac
@@ -655,18 +657,12 @@ class HTDemucs(nn.Module):
 
         zout = self._mask(z, x)
         if self.use_train_segment:
-            if self.training:
-                x = self._ispec(zout, length)
-            else:
-                x = self._ispec(zout, training_length)
+            x = self._ispec(zout, length) if self.training else self._ispec(zout, training_length)
         else:
             x = self._ispec(zout, length)
 
         if self.use_train_segment:
-            if self.training:
-                xt = xt.view(B, S, -1, length)
-            else:
-                xt = xt.view(B, S, -1, training_length)
+            xt = xt.view(B, S, -1, length) if self.training else xt.view(B, S, -1, training_length)
         else:
             xt = xt.view(B, S, -1, length)
         xt = xt * stdt[:, None] + meant[:, None]

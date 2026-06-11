@@ -21,7 +21,7 @@ METRIC_LABELS = {"si_sdr": "SI-SDR (dB)", "estoi": "ESTOI", "pesq": "PESQ"}
 
 
 def nearest_snr_level(snr):
-    return min(SNR_LEVELS, key=lambda l: abs(snr - l))
+    return min(SNR_LEVELS, key=lambda level: abs(snr - level))
 
 
 def load_metadata(dataset_path=None):
@@ -148,9 +148,9 @@ def plot_comparison(model_data, output_path):
         ax = axes[ax_idx]
 
         for model_idx, (model_name, per_snr) in enumerate(model_data.items()):
-            x = [l for l in SNR_LEVELS if not np.isnan(per_snr[l][metric])]
-            y = [per_snr[l][metric] for l in x]
-            yerr = [per_snr[l][f"{metric}_std"] for l in x]
+            x = [level for level in SNR_LEVELS if not np.isnan(per_snr[level][metric])]
+            y = [per_snr[level][metric] for level in x]
+            yerr = [per_snr[level][f"{metric}_std"] for level in x]
 
             color = colors[model_idx % len(colors)]
             marker = markers[model_idx % len(markers)]

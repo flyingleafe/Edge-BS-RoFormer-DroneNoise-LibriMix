@@ -276,7 +276,7 @@ def _read_fifo_nonblocking() -> dict[str, Any] | None:
     import select
 
     try:
-        rf, _, _ = select.select([open(POSTDOC_QUEUE_FIFO)], [], [], 0.1)
+        rf, _, _ = select.select([open(POSTDOC_QUEUE_FIFO)], [], [], 0.1)  # noqa: SIM115
     except Exception:
         return None
     if not rf:
@@ -297,7 +297,7 @@ def _read_fifo_blocking() -> dict[str, Any] | None:
     import select
 
     try:
-        fifo_fd = open(POSTDOC_QUEUE_FIFO)
+        fifo_fd = open(POSTDOC_QUEUE_FIFO)  # noqa: SIM115
         atexit.register(lambda: fifo_fd.close())
     except Exception:
         return None

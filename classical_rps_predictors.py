@@ -273,14 +273,11 @@ def _hps_spectrum(spec_frame: np.ndarray, max_downsample: int = 4) -> np.ndarray
     the same length as the original; the peak location indicates the
     fundamental frequency.
     """
-    n = len(spec_frame)
+    len(spec_frame)
     hps = spec_frame.copy()
     for d in range(2, max_downsample + 1):
         down = spec_frame[::d]
-        if len(down) < len(hps):
-            hps = hps[: len(down)] * down
-        else:
-            hps = hps * down[: len(hps)]
+        hps = hps[: len(down)] * down if len(down) < len(hps) else hps * down[: len(hps)]
     return hps
 
 
@@ -334,9 +331,8 @@ def _build_templates(
         the ``harmonic summation`` classical pitch detector.
     """
     global _RPS_GRID, _TEMPLATES
-    if _RPS_GRID is not None and _TEMPLATES is not None:
-        if _TEMPLATES.shape[1] == n_freqs:
-            return _RPS_GRID, _TEMPLATES
+    if _RPS_GRID is not None and _TEMPLATES is not None and _TEMPLATES.shape[1] == n_freqs:
+        return _RPS_GRID, _TEMPLATES
 
     rps_grid = np.arange(rps_min, rps_max + step, step)
     templates = np.zeros((len(rps_grid), n_freqs), dtype=np.float32)
@@ -469,7 +465,7 @@ def nmf_tracker(
     n_freqs, n_frames = V.shape
 
     rps_grid, W = _build_nmf_dictionary(n_freqs, sr)
-    n_atoms = len(rps_grid)
+    len(rps_grid)
 
     # Warm-start H with the non-negative least-squares solution
     H_init = np.linalg.lstsq(W, V.astype(np.float64), rcond=None)[0]

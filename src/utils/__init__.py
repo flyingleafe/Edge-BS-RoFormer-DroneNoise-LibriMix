@@ -3,7 +3,7 @@ __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 # Import necessary libraries
 import argparse
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, cast
 
 import loralib as lora
 import matplotlib.pyplot as plt
@@ -42,9 +42,9 @@ def load_config(model_type: str, config_path: str) -> DictConfig:
             raise ValueError(f"Expected a mapping config, got {type(cfg).__name__}")
         return cfg
     except FileNotFoundError:
-        raise FileNotFoundError(f"Configuration file not found at {config_path}")
+        raise FileNotFoundError(f"Configuration file not found at {config_path}") from None
     except Exception as e:
-        raise ValueError(f"Error loading configuration: {e}")
+        raise ValueError(f"Error loading configuration: {e}") from e
 
 
 def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module, DictConfig]:
@@ -225,7 +225,7 @@ def read_audio_transposed(
             print(f"No stem {instr}: skip!")
             return None, None
         else:
-            raise RuntimeError(f"Error reading the file at {path}: {e}")
+            raise RuntimeError(f"Error reading the file at {path}: {e}") from e
     else:
         # Convert mono audio to 2D array
         if len(mix.shape) == 1:
@@ -399,10 +399,7 @@ def demix(
     mix = torch.tensor(mix, dtype=torch.float32)
 
     # Select processing mode based on model type
-    if model_type == "htdemucs":
-        mode = "demucs"
-    else:
-        mode = "generic"
+    mode = "demucs" if model_type == "htdemucs" else "generic"
 
     # Set processing parameters based on mode
     fade_size: int = 0
@@ -534,9 +531,8 @@ def demix(
         np.nan_to_num(estimated_sources, copy=False, nan=0.0)
 
         # Remove padding for generic mode
-        if mode == "generic":
-            if length_init > 2 * border and border > 0:
-                estimated_sources = estimated_sources[..., border:-border]
+        if mode == "generic" and length_init > 2 * border and border > 0:
+            estimated_sources = estimated_sources[..., border:-border]
 
     # Return results
     if mode == "demucs":
@@ -626,7 +622,7 @@ def load_not_compatible_weights(
                     slices_old = tuple(slices_old)
                     slices_new = tuple(slices_new)
                     max_matrix = np.zeros(max_shape, dtype=np.float32)
-                    for i in range(ln):
+                    for _i in range(ln):
                         max_matrix[slices_old] = old_model[el].cpu().numpy()
                     max_matrix = torch.from_numpy(max_matrix)
                     new_model[el] = max_matrix[slices_new]

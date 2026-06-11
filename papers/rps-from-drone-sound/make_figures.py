@@ -35,9 +35,9 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
 
-from tasks.rps_prediction import load_predictor
-from utils.data import UniformSeries
-from utils.plots.rps_prediction import PLOT_TYPES
+from tasks.rps_prediction import load_predictor  # noqa: E402
+from utils.data import UniformSeries  # noqa: E402
+from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 ROTOR_LABELS = ["Rotor 1", "Rotor 2", "Rotor 3", "Rotor 4"]
@@ -63,7 +63,7 @@ plt.rcParams.update(
     }
 )
 
-from utils.paths import get_data_path, get_datasets_path, get_results_path
+from utils.paths import get_data_path, get_datasets_path, get_results_path  # noqa: E402
 
 CHECKPOINT = str(get_results_path("rps_exp_simple_conv/best_simple_conv.pt"))
 DREGON_VALID = get_datasets_path("DREGON-LM/valid")
@@ -199,7 +199,8 @@ def fig_highsnr_per_sample():
     if not data_path.is_file():
         print("SKIP: results/rps_high_snr_analysis.json not found")
         return
-    data = json.load(open(data_path))
+    with open(data_path) as f:
+        data = json.load(f)
     samples = data["results"]
     times = [s["rel_time"] for s in samples]
     sc_mse = [s["simple_conv"]["mse"] for s in samples]

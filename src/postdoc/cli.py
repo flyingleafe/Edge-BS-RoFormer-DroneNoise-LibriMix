@@ -83,9 +83,7 @@ def _run_sky(
 ) -> subprocess.CompletedProcess:
     cmd = ["sky", *args]
     if capture:
-        return subprocess.run(
-            cmd, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        return subprocess.run(cmd, check=check, text=True, capture_output=True)
     return subprocess.run(cmd, check=check)
 
 
@@ -126,8 +124,7 @@ def cmd_queue_start(
             f"{user}@{host}",
             "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if "running" in r.stdout:
@@ -159,8 +156,7 @@ def cmd_queue_start(
             f"{user}@{host}",
             "tmux has-session -t postdoc-queue 2>/dev/null && echo ok || echo fail",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if "ok" in r2.stdout:
@@ -205,8 +201,7 @@ def cmd_queue_status(
             f"{user}@{host}",
             "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     status = "running" if "running" in r.stdout else "stopped"
@@ -283,7 +278,7 @@ def cmd_submit(
         )
     except git_state.GitError as e:
         typer.echo(f"ERROR: {e}", err=True)
-        raise typer.Exit(3)
+        raise typer.Exit(3) from e
 
     typer.echo(
         f"[postdoc] branch={snap['branch']}  sha={snap['sha'][:12]}  "
@@ -346,7 +341,7 @@ def cmd_submit(
             )
         except Exception as e:
             typer.echo(f"[postdoc] cloud submit failed: {e}", err=True)
-            raise typer.Exit(4)
+            raise typer.Exit(4) from e
 
     # Print result
     suffix = ""
@@ -371,10 +366,7 @@ def cmd_list(
     if not jobs:
         typer.echo("No jobs found.")
         return
-    if all_:
-        visible = jobs
-    else:
-        visible = [j for j in jobs if j.status in ("running", "queued")]
+    visible = jobs if all_ else [j for j in jobs if j.status in ("running", "queued")]
     if not visible:
         typer.echo("No active jobs.")
         return
@@ -397,8 +389,7 @@ def cmd_status(
             f"{user}@{host}",
             f"cat {job_dir}/job.json 2>/dev/null || echo null",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     import json
@@ -407,7 +398,7 @@ def cmd_status(
         d = json.loads(r.stdout)
     except Exception:
         typer.echo(f"Job not found: {name_and_id}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     typer.echo(
         f"  name: {d['name']}\n"
         f"  id:   {d['id']}\n"
@@ -436,8 +427,7 @@ def cmd_logs(
     else:
         r = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", f"{user}@{host}", f"tail -{lines} {job_dir}/log.txt"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
         )
         typer.echo(r.stdout or "")
@@ -490,7 +480,7 @@ def cmd_check(
             )
     except Exception as e:
         typer.echo(f"[postdoc] ERROR: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command("probe")

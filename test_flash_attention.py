@@ -28,7 +28,7 @@ def measure_memory(op, *args, **kwargs):
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         mem_before = torch.cuda.memory_allocated()
-        result = op(*args, **kwargs)
+        op(*args, **kwargs)
         torch.cuda.synchronize()
         mem_peak = torch.cuda.max_memory_allocated()
         return (mem_peak - mem_before) / (1024**2)  # MB
@@ -65,7 +65,7 @@ print("\n" + "=" * 62)
 print("TEST 2: Attend module (models/edge_bs_rof/attend.py)")
 print("=" * 62)
 
-from models.edge_bs_rof.attend import Attend
+from models.edge_bs_rof.attend import Attend  # noqa: E402
 
 # Test Attend with flash=True
 print("\n--- Attend(flash=True) ---")

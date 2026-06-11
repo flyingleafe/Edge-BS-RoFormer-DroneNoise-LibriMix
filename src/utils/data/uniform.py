@@ -91,7 +91,7 @@ class UniformSeries(TimeSeries):
         N = self.samples.shape[-1]
         if N == 0:
             return
-        dur_exact = N / self.sr
+        N / self.sr
         # No stored dur field — derived from N/sr.  The grid anchor check:
         # t_first_edge = t_start + phase/sr must be ≤ t_start (phase ≤ 0)
         # and t_end = t_start + N/sr must be ≤ t_start + (phase+N)/sr + 1/sr
@@ -348,9 +348,7 @@ class UniformSeries(TimeSeries):
         if not np.array_equal(self.samples, other.samples):
             return False
         # Compare phases loosely (float, but bounded and precision‑safe).
-        if abs(self.phase - other.phase) > 1e-12:
-            return False
-        return True
+        return not abs(self.phase - other.phase) > 1e-12
 
     # ---- utilities ------------------------------------------------------
     def sample_times(self) -> np.ndarray:
@@ -386,10 +384,7 @@ class UniformSeries(TimeSeries):
     ) -> np.ndarray:
         """Evaluate signal at absolute query times."""
         times = np.asarray(times)
-        if times.dtype.kind == "i":
-            t_sec = ticks_array_to_secs(times)
-        else:
-            t_sec = times.astype(np.float64)
+        t_sec = ticks_array_to_secs(times) if times.dtype.kind == "i" else times.astype(np.float64)
 
         if self.n_samples == 0:
             if fill == "error":

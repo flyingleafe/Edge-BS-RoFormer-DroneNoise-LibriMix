@@ -287,10 +287,7 @@ class DCCRN(nn.Module):
         dec_out = list(reversed([1] + encoder_channels[:-1]))
         self.decoders = nn.ModuleList()
         for i in range(len(dec_out)):
-            if i == 0:
-                in_ch = encoder_channels[-1]  # bottleneck channels
-            else:
-                in_ch = dec_out[i - 1] * 2  # prev decoder output + skip
+            in_ch = encoder_channels[-1] if i == 0 else dec_out[i - 1] * 2
             out_ch = dec_out[i]
             is_last = i == len(dec_out) - 1
             self.decoders.append(

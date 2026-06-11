@@ -173,7 +173,7 @@ def _plot_spectrogram(ax, audio: np.ndarray, sr: float, t_start: float, dur: flo
     S = torch.abs(X).numpy()
     times = np.linspace(t_start, t_start + dur, S.shape[-1])
     freqs = np.linspace(0, sr / 2, S.shape[0])
-    im = ax.pcolormesh(times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma")
+    ax.pcolormesh(times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma")
     ax.set_ylabel("Freq (Hz)")
     ax.set_title("Input Spectrogram")
     # plt.colorbar(im, ax=ax, label="dB")

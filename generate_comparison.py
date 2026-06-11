@@ -158,7 +158,7 @@ def create_comparison_plot(plot_data, model_names, output_path, figsize=(18, 8))
     # Set style
     try:
         plt.style.use("seaborn-v0_8-darkgrid")
-    except:
+    except Exception:
         plt.style.use("seaborn-darkgrid")
 
     sns.set_palette("husl")
@@ -391,13 +391,13 @@ def main():
 Examples:
   # Compare specific models (metrics only)
   python generate_comparison.py --models Edge-BS-RoFormer DCUNet --output_dir presentations/fig1
-  
+
   # Compare all available models
   python generate_comparison.py --models all --output_dir results/comparison
-  
+
   # Generate audio comparison plots for specific samples
   python generate_comparison.py --models Edge-BS-RoFormer DCUNet HTDemucs --samples 00000 00001 --output_dir presentations/audio_comparison
-  
+
   # Both metrics and audio comparisons
   python generate_comparison.py --models Edge-BS-RoFormer DCUNet --samples 00000 --output_dir presentations/full_comparison
         """,
@@ -460,10 +460,7 @@ Examples:
         sys.exit(1)
 
     # Determine models to compare
-    if args.models == ["all"]:
-        model_names = list(MODEL_FILES.values())
-    else:
-        model_names = args.models
+    model_names = list(MODEL_FILES.values()) if args.models == ["all"] else args.models
 
     # Validate model names
     available_models = list(MODEL_FILES.values())

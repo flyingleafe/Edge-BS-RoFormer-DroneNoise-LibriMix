@@ -374,9 +374,7 @@ class TimeFrame:
                 return False
         if dict(self.tags) != dict(other.tags):
             return False
-        if not _global_equal(self.global_data, other.global_data):
-            return False
-        return True
+        return _global_equal(self.global_data, other.global_data)
 
     def __eq__(self, other: object) -> bool:  # type: ignore[override]
         if not isinstance(other, TimeFrame):
@@ -409,7 +407,4 @@ def _global_equal(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     """Compare two global_data dicts."""
     if a.keys() != b.keys():
         return False
-    for k in a:
-        if not _global_leaf_equal(a[k], b[k]):
-            return False
-    return True
+    return all(_global_leaf_equal(a[k], b[k]) for k in a)

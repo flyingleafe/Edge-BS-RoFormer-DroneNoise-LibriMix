@@ -176,7 +176,6 @@ class BEMTAerodynamics:
         """
         # Initial guess: zero induced velocity
         v_i = torch.tensor(0.0)
-        B = blade.n_radial
 
         for _ in range(self.max_iter):
             F_local, dT, dQ = self.compute_forces(blade, Omega, v_i)

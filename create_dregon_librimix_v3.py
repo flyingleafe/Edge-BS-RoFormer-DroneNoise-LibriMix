@@ -220,9 +220,14 @@ def main():
             )
 
         meta_path = output_dir / "metadata.json"
-        all_meta = json.load(open(meta_path)) if meta_path.exists() else {}
+        if meta_path.exists():
+            with open(meta_path) as f:
+                all_meta = json.load(f)
+        else:
+            all_meta = {}
         all_meta[split] = metadata_list
-        json.dump(all_meta, open(meta_path, "w"), indent=2)
+        with open(meta_path, "w") as f:
+            json.dump(all_meta, f, indent=2)
 
         print(f"Created {len(metadata_list)} {split} samples")
 

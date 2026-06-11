@@ -185,7 +185,7 @@ def load_dregon_noise_records(
         Each frame has a single-channel "audio" track.
     """
     dregon_dir = Path(dregon_dir)
-    geometry = get_geometry(dregon_dir)
+    get_geometry(dregon_dir)
 
     # Load all frames resampled to SAMPLE_RATE
     all_frames = load_dregon_timeframes(
@@ -219,7 +219,7 @@ def load_dregon_noise_records(
             )
             # Build new TimeFrame with single-channel audio + same other tracks
             new_tracks: dict[str, TimeSeries] = {"audio": ch_audio}
-            for key in tf.keys():
+            for key in tf:
                 if key != "audio":
                     new_tracks[key] = tf[key]
             new_tags = dict(tf.tags)
@@ -418,7 +418,7 @@ def _compute_per_channel_spl_targets(
 
     # --- Mean RMS per channel across all single-motor recordings ---
     single_rms_per_ch = np.zeros((len(motor_wavs), n_channels), dtype=np.float64)
-    for i, (key, audio) in enumerate(sorted(motor_wavs.items())):
+    for i, (_key, audio) in enumerate(sorted(motor_wavs.items())):
         single_rms_per_ch[i] = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0))
 
     mean_single_rms = single_rms_per_ch.mean(axis=0)  # (8,)
@@ -941,7 +941,7 @@ def create_dregon_librimix(
                 f"4-motor RMS={am_rms.mean():.6f}"
             )
 
-    num_inflight_samples = num_samples - num_motor_combo_samples
+    num_samples - num_motor_combo_samples
 
     # --- Generate samples ---
     metadata_list = []
@@ -975,7 +975,7 @@ def create_dregon_librimix(
 
             # Try to extract a valid chunk
             noise = None
-            for attempt in range(20):
+            for _attempt in range(20):
                 try:
                     noise, rps, noise_meta = extract_noise_chunk_with_command_rps(
                         record,

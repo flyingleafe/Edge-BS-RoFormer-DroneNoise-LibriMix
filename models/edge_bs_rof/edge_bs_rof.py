@@ -642,7 +642,7 @@ class BSRoformer(Module):
         skip_connection = bool(skip_connection)
         use_torch_checkpoint = bool(use_torch_checkpoint)
         num_stems = int(num_stems)
-        ff_mult = int(mlp_expansion_factor)
+        int(mlp_expansion_factor)
 
         # Determine audio channels based on stereo parameter
         self.stereo = stereo
@@ -782,7 +782,7 @@ class BSRoformer(Module):
         device = raw_audio.device  # Get device of input audio (e.g., CPU, GPU)
 
         # Check if running on MacOS MPS device to handle potential FFT compatibility issues
-        x_is_mps = True if device.type == "mps" else False
+        x_is_mps = device.type == "mps"
 
         # If input audio is 2D, it's missing channel dimension, so expand it (e.g., [b, t] -> [b, 1, t])
         if raw_audio.ndim == 2:
@@ -808,7 +808,7 @@ class BSRoformer(Module):
                 window=stft_window,
                 return_complex=True,  # type: ignore[arg-type]
             )
-        except:
+        except Exception:
             stft_repr = torch.stft(
                 raw_audio.cpu() if x_is_mps else raw_audio,
                 **self.stft_kwargs,  # type: ignore[arg-type]
@@ -912,7 +912,7 @@ class BSRoformer(Module):
                 return_complex=False,
                 length=raw_audio.shape[-1],
             )
-        except:
+        except Exception:
             recon_audio = torch.istft(
                 stft_repr.cpu() if x_is_mps else stft_repr,
                 **self.stft_kwargs,

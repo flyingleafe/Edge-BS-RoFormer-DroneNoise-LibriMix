@@ -13,7 +13,7 @@ class Encoder(nn.Module):
     """Estimation of the nonnegative mixture weight by a 1-D conv layer."""
 
     def __init__(self, W=2, N=64):
-        super(Encoder, self).__init__()
+        super().__init__()
         # Hyper-parameter
         self.W, self.N = W, N
         # Components
@@ -35,7 +35,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, E, W):
-        super(Decoder, self).__init__()
+        super().__init__()
         # Hyper-parameter
         self.E, self.W = E, W
         # Components
@@ -67,7 +67,7 @@ class SingleTransformer(nn.Module):
     """
 
     def __init__(self, input_size, hidden_size, dropout):
-        super(SingleTransformer, self).__init__()
+        super().__init__()
         self.transformer = TransformerEncoderLayer(
             d_model=input_size,
             nhead=4,
@@ -100,7 +100,7 @@ class DPT(nn.Module):
     """
 
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout=0):
-        super(DPT, self).__init__()
+        super().__init__()
 
         self.input_size = input_size
         self.output_size = output_size
@@ -109,7 +109,7 @@ class DPT(nn.Module):
         # dual-path transformer
         self.row_transformer = nn.ModuleList([])
         self.col_transformer = nn.ModuleList([])
-        for i in range(num_layers):
+        for _i in range(num_layers):
             self.row_transformer.append(SingleTransformer(input_size, hidden_size, dropout))
             self.col_transformer.append(SingleTransformer(input_size, hidden_size, dropout))
 
@@ -150,7 +150,7 @@ class DPT(nn.Module):
 # base module for deep DPT
 class DPT_base(nn.Module):
     def __init__(self, input_dim, feature_dim, hidden_dim, num_spk=2, layer=6, segment_size=250):
-        super(DPT_base, self).__init__()
+        super().__init__()
 
         self.input_dim = input_dim
         self.feature_dim = feature_dim
@@ -240,7 +240,7 @@ class DPT_base(nn.Module):
 
 class BF_module(DPT_base):
     def __init__(self, *args, **kwargs):
-        super(BF_module, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         # gated output layer
         self.output = nn.Sequential(nn.Conv1d(self.feature_dim, self.feature_dim, 1), nn.Tanh())
@@ -283,7 +283,7 @@ class DPTNet_base(nn.Module):
     def __init__(
         self, enc_dim, feature_dim, hidden_dim, layer, segment_size=250, nspk=2, win_len=2
     ):
-        super(DPTNet_base, self).__init__()
+        super().__init__()
 
         # parameters
         self.window = win_len

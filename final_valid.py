@@ -2,6 +2,7 @@ __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import required libraries
 import argparse
+import contextlib
 import glob
 import json  # For loading metadata files
 import os
@@ -60,15 +61,9 @@ def calculate_pesq(ref, est, orig_sr):
     # print(f"[DEBUG] ref shape: {ref.shape}, est shape: {est.shape}")
     # If 2D array, determine whether to convert to mono
     if ref.ndim == 2:
-        if ref.shape[0] > 1:
-            ref = librosa.to_mono(ref)
-        else:
-            ref = ref.squeeze(0)
+        ref = librosa.to_mono(ref) if ref.shape[0] > 1 else ref.squeeze(0)
     if est.ndim == 2:
-        if est.shape[0] > 1:
-            est = librosa.to_mono(est)
-        else:
-            est = est.squeeze(0)
+        est = librosa.to_mono(est) if est.shape[0] > 1 else est.squeeze(0)
 
     # Adjust sample rate
     target_sr = 16000 if orig_sr >= 16000 else 8000
@@ -107,15 +102,9 @@ def calculate_stoi(ref, est, orig_sr, extended=False):
     """
     # If 2D array, convert to mono
     if ref.ndim == 2:
-        if ref.shape[0] > 1:
-            ref = librosa.to_mono(ref)
-        else:
-            ref = ref.squeeze(0)
+        ref = librosa.to_mono(ref) if ref.shape[0] > 1 else ref.squeeze(0)
     if est.ndim == 2:
-        if est.shape[0] > 1:
-            est = librosa.to_mono(est)
-        else:
-            est = est.squeeze(0)
+        est = librosa.to_mono(est) if est.shape[0] > 1 else est.squeeze(0)
 
     # STOI requires 10000Hz sample rate, need to resample
     target_sr = 10000
@@ -176,9 +165,8 @@ def get_mixture_paths(args, verbose: bool, config: DictConfig, extension: str) -
     all_mixtures_path = []
     for path in valid_path:
         part = sorted(glob.glob(f"{path}/**/mixture.{extension}", recursive=True))
-        if len(part) == 0:
-            if verbose:
-                print(f"No validation data found in: {path}")
+        if len(part) == 0 and verbose:
+            print(f"No validation data found in: {path}")
         all_mixtures_path += part
     if verbose:
         print(f"Total mixtures: {len(all_mixtures_path)}")
@@ -220,10 +208,8 @@ def update_metrics_and_pbar(
         pbar_dict[f"{metric_name}_{instr}"] = metric_value
 
     if mixture_paths is not None:
-        try:
+        with contextlib.suppress(Exception):
             mixture_paths.set_postfix(pbar_dict)  # pyright: ignore[reportAttributeAccessIssue]
-        except Exception:
-            pass
 
 
 def process_audio_files(
@@ -337,25 +323,23 @@ def process_audio_files(
         input_snr = metadata.get(sample_id, {}).get("input_snr", None)
 
         # Resample to target sample rate
-        if "sample_rate" in config.audio:
-            if sr != config.audio["sample_rate"]:
-                orig_length = mix.shape[-1]
-                if verbose:
-                    print(
-                        f"Warning: sample rate is different. In config: {config.audio['sample_rate']} in file {path}: {sr}"
-                    )
-                mix = librosa.resample(
-                    mix, orig_sr=sr, target_sr=config.audio["sample_rate"], res_type="kaiser_best"
+        if "sample_rate" in config.audio and sr != config.audio["sample_rate"]:
+            orig_length = mix.shape[-1]
+            if verbose:
+                print(
+                    f"Warning: sample rate is different. In config: {config.audio['sample_rate']} in file {path}: {sr}"
                 )
+            mix = librosa.resample(
+                mix, orig_sr=sr, target_sr=config.audio["sample_rate"], res_type="kaiser_best"
+            )
 
         if verbose:
             folder_name = os.path.abspath(folder)
             print(f"Song: {folder_name} Shape: {mix.shape}")
 
         # Audio normalization
-        if "normalize" in config.inference:
-            if config.inference["normalize"] is True:
-                mix, norm_params = normalize_audio(mix)
+        if "normalize" in config.inference and config.inference["normalize"] is True:
+            mix, norm_params = normalize_audio(mix)
 
         # Reset memory statistics
         if device.type == "cuda":
@@ -411,20 +395,18 @@ def process_audio_files(
             estimates = waveforms_orig[instr]
 
             # Resample to original sample rate
-            if "sample_rate" in config.audio:
-                if sr != config.audio["sample_rate"]:
-                    estimates = librosa.resample(
-                        estimates,
-                        orig_sr=config.audio["sample_rate"],
-                        target_sr=sr,
-                        res_type="kaiser_best",
-                    )
-                    estimates = librosa.util.fix_length(estimates, size=orig_length)
+            if "sample_rate" in config.audio and sr != config.audio["sample_rate"]:
+                estimates = librosa.resample(
+                    estimates,
+                    orig_sr=config.audio["sample_rate"],
+                    target_sr=sr,
+                    res_type="kaiser_best",
+                )
+                estimates = librosa.util.fix_length(estimates, size=orig_length)
 
             # Denormalize
-            if "normalize" in config.inference:
-                if config.inference["normalize"] is True:
-                    estimates = denormalize_audio(estimates, norm_params)
+            if "normalize" in config.inference and config.inference["normalize"] is True:
+                estimates = denormalize_audio(estimates, norm_params)
 
             # Save separation results
             if store_dir:
@@ -580,7 +562,7 @@ _SNR_LEVELS = [-30, -25, -20, -15, -10, -5, 0]
 
 def _nearest_snr_level(snr):
     """Round SNR to nearest discrete level."""
-    return min(_SNR_LEVELS, key=lambda l: abs(snr - l))
+    return min(_SNR_LEVELS, key=lambda level: abs(snr - level))
 
 
 def compute_per_snr_summary(results_data, metrics, store_dir=None):
@@ -815,21 +797,16 @@ def run_parallel_validation(
     """
 
     model = model.to("cpu")
-    try:
+    with contextlib.suppress(AttributeError):
         # Extract single model for multi-GPU training
         model = model.module  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
-    except:
-        pass
 
     queue = torch.multiprocessing.Queue()
     processes = []
 
     # Create a process for each device
     for i, device in enumerate(device_ids):
-        if torch.cuda.is_available():
-            device = f"cuda:{device}"
-        else:
-            device = "cpu"
+        device = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
         p = torch.multiprocessing.Process(
             target=validate_in_subprocess,
             args=(i, queue, all_mixtures_path, model, args, config, device, return_dict),
@@ -1006,10 +983,8 @@ def check_validation(dict_args):
     """
     args = parse_args(dict_args)
     torch.backends.cudnn.benchmark = True
-    try:
+    with contextlib.suppress(Exception):
         torch.multiprocessing.set_start_method("spawn")
-    except Exception:
-        pass
 
     # Get model and configuration
     model, config = get_model_from_config(args.model_type, args.config_path)

@@ -18,7 +18,7 @@ from utils.paths import get_datasets_path, get_results_path
 PROJECT_ROOT = Path.cwd().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.rps_predictor import SimpleConv, SimpleConvBiGRUV2
+from models.rps_predictor import SimpleConv, SimpleConvBiGRUV2  # noqa: E402
 
 # ─── Config ─────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

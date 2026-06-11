@@ -67,9 +67,7 @@ def _run_sky(
         raise RuntimeError("sky CLI not found. Run `sky check` first.")
     cmd = ["sky", *args]
     if capture:
-        return subprocess.run(
-            cmd, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        return subprocess.run(cmd, check=check, text=True, capture_output=True)
     return subprocess.run(cmd, check=check)
 
 
@@ -227,8 +225,8 @@ def list_jobs_cloud() -> list[CloudJobInfo]:
                     sha="",
                     cmd="",
                     gpus=0,
-                    cloud=cloud,  # pyright: ignore[reportUndefinedVariable]
-                    region=region,  # pyright: ignore[reportUndefinedVariable]
+                    cloud=None,  # TODO: parse from sky output
+                    region=None,  # TODO: parse from sky output
                 )
             )
         except ValueError:

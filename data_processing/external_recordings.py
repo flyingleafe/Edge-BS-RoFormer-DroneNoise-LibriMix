@@ -135,10 +135,7 @@ def load_external_timeframe(
 
     # ── audio ──────────────────────────────────────────────────────────
     audio, sr = sf.read(str(wav_path))  # (N,) or (N, n_ch)
-    if audio.ndim == 1:
-        audio = audio[np.newaxis, :]  # → (1, N)  (axis -1 = time)
-    else:
-        audio = audio.T  # (n_ch, N)
+    audio = audio[np.newaxis, :] if audio.ndim == 1 else audio.T  # (n_ch, N)
 
     t_start = 0.0
 
