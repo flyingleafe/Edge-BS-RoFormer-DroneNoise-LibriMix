@@ -30,9 +30,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
+import wandb
 from torch.utils.data import DataLoader, Dataset
 
-import wandb
+from models.multif0.rps_predictor import MultiF0RPSPredictor
 
 # Import new model variants
 from models.rps_predictor import (
@@ -332,6 +333,7 @@ MODEL_REGISTRY = {
     "dcunet_enc_rps": DCUNetEncRPS,
     "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
     "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
+    "multif0_rps": MultiF0RPSPredictor,
 }
 
 

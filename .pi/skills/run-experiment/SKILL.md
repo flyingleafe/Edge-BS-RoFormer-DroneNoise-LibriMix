@@ -16,11 +16,11 @@ Complete workflow for running ML experiments in this repository.
 2. **Check prerequisites.**
    - Dataset exists? → `data_processing/AGENTS.md`
    - Config YAML exists? → `configs/AGENTS.md`
-   - Model type registered? → Check `models/AGENTS.md` for valid keys
+   - Model type registered? → Check `src/models/AGENTS.md` for valid keys
    - RPS needed? → Ensure `load_rps: true` in config
 
 3. **Compose the training command.**
-   - Pick the right `--model_type` — see `models/AGENTS.md`.
+   - Pick the right `--model_type` — see `src/models/AGENTS.md`.
    - Pick the right `--config` — see `configs/AGENTS.md`.
    - The entire command is what you submit; there is **no `postdoc`-specific YAML format**. If you have a reusable group of flags, write a shell script under `scripts/` and submit that.
 
