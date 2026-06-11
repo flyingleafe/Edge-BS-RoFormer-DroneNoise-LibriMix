@@ -26,6 +26,7 @@ def plot_sample_comparison(
     ax: Any = None,
     figsize: tuple[float, float] = (16, 12),
     show_separate_gt: bool | None = None,
+    two_columns: bool = False,
     **style,
 ) -> matplotlib.figure.Figure:
     """Generate a multi-row figure: spectrograms + GT + per-model predictions.
@@ -104,56 +105,127 @@ def plot_sample_comparison(
     n_spec_rows = len(channel)
     n_model_rows = len(preds)
     n_gt_rows = int(show_separate_gt)
-    n_rows = n_spec_rows + n_gt_rows + n_model_rows  # specs, GT, preds
-    height_ratios = [1.2] * n_spec_rows + [1.0] * (n_gt_rows + n_model_rows)
 
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(n_rows, 1, height_ratios=height_ratios, hspace=0.3)
 
-    # --- spectrogram rows ---
-    ax_first = None
-    for idx, ch in enumerate(channel):
-        ax_spec = fig.add_subplot(gs[idx], sharex=ax_first)
-        if ax_first is None:
-            ax_first = ax_spec
-        _plot_spectrogram(ax_spec, audio_by_ch[ch], sr, audio_us.t_start, dur)
-        ax_spec.yaxis.set_label_position("right")
-        ax_spec.set_ylabel(f"ch{ch}")
+    if two_columns:
+        # Two-column layout: each channel gets a row.
+        # Left column: spectrogram for that channel.
+        # Right column: GT + predictions for that channel.
+        # If preds keys match "ch{number}" they are mapped to that channel row;
+        # otherwise all predictions are overlaid on every channel row.
+        _preds_by_ch: dict[int, dict[str, np.ndarray]] = {}
+        _ch_keys = set()
+        for name, pred in preds.items():
+            if name.startswith("ch") and name[2:].isdigit():
+                ch_idx = int(name[2:])
+                _preds_by_ch.setdefault(ch_idx, {})[name] = pred
+                _ch_keys.add(ch_idx)
+        _use_per_ch = bool(_ch_keys) and all(ch in _ch_keys for ch in channel)
 
-    # --- GT row ---
-    if show_separate_gt:
-        ax_gt = fig.add_subplot(gs[n_spec_rows], sharex=ax_first)
-        sid = sample.tags.get("id", "")
-        for r, color in enumerate(ROTOR_COLORS):
-            ax_gt.plot(frame_times, gt[r], color=color, linewidth=2, label=f"Rotor {r + 1}")
-        ax_gt.set_ylabel("RPS")
-        ax_gt.set_title(f"Ground Truth — {sid}")
-        ax_gt.legend(loc="upper right", ncol=4, fontsize=8)
-        ax_gt.grid(True, alpha=0.3)
+        n_rows = n_spec_rows
+        gs = fig.add_gridspec(n_rows, 2, height_ratios=[1.0] * n_rows, hspace=0.3, wspace=0.15)
 
-    # --- model prediction rows ---
-    for idx, (model_name, pred) in enumerate(preds.items()):
-        ax_pred = fig.add_subplot(gs[n_spec_rows + n_gt_rows + idx], sharex=ax_first)
-        T_pred = pred.shape[-1]
-        pred_times = np.linspace(0.0, dur, T_pred) + audio_us.t_start
-        for r, color in enumerate(ROTOR_COLORS):
-            ax_pred.plot(
-                frame_times,
-                gt[r],
-                color=color,
-                linewidth=2,
-                linestyle=":",
-                alpha=0.8,
-            )
-            ax_pred.plot(pred_times, pred[r], color=color, linewidth=2)
+        # --- Left column: spectrograms ---
+        for idx, ch in enumerate(channel):
+            ax_spec = fig.add_subplot(gs[idx, 0])
+            _plot_spectrogram(ax_spec, audio_by_ch[ch], sr, audio_us.t_start, dur)
+            ax_spec.set_ylabel(f"ch{ch}")
+            if idx == 0:
+                ax_spec.set_title("Input Spectrogram")
 
-        gt_interp = rps_es.interpolate(pred_times)
-        mae = float(np.mean(np.abs(pred - gt_interp)))
-        ax_pred.set_title(f"{model_name} — MAE={mae:.2f}")
-        ax_pred.set_ylabel("RPS")
-        ax_pred.grid(True, alpha=0.3)
-        if idx == n_model_rows - 1:
-            ax_pred.set_xlabel("Time (s)")
+        # --- Right column: GT + predictions per channel ---
+        for idx, ch in enumerate(channel):
+            ax_rps = fig.add_subplot(gs[idx, 1])
+
+            # GT dotted
+            for r, color in enumerate(ROTOR_COLORS):
+                ax_rps.plot(
+                    frame_times,
+                    gt[r],
+                    color=color,
+                    linewidth=2,
+                    linestyle=":",
+                    alpha=0.7,
+                    label=f"GT R{r + 1}" if idx == 0 else "",
+                )
+
+            # Predictions for this channel
+            ch_preds = _preds_by_ch.get(ch, {}) if _use_per_ch else preds
+            for model_name, pred in ch_preds.items():
+                T_pred = pred.shape[-1]
+                pred_times = np.linspace(0.0, dur, T_pred) + audio_us.t_start
+                for r, color in enumerate(ROTOR_COLORS):
+                    ax_rps.plot(
+                        pred_times,
+                        pred[r],
+                        color=color,
+                        linewidth=2,
+                        alpha=0.9,
+                        label=f"{model_name} R{r + 1}" if idx == 0 else "",
+                    )
+
+                gt_interp = rps_es.interpolate(pred_times)
+                mae = float(np.mean(np.abs(pred - gt_interp)))
+                ax_rps.set_title(f"ch{ch} — MAE={mae:.2f}")
+
+            ax_rps.set_ylabel("RPS")
+            ax_rps.grid(True, alpha=0.3)
+            if idx == 0:
+                ax_rps.legend(loc="upper right", ncol=2, fontsize=6)
+            if idx == n_rows - 1:
+                ax_rps.set_xlabel("Time (s)")
+
+    else:
+        # Single-column layout (original): stacked vertically.
+        n_rows = n_spec_rows + n_gt_rows + n_model_rows
+        height_ratios = [1.2] * n_spec_rows + [1.0] * (n_gt_rows + n_model_rows)
+        gs = fig.add_gridspec(n_rows, 1, height_ratios=height_ratios, hspace=0.3)
+
+        # --- spectrogram rows ---
+        ax_first = None
+        for idx, ch in enumerate(channel):
+            ax_spec = fig.add_subplot(gs[idx], sharex=ax_first)
+            if ax_first is None:
+                ax_first = ax_spec
+            _plot_spectrogram(ax_spec, audio_by_ch[ch], sr, audio_us.t_start, dur)
+            ax_spec.yaxis.set_label_position("right")
+            ax_spec.set_ylabel(f"ch{ch}")
+
+        # --- GT row ---
+        if show_separate_gt:
+            ax_gt = fig.add_subplot(gs[n_spec_rows], sharex=ax_first)
+            sid = sample.tags.get("id", "")
+            for r, color in enumerate(ROTOR_COLORS):
+                ax_gt.plot(frame_times, gt[r], color=color, linewidth=2, label=f"Rotor {r + 1}")
+            ax_gt.set_ylabel("RPS")
+            ax_gt.set_title(f"Ground Truth — {sid}")
+            ax_gt.legend(loc="upper right", ncol=4, fontsize=8)
+            ax_gt.grid(True, alpha=0.3)
+
+        # --- model prediction rows ---
+        for idx, (model_name, pred) in enumerate(preds.items()):
+            ax_pred = fig.add_subplot(gs[n_spec_rows + n_gt_rows + idx], sharex=ax_first)
+            T_pred = pred.shape[-1]
+            pred_times = np.linspace(0.0, dur, T_pred) + audio_us.t_start
+            for r, color in enumerate(ROTOR_COLORS):
+                ax_pred.plot(
+                    frame_times,
+                    gt[r],
+                    color=color,
+                    linewidth=2,
+                    linestyle=":",
+                    alpha=0.8,
+                )
+                ax_pred.plot(pred_times, pred[r], color=color, linewidth=2)
+
+            gt_interp = rps_es.interpolate(pred_times)
+            mae = float(np.mean(np.abs(pred - gt_interp)))
+            ax_pred.set_title(f"{model_name} — MAE={mae:.2f}")
+            ax_pred.set_ylabel("RPS")
+            ax_pred.grid(True, alpha=0.3)
+            if idx == n_model_rows - 1:
+                ax_pred.set_xlabel("Time (s)")
 
     gs.tight_layout(fig)
     return fig

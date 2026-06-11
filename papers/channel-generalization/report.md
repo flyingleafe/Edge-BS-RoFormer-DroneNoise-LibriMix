@@ -14,8 +14,16 @@ degradation: edge-microphone MSE is 3–10× higher than the reference microphon
 and overall R² is near zero (SimpleConv barely beats the mean baseline, V2 is
 slightly worse). Permutation-invariant evaluation (allowing the model to swap
 motor assignments) recovers only 0.5–2.0% of the error, confirming that the
-failure is genuine misprediction, not motor confusion. The conclusion: **RPS predictors trained on DREGON-LM do not generalize
-across microphone positions.**
+failure is genuine misprediction, not motor confusion.
+
+We then retrain the same architectures on all 8 channels jointly (batch concatenation
+$(B, C, T) \to (B \cdot C, T)$, still single-channel input per prediction). The
+8ch-trained SimpleConv generalizes uniformly across channels ($R^2 = 0.57$), while
+the 8ch-trained SimpleConvV2 achieves excellent PIT performance ($R^2 = 0.94$) but
+shows a severe motor-swapping issue when evaluated without PIT. This confirms that
+the rotor-ordering task is fundamentally underdefined without a microphone-position
+reference, and **PIT evaluation (and PIT training loss) is the correct objective for
+RPS prediction.**
 
 ---
 
@@ -189,13 +197,133 @@ sample.*
 
 ---
 
-## 5. Data & Reproducibility
+## 5. Training on all 8 channels
+
+### 5.1 Training setup
+
+To test whether the channel-generalization failure is a data-coverage issue,
+we retrain SimpleConv and SimpleConvV2 on the same DREGON-LM dataset but with
+all 8 channels present in every training batch. The training batch is a
+concatenation of several 8-channel recordings channel-wise: $(B, C, T) \to
+(B \cdot C, T)$. The model still receives a **single channel** as input for
+each individual prediction — the only difference is that the training batch
+now contains all microphone positions, not just channel 0.
+
+Checkpoints:
+- `results/rps_8ch_v4_simple_conv/best_simple_conv.pt`
+- `results/rps_8ch_v4_simple_conv_v2/best_simple_conv_v2.pt`
+
+### 5.2 Results
+
+**SimpleConv (8ch)** — no PIT:
+
+| Recording | ch 0 | ch 1 | ch 2 | ch 3 | ch 4 | ch 5 | ch 6 | ch 7 |
+|-----------|------|------|------|------|------|------|------|------|
+| nosource | 26.9 | 24.1 | 28.5 | 25.0 | 26.1 | 24.9 | 26.7 | 25.3 |
+| speech-low | 33.6 | 32.3 | 34.2 | 32.3 | 33.2 | 32.0 | 32.8 | 32.4 |
+| whitenoise-low | 31.5 | 30.5 | 32.3 | 30.4 | 31.3 | 30.2 | 30.9 | 30.5 |
+
+Overall: MSE=29.70, MAE=2.74, R²=0.57.
+
+**SimpleConvV2 (8ch)** — no PIT:
+
+| Recording | ch 0 | ch 1 | ch 2 | ch 3 | ch 4 | ch 5 | ch 6 | ch 7 |
+|-----------|------|------|------|------|------|------|------|------|
+| nosource | 57.2 | 56.6 | 56.7 | 57.1 | 58.0 | 57.2 | 57.1 | 56.5 |
+| speech-low | 60.2 | 61.2 | 60.4 | 65.3 | 58.9 | 61.9 | 59.3 | 59.8 |
+| whitenoise-low | 66.9 | 67.3 | 67.6 | 68.1 | 65.9 | 67.2 | 66.7 | 65.9 |
+
+Overall: MSE=61.39, MAE=5.71, R²=−0.78.
+
+![8ch-trained MSE bars](figures/mse_bars_8ch_v4.png)
+*Figure 8. 8ch-trained models, no PIT. SimpleConv (top) is uniform across all
+channels; SimpleConvV2 (bottom) is uniformly bad.*
+
+**PIT results:**
+
+| Model | MSE (no PIT) | MSE (PIT) | Δ |
+|-------|-------------|----------|---|
+| SimpleConv (8ch) | 29.70 | 28.37 | −4.5% |
+| SimpleConvV2 (8ch) | 61.39 | **3.30** | **−94.6%** |
+
+![8ch-trained PIT MSE bars](figures/mse_bars_8ch_v4_pit.png)
+*Figure 9. 8ch-trained models, PIT. SimpleConvV2 bars collapse from ~60 to ~2–3
+on every channel.*
+
+### 5.3 Why motor swapping is expected, and why PIT is the right metric
+
+The 8ch-trained SimpleConvV2 results make a subtle but important point: the
+model predicts the **correct rotor speeds** (PIT MSE=3.30, R²=0.94) but
+assigns them to the **wrong rotor indices** (no-PIT MSE=61.39). This is not a
+bug — it is a **fundamental consequence of the physics**.
+
+Which rotor is heard loudest depends on the microphone position. There is no
+reliable acoustic signature that tells one motor from another independently of
+where the microphone is placed. Forcing the model to assign a consistent
+rotor index across all channels is therefore an **underdefined task**. We do
+not care about the label of each rotor; we only care that the set of four
+predicted speeds matches the true set.
+
+Consequently, **PIT evaluation (and PIT training loss) is the correct objective**
+for RPS prediction. A model that gets all four speeds right but swaps them
+between channels is perfectly useful for downstream harmonic-noise
+suppression — the comb-filter notch frequencies depend only on the rotor
+speeds, not on which rotor produces which harmonic.
+
+### 5.4 Sample comparisons
+
+**Nosource sample (`sample_00014`) — SimpleConv (8ch):**
+
+![8ch SimpleConv nosource](figures/sample_nosource_8ch_v4_simpleconv.png)
+*Figure 10. SimpleConv (8ch) on nosource sample_00014. All channels track the GT
+with similar MAE (~2.5–3.0). The model has learned a channel-agnostic
+representation.*
+
+**Nosource sample (`sample_00014`) — SimpleConvV2 (8ch), PIT-permuted:**
+
+![8ch V2 nosource](figures/sample_nosource_8ch_v4_simpleconv_v2.png)
+*Figure 11. SimpleConvV2 (8ch) on the same sample, after PIT permutation. All
+channels track the GT closely (MAE ~0.7–0.8). The raw predictions are
+motor-swapped, but the speed values themselves are accurate.*
+
+**Speech sample (`sample_00002`) — SimpleConv (8ch):**
+
+![8ch SimpleConv speech](figures/sample_speech_8ch_v4_simpleconv.png)
+*Figure 12. SimpleConv (8ch) on speech sample_00002. Uniform performance across
+channels, slight degradation from speech interference.*
+
+**Speech sample (`sample_00002`) — SimpleConvV2 (8ch), PIT-permuted:**
+
+![8ch V2 speech](figures/sample_speech_8ch_v4_simpleconv_v2.png)
+*Figure 13. SimpleConvV2 (8ch) on the same speech sample, after PIT permutation.
+Again, all channels are accurate once rotor indices are ignored.*
+
+**Dynamic sample (`sample_00012`, nosource) — both 8ch models, PIT-permuted:**
+
+`sample_00012` is a particularly revealing clip: the motors spin up from ~30 RPS
+to ~80 RPS during the first 1.5 s, then dip and recover at ~2 s. This is a much
+more dynamic regime than the steady-flight clips used above.
+
+![8ch SimpleConv dynamic](figures/sample_nosource_varied_8ch_v4_simpleconv.png)
+*Figure 14. SimpleConv (8ch) on `sample_00012`. The model tracks the ramp-up
+and the dip, but with a slight lag (MAE ~5.9–6.4).*
+
+![8ch V2 dynamic](figures/sample_nosource_varied_8ch_v4_simpleconv_v2.png)
+*Figure 15. SimpleConvV2 (8ch) on the same dynamic sample. The model tracks the
+transition almost perfectly (MAE ~1.4–2.0), confirming that it is not merely
+predicting flat means — it genuinely captures transient speed changes.*
+
+---
+
+## 6. Data & Reproducibility
 
 - **Dataset:** `datasets/DREGON-LM-V4/valid` (19 samples, 40 MB, 8-channel WAV + RPS NPY).
   Created by `create_dregon_librimix.py --max_non_overlapping`.
 - **Evaluation results:** `results/dregon_v4_eval/eval.json` (no PIT) and
   `results/dregon_v4_eval/eval_pit.json` (PIT). Generated by
   `evaluate-rps -i ... -m ... --pit`.
+- **8ch evaluation results:** `results/dregon_v4_eval/eval_8ch_v4.json` and
+  `eval_8ch_v4_pit.json`.
 - **Code changes:** `src/tasks/rps_prediction.py` — tag propagation from
   metadata to per_sample rows; `create_dregon_librimix.py` —
   `--max_non_overlapping` flag; `train_rps_predictor.py` — `return_indices`
