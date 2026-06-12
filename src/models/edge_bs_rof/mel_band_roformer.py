@@ -1,5 +1,5 @@
 from functools import partial
-from typing import cast
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -200,7 +200,7 @@ class Transformer(Module):
         linear_attn=False,
     ):
         super().__init__()
-        self.layers = ModuleList([])
+        self.layers: ModuleList = ModuleList([])
 
         for _ in range(depth):
             if linear_attn:
@@ -398,9 +398,9 @@ class MelBandRoformer(Module):
         self.num_stems = num_stems
         self.use_torch_checkpoint = use_torch_checkpoint
         self.skip_connection = skip_connection
-        self.layers = ModuleList([])
+        self.layers: ModuleList = ModuleList([])
 
-        transformer_kwargs = dict(
+        transformer_kwargs: dict[str, Any] = dict(
             dim=dim,
             heads=heads,
             dim_head=dim_head,
@@ -439,7 +439,7 @@ class MelBandRoformer(Module):
 
         self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # type: ignore[arg-type]
 
-        self.stft_kwargs = dict(
+        self.stft_kwargs: dict[str, Any] = dict(
             n_fft=stft_n_fft,
             hop_length=stft_hop_length,
             win_length=stft_win_length,
@@ -507,7 +507,7 @@ class MelBandRoformer(Module):
         self.multi_stft_n_fft = stft_n_fft
         self.multi_stft_window_fn = multi_stft_window_fn
 
-        self.multi_stft_kwargs = dict(
+        self.multi_stft_kwargs: dict[str, Any] = dict(
             hop_length=multi_stft_hop_size, normalized=multi_stft_normalized
         )
 
@@ -682,7 +682,7 @@ class MelBandRoformer(Module):
         multi_stft_resolution_loss = 0.0
 
         for window_size in self.multi_stft_resolutions_window_sizes:
-            res_stft_kwargs = dict(
+            res_stft_kwargs: dict[str, Any] = dict(
                 n_fft=max(window_size, self.multi_stft_n_fft),
                 win_length=window_size,
                 return_complex=True,

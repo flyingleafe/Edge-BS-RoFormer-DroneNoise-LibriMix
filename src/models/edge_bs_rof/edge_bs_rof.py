@@ -1,5 +1,6 @@
 import math  # Added for PositionalEncoding
 from functools import partial
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -316,7 +317,7 @@ class Transformer(Module):
         max_seq_len=1000,  # Maximum sequence length
     ):
         super().__init__()
-        self.layers = ModuleList([])  # Store all layers
+        self.layers: ModuleList = ModuleList([])  # Store all layers
         self.use_rotary_pos = use_rotary_pos
         self.max_seq_len = max_seq_len
 
@@ -621,6 +622,26 @@ class BSRoformer(Module):
     ):
         super().__init__()  # Initialize parent class Module
 
+        # Normalize OmegaConf types: config values arrive as float, need int/bool
+        depth = int(depth)
+        dim_head = int(dim_head)
+        heads = int(heads)
+        time_transformer_depth = int(time_transformer_depth)
+        freq_transformer_depth = int(freq_transformer_depth)
+        linear_transformer_depth = int(linear_transformer_depth)
+        mask_estimator_depth = int(mask_estimator_depth)
+        stft_n_fft = int(stft_n_fft)
+        stft_hop_length = int(stft_hop_length)
+        stft_win_length = int(stft_win_length)
+        max_seq_len = int(max_seq_len)
+        flash_attn = bool(flash_attn)
+        use_rotary_pos = bool(use_rotary_pos)
+        stft_normalized = bool(stft_normalized)
+        skip_connection = bool(skip_connection)
+        use_torch_checkpoint = bool(use_torch_checkpoint)
+        num_stems = int(num_stems)
+        int(mlp_expansion_factor)
+
         # Determine audio channels based on stereo parameter, stereo=2 channels, mono=1 channel
         self.stereo = stereo
         self.audio_channels = 2 if stereo else 1
@@ -631,10 +652,10 @@ class BSRoformer(Module):
         self.max_seq_len = max_seq_len
 
         # Initialize ModuleList to store multi-layer Transformer modules
-        self.layers = ModuleList([])
+        self.layers: ModuleList = ModuleList([])
 
         # Define common parameters for Transformer, passed to each layer's Transformer module
-        transformer_kwargs = dict(
+        transformer_kwargs: dict[str, Any] = dict(
             dim=dim,
             heads=heads,
             dim_head=dim_head,
@@ -683,7 +704,7 @@ class BSRoformer(Module):
         self.final_norm = RMSNorm(dim)
 
         # Configure STFT transform parameters to convert time-domain audio to frequency domain
-        self.stft_kwargs = dict(
+        self.stft_kwargs: dict[str, Any] = dict(
             n_fft=stft_n_fft,
             hop_length=stft_hop_length,
             win_length=stft_win_length,
@@ -732,7 +753,7 @@ class BSRoformer(Module):
         self.multi_stft_window_fn = multi_stft_window_fn
 
         # Configure other multi-resolution STFT parameters like hop length and normalization options
-        self.multi_stft_kwargs = dict(
+        self.multi_stft_kwargs: dict[str, Any] = dict(
             hop_length=multi_stft_hop_size, normalized=multi_stft_normalized
         )
 
@@ -931,7 +952,7 @@ class BSRoformer(Module):
         multi_stft_resolution_loss = 0.0
         for window_size in self.multi_stft_resolutions_window_sizes:
             # Configure STFT parameters for current window size, ensure FFT length is not smaller than window size
-            res_stft_kwargs = dict(
+            res_stft_kwargs: dict[str, Any] = dict(
                 n_fft=max(window_size, self.multi_stft_n_fft),
                 win_length=window_size,
                 return_complex=True,
