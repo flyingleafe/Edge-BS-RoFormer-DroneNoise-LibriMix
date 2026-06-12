@@ -118,12 +118,26 @@ class SalienceRPSPredictor(nn.Module):
         *,
         threshold: float = 0.3,
         max_jump_bins: int = 3,
+        chunk_size: int = 8,
     ) -> torch.Tensor:
         """Salience -> tracked RPS on the STFT frame grid, ``(B, num_rotors, T_stft)``.
 
         Hungarian tracking runs on CPU/numpy (slow but validation-only).
+
+        The CNN forward is run in row-chunks of ``chunk_size``. Validation clips
+        are typically much longer than training clips, and LateDeep's (360, 1)
+        distribution conv has activation memory ~ ``B·T``; forwarding the whole
+        flattened multichannel batch (B*C rows) at full length in fp32 OOMs.
+        Chunking bounds peak memory without affecting results (rows are
+        independent). ``chunk_size <= 0`` disables chunking.
         """
-        logits = self.forward(audio)  # (B, n_bins, T_grid)
+        if chunk_size and chunk_size > 0 and audio.shape[0] > chunk_size:
+            logits = torch.cat(
+                [self.forward(audio[i : i + chunk_size]) for i in range(0, audio.shape[0], chunk_size)],
+                dim=0,
+            )
+        else:
+            logits = self.forward(audio)  # (B, n_bins, T_grid)
         salience = torch.sigmoid(logits)
         rps_grid, _merge = salience_to_rps_segmented(
             salience,
