@@ -97,9 +97,23 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 | `dcunet_enc_rps` | DCUNet complex-conv encoder (in `train_rps_predictor.py`) |
 | `dccrn_enc_rps` | DCCRN complex-conv encoder (in `train_rps_predictor.py`) |
 | `multif0_rps` | Multi-F0 LateDeep CNN + soft-centroid RPS |
+| `multif0_salience` | LateDeep CNN → salience-map logits; BCE-trained, Hungarian-tracked to RPS at eval (`salience_rps.py`) |
+| `basic_pitch_salience` | Basic Pitch contour branch → salience-map logits; same BCE+tracking path, native 16 kHz (`salience_rps.py`) |
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
+
+### Salience-map RPS baselines (`salience_rps.py`)
+
+`multif0_salience` and `basic_pitch_salience` are *multi-pitch* baselines: they
+output per-bin salience **logits** `(B, n_bins, T)` (flagged `outputs_salience=True`),
+not RPS directly. `train_rps_predictor.py` routes them to a BCE path —
+`rps_to_salience()` builds the per-bin target (precomputed/cached in the dataset;
+blurred via `--salience_blur_bins`), trained with `BCEWithLogitsLoss` (`--bce_pos_weight`).
+At eval, `predict_rps()` does `sigmoid → salience_to_rps_segmented` (Hungarian
+tracking, `--track_threshold`) → STFT grid, so the existing global-PIT metrics
+(PIT MSE/RMSE/MAE/R²) apply unchanged and stay comparable to the SimpleConv family.
+Both run natively at 16 kHz. The RPS↔salience helpers live in `multif0/utils.py`.
 
 ## Multi-F0 (Cuesta et al. ISMIR 2020)
 

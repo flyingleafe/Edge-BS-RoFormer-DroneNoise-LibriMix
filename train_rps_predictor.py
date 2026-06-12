@@ -30,9 +30,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
-import wandb
 from torch.utils.data import DataLoader, Dataset
 
+import wandb
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 
 # Import new model variants
@@ -48,6 +48,7 @@ from models.rps_predictor import (
     SimpleConvV2,
     SimpleConvWide,
 )
+from models.salience_rps import BasicPitchSalience, LateDeepSalience
 
 # Alias for utils.py compatibility
 RPSPredictor = SimpleConv
@@ -57,9 +58,17 @@ RPSPredictor = SimpleConv
 
 
 class DREGONRPSDataset(Dataset):
-    """Load mixture.wav + rps.npy from DREGON-LM, resample RPS to STFT frames."""
+    """Load mixture.wav + rps.npy from DREGON-LM, resample RPS to STFT frames.
 
-    def __init__(self, data_dir, n_fft=2048, hop_length=512):
+    When ``salience_fn`` is given, each item additionally yields a per-bin
+    salience target (for BCE-trained salience models). ``salience_fn`` maps
+    ``(raw_rps (4, M), n_samples) -> (n_bins, T_grid)`` and is the model's
+    ``salience_target`` bound method. Targets are **precomputed once at init**
+    (in the main process, reading only audio metadata) so DataLoader workers
+    neither recompute them nor fork the GPU model.
+    """
+
+    def __init__(self, data_dir, n_fft=2048, hop_length=512, salience_fn=None):
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.samples = sorted(
@@ -68,6 +77,13 @@ class DREGONRPSDataset(Dataset):
             if os.path.isfile(os.path.join(d, "mixture.wav"))
             and os.path.isfile(os.path.join(d, "rps.npy"))
         )
+        self.salience_cache = None
+        if salience_fn is not None:
+            self.salience_cache = []
+            for d in self.samples:
+                info = torchaudio.info(os.path.join(d, "mixture.wav"))
+                raw_rps = torch.from_numpy(np.load(os.path.join(d, "rps.npy"))).float()
+                self.salience_cache.append(salience_fn(raw_rps, info.num_frames))
 
     def __len__(self):
         return len(self.samples)
@@ -101,6 +117,8 @@ class DREGONRPSDataset(Dataset):
             rps.unsqueeze(0), size=n_frames, mode="linear", align_corners=False
         ).squeeze(0)  # (4, n_frames)
 
+        if self.salience_cache is not None:
+            return audio, rps, self.salience_cache[idx]
         return audio, rps
 
 
@@ -331,6 +349,10 @@ MODEL_REGISTRY = {
     "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
     "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
     "multif0_rps": MultiF0RPSPredictor,
+    # Salience-map baselines (output (B, n_bins, T) logits; BCE-trained, tracked
+    # to RPS at eval). Flagged via .outputs_salience — see models/salience_rps.py.
+    "multif0_salience": LateDeepSalience,
+    "basic_pitch_salience": BasicPitchSalience,
 }
 
 
@@ -478,26 +500,41 @@ def _flatten_channels(audio: torch.Tensor, rps: torch.Tensor):
     return audio_flat, rps_flat, C
 
 
-def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
+def evaluate(
+    model, loader, device, dataset_len, pit_eval: bool = True, track_threshold: float = 0.3
+):
     """Run model on dataloader, return per-frame and per-clip metrics.
 
     Handles both mono (T,) and multichannel (C, T) samples transparently.
     When pit_eval=True, uses permutation-invariant MSE for the primary loss.
+
+    For salience models (``outputs_salience``) the prediction step runs
+    ``predict_rps`` (sigmoid -> Hungarian tracking -> STFT grid) in fp32 outside
+    autocast; the salience target in the batch is ignored. Everything downstream
+    (PIT MSE, MAE, R²) is identical to the RPS-regression path, so the reported
+    metrics stay comparable across all model families.
     """
     model.eval()
+    is_salience = getattr(model, "outputs_salience", False)
     total_pit_loss = 0.0
     total_std_loss = 0.0
     all_preds, all_targets = [], []
     total_items = 0  # count B*C items, not just B
 
     with torch.no_grad():
-        for audio, rps_target in loader:
+        for batch in loader:
+            audio, rps_target = batch[0], batch[1]  # salience target (batch[2]) unused at eval
             audio, rps_target = audio.to(device), rps_target.to(device)
             audio, rps_target, C = _flatten_channels(audio, rps_target)
-            with torch.amp.autocast("cuda"):
-                rps_pred = model(audio)
+            if is_salience:
+                rps_pred = model.predict_rps(audio, threshold=track_threshold)
                 pit_loss = pit_mse_loss(rps_pred, rps_target)
                 std_loss = F.mse_loss(rps_pred, rps_target)
+            else:
+                with torch.amp.autocast("cuda"):
+                    rps_pred = model(audio)
+                    pit_loss = pit_mse_loss(rps_pred, rps_target)
+                    std_loss = F.mse_loss(rps_pred, rps_target)
             n = audio.size(0)
             total_pit_loss += pit_loss.item() * n
             total_std_loss += std_loss.item() * n
@@ -569,11 +606,41 @@ def train_model(model_name, args):
 
     n_fft, hop = args.n_fft, args.hop_length
 
-    # Data
-    train_ds = DREGONRPSDataset(os.path.join(args.data_root, "train"), n_fft, hop)
-    valid_ds = DREGONRPSDataset(os.path.join(args.data_root, "valid"), n_fft, hop)
     print(f"\n{'=' * 60}")
     print(f"Model: {model_name}")
+
+    # Model first — salience models supply the dataset's BCE target function.
+    model = get_model(model_name, n_fft=n_fft, hop_length=hop).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {n_params:,}")
+
+    is_salience = getattr(model, "outputs_salience", False)
+    salience_fn = None
+    pos_weight = None
+    if is_salience:
+        blur = args.salience_blur_bins
+        # Bound to the (main-process) model; called only inside the dataset's
+        # __init__ to precompute targets, then dropped (not retained on the ds).
+        salience_fn = lambda raw, n: model.salience_target(raw, n, blur_bins=blur)  # noqa: E731
+        if args.bce_pos_weight > 0:
+            pw = args.bce_pos_weight
+        else:
+            # Auto: roughly (#negative bins) / (#positive bins) per frame.
+            active = model.num_rotors * (2 * blur + 1)
+            pw = (model.n_bins - active) / max(active, 1)
+        pos_weight = torch.tensor(float(pw), device=device)
+        print(
+            f"Salience model: n_bins={model.n_bins}, blur_bins={blur}, BCE pos_weight={pw:.1f}, "
+            f"track_threshold={args.track_threshold}"
+        )
+
+    # Data
+    train_ds = DREGONRPSDataset(
+        os.path.join(args.data_root, "train"), n_fft, hop, salience_fn=salience_fn
+    )
+    valid_ds = DREGONRPSDataset(
+        os.path.join(args.data_root, "valid"), n_fft, hop, salience_fn=salience_fn
+    )
     print(f"Train: {len(train_ds)} samples | Valid: {len(valid_ds)} samples")
 
     train_loader = DataLoader(
@@ -591,11 +658,6 @@ def train_model(model_name, args):
         pin_memory=True,
     )
 
-    # Model
-    model = get_model(model_name, n_fft=n_fft, hop_length=hop).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {n_params:,}")
-
     # Optimizer / scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -609,11 +671,13 @@ def train_model(model_name, args):
     # Naive baseline
     print("Computing naive baseline...")
     rps_sum = torch.zeros(4)
-    for _, rps in train_loader:
+    for batch in train_loader:
+        rps = batch[1]
         rps_sum += rps.sum(dim=(0, 2))
     rps_mean = rps_sum / (len(train_ds) * train_ds[0][1].shape[1])
     naive_mse = 0.0
-    for _, rps in valid_loader:
+    for batch in valid_loader:
+        rps = batch[1]
         diff = rps - rps_mean.view(1, 4, 1)
         naive_mse += (diff**2).sum().item()
     naive_mse /= len(valid_ds) * valid_ds[0][1].shape[1]
@@ -634,24 +698,41 @@ def train_model(model_name, args):
         model.train()
         train_loss_sum = 0.0
         train_items = 0
-        for audio, rps_target in train_loader:
-            audio, rps_target = audio.to(device), rps_target.to(device)
-            # Flatten multichannel batch: (B, C, T) → (B*C, T)
-            audio, rps_target, _C = _flatten_channels(audio, rps_target)
+        for batch in train_loader:
             optimizer.zero_grad()
-            with torch.amp.autocast("cuda"):
-                rps_pred = model(audio)
-                if args.pit_loss:
-                    loss = pit_mse_loss(rps_pred, rps_target)
-                else:
-                    loss = F.mse_loss(rps_pred, rps_target)
-                if args.smoothness_weight > 0:
-                    # Second-order finite difference for smoothness
-                    # (B, 4, T) -> diff along time
-                    diff1 = rps_pred[:, :, 1:] - rps_pred[:, :, :-1]
-                    diff2 = diff1[:, :, 1:] - diff1[:, :, :-1]
-                    smoothness = diff2.pow(2).mean()
-                    loss = loss + args.smoothness_weight * smoothness
+            if is_salience:
+                # Salience models: BCE on per-bin logits vs precomputed targets.
+                audio, sal_target = batch[0].to(device), batch[2].to(device)
+                # Broadcast the per-sample target across channels like RPS.
+                audio, sal_target, _C = _flatten_channels(audio, sal_target)
+                with torch.amp.autocast("cuda"):
+                    logits = model(audio)  # (B*C, n_bins, T_grid)
+                    # Defensive: the front-end's frame count can differ from the
+                    # precomputed grid by ±1; align the target along time.
+                    if sal_target.shape[-1] != logits.shape[-1]:
+                        sal_target = F.interpolate(
+                            sal_target, size=logits.shape[-1], mode="linear", align_corners=False
+                        )
+                    loss = F.binary_cross_entropy_with_logits(
+                        logits, sal_target, pos_weight=pos_weight
+                    )
+            else:
+                audio, rps_target = batch[0].to(device), batch[1].to(device)
+                # Flatten multichannel batch: (B, C, T) → (B*C, T)
+                audio, rps_target, _C = _flatten_channels(audio, rps_target)
+                with torch.amp.autocast("cuda"):
+                    rps_pred = model(audio)
+                    if args.pit_loss:
+                        loss = pit_mse_loss(rps_pred, rps_target)
+                    else:
+                        loss = F.mse_loss(rps_pred, rps_target)
+                    if args.smoothness_weight > 0:
+                        # Second-order finite difference for smoothness
+                        # (B, 4, T) -> diff along time
+                        diff1 = rps_pred[:, :, 1:] - rps_pred[:, :, :-1]
+                        diff2 = diff1[:, :, 1:] - diff1[:, :, :-1]
+                        smoothness = diff2.pow(2).mean()
+                        loss = loss + args.smoothness_weight * smoothness
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -661,7 +742,9 @@ def train_model(model_name, args):
             train_items += audio.size(0)
 
         train_mse = train_loss_sum / train_items
-        metrics = evaluate(model, valid_loader, device, len(valid_ds))
+        metrics = evaluate(
+            model, valid_loader, device, len(valid_ds), track_threshold=args.track_threshold
+        )
         val_mse = metrics["mse"]
         scheduler.step(val_mse)
         lr = optimizer.param_groups[0]["lr"]
@@ -704,7 +787,7 @@ def train_model(model_name, args):
     print(f"FINAL EVALUATION — {model_name}")
     print("=" * 60)
     model.load_state_dict(torch.load(best_path, weights_only=True))
-    m = evaluate(model, valid_loader, device, len(valid_ds))
+    m = evaluate(model, valid_loader, device, len(valid_ds), track_threshold=args.track_threshold)
 
     print(
         f"\nPer-frame: PIT MSE={m['mse']:.4f} (RMSE={m['mse'] ** 0.5:.2f}), Std MSE={m['std_mse']:.4f}, MAE={m['mae_frame']:.2f}, R²={m['r2']:.4f}"
@@ -761,6 +844,27 @@ def main():
         type=float,
         default=0.0,
         help="Weight for temporal smoothness loss (second-order diff)",
+    )
+    # Salience-model (multif0_salience / basic_pitch_salience) options
+    parser.add_argument(
+        "--salience_blur_bins",
+        type=int,
+        default=2,
+        help="Frequency-axis half-width for blurring the BCE salience target "
+        "(0 = strictly binary). Salience models only.",
+    )
+    parser.add_argument(
+        "--bce_pos_weight",
+        type=float,
+        default=0.0,
+        help="Positive-class weight for BCEWithLogitsLoss (0 = auto from grid "
+        "sparsity). Salience models only.",
+    )
+    parser.add_argument(
+        "--track_threshold",
+        type=float,
+        default=0.3,
+        help="Peak threshold for salience->RPS tracking at eval. Salience models only.",
     )
     args = parser.parse_args()
 

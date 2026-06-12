@@ -13,6 +13,7 @@ This module provides:
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CQT frequency grid
@@ -23,15 +24,26 @@ def cqt_freq_grid(
     fmin: float = 32.7,
     n_octaves: int = 6,
     over_sample: int = 5,
+    *,
+    n_bins: int | None = None,
+    bins_per_octave: int | None = None,
 ) -> np.ndarray:
     """CQT frequency grid (center frequency of each bin).
+
+    By default the grid is derived from ``n_octaves`` and ``over_sample``
+    (``bins_per_octave = 12 * over_sample``, ``n_bins = n_octaves * bins_per_octave``).
+    Pass ``n_bins`` / ``bins_per_octave`` explicitly to describe grids whose
+    octave count is non-integer — e.g. Basic Pitch's contour grid
+    (264 bins, 36 bins/octave, fmin 27.5).
 
     Returns (n_bins,) float array in Hz.
     """
     import librosa
 
-    n_bins = n_octaves * 12 * over_sample
-    bins_per_octave = 12 * over_sample
+    if bins_per_octave is None:
+        bins_per_octave = 12 * over_sample
+    if n_bins is None:
+        n_bins = n_octaves * 12 * over_sample
     return librosa.cqt_frequencies(n_bins, fmin=fmin, bins_per_octave=bins_per_octave)
 
 
@@ -74,12 +86,15 @@ def rps_to_salience(
     fmin: float = 32.7,
     n_octaves: int = 6,
     over_sample: int = 5,
+    n_bins: int | None = None,
+    bins_per_octave: int | None = None,
     hcqt_sr: int = 22050,
     hcqt_hop: int = 256,
     rps_sr: float = 1000.0,
     rps_t_start: float = 0.0,
+    blur_bins: int = 0,
 ) -> torch.Tensor:
-    """Convert RPS trajectories to binary salience targets.
+    """Convert RPS trajectories to salience targets.
 
     Parameters
     ----------
@@ -88,7 +103,9 @@ def rps_to_salience(
     n_hcqt_frames : int
         Number of HCQT output frames.
     fmin, n_octaves, over_sample :
-        CQT parameters.
+        CQT parameters. Ignored for the grid size if ``n_bins`` /
+        ``bins_per_octave`` are given explicitly (non-integer-octave grids,
+        e.g. Basic Pitch contour: ``n_bins=264, bins_per_octave=36, fmin=27.5``).
     hcqt_sr, hcqt_hop :
         Sample rate and hop for the HCQT time grid.
     rps_sr : float
@@ -96,19 +113,31 @@ def rps_to_salience(
     rps_t_start : float
         Start time of the RPS data relative to the audio start (seconds).
         If the RPS recording starts after the audio, this is > 0.
+    blur_bins : int
+        If > 0, spread each active bin over a triangular window of half-width
+        ``blur_bins`` along the frequency axis (peak 1.0, linear falloff to 0).
+        This turns the single-bin-per-rotor target into a soft target so BCE
+        training has a non-degenerate gradient. ``blur_bins=0`` leaves the
+        target strictly binary (used for round-trip / quantization analysis).
 
     Returns
     -------
     salience : (B, n_bins, n_hcqt_frames) or (n_bins, n_hcqt_frames)
-        Binary (0/1) tensor.
+        Binary (0/1) tensor, or soft [0, 1] tensor when ``blur_bins > 0``.
     """
     was_batched = rps.dim() == 3
     if not was_batched:
         rps = rps.unsqueeze(0)
 
     B, R, T_rps = rps.shape
-    n_bins = n_octaves * 12 * over_sample
-    freqs = cqt_freq_grid(fmin=fmin, n_octaves=n_octaves, over_sample=over_sample)
+    freqs = cqt_freq_grid(
+        fmin=fmin,
+        n_octaves=n_octaves,
+        over_sample=over_sample,
+        n_bins=n_bins,
+        bins_per_octave=bins_per_octave,
+    )
+    n_bins = len(freqs)
     freqs_t = torch.from_numpy(freqs).float().to(rps.device)
 
     # HCQT frame times (center of each frame)
@@ -153,7 +182,6 @@ def rps_to_salience(
 
     salience = torch.zeros(B, n_bins, n_hcqt_frames, device=rps.device)
     b_idx = torch.arange(B, device=rps.device).view(B, 1, 1).expand(-1, R, n_hcqt_frames)
-    r_idx = torch.arange(R, device=rps.device).view(1, R, 1).expand(B, -1, n_hcqt_frames)
     t_idx = torch.arange(n_hcqt_frames, device=rps.device).view(1, 1, -1).expand(B, R, -1)
 
     # Only set bins for active rotors AND in-range times
@@ -162,6 +190,18 @@ def rps_to_salience(
 
     # If two rotors map to the same bin, that bin stays 1 (unison is invisible)
     salience = salience.clamp(0, 1)
+
+    # Optional frequency-axis smoothing: turn the single hard bin per rotor into
+    # a soft triangular bump so per-bin BCE has a usable gradient.
+    if blur_bins > 0:
+        k = int(blur_bins)
+        ramp = torch.arange(1, k + 1, device=salience.device, dtype=salience.dtype)
+        kernel = torch.cat([ramp, torch.tensor([k + 1.0], device=salience.device), ramp.flip(0)])
+        kernel = (kernel / kernel.max()).view(1, 1, -1)  # (1, 1, 2k+1), peak 1.0
+        # Convolve along the frequency axis: treat each (B, frame) as a 1-D signal.
+        sal_f = salience.permute(0, 2, 1).reshape(B * n_hcqt_frames, 1, n_bins)
+        sal_f = F.conv1d(sal_f, kernel, padding=k)
+        salience = sal_f.reshape(B, n_hcqt_frames, n_bins).permute(0, 2, 1).clamp(0, 1)
 
     if not was_batched:
         salience = salience.squeeze(0)
@@ -210,7 +250,6 @@ def salience_to_rps(
 
     B, n_bins, T = salience.shape
     freqs = cqt_freq_grid(fmin=fmin, n_octaves=n_octaves, over_sample=over_sample)
-    freqs_t = torch.from_numpy(freqs).float().to(salience.device)
 
     salience_np = salience.cpu().numpy()
 
@@ -584,7 +623,7 @@ def _hungarian_tracking(
 
         # Detect merges: any peak claimed by ≥ 2 rotors, OR
         # more active rotors than available peaks (unison/stripe).
-        for pj, rotors in peak_claimed_by.items():
+        for _pj, rotors in peak_claimed_by.items():
             if len(rotors) >= 2:
                 merge_mask[t] = True
         # Also merge when we have fewer peaks than active rotors
@@ -639,6 +678,8 @@ def salience_to_rps_segmented(
     fmin: float = 32.7,
     n_octaves: int = 6,
     over_sample: int = 5,
+    n_bins: int | None = None,
+    bins_per_octave: int | None = None,
     threshold: float = 0.0,
     max_jump_bins: int = 3,
     merge_mode: str = "same_bin",
@@ -649,6 +690,9 @@ def salience_to_rps_segmented(
         salience: (B, n_bins, T) or (n_bins, T) salience map.
         num_rotors: Number of rotor trajectories to track.
         fmin, n_octaves, over_sample: CQT parameters.
+        n_bins, bins_per_octave: explicit grid override (non-integer-octave
+            grids, e.g. Basic Pitch contour). When given, the frequency grid is
+            taken from these and ``n_octaves``/``over_sample`` are ignored.
         threshold: Minimum activation for peak detection (0.0 for binary).
         max_jump_bins: Max CQT bins a rotor can jump between frames.
         merge_mode: ``"same_bin"`` (default) — only exact same-bin collisions
@@ -662,8 +706,14 @@ def salience_to_rps_segmented(
     if not was_batched:
         salience = salience.unsqueeze(0)
 
-    B, n_bins, T = salience.shape
-    freqs = cqt_freq_grid(fmin=fmin, n_octaves=n_octaves, over_sample=over_sample)
+    B, _n_bins, T = salience.shape
+    freqs = cqt_freq_grid(
+        fmin=fmin,
+        n_octaves=n_octaves,
+        over_sample=over_sample,
+        n_bins=n_bins,
+        bins_per_octave=bins_per_octave,
+    )
 
     salience_np = salience.cpu().numpy()
 
@@ -748,7 +798,6 @@ def segmented_pit_mse(
     B, K, T = rps_pred.shape
     device = rps_pred.device
     perms = list(permutations(range(K)))
-    perms_t = torch.tensor(perms, device=device)
 
     if merge_mask is None:
         merge_mask = torch.zeros(B, T, dtype=torch.bool, device=device)
