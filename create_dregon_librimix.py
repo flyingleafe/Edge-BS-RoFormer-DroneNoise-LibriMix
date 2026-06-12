@@ -654,6 +654,77 @@ def extract_multichannel_noise_chunk(
     return audio, rps, metadata
 
 
+def extract_non_overlapping_multichannel_chunks(
+    tf: TimeFrame,
+    duration_sec: float = SAMPLE_DURATION,
+    min_motor_rps: float = 0.0,
+) -> list[tuple[np.ndarray, np.ndarray, dict]]:
+    """Extract ALL non-overlapping ``(C, n_samples)`` chunks from a recording.
+
+    Same logic as ``extract_multichannel_noise_chunk`` but instead of picking
+    a single random chunk, returns every non-overlapping chunk spanning the
+    in-flight window in order.  Any remainder at the end that is shorter than
+    ``duration_sec`` is dropped (not zero-padded).
+
+    Returns:
+        List of (audio, rps, metadata) tuples, one per non-overlapping chunk.
+    """
+    detect_key = "motors_measured" if "motors_measured" in tf else "motors_command"
+    rps_key = "motors_command" if "motors_command" in tf else "motors_measured"
+
+    audio_us = tf["audio"]
+    detect_es = tf[detect_key]
+
+    valid_start = max(audio_us.t_start, detect_es.t_start)
+    valid_end = min(audio_us.t_end, detect_es.t_end)
+
+    if min_motor_rps > 0.0:
+        t_fl_start, t_fl_end = _find_inflight_window(tf, detect_key, min_motor_rps)
+        valid_start = max(valid_start, t_fl_start)
+        valid_end = min(valid_end, t_fl_end)
+
+    if valid_end - valid_start < duration_sec:
+        rec_id = tf.tags.get("recording_id", "?")
+        raise ValueError(
+            f"Record {rec_id} has insufficient overlap: "
+            f"{valid_end - valid_start:.1f}s < {duration_sec}s"
+        )
+
+    chunks = []
+    n_chunks = int((valid_end - valid_start) // duration_sec)
+    for i in range(n_chunks):
+        start_sec = valid_start + i * duration_sec
+        sliced = tf.slice(start_sec, start_sec + duration_sec)
+
+        audio_samples = sliced["audio"].samples
+        if audio_samples.ndim == 1:
+            audio_samples = audio_samples[np.newaxis, :]
+        audio = audio_samples.astype(np.float32)  # (C, N)
+
+        motor_es_sliced = sliced[rps_key]
+        if motor_es_sliced.values is not None:
+            rps = clean_command_spikes(motor_es_sliced.values.copy()).astype(np.float32)
+        else:
+            rps = np.zeros((4, 0), dtype=np.float32)
+
+        motor_ts = motor_es_sliced.abs_timestamps
+        if len(motor_ts) > 1:
+            motor_sr = 1.0 / np.median(np.diff(motor_ts.astype(np.float64)))
+        else:
+            motor_sr = MOTOR_SAMPLE_RATE
+
+        metadata = {
+            "recording_id": tf.tags.get("recording_id", ""),
+            "start_time": start_sec - audio_us.t_start,
+            "duration": duration_sec,
+            "motor_sample_rate": float(motor_sr),
+            "n_channels": int(audio.shape[0]),
+        }
+        chunks.append((audio, rps, metadata))
+
+    return chunks
+
+
 def adjust_length_mc(audio: np.ndarray, target_length: int) -> np.ndarray:
     """Pad or randomly crop a ``(C, T)`` array along the time axis."""
     current = audio.shape[-1]
@@ -1065,8 +1136,9 @@ def create_dregon_real_valid(
     recording_ids: list[str] | None = None,
     seed: int = 43,
     min_motor_rps: float = 0.0,
+    max_non_overlapping: bool = False,
 ) -> None:
-    """Extract real 8-channel clips from DREGON ``in_flight_source`` recordings.
+    """Extract real 8-channel clips from DREGON recordings.
 
     Unlike the synthesised training set, these samples are **not mixed** —
     ``mixture.wav`` IS the raw multichannel recording (drone + co-recorded
@@ -1076,10 +1148,12 @@ def create_dregon_real_valid(
     Metadata includes ``source_type`` (inferred from recording ID), ``recording_id``,
     and ``start_time`` so downstream code can group samples by condition.
 
-    Practical limits: ``speech-low`` ≈62 s and ``whitenoise-low`` ≈64 s give
-    roughly 7-8 non-overlapping 8-second clips each (≈15 total).  Larger
-    ``num_samples`` will overlap; samples are drawn with a fixed seed so the
-    set is reproducible.
+    Two modes:
+    - **random** (default): ``num_samples`` chunks drawn at random positions
+      from the pool of recordings (may overlap).
+    - **max_non_overlapping**: extracts every non-overlapping chunk in every
+      recording, covering the full in-flight window.  ``num_samples`` is
+      ignored; all available chunks are written.
     """
     if recording_ids is None:
         recording_ids = REAL_VALID_RECORDING_IDS
@@ -1094,73 +1168,138 @@ def create_dregon_real_valid(
     if not records:
         raise ValueError(f"No DREGON records found for IDs: {recording_ids}")
 
-    total_dur = sum(tf["audio"].duration for tf in records)
-    print(
-        f"Loaded {len(records)} real recordings "
-        f"({total_dur:.0f}s total, {total_dur // sample_duration:.0f} non-overlapping clips available)"
-    )
-
     target_length = int(sample_duration * sample_rate)
-    metadata_list = []
+    metadata_list: list[dict] = []
 
-    for idx in tqdm(range(num_samples), desc="Creating valid samples (real)"):
-        sample_id = f"sample_{idx:05d}"
-        sample_dir = split_dir / sample_id
-        sample_dir.mkdir(exist_ok=True)
-
-        record = random.choice(records)
-        for _ in range(20):
+    if max_non_overlapping:
+        # --- Extract every non-overlapping chunk from every recording ---
+        all_chunks: list[tuple[np.ndarray, np.ndarray, dict, str]] = []  # (audio, rps, meta, rid)
+        for tf in records:
+            rid = tf.tags.get("recording_id", "?")
             try:
-                audio, rps, chunk_meta = extract_multichannel_noise_chunk(
-                    record,
+                chunks = extract_non_overlapping_multichannel_chunks(
+                    tf,
                     duration_sec=sample_duration,
                     min_motor_rps=min_motor_rps,
                 )
-                break
-            except ValueError:
-                record = random.choice(records)
-        else:
-            raise ValueError("Could not find a valid chunk after 20 attempts")
+            except ValueError as e:
+                print(f"  Skipping {rid}: {e}")
+                continue
+            for audio, rps, chunk_meta in chunks:
+                all_chunks.append((audio, rps, chunk_meta, rid))
 
-        audio = adjust_length_mc(audio, target_length)  # (C, T)
+        total_possible = sum(
+            int(tf["audio"].duration // sample_duration)
+            for tf in records
+            if tf["audio"].duration >= sample_duration
+        )
+        print(
+            f"Loaded {len(records)} real recordings "
+            f"({sum(tf['audio'].duration for tf in records):.0f}s total, "
+            f"~{total_possible} non-overlapping clips available)"
+        )
+        print(f"Extracted {len(all_chunks)} non-overlapping chunks")
 
-        # Save raw recording as-is — no mixing.
-        sf.write(sample_dir / "mixture.wav", audio.T.astype(np.float32), sample_rate)
-        np.save(sample_dir / "rps.npy", rps)
+        for idx, (audio, rps, chunk_meta, rid) in enumerate(
+            tqdm(all_chunks, desc="Writing valid samples (non-overlapping)")
+        ):
+            sample_id = f"sample_{idx:05d}"
+            sample_dir = split_dir / sample_id
+            sample_dir.mkdir(exist_ok=True)
 
-        rid = chunk_meta["recording_id"]
-        if "speech" in rid:
-            source_type = "speech"
-        elif "whitenoise" in rid:
-            source_type = "whitenoise"
-        else:
-            source_type = "unknown"
+            audio = adjust_length_mc(audio, target_length)  # (C, T)
 
-        metadata_list.append(
-            {
-                "id": sample_id,
-                "recording_id": rid,
-                "source_type": source_type,
-                "start_time": chunk_meta.get("start_time", 0.0),
-                "duration": sample_duration,
-                "n_channels": int(audio.shape[0]),
-                "motor_sample_rate": chunk_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
-                "rps_shape": list(rps.shape),
-                "is_real_recording": True,
-            }
+            sf.write(sample_dir / "mixture.wav", audio.T.astype(np.float32), sample_rate)
+            np.save(sample_dir / "rps.npy", rps)
+
+            if "speech" in rid:
+                source_type = "speech"
+            elif "whitenoise" in rid:
+                source_type = "whitenoise"
+            elif "nosource" in rid.lower():
+                source_type = "nosource"
+            else:
+                source_type = "unknown"
+
+            metadata_list.append(
+                {
+                    "id": sample_id,
+                    "recording_id": rid,
+                    "source_type": source_type,
+                    "start_time": chunk_meta.get("start_time", 0.0),
+                    "duration": sample_duration,
+                    "n_channels": int(audio.shape[0]),
+                    "motor_sample_rate": chunk_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
+                    "rps_shape": list(rps.shape),
+                    "is_real_recording": True,
+                }
+            )
+    else:
+        # --- Original random-sampling behaviour ---
+        total_dur = sum(tf["audio"].duration for tf in records)
+        print(
+            f"Loaded {len(records)} real recordings "
+            f"({total_dur:.0f}s total, {total_dur // sample_duration:.0f} non-overlapping clips available)"
         )
 
-    metadata_path = output_dir / "metadata.json"
+        for idx in tqdm(range(num_samples), desc="Creating valid samples (real)"):
+            sample_id = f"sample_{idx:05d}"
+            sample_dir = split_dir / sample_id
+            sample_dir.mkdir(exist_ok=True)
+
+            record = random.choice(records)
+            for _ in range(20):
+                try:
+                    audio, rps, chunk_meta = extract_multichannel_noise_chunk(
+                        record,
+                        duration_sec=sample_duration,
+                        min_motor_rps=min_motor_rps,
+                    )
+                    break
+                except ValueError:
+                    record = random.choice(records)
+            else:
+                raise ValueError("Could not find a valid chunk after 20 attempts")
+
+            audio = adjust_length_mc(audio, target_length)  # (C, T)
+
+            # Save raw recording as-is — no mixing.
+            sf.write(sample_dir / "mixture.wav", audio.T.astype(np.float32), sample_rate)
+            np.save(sample_dir / "rps.npy", rps)
+
+            rid = chunk_meta["recording_id"]
+            if "speech" in rid:
+                source_type = "speech"
+            elif "whitenoise" in rid:
+                source_type = "whitenoise"
+            else:
+                source_type = "unknown"
+
+            metadata_list.append(
+                {
+                    "id": sample_id,
+                    "recording_id": rid,
+                    "source_type": source_type,
+                    "start_time": chunk_meta.get("start_time", 0.0),
+                    "duration": sample_duration,
+                    "n_channels": int(audio.shape[0]),
+                    "motor_sample_rate": chunk_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
+                    "rps_shape": list(rps.shape),
+                    "is_real_recording": True,
+                }
+            )
+
+    mpath = output_dir / "metadata.json"
     existing: dict = {}
-    if metadata_path.exists():
-        with open(metadata_path) as f:
+    if mpath.exists():
+        with open(mpath) as f:
             existing = json.load(f)
     existing["valid"] = metadata_list
-    with open(metadata_path, "w") as f:
+    with open(mpath, "w") as f:
         json.dump(existing, f, indent=2)
 
-    print(f"Created {num_samples} real-recording valid samples in {split_dir}")
-    print(f"Metadata saved to {metadata_path}")
+    print(f"Created {len(metadata_list)} real-recording valid samples in {split_dir}")
+    print(f"Metadata saved to {mpath}")
 
 
 # =============================================================================
@@ -1299,6 +1438,13 @@ def main():
         help="(--real_valid) comma-separated recording IDs to use; "
         f"defaults to: {','.join(REAL_VALID_RECORDING_IDS)}",
     )
+    parser.add_argument(
+        "--max_non_overlapping",
+        action="store_true",
+        help="(--real_valid) extract EVERY non-overlapping chunk from every "
+        "recording (num_valid is ignored). Guarantees zero overlap between "
+        "samples.",
+    )
 
     args = parser.parse_args()
 
@@ -1345,6 +1491,7 @@ def main():
                     recording_ids=rids,
                     seed=args.seed + 1,
                     min_motor_rps=args.min_motor_rps,
+                    max_non_overlapping=args.max_non_overlapping,
                 )
             else:
                 # Synthesised valid (same pipeline as train, different seed/records).

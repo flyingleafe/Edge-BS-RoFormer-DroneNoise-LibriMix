@@ -43,6 +43,7 @@ dependencies = [
     "dvc[s3]>=3.56",
     "skypilot[kubernetes]>=0.11",
     "playwright>=1.52.0",
+    "nnaudio>=0.3.4",
 ]
 
 [project.scripts]
@@ -77,7 +78,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/postdoc", "src/utils", "src/tasks", "data_processing"]
+packages = ["src/postdoc", "src/utils", "src/tasks", "src/models", "data_processing"]
 
 [tool.ruff]
 target-version = "py312"
@@ -99,7 +100,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["utils", "postdoc", "tasks", "data_processing"]
+known-first-party = ["utils", "postdoc", "tasks", "models", "data_processing"]
 
 [tool.pyright]
 typeCheckingMode = "basic"

@@ -33,6 +33,8 @@ import torchaudio
 import wandb
 from torch.utils.data import DataLoader, Dataset
 
+from models.multif0.rps_predictor import MultiF0RPSPredictor
+
 # Import new model variants
 from models.rps_predictor import (
     SimpleConv,
@@ -46,7 +48,6 @@ from models.rps_predictor import (
     SimpleConvV2,
     SimpleConvWide,
 )
-from utils.paths import get_datasets_path, get_results_path
 
 # Alias for utils.py compatibility
 RPSPredictor = SimpleConv
@@ -198,7 +199,7 @@ class DCUNetEncRPS(nn.Module):
         for ic, oc, k, s, p in enc_spec:
             self.encoders.append(
                 nn.Sequential(
-                    DCUNetCConv(ic, oc, k, s, p),  # pyright: ignore[reportArgumentType]
+                    DCUNetCConv(ic, oc, k, s, p),
                     DCUNetCBN(oc),
                     nn.LeakyReLU(0.2),
                 )
@@ -221,7 +222,7 @@ class DCUNetEncRPS(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,  # pyright: ignore[reportArgumentType]
+            window=self.window,
             return_complex=True,
             normalized=True,
         )
@@ -273,7 +274,7 @@ class DCCRNEncRPS(nn.Module):
         for ic, oc in zip(in_channels, encoder_channels):
             self.encoders.append(
                 nn.Sequential(
-                    DCCRN_CConv(ic, oc, enc_kernel, enc_stride, enc_padding),  # pyright: ignore[reportArgumentType]
+                    DCCRN_CConv(ic, oc, enc_kernel, enc_stride, enc_padding),
                     DCCRN_CBN(oc),
                     nn.LeakyReLU(0.2),
                 )
@@ -295,7 +296,7 @@ class DCCRNEncRPS(nn.Module):
             audio,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            window=self.window,  # pyright: ignore[reportArgumentType]
+            window=self.window,
             return_complex=True,
             normalized=True,
         )
@@ -329,6 +330,7 @@ MODEL_REGISTRY = {
     "dcunet_enc_rps": DCUNetEncRPS,
     "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
     "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
+    "multif0_rps": MultiF0RPSPredictor,
 }
 
 
@@ -367,7 +369,8 @@ def pit_mse_loss(
     est: torch.Tensor,
     target: torch.Tensor,
     perms: torch.Tensor | None = None,
-) -> torch.Tensor:
+    return_indices: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Permutation-invariant MSE loss for RPS prediction.
 
@@ -377,10 +380,13 @@ def pit_mse_loss(
     Args:
         est: (B, 4, T) predicted RPS
         target: (B, 4, T) ground-truth RPS
-        perms: Pre-computed permutation tensor (24, 4). If None, computes on-the-fly.
+        perms: Pre-computed permutation tensor (P, 4). If None, uses _ROTOR_PERMS.
+        return_indices: If True, also return the best permutation index per
+            batch element (so callers can recover the full permutation for
+            other metrics like MAE / R²).
 
     Returns:
-        Scalar loss (mean over batch of best-permutation MSE).
+        Scalar loss, or (loss, best_perm_idx) with shape (B,) if return_indices.
     """
     if perms is None:
         perms = _ROTOR_PERMS.to(est.device)
@@ -392,25 +398,21 @@ def pit_mse_loss(
 
     # For each permutation, sum the pairwise losses along the matched pairs
     # pw: (B, 4, 4), perms: (P, 4) -> gather: (B, P, 4)
-    # For perm p = [j0, j1, j2, j3], loss = pw[b, 0, j0] + pw[b, 1, j1] + ...
-    # More efficient: index with perms
     B = pw.size(0)
     P = perms.size(0)
 
-    # Gather: for each batch and permutation, collect pw[b, src_idx, tgt_idx]
     src_idx = torch.arange(4, device=pw.device).view(1, 1, 4)  # (1, 1, 4)
     tgt_idx = perms.view(1, P, 4)  # (1, P, 4)
-
-    # Advanced indexing: pw[b, src_idx, tgt_idx]
-    # pw: (B, 4, 4), want (B, P, 4)
     b_idx = torch.arange(B, device=pw.device).view(B, 1, 1)  # (B, 1, 1)
     perm_losses = pw[b_idx, src_idx, tgt_idx]  # (B, P, 4)
     perm_losses = perm_losses.sum(dim=-1)  # (B, P)
 
     # Best permutation per batch element
-    best_loss, _ = perm_losses.min(dim=1)  # (B,) — sum of 4 pairwise MSEs
-    # Normalize by n_rotors so PIT loss is comparable to standard per-element MSE
-    return best_loss.mean() / 4.0
+    best_loss, best_idx = perm_losses.min(dim=1)  # (B,)
+    loss = best_loss.mean() / 4.0
+    if return_indices:
+        return loss, best_idx  # best_idx indexes into perms
+    return loss
 
 
 # ─── WandB Initialization ────────────────────────────────────────────────────
@@ -442,7 +444,7 @@ def wandb_init(args: argparse.Namespace, model_name: str) -> None:
             "hop_length": args.hop_length,
         },
     )
-    wandb.init(**init_kwargs)  # pyright: ignore[reportArgumentType]
+    wandb.init(**init_kwargs)
 
     # Write run ID to save path
     if wandb.run is not None and wandb.run.id:
@@ -492,7 +494,7 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
         for audio, rps_target in loader:
             audio, rps_target = audio.to(device), rps_target.to(device)
             audio, rps_target, C = _flatten_channels(audio, rps_target)
-            with torch.amp.autocast("cuda"):  # pyright: ignore[reportArgumentType, reportPrivateImportUsage]
+            with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
                 pit_loss = pit_mse_loss(rps_pred, rps_target)
                 std_loss = F.mse_loss(rps_pred, rps_target)
@@ -509,12 +511,27 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
     # Divide by actual number of processed items (B*C), not dataset_len (B).
     pit_mse_val = total_pit_loss / total_items
     std_mse_val = total_std_loss / total_items
-    mae_frame = (all_preds - all_targets).abs().mean().item()
-    mae_per_rotor = (all_preds - all_targets).abs().mean(dim=(0, 2))
+
+    # ---- Reorder targets to PIT-optimal rotor matching for fixed-order metrics ----
+    # R², MAE, and per-clip MAE compare rotors in order; with PIT loss the model
+    # may learn any permutation.  We find the best 1-to-1 matching and reorder
+    # targets so every fixed-order metric uses the PIT-optimal pairing.
+    if pit_eval:
+        _, best_idx = pit_mse_loss(all_preds, all_targets, return_indices=True)
+        best_perms = _ROTOR_PERMS.to(all_preds.device)[best_idx]  # (B, 4)
+        # best_perms[b, i] = which target rotor matches predicted rotor i
+        all_targets_matched = torch.gather(
+            all_targets, 1, best_perms.unsqueeze(-1).expand(-1, -1, all_targets.shape[-1])
+        )
+    else:
+        all_targets_matched = all_targets
+
+    mae_frame = (all_preds - all_targets_matched).abs().mean().item()
+    mae_per_rotor = (all_preds - all_targets_matched).abs().mean(dim=(0, 2))
 
     # Per-clip (time-averaged)
     cp = all_preds.mean(dim=2)
-    ct = all_targets.mean(dim=2)
+    ct = all_targets_matched.mean(dim=2)
     mae_clip = (cp - ct).abs().mean().item()
 
     # Macro-averaged per-sample R²: compute R² per sample using each
@@ -522,7 +539,7 @@ def evaluate(model, loader, device, dataset_len, pit_eval: bool = True):
     # within-sample temporal tracking quality without inflating the
     # metric with between-sample RPS variance.
     r2_per_sample = []
-    for pred_i, tgt_i in zip(all_preds, all_targets):
+    for pred_i, tgt_i in zip(all_preds, all_targets_matched):
         ss_res_i = ((pred_i - tgt_i) ** 2).sum()
         ss_tot_i = ((tgt_i - tgt_i.mean()) ** 2).sum()
         if ss_tot_i > 1e-6:
@@ -587,7 +604,7 @@ def train_model(model_name, args):
         factor=0.5,
         patience=5,
     )
-    scaler = torch.amp.GradScaler("cuda")  # pyright: ignore[reportPrivateImportUsage]
+    scaler = torch.amp.GradScaler("cuda")
 
     # Naive baseline
     print("Computing naive baseline...")
@@ -622,7 +639,7 @@ def train_model(model_name, args):
             # Flatten multichannel batch: (B, C, T) → (B*C, T)
             audio, rps_target, _C = _flatten_channels(audio, rps_target)
             optimizer.zero_grad()
-            with torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
+            with torch.amp.autocast("cuda"):
                 rps_pred = model(audio)
                 if args.pit_loss:
                     loss = pit_mse_loss(rps_pred, rps_target)
@@ -722,8 +739,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--grad_clip", type=float, default=5.0)
-    parser.add_argument("--data_root", default=str(get_datasets_path("DREGON-LM-V2")))
-    parser.add_argument("--save_path", default=str(get_results_path("rps_predictor_comparison")))
+    parser.add_argument("--data_root", default="datasets/DREGON-LM-V2")
+    parser.add_argument("--save_path", default="results/rps_predictor_comparison")
     parser.add_argument(
         "--pit_loss",
         action="store_true",

@@ -57,6 +57,11 @@ def main(  # pyright: ignore[reportRedeclaration]
         "--alignment",
         help="GT alignment strategy: 'stft_timestamps' (canon) or 'shape_stretch' (legacy).",
     ),
+    pit: bool = typer.Option(
+        False,
+        "--pit",
+        help="Permutation-invariant evaluation: try all 4! = 24 rotor permutations per channel.",
+    ),
     verbose: bool = typer.Option(
         True,
         "--verbose/--quiet",
@@ -91,6 +96,7 @@ def main(  # pyright: ignore[reportRedeclaration]
             model_spec=spec,
             input_set_label=dataset_path.name,
             alignment=alignment,
+            pit=pit,
             verbose=verbose,
         )
         results.append(result)
