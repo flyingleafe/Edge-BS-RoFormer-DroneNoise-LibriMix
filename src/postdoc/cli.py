@@ -24,22 +24,21 @@ Utilities:
   postdoc ssh               interactive SSH to vast-server
   postdoc infer             local inference (unchanged)
 """
+
 from __future__ import annotations
 
 import os
 import shlex
 import subprocess
-import sys
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
 import typer
-import yaml
 
-from postdoc import git_state, infer as infer_mod
-from postdoc import direct as direct_mod
 from postdoc import cloud as cloud_mod
+from postdoc import direct as direct_mod
+from postdoc import git_state
+from postdoc import infer as infer_mod
 
 # ------------------------------------------------------------------ #
 # constants
@@ -53,7 +52,7 @@ DEFAULT_JOB_GPUS = int(os.environ.get("POSTDOC_DEFAULT_GPUS", "1"))
 app = typer.Typer(
     name="postdoc",
     help="Submit shell commands as jobs on vast-server (direct SSH) or cloud "
-         "(SkyPilot managed jobs).",
+    "(SkyPilot managed jobs).",
     no_args_is_help=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -62,6 +61,7 @@ app = typer.Typer(
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+
 
 def _project_root() -> Path:
     p = Path.cwd().resolve()
@@ -78,18 +78,17 @@ def _auto_name(command: str) -> str:
     return f"{stem}-{ts}"
 
 
-def _run_sky(args: list[str], *, check: bool = True,
-             capture: bool = False) -> subprocess.CompletedProcess:
+def _run_sky(
+    args: list[str], *, check: bool = True, capture: bool = False
+) -> subprocess.CompletedProcess:
     cmd = ["sky", *args]
     if capture:
-        return subprocess.run(cmd, check=check, text=True,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(cmd, check=check, text=True, capture_output=True)
     return subprocess.run(cmd, check=check)
 
 
 def _format_jobs(jobs: list) -> str:
-    lines = [f"{'ID':<6} {'Name':<30} {'SHA':<12} {'GPUs':<5} "
-             f"{'Status':<12} {'GPU Mask':<12}"]
+    lines = [f"{'ID':<6} {'Name':<30} {'SHA':<12} {'GPUs':<5} {'Status':<12} {'GPU Mask':<12}"]
     lines.append("-" * 80)
     for j in jobs:
         lines.append(
@@ -102,6 +101,7 @@ def _format_jobs(jobs: list) -> str:
 # --------------------------------------------------------------------------- #
 # queue daemon
 # --------------------------------------------------------------------------- #
+
 
 @app.command("queue-start")
 def cmd_queue_start(
@@ -117,9 +117,15 @@ def cmd_queue_start(
     """
     # Check if already running
     r = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-         "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            f"{user}@{host}",
+            "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped",
+        ],
+        capture_output=True,
+        text=True,
     )
     if "running" in r.stdout:
         typer.echo("[postdoc] queue already running in tmux postdoc-queue")
@@ -128,25 +134,38 @@ def cmd_queue_start(
     # Start the runner in a detached tmux session
     typer.echo("[postdoc] starting queue watcher in tmux postdoc-queue...")
     subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-         "tmux new-session -d -s postdoc-queue "
-         "'source ~/.bashrc 2>/dev/null; "
-         "cd ~/harmonic-noise-suppression && "
-         "/root/harmonic-noise-suppression/.venv/bin/postdoc-runner'"],
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            f"{user}@{host}",
+            "tmux new-session -d -s postdoc-queue "
+            "'source ~/.bashrc 2>/dev/null; "
+            "cd ~/harmonic-noise-suppression && "
+            "/root/harmonic-noise-suppression/.venv/bin/postdoc-runner'",
+        ],
         check=True,
     )
 
     # Verify it started
     r2 = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-         "tmux has-session -t postdoc-queue 2>/dev/null && echo ok || echo fail"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            f"{user}@{host}",
+            "tmux has-session -t postdoc-queue 2>/dev/null && echo ok || echo fail",
+        ],
+        capture_output=True,
+        text=True,
     )
     if "ok" in r2.stdout:
         typer.echo("[postdoc] queue started")
     else:
-        typer.echo("[postdoc] WARNING: could not verify queue started. "
-                    "Check manually with `postdoc queue-status`.")
+        typer.echo(
+            "[postdoc] WARNING: could not verify queue started. "
+            "Check manually with `postdoc queue-status`."
+        )
 
 
 @app.command("queue-stop")
@@ -156,8 +175,13 @@ def cmd_queue_stop(
 ):
     """Kill the postdoc queue watcher tmux session."""
     subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-         "tmux kill-session -t postdoc-queue 2>/dev/null; echo done"],
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            f"{user}@{host}",
+            "tmux kill-session -t postdoc-queue 2>/dev/null; echo done",
+        ],
         check=False,
     )
     typer.echo("[postdoc] queue stopped")
@@ -170,9 +194,15 @@ def cmd_queue_status(
 ):
     """Show whether the queue watcher is running."""
     r = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-         "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            f"{user}@{host}",
+            "tmux has-session -t postdoc-queue 2>/dev/null && echo running || echo stopped",
+        ],
+        capture_output=True,
+        text=True,
     )
     status = "running" if "running" in r.stdout else "stopped"
     typer.echo(f"[postdoc] queue: {status}")
@@ -182,8 +212,8 @@ def cmd_queue_status(
 # submit
 # --------------------------------------------------------------------------- #
 
-@app.command("submit", context_settings={"allow_extra_args": True,
-                                        "ignore_unknown_options": True})
+
+@app.command("submit", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def cmd_submit(
     ctx: typer.Context,
     name: str | None = typer.Option(None, "--name", "-n"),
@@ -192,17 +222,16 @@ def cmd_submit(
     allow_dirty: bool = typer.Option(False, "--dirty"),
     skip_push: bool = typer.Option(False, "--skip-push"),
     no_sync: bool = typer.Option(
-        False, "--no-sync",
+        False,
+        "--no-sync",
         help="Skip git fetch/reset and dvc pull on the server. "
-             "Use when data is already present and you don't want "
-             "in-flight DVC state clobbered (implies --skip-push)."
+        "Use when data is already present and you don't want "
+        "in-flight DVC state clobbered (implies --skip-push).",
     ),
     env: list[str] | None = typer.Option(None, "--env", "-e"),
     dry_run: bool = typer.Option(False, "--dry-run"),
-    direct: bool = typer.Option(False, "--direct",
-                                help="Force direct SSH to vast-server"),
-    cloud_backend: bool = typer.Option(False, "--cloud",
-                               help="Force SkyPilot cloud backend"),
+    direct: bool = typer.Option(False, "--direct", help="Force direct SSH to vast-server"),
+    cloud_backend: bool = typer.Option(False, "--cloud", help="Force SkyPilot cloud backend"),
     host: str = typer.Option(DEFAULT_POSTDOC_HOST, "--host"),
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),
 ):
@@ -221,8 +250,7 @@ def cmd_submit(
     """
     command_tokens = ctx.args
     if not command_tokens:
-        typer.echo("ERROR: no command given. Usage: postdoc submit <command...>",
-                   err=True)
+        typer.echo("ERROR: no command given. Usage: postdoc submit <command...>", err=True)
         raise typer.Exit(2)
 
     if cloud_backend and direct:
@@ -250,15 +278,14 @@ def cmd_submit(
         )
     except git_state.GitError as e:
         typer.echo(f"ERROR: {e}", err=True)
-        raise typer.Exit(3)
+        raise typer.Exit(3) from e
 
     typer.echo(
         f"[postdoc] branch={snap['branch']}  sha={snap['sha'][:12]}  "
         f"push={snap['refspec']}  dirty={snap['dirty']}"
     )
     if allow_dirty and snap["dirty"] == "True":
-        typer.echo("WARNING: --dirty set; uncommitted changes are NOT on the remote.",
-                   err=True)
+        typer.echo("WARNING: --dirty set; uncommitted changes are NOT on the remote.", err=True)
 
     # Determine backend before dry-run (backend is used in dry-run output)
     if cloud_backend:
@@ -273,8 +300,9 @@ def cmd_submit(
             backend = "cloud"
 
     if dry_run:
-        typer.echo(f"[postdoc] dry-run  backend={backend}  "
-                    f"sha={snap['sha'][:12]}  cmd={command[:80]}")
+        typer.echo(
+            f"[postdoc] dry-run  backend={backend}  sha={snap['sha'][:12]}  cmd={command[:80]}"
+        )
         return
 
     job_name = name or _auto_name(command)
@@ -313,7 +341,7 @@ def cmd_submit(
             )
         except Exception as e:
             typer.echo(f"[postdoc] cloud submit failed: {e}", err=True)
-            raise typer.Exit(4)
+            raise typer.Exit(4) from e
 
     # Print result
     suffix = ""
@@ -326,10 +354,10 @@ def cmd_submit(
 # list / status / logs / cancel
 # --------------------------------------------------------------------------- #
 
+
 @app.command("list")
 def cmd_list(
-    all_: bool = typer.Option(False, "--all", "-a",
-                              help="Include finished jobs"),
+    all_: bool = typer.Option(False, "--all", "-a", help="Include finished jobs"),
     host: str = typer.Option(DEFAULT_POSTDOC_HOST, "--host"),
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),
 ):
@@ -338,10 +366,7 @@ def cmd_list(
     if not jobs:
         typer.echo("No jobs found.")
         return
-    if all_:
-        visible = jobs
-    else:
-        visible = [j for j in jobs if j.status in ("running", "queued")]
+    visible = jobs if all_ else [j for j in jobs if j.status in ("running", "queued")]
     if not visible:
         typer.echo("No active jobs.")
         return
@@ -350,24 +375,30 @@ def cmd_list(
 
 @app.command("status")
 def cmd_status(
-    name_and_id: str = typer.Argument(...,
-                                      help="<name>__<id>, e.g. dccrn__42"),
+    name_and_id: str = typer.Argument(..., help="<name>__<id>, e.g. dccrn__42"),
     host: str = typer.Option(DEFAULT_POSTDOC_HOST, "--host"),
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),
 ):
     """Show one-line status for a specific job."""
     job_dir = f"/root/.postdoc/jobs/{name_and_id}"
     r = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-         f"cat {job_dir}/job.json 2>/dev/null || echo null"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            f"{user}@{host}",
+            f"cat {job_dir}/job.json 2>/dev/null || echo null",
+        ],
+        capture_output=True,
+        text=True,
     )
     import json
+
     try:
         d = json.loads(r.stdout)
     except Exception:
         typer.echo(f"Job not found: {name_and_id}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     typer.echo(
         f"  name: {d['name']}\n"
         f"  id:   {d['id']}\n"
@@ -382,8 +413,7 @@ def cmd_status(
 
 @app.command("logs")
 def cmd_logs(
-    name_and_id: str = typer.Argument(...,
-                                      help="<name>__<id>, e.g. dccrn__42"),
+    name_and_id: str = typer.Argument(..., help="<name>__<id>, e.g. dccrn__42"),
     follow: bool = typer.Option(False, "--follow/--no-follow", "-f"),
     lines: int = typer.Option(50, "--lines", "-n"),
     host: str = typer.Option(DEFAULT_POSTDOC_HOST, "--host"),
@@ -392,22 +422,20 @@ def cmd_logs(
     """Tail (or cat) the log file for a job."""
     job_dir = f"/root/.postdoc/jobs/{name_and_id}"
     if follow:
-        cmd = ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-               f"tail -F {job_dir}/log.txt"]
+        cmd = ["ssh", "-o", "BatchMode=yes", f"{user}@{host}", f"tail -F {job_dir}/log.txt"]
         subprocess.run(cmd)
     else:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", f"{user}@{host}",
-             f"tail -{lines} {job_dir}/log.txt"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ["ssh", "-o", "BatchMode=yes", f"{user}@{host}", f"tail -{lines} {job_dir}/log.txt"],
+            capture_output=True,
+            text=True,
         )
         typer.echo(r.stdout or "")
 
 
 @app.command("cancel")
 def cmd_cancel(
-    name_and_id: str = typer.Argument(...,
-                                      help="<name>__<id>, e.g. dccrn__42"),
+    name_and_id: str = typer.Argument(..., help="<name>__<id>, e.g. dccrn__42"),
     host: str = typer.Option(DEFAULT_POSTDOC_HOST, "--host"),
     user: str = typer.Option(DEFAULT_POSTDOC_USER, "--user"),
 ):
@@ -422,6 +450,7 @@ def cmd_cancel(
 # --------------------------------------------------------------------------- #
 # utility
 # --------------------------------------------------------------------------- #
+
 
 @app.command("ssh")
 def cmd_ssh(
@@ -451,7 +480,7 @@ def cmd_check(
             )
     except Exception as e:
         typer.echo(f"[postdoc] ERROR: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command("probe")
@@ -467,6 +496,7 @@ def cmd_probe(
 # infer (local, unchanged)
 # --------------------------------------------------------------------------- #
 
+
 @app.command("infer", help="Run inference with a trained model on audio files.")
 def cmd_infer(
     run: str = typer.Argument(...),
@@ -477,8 +507,12 @@ def cmd_infer(
     rps_file: str | None = typer.Option(None, "--rps-file"),
 ):
     infer_mod.infer_cmd(
-        run, checkpoint=checkpoint, input=input,
-        output=output, device=device, rps_file=rps_file,
+        run,
+        checkpoint=checkpoint,
+        input=input,
+        output=output,
+        device=device,
+        rps_file=rps_file,
     )
 
 
@@ -486,10 +520,14 @@ def cmd_infer(
 # backwards-compat stubs for old SkyPilot commands (removed / relocated)
 # --------------------------------------------------------------------------- #
 
+
 @app.command("pool-up", hidden=True)
 def cmd_pool_up():
-    typer.echo("[postdoc] pool-up is no longer needed. "
-               "The direct SSH backend uses plain SSH — no k3s required.", err=True)
+    typer.echo(
+        "[postdoc] pool-up is no longer needed. "
+        "The direct SSH backend uses plain SSH — no k3s required.",
+        err=True,
+    )
     raise typer.Exit(1)
 
 
@@ -500,16 +538,18 @@ def cmd_pool_down():
 
 @app.command("cluster-up", hidden=True)
 def cmd_cluster_up():
-    typer.echo("[postdoc] cluster-up is replaced by `postdoc queue-start`. "
-               "Direct SSH jobs don't need a persistent cluster.", err=True)
+    typer.echo(
+        "[postdoc] cluster-up is replaced by `postdoc queue-start`. "
+        "Direct SSH jobs don't need a persistent cluster.",
+        err=True,
+    )
     typer.echo("[postdoc] Run `postdoc queue-start` to start the queue daemon.", err=True)
     raise typer.Exit(1)
 
 
 @app.command("cluster-down", hidden=True)
 def cmd_cluster_down():
-    typer.echo("[postdoc] cluster-down: teardown is no longer needed for direct SSH.",
-               err=True)
+    typer.echo("[postdoc] cluster-down: teardown is no longer needed for direct SSH.", err=True)
 
 
 @app.command("cluster-status", hidden=True)
@@ -519,15 +559,17 @@ def cmd_cluster_status():
 
 @app.command("dashboard", hidden=True)
 def cmd_dashboard():
-    typer.echo("[postdoc] dashboard: Ray dashboard is gone (Ray cluster removed). "
-               "Use `postdoc ssh` to log in to vast-server directly.", err=True)
+    typer.echo(
+        "[postdoc] dashboard: Ray dashboard is gone (Ray cluster removed). "
+        "Use `postdoc ssh` to log in to vast-server directly.",
+        err=True,
+    )
     raise typer.Exit(1)
 
 
 @app.command("queue", hidden=True)
 def cmd_queue():
-    typer.echo("[postdoc] queue command removed. Use:",
-               err=True)
+    typer.echo("[postdoc] queue command removed. Use:", err=True)
     typer.echo("  postdoc queue-start   # start the daemon", err=True)
     typer.echo("  postdoc queue-status  # check status", err=True)
     typer.echo("  postdoc queue-stop    # stop the daemon", err=True)

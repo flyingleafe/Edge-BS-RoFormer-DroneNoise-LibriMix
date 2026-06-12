@@ -16,7 +16,12 @@ set -e  # Exit on error
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_HOST="vast-server"
 REMOTE_PATH="harmonic-noise-suppression/results/evaluation"
-LOCAL_PATH="${PROJECT_DIR}/results/evaluation"
+
+# Resolve local results path via DATA_ROOT (from .env) or fall back to PROJECT_DIR
+if [ -f "${PROJECT_DIR}/.env" ]; then
+    set -a; source "${PROJECT_DIR}/.env"; set +a
+fi
+LOCAL_PATH="${DATA_ROOT:-$PROJECT_DIR}/results/evaluation"
 
 # Colors for output
 RED='\033[0;31m'

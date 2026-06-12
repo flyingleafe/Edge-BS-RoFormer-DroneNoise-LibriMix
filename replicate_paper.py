@@ -15,8 +15,9 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, NoReturn
+from typing import NoReturn
 
 import yaml
 
@@ -29,15 +30,16 @@ from data_utils import (
 )
 from final_valid import check_validation
 from train import train_model
+from utils.paths import get_data_path, get_datasets_path, get_results_path
 
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DATA_DIR = PROJECT_DIR / "data"
-DATASETS_DIR = PROJECT_DIR / "datasets"
-RESULTS_DIR = PROJECT_DIR / "results"
+DATA_DIR = get_data_path()
+DATASETS_DIR = get_datasets_path()
+RESULTS_DIR = get_results_path()
 
 LIBRISPEECH_DIR = DATA_DIR / "librispeech"
 DNLM_DIR = DATASETS_DIR / "DN-LM"
@@ -78,12 +80,17 @@ MODELS = {
     "htdemucs": ("htdemucs", "configs/8_Baseline_htdemucs.yaml", "htdemucs"),
 }
 EVAL_ONLY_MODELS = {
-    "diffusion": ("diffusion_buffer", "configs/9_Diffusion_Buffer_BBED.yaml", "diffusion_buffer_bbed"),
+    "diffusion": (
+        "diffusion_buffer",
+        "configs/9_Diffusion_Buffer_BBED.yaml",
+        "diffusion_buffer_bbed",
+    ),
 }
 
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
+
 
 class _Colors:
     RED = "\033[0;31m"
@@ -121,6 +128,7 @@ def fail(msg: str, code: int = 1) -> NoReturn:
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+
 
 def check_command(name: str) -> None:
     if shutil.which(name) is None:
@@ -182,7 +190,7 @@ def ensure_clean_git_tree() -> None:
     result = get_git_status()
     if result.stdout.strip():
         log_error("Git working tree is dirty. Uncommitted changes detected:")
-        for line in result.stdout.strip().split('\n'):
+        for line in result.stdout.strip().split("\n"):
             if line.strip():
                 log_error(f"  {line.strip()}")
         fail("Please commit or stash your changes before proceeding.")
@@ -212,6 +220,7 @@ def get_num_gpus_from_config(config_path: Path) -> int:
 # -----------------------------------------------------------------------------
 # Step 0: Setup
 # -----------------------------------------------------------------------------
+
 
 def step_setup() -> None:
     log_info("=== Step 0: Setting up environment ===")
@@ -250,6 +259,7 @@ def step_setup() -> None:
 # -----------------------------------------------------------------------------
 # Step 1: Download
 # -----------------------------------------------------------------------------
+
 
 def step_download() -> None:
     log_info("=== Step 1: Downloading source datasets ===")
@@ -295,9 +305,7 @@ def step_download() -> None:
     extract_dir, split_dirs = prepare_zenodo_drone_noises(
         DATA_DIR, url=ZENODO_DRONE_NOISES_URL, extracted_dirname="zenodo_drone_noises"
     )
-    split_counts = {
-        split: len(collect_audio_files(path)) for split, path in split_dirs.items()
-    }
+    split_counts = {split: len(collect_audio_files(path)) for split, path in split_dirs.items()}
     for split, count in split_counts.items():
         log_info(f"  Zenodo {split} split: {count} audio files")
 
@@ -316,6 +324,7 @@ def step_download() -> None:
 # -----------------------------------------------------------------------------
 # Step 2: Dataset
 # -----------------------------------------------------------------------------
+
 
 def step_dataset() -> None:
     log_info("=== Step 2: Creating DroneNoise-LibriMix dataset ===")
@@ -399,6 +408,7 @@ def step_dataset() -> None:
 # Step 3: Train
 # -----------------------------------------------------------------------------
 
+
 def _train_setup() -> None:
     if not TRAIN_PATH.exists() or not VALID_PATH.exists():
         fail("DN-LM dataset not found. Run: python replicate_paper.py dataset")
@@ -433,21 +443,23 @@ def _train_one(model_key: str, device_ids: list[int] | None) -> None:
     if ckpt.exists():
         log_success(f"{results_subdir_with_hash} already trained")
         return
-    log_info(
-        f"Training {results_subdir_with_hash} (commit: {commit_hash}, gpus: {num_gpus})..."
+    log_info(f"Training {results_subdir_with_hash} (commit: {commit_hash}, gpus: {num_gpus})...")
+    train_model(
+        argparse.Namespace(
+            **{  # type: ignore[arg-type]
+                "model_type": model_type,
+                "config_path": str(config_path),
+                "results_path": str(results_path),
+                "data_path": [str(TRAIN_PATH)],
+                "valid_path": [str(VALID_PATH)],
+                "dataset_type": 1,
+                "device_ids": device_ids,
+                "num_workers": 4,
+                "metrics": ["si_sdr", "sdr"],
+                "metric_for_scheduler": "si_sdr",
+            }
+        )
     )
-    train_model({
-        "model_type": model_type,
-        "config_path": str(config_path),
-        "results_path": str(results_path),
-        "data_path": [str(TRAIN_PATH)],
-        "valid_path": [str(VALID_PATH)],
-        "dataset_type": 1,
-        "device_ids": device_ids,
-        "num_workers": 4,
-        "metrics": ["si_sdr", "sdr"],
-        "metric_for_scheduler": "si_sdr",
-    })
     log_success(f"{results_subdir_with_hash} training complete")
 
 
@@ -500,6 +512,7 @@ def step_train(device_ids: list[int] | None = None) -> None:
 # Step 4: Evaluate
 # -----------------------------------------------------------------------------
 
+
 def _eval_setup() -> None:
     # Check that git tree is clean before evaluation
     ensure_clean_git_tree()
@@ -521,23 +534,21 @@ def _eval_one(
     results_subdir_with_hash = f"{results_subdir}_{commit_hash}"
     ckpt = RESULTS_DIR / results_subdir_with_hash / "best_model.ckpt"
     if not ckpt.exists():
-        log_warning(
-            f"{results_subdir_with_hash} checkpoint not found, skipping evaluation"
-        )
+        log_warning(f"{results_subdir_with_hash} checkpoint not found, skipping evaluation")
         return
     device_id = 0 if device_id is None else device_id
-    log_info(
-        f"Evaluating {results_subdir_with_hash} (commit: {commit_hash}, gpu: {device_id})..."
+    log_info(f"Evaluating {results_subdir_with_hash} (commit: {commit_hash}, gpu: {device_id})...")
+    check_validation(
+        {
+            "model_type": model_type,
+            "config_path": str(config_path),
+            "start_check_point": str(ckpt),
+            "valid_path": [str(VALID_PATH)],
+            "store_dir": str(EVAL_STORE_DIR),
+            "device_ids": [device_id],
+            "metrics": ["si_sdr", "sdr", "pesq", "stoi"],
+        }
     )
-    check_validation({
-        "model_type": model_type,
-        "config_path": str(config_path),
-        "start_check_point": str(ckpt),
-        "valid_path": [str(VALID_PATH)],
-        "store_dir": str(EVAL_STORE_DIR),
-        "device_ids": [device_id],
-        "metrics": ["si_sdr", "sdr", "pesq", "stoi"],
-    })
     log_success(f"{results_subdir_with_hash} evaluation complete")
 
 
@@ -738,7 +749,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Replicate Edge-BS-RoFormer paper results.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_usage(f"python replicate_paper.py"),
+        epilog=_usage("python replicate_paper.py"),
     )
     parser.add_argument(
         "step",
@@ -786,7 +797,7 @@ def main() -> None:
         if args.step == "train_eval_all":
             step_train_eval_all(args.models)
         elif args.step == "train" or args.step.startswith("train_"):
-            step_fn(device_ids)
+            step_fn(device_ids)  # pyright: ignore[reportCallIssue]
         else:
             step_fn()
 

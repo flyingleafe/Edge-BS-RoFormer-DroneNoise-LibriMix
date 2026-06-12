@@ -729,11 +729,6 @@ class SimpleConvSENext(nn.Module):
 
     # ─── Model factory / registry ────────────────────────────────────────────────
 
-    def load_state_dict(self, state_dict, strict=True):
-        """Load state dict with legacy checkpoint remap."""
-        state_dict = _remap_legacy_state_dict(state_dict)
-        return super().load_state_dict(state_dict, strict=strict)
-
 
 # ─── Variant 8: SimpleConvMagPhaseBiGRU (mag + phase input, BiGRU head) ─────
 

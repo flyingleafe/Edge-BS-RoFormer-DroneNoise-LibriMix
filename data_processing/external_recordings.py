@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import soundfile as sf
@@ -134,10 +135,7 @@ def load_external_timeframe(
 
     # ── audio ──────────────────────────────────────────────────────────
     audio, sr = sf.read(str(wav_path))  # (N,) or (N, n_ch)
-    if audio.ndim == 1:
-        audio = audio[np.newaxis, :]  # → (1, N)  (axis -1 = time)
-    else:
-        audio = audio.T  # (n_ch, N)
+    audio = audio[np.newaxis, :] if audio.ndim == 1 else audio.T  # (n_ch, N)
 
     t_start = 0.0
 
@@ -215,7 +213,8 @@ def load_all_external_timeframes(
         tf = load_external_timeframe(wav_path, csv_path, recording_id=rec_id)
         frames.append(tf)
         audio_dur = tf["audio"].duration
-        n_motor = len(tf["motors_measured"]) if "motors_measured" in tf else 0
-        n_ch = tf["audio"].samples.shape[0] if tf["audio"].samples.ndim > 1 else 1
+        n_motor = len(cast(EventSeries, tf["motors_measured"])) if "motors_measured" in tf else 0
+        audio = cast(UniformSeries, tf["audio"])
+        n_ch = audio.samples.shape[0] if audio.samples.ndim > 1 else 1
         print(f"  Loaded {rec_id}: {audio_dur:.1f}s, {n_ch}ch, {n_motor} motor samples")
     return frames

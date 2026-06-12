@@ -16,9 +16,15 @@ set -e  # Exit on error
 # Configuration
 # ============================================================================
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="${PROJECT_DIR}/data"
-DATASETS_DIR="${PROJECT_DIR}/datasets"
-RESULTS_DIR="${PROJECT_DIR}/results"
+
+# Load .env if present (for DATA_ROOT override in worktrees)
+if [ -f "${PROJECT_DIR}/.env" ]; then
+    set -a; source "${PROJECT_DIR}/.env"; set +a
+fi
+
+DATA_DIR="${DATA_ROOT:-$PROJECT_DIR}/data"
+DATASETS_DIR="${DATA_ROOT:-$PROJECT_DIR}/datasets"
+RESULTS_DIR="${DATA_ROOT:-$PROJECT_DIR}/results"
 
 # Dataset paths
 LIBRISPEECH_DIR="${DATA_DIR}/librispeech"

@@ -5,7 +5,7 @@ plus sample-level inference and in-flight recording inference."""
 import json
 import os
 import random
-from pathlib import Path
+from typing import cast
 
 import numpy as np
 import torch
@@ -22,26 +22,36 @@ from train_rps_predictor import (
     pairwise_mse,
     pit_mse_loss,
 )
+from utils.data import EventSeries, UniformSeries
+from utils.paths import get_data_path, get_datasets_path, get_results_path
 
 device = "cuda:0"
-OUT = Path("results/rps_cross_eval")
+OUT = get_results_path("rps_cross_eval")
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "samples").mkdir(exist_ok=True)
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
 MODELS = [
-    ("old_simple_conv", "simple_conv", "results/rps_exp_simple_conv/best_simple_conv.pt"),
+    (
+        "old_simple_conv",
+        "simple_conv",
+        str(get_results_path("rps_exp_simple_conv/best_simple_conv.pt")),
+    ),
     (
         "old_bigru_v2",
         "simple_conv_bigru_v2",
-        "results/rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt",
+        str(get_results_path("rps_exp_bigru_v2/best_simple_conv_bigru_v2.pt")),
     ),
-    ("v3_simple_conv", "simple_conv", "results/rps_predictor_v3/simple_conv/best_simple_conv.pt"),
+    (
+        "v3_simple_conv",
+        "simple_conv",
+        str(get_results_path("rps_predictor_v3/simple_conv/best_simple_conv.pt")),
+    ),
     (
         "v3_bigru_v2",
         "simple_conv_bigru_v2",
-        "results/rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt",
+        str(get_results_path("rps_predictor_v3/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt")),
     ),
 ]
 
@@ -56,8 +66,8 @@ for name, mtype, ckpt in MODELS:
 
 # ── Part 1: Full validation set metrics ─────────────────────────────────────
 
-old_ds = DREGONRPSDataset("datasets/DREGON-LM/valid")
-new_ds = DREGONRPSDataset("datasets/DREGON-LM-V2/valid")
+old_ds = DREGONRPSDataset(str(get_datasets_path("DREGON-LM/valid")))
+new_ds = DREGONRPSDataset(str(get_datasets_path("DREGON-LM-V2/valid")))
 
 all_metrics = {}
 for ds_name, ds in [("OLD_valid", old_ds), ("V2_valid", new_ds)]:
@@ -83,7 +93,7 @@ random.seed(42)
 old_indices = random.sample(range(len(old_ds)), 5)
 new_indices = random.sample(range(len(new_ds)), 5)
 
-import soundfile as sf
+import soundfile as sf  # noqa: E402
 
 for tag, ds, indices in [("old", old_ds, old_indices), ("v2", new_ds, new_indices)]:
     for idx in indices:
@@ -104,7 +114,7 @@ for tag, ds, indices in [("old", old_ds, old_indices), ("v2", new_ds, new_indice
 
         # Inference from all models
         for model_name, model in loaded_models.items():
-            with torch.no_grad(), torch.amp.autocast("cuda"):
+            with torch.no_grad(), torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
                 pred = model(audio).cpu().squeeze(0)  # (4, T)
             np.save(out_dir / f"rps_pred_{model_name}.npy", pred.numpy())
 
@@ -134,9 +144,9 @@ print(f"Saved sample inferences to {OUT / 'samples'}/")
 # ── Part 3: In-flight recording inference ───────────────────────────────────
 
 # Load speech-high and whitenoise-high recordings
-from data_processing.dregon import discover_recordings, load_timeframe
+from data_processing.dregon import discover_recordings, load_timeframe  # noqa: E402
 
-dregon_dir = Path("data/DREGON")
+dregon_dir = get_data_path("DREGON")
 geometry = get_geometry(dregon_dir)
 
 # Discover recordings in the in_flight_source split
@@ -152,7 +162,7 @@ for sample in all_samples:
 
     tf = load_timeframe(sample, geometry=geometry, target_sr=16000)
 
-    audio_us = tf["audio"]
+    audio_us = cast(UniformSeries, tf["audio"])
     # UniformSeries stores (channels, N) — axis 0 = channels
     n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1
     total_duration = audio_us.duration
@@ -166,9 +176,13 @@ for sample in all_samples:
     # Extract command RPS (cleaned) for ground truth
     motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
     if motor_key in tf:
-        command = tf[motor_key].values.copy()
-        command_cleaned = clean_command_spikes(command)
-        rps_full = torch.from_numpy(command_cleaned.T.astype(np.float32))  # (4, T_motor)
+        motor_es = cast(EventSeries, tf[motor_key])
+        if motor_es.values is not None:
+            command = motor_es.values.copy()
+            command_cleaned = clean_command_spikes(command)
+            rps_full = torch.from_numpy(command_cleaned.T.astype(np.float32))  # (4, T_motor)
+        else:
+            rps_full = None
     else:
         rps_full = None
 
@@ -195,7 +209,7 @@ for sample in all_samples:
             all_targets_rps.append(rps_chunk.numpy())
 
         for model_name, model in loaded_models.items():
-            with torch.no_grad(), torch.amp.autocast("cuda"):
+            with torch.no_grad(), torch.amp.autocast("cuda"):  # pyright: ignore[reportPrivateImportUsage]
                 pred = model(chunk).cpu().squeeze(0)
             all_preds[model_name].append(pred.numpy())
 

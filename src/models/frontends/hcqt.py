@@ -63,7 +63,7 @@ class HCQTFrontEnd(SpectralFrontEnd):
 
     def __init__(
         self,
-        sr: int = 22050,
+        sr: int = 16000,
         input_sr: int = 16000,
         fmin: float = 32.7,
         n_octaves: int = 6,
@@ -83,11 +83,17 @@ class HCQTFrontEnd(SpectralFrontEnd):
         self.fmin = fmin
         self.n_octaves = n_octaves
         self.over_sample = over_sample
-        self.harmonics = harmonics or [1, 2, 3, 4, 5]
         self.hop_length = hop_length
         self.use_phase = phase
         self.use_log = use_log
         self.backend = backend
+
+        # Auto-derive harmonics if not provided: use the most harmonics that
+        # fit within Nyquist for all octaves.
+        if harmonics is None:
+            max_h = int(sr / 2 / (fmin * (2**n_octaves)))
+            harmonics = list(range(1, max(max_h, 1) + 1))
+        self.harmonics = harmonics
 
         n_h = len(self.harmonics)
         self.out_channels = 2 * n_h if phase else n_h

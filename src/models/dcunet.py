@@ -457,7 +457,7 @@ class DCUNet(nn.Module):
 
         if self.use_rps and rps is not None and self.rps_fusion == "hierarchical":
             n_stft_time = T
-            time_lengths = encoder_time_lengths(n_stft_time, self._encoder_strides)
+            encoder_time_lengths(n_stft_time, self._encoder_strides)
             rps_align = rps
             if rps.dim() == 2:
                 rps_align = rps.unsqueeze(1)
@@ -548,7 +548,8 @@ class DCUNet(nn.Module):
 
             warnings.warn(
                 f"DCUNet output length mismatch: output={output_length}, input={input_length}, "
-                f"diff={output_length - input_length}. Consider adjusting chunk_size."
+                f"diff={output_length - input_length}. Consider adjusting chunk_size.",
+                stacklevel=2,
             )
             if output_length < input_length:
                 output = torch.nn.functional.pad(output, (0, input_length - output_length))

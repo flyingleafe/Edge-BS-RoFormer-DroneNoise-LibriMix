@@ -13,10 +13,10 @@ Current format: ``Type@ckpt`` — ``Type`` is a ``MODEL_REGISTRY`` key,
 Future (backward-compatible): extended checkpoints that embed class +
 constructor kwargs, so ``load_model(ckpt)`` needs no ``@Type`` prefix.
 """
+
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -24,10 +24,12 @@ import torch.nn as nn
 
 # ── Model registries ──────────────────────────────────────────────────────
 
+
 # RPS prediction models (from train_rps_predictor.py).
 def _make_rps_registry() -> dict[str, Any]:
     """Return {name: callable(**kw) -> nn.Module} for RPS models."""
     from train_rps_predictor import MODEL_REGISTRY as RPS_REGISTRY
+
     return dict(RPS_REGISTRY)
 
 
@@ -35,8 +37,10 @@ def _make_rps_registry() -> dict[str, Any]:
 # These are config-keyed, not name-keyed; expose a thin wrapper.
 def _make_suppression_registry() -> dict[str, Any]:
     """Return {name: callable(**kw) -> nn.Module} for suppression models."""
-    from utils import get_model_from_config
-    from models import MODEL_TYPES as SUPP_MODEL_TYPES
+    from models import (
+        MODEL_TYPES as SUPP_MODEL_TYPES,  # pyright: ignore[reportAttributeAccessIssue]
+    )
+
     registry: dict[str, Any] = {}
     for name, cls in SUPP_MODEL_TYPES.items():
         registry[name] = cls
@@ -44,6 +48,7 @@ def _make_suppression_registry() -> dict[str, Any]:
 
 
 # ── Core API ──────────────────────────────────────────────────────────────
+
 
 def load_model(spec: str, device: str = "cpu") -> nn.Module:
     """Load a model from a spec string ``Type@ckpt``.
@@ -73,23 +78,16 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
         If the checkpoint path does not exist.
     """
     if "@" not in spec:
-        raise ValueError(
-            f"Invalid spec {spec!r}: expected 'Type@/path/to/ckpt.pt' "
-            f"(no '@' found)"
-        )
+        raise ValueError(f"Invalid spec {spec!r}: expected 'Type@/path/to/ckpt.pt' (no '@' found)")
 
     model_type, _, ckpt_path = spec.partition("@")
     model_type = model_type.strip()
     ckpt_path = ckpt_path.strip()
 
     if not model_type:
-        raise ValueError(
-            f"Invalid spec {spec!r}: missing model type before '@'"
-        )
+        raise ValueError(f"Invalid spec {spec!r}: missing model type before '@'")
     if not ckpt_path:
-        raise ValueError(
-            f"Invalid spec {spec!r}: missing checkpoint path after '@'"
-        )
+        raise ValueError(f"Invalid spec {spec!r}: missing checkpoint path after '@'")
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path!r}")
 
@@ -100,7 +98,8 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
         model = factory(n_fft=2048, hop_length=512, num_rotors=4)
     else:
         try:
-            from utils import get_model_from_config
+            from utils import get_model_from_config  # noqa: F401
+
             # For suppression models we need a fake config; this is a
             # transitional path — when extended checkpoints land, the
             # config is embedded in the checkpoint.
@@ -110,10 +109,7 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
             )
         except ImportError:
             pass
-        raise ValueError(
-            f"Unknown model type {model_type!r}.  "
-            f"Known RPS types: {sorted(rps_reg)}"
-        )
+        raise ValueError(f"Unknown model type {model_type!r}.  Known RPS types: {sorted(rps_reg)}")
 
     # Load state dict.
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)

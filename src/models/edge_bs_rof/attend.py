@@ -131,7 +131,7 @@ class Attend(nn.Module):
         """Implements optimized Flash Attention computation method"""
         # Unpack query vector q's shape and get number of attention heads, query sequence length, etc.
         # Also get key sequence length from key vector k, and detect if tensor is on CUDA and its device
-        _, heads, q_len, _, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device
+        _, _heads, _q_len, _, _k_len, is_cuda, _device = *q.shape, k.shape[-2], q.is_cuda, q.device
 
         # If user specified custom scaling factor, adjust query vector q accordingly
         if exists(self.scale):
@@ -183,10 +183,9 @@ class Attend(nn.Module):
           v - value vector
         """
         # Get query and key sequence lengths, and determine device of query
-        q_len, k_len, device = q.shape[-2], k.shape[-2], q.device
+        _q_len, _k_len, _device = q.shape[-2], k.shape[-2], q.device
 
-        # If custom scaling factor not provided, use default value 1/sqrt(feature_dimension)
-        scale = default(self.scale, q.shape[-1] ** -0.5)
+        scale = self.scale if self.scale is not None else q.shape[-1] ** -0.5
 
         # When Flash Attention mode is enabled, call flash_attn function to get attention output
         if self.flash:

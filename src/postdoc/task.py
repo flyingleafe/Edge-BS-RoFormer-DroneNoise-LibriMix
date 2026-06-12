@@ -16,6 +16,7 @@ Schema refs:
   YAML: https://docs.skypilot.co/en/latest/reference/yaml-spec.html
   SSH pod_config: https://docs.skypilot.co/en/stable/reservations/existing-machines.html
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 DEFAULT_POOL = os.environ.get("POSTDOC_SSH_POOL", "vast-server")
 DEFAULT_CLUSTER_GPUS = int(os.environ.get("POSTDOC_CLUSTER_GPUS", "2"))
@@ -43,7 +43,6 @@ def _accelerator_spec(gpus: int, gpu_type: str) -> str | None:
     if not gpus:
         return None
     return f"{gpu_type}:{gpus}"
-
 
 
 BOOTSTRAP_SETUP = """\
@@ -120,8 +119,7 @@ def _pod_config_with_hostpath(host_path: str, mount_path: str) -> dict[str, Any]
                         {
                             "volumeMounts": [
                                 {"mountPath": mount_path, "name": "project"},
-                                {"mountPath": "/root/.ssh",
-                                 "name": "ssh-creds", "readOnly": True},
+                                {"mountPath": "/root/.ssh", "name": "ssh-creds", "readOnly": True},
                             ],
                         }
                     ],
@@ -212,7 +210,7 @@ def _str_representer(dumper: yaml.Dumper, data: str):
     return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
 
 
-_LiteralDumper.add_representer(str, _str_representer)
+_LiteralDumper.add_representer(str, _str_representer)  # type: ignore[arg-type]
 
 
 def dump_task_yaml(task: dict[str, Any], path: Path) -> Path:

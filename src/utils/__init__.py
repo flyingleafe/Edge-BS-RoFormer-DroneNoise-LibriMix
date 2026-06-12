@@ -1,37 +1,35 @@
-# coding: utf-8
 __author__ = "Roman Solovyev (ZFTurbo): https://github.com/ZFTurbo/"
 
 # Import necessary libraries
 import argparse
+import os
+from typing import Any, cast
+
+import loralib as lora
+import matplotlib.pyplot as plt
 import numpy as np
+import soundfile as sf
 import torch
 import torch.nn as nn
-import yaml
-import os
-import soundfile as sf
-import matplotlib.pyplot as plt
-from ml_collections import ConfigDict
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
-from typing import Dict, List, Tuple, Any, Union
-import loralib as lora
 
 
-def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaConf]:
+def load_config(model_type: str, config_path: str) -> DictConfig:
     """
-    Load configuration file from specified path based on model type.
+    Load configuration file from specified path.
 
     Args:
     ----------
     model_type : str
         Model type (e.g., 'htdemucs', 'mdx23c', etc.)
     config_path : str
-        Path to YAML or OmegaConf configuration file
+        Path to YAML configuration file
 
     Returns:
     -------
-    config : Any
-        Loaded configuration object, can be OmegaConf or ConfigDict format
+    DictConfig
+        Loaded OmegaConf DictConfig object
 
     Raises:
     ------
@@ -39,21 +37,17 @@ def load_config(model_type: str, config_path: str) -> Union[ConfigDict, OmegaCon
     ValueError: When error occurs loading configuration file
     """
     try:
-        with open(config_path, "r") as f:
-            # htdemucs model uses OmegaConf format configuration
-            if model_type == "htdemucs":
-                config = OmegaConf.load(config_path)
-            # Other models use yaml format configuration
-            else:
-                config = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
-            return config
+        cfg = OmegaConf.load(config_path)
+        if not isinstance(cfg, DictConfig):
+            raise ValueError(f"Expected a mapping config, got {type(cfg).__name__}")
+        return cfg
     except FileNotFoundError:
-        raise FileNotFoundError(f"Configuration file not found at {config_path}")
+        raise FileNotFoundError(f"Configuration file not found at {config_path}") from None
     except Exception as e:
-        raise ValueError(f"Error loading configuration: {e}")
+        raise ValueError(f"Error loading configuration: {e}") from e
 
 
-def get_model_from_config(model_type: str, config_path: str) -> Tuple:
+def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module, DictConfig]:
     """
     Load corresponding model based on model type and configuration file.
 
@@ -103,12 +97,12 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
         # Mel band-based Roformer model
         from models.edge_bs_rof import MelBandRoformer
 
-        model = MelBandRoformer(**dict(config.model))
+        model = MelBandRoformer(**OmegaConf.to_container(config.model, resolve=True))  # type: ignore[arg-type]
     elif model_type == "edge_bs_rof":
         # Base Roformer model
         from models.edge_bs_rof import BSRoformer
 
-        model = BSRoformer(**dict(config.model))
+        model = BSRoformer(**OmegaConf.to_container(config.model, resolve=True))  # type: ignore[arg-type]
     elif model_type == "swin_upernet":
         # Swin Transformer + UperNet architecture
         from models.upernet_swin_transformers import Swin_UperNet_Model
@@ -153,7 +147,7 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
         # DCUNet model (original implementation)
         from models.dcunet import DCUNet
 
-        model = DCUNet(config)
+        model = DCUNet(cast(dict[str, Any], OmegaConf.to_container(config, resolve=True)))
     elif model_type == "dcunet_refactored":
         # Refactored DCUNet with separate Encoder/Decoder modules
         # RPS conditioning is decoder-side only
@@ -203,8 +197,8 @@ def get_model_from_config(model_type: str, config_path: str) -> Tuple:
 
 
 def read_audio_transposed(
-    path: str, instr: str = None, skip_err: bool = False
-) -> Tuple[np.ndarray, int]:
+    path: str, instr: str | None = None, skip_err: bool = False
+) -> tuple[np.ndarray, int] | tuple[None, None]:
     """
     Read audio file and transpose it.
 
@@ -231,7 +225,7 @@ def read_audio_transposed(
             print(f"No stem {instr}: skip!")
             return None, None
         else:
-            raise RuntimeError(f"Error reading the file at {path}: {e}")
+            raise RuntimeError(f"Error reading the file at {path}: {e}") from e
     else:
         # Convert mono audio to 2D array
         if len(mix.shape) == 1:
@@ -239,7 +233,7 @@ def read_audio_transposed(
         return mix.T, sr
 
 
-def normalize_audio(audio: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+def normalize_audio(audio: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
     """
     Normalize audio signal.
 
@@ -262,7 +256,7 @@ def normalize_audio(audio: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
     return (audio - mean) / std, {"mean": mean, "std": std}
 
 
-def denormalize_audio(audio: np.ndarray, norm_params: Dict[str, float]) -> np.ndarray:
+def denormalize_audio(audio: np.ndarray, norm_params: dict[str, float]) -> np.ndarray:
     """
     Denormalize a normalized audio signal.
 
@@ -283,13 +277,13 @@ def denormalize_audio(audio: np.ndarray, norm_params: Dict[str, float]) -> np.nd
 
 
 def apply_tta(
-    config,
-    model: torch.nn.Module,
+    config: DictConfig,
+    model: nn.Module,
     mix: torch.Tensor,
-    waveforms_orig: Dict[str, torch.Tensor],
+    waveforms_orig: dict[str, np.ndarray],
     device: torch.device,
     model_type: str,
-) -> Dict[str, torch.Tensor]:
+) -> dict[str, np.ndarray]:
     """
     Apply test-time augmentation (TTA) for source separation.
 
@@ -317,16 +311,19 @@ def apply_tta(
         Updated separated waveforms dictionary after applying TTA
     """
     # Create augmentations: channel inversion and polarity inversion
-    track_proc_list = [mix[::-1].copy(), -1.0 * mix.copy()]
+    track_proc_list: list[torch.Tensor] = [mix.flip(0), -1.0 * mix]
 
     # Process each augmented mixture
     for i, augmented_mix in enumerate(track_proc_list):
         waveforms = demix(config, model, augmented_mix, device, model_type=model_type)
+        if not isinstance(waveforms, dict):
+            continue
         for el in waveforms:
+            wav: np.ndarray = waveforms[el]
             if i == 0:
-                waveforms_orig[el] += waveforms[el][::-1].copy()
+                waveforms_orig[el] = waveforms_orig[el] + wav[::-1].copy()
             else:
-                waveforms_orig[el] -= waveforms[el]
+                waveforms_orig[el] = waveforms_orig[el] - wav
 
     # Average all augmented results
     for el in waveforms_orig:
@@ -364,14 +361,14 @@ def _getWindowingArray(window_size: int, fade_size: int) -> torch.Tensor:
 
 
 def demix(
-    config: ConfigDict,
-    model: torch.nn.Module,
+    config: DictConfig,
+    model: nn.Module,
     mix: torch.Tensor,
     device: torch.device,
     model_type: str,
     pbar: bool = False,
-    rps: Union[torch.Tensor, np.ndarray, None] = None,
-) -> Tuple[List[Dict[str, np.ndarray]], np.ndarray]:
+    rps: torch.Tensor | np.ndarray | None = None,
+) -> dict[str, np.ndarray] | np.ndarray:
     """
     Unified source separation function supporting multiple processing modes.
 
@@ -402,23 +399,22 @@ def demix(
     mix = torch.tensor(mix, dtype=torch.float32)
 
     # Select processing mode based on model type
-    if model_type == "htdemucs":
-        mode = "demucs"
-    else:
-        mode = "generic"
+    mode = "demucs" if model_type == "htdemucs" else "generic"
 
     # Set processing parameters based on mode
+    fade_size: int = 0
+    border: int = 0
     if mode == "demucs":
         # Demucs mode parameters
-        chunk_size = config.training.samplerate * config.training.segment
-        num_instruments = len(config.training.instruments)
-        num_overlap = config.inference.num_overlap
+        chunk_size = cast(int, config.training.samplerate * config.training.segment)
+        num_instruments = cast(int, len(config.training.instruments))
+        num_overlap = cast(int, config.inference.num_overlap)
         step = chunk_size // num_overlap
     else:
         # Generic mode parameters
-        chunk_size = config.audio.chunk_size
-        num_instruments = len(prefer_target_instrument(config))
-        num_overlap = config.inference.num_overlap
+        chunk_size = cast(int, config.audio.chunk_size)
+        num_instruments = cast(int, len(prefer_target_instrument(config)))
+        num_overlap = cast(int, config.inference.num_overlap)
 
         fade_size = chunk_size // 10
         step = chunk_size // num_overlap
@@ -433,116 +429,110 @@ def demix(
 
     use_amp = getattr(config.training, "use_amp", True)
 
-    with torch.cuda.amp.autocast(enabled=use_amp):
-        with torch.inference_mode():
-            # Initialize result and counter tensors
-            req_shape = (num_instruments,) + mix.shape
-            result = torch.zeros(req_shape, dtype=torch.float32)
-            counter = torch.zeros(req_shape, dtype=torch.float32)
+    with torch.cuda.amp.autocast(enabled=use_amp), torch.inference_mode():
+        # Initialize result and counter tensors
+        req_shape = (num_instruments,) + mix.shape
+        result = torch.zeros(req_shape, dtype=torch.float32)
+        counter = torch.zeros(req_shape, dtype=torch.float32)
 
-            i = 0
-            batch_data = []
-            batch_rps = []
-            batch_locations = []
-            progress_bar = (
-                tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False)
-                if pbar
-                else None
-            )
+        i: int = 0
+        batch_data = []
+        batch_rps = []
+        batch_locations = []
+        progress_bar = (
+            tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+        )
 
-            use_rps = rps is not None and getattr(model, "use_rps", False)
+        use_rps = rps is not None and getattr(model, "use_rps", False)
 
-            # Process audio in chunks
-            while i < mix.shape[1]:
-                # Extract and pad audio chunk
-                part = mix[:, i : i + chunk_size].to(device)
-                chunk_len = part.shape[-1]
-                if mode == "generic" and chunk_len > chunk_size // 2:
-                    pad_mode = "reflect"
+        # Process audio in chunks
+        while i < mix.shape[1]:
+            # Extract and pad audio chunk
+            part = mix[:, i : i + chunk_size].to(device)
+            chunk_len = part.shape[-1]
+            if mode == "generic" and chunk_len > chunk_size // 2:
+                pad_mode = "reflect"
+            else:
+                pad_mode = "constant"
+            part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
+
+            batch_data.append(part)
+            if use_rps:
+                rps_t = torch.as_tensor(rps, dtype=torch.float32, device=device)
+                if rps_t.dim() == 2:
+                    part_rps = rps_t[:, i : i + chunk_size].unsqueeze(0)
                 else:
-                    pad_mode = "constant"
-                part = nn.functional.pad(
-                    part, (0, chunk_size - chunk_len), mode=pad_mode, value=0
+                    part_rps = rps_t[:, :, i : i + chunk_size]
+                part_rps = nn.functional.pad(
+                    part_rps,
+                    (0, chunk_size - part_rps.shape[-1]),
+                    mode="constant",
+                    value=0,
                 )
+                batch_rps.append(part_rps)
+            batch_locations.append((i, chunk_len))
+            i += step
 
-                batch_data.append(part)
-                if use_rps:
-                    rps_t = torch.as_tensor(rps, dtype=torch.float32, device=device)
-                    if rps_t.dim() == 2:
-                        part_rps = rps_t[:, i : i + chunk_size].unsqueeze(0)
-                    else:
-                        part_rps = rps_t[:, :, i : i + chunk_size]
-                    part_rps = nn.functional.pad(
-                        part_rps,
-                        (0, chunk_size - part_rps.shape[-1]),
-                        mode="constant",
-                        value=0,
-                    )
-                    batch_rps.append(part_rps)
-                batch_locations.append((i, chunk_len))
-                i += step
+            # Process batch when batch_size is reached
+            if len(batch_data) >= batch_size or i >= mix.shape[1]:
+                arr = torch.stack(batch_data, dim=0)
+                if use_rps and batch_rps:
+                    arr_rps = torch.cat(batch_rps, dim=0)
+                    rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                    if rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
+                        arr_rps = arr_rps / float(rps_norm_scale)
+                    x = model(arr, rps=arr_rps)
+                else:
+                    x = model(arr)
+                # Discard auxiliary outputs (e.g. rps_pred); de-normalize if present
+                if isinstance(x, tuple):
+                    rps_pred = x[1]
+                    x = x[0]
+                    rps_norm_scale = getattr(config, "rps_norm_scale", None)
+                    if (
+                        rps_pred is not None
+                        and rps_norm_scale is not None
+                        and float(rps_norm_scale) != 1.0
+                    ):
+                        rps_pred = rps_pred * float(rps_norm_scale)
 
-                # Process batch when batch_size is reached
-                if len(batch_data) >= batch_size or i >= mix.shape[1]:
-                    arr = torch.stack(batch_data, dim=0)
-                    if use_rps and batch_rps:
-                        arr_rps = torch.cat(batch_rps, dim=0)
-                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
-                        if rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
-                            arr_rps = arr_rps / float(rps_norm_scale)
-                        x = model(arr, rps=arr_rps)
-                    else:
-                        x = model(arr)
-                    # Discard auxiliary outputs (e.g. rps_pred); de-normalize if present
-                    if isinstance(x, tuple):
-                        rps_pred = x[1]
-                        x = x[0]
-                        rps_norm_scale = getattr(config, "rps_norm_scale", None)
-                        if rps_pred is not None and rps_norm_scale is not None and float(rps_norm_scale) != 1.0:
-                            rps_pred = rps_pred * float(rps_norm_scale)
+                if mode == "generic":
+                    window = windowing_array.clone()
+                    if i - step == 0:  # First chunk doesn't need fade-in
+                        window[:fade_size] = 1
+                    elif i >= mix.shape[1]:  # Last chunk doesn't need fade-out
+                        window[-fade_size:] = 1
 
+                # Add processed results to total result
+                for j, (start, seg_len) in enumerate(batch_locations):
                     if mode == "generic":
-                        window = windowing_array.clone()
-                        if i - step == 0:  # First chunk doesn't need fade-in
-                            window[:fade_size] = 1
-                        elif i >= mix.shape[1]:  # Last chunk doesn't need fade-out
-                            window[-fade_size:] = 1
+                        result[..., start : start + seg_len] += (
+                            x[j, ..., :seg_len].cpu() * window[..., :seg_len]
+                        )
+                        counter[..., start : start + seg_len] += window[..., :seg_len]
+                    else:
+                        result[..., start : start + seg_len] += x[j, ..., :seg_len].cpu()
+                        counter[..., start : start + seg_len] += 1.0
 
-                    # Add processed results to total result
-                    for j, (start, seg_len) in enumerate(batch_locations):
-                        if mode == "generic":
-                            result[..., start : start + seg_len] += (
-                                x[j, ..., :seg_len].cpu() * window[..., :seg_len]
-                            )
-                            counter[..., start : start + seg_len] += window[
-                                ..., :seg_len
-                            ]
-                        else:
-                            result[..., start : start + seg_len] += x[
-                                j, ..., :seg_len
-                            ].cpu()
-                            counter[..., start : start + seg_len] += 1.0
-
-                    batch_data.clear()
-                    if use_rps:
-                        batch_rps.clear()
-                    batch_locations.clear()
-
-                if progress_bar:
-                    progress_bar.update(step)
+                batch_data.clear()
+                if use_rps:
+                    batch_rps.clear()
+                batch_locations.clear()
 
             if progress_bar:
-                progress_bar.close()
+                progress_bar.update(step)
 
-            # Compute final estimated sources
-            estimated_sources = result / counter
-            estimated_sources = estimated_sources.cpu().numpy()
-            np.nan_to_num(estimated_sources, copy=False, nan=0.0)
+        if progress_bar:
+            progress_bar.close()
 
-            # Remove padding for generic mode
-            if mode == "generic":
-                if length_init > 2 * border and border > 0:
-                    estimated_sources = estimated_sources[..., border:-border]
+        # Compute final estimated sources
+        estimated_sources = result / counter
+        estimated_sources = estimated_sources.cpu().numpy()
+        np.nan_to_num(estimated_sources, copy=False, nan=0.0)
+
+        # Remove padding for generic mode
+        if mode == "generic" and length_init > 2 * border and border > 0:
+            estimated_sources = estimated_sources[..., border:-border]
 
     # Return results
     if mode == "demucs":
@@ -558,7 +548,7 @@ def demix(
         return ret_data
 
 
-def prefer_target_instrument(config: ConfigDict) -> List[str]:
+def prefer_target_instrument(config: DictConfig) -> list[str]:
     """
     Return target instrument list based on configuration.
 
@@ -614,9 +604,7 @@ def load_not_compatible_weights(
                 # Handle different shape case
                 if len(new_model[el].shape) != len(old_model[el].shape):
                     if verbose:
-                        print(
-                            "Action: Different dimension! Too lazy to write the code... Skip it"
-                        )
+                        print("Action: Different dimension! Too lazy to write the code... Skip it")
                 else:
                     if verbose:
                         print(
@@ -628,15 +616,13 @@ def load_not_compatible_weights(
                     slices_old = []
                     slices_new = []
                     for i in range(ln):
-                        max_shape.append(
-                            max(new_model[el].shape[i], old_model[el].shape[i])
-                        )
+                        max_shape.append(max(new_model[el].shape[i], old_model[el].shape[i]))
                         slices_old.append(slice(0, old_model[el].shape[i]))
                         slices_new.append(slice(0, new_model[el].shape[i]))
                     slices_old = tuple(slices_old)
                     slices_new = tuple(slices_new)
                     max_matrix = np.zeros(max_shape, dtype=np.float32)
-                    for i in range(ln):
+                    for _i in range(ln):
                         max_matrix[slices_old] = old_model[el].cpu().numpy()
                     max_matrix = torch.from_numpy(max_matrix)
                     new_model[el] = max_matrix[slices_new]
@@ -646,9 +632,7 @@ def load_not_compatible_weights(
     model.load_state_dict(new_model)
 
 
-def load_lora_weights(
-    model: torch.nn.Module, lora_path: str, device: str = "cpu"
-) -> None:
+def load_lora_weights(model: torch.nn.Module, lora_path: str, device: str = "cpu") -> None:
     """
     Load LoRA weights into model.
 
@@ -665,9 +649,7 @@ def load_lora_weights(
     model.load_state_dict(lora_state_dict, strict=False)
 
 
-def load_start_checkpoint(
-    args: argparse.Namespace, model: torch.nn.Module, type_="train"
-) -> None:
+def load_start_checkpoint(args: argparse.Namespace, model: torch.nn.Module, type_="train") -> None:
     """
     Load starting checkpoint for model.
 
@@ -687,9 +669,7 @@ def load_start_checkpoint(
     else:
         device = "cpu"
         if args.model_type in ["htdemucs", "apollo"]:
-            state_dict = torch.load(
-                args.start_check_point, map_location=device, weights_only=False
-            )
+            state_dict = torch.load(args.start_check_point, map_location=device, weights_only=False)
             # htdemucs pretrained model fix
             if "state" in state_dict:
                 state_dict = state_dict["state"]
@@ -697,9 +677,7 @@ def load_start_checkpoint(
             if "state_dict" in state_dict:
                 state_dict = state_dict["state_dict"]
         else:
-            state_dict = torch.load(
-                args.start_check_point, map_location=device, weights_only=True
-            )
+            state_dict = torch.load(args.start_check_point, map_location=device, weights_only=True)
         model.load_state_dict(state_dict)
 
     if args.lora_checkpoint:
@@ -707,7 +685,7 @@ def load_start_checkpoint(
         load_lora_weights(model, args.lora_checkpoint)
 
 
-def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
+def bind_lora_to_model(config: DictConfig, model: nn.Module) -> nn.Module:
     """
     Replace specific layers in model with LoRA extended versions.
 
@@ -725,9 +703,7 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
     """
 
     if "lora" not in config:
-        raise ValueError(
-            "Configuration must contain the 'lora' key with parameters for LoRA."
-        )
+        raise ValueError("Configuration must contain the 'lora' key with parameters for LoRA.")
 
     replaced_layers = 0  # Replaced layer counter
 
@@ -761,9 +737,7 @@ def bind_lora_to_model(config: Dict[str, Any], model: nn.Module) -> nn.Module:
                 print(f"Error replacing layer {name}: {e}")
 
     if replaced_layers == 0:
-        print(
-            "Warning: No layers were replaced. Check the model structure and configuration."
-        )
+        print("Warning: No layers were replaced. Check the model structure and configuration.")
     else:
         print(f"Number of layers replaced with LoRA: {replaced_layers}")
 

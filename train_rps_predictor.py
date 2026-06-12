@@ -261,10 +261,7 @@ class DCCRNEncRPS(nn.Module):
         from models.dccrn import CBatchNorm2d as DCCRN_CBN
         from models.dccrn import CConv2d as DCCRN_CConv
 
-        if lite:
-            encoder_channels = [16, 32, 64, 128]
-        else:
-            encoder_channels = [32, 64, 128, 256, 256, 512]
+        encoder_channels = [16, 32, 64, 128] if lite else [32, 64, 128, 256, 256, 512]
 
         # DCCRN encoder: kernel (5,2), stride (2,1), padding (2,0) for all layers
         enc_kernel = (5, 2)

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from utils.data import DomainError, EventSeries, IncompatibleSeriesError
+from utils.data import DomainError, EventSeries, IncompatibleSeriesError, UniformSeries
 
 from .strategies import cut_points_ticks, event_series
 
@@ -64,13 +66,13 @@ def test_getitem_returns_float_seconds():
         t_start=10_000_000_000,
         dur=2_000_000_000,
     )
-    t0, v0 = es[0]
+    t0, v0 = cast(tuple, es[0])
     assert t0 == pytest.approx(10.0)
     assert v0 == pytest.approx(1.0)
-    t1, v1 = es[1]
+    t1, v1 = cast(tuple, es[1])
     assert t1 == pytest.approx(10.5)
     assert v1 == pytest.approx(2.0)
-    t2, v2 = es[2]
+    t2, v2 = cast(tuple, es[2])
     assert t2 == pytest.approx(11.0)
     assert v2 == pytest.approx(3.0)
 
@@ -117,10 +119,10 @@ def test_shift_changes_t_start():
     # Relative timestamps unchanged by shift.
     assert np.array_equal(shifted.timestamp_ticks, es.timestamp_ticks)
     # Absolute via __getitem__.
-    t0, v0 = shifted[0]
+    t0, v0 = cast(tuple, shifted[0])
     assert t0 == pytest.approx(10.0)
     assert v0 == pytest.approx(1.0)
-    t1, v1 = shifted[1]
+    t1, v1 = cast(tuple, shifted[1])
     assert t1 == pytest.approx(10.5)
     assert v1 == pytest.approx(2.0)
 
@@ -190,9 +192,9 @@ def test_slice_multidim_values_is_time_last():
     ).astype(np.float64)  # (4, M)
     es = EventSeries.from_ticks(ts, vals, t_start=0, dur=1_000_000_000)
     sl = es.slice(300_000_000, 700_000_000)  # events at 0.3,0.4,0.5,0.6
-    assert sl.values.shape == (4, 4)
-    np.testing.assert_array_equal(sl.values[:, 0], [3, 103, 203, 303])
-    _, v = es[2]
+    assert sl.values.shape == (4, 4)  # pyright: ignore[reportOptionalMemberAccess]
+    np.testing.assert_array_equal(sl.values[:, 0], [3, 103, 203, 303])  # pyright: ignore[reportOptionalSubscript]
+    _, v = cast(tuple, es[2])
     np.testing.assert_array_equal(v, [2, 102, 202, 302])
     rejoined = es.slice(0, 300_000_000).concat(es.slice(300_000_000, 1_000_000_000))
     assert rejoined.equal(es)
@@ -295,3 +297,223 @@ def test_interpolate_uniform_custom_domain():
     # Domain 0.6 s at 2 Hz → 1 sample at t=0.2 (N=round(0.6*2)=1, dur_ticks=round(1/2*s))=0.5s)
     assert us.t_start == pytest.approx(0.2, abs=1e-9)
     assert us.n_samples >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Validation paths (__post_init__)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_init_rejects_2d_timestamps():
+    with pytest.raises(ValueError, match="1-D"):
+        EventSeries(
+            timestamp_ticks=np.array([[1, 2], [3, 4]], dtype=np.int64),
+            values=None,
+            t_start_ticks=0,
+            dur_ticks=100,
+        )
+
+
+def test_init_rejects_value_shape_mismatch_last_axis():
+    with pytest.raises(ValueError, match="values.shape"):
+        EventSeries(
+            timestamp_ticks=np.array([100, 200], dtype=np.int64),
+            values=np.array([[1.0], [2.0]]),
+            t_start_ticks=0,
+            dur_ticks=300,
+        )
+
+
+def test_init_rejects_negative_dur_ticks():
+    with pytest.raises(ValueError, match="dur_ticks"):
+        EventSeries(
+            timestamp_ticks=np.array([], dtype=np.int64), values=None, t_start_ticks=0, dur_ticks=-1
+        )
+
+
+def test_init_rejects_negative_relative_timestamp():
+    with pytest.raises(ValueError, match="before t_start"):
+        EventSeries(
+            timestamp_ticks=np.array([-1], dtype=np.int64),
+            values=np.array([1.0]),
+            t_start_ticks=0,
+            dur_ticks=100,
+        )
+
+
+def test_init_rejects_event_after_domain_end():
+    with pytest.raises(ValueError, match="outside domain"):
+        EventSeries(
+            timestamp_ticks=np.array([200], dtype=np.int64),
+            values=np.array([1.0]),
+            t_start_ticks=0,
+            dur_ticks=100,
+        )
+
+
+def test_init_rejects_unsorted_timestamps():
+    with pytest.raises(ValueError, match="sorted"):
+        EventSeries(
+            timestamp_ticks=np.array([200, 100], dtype=np.int64),
+            values=np.array([1.0, 2.0]),
+            t_start_ticks=0,
+            dur_ticks=300,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Constructor branches
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_from_events_with_float_timestamps():
+    es = EventSeries.from_events(
+        np.array([0.5, 0.8]), np.array([10.0, 20.0]), t_start=0.0, t_end=1.0
+    )
+    assert es.t_start_ticks == 0
+    assert es.t_end_ticks == 1_000_000_000
+    assert len(es) == 2
+
+
+def test_from_events_empty_infers_zero_domain():
+    es = EventSeries.from_events(np.array([], dtype=np.float64), values=None)
+    assert es.t_start_ticks == 0
+    assert es.dur_ticks == 0
+    assert len(es) == 0
+
+
+def test_from_ticks_with_explicit_dur():
+    es = EventSeries.from_ticks(
+        np.array([100, 500], dtype=np.int64), np.array([1.0, 2.0]), t_start=1000, dur=600
+    )
+    assert es.t_start_ticks == 1000
+    assert es.dur_ticks == 600
+    assert es.t_end_ticks == 1600
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Interpolation edge paths
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_interpolate_with_int_query_times():
+    es = EventSeries.from_events(
+        np.array([0.0, 0.5, 1.0]), np.array([10.0, 20.0, 30.0]), t_start=0.0, t_end=1.0
+    )
+    vals = es.interpolate(np.array([500_000_000, 750_000_000], dtype=np.int64))
+    np.testing.assert_allclose(vals, [20.0, 25.0], atol=1e-6)
+
+
+def test_interpolate_empty_series_fill_error():
+    es = EventSeries.from_events(
+        np.array([], dtype=np.float64), np.array([], dtype=np.float64), t_start=0.0, t_end=1.0
+    )
+    with pytest.raises(DomainError, match="empty"):
+        es.interpolate(np.array([0.5]), fill="error")
+
+
+def test_interpolate_empty_series_fill_nan():
+    es = EventSeries.from_events(
+        np.array([], dtype=np.float64), np.array([], dtype=np.float64), t_start=0.0, t_end=1.0
+    )
+    vals = es.interpolate(np.array([0.5]), fill="nan")
+    assert np.isnan(vals[0])
+
+
+def test_interpolate_unsupported_kind():
+    es = EventSeries.from_events(np.array([0.0, 1.0]), np.array([1.0, 2.0]), t_start=0.0, t_end=1.0)
+    with pytest.raises(ValueError, match="unsupported interpolation kind"):
+        es.interpolate(np.array([0.5]), kind="cubic")
+
+
+def test_interpolate_fill_nan_extrapolation():
+    es = EventSeries.from_events(
+        np.array([0.2, 0.8]), np.array([5.0, 15.0]), t_start=0.0, t_end=1.0
+    )
+    vals = es.interpolate(np.array([0.0, 1.0]), fill="nan")
+    assert np.isnan(vals[0])
+    assert np.isnan(vals[1])
+
+
+def test_interpolate_fill_error_extrapolation():
+    es = EventSeries.from_events(
+        np.array([0.2, 0.8]), np.array([5.0, 15.0]), t_start=0.0, t_end=1.0
+    )
+    with pytest.raises(DomainError, match="outside event span"):
+        es.interpolate(np.array([0.0, 1.0]), fill="error")
+
+
+def test_interpolate_fill_error_within_span():
+    es = EventSeries.from_events(
+        np.array([0.2, 0.8]), np.array([5.0, 15.0]), t_start=0.0, t_end=1.0
+    )
+    vals = es.interpolate(np.array([0.3, 0.7]), fill="error")
+    assert len(vals) == 2
+
+
+def test_interpolate_unsupported_fill_value():
+    es = EventSeries.from_events(np.array([0.0, 1.0]), np.array([1.0, 2.0]), t_start=0.0, t_end=1.0)
+    with pytest.raises(ValueError, match="unsupported fill"):
+        es.interpolate(np.array([0.5]), fill="extrap")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Concat / equal error paths
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_concat_rejects_non_event_series():
+    es = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=0.0, t_end=0.5)
+    us = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=0)
+    with pytest.raises(IncompatibleSeriesError, match="cannot concat"):
+        es.concat(us)  # type: ignore[arg-type]
+
+
+def test_concat_rejects_one_has_values_one_does_not():
+    a = EventSeries.from_events(np.array([0.1]), values=np.array([1.0]), t_start=0.0, t_end=0.5)
+    b = EventSeries.from_events(np.array([0.1]), values=None, t_start=0.5, t_end=1.0)
+    with pytest.raises(IncompatibleSeriesError, match="one has values"):
+        a.concat(b)
+
+
+def test_equal_non_event_series_is_false():
+    es = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=0.0, t_end=0.5)
+    us = UniformSeries.from_samples(np.arange(5.0), sr=10.0, t_start=0)
+    assert es.equal(us) is False
+
+
+def test_equal_different_t_start_is_false():
+    a = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=0.0, t_end=0.5)
+    b = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=1.0, t_end=1.5)
+    assert a.equal(b) is False
+
+
+def test_equal_one_none_values_one_not():
+    a = EventSeries.from_events(np.array([0.1]), values=np.array([1.0]), t_start=0.0, t_end=0.5)
+    b = EventSeries.from_events(np.array([0.1]), values=None, t_start=0.0, t_end=0.5)
+    assert a.equal(b) is False
+
+
+def test_equal_different_dur_is_false():
+    a = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=0.0, t_end=0.5)
+    b = EventSeries.from_events(np.array([0.1]), np.array([1.0]), t_start=0.0, t_end=0.8)
+    assert a.equal(b) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# interpolate_uniform guards
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_interpolate_uniform_rejects_nonpositive_sr():
+    es = EventSeries.from_events(np.array([0.0, 1.0]), np.array([1.0, 2.0]), t_start=0.0, t_end=1.0)
+    with pytest.raises(ValueError, match="sr must be > 0"):
+        es.interpolate_uniform(0.0)
+    with pytest.raises(ValueError, match="sr must be > 0"):
+        es.interpolate_uniform(-1.0)
+
+
+def test_interpolate_uniform_rejects_zero_dur():
+    es = EventSeries.from_events(np.array([0.0, 1.0]), np.array([1.0, 2.0]), t_start=0.0, t_end=1.0)
+    with pytest.raises(ValueError, match="duration must be > 0"):
+        es.interpolate_uniform(10.0, t_start=100, t_end=100)

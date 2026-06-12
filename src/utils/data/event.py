@@ -11,7 +11,7 @@ All time comparisons are exact (== on ints).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -24,6 +24,9 @@ from ._ticks import (
     ticks_to_secs,
 )
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
+
+if TYPE_CHECKING:
+    from .uniform import UniformSeries
 
 
 @dataclass(frozen=True, eq=False)
@@ -104,10 +107,7 @@ class EventSeries(TimeSeries):
         rel_ts = ts_ticks - t_start_ticks
 
         if t_end is None:
-            if rel_ts.size:
-                dur_ticks = int(rel_ts[-1]) + 1  # strict half-open: > last event
-            else:
-                dur_ticks = 0
+            dur_ticks = int(rel_ts[-1]) + 1 if rel_ts.size else 0
         elif isinstance(t_end, (int, np.integer)):
             dur_ticks = int(t_end) - t_start_ticks
         else:
@@ -179,7 +179,7 @@ class EventSeries(TimeSeries):
     def __len__(self) -> int:
         return int(self.timestamp_ticks.shape[0])
 
-    def __getitem__(self, i: Any):
+    def __getitem__(self, i: Any) -> float | tuple[float, np.ndarray[Any, Any]]:
         t = ticks_to_secs(int(self.timestamp_ticks[i]) + self.t_start_ticks)
         if self.values is None:
             return t
@@ -223,11 +223,14 @@ class EventSeries(TimeSeries):
             raise IncompatibleSeriesError(f"cannot concat EventSeries with {type(other).__name__}")
         if (self.values is None) != (other.values is None):
             raise IncompatibleSeriesError("one has values, the other does not")
-        if self.values is not None and other.values is not None:
-            if self.values.shape[:-1] != other.values.shape[:-1]:
-                raise IncompatibleSeriesError(
-                    f"value shapes differ: {self.values.shape[:-1]} vs {other.values.shape[:-1]}"
-                )
+        if (
+            self.values is not None
+            and other.values is not None
+            and self.values.shape[:-1] != other.values.shape[:-1]
+        ):
+            raise IncompatibleSeriesError(
+                f"value shapes differ: {self.values.shape[:-1]} vs {other.values.shape[:-1]}"
+            )
 
         # Glue other so its t_start lands at self.t_end.  Both store relative
         # timestamps, so other's events relative to self.t_start_ticks are
@@ -256,7 +259,8 @@ class EventSeries(TimeSeries):
             return False
         if self.values is None:
             return True
-        return np.array_equal(self.values, other.values)
+        assert other.values is not None  # parity checked above
+        return bool(np.array_equal(self.values, other.values))
 
     # ---- interpolation / resampling ------------------------------------
     def interpolate(
@@ -275,10 +279,7 @@ class EventSeries(TimeSeries):
             raise ValueError("cannot interpolate EventSeries with no values")
 
         times = np.asarray(times)
-        if times.dtype.kind == "i":
-            t_sec = ticks_array_to_secs(times)
-        else:
-            t_sec = times.astype(np.float64)
+        t_sec = ticks_array_to_secs(times) if times.dtype.kind == "i" else times.astype(np.float64)
 
         # Event times in float seconds.
         ev_t = self.abs_timestamps  # shape (M,)

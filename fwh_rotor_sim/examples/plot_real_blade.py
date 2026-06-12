@@ -8,17 +8,18 @@ Data sources:
 - UIUC Propeller Database (m-selig.ae.illinois.edu/props/)
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 import sys
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from fwh_rotor_sim.geometry import Blade, Rotor
-from fwh_rotor_sim.plotting import plot_blade_geometry, plot_rotor_top_view
+from fwh_rotor_sim.geometry import Blade, Rotor  # noqa: E402
+from fwh_rotor_sim.plotting import plot_blade_geometry, plot_rotor_top_view  # noqa: E402
 
 
 def load_apc_10x7():
@@ -111,9 +112,11 @@ def make_blade_from_data(r_chord, chord, r_twist, twist_deg, radius, hub_radius)
     We create callable functions that interpolate the tabulated data,
     then pass them to Blade().
     """
+
     def chord_fn(r):
         # r is a torch tensor; interpolate using numpy then convert back
         import torch
+
         if isinstance(r, torch.Tensor):
             r_np = r.detach().cpu().numpy()
             c_np = np.interp(r_np, r_chord, chord)
@@ -122,6 +125,7 @@ def make_blade_from_data(r_chord, chord, r_twist, twist_deg, radius, hub_radius)
 
     def twist_fn(r):
         import torch
+
         if isinstance(r, torch.Tensor):
             r_np = r.detach().cpu().numpy()
             t_np = np.interp(r_np, r_twist, twist_deg)
@@ -165,7 +169,8 @@ def plot_comparison_with_uiuc():
     ax.fill(
         np.concatenate([le_x, te_x[::-1]]),
         np.concatenate([le_y, te_y[::-1]]),
-        color="C0", alpha=0.3,
+        color="C0",
+        alpha=0.3,
     )
     ax.plot(le_x, le_y, "k-", lw=0.8)
     ax.plot(te_x, te_y, "k-", lw=0.8)
@@ -189,7 +194,7 @@ def plot_comparison_with_uiuc():
     ax_c.tick_params(axis="y", labelcolor="C0")
     ax_t.tick_params(axis="y", labelcolor="C1")
     lines = [l_c, l_t]
-    labels = [l.get_label() for l in lines]
+    labels = [line.get_label() for line in lines]
     ax_c.legend(lines, labels, loc="upper right")
 
     # Panel 3: Tabulated raw data (like UIUC plot)
@@ -205,7 +210,7 @@ def plot_comparison_with_uiuc():
     ax_c2.tick_params(axis="y", labelcolor="C0")
     ax_t2.tick_params(axis="y", labelcolor="C1")
     lines2 = [l_c2, l_t2]
-    labels2 = [l.get_label() for l in lines2]
+    labels2 = [line.get_label() for line in lines2]
     ax_c2.legend(lines2, labels2, loc="upper right")
 
     plt.tight_layout()

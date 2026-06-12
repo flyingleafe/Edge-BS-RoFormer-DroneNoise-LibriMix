@@ -8,6 +8,7 @@ with a single script that uses tasks.rps_prediction and utils.plots.
 Usage from project root:
     python papers/classical_baselines_report/build.py
 """
+
 from __future__ import annotations
 
 import json
@@ -16,6 +17,8 @@ import sys
 from pathlib import Path
 
 import matplotlib
+from matplotlib.lines import Line2D
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,13 +30,14 @@ import torchaudio
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tasks.rps_prediction import (
+from tasks.rps_prediction import (  # noqa: E402
+    EvalResult,
+    evaluate,
     load_input_set,
     load_predictor,
-    evaluate,
-    EvalResult,
 )
-from utils.plots.rps_prediction import PLOT_TYPES
+from utils.paths import get_data_path, get_datasets_path, get_results_path  # noqa: E402
+from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -45,9 +49,9 @@ HOP = 512
 FIG_DIR = Path(__file__).resolve().parent / "figures"
 FIG_DIR.mkdir(exist_ok=True)
 
-CKPT = str(PROJECT_ROOT / "results/rps_predictor/best.pt")
-DATA_DIR = PROJECT_ROOT / "datasets/DREGON-LM-test/valid"
-SINGLE_ROTOR_DIR = PROJECT_ROOT / "data/DREGON/DREGON_individual_motors_recordings"
+CKPT = str(get_results_path("rps_predictor/best.pt"))
+DATA_DIR = get_datasets_path("DREGON-LM-test/valid")
+SINGLE_ROTOR_DIR = get_data_path("DREGON/DREGON_individual_motors_recordings")
 
 METHODS = ["simple_conv", "pyin", "cepstral", "hps", "matched_filter", "nmf"]
 METHOD_LABELS = {
@@ -68,17 +72,26 @@ METHOD_COLORS = {
 }
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
-plt.rcParams.update({
-    "font.size": 9, "axes.labelsize": 9, "axes.titlesize": 10,
-    "legend.fontsize": 8, "xtick.labelsize": 8, "ytick.labelsize": 8,
-    "figure.dpi": 300, "savefig.dpi": 300, "savefig.format": "pdf",
-    "pdf.compression": 9,
-})
+plt.rcParams.update(
+    {
+        "font.size": 9,
+        "axes.labelsize": 9,
+        "axes.titlesize": 10,
+        "legend.fontsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "figure.dpi": 300,
+        "savefig.dpi": 300,
+        "savefig.format": "pdf",
+        "pdf.compression": 9,
+    }
+)
 
 
 # =============================================================================
 # Part A — Multi-rotor synthetic mixtures (DREGON-LM)
 # =============================================================================
+
 
 def part_a_evaluate() -> dict[str, EvalResult]:
     """Evaluate every method on the first 10 validation samples."""
@@ -94,8 +107,10 @@ def part_a_evaluate() -> dict[str, EvalResult]:
         pred = load_predictor(spec)
         results[name] = evaluate(pred, samples, model_spec=name, alignment="stft_timestamps")
         agg = results[name].aggregate
-        print(f"    MSE={agg['mse']:.2f}  RMSE={agg['rmse']:.2f}  "
-              f"MAE/clip={agg['mae_clip']:.3f}  R²={agg['r2_mean']:.4f}")
+        print(
+            f"    MSE={agg['mse']:.2f}  RMSE={agg['rmse']:.2f}  "
+            f"MAE/clip={agg['mae_clip']:.3f}  R²={agg['r2_mean']:.4f}"
+        )
     return results
 
 
@@ -111,15 +126,17 @@ def part_a_tables(results: dict[str, EvalResult]) -> None:
         # We need the raw pred/gt arrays, but evaluate() doesn't keep them.
         # Fallback: use the per-sample R² from evaluate() which is close enough.
         r2_vals = [p["r2"] for p in per if p.get("r2") is not None]
-        rows.append({
-            "method": METHOD_LABELS[name],
-            "mse_mean": float(np.mean(mse_vals)),
-            "mse_std": float(np.std(mse_vals, ddof=0)),
-            "mae_mean": float(np.mean(mae_vals)),
-            "mae_std": float(np.std(mae_vals, ddof=0)),
-            "r2_mean": float(np.mean(r2_vals)) if r2_vals else float("nan"),
-            "r2_std": float(np.std(r2_vals, ddof=0)) if r2_vals else float("nan"),
-        })
+        rows.append(
+            {
+                "method": METHOD_LABELS[name],
+                "mse_mean": float(np.mean(mse_vals)),
+                "mse_std": float(np.std(mse_vals, ddof=0)),
+                "mae_mean": float(np.mean(mae_vals)),
+                "mae_std": float(np.std(mae_vals, ddof=0)),
+                "r2_mean": float(np.mean(r2_vals)) if r2_vals else float("nan"),
+                "r2_std": float(np.std(r2_vals, ddof=0)) if r2_vals else float("nan"),
+            }
+        )
     df = pd.DataFrame(rows)
     df.set_index("method", inplace=True)
 
@@ -129,19 +146,20 @@ def part_a_tables(results: dict[str, EvalResult]) -> None:
     # Build mean±std strings for LaTeX
     latex_rows = []
     for _, row in df.iterrows():
-        latex_rows.append({
-            "method": row.name,
-            "mse": f"{row['mse_mean']:.2f} ± {row['mse_std']:.2f}",
-            "mae": f"{row['mae_mean']:.2f} ± {row['mae_std']:.2f}",
-            "r2": f"{row['r2_mean']:.4f} ± {row['r2_std']:.4f}",
-        })
+        latex_rows.append(
+            {
+                "method": row.name,
+                "mse": f"{row['mse_mean']:.2f} ± {row['mse_std']:.2f}",
+                "mae": f"{row['mae_mean']:.2f} ± {row['mae_std']:.2f}",
+                "r2": f"{row['r2_mean']:.4f} ± {row['r2_std']:.4f}",
+            }
+        )
     df_latex = pd.DataFrame(latex_rows)
     df_latex.set_index("method", inplace=True)
-
     tex = df_latex.to_latex(
         escape=True,
         column_format="lccc",
-        header=["MSE", "MAE", r"$R^2$"],
+        header=("MSE", "MAE", r"$R^2$"),  # type: ignore[arg-type]
     )
     path = FIG_DIR / "table_summary.tex"
     with open(path, "w") as f:
@@ -155,8 +173,7 @@ def part_a_tables(results: dict[str, EvalResult]) -> None:
         row = {"sample": sid}
         for name in METHODS:
             # Find matching per-sample entry
-            found = next((p for p in results[name].per_sample
-                          if p.get("sample_id") == sid), None)
+            found = next((p for p in results[name].per_sample if p.get("sample_id") == sid), None)
             row[METHOD_LABELS[name]] = found["mse"] if found else np.nan
         per_sample_rows.append(row)
     df_ps = pd.DataFrame(per_sample_rows)
@@ -176,15 +193,16 @@ def part_a_tables(results: dict[str, EvalResult]) -> None:
     metrics = {
         "summary": {
             "mse_mean": {m: df.loc[METHOD_LABELS[m], "mse_mean"] for m in METHODS},
-            "mse_std":  {m: df.loc[METHOD_LABELS[m], "mse_std"]  for m in METHODS},
+            "mse_std": {m: df.loc[METHOD_LABELS[m], "mse_std"] for m in METHODS},
             "mae_mean": {m: df.loc[METHOD_LABELS[m], "mae_mean"] for m in METHODS},
-            "mae_std":  {m: df.loc[METHOD_LABELS[m], "mae_std"]  for m in METHODS},
-            "r2_mean":  {m: df.loc[METHOD_LABELS[m], "r2_mean"]  for m in METHODS},
-            "r2_std":   {m: df.loc[METHOD_LABELS[m], "r2_std"]   for m in METHODS},
+            "mae_std": {m: df.loc[METHOD_LABELS[m], "mae_std"] for m in METHODS},
+            "r2_mean": {m: df.loc[METHOD_LABELS[m], "r2_mean"] for m in METHODS},
+            "r2_std": {m: df.loc[METHOD_LABELS[m], "r2_std"] for m in METHODS},
         },
         "per_sample_mse": df_ps.to_dict(),
     }
     path_json = FIG_DIR / "metrics.json"
+
     def _convert(obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -220,8 +238,10 @@ def part_a_figures(results: dict[str, EvalResult]) -> None:
     all_samples = list(load_input_set(str(DATA_DIR)))
     sample_map = {s.tags.get("id", ""): s for s in all_samples}
 
-    predictors = {name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
-                  for name in METHODS}
+    predictors = {
+        name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
+        for name in METHODS
+    }
 
     for sid in ["sample_00000", "sample_00002", "sample_00005"]:
         if sid not in sample_map:
@@ -254,21 +274,33 @@ def _plot_sample_page(sample, predictors, sid):
         T = min(p.shape[-1], n_frames)
         preds[name] = p[:, :T]
 
-    fig, axes = plt.subplots(7, 1, figsize=(7.2, 10.5),
-                             gridspec_kw={"height_ratios": [1.2, 1, 1, 1, 1, 1, 1],
-                                          "hspace": 0.22})
+    fig, axes = plt.subplots(
+        7,
+        1,
+        figsize=(7.2, 10.5),
+        gridspec_kw={"height_ratios": [1.2, 1, 1, 1, 1, 1, 1], "hspace": 0.22},
+    )
 
     # --- Spectrogram ---
     ax = axes[0]
-    spec = np.abs(np.fft.rfft(
-        np.lib.stride_tricks.sliding_window_view(audio, N_FFT)[::HOP] *
-        np.hanning(N_FFT), axis=-1))
+    spec = np.abs(
+        np.fft.rfft(
+            np.lib.stride_tricks.sliding_window_view(audio, N_FFT)[::HOP] * np.hanning(N_FFT),
+            axis=-1,
+        )
+    )
     log_mag = np.log1p(spec.T)
     vmin = np.percentile(log_mag, 2)
     vmax = np.percentile(log_mag, 99)
-    ax.imshow(log_mag, origin="lower", aspect="auto",
-              extent=[0, dur, 0, sr / 2 / 1000],
-              cmap="hot", vmin=vmin, vmax=vmax)
+    ax.imshow(
+        log_mag,
+        origin="lower",
+        aspect="auto",
+        extent=[0, dur, 0, sr / 2 / 1000],
+        cmap="hot",
+        vmin=vmin,
+        vmax=vmax,
+    )
     ax.set_ylim(0, 4)
     ax.set_ylabel("freq [kHz]")
     ax.set_title(f"sample {sid.split('_')[1]}")
@@ -286,10 +318,8 @@ def _plot_sample_page(sample, predictors, sid):
         t_pred = np.linspace(0, dur, pred.shape[1])[:min_len]
 
         for r in range(4):
-            ax.plot(t_gt, gt[r, :min_len], ":", color=ROTOR_COLORS[r],
-                    lw=0.7, alpha=0.45)
-            ax.plot(t_pred, pred[r, :min_len], "-", color=ROTOR_COLORS[r],
-                    lw=0.9, alpha=0.85)
+            ax.plot(t_gt, gt[r, :min_len], ":", color=ROTOR_COLORS[r], lw=0.7, alpha=0.45)
+            ax.plot(t_pred, pred[r, :min_len], "-", color=ROTOR_COLORS[r], lw=0.9, alpha=0.85)
 
         ax.set_xlim(0, dur)
         ax.set_ylabel("RPS")
@@ -303,20 +333,25 @@ def _plot_sample_page(sample, predictors, sid):
             ax.set_xticklabels([])
 
     legend_elements = [
-        plt.Line2D([0], [0], color=ROTOR_COLORS[r], lw=1.5, label=f"R{r+1}")
-        for r in range(4)
-    ] + [plt.Line2D([0], [0], color="#333333", linestyle=":", lw=1.2, label="GT")]
-    fig.legend(handles=legend_elements, loc="lower center",
-               ncol=5, frameon=False, fontsize=8,
-               bbox_to_anchor=(0.5, -0.01))
+        Line2D([0], [0], color=ROTOR_COLORS[r], lw=1.5, label=f"R{r + 1}") for r in range(4)
+    ] + [Line2D([0], [0], color="#333333", linestyle=":", lw=1.2, label="GT")]
+    fig.legend(
+        handles=legend_elements,
+        loc="lower center",
+        ncol=5,
+        frameon=False,
+        fontsize=8,
+        bbox_to_anchor=(0.5, -0.01),
+    )
 
-    plt.tight_layout(rect=[0, 0.02, 1, 1])
+    plt.tight_layout(rect=(0, 0.02, 1, 1))
     return fig
 
 
 # =============================================================================
 # Part B — Single-rotor clean recordings
 # =============================================================================
+
 
 def _parse_filename(fname: str):
     m = re.match(r"Motor(\d+)_(\d+)\.wav", fname)
@@ -333,9 +368,11 @@ def _load_and_trim(path: Path, target_sr: int = SR, trim_ratio: float = 0.3):
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if sr != target_sr:
-        audio = torchaudio.functional.resample(
-            torch.from_numpy(audio).unsqueeze(0), sr, target_sr
-        ).squeeze().numpy()
+        audio = (
+            torchaudio.functional.resample(torch.from_numpy(audio).unsqueeze(0), sr, target_sr)
+            .squeeze()
+            .numpy()
+        )
     # Trim symmetrically
     n = len(audio)
     keep = int(n * (1 - trim_ratio))
@@ -349,8 +386,10 @@ def part_b_evaluate() -> list[dict]:
     files = sorted(SINGLE_ROTOR_DIR.glob("*.wav"))
     print(f"Found {len(files)} recordings")
 
-    predictors = {name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
-                      for name in METHODS}
+    predictors = {
+        name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
+        for name in METHODS
+    }
 
     results = []
     for path in files:
@@ -394,7 +433,9 @@ def part_b_evaluate() -> list[dict]:
         for name, pred in classical_preds.items():
             entry[name] = _eval(pred, target_rps)
         results.append(entry)
-        print(f"  {path.name} target={target_rps}  SC_avg_MSE={entry['simple_conv_avg']['mse']:.1f}")
+        print(
+            f"  {path.name} target={target_rps}  SC_avg_MSE={entry['simple_conv_avg']['mse']:.1f}"
+        )
 
     # Save JSON
     path_json = FIG_DIR / "single_rotor_results.json"
@@ -411,14 +452,16 @@ def part_b_tables(results: list[dict]) -> None:
     for r in results:
         for name in METHODS:
             key = name if name != "simple_conv" else "simple_conv_best"
-            rows.append({
-                "file": r["file"],
-                "motor_id": r["motor_id"],
-                "target_rps": r["target_rps"],
-                "method": METHOD_LABELS[name],
-                "mse": r[key]["mse"],
-                "mae": r[key]["mae"],
-            })
+            rows.append(
+                {
+                    "file": r["file"],
+                    "motor_id": r["motor_id"],
+                    "target_rps": r["target_rps"],
+                    "method": METHOD_LABELS[name],
+                    "mse": r[key]["mse"],
+                    "mae": r[key]["mae"],
+                }
+            )
     df = pd.DataFrame(rows)
 
     # Summary by method
@@ -437,8 +480,7 @@ def part_b_tables(results: list[dict]) -> None:
     print(f"  Wrote {path}")
 
     # Per-file table
-    pivot = df.pivot_table(index=["file", "motor_id", "target_rps"],
-                           columns="method", values="mse")
+    pivot = df.pivot_table(index=["file", "motor_id", "target_rps"], columns="method", values="mse")
     pivot = pivot[[METHOD_LABELS[m] for m in METHODS]]
     tex_pivot = pivot.round(1).to_latex(
         float_format="%.1f",
@@ -457,8 +499,8 @@ def part_b_figures(results: list[dict]) -> None:
 
     # --- Bar chart of MSE ---
     methods = METHODS[1:]  # exclude simple_conv for classical comparison
-    means = [df[f"{m}"].apply(lambda x: x["mse"]).mean() for m in methods]
-    stds = [df[f"{m}"].apply(lambda x: x["mse"]).std() for m in methods]
+    means = [float(df[f"{m}"].apply(lambda x: x["mse"]).mean()) for m in methods]
+    stds = [float(df[f"{m}"].apply(lambda x: x["mse"]).std()) for m in methods]
 
     fig, ax = plt.subplots(figsize=(6, 3.5))
     x = np.arange(len(methods))
@@ -483,8 +525,14 @@ def part_b_figures(results: list[dict]) -> None:
         key = name if name != "simple_conv" else "simple_conv_best"
         mse_vals = [r[key]["mse"] for r in results]
         mae_vals = [r[key]["mae"] for r in results]
-        ax.scatter(mse_vals, mae_vals, label=METHOD_LABELS[name],
-                   color=METHOD_COLORS[name], alpha=0.7, s=40)
+        ax.scatter(
+            mse_vals,
+            mae_vals,
+            label=METHOD_LABELS[name],
+            color=METHOD_COLORS[name],
+            alpha=0.7,
+            s=40,
+        )
     ax.set_xlabel(r"MSE  $[(\mathrm{rev}/\mathrm{s})^2]$")
     ax.set_ylabel(r"MAE  $[\mathrm{rev}/\mathrm{s}]$")
     ax.set_xscale("log")
@@ -499,8 +547,12 @@ def part_b_figures(results: list[dict]) -> None:
 
     # --- Trace panels (two sets + allMotors) ---
     # Find representative files
-    set1_files = [r["file"] for r in results if r["motor_id"] in ("1", "2") and r["target_rps"] == 70][:4]
-    set2_files = [r["file"] for r in results if r["motor_id"] in ("3", "4") and r["target_rps"] == 70][:4]
+    set1_files = [
+        r["file"] for r in results if r["motor_id"] in ("1", "2") and r["target_rps"] == 70
+    ][:4]
+    set2_files = [
+        r["file"] for r in results if r["motor_id"] in ("3", "4") and r["target_rps"] == 70
+    ][:4]
     allmotor_files = [r["file"] for r in results if r["motor_id"] == "all"][:3]
 
     for label, files in [("set1", set1_files), ("set2", set2_files), ("allmotors", allmotor_files)]:
@@ -523,18 +575,24 @@ def part_b_figures(results: list[dict]) -> None:
             gt_trace = np.full_like(t, target)
 
             # Predictions
-            predictors = {name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
-                          for name in METHODS}
+            predictors = {
+                name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
+                for name in METHODS
+            }
             for name in METHODS:
                 pred = predictors[name].predict(audio, sr=SR)
                 if pred.ndim == 2:
-                    if name == "simple_conv":
-                        pred = pred.mean(axis=0)
-                    else:
-                        pred = pred[0]
+                    pred = pred.mean(axis=0) if name == "simple_conv" else pred[0]
                 tp = np.linspace(0, dur, len(pred))
-                ax.plot(tp, pred, "-", color=METHOD_COLORS[name], lw=0.6, alpha=0.7,
-                        label=METHOD_LABELS[name])
+                ax.plot(
+                    tp,
+                    pred,
+                    "-",
+                    color=METHOD_COLORS[name],
+                    lw=0.6,
+                    alpha=0.7,
+                    label=METHOD_LABELS[name],
+                )
             ax.plot(t, gt_trace, "--", color="black", lw=1.0, alpha=0.5, label="target")
             ax.set_ylabel(f"{fname}\n[rev/s]", fontsize=7)
             ax.set_xlim(0, dur)
@@ -553,6 +611,7 @@ def part_b_figures(results: list[dict]) -> None:
 # =============================================================================
 # Main
 # =============================================================================
+
 
 def main():
     print("=" * 60)

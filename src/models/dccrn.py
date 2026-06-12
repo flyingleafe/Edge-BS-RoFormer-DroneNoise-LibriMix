@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -102,6 +104,8 @@ class Decoder(nn.Module):
     def forward(self, x):
         x = self.cconvt(x)
         if not self.last_layer:
+            assert self.cbn is not None
+            assert self.act is not None
             x = self.cbn(x)
             x = self.act(x)
         else:
@@ -283,10 +287,7 @@ class DCCRN(nn.Module):
         dec_out = list(reversed([1] + encoder_channels[:-1]))
         self.decoders = nn.ModuleList()
         for i in range(len(dec_out)):
-            if i == 0:
-                in_ch = encoder_channels[-1]  # bottleneck channels
-            else:
-                in_ch = dec_out[i - 1] * 2  # prev decoder output + skip
+            in_ch = encoder_channels[-1] if i == 0 else dec_out[i - 1] * 2
             out_ch = dec_out[i]
             is_last = i == len(dec_out) - 1
             self.decoders.append(
@@ -345,6 +346,7 @@ class DCCRN(nn.Module):
 
         # Concatenate rotor features before GRU (Gulli et al. RPS-DCCRN)
         if self.use_rps and rps is not None:
+            assert self.rotor_encoder is not None
             rotor_feat = self.rotor_encoder(rps, target_length=T_b)  # (B, 64, T_b)
             rotor_feat = rotor_feat.permute(0, 2, 1)  # (B, T_b, 64)
             gru_in = torch.cat([gru_in, rotor_feat], dim=-1)
@@ -390,7 +392,7 @@ class DCCRN(nn.Module):
 
 # ---------------------- Simple test case ----------------------
 if __name__ == "__main__":
-    config = {
+    config: dict[str, Any] = {
         "audio": {
             "chunk_size": 131584,
             "dim_f": 1024,

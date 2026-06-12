@@ -17,6 +17,7 @@ import json
 import random
 from glob import glob
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import soundfile as sf
@@ -28,6 +29,7 @@ from create_dregon_librimix import (
     load_audio,
     load_dregon_noise_records,
 )
+from utils.data import EventSeries
 
 # Override duration for V3
 SAMPLE_DURATION = 1.0
@@ -161,11 +163,13 @@ def main():
 
     for tf in tqdm(valid_records + train_records, desc="Cleaning commands"):
         motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
-        motor_es = tf[motor_key]
+        motor_es = cast(EventSeries, tf[motor_key])
         if motor_es.values is not None:
-            tf._cleaned_command = clean_command_spikes(motor_es.values.copy())  # (4, M)
+            object.__setattr__(
+                tf, "_cleaned_command", clean_command_spikes(motor_es.values.copy())
+            )  # (4, M)
         else:
-            tf._cleaned_command = np.zeros((4, 0), dtype=np.float32)
+            object.__setattr__(tf, "_cleaned_command", np.zeros((4, 0), dtype=np.float32))
 
     for split, records, num_samples in [
         ("train", train_records, args.num_train),
@@ -216,9 +220,14 @@ def main():
             )
 
         meta_path = output_dir / "metadata.json"
-        all_meta = json.load(open(meta_path)) if meta_path.exists() else {}
+        if meta_path.exists():
+            with open(meta_path) as f:
+                all_meta = json.load(f)
+        else:
+            all_meta = {}
         all_meta[split] = metadata_list
-        json.dump(all_meta, open(meta_path, "w"), indent=2)
+        with open(meta_path, "w") as f:
+            json.dump(all_meta, f, indent=2)
 
         print(f"Created {len(metadata_list)} {split} samples")
 

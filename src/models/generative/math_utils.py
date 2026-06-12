@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from scipy import fftpack
+from scipy.fft import next_fast_len
 
 # ---------------------------------------------------------------------------
 # Tensor helpers
@@ -64,7 +64,7 @@ def get_fft_size(frame_size: int, ir_size: int, power_of_2: bool = True) -> int:
     convolved_frame_size = ir_size + frame_size - 1
     if power_of_2:
         return int(2 ** np.ceil(np.log2(convolved_frame_size)))
-    return int(fftpack.helper.next_fast_len(convolved_frame_size))
+    return int(next_fast_len(convolved_frame_size) or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -107,22 +107,34 @@ def hz_to_midi(frequencies):
     return torch.where(torch.le(frequencies, 0.0), 0.0, notes)
 
 
-def unit_to_midi(unit, midi_min=20.0, midi_max=90.0, clip=False):
+def unit_to_midi(
+    unit,
+    midi_min: float | torch.Tensor = 20.0,
+    midi_max: float | torch.Tensor = 90.0,
+    clip: bool = False,
+):
     unit = torch.clamp(unit, 0.0, 1.0) if clip else unit
     return midi_min + (midi_max - midi_min) * unit
 
 
-def midi_to_unit(midi, midi_min=20.0, midi_max=90.0, clip=False):
+def midi_to_unit(
+    midi,
+    midi_min: float | torch.Tensor = 20.0,
+    midi_max: float | torch.Tensor = 90.0,
+    clip: bool = False,
+):
     unit = (midi - midi_min) / (midi_max - midi_min)
     return torch.clamp(unit, 0.0, 1.0) if clip else unit
 
 
-def unit_to_hz(unit, hz_min, hz_max, clip=False):
+def unit_to_hz(
+    unit, hz_min: float | torch.Tensor, hz_max: float | torch.Tensor, clip: bool = False
+):
     midi = unit_to_midi(unit, midi_min=hz_to_midi(hz_min), midi_max=hz_to_midi(hz_max), clip=clip)
     return midi_to_hz(midi)
 
 
-def hz_to_unit(hz, hz_min, hz_max, clip=False):
+def hz_to_unit(hz, hz_min: float | torch.Tensor, hz_max: float | torch.Tensor, clip: bool = False):
     midi = hz_to_midi(hz)
     return midi_to_unit(midi, midi_min=hz_to_midi(hz_min), midi_max=hz_to_midi(hz_max), clip=clip)
 

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import urllib.request
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
-
 
 AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3", ".ogg", ".WAV", ".FLAC", ".MP3", ".OGG")
 
@@ -38,14 +37,13 @@ def unpack_zip(zip_path: Path, dest_dir: Path) -> Path:
 
 
 def _has_audio_files(directory: Path) -> bool:
-    for ext in AUDIO_EXTENSIONS:
-        if any(directory.rglob(f"*{ext}")):
-            return True
-    return False
+    return any(any(directory.rglob(f"*{ext}")) for ext in AUDIO_EXTENSIONS)
 
 
-def find_split_dirs(root_dir: Path, split_names: Iterable[str] = ("train", "test")) -> Dict[str, Path]:
-    candidates: Dict[str, List[Path]] = {split: [] for split in split_names}
+def find_split_dirs(
+    root_dir: Path, split_names: Iterable[str] = ("train", "test")
+) -> dict[str, Path]:
+    candidates: dict[str, list[Path]] = {split: [] for split in split_names}
     for split in split_names:
         direct = root_dir / split
         if direct.exists() and direct.is_dir():
@@ -54,7 +52,7 @@ def find_split_dirs(root_dir: Path, split_names: Iterable[str] = ("train", "test
             if path.is_dir() and split in path.name.lower():
                 candidates[split].append(path)
 
-    split_dirs: Dict[str, Path] = {}
+    split_dirs: dict[str, Path] = {}
     for split, paths in candidates.items():
         valid = [p for p in paths if _has_audio_files(p)]
         if valid:
@@ -65,8 +63,8 @@ def find_split_dirs(root_dir: Path, split_names: Iterable[str] = ("train", "test
     return split_dirs
 
 
-def collect_audio_files(root_dir: Path) -> List[Path]:
-    files: List[Path] = []
+def collect_audio_files(root_dir: Path) -> list[Path]:
+    files: list[Path] = []
     for ext in AUDIO_EXTENSIONS:
         files.extend(root_dir.rglob(f"*{ext}"))
     return sorted(set(files))
@@ -78,7 +76,7 @@ def prepare_zenodo_drone_noises(
     url: str,
     archive_name: str = "all_drone_noises.zip",
     extracted_dirname: str = "zenodo_drone_noises",
-) -> Tuple[Path, Dict[str, Path]]:
+) -> tuple[Path, dict[str, Path]]:
     zenodo_root = data_dir / extracted_dirname
     archive_path = zenodo_root / archive_name
     extract_dir = zenodo_root / "raw"
@@ -91,7 +89,7 @@ def prepare_zenodo_drone_noises(
 
 
 def build_local_hf_dataset_from_splits(
-    split_dirs: Dict[str, Path],
+    split_dirs: dict[str, Path],
     output_dir: Path,
     *,
     sample_rate: int = 16000,
@@ -103,8 +101,7 @@ def build_local_hf_dataset_from_splits(
         from datasets import Audio, Dataset, DatasetDict
     except ImportError as exc:
         raise ValueError(
-            "datasets is required to build a local HF dataset. "
-            "Install it with: uv add datasets"
+            "datasets is required to build a local HF dataset. Install it with: uv add datasets"
         ) from exc
 
     dataset_dict = {}

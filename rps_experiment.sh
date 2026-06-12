@@ -14,10 +14,17 @@
 
 set -e
 
+# Resolve project directory & load .env for DATA_ROOT (worktree support)
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${PROJECT_DIR}/.env" ]; then
+    set -a; source "${PROJECT_DIR}/.env"; set +a
+fi
+DATA_ROOT="${DATA_ROOT:-$PROJECT_DIR}"
+
 # Configuration
-DATASET_DIR="datasets/DREGON-LM"
-RESULTS_RPS="results/dcunet_rps_dregon"
-RESULTS_BASELINE="results/dcunet_baseline_dregon"
+DATASET_DIR="${DATA_ROOT}/datasets/DREGON-LM"
+RESULTS_RPS="${DATA_ROOT}/results/dcunet_rps_dregon"
+RESULTS_BASELINE="${DATA_ROOT}/results/dcunet_baseline_dregon"
 CONFIG_RPS="configs/7a_DCUNet_RPS_DREGON.yaml"
 CONFIG_BASELINE="configs/7b_DCUNet_baseline_DREGON.yaml"
 
@@ -40,8 +47,8 @@ create_dataset() {
     echo ""
 
     python create_dregon_librimix.py \
-        --speech_dir data/librispeech/LibriSpeech/train-clean-100 \
-        --dregon_dir data/DREGON \
+        --speech_dir "${DATA_ROOT}/data/librispeech/LibriSpeech/train-clean-100" \
+        --dregon_dir "${DATA_ROOT}/data/DREGON" \
         --output_dir "$DATASET_DIR" \
         --num_train $NUM_TRAIN \
         --num_valid $NUM_VALID \

@@ -1,4 +1,5 @@
 from functools import partial
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -8,7 +9,7 @@ from einops import pack, rearrange, reduce, repeat, unpack
 from einops.layers.torch import Rearrange
 from librosa import filters
 from rotary_embedding_torch import RotaryEmbedding
-from torch import nn
+from torch import Tensor, nn
 from torch.nn import Module, ModuleList
 from torch.utils.checkpoint import checkpoint
 
@@ -124,8 +125,8 @@ class Attention(Module):
         q, k, v = rearrange(self.to_qkv(x), "b n (qkv h d) -> qkv b h n d", qkv=3, h=self.heads)
 
         if exists(self.rotary_embed):
-            q = self.rotary_embed.rotate_queries_or_keys(q)
-            k = self.rotary_embed.rotate_queries_or_keys(k)
+            q = cast(RotaryEmbedding, self.rotary_embed).rotate_queries_or_keys(q)
+            k = cast(RotaryEmbedding, self.rotary_embed).rotate_queries_or_keys(k)
 
         out = self.attend(q, k, v)
 
@@ -199,7 +200,7 @@ class Transformer(Module):
         linear_attn=False,
     ):
         super().__init__()
-        self.layers = ModuleList([])
+        self.layers: ModuleList = ModuleList([])
 
         for _ in range(depth):
             if linear_attn:
@@ -273,7 +274,7 @@ def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh):
     for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:])):
         is_last = ind == (len(dims) - 2)
 
-        net.append(nn.Linear(layer_dim_in, layer_dim_out))
+        net.append(nn.Linear(layer_dim_in, layer_dim_out))  # type: ignore[arg-type]
 
         if is_last:
             continue
@@ -297,8 +298,6 @@ class MaskEstimator(Module):
         dim_hidden = dim * mlp_expansion_factor
 
         for dim_in in dim_inputs:
-            net = []
-
             mlp = nn.Sequential(
                 MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth), nn.GLU(dim=-1)
             )
@@ -375,15 +374,33 @@ class MelBandRoformer(Module):
     ):
         super().__init__()
 
+        # Normalize OmegaConf types: config values arrive as float, need int/bool
+        depth = int(depth)
+        dim_head = int(dim_head)
+        heads = int(heads)
+        time_transformer_depth = int(time_transformer_depth)
+        freq_transformer_depth = int(freq_transformer_depth)
+        linear_transformer_depth = int(linear_transformer_depth)
+        num_bands = int(num_bands)
+        mask_estimator_depth = int(mask_estimator_depth)
+        stft_n_fft = int(stft_n_fft)
+        stft_hop_length = int(stft_hop_length)
+        stft_win_length = int(stft_win_length)
+        flash_attn = bool(flash_attn)
+        stft_normalized = bool(stft_normalized)
+        skip_connection = bool(skip_connection)
+        use_torch_checkpoint = bool(use_torch_checkpoint)
+        match_input_audio_length = bool(match_input_audio_length)
+        num_stems = int(num_stems)
+
         self.stereo = stereo
         self.audio_channels = 2 if stereo else 1
         self.num_stems = num_stems
         self.use_torch_checkpoint = use_torch_checkpoint
         self.skip_connection = skip_connection
+        self.layers: ModuleList = ModuleList([])
 
-        self.layers = ModuleList([])
-
-        transformer_kwargs = dict(
+        transformer_kwargs: dict[str, Any] = dict(
             dim=dim,
             heads=heads,
             dim_head=dim_head,
@@ -420,9 +437,9 @@ class MelBandRoformer(Module):
             )
             self.layers.append(nn.ModuleList(tran_modules))
 
-        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
+        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)  # type: ignore[arg-type]
 
-        self.stft_kwargs = dict(
+        self.stft_kwargs: dict[str, Any] = dict(
             n_fft=stft_n_fft,
             hop_length=stft_hop_length,
             win_length=stft_win_length,
@@ -490,7 +507,7 @@ class MelBandRoformer(Module):
         self.multi_stft_n_fft = stft_n_fft
         self.multi_stft_window_fn = multi_stft_window_fn
 
-        self.multi_stft_kwargs = dict(
+        self.multi_stft_kwargs: dict[str, Any] = dict(
             hop_length=multi_stft_hop_size, normalized=multi_stft_normalized
         )
 
@@ -540,7 +557,7 @@ class MelBandRoformer(Module):
 
         # Index frequencies for all bands
         batch_arange = torch.arange(batch, device=device)[..., None]
-        x = stft_repr[batch_arange, self.freq_indices]
+        x = stft_repr[batch_arange, cast(Tensor, self.freq_indices)]
 
         # Fold complex (real and imaginary) to frequency dimension
         x = rearrange(x, "b f t c -> b t (f c)")
@@ -564,12 +581,12 @@ class MelBandRoformer(Module):
                     x = linear_transformer(x)
                 (x,) = unpack(x, ft_ps, "b * d")
             else:
-                time_transformer, freq_transformer = transformer_block
+                time_transformer, freq_transformer = cast(ModuleList, transformer_block)
 
             if self.skip_connection:
                 # Accumulate previous features
                 for j in range(i):
-                    x = x + store[j]
+                    x = x + cast(Tensor, store[j])  # type: ignore[operator]
 
             # Time dimension attention
             x = rearrange(x, "b t f d -> b f t d")
@@ -648,6 +665,8 @@ class MelBandRoformer(Module):
         if not exists(target):
             return recon_audio
 
+        assert target is not None
+
         if self.num_stems > 1:
             assert target.ndim == 4 and target.shape[1] == self.num_stems
 
@@ -663,7 +682,7 @@ class MelBandRoformer(Module):
         multi_stft_resolution_loss = 0.0
 
         for window_size in self.multi_stft_resolutions_window_sizes:
-            res_stft_kwargs = dict(
+            res_stft_kwargs: dict[str, Any] = dict(
                 n_fft=max(window_size, self.multi_stft_n_fft),
                 win_length=window_size,
                 return_complex=True,

@@ -383,7 +383,7 @@ class DecoderHierarchicalRPSFusion(nn.Module):
         )  # (B, rps_channels, T_coarse)
 
         fused_features = []
-        for i, (feat, proj) in enumerate(zip(decoder_features, self.level_projs)):
+        for _i, (feat, proj) in enumerate(zip(decoder_features, self.level_projs)):
             B_f, C_f, F_f, T_f, _ = feat.shape
 
             # Interpolate RPS to match this level's time dimension

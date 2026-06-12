@@ -1,5 +1,6 @@
 # src/utils/plots/rps_prediction/training_curves.py
 """Training curves plot from training log CSV."""
+
 from __future__ import annotations
 
 import csv
@@ -34,7 +35,7 @@ def plot_training_curves(
     if len(labels) != len(log_paths):
         raise ValueError("length mismatch between log_paths and labels")
 
-    colors = plt.cm.tab10(np.linspace(0, 1, len(log_paths)))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(log_paths)))  # pyright: ignore[reportAttributeAccessIssue]
 
     fig, (ax_mse, ax_r2) = plt.subplots(1, 2, figsize=figsize)
 
@@ -48,19 +49,19 @@ def plot_training_curves(
         train_mse = [d.get("train_mse") for d in data]
         val_mse = [d.get("val_mse") for d in data]
         if any(v is not None for v in train_mse):
-            ax_mse.plot(epochs, train_mse, '-', color=color, alpha=0.5, linewidth=1)
+            ax_mse.plot(epochs, train_mse, "-", color=color, alpha=0.5, linewidth=1)
         if any(v is not None for v in val_mse):
-            ax_mse.plot(epochs, val_mse, 'o-', color=color, label=label,
-                        markersize=3, linewidth=1.5)
+            ax_mse.plot(
+                epochs, val_mse, "o-", color=color, label=label, markersize=3, linewidth=1.5
+            )
 
         # Train/val R²
         train_r2 = [d.get("train_r2") for d in data]
         val_r2 = [d.get("val_r2") for d in data]
         if any(v is not None for v in train_r2):
-            ax_r2.plot(epochs, train_r2, '-', color=color, alpha=0.5, linewidth=1)
+            ax_r2.plot(epochs, train_r2, "-", color=color, alpha=0.5, linewidth=1)
         if any(v is not None for v in val_r2):
-            ax_r2.plot(epochs, val_r2, 'o-', color=color, label=label,
-                       markersize=3, linewidth=1.5)
+            ax_r2.plot(epochs, val_r2, "o-", color=color, label=label, markersize=3, linewidth=1.5)
 
     ax_mse.set_xlabel("Epoch")
     ax_mse.set_ylabel("MSE")

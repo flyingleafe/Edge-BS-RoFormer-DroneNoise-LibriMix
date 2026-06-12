@@ -1,4 +1,3 @@
-# coding: utf-8
 """
 DroneNoise-LibriMix (DN-LM) Dataset Synthesis Script
 
@@ -11,18 +10,17 @@ This script creates the DN-LM dataset by mixing:
 Reference paper section 3.5 for methodology.
 """
 
-import os
-import json
-import random
 import argparse
+import json
+import os
+import random
+from glob import glob
+
+import librosa
 import numpy as np
 import soundfile as sf
-import librosa
-from glob import glob
-from tqdm import tqdm
-from pathlib import Path
 from torchcodec.decoders import AudioDecoder
-
+from tqdm import tqdm
 
 HF_DATASET_PREFIX = "hf:"
 HF_LOCAL_PREFIX = "hf-local:"
@@ -47,7 +45,7 @@ def load_audio(path, target_sr=16000, mono=True):
 def load_audio_from_hf_item(item, target_sr=16000, mono=True):
     """Load audio from a Hugging Face dataset item."""
     audio = item.get("audio")
-   
+
     if isinstance(audio, AudioDecoder):
         samples = audio.get_all_samples()
         data = samples.data.numpy()
@@ -87,11 +85,11 @@ def _is_hf_local_source(noise_dir):
 
 
 def _parse_hf_dataset_name(noise_dir):
-    return noise_dir[len(HF_DATASET_PREFIX):].strip()
+    return noise_dir[len(HF_DATASET_PREFIX) :].strip()
 
 
 def _parse_hf_local_path(noise_dir):
-    return noise_dir[len(HF_LOCAL_PREFIX):].strip()
+    return noise_dir[len(HF_LOCAL_PREFIX) :].strip()
 
 
 def _select_hf_split(dataset_dict, split_name):
@@ -116,16 +114,15 @@ def _load_hf_drone_dataset(dataset_name, sample_rate, split_name):
         from datasets import Audio, load_dataset
     except ImportError as exc:
         raise ValueError(
-            "datasets is required for Hugging Face noise sources. "
-            "Install it with: uv add datasets"
+            "datasets is required for Hugging Face noise sources. Install it with: uv add datasets"
         ) from exc
 
     dataset_dict = load_dataset(dataset_name)
     dataset, used_split = _select_hf_split(dataset_dict, split_name)
-    if "label" not in dataset.features:
+    if "label" not in dataset.features:  # type: ignore[attr-defined]
         raise ValueError(f"Hugging Face dataset '{dataset_name}' has no 'label' column")
     dataset = dataset.filter(lambda item: item["label"] == HF_DRONE_LABEL)
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=sample_rate))
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=sample_rate))  # type: ignore[attr-defined]
 
     if len(dataset) == 0:
         raise ValueError(f"No samples with label {HF_DRONE_LABEL} in '{dataset_name}'")
@@ -138,8 +135,7 @@ def _load_hf_dataset_from_disk(dataset_path, sample_rate, split_name):
         from datasets import Audio, load_from_disk
     except ImportError as exc:
         raise ValueError(
-            "datasets is required for Hugging Face noise sources. "
-            "Install it with: uv add datasets"
+            "datasets is required for Hugging Face noise sources. Install it with: uv add datasets"
         ) from exc
 
     dataset_dict = load_from_disk(dataset_path)
@@ -148,7 +144,7 @@ def _load_hf_dataset_from_disk(dataset_path, sample_rate, split_name):
     else:
         dataset = dataset_dict
         used_split = "train"
-    dataset = dataset.cast_column("audio", Audio(sampling_rate=sample_rate))
+    dataset = dataset.cast_column("audio", Audio(sampling_rate=sample_rate))  # type: ignore[attr-defined]
     return dataset, used_split
 
 
@@ -157,8 +153,7 @@ def _build_hf_dataset_from_files(noise_files, sample_rate):
         from datasets import Audio, Dataset
     except ImportError as exc:
         raise ValueError(
-            "datasets is required for Hugging Face noise sources. "
-            "Install it with: uv add datasets"
+            "datasets is required for Hugging Face noise sources. Install it with: uv add datasets"
         ) from exc
     dataset = Dataset.from_dict({"audio": [str(path) for path in noise_files]})
     return dataset.cast_column("audio", Audio(sampling_rate=sample_rate))
@@ -177,11 +172,11 @@ def adjust_length(audio, target_length):
     if current_length > target_length:
         # Random crop
         start = np.random.randint(0, current_length - target_length + 1)
-        audio = audio[start:start + target_length]
+        audio = audio[start : start + target_length]
     elif current_length < target_length:
         # Zero padding
         pad_length = target_length - current_length
-        audio = np.pad(audio, (0, pad_length), mode='constant', constant_values=0)
+        audio = np.pad(audio, (0, pad_length), mode="constant", constant_values=0)
 
     return audio
 
@@ -197,11 +192,11 @@ def apply_distance_attenuation(audio, distance):
 
 def calculate_snr(speech, noise):
     """Calculate Signal-to-Noise Ratio in dB."""
-    speech_power = np.sum(speech ** 2)
-    noise_power = np.sum(noise ** 2)
+    speech_power = np.sum(speech**2)
+    noise_power = np.sum(noise**2)
 
     if noise_power == 0:
-        return float('inf')
+        return float("inf")
 
     snr = 10 * np.log10(speech_power / noise_power)
     return snr
@@ -214,8 +209,8 @@ def mix_audio(speech, noise, target_snr=None):
     """
     if target_snr is not None:
         # Calculate current powers
-        speech_power = np.sum(speech ** 2)
-        noise_power = np.sum(noise ** 2)
+        speech_power = np.sum(speech**2)
+        noise_power = np.sum(noise**2)
 
         if noise_power > 0 and speech_power > 0:
             # Calculate required noise scale
@@ -239,8 +234,8 @@ def create_dataset(
     speech_distance_range=(5, 20),
     noise_distance=0.5,
     target_snr_range=(-30, 0),
-    split='train',
-    seed=42
+    split="train",
+    seed=42,
 ):
     """
     Create the DN-LM dataset.
@@ -269,8 +264,8 @@ def create_dataset(
 
     # Find all audio files
     speech_files = []
-    for ext in ['*.wav', '*.flac']:
-        speech_files.extend(glob(os.path.join(speech_dir, '**', ext), recursive=True))
+    for ext in ["*.wav", "*.flac"]:
+        speech_files.extend(glob(os.path.join(speech_dir, "**", ext), recursive=True))
 
     noise_files = []
     hf_datasets = []
@@ -286,8 +281,8 @@ def create_dataset(
             hf_dataset_names.append(f"{dataset_path}:{used_split}")
             hf_datasets.append(dataset)
         else:
-            for ext in ['*.wav', '*.WAV', '*.flac', '*.FLAC', '*.mp3', '*.MP3', '*.ogg', '*.OGG']:
-                noise_files.extend(glob(os.path.join(source, '**', ext), recursive=True))
+            for ext in ["*.wav", "*.WAV", "*.flac", "*.FLAC", "*.mp3", "*.MP3", "*.ogg", "*.OGG"]:
+                noise_files.extend(glob(os.path.join(source, "**", ext), recursive=True))
 
     if len(speech_files) == 0:
         raise ValueError(f"No speech files found in {speech_dir}")
@@ -377,60 +372,72 @@ def create_dataset(
             noise_final *= scale
 
         # Save audio files
-        sf.write(os.path.join(sample_dir, 'vocals.wav'), speech_final, sample_rate)
-        sf.write(os.path.join(sample_dir, 'noise.wav'), noise_final, sample_rate)
-        sf.write(os.path.join(sample_dir, 'mixture.wav'), mixture, sample_rate)
+        sf.write(os.path.join(sample_dir, "vocals.wav"), speech_final, sample_rate)
+        sf.write(os.path.join(sample_dir, "noise.wav"), noise_final, sample_rate)
+        sf.write(os.path.join(sample_dir, "mixture.wav"), mixture, sample_rate)
 
-        noise_source = (
-            os.path.basename(noise_path)
-            if noise_path
-            else f"hf#idx={noise_index}"
+        noise_source = os.path.basename(noise_path) if noise_path else f"hf#idx={noise_index}"
+        metadata.append(
+            {
+                "id": sample_id,
+                "input_snr": float(actual_snr),
+                "speech_source": os.path.basename(speech_path),
+                "noise_source": noise_source,
+                "speech_distance": speech_distance,
+            }
         )
-        metadata.append({
-            'id': sample_id,
-            'input_snr': float(actual_snr),
-            'speech_source': os.path.basename(speech_path),
-            'noise_source': noise_source,
-            'speech_distance': speech_distance,
-        })
 
     # Save metadata
-    metadata_file = os.path.join(split_dir, 'metadata.json')
-    with open(metadata_file, 'w') as f:
+    metadata_file = os.path.join(split_dir, "metadata.json")
+    with open(metadata_file, "w") as f:
         json.dump({split: metadata}, f, indent=2)
 
     print(f"Created {len(metadata)} samples in {split_dir}")
     print(f"Metadata saved to {metadata_file}")
 
     # Print SNR statistics
-    snrs = [m['input_snr'] for m in metadata if not np.isinf(m['input_snr'])]
+    snrs = [m["input_snr"] for m in metadata if not np.isinf(m["input_snr"])]
     print(f"SNR statistics: mean={np.mean(snrs):.2f} dB, std={np.std(snrs):.2f} dB")
     print(f"SNR range: [{min(snrs):.2f}, {max(snrs):.2f}] dB")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Create DroneNoise-LibriMix Dataset')
+    parser = argparse.ArgumentParser(description="Create DroneNoise-LibriMix Dataset")
 
-    parser.add_argument('--speech_dir', type=str, required=True,
-                        help='Directory containing LibriSpeech audio files')
-    parser.add_argument('--noise_dir', type=str, required=True,
-                        help='Directory containing drone audio files or hf:<dataset_name> or hf-local:<path>')
-    parser.add_argument('--output_dir', type=str, default='./datasets/DN-LM',
-                        help='Output directory for the dataset')
-    parser.add_argument('--train_samples', type=int, default=6480,
-                        help='Number of training samples (90% of 2 hours at 1s each)')
-    parser.add_argument('--valid_samples', type=int, default=720,
-                        help='Number of validation samples (10% of 2 hours at 1s each)')
-    parser.add_argument('--sample_duration', type=float, default=1.0,
-                        help='Duration of each sample in seconds')
-    parser.add_argument('--sample_rate', type=int, default=16000,
-                        help='Target sample rate')
-    parser.add_argument('--snr_min', type=float, default=-30,
-                        help='Minimum SNR in dB')
-    parser.add_argument('--snr_max', type=float, default=0,
-                        help='Maximum SNR in dB')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed')
+    parser.add_argument(
+        "--speech_dir", type=str, required=True, help="Directory containing LibriSpeech audio files"
+    )
+    parser.add_argument(
+        "--noise_dir",
+        type=str,
+        required=True,
+        help="Directory containing drone audio files or hf:<dataset_name> or hf-local:<path>",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./datasets/DN-LM",
+        help="Output directory for the dataset",
+    )
+    parser.add_argument(
+        "--train_samples",
+        type=int,
+        default=6480,
+        help="Number of training samples (90% of 2 hours at 1s each)",
+    )
+    parser.add_argument(
+        "--valid_samples",
+        type=int,
+        default=720,
+        help="Number of validation samples (10% of 2 hours at 1s each)",
+    )
+    parser.add_argument(
+        "--sample_duration", type=float, default=1.0, help="Duration of each sample in seconds"
+    )
+    parser.add_argument("--sample_rate", type=int, default=16000, help="Target sample rate")
+    parser.add_argument("--snr_min", type=float, default=-30, help="Minimum SNR in dB")
+    parser.add_argument("--snr_max", type=float, default=0, help="Maximum SNR in dB")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     args = parser.parse_args()
 
@@ -444,8 +451,8 @@ def main():
         sample_duration=args.sample_duration,
         sample_rate=args.sample_rate,
         target_snr_range=(args.snr_min, args.snr_max),
-        split='train',
-        seed=args.seed
+        split="train",
+        seed=args.seed,
     )
 
     # Create validation set
@@ -458,13 +465,13 @@ def main():
         sample_duration=args.sample_duration,
         sample_rate=args.sample_rate,
         target_snr_range=(args.snr_min, args.snr_max),
-        split='valid',
-        seed=args.seed + 1  # Different seed for validation
+        split="valid",
+        seed=args.seed + 1,  # Different seed for validation
     )
 
     print("\n=== Dataset Creation Complete ===")
     print(f"Dataset saved to: {args.output_dir}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

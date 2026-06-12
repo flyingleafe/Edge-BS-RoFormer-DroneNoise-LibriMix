@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 import torch.utils.benchmark as benchmark
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 # Ensure CUDA is available
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -13,10 +13,14 @@ query = torch.rand(batch_size, num_heads, seq_len, embed_dim, device=device, dty
 key = torch.rand(batch_size, num_heads, seq_len, embed_dim, device=device, dtype=dtype)
 value = torch.rand(batch_size, num_heads, seq_len, embed_dim, device=device, dtype=dtype)
 
+
 # Benchmark function
 def benchmark_op(op, *args, **kwargs):
-    t0 = benchmark.Timer(stmt="op(*args, **kwargs)", globals={"op": op, "args": args, "kwargs": kwargs})
+    t0 = benchmark.Timer(
+        stmt="op(*args, **kwargs)", globals={"op": op, "args": args, "kwargs": kwargs}
+    )
     return t0.blocked_autorange().mean * 1e6  # microseconds
+
 
 # Memory measurement function
 def measure_memory(op, *args, **kwargs):
@@ -24,17 +28,18 @@ def measure_memory(op, *args, **kwargs):
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         mem_before = torch.cuda.memory_allocated()
-        result = op(*args, **kwargs)
+        op(*args, **kwargs)
         torch.cuda.synchronize()
         mem_peak = torch.cuda.max_memory_allocated()
-        return (mem_peak - mem_before) / (1024 ** 2)  # MB
+        return (mem_peak - mem_before) / (1024**2)  # MB
     return 0.0
+
 
 # Test each backend explicitly
 backends = {
     SDPBackend.MATH: "Math (emulated)",
     SDPBackend.FLASH_ATTENTION: "FlashAttention",
-    SDPBackend.EFFICIENT_ATTENTION: "Memory-Efficient Attention"
+    SDPBackend.EFFICIENT_ATTENTION: "Memory-Efficient Attention",
 }
 
 print("=" * 62)
@@ -60,11 +65,11 @@ print("\n" + "=" * 62)
 print("TEST 2: Attend module (models/edge_bs_rof/attend.py)")
 print("=" * 62)
 
-from models.edge_bs_rof.attend import Attend
+from models.edge_bs_rof.attend import Attend  # noqa: E402
 
 # Test Attend with flash=True
 print("\n--- Attend(flash=True) ---")
-attend_flash = Attend(dropout=0., flash=True).to(device)
+attend_flash = Attend(dropout=0.0, flash=True).to(device)
 attend_flash.eval()
 
 # Benchmark Attend with flash=True
@@ -74,7 +79,7 @@ print(f"{'Attend(flash=True)':<30} {t_flash:>15.2f} {mem_flash:>15.2f}")
 
 # Test Attend with flash=False (standard attention)
 print("\n--- Attend(flash=False) ---")
-attend_standard = Attend(dropout=0., flash=False).to(device)
+attend_standard = Attend(dropout=0.0, flash=False).to(device)
 attend_standard.eval()
 
 t_standard = benchmark_op(attend_standard, query, key, value)
@@ -100,12 +105,14 @@ print("ANALYSIS")
 print("=" * 62)
 speedup = t_standard / t_flash if t_flash > 0 else 0
 mem_reduction = mem_standard / mem_flash if mem_flash > 0 else 0
-print(f"Attend(flash=True) vs Attend(flash=False):")
+print("Attend(flash=True) vs Attend(flash=False):")
 print(f"  - Speedup: {speedup:.2f}x")
 print(f"  - Memory reduction: {mem_reduction:.2f}x")
 
 # Check if flash attention is truly being used
 if t_flash < t_standard * 0.5 and mem_flash < mem_standard * 0.5:
-    print("\n[PASS] Attend(flash=True) is using an optimized attention kernel (Flash or Memory-Efficient)")
+    print(
+        "\n[PASS] Attend(flash=True) is using an optimized attention kernel (Flash or Memory-Efficient)"
+    )
 else:
     print("\n[WARN] Attend(flash=True) may not be using an optimized kernel")

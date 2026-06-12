@@ -66,7 +66,7 @@ class SegmentSeries(TimeSeries):
     starts_ticks: np.ndarray = field(repr=False)
     ends_ticks: np.ndarray = field(repr=False)
     values: np.ndarray | None = field(repr=False, default=None)
-    ids: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]
+    ids: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]  # set in __post_init__
     t_start_ticks: int = 0
     dur_ticks: int = 0
 
@@ -150,7 +150,7 @@ class SegmentSeries(TimeSeries):
             starts_ticks=rel_s,
             ends_ticks=rel_e,
             values=values,
-            ids=ids,
+            ids=ids,  # type: ignore[arg-type]
             t_start_ticks=t0,
             dur_ticks=dur,
         )
@@ -173,7 +173,7 @@ class SegmentSeries(TimeSeries):
             starts_ticks=rs,
             ends_ticks=re,
             values=values,
-            ids=ids,
+            ids=ids,  # type: ignore[arg-type]
             t_start_ticks=int(t_start),
             dur_ticks=int(dur),
         )
@@ -222,7 +222,9 @@ class SegmentSeries(TimeSeries):
     def __len__(self) -> int:
         return int(self.starts_ticks.shape[0])
 
-    def __getitem__(self, i: Any):
+    def __getitem__(
+        self, i: Any
+    ) -> tuple[float, float, int] | tuple[float, float, np.ndarray[Any, Any], int]:
         s = ticks_to_secs(int(self.starts_ticks[i]) + self.t_start_ticks)
         e = ticks_to_secs(int(self.ends_ticks[i]) + self.t_start_ticks)
         if self.values is None:
@@ -343,4 +345,5 @@ class SegmentSeries(TimeSeries):
             return False
         if self.values is None:
             return True
-        return np.array_equal(self.values, other.values)
+        assert other.values is not None  # parity checked above
+        return bool(np.array_equal(self.values, other.values))

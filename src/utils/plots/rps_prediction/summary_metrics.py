@@ -1,5 +1,6 @@
 # src/utils/plots/rps_prediction/summary_metrics.py
 """Bar chart of RMSE/MAE/R² across models from an EvalResult."""
+
 from __future__ import annotations
 
 import matplotlib.figure
@@ -40,7 +41,7 @@ def plot_summary_metrics(
         raise ValueError(f"models ({len(models)}) and results ({len(results)}) length mismatch")
 
     labels = [m[:25] for m in models]  # truncate long specs
-    colors = plt.cm.tab10(np.linspace(0, 1, len(models)))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(models)))  # pyright: ignore[reportAttributeAccessIssue]
 
     metrics = {
         "MSE": [r.aggregate["mse"] for r in results],
@@ -53,12 +54,18 @@ def plot_summary_metrics(
     for ax, (title, vals) in zip(axes, metrics.items()):
         bars = ax.bar(labels, vals, color=colors, alpha=0.85)
         ax.set_title(title)
-        ax.tick_params(axis='x', rotation=45, labelsize=8)
+        ax.tick_params(axis="x", rotation=45, labelsize=8)
         ax.grid(True, axis="y", alpha=0.3)
         # Add value labels on bars
         for bar, v in zip(bars, vals):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(vals) * 0.01,
-                    f"{v:.2f}", ha="center", va="bottom", fontsize=7)
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + max(vals) * 0.01,
+                f"{v:.2f}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
 
     plt.tight_layout()
     return fig

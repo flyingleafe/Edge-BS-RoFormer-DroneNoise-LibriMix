@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -78,8 +78,8 @@ class TimeFrame:
                 raise TypeError(f"track {name!r} is not a TimeSeries")
         if self.tracks:
             # Validate hull against the incoming (absolute) tracks.
-            hull_start = min(tr.t_start_ticks for tr in self.tracks.values())
-            hull_end = max(tr.t_end_ticks for tr in self.tracks.values())
+            hull_start = min(_tr_start_ticks(tr) for tr in self.tracks.values())
+            hull_end = max(_tr_end_ticks(tr) for tr in self.tracks.values())
             if self.t_start_ticks > hull_start:
                 raise ValueError(
                     f"frame t_start_ticks ({self.t_start_ticks}) after hull start ({hull_start})"
@@ -136,8 +136,8 @@ class TimeFrame:
         if t_start is None or t_end is None:
             if not tracks:
                 raise ValueError("cannot infer domain from empty tracks dict")
-            hull_start = min(tr.t_start_ticks for tr in tracks.values())
-            hull_end = max(tr.t_end_ticks for tr in tracks.values())
+            hull_start = min(_tr_start_ticks(tr) for tr in tracks.values())
+            hull_end = max(_tr_end_ticks(tr) for tr in tracks.values())
             t_start = hull_start if t_start is None else t_start
             t_end = hull_end if t_end is None else t_end
         t0 = _c_to_ticks(t_start) if not isinstance(t_start, int) else t_start
@@ -222,8 +222,8 @@ class TimeFrame:
         """Return a new frame with ``name`` mapped to ``track``, expanding
         the hull domain as needed.
         """
-        new_t_start = min(self.t_start_ticks, track.t_start_ticks)
-        new_t_end = max(self.t_start_ticks + self.dur_ticks, track.t_end_ticks)
+        new_t_start = min(self.t_start_ticks, _tr_start_ticks(track))
+        new_t_end = max(self.t_start_ticks + self.dur_ticks, _tr_end_ticks(track))
         return TimeFrame(
             tracks={**self._abs(), name: track},
             t_start_ticks=new_t_start,
@@ -297,8 +297,8 @@ class TimeFrame:
         abs_tracks = self._abs()
         new_tracks: dict[str, TimeSeries] = {}
         for name, tr in abs_tracks.items():
-            a_eff = max(ta_tick, tr.t_start_ticks)
-            b_eff = min(tb_tick, tr.t_end_ticks)
+            a_eff = max(ta_tick, _tr_start_ticks(tr))
+            b_eff = min(tb_tick, _tr_end_ticks(tr))
             if a_eff <= b_eff:
                 new_tracks[name] = tr.slice(a_eff, b_eff)
         return TimeFrame(
@@ -374,9 +374,7 @@ class TimeFrame:
                 return False
         if dict(self.tags) != dict(other.tags):
             return False
-        if not _global_equal(self.global_data, other.global_data):
-            return False
-        return True
+        return _global_equal(self.global_data, other.global_data)
 
     def __eq__(self, other: object) -> bool:  # type: ignore[override]
         if not isinstance(other, TimeFrame):
@@ -387,21 +385,26 @@ class TimeFrame:
         return id(self)
 
 
+# ---- internal helpers ------------------------------------------------------
+def _tr_start_ticks(tr: TimeSeries) -> int:
+    """Return t_start_ticks from any concrete TimeSeries subclass."""
+    return cast(Any, tr).t_start_ticks
+
+
+def _tr_end_ticks(tr: TimeSeries) -> int:
+    """Return t_end_ticks from any concrete TimeSeries subclass."""
+    return cast(Any, tr).t_end_ticks
+
+
 # ---- global_data helpers ----------------------------------------------------
-
-
 def _global_leaf_equal(a: Any, b: Any) -> bool:
-    """Compare two global_data leaves, handling numpy arrays."""
     if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
         return a.shape == b.shape and bool(np.all(a == b))
     return a == b
 
 
-def _global_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+def _global_equal(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     """Compare two global_data dicts."""
     if a.keys() != b.keys():
         return False
-    for k in a:
-        if not _global_leaf_equal(a[k], b[k]):
-            return False
-    return True
+    return all(_global_leaf_equal(a[k], b[k]) for k in a)

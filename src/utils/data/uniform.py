@@ -37,6 +37,7 @@ Invariants
 * `slice(a,b) ⊕ slice(b,c) == slice(a,c)` holds exactly at the sample level
   for integer `sr`.
 """
+
 from __future__ import annotations
 
 import math
@@ -45,7 +46,7 @@ from typing import Any
 
 import numpy as np
 
-from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_to_ticks, ticks_to_secs
+from ._ticks import TICKS_PER_SECOND, _c_to_ticks, secs_to_ticks, ticks_array_to_secs, ticks_to_secs
 from .base import DomainError, IncompatibleSeriesError, TimeSeries
 
 # Index‑space epsilon used ONLY on the non‑integer‑sr fallback path.
@@ -90,7 +91,6 @@ class UniformSeries(TimeSeries):
         N = self.samples.shape[-1]
         if N == 0:
             return
-        dur_exact = N / self.sr
         # No stored dur field — derived from N/sr.  The grid anchor check:
         # t_first_edge = t_start + phase/sr must be ≤ t_start (phase ≤ 0)
         # and t_end = t_start + N/sr must be ≤ t_start + (phase+N)/sr + 1/sr
@@ -103,8 +103,12 @@ class UniformSeries(TimeSeries):
     # ---- constructors ---------------------------------------------------
     @classmethod
     def from_samples(
-        cls, samples: np.ndarray, sr: float, *, t_start: float | int = 0.0,
-    ) -> "UniformSeries":
+        cls,
+        samples: np.ndarray,
+        sr: float,
+        *,
+        t_start: float | int = 0.0,
+    ) -> UniformSeries:
         """Build a series whose declared interval matches its sample grid exactly.
 
         ``t_start`` may be float seconds or int64 ticks.
@@ -118,19 +122,30 @@ class UniformSeries(TimeSeries):
             t0 = secs_to_ticks(float(t_start))
         dur = round(N * TICKS_PER_SECOND / sr)
         return cls(
-            samples=samples, sr=sr,
-            t_start_ticks=t0, dur_ticks=dur, phase=0.0,
+            samples=samples,
+            sr=sr,
+            t_start_ticks=t0,
+            dur_ticks=dur,
+            phase=0.0,
         )
 
     @classmethod
     def from_ticks(
-        cls, samples: np.ndarray, sr: float, *,
-        t_start: int = 0, dur: int = 0, phase: float = 0.0,
-    ) -> "UniformSeries":
+        cls,
+        samples: np.ndarray,
+        sr: float,
+        *,
+        t_start: int = 0,
+        dur: int = 0,
+        phase: float = 0.0,
+    ) -> UniformSeries:
         """Build from explicit int64 ticks and phase."""
         return cls(
-            samples=np.asarray(samples), sr=float(sr),
-            t_start_ticks=int(t_start), dur_ticks=int(dur), phase=float(phase),
+            samples=np.asarray(samples),
+            sr=float(sr),
+            t_start_ticks=int(t_start),
+            dur_ticks=int(dur),
+            phase=float(phase),
         )
 
     # ---- domain properties (seconds) ------------------------------------
@@ -163,7 +178,7 @@ class UniformSeries(TimeSeries):
     def timestamps(self) -> np.ndarray:
         """Absolute sample times as float seconds."""
         return self.sample_times() - self.t_first_edge
-    
+
     @property
     def timestamp_ticks(self) -> np.ndarray:
         """Absolute sample times as int64 ticks (nearest)."""
@@ -222,7 +237,7 @@ class UniformSeries(TimeSeries):
         return ka, kb
 
     # ---- slice ----------------------------------------------------------
-    def slice(self, t_a: float | int, t_b: float | int) -> "UniformSeries":
+    def slice(self, t_a: float | int, t_b: float | int) -> UniformSeries:
         ta_tick = _c_to_ticks(t_a) if not isinstance(t_a, int) else t_a
         tb_tick = _c_to_ticks(t_b) if not isinstance(t_b, int) else t_b
         t0 = self.t_start_ticks
@@ -259,22 +274,20 @@ class UniformSeries(TimeSeries):
         )
 
     # ---- shift ----------------------------------------------------------
-    def shift(self, t_delta: float | int) -> "UniformSeries":
+    def shift(self, t_delta: float | int) -> UniformSeries:
         dt = _c_to_ticks(t_delta) if not isinstance(t_delta, int) else t_delta
         if dt == 0:
             return self
         return replace(self, t_start_ticks=self.t_start_ticks + dt)
 
     # ---- concat ---------------------------------------------------------
-    def concat(self, other: "UniformSeries") -> "UniformSeries":
+    def concat(self, other: UniformSeries) -> UniformSeries:
         if not isinstance(other, UniformSeries):
             raise IncompatibleSeriesError(
                 f"cannot concat UniformSeries with {type(other).__name__}"
             )
         if self.sr != other.sr:
-            raise IncompatibleSeriesError(
-                f"sample rates differ: {self.sr} vs {other.sr}"
-            )
+            raise IncompatibleSeriesError(f"sample rates differ: {self.sr} vs {other.sr}")
         if self.samples.shape[:-1] != other.samples.shape[:-1]:
             raise IncompatibleSeriesError(
                 f"channel shapes differ: {self.samples.shape[:-1]} vs {other.samples.shape[:-1]}"
@@ -334,9 +347,7 @@ class UniformSeries(TimeSeries):
         if not np.array_equal(self.samples, other.samples):
             return False
         # Compare phases loosely (float, but bounded and precision‑safe).
-        if abs(self.phase - other.phase) > 1e-12:
-            return False
-        return True
+        return not abs(self.phase - other.phase) > 1e-12
 
     # ---- utilities ------------------------------------------------------
     def sample_times(self) -> np.ndarray:
@@ -364,14 +375,15 @@ class UniformSeries(TimeSeries):
 
     # ---- interpolation / resampling ------------------------------------
     def interpolate(
-        self, times, *, kind: str = "linear", fill: str = "clamp",
+        self,
+        times,
+        *,
+        kind: str = "linear",
+        fill: str = "clamp",
     ) -> np.ndarray:
         """Evaluate signal at absolute query times."""
         times = np.asarray(times)
-        if times.dtype.kind == 'i':
-            t_sec = ticks_array_to_secs(times)
-        else:
-            t_sec = times.astype(np.float64)
+        t_sec = ticks_array_to_secs(times) if times.dtype.kind == "i" else times.astype(np.float64)
 
         if self.n_samples == 0:
             if fill == "error":
@@ -425,8 +437,11 @@ class UniformSeries(TimeSeries):
         return result
 
     def resample(
-        self, new_sr: float, *, kind: str = "linear",
-    ) -> "UniformSeries":
+        self,
+        new_sr: float,
+        *,
+        kind: str = "linear",
+    ) -> UniformSeries:
         """Resample to a new sample rate over the same declared domain.
 
         The output grid uses ``phase=0`` (sample ``k`` at

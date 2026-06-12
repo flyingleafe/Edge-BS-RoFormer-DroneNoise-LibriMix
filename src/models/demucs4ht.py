@@ -1,5 +1,6 @@
 import math
 from fractions import Fraction
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -105,7 +106,7 @@ class HTDemucs(nn.Module):
         t_sin_random_shift=0,
         t_cape_mean_normalize=True,
         t_cape_augment=True,
-        t_cape_glob_loc_scale=[5000.0, 1.0, 1.4],
+        t_cape_glob_loc_scale=None,
         t_sparse_self_attn=False,
         t_sparse_cross_attn=False,
         t_mask_type="diag",
@@ -212,6 +213,8 @@ class HTDemucs(nn.Module):
             use_train_segment: (bool) if True, the actual size that is used during the
                 training is used during inference.
         """
+        if t_cape_glob_loc_scale is None:
+            t_cape_glob_loc_scale = [5000.0, 1.0, 1.4]
         super().__init__()
         self.num_subbands = num_subbands
         self.cac = cac
@@ -324,7 +327,7 @@ class HTDemucs(nn.Module):
                 tdec = HDecLayer(
                     chout,
                     chin,
-                    dconv=dconv_mode & 2,
+                    dconv=bool(dconv_mode & 2),
                     empty=last_freq,
                     last=index == 0,
                     context=context,
@@ -583,7 +586,8 @@ class HTDemucs(nn.Module):
                 # add frequency embedding to allow for non equivariant convolutions
                 # over the frequency axis.
                 frs = torch.arange(x.shape[-2], device=x.device)
-                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+                assert self.freq_emb is not None
+                emb = cast(nn.Module, self.freq_emb)(frs).t()[None, :, :, None].expand_as(x)
                 x = x + self.freq_emb_scale * emb
 
             saved.append(x)
@@ -643,18 +647,12 @@ class HTDemucs(nn.Module):
 
         zout = self._mask(z, x)
         if self.use_train_segment:
-            if self.training:
-                x = self._ispec(zout, length)
-            else:
-                x = self._ispec(zout, training_length)
+            x = self._ispec(zout, length) if self.training else self._ispec(zout, training_length)
         else:
             x = self._ispec(zout, length)
 
         if self.use_train_segment:
-            if self.training:
-                xt = xt.view(B, S, -1, length)
-            else:
-                xt = xt.view(B, S, -1, training_length)
+            xt = xt.view(B, S, -1, length) if self.training else xt.view(B, S, -1, training_length)
         else:
             xt = xt.view(B, S, -1, length)
         xt = xt * stdt[:, None] + meant[:, None]
@@ -670,7 +668,7 @@ class HTDemucs(nn.Module):
 
 
 def get_model(args):
-    extra = {
+    extra: dict[str, Any] = {
         "sources": list(args.training.instruments),
         "audio_channels": args.training.channels,
         "samplerate": args.training.samplerate,
@@ -682,6 +680,8 @@ def get_model(args):
         "hdemucs": HDemucs,
         "htdemucs": HTDemucs,
     }[args.model]
-    kw = OmegaConf.to_container(getattr(args, args.model), resolve=True)
+    kw_container = OmegaConf.to_container(getattr(args, args.model), resolve=True)
+    assert isinstance(kw_container, dict)
+    kw = cast(dict[str, Any], kw_container)
     model = klass(**extra, **kw)
     return model
