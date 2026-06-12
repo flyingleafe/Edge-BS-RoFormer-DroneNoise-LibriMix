@@ -34,16 +34,46 @@
 3 samples excluded (rotors at 30.7–31.3 Hz, below fmin=32.7).
 Irreducible pure-quantization floor: **0.27 Hz** (per-frame PIT directly on salience bins, no tracking).
 
-## Pending
-1. **Lower fmin** to 16.35 Hz (C0) so hovering-flight rotors (28–32 Hz) are captured.
-   - Change `src/models/frontends/hcqt.py` default and `src/models/multif0/utils.py` defaults.
-   - Re-test round-trip on all 19 V4 valid samples.
-2. **BCE loss integration** in training loop:
-   - Modify `train_rps_predictor.py`: for `multif0_rps` model type, use `rps_to_salience()` on GT targets, train with `BCEWithLogitsLoss` on predicted salience.
-   - Model must output (B, n_bins, T) logits — may need output-layer change in `MultiF0RPSPredictor` (currently outputs soft-centroid RPS via MLP).
-3. **Inference pipeline**: `salience_to_rps_segmented()` on model-predicted salience with `threshold > 0` for soft predictions.
-4. **One-epoch BCE training run** on DREGON-LM-V4 data, evaluate against baseline SimpleConv models (STFT + MSE).
-5. **CLI integration**: `--frontend hcqt|stft_mag|stft_magphase` flag in training scripts.
+## DONE — BCE-salience baselines wired into train/eval (branch `salience-rps-baselines`)
+Implemented on a fresh branch off `main` (NOT this stale worktree — `main` already
+contains both the salience-tracking utils and the basic_pitch port).
+
+- **New module `src/models/salience_rps.py`**: `SalienceRPSPredictor` base (flag
+  `outputs_salience=True`, `grid_params`/`num_grid_frames`/`salience_target`/`predict_rps`)
+  + `LateDeepSalience` (HCQT 16 kHz, 3 harmonics, 360-bin grid) + `BasicPitchSalience`
+  (contour branch, 264-bin grid, native 16 kHz). Registry keys `multif0_salience`,
+  `basic_pitch_salience`.
+- **forward → (B, n_bins, T) logits**; **predict_rps → (B,4,T_stft)** via
+  `sigmoid → salience_to_rps_segmented → F.interpolate to STFT grid` (nan_to_num).
+- **utils.py**: `cqt_freq_grid` + `rps_to_salience` + `salience_to_rps_segmented` now
+  take explicit `n_bins`/`bins_per_octave` (for the 36-bin/oct basic-pitch grid);
+  `rps_to_salience` gained `blur_bins` (triangular freq-axis smoothing for BCE).
+- **LateDeep.forward(return_logits=True)** (pre-sigmoid, checkpoint-compatible);
+  **basic_pitch `CQTFrontEnd(sr=...)`** parameterized + `BasicPitch.contour_logits()`.
+- **train_rps_predictor.py**: dataset precomputes/caches salience targets (no GPU fork
+  into workers); train loop branches BCEWithLogitsLoss (auto `pos_weight`) vs pit_mse;
+  eval loop branches `predict_rps` (tracking, fp32) then the **unchanged** global-PIT
+  metrics; CLI `--salience_blur_bins/--bce_pos_weight/--track_threshold`.
+- **Tests**: 6 existing multif0 tests pass; new `test_salience_rps.py` (round-trip on
+  both grids, blur, shapes+BCE backward) passes. 1-epoch CPU smoke trains verified
+  end-to-end for `multif0_salience`, `basic_pitch_salience`, and a `simple_conv`
+  regression (2-tuple path intact).
+
+### Decisions (locked with user)
+- "LateFusion" = LateDeep. Paradigm = BCE-salience + tracking eval (soft-centroid
+  `multif0_rps` kept untouched as a separate baseline). Headline metrics = existing
+  global-PIT `evaluate()` (segmented PIT stays a side diagnostic only).
+- **Native 16 kHz everywhere** for comparability with SimpleConv; only the (deferred)
+  zero-shot *pretrained* basic-pitch would need 16k→22.05k resampling.
+
+## Pending (next)
+1. **Lower fmin** to 16.35 Hz (C0) so hovering-flight rotors (28–32 Hz) are captured
+   (HCQT default + utils defaults; re-test round-trip on all 19 V4 valid samples).
+2. **Real GPU training run** (multif0_salience, basic_pitch_salience) vs SimpleConv
+   baselines on full DREGON-LM; tune `--track_threshold` / `--salience_blur_bins`.
+3. **Deferred**: zero-shot pretrained basic-pitch (`from_pretrained` + 16k→22.05k
+   resample + freeze; `pretrained=True` currently raises NotImplementedError).
+4. **CLI `--frontend`** flag for SimpleConv* (pending #5) — not done (out of scope here).
 
 ## State
 - Working tree: **dirty** — `src/models/multif0/utils.py`, `src/models/frontends/hcqt.py`, `src/models/multif0/rps_predictor.py` modified.

@@ -295,7 +295,12 @@ class LateDeep(MultiF0Estimator):
             nn.Sigmoid(),
         )
 
-    def forward(self, mag: torch.Tensor, dphase: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        mag: torch.Tensor,
+        dphase: torch.Tensor | None = None,
+        return_logits: bool = False,
+    ) -> torch.Tensor:
         if dphase is None:
             raise ValueError("LateDeep requires dphase input")
 
@@ -307,6 +312,11 @@ class LateDeep(MultiF0Estimator):
         x = self.dist_conv(x)  # (B, 8, F, T)
         x = self.dist_bn(x)
         x = self.dist_act(x)
+        if return_logits:
+            # Pre-sigmoid logits for BCEWithLogitsLoss. squishy = [BN, Conv(1×1),
+            # Sigmoid]; replay BN + Conv and skip the final activation. Indexing the
+            # Sequential (rather than restructuring it) keeps checkpoints loadable.
+            return self.squishy[1](self.squishy[0](x))  # (B, 1, F, T) logits
         x = self.squishy(x)  # (B, 1, F, T)
         return x
 

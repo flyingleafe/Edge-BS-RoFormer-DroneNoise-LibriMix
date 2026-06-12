@@ -29,13 +29,24 @@ MAX_N_SEMITONES = int(
 )
 
 
-def n_semitones_for(n_harmonics: int) -> int:
-    """Replicates ``get_cqt``'s semitone count derivation."""
+def max_n_semitones_for(sr: int = AUDIO_SAMPLE_RATE) -> int:
+    """Highest representable semitone count above fmin for a given Nyquist."""
+    return int(np.floor(12.0 * np.log2(0.5 * sr / ANNOTATIONS_BASE_FREQUENCY)))
+
+
+def n_semitones_for(n_harmonics: int, sr: int = AUDIO_SAMPLE_RATE) -> int:
+    """Replicates ``get_cqt``'s semitone count derivation.
+
+    ``sr`` only sets the Nyquist ceiling: at 16 kHz the harmonic-stacking CQT
+    caps at 98 semitones above 27.5 Hz (vs 103 at 22.05 kHz). The 264-bin
+    contour grid (88 semitones) fits either way, so the model's salience grid
+    is sample-rate-invariant; only the upper harmonic channels lose content.
+    """
     return int(
         np.min(
             [
                 int(np.ceil(12.0 * np.log2(n_harmonics)) + ANNOTATIONS_N_SEMITONES),
-                MAX_N_SEMITONES,
+                max_n_semitones_for(sr),
             ]
         )
     )
@@ -44,16 +55,22 @@ def n_semitones_for(n_harmonics: int) -> int:
 class CQTFrontEnd(nn.Module):
     """``get_cqt`` without the trailing BatchNorm: CQT -> NormalizedLog.
 
-    Input:  ``(B, n_samples)`` audio at 22050 Hz.
+    Input:  ``(B, n_samples)`` audio at ``sr`` Hz (default 22050).
     Output: ``(B, 1, time, n_freq_bins)`` (channels-first, ch=1).
+
+    ``sr`` is configurable so the model can run natively at 16 kHz (matching the
+    rest of the RPS pipeline) without resampling. The pretrained ICASSP-2022
+    weights, however, assume 22050 — only use ``sr != 22050`` when training from
+    scratch.
     """
 
-    def __init__(self, n_harmonics: int = 8):
+    def __init__(self, n_harmonics: int = 8, sr: int = AUDIO_SAMPLE_RATE):
         super().__init__()
-        n_semitones = n_semitones_for(n_harmonics)
+        self.sr = sr
+        n_semitones = n_semitones_for(n_harmonics, sr=sr)
         self.n_bins = n_semitones * CONTOURS_BINS_PER_SEMITONE
         self.cqt = CQT2010v2(
-            sr=AUDIO_SAMPLE_RATE,
+            sr=sr,
             hop_length=FFT_HOP,
             fmin=ANNOTATIONS_BASE_FREQUENCY,
             n_bins=self.n_bins,

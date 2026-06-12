@@ -74,12 +74,13 @@ class BasicPitch(nn.Module):
         n_filters_onsets: int = 32,
         n_filters_notes: int = 32,
         no_contours: bool = False,
+        sr: int = 22050,
     ):
         super().__init__()
         self.no_contours = no_contours
 
         # --- input representation -------------------------------------------
-        self.cqt = CQTFrontEnd(n_harmonics)
+        self.cqt = CQTFrontEnd(n_harmonics, sr=sr)
         self.cqt_bn = nn.BatchNorm2d(1, eps=BN_EPSILON)
 
         if n_harmonics > 1:
@@ -139,9 +140,25 @@ class BasicPitch(nn.Module):
         onset = flatten_freq_ch(xo)  # (B, time, 88)
 
         out = {"onset": onset, "note": note}
-        if not self.no_contours:
+        if not self.no_contours and contour is not None:
             out["contour"] = contour
         return out
+
+    def contour_logits(self, audio: torch.Tensor) -> torch.Tensor:
+        """Pre-sigmoid contour posteriorgram, ``(B, time, 264)``.
+
+        Runs only the CQT → harmonic-stacking → contour branch (skipping the
+        note/onset heads and the final sigmoid), for use as raw salience logits
+        with ``BCEWithLogitsLoss``. Requires ``no_contours=False``.
+        """
+        if self.no_contours:
+            raise ValueError("contour_logits requires no_contours=False")
+        x = self.cqt(audio)  # (B, 1, time, n_bins)
+        x = self.cqt_bn(x)
+        x = self.harmonic_stacking(x)  # (B, n_h, time, 264)
+        xc = F.relu(self.contour_bn(self.contour_conv1(x)))
+        logits = self.contour_out(xc)  # (B, 1, time, 264) — no sigmoid
+        return flatten_freq_ch(logits)  # (B, time, 264)
 
     # ------------------------------------------------------------------ weights
     @torch.no_grad()
