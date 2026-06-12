@@ -31,6 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 import wandb
 from models.multif0.rps_predictor import MultiF0RPSPredictor
@@ -501,7 +502,13 @@ def _flatten_channels(audio: torch.Tensor, rps: torch.Tensor):
 
 
 def evaluate(
-    model, loader, device, dataset_len, pit_eval: bool = True, track_threshold: float = 0.3
+    model,
+    loader,
+    device,
+    dataset_len,
+    pit_eval: bool = True,
+    track_threshold: float = 0.3,
+    progress: bool = False,
 ):
     """Run model on dataloader, return per-frame and per-clip metrics.
 
@@ -522,7 +529,9 @@ def evaluate(
     total_items = 0  # count B*C items, not just B
 
     with torch.no_grad():
-        for batch in loader:
+        for batch in tqdm(
+            loader, desc="eval", unit="batch", leave=False, disable=not progress
+        ):
             audio, rps_target = batch[0], batch[1]  # salience target (batch[2]) unused at eval
             audio, rps_target = audio.to(device), rps_target.to(device)
             audio, rps_target, C = _flatten_channels(audio, rps_target)
@@ -698,7 +707,13 @@ def train_model(model_name, args):
         model.train()
         train_loss_sum = 0.0
         train_items = 0
-        for batch in train_loader:
+        for batch in tqdm(
+            train_loader,
+            desc=f"train e{epoch}",
+            unit="batch",
+            leave=False,
+            disable=not args.epoch_progress,
+        ):
             optimizer.zero_grad()
             if is_salience:
                 # Salience models: BCE on per-bin logits vs precomputed targets.
@@ -743,7 +758,12 @@ def train_model(model_name, args):
 
         train_mse = train_loss_sum / train_items
         metrics = evaluate(
-            model, valid_loader, device, len(valid_ds), track_threshold=args.track_threshold
+            model,
+            valid_loader,
+            device,
+            len(valid_ds),
+            track_threshold=args.track_threshold,
+            progress=args.epoch_progress,
         )
         val_mse = metrics["mse"]
         scheduler.step(val_mse)
@@ -787,7 +807,14 @@ def train_model(model_name, args):
     print(f"FINAL EVALUATION — {model_name}")
     print("=" * 60)
     model.load_state_dict(torch.load(best_path, weights_only=True))
-    m = evaluate(model, valid_loader, device, len(valid_ds), track_threshold=args.track_threshold)
+    m = evaluate(
+        model,
+        valid_loader,
+        device,
+        len(valid_ds),
+        track_threshold=args.track_threshold,
+        progress=args.epoch_progress,
+    )
 
     print(
         f"\nPer-frame: PIT MSE={m['mse']:.4f} (RMSE={m['mse'] ** 0.5:.2f}), Std MSE={m['std_mse']:.4f}, MAE={m['mae_frame']:.2f}, R²={m['r2']:.4f}"
@@ -865,6 +892,14 @@ def main():
         type=float,
         default=0.3,
         help="Peak threshold for salience->RPS tracking at eval. Salience models only.",
+    )
+    parser.add_argument(
+        "--epoch-progress",
+        "--epoch_progress",
+        dest="epoch_progress",
+        action="store_true",
+        help="Show a per-batch tqdm progress bar during training and eval (transient, "
+        "leaves the per-epoch metrics table untouched).",
     )
     args = parser.parse_args()
 
