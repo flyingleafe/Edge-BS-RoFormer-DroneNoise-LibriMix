@@ -115,6 +115,12 @@ tracking, `--track_threshold`) → STFT grid, so the existing global-PIT metrics
 (PIT MSE/RMSE/MAE/R²) apply unchanged and stay comparable to the SimpleConv family.
 Both run natively at 16 kHz. The RPS↔salience helpers live in `multif0/utils.py`.
 
+`multif0_salience`'s HCQT `fmin` defaults to **27.5 Hz (A0)** — matching
+basic-pitch, low enough to cover rotor fundamentals below C1 — and is settable
+via `--hcqt_fmin`. The grid descriptor is read back from the front-end, so
+changing `fmin` auto-reshapes the salience target and the tracker. (At 16 kHz,
+`fmin=27.5` auto-derives 4 harmonics `[1,2,3,4]`; lower `fmin` → more.)
+
 ## Multi-F0 (Cuesta et al. ISMIR 2020)
 
 Located in `multif0/`.  Pure PyTorch reimplementation.
