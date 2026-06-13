@@ -111,6 +111,91 @@ class HCQT_nnAudio(nn.Module):
         return mag, dphase
 
 
+class HCQTStacked_nnAudio(nn.Module):
+    """GPU Harmonic CQT from a **single** CQT2010v2 + harmonic stacking.
+
+    Drop-in replacement for :class:`HCQT_nnAudio` (same ``(mag, dphase)`` return,
+    same grid), but instead of running one CQT per harmonic at ``fmin·h`` it runs
+    **one** complex CQT spanning enough extra high bins, then forms each harmonic
+    channel by *shifting* the magnitude and phase-differential along the
+    frequency axis by ``round(bins_per_octave·log2(h))`` bins (Bittner et al.
+    harmonic-stacking, ICASSP 2022). CQT bins are log-spaced, so output bin ``k``
+    of harmonic ``h`` reads base bin ``k+shift`` = frequency ``fmin·2^(k/bpo)·h``
+    — the same target frequency the separate ``fmin·h`` CQT would compute.
+
+    Unlike basic-pitch (magnitude only) the phase differential is stacked too:
+    ``dphase`` is computed once from the single complex CQT and shifted
+    identically, so LateDeep's phase branch still gets its input.
+
+    The base CQT carries ``n_bins + max_shift`` bins so every harmonic channel
+    has fully valid (non-zero-padded) content over the output grid.
+    """
+
+    def __init__(
+        self,
+        sr: int = 22050,
+        fmin: float = 32.7,
+        n_octaves: int = 6,
+        over_sample: int = 5,
+        harmonics: list[int] | None = None,
+        hop_length: int = 256,
+        log_mag: bool = True,
+    ):
+        super().__init__()
+        if harmonics is None:
+            harmonics = [1, 2, 3, 4, 5]
+        else:
+            harmonics = list(harmonics)
+        self.harmonics = harmonics
+        self.sr = sr
+        self.hop_length = hop_length
+        self.log_mag = log_mag
+
+        bins_per_octave = 12 * over_sample
+        n_bins = n_octaves * bins_per_octave  # output grid (matches HCQT_nnAudio)
+        self.n_bins = n_bins
+
+        self.shifts = [int(round(bins_per_octave * np.log2(h))) for h in harmonics]
+        max_shift = max(self.shifts)
+        base_n_bins = n_bins + max_shift  # extra high bins so all harmonics are valid
+
+        self.cqt = CQT2010v2(
+            sr=sr,
+            hop_length=hop_length,
+            fmin=fmin,
+            n_bins=base_n_bins,
+            bins_per_octave=bins_per_octave,
+            output_format="Complex",
+            verbose=False,
+        )
+
+    def forward(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Same contract as :meth:`HCQT_nnAudio.forward`.
+
+        Returns mag, dphase each ``(B, n_harmonics, n_bins, n_frames)``.
+        """
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+
+        C = self.cqt(audio)  # (B, base_F, T, 2)
+        real, imag = C[..., 0], C[..., 1]
+        mag_full = torch.sqrt(real**2 + imag**2 + 1e-10)  # (B, base_F, T)
+        phase_full = torch.atan2(imag, real)
+        dphase_full = _phase_diff_torch(phase_full)  # (B, base_F, T)
+
+        mags, dphases = [], []
+        for shift in self.shifts:
+            m = mag_full[:, shift : shift + self.n_bins, :]  # (B, n_bins, T)
+            if self.log_mag:
+                # per-harmonic dB with ref=max, matching HCQT_nnAudio
+                ref = m.amax(dim=(1, 2), keepdim=True).clamp(min=1e-10)
+                m = (20.0 * torch.log10(m / ref + 1e-10)).clamp(min=-80.0)
+            mags.append(m.unsqueeze(1))  # (B, 1, n_bins, T)
+            dphases.append(dphase_full[:, shift : shift + self.n_bins, :].unsqueeze(1))
+
+        return torch.cat(mags, dim=1), torch.cat(dphases, dim=1)
+
+
 def _phase_diff_torch(phase: torch.Tensor) -> torch.Tensor:
     """Unwrapped phase differential along last axis (time).
 

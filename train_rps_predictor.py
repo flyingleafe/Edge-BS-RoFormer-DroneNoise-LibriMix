@@ -358,13 +358,20 @@ MODEL_REGISTRY = {
 
 
 def get_model(
-    model_name, n_fft=2048, hop_length=512, num_rotors=4, hcqt_fmin=None, fused_branches=False
+    model_name,
+    n_fft=2048,
+    hop_length=512,
+    num_rotors=4,
+    hcqt_fmin=None,
+    fused_branches=False,
+    stacked_hcqt=False,
 ):
     """Create a model by name.
 
     ``hcqt_fmin`` overrides the HCQT base frequency for ``multif0_salience``
     (default in the model is A0 = 27.5 Hz); ``fused_branches`` runs LateDeep's
-    mag/phase branches as one grouped stack. Both ignored by other models.
+    mag/phase branches as one grouped stack; ``stacked_hcqt`` uses the single-CQT
+    + harmonic-shift front-end. All ignored by other models.
     """
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}")
@@ -374,6 +381,8 @@ def get_model(
             kwargs["fmin"] = hcqt_fmin
         if fused_branches:
             kwargs["fused_branches"] = True
+        if stacked_hcqt:
+            kwargs["stacked"] = True  # rides through LateDeepSalience -> build_frontend
     return MODEL_REGISTRY[model_name](**kwargs)
 
 
@@ -638,6 +647,7 @@ def train_model(model_name, args):
         hop_length=hop,
         hcqt_fmin=args.hcqt_fmin,
         fused_branches=args.fused_branches,
+        stacked_hcqt=args.stacked_hcqt,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
@@ -926,6 +936,13 @@ def main():
         help="Run LateDeep's mag/phase branches as one grouped (groups=2) stack "
         "(multif0_salience). Numerically identical to the two-branch version, fewer "
         "kernel launches. Checkpoints convert between layouts transparently.",
+    )
+    parser.add_argument(
+        "--stacked_hcqt",
+        action="store_true",
+        help="Use the single-CQT + harmonic-shift HCQT front-end for multif0_salience "
+        "(~2x faster on GPU than one CQT per harmonic). Lossy approximation at higher "
+        "harmonics, so train from scratch — do not load a non-stacked checkpoint.",
     )
     parser.add_argument(
         "--epoch-progress",

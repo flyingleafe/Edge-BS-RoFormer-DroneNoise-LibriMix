@@ -73,10 +73,13 @@ class HCQTFrontEnd(SpectralFrontEnd):
         phase: bool = True,
         use_log: bool = True,
         backend: str = "nnaudio",
+        stacked: bool = False,
     ):
         super().__init__()
         if backend not in ("nnaudio", "librosa"):
             raise ValueError(f"backend must be 'nnaudio' or 'librosa', got {backend!r}")
+        if stacked and backend != "nnaudio":
+            raise ValueError("stacked=True is only supported with backend='nnaudio'")
 
         self.sr = sr
         self.input_sr = input_sr
@@ -87,6 +90,7 @@ class HCQTFrontEnd(SpectralFrontEnd):
         self.use_phase = phase
         self.use_log = use_log
         self.backend = backend
+        self.stacked = stacked
 
         # Auto-derive harmonics if not provided: use the most harmonics that
         # fit within Nyquist for all octaves.
@@ -99,10 +103,16 @@ class HCQTFrontEnd(SpectralFrontEnd):
         self.out_channels = 2 * n_h if phase else n_h
 
         # ── nnAudio backend ──
+        # ``stacked`` uses one CQT + harmonic freq-shifts (HCQTStacked_nnAudio,
+        # ~2x faster on GPU) instead of one CQT per harmonic. Same (mag, dphase)
+        # contract and grid; lossy at higher harmonics, so train from scratch.
         if backend == "nnaudio":
-            from models.multif0.nnaudio_cqt import HCQT_nnAudio
+            if stacked:
+                from models.multif0.nnaudio_cqt import HCQTStacked_nnAudio as _HCQT
+            else:
+                from models.multif0.nnaudio_cqt import HCQT_nnAudio as _HCQT
 
-            self._nn_hcqt = HCQT_nnAudio(
+            self._nn_hcqt = _HCQT(
                 sr=sr,
                 fmin=fmin,
                 n_octaves=n_octaves,
