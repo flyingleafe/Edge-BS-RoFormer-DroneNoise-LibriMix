@@ -163,8 +163,16 @@ class SalienceRPSPredictor(nn.Module):
 class LateDeepSalience(SalienceRPSPredictor):
     """LateDeep multi-F0 CNN over an HCQT front-end, emitting salience logits.
 
-    Native 16 kHz: the HCQT front-end auto-derives 3 harmonics ``[1,2,3]`` at
-    16 kHz Nyquist and a 360-bin grid (fmin 32.7, 60 bins/oct).
+    Native 16 kHz: with the default ``fmin=27.5`` the HCQT front-end auto-derives
+    4 harmonics ``[1,2,3,4]`` (Nyquist 8 kHz, top bin 1760 Hz) on a 360-bin grid
+    (60 bins/oct, spanning 27.5 → 1760 Hz).
+
+    ``fmin`` defaults to **27.5 Hz (A0)** — matching basic-pitch's
+    ``ANNOTATIONS_BASE_FREQUENCY`` — rather than the multi-F0 paper's 32.7 Hz
+    (C1), so the grid reaches low enough to cover rotor fundamentals that dip
+    below 32.7 Hz. The grid descriptor (fmin/n_bins/...) is read back from the
+    front-end, so lowering it automatically reshapes the salience target and the
+    Hungarian tracker — no other changes needed.
     """
 
     def __init__(
@@ -172,6 +180,7 @@ class LateDeepSalience(SalienceRPSPredictor):
         n_fft: int = 2048,
         hop_length: int = 512,
         num_rotors: int = 4,
+        fmin: float = 27.5,  # A0; matches basic-pitch ANNOTATIONS_BASE_FREQUENCY
         frontend: nn.Module | None = None,
         **frontend_kwargs,
     ):
@@ -183,7 +192,7 @@ class LateDeepSalience(SalienceRPSPredictor):
         from models.multif0.model import LateDeep
 
         if frontend is None:
-            frontend = build_frontend("hcqt", phase=True, **frontend_kwargs)
+            frontend = build_frontend("hcqt", phase=True, fmin=fmin, **frontend_kwargs)
         self.frontend = frontend
         # Grid descriptor reads HCQT-specific attributes; cast for static typing
         # (the frontend must expose fmin/n_octaves/over_sample/n_bins/sr/hop_length).
