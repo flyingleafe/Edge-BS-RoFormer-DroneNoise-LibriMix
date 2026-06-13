@@ -5,6 +5,8 @@ correctly handles multi-rate processing and matches librosa peak frequencies.
 Module structure mirrors hcqt.py's compute_hcqt_mag_phase interface.
 """
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -80,9 +82,6 @@ class HCQT_nnAudio(nn.Module):
         if audio.dim() == 3:
             audio = audio.squeeze(1)
 
-        B = audio.shape[0]
-        device = audio.device
-
         mags = []
         dphases = []
 
@@ -118,13 +117,23 @@ def _phase_diff_torch(phase: torch.Tensor) -> torch.Tensor:
     Replicates pumpp's phase_diff:
         dphase[:, 0] = phase[:, 0]
         dphase[:, 1:] = diff(unwrap(phase), axis=-1)
+
+    Pure-torch, stays on-device. ``diff(unwrap(phase))`` is algebraically the
+    wrapped per-step phase difference ``((dd + π) mod 2π) − π``; the old numpy
+    path forced a GPU→CPU sync every forward (a major GPU training stall). The
+    only subtlety is numpy's ``unwrap`` edge case: a wrapped diff of exactly
+    ``−π`` flips to ``+π`` when the raw step ``dd`` is positive — replicated here
+    so the output is bit-faithful to ``np.diff(np.unwrap(...))``.
     """
-    # numpy unwrap is more reliable than torch's; fall through CPU for correctness
-    phase_np = phase.detach().cpu().numpy()
-    dphase_np = np.empty_like(phase_np)
-    dphase_np[..., 0] = phase_np[..., 0]
-    dphase_np[..., 1:] = np.diff(np.unwrap(phase_np, axis=-1), axis=-1)
-    return torch.from_numpy(dphase_np).to(phase.device, dtype=phase.dtype)
+    dphase = torch.empty_like(phase)
+    dphase[..., 0] = phase[..., 0]
+    dd = phase[..., 1:] - phase[..., :-1]
+    ddmod = torch.remainder(dd + math.pi, 2.0 * math.pi) - math.pi
+    ddmod = torch.where(
+        (ddmod == -math.pi) & (dd > 0), torch.full_like(ddmod, math.pi), ddmod
+    )
+    dphase[..., 1:] = ddmod
+    return dphase
 
 
 # ═══════════════════════════════════════════════════════════════════════════
