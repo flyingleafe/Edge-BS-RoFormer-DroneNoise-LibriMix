@@ -114,8 +114,33 @@ def test_model_shapes_and_backward():
         assert torch.isfinite(rps_pred).all()
 
 
+def test_stacked_hcqt_wiring():
+    """LateDeepSalience(stacked=True) swaps the front-end; same grid + I/O shapes."""
+    from models.multif0.nnaudio_cqt import HCQT_nnAudio, HCQTStacked_nnAudio
+
+    audio = torch.randn(2, 16000)
+    sep = LateDeepSalience(fmin=27.5)
+    stk = LateDeepSalience(fmin=27.5, stacked=True)
+
+    assert isinstance(sep.frontend._nn_hcqt, HCQT_nnAudio)
+    assert isinstance(stk.frontend._nn_hcqt, HCQTStacked_nnAudio)
+    # Same grid descriptor -> target/tracker unaffected by the swap.
+    assert (sep.fmin, sep.n_bins, sep.n_harmonics) == (stk.fmin, stk.n_bins, stk.n_harmonics)
+
+    sep.eval()
+    stk.eval()
+    with torch.no_grad():
+        assert sep(audio).shape == stk(audio).shape  # (B, n_bins, T)
+        assert stk.predict_rps(audio, threshold=0.0).shape == (2, 4, 16000 // 512 + 1)
+    # stacked composes with fused_branches
+    both = LateDeepSalience(fmin=27.5, stacked=True, fused_branches=True)
+    assert isinstance(both.frontend._nn_hcqt, HCQTStacked_nnAudio)
+    assert both.cnn.fused_branches is True
+
+
 if __name__ == "__main__":
     test_roundtrip_quantization_floor()
     test_target_blur()
     test_model_shapes_and_backward()
+    test_stacked_hcqt_wiring()
     print("all salience_rps tests passed")
