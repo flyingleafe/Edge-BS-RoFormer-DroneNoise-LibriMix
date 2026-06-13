@@ -115,6 +115,18 @@ class HarmBlock(ConvBlock):
 
 # ── Base branch (shared by all two-input models) ───────────────────────────
 
+# Per-block (out_per_group, kernel) spec of _base_branch — single source of truth
+# so the fused (grouped) twin stays in lock-step with it (the first block's input
+# is n_harmonics, set per-model).
+_BASE_BRANCH_SPEC: list[tuple[int, tuple[int, int]]] = [
+    (16, (5, 5)),
+    (32, (5, 5)),
+    (32, (5, 5)),
+    (32, (5, 5)),
+    (32, (70, 3)),
+    (32, (70, 3)),
+]
+
 
 def _base_branch(in_channels: int) -> nn.Sequential:
     """Per-input branch used in all two-input models.
@@ -137,6 +149,83 @@ def _base_branch(in_channels: int) -> nn.Sequential:
         HarmBlock(32, 32),
         HarmBlock(32, 32),
     )
+
+
+# ── Fused (grouped) twin of the two-branch stack ────────────────────────────
+
+
+class GroupedConvBlock(nn.Module):
+    """BN(2C) → pad → grouped Conv2d(groups=2) → ReLU.
+
+    Fuses the two structurally identical ``ConvBlock``s (one per input branch)
+    into a single block operating on the channel-stacked ``[mag, dphase]`` input.
+    ``groups=2`` keeps the two branches' channels from mixing, so the result is
+    mathematically identical to the separate branches (BN stats are per-channel,
+    so a single BN over the stacked channels == two independent BNs, in train and
+    eval alike). The grouped-conv output ordering ``[group0, group1]`` already
+    equals ``torch.cat([mag_feats, phase_feats])`` — the old concat is free.
+    """
+
+    def __init__(self, in_per_group: int, out_per_group: int, kernel_size: tuple[int, int]):
+        super().__init__()
+        self.bn = nn.BatchNorm2d(2 * in_per_group)
+        self.padding = _keras_same_padding(kernel_size)
+        self.conv = nn.Conv2d(
+            2 * in_per_group, 2 * out_per_group, kernel_size, stride=1, padding=0, bias=False, groups=2
+        )
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.bn(x)
+        x = F.pad(x, self.padding, mode="constant", value=0)
+        x = self.conv(x)
+        x = self.act(x)
+        return x
+
+
+def _fused_base_branch(in_channels: int) -> nn.Sequential:
+    """Grouped (groups=2) twin of two stacked ``_base_branch`` stacks.
+
+    Input  : ``(B, 2·in_channels, F, T)`` = ``cat([mag, dphase], dim=1)``.
+    Output : ``(B, 64, F, T)`` = ``cat([mag_feats(32), phase_feats(32)], dim=1)``.
+    """
+    blocks: list[nn.Module] = []
+    in_pg = in_channels
+    for out_pg, k in _BASE_BRANCH_SPEC:
+        blocks.append(GroupedConvBlock(in_pg, out_pg, k))
+        in_pg = out_pg
+    return nn.Sequential(*blocks)
+
+
+def _merge_branches_in_state_dict(sd: dict, prefix: str) -> None:
+    """In place: ``branch_mag.* + branch_phase.* → fused_branch.*`` (concat dim 0)."""
+    mp, pp, fp = prefix + "branch_mag.", prefix + "branch_phase.", prefix + "fused_branch."
+    idxs = sorted({int(k[len(mp):].split(".")[0]) for k in sd if k.startswith(mp)})
+    for i in idxs:
+        for sub in ("bn.weight", "bn.bias", "bn.running_mean", "bn.running_var", "conv.weight"):
+            sd[f"{fp}{i}.{sub}"] = torch.cat([sd[f"{mp}{i}.{sub}"], sd[f"{pp}{i}.{sub}"]], dim=0)
+        nbt = f"{mp}{i}.bn.num_batches_tracked"
+        if nbt in sd:
+            sd[f"{fp}{i}.bn.num_batches_tracked"] = sd[nbt]
+    for k in [k for k in sd if k.startswith(mp) or k.startswith(pp)]:
+        del sd[k]
+
+
+def _split_branch_in_state_dict(sd: dict, prefix: str) -> None:
+    """In place: ``fused_branch.* → branch_mag.* + branch_phase.*`` (split dim 0)."""
+    fp, mp, pp = prefix + "fused_branch.", prefix + "branch_mag.", prefix + "branch_phase."
+    idxs = sorted({int(k[len(fp):].split(".")[0]) for k in sd if k.startswith(fp)})
+    for i in idxs:
+        for sub in ("bn.weight", "bn.bias", "bn.running_mean", "bn.running_var", "conv.weight"):
+            v = sd[f"{fp}{i}.{sub}"]
+            c = v.shape[0] // 2
+            sd[f"{mp}{i}.{sub}"], sd[f"{pp}{i}.{sub}"] = v[:c], v[c:]
+        nbt = f"{fp}{i}.bn.num_batches_tracked"
+        if nbt in sd:
+            sd[f"{mp}{i}.bn.num_batches_tracked"] = sd[nbt]
+            sd[f"{pp}{i}.bn.num_batches_tracked"] = sd[nbt]
+    for k in [k for k in sd if k.startswith(fp)]:
+        del sd[k]
 
 
 # ── Model classes ──────────────────────────────────────────────────────────
@@ -269,14 +358,30 @@ class LateDeep(MultiF0Estimator):
 
     Two independent branches (6 conv layers each) process mag and dphase
     separately.  Concatenated at channel 64, then 3×3 convs, then output.
+
+    ``fused_branches=True`` replaces the two branches with a single grouped
+    (``groups=2``) stack over the channel-stacked ``[mag, dphase]`` input —
+    mathematically identical (verified to float32 precision) but one kernel
+    launch per layer instead of two, and the concat becomes free. Checkpoints
+    convert transparently between the two layouts via a load-state-dict pre-hook,
+    so a model trained one way loads either way.
     """
 
-    def __init__(self, n_harmonics: int = 5):
+    def __init__(self, n_harmonics: int = 5, fused_branches: bool = False):
         super().__init__()
+        self.fused_branches = fused_branches
 
-        # Independent branches (32 channels each)
-        self.branch_mag = _base_branch(n_harmonics)
-        self.branch_phase = _base_branch(n_harmonics)
+        if fused_branches:
+            self.fused_branch = _fused_base_branch(n_harmonics)
+        else:
+            # Independent branches (32 channels each)
+            self.branch_mag = _base_branch(n_harmonics)
+            self.branch_phase = _base_branch(n_harmonics)
+
+        # Remap branch_mag/branch_phase <-> fused_branch when the checkpoint's
+        # layout differs from this instance's. Pre-hook (not a load_state_dict
+        # override) so it fires even when loaded via a parent module.
+        self._register_load_state_dict_pre_hook(self._branch_remap_hook)
 
         # Post-concat (64 ch = 32 + 32)
         self.post = nn.Sequential(
@@ -295,6 +400,17 @@ class LateDeep(MultiF0Estimator):
             nn.Sigmoid(),
         )
 
+    def _branch_remap_hook(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        """Convert checkpoint branch layout to match this instance's, in place."""
+        has_fused = any(k.startswith(prefix + "fused_branch.") for k in state_dict)
+        has_split = any(k.startswith(prefix + "branch_mag.") for k in state_dict)
+        if self.fused_branches and has_split and not has_fused:
+            _merge_branches_in_state_dict(state_dict, prefix)
+        elif not self.fused_branches and has_fused and not has_split:
+            _split_branch_in_state_dict(state_dict, prefix)
+
     def forward(
         self,
         mag: torch.Tensor,
@@ -304,9 +420,13 @@ class LateDeep(MultiF0Estimator):
         if dphase is None:
             raise ValueError("LateDeep requires dphase input")
 
-        x_mag = self.branch_mag(mag)  # (B, 32, F, T)
-        x_phase = self.branch_phase(dphase)  # (B, 32, F, T)
-        x = torch.cat([x_mag, x_phase], dim=1)  # (B, 64, F, T)
+        if self.fused_branches:
+            # Grouped stack: output is already [mag_feats, phase_feats] -> (B, 64, F, T)
+            x = self.fused_branch(torch.cat([mag, dphase], dim=1))
+        else:
+            x_mag = self.branch_mag(mag)  # (B, 32, F, T)
+            x_phase = self.branch_phase(dphase)  # (B, 32, F, T)
+            x = torch.cat([x_mag, x_phase], dim=1)  # (B, 64, F, T)
         x = self.post(x)  # (B, 64, F, T)
         x = F.pad(x, self.dist_pad, mode="constant", value=0)
         x = self.dist_conv(x)  # (B, 8, F, T)

@@ -121,6 +121,15 @@ via `--hcqt_fmin`. The grid descriptor is read back from the front-end, so
 changing `fmin` auto-reshapes the salience target and the tracker. (At 16 kHz,
 `fmin=27.5` auto-derives 4 harmonics `[1,2,3,4]`; lower `fmin` → more.)
 
+`--fused_branches` runs LateDeep's two identical mag/phase branches as a single
+grouped (`groups=2`) stack (`LateDeep(fused_branches=True)`): mathematically
+identical (verified to float32 precision in `test_multif0.py`), one kernel launch
+per layer instead of two, and the channel concat becomes free. Checkpoints
+convert between the two layouts transparently via a `load_state_dict` pre-hook on
+`LateDeep`, so a model trained either way loads either way. Same FLOPs — the win
+is launch overhead, so benchmark on GPU (`bench_grouped_branches.py`) before
+relying on it; `groups=2` can regress on some cuDNN versions.
+
 ## Multi-F0 (Cuesta et al. ISMIR 2020)
 
 Located in `multif0/`.  Pure PyTorch reimplementation.

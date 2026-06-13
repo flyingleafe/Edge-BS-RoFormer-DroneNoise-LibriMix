@@ -155,6 +155,36 @@ def test_models(n_harmonics=5, n_freqs=360):
     print("  ✓ All model tests passed\n")
 
 
+def test_fused_branches_equivalence(n_harmonics=4, n_freqs=360, T=40):
+    """Grouped (groups=2) LateDeep == two-branch LateDeep, both layout directions."""
+    torch.manual_seed(0)
+    mag = torch.randn(3, n_harmonics, n_freqs, T)
+    dphase = torch.randn(3, n_harmonics, n_freqs, T)
+
+    unfused = LateDeep(n_harmonics, fused_branches=False).eval()
+    fused = LateDeep(n_harmonics, fused_branches=True).eval()
+
+    # unfused -> fused remap (pre-hook merges branch_mag/branch_phase)
+    fused.load_state_dict(unfused.state_dict())
+    with torch.no_grad():
+        a, b = unfused(mag, dphase), fused(mag, dphase)
+    assert torch.allclose(a, b, atol=1e-5), f"fwd mismatch (merge): {(a - b).abs().max()}"
+
+    # fused -> unfused remap (pre-hook splits fused_branch); round-trips back
+    unfused2 = LateDeep(n_harmonics, fused_branches=False).eval()
+    unfused2.load_state_dict(fused.state_dict())
+    with torch.no_grad():
+        c = unfused2(mag, dphase)
+    assert torch.allclose(b, c, atol=1e-5), f"fwd mismatch (split): {(b - c).abs().max()}"
+
+    # return_logits path also matches
+    with torch.no_grad():
+        la = unfused(mag, dphase, return_logits=True)
+        lb = fused(mag, dphase, return_logits=True)
+    assert torch.allclose(la, lb, atol=1e-5)
+    print("  ✓ Fused-branch equivalence + bidirectional checkpoint remap passed\n")
+
+
 def test_conv_dimensions():
     """Detailed check: verify conv layers preserve frequency dimension correctly."""
     print("=" * 60)
