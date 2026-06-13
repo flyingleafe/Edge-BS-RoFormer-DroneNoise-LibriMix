@@ -357,17 +357,23 @@ MODEL_REGISTRY = {
 }
 
 
-def get_model(model_name, n_fft=2048, hop_length=512, num_rotors=4, hcqt_fmin=None):
+def get_model(
+    model_name, n_fft=2048, hop_length=512, num_rotors=4, hcqt_fmin=None, fused_branches=False
+):
     """Create a model by name.
 
     ``hcqt_fmin`` overrides the HCQT base frequency for ``multif0_salience``
-    (default in the model is A0 = 27.5 Hz); ignored by other models.
+    (default in the model is A0 = 27.5 Hz); ``fused_branches`` runs LateDeep's
+    mag/phase branches as one grouped stack. Both ignored by other models.
     """
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}")
     kwargs = dict(n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)
-    if model_name == "multif0_salience" and hcqt_fmin is not None:
-        kwargs["fmin"] = hcqt_fmin
+    if model_name == "multif0_salience":
+        if hcqt_fmin is not None:
+            kwargs["fmin"] = hcqt_fmin
+        if fused_branches:
+            kwargs["fused_branches"] = True
     return MODEL_REGISTRY[model_name](**kwargs)
 
 
@@ -626,7 +632,13 @@ def train_model(model_name, args):
     print(f"Model: {model_name}")
 
     # Model first — salience models supply the dataset's BCE target function.
-    model = get_model(model_name, n_fft=n_fft, hop_length=hop, hcqt_fmin=args.hcqt_fmin).to(device)
+    model = get_model(
+        model_name,
+        n_fft=n_fft,
+        hop_length=hop,
+        hcqt_fmin=args.hcqt_fmin,
+        fused_branches=args.fused_branches,
+    ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
 
@@ -907,6 +919,13 @@ def main():
         help="Override the HCQT base frequency (Hz) for multif0_salience. Default in "
         "the model is A0 = 27.5 Hz (matches basic-pitch), low enough to cover rotor "
         "fundamentals below C1. Lowering it auto-reshapes the salience grid + tracker.",
+    )
+    parser.add_argument(
+        "--fused_branches",
+        action="store_true",
+        help="Run LateDeep's mag/phase branches as one grouped (groups=2) stack "
+        "(multif0_salience). Numerically identical to the two-branch version, fewer "
+        "kernel launches. Checkpoints convert between layouts transparently.",
     )
     parser.add_argument(
         "--epoch-progress",

@@ -181,6 +181,7 @@ class LateDeepSalience(SalienceRPSPredictor):
         hop_length: int = 512,
         num_rotors: int = 4,
         fmin: float = 27.5,  # A0; matches basic-pitch ANNOTATIONS_BASE_FREQUENCY
+        fused_branches: bool = False,
         frontend: nn.Module | None = None,
         **frontend_kwargs,
     ):
@@ -199,7 +200,7 @@ class LateDeepSalience(SalienceRPSPredictor):
         fe = cast(HCQTFrontEnd, frontend)
 
         self.n_harmonics = fe.out_channels // 2 if fe.use_phase else fe.out_channels
-        self.cnn = LateDeep(n_harmonics=self.n_harmonics)
+        self.cnn = LateDeep(n_harmonics=self.n_harmonics, fused_branches=fused_branches)
 
         # Grid descriptor (HCQT params)
         self.fmin = fe.fmin
