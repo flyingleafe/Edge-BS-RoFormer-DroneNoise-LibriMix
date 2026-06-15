@@ -116,6 +116,58 @@ def make_log_spectrogram_series(
 
 
 # ---------------------------------------------------------------------------
+# Salience-map converter
+# ---------------------------------------------------------------------------
+
+
+def make_salience_series(
+    salience: Any,
+    *,
+    freqs: Any,
+    frame_sr: float,
+    t_start: float = 0.0,
+    rps_pred: Any | None = None,
+    title: str | None = None,
+) -> UniformSeries:
+    """Wrap a model salience map as a ``UniformSeries`` for the ``"salience"`` renderer.
+
+    Parameters
+    ----------
+    salience
+        ``(n_bins, T)`` per-frequency-bin salience in ``[0, 1]`` (already
+        sigmoid-activated). Tensors are accepted and converted to numpy.
+    freqs
+        ``(n_bins,)`` centre frequency (Hz) of each salience bin — used as the
+        (log-scaled) y-axis. Get it from
+        ``models.multif0.utils.cqt_freq_grid(**model.grid_params())``.
+    frame_sr
+        Salience frame rate in Hz (``model.spec_sr / model.spec_hop``).
+    t_start
+        Absolute start time (s) of the first salience frame.
+    rps_pred
+        Optional ``(n_rotors, T_pred)`` tracked-RPS trajectory to overlay as
+        solid lines on the heatmap. Its own time axis is stretched to span the
+        salience duration, matching how the tracker resamples to the STFT grid.
+    title
+        Optional subplot title (defaults to the track name).
+    """
+    samples = np.asarray(salience.detach().cpu() if hasattr(salience, "detach") else salience)
+    samples = samples.astype(np.float32)
+    if samples.ndim != 2:
+        raise ValueError(f"salience must be 2-D (n_bins, T), got {samples.shape}")
+    tags: dict[str, Any] = {
+        "plot.renderer": "salience",
+        "plot.freqs": np.asarray(freqs, dtype=np.float64),
+    }
+    if rps_pred is not None:
+        rp = rps_pred.detach().cpu() if hasattr(rps_pred, "detach") else rps_pred
+        tags["plot.rps_pred"] = np.asarray(rp, dtype=np.float64)
+    if title is not None:
+        tags["plot.title"] = title
+    return UniformSeries.from_samples(samples, sr=frame_sr, t_start=t_start, tags=tags)
+
+
+# ---------------------------------------------------------------------------
 # Renderers
 # ---------------------------------------------------------------------------
 
@@ -281,6 +333,70 @@ def render_rps(series: Any, context: TrackContext) -> RenderedTrack:
     return RenderedTrack(ax=ax, legend_handles=handles)
 
 
+def render_salience(series: Any, context: TrackContext) -> RenderedTrack:
+    """Render a model salience map (heatmap) with RPS overlays.
+
+    Expects a ``UniformSeries`` built by :func:`make_salience_series`: samples
+    ``(n_bins, T)`` in ``[0, 1]`` with a ``"plot.freqs"`` tag for the y-axis.
+    The ground-truth RPS (from the frame's ``"rps"`` track, if present) is
+    overlaid as dotted lines, and the model's tracked RPS prediction (from the
+    ``"plot.rps_pred"`` tag, if present) as solid lines — so one can read how
+    the salience peaks are tracked into a per-rotor trajectory.
+    """
+    if not isinstance(series, UniformSeries):
+        raise TypeError(f"'salience' renderer expects UniformSeries, got {type(series).__name__}")
+    S = series.samples
+    if S.ndim != 2:
+        raise ValueError(f"Salience series must be 2-D (n_bins, time), got {S.shape}")
+    freqs = series.tags.get("plot.freqs")
+    if freqs is None:
+        raise ValueError("salience series needs a 'plot.freqs' tag (bin centre frequencies)")
+    freqs = np.asarray(freqs, dtype=np.float64)
+
+    ax = context.ax
+    times = series.sample_times()
+    vmax = context.style.get("salience_vmax", 1.0)
+    if vmax == "auto":
+        vmax = float(np.percentile(S, 99.5)) or 1.0
+    mesh = ax.pcolormesh(times, freqs, S, shading="auto", cmap="magma", vmin=0.0, vmax=vmax)
+    ax.set_yscale("log")
+    ax.set_ylim(freqs[0], freqs[-1])
+    ax.set_ylabel("Freq (Hz)")
+    if context.style.get("salience_colorbar", True):
+        ax.figure.colorbar(mesh, ax=ax, pad=0.01, fraction=0.025, label="salience")
+
+    handles = []
+    # Ground-truth RPS (dotted) — from the frame's rps track, on the salience grid.
+    frame = context.style.get("_frame")
+    if frame is not None and "rps" in frame:
+        rps_track = frame["rps"]
+        if isinstance(rps_track, EventSeries) and rps_track.values is not None:
+            gt = np.asarray(rps_track.interpolate(times))
+            for r in range(min(gt.shape[0], len(ROTOR_COLORS))):
+                (line,) = ax.plot(
+                    times, gt[r], color=ROTOR_COLORS[r], linewidth=1.4, linestyle=":",
+                    alpha=0.9, label=f"GT R{r + 1}",
+                )
+                handles.append(line)
+
+    # Predicted (tracked) RPS (solid) — stretched to the salience time span.
+    rps_pred = series.tags.get("plot.rps_pred")
+    if rps_pred is not None:
+        rps_pred = np.asarray(rps_pred)
+        pred_times = np.linspace(times[0], times[-1], rps_pred.shape[-1])
+        for r in range(min(rps_pred.shape[0], len(ROTOR_COLORS))):
+            (line,) = ax.plot(
+                pred_times, rps_pred[r], color=ROTOR_COLORS[r], linewidth=1.6,
+                alpha=0.95, label=f"pred R{r + 1}",
+            )
+            handles.append(line)
+
+    if handles:
+        ax.legend(handles=handles, loc="upper right", ncol=2, fontsize=6)
+    ax.set_xlim(context.t_start, context.t_end)
+    return RenderedTrack(ax=ax, legend_handles=handles)
+
+
 # ---------------------------------------------------------------------------
 # Register defaults
 # ---------------------------------------------------------------------------
@@ -291,3 +407,4 @@ register_renderer("UniformSeries", render_uniform_fallback)
 register_renderer("EventSeries", render_event_fallback)
 register_renderer("SegmentSeries", render_segment_fallback)
 register_renderer("rps", render_rps)
+register_renderer("salience", render_salience)
