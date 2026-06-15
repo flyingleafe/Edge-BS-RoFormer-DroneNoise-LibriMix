@@ -20,6 +20,8 @@ drones-with-speeds.md
 .worktrees/**
 !.worktrees/.gitkeep
 
+bibliography/**.png
+
 .venv/
 node_modules/
 
