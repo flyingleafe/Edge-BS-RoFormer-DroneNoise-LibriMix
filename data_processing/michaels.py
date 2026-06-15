@@ -54,15 +54,17 @@ class MotorData:
 
 
 # ---------------------------------------------------------------------------
-# File registry (empirical offsets from legacy repo)
+# File registry
 # ---------------------------------------------------------------------------
 
-# (wav_filename, csv_filename, time_offset_sec, l_s, r_s)
+# (wav_filename, csv_filename, time_offset_sec, l_s, r_s, fine_offset, rate)
+# fine_offset and rate optimised via VP-transform energy (src.utils.align_rps).
+# rate is currently fixed at 1.0 — VP energy is insensitive to it.
 MICHAELS_FILES = [
-    ("103_2.wav", "FLY103.csv", -0.94, 12.0, 100.0),
-    ("108_2.wav", "FLY108.csv", -0.40, 9.0, 88.0),
-    ("124.wav", "FLY124.csv", -20.63, 33.0, 105.0),
-    ("125.wav", "FLY125.csv", -26.27, 17.0, 170.0),
+    ("103_2.wav", "FLY103.csv", -0.94, 12.0, 100.0, 0.95, 1.0),
+    ("108_2.wav", "FLY108.csv", -0.40, 9.0, 88.0, 0.40, 1.0),
+    ("124.wav", "FLY124.csv", -20.84, 33.0, 105.0, 0.21, 1.0),
+    ("125.wav", "FLY125.csv", -26.27, 17.0, 170.0, 0.15, 1.0),  # not optimised (files missing)
 ]
 
 
@@ -92,11 +94,12 @@ class MichaelsRecord:
     audio_timestamps: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]  # (n_samples,)
     motors: MotorData | None = None
     sample_rate: int = 44100
-
-    # Source paths (for traceability)
+    # Source paths + alignment params (for traceability)
     wav_path: str | None = None
     csv_path: str | None = None
-    time_offset: float = 0.0  # csv-time shift applied
+    time_offset: float = 0.0  # rough csv-time shift applied by _load_raw
+    fine_offset: float = 0.0  # VP-optimised fine shift (replaces notebook +0.15)
+    rate: float = 1.0  # VP-optimised post-jump rate factor
     l_s: float = 0.0  # used valid-range start (sec, rel to record start)
     r_s: float = 0.0  # used valid-range end   (sec, rel to record start)
 
@@ -196,38 +199,48 @@ def load_michaels_record(
     valid_l_s: float = 0.0,
     valid_r_s: float | None = None,
     recording_id: str | None = None,
+    fine_offset: float = 0.15,
+    rate: float = 1.0,
 ) -> MichaelsRecord:
     """Load a single Michael's recording into a `MichaelsRecord`.
 
     Args:
         wav_path: path to the WAV file.
         csv_path: path to the DJI CSV log.
-        time_offset: empirical CSV-time shift (sec). Positive = CSV time runs
+        time_offset: rough CSV-time shift (sec).  Positive = CSV time runs
             ahead of audio time; negative = behind.
         sample_rate: target audio sample rate (resamples via librosa).
         valid_l_s, valid_r_s: optional inner clip range (seconds, relative to
-            record start) for trimming takeoff/landing. If `valid_r_s` is None,
+            record start) for trimming takeoff/landing.  ``valid_r_s=None``
             keeps to end.
         recording_id: optional id (defaults to wav filename stem).
+        fine_offset: VP-optimised fine time shift applied after the jump fix
+            (replaces the old +0.15 heuristic).
+        rate: VP-optimised post-jump clock-rate factor (1.0 = no correction).
 
     Returns:
-        MichaelsRecord with audio (n_samples, 1) and synthetic audio
-        timestamps anchored at the first CSV timestamp.
+        MichaelsRecord with audio (n_samples, 1) and corrected motor timestamps.
     """
+    from src.utils.align_rps import _find_jump, correct_timestamps
+
     wav_path = Path(wav_path)
     csv_path = Path(csv_path)
     if recording_id is None:
         recording_id = wav_path.stem
 
-    wav, ts, motor_rps = _load_raw(wav_path, csv_path, time_offset, sample_rate)
+    wav, ts_raw, motor_rps = _load_raw(wav_path, csv_path, time_offset, sample_rate)
 
-    # Build synthetic audio timestamps anchored at first CSV timestamp.
+    # Apply jump fix + fine offset + rate correction
+    jump_idx = _find_jump(ts_raw)
+    ts_corr = correct_timestamps(ts_raw, jump_idx, offset=fine_offset, rate=rate)
+
+    # Build synthetic audio timestamps anchored at first *corrected* CSV timestamp.
     n_samples = wav.shape[-1]
-    audiots = np.arange(n_samples, dtype=np.float64) / sample_rate + ts[0]
+    audiots = np.arange(n_samples, dtype=np.float64) / sample_rate + ts_corr[0]
 
     # Build a MotorData with the same units as DREGON (rev/s).
     motors = MotorData(
-        timestamps=ts,
+        timestamps=ts_corr,
         measured=motor_rps.T,  # (M_motor, 4) — DREGON convention
         command=motor_rps.T,  # no command logged here; reuse measured
     )
@@ -244,6 +257,8 @@ def load_michaels_record(
         wav_path=str(wav_path),
         csv_path=str(csv_path),
         time_offset=time_offset,
+        fine_offset=fine_offset,
+        rate=rate,
         l_s=valid_l_s,
         r_s=valid_r_s if valid_r_s is not None else len(audio) / sample_rate,
     )
@@ -252,8 +267,6 @@ def load_michaels_record(
     if valid_r_s is None:
         valid_r_s = rec.duration
     rec = rec.slice_by_time(valid_l_s, valid_r_s)
-    # Re-attach metadata that `replace` doesn't touch (it does — but set ranges
-    # to reflect the post-slice frame of reference: now starts at 0).
     rec.l_s = 0.0
     rec.r_s = float(rec.duration)
     return rec
@@ -264,20 +277,25 @@ def load_all_michaels_records(
     sample_rate: int = 16000,
     files: list[tuple] | None = None,
 ) -> list[MichaelsRecord]:
-    """Load every Michael's recording whose files exist in `data_dir`.
+    """Load every Michael's recording whose files exist in ``data_dir``.
 
     Args:
         data_dir: directory containing the WAVs and CSVs (e.g.
-            `data/new-drone-noises/`).
+            ``data/new-drone-noises/``).
         sample_rate: target sample rate.
-        files: optional override of `MICHAELS_FILES` (same 5-tuple format).
+        files: optional override of ``MICHAELS_FILES``.
+            7-tuple format: ``(wav, csv, time_off, l_s, r_s, fine_off, rate)``.
+
     Returns:
-        list of `MichaelsRecord`.
+        list of ``MichaelsRecord``.
     """
     data_dir = Path(data_dir)
     files = files if files is not None else MICHAELS_FILES
     records: list[MichaelsRecord] = []
-    for wav_name, csv_name, t_off, l_s, r_s in files:
+    for entry in files:
+        wav_name, csv_name, t_off, l_s, r_s = entry[:5]
+        fine_off = entry[5] if len(entry) > 5 else 0.15
+        rate = entry[6] if len(entry) > 6 else 1.0
         wav_p = data_dir / wav_name
         csv_p = data_dir / csv_name
         if not (wav_p.exists() and csv_p.exists()):
@@ -290,6 +308,8 @@ def load_all_michaels_records(
             valid_l_s=l_s,
             valid_r_s=r_s,
             recording_id=wav_p.stem,
+            fine_offset=fine_off,
+            rate=rate,
         )
         records.append(rec)
     return records

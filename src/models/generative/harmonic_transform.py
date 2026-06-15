@@ -25,11 +25,8 @@ def _windowed_phasors(freqs, window_len: int, hop_len: int, sr: int):
     phasors = freqs_to_phasors(freqs, sr=sr)
     # Mask harmonics above Nyquist; phasors are complex but the helper takes any tensor.
     phasors = remove_above_nyquist(freqs, phasors, sr=sr)
-    phasors_unfold = F.unfold(
-        phasors.unsqueeze(-1), kernel_size=(window_len, 1), stride=(hop_len, 1)
-    )
-    c = phasors.shape[-2]
-    phasors_unfold = rearrange(phasors_unfold, "b (c k) t -> b c t k", c=c)
+    # .unfold() works on complex tensors (F.unfold does not).
+    phasors_unfold = phasors.unfold(-1, window_len, hop_len)  # (B, C, n_frames, window_len)
     window = torch.hann_window(window_len, device=phasors_unfold.device)
     phasors_windowed = phasors_unfold * rearrange(window, "k -> 1 1 1 k")
     phasors_windowed = phasors_windowed / torch.linalg.vector_norm(

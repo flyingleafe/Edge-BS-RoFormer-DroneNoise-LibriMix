@@ -54,7 +54,7 @@ def make_spectrogram_series(
     *,
     n_fft: int = N_FFT,
     hop_length: int = HOP,
-    fmax: float | None = 4000,
+    fmax: float | None = None,
     log: bool = True,
 ) -> UniformSeries:
     """Return a time-frequency ``UniformSeries`` for an audio track.
@@ -69,7 +69,7 @@ def make_spectrogram_series(
     elif samples.ndim == 2:
         # Flatten channels for a single spectrogram; the renderer handles one
         # channel at a time.
-        waveform = torch.from_numpy(samples[0]).float()
+        waveform = torch.from_numpy(samples).float()
     else:
         raise ValueError(f"Unsupported audio shape {samples.shape} for spectrogram")
 
@@ -83,8 +83,8 @@ def make_spectrogram_series(
     )
     S = torch.abs(X).numpy()
     if fmax is not None:
-        max_bin = min(int(fmax / (audio.sr / 2) * S.shape[0]), S.shape[0])
-        S = S[:max_bin, :]
+        max_bin = min(int(fmax / (audio.sr / 2) * S.shape[-2]), S.shape[-2])
+        S = S[..., :max_bin, :]
     if log:
         S = 20 * np.log10(S + 1e-8)
 
@@ -175,10 +175,10 @@ def make_salience_series(
 def _render_spectrogram(ax: matplotlib.axes.Axes, series: UniformSeries) -> None:
     """Render a magnitude spectrogram produced by ``make_spectrogram_series``."""
     S = series.samples
-    if S.ndim != 2:
-        raise ValueError(f"Spectrogram series must be 2-D (freq, time), got {S.shape}")
+    if S.ndim < 2:
+        raise ValueError(f"Spectrogram series must be at least 2-D (freq, time), got {S.shape}")
     times = series.sample_times()
-    freqs = np.linspace(0, series.sr / 2, S.shape[0])
+    freqs = np.linspace(0, series.sr / 2, S.shape[-2])
     ax.pcolormesh(times, freqs, S, shading="auto", cmap="magma")
     ax.set_ylabel("Freq (Hz)")
 
