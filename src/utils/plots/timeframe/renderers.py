@@ -257,7 +257,7 @@ def render_event_fallback(series: Any, context: TrackContext) -> RenderedTrack:
             handles.append(line)
         else:
             n_rows = values.shape[0]
-            colors = plt.cm.tab10(np.linspace(0, 1, max(n_rows, 10)))
+            colors = plt.cm.tab10(np.linspace(0, 1, max(n_rows, 10)))  # pyright: ignore[reportAttributeAccessIssue]
             for r in range(n_rows):
                 (line,) = ax.plot(times, values[r], color=colors[r], label=f"row{r}")
                 handles.append(line)
@@ -278,8 +278,8 @@ def render_segment_fallback(series: Any, context: TrackContext) -> RenderedTrack
     values = series.values
     if values is not None and values.ndim > 0 and values.shape[0] == 1:
         scalar = np.asarray(values).ravel()
-        norm = plt.Normalize(scalar.min(), scalar.max())
-        cmap = plt.cm.viridis
+        norm = plt.Normalize(scalar.min(), scalar.max())  # pyright: ignore[reportPrivateImportUsage]
+        cmap = plt.cm.viridis  # pyright: ignore[reportAttributeAccessIssue]
         for i, (s, e) in enumerate(zip(starts, ends)):
             ax.axvspan(s, e, color=cmap(norm(scalar[i])), alpha=0.4)
     else:

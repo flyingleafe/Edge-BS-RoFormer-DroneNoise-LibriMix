@@ -615,7 +615,7 @@ def evaluate(
             for tag_key, tag_val in frame.tags.items():
                 if tag_key not in ("id",):
                     row[tag_key] = tag_val
-            if per_ch_snr is not None and ch < len(per_ch_snr):
+            if isinstance(per_ch_snr, (list, tuple)) and ch < len(per_ch_snr):
                 row["input_snr_channel"] = per_ch_snr[ch]
 
             per_sample.append(row)
