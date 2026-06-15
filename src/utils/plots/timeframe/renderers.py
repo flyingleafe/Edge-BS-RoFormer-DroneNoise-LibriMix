@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from tasks.rps_prediction import HOP, N_FFT
+from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
 from utils.data import EventSeries, SegmentSeries, UniformSeries
 
 from .registry import RenderedTrack, TrackContext, register_renderer
@@ -367,6 +367,7 @@ def render_salience(series: Any, context: TrackContext) -> RenderedTrack:
 
     handles = []
     # Ground-truth RPS (dotted) — from the frame's rps track, on the salience grid.
+    gt = None
     frame = context.style.get("_frame")
     if frame is not None and "rps" in frame:
         rps_track = frame["rps"]
@@ -374,8 +375,13 @@ def render_salience(series: Any, context: TrackContext) -> RenderedTrack:
             gt = np.asarray(rps_track.interpolate(times))
             for r in range(min(gt.shape[0], len(ROTOR_COLORS))):
                 (line,) = ax.plot(
-                    times, gt[r], color=ROTOR_COLORS[r], linewidth=1.4, linestyle=":",
-                    alpha=0.9, label=f"GT R{r + 1}",
+                    times,
+                    gt[r],
+                    color=ROTOR_COLORS[r],
+                    linewidth=1.4,
+                    linestyle=":",
+                    alpha=0.9,
+                    label=f"GT R{r + 1}",
                 )
                 handles.append(line)
 
@@ -383,11 +389,19 @@ def render_salience(series: Any, context: TrackContext) -> RenderedTrack:
     rps_pred = series.tags.get("plot.rps_pred")
     if rps_pred is not None:
         rps_pred = np.asarray(rps_pred)
+        # PIT-trained predictors emit rotors in arbitrary order; align to GT so
+        # colours mean a fixed rotor identity (matches the evaluation matching).
+        if gt is not None:
+            rps_pred = align_rps_to_gt(rps_pred, gt)
         pred_times = np.linspace(times[0], times[-1], rps_pred.shape[-1])
         for r in range(min(rps_pred.shape[0], len(ROTOR_COLORS))):
             (line,) = ax.plot(
-                pred_times, rps_pred[r], color=ROTOR_COLORS[r], linewidth=1.6,
-                alpha=0.95, label=f"pred R{r + 1}",
+                pred_times,
+                rps_pred[r],
+                color=ROTOR_COLORS[r],
+                linewidth=1.6,
+                alpha=0.95,
+                label=f"pred R{r + 1}",
             )
             handles.append(line)
 

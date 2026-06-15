@@ -14,6 +14,7 @@ from tasks.rps_prediction import (
     HOP,
     N_FFT,
     SR_AUDIO,
+    align_rps_to_gt,
 )
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
@@ -51,6 +52,10 @@ def plot_full_sequence(
     """
     if audio is None or rps_gt is None or rps_pred is None:
         raise ValueError("audio, rps_gt, and rps_pred are all required")
+
+    # PIT-trained predictors emit rotors in arbitrary order; align to GT so the
+    # overlay colours and the per-frame MSE trace match the evaluation matching.
+    rps_pred = align_rps_to_gt(rps_pred, rps_gt)
 
     audio = np.asarray(audio, dtype=np.float32)
     duration = len(audio) / sr

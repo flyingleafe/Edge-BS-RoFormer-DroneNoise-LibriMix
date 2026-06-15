@@ -39,6 +39,51 @@ N_ROTORS: int = 4
 DEVICE: str = "cpu"  # evaluation default
 
 
+# ── Permutation alignment ─────────────────────────────────────────────────
+
+
+def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
+    """Reorder a prediction's rotor rows to best-match the ground truth.
+
+    RPS predictors are trained with a permutation-invariant objective, so the
+    rotor *order* of a prediction is arbitrary: predicted row ``i`` does not
+    correspond to ground-truth rotor ``i``. Evaluation accounts for this by
+    searching all rotor assignments (see :func:`evaluate`'s ``pit`` branch).
+    **Any plot that overlays a prediction on the ground truth must apply the
+    same matching**, otherwise rotors appear swapped even when the prediction is
+    good.
+
+    Returns ``pred`` with its rotor rows permuted so that ``pred[k]``
+    corresponds to ``gt[k]`` under the assignment minimising total MSE. The
+    optimal linear assignment is identical to the brute-force 4!-permutation PIT
+    search used by evaluation, so plots and metrics agree.
+
+    ``pred`` and ``gt`` are ``(R, F)``; they may differ in frame count (``gt`` is
+    linearly resampled onto the prediction's grid for the cost computation). If
+    the shapes are incompatible (not 2-D, mismatched/​<2 rotor counts) ``pred``
+    is returned unchanged.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    pred = np.asarray(pred, dtype=np.float64)
+    gt = np.asarray(gt, dtype=np.float64)
+    if pred.ndim != 2 or gt.ndim != 2 or pred.shape[0] != gt.shape[0] or pred.shape[0] < 2:
+        return pred
+
+    R, F = pred.shape
+    if gt.shape[1] != F:  # put GT on the prediction's frame grid
+        xp = np.linspace(0.0, 1.0, gt.shape[1])
+        xq = np.linspace(0.0, 1.0, F)
+        gt = np.vstack([np.interp(xq, xp, gt[r]) for r in range(R)])
+
+    # cost[i, j] = MSE(pred rotor i, gt rotor j); Hungarian == optimal PIT match.
+    cost = np.mean((pred[:, None, :] - gt[None, :, :]) ** 2, axis=-1)  # (R, R)
+    row, col = linear_sum_assignment(cost)
+    aligned = np.empty_like(pred)
+    aligned[col] = pred[row]
+    return aligned
+
+
 # ── Predictor protocol ────────────────────────────────────────────────────
 
 

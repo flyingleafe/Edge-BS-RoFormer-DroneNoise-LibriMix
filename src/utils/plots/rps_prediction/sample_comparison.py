@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torchaudio
 
-from tasks.rps_prediction import HOP, N_FFT
+from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
 from utils.data import EventSeries, TimeFrame, UniformSeries
 from utils.plots.timeframe import plot_timeframe
 
@@ -52,7 +52,9 @@ def plot_sample_comparison(
 
     audio_us = cast(UniformSeries, sample["audio"])
 
-    # Convert preds into overlay tracks.
+    # Convert preds into overlay tracks. PIT-trained predictors emit rotors in
+    # arbitrary order, so align each prediction to the GT rotor order first.
+    preds = _align_preds_to_gt(sample, preds)
     for name, pred in preds.items():
         pred_us = _prediction_to_uniform(pred, audio_us)
         sample = sample.with_track(f"pred_{name}", pred_us)
@@ -70,6 +72,18 @@ def plot_sample_comparison(
         figsize=figsize,
         **style,
     )
+
+
+def _align_preds_to_gt(sample: TimeFrame, preds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Reorder each prediction's rotor rows to the GT order (PIT match).
+
+    Returns ``preds`` unchanged if the sample has no GT ``rps`` track.
+    """
+    rps = sample["rps"] if "rps" in sample else None  # noqa: SIM401 (TimeFrame has no .get)
+    if not isinstance(rps, EventSeries) or rps.values is None:
+        return preds
+    gt = np.asarray(rps.values, dtype=np.float64)  # resampled to pred grid inside
+    return {name: align_rps_to_gt(np.asarray(pred), gt) for name, pred in preds.items()}
 
 
 def _prediction_to_uniform(pred: np.ndarray, audio_us: UniformSeries) -> UniformSeries:
@@ -165,6 +179,8 @@ def _plot_two_columns(
         for model_name, pred in ch_preds.items():
             T_pred = pred.shape[-1]
             pred_times = np.linspace(0.0, dur, T_pred) + audio_us.t_start
+            # Align rotor order to GT (PIT match) before plotting / MAE.
+            pred = align_rps_to_gt(pred, np.asarray(rps_es.interpolate(pred_times)))
             for r, color in enumerate(ROTOR_COLORS):
                 ax_rps.plot(
                     pred_times,

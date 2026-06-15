@@ -24,7 +24,7 @@ import torch
 
 from models.multif0.utils import cqt_freq_grid
 from models.salience_rps import SalienceRPSPredictor
-from tasks.rps_prediction import HOP, N_FFT
+from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
 from utils.data import TimeFrame, UniformSeries
 from utils.plots.timeframe import plot_timeframe
 from utils.plots.timeframe.renderers import (
@@ -199,13 +199,21 @@ def plot_salience_comparison(
         ax = fig.axes[-1]
         mono = select_channel(cast(UniformSeries, sample["audio"]), channel)
         dur = mono.duration
+        gt_track = sample["rps"] if "rps" in sample else None  # noqa: SIM401 (TimeFrame has no .get)
         for model in models.values():
             pred = model_rps_prediction(model, mono, device=device, track_threshold=track_threshold)
             pred_times = np.linspace(mono.t_start, mono.t_start + dur, pred.shape[-1])
+            # Align rotor order to GT (PIT match) so overlay colours are consistent.
+            if gt_track is not None and getattr(gt_track, "values", None) is not None:
+                pred = align_rps_to_gt(pred, np.asarray(gt_track.interpolate(pred_times)))
             for r in range(min(pred.shape[0], len(ROTOR_COLORS))):
                 ax.plot(
-                    pred_times, pred[r], color=ROTOR_COLORS[r], linewidth=1.4,
-                    linestyle="--", alpha=0.9,
+                    pred_times,
+                    pred[r],
+                    color=ROTOR_COLORS[r],
+                    linewidth=1.4,
+                    linestyle="--",
+                    alpha=0.9,
                 )
         ax.set_title("RPS — GT (solid) vs predictions (dashed)")
 
