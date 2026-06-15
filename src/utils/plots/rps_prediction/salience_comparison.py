@@ -79,7 +79,12 @@ def model_salience_series(
         raise ValueError(f"model_salience_series expects mono audio, got shape {tuple(wav.shape)}")
     logits = model(wav.unsqueeze(0))  # (1, n_bins, T)
     salience = torch.sigmoid(logits)[0]  # (n_bins, T)
-    freqs = cqt_freq_grid(**model.grid_params())
+    # Frequency axis of the salience the model *emits*: the decoupled output grid
+    # (super-resolution head) when present, else the CQT input grid.
+    if getattr(model, "output_freqs", None) is not None:
+        freqs = model.output_freqs()
+    else:
+        freqs = cqt_freq_grid(**model.grid_params())
     frame_sr = float(model.spec_sr) / float(model.spec_hop)
     rps_pred = None
     if with_prediction:
