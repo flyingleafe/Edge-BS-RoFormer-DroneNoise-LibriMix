@@ -4,11 +4,11 @@ Storage model
 -------------
 We store the raw sample array, the sample rate, an absolute int64 anchor
 (`t_start_ticks`), and a sub-sample **phase** — the offset of `samples[0]`'s
-left edge from `t_start`, in sample units, ∈ [−1, 0].
+left edge from `t_start`, in sample units, ∈ [−1, 0].
 
 No per-sample edge times are stored.  Every edge is derived from these four
 quantities.  Because the phase is *relative* and bounded by one sample, a
-float64 stores it to ≈ 1e‑21 s — effectively exact.  The Unix‑magnitude
+float64 stores it to ≈ 1e‑21 s — effectively exact.  The Unix‑magnitude
 precision problem never touches it; only the (exact int64) anchor carries the
 magnitude.
 
@@ -41,6 +41,7 @@ Invariants
 from __future__ import annotations
 
 import math
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -55,12 +56,12 @@ INDEX_EPSILON: float = 1e-6
 
 @dataclass(frozen=True, eq=False)
 class UniformSeries(TimeSeries):
-    """A regular-rate sequence of samples along axis 0.
+    """A regular-rate sequence of samples along axis 0.
 
     Parameters
     ----------
     samples : np.ndarray
-        Shape ``(…, N)``.  Axis ‑1 is time.
+        Shape ``(…, N)``.  Axis -1 is time.
     sr : float
         Sample rate in Hz.
     t_start_ticks : int
@@ -70,7 +71,9 @@ class UniformSeries(TimeSeries):
         May differ from ``N/sr`` after sub‑sample slicing.
     phase : float
         Offset of ``samples[0]``'s left edge from ``t_start``, in **sample
-        units**, ∈ [−1, 0].  The absolute edge time is ``t_first_edge``.
+        units**, ∈ [-1, 0].  The absolute edge time is ``t_first_edge``.
+    tags : Mapping[str, Hashable]
+        Optional scalar metadata attached to the series.
     """
 
     samples: np.ndarray = field(repr=False)
@@ -78,6 +81,7 @@ class UniformSeries(TimeSeries):
     t_start_ticks: int
     dur_ticks: int
     phase: float
+    tags: Mapping[str, Hashable] = field(default_factory=dict)
 
     # ---- validation -----------------------------------------------------
     def __post_init__(self) -> None:
@@ -87,6 +91,11 @@ class UniformSeries(TimeSeries):
             raise ValueError("sr must be > 0")
         if self.phase < -1.0 or self.phase > 0.0:
             raise ValueError(f"phase ({self.phase}) must be in [-1, 0]")
+        # Normalize tags.
+        if self.tags is None:
+            object.__setattr__(self, "tags", {})
+        elif not isinstance(self.tags, dict):
+            object.__setattr__(self, "tags", dict(self.tags))
         # The declared domain is bounded by the sample grid within one sample.
         N = self.samples.shape[-1]
         if N == 0:
@@ -108,6 +117,7 @@ class UniformSeries(TimeSeries):
         sr: float,
         *,
         t_start: float | int = 0.0,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> UniformSeries:
         """Build a series whose declared interval matches its sample grid exactly.
 
@@ -127,6 +137,7 @@ class UniformSeries(TimeSeries):
             t_start_ticks=t0,
             dur_ticks=dur,
             phase=0.0,
+            tags=tags or {},
         )
 
     @classmethod
@@ -138,6 +149,7 @@ class UniformSeries(TimeSeries):
         t_start: int = 0,
         dur: int = 0,
         phase: float = 0.0,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> UniformSeries:
         """Build from explicit int64 ticks and phase."""
         return cls(
@@ -146,6 +158,7 @@ class UniformSeries(TimeSeries):
             t_start_ticks=int(t_start),
             dur_ticks=int(dur),
             phase=float(phase),
+            tags=tags or {},
         )
 
     # ---- domain properties (seconds) ------------------------------------
@@ -271,6 +284,7 @@ class UniformSeries(TimeSeries):
             t_start_ticks=ta_tick,
             dur_ticks=rb - ra,
             phase=new_phase,
+            tags=self.tags,
         )
 
     # ---- shift ----------------------------------------------------------
@@ -326,17 +340,29 @@ class UniformSeries(TimeSeries):
             )
 
         new_dur_ticks = self.dur_ticks + other.dur_ticks
+        new_tags = dict(self.tags)
+        for k, v in other.tags.items():
+            if k in new_tags:
+                if new_tags[k] != v:
+                    raise IncompatibleSeriesError(
+                        f"conflicting tag {k!r}: {new_tags[k]!r} vs {v!r}"
+                    )
+            else:
+                new_tags[k] = v
         return UniformSeries(
             samples=new_samples,
             sr=sr,
             t_start_ticks=self.t_start_ticks,
             dur_ticks=new_dur_ticks,
             phase=self.phase,
+            tags=new_tags,
         )
 
     # ---- equality -------------------------------------------------------
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, UniformSeries):
+            return False
+        if self.tags != other.tags:
             return False
         if not (
             self.t_start_ticks == other.t_start_ticks
@@ -462,4 +488,5 @@ class UniformSeries(TimeSeries):
             t_start_ticks=self.t_start_ticks,
             dur_ticks=new_dur_ticks,
             phase=0.0,
+            tags=self.tags,
         )

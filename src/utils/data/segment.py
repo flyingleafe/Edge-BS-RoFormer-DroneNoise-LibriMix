@@ -22,6 +22,7 @@ collision is negligible in practice but users may pass explicit ids.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -61,6 +62,8 @@ class SegmentSeries(TimeSeries):
         Absolute domain-start anchor (int64 ticks).
     dur_ticks : int
         Declared domain duration (int64 ticks).
+    tags : Mapping[str, Hashable]
+        Optional scalar metadata attached to the series.
     """
 
     starts_ticks: np.ndarray = field(repr=False)
@@ -69,6 +72,7 @@ class SegmentSeries(TimeSeries):
     ids: np.ndarray = field(repr=False, default=None)  # type: ignore[assignment]  # set in __post_init__
     t_start_ticks: int = 0
     dur_ticks: int = 0
+    tags: Mapping[str, Hashable] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         s = np.asarray(self.starts_ticks, dtype=np.int64)
@@ -101,6 +105,11 @@ class SegmentSeries(TimeSeries):
             object.__setattr__(self, "values", v)
         if self.dur_ticks < 0:
             raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
+        # Normalize tags.
+        if self.tags is None:
+            object.__setattr__(self, "tags", {})
+        elif not isinstance(self.tags, dict):
+            object.__setattr__(self, "tags", dict(self.tags))
         if s.size:
             if s[0] < 0:
                 raise ValueError("segment starts before t_start (relative < 0)")
@@ -120,6 +129,7 @@ class SegmentSeries(TimeSeries):
         *,
         t_start: float | int | None = None,
         t_end: float | int | None = None,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> SegmentSeries:
         """Build from absolute times (float seconds or int ticks)."""
         s = np.asarray(starts)
@@ -153,6 +163,7 @@ class SegmentSeries(TimeSeries):
             ids=ids,  # type: ignore[arg-type]
             t_start_ticks=t0,
             dur_ticks=dur,
+            tags=tags or {},
         )
 
     @classmethod
@@ -165,6 +176,7 @@ class SegmentSeries(TimeSeries):
         *,
         t_start: int = 0,
         dur: int,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> SegmentSeries:
         """Build from relative int64 ticks."""
         rs = np.asarray(starts, dtype=np.int64)
@@ -176,6 +188,7 @@ class SegmentSeries(TimeSeries):
             ids=ids,  # type: ignore[arg-type]
             t_start_ticks=int(t_start),
             dur_ticks=int(dur),
+            tags=tags or {},
         )
 
     @property
@@ -257,6 +270,7 @@ class SegmentSeries(TimeSeries):
             ids=nids,
             t_start_ticks=a_tick,
             dur_ticks=rb - ra,
+            tags=self.tags,
         )
 
     # ---- shift ----------------------------------------------------------
@@ -306,6 +320,16 @@ class SegmentSeries(TimeSeries):
         else:
             new_vals = np.concatenate([self.values, other.values[..., right_keep]], axis=-1)  # type: ignore[arg-type]
 
+        new_tags = dict(self.tags)
+        for k, v in other.tags.items():
+            if k in new_tags:
+                if new_tags[k] != v:
+                    raise IncompatibleSeriesError(
+                        f"conflicting tag {k!r}: {new_tags[k]!r} vs {v!r}"
+                    )
+            else:
+                new_tags[k] = v
+
         return SegmentSeries(
             starts_ticks=new_starts,
             ends_ticks=new_ends,
@@ -313,6 +337,7 @@ class SegmentSeries(TimeSeries):
             ids=new_ids,
             t_start_ticks=self.t_start_ticks,
             dur_ticks=self_dur + other_dur,
+            tags=new_tags,
         )
 
     # ---- interpolation -------------------------------------------------
@@ -332,6 +357,8 @@ class SegmentSeries(TimeSeries):
     # ---- equality -------------------------------------------------------
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, SegmentSeries):
+            return False
+        if self.tags != other.tags:
             return False
         if not (self.t_start_ticks == other.t_start_ticks and self.dur_ticks == other.dur_ticks):
             return False

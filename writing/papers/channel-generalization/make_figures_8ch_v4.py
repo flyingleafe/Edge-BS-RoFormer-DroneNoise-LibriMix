@@ -152,7 +152,7 @@ def _get_gt_on_frame_grid(sample):
     audio = np.asarray(sample["audio"].samples, dtype=np.float32)
     if audio.ndim == 1:
         audio = audio[np.newaxis, :]
-    dur = audio.shape[1] / SR_AUDIO
+
     n_frames = audio.shape[1] // HOP + 1
     frame_times = np.arange(n_frames) * HOP / SR_AUDIO + rps_es.t_start + N_FFT / SR_AUDIO / 2
     gt = rps_es.interpolate(frame_times)

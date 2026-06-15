@@ -45,8 +45,8 @@ Route to the right skill (table below), execute, and close with `record-and-reme
 |-------|-------------|
 | `run-experiment` | Task requires training a model, running evaluation, orchestrating an experiment |
 | `generate-model-comparisons` | Publication-ready plots/tables from eval results |
-| `generate-slidev-presentation` | Academic presentations with mermaid + result figures |
-| `examine-presentation-slides` | Start Slidev and visually inspect slides |
+| `create-typst-report` | Create a new Typst report in `writing/reports/` |
+| `create-typst-slides` | Create a new Typst slide deck in `writing/slides/` |
 | `vast-server-training` | Run training on remote GPU (via `postdoc submit` / SkyPilot) |
 | `reimplement-model` | Port a paper model into the project framework |
 | `create-dregon-dataset` | (Re)create any DREGON-LM dataset variant |
@@ -67,7 +67,8 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 | **RPS conditioning** (RotorEncoder, fusion, predictor interface) | — | `src/models/AGENTS.md` + `src/tasks/rps-prediction/AGENTS.md`. |
 | **Running an experiment** (train / eval / orchestrate) | `run-experiment` (`vast-server-training` for remote GPU) | `experiments/AGENTS.md`, `configs/AGENTS.md`, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`. |
 | **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `generate_comparison.py`. |
-| **Producing a presentation / slides** | `generate-slidev-presentation`, then `examine-presentation-slides` | `slides/`; results figures via `generate_comparison.py`. |
+| **Producing a presentation / slides** | `create-typst-slides` | `writing/AGENTS.md`; results figures via `generate_comparison.py`. |
+| **Producing a report** | `create-typst-report` | `writing/AGENTS.md`; results figures via `generate_comparison.py`. |
 | **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `fwh_rotor_sim/AGENTS.md`. |
 | **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (DVC + W&B artifacts; rsync fallback). |
 
@@ -85,6 +86,7 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 | `src/utils/data/` | **Fixed‑point time‑series algebra** for audio, telemetry, and any aligned data. Use this for manipulating audio with co‑recorded signals (RPS, IMU, VAD). Four frozen container types with a uniform `slice`/`concat`/`shift` algebra, exact int64‑tick storage. | **Always read `src/utils/data/AGENTS.md` before any task touching audio, media, or timeseries data.** Full API reference at [`src/utils/data/API.md`](src/utils/data/API.md). |
 | `experiments/` | Experiment YAML definitions | Format, creating new experiments |
 | `data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM creation scripts |
+| `writing/` | Reports, slides, and papers (Typst + LaTeX) | See `writing/AGENTS.md` for templates, build chain, and visual-check workflow. |
 | `notebooks/` | Jupyter notebooks for analysis | Result analysis, data exploration |
 | `docs/` | Design docs and debugging guides | Postdoc specs, training loop docs, R2 sync (`docs/data-and-artifacts.md`) |
 | `tests/` | Postdoc system tests | Test structure, running tests |

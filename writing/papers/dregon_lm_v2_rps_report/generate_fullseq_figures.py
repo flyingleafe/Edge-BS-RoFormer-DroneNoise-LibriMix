@@ -11,5 +11,6 @@ Now produced by::
 
 See legacy/generate_fullseq_figures.py for the original.
 """
+
 if __name__ == "__main__":
     print(__doc__)

@@ -84,7 +84,7 @@ def plot_mse_bars(eval_path: Path, out_name: str, title_suffix: str = ""):
             ax = axes[mi, ri]
             ch_mses = [mse_by_key.get((rec, ch), 0.0) for ch in range(8)]
             colors = ["#2ca02c" if ch == 0 else "#d62728" for ch in range(8)]
-            bars = ax.bar(range(8), ch_mses, color=colors, edgecolor="black", linewidth=0.5)
+            ax.bar(range(8), ch_mses, color=colors, edgecolor="black", linewidth=0.5)
             ax.set_xticks(range(8))
             ax.set_xlabel("Channel")
             if ri == 0:
@@ -158,7 +158,7 @@ def _get_gt_on_frame_grid(sample, pred_times: np.ndarray | None = None):
     audio = np.asarray(sample["audio"].samples, dtype=np.float32)
     if audio.ndim == 1:
         audio = audio[np.newaxis, :]
-    dur = audio.shape[1] / SR_AUDIO
+
     n_frames = audio.shape[1] // HOP + 1
     frame_times = np.arange(n_frames) * HOP / SR_AUDIO + rps_es.t_start + N_FFT / SR_AUDIO / 2
     gt = rps_es.interpolate(frame_times)  # (4, n_frames)

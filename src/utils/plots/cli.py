@@ -131,7 +131,7 @@ def main(
 
 def _import_plot_packages() -> None:
     """Import known plot sub-packages to trigger registration."""
-    for mod_name in ["utils.plots.rps_prediction"]:
+    for mod_name in ["utils.plots.rps_prediction", "utils.plots.timeframe"]:
         with contextlib.suppress(ImportError):
             importlib.import_module(mod_name)
 

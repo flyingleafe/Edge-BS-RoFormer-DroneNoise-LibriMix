@@ -16,5 +16,6 @@ Now produced by evaluate-rps + make-plot::
 
 See legacy/generate_figures_v2.py for the original 239-line script.
 """
+
 if __name__ == "__main__":
     print(__doc__)

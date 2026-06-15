@@ -10,6 +10,7 @@ All time comparisons are exact (== on ints).
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -44,12 +45,15 @@ class EventSeries(TimeSeries):
         Absolute domain-start anchor (int64 ticks).
     dur_ticks : int
         Declared domain duration (int64 ticks).  `t_end_ticks == t_start_ticks + dur_ticks`.
+    tags : Mapping[str, Hashable]
+        Optional scalar metadata attached to the series.
     """
 
     timestamp_ticks: np.ndarray = field(repr=False)
     values: np.ndarray | None = field(repr=False, default=None)
     t_start_ticks: int = 0
     dur_ticks: int = 0
+    tags: Mapping[str, Hashable] = field(default_factory=dict)
 
     # ---- validation -----------------------------------------------------
     def __post_init__(self) -> None:
@@ -66,6 +70,11 @@ class EventSeries(TimeSeries):
                 )
         if self.dur_ticks < 0:
             raise ValueError(f"dur_ticks ({self.dur_ticks}) < 0")
+        # Normalize tags.
+        if self.tags is None:
+            object.__setattr__(self, "tags", {})
+        elif not isinstance(self.tags, dict):
+            object.__setattr__(self, "tags", dict(self.tags))
         if ts.size:
             if ts[0] < 0:
                 raise ValueError("events before t_start (relative < 0)")
@@ -85,6 +94,7 @@ class EventSeries(TimeSeries):
         *,
         t_start: float | int | None = None,
         t_end: float | int | None = None,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> EventSeries:
         """Build from absolute timestamps (float seconds or int ticks).
 
@@ -113,7 +123,7 @@ class EventSeries(TimeSeries):
         else:
             dur_ticks = secs_to_ticks(float(t_end)) - t_start_ticks
 
-        return cls._from_relative(rel_ts, values, t_start_ticks, dur_ticks)
+        return cls._from_relative(rel_ts, values, t_start_ticks, dur_ticks, tags=tags)
 
     @classmethod
     def from_ticks(
@@ -123,10 +133,11 @@ class EventSeries(TimeSeries):
         *,
         t_start: int = 0,
         dur: int,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> EventSeries:
         """Build from relative int64 ticks and explicit domain."""
         rel_ts = np.asarray(timestamps, dtype=np.int64)
-        return cls._from_relative(rel_ts, values, int(t_start), int(dur))
+        return cls._from_relative(rel_ts, values, int(t_start), int(dur), tags=tags)
 
     @classmethod
     def _from_relative(
@@ -135,6 +146,7 @@ class EventSeries(TimeSeries):
         values: np.ndarray | None,
         t_start_ticks: int,
         dur_ticks: int,
+        tags: Mapping[str, Hashable] | None = None,
     ) -> EventSeries:
         """Fast-path: timestamps already relative int64 ticks.  Bypasses
         __post_init__ conversion.
@@ -144,6 +156,7 @@ class EventSeries(TimeSeries):
         object.__setattr__(self, "values", values)
         object.__setattr__(self, "t_start_ticks", int(t_start_ticks))
         object.__setattr__(self, "dur_ticks", int(dur_ticks))
+        object.__setattr__(self, "tags", dict(tags or {}))
         return self
 
     # ---- domain properties (seconds) ------------------------------------
@@ -203,7 +216,7 @@ class EventSeries(TimeSeries):
         hi = int(np.searchsorted(ts, rb, side="left"))  # half-open at right
         new_ts = ts[lo:hi] - ra  # rebase to new t_start = a_tick
         new_vals = None if self.values is None else self.values[..., lo:hi]
-        return EventSeries._from_relative(new_ts, new_vals, a_tick, rb - ra)
+        return EventSeries._from_relative(new_ts, new_vals, a_tick, rb - ra, tags=self.tags)
 
     # ---- shift ----------------------------------------------------------
     def shift(self, t_delta: float | int) -> EventSeries:
@@ -215,6 +228,7 @@ class EventSeries(TimeSeries):
             self.values,
             self.t_start_ticks + dt,
             self.dur_ticks,
+            tags=self.tags,
         )
 
     # ---- concat ---------------------------------------------------------
@@ -240,16 +254,27 @@ class EventSeries(TimeSeries):
         new_ts = np.concatenate([self.timestamp_ticks, other.timestamp_ticks + int(self_dur)])
         new_t_start = self.t_start_ticks
         new_dur = self_dur + other_dur
+        new_tags = dict(self.tags)
+        for k, v in other.tags.items():
+            if k in new_tags:
+                if new_tags[k] != v:
+                    raise IncompatibleSeriesError(
+                        f"conflicting tag {k!r}: {new_tags[k]!r} vs {v!r}"
+                    )
+            else:
+                new_tags[k] = v
         new_vals: np.ndarray | None
         if self.values is None:
             new_vals = None
         else:
             new_vals = np.concatenate([self.values, other.values], axis=-1)  # type: ignore[arg-type]
-        return EventSeries._from_relative(new_ts, new_vals, new_t_start, new_dur)
+        return EventSeries._from_relative(new_ts, new_vals, new_t_start, new_dur, tags=new_tags)
 
     # ---- equality -------------------------------------------------------
     def equal(self, other: TimeSeries) -> bool:
         if not isinstance(other, EventSeries):
+            return False
+        if self.tags != other.tags:
             return False
         if not (self.t_start_ticks == other.t_start_ticks and self.dur_ticks == other.dur_ticks):
             return False
@@ -372,4 +397,5 @@ class EventSeries(TimeSeries):
             t_start_ticks=t0_ticks,
             dur_ticks=new_dur_ticks,
             phase=0.0,
+            tags=self.tags,
         )

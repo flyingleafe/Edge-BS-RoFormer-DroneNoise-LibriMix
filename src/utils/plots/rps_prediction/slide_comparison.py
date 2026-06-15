@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-import torchaudio
 
 from tasks.rps_prediction import HOP, N_FFT
-from utils.data import TimeFrame
-from utils.plots.rps_prediction.sample_comparison import ROTOR_COLORS
+from utils.data import EventSeries, TimeFrame, UniformSeries
+from utils.plots.rps_prediction.sample_comparison import (
+    ROTOR_COLORS,
+    _load_sample,
+    _plot_spectrogram,
+)
 
 
 def plot_slide_comparison(
@@ -49,6 +53,7 @@ def plot_slide_comparison(
     if sample is None and sample_path is None:
         raise ValueError("One of sample or sample_path is required")
     if sample is None:
+        assert sample_path is not None, "sample_path is required when sample is None"
         sample = _load_sample(sample_path)
     if preds is None:
         preds = {}
@@ -56,16 +61,18 @@ def plot_slide_comparison(
         channels = [0, 1]
 
     # Normalise preds to per-channel dict
+    preds_by_ch: dict[int, dict[str, np.ndarray]]
     if preds and isinstance(next(iter(preds.values())), np.ndarray):
-        preds = {ch: preds for ch in channels}
+        preds_by_ch = {ch: preds for ch in channels}  # type: ignore[assignment]
+    else:
+        preds_by_ch = cast(dict[int, dict[str, np.ndarray]], preds)
 
-    audio_us = sample["audio"]
-    rps_es = sample["rps"]
+    audio_us = cast(UniformSeries, sample["audio"])
+    rps_es = cast(EventSeries, sample["rps"])
     audio = np.asarray(audio_us.samples, dtype=np.float32)
     sr = audio_us.sr
     dur = audio.shape[-1] / sr
 
-    # GT on frame grid
     sample_audio = audio[0] if audio.ndim > 1 else audio
     n_frames = len(sample_audio) // HOP + 1
     frame_times = np.arange(n_frames) * HOP / sr + rps_es.t_start + N_FFT / sr / 2
@@ -102,7 +109,7 @@ def plot_slide_comparison(
             )
 
         # Predictions (per-channel)
-        ch_preds = preds.get(ch, {})
+        ch_preds = preds_by_ch.get(ch, {})
         for model_name, pred in ch_preds.items():
             T_pred = pred.shape[-1]
             pred_times = np.linspace(0.0, dur, T_pred) + audio_us.t_start
@@ -129,46 +136,3 @@ def plot_slide_comparison(
 
     fig.tight_layout()
     return fig
-
-
-def _plot_spectrogram(ax, audio: np.ndarray, sr: float, t_start: float, dur: float) -> None:
-    window = torch.hann_window(N_FFT)
-    X = torch.stft(
-        torch.from_numpy(audio).float(),
-        n_fft=N_FFT,
-        hop_length=HOP,
-        window=window,
-        return_complex=True,
-    )
-    S = torch.abs(X).numpy()
-    times = np.linspace(t_start, t_start + dur, S.shape[-1])
-    freqs = np.linspace(0, sr / 2, S.shape[0])
-    im = ax.pcolormesh(times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma")
-    ax.set_ylabel("Freq (Hz)", fontsize=8)
-    ax.set_ylim(0, 4000)
-
-
-def _load_sample(path: str) -> TimeFrame:
-    from pathlib import Path
-
-    from utils.data import EventSeries, UniformSeries
-
-    d = Path(path)
-    waveform, file_sr = torchaudio.load(str(d / "mixture.wav"))
-    audio = waveform.squeeze(0).numpy().astype(np.float32)
-    rps_raw = np.load(str(d / "rps.npy")).astype(np.float64)
-    M = rps_raw.shape[1]
-    dur_s = waveform.shape[-1] / file_sr
-    motor_sr = M / dur_s if dur_s > 0 else 1000.0
-    motor_times = np.arange(M) / motor_sr
-    rps_es = EventSeries.from_events(
-        timestamps=motor_times,
-        values=rps_raw,
-        t_start=0.0,
-        t_end=dur_s,
-    )
-    audio_us = UniformSeries.from_samples(audio, sr=float(file_sr), t_start=0.0)
-    return TimeFrame.from_tracks(
-        {"audio": audio_us, "rps": rps_es},
-        tags={"id": d.name},
-    )
