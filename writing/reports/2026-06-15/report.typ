@@ -1,4 +1,4 @@
-#import "/writing/templates/typst/report.typ": report, author-meta
+#import "/writing/templates/typst/report.typ": author-meta, report
 
 #show: report.with(
   title: [Salience-Map Multi-Pitch Baselines for RPS Prediction],
@@ -74,7 +74,9 @@ the cleaned `motors_command` telemetry. Evaluation is fully permutation-invarian
     [SimpleConv (8ch)], [Regression], [4 conv blocks, global pooling + 1-D conv head; trained on all 8 channels.],
     [SimpleConvV2 (8ch)], [Regression], [6 conv blocks + BiGRU + SE blocks; trained on all 8 channels.],
     [multif0_salience], [Salience], [LateDeep CNN over HCQT; fmin 32.7 Hz, 3 harmonics, 360 bins.],
-    [multif0_salience_fastest], [Salience], [LateDeep with stacked HCQT, A0 fmin (27.5 Hz), fused branches, 4 harmonics. This is a speed-optimized variant of LateDeep; accuracy is essentially unchanged.],
+    [multif0_salience_fastest],
+    [Salience],
+    [LateDeep with stacked HCQT, A0 fmin (27.5 Hz), fused branches, 4 harmonics. This is a speed-optimized variant of LateDeep; accuracy is essentially unchanged.],
     [basic_pitch_salience], [Salience], [Basic Pitch contour branch; 264 bins, native 16 kHz.],
   ),
   caption: [Models compared in this report.],
@@ -440,6 +442,56 @@ The salience-map paradigm is therefore not fundamentally unsuited to closely-spa
 rotor fundamentals — the original baselines were simply mis-resolved. Basic Pitch,
 however, remains unusable regardless of grid, consistent with its design for discrete
 musical notes rather than continuously-varying low-frequency F0s. SimpleConvV2 still
-leads, so the regression family remains the right primary investment; but a narrow-SR
-salience head is now a credible secondary route worth pursuing, e.g. with longer
-training clips to lift the 1-second input-resolution wall.
+leads, so the regression family remains the right primary investment.
+= Cross-drone evaluation: Michael's FLY124
+
+All results above use the DREGON drone. As a first generalization probe, the best
+model (`SimpleConvV2`, 8ch, trained on DREGON-LM-V4) is evaluated — *without any
+retraining* — on a different aircraft: Michael's FLY124 8-channel recording, with
+ground-truth RPS from the co-recorded DJI flight-controller telemetry. FLY124 idles
+on the ground at ~36 Hz and ramps through takeoff and landing, so only *stable
+in-flight* slices are kept (per-frame mean rotor speed $> 45$ Hz throughout each 8 s
+slice); this yields 9 slices ($times$ 8 channels $=$ 72 sample-channel rows).
+
+#include "assets/metrics_table_fly124.typ"
+
+The model transfers only partially across drones (@tab:fly124). With oracle rotor
+matching (PIT) the frame MAE is 5.4 Hz and the median $R^2$ is 0.52 — well below the
+0.93–0.96 it reaches in-domain on DREGON-LM-V4, but it still recovers the rotor-speed
+*dynamics*. The fixed-order metrics are markedly worse ($R^2$ median $approx 0$), so a
+large share of the error is rotor-identity permutation rather than trajectory shape.
+
+#figure(
+  image("assets/fly124_vs_v4_per_channel.png", width: 100%),
+  caption: [
+    Per-channel PIT error for SimpleConvV2, in-domain (DREGON-LM-V4/valid) versus
+    cross-drone (FLY124 in-flight). In-domain error is *uniform* across the 8 mics
+    (~1.0–1.2 Hz MAE, $R^2$ 0.94–0.96); on FLY124 it rises to 3.4–4 Hz on most channels
+    but is strongly *channel-dependent* — channel 1 collapses (MAE 12.2 Hz, $R^2 = -2.7$)
+    and channels 6–7 degrade (5.6–7.0 Hz), pointing to mic-placement / SNR differences on
+    the unfamiliar array rather than a uniform domain shift.
+  ],
+) <fig:fly124-per-channel>
+
+#figure(
+  image("assets/fly124_sample_00004.png", width: 100%),
+  caption: [
+    FLY124 `sample_00004` (channel 0): input spectrogram (left) and predicted RPS
+    (solid) over PIT-aligned ground truth (dotted, right). The prediction tracks the
+    temporal shape but *underpredicts the faster rotors* (GT ~80–95 Hz vs prediction
+    ~75–85 Hz) — a level offset consistent with FLY124 running at higher and
+    differently-distributed speeds than DREGON.
+  ],
+) <fig:fly124-sample-00004>
+
+#figure(
+  image("assets/fly124_sample_00006.png", width: 100%),
+  caption: [
+    FLY124 `sample_00006` (channel 0): a slice where the four trajectories are tracked
+    more tightly (channel MAE $approx 3.6$ Hz).
+  ],
+) <fig:fly124-sample-00006>
+
+The gap motivates adding Michael's recordings to the training mix: FLY125 is now a
+composable noise source for the DREGON-LibriMix pipeline, so a DREGON+FLY125-trained
+model can be re-tested on FLY124 to measure how much the cross-drone gap closes.

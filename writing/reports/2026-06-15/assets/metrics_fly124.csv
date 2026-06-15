@@ -1,0 +1,3 @@
+alignment,rmse,mae_frame,mae_clip,r2_mean,r2_median,n_samples,n_rows
+regular,9.6083,7.5268,6.8926,-0.8546,-0.0856,9,72
+pit,7.9573,5.4146,4.4086,-0.2734,0.5150,9,72

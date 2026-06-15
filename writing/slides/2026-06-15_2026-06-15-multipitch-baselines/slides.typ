@@ -182,3 +182,34 @@ LateDeep-fast is a modification of LateDeep using simplified stacked HCQT (as Ba
 - Salience maps are *not* fundamentally unsuited to closely-spaced rotors — the old baselines were just mis-resolved
 - Basic Pitch stays unusable regardless of grid; SimpleConvV2 still leads
 - Next lever: longer training clips to lift the 1-second input-resolution wall
+
+= Cross-drone test: Michael's FLY124
+
+DREGON-trained *SimpleConvV2 (8ch)*, evaluated *without retraining* on a different aircraft (Michael's FLY124 8-channel recording, RPS from DJI telemetry).
+
+- Stable in-flight slices only (per-frame mean rotor speed > 45 Hz): 9 slices × 8 channels = 72 rows
+- PIT: frame MAE *5.4 Hz*, $R^2$ median *0.52* — vs *0.93–0.96* in-domain on DREGON-LM-V4
+- Fixed-order $R^2$ median $approx 0$ → much of the error is rotor *identity* (permutation), not trajectory shape
+
+= FLY124 — example slice
+
+#figure(
+  placement: none,
+  image("assets/fly124_sample_00004.png", width: 100%),
+  caption: [FLY124 `sample_00004` (channel 0): input spectrogram (left) and predicted RPS (solid) over PIT-aligned GT (dotted, right). Tracks the dynamics but *underpredicts the faster rotors* (GT ~80–95 Hz vs prediction ~75–85 Hz).],
+)
+
+= FLY124 — per-channel error vs in-domain
+
+#figure(
+  placement: none,
+  image("assets/fly124_vs_v4_per_channel.png", width: 100%),
+  caption: [SimpleConvV2 per-channel PIT error: in-domain DREGON-LM-V4 (uniform ~1 Hz, $R^2$ 0.94–0.96) vs cross-drone FLY124. Most mics rise to 3.4–4 Hz, but channel 1 collapses (12.2 Hz, $R^2 = -2.7$) and ch6–7 degrade — a *channel-dependent* gap, i.e. mic-placement / SNR, not a uniform shift.],
+)
+
+= Cross-drone — take-away
+
+- The DREGON-trained model does not transfer well to Michael's recording
+- The gap is *channel-dependent* (ch1 collapses, ch6–7 degrade) — mic placement / SNR, not a uniform shift
+- Motivates adding Michael's other recording *FLY125* to the training set, to see if the model could generalize across two different drones at least.
+- Next: train on DREGON+FLY125, re-test on FLY124 to measure how much the cross-drone gap closes
