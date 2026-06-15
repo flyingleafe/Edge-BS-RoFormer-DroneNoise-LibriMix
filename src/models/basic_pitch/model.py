@@ -25,7 +25,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .cqt import CONTOURS_BINS_PER_SEMITONE, N_FREQ_BINS_CONTOURS, CQTFrontEnd
+from .cqt import (
+    ANNOTATIONS_BASE_FREQUENCY,
+    ANNOTATIONS_N_SEMITONES,
+    CONTOURS_BINS_PER_SEMITONE,
+    CQTFrontEnd,
+)
 from .nn import HarmonicStacking, flatten_freq_ch
 
 # kernel sizes / strides / filter counts (basic_pitch.models)
@@ -75,12 +80,25 @@ class BasicPitch(nn.Module):
         n_filters_notes: int = 32,
         no_contours: bool = False,
         sr: int = 22050,
+        fmin: float = ANNOTATIONS_BASE_FREQUENCY,
+        bins_per_semitone: int = CONTOURS_BINS_PER_SEMITONE,
+        n_contour_semitones: int = ANNOTATIONS_N_SEMITONES,
     ):
         super().__init__()
         self.no_contours = no_contours
+        # Contour (salience) grid — configurable for a narrow rotor band.
+        self.fmin = fmin
+        self.bins_per_semitone = bins_per_semitone
+        self.contour_bins = n_contour_semitones * bins_per_semitone
 
         # --- input representation -------------------------------------------
-        self.cqt = CQTFrontEnd(n_harmonics, sr=sr)
+        self.cqt = CQTFrontEnd(
+            n_harmonics,
+            sr=sr,
+            fmin=fmin,
+            bins_per_semitone=bins_per_semitone,
+            n_contour_semitones=n_contour_semitones,
+        )
         self.cqt_bn = nn.BatchNorm2d(1, eps=BN_EPSILON)
 
         if n_harmonics > 1:
@@ -88,7 +106,7 @@ class BasicPitch(nn.Module):
         else:
             harmonics = [1]
         self.harmonic_stacking = HarmonicStacking(
-            CONTOURS_BINS_PER_SEMITONE, harmonics, N_FREQ_BINS_CONTOURS
+            bins_per_semitone, harmonics, self.contour_bins
         )
         n_h = len(harmonics)
 

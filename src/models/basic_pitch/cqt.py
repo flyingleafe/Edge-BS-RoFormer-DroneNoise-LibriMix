@@ -64,17 +64,34 @@ class CQTFrontEnd(nn.Module):
     scratch.
     """
 
-    def __init__(self, n_harmonics: int = 8, sr: int = AUDIO_SAMPLE_RATE):
+    def __init__(
+        self,
+        n_harmonics: int = 8,
+        sr: int = AUDIO_SAMPLE_RATE,
+        fmin: float = ANNOTATIONS_BASE_FREQUENCY,
+        bins_per_semitone: int = CONTOURS_BINS_PER_SEMITONE,
+        n_contour_semitones: int = ANNOTATIONS_N_SEMITONES,
+    ):
         super().__init__()
         self.sr = sr
-        n_semitones = n_semitones_for(n_harmonics, sr=sr)
-        self.n_bins = n_semitones * CONTOURS_BINS_PER_SEMITONE
+        self.fmin = fmin
+        self.bins_per_semitone = bins_per_semitone
+        # The CQT spans the contour output band plus enough extra semitones above
+        # it for the harmonic-stacking shifts (ceil(12·log2(n_harmonics))), capped
+        # by Nyquist for this ``fmin``.
+        max_semitones = int(np.floor(12.0 * np.log2(0.5 * sr / fmin)))
+        cqt_semitones = min(
+            int(np.ceil(12.0 * np.log2(max(n_harmonics, 1))) + n_contour_semitones),
+            max_semitones,
+        )
+        self.n_bins = cqt_semitones * bins_per_semitone
+        self.contour_bins = n_contour_semitones * bins_per_semitone
         self.cqt = CQT2010v2(
             sr=sr,
             hop_length=FFT_HOP,
-            fmin=ANNOTATIONS_BASE_FREQUENCY,
+            fmin=fmin,
             n_bins=self.n_bins,
-            bins_per_octave=12 * CONTOURS_BINS_PER_SEMITONE,
+            bins_per_octave=12 * bins_per_semitone,
             output_format="Magnitude",
             verbose=False,
         )

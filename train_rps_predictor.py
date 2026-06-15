@@ -365,17 +365,27 @@ def get_model(
     hcqt_fmin=None,
     fused_branches=False,
     stacked_hcqt=False,
+    salience_cfg=None,
 ):
     """Create a model by name.
 
     ``hcqt_fmin`` overrides the HCQT base frequency for ``multif0_salience``
     (default in the model is A0 = 27.5 Hz); ``fused_branches`` runs LateDeep's
     mag/phase branches as one grouped stack; ``stacked_hcqt`` uses the single-CQT
-    + harmonic-shift front-end. All ignored by other models.
+    + harmonic-shift front-end. ``salience_cfg`` is a dict of optional narrow-input
+    / super-resolution-output overrides (keys ignored when ``None``). All ignored
+    by non-salience models.
     """
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}")
     kwargs = dict(n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)
+    cfg = salience_cfg or {}
+
+    def _merge(keys):
+        for k in keys:
+            if cfg.get(k) is not None:
+                kwargs[k] = cfg[k]
+
     if model_name == "multif0_salience":
         if hcqt_fmin is not None:
             kwargs["fmin"] = hcqt_fmin
@@ -383,7 +393,29 @@ def get_model(
             kwargs["fused_branches"] = True
         if stacked_hcqt:
             kwargs["stacked"] = True  # rides through LateDeepSalience -> build_frontend
+        # narrow input HCQT + super-resolution output grid
+        _merge(["n_octaves", "over_sample", "harmonics",
+                "superres_out", "out_fmin", "out_fmax", "out_bins"])
+    elif model_name == "basic_pitch_salience":
+        _merge(["bp_fmin", "bins_per_semitone", "n_contour_semitones",
+                "superres_out", "out_fmin", "out_fmax", "out_bins"])
     return MODEL_REGISTRY[model_name](**kwargs)
+
+
+def _salience_cfg_from_args(args) -> dict:
+    """Collect narrow-input / super-res-output overrides from CLI args."""
+    return {
+        "n_octaves": getattr(args, "hcqt_n_octaves", None),
+        "over_sample": getattr(args, "hcqt_over_sample", None),
+        "harmonics": getattr(args, "hcqt_harmonics", None),
+        "bp_fmin": getattr(args, "bp_fmin", None),
+        "bins_per_semitone": getattr(args, "bp_bins_per_semitone", None),
+        "n_contour_semitones": getattr(args, "bp_n_contour_semitones", None),
+        "superres_out": True if getattr(args, "superres_out", False) else None,
+        "out_fmin": getattr(args, "out_fmin", None),
+        "out_fmax": getattr(args, "out_fmax", None),
+        "out_bins": getattr(args, "out_bins", None),
+    }
 
 
 # ─── PIT (Permutation-Invariant) MSE Loss ───────────────────────────────────
@@ -648,6 +680,7 @@ def train_model(model_name, args):
         hcqt_fmin=args.hcqt_fmin,
         fused_branches=args.fused_branches,
         stacked_hcqt=args.stacked_hcqt,
+        salience_cfg=_salience_cfg_from_args(args),
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
@@ -944,6 +977,28 @@ def main():
         "(~2x faster on GPU than one CQT per harmonic). Lossy approximation at higher "
         "harmonics, so train from scratch — do not load a non-stacked checkpoint.",
     )
+    # Narrow-input HCQT (multif0_salience) — concentrate input bins in-band.
+    parser.add_argument("--hcqt_n_octaves", type=int, default=None,
+                        help="Override HCQT octave span for multif0_salience (narrow input).")
+    parser.add_argument("--hcqt_over_sample", type=int, default=None,
+                        help="Override HCQT oversampling (bins/oct = 12*over_sample).")
+    parser.add_argument("--hcqt_harmonics", type=int, nargs="+", default=None,
+                        help="Explicit HCQT harmonics, e.g. --hcqt_harmonics 1 2 3 4 "
+                        "(REQUIRED for narrow grids — auto-derivation overshoots).")
+    # Narrow-input contour grid (basic_pitch_salience).
+    parser.add_argument("--bp_fmin", type=float, default=None,
+                        help="basic_pitch contour fmin (Hz), narrow input. Default 27.5.")
+    parser.add_argument("--bp_bins_per_semitone", type=int, default=None,
+                        help="basic_pitch contour bins/semitone. Default 3.")
+    parser.add_argument("--bp_n_contour_semitones", type=int, default=None,
+                        help="basic_pitch contour span in semitones. Default 88.")
+    # Decoupled fine OUTPUT salience grid (super-resolution head, both models).
+    parser.add_argument("--superres_out", action="store_true",
+                        help="Emit salience on a fine LINEAR output grid (decoupled from "
+                        "the input CQT) via a super-resolution head.")
+    parser.add_argument("--out_fmin", type=float, default=55.0, help="Output grid fmin (Hz).")
+    parser.add_argument("--out_fmax", type=float, default=110.0, help="Output grid fmax (Hz).")
+    parser.add_argument("--out_bins", type=int, default=360, help="Output grid bin count.")
     parser.add_argument(
         "--epoch-progress",
         "--epoch_progress",

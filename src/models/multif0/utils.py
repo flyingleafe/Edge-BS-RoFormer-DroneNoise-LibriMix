@@ -47,6 +47,17 @@ def cqt_freq_grid(
     return librosa.cqt_frequencies(n_bins, fmin=fmin, bins_per_octave=bins_per_octave)
 
 
+def linear_freq_grid(fmin: float, fmax: float, n_bins: int) -> np.ndarray:
+    """Uniform (linear-in-Hz) frequency grid, ``(n_bins,)`` from ``fmin`` to ``fmax``.
+
+    Unlike :func:`cqt_freq_grid` (geometric / log-spaced), this places bins at a
+    constant Hz spacing — useful as a fine *output* salience grid concentrated in
+    a narrow band (e.g. 360 bins over 55–110 Hz ≈ 0.153 Hz/bin), decoupled from
+    the model's log-spaced CQT input grid.
+    """
+    return np.linspace(float(fmin), float(fmax), int(n_bins), dtype=np.float64)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Time grids
 # ═══════════════════════════════════════════════════════════════════════════
@@ -88,6 +99,7 @@ def rps_to_salience(
     over_sample: int = 5,
     n_bins: int | None = None,
     bins_per_octave: int | None = None,
+    freqs: np.ndarray | None = None,
     hcqt_sr: int = 22050,
     hcqt_hop: int = 256,
     rps_sr: float = 1000.0,
@@ -130,13 +142,18 @@ def rps_to_salience(
         rps = rps.unsqueeze(0)
 
     B, R, T_rps = rps.shape
-    freqs = cqt_freq_grid(
-        fmin=fmin,
-        n_octaves=n_octaves,
-        over_sample=over_sample,
-        n_bins=n_bins,
-        bins_per_octave=bins_per_octave,
-    )
+    # Frequency grid: an explicit ``freqs`` array (e.g. a linear output grid)
+    # overrides the geometric CQT construction.
+    if freqs is None:
+        freqs = cqt_freq_grid(
+            fmin=fmin,
+            n_octaves=n_octaves,
+            over_sample=over_sample,
+            n_bins=n_bins,
+            bins_per_octave=bins_per_octave,
+        )
+    else:
+        freqs = np.asarray(freqs, dtype=np.float64)
     n_bins = len(freqs)
     freqs_t = torch.from_numpy(freqs).float().to(rps.device)
 
@@ -680,6 +697,7 @@ def salience_to_rps_segmented(
     over_sample: int = 5,
     n_bins: int | None = None,
     bins_per_octave: int | None = None,
+    freqs: np.ndarray | None = None,
     threshold: float = 0.0,
     max_jump_bins: int = 3,
     merge_mode: str = "same_bin",
@@ -707,13 +725,17 @@ def salience_to_rps_segmented(
         salience = salience.unsqueeze(0)
 
     B, _n_bins, T = salience.shape
-    freqs = cqt_freq_grid(
-        fmin=fmin,
-        n_octaves=n_octaves,
-        over_sample=over_sample,
-        n_bins=n_bins,
-        bins_per_octave=bins_per_octave,
-    )
+    # Explicit ``freqs`` (e.g. a linear output grid) overrides the geometric grid.
+    if freqs is None:
+        freqs = cqt_freq_grid(
+            fmin=fmin,
+            n_octaves=n_octaves,
+            over_sample=over_sample,
+            n_bins=n_bins,
+            bins_per_octave=bins_per_octave,
+        )
+    else:
+        freqs = np.asarray(freqs, dtype=np.float64)
 
     salience_np = salience.cpu().numpy()
 
