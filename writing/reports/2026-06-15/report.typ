@@ -335,3 +335,111 @@ with PIT training, produces models that are simultaneously more accurate, more s
 per-rotor, and orders of magnitude faster than salience-map multi-pitch baselines.
 Future work should therefore invest in improving the regression family rather than
 treating multi-pitch salience as a drop-in replacement.
+
+= Narrow-band super-resolution salience
+
+The salience baselines above waste almost all of their frequency grid: rotor
+fundamentals on `DREGON-LM-V4` are tightly clustered (p1–p99 = 69–89 Hz, barely one
+octave), while the `multif0_salience` and `basic_pitch_salience` grids span 32.7–2068 Hz
+and 27.5–4350 Hz respectively. Worse, in 55% of frames two rotors sit less than 1 Hz
+apart — below the $approx 0.9$ Hz bin spacing of the LateDeep grid at 80 Hz — so the
+tracker merges them and the four trajectories collapse toward their mean.
+
+This experiment decouples the salience *output* grid from the CQT *input* grid to
+attack that failure mode directly:
+
+- *Narrow input.* The front-ends are concentrated in the rotor band:
+  `multif0_salience_narrow_sr` uses an HCQT with `fmin = 55` Hz, one octave,
+  `over_sample = 10` (120 log bins, 55–110 Hz) and harmonics $[1,2,3,4]$;
+  `basic_pitch_narrow_sr` uses a contour CQT with `bp_fmin = 55` Hz, 4 bins/semitone,
+  12 semitones (48 log bins).
+- *Super-resolution output.* A `FreqSuperResHead` resamples the salience onto a
+  *linear* 55–110 Hz grid of 360 bins ($approx 0.153$ Hz/bin) and a stack of
+  $(5,1)$ convolutions learns to sharpen it. The model is trained end-to-end with BCE
+  on a blurred target built on this fine grid, and the Hungarian tracker reads the same
+  grid (its max-jump cap auto-scales to $approx 1.5$ Hz). The output grid is thus
+  $approx 6 times$ finer than the input CQT can physically resolve from the 1-second
+  training clips.
+
+== Results
+
+#figure(
+  image("assets/leaderboard_metrics_narrow_sr.png", width: 100%),
+  caption: [
+    Leaderboard on DREGON-LM-V4/valid with the narrow-band super-resolution models
+    added (last two bars). Left: RMSE (Hz); right: $R^2$.
+    `multif0_salience_narrow_sr` is now the best salience model by a wide margin and
+    ranks third overall, behind only the two regression baselines.
+  ],
+) <fig:leaderboard-narrow>
+
+#include "assets/metrics_table_narrow_sr.typ"
+
+The narrow + super-resolution recipe vindicates the salience approach for the LateDeep
+family. `multif0_salience_narrow_sr` improves on the original `multif0_salience` across
+every metric: RMSE drops from 6.30 to *4.03 Hz*, $R^2$ rises from 0.19 to *0.573*, and
+frame MAE falls from 3.40 to 2.34 Hz. It now sits *below* the round-trip resolution
+floor of the old coarse grid (2.5–3.0 Hz was the floor for the 32.7 Hz / 360-bin grid),
+confirming that the finer output grid genuinely buys localization rather than merely
+confident-but-wrong peaks. It still trails SimpleConvV2 (RMSE 1.62 Hz, $R^2$ 0.93), but
+the gap has narrowed from $approx 4 times$ to $approx 2.5 times$ in RMSE.
+
+`basic_pitch_narrow_sr` also improves dramatically — RMSE halves from 23.24 to
+11.66 Hz and $R^2$ rises from $-16.21$ to $-3.24$ — but it remains unusable: a negative
+$R^2$ means it is still worse than predicting the per-clip mean. The contour branch
+produces a diffuse salience map even on the narrow grid, so the tracker cannot lock onto
+four clean fundamentals.
+
+#figure(
+  image("assets/per_rotor_mae_narrow_sr.png", width: 90%),
+  caption: [
+    Per-rotor frame MAE for all five salience models. The narrow-SR LateDeep variant
+    has the lowest and most *even* per-rotor errors (1.8–2.9 Hz), in contrast to the
+    original LateDeep whose rotor-2 error spikes to 5.5 Hz — direct evidence that the
+    fine grid stops the near-unison rotors from collapsing.
+  ],
+) <fig:per-rotor-narrow>
+
+The flattened per-rotor profile in @fig:per-rotor-narrow is the clearest sign that the
+experiment worked as intended: the original `multif0_salience` had a 4.5 Hz spread
+across rotors (1.2 Hz on the easy rotor, 5.5 Hz on the hardest), whereas the narrow-SR
+variant compresses this to roughly 1.8–2.9 Hz. The model no longer sacrifices the
+closely-spaced rotors to a shared bin.
+
+== Qualitative example: sample_00026
+
+#pagebreak()
+
+#figure(
+  image("assets/sample_00026_narrow_sr_separate_rps.png", width: 100%),
+  caption: [
+    `sample_00026` (channel 0) for the two narrow-SR models. From top: spectrogram, then
+    for each model a salience map (now restricted to the 55–110 Hz rotor band on a fine
+    linear grid) followed by its tracked RPS (solid) versus GT (dotted).
+    `multif0_salience_narrow_sr` resolves four distinct, near-unison trajectories;
+    `basic_pitch_narrow_sr` still produces a diffuse map and mistracks.
+  ],
+) <fig:sample-00026-narrow>
+
+#figure(
+  image("assets/sample_00026_narrow_sr_all_models_rps.png", width: 100%),
+  caption: [
+    Per-model RPS trajectories for `sample_00026` (channel 0): the two regression
+    baselines (top) versus the two narrow-SR salience models (bottom). The narrow-SR
+    LateDeep now hugs the four ground-truth tracks nearly as tightly as the regression
+    models, while Basic Pitch exhibits an initial transient and merges rotors.
+  ],
+) <fig:all-models-rps-narrow>
+
+== Take-away
+
+Concentrating the representation in the rotor band and emitting salience on a learned
+super-resolution grid closes most of the gap between LateDeep and the regression
+models, and removes the rotor-collapse failure mode that motivated the experiment.
+The salience-map paradigm is therefore not fundamentally unsuited to closely-spaced
+rotor fundamentals — the original baselines were simply mis-resolved. Basic Pitch,
+however, remains unusable regardless of grid, consistent with its design for discrete
+musical notes rather than continuously-varying low-frequency F0s. SimpleConvV2 still
+leads, so the regression family remains the right primary investment; but a narrow-SR
+salience head is now a credible secondary route worth pursuing, e.g. with longer
+training clips to lift the 1-second input-resolution wall.

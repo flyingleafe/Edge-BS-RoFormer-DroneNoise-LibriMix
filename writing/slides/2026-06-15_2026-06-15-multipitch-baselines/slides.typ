@@ -121,3 +121,64 @@ LateDeep-fast is a modification of LateDeep using simplified stacked HCQT (as Ba
 - Salience grid resolution floor: ~2.5–3 Hz irreducible error from bin snapping
 - LateDeep-fast (stacked HCQT) is nearly free: same accuracy, ~2× faster front-end
 - Basic Pitch is unusable for continuous RPS tracking — designed for discrete musical notes
+
+= Narrow-band super-resolution salience — idea
+
+*The failure mode:* rotors cluster in 69–89 Hz; 55% of frames have two rotors < 1 Hz apart → coarse grids merge them → trajectories collapse to the mean.
+
+*The fix — decouple output grid from input CQT:*
+- *Narrow input:* HCQT `fmin = 55` Hz, 1 octave, harmonics [1,2,3,4] (multif0); contour CQT `fmin = 55` Hz, 12 semitones (Basic Pitch)
+- *Super-resolution output:* `FreqSuperResHead` → linear 55–110 Hz grid, 360 bins (~0.15 Hz/bin), $(5,1)$-conv sharpening, BCE end-to-end
+- Tracker reads the fine grid (max-jump auto-scaled to ~1.5 Hz)
+
+= Narrow-SR — leaderboard
+
+#figure(
+  image("assets/leaderboard_metrics_narrow_sr.png", width: 100%),
+  caption: [With narrow-SR models (last two bars). `multif0_salience_narrow_sr`: RMSE 6.30 → *4.03 Hz*, $R^2$ 0.19 → *0.57* — now the best salience model, 3rd overall.],
+)
+
+= Narrow-SR — per-rotor MAE
+
+#figure(
+  image("assets/per_rotor_mae_narrow_sr.png", width: 80%),
+  caption: [Narrow-SR LateDeep has the lowest and most *even* per-rotor errors (1.8–2.9 Hz) — the near-unison rotors no longer collapse.],
+)
+
+= Narrow-SR LateDeep
+
+#figure(
+  image("assets/sample_00026_multif0_salience_narrow_sr_3pane.pdf", height: 80%),
+  caption: [multif0_salience_narrow_sr — salience now restricted to 55–110 Hz on a fine linear grid; four distinct trajectories tracked.],
+)
+
+= Narrow-SR Basic Pitch
+
+#figure(
+  image("assets/sample_00026_basic_pitch_narrow_sr_3pane.pdf", height: 80%),
+  caption: [basic_pitch_narrow_sr — RMSE 23.24 → 11.66 Hz, but $R^2$ still negative ($-3.24$): diffuse map, mistracks.],
+)
+
+= Narrow-SR LateDeep vs SimpleConvV2
+
+#figure(
+  placement: none,
+  image("assets/sample_00026_compare_simpleconvv2_vs_multif0_salience_narrow_sr.png", width: 95%),
+  caption: [Top: SimpleConvV2 (RMSE 1.62 Hz). Bottom: narrow-SR LateDeep (RMSE 4.03 Hz) — gap narrowed from ~4× to ~2.5×.],
+)
+
+= Narrow-SR Basic Pitch vs SimpleConvV2
+
+#figure(
+  placement: none,
+  image("assets/sample_00026_compare_simpleconvv2_vs_basic_pitch_narrow_sr.png", width: 95%),
+  caption: [Top: SimpleConvV2. Bottom: narrow-SR Basic Pitch (RMSE 11.66 Hz, $R^2 = -3.24$) — much improved but still unusable.],
+)
+
+= Narrow-SR — take-away
+
+- Concentrating the grid in the rotor band + a learned super-resolution head *closes most of the LateDeep ↔ regression gap* and removes the rotor-collapse failure mode
+- `multif0_salience_narrow_sr` now beats its round-trip resolution floor (2.5–3 Hz) → finer grid buys real localization, not hallucinated precision
+- Salience maps are *not* fundamentally unsuited to closely-spaced rotors — the old baselines were just mis-resolved
+- Basic Pitch stays unusable regardless of grid; SimpleConvV2 still leads
+- Next lever: longer training clips to lift the 1-second input-resolution wall
