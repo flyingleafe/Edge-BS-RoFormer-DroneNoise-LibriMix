@@ -154,6 +154,54 @@ Key flags:
 | `--speech_per_channel` | independent | `independent` = different utterance+SNR per channel |
 | `--valid_recording_ids` | speech-low,whitenoise-low | Comma-separated IDs for `--real_valid` |
 | `--motor_combo_fraction` | 0.2 | Synthetic motor combos (mono pipeline only) |
+| `--train_noise_sources` | "" (DREGON in_flight_noise) | Compose the **train** noise pool from source specs |
+| `--valid_noise_sources` | "" (defaults / `--valid_recording_ids`) | Compose the **valid** noise pool; overrides `--valid_recording_ids` |
+
+---
+
+## Composable noise pools (mix-and-match sources)
+
+The `--multichannel` pipeline builds its train/valid noise pools as plain
+`list[TimeFrame]`. `--train_noise_sources` / `--valid_noise_sources` let you
+compose those pools from **any aligned sources** via comma-separated specs
+(`load_noise_sources()` in `create_dregon_librimix.py`):
+
+| Spec | Selects |
+|------|---------|
+| `dregon-split:<split>` | all DREGON recordings in a split (e.g. `dregon-split:in_flight_noise`) |
+| `dregon-id:<recording_id>` | one DREGON recording, searched across all splits |
+| `michaels:<id>` | a Michael's recording — `id` = `125` / `FLY125` / `all` |
+| `<bare token>` | treated as a DREGON recording id (back-compat) |
+
+(`dregon:` is accepted as a short alias for `dregon-split:`, and `dregon-rec:`
+for `dregon-id:`.)
+
+Any source `TimeFrame` works as long as it has an `audio` track and a
+rotor-speed track. `resolve_motor_tracks(tf)` handles both naming conventions:
+DREGON's `motors_measured` / `motors_command` (command needs
+`clean_command_spikes`) and the generic `rps` track used by Michael's
+(already-aligned measured speeds in rev/s — **not** spike-cleaned). To add a new
+source kind, give its frames an `audio` + `rps` track and a loader, then wire a
+new spec prefix into `load_noise_sources`.
+
+### Example: DREGON-LM-V4 + Michael's (FLY125→train, FLY124→valid)
+
+```bash
+python create_dregon_librimix.py \
+  --multichannel --real_valid --max_non_overlapping \
+  --output_dir datasets/DREGON-LM-V5 \
+  --num_train 6000 --duration 1.0 \
+  --num_valid 30   --valid_duration 8.0 \
+  --min_motor_rps 30.0 --source_white_noise_prob 0.3 \
+  --speech_per_channel independent --snr_min -30 --snr_max 0 \
+  --train_noise_sources "dregon-split:in_flight_noise,michaels:FLY125" \
+  --valid_noise_sources  "dregon-id:free-flight_nosource_room1,dregon-id:free-flight_speech-low_room1,dregon-id:free-flight_whitenoise-low_room1,michaels:FLY124"
+```
+
+Drop `--train_noise_sources` / `--valid_noise_sources` to reproduce plain
+DREGON-LM-V4. Michael's recordings are pure drone noise → `source_type`
+`"nosource"`; their motor telemetry is ~29 Hz (vs DREGON's ~929 Hz), so
+`rps.npy` is shorter — handled downstream via per-sample `motor_sample_rate`.
 
 ---
 

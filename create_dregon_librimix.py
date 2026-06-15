@@ -31,6 +31,7 @@ from data_processing.dregon import (
     get_geometry,
     load_dregon_timeframes,
 )
+from data_processing.michaels import load_michaels_timeframes
 from utils.data import EventSeries, TimeFrame, TimeSeries, UniformSeries
 from utils.paths import get_data_path, get_datasets_path
 
@@ -240,27 +241,65 @@ def load_dregon_noise_records(
 # =============================================================================
 
 
+def resolve_motor_tracks(tf: TimeFrame) -> tuple[str, str, bool]:
+    """Resolve the rotor-speed track names of a noise ``TimeFrame``.
+
+    Returns ``(detect_key, rps_key, needs_cleaning)``:
+
+    - ``detect_key``: track used for in-flight window detection (real measured
+      speeds when available — they capture spindown during landing).
+    - ``rps_key``: track saved as ground-truth RPS.
+    - ``needs_cleaning``: whether ``clean_command_spikes`` must be applied
+      (only DREGON ``motors_command`` carries logging spikes / freezes).
+
+    Two conventions are supported so that any aligned ``TimeFrame`` can serve as
+    a noise source:
+
+    - **DREGON**: separate ``motors_measured`` (real, preferred for detection)
+      and ``motors_command`` (cleaner, preferred as GT). Command values carry
+      leading/trailing freezes → ``needs_cleaning=True``.
+    - **Generic / Michael's**: a single ``rps`` track of already-aligned
+      measured rotor speeds (rev/s). Detection and GT both use it, and no spike
+      cleaning is applied.
+    """
+    if "motors_command" in tf or "motors_measured" in tf:
+        detect = "motors_measured" if "motors_measured" in tf else "motors_command"
+        rps_k = "motors_command" if "motors_command" in tf else "motors_measured"
+        return detect, rps_k, True
+    if "rps" in tf:
+        return "rps", "rps", False
+    raise ValueError(
+        f"{tf.tags.get('recording_id', '?')} has no rotor-speed track "
+        f"(expected one of 'motors_measured', 'motors_command', 'rps')"
+    )
+
+
 def _find_inflight_window(
     tf: TimeFrame,
     motor_key: str,
     min_motor_rps: float,
+    clean: bool = True,
 ) -> tuple[float, float]:
     """Return (t_start, t_end) of the in-flight window (absolute seconds).
 
-    Applies ``clean_command_spikes`` to the full motor track, then finds the
-    first and last absolute times where **all 4 rotors** exceed
-    ``min_motor_rps``.  This trims the pre-takeoff logging artefact and
-    ramp-up from the start; landing is usually not captured in DREGON
-    telemetry so the end is rarely affected.
+    Finds the first and last absolute times where **all 4 rotors** exceed
+    ``min_motor_rps``.  For DREGON command telemetry, ``clean_command_spikes``
+    is first applied to the motor track (``clean=True``) to strip the
+    pre-takeoff logging artefact; for already-clean measured tracks (e.g.
+    Michael's ``rps``) pass ``clean=False``.  This trims the ramp-up from the
+    start; landing is usually not captured in DREGON telemetry so the end is
+    rarely affected.
 
     Raises ``ValueError`` if no in-flight window can be found.
     """
     motor_es = cast(EventSeries, tf[motor_key])
     if motor_es.values is None:
         return motor_es.t_start, motor_es.t_end
-    cleaned = clean_command_spikes(motor_es.values.copy())  # (4, M)
+    vals = motor_es.values.copy()  # (4, M)
+    if clean:
+        vals = clean_command_spikes(vals)
     ts = motor_es.abs_timestamps  # (M,)
-    in_flight = np.all(cleaned > min_motor_rps, axis=0)  # (M,) bool
+    in_flight = np.all(vals > min_motor_rps, axis=0)  # (M,) bool
     idxs = np.where(in_flight)[0]
     if len(idxs) == 0:
         raise ValueError(
@@ -295,12 +334,8 @@ def extract_noise_chunk_with_command_rps(
         - rps: (4, n_motor_samples) cleaned command RPS at native motor rate
         - metadata: dict with recording_id, start_time, motor_sample_rate
     """
-    # For flight-window detection use measured (captures actual spindown during
-    # landing); fall back to command only when measured is absent.
-    detect_key = "motors_measured" if "motors_measured" in tf else "motors_command"
-    # For the saved RPS use command (cleaner signal, no measurement noise);
-    # fall back to measured when command is absent.
-    rps_key = "motors_command" if "motors_command" in tf else "motors_measured"
+    # Resolve rotor-speed tracks (DREGON command/measured, or generic ``rps``).
+    detect_key, rps_key, needs_clean = resolve_motor_tracks(tf)
 
     audio_us = cast(UniformSeries, tf["audio"])
     detect_es = cast(EventSeries, tf[detect_key])
@@ -309,7 +344,9 @@ def extract_noise_chunk_with_command_rps(
     valid_end = min(audio_us.t_end, detect_es.t_end)
 
     if min_motor_rps > 0.0:
-        t_fl_start, t_fl_end = _find_inflight_window(tf, detect_key, min_motor_rps)
+        t_fl_start, t_fl_end = _find_inflight_window(
+            tf, detect_key, min_motor_rps, clean=needs_clean
+        )
         valid_start = max(valid_start, t_fl_start)
         valid_end = min(valid_end, t_fl_end)
 
@@ -335,8 +372,8 @@ def extract_noise_chunk_with_command_rps(
 
     motor_es_sliced = cast(EventSeries, sliced[rps_key])
     if motor_es_sliced.values is not None:
-        command = motor_es_sliced.values.copy()  # (4, M) — time-last
-        rps = clean_command_spikes(command).astype(np.float32)  # (4, M)
+        vals = motor_es_sliced.values.copy()  # (4, M) — time-last
+        rps = (clean_command_spikes(vals) if needs_clean else vals).astype(np.float32)
     else:
         rps = np.zeros((4, 0), dtype=np.float32)
 
@@ -577,6 +614,101 @@ def load_dregon_multichannel_records(
     return result
 
 
+def load_michaels_sources(
+    ids: list[str],
+    data_root: Path | None = None,
+    sr: int = SAMPLE_RATE,
+) -> list[TimeFrame]:
+    """Load Michael's recordings as noise-source ``TimeFrame``s, filtered by id.
+
+    Each id may be given as ``"125"``, ``"FLY125"`` (case-insensitive), or
+    ``"all"``.  The returned frames carry an ``rps`` track (already-aligned
+    measured rotor speeds, rev/s) and an 8-channel ``audio`` track, ready to be
+    used as a noise source.  Their ``recording_id`` tag is normalised to
+    ``"michaels_FLY<id>"`` so downstream metadata can distinguish them.
+    """
+    frames = load_michaels_timeframes(data_root=data_root, sr=sr)
+    want_all = any(i.strip().lower() == "all" for i in ids)
+    wanted = {i.strip().lower().removeprefix("fly") for i in ids}
+
+    out: list[TimeFrame] = []
+    for tf in frames:
+        rid = str(tf.tags.get("recording_id", ""))  # wav stem, e.g. "124"
+        if want_all or rid.lower().removeprefix("fly") in wanted:
+            new_tags = dict(tf.tags)
+            new_tags["recording_id"] = f"michaels_FLY{rid}"
+            out.append(
+                TimeFrame.from_tracks(
+                    {k: tf[k] for k in tf},
+                    t_start=tf.t_start,
+                    tags=new_tags,
+                    global_data=tf.global_data,
+                )
+            )
+    return out
+
+
+def load_noise_sources(
+    specs: list[str],
+    dregon_dir: Path,
+    sr: int = SAMPLE_RATE,
+    michaels_root: Path | None = None,
+) -> list[TimeFrame]:
+    """Compose a noise-source pool (``list[TimeFrame]``) from a list of specs.
+
+    This is the single entry point for mixing and matching any sets of aligned
+    source ``TimeFrame``s into a train or valid noise pool.  Each spec selects
+    one group of recordings:
+
+    - ``"dregon-split:<split>"`` — all DREGON recordings in a split
+      (e.g. ``"dregon-split:in_flight_noise"``); ``"dregon:"`` is a short alias.
+    - ``"dregon-id:<recording_id>"`` — a specific DREGON recording, searched
+      across all splits (e.g. ``"dregon-id:free-flight_speech-low_room1"``);
+      ``"dregon-rec:"`` is an alias.
+    - ``"michaels:<id>"`` — a Michael's recording by id, ``"125"`` /
+      ``"FLY125"`` / ``"all"`` (e.g. ``"michaels:FLY125"``).
+    - a bare token with no ``"kind:"`` prefix is treated as a DREGON
+      recording id (backward-compatible with ``--valid_recording_ids``).
+
+    The pool is the concatenation of all selected frames, in spec order
+    (DREGON splits, then DREGON ids, then Michael's).
+    """
+    dregon_splits: list[str] = []
+    dregon_ids: list[str] = []
+    michaels_ids: list[str] = []
+
+    for raw in specs:
+        spec = raw.strip()
+        if not spec:
+            continue
+        if ":" in spec:
+            kind, val = spec.split(":", 1)
+            kind, val = kind.strip().lower(), val.strip()
+        else:
+            kind, val = "dregon-id", spec  # bare token → DREGON recording id
+
+        if kind in ("dregon", "dregon-split"):
+            dregon_splits.append(val)
+        elif kind in ("dregon-id", "dregon-rec"):
+            dregon_ids.append(val)
+        elif kind in ("michaels", "michael", "fly"):
+            michaels_ids.append(val)
+        else:
+            raise ValueError(
+                f"Unknown noise source spec '{spec}'. Expected one of: "
+                f"'dregon:<split>', 'dregon-id:<recording_id>', 'michaels:<id>'."
+            )
+
+    frames: list[TimeFrame] = []
+    if dregon_splits:
+        frames += load_dregon_multichannel_records(dregon_dir, splits=dregon_splits)
+    if dregon_ids:
+        frames += load_dregon_multichannel_records(dregon_dir, recording_ids=dregon_ids)
+    if michaels_ids:
+        frames += load_michaels_sources(michaels_ids, data_root=michaels_root, sr=sr)
+    return frames
+
+
 def extract_multichannel_noise_chunk(
     tf: TimeFrame,
     duration_sec: float = SAMPLE_DURATION,
@@ -597,11 +729,8 @@ def extract_multichannel_noise_chunk(
         - rps: ``(4, n_motor_samples)`` cleaned command RPS (shared across channels)
         - metadata: dict with recording_id, start_time, motor_sample_rate, n_channels
     """
-    # For flight-window detection use measured (captures actual spindown during
-    # landing); fall back to command only when measured is absent.
-    detect_key = "motors_measured" if "motors_measured" in tf else "motors_command"
-    # For the saved RPS use command (cleaner signal); fall back to measured.
-    rps_key = "motors_command" if "motors_command" in tf else "motors_measured"
+    # Resolve rotor-speed tracks (DREGON command/measured, or generic ``rps``).
+    detect_key, rps_key, needs_clean = resolve_motor_tracks(tf)
 
     audio_us = tf["audio"]
     detect_es = tf[detect_key]
@@ -610,7 +739,9 @@ def extract_multichannel_noise_chunk(
     valid_end = min(audio_us.t_end, detect_es.t_end)
 
     if min_motor_rps > 0.0:
-        t_fl_start, t_fl_end = _find_inflight_window(tf, detect_key, min_motor_rps)
+        t_fl_start, t_fl_end = _find_inflight_window(
+            tf, detect_key, min_motor_rps, clean=needs_clean
+        )
         valid_start = max(valid_start, t_fl_start)
         valid_end = min(valid_end, t_fl_end)
 
@@ -634,7 +765,8 @@ def extract_multichannel_noise_chunk(
     motor_es_sliced = cast(EventSeries, sliced[rps_key])
     if motor_es_sliced.values is not None:
         # EventSeries values are time-last (4, M); clean_command_spikes keeps shape
-        rps = clean_command_spikes(motor_es_sliced.values.copy()).astype(np.float32)
+        vals = motor_es_sliced.values.copy()
+        rps = (clean_command_spikes(vals) if needs_clean else vals).astype(np.float32)
     else:
         rps = np.zeros((4, 0), dtype=np.float32)
 
@@ -669,8 +801,7 @@ def extract_non_overlapping_multichannel_chunks(
     Returns:
         List of (audio, rps, metadata) tuples, one per non-overlapping chunk.
     """
-    detect_key = "motors_measured" if "motors_measured" in tf else "motors_command"
-    rps_key = "motors_command" if "motors_command" in tf else "motors_measured"
+    detect_key, rps_key, needs_clean = resolve_motor_tracks(tf)
 
     audio_us = tf["audio"]
     detect_es = tf[detect_key]
@@ -679,7 +810,9 @@ def extract_non_overlapping_multichannel_chunks(
     valid_end = min(audio_us.t_end, detect_es.t_end)
 
     if min_motor_rps > 0.0:
-        t_fl_start, t_fl_end = _find_inflight_window(tf, detect_key, min_motor_rps)
+        t_fl_start, t_fl_end = _find_inflight_window(
+            tf, detect_key, min_motor_rps, clean=needs_clean
+        )
         valid_start = max(valid_start, t_fl_start)
         valid_end = min(valid_end, t_fl_end)
 
@@ -696,14 +829,15 @@ def extract_non_overlapping_multichannel_chunks(
         start_sec = valid_start + i * duration_sec
         sliced = tf.slice(start_sec, start_sec + duration_sec)
 
-        audio_samples = sliced["audio"].samples
+        audio_samples = cast(UniformSeries, sliced["audio"]).samples
         if audio_samples.ndim == 1:
             audio_samples = audio_samples[np.newaxis, :]
         audio = audio_samples.astype(np.float32)  # (C, N)
 
-        motor_es_sliced = sliced[rps_key]
+        motor_es_sliced = cast(EventSeries, sliced[rps_key])
         if motor_es_sliced.values is not None:
-            rps = clean_command_spikes(motor_es_sliced.values.copy()).astype(np.float32)
+            vals = motor_es_sliced.values.copy()
+            rps = (clean_command_spikes(vals) if needs_clean else vals).astype(np.float32)
         else:
             rps = np.zeros((4, 0), dtype=np.float32)
 
@@ -751,6 +885,7 @@ def create_dregon_librimix_multichannel(
     white_noise_prob: float = 0.0,
     white_noise_snr: float = 30.0,
     min_motor_rps: float = 0.0,
+    noise_records: list[TimeFrame] | None = None,
 ):
     """Create an 8-channel DREGON-LibriMix dataset.
 
@@ -770,6 +905,10 @@ def create_dregon_librimix_multichannel(
     speech source (not a replacement).  Usually 0 for the real-recording
     validation approach.
 
+    The noise pool is ``noise_records`` when provided (compose it with
+    ``load_noise_sources``); otherwise it falls back to the DREGON defaults
+    (``TRAIN_NOISE_SPLITS`` for train, ``VALID_NOISE_RECORDING_IDS`` for valid).
+
     Saved per sample: ``vocals.wav``, ``noise.wav``, ``mixture.wav`` each
     ``(n_samples, C)`` interleaved WAV, plus ``rps.npy``.
     """
@@ -787,19 +926,21 @@ def create_dregon_librimix_multichannel(
         raise ValueError(f"No speech files found in {speech_dir}")
     print(f"Found {len(speech_files)} speech files")
 
-    if split == "train":
-        noise_records = load_dregon_multichannel_records(
-            dregon_dir,
-            splits=TRAIN_NOISE_SPLITS,
-        )
-    else:
-        noise_records = load_dregon_multichannel_records(
-            dregon_dir,
-            recording_ids=VALID_NOISE_RECORDING_IDS,
-        )
+    if noise_records is None:
+        if split == "train":
+            noise_records = load_dregon_multichannel_records(
+                dregon_dir,
+                splits=TRAIN_NOISE_SPLITS,
+            )
+        else:
+            noise_records = load_dregon_multichannel_records(
+                dregon_dir,
+                recording_ids=VALID_NOISE_RECORDING_IDS,
+            )
     if len(noise_records) == 0:
-        raise ValueError("No valid DREGON records with motor data found")
+        raise ValueError("No valid noise records with motor data found")
     print(f"Loaded {len(noise_records)} multichannel noise records")
+    print(f"  Sources: {sorted({str(tf.tags.get('recording_id', '?')) for tf in noise_records})}")
 
     metadata_list = []
     for idx in tqdm(range(num_samples), desc=f"Creating {split} samples"):
@@ -1127,6 +1268,22 @@ REAL_VALID_RECORDING_IDS = [
 ]
 
 
+def _infer_source_type(recording_id: str) -> str:
+    """Infer the co-recorded source type from a recording id.
+
+    Michael's recordings are pure drone noise (no co-recorded source), so they
+    map to ``"nosource"`` like DREGON ``*_nosource_*`` recordings.
+    """
+    rid = recording_id.lower()
+    if "speech" in rid:
+        return "speech"
+    if "whitenoise" in rid:
+        return "whitenoise"
+    if "nosource" in rid or "michaels" in rid:
+        return "nosource"
+    return "unknown"
+
+
 def create_dregon_real_valid(
     dregon_dir: Path,
     output_dir: Path,
@@ -1137,6 +1294,7 @@ def create_dregon_real_valid(
     seed: int = 43,
     min_motor_rps: float = 0.0,
     max_non_overlapping: bool = False,
+    records: list[TimeFrame] | None = None,
 ) -> None:
     """Extract real 8-channel clips from DREGON recordings.
 
@@ -1155,16 +1313,18 @@ def create_dregon_real_valid(
       recording, covering the full in-flight window.  ``num_samples`` is
       ignored; all available chunks are written.
     """
-    if recording_ids is None:
-        recording_ids = REAL_VALID_RECORDING_IDS
-
     random.seed(seed)
     np.random.seed(seed)
 
     split_dir = output_dir / "valid"
     split_dir.mkdir(parents=True, exist_ok=True)
 
-    records = load_dregon_multichannel_records(dregon_dir, recording_ids=recording_ids)
+    # ``records`` (a pre-composed pool) takes precedence; otherwise fall back to
+    # loading DREGON recordings by id.
+    if records is None:
+        if recording_ids is None:
+            recording_ids = REAL_VALID_RECORDING_IDS
+        records = load_dregon_multichannel_records(dregon_dir, recording_ids=recording_ids)
     if not records:
         raise ValueError(f"No DREGON records found for IDs: {recording_ids}")
 
@@ -1175,7 +1335,7 @@ def create_dregon_real_valid(
         # --- Extract every non-overlapping chunk from every recording ---
         all_chunks: list[tuple[np.ndarray, np.ndarray, dict, str]] = []  # (audio, rps, meta, rid)
         for tf in records:
-            rid = tf.tags.get("recording_id", "?")
+            rid = str(tf.tags.get("recording_id", "?"))
             try:
                 chunks = extract_non_overlapping_multichannel_chunks(
                     tf,
@@ -1212,14 +1372,7 @@ def create_dregon_real_valid(
             sf.write(sample_dir / "mixture.wav", audio.T.astype(np.float32), sample_rate)
             np.save(sample_dir / "rps.npy", rps)
 
-            if "speech" in rid:
-                source_type = "speech"
-            elif "whitenoise" in rid:
-                source_type = "whitenoise"
-            elif "nosource" in rid.lower():
-                source_type = "nosource"
-            else:
-                source_type = "unknown"
+            source_type = _infer_source_type(rid)
 
             metadata_list.append(
                 {
@@ -1268,12 +1421,7 @@ def create_dregon_real_valid(
             np.save(sample_dir / "rps.npy", rps)
 
             rid = chunk_meta["recording_id"]
-            if "speech" in rid:
-                source_type = "speech"
-            elif "whitenoise" in rid:
-                source_type = "whitenoise"
-            else:
-                source_type = "unknown"
+            source_type = _infer_source_type(rid)
 
             metadata_list.append(
                 {
@@ -1439,6 +1587,25 @@ def main():
         f"defaults to: {','.join(REAL_VALID_RECORDING_IDS)}",
     )
     parser.add_argument(
+        "--train_noise_sources",
+        type=str,
+        default="",
+        help="(--multichannel) comma-separated noise-source specs composing the "
+        "TRAIN noise pool. Each spec is one of 'dregon-split:<split>', "
+        "'dregon-id:<recording_id>', or 'michaels:<id>' (id = 125 / FLY125 / all). "
+        "Empty = default DREGON in_flight_noise. Example: "
+        "'dregon-split:in_flight_noise,michaels:FLY125'.",
+    )
+    parser.add_argument(
+        "--valid_noise_sources",
+        type=str,
+        default="",
+        help="(--multichannel) comma-separated noise-source specs composing the "
+        "VALID noise pool (same spec grammar as --train_noise_sources). When set, "
+        "overrides --valid_recording_ids. Example: "
+        "'dregon-id:free-flight_speech-low_room1,michaels:FLY124'.",
+    )
+    parser.add_argument(
         "--max_non_overlapping",
         action="store_true",
         help="(--real_valid) extract EVERY non-overlapping chunk from every "
@@ -1449,6 +1616,27 @@ def main():
     args = parser.parse_args()
 
     if args.multichannel:
+        # Compose the train/valid noise pools from source specs (when given).
+        # Each pool is a plain list[TimeFrame], so any aligned sources (DREGON
+        # splits/recordings, Michael's, …) can be mixed and matched.
+        michaels_root = args.dregon_dir.parent
+        train_pool = None
+        if args.train_noise_sources.strip():
+            train_pool = load_noise_sources(
+                [s for s in args.train_noise_sources.split(",")],
+                dregon_dir=args.dregon_dir,
+                sr=args.sample_rate,
+                michaels_root=michaels_root,
+            )
+        valid_pool = None
+        if args.valid_noise_sources.strip():
+            valid_pool = load_noise_sources(
+                [s for s in args.valid_noise_sources.split(",")],
+                dregon_dir=args.dregon_dir,
+                sr=args.sample_rate,
+                michaels_root=michaels_root,
+            )
+
         # --- Training split (synthesised mixtures) ---
         if args.num_train > 0:
             print("=" * 60)
@@ -1469,12 +1657,14 @@ def main():
                 white_noise_prob=args.white_noise_prob,
                 white_noise_snr=args.white_noise_snr,
                 min_motor_rps=args.min_motor_rps,
+                noise_records=train_pool,
             )
 
         # --- Validation split ---
         if args.num_valid > 0:
             if args.real_valid:
-                # Passthrough: raw in_flight_source clips, no mixing.
+                # Passthrough: raw clips, no mixing. ``valid_pool`` (when set)
+                # overrides --valid_recording_ids.
                 rids = (
                     [r.strip() for r in args.valid_recording_ids.split(",") if r.strip()]
                     or None  # None → defaults to REAL_VALID_RECORDING_IDS
@@ -1492,6 +1682,7 @@ def main():
                     seed=args.seed + 1,
                     min_motor_rps=args.min_motor_rps,
                     max_non_overlapping=args.max_non_overlapping,
+                    records=valid_pool,
                 )
             else:
                 # Synthesised valid (same pipeline as train, different seed/records).
@@ -1513,6 +1704,7 @@ def main():
                     white_noise_prob=args.white_noise_prob,
                     white_noise_snr=args.white_noise_snr,
                     min_motor_rps=args.min_motor_rps,
+                    noise_records=valid_pool,
                 )
 
         print("\n" + "=" * 60)
