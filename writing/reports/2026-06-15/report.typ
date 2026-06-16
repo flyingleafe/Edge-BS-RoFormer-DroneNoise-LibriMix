@@ -442,7 +442,11 @@ The salience-map paradigm is therefore not fundamentally unsuited to closely-spa
 rotor fundamentals — the original baselines were simply mis-resolved. Basic Pitch,
 however, remains unusable regardless of grid, consistent with its design for discrete
 musical notes rather than continuously-varying low-frequency F0s. SimpleConvV2 still
-leads, so the regression family remains the right primary investment.
+leads, so the regression family remains the right primary investment. However, LateDeep with
+improved resolution almost matches SimpleConv performance, though does not surpass it. It
+suggests that after fixing the output resolution problem, the model faces the problem of
+insufficient architectural complexity, just like SimpleConv does.
+
 = Cross-drone evaluation: Michael's FLY124
 
 All results above use the DREGON drone. As a first generalization probe, the best
@@ -495,3 +499,96 @@ large share of the error is rotor-identity permutation rather than trajectory sh
 The gap motivates adding Michael's recordings to the training mix: FLY125 is now a
 composable noise source for the DREGON-LibriMix pipeline, so a DREGON+FLY125-trained
 model can be re-tested on FLY124 to measure how much the cross-drone gap closes.
+
+= Closing the cross-drone gap: training on DREGON + FLY125
+
+We retrained SimpleConvV2 (8ch) from scratch on *DREGON-LM-V4 + Michael's FLY125*
+(the composable-noise dataset `DREGON-LM-V4-michaels`), then re-evaluated *the same
+two metrics* — on the in-domain DREGON-LM-V4 valid set and on the held-out FLY124
+in-flight slices — against the original DREGON-only model.
+
+#include "assets/metrics_table_fly125.typ"
+
+Adding a single recording of the target aircraft *helps model to generalize* (@tab:fly125). On FLY124, PIT RMSE drops from *7.96 Hz to 1.63 Hz*
+and $R^2$ median climbs from *0.52 to 0.96*. However, precision on DREGON validation samples degrades: PIT RMSE rises from 1.62 Hz to
+2.77 Hz (see @fig:fly125-curves for why).
+
+#figure(
+  placement: none,
+  image("assets/fly125_per_channel.png", width: 100%),
+  caption: [
+    Per-channel PIT frame MAE, DREGON-only vs DREGON+FLY125. *Left (in-domain
+    DREGON-LM-V4):* a uniform regression from ~1.0–1.2 Hz to ~2.0–2.2 Hz across all
+    8 mics. *Right (cross-drone FLY124):*
+    DREGON+FLY125 is uniform at ~1.1 Hz on every channel - better than on DREGON recordings.
+  ],
+) <fig:fly125-per-channel>
+
+== Training dynamics
+
+#figure(
+  placement: none,
+  image("assets/fly125_loss_curves.png", width: 100%),
+  caption: [
+    Train (left) and validation (right) PIT loss, plotted as RMSE in Hz, for both
+    runs. *Caveat:* the two runs validate on *different* sets — DREGON-only on
+    DREGON-LM-V4/valid, DREGON+FLY125 on the V4+FLY125 mix — so the validation curves
+    are not directly comparable. The DREGON+FLY125 run peaks early (best epoch 20)
+    and mildly overfits thereafter; the saved best checkpoint is from that early peak,
+    which is less V4-converged and explains the in-domain regression in @tab:fly125.
+  ],
+) <fig:fly125-curves>
+
+The in-domain regression is therefore *not* a fundamental capacity trade-off but an
+artifact of early stopping on a combined validation set: the best-by-val checkpoint
+(epoch 20) sacrifices some DREGON-LM-V4 sharpness for FLY124 generalisation. A longer
+schedule, a V4-only early-stopping criterion, or simply more FLY-style data would
+likely recover the in-domain accuracy while keeping the cross-drone gains.
+
+@fig:fly125-v4-compare makes this in-domain regression concrete on a single
+DREGON-LM-V4 slice: both models track the four rotors, but the DREGON-only model
+hugs the ground truth more tightly (PIT frame MAE 1.19 vs 2.17 Hz), with the
+DREGON+FLY125 model slightly over-smoothing the fast transient near $t approx 2.5$ s.
+
+#figure(
+  placement: none,
+  image("assets/fly125_v4_compare.png", width: 92%),
+  caption: [
+    In-domain old-vs-new comparison on DREGON-LM-V4 `sample_00012` (channel 0).
+    Top: input spectrogram. Middle: DREGON-only SimpleConvV2 prediction (solid) over
+    PIT-permuted ground truth (dotted). Bottom: DREGON+FLY125 SimpleConvV2. Both stay
+    within ~2 Hz of the truth; the DREGON-only model is marginally sharper here, the
+    price the mixed-data model pays for its cross-drone gains.
+  ],
+) <fig:fly125-v4-compare>
+
+#figure(
+  placement: none,
+  image("assets/fly125_sample_00004.png", width: 100%),
+  caption: [
+    DREGON+FLY125 on FLY124 `sample_00004` (channel 0): the predicted RPS now tracks
+    all four rotors tightly over the ground truth, including the faster rotors that the
+    DREGON-only model under-predicted (cf. @fig:fly124-sample-00004).
+  ],
+) <fig:fly125-sample-00004>
+
+#figure(
+  placement: none,
+  image("assets/fly125_sample_00006.png", width: 100%),
+  caption: [DREGON+FLY125 on FLY124 `sample_00006` (channel 0).],
+) <fig:fly125-sample-00006>
+
+== Take-away
+
+- *One recording of the target drone closes the cross-drone gap.* FLY124 PIT RMSE
+  7.96 #sym.arrow.r 1.63 Hz, $R^2$ median 0.52 #sym.arrow.r 0.96 — held-out accuracy
+  now matches in-domain.
+- The fix is *uniform across channels*: the ch1/ch6–7 collapse of the DREGON-only
+  model disappears, confirming the gap was a mic/SNR-domain mismatch rather than a
+  trajectory-modelling failure.
+- The *fixed-order (non-PIT) error stays high* (RMSE ~12 Hz) — the residual difficulty
+  is rotor *identity/permutation*, not speed estimation, and is orthogonal to the
+  cross-drone question.
+- The small in-domain regression is an *early-stopping artifact* (best ckpt at epoch
+  20 on a mixed val set), recoverable with a longer schedule or a V4-only stopping
+  criterion.

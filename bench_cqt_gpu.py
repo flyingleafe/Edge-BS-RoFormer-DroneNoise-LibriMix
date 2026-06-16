@@ -48,14 +48,23 @@ def main():
     torch.manual_seed(0)
     audio = torch.randn(args.batch, N, device=device)
 
-    kw = dict(sr=args.sr, fmin=32.7, n_octaves=args.n_octaves, over_sample=args.over_sample,
-              harmonics=harmonics, hop_length=args.hop, log_mag=True)
+    kw = dict(
+        sr=args.sr,
+        fmin=32.7,
+        n_octaves=args.n_octaves,
+        over_sample=args.over_sample,
+        harmonics=harmonics,
+        hop_length=args.hop,
+        log_mag=True,
+    )
     sep = HCQT_nnAudio(**kw).to(device).eval()
     stk = HCQTStacked_nnAudio(**kw).to(device).eval()
 
-    print(f"device={device}  batch={args.batch}  dur={args.dur}s  sr={args.sr}  "
-          f"harmonics={harmonics}  iters={args.iters}")
-    print(f"  separate: {len(harmonics)} CQTs of {kw['n_octaves']*12*args.over_sample} bins")
+    print(
+        f"device={device}  batch={args.batch}  dur={args.dur}s  sr={args.sr}  "
+        f"harmonics={harmonics}  iters={args.iters}"
+    )
+    print(f"  separate: {len(harmonics)} CQTs of {kw['n_octaves'] * 12 * args.over_sample} bins")
     print(f"  stacked : 1 CQT of {stk.cqt.n_bins} bins + {len(harmonics)} freq-shifts\n")
 
     with torch.no_grad():
@@ -67,15 +76,17 @@ def main():
         m_stk, dp_stk = stk(audio[:4])
 
     print(f"  HCQT_nnAudio   (3 CQTs + phase): {t_sep:8.2f} ms")
-    print(f"  HCQTStacked    (1 CQT  + phase): {t_stk:8.2f} ms   ({t_sep/t_stk:.2f}x faster)\n")
+    print(f"  HCQTStacked    (1 CQT  + phase): {t_stk:8.2f} ms   ({t_sep / t_stk:.2f}x faster)\n")
 
     assert m_sep.shape == m_stk.shape, (m_sep.shape, m_stk.shape)
     mc = np.corrcoef(m_sep.flatten().cpu().numpy(), m_stk.flatten().cpu().numpy())[0, 1]
     # phase-diff circular agreement
     dd = (dp_sep - dp_stk).cpu().numpy()
     dd = np.abs((dd + np.pi) % (2 * np.pi) - np.pi)
-    print(f"  output shape {tuple(m_sep.shape)} match | mag corr={mc:.4f} | "
-          f"dphase mean|Δ|={dd.mean():.4f} rad  max={dd.max():.4f} rad")
+    print(
+        f"  output shape {tuple(m_sep.shape)} match | mag corr={mc:.4f} | "
+        f"dphase mean|Δ|={dd.mean():.4f} rad  max={dd.max():.4f} rad"
+    )
 
 
 if __name__ == "__main__":

@@ -213,3 +213,60 @@ DREGON-trained *SimpleConvV2 (8ch)*, evaluated *without retraining* on a differe
 - The gap is *channel-dependent* (ch1 collapses, ch6–7 degrade) — mic placement / SNR, not a uniform shift
 - Motivates adding Michael's other recording *FLY125* to the training set, to see if the model could generalize across two different drones at least.
 - Next: train on DREGON+FLY125, re-test on FLY124 to measure how much the cross-drone gap closes
+
+= Adding FLY125 to training closes the gap
+
+DREGON-trained vs *DREGON + FLY125*-trained SimpleConvV2 (8ch), same two eval sets (PIT):
+
+#table(
+  columns: (auto, auto, auto, auto),
+  inset: 7pt,
+  align: (left + horizon, left + horizon, center + horizon, center + horizon),
+  table.header([*Training set*], [*Eval set*], [*RMSE (Hz)*], [*$R^2$ median*]),
+  table.hline(),
+  [DREGON-only], [DREGON-LM-V4 (in-dom.)], [*1.62*], [*0.955*],
+  [DREGON+FLY125], [DREGON-LM-V4 (in-dom.)], [2.77], [0.776],
+  table.hline(),
+  [DREGON-only], [FLY124 (cross-drone)], [7.96], [0.515],
+  [DREGON+FLY125], [FLY124 (cross-drone)], [*1.63*], [*0.961*],
+)
+
+RMSE *7.96 #sym.arrow.r 1.63 Hz* ($R^2$ 0.52 #sym.arrow.r 0.96) — model seem to be able to generalize across drones.
+
+= FLY125 — per-channel error
+
+#figure(
+  placement: none,
+  image("assets/fly125_per_channel.png", width: 100%),
+  caption: [The DREGON-only channel-dependent failure on FLY124 (right: ch1 spikes to 12 Hz, ch6–7 degrade) is *erased* — DREGON+FLY125 is uniform ~1.1 Hz on every mic. In-domain (left): a uniform ~1 Hz regression.],
+)
+
+= FLY125 — training dynamics
+
+#figure(
+  placement: none,
+  image("assets/fly125_loss_curves.png", width: 100%),
+  caption: [Train/val PIT loss (RMSE Hz). Val sets differ (DREGON-only: V4; DREGON+FLY125: V4+FLY125 mix). The FLY125 run peaks at *epoch 20* then overfits — the model is still not sufficient to generalize without some quality degradation.],
+)
+
+= FLY125 — example slice
+
+#figure(
+  placement: none,
+  image("assets/fly125_sample_00004.png", width: 100%),
+  caption: [DREGON+FLY125 on FLY124 `sample_00004` (ch0): predictions are useful now.],
+)
+
+= FLY125 — in-domain old vs new
+
+#figure(
+  placement: none,
+  image("assets/fly125_v4_compare.png", height: 80%),
+  caption: [DREGON-LM-V4 `sample_00012` (ch0): spectrogram, then DREGON-only (PIT MAE 1.19 Hz) and DREGON+FLY125 (2.17 Hz) predictions over GT (dotted). We see that model lost precision on DREGON recordings.],
+)
+
+= FLY125 — take-away
+
+- *In principle, best model generalizes across drones*: FLY124 RMSE 7.96 #sym.arrow.r 1.63 Hz, $R^2$ 0.52 #sym.arrow.r 0.96.
+- But its overall precision degrades from additional data due to _overfitting_ still.
+- Next steps: fight overfitting (more randomized, non-repeating mixtures) and iterate on model architecture once more, to get model which is precise on both drones.
