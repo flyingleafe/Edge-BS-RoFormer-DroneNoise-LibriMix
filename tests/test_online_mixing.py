@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from omegaconf import OmegaConf
 import numpy as np
 import soundfile as sf
 import torch
@@ -127,6 +128,15 @@ def test_audio_source_pool_memory_cache_keeps_sampling_interface(tmp_path):
 
     assert sample.shape == (8, sr)
     assert pool._memory_cache is not None
+
+
+def test_v4_michaels_online_config_uses_original_librispeech_not_generated_vocals():
+    cfg = OmegaConf.load("configs/online_mix_v4_michaels_train_no_room1.yaml")
+    speech = cfg.sources.speech[0]
+
+    assert speech.root == "data/librispeech/LibriSpeech/train-clean-100"
+    assert speech.glob == "**/*.flac"
+    assert "datasets/DREGON-LM-V4-michaels/train" not in speech.root
 
 
 def test_online_mix_dataloader_batches_multichannel_tensors(tmp_path):

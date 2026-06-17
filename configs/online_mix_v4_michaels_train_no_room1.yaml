@@ -23,10 +23,13 @@ sources:
       min_motor_rps: 0.0
   speech:
     - kind: audio_files
-      root: datasets/DREGON-LM-V4-michaels/train
-      glob: "**/vocals.wav"
+      root: data/librispeech/LibriSpeech/train-clean-100
+      glob: "**/*.flac"
       cache:
-        mode: memory
+        # Do not preload all LibriSpeech into RAM. A packed/lazy cache can be
+        # added behind this same interface; the public source is the original
+        # LibriSpeech tree, not generated dataset vocals.
+        mode: none
 
 policy:
   stages:
