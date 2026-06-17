@@ -925,6 +925,12 @@ def main():
         dest="pit_loss",
         help="Disable permutation-invariant loss",
     )
+    parser.add_argument(
+        "--loss",
+        choices=["pit_mse", "mse"],
+        default=None,
+        help="Loss alias for autoresearch commands: pit_mse enables PIT loss, mse disables it.",
+    )
     parser.add_argument("--wandb_key", type=str, default="", help="WandB API key")
     parser.add_argument("--n_fft", type=int, default=2048)
     parser.add_argument("--hop_length", type=int, default=512)
@@ -1008,6 +1014,8 @@ def main():
         "leaves the per-epoch metrics table untouched).",
     )
     args = parser.parse_args()
+    if args.loss is not None:
+        args.pit_loss = args.loss == "pit_mse"
 
     os.makedirs(args.save_path, exist_ok=True)
     results = {}
