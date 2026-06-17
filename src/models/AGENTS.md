@@ -119,6 +119,14 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
 
+Causal RPS gotcha from autoresearch session `20260617-012233`: simply swapping
+`BiGRUHead` for a unidirectional GRU was unstable/poor. The best causal-head
+variant in that sweep was `simple_conv_v2_uni_gru96_norm_do03` (GroupNorm +
+dropout 0.3), still worse than `simple_conv_v2`. Fully time-causal STFT +
+left-padded temporal conv variants underfit badly, likely due alignment/latency
+and loss of future context; treat them as a separate front-end/alignment problem,
+not just a head replacement.
+
 ### Salience-map RPS baselines (`salience_rps.py`)
 
 `multif0_salience` and `basic_pitch_salience` are *multi-pitch* baselines: they
