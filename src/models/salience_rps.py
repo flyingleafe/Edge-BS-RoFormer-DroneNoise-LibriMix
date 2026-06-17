@@ -5,9 +5,10 @@ RPS trajectories directly:
 
     forward(audio) -> (B, n_bins, T_grid)   logits on the model's CQT grid
 
-- **Training** (``train_rps_predictor.py``): BCE against ``rps_to_salience()``
-  binary/soft targets (see ``salience_target``). The target is deterministic per
-  sample, so it is precomputed/cached by the dataset — no per-step tracking.
+- **Training** (``train_rps_predictor.py``): BCE against binary/soft salience
+  targets derived on the fly from the batch's STFT-grid RPS target (see
+  ``salience_target_from_frame_rps``). This keeps every dataloader on the common
+  ``(audio, rps)`` task interface; no per-step inverse tracking is involved.
 - **Inference / eval**: ``predict_rps()`` does ``sigmoid -> salience_to_rps_segmented``
   (Hungarian tracking) -> resample to the STFT frame grid -> ``(B, num_rotors, T_stft)``,
   so the *existing* global-PIT metrics in ``evaluate()`` apply unchanged.
@@ -207,6 +208,68 @@ class SalienceRPSPredictor(nn.Module):
             rps_sr=rps_sr,
             blur_bins=blur_bins,
         )
+
+    def salience_target_from_frame_rps(
+        self,
+        rps_frames: torch.Tensor,
+        n_samples: int,
+        *,
+        blur_bins: int = 0,
+    ) -> torch.Tensor:
+        """Build a BCE target from RPS already resampled to the STFT frame grid.
+
+        Training datasets should be able to expose the same ``(audio, rps)``
+        batch for every RPS-prediction model.  Direct-regression models consume
+        the STFT-grid RPS directly; salience models convert it to their own
+        time/frequency grid here, inside the training loop.
+
+        Args:
+            rps_frames: ``(4, T_stft)`` or ``(B, 4, T_stft)`` RPS in Hz.
+            n_samples: waveform length used to size this model's salience grid.
+            blur_bins: frequency-axis smoothing half-width.
+
+        Returns:
+            ``(n_bins_out, T_grid)`` or ``(B, n_bins_out, T_grid)``.
+        """
+        was_batched = rps_frames.dim() == 3
+        if not was_batched:
+            rps_frames = rps_frames.unsqueeze(0)
+
+        n_grid = self.num_grid_frames(n_samples)
+        rps_grid = F.interpolate(
+            rps_frames.float(), size=n_grid, mode="linear", align_corners=False
+        )
+
+        freqs_t = torch.as_tensor(
+            self.output_freqs(), dtype=rps_grid.dtype, device=rps_grid.device
+        )
+        B, R, _T = rps_grid.shape
+        n_bins = int(freqs_t.numel())
+
+        dists = (rps_grid.unsqueeze(2) - freqs_t.view(1, 1, n_bins, 1)).abs()
+        nearest_bin = dists.argmin(dim=2)  # (B, 4, T_grid)
+        active = rps_grid > 0.1
+
+        salience = torch.zeros(B, n_bins, n_grid, device=rps_grid.device, dtype=rps_grid.dtype)
+        b_idx = torch.arange(B, device=rps_grid.device).view(B, 1, 1).expand(-1, R, n_grid)
+        t_idx = torch.arange(n_grid, device=rps_grid.device).view(1, 1, -1).expand(B, R, -1)
+        salience[b_idx[active], nearest_bin[active], t_idx[active]] = 1.0
+        salience = salience.clamp(0, 1)
+
+        if blur_bins > 0:
+            k = int(blur_bins)
+            ramp = torch.arange(1, k + 1, device=salience.device, dtype=salience.dtype)
+            kernel = torch.cat(
+                [ramp, torch.tensor([k + 1.0], device=salience.device), ramp.flip(0)]
+            )
+            kernel = (kernel / kernel.max()).view(1, 1, -1)
+            sal_f = salience.permute(0, 2, 1).reshape(B * n_grid, 1, n_bins)
+            sal_f = F.conv1d(sal_f, kernel, padding=k)
+            salience = sal_f.reshape(B, n_grid, n_bins).permute(0, 2, 1).clamp(0, 1)
+
+        if not was_batched:
+            salience = salience.squeeze(0)
+        return salience
 
     # ── forward / inference ──────────────────────────────────────────────────
 
