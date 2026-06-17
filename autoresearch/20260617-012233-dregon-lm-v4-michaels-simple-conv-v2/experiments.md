@@ -574,7 +574,7 @@ Results:
 
 ### E15 — Candidate simple_conv_v2_uni_gru96_norm_do02
 
-Status: submitted/running
+Status: completed — worse than H14
 
 Hypothesis: H15 — keep H14's hidden size 96 but reduce dropout to `0.2`, testing whether H14 was over-regularized.
 
@@ -590,6 +590,7 @@ Job:
 - Slurm job id: `12542830`
 - Job name: `ar_012233_v2ug96b`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H16.
+- Final Slurm status: `COMPLETED` (elapsed `00:09:34`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ug96b.o12542830`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru96_norm_do02`
 
@@ -599,9 +600,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_uni_gru96_norm_do02 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru96_norm_do02 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 19
+- Best/final checkpoint evaluation: PIT MSE `65.4811`, RMSE `8.09`, Std MSE `108.1616`, frame MAE `4.43`, clip MAE `3.88`, R² `-1.2644`
+- Best epoch by validation PIT: epoch 9 (`Train=7.7301`, `Val PIT=65.4811`, `R²=-1.2644`)
+- Conclusion: lower dropout than H14 generalized much worse.
+
 ### E16 — Candidate simple_conv_v2_uni_gru64_norm_do03
 
-Status: submitted/running
+Status: completed — failed/unstable
 
 Hypothesis: H16 — lower the normalized causal GRU hidden size to 64 while keeping dropout `0.3`, testing whether GroupNorm+dropout makes the original small unidirectional head viable.
 
@@ -617,6 +625,7 @@ Job:
 - Slurm job id: `12542878`
 - Job name: `ar_012233_v2ug64d`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Final Slurm status: `COMPLETED` (elapsed `00:07:36`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ug64d.o12542878`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru64_norm_do03`
 
@@ -625,3 +634,10 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_uni_gru64_norm_do03 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru64_norm_do03 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 16
+- Best/final checkpoint evaluation: PIT MSE `95.4777`, RMSE `9.77`, Std MSE `141.9276`, frame MAE `4.96`, clip MAE `4.60`, R² `-3.7860`
+- Best checkpoint came from epoch 6, which had finite validation metrics but a `nan` training loss row.
+- Conclusion: lower capacity did not fix causal-head instability/generalization.
