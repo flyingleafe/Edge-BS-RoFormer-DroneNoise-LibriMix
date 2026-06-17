@@ -1,0 +1,41 @@
+# Online-mixing RPS training stream matching DREGON-LM-V4-michaels/train noise/source setup,
+# but with NO augmentations at any point: only random LibriSpeech + rotating-noise mixtures.
+# Validation leakage guards:
+# - DREGON free-flight_nosource_room1 is excluded because it appears in validation.
+# - Michael's FLY124 is validation-only; training uses FLY125 only.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260618
+
+sources:
+  noise:
+    - kind: dregon
+      root: data
+      split: in_flight_noise
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      min_motor_rps: 30.0
+      download: false
+    - kind: michaels
+      root: data
+      ids: [FLY125]
+      # Michael's FLY125 motor telemetry hovers around 29 RPS; do not apply the
+      # DREGON >30 RPS in-flight threshold to it.
+      min_motor_rps: 0.0
+  speech:
+    - kind: audio_files
+      root: data/librispeech/LibriSpeech/train-clean-100
+      glob: "**/*.flac"
+      cache:
+        # Created automatically if missing; reused between runs. Override with
+        # ONLINE_MIX_SOURCE_CACHE_DIR in .env/on the shell for another partition.
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false

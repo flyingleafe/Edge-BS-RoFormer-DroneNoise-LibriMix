@@ -40,9 +40,21 @@ The factory `get_model(model_name, n_fft, hop_length, num_rotors)` constructs
 `YourModelClass(n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)`.
 
 ### Dataset
-`DREGONRPSDataset` loads `mixture.wav` + `rps.npy` from DREGON-LM-V2 chunks
-(3s at 16 kHz).  Audio is mono; RPS is `(4, M)` with `M ≈ N // 512 + 1`
-frames.  No need to modify.
+`DREGONRPSDataset` loads `mixture.wav` + `rps.npy` from DREGON-LM chunks.
+Dataloaders for this task should expose the common `(audio, rps_target)` format:
+audio is `(T,)` or `(C, T)`, and `rps_target` is `(4, T_stft)` on the model's
+STFT output grid.  Salience-map models do **not** require a special dataset item;
+the training loop derives their BCE salience targets on the fly from `rps_target`.
+For online mixing, use an infinite `IterableDataset`, not a finite map-style
+`Dataset`: the training loop defines an arbitrary validation cadence such as
+`samples_per_validation`, consumes that many online samples, then evaluates on a
+fixed validation set. The public interface is config-in/stream-out: do not add
+separate source-cache preparation scripts or cache-specific CLI flags; if a
+cache/memmap is needed and missing, create it under the hood from the same YAML
+config. Do not invent per-segment data containers: use existing
+`TimeFrame`/`TimeSeries` objects for aligned audio+telemetry and plain NumPy
+arrays/memmaps/tensors for simple unaligned audio; prefer OmegaConf YAML nodes
+or plain mappings over custom config dataclasses.
 
 ### Loss
 Training loop calls `model(audio)` to get `rps_pred: (B, 4, T)` and computes
