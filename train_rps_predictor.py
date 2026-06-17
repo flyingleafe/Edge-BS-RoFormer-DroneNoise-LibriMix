@@ -22,6 +22,7 @@ Output: (B, 4, T_stft) predicted RPS per STFT frame
 import argparse
 import glob
 import itertools
+import math
 import os
 import time
 
@@ -34,10 +35,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 import wandb
+from data_processing.online_mixing import OnlineMixIterableDataset
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 
 # Import new model variants
@@ -89,12 +92,12 @@ RPSPredictor = SimpleConv
 class DREGONRPSDataset(Dataset):
     """Load mixture.wav + rps.npy from DREGON-LM, resample RPS to STFT frames.
 
-    When ``salience_fn`` is given, each item additionally yields a per-bin
-    salience target (for BCE-trained salience models). ``salience_fn`` maps
-    ``(raw_rps (4, M), n_samples) -> (n_bins, T_grid)`` and is the model's
-    ``salience_target`` bound method. Targets are **precomputed once at init**
-    (in the main process, reading only audio metadata) so DataLoader workers
-    neither recompute them nor fork the GPU model.
+    The training loop consumes the common ``(audio, rps)`` format for all model
+    families.  Salience-model BCE targets are derived from ``rps`` on the fly in
+    the training step, so future dataloaders do not need a special third item.
+
+    ``salience_fn`` is kept only as a legacy/backward-compatible escape hatch;
+    the main training path no longer uses it.
     """
 
     def __init__(self, data_dir, n_fft=2048, hop_length=512, salience_fn=None):
@@ -623,9 +626,9 @@ def evaluate(
 
     For salience models (``outputs_salience``) the prediction step runs
     ``predict_rps`` (sigmoid -> Hungarian tracking -> STFT grid) in fp32 outside
-    autocast; the salience target in the batch is ignored. Everything downstream
-    (PIT MSE, MAE, R²) is identical to the RPS-regression path, so the reported
-    metrics stay comparable across all model families.
+    autocast. Everything downstream (PIT MSE, MAE, R²) is identical to the
+    RPS-regression path, so the reported metrics stay comparable across all
+    model families.
     """
     model.eval()
     is_salience = getattr(model, "outputs_salience", False)
@@ -638,7 +641,7 @@ def evaluate(
         for batch in tqdm(
             loader, desc="eval", unit="batch", leave=False, disable=not progress
         ):
-            audio, rps_target = batch[0], batch[1]  # salience target (batch[2]) unused at eval
+            audio, rps_target = batch[0], batch[1]
             audio, rps_target = audio.to(device), rps_target.to(device)
             audio, rps_target, C = _flatten_channels(audio, rps_target)
             if is_salience:
@@ -724,54 +727,71 @@ def train_model(model_name, args):
     print(f"\n{'=' * 60}")
     print(f"Model: {model_name}")
 
-    # Model first — salience models supply the dataset's BCE target function.
     model = get_model(
         model_name,
         n_fft=n_fft,
         hop_length=hop,
-        hcqt_fmin=args.hcqt_fmin,
-        fused_branches=args.fused_branches,
-        stacked_hcqt=args.stacked_hcqt,
+        hcqt_fmin=getattr(args, "hcqt_fmin", None),
+        fused_branches=getattr(args, "fused_branches", False),
+        stacked_hcqt=getattr(args, "stacked_hcqt", False),
         salience_cfg=_salience_cfg_from_args(args),
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
 
     is_salience = getattr(model, "outputs_salience", False)
-    salience_fn = None
+    epoch_progress = getattr(args, "epoch_progress", False)
+    track_threshold = getattr(args, "track_threshold", 0.3)
+    salience_blur_bins = getattr(args, "salience_blur_bins", 2)
+    bce_pos_weight = getattr(args, "bce_pos_weight", 0.0)
     pos_weight = None
     if is_salience:
-        blur = args.salience_blur_bins
-        # Bound to the (main-process) model; called only inside the dataset's
-        # __init__ to precompute targets, then dropped (not retained on the ds).
-        salience_fn = lambda raw, n: model.salience_target(raw, n, blur_bins=blur)  # noqa: E731
-        if args.bce_pos_weight > 0:
-            pw = args.bce_pos_weight
+        blur = salience_blur_bins
+        salience_bins = len(model.output_freqs())
+        if bce_pos_weight > 0:
+            pw = bce_pos_weight
         else:
             # Auto: roughly (#negative bins) / (#positive bins) per frame.
             active = model.num_rotors * (2 * blur + 1)
-            pw = (model.n_bins - active) / max(active, 1)
+            pw = (salience_bins - active) / max(active, 1)
         pos_weight = torch.tensor(float(pw), device=device)
         print(
-            f"Salience model: n_bins={model.n_bins}, blur_bins={blur}, BCE pos_weight={pw:.1f}, "
-            f"track_threshold={args.track_threshold}"
+            f"Salience model: n_bins={salience_bins}, blur_bins={blur}, BCE pos_weight={pw:.1f}, "
+            f"track_threshold={track_threshold}"
         )
 
     # Data
-    train_ds = DREGONRPSDataset(
-        os.path.join(args.data_root, "train"), n_fft, hop, salience_fn=salience_fn
-    )
-    valid_ds = DREGONRPSDataset(
-        os.path.join(args.data_root, "valid"), n_fft, hop, salience_fn=salience_fn
-    )
-    print(f"Train: {len(train_ds)} samples | Valid: {len(valid_ds)} samples")
+    online_mix = getattr(args, "online_mix", False)
+    if online_mix:
+        if not getattr(args, "mix_config", None):
+            raise ValueError("--online_mix requires --mix_config")
+        mix_cfg = OmegaConf.load(args.mix_config)
+        # Keep model-grid settings single-sourced from the training CLI.
+        mix_cfg.sample_rate = int(getattr(mix_cfg, "sample_rate", 16000))
+        mix_cfg.n_fft = n_fft
+        mix_cfg.hop_length = hop
+        train_ds = OnlineMixIterableDataset.from_config(mix_cfg)
+        samples_per_validation = int(getattr(args, "samples_per_validation", 9000))
+        train_batches_per_epoch = math.ceil(samples_per_validation / args.batch_size)
+        print(
+            f"Train: online stream ({samples_per_validation} samples/validation, "
+            f"{train_batches_per_epoch} batches)"
+        )
+    else:
+        train_ds = DREGONRPSDataset(os.path.join(args.data_root, "train"), n_fft, hop)
+        train_batches_per_epoch = None
+        print(f"Train: {len(train_ds)} samples", end=" | ")
+
+    valid_ds = DREGONRPSDataset(os.path.join(args.data_root, "valid"), n_fft, hop)
+    print(f"Valid: {len(valid_ds)} samples")
 
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=not online_mix,
         num_workers=4,
         pin_memory=True,
+        persistent_workers=online_mix,
     )
     valid_loader = DataLoader(
         valid_ds,
@@ -794,10 +814,15 @@ def train_model(model_name, args):
     # Naive baseline
     print("Computing naive baseline...")
     rps_sum = torch.zeros(4)
-    for batch in train_loader:
+    rps_count = 0
+    # For an infinite online stream, do not consume training samples just to
+    # estimate a baseline. Use the fixed validation set as a stable probe.
+    baseline_loader = valid_loader if online_mix else train_loader
+    for batch in baseline_loader:
         rps = batch[1]
         rps_sum += rps.sum(dim=(0, 2))
-    rps_mean = rps_sum / (len(train_ds) * train_ds[0][1].shape[1])
+        rps_count += rps.shape[0] * rps.shape[2]
+    rps_mean = rps_sum / max(rps_count, 1)
     naive_mse = 0.0
     for batch in valid_loader:
         rps = batch[1]
@@ -817,27 +842,42 @@ def train_model(model_name, args):
     print("-" * 75)
 
     t0 = time.time()
+    train_iter = iter(train_loader) if online_mix else None
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_loss_sum = 0.0
         train_items = 0
+        if online_mix:
+            batch_iter = (next(train_iter) for _ in range(train_batches_per_epoch))
+            progress_total = train_batches_per_epoch
+        else:
+            batch_iter = train_loader
+            progress_total = None
         for batch in tqdm(
-            train_loader,
+            batch_iter,
+            total=progress_total,
             desc=f"train e{epoch}",
             unit="batch",
             leave=False,
-            disable=not args.epoch_progress,
+            disable=not epoch_progress,
         ):
             optimizer.zero_grad()
             if is_salience:
-                # Salience models: BCE on per-bin logits vs precomputed targets.
-                audio, sal_target = batch[0].to(device), batch[2].to(device)
-                # Broadcast the per-sample target across channels like RPS.
-                audio, sal_target, _C = _flatten_channels(audio, sal_target)
+                # Salience models train with BCE on per-bin targets, but consume
+                # the same dataset batch as direct RPS-regression models.  The
+                # cheap RPS->salience conversion happens here so every dataloader
+                # only has to provide `(audio, rps_target)`.
+                audio, rps_target = batch[0].to(device), batch[1].to(device)
+                audio, rps_target, _C = _flatten_channels(audio, rps_target)
+                with torch.no_grad():
+                    sal_target = model.salience_target_from_frame_rps(
+                        rps_target,
+                        audio.shape[-1],
+                        blur_bins=salience_blur_bins,
+                    )
                 with torch.amp.autocast("cuda"):
                     logits = model(audio)  # (B*C, n_bins, T_grid)
-                    # Defensive: the front-end's frame count can differ from the
-                    # precomputed grid by ±1; align the target along time.
+                    # Defensive: the front-end's frame count can differ by ±1.
                     if sal_target.shape[-1] != logits.shape[-1]:
                         sal_target = F.interpolate(
                             sal_target, size=logits.shape[-1], mode="linear", align_corners=False
@@ -876,8 +916,8 @@ def train_model(model_name, args):
             valid_loader,
             device,
             len(valid_ds),
-            track_threshold=args.track_threshold,
-            progress=args.epoch_progress,
+            track_threshold=track_threshold,
+            progress=epoch_progress,
         )
         val_mse = metrics["mse"]
         scheduler.step(val_mse)
@@ -926,8 +966,8 @@ def train_model(model_name, args):
         valid_loader,
         device,
         len(valid_ds),
-        track_threshold=args.track_threshold,
-        progress=args.epoch_progress,
+        track_threshold=track_threshold,
+        progress=epoch_progress,
     )
 
     print(
@@ -965,6 +1005,23 @@ def main():
     parser.add_argument("--grad_clip", type=float, default=5.0)
     parser.add_argument("--data_root", default="datasets/DREGON-LM-V2")
     parser.add_argument("--save_path", default="results/rps_predictor_comparison")
+    parser.add_argument(
+        "--online_mix",
+        action="store_true",
+        help="Use the config-driven infinite online-mixing training stream.",
+    )
+    parser.add_argument(
+        "--mix_config",
+        type=str,
+        default="",
+        help="OmegaConf YAML for OnlineMixIterableDataset.from_config; required with --online_mix.",
+    )
+    parser.add_argument(
+        "--samples_per_validation",
+        type=int,
+        default=9000,
+        help="Online-mixing samples to consume before each fixed validation pass.",
+    )
     parser.add_argument(
         "--pit_loss",
         action="store_true",

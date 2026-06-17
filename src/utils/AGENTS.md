@@ -20,6 +20,7 @@ preserved every legacy import while opening the namespace for sub-packages.
 | Subdir | Purpose | Details |
 |--------|---------|---------|
 | `data/` | Aligned time-series containers (audio + RPS + segments + ...) | See `data/AGENTS.md` |
+| `dataloader_benchmark.py` | Reusable `benchmark_dataloader(...)` helper for finite and infinite PyTorch loaders; reports batch/example/effective-audio-clip throughput. | Use before optimizing online-mixing dataloaders. |
 
 ## Adding new sub-packages
 
