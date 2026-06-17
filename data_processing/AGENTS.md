@@ -210,9 +210,28 @@ DREGON-LM-V4. Michael's recordings are pure drone noise → `source_type`
 `data_processing/online_mixing.py` contains the config-in/stream-out online mixer:
 `OnlineMixIterableDataset.from_config(cfg)` returns an infinite `IterableDataset`
 that uses `TimeFrame` internally for aligned noise+RPS slicing and yields
-model-ready `(audio, rps_target)` tensors. The first implementation is deliberately
-naive for source audio (file-backed reads through `AudioFileSourcePool`); cache or
-memmap optimizations must stay behind the same config/interface.
+model-ready `(audio, rps_target)` tensors. Unaligned speech/source audio is plain
+NumPy/memmap/tensor data, not a new project container.
+
+Fresh-session map for online RPS training:
+1. Read this section, then `configs/AGENTS.md` § "Online-mixing configs".
+2. Loader implementation: `data_processing/online_mixing.py`.
+3. Durable policies: `configs/online_mix_*.yaml`.
+4. Training integration: `train_rps_predictor.py --online_mix --mix_config <yaml>
+   --samples_per_validation <N>`. The stream is infinite; `samples_per_validation`
+   defines the arbitrary validation cadence/"epoch" size.
+5. Validation remains fixed via `--data_root <dataset>/valid`; do **not** use an
+   advancing online validation stream for early stopping.
+
+Source/cache interface rules:
+- Public interface is config-in/stream-out. Do not add source-cache prep scripts
+  or cache-specific CLI flags; cache/memmap optimizations belong behind
+  `AudioFileSourcePool.from_config(...)`.
+- `cache.mode: packed_int16` creates/reuses a packed PCM16 source cache. Its
+  location is `sources.speech[].cache.dir`, normally
+  `${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}`. Put
+  `ONLINE_MIX_SOURCE_CACHE_DIR=/large/partition/online_mix_sources` in `.env` on
+  machines where repo-local `.cache/` is the wrong partition.
 
 Benchmark notes:
 - Early local smoke using generated `DREGON-LM-V4-michaels/train/**/vocals.wav`
@@ -312,6 +331,11 @@ See `docs/data-and-artifacts.md` for the end-to-end CPU → GPU → laptop flow.
 - **Valid clip count ceiling**: with `--real_valid --valid_duration 8.0`, only
   ~15 non-overlapping clips exist across the 2 default recordings.  Larger
   `--num_valid` will overlap; this is fine for RPS eval but be aware.
+- **Online-mix leakage/source split**: for V4-Michaels online RPS training, use
+  original LibriSpeech under `data/librispeech/LibriSpeech/train-clean-100`, not
+  generated `datasets/.../train/**/vocals.wav`; exclude DREGON
+  `free-flight_nosource_room1`; use Michael's `FLY125` for training and reserve
+  `FLY124` for validation.
 - **`source_white_noise_prob` vs `white_noise_prob`**: the former replaces speech
   with white noise as the *target source*; the latter adds WN *on top of* speech.
   For diversity training use `--source_white_noise_prob 0.2–0.4`.

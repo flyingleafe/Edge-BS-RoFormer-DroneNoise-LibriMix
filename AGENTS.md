@@ -66,6 +66,7 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 | **Adding a spectral front-end** | — | `src/models/AGENTS.md` § "Spectral front-ends" / "Adding a new front-end". |
 | **RPS conditioning** (RotorEncoder, fusion, predictor interface) | — | `src/models/AGENTS.md` + `src/tasks/rps-prediction/AGENTS.md`. |
 | **Running an experiment** (train / eval / orchestrate) | `run-experiment` (`vast-server-training` for remote GPU) | `experiments/AGENTS.md`, `configs/AGENTS.md`, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`. |
+| **Running online-mixed RPS-predictor training** (random mixtures each epoch, fixed validation, curriculum/augment stages) | `run-experiment` | `data_processing/AGENTS.md` § "Online Mixing for RPS Prediction" **first**, then `configs/AGENTS.md` § "Online-mixing configs", then `train_rps_predictor.py` (`--online_mix --mix_config --samples_per_validation`). |
 | **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `generate_comparison.py`. |
 | **Producing a presentation / slides** | `create-typst-slides` | `writing/AGENTS.md`; results figures via `generate_comparison.py`. |
 | **Producing a report** | `create-typst-report` | `writing/AGENTS.md`; results figures via `generate_comparison.py`. |
@@ -80,7 +81,7 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 |-----------|---------|-------------|
 | `src/models/` | Model implementations + pluggable spectral front-ends | Model type keys, RPS conditioning, adding new models; front-end system; see `src/models/AGENTS.md` |
 | `src/tasks/` | Task interface definitions (what a model must implement for each ML task) | RPS prediction, speech enhancement; see `src/tasks/AGENTS.md` |
-| `configs/` | YAML config files for model variants | Naming conventions, config structure |
+| `configs/` | YAML config files for model variants and online-mixing dataset policies | Naming conventions, config structure; online mixer configs are `configs/online_mix_*.yaml` |
 | `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
 | `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py` | See `src/utils/AGENTS.md` for layout |
 | `src/utils/data/` | **Fixed‑point time‑series algebra** for audio, telemetry, and any aligned data. Use this for manipulating audio with co‑recorded signals (RPS, IMU, VAD). Four frozen container types with a uniform `slice`/`concat`/`shift` algebra, exact int64‑tick storage. | **Always read `src/utils/data/AGENTS.md` before any task touching audio, media, or timeseries data.** Full API reference at [`src/utils/data/API.md`](src/utils/data/API.md). |
@@ -98,6 +99,7 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 - **Model types**: Registered in `utils.get_model_from_config()` (now at `src/utils/__init__.py`) — see `src/models/AGENTS.md` for full table
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `src/models/AGENTS.md`
+- **Online-mixed RPS training**: loader logic is `data_processing/online_mixing.py`; durable YAML policies live at `configs/online_mix_*.yaml`; training uses `train_rps_predictor.py --online_mix --mix_config <yaml> --samples_per_validation <N>` with fixed validation from `--data_root .../valid`. Cache location is `ONLINE_MIX_SOURCE_CACHE_DIR` in `.env` (default `.cache/online_mix_sources`).
 - **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
 - **Playwright (browser automation)**: Installed via `python312Packages.playwright` + `playwright-driver.browsers` in `flake.nix`. The nixpkgs package shadows any `uv`-installed version via `PYTHONPATH` ordering. Uses NixOS-patched Chromium/headless_shell — no `playwright install` needed. Env vars `PLAYWRIGHT_BROWSERS_PATH` and `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` are set in the shell hook.
 - **Results**: Always `./sync_results.sh` before analysis
