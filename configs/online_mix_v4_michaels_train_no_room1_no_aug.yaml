@@ -28,9 +28,10 @@ sources:
       root: data/librispeech/LibriSpeech/train-clean-100
       glob: "**/*.flac"
       cache:
-        # Created automatically if missing; reused between runs.
+        # Created automatically if missing; reused between runs. Override with
+        # ONLINE_MIX_SOURCE_CACHE_DIR in .env/on the shell for another partition.
         mode: packed_int16
-        dir: .cache/online_mix_sources
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
 
 policy:
   source_prob: 1.0

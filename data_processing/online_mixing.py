@@ -24,6 +24,16 @@ import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from torch.utils.data import IterableDataset, get_worker_info
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - python-dotenv is a project dependency.
+    load_dotenv = None
+
+if load_dotenv is not None:
+    # Let configs use ${oc.env:...} values from the project .env while still
+    # respecting variables already provided by the shell/job launcher.
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
 from data_processing.michaels import load_michaels_timeframes
 from utils.data import EventSeries, TimeFrame, UniformSeries

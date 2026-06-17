@@ -164,6 +164,17 @@ def test_v4_michaels_online_config_uses_original_librispeech_not_generated_vocal
     assert "datasets/DREGON-LM-V4-michaels/train" not in speech.root
 
 
+def test_v4_michaels_online_config_cache_dir_is_env_configurable(monkeypatch, tmp_path):
+    override = tmp_path / "online-cache"
+    monkeypatch.setenv("ONLINE_MIX_SOURCE_CACHE_DIR", str(override))
+
+    cfg = OmegaConf.load("configs/online_mix_v4_michaels_train_no_room1.yaml")
+    speech = cfg.sources.speech[0]
+
+    assert speech.cache.mode == "packed_int16"
+    assert speech.cache.dir == str(override)
+
+
 def test_online_mix_dataloader_batches_multichannel_tensors(tmp_path):
     noise_pool = TimeFrameNoisePool([_make_noise_tf()], min_motor_rps=0.0, duration_s=1.0)
     ds = OnlineMixIterableDataset(

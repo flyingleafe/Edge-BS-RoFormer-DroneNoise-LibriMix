@@ -221,8 +221,10 @@ Benchmark notes:
   DREGON train noise excluding `free-flight_nosource_room1`, plus Michael's
   `FLY125` only), `batch_size=16`, `num_workers=4`,
   `speech_per_channel=independent`: direct FLAC decode was about `2.9 batch/s`;
-  internal `cache.mode: packed_int16` creates/reuses `.cache/online_mix_sources/*`
-  and reaches about `13.5 batch/s` / `1728 audio-clip/s` on cache reuse.
+  internal `cache.mode: packed_int16` creates/reuses
+  `${ONLINE_MIX_SOURCE_CACHE_DIR:-.cache/online_mix_sources}/*` and reaches about
+  `13.5 batch/s` / `1728 audio-clip/s` on cache reuse. Set
+  `ONLINE_MIX_SOURCE_CACHE_DIR` in `.env` to place this cache on another partition.
 - Fixed precomputed loader is about `21 batch/s` / `5394 audio-clip/s`.
 Optimize only behind the same public API.
 
