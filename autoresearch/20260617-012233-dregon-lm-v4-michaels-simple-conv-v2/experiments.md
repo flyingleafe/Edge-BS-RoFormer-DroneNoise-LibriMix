@@ -431,7 +431,7 @@ Results:
 
 ### E11 — Candidate simple_conv_v2_uni_gru128
 
-Status: submitted/running
+Status: completed — failed/unstable
 
 Hypothesis: H11 — use a unidirectional GRU with hidden size 128 to match the BiGRU baseline's output width (`2*64`) while preserving the baseline STFT and encoder.
 
@@ -448,6 +448,7 @@ Job:
 - Slurm job id: `12533051`
 - Job name: `ar_012233_v2ug128`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H12.
+- Final Slurm status: `COMPLETED` (elapsed `00:13:57`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ug128.o12533051`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128`
 
@@ -457,9 +458,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_uni_gru128 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 17
+- Best/final checkpoint evaluation: PIT MSE `39.8099`, RMSE `6.31`, Std MSE `91.8041`, frame MAE `4.12`, clip MAE `3.80`, R² `-0.5486`
+- Best epoch by validation PIT: epoch 7 (`Train=9.0165`, `Val PIT=39.8099`, `R²=-0.5486`)
+- Failure detail: one epoch logged `nan` train loss; capacity improved H8 but remained unstable and much worse than baseline.
+
 ### E12 — Candidate simple_conv_v2_uni_gru128_norm
 
-Status: submitted/running
+Status: completed — overfit/generalization gap
 
 Hypothesis: H12 — add GroupNorm after the causal Conv1d prenet of H11 to stabilize the fixed-LR/AMP training that produced NaNs in H8.
 
@@ -475,6 +483,7 @@ Job:
 - Slurm job id: `12533200`
 - Job name: `ar_012233_v2ugnrm`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Final Slurm status: `COMPLETED` (elapsed `00:36:21`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ugnrm.o12533200`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128_norm`
 
@@ -483,3 +492,11 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_uni_gru128_norm --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128_norm --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Ran all 50 epochs (no early stopping).
+- Best/final checkpoint evaluation: PIT MSE `20.2943`, RMSE `4.50`, Std MSE `76.0374`, frame MAE `2.34`, clip MAE `1.81`, R² `0.7391`
+- Best epoch by validation PIT: epoch 42 (`Train=1.5089`, `Val PIT=20.2943`, `R²=0.7391`)
+- Minimum train loss: epoch 50 (`Train=1.2512`, `Val PIT=25.7291`)
+- Conclusion: GroupNorm fixed NaNs and trained strongly, but the causal head overfits/generalizes poorly versus the BiGRU baseline.
