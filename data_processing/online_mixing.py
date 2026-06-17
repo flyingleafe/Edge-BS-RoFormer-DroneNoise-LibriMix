@@ -225,12 +225,24 @@ class AudioFileSourcePool:
         *,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         duration_s: float = DEFAULT_DURATION_S,
+        cache_mode: str = "none",
     ):
         self.files = [Path(p) for p in files]
         self.sample_rate = int(sample_rate)
         self.target_len = int(round(duration_s * sample_rate))
+        self.cache_mode = str(cache_mode)
         if not self.files:
             raise ValueError("source pool has no audio files")
+        self._memory_cache: list[np.ndarray] | None = None
+        if self.cache_mode == "memory":
+            print(f"Creating in-memory source cache for {len(self.files)} files ...")
+            self._memory_cache = [self._load_one(p) for p in self.files]
+        elif self.cache_mode in {"none", "auto", "file_lru"}:
+            # `auto`/`file_lru` currently fall back to direct file reads. They keep
+            # the config schema stable for later cache implementations.
+            pass
+        else:
+            raise ValueError(f"unsupported source cache mode: {self.cache_mode!r}")
 
     @classmethod
     def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> "AudioFileSourcePool":
@@ -244,7 +256,9 @@ class AudioFileSourcePool:
         for pattern in globs:
             files.extend(p for p in root.glob(str(pattern)) if p.suffix.lower() in cls.AUDIO_SUFFIXES)
         files = sorted(set(files))
-        return cls(files, sample_rate=sample_rate, duration_s=duration_s)
+        cache_cfg = _cfg_get(cfg, "cache", {}) or {}
+        cache_mode = str(_cfg_get(cache_cfg, "mode", "none"))
+        return cls(files, sample_rate=sample_rate, duration_s=duration_s, cache_mode=cache_mode)
 
     def _load_one(self, path: Path) -> np.ndarray:
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
@@ -256,8 +270,12 @@ class AudioFileSourcePool:
         return np.asarray(audio, dtype=np.float32)
 
     def sample_mono(self, rng: np.random.Generator) -> np.ndarray:
-        path = self.files[int(rng.integers(0, len(self.files)))]
-        audio = self._load_one(path)
+        idx = int(rng.integers(0, len(self.files)))
+        if self._memory_cache is None:
+            path = self.files[idx]
+            audio = self._load_one(path)
+        else:
+            audio = self._memory_cache[idx]
         if audio.shape[0] >= self.target_len:
             start = int(rng.integers(0, audio.shape[0] - self.target_len + 1))
             audio = audio[start : start + self.target_len]

@@ -69,6 +69,24 @@ def test_online_mix_generate_sample_shape_and_determinism(tmp_path):
     assert not torch.equal(rps1, rps3)
 
 
+def test_audio_source_pool_memory_cache_keeps_sampling_interface(tmp_path):
+    source_dir = tmp_path / "sources_cache"
+    source_dir.mkdir()
+    sr = 16000
+    sf.write(source_dir / "a.wav", np.ones(sr, dtype=np.float32) * 0.01, sr)
+
+    pool = AudioFileSourcePool.from_config(
+        {"root": str(source_dir), "glob": "*.wav", "cache": {"mode": "memory"}},
+        duration_s=1.0,
+        sample_rate=sr,
+    )
+
+    sample = pool.sample_array(np.random.default_rng(0), channels=8, mode="shared")
+
+    assert sample.shape == (8, sr)
+    assert pool._memory_cache is not None
+
+
 def test_online_mix_dataloader_batches_multichannel_tensors(tmp_path):
     noise_pool = TimeFrameNoisePool([_make_noise_tf()], min_motor_rps=0.0, duration_s=1.0)
     ds = OnlineMixIterableDataset(

@@ -215,9 +215,11 @@ naive for source audio (file-backed reads through `AudioFileSourcePool`); cache 
 memmap optimizations must stay behind the same config/interface.
 
 Benchmark baseline from local raw DREGON noise + `DREGON-LM-V4-michaels/train/**/vocals.wav`,
-`batch_size=32`, `num_workers=4`, `speech_per_channel=independent`: about
-`3.96 batch/s` / `1013 audio-clip/s`, versus fixed precomputed loader about
-`21 batch/s` / `5394 audio-clip/s`. Optimize only behind the same public API.
+`batch_size=32`, `num_workers=4`, `speech_per_channel=independent`: naive
+file-backed source reads reached about `3.96 batch/s` / `1013 audio-clip/s`;
+`cache.mode: memory` reached about `13.7 batch/s` / `3506 audio-clip/s`; fixed
+precomputed loader is about `21 batch/s` / `5394 audio-clip/s`. Optimize only
+behind the same public API.
 
 ## Multichannel Training & Evaluation Wiring
 
