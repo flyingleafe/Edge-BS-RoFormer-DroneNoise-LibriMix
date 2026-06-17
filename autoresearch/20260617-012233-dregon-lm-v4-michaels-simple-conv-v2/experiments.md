@@ -126,3 +126,33 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_local_attn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_local_attn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+### E3 — Candidate simple_conv_v2_multires
+
+Status: submitted/running
+
+Hypothesis: H3 — concatenate long-window and short-window STFT magnitudes before the `simple_conv_v2` encoder so the model can use both high frequency resolution and better temporal localization.
+
+Implementation:
+
+- Added `SimpleConvV2MultiRes` in `src/models/rps_predictor.py`.
+- Uses default `n_fft=2048` STFT magnitude plus a short-window `n_fft=1024` STFT magnitude with the same hop (`512`).
+- Interpolates the short-resolution feature map to the long-resolution `(F,T)` grid and concatenates along channel dimension, then uses the same residual+SE encoder, attention frequency pool, and BiGRU head shape as `simple_conv_v2`.
+- Registered model key `simple_conv_v2_multires` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+
+Smoke test output: `simple_conv_v2_multires (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 11:08 BST
+- Slurm job id: `12523268`
+- Job name: `ar_012233_v2mres`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop may continue submitting additional candidates.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2mres.o12523268`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_multires`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_multires --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_multires --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```

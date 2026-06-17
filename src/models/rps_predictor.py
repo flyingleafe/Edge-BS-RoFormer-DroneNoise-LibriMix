@@ -598,6 +598,66 @@ class SimpleConvV2LocalAttention(nn.Module):
         return super().load_state_dict(state_dict, strict=strict)
 
 
+class SimpleConvV2MultiRes(nn.Module):
+    """SimpleConvV2 with concatenated long/short-window STFT magnitude inputs."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        from models.frontends import build_frontend
+
+        if frontend is None:
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+        # Same hop keeps time frames aligned; shorter window trades frequency
+        # resolution for better localization of rapid RPS/noise changes.
+        short_n_fft = max(256, n_fft // 2)
+        self.short_frontend = build_frontend(
+            "stft_mag", n_fft=short_n_fft, hop_length=hop_length
+        )
+
+        enc_spec = [
+            (2, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x_long = self.frontend(audio)  # (B, 1, F_long, T)
+        x_short = self.short_frontend(audio)  # (B, 1, F_short, T_short)
+        if x_short.shape[-1] != x_long.shape[-1] or x_short.shape[-2] != x_long.shape[-2]:
+            x_short = F.interpolate(
+                x_short,
+                size=(x_long.shape[-2], x_long.shape[-1]),
+                mode="bilinear",
+                align_corners=False,
+            )
+        x = torch.cat([x_long, x_short], dim=1)  # (B, 2, F_long, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
 class SimpleConvWide(nn.Module):
     """Wider and deeper SimpleConv with residual connections but no attention/GRU."""
 
@@ -1050,6 +1110,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2": SimpleConvV2,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
+    "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,

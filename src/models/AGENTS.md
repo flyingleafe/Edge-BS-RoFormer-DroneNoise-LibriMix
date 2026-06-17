@@ -88,6 +88,7 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 | `simple_conv_v2` | Residual + SE + attention pool + BiGRU |
 | `simple_conv_v2_transformer` | `simple_conv_v2` encoder/pool + Transformer temporal head |
 | `simple_conv_v2_local_attn` | `simple_conv_v2` encoder/pool + local-window Transformer temporal head |
+| `simple_conv_v2_multires` | `simple_conv_v2` with concatenated long/short-window STFT magnitude inputs |
 | `simple_conv_wide` | Wider/deeper baseline |
 | `simple_conv_tcn` | TCN head (dilated convs) |
 | `simple_conv_multiscale` | FPN-style multi-scale fusion |
