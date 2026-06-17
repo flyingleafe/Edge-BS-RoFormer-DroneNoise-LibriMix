@@ -213,7 +213,7 @@ Results:
 
 ### E5 — Candidate simple_conv_v2_magphase
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H5 — keep the `simple_conv_v2` residual+SE encoder, attention frequency pooling, and BiGRU temporal head, but use `stft_magphase` input (log magnitude + cos/sin phase) instead of magnitude only.
 
@@ -230,6 +230,7 @@ Job:
 - Slurm job id: `12524918`
 - Job name: `ar_012233_v2phase`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop may continue submitting additional candidates.
+- Final Slurm status: `COMPLETED` (elapsed `00:13:26`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2phase.o12524918`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_magphase`
 
@@ -239,9 +240,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_magphase --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_magphase --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 27
+- Best/final checkpoint evaluation: PIT MSE `10.4266`, RMSE `3.23`, Std MSE `87.2740`, frame MAE `2.39`, clip MAE `1.85`, R² `0.7466`
+- Best epoch by validation PIT: epoch 17 (`Val PIT=10.4266`, `R²=0.7466`)
+- Conclusion: phase channels hurt relative to magnitude-only `simple_conv_v2`.
+
 ### E6 — Candidate simple_conv_v2_dual_pool
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H6 — preserve both learned attention frequency pooling and plain mean frequency pooling by concatenating them before the BiGRU head.
 
@@ -258,6 +266,7 @@ Job:
 - Slurm job id: `12524982`
 - Job name: `ar_012233_v2dpool`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop may continue submitting additional candidates.
+- Final Slurm status: `COMPLETED` (elapsed `00:20:22`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2dpool.o12524982`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dual_pool`
 
@@ -267,9 +276,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_dual_pool --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dual_pool --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 28
+- Best/final checkpoint evaluation: PIT MSE `9.8217`, RMSE `3.13`, Std MSE `110.3518`, frame MAE `2.37`, clip MAE `1.93`, R² `0.7462`
+- Best epoch by validation PIT: epoch 18 (`Val PIT=9.8217`, `R²=0.7462`)
+- Conclusion: mean+attention pooling did not help; it underperformed the baseline and the closest feature-augmentation variants.
+
 ### E7 — Candidate simple_conv_v2_gru96
 
-Status: submitted/pending
+Status: completed
 
 Hypothesis: H7 — keep `simple_conv_v2` unchanged except increase the BiGRU hidden size from 64 to 96.
 
@@ -286,6 +302,7 @@ Job:
 - Slurm job id: `12525024`
 - Job name: `ar_012233_v2gru96`
 - Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `QOSMaxGRESPerUser`, so no further jobs submitted.
+- Started after an earlier job completed; final Slurm status: `COMPLETED` (elapsed `00:21:50`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2gru96.o12525024`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_gru96`
 
@@ -294,3 +311,10 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_gru96 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_gru96 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 45
+- Best/final checkpoint evaluation: PIT MSE `8.6612`, RMSE `2.94`, Std MSE `12.9412`, frame MAE `2.07`, clip MAE `1.62`, R² `0.8216`
+- Best epoch by validation PIT: epoch 35 (`Val PIT=8.6612`, `R²=0.8216`)
+- Conclusion: best candidate so far and slightly better than baseline on R²/frame MAE, but worse on primary PIT MSE (`8.6612` vs `7.8920`).
