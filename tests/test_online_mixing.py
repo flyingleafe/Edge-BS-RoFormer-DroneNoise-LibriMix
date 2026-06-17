@@ -112,6 +112,31 @@ def test_online_mix_generate_sample_shape_and_determinism(tmp_path):
     assert not torch.equal(rps1, rps3)
 
 
+def test_audio_source_pool_packed_int16_cache_is_reused(tmp_path, capsys):
+    source_dir = tmp_path / "sources_packed"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    sr = 16000
+    sf.write(source_dir / "a.wav", np.linspace(-0.1, 0.1, sr, dtype=np.float32), sr)
+    cfg = {
+        "root": str(source_dir),
+        "glob": "*.wav",
+        "cache": {"mode": "packed_int16", "dir": str(cache_dir)},
+    }
+
+    pool1 = AudioFileSourcePool.from_config(cfg, duration_s=1.0, sample_rate=sr)
+    first_out = capsys.readouterr().out
+    pool2 = AudioFileSourcePool.from_config(cfg, duration_s=1.0, sample_rate=sr)
+    second_out = capsys.readouterr().out
+    sample = pool2.sample_array(np.random.default_rng(0), channels=2, mode="shared")
+
+    assert "Creating source cache" in first_out
+    assert "Reusing source cache" in second_out
+    assert sample.shape == (2, sr)
+    assert pool1._packed_index is not None
+    assert pool2._packed_data is not None
+
+
 def test_audio_source_pool_memory_cache_keeps_sampling_interface(tmp_path):
     source_dir = tmp_path / "sources_cache"
     source_dir.mkdir()

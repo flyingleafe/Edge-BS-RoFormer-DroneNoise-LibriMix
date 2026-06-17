@@ -26,10 +26,11 @@ sources:
       root: data/librispeech/LibriSpeech/train-clean-100
       glob: "**/*.flac"
       cache:
-        # Do not preload all LibriSpeech into RAM. A packed/lazy cache can be
-        # added behind this same interface; the public source is the original
-        # LibriSpeech tree, not generated dataset vocals.
-        mode: none
+        # Public source is the original LibriSpeech tree, not generated dataset
+        # vocals. The packed PCM16 cache is created automatically if missing and
+        # reused between runs.
+        mode: packed_int16
+        dir: .cache/online_mix_sources
 
 policy:
   stages:

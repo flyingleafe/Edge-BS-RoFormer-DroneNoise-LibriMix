@@ -12,6 +12,7 @@ This is intentionally the simplest implementation of the online-mixing design:
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -278,20 +279,26 @@ class AudioFileSourcePool:
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         duration_s: float = DEFAULT_DURATION_S,
         cache_mode: str = "none",
+        cache_dir: str | Path = ".cache/online_mix_sources",
     ):
         self.files = [Path(p) for p in files]
         self.sample_rate = int(sample_rate)
         self.target_len = int(round(duration_s * sample_rate))
         self.cache_mode = str(cache_mode)
+        self.cache_dir = Path(cache_dir)
         if not self.files:
             raise ValueError("source pool has no audio files")
         self._memory_cache: list[np.ndarray] | None = None
+        self._packed_data: np.memmap | None = None
+        self._packed_index: np.ndarray | None = None
         if self.cache_mode == "memory":
             print(f"Creating in-memory source cache for {len(self.files)} files ...")
             self._memory_cache = [self._load_one(p) for p in self.files]
-        elif self.cache_mode in {"none", "auto", "file_lru"}:
-            # `auto`/`file_lru` currently fall back to direct file reads. They keep
-            # the config schema stable for later cache implementations.
+        elif self.cache_mode in {"packed_int16", "auto"}:
+            self._open_or_create_packed_cache()
+        elif self.cache_mode in {"none", "file_lru"}:
+            # `file_lru` currently falls back to direct file reads. It keeps the
+            # config schema stable for a later bounded cache implementation.
             pass
         else:
             raise ValueError(f"unsupported source cache mode: {self.cache_mode!r}")
@@ -310,7 +317,75 @@ class AudioFileSourcePool:
         files = sorted(set(files))
         cache_cfg = _cfg_get(cfg, "cache", {}) or {}
         cache_mode = str(_cfg_get(cache_cfg, "mode", "none"))
-        return cls(files, sample_rate=sample_rate, duration_s=duration_s, cache_mode=cache_mode)
+        cache_dir = _cfg_get(cache_cfg, "dir", ".cache/online_mix_sources")
+        return cls(
+            files,
+            sample_rate=sample_rate,
+            duration_s=duration_s,
+            cache_mode=cache_mode,
+            cache_dir=cache_dir,
+        )
+
+    def _cache_fingerprint(self) -> str:
+        h = hashlib.blake2b(digest_size=12)
+        h.update(b"online-mix-source-cache-v1")
+        h.update(str(self.sample_rate).encode())
+        for path in self.files:
+            st = path.stat()
+            h.update(str(path.resolve()).encode())
+            h.update(str(st.st_size).encode())
+            h.update(str(st.st_mtime_ns).encode())
+        return h.hexdigest()
+
+    def _open_or_create_packed_cache(self) -> None:
+        fingerprint = self._cache_fingerprint()
+        cache_path = self.cache_dir / fingerprint
+        data_path = cache_path / "audio.i16"
+        index_path = cache_path / "index.npy"
+        manifest_path = cache_path / "manifest.json"
+
+        if not (data_path.exists() and index_path.exists() and manifest_path.exists()):
+            print(
+                f"Creating source cache for {len(self.files)} files at {cache_path} "
+                "(PCM16 packed audio) ..."
+            )
+            cache_path.mkdir(parents=True, exist_ok=True)
+            tmp_data = cache_path / "audio.i16.tmp"
+            tmp_index = cache_path / "index.npy.tmp"
+            tmp_manifest = cache_path / "manifest.json.tmp"
+            offsets: list[tuple[int, int]] = []
+            offset = 0
+            with open(tmp_data, "wb") as f:
+                for i, path in enumerate(self.files, start=1):
+                    audio = self._load_one(path)
+                    audio_i16 = np.clip(audio, -1.0, 1.0)
+                    audio_i16 = np.round(audio_i16 * 32767.0).astype(np.int16)
+                    offsets.append((offset, int(audio_i16.shape[0])))
+                    f.write(audio_i16.tobytes(order="C"))
+                    offset += int(audio_i16.shape[0])
+                    if i == 1 or i % 1000 == 0 or i == len(self.files):
+                        print(f"  cached {i}/{len(self.files)} source files")
+            index = np.asarray(offsets, dtype=np.int64)
+            with open(tmp_index, "wb") as f:
+                np.save(f, index)
+            manifest = {
+                "version": 1,
+                "dtype": "int16",
+                "sample_rate": self.sample_rate,
+                "n_files": len(self.files),
+                "total_samples": int(offset),
+                "fingerprint": fingerprint,
+            }
+            tmp_manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            tmp_data.replace(data_path)
+            tmp_index.replace(index_path)
+            tmp_manifest.replace(manifest_path)
+        else:
+            print(f"Reusing source cache at {cache_path}")
+
+        self._packed_index = np.load(index_path)
+        total_samples = int(self._packed_index[:, 1].sum())
+        self._packed_data = np.memmap(data_path, dtype=np.int16, mode="r", shape=(total_samples,))
 
     def _load_one(self, path: Path) -> np.ndarray:
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
@@ -323,7 +398,10 @@ class AudioFileSourcePool:
 
     def sample_mono(self, rng: np.random.Generator) -> np.ndarray:
         idx = int(rng.integers(0, len(self.files)))
-        if self._memory_cache is None:
+        if self._packed_data is not None and self._packed_index is not None:
+            offset, length = self._packed_index[idx]
+            audio = self._packed_data[int(offset) : int(offset + length)].astype(np.float32) / 32767.0
+        elif self._memory_cache is None:
             path = self.files[idx]
             audio = self._load_one(path)
         else:
