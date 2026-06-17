@@ -47,6 +47,7 @@ from models.rps_predictor import (
     SimpleConvSENext,
     SimpleConvTCN,
     SimpleConvV2,
+    SimpleConvV2Transformer,
     SimpleConvWide,
 )
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
@@ -338,6 +339,7 @@ class DCCRNEncRPS(nn.Module):
 MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
+    "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,

@@ -44,3 +44,49 @@ Results:
 - Early stopping: epoch 31
 - Best/final checkpoint evaluation: PIT MSE `7.8920`, RMSE `2.81`, Std MSE `42.1642`, frame MAE `2.08`, clip MAE `1.62`, R² `0.8183`
 - Best epoch by validation PIT: epoch 21 (`Val PIT=7.8920`, `R²=0.8183`)
+
+### E1 — Candidate simple_conv_v2_transformer
+
+Status: submitted/running
+
+Hypothesis: H1 — replace the BiGRU temporal head in `simple_conv_v2` with a small Transformer encoder while preserving the same STFT magnitude front-end, residual+SE encoder, and attention frequency pooling.
+
+Implementation:
+
+- Added `TemporalTransformerHead` and `SimpleConvV2Transformer` in `src/models/rps_predictor.py`.
+- Registered model key `simple_conv_v2_transformer` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+
+Smoke test:
+
+```bash
+python - <<'PY'
+import torch
+from train_rps_predictor import get_model
+model_name = "simple_conv_v2_transformer"
+model = get_model(model_name, n_fft=2048, hop_length=512, num_rotors=4).eval()
+audio = torch.randn(2, 48000)
+with torch.no_grad():
+    out = model(audio)
+print(model_name, tuple(out.shape))
+assert out.ndim == 3, out.shape
+assert out.shape[0] == 2 and out.shape[1] == 4, out.shape
+PY
+```
+
+Output: `simple_conv_v2_transformer (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 10:46 BST
+- Slurm job id: `12521795`
+- Job name: `ar_012233_v2trans`
+- Initial submit status: `PENDING` (therefore no further candidate submissions this cycle)
+- Follow-up status: `RUNNING` on `rdg1`
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2trans.o12521795`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_transformer`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_transformer --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_transformer --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```

@@ -203,6 +203,65 @@ class BiGRUHead(nn.Module):
         return x.transpose(1, 2)  # (B, num_rotors, T)
 
 
+class TemporalTransformerHead(nn.Module):
+    """Transformer temporal head for per-frame RPS prediction."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.hidden_ch = hidden_ch
+        self.prenet = nn.Sequential(
+            nn.Conv1d(in_ch, hidden_ch, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_ch,
+            nhead=num_heads,
+            dim_feedforward=hidden_ch * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.proj = nn.Linear(hidden_ch, num_rotors)
+
+    @staticmethod
+    def _sinusoidal_positional_encoding(
+        length: int, dim: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        pos = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
+        div = torch.exp(
+            torch.arange(0, dim, 2, device=device, dtype=dtype)
+            * (-math.log(10000.0) / dim)
+        )
+        pe = torch.zeros(length, dim, device=device, dtype=dtype)
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div[: pe[:, 1::2].shape[1]])
+        return pe
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, C, T)
+        Returns: (B, num_rotors, T)
+        """
+        x = self.prenet(x).transpose(1, 2)  # (B, T, hidden)
+        pe = self._sinusoidal_positional_encoding(
+            x.size(1), self.hidden_ch, x.device, x.dtype
+        )
+        x = self.transformer(x + pe.unsqueeze(0))
+        x = self.proj(x)
+        return x.transpose(1, 2)
+
+
 class MultiScaleFusionHead(nn.Module):
     """FPN-style multi-scale feature fusion + prediction head."""
 
@@ -392,6 +451,53 @@ class SimpleConvV2(nn.Module):
 
 
 # ─── Variant 2: SimpleConvWide (scale up, keep it simple) ────────────────────
+
+
+class SimpleConvV2Transformer(nn.Module):
+    """SimpleConvV2 encoder/pool with a Transformer temporal head replacing BiGRU."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = TemporalTransformerHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, num_heads=4
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
 
 
 class SimpleConvWide(nn.Module):
@@ -844,6 +950,7 @@ class SimpleConvBiGRUV2(nn.Module):
 RPS_MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
+    "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,
