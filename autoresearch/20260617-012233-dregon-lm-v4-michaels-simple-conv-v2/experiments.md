@@ -318,3 +318,75 @@ Results:
 - Best/final checkpoint evaluation: PIT MSE `8.6612`, RMSE `2.94`, Std MSE `12.9412`, frame MAE `2.07`, clip MAE `1.62`, R² `0.8216`
 - Best epoch by validation PIT: epoch 35 (`Val PIT=8.6612`, `R²=0.8216`)
 - Conclusion: best candidate so far and slightly better than baseline on R²/frame MAE, but worse on primary PIT MSE (`8.6612` vs `7.8920`).
+
+### E8 — Candidate simple_conv_v2_uni_gru
+
+Status: submitted/running
+
+Hypothesis: H8 — replace only the BiGRU temporal head with a unidirectional, causal-prenet GRU while preserving the existing centered STFT and symmetric temporal encoder.
+
+Implementation:
+
+- Added `CausalGRUHead` with left-padded Conv1d prenet and unidirectional GRU in `src/models/rps_predictor.py`.
+- Added `SimpleConvV2UniGRU` and registered model key `simple_conv_v2_uni_gru` in both registries.
+- Note: this is causal in the recurrent head only; the existing STFT and 2D encoder still use lookahead.
+
+Smoke test output: `simple_conv_v2_uni_gru (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 12:33 BST
+- Slurm job id: `12530583`
+- Job name: `ar_012233_v2ugru`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H9.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ugru.o12530583`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_uni_gru --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E9 — Candidate simple_conv_v2_causal_gru
+
+Status: submitted/pending
+
+Hypothesis: H9 — make the neural stack time-causal via causal STFT framing, left-padded temporal Conv2d blocks, and a unidirectional GRU head.
+
+Implementation:
+
+- Added `CausalSTFTMag` using left-padded `torch.stft(center=False)` with the same frame count as the centered STFT.
+- Added `CausalResidualConvBlock2d` with left-only temporal padding.
+- Added `SimpleConvV2CausalGRU` and registered model key `simple_conv_v2_causal_gru` in both registries.
+
+Smoke test output: `simple_conv_v2_causal_gru (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 12:34 BST
+- Slurm job id: `12530599`
+- Job name: `ar_012233_v2cgru`
+- Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `Priority`, so no further jobs submitted.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2cgru.o12530599`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_causal_gru --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E10 — Candidate simple_conv_v2_causal_gru96
+
+Status: smoke-tested, not submitted
+
+Hypothesis: H10 — widen the fully causal unidirectional GRU to 96 hidden units to recover some capacity lost by removing bidirectional recurrence.
+
+Implementation:
+
+- Added `SimpleConvV2CausalGRU96`, registered as `simple_conv_v2_causal_gru96`, reusing the causal front-end and causal encoder from H9 with `hidden_ch=96`.
+
+Smoke test output: `simple_conv_v2_causal_gru96 (2, 4, 94)`.
+
+Job: not submitted because H9 remained `PENDING` after the >10 s check.

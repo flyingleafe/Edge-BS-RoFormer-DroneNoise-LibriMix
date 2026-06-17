@@ -203,6 +203,126 @@ class BiGRUHead(nn.Module):
         return x.transpose(1, 2)  # (B, num_rotors, T)
 
 
+class CausalGRUHead(nn.Module):
+    """Unidirectional GRU head with causal Conv1d prenet."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        kernel_size: int = 5,
+    ):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.prenet_conv = nn.Conv1d(in_ch, hidden_ch, kernel_size=kernel_size, padding=0)
+        self.prenet = nn.Sequential(
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        self.gru = nn.GRU(
+            hidden_ch,
+            hidden_ch,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=False,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.proj = nn.Linear(hidden_ch, num_rotors)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, C, T)
+        Returns: (B, num_rotors, T)
+        """
+        x = F.pad(x, (self.kernel_size - 1, 0))
+        x = self.prenet(self.prenet_conv(x))  # (B, hidden, T)
+        x = x.transpose(1, 2)  # (B, T, hidden)
+        x, _ = self.gru(x)  # (B, T, hidden)
+        x = self.proj(x)  # (B, T, num_rotors)
+        return x.transpose(1, 2)  # (B, num_rotors, T)
+
+
+class CausalResidualConvBlock2d(nn.Module):
+    """Residual Conv2d block with left-only padding along time."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel: tuple,
+        stride: tuple,
+        padding: tuple,
+        use_se: bool = True,
+        negative_slope: float = 0.2,
+    ):
+        super().__init__()
+        self.time_pad = kernel[1] - 1
+        self.conv = nn.Conv2d(
+            in_ch, out_ch, kernel, stride=stride, padding=(padding[0], 0)
+        )
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.act = nn.LeakyReLU(negative_slope, inplace=True)
+        self.se = SqueezeExcitation2d(out_ch) if use_se else None
+        self.has_skip = stride == (1, 1) and in_ch == out_ch
+        if not self.has_skip and stride == (1, 1):
+            self.skip_proj = nn.Conv2d(in_ch, out_ch, 1)
+        else:
+            self.skip_proj = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        out = F.pad(x, (self.time_pad, 0, 0, 0))
+        out = self.conv(out)
+        out = self.bn(out)
+        if self.skip_proj is not None:
+            identity = self.skip_proj(identity)
+        if self.has_skip or self.skip_proj is not None:
+            out = out + identity
+        out = self.act(out)
+        if self.se is not None:
+            out = self.se(out)
+        return out
+
+
+class CausalSTFTMag(nn.Module):
+    """Log-magnitude STFT using only past samples for each output frame.
+
+    We left-pad by ``n_fft`` and run ``torch.stft(center=False)`` so the output
+    frame count remains ``n_samples // hop_length + 1`` like the comparable
+    centered STFT front-end. Frame ``t`` sees audio up to, but not after, the
+    frame boundary at ``t * hop_length``.
+    """
+
+    out_channels = 1
+
+    def __init__(self, n_fft: int = 2048, hop_length: int = 512):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.register_buffer("window", torch.hann_window(n_fft))
+
+    def num_frames(self, n_samples: int) -> int:
+        return n_samples // self.hop_length + 1
+
+    def forward(self, audio: torch.Tensor) -> torch.Tensor:
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        audio = F.pad(audio, (self.n_fft, 0))
+        X = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            center=False,
+            return_complex=True,
+            normalized=True,
+        )
+        return torch.log1p(X.abs()).unsqueeze(1)
+
+
 class TemporalTransformerHead(nn.Module):
     """Transformer temporal head for per-frame RPS prediction."""
 
@@ -495,6 +615,110 @@ class SimpleConvV2(nn.Module):
 
 
 # ─── Variant 2: SimpleConvWide (scale up, keep it simple) ────────────────────
+
+
+class SimpleConvV2UniGRU(nn.Module):
+    """SimpleConvV2 encoder/pool with a unidirectional causal GRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = CausalGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2CausalGRU(nn.Module):
+    """SimpleConvV2-style fully time-causal stack with unidirectional GRU."""
+
+    def __init__(
+        self,
+        n_fft=2048,
+        hop_length=512,
+        num_rotors=4,
+        frontend=None,
+        hidden_ch=64,
+    ):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.frontend = frontend or CausalSTFTMag(n_fft=n_fft, hop_length=hop_length)
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(CausalResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = CausalGRUHead(
+            128, hidden_ch=hidden_ch, num_rotors=num_rotors, num_layers=2
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, 1, F, T)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2CausalGRU96(SimpleConvV2CausalGRU):
+    """Time-causal SimpleConvV2 stack with wider unidirectional GRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft,
+            hop_length=hop_length,
+            num_rotors=num_rotors,
+            frontend=frontend,
+            hidden_ch=96,
+        )
 
 
 class SimpleConvV2Transformer(nn.Module):
@@ -1319,6 +1543,9 @@ class SimpleConvBiGRUV2(nn.Module):
 RPS_MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
+    "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
+    "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
+    "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
