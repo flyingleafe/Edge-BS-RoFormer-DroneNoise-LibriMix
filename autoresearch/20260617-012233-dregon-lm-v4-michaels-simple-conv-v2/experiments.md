@@ -210,3 +210,31 @@ Results:
 - Best/final checkpoint evaluation: PIT MSE `8.8957`, RMSE `2.98`, Std MSE `74.7740`, frame MAE `2.12`, clip MAE `1.70`, R² `0.8133`
 - Best epoch by validation PIT: epoch 17 (`Val PIT=8.8957`, `R²=0.8133`)
 - Conclusion: closest candidate in this batch but still worse than baseline (`7.8920`, R² `0.8183`).
+
+### E5 — Candidate simple_conv_v2_magphase
+
+Status: submitted/running
+
+Hypothesis: H5 — keep the `simple_conv_v2` residual+SE encoder, attention frequency pooling, and BiGRU temporal head, but use `stft_magphase` input (log magnitude + cos/sin phase) instead of magnitude only.
+
+Implementation:
+
+- Added `SimpleConvV2MagPhase` in `src/models/rps_predictor.py`.
+- Registered model key `simple_conv_v2_magphase` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+
+Smoke test output: `simple_conv_v2_magphase (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 11:37 BST
+- Slurm job id: `12524918`
+- Job name: `ar_012233_v2phase`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop may continue submitting additional candidates.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2phase.o12524918`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_magphase`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_magphase --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_magphase --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
