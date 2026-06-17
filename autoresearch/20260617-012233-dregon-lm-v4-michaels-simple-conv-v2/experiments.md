@@ -97,3 +97,32 @@ Results:
 - Best/final checkpoint evaluation: PIT MSE `43.5184`, RMSE `6.60`, Std MSE `70.5665`, frame MAE `5.03`, clip MAE `4.58`, R² `-0.6571`
 - Best epoch by validation PIT: epoch 11 (`Val PIT=43.5184`, `R²=-0.6571`)
 - Conclusion: substantially worse than `simple_conv_v2` baseline (`7.8920`, R² `0.8183`). This rejects the naive “replace BiGRU with small global Transformer” variant under the fixed training budget.
+
+### E2 — Candidate simple_conv_v2_local_attn
+
+Status: submitted/running
+
+Hypothesis: H2 — keep the `simple_conv_v2` STFT magnitude front-end, residual+SE encoder, and attention frequency pooling, but replace the BiGRU with a Transformer encoder constrained by a local temporal attention mask.
+
+Implementation:
+
+- Added `LocalTemporalTransformerHead` and `SimpleConvV2LocalAttention` in `src/models/rps_predictor.py`.
+- Registered model key `simple_conv_v2_local_attn` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+- Local window: 17 STFT frames (~0.54 s at 16 kHz / hop 512).
+
+Smoke test output: `simple_conv_v2_local_attn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 11:05 BST
+- Slurm job id: `12522911`
+- Job name: `ar_012233_v2local`
+- Initial submit status: `PENDING`; follow-up check within ~10 s showed `RUNNING`, so per corrected user policy the loop may continue submitting additional candidates.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2local.o12522911`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_local_attn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_local_attn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_local_attn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```

@@ -47,6 +47,7 @@ from models.rps_predictor import (
     SimpleConvSENext,
     SimpleConvTCN,
     SimpleConvV2,
+    SimpleConvV2LocalAttention,
     SimpleConvV2Transformer,
     SimpleConvWide,
 )
@@ -340,6 +341,7 @@ MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
+    "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,
