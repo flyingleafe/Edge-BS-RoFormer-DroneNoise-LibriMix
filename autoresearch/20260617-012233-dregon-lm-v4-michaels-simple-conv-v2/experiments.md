@@ -861,15 +861,32 @@ Results:
 
 ### E23 — Candidate simple_conv_v2_smol_causal_tcn
 
-Status: implemented/smoke-tested, not submitted
+Status: submitted/running
 
 Hypothesis: H23 — combine v2 encoder with SMoLnet-style refinement and a left-padded TCN head.
 
 Implementation:
 
 - Added `SimpleConvV2SMoLCausalTCN`, registered as `simple_conv_v2_smol_causal_tcn`.
-- Smoke test output: `simple_conv_v2_smol_causal_tcn (2, 4, 94)`.
-- Not submitted because H22 stayed pending after >10 s.
+- Uses causal-time SMoLnet refinement and left-padded TCN head.
+- Caveat: still uses centered STFT and symmetric 2D conv encoder; only the refinement and head are causal.
+
+Smoke test output: `simple_conv_v2_smol_causal_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12568662`
+- Job name: `ar_012233_v2smct`
+- Initial submit status: `PENDING`; follow-up after ~12 s showed `RUNNING`.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2smct.o12568662`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_causal_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_smol_causal_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_causal_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
 
 ### E24 — Candidate smolnet_rps_simple_head
 
@@ -910,3 +927,32 @@ Results:
 - Early stopping: epoch 15
 - Best/final checkpoint evaluation: PIT MSE `141.0523`, RMSE `11.88`, Std MSE `171.6778`, frame MAE `10.03`, clip MAE `9.58`, R² `-3.8919`
 - Conclusion: the SMoLnet body with a simple Conv1d head fails dramatically. The SMoLnet frequency-dilated backbone needs the TCN head's strong temporal receptive field.
+
+### E25 — Candidate simple_conv_v2_smol_bigru
+
+Status: submitted/running
+
+Hypothesis: H25 — combine the winning v2+SMoL encoder (E22, best R²) with the winning BiGRU temporal head (baseline, best PIT MSE).
+
+Implementation:
+
+- Added `SimpleConvV2SMoLBiGRU`, registered as `simple_conv_v2_smol_bigru`.
+- Extends `SimpleConvV2` (not `SimpleConvV2TCN`) and inserts `SMoLnetRPSBackbone` (non-causal) between the v2 encoder and attention frequency pooling.
+- Uses `BiGRUHead(128, hidden_ch=64, num_layers=2)` identical to the baseline.
+
+Smoke test output: `simple_conv_v2_smol_bigru (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12568655`
+- Job name: `ar_012233_v2smbg`
+- Initial submit status: `PENDING`; follow-up after ~12 s showed `RUNNING`.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2smbg.o12568655`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_bigru`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_smol_bigru --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_bigru --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
