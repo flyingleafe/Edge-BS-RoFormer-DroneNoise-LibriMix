@@ -86,6 +86,8 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 |-----|---------------------|
 | `simple_conv` | Baseline — 5-block encoder + Conv1d head |
 | `simple_conv_v2` | Residual + SE + attention pool + BiGRU |
+| `simple_conv_v2_tcn` | `simple_conv_v2` encoder/pool + symmetric dilated TCN head |
+| `simple_conv_v2_causal_tcn` | `simple_conv_v2` encoder/pool + left-padded dilated TCN head (head-only causal) |
 | `simple_conv_v2_uni_gru` | `simple_conv_v2` encoder/pool + unidirectional causal GRU head (head-only causal) |
 | `simple_conv_v2_uni_gru128` | `simple_conv_v2_uni_gru` with hidden size 128 to match BiGRU output width |
 | `simple_conv_v2_uni_gru128_norm` | `simple_conv_v2_uni_gru128` with GroupNorm after the causal Conv1d prenet |

@@ -678,3 +678,59 @@ Results:
 - Best epoch by validation PIT: epoch 22 (`Train=2.5823`, `Val PIT=24.5623`, `R²=0.3952`)
 - Minimum train loss: epoch 31 (`Train=1.7520`, `Val PIT=42.5755`)
 - Conclusion: the existing TCN fits train very well but generalizes much worse than `simple_conv_v2`; likely needs the v2 residual/SE/attention encoder/pool and/or stronger normalization/causal padding.
+
+### E18 — Candidate simple_conv_v2_tcn
+
+Status: submitted/running
+
+Hypothesis: H18 — put the existing dilated TCN head on the stronger `simple_conv_v2` residual/SE encoder and attention frequency pool. This tests whether H17 failed because of the older SimpleConv encoder/pool rather than because of the TCN head.
+
+Implementation:
+
+- Added `SimpleConvV2TCN`, registered as `simple_conv_v2_tcn`.
+- Uses `TCNHead` unchanged, so the temporal head still has symmetric padding.
+
+Smoke test output: `simple_conv_v2_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12566518`
+- Job name: `ar_012233_v2tcn`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H19.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2tcn.o12566518`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E19 — Candidate simple_conv_v2_causal_tcn
+
+Status: submitted/running
+
+Hypothesis: H19 — replace the symmetric TCN head with a left-padded dilated TCN head, avoiding temporal normalization, to test a simpler head-causal alternative.
+
+Implementation:
+
+- Added `CausalTCNHead` and `SimpleConvV2CausalTCN`, registered as `simple_conv_v2_causal_tcn`.
+- Caveat: this is head-only causal; the v2 encoder still uses centered STFT and symmetric 2D conv padding.
+
+Smoke test output: `simple_conv_v2_causal_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12566528`
+- Job name: `ar_012233_v2ctcn`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ctcn.o12566528`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_causal_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```

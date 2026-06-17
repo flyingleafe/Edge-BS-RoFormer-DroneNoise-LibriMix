@@ -164,6 +164,64 @@ class TCNHead(nn.Module):
         return self.proj(x)
 
 
+class CausalTCNHead(nn.Module):
+    """Left-padded temporal convolution head.
+
+    This keeps the temporal head causal by padding only on the left. It avoids
+    BatchNorm/GroupNorm because those normalize across the time axis for Conv1d
+    tensors and would leak future frames during training/inference on full clips.
+    """
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 4,
+        kernel_size: int = 5,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.blocks = nn.ModuleList()
+        for i in range(num_layers):
+            dilation = 2**i
+            conv = nn.Conv1d(
+                in_ch if i == 0 else hidden_ch,
+                hidden_ch,
+                kernel_size,
+                padding=0,
+                dilation=dilation,
+            )
+            skip = None
+            if i == 0 and in_ch != hidden_ch:
+                skip = nn.Conv1d(in_ch, hidden_ch, kernel_size=1)
+            self.blocks.append(
+                nn.ModuleDict(
+                    {
+                        "conv": conv,
+                        "act": nn.ReLU(inplace=True),
+                        "drop": nn.Dropout(dropout),
+                        "skip": skip if skip is not None else nn.Identity(),
+                    }
+                )
+            )
+        self.kernel_size = kernel_size
+        self.proj = nn.Conv1d(hidden_ch, num_rotors, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, C, T), returns (B, num_rotors, T)."""
+        for i, block in enumerate(self.blocks):
+            dilation = 2**i
+            pad = (self.kernel_size - 1) * dilation
+            y = F.pad(x, (pad, 0))
+            y = block["conv"](y)
+            y = block["act"](y)
+            y = block["drop"](y)
+            residual = block["skip"](x)
+            x = y + residual if y.shape == residual.shape else y
+        return self.proj(x)
+
+
 class BiGRUHead(nn.Module):
     """Bidirectional GRU head for temporal modeling."""
 
@@ -655,6 +713,59 @@ class SimpleConvV2(nn.Module):
 
 
 # ─── Variant 2: SimpleConvWide (scale up, keep it simple) ────────────────────
+
+
+class SimpleConvV2TCN(nn.Module):
+    """SimpleConvV2 encoder/pool with the existing symmetric dilated TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = TCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)
+        return self.head(h)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2CausalTCN(SimpleConvV2TCN):
+    """SimpleConvV2 encoder/pool with a left-padded dilated TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalTCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
 
 
 class SimpleConvV2UniGRU(nn.Module):
@@ -1651,6 +1762,8 @@ class SimpleConvBiGRUV2(nn.Module):
 RPS_MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
+    "simple_conv_v2_tcn": SimpleConvV2TCN,
+    "simple_conv_v2_causal_tcn": SimpleConvV2CausalTCN,
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
     "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
     "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
