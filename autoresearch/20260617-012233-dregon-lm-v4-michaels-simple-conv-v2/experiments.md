@@ -861,7 +861,7 @@ Results:
 
 ### E23 — Candidate simple_conv_v2_smol_causal_tcn
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H23 — combine v2 encoder with SMoLnet-style refinement and a left-padded TCN head.
 
@@ -879,6 +879,7 @@ Job:
 - Slurm job id: `12568662`
 - Job name: `ar_012233_v2smct`
 - Initial submit status: `PENDING`; follow-up after ~12 s showed `RUNNING`.
+- Final Slurm status: `COMPLETED` (elapsed `00:24:04`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2smct.o12568662`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_causal_tcn`
 
@@ -887,6 +888,15 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_smol_causal_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_causal_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Ran all 50 epochs (no early stopping, patience not triggered)
+- Best/final checkpoint evaluation: PIT MSE `8.3806`, RMSE `2.89`, Std MSE `105.0128`, frame MAE `1.93`, clip MAE `1.46`, R² `0.8331`
+- **New best R² (0.8331)**, beating E22 (0.8318) and baseline (0.8183). PIT MSE (8.3806) close to baseline (7.8920).
+- Conclusion: causal constraint in SMoL refinement + head acts as effective regularizer, improving both metrics vs. symmetric E22. Best overall model on the leaderboard by combined PIT MSE + R².
+
+### E24 — Candidate smolnet_rps_simple_head
 
 ### E24 — Candidate smolnet_rps_simple_head
 
@@ -930,7 +940,7 @@ Results:
 
 ### E25 — Candidate simple_conv_v2_smol_bigru
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H25 — combine the winning v2+SMoL encoder (E22, best R²) with the winning BiGRU temporal head (baseline, best PIT MSE).
 
@@ -948,6 +958,7 @@ Job:
 - Slurm job id: `12568655`
 - Job name: `ar_012233_v2smbg`
 - Initial submit status: `PENDING`; follow-up after ~12 s showed `RUNNING`.
+- Final Slurm status: `COMPLETED` (elapsed `00:16:03`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2smbg.o12568655`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_bigru`
 
@@ -956,3 +967,9 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_smol_bigru --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_bigru --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 32
+- Best/final checkpoint evaluation: PIT MSE `11.3410`, RMSE `3.37`, Std MSE `27.4749`, frame MAE `2.34`, clip MAE `1.73`, R² `0.7461`
+- Conclusion: combining v2+SMoL encoder with BiGRU head performs worse than either alone. The compound architecture (v2 encoder → SMoL refinement → BiGRU) likely introduces optimization difficulties or gradient conflicts within the fixed training budget.
