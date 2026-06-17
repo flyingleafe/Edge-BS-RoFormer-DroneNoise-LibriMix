@@ -367,7 +367,8 @@ Job:
 - Submitted: 2026-06-17 12:34 BST
 - Slurm job id: `12530599`
 - Job name: `ar_012233_v2cgru`
-- Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `Priority`, so no further jobs submitted.
+- Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `Priority`, so no further jobs were submitted at that moment.
+- Later status check showed `RUNNING`, allowing H10 submission.
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2cgru.o12530599`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru`
 
@@ -379,7 +380,7 @@ python train_rps_predictor.py --model simple_conv_v2_causal_gru --device cuda:0 
 
 ### E10 — Candidate simple_conv_v2_causal_gru96
 
-Status: smoke-tested, not submitted
+Status: submitted/pending
 
 Hypothesis: H10 — widen the fully causal unidirectional GRU to 96 hidden units to recover some capacity lost by removing bidirectional recurrence.
 
@@ -389,4 +390,17 @@ Implementation:
 
 Smoke test output: `simple_conv_v2_causal_gru96 (2, 4, 94)`.
 
-Job: not submitted because H9 remained `PENDING` after the >10 s check.
+Job:
+
+- Submitted: 2026-06-17 12:35 BST
+- Slurm job id: `12530631`
+- Job name: `ar_012233_v2cgr96`
+- Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `Priority`, so no further jobs submitted.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2cgr96.o12530631`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru96`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_causal_gru96 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru96 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
