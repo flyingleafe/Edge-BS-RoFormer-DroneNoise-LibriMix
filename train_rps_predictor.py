@@ -25,6 +25,10 @@ import itertools
 import os
 import time
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -39,6 +43,7 @@ from models.multif0.rps_predictor import MultiF0RPSPredictor
 # Import new model variants
 from models.rps_predictor import (
     SMoLnetRPSCausalTCN,
+    SMoLnetRPSSimpleHead,
     SMoLnetRPSTCN,
     SimpleConv,
     SimpleConvAttnPool,
@@ -365,6 +370,7 @@ MODEL_REGISTRY = {
     "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
     "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
     "smolnet_rps_tcn": SMoLnetRPSTCN,
+    "smolnet_rps_simple_head": SMoLnetRPSSimpleHead,
     "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
     "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,

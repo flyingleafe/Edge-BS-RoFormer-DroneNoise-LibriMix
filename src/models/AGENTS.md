@@ -91,6 +91,7 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 | `simple_conv_v2_smol_tcn` | `simple_conv_v2` encoder/pool + SMoLnet-style frequency-dilated refinement + symmetric TCN head |
 | `simple_conv_v2_smol_causal_tcn` | `simple_conv_v2` encoder/pool + SMoLnet-style refinement + left-padded TCN head |
 | `smolnet_rps_tcn` | SMoLnet-style compressed re/im STFT backbone + attention frequency pool + symmetric TCN head |
+| `smolnet_rps_simple_head` | SMoLnet-style compressed re/im STFT backbone + SimpleConv-style mean frequency pool and shallow Conv1d head |
 | `smolnet_rps_causal_tcn` | SMoLnet-style compressed re/im STFT backbone with left-padded late layers + left-padded TCN head |
 | `simple_conv_v2_uni_gru` | `simple_conv_v2` encoder/pool + unidirectional causal GRU head (head-only causal) |
 | `simple_conv_v2_uni_gru128` | `simple_conv_v2_uni_gru` with hidden size 128 to match BiGRU output width |
@@ -134,7 +135,10 @@ and loss of future context; treat them as a separate front-end/alignment problem
 not just a head replacement. The external SMoLnet reference
 (`../drone-audition/drone_audition/models/smolnet.py`) is frequency-dilated in
 its early `(kernel, 1)` Conv2d layers and uses symmetric time padding in late
-square layers, so it is not strictly causal as written.
+square layers, so it is not strictly causal as written. When adapting a new
+backbone such as SMoLnet to RPS prediction, run the cleanest body-only ablation
+first (body + SimpleConv-style mean-pool Conv1d head) before adding stronger
+TCN/GRU/attention heads; otherwise body and head effects are confounded.
 
 ### Salience-map RPS baselines (`salience_rps.py`)
 

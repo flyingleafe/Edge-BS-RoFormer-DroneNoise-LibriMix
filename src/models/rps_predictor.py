@@ -360,6 +360,21 @@ class SMoLnetRPSTCN(nn.Module):
         return super().load_state_dict(state_dict, strict=strict)
 
 
+class SMoLnetRPSSimpleHead(SMoLnetRPSTCN):
+    """SMoLnet-style re/im STFT backbone with SimpleConv-style Conv1d head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = nn.Sequential(
+            nn.Conv1d(16, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Conv1d(64, num_rotors, kernel_size=1),
+        )
+
+
 class SMoLnetRPSCausalTCN(SMoLnetRPSTCN):
     """SMoLnet-style backbone with left-padded late layers and causal TCN head."""
 
@@ -1962,6 +1977,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
     "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
     "smolnet_rps_tcn": SMoLnetRPSTCN,
+    "smolnet_rps_simple_head": SMoLnetRPSSimpleHead,
     "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
     "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,

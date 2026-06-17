@@ -848,3 +848,36 @@ Implementation:
 - Added `SimpleConvV2SMoLCausalTCN`, registered as `simple_conv_v2_smol_causal_tcn`.
 - Smoke test output: `simple_conv_v2_smol_causal_tcn (2, 4, 94)`.
 - Not submitted because H22 stayed pending after >10 s.
+
+### E24 — Candidate smolnet_rps_simple_head
+
+Status: submitted/pending
+
+Hypothesis: H24 — use the SMoLnet-style frequency-dilated body with the simplest SimpleConv-style mean-frequency-pool + shallow Conv1d head.
+
+Rationale:
+
+- This is the missing clean ablation: it changes the body while preserving the simplest temporal head pattern, rather than introducing a TCN at the same time.
+- Expected to show whether the SMoLnet body is useful before attributing effects to temporal-head changes.
+
+Implementation:
+
+- Added `SMoLnetRPSSimpleHead`, registered as `smolnet_rps_simple_head` in both registries.
+- Uses the existing `SMoLnetRPSBackbone` and then `mean(dim=2)` frequency pooling followed by `Conv1d(16→64, k=5)`, ReLU, dropout `0.1`, and `Conv1d(64→4, k=1)`, matching the SimpleConv head pattern.
+
+Smoke test output: `smolnet_rps_simple_head (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12568116`
+- Job name: `ar_012233_smsimp`
+- Initial submit status: `PENDING`; follow-up after ~12 s remained `PENDING` with reason `Resources`, so no further jobs submitted.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_smsimp.o12568116`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_simple_head`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model smolnet_rps_simple_head --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_simple_head --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
