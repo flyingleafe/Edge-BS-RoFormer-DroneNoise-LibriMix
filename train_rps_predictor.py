@@ -50,6 +50,7 @@ from models.rps_predictor import (
     SimpleConvV2LocalAttention,
     SimpleConvV2MultiRes,
     SimpleConvV2Transformer,
+    SimpleConvV2Wavelet,
     SimpleConvWide,
 )
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
@@ -344,6 +345,7 @@ MODEL_REGISTRY = {
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
+    "simple_conv_v2_dwt": SimpleConvV2Wavelet,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,

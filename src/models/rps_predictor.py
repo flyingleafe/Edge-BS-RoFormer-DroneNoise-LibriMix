@@ -658,6 +658,81 @@ class SimpleConvV2MultiRes(nn.Module):
         return super().load_state_dict(state_dict, strict=strict)
 
 
+class SimpleConvV2Wavelet(nn.Module):
+    """SimpleConvV2 with an added lightweight Haar-like temporal wavelet branch."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.wavelet_scales = (128, 256, 512, 1024)
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+        self.wavelet_proj = nn.Sequential(
+            nn.Conv1d(len(self.wavelet_scales), 8, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(8, 1, kernel_size=1),
+        )
+
+        enc_spec = [
+            (2, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def _wavelet_features(self, audio: torch.Tensor, target_t: int) -> torch.Tensor:
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        x = audio.unsqueeze(1)
+        feats = []
+        for scale in self.wavelet_scales:
+            half = scale // 2
+            filt = torch.cat(
+                [
+                    torch.ones(half, device=x.device, dtype=x.dtype),
+                    -torch.ones(half, device=x.device, dtype=x.dtype),
+                ]
+            ).view(1, 1, scale)
+            filt = filt / math.sqrt(float(scale))
+            y = F.conv1d(x, filt, stride=self.hop_length, padding=scale // 2)
+            feats.append(torch.log1p(y.abs()))
+        w = torch.cat(feats, dim=1)  # (B, scales, T_w)
+        if w.shape[-1] != target_t:
+            w = F.interpolate(w, size=target_t, mode="linear", align_corners=False)
+        return self.wavelet_proj(w)  # (B, 1, T)
+
+    def forward(self, audio):
+        x_mag = self.frontend(audio)  # (B, 1, F, T)
+        w = self._wavelet_features(audio, x_mag.shape[-1]).unsqueeze(2)
+        w = w.expand(-1, -1, x_mag.shape[-2], -1)
+        x = torch.cat([x_mag, w], dim=1)  # (B, 2, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
 class SimpleConvWide(nn.Module):
     """Wider and deeper SimpleConv with residual connections but no attention/GRU."""
 
@@ -1111,6 +1186,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
+    "simple_conv_v2_dwt": SimpleConvV2Wavelet,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,

@@ -156,3 +156,33 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_multires --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_multires --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+### E4 — Candidate simple_conv_v2_dwt
+
+Status: submitted/pending
+
+Hypothesis: H4 — augment STFT magnitude with a lightweight wavelet-like temporal feature branch that exposes multi-scale time-domain change/periodicity cues while avoiding extra dependencies.
+
+Implementation:
+
+- Added `SimpleConvV2Wavelet` in `src/models/rps_predictor.py`.
+- Computes fixed Haar-like Conv1d responses on raw audio at scales 128, 256, 512, and 1024 samples with stride equal to STFT hop (`512`).
+- Applies `log1p(abs(.))`, a tiny Conv1d projection to one temporal channel, broadcasts across frequency, concatenates with STFT magnitude, then reuses the `simple_conv_v2` encoder/pool/BiGRU shape.
+- Registered model key `simple_conv_v2_dwt` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+
+Smoke test output: `simple_conv_v2_dwt (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 11:11 BST
+- Slurm job id: `12523611`
+- Job name: `ar_012233_v2dwt`
+- Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `QOSMaxGRESPerUser`, so no further jobs submitted.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2dwt.o12523611`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dwt`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_dwt --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dwt --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
