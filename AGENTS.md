@@ -99,6 +99,8 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `src/models/AGENTS.md`
 - **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
+- **Slurm gpushort**: On Slurm login nodes, use `./sbatch.sh [slurm_params] -- <training command>` for generic GPU jobs. It enforces `gpushort` and the 1:00:00 wall-time limit, with logs/results rooted under `/gpfs/scratch/acw592`.
+- **Pi autoresearch**: Project-local extension `.pi/extensions/autoresearch/` provides `/autoresearch`, `/autoresearch-resume`, plus `slurm_submit`, `slurm_status`, and `slurm_logs`. It scaffolds git-tracked research artifacts under `autoresearch/<session>/`; checkpoints/results remain under `/gpfs/scratch/acw592/results/autoresearch/`. Use `/autoresearch-resume` to reattach to an existing `autoresearch/<session>/session.json` after fixing or reloading the extension.
 - **Playwright (browser automation)**: Installed via `python312Packages.playwright` + `playwright-driver.browsers` in `flake.nix`. The nixpkgs package shadows any `uv`-installed version via `PYTHONPATH` ordering. Uses NixOS-patched Chromium/headless_shell — no `playwright install` needed. Env vars `PLAYWRIGHT_BROWSERS_PATH` and `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` are set in the shell hook.
 - **Results**: Always `./sync_results.sh` before analysis
 
