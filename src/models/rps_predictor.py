@@ -744,6 +744,30 @@ class SimpleConvV2UniGRU96NormDO03(SimpleConvV2UniGRU):
         )
 
 
+class SimpleConvV2UniGRU96NormDO02(SimpleConvV2UniGRU):
+    """Normalized hidden=96 unidirectional GRU head with moderate dropout."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(
+            128, hidden_ch=96, num_rotors=num_rotors, num_layers=2, dropout=0.2
+        )
+
+
+class SimpleConvV2UniGRU64NormDO03(SimpleConvV2UniGRU):
+    """Normalized hidden=64 unidirectional GRU head with stronger dropout."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, dropout=0.3
+        )
+
+
 class SimpleConvV2CausalGRU(nn.Module):
     """SimpleConvV2-style fully time-causal stack with unidirectional GRU."""
 
@@ -1632,6 +1656,8 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
     "simple_conv_v2_uni_gru128_norm_do03": SimpleConvV2UniGRU128NormDO03,
     "simple_conv_v2_uni_gru96_norm_do03": SimpleConvV2UniGRU96NormDO03,
+    "simple_conv_v2_uni_gru96_norm_do02": SimpleConvV2UniGRU96NormDO02,
+    "simple_conv_v2_uni_gru64_norm_do03": SimpleConvV2UniGRU64NormDO03,
     "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
     "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,

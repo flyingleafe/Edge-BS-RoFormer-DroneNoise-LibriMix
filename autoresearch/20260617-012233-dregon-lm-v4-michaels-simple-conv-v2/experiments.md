@@ -571,3 +571,57 @@ Results:
 - Best epoch by validation PIT: epoch 15 (`Train=5.4321`, `Val PIT=13.1309`, `R²=0.7340`)
 - Minimum train loss: epoch 25 (`Train=3.8700`, `Val PIT=28.4468`)
 - Conclusion: best causal-head candidate so far, but still substantially worse than `simple_conv_v2`.
+
+### E15 — Candidate simple_conv_v2_uni_gru96_norm_do02
+
+Status: submitted/running
+
+Hypothesis: H15 — keep H14's hidden size 96 but reduce dropout to `0.2`, testing whether H14 was over-regularized.
+
+Implementation:
+
+- Added `SimpleConvV2UniGRU96NormDO02`, registered as `simple_conv_v2_uni_gru96_norm_do02`.
+
+Smoke test output: `simple_conv_v2_uni_gru96_norm_do02 (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 15:14 BST
+- Slurm job id: `12542830`
+- Job name: `ar_012233_v2ug96b`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H16.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ug96b.o12542830`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru96_norm_do02`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_uni_gru96_norm_do02 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru96_norm_do02 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E16 — Candidate simple_conv_v2_uni_gru64_norm_do03
+
+Status: submitted/running
+
+Hypothesis: H16 — lower the normalized causal GRU hidden size to 64 while keeping dropout `0.3`, testing whether GroupNorm+dropout makes the original small unidirectional head viable.
+
+Implementation:
+
+- Added `SimpleConvV2UniGRU64NormDO03`, registered as `simple_conv_v2_uni_gru64_norm_do03`.
+
+Smoke test output: `simple_conv_v2_uni_gru64_norm_do03 (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 15:15 BST
+- Slurm job id: `12542878`
+- Job name: `ar_012233_v2ug64d`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ug64d.o12542878`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru64_norm_do03`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_uni_gru64_norm_do03 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru64_norm_do03 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
