@@ -28,6 +28,41 @@ def stft_time_frames(audio_length: int, hop_length: int, n_fft: int) -> int:
     return audio_length // hop_length + 1
 
 
+class STFTReImFrontEnd(nn.Module):
+    """Compressed real/imag STFT front-end for SMoLnet-style RPS models."""
+
+    out_channels = 2
+
+    def __init__(self, n_fft=2048, hop_length=512, center=True, compressed=True):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.center = center
+        self.compressed = compressed
+        self.register_buffer("window", torch.hann_window(n_fft), persistent=True)
+
+    def forward(self, audio):
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        spec = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            center=self.center,
+            return_complex=True,
+        )
+        x = torch.stack([spec.real, spec.imag], dim=1)
+        if self.compressed:
+            x = x.sign() * torch.log1p(x.abs())
+        return x
+
+    def num_frames(self, n_samples: int) -> int:
+        if self.center:
+            return n_samples // self.hop_length + 1
+        return max(0, (n_samples - self.n_fft) // self.hop_length + 1)
+
+
 class SqueezeExcitation2d(nn.Module):
     """Squeeze-and-Excitation block for 2D conv features (B, C, F, T)."""
 
@@ -220,6 +255,127 @@ class CausalTCNHead(nn.Module):
             residual = block["skip"](x)
             x = y + residual if y.shape == residual.shape else y
         return self.proj(x)
+
+
+class SMoLnetRPSDilatedLayer(nn.Module):
+    """SMoLnet-style frequency-dilated convolution layer."""
+
+    def __init__(self, in_channels, out_channels, dilation=1, kernel_size=3, use_norm=True):
+        super().__init__()
+        self.main = nn.Sequential(
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=(kernel_size, 1),
+                padding=(kernel_size // 2 * dilation, 0),
+                dilation=(dilation, 1),
+            ),
+            nn.BatchNorm2d(out_channels) if use_norm else nn.Identity(),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.main(x)
+
+
+class SMoLnetRPSLateLayer(nn.Module):
+    """SMoLnet late square layer; optionally left-padded in time."""
+
+    def __init__(self, channels, kernel_size=3, causal_time=False, use_norm=True):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.causal_time = causal_time
+        padding = (kernel_size // 2, 0) if causal_time else (kernel_size // 2, kernel_size // 2)
+        self.conv = nn.Conv2d(channels, channels, kernel_size=(kernel_size, kernel_size), padding=padding)
+        self.norm = nn.BatchNorm2d(channels) if use_norm else nn.Identity()
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        if self.causal_time:
+            x = F.pad(x, (self.kernel_size - 1, 0, 0, 0))
+        return self.act(self.norm(self.conv(x)))
+
+
+class SMoLnetRPSBackbone(nn.Module):
+    """Frequency-dilated SMoLnet-style 2D convolutional backbone."""
+
+    def __init__(
+        self,
+        input_ch=2,
+        inner_channels=32,
+        dilated_layers=8,
+        total_layers=11,
+        max_dilation=64,
+        causal_time=False,
+    ):
+        super().__init__()
+        assert total_layers > dilated_layers
+        use_norm = not causal_time
+        layers = []
+        prev_ch = input_ch
+        for idx in range(dilated_layers):
+            dilation = 2**idx
+            if max_dilation is not None:
+                dilation = min(dilation, max_dilation)
+            layers.append(
+                SMoLnetRPSDilatedLayer(
+                    prev_ch, inner_channels, dilation=dilation, use_norm=use_norm
+                )
+            )
+            prev_ch = inner_channels
+        for _ in range(total_layers - dilated_layers):
+            layers.append(
+                SMoLnetRPSLateLayer(
+                    inner_channels, causal_time=causal_time, use_norm=use_norm
+                )
+            )
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class SMoLnetRPSTCN(nn.Module):
+    """SMoLnet-style re/im STFT backbone with symmetric dilated TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.frontend = frontend if frontend is not None else STFTReImFrontEnd(n_fft, hop_length)
+        self.backbone = SMoLnetRPSBackbone(
+            input_ch=2, inner_channels=16, dilated_layers=6, total_layers=8, max_dilation=32
+        )
+        self.head = TCNHead(16, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = self.backbone(x)
+        h = h.mean(dim=2)
+        return self.head(h)
+
+    def load_state_dict(self, state_dict, strict=True):
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SMoLnetRPSCausalTCN(SMoLnetRPSTCN):
+    """SMoLnet-style backbone with left-padded late layers and causal TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.backbone = SMoLnetRPSBackbone(
+            input_ch=2,
+            inner_channels=16,
+            dilated_layers=6,
+            total_layers=8,
+            max_dilation=32,
+            causal_time=True,
+        )
+        self.head = CausalTCNHead(16, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
 
 
 class BiGRUHead(nn.Module):
@@ -764,6 +920,45 @@ class SimpleConvV2CausalTCN(SimpleConvV2TCN):
     def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
         super().__init__(
             n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalTCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+
+class SimpleConvV2SMoLTCN(SimpleConvV2TCN):
+    """SimpleConvV2 plus SMoLnet-style frequency-dilated refinement before TCN."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.smol_refine = SMoLnetRPSBackbone(
+            input_ch=128, inner_channels=128, dilated_layers=4, total_layers=5, max_dilation=8
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.smol_refine(h)
+        h = self.freq_pool(h)
+        return self.head(h)
+
+
+class SimpleConvV2SMoLCausalTCN(SimpleConvV2SMoLTCN):
+    """SimpleConvV2 + SMoL refinement with left-padded TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.smol_refine = SMoLnetRPSBackbone(
+            input_ch=128,
+            inner_channels=128,
+            dilated_layers=4,
+            total_layers=5,
+            max_dilation=8,
+            causal_time=True,
         )
         self.head = CausalTCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
 
@@ -1764,6 +1959,10 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2": SimpleConvV2,
     "simple_conv_v2_tcn": SimpleConvV2TCN,
     "simple_conv_v2_causal_tcn": SimpleConvV2CausalTCN,
+    "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
+    "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
+    "smolnet_rps_tcn": SMoLnetRPSTCN,
+    "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
     "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
     "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,

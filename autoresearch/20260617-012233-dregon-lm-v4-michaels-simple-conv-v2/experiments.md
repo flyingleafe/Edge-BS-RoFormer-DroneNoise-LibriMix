@@ -752,3 +752,99 @@ Results:
 - Best epoch by validation PIT: epoch 32 (`Train=2.5846`, `Val PIT=14.1444`, `R²=0.6025`)
 - Minimum train loss: epoch 42 (`Train=1.6237`, `Val PIT=15.2405`)
 - Conclusion: left-padded TCN head is simple and fits training, but validation is worse than H14 causal GRU (`13.1309`).
+
+### E20 — Candidate smolnet_rps_tcn
+
+Status: submitted/running
+
+Hypothesis: H20 — adapt SMoLnet's compressed real/imag STFT, frequency-dilated Conv2d backbone, and late square Conv2d layers to RPS prediction with mean frequency pooling and TCN head.
+
+Implementation notes:
+
+- Read source: `../drone-audition/drone_audition/models/smolnet.py`.
+- SMoLnet early layers are `(kernel, 1)` Conv2d with dilation on the first spatial axis, i.e. frequency-dilated for `(B,C,F,T)` tensors. Late square layers use symmetric time padding, so the reference is not strictly causal.
+- Added local RPS adaptation `SMoLnetRPSTCN`, registered as `smolnet_rps_tcn`.
+- The pure SMoLnet RPS variants use mean frequency pooling because attention over all 1025 STFT bins OOMed during smoke testing.
+
+Smoke test output: `smolnet_rps_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12567513`
+- Job name: `ar_012233_smtcn`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H21.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_smtcn.o12567513`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model smolnet_rps_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E21 — Candidate smolnet_rps_causal_tcn
+
+Status: submitted/running
+
+Hypothesis: H21 — make the SMoLnet-style RPS adaptation more causal-compatible with left-padded late square layers and a left-padded TCN head, omitting temporal normalization.
+
+Implementation:
+
+- Added `SMoLnetRPSCausalTCN`, registered as `smolnet_rps_causal_tcn`.
+
+Smoke test output: `smolnet_rps_causal_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12567530`
+- Job name: `ar_012233_smctcn`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H22.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_smctcn.o12567530`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_causal_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model smolnet_rps_causal_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_causal_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E22 — Candidate simple_conv_v2_smol_tcn
+
+Status: submitted/pending
+
+Hypothesis: H22 — combine the strong v2 encoder/pool with a shallow SMoLnet-style frequency-dilated refinement before the symmetric TCN head.
+
+Implementation:
+
+- Added `SimpleConvV2SMoLTCN`, registered as `simple_conv_v2_smol_tcn`.
+
+Smoke test output: `simple_conv_v2_smol_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12567556`
+- Job name: `ar_012233_v2smt`
+- Initial submit status: `PENDING`; follow-up after ~11 s still `PENDING` with reason `QOSMaxGRESPerUser`, so no further jobs were submitted.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2smt.o12567556`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_smol_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E23 — Candidate simple_conv_v2_smol_causal_tcn
+
+Status: implemented/smoke-tested, not submitted
+
+Hypothesis: H23 — combine v2 encoder with SMoLnet-style refinement and a left-padded TCN head.
+
+Implementation:
+
+- Added `SimpleConvV2SMoLCausalTCN`, registered as `simple_conv_v2_smol_causal_tcn`.
+- Smoke test output: `simple_conv_v2_smol_causal_tcn (2, 4, 94)`.
+- Not submitted because H22 stayed pending after >10 s.

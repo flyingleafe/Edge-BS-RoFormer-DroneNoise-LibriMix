@@ -38,6 +38,8 @@ from models.multif0.rps_predictor import MultiF0RPSPredictor
 
 # Import new model variants
 from models.rps_predictor import (
+    SMoLnetRPSCausalTCN,
+    SMoLnetRPSTCN,
     SimpleConv,
     SimpleConvAttnPool,
     SimpleConvBiGRU,
@@ -55,6 +57,8 @@ from models.rps_predictor import (
     SimpleConvV2CausalTCN,
     SimpleConvV2MagPhase,
     SimpleConvV2MultiRes,
+    SimpleConvV2SMoLCausalTCN,
+    SimpleConvV2SMoLTCN,
     SimpleConvV2TCN,
     SimpleConvV2Transformer,
     SimpleConvV2UniGRU,
@@ -358,6 +362,10 @@ MODEL_REGISTRY = {
     "simple_conv_v2": SimpleConvV2,
     "simple_conv_v2_tcn": SimpleConvV2TCN,
     "simple_conv_v2_causal_tcn": SimpleConvV2CausalTCN,
+    "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
+    "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
+    "smolnet_rps_tcn": SMoLnetRPSTCN,
+    "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
     "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
     "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
