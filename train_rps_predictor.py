@@ -58,6 +58,8 @@ from models.rps_predictor import (
     SimpleConvV2UniGRU,
     SimpleConvV2UniGRU128,
     SimpleConvV2UniGRU128Norm,
+    SimpleConvV2UniGRU128NormDO03,
+    SimpleConvV2UniGRU96NormDO03,
     SimpleConvV2Wavelet,
     SimpleConvWide,
 )
@@ -353,6 +355,8 @@ MODEL_REGISTRY = {
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
     "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
     "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
+    "simple_conv_v2_uni_gru128_norm_do03": SimpleConvV2UniGRU128NormDO03,
+    "simple_conv_v2_uni_gru96_norm_do03": SimpleConvV2UniGRU96NormDO03,
     "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
     "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,

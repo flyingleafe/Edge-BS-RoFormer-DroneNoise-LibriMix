@@ -89,6 +89,8 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 | `simple_conv_v2_uni_gru` | `simple_conv_v2` encoder/pool + unidirectional causal GRU head (head-only causal) |
 | `simple_conv_v2_uni_gru128` | `simple_conv_v2_uni_gru` with hidden size 128 to match BiGRU output width |
 | `simple_conv_v2_uni_gru128_norm` | `simple_conv_v2_uni_gru128` with GroupNorm after the causal Conv1d prenet |
+| `simple_conv_v2_uni_gru128_norm_do03` | `simple_conv_v2_uni_gru128_norm` with stronger head dropout (`0.3`) |
+| `simple_conv_v2_uni_gru96_norm_do03` | Normalized unidirectional GRU head with hidden size 96 and dropout `0.3` |
 | `simple_conv_v2_causal_gru` | Time-causal STFT framing + left-padded temporal conv encoder + unidirectional GRU |
 | `simple_conv_v2_causal_gru96` | `simple_conv_v2_causal_gru` with wider unidirectional GRU (`hidden_ch=96`) |
 | `simple_conv_v2_transformer` | `simple_conv_v2` encoder/pool + Transformer temporal head |
