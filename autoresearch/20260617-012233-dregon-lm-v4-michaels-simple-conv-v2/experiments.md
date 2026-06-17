@@ -644,7 +644,7 @@ Results:
 
 ### E17 — Candidate simple_conv_tcn
 
-Status: submitted/running
+Status: completed — overfit/poor generalization
 
 Hypothesis: H17 — benchmark the existing `simple_conv_tcn` under the same DREGON-LM-V4-michaels/50-epoch PIT-MSE protocol. The dilated TCN head may be much simpler than BiGRU while retaining useful temporal context.
 
@@ -661,6 +661,7 @@ Job:
 - Slurm job id: `12562530`
 - Job name: `ar_012233_tcn`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Final Slurm status: `COMPLETED` (elapsed `00:19:36`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_tcn.o12562530`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_tcn`
 
@@ -669,3 +670,11 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 32
+- Best/final checkpoint evaluation: PIT MSE `24.5623`, RMSE `4.96`, Std MSE `44.8049`, frame MAE `3.35`, clip MAE `2.68`, R² `0.3952`
+- Best epoch by validation PIT: epoch 22 (`Train=2.5823`, `Val PIT=24.5623`, `R²=0.3952`)
+- Minimum train loss: epoch 31 (`Train=1.7520`, `Val PIT=42.5755`)
+- Conclusion: the existing TCN fits train very well but generalizes much worse than `simple_conv_v2`; likely needs the v2 residual/SE/attention encoder/pool and/or stronger normalization/causal padding.
