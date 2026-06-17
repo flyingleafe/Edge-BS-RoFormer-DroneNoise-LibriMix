@@ -641,3 +641,31 @@ Results:
 - Best/final checkpoint evaluation: PIT MSE `95.4777`, RMSE `9.77`, Std MSE `141.9276`, frame MAE `4.96`, clip MAE `4.60`, R² `-3.7860`
 - Best checkpoint came from epoch 6, which had finite validation metrics but a `nan` training loss row.
 - Conclusion: lower capacity did not fix causal-head instability/generalization.
+
+### E17 — Candidate simple_conv_tcn
+
+Status: submitted/running
+
+Hypothesis: H17 — benchmark the existing `simple_conv_tcn` under the same DREGON-LM-V4-michaels/50-epoch PIT-MSE protocol. The dilated TCN head may be much simpler than BiGRU while retaining useful temporal context.
+
+Implementation notes:
+
+- No code changes required; existing model key `simple_conv_tcn` is already registered.
+- Inspection caveat: `TCNHead` currently uses symmetric `padding=` in `Conv1d`, and the front-end uses default centered STFT, so this benchmark is dilated-conv/simple but not strictly causal.
+
+Smoke test output: `simple_conv_tcn (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17
+- Slurm job id: `12562530`
+- Job name: `ar_012233_tcn`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_tcn.o12562530`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_tcn`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
