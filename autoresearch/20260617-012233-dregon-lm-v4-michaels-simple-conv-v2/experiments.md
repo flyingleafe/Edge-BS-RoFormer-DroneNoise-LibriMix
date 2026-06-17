@@ -321,7 +321,7 @@ Results:
 
 ### E8 — Candidate simple_conv_v2_uni_gru
 
-Status: submitted/running
+Status: completed — failed/unstable
 
 Hypothesis: H8 — replace only the BiGRU temporal head with a unidirectional, causal-prenet GRU while preserving the existing centered STFT and symmetric temporal encoder.
 
@@ -339,6 +339,7 @@ Job:
 - Slurm job id: `12530583`
 - Job name: `ar_012233_v2ugru`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H9.
+- Final Slurm status: `COMPLETED` (elapsed `00:07:09`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ugru.o12530583`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru`
 
@@ -348,9 +349,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_uni_gru --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 14
+- Best/final checkpoint evaluation: PIT MSE `228.6723`, RMSE `15.12`, Std MSE `270.6812`, frame MAE `9.82`, clip MAE `9.13`, R² `-10.4445`
+- Best epoch by validation PIT: epoch 4 (`Train=274.9730`, `Val PIT=228.6723`, `R²=-10.4445`)
+- Failure detail: epoch rows became `nan` after epoch 10/11; final evaluation loaded the epoch-4 checkpoint. This is not overfitting; it is instability plus failure to fit/use the training data well.
+
 ### E9 — Candidate simple_conv_v2_causal_gru
 
-Status: submitted/pending
+Status: completed — failed to fit
 
 Hypothesis: H9 — make the neural stack time-causal via causal STFT framing, left-padded temporal Conv2d blocks, and a unidirectional GRU head.
 
@@ -369,6 +377,7 @@ Job:
 - Job name: `ar_012233_v2cgru`
 - Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `Priority`, so no further jobs were submitted at that moment.
 - Later status check showed `RUNNING`, allowing H10 submission.
+- Final Slurm status: `COMPLETED` (elapsed `00:24:53`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2cgru.o12530599`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru`
 
@@ -378,9 +387,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_causal_gru --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Ran all 50 epochs (no early stopping).
+- Best/final checkpoint evaluation: PIT MSE `83.5143`, RMSE `9.14`, Std MSE `87.9984`, frame MAE `5.50`, clip MAE `5.08`, R² `-2.8866`
+- Best epoch by validation PIT: epoch 49 (`Train=15.4060`, `Val PIT=83.5143`, `R²=-2.8866`)
+- Conclusion: severe underfit/failure to learn a good mapping. The causal STFT framing and left-padded encoder likely introduce an alignment/latency penalty beyond just removing bidirectional recurrence.
+
 ### E10 — Candidate simple_conv_v2_causal_gru96
 
-Status: submitted/pending
+Status: completed — failed to fit
 
 Hypothesis: H10 — widen the fully causal unidirectional GRU to 96 hidden units to recover some capacity lost by removing bidirectional recurrence.
 
@@ -396,6 +412,7 @@ Job:
 - Slurm job id: `12530631`
 - Job name: `ar_012233_v2cgr96`
 - Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `Priority`, so no further jobs submitted.
+- Final Slurm status: `COMPLETED` (elapsed `00:08:59`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2cgr96.o12530631`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru96`
 
@@ -404,3 +421,10 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_causal_gru96 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_gru96 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 18
+- Best/final checkpoint evaluation: PIT MSE `253.5939`, RMSE `15.92`, Std MSE `291.9453`, frame MAE `8.14`, clip MAE `7.73`, R² `-12.6410`
+- Best epoch by validation PIT: epoch 8 (`Train=39.3973`, `Val PIT=253.5939`, `R²=-12.6410`)
+- Conclusion: widening the fully causal head did not recover capacity; it stalled at high training loss.
