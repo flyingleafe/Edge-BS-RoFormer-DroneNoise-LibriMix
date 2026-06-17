@@ -47,7 +47,7 @@ Results:
 
 ### E1 — Candidate simple_conv_v2_transformer
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H1 — replace the BiGRU temporal head in `simple_conv_v2` with a small Transformer encoder while preserving the same STFT magnitude front-end, residual+SE encoder, and attention frequency pooling.
 
@@ -81,7 +81,7 @@ Job:
 - Slurm job id: `12521795`
 - Job name: `ar_012233_v2trans`
 - Initial submit status: `PENDING` (therefore no further candidate submissions this cycle)
-- Follow-up status: `RUNNING` on `rdg1`
+- Final Slurm status: `COMPLETED` (elapsed `00:11:10`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2trans.o12521795`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_transformer`
 
@@ -90,3 +90,10 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_transformer --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_transformer --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 21
+- Best/final checkpoint evaluation: PIT MSE `43.5184`, RMSE `6.60`, Std MSE `70.5665`, frame MAE `5.03`, clip MAE `4.58`, R² `-0.6571`
+- Best epoch by validation PIT: epoch 11 (`Val PIT=43.5184`, `R²=-0.6571`)
+- Conclusion: substantially worse than `simple_conv_v2` baseline (`7.8920`, R² `0.8183`). This rejects the naive “replace BiGRU with small global Transformer” variant under the fixed training budget.
