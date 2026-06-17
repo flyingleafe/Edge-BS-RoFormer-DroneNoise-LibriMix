@@ -681,7 +681,7 @@ Results:
 
 ### E18 — Candidate simple_conv_v2_tcn
 
-Status: submitted/running
+Status: completed — useful but below baseline
 
 Hypothesis: H18 — put the existing dilated TCN head on the stronger `simple_conv_v2` residual/SE encoder and attention frequency pool. This tests whether H17 failed because of the older SimpleConv encoder/pool rather than because of the TCN head.
 
@@ -698,6 +698,7 @@ Job:
 - Slurm job id: `12566518`
 - Job name: `ar_012233_v2tcn`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H19.
+- Final Slurm status: `COMPLETED` (elapsed `00:18:00`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2tcn.o12566518`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_tcn`
 
@@ -707,9 +708,17 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 37
+- Best/final checkpoint evaluation: PIT MSE `10.7799`, RMSE `3.28`, Std MSE `58.4627`, frame MAE `2.22`, clip MAE `1.72`, R² `0.7606`
+- Best epoch by validation PIT: epoch 27 (`Train=2.3410`, `Val PIT=10.7799`, `R²=0.7606`)
+- Minimum train loss: epoch 37 (`Train=1.7195`, `Val PIT=11.2610`)
+- Conclusion: v2 encoder/pool fixed much of H17's problem, but the symmetric TCN remains worse than the BiGRU baseline.
+
 ### E19 — Candidate simple_conv_v2_causal_tcn
 
-Status: submitted/running
+Status: completed — simpler but below best causal GRU
 
 Hypothesis: H19 — replace the symmetric TCN head with a left-padded dilated TCN head, avoiding temporal normalization, to test a simpler head-causal alternative.
 
@@ -726,6 +735,7 @@ Job:
 - Slurm job id: `12566528`
 - Job name: `ar_012233_v2ctcn`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Final Slurm status: `COMPLETED` (elapsed `00:19:55`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ctcn.o12566528`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_tcn`
 
@@ -734,3 +744,11 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_causal_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_causal_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 42
+- Best/final checkpoint evaluation: PIT MSE `14.1444`, RMSE `3.76`, Std MSE `65.4155`, frame MAE `2.70`, clip MAE `2.19`, R² `0.6025`
+- Best epoch by validation PIT: epoch 32 (`Train=2.5846`, `Val PIT=14.1444`, `R²=0.6025`)
+- Minimum train loss: epoch 42 (`Train=1.6237`, `Val PIT=15.2405`)
+- Conclusion: left-padded TCN head is simple and fits training, but validation is worse than H14 causal GRU (`13.1309`).
