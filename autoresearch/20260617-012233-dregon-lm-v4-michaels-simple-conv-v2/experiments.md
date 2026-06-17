@@ -238,3 +238,31 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_magphase --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_magphase --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+### E6 — Candidate simple_conv_v2_dual_pool
+
+Status: submitted/running
+
+Hypothesis: H6 — preserve both learned attention frequency pooling and plain mean frequency pooling by concatenating them before the BiGRU head.
+
+Implementation:
+
+- Added `SimpleConvV2DualPool` in `src/models/rps_predictor.py`.
+- Registered model key `simple_conv_v2_dual_pool` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+
+Smoke test output: `simple_conv_v2_dual_pool (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 11:40 BST
+- Slurm job id: `12524982`
+- Job name: `ar_012233_v2dpool`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop may continue submitting additional candidates.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2dpool.o12524982`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dual_pool`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_dual_pool --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dual_pool --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
