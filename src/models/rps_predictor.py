@@ -978,6 +978,27 @@ class SimpleConvV2SMoLCausalTCN(SimpleConvV2SMoLTCN):
         self.head = CausalTCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
 
 
+class SimpleConvV2SMoLBiGRU(SimpleConvV2):
+    """SimpleConvV2 + SMoLnet-style frequency-dilated refinement + BiGRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.smol_refine = SMoLnetRPSBackbone(
+            input_ch=128, inner_channels=128, dilated_layers=4, total_layers=5, max_dilation=8
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.smol_refine(h)
+        h = self.freq_pool(h)
+        return self.head(h)
+
+
 class SimpleConvV2UniGRU(nn.Module):
     """SimpleConvV2 encoder/pool with a unidirectional causal GRU head."""
 
@@ -1976,6 +1997,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_causal_tcn": SimpleConvV2CausalTCN,
     "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
     "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
+    "simple_conv_v2_smol_bigru": SimpleConvV2SMoLBiGRU,
     "smolnet_rps_tcn": SMoLnetRPSTCN,
     "smolnet_rps_simple_head": SMoLnetRPSSimpleHead,
     "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
