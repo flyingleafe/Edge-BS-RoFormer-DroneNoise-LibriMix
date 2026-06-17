@@ -9,11 +9,16 @@ from data_processing.online_mixing import (
     AudioFileSourcePool,
     OnlineMixIterableDataset,
     TimeFrameNoisePool,
+    _resolve_policy,
 )
 from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
-def _make_noise_tf(duration_s: float = 2.0, sr: int = 16000) -> TimeFrame:
+def _make_noise_tf(
+    duration_s: float = 2.0,
+    sr: int = 16000,
+    recording_id: str = "synthetic",
+) -> TimeFrame:
     n = int(duration_s * sr)
     t = np.arange(n, dtype=np.float32) / sr
     audio = np.stack(
@@ -28,7 +33,7 @@ def _make_noise_tf(duration_s: float = 2.0, sr: int = 16000) -> TimeFrame:
         {"audio": audio_us, "rps": rps_es},
         t_start=0.0,
         t_end=duration_s,
-        tags={"recording_id": "synthetic"},
+        tags={"recording_id": recording_id},
     )
 
 
@@ -42,6 +47,43 @@ def _make_source_pool(tmp_path, sr: int = 16000) -> AudioFileSourcePool:
     return AudioFileSourcePool.from_config(
         {"root": str(source_dir), "glob": "*.wav"}, duration_s=1.0, sample_rate=sr
     )
+
+
+def test_noise_pool_from_config_excludes_validation_recording(monkeypatch):
+    import data_processing.online_mixing as om
+
+    frames = [
+        _make_noise_tf(recording_id="free-flight_nosource_room1"),
+        _make_noise_tf(recording_id="free-flight_nosource_room2"),
+    ]
+    monkeypatch.setattr(om, "load_dregon_timeframes", lambda *args, **kwargs: frames)
+
+    pool = TimeFrameNoisePool.from_config(
+        {
+            "kind": "dregon",
+            "root": "data",
+            "split": "in_flight_noise",
+            "exclude_recording_ids": ["free-flight_nosource_room1"],
+            "min_motor_rps": 0.0,
+        },
+        duration_s=1.0,
+        sample_rate=16000,
+    )
+
+    ids = [r["tf"].tags["recording_id"] for r in pool.records]
+    assert ids == ["free-flight_nosource_room2"]
+
+
+def test_resolve_policy_uses_sample_id_stages():
+    policy = {
+        "stages": [
+            {"until": 50_000, "source_prob": 1.0},
+            {"until": None, "source_prob": 1.0, "augmentations": {"probability": 0.5}},
+        ]
+    }
+
+    assert "augmentations" not in _resolve_policy(policy, 49_999)
+    assert _resolve_policy(policy, 50_000)["augmentations"]["probability"] == 0.5
 
 
 def test_online_mix_generate_sample_shape_and_determinism(tmp_path):

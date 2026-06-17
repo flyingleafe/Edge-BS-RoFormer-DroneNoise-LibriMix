@@ -24,6 +24,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from torch.utils.data import IterableDataset, get_worker_info
 
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
+from data_processing.michaels import load_michaels_timeframes
 from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
@@ -192,19 +193,70 @@ class TimeFrameNoisePool:
     @classmethod
     def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> "TimeFrameNoisePool":
         cfg = _to_plain(cfg)
+        if isinstance(cfg, list):
+            combined = object.__new__(cls)
+            combined.records = []
+            for one_cfg in cfg:
+                pool = cls.from_config(one_cfg, duration_s=duration_s, sample_rate=sample_rate)
+                combined.records.extend(pool.records)
+            if not combined.records:
+                raise ValueError("no usable noise recordings found")
+            weights = np.array(
+                [r["valid_end"] - r["valid_start"] for r in combined.records], dtype=np.float64
+            )
+            combined.weights = weights / weights.sum()
+            return combined
+
         kind = _cfg_get(cfg, "kind", "dregon")
-        if kind != "dregon":
-            raise ValueError(f"unsupported noise source kind: {kind!r}")
         root = Path(_cfg_get(cfg, "root", "data"))
-        splits = _cfg_get(cfg, "splits", None)
-        split = _cfg_get(cfg, "split", None)
-        if splits is None and split is not None:
-            splits = [split]
-        if splits is None:
-            splits = ["in_flight_noise"]
         min_motor_rps = float(_cfg_get(cfg, "min_motor_rps", 30.0))
-        download = bool(_cfg_get(cfg, "download", False))
-        frames = load_dregon_timeframes(root, splits=list(splits), target_sr=sample_rate, download=download)
+        if kind == "dregon":
+            splits = _cfg_get(cfg, "splits", None)
+            split = _cfg_get(cfg, "split", None)
+            if splits is None and split is not None:
+                splits = [split]
+            if splits is None:
+                splits = ["in_flight_noise"]
+            download = bool(_cfg_get(cfg, "download", False))
+            frames = load_dregon_timeframes(
+                root, splits=list(splits), target_sr=sample_rate, download=download
+            )
+            ids = _cfg_get(cfg, "recording_ids", None)
+            if ids is not None:
+                wanted = {str(x) for x in ids}
+                frames = [tf for tf in frames if str(tf.tags.get("recording_id", "")) in wanted]
+            exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
+            if exclude_ids is not None:
+                excluded = {str(x) for x in exclude_ids}
+                frames = [tf for tf in frames if str(tf.tags.get("recording_id", "")) not in excluded]
+        elif kind in {"michaels", "michael"}:
+            frames = load_michaels_timeframes(data_root=root, sr=sample_rate)
+            ids = _cfg_get(cfg, "ids", _cfg_get(cfg, "id", "all"))
+            if isinstance(ids, str):
+                ids = [ids]
+            want_all = any(str(i).strip().lower() == "all" for i in ids)
+            wanted = {str(i).strip().lower().removeprefix("fly") for i in ids}
+            selected = []
+            for tf in frames:
+                rid = str(tf.tags.get("recording_id", ""))
+                if want_all or rid.lower().removeprefix("fly") in wanted:
+                    tags = dict(tf.tags)
+                    tags["recording_id"] = f"michaels_FLY{rid}"
+                    selected.append(
+                        TimeFrame.from_tracks(
+                            {k: tf[k] for k in tf},
+                            t_start=tf.t_start,
+                            tags=tags,
+                            global_data=tf.global_data,
+                        )
+                    )
+            exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
+            if exclude_ids is not None:
+                excluded = {str(x) for x in exclude_ids}
+                selected = [tf for tf in selected if str(tf.tags.get("recording_id", "")) not in excluded]
+            frames = selected
+        else:
+            raise ValueError(f"unsupported noise source kind: {kind!r}")
         return cls(frames, min_motor_rps=min_motor_rps, duration_s=duration_s)
 
     def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame:
@@ -308,6 +360,23 @@ def _sample_snr_db(policy: Mapping[str, Any], rng: np.random.Generator) -> float
     raise ValueError(f"unsupported snr_db spec: {spec!r}")
 
 
+def _resolve_policy(policy: Mapping[str, Any], global_sample_id: int) -> Mapping[str, Any]:
+    """Resolve constant or staged policy for a global sample id.
+
+    Phase-1 schedules are intentionally simple: a list of stages with ``until``
+    sample ids.  The first stage whose ``until`` is ``None`` or greater than the
+    current id is active.
+    """
+    stages = policy.get("stages") if isinstance(policy, Mapping) else None
+    if not stages:
+        return policy
+    for stage in stages:
+        until = stage.get("until")
+        if until is None or int(global_sample_id) < int(until):
+            return stage
+    return stages[-1]
+
+
 def _mix_at_source_to_noise_snr(
     source: np.ndarray,
     noise: np.ndarray,
@@ -324,6 +393,50 @@ def _mix_at_source_to_noise_snr(
         source_power = np.array([[np.mean(source.astype(np.float64) ** 2)]])
     scale = np.sqrt((noise_power * (10.0 ** (float(snr_db) / 10.0))) / (source_power + eps))
     return (noise + source * scale.astype(np.float32)).astype(np.float32)
+
+
+def _apply_one_augmentation(
+    audio: np.ndarray,
+    spec: Mapping[str, Any] | None,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if not spec:
+        return audio
+    probability = float(spec.get("probability", 0.0))
+    if probability <= 0.0 or rng.random() >= probability:
+        return audio
+    choices = list(spec.get("choices", []))
+    if not choices:
+        return audio
+    choice = choices[int(rng.integers(0, len(choices)))]
+    if isinstance(choice, str):
+        name, params = choice, {}
+    elif isinstance(choice, Mapping):
+        if len(choice) != 1:
+            raise ValueError(f"augmentation choice must have one key, got {choice!r}")
+        name, params = next(iter(choice.items()))
+        params = params or {}
+    else:
+        raise ValueError(f"unsupported augmentation choice: {choice!r}")
+
+    out = audio.copy()
+    if name == "random_gain":
+        min_db = float(params.get("min_db", -6.0))
+        max_db = float(params.get("max_db", 6.0))
+        gain = 10.0 ** (float(rng.uniform(min_db, max_db)) / 20.0)
+        out *= np.float32(gain)
+    elif name == "random_polarity":
+        out *= -1.0
+    elif name == "channel_drop":
+        if out.shape[0] <= 1:
+            return out
+        max_channels = int(params.get("max_channels", 1))
+        n_drop = int(rng.integers(1, min(max_channels, out.shape[0] - 1) + 1))
+        drop = rng.choice(out.shape[0], size=n_drop, replace=False)
+        out[drop, :] = 0.0
+    else:
+        raise ValueError(f"unsupported augmentation: {name!r}")
+    return out.astype(np.float32, copy=False)
 
 
 class OnlineMixIterableDataset(IterableDataset):
@@ -365,12 +478,7 @@ class OnlineMixIterableDataset(IterableDataset):
         policy = cast(Mapping[str, Any], _cfg_get(cfg, "policy", {}))
 
         sources = _cfg_get(cfg, "sources", {})
-        noise_cfgs = _cfg_get(sources, "noise", None)
-        if isinstance(noise_cfgs, list):
-            # Phase 1 supports one noise source. Keep schema list-shaped for future weights.
-            noise_cfg = noise_cfgs[0]
-        else:
-            noise_cfg = noise_cfgs
+        noise_cfg = _cfg_get(sources, "noise", None)
         if noise_cfg is None:
             raise ValueError("online mix config requires sources.noise")
         noise_pool = TimeFrameNoisePool.from_config(
@@ -409,7 +517,7 @@ class OnlineMixIterableDataset(IterableDataset):
 
     def generate_sample(self, global_sample_id: int) -> tuple[torch.Tensor, torch.Tensor]:
         rng = make_rng(self.base_seed, int(global_sample_id))
-        policy = self.policy
+        policy = _resolve_policy(self.policy, int(global_sample_id))
         noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
         audio_track = cast(UniformSeries, noise_tf["audio"])
         noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
@@ -428,6 +536,11 @@ class OnlineMixIterableDataset(IterableDataset):
                 per_channel=bool(policy.get("snr_per_channel", False)),
             )
 
+        mixture = _apply_one_augmentation(
+            mixture,
+            cast(Mapping[str, Any] | None, policy.get("augmentations")),
+            rng,
+        )
         # Keep amplitude policy deliberately simple for Phase 1: no peak
         # normalization, because that would alter the configured SNR/gain regime.
         rps = interpolate_rps_to_stft_grid(
