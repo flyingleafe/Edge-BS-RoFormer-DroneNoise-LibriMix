@@ -100,7 +100,7 @@ Results:
 
 ### E2 — Candidate simple_conv_v2_local_attn
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H2 — keep the `simple_conv_v2` STFT magnitude front-end, residual+SE encoder, and attention frequency pooling, but replace the BiGRU with a Transformer encoder constrained by a local temporal attention mask.
 
@@ -118,6 +118,7 @@ Job:
 - Slurm job id: `12522911`
 - Job name: `ar_012233_v2local`
 - Initial submit status: `PENDING`; follow-up check within ~10 s showed `RUNNING`, so per corrected user policy the loop may continue submitting additional candidates.
+- Final Slurm status: `COMPLETED` (elapsed `00:10:05`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2local.o12522911`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_local_attn`
 
@@ -127,9 +128,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_local_attn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_local_attn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 19
+- Best/final checkpoint evaluation: PIT MSE `18.5846`, RMSE `4.31`, Std MSE `89.7452`, frame MAE `3.25`, clip MAE `2.71`, R² `0.5213`
+- Best epoch by validation PIT: epoch 9 (`Val PIT=18.5846`, `R²=0.5213`)
+- Conclusion: local attention is better than global Transformer H1 but still much worse than the BiGRU baseline.
+
 ### E3 — Candidate simple_conv_v2_multires
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H3 — concatenate long-window and short-window STFT magnitudes before the `simple_conv_v2` encoder so the model can use both high frequency resolution and better temporal localization.
 
@@ -148,6 +156,7 @@ Job:
 - Slurm job id: `12523268`
 - Job name: `ar_012233_v2mres`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop may continue submitting additional candidates.
+- Final Slurm status: `COMPLETED` (elapsed `00:13:10`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2mres.o12523268`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_multires`
 
@@ -157,9 +166,16 @@ Command:
 python train_rps_predictor.py --model simple_conv_v2_multires --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_multires --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 18
+- Best/final checkpoint evaluation: PIT MSE `8.9704`, RMSE `3.00`, Std MSE `104.2420`, frame MAE `2.17`, clip MAE `1.62`, R² `0.8088`
+- Best epoch by validation PIT: epoch 8 (`Val PIT=8.9704`, `R²=0.8088`)
+- Conclusion: near baseline but slightly worse; multi-resolution STFT did not improve the fixed-budget score.
+
 ### E4 — Candidate simple_conv_v2_dwt
 
-Status: submitted/pending
+Status: completed
 
 Hypothesis: H4 — augment STFT magnitude with a lightweight wavelet-like temporal feature branch that exposes multi-scale time-domain change/periodicity cues while avoiding extra dependencies.
 
@@ -178,6 +194,7 @@ Job:
 - Slurm job id: `12523611`
 - Job name: `ar_012233_v2dwt`
 - Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `QOSMaxGRESPerUser`, so no further jobs submitted.
+- Started after an earlier job completed; final Slurm status: `COMPLETED` (elapsed `00:13:59`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2dwt.o12523611`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dwt`
 
@@ -186,3 +203,10 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_dwt --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dwt --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 27
+- Best/final checkpoint evaluation: PIT MSE `8.8957`, RMSE `2.98`, Std MSE `74.7740`, frame MAE `2.12`, clip MAE `1.70`, R² `0.8133`
+- Best epoch by validation PIT: epoch 17 (`Val PIT=8.8957`, `R²=0.8133`)
+- Conclusion: closest candidate in this batch but still worse than baseline (`7.8920`, R² `0.8183`).
