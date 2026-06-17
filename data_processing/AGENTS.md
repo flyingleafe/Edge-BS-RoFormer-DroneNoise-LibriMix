@@ -214,12 +214,17 @@ model-ready `(audio, rps_target)` tensors. The first implementation is deliberat
 naive for source audio (file-backed reads through `AudioFileSourcePool`); cache or
 memmap optimizations must stay behind the same config/interface.
 
-Benchmark baseline from local raw DREGON noise + `DREGON-LM-V4-michaels/train/**/vocals.wav`,
-`batch_size=32`, `num_workers=4`, `speech_per_channel=independent`: naive
-file-backed source reads reached about `3.96 batch/s` / `1013 audio-clip/s`;
-`cache.mode: memory` reached about `13.7 batch/s` / `3506 audio-clip/s`; fixed
-precomputed loader is about `21 batch/s` / `5394 audio-clip/s`. Optimize only
-behind the same public API.
+Benchmark notes:
+- Early local smoke using generated `DREGON-LM-V4-michaels/train/**/vocals.wav`
+  is obsolete; online training should use original LibriSpeech files.
+- Correct V4-Michaels setup (`data/librispeech/LibriSpeech/train-clean-100`,
+  DREGON train noise excluding `free-flight_nosource_room1`, plus Michael's
+  `FLY125` only), `batch_size=16`, `num_workers=4`,
+  `speech_per_channel=independent`: direct FLAC decode was about `2.9 batch/s`;
+  internal `cache.mode: packed_int16` creates/reuses `.cache/online_mix_sources/*`
+  and reaches about `13.5 batch/s` / `1728 audio-clip/s` on cache reuse.
+- Fixed precomputed loader is about `21 batch/s` / `5394 audio-clip/s`.
+Optimize only behind the same public API.
 
 ## Multichannel Training & Evaluation Wiring
 
