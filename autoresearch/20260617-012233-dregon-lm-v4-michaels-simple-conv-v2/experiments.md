@@ -755,7 +755,7 @@ Results:
 
 ### E20 — Candidate smolnet_rps_tcn
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H20 — adapt SMoLnet's compressed real/imag STFT, frequency-dilated Conv2d backbone, and late square Conv2d layers to RPS prediction with mean frequency pooling and TCN head.
 
@@ -774,6 +774,7 @@ Job:
 - Slurm job id: `12567513`
 - Job name: `ar_012233_smtcn`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H21.
+- Final Slurm status: `COMPLETED` (elapsed `00:35:20`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_smtcn.o12567513`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_tcn`
 
@@ -783,9 +784,15 @@ Command:
 python train_rps_predictor.py --model smolnet_rps_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 31
+- Best/final checkpoint evaluation: PIT MSE `17.4362`, RMSE `4.18`, Std MSE `58.4671`, frame MAE `2.95`, clip MAE `2.35`, R² `0.4048`
+- Conclusion: SMoLnet-style backbone alone is better than old `simple_conv_tcn` (H17, 24.56) but much worse than the v2 encoder/pool variants.
+
 ### E21 — Candidate smolnet_rps_causal_tcn
 
-Status: submitted/running
+Status: completed
 
 Hypothesis: H21 — make the SMoLnet-style RPS adaptation more causal-compatible with left-padded late square layers and a left-padded TCN head, omitting temporal normalization.
 
@@ -801,6 +808,7 @@ Job:
 - Slurm job id: `12567530`
 - Job name: `ar_012233_smctcn`
 - Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H22.
+- Final Slurm status: `COMPLETED` (elapsed `00:08:01`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_smctcn.o12567530`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_causal_tcn`
 
@@ -810,9 +818,15 @@ Command:
 python train_rps_predictor.py --model smolnet_rps_causal_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_causal_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
 
+Results:
+
+- Early stopping: epoch 16
+- Best/final checkpoint evaluation: PIT MSE `49.6064`, RMSE `7.04`, Std MSE `79.4002`, frame MAE `5.97`, clip MAE `4.86`, R² `-0.3305`
+- Conclusion: making the SMoLnet backbone causal worsens it substantially (vs. E20 17.44). The causal penalty hit SMoLnet harder than the v2 encoder.
+
 ### E22 — Candidate simple_conv_v2_smol_tcn
 
-Status: submitted/pending
+Status: completed
 
 Hypothesis: H22 — combine the strong v2 encoder/pool with a shallow SMoLnet-style frequency-dilated refinement before the symmetric TCN head.
 
@@ -828,6 +842,7 @@ Job:
 - Slurm job id: `12567556`
 - Job name: `ar_012233_v2smt`
 - Initial submit status: `PENDING`; follow-up after ~11 s still `PENDING` with reason `QOSMaxGRESPerUser`, so no further jobs were submitted.
+- Final Slurm status: `COMPLETED` (elapsed `00:15:31`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_v2smt.o12567556`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_tcn`
 
@@ -836,6 +851,13 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_smol_tcn --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_smol_tcn --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 31
+- Best/final checkpoint evaluation: PIT MSE `9.0751`, RMSE `3.01`, Std MSE `14.6140`, frame MAE `1.89`, clip MAE `1.31`, R² `0.8318`
+- **Best R² (0.8318) of any model so far**, beating the baseline (0.8183) and H7 gru96 (0.8216). PIT MSE (9.0751) is slightly worse than baseline (7.8920).
+- Conclusion: the v2 encoder + SMoLnet frequency-dilated refinement is the best combination found so far for R²; the main gap to baseline is PIT MSE, not explained variance.
 
 ### E23 — Candidate simple_conv_v2_smol_causal_tcn
 
@@ -851,7 +873,7 @@ Implementation:
 
 ### E24 — Candidate smolnet_rps_simple_head
 
-Status: submitted/pending
+Status: completed
 
 Hypothesis: H24 — use the SMoLnet-style frequency-dilated body with the simplest SimpleConv-style mean-frequency-pool + shallow Conv1d head.
 
@@ -873,6 +895,7 @@ Job:
 - Slurm job id: `12568116`
 - Job name: `ar_012233_smsimp`
 - Initial submit status: `PENDING`; follow-up after ~12 s remained `PENDING` with reason `Resources`, so no further jobs submitted.
+- Final Slurm status: `COMPLETED` (elapsed `00:18:00`)
 - Log: `/gpfs/scratch/acw592/logs/ar_012233_smsimp.o12568116`
 - Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_simple_head`
 
@@ -881,3 +904,9 @@ Command:
 ```bash
 python train_rps_predictor.py --model smolnet_rps_simple_head --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/smolnet_rps_simple_head --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+Results:
+
+- Early stopping: epoch 15
+- Best/final checkpoint evaluation: PIT MSE `141.0523`, RMSE `11.88`, Std MSE `171.6778`, frame MAE `10.03`, clip MAE `9.58`, R² `-3.8919`
+- Conclusion: the SMoLnet body with a simple Conv1d head fails dramatically. The SMoLnet frequency-dilated backbone needs the TCN head's strong temporal receptive field.
