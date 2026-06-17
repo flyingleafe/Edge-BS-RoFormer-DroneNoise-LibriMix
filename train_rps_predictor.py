@@ -22,6 +22,7 @@ Output: (B, 4, T_stft) predicted RPS per STFT frame
 import argparse
 import glob
 import itertools
+import math
 import os
 import time
 
@@ -30,10 +31,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 import wandb
+from data_processing.online_mixing import OnlineMixIterableDataset
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 
 # Import new model variants
@@ -706,16 +709,37 @@ def train_model(model_name, args):
         )
 
     # Data
-    train_ds = DREGONRPSDataset(os.path.join(args.data_root, "train"), n_fft, hop)
+    online_mix = getattr(args, "online_mix", False)
+    if online_mix:
+        if not getattr(args, "mix_config", None):
+            raise ValueError("--online_mix requires --mix_config")
+        mix_cfg = OmegaConf.load(args.mix_config)
+        # Keep model-grid settings single-sourced from the training CLI.
+        mix_cfg.sample_rate = int(getattr(mix_cfg, "sample_rate", 16000))
+        mix_cfg.n_fft = n_fft
+        mix_cfg.hop_length = hop
+        train_ds = OnlineMixIterableDataset.from_config(mix_cfg)
+        samples_per_validation = int(getattr(args, "samples_per_validation", 9000))
+        train_batches_per_epoch = math.ceil(samples_per_validation / args.batch_size)
+        print(
+            f"Train: online stream ({samples_per_validation} samples/validation, "
+            f"{train_batches_per_epoch} batches)"
+        )
+    else:
+        train_ds = DREGONRPSDataset(os.path.join(args.data_root, "train"), n_fft, hop)
+        train_batches_per_epoch = None
+        print(f"Train: {len(train_ds)} samples", end=" | ")
+
     valid_ds = DREGONRPSDataset(os.path.join(args.data_root, "valid"), n_fft, hop)
-    print(f"Train: {len(train_ds)} samples | Valid: {len(valid_ds)} samples")
+    print(f"Valid: {len(valid_ds)} samples")
 
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=not online_mix,
         num_workers=4,
         pin_memory=True,
+        persistent_workers=online_mix,
     )
     valid_loader = DataLoader(
         valid_ds,
@@ -738,10 +762,15 @@ def train_model(model_name, args):
     # Naive baseline
     print("Computing naive baseline...")
     rps_sum = torch.zeros(4)
-    for batch in train_loader:
+    rps_count = 0
+    # For an infinite online stream, do not consume training samples just to
+    # estimate a baseline. Use the fixed validation set as a stable probe.
+    baseline_loader = valid_loader if online_mix else train_loader
+    for batch in baseline_loader:
         rps = batch[1]
         rps_sum += rps.sum(dim=(0, 2))
-    rps_mean = rps_sum / (len(train_ds) * train_ds[0][1].shape[1])
+        rps_count += rps.shape[0] * rps.shape[2]
+    rps_mean = rps_sum / max(rps_count, 1)
     naive_mse = 0.0
     for batch in valid_loader:
         rps = batch[1]
@@ -761,12 +790,20 @@ def train_model(model_name, args):
     print("-" * 75)
 
     t0 = time.time()
+    train_iter = iter(train_loader) if online_mix else None
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_loss_sum = 0.0
         train_items = 0
+        if online_mix:
+            batch_iter = (next(train_iter) for _ in range(train_batches_per_epoch))
+            progress_total = train_batches_per_epoch
+        else:
+            batch_iter = train_loader
+            progress_total = None
         for batch in tqdm(
-            train_loader,
+            batch_iter,
+            total=progress_total,
             desc=f"train e{epoch}",
             unit="batch",
             leave=False,
@@ -916,6 +953,23 @@ def main():
     parser.add_argument("--grad_clip", type=float, default=5.0)
     parser.add_argument("--data_root", default="datasets/DREGON-LM-V2")
     parser.add_argument("--save_path", default="results/rps_predictor_comparison")
+    parser.add_argument(
+        "--online_mix",
+        action="store_true",
+        help="Use the config-driven infinite online-mixing training stream.",
+    )
+    parser.add_argument(
+        "--mix_config",
+        type=str,
+        default="",
+        help="OmegaConf YAML for OnlineMixIterableDataset.from_config; required with --online_mix.",
+    )
+    parser.add_argument(
+        "--samples_per_validation",
+        type=int,
+        default=9000,
+        help="Online-mixing samples to consume before each fixed validation pass.",
+    )
     parser.add_argument(
         "--pit_loss",
         action="store_true",
