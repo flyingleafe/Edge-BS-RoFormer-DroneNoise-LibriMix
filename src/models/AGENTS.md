@@ -92,6 +92,7 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 | `simple_conv_v2_dwt` | `simple_conv_v2` with a lightweight Haar-like temporal wavelet branch |
 | `simple_conv_v2_magphase` | `simple_conv_v2` using log-magnitude plus cosine/sine phase STFT channels |
 | `simple_conv_v2_dual_pool` | `simple_conv_v2` concatenating attention and mean frequency pooling before BiGRU |
+| `simple_conv_v2_gru96` | `simple_conv_v2` with a wider BiGRU temporal head (`hidden_ch=96`) |
 | `simple_conv_wide` | Wider/deeper baseline |
 | `simple_conv_tcn` | TCN head (dilated convs) |
 | `simple_conv_multiscale` | FPN-style multi-scale fusion |

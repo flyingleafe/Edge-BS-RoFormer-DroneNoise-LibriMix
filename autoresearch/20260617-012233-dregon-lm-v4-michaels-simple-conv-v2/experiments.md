@@ -266,3 +266,31 @@ Command:
 ```bash
 python train_rps_predictor.py --model simple_conv_v2_dual_pool --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_dual_pool --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
 ```
+
+### E7 — Candidate simple_conv_v2_gru96
+
+Status: submitted/pending
+
+Hypothesis: H7 — keep `simple_conv_v2` unchanged except increase the BiGRU hidden size from 64 to 96.
+
+Implementation:
+
+- Added `SimpleConvV2GRU96` in `src/models/rps_predictor.py`.
+- Registered model key `simple_conv_v2_gru96` in both `src/models/rps_predictor.py::RPS_MODEL_REGISTRY` and `train_rps_predictor.py::MODEL_REGISTRY`.
+
+Smoke test output: `simple_conv_v2_gru96 (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 11:43 BST
+- Slurm job id: `12525024`
+- Job name: `ar_012233_v2gru96`
+- Initial submit status: `PENDING`; follow-up after ~11 s remained `PENDING` with reason `QOSMaxGRESPerUser`, so no further jobs submitted.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2gru96.o12525024`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_gru96`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_gru96 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_gru96 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
