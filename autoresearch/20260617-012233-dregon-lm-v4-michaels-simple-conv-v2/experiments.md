@@ -428,3 +428,58 @@ Results:
 - Best/final checkpoint evaluation: PIT MSE `253.5939`, RMSE `15.92`, Std MSE `291.9453`, frame MAE `8.14`, clip MAE `7.73`, R² `-12.6410`
 - Best epoch by validation PIT: epoch 8 (`Train=39.3973`, `Val PIT=253.5939`, `R²=-12.6410`)
 - Conclusion: widening the fully causal head did not recover capacity; it stalled at high training loss.
+
+### E11 — Candidate simple_conv_v2_uni_gru128
+
+Status: submitted/running
+
+Hypothesis: H11 — use a unidirectional GRU with hidden size 128 to match the BiGRU baseline's output width (`2*64`) while preserving the baseline STFT and encoder.
+
+Implementation:
+
+- Added `SimpleConvV2UniGRU128`, registered as `simple_conv_v2_uni_gru128`.
+- Reuses `CausalGRUHead` with `hidden_ch=128`.
+
+Smoke test output: `simple_conv_v2_uni_gru128 (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 13:09 BST
+- Slurm job id: `12533051`
+- Job name: `ar_012233_v2ug128`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`, so the loop continued to H12.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ug128.o12533051`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_uni_gru128 --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128 --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```
+
+### E12 — Candidate simple_conv_v2_uni_gru128_norm
+
+Status: submitted/running
+
+Hypothesis: H12 — add GroupNorm after the causal Conv1d prenet of H11 to stabilize the fixed-LR/AMP training that produced NaNs in H8.
+
+Implementation:
+
+- Added `CausalGRUNormHead` and `SimpleConvV2UniGRU128Norm`, registered as `simple_conv_v2_uni_gru128_norm`.
+
+Smoke test output: `simple_conv_v2_uni_gru128_norm (2, 4, 94)`.
+
+Job:
+
+- Submitted: 2026-06-17 13:10 BST
+- Slurm job id: `12533200`
+- Job name: `ar_012233_v2ugnrm`
+- Initial submit status: `PENDING`; follow-up after ~11 s showed `RUNNING`.
+- Log: `/gpfs/scratch/acw592/logs/ar_012233_v2ugnrm.o12533200`
+- Save path: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128_norm`
+
+Command:
+
+```bash
+python train_rps_predictor.py --model simple_conv_v2_uni_gru128_norm --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels --save_path /gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/simple_conv_v2_uni_gru128_norm --epochs 50 --patience 10 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress
+```

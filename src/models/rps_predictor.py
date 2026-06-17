@@ -245,6 +245,46 @@ class CausalGRUHead(nn.Module):
         return x.transpose(1, 2)  # (B, num_rotors, T)
 
 
+class CausalGRUNormHead(nn.Module):
+    """Unidirectional GRU head with causal Conv1d + GroupNorm prenet."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 128,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        kernel_size: int = 5,
+    ):
+        super().__init__()
+        self.kernel_size = kernel_size
+        groups = 8 if hidden_ch % 8 == 0 else 1
+        self.prenet_conv = nn.Conv1d(in_ch, hidden_ch, kernel_size=kernel_size, padding=0)
+        self.prenet = nn.Sequential(
+            nn.GroupNorm(groups, hidden_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        self.gru = nn.GRU(
+            hidden_ch,
+            hidden_ch,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=False,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.proj = nn.Linear(hidden_ch, num_rotors)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (self.kernel_size - 1, 0))
+        x = self.prenet(self.prenet_conv(x))
+        x = x.transpose(1, 2)
+        x, _ = self.gru(x)
+        x = self.proj(x)
+        return x.transpose(1, 2)
+
+
 class CausalResidualConvBlock2d(nn.Module):
     """Residual Conv2d block with left-only padding along time."""
 
@@ -658,6 +698,26 @@ class SimpleConvV2UniGRU(nn.Module):
         """Load state dict with legacy checkpoint remap."""
         state_dict = _remap_legacy_state_dict(state_dict)
         return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2UniGRU128(SimpleConvV2UniGRU):
+    """SimpleConvV2 encoder/pool with capacity-matched unidirectional GRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUHead(128, hidden_ch=128, num_rotors=num_rotors, num_layers=2)
+
+
+class SimpleConvV2UniGRU128Norm(SimpleConvV2UniGRU):
+    """Capacity-matched unidirectional GRU head with normalized prenet."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(128, hidden_ch=128, num_rotors=num_rotors, num_layers=2)
 
 
 class SimpleConvV2CausalGRU(nn.Module):
@@ -1544,6 +1604,8 @@ RPS_MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
     "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
+    "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
+    "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
     "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
     "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
