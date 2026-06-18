@@ -107,69 +107,195 @@ function tailFile(file: string, lines: number): string {
   return split.slice(Math.max(0, split.length - lines)).join("\n");
 }
 
-export const SLURM_TOOL_NAMES = ["slurm_submit", "slurm_status", "slurm_logs"];
+type SlurmPartition = "gpushort" | "sae";
+
+const SHORT_PARTITION: SlurmPartition = "gpushort";
+const LONG_PARTITION: SlurmPartition = "sae";
+const SHORT_DEFAULT_TIME = "1:00:00";
+const LONG_DEFAULT_TIME = "4:00:00";
+
+export const SLURM_TOOL_NAMES = [
+  "slurm_submit_short",
+  "slurm_submit_long",
+  "slurm_submit",
+  "slurm_status",
+  "slurm_logs",
+];
+
+const SUBMIT_BASE_PARAMETERS = {
+  command: Type.String({
+    description:
+      "Shell command to run inside the Slurm job, e.g. python train_rps_predictor.py --model simple_conv_v2 ...",
+  }),
+  jobName: Type.Optional(Type.String({ description: "Slurm job name (-J)." })),
+  time: Type.Optional(
+    Type.String({
+      description:
+        "Slurm time limit. gpushort jobs must be <= 1:00:00; sae jobs may be longer (cluster max: 10-00:00:00).",
+    }),
+  ),
+  slurmArgs: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Additional sbatch arguments before --, e.g. ['--cpus-per-gpu=4']. Do not include --partition or --time; use the dedicated parameters/tool instead.",
+    }),
+  ),
+};
+
+function submitParameters(includePartition = false) {
+  const params: any = { ...SUBMIT_BASE_PARAMETERS };
+  if (includePartition) {
+    params.partition = Type.Optional(
+      Type.String({
+        description:
+          "Slurm partition: 'gpushort' for short <=1h jobs or 'sae' for longer jobs. Default: gpushort.",
+      }),
+    );
+  }
+  return Type.Object(params);
+}
+
+function normalizePartition(value: string | undefined, fallback: SlurmPartition): SlurmPartition {
+  if (!value) return fallback;
+  if (value === SHORT_PARTITION || value === LONG_PARTITION) return value;
+  throw new Error(`Unsupported Slurm partition '${value}'; expected '${SHORT_PARTITION}' or '${LONG_PARTITION}'.`);
+}
+
+function defaultTimeForPartition(partition: SlurmPartition): string {
+  return partition === LONG_PARTITION ? LONG_DEFAULT_TIME : SHORT_DEFAULT_TIME;
+}
+
+function assertNoControlledSlurmArgs(slurmArgs: string[] | undefined) {
+  for (const arg of slurmArgs ?? []) {
+    if (arg === "-p" || arg === "--partition" || arg.startsWith("-p") || arg.startsWith("--partition=")) {
+      throw new Error("Do not pass partition in slurmArgs; use slurm_submit_short/slurm_submit_long or the partition parameter.");
+    }
+    if (arg === "-t" || arg === "--time" || arg.startsWith("-t") || arg.startsWith("--time=")) {
+      throw new Error("Do not pass time in slurmArgs; use the time parameter.");
+    }
+  }
+}
+
+async function executeSubmit(
+  pi: ExtensionAPI,
+  params: {
+    command: string;
+    jobName?: string;
+    time?: string;
+    slurmArgs?: string[];
+    partition?: string;
+  },
+  signal: AbortSignal | undefined,
+  ctx: { cwd: string },
+  fallbackPartition: SlurmPartition,
+) {
+  const wrapper = path.join(ctx.cwd, "sbatch.sh");
+  if (!fs.existsSync(wrapper)) {
+    throw new Error(`Missing ${wrapper}; create/update the Slurm wrapper before submitting jobs.`);
+  }
+
+  const partition = normalizePartition(params.partition, fallbackPartition);
+  const time = params.time ?? defaultTimeForPartition(partition);
+  assertNoControlledSlurmArgs(params.slurmArgs);
+
+  const args: string[] = ["--partition", partition, "--time", time];
+  if (params.jobName) args.push("-J", params.jobName);
+  if (params.slurmArgs) args.push(...params.slurmArgs);
+  args.push("--", "bash", "-lc", params.command);
+
+  const result = await run(pi, "./sbatch.sh", args, signal, 30_000);
+  const combined = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
+  if (result.code !== 0) {
+    throw new Error(`sbatch failed (exit ${result.code}):\n${combined}`);
+  }
+
+  const jobId = parseSubmittedJobId(result.stdout);
+  const status = jobId ? await querySqueue(pi, signal, { jobId }) : "";
+  const files = findLogFiles(jobId, params.jobName);
+  const summary = [
+    combined,
+    jobId ? `Job ID: ${jobId}` : "Job ID: unknown",
+    params.jobName ? `Job name: ${params.jobName}` : undefined,
+    `Partition: ${partition}`,
+    `Time limit: ${time}`,
+    status ? `Immediate squeue status:\n${status}` : undefined,
+    files.length ? `Log file(s):\n${files.join("\n")}` : `Logs will appear under ${LOG_DIR}/%x.o%j`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    content: text(summary),
+    details: { jobId, jobName: params.jobName, command: params.command, partition, time, args, status, logFiles: files },
+  };
+}
+
+function registerPartitionSubmitTool(
+  pi: ExtensionAPI,
+  opts: {
+    name: string;
+    label: string;
+    partition: SlurmPartition;
+    description: string;
+    promptSnippet: string;
+    promptGuidelines: string[];
+  },
+) {
+  pi.registerTool({
+    name: opts.name,
+    label: opts.label,
+    description: opts.description,
+    promptSnippet: opts.promptSnippet,
+    promptGuidelines: opts.promptGuidelines,
+    parameters: submitParameters(false),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return executeSubmit(pi, params as any, signal, ctx, opts.partition);
+    },
+  });
+}
 
 export function registerSlurmTools(pi: ExtensionAPI) {
+  registerPartitionSubmitTool(pi, {
+    name: "slurm_submit_short",
+    label: "Submit Short Slurm Job",
+    partition: SHORT_PARTITION,
+    description:
+      "Submit a short GPU job (<= 1 hour) to the gpushort Slurm partition through ./sbatch.sh. Use for smoke tests and quick training jobs; never run GPU training directly on the login node.",
+    promptSnippet: "Submit a short <=1h gpushort Slurm job through ./sbatch.sh",
+    promptGuidelines: [
+      "Use slurm_submit_short for jobs expected to finish within 1 hour on the gpushort partition.",
+      "slurm_submit_short commands should put datasets and results under /gpfs/scratch/acw592.",
+    ],
+  });
+
+  registerPartitionSubmitTool(pi, {
+    name: "slurm_submit_long",
+    label: "Submit Long Slurm Job",
+    partition: LONG_PARTITION,
+    description:
+      "Submit a longer GPU job to the sae Slurm partition through ./sbatch.sh. Use for training jobs expected to exceed 1 hour; default time is 4:00:00 unless overridden.",
+    promptSnippet: "Submit a longer sae Slurm training job through ./sbatch.sh",
+    promptGuidelines: [
+      "Use slurm_submit_long for jobs expected to exceed 1 hour or needing the better GPUs on the sae partition.",
+      "Set an explicit time limit when you know the expected runtime; sae supports longer jobs than gpushort.",
+      "slurm_submit_long commands should put datasets and results under /gpfs/scratch/acw592.",
+    ],
+  });
+
   pi.registerTool({
     name: "slurm_submit",
     label: "Submit Slurm Job",
     description:
-      "Submit a gpushort Slurm job through ./sbatch.sh. Use for training jobs; never run GPU training directly on the login node. Returns the Slurm job id and immediate queue status when available.",
-    promptSnippet: "Submit a gpushort Slurm training job through ./sbatch.sh",
+      "Submit a Slurm GPU job through ./sbatch.sh. Prefer slurm_submit_short for <=1h gpushort jobs and slurm_submit_long for longer sae jobs; this compatibility tool defaults to gpushort.",
+    promptSnippet: "Submit a Slurm training job through ./sbatch.sh",
     promptGuidelines: [
-      "Use slurm_submit for gpushort training jobs instead of running long GPU training with bash on the login node.",
+      "Prefer slurm_submit_short for <=1h jobs and slurm_submit_long for longer sae jobs.",
+      "Use the partition parameter only when you need one generic submission call.",
       "slurm_submit commands should put datasets and results under /gpfs/scratch/acw592.",
     ],
-    parameters: Type.Object({
-      command: Type.String({
-        description:
-          "Shell command to run inside the Slurm job, e.g. python train_rps_predictor.py --model simple_conv_v2 ...",
-      }),
-      jobName: Type.Optional(Type.String({ description: "Slurm job name (-J)." })),
-      time: Type.Optional(
-        Type.String({ description: "Slurm time limit, <= 1:00:00. Default: 1:00:00." }),
-      ),
-      slurmArgs: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "Additional sbatch arguments before --, e.g. ['--cpus-per-gpu=4'].",
-        }),
-      ),
-    }),
+    parameters: submitParameters(true),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const wrapper = path.join(ctx.cwd, "sbatch.sh");
-      if (!fs.existsSync(wrapper)) {
-        throw new Error(`Missing ${wrapper}; create the gpushort wrapper before submitting jobs.`);
-      }
-
-      const args: string[] = [];
-      if (params.jobName) args.push("-J", params.jobName);
-      if (params.time) args.push("--time", params.time);
-      if (params.slurmArgs) args.push(...params.slurmArgs);
-      args.push("--", "bash", "-lc", params.command);
-
-      const result = await run(pi, "./sbatch.sh", args, signal, 30_000);
-      const combined = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
-      if (result.code !== 0) {
-        throw new Error(`sbatch failed (exit ${result.code}):\n${combined}`);
-      }
-
-      const jobId = parseSubmittedJobId(result.stdout);
-      const status = jobId ? await querySqueue(pi, signal, { jobId }) : "";
-      const files = findLogFiles(jobId, params.jobName);
-      const summary = [
-        combined,
-        jobId ? `Job ID: ${jobId}` : "Job ID: unknown",
-        params.jobName ? `Job name: ${params.jobName}` : undefined,
-        status ? `Immediate squeue status:\n${status}` : undefined,
-        files.length ? `Log file(s):\n${files.join("\n")}` : `Logs will appear under ${LOG_DIR}/%x.o%j`,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-
-      return {
-        content: text(summary),
-        details: { jobId, jobName: params.jobName, command: params.command, args, status, logFiles: files },
-      };
+      return executeSubmit(pi, params as any, signal, ctx, SHORT_PARTITION);
     },
   });
 
@@ -180,7 +306,7 @@ export function registerSlurmTools(pi: ExtensionAPI) {
       "Check Slurm job status via squeue and sacct. Provide jobId when possible; jobName is supported for queued/running jobs.",
     promptSnippet: "Check status of Slurm jobs with squeue/sacct",
     promptGuidelines: [
-      "Use slurm_status after slurm_submit to decide whether a job is RUNNING or PENDING; stop submitting new autoresearch jobs once the first job is pending/queued.",
+      "Use slurm_status after slurm_submit_short/slurm_submit_long/slurm_submit to decide whether a job is RUNNING or PENDING; stop submitting new autoresearch jobs once the first job is pending/queued.",
     ],
     parameters: Type.Object({
       jobId: Type.Optional(Type.String({ description: "Slurm job id." })),

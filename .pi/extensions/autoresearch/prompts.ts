@@ -34,7 +34,7 @@ export function loopInstructions(session: AutoresearchSession): string {
   return `
 ## Active Workflow: Architectural Autoresearch Loop
 
-You are running a project-specific autoresearch loop inspired by Karpathy's autoresearch framework. The goal is to improve RPS-prediction model architecture with short, evidence-driven Slurm experiments.
+You are running a project-specific autoresearch loop inspired by Karpathy's autoresearch framework. The goal is to improve RPS-prediction model architecture with evidence-driven Slurm experiments. Use gpushort for short <=1h jobs and sae for longer training jobs.
 
 ### Fixed session context
 
@@ -73,15 +73,15 @@ Check and update these files throughout the loop. Do not store checkpoints in gi
    - write a hypothesis in ideas.md before implementing;
    - implement the model and register it in train_rps_predictor.py::MODEL_REGISTRY;
    - smoke-test with one forward pass locally (no long login-node training);
-   - submit a gpushort Slurm job with slurm_submit.
-5. Submit jobs until the first job is queued/pending and not running immediately. When slurm_status/slurm_submit shows PENDING/queued, stop submitting new jobs and monitor existing jobs instead.
+   - submit a Slurm job with slurm_submit_short (<=1h gpushort) or slurm_submit_long (>1h/better sae GPUs).
+5. Submit jobs until the first job is queued/pending and not running immediately. When slurm_status or a submit tool shows PENDING/queued, stop submitting new jobs and monitor existing jobs instead.
 6. If a job fails due to a code bug, inspect slurm_logs, fix the bug, run the one-forward smoke test again, and restart the failed job. Record the failure and fix in experiments.md.
 7. When jobs finish, parse best validation metrics from logs/results, update leaderboard.md, summarize findings in experiments.md, and commit code + research artifacts to git.
 8. Start the next cycle only from the fresh commit and fresh leaderboard.
 
 ### Training command pattern
 
-Use slurm_submit rather than bash for training. The command passed to slurm_submit should follow this shape:
+Use Slurm submit tools rather than bash for training. Use slurm_submit_short for jobs expected to finish within 1 hour on gpushort; use slurm_submit_long for longer jobs on sae. The command passed to the submit tool should follow this shape:
 
 python train_rps_predictor.py \\
   --model <model_key> \\
@@ -133,7 +133,9 @@ This is the only required smoke test. Do not run long training directly on the l
 ### Slurm tools
 
 Dedicated tools are available:
-- slurm_submit — submit gpushort jobs through ./sbatch.sh.
+- slurm_submit_short — submit <=1h gpushort jobs through ./sbatch.sh.
+- slurm_submit_long — submit longer sae jobs through ./sbatch.sh.
+- slurm_submit — compatibility/generic submit tool; prefer the explicit short/long tools.
 - slurm_status — check squeue/sacct.
 - slurm_logs — tail logs under ${SCRATCH}/logs.
 
@@ -158,7 +160,7 @@ Add entries before implementation.
 
 | ID | Status | Model key | Hypothesis | Expected mechanism | Risk |
 |----|--------|-----------|------------|--------------------|------|
-| H0 | planned | ${session.baseline} | Baseline reference trained with identical parameters. | Establish comparable score floor. | Short gpushort run may undertrain. |
+| H0 | planned | ${session.baseline} | Baseline reference trained with identical parameters. | Establish comparable score floor. | Short runs may undertrain; long sae jobs may queue longer. |
 `;
 }
 
@@ -171,7 +173,7 @@ export function experimentsTemplate(session: AutoresearchSession): string {
 - Results root: \`${RESULTS_ROOT}/${session.id}\`
 - Baseline: \`${session.baseline}\`
 - Target metrics: ${session.metrics}
-- Training budget: 50 epochs, patience 10, gpushort <= 1:00:00
+- Training budget: 50 epochs, patience 10; use gpushort <= 1:00:00 for short trials or sae for longer runs
 - Extra training args: \`${session.trainingArgs.trim() || ""}\`
 
 ## Experiment log

@@ -41,3 +41,19 @@ Add entries before implementation.
 | H24 | completed — dramatic failure | smolnet_rps_simple_head | Use the SMoLnet-style frequency-dilated body with the simplest SimpleConv-style mean-frequency-pool + shallow Conv1d head. | Clean ablation: isolates whether the SMoLnet body helps before adding TCN/causal temporal heads. | PIT MSE 141.0523, R² -3.8919. SMoLnet body needs the TCN head's temporal receptive field; simple head is insufficient. |
 | H25 | completed — worse than both | simple_conv_v2_smol_bigru | Combine the winning v2+SMoL encoder with the winning BiGRU temporal head. | E22 (v2+SMoL+TCN) gave best R² (0.8318) but worse PIT MSE than baseline. The BiGRU head gave best PIT MSE. Combining both should give best of both: SMoL harmonic selectivity + BiGRU bidirectional temporal modeling. | PIT MSE 11.3410, R² 0.7461. Counterintuitively much worse — v2+SMoL+BiGRU underperforms both baseline and E22. Compound model likely harder to optimize within fixed budget. |
 | H26 | proposed | simple_conv_v2_smol_gru96 | v2+SMoL encoder with BiGRU96 head (wider GRU from H7). | H7 showed wider GRU improved R²; combining with SMoL refinement might push both metrics past baseline. | TBD |
+
+## Online-mixing rerun interpretation (2026-06-18)
+
+The full H0–H25 model set was rerun with online mixing: 200 max epochs, patience 50, 5000 samples/validation, SNR uniform `[-30,0]`, DREGON room2 `nosource` recordings + Michael's FLY125, LibriSpeech speech, and augmentations after 50k samples.
+
+Main change in interpretation: online mixture diversity strongly benefits some models that failed or underfit on the fixed offline train set. The best online PIT model is `simple_conv_v2_uni_gru128` (PIT MSE `7.3264`, R² `0.8224`), despite the same architecture being poor/unstable offline. The best online R² is `simple_conv_v2_magphase` (PIT MSE `8.1824`, R² `0.8348`), reversing the offline conclusion that phase hurts. The online baseline `simple_conv_v2` is strong but not best (PIT MSE `8.5349`, R² `0.8332`).
+
+Timeout note: `smolnet_rps_tcn` was the only 1h gpushort timeout. It reached best logged validation at epoch 48 (`Val PIT=11.8746`, R² `0.7270`) and had worsened by epoch 96 (`Val PIT=13.4076`, R² `0.6784`) before Slurm killed it during epoch 97. It likely would have early-stopped around epoch 98 and is not a contender.
+
+Follow-up hypotheses from online rerun:
+
+| ID | Status | Model key | Hypothesis | Expected mechanism | Risk |
+|----|--------|-----------|------------|--------------------|------|
+| H27 | proposed | simple_conv_v2_uni_gru128_online_repeat | Repeat the online winner with another seed / possibly longer validation cadence. | Verify the surprising uni-GRU128 win is robust and not seed/stream variance. | Online streams are stochastic; a single run may overstate ranking changes. |
+| H28 | proposed | simple_conv_v2_magphase_online_repeat | Repeat the online phase-input model and compare against `simple_conv_v2` under identical seeds. | Test whether phase is genuinely useful once online diversity removes fixed-set overfit. | Phase benefit may be seed-specific or validation-set-specific. |
+| H29 | proposed | simple_conv_v2_uni_gru128_magphase | Combine the online-winning uni-GRU128 temporal head with mag+phase input. | H27 and H28 suggest separate gains from unidirectional capacity and phase features. | Compound variant may reintroduce optimization instability. |

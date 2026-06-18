@@ -973,3 +973,76 @@ Results:
 - Early stopping: epoch 32
 - Best/final checkpoint evaluation: PIT MSE `11.3410`, RMSE `3.37`, Std MSE `27.4749`, frame MAE `2.34`, clip MAE `1.73`, R² `0.7461`
 - Conclusion: combining v2+SMoL encoder with BiGRU head performs worse than either alone. The compound architecture (v2 encoder → SMoL refinement → BiGRU) likely introduces optimization difficulties or gradient conflicts within the fixed training budget.
+
+## Online-mixing rerun — 200 epoch / patience 50 / 5000 samples per validation
+
+Status: 25 completed, 1 timed out on gpushort.
+
+Purpose: rerun the same 26 model keys under online mixture generation rather than fixed offline train samples, while keeping the original optimizer/model parameters (`--batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --epoch-progress`).
+
+Setup:
+
+- Train stream: `configs/online_mix_v4_michaels_train_no_room1_gpfs.yaml`
+- Noise sources: DREGON `in_flight_noise` from `/gpfs/scratch/acw592/data/DREGON`, excluding `free-flight_nosource_room1`; plus Michael's `FLY125` from `/gpfs/scratch/acw592/data`.
+- Speech source: LibriSpeech `train-clean-100` under `/gpfs/scratch/acw592/data/librispeech/LibriSpeech/train-clean-100-readable` (symlink tree excluding one unreadable FLAC: `669/129061/669-129061-0001.flac`, which raised `flac decoder lost sync`).
+- Source cache: `/gpfs/scratch/acw592/cache/online_mix_sources`; created once by `simple_conv_tcn` before submitting the rest of the array.
+- SNR: uniform `[-30, 0]` dB; `speech_per_channel: independent`; `snr_per_channel: false`.
+- Augmentations: enabled after 50000 global samples with probability `0.5`, choosing one of random gain, polarity flip, or single-channel drop.
+- Fixed validation set: `/gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels/valid`.
+- Results root: `/gpfs/scratch/acw592/results/autoresearch/20260618-v4-michaels-online-mix-200ep-aug50k-gpushort`.
+- Runner script: `/gpfs/scratch/acw592/run_online_mix_v4_michaels_gpushort_array.sh`.
+
+Submission notes:
+
+- A first concurrent cache attempt was cancelled because one LibriSpeech file was unreadable and because concurrent cache creation made diagnosis noisy.
+- Final sequence: delete cache, run `simple_conv_tcn` alone until cache creation completed and training started, then submit the rest as array `12575857_[0-16,18-25]`.
+- `simple_conv_tcn` single job: `12575848`, log `/gpfs/scratch/acw592/logs/om0618_one_tcn.o12575848`, completed in `00:17:08`.
+- Rest array: `12575857`, logs `/gpfs/scratch/acw592/logs/om0618_gs_rest.o*`.
+
+Results table (best/final checkpoint when completed; best observed validation when timed out):
+
+| Task | Model | Slurm | Status | Epochs logged | Early stop | PIT MSE | RMSE | MAE/f | MAE/c | R² | Best epoch | Log |
+|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 0 | `simple_conv_v2` | 12575857_0 | completed | 92 | 92 | 8.5349 | 2.92 | 2.00 | 1.56 | 0.8332 | 42 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575858` |
+| 1 | `simple_conv_v2_transformer` | 12575857_1 | completed | 65 | 65 | 8.4629 | 2.91 | 2.16 | 1.68 | 0.8085 | 15 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575874` |
+| 2 | `simple_conv_v2_local_attn` | 12575857_2 | completed | 67 | 67 | 10.0549 | 3.17 | 2.37 | 1.86 | 0.7637 | 17 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575889` |
+| 3 | `simple_conv_v2_multires` | 12575857_3 | completed | 107 | 107 | 8.7521 | 2.96 | 2.27 | 1.87 | 0.7710 | 57 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575901` |
+| 4 | `simple_conv_v2_dwt` | 12575857_4 | completed | 63 | 63 | 8.8512 | 2.98 | 2.32 | 1.87 | 0.7828 | 13 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575918` |
+| 5 | `simple_conv_v2_magphase` | 12575857_5 | completed | 87 | 87 | 8.1824 | 2.86 | 2.06 | 1.54 | 0.8348 | 37 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575940` |
+| 6 | `simple_conv_v2_dual_pool` | 12575857_6 | completed | 66 | 66 | 8.4940 | 2.91 | 2.29 | 1.80 | 0.7888 | 16 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575941` |
+| 7 | `simple_conv_v2_gru96` | 12575857_7 | completed | 56 | 56 | 10.7942 | 3.29 | 2.51 | 2.12 | 0.7886 | 6 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575979` |
+| 8 | `simple_conv_v2_uni_gru` | 12575857_8 | completed | 102 | 102 | 8.7301 | 2.95 | 2.28 | 1.88 | 0.8030 | 52 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575994` |
+| 9 | `simple_conv_v2_causal_gru` | 12575857_9 | completed | 75 | 75 | 14.6395 | 3.83 | 2.48 | 2.04 | 0.7703 | 25 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576022` |
+| 10 | `simple_conv_v2_causal_gru96` | 12575857_10 | completed | 65 | 65 | 11.4611 | 3.39 | 2.50 | 2.03 | 0.7657 | 15 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576086` |
+| 11 | `simple_conv_v2_uni_gru128` | 12575857_11 | completed | 67 | 67 | **7.3264** | 2.71 | 2.04 | 1.55 | 0.8224 | 17 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576104` |
+| 12 | `simple_conv_v2_uni_gru128_norm` | 12575857_12 | completed | 75 | 75 | 7.9864 | 2.83 | 2.11 | 1.62 | 0.8024 | 25 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576193` |
+| 13 | `simple_conv_v2_uni_gru128_norm_do03` | 12575857_13 | completed | 67 | 67 | 8.2826 | 2.88 | 2.15 | 1.69 | 0.8057 | 17 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576224` |
+| 14 | `simple_conv_v2_uni_gru96_norm_do03` | 12575857_14 | completed | 75 | 75 | 8.3325 | 2.89 | 2.26 | 1.87 | 0.8059 | 25 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576255` |
+| 15 | `simple_conv_v2_uni_gru96_norm_do02` | 12575857_15 | completed | 71 | 71 | 9.3224 | 3.05 | 2.31 | 1.88 | 0.7946 | 21 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576262` |
+| 16 | `simple_conv_v2_uni_gru64_norm_do03` | 12575857_16 | completed | 60 | 60 | 88.8055 | 9.42 | 7.60 | 7.27 | -1.8765 | 10 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576299` |
+| 17 | `simple_conv_tcn` | 12575848 | completed | 65 | 65 | 14.1221 | 3.76 | 2.77 | 2.17 | 0.6832 | 15 | `/gpfs/scratch/acw592/logs/om0618_one_tcn.o12575848` |
+| 18 | `simple_conv_v2_tcn` | 12575857_18 | completed | 71 | 71 | 12.4689 | 3.53 | 2.80 | 2.34 | 0.6924 | 21 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576301` |
+| 19 | `simple_conv_v2_causal_tcn` | 12575857_19 | completed | 76 | 76 | 11.3739 | 3.37 | 2.35 | 1.73 | 0.7458 | 26 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576334` |
+| 20 | `smolnet_rps_tcn` | 12575857_20 | timed out | 96 | — | 11.8746* | — | 2.60* | 1.99* | 0.7270* | 48 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576345` |
+| 21 | `smolnet_rps_causal_tcn` | 12575857_21 | completed | 100 | 100 | 12.9773 | 3.60 | 2.59 | 1.94 | 0.6755 | 50 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576372` |
+| 22 | `simple_conv_v2_smol_tcn` | 12575857_22 | completed | 88 | 88 | 12.6057 | 3.55 | 2.49 | 1.83 | 0.6863 | 38 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576414` |
+| 23 | `simple_conv_v2_smol_causal_tcn` | 12575857_23 | completed | 113 | 113 | 8.9874 | 3.00 | 2.02 | 1.56 | 0.8237 | 63 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576468` |
+| 24 | `smolnet_rps_simple_head` | 12575857_24 | completed | 93 | 93 | 13.7097 | 3.70 | 2.51 | 1.92 | 0.6900 | 43 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576469` |
+| 25 | `simple_conv_v2_smol_bigru` | 12575857_25 | completed | 60 | 60 | 9.5475 | 3.09 | 2.38 | 2.01 | 0.8052 | 10 | `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12575857` |
+
+\* `smolnet_rps_tcn` timed out before final checkpoint evaluation. Metrics marked with `*` are the best logged validation row, not a loaded-best final evaluation.
+
+Timeout diagnosis:
+
+- Only timed-out job: `smolnet_rps_tcn` (`12575857_20`, batch log `/gpfs/scratch/acw592/logs/om0618_gs_rest.o12576345`).
+- Slurm status: `TIMEOUT`, elapsed `01:00:12`, time limit `01:00:00`.
+- It reused the finalized cache and trained normally; no traceback/error before timeout.
+- Best observed validation: epoch 48, `Val PIT=11.8746`, train `12.1482`, frame MAE `2.60`, clip MAE `1.99`, R² `0.7270`.
+- At epoch 96, immediately before timeout, it had worsened to `Val PIT=13.4076`, train `9.9089`, frame MAE `2.79`, clip MAE `2.21`, R² `0.6784`; then Slurm cancelled during epoch 97.
+- Interpretation: it was not on track to beat the best online-mix models. Because patience is 50, best epoch 48 would early-stop at epoch 98 if no improvement; the 1h cutoff likely occurred just before natural early stopping/final evaluation.
+
+Online-mix conclusions:
+
+- Best completed PIT MSE: `simple_conv_v2_uni_gru128` with PIT MSE `7.3264`, beating the offline fixed-loader baseline (`7.8920`) on the same validation set.
+- Best completed R²: `simple_conv_v2_magphase` with R² `0.8348`; `simple_conv_v2` online also reached R² `0.8332`.
+- Online mixing substantially changed the ranking: previously failed unidirectional GRU variants became competitive, while `simple_conv_v2_smol_causal_tcn` remained strong but no longer best (`8.9874`, R² `0.8237`).

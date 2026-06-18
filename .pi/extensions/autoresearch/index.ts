@@ -303,7 +303,7 @@ async function startAutoresearch(pi: ExtensionAPI, _args: string, ctx: Extension
   const initialIdeas =
     (await ctx.ui.editor(
       "Initial architecture ideas / constraints (optional):",
-      "Start near simple_conv_v2. Prefer small, comparable variants that can smoke-test with one forward pass and train within gpushort. Keep the first batch hypothesis-diverse rather than many hyperparameter-only tweaks.",
+      "Start near simple_conv_v2. Prefer small, comparable variants that can smoke-test with one forward pass. Use gpushort for <=1h trials and sae for longer training. Keep the first batch hypothesis-diverse rather than many hyperparameter-only tweaks.",
     )) ?? "";
 
   const session = makeSession({ dataset, metrics, baseline, trainingArgs, initialIdeas });
@@ -351,7 +351,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("autoresearch", {
-    description: "Start the architectural autoresearch loop for RPS models on gpushort Slurm.",
+    description: "Start the architectural autoresearch loop for RPS models on Slurm (gpushort/sae).",
     handler: async (args, ctx) => startAutoresearch(pi, args, ctx),
   });
 
