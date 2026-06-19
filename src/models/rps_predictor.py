@@ -28,6 +28,41 @@ def stft_time_frames(audio_length: int, hop_length: int, n_fft: int) -> int:
     return audio_length // hop_length + 1
 
 
+class STFTReImFrontEnd(nn.Module):
+    """Compressed real/imag STFT front-end for SMoLnet-style RPS models."""
+
+    out_channels = 2
+
+    def __init__(self, n_fft=2048, hop_length=512, center=True, compressed=True):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.center = center
+        self.compressed = compressed
+        self.register_buffer("window", torch.hann_window(n_fft), persistent=True)
+
+    def forward(self, audio):
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        spec = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            center=self.center,
+            return_complex=True,
+        )
+        x = torch.stack([spec.real, spec.imag], dim=1)
+        if self.compressed:
+            x = x.sign() * torch.log1p(x.abs())
+        return x
+
+    def num_frames(self, n_samples: int) -> int:
+        if self.center:
+            return n_samples // self.hop_length + 1
+        return max(0, (n_samples - self.n_fft) // self.hop_length + 1)
+
+
 class SqueezeExcitation2d(nn.Module):
     """Squeeze-and-Excitation block for 2D conv features (B, C, F, T)."""
 
@@ -164,6 +199,200 @@ class TCNHead(nn.Module):
         return self.proj(x)
 
 
+class CausalTCNHead(nn.Module):
+    """Left-padded temporal convolution head.
+
+    This keeps the temporal head causal by padding only on the left. It avoids
+    BatchNorm/GroupNorm because those normalize across the time axis for Conv1d
+    tensors and would leak future frames during training/inference on full clips.
+    """
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 4,
+        kernel_size: int = 5,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.blocks = nn.ModuleList()
+        for i in range(num_layers):
+            dilation = 2**i
+            conv = nn.Conv1d(
+                in_ch if i == 0 else hidden_ch,
+                hidden_ch,
+                kernel_size,
+                padding=0,
+                dilation=dilation,
+            )
+            skip = None
+            if i == 0 and in_ch != hidden_ch:
+                skip = nn.Conv1d(in_ch, hidden_ch, kernel_size=1)
+            self.blocks.append(
+                nn.ModuleDict(
+                    {
+                        "conv": conv,
+                        "act": nn.ReLU(inplace=True),
+                        "drop": nn.Dropout(dropout),
+                        "skip": skip if skip is not None else nn.Identity(),
+                    }
+                )
+            )
+        self.kernel_size = kernel_size
+        self.proj = nn.Conv1d(hidden_ch, num_rotors, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, C, T), returns (B, num_rotors, T)."""
+        for i, block in enumerate(self.blocks):
+            dilation = 2**i
+            pad = (self.kernel_size - 1) * dilation
+            y = F.pad(x, (pad, 0))
+            y = block["conv"](y)
+            y = block["act"](y)
+            y = block["drop"](y)
+            residual = block["skip"](x)
+            x = y + residual if y.shape == residual.shape else y
+        return self.proj(x)
+
+
+class SMoLnetRPSDilatedLayer(nn.Module):
+    """SMoLnet-style frequency-dilated convolution layer."""
+
+    def __init__(self, in_channels, out_channels, dilation=1, kernel_size=3, use_norm=True):
+        super().__init__()
+        self.main = nn.Sequential(
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=(kernel_size, 1),
+                padding=(kernel_size // 2 * dilation, 0),
+                dilation=(dilation, 1),
+            ),
+            nn.BatchNorm2d(out_channels) if use_norm else nn.Identity(),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.main(x)
+
+
+class SMoLnetRPSLateLayer(nn.Module):
+    """SMoLnet late square layer; optionally left-padded in time."""
+
+    def __init__(self, channels, kernel_size=3, causal_time=False, use_norm=True):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.causal_time = causal_time
+        padding = (kernel_size // 2, 0) if causal_time else (kernel_size // 2, kernel_size // 2)
+        self.conv = nn.Conv2d(channels, channels, kernel_size=(kernel_size, kernel_size), padding=padding)
+        self.norm = nn.BatchNorm2d(channels) if use_norm else nn.Identity()
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        if self.causal_time:
+            x = F.pad(x, (self.kernel_size - 1, 0, 0, 0))
+        return self.act(self.norm(self.conv(x)))
+
+
+class SMoLnetRPSBackbone(nn.Module):
+    """Frequency-dilated SMoLnet-style 2D convolutional backbone."""
+
+    def __init__(
+        self,
+        input_ch=2,
+        inner_channels=32,
+        dilated_layers=8,
+        total_layers=11,
+        max_dilation=64,
+        causal_time=False,
+    ):
+        super().__init__()
+        assert total_layers > dilated_layers
+        use_norm = not causal_time
+        layers = []
+        prev_ch = input_ch
+        for idx in range(dilated_layers):
+            dilation = 2**idx
+            if max_dilation is not None:
+                dilation = min(dilation, max_dilation)
+            layers.append(
+                SMoLnetRPSDilatedLayer(
+                    prev_ch, inner_channels, dilation=dilation, use_norm=use_norm
+                )
+            )
+            prev_ch = inner_channels
+        for _ in range(total_layers - dilated_layers):
+            layers.append(
+                SMoLnetRPSLateLayer(
+                    inner_channels, causal_time=causal_time, use_norm=use_norm
+                )
+            )
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class SMoLnetRPSTCN(nn.Module):
+    """SMoLnet-style re/im STFT backbone with symmetric dilated TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.frontend = frontend if frontend is not None else STFTReImFrontEnd(n_fft, hop_length)
+        self.backbone = SMoLnetRPSBackbone(
+            input_ch=2, inner_channels=16, dilated_layers=6, total_layers=8, max_dilation=32
+        )
+        self.head = TCNHead(16, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = self.backbone(x)
+        h = h.mean(dim=2)
+        return self.head(h)
+
+    def load_state_dict(self, state_dict, strict=True):
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SMoLnetRPSSimpleHead(SMoLnetRPSTCN):
+    """SMoLnet-style re/im STFT backbone with SimpleConv-style Conv1d head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = nn.Sequential(
+            nn.Conv1d(16, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Conv1d(64, num_rotors, kernel_size=1),
+        )
+
+
+class SMoLnetRPSCausalTCN(SMoLnetRPSTCN):
+    """SMoLnet-style backbone with left-padded late layers and causal TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.backbone = SMoLnetRPSBackbone(
+            input_ch=2,
+            inner_channels=16,
+            dilated_layers=6,
+            total_layers=8,
+            max_dilation=32,
+            causal_time=True,
+        )
+        self.head = CausalTCNHead(16, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+
 class BiGRUHead(nn.Module):
     """Bidirectional GRU head for temporal modeling."""
 
@@ -201,6 +430,269 @@ class BiGRUHead(nn.Module):
         x, _ = self.gru(x)  # (B, T, hidden*2)
         x = self.proj(x)  # (B, T, num_rotors)
         return x.transpose(1, 2)  # (B, num_rotors, T)
+
+
+class CausalGRUHead(nn.Module):
+    """Unidirectional GRU head with causal Conv1d prenet."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        kernel_size: int = 5,
+    ):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.prenet_conv = nn.Conv1d(in_ch, hidden_ch, kernel_size=kernel_size, padding=0)
+        self.prenet = nn.Sequential(
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        self.gru = nn.GRU(
+            hidden_ch,
+            hidden_ch,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=False,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.proj = nn.Linear(hidden_ch, num_rotors)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, C, T)
+        Returns: (B, num_rotors, T)
+        """
+        x = F.pad(x, (self.kernel_size - 1, 0))
+        x = self.prenet(self.prenet_conv(x))  # (B, hidden, T)
+        x = x.transpose(1, 2)  # (B, T, hidden)
+        x, _ = self.gru(x)  # (B, T, hidden)
+        x = self.proj(x)  # (B, T, num_rotors)
+        return x.transpose(1, 2)  # (B, num_rotors, T)
+
+
+class CausalGRUNormHead(nn.Module):
+    """Unidirectional GRU head with causal Conv1d + GroupNorm prenet."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 128,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        kernel_size: int = 5,
+    ):
+        super().__init__()
+        self.kernel_size = kernel_size
+        groups = 8 if hidden_ch % 8 == 0 else 1
+        self.prenet_conv = nn.Conv1d(in_ch, hidden_ch, kernel_size=kernel_size, padding=0)
+        self.prenet = nn.Sequential(
+            nn.GroupNorm(groups, hidden_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        self.gru = nn.GRU(
+            hidden_ch,
+            hidden_ch,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=False,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.proj = nn.Linear(hidden_ch, num_rotors)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (self.kernel_size - 1, 0))
+        x = self.prenet(self.prenet_conv(x))
+        x = x.transpose(1, 2)
+        x, _ = self.gru(x)
+        x = self.proj(x)
+        return x.transpose(1, 2)
+
+
+class CausalResidualConvBlock2d(nn.Module):
+    """Residual Conv2d block with left-only padding along time."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel: tuple,
+        stride: tuple,
+        padding: tuple,
+        use_se: bool = True,
+        negative_slope: float = 0.2,
+    ):
+        super().__init__()
+        self.time_pad = kernel[1] - 1
+        self.conv = nn.Conv2d(
+            in_ch, out_ch, kernel, stride=stride, padding=(padding[0], 0)
+        )
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.act = nn.LeakyReLU(negative_slope, inplace=True)
+        self.se = SqueezeExcitation2d(out_ch) if use_se else None
+        self.has_skip = stride == (1, 1) and in_ch == out_ch
+        if not self.has_skip and stride == (1, 1):
+            self.skip_proj = nn.Conv2d(in_ch, out_ch, 1)
+        else:
+            self.skip_proj = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        out = F.pad(x, (self.time_pad, 0, 0, 0))
+        out = self.conv(out)
+        out = self.bn(out)
+        if self.skip_proj is not None:
+            identity = self.skip_proj(identity)
+        if self.has_skip or self.skip_proj is not None:
+            out = out + identity
+        out = self.act(out)
+        if self.se is not None:
+            out = self.se(out)
+        return out
+
+
+class CausalSTFTMag(nn.Module):
+    """Log-magnitude STFT using only past samples for each output frame.
+
+    We left-pad by ``n_fft`` and run ``torch.stft(center=False)`` so the output
+    frame count remains ``n_samples // hop_length + 1`` like the comparable
+    centered STFT front-end. Frame ``t`` sees audio up to, but not after, the
+    frame boundary at ``t * hop_length``.
+    """
+
+    out_channels = 1
+
+    def __init__(self, n_fft: int = 2048, hop_length: int = 512):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.register_buffer("window", torch.hann_window(n_fft))
+
+    def num_frames(self, n_samples: int) -> int:
+        return n_samples // self.hop_length + 1
+
+    def forward(self, audio: torch.Tensor) -> torch.Tensor:
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        audio = F.pad(audio, (self.n_fft, 0))
+        X = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            center=False,
+            return_complex=True,
+            normalized=True,
+        )
+        return torch.log1p(X.abs()).unsqueeze(1)
+
+
+class TemporalTransformerHead(nn.Module):
+    """Transformer temporal head for per-frame RPS prediction."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.hidden_ch = hidden_ch
+        self.prenet = nn.Sequential(
+            nn.Conv1d(in_ch, hidden_ch, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_ch,
+            nhead=num_heads,
+            dim_feedforward=hidden_ch * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.proj = nn.Linear(hidden_ch, num_rotors)
+
+    @staticmethod
+    def _sinusoidal_positional_encoding(
+        length: int, dim: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        pos = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
+        div = torch.exp(
+            torch.arange(0, dim, 2, device=device, dtype=dtype)
+            * (-math.log(10000.0) / dim)
+        )
+        pe = torch.zeros(length, dim, device=device, dtype=dtype)
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div[: pe[:, 1::2].shape[1]])
+        return pe
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, C, T)
+        Returns: (B, num_rotors, T)
+        """
+        x = self.prenet(x).transpose(1, 2)  # (B, T, hidden)
+        pe = self._sinusoidal_positional_encoding(
+            x.size(1), self.hidden_ch, x.device, x.dtype
+        )
+        x = self.transformer(x + pe.unsqueeze(0))
+        x = self.proj(x)
+        return x.transpose(1, 2)
+
+
+class LocalTemporalTransformerHead(TemporalTransformerHead):
+    """Transformer temporal head constrained to a fixed local attention window."""
+
+    def __init__(
+        self,
+        in_ch: int,
+        hidden_ch: int = 64,
+        num_rotors: int = 4,
+        num_layers: int = 2,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+        local_window: int = 17,
+    ):
+        super().__init__(
+            in_ch=in_ch,
+            hidden_ch=hidden_ch,
+            num_rotors=num_rotors,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            dropout=dropout,
+        )
+        self.local_window = local_window
+
+    @staticmethod
+    def _local_attention_mask(length: int, local_window: int, device: torch.device) -> torch.Tensor:
+        radius = max(0, local_window // 2)
+        idx = torch.arange(length, device=device)
+        return (idx[:, None] - idx[None, :]).abs() > radius
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, C, T)
+        Returns: (B, num_rotors, T)
+        """
+        x = self.prenet(x).transpose(1, 2)  # (B, T, hidden)
+        pe = self._sinusoidal_positional_encoding(
+            x.size(1), self.hidden_ch, x.device, x.dtype
+        )
+        mask = self._local_attention_mask(x.size(1), self.local_window, x.device)
+        x = self.transformer(x + pe.unsqueeze(0), mask=mask)
+        x = self.proj(x)
+        return x.transpose(1, 2)
 
 
 class MultiScaleFusionHead(nn.Module):
@@ -392,6 +884,663 @@ class SimpleConvV2(nn.Module):
 
 
 # ─── Variant 2: SimpleConvWide (scale up, keep it simple) ────────────────────
+
+
+class SimpleConvV2TCN(nn.Module):
+    """SimpleConvV2 encoder/pool with the existing symmetric dilated TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = TCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)
+        return self.head(h)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2CausalTCN(SimpleConvV2TCN):
+    """SimpleConvV2 encoder/pool with a left-padded dilated TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalTCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+
+class SimpleConvV2SMoLTCN(SimpleConvV2TCN):
+    """SimpleConvV2 plus SMoLnet-style frequency-dilated refinement before TCN."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.smol_refine = SMoLnetRPSBackbone(
+            input_ch=128, inner_channels=128, dilated_layers=4, total_layers=5, max_dilation=8
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.smol_refine(h)
+        h = self.freq_pool(h)
+        return self.head(h)
+
+
+class SimpleConvV2SMoLCausalTCN(SimpleConvV2SMoLTCN):
+    """SimpleConvV2 + SMoL refinement with left-padded TCN head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.smol_refine = SMoLnetRPSBackbone(
+            input_ch=128,
+            inner_channels=128,
+            dilated_layers=4,
+            total_layers=5,
+            max_dilation=8,
+            causal_time=True,
+        )
+        self.head = CausalTCNHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
+
+
+class SimpleConvV2SMoLBiGRU(SimpleConvV2):
+    """SimpleConvV2 + SMoLnet-style frequency-dilated refinement + BiGRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.smol_refine = SMoLnetRPSBackbone(
+            input_ch=128, inner_channels=128, dilated_layers=4, total_layers=5, max_dilation=8
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.smol_refine(h)
+        h = self.freq_pool(h)
+        return self.head(h)
+
+
+class SimpleConvV2UniGRU(nn.Module):
+    """SimpleConvV2 encoder/pool with a unidirectional causal GRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = CausalGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2UniGRU128(SimpleConvV2UniGRU):
+    """SimpleConvV2 encoder/pool with capacity-matched unidirectional GRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUHead(128, hidden_ch=128, num_rotors=num_rotors, num_layers=2)
+
+
+class SimpleConvV2UniGRU128Norm(SimpleConvV2UniGRU):
+    """Capacity-matched unidirectional GRU head with normalized prenet."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(128, hidden_ch=128, num_rotors=num_rotors, num_layers=2)
+
+
+class SimpleConvV2UniGRU128NormDO03(SimpleConvV2UniGRU):
+    """Normalized capacity-matched unidirectional GRU head with stronger dropout."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(
+            128, hidden_ch=128, num_rotors=num_rotors, num_layers=2, dropout=0.3
+        )
+
+
+class SimpleConvV2UniGRU96NormDO03(SimpleConvV2UniGRU):
+    """Normalized lower-capacity unidirectional GRU head with stronger dropout."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(
+            128, hidden_ch=96, num_rotors=num_rotors, num_layers=2, dropout=0.3
+        )
+
+
+class SimpleConvV2UniGRU96NormDO02(SimpleConvV2UniGRU):
+    """Normalized hidden=96 unidirectional GRU head with moderate dropout."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(
+            128, hidden_ch=96, num_rotors=num_rotors, num_layers=2, dropout=0.2
+        )
+
+
+class SimpleConvV2UniGRU64NormDO03(SimpleConvV2UniGRU):
+    """Normalized hidden=64 unidirectional GRU head with stronger dropout."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+        self.head = CausalGRUNormHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, dropout=0.3
+        )
+
+
+class SimpleConvV2CausalGRU(nn.Module):
+    """SimpleConvV2-style fully time-causal stack with unidirectional GRU."""
+
+    def __init__(
+        self,
+        n_fft=2048,
+        hop_length=512,
+        num_rotors=4,
+        frontend=None,
+        hidden_ch=64,
+    ):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.frontend = frontend or CausalSTFTMag(n_fft=n_fft, hop_length=hop_length)
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(CausalResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = CausalGRUHead(
+            128, hidden_ch=hidden_ch, num_rotors=num_rotors, num_layers=2
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, 1, F, T)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2CausalGRU96(SimpleConvV2CausalGRU):
+    """Time-causal SimpleConvV2 stack with wider unidirectional GRU head."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__(
+            n_fft=n_fft,
+            hop_length=hop_length,
+            num_rotors=num_rotors,
+            frontend=frontend,
+            hidden_ch=96,
+        )
+
+
+class SimpleConvV2Transformer(nn.Module):
+    """SimpleConvV2 encoder/pool with a Transformer temporal head replacing BiGRU."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = TemporalTransformerHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, num_heads=4
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2LocalAttention(nn.Module):
+    """SimpleConvV2 encoder/pool with local-window Transformer temporal attention."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        # 17 STFT frames ≈ 0.54 s at 16 kHz / hop 512: enough for smooth RPS
+        # changes while discouraging nonlocal shortcuts on the tiny valid set.
+        self.head = LocalTemporalTransformerHead(
+            128,
+            hidden_ch=64,
+            num_rotors=num_rotors,
+            num_layers=2,
+            num_heads=4,
+            local_window=17,
+        )
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2MultiRes(nn.Module):
+    """SimpleConvV2 with concatenated long/short-window STFT magnitude inputs."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        from models.frontends import build_frontend
+
+        if frontend is None:
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+        # Same hop keeps time frames aligned; shorter window trades frequency
+        # resolution for better localization of rapid RPS/noise changes.
+        short_n_fft = max(256, n_fft // 2)
+        self.short_frontend = build_frontend(
+            "stft_mag", n_fft=short_n_fft, hop_length=hop_length
+        )
+
+        enc_spec = [
+            (2, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x_long = self.frontend(audio)  # (B, 1, F_long, T)
+        x_short = self.short_frontend(audio)  # (B, 1, F_short, T_short)
+        if x_short.shape[-1] != x_long.shape[-1] or x_short.shape[-2] != x_long.shape[-2]:
+            x_short = F.interpolate(
+                x_short,
+                size=(x_long.shape[-2], x_long.shape[-1]),
+                mode="bilinear",
+                align_corners=False,
+            )
+        x = torch.cat([x_long, x_short], dim=1)  # (B, 2, F_long, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2Wavelet(nn.Module):
+    """SimpleConvV2 with an added lightweight Haar-like temporal wavelet branch."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.wavelet_scales = (128, 256, 512, 1024)
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+        self.wavelet_proj = nn.Sequential(
+            nn.Conv1d(len(self.wavelet_scales), 8, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(8, 1, kernel_size=1),
+        )
+
+        enc_spec = [
+            (2, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def _wavelet_features(self, audio: torch.Tensor, target_t: int) -> torch.Tensor:
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        x = audio.unsqueeze(1)
+        feats = []
+        for scale in self.wavelet_scales:
+            half = scale // 2
+            filt = torch.cat(
+                [
+                    torch.ones(half, device=x.device, dtype=x.dtype),
+                    -torch.ones(half, device=x.device, dtype=x.dtype),
+                ]
+            ).view(1, 1, scale)
+            filt = filt / math.sqrt(float(scale))
+            y = F.conv1d(x, filt, stride=self.hop_length, padding=scale // 2)
+            feats.append(torch.log1p(y.abs()))
+        w = torch.cat(feats, dim=1)  # (B, scales, T_w)
+        if w.shape[-1] != target_t:
+            w = F.interpolate(w, size=target_t, mode="linear", align_corners=False)
+        return self.wavelet_proj(w)  # (B, 1, T)
+
+    def forward(self, audio):
+        x_mag = self.frontend(audio)  # (B, 1, F, T)
+        w = self._wavelet_features(audio, x_mag.shape[-1]).unsqueeze(2)
+        w = w.expand(-1, -1, x_mag.shape[-2], -1)
+        x = torch.cat([x_mag, w], dim=1)  # (B, 2, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2MagPhase(nn.Module):
+    """SimpleConvV2 using log-magnitude plus cosine/sine phase STFT channels."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_magphase", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (3, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, 3, F, T) — mag, cos(θ), sin(θ)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2DualPool(nn.Module):
+    """SimpleConvV2 concatenating attention and mean frequency pooling before BiGRU."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(256, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h_attn = self.freq_pool(h)  # (B, 128, T)
+        h_mean = h.mean(dim=2)  # (B, 128, T)
+        return self.head(torch.cat([h_attn, h_mean], dim=1))  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2GRU96(nn.Module):
+    """SimpleConvV2 with a modestly wider BiGRU temporal head (hidden=96)."""
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        enc_spec = [
+            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (64, 128, (7, 5), (2, 1), (3, 2)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (128, 128, (5, 3), (2, 1), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
+
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.head = BiGRUHead(128, hidden_ch=96, num_rotors=num_rotors, num_layers=2)
+
+    def forward(self, audio):
+        x = self.frontend(audio)  # (B, C, F, T)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load state dict with legacy checkpoint remap."""
+        state_dict = _remap_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
 
 
 class SimpleConvWide(nn.Module):
@@ -844,6 +1993,30 @@ class SimpleConvBiGRUV2(nn.Module):
 RPS_MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
+    "simple_conv_v2_tcn": SimpleConvV2TCN,
+    "simple_conv_v2_causal_tcn": SimpleConvV2CausalTCN,
+    "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
+    "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
+    "simple_conv_v2_smol_bigru": SimpleConvV2SMoLBiGRU,
+    "smolnet_rps_tcn": SMoLnetRPSTCN,
+    "smolnet_rps_simple_head": SMoLnetRPSSimpleHead,
+    "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
+    "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
+    "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
+    "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
+    "simple_conv_v2_uni_gru128_norm_do03": SimpleConvV2UniGRU128NormDO03,
+    "simple_conv_v2_uni_gru96_norm_do03": SimpleConvV2UniGRU96NormDO03,
+    "simple_conv_v2_uni_gru96_norm_do02": SimpleConvV2UniGRU96NormDO02,
+    "simple_conv_v2_uni_gru64_norm_do03": SimpleConvV2UniGRU64NormDO03,
+    "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
+    "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
+    "simple_conv_v2_transformer": SimpleConvV2Transformer,
+    "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
+    "simple_conv_v2_multires": SimpleConvV2MultiRes,
+    "simple_conv_v2_dwt": SimpleConvV2Wavelet,
+    "simple_conv_v2_magphase": SimpleConvV2MagPhase,
+    "simple_conv_v2_dual_pool": SimpleConvV2DualPool,
+    "simple_conv_v2_gru96": SimpleConvV2GRU96,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,

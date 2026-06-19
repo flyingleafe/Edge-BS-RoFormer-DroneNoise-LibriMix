@@ -26,6 +26,10 @@ import math
 import os
 import time
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -41,6 +45,9 @@ from models.multif0.rps_predictor import MultiF0RPSPredictor
 
 # Import new model variants
 from models.rps_predictor import (
+    SMoLnetRPSCausalTCN,
+    SMoLnetRPSSimpleHead,
+    SMoLnetRPSTCN,
     SimpleConv,
     SimpleConvAttnPool,
     SimpleConvBiGRU,
@@ -50,6 +57,27 @@ from models.rps_predictor import (
     SimpleConvSENext,
     SimpleConvTCN,
     SimpleConvV2,
+    SimpleConvV2CausalGRU,
+    SimpleConvV2CausalGRU96,
+    SimpleConvV2DualPool,
+    SimpleConvV2GRU96,
+    SimpleConvV2LocalAttention,
+    SimpleConvV2CausalTCN,
+    SimpleConvV2MagPhase,
+    SimpleConvV2MultiRes,
+    SimpleConvV2SMoLCausalTCN,
+    SimpleConvV2SMoLBiGRU,
+    SimpleConvV2SMoLTCN,
+    SimpleConvV2TCN,
+    SimpleConvV2Transformer,
+    SimpleConvV2UniGRU,
+    SimpleConvV2UniGRU128,
+    SimpleConvV2UniGRU128Norm,
+    SimpleConvV2UniGRU128NormDO03,
+    SimpleConvV2UniGRU64NormDO03,
+    SimpleConvV2UniGRU96NormDO02,
+    SimpleConvV2UniGRU96NormDO03,
+    SimpleConvV2Wavelet,
     SimpleConvWide,
 )
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
@@ -341,6 +369,30 @@ class DCCRNEncRPS(nn.Module):
 MODEL_REGISTRY = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
+    "simple_conv_v2_tcn": SimpleConvV2TCN,
+    "simple_conv_v2_causal_tcn": SimpleConvV2CausalTCN,
+    "simple_conv_v2_smol_tcn": SimpleConvV2SMoLTCN,
+    "simple_conv_v2_smol_causal_tcn": SimpleConvV2SMoLCausalTCN,
+    "simple_conv_v2_smol_bigru": SimpleConvV2SMoLBiGRU,
+    "smolnet_rps_tcn": SMoLnetRPSTCN,
+    "smolnet_rps_simple_head": SMoLnetRPSSimpleHead,
+    "smolnet_rps_causal_tcn": SMoLnetRPSCausalTCN,
+    "simple_conv_v2_uni_gru": SimpleConvV2UniGRU,
+    "simple_conv_v2_uni_gru128": SimpleConvV2UniGRU128,
+    "simple_conv_v2_uni_gru128_norm": SimpleConvV2UniGRU128Norm,
+    "simple_conv_v2_uni_gru128_norm_do03": SimpleConvV2UniGRU128NormDO03,
+    "simple_conv_v2_uni_gru96_norm_do03": SimpleConvV2UniGRU96NormDO03,
+    "simple_conv_v2_uni_gru96_norm_do02": SimpleConvV2UniGRU96NormDO02,
+    "simple_conv_v2_uni_gru64_norm_do03": SimpleConvV2UniGRU64NormDO03,
+    "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
+    "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
+    "simple_conv_v2_transformer": SimpleConvV2Transformer,
+    "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
+    "simple_conv_v2_multires": SimpleConvV2MultiRes,
+    "simple_conv_v2_dwt": SimpleConvV2Wavelet,
+    "simple_conv_v2_magphase": SimpleConvV2MagPhase,
+    "simple_conv_v2_dual_pool": SimpleConvV2DualPool,
+    "simple_conv_v2_gru96": SimpleConvV2GRU96,
     "simple_conv_wide": SimpleConvWide,
     "simple_conv_tcn": SimpleConvTCN,
     "simple_conv_multiscale": SimpleConvMultiScale,
@@ -982,6 +1034,12 @@ def main():
         dest="pit_loss",
         help="Disable permutation-invariant loss",
     )
+    parser.add_argument(
+        "--loss",
+        choices=["pit_mse", "mse"],
+        default=None,
+        help="Loss alias for autoresearch commands: pit_mse enables PIT loss, mse disables it.",
+    )
     parser.add_argument("--wandb_key", type=str, default="", help="WandB API key")
     parser.add_argument("--n_fft", type=int, default=2048)
     parser.add_argument("--hop_length", type=int, default=512)
@@ -1065,6 +1123,8 @@ def main():
         "leaves the per-epoch metrics table untouched).",
     )
     args = parser.parse_args()
+    if args.loss is not None:
+        args.pit_loss = args.loss == "pit_mse"
 
     os.makedirs(args.save_path, exist_ok=True)
     results = {}

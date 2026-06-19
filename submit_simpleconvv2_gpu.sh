@@ -1,19 +1,20 @@
 #!/bin/bash
 #SBATCH -J scv2_test
 #SBATCH -o /gpfs/scratch/acw592/logs/%x.o%j
-#SBATCH -p gpushort
+#SBATCH -p gpu
 #SBATCH -n 8
 #SBATCH --cpus-per-gpu=8
-#SBATCH -t 1:0:0
+#SBATCH -t 10:0:0
 #SBATCH --mem-per-cpu=11G
 #SBATCH --gres=gpu:1
 
 set -euo pipefail
 
 SCRATCH=/gpfs/scratch/acw592
+RESULTS_DIR="$SCRATCH/results/apocrita_simpleconvv2"
 
 cd "$SLURM_SUBMIT_DIR"
-mkdir -p "$SCRATCH/logs" "$SCRATCH/results/apocrita_simpleconvv2_test"
+mkdir -p "$SCRATCH/logs" "$RESULTS_DIR"
 
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
@@ -45,7 +46,7 @@ python train_rps_predictor.py \
   --model simple_conv_v2 \
   --device cuda:0 \
   --data_root "$SCRATCH/datasets/DREGON-LM-V4" \
-  --save_path "$SCRATCH/results/apocrita_simpleconvv2_test" \
+  --save_path "$RESULTS_DIR" \
   --epochs 20 \
   --patience 5 \
   --batch_size 32 \

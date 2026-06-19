@@ -86,6 +86,29 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 |-----|---------------------|
 | `simple_conv` | Baseline — 5-block encoder + Conv1d head |
 | `simple_conv_v2` | Residual + SE + attention pool + BiGRU |
+| `simple_conv_v2_tcn` | `simple_conv_v2` encoder/pool + symmetric dilated TCN head |
+| `simple_conv_v2_causal_tcn` | `simple_conv_v2` encoder/pool + left-padded dilated TCN head (head-only causal) |
+| `simple_conv_v2_smol_tcn` | `simple_conv_v2` encoder/pool + SMoLnet-style frequency-dilated refinement + symmetric TCN head |
+| `simple_conv_v2_smol_causal_tcn` | `simple_conv_v2` encoder/pool + SMoLnet-style refinement + left-padded TCN head |
+| `smolnet_rps_tcn` | SMoLnet-style compressed re/im STFT backbone + attention frequency pool + symmetric TCN head |
+| `smolnet_rps_simple_head` | SMoLnet-style compressed re/im STFT backbone + SimpleConv-style mean frequency pool and shallow Conv1d head |
+| `smolnet_rps_causal_tcn` | SMoLnet-style compressed re/im STFT backbone with left-padded late layers + left-padded TCN head |
+| `simple_conv_v2_uni_gru` | `simple_conv_v2` encoder/pool + unidirectional causal GRU head (head-only causal) |
+| `simple_conv_v2_uni_gru128` | `simple_conv_v2_uni_gru` with hidden size 128 to match BiGRU output width |
+| `simple_conv_v2_uni_gru128_norm` | `simple_conv_v2_uni_gru128` with GroupNorm after the causal Conv1d prenet |
+| `simple_conv_v2_uni_gru128_norm_do03` | `simple_conv_v2_uni_gru128_norm` with stronger head dropout (`0.3`) |
+| `simple_conv_v2_uni_gru96_norm_do03` | Normalized unidirectional GRU head with hidden size 96 and dropout `0.3` |
+| `simple_conv_v2_uni_gru96_norm_do02` | Normalized unidirectional GRU head with hidden size 96 and dropout `0.2` |
+| `simple_conv_v2_uni_gru64_norm_do03` | Normalized unidirectional GRU head with hidden size 64 and dropout `0.3` |
+| `simple_conv_v2_causal_gru` | Time-causal STFT framing + left-padded temporal conv encoder + unidirectional GRU |
+| `simple_conv_v2_causal_gru96` | `simple_conv_v2_causal_gru` with wider unidirectional GRU (`hidden_ch=96`) |
+| `simple_conv_v2_transformer` | `simple_conv_v2` encoder/pool + Transformer temporal head |
+| `simple_conv_v2_local_attn` | `simple_conv_v2` encoder/pool + local-window Transformer temporal head |
+| `simple_conv_v2_multires` | `simple_conv_v2` with concatenated long/short-window STFT magnitude inputs |
+| `simple_conv_v2_dwt` | `simple_conv_v2` with a lightweight Haar-like temporal wavelet branch |
+| `simple_conv_v2_magphase` | `simple_conv_v2` using log-magnitude plus cosine/sine phase STFT channels |
+| `simple_conv_v2_dual_pool` | `simple_conv_v2` concatenating attention and mean frequency pooling before BiGRU |
+| `simple_conv_v2_gru96` | `simple_conv_v2` with a wider BiGRU temporal head (`hidden_ch=96`) |
 | `simple_conv_wide` | Wider/deeper baseline |
 | `simple_conv_tcn` | TCN head (dilated convs) |
 | `simple_conv_multiscale` | FPN-style multi-scale fusion |
@@ -102,6 +125,20 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
+
+Causal RPS gotcha from autoresearch session `20260617-012233`: simply swapping
+`BiGRUHead` for a unidirectional GRU was unstable/poor. The best causal-head
+variant in that sweep was `simple_conv_v2_uni_gru96_norm_do03` (GroupNorm +
+dropout 0.3), still worse than `simple_conv_v2`. Fully time-causal STFT +
+left-padded temporal conv variants underfit badly, likely due alignment/latency
+and loss of future context; treat them as a separate front-end/alignment problem,
+not just a head replacement. The external SMoLnet reference
+(`../drone-audition/drone_audition/models/smolnet.py`) is frequency-dilated in
+its early `(kernel, 1)` Conv2d layers and uses symmetric time padding in late
+square layers, so it is not strictly causal as written. When adapting a new
+backbone such as SMoLnet to RPS prediction, run the cleanest body-only ablation
+first (body + SimpleConv-style mean-pool Conv1d head) before adding stronger
+TCN/GRU/attention heads; otherwise body and head effects are confounded.
 
 ### Salience-map RPS baselines (`salience_rps.py`)
 
