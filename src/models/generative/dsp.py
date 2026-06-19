@@ -56,7 +56,9 @@ def oscillator_bank(freqs, amps, initial_phases=None, return_sum=True, sr: int =
     amps = remove_above_nyquist(freqs, amps, sr)
     phasors = freqs_to_phasors(freqs, sr)
     if initial_phases is not None:
-        phasors = phasors * torch.exp(1j * initial_phases.unsqueeze(-1))
+        if initial_phases.dim() < phasors.dim():
+            initial_phases = initial_phases.unsqueeze(-1)
+        phasors = phasors * torch.exp(1j * initial_phases)
     cosines = phasors.real
     oscillators = amps * cosines
     if return_sum:
@@ -73,6 +75,37 @@ def harmonic_oscillator_bank(freqs, amps, sr: int = 16000, **kwargs):
     """
     harmonic_freqs = harmonic_freq_series(freqs, amps.shape[-2])
     return oscillator_bank(harmonic_freqs, amps, sr=sr, **kwargs)
+
+
+def upsample_with_windows(inputs: torch.Tensor, n_timesteps: int, add_endpoint: bool = True):
+    """Upsample a frame-rate signal to `n_timesteps` via Hann-window overlap-add.
+
+    Args:
+        inputs: [..., n_frames, channels]
+        n_timesteps: target length; must be divisible by `n_frames - 1`
+            (or `n_frames` when `add_endpoint=False` shifts the interval count).
+        add_endpoint: repeat the last frame so the ramp reaches the endpoint.
+    Returns:
+        [..., n_timesteps, channels]
+    """
+    if add_endpoint:
+        inputs = torch.cat([inputs, inputs[..., -1:, :]], -2)
+
+    n_frames = inputs.shape[-2]
+    n_intervals = n_frames - 1
+    assert n_timesteps % n_intervals == 0, "n_timesteps should be divisible by n_intervals"
+
+    inputs = inputs.transpose(-1, -2)  # n_frames last
+
+    hop_size = n_timesteps // n_intervals
+    window_length = 2 * hop_size
+    window = torch.hann_window(window_length).to(inputs)
+    windowed = inputs.unsqueeze(-1) * window
+
+    result = overlap_and_add(windowed, hop_size)
+    result = result.transpose(-1, -2)
+
+    return result[..., hop_size:-hop_size, :]
 
 
 # ---------------------------------------------------------------------------
