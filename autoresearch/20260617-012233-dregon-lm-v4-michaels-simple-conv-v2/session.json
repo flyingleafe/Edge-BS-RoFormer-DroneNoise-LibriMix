@@ -28,5 +28,21 @@
     "bestCompletedPitMse": 7.3264,
     "bestCompletedR2Model": "simple_conv_v2_magphase",
     "bestCompletedR2": 0.8348
+  },
+  "validationPredictionExport": {
+    "jobId": "12642388",
+    "jobName": "om0618_eval_preds",
+    "script": "autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/save_validation_predictions.py",
+    "initialOutputRoot": "/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/validation_rps_predictions",
+    "finalLayout": "per-checkpoint-folder",
+    "perModelSubdir": "validation_rps_predictions",
+    "moveManifest": "/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/validation_rps_predictions/moved_manifest.json",
+    "seriesRoots": {
+      "offline_fixed_train_50ep": "/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/<model>/validation_rps_predictions",
+      "online_mix_200ep_aug50k": "/gpfs/scratch/acw592/results/autoresearch/20260618-v4-michaels-online-mix-200ep-aug50k-gpushort/<model>/validation_rps_predictions"
+    },
+    "series": ["offline_fixed_train_50ep", "online_mix_200ep_aug50k"],
+    "nCheckpointsExpected": 52,
+    "nPredictionFoldersMoved": 52
   }
 }

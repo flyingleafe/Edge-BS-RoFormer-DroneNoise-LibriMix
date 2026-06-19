@@ -1046,3 +1046,30 @@ Online-mix conclusions:
 - Best completed PIT MSE: `simple_conv_v2_uni_gru128` with PIT MSE `7.3264`, beating the offline fixed-loader baseline (`7.8920`) on the same validation set.
 - Best completed R²: `simple_conv_v2_magphase` with R² `0.8348`; `simple_conv_v2` online also reached R² `0.8332`.
 - Online mixing substantially changed the ranking: previously failed unidirectional GRU variants became competitive, while `simple_conv_v2_smol_causal_tcn` remained strong but no longer best (`8.9874`, R² `0.8237`).
+
+## Validation prediction export
+
+Training/evaluation logs do not save raw validation predictions; they only keep checkpoints, W&B IDs, and printed aggregate metrics. A separate export job was submitted to evaluate all 52 best checkpoints from both series (26 original fixed/offline checkpoints + 26 online-mix checkpoints) on `/gpfs/scratch/acw592/datasets/DREGON-LM-V4-michaels/valid`.
+
+Job:
+
+- Slurm job id: `12642388`
+- Job name: `om0618_eval_preds`
+- Partition: `gpushort`
+- Script: `autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/save_validation_predictions.py`
+- Initial output root: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/validation_rps_predictions`
+- Final layout: each model checkpoint folder now contains its own `validation_rps_predictions/` subdirectory.
+- Move manifest: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/validation_rps_predictions/moved_manifest.json`
+
+Per model checkpoint folder output files:
+
+- `validation_rps_predictions/pred_raw.npy` — raw model output before PIT rotor-order matching, shape `(rows, 4, frames)`.
+- `validation_rps_predictions/target.npy` — validation target on the prediction frame grid.
+- `validation_rps_predictions/target_pit_matched_to_pred.npy` — target reordered by PIT-optimal rotor assignment for metric/plot overlays.
+- `validation_rps_predictions/sample_ids.npy`, `validation_rps_predictions/channels.npy` — row metadata.
+- `validation_rps_predictions/metadata.json` — checkpoint path, shapes, final prediction folder, and quick metrics computed from saved arrays.
+
+Series roots containing per-model `validation_rps_predictions/` folders:
+
+- Offline fixed-train checkpoints: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/<model>/validation_rps_predictions/`
+- Online-mix checkpoints: `/gpfs/scratch/acw592/results/autoresearch/20260618-v4-michaels-online-mix-200ep-aug50k-gpushort/<model>/validation_rps_predictions/`
