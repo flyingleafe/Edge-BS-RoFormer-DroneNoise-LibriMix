@@ -128,6 +128,38 @@ FAMILY_COLOURS = {
     "SMoLnet / freq-dilated": "#8c564b",
 }
 
+UNI_GRU_KEYS = [
+    "simple_conv_v2_uni_gru",
+    "simple_conv_v2_uni_gru128",
+    "simple_conv_v2_uni_gru128_norm",
+    "simple_conv_v2_uni_gru128_norm_do03",
+    "simple_conv_v2_uni_gru96_norm_do03",
+    "simple_conv_v2_uni_gru96_norm_do02",
+    "simple_conv_v2_uni_gru64_norm_do03",
+]
+
+# Follow-up rerun: grad_clip=0.5, 200 epochs, patience 50.
+# key: (pit_mse, rmse, mae_f, mae_c, r2, best_epoch, nan_observed)
+CLIPPED_OFFLINE = {
+    "simple_conv_v2_uni_gru128": (10.4019, 3.23, 2.03, 1.56, 0.7818, 25, False),
+    "simple_conv_v2_uni_gru96_norm_do03": (18.9526, 4.35, 2.54, 1.82, 0.6640, 21, True),
+    "simple_conv_v2_uni_gru128_norm_do03": (178.0662, 13.34, 6.93, 6.64, -9.2014, 3, False),
+    "simple_conv_v2_uni_gru96_norm_do02": (194.3177, 13.94, 6.94, 6.59, -10.2839, 4, True),
+    "simple_conv_v2_uni_gru64_norm_do03": (212.2095, 14.57, 7.77, 7.36, -10.5720, 5, True),
+    "simple_conv_v2_uni_gru128_norm": (228.8797, 15.13, 9.93, 9.23, -10.4075, 2, True),
+    "simple_conv_v2_uni_gru": (573.9627, 23.96, 23.29, 22.97, -15.7796, 3, True),
+}
+
+CLIPPED_ONLINE = {
+    "simple_conv_v2_uni_gru": (8.5433, 2.92, 2.17, 1.72, 0.8018, 69, False),
+    "simple_conv_v2_uni_gru96_norm_do02": (8.8912, 2.98, 2.28, 1.82, 0.7822, 16, False),
+    "simple_conv_v2_uni_gru128": (9.1313, 3.02, 2.33, 1.87, 0.7674, 25, False),
+    "simple_conv_v2_uni_gru96_norm_do03": (9.1714, 3.03, 2.32, 1.80, 0.7668, 20, True),
+    "simple_conv_v2_uni_gru128_norm_do03": (11.4313, 3.38, 2.46, 1.98, 0.7532, 20, True),
+    "simple_conv_v2_uni_gru64_norm_do03": (17.0005, 4.12, 2.68, 2.24, 0.7084, 15, True),
+    "simple_conv_v2_uni_gru128_norm": (36.1067, 6.01, 3.41, 2.84, -0.2631, 9, True),
+}
+
 
 def _fmt(v):
     return "—" if v is None else f"{v:.4f}" if abs(v) < 100 else f"{v:.2f}"
@@ -272,6 +304,84 @@ def pit_vs_r2(path):
     plt.close(fig)
 
 
+def write_clipped_csv(path, series):
+    ranked = sorted(series, key=lambda k: series[k][0])
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["#", "Model", "NaN?", "PIT MSE", "RMSE", "MAE/f", "MAE/c", "R2", "Best epoch"])
+        for rank, key in enumerate(ranked, 1):
+            pit, rmse, maef, maec, r2, best_epoch, nan_observed = series[key]
+            label = key.replace("simple_conv_v2", "scv2")
+            w.writerow(
+                [
+                    rank,
+                    label,
+                    "yes" if nan_observed else "no",
+                    f"{pit:.4f}",
+                    f"{rmse:.2f}",
+                    f"{maef:.2f}",
+                    f"{maec:.2f}",
+                    f"{r2:.4f}",
+                    best_epoch,
+                ]
+            )
+
+
+def clipped_uni_gru_comparison(path):
+    labels = [k.replace("simple_conv_v2", "scv2") for k in UNI_GRU_KEYS]
+    series_defs = [
+        ("Offline 50ep", OFFLINE, "#9ecae1", None),
+        ("Offline + clip", CLIPPED_OFFLINE, "#1f77b4", CLIPPED_OFFLINE),
+        ("Online", ONLINE, "#fdd0a2", None),
+        ("Online + clip", CLIPPED_ONLINE, "#ff7f0e", CLIPPED_ONLINE),
+    ]
+
+    fig, ax = plt.subplots(figsize=(12, 5.4))
+    x = list(range(len(UNI_GRU_KEYS)))
+    width = 0.18
+    offsets = [-1.5 * width, -0.5 * width, 0.5 * width, 1.5 * width]
+    for (name, data, colour, nan_source), off in zip(series_defs, offsets):
+        vals = [data[k][0] for k in UNI_GRU_KEYS]
+        bars = ax.bar(
+            [xi + off for xi in x],
+            vals,
+            width=width,
+            label=name,
+            color=colour,
+            edgecolor="black",
+            linewidth=0.4,
+        )
+        if nan_source is not None:
+            for bar, key in zip(bars, UNI_GRU_KEYS):
+                if nan_source[key][6]:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() * 1.08,
+                        "NaN",
+                        ha="center",
+                        va="bottom",
+                        fontsize=7,
+                        rotation=90,
+                    )
+
+    ax.axhline(
+        OFFLINE[BASELINE][0], color="#d62728", linestyle="--", linewidth=1, label="offline baseline"
+    )
+    ax.axhline(
+        ONLINE[BASELINE][0], color="#d62728", linestyle=":", linewidth=1, label="online baseline"
+    )
+    ax.set_yscale("log")
+    ax.set_ylabel("PIT MSE (log, lower better)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
+    ax.set_title("Unidirectional-GRU follow-up: grad_clip=0.5 does not reproduce the online winner")
+    ax.grid(axis="y", alpha=0.3, which="both")
+    ax.legend(fontsize=8, ncol=3, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 def main():
     assets = pathlib.Path("assets")
     assets.mkdir(exist_ok=True)
@@ -281,6 +391,8 @@ def main():
 
     write_csv(assets / "offline.csv", OFFLINE, offline_ranked)
     write_csv(assets / "online.csv", ONLINE, online_ranked)
+    write_clipped_csv(assets / "clipped_offline.csv", CLIPPED_OFFLINE)
+    write_clipped_csv(assets / "clipped_online.csv", CLIPPED_ONLINE)
 
     barh_leaderboard(
         assets / "fig_offline_leaderboard.png",
@@ -292,6 +404,7 @@ def main():
     )
     offline_vs_online(assets / "fig_offline_vs_online.png")
     pit_vs_r2(assets / "fig_pit_vs_r2.png")
+    clipped_uni_gru_comparison(assets / "fig_clipped_uni_gru.png")
     print("Wrote figures and CSVs to", assets.resolve())
 
 
