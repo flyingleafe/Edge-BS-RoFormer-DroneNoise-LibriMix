@@ -82,8 +82,9 @@ def upsample_with_windows(inputs: torch.Tensor, n_timesteps: int, add_endpoint: 
 
     Args:
         inputs: [..., n_frames, channels]
-        n_timesteps: target length; must be divisible by `n_frames - 1`
-            (or `n_frames` when `add_endpoint=False` shifts the interval count).
+        n_timesteps: target length; must be divisible by the number of upsample
+            intervals: the input's `n_frames` when ``add_endpoint=True`` (default),
+            else `n_frames - 1`.
         add_endpoint: repeat the last frame so the ramp reaches the endpoint.
     Returns:
         [..., n_timesteps, channels]

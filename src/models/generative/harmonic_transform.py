@@ -211,9 +211,9 @@ def harmonic_lstsq_VP_transform(ms, wav, n_harmonics=100, **kwargs):
     return lstsq_VP_transform(freqs, wav, **kwargs)
 
 
-def inverse_harmonic_VP_transform(ms, wav, n_harmonics=100, **kwargs):
+def inverse_harmonic_VP_transform(ms, V, n_harmonics=100, **kwargs):
     freqs = harmonic_freq_series(ms, n_harmonics)
-    return inverse_VP_transform(freqs, wav, **kwargs)
+    return inverse_VP_transform(freqs, V, **kwargs)
 
 
 # ---------------------------------------------------------------------------

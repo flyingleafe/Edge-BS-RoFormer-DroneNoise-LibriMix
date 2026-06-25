@@ -58,7 +58,9 @@ def main() -> None:
     args = ap.parse_args()
 
     tfs = load_dregon_timeframes(args.data_dir, splits=[args.split], download=False)
-    tf = next(t for t in tfs if t.tags["recording_id"] == args.recording)
+    tf = next((t for t in tfs if t.tags["recording_id"] == args.recording), None)
+    if tf is None:
+        raise SystemExit(f"recording {args.recording!r} not found in split {args.split!r}")
 
     mic_pos = tf.global_data["mic_positions"].astype(np.float64)  # (8, 3)
     rotor_gt = tf.global_data["rotor_positions"].astype(np.float64)  # (4, 3)
