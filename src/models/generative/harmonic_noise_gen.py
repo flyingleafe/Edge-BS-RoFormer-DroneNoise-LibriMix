@@ -38,6 +38,27 @@ class PolynomialRegression(nn.Module):
         return out
 
 
+class PolyWithExpLog(nn.Module):
+    """Polynomial + exponential + log terms for richer scalar regression."""
+
+    def __init__(self, max_degree: int, bias: bool = True):
+        super().__init__()
+        self.poly = PolynomialRegression(max_degree, bias)
+        # log(wx + b) = log(w) + log(x + b/w), so the inner weight is not needed
+        self.log_logb = nn.Parameter(torch.abs(torch.randn(1) * 0.0001))
+        self.log_a = nn.Parameter(torch.abs(torch.randn(1) * 0.0001))
+        # exp(wx + b) = exp(wx) * exp(b)
+        self.exp_w = nn.Parameter(torch.abs(torch.randn(1) * 0.0001))
+        self.exp_a = nn.Parameter(torch.abs(torch.randn(1) * 0.0001))
+
+    def forward(self, x):
+        return (
+            self.poly(x)
+            + self.exp_a * torch.exp(self.exp_w * x)
+            + self.log_a * torch.log(x + torch.exp(self.log_logb) + EPS)
+        )
+
+
 class PropellerNoiseGen(nn.Module):
     """Single propeller (rotor) sinusoidal noise generator.
 

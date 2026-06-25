@@ -193,14 +193,26 @@ A GPU-compatible version via nnAudio is in `multif0/nnaudio_cqt.py`.
 
 ## Generative models (RPS → noise)
 
-In `generative/`.  Not registered in `get_model_from_config`.  Used by
-`train_noise_gen.py`.
+In `generative/`.  Not registered in `get_model_from_config`.  Full sync of
+`drone_audition.models` (no `env.settings`; sample rate is an explicit arg,
+default 16 kHz).  `DroneNoisePlusFilterGen` is used by `train_noise_gen.py`;
+`VP_transform` is used by `src/utils/align_rps.py`.
 
-| Class | Purpose |
-|-------|---------|
-| `DroneNoiseGen` | Per-rotor harmonic oscillator bank |
-| `DroneNoisePlusFilterGen` | DroneNoiseGen + RPS-conditioned filtered-noise residual |
-| `HarmonicTransformModule` | VP-transform harmonic analysis/synthesis |
+| Class | File | Purpose |
+|-------|------|---------|
+| `DroneNoiseGen` | `harmonic_noise_gen.py` | Per-rotor harmonic oscillator bank |
+| `PropellerNoiseGen` / `PolynomialRegression` / `PolyWithExpLog` | `harmonic_noise_gen.py` | Single-rotor bank + scalar gain regressors |
+| `DroneNoisePlusFilterGen` | `filtered_noise.py` | DroneNoiseGen + RPS-conditioned filtered-noise residual (port-only) |
+| `HarmonicTransformModule` + `VP_transform` / `lstsq_VP_transform` / `inverse_VP_transform` / `harmonic_VP_transform` | `harmonic_transform.py` | VP-transform harmonic analysis/synthesis (dot-product **and** least-squares projection; zero-guard + per-frame antialias + `center`) |
+| `HarmonicNoiseGenNew` | `harmonic_gen_new.py` | End-to-end RPS→audio: NN predicts harmonic amps + noise mags → oscillator bank + filtered noise |
+| `JointAmplitudePredictor` / `ConstantAmplitudePredictor` / `DirectionalOutputHead` / `SpeedsPostprocessingWrapper` / `LearnableTimeShift` | `harmonic_gen_new.py` | Amplitude predictors + helpers for `HarmonicNoiseGenNew` |
+| `SimpleHarmonicNoiseGen` / `PropellerAmplitudePredictor` | `harmonic_gen_new.py` | DEPRECATED random-phase synthesiser + per-prop predictor |
+| `CausalConv1d` / `CausalConv1dBlock` / `ResNet` / `RnnSandwich` / … | `nn.py` | Shared building blocks (used by the predictors) |
+
+`good_lstsq` (in `harmonic_transform.py`) picks `gelsd` on CPU / `gels` on CUDA;
+`iterative_lstsq_minimize` needs the optional `torchmin` package (imported
+lazily).  The `harmonic_gen_new` predictors run natively at 16 kHz; older
+44.1 kHz checkpoints from `drone_audition` are not weight-compatible.
 
 ## Checkpoint compatibility
 
