@@ -53,6 +53,60 @@ MICHAELS_FILES = [
 ]
 
 
+# ── Array / airframe geometry ───────────────────────────────────────────────
+# Body frame: X = forward, Y = left, Z = up; origin at the drone body centre
+# (rotor plane). The microphone array is a vertical ring (plane = Y-Z, normal
+# +X) mounted forward of and above the body. Constants read from
+# `data/recording_with_motor_speed/Microphone_Array_Configuration.jpeg`;
+# wheelbase from the DJI Matrice 100 (the airframe in the rig photos).
+
+N_MICS = 8
+NUM_ROTORS = 4
+MIC_ARRAY_RADIUS = 0.0825  # m (Ø165 mm)
+ARRAY_OFFSET_FORWARD = 0.20  # m (+X): body centre -> array centre, horizontal
+ARRAY_OFFSET_UP = 0.33  # m (+Z): body centre -> array centre, vertical
+WHEELBASE = 0.650  # m: DJI Matrice 100 motor-to-motor diagonal
+# rps-row order — michaels CSV "Motor:Speed:*" columns, first 4 (see
+# `_load_michaels_data_raw`); rotor_positions below is in the SAME order.
+ROTOR_ORDER = ("RFront", "LFront", "LBack", "RBack")
+
+
+def get_geometry() -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(mic_positions (8, 3), rotor_positions (4, 3))`` in metres.
+
+    Body frame: X = forward, Y = left, Z = up; origin at the body centre.
+    Mirrors :func:`data_processing.dregon.get_geometry` so Michael's recordings
+    can populate ``TimeFrame.global_data`` the same way DREGON does.
+
+    Microphones: 8 evenly-spaced points on a vertical ring (radius 82.5 mm),
+    numbered counter-clockwise starting 22.5° left of top, with the ring centre
+    200 mm forward and 330 mm above the body.
+
+    Rotors: X-quad, arms at ±45°, motor radius ``(W/2)·cos45°`` per horizontal
+    axis, at body height (z = 0). Ordered to match the ``rps`` rows
+    (``ROTOR_ORDER``: RFront, LFront, LBack, RBack).
+    """
+    # Microphones — ring in the Y-Z plane (u = lateral -> +Y, v = vertical -> +Z).
+    theta = np.deg2rad(112.5 + 45.0 * np.arange(N_MICS))  # mic 1 at 112.5°, CCW
+    u = MIC_ARRAY_RADIUS * np.cos(theta)
+    v = MIC_ARRAY_RADIUS * np.sin(theta)
+    mic_positions = np.stack(
+        [np.full(N_MICS, ARRAY_OFFSET_FORWARD), u, ARRAY_OFFSET_UP + v], axis=-1
+    )  # (8, 3)
+
+    # Rotors — X-config; per-axis offset a = (W/2)·cos45°.
+    a = (WHEELBASE / 2.0) * np.cos(np.deg2rad(45.0))
+    rotor_positions = np.array(
+        [
+            [+a, -a, 0.0],  # RFront
+            [+a, +a, 0.0],  # LFront
+            [-a, +a, 0.0],  # LBack
+            [-a, -a, 0.0],  # RBack
+        ]
+    )
+    return mic_positions, rotor_positions
+
+
 def _load_michaels_data_raw(
     wav_path: str | Path,
     csv_path: str | Path,
@@ -82,7 +136,7 @@ def _load_michaels_data_raw(
     cut_csv = small_csv[
         (small_csv[t_col] >= time_offset) & (small_csv[t_col] <= wav_duration + time_offset)
     ]
-    ts = cut_csv[t_col].values
+    ts = np.asarray(cut_csv[t_col], dtype=np.float64)
 
     if ts[0] > time_offset:
         wav = wav[:, int((ts[0] - time_offset) * sample_rate) :]
@@ -96,8 +150,8 @@ def _load_michaels_data_raw(
     ts[0 : jump_idx + 2] = np.linspace(ts[0], ts[jump_idx + 2], jump_idx + 2)
     ts *= time_dilation
 
-    ms = cut_csv[ms_cols].values.T / 60
-    return wav, ts, ms, sample_rate
+    ms = np.asarray(cut_csv[ms_cols], dtype=np.float64).T / 60
+    return wav, ts, ms, int(sample_rate)
 
 
 def load_michaels_timeframe(
@@ -121,7 +175,12 @@ def load_michaels_timeframe(
     audio = UniformSeries.from_samples(samples=wav, sr=sample_rate)
     rps = EventSeries.from_events(timestamps=ts, values=ms)
     tags = {"recording_id": recording_id or Path(wav_path).stem}
-    return TimeFrame.from_tracks(dict(audio=audio, rps=rps), tags=tags)
+    mic_positions, rotor_positions = get_geometry()
+    return TimeFrame.from_tracks(
+        dict(audio=audio, rps=rps),
+        tags=tags,
+        global_data={"mic_positions": mic_positions, "rotor_positions": rotor_positions},
+    )
 
 
 def load_michaels_timeframes(

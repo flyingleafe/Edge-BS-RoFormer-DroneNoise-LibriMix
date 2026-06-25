@@ -11,6 +11,7 @@ the target contract the model must satisfy.
 | Task | Directory | Training script | Model interface |
 |------|-----------|-----------------|-----------------|
 | RPS Prediction | `rps-prediction/` | `train_rps_predictor.py` | `forward(audio) → (B, 4, T_stft)` |
+| Noise Generation | `noise-generation/` | `train_noise_generation.py` | `forward(rps, rel_pos) → (B, M, T)` |
 
 ## Adding a task
 
