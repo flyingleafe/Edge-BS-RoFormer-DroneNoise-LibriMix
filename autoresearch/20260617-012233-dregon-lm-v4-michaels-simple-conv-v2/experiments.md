@@ -1073,3 +1073,115 @@ Series roots containing per-model `validation_rps_predictions/` folders:
 
 - Offline fixed-train checkpoints: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/<model>/validation_rps_predictions/`
 - Online-mix checkpoints: `/gpfs/scratch/acw592/results/autoresearch/20260618-v4-michaels-online-mix-200ep-aug50k-gpushort/<model>/validation_rps_predictions/`
+
+## Gradient clipping calibration — unidirectional GRU128
+
+Status: completed (`12646634`); first submission failed due to shell quoting in the inline Slurm command.
+
+Purpose: choose a global gradient-norm clip for the planned matched offline/online unidirectional-RNN reruns. Note: `train_rps_predictor.py` already had `--grad_clip` with default `5.0`, so prior offline NaN runs were not unclipped; this calibration tests whether smaller caps stabilize the AMP GRU updates.
+
+Setup:
+
+- Model: `simple_conv_v2_uni_gru128` (online PIT-MSE winner; offline run had a NaN train row).
+- Regime: offline fixed DREGON-LM-V4-michaels train set only for this calibration.
+- Clips tested in one gpushort job: `0.5`, `1.0`, `2.0`, `5.0` control.
+- Budget per clip: `--epochs 16 --patience 16 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse`.
+- Script: `autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/run_grad_clip_calibration.sh`.
+- Output root: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/grad_clip_calibration/simple_conv_v2_uni_gru128_offline_16ep`.
+
+Failed attempt:
+
+- Slurm job id: `12646612`
+- Job name: `ar012233_clipcal`
+- Status: `FAILED` immediately (`syntax error near unexpected token '('`) because the Python summary heredoc was embedded inside an inline `bash -lc` Slurm command and was parsed incorrectly.
+- Fix: moved the calibration command into the git-tracked shell script above and verified it with `bash -n` before resubmission.
+
+Completed job:
+
+- Slurm job id: `12646634`
+- Job name: `ar012233_clipcal2`
+- Status: `COMPLETED` in `00:30:57`.
+- Log: `/gpfs/scratch/acw592/logs/ar012233_clipcal2.o12646634`
+
+Command:
+
+```bash
+bash autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/run_grad_clip_calibration.sh
+```
+
+Calibration summary (`summary.json` under the output root):
+
+| Clip | NaN observed? | Best epoch | Best PIT MSE | R² | Interpretation |
+|---:|---|---:|---:|---:|---|
+| 0.5 | no | 13 | 10.7311 | 0.7635 | Best fully finite setting; conservative choice for reruns. |
+| 1.0 | no | 15 | 62.3020 | -1.6250 | Stable but bad/slow. |
+| 2.0 | yes | 15 | 9.4312 | 0.8049 | Better metric but still permits NaN. |
+| 5.0 | yes | 14 | 8.2215 | 0.8164 | Best short-run metric but repeats the existing unstable default. |
+
+Decision: use `--grad_clip 0.5` for the matched offline/online arrays. Although `5.0` had the best 16-epoch validation PIT, it reproduced NaN train rows; the purpose of the rerun is to remove the stability artifact, so the best *stable* cap is the appropriate choice.
+
+## Matched clipped unidirectional-GRU arrays
+
+Runner script: `autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/run_uni_gru_clip_array.sh`.
+
+Model list (array tasks 0–6):
+
+0. `simple_conv_v2_uni_gru`
+1. `simple_conv_v2_uni_gru128`
+2. `simple_conv_v2_uni_gru128_norm`
+3. `simple_conv_v2_uni_gru128_norm_do03`
+4. `simple_conv_v2_uni_gru96_norm_do03`
+5. `simple_conv_v2_uni_gru96_norm_do02`
+6. `simple_conv_v2_uni_gru64_norm_do03`
+
+Shared args:
+
+```bash
+--epochs 200 --patience 50 --batch_size 32 --lr 1e-3 --weight_decay 1e-4 --loss pit_mse --grad_clip 0.5 --epoch-progress
+```
+
+Offline array:
+
+- Slurm array id: `12649208`
+- Job name: `ar012233_ugoff05`
+- Submission: `GRAD_CLIP=0.5 bash autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/run_uni_gru_clip_array.sh offline`
+- Initial status: `PENDING`; follow-up after 30s had tasks `0` and `1` running, tasks `2-6` pending with `QOSMaxGRESPerUser`.
+- Save root: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/uni_gru_clip0p5_200ep_p50/offline_fixed_train`
+- Log glob: `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o*`
+
+Offline array results (completed):
+
+| Task | Model | Status | NaN? | Epochs logged | Best epoch | PIT MSE | R² | Log |
+|---:|---|---|---|---:|---:|---:|---:|---|
+| 0 | `simple_conv_v2_uni_gru` | completed | yes | 53 | 3 | 573.9627 | -15.7796 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12649209` |
+| 1 | `simple_conv_v2_uni_gru128` | completed | no | 75 | 25 | 10.4019 | 0.7818 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12649210` |
+| 2 | `simple_conv_v2_uni_gru128_norm` | completed | yes | 52 | 2 | 228.8797 | -10.4075 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12649869` |
+| 3 | `simple_conv_v2_uni_gru128_norm_do03` | completed | no | 53 | 3 | 178.0662 | -9.2014 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12650109` |
+| 4 | `simple_conv_v2_uni_gru96_norm_do03` | completed | yes | 71 | 21 | 18.9526 | 0.6640 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12650800` |
+| 5 | `simple_conv_v2_uni_gru96_norm_do02` | completed | yes | 54 | 4 | 194.3177 | -10.2839 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12650824` |
+| 6 | `simple_conv_v2_uni_gru64_norm_do03` | completed | yes | 55 | 5 | 212.2095 | -10.5720 | `/gpfs/scratch/acw592/logs/ar012233_ugoff05.o12649208` |
+
+Offline interpretation: `--grad_clip 0.5` only gave a clean useful offline run for `simple_conv_v2_uni_gru128` (PIT `10.4019`, R² `0.7818`); most other offline GRU variants still hit NaNs or early bad checkpoints. This suggests gradient clipping alone does not remove the offline instability artifact.
+
+Online array:
+
+- Slurm array id: `12652524`
+- Job name: `ar012233_ugon05`
+- Submission: `GRAD_CLIP=0.5 bash autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/run_uni_gru_clip_array.sh online`
+- Status: all tasks `COMPLETED`.
+- Save root: `/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/uni_gru_clip0p5_200ep_p50/online_mix_aug50k`
+- Log glob: `/gpfs/scratch/acw592/logs/ar012233_ugon05.o*`
+
+Online array results:
+
+| Task | Model | Status | NaN? | Epochs logged | Best epoch | PIT MSE | R² | Log |
+|---:|---|---|---|---:|---:|---:|---:|---|
+| 0 | `simple_conv_v2_uni_gru` | completed | no | 119 | 69 | 8.5433 | 0.8018 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12652525` |
+| 1 | `simple_conv_v2_uni_gru128` | completed | no | 75 | 25 | 9.1313 | 0.7674 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12652526` |
+| 2 | `simple_conv_v2_uni_gru128_norm` | completed | yes | 59 | 9 | 36.1067 | -0.2631 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12653035` |
+| 3 | `simple_conv_v2_uni_gru128_norm_do03` | completed | yes | 70 | 20 | 11.4313 | 0.7532 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12653262` |
+| 4 | `simple_conv_v2_uni_gru96_norm_do03` | completed | yes | 70 | 20 | 9.1714 | 0.7668 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12653324` |
+| 5 | `simple_conv_v2_uni_gru96_norm_do02` | completed | no | 66 | 16 | 8.8912 | 0.7822 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12653693` |
+| 6 | `simple_conv_v2_uni_gru64_norm_do03` | completed | yes | 65 | 15 | 17.0005 | 0.7084 | `/gpfs/scratch/acw592/logs/ar012233_ugon05.o12652524` |
+
+Clipped rerun conclusion: `--grad_clip 0.5` does not reproduce the previous online `simple_conv_v2_uni_gru128` win (PIT worsened from `7.3264` to `9.1313`). The best clipped-online model is now the smaller unnormalized `simple_conv_v2_uni_gru` (PIT `8.5433`), essentially tied with the prior online `simple_conv_v2` baseline (`8.5349`) and worse than the prior unclipped/clip-5 online GRU128. The disambiguation result is that data diversity is still important, but overly tight clipping appears to under-train the high-capacity GRU; clipping alone does not cure offline failures.
