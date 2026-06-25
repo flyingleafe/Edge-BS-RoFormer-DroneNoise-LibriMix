@@ -29,6 +29,19 @@
     "bestCompletedR2Model": "simple_conv_v2_magphase",
     "bestCompletedR2": 0.8348
   },
+  "gradClipRerun": {
+    "date": "2026-06-19",
+    "selectedGradClip": 0.5,
+    "calibrationJob": "12646634",
+    "offlineArrayJob": "12649208",
+    "onlineArrayJob": "12652524",
+    "resultsRoot": "/gpfs/scratch/acw592/results/autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/uni_gru_clip0p5_200ep_p50",
+    "offlineBestPitMseModel": "simple_conv_v2_uni_gru128",
+    "offlineBestPitMse": 10.4019,
+    "onlineBestPitMseModel": "simple_conv_v2_uni_gru",
+    "onlineBestPitMse": 8.5433,
+    "conclusion": "grad_clip=0.5 was the best finite calibration setting but did not reproduce the previous online uni_gru128 win and did not eliminate offline GRU instability"
+  },
   "validationPredictionExport": {
     "jobId": "12642388",
     "jobName": "om0618_eval_preds",
