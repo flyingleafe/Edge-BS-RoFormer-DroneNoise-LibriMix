@@ -248,7 +248,9 @@ class JointAmplitudePredictor(nn.Module):
         self.noise_amps = noise_amps
         self.z_dim = z_dim
 
-        self.entry = CausalConv1dBlock(4, 32, entry_window, entry_hop, padding_mode="reflect")
+        self.entry = CausalConv1dBlock(
+            n_oscillators, 32, entry_window, entry_hop, padding_mode="reflect"
+        )
 
         self.meat = nn.Sequential(
             *[

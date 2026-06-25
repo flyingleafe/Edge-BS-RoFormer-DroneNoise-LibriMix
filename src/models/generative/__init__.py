@@ -47,6 +47,11 @@ from .harmonic_transform import (
     lstsq_VP_transform,
 )
 from .losses import MultiScaleSTFT
+from .positional_harmonic_gen import (
+    PositionalHarmonicNoiseGen,
+    fractional_delay,
+    propagate,
+)
 
 __all__ = [
     "PropellerNoiseGen",
@@ -68,4 +73,7 @@ __all__ = [
     "LearnableTimeShift",
     "SpeedsPostprocessingWrapper",
     "MultiScaleSTFT",
+    "PositionalHarmonicNoiseGen",
+    "fractional_delay",
+    "propagate",
 ]

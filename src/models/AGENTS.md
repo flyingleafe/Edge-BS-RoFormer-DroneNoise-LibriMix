@@ -206,6 +206,7 @@ default 16 kHz).  `DroneNoisePlusFilterGen` is used by `train_noise_gen.py`;
 | `HarmonicTransformModule` + `VP_transform` / `lstsq_VP_transform` / `inverse_VP_transform` / `harmonic_VP_transform` | `harmonic_transform.py` | VP-transform harmonic analysis/synthesis (dot-product **and** least-squares projection; zero-guard + per-frame antialias + `center`) |
 | `HarmonicNoiseGenNew` | `harmonic_gen_new.py` | End-to-end RPS→audio: NN predicts harmonic amps + noise mags → oscillator bank + filtered noise |
 | `JointAmplitudePredictor` / `ConstantAmplitudePredictor` / `DirectionalOutputHead` / `SpeedsPostprocessingWrapper` / `LearnableTimeShift` | `harmonic_gen_new.py` | Amplitude predictors + helpers for `HarmonicNoiseGenNew` |
+| `PositionalHarmonicNoiseGen` + `propagate` / `fractional_delay` | `positional_harmonic_gen.py` | Position-aware generator: single-rotor `HarmonicNoiseGenNew` (rotor folded into batch) **emits** per-rotor sources, then **propagates** to observation point(s) with 1/r attenuation + fractional delay (`r/c`, c=343). Native multi-observer — rotors summed in the rfft domain, so M mics cost R fwd + M inv transforms. Differentiable w.r.t. position. Isotropic point source (distance-only); not yet wired to a dataset/training script. |
 | `SimpleHarmonicNoiseGen` / `PropellerAmplitudePredictor` | `harmonic_gen_new.py` | DEPRECATED random-phase synthesiser + per-prop predictor |
 | `CausalConv1d` / `CausalConv1dBlock` / `ResNet` / `RnnSandwich` / … | `nn.py` | Shared building blocks (used by the predictors) |
 
