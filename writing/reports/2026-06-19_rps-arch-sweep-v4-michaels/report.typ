@@ -11,6 +11,17 @@
   )
 ]
 
+#let render-clipped-table(rows) = text(size: 6.8pt)[
+  #table(
+    columns: (auto, 1.55fr, auto, auto, auto, auto, auto, auto, auto),
+    align: (center, left, center, right, right, right, right, right, right),
+    inset: 3.2pt,
+    stroke: 0.35pt + luma(180),
+    table.header(..rows.first().map(c => strong(c))),
+    ..rows.slice(1).flatten()
+  )
+]
+
 #show: report.with(
   title: [RPS-Predictor Architecture Sweep on DREGON-LM-V4-michaels],
   authors: (
@@ -28,9 +39,11 @@
     (`DREGON-LM-V4-michaels/valid`): (1) an offline fixed-train sweep
     (50 epochs, patience 10), and (2) an online-mixed rerun (200 max epochs,
     patience 50, augmentations after 50k samples). A subsequent export job
-    saved raw validation predictions for all 52 resulting checkpoints. This
-    document describes the experiment sets and presents the measured results
-    only; interpretation is deferred.
+    saved raw validation predictions for all 52 resulting checkpoints. A final
+    follow-up reran the unidirectional-GRU subset with `--grad_clip 0.5` under
+    matched offline and online budgets to test whether the causal-RNN swing was
+    primarily a divergence artifact. This document describes the experiment sets
+    and presents the measured results only; interpretation is deferred.
   ],
   keywords: ("RPS prediction", "architecture sweep", "DREGON-LM", "online mixing", "autoresearch"),
 )
@@ -273,11 +286,62 @@ the apparent swing — is removed once divergence is controlled:
   driven by training-data diversity (residual temporal overfitting), confirming
   the mechanism in the previous subsection.
 
-#block(fill: luma(238), inset: 9pt, radius: 4pt, width: 100%, stroke: 0.5pt + luma(170))[
-  *Results pending.* The gradient-clipped unidirectional-RNN runs are in
-  progress; this subsection will be filled in with their PIT MSE / $R^2$ and the
-  resulting disambiguation once the jobs complete.
-]
+The follow-up completed on 2026-06-19. The selected calibration setting was
+`--grad_clip 0.5`; both clipped reruns used the same 200-epoch / patience-50
+budget as the online sweep, with the only intended difference being the data
+loader (fixed offline train set vs. online mix). This makes the comparison a
+better stability test than the original offline 50-epoch sweep, though it is
+still not a pure optimizer ablation because the unclipped offline causal runs
+had the shorter budget.
+
+#figure(
+  image("assets/fig_clipped_uni_gru.png", width: 100%),
+  placement: none,
+  caption: [
+    Unidirectional-GRU subset before and after gradient clipping. Dashed/dotted
+    red lines are the corresponding `simple_conv_v2` baselines. `NaN` labels
+    mark clipped runs where a NaN training row was still observed.
+  ],
+)
+
+#pagebreak()
+
+Results:
+
+#figure(
+  render-clipped-table(csv("assets/clipped_offline.csv")),
+  placement: none,
+  caption: [Offline fixed-train unidirectional-GRU follow-up with `--grad_clip 0.5`, ranked by PIT MSE.],
+)
+
+#figure(
+  render-clipped-table(csv("assets/clipped_online.csv")),
+  placement: none,
+  caption: [Online-mixed unidirectional-GRU follow-up with `--grad_clip 0.5`, ranked by PIT MSE.],
+)
+
+- *Offline + clipping:* only `scv2_uni_gru128` produced a clean useful run
+  (PIT MSE $10.4019$, $R^2 = 0.7818$, best epoch 25). It is far better than
+  its original unstable offline score ($39.8099$), but still worse than the
+  offline baseline ($7.8920$) and worse than the original online winner
+  (`scv2_uni_gru128`, $7.3264$). Five of seven clipped offline runs still
+  showed NaNs, and several loaded very early failed checkpoints.
+- *Online + clipping:* the best clipped online run was the plain
+  `scv2_uni_gru` (PIT MSE $8.5433$, $R^2 = 0.8018$, best epoch 69), essentially
+  tied with the online `simple_conv_v2` baseline ($8.5349$) but below the
+  previous unclipped online `scv2_uni_gru128` winner ($7.3264$). Tight clipping
+  actively hurt that winner (`scv2_uni_gru128`: $7.3264 arrow 9.1313$).
+- *Stability:* clipping did not eliminate instability: 5/7 offline clipped and
+  4/7 online clipped runs still logged NaNs. It also changed the ranking rather
+  than preserving the online-capacity ordering.
+
+Conclusion: the original causal-RNN offline$arrow$online swing was not *only* an
+unclipped-gradient artifact. Gradient clipping can rescue one offline
+configuration from catastrophic failure, but it neither makes the offline fixed
+loader competitive nor reproduces the best online causal-GRU score. The stronger
+explanation remains data-regime diversity plus recurrent stability: online
+mixing supplies fresh acoustic evidence for the same limited RPS trajectories,
+while a fixed clip of 0.5 is too blunt to be a general cure.
 
 = Validation-Prediction Export
 
