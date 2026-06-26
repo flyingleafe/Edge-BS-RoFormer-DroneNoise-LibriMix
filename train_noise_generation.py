@@ -27,6 +27,7 @@ import argparse
 import glob
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -371,7 +372,7 @@ def train_model(args: argparse.Namespace) -> dict:
             mic_pos, rotor_pos = get_michaels_geometry()
             geom_src = "michaels (DJI Matrice 100)"
         else:
-            mic_pos, rotor_pos = get_geometry(args.dregon_dir)
+            mic_pos, rotor_pos = get_geometry(Path(args.dregon_dir))
             geom_src = args.dregon_dir
         print(f"Geometry: {mic_pos.shape[0]} mics, {rotor_pos.shape[0]} rotors (from {geom_src})")
 
