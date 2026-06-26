@@ -34,13 +34,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
+import yaml
 from dotenv import load_dotenv
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 import wandb as _wandb
 from data_processing.dregon import get_geometry
 from data_processing.michaels import get_geometry as get_michaels_geometry
+from data_processing.online_mixing import (
+    TimeFrameNoisePool,
+    _extract_audio_array,
+    interpolate_rps_to_stft_grid,
+)
 from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
 from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
 
@@ -110,6 +116,109 @@ class DREGONNoiseGenDataset(Dataset):
 
         rel_pos = self.rel_pos[: target.shape[0]]  # (M, R, 3) — match mic count
         return rps_up, rel_pos, target.float(), self.drone_name
+
+
+# ─── Online streaming dataset (reuses the RPS online-mixing slicer) ──────────────
+
+
+def _drone_name(tf) -> str:
+    """Map a noise recording to a codebook drone name (DREGON vs Michael's)."""
+    rid = str(tf.tags.get("recording_id", ""))
+    return "michaels" if rid.startswith("michaels") else "dregon"
+
+
+def _noise_item(tf, *, sample_rate: int, duration_s: float):
+    """Turn a sliced noise ``TimeFrame`` into a noise-gen training item.
+
+    Reuses the online-mixing extractors: clean multichannel noise as the target,
+    RPS interpolated onto the audio grid (``hop_length=1`` => one value per
+    sample), and the per-frame geometry from ``global_data``.
+    """
+    n_samples = int(round(duration_s * sample_rate))
+    audio = _extract_audio_array(tf, target_len=n_samples)  # (C, T)
+    rps = interpolate_rps_to_stft_grid(tf, n_frames=n_samples, hop_length=1)  # (R, T)
+    gd = tf.global_data or {}
+    rel = geometry_to_rel_pos(gd["mic_positions"], gd["rotor_positions"])  # (M, R, 3)
+    rel = rel[: audio.shape[0]]  # match channel count
+    return (
+        torch.from_numpy(rps),
+        torch.from_numpy(rel),
+        torch.from_numpy(audio),
+        _drone_name(tf),
+    )
+
+
+class OnlineNoiseGenDataset(IterableDataset):
+    """Finite stream of randomly-sliced ``(rps, rel_pos, noise, drone_name)``.
+
+    Wraps :class:`data_processing.online_mixing.TimeFrameNoisePool` (the existing
+    on-the-fly slicer) — one "epoch" is ``length`` random slices. Each slice
+    carries its own geometry and drone identity, so DREGON + Michael's stream
+    together.
+    """
+
+    def __init__(self, pool, *, sample_rate: int, duration_s: float, base_seed: int, length: int):
+        self.pool = pool
+        self.sample_rate = sample_rate
+        self.duration_s = duration_s
+        self.base_seed = base_seed
+        self.length = length
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __iter__(self):
+        info = torch.utils.data.get_worker_info()
+        wid = 0 if info is None else info.id
+        nworkers = 1 if info is None else info.num_workers
+        rng = np.random.default_rng(self.base_seed + wid)
+        # split the epoch across workers
+        n = self.length // nworkers + (1 if wid < self.length % nworkers else 0)
+        for _ in range(n):
+            tf = self.pool.sample_timeframe(rng, self.duration_s)
+            yield _noise_item(tf, sample_rate=self.sample_rate, duration_s=self.duration_s)
+
+
+class FixedNoiseGenDataset(Dataset):
+    """A deterministic, pre-sliced validation set (so eval is reproducible)."""
+
+    def __init__(self, pool, *, sample_rate: int, duration_s: float, seed: int, n: int):
+        rng = np.random.default_rng(seed)
+        self.items = [
+            _noise_item(
+                pool.sample_timeframe(rng, duration_s),
+                sample_rate=sample_rate,
+                duration_s=duration_s,
+            )
+            for _ in range(n)
+        ]
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, idx: int):
+        return self.items[idx]
+
+
+def build_noise_pools(config_path: str, *, sample_rate: int, duration_s: float):
+    """Build (train_pool, valid_pool) from the online noise-gen YAML config."""
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    train_pool = TimeFrameNoisePool.from_config(
+        cfg["noise_train"], duration_s=duration_s, sample_rate=sample_rate
+    )
+    valid_pool = TimeFrameNoisePool.from_config(
+        cfg["noise_valid"], duration_s=duration_s, sample_rate=sample_rate
+    )
+    return cfg, train_pool, valid_pool
+
+
+def _pool_drone_names(*pools) -> list[str]:
+    names = set()
+    for pool in pools:
+        for rec in pool.records:
+            names.add(_drone_name(rec["tf"]))
+    return sorted(names)
 
 
 # ─── Model factory ────────────────────────────────────────────────────────────
@@ -223,38 +332,74 @@ def train_model(args: argparse.Namespace) -> dict:
     device = torch.device(args.device)
     os.makedirs(args.save_path, exist_ok=True)
 
-    if args.geometry == "michaels":
-        mic_pos, rotor_pos = get_michaels_geometry()
-        geom_src = "michaels (DJI Matrice 100)"
+    if args.online_config:
+        # Online stream: clean noise + RPS + per-frame geometry sliced on the fly
+        # from long recordings (reuses the RPS online-mixing slicer). DREGON and
+        # Michael's stream together, each frame carrying its own geometry + drone.
+        cfg, train_pool, valid_pool = build_noise_pools(
+            args.online_config, sample_rate=args.sample_rate, duration_s=args.duration_s
+        )
+        base_seed = int(cfg.get("base_seed", 0))
+        codebook_names = _pool_drone_names(train_pool, valid_pool)
+        print(
+            f"Online | train recs {[r['tf'].tags.get('recording_id') for r in train_pool.records]}"
+        )
+        print(
+            f"       | valid recs {[r['tf'].tags.get('recording_id') for r in valid_pool.records]}"
+        )
+        print(f"       | drones {codebook_names}")
+        train_ds: Dataset | IterableDataset = OnlineNoiseGenDataset(
+            train_pool,
+            sample_rate=args.sample_rate,
+            duration_s=args.duration_s,
+            base_seed=base_seed,
+            length=args.samples_per_epoch,
+        )
+        valid_ds: Dataset = FixedNoiseGenDataset(
+            valid_pool,
+            sample_rate=args.sample_rate,
+            duration_s=args.duration_s,
+            seed=base_seed + 1,
+            n=args.num_valid,
+        )
+        train_loader = DataLoader(
+            train_ds, batch_size=args.batch_size, num_workers=args.num_workers, drop_last=True
+        )
+        print(f"Train: {len(train_ds)} stream | Valid: {len(valid_ds)} fixed samples")
     else:
-        mic_pos, rotor_pos = get_geometry(args.dregon_dir)
-        geom_src = args.dregon_dir
-    print(f"Geometry: {mic_pos.shape[0]} mics, {rotor_pos.shape[0]} rotors (from {geom_src})")
+        if args.geometry == "michaels":
+            mic_pos, rotor_pos = get_michaels_geometry()
+            geom_src = "michaels (DJI Matrice 100)"
+        else:
+            mic_pos, rotor_pos = get_geometry(args.dregon_dir)
+            geom_src = args.dregon_dir
+        print(f"Geometry: {mic_pos.shape[0]} mics, {rotor_pos.shape[0]} rotors (from {geom_src})")
 
-    train_ds = DREGONNoiseGenDataset(
-        os.path.join(args.data_root, "train"),
-        mic_pos,
-        rotor_pos,
-        target_file=args.target_file,
-        drone_name=args.drone_name,
-    )
-    valid_ds = DREGONNoiseGenDataset(
-        os.path.join(args.data_root, "valid"),
-        mic_pos,
-        rotor_pos,
-        target_file=args.target_file,
-        drone_name=args.drone_name,
-    )
-    print(f"Train: {len(train_ds)} | Valid: {len(valid_ds)} samples")
+        train_ds = DREGONNoiseGenDataset(
+            os.path.join(args.data_root, "train"),
+            mic_pos,
+            rotor_pos,
+            target_file=args.target_file,
+            drone_name=args.drone_name,
+        )
+        valid_ds = DREGONNoiseGenDataset(
+            os.path.join(args.data_root, "valid"),
+            mic_pos,
+            rotor_pos,
+            target_file=args.target_file,
+            drone_name=args.drone_name,
+        )
+        codebook_names = [args.drone_name]
+        print(f"Train: {len(train_ds)} | Valid: {len(valid_ds)} samples")
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
     valid_loader = DataLoader(
         valid_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
     )
@@ -271,7 +416,7 @@ def train_model(args: argparse.Namespace) -> dict:
     # a drone never resizes model weights. cond_dim == 0 disables conditioning.
     codebook: DroneCodebook | None = None
     if args.cond_dim > 0:
-        codebook = DroneCodebook(args.cond_dim, names=[args.drone_name]).to(device)
+        codebook = DroneCodebook(args.cond_dim, names=codebook_names).to(device)
 
     # Optional warm-start for few-shot adaptation to a new drone: load a trained
     # generator (+ codes), then either fine-tune all or freeze the emitter and
@@ -378,6 +523,30 @@ def main():
         "(data_processing.michaels.get_geometry); use it for Michael's-source datasets.",
     )
     p.add_argument("--target_file", default="noise.wav", help="Per-chunk clean-noise target file.")
+    p.add_argument(
+        "--online_config",
+        default="",
+        help="Online noise-gen YAML (noise_train/noise_valid source specs). When "
+        "set, clean noise + RPS + per-frame geometry are sliced on the fly from "
+        "long recordings (reuses the RPS online-mixing slicer) instead of "
+        "precomputed chunks; DREGON + Michael's stream jointly with per-drone "
+        "conditioning. Overrides --data_root/--geometry/--drone_name.",
+    )
+    p.add_argument(
+        "--samples_per_epoch",
+        type=int,
+        default=2000,
+        help="Online mode: random slices per epoch (the stream is infinite).",
+    )
+    p.add_argument(
+        "--num_valid",
+        type=int,
+        default=128,
+        help="Online mode: fixed validation slices (deterministic).",
+    )
+    p.add_argument(
+        "--duration_s", type=float, default=1.0, help="Online mode: slice length (seconds)."
+    )
     p.add_argument("--save_path", default="results/noise_generation")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--epochs", type=int, default=200)

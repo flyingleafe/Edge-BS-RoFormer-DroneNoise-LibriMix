@@ -1,0 +1,44 @@
+# Online noise-generation stream: clean drone-noise slices + RPS + per-frame
+# geometry, sliced on the fly from long source recordings (reuses
+# data_processing.online_mixing.TimeFrameNoisePool — the same slicing path as
+# RPS-prediction online training, minus the speech mixing).
+#
+# Split (per request):
+#   train = DREGON non-room2 nosource (free-flight_nosource_room1) + Michael's FLY125
+#   valid = DREGON room2 nosource (5 recordings)               + Michael's FLY124
+# Each sliced frame carries its own mic/rotor geometry (global_data) and drone
+# identity (recording_id -> "dregon"/"michaels"), so DREGON + Michael's train
+# jointly with per-drone FiLM conditioning.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260626
+
+noise_train:
+  - kind: dregon
+    root: data
+    split: in_flight_noise
+    recording_ids: [free-flight_nosource_room1]
+    min_motor_rps: 30.0
+    download: false
+  - kind: michaels
+    root: data
+    ids: [FLY125]
+    min_motor_rps: 30.0
+
+noise_valid:
+  - kind: dregon
+    root: data
+    split: in_flight_noise
+    recording_ids:
+      - free-flight_nosource_room2
+      - hovering_nosource_room2
+      - updown_nosource_room2
+      - rectangle_nosource_room2
+      - spinning_nosource_room2
+    min_motor_rps: 30.0
+    download: false
+  - kind: michaels
+    root: data
+    ids: [FLY124]
+    min_motor_rps: 30.0
