@@ -16,7 +16,7 @@ import torchaudio
 from data_processing.michaels import MIC_ARRAY_RADIUS, WHEELBASE
 from data_processing.michaels import NUM_ROTORS as MICHAELS_NUM_ROTORS
 from data_processing.michaels import get_geometry as get_michaels_geometry
-from tasks.noise_generation import geometry_to_rel_pos, load_input_set
+from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos, load_input_set
 from train_noise_generation import (
     DREGONNoiseGenDataset,
     MultiScaleSTFT,
@@ -80,11 +80,12 @@ def test_load_input_set_global_data(tmp_path):
 def test_dataset_item_shapes(tmp_path):
     _make_dataset(tmp_path, n_samples=4096)
     mic_pos, rotor_pos = _fake_geometry()
-    ds = DREGONNoiseGenDataset(str(tmp_path), mic_pos, rotor_pos)
-    rps, rel_pos, target = ds[0]
+    ds = DREGONNoiseGenDataset(str(tmp_path), mic_pos, rotor_pos, drone_name="dregon")
+    rps, rel_pos, target, drone_name = ds[0]
     assert rps.shape == (N_ROTORS, 4096)  # upsampled to audio rate
     assert rel_pos.shape == (N_MICS, N_ROTORS, 3)
     assert target.shape == (N_MICS, 4096)
+    assert drone_name == "dregon"
 
 
 def test_dataset_missing_target_raises(tmp_path):
@@ -113,7 +114,7 @@ def test_one_training_step(tmp_path):
     loss_fn = MultiScaleSTFT(n_ffts=[512, 256, 128], log_weight=1.0, loss_type="L1")
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    rps, rel_pos, target = next(iter(loader))
+    rps, rel_pos, target, _drone_name = next(iter(loader))
     pred = model(rps, rel_pos)
     assert pred.shape == target.shape == (2, N_MICS, 4096)
 
@@ -134,9 +135,98 @@ def test_diff_noise_toggle(tmp_path):
     model = get_model(
         "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False
     )
-    rps, rel_pos, target = ds[0]
+    rps, rel_pos, target, _drone_name = ds[0]
     out = model(rps.unsqueeze(0), rel_pos.unsqueeze(0))
     assert out.shape == (1, N_MICS, target.shape[-1])
+
+
+# ── Per-drone conditioning (external DroneCodebook + FiLM) ────────────────────
+
+
+def _rel(n=1):
+    rng = np.random.default_rng(2)
+    return torch.from_numpy(
+        (rng.normal(scale=0.1, size=(n, N_MICS, N_ROTORS, 3)) + 0.3).astype("float32")
+    )
+
+
+def test_codebook_lookup_and_growth():
+    cb = DroneCodebook(8, names=["dregon"])
+    assert cb.names() == ["dregon"] and "dregon" in cb
+    z = cb(["dregon"])
+    assert z.shape == (1, 8)
+    # Growable by name without touching anything else; idempotent add.
+    cb.add("michaels")
+    assert set(cb.names()) == {"dregon", "michaels"}
+    assert cb(["michaels", "dregon"]).shape == (2, 8)
+    with pytest.raises(KeyError):
+        cb(["unknown"])
+
+
+def test_drone_conditioning_changes_output():
+    # Two drone codes -> different audio (deterministic emitter so it's the
+    # code, not the random noise branch).
+    model = get_model(
+        "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False, cond_dim=4
+    )
+    cb = DroneCodebook(4, names=["a", "b"], init_std=0.5)
+    rps = torch.full((1, N_ROTORS, 4096), 80.0)
+    rel = _rel(1)
+    out0 = model(rps, rel, cb(["a"]))
+    out1 = model(rps, rel, cb(["b"]))
+    assert out0.shape == (1, N_MICS, 4096)
+    assert not torch.allclose(out0, out1)
+
+
+def test_codebook_receives_gradient():
+    # The external code is what we optimise; gradient must reach it.
+    model = get_model(
+        "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False, cond_dim=4
+    )
+    cb = DroneCodebook(4, names=["a", "b"], init_std=0.5)
+    rps = torch.full((2, N_ROTORS, 4096), 80.0)
+    out = model(rps, _rel(2), cb(["a", "b"]))
+    out.pow(2).mean().backward()
+    grads = [p.grad for p in cb.parameters()]
+    assert grads and all(g is not None and g.abs().sum() > 0 for g in grads)
+
+
+def test_z_required_when_conditioned():
+    model = get_model("positional_harmonic_gen", sample_rate=SR, n_harmonics=8, cond_dim=4)
+    rps = torch.full((1, N_ROTORS, 4096), 80.0)
+    with pytest.raises(ValueError, match="cond_dim"):
+        model(rps, _rel(1))
+
+
+def test_unconditioned_ignores_z():
+    # cond_dim=0 (default): a code passed in is accepted but unused.
+    model = get_model(
+        "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False
+    )
+    rps = torch.full((1, N_ROTORS, 4096), 80.0)
+    rel = _rel(1)
+    assert torch.allclose(model(rps, rel), model(rps, rel, torch.zeros(1, 4)))
+
+
+def test_few_shot_freeze_emitter_adapts_only_code():
+    # Few-shot adaptation: freeze the generator, optimise only a fresh code.
+    model = get_model(
+        "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False, cond_dim=4
+    )
+    for p in model.parameters():
+        p.requires_grad_(False)
+    cb = DroneCodebook(4, names=["new_drone"], init_std=0.5)
+    before = cb(["new_drone"]).detach().clone()
+    opt = torch.optim.Adam(cb.parameters(), lr=1e-1)
+    target = torch.randn(1, N_MICS, 4096)
+    for _ in range(3):
+        opt.zero_grad()
+        pred = model(torch.full((1, N_ROTORS, 4096), 80.0), _rel(1), cb(["new_drone"]))
+        (pred - target).pow(2).mean().backward()
+        opt.step()
+    # the code moved; the (frozen) model did not need any trainable params
+    assert not torch.allclose(before, cb(["new_drone"]))
+    assert all(not p.requires_grad for p in model.parameters())
 
 
 # ── Michael's array geometry (from the rig photos + DJI Matrice 100) ──────────

@@ -9,10 +9,11 @@ multichannel noise*.
 
 ```python
 class NoiseGenerator(nn.Module):
-    def forward(self, rps: Tensor, rel_pos: Tensor) -> Tensor:
+    def forward(self, rps: Tensor, rel_pos: Tensor, z: Tensor | None = None) -> Tensor:
         """
         rps:     (B, R, T)      per-rotor speed (Hz) at audio rate
         rel_pos: (B, M, R, 3)   vector rotor_r -> mic_m (metres)
+        z:       (B, d)         external per-drone conditioning code (or None)
         returns: (B, M, T)      noise at each of the M microphones
         """
 ```
@@ -38,6 +39,35 @@ class NoiseGenerator(nn.Module):
   rotors in the rfft domain → M mics cost R forward + M inverse transforms.
 - **Output**: clean drone noise `(B, M, T)` (no speech).
 
+### Per-drone conditioning — external codebook (different drones = different source)
+
+DREGON and Michael's are different drones (different harmonics/broadband/dynamics),
+so the source is conditioned on a learned per-drone code. The code is **external**
+to the model, by the same logic that keeps geometry external:
+
+- The generator takes the code `z (B, d)` as an **input**, not a `drone_id`:
+  `PositionalHarmonicNoiseGen(cond_dim=d)` builds the emitter with
+  `JointAmplitudePredictor(film=True)` so `z → (γ,β)` modulate the CNN features
+  (per-drone spectral envelope *and* RPS→sound dynamics). `cond_dim == 0`
+  disables conditioning. FiLM starts near-identity (γ≈1, β≈0) with a small
+  non-zero weight so the code gets gradient from step 1.
+- The `name → z` table is a separate `tasks.noise_generation.DroneCodebook(d, names)`:
+  a **name-keyed** `nn.ParameterDict`. Crucially the model owns `d`
+  (architectural — it sizes the FiLM generator) but **not** `K` (the number of
+  drones, a data property). Adding a drone never resizes model weights; codes
+  load by name with `strict=False`, so no index drift between datasets.
+- **Few-shot adaptation to an unseen drone** = freeze the generator
+  (`--freeze_emitter`), warm-start from a trained bundle (`--init_checkpoint`),
+  and optimise just the new drone's `d`-vector. This is the payoff of the
+  external/`z`-input design and is not clean with an in-model table.
+
+`train_noise_generation.py --cond_dim d --drone_name NAME`; the codebook is
+bundled with the model in the checkpoint (`save_bundle`: `{"model", "codebook",
+"cond_dim", "drone_names"}`). **Multi-drone training in one run** needs per-chunk
+`drone_name` + geometry (same per-chunk metadata follow-on as mixed datasets);
+the model + codebook already support arbitrary `K`, only the dataset attaches one
+name today.
+
 ## Training integration
 
 - **Script**: `train_noise_generation.py`.
@@ -48,7 +78,7 @@ class NoiseGenerator(nn.Module):
   - target is the clean `noise.wav` (configurable via `--target_file`), **not**
     `mixture.wav` — no speech mixing;
   - positions are attached from the recording geometry (`get_geometry`).
-  Yields `(rps_audio_rate (R,T), rel_pos (M,R,3), target (M,T))`.
+  Yields `(rps_audio_rate (R,T), rel_pos (M,R,3), target (M,T), drone_name str)`.
   Requires chunks that keep a clean-noise target (a non `--real_valid`
   multichannel set; `--real_valid` valid chunks have only `mixture.wav`).
 - **Loss**: multi-scale STFT (`models.generative.MultiScaleSTFT`), the mic axis
@@ -61,7 +91,8 @@ class NoiseGenerator(nn.Module):
   (`PositionalHarmonicNoiseGen` = single-rotor `HarmonicNoiseGenNew` emitter +
   `propagate`).
 - **Task module**: `src/tasks/noise_generation.py` (`NoiseGenerator` protocol,
-  `geometry_to_rel_pos`, `load_input_set` TimeFrame loader).
+  `geometry_to_rel_pos`, `load_input_set` TimeFrame loader, `DroneCodebook` —
+  the external name-keyed per-drone code table).
 
 ## Existing implementations
 

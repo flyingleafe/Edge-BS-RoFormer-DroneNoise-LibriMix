@@ -74,13 +74,100 @@ def geometry_to_rel_pos(
 class NoiseGenerator(Protocol):
     """Structural interface for position-aware noise generation.
 
-    ``forward(rps, rel_pos) -> audio`` with:
+    ``forward(rps, rel_pos, z=None) -> audio`` with:
     * ``rps``     : ``(B, R, T)`` per-rotor speed at audio rate (Hz)
     * ``rel_pos`` : ``(B, M, R, 3)`` rotor->mic vectors (metres)
+    * ``z``       : ``(B, d)`` optional external per-drone conditioning code
+      (from a :class:`DroneCodebook`); required iff the model was built with
+      ``cond_dim > 0``
     * returns     : ``(B, M, T)`` noise at each microphone
     """
 
-    def forward(self, rps: torch.Tensor, rel_pos: torch.Tensor) -> torch.Tensor: ...
+    def forward(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+    ) -> torch.Tensor: ...
+
+
+# ── Per-drone conditioning codebook (external, name-keyed) ──────────────────
+
+
+class DroneCodebook(torch.nn.Module):
+    """Name-keyed table of learnable per-drone conditioning codes.
+
+    Deliberately **decoupled** from the generator. The model takes a code ``z``
+    ``(B, d)`` as an input (like geometry); this owns the ``drone_name -> z``
+    map. Keeping it external means:
+
+    * the generator's parameter shape is **fixed** regardless of how many drones
+      exist — adding a drone never resizes model weights;
+    * keys are **names**, not positional indices, so adding/removing a drone
+      never disturbs existing codes and there is no index drift between datasets
+      (``load_state_dict(strict=False)`` loads the intersection by name);
+    * **few-shot adaptation** to an unseen drone = freeze the generator, add a
+      fresh code here, and optimise just that ``d``-vector.
+
+    ``d`` is fixed by the generator (it sizes the FiLM generator), so build the
+    codebook with the same ``dim``.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        names: list[str] | tuple[str, ...] = (),
+        *,
+        init_std: float = 0.01,
+    ):
+        super().__init__()
+        self.dim = int(dim)
+        self.init_std = float(init_std)
+        self.codes = torch.nn.ParameterDict()
+        for name in names:
+            self.add(name)
+
+    @staticmethod
+    def _key(name: str) -> str:
+        # nn.ParameterDict keys are state_dict path components, so '.' is unsafe.
+        key = str(name)
+        if "." in key:
+            raise ValueError(f"drone name must not contain '.': {name!r}")
+        if not key:
+            raise ValueError("drone name must be a non-empty string")
+        return key
+
+    def add(self, name: str, init: torch.Tensor | None = None) -> torch.nn.Parameter:
+        """Register a drone by name (idempotent). Returns its code parameter.
+
+        ``init`` warm-starts the code (e.g. from a nearby known drone); otherwise
+        it is small-random so a fresh drone starts near the FiLM near-identity.
+        """
+        key = self._key(name)
+        if key in self.codes:
+            return self.codes[key]
+        if init is None:
+            vec = torch.randn(self.dim) * self.init_std
+        else:
+            vec = init.detach().clone().reshape(-1)
+            if vec.shape[-1] != self.dim:
+                raise ValueError(f"init must have dim {self.dim}, got {tuple(init.shape)}")
+        param = torch.nn.Parameter(vec)
+        self.codes[key] = param
+        return param
+
+    def names(self) -> list[str]:
+        return list(self.codes.keys())
+
+    def __contains__(self, name: str) -> bool:
+        return self._key(name) in self.codes
+
+    def forward(self, names: list[str] | tuple[str, ...]) -> torch.Tensor:
+        """Look up a batch of codes by name -> ``(B, d)`` (gradient-tracked)."""
+        missing = [n for n in names if self._key(n) not in self.codes]
+        if missing:
+            raise KeyError(f"unknown drone(s) {missing}; known: {self.names()}")
+        return torch.stack([self.codes[self._key(n)] for n in names], dim=0)
 
 
 # ── TimeFrame input-set loader ────────────────────────────────────────────

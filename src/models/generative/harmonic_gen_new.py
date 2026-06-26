@@ -240,6 +240,7 @@ class JointAmplitudePredictor(nn.Module):
         dilated=False,
         predict_f0s=False,
         z_dim=0,
+        film=False,
         **kwargs,
     ):
         super().__init__()
@@ -247,6 +248,10 @@ class JointAmplitudePredictor(nn.Module):
         self.n_oscillators = n_oscillators
         self.noise_amps = noise_amps
         self.z_dim = z_dim
+        # FiLM conditioning modulates the backbone features by z (per-drone
+        # spectral envelope AND dynamics); the alternative (z_dim>0, film=False)
+        # only adds a z-derived bias to the output heads (static envelope).
+        self.film = bool(film) and z_dim > 0
 
         self.entry = CausalConv1dBlock(
             n_oscillators, 32, entry_window, entry_hop, padding_mode="reflect"
@@ -262,8 +267,21 @@ class JointAmplitudePredictor(nn.Module):
         )
 
         last_ch = 32 * (2**n_blocks)
+        self.last_ch = last_ch
 
         if self.z_dim == 0:
+            self.harm_out = nn.Linear(last_ch, n_harmonics * n_oscillators)
+            self.noise_out = nn.Linear(last_ch, noise_amps)
+        elif self.film:
+            # z -> (gamma, beta) over the backbone channels. Init near identity
+            # (gamma~1, beta~0) for stable starts, but with a small *nonzero*
+            # weight so the embedding receives gradient from step 1 (a zeroed
+            # weight makes d(out)/dz = 0 and the embedding never moves).
+            self.film_gen = nn.Linear(self.z_dim, 2 * last_ch)
+            with torch.no_grad():
+                self.film_gen.weight.mul_(0.1)
+                self.film_gen.bias[:last_ch].fill_(1.0)
+                self.film_gen.bias[last_ch:].zero_()
             self.harm_out = nn.Linear(last_ch, n_harmonics * n_oscillators)
             self.noise_out = nn.Linear(last_ch, noise_amps)
         else:
@@ -282,8 +300,14 @@ class JointAmplitudePredictor(nn.Module):
 
         if self.z_dim > 0:
             assert z is not None and z.shape[-1] == self.z_dim
-            harms = self.harm_out(x, z)
-            noise_mags = self.noise_out(x, z)
+            if self.film:
+                gamma, beta = self.film_gen(z).split(self.last_ch, dim=-1)  # each [B, C]
+                x = gamma.unsqueeze(-2) * x + beta.unsqueeze(-2)  # modulate [B, t, C]
+                harms = self.harm_out(x)
+                noise_mags = self.noise_out(x)
+            else:
+                harms = self.harm_out(x, z)
+                noise_mags = self.noise_out(x, z)
         else:
             harms = self.harm_out(x)
             noise_mags = self.noise_out(x)

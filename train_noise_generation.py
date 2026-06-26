@@ -42,7 +42,7 @@ import wandb as _wandb
 from data_processing.dregon import get_geometry
 from data_processing.michaels import get_geometry as get_michaels_geometry
 from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
-from tasks.noise_generation import geometry_to_rel_pos
+from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
 
 # wandb's type stubs omit run/init/log/login/finish; treat as untyped.
 wandb: Any = _wandb
@@ -53,14 +53,17 @@ wandb: Any = _wandb
 class DREGONNoiseGenDataset(Dataset):
     """Load ``noise.wav`` + ``rps.npy`` from DREGON-LM chunks for noise generation.
 
-    Yields ``(rps_audio_rate, rel_pos, target)``:
+    Yields ``(rps_audio_rate, rel_pos, target, drone_name)``:
     * ``rps_audio_rate`` : ``(R, T)`` per-rotor speed (Hz) upsampled to audio rate
     * ``rel_pos``        : ``(M, R, 3)`` rotor->mic vectors (constant per recording
       geometry; carried as ``TimeFrame.global_data`` semantics)
     * ``target``         : ``(M, T)`` clean multichannel drone noise
+    * ``drone_name``     : ``str`` key into the external :class:`DroneCodebook`
 
-    The geometry (``mic_positions``/``rotor_positions``) is the same for every
-    DREGON chunk, so it is computed once and shared.
+    The geometry (``mic_positions``/``rotor_positions``) and ``drone_name`` are the
+    same for every chunk in a single-source dataset, so they are shared. (Mixed
+    multi-drone datasets need per-chunk geometry + ``drone_name`` — see the task
+    AGENTS doc.)
     """
 
     def __init__(
@@ -70,6 +73,7 @@ class DREGONNoiseGenDataset(Dataset):
         rotor_positions: np.ndarray,
         *,
         target_file: str = "noise.wav",
+        drone_name: str = "default",
     ):
         self.samples = sorted(
             d
@@ -84,6 +88,7 @@ class DREGONNoiseGenDataset(Dataset):
                 f"keeps '{target_file}' (e.g. a non --real_valid multichannel set)."
             )
         self.target_file = target_file
+        self.drone_name = str(drone_name)
         # (M, R, 3) float32, shared across all samples.
         self.rel_pos = torch.from_numpy(geometry_to_rel_pos(mic_positions, rotor_positions))
 
@@ -104,7 +109,7 @@ class DREGONNoiseGenDataset(Dataset):
         ).squeeze(0)  # (R, T)
 
         rel_pos = self.rel_pos[: target.shape[0]]  # (M, R, 3) — match mic count
-        return rps_up, rel_pos, target.float()
+        return rps_up, rel_pos, target.float(), self.drone_name
 
 
 # ─── Model factory ────────────────────────────────────────────────────────────
@@ -121,14 +126,22 @@ def get_model(
     sample_rate: int = 16000,
     n_harmonics: int = 100,
     use_diff_noise: bool = True,
+    cond_dim: int = 0,
 ) -> nn.Module:
-    """Construct a noise-generation model by name."""
+    """Construct a noise-generation model by name.
+
+    ``cond_dim > 0`` FiLM-conditions the emitter on an external code ``z``
+    ``(B, cond_dim)``; the per-drone codes live in a separate
+    :class:`DroneCodebook` (not in the model), and the training loop supplies
+    ``z`` each step.
+    """
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY)}")
     return MODEL_REGISTRY[model_name](
         sample_rate=sample_rate,
         n_harmonics=n_harmonics,
         use_diff_noise=use_diff_noise,
+        cond_dim=cond_dim,
     )
 
 
@@ -150,19 +163,52 @@ def _spectral_loss(loss_fn: MultiScaleSTFT, pred: torch.Tensor, target: torch.Te
     return loss_fn(pred.reshape(b * m, t), target.reshape(b * m, t))
 
 
+# ─── Checkpoint bundling (model + external codebook) ─────────────────────────────
+
+
+def save_bundle(path: str, model: nn.Module, codebook: DroneCodebook | None) -> None:
+    """Save the generator and its external codebook in one file.
+
+    The codebook is separate from the model (so model weights never resize when
+    drones are added), but a single bundle keeps a run self-contained.
+    """
+    bundle: dict[str, Any] = {"model": model.state_dict()}
+    if codebook is not None:
+        bundle["codebook"] = codebook.state_dict()
+        bundle["cond_dim"] = codebook.dim
+        bundle["drone_names"] = codebook.names()
+    torch.save(bundle, path)
+
+
+def _load_for_adaptation(
+    path: str, model: nn.Module, codebook: DroneCodebook | None, device
+) -> None:
+    """Warm-start from a bundle for few-shot adaptation to a new drone.
+
+    Loads the trained generator. Known drones' codes load by name; the current
+    (new) drone keeps its fresh small-random code (``strict=False``), which is
+    exactly what gets optimised when ``--freeze_emitter`` is set.
+    """
+    bundle = torch.load(path, map_location=device)
+    model.load_state_dict(bundle["model"])
+    if codebook is not None and "codebook" in bundle:
+        codebook.load_state_dict(bundle["codebook"], strict=False)
+
+
 # ─── Eval ──────────────────────────────────────────────────────────────────────
 
 
 @torch.no_grad()
-def evaluate(model, loader, loss_fn, device, *, progress=False) -> float:
+def evaluate(model, loader, loss_fn, device, *, codebook=None, progress=False) -> float:
     model.eval()
     total = 0.0
     n = 0
-    for rps, rel_pos, target in tqdm(
+    for rps, rel_pos, target, drone_names in tqdm(
         loader, desc="eval", unit="batch", leave=False, disable=not progress
     ):
         rps, rel_pos, target = rps.to(device), rel_pos.to(device), target.to(device)
-        pred = model(rps, rel_pos)
+        z = codebook(list(drone_names)).to(device) if codebook is not None else None
+        pred = model(rps, rel_pos, z)
         loss = _spectral_loss(loss_fn, pred, target)
         bs = target.shape[0]
         total += loss.item() * bs
@@ -186,10 +232,18 @@ def train_model(args: argparse.Namespace) -> dict:
     print(f"Geometry: {mic_pos.shape[0]} mics, {rotor_pos.shape[0]} rotors (from {geom_src})")
 
     train_ds = DREGONNoiseGenDataset(
-        os.path.join(args.data_root, "train"), mic_pos, rotor_pos, target_file=args.target_file
+        os.path.join(args.data_root, "train"),
+        mic_pos,
+        rotor_pos,
+        target_file=args.target_file,
+        drone_name=args.drone_name,
     )
     valid_ds = DREGONNoiseGenDataset(
-        os.path.join(args.data_root, "valid"), mic_pos, rotor_pos, target_file=args.target_file
+        os.path.join(args.data_root, "valid"),
+        mic_pos,
+        rotor_pos,
+        target_file=args.target_file,
+        drone_name=args.drone_name,
     )
     print(f"Train: {len(train_ds)} | Valid: {len(valid_ds)} samples")
 
@@ -210,12 +264,34 @@ def train_model(args: argparse.Namespace) -> dict:
         sample_rate=args.sample_rate,
         n_harmonics=args.n_harmonics,
         use_diff_noise=not args.no_diff_noise,
+        cond_dim=args.cond_dim,
     ).to(device)
+
+    # Per-drone conditioning codes live OUTSIDE the model (name-keyed), so adding
+    # a drone never resizes model weights. cond_dim == 0 disables conditioning.
+    codebook: DroneCodebook | None = None
+    if args.cond_dim > 0:
+        codebook = DroneCodebook(args.cond_dim, names=[args.drone_name]).to(device)
+
+    # Optional warm-start for few-shot adaptation to a new drone: load a trained
+    # generator (+ codes), then either fine-tune all or freeze the emitter and
+    # fit only the new drone's code.
+    if args.init_checkpoint:
+        _load_for_adaptation(args.init_checkpoint, model, codebook, device)
+    if args.freeze_emitter:
+        for p in model.parameters():
+            p.requires_grad_(False)
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model: {args.model} | params: {n_params:,}")
+    if codebook is not None:
+        print(f"Codebook: dim {args.cond_dim} | drones {codebook.names()}")
 
     loss_fn = build_loss(args).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    params = [p for p in model.parameters() if p.requires_grad]
+    if codebook is not None:
+        params += list(codebook.parameters())
+    optimizer = torch.optim.Adam(params, lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=args.scheduler_patience
     )
@@ -231,7 +307,7 @@ def train_model(args: argparse.Namespace) -> dict:
         model.train()
         run_loss = 0.0
         n = 0
-        for rps, rel_pos, target in tqdm(
+        for rps, rel_pos, target, drone_names in tqdm(
             train_loader,
             desc=f"train e{epoch}",
             unit="batch",
@@ -239,18 +315,21 @@ def train_model(args: argparse.Namespace) -> dict:
             disable=not args.epoch_progress,
         ):
             rps, rel_pos, target = rps.to(device), rel_pos.to(device), target.to(device)
+            z = codebook(list(drone_names)).to(device) if codebook is not None else None
             optimizer.zero_grad()
-            pred = model(rps, rel_pos)
+            pred = model(rps, rel_pos, z)
             loss = _spectral_loss(loss_fn, pred, target)
             loss.backward()
             if args.grad_clip:
-                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                nn.utils.clip_grad_norm_(params, args.grad_clip)
             optimizer.step()
             run_loss += loss.item() * target.shape[0]
             n += target.shape[0]
 
         train_loss = run_loss / max(n, 1)
-        val_loss = evaluate(model, valid_loader, loss_fn, device, progress=args.epoch_progress)
+        val_loss = evaluate(
+            model, valid_loader, loss_fn, device, codebook=codebook, progress=args.epoch_progress
+        )
         scheduler.step(val_loss)
         lr = optimizer.param_groups[0]["lr"]
         print(f"{epoch:5d} {train_loss:10.4f} {val_loss:10.4f} {lr:10.1e}")
@@ -261,7 +340,7 @@ def train_model(args: argparse.Namespace) -> dict:
         if val_loss < best_val:
             best_val = val_loss
             epochs_no_improve = 0
-            torch.save(model.state_dict(), best_path)
+            save_bundle(best_path, model, codebook)
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= args.patience:
@@ -312,6 +391,31 @@ def main():
     p.add_argument("--n_harmonics", type=int, default=100)
     p.add_argument(
         "--no_diff_noise", action="store_true", help="Disable the filtered-noise branch."
+    )
+    p.add_argument(
+        "--cond_dim",
+        type=int,
+        default=0,
+        help="Per-drone conditioning-code dim d (0 = single-drone, no "
+        "conditioning). >0 FiLM-conditions the emitter on an external code z; "
+        "the codes live in a name-keyed DroneCodebook, not in the model.",
+    )
+    p.add_argument(
+        "--drone_name",
+        default="default",
+        help="Drone name (codebook key) for this single-source dataset.",
+    )
+    p.add_argument(
+        "--init_checkpoint",
+        default="",
+        help="Warm-start bundle for few-shot adaptation: loads the trained "
+        "generator (+ known codes by name); a new drone keeps a fresh code.",
+    )
+    p.add_argument(
+        "--freeze_emitter",
+        action="store_true",
+        help="Freeze the generator and train only the codebook (few-shot "
+        "adaptation of a new drone's code).",
     )
     p.add_argument("--stft_sizes", type=int, nargs="+", default=[2048, 1024, 512, 256, 128])
     p.add_argument("--log_weight", type=float, default=1.0)

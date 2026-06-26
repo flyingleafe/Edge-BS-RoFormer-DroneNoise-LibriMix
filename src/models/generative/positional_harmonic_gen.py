@@ -174,6 +174,15 @@ def propagate(
 class PositionalHarmonicNoiseGen(nn.Module):
     """RPS + geometry -> drone noise at an observation point.
 
+    Per-drone conditioning is **external**: the model takes a conditioning code
+    ``z`` ``(B, d)`` as an *input* (alongside ``rps`` and the geometry), exactly
+    as it takes positions. It does not own a per-drone table — the ``id -> z``
+    map lives in a separate :class:`tasks.noise_generation.DroneCodebook`. This
+    keeps the model's parameter shape fixed regardless of how many drones exist,
+    and enables few-shot adaptation to an unseen drone by freezing the model and
+    optimising only a fresh code. ``d`` *is* architectural (it sizes the FiLM
+    generator), so the model owns it; the number of drones ``K`` is not.
+
     Args:
         emitter: a single-rotor :class:`HarmonicNoiseGenNew`. If ``None``, one is
             built with ``n_oscillators=1`` (the rotor axis is folded into the
@@ -184,6 +193,9 @@ class PositionalHarmonicNoiseGen(nn.Module):
         speed_of_sound: ``c`` for the delay law (m/s).
         ref_distance: reference distance for the ``1/r`` attenuation (metres).
         eps: distance floor for the attenuation/delay.
+        cond_dim: conditioning-code dimension ``d``. ``0`` disables per-drone
+            conditioning (single-drone); ``> 0`` FiLM-conditions the emitter on
+            the externally supplied ``z`` ``(B, cond_dim)``.
     """
 
     def __init__(
@@ -195,27 +207,33 @@ class PositionalHarmonicNoiseGen(nn.Module):
         speed_of_sound: float = SPEED_OF_SOUND,
         ref_distance: float = 1.0,
         eps: float = 1e-6,
+        cond_dim: int = 0,
         **kwargs,
     ):
         super().__init__()
+        self.cond_dim = cond_dim
         if emitter is None:
-            emitter = HarmonicNoiseGenNew(
-                n_harmonics=n_harmonics,
-                sample_rate=sample_rate,
-                n_oscillators=1,
-                **kwargs,
+            emitter_kwargs: dict = dict(
+                n_harmonics=n_harmonics, sample_rate=sample_rate, n_oscillators=1, **kwargs
             )
+            if cond_dim > 0:
+                # FiLM-condition the emitter on the external code z (B, cond_dim).
+                emitter_kwargs.update(use_z=True, z_dim=cond_dim, film=True)
+            emitter = HarmonicNoiseGenNew(**emitter_kwargs)
         self.emitter = emitter
         self.sample_rate = sample_rate
         self.speed_of_sound = speed_of_sound
         self.ref_distance = ref_distance
         self.eps = eps
 
-    def emit(self, rps: torch.Tensor) -> torch.Tensor:
+    def emit(self, rps: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
         """Synthesise each rotor's source waveform (radiated at the rotor).
 
         Args:
             rps: ``[B, R, T]`` per-rotor speed at audio rate (Hz).
+            z: ``[B, d]`` optional per-clip conditioning (drone embedding). The
+                same vector conditions every rotor of a clip, so it is repeated
+                across the folded rotor axis.
 
         Returns:
             ``[B, R, T]`` per-rotor source waveforms.
@@ -224,13 +242,15 @@ class PositionalHarmonicNoiseGen(nn.Module):
             raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
         b, r, t = rps.shape
         folded = rps.reshape(b * r, 1, t)  # rotor axis -> batch, single-rotor net
-        src = self.emitter(folded)  # [B*R, T]
+        z_folded = z.repeat_interleave(r, dim=0) if z is not None else None  # [B*R, d]
+        src = self.emitter(folded, z=z_folded)  # [B*R, T]
         return src.reshape(b, r, t)
 
     def forward(
         self,
         rps: torch.Tensor,
         rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
         *,
         return_dict: bool = False,
     ):
@@ -240,13 +260,25 @@ class PositionalHarmonicNoiseGen(nn.Module):
             rps: ``[B, R, T]`` per-rotor speed at audio rate (Hz).
             rel_pos: ``[B, R, 3]`` (single point) or ``[B, M, R, 3]`` (M points):
                 vector from each rotor to the observation point(s), metres.
+            z: ``[B, cond_dim]`` external per-drone conditioning code (from a
+                :class:`tasks.noise_generation.DroneCodebook`). Required iff the
+                model was built with ``cond_dim > 0``; ignored otherwise.
             return_dict: if True, also return the per-rotor ``sources``.
 
         Returns:
             ``[B, T]`` / ``[B, M, T]`` observed signal, or a dict with
             ``{"audio", "sources"}``.
         """
-        sources = self.emit(rps)  # [B, R, T]
+        if self.cond_dim > 0:
+            if z is None:
+                raise ValueError("model built with cond_dim>0 requires a conditioning code z")
+            if z.shape[-1] != self.cond_dim:
+                raise ValueError(
+                    f"z last dim must be cond_dim={self.cond_dim}, got {tuple(z.shape)}"
+                )
+        else:
+            z = None  # unconditioned: ignore any code passed in
+        sources = self.emit(rps, z=z)  # [B, R, T]
         audio = propagate(
             sources,
             rel_pos,
