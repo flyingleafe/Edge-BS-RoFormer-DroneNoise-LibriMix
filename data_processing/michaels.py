@@ -63,8 +63,18 @@ MICHAELS_FILES = [
 N_MICS = 8
 NUM_ROTORS = 4
 MIC_ARRAY_RADIUS = 0.0825  # m (Ø165 mm)
-ARRAY_OFFSET_FORWARD = 0.20  # m (+X): body centre -> array centre, horizontal
-ARRAY_OFFSET_UP = 0.33  # m (+Z): body centre -> array centre, vertical
+# The rig spec's horizontal "20cm" is "drone body to centre of array" — i.e. the
+# gap from the body's FRONT EDGE to the array centre, NOT from the body centre
+# (the wording contrasts "drone body" with the explicit "centre of array"). To
+# express the array in the body-centre frame we add the body's forward
+# half-extent. Sanity check: the array ring sits clearly *forward* of the front
+# props in the rig photos, so its forward offset must exceed the front-rotor
+# reach (a = WHEELBASE/2·cos45° ≈ 230 mm); the old centre-referenced 200 mm put
+# it *behind* the front rotors, which is wrong. 200 + ~100 ≈ 300 mm clears them.
+ARRAY_GAP_FROM_BODY_EDGE = 0.20  # m: measured front-edge -> array centre (spec)
+BODY_HALF_FORWARD = 0.10  # m: DJI Matrice 100 body centre -> front edge (estimate)
+ARRAY_OFFSET_FORWARD = ARRAY_GAP_FROM_BODY_EDGE + BODY_HALF_FORWARD  # +X, body-centre frame
+ARRAY_OFFSET_UP = 0.33  # m (+Z): above drone body, vertical
 WHEELBASE = 0.650  # m: DJI Matrice 100 motor-to-motor diagonal
 # rps-row order — michaels CSV "Motor:Speed:*" columns, first 4 (see
 # `_load_michaels_data_raw`); rotor_positions below is in the SAME order.
@@ -80,7 +90,8 @@ def get_geometry() -> tuple[np.ndarray, np.ndarray]:
 
     Microphones: 8 evenly-spaced points on a vertical ring (radius 82.5 mm),
     numbered counter-clockwise starting 22.5° left of top, with the ring centre
-    200 mm forward and 330 mm above the body.
+    ``ARRAY_OFFSET_FORWARD`` forward (the spec's 20 cm front-edge gap + the body's
+    forward half-extent) and 330 mm above the body.
 
     Rotors: X-quad, arms at ±45°, motor radius ``(W/2)·cos45°`` per horizontal
     axis, at body height (z = 0). Ordered to match the ``rps`` rows

@@ -13,7 +13,7 @@ import pytest
 import torch
 import torchaudio
 
-from data_processing.michaels import MIC_ARRAY_RADIUS, WHEELBASE
+from data_processing.michaels import ARRAY_OFFSET_FORWARD, MIC_ARRAY_RADIUS, WHEELBASE
 from data_processing.michaels import NUM_ROTORS as MICHAELS_NUM_ROTORS
 from data_processing.michaels import get_geometry as get_michaels_geometry
 from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos, load_input_set
@@ -239,12 +239,17 @@ def test_michaels_geometry():
 
     # All 8 mics lie on the ring: same forward (X) offset, and radius
     # MIC_ARRAY_RADIUS about the centre in the Y-Z (lateral-vertical) plane.
-    center = np.array([0.20, 0.0, 0.33])
-    assert np.allclose(mic_pos[:, 0], 0.20)  # all at the forward offset
+    fwd = ARRAY_OFFSET_FORWARD
+    center = np.array([fwd, 0.0, 0.33])
+    assert np.allclose(mic_pos[:, 0], fwd)  # all at the forward offset
     radii = np.linalg.norm(mic_pos[:, 1:] - center[1:], axis=-1)
     assert np.allclose(radii, MIC_ARRAY_RADIUS)
     # adjacent-mic spacing ~ 60 mm (the spec's measured value)
     assert np.linalg.norm(mic_pos[0] - mic_pos[7]) == pytest.approx(0.060, abs=0.004)
+    # The array centre sits forward of the front rotors (boom sticks out front),
+    # not behind them — a front-edge-referenced offset, not body-centre 20 cm.
+    front_rotor_x = rotor_pos[:, 0].max()
+    assert fwd > front_rotor_x
 
     # Rotors: opposite motors are the diagonal == wheelbase; all at body height.
     assert np.allclose(rotor_pos[:, 2], 0.0)
