@@ -1,0 +1,9 @@
+recording,dur_s,active_pct,maneuver_rate_hz,mean_hold_s
+DREGON/free-flight_nosource_room1,60.2,11.4,0.166,5.3
+DREGON/free-flight_nosource_room2,74.7,10.7,0.187,4.8
+DREGON/hovering_nosource_room2,33.5,4.1,0.09,10.7
+DREGON/updown_nosource_room2,43.4,15.7,0.138,6.1
+DREGON/rectangle_nosource_room2,34.1,4.8,0.088,10.8
+DREGON/spinning_nosource_room2,28.1,3.5,0.071,13.6
+michaels/124,105.7,5.5,0.095,10.0
+michaels/125,170.9,3.7,0.105,9.1

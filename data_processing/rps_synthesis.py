@@ -1,0 +1,589 @@
+"""Synthetic RPS-trajectory generation via OU processes in quadrotor control-mode space.
+
+A quadrotor controls four degrees of freedom — *collective thrust*, *roll*,
+*pitch*, *yaw* — through four motors related by a fixed linear mixer ``B``.  Rather
+than model four correlated rotor-speed channels directly, we model the four
+**control modes** as *independent* mean-reverting (Ornstein–Uhlenbeck) processes
+and recover rotor speeds via ``w = B @ m``.  The mixer's structure then produces
+the strong inter-rotor correlation seen in real flights "for free".
+
+Each mode ``m_k(t)`` is a scalar OU process
+
+    dm = (1/tau) (mu - m) dt + sigma_drive dW ,
+
+parametrised here by its **stationary mean** ``mu``, **stationary std**
+``sigma`` (= ``sigma_drive * sqrt(tau / 2)``) and **correlation time** ``tau``.
+These three numbers per mode are the entire model.  Calibrated defaults
+(:data:`DEFAULT_CONFIG`) come from the DREGON ``in_flight_noise`` recordings
+(929 Hz motor telemetry; see ``notebooks``/the project report); Michael's 29 Hz
+telemetry is too coarse to estimate the sub-second maneuver time constants.
+
+Control modes recovered from real flights show:
+  * a ~80 RPS **common-mode** hover level with a few-RPS slow wander;
+  * small, persistent **trim biases** on the maneuver modes (notably yaw ≈ +2.5,
+    the CW/CCW rotor-drag imbalance), about which they fluctuate;
+  * a clean ordering of *aggressiveness* by maneuver-mode std (hovering <
+    translation < spinning), which the :func:`generate` ``aggressiveness`` knob
+    reproduces by scaling the dynamic stds.
+
+The public surface is :class:`RPSSynthConfig`, :func:`fit_config`,
+:func:`generate` and :func:`generate_batch`.  Output is a ``(4, M)`` array of
+rotor speeds in revolutions/second, the same convention as ``rps.npy`` and the
+``rps`` track elsewhere in the project.
+
+Intermittent ("pilot + airframe") model
+---------------------------------------
+A plain OU process wanders *continuously*, but a human-piloted drone is mostly
+**steady**, holding attitude for seconds at a time and only occasionally
+commanding a brief maneuver.  Measured on the real recordings, the differential
+control modes are active only ~4–16 % of the time, with maneuver onsets every
+5–14 s.  The :func:`generate_intermittent` model reproduces this with a two-layer
+"pilot + airframe" structure per mode:
+
+  1. an **intermittent setpoint** — a telegraph signal that holds at the trim
+     value and, at Poisson-distributed onsets, deflects by a random amount for a
+     short random duration before returning (the pilot's stick command);
+  2. a **first-order motor/airframe lag** (time constant ``motor_tau``) that
+     low-passes the setpoint, rounding its step edges as rotor inertia would;
+  3. a small **cruise jitter** OU term so holds are not perfectly flat.
+
+Two knobs control it.  ``aggressiveness`` scales the maneuver rate and amplitude;
+``drone_profile`` in ``[0, 1]`` blends a :data:`DREGON_PROFILE` (small, fast,
+~80 RPS hover) and a :data:`MICHAELS_PROFILE` (DJI Matrice 100 — larger, slower
+motor response, ~72 RPS hover), with ``0.5`` an in-between airframe.  Public
+surface: :class:`ManeuverModeParams`, :class:`DroneProfile`,
+:func:`blend_profiles`, :func:`generate_intermittent`,
+:func:`generate_intermittent_batch`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+import numpy as np
+
+NUM_ROTORS = 4
+
+# Quadrotor control-allocation mixer.  Columns = [common, roll, pitch, yaw];
+# rows = rotors in the order [RFront, LFront, LBack, RBack] (matches
+# ``data_processing.michaels.ROTOR_ORDER``).  Entries are +/-1, so the columns
+# are mutually orthogonal with squared norm 4 -> B^T B = 4 I and B^-1 = B^T / 4.
+MIXER = np.array(
+    [
+        [1.0, +1.0, +1.0, +1.0],  # RFront
+        [1.0, -1.0, +1.0, -1.0],  # LFront
+        [1.0, -1.0, -1.0, +1.0],  # LBack
+        [1.0, +1.0, -1.0, -1.0],  # RBack
+    ]
+)
+
+MODE_NAMES = ("common", "roll", "pitch", "yaw")
+
+
+@dataclass(frozen=True)
+class OUModeParams:
+    """Stationary parameters of one OU control mode.
+
+    Attributes:
+        mean: stationary mean (RPS units, in mode space).
+        std: stationary standard deviation.
+        tau: correlation (relaxation) time in seconds.
+    """
+
+    mean: float
+    std: float
+    tau: float
+
+
+@dataclass(frozen=True)
+class RPSSynthConfig:
+    """Full synthesizer configuration — one :class:`OUModeParams` per control mode."""
+
+    common: OUModeParams
+    roll: OUModeParams
+    pitch: OUModeParams
+    yaw: OUModeParams
+    rps_min: float = 30.0  # physical floor (below = takeoff/landing, not in-flight)
+    rps_max: float = 120.0  # physical ceiling
+
+    @property
+    def modes(self) -> tuple[OUModeParams, ...]:
+        return (self.common, self.roll, self.pitch, self.yaw)
+
+
+# Calibrated from DREGON in_flight_noise (median over the 6 recordings; common
+# std/tau from the gentler free-flight subset so aggressiveness=1 is a typical,
+# not extreme, flight).  See project report for the per-recording breakdown.
+DEFAULT_CONFIG = RPSSynthConfig(
+    common=OUModeParams(mean=80.0, std=4.0, tau=0.70),
+    roll=OUModeParams(mean=0.0, std=0.70, tau=0.60),
+    pitch=OUModeParams(mean=0.0, std=0.85, tau=0.75),
+    yaw=OUModeParams(mean=2.5, std=1.40, tau=1.00),
+    rps_min=30.0,
+    rps_max=120.0,
+)
+
+
+def modes_from_rps(w: np.ndarray) -> np.ndarray:
+    """Project rotor speeds onto control modes: ``m = B^T w / 4``.
+
+    Args:
+        w: ``(4, M)`` rotor speeds (rev/s).
+
+    Returns:
+        ``(4, M)`` mode coefficients in the order :data:`MODE_NAMES`.
+    """
+    return (MIXER.T @ w) / NUM_ROTORS
+
+
+def rps_from_modes(m: np.ndarray) -> np.ndarray:
+    """Recover rotor speeds from control modes: ``w = B m``."""
+    return MIXER @ m
+
+
+def _estimate_mode_params(m: np.ndarray, dt: float) -> OUModeParams:
+    """Estimate ``(mean, std, tau)`` of a 1-D OU series sampled at step ``dt``.
+
+    ``tau`` comes from the lag-1 autocorrelation ``rho1 = exp(-dt/tau)``.
+    """
+    mu = float(np.mean(m))
+    x = m - mu
+    var = float(np.var(x))
+    if x.size > 2 and var > 0.0:
+        rho1 = float(np.mean(x[:-1] * x[1:]) / var)
+        rho1 = min(max(rho1, 1e-4), 1.0 - 1e-4)
+        tau = float(dt / -np.log(rho1))
+    else:
+        tau = dt
+    return OUModeParams(mean=mu, std=float(np.sqrt(var)), tau=tau)
+
+
+def fit_config(
+    traces: list[np.ndarray],
+    dts: list[float],
+    *,
+    rps_min: float = 30.0,
+    rps_max: float = 120.0,
+    inflight_min_rps: float = 30.0,
+) -> RPSSynthConfig:
+    """Fit a :class:`RPSSynthConfig` from real ``(4, M)`` rotor-speed traces.
+
+    Each trace is projected onto the control modes; per-mode ``(mean, std, tau)``
+    are estimated per recording and aggregated by the **median** across
+    recordings (robust to the differing flight types).  Samples whose
+    rotor-mean RPS is below ``inflight_min_rps`` are dropped before fitting so
+    takeoff/landing ramps do not contaminate the in-flight statistics.
+
+    Args:
+        traces: list of ``(4, M)`` rotor-speed arrays (rev/s).
+        dts: matching list of sample periods (seconds) for each trace.
+        rps_min, rps_max: physical clamp range stored on the returned config.
+        inflight_min_rps: rotor-mean threshold for the in-flight mask.
+
+    Returns:
+        Calibrated :class:`RPSSynthConfig`.
+    """
+    if len(traces) != len(dts):
+        raise ValueError("traces and dts must have the same length")
+    per_mode: list[list[OUModeParams]] = [[] for _ in MODE_NAMES]
+    for w, dt in zip(traces, dts, strict=True):
+        w = np.asarray(w, dtype=np.float64)
+        mask = w.mean(axis=0) > inflight_min_rps
+        if mask.sum() < 10:
+            continue
+        m = modes_from_rps(w[:, mask])
+        for k in range(NUM_ROTORS):
+            per_mode[k].append(_estimate_mode_params(m[k], dt))
+    if any(len(p) == 0 for p in per_mode):
+        raise ValueError("no traces had enough in-flight samples to fit")
+
+    def _median(params: list[OUModeParams]) -> OUModeParams:
+        return OUModeParams(
+            mean=float(np.median([p.mean for p in params])),
+            std=float(np.median([p.std for p in params])),
+            tau=float(np.median([p.tau for p in params])),
+        )
+
+    return RPSSynthConfig(
+        common=_median(per_mode[0]),
+        roll=_median(per_mode[1]),
+        pitch=_median(per_mode[2]),
+        yaw=_median(per_mode[3]),
+        rps_min=rps_min,
+        rps_max=rps_max,
+    )
+
+
+def _ou_path(
+    params: OUModeParams,
+    n: int,
+    dt: float,
+    rng: np.random.Generator,
+    std_scale: float,
+) -> np.ndarray:
+    """Exact discrete-time OU sample path of length ``n`` at step ``dt``.
+
+    Uses the exact transition ``x[i+1] = mu + phi (x[i] - mu) + eps`` with
+    ``phi = exp(-dt/tau)`` and ``eps ~ N(0, sigma^2 (1 - phi^2))``; this is exact
+    for any ``dt`` (no Euler discretisation error).  ``std_scale`` scales the
+    *dynamic* stationary std (the aggressiveness knob); the mean is unchanged.
+    """
+    sigma = params.std * std_scale
+    if params.tau <= 0.0:
+        # Degenerate: white noise about the mean.
+        return params.mean + sigma * rng.standard_normal(n)
+    phi = float(np.exp(-dt / params.tau))
+    step_std = sigma * np.sqrt(max(1.0 - phi * phi, 0.0))
+    x = np.empty(n, dtype=np.float64)
+    x[0] = params.mean + sigma * rng.standard_normal()
+    noise = step_std * rng.standard_normal(n)
+    for i in range(1, n):
+        x[i] = params.mean + phi * (x[i - 1] - params.mean) + noise[i]
+    return x
+
+
+def generate(
+    duration: float,
+    fs: float,
+    *,
+    config: RPSSynthConfig = DEFAULT_CONFIG,
+    aggressiveness: float = 1.0,
+    mode_scales: dict[str, float] | None = None,
+    rng: np.random.Generator | int | None = None,
+) -> np.ndarray:
+    """Generate one synthetic ``(4, M)`` rotor-speed trajectory.
+
+    Args:
+        duration: trajectory length in seconds.
+        fs: sample rate of the trajectory (Hz).  ``M = round(duration * fs)``.
+        config: OU parameters per control mode (default: DREGON-calibrated).
+        aggressiveness: global multiplier on every mode's dynamic std.  ``1.0``
+            is a typical free flight; ``< 1`` is gentle/near-hover, ``> 1`` is
+            aggressive maneuvering.  Means (hover level, trim biases) are fixed.
+        mode_scales: optional per-mode std multipliers (keys from
+            :data:`MODE_NAMES`), applied *on top of* ``aggressiveness`` — e.g.
+            ``{"yaw": 3.0}`` for a spin-dominated flight.
+        rng: ``np.random.Generator``, integer seed, or ``None``.
+
+    Returns:
+        ``(4, M)`` array of rotor speeds (rev/s), clamped to
+        ``[config.rps_min, config.rps_max]``, rotor order matching
+        :data:`MIXER` rows.
+    """
+    if duration <= 0.0 or fs <= 0.0:
+        raise ValueError("duration and fs must be positive")
+    if aggressiveness < 0.0:
+        raise ValueError("aggressiveness must be non-negative")
+    generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
+    n = int(round(duration * fs))
+    dt = 1.0 / fs
+    scales = {name: 1.0 for name in MODE_NAMES}
+    if mode_scales:
+        unknown = set(mode_scales) - set(MODE_NAMES)
+        if unknown:
+            raise ValueError(f"unknown mode_scales keys: {sorted(unknown)}")
+        scales.update(mode_scales)
+
+    m = np.stack(
+        [
+            _ou_path(params, n, dt, generator, aggressiveness * scales[name])
+            for name, params in zip(MODE_NAMES, config.modes, strict=True)
+        ]
+    )
+    w = rps_from_modes(m)
+    return np.clip(w, config.rps_min, config.rps_max)
+
+
+def generate_batch(
+    n_trajectories: int,
+    duration: float,
+    fs: float,
+    **kwargs,
+) -> np.ndarray:
+    """Generate ``n_trajectories`` trajectories, returning a ``(N, 4, M)`` array.
+
+    A single ``rng`` (passed via ``**kwargs``) is threaded through all
+    trajectories so the batch is reproducible from one seed.  Remaining keyword
+    arguments are forwarded to :func:`generate`.
+    """
+    if n_trajectories <= 0:
+        raise ValueError("n_trajectories must be positive")
+    rng = kwargs.pop("rng", None)
+    generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
+    return np.stack(
+        [generate(duration, fs, rng=generator, **kwargs) for _ in range(n_trajectories)]
+    )
+
+
+def scaled_config(config: RPSSynthConfig, factor: float) -> RPSSynthConfig:
+    """Return a copy of ``config`` with all mode stds multiplied by ``factor``.
+
+    Convenience for baking an aggressiveness level into a config (e.g. to store
+    a "gentle" or "aggressive" preset) instead of passing it at call time.
+    """
+    return replace(
+        config,
+        common=replace(config.common, std=config.common.std * factor),
+        roll=replace(config.roll, std=config.roll.std * factor),
+        pitch=replace(config.pitch, std=config.pitch.std * factor),
+        yaw=replace(config.yaw, std=config.yaw.std * factor),
+    )
+
+
+# =============================================================================
+# Intermittent ("pilot + airframe") model
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ManeuverModeParams:
+    """Intermittent-model parameters for one control mode.
+
+    Attributes:
+        trim: hold setpoint (mode units, rev/s) — the value the pilot holds.
+        cruise_std: std of the small jitter added while holding (never perfectly
+            still).
+        maneuver_std: std of a maneuver's peak deflection amplitude (rev/s).
+        rate_hz: Poisson rate of maneuver onsets (events per second).
+        mean_maneuver_s: mean duration of a single maneuver excursion (seconds).
+            The active fraction of time is approximately ``rate_hz *
+            mean_maneuver_s``.
+    """
+
+    trim: float
+    cruise_std: float
+    maneuver_std: float
+    rate_hz: float
+    mean_maneuver_s: float
+
+
+@dataclass(frozen=True)
+class DroneProfile:
+    """A full intermittent-model profile — per-mode params plus airframe dynamics.
+
+    ``motor_tau`` is the first-order motor/airframe lag that rounds the setpoint
+    step edges; it is the principal knob distinguishing a small, snappy airframe
+    (DREGON) from a large, sluggish one (Michael's DJI Matrice 100).
+    """
+
+    common: ManeuverModeParams
+    roll: ManeuverModeParams
+    pitch: ManeuverModeParams
+    yaw: ManeuverModeParams
+    motor_tau: float = 0.2  # s: first-order motor/airframe response lag
+    cruise_tau: float = 0.4  # s: correlation time of the cruise jitter
+    rps_min: float = 30.0
+    rps_max: float = 120.0
+
+    @property
+    def modes(self) -> tuple[ManeuverModeParams, ...]:
+        return (self.common, self.roll, self.pitch, self.yaw)
+
+
+# Calibrated from the real recordings: maneuver structure (rate ~0.12/s, active
+# ~8 %, so ~0.7 s excursions) from the intermittency analysis; trim biases and
+# amplitudes from the control-mode projection (maneuver_std chosen so the overall
+# per-mode std, diluted by the ~8 % active fraction, matches the measured OU std).
+# DREGON: small quad, ~80 RPS hover, fast (short motor_tau).
+DREGON_PROFILE = DroneProfile(
+    common=ManeuverModeParams(
+        trim=80.0, cruise_std=0.6, maneuver_std=12.0, rate_hz=0.14, mean_maneuver_s=0.7
+    ),
+    roll=ManeuverModeParams(
+        trim=1.3, cruise_std=0.2, maneuver_std=3.0, rate_hz=0.12, mean_maneuver_s=0.7
+    ),
+    pitch=ManeuverModeParams(
+        trim=-0.4, cruise_std=0.25, maneuver_std=3.5, rate_hz=0.12, mean_maneuver_s=0.7
+    ),
+    yaw=ManeuverModeParams(
+        trim=2.5, cruise_std=0.3, maneuver_std=5.0, rate_hz=0.10, mean_maneuver_s=0.9
+    ),
+    motor_tau=0.15,
+    cruise_tau=0.3,
+)
+
+# Michael's DJI Matrice 100: larger airframe, ~72 RPS hover, slower response
+# (longer motor_tau), slightly less frequent but larger maneuvers.
+MICHAELS_PROFILE = DroneProfile(
+    common=ManeuverModeParams(
+        trim=72.0, cruise_std=0.9, maneuver_std=14.0, rate_hz=0.10, mean_maneuver_s=1.0
+    ),
+    roll=ManeuverModeParams(
+        trim=1.8, cruise_std=0.3, maneuver_std=4.0, rate_hz=0.10, mean_maneuver_s=1.0
+    ),
+    pitch=ManeuverModeParams(
+        trim=1.0, cruise_std=0.3, maneuver_std=4.0, rate_hz=0.10, mean_maneuver_s=1.0
+    ),
+    yaw=ManeuverModeParams(
+        trim=4.5, cruise_std=0.4, maneuver_std=4.5, rate_hz=0.10, mean_maneuver_s=1.2
+    ),
+    motor_tau=0.35,
+    cruise_tau=0.5,
+)
+
+
+def _blend_mode(a: ManeuverModeParams, b: ManeuverModeParams, t: float) -> ManeuverModeParams:
+    lerp = lambda x, y: (1.0 - t) * x + t * y  # noqa: E731
+    return ManeuverModeParams(
+        trim=lerp(a.trim, b.trim),
+        cruise_std=lerp(a.cruise_std, b.cruise_std),
+        maneuver_std=lerp(a.maneuver_std, b.maneuver_std),
+        rate_hz=lerp(a.rate_hz, b.rate_hz),
+        mean_maneuver_s=lerp(a.mean_maneuver_s, b.mean_maneuver_s),
+    )
+
+
+def blend_profiles(
+    a: DroneProfile = DREGON_PROFILE,
+    b: DroneProfile = MICHAELS_PROFILE,
+    t: float = 0.5,
+) -> DroneProfile:
+    """Linearly interpolate between two drone profiles.
+
+    ``t = 0`` returns ``a`` (DREGON-like), ``t = 1`` returns ``b``
+    (Michael's-like), ``0.5`` an in-between airframe.  Every numeric field —
+    trims, amplitudes, rates, durations, ``motor_tau`` and ``cruise_tau`` — is
+    blended, so the resulting profile is itself a valid drone.
+    """
+    if not 0.0 <= t <= 1.0:
+        raise ValueError("blend factor t must be in [0, 1]")
+    lerp = lambda x, y: (1.0 - t) * x + t * y  # noqa: E731
+    return DroneProfile(
+        common=_blend_mode(a.common, b.common, t),
+        roll=_blend_mode(a.roll, b.roll, t),
+        pitch=_blend_mode(a.pitch, b.pitch, t),
+        yaw=_blend_mode(a.yaw, b.yaw, t),
+        motor_tau=lerp(a.motor_tau, b.motor_tau),
+        cruise_tau=lerp(a.cruise_tau, b.cruise_tau),
+        rps_min=lerp(a.rps_min, b.rps_min),
+        rps_max=lerp(a.rps_max, b.rps_max),
+    )
+
+
+def _first_order_lowpass(x: np.ndarray, tau: float, dt: float) -> np.ndarray:
+    """Causal first-order (exponential) low-pass filter along the last axis.
+
+    ``tau`` is the response time constant; ``tau <= 0`` is a no-op (instant
+    response).  Implements ``y[i] = y[i-1] + alpha (x[i] - y[i-1])`` with the
+    exact ``alpha = 1 - exp(-dt/tau)``.
+    """
+    if tau <= 0.0:
+        return x.copy()
+    alpha = 1.0 - np.exp(-dt / tau)
+    y = np.empty_like(x)
+    y[0] = x[0]
+    for i in range(1, x.shape[0]):
+        y[i] = y[i - 1] + alpha * (x[i] - y[i - 1])
+    return y
+
+
+def _telegraph_setpoint(
+    params: ManeuverModeParams,
+    n: int,
+    dt: float,
+    rng: np.random.Generator,
+    rate_scale: float,
+    amp_scale: float,
+) -> np.ndarray:
+    """Piecewise-constant setpoint: holds at trim, with random maneuver pulses.
+
+    Maneuver onsets are Poisson(``rate_hz * rate_scale``); each adds a rectangular
+    deflection of amplitude ``N(0, maneuver_std * amp_scale)`` lasting
+    ``Exp(mean_maneuver_s)``.  Overlapping pulses sum (compound maneuvers).
+    """
+    setpoint = np.full(n, params.trim, dtype=np.float64)
+    duration_s = n * dt
+    expected = params.rate_hz * rate_scale * duration_s
+    n_events = int(rng.poisson(expected))
+    for _ in range(n_events):
+        onset = int(rng.integers(0, n))
+        dur = max(1, int(rng.exponential(params.mean_maneuver_s) / dt))
+        amp = float(rng.normal(0.0, params.maneuver_std * amp_scale))
+        setpoint[onset : onset + dur] += amp
+    return setpoint
+
+
+def generate_intermittent(
+    duration: float,
+    fs: float,
+    *,
+    profile: DroneProfile | None = None,
+    drone_profile: float | None = None,
+    aggressiveness: float = 1.0,
+    rng: np.random.Generator | int | None = None,
+) -> np.ndarray:
+    """Generate one realistic, *intermittent* ``(4, M)`` rotor-speed trajectory.
+
+    Each control mode is a held trim value perturbed by occasional Poisson
+    maneuver pulses, low-passed by the airframe's ``motor_tau`` lag, plus a small
+    cruise jitter — producing the "steady, then a brief maneuver" texture of real
+    flights rather than continuous OU wander.
+
+    Args:
+        duration: trajectory length in seconds.
+        fs: sample rate (Hz); ``M = round(duration * fs)``.
+        profile: explicit :class:`DroneProfile`.  Mutually exclusive with
+            ``drone_profile``.
+        drone_profile: convenience blend in ``[0, 1]`` between
+            :data:`DREGON_PROFILE` (0) and :data:`MICHAELS_PROFILE` (1).  Used
+            when ``profile`` is ``None`` (default blend ``0.0`` = DREGON).
+        aggressiveness: scales both maneuver rate and amplitude; ``1.0`` is a
+            typical flight, ``<1`` calmer, ``>1`` busier/larger maneuvers.
+        rng: ``np.random.Generator``, int seed, or ``None``.
+
+    Returns:
+        ``(4, M)`` rotor speeds (rev/s), clamped to the profile's range, rotor
+        order matching :data:`MIXER`.
+    """
+    if duration <= 0.0 or fs <= 0.0:
+        raise ValueError("duration and fs must be positive")
+    if aggressiveness < 0.0:
+        raise ValueError("aggressiveness must be non-negative")
+    if profile is not None and drone_profile is not None:
+        raise ValueError("pass either profile or drone_profile, not both")
+    if profile is None:
+        profile = DREGON_PROFILE if drone_profile is None else blend_profiles(t=drone_profile)
+
+    generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
+    n = int(round(duration * fs))
+    dt = 1.0 / fs
+
+    modes = []
+    for params in profile.modes:
+        setpoint = _telegraph_setpoint(
+            params, n, dt, generator, rate_scale=aggressiveness, amp_scale=aggressiveness
+        )
+        lagged = _first_order_lowpass(setpoint, profile.motor_tau, dt)
+        jitter = _ou_path(
+            OUModeParams(mean=0.0, std=params.cruise_std, tau=profile.cruise_tau),
+            n,
+            dt,
+            generator,
+            std_scale=1.0,
+        )
+        modes.append(lagged + jitter)
+    w = rps_from_modes(np.stack(modes))
+    return np.clip(w, profile.rps_min, profile.rps_max)
+
+
+def generate_intermittent_batch(
+    n_trajectories: int,
+    duration: float,
+    fs: float,
+    **kwargs,
+) -> np.ndarray:
+    """Generate ``n_trajectories`` intermittent trajectories as a ``(N, 4, M)`` array.
+
+    A single ``rng`` (via ``**kwargs``) is threaded through all trajectories for
+    reproducibility; remaining keyword args forward to :func:`generate_intermittent`.
+    """
+    if n_trajectories <= 0:
+        raise ValueError("n_trajectories must be positive")
+    rng = kwargs.pop("rng", None)
+    generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
+    return np.stack(
+        [
+            generate_intermittent(duration, fs, rng=generator, **kwargs)
+            for _ in range(n_trajectories)
+        ]
+    )
