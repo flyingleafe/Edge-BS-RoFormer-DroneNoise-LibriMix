@@ -1,0 +1,50 @@
+# Online noise-generation stream — SWAPPED (correct) DREGON split.
+#
+# This is the split that produced the checkpoint used in the 2026-06-30
+# supervisor-update slides (results/noise_gen_dregon_michaels_swapped/). It swaps
+# the DREGON rooms relative to noise_gen_online_dregon_michaels.yaml so the model
+# TRAINS on the 5 room2 recordings and VALIDATES on the single room1 recording —
+# the sensible direction (train on many, validate on one). The original config
+# had it backwards (train on 1, validate on 5).
+#
+# Split:
+#   train = DREGON room2 nosource (5 recordings) + Michael's FLY125
+#   valid = DREGON room1 nosource (1 recording)  + Michael's FLY124
+# Michael's FLY125-train / FLY124-valid is unchanged from the original.
+#
+# Each sliced frame carries its own mic/rotor geometry (global_data) and drone
+# identity (recording_id -> "dregon"/"michaels"), so DREGON + Michael's train
+# jointly with per-drone FiLM conditioning.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260626
+
+noise_train:
+  - kind: dregon
+    root: data
+    split: in_flight_noise
+    recording_ids:
+      - free-flight_nosource_room2
+      - hovering_nosource_room2
+      - updown_nosource_room2
+      - rectangle_nosource_room2
+      - spinning_nosource_room2
+    min_motor_rps: 30.0
+    download: false
+  - kind: michaels
+    root: data
+    ids: [FLY125]
+    min_motor_rps: 30.0
+
+noise_valid:
+  - kind: dregon
+    root: data
+    split: in_flight_noise
+    recording_ids: [free-flight_nosource_room1]
+    min_motor_rps: 30.0
+    download: false
+  - kind: michaels
+    root: data
+    ids: [FLY124]
+    min_motor_rps: 30.0
