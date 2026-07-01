@@ -21,6 +21,41 @@ def _mean_diff(a: torch.Tensor, b: torch.Tensor, loss_type: str = "L1") -> torch
     raise ValueError(f"Unknown loss_type {loss_type}")
 
 
+def _second_difference(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """Discrete 2nd difference ``x[i+1] - 2 x[i] + x[i-1]`` along ``dim``."""
+    n = x.size(dim)
+    a = x.narrow(dim, 0, n - 2)
+    b = x.narrow(dim, 1, n - 2)
+    c = x.narrow(dim, 2, n - 2)
+    return c - 2.0 * b + a
+
+
+def smoothness_penalty(x: torch.Tensor, dims: tuple[int, ...]) -> torch.Tensor:
+    """Mean squared 2nd-difference of ``x`` summed over ``dims``.
+
+    The "squared norm of the 2nd differential" regulariser from the Stage-2
+    report: penalises curvature of a control curve so the network prefers
+    slowly-varying trajectories. Used on the harmonic amplitudes (over time) and
+    the diffuse noise-filter shape (over time *and* frequency).
+
+    Args:
+        x: any tensor; the penalty is applied independently along each axis in
+            ``dims`` and summed. Axes with fewer than 3 elements contribute 0
+            (no 2nd difference is defined).
+        dims: axes to smooth over (e.g. ``(-1,)`` for time only, ``(-2, -1)`` for
+            frequency *and* time).
+
+    Returns:
+        Scalar tensor (mean over all elements, so it is invariant to tensor size
+        and can be weighted directly against the spectral loss).
+    """
+    total = x.new_zeros(())
+    for dim in dims:
+        if x.size(dim) >= 3:
+            total = total + _second_difference(x, dim).pow(2).mean()
+    return total
+
+
 class MultiScaleSTFT(nn.Module):
     """Multi-scale spectral loss (linear-magnitude + log-magnitude).
 

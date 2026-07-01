@@ -48,7 +48,7 @@ from data_processing.online_mixing import (
     _extract_audio_array,
     interpolate_rps_to_stft_grid,
 )
-from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
+from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen, smoothness_penalty
 from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
 
 # wandb's type stubs omit run/init/log/login/finish; treat as untyped.
@@ -273,6 +273,29 @@ def _spectral_loss(loss_fn: MultiScaleSTFT, pred: torch.Tensor, target: torch.Te
     return loss_fn(pred.reshape(b * m, t), target.reshape(b * m, t))
 
 
+def _smoothness_loss(out: dict[str, torch.Tensor], args: argparse.Namespace) -> torch.Tensor:
+    """Stage-2 control-curve smoothness regularisers (squared 2nd difference).
+
+    Penalises curvature of the emitter's control curves so the generator prefers
+    slowly-varying trajectories — the harmonic amplitudes over *time*, and the
+    diffuse noise-filter shape over *time and frequency*. ``out`` is a
+    :meth:`PositionalHarmonicNoiseGen.forward` ``return_dict``. Returns a scalar
+    (zero when both weights are 0).
+    """
+    penalty = out["audio"].new_zeros(())
+    if args.harm_smooth_weight > 0:
+        # harm_amps: [B, R, O, H, t] — smooth over time only.
+        penalty = penalty + args.harm_smooth_weight * smoothness_penalty(
+            out["harm_amps"], dims=(-1,)
+        )
+    if args.noise_smooth_weight > 0 and not args.no_diff_noise:
+        # noise_amps: [B, R, F, t] — smooth over frequency and time.
+        penalty = penalty + args.noise_smooth_weight * smoothness_penalty(
+            out["noise_amps"], dims=(-2, -1)
+        )
+    return penalty
+
+
 # ─── Checkpoint bundling (model + external codebook) ─────────────────────────────
 
 
@@ -448,10 +471,22 @@ def train_model(args: argparse.Namespace) -> dict:
 
     print(f"\n{'Epoch':>5} {'Train':>10} {'Val':>10} {'LR':>10}")
     print("-" * 40)
+    # The smoothness regularisers act on the emitter's internal control curves,
+    # so they need the model's return_dict; skip that extra bookkeeping when both
+    # weights are 0 (the default = pure spectral loss, unchanged behaviour).
+    use_smooth = args.harm_smooth_weight > 0 or args.noise_smooth_weight > 0
+    if use_smooth:
+        print(
+            f"Smoothness: harm {args.harm_smooth_weight:g} (time) | "
+            f"noise {args.noise_smooth_weight:g} (time+freq)"
+        )
+
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         model.train()
         run_loss = 0.0
+        run_spec = 0.0
+        run_smooth = 0.0
         n = 0
         for rps, rel_pos, target, drone_names in tqdm(
             train_loader,
@@ -463,16 +498,31 @@ def train_model(args: argparse.Namespace) -> dict:
             rps, rel_pos, target = rps.to(device), rel_pos.to(device), target.to(device)
             z = codebook(list(drone_names)).to(device) if codebook is not None else None
             optimizer.zero_grad()
-            pred = model(rps, rel_pos, z)
-            loss = _spectral_loss(loss_fn, pred, target)
+            if use_smooth:
+                out = model(rps, rel_pos, z, return_dict=True)
+                pred = out["audio"]
+                spec = _spectral_loss(loss_fn, pred, target)
+                smooth = _smoothness_loss(out, args)
+                loss = spec + smooth
+            else:
+                pred = model(rps, rel_pos, z)
+                spec = _spectral_loss(loss_fn, pred, target)
+                smooth = None
+                loss = spec
             loss.backward()
             if args.grad_clip:
                 nn.utils.clip_grad_norm_(params, args.grad_clip)
             optimizer.step()
-            run_loss += loss.item() * target.shape[0]
-            n += target.shape[0]
+            bs = target.shape[0]
+            run_loss += loss.item() * bs
+            run_spec += spec.item() * bs
+            if smooth is not None:
+                run_smooth += smooth.item() * bs
+            n += bs
 
         train_loss = run_loss / max(n, 1)
+        # Validation uses the pure spectral loss (fidelity), so best-checkpoint
+        # selection stays comparable across smoothness settings and prior runs.
         val_loss = evaluate(
             model, valid_loader, loss_fn, device, codebook=codebook, progress=args.epoch_progress
         )
@@ -481,7 +531,11 @@ def train_model(args: argparse.Namespace) -> dict:
         print(f"{epoch:5d} {train_loss:10.4f} {val_loss:10.4f} {lr:10.1e}")
 
         if wandb.run is not None and not wandb.run.disabled:
-            wandb.log({"epoch": epoch, "train/loss": train_loss, "val/loss": val_loss, "lr": lr})
+            log = {"epoch": epoch, "train/loss": train_loss, "val/loss": val_loss, "lr": lr}
+            if use_smooth:
+                log["train/spectral"] = run_spec / max(n, 1)
+                log["train/smoothness"] = run_smooth / max(n, 1)
+            wandb.log(log)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -590,6 +644,22 @@ def main():
     p.add_argument("--stft_sizes", type=int, nargs="+", default=[2048, 1024, 512, 256, 128])
     p.add_argument("--log_weight", type=float, default=1.0)
     p.add_argument("--loss_type", choices=["L1", "L2"], default="L1")
+    p.add_argument(
+        "--harm_smooth_weight",
+        type=float,
+        default=0.0,
+        help="Weight on the Stage-2 harmonic-amplitude smoothness regulariser "
+        "(mean squared 2nd difference over TIME). 0 disables it. Try ~1e-2 to "
+        "suppress amplitude flicker; too large over-smooths transients.",
+    )
+    p.add_argument(
+        "--noise_smooth_weight",
+        type=float,
+        default=0.0,
+        help="Weight on the Stage-2 diffuse-noise-shape smoothness regulariser "
+        "(mean squared 2nd difference over TIME and FREQUENCY). 0 disables it. "
+        "Ignored under --no_diff_noise (no noise branch to smooth).",
+    )
     p.add_argument("--wandb_key", default="")
     p.add_argument(
         "--epoch-progress", "--epoch_progress", dest="epoch_progress", action="store_true"

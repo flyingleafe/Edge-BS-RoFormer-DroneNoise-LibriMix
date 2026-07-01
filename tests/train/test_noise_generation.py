@@ -20,6 +20,7 @@ from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos, load_inpu
 from train_noise_generation import (
     DREGONNoiseGenDataset,
     MultiScaleSTFT,
+    _smoothness_loss,
     _spectral_loss,
     get_model,
 )
@@ -128,6 +129,48 @@ def test_one_training_step(tmp_path):
     opt.step()
 
 
+def _smooth_args(harm=0.0, noise=0.0, no_diff_noise=False):
+    import argparse
+
+    return argparse.Namespace(
+        harm_smooth_weight=harm, noise_smooth_weight=noise, no_diff_noise=no_diff_noise
+    )
+
+
+def test_smoothness_loss_zero_when_disabled():
+    model = get_model("positional_harmonic_gen", sample_rate=SR, n_harmonics=8)
+    rps = torch.full((1, N_ROTORS, 4096), 80.0)
+    out = model(rps, _rel(1), return_dict=True)
+    assert _smoothness_loss(out, _smooth_args(0.0, 0.0)).item() == 0.0
+
+
+def test_smoothness_loss_positive_and_backprops():
+    # Enabling either weight adds a positive penalty whose gradient reaches the
+    # emitter (it is computed from the emitter's own control curves).
+    model = get_model("positional_harmonic_gen", sample_rate=SR, n_harmonics=8)
+    rps = torch.full((2, N_ROTORS, 4096), 80.0)
+    out = model(rps, _rel(2), return_dict=True)
+    pen = _smoothness_loss(out, _smooth_args(harm=1e-2, noise=1e-2))
+    assert pen.item() > 0
+    pen.backward()
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    assert grads and all(torch.isfinite(g).all() for g in grads)
+
+
+def test_noise_smoothness_ignored_without_diff_noise():
+    # --no_diff_noise removes the noise branch, so its smoothness term is skipped
+    # even if the weight is set (only the harmonic term remains).
+    model = get_model(
+        "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False
+    )
+    rps = torch.full((1, N_ROTORS, 4096), 80.0)
+    out = model(rps, _rel(1), return_dict=True)
+    only_noise = _smoothness_loss(out, _smooth_args(harm=0.0, noise=1e-2, no_diff_noise=True))
+    assert only_noise.item() == 0.0
+    with_harm = _smoothness_loss(out, _smooth_args(harm=1e-2, noise=1e-2, no_diff_noise=True))
+    assert with_harm.item() > 0
+
+
 def test_diff_noise_toggle(tmp_path):
     _make_dataset(tmp_path, n=2)
     mic_pos, rotor_pos = _fake_geometry()
@@ -164,11 +207,11 @@ def test_codebook_lookup_and_growth():
 
 
 def test_drone_conditioning_changes_output():
-    # Two drone codes -> different audio (deterministic emitter so it's the
-    # code, not the random noise branch).
+    # Two drone codes -> different audio (deterministic emitter + eval mode so
+    # the difference is the code, not the random noise branch or random phases).
     model = get_model(
         "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False, cond_dim=4
-    )
+    ).eval()
     cb = DroneCodebook(4, names=["a", "b"], init_std=0.5)
     rps = torch.full((1, N_ROTORS, 4096), 80.0)
     rel = _rel(1)
@@ -199,10 +242,11 @@ def test_z_required_when_conditioned():
 
 
 def test_unconditioned_ignores_z():
-    # cond_dim=0 (default): a code passed in is accepted but unused.
+    # cond_dim=0 (default): a code passed in is accepted but unused. Eval mode so
+    # the two calls share zero phases (train mode would resample per call).
     model = get_model(
         "positional_harmonic_gen", sample_rate=SR, n_harmonics=8, use_diff_noise=False
-    )
+    ).eval()
     rps = torch.full((1, N_ROTORS, 4096), 80.0)
     rel = _rel(1)
     assert torch.allclose(model(rps, rel), model(rps, rel, torch.zeros(1, 4)))

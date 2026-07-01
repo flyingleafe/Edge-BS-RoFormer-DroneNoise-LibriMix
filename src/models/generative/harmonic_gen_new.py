@@ -101,6 +101,18 @@ class HarmonicNoiseGenNew(nn.Module):
         return harm_noise
 
     def forward(self, ms, z=None, initial_phases=None, return_dict=False):
+        """Synthesise audio from motor speeds.
+
+        Initial harmonic phases (``[*freqs.shape[:-1]]`` = per (batch, oscillator,
+        harmonic)):
+        * if ``initial_phases`` is given, it is used verbatim (train or eval) —
+          the optional inference override;
+        * else, in **training** mode a fresh random phase per harmonic is sampled
+          each call (phase augmentation: the amplitude/magnitude model must not
+          rely on a fixed phase alignment);
+        * else, in **eval** mode phases are **zero** (deterministic, reproducible
+          synthesis).
+        """
         b, o, t = ms.shape
 
         # Motor speeds are not necessarily processed
@@ -125,6 +137,12 @@ class HarmonicNoiseGenNew(nn.Module):
             amps_up = harm_amps
 
         assert amps_up.shape == freqs.shape
+
+        if initial_phases is None and self.training:
+            # Phase augmentation during training only; eval => None => zero phase.
+            initial_phases = (
+                torch.rand(freqs.shape[:-1], device=freqs.device, dtype=freqs.dtype) * 2 * torch.pi
+            )
 
         harm_noise = self.gen_harm_noise(freqs, amps_up, initial_phases)
 

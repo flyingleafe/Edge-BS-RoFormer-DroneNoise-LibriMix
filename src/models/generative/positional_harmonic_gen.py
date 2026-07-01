@@ -45,6 +45,8 @@ change.
 
 from __future__ import annotations
 
+from typing import Literal, overload
+
 import torch
 from torch import nn
 
@@ -226,7 +228,32 @@ class PositionalHarmonicNoiseGen(nn.Module):
         self.ref_distance = ref_distance
         self.eps = eps
 
-    def emit(self, rps: torch.Tensor, z: torch.Tensor | None = None) -> torch.Tensor:
+    @overload
+    def emit(
+        self,
+        rps: torch.Tensor,
+        z: torch.Tensor | None = ...,
+        *,
+        initial_phases: torch.Tensor | None = ...,
+        return_dict: Literal[False] = ...,
+    ) -> torch.Tensor: ...
+    @overload
+    def emit(
+        self,
+        rps: torch.Tensor,
+        z: torch.Tensor | None = ...,
+        *,
+        initial_phases: torch.Tensor | None = ...,
+        return_dict: Literal[True],
+    ) -> dict[str, torch.Tensor]: ...
+    def emit(
+        self,
+        rps: torch.Tensor,
+        z: torch.Tensor | None = None,
+        *,
+        initial_phases: torch.Tensor | None = None,
+        return_dict: bool = False,
+    ):
         """Synthesise each rotor's source waveform (radiated at the rotor).
 
         Args:
@@ -234,17 +261,45 @@ class PositionalHarmonicNoiseGen(nn.Module):
             z: ``[B, d]`` optional per-clip conditioning (drone embedding). The
                 same vector conditions every rotor of a clip, so it is repeated
                 across the folded rotor axis.
+            initial_phases: optional ``[B, R, H]`` per-rotor per-harmonic initial
+                phase offsets (radians). ``None`` (default) => the emitter samples
+                random phases while training and uses zero phases at eval. Provide
+                a tensor to pin phases (e.g. reproducible inference).
+            return_dict: if True, also return the emitter's per-rotor control
+                curves (``harm_amps``, ``noise_amps``) with the rotor axis
+                restored — these are what the smoothness regularisers act on.
 
         Returns:
-            ``[B, R, T]`` per-rotor source waveforms.
+            ``[B, R, T]`` per-rotor source waveforms, or (if ``return_dict``) a
+            dict ``{"sources", "harm_amps", "noise_amps"}`` where
+            ``harm_amps`` is ``[B, R, O, H, t_a]`` and ``noise_amps`` is
+            ``[B, R, F, t_n]``.
         """
         if rps.dim() != 3:
             raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
         b, r, t = rps.shape
         folded = rps.reshape(b * r, 1, t)  # rotor axis -> batch, single-rotor net
         z_folded = z.repeat_interleave(r, dim=0) if z is not None else None  # [B*R, d]
-        src = self.emitter(folded, z=z_folded)  # [B*R, T]
-        return src.reshape(b, r, t)
+        # Fold rotor into batch and add the single-oscillator axis: [B,R,H] ->
+        # [B*R, 1, H], matching the emitter's freqs [B*R, O=1, H, t].
+        ip_folded = None
+        if initial_phases is not None:
+            if initial_phases.shape[:2] != (b, r):
+                raise ValueError(
+                    f"initial_phases must be [B={b}, R={r}, H], got {tuple(initial_phases.shape)}"
+                )
+            ip_folded = initial_phases.reshape(b * r, 1, initial_phases.shape[-1])
+        if not return_dict:
+            src = self.emitter(folded, z=z_folded, initial_phases=ip_folded)  # [B*R, T]
+            return src.reshape(b, r, t)
+        out = self.emitter(folded, z=z_folded, initial_phases=ip_folded, return_dict=True)
+        harm_amps = out["harm_amps"]  # [B*R, O, H, t_a]
+        noise_amps = out["noise_amps"]  # [B*R, F, t_n]
+        return {
+            "sources": out["audio"].reshape(b, r, t),
+            "harm_amps": harm_amps.reshape(b, r, *harm_amps.shape[1:]),
+            "noise_amps": noise_amps.reshape(b, r, *noise_amps.shape[1:]),
+        }
 
     def forward(
         self,
@@ -252,6 +307,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         rel_pos: torch.Tensor,
         z: torch.Tensor | None = None,
         *,
+        initial_phases: torch.Tensor | None = None,
         return_dict: bool = False,
     ):
         """Render drone noise at the observation point(s).
@@ -263,11 +319,16 @@ class PositionalHarmonicNoiseGen(nn.Module):
             z: ``[B, cond_dim]`` external per-drone conditioning code (from a
                 :class:`tasks.noise_generation.DroneCodebook`). Required iff the
                 model was built with ``cond_dim > 0``; ignored otherwise.
-            return_dict: if True, also return the per-rotor ``sources``.
+            initial_phases: optional ``[B, R, H]`` per-rotor per-harmonic initial
+                phases (radians). ``None`` (default) => random phases while
+                training, zero phases at eval. See :meth:`emit`.
+            return_dict: if True, also return the per-rotor ``sources`` and the
+                emitter control curves (``harm_amps``, ``noise_amps``) that the
+                smoothness regularisers act on.
 
         Returns:
             ``[B, T]`` / ``[B, M, T]`` observed signal, or a dict with
-            ``{"audio", "sources"}``.
+            ``{"audio", "sources", "harm_amps", "noise_amps"}``.
         """
         if self.cond_dim > 0:
             if z is None:
@@ -278,7 +339,12 @@ class PositionalHarmonicNoiseGen(nn.Module):
                 )
         else:
             z = None  # unconditioned: ignore any code passed in
-        sources = self.emit(rps, z=z)  # [B, R, T]
+
+        if return_dict:
+            emitted = self.emit(rps, z=z, initial_phases=initial_phases, return_dict=True)
+            sources = emitted["sources"]  # [B, R, T]
+        else:
+            sources = self.emit(rps, z=z, initial_phases=initial_phases)  # [B, R, T]
         audio = propagate(
             sources,
             rel_pos,
@@ -288,5 +354,10 @@ class PositionalHarmonicNoiseGen(nn.Module):
             eps=self.eps,
         )
         if return_dict:
-            return {"audio": audio, "sources": sources}
+            return {
+                "audio": audio,
+                "sources": sources,
+                "harm_amps": emitted["harm_amps"],
+                "noise_amps": emitted["noise_amps"],
+            }
         return audio

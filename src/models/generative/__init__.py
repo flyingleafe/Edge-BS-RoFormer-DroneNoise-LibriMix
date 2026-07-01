@@ -22,6 +22,7 @@ Modules
                          `JointAmplitudePredictor`, `ConstantAmplitudePredictor`, ...)
 - `nn`                 : shared building blocks (`CausalConv1d`, `ResNet`, ...)
 - `losses`             : `MultiScaleSTFT` (DDSP-style multi-scale spectral loss)
+                         + `smoothness_penalty` (2nd-difference control-curve regulariser)
 """
 
 from .filtered_noise import DroneNoisePlusFilterGen, FilteredNoiseSynth, RPSFilterNet
@@ -46,7 +47,7 @@ from .harmonic_transform import (
     inverse_VP_transform,
     lstsq_VP_transform,
 )
-from .losses import MultiScaleSTFT
+from .losses import MultiScaleSTFT, smoothness_penalty
 from .positional_harmonic_gen import (
     PositionalHarmonicNoiseGen,
     fractional_delay,
@@ -73,6 +74,7 @@ __all__ = [
     "LearnableTimeShift",
     "SpeedsPostprocessingWrapper",
     "MultiScaleSTFT",
+    "smoothness_penalty",
     "PositionalHarmonicNoiseGen",
     "fractional_delay",
     "propagate",

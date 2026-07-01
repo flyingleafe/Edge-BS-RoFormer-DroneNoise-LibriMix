@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from models.generative import HarmonicNoiseGenNew, PositionalHarmonicNoiseGen
+from models.generative import HarmonicNoiseGenNew, PositionalHarmonicNoiseGen, smoothness_penalty
 from models.generative.positional_harmonic_gen import (
     SPEED_OF_SOUND,
     fractional_delay,
@@ -179,14 +179,114 @@ def test_forward_multi_observer_shape():
 
 
 def test_forward_composes_emit_and_propagate():
-    # With the random branch off, forward must equal propagate(emit(...)).
-    model = _det_model()
+    # With the random branch off AND eval mode (zero phases), forward must equal
+    # propagate(emit(...)).
+    model = _det_model().eval()
     rps = torch.full((1, 4, SR), 75.0)
     rel = torch.randn(1, 4, 3) * 0.1 + 0.3
 
     res = model(rps, rel, return_dict=True)
     expected = propagate(model.emit(rps), rel, sample_rate=SR, c=SPEED_OF_SOUND)
     assert torch.allclose(res["audio"], expected, atol=1e-5)
+
+
+def test_forward_return_dict_exposes_control_curves():
+    # return_dict must surface the emitter's per-rotor control curves (what the
+    # smoothness regularisers act on) with the rotor axis restored.
+    model = _det_model().eval()  # n_harmonics=16, use_diff_noise=False, zero phases
+    rps = torch.full((2, 4, SR), 80.0)
+    rel = torch.randn(2, 8, 4, 3) * 0.1 + 0.3
+    out = model(rps, rel, return_dict=True)
+
+    assert set(out) == {"audio", "sources", "harm_amps", "noise_amps"}
+    assert out["audio"].shape == (2, 8, SR)
+    assert out["sources"].shape == (2, 4, SR)
+    # harm_amps: [B, R, O=1, H, t_a]; noise_amps: [B, R, F, t_n]
+    assert out["harm_amps"].shape[:2] == (2, 4)
+    assert out["harm_amps"].shape[-2] == 16  # n_harmonics
+    assert out["noise_amps"].shape[:2] == (2, 4)
+    # audio matches the plain-tensor forward (dict path must not change synthesis)
+    assert torch.allclose(out["audio"], model(rps, rel), atol=1e-5)
+
+
+def test_emit_return_dict_sources_match_plain():
+    model = _det_model().eval()  # deterministic (no random branch, zero phases)
+    rps = torch.full((1, 4, SR), 75.0)
+    d = model.emit(rps, return_dict=True)
+    assert torch.allclose(d["sources"], model.emit(rps), atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Initial harmonic phases: random while training, zero at eval, overridable
+# ---------------------------------------------------------------------------
+
+
+def test_phases_random_in_train_deterministic_in_eval():
+    model = _det_model()  # deterministic broadband off, so phase is the only rng
+    rps = torch.full((1, 4, SR), 80.0)
+    # train mode: two emits sample independent random phases -> outputs differ
+    model.train()
+    assert not torch.allclose(model.emit(rps), model.emit(rps), atol=1e-6)
+    # eval mode: zero phases -> fully deterministic
+    model.eval()
+    assert torch.allclose(model.emit(rps), model.emit(rps), atol=1e-6)
+
+
+def test_eval_uses_zero_phases_equivalent_to_explicit_zeros():
+    model = _det_model().eval()
+    rps = torch.full((1, 4, SR), 80.0)
+    zeros = torch.zeros(1, 4, 16)  # [B, R, H]
+    assert torch.allclose(model.emit(rps), model.emit(rps, initial_phases=zeros), atol=1e-6)
+
+
+def test_initial_phases_override_is_deterministic_and_changes_output():
+    model = _det_model()
+    model.train()  # even in train mode, an explicit override pins the phases
+    rps = torch.full((1, 4, SR), 80.0)
+    torch.manual_seed(1)
+    phases = torch.rand(1, 4, 16) * 2 * torch.pi  # [B, R, H]
+    a = model.emit(rps, initial_phases=phases)
+    b = model.emit(rps, initial_phases=phases)
+    assert torch.allclose(a, b, atol=1e-6)  # override => reproducible
+    # a nonzero phase shifts the waveform away from the zero-phase synthesis
+    assert not torch.allclose(a, model.eval().emit(rps), atol=1e-4)
+
+
+def test_initial_phases_bad_shape_raises():
+    model = _det_model()
+    rps = torch.full((2, 4, SR), 80.0)
+    with pytest.raises(ValueError, match="initial_phases"):
+        model.emit(rps, initial_phases=torch.zeros(1, 4, 16))  # wrong batch
+
+
+# ---------------------------------------------------------------------------
+# smoothness_penalty (Stage-2 squared-2nd-difference regulariser)
+# ---------------------------------------------------------------------------
+
+
+def test_smoothness_penalty_constant_and_linear_are_zero():
+    # 2nd difference of a constant OR a linear ramp is exactly zero.
+    const = torch.full((2, 3, 40), 5.0)
+    assert smoothness_penalty(const, dims=(-1,)).item() == pytest.approx(0.0, abs=1e-8)
+    ramp = torch.arange(40, dtype=torch.float32).expand(2, 3, 40)
+    assert smoothness_penalty(ramp, dims=(-1,)).item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_smoothness_penalty_quadratic_is_four():
+    # x[i]=i^2 -> 2nd diff == 2 everywhere -> mean square == 4.
+    quad = (torch.arange(40, dtype=torch.float32) ** 2)[None]
+    assert smoothness_penalty(quad, dims=(-1,)).item() == pytest.approx(4.0, rel=1e-5)
+
+
+def test_smoothness_penalty_sums_over_dims_and_ignores_short_axes():
+    x = torch.randn(2, 5, 40)
+    both = smoothness_penalty(x, dims=(-2, -1))
+    sep = smoothness_penalty(x, dims=(-2,)) + smoothness_penalty(x, dims=(-1,))
+    assert both.item() == pytest.approx(sep.item(), rel=1e-6)
+    # an axis with < 3 elements has no defined 2nd difference -> contributes 0
+    assert smoothness_penalty(torch.randn(2, 2, 40), dims=(-2,)).item() == pytest.approx(
+        0.0, abs=1e-8
+    )
 
 
 def test_per_rotor_sources_track_their_speed():
