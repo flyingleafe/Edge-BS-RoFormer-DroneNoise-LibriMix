@@ -32,6 +32,8 @@ Complete workflow for running ML experiments in this repository.
 
    See `vast-server-training` skill for the full CLI surface and `docs/skypilot/README.md` for setup.
 
+   **Slurm timeout fallback pattern:** when asked to try `gpushort` first and escalate only if the short job hits walltime, submit the short job, then a long `sae` job with `--dependency=afternotok:<short_job_id>`. In the dependent job, inspect `sacct` for the short job's top-level state and run training only if it starts with `TIMEOUT`; exit without training on ordinary failures. This avoids masking data/code errors as a long rerun.
+
 5. **Monitor.** `postdoc list`, `postdoc logs <job-id> -f`, `postdoc status <job-id>`, `postdoc dashboard`.
 
 6. **Evaluate.** Submit a second job for eval, or chain train + eval in one shell script and submit that script.
