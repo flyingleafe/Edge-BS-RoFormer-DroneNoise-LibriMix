@@ -1,0 +1,60 @@
+# Online-mixing RPS training stream that AUGMENTS real rotating noise with a
+# GENERATED noise source — the trained PositionalHarmonicNoiseGen rendered live
+# on the GPU by a single background producer process (see
+# data_processing/generated_noise.py). A `kind: generated` entry lists exactly
+# like a real recording; the generated chunk's synthetic RPS trajectory is also
+# its exact RPS label.
+#
+# Validation leakage guards (unchanged): DREGON room1 excluded from training,
+# Michael's FLY125 train-only. The generated source draws fresh synthetic
+# (intermittent) trajectories, so it never leaks a held-out recording.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260702
+
+sources:
+  noise:
+    # --- real recordings (weight defaults to 1.0 per source item) ---
+    - kind: dregon
+      root: data
+      split: in_flight_noise
+      exclude_recording_ids: [free-flight_nosource_room1]
+      min_motor_rps: 30.0
+      download: false
+    - kind: michaels
+      root: data
+      ids: [FLY125]
+      min_motor_rps: 0.0
+
+    # --- generated source: ~1/3 of noise batches (weight 1.0 vs 2.0 real) ---
+    - kind: generated
+      weight: 2.0                     # bump to lean harder on synthetic variety
+      checkpoint: results/noise_gen_dregon_michaels_swapped/best_positional_harmonic_gen.pt
+      drone: michaels                 # codebook key + geometry (michaels/dregon)
+      n_harmonics: 100                # MUST match the checkpoint's training value
+      device: cuda:0                  # the ONE extra CUDA context (producer)
+      gen_batch: 32                   # batched GPU render per producer step
+      random_phase: true              # per-chunk phase => extra texture variety
+      refresh: true                   # live stream; set false for a fixed bank
+      rps:
+        kind: synthetic_intermittent  # only supported RPS source (calibrated OU + Poisson maneuvers)
+        aggressiveness: 1.0           # <1 calmer, >1 busier maneuvering
+      buffer:
+        slots: 512                    # ring size (~384 MB @ 8 mic × 1 s × 512)
+        warmup: 32                    # min filled slots before sampling starts
+
+  speech:
+    - kind: audio_files
+      root: data/librispeech/LibriSpeech/train-clean-100
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false

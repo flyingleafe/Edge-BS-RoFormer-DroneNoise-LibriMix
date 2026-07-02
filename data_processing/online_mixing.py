@@ -15,7 +15,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 import librosa
 import numpy as np
@@ -37,6 +37,13 @@ if load_dotenv is not None:
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
 from data_processing.michaels import load_michaels_timeframes
 from utils.data import EventSeries, TimeFrame, UniformSeries
+
+
+@runtime_checkable
+class NoisePool(Protocol):
+    """A source of aligned noise slices: real recordings or a generated stream."""
+
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame: ...
 
 
 DEFAULT_SAMPLE_RATE = 16_000
@@ -61,7 +68,7 @@ def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
 
 def make_rng(base_seed: int, global_sample_id: int) -> np.random.Generator:
     """Deterministic per-sample RNG independent of worker process."""
-    payload = f"{int(base_seed)}:{int(global_sample_id)}".encode("utf-8")
+    payload = f"{int(base_seed)}:{int(global_sample_id)}".encode()
     digest = hashlib.blake2b(payload, digest_size=8).digest()
     seed = int.from_bytes(digest, "little", signed=False)
     return np.random.default_rng(seed)
@@ -202,7 +209,7 @@ class TimeFrameNoisePool:
         self.weights = weights / weights.sum()
 
     @classmethod
-    def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> "TimeFrameNoisePool":
+    def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> TimeFrameNoisePool:
         cfg = _to_plain(cfg)
         if isinstance(cfg, list):
             combined = object.__new__(cls)
@@ -239,7 +246,9 @@ class TimeFrameNoisePool:
             exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
             if exclude_ids is not None:
                 excluded = {str(x) for x in exclude_ids}
-                frames = [tf for tf in frames if str(tf.tags.get("recording_id", "")) not in excluded]
+                frames = [
+                    tf for tf in frames if str(tf.tags.get("recording_id", "")) not in excluded
+                ]
         elif kind in {"michaels", "michael"}:
             frames = load_michaels_timeframes(data_root=root, sr=sample_rate)
             ids = _cfg_get(cfg, "ids", _cfg_get(cfg, "id", "all"))
@@ -264,7 +273,9 @@ class TimeFrameNoisePool:
             exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
             if exclude_ids is not None:
                 excluded = {str(x) for x in exclude_ids}
-                selected = [tf for tf in selected if str(tf.tags.get("recording_id", "")) not in excluded]
+                selected = [
+                    tf for tf in selected if str(tf.tags.get("recording_id", "")) not in excluded
+                ]
             frames = selected
         else:
             raise ValueError(f"unsupported noise source kind: {kind!r}")
@@ -275,6 +286,78 @@ class TimeFrameNoisePool:
         rec = self.records[idx]
         start = float(rng.uniform(rec["valid_start"], rec["valid_end"] - duration_s))
         return cast(TimeFrame, rec["tf"]).slice(start, start + duration_s)
+
+
+class MixedNoisePool:
+    """Weight-sample among several noise sub-pools, delegating the slice.
+
+    Lets a heterogeneous ``sources.noise`` list — e.g. real recordings plus a
+    :class:`data_processing.generated_noise.GeneratedNoisePool` — behave as one
+    pool. Each sub-pool has a relative ``weight`` (a generated, infinite pool has
+    no natural duration, so its weight is explicit).
+    """
+
+    def __init__(self, pools: list[Any], weights: list[float]):
+        if not pools:
+            raise ValueError("MixedNoisePool needs at least one sub-pool")
+        self.pools = list(pools)
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape != (len(self.pools),) or np.any(w < 0) or w.sum() <= 0:
+            raise ValueError("weights must be one non-negative value per pool, summing > 0")
+        self.weights = w / w.sum()
+
+    @property
+    def records(self) -> list[dict[str, Any]]:
+        # Aggregate real sub-pool records (generated pools contribute none), so
+        # helpers that introspect `.records` (e.g. drone-name discovery) still work.
+        recs: list[dict[str, Any]] = []
+        for pool in self.pools:
+            recs.extend(getattr(pool, "records", []))
+        return recs
+
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame:
+        idx = int(rng.choice(len(self.pools), p=self.weights))
+        return self.pools[idx].sample_timeframe(rng, duration_s)
+
+
+def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
+    """Build a noise pool from a source spec (or list), dispatching on ``kind``.
+
+    Real sources (``dregon``/``michaels``) are merged into one
+    :class:`TimeFrameNoisePool` (duration-weighted across recordings, unchanged).
+    Any ``kind: generated`` source becomes a
+    :class:`data_processing.generated_noise.GeneratedNoisePool`; when generated
+    and real sources are mixed, they are combined in a :class:`MixedNoisePool`
+    with pool-level ``weight`` (default ``1.0`` per source item — so a bare
+    ``[dregon, generated]`` list is a 50/50 mix). The pure-real path is
+    byte-for-byte the old behaviour.
+    """
+    cfg = _to_plain(cfg)
+    items = list(cfg) if isinstance(cfg, list) else [cfg]
+    gen_items = [c for c in items if _cfg_get(c, "kind") == "generated"]
+    if not gen_items:
+        return TimeFrameNoisePool.from_config(cfg, duration_s=duration_s, sample_rate=sample_rate)
+
+    from data_processing.generated_noise import GeneratedNoisePool
+
+    real_items = [c for c in items if _cfg_get(c, "kind") != "generated"]
+    pools: list[Any] = []
+    weights: list[float] = []
+    if real_items:
+        pools.append(
+            TimeFrameNoisePool.from_config(
+                real_items, duration_s=duration_s, sample_rate=sample_rate
+            )
+        )
+        weights.append(sum(float(_cfg_get(c, "weight", 1.0)) for c in real_items))
+    for c in gen_items:
+        pools.append(
+            GeneratedNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
+        )
+        weights.append(float(_cfg_get(c, "weight", 1.0)))
+    if len(pools) == 1:
+        return pools[0]
+    return MixedNoisePool(pools, weights)
 
 
 class AudioFileSourcePool:
@@ -314,7 +397,7 @@ class AudioFileSourcePool:
             raise ValueError(f"unsupported source cache mode: {self.cache_mode!r}")
 
     @classmethod
-    def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> "AudioFileSourcePool":
+    def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> AudioFileSourcePool:
         cfg = _to_plain(cfg)
         root = Path(_cfg_get(cfg, "root", "."))
         globs = _cfg_get(cfg, "globs", None)
@@ -323,7 +406,9 @@ class AudioFileSourcePool:
             globs = [glob_one] if glob_one is not None else ["**/*.flac", "**/*.wav"]
         files: list[Path] = []
         for pattern in globs:
-            files.extend(p for p in root.glob(str(pattern)) if p.suffix.lower() in cls.AUDIO_SUFFIXES)
+            files.extend(
+                p for p in root.glob(str(pattern)) if p.suffix.lower() in cls.AUDIO_SUFFIXES
+            )
         files = sorted(set(files))
         cache_cfg = _cfg_get(cfg, "cache", {}) or {}
         cache_mode = str(_cfg_get(cache_cfg, "mode", "none"))
@@ -393,8 +478,9 @@ class AudioFileSourcePool:
         else:
             print(f"Reusing source cache at {cache_path}")
 
-        self._packed_index = np.load(index_path)
-        total_samples = int(self._packed_index[:, 1].sum())
+        packed_index = np.load(index_path)
+        self._packed_index = packed_index
+        total_samples = int(packed_index[:, 1].sum())
         self._packed_data = np.memmap(data_path, dtype=np.int16, mode="r", shape=(total_samples,))
 
     def _load_one(self, path: Path) -> np.ndarray:
@@ -410,7 +496,9 @@ class AudioFileSourcePool:
         idx = int(rng.integers(0, len(self.files)))
         if self._packed_data is not None and self._packed_index is not None:
             offset, length = self._packed_index[idx]
-            audio = self._packed_data[int(offset) : int(offset + length)].astype(np.float32) / 32767.0
+            audio = (
+                self._packed_data[int(offset) : int(offset + length)].astype(np.float32) / 32767.0
+            )
         elif self._memory_cache is None:
             path = self.files[idx]
             audio = self._load_one(path)
@@ -532,7 +620,7 @@ class OnlineMixIterableDataset(IterableDataset):
 
     def __init__(
         self,
-        noise_pool: TimeFrameNoisePool,
+        noise_pool: NoisePool,
         source_pool: AudioFileSourcePool | None,
         *,
         policy: Mapping[str, Any] | None = None,
@@ -555,7 +643,7 @@ class OnlineMixIterableDataset(IterableDataset):
         self.target_len = int(round(self.duration_s * self.sample_rate))
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "OnlineMixIterableDataset":
+    def from_config(cls, cfg: Any) -> OnlineMixIterableDataset:
         cfg = _to_plain(cfg)
         sample_rate = int(_cfg_get(cfg, "sample_rate", DEFAULT_SAMPLE_RATE))
         duration_s = float(_cfg_get(cfg, "duration_s", DEFAULT_DURATION_S))
@@ -569,9 +657,7 @@ class OnlineMixIterableDataset(IterableDataset):
         noise_cfg = _cfg_get(sources, "noise", None)
         if noise_cfg is None:
             raise ValueError("online mix config requires sources.noise")
-        noise_pool = TimeFrameNoisePool.from_config(
-            noise_cfg, duration_s=duration_s, sample_rate=sample_rate
-        )
+        noise_pool = build_noise_pool(noise_cfg, duration_s=duration_s, sample_rate=sample_rate)
 
         speech_cfgs = _cfg_get(sources, "speech", None)
         source_pool = None

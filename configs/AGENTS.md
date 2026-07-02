@@ -53,6 +53,7 @@ Current durable configs:
 |--------|-----|
 | `online_mix_v4_michaels_train_no_room1.yaml` | V4-Michaels online training with DREGON `free-flight_nosource_room1` excluded, Michael's `FLY125` train-only, original LibriSpeech sources, SNR uniform `[-30, 0]`, and staged augmentations after 50k samples. |
 | `online_mix_v4_michaels_train_no_room1_no_aug.yaml` | Same source/noise split and random mixtures, but no augmentations at any point. |
+| `online_mix_generated_augment_example.yaml` | Adds a `kind: generated` noise source (a trained `PositionalHarmonicNoiseGen` rendered live on GPU) alongside real DREGON + Michael's noise. Template for augmenting with unlimited synthetic rotating noise + exact RPS labels. See `data_processing/AGENTS.md` § "Generated noise source". |
 
 Important fields:
 - `sources.noise`: aligned rotating-noise pools. DREGON and Michael's loaders

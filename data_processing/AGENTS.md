@@ -15,6 +15,7 @@ formats before any experiment can run.
 | `dregon.py` | DREGON dataset loading — TimeFrame-native. `load_timeframe(sample)` returns a `TimeFrame` with tracks `"audio"` (UniformSeries), `"motors_measured"` / `"motors_command"` (EventSeries), etc. Tags hold scalar metadata; `global_data` holds mic/rotor positions. |
 | `michaels.py` | Michael's drone-noise dataset (DJI WAVs + flight-controller CSVs in `data/new-drone-noises/`). Uses its own local `MotorData` dataclass. `get_geometry()` returns the DJI Matrice 100 rig geometry (8-mic ring + 4 rotors; from `data/recording_with_motor_speed/` photos), and `load_michaels_timeframe` populates `global_data` with `mic_positions`/`rotor_positions` (rotor order RFront, LFront, LBack, RBack). |
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's. |
+| `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` exposed as a noise **source** (`kind: generated`). One background **spawn** producer process (the only extra CUDA context) renders chunks into a **shared-memory ring buffer**; fork `DataLoader` workers read finished chunks (lock-free seqlock). RPS excitation is synthetic-intermittent (`rps_synthesis`) and doubles as the exact label. See § "Generated noise source". |
 | `external_recordings.py` | Loads external DJI recordings as `TimeFrame`. |
 | `__init__.py` | Package init |
 
@@ -233,7 +234,43 @@ Source/cache interface rules:
   `ONLINE_MIX_SOURCE_CACHE_DIR=/large/partition/online_mix_sources` in `.env` on
   machines where repo-local `.cache/` is the wrong partition.
 
+### Generated noise source (`kind: generated`)
+
+A trained noise generator can be listed as a `sources.noise` entry exactly like a
+real recording — the payoff being *unlimited* rotating-noise variety with an
+*exact* RPS label. Implementation: `data_processing/generated_noise.py`
+(`GeneratedNoisePool`), wired into `build_noise_pool(...)` (the dispatcher
+`OnlineMixIterableDataset.from_config` now uses). Example config:
+`configs/online_mix_generated_augment_example.yaml`.
+
+Why the process/buffer design (option C): the mixer runs in **forked** DataLoader
+workers, and CUDA cannot init in a forked child. So one **spawn** producer owns
+the single generation CUDA context and renders batches into a **shared-memory ring
+buffer** (`torch` shared tensors); the fork workers only read finished chunks.
+Reads are lock-free via a per-slot **seqlock** (`version` odd=writing; reader
+retries if odd or changed across its copy) — no mutex across the spawn/fork split.
+Generation rate is **decoupled** from consumption: workers sample-with-replacement
+from filled slots, so a slow GPU just means more chunk reuse (fine for an
+augmentation source). The producer is started once in the main process (never in a
+worker); `close()`/`atexit` tears it down.
+
+Config fields (defaults in parens): `checkpoint` (bundle path, required); `drone`
+(codebook key + geometry source, michaels/dregon); `n_harmonics` (**must match the
+checkpoint**); `device` (cuda:0 — the one extra context); `gen_batch` (32);
+`random_phase` (true — per-chunk harmonic phases for extra texture, model stays in
+eval); `refresh` (true; **false** = fill the buffer once for a reproducible fixed
+bank); `rps.kind` (`synthetic_intermittent` only) + `rps.aggressiveness` (1.0);
+`buffer.slots` (512 ≈ 384 MB) + `buffer.warmup` (16); `weight` (mix weight, 1.0
+per source item — a bare `[dregon, michaels, generated]` list is duration-weighted
+within reals, then real-pool vs generated at these pool-level weights).
+Determinism caveat: a live (`refresh: true`) stream is **not** seed-reproducible
+(buffer contents depend on timing) — keep validation on real/fixed sources, or use
+`refresh: false`.
+
 Benchmark notes:
+- Noise-gen inference (`PositionalHarmonicNoiseGen`, 236k params, mostly FFTs) is
+  ~128 ms per 1 s 8-mic chunk on CPU (batched); GPU is far faster, which is why the
+  producer renders on the GPU in `gen_batch` batches.
 - Early local smoke using generated `DREGON-LM-V4-michaels/train/**/vocals.wav`
   is obsolete; online training should use original LibriSpeech files.
 - Correct V4-Michaels setup (`data/librispeech/LibriSpeech/train-clean-100`,
