@@ -19,17 +19,17 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
-from tasks.rps_prediction import align_rps_to_gt
-from train_rps_predictor import get_model
-from utils.plots.rps_prediction.salience_comparison import (
+from plots.rps_prediction.salience_comparison import (
     build_salience_frame,
     model_rps_prediction,
     model_salience_series,
     select_channel,
 )
-from utils.plots.rps_prediction.sample_comparison import _load_sample
-from utils.plots.timeframe import plot_timeframe
-from utils.plots.timeframe.renderers import ROTOR_COLORS, make_spectrogram_series
+from plots.rps_prediction.sample_comparison import _load_sample
+from plots.timeframe import plot_timeframe
+from plots.timeframe.renderers import ROTOR_COLORS, make_spectrogram_series
+from tasks.rps_prediction import align_rps_to_gt
+from train_rps_predictor import get_model
 
 ASSETS = Path("assets")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

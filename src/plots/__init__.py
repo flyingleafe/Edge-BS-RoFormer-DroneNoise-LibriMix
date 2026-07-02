@@ -4,7 +4,7 @@
 Each task sub-package exposes a ``PLOT_TYPES`` dict mapping dotted names
 to plot functions::
 
-    from utils.plots.rps_prediction import PLOT_TYPES as RPS_PLOT_TYPES
+    from plots.rps_prediction import PLOT_TYPES as RPS_PLOT_TYPES
 
 Plot functions have signature::
 

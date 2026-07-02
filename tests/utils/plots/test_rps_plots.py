@@ -1,4 +1,4 @@
-"""Smoke tests for `utils.plots.rps_prediction` plot functions."""
+"""Smoke tests for `plots.rps_prediction` plot functions."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _make_timeframe() -> TimeFrame:
 
 
 def test_plot_summary_metrics_returns_figure():
-    from utils.plots.rps_prediction.summary_metrics import plot_summary_metrics
+    from plots.rps_prediction.summary_metrics import plot_summary_metrics
 
     results = [
         _make_eval_result("model_a", mse=2.0, r2=0.85),
@@ -83,14 +83,14 @@ def test_plot_summary_metrics_returns_figure():
 
 
 def test_plot_summary_metrics_empty_raises():
-    from utils.plots.rps_prediction.summary_metrics import plot_summary_metrics
+    from plots.rps_prediction.summary_metrics import plot_summary_metrics
 
     with pytest.raises(ValueError, match="required"):
         plot_summary_metrics(results=[])
 
 
 def test_plot_summary_metrics_length_mismatch_raises():
-    from utils.plots.rps_prediction.summary_metrics import plot_summary_metrics
+    from plots.rps_prediction.summary_metrics import plot_summary_metrics
 
     results = [_make_eval_result("a", 2.0, 0.8)]
     with pytest.raises(ValueError, match="length mismatch"):
@@ -101,7 +101,7 @@ def test_plot_summary_metrics_length_mismatch_raises():
 
 
 def test_plot_per_snr_returns_figure():
-    from utils.plots.rps_prediction.per_snr import plot_per_snr
+    from plots.rps_prediction.per_snr import plot_per_snr
 
     results = [
         _make_eval_result("model_a", mse=2.0, r2=0.85, n=20),
@@ -112,7 +112,7 @@ def test_plot_per_snr_returns_figure():
 
 
 def test_plot_per_snr_empty_raises():
-    from utils.plots.rps_prediction.per_snr import plot_per_snr
+    from plots.rps_prediction.per_snr import plot_per_snr
 
     with pytest.raises(ValueError, match="required"):
         plot_per_snr(results=[])
@@ -122,7 +122,7 @@ def test_plot_per_snr_empty_raises():
 
 
 def test_plot_full_sequence_returns_figure():
-    from utils.plots.rps_prediction.full_sequence import plot_full_sequence
+    from plots.rps_prediction.full_sequence import plot_full_sequence
 
     sr = 16000.0
     audio = np.random.randn(32000).astype(np.float32)
@@ -135,7 +135,7 @@ def test_plot_full_sequence_returns_figure():
 
 
 def test_plot_full_sequence_missing_input_raises():
-    from utils.plots.rps_prediction.full_sequence import plot_full_sequence
+    from plots.rps_prediction.full_sequence import plot_full_sequence
 
     with pytest.raises(ValueError, match="required"):
         plot_full_sequence()
@@ -145,7 +145,7 @@ def test_plot_full_sequence_missing_input_raises():
 
 
 def test_plot_sample_comparison_returns_figure():
-    from utils.plots.rps_prediction.sample_comparison import plot_sample_comparison
+    from plots.rps_prediction.sample_comparison import plot_sample_comparison
 
     tf = _make_timeframe()
     preds = {
@@ -157,14 +157,14 @@ def test_plot_sample_comparison_returns_figure():
 
 
 def test_plot_sample_comparison_no_args_raises():
-    from utils.plots.rps_prediction.sample_comparison import plot_sample_comparison
+    from plots.rps_prediction.sample_comparison import plot_sample_comparison
 
     with pytest.raises(ValueError, match="required"):
         plot_sample_comparison()
 
 
 def test_plot_sample_comparison_bad_channel_raises():
-    from utils.plots.rps_prediction.sample_comparison import plot_sample_comparison
+    from plots.rps_prediction.sample_comparison import plot_sample_comparison
 
     tf = _make_timeframe()
     with pytest.raises(ValueError, match="channel"):
@@ -175,7 +175,7 @@ def test_plot_sample_comparison_bad_channel_raises():
 
 
 def test_plot_training_curves_returns_figure(tmp_path):
-    from utils.plots.rps_prediction.training_curves import plot_training_curves
+    from plots.rps_prediction.training_curves import plot_training_curves
 
     # Write a minimal training log CSV.
     log_path = tmp_path / "training_log.csv"
@@ -200,14 +200,14 @@ def test_plot_training_curves_returns_figure(tmp_path):
 
 
 def test_plot_training_curves_empty_raises():
-    from utils.plots.rps_prediction.training_curves import plot_training_curves
+    from plots.rps_prediction.training_curves import plot_training_curves
 
     with pytest.raises(ValueError, match="required"):
         plot_training_curves(log_paths=[])
 
 
 def test_plot_training_curves_length_mismatch_raises(tmp_path):
-    from utils.plots.rps_prediction.training_curves import plot_training_curves
+    from plots.rps_prediction.training_curves import plot_training_curves
 
     log_path = tmp_path / "log.csv"
     log_path.write_text("epoch,train_mse\n1,5.0\n")

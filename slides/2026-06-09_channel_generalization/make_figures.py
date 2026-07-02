@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from plots.rps_prediction.sample_comparison import plot_sample_comparison
 from tasks.rps_prediction import HOP, N_FFT, SR_AUDIO, load_input_set, load_predictor
 from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
-from utils.plots.rps_prediction.sample_comparison import plot_sample_comparison
 
 FIG_DIR = Path(__file__).resolve().parent / "public"
 FIG_DIR.mkdir(exist_ok=True)

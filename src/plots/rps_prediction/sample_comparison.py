@@ -10,9 +10,9 @@ import numpy as np
 import torch
 import torchaudio
 
+from plots.timeframe import plot_timeframe
 from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
 from utils.data import EventSeries, TimeFrame, UniformSeries
-from utils.plots.timeframe import plot_timeframe
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 

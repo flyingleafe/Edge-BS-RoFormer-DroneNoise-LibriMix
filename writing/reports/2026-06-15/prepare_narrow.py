@@ -283,11 +283,11 @@ def plot_all_models_rps_narrow(sample_id, models, order):
     """Like P.plot_all_models_rps but with an explicit model order (incl. narrow keys)."""
     from typing import cast
 
+    from plots.rps_prediction.salience_comparison import model_rps_prediction, select_channel
+    from plots.rps_prediction.sample_comparison import _load_sample
+    from plots.timeframe.renderers import ROTOR_COLORS
     from tasks.rps_prediction import align_rps_to_gt
     from utils.data import EventSeries, UniformSeries
-    from utils.plots.rps_prediction.salience_comparison import model_rps_prediction, select_channel
-    from utils.plots.rps_prediction.sample_comparison import _load_sample
-    from utils.plots.timeframe.renderers import ROTOR_COLORS
 
     sample = _load_sample(str(P.DATASET / sample_id))
     mono = select_channel(cast(UniformSeries, sample["audio"]), P.CHANNEL)

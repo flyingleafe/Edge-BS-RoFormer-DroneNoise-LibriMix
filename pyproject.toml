@@ -44,13 +44,15 @@ dependencies = [
     "skypilot[kubernetes]>=0.11",
     "playwright>=1.52.0",
     "nnaudio>=0.3.4",
+    "tdseries>=0.1.0",
+    "hydra-core>=1.3.2",
 ]
 
 [project.scripts]
 postdoc = "postdoc.cli:main"
 postdoc-runner = "postdoc.queue:main"
 evaluate-rps = "tasks.cli:main"
-make-plot = "utils.plots.cli:app"
+make-plot = "plots.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -78,7 +80,17 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/postdoc", "src/utils", "src/tasks", "src/models", "data_processing"]
+packages = [
+    "src/postdoc",
+    "src/utils",
+    "src/tasks",
+    "src/models",
+    "src/data_processing",
+    "src/plots",
+    "src/losses",
+    "src/metrics",
+    "src/training",
+]
 
 [tool.ruff]
 target-version = "py312"

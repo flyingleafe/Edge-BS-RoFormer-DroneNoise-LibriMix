@@ -27,17 +27,17 @@ os.chdir(PROJECT_ROOT)
 
 from typing import cast
 
-from tasks.rps_prediction import align_rps_to_gt
-from train_rps_predictor import get_model
-from utils.data import EventSeries, UniformSeries
-from utils.plots.rps_prediction.salience_comparison import (
+from plots.rps_prediction.salience_comparison import (
     model_rps_prediction,
     model_salience_series,
     select_channel,
 )
-from utils.plots.rps_prediction.sample_comparison import _load_sample
-from utils.plots.timeframe.registry import TrackContext
-from utils.plots.timeframe.renderers import make_spectrogram_series, render_salience
+from plots.rps_prediction.sample_comparison import _load_sample
+from plots.timeframe.registry import TrackContext
+from plots.timeframe.renderers import make_spectrogram_series, render_salience
+from tasks.rps_prediction import align_rps_to_gt
+from train_rps_predictor import get_model
+from utils.data import EventSeries, UniformSeries
 
 SLIDE_DIR = pathlib.Path(__file__).parent.resolve()
 ASSETS = SLIDE_DIR / "assets"

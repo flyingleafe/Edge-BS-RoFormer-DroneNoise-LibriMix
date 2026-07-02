@@ -8,13 +8,13 @@ import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 
-from tasks.rps_prediction import HOP, N_FFT
-from utils.data import EventSeries, TimeFrame, UniformSeries
-from utils.plots.rps_prediction.sample_comparison import (
+from plots.rps_prediction.sample_comparison import (
     ROTOR_COLORS,
     _load_sample,
     _plot_spectrogram,
 )
+from tasks.rps_prediction import HOP, N_FFT
+from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
 def plot_slide_comparison(

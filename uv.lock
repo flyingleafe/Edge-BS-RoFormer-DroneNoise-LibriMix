@@ -1485,6 +1485,7 @@ dependencies = [
     { name = "demucs" },
     { name = "dvc", extra = ["s3"] },
     { name = "einops" },
+    { name = "hydra-core" },
     { name = "ipykernel" },
     { name = "ipython" },
     { name = "jupyter" },
@@ -1509,6 +1510,7 @@ dependencies = [
     { name = "seaborn" },
     { name = "skypilot", extra = ["kubernetes"] },
     { name = "soundfile" },
+    { name = "tdseries" },
     { name = "thop" },
     { name = "torch" },
     { name = "torch-log-wmse" },
@@ -1542,6 +1544,7 @@ requires-dist = [
     { name = "demucs", specifier = ">=4.0.1" },
     { name = "dvc", extras = ["s3"], specifier = ">=3.56" },
     { name = "einops", specifier = "==0.8.1" },
+    { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "ipython", specifier = ">=9.9.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
@@ -1566,6 +1569,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "skypilot", extras = ["kubernetes"], specifier = ">=0.11" },
     { name = "soundfile", specifier = "==0.13.1" },
+    { name = "tdseries", specifier = ">=0.1.0" },
     { name = "thop", specifier = "==0.1.1.post2209072238" },
     { name = "torch", specifier = "==2.7" },
     { name = "torch-log-wmse", specifier = "==0.3.0" },
@@ -5683,6 +5687,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
+]
+
+[[package]]
+name = "tdseries"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a6/93/569a31e0753f9d8f49b7d4acf0ad1d42e206d4629bb8dac76a6e695e2c5a/tdseries-0.1.0.tar.gz", hash = "sha256:fa7bee9a6dfc8617982c0c338c8e219aca965bb7b0da5033c03b360de93b0aca", size = 74827, upload-time = "2026-07-02T17:48:15.69Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/c3/a7a2daea260e4e9dd512958dc694e10e7a33e29a2e2dec011efc4d7aaf3e/tdseries-0.1.0-py3-none-any.whl", hash = "sha256:cf78aa6141f4be24732e0dca83ad5b7f8226878263f1f8d0dac2e0e42d642c84", size = 24165, upload-time = "2026-07-02T17:48:14.547Z" },
 ]
 
 [[package]]

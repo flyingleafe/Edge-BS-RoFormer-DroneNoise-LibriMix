@@ -14,7 +14,7 @@ from pathlib import Path
 
 import typer
 
-from utils.plots import get_plot_fn, list_plot_types
+from plots import get_plot_fn, list_plot_types
 
 app = typer.Typer(
     name="make-plot",
@@ -131,7 +131,7 @@ def main(
 
 def _import_plot_packages() -> None:
     """Import known plot sub-packages to trigger registration."""
-    for mod_name in ["utils.plots.rps_prediction", "utils.plots.timeframe"]:
+    for mod_name in ["plots.rps_prediction", "plots.timeframe"]:
         with contextlib.suppress(ImportError):
             importlib.import_module(mod_name)
 

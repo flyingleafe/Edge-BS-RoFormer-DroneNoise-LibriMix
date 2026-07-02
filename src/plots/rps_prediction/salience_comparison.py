@@ -7,7 +7,7 @@ it produces:
 * the input log-magnitude spectrogram (one selected channel),
 * one salience-heatmap row per model, with the ground-truth RPS (dotted) and the
   model's tracked RPS prediction (solid) overlaid — see the ``"salience"``
-  renderer in :mod:`utils.plots.timeframe.renderers`,
+  renderer in :mod:`plots.timeframe.renderers`,
 * a final RPS-trajectory row overlaying GT and every model's prediction.
 
 The inference helpers (:func:`model_salience_series`, :func:`model_rps_prediction`)
@@ -24,14 +24,14 @@ import torch
 
 from models.multif0.utils import cqt_freq_grid
 from models.salience_rps import SalienceRPSPredictor
-from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
-from utils.data import TimeFrame, UniformSeries
-from utils.plots.timeframe import plot_timeframe
-from utils.plots.timeframe.renderers import (
+from plots.timeframe import plot_timeframe
+from plots.timeframe.renderers import (
     ROTOR_COLORS,
     make_salience_series,
     make_spectrogram_series,
 )
+from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
+from utils.data import TimeFrame, UniformSeries
 
 __all__ = [
     "select_channel",
@@ -164,7 +164,7 @@ def plot_salience_comparison(
     ----------
     sample
         ``TimeFrame`` with ``"audio"`` and ``"rps"`` (GT) tracks (e.g. from
-        :func:`utils.plots.rps_prediction.sample_comparison._load_sample`).
+        :func:`plots.rps_prediction.sample_comparison._load_sample`).
     models
         ``{display_name: loaded_model}`` mapping. Each model must expose the
         salience interface (``forward`` → logits, ``predict_rps``, ``grid_params``,

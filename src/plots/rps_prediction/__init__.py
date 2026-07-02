@@ -6,7 +6,7 @@ Each plot function is registered by a dotted name::
     make-plot --type=rps_prediction.sample_comparison ...
 """
 
-from utils.plots import register as _register
+from plots import register as _register
 
 from .full_sequence import plot_full_sequence
 from .per_snr import plot_per_snr

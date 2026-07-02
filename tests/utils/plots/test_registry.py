@@ -1,4 +1,4 @@
-"""Smoke tests for `utils.plots` — registry and plot functions."""
+"""Smoke tests for `plots` — registry and plot functions."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ matplotlib.use("Agg")  # non-interactive backend
 
 import pytest
 
-from utils.plots import get_plot_fn, list_plot_types, register
+from plots import get_plot_fn, list_plot_types, register
 
 # ── Registry ─────────────────────────────────────────────────────────────
 

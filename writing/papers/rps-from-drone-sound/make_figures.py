@@ -35,9 +35,9 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
 
+from plots.rps_prediction import PLOT_TYPES  # noqa: E402
 from tasks.rps_prediction import load_predictor  # noqa: E402
 from utils.data import UniformSeries  # noqa: E402
-from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 ROTOR_LABELS = ["Rotor 1", "Rotor 2", "Rotor 3", "Rotor 4"]

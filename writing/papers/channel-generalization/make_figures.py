@@ -13,6 +13,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parents[2]))  # project root
 
+from plots.rps_prediction.sample_comparison import plot_sample_comparison
 from tasks.rps_prediction import (
     HOP,
     N_FFT,
@@ -21,7 +22,6 @@ from tasks.rps_prediction import (
     load_predictor,
 )
 from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
-from utils.plots.rps_prediction.sample_comparison import plot_sample_comparison
 
 # ─── Paths ─────────────────────────────────────────────────────────────────
 PROJECT = Path(__file__).parents[2]

@@ -3,7 +3,7 @@
 Build the classical baselines report using the unified RPS API.
 
 Replaces the old 810-line duo (generate_figures.py + evaluate_single_rotor.py)
-with a single script that uses tasks.rps_prediction and utils.plots.
+with a single script that uses tasks.rps_prediction and plots.
 
 Usage from project root:
     python papers/classical_baselines_report/build.py
@@ -30,6 +30,7 @@ import torchaudio
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from plots.rps_prediction import PLOT_TYPES  # noqa: E402
 from tasks.rps_prediction import (  # noqa: E402
     EvalResult,
     evaluate,
@@ -37,7 +38,6 @@ from tasks.rps_prediction import (  # noqa: E402
     load_predictor,
 )
 from utils.paths import get_data_path, get_datasets_path, get_results_path  # noqa: E402
-from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config

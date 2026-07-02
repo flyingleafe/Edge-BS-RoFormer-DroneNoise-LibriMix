@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from plots.timeframe import plot_timeframe
+from plots.timeframe.registry import resolve_renderer_key, resolve_title
 from utils.data import EventSeries, SegmentSeries, TimeFrame, UniformSeries
-from utils.plots.timeframe import plot_timeframe
-from utils.plots.timeframe.registry import resolve_renderer_key, resolve_title
 
 
 def test_mono_audio_and_rps():

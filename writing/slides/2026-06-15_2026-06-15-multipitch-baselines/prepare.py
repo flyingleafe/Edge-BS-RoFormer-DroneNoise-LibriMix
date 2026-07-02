@@ -25,14 +25,14 @@ import numpy as np
 import torch
 
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
-from tasks.rps_prediction import align_rps_to_gt
-from utils.plots.rps_prediction.salience_comparison import (
+from plots.rps_prediction.salience_comparison import (
     model_rps_prediction,
     model_salience_series,
     plot_salience_comparison,
     select_channel,
 )
-from utils.plots.rps_prediction.sample_comparison import _load_sample
+from plots.rps_prediction.sample_comparison import _load_sample
+from tasks.rps_prediction import align_rps_to_gt
 
 # ── paths ───────────────────────────────────────────────────────────────
 SLIDE_DIR = pathlib.Path(__file__).parent.resolve()
@@ -244,8 +244,8 @@ plt.close(fig)
 print(f"Saved: {SAMPLE_ID}_salience_all_models.png")
 
 # Generate individual per-model figures: 3-pane (spectrogram + salience + RPS)
-from utils.plots.timeframe.registry import TrackContext
-from utils.plots.timeframe.renderers import make_spectrogram_series, render_salience
+from plots.timeframe.registry import TrackContext
+from plots.timeframe.renderers import make_spectrogram_series, render_salience
 
 audio_us = sample["audio"]
 mono = select_channel(audio_us, CHANNEL)
