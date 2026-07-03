@@ -1,0 +1,12 @@
+# @package _global_
+# Diffusion-Buffer BBED SDE model on DN-LM; historically eval-only in this repo (pretrained checkpoint expected) — see REPLICATION.md § A2 for the K=128-frame/hop=256 chunking mismatch caveat.
+defaults:
+  - override /data: dn_lm
+  - override /model: a2_diffusion_buffer_bbed
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: a2_diffusion_buffer_bbed
+optim:
+  monitor: si_sdr
+  monitor_mode: max

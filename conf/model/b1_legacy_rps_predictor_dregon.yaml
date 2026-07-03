@@ -1,0 +1,14 @@
+# b1_legacy_rps_predictor_dregon — standalone RPS predictor via the LEGACY
+# utils.get_model_from_config `rps_predictor` model_type (configs/11c —
+# distinct from the modern models.registry.RPS_MODEL_REGISTRY route used by
+# conf/model/simple_conv_v2.yaml and siblings; see REPLICATION.md § Part 3
+# for the dispatch-table ambiguity). task=rps_prediction (no speech head).
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: null
+params: {}
+model_type: rps_predictor
+legacy_config_path: configs/11c_RPSPredictor_DREGON.yaml

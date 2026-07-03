@@ -20,6 +20,7 @@ from metrics.rps import (
     rps_r2,
     rps_rmse,
 )
+from metrics.salience import SalienceBCEMetric
 from metrics.separation import (
     AuraMRSTFTMetric,
     AuraSTFTMetric,
@@ -83,6 +84,8 @@ __all__ = [
     "rps_r2",
     "RPSMetric",
     "rps_metric_suite",
+    # salience
+    "SalienceBCEMetric",
     # perf
     "compute_rtf",
     "measure_inference",

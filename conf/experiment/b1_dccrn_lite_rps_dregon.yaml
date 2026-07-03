@@ -1,0 +1,12 @@
+# @package _global_
+# DCCRNLite (embedded-deployment variant) + RPS fusion on DREGON-LM.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dccrn_lite_rps_dregon
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b1_dccrn_lite_rps_dregon
+optim:
+  monitor: si_sdr
+  monitor_mode: max

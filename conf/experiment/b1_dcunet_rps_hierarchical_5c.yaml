@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNet + encoder-side hierarchical RPS fusion, 5-layer. Dataset ambiguous — see REPLICATION.md § B1 caveat.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dcunet_rps_hierarchical_5c
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b1_dcunet_rps_hierarchical_5c
+optim:
+  monitor: si_sdr
+  monitor_mode: max

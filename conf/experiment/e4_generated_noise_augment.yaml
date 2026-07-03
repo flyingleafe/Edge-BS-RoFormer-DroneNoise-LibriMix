@@ -1,0 +1,29 @@
+# @package _global_
+# E4 — RPS training (simple_conv_v2) augmented with a live GENERATED noise
+# source (frozen, pretrained PositionalHarmonicNoiseGen rendered by a
+# background producer process — data_processing.generated_noise.GeneratedNoisePool),
+# ~1/3 of noise batches synthetic. See conf/data/online_mix_generated_augment.yaml
+# for the hard prerequisite (noise-gen checkpoint must exist) and REPLICATION.md
+# § E4 for status (code done + CPU-smoke verified; no GPU run recorded yet —
+# reproducing this config runs the *intended* experiment, not a verified result).
+# A/B baseline arm (same sources, no synthetic augmentation):
+# conf/experiment/e4_no_aug_baseline.yaml. Historical command:
+# train_rps_predictor.py --model simple_conv_v2 --data_root
+# datasets/DREGON-LM-V4-michaels --online_mix --mix_config
+# configs/online_mix_generated_augment_example.yaml --samples_per_validation
+# 5000 --pit_loss --epochs 200 --patience 50 --batch_size 16 --num_workers 6.
+defaults:
+  - override /data: online_mix_generated_augment
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e4_generated_noise_augment
+epochs: 200
+patience: 50
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  monitor: mse
+  monitor_mode: min

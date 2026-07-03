@@ -32,6 +32,7 @@ from models.multif0.utils import (
     cqt_freq_grid,
     linear_freq_grid,
     rps_to_salience,
+    salience_target_from_resampled_rps,
     salience_to_rps_segmented,
 )
 
@@ -81,9 +82,7 @@ class FreqSuperResHead(nn.Module):
         n_layers: int = 2,
     ):
         super().__init__()
-        self.register_buffer(
-            "W", torch.from_numpy(_freq_interp_matrix(in_freqs, out_freqs))
-        )
+        self.register_buffer("W", torch.from_numpy(_freq_interp_matrix(in_freqs, out_freqs)))
         pad = kernel // 2
         layers: list[nn.Module] = []
         ch_in = 1
@@ -239,33 +238,9 @@ class SalienceRPSPredictor(nn.Module):
         rps_grid = F.interpolate(
             rps_frames.float(), size=n_grid, mode="linear", align_corners=False
         )
-
-        freqs_t = torch.as_tensor(
-            self.output_freqs(), dtype=rps_grid.dtype, device=rps_grid.device
+        salience = salience_target_from_resampled_rps(
+            rps_grid, self.output_freqs(), blur_bins=blur_bins
         )
-        B, R, _T = rps_grid.shape
-        n_bins = int(freqs_t.numel())
-
-        dists = (rps_grid.unsqueeze(2) - freqs_t.view(1, 1, n_bins, 1)).abs()
-        nearest_bin = dists.argmin(dim=2)  # (B, 4, T_grid)
-        active = rps_grid > 0.1
-
-        salience = torch.zeros(B, n_bins, n_grid, device=rps_grid.device, dtype=rps_grid.dtype)
-        b_idx = torch.arange(B, device=rps_grid.device).view(B, 1, 1).expand(-1, R, n_grid)
-        t_idx = torch.arange(n_grid, device=rps_grid.device).view(1, 1, -1).expand(B, R, -1)
-        salience[b_idx[active], nearest_bin[active], t_idx[active]] = 1.0
-        salience = salience.clamp(0, 1)
-
-        if blur_bins > 0:
-            k = int(blur_bins)
-            ramp = torch.arange(1, k + 1, device=salience.device, dtype=salience.dtype)
-            kernel = torch.cat(
-                [ramp, torch.tensor([k + 1.0], device=salience.device), ramp.flip(0)]
-            )
-            kernel = (kernel / kernel.max()).view(1, 1, -1)
-            sal_f = salience.permute(0, 2, 1).reshape(B * n_grid, 1, n_bins)
-            sal_f = F.conv1d(sal_f, kernel, padding=k)
-            salience = sal_f.reshape(B, n_grid, n_bins).permute(0, 2, 1).clamp(0, 1)
 
         if not was_batched:
             salience = salience.squeeze(0)
@@ -299,7 +274,10 @@ class SalienceRPSPredictor(nn.Module):
         """
         if chunk_size and chunk_size > 0 and audio.shape[0] > chunk_size:
             logits = torch.cat(
-                [self.forward(audio[i : i + chunk_size]) for i in range(0, audio.shape[0], chunk_size)],
+                [
+                    self.forward(audio[i : i + chunk_size])
+                    for i in range(0, audio.shape[0], chunk_size)
+                ],
                 dim=0,
             )
         else:

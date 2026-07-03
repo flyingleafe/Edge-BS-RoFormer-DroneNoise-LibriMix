@@ -1,0 +1,12 @@
+# b1_dcunet_rpsonly_dregon — DCUNet encoder + RPSPredictionHead, RPS-only loss (no speech-enhancement loss — see the paired b1_dcunet_rpsonly loss/experiment note in REPLICATION.md § B1).
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: true
+  predict_rps: true
+  sr: [16000, 1]
+  rps_rate: [16000, 512]
+_target_: null
+params: {}
+model_type: dcunet
+legacy_config_path: configs/11a_DCUNet_RPSOnly_DREGON.yaml

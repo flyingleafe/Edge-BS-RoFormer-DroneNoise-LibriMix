@@ -23,4 +23,4 @@ Jupyter notebooks provide interactive exploration that scripts and CLI tools can
 
 - Notebooks may reference `results/` data that needs syncing first (`./sync_results.sh`)
 - `.ipynb_checkpoints/` is gitignored
-- For publication figures, prefer `generate_comparison.py` and `plot_per_snr.py` (root scripts) — see `generate-model-comparisons` skill
+- For publication figures, prefer `eval.py` + `src/plots` comparison plots (absorbs the former `generate_comparison.py`/`plot_per_snr.py`) — see `generate-model-comparisons` skill

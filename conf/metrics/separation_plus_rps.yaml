@@ -1,0 +1,23 @@
+# Combined speech-separation + PIT-aware RPS metric suite, for
+# speech_enhancement experiments with an auxiliary RPS-prediction head
+# (predict_rps: true — B1/B2 PredRPS families). Set optim.monitor: si_sdr /
+# optim.monitor_mode: max (primary task is enhancement; RPS is a regularizer).
+terms:
+  - name: si_sdr
+    _target_: metrics.SISDRMetric
+    params: {n_channels: null, sr: [16000, 1]}
+  - name: sdr
+    _target_: metrics.SDRMetric
+    params: {n_channels: null, sr: [16000, 1]}
+  - name: rps_mse
+    _target_: metrics.RPSMetric
+    params: {stat: mse, rate: [16000, 512]}
+  - name: rps_rmse
+    _target_: metrics.RPSMetric
+    params: {stat: rmse, rate: [16000, 512]}
+  - name: rps_mae_frame
+    _target_: metrics.RPSMetric
+    params: {stat: mae_frame, rate: [16000, 512]}
+  - name: rps_r2
+    _target_: metrics.RPSMetric
+    params: {stat: r2, rate: [16000, 512]}

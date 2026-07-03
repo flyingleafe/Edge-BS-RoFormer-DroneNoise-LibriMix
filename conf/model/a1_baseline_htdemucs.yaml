@@ -1,0 +1,11 @@
+# a1_baseline_htdemucs — HTDemucs baseline (Paper 1 comparison point), no RPS. DN-LM. See REPLICATION.md § A1.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr: [16000, 1]
+_target_: null
+params: {}
+model_type: htdemucs
+legacy_config_path: configs/8_Baseline_htdemucs.yaml

@@ -1,0 +1,12 @@
+# @package _global_
+# DCCRN encoder + RPSPredictionHead, RPS-only loss on DREGON-LM.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dccrn_rpsonly_dregon
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: b1_dccrn_rpsonly_dregon
+optim:
+  monitor: mse
+  monitor_mode: min

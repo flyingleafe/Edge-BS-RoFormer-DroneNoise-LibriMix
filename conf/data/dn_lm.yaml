@@ -1,0 +1,25 @@
+# DN-LM (DroneNoise-LibriMix, Paper 1): mixture.wav + vocals.wav per
+# sample_* directory, no per-sample RPS label (predates DREGON-LM's
+# rps.npy convention). Loader: data_processing.frame_datasets.DNLMFrameDataset
+# (new — see docs/refactor-unified-framework.md "Execution waves" wave 4 and
+# REPLICATION.md § A1/A2). Create with:
+#   python create_dataset.py --speech_dir <LibriSpeech train-clean-100> \
+#     --noise_dir <drone-audio source> --output_dir datasets/DN-LM \
+#     --train_samples 6480 --valid_samples 720 --sample_duration 1.0 \
+#     --sample_rate 16000 --snr_min -30 --snr_max 0 --seed 42
+# (README.md's historical --train_samples 6480; replicate_paper.py's current
+# default is 64800 — see REPLICATION.md caveat.)
+train:
+  _target_: data_processing.frame_datasets.DNLMFrameDataset
+  params:
+    data_dir: datasets/DN-LM/train
+    sample_rate: 16000
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DNLMFrameDataset
+  params:
+    data_dir: datasets/DN-LM/valid
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

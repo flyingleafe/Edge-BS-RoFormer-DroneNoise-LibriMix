@@ -1,0 +1,11 @@
+# a2_diffusion_buffer_bbed — Diffusion-Buffer BBED SDE model (paper-exact hyperparams: n_fft/hop=510/256, differs from A1's 2048/512 — internal to the legacy config, not a task_params field). DN-LM; eval-only in this repo historically (pretrained checkpoint expected). See REPLICATION.md § A2.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr: [16000, 1]
+_target_: null
+params: {}
+model_type: diffusion_buffer
+legacy_config_path: configs/9_Diffusion_Buffer_BBED.yaml

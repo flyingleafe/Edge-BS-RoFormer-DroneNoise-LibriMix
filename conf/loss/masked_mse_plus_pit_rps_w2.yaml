@@ -1,0 +1,14 @@
+# Speech-enhancement masked MSE + weighted PIT-MSE auxiliary RPS loss (rps_aux_weight=2.0) — historical combined loss for configs/10d_DCCRN_RPS_PredRPS_DREGON.yaml (predict_rps=true). See REPLICATION.md § B1.
+terms:
+  - name: masked_mse
+    _target_: losses.MaskedLoss
+    weight: 1.0
+    params:
+      q: 0.9
+      n_channels: null
+      sr: [16000, 1]
+  - name: pit_mse_rps_aux
+    _target_: losses.PITMSELoss
+    weight: 2.0
+    params:
+      rate: [16000, 512]

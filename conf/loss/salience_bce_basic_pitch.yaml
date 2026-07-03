@@ -1,0 +1,18 @@
+# BCE-on-RPS-derived-salience, basic_pitch_salience baseline grid: fmin=27.5
+# (A0), 264 contour bins, 36 bins/octave (3 bins/semitone x 88 semitones —
+# BasicPitchSalience's own defaults). blur_bins=2 / pos_weight=auto mirror
+# train_rps_predictor.py's --salience_blur_bins/--bce_pos_weight defaults.
+# rate=[16000,256] is the contour front-end's native time grid (native 16
+# kHz, FFT_HOP=256 always, independent of sample rate).
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      fmin: 27.5
+      n_bins: 264
+      bins_per_octave: 36
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

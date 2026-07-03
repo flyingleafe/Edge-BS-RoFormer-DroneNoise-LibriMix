@@ -1,0 +1,11 @@
+# b1_dccrn_baseline_dregon — DCCRN baseline, no RPS, on DREGON-LM.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr: [16000, 1]
+_target_: null
+params: {}
+model_type: dccrn
+legacy_config_path: configs/10a_DCCRN_baseline_DREGON.yaml

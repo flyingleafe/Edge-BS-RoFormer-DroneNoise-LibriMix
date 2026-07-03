@@ -1,0 +1,14 @@
+# Validation-time BCE-on-salience metric, multif0_salience baseline grid —
+# mirrors conf/loss/salience_bce_multif0.yaml exactly (same grid/blur/pos_weight)
+# so `optim.monitor: bce` tracks the same objective on the validation split.
+terms:
+  - name: bce
+    _target_: metrics.SalienceBCEMetric
+    params:
+      fmin: 32.7
+      n_octaves: 6
+      over_sample: 5
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

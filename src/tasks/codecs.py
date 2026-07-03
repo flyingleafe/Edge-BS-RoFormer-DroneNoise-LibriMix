@@ -23,7 +23,9 @@ from typing import Any, Protocol, runtime_checkable
 import tdseries as td
 import torch
 
+from data_processing.frames import meta_dict
 from losses._common import get_tensor
+from tasks.noise_generation import geometry_to_rel_pos
 from tasks.task import AUDIO_RATE
 
 __all__ = [
@@ -229,30 +231,80 @@ class SalienceRPSCodec:
 
 
 class NoiseGenerationCodec:
-    """Codec for ``tasks.task.noise_generation``: RPS + geometry in, ``audio`` out."""
+    """Codec for ``tasks.task.noise_generation``: RPS + geometry in, ``audio`` out.
 
-    def __init__(self, *, sr: tuple[int, int] = AUDIO_RATE) -> None:
+    Fixes the codec/model signature mismatch documented in
+    REPLICATION.md § "E1/E2/E3 — noise-generation training": ``mic_pos``/
+    ``rotor_pos`` (the Frame's geometry entries) are turned into the
+    ``rel_pos`` tensor :class:`~models.generative.PositionalHarmonicNoiseGen.forward`
+    actually wants via :func:`tasks.noise_generation.geometry_to_rel_pos`
+    (batched-tensor path). ``conditioned=True`` additionally resolves each
+    sample's per-drone identity from ``batch["meta"]["drone"]`` (a string
+    per sample, e.g. ``"dregon"``/``"michaels"`` — see
+    :class:`~data_processing.frame_datasets.NoiseGenFrameDataset`) and
+    passes it through as ``drone_names`` for the model to resolve a
+    conditioning code ``z`` via its own (trainable, checkpoint-persisted)
+    ``tasks.noise_generation.DroneCodebook`` submodule — see
+    ``models.registry.build_noise_gen_model``'s ``drone_names`` argument and
+    ``src/tasks/noise-generation/AGENTS.md`` for why the codebook lives
+    inside "the model" rather than the codec (the training loop's
+    checkpoint/optimizer contract is exactly one ``model.state_dict()``).
+    ``return_dict=True`` requests the emitter's internal control curves
+    (``harm_amps``/``noise_amps``) as extra pred entries, for E3's
+    smoothness regularisers (``losses.SmoothnessPenalty``).
+    """
+
+    def __init__(
+        self,
+        *,
+        sr: tuple[int, int] = AUDIO_RATE,
+        conditioned: bool = False,
+        return_dict: bool = False,
+        default_drone: str = "dregon",
+    ) -> None:
         self.sr = sr
+        self.conditioned = conditioned
+        self.return_dict = return_dict
+        self.default_drone = default_drone
 
-    def to_inputs(self, batch: td.Frame) -> dict[str, torch.Tensor]:
-        inputs = {
+    def to_inputs(self, batch: td.Frame) -> dict[str, Any]:
+        mic_pos = get_tensor(batch, "mic_pos")  # (B, M, 3)
+        rotor_pos = get_tensor(batch, "rotor_pos")  # (B, R, 3)
+        inputs: dict[str, Any] = {
             "rps": get_tensor(batch, "rps"),
-            "mic_pos": get_tensor(batch, "mic_pos"),
-            "rotor_pos": get_tensor(batch, "rotor_pos"),
+            "rel_pos": geometry_to_rel_pos(mic_pos, rotor_pos),  # (B, M, R, 3)
         }
-        if "drone_id" in batch:
-            inputs["drone_id"] = get_tensor(batch, "drone_id")
+        if self.conditioned:
+            names = meta_dict(batch).get("drone")
+            if names is None:
+                names = [self.default_drone] * int(inputs["rps"].shape[0])
+            inputs["drone_names"] = list(names)
         return inputs
 
     def to_frame(self, outputs: Any, batch: td.Frame) -> td.Frame:
+        if isinstance(outputs, dict):
+            entries: dict[str, Any] = {
+                "audio": _batched_series(outputs["audio"], ("batch", "mic", "time"), self.sr)
+            }
+            if "harm_amps" in outputs:
+                entries["harm_amps"] = td.wrap(
+                    outputs["harm_amps"], dims=("batch", "rotor", None, None, None)
+                )
+            if "noise_amps" in outputs:
+                entries["noise_amps"] = td.wrap(
+                    outputs["noise_amps"], dims=("batch", "rotor", None, None)
+                )
+            return td.Frame(entries)
         audio, _aux = _split_model_output(outputs)
         return td.Frame({"audio": _batched_series(audio, ("batch", "mic", "time"), self.sr)})
 
     def call_model(self, model: Any, inputs: dict[str, torch.Tensor]) -> Any:
-        kwargs = {"mic_pos": inputs["mic_pos"], "rotor_pos": inputs["rotor_pos"]}
-        if "drone_id" in inputs:
-            kwargs["drone_id"] = inputs["drone_id"]
-        return model(inputs["rps"], **kwargs)
+        kwargs: dict[str, Any] = {}
+        if self.return_dict:
+            kwargs["return_dict"] = True
+        if self.conditioned:
+            return model(inputs["rps"], inputs["rel_pos"], inputs["drone_names"], **kwargs)
+        return model(inputs["rps"], inputs["rel_pos"], **kwargs)
 
 
 CODEC_FACTORIES = {

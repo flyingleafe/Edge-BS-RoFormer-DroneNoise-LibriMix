@@ -143,6 +143,30 @@ rclone mount r2:hns-research/ ./r2-mount \
 `--vfs-cache-max-size` gives you the LRU-capped local mirror behavior
 natively, no custom code.
 
+## Training artifacts (checkpoints + val samples) → R2
+
+Since the unified `train.py`, checkpoints **and** a selection of validation
+samples (audio + figures) also upload directly to the Cloudflare R2 bucket
+`ml-data`, in addition to the wandb-artifact checkpoint flow above. This is
+handled by `src/training/artifacts.py::ArtifactStore` — not DVC, and not the
+`dvc`/`wandb.use_artifact` flow described above.
+
+- **Where**: `s3://ml-data/artifacts/<experiment_name>/checkpoints/<filename>.ckpt`
+  and `s3://ml-data/artifacts/<experiment_name>/val_samples/epoch_<N>/...`
+  (`bucket`/`prefix` are configurable; defaults are `ml-data`/`artifacts`).
+- **Client**: `s3fs.S3FileSystem` (not `boto3`) pointed at the same R2
+  S3-compatible endpoint used by DVC (`https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`).
+- **Credentials**: the same `.env` vars as the DVC setup above —
+  `R2_ACCOUNT_ID`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. If any are
+  missing, or `artifacts.enabled=false` in the Hydra config, every
+  `ArtifactStore` method becomes a no-op (one log line, no exception) — a
+  broken/absent artifact store never fails training.
+- **wandb linkage**: each training run's wandb summary carries `r2/*` URIs
+  pointing at the uploaded checkpoint/val-sample objects, so a wandb run page
+  is still the starting point for finding an R2 artifact.
+- Config seam: `conf/artifacts/r2.yaml` (selected via the `artifacts:` Hydra
+  default group in `conf/config.yaml`).
+
 ## Gotchas
 
 - **`dvc push` is per-commit, not per-session.** After `dvc add`, remember to

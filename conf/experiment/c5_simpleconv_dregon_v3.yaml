@@ -1,0 +1,22 @@
+# @package _global_
+# C5 — DREGON-LM-V3 baseline: `simple_conv` on 1 s clips. Historical training
+# used plain (non-PIT) MSE (`--no_pit_loss`); this encoding uses `pit_mse`
+# instead — a deliberate, documented deviation (PIT is the current best
+# practice per the C9 channel-generalization finding), see
+# REPLICATION.md § C5. R² is degenerate on this dataset (near-constant RPS
+# per 1 s clip); trust MSE/MAE. Historical command: train_rps_predictor.py
+# --model simple_conv --data_root datasets/DREGON-LM-V3 --no_pit_loss
+# --epochs 200 --patience 30 --batch_size 128.
+defaults:
+  - override /data: dregon_lm_v3
+  - override /model: simple_conv
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: c5_simpleconv_dregon_v3
+epochs: 200
+patience: 30
+batch_size: 128
+optim:
+  monitor: mse
+  monitor_mode: min

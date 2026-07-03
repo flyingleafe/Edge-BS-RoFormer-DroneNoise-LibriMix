@@ -1,0 +1,13 @@
+# Multi-Resolution STFT quality metric for noise-generation (E2/E3) —
+# reuses the existing generic metrics.AuraMRSTFTMetric (higher = better,
+# rescaled to [0,100]) rather than adding a bespoke metric class; pred/target
+# both read the "audio" key (see conf/loss/multiscale_stft.yaml).
+terms:
+  - name: mrstft
+    _target_: metrics.AuraMRSTFTMetric
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      sample_rate: 16000
+      pred_key: audio
+      target_key: audio

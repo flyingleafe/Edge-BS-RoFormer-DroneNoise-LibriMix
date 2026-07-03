@@ -1,0 +1,18 @@
+# simple_conv_v2_uni_gru96_norm_do03 — rps_prediction, from the RPS-model registry
+# (src/models/registry.py::RPS_MODEL_REGISTRY). Same n_fft/hop/num_rotors as
+# simple_conv_v2.yaml (the reference SimpleConv-family template) — only
+# `params.name` differs. Part of the C3/C6 (10-variant) and/or C10
+# (26-variant) SimpleConv architecture sweeps — see REPLICATION.md.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_uni_gru96_norm_do03
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

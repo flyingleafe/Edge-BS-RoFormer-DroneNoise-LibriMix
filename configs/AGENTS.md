@@ -1,10 +1,10 @@
-# configs/ — Model Configuration Files
+# configs/ — Legacy Model Configuration Files + Online-Mixing Policies
 
-YAML configuration files that define model architectures, training hyperparameters, and dataset parameters. Loaded by `train.py` via `ml_collections.ConfigDict` (or `OmegaConf` for HTDemucs).
+YAML configuration files that define model architectures and training hyperparameters for the **legacy** `utils.get_model_from_config()` model dispatch (28+ model types), loaded via `ml_collections.ConfigDict` (or `OmegaConf` for HTDemucs). The unified `train.py`/`eval.py` (Hydra) reaches these through `legacy_config_path` on a `conf/model/*.yaml` entry — see `docs/refactor-unified-framework.md` § "Hydra config architecture". This directory also still holds the durable `online_mix_*.yaml` dataloader policies, referenced from `conf/data/*.yaml` entries that wrap `OnlineMixIterableDataset` (unrelated to the legacy model configs above, just co-located for now).
 
 ## Why this directory exists
 
-Separates experiment configuration from code. Each config YAML is a self-contained experiment specification that can be version-controlled and referenced by experiment YAMLs.
+Separates experiment configuration from code. Each model config YAML is a self-contained architecture/training specification that legacy `conf/model` entries point to via `legacy_config_path`; `online_mix_*.yaml` policies are independently referenced by `conf/data` entries.
 
 ## Naming Convention
 
@@ -26,7 +26,7 @@ Config files follow a numbered prefix pattern reflecting experiment history:
 | `12a-c_DCUNetRefactored_*.yaml` | DCUNetRefactored variants |
 | `13a-d_*.yaml` | Refactored models + auxiliary RPS prediction |
 | `test_cpu_*.yaml` | CPU-only test configs |
-| `online_mix_*.yaml` | Online-mixing RPS dataloader policies consumed by `train_rps_predictor.py --online_mix --mix_config ...` |
+| `online_mix_*.yaml` | Online-mixing RPS dataloader policies consumed by a `conf/data/*.yaml` entry that wraps `OnlineMixIterableDataset` (e.g. `conf/data/online_mix_v4_michaels.yaml`), used by `python train.py data=<that entry> ...` |
 
 ## Key Config Fields
 
@@ -44,8 +44,11 @@ Config files follow a numbered prefix pattern reflecting experiment history:
 ## Online-mixing configs
 
 These are not model-architecture configs. They define the online RPS dataloader
-policy for `data_processing/online_mixing.py` and are loaded with OmegaConf by
-`train_rps_predictor.py` when `--online_mix --mix_config <path>` is passed.
+policy for `src/data_processing/online_mixing.py` and are loaded with OmegaConf
+by a `conf/data/*.yaml` entry that instantiates `OnlineMixIterableDataset.from_yaml`
+(or `OnlineMixFrameDataset.from_yaml`) with `path: configs/online_mix_*.yaml` — see
+`conf/data/online_mix_v4_michaels.yaml` for the current wiring pattern, and
+`train.py` (the unified Hydra entry point) for how `data=<name>` selects it.
 
 Current durable configs:
 
@@ -73,23 +76,23 @@ Important fields:
 Minimal launch pattern:
 
 ```bash
-python train_rps_predictor.py \
-  --model simple_conv_v2 \
-  --device cuda:0 \
-  --epochs 200 --patience 50 --batch_size 16 \
-  --data_root datasets/DREGON-LM-V4-michaels \
-  --online_mix \
-  --mix_config configs/online_mix_v4_michaels_train_no_room1_no_aug.yaml \
-  --samples_per_validation 5000 \
-  --pit_loss
+python train.py experiment=<name_composing_the_online_mix_data_entry> \
+  batch_size=16 epochs=200 patience=50 samples_per_validation=5000
 ```
+
+where the experiment file overrides `data: online_mix_v4_michaels` (or a sibling
+`conf/data/*.yaml` pointed at a different `online_mix_*.yaml` policy) and
+`model: simple_conv_v2`, `loss: pit_mse`. See `conf/data/online_mix_v4_michaels.yaml`
+for the current train/valid wiring (train = `OnlineMixFrameDataset.from_yaml` over
+`configs/online_mix_v4_michaels_train_no_room1.yaml`; valid = fixed
+`DregonLMFrameDataset` over `datasets/DREGON-LM-V4-michaels/valid`).
 
 ## Creating a New Config
 
 1. Copy the closest existing config as a starting point
 2. Modify model, training, and dataset fields
 3. Use the next available number prefix
-4. Reference it from an experiment YAML in `experiments/`
+4. Point a `conf/model/*.yaml` entry's `legacy_config_path` at it, then reference that `conf/model` entry from a `conf/experiment/<name>.yaml` (see `experiments/AGENTS.md` for the historical `experiments/` YAML format this supersedes)
 
 ## Gotchas
 

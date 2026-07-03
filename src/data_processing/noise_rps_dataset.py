@@ -287,6 +287,7 @@ def build_noise_rps_datasets(
     train_samples: int = 4096,
     val_samples: int = 512,
     val_pct: float = 0.1,
+    val_at_start: bool = False,
     seed: int = 42,
     cache_dir: str | Path | None = None,
     **dataset_kwargs,
@@ -305,7 +306,15 @@ def build_noise_rps_datasets(
         sample_rate: target audio sample rate.
         chunk_size: chunk length in samples.
         train_samples / val_samples: virtual epoch sizes.
-        val_pct: fraction of each recording held out at the end for validation.
+        val_pct: fraction of each recording held out for validation.
+        val_at_start: hold out the *first* `val_pct` fraction of each
+            recording for validation instead of the last (train:
+            `[t_start+cut, t_end]`, val: `[t_start, t_start+cut]`). A
+            "swapped-split" knob for noise-generation experiments (see
+            REPLICATION.md § E2/E3) — not a room-level DREGON split (this
+            loader pools all `in_flight_noise` recordings together, it does
+            not select by recording id), just which end of each recording's
+            time axis is held out.
         seed: RNG seed.
         cache_dir: where to cache resampled DREGON audio (kept for API compat).
         **dataset_kwargs: forwarded to `NoiseRPSDataset` (e.g. rps_normalize).
@@ -323,10 +332,15 @@ def build_noise_rps_datasets(
     val_sources: list[_ChunkSource] = []
     for src in sources:
         tf = src.frame
-        cut = src.duration * (1.0 - val_pct)
-        # Train: time[t_start, t_start+cut]  |  Val: time[t_start+cut, t_end]
-        train_tf = tf.time[tf.t_start : tf.t_start + cut]
-        val_tf = tf.time[tf.t_start + cut : tf.t_end]
+        cut = src.duration * (1.0 - val_pct) if not val_at_start else src.duration * val_pct
+        if val_at_start:
+            # Val: [t_start, t_start+cut]  |  Train: [t_start+cut, t_end]
+            val_tf = tf.time[tf.t_start : tf.t_start + cut]
+            train_tf = tf.time[tf.t_start + cut : tf.t_end]
+        else:
+            # Train: [t_start, t_start+cut]  |  Val: [t_start+cut, t_end]
+            train_tf = tf.time[tf.t_start : tf.t_start + cut]
+            val_tf = tf.time[tf.t_start + cut : tf.t_end]
         if train_tf["audio"].duration >= chunk_size / sample_rate:
             train_sources.append(_wrap_frame(train_tf, origin=src.origin, rps_key=src.rps_key))
         if val_tf["audio"].duration >= chunk_size / sample_rate:

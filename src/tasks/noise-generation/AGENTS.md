@@ -20,20 +20,42 @@ class NoiseGenerator(nn.Module):
 
 - **Input rate**: 16 kHz; `rps` is upsampled to the audio grid (not the STFT grid).
 - **Geometry as input**: microphone/rotor positions are non-temporal array
-  metadata, carried in `TimeFrame.global_data` (`mic_positions (M,3)`,
-  `rotor_positions (R,3)`). `tasks.noise_generation.geometry_to_rel_pos` turns
-  them into `rel_pos[m, r] = mic[m] - rotor[r]`. Geometry is fixed per array:
-  `data_processing.dregon.get_geometry()` (DREGON 8-mic) and
-  `data_processing.michaels.get_geometry()` (Michael's circular 8-mic ring on a
-  DJI Matrice 100 — derived from the rig photos in
+  metadata, carried as Frame entries `mic_pos (M,3)`/`rotor_pos (R,3)` (dims
+  `("mic", None)`/`("rotor", None)`). `tasks.noise_generation.geometry_to_rel_pos`
+  turns them into `rel_pos[m, r] = mic[m] - rotor[r]` — it now has **two
+  dispatch paths**: the original unbatched-numpy `(M,3),(R,3) -> (M,R,3)`
+  (report/notebook figure scripts, `data_processing.generated_noise`) and a
+  batched-torch `(B,M,3),(B,R,3) -> (B,M,R,3)` path (differentiable,
+  on-device), used by `tasks.codecs.NoiseGenerationCodec` — which now
+  correctly builds `rel_pos` from a training batch's `mic_pos`/`rotor_pos`
+  entries before calling the model (the fix for the codec/model signature
+  mismatch REPLICATION.md § E2/E3 used to document as an open bug). Geometry
+  is fixed per array: `data_processing.dregon.get_geometry()` (DREGON 8-mic)
+  and `data_processing.michaels.get_geometry()` (Michael's circular 8-mic ring
+  on a DJI Matrice 100 — derived from the rig photos in
   `data/recording_with_motor_speed/`; rotor rows ordered RFront, LFront, LBack,
-  RBack to match the telemetry). Select with `train_noise_generation.py
-  --geometry {dregon,michaels}`.
+  RBack to match the telemetry). Geometry selection (`{dregon,michaels}`) was a
+  `--geometry` flag on the deleted `train_noise_generation.py`; the unified
+  framework now resolves geometry per-chunk via the data source instead — see
+  "Training integration" below (`conf/model/positional_harmonic_gen{,_conditioned}.yaml`,
+  `conf/data/noise_rps_dregon_michaels{,_swapped}.yaml`,
+  `conf/experiment/e2_noise_gen_dregon_michaels.yaml`/
+  `e3_noise_gen_swapped_smoothness.yaml` — REPLICATION.md § E2/E3).
+  Report/notebook scripts (e.g. `notebooks/noise_gen_real_vs_generated.ipynb`)
+  still use `src/models/registry.py::build_noise_gen_model` directly to
+  reconstruct a generator against a chosen geometry outside the training loop.
 
-  **Mixed-geometry datasets** (DREGON + Michael's chunks together) are not yet
-  supported: the dataset attaches one geometry to all chunks, so train per
-  source for now. Supporting mixtures means persisting positions **per chunk**
-  (in `global_data`) at dataset-creation time.
+  **Mixed-geometry datasets** (DREGON + Michael's chunks together) ARE now
+  supported for training: `data_processing.frame_datasets.NoiseGenFrameDataset`
+  wraps `data_processing.noise_rps_dataset.NoiseRPSDataset` (whose chunks
+  already carry a per-draw `origin`, `"dregon"`/`"michaels"`) and attaches
+  that origin's geometry + a `meta.drone` name per sample — so DREGON and
+  Michael's chunks stream together in one dataset, each with its own
+  geometry. **Caveat**: `NoiseRPSDataset` reduces each draw to one selected
+  audio channel without reporting which physical index was picked, so
+  `NoiseGenFrameDataset` only supports `channel_policy="first"` (single mic,
+  not the full 8-mic array) — see REPLICATION.md § E2/E3 for the deviation
+  from the historical online trainer's native multi-observer rendering.
 - **Multichannel**: all M mics are rendered **jointly** (native multi-observer),
   *not* flattened into the batch like RPS prediction. The reference model sums
   rotors in the rfft domain → M mics cost R forward + M inverse transforms.
@@ -61,29 +83,57 @@ to the model, by the same logic that keeps geometry external:
   and optimise just the new drone's `d`-vector. This is the payoff of the
   external/`z`-input design and is not clean with an in-model table.
 
-`train_noise_generation.py --cond_dim d --drone_name NAME`; the codebook is
-bundled with the model in the checkpoint (`save_bundle`: `{"model", "codebook",
-"cond_dim", "drone_names"}`). **Multi-drone training in one run** needs per-chunk
-`drone_name` + geometry (same per-chunk metadata follow-on as mixed datasets);
-the model + codebook already support arbitrary `K`, only the dataset attaches one
-name today.
+The deleted `train_noise_generation.py` took this as `--cond_dim d --drone_name
+NAME`, with the codebook bundled alongside the model in a checkpoint file
+(`save_bundle`: `{"model", "codebook", "cond_dim", "drone_names"}`) — external
+to "the model" in `models.registry`'s sense, with its own optimizer param
+group. The unified `training.loop.run_training` doesn't support that (one
+`optimizer = get_optimizer(model, ...)` over `model.parameters()`, one
+checkpoint = `model.state_dict()`), so `models.registry.build_noise_gen_model(...,
+cond_dim=d, drone_names=[...])` now instead returns a composite
+`_CodebookConditionedNoiseGen(generator, codebook)` — the codebook is a
+genuine submodule, so its params are trained and checkpointed through the
+normal single-model path. `tasks.codecs.NoiseGenerationCodec(conditioned=True)`
+resolves each sample's `drone_names` from `meta.drone` (see "Mixed-geometry
+datasets" above) and calls `model(rps, rel_pos, drone_names)`; the model
+resolves `z` from its own codebook. **Multi-drone training in one run** now
+works out of the box: `NoiseGenFrameDataset` already attaches per-chunk
+`meta.drone` + geometry from whichever source (`dregon`/`michaels`) each
+draw came from.
 
 ## Training integration
 
-- **Script**: `train_noise_generation.py`.
-- **Registry**: add the model class to `MODEL_REGISTRY` there; the factory is
-  `get_model(name, sample_rate, n_harmonics, use_diff_noise)`.
-- **Dataset**: `DREGONNoiseGenDataset` reuses the **same on-disk format as RPS
-  prediction** (DREGON-LM `sample_*` chunks) but:
-  - target is the clean `noise.wav` (configurable via `--target_file`), **not**
-    `mixture.wav` — no speech mixing;
-  - positions are attached from the recording geometry (`get_geometry`).
-  Yields `(rps_audio_rate (R,T), rel_pos (M,R,3), target (M,T), drone_name str)`.
-  Requires chunks that keep a clean-noise target (a non `--real_valid`
-  multichannel set; `--real_valid` valid chunks have only `mixture.wav`).
-- **Loss**: multi-scale STFT (`models.generative.MultiScaleSTFT`), the mic axis
-  folded into the batch. Magnitude loss is blind to a *common* delay but sees
-  inter-rotor delay differences (the geometric signal).
+- **Script**: the dedicated `train_noise_generation.py` is deleted; training
+  routes through the unified `train.py` + `conf` —
+  `conf/model/positional_harmonic_gen{,_conditioned}.yaml`,
+  `conf/data/noise_rps_dregon_michaels{,_swapped}.yaml`,
+  `conf/loss/multiscale_stft{,_smoothness}.yaml`,
+  `conf/metrics/noise_gen_spectral.yaml`,
+  `conf/experiment/e2_noise_gen_dregon_michaels.yaml`/
+  `e3_noise_gen_swapped_smoothness.yaml` (REPLICATION.md § E2/E3; E1 remains
+  an intentional dead end, its model class isn't registered).
+- **Registry**: register the model class in
+  `src/models/registry.py::NOISE_GEN_MODEL_REGISTRY`; the factory is
+  `build_noise_gen_model(name, sample_rate, n_harmonics, use_diff_noise,
+  cond_dim, drone_names)` (verbatim port of the former
+  `train_noise_generation.py::get_model`, plus the `drone_names` ->
+  `_CodebookConditionedNoiseGen` wrapping described above).
+- **Dataset**: `data_processing.frame_datasets.NoiseGenFrameDataset` wraps
+  `data_processing.noise_rps_dataset.NoiseRPSDataset`/
+  `build_noise_rps_datasets` (DREGON `in_flight_noise` + Michael's, reused
+  verbatim — not the on-disk DREGON-LM `sample_*` chunk format
+  `DREGONNoiseGenDataset` used historically). Emits Frames with
+  `rps (rotor,time)` at audio rate, `audio (mic,time)` (the clean target —
+  single mic only, see the `channel_policy="first"` caveat above),
+  `mic_pos`/`rotor_pos`, `meta.drone`.
+- **Loss**: multi-scale STFT (`losses.MultiScaleSTFTLoss`, `pred_key=
+  target_key="audio"`), the mic axis folded into the batch by
+  `losses.spectral._flatten_to_2d`. Magnitude loss is blind to a *common*
+  delay but sees inter-rotor delay differences (the geometric signal). E3's
+  Stage-2 smoothness regularisers: `losses.SmoothnessPenalty(entry=
+  "harm_amps"|"noise_amps", series_dims=..., series_time=None)` acting on
+  the extra pred entries `tasks.codecs.NoiseGenerationCodec(return_dict=True)`
+  exposes.
 
 ## Code placement
 
@@ -104,6 +154,6 @@ name today.
 
 1. [ ] Implement core model in `src/models/generative/`.
 2. [ ] Satisfy `forward(rps (B,R,T), rel_pos (B,M,R,3)) -> (B,M,T)`.
-3. [ ] Register in `train_noise_generation.py::MODEL_REGISTRY`.
-4. [ ] Smoke test: shapes + one forward/backward (`tests/train/test_noise_generation.py`).
+3. [ ] Register in `src/models/registry.py::NOISE_GEN_MODEL_REGISTRY`.
+4. [ ] Smoke test: shapes + one forward/backward — `tests/tasks/test_noise_generation.py` covers the codec/task-composition layer generically (geometry_to_rel_pos, NoiseGenerationCodec, build_noise_gen_model's DroneCodebook wrapping); `tests/models/test_positional_harmonic_gen.py` is the model-specific pattern to mirror for a new model.
 5. [ ] One-epoch run to verify gradient flow and loss decrease.

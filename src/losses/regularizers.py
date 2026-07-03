@@ -17,7 +17,7 @@ import tdseries as td
 import torch
 
 from losses._common import get_tensor, rps_series_spec
-from tasks.spec import FrameSpec
+from tasks.spec import FrameSpec, SeriesSpec, TimeKind
 
 # ─── Pure tensor functions ───────────────────────────────────────────────────
 
@@ -67,6 +67,17 @@ class SmoothnessPenalty:
     axis only — ``dims=(-1,)``, matching the ``train_rps_predictor.py``
     inline usage). ``target`` is unused (this is a pure regulariser on the
     prediction) but kept in the signature for Loss-protocol conformance.
+
+    ``series_dims``/``series_time`` let this same adapter target a
+    differently-shaped pred entry — e.g. E3's noise-generation smoothness
+    regularisers act on
+    :class:`~models.generative.PositionalHarmonicNoiseGen`'s internal
+    control curves (``harm_amps`` ``(batch, rotor, O, H, t)``, ``noise_amps``
+    ``(batch, rotor, F, t)``, exposed via
+    ``tasks.codecs.NoiseGenerationCodec(return_dict=True)``), not an
+    ``(batch, rotor, time)`` RPS trajectory. Default (``None``) keeps the
+    original RPS-shaped spec (``rps_series_spec(rate)``) for backward
+    compatibility with the RPS-prediction smoothness usage.
     """
 
     def __init__(
@@ -75,10 +86,16 @@ class SmoothnessPenalty:
         entry: str = "rps_pred",
         dims: tuple[int, ...] = (-1,),
         rate: tuple[int, int] | None = None,
+        series_dims: tuple[str | None, ...] | None = None,
+        series_time: TimeKind | None = "grid",
     ) -> None:
         self.entry = entry
         self.dims = dims
-        self.requires_pred = FrameSpec({entry: rps_series_spec(rate)})
+        if series_dims is None:
+            spec = rps_series_spec(rate)
+        else:
+            spec = SeriesSpec(dims=series_dims, time=series_time, rate=rate)
+        self.requires_pred = FrameSpec({entry: spec})
         self.requires_target = FrameSpec({})
 
     def __call__(self, pred: td.Frame, target: td.Frame) -> torch.Tensor:

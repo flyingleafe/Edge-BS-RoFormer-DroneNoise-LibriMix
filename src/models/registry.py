@@ -204,6 +204,40 @@ NOISE_GEN_MODEL_REGISTRY: dict[str, Any] = {
 }
 
 
+class _CodebookConditionedNoiseGen(nn.Module):
+    """Bundles a position-aware generator with its external per-drone codebook.
+
+    The deleted ``train_noise_generation.py`` trainer kept
+    ``tasks.noise_generation.DroneCodebook`` fully external to "the model"
+    (its own optimizer param group, its own bundle-file entry). The unified
+    ``training.loop.run_training`` has a narrower single-model contract —
+    one ``optimizer = get_optimizer(model, ...)`` over ``model.parameters()``,
+    one checkpoint = ``model.state_dict()`` (see
+    ``training/loop.py``/``eval.py``) — so a codebook that needs to be
+    *trained* and *persisted* through that contract must be a submodule of
+    the instantiated model. This wrapper is that composition:
+    :meth:`forward` resolves each sample's conditioning code ``z`` from its
+    drone *name* via the codebook, then calls the generator — matching
+    :class:`tasks.codecs.NoiseGenerationCodec`'s ``conditioned=True`` call
+    convention (``model(rps, rel_pos, drone_names)``).
+    """
+
+    def __init__(self, generator: nn.Module, codebook: nn.Module) -> None:
+        super().__init__()
+        self.generator = generator
+        self.codebook = codebook
+
+    def forward(
+        self,
+        rps: Any,
+        rel_pos: Any,
+        drone_names: list[str],
+        **kwargs: Any,
+    ) -> Any:
+        z = self.codebook(list(drone_names))
+        return self.generator(rps, rel_pos, z=z, **kwargs)
+
+
 def build_noise_gen_model(
     model_name: str,
     *,
@@ -211,24 +245,37 @@ def build_noise_gen_model(
     n_harmonics: int = 100,
     use_diff_noise: bool = True,
     cond_dim: int = 0,
+    drone_names: list[str] | None = None,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
-    Verbatim port of the former ``train_noise_generation.py::get_model``.
-    ``cond_dim > 0`` FiLM-conditions the emitter on an external code ``z``
-    ``(B, cond_dim)``; the per-drone codes live in a separate
-    ``tasks.noise_generation.DroneCodebook`` (not in the model).
+    Verbatim port of the former ``train_noise_generation.py::get_model``,
+    plus ``drone_names``: when ``cond_dim > 0``, the returned model is a
+    :class:`_CodebookConditionedNoiseGen` wrapping the generator and a fresh
+    ``tasks.noise_generation.DroneCodebook(cond_dim, names=drone_names)`` —
+    see that class's docstring for why the codebook now lives inside the
+    model rather than external to it. ``cond_dim == 0`` (single-drone,
+    unconditioned) returns the bare generator, ``drone_names`` ignored.
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
             f"Unknown model: {model_name}. Available: {sorted(NOISE_GEN_MODEL_REGISTRY)}"
         )
-    return NOISE_GEN_MODEL_REGISTRY[model_name](
+    generator = NOISE_GEN_MODEL_REGISTRY[model_name](
         sample_rate=sample_rate,
         n_harmonics=n_harmonics,
         use_diff_noise=use_diff_noise,
         cond_dim=cond_dim,
     )
+    if cond_dim <= 0:
+        return generator
+    if not drone_names:
+        raise ValueError("cond_dim > 0 requires drone_names (DroneCodebook keys)")
+
+    from tasks.noise_generation import DroneCodebook
+
+    codebook = DroneCodebook(cond_dim, names=list(drone_names))
+    return _CodebookConditionedNoiseGen(generator, codebook)
 
 
 def build_noise_gen_loss(

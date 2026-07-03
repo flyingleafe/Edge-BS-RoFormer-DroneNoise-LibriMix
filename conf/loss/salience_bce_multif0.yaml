@@ -1,0 +1,20 @@
+# BCE-on-RPS-derived-salience, multif0_salience baseline grid. fmin=32.7
+# (C1, 3 harmonics) matches the historical checkpoint construction in
+# .pi/checkpoints/salience-baselines-dregon-v4-report.md — NOT the
+# LateDeepSalience class's own code default (fmin=27.5); keep this in sync
+# with conf/model/multif0_salience.yaml's `params.fmin`. blur_bins=2 /
+# pos_weight=auto mirror train_rps_predictor.py's
+# --salience_blur_bins/--bce_pos_weight defaults. rate=[16000,256] is the
+# HCQT front-end's native time grid (sr=16000, hop_length=256 defaults).
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      fmin: 32.7
+      n_octaves: 6
+      over_sample: 5
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

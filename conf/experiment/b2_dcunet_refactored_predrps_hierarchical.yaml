@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNetRefactored, decoder hierarchical RPS fusion + auxiliary RPS-prediction head (rps_aux_weight=0.1), on DREGON-LM.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b2_dcunet_refactored_predrps_hierarchical
+  - override /loss: masked_mse_plus_pit_rps_w0p1
+  - override /metrics: separation_plus_rps
+
+experiment_name: b2_dcunet_refactored_predrps_hierarchical
+optim:
+  monitor: si_sdr
+  monitor_mode: max

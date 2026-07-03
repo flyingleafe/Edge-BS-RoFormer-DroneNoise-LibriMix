@@ -1,0 +1,12 @@
+# @package _global_
+# + Flash Attention, on DN-LM (Paper 1). See REPLICATION.md § A1.
+defaults:
+  - override /data: dn_lm
+  - override /model: a1_edge_bs_rof_fa
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: a1_edge_bs_rof_fa
+optim:
+  monitor: si_sdr
+  monitor_mode: max

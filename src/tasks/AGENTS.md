@@ -11,7 +11,7 @@ the target contract the model must satisfy.
 | Task | Directory | Training entry point | Model interface |
 |------|-----------|-----------------------|-----------------|
 | RPS Prediction | `rps-prediction/` | `train.py` (Hydra; models `src/models/registry.py::RPS_MODEL_REGISTRY`) | `forward(audio) → (B, 4, T_stft)` |
-| Noise Generation | `noise-generation/` | none yet — task/model exist (`src/models/registry.py::build_noise_gen_model`), but no `conf/data`/`conf/model` wiring into `train.py` (see docs/refactor-unified-framework.md § "Future expansions") | `forward(rps, rel_pos) → (B, M, T)` |
+| Noise Generation | `noise-generation/` | `train.py` (Hydra; models `src/models/registry.py::build_noise_gen_model`; `conf/experiment/e2_noise_gen_dregon_michaels.yaml`/`e3_noise_gen_swapped_smoothness.yaml`, see REPLICATION.md § E2/E3) | `forward(rps, rel_pos) → (B, M, T)` |
 
 ## Adding a task
 

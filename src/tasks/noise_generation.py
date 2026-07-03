@@ -47,19 +47,46 @@ SPEED_OF_SOUND: float = 343.0
 
 
 def geometry_to_rel_pos(
-    mic_positions: np.ndarray,
-    rotor_positions: np.ndarray,
-) -> np.ndarray:
+    mic_positions: np.ndarray | torch.Tensor,
+    rotor_positions: np.ndarray | torch.Tensor,
+) -> np.ndarray | torch.Tensor:
     """Build per-(mic, rotor) relative position vectors.
 
-    Args:
-        mic_positions: ``(M, 3)`` microphone xyz (metres).
-        rotor_positions: ``(R, 3)`` rotor xyz (metres), same frame.
+    Two call shapes, dispatched on argument type:
 
-    Returns:
-        ``(M, R, 3)`` float32 where ``rel_pos[m, r] = mic[m] - rotor[r]`` — the
-        vector from rotor ``r`` to mic ``m`` that the generator propagates along.
+    - **numpy, unbatched** (single recording's geometry): ``mic_positions
+      (M, 3)``, ``rotor_positions (R, 3)`` -> ``(M, R, 3)`` float32 numpy
+      array. The original single-recording contract (report/notebook figure
+      scripts, ``data_processing.generated_noise``).
+    - **torch, batched** (a training batch, one geometry per sample):
+      ``mic_positions (B, M, 3)``, ``rotor_positions (B, R, 3)`` -> ``(B, M,
+      R, 3)`` tensor, same dtype/device as the inputs. Used by
+      :class:`tasks.codecs.NoiseGenerationCodec` — geometry arrives as a
+      batched Frame entry (``tasks.task.noise_generation``'s input spec),
+      and building the relative-position tensor via plain broadcasting
+      (rather than round-tripping through numpy) keeps it differentiable
+      and on-device.
+
+    In both cases: ``rel_pos[..., m, r, :] = mic[..., m, :] - rotor[..., r, :]``
+    — the vector from rotor ``r`` to mic ``m`` that the generator propagates
+    along.
     """
+    if isinstance(mic_positions, torch.Tensor) or isinstance(rotor_positions, torch.Tensor):
+        mic_t = torch.as_tensor(mic_positions)
+        rotor_t = torch.as_tensor(rotor_positions)
+        if mic_t.shape[-1] != 3:
+            raise ValueError(f"mic_positions must end in dim 3 (xyz), got {tuple(mic_t.shape)}")
+        if rotor_t.shape[-1] != 3:
+            raise ValueError(f"rotor_positions must end in dim 3 (xyz), got {tuple(rotor_t.shape)}")
+        if mic_t.dim() == 3 and rotor_t.dim() == 3:
+            return mic_t.unsqueeze(2) - rotor_t.unsqueeze(1)  # (B, M, R, 3)
+        if mic_t.dim() == 2 and rotor_t.dim() == 2:
+            return mic_t.unsqueeze(1) - rotor_t.unsqueeze(0)  # (M, R, 3)
+        raise ValueError(
+            "mic_positions/rotor_positions must both be (M,3)/(R,3) (unbatched) or "
+            f"(B,M,3)/(B,R,3) (batched); got {tuple(mic_t.shape)} and {tuple(rotor_t.shape)}"
+        )
+
     mic = np.asarray(mic_positions, dtype=np.float64)
     rotor = np.asarray(rotor_positions, dtype=np.float64)
     if mic.ndim != 2 or mic.shape[-1] != 3:

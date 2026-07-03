@@ -20,7 +20,12 @@ from losses.pit import (
     segmented_pit_mse,
 )
 from losses.regularizers import SmoothnessPenalty, smoothness_penalty
-from losses.salience import SalienceBCELoss, auto_pos_weight, salience_bce_loss
+from losses.salience import (
+    SalienceBCELoss,
+    SalienceRPSBCELoss,
+    auto_pos_weight,
+    salience_bce_loss,
+)
 from losses.spectral import (
     AuraMRSTFTLoss,
     MultiScaleSTFT,
@@ -42,6 +47,7 @@ __all__ = [
     "SmoothnessPenalty",
     "smoothness_penalty",
     "SalienceBCELoss",
+    "SalienceRPSBCELoss",
     "auto_pos_weight",
     "salience_bce_loss",
     "AuraMRSTFTLoss",

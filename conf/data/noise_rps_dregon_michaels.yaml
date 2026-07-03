@@ -1,0 +1,40 @@
+# Noise-generation training data: DREGON `in_flight_noise` + Michael's
+# drone-noise recordings, chunked via the existing
+# data_processing.noise_rps_dataset.NoiseRPSDataset (time-holdout
+# train/valid split per recording, val_pct at the END of each recording —
+# see conf/data/noise_rps_dregon_michaels_swapped.yaml for the flipped
+# variant). Wrapped as Frames by
+# data_processing.frame_datasets.NoiseGenFrameDataset (attaches
+# mic_pos/rotor_pos geometry + meta.drone; single-mic only — see its
+# docstring). E2's dataset — approximates (does not reproduce byte-for-byte)
+# the historical *online* streaming slicer
+# (configs/noise_gen_online_dregon_michaels.yaml, per-frame geometry, all 8
+# mics jointly); see REPLICATION.md § E2/E3 for the documented deviation.
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: data/DREGON
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: false
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: data/DREGON
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: false
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

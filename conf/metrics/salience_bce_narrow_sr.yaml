@@ -1,0 +1,13 @@
+# Validation-time BCE-on-salience metric, narrow-input + super-resolution
+# output grid — mirrors conf/loss/salience_bce_narrow_sr.yaml exactly.
+terms:
+  - name: bce
+    _target_: metrics.SalienceBCEMetric
+    params:
+      out_fmin: 55.0
+      out_fmax: 110.0
+      out_bins: 360
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

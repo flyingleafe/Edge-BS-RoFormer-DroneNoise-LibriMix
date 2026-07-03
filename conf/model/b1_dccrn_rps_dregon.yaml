@@ -1,0 +1,12 @@
+# b1_dccrn_rps_dregon — DCCRN + encoder-side GRU-based RPS fusion, on DREGON-LM.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: true
+  predict_rps: false
+  sr: [16000, 1]
+  rps_rate: [16000, 512]
+_target_: null
+params: {}
+model_type: dccrn
+legacy_config_path: configs/10b_DCCRN_RPS_DREGON.yaml

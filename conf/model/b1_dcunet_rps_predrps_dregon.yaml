@@ -1,0 +1,12 @@
+# b1_dcunet_rps_predrps_dregon — DCUNet + encoder-side bottleneck RPS conditioning + auxiliary RPS-prediction head, on DREGON-LM.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: true
+  predict_rps: true
+  sr: [16000, 1]
+  rps_rate: [16000, 512]
+_target_: null
+params: {}
+model_type: dcunet
+legacy_config_path: configs/7c_DCUNet_RPS_PredRPS_DREGON.yaml

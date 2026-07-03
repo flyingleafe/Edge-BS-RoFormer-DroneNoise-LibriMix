@@ -1,0 +1,25 @@
+# @package _global_
+# C7 — multif0_salience (LateDeep CNN over HCQT) salience-map RPS baseline
+# on DREGON-LM-V4, 8-channel-as-extra-batch-item (see
+# conf/data/dregon_lm_v4_8ch_flat.yaml — matches
+# .pi/checkpoints/salience-baselines-dregon-v4-report.md: "30 clips x 8
+# channels (channels flattened into the batch via _flatten_channels)").
+# `optim.monitor: bce` tracks BCE-on-salience on the validation split (see
+# conf/metrics/salience_bce_multif0.yaml / src/metrics/salience.py) — there
+# is no RPS-space metric for salience models yet (predict_rps()'s Hungarian
+# tracking is not wired into MetricSuite, see REPLICATION.md § C7/C8).
+# Historical command: train_rps_predictor.py --model multif0_salience
+# --data_root datasets/DREGON-LM-V4 --device cuda:0 --epochs 200
+# --patience 15.
+defaults:
+  - override /data: dregon_lm_v4_8ch_flat
+  - override /model: multif0_salience
+  - override /loss: salience_bce_multif0
+  - override /metrics: salience_bce_multif0
+
+experiment_name: c7_multif0_salience
+epochs: 200
+patience: 15
+optim:
+  monitor: bce
+  monitor_mode: min

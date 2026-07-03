@@ -216,12 +216,16 @@ NumPy/memmap/tensor data, not a new project container.
 
 Fresh-session map for online RPS training:
 1. Read this section, then `configs/AGENTS.md` § "Online-mixing configs".
-2. Loader implementation: `data_processing/online_mixing.py`.
+2. Loader implementation: `src/data_processing/online_mixing.py`.
 3. Durable policies: `configs/online_mix_*.yaml`.
-4. Training integration: `train_rps_predictor.py --online_mix --mix_config <yaml>
-   --samples_per_validation <N>`. The stream is infinite; `samples_per_validation`
-   defines the arbitrary validation cadence/"epoch" size.
-5. Validation remains fixed via `--data_root <dataset>/valid`; do **not** use an
+4. Training integration: `python train.py experiment=<name>` where the experiment
+   overrides `data:` to a `conf/data/*.yaml` entry wrapping `OnlineMixIterableDataset`
+   / `OnlineMixFrameDataset.from_yaml` over the policy YAML (see
+   `conf/data/online_mix_v4_michaels.yaml`), plus `samples_per_validation=<N>`
+   (top-level Hydra field, `conf/config.yaml`). The stream is infinite;
+   `samples_per_validation` defines the arbitrary validation cadence/"epoch" size.
+5. Validation remains fixed via the `valid:` entry of the `conf/data/*.yaml` config
+   (a plain `DregonLMFrameDataset` over `<dataset>/valid`); do **not** use an
    advancing online validation stream for early stopping.
 
 Source/cache interface rules:
@@ -297,9 +301,14 @@ a `td.Frame` per sample instead of a raw `(audio, rps)` tensor pair:
 
 `frame["rps"]` is `(rotor, time)` on the STFT frame grid in both cases.
 `_flatten_channels`'s channel-as-extra-batch-item trick (broadcasting a
-`(B, 4, F)` RPS target across `(B, C, T)` audio) is **not reproduced** in the
-new world — `channel=<int>` on `DregonLMFrameDataset` selects one mic instead,
-producing a genuinely mono `(time,)` Frame per sample.
+`(B, 4, F)` RPS target across `(B, C, T)` audio) is now reproduced at the
+*data* level (C9, REPLICATION.md § C9): `channel=<int>` on
+`DregonLMFrameDataset` still selects one mic deterministically (a genuinely
+mono `(time,)` Frame per sample); `flatten_channels=True` instead expands
+each multichannel sample into `n_channels` separate mono-view Frames (one
+per mic, `len(dataset) = n_samples * n_channels`), each broadcasting the
+recording's single RPS target and tagging `meta.channel` with which mic it
+came from — `conf/data/dregon_lm_v4_8ch_flat.yaml`.
 
 `SimpleConv` (and all `rps_predictor` model variants) accept any leading batch
 shape before the time dimension — `torch.stft` treats everything before `T` as
@@ -357,10 +366,13 @@ See `docs/data-and-artifacts.md` for the end-to-end CPU → GPU → laptop flow.
   (logger stopped).  `_find_inflight_window` strips this when using `motors_measured`;
   when only command is available, the end trim is effectively 0 s.  **Never use
   raw command tail samples as ground-truth RPS.**
-- **EventSeries values are time-last `(…, M)`** — see `src/utils/data/AGENTS.md`.
-  `load_timeframe` stores motor/imu/source telemetry as `(4|3, M)`.  Older code
-  used `(M, 4)` + `.T`; if you see `(M, 0)` after slicing or a `.T` on motor
-  values, it predates the convention fix (June 2026).
+- **Motor/IMU/source telemetry is time-last `(…, M)`**, carried as a `tdseries`
+  `StampIndex`-backed Series (values `.data`, timestamps `.tindex.abs_stamps`) —
+  see `docs/refactor-unified-framework.md` § "tdseries migration guide" (the old
+  `EventSeries`/`src/utils/data` API was deleted). `load_timeframe` stores
+  motor/imu/source telemetry as `(4|3, M)`.  Older code used `(M, 4)` + `.T`;
+  if you see `(M, 0)` after slicing or a `.T` on motor values, it predates the
+  convention fix (June 2026).
 - **`load_timeframe(target_sr=…)` resampling**: `librosa.resample` must receive
   the `(n_ch, N)` array with `axis=-1`.  The wrong axis (resampling the 8-element
   channel dimension) loops over ~3M tiny signals and hangs for minutes.  Always
@@ -368,7 +380,7 @@ See `docs/data-and-artifacts.md` for the end-to-end CPU → GPU → laptop flow.
 - **`--min_motor_rps`** defaults to 0 (backward-compat).  Always pass `30.0` for
   new datasets to exclude takeoff and any visible landing.
 - **`--real_valid` valid set has no `vocals.wav`** — only `mixture.wav` and
-  `rps.npy`.  Do not run `final_valid.py` speech-enhancement eval on it; it is
+  `rps.npy`.  Do not run `eval.py`'s speech-enhancement metrics on it; it is
   for RPS prediction evaluation only.
 - **Valid clip count ceiling**: with `--real_valid --valid_duration 8.0`, only
   ~15 non-overlapping clips exist across the 2 default recordings.  Larger

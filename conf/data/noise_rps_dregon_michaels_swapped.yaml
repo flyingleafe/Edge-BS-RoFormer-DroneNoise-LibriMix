@@ -1,0 +1,40 @@
+# E3's "swapped-split" noise-generation data variant —
+# val_at_start=true flips which end of each recording's time axis is held
+# out for validation (val: [t_start, t_start+cut], train:
+# [t_start+cut, t_end]) instead of conf/data/noise_rps_dregon_michaels.yaml's
+# default (val at the end). This is a documented approximation of the
+# historical swap (.pi/checkpoints/noise-gen-swapped-smoothness-random-phase.md:
+# DREGON room1-train/room2-valid -> room2-train/room1-valid), NOT a literal
+# reproduction — NoiseRPSDataset/load_dregon_noise_sources pools all
+# `in_flight_noise` recordings together and does not select by room/recording
+# id, so the closest available "swap" achievable without rewriting that
+# loader is which end of the pooled per-recording time axis is held out. See
+# REPLICATION.md § E2/E3.
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: data/DREGON
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: data/DREGON
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

@@ -1,0 +1,11 @@
+# a1_edge_bs_rof_fa — + Flash Attention. DN-LM (Paper 1). See REPLICATION.md § A1.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr: [16000, 1]
+_target_: null
+params: {}
+model_type: edge_bs_rof
+legacy_config_path: configs/2_FA.yaml

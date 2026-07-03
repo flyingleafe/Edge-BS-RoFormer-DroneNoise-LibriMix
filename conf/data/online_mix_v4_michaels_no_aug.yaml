@@ -1,0 +1,21 @@
+# Online-mixed RPS training stream, no-augmentation A/B baseline arm for the
+# E4 generated-noise-augmentation experiment (see
+# conf/data/online_mix_generated_augment.yaml, the paired augmented arm).
+# Same sources/policy as online_mix_v4_michaels.yaml but pinned to the
+# explicit "_no_aug" policy file for a stable A/B comparison point; fixed,
+# non-mixed validation split as usual.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: configs/online_mix_v4_michaels_train_no_room1_no_aug.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

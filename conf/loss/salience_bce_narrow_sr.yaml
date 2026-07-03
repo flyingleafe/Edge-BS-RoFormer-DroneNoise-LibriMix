@@ -1,0 +1,22 @@
+# BCE-on-RPS-derived-salience, narrow-input + fine super-resolution OUTPUT
+# grid variant (decoupled linear 55-110 Hz, 360 bins) — shared by both
+# multif0_salience_narrow_sr and basic_pitch_salience_narrow_sr, since the
+# output grid is fully decoupled from each model's own (narrower) input CQT
+# grid (FreqSuperResHead). Exact flags from
+# .pi/checkpoints/salience-narrow-superres-experiment.md:
+# --superres_out --out_fmin 55 --out_fmax 110 --out_bins 360
+# --salience_blur_bins 2. rate=[16000,256]: neither model's narrow-input
+# HCQT/contour front-end changes its time grid (spec_sr/spec_hop), only the
+# frequency axis narrows.
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      out_fmin: 55.0
+      out_fmax: 110.0
+      out_bins: 360
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

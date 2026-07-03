@@ -1,0 +1,14 @@
+# Speech-enhancement masked MSE + weighted PIT-MSE auxiliary RPS loss (rps_aux_weight=0.1) — historical combined loss for configs/13a-13d_*_PredRPS_*.yaml (predict_rps=true, DCUNetRefactored/DCCRNRefactored, decoder bottleneck/hierarchical). 13c/13d's exact rps_aux_weight is not separately documented in the legacy config comments; assumed identical to 13a/13b's 0.1 — flag if this needs correction. See REPLICATION.md § B2.
+terms:
+  - name: masked_mse
+    _target_: losses.MaskedLoss
+    weight: 1.0
+    params:
+      q: 0.9
+      n_channels: null
+      sr: [16000, 1]
+  - name: pit_mse_rps_aux
+    _target_: losses.PITMSELoss
+    weight: 0.1
+    params:
+      rate: [16000, 512]

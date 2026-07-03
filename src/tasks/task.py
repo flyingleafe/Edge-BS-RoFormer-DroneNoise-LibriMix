@@ -100,9 +100,25 @@ def salience_rps(
 def noise_generation(
     *,
     sr: tuple[int, int] = AUDIO_RATE,
+    conditioned: bool = False,
+    return_dict: bool = False,
 ) -> Task:
     """RPS trajectories + array geometry in, synthesized drone noise at
-    each microphone out."""
+    each microphone out.
+
+    ``conditioned``/``return_dict`` don't change this Frame contract (per-
+    drone identity travels as ``meta.drone`` string metadata, not a Series
+    entry, and the emitter's internal control curves are extra — always-
+    allowed — pred entries, not part of the required output spec); they are
+    accepted here only so a model config's single ``task_params`` dict can
+    build both this Task and the paired
+    :class:`tasks.codecs.NoiseGenerationCodec` from the same kwargs (see
+    module docstring of ``tasks.codecs``). ``conditioned`` must match the
+    model's own ``cond_dim > 0``; ``return_dict`` must match whether the
+    loss needs the emitter's ``harm_amps``/``noise_amps`` (E3's smoothness
+    regularisers) — see ``src/tasks/noise-generation/AGENTS.md``.
+    """
+    del conditioned, return_dict
     return Task(
         name="noise_generation",
         input_spec=FrameSpec(
@@ -110,9 +126,7 @@ def noise_generation(
                 "rps": _rps_spec(None),
                 "mic_pos": SeriesSpec(dims=("batch", "mic", None), time=None),
                 "rotor_pos": SeriesSpec(dims=("batch", "rotor", None), time=None),
-                "drone_id": SeriesSpec(dims=("batch",), time=None, dtype="integer"),
-            },
-            frozenset({"drone_id"}),
+            }
         ),
         output_spec=FrameSpec(
             {"audio": SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)}
