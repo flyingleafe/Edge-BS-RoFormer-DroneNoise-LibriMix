@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate figures and CSV tables for the RPS-predictor architecture-sweep report.
 
-All numbers are transcribed from the autoresearch session artifacts:
-  autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/
-    {experiments.md, leaderboard.md, session.json}
+All numbers are transcribed from the autoresearch session artifacts
+(session summarized in docs/experiments/simpleconv-rps-architecture-search.md;
+raw session.json/scripts remain under
+autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/).
 
 Two training series share the same 26 model keys and the same fixed
 DREGON-LM-V4-michaels/valid evaluation set:

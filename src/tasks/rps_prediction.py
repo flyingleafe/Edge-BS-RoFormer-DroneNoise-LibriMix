@@ -3,7 +3,7 @@
 Provides the Python API for RPS-prediction evaluation and the thin CLI shim
 that ``evaluate-rps`` calls.
 
-See .pi/plans/rps-eval-plot-refactor-plan.md for the full architecture.
+See src/tasks/AGENTS.md for the full architecture.
 """
 
 from __future__ import annotations

@@ -173,7 +173,7 @@ against the legacy YAML before trusting exactly.
 ## C1 / C3 / C6 — first RPS predictor + 10-variant SimpleConv arch-zoo sweep (DREGON-LM v1)
 
 These three labels (from the original recon) refer to the **same historical
-sweep event**: `.pi/checkpoints/autoresearch-simpleconv-variants.md` +
+sweep event**: `docs/experiments/simpleconv-rps-architecture-search.md` +
 `writing/reports/2026-05-30_simpleconv-variants/report.typ`, on the original
 `datasets/DREGON-LM` (v1) dataset. `simple_conv` is both the literal "first"
 RPS predictor trained (C1) and the sweep's baseline (C3/C6).
@@ -220,7 +220,7 @@ non-neural signal-processing trackers (`pyin_single_f0`, `cepstral_tracker`,
 | **conf/data** | `conf/data/dregon_lm_v2_{0pct,2p5pct,5pct,20pct}.yaml` (`channel: 0` — 8-mic file, mono model, no channel-flattening trick). |
 | **Historical command** | `train_rps_predictor.py --model simple_conv_bigru_v2 --data_root datasets/DREGON-LM-V2-2.5pct --epochs 500 --patience 30 --batch_size 96 --lr 1e-3` |
 | **New-framework command** | `python train.py experiment=c4_dregon_v2_motorcombo_sweep` (default: 2.5pct, best); override `data=dregon_lm_v2_0pct` / `dregon_lm_v2_5pct` / `dregon_lm_v2_20pct` for the other points. |
-| **Results** | `.pi/checkpoints/dregon-lm-v2-rps-training.md`. PIT MSE: 0%→117.3 (collapses, no PIT anchor), 2.5%→**56.70** (best), 5%→65.9, 20%→71.1 — U-shaped. Checkpoint `results/rps_predictor_v4_2.5pct/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt`. Cross-eval vs. the "OLD" (v1) checkpoints: `results/rps_cross_eval/validation_metrics.json` (63–123× degradation off-domain — this is the "dataset-flawed" finding for C1/C3/C6 above). |
+| **Results** | `docs/experiments/dregon-lm-v2-v3-baseline.md`. PIT MSE: 0%→117.3 (collapses, no PIT anchor), 2.5%→**56.70** (best), 5%→65.9, 20%→71.1 — U-shaped. Checkpoint `results/rps_predictor_v4_2.5pct/simple_conv_bigru_v2/best_simple_conv_bigru_v2.pt`. Cross-eval vs. the "OLD" (v1) checkpoints: `results/rps_cross_eval/validation_metrics.json` (63–123× degradation off-domain — this is the "dataset-flawed" finding for C1/C3/C6 above). |
 
 **Replicability status: config-complete, blocked on data.**
 
@@ -233,7 +233,7 @@ non-neural signal-processing trackers (`pyin_single_f0`, `cepstral_tracker`,
 | **conf/data** | `conf/data/dregon_lm_v3.yaml`. |
 | **Historical command** | `train_rps_predictor.py --model simple_conv --data_root datasets/DREGON-LM-V3 --no_pit_loss --epochs 200 --patience 30 --batch_size 128` |
 | **New-framework command** | `python train.py experiment=c5_simpleconv_dregon_v3` |
-| **Results** | `.pi/checkpoints/dregon-lm-v3-baseline.md`. Val MSE 227.0 (RMSE 15.1), MAE/clip 8.14 RPS. Checkpoint `results/rps_predictor_comparison/best_simple_conv.pt`. wandb: `flyingleafe/rps-prediction/runs/ivbyimpe` (legacy project, distinct from the new framework's `harmonic-noise-suppression` project). |
+| **Results** | `docs/experiments/dregon-lm-v2-v3-baseline.md`. Val MSE 227.0 (RMSE 15.1), MAE/clip 8.14 RPS. Checkpoint `results/rps_predictor_comparison/best_simple_conv.pt`. wandb: `flyingleafe/rps-prediction/runs/ivbyimpe` (legacy project, distinct from the new framework's `harmonic-noise-suppression` project). |
 
 **Replicability status: config-complete, blocked on data. Documented
 deviation**: historical training used plain (non-PIT) MSE (`--no_pit_loss`);
@@ -262,13 +262,13 @@ fallback, which tracks *train* loss — see `training/loop.py::run_training`).
 
 | | |
 |---|---|
-| **Dataset** | `datasets/DREGON-LM-V4`, 8-channel-as-extra-batch-item — `conf/data/dregon_lm_v4_8ch_flat.yaml` (`DregonLMFrameDataset(flatten_channels=True)`, new C9 flag, shared with C9 below). Matches the historical training loop's `_flatten_channels` call, confirmed by `.pi/checkpoints/salience-baselines-dregon-v4-report.md` ("30 clips x 8 channels (channels flattened into the batch via _flatten_channels)"). |
+| **Dataset** | `datasets/DREGON-LM-V4`, 8-channel-as-extra-batch-item — `conf/data/dregon_lm_v4_8ch_flat.yaml` (`DregonLMFrameDataset(flatten_channels=True)`, new C9 flag, shared with C9 below). Matches the historical training loop's `_flatten_channels` call, confirmed by `docs/experiments/salience-map-rps-tracking.md` ("30 clips x 8 channels (channels flattened into the batch via _flatten_channels)"). |
 | **Historical command (baseline)** | `train_rps_predictor.py --model {multif0_salience,basic_pitch_salience} --data_root datasets/DREGON-LM-V4 --device cuda:0 --epochs 200 --patience 15` (`--salience_blur_bins` default 2, `--bce_pos_weight` default 0 = auto). |
 | **New-framework command (baseline)** | `python train.py experiment=c7_multif0_salience` / `python train.py experiment=c8_basic_pitch_salience` |
-| **Historical command (narrow + super-res, `.pi/checkpoints/salience-narrow-superres-experiment.md`)** | multif0: `--hcqt_fmin 55 --hcqt_n_octaves 1 --hcqt_over_sample 10 --hcqt_harmonics 1 2 3 4 --superres_out --out_fmin 55 --out_fmax 110 --out_bins 360 --salience_blur_bins 2`; basic_pitch: `--bp_fmin 55 --bp_bins_per_semitone 4 --bp_n_contour_semitones 12` + the same `--superres_out` flags. |
+| **Historical command (narrow + super-res, `docs/experiments/salience-map-rps-tracking.md`)** | multif0: `--hcqt_fmin 55 --hcqt_n_octaves 1 --hcqt_over_sample 10 --hcqt_harmonics 1 2 3 4 --superres_out --out_fmin 55 --out_fmax 110 --out_bins 360 --salience_blur_bins 2`; basic_pitch: `--bp_fmin 55 --bp_bins_per_semitone 4 --bp_n_contour_semitones 12` + the same `--superres_out` flags. |
 | **New-framework command (narrow + super-res)** | `python train.py experiment=c7_multif0_salience_narrow_sr` / `python train.py experiment=c8_basic_pitch_salience_narrow_sr` |
 | **conf** | Models: `conf/model/{multif0_salience,basic_pitch_salience}{,_narrow_sr}.yaml`. Losses/metrics: `conf/{loss,metrics}/salience_bce_{multif0,basic_pitch,narrow_sr}.yaml` (one pair per grid, since the BCE target's bin count/positions are grid-specific). |
-| **Results** | `.pi/checkpoints/salience-baselines-dregon-v4-report.md` (baseline: multif0 RMSE 6.30/R² 0.19, basic_pitch RMSE 23.24/R² −16.21 — via the *old* eval pipeline's Hungarian-tracked `predict_rps()`, not reproduced by the new framework yet, see caveat below). |
+| **Results** | `docs/experiments/salience-map-rps-tracking.md` (baseline: multif0 RMSE 6.30/R² 0.19, basic_pitch RMSE 23.24/R² −16.21 — via the *old* eval pipeline's Hungarian-tracked `predict_rps()`, not reproduced by the new framework yet, see caveat below). |
 
 **Replicability status: config-complete, blocked on data.** **Caveat —
 `multif0_salience`'s baseline `fmin`**: the historical headline checkpoint
@@ -355,7 +355,7 @@ experiment to match the historical wandb-run/results-dir naming.
 `DroneNoisePlusFilterGen` (`src/models/generative/filtered_noise.py`) is
 explicitly marked "port-only" in `src/models/AGENTS.md` — never wired to
 *any* training entry point in this repo, unified or legacy. No
-`.pi/checkpoints/*.md` note documents a completed run; no `results/noise_gen/`
+`docs/experiments/noise-generation-augmentation.md` note documents a completed run; no `results/noise_gen/`
 directory exists in the current worktree. Likely superseded by E2/E3 in
 practice. **Not routable** (see "Needs follow-up wiring" — same three gaps
 as E2/E3, plus the model class isn't even in
@@ -407,9 +407,9 @@ are closed:
 |---|---|
 | **Dataset** | DREGON `in_flight_noise` + Michael's, via `NoiseGenFrameDataset` — `conf/data/noise_rps_dregon_michaels{,_swapped}.yaml`. **Caveat — not a byte-for-byte split reproduction**: these wrap the offline time-holdout `NoiseRPSDataset` (pools all `in_flight_noise` recordings together, does not select by room/recording id), not the historical *online* per-frame-geometry streaming slicer (`configs/noise_gen_online_dregon_michaels{,_swapped}.yaml` — all 8 mics jointly, DREGON room1-vs-room2 split explicitly). `..._swapped.yaml`'s `val_at_start=true` flips which *end* of each pooled recording's time axis is held out — an approximation of the historical room-swap, not the same split. |
 | **Model** | `positional_harmonic_gen`, `cond_dim=16`, `drone_names=[dregon, michaels]` — `conf/model/positional_harmonic_gen_conditioned.yaml` (unconditioned `cond_dim=0` variant also exists: `conf/model/positional_harmonic_gen.yaml`, for a single-drone dataset). |
-| **Historical command (E2, `.pi/checkpoints/noise-generation-online-dregon-michaels.md`)** | `train_noise_generation.py --online_config configs/noise_gen_online_dregon_michaels.yaml --cond_dim 16 --device cuda:0 --epochs 200 --patience 20 --batch_size 32 --duration_s 1.0 --n_harmonics 100 --samples_per_epoch 6000 --num_valid 256 --num_workers 8` |
+| **Historical command (E2, `docs/experiments/noise-generation-augmentation.md`)** | `train_noise_generation.py --online_config configs/noise_gen_online_dregon_michaels.yaml --cond_dim 16 --device cuda:0 --epochs 200 --patience 20 --batch_size 32 --duration_s 1.0 --n_harmonics 100 --samples_per_epoch 6000 --num_valid 256 --num_workers 8` |
 | **New-framework command (E2)** | `python train.py experiment=e2_noise_gen_dregon_michaels` |
-| **Historical command (E3, `.pi/checkpoints/noise-gen-swapped-smoothness-random-phase.md`)** | same + `--online_config configs/noise_gen_online_dregon_michaels_swapped.yaml --harm_smooth_weight 1e-2 --noise_smooth_weight 1e-2` (random-phase training is automatic, no flag). |
+| **Historical command (E3, `docs/experiments/noise-generation-augmentation.md`)** | same + `--online_config configs/noise_gen_online_dregon_michaels_swapped.yaml --harm_smooth_weight 1e-2 --noise_smooth_weight 1e-2` (random-phase training is automatic, no flag). |
 | **New-framework command (E3)** | `python train.py experiment=e3_noise_gen_swapped_smoothness` |
 | **Results** | E2/E3 GPU runs were never completed start-to-finish in either the old or new framework (both handoff docs are "needs a real GPU run"/"CPU-smoke verified" only) — no numeric results to compare against. The `results/noise_gen_dregon_michaels_swapped/best_positional_harmonic_gen.pt` bundle E4 depends on is a *pre-existing* artifact from an earlier ad-hoc GPU run outside this framework, not reproduced here. |
 

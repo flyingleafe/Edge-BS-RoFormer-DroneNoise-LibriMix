@@ -104,3 +104,4 @@ Wk 19–28 Buffer + transfer doc finalization + viva prep
 - **Durable sections** ("Project Goal", "Deadline Structure", "Constraints") edit only when the underlying situation changes (new bureaucratic constraint, missed deadline, scope shift). Each edit is dated in the header.
 - **Live section** ("Current Portfolio") is updated whenever a bet is killed, modified, or added. **Mandatory rewrite at the mid-point review.**
 - Strategic routing and directory structure live in `AGENTS.md`. Concrete how-to lives in skills under `.pi/skills/`. This file answers *what* and *why*, not *how*.
+- Completed/background experiment write-ups (motivation/results/conclusion) live in `docs/experiments/` — distinct from the live bet detail cards below, which move to `experiments/bets/` once a bet concludes.

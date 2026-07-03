@@ -1,0 +1,40 @@
+# docs/experiments/ — Past-Experiment Log
+
+One markdown file per completed (or in-progress) experiment: **Motivation /
+Results / Conclusion**, plus a status/dates header. This replaced a scattered
+"zoo" of `.pi/checkpoints/*.md` session handoffs, raw `autoresearch/*.md`
+sweep logs, and duplicate legacy `writing/papers/*/report.md` drafts
+(consolidated 2026-07-03; originals deleted, content preserved in git
+history and in these docs).
+
+This is a **history/reference log**, distinct from `experiments/bets/`
+(GOALS.md's live, currently-active portfolio bets — not yet started as of
+this writing). Once a bet from `GOALS.md`'s "Current Portfolio" concludes,
+its detail card belongs here too.
+
+## Convention
+
+- One file per experiment cluster, kebab-case filename.
+- Header line: `**Status:** done | in progress | blocked` + date range +
+  (if one exists) a link to the full `writing/reports/<date>_<slug>/`
+  Typst report (`make` in that dir builds the PDF).
+- If a full Typst report already exists, keep this doc **short** — a
+  pointer/summary, not a re-publication (see `channel-generalization-pit-loss.md`).
+  If no polished report exists, this doc **is** the full record (see
+  `dregon-lm-v2-v3-baseline.md`).
+- Only state numbers/claims present in source material — no invented
+  figures, no rounding away uncertainty the source didn't have.
+
+## Contents
+
+| File | Experiment |
+|---|---|
+| `simpleconv-rps-architecture-search.md` | Two SimpleConv encoder/temporal-head sweeps (offline + online-mixed, DREGON-LM / V4-michaels) |
+| `dregon-lm-v2-v3-baseline.md` | DREGON-LM V2→V3 dataset evolution + baseline RPS training (superseded by V4) |
+| `channel-generalization-pit-loss.md` | RPS models don't generalize across mic channels without PIT loss |
+| `salience-map-rps-tracking.md` | Multi-F0 salience-map tracking as an alternative to direct RPS regression |
+| `noise-generation-augmentation.md` | Learned harmonic noise generator as an online-mixing augmentation source (in progress, blocked on a GPU run) |
+
+Related: `docs/fwh_rotor_acoustic_simulator_plan.md` (a tool build with its
+own implementation-status section, not a comparative experiment, so it stays
+in `docs/` rather than here).
