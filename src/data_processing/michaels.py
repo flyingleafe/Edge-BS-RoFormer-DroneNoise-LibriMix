@@ -11,10 +11,11 @@ CSV logs per-motor rotation speed (RPM). The audio and telemetry clocks are
 were tuned **manually** (see `notebooks/michael_data_analysis.ipynb`) and are
 the values reproduced here verbatim.
 
-`load_michaels_timeframes()` returns a list of two `TimeFrame`s, one per
+`load_michaels_timeframes()` returns a list of two `td.Frame`s, one per
 recording, each holding:
-  - `audio`: 8-channel `UniformSeries` `(8, N)` at `sr`
-  - `rps`  : `EventSeries` of motor speeds `(4, M)` in revolutions/second
+  - `audio`: 8-channel Series (dims `("mic", "time")`) `(8, N)` at `sr`
+  - `rps`  : Series of motor speeds (dims `("rotor", "time")`) `(4, M)` in
+    revolutions/second
 
 Audio and RPS share the frame's time anchor, so they are aligned: slicing the
 frame slices both consistently.
@@ -28,8 +29,9 @@ from pathlib import Path
 import librosa as lr
 import numpy as np
 import pandas as pd
+import tdseries as td
 
-from utils.data import EventSeries, TimeFrame, UniformSeries
+from data_processing.frames import make_recording_frame
 
 # Project data root: `$DATA_ROOT` if set, else `<repo>/data` (this file lives
 # in `<repo>/data_processing/`).
@@ -86,7 +88,8 @@ def get_geometry() -> tuple[np.ndarray, np.ndarray]:
 
     Body frame: X = forward, Y = left, Z = up; origin at the body centre.
     Mirrors :func:`data_processing.dregon.get_geometry` so Michael's recordings
-    can populate ``TimeFrame.global_data`` the same way DREGON does.
+    can populate the ``"mic_pos"`` / ``"rotor_pos"`` Frame entries the same way
+    DREGON does.
 
     Microphones: 8 evenly-spaced points on a vertical ring (radius 82.5 mm),
     numbered counter-clockwise starting 22.5° left of top, with the ring centre
@@ -172,40 +175,41 @@ def load_michaels_timeframe(
     time_dilation: float = 1.0,
     sr: int | None = 16000,
     recording_id: str | None = None,
-) -> TimeFrame:
-    """Load one Michael's recording as an aligned `TimeFrame`.
+) -> td.Frame:
+    """Load one Michael's recording as an aligned ``td.Frame``.
 
-    The frame holds an 8-channel `audio` `UniformSeries` and an `rps`
-    `EventSeries` (4 rotors), built exactly as in the notebook — the audio is
-    anchored at t=0 and the RPS timestamps are aligned to it via the
-    `time_offset` / `time_dilation` constants.
+    The frame holds an 8-channel ``audio`` Series (dims ``("mic", "time")``)
+    and an ``rps`` Series (dims ``("rotor", "time")``), built exactly as in
+    the notebook — the audio is anchored at t=0 and the RPS timestamps are
+    aligned to it via the `time_offset` / `time_dilation` constants.
     """
     wav, ts, ms, sample_rate = _load_michaels_data_raw(
         wav_path, csv_path, time_offset=time_offset, time_dilation=time_dilation, sr=sr
     )
-    audio = UniformSeries.from_samples(samples=wav, sr=sample_rate)
-    rps = EventSeries.from_events(timestamps=ts, values=ms)
-    tags = {"recording_id": recording_id or Path(wav_path).stem}
+    audio = td.uniform(wav, sample_rate, dims=("mic", "time"))
+    rps = td.events(ts, ms, dims=("rotor", "time"))
+    meta = {"recording_id": recording_id or Path(wav_path).stem}
     mic_positions, rotor_positions = get_geometry()
-    return TimeFrame.from_tracks(
-        dict(audio=audio, rps=rps),
-        tags=tags,
-        global_data={"mic_positions": mic_positions, "rotor_positions": rotor_positions},
+    return make_recording_frame(
+        {"audio": audio, "rps": rps},
+        meta=meta,
+        mic_pos=mic_positions,
+        rotor_pos=rotor_positions,
     )
 
 
 def load_michaels_timeframes(
     data_root: str | Path | None = None,
     sr: int | None = 16000,
-) -> list[TimeFrame]:
-    """Load FLY124 and FLY125 as a list of two aligned 8-channel `TimeFrame`s.
+) -> list[td.Frame]:
+    """Load FLY124 and FLY125 as a list of two aligned 8-channel ``td.Frame``s.
 
-    Each frame contains `audio` (8-channel `UniformSeries`, `(8, N)`) and `rps`
-    (motor speeds `EventSeries`, `(4, M)` in rev/s), aligned exactly as in
+    Each frame contains ``audio`` (8-channel Series, ``(8, N)``) and ``rps``
+    (motor speeds Series, ``(4, M)`` in rev/s), aligned exactly as in
     `notebooks/michael_data_analysis.ipynb`.
     """
     root = Path(data_root) if data_root is not None else _DATA_ROOT
-    frames: list[TimeFrame] = []
+    frames: list[td.Frame] = []
     for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
         frames.append(
             load_michaels_timeframe(

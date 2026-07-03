@@ -1,22 +1,24 @@
 """
-DREGON Dataset Loader — TimeFrame-native interface.
+DREGON Dataset Loader — tdseries-native interface.
 
 DREGON: Dataset and Methods for UAV-Embedded Sound Source Localization
 https://dregon.inria.fr/datasets/dregon/
 
-Each recording is loaded as a `TimeFrame` with tracks:
-  - ``"audio"``            : UniformSeries  — (n_samples, n_channels) at 44100 Hz
-  - ``"motors_measured"``  : EventSeries    — timestamps + values (N, 4)  [if available]
-  - ``"motors_command"``   : EventSeries    — timestamps + values (N, 4)  [if available]
-  - ``"imu_accel"``        : EventSeries    — timestamps + values (N, 3)  [if available]
-  - ``"imu_gyro"``         : EventSeries    — timestamps + values (N, 3)  [if available]
-  - ``"source_position"``  : EventSeries    — timestamps + values (N, 3)  [if available]
-
-``tags`` carry scalar metadata (``recording_id``, ``split``, ``flight_type``, …).
-``global_data`` stores array metadata: ``mic_positions`` (8, 3), ``rotor_positions`` (4, 3).
+Each recording is loaded as a ``td.Frame`` with entries:
+  - ``"audio"``            : Series (dims ``("mic", "time")``) at 44100 Hz
+  - ``"motors_measured"``  : Series (dims ``("rotor", "time")``)  [if available]
+  - ``"motors_command"``   : Series (dims ``("rotor", "time")``)  [if available]
+  - ``"imu_accel"``        : Series (dims ``(None, "time")``, 3 axes)  [if available]
+  - ``"imu_gyro"``         : Series (dims ``(None, "time")``, 3 axes)  [if available]
+  - ``"source_position"``  : Series (dims ``(None, "time")``, 3 axes)  [if available]
+  - ``"mic_pos"``          : invariant Series ``(8, 3)``, dims ``("mic", None)``
+  - ``"rotor_pos"``        : invariant Series ``(4, 3)``, dims ``("rotor", None)``
+  - ``"meta"``             : nested invariant Frame — ``recording_id``, ``split``,
+    ``flight_type``, ``source_type``, ``source_level``, ``room``, ``motor_id``,
+    ``motor_speed``, ``sample_rate``.
 
 All time-series are aligned to a common absolute time base (Unix timestamps),
-so ``tf.slice(t_a, t_b)`` simultaneously cuts every track.
+so ``frame.time[t_a:t_b]`` simultaneously cuts every entry.
 """
 
 from __future__ import annotations
@@ -30,9 +32,10 @@ import librosa
 import numpy as np
 import scipy.io
 import soundfile as sf
+import tdseries as td
 from scipy.ndimage import median_filter
 
-from utils.data import EventSeries, TimeFrame, UniformSeries
+from data_processing.frames import make_recording_frame
 
 # =============================================================================
 # Constants
@@ -400,7 +403,7 @@ def get_geometry(dregon_dir: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 # =============================================================================
-# TimeFrame-native loading
+# tdseries-native loading
 # =============================================================================
 
 
@@ -415,8 +418,8 @@ def load_timeframe(
     *,
     geometry: tuple[np.ndarray, np.ndarray] | None = None,
     target_sr: int | None = None,
-) -> TimeFrame:
-    """Load a single DREGON recording as a ``TimeFrame``.
+) -> td.Frame:
+    """Load a single DREGON recording as a ``td.Frame``.
 
     Parameters
     ----------
@@ -428,18 +431,17 @@ def load_timeframe(
     geometry : (mic_pos, rotor_pos) | None
         Pre-loaded geometry.  Loaded from paths in *sample* if ``None``.
     target_sr : int | None
-        If given, resample audio to this rate before wrapping in UniformSeries.
+        If given, resample audio to this rate before wrapping in a Series.
 
     Returns
     -------
-    TimeFrame
-        Tracks: ``"audio"``, and optionally ``"motors_measured"``,
+    td.Frame
+        Entries: ``"audio"``, and optionally ``"motors_measured"``,
         ``"motors_command"``, ``"imu_accel"``, ``"imu_gyro"``,
-        ``"source_position"``.
-        Tags: ``recording_id``, ``split``, ``flight_type``, ``source_type``,
+        ``"source_position"``, plus ``"mic_pos"``, ``"rotor_pos"``, ``"meta"``
+        (``recording_id``, ``split``, ``flight_type``, ``source_type``,
         ``source_level``, ``room``, ``motor_id``, ``motor_speed``,
-        ``sample_rate``.
-        global_data: ``mic_positions``, ``rotor_positions``.
+        ``sample_rate``).
     """
     # --- geometry -----------------------------------------------------------
     if geometry is not None:
@@ -471,8 +473,8 @@ def load_timeframe(
     else:
         t0 = 0.0
 
-    tracks: dict = {
-        "audio": UniformSeries.from_samples(audio.astype(np.float32), sr, t_start=t0),
+    tracks: dict[str, td.Series] = {
+        "audio": td.uniform(audio.astype(np.float32), sr, dims=("mic", "time"), t_start=t0),
     }
 
     # --- motor data ----------------------------------------------------------
@@ -482,19 +484,15 @@ def load_timeframe(
         motor_ts = ms["timestamps"][0, 0].flatten().astype(np.float64)
         # Some recordings (room2) have only 'command', not 'measured'
         has_measured = "measured" in ms.dtype.names
-        # EventSeries values are time-last (..., M); .mat stores (M, K) -> .T
+        # values are time-last (..., M); .mat stores (M, K) -> .T
         if has_measured:
             measured = ms["measured"][0, 0].astype(np.float32)  # (M, 4)
-            tracks["motors_measured"] = EventSeries.from_events(
-                motor_ts,
-                values=measured.T,
-                t_start=t0,  # (4, M)
+            tracks["motors_measured"] = td.events(
+                motor_ts, measured.T, dims=("rotor", "time"), t_start=t0
             )
         command = ms["command"][0, 0].astype(np.float32)  # (M, 4)
-        tracks["motors_command"] = EventSeries.from_events(
-            motor_ts,
-            values=command.T,
-            t_start=t0,  # (4, M)
+        tracks["motors_command"] = td.events(
+            motor_ts, command.T, dims=("rotor", "time"), t_start=t0
         )
 
     # --- IMU -----------------------------------------------------------------
@@ -503,8 +501,8 @@ def load_timeframe(
         imu_ts = imu["timestamps"][0, 0].flatten().astype(np.float64)
         accel = imu["acceleration"][0, 0].astype(np.float32)  # (M, 3)
         gyro = imu["angular_velocity"][0, 0].astype(np.float32)  # (M, 3)
-        tracks["imu_accel"] = EventSeries.from_events(imu_ts, values=accel.T, t_start=t0)
-        tracks["imu_gyro"] = EventSeries.from_events(imu_ts, values=gyro.T, t_start=t0)
+        tracks["imu_accel"] = td.events(imu_ts, accel.T, dims=(None, "time"), t_start=t0)
+        tracks["imu_gyro"] = td.events(imu_ts, gyro.T, dims=(None, "time"), t_start=t0)
 
     # --- source position -----------------------------------------------------
     if sample.get("sourcepos_path"):
@@ -517,10 +515,10 @@ def load_timeframe(
                 sp["distance"][0, 0].flatten(),
             ]
         ).astype(np.float32)  # (M, 3)
-        tracks["source_position"] = EventSeries.from_events(sp_ts, values=sp_vals.T, t_start=t0)
+        tracks["source_position"] = td.events(sp_ts, sp_vals.T, dims=(None, "time"), t_start=t0)
 
-    # --- tags ----------------------------------------------------------------
-    tags: dict = {
+    # --- meta ------------------------------------------------------------------
+    meta: dict = {
         "recording_id": str(sample.get("recording_id", "")),
         "split": str(sample.get("split", "")),
         "flight_type": str(sample.get("flight_type") or ""),
@@ -532,17 +530,11 @@ def load_timeframe(
         "sample_rate": int(sr),
     }
 
-    # --- global_data ---------------------------------------------------------
-    global_data: dict = {
-        "mic_positions": mic_pos.astype(np.float64),
-        "rotor_positions": rotor_pos.astype(np.float64),
-    }
-
-    return TimeFrame.from_tracks(
+    return make_recording_frame(
         tracks,
-        t_start=t0,
-        tags=tags,
-        global_data=global_data,
+        meta=meta,
+        mic_pos=mic_pos.astype(np.float64),
+        rotor_pos=rotor_pos.astype(np.float64),
     )
 
 
@@ -552,8 +544,8 @@ def load_dregon_timeframes(
     splits: list[str] | None = None,
     target_sr: int | None = None,
     download: bool = True,
-) -> list[TimeFrame]:
-    """Load all DREGON recordings in *splits* as a flat ``list[TimeFrame]``.
+) -> list[td.Frame]:
+    """Load all DREGON recordings in *splits* as a flat ``list[td.Frame]``.
 
     Parameters
     ----------
@@ -579,7 +571,7 @@ def load_dregon_timeframes(
         split_set = set(splits)
         all_samples = [s for s in all_samples if s["split"] in split_set]
 
-    frames: list[TimeFrame] = []
+    frames: list[td.Frame] = []
     for s in all_samples:
         try:
             tf = load_timeframe(s, geometry=geometry, target_sr=target_sr)
@@ -625,7 +617,7 @@ def clean_command_spikes(
 
     Args:
         command: (4, n_samples) array of commanded rotor speeds (RPS, Hz).
-            Time is the LAST axis (matches EventSeries values convention).
+            Time is the LAST axis (matches the events-values convention).
         kernel: Median filter kernel size along time axis (odd int, default 21).
 
     Returns:

@@ -2,7 +2,7 @@
 
 This is intentionally the simplest implementation of the online-mixing design:
 
-- aligned rotating-noise recordings stay as existing ``TimeFrame`` objects;
+- aligned rotating-noise recordings stay as existing ``td.Frame`` objects;
 - unaligned speech/source audio is loaded from ordinary files on demand;
 - the public interface is config-in/stream-out;
 - optimization layers such as packed source caches can be added behind the same
@@ -14,12 +14,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
 import librosa
 import numpy as np
 import soundfile as sf
+import tdseries as td
 import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from torch.utils.data import IterableDataset, get_worker_info
@@ -35,15 +37,15 @@ if load_dotenv is not None:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
+from data_processing.frames import get_meta, with_meta
 from data_processing.michaels import load_michaels_timeframes
-from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
 @runtime_checkable
 class NoisePool(Protocol):
     """A source of aligned noise slices: real recordings or a generated stream."""
 
-    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame: ...
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame: ...
 
 
 DEFAULT_SAMPLE_RATE = 16_000
@@ -74,8 +76,8 @@ def make_rng(base_seed: int, global_sample_id: int) -> np.random.Generator:
     return np.random.default_rng(seed)
 
 
-def _resolve_motor_tracks(tf: TimeFrame) -> tuple[str, str, bool]:
-    """Return ``(detect_key, rps_key, needs_cleaning)`` for a noise TimeFrame."""
+def _resolve_motor_tracks(tf: td.Frame) -> tuple[str, str, bool]:
+    """Return ``(detect_key, rps_key, needs_cleaning)`` for a noise Frame."""
     if "motors_command" in tf or "motors_measured" in tf:
         detect = "motors_measured" if "motors_measured" in tf else "motors_command"
         rps_key = "motors_command" if "motors_command" in tf else "motors_measured"
@@ -83,22 +85,22 @@ def _resolve_motor_tracks(tf: TimeFrame) -> tuple[str, str, bool]:
     if "rps" in tf:
         return "rps", "rps", False
     raise ValueError(
-        f"{tf.tags.get('recording_id', '?')} has no rotor-speed track "
+        f"{get_meta(tf, 'recording_id', '?')} has no rotor-speed track "
         "(expected 'motors_measured', 'motors_command', or 'rps')"
     )
 
 
 def _inflight_window(
-    tf: TimeFrame,
+    tf: td.Frame,
     motor_key: str,
     *,
     min_motor_rps: float,
     clean: bool,
 ) -> tuple[float, float]:
-    motor = cast(EventSeries, tf[motor_key])
-    if motor.values is None or len(motor) == 0:
+    motor = tf[motor_key]
+    if motor.data is None or motor.dim_size("time") == 0:
         return motor.t_start, motor.t_end
-    values = np.asarray(motor.values, dtype=np.float32)
+    values = np.asarray(motor.data, dtype=np.float32)
     if clean:
         values = clean_command_spikes(values)
     mask = np.all(values > float(min_motor_rps), axis=0)
@@ -106,9 +108,9 @@ def _inflight_window(
     if idxs.size == 0:
         raise ValueError(
             f"No in-flight window (all motors > {min_motor_rps} RPS) in "
-            f"{tf.tags.get('recording_id', '?')}"
+            f"{get_meta(tf, 'recording_id', '?')}"
         )
-    times = motor.abs_timestamps
+    times = cast(td.StampIndex, motor.tindex).abs_stamps
     return float(times[idxs[0]]), float(times[idxs[-1]])
 
 
@@ -117,7 +119,7 @@ def _as_audio_ct(audio: np.ndarray, *, target_len: int | None = None) -> np.ndar
     if audio.ndim == 1:
         audio = audio[None, :]
     elif audio.ndim == 2:
-        # TimeFrame audio is already (C, T); soundfile audio is normalized before
+        # Frame audio is already (C, T); soundfile audio is normalized before
         # calling this helper.
         pass
     else:
@@ -130,49 +132,49 @@ def _as_audio_ct(audio: np.ndarray, *, target_len: int | None = None) -> np.ndar
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
-def _extract_audio_array(tf: TimeFrame, *, target_len: int) -> np.ndarray:
-    audio = cast(UniformSeries, tf["audio"])
-    return _as_audio_ct(audio.samples, target_len=target_len)
+def _extract_audio_array(tf: td.Frame, *, target_len: int) -> np.ndarray:
+    audio = tf["audio"]
+    return _as_audio_ct(audio.data, target_len=target_len)
 
 
-def _stft_frame_times(audio: UniformSeries, n_frames: int, hop_length: int) -> np.ndarray:
+def _stft_frame_times(audio: td.Series, n_frames: int, hop_length: int) -> np.ndarray:
     # Match the existing training target convention: frame i is placed at
-    # t_start + i * hop / sr.  Online data uses timestamp interpolation rather
-    # than shape-stretching raw RPS arrays.
-    return audio.t_start + (np.arange(n_frames, dtype=np.float64) * hop_length / audio.sr)
+    # t_start + i * hop / sr.  Built from the exact sr/hop frame-rate fraction
+    # (never a float division) via a throwaway GridIndex, then read back as
+    # absolute sample-edge times.
+    ti = cast(td.GridIndex, audio.tindex)
+    frame_rate = Fraction(ti.sr_num, ti.sr_den) / hop_length
+    grid = td.GridIndex.create(
+        (frame_rate.numerator, frame_rate.denominator), n_frames, t_start=ti.t_start_ticks
+    )
+    return grid.sample_times()
 
 
 def interpolate_rps_to_stft_grid(
-    tf: TimeFrame,
+    tf: td.Frame,
     *,
     n_frames: int,
     hop_length: int,
 ) -> np.ndarray:
-    """Interpolate a sliced TimeFrame's RPS track to the model STFT grid."""
+    """Interpolate a sliced Frame's RPS track to the model STFT grid."""
     _, rps_key, needs_clean = _resolve_motor_tracks(tf)
-    audio = cast(UniformSeries, tf["audio"])
-    rps = cast(EventSeries, tf[rps_key])
-    if rps.values is None or len(rps) == 0:
+    audio = tf["audio"]
+    rps = tf[rps_key]
+    if rps.data is None or rps.dim_size("time") == 0:
         return np.zeros((4, n_frames), dtype=np.float32)
 
     frame_times = _stft_frame_times(audio, n_frames, hop_length)
-    values = np.asarray(rps.values, dtype=np.float32)
     if needs_clean:
-        values = clean_command_spikes(values)
-    event_times = rps.abs_timestamps
-
-    out = np.empty((values.shape[0], n_frames), dtype=np.float32)
-    for i in range(values.shape[0]):
-        out[i] = np.interp(frame_times, event_times, values[i]).astype(np.float32)
-    return out
+        rps = rps.map_data(clean_command_spikes)
+    return rps.interpolate(frame_times).astype(np.float32)
 
 
 class TimeFrameNoisePool:
-    """Randomly slice existing aligned noise ``TimeFrame`` recordings."""
+    """Randomly slice existing aligned noise ``td.Frame`` recordings."""
 
     def __init__(
         self,
-        recordings: Iterable[TimeFrame],
+        recordings: Iterable[td.Frame],
         *,
         min_motor_rps: float = 30.0,
         duration_s: float = DEFAULT_DURATION_S,
@@ -183,8 +185,8 @@ class TimeFrameNoisePool:
                 continue
             try:
                 detect_key, _rps_key, needs_clean = _resolve_motor_tracks(tf)
-                audio = cast(UniformSeries, tf["audio"])
-                detect = cast(EventSeries, tf[detect_key])
+                audio = tf["audio"]
+                detect = tf[detect_key]
                 valid_start = max(audio.t_start, detect.t_start)
                 valid_end = min(audio.t_end, detect.t_end)
                 if min_motor_rps > 0:
@@ -199,7 +201,7 @@ class TimeFrameNoisePool:
                         {"tf": tf, "valid_start": valid_start, "valid_end": valid_end}
                     )
             except Exception as exc:
-                print(f"Warning: skipping noise frame {tf.tags.get('recording_id', '?')}: {exc}")
+                print(f"Warning: skipping noise frame {get_meta(tf, 'recording_id', '?')}: {exc}")
 
         if not self.records:
             raise ValueError("no usable noise recordings found")
@@ -242,12 +244,12 @@ class TimeFrameNoisePool:
             ids = _cfg_get(cfg, "recording_ids", None)
             if ids is not None:
                 wanted = {str(x) for x in ids}
-                frames = [tf for tf in frames if str(tf.tags.get("recording_id", "")) in wanted]
+                frames = [tf for tf in frames if str(get_meta(tf, "recording_id", "")) in wanted]
             exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
             if exclude_ids is not None:
                 excluded = {str(x) for x in exclude_ids}
                 frames = [
-                    tf for tf in frames if str(tf.tags.get("recording_id", "")) not in excluded
+                    tf for tf in frames if str(get_meta(tf, "recording_id", "")) not in excluded
                 ]
         elif kind in {"michaels", "michael"}:
             frames = load_michaels_timeframes(data_root=root, sr=sample_rate)
@@ -258,34 +260,26 @@ class TimeFrameNoisePool:
             wanted = {str(i).strip().lower().removeprefix("fly") for i in ids}
             selected = []
             for tf in frames:
-                rid = str(tf.tags.get("recording_id", ""))
+                rid = str(get_meta(tf, "recording_id", ""))
                 if want_all or rid.lower().removeprefix("fly") in wanted:
-                    tags = dict(tf.tags)
-                    tags["recording_id"] = f"michaels_FLY{rid}"
-                    selected.append(
-                        TimeFrame.from_tracks(
-                            {k: tf[k] for k in tf},
-                            t_start=tf.t_start,
-                            tags=tags,
-                            global_data=tf.global_data,
-                        )
-                    )
+                    selected.append(with_meta(tf, recording_id=f"michaels_FLY{rid}"))
             exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
             if exclude_ids is not None:
                 excluded = {str(x) for x in exclude_ids}
                 selected = [
-                    tf for tf in selected if str(tf.tags.get("recording_id", "")) not in excluded
+                    tf for tf in selected if str(get_meta(tf, "recording_id", "")) not in excluded
                 ]
             frames = selected
         else:
             raise ValueError(f"unsupported noise source kind: {kind!r}")
         return cls(frames, min_motor_rps=min_motor_rps, duration_s=duration_s)
 
-    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame:
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
         idx = int(rng.choice(len(self.records), p=self.weights))
         rec = self.records[idx]
         start = float(rng.uniform(rec["valid_start"], rec["valid_end"] - duration_s))
-        return cast(TimeFrame, rec["tf"]).slice(start, start + duration_s)
+        tf = cast(td.Frame, rec["tf"])
+        return tf.time[start : start + duration_s]
 
 
 class MixedNoisePool:
@@ -315,7 +309,7 @@ class MixedNoisePool:
             recs.extend(getattr(pool, "records", []))
         return recs
 
-    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame:
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
         idx = int(rng.choice(len(self.pools), p=self.weights))
         return self.pools[idx].sample_timeframe(rng, duration_s)
 
@@ -693,7 +687,7 @@ class OnlineMixIterableDataset(IterableDataset):
         rng = make_rng(self.base_seed, int(global_sample_id))
         policy = _resolve_policy(self.policy, int(global_sample_id))
         noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
-        audio_track = cast(UniformSeries, noise_tf["audio"])
+        audio_track = noise_tf["audio"]
         noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
         n_frames = noise_audio.shape[-1] // self.hop_length + 1
 
@@ -724,6 +718,7 @@ class OnlineMixIterableDataset(IterableDataset):
         )
         # `audio_track` is read above to document that the STFT frame grid is
         # tied to the sliced audio's actual timeline; keep this sanity check here.
-        if int(round(audio_track.sr)) != self.sample_rate:
-            raise ValueError(f"noise audio sr {audio_track.sr} != configured {self.sample_rate}")
+        audio_sr = cast(td.GridIndex, audio_track.tindex).sr
+        if int(round(audio_sr)) != self.sample_rate:
+            raise ValueError(f"noise audio sr {audio_sr} != configured {self.sample_rate}")
         return torch.from_numpy(mixture), torch.from_numpy(rps)

@@ -1,8 +1,8 @@
 """
-External Drone Recording Loader — TimeFrame-native.
+External Drone Recording Loader — tdseries-native.
 
 Loads drone noise recordings with DJI flight-log CSVs (FLY*.csv) and
-multi-channel WAV audio into `TimeFrame` objects, making them compatible
+multi-channel WAV audio into ``td.Frame`` objects, making them compatible
 with the DREGON data processing pipeline.
 
 Expected directory layout::
@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 import soundfile as sf
+import tdseries as td
 
-from utils.data import EventSeries, TimeFrame, UniformSeries
+from data_processing.frames import make_recording_frame
 
 # Column names in DJI flight-log CSVs
 _TIME_COL = "Clock:offsetTime"
@@ -116,17 +116,17 @@ def load_external_timeframe(
     wav_path: str | Path,
     csv_path: str | Path,
     recording_id: str | None = None,
-) -> TimeFrame:
-    """Load an external drone recording as a ``TimeFrame``.
+) -> td.Frame:
+    """Load an external drone recording as a ``td.Frame``.
 
     Alignment assumption: ``Clock:offsetTime = 0`` → audio sample 0.
 
     Returns
     -------
-    TimeFrame
-        Tracks: ``"audio"``, ``"motors_measured"``, and optionally
-        ``"imu_accel"``, ``"imu_gyro"``.
-        Tags: ``recording_id``, ``split``, ``flight_type``.
+    td.Frame
+        Entries: ``"audio"``, ``"motors_measured"``, and optionally
+        ``"imu_accel"``, ``"imu_gyro"``, plus ``"meta"`` (``recording_id``,
+        ``split``, ``flight_type``, ``sample_rate``).
     """
     wav_path = Path(wav_path)
     csv_path = Path(csv_path)
@@ -139,48 +139,52 @@ def load_external_timeframe(
 
     t_start = 0.0
 
-    tracks: dict = {
-        "audio": UniformSeries.from_samples(
+    tracks: dict[str, td.Series] = {
+        "audio": td.uniform(
             audio.astype(np.float32),
             sr,
+            dims=("mic", "time"),
             t_start=t_start,
         ),
     }
 
     # ── CSV telemetry ──────────────────────────────────────────────────
     csv_data = _parse_dji_csv(csv_path)
-    csv_time = csv_data["time"]  # may start negative — EventSeries handles that
+    csv_time = csv_data["time"]  # may start negative — events handle that
     motor_rps = csv_data["motor_rps"]  # (M, 4)
 
-    # EventSeries values are time-last (..., M).
-    tracks["motors_measured"] = EventSeries.from_events(
+    # values are time-last (..., M).
+    tracks["motors_measured"] = td.events(
         csv_time,
-        values=motor_rps.T,
-        t_start=t_start,  # (4, M)
+        motor_rps.T,
+        dims=("rotor", "time"),
+        t_start=t_start,
     )
 
     # ── IMU (optional) ─────────────────────────────────────────────────
     if "accel" in csv_data:
-        tracks["imu_accel"] = EventSeries.from_events(
+        tracks["imu_accel"] = td.events(
             csv_time,
-            values=csv_data["accel"].T,
+            csv_data["accel"].T,
+            dims=(None, "time"),
             t_start=t_start,
         )
-        tracks["imu_gyro"] = EventSeries.from_events(
+        tracks["imu_gyro"] = td.events(
             csv_time,
-            values=csv_data["gyro"].T,
+            csv_data["gyro"].T,
+            dims=(None, "time"),
             t_start=t_start,
         )
 
-    # ── tags ───────────────────────────────────────────────────────────
-    tags = {
+    # ── meta ───────────────────────────────────────────────────────────
+    meta = {
         "recording_id": recording_id,
         "split": "in_flight_noise",
         "flight_type": "free-flight",
         "sample_rate": int(sr),
     }
 
-    return TimeFrame.from_tracks(tracks, t_start=t_start, tags=tags)
+    return make_recording_frame(tracks, meta=meta)
 
 
 def discover_external_recordings(
@@ -205,16 +209,15 @@ def discover_external_recordings(
 
 def load_all_external_timeframes(
     data_root: str | Path,
-) -> list[TimeFrame]:
-    """Load every external recording found under *data_root* as TimeFrame."""
+) -> list[td.Frame]:
+    """Load every external recording found under *data_root* as a ``td.Frame``."""
     triples = discover_external_recordings(data_root)
     frames = []
     for wav_path, csv_path, rec_id in triples:
         tf = load_external_timeframe(wav_path, csv_path, recording_id=rec_id)
         frames.append(tf)
         audio_dur = tf["audio"].duration
-        n_motor = len(cast(EventSeries, tf["motors_measured"])) if "motors_measured" in tf else 0
-        audio = cast(UniformSeries, tf["audio"])
-        n_ch = audio.samples.shape[0] if audio.samples.ndim > 1 else 1
+        n_motor = tf["motors_measured"].dim_size("time") if "motors_measured" in tf else 0
+        n_ch = tf["audio"].dim_size("mic")
         print(f"  Loaded {rec_id}: {audio_dur:.1f}s, {n_ch}ch, {n_motor} motor samples")
     return frames

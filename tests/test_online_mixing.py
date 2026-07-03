@@ -1,40 +1,38 @@
 from __future__ import annotations
 
-from omegaconf import OmegaConf
 import numpy as np
 import soundfile as sf
+import tdseries as td
 import torch
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
+from data_processing.frames import get_meta, make_recording_frame
 from data_processing.online_mixing import (
     AudioFileSourcePool,
     OnlineMixIterableDataset,
     TimeFrameNoisePool,
     _resolve_policy,
 )
-from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
 def _make_noise_tf(
     duration_s: float = 2.0,
     sr: int = 16000,
     recording_id: str = "synthetic",
-) -> TimeFrame:
+) -> td.Frame:
     n = int(duration_s * sr)
     t = np.arange(n, dtype=np.float32) / sr
     audio = np.stack(
         [0.01 * np.sin(2 * np.pi * (100 + 10 * ch) * t) for ch in range(8)], axis=0
     ).astype(np.float32)
-    audio_us = UniformSeries.from_samples(audio, sr, t_start=0.0)
+    audio_us = td.uniform(audio, sr, dims=("mic", "time"), t_start=0.0)
 
     motor_t = np.linspace(0.0, duration_s - 0.01, 200, dtype=np.float64)
     rps = np.stack([60 + i + 0.5 * motor_t for i in range(4)], axis=0).astype(np.float32)
-    rps_es = EventSeries.from_events(motor_t, rps, t_start=0.0, t_end=duration_s)
-    return TimeFrame.from_tracks(
-        {"audio": audio_us, "rps": rps_es},
-        t_start=0.0,
-        t_end=duration_s,
-        tags={"recording_id": recording_id},
+    rps_es = td.events(motor_t, rps, dims=("rotor", "time"), t_start=0.0, t_end=duration_s)
+    return make_recording_frame(
+        {"audio": audio_us, "rps": rps_es}, meta={"recording_id": recording_id}
     )
 
 
@@ -71,7 +69,7 @@ def test_noise_pool_from_config_excludes_validation_recording(monkeypatch):
         sample_rate=16000,
     )
 
-    ids = [r["tf"].tags["recording_id"] for r in pool.records]
+    ids = [get_meta(r["tf"], "recording_id") for r in pool.records]
     assert ids == ["free-flight_nosource_room2"]
 
 

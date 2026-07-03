@@ -110,6 +110,22 @@ stay at root — they are offline one-shot tools, not train/eval.
   a new grid use `s.resample(new_sr)`.
 - No `# type: ignore`, no `# noqa` — restructure until ruff+pyright pass
   (a PostToolUse hook enforces this on every write).
+- **Frame tags** (`tf.tags["recording_id"]`, `input_snr`, …) become the
+  nested invariant `"meta"` Frame. Shared helpers live in
+  `src/data_processing/frames.py` (NEW):
+  `get_meta(frame, key, default=None)`, `with_meta(frame, **tags)`
+  (returns a new Frame with an updated `"meta"` entry), and
+  `meta_dict(frame) -> dict`. All ported code goes through these helpers —
+  no ad-hoc `frame["meta"]` chains at call sites.
+- **Series-level plot tags** (`plot.renderer`, `plot.freqs`,
+  `plot.rps_pred` in `src/plots/timeframe/`) do NOT move into the data
+  model. The plots package defines its own `PlotTrack` dataclass
+  (`series: td.Series`, `renderer: str | None`, `hints: dict`);
+  `make_spectrogram_series` / `make_salience_series` return `PlotTrack`s,
+  and `plot_timeframe` accepts a mix of raw Series/Frame entries and
+  `PlotTrack`s. Renderer dispatch: explicit `renderer` first, else by index
+  type (GridIndex 1-D→waveform, 2-D→spectrogram/heatmap; StampIndex→rps;
+  SpanIndex→spans).
 
 ## Task typing: FrameSpec
 

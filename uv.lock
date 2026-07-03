@@ -1569,7 +1569,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "skypilot", extras = ["kubernetes"], specifier = ">=0.11" },
     { name = "soundfile", specifier = "==0.13.1" },
-    { name = "tdseries", specifier = ">=0.1.0" },
+    { name = "tdseries", specifier = ">=0.1.1" },
     { name = "thop", specifier = "==0.1.1.post2209072238" },
     { name = "torch", specifier = "==2.7" },
     { name = "torch-log-wmse", specifier = "==0.3.0" },
@@ -5691,14 +5691,14 @@ wheels = [
 
 [[package]]
 name = "tdseries"
-version = "0.1.0"
+version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/93/569a31e0753f9d8f49b7d4acf0ad1d42e206d4629bb8dac76a6e695e2c5a/tdseries-0.1.0.tar.gz", hash = "sha256:fa7bee9a6dfc8617982c0c338c8e219aca965bb7b0da5033c03b360de93b0aca", size = 74827, upload-time = "2026-07-02T17:48:15.69Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/72/4190e6897264fb12257d56b00f9c1e36a23a4273d4e39afe91b26b44ada5/tdseries-0.1.1.tar.gz", hash = "sha256:45c5392ce079e5ad1ee7d6140ae40c88f304da701ed2c5e1fd3b68396f1a98ef", size = 74851, upload-time = "2026-07-02T22:25:05.544Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/c3/a7a2daea260e4e9dd512958dc694e10e7a33e29a2e2dec011efc4d7aaf3e/tdseries-0.1.0-py3-none-any.whl", hash = "sha256:cf78aa6141f4be24732e0dca83ad5b7f8226878263f1f8d0dac2e0e42d642c84", size = 24165, upload-time = "2026-07-02T17:48:14.547Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/d3/0c06155e8e8757ce38c575942b23b0fc6a24b8818648104a7005fe3615da/tdseries-0.1.1-py3-none-any.whl", hash = "sha256:855fc22a90a50f1821e068500c77a7f6329b8fcb70f1ab4dfbe2e54763cc243c", size = 24322, upload-time = "2026-07-02T22:25:04.625Z" },
 ]
 
 [[package]]

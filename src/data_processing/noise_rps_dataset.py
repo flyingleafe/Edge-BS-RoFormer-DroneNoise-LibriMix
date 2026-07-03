@@ -18,14 +18,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
+import tdseries as td
 import torch
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
-
-from utils.data import TimeFrame
 
 from . import dregon as D
 from . import michaels as M
@@ -66,27 +65,28 @@ def upsample_rps_to_audio_rate(
 
 
 # ---------------------------------------------------------------------------
-# Unified record wrapper (DREGON → TimeFrame; Michael's → MichaelsRecord)
+# Unified record wrapper — both DREGON and Michael's are now plain
+# ``td.Frame``s with an "audio" entry (dims ("mic", "time")) and a
+# rotor-speed entry (dims ("rotor", "time")); only the entry name differs
+# ("motors_measured" for DREGON, "rps" for Michael's).
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class _ChunkSource:
-    record: object  # TimeFrame | MichaelsRecord
+    frame: td.Frame
     origin: str  # "dregon" | "michaels"
+    rps_key: str  # "motors_measured" | "rps"
     n_channels: int  # number of usable audio channels
     duration: float
 
 
-def _wrap_dregon(tf: TimeFrame) -> _ChunkSource:
+def _wrap_frame(tf: td.Frame, *, origin: str, rps_key: str) -> _ChunkSource:
     audio = tf["audio"]
-    n_ch = audio.samples.shape[0] if audio.samples.ndim > 1 else 1  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-    return _ChunkSource(record=tf, origin="dregon", n_channels=n_ch, duration=audio.duration)
-
-
-def _wrap_michaels(record: M.MichaelsRecord) -> _ChunkSource:
-    n_ch = record.audio.shape[1] if record.audio.ndim > 1 else 1
-    return _ChunkSource(record=record, origin="michaels", n_channels=n_ch, duration=record.duration)
+    n_ch = audio.dim_size("mic") if "mic" in audio.dims else 1
+    return _ChunkSource(
+        frame=tf, origin=origin, rps_key=rps_key, n_channels=n_ch, duration=audio.duration
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -156,61 +156,41 @@ class NoiseRPSDataset(Dataset):
         self, src: _ChunkSource
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Returns (audio [T], rps_motor_rate [4, M], audio_ts [T], motor_ts [M])."""
-        rec = src.record
+        tf = src.frame
         # Random channel within record
         if self.channel_policy == "random" and src.n_channels > 1:
             ch = int(self.rng.integers(0, src.n_channels))
         else:
             ch = 0
 
-        if src.origin == "dregon":
-            # rec is a TimeFrame — use native slice + track access.
-            tf: TimeFrame = rec  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            # Compute valid time window (intersection of audio and motor domains).
-            audio_start = tf["audio"].t_start
-            audio_end = tf["audio"].t_end
-            motor_track = tf["motors_measured"]
-            motor_start = motor_track.t_start
-            motor_end = motor_track.t_end
-            valid_start = max(audio_start, motor_start)
-            valid_end = min(audio_end, motor_end)
-            rel_lo = valid_start - audio_start
-            rel_hi = valid_end - audio_start - self._chunk_duration_sec
-            start = float(self.rng.uniform(rel_lo, rel_hi))
+        # Compute valid time window (intersection of audio and motor domains).
+        audio_start = tf["audio"].t_start
+        audio_end = tf["audio"].t_end
+        motor_track = tf[src.rps_key]
+        motor_start = motor_track.t_start
+        motor_end = motor_track.t_end
+        valid_start = max(audio_start, motor_start)
+        valid_end = min(audio_end, motor_end)
+        rel_lo = valid_start - audio_start
+        rel_hi = valid_end - audio_start - self._chunk_duration_sec
+        start = float(self.rng.uniform(rel_lo, rel_hi))
 
-            # Slice both audio and motors simultaneously.
-            sliced = tf.slice(audio_start + start, audio_start + start + self._chunk_duration_sec)
+        # Slice both audio and motors simultaneously.
+        sliced = tf.time[audio_start + start : audio_start + start + self._chunk_duration_sec]
 
-            audio_us = sliced["audio"]
-            # UniformSeries stores (channels, N) — axis 0 = channels, axis -1 = time
-            audio = audio_us.samples[ch, :] if audio_us.samples.ndim > 1 else audio_us.samples  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            audio_ts = audio_us.sample_times()  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
+        audio_s = sliced["audio"]
+        # audio data is (channels, N) — axis 0 = channels, axis -1 = time
+        audio = np.asarray(audio_s.data)[ch, :]
+        audio_ts = cast(td.GridIndex, audio_s.tindex).sample_times()
 
-            motor_es = sliced["motors_measured"]
-            motor_ts = motor_es.abs_timestamps  # float seconds  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            # EventSeries values are already time-last (4, M).
-            rps = (
-                motor_es.values  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-                if motor_es.values is not None  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-                else np.zeros((4, 0), dtype=np.float32)
-            )
-        else:  # michaels
-            # Same logic as before, using MichaelsRecord API.
-            rec_m: M.MichaelsRecord = rec  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            audio_start = rec_m.audio_timestamps[0]
-            audio_end = rec_m.audio_timestamps[-1]
-            motor_start = rec_m.motors.timestamps[0]  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            motor_end = rec_m.motors.timestamps[-1]  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            valid_start = max(audio_start, motor_start)
-            valid_end = min(audio_end, motor_end)
-            rel_lo = valid_start - audio_start
-            rel_hi = valid_end - audio_start - self._chunk_duration_sec
-            start = float(self.rng.uniform(rel_lo, rel_hi))
-            sliced = rec_m.slice_by_time(start, start + self._chunk_duration_sec)
-            audio = sliced.audio[:, ch] if sliced.audio.ndim > 1 else sliced.audio
-            rps = sliced.motors.measured.T  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            motor_ts = sliced.motors.timestamps  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            audio_ts = sliced.audio_timestamps
+        motor_s = sliced[src.rps_key]
+        motor_ts = cast(td.StampIndex, motor_s.tindex).abs_stamps
+        # values are already time-last (4, M).
+        rps = (
+            np.asarray(motor_s.data)
+            if motor_s.data is not None
+            else np.zeros((4, 0), dtype=np.float32)
+        )
 
         # Length normalisation — chunks can be off by 1 sample due to int cast
         if len(audio) > self.chunk_size:
@@ -272,7 +252,7 @@ def load_dregon_noise_sources(
 ) -> list[_ChunkSource]:
     """Load all DREGON `in_flight_noise` recordings with motor data.
 
-    Uses the new TimeFrame-native loader.
+    Uses the tdseries-native loader.
     """
     dregon_dir = Path(dregon_dir)
     frames = D.load_dregon_timeframes(
@@ -285,7 +265,7 @@ def load_dregon_noise_sources(
     for tf in frames:
         if "motors_measured" not in tf:
             continue
-        sources.append(_wrap_dregon(tf))
+        sources.append(_wrap_frame(tf, origin="dregon", rps_key="motors_measured"))
     return sources
 
 
@@ -294,8 +274,8 @@ def load_michaels_noise_sources(
     sample_rate: int,
 ) -> list[_ChunkSource]:
     """Load all Michael's recordings that exist in `michaels_dir`."""
-    records = M.load_all_michaels_records(michaels_dir, sample_rate=sample_rate)
-    return [_wrap_michaels(r) for r in records]
+    frames = M.load_michaels_timeframes(data_root=michaels_dir, sr=sample_rate)
+    return [_wrap_frame(tf, origin="michaels", rps_key="rps") for tf in frames]
 
 
 def build_noise_rps_datasets(
@@ -342,25 +322,15 @@ def build_noise_rps_datasets(
     train_sources: list[_ChunkSource] = []
     val_sources: list[_ChunkSource] = []
     for src in sources:
+        tf = src.frame
         cut = src.duration * (1.0 - val_pct)
-
-        if src.origin == "dregon":
-            tf: TimeFrame = src.record  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            # Train: slice(0, cut)  |  Val: slice(cut, end)
-            train_tf = tf.slice(tf.t_start, tf.t_start + cut)
-            val_tf = tf.slice(tf.t_start + cut, tf.t_end)
-            if train_tf["audio"].duration >= chunk_size / sample_rate:
-                train_sources.append(_wrap_dregon(train_tf))
-            if val_tf["audio"].duration >= chunk_size / sample_rate:
-                val_sources.append(_wrap_dregon(val_tf))
-        else:
-            rec = src.record
-            train_rec = rec.slice_by_time(0.0, cut)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            val_rec = rec.slice_by_time(cut, src.duration)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue, reportOptionalMemberAccess, reportOptionalCall, reportGeneralTypeIssues, reportIndexIssue, reportOptionalSubscript, reportOptionalOperand, reportAssignmentType]
-            if train_rec.duration >= chunk_size / sample_rate:
-                train_sources.append(_wrap_michaels(train_rec))
-            if val_rec.duration >= chunk_size / sample_rate:
-                val_sources.append(_wrap_michaels(val_rec))
+        # Train: time[t_start, t_start+cut]  |  Val: time[t_start+cut, t_end]
+        train_tf = tf.time[tf.t_start : tf.t_start + cut]
+        val_tf = tf.time[tf.t_start + cut : tf.t_end]
+        if train_tf["audio"].duration >= chunk_size / sample_rate:
+            train_sources.append(_wrap_frame(train_tf, origin=src.origin, rps_key=src.rps_key))
+        if val_tf["audio"].duration >= chunk_size / sample_rate:
+            val_sources.append(_wrap_frame(val_tf, origin=src.origin, rps_key=src.rps_key))
 
     train_ds = NoiseRPSDataset(
         train_sources,

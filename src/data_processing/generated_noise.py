@@ -29,7 +29,7 @@ Key properties:
   buffer once (fixed seeds) and stops — a reproducible fixed generated set,
   usable where a live stream would break reproducibility.
 
-The pool implements the same ``sample_timeframe(rng, duration_s) -> TimeFrame``
+The pool implements the same ``sample_timeframe(rng, duration_s) -> td.Frame``
 interface as :class:`data_processing.online_mixing.TimeFrameNoisePool`, so
 ``kind: generated`` slots into an online-mix ``sources.noise`` list exactly like
 a real recording.
@@ -45,11 +45,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import tdseries as td
 import torch
 import torch.multiprocessing as tmp
 
 from data_processing import rps_synthesis
-from utils.data import EventSeries, TimeFrame, UniformSeries
+from data_processing.frames import make_recording_frame
 
 # Convenience blend factor for `rps_synthesis.generate_intermittent(drone_profile=...)`
 # keyed by codebook drone name. Unknown names default to the DREGON end (0.0).
@@ -332,7 +333,7 @@ class GeneratedNoisePool:
                 )
             time.sleep(0.02)
 
-    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> TimeFrame:
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
         ready_idx = self._wait_warmup()
         version = self.shared["version"]
         while True:
@@ -355,15 +356,19 @@ class GeneratedNoisePool:
             audio = np.pad(audio, ((0, 0), (0, pad)))
             rps = np.pad(rps, ((0, 0), (0, pad)))
 
-        audio_us = UniformSeries.from_samples(
-            np.ascontiguousarray(audio, dtype=np.float32), self.sample_rate, t_start=0.0
+        audio_us = td.uniform(
+            np.ascontiguousarray(audio, dtype=np.float32),
+            self.sample_rate,
+            dims=("mic", "time"),
+            t_start=0.0,
         )
         t = np.arange(audio.shape[-1], dtype=np.float64) / self.sample_rate
-        rps_es = EventSeries.from_events(
-            t, np.ascontiguousarray(rps, dtype=np.float32), t_start=0.0
+        rps_es = td.events(
+            t, np.ascontiguousarray(rps, dtype=np.float32), dims=("rotor", "time"), t_start=0.0
         )
-        return TimeFrame.from_tracks(
+        return make_recording_frame(
             {"audio": audio_us, "rps": rps_es},
-            tags={"recording_id": f"generated_{self.drone}"},
-            global_data={"mic_positions": self.mic_pos, "rotor_positions": self.rotor_pos},
+            meta={"recording_id": f"generated_{self.drone}"},
+            mic_pos=self.mic_pos,
+            rotor_pos=self.rotor_pos,
         )
