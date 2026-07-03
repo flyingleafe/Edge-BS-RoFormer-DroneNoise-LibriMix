@@ -24,6 +24,7 @@ from typing import cast
 import librosa
 import numpy as np
 import soundfile as sf
+import tdseries as td
 from tqdm import tqdm
 
 from data_processing.dregon import (
@@ -31,8 +32,8 @@ from data_processing.dregon import (
     get_geometry,
     load_dregon_timeframes,
 )
+from data_processing.frames import get_meta, with_meta
 from data_processing.michaels import load_michaels_timeframes
-from utils.data import EventSeries, TimeFrame, TimeSeries, UniformSeries
 from utils.paths import get_data_path, get_datasets_path
 
 # =============================================================================
@@ -171,19 +172,20 @@ def load_dregon_noise_records(
     recording_ids: list[str] | None = None,
     splits: list[str] | None = None,
     cache_dir: Path | None = None,
-) -> list[TimeFrame]:
+) -> list[td.Frame]:
     """
-    Load DREGON recordings as TimeFrame objects, one per channel per recording.
+    Load DREGON recordings as ``td.Frame`` objects, one per channel per recording.
 
     Args:
         dregon_dir: Path to DREGON data directory
         recording_ids: Specific recording IDs to load (overrides splits)
         splits: Split names to load (used if recording_ids is None)
-        cache_dir: Ignored (TimeFrame handles resampling via target_sr).
+        cache_dir: Ignored (the loader handles resampling via target_sr).
 
     Returns:
-        List of TimeFrame objects (one per channel per recording).
-        Each frame has a single-channel "audio" track.
+        List of ``td.Frame`` objects (one per channel per recording).
+        Each frame keeps a single-channel ``"audio"`` entry with dims
+        ``("mic", "time")`` (mic size 1 — never squeezed away).
     """
     dregon_dir = Path(dregon_dir)
     get_geometry(dregon_dir)
@@ -199,38 +201,22 @@ def load_dregon_noise_records(
     # Filter by recording_ids if given
     if recording_ids is not None:
         rid_set = set(recording_ids)
-        all_frames = [tf for tf in all_frames if tf.tags.get("recording_id", "") in rid_set]
+        all_frames = [tf for tf in all_frames if get_meta(tf, "recording_id", "") in rid_set]
 
-    # Expand each channel into a separate single-channel TimeFrame
-    result: list[TimeFrame] = []
+    # Expand each channel into a separate single-channel td.Frame.
+    # ``tf.slice["mic", ch:ch+1]`` (a *slice*, not a bare int) keeps the "mic"
+    # dim at size 1 and slices "audio" and "mic_pos" together consistently
+    # (they share the "mic" dim) — see docs/refactor-unified-framework.md.
+    result: list[td.Frame] = []
     for tf in tqdm(all_frames, desc="Loading DREGON records"):
+        rid = get_meta(tf, "recording_id", "?")
         if "motors_measured" not in tf and "motors_command" not in tf:
-            print(f"Warning: {tf.tags.get('recording_id', '?')} has no motor data, skipping")
+            print(f"Warning: {rid} has no motor data, skipping")
             continue
-        audio_us = cast(UniformSeries, tf["audio"])
-        # UniformSeries stores (channels, N) — axis 0 = channels
-        n_channels = audio_us.samples.shape[0] if audio_us.samples.ndim > 1 else 1
+        n_channels = tf["audio"].dim_size("mic")
         for ch in range(n_channels):
-            # Create single-channel audio UniformSeries
-            ch_samples = audio_us.samples[ch : ch + 1, :]  # (1, N)
-            ch_audio = UniformSeries.from_samples(
-                ch_samples,
-                audio_us.sr,
-                t_start=audio_us.t_start,
-            )
-            # Build new TimeFrame with single-channel audio + same other tracks
-            new_tracks: dict[str, TimeSeries] = {"audio": ch_audio}
-            for key in tf:
-                if key != "audio":
-                    new_tracks[key] = tf[key]
-            new_tags = dict(tf.tags)
-            new_tags["recording_id"] = f"{new_tags['recording_id']}_ch{ch}"
-            ch_tf = TimeFrame.from_tracks(
-                new_tracks,
-                t_start=tf.t_start,
-                tags=new_tags,
-                global_data=tf.global_data,
-            )
+            ch_tf = tf.slice["mic", ch : ch + 1]
+            ch_tf = with_meta(ch_tf, recording_id=f"{rid}_ch{ch}")
             result.append(ch_tf)
 
     return result
@@ -241,24 +227,24 @@ def load_dregon_noise_records(
 # =============================================================================
 
 
-def resolve_motor_tracks(tf: TimeFrame) -> tuple[str, str, bool]:
-    """Resolve the rotor-speed track names of a noise ``TimeFrame``.
+def resolve_motor_tracks(tf: td.Frame) -> tuple[str, str, bool]:
+    """Resolve the rotor-speed entry names of a noise ``td.Frame``.
 
     Returns ``(detect_key, rps_key, needs_cleaning)``:
 
-    - ``detect_key``: track used for in-flight window detection (real measured
+    - ``detect_key``: entry used for in-flight window detection (real measured
       speeds when available — they capture spindown during landing).
-    - ``rps_key``: track saved as ground-truth RPS.
+    - ``rps_key``: entry saved as ground-truth RPS.
     - ``needs_cleaning``: whether ``clean_command_spikes`` must be applied
       (only DREGON ``motors_command`` carries logging spikes / freezes).
 
-    Two conventions are supported so that any aligned ``TimeFrame`` can serve as
+    Two conventions are supported so that any aligned ``td.Frame`` can serve as
     a noise source:
 
     - **DREGON**: separate ``motors_measured`` (real, preferred for detection)
       and ``motors_command`` (cleaner, preferred as GT). Command values carry
       leading/trailing freezes → ``needs_cleaning=True``.
-    - **Generic / Michael's**: a single ``rps`` track of already-aligned
+    - **Generic / Michael's**: a single ``rps`` entry of already-aligned
       measured rotor speeds (rev/s). Detection and GT both use it, and no spike
       cleaning is applied.
     """
@@ -269,13 +255,13 @@ def resolve_motor_tracks(tf: TimeFrame) -> tuple[str, str, bool]:
     if "rps" in tf:
         return "rps", "rps", False
     raise ValueError(
-        f"{tf.tags.get('recording_id', '?')} has no rotor-speed track "
+        f"{get_meta(tf, 'recording_id', '?')} has no rotor-speed track "
         f"(expected one of 'motors_measured', 'motors_command', 'rps')"
     )
 
 
 def _find_inflight_window(
-    tf: TimeFrame,
+    tf: td.Frame,
     motor_key: str,
     min_motor_rps: float,
     clean: bool = True,
@@ -284,7 +270,7 @@ def _find_inflight_window(
 
     Finds the first and last absolute times where **all 4 rotors** exceed
     ``min_motor_rps``.  For DREGON command telemetry, ``clean_command_spikes``
-    is first applied to the motor track (``clean=True``) to strip the
+    is first applied to the motor entry (``clean=True``) to strip the
     pre-takeoff logging artefact; for already-clean measured tracks (e.g.
     Michael's ``rps``) pass ``clean=False``.  This trims the ramp-up from the
     start; landing is usually not captured in DREGON telemetry so the end is
@@ -292,38 +278,38 @@ def _find_inflight_window(
 
     Raises ``ValueError`` if no in-flight window can be found.
     """
-    motor_es = cast(EventSeries, tf[motor_key])
-    if motor_es.values is None:
-        return motor_es.t_start, motor_es.t_end
-    vals = motor_es.values.copy()  # (4, M)
+    motor = tf[motor_key]
+    if motor.data is None or motor.dim_size("time") == 0:
+        return motor.t_start, motor.t_end
+    vals = np.asarray(motor.data).copy()  # (4, M)
     if clean:
         vals = clean_command_spikes(vals)
-    ts = motor_es.abs_timestamps  # (M,)
+    ts = cast(td.StampIndex, motor.tindex).abs_stamps  # (M,)
     in_flight = np.all(vals > min_motor_rps, axis=0)  # (M,) bool
     idxs = np.where(in_flight)[0]
     if len(idxs) == 0:
         raise ValueError(
             f"No in-flight window (all motors > {min_motor_rps} RPS) found "
-            f"in {tf.tags.get('recording_id', '?')}"
+            f"in {get_meta(tf, 'recording_id', '?')}"
         )
     return float(ts[idxs[0]]), float(ts[idxs[-1]])
 
 
 def extract_noise_chunk_with_command_rps(
-    tf: TimeFrame,
+    tf: td.Frame,
     duration_sec: float = SAMPLE_DURATION,
     channel: int = 0,
     min_motor_rps: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """
-    Extract a random noise chunk with aligned command RPS (cleaned) from a TimeFrame.
+    Extract a random noise chunk with aligned command RPS (cleaned) from a td.Frame.
 
     Uses command speeds (not measured), cleaned via clean_command_spikes.
 
     Args:
-        tf: TimeFrame with "audio" and "motors_command" tracks.
+        tf: td.Frame with "audio" and "motors_command" entries.
         duration_sec: Duration of chunk in seconds.
-        channel: Microphone channel index (0-based) within the audio track.
+        channel: Microphone channel index (0-based) within the audio entry.
         min_motor_rps: When > 0, restrict sampling to the in-flight window
             (all 4 rotors above this threshold after cleaning).  Set to e.g.
             30.0 to exclude takeoff/pre-takeoff; 0.0 disables (default).
@@ -337,11 +323,11 @@ def extract_noise_chunk_with_command_rps(
     # Resolve rotor-speed tracks (DREGON command/measured, or generic ``rps``).
     detect_key, rps_key, needs_clean = resolve_motor_tracks(tf)
 
-    audio_us = cast(UniformSeries, tf["audio"])
-    detect_es = cast(EventSeries, tf[detect_key])
+    audio_s = tf["audio"]
+    detect_s = tf[detect_key]
 
-    valid_start = max(audio_us.t_start, detect_es.t_start)
-    valid_end = min(audio_us.t_end, detect_es.t_end)
+    valid_start = max(audio_s.t_start, detect_s.t_start)
+    valid_end = min(audio_s.t_end, detect_s.t_end)
 
     if min_motor_rps > 0.0:
         t_fl_start, t_fl_end = _find_inflight_window(
@@ -353,7 +339,7 @@ def extract_noise_chunk_with_command_rps(
     valid_duration = valid_end - valid_start
 
     if valid_duration < duration_sec:
-        rec_id = tf.tags.get("recording_id", "?")
+        rec_id = get_meta(tf, "recording_id", "?")
         raise ValueError(
             f"Record {rec_id} has insufficient overlap: {valid_duration:.1f}s < {duration_sec}s"
         )
@@ -361,32 +347,31 @@ def extract_noise_chunk_with_command_rps(
     # Random start time within valid range (absolute time)
     start_sec = np.random.uniform(valid_start, valid_end - duration_sec)
 
-    # Slice using TimeFrame.slice (works on absolute time)
-    sliced = tf.slice(start_sec, start_sec + duration_sec)
+    # Slice using Frame.time (works on absolute time)
+    sliced = tf.time[start_sec : start_sec + duration_sec]
 
     # Extract mono audio from specified channel
-    # UniformSeries stores (channels, N) — axis 0 = channels
-    audio_sliced = cast(UniformSeries, sliced["audio"])
-    audio_samples = audio_sliced.samples
+    # audio data is (channels, N) — axis 0 = channels
+    audio_samples = np.asarray(sliced["audio"].data)
     audio = audio_samples[channel, :] if audio_samples.ndim > 1 else audio_samples
 
-    motor_es_sliced = cast(EventSeries, sliced[rps_key])
-    if motor_es_sliced.values is not None:
-        vals = motor_es_sliced.values.copy()  # (4, M) — time-last
+    motor_sliced = sliced[rps_key]
+    if motor_sliced.data is not None:
+        vals = np.asarray(motor_sliced.data).copy()  # (4, M) — time-last
         rps = (clean_command_spikes(vals) if needs_clean else vals).astype(np.float32)
     else:
         rps = np.zeros((4, 0), dtype=np.float32)
 
     # Estimate motor sample rate
-    motor_ts = motor_es_sliced.abs_timestamps
+    motor_ts = cast(td.StampIndex, motor_sliced.tindex).abs_stamps
     if len(motor_ts) > 1:
         motor_sr = 1.0 / np.median(np.diff(motor_ts.astype(np.float64)))
     else:
         motor_sr = MOTOR_SAMPLE_RATE
 
     metadata = {
-        "recording_id": tf.tags.get("recording_id", ""),
-        "start_time": start_sec - audio_us.t_start,
+        "recording_id": get_meta(tf, "recording_id", ""),
+        "start_time": start_sec - audio_s.t_start,
         "duration": duration_sec,
         "motor_sample_rate": float(motor_sr),
         "channel": channel,
@@ -578,16 +563,17 @@ def load_dregon_multichannel_records(
     dregon_dir: Path,
     recording_ids: list[str] | None = None,
     splits: list[str] | None = None,
-) -> list[TimeFrame]:
-    """Load DREGON recordings as full multi-channel TimeFrame objects.
+) -> list[td.Frame]:
+    """Load DREGON recordings as full multi-channel ``td.Frame`` objects.
 
     Unlike ``load_dregon_noise_records`` (which expands each mic channel into a
-    separate single-channel frame), this keeps the full ``(C, N)`` audio track so
+    separate single-channel frame), this keeps the full ``(C, N)`` audio entry so
     a single chunk yields all microphone channels at the same time slice.
 
     Returns:
-        List of TimeFrame objects (one per recording), each with a multi-channel
-        ``"audio"`` track and shared ``"motors_command"`` / ``"motors_measured"``.
+        List of ``td.Frame`` objects (one per recording), each with a
+        multi-channel ``"audio"`` entry and shared ``"motors_command"`` /
+        ``"motors_measured"``.
     """
     dregon_dir = Path(dregon_dir)
 
@@ -603,12 +589,12 @@ def load_dregon_multichannel_records(
 
     if recording_ids is not None:
         rid_set = set(recording_ids)
-        all_frames = [tf for tf in all_frames if tf.tags.get("recording_id", "") in rid_set]
+        all_frames = [tf for tf in all_frames if get_meta(tf, "recording_id", "") in rid_set]
 
-    result: list[TimeFrame] = []
+    result: list[td.Frame] = []
     for tf in all_frames:
         if "motors_measured" not in tf and "motors_command" not in tf:
-            print(f"Warning: {tf.tags.get('recording_id', '?')} has no motor data, skipping")
+            print(f"Warning: {get_meta(tf, 'recording_id', '?')} has no motor data, skipping")
             continue
         result.append(tf)
     return result
@@ -618,33 +604,24 @@ def load_michaels_sources(
     ids: list[str],
     data_root: Path | None = None,
     sr: int = SAMPLE_RATE,
-) -> list[TimeFrame]:
-    """Load Michael's recordings as noise-source ``TimeFrame``s, filtered by id.
+) -> list[td.Frame]:
+    """Load Michael's recordings as noise-source ``td.Frame``s, filtered by id.
 
     Each id may be given as ``"125"``, ``"FLY125"`` (case-insensitive), or
-    ``"all"``.  The returned frames carry an ``rps`` track (already-aligned
-    measured rotor speeds, rev/s) and an 8-channel ``audio`` track, ready to be
-    used as a noise source.  Their ``recording_id`` tag is normalised to
+    ``"all"``.  The returned frames carry an ``rps`` entry (already-aligned
+    measured rotor speeds, rev/s) and an 8-channel ``audio`` entry, ready to be
+    used as a noise source.  Their ``recording_id`` meta is normalised to
     ``"michaels_FLY<id>"`` so downstream metadata can distinguish them.
     """
     frames = load_michaels_timeframes(data_root=data_root, sr=sr)
     want_all = any(i.strip().lower() == "all" for i in ids)
     wanted = {i.strip().lower().removeprefix("fly") for i in ids}
 
-    out: list[TimeFrame] = []
+    out: list[td.Frame] = []
     for tf in frames:
-        rid = str(tf.tags.get("recording_id", ""))  # wav stem, e.g. "124"
+        rid = str(get_meta(tf, "recording_id", ""))  # wav stem, e.g. "124"
         if want_all or rid.lower().removeprefix("fly") in wanted:
-            new_tags = dict(tf.tags)
-            new_tags["recording_id"] = f"michaels_FLY{rid}"
-            out.append(
-                TimeFrame.from_tracks(
-                    {k: tf[k] for k in tf},
-                    t_start=tf.t_start,
-                    tags=new_tags,
-                    global_data=tf.global_data,
-                )
-            )
+            out.append(with_meta(tf, recording_id=f"michaels_FLY{rid}"))
     return out
 
 
@@ -653,11 +630,11 @@ def load_noise_sources(
     dregon_dir: Path,
     sr: int = SAMPLE_RATE,
     michaels_root: Path | None = None,
-) -> list[TimeFrame]:
-    """Compose a noise-source pool (``list[TimeFrame]``) from a list of specs.
+) -> list[td.Frame]:
+    """Compose a noise-source pool (``list[td.Frame]``) from a list of specs.
 
     This is the single entry point for mixing and matching any sets of aligned
-    source ``TimeFrame``s into a train or valid noise pool.  Each spec selects
+    source ``td.Frame``s into a train or valid noise pool.  Each spec selects
     one group of recordings:
 
     - ``"dregon-split:<split>"`` — all DREGON recordings in a split
@@ -699,7 +676,7 @@ def load_noise_sources(
                 f"'dregon:<split>', 'dregon-id:<recording_id>', 'michaels:<id>'."
             )
 
-    frames: list[TimeFrame] = []
+    frames: list[td.Frame] = []
     if dregon_splits:
         frames += load_dregon_multichannel_records(dregon_dir, splits=dregon_splits)
     if dregon_ids:
@@ -710,7 +687,7 @@ def load_noise_sources(
 
 
 def extract_multichannel_noise_chunk(
-    tf: TimeFrame,
+    tf: td.Frame,
     duration_sec: float = SAMPLE_DURATION,
     min_motor_rps: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -732,11 +709,11 @@ def extract_multichannel_noise_chunk(
     # Resolve rotor-speed tracks (DREGON command/measured, or generic ``rps``).
     detect_key, rps_key, needs_clean = resolve_motor_tracks(tf)
 
-    audio_us = tf["audio"]
-    detect_es = tf[detect_key]
+    audio_s = tf["audio"]
+    detect_s = tf[detect_key]
 
-    valid_start = max(audio_us.t_start, detect_es.t_start)
-    valid_end = min(audio_us.t_end, detect_es.t_end)
+    valid_start = max(audio_s.t_start, detect_s.t_start)
+    valid_end = min(audio_s.t_end, detect_s.t_end)
 
     if min_motor_rps > 0.0:
         t_fl_start, t_fl_end = _find_inflight_window(
@@ -746,39 +723,38 @@ def extract_multichannel_noise_chunk(
         valid_end = min(valid_end, t_fl_end)
 
     if valid_end - valid_start < duration_sec:
-        rec_id = tf.tags.get("recording_id", "?")
+        rec_id = get_meta(tf, "recording_id", "?")
         raise ValueError(
             f"Record {rec_id} has insufficient overlap: "
             f"{valid_end - valid_start:.1f}s < {duration_sec}s"
         )
 
     start_sec = np.random.uniform(valid_start, valid_end - duration_sec)
-    sliced = tf.slice(start_sec, start_sec + duration_sec)
+    sliced = tf.time[start_sec : start_sec + duration_sec]
 
-    # Keep all channels: UniformSeries stores (channels, N)
-    audio_sliced = cast(UniformSeries, sliced["audio"])
-    audio_samples = audio_sliced.samples
+    # Keep all channels: audio data is (channels, N)
+    audio_samples = np.asarray(sliced["audio"].data)
     if audio_samples.ndim == 1:
         audio_samples = audio_samples[np.newaxis, :]
     audio = audio_samples.astype(np.float32)  # (C, N)
 
-    motor_es_sliced = cast(EventSeries, sliced[rps_key])
-    if motor_es_sliced.values is not None:
-        # EventSeries values are time-last (4, M); clean_command_spikes keeps shape
-        vals = motor_es_sliced.values.copy()
+    motor_sliced = sliced[rps_key]
+    if motor_sliced.data is not None:
+        # motor data is time-last (4, M); clean_command_spikes keeps shape
+        vals = np.asarray(motor_sliced.data).copy()
         rps = (clean_command_spikes(vals) if needs_clean else vals).astype(np.float32)
     else:
         rps = np.zeros((4, 0), dtype=np.float32)
 
-    motor_ts = motor_es_sliced.abs_timestamps
+    motor_ts = cast(td.StampIndex, motor_sliced.tindex).abs_stamps
     if len(motor_ts) > 1:
         motor_sr = 1.0 / np.median(np.diff(motor_ts.astype(np.float64)))
     else:
         motor_sr = MOTOR_SAMPLE_RATE
 
     metadata = {
-        "recording_id": tf.tags.get("recording_id", ""),
-        "start_time": start_sec - audio_us.t_start,
+        "recording_id": get_meta(tf, "recording_id", ""),
+        "start_time": start_sec - audio_s.t_start,
         "duration": duration_sec,
         "motor_sample_rate": float(motor_sr),
         "n_channels": int(audio.shape[0]),
@@ -787,7 +763,7 @@ def extract_multichannel_noise_chunk(
 
 
 def extract_non_overlapping_multichannel_chunks(
-    tf: TimeFrame,
+    tf: td.Frame,
     duration_sec: float = SAMPLE_DURATION,
     min_motor_rps: float = 0.0,
 ) -> list[tuple[np.ndarray, np.ndarray, dict]]:
@@ -803,11 +779,11 @@ def extract_non_overlapping_multichannel_chunks(
     """
     detect_key, rps_key, needs_clean = resolve_motor_tracks(tf)
 
-    audio_us = tf["audio"]
-    detect_es = tf[detect_key]
+    audio_s = tf["audio"]
+    detect_s = tf[detect_key]
 
-    valid_start = max(audio_us.t_start, detect_es.t_start)
-    valid_end = min(audio_us.t_end, detect_es.t_end)
+    valid_start = max(audio_s.t_start, detect_s.t_start)
+    valid_end = min(audio_s.t_end, detect_s.t_end)
 
     if min_motor_rps > 0.0:
         t_fl_start, t_fl_end = _find_inflight_window(
@@ -817,7 +793,7 @@ def extract_non_overlapping_multichannel_chunks(
         valid_end = min(valid_end, t_fl_end)
 
     if valid_end - valid_start < duration_sec:
-        rec_id = tf.tags.get("recording_id", "?")
+        rec_id = get_meta(tf, "recording_id", "?")
         raise ValueError(
             f"Record {rec_id} has insufficient overlap: "
             f"{valid_end - valid_start:.1f}s < {duration_sec}s"
@@ -827,29 +803,29 @@ def extract_non_overlapping_multichannel_chunks(
     n_chunks = int((valid_end - valid_start) // duration_sec)
     for i in range(n_chunks):
         start_sec = valid_start + i * duration_sec
-        sliced = tf.slice(start_sec, start_sec + duration_sec)
+        sliced = tf.time[start_sec : start_sec + duration_sec]
 
-        audio_samples = cast(UniformSeries, sliced["audio"]).samples
+        audio_samples = np.asarray(sliced["audio"].data)
         if audio_samples.ndim == 1:
             audio_samples = audio_samples[np.newaxis, :]
         audio = audio_samples.astype(np.float32)  # (C, N)
 
-        motor_es_sliced = cast(EventSeries, sliced[rps_key])
-        if motor_es_sliced.values is not None:
-            vals = motor_es_sliced.values.copy()
+        motor_sliced = sliced[rps_key]
+        if motor_sliced.data is not None:
+            vals = np.asarray(motor_sliced.data).copy()
             rps = (clean_command_spikes(vals) if needs_clean else vals).astype(np.float32)
         else:
             rps = np.zeros((4, 0), dtype=np.float32)
 
-        motor_ts = motor_es_sliced.abs_timestamps
+        motor_ts = cast(td.StampIndex, motor_sliced.tindex).abs_stamps
         if len(motor_ts) > 1:
             motor_sr = 1.0 / np.median(np.diff(motor_ts.astype(np.float64)))
         else:
             motor_sr = MOTOR_SAMPLE_RATE
 
         metadata = {
-            "recording_id": tf.tags.get("recording_id", ""),
-            "start_time": start_sec - audio_us.t_start,
+            "recording_id": get_meta(tf, "recording_id", ""),
+            "start_time": start_sec - audio_s.t_start,
             "duration": duration_sec,
             "motor_sample_rate": float(motor_sr),
             "n_channels": int(audio.shape[0]),
@@ -885,7 +861,7 @@ def create_dregon_librimix_multichannel(
     white_noise_prob: float = 0.0,
     white_noise_snr: float = 30.0,
     min_motor_rps: float = 0.0,
-    noise_records: list[TimeFrame] | None = None,
+    noise_records: list[td.Frame] | None = None,
 ):
     """Create an 8-channel DREGON-LibriMix dataset.
 
@@ -940,7 +916,7 @@ def create_dregon_librimix_multichannel(
     if len(noise_records) == 0:
         raise ValueError("No valid noise records with motor data found")
     print(f"Loaded {len(noise_records)} multichannel noise records")
-    print(f"  Sources: {sorted({str(tf.tags.get('recording_id', '?')) for tf in noise_records})}")
+    print(f"  Sources: {sorted({str(get_meta(tf, 'recording_id', '?')) for tf in noise_records})}")
 
     metadata_list = []
     for idx in tqdm(range(num_samples), desc=f"Creating {split} samples"):
@@ -1122,7 +1098,7 @@ def create_dregon_librimix(
 
     # Identify unique base recordings (strip _chN suffix) for reporting
     base_recordings = set(
-        cast(str, tf.tags["recording_id"]).rsplit("_ch", 1)[0] for tf in noise_records
+        str(get_meta(tf, "recording_id", "")).rsplit("_ch", 1)[0] for tf in noise_records
     )
     print(f"  Unique base recordings: {sorted(base_recordings)}")
 
@@ -1294,7 +1270,7 @@ def create_dregon_real_valid(
     seed: int = 43,
     min_motor_rps: float = 0.0,
     max_non_overlapping: bool = False,
-    records: list[TimeFrame] | None = None,
+    records: list[td.Frame] | None = None,
 ) -> None:
     """Extract real 8-channel clips from DREGON recordings.
 
@@ -1335,7 +1311,7 @@ def create_dregon_real_valid(
         # --- Extract every non-overlapping chunk from every recording ---
         all_chunks: list[tuple[np.ndarray, np.ndarray, dict, str]] = []  # (audio, rps, meta, rid)
         for tf in records:
-            rid = str(tf.tags.get("recording_id", "?"))
+            rid = str(get_meta(tf, "recording_id", "?"))
             try:
                 chunks = extract_non_overlapping_multichannel_chunks(
                     tf,
@@ -1617,7 +1593,7 @@ def main():
 
     if args.multichannel:
         # Compose the train/valid noise pools from source specs (when given).
-        # Each pool is a plain list[TimeFrame], so any aligned sources (DREGON
+        # Each pool is a plain list[td.Frame], so any aligned sources (DREGON
         # splits/recordings, Michael's, …) can be mixed and matched.
         michaels_root = args.dregon_dir.parent
         train_pool = None

@@ -17,10 +17,10 @@ import json
 import random
 from glob import glob
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 import soundfile as sf
+import tdseries as td
 from tqdm import tqdm
 
 from create_dregon_librimix import (
@@ -29,7 +29,8 @@ from create_dregon_librimix import (
     load_audio,
     load_dregon_noise_records,
 )
-from utils.data import EventSeries
+from data_processing.dregon import clean_command_spikes
+from data_processing.frames import get_meta
 
 # Override duration for V3
 SAMPLE_DURATION = 1.0
@@ -78,17 +79,20 @@ def resample_rps(rps_motor, n_target, motor_rate=MOTOR_SAMPLE_RATE):
     )
 
 
-def get_random_chunk(tf, duration_sec=SAMPLE_DURATION):
-    """Extract random audio chunk + motor RPS from a TimeFrame.
+def get_random_chunk(
+    tf: td.Frame, command: np.ndarray, duration_sec: float = SAMPLE_DURATION
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract random audio chunk + motor RPS from a ``td.Frame``.
 
     Args:
-        tf: TimeFrame with "audio" and "motors_command" (or "motors_measured") tracks,
-            and a ``_cleaned_command`` attribute (pre-computed numpy array).
+        tf: td.Frame with an "audio" entry.
+        command: pre-cleaned ``(num_motors, num_motor_samples)`` RPS array
+            (time-last), computed once via ``clean_command_spikes``.
+        duration_sec: chunk duration in seconds.
     Returns:
         (audio_chunk, rps_chunk) where audio is (target_samples,) and rps is (4, motor_target).
     """
-    audio = tf["audio"].samples.squeeze()  # (n_samples,)
-    command = tf._cleaned_command  # (num_motors, num_motor_samples) — time-last
+    audio = np.asarray(tf["audio"].data).squeeze()  # (n_samples,)
 
     target_samples = int(duration_sec * SAMPLE_RATE)
     motor_target = int(duration_sec * MOTOR_SAMPLE_RATE)
@@ -158,18 +162,17 @@ def main():
     )
     print(f"  {len(train_records)} channel-records")
 
-    # Pre-clean command spikes for all records (avoid repeated work)
-    from data_processing.dregon import clean_command_spikes
-
+    # Pre-clean command spikes for all records (avoid repeated work). Keyed by
+    # object identity since ``td.Frame`` is immutable — unlike the old
+    # ``TimeFrame``, we don't attach a cache attribute to the frame itself.
+    cleaned_commands: dict[int, np.ndarray] = {}
     for tf in tqdm(valid_records + train_records, desc="Cleaning commands"):
         motor_key = "motors_command" if "motors_command" in tf else "motors_measured"
-        motor_es = cast(EventSeries, tf[motor_key])
-        if motor_es.values is not None:
-            object.__setattr__(
-                tf, "_cleaned_command", clean_command_spikes(motor_es.values.copy())
-            )  # (4, M)
+        motor = tf[motor_key]
+        if motor.data is not None:
+            cleaned_commands[id(tf)] = clean_command_spikes(np.asarray(motor.data).copy())
         else:
-            object.__setattr__(tf, "_cleaned_command", np.zeros((4, 0), dtype=np.float32))
+            cleaned_commands[id(tf)] = np.zeros((4, 0), dtype=np.float32)
 
     for split, records, num_samples in [
         ("train", train_records, args.num_train),
@@ -188,7 +191,7 @@ def main():
             sample_dir.mkdir(exist_ok=True)
 
             tf = random.choice(records)
-            noise_chunk, rps_motor = get_random_chunk(tf)
+            noise_chunk, rps_motor = get_random_chunk(tf, cleaned_commands[id(tf)])
 
             n_frames = TARGET_LENGTH // 512 + 1
             rps = resample_rps(rps_motor, n_frames)
@@ -215,7 +218,7 @@ def main():
                     "input_snr": float(actual_snr),
                     "target_snr": float(snr),
                     "speech_source": Path(random.choice(speech_files)).name,
-                    "noise_source": tf.tags["recording_id"],
+                    "noise_source": get_meta(tf, "recording_id", ""),
                 }
             )
 
