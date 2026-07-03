@@ -98,7 +98,7 @@ User: "Generate comparison for my presentation in the slides folder"
 ```bash
 python generate_comparison.py \
     --models Edge-BS-RoFormer DCUNet \
-    --output_dir slides/figures \
+    --output_dir writing/slides/<your-deck>/assets \
     --plot_name model_comparison.png
 ```
 

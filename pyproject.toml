@@ -119,7 +119,6 @@ known-first-party = ["utils", "postdoc", "tasks", "models", "data_processing"]
 # Standalone report/slide scripts bootstrap sys.path / os.chdir / matplotlib
 # backend before imports; E402 is structural there.
 "writing/**" = ["E402"]
-"slides/**" = ["E402"]
 
 [tool.pyright]
 typeCheckingMode = "basic"
