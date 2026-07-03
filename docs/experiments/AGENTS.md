@@ -26,15 +26,30 @@ lands as a top-level file here.
 - Only state numbers/claims present in source material — no invented
   figures, no rounding away uncertainty the source didn't have.
 
-## Contents
+## Two tiers
 
-| File | Experiment |
-|---|---|
-| `simpleconv-rps-architecture-search.md` | Two SimpleConv encoder/temporal-head sweeps (offline + online-mixed, DREGON-LM / V4-michaels) |
-| `dregon-lm-v2-v3-baseline.md` | DREGON-LM V2→V3 dataset evolution + baseline RPS training (superseded by V4) |
-| `channel-generalization-pit-loss.md` | RPS models don't generalize across mic channels without PIT loss |
-| `salience-map-rps-tracking.md` | Multi-F0 salience-map tracking as an alternative to direct RPS regression |
-| `noise-generation-augmentation.md` | Learned harmonic noise generator as an online-mixing augmentation source (in progress, blocked on a GPU run) |
+- **Batch docs** (the files in this directory) — one motivation/results/conclusion
+  narrative per *group* of related experiments.
+- **Per-experiment docs** — one `conf/experiment/<name>.md` **beside every**
+  `conf/experiment/<name>.yaml`, with YAML frontmatter linking the config to its
+  batch doc (`batch:`) plus a `## Motivation` / `## Conclusion` body. Enforced by
+  `scripts/validate_experiment_docs.py` (a pre-commit hook): every experiment
+  config must have a valid sibling doc pointing at an existing batch doc here.
+
+## Contents (batch docs)
+
+| File | Experiments (conf/experiment prefix) | Experiment batch |
+|---|---|---|
+| `paper1-edge-bs-roformer-dn-lm.md` | `a1_*` | Paper-1 Edge-BS-RoFormer + SE baselines on DN-LM |
+| `diffusion-buffer-se.md` | `a2_*` | Diffusion-Buffer (BBED) SE baseline |
+| `rps-conditioned-se-dregon.md` | `b1_*` | Paper-2 oracle-RPS-conditioned DCUNet/DCCRN on DREGON-LM |
+| `refactored-decoder-rps-fusion.md` | `b2_*` | Refactored decoder-side RPS fusion + auxiliary RPS head |
+| `simpleconv-rps-architecture-search.md` | `c1_c3_c6_*`, `c10_*`, `rps_simple_conv_v2_v4` | SimpleConv encoder/temporal-head sweeps (offline + online-mixed) |
+| `dregon-lm-v2-v3-baseline.md` | `c4_*`, `c5_*` | DREGON-LM V2→V3 dataset evolution + baseline RPS training (superseded by V4) |
+| `channel-generalization-pit-loss.md` | `c9_*` | RPS models don't generalize across mic channels without PIT loss |
+| `cross-drone-generalization-fly125.md` | `c11_*` | Adding Michael's FLY125 closes the cross-drone RPS gap on FLY124 |
+| `salience-map-rps-tracking.md` | `c7_*`, `c8_*` | Multi-F0 salience-map tracking as an alternative to direct RPS regression |
+| `noise-generation-augmentation.md` | `e2_*`, `e3_*`, `e4_*` | Learned harmonic noise generator as an online-mixing augmentation source |
 
 Related: `docs/fwh_rotor_acoustic_simulator_plan.md` (a tool build with its
 own implementation-status section, not a comparative experiment, so it stays

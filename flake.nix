@@ -28,6 +28,16 @@
             pyright = {
               enable = true;
             };
+            validate-experiment-docs = {
+              enable = true;
+              name = "experiment docs";
+              entry = "${python}/bin/python scripts/validate_experiment_docs.py";
+              # Whole-set contract (not per-file): run once whenever any
+              # experiment config or experiment doc changes.
+              files = "^(conf/experiment/.*\\.(yaml|md)|docs/experiments/.*\\.md|scripts/validate_experiment_docs\\.py)$";
+              pass_filenames = false;
+              language = "system";
+            };
           };
         };
       in
