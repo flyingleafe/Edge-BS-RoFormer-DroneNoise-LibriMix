@@ -34,6 +34,9 @@ node_modules/
 # nix build result
 result
 
+# Hydra run output dirs (auto-created by train.py/eval.py)
+outputs/
+
 # some old stuff
 backups/
 
