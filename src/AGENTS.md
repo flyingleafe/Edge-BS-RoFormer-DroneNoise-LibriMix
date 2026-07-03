@@ -19,4 +19,3 @@ Separates installable Python packages from root-level scripts. Packages here are
 | `metrics/` | Consolidated metric implementations (separation, RPS, perf) + `MetricSuite` | See `metrics/AGENTS.md` |
 | `training/` | Training loop, checkpointing, config, R2 artifact upload, LoRA config seam | See `training/AGENTS.md` |
 | `localization/` | Rotor position estimation from mic-array audio (near-field SRP-PHAT) | See `localization/AGENTS.md` |
-| `postdoc/` | Experiment orchestration CLI | See `postdoc/AGENTS.md` |

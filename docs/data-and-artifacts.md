@@ -34,9 +34,9 @@ dvc remote list                 # should show 'r2 s3://ml-data/datasets (default
 dvc status --cloud              # should connect without errors
 ```
 
-On the laptop, `direnv` loads `.env` automatically (see `.envrc`). On the
-GPU server, the per-job `run.sh` template `set -a; . ./.env; set +a`s it
-before invoking `dvc pull` or your command — see `src/postdoc/direct.py`.
+On the laptop, `direnv` loads `.env` automatically (see `.envrc`). On a GPU
+server, source it yourself (`set -a; . ./.env; set +a`) before invoking
+`dvc pull` or your training command.
 
 > **Gotcha**: `.dvc/config` has a `region` field, but **dvc-s3 ignores it**.
 > The region must come from the `AWS_DEFAULT_REGION` env var (= `auto` for
@@ -68,15 +68,15 @@ Every subsequent `dvc add` on the same dataset dir produces a new content hash
 
 ```bash
 git pull                           # get the latest .dvc pointers
-postdoc submit python train.py --model_type dccrn --config configs/dccrn.yaml
-# SkyPilot rsyncs the workdir, runs setup (pip install -e . + dvc pull),
-# then starts the training command as a managed job.
+dvc pull                           # fetch any datasets missing locally
+python train.py experiment=b1_dccrn_rps_dregon
+# On a Slurm cluster, wrap the last line:
+#   ./scripts/sbatch.sh -- python train.py experiment=b1_dccrn_rps_dregon
 ```
 
-The `postdoc submit` setup step automatically runs `dvc pull` for any
-dataset that is missing locally but has a `.dvc` file in the repo. At
-training end, the best checkpoint is automatically logged as a wandb
-artifact (aliased `best` and `latest`).
+Run `dvc pull` for any dataset that is missing locally but has a `.dvc` file in
+the repo. At training end, the best checkpoint is automatically logged as a
+wandb artifact (aliased `best` and `latest`).
 
 ### Evening on laptop — analyze
 

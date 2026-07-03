@@ -17,9 +17,7 @@ Long-form documentation that doesn't belong in code comments or AGENTS.md files.
 | `diffusion-prompt.md` | Prompt used to implement the diffusion buffer model |
 | `fwh_rotor_acoustic_simulator_plan.md` | FWH rotor acoustic simulator design + implementation status |
 | `experiments/` | One doc per past experiment (motivation/results/conclusion); live PhD-bet detail cards under `experiments/bets/` — see `docs/experiments/AGENTS.md` |
-| `superpowers/` | Postdoc platform architecture specs and implementation plans |
 
 ## Gotchas
 
-- `superpowers/specs/` contains design documents that may describe features not yet implemented
-- When in doubt about postdoc behavior, read source code in `src/postdoc/` first, then check `debug-training-loop.md` for training issues
+- When debugging training issues, read `debug-training-loop.md` first, then the source in `src/training/`

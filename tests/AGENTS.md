@@ -1,29 +1,39 @@
-# tests/ — Postdoc System Tests
+# tests/ — Framework Test Suite
 
-Pytest suite for the `postdoc` CLI. Tests the thin surface we own: task-YAML construction and `sky` command-line invocation. Tests do **not** invoke SkyPilot — `subprocess.run` is mocked.
+Pytest suite for the training framework: datasets, losses, metrics, models,
+tasks, the training loop, and utilities. (The old `postdoc` CLI tests were
+removed when that subsystem was deleted.)
 
-## Files
+## Layout
 
-| File | Tests |
+| Path | Covers |
 |---|---|
-| `conftest.py` | `fake_sky` fixture — monkeypatches `subprocess.run` and `shutil.which`, records every argv |
-| `test_task.py` | `build_task` — defaults, overrides, zero-GPU case |
-| `test_cli.py` | every subcommand — verifies the `sky` argv we produce |
+| `data_processing/` | DREGON loader, Frame datasets, online mixing, generated-noise pool, RPS synthesis |
+| `losses/` | spectral, masked, PIT, regularizers, salience, composite losses |
+| `metrics/` | separation, RPS, salience, perf metrics + `MetricSuite` |
+| `models/` | RPS predictor, salience-RPS, positional harmonic noise generator |
+| `tasks/` | task spec/contract, checkpoints, CLI, RPS prediction/regression, noise generation |
+| `training/` | training loop, collate, validate, val-logging, R2 artifact upload (`conftest.py` + `_fixtures.py` here) |
+| `utils/` | path helpers, plot registry, RPS plots |
+| `test_basic_pitch.py`, `test_online_mixing.py`, `test_plot_timeframe.py`, `test_dataloader_benchmark.py` | standalone module tests; `basic_pitch_ref.npz` is fixture data |
 
 ## Running
 
+**Never run an unbounded `pytest`** — some tests build large tensors and a wide
+`-k` selection has OOM-frozen small machines. Run a bounded subdirectory or a
+single file, e.g.:
+
 ```bash
-pytest tests/
+pytest tests/losses -q
+pytest tests/data_processing/test_generated_noise.py -q
 ```
 
-## Not covered (by design)
-
-- Live SkyPilot behaviour — exercised by real runs on vast-server.
-- Logs/queue/status output parsing — we pass through to `sky` directly; nothing to test in isolation.
-- `infer.py` — currently no unit test; its deps (torch, ml-collections) are heavy. Add a smoke test if/when the resolver logic grows.
+Run inside the nix devshell (`nix develop`) so torch and the editable install
+resolve.
 
 ## If adding a feature
 
-1. If it builds argv for `sky`, add a `test_cli.py` case that asserts the argv.
-2. If it shapes the task YAML, add a `test_task.py` case.
-3. If it touches `sky` live behaviour only — don't add a unit test, document it and rely on a real run.
+Add its test under the matching subdirectory (mirror `src/`'s layout). New
+model → `tests/models/`; new loss → `tests/losses/`; new task behaviour →
+`tests/tasks/`. Keep fixtures local to the subdirectory's `conftest.py` where
+possible.

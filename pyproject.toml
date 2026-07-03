@@ -41,7 +41,6 @@ dependencies = [
     "datasets>=4.5.0",
     "torchcodec==0.5",
     "dvc[s3]>=3.56",
-    "skypilot[kubernetes]>=0.11",
     "playwright>=1.52.0",
     "nnaudio>=0.3.4",
     "tdseries>=0.1.1",
@@ -49,8 +48,6 @@ dependencies = [
 ]
 
 [project.scripts]
-postdoc = "postdoc.cli:main"
-postdoc-runner = "postdoc.queue:main"
 evaluate-rps = "tasks.cli:main"
 make-plot = "plots.cli:app"
 
@@ -81,7 +78,6 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "src/postdoc",
     "src/utils",
     "src/tasks",
     "src/models",
@@ -113,7 +109,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["utils", "postdoc", "tasks", "models", "data_processing"]
+known-first-party = ["utils", "tasks", "models", "data_processing"]
 
 [tool.ruff.lint.per-file-ignores]
 # Standalone report/slide scripts bootstrap sys.path / os.chdir / matplotlib
@@ -128,6 +124,6 @@ pythonVersion = "3.12"
 # Unknown), diverging from editor/hook runs.
 venvPath = "."
 venv = ".venv"
-exclude = [".venv", "node_modules", ".postdoc", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
+exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
 reportMissingImports = false
 reportMissingTypeStubs = false

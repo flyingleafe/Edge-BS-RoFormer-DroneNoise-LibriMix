@@ -158,7 +158,7 @@ This generates both metric plots/tables AND audio comparison plots in the same o
 If evaluation directory is missing:
 ```
 Error: Evaluation directory not found: results/evaluation/evaluation
-Hint: Run './scripts/sync_results.sh' first to sync results from vast-server
+Hint: Run './scripts/sync_results.sh' first to sync results from the training server/cluster
 ```
 
 If invalid model names are provided:

@@ -6,7 +6,7 @@ This directory holds the `utils` Python package. It is editable-installed via
 `__init__.py` contains the legacy "ZFTurbo"-style helpers (model factory,
 config loader, training utilities) that used to live in `utils.py` at the
 project root. Callers — `src/models/registry.py::build_legacy_model`,
-`src/postdoc/infer.py`, notebooks — keep working unchanged: `from utils import
+notebooks — keep working unchanged: `from utils import
 load_config, get_model_from_config, ...`.
 
 ## Why a package, not a module

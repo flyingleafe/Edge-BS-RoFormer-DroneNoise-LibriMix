@@ -15,31 +15,31 @@ Complete workflow for running ML experiments in this repository.
 
 2. **Check prerequisites.**
    - Dataset exists? → `data_processing/AGENTS.md`
-   - Config YAML exists? → `configs/AGENTS.md`
-   - Model type registered? → Check `src/models/AGENTS.md` for valid keys
-   - RPS needed? → Ensure `load_rps: true` in config
+   - Experiment config exists? → `conf/AGENTS.md` (`conf/experiment/<name>.yaml` + its sibling `.md` doc)
+   - Model registered? → Check `src/models/AGENTS.md` for valid `_target_`/keys
+   - RPS needed? → the experiment's `conf/data` entry sets `load_rps`
 
-3. **Compose the training command.**
-   - Pick the right `--model_type` — see `src/models/AGENTS.md`.
-   - Pick the right `--config` — see `configs/AGENTS.md`.
-   - The entire command is what you submit; there is **no `postdoc`-specific YAML format**. If you have a reusable group of flags, write a shell script under `scripts/` and submit that.
+3. **Pick / create the experiment config.**
+   - Experiments live in `conf/experiment/<name>.yaml` (Hydra), selected with `experiment=<name>`. See `conf/AGENTS.md`.
+   - New experiment? add `conf/experiment/<name>.yaml` **and** its sibling `conf/experiment/<name>.md` doc — the pre-commit hook (`scripts/validate_experiment_docs.py`) enforces this.
+   - Override anything on the CLI, e.g. `optim.max_epochs=50 data=<other>`.
 
-4. **Submit.**
+4. **Run.** There is no bespoke job runner — a job is just the training command.
    ```bash
-   postdoc submit python train.py --model_type <key> --config configs/<name>.yaml [--results_dir ...] [other flags...]
+   python train.py experiment=<name>                          # on a GPU box, run it directly
+   ./scripts/sbatch.sh -- python train.py experiment=<name>   # on a Slurm cluster
    ```
-   Optional: `-n <name>` (job name), `--gpus N`, `--dry-run` (inspect task YAML), `-e KEY=VAL` (env vars), `-f <task.sky.yaml>` (full task spec).
-
-   See `vast-server-training` skill for the full CLI surface and `docs/skypilot/README.md` for setup.
+   `./scripts/sbatch.sh` defaults to `gpushort` (≤1 h) and takes `--partition=sae` for longer jobs; or drive it from the `autoresearch` extension (`/autoresearch`, `slurm_submit_short`/`slurm_submit_long`).
 
    **Slurm timeout fallback pattern:** when asked to try `gpushort` first and escalate only if the short job hits walltime, submit the short job, then a long `sae` job with `--dependency=afternotok:<short_job_id>`. In the dependent job, inspect `sacct` for the short job's top-level state and run training only if it starts with `TIMEOUT`; exit without training on ordinary failures. This avoids masking data/code errors as a long rerun.
 
-5. **Monitor.** `postdoc list`, `postdoc logs <job-id> -f`, `postdoc status <job-id>`, `postdoc dashboard`.
+5. **Monitor.** Locally: watch stdout / the wandb run. On Slurm: `squeue -u $USER`, `sacct -j <id>`, and tail the log under `/gpfs/scratch/acw592/logs/` (or `slurm_logs` from the autoresearch extension).
 
-6. **Evaluate.** Submit a second job for eval, or chain train + eval in one shell script and submit that script.
+6. **Evaluate.** Run the single eval entry point (it absorbed the old `valid`/`final_valid`/`eval_cross` scripts):
    ```bash
-   postdoc submit bash -c 'python train.py ... && python final_valid.py ...'
+   python eval.py experiment=<name>
    ```
+   Or chain: `python train.py experiment=<name> && python eval.py experiment=<name>`.
 
 7. **Analyze results.**
    - `./scripts/sync_results.sh` first (mandatory)

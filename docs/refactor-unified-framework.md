@@ -44,7 +44,6 @@ src/
   training/                # NEW: loop, checkpointing, wandb, optim factory
   models/                  # unchanged (tensor-based nn.Modules + registry)
   utils/                   # legacy ZFTurbo helpers only; src/utils/data DELETED
-  postdoc/                 # unchanged
 train.py                   # the only training entry point
 eval.py                    # the only evaluation entry point
 results/<experiment>/      # one subfolder per experiment
