@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from utils.data import EventSeries, TimeFrame, UniformSeries
+import tdseries as td
 
 # ── load_predictor ───────────────────────────────────────────────────────
 
@@ -36,6 +35,30 @@ def test_load_predictor_rejects_non_string_non_predictor():
         load_predictor(42)
 
 
+# ── align_rps_to_gt ──────────────────────────────────────────────────────
+
+
+def test_align_rps_to_gt_rejects_transposed_input():
+    from tasks.rps_prediction import align_rps_to_gt
+
+    # A transposed (F, R) array reads as R = 100 rotors — must fail fast
+    # instead of materializing a huge pairwise cost over frames.
+    pred = np.random.rand(100, 4)
+    gt = np.random.rand(100, 4)
+    with pytest.raises(ValueError, match="rotor axis first"):
+        align_rps_to_gt(pred, gt)
+
+
+def test_align_rps_to_gt_permutes_rows_back():
+    from tasks.rps_prediction import align_rps_to_gt
+
+    gt = np.stack([np.full(32, 10.0 * (r + 1)) for r in range(4)])  # (4, 32)
+    perm = [2, 0, 3, 1]
+    pred = gt[perm]
+    aligned = align_rps_to_gt(pred, gt)
+    np.testing.assert_allclose(aligned, gt)
+
+
 # ── evaluate error paths ─────────────────────────────────────────────────
 
 
@@ -46,11 +69,13 @@ def test_evaluate_missing_audio_track():
         def predict(self, audio, sr=16000):
             return np.zeros((4, 32))
 
-    es = EventSeries.from_events(np.array([0.0, 1.0]), np.zeros((4, 2)), t_start=0.0, t_end=1.0)
-    tf = TimeFrame.from_tracks({"rps": es})  # no "audio"
+    rps = td.events(
+        np.array([0.0, 1.0]), np.zeros((4, 2)), dims=("rotor", "time"), t_start=0.0, t_end=2.0
+    )
+    frame = td.Frame({"rps": rps})  # no "audio"
     p = FakePredictor()
     with pytest.raises(KeyError, match="audio"):
-        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
+        evaluate(p, [frame], verbose=False)  # type: ignore[arg-type]
 
 
 def test_evaluate_missing_rps_track():
@@ -60,40 +85,44 @@ def test_evaluate_missing_rps_track():
         def predict(self, audio, sr=16000):
             return np.zeros((4, 32))
 
-    us = UniformSeries.from_samples(np.zeros(16000), sr=16000.0, t_start=0)
-    tf = TimeFrame.from_tracks({"audio": us})  # no "rps"
+    audio = td.uniform(np.zeros(16000, dtype=np.float32), 16000, dims=("time",), t_start=0)
+    frame = td.Frame({"audio": audio})  # no "rps"
     p = FakePredictor()
     with pytest.raises(KeyError, match="rps"):
-        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
+        evaluate(p, [frame], verbose=False)  # type: ignore[arg-type]
 
 
-def test_evaluate_audio_not_uniform_series():
+def test_evaluate_audio_not_grid_series():
     from tasks.rps_prediction import evaluate
 
     class FakePredictor:
         def predict(self, audio, sr=16000):
             return np.zeros((4, 32))
 
-    es = EventSeries.from_events(np.array([0.0]), np.array([1.0]), t_start=0.0, t_end=1.0)
-    rps_es = EventSeries.from_events(np.array([0.0, 1.0]), np.zeros((4, 2)), t_start=0.0, t_end=1.0)
-    tf = TimeFrame.from_tracks({"audio": es, "rps": rps_es})
+    audio_es = td.events(
+        np.array([0.0]), np.zeros((4, 1)), dims=("rotor", "time"), t_start=0.0, t_end=1.0
+    )
+    rps_es = td.events(
+        np.array([0.0, 1.0]), np.zeros((4, 2)), dims=("rotor", "time"), t_start=0.0, t_end=2.0
+    )
+    frame = td.Frame({"audio": audio_es, "rps": rps_es})
     p = FakePredictor()
-    with pytest.raises(TypeError, match="UniformSeries"):
-        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="GridIndex"):
+        evaluate(p, [frame], verbose=False)  # type: ignore[arg-type]
 
 
-def test_evaluate_rps_not_event_series():
+def test_evaluate_rps_not_stamp_series():
     from tasks.rps_prediction import evaluate
 
     class FakePredictor:
         def predict(self, audio, sr=16000):
             return np.zeros((4, 32))
 
-    us = UniformSeries.from_samples(np.zeros(16000), sr=16000.0, t_start=0)
-    tf = TimeFrame.from_tracks({"audio": us, "rps": us})  # rps is UniformSeries
+    audio = td.uniform(np.zeros(16000, dtype=np.float32), 16000, dims=("time",), t_start=0)
+    frame = td.Frame({"audio": audio, "rps": audio})  # rps is a GridIndex Series
     p = FakePredictor()
-    with pytest.raises(TypeError, match="EventSeries"):
-        evaluate(p, [tf], verbose=False)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="StampIndex"):
+        evaluate(p, [frame], verbose=False)  # type: ignore[arg-type]
 
 
 def test_evaluate_with_unknown_alignment():
@@ -103,18 +132,20 @@ def test_evaluate_with_unknown_alignment():
         def predict(self, audio, sr=16000):
             return np.zeros((4, 32))
 
-    us = UniformSeries.from_samples(np.zeros(16000), sr=16000.0, t_start=0)
-    es = EventSeries.from_events(np.array([0.0, 1.0]), np.zeros((4, 2)), t_start=0.0, t_end=1.0)
-    tf = TimeFrame.from_tracks({"audio": us, "rps": es})
+    audio = td.uniform(np.zeros(16000, dtype=np.float32), 16000, dims=("time",), t_start=0)
+    rps = td.events(
+        np.array([0.0, 1.0]), np.zeros((4, 2)), dims=("rotor", "time"), t_start=0.0, t_end=2.0
+    )
+    frame = td.Frame({"audio": audio, "rps": rps})
     p = FakePredictor()
     with pytest.raises(ValueError, match="Unknown alignment"):
-        evaluate(p, [tf], alignment="bogus", verbose=False)  # type: ignore[arg-type]
+        evaluate(p, [frame], alignment="bogus", verbose=False)  # type: ignore[arg-type]
 
 
 def test_align_shape_stretch_no_values_raises():
     from tasks.rps_prediction import _align_shape_stretch
 
-    es = EventSeries.from_events(np.array([0.0, 1.0]), values=None, t_start=0.0, t_end=1.0)
+    es = td.events(np.array([0.0, 0.5]), values=None, dims=("time",), t_start=0.0, t_end=1.0)
     audio = np.zeros(16000)
     with pytest.raises(ValueError, match="no values"):
         _align_shape_stretch(audio, es)

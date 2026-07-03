@@ -12,6 +12,7 @@ import json
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import (
     Any,
@@ -20,26 +21,30 @@ from typing import (
 )
 
 import numpy as np
+import tdseries as td
 import torch
 import torch.nn as nn
 
-from utils.data import (
-    EventSeries,
-    TimeFrame,
-    UniformSeries,
-)
+from data_processing.frames import get_meta, meta_dict, with_meta
 
 # ── Constants ─────────────────────────────────────────────────────────────
 
 SR_AUDIO: float = 16000.0
 N_FFT: int = 2048
 HOP: int = 512
-FRAME_SR: float = SR_AUDIO / HOP  # ≈ 31.25 Hz
+FRAME_SR: Fraction = Fraction(16000, HOP)  # exact rate; ≈ 31.25 Hz — never a rounded float
 N_ROTORS: int = 4
 DEVICE: str = "cpu"  # evaluation default
 
 
 # ── Permutation alignment ─────────────────────────────────────────────────
+
+# Rotor counts are physically small (quadrotor = 4). An absurd R means the
+# caller passed a transposed (F, R) array, and the (R, R, F) pairwise cost
+# would be materialized over R = thousands of frames — fail fast instead of
+# allocating it and taking the machine down. Same guard style as
+# ``src/losses/pit.py::_MAX_PIT_SOURCES``.
+_MAX_PIT_ROTORS = 8
 
 
 def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
@@ -58,10 +63,12 @@ def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
     optimal linear assignment is identical to the brute-force 4!-permutation PIT
     search used by evaluation, so plots and metrics agree.
 
-    ``pred`` and ``gt`` are ``(R, F)``; they may differ in frame count (``gt`` is
-    linearly resampled onto the prediction's grid for the cost computation). If
-    the shapes are incompatible (not 2-D, mismatched/​<2 rotor counts) ``pred``
-    is returned unchanged.
+    ``pred`` and ``gt`` are ``(R, F)`` with the rotor axis FIRST; they may
+    differ in frame count (``gt`` is linearly resampled onto the prediction's
+    grid for the cost computation). If the shapes are incompatible (not 2-D,
+    mismatched/​<2 rotor counts) ``pred`` is returned unchanged. A rotor count
+    above ``_MAX_PIT_ROTORS`` raises ``ValueError`` — it means the input is
+    transposed ``(F, R)`` and matching would blow up over frames.
     """
     from scipy.optimize import linear_sum_assignment
 
@@ -69,6 +76,12 @@ def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
     gt = np.asarray(gt, dtype=np.float64)
     if pred.ndim != 2 or gt.ndim != 2 or pred.shape[0] != gt.shape[0] or pred.shape[0] < 2:
         return pred
+    if pred.shape[0] > _MAX_PIT_ROTORS:
+        raise ValueError(
+            f"align_rps_to_gt got R={pred.shape[0]} rotors (max {_MAX_PIT_ROTORS}). "
+            "Check the array layout — expected (R, F) with the rotor axis first; "
+            "a transposed (F, R) input would match over frames instead of rotors."
+        )
 
     R, F = pred.shape
     if gt.shape[1] != F:  # put GT on the prediction's frame grid
@@ -221,8 +234,8 @@ _CLASSICAL_NAMES = {
 # ── Input-set loader ──────────────────────────────────────────────────────
 
 
-def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
-    """Load a DREGON-LM-style dataset as ``Iterable[TimeFrame]``.
+def load_input_set(path: str | Path) -> Iterator[td.Frame]:
+    """Load a DREGON-LM-style dataset as ``Iterable[td.Frame]``.
 
     Expects each sample in a subdirectory ``sample_XXXXX/`` containing:
     * ``mixture.wav``   — 16 kHz mono audio
@@ -233,9 +246,9 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
 
     Yields
     ------
-    TimeFrame
-        Each frame has tracks ``{"audio": UniformSeries, "rps": EventSeries}``
-        and tags ``{"id": ..., "input_snr": ...}``.
+    td.Frame
+        Each frame has entries ``{"audio": Series, "rps": Series, "meta": Frame}``
+        (``meta`` carries ``id``, ``input_snr``, ...).
     """
     root = Path(path)
     if not root.is_dir():
@@ -286,36 +299,39 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
             raise ValueError(f"Expected {SR_AUDIO} Hz audio, got {file_sr} in {wav_path}")
         if waveform.shape[0] == 1:
             audio = waveform.squeeze(0).numpy().astype(np.float32)  # (T,) mono
+            audio_dims = ("time",)
         else:
             audio = waveform.numpy().astype(np.float32)  # (C, T) multichannel
+            audio_dims = ("mic", "time")
 
         # Load motor RPS.
         rps_raw = np.load(str(rps_path)).astype(np.float64)  # (R, M)
         if rps_raw.ndim != 2 or rps_raw.shape[0] != N_ROTORS:
             raise ValueError(f"Expected RPS shape (4, M), got {rps_raw.shape} in {rps_path}")
 
-        # Build RPS as EventSeries: timestamps at motor rate, co-extensive
-        # with audio.  The legacy motor_sample_rate is per-sample and varies.
-        # Derive it from the audio duration — the RPS array covers the same
-        # time span.
-        # For multichannel audio is (C, T), so use last dimension.
+        # Build RPS as a StampIndex Series: timestamps at motor rate,
+        # co-extensive with audio. The legacy motor_sample_rate is per-sample
+        # and varies. Derive it from the audio duration — the RPS array
+        # covers the same time span. For multichannel audio is (C, T), so use
+        # last dimension.
         audio_dur_s = audio.shape[-1] / file_sr
         M = rps_raw.shape[1]
         motor_sr = M / audio_dur_s if audio_dur_s > 0 else 1000.0
         motor_times = np.arange(M) / motor_sr  # float seconds
 
-        rps_es = EventSeries.from_events(
-            timestamps=motor_times,
-            values=rps_raw,  # (R, M)
+        rps_series = td.events(
+            motor_times,
+            rps_raw,  # (R, M)
+            dims=("rotor", "time"),
             t_start=0.0,
             t_end=audio_dur_s,
         )
 
-        audio_us = UniformSeries.from_samples(audio, sr=file_sr, t_start=0.0)
+        audio_series = td.uniform(audio, file_sr, dims=audio_dims, t_start=0.0)
 
-        # Build tags — propagate ALL metadata fields so downstream
-        # analysis (per-recording, per-source-type, etc.) works without
-        # needing to re-read metadata.json.
+        # Build meta — propagate ALL metadata fields so downstream analysis
+        # (per-recording, per-source-type, etc.) works without needing to
+        # re-read metadata.json.
         tags: dict[str, Any] = {"id": sid}
         meta_entry = metadata.get(sid) or _find_meta_entry(metadata, sid)
         if meta_entry:
@@ -330,10 +346,8 @@ def load_input_set(path: str | Path) -> Iterator[TimeFrame]:
                 else:
                     tags[k] = v
 
-        yield TimeFrame.from_tracks(
-            {"audio": audio_us, "rps": rps_es},
-            tags=tags,
-        )
+        frame = td.Frame({"audio": audio_series, "rps": rps_series})
+        yield with_meta(frame, **tags)
 
 
 def _find_meta_entry(metadata: dict, sid: str) -> dict | None:
@@ -441,7 +455,7 @@ def _audio_len(audio: np.ndarray) -> int:
 
 def _align_stft_timestamps(
     audio: np.ndarray,
-    rps_es: EventSeries,
+    rps_series: td.Series,
     *,
     sr: float = SR_AUDIO,
 ) -> np.ndarray:
@@ -452,12 +466,12 @@ def _align_stft_timestamps(
     """
     n_frames = _audio_len(audio) // HOP + 1
     frame_times = np.arange(n_frames) * HOP / sr
-    return rps_es.interpolate(frame_times)  # (R, F)
+    return np.asarray(rps_series.interpolate(frame_times))  # (R, F)
 
 
 def _align_shape_stretch(
     audio: np.ndarray,
-    rps_es: EventSeries,
+    rps_series: td.Series,
     *,
     sr: float = SR_AUDIO,
 ) -> np.ndarray:
@@ -469,9 +483,9 @@ def _align_shape_stretch(
     """
     import torch.nn.functional as F
 
-    if rps_es.values is None:
-        raise ValueError("RPS EventSeries has no values — cannot shape-stretch")
-    raw_rps = np.asarray(rps_es.values, dtype=np.float64)  # (R, M) — time-last
+    if rps_series.data is None:
+        raise ValueError("RPS series has no values — cannot shape-stretch")
+    raw_rps = np.asarray(rps_series.data, dtype=np.float64)  # (R, M) — time-last
     n_frames = _audio_len(audio) // HOP + 1
     # Torch F.interpolate: (B, C, L) -> (B, C, N)
     t = torch.from_numpy(raw_rps).unsqueeze(0)  # (1, R, M)
@@ -486,7 +500,7 @@ def _align_shape_stretch(
 
 def evaluate(
     predictor: RPSPredictor | str,
-    samples: Iterable[TimeFrame],
+    samples: Iterable[td.Frame],
     *,
     model_spec: str = "",
     input_set_label: str = "",
@@ -500,9 +514,9 @@ def evaluate(
     ----------
     predictor : RPSPredictor | str
         A predictor object or a spec string (passed to ``load_predictor``).
-    samples : Iterable[TimeFrame]
-        Each ``TimeFrame`` must have tracks ``"audio"`` and ``"rps"`` and
-        tags ``{"id": ...}``.
+    samples : Iterable[td.Frame]
+        Each ``Frame`` must have entries ``"audio"`` and ``"rps"`` and a
+        ``"meta"`` entry with ``id``.
     model_spec : str
         Human-readable label for the predictor (for logging).
     input_set_label : str
@@ -545,26 +559,35 @@ def evaluate(
     n = 0
     for frame in samples:
         if "audio" not in frame or "rps" not in frame:
-            raise KeyError("TimeFrame missing required tracks 'audio' and 'rps'")
+            raise KeyError("Frame missing required entries 'audio' and 'rps'")
 
-        audio_us = frame["audio"]
-        rps_es = frame["rps"]
+        audio_series = frame["audio"]
+        rps_series = frame["rps"]
 
-        if not isinstance(audio_us, UniformSeries):
-            raise TypeError(f"audio track must be UniformSeries, got {type(audio_us).__name__}")
-        if not isinstance(rps_es, EventSeries):
-            raise TypeError(f"rps track must be EventSeries, got {type(rps_es).__name__}")
+        if not isinstance(audio_series, td.Series) or not isinstance(
+            audio_series.tindex, td.GridIndex
+        ):
+            raise TypeError(
+                "'audio' entry must be a uniform (GridIndex) Series, got "
+                f"{type(audio_series).__name__}"
+            )
+        if not isinstance(rps_series, td.Series) or not isinstance(
+            rps_series.tindex, td.StampIndex
+        ):
+            raise TypeError(
+                f"'rps' entry must be a StampIndex Series, got {type(rps_series).__name__}"
+            )
 
-        audio = audio_us.samples  # (T,) or (C, T)
-        sr = audio_us.sr
-        sid = frame.tags.get("id", f"sample_{n:05d}")
-        per_ch_snr = frame.tags.get("input_snr_per_channel", None)
+        audio = audio_series.data  # (T,) or (C, T)
+        sr = audio_series.tindex.sr
+        sid = get_meta(frame, "id", f"sample_{n:05d}")
+        per_ch_snr = get_meta(frame, "input_snr_per_channel", None)
 
         # Predict: (R, F) for mono, (C, R, F) for multichannel.
         pred = predictor.predict(audio, sr=sr)
 
         # Align GT RPS onto the predicted frame grid (shared across channels).
-        gt = _align_gt(audio, rps_es, sr=sr)  # (R, F_gt)
+        gt = _align_gt(audio, rps_series, sr=sr)  # (R, F_gt)
 
         # Normalise to the same number of frames.
         F = min(pred.shape[-1], gt.shape[-1])
@@ -581,12 +604,15 @@ def evaluate(
 
             if pit:
                 # Use the project's canonical PIT implementation.
-                from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
+                from losses.pit import _permutations_tensor, pit_mse_loss
 
                 p_t = torch.from_numpy(np.asarray(p_ch, dtype=np.float32)).unsqueeze(0)  # (1, 4, F)
                 g_t = torch.from_numpy(np.asarray(gt, dtype=np.float32)).unsqueeze(0)  # (1, 4, F)
-                _, best_idx = pit_mse_loss(p_t, g_t, perms=_ROTOR_PERMS, return_indices=True)
-                best_perm = _ROTOR_PERMS[best_idx[0]].tolist()  # e.g. [0, 2, 1, 3]
+                perms = _permutations_tensor(p_t.size(1))
+                result = pit_mse_loss(p_t, g_t, perms=perms, return_indices=True)
+                assert isinstance(result, tuple)
+                _, best_idx = result
+                best_perm = perms[best_idx[0]].tolist()  # e.g. [0, 2, 1, 3]
                 gt_ch = gt[best_perm]  # (R, F)
             else:
                 best_perm = None
@@ -610,10 +636,10 @@ def evaluate(
             }
             if pit and best_perm is not None:
                 row["pit_perm"] = list(best_perm)
-            # Propagate ALL frame tags (recording_id, source_type, etc.) to
+            # Propagate ALL frame meta (recording_id, source_type, etc.) to
             # every per-sample row so aggregations don't need metadata.json.
-            for tag_key, tag_val in frame.tags.items():
-                if tag_key not in ("id",):
+            for tag_key, tag_val in meta_dict(frame).items():
+                if tag_key != "id":
                     row[tag_key] = tag_val
             if isinstance(per_ch_snr, (list, tuple)) and ch < len(per_ch_snr):
                 row["input_snr_channel"] = per_ch_snr[ch]

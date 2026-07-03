@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import matplotlib.figure
+import matplotlib.lines
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -122,8 +123,12 @@ def plot_full_sequence(
     ax.set_ylabel("rotor speed [rev/s]")
     ax.legend(
         handles=[
-            plt.Line2D([0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="GT"),  # pyright: ignore[reportPrivateImportUsage]
-            plt.Line2D([0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"),  # pyright: ignore[reportPrivateImportUsage]
+            matplotlib.lines.Line2D(
+                [0], [0], color="black", lw=0.5, ls=":", alpha=0.55, label="GT"
+            ),
+            matplotlib.lines.Line2D(
+                [0], [0], color="black", lw=0.5, ls="-", alpha=0.75, label="predicted"
+            ),
         ],
         loc="upper right",
         fontsize=6,

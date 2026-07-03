@@ -16,67 +16,70 @@ are independent of plotting and reusable on their own.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import Any, cast
 
 import matplotlib.figure
 import numpy as np
+import tdseries as td
 import torch
 
 from models.multif0.utils import cqt_freq_grid
 from models.salience_rps import SalienceRPSPredictor
-from plots.timeframe import plot_timeframe
+from plots.timeframe import PlotTrack, plot_timeframe
 from plots.timeframe.renderers import (
     ROTOR_COLORS,
     make_salience_series,
     make_spectrogram_series,
 )
-from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
-from utils.data import TimeFrame, UniformSeries
+from tasks.rps_prediction import align_rps_to_gt
 
 __all__ = [
     "select_channel",
     "model_salience_series",
     "model_rps_prediction",
-    "build_salience_frame",
+    "build_salience_tracks",
     "plot_salience_comparison",
 ]
 
 
-def select_channel(audio: UniformSeries, channel: int = 0) -> UniformSeries:
-    """Return a mono ``UniformSeries`` for one channel of a (possibly) multichannel one."""
-    samples = np.asarray(audio.samples, dtype=np.float32)
-    if samples.ndim == 1:
+def select_channel(audio: td.Series, channel: int = 0) -> td.Series:
+    """Return a mono ``Series`` for one channel of a (possibly) multichannel one."""
+    extra = [d for d in audio.dims if d != "time"]
+    if not extra:
         if channel != 0:
             raise ValueError(f"Mono audio only supports channel 0, got {channel}")
-        mono = samples
-    else:
-        n_ch = samples.shape[0]
-        if not (0 <= channel < n_ch):
-            raise ValueError(f"Channel {channel} out of range (0..{n_ch - 1})")
-        mono = samples[channel]
-    return UniformSeries.from_samples(mono, sr=audio.sr, t_start=audio.t_start_ticks)
+        return audio
+    if len(extra) > 1 or extra[0] not in ("mic", "channel"):
+        raise ValueError(f"Unsupported audio dims {audio.dims!r} for channel selection")
+    dim = extra[0]
+    n_ch = audio.dim_size(dim)
+    if not (0 <= channel < n_ch):
+        raise ValueError(f"Channel {channel} out of range (0..{n_ch - 1})")
+    return audio.slice[dim, channel]
 
 
 @torch.no_grad()
 def model_salience_series(
     model: SalienceRPSPredictor,
-    audio: UniformSeries,
+    audio: td.Series,
     *,
     device: str | torch.device = "cpu",
     title: str | None = None,
     with_prediction: bool = True,
     track_threshold: float = 0.3,
-) -> UniformSeries:
-    """Run a salience model on a mono audio track → salience ``UniformSeries``.
+) -> PlotTrack:
+    """Run a salience model on a mono audio track → salience ``PlotTrack``.
 
-    The returned series carries the bin centre frequencies (``plot.freqs``) and,
-    if ``with_prediction``, the tracked RPS overlay (``plot.rps_pred``), so it is
-    ready for the ``"salience"`` renderer.
+    The returned track carries the bin centre frequencies (``hints["freqs"]``)
+    and, if ``with_prediction``, the tracked RPS overlay (``hints["rps_pred"]``),
+    so it is ready for the ``"salience"`` renderer.
     """
     model.eval()
-    wav = torch.as_tensor(np.asarray(audio.samples, dtype=np.float32), device=device)
-    if wav.ndim != 1:
-        raise ValueError(f"model_salience_series expects mono audio, got shape {tuple(wav.shape)}")
+    wav_data = np.asarray(audio.data, dtype=np.float32)
+    if wav_data.ndim != 1:
+        raise ValueError(f"model_salience_series expects mono audio, got shape {wav_data.shape}")
+    wav = torch.as_tensor(wav_data, device=device)
     logits = model(wav.unsqueeze(0))  # (1, n_bins, T)
     salience = torch.sigmoid(logits)[0]  # (n_bins, T)
     # Frequency axis of the salience the model *emits*: the decoupled output grid
@@ -85,7 +88,9 @@ def model_salience_series(
         freqs = model.output_freqs()
     else:
         freqs = cqt_freq_grid(**model.grid_params())
-    frame_sr = float(model.spec_sr) / float(model.spec_hop)
+    # Exact frame rate — never a rounded float (spec_sr / spec_hop is exactly
+    # rational by construction).
+    frame_sr = Fraction(int(model.spec_sr), int(model.spec_hop))
     rps_pred = None
     if with_prediction:
         rps_pred = model.predict_rps(wav.unsqueeze(0), threshold=track_threshold)[0]  # (R, T_stft)
@@ -102,52 +107,51 @@ def model_salience_series(
 @torch.no_grad()
 def model_rps_prediction(
     model: SalienceRPSPredictor,
-    audio: UniformSeries,
+    audio: td.Series,
     *,
     device: str | torch.device = "cpu",
     track_threshold: float = 0.3,
 ) -> np.ndarray:
     """Return the model's tracked RPS prediction ``(n_rotors, T_stft)`` as numpy."""
     model.eval()
-    wav = torch.as_tensor(np.asarray(audio.samples, dtype=np.float32), device=device)
+    wav_data = np.asarray(audio.data, dtype=np.float32)
+    wav = torch.as_tensor(wav_data, device=device)
     pred = model.predict_rps(wav.unsqueeze(0), threshold=track_threshold)[0]
     return pred.detach().cpu().numpy()
 
 
-def build_salience_frame(
-    sample: TimeFrame,
+def build_salience_tracks(
+    sample: td.Frame,
     models: dict[str, SalienceRPSPredictor],
     *,
     channel: int = 0,
     device: str | torch.device = "cpu",
     fmax: float | None = 4000.0,
     track_threshold: float = 0.3,
-) -> TimeFrame:
-    """Assemble a ``TimeFrame`` with spectrogram + GT RPS + per-model salience tracks.
+) -> dict[str, PlotTrack | td.Series]:
+    """Build the ordered ``{name: track}`` mapping consumed by :func:`plot_salience_comparison`.
 
-    The input ``sample`` must have an ``"audio"`` track and an ``"rps"`` (GT)
-    ``EventSeries``. Track names: ``"spectrogram"``, ``"rps"`` (GT), and
-    ``"salience_<model>"`` for each model.
+    Returns the spectrogram track, one salience track per model, and the GT
+    ``"rps"`` track (if present). This is a plain mapping — not a ``Frame`` —
+    because ``PlotTrack``s carry plot-only renderer/hints metadata that does
+    not belong in the data model (see ``docs/refactor-unified-framework.md``).
     """
-    audio_us = cast(UniformSeries, sample["audio"])
-    mono = select_channel(audio_us, channel)
+    audio_series = cast(td.Series, sample["audio"])
+    mono = select_channel(audio_series, channel)
 
-    tracks: dict[str, Any] = {"audio": mono}
+    tracks: dict[str, PlotTrack | td.Series] = {"audio": mono}
     if "rps" in sample:
-        tracks["rps"] = sample["rps"]
+        tracks["rps"] = cast(td.Series, sample["rps"])
     tracks["spectrogram"] = make_spectrogram_series(mono, fmax=fmax)
-
-    frame = TimeFrame.from_tracks(tracks, tags=dict(sample.tags))
     for name, model in models.items():
-        sal = model_salience_series(
+        tracks[f"salience_{name}"] = model_salience_series(
             model, mono, device=device, title=f"{name} salience", track_threshold=track_threshold
         )
-        frame = frame.with_track(f"salience_{name}", sal)
-    return frame
+    return tracks
 
 
 def plot_salience_comparison(
-    sample: TimeFrame,
+    sample: td.Frame,
     models: dict[str, SalienceRPSPredictor],
     *,
     channel: int = 0,
@@ -163,7 +167,7 @@ def plot_salience_comparison(
     Parameters
     ----------
     sample
-        ``TimeFrame`` with ``"audio"`` and ``"rps"`` (GT) tracks (e.g. from
+        ``Frame`` with ``"audio"`` and ``"rps"`` (GT) entries (e.g. from
         :func:`plots.rps_prediction.sample_comparison._load_sample`).
     models
         ``{display_name: loaded_model}`` mapping. Each model must expose the
@@ -174,42 +178,43 @@ def plot_salience_comparison(
     show_rps_row
         Append a final row overlaying GT and every model's predicted RPS.
     """
-    frame = build_salience_frame(
+    tracks = build_salience_tracks(
         sample, models, channel=channel, device=device, fmax=fmax, track_threshold=track_threshold
     )
 
-    tracks = ["spectrogram"] + [f"salience_{name}" for name in models]
-    if show_rps_row and "rps" in frame:
-        tracks.append("rps")
+    plot_tracks: list[Any] = [tracks["spectrogram"]] + [
+        tracks[f"salience_{name}"] for name in models
+    ]
     # Salience rows are taller than the spectrogram / line rows.
-    height_ratios = []
-    for t in tracks:
-        height_ratios.append(2.0 if t.startswith("salience_") else 1.0)
+    height_ratios = [1.0] + [2.0] * len(models)
+    if show_rps_row and "rps" in tracks:
+        plot_tracks.append(tracks["rps"])
+        height_ratios.append(1.0)
 
     if figsize is None:
-        figsize = (15, 3.0 * sum(height_ratios) / max(len(tracks), 1) + 2.0 * len(tracks))
+        figsize = (15, 3.0 * sum(height_ratios) / max(len(plot_tracks), 1) + 2.0 * len(plot_tracks))
 
     fig = plot_timeframe(
-        frame,
-        tracks=tracks,
+        sample,
+        tracks=plot_tracks,
         figsize=figsize,
         height_ratios=height_ratios,
         **style,
     )
 
-    if show_rps_row and "rps" in frame:
+    if show_rps_row and "rps" in tracks:
         # Overlay each model's predicted RPS on the final (GT) rps row. The rps
         # track is always the last one added and (unlike salience rows) adds no
         # colorbar axis, so it is reliably ``fig.axes[-1]``.
         ax = fig.axes[-1]
-        mono = select_channel(cast(UniformSeries, sample["audio"]), channel)
+        mono = select_channel(cast(td.Series, sample["audio"]), channel)
         dur = mono.duration
-        gt_track = sample["rps"] if "rps" in sample else None  # noqa: SIM401 (TimeFrame has no .get)
+        gt_track = tracks.get("rps")
         for model in models.values():
             pred = model_rps_prediction(model, mono, device=device, track_threshold=track_threshold)
             pred_times = np.linspace(mono.t_start, mono.t_start + dur, pred.shape[-1])
             # Align rotor order to GT (PIT match) so overlay colours are consistent.
-            if gt_track is not None and getattr(gt_track, "values", None) is not None:
+            if isinstance(gt_track, td.Series) and gt_track.data is not None:
                 pred = align_rps_to_gt(pred, np.asarray(gt_track.interpolate(pred_times)))
             for r in range(min(pred.shape[0], len(ROTOR_COLORS))):
                 ax.plot(
@@ -223,8 +228,3 @@ def plot_salience_comparison(
         ax.set_title("RPS — GT (solid) vs predictions (dashed)")
 
     return fig
-
-
-# Frame rate of the salience grid is model-specific; HOP / N_FFT are re-exported
-# for callers that build their own STFT-grid overlays.
-__all__ += ["HOP", "N_FFT"]

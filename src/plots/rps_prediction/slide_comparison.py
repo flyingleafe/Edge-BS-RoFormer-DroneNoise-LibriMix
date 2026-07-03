@@ -7,6 +7,7 @@ from typing import cast
 import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
+import tdseries as td
 
 from plots.rps_prediction.sample_comparison import (
     ROTOR_COLORS,
@@ -14,12 +15,11 @@ from plots.rps_prediction.sample_comparison import (
     _plot_spectrogram,
 )
 from tasks.rps_prediction import HOP, N_FFT
-from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
 def plot_slide_comparison(
     *,
-    sample: TimeFrame | None = None,
+    sample: td.Frame | None = None,
     sample_path: str | None = None,
     channels: list[int] | None = None,
     preds: dict[str, np.ndarray] | dict[int, dict[str, np.ndarray]] | None = None,
@@ -31,7 +31,7 @@ def plot_slide_comparison(
 
     Parameters
     ----------
-    sample : TimeFrame | None
+    sample : td.Frame | None
         Pre-loaded sample.
     sample_path : str | None
         Path to sample directory.
@@ -63,20 +63,23 @@ def plot_slide_comparison(
     # Normalise preds to per-channel dict
     preds_by_ch: dict[int, dict[str, np.ndarray]]
     if preds and isinstance(next(iter(preds.values())), np.ndarray):
-        preds_by_ch = {ch: preds for ch in channels}  # type: ignore[assignment]
+        preds_by_ch = {ch: cast(dict[str, np.ndarray], preds) for ch in channels}
     else:
         preds_by_ch = cast(dict[int, dict[str, np.ndarray]], preds)
 
-    audio_us = cast(UniformSeries, sample["audio"])
-    rps_es = cast(EventSeries, sample["rps"])
-    audio = np.asarray(audio_us.samples, dtype=np.float32)
-    sr = audio_us.sr
+    audio_series = cast(td.Series, sample["audio"])
+    rps_series = cast(td.Series, sample["rps"])
+    audio_tindex = audio_series.tindex
+    if not isinstance(audio_tindex, td.GridIndex):
+        raise TypeError(f"'audio' entry must be a uniform (GridIndex) Series, got {audio_series}")
+    audio = np.asarray(audio_series.data, dtype=np.float32)
+    sr = audio_tindex.sr
     dur = audio.shape[-1] / sr
 
     sample_audio = audio[0] if audio.ndim > 1 else audio
     n_frames = len(sample_audio) // HOP + 1
-    frame_times = np.arange(n_frames) * HOP / sr + rps_es.t_start + N_FFT / sr / 2
-    gt = rps_es.interpolate(frame_times)
+    frame_times = np.arange(n_frames) * HOP / sr + rps_series.t_start + N_FFT / sr / 2
+    gt = np.asarray(rps_series.interpolate(frame_times))
 
     n_ch = len(channels)
     fig = plt.figure(figsize=figsize)
@@ -87,7 +90,7 @@ def plot_slide_comparison(
 
         # --- Left: spectrogram ---
         ax_spec = fig.add_subplot(gs[idx, 0])
-        _plot_spectrogram(ax_spec, ch_audio, sr, audio_us.t_start, dur)
+        _plot_spectrogram(ax_spec, ch_audio, sr, audio_series.t_start, dur)
         ax_spec.set_title(f"ch{ch} — Spectrogram", fontsize=10)
         ax_spec.set_xlabel("")
         if idx < n_ch - 1:
@@ -112,7 +115,7 @@ def plot_slide_comparison(
         ch_preds = preds_by_ch.get(ch, {})
         for model_name, pred in ch_preds.items():
             T_pred = pred.shape[-1]
-            pred_times = np.linspace(0.0, dur, T_pred) + audio_us.t_start
+            pred_times = np.linspace(0.0, dur, T_pred) + audio_series.t_start
             for r, color in enumerate(ROTOR_COLORS):
                 ax_rps.plot(
                     pred_times,

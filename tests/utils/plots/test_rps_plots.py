@@ -10,9 +10,10 @@ matplotlib.use("Agg")
 import matplotlib.figure
 import numpy as np
 import pytest
+import tdseries as td
 
+from data_processing.frames import with_meta
 from tasks.rps_prediction import EvalResult
-from utils.data import EventSeries, TimeFrame, UniformSeries
 
 # ── Synthetic helpers ────────────────────────────────────────────────────
 
@@ -49,8 +50,8 @@ def _make_eval_result(model_spec: str, mse: float, r2: float, n: int = 10) -> Ev
     return EvalResult(per_sample=rows, aggregate=agg, model_spec=model_spec)
 
 
-def _make_timeframe() -> TimeFrame:
-    """Build a minimal TimeFrame with audio + RPS tracks."""
+def _make_frame() -> td.Frame:
+    """Build a minimal Frame with audio + RPS entries."""
     sr = 16000.0
     audio = np.random.randn(16000).astype(np.float32)
     rps = np.random.uniform(100, 200, (4, 50)).astype(np.float64)
@@ -58,14 +59,10 @@ def _make_timeframe() -> TimeFrame:
     motor_sr = rps.shape[1] / dur
     motor_times = np.arange(rps.shape[1]) / motor_sr
 
-    audio_us = UniformSeries.from_samples(audio, sr=sr, t_start=0.0)
-    rps_es = EventSeries.from_events(
-        timestamps=motor_times,
-        values=rps,
-        t_start=0.0,
-        t_end=dur,
-    )
-    return TimeFrame.from_tracks({"audio": audio_us, "rps": rps_es}, tags={"id": "test_sample"})
+    audio_series = td.uniform(audio, sr, dims=("time",), t_start=0.0)
+    rps_series = td.events(motor_times, rps, dims=("rotor", "time"), t_start=0.0, t_end=dur)
+    frame = td.Frame({"audio": audio_series, "rps": rps_series})
+    return with_meta(frame, id="test_sample")
 
 
 # ── plot_summary_metrics ─────────────────────────────────────────────────
@@ -147,12 +144,12 @@ def test_plot_full_sequence_missing_input_raises():
 def test_plot_sample_comparison_returns_figure():
     from plots.rps_prediction.sample_comparison import plot_sample_comparison
 
-    tf = _make_timeframe()
+    frame = _make_frame()
     preds = {
         "model_a": np.random.uniform(100, 200, (4, 31)).astype(np.float32),
         "model_b": np.random.uniform(100, 200, (4, 31)).astype(np.float32),
     }
-    fig = plot_sample_comparison(sample=tf, preds=preds)
+    fig = plot_sample_comparison(sample=frame, preds=preds)
     assert isinstance(fig, matplotlib.figure.Figure)
 
 
@@ -166,9 +163,9 @@ def test_plot_sample_comparison_no_args_raises():
 def test_plot_sample_comparison_bad_channel_raises():
     from plots.rps_prediction.sample_comparison import plot_sample_comparison
 
-    tf = _make_timeframe()
+    frame = _make_frame()
     with pytest.raises(ValueError, match="channel"):
-        plot_sample_comparison(sample=tf, channel="bogus")
+        plot_sample_comparison(sample=frame, channel="bogus")
 
 
 # ── plot_training_curves ─────────────────────────────────────────────────
