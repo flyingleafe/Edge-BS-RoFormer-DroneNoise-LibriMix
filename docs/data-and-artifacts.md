@@ -48,7 +48,7 @@ before invoking `dvc pull` or your command — see `src/postdoc/direct.py`.
 
 ```bash
 # (whatever produces the data)
-python create_dregon_librimix.py --output datasets/DREGON-LM ...
+python scripts/create_dregon_librimix.py --output datasets/DREGON-LM ...
 
 # Track it with DVC (writes datasets/DREGON-LM.dvc, ignores the dir in git).
 dvc add datasets/DREGON-LM

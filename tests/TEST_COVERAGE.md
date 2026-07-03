@@ -3,8 +3,8 @@
 > Last updated: 2026-06-08  
 > FWH simulator excluded per request.  
 > Scope: `src/` + `train_rps_predictor.py` + `data_processing/` + `models/rps_predictor.py`.
-> Excluded: standalone report/slide scripts (`papers/`, `slides/`, root `generate_comparison.py`, `plot_per_snr.py`, `replicate_paper.py`, `eval_cross.py`).
-> Excluded: dataset creation scripts (`create_dataset.py`, `create_dregon_librimix.py`, `create_dregon_librimix_v3.py`).
+> Excluded: standalone report/slide scripts (under `writing/`) and one-off scripts under `scripts/` (benchmarks, config checks). Several former root scripts (`generate_comparison.py`, `plot_per_snr.py`, `eval_cross.py`) were absorbed into `eval.py`; `replicate_paper.py` was removed.
+> Excluded: dataset creation scripts (`scripts/create_dataset.py`, `scripts/create_dregon_librimix.py`, `scripts/create_dregon_librimix_v3.py`).
 > Excluded: legacy `src/utils/__init__.py` (ZFTurbo), `src/postdoc/infer.py`, `src/postdoc/queue.py` — deferred per decision.
 
 ---

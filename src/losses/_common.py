@@ -7,7 +7,7 @@ and deliberately omits the clean-speech ground truth, which is dataset-only
 (never produced by a model). This package adopts the entry name
 ``"target"`` for it in the *target* Frame (the dataset batch), mirroring the
 mixture/target naming already used throughout the pre-refactor root scripts
-(``dataset.py``, ``train.py``).
+(``scripts/dataset.py``, ``train.py``).
 """
 
 from __future__ import annotations

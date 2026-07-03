@@ -18,7 +18,7 @@ This module holds the concrete adapters wired into ``conf/data/``:
   ``sample_*/{mixture.wav,vocals.wav,noise.wav}`` (no ``rps.npy`` — DN-LM
   predates per-sample RPS labels), emitting ``{"mixture", "target", "meta"}``
   (``"target"`` = clean ``vocals.wav``, matching ``losses.MaskedLoss``'s
-  default ``target_key``). ``create_dataset.py`` writes one
+  default ``target_key``). ``scripts/create_dataset.py`` writes one
   ``metadata.json`` **inside each split directory** (``{"train": [...]}`` /
   ``{"valid": [...]}``), unlike ``DregonLMFrameDataset``'s sibling-of-both-
   splits layout — see :meth:`DNLMFrameDataset._load_metadata`.
@@ -93,7 +93,7 @@ class DregonLMFrameDataset(Dataset):
     containing ``sample_*/`` subdirectories, each with ``mixture.wav`` and
     ``rps.npy``. Per-sample metadata is read once from the sibling
     ``metadata.json`` (``{"train": [{"id": ..., "input_snr": ...}, ...],
-    "valid": [...]}}`` — see ``create_dregon_librimix.py``) and merged under
+    "valid": [...]}}`` — see ``scripts/create_dregon_librimix.py``) and merged under
     ``"meta"``; absent when no ``metadata.json`` exists.
 
     ``channel``, when set, selects one mic channel (``audio[channel]``) from
@@ -223,7 +223,7 @@ class DNLMFrameDataset(Dataset):
     labels — there is no ``rps.npy`` and no ``"rps"`` Frame entry, matching
     ``tasks.task.speech_enhancement``'s ``use_rps=False`` default. Per-sample
     metadata (``input_snr``, ``speech_source``, ``noise_source``,
-    ``speech_distance``) is read from ``create_dataset.py``'s per-split
+    ``speech_distance``) is read from ``scripts/create_dataset.py``'s per-split
     ``metadata.json`` (``{"<split>": [{"id": ..., ...}, ...]}``, written
     *inside* the split directory itself — unlike ``DregonLMFrameDataset``'s
     dataset-root-level file shared by both splits).

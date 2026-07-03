@@ -16,7 +16,7 @@ Long-form documentation that doesn't belong in code comments or AGENTS.md files.
 | `diffusion-buffer-paper.md` | Notes on the diffusion buffer paper |
 | `diffusion-prompt.md` | Prompt used to implement the diffusion buffer model |
 | `fwh_rotor_acoustic_simulator_plan.md` | FWH rotor acoustic simulator design + implementation status |
-| `experiments/` | One doc per past experiment (motivation/results/conclusion) — see `experiments/AGENTS.md` |
+| `experiments/` | One doc per past experiment (motivation/results/conclusion); live PhD-bet detail cards under `experiments/bets/` — see `docs/experiments/AGENTS.md` |
 | `superpowers/` | Postdoc platform architecture specs and implementation plans |
 
 ## Gotchas

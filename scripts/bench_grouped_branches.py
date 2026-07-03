@@ -49,8 +49,10 @@ def main():
     mag = torch.randn(args.batch, H, args.freq, args.time, device=device)
     phase = torch.randn(args.batch, H, args.freq, args.time, device=device)
 
-    print(f"device={device}  batch={args.batch}  H={H}  freq={args.freq}  time={args.time}  "
-          f"iters={args.iters}")
+    print(
+        f"device={device}  batch={args.batch}  H={H}  freq={args.freq}  time={args.time}  "
+        f"iters={args.iters}"
+    )
 
     # ── correctness (remap + equivalence) ──
     unfused.eval()
@@ -58,14 +60,13 @@ def main():
     with torch.no_grad():
         a = unfused(mag, phase)
         b = fused(mag, phase)
-    print(f"  correctness: max|Δ|={ (a-b).abs().max().item():.2e}  shape={tuple(b.shape)}\n")
+    print(f"  correctness: max|Δ|={(a - b).abs().max().item():.2e}  shape={tuple(b.shape)}\n")
 
     # ── forward (eval) ──
     with torch.no_grad():
         t_uf = timeit(lambda: unfused(mag, phase), device, args.iters, args.warmup)
         t_f = timeit(lambda: fused(mag, phase), device, args.iters, args.warmup)
-    print(f"  forward (eval)      unfused {t_uf:8.2f} ms | fused {t_f:8.2f} ms | "
-          f"{t_uf/t_f:.2f}x")
+    print(f"  forward (eval)      unfused {t_uf:8.2f} ms | fused {t_f:8.2f} ms | {t_uf / t_f:.2f}x")
 
     # ── forward + backward (train) ──
     unfused.train()
@@ -78,8 +79,10 @@ def main():
 
     t_uf_b = timeit(lambda: step(unfused), device, args.iters, args.warmup)
     t_f_b = timeit(lambda: step(fused), device, args.iters, args.warmup)
-    print(f"  fwd+bwd (train)     unfused {t_uf_b:8.2f} ms | fused {t_f_b:8.2f} ms | "
-          f"{t_uf_b/t_f_b:.2f}x")
+    print(
+        f"  fwd+bwd (train)     unfused {t_uf_b:8.2f} ms | fused {t_f_b:8.2f} ms | "
+        f"{t_uf_b / t_f_b:.2f}x"
+    )
 
 
 if __name__ == "__main__":

@@ -21,14 +21,14 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import tdseries as td
-from tqdm import tqdm
-
 from create_dregon_librimix import (
     MOTOR_SAMPLE_RATE,
     SAMPLE_RATE,
     load_audio,
     load_dregon_noise_records,
 )
+from tqdm import tqdm
+
 from data_processing.dregon import clean_command_spikes
 from data_processing.frames import get_meta
 

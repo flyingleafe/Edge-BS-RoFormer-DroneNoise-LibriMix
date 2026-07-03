@@ -7,8 +7,8 @@
 #     --noise_dir <drone-audio source> --output_dir datasets/DN-LM \
 #     --train_samples 6480 --valid_samples 720 --sample_duration 1.0 \
 #     --sample_rate 16000 --snr_min -30 --snr_max 0 --seed 42
-# (README.md's historical --train_samples 6480; replicate_paper.py's current
-# default is 64800 — see REPLICATION.md caveat.)
+# (README.md's historical --train_samples 6480; the former replicate_paper.py
+# driver defaulted to 64800 — see REPLICATION.md caveat.)
 train:
   _target_: data_processing.frame_datasets.DNLMFrameDataset
   params:

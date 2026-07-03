@@ -61,6 +61,6 @@ Chain: `Loss(p(t))` → FWH terms → `F, Fdot` from BEMT → `cl, cd` from thin
 
 ## Tests
 
-Run: `cd $PROJECT && PYTHONPATH=$PROJECT:$PYTHONPATH python fwh_rotor_sim/test_validation.py`
+Run: `python src/fwh_rotor_sim/test_validation.py` (the package is importable as `fwh_rotor_sim` — `src/` is on `sys.path` via the editable install, no `PYTHONPATH` needed)
 
 All 4 tests pass. The multi-observer test verifies float32 (err ~1e-9, order-of-operations roundoff) and float64 (err ~1e-18, machine epsilon).

@@ -40,7 +40,7 @@ Complete workflow for running ML experiments in this repository.
    ```
 
 7. **Analyze results.**
-   - `./sync_results.sh` first (mandatory)
+   - `./scripts/sync_results.sh` first (mandatory)
    - Then use `generate-model-comparisons` skill
 
 8. **Finish with `record-and-remember`.** Record setup, results, conclusions.
@@ -50,4 +50,4 @@ Complete workflow for running ML experiments in this repository.
 - **Create datasets first** — training fails silently with empty data dirs
 - **Match model_type key exactly** to `utils.py:get_model_from_config()` entries
 - **RPS experiments require `load_rps: true`** in config and `rps.npy` in dataset
-- **Always sync results before analysis** — `./sync_results.sh`
+- **Always sync results before analysis** — `./scripts/sync_results.sh`

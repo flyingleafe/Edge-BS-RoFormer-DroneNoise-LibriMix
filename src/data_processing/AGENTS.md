@@ -77,7 +77,7 @@ All recordings begin with ~5–13 s of pre-takeoff/ramp-up:
 (Computed with `--min_motor_rps 30.0`, which is the recommended default.)
 
 The helper `_find_inflight_window(tf, motor_key, min_motor_rps)` in
-`create_dregon_librimix.py` implements this.  It prefers `motors_measured`
+`scripts/create_dregon_librimix.py` implements this.  It prefers `motors_measured`
 for detection (real spindown) and falls back to `motors_command`.  The saved
 `rps.npy` always comes from `motors_command` (cleaner signal).
 
@@ -87,7 +87,7 @@ for detection (real spindown) and falls back to `motors_command`.  The saved
 
 ### DN-LM (DroneNoise-LibriMix) — Paper 1
 
-Script: `create_dataset.py` (root level).
+Script: `scripts/create_dataset.py` (root level).
 
 - Sources: LibriSpeech `train-clean-100` + DroneAudioDataset
 - 1 s samples, 16 kHz mono, SNR −30…0 dB
@@ -95,7 +95,7 @@ Script: `create_dataset.py` (root level).
 
 ### DREGON-LM (mono) — Paper 2 baseline
 
-Script: `create_dregon_librimix.py` (root level), no flags.
+Script: `scripts/create_dregon_librimix.py` (root level), no flags.
 
 - Sources: DREGON `in_flight_noise` (train) + LibriSpeech; `in_flight_source`
   recordings (valid) also mixed with LibriSpeech
@@ -105,7 +105,7 @@ Script: `create_dregon_librimix.py` (root level), no flags.
 
 ### DREGON-LM (multichannel) — current
 
-Script: `create_dregon_librimix.py --multichannel`
+Script: `scripts/create_dregon_librimix.py --multichannel`
 
 - Sources: same as mono but all 8 mic channels kept together
 - Per sample: `mixture.wav (T, 8)`, `vocals.wav (T, 8)`, `noise.wav (T, 8)`,
@@ -130,7 +130,7 @@ Script: `create_dregon_librimix.py --multichannel`
 ## Canonical Dataset Creation Command
 
 ```bash
-python create_dregon_librimix.py \
+python scripts/create_dregon_librimix.py \
   --multichannel --real_valid \
   --output_dir datasets/DREGON-LM-RealValid \
   --num_train 6000   --duration 1.0 \
@@ -165,7 +165,7 @@ Key flags:
 The `--multichannel` pipeline builds its train/valid noise pools as plain
 `list[TimeFrame]`. `--train_noise_sources` / `--valid_noise_sources` let you
 compose those pools from **any aligned sources** via comma-separated specs
-(`load_noise_sources()` in `create_dregon_librimix.py`):
+(`load_noise_sources()` in `scripts/create_dregon_librimix.py`):
 
 | Spec | Selects |
 |------|---------|
@@ -188,7 +188,7 @@ new spec prefix into `load_noise_sources`.
 ### Example: DREGON-LM-V4 + Michael's (FLY125→train, FLY124→valid)
 
 ```bash
-python create_dregon_librimix.py \
+python scripts/create_dregon_librimix.py \
   --multichannel --real_valid --max_non_overlapping \
   --output_dir datasets/DREGON-LM-V5 \
   --num_train 6000 --duration 1.0 \
@@ -343,7 +343,7 @@ Aggregate has both `n_samples` (distinct samples) and `n_rows` (= n_samples × C
 - `clean_command_spikes(command)` — `(4, M)` in/out; zeros leading freeze,
   applies median filter along time axis.  Time is the **last** axis.
 - `load_dregon_timeframes(data_dir, splits=…)` — load all recordings in splits
-- `_find_inflight_window(tf, motor_key, min_motor_rps)` — in `create_dregon_librimix.py`
+- `_find_inflight_window(tf, motor_key, min_motor_rps)` — in `scripts/create_dregon_librimix.py`
 
 ---
 

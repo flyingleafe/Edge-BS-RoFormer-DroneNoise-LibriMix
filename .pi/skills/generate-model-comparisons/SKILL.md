@@ -12,7 +12,7 @@ Generates publication-ready comparison plots and summary tables from evaluation 
 Before generating comparisons, ensure evaluation results are synced:
 
 ```bash
-./sync_results.sh
+./scripts/sync_results.sh
 ```
 
 Then generate comparisons:
@@ -34,7 +34,7 @@ When the user requests comparison plots or tables:
 
 1. **Sync results first** (if not already done):
    ```bash
-   ./sync_results.sh
+   ./scripts/sync_results.sh
    ```
 
 2. **Generate comparison** with selected models and output location:
@@ -144,7 +144,7 @@ This generates both metric plots/tables AND audio comparison plots in the same o
 
 ## Notes
 
-- **Always sync results first**: Run `./sync_results.sh` before generating comparisons
+- **Always sync results first**: Run `./scripts/sync_results.sh` before generating comparisons
 - **Model names are case-sensitive**: Use exact names as listed above
 - **Output directory is created automatically**: Parent directories are created if needed
 - **Plots are publication-ready**: 300 DPI PNG format with proper styling
@@ -158,7 +158,7 @@ This generates both metric plots/tables AND audio comparison plots in the same o
 If evaluation directory is missing:
 ```
 Error: Evaluation directory not found: results/evaluation/evaluation
-Hint: Run './sync_results.sh' first to sync results from vast-server
+Hint: Run './scripts/sync_results.sh' first to sync results from vast-server
 ```
 
 If invalid model names are provided:

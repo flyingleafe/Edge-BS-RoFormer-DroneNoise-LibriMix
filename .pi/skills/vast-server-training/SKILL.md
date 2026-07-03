@@ -121,14 +121,12 @@ postdoc submit --host other-box python train.py ...
 
 ## Working with experiment configs
 
-The experiment YAMLs in `experiments/` are **inputs to the training script's
-`--config` flag**, not to `postdoc`. Pattern:
+Experiment definitions live in the Hydra config tree (`conf/experiment/`),
+selected with `train.py experiment=<name>` — they are **inputs to the
+training script**, not to `postdoc`. Pattern:
 
 ```bash
-postdoc submit python train.py \
-    --model_type dccrn \
-    --config configs/dccrn_dregon.yaml \
-    --results_dir results/dccrn_dregon
+postdoc submit python train.py experiment=b1_dccrn_rps_dregon
 ```
 
 If a group of runs shares a setup, write a one-line shell script in the repo
@@ -146,7 +144,7 @@ the script's concern.
 - **Datasets**: `dvc pull` (locally or in-job via the per-job script).
 - **Checkpoints + metrics**: `wandb` artifacts.
 - **Raw logs**: stream with `postdoc logs <name>__<id>`; the file lives at
-  `/root/.postdoc/jobs/<name>__<id>/log.txt`. The legacy `./sync_results.sh`
+  `/root/.postdoc/jobs/<name>__<id>/log.txt`. The legacy `./scripts/sync_results.sh`
   is still available for a full rsync of the `results/` dir.
 
 See `docs/data-and-artifacts.md` for the full DVC + wandb story.

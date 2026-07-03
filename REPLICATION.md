@@ -51,9 +51,9 @@ python train.py experiment=<name> validate_only=true
 | | |
 |---|---|
 | **Dataset** | DN-LM (DroneNoise-LibriMix). Per-sample `sample_NNNNN/{mixture.wav,vocals.wav,noise.wav}` + per-split `metadata.json`. **No RPS label.** |
-| **Build** | `python create_dataset.py --speech_dir <LibriSpeech train-clean-100> --noise_dir <drone-audio source> --output_dir datasets/DN-LM --train_samples 6480 --valid_samples 720 --sample_duration 1.0 --sample_rate 16000 --snr_min -30 --snr_max 0 --seed 42` (README.md's historical sample counts; `replicate_paper.py`'s current default is `DATASET_TRAIN_SAMPLES=64800` — a 10× discrepancy between the README and the live reproduction script; treat 64800 as current-of-record if reproducing via `replicate_paper.py`). Noise source moved from a local dir to HF `geronimobasso/drone-audio-detection-samples` + a Zenodo `all_drone_noises.zip` mirror over time — check `create_dataset.py --help` for the current `--noise_dir` syntax (`hf:`/`hf-local:` prefixes supported). |
+| **Build** | `python scripts/create_dataset.py --speech_dir <LibriSpeech train-clean-100> --noise_dir <drone-audio source> --output_dir datasets/DN-LM --train_samples 6480 --valid_samples 720 --sample_duration 1.0 --sample_rate 16000 --snr_min -30 --snr_max 0 --seed 42` (README.md's historical sample counts; the former `replicate_paper.py` driver defaulted to `DATASET_TRAIN_SAMPLES=64800` — a 10× discrepancy vs the README; treat 64800 as current-of-record for a full reproduction). Noise source moved from a local dir to HF `geronimobasso/drone-audio-detection-samples` + a Zenodo `all_drone_noises.zip` mirror over time — check `scripts/create_dataset.py --help` for the current `--noise_dir` syntax (`hf:`/`hf-local:` prefixes supported). |
 | **conf/data** | `conf/data/dn_lm.yaml`, via the **new** `data_processing.frame_datasets.DNLMFrameDataset` (mirrors `DregonLMFrameDataset`; emits `{mixture, target, meta}` — no `rps`). |
-| **Results** | README.md's own Results table (SI-SDR/PESQ vs DCUNet/HTDemucs at −15 dB SNR; Jetson AGX Xavier edge deployment: RTF 0.325, 8.5 MB, <500 MB runtime). `replicate_paper.sh`/`.py` (repo root) are the reproduction drivers, results under `results/<subdir>_<githash>/`. |
+| **Results** | README.md's own Results table (SI-SDR/PESQ vs DCUNet/HTDemucs at −15 dB SNR; Jetson AGX Xavier edge deployment: RTF 0.325, 8.5 MB, <500 MB runtime). Reproduce via `python scripts/create_dataset.py ...` + `python train.py experiment=a1_*` (this file is the authoritative command catalogue; the former one-shot `replicate_paper.sh`/`.py` drivers were removed — see git history), results under `results/<subdir>_<githash>/`. |
 
 | Variant | Historical command | New-framework command |
 |---|---|---|
@@ -86,8 +86,9 @@ paper's exact training loss.
 | **Results** | No standalone report; `docs/diffusion-buffer-paper.md` (paper transcription) + `docs/diffusion-prompt.md` (implementation notes + repo config mapping). |
 
 **Replicability status: config-complete, but historically eval-only in this
-repo.** `replicate_paper.py`'s `EVAL_ONLY_MODELS` treats this as a
-pretrained-checkpoint import (from `sp-uhh/Diffusion-Buffer` upstream), not a
+repo.** The former `replicate_paper.py` driver's `EVAL_ONLY_MODELS` list
+treated this as a pretrained-checkpoint import (from `sp-uhh/Diffusion-Buffer`
+upstream), not a
 from-scratch training target — no training step was ever defined for it
 here. **Known chunking mismatch** (`docs/diffusion-prompt.md`): DN-LM's
 native 1 s/16000-sample clips don't match the paper's K=128-frame (~2 s)
@@ -101,9 +102,9 @@ upstream checkpoint for eval-only work.
 | | |
 |---|---|
 | **Dataset** | DREGON-LM (mono), `datasets/DREGON-LM/{train,valid}`. |
-| **Build** | `python create_dregon_librimix.py` (no flags). |
+| **Build** | `python scripts/create_dregon_librimix.py` (no flags). |
 | **conf/data** | `conf/data/dregon_lm_v1.yaml`. |
-| **Results** | `experiments/eval_dccrn_baseline_dregon.yaml` → `results/02b92aae2f89/training/best_model.ckpt`; `experiments/eval_dccrn_rps_dregon.yaml` → `results/85eddadc0e33/training/best_model.ckpt`; `experiments/eval_dcunet_baseline_dregon.yaml` → `results/dcunet_baseline_dregon/model_dcunet_ep_119_sdr_1.2846.ckpt`; `experiments/eval_dcunet_rps_dregon.yaml` → `results/dcunet_rps_dregon/model_dcunet_ep_124_sdr_1.2997.ckpt`. **These paths are stale/historical** — re-verify existence before reuse (`experiments/AGENTS.md` gotcha). |
+| **Results** | `experiments/eval_dccrn_baseline_dregon.yaml` → `results/02b92aae2f89/training/best_model.ckpt`; `experiments/eval_dccrn_rps_dregon.yaml` → `results/85eddadc0e33/training/best_model.ckpt`; `experiments/eval_dcunet_baseline_dregon.yaml` → `results/dcunet_baseline_dregon/model_dcunet_ep_119_sdr_1.2846.ckpt`; `experiments/eval_dcunet_rps_dregon.yaml` → `results/dcunet_rps_dregon/model_dcunet_ep_124_sdr_1.2997.ckpt` (these were keyed by the now-removed legacy `experiments/eval_*.yaml` records). **These paths are stale/historical** — re-verify existence before reuse. |
 
 | Variant | Legacy config | New-framework command |
 |---|---|---|
@@ -125,9 +126,10 @@ upstream checkpoint for eval-only work.
 | Standalone RPS predictor (legacy `rps_predictor` model_type) | `configs/11c_RPSPredictor_DREGON.yaml` | `python train.py experiment=b1_legacy_rps_predictor_dregon` |
 
 **Replicability status: config-complete, blocked on `datasets/DREGON-LM`
-existing locally.** `experiments/*.yaml` (legacy reproducibility records) map
-1:1 onto most of the above; `experiments/AGENTS.md` documents that schema
-(not machine-consumed, translate manually). **Caveat — 5a/5b/5c dataset is
+existing locally.** The legacy `experiments/*.yaml` reproducibility records
+(which mapped 1:1 onto most of the above) were removed — `conf/experiment/`
+is now the sole home; the mappings live in the "New-framework command"
+column here. **Caveat — 5a/5b/5c dataset is
 ambiguous**: these three configs have no `data_path` field at all (unlike
 the `_DREGON`-suffixed 6-series), suggesting they predate the DREGON dataset
 entirely (possibly an earlier synthetic-RPS DN-LM-style dataset). Best-effort
@@ -197,7 +199,7 @@ baseline, not recommended for new work (see C4 below).
 Not a `train.py` experiment — a comparison script against fixed,
 non-neural signal-processing trackers (`pyin_single_f0`, `cepstral_tracker`,
 `hps_tracker`, `matched_filter_tracker`, `nmf_tracker`; root
-`classical_rps_predictors.py`) vs. an existing learned checkpoint.
+`src/tasks/classical_rps_predictors.py`) vs. an existing learned checkpoint.
 
 - **Reproduce**: `python writing/papers/classical_baselines_report/build.py`
   (uses `tasks.rps_prediction.{evaluate,load_input_set,load_predictor}`,
@@ -216,7 +218,7 @@ non-neural signal-processing trackers (`pyin_single_f0`, `cepstral_tracker`,
 | | |
 |---|---|
 | **Dataset** | DREGON-LM-V2-{0,2.5,5,20}pct, `datasets/DREGON-LM-V2-<pct>/{train,valid}` — 6000 train/600 valid, 3 s, 8-mic, command RPS. |
-| **Build** | `python create_dregon_librimix.py --speech_dir data/librispeech/LibriSpeech/train-clean-100 --dregon_dir data/DREGON --output_dir datasets/DREGON-LM-V2-<pct> --num_train 6000 --num_valid 600 --motor_combo_fraction <0.0\|0.025\|0.05\|0.20>` |
+| **Build** | `python scripts/create_dregon_librimix.py --speech_dir data/librispeech/LibriSpeech/train-clean-100 --dregon_dir data/DREGON --output_dir datasets/DREGON-LM-V2-<pct> --num_train 6000 --num_valid 600 --motor_combo_fraction <0.0\|0.025\|0.05\|0.20>` |
 | **conf/data** | `conf/data/dregon_lm_v2_{0pct,2p5pct,5pct,20pct}.yaml` (`channel: 0` — 8-mic file, mono model, no channel-flattening trick). |
 | **Historical command** | `train_rps_predictor.py --model simple_conv_bigru_v2 --data_root datasets/DREGON-LM-V2-2.5pct --epochs 500 --patience 30 --batch_size 96 --lr 1e-3` |
 | **New-framework command** | `python train.py experiment=c4_dregon_v2_motorcombo_sweep` (default: 2.5pct, best); override `data=dregon_lm_v2_0pct` / `dregon_lm_v2_5pct` / `dregon_lm_v2_20pct` for the other points. |
@@ -229,7 +231,7 @@ non-neural signal-processing trackers (`pyin_single_f0`, `cepstral_tracker`,
 | | |
 |---|---|
 | **Dataset** | `datasets/DREGON-LM-V3` — 6000/600, 1 s @16kHz mono, SNR [-30,0]. |
-| **Build** | `python create_dregon_librimix_v3.py` (superseded script; if absent, closest modern equivalent: `create_dregon_librimix.py --duration 1.0 --num_train 6000 --num_valid 600`). |
+| **Build** | `python scripts/create_dregon_librimix_v3.py` (superseded script; if absent, closest modern equivalent: `scripts/create_dregon_librimix.py --duration 1.0 --num_train 6000 --num_valid 600`). |
 | **conf/data** | `conf/data/dregon_lm_v3.yaml`. |
 | **Historical command** | `train_rps_predictor.py --model simple_conv --data_root datasets/DREGON-LM-V3 --no_pit_loss --epochs 200 --patience 30 --batch_size 128` |
 | **New-framework command** | `python train.py experiment=c5_simpleconv_dregon_v3` |
@@ -307,14 +309,14 @@ the 8-channel-as-batch alternative alongside it, not in place of it.
 
 ## C10 — 26-variant SimpleConv architecture sweep (offline + online-mix) + clipped-GRU follow-up
 
-Source: `autoresearch/20260617-012233-dregon-lm-v4-michaels-simple-conv-v2/{experiments.md,leaderboard.md}`,
+Source: `docs/experiments/simpleconv-rps-architecture-search.md`,
 `writing/reports/2026-06-19_rps-arch-sweep-v4-michaels/report.typ`.
 
 | | |
 |---|---|
 | **Dataset (offline)** | `datasets/DREGON-LM-V4-michaels/{train,valid}` — `conf/data/dregon_lm_v4_michaels.yaml`. |
 | **Dataset (online-mix)** | streamed via `configs/online_mix_v4_michaels_train_no_room1_gpfs.yaml`, fixed valid = same as offline — `conf/data/online_mix_v4_michaels.yaml` (pre-existing). |
-| **Build** | `python create_dregon_librimix.py --multichannel --real_valid --max_non_overlapping --output_dir datasets/DREGON-LM-V4-michaels ... --train_noise_sources "dregon-split:in_flight_noise,michaels:FLY125" --valid_noise_sources "dregon-id:free-flight_nosource_room1,...,michaels:FLY124"` (full command in `conf/data/dregon_lm_v4_michaels.yaml`'s header comment). |
+| **Build** | `python scripts/create_dregon_librimix.py --multichannel --real_valid --max_non_overlapping --output_dir datasets/DREGON-LM-V4-michaels ... --train_noise_sources "dregon-split:in_flight_noise,michaels:FLY125" --valid_noise_sources "dregon-id:free-flight_nosource_room1,...,michaels:FLY124"` (full command in `conf/data/dregon_lm_v4_michaels.yaml`'s header comment). |
 | **New-framework command (offline)** | `python train.py experiment=c10_arch_sweep_offline model=<key>` |
 | **New-framework command (online)** | `python train.py experiment=c10_arch_sweep_online model=<key>` |
 | **Winner (named)** | `python train.py experiment=c10_uni_gru128_online` (mirrors the worked example in `docs/refactor-unified-framework.md`) |
@@ -485,8 +487,8 @@ data=fly124_eval checkpoint=<dregon-only ckpt>`.
 
 ### A1 — DN-LM sample-count discrepancy
 
-README.md's historical `create_dataset.py` invocation uses
-`--train_samples 6480 --valid_samples 720`; the current `replicate_paper.py`
-driver defaults to `DATASET_TRAIN_SAMPLES=64800` (10× larger). Not resolved
+README.md's historical `scripts/create_dataset.py` invocation uses
+`--train_samples 6480 --valid_samples 720`; the former `replicate_paper.py`
+driver defaulted to `DATASET_TRAIN_SAMPLES=64800` (10× larger). Not resolved
 here — pick one deliberately before a real run and note which in the run's
 wandb tags/notes.

@@ -136,7 +136,7 @@ def load_predictor(spec: Any) -> RPSPredictor:
     * A string ``"Type@/path/to/ckpt.pt"`` → learned model loaded via
       ``tasks.checkpoints.load_model``, wrapped in an inference adapter.
     * A string ``"cepstral" | "hps" | "pyin" | "matched_filter" | "nmf"`` →
-      classical predictor from ``classical_rps_predictors``.
+      classical predictor from ``tasks.classical_rps_predictors``.
 
     The factory is **idempotent**: passing an already-loaded predictor
     returns it unchanged.
@@ -169,7 +169,7 @@ def load_predictor(spec: Any) -> RPSPredictor:
     if s in _CLASSICAL_ATTR:
         import importlib
 
-        mod = importlib.import_module("classical_rps_predictors")
+        mod = importlib.import_module("tasks.classical_rps_predictors")
         fn = getattr(mod, _CLASSICAL_ATTR[s])
         if hasattr(fn, "predict"):
             return fn

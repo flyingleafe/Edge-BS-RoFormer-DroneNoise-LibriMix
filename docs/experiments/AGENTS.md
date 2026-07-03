@@ -7,10 +7,11 @@ sweep logs, and duplicate legacy `writing/papers/*/report.md` drafts
 (consolidated 2026-07-03; originals deleted, content preserved in git
 history and in these docs).
 
-This is a **history/reference log**, distinct from `experiments/bets/`
-(GOALS.md's live, currently-active portfolio bets — not yet started as of
-this writing). Once a bet from `GOALS.md`'s "Current Portfolio" concludes,
-its detail card belongs here too.
+This is a **history/reference log**. Its `bets/` subdirectory (`docs/experiments/bets/`)
+holds GOALS.md's live, currently-active portfolio bets — one detail card per
+bet, created when a bet starts (none started as of this writing). A concluded
+bet's card stays under `bets/`; its write-up (motivation/results/conclusion)
+lands as a top-level file here.
 
 ## Convention
 

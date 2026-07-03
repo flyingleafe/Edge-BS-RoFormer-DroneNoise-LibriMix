@@ -90,6 +90,7 @@ packages = [
     "src/losses",
     "src/metrics",
     "src/training",
+    "src/fwh_rotor_sim",
 ]
 
 [tool.ruff]
