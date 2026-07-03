@@ -286,20 +286,25 @@ Optimize only behind the same public API.
 
 ## Multichannel Training & Evaluation Wiring
 
-### Training (`train_rps_predictor.py`)
+### Training (unified `train.py`, via `data_processing.frame_datasets.DregonLMFrameDataset`)
 
-`DREGONRPSDataset.__getitem__` returns:
-- Mono files (`C=1`): `audio (T,)`, `rps (4, F)`
-- Multichannel files (`C>1`): `audio (C, T)`, `rps (4, F)`
+The legacy `train_rps_predictor.py` (and its `DREGONRPSDataset` /
+`_flatten_channels`) has been deleted — see docs/refactor-unified-framework.md.
+`DregonLMFrameDataset.__getitem__` (this package's `frame_datasets.py`) returns
+a `td.Frame` per sample instead of a raw `(audio, rps)` tensor pair:
+- Mono files (`C=1`): `frame["mixture"]` is `(time,)`
+- Multichannel files (`C>1`): `frame["mixture"]` is `(mic, time)`
 
-The training loop calls `_flatten_channels(audio, rps)`:
-- `(B, T)` → no-op, C=1
-- `(B, C, T)` → `(B*C, T)` audio; `(B, 4, F)` → broadcast+reshape → `(B*C, 4, F)` rps
+`frame["rps"]` is `(rotor, time)` on the STFT frame grid in both cases.
+`_flatten_channels`'s channel-as-extra-batch-item trick (broadcasting a
+`(B, 4, F)` RPS target across `(B, C, T)` audio) is **not reproduced** in the
+new world — `channel=<int>` on `DregonLMFrameDataset` selects one mic instead,
+producing a genuinely mono `(time,)` Frame per sample.
 
 `SimpleConv` (and all `rps_predictor` model variants) accept any leading batch
 shape before the time dimension — `torch.stft` treats everything before `T` as
-batch.  DCUNet/DCCRN are **not** covered by this flattening; they handle 1-channel
-mono only.
+batch.  DCUNet/DCCRN are **not** covered by channel flattening; they handle
+1-channel mono only.
 
 ### Evaluation (`src/tasks/rps_prediction.py`)
 

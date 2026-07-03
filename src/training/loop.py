@@ -20,6 +20,7 @@ needs) — the loop itself never inspects task-specific tensor shapes.
 
 from __future__ import annotations
 
+import logging
 import math
 import subprocess
 from collections.abc import Iterable, Iterator
@@ -28,15 +29,16 @@ from typing import Any
 
 import tdseries as td
 import torch
+import wandb
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import tqdm
 
-import wandb
 from data_processing.collate import batch_size as frame_batch_size
 from data_processing.collate import frame_collate, slice_sample
 from tasks.codecs import Codec
 from tasks.task import Task
+from training.artifacts import ArtifactStore
 from training.config import (
     build_dataset,
     build_losses,
@@ -44,8 +46,21 @@ from training.config import (
     build_task_and_codec,
     instantiate_model,
 )
+from training.lora import maybe_apply_lora
+from training.val_logging import log_validation_samples
 
 __all__ = ["run_training", "get_optimizer", "git_commit_hash", "is_git_dirty"]
+
+logger = logging.getLogger(__name__)
+
+
+def _wandb_log(data: dict[str, Any]) -> None:
+    """``log_fn`` passed to ``training.val_logging`` — a thin indirection over
+    the module-level ``wandb`` name (not a direct ``wandb.log`` call inside
+    ``val_logging`` itself) so tests can monkeypatch ``training.loop.wandb``
+    the same way ``tests/training/test_loop.py`` already does for the rest of
+    this module's wandb calls."""
+    wandb.log(data)
 
 
 # ─── Optimizer factory (ported from train.py::get_optimizer) ─────────────────
@@ -211,10 +226,14 @@ def _validate(
     *,
     model: torch.nn.Module,
     codec: Codec,
+    task: Task,
     valid_loader: DataLoader,
     metric_suite: Any,
     device: torch.device,
     amp: bool,
+    epoch: int,
+    artifacts_cfg: Any,
+    artifact_store: ArtifactStore,
 ) -> dict[str, float]:
     model.eval()
     pairs: list[tuple[td.Frame, td.Frame]] = []
@@ -227,6 +246,24 @@ def _validate(
             for pred_i, target_i in zip(_iter_samples(pred_cpu), _iter_samples(batch_cpu)):
                 pairs.append((pred_i, target_i))
     result = metric_suite.evaluate(pairs)
+
+    num_val_samples = int(getattr(artifacts_cfg, "num_val_samples", 0) or 0)
+    if num_val_samples > 0:
+        try:
+            log_validation_samples(
+                task=task,
+                pairs=pairs,
+                epoch=epoch,
+                num_samples=num_val_samples,
+                log_fn=_wandb_log,
+                metric_suite=metric_suite,
+                artifact_store=(
+                    artifact_store if getattr(artifacts_cfg, "upload_val_samples", True) else None
+                ),
+            )
+        except Exception:
+            logger.warning("validation-sample logging failed for epoch %d", epoch, exc_info=True)
+
     return result.aggregate("mean")
 
 
@@ -237,15 +274,35 @@ def _save_checkpoint(model: torch.nn.Module, path: Path) -> None:
     torch.save(model.state_dict(), path)
 
 
+def _upload_checkpoint_and_record(
+    *, store: ArtifactStore, upload_enabled: bool, path: Path, run: Any, summary_key: str
+) -> None:
+    """Upload ``path`` (best/periodic checkpoint) to R2 and, if it succeeded,
+    write its ``r2://...`` URI into the wandb run summary under
+    ``summary_key`` (e.g. ``"r2/best_checkpoint"``). No-op when
+    ``upload_enabled`` is false; never raises (``ArtifactStore`` already
+    swallows its own upload failures)."""
+    if not upload_enabled:
+        return
+    uri = store.upload_checkpoint(path)
+    if uri is not None and run is not None:
+        run.summary[summary_key] = uri
+
+
 # ─── Main entry point ──────────────────────────────────────────────────────────
 
 
-def run_training(cfg: Any) -> dict[str, float]:
+def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> dict[str, float]:
     """Train per ``cfg`` (a composed ``training.config.RootConfig``).
 
     Sets up the run dir + wandb, builds every component, then runs
     epochs/iterable-stream-chunks with early stopping. Returns the best
     monitored metric value and the epoch it stopped at.
+
+    ``artifact_store`` is dependency-injected for tests (an
+    :class:`~training.artifacts.ArtifactStore` built around a fake
+    filesystem); when omitted, a real store is built from ``cfg.artifacts``
+    (no-op unless R2 credentials are present — see ``training.artifacts``).
     """
     if is_git_dirty() and not cfg.allow_dirty:
         raise RuntimeError(
@@ -265,9 +322,22 @@ def run_training(cfg: Any) -> dict[str, float]:
 
     task: Task
     task, codec = build_task_and_codec(cfg.model)
-    model = instantiate_model(cfg.model).to(device)
+    model = instantiate_model(cfg.model)
+    model = maybe_apply_lora(model, cfg.lora)
+    model = model.to(device)
     loss_fn = build_losses(cfg.loss).to(device)
     metric_suite = build_metrics(cfg.metrics)
+
+    store = (
+        artifact_store
+        if artifact_store is not None
+        else ArtifactStore(
+            experiment_name=cfg.experiment_name,
+            bucket=cfg.artifacts.bucket,
+            prefix=cfg.artifacts.prefix,
+            enabled=cfg.artifacts.enabled,
+        )
+    )
 
     optimizer = get_optimizer(
         model,
@@ -350,10 +420,14 @@ def run_training(cfg: Any) -> dict[str, float]:
         val_metrics = _validate(
             model=model,
             codec=codec,
+            task=task,
             valid_loader=valid_loader,
             metric_suite=metric_suite,
             device=device,
             amp=cfg.amp,
+            epoch=epoch,
+            artifacts_cfg=cfg.artifacts,
+            artifact_store=store,
         )
 
         metric_value = train_loss if monitor == "loss" else val_metrics[monitor]
@@ -373,12 +447,28 @@ def run_training(cfg: Any) -> dict[str, float]:
         if improved:
             best_metric = metric_value
             no_improve = 0
-            _save_checkpoint(model, run_dir / "best.ckpt")
+            best_ckpt_path = run_dir / "best.ckpt"
+            _save_checkpoint(model, best_ckpt_path)
+            _upload_checkpoint_and_record(
+                store=store,
+                upload_enabled=cfg.artifacts.upload_checkpoints,
+                path=best_ckpt_path,
+                run=run,
+                summary_key="r2/best_checkpoint",
+            )
         else:
             no_improve += 1
 
         if cfg.checkpoint_every and (epoch + 1) % cfg.checkpoint_every == 0:
-            _save_checkpoint(model, run_dir / f"ep{epoch}_{monitor}_{metric_value:.4f}.ckpt")
+            periodic_ckpt_path = run_dir / f"ep{epoch}_{monitor}_{metric_value:.4f}.ckpt"
+            _save_checkpoint(model, periodic_ckpt_path)
+            _upload_checkpoint_and_record(
+                store=store,
+                upload_enabled=cfg.artifacts.upload_checkpoints,
+                path=periodic_ckpt_path,
+                run=run,
+                summary_key=f"r2/checkpoint_ep{epoch}",
+            )
 
         if no_improve >= cfg.patience:
             break

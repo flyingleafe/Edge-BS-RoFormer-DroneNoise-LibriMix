@@ -1,0 +1,10 @@
+# LoRA fine-tuning seam (training.lora.maybe_apply_lora). The config shape
+# exists per docs/refactor-unified-framework.md § "Future expansions"; the
+# port from the old loralib-based trainer is deliberately deferred — setting
+# `enabled: true` raises NotImplementedError until that port lands.
+enabled: false
+r: 8
+alpha: 16
+dropout: 0.0
+target_modules: null
+checkpoint: null

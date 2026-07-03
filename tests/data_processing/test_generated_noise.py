@@ -8,6 +8,7 @@ the Frame wrapping end-to-end (just not GPU or model quality).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -118,6 +119,10 @@ def test_deterministic_bank_fills_once_and_stops(tmp_path):
         pool.close()
 
 
+@pytest.mark.skipif(
+    not Path("data/DREGON").is_dir(),
+    reason="needs local data/DREGON geometry (producer loads it before codebook lookup)",
+)
 def test_unknown_drone_rejected(tmp_path):
     from data_processing.generated_noise import GeneratedNoisePool
 

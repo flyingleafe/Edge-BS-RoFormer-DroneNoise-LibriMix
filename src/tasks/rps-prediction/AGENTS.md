@@ -27,17 +27,23 @@ class RPSPredictor(nn.Module):
 ## Training integration
 
 ### Registry
-Add the model class to `MODEL_REGISTRY` in `train_rps_predictor.py`:
+Add the model class to `RPS_MODEL_REGISTRY` in `src/models/rps_predictor.py`
+(or wherever the class lives), then re-export it from
+`src/models/registry.py::RPS_MODEL_REGISTRY` — the single registry the
+unified `train.py`/`eval.py` (Hydra) and `tasks.checkpoints.load_model` both
+resolve model names against:
 
 ```python
-MODEL_REGISTRY = {
+RPS_MODEL_REGISTRY = {
     ...
     "your_model_key": YourModelClass,
 }
 ```
 
-The factory `get_model(model_name, n_fft, hop_length, num_rotors)` constructs
-`YourModelClass(n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)`.
+`src/models/registry.py::build_model(name, **params)` constructs
+`YourModelClass(**params)`; `get_rps_model(model_name, n_fft, hop_length,
+num_rotors, ...)` is the richer factory that also handles the salience-model
+narrow-input/super-resolution config overrides.
 
 ### Dataset
 `DREGONRPSDataset` loads `mixture.wav` + `rps.npy` from DREGON-LM chunks.
@@ -119,7 +125,7 @@ RPS vs ground truth.
        or keep inline (prefer front-end if it's a standard transform).
 4. [ ] Implement core model in `src/models/<subdir>/`.
 5. [ ] Wrap to `RPSPredictor` interface if needed.
-6. [ ] Register in `train_rps_predictor.py::MODEL_REGISTRY`.
-7. [ ] Smoke test: `model = get_model("key"); out = model(audio); assert out.shape == (B, 4, T_stft)`.
+6. [ ] Register in `src/models/registry.py::RPS_MODEL_REGISTRY`.
+7. [ ] Smoke test: `model = build_model("key"); out = model(audio); assert out.shape == (B, 4, T_stft)`.
 8. [ ] One-epoch training run to verify gradient flow and loss decrease.
 9. [ ] Evaluation against baseline metrics.

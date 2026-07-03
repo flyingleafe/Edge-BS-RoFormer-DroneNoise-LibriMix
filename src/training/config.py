@@ -49,6 +49,8 @@ __all__ = [
     "MetricsConfig",
     "OptimConfig",
     "WandbConfig",
+    "ArtifactsConfig",
+    "LoraConfig",
     "RootConfig",
     "register_configs",
     "instantiate_target",
@@ -152,6 +154,40 @@ class WandbConfig:
 
 
 @dataclass
+class ArtifactsConfig:
+    """Cloudflare R2 artifact upload — see ``training.artifacts.ArtifactStore``
+    and docs/refactor-unified-framework.md § "Future expansions". Uploads are
+    a no-op (with a log line) when ``enabled=False`` or R2 credentials
+    (``.env``: ``R2_ACCOUNT_ID`` + AWS keys) are missing — headless/CI safe by
+    default even with ``enabled=True``.
+    """
+
+    enabled: bool = True
+    bucket: str = "ml-data"
+    prefix: str = "artifacts"
+    upload_checkpoints: bool = True
+    upload_val_samples: bool = True
+    num_val_samples: int = 6
+
+
+@dataclass
+class LoraConfig:
+    """LoRA fine-tuning seam — see ``training.lora.maybe_apply_lora``. Off by
+    default; the port from the old ``loralib``-based trainer is deliberately
+    deferred (enabling raises ``NotImplementedError`` with a pointer to the
+    old implementation), the config shape exists so a future PR doesn't need
+    to touch the training loop's call site.
+    """
+
+    enabled: bool = False
+    r: int = 8
+    alpha: int = 16
+    dropout: float = 0.0
+    target_modules: list[str] | None = None
+    checkpoint: str | None = None
+
+
+@dataclass
 class RootConfig:
     experiment_name: str = MISSING
     seed: int = 0
@@ -175,6 +211,8 @@ class RootConfig:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     logging: WandbConfig = field(default_factory=WandbConfig)
+    artifacts: ArtifactsConfig = field(default_factory=ArtifactsConfig)
+    lora: LoraConfig = field(default_factory=LoraConfig)
 
 
 def register_configs() -> None:

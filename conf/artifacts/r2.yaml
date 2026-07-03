@@ -1,0 +1,11 @@
+# Cloudflare R2 artifact upload (checkpoints + validation samples). See
+# training.artifacts.ArtifactStore and docs/refactor-unified-framework.md
+# § "Future expansions". Credentials (R2_ACCOUNT_ID, AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY) come from .env; uploads no-op (one log line) instead
+# of failing a run when they're missing or `enabled: false` is set.
+enabled: true
+bucket: ml-data
+prefix: artifacts
+upload_checkpoints: true
+upload_val_samples: true
+num_val_samples: 6

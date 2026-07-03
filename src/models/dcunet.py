@@ -41,7 +41,7 @@ class RotorEncoder(nn.Module):
         nn.init.xavier_uniform_(self.conv1.weight)
         nn.init.xavier_uniform_(self.conv2.weight)
 
-    def forward(self, rps: torch.Tensor, target_length: int = None) -> torch.Tensor:
+    def forward(self, rps: torch.Tensor, target_length: int | None = None) -> torch.Tensor:
         """
         rps: (B, num_rotors, time_rps) or (B, time_rps) [then unsqueeze(1)]
         """
@@ -115,7 +115,14 @@ class RPSPredictionHead(nn.Module):
 class CConv2d(nn.Module):
     """Complex Convolutional Layer"""
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int],
+        padding: int | tuple[int, int] = 0,
+    ):
         super().__init__()
         self.real_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
         self.im_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -141,7 +148,15 @@ class CConv2d(nn.Module):
 class CConvTranspose2d(nn.Module):
     """Complex Transpose Convolutional Layer"""
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride, output_padding=0, padding=0):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int],
+        output_padding: int | tuple[int, int] = 0,
+        padding: int | tuple[int, int] = 0,
+    ):
         super().__init__()
         self.real_convt = nn.ConvTranspose2d(
             in_channels, out_channels, kernel_size, stride, padding, output_padding
@@ -224,6 +239,7 @@ class Decoder(nn.Module):
     def forward(self, x):
         x = self.cconvt(x)
         if not self.last_layer:
+            assert self.cbn is not None and self.act is not None
             x = self.cbn(x)
             x = self.act(x)
         else:
@@ -451,7 +467,7 @@ class DCUNet(nn.Module):
         """
         input_length = x.shape[-1]  # Store original length for output padding
         X = self.stft.transform(x)
-        B, _, F, T, _ = X.shape
+        B, _, n_freq, T, _ = X.shape
         encoder_features = []
         current = X
 
@@ -465,6 +481,8 @@ class DCUNet(nn.Module):
         for i, encoder in enumerate(self.encoders):
             current = encoder(current)
             if self.use_rps and rps is not None and self.rps_fusion == "hierarchical":
+                assert self.rps_hierarchical_blocks is not None
+                assert self.rps_hierarchical_projs is not None
                 level_t = current.shape[3]
                 h = self.rps_hierarchical_blocks[i](rps_align)
                 if h.size(-1) != level_t:
@@ -485,9 +503,10 @@ class DCUNet(nn.Module):
 
         if self.use_rps and rps is not None:
             if self.rps_fusion == "bottleneck":
+                assert self.rotor_encoder is not None and self.rps_bottleneck_proj is not None
                 # Run RPS pathway in float32 to avoid float16 overflow
                 # (rotor activations can be large before BN fully converges)
-                with torch.amp.autocast("cuda", enabled=False):
+                with torch.autocast("cuda", enabled=False):
                     rotor_feat = self.rotor_encoder(rps.float())
                     rotor_feat = rotor_feat.mean(dim=-1)
                     proj = self.rps_bottleneck_proj(rotor_feat)
@@ -495,6 +514,8 @@ class DCUNet(nn.Module):
                 proj = proj.view(B, C, 2)
                 current = current.float() + proj.unsqueeze(2).unsqueeze(3)
             elif self.rps_fusion == "gru":
+                assert self.rotor_encoder is not None
+                assert self.rps_gru is not None and self.rps_gru_proj is not None
                 T_b = current.shape[3]
                 rotor_feat = self.rotor_encoder(rps, target_length=T_b)
                 flat = current.permute(0, 3, 1, 2, 4).reshape(B, T_b, -1)
@@ -525,9 +546,9 @@ class DCUNet(nn.Module):
                 current = decoder(torch.cat([current, skip], dim=1))
 
         # Pad or crop output to match input spectrogram dimensions
-        if current.shape[2] != F or current.shape[3] != T:
+        if current.shape[2] != n_freq or current.shape[3] != T:
             # Pad if output is smaller, crop if larger
-            pad_f = F - current.shape[2]
+            pad_f = n_freq - current.shape[2]
             pad_t = T - current.shape[3]
             if pad_f > 0 or pad_t > 0:
                 # Pad with zeros: (last_dim_pad, ..., first_dim_pad)
@@ -537,7 +558,7 @@ class DCUNet(nn.Module):
                 )
             if pad_f < 0 or pad_t < 0:
                 # Crop if larger
-                current = current[:, :, :F, :T, :]
+                current = current[:, :, :n_freq, :T, :]
         output = current * X
         output = self.stft.inverse(output)
 
@@ -564,7 +585,7 @@ class DCUNet(nn.Module):
 
 # ---------------------- Simple test case ----------------------
 if __name__ == "__main__":
-    config = {
+    config: dict = {
         "audio": {
             "chunk_size": 131584,
             "dim_f": 1024,

@@ -59,9 +59,9 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 
 | If the task is… | Skill | Read first |
 |-----------------|-------|------------|
-| **Manipulating audio / telemetry / any aligned signal** (loading, slicing, concat, shifting RPS/IMU/VAD alongside audio) | — | `src/utils/data/AGENTS.md` + [`src/utils/data/API.md`](src/utils/data/API.md). The fixed-point timeseries algebra is the substrate for *all* media work. |
-| **Creating or processing a dataset** (DREGON-LM, DN-LM, mixing, RPS extraction) | `create-dregon-dataset` | `data_processing/AGENTS.md` (recording inventory, variants, canonical command, gotchas); loaders `data_processing/dregon.py`, `michaels.py`; root scripts `create_dregon_librimix.py`, `create_dataset.py`. |
-| **Loading data into a training loop** (Dataset/wiring, multichannel flattening) | — | `data_processing/AGENTS.md` § "Multichannel Training & Evaluation Wiring" (`DREGONRPSDataset`, `NoiseRPSDataset`, `_flatten_channels`) + `src/utils/data/AGENTS.md`. |
+| **Manipulating audio / telemetry / any aligned signal** (loading, slicing, concat, shifting RPS/IMU/VAD alongside audio) | — | The in-repo `src/utils/data` timeseries algebra was replaced by the PyPI `tdseries` package (`import tdseries as td`) and deleted — see `docs/refactor-unified-framework.md` § "tdseries migration guide" for the old→new API table and gotchas. Full `tdseries` API: `~/Research/PhD/projects/tflib/DESIGN.md`. |
+| **Creating or processing a dataset** (DREGON-LM, DN-LM, mixing, RPS extraction) | `create-dregon-dataset` | `src/data_processing/AGENTS.md` (recording inventory, variants, canonical command, gotchas); loaders `src/data_processing/dregon.py`, `michaels.py`; root scripts `create_dregon_librimix.py`, `create_dataset.py`. |
+| **Loading data into a training loop** (Dataset/wiring, multichannel flattening) | — | `src/data_processing/AGENTS.md` § "Multichannel Training & Evaluation Wiring" (`DregonLMFrameDataset`, `NoiseRPSDataset`) + `docs/refactor-unified-framework.md` for the `tdseries`/Frame data model. |
 | **Implementing / reimplementing a model** (need examples + the interface contract) | `reimplement-model` | `src/tasks/AGENTS.md` **first** (the contract the model must satisfy) → `src/models/AGENTS.md` (registry, RPS support, "Adding a front-end"). Example impls to mirror: `src/models/dcunet_refactored.py`, `src/models/multif0/`, `src/models/rps_predictor.py`. |
 | **Adding a spectral front-end** | — | `src/models/AGENTS.md` § "Spectral front-ends" / "Adding a new front-end". |
 | **RPS conditioning** (RotorEncoder, fusion, predictor interface) | — | `src/models/AGENTS.md` + `src/tasks/rps-prediction/AGENTS.md`. |
@@ -84,7 +84,6 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 | `configs/` | YAML config files for model variants and online-mixing dataset policies | Naming conventions, config structure; online mixer configs are `configs/online_mix_*.yaml` |
 | `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
 | `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py` | See `src/utils/AGENTS.md` for layout |
-| `src/utils/data/` | **Fixed‑point time‑series algebra** for audio, telemetry, and any aligned data. Use this for manipulating audio with co‑recorded signals (RPS, IMU, VAD). Four frozen container types with a uniform `slice`/`concat`/`shift` algebra, exact int64‑tick storage. | **Always read `src/utils/data/AGENTS.md` before any task touching audio, media, or timeseries data.** Full API reference at [`src/utils/data/API.md`](src/utils/data/API.md). |
 | `experiments/` | Experiment YAML definitions | Format, creating new experiments |
 | `data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM creation scripts |
 | `writing/` | Reports, slides, and papers (Typst + LaTeX) | See `writing/AGENTS.md` for templates, build chain, and visual-check workflow. |

@@ -300,6 +300,36 @@ final_valid.py (PESQ/STOI/RTF/FLOPs are just metrics in the suite),
 eval_cross.py (cross-eval = experiment config with a different data
 group), eval_narrow_sr.py, generate_comparison.py.
 
+## Future expansions (design headroom — do NOT implement yet)
+
+Decided 2026-07-03. These shape interfaces; no code for them exists yet:
+
+1. **Arbitrary under-annotated audio datasets as Frame sources.** A dataset
+   adapter's only obligation is "emit `td.Frame`s + declare a `FrameSpec`".
+   Nothing may assume the presence of `rps`/`target` beyond what a spec
+   declares — losses/metrics already declare what they need, and the
+   validator already treats absent-but-optional entries correctly. Data
+   configs must stay *composable to a list of named sources* (each with its
+   own spec and sampling weight) without changing the trainer.
+2. **Self-supervised objectives on under-annotated data, trained alongside
+   supervised losses.** The loss list must tolerate per-source
+   applicability: a loss whose `requires_target` is not satisfied by a
+   given source's spec is *skipped for batches from that source*, not an
+   error, once multi-source training lands. Keep loss composition
+   declarative (CompositeLoss) so adding an SSL term = adding a conf/loss
+   entry.
+3. **Joint / adversarial training of the RPS predictor and the noise
+   generator on unannotated noise audio.** The training loop's
+   model/optimizer construction must stay behind a narrow seam (build →
+   step → validate) so a future "training scheme" abstraction (N models,
+   N optimizers, alternating steps) can replace the single-model scheme
+   without rewriting checkpointing/logging/artifacts.
+
+Also decided: LoRA fine-tuning keeps a config seam (`lora.*`) in the
+unified trainer; multi-GPU validation is dropped; checkpoints AND selected
+validation samples are uploaded as artifacts to Cloudflare R2 (bucket
+`ml-data`, creds via `.env`: `R2_ACCOUNT_ID` + AWS keys, s3fs client).
+
 ## Execution waves
 
 0. Branch + this doc + mechanical moves (`git mv data_processing

@@ -7,7 +7,6 @@ touching the existing assets. Mirrors the figure style of ``prepare.py``.
 """
 
 # Imports follow os.chdir() into the project root (matches sibling prepare.py).
-# ruff: noqa: E402
 
 import json
 import os
@@ -28,6 +27,8 @@ os.chdir(PROJECT_ROOT)
 
 from typing import cast
 
+from models.registry import get_rps_model as get_model
+from models.salience_rps import SalienceRPSPredictor
 from plots.rps_prediction.salience_comparison import (
     model_rps_prediction,
     model_salience_series,
@@ -37,7 +38,6 @@ from plots.rps_prediction.sample_comparison import _load_sample
 from plots.timeframe.registry import TrackContext
 from plots.timeframe.renderers import make_spectrogram_series, render_salience
 from tasks.rps_prediction import align_rps_to_gt
-from train_rps_predictor import get_model
 
 SLIDE_DIR = pathlib.Path(__file__).parent.resolve()
 ASSETS = SLIDE_DIR / "assets"
@@ -156,11 +156,14 @@ print("Saved: per_rotor_mae_narrow_sr.png")
 
 # ── 4. load narrow-SR salience models + SimpleConvV2 ─────────────────────────
 print(f"Device: {DEVICE}")
-narrow_models = {
-    "multif0_salience_narrow_sr": get_model(
-        "multif0_salience", hcqt_fmin=55.0, salience_cfg=MULTIF0_CFG
+narrow_models: dict[str, SalienceRPSPredictor] = {
+    "multif0_salience_narrow_sr": cast(
+        SalienceRPSPredictor,
+        get_model("multif0_salience", hcqt_fmin=55.0, salience_cfg=MULTIF0_CFG),
     ),
-    "basic_pitch_narrow_sr": get_model("basic_pitch_salience", salience_cfg=BP_CFG),
+    "basic_pitch_narrow_sr": cast(
+        SalienceRPSPredictor, get_model("basic_pitch_salience", salience_cfg=BP_CFG)
+    ),
 }
 ckpts = {
     "multif0_salience_narrow_sr": PROJECT_ROOT

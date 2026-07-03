@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).parents[2]))  # project root
 
 from data_processing.frames import get_meta
+from losses.pit import pit_mse_loss
 from plots.rps_prediction.sample_comparison import plot_sample_comparison
 from tasks.rps_prediction import (
     HOP,
@@ -24,12 +26,13 @@ from tasks.rps_prediction import (
     load_input_set,
     load_predictor,
 )
-from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
 
 # ─── Paths ─────────────────────────────────────────────────────────────────
 PROJECT = Path(__file__).parents[2]
 FIG_DIR = Path(__file__).parent / "figures"
 FIG_DIR.mkdir(exist_ok=True)
+
+_ROTOR_PERMS = torch.tensor(list(itertools.permutations(range(4))), dtype=torch.long)
 
 DATASET = PROJECT / "datasets" / "DREGON-LM-V4" / "valid"
 EVAL_NO_PIT = PROJECT / "results" / "dregon_v4_eval" / "eval_8ch_v4.json"

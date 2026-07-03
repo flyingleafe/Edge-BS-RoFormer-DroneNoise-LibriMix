@@ -14,19 +14,27 @@ import math
 
 import training.loop as loop_module
 from tests.training.conftest import make_tiny_config
+from tests.training.test_artifacts import FakeFS
+from training.artifacts import ArtifactStore
 from training.loop import run_training
 
 
 class _FakeRun:
     id = "fake-run-id"
 
+    def __init__(self) -> None:
+        self.summary: dict = {}
+
 
 class _FakeWandb:
     def __init__(self) -> None:
         self.logged: list[dict] = []
+        self.last_run: _FakeRun | None = None
 
     def init(self, *args, **kwargs):
-        return _FakeRun()
+        run = _FakeRun()
+        self.last_run = run
+        return run
 
     def log(self, data, *args, **kwargs):
         self.logged.append(dict(data))
@@ -73,3 +81,60 @@ def test_run_training_refuses_to_overwrite_a_nonempty_run_dir(tmp_path, monkeypa
         pass
     else:
         raise AssertionError("expected FileExistsError on a second run without resume=true")
+
+
+def test_run_training_uploads_best_checkpoint_to_injected_artifact_store(tmp_path, monkeypatch):
+    fake_wandb = _FakeWandb()
+    monkeypatch.setattr(loop_module, "wandb", fake_wandb)
+
+    fs = FakeFS()
+    experiment_name = "tiny_loop_artifacts"
+    store = ArtifactStore(experiment_name=experiment_name, fs=fs, enabled=True)
+
+    cfg = make_tiny_config(
+        results_root=str(tmp_path),
+        experiment_name=experiment_name,
+        epochs=2,
+        n_train=6,
+        n_valid=4,
+        batch_size=2,
+        artifacts_enabled=True,
+        num_val_samples=0,  # this test is scoped to checkpoint upload, not sample logging
+    )
+    run_training(cfg, artifact_store=store)
+
+    ckpt_key = f"ml-data/artifacts/{experiment_name}/checkpoints/best.ckpt"
+    assert ckpt_key in fs.files, f"expected checkpoint at {ckpt_key}, got keys: {list(fs.files)}"
+
+    assert fake_wandb.last_run is not None
+    recorded_uri = fake_wandb.last_run.summary.get("r2/best_checkpoint")
+    assert recorded_uri == f"r2://{ckpt_key}"
+
+
+def test_run_training_val_sample_logging_and_upload_when_enabled(tmp_path, monkeypatch):
+    fake_wandb = _FakeWandb()
+    monkeypatch.setattr(loop_module, "wandb", fake_wandb)
+
+    fs = FakeFS()
+    experiment_name = "tiny_loop_val_samples"
+    store = ArtifactStore(experiment_name=experiment_name, fs=fs, enabled=True)
+
+    cfg = make_tiny_config(
+        results_root=str(tmp_path),
+        experiment_name=experiment_name,
+        epochs=1,
+        n_train=6,
+        n_valid=4,
+        batch_size=2,
+        artifacts_enabled=True,
+        num_val_samples=2,
+    )
+    run_training(cfg, artifact_store=store)
+
+    # wandb.Audio/Image payloads logged alongside the usual train/val scalars.
+    audio_rows = [row for row in fake_wandb.logged if any(k.startswith("val/") for k in row)]
+    assert audio_rows, "expected at least one wandb.log call carrying val/ sample keys"
+
+    # And the same samples reached the (fake) R2 filesystem as a manifest.
+    manifest_keys = [k for k in fs.files if k.endswith("manifest.json")]
+    assert manifest_keys, f"expected a val_samples manifest.json, got keys: {list(fs.files)}"

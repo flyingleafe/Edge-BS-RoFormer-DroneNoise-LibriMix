@@ -5,15 +5,12 @@
 # on the sae partition via --partition=sae.
 #
 # Usage:
-#   ./sbatch.sh [slurm_params] -- python train_rps_predictor.py [...training params]
+#   ./sbatch.sh [slurm_params] -- python train.py experiment=<name> [hydra overrides...]
 #
 # Examples:
-#   ./sbatch.sh -J rps_scv2 -- python train_rps_predictor.py \
-#     --device cuda:0 \
-#     --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4 \
-#     --save_path /gpfs/scratch/acw592/results/rps_scv2
+#   ./sbatch.sh -J rps_scv2 -- python train.py experiment=rps_simple_conv_v2_v4
 #
-#   ./sbatch.sh -J long_rps --partition=sae --time=4:00:00 -- python train_rps_predictor.py [...]
+#   ./sbatch.sh -J long_rps --partition=sae --time=4:00:00 -- python train.py experiment=rps_simple_conv_v2_v4 [...]
 #
 #   ./sbatch.sh -J debug --cpus-per-gpu=4 --mem-per-cpu=8G -- python -c 'import torch; print(torch.cuda.is_available())'
 #
@@ -54,8 +51,8 @@ Defaults added by this wrapper:
   --account=pilot_sae_gpu  (only when --partition=sae and no account is supplied)
 
 Examples:
-  ./sbatch.sh -J rps_test -- python train_rps_predictor.py --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4 --save_path /gpfs/scratch/acw592/results/rps_test
-  ./sbatch.sh -J rps_long --partition=sae --time=4:00:00 -- python train_rps_predictor.py --device cuda:0 --data_root /gpfs/scratch/acw592/datasets/DREGON-LM-V4 --save_path /gpfs/scratch/acw592/results/rps_long
+  ./sbatch.sh -J rps_test -- python train.py experiment=rps_simple_conv_v2_v4
+  ./sbatch.sh -J rps_long --partition=sae --time=4:00:00 -- python train.py experiment=rps_simple_conv_v2_v4
   ./sbatch.sh -J smoke --time=00:10:00 -- python -c 'import torch; print(torch.cuda.is_available())'
 EOF
 }

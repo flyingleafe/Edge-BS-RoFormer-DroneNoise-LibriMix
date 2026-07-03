@@ -12,6 +12,8 @@ defaults:
   - metrics: ???
   - optim: adamw_plateau
   - logging: wandb
+  - artifacts: r2
+  - lora: disabled
   - _self_
   - experiment: null
 

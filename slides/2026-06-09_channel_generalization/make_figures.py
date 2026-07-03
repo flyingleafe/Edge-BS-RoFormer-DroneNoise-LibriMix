@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 from typing import cast
@@ -16,12 +17,14 @@ import tdseries as td
 import torch
 
 from data_processing.frames import get_meta
+from losses.pit import pit_mse_loss
 from plots.rps_prediction.sample_comparison import plot_sample_comparison
 from tasks.rps_prediction import HOP, N_FFT, SR_AUDIO, load_input_set, load_predictor
-from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
 
 FIG_DIR = Path(__file__).resolve().parent / "public"
 FIG_DIR.mkdir(exist_ok=True)
+
+_ROTOR_PERMS = torch.tensor(list(itertools.permutations(range(4))), dtype=torch.long)
 
 
 def _pit_permute(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:

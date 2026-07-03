@@ -80,7 +80,9 @@ From `utils.get_model_from_config()` — see `src/utils/AGENTS.md`.
 
 ## RPS prediction models
 
-Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::RPS_MODEL_REGISTRY`).
+Registered in `rps_predictor.py::RPS_MODEL_REGISTRY` (also re-exported, plus the
+salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
+`build_model(name, **params)` entry point used by the unified `train.py`/`eval.py`).
 
 | Key | Class / description |
 |-----|---------------------|
@@ -117,8 +119,8 @@ Registered in `train_rps_predictor.py::MODEL_REGISTRY` (see `rps_predictor.py::R
 | `simple_conv_magphase_bigru` | 3-channel (mag+phase) + BiGRU |
 | `simple_conv_attn_pool` | Attention frequency pooling |
 | `simple_conv_se_next` | SE + residual + deeper |
-| `dcunet_enc_rps` | DCUNet complex-conv encoder (in `train_rps_predictor.py`) |
-| `dccrn_enc_rps` | DCCRN complex-conv encoder (in `train_rps_predictor.py`) |
+| `dcunet_enc_rps` | DCUNet complex-conv encoder + `RPSPredictionHead` (from `models.dcunet`) |
+| `dccrn_enc_rps` | DCCRN complex-conv encoder + `RPSPredictionHead` (from `models.dcunet`) |
 | `multif0_rps` | Multi-F0 LateDeep CNN + soft-centroid RPS |
 | `multif0_salience` | LateDeep CNN → salience-map logits; BCE-trained, Hungarian-tracked to RPS at eval (`salience_rps.py`) |
 | `basic_pitch_salience` | Basic Pitch contour branch → salience-map logits; same BCE+tracking path, native 16 kHz (`salience_rps.py`) |
@@ -195,7 +197,8 @@ A GPU-compatible version via nnAudio is in `multif0/nnaudio_cqt.py`.
 
 In `generative/`.  Not registered in `get_model_from_config`.  Full sync of
 `drone_audition.models` (no `env.settings`; sample rate is an explicit arg,
-default 16 kHz).  `DroneNoisePlusFilterGen` is used by `train_noise_gen.py`;
+default 16 kHz).  `DroneNoisePlusFilterGen` was used by the deleted `train_noise_gen.py`
+(no unified-framework `conf/model`/training entry point for it yet);
 `VP_transform` is used by `src/utils/align_rps.py`.
 
 | Class | File | Purpose |
@@ -206,7 +209,7 @@ default 16 kHz).  `DroneNoisePlusFilterGen` is used by `train_noise_gen.py`;
 | `HarmonicTransformModule` + `VP_transform` / `lstsq_VP_transform` / `inverse_VP_transform` / `harmonic_VP_transform` | `harmonic_transform.py` | VP-transform harmonic analysis/synthesis (dot-product **and** least-squares projection; zero-guard + per-frame antialias + `center`) |
 | `HarmonicNoiseGenNew` | `harmonic_gen_new.py` | End-to-end RPS→audio: NN predicts harmonic amps + noise mags → oscillator bank + filtered noise |
 | `JointAmplitudePredictor` / `ConstantAmplitudePredictor` / `DirectionalOutputHead` / `SpeedsPostprocessingWrapper` / `LearnableTimeShift` | `harmonic_gen_new.py` | Amplitude predictors + helpers for `HarmonicNoiseGenNew` |
-| `PositionalHarmonicNoiseGen` + `propagate` / `fractional_delay` | `positional_harmonic_gen.py` | Position-aware generator: single-rotor `HarmonicNoiseGenNew` (rotor folded into batch) **emits** per-rotor sources, then **propagates** to observation point(s) with 1/r attenuation + fractional delay (`r/c`, c=343). Native multi-observer — rotors summed in the rfft domain, so M mics cost R fwd + M inv transforms. Differentiable w.r.t. position. Isotropic point source (distance-only). Per-drone conditioning is **external** (`cond_dim=d` FiLM-conditions the emitter on a code `z (B,d)` passed to `forward`; the `name→z` table is a separate `tasks.noise_generation.DroneCodebook`, so model params never resize with drone count and an unseen drone is few-shot-adaptable by freezing the model and fitting just its code). `forward(..., return_dict=True)` also exposes the emitter's per-rotor control curves (`harm_amps` `[B,R,O,H,t]`, `noise_amps` `[B,R,F,t]`) — the inputs to the Stage-2 smoothness regularisers (`losses.smoothness_penalty`, squared 2nd difference; harmonic amps over time, noise shape over time+freq). Wired via `train_noise_generation.py` (`--harm_smooth_weight`/`--noise_smooth_weight`, both default 0 = off; validation stays pure spectral). **Initial harmonic phases** (`HarmonicNoiseGenNew.forward`): random per-harmonic in **train** mode (phase augmentation), **zero** in **eval** mode (deterministic) — so always `model.eval()` for inference/rendering. Overridable via `forward(..., initial_phases=[B,R,H])` for reproducible/pinned synthesis (distinct from the heavier `use_random_phases` spectral-phase randomiser, which is off by default). |
+| `PositionalHarmonicNoiseGen` + `propagate` / `fractional_delay` | `positional_harmonic_gen.py` | Position-aware generator: single-rotor `HarmonicNoiseGenNew` (rotor folded into batch) **emits** per-rotor sources, then **propagates** to observation point(s) with 1/r attenuation + fractional delay (`r/c`, c=343). Native multi-observer — rotors summed in the rfft domain, so M mics cost R fwd + M inv transforms. Differentiable w.r.t. position. Isotropic point source (distance-only). Per-drone conditioning is **external** (`cond_dim=d` FiLM-conditions the emitter on a code `z (B,d)` passed to `forward`; the `name→z` table is a separate `tasks.noise_generation.DroneCodebook`, so model params never resize with drone count and an unseen drone is few-shot-adaptable by freezing the model and fitting just its code). `forward(..., return_dict=True)` also exposes the emitter's per-rotor control curves (`harm_amps` `[B,R,O,H,t]`, `noise_amps` `[B,R,F,t]`) — the inputs to the Stage-2 smoothness regularisers (`losses.smoothness_penalty`, squared 2nd difference; harmonic amps over time, noise shape over time+freq). Was wired via the deleted `train_noise_generation.py` (`--harm_smooth_weight`/`--noise_smooth_weight`, both default 0 = off; validation stayed pure spectral) — no unified-framework `conf/model`/training entry point for the `noise_generation` task exists yet (see docs/refactor-unified-framework.md § "Future expansions"); `src/models/registry.py::build_noise_gen_model`/`build_noise_gen_loss` are the surviving model/loss factories, used by report and notebook figure scripts to reload a trained checkpoint. **Initial harmonic phases** (`HarmonicNoiseGenNew.forward`): random per-harmonic in **train** mode (phase augmentation), **zero** in **eval** mode (deterministic) — so always `model.eval()` for inference/rendering. Overridable via `forward(..., initial_phases=[B,R,H])` for reproducible/pinned synthesis (distinct from the heavier `use_random_phases` spectral-phase randomiser, which is off by default). |
 | `SimpleHarmonicNoiseGen` / `PropellerAmplitudePredictor` | `harmonic_gen_new.py` | DEPRECATED random-phase synthesiser + per-prop predictor |
 | `CausalConv1d` / `CausalConv1dBlock` / `ResNet` / `RnnSandwich` / … | `nn.py` | Shared building blocks (used by the predictors) |
 

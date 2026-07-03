@@ -1,13 +1,19 @@
 """One ``build_model(name, **params) -> nn.Module`` entry point.
 
-Re-exports two pre-existing model registries behind a single name lookup:
+Re-exports three pre-existing model registries behind a single name lookup:
 
-- the **RPS-model** registry, a verbatim copy of ``train_rps_predictor.py``'s
-  ``MODEL_REGISTRY`` (imported directly from ``models.rps_predictor`` /
-  ``models.multif0.rps_predictor`` / ``models.salience_rps`` rather than from
-  ``train_rps_predictor.py`` itself, since that root script is deleted in a
-  later refactor wave — see docs/refactor-unified-framework.md § "Execution
-  waves");
+- the **RPS-model** registry, a verbatim copy of the former
+  ``train_rps_predictor.py``'s ``MODEL_REGISTRY`` (imported directly from
+  ``models.rps_predictor`` / ``models.multif0.rps_predictor`` /
+  ``models.salience_rps`` — that root script has been deleted per
+  docs/refactor-unified-framework.md § "Execution waves");
+- the **noise-generation** registry, a verbatim copy of the former
+  ``train_noise_generation.py``'s ``MODEL_REGISTRY``/``get_model``/
+  ``build_loss`` (that script is also deleted; no ``conf/model`` wiring for
+  the ``noise_generation`` task exists yet — see docs/refactor-unified-framework.md
+  § "Future expansions" — but report/notebook figure scripts still reconstruct
+  a trained generator + its loss to load a checkpoint, e.g.
+  ``notebooks/noise_gen_real_vs_generated.ipynb``);
 - the **legacy** registry (``utils.get_model_from_config``'s ``model_type``
   dispatch — DCUNet/DCCRN/MDX23C/htdemucs/... 28+ types), reached by name
   through :func:`build_legacy_model`.
@@ -16,7 +22,7 @@ Re-exports two pre-existing model registries behind a single name lookup:
 config file); the legacy registry needs a YAML config alongside the
 ``model_type`` string, so ``src/training/config.py`` calls
 :func:`build_legacy_model` directly for that path instead of going through
-here. Both are exposed from this module so callers have one place to look.
+here. All three are exposed from this module so callers have one place to look.
 """
 
 from __future__ import annotations
@@ -25,8 +31,11 @@ from typing import Any
 
 from torch import nn
 
+from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
+    DCCRNEncRPS,
+    DCUNetEncRPS,
     SimpleConv,
     SimpleConvAttnPool,
     SimpleConvBiGRU,
@@ -64,11 +73,7 @@ from models.rps_predictor import (
 )
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
 
-# Verbatim copy of train_rps_predictor.py::MODEL_REGISTRY, minus the two
-# DCUNet/DCCRN-encoder-+-RPS-head classes defined inline in that script
-# (DCUNetEncRPS / DCCRNEncRPS) — those never moved into src/models/, so they
-# are out of scope for this refactor wave (not used by any conf/model/*.yaml
-# added here); add them here first if a future experiment needs them.
+# Verbatim copy of the former train_rps_predictor.py::MODEL_REGISTRY.
 RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
@@ -104,6 +109,9 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_magphase_bigru": SimpleConvMagPhaseBiGRU,
     "simple_conv_attn_pool": SimpleConvAttnPool,
     "simple_conv_se_next": SimpleConvSENext,
+    "dcunet_enc_rps": DCUNetEncRPS,
+    "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
+    "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
     "multif0_rps": MultiF0RPSPredictor,
     "multif0_salience": LateDeepSalience,
     "basic_pitch_salience": BasicPitchSalience,
@@ -122,6 +130,125 @@ def build_model(name: str, **params: Any) -> nn.Module:
     return RPS_MODEL_REGISTRY[name](**params)
 
 
+def get_rps_model(
+    model_name: str,
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    num_rotors: int = 4,
+    hcqt_fmin: float | None = None,
+    fused_branches: bool = False,
+    stacked_hcqt: bool = False,
+    salience_cfg: dict[str, Any] | None = None,
+) -> nn.Module:
+    """Build an RPS-family model with the salience-model config overrides.
+
+    Verbatim port of the former ``train_rps_predictor.py::get_model`` (kept
+    under a different name here since :func:`build_model` already owns the
+    plain ``name, **params`` contract). Still needed by report/slide figure
+    scripts that reconstruct a narrow-input/super-resolution salience model
+    to load a checkpoint (e.g. ``writing/reports/2026-06-15/prepare_narrow.py``).
+
+    ``hcqt_fmin`` overrides the HCQT base frequency for ``multif0_salience``
+    (default in the model is A0 = 27.5 Hz); ``fused_branches`` runs LateDeep's
+    mag/phase branches as one grouped stack; ``stacked_hcqt`` uses the
+    single-CQT + harmonic-shift front-end. ``salience_cfg`` is a dict of
+    optional narrow-input / super-resolution-output overrides (keys ignored
+    when ``None``). All ignored by non-salience models.
+    """
+    if model_name not in RPS_MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {model_name}. Available: {sorted(RPS_MODEL_REGISTRY)}")
+    kwargs: dict[str, Any] = dict(n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors)
+    cfg = salience_cfg or {}
+
+    def _merge(keys: list[str]) -> None:
+        for k in keys:
+            if cfg.get(k) is not None:
+                kwargs[k] = cfg[k]
+
+    if model_name == "multif0_salience":
+        if hcqt_fmin is not None:
+            kwargs["fmin"] = hcqt_fmin
+        if fused_branches:
+            kwargs["fused_branches"] = True
+        if stacked_hcqt:
+            kwargs["stacked"] = True  # rides through LateDeepSalience -> build_frontend
+        _merge(
+            [
+                "n_octaves",
+                "over_sample",
+                "harmonics",
+                "superres_out",
+                "out_fmin",
+                "out_fmax",
+                "out_bins",
+            ]
+        )
+    elif model_name == "basic_pitch_salience":
+        _merge(
+            [
+                "bp_fmin",
+                "bins_per_semitone",
+                "n_contour_semitones",
+                "superres_out",
+                "out_fmin",
+                "out_fmax",
+                "out_bins",
+            ]
+        )
+    return RPS_MODEL_REGISTRY[model_name](**kwargs)
+
+
+# Verbatim copy of the former train_noise_generation.py::MODEL_REGISTRY.
+NOISE_GEN_MODEL_REGISTRY: dict[str, Any] = {
+    "positional_harmonic_gen": PositionalHarmonicNoiseGen,
+}
+
+
+def build_noise_gen_model(
+    model_name: str,
+    *,
+    sample_rate: int = 16000,
+    n_harmonics: int = 100,
+    use_diff_noise: bool = True,
+    cond_dim: int = 0,
+) -> nn.Module:
+    """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
+
+    Verbatim port of the former ``train_noise_generation.py::get_model``.
+    ``cond_dim > 0`` FiLM-conditions the emitter on an external code ``z``
+    ``(B, cond_dim)``; the per-drone codes live in a separate
+    ``tasks.noise_generation.DroneCodebook`` (not in the model).
+    """
+    if model_name not in NOISE_GEN_MODEL_REGISTRY:
+        raise ValueError(
+            f"Unknown model: {model_name}. Available: {sorted(NOISE_GEN_MODEL_REGISTRY)}"
+        )
+    return NOISE_GEN_MODEL_REGISTRY[model_name](
+        sample_rate=sample_rate,
+        n_harmonics=n_harmonics,
+        use_diff_noise=use_diff_noise,
+        cond_dim=cond_dim,
+    )
+
+
+def build_noise_gen_loss(
+    *,
+    stft_sizes: list[int] | None = None,
+    log_weight: float = 1.0,
+    loss_type: str = "L1",
+) -> MultiScaleSTFT:
+    """Build the multi-scale STFT loss used to train/score noise-generation models.
+
+    Verbatim port of the former ``train_noise_generation.py::build_loss``, minus
+    the ``argparse.Namespace`` indirection — takes the three loss knobs directly.
+    """
+    return MultiScaleSTFT(
+        n_ffts=list(stft_sizes or [2048, 1024, 512, 256, 128]),
+        log_weight=log_weight,
+        loss_type=loss_type,
+    )
+
+
 def build_legacy_model(model_type: str, config_path: str) -> nn.Module:
     """Build a model through the legacy ``utils.get_model_from_config`` registry.
 
@@ -136,4 +263,12 @@ def build_legacy_model(model_type: str, config_path: str) -> nn.Module:
     return model
 
 
-__all__ = ["RPS_MODEL_REGISTRY", "build_model", "build_legacy_model"]
+__all__ = [
+    "RPS_MODEL_REGISTRY",
+    "NOISE_GEN_MODEL_REGISTRY",
+    "build_model",
+    "build_legacy_model",
+    "get_rps_model",
+    "build_noise_gen_model",
+    "build_noise_gen_loss",
+]

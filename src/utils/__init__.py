@@ -167,7 +167,7 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
         model = DCCRNRefactored(config)
     elif model_type == "rps_predictor":
         # Standalone RPS predictor (real-valued encoder on log-mag spectrograms)
-        from train_rps_predictor import RPSPredictor
+        from models.rps_predictor import SimpleConv as RPSPredictor
 
         model = RPSPredictor(
             n_fft=config.audio.n_fft,

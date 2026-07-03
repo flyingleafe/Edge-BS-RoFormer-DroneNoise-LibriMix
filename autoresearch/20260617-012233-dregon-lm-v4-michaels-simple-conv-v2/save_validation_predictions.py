@@ -12,15 +12,60 @@ PIT matching) so they are raw model outputs.
 
 from __future__ import annotations
 
+import glob
+import itertools
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchaudio
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from train_rps_predictor import DREGONRPSDataset, get_model, pit_mse_loss, _ROTOR_PERMS
+from losses.pit import pit_mse_loss
+from models.registry import build_model as get_model
+
+_ROTOR_PERMS = torch.tensor(list(itertools.permutations(range(4))), dtype=torch.long)
+
+
+class DREGONRPSDataset(Dataset):
+    """Load mixture.wav + rps.npy from DREGON-LM, resample RPS to STFT frames.
+
+    Faithful, self-contained port of the former ``train_rps_predictor.py``'s
+    class of the same name (see docs/refactor-unified-framework.md); this
+    autoresearch session artifact is the only remaining consumer of the exact
+    ``(audio, rps)`` tensor-tuple contract, so it is inlined here rather than
+    reused from ``data_processing.frame_datasets.DregonLMFrameDataset`` (which
+    returns a ``td.Frame``, a different shape).
+    """
+
+    def __init__(self, data_dir, n_fft=2048, hop_length=512):
+        self.hop_length = hop_length
+        self.samples = sorted(
+            d
+            for d in glob.glob(os.path.join(data_dir, "sample_*"))
+            if os.path.isfile(os.path.join(d, "mixture.wav"))
+            and os.path.isfile(os.path.join(d, "rps.npy"))
+        )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        d = self.samples[idx]
+        audio, _sr = torchaudio.load(os.path.join(d, "mixture.wav"))
+        if audio.shape[0] == 1:
+            audio = audio[0]  # (T,)
+        rps = torch.from_numpy(np.load(os.path.join(d, "rps.npy"))).float()  # (4, rps_T)
+        n_frames = audio.shape[-1] // self.hop_length + 1
+        rps = F.interpolate(
+            rps.unsqueeze(0), size=n_frames, mode="linear", align_corners=False
+        ).squeeze(0)
+        return audio, rps
+
 
 MODELS = [
     "simple_conv_v2",
@@ -115,10 +160,12 @@ def evaluate_checkpoint(
             audio_f, rps_f, chs = _flatten_one(audio.float(), rps.float())
             audio_f = audio_f.to(device)
             rps_f = rps_f.to(device)
-            with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
+            with torch.autocast("cuda", enabled=(device.type == "cuda")):
                 pred = model(audio_f)
             if pred.shape[-1] != rps_f.shape[-1]:
-                rps_f = F.interpolate(rps_f, size=pred.shape[-1], mode="linear", align_corners=False)
+                rps_f = F.interpolate(
+                    rps_f, size=pred.shape[-1], mode="linear", align_corners=False
+                )
             target_pit = _match_targets_to_preds(pred.float(), rps_f.float())
 
             preds.append(pred.float().cpu().numpy())
@@ -161,7 +208,7 @@ def evaluate_checkpoint(
         },
         "quick_metrics_from_saved_arrays": {
             "pit_matched_mse": mse,
-            "pit_matched_rmse": mse ** 0.5,
+            "pit_matched_rmse": mse**0.5,
             "pit_matched_mae_frame": mae,
             "pit_matched_mae_clip": clip_mae,
         },

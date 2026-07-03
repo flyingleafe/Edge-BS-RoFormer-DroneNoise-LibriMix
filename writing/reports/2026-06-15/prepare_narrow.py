@@ -20,9 +20,9 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-import prepare as P  # noqa: E402  (sibling report prepare.py)
+import prepare as P  # sibling report prepare.py
 
-from train_rps_predictor import get_model  # noqa: E402
+from models.registry import get_rps_model as get_model
 
 ASSETS = P.ASSETS
 DEVICE = P.DEVICE

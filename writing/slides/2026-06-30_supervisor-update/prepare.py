@@ -15,7 +15,6 @@ Run via `make figures` (sets PYTHONPATH to the repo root).
 
 from __future__ import annotations
 
-import argparse
 import os
 import pathlib
 import shutil
@@ -275,13 +274,14 @@ def render_spectrograms() -> None:
         import torch
 
         from data_processing.dregon import load_dregon_timeframes
+        from data_processing.frames import get_meta
         from data_processing.michaels import load_michaels_timeframes
         from data_processing.online_mixing import (
             _extract_audio_array,
             interpolate_rps_to_stft_grid,
         )
+        from models.registry import build_noise_gen_loss, build_noise_gen_model
         from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
-        from train_noise_generation import build_loss, get_model
     except Exception as e:  # pragma: no cover
         print(f"  WARNING: cannot import noise-gen stack ({e}); skipping spectrograms.")
         return
@@ -290,34 +290,33 @@ def render_spectrograms() -> None:
         return
 
     bundle = torch.load(CKPT, map_location=DEVICE, weights_only=False)
-    model = get_model(
+    model = build_noise_gen_model(
         "positional_harmonic_gen", sample_rate=SR, n_harmonics=100, cond_dim=bundle["cond_dim"]
     )
     model.load_state_dict(bundle["model"])
     model.to(DEVICE).eval()
     codebook = DroneCodebook(bundle["cond_dim"], names=bundle["drone_names"]).to(DEVICE)
     codebook.load_state_dict(bundle["codebook"])
-    loss_fn = build_loss(
-        argparse.Namespace(stft_sizes=[2048, 1024, 512, 256, 128], log_weight=1.0, loss_type="L1")
+    loss_fn = build_noise_gen_loss(
+        stft_sizes=[2048, 1024, 512, 256, 128], log_weight=1.0, loss_type="L1"
     ).to(DEVICE)
 
     recordings = {}
     for tf in load_dregon_timeframes(
         PROJECT_ROOT / "data", splits=["in_flight_noise"], target_sr=SR, download=False
     ):
-        recordings[f"dregon:{tf.tags['recording_id']}"] = (tf, "dregon")
+        recordings[f"dregon:{get_meta(tf, 'recording_id')}"] = (tf, "dregon")
     for tf in load_michaels_timeframes(data_root=PROJECT_ROOT / "data", sr=SR):
-        recordings[f"michaels:FLY{tf.tags['recording_id']}"] = (tf, "michaels")
+        recordings[f"michaels:FLY{get_meta(tf, 'recording_id')}"] = (tf, "michaels")
 
     def render(rec_id, start_s, dur_s, mic):
         tf, drone = recordings[rec_id]
         t0 = tf["audio"].t_start
-        sl = tf.slice(t0 + start_s, t0 + start_s + dur_s)
+        sl = tf.time[t0 + start_s : t0 + start_s + dur_s]
         n = int(round(dur_s * SR))
         target = _extract_audio_array(sl, target_len=n)
         rps = interpolate_rps_to_stft_grid(sl, n_frames=n, hop_length=1)
-        gd = sl.global_data
-        rel = geometry_to_rel_pos(gd["mic_positions"], gd["rotor_positions"])[: target.shape[0]]
+        rel = geometry_to_rel_pos(sl["mic_pos"].data, sl["rotor_pos"].data)[: target.shape[0]]
         z = codebook([drone])
         with torch.no_grad():
             pred = (

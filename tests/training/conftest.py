@@ -17,6 +17,10 @@ def make_tiny_config(
     epochs: int = 1,
     batch_size: int = 2,
     monitor: str = "mse",
+    artifacts_enabled: bool = False,
+    num_val_samples: int = 0,
+    upload_checkpoints: bool = True,
+    upload_val_samples: bool = True,
 ) -> Any:
     """Build a minimal RootConfig-shaped ``DictConfig`` around
     ``tests.training._fixtures`` (``TinyRPSFrameDataset`` / ``TinyRPSModel``)
@@ -82,6 +86,28 @@ def make_tiny_config(
         "mode": "disabled",
         "tags": [],
     }
+    # Disabled + num_val_samples=0 by default so ordinary loop/collate/validate
+    # tests never touch R2, the network, or the (heavier) validation-sample
+    # figure/audio-building path; tests that specifically exercise artifact
+    # upload or sample logging override "artifacts" (see
+    # tests/training/test_loop.py) or inject an ArtifactStore directly via
+    # ``run_training(cfg, artifact_store=...)``.
+    artifacts = {
+        "enabled": artifacts_enabled,
+        "bucket": "ml-data",
+        "prefix": "artifacts",
+        "upload_checkpoints": upload_checkpoints,
+        "upload_val_samples": upload_val_samples,
+        "num_val_samples": num_val_samples,
+    }
+    lora = {
+        "enabled": False,
+        "r": 8,
+        "alpha": 16,
+        "dropout": 0.0,
+        "target_modules": None,
+        "checkpoint": None,
+    }
     return OmegaConf.create(
         {
             "experiment_name": experiment_name,
@@ -106,5 +132,7 @@ def make_tiny_config(
             "metrics": metrics,
             "optim": optim,
             "logging": logging,
+            "artifacts": artifacts,
+            "lora": lora,
         }
     )
