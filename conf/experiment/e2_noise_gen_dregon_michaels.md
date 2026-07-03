@@ -21,4 +21,8 @@ evaluate with `python eval.py experiment=e2_noise_gen_dregon_michaels`.
 
 ## Conclusion
 
-This run's outcome is reported comparatively in the batch write-up — see [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).
+Stage-1 base generator. Its DREGON train/valid split was later found to be
+backwards and corrected in [e3_noise_gen_swapped_smoothness](e3_noise_gen_swapped_smoothness.md)
+— the actual trained checkpoints (baseline spectral val 5.3554, plus the
+smoothness sweep) come from E3, and the frozen baseline checkpoint is what the E4
+augmentation arm consumes. Full narrative: [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).

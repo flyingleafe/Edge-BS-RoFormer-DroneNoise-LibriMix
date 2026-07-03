@@ -1,0 +1,60 @@
+# Online-mixing RPS training stream that AUGMENTS real rotating noise with a
+# GENERATED noise source — the trained PositionalHarmonicNoiseGen rendered live
+# on the GPU by a single background producer process.
+#
+# Based on the GPFS online_mix_v4_michaels_train_no_room1_gpfs.yaml, with one
+# additional `kind: generated` noise source.
+#
+# Validation leakage guards: DREGON room1 excluded from training,
+# Michael's FLY125 train-only.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260702
+
+sources:
+  noise:
+    # --- real recordings ---
+    - kind: dregon
+      root: /gpfs/scratch/acw592/data
+      split: in_flight_noise
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      min_motor_rps: 30.0
+      download: false
+    - kind: michaels
+      root: /gpfs/scratch/acw592/data
+      ids: [FLY125]
+      min_motor_rps: 0.0
+
+    # --- generated Michael's (weight 0.5 -> ~33% of noise batches) ---
+    - kind: generated
+      weight: 0.5
+      checkpoint: /gpfs/scratch/acw592/results/noise_gen_sweep/baseline/best_positional_harmonic_gen.pt
+      drone: michaels
+      n_harmonics: 100
+      device: cuda:0
+      gen_batch: 32
+      random_phase: true
+      refresh: true
+      rps:
+        kind: synthetic_intermittent
+        aggressiveness: 1.0
+      buffer:
+        slots: 512
+        warmup: 32
+
+  speech:
+    - kind: audio_files
+      root: /gpfs/scratch/acw592/data/librispeech/LibriSpeech/train-clean-100-readable
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: /gpfs/scratch/acw592/cache/online_mix_sources
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false

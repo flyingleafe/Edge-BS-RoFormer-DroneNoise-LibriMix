@@ -21,4 +21,11 @@ evaluate with `python eval.py experiment=e4_generated_noise_augment`.
 
 ## Conclusion
 
-This run's outcome is reported comparatively in the batch write-up — see [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).
+**Negative result.** Adding the live generated `michaels` source (weight 0.5,
+~⅓ of noise batches; baseline no-smoothness noise-gen checkpoint) *degrades* RPS
+prediction vs. the no-generator baseline: `uni_gru128` PIT MSE 7.33 → **9.29**
+(+27%), `transformer` 8.46 → **10.63** (+26%). Only 2 of ~11 Slurm jobs produced
+usable checkpoints (rest NaN/OOM/GPU-node failures); the transformer overfits to
+generator artifacts (train MSE 9.9→3.7 while val PIT 10.6→43.6). Root cause and
+next steps (smoothness-trained checkpoint, RPS-trajectory augmentation, lower
+generated weight) in the batch write-up: [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).

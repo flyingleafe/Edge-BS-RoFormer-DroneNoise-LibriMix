@@ -238,6 +238,11 @@ mkdir -p "$SCRATCH/logs" "$SCRATCH/results"
 
 # Quote the user command once, preserving exact argv boundaries in the job script.
 printf -v quoted_cmd '%q ' "${cmd[@]}"
+# Base64-encode the raw command arguments for safe injection into the job
+# script.  The heredoc expands ${cmd_b64} (plain base64 text, no special bash
+# characters) and the generated script decodes/executes via Python, avoiding
+# all second-pass backslash/dollar mangling.
+cmd_b64=$(printf '%s\0' "${cmd[@]}" | base64 -w0)
 
 job_script=$(mktemp "${TMPDIR:-/tmp}/hns-${selected_partition}-XXXXXX.sbatch")
 cleanup() {
@@ -304,7 +309,13 @@ except Exception as exc:
     print("torch check skipped/failed:", exc)
 PY
 
-${quoted_cmd}
+python3 -c "
+import base64, subprocess, sys
+cmd_b64 = sys.argv[1]
+data = base64.b64decode(cmd_b64)
+args = [a.decode() for a in data.rstrip(b'\0').split(b'\0')]
+subprocess.run(args, check=True)
+" "${cmd_b64}"
 
 date
 EOF

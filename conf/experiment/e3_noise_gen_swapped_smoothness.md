@@ -21,4 +21,10 @@ evaluate with `python eval.py experiment=e3_noise_gen_swapped_smoothness`.
 
 ## Conclusion
 
-This run's outcome is reported comparatively in the batch write-up — see [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).
+9-run smoothness sweep completed (2026-07-02): `harm_smooth_weight = 1e-1` is the
+nominal winner (best spectral val **5.3506**) but sits within ~0.008 of the
+no-smoothing baseline (5.3554) — **noise-level**. Harm smoothness peaks at 1e-1
+(1/10 over-smooth and hurt); noise smoothness only helps at weights > 1 and hurts
+at 1e-2. Smoothness does **not** meaningfully improve the raw spectral val loss;
+whether it yields qualitatively cleaner harmonic/noise components is an open
+per-component analysis. Sweep table + checkpoint map: [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).

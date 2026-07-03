@@ -1,6 +1,6 @@
 # Harmonic Noise Generator as an RPS-Training Augmentation Source
 
-**Status:** in progress (infra wired, no completed result run yet) · **Dates:** 2026-06-26 – 2026-07-03
+**Status:** done — **negative result** (generated-noise augmentation *degrades* RPS prediction) · **Dates:** 2026-06-26 – 2026-07-03
 
 ## Motivation
 
@@ -12,73 +12,89 @@ augmentation") — is that a **learned generative model of rotor harmonic noise*
 synthesize unlimited, perfectly-labelled training variety and thereby improve
 RPS prediction, especially generalization to unseen trajectories/drones.
 
-The work proceeded in three prerequisite stages: (1) build and train the
-generator (`PositionalHarmonicNoiseGen`) jointly on two drones with per-drone
-conditioning; (2) fix an artifact in the generated noise by correcting the
-DREGON train/valid split and adding random-phase rendering + smoothness
-regularization; (3) wire the (would-be) trained generator as a live
-`kind: generated` source inside the RPS online-mixing pipeline, so a frozen
-noise-gen checkpoint renders synthetic noise on the GPU alongside real
-recordings during RPS-predictor training.
+## Implementation (three prerequisite stages)
+
+1. **Generator + online data pipeline (E2, 2026-06-26).** `PositionalHarmonicNoiseGen`
+   (single-rotor harmonic + filtered-noise emitter; differentiable propagation to
+   8 mics via 1/r attenuation + fractional delay), trained jointly on two drones
+   with per-drone conditioning, streaming DREGON `in_flight_noise` + Michael's
+   `FLY125`/`FLY124`.
+2. **Swapped split + random phase + smoothness (E3, 2026-07-01).** The original
+   DREGON split was backwards (trained on 1 room, validated on 5); corrected to
+   train on room2 (5 recs) + FLY125, validate on room1 + FLY124. Added
+   random-per-harmonic initial phase at train (zero phase at eval) and opt-in
+   squared-2nd-difference smoothness penalties on harmonic-amplitude curves (time)
+   and diffuse-noise filter shape (time+freq), targeting DREGON's weak
+   mid-frequency harmonics.
+3. **RPS-training augmentation wiring (E4, 2026-07-02).** A `kind: generated`
+   source (`GeneratedNoisePool`): a spawned producer owns the CUDA context for a
+   frozen noise-gen checkpoint and renders into a shared-memory ring buffer
+   (seqlock) read lock-free by DataLoader workers; each chunk's synthetic RPS
+   trajectory is its exact label. A/B config pair: baseline (real noise only) vs.
+   treatment (+ one generated `michaels` source). Plumbing verified by
+   `tests/data_processing/test_generated_noise.py` (42 pass).
 
 ## Results
 
-No GPU training run has completed for any of the three stages — all milestones
-below are **implementation/plumbing verification (CPU smoke tests)**, not
-trained-model performance results.
+### E3 — noise-gen smoothness sweep (2026-07-02, 9 runs)
 
-1. **Generator + online data pipeline (2026-06-26).** `PositionalHarmonicNoiseGen`
-   (single-rotor harmonic + filtered-noise emitter, differentiable propagation
-   to 8 mics via 1/r attenuation + fractional delay) trains end-to-end on a
-   CPU smoke test (128 train / 32 valid samples, 1 epoch, 236,572 params) with
-   the online per-frame-geometry slicer streaming DREGON `in_flight_noise` +
-   Michael's `FLY125`/`FLY124`. Confirms plumbing/gradient flow only — never
-   run on GPU.
+1-D sweep over `harm_smooth_weight` and `noise_smooth_weight` (orthogonal
+regularisers, swept independently). `harm_smooth_weight = 1e-1` is the nominal
+winner (best spectral val **5.3506**), but the top three are within ~0.008 —
+**noise-level**:
 
-2. **Swapped split + random phase + smoothness (2026-07-01).** The original
-   DREGON split was backwards (trained on 1 excluded-room recording, validated
-   on 5); corrected to train on room2 (5 recs) + FLY125, validate on room1
-   (1 rec) + FLY124. Random per-harmonic initial phase during training (zero
-   phase at eval) was added, plus opt-in squared-2nd-difference smoothness
-   penalties on harmonic amplitude (time) and diffuse-noise filter shape
-   (time+freq), targeting a known weak spot (DREGON mid-frequency harmonics). A
-   CPU smoke test confirmed the split loads and both the smoothness loss and
-   random-phase training run/log correctly — plumbing only. Checkpoint note:
-   the suggested smoothness weight (`1e-2`) is likely too weak (raw penalty
-   ~0.26 vs. spectral loss in the hundreds) and needs a sweep.
+| harm_smooth | noise_smooth | best val |
+|---|---|---|
+| **1e-1** | 0 | **5.3506** |
+| 0 (baseline) | 0 | 5.3554 |
+| 0 | 10 | 5.3581 |
 
-3. **RPS-training augmentation wiring (2026-07-02).** A `kind: generated`
-   noise source (`GeneratedNoisePool`) was added to the online-mixing dataset:
-   a spawned producer process owns the CUDA context for a frozen noise-gen
-   checkpoint and renders batches into a shared-memory ring buffer (seqlock)
-   read lock-free by forked DataLoader workers; the synthetic RPS trajectory
-   driving each chunk doubles as its exact label. A clean A/B config pair was
-   defined (baseline = real-noise-only; treatment = same + one `generated`
-   source, drone `michaels`, `n_harmonics: 100` matching the checkpoint). CPU
-   smoke test (`tests/data_processing/test_generated_noise.py`, 42 pass)
-   verified the producer/buffer/seqlock/mixing plumbing end-to-end; no
-   RPS-predictor accuracy numbers exist for either arm.
+Harm smoothness peaks at 1e-1 (1e-2 does little; 1/10 over-smooth and hurt);
+noise smoothness only helps at large weights (>1) and *actively hurts* at 1e-2
+(5.60). **Smoothness does not meaningfully move the raw spectral val loss.**
+Whether it yields qualitatively cleaner harmonic/noise *components* is an open
+analysis (checkpoints at `.../noise_gen_sweep/{baseline,harm_*,noise_*}`; render
+per-component via the emitter with `return_dict=True` →
+`harm_amps`/`noise_amps`/`harm_noise`/`diff_noise`).
 
-**2026-07-03 refactor update:** the move to the unified Hydra framework ported
-all three stages into `conf/experiment/`: `e2_noise_gen_dregon_michaels.yaml`
-(stage 1), `e3_noise_gen_swapped_smoothness.yaml` (stage 2), and
-`e4_generated_noise_augment.yaml` / `e4_no_aug_baseline.yaml` (stage 3's A/B
-pair). Per `REPLICATION.md`, all 48 experiment configs compose successfully
-against the Hydra schema, but E2/E3/E4 remain **config-complete with no
-numeric results** — E2/E3 wrap an offline time-holdout dataset rather than the
-original per-frame-geometry streamer (documented deviation), and E4 also needs
-the E3 checkpoint artifact synced to the training machine.
+### E4 — generated-noise augmentation for RPS prediction (2026-07-03, 11 Slurm jobs, 2 usable)
+
+Augmenting the RPS online-mix stream with a live generated `michaels` source
+(weight 0.5, ~⅓ of noise batches; the **baseline** no-smoothness noise-gen
+checkpoint) **degrades** RPS prediction versus the no-generator online-mix
+baseline:
+
+| Model | Online-mix baseline | + generated noise | Δ PIT MSE |
+|---|---|---|---|
+| `simple_conv_v2_uni_gru128` | 7.33 (R² 0.822) | **9.29** (R² 0.791) | **+27%** |
+| `simple_conv_v2_transformer` | 8.46 (R² 0.808) | **10.63** (R² 0.762) | **+26%** |
+
+Only 2 of ~11 jobs produced usable checkpoints; the rest died on NaN divergence,
+OOM (V100 — the producer shares VRAM, so batch ≤ 8), or broken-GPU /
+multiprocessing node issues. The **transformer** shows a textbook overfitting
+curve (train MSE 9.9→3.7 while val PIT 10.6→**43.6** after epoch 9): global
+attention lets it memorize both the narrow set of synthetic RPS trajectories and
+the generator's spectral fingerprint, pivoting to generator artifacts once the
+real harmonic structure is exhausted. The causal uni-GRU is regularised by its
+frame-by-frame constraint and degrades less, but still lands below baseline.
+
+**Why it fails (analysis):** (1) generator quality is the bottleneck — the
+baseline checkpoint has imperfect mid-frequency harmonics and a fixed
+filter-envelope the RPS model latches onto as a shortcut feature; (2)
+RPS-trajectory diversity is narrow (OU + Poisson maneuvers); (3) the online mixer
+diversifies only the acoustic dressing (speech, SNR), not the RPS curves
+themselves.
 
 ## Conclusion
 
-Design and implementation work for this cluster is done; what remains is
-purely a completed GPU run. Next step: on a GPU machine with DREGON +
-Michael's + LibriSpeech data available, run
-`python train.py experiment=e3_noise_gen_swapped_smoothness` (the corrected
-successor to `e2_noise_gen_dregon_michaels`) to actually train the generator,
-then use its checkpoint to run `experiment=e4_generated_noise_augment` vs.
-`experiment=e4_no_aug_baseline` for the RPS-predictor A/B. These `train.py`
-commands supersede the deleted historical entry points
-(`train_noise_generation.py`, `train_rps_predictor.py`) named in the source
-checkpoint docs. Blocked on GPU compute and data availability, not on
-remaining design work.
+Generated-noise augmentation, as built, **hurts** RPS prediction — a negative
+result driven by exploitable generator artifacts plus insufficient
+RPS-trajectory diversity, not by the plumbing (verified end-to-end). Highest-value
+next steps, in order: (1) swap in a **smoothness-trained** noise-gen checkpoint
+(`harm=1e-1`) to reduce exploitable artifacts; (2) **augment the RPS trajectories
+themselves** (time-warp / speed-perturb) — directly attacks the memorization root
+cause, independent of acoustic augmentation; (3) drop the generated weight to
+0.25/0.1; (4) single producer serving multiple drones (michaels + dregon) to lift
+the VRAM ceiling. Investigation diagnostics: `scripts/diag_generated_noise*.py`,
+`scripts/diag_online_mix_integrity.py`, `scripts/diag_tune_gen.py`; the cluster
+online-mix policy used is `conf/online_mix/online_mix_generated_augment_gpfs.yaml`.

@@ -21,4 +21,8 @@ evaluate with `python eval.py experiment=e4_no_aug_baseline`.
 
 ## Conclusion
 
-This run's outcome is reported comparatively in the batch write-up — see [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).
+The A/B **control** ("what to beat") — real-noise-only online mix, no generated
+source: `simple_conv_v2_uni_gru128` PIT MSE **7.33** (R² 0.822),
+`simple_conv_v2_transformer` **8.46** (R² 0.808). The generated-augment arm
+([e4_generated_noise_augment](e4_generated_noise_augment.md)) came in **worse**
+on both, so this baseline stands. Full comparison: [Learned noise-generation augmentation](../../docs/experiments/noise-generation-augmentation.md).
