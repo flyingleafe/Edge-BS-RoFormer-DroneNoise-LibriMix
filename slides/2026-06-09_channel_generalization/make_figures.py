@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import cast
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import matplotlib.pyplot as plt
 import numpy as np
+import tdseries as td
 import torch
 
+from data_processing.frames import get_meta
 from plots.rps_prediction.sample_comparison import plot_sample_comparison
 from tasks.rps_prediction import HOP, N_FFT, SR_AUDIO, load_input_set, load_predictor
 from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
@@ -36,16 +39,13 @@ def _pit_permute(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
     return pred[inv]
 
 
-def get_gt(sample) -> np.ndarray:
+def get_gt(sample: td.Frame) -> np.ndarray:
     """Extract GT RPS on STFT frame grid."""
-    rps_es = sample["rps"]
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)
-    if audio.ndim == 1:
-        n_frames = len(audio) // HOP + 1
-    else:
-        n_frames = audio.shape[1] // HOP + 1
+    rps_es = cast(td.Series, sample["rps"])
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)
+    n_frames = len(audio) // HOP + 1 if audio.ndim == 1 else audio.shape[1] // HOP + 1
     frame_times = np.arange(n_frames) * HOP / SR_AUDIO + rps_es.t_start + N_FFT / SR_AUDIO / 2
-    return rps_es.interpolate(frame_times)
+    return np.asarray(rps_es.interpolate(frame_times))
 
 
 def make_ch0only_sc() -> None:
@@ -54,9 +54,9 @@ def make_ch0only_sc() -> None:
     sample = next(
         s
         for s in load_input_set("datasets/DREGON-LM-V4/valid")
-        if s.tags.get("id") == "sample_00014"
+        if get_meta(s, "id") == "sample_00014"
     )
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)
     gt = get_gt(sample)
 
     preds = {}
@@ -85,9 +85,9 @@ def make_ch0only_v2() -> None:
     sample = next(
         s
         for s in load_input_set("datasets/DREGON-LM-V4/valid")
-        if s.tags.get("id") == "sample_00014"
+        if get_meta(s, "id") == "sample_00014"
     )
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)
     gt = get_gt(sample)
 
     preds = {}
@@ -118,9 +118,9 @@ def make_dynamic_8ch_v2() -> None:
     sample = next(
         s
         for s in load_input_set("datasets/DREGON-LM-V4/valid")
-        if s.tags.get("id") == "sample_00012"
+        if get_meta(s, "id") == "sample_00012"
     )
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)
     gt = get_gt(sample)
 
     preds = {}
@@ -153,9 +153,9 @@ def make_dynamic_8ch_sc() -> None:
     sample = next(
         s
         for s in load_input_set("datasets/DREGON-LM-V4/valid")
-        if s.tags.get("id") == "sample_00012"
+        if get_meta(s, "id") == "sample_00012"
     )
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)
     gt = get_gt(sample)
 
     preds = {}

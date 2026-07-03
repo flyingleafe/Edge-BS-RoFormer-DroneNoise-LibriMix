@@ -11,6 +11,7 @@ import os
 import pathlib
 import shutil
 import sys
+from typing import cast
 
 # ── bootstrap project paths ─────────────────────────────────────────────
 PROJECT_ROOT = pathlib.Path("../../../").resolve()
@@ -22,6 +23,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import tdseries as td
 import torch
 
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
@@ -247,26 +249,26 @@ print(f"Saved: {SAMPLE_ID}_salience_all_models.png")
 from plots.timeframe.registry import TrackContext
 from plots.timeframe.renderers import make_spectrogram_series, render_salience
 
-audio_us = sample["audio"]
+audio_us = cast(td.Series, sample["audio"])
 mono = select_channel(audio_us, CHANNEL)
 
 # Get GT RPS data
-gt_rps_series = sample["rps"]
-gt_rps_data = np.asarray(gt_rps_series.values, dtype=np.float32)
-gt_rps_timestamps = np.asarray(gt_rps_series.timestamps)
+gt_rps_series = cast(td.Series, sample["rps"])
+gt_rps_data = np.asarray(gt_rps_series.data, dtype=np.float32)
+gt_rps_timestamps = np.asarray(cast(td.StampIndex, gt_rps_series.tindex).abs_stamps)
 
 # ── Precompute shared spectrogram data ──
 print("Precomputing spectrogram data...")
-spec_series = make_spectrogram_series(mono, fmax=4000)
-S = np.asarray(spec_series.samples)
-t_spec = np.asarray(spec_series.timestamps)
+spec_track = make_spectrogram_series(mono, fmax=4000)
+S = np.asarray(spec_track.series.data)
+t_spec = cast(td.GridIndex, spec_track.series.tindex).sample_times()
 freqs = np.linspace(0, 4000, S.shape[0])
 
 for model_name, model in salience_models.items():
     print(f"Generating 3-pane figure for {model_name}...")
 
     # Get salience series and RPS prediction
-    salience_series = model_salience_series(model, mono, device=DEVICE)
+    salience_track = model_salience_series(model, mono, device=DEVICE)
     rps_pred = model_rps_prediction(model, mono, device=DEVICE, track_threshold=0.3)
 
     # Resample pred to match GT length if needed
@@ -276,7 +278,7 @@ for model_name, model in salience_models.items():
 
         pred_resampled = np.zeros((4, gt_rps_data.shape[1]))
         for i in range(4):
-            pred_resampled[i] = signal.resample(pred[i], gt_rps_data.shape[1])
+            pred_resampled[i] = np.asarray(signal.resample(pred[i], gt_rps_data.shape[1]))
         pred = pred_resampled
 
     # Align rotor order to GT (PIT match) so the per-rotor colours are consistent.
@@ -296,16 +298,21 @@ for model_name, model in salience_models.items():
 
     # Pane 2: salience map (no colorbar)
     ax = axes[1]
-    t_start = salience_series.t_start if hasattr(salience_series, "t_start") else 0.0
-    t_end = t_start + salience_series.duration if hasattr(salience_series, "duration") else 8.0
+    t_start = salience_track.series.t_start
+    t_end = t_start + salience_track.series.duration
     context = TrackContext(
         ax=ax,
         name=f"{model_name} salience",
         t_start=t_start,
         t_end=t_end,
-        style={"salience_vmax": SALIENCE_VMAX, "salience_colorbar": False, "_frame": sample},
+        style={
+            "salience_vmax": SALIENCE_VMAX,
+            "salience_colorbar": False,
+            "_frame": sample,
+            "_hints": salience_track.hints,
+        },
     )
-    render_salience(salience_series, context)
+    render_salience(salience_track.series, context)
     ax.set_title(f"{model_name} salience", fontsize=12)
 
     # Pane 3: RPS trajectories
@@ -338,7 +345,7 @@ ckpt_v2 = torch.load(
 simpleconv_v2.load_state_dict(ckpt_v2, strict=True)
 simpleconv_v2.eval().to(DEVICE)
 
-wav = torch.as_tensor(np.asarray(mono.samples, dtype=np.float32), device=DEVICE).unsqueeze(0)
+wav = torch.as_tensor(np.asarray(mono.data, dtype=np.float32), device=DEVICE).unsqueeze(0)
 with torch.no_grad():
     pred_v2 = simpleconv_v2(wav)[0].cpu().numpy()  # (4, T)
 
@@ -351,7 +358,7 @@ if pred_v2.shape[1] != gt_rps_data.shape[1]:
 
     pred_v2_resampled = np.zeros((4, gt_rps_data.shape[1]))
     for i in range(4):
-        pred_v2_resampled[i] = signal.resample(pred_v2[i], gt_rps_data.shape[1])
+        pred_v2_resampled[i] = np.asarray(signal.resample(pred_v2[i], gt_rps_data.shape[1]))
     pred_v2 = pred_v2_resampled
 
 # Align rotor order to GT (PIT match) before plotting.
@@ -382,7 +389,7 @@ for model_name, model in salience_models.items():
 
         pred_resampled = np.zeros((4, gt_rps_data.shape[1]))
         for i in range(4):
-            pred_resampled[i] = signal.resample(pred[i], gt_rps_data.shape[1])
+            pred_resampled[i] = np.asarray(signal.resample(pred[i], gt_rps_data.shape[1]))
         pred = pred_resampled
 
     pred = align_rps_to_gt(pred, gt_rps_data)

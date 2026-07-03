@@ -17,7 +17,7 @@ Jupyter notebooks provide interactive exploration that scripts and CLI tools can
 | `visualize_models.ipynb` | Model architecture visualization |
 | `inference_comparison.ipynb` | Side-by-side inference comparisons |
 | `rps_evaluation_interactive.ipynb` | Interactive RPS evaluation |
-| `salience_baselines_dregon_v4.ipynb` | `multif0_salience` + `basic_pitch` final validation on DREGON-LM-V4 + per-sample spectrogram / **salience map** / RPS-vs-GT viz (uses the `"salience"` renderer + `utils.plots.rps_prediction.salience_comparison`) |
+| `salience_baselines_dregon_v4.ipynb` | `multif0_salience` + `basic_pitch` final validation on DREGON-LM-V4 + per-sample spectrogram / **salience map** / RPS-vs-GT viz (uses the `"salience"` renderer + `plots.rps_prediction.salience_comparison`) |
 
 ## Gotchas
 

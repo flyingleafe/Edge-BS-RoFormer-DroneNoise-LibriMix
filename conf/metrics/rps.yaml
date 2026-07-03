@@ -1,0 +1,20 @@
+# PIT-aware RPS-prediction metric suite — mirrors
+# train_rps_predictor.py::evaluate's mse/mae_frame/mae_clip/r2 (+rmse), now
+# the ONE implementation (metrics/rps.py). `mse` is the default
+# conf/optim/adamw_plateau.yaml scheduler monitor.
+terms:
+  - name: mse
+    _target_: metrics.RPSMetric
+    params: {stat: mse, rate: [16000, 512]}
+  - name: rmse
+    _target_: metrics.RPSMetric
+    params: {stat: rmse, rate: [16000, 512]}
+  - name: mae_frame
+    _target_: metrics.RPSMetric
+    params: {stat: mae_frame, rate: [16000, 512]}
+  - name: mae_clip
+    _target_: metrics.RPSMetric
+    params: {stat: mae_clip, rate: [16000, 512]}
+  - name: r2
+    _target_: metrics.RPSMetric
+    params: {stat: r2, rate: [16000, 512]}

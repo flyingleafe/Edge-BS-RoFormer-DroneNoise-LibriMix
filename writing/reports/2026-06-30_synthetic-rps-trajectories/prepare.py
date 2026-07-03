@@ -38,12 +38,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import tdseries as td
 
 from data_processing.dregon import (
     MOTOR_SAMPLE_RATE,
     clean_command_spikes,
     load_dregon_timeframes,
 )
+from data_processing.frames import get_meta
 from data_processing.michaels import load_michaels_timeframes
 from data_processing.rps_synthesis import (
     DEFAULT_CONFIG,
@@ -54,7 +56,6 @@ from data_processing.rps_synthesis import (
     generate,
     modes_from_rps,
 )
-from utils.data import EventSeries
 
 ASSETS = pathlib.Path("assets")
 ROTOR_LABELS = ("RFront", "LFront", "LBack", "RBack")
@@ -99,14 +100,14 @@ def load_real_traces() -> tuple[list[tuple[str, np.ndarray, float]], pathlib.Pat
         print("WARNING: no real data found; comparison figures use DEFAULT_CONFIG only.")
         return out, None
     for tf in load_dregon_timeframes(root, splits=["in_flight_noise"], download=False):
-        cmd = cast(EventSeries, tf.tracks["motors_command"])
-        w = clean_command_spikes(np.asarray(cmd.values, dtype=np.float64))
-        out.append((f"DREGON/{tf.tags['recording_id']}", w, 1.0 / MOTOR_SAMPLE_RATE))
+        cmd = cast(td.Series, tf["motors_command"])
+        w = clean_command_spikes(np.asarray(cmd.data, dtype=np.float64))
+        out.append((f"DREGON/{get_meta(tf, 'recording_id')}", w, 1.0 / MOTOR_SAMPLE_RATE))
     for tf in load_michaels_timeframes(data_root=root):
-        es = cast(EventSeries, tf.tracks["rps"])
-        w = np.asarray(es.values, dtype=np.float64)
-        ts = np.asarray(es.timestamps, dtype=np.float64)
-        out.append((f"michaels/{tf.tags['recording_id']}", w, float(np.median(np.diff(ts)))))
+        es = cast(td.Series, tf["rps"])
+        w = np.asarray(es.data, dtype=np.float64)
+        ts = np.asarray(cast(td.StampIndex, es.tindex).abs_stamps, dtype=np.float64)
+        out.append((f"michaels/{get_meta(tf, 'recording_id')}", w, float(np.median(np.diff(ts)))))
     return out, root
 
 

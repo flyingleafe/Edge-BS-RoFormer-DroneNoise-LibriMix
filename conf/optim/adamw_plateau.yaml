@@ -1,0 +1,12 @@
+# AdamW + ReduceLROnPlateau — the default optimizer/scheduler group.
+# `monitor` names a metrics.terms entry (or the literal "loss"); override it
+# per-experiment when the metric suite doesn't have "mse" (e.g. separation
+# metrics use "si_sdr", higher-is-better -> monitor_mode: max).
+optimizer: adamw
+lr: 1.0e-3
+weight_decay: 1.0e-4
+optimizer_params: {}
+patience: 5
+factor: 0.5
+monitor: mse
+monitor_mode: min
