@@ -28,6 +28,11 @@
             pyright = {
               enable = true;
             };
+            # Syntax-check every YAML file (Hydra configs included). Uses the
+            # pre-commit-hooks PyYAML, independent of the project .venv.
+            check-yaml = {
+              enable = true;
+            };
             validate-experiment-docs = {
               enable = true;
               name = "experiment docs";
