@@ -154,7 +154,7 @@ def test_audio_source_pool_memory_cache_keeps_sampling_interface(tmp_path):
 
 
 def test_v4_michaels_online_config_uses_original_librispeech_not_generated_vocals():
-    cfg = OmegaConf.load("configs/online_mix_v4_michaels_train_no_room1.yaml")
+    cfg = OmegaConf.load("conf/online_mix/online_mix_v4_michaels_train_no_room1.yaml")
     speech = cfg.sources.speech[0]
 
     assert speech.root == "data/librispeech/LibriSpeech/train-clean-100"
@@ -166,7 +166,7 @@ def test_v4_michaels_online_config_cache_dir_is_env_configurable(monkeypatch, tm
     override = tmp_path / "online-cache"
     monkeypatch.setenv("ONLINE_MIX_SOURCE_CACHE_DIR", str(override))
 
-    cfg = OmegaConf.load("configs/online_mix_v4_michaels_train_no_room1.yaml")
+    cfg = OmegaConf.load("conf/online_mix/online_mix_v4_michaels_train_no_room1.yaml")
     speech = cfg.sources.speech[0]
 
     assert speech.cache.mode == "packed_int16"

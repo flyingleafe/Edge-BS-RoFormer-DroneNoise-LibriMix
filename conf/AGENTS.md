@@ -10,8 +10,8 @@ Historical experiments are catalogued in `REPLICATION.md` (repo root).
 
 | Group | Meaning |
 |---|---|
-| `data/` | Dataset source (folder datasets via `frame_datasets`, online-mix wrappers referencing `configs/online_mix_*.yaml` policies) |
-| `model/` | Task name + task params + model instantiation — either `_target_` into `models.registry`, or `model_type` + `legacy_config_path` (pointing at legacy `configs/*.yaml`) through `utils.get_model_from_config` |
+| `data/` | Dataset source (folder datasets via `frame_datasets`, online-mix wrappers referencing `conf/online_mix/*.yaml` policies) |
+| `model/` | Task name + task params + model instantiation via `_target_` into `models.registry` — either `build_model` (native RPS registry, flat `params`), or `build_legacy_inline` (`params.model_type` + the ZFTurbo config tree inlined under `params.config`, routed through `utils.build_model_from_config`; this replaced the former `legacy_config_path`→`configs/*.yaml` indirection) |
 | `loss/` | Loss composition (entries instantiate `src/losses` Frame adapters; multiple terms via `losses.composite`) |
 | `metrics/` | MetricSuite membership (must include the monitor metric) |
 | `optim/` | Optimizer + scheduler + monitor |

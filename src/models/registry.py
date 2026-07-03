@@ -310,11 +310,32 @@ def build_legacy_model(model_type: str, config_path: str) -> nn.Module:
     return model
 
 
+def build_legacy_inline(model_type: str, config: Any) -> nn.Module:
+    """Build a legacy-registry model from an **inline** config (the Hydra-native
+    replacement for ``build_legacy_model``'s file + ``legacy_config_path``).
+
+    ``config`` is the ZFTurbo-style tree (``audio`` / ``model`` / ``training``
+    sections) inlined directly into a ``conf/model/*.yaml`` under ``params`` —
+    identical content to the former ``configs/*.yaml`` file, just no separate
+    file. Routes through the exact same construction dispatch
+    (:func:`utils.build_model_from_config`) as the file-based path, so the
+    resulting module is bit-for-bit identical to the legacy build."""
+    from omegaconf import DictConfig, OmegaConf
+
+    from utils import build_model_from_config
+
+    cfg = config if isinstance(config, DictConfig) else OmegaConf.create(config)
+    if not isinstance(cfg, DictConfig):
+        raise TypeError(f"inline model config must be a mapping, got {type(cfg).__name__}")
+    return build_model_from_config(model_type, cfg)
+
+
 __all__ = [
     "RPS_MODEL_REGISTRY",
     "NOISE_GEN_MODEL_REGISTRY",
     "build_model",
     "build_legacy_model",
+    "build_legacy_inline",
     "get_rps_model",
     "build_noise_gen_model",
     "build_noise_gen_loss",

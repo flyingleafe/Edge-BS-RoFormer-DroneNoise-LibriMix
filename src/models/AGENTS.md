@@ -165,18 +165,18 @@ changing `fmin` auto-reshapes the salience target and the tracker. (At 16 kHz,
 
 `--fused_branches` runs LateDeep's two identical mag/phase branches as a single
 grouped (`groups=2`) stack (`LateDeep(fused_branches=True)`): mathematically
-identical (verified to float32 precision in `test_multif0.py`), one kernel launch
+identical (verified to float32 precision in the since-removed `test_multif0.py` smoke test), one kernel launch
 per layer instead of two, and the channel concat becomes free. Checkpoints
 convert between the two layouts transparently via a `load_state_dict` pre-hook on
 `LateDeep`, so a model trained either way loads either way. Same FLOPs — the win
-is launch overhead, so benchmark on GPU (`bench_grouped_branches.py`) before
+is launch overhead, so benchmark on GPU (`scripts/bench_grouped_branches.py`) before
 relying on it; `groups=2` can regress on some cuDNN versions.
 
 `--stacked_hcqt` (`LateDeepSalience(stacked=True)`, which rides through to
 `build_frontend("hcqt", stacked=True)` → `HCQTFrontEnd(stacked=True)`) uses
 `HCQTStacked_nnAudio`: **one** CQT (extra high bins) + harmonic freq-shifts of mag
 and phase, instead of one CQT per harmonic. ~2× faster front-end on GPU
-(`bench_cqt_gpu.py`), same `(mag, dphase)` contract and grid. It is a **lossy
+(`scripts/bench_cqt_gpu.py`), same `(mag, dphase)` contract and grid. It is a **lossy
 approximation** at higher harmonics (h=3 mag corr ~0.977), so the features differ
 — **train from scratch**, do not load a non-stacked checkpoint into it. Composes
 with `--fused_branches`.

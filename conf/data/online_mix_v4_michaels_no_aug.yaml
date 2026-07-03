@@ -7,7 +7,7 @@
 train:
   _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
   params:
-    path: configs/online_mix_v4_michaels_train_no_room1_no_aug.yaml
+    path: conf/online_mix/online_mix_v4_michaels_train_no_room1_no_aug.yaml
   iterable: true
 valid:
   _target_: data_processing.frame_datasets.DregonLMFrameDataset

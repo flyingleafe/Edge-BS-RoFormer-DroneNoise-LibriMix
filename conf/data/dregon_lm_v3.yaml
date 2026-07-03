@@ -1,7 +1,7 @@
 # DREGON-LM-V3: 6000 train / 600 valid, 1 s @16kHz mono, SNR [-30,0] dB.
 # Fixed an axis bug in get_random_chunk relative to v1. Historical training
 # used plain (non-PIT) MSE (`--no_pit_loss`) and model_type `rps_predictor`
-# via configs/14a_SimpleConv_DREGON_V3.yaml; this new-framework encoding
+# via the former configs/14a_SimpleConv_DREGON_V3.yaml (removed); this new-framework encoding
 # instead uses the modern `simple_conv` registry key + pit_mse (current best
 # practice per the C9 channel-generalization finding that PIT is the correct
 # objective, not a workaround) — a deliberate, documented deviation, see

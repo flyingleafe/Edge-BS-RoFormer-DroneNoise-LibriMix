@@ -298,7 +298,7 @@ class OnlineMixFrameDataset(IterableDataset):
 
     @classmethod
     def from_yaml(cls, path: str) -> OnlineMixFrameDataset:
-        """Load an online-mix policy YAML (e.g. ``configs/online_mix_*.yaml``)
+        """Load an online-mix policy YAML (e.g. ``conf/online_mix/online_mix_*.yaml``)
         and build the dataset from it — the ``_target_`` this module's
         ``conf/data/online_mix_*.yaml`` configs actually use, since a Hydra
         component config carries a config *path*, not an inlined policy tree."""
@@ -354,7 +354,7 @@ class NoiseGenFrameDataset(Dataset):
     array geometry (``mic_pos``/``rotor_pos``) and a ``meta.drone`` name
     (``"dregon"``/``"michaels"``, straight from the inner dataset's
     per-draw ``origin`` — already exactly the codebook key convention used
-    by ``configs/noise_gen_online_dregon_michaels*.yaml`` historically).
+    by ``conf/online_mix/noise_gen_online_dregon_michaels*.yaml`` historically).
 
     **Single-microphone limitation**: ``NoiseRPSDataset`` already reduces
     each draw to one selected audio channel (``channel_policy``) without

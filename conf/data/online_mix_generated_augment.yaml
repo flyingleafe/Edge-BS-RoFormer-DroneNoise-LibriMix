@@ -1,7 +1,7 @@
 # E4 — RPS training augmented with a live GENERATED noise source (a trained
 # PositionalHarmonicNoiseGen rendered by a background producer process; see
 # data_processing/generated_noise.py::GeneratedNoisePool and
-# configs/online_mix_generated_augment_example.yaml for the full policy,
+# conf/online_mix/online_mix_generated_augment_example.yaml for the full policy,
 # read in full there). Same real DREGON (minus room1) + Michael's FLY125 +
 # LibriSpeech sources as online_mix_v4_michaels.yaml, plus one `kind:
 # generated` noise source (weight 2.0) drawing synthetic-intermittent RPS
@@ -16,7 +16,7 @@
 train:
   _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
   params:
-    path: configs/online_mix_generated_augment_example.yaml
+    path: conf/online_mix/online_mix_generated_augment_example.yaml
   iterable: true
 valid:
   _target_: data_processing.frame_datasets.DregonLMFrameDataset

@@ -217,7 +217,7 @@ NumPy/memmap/tensor data, not a new project container.
 Fresh-session map for online RPS training:
 1. Read this section, then `configs/AGENTS.md` § "Online-mixing configs".
 2. Loader implementation: `src/data_processing/online_mixing.py`.
-3. Durable policies: `configs/online_mix_*.yaml`.
+3. Durable policies: `conf/online_mix/online_mix_*.yaml`.
 4. Training integration: `python train.py experiment=<name>` where the experiment
    overrides `data:` to a `conf/data/*.yaml` entry wrapping `OnlineMixIterableDataset`
    / `OnlineMixFrameDataset.from_yaml` over the policy YAML (see
@@ -245,7 +245,7 @@ real recording — the payoff being *unlimited* rotating-noise variety with an
 *exact* RPS label. Implementation: `data_processing/generated_noise.py`
 (`GeneratedNoisePool`), wired into `build_noise_pool(...)` (the dispatcher
 `OnlineMixIterableDataset.from_config` now uses). Example config:
-`configs/online_mix_generated_augment_example.yaml`.
+`conf/online_mix/online_mix_generated_augment_example.yaml`.
 
 Why the process/buffer design (option C): the mixer runs in **forked** DataLoader
 workers, and CUDA cannot init in a forked child. So one **spawn** producer owns

@@ -8,7 +8,7 @@
 # mic_pos/rotor_pos geometry + meta.drone; single-mic only — see its
 # docstring). E2's dataset — approximates (does not reproduce byte-for-byte)
 # the historical *online* streaming slicer
-# (configs/noise_gen_online_dregon_michaels.yaml, per-frame geometry, all 8
+# (conf/online_mix/noise_gen_online_dregon_michaels.yaml, per-frame geometry, all 8
 # mics jointly); see REPLICATION.md § E2/E3 for the documented deviation.
 train:
   _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train

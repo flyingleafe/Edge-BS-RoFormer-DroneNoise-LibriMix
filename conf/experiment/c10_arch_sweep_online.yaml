@@ -10,7 +10,7 @@
 #   python train.py experiment=c10_arch_sweep_online model=simple_conv_v2_uni_gru grad_clip=0.5
 # Historical command: train_rps_predictor.py --model <key> --data_root
 # datasets/DREGON-LM-V4-michaels --online_mix --mix_config
-# configs/online_mix_v4_michaels_train_no_room1_gpfs.yaml
+# conf/online_mix/online_mix_v4_michaels_train_no_room1_gpfs.yaml
 # --samples_per_validation 5000 --epochs 200 --patience 50 --batch_size 32
 # --lr 1e-3 --weight_decay 1e-4 --loss pit_mse. Results on HPC scratch (not
 # synced) — see REPLICATION.md § C10.

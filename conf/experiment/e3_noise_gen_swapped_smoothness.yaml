@@ -5,7 +5,7 @@
 # flag needed). Historical command
 # (.pi/checkpoints/noise-gen-swapped-smoothness-random-phase.md):
 #   train_noise_generation.py --online_config
-#   configs/noise_gen_online_dregon_michaels_swapped.yaml --cond_dim 16
+#   conf/online_mix/noise_gen_online_dregon_michaels_swapped.yaml --cond_dim 16
 #   --device cuda:0 --epochs 200 --patience 20 --batch_size 32
 #   --duration_s 1.0 --n_harmonics 100 --samples_per_epoch 6000
 #   --num_valid 256 --num_workers 8 --harm_smooth_weight 1e-2

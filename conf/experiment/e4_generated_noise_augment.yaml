@@ -10,7 +10,7 @@
 # conf/experiment/e4_no_aug_baseline.yaml. Historical command:
 # train_rps_predictor.py --model simple_conv_v2 --data_root
 # datasets/DREGON-LM-V4-michaels --online_mix --mix_config
-# configs/online_mix_generated_augment_example.yaml --samples_per_validation
+# conf/online_mix/online_mix_generated_augment_example.yaml --samples_per_validation
 # 5000 --pit_loss --epochs 200 --patience 50 --batch_size 16 --num_workers 6.
 defaults:
   - override /data: online_mix_generated_augment

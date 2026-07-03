@@ -6,11 +6,17 @@ line, and the noise-generation line) onto the unified Hydra framework
 point/command, the new-framework command, the dataset needed (+ how to build
 it), where the original results live, and replicability status/caveats.
 
-All new config files live under `conf/data/`, `conf/model/`, `conf/loss/`,
-`conf/metrics/`, `conf/experiment/`. Legacy per-model YAMLs (`configs/1_*.yaml`
-… `configs/14a_*.yaml`) remain valid and are referenced via
-`model.legacy_config_path` + `model.model_type` (the `instantiate_model`
-dispatch in `src/training/config.py`).
+All config files live under `conf/data/`, `conf/model/`, `conf/loss/`,
+`conf/metrics/`, `conf/experiment/`, `conf/online_mix/`. The former legacy
+per-model YAMLs (`configs/1_*.yaml` … `configs/14a_*.yaml`) were **inlined**
+into their corresponding `conf/model/*.yaml`: each now uses
+`_target_: models.registry.build_legacy_inline` with the ZFTurbo config tree
+under `params.config` (built via `utils.build_model_from_config` — the exact
+same dispatch, verified to produce bit-identical models; see the conversion
+harness in git history). The `configs/` directory and the
+`model.legacy_config_path` indirection are gone. Where a table below cites
+`configs/N_*.yaml`, that content now lives inlined in the `conf/model` entry
+named in the "New-framework command" column.
 
 **Scope note on `train.py`/`final_valid.py`/`train_rps_predictor.py`/
 `train_noise_generation.py`**: these historical entry-point scripts are
