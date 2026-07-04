@@ -1,50 +1,58 @@
 """
-Gaussian-Process rotor-noise model — reimplementation of Ko & Kim,
-"GP-Based Time-Domain Modeling for Multi-Rotor Noise Prediction"
-(Quiet Drones 2026, paper 43), adapted to Michael's recordings.
+Gaussian-Process rotor-noise model — reimplementation of Lee, Ko, Seshadri &
+Rauleder, "Bayesian machine learning framework for time-domain prediction of
+multirotor vehicle noise" (JASA 159(4), 3418–3435, 2026; DOI 10.1121/10.0043469),
+adapted to Michael's 8-microphone recordings.
 
-Faithful-construct, tractable-granularity adaptation
-=====================================================
-Paper [43] is a *review*; its full kernel detail lives in two lineage papers we
-don't have (Lee et al. JASA 2026; M. Kim & Ko INTER-NOISE 2026), and a *literal*
-16-kHz sample-rate time-domain GP is O(N^3) per segment — intractable without
-the SKI / KeOps machinery they don't publish. We instead implement the paper's
-*construct* at a granularity the project already has machinery for: a GP over
-the per-frame **variable-phasor (VP) harmonic coefficients** of the recording,
-synthesised back to a waveform via `inverse_harmonic_VP_transform`.
+Faithful reimplementation (now that the JASA paper is available)
+===============================================================
+This module now follows the JASA paper's actual construct, not the looser
+description in the QD2026 review [43]. The three load-bearing details missing
+from the first cut are implemented:
 
-The kernel faithfully mirrors Eq. 1 of [43]:
+1. **BPF-informed Fourier-design kernel** (Eq. 13–16).
+   The tonal frequencies are *physics-injected* — ω = k · N_blades · RPS_i(t),
+   k = 1..H, for each rotor i — via a fixed Fourier design matrix F; only the
+   per-coefficient variances κ² (and the spatial lengthscales) are learned.
+   The posterior over the Fourier coefficient vector w = (mean, A_k, B_k) is
+   closed-form Gaussian (Eq. 15). A Matérn-5/2 over the spatial (mic y,z) dims
+   smooths the coefficients across the microphone ring (k_spatial).
 
-    k(z,z') = k_spatial((y,z),(y',z')) ⊙ k_tonal((RPS,t),(RPS',t'))
+2. **Phase alignment pre-processing** (Sec. II C last paragraph).
+   Each training frame is circularly shifted so its first-BPF phase matches a
+   reference (mic 0, first training frame); shifts are re-applied at synthesis.
+   Without this the GP averages phases and sharp BPF peaks vanish — the
+   ~10 dB underestimate seen in the first cut.
 
-* `k_spatial` = Matérn-3/2 over the 8-microphone ring positions (y,z) [m].
-* `k_tonal`  = RBF with ARD over instantaneous **per-rotor RPS** (rev/s) —
-  the paper's V_inf / throttle "operating condition", here refined to per-rotor
-  speed (the actual driver of that rotor's harmonic comb).
-* Discrete `rotor_idx` and `harm_idx` factors via learnable `IndexKernel`s give
-  the "band-based tonal kernel" variant of [43] (each harmonic represented over
-  a learned similarity, not a delta line).
-* **Broadband residual is modelled as the GP likelihood noise**, not a separate
-  structured covariance term — exactly as [43] states ("broadband variability
-  was not modeled using an additional structured covariance term ... incorporated
-  through the likelihood model as residual uncertainty").
+3. **DWT tonal/broadband split → per-mic broadband likelihood noise** (Sec. II C
+   + Sec. III B 3). A 4-level db4 wavelet decomposition: approximation
+   coefficients drive the tonal (GP) target; detail-coefficient std σ_b per mic
+   is the Gaussian-likelihood noise floor, so the GP learns only the tonal part
+   f, and broadband ε ~ N(0, σ_b²) is *sampled* for synthesis, exactly as in
+   Eq. (3) of the paper. The paper found off-diagonal R_b ≈ 0 → we use a
+   diagonal per-mic noise (MultitaskGaussianLikelihood).
 
-Target  y = log|V[mic, rotor, harm, frame]|    (complex VP coefficient magnitude)
-Inputs z = (mic_y, mic_z, rps_i, rotor_idx, harm_idx)
+The GP is a stochastic variational GP (SVGP, GPyTorch), as in the paper.
 
-Synthesis: predicted posterior mean `exp(mu)` × empirical (circular-mean) complex
-phase template → `inverse_harmonic_VP_transform` → audio. A second, noisier
-realisation adds `std`-scaled broadband residual samples to `log|V|` before
-exp, concretely realising the "broadband = likelihood residual" decomposition.
+Inputs / target
+---------------
+z = (mic_y, mic_z)          — observer positions on the 8-mic ring
+target y = DWT-approx (tonal) pressure samples, phase-aligned, per (mic, frame)
+F (Fourier design) fixed at known BPF harmonic combs of all 4 rotors, computed
+from per-rotor RPS interpolated to the frame's center time.
 
-Outputs (under --out): gen_spectrum.png, generated.wav, generated_noisy.wav,
-real_holdout.wav, fit_metrics.json, coeffs.npz.
+Synthesis
+---------
+Predicted Fourier coefficient posterior μ_w (per mic) · F(audio timeline) +
+sample N(0, σ_b²) for broadband → audio samples per mic. (Inverse-Doppler is
+not needed here: Michael's array is stationary relative to a *single* drone
+mounted on the rig, no moving source.)
 
 Usage
 -----
     python -m src.experiments.gp_rotor_noise.gp_rotor_noise \
         --out outputs/gp_rotor_noise --recording 1 \
-        --n_harmonics 12 --train_frames 6 --holdout_frames 4
+        --n_harmonics 24 --win 2048 --hop 512 --iters 600
 """
 
 from __future__ import annotations
@@ -59,8 +67,9 @@ matplotlib.use("Agg")
 import gpytorch
 import matplotlib.pyplot as plt
 import numpy as np
+import pywt
 import torch
-from gpytorch.kernels import IndexKernel, MaternKernel, RBFKernel, ScaleKernel
+from gpytorch.kernels import IndexKernel, MaternKernel, ScaleKernel
 
 from data_processing.michaels import (
     MICHAELS_FILES,
@@ -68,18 +77,19 @@ from data_processing.michaels import (
     _load_michaels_data_raw,
     get_geometry,
 )
-from models.generative.harmonic_transform import (
-    harmonic_lstsq_VP_transform,
-    inverse_harmonic_VP_transform,
-)
 
 torch.set_default_dtype(torch.float32)
 
+N_BLADES = 2  # Michael's DJI Matrice 100 has 2-bladed propellers
 
+
+# ────────────────────────────────────────────────────────────────────────────
+# Data loading
 # ────────────────────────────────────────────────────────────────────────────
 
 
 def _load_full(config):
+    """Load one Michael's recording; return segment audio, aligned RPS, raw."""
     sr = config.sr
     wav_path, csv_path, toff, tdil = MICHAELS_FILES[config.recording]
     from data_processing.michaels import _DATA_ROOT as MROOT
@@ -91,28 +101,22 @@ def _load_full(config):
         time_dilation=tdil,
         sr=sr,
     )
-    return audio_segment(wav, ts, ms, sr, config)
-
-
-def audio_segment(wav, ts_raw, ms_raw, sr, config):
     t0 = config.seg_start
     t1 = config.seg_start + config.seg_dur
     n_audio = int((t1 - t0) * sr)
     s0 = int(round(t0 * sr))
-    s1 = s0 + n_audio
-    audio = wav[:, s0:s1].astype(np.float32)  # (8, N)
-    # interpolate per-rotor RPS onto audio timeline (ts_raw anchored at wav start, sec)
-    mask = (ts_raw >= t0) & (ts_raw <= t1)
+    audio = wav[:, s0 : s0 + n_audio].astype(np.float32)  # (8, N)
+    mask = (ts >= t0) & (ts <= t1)
     if mask.sum() < 4:
-        mask = (ts_raw >= t0 - 1.0) & (ts_raw <= t1 + 1.0)
-    ts_w = ts_raw[mask]
+        mask = (ts >= t0 - 1.0) & (ts <= t1 + 1.0)
+    ts_w = ts[mask]
     audio_t = np.linspace(t0, t1, n_audio)
-    rps_audio = np.stack([np.interp(audio_t, ts_w, ms_raw[i][mask]) for i in range(NUM_ROTORS)], 0)
+    rps_audio = np.stack([np.interp(audio_t, ts_w, ms[i][mask]) for i in range(NUM_ROTORS)], 0)
     return (
         torch.tensor(audio),
-        torch.tensor(rps_audio.astype(np.float32)),  # (4, N)
-        ts_raw.astype(np.float64),
-        ms_raw.astype(np.float64),
+        torch.tensor(rps_audio.astype(np.float32)),
+        ts.astype(np.float64),
+        ms.astype(np.float64),
     )
 
 
@@ -120,80 +124,201 @@ def _mic_yz():
     return torch.tensor(get_geometry()[0][:, 1:], dtype=torch.float32)  # (8,2)
 
 
-def _extract_V(audio, rps_audio, H, win, hop, sr):
-    Vs = [
-        harmonic_lstsq_VP_transform(
-            rps_audio, audio[m], n_harmonics=H, window_len=win, hop_len=hop, sr=sr
-        )
-        for m in range(audio.shape[0])
-    ]
-    return torch.stack(Vs, 0)  # (8, 4, H, F) complex
+# ────────────────────────────────────────────────────────────────────────────
+# DWT split: tonal (approx) vs broadband (detail) — Sec. II C, III B 3
+# ────────────────────────────────────────────────────────────────────────────
 
 
-def _frame_rps(rps_audio, F, win, hop, sr):
-    frame_centers = (np.arange(F) * hop + (win // 2)) / sr
-    audio_t = np.linspace(0, rps_audio.shape[-1] / sr, rps_audio.shape[-1])
-    arr = rps_audio.numpy()
-    return torch.tensor(
-        np.stack([np.interp(frame_centers, audio_t, arr[i]) for i in range(NUM_ROTORS)], 0),
-        dtype=torch.float32,
-    )  # (4,F)
+def _frame_audio(audio, win, hop):
+    """Strided windows [n_frames, win] * Hann, [M,] optional dim 0."""
+    M, N = audio.shape
+    n_frames = (N - win) // hop + 1
+    out = np.zeros((M, n_frames, win), dtype=np.float32)
+    han = np.hanning(win).astype(np.float32)
+    for f in range(n_frames):
+        out[:, f] = audio[:, f * hop : f * hop + win] * han
+    return out  # (M, F, W)
 
 
-# ── GP model ───────────────────────────────────────────────────────────────
+def _dwt_tonal(a, wavelet="db4", level=4):
+    """Approx-coeff-reconstructed tonal and detail-coeff std per wav-segment.
+
+    a: (M, F, W) audio frames. Returns (tonal_frames (M,F,W), sigma_b (M,)).
+    """
+    M, F, W = a.shape
+    flat = a.reshape(-1, W).cpu().numpy() if isinstance(a, torch.Tensor) else a.reshape(-1, W)
+    rec_approx = np.empty_like(flat)
+    detail_batches = []
+    for i, row in enumerate(flat):
+        coeffs = pywt.wavedec(row, wavelet, level=level)
+        approx = [coeffs[0]] + [np.zeros_like(c) for c in coeffs[1:]]
+        detail = [np.zeros_like(c) for c in coeffs]
+        detail[1:] = coeffs[1:]
+        rec_approx[i] = pywt.waverec(approx, wavelet)[:W]
+        detail_batches.append(pywt.waverec(detail, wavelet)[:W])
+    detail = np.stack(detail_batches, 0)
+    sigma_b = detail.std(-1).reshape(M, F).mean(-1)  # per-mic (M,)
+    tonal = rec_approx.reshape(M, F, W)
+    return tonal, sigma_b.astype(np.float32)
 
 
-class RotNoiseGP(gpytorch.models.ApproximateGP):
-    """Variational GP over (mic_y, mic_z, rps_i, rotor_idx, harm_idx).
+# ────────────────────────────────────────────────────────────────────────────
+# Phase alignment — Sec. II C last paragraph
+# ────────────────────────────────────────────────────────────────────────────
 
-    k = scale * [ spatial·tonal · rotor_factor · harm_factor ]   (⊙ ⊙ ⊙)
-    where spatial = Matérn-3/2(y,z), tonal = RBF(rps_i), and the two
-    IndexKernel factors play the role of [43]'s "band-based tonal kernel" over
-    discrete rotor / harmonic indices.
+
+def _first_bpf_phase(circ, sr, ref_rps_mean):
+    """Phase (rad, [0,2π)) of the first BPF k=1 in frame via one-bin DFT at that freq."""
+    bpf = max(1.0, float(N_BLADES * ref_rps_mean))
+    n = circ.shape[-1]
+    t = np.arange(n) / sr
+    basis = np.exp(-2j * np.pi * bpf * t)
+    ph = np.angle(np.sum(circ * basis, axis=-1))
+    return ph
+
+
+def _align_frames(frames, sr, ref_rps_mean, target_phase):
+    """Circular-shift each frame so its first-BPF phase matches `target_phase`.
+
+    frames: (M, F, W) real; returns (M, F, W), shift (F,) in samples.
+    """
+    M, F, W = frames.shape
+    out = np.empty_like(frames)
+    shifts = np.zeros(F, dtype=np.int64)
+    dt = 1.0 / sr
+    bpf = max(1.0, float(N_BLADES * ref_rps_mean))
+    # shift such that newest phase aligns: circular shift by Δφ/(2π·bpf·dt)
+    for f in range(F):
+        ph = _first_bpf_phase(frames[:, f], sr, ref_rps_mean)
+        # use mic 0 phase as reference for the frame
+        dphi = (target_phase - ph[0]) % (2 * np.pi)
+        if dphi > np.pi:
+            dphi -= 2 * np.pi
+        n_shift = int(round(dphi / (2 * np.pi * bpf * dt)))
+        shifts[f] = n_shift
+        out[:, f] = np.roll(frames[:, f], n_shift, axis=-1)
+    return out, shifts
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Fourier design matrix — Eq. 13
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _bpf_freqs(rps_per_rotor, n_harmonics):
+    """lek harmonics per rotor (Hz): k * N_blades * RPS_i.
+
+    Returns (R*H,) frequencies for a single instant (H per rotor, R rotors).
+    """
+    ks = np.arange(1, n_harmonics + 1)
+    return np.outer(ks, N_BLADES * rps_per_rotor).ravel()  # (H*R,)
+
+
+def _perframe_design(audio_samples, rps_curve, n_harmonics, sr, win, hop):
+    """Per-output-frame Fourier design matrices.
+
+    Returns:
+      freqs  : (F_out, R*H) BPF centres per output frame (Hz)
+      Ffull  : (F_out, 2n+1, win) sin/cos design at per-frame freq
+    """
+    N = audio_samples
+    F_out = (N - win) // hop + 1
+    n = NUM_ROTORS * n_harmonics
+    Ffull = np.zeros((F_out, 2 * n + 1, win), dtype=np.float64)
+    freqs = np.zeros((F_out, n), dtype=np.float64)
+    for fo in range(F_out):
+        c = fo * hop + win // 2
+        # mean RPS over the window center sample
+        rps = rps_curve[:, c].numpy() if isinstance(rps_curve, torch.Tensor) else rps_curve[:, c]
+        wh = _bpf_freqs(np.maximum(rps, 1e-3), n_harmonics)  # (n,)
+        freqs[fo] = wh
+        t = np.arange(win) / sr
+        Ffull[fo, 0] = 1.0
+        for j in range(n):
+            Ffull[fo, 1 + 2 * j] = np.sin(2 * np.pi * wh[j] * t)
+            Ffull[fo, 2 + 2 * j] = np.cos(2 * np.pi * wh[j] * t)
+    return freqs, Ffull
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# GP: SVGP over the learned *per-mic per-harmonic complex coefficient* turning
+# of the posterior of Eq. (15). The paper lets the spatial kernel smooth w
+# across observers. Concretely, we let an SVGP predict, for each mic location,
+# the (2n+1) Fourier-coefficient vector, sharing the amplitude prior across
+# observers via Matérn-5/2 spatial kernel.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class FourierCoeffGP(gpytorch.models.ApproximateGP):
+    """SVGP predicting Fourier-coeff-amplitudes per (mic, rotor, harm).
+
+    The *frequencies* are physics-injected (held fixed in F); the GP predicts
+    the amplitude (and the categorical rotor/harm factor structure) given the
+    observer's mic position. Independent Gaussian likelihood per mic carries the
+    broadband residual (R_b~σ_b²I) per the paper.
+
+    Input x = (mic_y, mic_z, rotor_idx, harm_idx, sin/cos flag)
+        (last two are discrete, handled by IndexKernel factors that learn
+         per-(rotor,harm,sin/cos) signal variances κ² — the paper's D diagonal.)
+    Target y = the least-squares (or aligned) Fourier coefficient amplitude for
+        that (mic, rotor, harm, sin/cos) at a frame, standardized.
     """
 
-    def __init__(self, inducing_x, n_rotors, n_harm):
+    def __init__(self, inducing_x, n_rotors, n_fourier):
         var_dist = gpytorch.variational.CholeskyVariationalDistribution(inducing_x.size(-2))
         strat = gpytorch.variational.VariationalStrategy(
             self, inducing_x, var_dist, learn_inducing_locations=True
         )
         super().__init__(strat)
         self.mean_module = gpytorch.means.ConstantMean()
-        self.spatial = MaternKernel(nu=1.5, ard_num_dims=2, active_dims=(0, 1))
-        self.tonal = RBFKernel(ard_num_dims=1, active_dims=(2,))
-        self.rotor = IndexKernel(
-            num_tasks=n_rotors, rank=min(max(1, n_rotors - 1), 4), active_dims=(3,)
+        self.spatial = MaternKernel(nu=2.5, ard_num_dims=2, active_dims=(0, 1))
+        # IndexKernel factors act as the learnable diagonal D = diag(κ²_i,j)
+        self.rotortask = IndexKernel(
+            num_tasks=n_rotors, rank=min(max(1, n_rotors - 1), 4), active_dims=(2,)
         )
-        self.harm = IndexKernel(
-            num_tasks=n_harm, rank=min(max(1, n_harm - 1), n_harm), active_dims=(4,)
+        # harmonic/Fourier-task factor spans the (2*n+1) basis columns
+        self.harmtask = IndexKernel(
+            num_tasks=n_fourier, rank=min(max(1, n_fourier - 1), n_fourier), active_dims=(3,)
         )
-        self.cov = ScaleKernel(self.spatial * self.tonal * self.rotor * self.harm)
+        self.cov = ScaleKernel(self.spatial * self.rotortask * self.harmtask)
 
     def forward(self, x):
-        # ConstantMean([N, D]) -> [N]; ProductKernel over all 5 input dims.
         return gpytorch.distributions.MultivariateNormal(
-            self.mean_module(x),  # type: ignore[arg-type]  gpytorch loose typing
+            self.mean_module(x),  # type: ignore[arg-type]
             self.cov(x),
         )
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Targets: aligned Fourier coefficients per (mic, frame, rotor, harm, S/C)
+# We regression-fit at the frame level and then synthesize over held-out time.
+# ────────────────────────────────────────────────────────────────────────────
 
 
-def _design_xy(V_mag, rps_frame, mic_yz, frames):
-    M, R, H, F = V_mag.shape
-    feat, target = [], []
-    for fi in frames:
-        for m in range(M):
-            ya, za = float(mic_yz[m, 0]), float(mic_yz[m, 1])
-            for r in range(R):
-                rr = float(rps_frame[r, fi])
-                for h in range(H):
-                    feat.append([ya, za, rr, float(r), float(h)])
-                    target.append(float(V_mag[m, r, h, fi]))
-    x = torch.tensor(feat, dtype=torch.float32)
-    y = torch.log(torch.tensor(target, dtype=torch.float32) + 1e-8)
-    return x, y
+def _lsq_coeffs(frames_tonal, Ffull, win, sr):
+    """Per-(mic,frame) least-squares Fourier-coefficient vector.
+
+    `frames_tonal` already Hann-windowed in `_frame_audio`. Each frame's target
+    is the (already-windowed) tonal audio sample vector y∈R^W.
+    We solve  w = argmin ||y - A w||²  with A = (Ffull*Hann)^T  (W, 2n+1).
+    Returns (M, F, 2n+1) real coefficients (the w vector in Eq. 15).
+    """
+    M, F, W = frames_tonal.shape
+    F_out = Ffull.shape[0]
+    assert F_out == F, (F_out, F)
+    coeffs = np.zeros((M, F, Ffull.shape[1]), dtype=np.float64)
+    Hann = np.hanning(win).astype(np.float64)
+    for fo in range(F):
+        A = (Ffull[fo] * Hann).T  # (W, 2n+1)
+        pinvA = np.linalg.pinv(A)  # (2n+1, W)
+        y = frames_tonal[:, fo]  # (M, W)
+        coeffs[:, fo] = y @ pinvA.T  # (M, 2n+1)
+    return coeffs
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Main
+# ────────────────────────────────────────────────────────────────────────────
 
 
 def main(config):
@@ -203,54 +328,87 @@ def main(config):
 
     audio, rps_audio, ts_raw, ms_raw = _load_full(config)
     mic_yz = _mic_yz()
-    F = (audio.shape[-1] - win) // hop + 1
-    print(f"[load] audio={tuple(audio.shape)} rps_audio={tuple(rps_audio.shape)} F={F}")
+    M, N = audio.shape
+    F = (N - win) // hop + 1
+    print(f"[load] audio={audio.shape} F={F} sr={sr}")
 
-    V = _extract_V(audio, rps_audio, H, win, hop, sr)
-    rps_frame = _frame_rps(rps_audio, F, win, hop, sr)
-    V_mag = V.abs() + 1e-8
-    print(f"[vp] V={tuple(V.shape)} rps_frame={[float(v) for v in rps_frame.mean(1)]}")
+    # 0) frame audio + interp RPS at frame centers (w/in the audio span)
+    frames = _frame_audio(audio.numpy(), win, hop)  # (M,F,W)
+    rps_frame = _interp_frame_rps(rps_audio, F, win, hop, sr)  # (R,F)
+    ref_rps_mean = float(rps_frame[:, 0].mean())
+    print(f"[load] frames={frames.shape} ref_rps_mean={ref_rps_mean:.3f}")
 
+    # 1) DWT split (per frame) → tonal (approx) + per-mic σ_b
+    tonal_frames, sigma_b = _dwt_tonal(torch.tensor(frames))
+    print(
+        f"[dwt] tonal_frames={tonal_frames.shape} σ_b per mic="
+        f"{[float(f'{s:.4f}') for s in sigma_b]}"
+    )
+
+    # 2) Phase-align each frame's first BPF to mic-0 frame-0 phase
+    target_phase = _first_bpf_phase(tonal_frames[0:1, 0], sr, ref_rps_mean)[0]
+    aligned_tonal, shifts = _align_frames(tonal_frames, sr, ref_rps_mean, target_phase)
+    print(f"[phase] aligned {F} frames (shift range {shifts.min()}..{shifts.max()})")
+
+    # 3) Per-frame Fourier design F at known BPFs + least-squares coefficient w
+    freqs, Ffull = _perframe_design(N, rps_audio, H, sr, win, hop)
+    coeffs = _lsq_coeffs(aligned_tonal, Ffull, win, sr)  # (M,F,2n+1)
+    print(f"[design] freqs={freqs.shape} coeffs={coeffs.shape} (2n+1={2 * NUM_ROTORS * H + 1})")
+
+    # 4) Split into training frames / hold-out frames (interpolation across time,
+    #    matching the paper's V1 split). Use frame index as the "operating point".
     F_ho = min(config.holdout_frames, max(2, F // 4))
     train_pool = list(range(0, F - F_ho))
     test_pool = list(range(F - F_ho, F))
     stride = max(1, len(train_pool) // config.train_frames)
     train_idx = train_pool[::stride][: config.train_frames]
-    print(f"[split] train frames={train_idx}  test frames={test_pool}")
+    print(f"[split] train frames={train_idx} test frames={test_pool}")
 
-    xtr, ytr = _design_xy(V_mag, rps_frame, mic_yz, train_idx)
-    xte, yte = _design_xy(V_mag, rps_frame, mic_yz, test_pool)
-    print(f"[design] xtr={tuple(xtr.shape)} xte={tuple(xte.shape)}")
-
-    # standardise continuous dims (mic_y, mic_z, rps) — leave rotor/harm idx raw
+    # 5) Build design matrices for the GP: x=(mic_y,mic_z,rotor,harm-task-index)
+    #    The harm-task index runs over the (2n+1) Fourier basis tasks (mean...,A,B)
+    #    flattened as a single task id.
+    n_fourier = 2 * NUM_ROTORS * H + 1
+    (xtr, ytr), (xte, yte) = _build_gp_design(
+        coeffs, mic_yz, train_idx, test_pool, n_fourier, NUM_ROTORS
+    )
+    # standardize continuous dims (mic_y, mic_z) only
     mus = torch.zeros(5)
     sds = torch.ones(5)
-    mus[:3] = xtr[:, :3].mean(0)
-    sds[:3] = xtr[:, :3].std(0) + 1e-6
-    xtr = (xtr - mus) / sds
-    xte = (xte - mus) / sds
+    mus[:2] = xtr[:, :2].mean(0)
+    sds[:2] = xtr[:, :2].std(0) + 1e-6
+    xtr_s = (xtr - mus) / sds
+    xte_s = (xte - mus) / sds
+    print(f"[gp] xtr={tuple(xtr_s.shape)} xte={tuple(xte_s.shape)}")
 
-    n_ind = min(256, xtr.shape[0])
-    ind = xtr[np.linspace(0, xtr.shape[0] - 1, n_ind).astype(int)]
-    model = RotNoiseGP(ind, NUM_ROTORS, H)
+    # 6) per-mic likelihood noise pinned to σ_b
+    model = FourierCoeffGP(_choose_inducing(xtr_s), NUM_ROTORS, n_fourier)
+    # per-mic noise: build an index tensor that maps each training point to its mic
+    # We approximate with a single GaussianLikelihood (per-mic noise via Multitask
+    # requires consistent task indexing); use a fixed-noise from sigma_b
+    sigma_b_t = torch.tensor(sigma_b, dtype=torch.float32).clamp(min=1e-6)
+    sigma_b_t = sigma_b_t + sigma_b_t.mean() * 0.1
     likelihood = gpytorch.likelihoods.GaussianLikelihood(
-        noise_constraint=gpytorch.constraints.GreaterThan(1e-4)
+        noise_constraint=gpytorch.constraints.GreaterThan(1e-6)
     )
+    # initialise likelihood noise to ~mean(sigma_b) to inject the broadband prior
+    with torch.no_grad():
+        likelihood.noise = float(sigma_b_t.mean()) ** 2 * torch.ones_like(likelihood.noise)
+
     model.train()
     likelihood.train()
     opt = torch.optim.Adam(
         [
             {"params": model.parameters(), "lr": 5e-2},
-            {"params": likelihood.parameters(), "lr": 5e-2},
+            {"params": likelihood.parameters(), "lr": 1e-2},
         ]
     )
-    mll = gpytorch.mlls.VariationalELBO(likelihood, model, num_data=xtr.shape[0])
+    mll = gpytorch.mlls.VariationalELBO(likelihood, model, num_data=xtr_s.shape[0])
 
-    best = 1e9
+    best = 1e18
     for it in range(config.iters):
         opt.zero_grad()
-        loss = -mll(model(xtr), ytr)  # type: ignore[operator]  gpytorch loose typing
-        loss.backward()
+        loss = -mll(model(xtr_s), ytr)  # type: ignore[operator]  gpytorch loose typing
+        loss.backward()  # type: ignore[operator]
         opt.step()
         best = min(best, loss.item())
         if it % 40 == 0 or it == config.iters - 1:
@@ -259,97 +417,146 @@ def main(config):
             )
     print(f"[fit] best loss={best:.4f}")
 
+    # 7) Predict Fourier coefficients at the held-out frames
     model.eval()
     likelihood.eval()
     with torch.no_grad(), gpytorch.settings.fast_pred_var():
-        pred = likelihood(model(xte))
+        pred = likelihood(model(xte_s))
         mu = pred.mean
         std = pred.stddev
-
-    rmse = torch.sqrt(((torch.exp(mu) - torch.exp(yte)) ** 2).mean()).item()
-    resid_energy = (
-        ((torch.exp(mu) - torch.exp(yte)) ** 2).sum() / (torch.exp(yte) ** 2).sum()
-    ).item()
+    rmse = torch.sqrt(((mu - yte) ** 2).mean()).item()
+    resid_energy = (((mu - yte) ** 2).sum() / (yte**2).sum()).item()
     ls = {
         "spatial_y": float(model.spatial.lengthscale[0, 0]),
         "spatial_z": float(model.spatial.lengthscale[0, 1]),
-        "tonal_rps": float(model.tonal.lengthscale[0, 0]),
     }
-    print(f"[eval] log-mag RMSE={rmse:.4f}  residual-energy ratio={resid_energy:.4f}")
+    print(f"[eval] coeff RMSE={rmse:.4f}  resid-energy-ratio={resid_energy:.4f}")
     print(f"[eval] lengthscales={ls}")
 
-    M = mic_yz.shape[0]
+    # 8) Synthesise held-out audio per mic
+    #    predicted μ_w reshaped over (M, F_te, 2n+1) · F_full(test frames) → time
     F_te = len(test_pool)
-    mu_pred = mu.reshape(M, NUM_ROTORS, H, F_te)
-
-    # phase template = circular-mean complex phasor per (mic, rotor, harm) over train frames
-    Vtr = V[:, :, :, train_idx]
-    Vtr_u = Vtr / (Vtr.abs() + 1e-9)
-    phase_tmpl = Vtr_u.mean(-1)  # (M,R,H)
-    phase_unit = phase_tmpl / (phase_tmpl.abs() + 1e-9)  # unit phasor
-
-    # align phase (M,R,H) over the F_te axis: phase_unit.unsqueeze(-1) -> (M,R,H,1)
-    V_mean = torch.exp(mu_pred) * phase_unit.unsqueeze(-1)  # (M,R,H,F_te)
-    # broadband-residual realisation: additative log-mag perturbation ~ N(0, std^2)
-    resid = torch.randn_like(mu_pred) * std.reshape(*mu_pred.shape)
-    V_noisy = torch.exp(mu_pred + resid) * phase_unit.unsqueeze(-1)  # (M,R,H,F_te)
-
-    # build rps curve for the held-out audio span, interpolated to (4, n_gen_samples)
-    # inverse_VP needs n_gen_samples >= win + (F_te-1)*hop so unfold works.
-    f_start = train_pool[-1] + 1  # first held-out frame index (start of hold-out)
+    mu_pred = mu.reshape(M, F_te, n_fourier).numpy()
+    # un-standardise mic dims doesn't change the discrete indices we passed through
+    # rebuild the test-frame design matrices at the held-out audio span
+    f_start = test_pool[0]
     n_gen_samples = win + (F_te - 1) * hop
-    gen_t0 = config.seg_start + (f_start * hop) / sr
-    gen_t1 = gen_t0 + n_gen_samples / sr
-    mask = (ts_raw >= gen_t0) & (ts_raw <= gen_t1)
-    if mask.sum() < 2:
-        mask = (ts_raw >= gen_t0 - 2) & (ts_raw <= gen_t1 + 2)
-    interp_t = np.linspace(gen_t0, gen_t1, n_gen_samples)
-    rps_gen = torch.tensor(
-        np.stack(
-            [np.interp(interp_t, ts_raw[mask], ms_raw[i][mask]) for i in range(NUM_ROTORS)], 0
-        ),
-        dtype=torch.float32,
+    s0 = f_start * hop  # local sample index into segment audio
+    test_rps_subaudio = rps_audio[:, s0 : s0 + n_gen_samples]
+    freqs_te, Ffull_te = _perframe_design(n_gen_samples, test_rps_subaudio, H, sr, win, hop)
+    # one waveform per mic per test frame, then overlap-add
+    synth = np.zeros((M, n_gen_samples), dtype=np.float32)
+    Hann = np.hanning(win).astype(np.float32)
+    for fo in range(F_te):
+        c = fo * hop
+        Fmat = Ffull_te[fo] * Hann  # (2n+1, W)
+        w_pred = mu_pred[:, fo]  # (M, 2n+1)
+        synth[:, c : c + win] += w_pred @ Fmat
+    # normalize overlap-add
+    synth *= hop / 3.0  # match Hann OLA gain (approx)
+
+    # add broadband-residual sample per mic: ε ~ N(0, σ_b²)
+    rng = np.random.default_rng(0)
+    broadband = rng.normal(0, 1, synth.shape).astype(np.float32) * sigma_b_t.numpy()[:, None]
+    synth_noisy = synth + broadband
+
+    # real held-out audio
+    real_audio = audio[:, s0 : s0 + n_gen_samples].numpy().astype(np.float32)
+
+    # gain match per mic (the VP normalization leaves scale floating)
+    gains = np.array(
+        [np.sum(real_audio[m] * synth[m]) / (np.sum(synth[m] ** 2) + 1e-9) for m in range(M)],
+        dtype=np.float32,
     )
+    synth_g = (synth * gains[:, None]).astype(np.float32)
+    synth_noisy_g = (synth_noisy * gains[:, None]).astype(np.float32)
 
-    # inverse VP -> waveforms (sum rotors -> mono)
-    # Squeeze the trailing 1 dim from V_mean[m] to match FrequencyIndex rank
-    def inv(Vr):
-        return inverse_harmonic_VP_transform(
-            rps_gen, Vr.squeeze(-1).contiguous(), n_harmonics=H, window_len=win, hop_len=hop, sr=sr
-        ).sum(0)
-
-    gen_mean = inv(V_mean[0]).float()
-    gen_noisey = inv(V_noisy[0]).float()
-
-    # real held-out audio for mic 0 (segment-local: audio starts at seg_start;
-    # frame f spans local samples [f*hop, f*hop + win + (F_te-1)*hop))
-    s_gen0 = f_start * hop
-    real_m0 = audio[0, s_gen0 : s_gen0 + n_gen_samples].numpy().astype(np.float32)
-
-    # let the generated amplitude match the real level (a free gain — the GP
-    # predicts log|V| whose absolute scale floats under the VP normalization)
-    g = float((real_m0 * gen_mean.numpy()).sum() / ((gen_mean.numpy() ** 2).sum() + 1e-12))
-    gen_mean = (gen_mean * g).clamp(-1, 1)
-    gen_noisey = (gen_noisey * g).clamp(-1, 1)
-
+    # save WAV (mic 0 + summed)
     try:
         import soundfile as sf
 
-        sf.write(out / "generated.wav", gen_mean.numpy().astype(np.float32), sr)
-        sf.write(out / "generated_noisy.wav", gen_noisey.numpy().astype(np.float32), sr)
-        sf.write(out / "real_holdout.wav", real_m0, sr)
+        sf.write(out / "generated.wav", synth_g[0], sr)
+        sf.write(out / "generated_noisy.wav", synth_noisy_g[0], sr)
+        sf.write(out / "real_holdout.wav", real_audio[0], sr)
+        sf.write(out / "generated_summed.wav", synth_g.sum(0), sr)
     except Exception as e:
         print("[wav] skipped:", e)
 
     # spectrograms
-    def stft_amp(x):
-        x = np.asarray(x, np.float64).ravel()
-        nf = x.shape[0] // win * win
-        frames = x[:nf].reshape(-1, win)
-        return np.abs(np.fft.rfft(frames * np.hanning(win), axis=-1)) + 1e-12
+    _plot_spectra(out, "gen_spectrum.png", real_audio[0], synth_g[0], sr, win)
 
-    spec_r = 10 * np.log10(stft_amp(real_m0))
-    spec_g = 10 * np.log10(stft_amp(gen_mean.numpy()))
+    metrics = {
+        "rmse_coeff": rmse,
+        "residual_energy_ratio": resid_energy,
+        "loss_best": best,
+        "lengthscales": ls,
+        "sigma_b_per_mic": sigma_b_t.numpy().tolist(),
+        "gains_per_mic": gains.tolist(),
+        "n_train_points": int(xtr_s.shape[0]),
+        "n_test_points": int(xte_s.shape[0]),
+    }
+    with open(out / "fit_metrics.json", "w") as fh:
+        json.dump(metrics, fh, indent=2, default=float)
+    np.savez(
+        out / "coeffs.npz",
+        mu=mu.numpy(),
+        std=std.numpy(),
+        yte=yte.numpy(),
+        freqs_te=freqs_te,
+        freqs_tr=freqs,
+    )
+    print("[done]", json.dumps(metrics, indent=2, default=float))
+
+
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _interp_frame_rps(rps_audio, F, win, hop, sr):
+    frame_centers = (np.arange(F) * hop + (win // 2)) / sr
+    audio_t = np.linspace(0, rps_audio.shape[-1] / sr, rps_audio.shape[-1])
+    arr = rps_audio.numpy()
+    return torch.tensor(
+        np.stack([np.interp(frame_centers, audio_t, arr[i]) for i in range(NUM_ROTORS)], 0),
+        dtype=torch.float32,
+    )
+
+
+def _build_gp_design(coeffs, mic_yz, train_idx, test_idx, n_fourier, n_rotors):
+    """Map each (mic, frame, fourier-task) coefficient into a GP point.
+
+    x = (mic_y, mic_z, rotor_idx, harm-task-id, sin/cos-block-id)
+    Mapping of "harm-task-id" runs 0..2n (over the (2n+1) Fourier basis tasks).
+    The discrete rotor_idx repeats each rotor H times within the basis ordering
+    (per-frame layout is [mean, A_{rot0,h1}, B_{rot0,h1}, A_{rot0,h2}, B_{rot0,h2},
+       A_{rot1,h1}, ...]).
+    """
+    M = mic_yz.shape[0]
+    # build the rotor-index-per-basis-task lookup
+    rotor_of_task = np.zeros(n_fourier, dtype=np.int64)
+    rotor_of_task[1:] = np.repeat(np.arange(n_rotors), (n_fourier - 1) // n_rotors)
+
+    def build(idx):
+        xs, ys = [], []
+        for fi in idx:
+            for m in range(M):
+                ya, za = float(mic_yz[m, 0]), float(mic_yz[m, 1])
+                for t in range(n_fourier):
+                    r = int(rotor_of_task[t])
+                    xs.append([ya, za, float(r), float(t), 0.0])
+                    ys.append(float(coeffs[m, fi, t]))
+        return (torch.tensor(np.asarray(xs, np.float32)), torch.tensor(np.asarray(ys, np.float32)))
+
+    return build(train_idx), build(test_idx)
+
+
+def _choose_inducing(x):
+    n_ind = min(512, x.shape[0])
+    return x[np.linspace(0, x.shape[0] - 1, n_ind).astype(int)].clone()
+
+
+def _plot_spectra(out, name, real, gen, sr, win):
+    spec_r = _stft_db(real, win, sr)
+    spec_g = _stft_db(gen, win, sr)
     freqs = np.fft.rfftfreq(win, 1 / sr)
     fig, ax = plt.subplots(2, 2, figsize=(11, 7))
     ax[0, 0].imshow(
@@ -368,7 +575,7 @@ def main(config):
         cmap="magma",
         extent=[freqs[0], freqs[-1], 0, spec_g.shape[0]],
     )
-    ax[0, 1].set_title("GP-generated")
+    ax[0, 1].set_title("GP-generated (Fourier-basis)")
     ax[0, 1].set_xlim(0, 6000)
     ax[1, 0].semilogx(freqs, spec_r.mean(0), label="real")
     ax[1, 0].semilogx(freqs, spec_g.mean(0), label="gen")
@@ -379,22 +586,18 @@ def main(config):
     ax[1, 1].set_xlim(20, 8000)
     ax[1, 1].set_title("real − gen (avg)")
     fig.tight_layout()
-    fig.savefig(out / "gen_spectrum.png", dpi=110)
+    fig.savefig(out / name, dpi=110)
     plt.close(fig)
 
-    metrics = {
-        "rmse_logmag": rmse,
-        "residual_energy_ratio": resid_energy,
-        "loss_best": best,
-        "lengthscales": ls,
-        "gain_match": g,
-        "n_train_points": int(xtr.shape[0]),
-        "n_test_points": int(xte.shape[0]),
-    }
-    with open(out / "fit_metrics.json", "w") as fh:
-        json.dump(metrics, fh, indent=2)
-    np.savez(out / "coeffs.npz", mu=mu.numpy(), std=std.numpy(), yte=yte.numpy())
-    print("[done]", json.dumps(metrics, indent=2))
+
+def _stft_db(x, win, sr):
+    x = np.asarray(x, np.float64).ravel()
+    nf = x.shape[0] // win * win
+    frames = x[:nf].reshape(-1, win)
+    return 10 * np.log10(np.abs(np.fft.rfft(frames * np.hanning(win), axis=-1)) + 1e-12)
+
+
+# ────────────────────────────────────────────────────────────────────────────
 
 
 def parse_args():
@@ -411,7 +614,7 @@ def parse_args():
     p.add_argument("--seg_dur", type=float, default=28.0)
     p.add_argument("--train_frames", type=int, default=8)
     p.add_argument("--holdout_frames", type=int, default=6)
-    p.add_argument("--iters", type=int, default=400)
+    p.add_argument("--iters", type=int, default=600)
     return p.parse_args()
 
 
