@@ -39,6 +39,7 @@ if load_dotenv is not None:
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
 from data_processing.frames import get_meta, with_meta
 from data_processing.michaels import load_michaels_timeframes
+from data_processing.streams import resolve_source
 
 
 @runtime_checkable
@@ -228,7 +229,9 @@ class TimeFrameNoisePool:
             return combined
 
         kind = _cfg_get(cfg, "kind", "dregon")
-        root = Path(_cfg_get(cfg, "root", "data"))
+        # `root` may be a plain path (unchanged behaviour) or a `dload:NAME`
+        # URI materialized to a local tree first.
+        root = resolve_source(_cfg_get(cfg, "root", "data"))
         min_motor_rps = float(_cfg_get(cfg, "min_motor_rps", 30.0))
         if kind == "dregon":
             splits = _cfg_get(cfg, "splits", None)
@@ -393,7 +396,7 @@ class AudioFileSourcePool:
     @classmethod
     def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> AudioFileSourcePool:
         cfg = _to_plain(cfg)
-        root = Path(_cfg_get(cfg, "root", "."))
+        root = resolve_source(_cfg_get(cfg, "root", "."))
         globs = _cfg_get(cfg, "globs", None)
         glob_one = _cfg_get(cfg, "glob", None)
         if globs is None:

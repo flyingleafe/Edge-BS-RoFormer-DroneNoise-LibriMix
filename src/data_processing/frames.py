@@ -17,6 +17,25 @@ import numpy as np
 import tdseries as td
 
 
+def audio_series(audio: np.ndarray, sample_rate: int) -> td.Series:
+    """``(C, T)`` -> mono ``(time,)`` Series (``C == 1``) or ``(mic, time)``.
+
+    The one canonical audio-array-to-Series convention shared by every
+    dataset adapter (``frame_datasets``) and the dload bridge (``streams``);
+    matches ``tasks.task``'s ``n_channels=None`` vs ``n_channels=C`` split.
+    """
+    if audio.shape[0] == 1:
+        return td.uniform(audio[0], sample_rate, dims=("time",), t_start=0.0)
+    return td.uniform(audio, sample_rate, dims=("mic", "time"), t_start=0.0)
+
+
+def rps_series(rps: np.ndarray, *, sample_rate: int, hop_length: int) -> td.Series:
+    """``(rotor, n_frames)`` array -> Series on the exact ``sr/hop`` STFT grid."""
+    n_frames = rps.shape[-1]
+    idx = td.GridIndex.create((sample_rate, hop_length), n_frames, t_start=0)
+    return td.Series(rps, ("rotor", "time"), {"time": idx})
+
+
 def get_meta(frame: td.Frame, key: str, default: Any = None) -> Any:
     """Look up one scalar metadata key from ``frame["meta"]``."""
     if "meta" not in frame:
