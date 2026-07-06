@@ -11,7 +11,7 @@ Long-form documentation that doesn't belong in code comments or AGENTS.md files.
 | File/Dir | Purpose |
 |----------|---------|
 | `debug-training-loop.md` | Training loop debugging guide — read this before debugging training failures |
-| `data-and-artifacts.md` | DVC + wandb Artifacts workflow (datasets → R2, checkpoints → wandb), per-machine setup |
+| `data-and-artifacts.md` | dload + wandb Artifacts workflow (datasets → R2, checkpoints → wandb), per-machine setup |
 | `dcunet-refactored.md` | Design notes for DCUNet/DCCRN refactoring (Paper 2) |
 | `diffusion-buffer-paper.md` | Notes on the diffusion buffer paper |
 | `diffusion-prompt.md` | Prompt used to implement the diffusion buffer model |

@@ -1,4 +1,4 @@
-# Data & Artifacts — R2 via DVC + wandb Artifacts
+# Data & Artifacts — R2 via dload + wandb Artifacts
 
 Single page. Read once, bookmark, move on.
 
@@ -6,17 +6,19 @@ Single page. Read once, bookmark, move on.
 
 | Thing                | Tool              | Where                                   |
 |----------------------|-------------------|-----------------------------------------|
-| Datasets (raw/processed) | **DVC** + R2 remote | `s3://ml-data/datasets/` + `.dvc` files in git |
+| Datasets (raw/processed) | **dload** (PyPI `dload-ml`) + R2 remote | `s3://ml-data-new/` + `dload.toml`/`dload.lock` in git |
 | Checkpoints          | **wandb Artifacts** | wandb servers, linked to the training run |
 | Metrics / logs / run metadata | wandb (already in use) | wandb |
 | Eval audio samples   | local `results/<job>/eval/`; push to wandb or R2 manually if needed | |
 
-One bucket (`ml-data`, prefix `datasets/`), one Cloudflare account.
+One bucket (`ml-data-new`), one Cloudflare account. The remote endpoint and
+bucket are committed in `dload.toml`; per-dataset version pins live in
+`dload.lock` (managed by `dload pin` / `dload unpin`).
 
 ## One-time setup per machine
 
 ```bash
-# 1. Install deps (uv does this via pyproject.toml).
+# 1. Install deps (uv does this via pyproject.toml; dload-ml is a direct dep).
 uv sync
 
 # 2. Put credentials in .env (never committed).
@@ -25,22 +27,14 @@ cp .env.example .env
 #       WANDB_API_KEY, and keep AWS_DEFAULT_REGION=auto (R2 rejects real
 #       AWS region names; only "auto" works).
 
-# 3. Point DVC at your R2 endpoint (gitignored via .dvc/config.local).
-dvc remote modify --local r2 endpointurl \
-    "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-
-# 4. Sanity check.
-dvc remote list                 # should show 'r2 s3://ml-data/datasets (default)'
-dvc status --cloud              # should connect without errors
+# 3. Sanity check: resolved config, cache usage, remote reachability.
+dload status
+dload ls          # list datasets in the remote
 ```
 
 On the laptop, `direnv` loads `.env` automatically (see `.envrc`). On a GPU
 server, source it yourself (`set -a; . ./.env; set +a`) before invoking
-`dvc pull` or your training command.
-
-> **Gotcha**: `.dvc/config` has a `region` field, but **dvc-s3 ignores it**.
-> The region must come from the `AWS_DEFAULT_REGION` env var (= `auto` for
-> R2). Hence the entry in `.env`.
+`dload pull` or your training command.
 
 ## Workflow
 
@@ -50,40 +44,47 @@ server, source it yourself (`set -a; . ./.env; set +a`) before invoking
 # (whatever produces the data)
 python scripts/create_dregon_librimix.py --output datasets/DREGON-LM ...
 
-# Track it with DVC (writes datasets/DREGON-LM.dvc, ignores the dir in git).
-dvc add datasets/DREGON-LM
+# Ingest as a new version of the dataset (content-addressed shards → R2).
+dload commit DREGON-LM --from datasets/DREGON-LM
 
-# Push data to R2 and the pointer to git.
-dvc push
-git add datasets/DREGON-LM.dvc datasets/.gitignore
-git commit -m "dataset: DREGON-LM v1"
+# Pin the repo to the new version and commit the lock change.
+dload pin DREGON-LM
+git add dload.lock
+git commit -m "dataset: DREGON-LM new version"
 git push
 ```
 
-Every subsequent `dvc add` on the same dataset dir produces a new content hash
-→ git diff on the `.dvc` file shows the version change. `dvc push` uploads
-**only the changed blobs** (content-addressed, deduplicated).
+Every `dload commit` on the same dataset name produces a new version; the git
+diff on `dload.lock` shows the version change. `dload info NAME` shows the
+manifest and version history; `--recipe FILE` on commit stores the producing
+script/config verbatim alongside the version.
 
 ### Morning on GPU server — train
 
 ```bash
-git pull                           # get the latest .dvc pointers
-dvc pull                           # fetch any datasets missing locally
+git pull                           # get the latest dload.lock pins
+dload pull DREGON-LM               # fetch shards into the local cache
 python train.py experiment=b1_dccrn_rps_dregon
 # On a Slurm cluster, wrap the last line:
 #   ./scripts/sbatch.sh -- python train.py experiment=b1_dccrn_rps_dregon
 ```
 
-Run `dvc pull` for any dataset that is missing locally but has a `.dvc` file in
-the repo. At training end, the best checkpoint is automatically logged as a
-wandb artifact (aliased `best` and `latest`).
+`dload pull NAME` fetches the pinned (or latest) version of a dataset into the
+local shard cache. How training code consumes dload-managed datasets (the
+streaming/`Pipeline` layer, `dload.Repository.open()`) is still under
+construction; until it lands, the datasets under `data/` are used as plain
+local directories.
+<!-- TODO(dload-docs): expand after streams layer lands -->
+
+At training end, the best checkpoint is automatically logged as a wandb
+artifact (aliased `best` and `latest`).
 
 ### Evening on laptop — analyze
 
 ```bash
 # Pull the dataset (only needed if you want to inspect raw data locally).
 git pull
-dvc pull datasets/DREGON-LM.dvc
+dload pull DREGON-LM
 
 # Pull trained checkpoints from wandb (cached by wandb under ~/.cache/wandb).
 python -c "
@@ -102,13 +103,11 @@ for run_id in ['abc123', 'def456']:
 
 ## Disk management
 
-**DVC cache** (default `.dvc/cache/` per project, shared via `dvc cache dir`).
-Content-addressed, deduplicated. When it grows:
-
-```bash
-dvc gc --workspace          # remove blobs not referenced by HEAD
-dvc gc --all-branches       # remove blobs not referenced by any branch
-```
+**dload shard cache** — content-addressed, deduplicated. `dload status` shows
+usage; `dload cache` subcommands manage it. `dload gc` deletes *remote* shards
+referenced by no manifest of any dataset (destructive housekeeping — use
+deliberately).
+<!-- TODO(dload-docs): expand after streams layer lands -->
 
 **wandb cache** (default `~/.cache/wandb/artifacts/`). Override with
 `WANDB_CACHE_DIR=/big/disk/wandb`. To cap size:
@@ -117,46 +116,26 @@ dvc gc --all-branches       # remove blobs not referenced by any branch
 export WANDB_CACHE_SIZE=50GB   # wandb enforces LRU above this
 ```
 
-**True on-the-fly streaming** — if a dataset is too big to fit locally and you
-want files fetched lazily as the DataLoader reads them, skip `dvc pull` and
-mount R2 directly with `rclone`:
-
-```bash
-# once per machine
-cat >> ~/.config/rclone/rclone.conf <<EOF
-[r2]
-type = s3
-provider = Cloudflare
-access_key_id = $AWS_ACCESS_KEY_ID
-secret_access_key = $AWS_SECRET_ACCESS_KEY
-endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-EOF
-
-# per-session
-rclone mount r2:hns-research/ ./r2-mount \
-    --vfs-cache-mode full \
-    --vfs-cache-max-size 50G \
-    --daemon
-# then symlink/point datasets at ./r2-mount/<path>
-```
-
-`--vfs-cache-max-size` gives you the LRU-capped local mirror behavior
-natively, no custom code.
+**On-the-fly streaming** — dload's streaming layer (lazy shard fetch as the
+DataLoader reads, LRU-capped local cache) is the intended replacement for the
+old rclone-mount trick; it is still under construction.
+<!-- TODO(dload-docs): expand after streams layer lands -->
 
 ## Training artifacts (checkpoints + val samples) → R2
 
 Since the unified `train.py`, checkpoints **and** a selection of validation
 samples (audio + figures) also upload directly to the Cloudflare R2 bucket
 `ml-data`, in addition to the wandb-artifact checkpoint flow above. This is
-handled by `src/training/artifacts.py::ArtifactStore` — not DVC, and not the
-`dvc`/`wandb.use_artifact` flow described above.
+handled by `src/training/artifacts.py::ArtifactStore` — not dload, and not the
+`dload pull`/`wandb.use_artifact` flow described above.
 
 - **Where**: `s3://ml-data/artifacts/<experiment_name>/checkpoints/<filename>.ckpt`
   and `s3://ml-data/artifacts/<experiment_name>/val_samples/epoch_<N>/...`
   (`bucket`/`prefix` are configurable; defaults are `ml-data`/`artifacts`).
-- **Client**: `s3fs.S3FileSystem` (not `boto3`) pointed at the same R2
-  S3-compatible endpoint used by DVC (`https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`).
-- **Credentials**: the same `.env` vars as the DVC setup above —
+- **Client**: `s3fs.S3FileSystem` (not `boto3`; s3fs is a direct project
+  dependency) pointed at the same R2 S3-compatible endpoint used by dload
+  (`https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`).
+- **Credentials**: the same `.env` vars as the dload setup above —
   `R2_ACCOUNT_ID`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. If any are
   missing, or `artifacts.enabled=false` in the Hydra config, every
   `ArtifactStore` method becomes a no-op (one log line, no exception) — a
@@ -169,14 +148,12 @@ handled by `src/training/artifacts.py::ArtifactStore` — not DVC, and not the
 
 ## Gotchas
 
-- **`dvc push` is per-commit, not per-session.** After `dvc add`, remember to
-  `git add <name>.dvc` AND push both git and DVC — they're two separate remotes.
-- **DVC cache type** is configured to `reflink,hardlink,symlink,copy` in
-  `.dvc/config`. On NFS or cross-filesystem setups it falls back to `copy`
-  (and doubles disk). Put `datasets/` and `.dvc/cache/` on the same filesystem.
+- **`dload commit` uploads immediately, but the pin is git's job.** After
+  `dload commit` + `dload pin`, remember to `git add dload.lock` and push —
+  the data remote and git are two separate things.
 - **Reproducibility**: a job's dataset version is fully captured by the git
-  commit of its `.dvc` files. Pin experiments to a commit in the job record
-  and you can always recreate.
+  commit of `dload.lock`. Pin experiments to a commit in the job record and
+  you can always recreate.
 - **wandb artifact size**: if checkpoints get huge (~GBs) and push free-tier
   limits, switch to *reference artifacts* that point at R2:
   `artifact.add_reference("s3://hns-research/checkpoints/...")`.

@@ -5,9 +5,8 @@ headroom)": "checkpoints AND selected validation samples are uploaded as
 artifacts to Cloudflare R2 (bucket ``ml-data``, creds via ``.env``:
 ``R2_ACCOUNT_ID`` + AWS keys, s3fs client)".
 
-Client library is ``s3fs`` (not ``boto3`` — not installed in this project;
-``s3fs.S3FileSystem`` is already a transitive dependency via ``dvc[s3]``),
-pointed at the R2 S3-compatible endpoint
+Client library is ``s3fs`` (a direct project dependency; see
+``pyproject.toml``), pointed at the R2 S3-compatible endpoint
 ``https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com``.
 
 Bucket layout (``bucket`` defaults to ``"ml-data"``, ``prefix`` to

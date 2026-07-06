@@ -10,14 +10,14 @@ description: Create any variant of the DREGON-LM dataset (mono, multichannel syn
 
 ## Prerequisites
 
-Both raw sources must be locally present (DVC-tracked under `data/`):
+Both raw sources must be locally present (dload-managed, pinned in `dload.lock`):
 
 ```bash
-dvc pull data/DREGON.dvc        # ~4 GB — DREGON recordings + telemetry
-dvc pull data/librispeech.dvc   # LibriSpeech train-clean-100
+dload pull DREGON               # ~4 GB — DREGON recordings + telemetry
+dload pull librispeech          # LibriSpeech train-clean-100
 ```
 
-If DVC pull fails, DREGON can be auto-downloaded from `dregon.inria.fr` by the
+If dload pull fails, DREGON can be auto-downloaded from `dregon.inria.fr` by the
 script itself (pass `download=True` to `load_dregon_timeframes` or let the script
 handle it).
 
@@ -63,8 +63,9 @@ python scripts/create_dregon_librimix.py \
 ## Publish after creation
 
 ```bash
-dvc add datasets/DREGON-LM-RealValid && dvc push
-git add datasets/DREGON-LM-RealValid.dvc datasets/.gitignore
+dload commit DREGON-LM-RealValid --from datasets/DREGON-LM-RealValid
+dload pin DREGON-LM-RealValid
+git add dload.lock
 git commit -m "dataset: DREGON-LM-RealValid" && git push
 ```
 

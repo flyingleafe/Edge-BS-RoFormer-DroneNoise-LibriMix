@@ -1,0 +1,9 @@
+# Pinned dataset versions, managed by `dload pin`.
+[datasets]
+DREGON = "db39bcf762d0b2beb3433fc2760da6a55e078f8134f8bb074ee8bf985a5ffc03"
+drone_audio = "b6c77a68c55dedec11750a3784c10833e7db981fab6ef00380300a9e4d382b95"
+librispeech = "fda9aad8dfb545c82752f33e8ff563feaee82f5f9ba7b50efafff4cd8ff73ae5"
+music = "c5112a018810fd2dc2c0a1ca55e717d80cd54c2462f0378ff17501557f876d46"
+new-drone-noises = "158b780aaaf27af03ed995707d8a93e62e3fce7246132b815d52cfc225dcc774"
+recording_with_motor_speed = "5b7eab554710c3d83667085c8f5ca256322ec10e2cffae6002443f63b05257b4"
+zenodo_drone_noises = "a5d0ed89df141780502eef5084bb722ec2d38b4418ff7d0a573dd26f2eea28c6"

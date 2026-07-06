@@ -1,6 +1,0 @@
-outs:
-- md5: 35ccaa737d095c5bf0ffb515ed92bcf6.dir
-  size: 194615231
-  nfiles: 16
-  hash: md5
-  path: zenodo_drone_noises

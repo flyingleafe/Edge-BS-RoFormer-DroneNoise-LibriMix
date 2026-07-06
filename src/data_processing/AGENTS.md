@@ -349,9 +349,13 @@ Aggregate has both `n_samples` (distinct samples) and `n_rows` (= n_samples × C
 
 ## Publishing a processed dataset
 
+Datasets are managed by `dload` (PyPI `dload-ml`; remote + pins in
+`dload.toml`/`dload.lock` at repo root):
+
 ```bash
-dvc add datasets/DREGON-LM-RealValid && dvc push
-git add datasets/DREGON-LM-RealValid.dvc datasets/.gitignore
+dload commit DREGON-LM-RealValid --from datasets/DREGON-LM-RealValid
+dload pin DREGON-LM-RealValid
+git add dload.lock
 git commit -m "dataset: DREGON-LM-RealValid" && git push
 ```
 
@@ -361,7 +365,7 @@ See `docs/data-and-artifacts.md` for the end-to-end CPU → GPU → laptop flow.
 
 ## Gotchas
 
-- **Datasets are gitignored** — create locally or `dvc pull` before training.
+- **Datasets are gitignored** — create locally or `dload pull <name>` before training.
 - **`motors_command` trailing freeze**: the last 45–1577 samples are identical
   (logger stopped).  `_find_inflight_window` strips this when using `motors_measured`;
   when only command is available, the end trim is effectively 0 s.  **Never use

@@ -70,7 +70,7 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 | **Producing a presentation / slides** | `create-typst-slides` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`. |
 | **Producing a report** | `create-typst-report` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`. |
 | **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `src/fwh_rotor_sim/AGENTS.md`. |
-| **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (DVC + W&B artifacts; rsync fallback). |
+| **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (dload + W&B artifacts; rsync fallback). |
 
 ## Directory Map
 
@@ -124,7 +124,7 @@ Root-level scripts: **only** `train.py` (the only training entry point, Hydra-dr
 2. **Route before acting** (for non-trivial tasks). Skills exist; use them.
 3. **Subdirectory AGENTS.md is truth.** Read the relevant one before working in any directory.
 4. **Code comments = concrete; AGENTS.md = conceptual/structural.**
-5. **Sync results before analysis.** Preferred: `dvc pull` (datasets) + `wandb.use_artifact(...)` (checkpoints) — see `docs/data-and-artifacts.md`. Legacy rsync fallback: `./scripts/sync_results.sh`.
+5. **Sync results before analysis.** Preferred: `dload pull <name>` (datasets) + `wandb.use_artifact(...)` (checkpoints) — see `docs/data-and-artifacts.md`. Legacy rsync fallback: `./scripts/sync_results.sh`.
 6. **Record iff non-trivial.** If the task taught, solved, or revealed a gap — run `record-and-remember`. If nothing was learned, skip.
 
 ## References
