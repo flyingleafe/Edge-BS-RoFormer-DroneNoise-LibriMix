@@ -1,0 +1,30 @@
+# DREGON-LM-V2-0pct: motor-combo-fraction sweep variant (motor_combo_fraction
+# regularizes PIT training by injecting synthetic single/dual-motor-combo
+# clips). 0% — collapses without a PIT anchor. 6000 train / 600 valid, 3 s @16kHz,
+# 8-mic multichannel, command RPS. `channel: 0` selects one mic (mono
+# models — no channel-flattening trick, see data_processing/AGENTS.md
+# § "Multichannel Training & Evaluation Wiring"). See REPLICATION.md § C1/C4.
+# Create: python create_dregon_librimix.py \
+#   --speech_dir data/librispeech/LibriSpeech/train-clean-100 \
+#   --dregon_dir data/DREGON --output_dir datasets/DREGON-LM-V2-0pct \
+#   --num_train 6000 --num_valid 600 --motor_combo_fraction 0.0
+train:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V2-0pct/train
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    channel: 0
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V2-0pct/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    channel: 0
+  iterable: false
+batch_size: null
+num_workers: null

@@ -47,7 +47,6 @@ Route to the right skill (table below), execute, and close with `record-and-reme
 | `generate-model-comparisons` | Publication-ready plots/tables from eval results |
 | `create-typst-report` | Create a new Typst report in `writing/reports/` |
 | `create-typst-slides` | Create a new Typst slide deck in `writing/slides/` |
-| `vast-server-training` | Run training on remote GPU (via `postdoc submit` / SkyPilot) |
 | `reimplement-model` | Port a paper model into the project framework |
 | `create-dregon-dataset` | (Re)create any DREGON-LM dataset variant |
 | `improve-plot-visibility` | Inspect and improve generated plots |
@@ -59,18 +58,18 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 
 | If the task is… | Skill | Read first |
 |-----------------|-------|------------|
-| **Manipulating audio / telemetry / any aligned signal** (loading, slicing, concat, shifting RPS/IMU/VAD alongside audio) | — | `src/utils/data/AGENTS.md` + [`src/utils/data/API.md`](src/utils/data/API.md). The fixed-point timeseries algebra is the substrate for *all* media work. |
-| **Creating or processing a dataset** (DREGON-LM, DN-LM, mixing, RPS extraction) | `create-dregon-dataset` | `data_processing/AGENTS.md` (recording inventory, variants, canonical command, gotchas); loaders `data_processing/dregon.py`, `michaels.py`; root scripts `create_dregon_librimix.py`, `create_dataset.py`. |
-| **Loading data into a training loop** (Dataset/wiring, multichannel flattening) | — | `data_processing/AGENTS.md` § "Multichannel Training & Evaluation Wiring" (`DREGONRPSDataset`, `NoiseRPSDataset`, `_flatten_channels`) + `src/utils/data/AGENTS.md`. |
+| **Manipulating audio / telemetry / any aligned signal** (loading, slicing, concat, shifting RPS/IMU/VAD alongside audio) | — | The in-repo `src/utils/data` timeseries algebra was replaced by the PyPI `tdseries` package (`import tdseries as td`) and deleted — see `docs/refactor-unified-framework.md` § "tdseries migration guide" for the old→new API table and gotchas. Full `tdseries` API/design: `https://github.com/flyingleafe/tflib` (source repo for the `tdseries` PyPI package; not checked out on this machine). |
+| **Creating or processing a dataset** (DREGON-LM, DN-LM, mixing, RPS extraction) | `create-dregon-dataset` | `src/data_processing/AGENTS.md` (recording inventory, variants, canonical command, gotchas); loaders `src/data_processing/dregon.py`, `michaels.py`; scripts `scripts/create_dregon_librimix.py`, `scripts/create_dataset.py`. |
+| **Loading data into a training loop** (Dataset/wiring, multichannel flattening) | — | `src/data_processing/AGENTS.md` § "Multichannel Training & Evaluation Wiring" (`DregonLMFrameDataset`, `NoiseRPSDataset`) + `docs/refactor-unified-framework.md` for the `tdseries`/Frame data model. |
 | **Implementing / reimplementing a model** (need examples + the interface contract) | `reimplement-model` | `src/tasks/AGENTS.md` **first** (the contract the model must satisfy) → `src/models/AGENTS.md` (registry, RPS support, "Adding a front-end"). Example impls to mirror: `src/models/dcunet_refactored.py`, `src/models/multif0/`, `src/models/rps_predictor.py`. |
 | **Adding a spectral front-end** | — | `src/models/AGENTS.md` § "Spectral front-ends" / "Adding a new front-end". |
 | **RPS conditioning** (RotorEncoder, fusion, predictor interface) | — | `src/models/AGENTS.md` + `src/tasks/rps-prediction/AGENTS.md`. |
-| **Running an experiment** (train / eval / orchestrate) | `run-experiment` (`vast-server-training` for remote GPU) | `experiments/AGENTS.md`, `configs/AGENTS.md`, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`. |
-| **Running online-mixed RPS-predictor training** (random mixtures each epoch, fixed validation, curriculum/augment stages) | `run-experiment` | `data_processing/AGENTS.md` § "Online Mixing for RPS Prediction" **first**, then `configs/AGENTS.md` § "Online-mixing configs", then `train_rps_predictor.py` (`--online_mix --mix_config --samples_per_validation`). |
-| **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `generate_comparison.py`. |
-| **Producing a presentation / slides** | `create-typst-slides` | `writing/AGENTS.md`; results figures via `generate_comparison.py`. |
-| **Producing a report** | `create-typst-report` | `writing/AGENTS.md`; results figures via `generate_comparison.py`. |
-| **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `fwh_rotor_sim/AGENTS.md`. |
+| **Running an experiment** (train / eval / orchestrate) | `run-experiment` | `conf/AGENTS.md` (the Hydra experiment tree — `conf/experiment/`). Run directly with `python train.py experiment=<name>`; for cluster GPU use `./scripts/sbatch.sh` (Key Facts below) or the `autoresearch` extension. |
+| **Running online-mixed RPS-predictor training** (random mixtures each epoch, fixed validation, curriculum/augment stages) | `run-experiment` | `src/data_processing/AGENTS.md` § "Online Mixing for RPS Prediction" **first**, then `conf/AGENTS.md`, then `python train.py experiment=<name>` with a `conf/data` entry that wraps `OnlineMixIterableDataset` (policy YAMLs live at `conf/online_mix/*.yaml`; `samples_per_validation` set in `conf/config.yaml`/the experiment file). |
+| **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `eval.py` + `src/plots` comparison plots. |
+| **Producing a presentation / slides** | `create-typst-slides` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`. |
+| **Producing a report** | `create-typst-report` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`. |
+| **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `src/fwh_rotor_sim/AGENTS.md`. |
 | **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (DVC + W&B artifacts; rsync fallback). |
 
 ## Directory Map
@@ -81,30 +80,29 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 |-----------|---------|-------------|
 | `src/models/` | Model implementations + pluggable spectral front-ends | Model type keys, RPS conditioning, adding new models; front-end system; see `src/models/AGENTS.md` |
 | `src/tasks/` | Task interface definitions (what a model must implement for each ML task) | RPS prediction, speech enhancement; see `src/tasks/AGENTS.md` |
-| `configs/` | YAML config files for model variants and online-mixing dataset policies | Naming conventions, config structure; online mixer configs are `configs/online_mix_*.yaml` |
-| `src/postdoc/` | Job-runner CLI — thin wrapper over SkyPilot managed jobs on an SSH node pool | `postdoc submit <shell-command>`; see `src/postdoc/AGENTS.md` and `docs/skypilot/` |
+| `conf/` | Hydra config tree — `experiment/`, `model/` (native `_target_`; legacy models inlined via `build_legacy_inline`), `data/`, `loss/`, `metrics/`, `optim/`, plus online-mix policies in `conf/online_mix/` | See `conf/AGENTS.md` |
 | `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py` | See `src/utils/AGENTS.md` for layout |
-| `src/utils/data/` | **Fixed‑point time‑series algebra** for audio, telemetry, and any aligned data. Use this for manipulating audio with co‑recorded signals (RPS, IMU, VAD). Four frozen container types with a uniform `slice`/`concat`/`shift` algebra, exact int64‑tick storage. | **Always read `src/utils/data/AGENTS.md` before any task touching audio, media, or timeseries data.** Full API reference at [`src/utils/data/API.md`](src/utils/data/API.md). |
-| `experiments/` | Experiment YAML definitions | Format, creating new experiments |
-| `data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM creation scripts |
+| `src/fwh_rotor_sim/` | FWH rotor acoustic simulator (BEMT + Farassat 1A), differentiable | See `src/fwh_rotor_sim/AGENTS.md` |
+| `src/data_processing/` | Dataset creation and RPS processing | DN-LM, DREGON-LM loaders; offline creation scripts live in `scripts/` |
+| `scripts/` | Standalone scripts not on the train/eval path | Offline dataset creation (`create_dataset.py`, `create_dregon_librimix.py`), Slurm/sync helpers (`sbatch.sh`, `sync_results.sh`), benchmarks, config checks |
 | `writing/` | Reports, slides, and papers (Typst + LaTeX) | See `writing/AGENTS.md` for templates, build chain, and visual-check workflow. |
 | `notebooks/` | Jupyter notebooks for analysis | Result analysis, data exploration |
-| `docs/` | Design docs and debugging guides | Postdoc specs, training loop docs, R2 sync (`docs/data-and-artifacts.md`) |
+| `docs/` | Design docs and debugging guides | Training loop docs, experiment log (`docs/experiments/`), R2 sync (`docs/data-and-artifacts.md`) |
 | `tests/` | Postdoc system tests | Test structure, running tests |
 
-Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `metrics.py`, `train_noise_gen.py` (sinusoidal+filter drone-noise generator trained on DREGON+Michael's), etc. See code comments for details. (The former root-level `utils.py` is now `src/utils/__init__.py` — `from utils import ...` keeps working.)
+Root-level scripts: **only** `train.py` (the only training entry point, Hydra-driven — `python train.py experiment=<name>`) and `eval.py` (the only evaluation entry point; absorbs the former `valid.py`/`final_valid.py`/`eval_cross.py`/`eval_narrow_sr.py`/`generate_comparison.py`/`plot_per_snr.py`). Everything else that is not a `src/` package lives under `scripts/`: offline dataset-creation (`scripts/dataset.py`, `scripts/create_dataset.py`, `scripts/create_dregon_librimix.py`), Slurm/sync helpers (`scripts/sbatch.sh`, `scripts/sync_results.sh`), benchmarks and config checks. See code comments for details. (The former root-level `utils.py` is now `src/utils/__init__.py` — `from utils import ...` keeps working; the former root `metrics.py` is now the `src/metrics` package.)
 
 ## Key Facts
 
 - **Model types**: Registered in `utils.get_model_from_config()` (now at `src/utils/__init__.py`) — see `src/models/AGENTS.md` for full table
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `src/models/AGENTS.md`
-- **Online-mixed RPS training**: loader logic is `data_processing/online_mixing.py`; durable YAML policies live at `configs/online_mix_*.yaml`; training uses `train_rps_predictor.py --online_mix --mix_config <yaml> --samples_per_validation <N>` with fixed validation from `--data_root .../valid`. Cache location is `ONLINE_MIX_SOURCE_CACHE_DIR` in `.env` (default `.cache/online_mix_sources`).
-- **Experiment running**: `postdoc submit <shell-command>` — thin SkyPilot wrapper. Jobs are plain shell commands; configs are the training script's concern. See `run-experiment` skill, `src/postdoc/AGENTS.md`, `docs/skypilot/README.md`
-- **Slurm GPU jobs**: On Slurm login nodes, use `./sbatch.sh [slurm_params] -- <training command>` for generic GPU jobs. It defaults to `gpushort` for short jobs (<=1:00:00) and supports `--partition=sae` for longer jobs (sae max observed via `sinfo`: 10-00:00:00), with logs/results rooted under `/gpfs/scratch/acw592`.
+- **Online-mixed RPS training**: loader logic is `src/data_processing/online_mixing.py`; durable YAML policies live at `conf/online_mix/*.yaml`; training uses `python train.py experiment=<name>` with a `conf/data` entry that wraps `OnlineMixIterableDataset` (e.g. `conf/data/online_mix_v4_michaels.yaml`) and a fixed, non-mixed validation split. `samples_per_validation` is a top-level Hydra field (`conf/config.yaml`). Cache location is `ONLINE_MIX_SOURCE_CACHE_DIR` in `.env` (default `.cache/online_mix_sources`).
+- **Experiment running**: run `python train.py experiment=<name>` directly (the only training entry point). On a GPU box just run it there; on a Slurm cluster wrap it in `./scripts/sbatch.sh` (below) or drive it from the `autoresearch` extension. Jobs are plain shell commands — there is no bespoke job-runner. See the `run-experiment` skill.
+- **Slurm GPU jobs**: On Slurm login nodes, use `./scripts/sbatch.sh [slurm_params] -- <training command>` for generic GPU jobs. It defaults to `gpushort` for short jobs (<=1:00:00) and supports `--partition=sae` for longer jobs (sae max observed via `sinfo`: 10-00:00:00), with logs/results rooted under `/gpfs/scratch/acw592`.
 - **Pi autoresearch**: Project-local extension `.pi/extensions/autoresearch/` provides `/autoresearch`, `/autoresearch-resume`, plus `slurm_submit_short` (gpushort <=1h), `slurm_submit_long` (sae longer jobs), compatibility `slurm_submit`, `slurm_status`, and `slurm_logs`. It scaffolds git-tracked research artifacts under `autoresearch/<session>/`; checkpoints/results remain under `/gpfs/scratch/acw592/results/autoresearch/`. Use `/autoresearch-resume` to reattach to an existing `autoresearch/<session>/session.json` after fixing or reloading the extension.
 - **Playwright (browser automation)**: Installed via `python312Packages.playwright` + `playwright-driver.browsers` in `flake.nix`. The nixpkgs package shadows any `uv`-installed version via `PYTHONPATH` ordering. Uses NixOS-patched Chromium/headless_shell — no `playwright install` needed. Env vars `PLAYWRIGHT_BROWSERS_PATH` and `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` are set in the shell hook.
-- **Results**: Always `./sync_results.sh` before analysis
+- **Results**: Always `./scripts/sync_results.sh` before analysis
 
 ## Philosophy (earned, do not relitigate)
 
@@ -126,7 +124,7 @@ Root-level scripts: `train.py`, `valid.py`, `final_valid.py`, `dataset.py`, `met
 2. **Route before acting** (for non-trivial tasks). Skills exist; use them.
 3. **Subdirectory AGENTS.md is truth.** Read the relevant one before working in any directory.
 4. **Code comments = concrete; AGENTS.md = conceptual/structural.**
-5. **Sync results before analysis.** Preferred: `dvc pull` (datasets) + `wandb.use_artifact(...)` (checkpoints) — see `docs/data-and-artifacts.md`. Legacy rsync fallback: `./sync_results.sh`.
+5. **Sync results before analysis.** Preferred: `dvc pull` (datasets) + `wandb.use_artifact(...)` (checkpoints) — see `docs/data-and-artifacts.md`. Legacy rsync fallback: `./scripts/sync_results.sh`.
 6. **Record iff non-trivial.** If the task taught, solved, or revealed a gap — run `record-and-remember`. If nothing was learned, skip.
 
 ## References

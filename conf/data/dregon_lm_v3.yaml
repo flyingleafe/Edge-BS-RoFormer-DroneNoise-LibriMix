@@ -1,0 +1,30 @@
+# DREGON-LM-V3: 6000 train / 600 valid, 1 s @16kHz mono, SNR [-30,0] dB.
+# Fixed an axis bug in get_random_chunk relative to v1. Historical training
+# used plain (non-PIT) MSE (`--no_pit_loss`) and model_type `rps_predictor`
+# via the former configs/14a_SimpleConv_DREGON_V3.yaml (removed); this new-framework encoding
+# instead uses the modern `simple_conv` registry key + pit_mse (current best
+# practice per the C9 channel-generalization finding that PIT is the correct
+# objective, not a workaround) — a deliberate, documented deviation, see
+# REPLICATION.md § C5. R² is degenerate on 1 s near-constant-RPS clips
+# (SS_total ~ 0); trust MSE/MAE over R² for this dataset.
+# Create: python create_dregon_librimix_v3.py (superseded script; if absent,
+# the closest modern equivalent is
+# `create_dregon_librimix.py --duration 1.0 --num_train 6000 --num_valid 600`).
+train:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V3/train
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V3/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

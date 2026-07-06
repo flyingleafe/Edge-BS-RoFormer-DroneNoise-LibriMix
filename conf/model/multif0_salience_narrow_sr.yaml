@@ -1,0 +1,29 @@
+# multif0_salience, narrow-band input + fine super-resolution OUTPUT grid
+# (.pi/checkpoints/salience-narrow-superres-experiment.md). Input HCQT
+# concentrated in the rotor band (fmin=55, 1 octave, 10x oversample,
+# EXPLICIT harmonics=[1,2,3,4] — auto-derivation overshoots to ~57
+# harmonics at this fmin/octave span); output decoupled to a fine linear
+# 55-110 Hz / 360-bin grid via FreqSuperResHead. frame_rate stays
+# [16000,256]: only the frequency axis changes, the HCQT time grid
+# (sr=16000, hop_length=256) is untouched by fmin/n_octaves/over_sample.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: multif0_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  fmin: 55.0
+  n_octaves: 1
+  over_sample: 10
+  harmonics: [1, 2, 3, 4]
+  superres_out: true
+  out_fmin: 55.0
+  out_fmax: 110.0
+  out_bins: 360
+model_type: null
+legacy_config_path: null

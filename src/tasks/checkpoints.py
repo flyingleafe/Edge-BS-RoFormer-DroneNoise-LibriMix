@@ -25,12 +25,12 @@ import torch.nn as nn
 # ── Model registries ──────────────────────────────────────────────────────
 
 
-# RPS prediction models (from train_rps_predictor.py).
+# RPS prediction models (from models.registry).
 def _make_rps_registry() -> dict[str, Any]:
     """Return {name: callable(**kw) -> nn.Module} for RPS models."""
-    from train_rps_predictor import MODEL_REGISTRY as RPS_REGISTRY
+    from models.registry import RPS_MODEL_REGISTRY
 
-    return dict(RPS_REGISTRY)
+    return dict(RPS_MODEL_REGISTRY)
 
 
 # Suppression/encoder models (from utils.get_model_from_config).
@@ -58,8 +58,8 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
     spec : str
         Format ``Type@/path/to/checkpoint.pt``.  ``Type`` is resolved
         against the known model registries:
-        * RPS predictors  — ``MODEL_REGISTRY`` keys from
-          ``train_rps_predictor`` (e.g. ``simple_conv``, ``dccrn_enc_rps``).
+        * RPS predictors  — ``RPS_MODEL_REGISTRY`` keys from
+          ``models.registry`` (e.g. ``simple_conv``, ``dccrn_enc_rps``).
         * Suppression models — ``utils.get_model_from_config`` model-type
           keys (e.g. ``dcunet``, ``dccrn``).
     device : str

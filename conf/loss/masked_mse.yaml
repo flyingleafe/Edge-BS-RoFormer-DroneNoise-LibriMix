@@ -1,0 +1,11 @@
+# Quantile-masked MSE between enhanced (model output) and target (clean
+# speech, dataset-only) — train.py's default speech-enhancement loss
+# (coarse_loss_clip / q=0.9).
+terms:
+  - name: masked_mse
+    _target_: losses.MaskedLoss
+    weight: 1.0
+    params:
+      q: 0.9
+      n_channels: null
+      sr: [16000, 1]

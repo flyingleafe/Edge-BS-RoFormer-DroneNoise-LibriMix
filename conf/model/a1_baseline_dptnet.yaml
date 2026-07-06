@@ -1,0 +1,53 @@
+# Native inline Hydra model config (converted from the former
+# configs/*.yaml + legacy_config_path indirection). The `config`
+# block below is the inlined ZFTurbo-style tree; it is built via
+# models.registry.build_legacy_inline -> utils.build_model_from_config,
+# the exact same dispatch the file-based path used. See REPLICATION.md.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.registry.build_legacy_inline
+params:
+  model_type: dptnet
+  config:
+    audio:
+      chunk_size: 131584
+      dim_f: 1024
+      dim_t: 515
+      hop_length: 512
+      n_fft: 2048
+      num_channels: 1
+      sample_rate: 16000
+      min_mean_abs: 0.0
+    model: dptnet
+    training:
+      batch_size: 12
+      gradient_accumulation_steps: 1
+      grad_clip: 0
+      instruments:
+      - vocals
+      - noise
+      lr: 0.0005
+      patience: 2
+      reduce_factor: 0.95
+      target_instrument: vocals
+      num_epochs: 1000
+      num_steps: 200
+      q: 0.95
+      coarse_loss_clip: true
+      ema_momentum: 0.999
+      optimizer: adamw
+      other_fix: false
+      use_amp: true
+      early_stop:
+        enabled: true
+        patience: 5
+        metric: si-sdr
+    inference:
+      batch_size: 10
+      num_overlap: 4

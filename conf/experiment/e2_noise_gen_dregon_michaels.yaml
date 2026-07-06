@@ -1,0 +1,31 @@
+# @package _global_
+# E2 — positional multi-observer noise-gen (PositionalHarmonicNoiseGen),
+# jointly on DREGON in_flight_noise + Michael's FLY-series, per-drone
+# conditioned (cond_dim=16). Historical command
+# (.pi/checkpoints/noise-generation-online-dregon-michaels.md):
+#   train_noise_generation.py --online_config
+#   conf/online_mix/noise_gen_online_dregon_michaels.yaml --cond_dim 16
+#   --device cuda:0 --epochs 200 --patience 20 --batch_size 32
+#   --duration_s 1.0 --n_harmonics 100 --samples_per_epoch 6000
+#   --num_valid 256 --num_workers 8
+# New-framework deviation (see REPLICATION.md § E2/E3): conf/data/noise_rps_dregon_michaels.yaml
+# wraps the offline chunkable NoiseRPSDataset (single mic, time-holdout
+# split) instead of the historical *online* per-frame-geometry streaming
+# slicer (all 8 mics jointly) — documented, not a byte-for-byte
+# reproduction.
+defaults:
+  - override /data: noise_rps_dregon_michaels
+  - override /model: positional_harmonic_gen_conditioned
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e2_noise_gen_dregon_michaels
+epochs: 200
+patience: 20
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max

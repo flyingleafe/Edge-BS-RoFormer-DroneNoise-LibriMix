@@ -1,0 +1,27 @@
+# positional_harmonic_gen — noise_generation task, per-drone conditioned
+# (cond_dim=16, drone_names=[dregon, michaels] — matches the historical
+# --cond_dim 16 online-mixed DREGON+Michael's runs,
+# .pi/checkpoints/noise-generation-online-dregon-michaels.md /
+# noise-gen-swapped-smoothness-random-phase.md). `models.registry.build_noise_gen_model`
+# wraps the generator + a trainable tasks.noise_generation.DroneCodebook
+# into one composite nn.Module (see that function's docstring for why the
+# codebook now lives inside "the model"). `drone_names` must match the
+# `meta.drone` values data_processing.frame_datasets.NoiseGenFrameDataset
+# emits ("dregon"/"michaels" — NoiseRPSDataset's chunk `origin`).
+# `task_params.conditioned: true` tells NoiseGenerationCodec to resolve
+# `drone_names` from `meta.drone` and call the model with them.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+model_type: null
+legacy_config_path: null

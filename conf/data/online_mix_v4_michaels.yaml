@@ -1,0 +1,20 @@
+# Online-mixed RPS training stream (DREGON in_flight_noise minus room1 +
+# Michael's FLY125, LibriSpeech speech) with a FIXED, non-mixed validation
+# split (DREGON-LM-V4-michaels/valid) — see data_processing/AGENTS.md §
+# "Online Mixing for RPS Prediction": never use an advancing online stream
+# for validation/early-stopping.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/online_mix_v4_michaels_train_no_room1.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

@@ -1,0 +1,19 @@
+# basic_pitch_salience (Bittner contour branch) — salience_rps task, native
+# 16 kHz, library defaults (bp_fmin=27.5, bins_per_semitone=3,
+# n_contour_semitones=88 -> 264 bins / 36 bins-per-octave). frame_rate=
+# [16000,256] is FFT_HOP=256 always (models.basic_pitch.cqt), independent
+# of sample rate.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: basic_pitch_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+model_type: null
+legacy_config_path: null

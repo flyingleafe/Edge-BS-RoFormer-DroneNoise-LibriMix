@@ -1,0 +1,25 @@
+# @package _global_
+# C9 — 8-channel retrain / channel-generalization finding. Reproduces the
+# legacy channel-as-extra-batch-item scheme (data_processing/AGENTS.md §
+# "Multichannel Training & Evaluation Wiring") via
+# conf/data/dregon_lm_v4_8ch_flat.yaml (flatten_channels=true), instead of
+# the mono-only `channel: 0` used by rps_simple_conv_v2_v4 / the C10/C11
+# family. Historical command (approximate — the legacy
+# _flatten_channels-based DREGONRPSDataset run had no dedicated
+# `train_rps_predictor.py` flag beyond the model already returning a
+# `(B*C, ...)`-shaped batch; see REPLICATION.md § C9):
+#   train_rps_predictor.py --model simple_conv_v2 --data_root
+#   datasets/DREGON-LM-V4 --epochs 200 --patience 30 --batch_size 16
+defaults:
+  - override /data: dregon_lm_v4_8ch_flat
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: c9_simple_conv_v2_8ch
+epochs: 200
+patience: 30
+batch_size: 16
+optim:
+  monitor: mse
+  monitor_mode: min

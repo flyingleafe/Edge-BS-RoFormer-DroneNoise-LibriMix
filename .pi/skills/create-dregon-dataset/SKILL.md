@@ -24,7 +24,7 @@ handle it).
 ## Recommended command (multichannel + real valid)
 
 ```bash
-python create_dregon_librimix.py \
+python scripts/create_dregon_librimix.py \
   --multichannel --real_valid \
   --output_dir datasets/DREGON-LM-RealValid \
   --num_train 6000   --duration 1.0 \
@@ -52,7 +52,7 @@ See `data_processing/AGENTS.md` § "In-flight window" for per-recording trims.
 ## Mono (legacy / Paper 2 baseline)
 
 ```bash
-python create_dregon_librimix.py \
+python scripts/create_dregon_librimix.py \
   --output_dir datasets/DREGON-LM \
   --num_train 6000 --num_valid 600 \
   --duration 3.0 \

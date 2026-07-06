@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNet + encoder-side bottleneck RPS fusion, 6-layer. Dataset ambiguous (best-effort dregon_lm_v1) — see REPLICATION.md § B1 caveat.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dcunet_rps_bottleneck_5a
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b1_dcunet_rps_bottleneck_5a
+optim:
+  monitor: si_sdr
+  monitor_mode: max

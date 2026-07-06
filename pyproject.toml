@@ -41,16 +41,15 @@ dependencies = [
     "datasets>=4.5.0",
     "torchcodec==0.5",
     "dvc[s3]>=3.56",
-    "skypilot[kubernetes]>=0.11",
     "playwright>=1.52.0",
     "nnaudio>=0.3.4",
+    "tdseries>=0.1.1",
+    "hydra-core>=1.3.2",
 ]
 
 [project.scripts]
-postdoc = "postdoc.cli:main"
-postdoc-runner = "postdoc.queue:main"
 evaluate-rps = "tasks.cli:main"
-make-plot = "utils.plots.cli:app"
+make-plot = "plots.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -78,7 +77,17 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/postdoc", "src/utils", "src/tasks", "src/models", "data_processing"]
+packages = [
+    "src/utils",
+    "src/tasks",
+    "src/models",
+    "src/data_processing",
+    "src/plots",
+    "src/losses",
+    "src/metrics",
+    "src/training",
+    "src/fwh_rotor_sim",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -100,11 +109,21 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["utils", "postdoc", "tasks", "models", "data_processing"]
+known-first-party = ["utils", "tasks", "models", "data_processing"]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone report/slide scripts bootstrap sys.path / os.chdir / matplotlib
+# backend before imports; E402 is structural there.
+"writing/**" = ["E402"]
 
 [tool.pyright]
 typeCheckingMode = "basic"
 pythonVersion = "3.12"
-exclude = [".venv", "node_modules", ".postdoc", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
+# Pin the interpreter environment: pre-commit scrubs VIRTUAL_ENV, and without
+# it pyright silently type-checks against no site-packages (everything
+# Unknown), diverging from editor/hook runs.
+venvPath = "."
+venv = ".venv"
+exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
 reportMissingImports = false
 reportMissingTypeStubs = false

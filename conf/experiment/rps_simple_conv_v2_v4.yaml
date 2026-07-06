@@ -1,0 +1,11 @@
+# @package _global_
+# SimpleConvV2 on DREGON-LM-V4 — the reference online-mixing-free RPS
+# baseline (mirrors the historical `train_rps_predictor.py --model
+# simple_conv_v2 --data_root datasets/DREGON-LM-V4` run).
+defaults:
+  - override /data: dregon_lm_v4
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: rps_simple_conv_v2_v4

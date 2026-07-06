@@ -1,1 +1,0 @@
-import{c as a,e}from"./center-B5EppFYO.js";var d=a((t,o)=>{let n;return o==="sandbox"&&(n=e("#i"+t)),(o==="sandbox"?e(n.nodes()[0].contentDocument.body):e("body")).select(`[id="${t}"]`)},"getDiagramElement");export{d as g};

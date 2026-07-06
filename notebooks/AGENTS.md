@@ -17,10 +17,10 @@ Jupyter notebooks provide interactive exploration that scripts and CLI tools can
 | `visualize_models.ipynb` | Model architecture visualization |
 | `inference_comparison.ipynb` | Side-by-side inference comparisons |
 | `rps_evaluation_interactive.ipynb` | Interactive RPS evaluation |
-| `salience_baselines_dregon_v4.ipynb` | `multif0_salience` + `basic_pitch` final validation on DREGON-LM-V4 + per-sample spectrogram / **salience map** / RPS-vs-GT viz (uses the `"salience"` renderer + `utils.plots.rps_prediction.salience_comparison`) |
+| `salience_baselines_dregon_v4.ipynb` | `multif0_salience` + `basic_pitch` final validation on DREGON-LM-V4 + per-sample spectrogram / **salience map** / RPS-vs-GT viz (uses the `"salience"` renderer + `plots.rps_prediction.salience_comparison`) |
 
 ## Gotchas
 
-- Notebooks may reference `results/` data that needs syncing first (`./sync_results.sh`)
+- Notebooks may reference `results/` data that needs syncing first (`./scripts/sync_results.sh`)
 - `.ipynb_checkpoints/` is gitignored
-- For publication figures, prefer `generate_comparison.py` and `plot_per_snr.py` (root scripts) — see `generate-model-comparisons` skill
+- For publication figures, prefer `eval.py` + `src/plots` comparison plots (absorbs the former `generate_comparison.py`/`plot_per_snr.py`) — see `generate-model-comparisons` skill

@@ -8,14 +8,15 @@ harmonic + filtered-noise emitter, and the array geometry places each rotor as
 a point source and renders it at every mic (1/r attenuation + propagation
 delay), summing over rotors.
 
-Geometry convention (the project's `TimeFrame` carries it natively)
--------------------------------------------------------------------
-Microphone and rotor positions are **non-temporal** array metadata, so they live
-in ``TimeFrame.global_data`` (``mic_positions`` ``(M, 3)``,
-``rotor_positions`` ``(R, 3)``) — exactly as ``data_processing.dregon`` already
-populates them. The model consumes the per-(mic, rotor) relative vector
-``rel_pos[m, r] = mic_positions[m] - rotor_positions[r]`` built by
-:func:`geometry_to_rel_pos`.
+Geometry convention (the project's ``tdseries.Frame`` carries it natively)
+-------------------------------------------------------------------------
+Microphone and rotor positions are **non-temporal** array metadata, so they
+live in dedicated Frame entries ``"mic_pos"`` (``(M, 3)``, sharing the
+``"mic"`` dim with the audio track) and ``"rotor_pos"`` (``(R, 3)``, sharing
+the ``"rotor"`` dim with the ``"rps"`` track) — exactly as
+``data_processing.dregon`` already populates them. The model consumes the
+per-(mic, rotor) relative vector ``rel_pos[m, r] = mic_positions[m] -
+rotor_positions[r]`` built by :func:`geometry_to_rel_pos`.
 
 The training/eval datasets reuse the **same on-disk format as RPS prediction**
 (DREGON-LM ``sample_*`` chunks). The only differences: the target is the clean
@@ -30,9 +31,10 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+import tdseries as td
 import torch
 
-from utils.data import EventSeries, TimeFrame, UniformSeries
+from data_processing.frames import with_meta
 
 # ── Constants ─────────────────────────────────────────────────────────────
 
@@ -45,19 +47,46 @@ SPEED_OF_SOUND: float = 343.0
 
 
 def geometry_to_rel_pos(
-    mic_positions: np.ndarray,
-    rotor_positions: np.ndarray,
-) -> np.ndarray:
+    mic_positions: np.ndarray | torch.Tensor,
+    rotor_positions: np.ndarray | torch.Tensor,
+) -> np.ndarray | torch.Tensor:
     """Build per-(mic, rotor) relative position vectors.
 
-    Args:
-        mic_positions: ``(M, 3)`` microphone xyz (metres).
-        rotor_positions: ``(R, 3)`` rotor xyz (metres), same frame.
+    Two call shapes, dispatched on argument type:
 
-    Returns:
-        ``(M, R, 3)`` float32 where ``rel_pos[m, r] = mic[m] - rotor[r]`` — the
-        vector from rotor ``r`` to mic ``m`` that the generator propagates along.
+    - **numpy, unbatched** (single recording's geometry): ``mic_positions
+      (M, 3)``, ``rotor_positions (R, 3)`` -> ``(M, R, 3)`` float32 numpy
+      array. The original single-recording contract (report/notebook figure
+      scripts, ``data_processing.generated_noise``).
+    - **torch, batched** (a training batch, one geometry per sample):
+      ``mic_positions (B, M, 3)``, ``rotor_positions (B, R, 3)`` -> ``(B, M,
+      R, 3)`` tensor, same dtype/device as the inputs. Used by
+      :class:`tasks.codecs.NoiseGenerationCodec` — geometry arrives as a
+      batched Frame entry (``tasks.task.noise_generation``'s input spec),
+      and building the relative-position tensor via plain broadcasting
+      (rather than round-tripping through numpy) keeps it differentiable
+      and on-device.
+
+    In both cases: ``rel_pos[..., m, r, :] = mic[..., m, :] - rotor[..., r, :]``
+    — the vector from rotor ``r`` to mic ``m`` that the generator propagates
+    along.
     """
+    if isinstance(mic_positions, torch.Tensor) or isinstance(rotor_positions, torch.Tensor):
+        mic_t = torch.as_tensor(mic_positions)
+        rotor_t = torch.as_tensor(rotor_positions)
+        if mic_t.shape[-1] != 3:
+            raise ValueError(f"mic_positions must end in dim 3 (xyz), got {tuple(mic_t.shape)}")
+        if rotor_t.shape[-1] != 3:
+            raise ValueError(f"rotor_positions must end in dim 3 (xyz), got {tuple(rotor_t.shape)}")
+        if mic_t.dim() == 3 and rotor_t.dim() == 3:
+            return mic_t.unsqueeze(2) - rotor_t.unsqueeze(1)  # (B, M, R, 3)
+        if mic_t.dim() == 2 and rotor_t.dim() == 2:
+            return mic_t.unsqueeze(1) - rotor_t.unsqueeze(0)  # (M, R, 3)
+        raise ValueError(
+            "mic_positions/rotor_positions must both be (M,3)/(R,3) (unbatched) or "
+            f"(B,M,3)/(B,R,3) (batched); got {tuple(mic_t.shape)} and {tuple(rotor_t.shape)}"
+        )
+
     mic = np.asarray(mic_positions, dtype=np.float64)
     rotor = np.asarray(rotor_positions, dtype=np.float64)
     if mic.ndim != 2 or mic.shape[-1] != 3:
@@ -170,7 +199,7 @@ class DroneCodebook(torch.nn.Module):
         return torch.stack([self.codes[self._key(n)] for n in names], dim=0)
 
 
-# ── TimeFrame input-set loader ────────────────────────────────────────────
+# ── Frame input-set loader ────────────────────────────────────────────────
 
 
 def load_input_set(
@@ -180,12 +209,12 @@ def load_input_set(
     *,
     target_file: str = "noise.wav",
     sr: float = SR_AUDIO,
-) -> Iterator[TimeFrame]:
-    """Load DREGON-LM-style chunks as ``TimeFrame``s for noise-generation eval.
+) -> Iterator[td.Frame]:
+    """Load DREGON-LM-style chunks as ``Frame``s for noise-generation eval.
 
-    Each yielded frame has tracks ``{"audio": UniformSeries (clean noise),
-    "rps": EventSeries}`` and ``global_data = {"mic_positions",
-    "rotor_positions"}`` — the geometry the generator needs. Mirrors
+    Each yielded frame has entries ``"audio"`` (clean noise), ``"rps"``,
+    ``"mic_pos"`` (``(M, 3)``, dim ``"mic"``) and ``"rotor_pos"`` (``(R, 3)``,
+    dim ``"rotor"``) — the geometry the generator needs. Mirrors
     :func:`tasks.rps_prediction.load_input_set` but targets the clean noise and
     carries positions.
 
@@ -201,10 +230,8 @@ def load_input_set(
 
     import torchaudio
 
-    global_data = {
-        "mic_positions": np.asarray(mic_positions, dtype=np.float64),
-        "rotor_positions": np.asarray(rotor_positions, dtype=np.float64),
-    }
+    mic_pos_series = td.wrap(np.asarray(mic_positions, dtype=np.float64), dims=("mic", None))
+    rotor_pos_series = td.wrap(np.asarray(rotor_positions, dtype=np.float64), dims=("rotor", None))
 
     for sample_dir in sorted(root.iterdir()):
         if not sample_dir.is_dir() or not sample_dir.name.startswith("sample_"):
@@ -220,18 +247,25 @@ def load_input_set(
         audio = waveform.numpy().astype(np.float32)
         if audio.shape[0] == 1:
             audio = audio[0]  # (T,) mono
+            audio_dims = ("time",)
+        else:
+            audio_dims = ("mic", "time")
 
         rps_raw = np.load(str(rps_path)).astype(np.float64)  # (R, M)
         audio_dur_s = audio.shape[-1] / file_sr
         n_motor = rps_raw.shape[-1]
         motor_times = np.arange(n_motor) / (n_motor / audio_dur_s if audio_dur_s > 0 else 1000.0)
-        rps_es = EventSeries.from_events(
-            timestamps=motor_times, values=rps_raw, t_start=0.0, t_end=audio_dur_s
+        rps_series = td.events(
+            motor_times, rps_raw, dims=("rotor", "time"), t_start=0.0, t_end=audio_dur_s
         )
-        audio_us = UniformSeries.from_samples(audio, sr=file_sr, t_start=0.0)
+        audio_series = td.uniform(audio, file_sr, dims=audio_dims, t_start=0.0)
 
-        yield TimeFrame.from_tracks(
-            {"audio": audio_us, "rps": rps_es},
-            tags={"id": sample_dir.name},
-            global_data=global_data,
+        frame = td.Frame(
+            {
+                "audio": audio_series,
+                "rps": rps_series,
+                "mic_pos": mic_pos_series,
+                "rotor_pos": rotor_pos_series,
+            }
         )
+        yield with_meta(frame, id=sample_dir.name)

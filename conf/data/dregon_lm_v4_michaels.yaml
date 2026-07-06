@@ -1,0 +1,39 @@
+# DREGON-LM-V4-michaels, OFFLINE/fixed-train variant (both splits are static
+# folders — contrast with conf/data/online_mix_v4_michaels.yaml, whose `train:`
+# streams from an online mixer over the same underlying sources). Used by the
+# C10 26-variant architecture-sweep "offline_fixed_train" arm and the C11
+# DREGON+FLY125 cross-drone retrain. `valid:` is identical to
+# online_mix_v4_michaels.yaml's fixed validation split (never train on an
+# advancing stream and validate on it — see data_processing/AGENTS.md §
+# "Online Mixing for RPS Prediction"). `channel: 0` selects one mic (8-channel
+# recording, mono SimpleConv-family models).
+# Create (src/data_processing/AGENTS.md § "Composable noise pools" example;
+# note that doc's own example command uses --output_dir datasets/DREGON-LM-V5
+# — a naming inconsistency with the "V4-michaels" name used everywhere else
+# in the historical record, see REPLICATION.md § C10/C11 caveats):
+#   python create_dregon_librimix.py --multichannel --real_valid --max_non_overlapping \
+#     --output_dir datasets/DREGON-LM-V4-michaels \
+#     --num_train 6000 --duration 1.0 --num_valid 30 --valid_duration 8.0 \
+#     --min_motor_rps 30.0 --source_white_noise_prob 0.3 \
+#     --speech_per_channel independent --snr_min -30 --snr_max 0 \
+#     --train_noise_sources "dregon-split:in_flight_noise,michaels:FLY125" \
+#     --valid_noise_sources "dregon-id:free-flight_nosource_room1,dregon-id:free-flight_speech-low_room1,dregon-id:free-flight_whitenoise-low_room1,michaels:FLY124"
+train:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/train
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    channel: 0
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

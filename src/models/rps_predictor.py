@@ -39,6 +39,7 @@ class STFTReImFrontEnd(nn.Module):
         self.hop_length = hop_length
         self.center = center
         self.compressed = compressed
+        self.window: torch.Tensor
         self.register_buffer("window", torch.hann_window(n_fft), persistent=True)
 
     def forward(self, audio):
@@ -246,6 +247,7 @@ class CausalTCNHead(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, C, T), returns (B, num_rotors, T)."""
         for i, block in enumerate(self.blocks):
+            assert isinstance(block, nn.ModuleDict)
             dilation = 2**i
             pad = (self.kernel_size - 1) * dilation
             y = F.pad(x, (pad, 0))
@@ -286,7 +288,9 @@ class SMoLnetRPSLateLayer(nn.Module):
         self.kernel_size = kernel_size
         self.causal_time = causal_time
         padding = (kernel_size // 2, 0) if causal_time else (kernel_size // 2, kernel_size // 2)
-        self.conv = nn.Conv2d(channels, channels, kernel_size=(kernel_size, kernel_size), padding=padding)
+        self.conv = nn.Conv2d(
+            channels, channels, kernel_size=(kernel_size, kernel_size), padding=padding
+        )
         self.norm = nn.BatchNorm2d(channels) if use_norm else nn.Identity()
         self.act = nn.ReLU(inplace=True)
 
@@ -325,9 +329,7 @@ class SMoLnetRPSBackbone(nn.Module):
             prev_ch = inner_channels
         for _ in range(total_layers - dilated_layers):
             layers.append(
-                SMoLnetRPSLateLayer(
-                    inner_channels, causal_time=causal_time, use_norm=use_norm
-                )
+                SMoLnetRPSLateLayer(inner_channels, causal_time=causal_time, use_norm=use_norm)
             )
         self.net = nn.Sequential(*layers)
 
@@ -529,9 +531,7 @@ class CausalResidualConvBlock2d(nn.Module):
     ):
         super().__init__()
         self.time_pad = kernel[1] - 1
-        self.conv = nn.Conv2d(
-            in_ch, out_ch, kernel, stride=stride, padding=(padding[0], 0)
-        )
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel, stride=stride, padding=(padding[0], 0))
         self.bn = nn.BatchNorm2d(out_ch)
         self.act = nn.LeakyReLU(negative_slope, inplace=True)
         self.se = SqueezeExcitation2d(out_ch) if use_se else None
@@ -571,6 +571,7 @@ class CausalSTFTMag(nn.Module):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
+        self.window: torch.Tensor
         self.register_buffer("window", torch.hann_window(n_fft))
 
     def num_frames(self, n_samples: int) -> int:
@@ -629,8 +630,7 @@ class TemporalTransformerHead(nn.Module):
     ) -> torch.Tensor:
         pos = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
         div = torch.exp(
-            torch.arange(0, dim, 2, device=device, dtype=dtype)
-            * (-math.log(10000.0) / dim)
+            torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000.0) / dim)
         )
         pe = torch.zeros(length, dim, device=device, dtype=dtype)
         pe[:, 0::2] = torch.sin(pos * div)
@@ -643,9 +643,7 @@ class TemporalTransformerHead(nn.Module):
         Returns: (B, num_rotors, T)
         """
         x = self.prenet(x).transpose(1, 2)  # (B, T, hidden)
-        pe = self._sinusoidal_positional_encoding(
-            x.size(1), self.hidden_ch, x.device, x.dtype
-        )
+        pe = self._sinusoidal_positional_encoding(x.size(1), self.hidden_ch, x.device, x.dtype)
         x = self.transformer(x + pe.unsqueeze(0))
         x = self.proj(x)
         return x.transpose(1, 2)
@@ -686,9 +684,7 @@ class LocalTemporalTransformerHead(TemporalTransformerHead):
         Returns: (B, num_rotors, T)
         """
         x = self.prenet(x).transpose(1, 2)  # (B, T, hidden)
-        pe = self._sinusoidal_positional_encoding(
-            x.size(1), self.hidden_ch, x.device, x.dtype
-        )
+        pe = self._sinusoidal_positional_encoding(x.size(1), self.hidden_ch, x.device, x.dtype)
         mask = self._local_attention_mask(x.size(1), self.local_window, x.device)
         x = self.transformer(x + pe.unsqueeze(0), mask=mask)
         x = self.proj(x)
@@ -1140,9 +1136,7 @@ class SimpleConvV2CausalGRU(nn.Module):
             self.encoder.append(CausalResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
         self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
-        self.head = CausalGRUHead(
-            128, hidden_ch=hidden_ch, num_rotors=num_rotors, num_layers=2
-        )
+        self.head = CausalGRUHead(128, hidden_ch=hidden_ch, num_rotors=num_rotors, num_layers=2)
 
     def forward(self, audio):
         x = self.frontend(audio)  # (B, 1, F, T)
@@ -1288,9 +1282,7 @@ class SimpleConvV2MultiRes(nn.Module):
         # Same hop keeps time frames aligned; shorter window trades frequency
         # resolution for better localization of rapid RPS/noise changes.
         short_n_fft = max(256, n_fft // 2)
-        self.short_frontend = build_frontend(
-            "stft_mag", n_fft=short_n_fft, hop_length=hop_length
-        )
+        self.short_frontend = build_frontend("stft_mag", n_fft=short_n_fft, hop_length=hop_length)
 
         enc_spec = [
             (2, 64, (7, 5), (2, 1), (3, 2)),
@@ -1987,6 +1979,153 @@ class SimpleConvBiGRUV2(nn.Module):
         return super().load_state_dict(state_dict, strict=strict)
 
 
+# ─── DCUNet/DCCRN complex-conv encoders (standalone RPS prediction) ──────────
+#
+# Ported from ``train_rps_predictor.py`` (``DCUNetEncRPS`` / ``DCCRNEncRPS``,
+# never registered in ``src/models/registry.py::RPS_MODEL_REGISTRY`` until
+# now — see docs/refactor-unified-framework.md). ``RPSPredictionHead`` is
+# *not* duplicated here: the canonical implementation already lives in
+# ``models.dcunet`` (``models.dccrn`` imports it from there too).
+
+
+class DCUNetEncRPS(nn.Module):
+    """DCUNet encoder (complex conv) + ``RPSPredictionHead`` for standalone RPS
+    prediction. Faithfully replicates the encoder architecture from ``models/dcunet.py``.
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, num_layers=5):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.window: torch.Tensor
+        self.register_buffer("window", torch.hann_window(n_fft))
+
+        from models.dcunet import CBatchNorm2d as DCUNetCBN
+        from models.dcunet import CConv2d as DCUNetCConv
+        from models.dcunet import RPSPredictionHead
+
+        # DCUNet encoder spec — faithful copy from models/dcunet.py
+        enc_spec = [
+            (1, 45, (7, 5), (2, 2), (3, 2)),
+            (45, 90, (7, 5), (2, 2), (3, 2)),
+            (90, 90, (5, 3), (2, 2), (2, 1)),
+            (90, 90, (5, 3), (2, 2), (2, 1)),
+            (90, 90, (5, 3), (2, 1), (2, 1)),
+        ]
+        if num_layers == 6:
+            enc_spec.append((90, 90, (5, 3), (2, 1), (2, 1)))
+
+        self.encoders = nn.ModuleList()
+        for ic, oc, k, s, p in enc_spec:
+            self.encoders.append(
+                nn.Sequential(
+                    DCUNetCConv(ic, oc, k, s, p),
+                    DCUNetCBN(oc),
+                    nn.LeakyReLU(0.2),
+                )
+            )
+
+        enc_channels = [oc for _, oc, _, _, _ in enc_spec]
+        target_t = stft_time_frames(131584, hop_length, n_fft)  # chunk_size=131584
+        self.head = RPSPredictionHead(enc_channels, target_t, num_rotors=num_rotors)
+
+    def forward(self, audio):
+        """
+        audio: (B, samples) raw mono waveform.
+        Returns: (B, 4, T_stft) predicted RPS per STFT frame.
+        """
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+
+        X = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            return_complex=True,
+            normalized=True,
+        )
+        X = torch.view_as_real(X)  # (B, F, T, 2)
+        X = X.unsqueeze(1)  # (B, 1, F, T, 2)
+
+        encoder_features = []
+        h = X
+        for encoder in self.encoders:
+            h = encoder(h)
+            encoder_features.append(h)
+
+        return self.head(encoder_features)
+
+
+class DCCRNEncRPS(nn.Module):
+    """DCCRN encoder (complex conv) + ``RPSPredictionHead`` for standalone RPS
+    prediction. Faithfully replicates the encoder architecture from ``models/dccrn.py``.
+    Supports the lite variant (fewer layers/channels).
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, lite=False):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        self.lite = lite
+        self.window: torch.Tensor
+        self.register_buffer("window", torch.hann_window(n_fft))
+
+        from models.dccrn import CBatchNorm2d as DCCRN_CBN
+        from models.dccrn import CConv2d as DCCRN_CConv
+        from models.dcunet import RPSPredictionHead
+
+        encoder_channels = [16, 32, 64, 128] if lite else [32, 64, 128, 256, 256, 512]
+
+        enc_kernel = (5, 2)
+        enc_stride = (2, 1)
+        enc_padding = (2, 0)
+
+        in_channels = [1] + encoder_channels[:-1]
+
+        self.encoders = nn.ModuleList()
+        for ic, oc in zip(in_channels, encoder_channels):
+            self.encoders.append(
+                nn.Sequential(
+                    DCCRN_CConv(ic, oc, enc_kernel, enc_stride, enc_padding),
+                    DCCRN_CBN(oc),
+                    nn.LeakyReLU(0.2),
+                )
+            )
+
+        target_t = stft_time_frames(131584, hop_length, n_fft)
+        self.head = RPSPredictionHead(encoder_channels, target_t, num_rotors=num_rotors)
+
+    def forward(self, audio):
+        """
+        audio: (B, samples) raw mono waveform.
+        Returns: (B, 4, T_stft) predicted RPS per STFT frame.
+        """
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+
+        X = torch.stft(
+            audio,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window,
+            return_complex=True,
+            normalized=True,
+        )
+        X = torch.view_as_real(X)  # (B, F, T, 2)
+        X = X.unsqueeze(1)  # (B, 1, F, T, 2)
+
+        encoder_features = []
+        h = X
+        for encoder in self.encoders:
+            h = encoder(h)
+            encoder_features.append(h)
+
+        return self.head(encoder_features)
+
+
 # ─── Model factory / registry ────────────────────────────────────────────────
 
 
@@ -2025,6 +2164,9 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_magphase_bigru": SimpleConvMagPhaseBiGRU,
     "simple_conv_attn_pool": SimpleConvAttnPool,
     "simple_conv_se_next": SimpleConvSENext,
+    "dcunet_enc_rps": DCUNetEncRPS,
+    "dccrn_enc_rps": lambda **kw: DCCRNEncRPS(lite=False, **kw),
+    "dccrn_lite_rps": lambda **kw: DCCRNEncRPS(lite=True, **kw),
 }
 
 

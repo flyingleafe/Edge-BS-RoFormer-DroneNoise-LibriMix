@@ -1,0 +1,19 @@
+# Multi-scale STFT loss for noise-generation (E2) — the pure spectral
+# objective, matching train_noise_generation.py::build_loss's defaults
+# (stft_sizes=[2048,1024,512,256,128], log_weight=1.0, loss_type=L1).
+# pred_key=target_key="audio": tasks.codecs.NoiseGenerationCodec emits the
+# synthesized noise as pred["audio"]; data_processing.frame_datasets.NoiseGenFrameDataset
+# emits the real recorded noise as target["audio"] (same key, different
+# Frame — see tasks.task.noise_generation's output spec).
+terms:
+  - name: spectral
+    _target_: losses.MultiScaleSTFTLoss
+    weight: 1.0
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      pred_key: audio
+      target_key: audio
+      n_ffts: [2048, 1024, 512, 256, 128]
+      log_weight: 1.0
+      loss_type: L1

@@ -1,0 +1,25 @@
+# DREGON-LM-V4 (folder dataset): mixture.wav + rps.npy per sample_* directory.
+# See data_processing/AGENTS.md for how this dataset is created
+# (create_dregon_librimix.py) and src/data_processing/frame_datasets.py for
+# the loader (a Frame-producing port of train_rps_predictor.py's
+# DREGONRPSDataset).
+train:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4/train
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    channel: 0  # DREGON-LM-V4 mixture.wav is 8-channel; simple_conv_v2 is mono
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    channel: 0  # DREGON-LM-V4 mixture.wav is 8-channel; simple_conv_v2 is mono
+  iterable: false
+batch_size: null
+num_workers: null

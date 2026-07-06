@@ -1,0 +1,25 @@
+# @package _global_
+# C4 — DREGON-LM-V2 motor-combo-fraction sweep. `simple_conv_bigru_v2` +
+# 2.5% combo fraction is the best result found (PIT MSE 56.70 vs 71.1 @20%,
+# 65.9 @5%, 117.3 @0% — collapses without a PIT anchor). Override `data` to
+# reproduce another combo-fraction point:
+#   python train.py experiment=c4_dregon_v2_motorcombo_sweep data=dregon_lm_v2_0pct
+#   python train.py experiment=c4_dregon_v2_motorcombo_sweep data=dregon_lm_v2_5pct
+#   python train.py experiment=c4_dregon_v2_motorcombo_sweep data=dregon_lm_v2_20pct
+# Historical command: train_rps_predictor.py --model simple_conv_bigru_v2
+# --data_root datasets/DREGON-LM-V2-2.5pct --epochs 500 --patience 30
+# --batch_size 96 --lr 1e-3. See REPLICATION.md § C1/C4.
+defaults:
+  - override /data: dregon_lm_v2_2p5pct
+  - override /model: simple_conv_bigru_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: c4_dregon_v2_motorcombo_sweep
+epochs: 500
+patience: 30
+batch_size: 96
+optim:
+  lr: 0.001
+  monitor: mse
+  monitor_mode: min

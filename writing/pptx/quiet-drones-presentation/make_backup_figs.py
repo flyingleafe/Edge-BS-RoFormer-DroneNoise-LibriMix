@@ -31,8 +31,11 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
 
+
+import tdseries as td  # noqa: E402
+
+from data_processing.frames import get_meta  # noqa: E402
 from tasks.rps_prediction import load_input_set, load_predictor  # noqa: E402
-from utils.data import UniformSeries  # noqa: E402
 from utils.paths import get_data_path, get_datasets_path, get_results_path  # noqa: E402
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
@@ -107,11 +110,11 @@ def fig_classical_mse_bar():
 
 # ── 2. RPS overlay: SimpleConv vs GT (top), best classical NMF vs GT (bottom) ─
 def fig_classical_rps_overlay(sid: str = "sample_00000"):
-    samples = {s.tags.get("id", ""): s for s in load_input_set(str(DREGON_VALID))}
+    samples = {get_meta(s, "id", ""): s for s in load_input_set(str(DREGON_VALID))}
     sample = samples[sid]
-    audio_us = cast(UniformSeries, sample["audio"])
-    audio = np.asarray(audio_us.samples, dtype=np.float32)
-    sr = audio_us.sr
+    audio_us = cast(td.Series, sample["audio"])
+    audio = np.asarray(audio_us.data, dtype=np.float32)
+    sr = cast(td.GridIndex, audio_us.tindex).sr
     dur = len(audio) / sr
     n_frames = len(audio) // HOP + 1
     frame_times = np.arange(n_frames) * HOP / sr

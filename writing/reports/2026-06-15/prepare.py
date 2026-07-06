@@ -6,11 +6,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import tdseries as td
 import torch
 
 # Ensure project src is importable (prepare.py runs inside writing/reports/2026-06-15/)
@@ -18,18 +20,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 
-from models.salience_rps import BasicPitchSalience, LateDeepSalience
-from tasks.rps_prediction import align_rps_to_gt
-from train_rps_predictor import get_model
-from utils.plots.rps_prediction.salience_comparison import (
-    build_salience_frame,
+from models.registry import get_rps_model as get_model
+from models.salience_rps import BasicPitchSalience, LateDeepSalience, SalienceRPSPredictor
+from plots.rps_prediction.salience_comparison import (
+    build_salience_tracks,
     model_rps_prediction,
     model_salience_series,
     select_channel,
 )
-from utils.plots.rps_prediction.sample_comparison import _load_sample
-from utils.plots.timeframe import plot_timeframe
-from utils.plots.timeframe.renderers import ROTOR_COLORS, make_spectrogram_series
+from plots.rps_prediction.sample_comparison import _load_sample
+from plots.timeframe import PlotTrack, plot_timeframe
+from plots.timeframe.renderers import ROTOR_COLORS, make_spectrogram_series
+from tasks.rps_prediction import align_rps_to_gt
 
 ASSETS = Path("assets")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -276,9 +278,9 @@ def load_all_models() -> dict[str, torch.nn.Module]:
     return loaded
 
 
-def regression_rps_prediction(model: torch.nn.Module, audio) -> np.ndarray:
-    """Run a regression model on mono UniformSeries and return (4, T_stft) numpy."""
-    wav = torch.as_tensor(np.asarray(audio.samples, dtype=np.float32), device=DEVICE)
+def regression_rps_prediction(model: torch.nn.Module, audio: td.Series) -> np.ndarray:
+    """Run a regression model on mono audio Series and return (4, T_stft) numpy."""
+    wav = torch.as_tensor(np.asarray(audio.data, dtype=np.float32), device=DEVICE)
     if wav.ndim != 1:
         wav = wav.mean(dim=0) if wav.ndim == 2 else wav.reshape(-1)
     with torch.no_grad():
@@ -292,14 +294,15 @@ def plot_full_comparison(
     """Spectrogram + salience rows + RPS row overlaying all five models."""
     sample_path = DATASET / sample_id
     sample = _load_sample(str(sample_path))
-    audio_us = sample["audio"]
+    audio_us = cast(td.Series, sample["audio"])
     mono = select_channel(audio_us, CHANNEL)
 
-    salience_models = {k: v for k, v in models.items() if MODELS[k]["salience"]}
-    regression_models = {k: v for k, v in models.items() if not MODELS[k]["salience"]}
+    salience_models = {
+        k: cast(SalienceRPSPredictor, v) for k, v in models.items() if MODELS[k]["salience"]
+    }
 
-    # Build timeframe with spectrogram, GT RPS, and salience rows.
-    frame = build_salience_frame(
+    # Build the plot tracks: spectrogram, GT RPS, and one salience heatmap per model.
+    tracks_map = build_salience_tracks(
         sample,
         salience_models,
         channel=CHANNEL,
@@ -308,33 +311,42 @@ def plot_full_comparison(
         track_threshold=TRACK_THRESHOLD,
     )
 
-    tracks = ["spectrogram"] + [f"salience_{name}" for name in salience_models]
-    if "rps" in frame:
-        tracks.append("rps")
+    plot_tracks: list[PlotTrack | td.Series] = [tracks_map["spectrogram"]] + [
+        tracks_map[f"salience_{name}"] for name in salience_models
+    ]
+    height_ratios = [1.0] + [2.0] * len(salience_models)
+    if "rps" in tracks_map:
+        plot_tracks.append(tracks_map["rps"])
+        height_ratios.append(1.0)
 
-    height_ratios = [2.0 if t.startswith("salience_") else 1.0 for t in tracks]
     fig = plot_timeframe(
-        frame,
-        tracks=tracks,
-        figsize=(15, 3.0 * sum(height_ratios) / max(len(tracks), 1) + 2.0 * len(tracks)),
+        sample,
+        tracks=plot_tracks,
+        figsize=(
+            15,
+            3.0 * sum(height_ratios) / max(len(plot_tracks), 1) + 2.0 * len(plot_tracks),
+        ),
         height_ratios=height_ratios,
         salience_vmax="auto",
     )
 
     # Overlay all model predictions on the final RPS axis.
-    if "rps" in frame:
+    if "rps" in tracks_map:
+        gt_track = cast(td.Series, tracks_map["rps"])
         ax = fig.axes[-1]
         dur = mono.duration
         for key, model in models.items():
             if MODELS[key]["salience"]:
                 pred = model_rps_prediction(
-                    model, mono, device=DEVICE, track_threshold=TRACK_THRESHOLD
+                    cast(SalienceRPSPredictor, model),
+                    mono,
+                    device=DEVICE,
+                    track_threshold=TRACK_THRESHOLD,
                 )
             else:
                 pred = regression_rps_prediction(model, mono)
             pred_times = np.linspace(mono.t_start, mono.t_start + dur, pred.shape[-1])
-            if "rps" in frame:
-                pred = align_rps_to_gt(pred, np.asarray(frame["rps"].interpolate(pred_times)))
+            pred = align_rps_to_gt(pred, np.asarray(gt_track.interpolate(pred_times)))
             style = "-" if MODELS[key]["salience"] else "--"
             alpha = 0.85 if MODELS[key]["salience"] else 1.0
             for r in range(min(pred.shape[0], len(ROTOR_COLORS))):
@@ -364,20 +376,27 @@ def plot_separate_rps_comparison(
     """7-pane: spectrogram + 3 salience maps + 3 per-model RPS panels."""
     sample_path = DATASET / sample_id
     sample = _load_sample(str(sample_path))
-    audio_us = sample["audio"]
+    audio_us = cast(td.Series, sample["audio"])
     mono = select_channel(audio_us, channel)
 
-    salience_models = {k: v for k, v in models.items() if MODELS[k]["salience"]}
-    rps_track = sample["rps"] if "rps" in sample else None
+    salience_models = {
+        k: cast(SalienceRPSPredictor, v) for k, v in models.items() if MODELS[k]["salience"]
+    }
+    rps_track = cast(td.Series, sample["rps"]) if "rps" in sample else None
     dur = mono.duration
 
     # Compute global y-limits for RPS panels
     all_rps_values = []
-    if rps_track is not None and rps_track.values is not None:
-        all_rps_values.append(rps_track.values)
+    if rps_track is not None and rps_track.data is not None:
+        all_rps_values.append(rps_track.data)
     for key, model in models.items():
         if MODELS[key]["salience"]:
-            pred = model_rps_prediction(model, mono, device=DEVICE, track_threshold=track_threshold)
+            pred = model_rps_prediction(
+                cast(SalienceRPSPredictor, model),
+                mono,
+                device=DEVICE,
+                track_threshold=track_threshold,
+            )
         else:
             pred = regression_rps_prediction(model, mono)
         all_rps_values.append(pred)
@@ -399,10 +418,13 @@ def plot_separate_rps_comparison(
 
     # Row 0: spectrogram
     ax = fig.add_subplot(gs[0])
-    spec_series = make_spectrogram_series(mono, fmax=4000.0)
-    S = spec_series.samples
-    times = spec_series.sample_times()
-    freqs = np.linspace(0, spec_series.sr / 2, S.shape[0])
+    spec_track = make_spectrogram_series(mono, fmax=4000.0)
+    S = spec_track.series.data
+    times = cast(td.GridIndex, spec_track.series.tindex).sample_times()
+    freq_max_hz = spec_track.hints.get(
+        "freq_max_hz", float(cast(td.GridIndex, mono.tindex).rate) / 2.0
+    )
+    freqs = np.linspace(0, freq_max_hz, S.shape[0])
     ax.pcolormesh(times, freqs, S, shading="auto", cmap="magma")
     ax.set_ylabel("Freq (Hz)")
     ax.set_title("spectrogram")
@@ -414,22 +436,22 @@ def plot_separate_rps_comparison(
 
         # Salience row
         ax_sal = fig.add_subplot(gs[row_idx])
-        sal_series = model_salience_series(
+        sal_track = model_salience_series(
             model,
             mono,
             device=DEVICE,
             with_prediction=False,
             title=f"{MODELS[key]['display']} salience",
         )
-        S = sal_series.samples
-        times = sal_series.sample_times()
-        freqs = sal_series.tags["plot.freqs"]
+        S = sal_track.series.data
+        times = cast(td.GridIndex, sal_track.series.tindex).sample_times()
+        freqs = sal_track.hints["freqs"]
         vmax = float(np.percentile(S, 99.5)) or 1.0
         mesh = ax_sal.pcolormesh(times, freqs, S, shading="auto", cmap="magma", vmin=0.0, vmax=vmax)
         ax_sal.set_yscale("log")
         ax_sal.set_ylim(freqs[0], freqs[-1])
         ax_sal.set_ylabel("Freq (Hz)")
-        ax_sal.set_title(sal_series.tags.get("plot.title", f"{MODELS[key]['display']} salience"))
+        ax_sal.set_title(sal_track.hints.get("title", f"{MODELS[key]['display']} salience"))
         fig.colorbar(mesh, ax=ax_sal, pad=0.01, fraction=0.025, label="salience")
         ax_sal.set_xlim(mono.t_start, mono.t_start + dur)
 
@@ -440,7 +462,7 @@ def plot_separate_rps_comparison(
         pred = model_rps_prediction(model, mono, device=DEVICE, track_threshold=track_threshold)
         pred_times = np.linspace(mono.t_start, mono.t_start + dur, pred.shape[-1])
 
-        if rps_track is not None and rps_track.values is not None:
+        if rps_track is not None and rps_track.data is not None:
             gt = rps_track.interpolate(pred_times)
             pred = align_rps_to_gt(pred, np.asarray(gt))
             for r in range(min(gt.shape[0], len(ROTOR_COLORS))):
@@ -494,10 +516,10 @@ def plot_all_models_rps(
     """5-pane figure: one pane per model, each showing GT (dotted) and model predictions (solid)."""
     sample_path = DATASET / sample_id
     sample = _load_sample(str(sample_path))
-    audio_us = sample["audio"]
+    audio_us = cast(td.Series, sample["audio"])
     mono = select_channel(audio_us, channel)
 
-    rps_track = sample["rps"] if "rps" in sample else None
+    rps_track = cast(td.Series, sample["rps"]) if "rps" in sample else None
     dur = mono.duration
 
     # Determine model order
@@ -520,7 +542,10 @@ def plot_all_models_rps(
     first_model = models[first_key]
     if MODELS[first_key]["salience"]:
         dummy_pred = model_rps_prediction(
-            first_model, mono, device=DEVICE, track_threshold=track_threshold
+            cast(SalienceRPSPredictor, first_model),
+            mono,
+            device=DEVICE,
+            track_threshold=track_threshold,
         )
     else:
         dummy_pred = regression_rps_prediction(first_model, mono)
@@ -528,13 +553,18 @@ def plot_all_models_rps(
 
     # Global y-limits across all models
     all_rps_values = []
-    if rps_track is not None and rps_track.values is not None:
+    if rps_track is not None and rps_track.data is not None:
         gt = rps_track.interpolate(pred_times)
         all_rps_values.append(gt)
     for key in model_keys:
         model = models[key]
         if MODELS[key]["salience"]:
-            pred = model_rps_prediction(model, mono, device=DEVICE, track_threshold=track_threshold)
+            pred = model_rps_prediction(
+                cast(SalienceRPSPredictor, model),
+                mono,
+                device=DEVICE,
+                track_threshold=track_threshold,
+            )
         else:
             pred = regression_rps_prediction(model, mono)
         all_rps_values.append(pred)
@@ -548,12 +578,17 @@ def plot_all_models_rps(
     for ax, key in zip(axes, model_keys):
         model = models[key]
         if MODELS[key]["salience"]:
-            pred = model_rps_prediction(model, mono, device=DEVICE, track_threshold=track_threshold)
+            pred = model_rps_prediction(
+                cast(SalienceRPSPredictor, model),
+                mono,
+                device=DEVICE,
+                track_threshold=track_threshold,
+            )
         else:
             pred = regression_rps_prediction(model, mono)
 
         # GT (dotted)
-        if rps_track is not None and rps_track.values is not None:
+        if rps_track is not None and rps_track.data is not None:
             gt = rps_track.interpolate(pred_times)
             pred = align_rps_to_gt(pred, np.asarray(gt))
             for r in range(min(gt.shape[0], len(ROTOR_COLORS))):

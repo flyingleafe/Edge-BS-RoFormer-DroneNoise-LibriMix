@@ -1,0 +1,12 @@
+# @package _global_
+# Proposed Edge-BS-RoFormer (Paper 1 headline model): + RoPE head dim 64, on DN-LM. See REPLICATION.md § A1.
+defaults:
+  - override /data: dn_lm
+  - override /model: a1_edge_bs_rof_fa_rope64
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: a1_edge_bs_rof_fa_rope64
+optim:
+  monitor: si_sdr
+  monitor_mode: max

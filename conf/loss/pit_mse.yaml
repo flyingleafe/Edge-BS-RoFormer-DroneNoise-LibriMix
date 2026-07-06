@@ -1,0 +1,8 @@
+# Permutation-invariant MSE between rps_pred (model output) and rps (dataset
+# target) — the rps_prediction training loss.
+terms:
+  - name: pit_mse
+    _target_: losses.PITMSELoss
+    weight: 1.0
+    params:
+      rate: [16000, 512]

@@ -1,0 +1,35 @@
+# Root Hydra config — see docs/refactor-unified-framework.md § "Hydra config
+# architecture". `base_config` (training.config.RootConfig, registered in the
+# ConfigStore by training.config.register_configs) supplies every field's
+# default/type; the four `???` groups below are mandatory — an experiment
+# file (conf/experiment/*.yaml) or a `data=... model=... loss=... metrics=...`
+# CLI override must set them.
+defaults:
+  - base_config
+  - data: ???
+  - model: ???
+  - loss: ???
+  - metrics: ???
+  - optim: adamw_plateau
+  - logging: wandb
+  - artifacts: r2
+  - lora: disabled
+  - _self_
+  - experiment: null
+
+experiment_name: ???
+seed: 0
+validate_only: false
+allow_dirty: false
+resume: false
+results_root: results
+epochs: 100
+batch_size: 16
+num_workers: 4
+patience: 10
+grad_clip: 5.0
+grad_accum_steps: 1
+amp: true
+samples_per_validation: null
+checkpoint_every: 0
+checkpoint: null

@@ -1,0 +1,146 @@
+# Native inline Hydra model config (converted from the former
+# configs/*.yaml + legacy_config_path indirection). The `config`
+# block below is the inlined ZFTurbo-style tree; it is built via
+# models.registry.build_legacy_inline -> utils.build_model_from_config,
+# the exact same dispatch the file-based path used. See REPLICATION.md.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.registry.build_legacy_inline
+params:
+  model_type: edge_bs_rof
+  config:
+    audio:
+      chunk_size: 131584
+      dim_f: 1024
+      dim_t: 515
+      hop_length: 512
+      n_fft: 2048
+      num_channels: 1
+      sample_rate: 16000
+      min_mean_abs: 0.0
+    model:
+      dim: 48
+      depth: 3
+      dim_head: 64
+      heads: 8
+      flash_attn: true
+      use_rotary_pos: true
+      max_seq_len: 1000
+      freqs_per_bands:
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 128
+      - 129
+      stereo: false
+      num_stems: 1
+      time_transformer_depth: 1
+      freq_transformer_depth: 1
+      linear_transformer_depth: 0
+      attn_dropout: 0.1
+      ff_dropout: 0.1
+      dim_freqs_in: 1025
+      stft_n_fft: 2048
+      stft_hop_length: 512
+      stft_win_length: 2048
+      stft_normalized: false
+      mask_estimator_depth: 2
+      multi_stft_resolution_loss_weight: 1.0
+      multi_stft_resolutions_window_sizes:
+      - 4096
+      - 2048
+      - 1024
+      - 512
+      - 256
+      multi_stft_hop_size: 147
+      multi_stft_normalized: false
+    training:
+      num_gpus: 2
+      batch_size: 6
+      gradient_accumulation_steps: 1
+      grad_clip: 0
+      instruments:
+      - vocals
+      - noise
+      lr: 0.0005
+      patience: 2
+      reduce_factor: 0.95
+      target_instrument: vocals
+      num_epochs: 1000
+      num_steps: 200
+      q: 0.95
+      coarse_loss_clip: true
+      ema_momentum: 0.999
+      optimizer: adamw
+      other_fix: false
+      use_amp: true
+      early_stop:
+        enabled: true
+        patience: 5
+        metric: si-sdr
+    inference:
+      batch_size: 10
+      num_overlap: 4

@@ -5,21 +5,21 @@ This directory holds the `utils` Python package. It is editable-installed via
 
 `__init__.py` contains the legacy "ZFTurbo"-style helpers (model factory,
 config loader, training utilities) that used to live in `utils.py` at the
-project root. All existing callers — `train.py`, `valid.py`, `final_valid.py`,
-`src/postdoc/infer.py`, notebooks — keep working unchanged: `from utils import
+project root. Callers — `src/models/registry.py::build_legacy_model`,
+notebooks — keep working unchanged: `from utils import
 load_config, get_model_from_config, ...`.
 
 ## Why a package, not a module
 
-We needed a sub-package (`utils.data`) for a new abstraction, which is not
-possible if `utils` is a flat module. Converting `utils.py` → `utils/__init__.py`
-preserved every legacy import while opening the namespace for sub-packages.
+This used to be a sub-package (`utils.data`, the in-repo timeseries algebra)
+before it was replaced by the PyPI `tdseries` package and deleted (see
+docs/refactor-unified-framework.md). Converting `utils.py` → `utils/__init__.py`
+preserved every legacy import while opening the namespace for future sub-packages.
 
-## Subdirectories
+## Files
 
-| Subdir | Purpose | Details |
-|--------|---------|---------|
-| `data/` | Aligned time-series containers (audio + RPS + segments + ...) | See `data/AGENTS.md` |
+| Path | Purpose | Details |
+|------|---------|---------|
 | `dataloader_benchmark.py` | Reusable `benchmark_dataloader(...)` helper for finite and infinite PyTorch loaders; reports batch/example/effective-audio-clip throughput. | Use before optimizing online-mixing dataloaders. |
 
 ## Adding new sub-packages

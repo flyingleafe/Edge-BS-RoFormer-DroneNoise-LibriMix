@@ -30,6 +30,18 @@ _GOLDEN_PER_SAMPLE = _GOLDEN_DIR / "val_inference/per_sample_metrics_10.json"
 _GOLDEN_SIMPLE_CONV_CKPT = get_results_path("rps_exp_simple_conv/best_simple_conv.pt")
 _DREGON_VALID = get_datasets_path("DREGON-LM/valid")
 
+# Golden artifacts (checkpoint + dataset + per-sample json) are gitignored
+# and machine-local; skip the whole module when they are absent instead of
+# failing on fresh clones.
+pytestmark = pytest.mark.skipif(
+    not (
+        _GOLDEN_SIMPLE_CONV_CKPT.is_file()
+        and _DREGON_VALID.is_dir()
+        and _GOLDEN_PER_SAMPLE.is_file()
+    ),
+    reason="golden artifacts (results/ + datasets/) not present on this machine",
+)
+
 # ── Test-sized subset ────────────────────────────────────────────────────
 
 _N_SAMPLES = 10  # small for fast CPU regression smoke

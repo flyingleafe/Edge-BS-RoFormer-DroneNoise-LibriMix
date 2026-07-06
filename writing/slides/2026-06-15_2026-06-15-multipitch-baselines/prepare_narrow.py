@@ -7,7 +7,6 @@ touching the existing assets. Mirrors the figure style of ``prepare.py``.
 """
 
 # Imports follow os.chdir() into the project root (matches sibling prepare.py).
-# ruff: noqa: E402
 
 import json
 import os
@@ -19,6 +18,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import tdseries as td
 import torch
 
 PROJECT_ROOT = pathlib.Path("../../../").resolve()
@@ -27,17 +27,17 @@ os.chdir(PROJECT_ROOT)
 
 from typing import cast
 
-from tasks.rps_prediction import align_rps_to_gt
-from train_rps_predictor import get_model
-from utils.data import EventSeries, UniformSeries
-from utils.plots.rps_prediction.salience_comparison import (
+from models.registry import get_rps_model as get_model
+from models.salience_rps import SalienceRPSPredictor
+from plots.rps_prediction.salience_comparison import (
     model_rps_prediction,
     model_salience_series,
     select_channel,
 )
-from utils.plots.rps_prediction.sample_comparison import _load_sample
-from utils.plots.timeframe.registry import TrackContext
-from utils.plots.timeframe.renderers import make_spectrogram_series, render_salience
+from plots.rps_prediction.sample_comparison import _load_sample
+from plots.timeframe.registry import TrackContext
+from plots.timeframe.renderers import make_spectrogram_series, render_salience
+from tasks.rps_prediction import align_rps_to_gt
 
 SLIDE_DIR = pathlib.Path(__file__).parent.resolve()
 ASSETS = SLIDE_DIR / "assets"
@@ -156,11 +156,14 @@ print("Saved: per_rotor_mae_narrow_sr.png")
 
 # ── 4. load narrow-SR salience models + SimpleConvV2 ─────────────────────────
 print(f"Device: {DEVICE}")
-narrow_models = {
-    "multif0_salience_narrow_sr": get_model(
-        "multif0_salience", hcqt_fmin=55.0, salience_cfg=MULTIF0_CFG
+narrow_models: dict[str, SalienceRPSPredictor] = {
+    "multif0_salience_narrow_sr": cast(
+        SalienceRPSPredictor,
+        get_model("multif0_salience", hcqt_fmin=55.0, salience_cfg=MULTIF0_CFG),
     ),
-    "basic_pitch_narrow_sr": get_model("basic_pitch_salience", salience_cfg=BP_CFG),
+    "basic_pitch_narrow_sr": cast(
+        SalienceRPSPredictor, get_model("basic_pitch_salience", salience_cfg=BP_CFG)
+    ),
 }
 ckpts = {
     "multif0_salience_narrow_sr": PROJECT_ROOT
@@ -180,20 +183,20 @@ DATASET = PROJECT_ROOT / "datasets" / "DREGON-LM-V4" / "valid"
 SALIENCE_VMAX = "auto"
 
 sample = _load_sample(str(DATASET / SAMPLE_ID))
-mono = select_channel(cast(UniformSeries, sample["audio"]), CHANNEL)
-gt_rps_series = cast(EventSeries, sample["rps"])
-gt_rps_data = np.asarray(gt_rps_series.values, dtype=np.float32)
-gt_rps_timestamps = np.asarray(gt_rps_series.timestamps)
+mono = select_channel(cast(td.Series, sample["audio"]), CHANNEL)
+gt_rps_series = cast(td.Series, sample["rps"])
+gt_rps_data = np.asarray(gt_rps_series.data, dtype=np.float32)
+gt_rps_timestamps = np.asarray(cast(td.StampIndex, gt_rps_series.tindex).abs_stamps)
 
-spec_series = make_spectrogram_series(mono, fmax=4000)
-S = np.asarray(spec_series.samples)
-t_spec = np.asarray(spec_series.timestamps)
+spec_track = make_spectrogram_series(mono, fmax=4000)
+S = np.asarray(spec_track.series.data)
+t_spec = cast(td.GridIndex, spec_track.series.tindex).sample_times()
 freqs = np.linspace(0, 4000, S.shape[0])
 colors_rps = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
 for model_name, model in narrow_models.items():
     print(f"3-pane: {model_name}")
-    salience_series = model_salience_series(model, mono, device=DEVICE)
+    salience_track = model_salience_series(model, mono, device=DEVICE)
     pred = model_rps_prediction(model, mono, device=DEVICE, track_threshold=0.3)
     if pred.shape[1] != gt_rps_data.shape[1]:
         from scipy import signal
@@ -214,16 +217,21 @@ for model_name, model in narrow_models.items():
     ax.set_ylim(0, 4000)
 
     ax = axes[1]
-    t_start = getattr(salience_series, "t_start", 0.0)
-    t_end = t_start + getattr(salience_series, "duration", 8.0)
+    t_start = salience_track.series.t_start
+    t_end = t_start + salience_track.series.duration
     context = TrackContext(
         ax=ax,
         name=f"{model_name} salience",
         t_start=t_start,
         t_end=t_end,
-        style={"salience_vmax": SALIENCE_VMAX, "salience_colorbar": False, "_frame": sample},
+        style={
+            "salience_vmax": SALIENCE_VMAX,
+            "salience_colorbar": False,
+            "_frame": sample,
+            "_hints": salience_track.hints,
+        },
     )
-    render_salience(salience_series, context)
+    render_salience(salience_track.series, context)
     ax.set_title(f"{model_name} salience", fontsize=12)
 
     ax = axes[2]
@@ -267,7 +275,7 @@ simpleconv_v2.load_state_dict(
 )
 simpleconv_v2.eval().to(DEVICE)
 
-wav = torch.as_tensor(np.asarray(mono.samples, dtype=np.float32), device=DEVICE).unsqueeze(0)
+wav = torch.as_tensor(np.asarray(mono.data, dtype=np.float32), device=DEVICE).unsqueeze(0)
 with torch.no_grad():
     pred_v2 = simpleconv_v2(wav)[0].cpu().numpy()
 if pred_v2.shape[1] != gt_rps_data.shape[1]:

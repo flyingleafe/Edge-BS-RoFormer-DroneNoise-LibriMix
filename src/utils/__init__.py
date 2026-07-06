@@ -71,7 +71,32 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
     """
 
     config = load_config(model_type, config_path)
+    model = build_model_from_config(model_type, config)
+    return model, config
 
+
+def _roformer_kwargs(config: DictConfig) -> dict[str, Any]:
+    """``config.model`` as plain kwargs for (Mel)BandRoformer, restoring the
+    tuple type of ``freqs_per_bands`` / ``multi_stft_resolutions_window_sizes``.
+    The legacy YAML tagged these ``!!python/tuple``; BSRoformer's beartype hints
+    require ``tuple[int, ...]``, but container coercion turns them into lists."""
+    mp = cast(dict[str, Any], OmegaConf.to_container(config.model, resolve=True))
+    for k in ("freqs_per_bands", "multi_stft_resolutions_window_sizes"):
+        v = mp.get(k)
+        if isinstance(v, list):
+            mp[k] = tuple(v)
+    return mp
+
+
+def build_model_from_config(model_type: str, config: DictConfig) -> nn.Module:
+    """Construct a model from an already-loaded ``config`` (DictConfig).
+
+    Shared dispatch behind the file-based :func:`get_model_from_config` and the
+    inline :func:`models.registry.build_legacy_inline` (the Hydra-native
+    replacement for the former ``configs/*.yaml`` + ``legacy_config_path``
+    indirection — the config content is inlined into ``conf/model/`` instead of
+    read from a separate file). ``config`` is the ZFTurbo-style tree with
+    ``audio`` / ``model`` / ``training`` sections."""
     # Load corresponding model architecture based on model type
     if model_type == "mdx23c":
         # MDX23C model - uses TFC-TDF network architecture
@@ -97,12 +122,12 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
         # Mel band-based Roformer model
         from models.edge_bs_rof import MelBandRoformer
 
-        model = MelBandRoformer(**OmegaConf.to_container(config.model, resolve=True))  # type: ignore[arg-type]
+        model = MelBandRoformer(**_roformer_kwargs(config))
     elif model_type == "edge_bs_rof":
         # Base Roformer model
         from models.edge_bs_rof import BSRoformer
 
-        model = BSRoformer(**OmegaConf.to_container(config.model, resolve=True))  # type: ignore[arg-type]
+        model = BSRoformer(**_roformer_kwargs(config))
     elif model_type == "swin_upernet":
         # Swin Transformer + UperNet architecture
         from models.upernet_swin_transformers import Swin_UperNet_Model
@@ -167,7 +192,7 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
         model = DCCRNRefactored(config)
     elif model_type == "rps_predictor":
         # Standalone RPS predictor (real-valued encoder on log-mag spectrograms)
-        from train_rps_predictor import RPSPredictor
+        from models.rps_predictor import SimpleConv as RPSPredictor
 
         model = RPSPredictor(
             n_fft=config.audio.n_fft,
@@ -193,7 +218,7 @@ def get_model_from_config(model_type: str, config_path: str) -> tuple[nn.Module,
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    return model, config
+    return model
 
 
 def read_audio_transposed(

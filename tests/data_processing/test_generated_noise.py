@@ -2,20 +2,21 @@
 
 These spin up the real background producer process on CPU with a tiny random-init
 checkpoint, so they exercise the shared-memory buffer, the seqlock read path, and
-the TimeFrame wrapping end-to-end (just not GPU or model quality).
+the Frame wrapping end-to-end (just not GPU or model quality).
 """
 
 from __future__ import annotations
 
 import time
-from typing import cast
+from pathlib import Path
 
 import numpy as np
 import pytest
+import tdseries as td
 import torch
 
+from data_processing.frames import get_meta
 from data_processing.online_mixing import MixedNoisePool, build_noise_pool
-from utils.data import EventSeries, TimeFrame, UniformSeries
 
 
 def _tiny_bundle(tmp_path, *, drone: str = "michaels", n_harm: int = 8, cond_dim: int = 8) -> str:
@@ -66,23 +67,23 @@ def _make_pool(
     )
 
 
-def _rps_values(tf: TimeFrame) -> np.ndarray:
-    return cast(np.ndarray, cast(EventSeries, tf["rps"]).values)
+def _rps_values(tf: td.Frame) -> np.ndarray:
+    return np.asarray(tf["rps"].data)
 
 
 def test_generated_pool_yields_wellformed_timeframe(tmp_path):
     pool = _make_pool(tmp_path)
     try:
         tf = pool.sample_timeframe(np.random.default_rng(0), 0.25)
-        assert isinstance(tf, TimeFrame)
-        assert set(tf) == {"audio", "rps"}
-        audio = cast(UniformSeries, tf["audio"])
-        assert audio.samples.shape == (8, int(round(0.25 * 16000)))
-        assert int(round(audio.sr)) == 16000
+        assert isinstance(tf, td.Frame)
+        assert set(tf) == {"audio", "rps", "mic_pos", "rotor_pos", "meta"}
+        audio = tf["audio"]
+        assert audio.data.shape == (8, int(round(0.25 * 16000)))
+        assert int(round(audio.tindex.sr)) == 16000
         assert _rps_values(tf).shape[0] == 4  # 4 rotors, time-last
-        assert tf.global_data["mic_positions"].shape == (8, 3)
-        assert tf.global_data["rotor_positions"].shape == (4, 3)
-        assert tf.tags["recording_id"] == "generated_michaels"
+        assert tf["mic_pos"].data.shape == (8, 3)
+        assert tf["rotor_pos"].data.shape == (4, 3)
+        assert get_meta(tf, "recording_id") == "generated_michaels"
     finally:
         pool.close()
 
@@ -118,6 +119,10 @@ def test_deterministic_bank_fills_once_and_stops(tmp_path):
         pool.close()
 
 
+@pytest.mark.skipif(
+    not Path("data/DREGON").is_dir(),
+    reason="needs local data/DREGON geometry (producer loads it before codebook lookup)",
+)
 def test_unknown_drone_rejected(tmp_path):
     from data_processing.generated_noise import GeneratedNoisePool
 

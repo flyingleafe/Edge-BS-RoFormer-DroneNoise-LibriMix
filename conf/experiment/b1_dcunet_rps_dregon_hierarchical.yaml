@@ -1,0 +1,12 @@
+# @package _global_
+# RPS-DCUN5-H — DCUNet + encoder hierarchical RPS fusion on DREGON-LM.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dcunet_rps_dregon_hierarchical
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b1_dcunet_rps_dregon_hierarchical
+optim:
+  monitor: si_sdr
+  monitor_mode: max

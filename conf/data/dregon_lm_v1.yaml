@@ -1,0 +1,28 @@
+# DREGON-LM (mono) — the original Paper-2-baseline dataset (predates the
+# V2/V3/V4 naming; "v1" here is a repo-convention label, not part of the
+# on-disk directory name). mixture.wav is already mono (1, T) — no
+# `channel` selection needed. Historically flagged as "trivially easy"
+# (1 s clips, measured RPS, train/valid overlap risk) once V2 existed for
+# comparison — see REPLICATION.md § C1/C3/C6 caveats. Used by families
+# B1 (5a-c/6a-c/7a-c/10a-d/11a-c legacy DCUNet/DCCRN configs) and the
+# 10-variant SimpleConv arch-zoo sweep (C3/C6).
+# Create: python create_dregon_librimix.py (no flags; defaults to
+# datasets/DREGON-LM/{train,valid}).
+train:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM/train
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

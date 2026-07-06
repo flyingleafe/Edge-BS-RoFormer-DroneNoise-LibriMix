@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNet baseline, no RPS, on DREGON-LM (no-RPS counterpart to b1_dcunet_rps_dregon).
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dcunet_baseline_dregon
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b1_dcunet_baseline_dregon
+optim:
+  monitor: si_sdr
+  monitor_mode: max

@@ -34,14 +34,14 @@ python train.py \
 
 ## 2) Dataset and I/O Checks (DN‑LM)
 
-Expected `__getitem__` output from `dataset.py`:
+Expected `__getitem__` output from `scripts/dataset.py`:
 
 - `mix`: `[channels, time]`
 - `target`: `[channels, time]`
 
 For DN‑LM, `audio.chunk_size` should be 16000 (1 second at 16 kHz). If chunk size is larger than the file length, the loader pads with zeros.
 
-Quick print in `dataset.py` (first batch only) if shapes look off.
+Quick print in `scripts/dataset.py` (first batch only) if shapes look off.
 
 ## 3) STFT Shape Expectations (Diffusion Model)
 

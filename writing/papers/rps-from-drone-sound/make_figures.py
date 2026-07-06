@@ -35,9 +35,12 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
 
+
+import tdseries as td  # noqa: E402
+
+from data_processing.frames import get_meta  # noqa: E402
+from plots.rps_prediction import PLOT_TYPES  # noqa: E402
 from tasks.rps_prediction import load_predictor  # noqa: E402
-from utils.data import UniformSeries  # noqa: E402
-from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 ROTOR_LABELS = ["Rotor 1", "Rotor 2", "Rotor 3", "Rotor 4"]
@@ -95,7 +98,7 @@ def fig_qualitative_examples():
     from tasks.rps_prediction import load_input_set
 
     sample_ids = ("sample_00000", "sample_00149", "sample_00599")
-    all_samples = {s.tags.get("id", ""): s for s in load_input_set(str(DREGON_VALID))}
+    all_samples = {get_meta(s, "id", ""): s for s in load_input_set(str(DREGON_VALID))}
     pred = load_predictor(f"simple_conv@{CHECKPOINT}")
 
     n = len(sample_ids)
@@ -110,9 +113,9 @@ def fig_qualitative_examples():
 
     for col, sid in enumerate(sample_ids):
         sample = all_samples[sid]
-        audio_us = cast(UniformSeries, sample["audio"])
-        audio = np.asarray(audio_us.samples, dtype=np.float32)
-        sr = audio_us.sr
+        audio_us = cast(td.Series, sample["audio"])
+        audio = np.asarray(audio_us.data, dtype=np.float32)
+        sr = cast(td.GridIndex, audio_us.tindex).sr
         dur = len(audio) / sr
 
         # Spectrogram
@@ -143,7 +146,7 @@ def fig_qualitative_examples():
         ax = axes[1, col]
         n_frames = len(audio) // HOP + 1
         frame_times = np.arange(n_frames) * HOP / sr
-        gt = sample["rps"].interpolate(frame_times).T  # (4, F)
+        gt = np.asarray(sample["rps"].interpolate(frame_times))  # (4, F)
         pred_arr = pred.predict(audio, sr=sr)
         T = min(pred_arr.shape[1], n_frames)
         for r in range(4):

@@ -90,6 +90,59 @@ def stft_time_grid(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def salience_target_from_resampled_rps(
+    rps_grid: torch.Tensor,
+    freqs: np.ndarray,
+    *,
+    blur_bins: int = 0,
+) -> torch.Tensor:
+    """Nearest-bin BCE salience target from RPS already on the target time grid.
+
+    The shared core of ``rps_to_salience`` (which additionally handles a
+    ``rps_sr``-timed interpolation onto the output grid) and
+    ``models.salience_rps.SalienceRPSPredictor.salience_target_from_frame_rps``
+    (which additionally handles the STFT-grid -> model-grid resample and the
+    model's own frequency grid). Both callers, and
+    ``losses.salience.SalienceRPSBCELoss`` (which has no model instance to
+    query for a frontend/frequency grid), funnel through this one
+    implementation so the RPS->salience quantization never drifts between
+    them — see docs/refactor-unified-framework.md § C7/C8.
+
+    Args:
+        rps_grid: ``(B, R, T)`` per-rotor speed (Hz), already resampled onto
+            the target time grid (``T`` = the salience model's frame count).
+        freqs: ``(n_bins,)`` frequency grid (Hz) — the salience bins.
+        blur_bins: frequency-axis smoothing half-width (0 = strictly binary).
+
+    Returns:
+        ``(B, n_bins, T)`` binary (or soft, if ``blur_bins > 0``) target.
+    """
+    freqs_t = torch.as_tensor(freqs, dtype=rps_grid.dtype, device=rps_grid.device)
+    b, r, t = rps_grid.shape
+    n_bins = int(freqs_t.numel())
+
+    dists = (rps_grid.unsqueeze(2) - freqs_t.view(1, 1, n_bins, 1)).abs()  # (B, R, n_bins, T)
+    nearest_bin = dists.argmin(dim=2)  # (B, R, T)
+    active = rps_grid > 0.1
+
+    salience = torch.zeros(b, n_bins, t, device=rps_grid.device, dtype=rps_grid.dtype)
+    b_idx = torch.arange(b, device=rps_grid.device).view(b, 1, 1).expand(-1, r, t)
+    t_idx = torch.arange(t, device=rps_grid.device).view(1, 1, -1).expand(b, r, -1)
+    salience[b_idx[active], nearest_bin[active], t_idx[active]] = 1.0
+    salience = salience.clamp(0, 1)
+
+    if blur_bins > 0:
+        k = int(blur_bins)
+        ramp = torch.arange(1, k + 1, device=salience.device, dtype=salience.dtype)
+        kernel = torch.cat([ramp, torch.tensor([k + 1.0], device=salience.device), ramp.flip(0)])
+        kernel = (kernel / kernel.max()).view(1, 1, -1)
+        sal_f = salience.permute(0, 2, 1).reshape(b * t, 1, n_bins)
+        sal_f = F.conv1d(sal_f, kernel, padding=k)
+        salience = sal_f.reshape(b, t, n_bins).permute(0, 2, 1).clamp(0, 1)
+
+    return salience
+
+
 def rps_to_salience(
     rps: torch.Tensor,
     n_hcqt_frames: int,

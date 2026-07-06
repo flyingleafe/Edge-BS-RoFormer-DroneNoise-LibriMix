@@ -1,0 +1,10 @@
+# Basic speech-separation metric suite (SI-SDR, SDR) for speech_enhancement
+# experiments. Set optim.monitor: si_sdr / optim.monitor_mode: max when
+# using this suite (higher is better, unlike the RPS-error suite).
+terms:
+  - name: si_sdr
+    _target_: metrics.SISDRMetric
+    params: {n_channels: null, sr: [16000, 1]}
+  - name: sdr
+    _target_: metrics.SDRMetric
+    params: {n_channels: null, sr: [16000, 1]}

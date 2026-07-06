@@ -1,0 +1,20 @@
+# @package _global_
+# C7 narrow-band + super-resolution variant — see
+# .pi/checkpoints/salience-narrow-superres-experiment.md. Historical
+# command: train_rps_predictor.py --model multif0_salience --data_root
+# datasets/DREGON-LM-V4 --device cuda:0 --epochs 200 --patience 15
+# --hcqt_fmin 55 --hcqt_n_octaves 1 --hcqt_over_sample 10
+# --hcqt_harmonics 1 2 3 4 --superres_out --out_fmin 55 --out_fmax 110
+# --out_bins 360 --salience_blur_bins 2.
+defaults:
+  - override /data: dregon_lm_v4_8ch_flat
+  - override /model: multif0_salience_narrow_sr
+  - override /loss: salience_bce_narrow_sr
+  - override /metrics: salience_bce_narrow_sr
+
+experiment_name: c7_multif0_salience_narrow_sr
+epochs: 200
+patience: 15
+optim:
+  monitor: bce
+  monitor_mode: min

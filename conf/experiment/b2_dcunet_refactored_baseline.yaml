@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNetRefactored baseline, no RPS, on DREGON-LM (docs/dcunet-refactored.md) — reuses conf/model/dcunet.yaml (configs/12a).
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: dcunet
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b2_dcunet_refactored_baseline
+optim:
+  monitor: si_sdr
+  monitor_mode: max

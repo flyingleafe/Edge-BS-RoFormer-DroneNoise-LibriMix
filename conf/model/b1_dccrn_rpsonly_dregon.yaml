@@ -1,0 +1,71 @@
+# Native inline Hydra model config (converted from the former
+# configs/*.yaml + legacy_config_path indirection). The `config`
+# block below is the inlined ZFTurbo-style tree; it is built via
+# models.registry.build_legacy_inline -> utils.build_model_from_config,
+# the exact same dispatch the file-based path used. See REPLICATION.md.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: true
+  predict_rps: true
+  sr:
+  - 16000
+  - 1
+  rps_rate:
+  - 16000
+  - 512
+_target_: models.registry.build_legacy_inline
+params:
+  model_type: dccrn
+  config:
+    audio:
+      chunk_size: 131584
+      dim_f: 1024
+      dim_t: 254
+      hop_length: 512
+      min_mean_abs: 0.0
+      n_fft: 2048
+      num_channels: 1
+      sample_rate: 16000
+    augmentations:
+      enable: false
+    dccrn_gru_hidden: 256
+    dccrn_gru_layers: 2
+    inference:
+      batch_size: 4
+      num_overlap: 4
+    load_rps: true
+    model: dccrn
+    num_rotors: 4
+    predict_rps: true
+    rps_length: 8500
+    run_name: DCCRN RPS-Only (DREGON)
+    training:
+      batch_size: 8
+      coarse_loss_clip: true
+      data_path:
+      - datasets/DREGON-LM/train
+      early_stop:
+        enabled: true
+        metric: neg_mse
+        patience: 30
+      ema_momentum: 0.999
+      grad_clip: 0
+      gradient_accumulation_steps: 1
+      instruments:
+      - vocals
+      - noise
+      lr: 0.0003
+      num_epochs: 1000
+      num_steps: 200
+      optimizer: adamw
+      other_fix: false
+      patience: 2
+      q: 0.95
+      reduce_factor: 0.95
+      rps_loss_only: true
+      target_instrument: vocals
+      use_amp: true
+      valid_path:
+      - datasets/DREGON-LM/valid
+    use_rps: true

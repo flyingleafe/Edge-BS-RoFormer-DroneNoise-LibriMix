@@ -1,2 +1,9 @@
 **.pdf
 **.png
+
+# Exception: three decks ported from the old Marp `slides/` tree (2026-07-03)
+# carry non-regenerable committed figures (their prepare.py is a stub, not a
+# generator), so their PNGs are tracked rather than rebuilt from data.
+!slides/2026-02-24_rps-informed-enhancement/assets/*.png
+!slides/2026-03-24_dregon-rps-experiment-update/assets/*.png
+!slides/2026-05-04_rps-high-snr-performance/assets/*.png

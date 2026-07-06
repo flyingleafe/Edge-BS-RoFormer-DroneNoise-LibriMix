@@ -3,7 +3,7 @@
 Build the classical baselines report using the unified RPS API.
 
 Replaces the old 810-line duo (generate_figures.py + evaluate_single_rotor.py)
-with a single script that uses tasks.rps_prediction and utils.plots.
+with a single script that uses tasks.rps_prediction and plots.
 
 Usage from project root:
     python papers/classical_baselines_report/build.py
@@ -15,6 +15,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import cast
 
 import matplotlib
 from matplotlib.lines import Line2D
@@ -24,12 +25,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import soundfile as sf
+import tdseries as td
 import torch
 import torchaudio
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from data_processing.frames import get_meta  # noqa: E402
+from plots.rps_prediction import PLOT_TYPES  # noqa: E402
 from tasks.rps_prediction import (  # noqa: E402
     EvalResult,
     evaluate,
@@ -37,7 +41,6 @@ from tasks.rps_prediction import (  # noqa: E402
     load_predictor,
 )
 from utils.paths import get_data_path, get_datasets_path, get_results_path  # noqa: E402
-from utils.plots.rps_prediction import PLOT_TYPES  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -236,7 +239,7 @@ def part_a_figures(results: dict[str, EvalResult]) -> None:
 
     # --- Per-sample pages (3 representative samples) ---
     all_samples = list(load_input_set(str(DATA_DIR)))
-    sample_map = {s.tags.get("id", ""): s for s in all_samples}
+    sample_map = {get_meta(s, "id", ""): s for s in all_samples}
 
     predictors = {
         name: load_predictor(f"simple_conv@{CKPT}" if name == "simple_conv" else name)
@@ -257,15 +260,15 @@ def part_a_figures(results: dict[str, EvalResult]) -> None:
 
 def _plot_sample_page(sample, predictors, sid):
     """7-row figure: spectrogram + one panel per method (matches old layout)."""
-    audio_us = sample["audio"]
-    rps_es = sample["rps"]
-    audio = np.asarray(audio_us.samples, dtype=np.float32)
-    sr = audio_us.sr
+    audio_us = cast(td.Series, sample["audio"])
+    rps_es = cast(td.Series, sample["rps"])
+    audio = np.asarray(audio_us.data, dtype=np.float32)
+    sr = cast(td.GridIndex, audio_us.tindex).sr
     dur = len(audio) / sr
 
     n_frames = len(audio) // HOP + 1
     frame_times = np.arange(n_frames) * HOP / sr
-    gt = rps_es.interpolate(frame_times).T
+    gt = np.asarray(rps_es.interpolate(frame_times))
 
     # Get predictions
     preds = {}

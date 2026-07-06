@@ -28,11 +28,11 @@ node_modules/
 # Trello project config (may contain workspace names)
 .trello
 
-# postdoc runtime state (runs, worktrees, FIFO, logs)
-.postdoc/
-
 # nix build result
 result
+
+# Hydra run output dirs (auto-created by train.py/eval.py)
+outputs/
 
 # some old stuff
 backups/

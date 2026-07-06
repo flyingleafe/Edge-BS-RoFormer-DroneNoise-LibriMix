@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNet + encoder bottleneck RPS conditioning + auxiliary RPS-prediction head (rps_aux_weight=0.5) on DREGON-LM.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dcunet_rps_predrps_dregon
+  - override /loss: masked_mse_plus_pit_rps_w0p5
+  - override /metrics: separation_plus_rps
+
+experiment_name: b1_dcunet_rps_predrps_dregon
+optim:
+  monitor: si_sdr
+  monitor_mode: max

@@ -1,0 +1,40 @@
+# E3 — multi-scale STFT + Stage-2 control-curve smoothness regularisers
+# (squared 2nd difference), matching the historical launch command in
+# .pi/checkpoints/noise-gen-swapped-smoothness-random-phase.md:
+# --harm_smooth_weight 1e-2 --noise_smooth_weight 1e-2. NOTE (from that
+# same doc): 1e-2 was measured "probably too weak" in a CPU smoke (raw
+# penalty ~0.26 vs spectral loss in the hundreds) — kept here for
+# historical-command fidelity, not because it's been validated as a good
+# weight; a short sweep over {1e-2, 1e-1, 1, 10} was the suggested
+# follow-up. Requires `model.task_params.return_dict: true` (see
+# conf/experiment/e3_noise_gen_swapped_smoothness.yaml) so
+# tasks.codecs.NoiseGenerationCodec exposes `harm_amps`/`noise_amps` as
+# extra pred entries for losses.SmoothnessPenalty to read.
+terms:
+  - name: spectral
+    _target_: losses.MultiScaleSTFTLoss
+    weight: 1.0
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      pred_key: audio
+      target_key: audio
+      n_ffts: [2048, 1024, 512, 256, 128]
+      log_weight: 1.0
+      loss_type: L1
+  - name: harm_smooth
+    _target_: losses.SmoothnessPenalty
+    weight: 0.01
+    params:
+      entry: harm_amps
+      dims: [-1]
+      series_dims: [batch, rotor, null, null, null]
+      series_time: null
+  - name: noise_smooth
+    _target_: losses.SmoothnessPenalty
+    weight: 0.01
+    params:
+      entry: noise_amps
+      dims: [-2, -1]
+      series_dims: [batch, rotor, null, null]
+      series_time: null

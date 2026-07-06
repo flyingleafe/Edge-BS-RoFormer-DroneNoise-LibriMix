@@ -10,7 +10,14 @@ from models.dcunet import RPSPredictionHead
 class CConv2d(nn.Module):
     """Complex Convolutional Layer"""
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride, padding=0):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int],
+        padding: int | tuple[int, int] = 0,
+    ):
         super().__init__()
         self.real_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
         self.im_conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -31,7 +38,15 @@ class CConv2d(nn.Module):
 class CConvTranspose2d(nn.Module):
     """Complex Transpose Convolutional Layer"""
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride, output_padding=0, padding=0):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int],
+        output_padding: int | tuple[int, int] = 0,
+        padding: int | tuple[int, int] = 0,
+    ):
         super().__init__()
         self.real_convt = nn.ConvTranspose2d(
             in_channels, out_channels, kernel_size, stride, padding, output_padding

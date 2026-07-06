@@ -1,0 +1,9 @@
+# wandb run conventions — entity/project are fixed project-wide (see
+# CLAUDE.md § "Key Facts"); `mode: null` lets wandb decide from
+# WANDB_API_KEY/env (set to "disabled" for CI/tests, "offline" for
+# no-network jobs).
+enabled: true
+entity: flyingleafe
+project: harmonic-noise-suppression
+mode: null
+tags: []

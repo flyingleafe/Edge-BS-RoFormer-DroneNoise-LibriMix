@@ -1,5 +1,31 @@
 # Plan: FWH-Based Rotor Acoustic Field Simulator
 
+## Implementation Status
+
+Phase 1 (Foundation) is complete and validated; the simulator lives in `src/fwh_rotor_sim/`. See `src/fwh_rotor_sim/AGENTS.md` for the API and differentiability details.
+
+**Implemented modules:**
+- `geometry.py` — `Blade`, `Rotor` classes with panel discretization
+- `bemt.py` — `BEMTAerodynamics`, `ThinAirfoilPolar` (thin-airfoil + uniform inflow, per the Phase 1 plan)
+- `fwh.py` — `Farassat1ASolver`, with a vectorized Newton-Raphson retarded-time solver (batched over panels and observers)
+- `solver.py` — `FWHRotorSolver`, the end-to-end geometry+RPM → pressure API
+
+**Validation** (`src/fwh_rotor_sim/test_validation.py`, all passing):
+- Stationary dipole — exact match against the analytic solution
+- Hovering rotor — BPF peak at 166.6 Hz vs. expected 166.7 Hz, SPL ≈ 42.9 dB
+- Variable-speed rotor — stable (no NaN/Inf), correct amplitude modulation
+- Vectorized multi-observer evaluation
+
+This satisfies the Section 7 validation strategy for the compact/hover cases; forward-flight and thickness-noise validation (also listed in Section 7) are not yet exercised.
+
+**Real blade geometry** (extends Section 8's "reuse for mesh/geometry" decision): real chord/twist distributions for the APC 10×7 Thin Electric propeller (FLOWUnsteady/UIUC database) load into `Blade` via `src/fwh_rotor_sim/examples/plot_real_blade.py`; interpolated planform matches the UIUC reference plot. See the `load-real-propeller-geometry` skill for the recipe.
+
+**Also done:** an audio-generation notebook driving the simulator from RPS timeseries (`notebooks/fwh_rotor_audio_generator.ipynb`). The simulator is confirmed differentiable through the blade envelope parameters `c(r)`, `θ(r)`.
+
+**Still open:** everything under Phase 2/3 below beyond what's listed as done — non-uniform BEMT inflow, real (XFOIL) airfoil polars, dynamic stall, ground effect, VLM/VPM, permeable-surface/CFD coupling, broadband noise, and gradient-based optimization demos.
+
+---
+
 ## 1. Knowledge Extracted from Papers
 
 ### 1.1 Original FWH Equation (Ffowcs Williams & Hawkings, 1969)

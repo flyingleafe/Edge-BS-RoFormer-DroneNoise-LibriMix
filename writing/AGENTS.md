@@ -79,9 +79,11 @@ Inherit from the respective base templates.
 
 ## Existing Figures
 
-The `generate_comparison.py` pipeline (SI-SDR, STOI, PESQ plots, waveform/spectrogram
-comparisons) continues unchanged. Its output PNGs/PDFs are used as assets in both
-reports and slides — simply `image("path/to/fig.png")` in Typst.
+`eval.py` (the unified evaluation entry point) + `src/plots` comparison plots
+(SI-SDR, STOI, PESQ plots, waveform/spectrogram comparisons; absorbs the former
+`generate_comparison.py`/`plot_per_snr.py`) produce the figures. Their output
+PNGs/PDFs are used as assets in both reports and slides — simply
+`image("path/to/fig.png")` in Typst.
 
 ---
 

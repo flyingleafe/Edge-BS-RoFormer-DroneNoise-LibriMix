@@ -20,9 +20,9 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-import prepare as P  # noqa: E402  (sibling report prepare.py)
+import prepare as P  # sibling report prepare.py
 
-from train_rps_predictor import get_model  # noqa: E402
+from models.registry import get_rps_model as get_model
 
 ASSETS = P.ASSETS
 DEVICE = P.DEVICE
@@ -283,15 +283,16 @@ def plot_all_models_rps_narrow(sample_id, models, order):
     """Like P.plot_all_models_rps but with an explicit model order (incl. narrow keys)."""
     from typing import cast
 
+    import tdseries as td
+
+    from plots.rps_prediction.salience_comparison import model_rps_prediction, select_channel
+    from plots.rps_prediction.sample_comparison import _load_sample
+    from plots.timeframe.renderers import ROTOR_COLORS
     from tasks.rps_prediction import align_rps_to_gt
-    from utils.data import EventSeries, UniformSeries
-    from utils.plots.rps_prediction.salience_comparison import model_rps_prediction, select_channel
-    from utils.plots.rps_prediction.sample_comparison import _load_sample
-    from utils.plots.timeframe.renderers import ROTOR_COLORS
 
     sample = _load_sample(str(P.DATASET / sample_id))
-    mono = select_channel(cast(UniformSeries, sample["audio"]), P.CHANNEL)
-    rps_track = cast(EventSeries, sample["rps"]) if "rps" in sample else None  # noqa: SIM401
+    mono = select_channel(cast(td.Series, sample["audio"]), P.CHANNEL)
+    rps_track = cast(td.Series, sample["rps"]) if "rps" in sample else None
     dur = mono.duration
 
     def predict(key, model):
@@ -310,7 +311,7 @@ def plot_all_models_rps_narrow(sample_id, models, order):
     pred0 = predict(keys[0], models[keys[0]])
     pred_times = np.linspace(mono.t_start, mono.t_start + dur, pred0.shape[-1])
     all_vals = []
-    if rps_track is not None and rps_track.values is not None:
+    if rps_track is not None and rps_track.data is not None:
         all_vals.append(rps_track.interpolate(pred_times))
     for key in keys:
         all_vals.append(predict(key, models[key]))
@@ -319,7 +320,7 @@ def plot_all_models_rps_narrow(sample_id, models, order):
 
     for ax, key in zip(axes, keys):
         pred = predict(key, models[key])
-        if rps_track is not None and rps_track.values is not None:
+        if rps_track is not None and rps_track.data is not None:
             gt = rps_track.interpolate(pred_times)
             pred = align_rps_to_gt(pred, np.asarray(gt))
             for r in range(min(gt.shape[0], len(ROTOR_COLORS))):

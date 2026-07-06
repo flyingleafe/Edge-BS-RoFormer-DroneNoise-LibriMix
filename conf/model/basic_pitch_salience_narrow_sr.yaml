@@ -1,0 +1,27 @@
+# basic_pitch_salience, narrow-band input + fine super-resolution OUTPUT
+# grid (.pi/checkpoints/salience-narrow-superres-experiment.md). Input
+# contour CQT concentrated in the rotor band (bp_fmin=55, 4 bins/semitone,
+# 12 semitones -> 48 log bins); output decoupled to the same fine linear
+# 55-110 Hz / 360-bin grid as multif0_salience_narrow_sr via
+# FreqSuperResHead. frame_rate stays [16000,256] (FFT_HOP unaffected).
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: basic_pitch_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  bp_fmin: 55.0
+  bins_per_semitone: 4
+  n_contour_semitones: 12
+  superres_out: true
+  out_fmin: 55.0
+  out_fmax: 110.0
+  out_bins: 360
+model_type: null
+legacy_config_path: null

@@ -3,16 +3,22 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import matplotlib.pyplot as plt
 import numpy as np
+import tdseries as td
 import torch
 
 sys.path.insert(0, str(Path(__file__).parents[2]))  # project root
 
+from data_processing.frames import get_meta
+from losses.pit import pit_mse_loss
+from plots.rps_prediction.sample_comparison import plot_sample_comparison
 from tasks.rps_prediction import (
     HOP,
     N_FFT,
@@ -20,13 +26,13 @@ from tasks.rps_prediction import (
     load_input_set,
     load_predictor,
 )
-from train_rps_predictor import _ROTOR_PERMS, pit_mse_loss
-from utils.plots.rps_prediction.sample_comparison import plot_sample_comparison
 
 # ─── Paths ─────────────────────────────────────────────────────────────────
 PROJECT = Path(__file__).parents[2]
 FIG_DIR = Path(__file__).parent / "figures"
 FIG_DIR.mkdir(exist_ok=True)
+
+_ROTOR_PERMS = torch.tensor(list(itertools.permutations(range(4))), dtype=torch.long)
 
 DATASET = PROJECT / "datasets" / "DREGON-LM-V4" / "valid"
 EVAL_NO_PIT = PROJECT / "results" / "dregon_v4_eval" / "eval.json"
@@ -104,7 +110,7 @@ def plot_mse_bars(eval_path: Path, out_name: str, title_suffix: str = ""):
                 color="red",
             )
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout(rect=(0, 0, 1, 0.96))
     out_path = FIG_DIR / out_name
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     print(f"Saved {out_path}")
@@ -142,7 +148,7 @@ def _permute_pred_for_plot(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
 
 def _predict_all_channels(model, sample) -> dict[int, np.ndarray]:
     """Run model on each channel of the sample, return {ch: pred (4, F)}."""
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)  # (8, T) or (T,)
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)  # (8, T) or (T,)
     if audio.ndim == 1:
         audio = audio[np.newaxis, :]  # (1, T)
     preds = {}
@@ -154,14 +160,14 @@ def _predict_all_channels(model, sample) -> dict[int, np.ndarray]:
 
 def _get_gt_on_frame_grid(sample, pred_times: np.ndarray | None = None):
     """Get GT RPS interpolated to the frame grid used by the model."""
-    rps_es = sample["rps"]
-    audio = np.asarray(sample["audio"].samples, dtype=np.float32)
+    rps_es = cast(td.Series, sample["rps"])
+    audio = np.asarray(cast(td.Series, sample["audio"]).data, dtype=np.float32)
     if audio.ndim == 1:
         audio = audio[np.newaxis, :]
 
     n_frames = audio.shape[1] // HOP + 1
     frame_times = np.arange(n_frames) * HOP / SR_AUDIO + rps_es.t_start + N_FFT / SR_AUDIO / 2
-    gt = rps_es.interpolate(frame_times)  # (4, n_frames)
+    gt = np.asarray(rps_es.interpolate(frame_times))  # (4, n_frames)
     return gt, frame_times
 
 
@@ -182,7 +188,7 @@ def make_sample_comparison_figure(
     predictor = load_predictor(abs_model_spec)
 
     # Load sample
-    sample = next(s for s in load_input_set(str(sample_path)) if s.tags.get("id") == sample_id)
+    sample = next(s for s in load_input_set(str(sample_path)) if get_meta(s, "id") == sample_id)
 
     # Predict all channels
     preds_by_ch = _predict_all_channels(predictor, sample)
@@ -213,7 +219,7 @@ def make_sample_comparison_figure(
 
     # Add title
     fig.suptitle(
-        f"{model_name} — {sample_id} ({sample.tags.get('recording_id', '')})\n"
+        f"{model_name} — {sample_id} ({get_meta(sample, 'recording_id', '')})\n"
         "Predictions are PIT-permuted per channel",
         fontsize=14,
         y=1.01,

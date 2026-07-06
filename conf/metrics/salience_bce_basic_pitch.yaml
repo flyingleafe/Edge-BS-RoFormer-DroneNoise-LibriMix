@@ -1,0 +1,13 @@
+# Validation-time BCE-on-salience metric, basic_pitch_salience baseline grid —
+# mirrors conf/loss/salience_bce_basic_pitch.yaml exactly.
+terms:
+  - name: bce
+    _target_: metrics.SalienceBCEMetric
+    params:
+      fmin: 27.5
+      n_bins: 264
+      bins_per_octave: 36
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNet + encoder bottleneck RPS fusion (5-layer variant) on DREGON-LM.
+defaults:
+  - override /data: dregon_lm_v1
+  - override /model: b1_dcunet_rps_dregon
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: b1_dcunet_rps_dregon
+optim:
+  monitor: si_sdr
+  monitor_mode: max

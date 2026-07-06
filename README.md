@@ -17,23 +17,21 @@ Addressing the significant challenge of speech enhancement in ultra-low Signal-t
 - [uv](https://github.com/astral-sh/uv) package manager (recommended) or pip
 - ~10GB disk space for datasets
 
-### One-Command Replication
+### Replication
 
-To replicate all paper results with a single command:
-
-```bash
-./replicate_paper.sh all
-```
-
-Or run individual steps:
+See [`REPLICATION.md`](./REPLICATION.md) for the full, up-to-date command
+catalogue mapping every historical experiment to its current Hydra invocation.
+The short version:
 
 ```bash
-./replicate_paper.sh setup     # Set up environment
-./replicate_paper.sh download  # Download source datasets
-./replicate_paper.sh dataset   # Create DN-LM dataset
-./replicate_paper.sh train     # Train all models
-./replicate_paper.sh eval      # Evaluate models
+python scripts/create_dataset.py ...   # Create the DN-LM dataset (see below)
+python train.py experiment=<name>      # Train a model (Hydra-driven)
+python eval.py ...                     # Evaluate
 ```
+
+(The former one-shot `replicate_paper.sh` driver was removed once training
+moved to the Hydra `train.py experiment=<name>` entry point — `REPLICATION.md`
+supersedes it.)
 
 ## Installation
 
@@ -107,7 +105,7 @@ cd ../..
 git clone https://github.com/saraalemadi/DroneAudioDataset.git data/drone_audio
 
 # Create DN-LM dataset
-python create_dataset.py \
+python scripts/create_dataset.py \
     --speech_dir data/librispeech/LibriSpeech/train-clean-100 \
     --noise_dir data/drone_audio \
     --output_dir datasets/DN-LM \
@@ -280,14 +278,14 @@ Edge-BS-RoFormer-DroneNoise-LibriMix/
 │   ├── dcunet.py              # DCUNet baseline
 │   ├── dptnet/                # DPTNet baseline
 │   └── demucs4ht.py           # HTDemucs baseline
-├── create_dataset.py          # DN-LM dataset creation script
-├── train.py                   # Training script
-├── valid.py                   # Validation during training
-├── final_valid.py             # Final evaluation script
-├── dataset.py                 # Dataset loader
-├── metrics.py                 # Evaluation metrics
-├── utils.py                   # Utility functions
-├── replicate_paper.sh         # One-click replication script
+├── train.py                   # Training entry point (Hydra: experiment=<name>)
+├── eval.py                    # Evaluation entry point
+├── conf/                      # Hydra config tree (experiment/, model/, data/, ...)
+├── scripts/                   # Offline dataset creation, Slurm/sync helpers, benchmarks
+│   ├── create_dataset.py      #   DN-LM dataset creation
+│   ├── create_dregon_librimix.py  # DREGON-LM dataset creation
+│   └── dataset.py             #   Dataset loader
+├── src/                       # Installable packages (models, tasks, data_processing, metrics, ...)
 └── requirements.txt           # Python dependencies
 ```
 

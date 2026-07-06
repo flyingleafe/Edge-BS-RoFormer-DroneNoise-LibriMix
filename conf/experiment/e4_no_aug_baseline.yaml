@@ -1,0 +1,21 @@
+# @package _global_
+# E4 — A/B baseline arm for conf/experiment/e4_generated_noise_augment.yaml:
+# same real DREGON (minus room1) + Michael's FLY125 + LibriSpeech sources,
+# WITHOUT the generated-noise augmentation source. Use this and
+# e4_generated_noise_augment.yaml as a matched pair to isolate the
+# augmentation's effect. See REPLICATION.md § E4.
+defaults:
+  - override /data: online_mix_v4_michaels_no_aug
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e4_no_aug_baseline
+epochs: 200
+patience: 50
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  monitor: mse
+  monitor_mode: min

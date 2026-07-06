@@ -1,0 +1,31 @@
+# DREGON-LM-V4, 8-channel-as-extra-batch-item ("flatten_channels") variant.
+# Reproduces the legacy train_rps_predictor.py::_flatten_channels scheme at
+# the data level (C9): each 8-channel mixture.wav expands into 8 mono
+# samples (one per mic), all broadcasting the recording's single RPS
+# target. len(dataset) == 8 * n_recordings. See
+# data_processing/frame_datasets.py::DregonLMFrameDataset and
+# data_processing/AGENTS.md § "Multichannel Training & Evaluation Wiring".
+# Also used by C7/C8 (multif0_salience / basic_pitch_salience) — the
+# historical salience-baseline training loop flattened channels the same
+# way (.pi/checkpoints/salience-baselines-dregon-v4-report.md: "30 clips x
+# 8 channels (channels flattened into the batch via _flatten_channels)").
+train:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4/train
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

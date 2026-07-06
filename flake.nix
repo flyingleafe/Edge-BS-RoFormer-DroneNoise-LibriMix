@@ -28,6 +28,21 @@
             pyright = {
               enable = true;
             };
+            # Syntax-check every YAML file (Hydra configs included). Uses the
+            # pre-commit-hooks PyYAML, independent of the project .venv.
+            check-yaml = {
+              enable = true;
+            };
+            validate-experiment-docs = {
+              enable = true;
+              name = "experiment docs";
+              entry = "${python}/bin/python scripts/validate_experiment_docs.py";
+              # Whole-set contract (not per-file): run once whenever any
+              # experiment config or experiment doc changes.
+              files = "^(conf/experiment/.*\\.(yaml|md)|docs/experiments/.*\\.md|scripts/validate_experiment_docs\\.py)$";
+              pass_filenames = false;
+              language = "system";
+            };
           };
         };
       in
@@ -59,16 +74,6 @@
             # Graphviz for pygraphviz
             graphviz
             pkg-config
-            # Required by SkyPilot's Kubernetes/SSH-node-pool bootstrap:
-            #   - socat + nc: portforward networking mode needs both.
-            #     Use netcat-gnu (not plain `netcat`/libressl) — SkyPilot runs
-            #     `nc -h` and treats non-zero exit as "not installed";
-            #     libressl's nc exits 1 on -h, GNU netcat exits 0.
-            #   - kubectl: SkyPilot installs k3s on SSH nodes and talks to it
-            #     via kubectl.
-            socat
-            netcat-gnu
-            kubectl
             # Playwright browser automation — python package + NixOS-provided browsers.
             # The nixpkgs python package is patched to use store paths for the node
             # driver, so it works on NixOS without nix-ld.  playwright-driver.browsers

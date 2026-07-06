@@ -1,0 +1,12 @@
+# @package _global_
+# DCUNet baseline (Paper 1 comparison point), on DN-LM. See REPLICATION.md § A1.
+defaults:
+  - override /data: dn_lm
+  - override /model: a1_baseline_dcunet
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: a1_baseline_dcunet
+optim:
+  monitor: si_sdr
+  monitor_mode: max

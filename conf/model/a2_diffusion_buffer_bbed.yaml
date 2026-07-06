@@ -1,0 +1,84 @@
+# Native inline Hydra model config (converted from the former
+# configs/*.yaml + legacy_config_path indirection). The `config`
+# block below is the inlined ZFTurbo-style tree; it is built via
+# models.registry.build_legacy_inline -> utils.build_model_from_config,
+# the exact same dispatch the file-based path used. See REPLICATION.md.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.registry.build_legacy_inline
+params:
+  model_type: diffusion_buffer
+  config:
+    audio:
+      chunk_size: 16000
+      sample_rate: 16000
+      hop_length: 256
+      n_fft: 510
+      num_channels: 1
+      min_mean_abs: 0.0
+      stft:
+        n_fft: 510
+        win_length: 510
+        hop_length: 256
+        window: hann_periodic
+    preprocessing:
+      magnitude_compression:
+        beta: 0.15
+        alpha: 0.5
+    model:
+      name: diffusion_buffer_bbed
+      base_channels: 64
+      channels: 96
+      down_blocks: 4
+      up_blocks: 4
+      res_blocks: 1
+      time_embedding_conv2d: true
+      output_crop_last_frames: true
+    diffusion_buffer:
+      buffer_size: 20
+      t_eps: 0.03
+      t_max: 0.8
+      buffer_lengths:
+      - 5
+      - 10
+      - 20
+      - 30
+      - 60
+    sde:
+      type: bbed
+      diffusion:
+        c: 0.08
+        k: 2.6
+      reverse_start: 0.8
+    training:
+      optimizer: adam
+      lr: 0.0001
+      batch_size: 32
+      ema_momentum: 0.999
+      num_epochs: 250
+      num_steps: 200
+      patience: 2
+      reduce_factor: 0.95
+      q: 0.95
+      coarse_loss_clip: true
+      gradient_accumulation_steps: 1
+      grad_clip: 0
+      use_amp: true
+      other_fix: false
+      instruments:
+      - vocals
+      - noise
+      target_instrument: vocals
+      early_stop:
+        enabled: true
+        patience: 30
+        metric: si-sdr
+    inference:
+      batch_size: 10
+      num_overlap: 4

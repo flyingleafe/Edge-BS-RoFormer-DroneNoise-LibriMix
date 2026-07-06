@@ -1,0 +1,18 @@
+# positional_harmonic_gen — noise_generation task, unconditioned
+# (cond_dim=0, single-drone). `task_params.conditioned` must stay in sync
+# with `params.cond_dim > 0` (see conf/model/positional_harmonic_gen_conditioned.yaml
+# for the 2-drone conditioned variant used by E2/E3). sr is fixed audio rate.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: false
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 0
+model_type: null
+legacy_config_path: null
