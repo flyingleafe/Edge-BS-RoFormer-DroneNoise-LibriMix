@@ -54,11 +54,13 @@ Usage
         --out outputs/gp_rotor_noise --recording 1 \
         --n_harmonics 24 --win 2048 --hop 512 --iters 600
 """
+# pyright: reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportOptionalCall=false, reportOptionalOperand=false
 
 from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -77,6 +79,8 @@ from data_processing.michaels import (
     _load_michaels_data_raw,
     get_geometry,
 )
+
+N_MICS_DEFAULT = 8
 
 torch.set_default_dtype(torch.float32)
 
@@ -310,9 +314,15 @@ def _lsq_coeffs(frames_tonal, Ffull, win, sr):
     Hann = np.hanning(win).astype(np.float64)
     for fo in range(F):
         A = (Ffull[fo] * Hann).T  # (W, 2n+1)
-        pinvA = np.linalg.pinv(A)  # (2n+1, W)
+        # rcond truncates small singular values — critical here because
+        # multiple rotors at near-identical RPS make the Fourier basis rank-
+        # deficient; without it OLS pinv returns huge cancelling coefficients.
+        U, S, Vt = np.linalg.svd(A, full_matrices=False)
+        rcond = max(1e-3, (S[0] * 1e-3) if len(S) else 1e-6)
+        keep = rcond < S
+        A_pinv = (Vt[keep].T * (1.0 / S[keep])) @ U[:, keep].T
         y = frames_tonal[:, fo]  # (M, W)
-        coeffs[:, fo] = y @ pinvA.T  # (M, 2n+1)
+        coeffs[:, fo] = y @ A_pinv.T  # (M, 2n+1)
     return coeffs
 
 
@@ -620,3 +630,352 @@ def parse_args():
 
 if __name__ == "__main__":
     main(parse_args())
+
+
+# ============================================================================
+# GPRotorNoiseModel — reusable fit / save / load / generate interface
+# (used by the training driver `train_dregon_michaels.py` and the listening
+# notebook `noise_gen_real_vs_generated_gp_comparison.ipynb`).
+# ============================================================================
+
+
+@dataclass
+class GPRotorNoiseConfig:
+    sr: int = 16000
+    win: int = 2048
+    hop: int = 512
+    n_harmonics: int = 24
+    n_blades: int = 2
+    n_rotors: int = 4
+    iters: int = 600
+    max_per_source_dur_s: float | None = 30.0  # cap per-recording training audio
+    max_total_frames: int | None = 240  # cap total training frames (across sources & mics)
+    n_inducing: int | None = None
+    lr: float = 5e-2
+    noise_lr: float = 1e-2
+    verbose: bool = True
+
+
+class GPRotorNoiseModel:
+    """Faithful Lee et al. (JASA 2026) GP rotor-noise model — fit/save/load/generate.
+
+    Training: for each source recording `(audio (M, T), rps_audio (R, T),
+    mic_pos (M, 3))` we frame, DWT-split (tonal vs broadband σ_b), phase-align to
+    a reference mic/frame, compute per-frame Fourier coefficients via lstsq on the
+    BPF-injected design matrix, then fit a single SVGP over all `(`    mic_pos_2d, rotor_indx, fourier-task-id`)` design points across sources.
+    `mic_pos` must be constant within a fit (one GP per drone); Michaers and
+    DREGON are trained as *two separate* `GPRotorNoiseModel`s, mirroring the deep
+    `DroneCodebook`'s per-drone codes.
+
+    Generate: given the **real RPS trajectory** of a held-out slice we build a
+    per-frame Fourier design at those BPFs, GP-predict posterior mean weight μ_w
+    per mic & frame, multiply by the design (overlap-add) → tonal audio, and
+    optionally sample N(0, σ_b²_per_mic) broadband for `mode="noisy"`, exactly
+    reproducing Eq. (3) of the paper.
+    """
+
+    def __init__(self, cfg: GPRotorNoiseConfig | None = None):
+        self.cfg = cfg or GPRotorNoiseConfig()
+        self.model: FourierCoeffGP | None = None
+        self.likelihood: gpytorch.likelihoods.GaussianLikelihood | None = None
+        # training-time state needed for inference
+        self.mic_pos: np.ndarray | None = None  # (M,3)
+        self.ref_rps_mean: float | None = None
+        self.target_phase: float | None = None
+        self.sigma_b_per_mic: np.ndarray | None = None  # (M,)
+        self.mus: torch.Tensor | None = None
+        self.sds: torch.Tensor | None = None
+        self.gain_per_mic: np.ndarray | None = (
+            None  # calibration: match predicted tonal level to real level
+        )
+
+    # -- public API ---------------------------------------------------------
+
+    def fit(self, sources: list[dict]) -> None:
+        """Train on one drone's set of recording sources.
+
+        `sources`: list of dicts with keys `audio` (M, T) float32, `rps_audio`
+        (R, T) float32 already upsampled to the audio rate, `mic_pos` (M, 3)
+        float32 (the same mic geometry for every source within a fit; CHECKED).
+        """
+        cfg = self.cfg
+        # validate shared geometry
+        mic0 = sources[0]["mic_pos"]
+        for s in sources[1:]:
+            assert np.allclose(s["mic_pos"], mic0), (
+                "GPRotorNoiseModel.fit requires identical mic geometry across "
+                "sources (per-drone GP); mismatched with first source."
+            )
+        self.mic_pos = np.asarray(mic0, dtype=np.float32)
+        mic_yz = torch.tensor(self.mic_pos[:, 1:], dtype=torch.float32)  # (M,2)
+
+        # build global Phase template: align every frame to mic-0 frame-0 phase
+        # of the first source. ref_rps_mean = mean of first source's frame-0 RPS.
+        chunk_audio0 = self._chunk_source(sources[0])
+        F0 = (chunk_audio0.shape[-1] - cfg.win) // cfg.hop + 1
+        rps_frame0 = _interp_frame_rps(
+            torch.tensor(sources[0]["rps_audio"]), F0, cfg.win, cfg.hop, cfg.sr
+        )
+        self.ref_rps_mean = float(rps_frame0[:, 0].mean())
+        tonal0, _ = _dwt_tonal(torch.tensor(_frame_audio(chunk_audio0, cfg.win, cfg.hop)))
+        self.target_phase = float(_first_bpf_phase(tonal0[0:1, 0], cfg.sr, self.ref_rps_mean)[0])
+        if cfg.verbose:
+            print(
+                f"[gp.fit] ref_rps_mean={self.ref_rps_mean:.3f} target_phase={self.target_phase:.3f}"
+            )
+
+        # Build the grouped per-source DWT/phase-align/lstsq pipeline → design pts
+        n_fourier = 2 * cfg.n_rotors * cfg.n_harmonics + 1
+        coeff_blocks = []
+        for kh, src in enumerate(sources):
+            audio = np.asarray(src["audio"], dtype=np.float32)
+            rps_audio = np.asarray(src["rps_audio"], dtype=np.float32)
+            if audio.shape[0] != self.mic_pos.shape[0]:
+                raise ValueError(
+                    f"source {kh} audio M={audio.shape[0]} != mic_pos M={self.mic_pos.shape[0]}"
+                )
+            chunks = self._chunk_source(src)
+            frames = _frame_audio(chunks, cfg.win, cfg.hop)  # (M,F,W)
+            Fout = frames.shape[1]
+            _rps_frame = _interp_frame_rps(torch.tensor(rps_audio), Fout, cfg.win, cfg.hop, cfg.sr)
+            tonal, sigma_b = _dwt_tonal(torch.tensor(frames))
+            aligned, _ = _align_frames(tonal, cfg.sr, self.ref_rps_mean, self.target_phase)
+            freqs, Ffull = _perframe_design(
+                chunks.shape[-1], rps_audio, cfg.n_harmonics, cfg.sr, cfg.win, cfg.hop
+            )
+            cfg_attrs = (cfg.win, cfg.sr)
+            coeffs = _lsq_coeffs(aligned, Ffull, *cfg_attrs)  # (M,F,2n+1)
+            coeff_blocks.append(coeffs)
+            if cfg.verbose:
+                print(
+                    f"[gp.fit] src {kh}: audio={chunks.shape} sigma_b={np.round(sigma_b, 4)} coeff rmse-target ok"
+                )
+        # mic σ_b: per-mic average across all sources (rows=mics, cols=frames merged)
+        # Recompute to combine contribution from each source.
+        sigma_b_blocks = []
+        for _kh, src in enumerate(sources):
+            chunks = self._chunk_source(src)
+            frames = _frame_audio(chunks, cfg.win, cfg.hop)
+            _, sigma_b = _dwt_tonal(torch.tensor(frames))
+            sigma_b_blocks.append(sigma_b)
+        sigma_b_per_mic = np.stack(sigma_b_blocks).mean(0).astype(np.float32).clip(1e-6, None)
+        self.sigma_b_per_mic = sigma_b_per_mic
+        if cfg.verbose:
+            print(
+                f"[gp.fit] sigma_b per mic (merged, n={len(sources)} src): {np.round(sigma_b_per_mic, 4)}"
+            )
+
+        # Build GP design points across all sources (concat per-frame coeffs).
+        rotor_of_task = np.zeros(n_fourier, dtype=np.int64)
+        rotor_of_task[1:] = np.repeat(np.arange(cfg.n_rotors), (n_fourier - 1) // cfg.n_rotors)
+        xs, ys = [], []
+        for coeffs in coeff_blocks:
+            M, F, _ = coeffs.shape
+            for fi in range(F):
+                for m in range(M):
+                    ya, za = float(mic_yz[m, 0]), float(mic_yz[m, 1])
+                    for t in range(n_fourier):
+                        xs.append([ya, za, float(rotor_of_task[t]), float(t), 0.0])
+                        ys.append(float(coeffs[m, fi, t]))
+        xtr = torch.tensor(np.asarray(xs, np.float32))
+        ytr = torch.tensor(np.asarray(ys, np.float32))
+        if cfg.max_total_frames is not None and ytr.shape[
+            0
+        ] > cfg.max_total_frames * cfg.n_rotors * n_fourier * len(self.mic_pos):
+            # subsample frames uniformly
+            N_pts = ytr.shape[0]
+            keep = np.linspace(
+                0, N_pts - 1, cfg.max_total_frames * len(self.mic_pos) * n_fourier
+            ).astype(int)
+            xtr = xtr[keep]
+            ytr = ytr[keep]
+        # standardise mic_yz dims + the target coefficient magnitude
+        mus = torch.zeros(5)
+        sds = torch.ones(5)
+        mus[:2] = xtr[:, :2].mean(0)
+        sds[:2] = xtr[:, :2].std(0) + 1e-6
+        self.mus = mus
+        self.sds = sds
+        xtr_s = (xtr - mus) / sds
+        self.y_mean = float(ytr.mean())
+        self.y_std = float(ytr.std() + 1e-6)
+        ytr_s = (ytr - self.y_mean) / self.y_std
+        if cfg.verbose:
+            print(
+                f"[gp.fit] GP training points: {tuple(xtr_s.shape)}  Σ_b mean={sigma_b_per_mic.mean():.4f}"
+            )
+
+        n_ind = min(cfg.n_inducing or 512, xtr_s.shape[0])
+        ind = xtr_s[np.linspace(0, xtr_s.shape[0] - 1, n_ind).astype(int)]
+        self.model = FourierCoeffGP(ind, cfg.n_rotors, n_fourier)
+        sigma_b_mean = float(sigma_b_per_mic.mean())
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood(
+            noise_constraint=gpytorch.constraints.GreaterThan(max(1e-6, 0.25 * sigma_b_mean**2))
+        )
+        with torch.no_grad():
+            init_noise = max(1e-6, sigma_b_mean**2)
+            self.likelihood.noise_covar.raw_noise.data.fill_(
+                float(
+                    self.likelihood.noise_covar.raw_noise_constraint.inverse_transform(init_noise)  # type: ignore[operator, union-attr]
+                )
+            )
+        self.model.train()
+        self.likelihood.train()
+        opt = torch.optim.Adam(
+            [
+                {"params": self.model.parameters(), "lr": cfg.lr},
+                {"params": self.likelihood.parameters(), "lr": cfg.noise_lr},
+            ]
+        )
+        mll = gpytorch.mlls.VariationalELBO(self.likelihood, self.model, num_data=xtr_s.shape[0])
+        for it in range(cfg.iters):
+            opt.zero_grad()
+            loss = -mll(self.model(xtr_s), ytr_s)  # type: ignore[operator]
+            loss.backward()  # type: ignore[operator]
+            opt.step()
+            if cfg.verbose and (it % 40 == 0 or it == cfg.iters - 1):
+                print(
+                    f"[gp.fit] it={it:4d} loss={loss.item():.4f} noise={self.likelihood.noise.sqrt().item():.4f}"
+                )
+
+    def _chunk_source(self, src: dict) -> np.ndarray:
+        """Return the source's audio, optionally trimmed to `max_per_source_dur_s` (sec)."""
+        a = np.asarray(src["audio"], dtype=np.float32)
+        if self.cfg.max_per_source_dur_s is not None:
+            n_keep = int(round(self.cfg.max_per_source_dur_s * self.cfg.sr))
+            a = a[:, :n_keep]
+        return a
+
+    def generate(
+        self,
+        rps_audio_gen: np.ndarray | torch.Tensor,
+        mode: str = "mean",
+        rng_seed: int = 0,
+    ) -> np.ndarray:
+        """Render audio at the (real) RPS trajectory, one waveform per mic.
+
+        Returns (M, T_gen) float32. `mode="mean"` -> tonal-only (γ_b left out);
+        `mode="noisy"` -> adds N(0, σ_per_mic²) broadband residual per Eq. (3).
+        """
+        if self.model is None:
+            raise RuntimeError("call .fit() before .generate()")
+        cfg = self.cfg
+        M = self.mic_pos.shape[0]
+        rps_audio_gen = (
+            rps_audio_gen.numpy()
+            if isinstance(rps_audio_gen, torch.Tensor)
+            else np.asarray(rps_audio_gen, dtype=np.float32)
+        )
+        if rps_audio_gen.shape[0] != cfg.n_rotors:
+            raise ValueError(
+                f"rps_audio_gen R={rps_audio_gen.shape[0]} != cfg.n_rotors={cfg.n_rotors}"
+            )
+        T_gen = rps_audio_gen.shape[-1]
+        N = T_gen
+        F_out = (N - cfg.win) // cfg.hop + 1
+        if F_out < 1:
+            raise ValueError(f"T_gen={T_gen} too short for win={cfg.win} hop={cfg.hop}")
+        # build per-frame Fourier design at the gen RPS
+        _, Ffull = _perframe_design(N, rps_audio_gen, cfg.n_harmonics, cfg.sr, cfg.win, cfg.hop)
+        # build GP design points over (mic, frame, fourier-task)
+        n_fourier = 2 * cfg.n_rotors * cfg.n_harmonics + 1
+        rotor_of_task = np.zeros(n_fourier, dtype=np.int64)
+        rotor_of_task[1:] = np.repeat(np.arange(cfg.n_rotors), (n_fourier - 1) // cfg.n_rotors)
+        xs = []
+        mic_yz = (self.mic_pos[:, 1:] - self.mus[:2].numpy()) / self.sds[:2].numpy()
+        for _fo in range(F_out):
+            for m in range(M):
+                ya, za = float(mic_yz[m, 0]), float(mic_yz[m, 1])
+                for t in range(n_fourier):
+                    xs.append([ya, za, float(rotor_of_task[t]), float(t), 0.0])
+        xte = (torch.tensor(np.asarray(xs, np.float32)) - self.mus) / self.sds  # type: ignore[operator]
+        self.model.eval()
+        self.likelihood.eval()
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            pred = self.likelihood(self.model(xte))
+            mu = pred.mean
+        mu = mu * self.y_std + self.y_mean  # un-standardize target
+        mu_pred = mu.reshape(M, F_out, n_fourier).numpy()
+        # overlap-add synthesis
+        synth = np.zeros((M, N), dtype=np.float32)
+        Hann = np.hanning(cfg.win).astype(np.float32)
+        for fo in range(F_out):
+            c = fo * cfg.hop
+            Fmat = Ffull[fo] * Hann  # (2n+1, win)
+            w_pred = mu_pred[:, fo]  # (M, 2n+1)
+            synth[:, c : c + cfg.win] += w_pred @ Fmat
+        synth *= cfg.hop / 3.0  # Hann OLA normalization
+        if mode == "noisy":
+            rng = np.random.default_rng(rng_seed)
+            bb = rng.normal(0, 1, synth.shape).astype(np.float32)
+            synth = synth + bb * self.sigma_b_per_mic[:, None]
+        if self.gain_per_mic is not None:
+            synth = synth * self.gain_per_mic[:, None]
+        return synth.astype(np.float32)
+
+    def calibrate_gain(self, real_audio: np.ndarray, gen_audio: np.ndarray) -> None:
+        """Per-mic least-squares gain matching gen -> real (used at notebook time)."""
+        M = real_audio.shape[0]
+        g = np.zeros(M, dtype=np.float32)
+        for m in range(M):
+            denom = float((gen_audio[m] ** 2).sum()) + 1e-9
+            g[m] = float((real_audio[m] * gen_audio[m]).sum() / denom)
+        self.gain_per_mic = g
+
+    # -- (de)serialization -------------------------------------------------
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "cfg": self.cfg.__dict__,
+            "model": self.model.state_dict() if self.model is not None else None,
+            "likelihood": self.likelihood.state_dict() if self.likelihood is not None else None,
+            "mic_pos": self.mic_pos,
+            "ref_rps_mean": self.ref_rps_mean,
+            "target_phase": self.target_phase,
+            "sigma_b_per_mic": self.sigma_b_per_mic,
+            "mus": self.mus.numpy() if isinstance(self.mus, torch.Tensor) else self.mus,
+            "sds": self.sds.numpy() if isinstance(self.sds, torch.Tensor) else self.sds,
+            "gain_per_mic": self.gain_per_mic,
+            "y_mean": self.y_mean,
+            "y_std": self.y_std,
+            "inducing_x": (
+                self.model.variational_strategy.inducing_points.detach().cpu()
+                if self.model is not None
+                else None
+            ),
+        }
+        torch.save(state, path)
+
+    @classmethod
+    def load(cls, path: str | Path, device: str = "cpu") -> GPRotorNoiseModel:
+        state = torch.load(path, map_location=device, weights_only=False)
+        cfg = GPRotorNoiseConfig(**state["cfg"])
+        m = cls(cfg=cfg)
+        m.mic_pos = state["mic_pos"]
+        m.ref_rps_mean = state["ref_rps_mean"]
+        m.target_phase = state["target_phase"]
+        m.sigma_b_per_mic = state["sigma_b_per_mic"]
+        m.mus = torch.tensor(state["mus"])
+        m.sds = torch.tensor(state["sds"])
+        m.gain_per_mic = state["gain_per_mic"]
+        m.y_mean = state.get("y_mean", 0.0)
+        m.y_std = state.get("y_std", 1.0)
+        n_fourier = 2 * cfg.n_rotors * cfg.n_harmonics + 1
+        ind = state["inducing_x"]
+        m.model = FourierCoeffGP(ind, cfg.n_rotors, n_fourier)
+        m.model.load_state_dict(state["model"])
+        m.likelihood = gpytorch.likelihoods.GaussianLikelihood(
+            noise_constraint=gpytorch.constraints.GreaterThan(1e-6)
+        )
+        m.likelihood.load_state_dict(state["likelihood"])
+        m.model.eval()
+        m.likelihood.eval()
+        return m
+
+    # -- tiny reflection hook (used by the notebook to size the model) -------
+
+    @property
+    def n_mics(self) -> int:
+        return int(self.mic_pos.shape[0]) if self.mic_pos is not None else 0
