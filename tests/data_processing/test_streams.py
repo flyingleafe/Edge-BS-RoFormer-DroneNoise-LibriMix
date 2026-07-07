@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 from functools import partial
+from pathlib import PurePosixPath
 
 import dload
 import numpy as np
@@ -376,6 +377,22 @@ def test_ensure_local_uses_manifest_fields_map(patched_repo, dregon_lm_dataset):
     assert not (root / "_meta").exists()  # bookkeeping samples are skipped
     rps = np.load(sample_dir / "rps.npy")
     assert rps.shape == (4, 29)
+
+
+def test_field_relpath_accepts_full_filenames():
+    """publish scripts record full filenames ("mixture.wav"), not bare
+    extensions — must not double up as mixture.mixture.wav."""
+    fields_map = {"mixture": "mixture.wav", "rps": "rps.npy"}
+    assert streams._field_relpath("sample_00000", "mixture", fields_map) == PurePosixPath(
+        "sample_00000/mixture.wav"
+    )
+    assert streams._field_relpath("sample_00000", "rps", fields_map) == PurePosixPath(
+        "sample_00000/rps.npy"
+    )
+    # bare-extension mapping still works
+    assert streams._field_relpath("s", "mixture", {"mixture": "wav"}) == PurePosixPath(
+        "s/mixture.wav"
+    )
 
 
 def test_resolve_source_passthrough_and_uri(patched_repo, dregon_lm_dataset):

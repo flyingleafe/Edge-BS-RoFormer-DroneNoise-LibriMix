@@ -805,10 +805,14 @@ def _field_relpath(key: str, field: str, fields_map: Mapping[str, str]) -> PureP
     if rel.is_absolute() or ".." in rel.parts:
         raise ValueError(f"refusing to materialize suspicious sample key {key!r}")
     if field in fields_map:
-        # Manifest-declared stem->extension mapping (processed datasets:
-        # key = sample dir, field = file stem): <key>/<field>.<ext>.
-        ext = str(fields_map[field])
-        name = field if ext in _EXTENSIONLESS_FIELDS else f"{field}.{ext}"
+        # Manifest-declared mapping (processed datasets: key = sample dir,
+        # field = file stem). The value is either the full original filename
+        # ("mixture.wav" — what publish scripts record) or a bare extension
+        # ("wav"): materialize as <key>/<original filename>.
+        mapped = str(fields_map[field])
+        if "." in mapped:
+            return rel / mapped
+        name = field if mapped in _EXTENSIONLESS_FIELDS else f"{field}.{mapped}"
         return rel / name
     # Raw datasets committed via the dload CLI: key = relpath minus
     # extension, field = the extension itself: <key>.<field>.
