@@ -11,6 +11,8 @@ time = "1h"
 
 [job.env]
 # Explicit "uv", not "auto": on notebook backends (colab/kaggle) omnirun
-# rewrites auto -> system, and plain pip cannot resolve this project
-# (s3fs<->dload-ml botocore conflict needs uv's override-dependencies).
+# rewrites auto -> system (ambient pip install), losing uv.lock pinning.
+# "uv" builds the locked venv everywhere (~4 min on Kaggle, verified).
+# kind = "system" also resolves since the s3fs removal, if you prefer to
+# reuse the notebook's preinstalled CUDA torch over exact reproducibility.
 kind = "uv"
