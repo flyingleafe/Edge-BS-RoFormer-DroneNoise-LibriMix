@@ -3,10 +3,10 @@
 See docs/refactor-unified-framework.md § "Future expansions (design
 headroom)": "checkpoints AND selected validation samples are uploaded as
 artifacts to Cloudflare R2 (bucket ``ml-data``, creds via ``.env``:
-``R2_ACCOUNT_ID`` + AWS keys, s3fs client)".
+``R2_ACCOUNT_ID`` + AWS keys, boto3 client)".
 
-Client library is ``s3fs`` (a direct project dependency; see
-``pyproject.toml``), pointed at the R2 S3-compatible endpoint
+Client library is ``boto3`` (already a dependency via ``dload-ml``; declared
+directly in ``pyproject.toml``), pointed at the R2 S3-compatible endpoint
 ``https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com``.
 
 Bucket layout (``bucket`` defaults to ``"ml-data"``, ``prefix`` to
@@ -25,10 +25,11 @@ artifact-free but crash-free. Any exception raised *during* an upload
 (network error, bad credentials, etc.) is caught, logged, and swallowed the
 same way: a broken artifact store must never take training down.
 
-The underlying filesystem object is dependency-injected via the ``fs``
-constructor argument (anything shaped like ``s3fs.S3FileSystem``: ``.open(path,
-mode)`` context manager + ``.makedirs(path, exist_ok=True)``) so tests can pass
-an in-memory fake instead of monkeypatching ``s3fs`` internals.
+The underlying S3 client is dependency-injected via the ``client``
+constructor argument (anything shaped like ``boto3.client("s3")``:
+``.put_object(Bucket=..., Key=..., Body=...)`` +
+``.upload_file(Filename, Bucket, Key)``) so tests can pass an in-memory fake
+instead of monkeypatching ``boto3`` internals.
 """
 
 from __future__ import annotations
@@ -102,11 +103,11 @@ class ArtifactStore:
         Bucket + key prefix (``conf/artifacts/*.yaml`` :class:`~training.config.ArtifactsConfig`).
     enabled:
         When ``False``, every method is a no-op (one log line).
-    fs:
-        Pre-built filesystem object (``s3fs.S3FileSystem``-shaped, or a test
-        fake). When omitted, a real ``s3fs.S3FileSystem`` is lazily built
-        from ``.env`` credentials on first use; if those are missing, the
-        store silently degrades to no-op mode (headless CI safety).
+    client:
+        Pre-built S3 client (``boto3.client("s3")``-shaped, or a test fake).
+        When omitted, a real boto3 S3 client is lazily built from ``.env``
+        credentials on first use; if those are missing, the store silently
+        degrades to no-op mode (headless CI safety).
     """
 
     def __init__(
@@ -116,23 +117,23 @@ class ArtifactStore:
         bucket: str = "ml-data",
         prefix: str = "artifacts",
         enabled: bool = True,
-        fs: Any | None = None,
+        client: Any | None = None,
     ) -> None:
         self.experiment_name = experiment_name
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         self.enabled = enabled
-        self._fs: Any | None = fs
-        self._env_checked = fs is not None
+        self._client: Any | None = client
+        self._env_checked = client is not None
 
     @property
     def active(self) -> bool:
-        """Whether uploads will actually reach R2 (enabled + fs resolvable)."""
-        return self.enabled and self._get_fs() is not None
+        """Whether uploads will actually reach R2 (enabled + client resolvable)."""
+        return self.enabled and self._get_client() is not None
 
-    def _get_fs(self) -> Any | None:
-        if self._fs is not None:
-            return self._fs
+    def _get_client(self) -> Any | None:
+        if self._client is not None:
+            return self._client
         if not self.enabled or self._env_checked:
             return None
         self._env_checked = True
@@ -143,17 +144,23 @@ class ArtifactStore:
                 ", ".join(R2_ENV_VARS),
             )
             return None
-        import s3fs
+        import boto3
 
-        self._fs = s3fs.S3FileSystem(
+        self._client = boto3.client(
+            "s3",
             endpoint_url=f"https://{env['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-            key=env["AWS_ACCESS_KEY_ID"],
-            secret=env["AWS_SECRET_ACCESS_KEY"],
+            aws_access_key_id=env["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
+            region_name="auto",
         )
-        return self._fs
+        return self._client
 
-    def _root(self) -> str:
-        return f"{self.bucket}/{self.prefix}/{self.experiment_name}"
+    def _key_root(self) -> str:
+        """Key root inside the bucket (no bucket component)."""
+        return f"{self.prefix}/{self.experiment_name}"
+
+    def _uri(self, key: str) -> str:
+        return f"r2://{self.bucket}/{key}"
 
     def upload_checkpoint(self, path: str | Path) -> str | None:
         """Upload a checkpoint file; returns its ``r2://...`` URI, or ``None``
@@ -161,22 +168,19 @@ class ArtifactStore:
         if not self.enabled:
             logger.info("ArtifactStore: disabled; skipping checkpoint upload for %s", path)
             return None
-        fs = self._get_fs()
-        if fs is None:
+        client = self._get_client()
+        if client is None:
             return None
         ckpt_path = Path(path)
-        checkpoints_dir = f"{self._root()}/checkpoints"
-        key = f"{checkpoints_dir}/{ckpt_path.name}"
+        key = f"{self._key_root()}/checkpoints/{ckpt_path.name}"
         try:
-            fs.makedirs(checkpoints_dir, exist_ok=True)
-            with open(ckpt_path, "rb") as src, fs.open(key, "wb") as dst:
-                dst.write(src.read())
+            client.upload_file(str(ckpt_path), self.bucket, key)
         except Exception:
             logger.warning(
                 "ArtifactStore: failed to upload checkpoint %s", ckpt_path, exc_info=True
             )
             return None
-        return f"r2://{key}"
+        return self._uri(key)
 
     def upload_val_samples(self, epoch: int, samples: Sequence[ValSample]) -> str | None:
         """Upload one epoch's validation-sample audio/figures + a manifest.
@@ -189,28 +193,25 @@ class ArtifactStore:
             return None
         if not samples:
             return None
-        fs = self._get_fs()
-        if fs is None:
+        client = self._get_client()
+        if client is None:
             return None
 
-        epoch_root = f"{self._root()}/val_samples/epoch_{epoch}"
+        epoch_root = f"{self._key_root()}/val_samples/epoch_{epoch}"
         manifest: dict[str, Any] = {"epoch": epoch, "samples": []}
         try:
-            fs.makedirs(epoch_root, exist_ok=True)
             for sample in samples:
                 keys: dict[str, str] = {}
                 for role, (wav, sr) in sample.audio.items():
                     key = f"{epoch_root}/{sample.sample_id}__{role}.wav"
                     buf = io.BytesIO()
                     sf.write(buf, np.asarray(wav, dtype=np.float32), sr, format="WAV")
-                    with fs.open(key, "wb") as dst:
-                        dst.write(buf.getvalue())
-                    keys[role] = f"r2://{key}"
+                    client.put_object(Bucket=self.bucket, Key=key, Body=buf.getvalue())
+                    keys[role] = self._uri(key)
                 for role, png_bytes in sample.figures.items():
                     key = f"{epoch_root}/{sample.sample_id}__{role}.png"
-                    with fs.open(key, "wb") as dst:
-                        dst.write(png_bytes)
-                    keys[role] = f"r2://{key}"
+                    client.put_object(Bucket=self.bucket, Key=key, Body=png_bytes)
+                    keys[role] = self._uri(key)
                 manifest["samples"].append(
                     {
                         "sample_id": sample.sample_id,
@@ -221,11 +222,14 @@ class ArtifactStore:
                 )
 
             manifest_key = f"{epoch_root}/manifest.json"
-            with fs.open(manifest_key, "wb") as dst:
-                dst.write(json.dumps(manifest, indent=2).encode("utf-8"))
+            client.put_object(
+                Bucket=self.bucket,
+                Key=manifest_key,
+                Body=json.dumps(manifest, indent=2).encode("utf-8"),
+            )
         except Exception:
             logger.warning(
                 "ArtifactStore: failed to upload val samples for epoch %d", epoch, exc_info=True
             )
             return None
-        return f"r2://{manifest_key}"
+        return self._uri(manifest_key)

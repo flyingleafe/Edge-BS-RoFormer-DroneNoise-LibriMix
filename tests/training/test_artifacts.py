@@ -1,8 +1,8 @@
 """Unit tests for ``training.artifacts.ArtifactStore``.
 
-Uses a small in-memory fake filesystem (dependency-injected via
-``ArtifactStore(fs=...)``) instead of monkeypatching ``s3fs`` internals — see
-module docstring of ``training/artifacts.py``. The one test that talks to
+Uses a small in-memory fake S3 client (dependency-injected via
+``ArtifactStore(client=...)``) instead of monkeypatching ``boto3`` internals —
+see module docstring of ``training/artifacts.py``. The one test that talks to
 real Cloudflare R2 lives in ``test_artifacts_r2_integration.py``.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
@@ -17,42 +18,30 @@ import soundfile as sf
 from training.artifacts import R2_ENV_VARS, ArtifactStore, ValSample, _load_r2_env
 
 
-class _FakeFile:
-    def __init__(self, fs: FakeFS, path: str, mode: str) -> None:
-        self._fs = fs
-        self._path = path
-        self._mode = mode
-        self._buf = io.BytesIO()
+class FakeS3Client:
+    """Minimal in-memory stand-in for ``boto3.client("s3")``.
 
-    def __enter__(self) -> _FakeFile:
-        return self
+    Stores uploaded objects in ``objects`` keyed by ``"<bucket>/<key>"``.
+    """
 
-    def __exit__(self, *exc: object) -> bool:
-        if "w" in self._mode:
-            self._fs.files[self._path] = self._buf.getvalue()
-        return False
+    def __init__(self, *, fail_keys: set[str] | None = None) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.fail_keys = fail_keys or set()
 
-    def write(self, data: bytes | str) -> int:
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        return self._buf.write(data)
+    def _check(self, bucket: str, key: str) -> str:
+        path = f"{bucket}/{key}"
+        if path in self.fail_keys:
+            raise RuntimeError(f"synthetic failure uploading {path}")
+        return path
 
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes) -> dict:
+        path = self._check(Bucket, Key)
+        self.objects[path] = bytes(Body)
+        return {}
 
-class FakeFS:
-    """Minimal in-memory stand-in for ``s3fs.S3FileSystem``."""
-
-    def __init__(self, *, fail_paths: set[str] | None = None) -> None:
-        self.files: dict[str, bytes] = {}
-        self.dirs: set[str] = set()
-        self.fail_paths = fail_paths or set()
-
-    def makedirs(self, path: str, exist_ok: bool = True) -> None:
-        self.dirs.add(path)
-
-    def open(self, path: str, mode: str = "rb") -> _FakeFile:
-        if path in self.fail_paths:
-            raise RuntimeError(f"synthetic failure opening {path}")
-        return _FakeFile(self, path, mode)
+    def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:
+        path = self._check(Bucket, Key)
+        self.objects[path] = Path(Filename).read_bytes()
 
 
 # ─── upload_checkpoint ──────────────────────────────────────────────────────
@@ -61,23 +50,22 @@ class FakeFS:
 def test_upload_checkpoint_writes_expected_key(tmp_path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_bytes(b"fake-checkpoint-bytes")
-    fs = FakeFS()
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=True)
+    client = FakeS3Client()
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=True)
 
     uri = store.upload_checkpoint(ckpt)
 
     expected_key = "ml-data/artifacts/exp1/checkpoints/best.ckpt"
     assert uri == f"r2://{expected_key}"
-    assert fs.files[expected_key] == b"fake-checkpoint-bytes"
-    assert "ml-data/artifacts/exp1/checkpoints" in fs.dirs
+    assert client.objects[expected_key] == b"fake-checkpoint-bytes"
 
 
 def test_upload_checkpoint_custom_bucket_and_prefix(tmp_path):
     ckpt = tmp_path / "ep3_mse_0.1234.ckpt"
     ckpt.write_bytes(b"x")
-    fs = FakeFS()
+    client = FakeS3Client()
     store = ArtifactStore(
-        experiment_name="exp2", bucket="other-bucket", prefix="/runs/", fs=fs, enabled=True
+        experiment_name="exp2", bucket="other-bucket", prefix="/runs/", client=client, enabled=True
     )
 
     uri = store.upload_checkpoint(ckpt)
@@ -88,18 +76,18 @@ def test_upload_checkpoint_custom_bucket_and_prefix(tmp_path):
 def test_upload_checkpoint_disabled_is_noop(tmp_path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_bytes(b"x")
-    fs = FakeFS()
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=False)
+    client = FakeS3Client()
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=False)
 
     assert store.upload_checkpoint(ckpt) is None
-    assert fs.files == {}
+    assert client.objects == {}
 
 
 def test_upload_checkpoint_exception_does_not_propagate(tmp_path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_bytes(b"x")
-    fs = FakeFS(fail_paths={"ml-data/artifacts/exp1/checkpoints/best.ckpt"})
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=True)
+    client = FakeS3Client(fail_keys={"ml-data/artifacts/exp1/checkpoints/best.ckpt"})
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=True)
 
     # Must not raise.
     result = store.upload_checkpoint(ckpt)
@@ -110,8 +98,8 @@ def test_upload_checkpoint_exception_does_not_propagate(tmp_path):
 
 
 def test_upload_val_samples_writes_audio_figures_and_manifest():
-    fs = FakeFS()
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=True)
+    client = FakeS3Client()
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=True)
 
     wav = (np.linspace(-1.0, 1.0, 1600, dtype=np.float32), 16000)
     samples = [
@@ -131,19 +119,19 @@ def test_upload_val_samples_writes_audio_figures_and_manifest():
     assert manifest_uri == f"r2://{root}/manifest.json"
 
     # Audio + figure keys present with the expected naming convention.
-    assert f"{root}/sample_000__mixture.wav" in fs.files
-    assert f"{root}/sample_000__target.wav" in fs.files
-    assert f"{root}/sample_000__output.wav" in fs.files
-    assert f"{root}/sample_000__rps_overlay.png" in fs.files
-    assert fs.files[f"{root}/sample_000__rps_overlay.png"] == b"\x89PNGfakebytes"
-    assert f"{root}/sample_001__mixture.wav" in fs.files
+    assert f"{root}/sample_000__mixture.wav" in client.objects
+    assert f"{root}/sample_000__target.wav" in client.objects
+    assert f"{root}/sample_000__output.wav" in client.objects
+    assert f"{root}/sample_000__rps_overlay.png" in client.objects
+    assert client.objects[f"{root}/sample_000__rps_overlay.png"] == b"\x89PNGfakebytes"
+    assert f"{root}/sample_001__mixture.wav" in client.objects
 
     # The wav bytes are a real, readable WAV file at the right sample rate.
-    data, sr = sf.read(io.BytesIO(fs.files[f"{root}/sample_000__mixture.wav"]))
+    data, sr = sf.read(io.BytesIO(client.objects[f"{root}/sample_000__mixture.wav"]))
     assert sr == 16000
     assert len(data) == 1600
 
-    manifest = json.loads(fs.files[f"{root}/manifest.json"])
+    manifest = json.loads(client.objects[f"{root}/manifest.json"])
     assert manifest["epoch"] == 7
     ids = {row["sample_id"]: row for row in manifest["samples"]}
     assert ids["sample_000"]["input_snr"] == -12.5
@@ -154,25 +142,25 @@ def test_upload_val_samples_writes_audio_figures_and_manifest():
 
 
 def test_upload_val_samples_empty_list_returns_none():
-    fs = FakeFS()
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=True)
+    client = FakeS3Client()
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=True)
     assert store.upload_val_samples(0, []) is None
-    assert fs.files == {}
+    assert client.objects == {}
 
 
 def test_upload_val_samples_disabled_is_noop():
-    fs = FakeFS()
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=False)
+    client = FakeS3Client()
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=False)
     wav = (np.zeros(100, dtype=np.float32), 16000)
     samples = [ValSample(sample_id="s0", audio={"mixture": wav})]
 
     assert store.upload_val_samples(0, samples) is None
-    assert fs.files == {}
+    assert client.objects == {}
 
 
 def test_upload_val_samples_exception_does_not_propagate():
-    fs = FakeFS(fail_paths={"ml-data/artifacts/exp1/val_samples/epoch_0/s0__mixture.wav"})
-    store = ArtifactStore(experiment_name="exp1", fs=fs, enabled=True)
+    client = FakeS3Client(fail_keys={"ml-data/artifacts/exp1/val_samples/epoch_0/s0__mixture.wav"})
+    store = ArtifactStore(experiment_name="exp1", client=client, enabled=True)
     wav = (np.zeros(100, dtype=np.float32), 16000)
     samples = [ValSample(sample_id="s0", audio={"mixture": wav})]
 
@@ -180,7 +168,7 @@ def test_upload_val_samples_exception_does_not_propagate():
     assert result is None
 
 
-# ─── missing-env / no-fs no-op path ─────────────────────────────────────────
+# ─── missing-env / no-client no-op path ─────────────────────────────────────
 
 
 def test_load_r2_env_returns_none_when_vars_missing(monkeypatch):
@@ -205,14 +193,14 @@ def test_load_r2_env_returns_values_when_present(monkeypatch):
     }
 
 
-def test_store_without_fs_or_env_is_noop(tmp_path, monkeypatch):
+def test_store_without_client_or_env_is_noop(tmp_path, monkeypatch):
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     for var in R2_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
 
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_bytes(b"x")
-    store = ArtifactStore(experiment_name="exp1", enabled=True)  # no fs injected
+    store = ArtifactStore(experiment_name="exp1", enabled=True)  # no client injected
 
     assert store.active is False
     assert store.upload_checkpoint(ckpt) is None

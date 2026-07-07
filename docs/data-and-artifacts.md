@@ -219,9 +219,13 @@ handled by `src/training/artifacts.py::ArtifactStore` — not dload, and not the
 - **Where**: `s3://ml-data/artifacts/<experiment_name>/checkpoints/<filename>.ckpt`
   and `s3://ml-data/artifacts/<experiment_name>/val_samples/epoch_<N>/...`
   (`bucket`/`prefix` are configurable; defaults are `ml-data`/`artifacts`).
-- **Client**: `s3fs.S3FileSystem` (not `boto3`; s3fs is a direct project
-  dependency) pointed at the same R2 S3-compatible endpoint used by dload
-  (`https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`).
+- **Client**: `boto3.client("s3")` (same library dload uses; boto3 is a
+  direct project dependency) pointed at the same R2 S3-compatible endpoint
+  used by dload (`https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`).
+  Formerly `s3fs`, dropped because its `aiobotocore` pin capped `botocore`
+  below dload-ml's `boto3` floor, forcing a `[tool.uv]`
+  `override-dependencies` pin that made the project unresolvable by plain
+  pip.
 - **Credentials**: the same `.env` vars as the dload setup above —
   `R2_ACCOUNT_ID`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`. If any are
   missing, or `artifacts.enabled=false` in the Hydra config, every
