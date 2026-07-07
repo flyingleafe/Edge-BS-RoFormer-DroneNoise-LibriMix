@@ -1,0 +1,11 @@
+# Per-repo omnirun job defaults (CLI flags override). Not committed.
+
+[job]
+outputs = ["results/**"]
+
+[job.resources]
+gpus = 1
+time = "1h"
+
+[job.env]
+kind = "auto"
