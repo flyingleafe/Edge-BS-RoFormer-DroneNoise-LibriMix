@@ -76,6 +76,32 @@ families unblock with a single pull. Notable exceptions still unpublished:
 beyond the pinned `DREGON-LM-V2-{train,valid}` — rebuild those via their
 "Build" rows.
 
+## Replication battery (2026-07-07) — dload + omnirun path validated
+
+Four experiments were replicated end-to-end on `apocrita-long` (A100-80) via
+`omnirun submit`, at commit `bf0ebc6`, W&B tag `replication-apocrita`, with the
+data paths overridden to dload URIs
+(`data.train.params.data_dir=dload:DREGON-LM-V4-train` etc.) — i.e. **no local
+`datasets/` checkout anywhere in the loop**. This validates the whole
+checkout-free replication path this document assumes: the "blocked on data"
+statuses below are cleared for any family whose datasets are in `dload.lock`.
+
+| Experiment | Replica (W&B run) | Reference | Verdict |
+|---|---|---|---|
+| `rps_simple_conv_v2_v4` | best PIT RMSE **1.474**, R² 0.929 (`x74lqn5s`) | ≈1.62 | **replicated** |
+| `c5_simpleconv_dregon_v3` | MSE **215.7**, MAE_clip 7.51 (`rk260zp7`) | 227.0 / 8.14 (non-PIT legacy) | **replicated** |
+| `c9_simple_conv_v2_8ch` | PIT MSE **2.49**, R² 0.935 (`8mkjipu6`) | ≈3.30 / 0.94 | **replicated** |
+| `c11_dregon_fly125_retrain` | post-hoc `eval.py` on `dload:DREGON-LM-V4-valid`: PIT RMSE **3.18** / R² 0.65 (channel 0) (`nn17a6u0`) | 2.77 | **directionally replicated** — see § C11 caveats |
+
+Operational notes from the battery: dload streamed ~12.6 GiB of frame
+datasets in-job transparently (training-start gap 60–90 s incl.
+materialization; env bootstrap ~2 s on worktree+venv reuse, 36 s on a lock
+delta); the Colab free tier failed at session creation (consistent with the
+earlier allocation-lottery finding). omnirun gotchas found along the way are
+documented in `docs/data-and-artifacts.md` § "Job running (omnirun)". The
+battery also exposed a michaels valid-split crash (`flatten_channels`), fixed
+in commit `ffba378`.
+
 ## A1 — Paper 1: Edge-BS-RoFormer + baselines (DN-LM)
 
 | | |
@@ -267,7 +293,10 @@ non-neural signal-processing trackers (`pyin_single_f0`, `cepstral_tracker`,
 | **New-framework command** | `python train.py experiment=c5_simpleconv_dregon_v3` |
 | **Results** | `docs/experiments/dregon-lm-v2-v3-baseline.md`. Val MSE 227.0 (RMSE 15.1), MAE/clip 8.14 RPS. Checkpoint `results/rps_predictor_comparison/best_simple_conv.pt`. wandb: `flyingleafe/rps-prediction/runs/ivbyimpe` (legacy project, distinct from the new framework's `harmonic-noise-suppression` project). |
 
-**Replicability status: config-complete, blocked on data. Documented
+**Replicability status: replicated (2026-07-07).** W&B `rk260zp7` (via
+omnirun on apocrita + dload data, see "Replication battery" above): MSE
+**215.7**, MAE_clip **7.51** vs. reference 227.0 / 8.14 (non-PIT legacy) —
+matches within the loss deviation below. **Documented
 deviation**: historical training used plain (non-PIT) MSE (`--no_pit_loss`);
 `c5_simpleconv_dregon_v3` uses `pit_mse` instead — current best practice per
 the C9 finding that PIT is the correct objective, not a workaround (see C9
@@ -332,9 +361,13 @@ inside the training loop.
 | **Dataset** | `datasets/DREGON-LM-V4` — `conf/data/dregon_lm_v4_8ch_flat.yaml` (shared with C7/C8 above). |
 | **New-framework command** | `python train.py experiment=c9_simple_conv_v2_8ch` |
 
-**Replicability status: config-complete, blocked on data.** The
+**Replicability status: replicated (2026-07-07).** W&B `8mkjipu6` (via
+omnirun on apocrita + dload data, see "Replication battery" above): PIT MSE
+**2.49**, R² **0.935** vs. reference ≈3.30 / 0.94. The
 single-channel path (`channel: 0`) remains covered by the pre-existing
-`rps_simple_conv_v2_v4` experiment and every V4-based experiment; this adds
+`rps_simple_conv_v2_v4` experiment (itself replicated in the same battery:
+best PIT RMSE **1.474**, R² 0.929, W&B `x74lqn5s`, vs. reference ≈1.62) and
+every V4-based experiment; this adds
 the 8-channel-as-batch alternative alongside it, not in place of it.
 
 ## C10 — 26-variant SimpleConv architecture sweep (offline + online-mix) + clipped-GRU follow-up
@@ -377,7 +410,19 @@ see below.
 | **New-framework command** | `python train.py experiment=c11_dregon_fly125_retrain` |
 | **Results** | `results/fly125_simpleconvv2_eval/metrics.json` (script gitignored/not found in repo — `run_eval.py` referenced only in user memory notes, path unverified). FLY124 cross-drone: PIT RMSE 7.96→**1.63** Hz, R² median 0.52→**0.96**. DREGON-LM-V4 in-domain: PIT RMSE regresses 1.62→2.77 Hz (attributed to an early-stopping artifact at epoch 20, not a capacity tradeoff). |
 
-**Replicability status: config-complete for step 2, blocked on data.**
+**Replicability status (step 2): directionally replicated (2026-07-07).**
+W&B `nn17a6u0` (via omnirun on apocrita + dload data, see "Replication
+battery" above); post-hoc `eval.py` on `dload:DREGON-LM-V4-valid` gave PIT
+RMSE **3.18** / R² 0.65 (channel 0) vs. the reference 2.77 — the in-domain
+regression vs. the 1.62 V4 baseline is confirmed, so the experiment's
+conclusion holds. Caveats: (a) the reference 2.77 came from a post-hoc eval
+script not in the repo; (b) the historical run validated per-mic-flattened
+(legacy loop) while the replica evaluated channel 0 only — and the
+ch0-trained replica does **not** generalize across mics (flattened eval RMSE
+9.38); (c) the yaml's `epochs: 50` / `batch_size: 32` deviate from the
+historical W&B run config (epochs=200, batch_size=16, early-stopped ~ep20).
+The michaels valid-split crash this replication exposed is fixed
+(`flatten_channels`, commit `ffba378`).
 `c11_dregon_fly125_retrain` composes identically to `c10_arch_sweep_offline`'s
 default (same dataset, same default model) but is kept as a separately-named
 experiment to match the historical wandb-run/results-dir naming.

@@ -205,6 +205,18 @@ omnirun backends check        # re-establish the SSH ControlMaster after expiry
   (`uv sync --frozen`).
 - `.env` ships with every job automatically — R2 + WANDB credentials travel,
   so dload streaming and wandb logging work on any backend.
+- The `sae` partition (`apocrita-long`) **requires** `account =
+  "pilot_sae_gpu"` in the backend config — `sbatch` rejects the submission
+  otherwise.
+- Shared same-SHA worktree warts: a crashed run's `results/<exp>` dir
+  persists in the worktree and **poisons retries at the same SHA**
+  (`FileExistsError`) — work around with a `results_root=...` override. Also
+  `outputs = results/**` scoops *sibling* jobs' results dirs into every
+  `omnirun pull`.
+- After the local SSH ControlMaster dies, jobs show **LOST** from stale
+  heartbeats — run `omnirun backends check` and verify via `sacct` on the
+  cluster; a completed job may stay "lost" in `omnirun ps` while
+  `omnirun pull` still works.
 - Legacy fallback on an Apocrita login node: `./scripts/sbatch.sh` (and
   `./scripts/sync_results.sh` to rsync results back). Prefer omnirun.
 
