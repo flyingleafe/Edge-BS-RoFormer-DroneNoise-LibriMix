@@ -10,4 +10,7 @@ gpus = 1
 time = "1h"
 
 [job.env]
-kind = "auto"
+# Explicit "uv", not "auto": on notebook backends (colab/kaggle) omnirun
+# rewrites auto -> system, and plain pip cannot resolve this project
+# (s3fs<->dload-ml botocore conflict needs uv's override-dependencies).
+kind = "uv"

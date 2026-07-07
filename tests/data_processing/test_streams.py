@@ -78,16 +78,22 @@ def _dregon_lm_samples(n: int = N_SAMPLES, channels: int = N_CHANNELS):
                 },
             )
         )
-    out.append(("_meta", {"json": dload.codecs.json_bytes({"note": "bookkeeping"})}))
+    out.append(("_meta", {"metadata": dload.codecs.json_bytes({"note": "bookkeeping"})}))
     return out
 
 
 @pytest.fixture
 def dregon_lm_dataset(repo) -> dload.Dataset:
+    # meta mirrors the REAL published manifests (publish_derived convention):
+    # full filenames in "fields", plus the "_meta" bookkeeping-sample mapping.
     manifest = repo.commit(
         "DREGON-LM-TEST-train",
         _dregon_lm_samples(),
-        meta={"fields": {"mixture": "wav", "rps": "npy", "meta": "json"}},
+        meta={
+            "fields": {"mixture": "mixture.wav", "rps": "rps.npy", "meta": "meta.json"},
+            "layout": "sample-dir-v1",
+            "meta_sample": {"key": "_meta", "fields": {"metadata": "metadata.json"}},
+        },
     )
     return dload.Dataset(repo, manifest)
 
@@ -374,7 +380,9 @@ def test_ensure_local_uses_manifest_fields_map(patched_repo, dregon_lm_dataset):
     assert (sample_dir / "mixture.wav").is_file()
     assert (sample_dir / "rps.npy").is_file()
     assert (sample_dir / "meta.json").is_file()
-    assert not (root / "_meta").exists()  # bookkeeping samples are skipped
+    assert not (root / "_meta").exists()  # no directory for the bookkeeping key
+    # ...but its declared files land at the tree root (split metadata.json)
+    assert (root / "metadata.json").is_file()
     rps = np.load(sample_dir / "rps.npy")
     assert rps.shape == (4, 29)
 

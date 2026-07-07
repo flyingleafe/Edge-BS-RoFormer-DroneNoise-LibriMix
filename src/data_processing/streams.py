@@ -842,10 +842,20 @@ def ensure_local(name: str, version: str | None = None) -> Path:
         return dest
     meta = manifest.meta if isinstance(manifest.meta, dict) else {}
     fields_map: Mapping[str, str] = meta.get("fields", {}) or {}
+    meta_sample = meta.get("meta_sample", {}) if isinstance(meta.get("meta_sample"), dict) else {}
+    meta_key = meta_sample.get("key", "_meta")
+    meta_fields: Mapping[str, str] = meta_sample.get("fields", {}) or {}
     dest.mkdir(parents=True, exist_ok=True)
     for key, fields in dload.Dataset(repo, manifest).samples():
         if key.startswith("_"):
-            continue  # bookkeeping samples have no file-tree counterpart
+            if key != meta_key or not meta_fields:
+                continue  # bookkeeping samples with no declared file mapping
+            # Dataset/split-root metadata files (e.g. metadata.json) — restore
+            # them at the tree root so path-based loaders find them.
+            for field, data in fields.items():
+                name_in_tree = str(meta_fields.get(field, f"{field}.json"))
+                (dest / name_in_tree).write_bytes(data)
+            continue
         for field, data in fields.items():
             path = dest / _field_relpath(key, field, fields_map)
             path.parent.mkdir(parents=True, exist_ok=True)
