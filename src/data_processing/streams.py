@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -92,6 +92,7 @@ __all__ = [
     "is_data_sample",
     "frame_to_sample",
     "sample_to_frame",
+    "iter_published_frames",
     "TDFRAME_LAYOUT",
     "to_frames",
     "frame_windows",
@@ -485,6 +486,39 @@ def decode_tdframe(sample: Sample) -> td.Frame:
     if get_meta(frame, "recording_id") is None:
         frame = with_meta(frame, recording_id=key)
     return frame
+
+
+def iter_published_frames(
+    dataset: str,
+    version: str | None = None,
+    *,
+    splits: Iterable[str] | None = None,
+) -> Iterator[td.Frame]:
+    """Stream a published ``tdframe-v1`` dataset as decoded ``td.Frame``s.
+
+    The plain-Python counterpart of :class:`DloadFrameDataset` for pool-style
+    consumers (``online_mixing.TimeFrameNoisePool``,
+    ``noise_rps_dataset.build_noise_rps_datasets``) that want a lazy iterator
+    of full recordings rather than a torch dataset. ``splits`` filters on each
+    frame's ``meta.split`` (frames without the key are dropped when a filter
+    is given). Exactly one decoded frame is alive per iteration — callers
+    should subset what they keep before pulling the next one.
+    """
+    ds = open_repository().dataset(str(dataset), version)
+    manifest_meta = ds.manifest.meta if isinstance(ds.manifest.meta, dict) else {}
+    if manifest_meta.get(LAYOUT_META_KEY) != TDFRAME_LAYOUT:
+        raise ValueError(
+            f"dataset {dataset!r} is not published with the {TDFRAME_LAYOUT} layout "
+            f"(manifest meta: {manifest_meta!r})"
+        )
+    wanted = {str(s) for s in splits} if splits is not None else None
+    for sample in ds.samples():
+        if not is_data_sample(sample):
+            continue
+        frame = decode_tdframe(sample)
+        if wanted is not None and str(get_meta(frame, "split", "")) not in wanted:
+            continue
+        yield frame
 
 
 # ─── Frame combinators over dload Pipelines ────────────────────────────────────

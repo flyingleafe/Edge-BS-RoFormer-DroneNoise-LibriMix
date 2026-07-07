@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import tdseries as td
@@ -28,6 +28,8 @@ from torch.utils.data import Dataset
 
 from . import dregon as D
 from . import michaels as M
+from .frames import resample_audio_series
+from .streams import iter_published_frames
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -278,6 +280,55 @@ def load_michaels_noise_sources(
     return [_wrap_frame(tf, origin="michaels", rps_key="rps") for tf in frames]
 
 
+#: ``dregon_dir`` / ``michaels_dir`` values starting with this prefix select a
+#: published rich-frame dataset instead of a local folder:
+#: ``frames:NAME[@VERSION]`` (e.g. ``frames:DREGON-frames``).
+FRAMES_SPEC_PREFIX = "frames:"
+
+
+def _parse_frames_spec(spec: str) -> tuple[str, str | None]:
+    body = spec[len(FRAMES_SPEC_PREFIX) :]
+    name, _, version = body.partition("@")
+    if not name:
+        raise ValueError(
+            f"invalid published-frames spec {spec!r}: expected 'frames:NAME[@VERSION]'"
+        )
+    return name, (version or None)
+
+
+def load_published_noise_sources(
+    spec: str,
+    sample_rate: int,
+    *,
+    origin: str,
+    rps_key: str,
+    splits: list[str] | None = None,
+) -> list[_ChunkSource]:
+    """Load a published rich-frame dataset (``frames:NAME[@VERSION]``).
+
+    The dload/tdframe-v1 counterpart of the folder loaders above (see
+    ``scripts/publish_frame_datasets.py``): streams the dataset via
+    ``streams.iter_published_frames``, keeps only the ``audio`` + ``rps_key``
+    tracks (+ ``meta``) of each recording — the published frames carry their
+    fixes baked in, so nothing is re-cleaned here — and soxr-resamples audio
+    to ``sample_rate``. Recordings missing either track are skipped, matching
+    the folder loaders (e.g. DREGON recordings without ``motors_measured``).
+    """
+    name, version = _parse_frames_spec(spec)
+    sources: list[_ChunkSource] = []
+    for tf in iter_published_frames(name, version, splits=splits):
+        if "audio" not in tf or rps_key not in tf:
+            continue
+        entries: dict[str, Any] = {
+            "audio": resample_audio_series(cast(td.Series, tf["audio"]), sample_rate),
+            rps_key: tf[rps_key],
+        }
+        if "meta" in tf:
+            entries["meta"] = tf["meta"]
+        sources.append(_wrap_frame(td.Frame(entries), origin=origin, rps_key=rps_key))
+    return sources
+
+
 def build_noise_rps_datasets(
     *,
     dregon_dir: str | Path | None,
@@ -301,8 +352,11 @@ def build_noise_rps_datasets(
     almost-independent for our purposes).
 
     Args:
-        dregon_dir: path to DREGON dataset (or None to skip).
-        michaels_dir: path to Michael's recordings (or None to skip).
+        dregon_dir: path to DREGON dataset (or None to skip). May also be a
+            published-frames spec ``frames:DREGON-frames[@VERSION]`` to stream
+            the rich-frame dataset from dload instead of a local folder.
+        michaels_dir: path to Michael's recordings (or None to skip). May also
+            be ``frames:michaels-frames[@VERSION]``.
         sample_rate: target audio sample rate.
         chunk_size: chunk length in samples.
         train_samples / val_samples: virtual epoch sizes.
@@ -321,9 +375,25 @@ def build_noise_rps_datasets(
     """
     sources: list[_ChunkSource] = []
     if dregon_dir is not None:
-        sources += load_dregon_noise_sources(dregon_dir, sample_rate, cache_dir=cache_dir)
+        if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
+            # e.g. "frames:DREGON-frames" — mirror the folder loader: the
+            # in_flight_noise split, measured motor speeds only.
+            sources += load_published_noise_sources(
+                dregon_dir,
+                sample_rate,
+                origin="dregon",
+                rps_key="motors_measured",
+                splits=["in_flight_noise"],
+            )
+        else:
+            sources += load_dregon_noise_sources(dregon_dir, sample_rate, cache_dir=cache_dir)
     if michaels_dir is not None:
-        sources += load_michaels_noise_sources(michaels_dir, sample_rate)
+        if isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX):
+            sources += load_published_noise_sources(
+                michaels_dir, sample_rate, origin="michaels", rps_key="rps"
+            )
+        else:
+            sources += load_michaels_noise_sources(michaels_dir, sample_rate)
 
     if not sources:
         raise ValueError("No noise sources found (DREGON and Michael's both empty/absent)")

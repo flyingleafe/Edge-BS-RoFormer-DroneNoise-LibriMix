@@ -288,6 +288,41 @@ Benchmark notes:
 - Fixed precomputed loader is about `21 batch/s` / `5394 audio-clip/s`.
 Optimize only behind the same public API.
 
+### Published rich-frame noise source (`kind: frames`)
+
+The fixed rich-frame datasets published by `scripts/publish_frame_datasets.py`
+(`DREGON-frames`, `michaels-frames`; dload `tdframe-v1` layout, decoded by
+`data_processing.streams`) can feed the noise pool directly. **Fixes are baked
+in at publish time** — DREGON `motors_command` is already
+`clean_command_spikes`-cleaned, michaels `rps` is already aligned — so the
+loader re-applies nothing: it renames the rotor track to the generic `rps`
+entry (the no-cleaning path of `_resolve_motor_tracks`), keeps only
+`audio` + `rps` + `meta` per recording (IMU/GPS/raw telemetry dropped, one
+frame decoded at a time), and soxr-resamples audio to the pool `sample_rate`.
+
+```yaml
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames        # dload dataset name (tdframe-v1)
+      # version: <manifest hash>    # optional; default = dload.lock pin / latest
+      splits: [in_flight_noise]     # optional filter on frame meta.split
+      exclude_recording_ids: [free-flight_nosource_room1]
+      min_motor_rps: 30.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]       # bare published ids (not michaels_FLY125)
+```
+
+Also accepts `split` (singular), `recording_ids`, and `take` (cap the number
+of recordings). Nuance vs `kind: dregon`: after adaptation there is no
+separate `motors_measured` detect track, so the in-flight window is detected
+on the cleaned `motors_command` — the command's trailing logging freeze is not
+trimmed (same behaviour as the command-only room2 recordings). Likewise,
+`noise_rps_dataset.build_noise_rps_datasets` accepts
+`dregon_dir="frames:DREGON-frames[@VERSION]"` /
+`michaels_dir="frames:michaels-frames"` in place of local folders.
+
 ## Multichannel Training & Evaluation Wiring
 
 ### Training (unified `train.py`, via `data_processing.frame_datasets.DregonLMFrameDataset`)
