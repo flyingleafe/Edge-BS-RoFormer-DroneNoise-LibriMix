@@ -19,6 +19,9 @@ train:
     sample_rate: 16000
     channel: 0  # DREGON-LM-V4 mixture.wav is 8-channel; simple_conv_v2 is mono
     shuffle: 1234  # int = fixed shuffle seed; true = fresh seed per run
+    # Buffer holds RAW samples (~0.8 MB each for V4) — the DloadFrameDataset
+    # default of 4096 would buffer ~3.2 GB per worker. 512 ≈ 400 MB.
+    shuffle_buffer: 512
     repeat: true
   iterable: true
 valid:
