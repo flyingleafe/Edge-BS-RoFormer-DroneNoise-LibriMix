@@ -1,4 +1,6 @@
-# Per-repo omnirun job defaults (CLI flags override). Not committed.
+# Per-repo omnirun job defaults (CLI flags override). Committed; backend
+# definitions (apocrita-short/-long, colab, kaggle) live in the user-global
+# ~/.config/omnirun/config.toml — see docs/data-and-artifacts.md § "Job running".
 
 [job]
 outputs = ["results/**"]

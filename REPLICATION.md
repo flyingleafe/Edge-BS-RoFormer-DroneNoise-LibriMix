@@ -52,6 +52,30 @@ forward pass (`training.validate.validate_config`):
 python train.py experiment=<name> validate_only=true
 ```
 
+## Getting the data (dload)
+
+The "blocked on data" statuses below predate dataset publication. The
+datasets are now hosted on the R2 bucket `ml-data-new` via **dload**, with
+version pins in `dload.lock` at repo root — that file is the authoritative
+list of what is published. Acquisition is by name:
+
+```
+dload pull DREGON-LM-V4-train        # eager prefetch into the local cache
+```
+
+or checkout-free: stream configs (`conf/data/dregon_lm_v4_stream.yaml`) and
+`dload:NAME[@VERSION][/subpath]` URIs on any `conf/data` path field consume
+the store directly (see `docs/data-and-artifacts.md` and
+`src/data_processing/AGENTS.md` § "Publishing datasets to dload"). Published
+today: the raw sources (`DREGON`, `librispeech`, `new-drone-noises`, …), the
+derived `DREGON-LM-*` splits (V2/V3/V4/V4-michaels/test/rps-eval sets), and
+the rich frame datasets (`DREGON-frames`, `michaels-frames`) — so the "Build"
+commands below are reproducible from a bare clone, and most "blocked on data"
+families unblock with a single pull. Notable exceptions still unpublished:
+**DN-LM** (A1/A2) and the per-percentage `DREGON-LM-V2-<pct>` sweep variants
+beyond the pinned `DREGON-LM-V2-{train,valid}` — rebuild those via their
+"Build" rows.
+
 ## A1 — Paper 1: Edge-BS-RoFormer + baselines (DN-LM)
 
 | | |

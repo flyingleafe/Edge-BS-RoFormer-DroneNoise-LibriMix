@@ -14,9 +14,9 @@ Self-contained paper drafts. Each subdirectory is one paper.
 - **No fresh experiments at paper-build time.** Figures and tables are
   regenerated from existing results in `../results/` (and other already-
   produced artifacts). If a paper needs a new number, run the experiment
-  separately (`python train.py experiment=<name>`, or via `./scripts/sbatch.sh`
-  on a cluster) and let the result land in `../results/` before regenerating
-  figures.
+  separately (`python train.py experiment=<name>` locally, or via
+  `omnirun submit ... -- python train.py experiment=<name>` on a remote GPU)
+  and let the result land in `../results/` before regenerating figures.
 - **LaTeX toolchain comes from the flake.** `nix develop` provides
   `pdflatex`, `latexmk`, `biber`, and IEEEtran via a custom `texlive.combine`
   on top of `scheme-medium`. Do not introduce a TeX-from-pip or per-paper

@@ -40,41 +40,82 @@ server, source it yourself (`set -a; . ./.env; set +a`) before invoking
 
 ### Overnight on CPU server — process and publish a dataset
 
+Three publishing conventions exist — pick by dataset shape (full detail:
+`src/data_processing/AGENTS.md` § "Publishing datasets to dload"):
+
+1. **Raw recording dirs** (`data/*`) — the CLI: `dload commit NAME --from
+   data/NAME` (key = relpath minus extension, field = the extension; the CLI
+   does not skip hidden files).
+2. **Derived sample-dir datasets** (`datasets/DREGON-LM-*`) — the Python API
+   (`dload.Repository.commit` over a generator; key = `sample_NNNNN`, fields =
+   file stems, plus a `_meta` sample). The CLI `--from` convention **cannot**
+   produce this layout — write a small publish script.
+3. **Rich frame datasets** — `scripts/publish_frame_datasets.py`
+   (`tdframe-v1` Frame codec, fixes baked in, script source as recipe).
+
+Whatever the convention, finish by pinning:
+
 ```bash
-# (whatever produces the data)
-python scripts/create_dregon_librimix.py --output datasets/DREGON-LM ...
-
-# Ingest as a new version of the dataset (content-addressed shards → R2).
-dload commit DREGON-LM --from datasets/DREGON-LM
-
-# Pin the repo to the new version and commit the lock change.
-dload pin DREGON-LM
+dload pin DREGON-LM-V4-train
 git add dload.lock
-git commit -m "dataset: DREGON-LM new version"
+git commit -m "dataset: DREGON-LM-V4-train new version"
 git push
 ```
 
-Every `dload commit` on the same dataset name produces a new version; the git
-diff on `dload.lock` shows the version change. `dload info NAME` shows the
-manifest and version history; `--recipe FILE` on commit stores the producing
-script/config verbatim alongside the version.
+Every commit on the same dataset name produces a new version; the git diff on
+`dload.lock` shows the version change. `dload info NAME` shows the manifest
+and version history; `--recipe FILE` (or the Python-API equivalent) stores the
+producing script/config verbatim alongside the version.
 
 ### Morning on GPU server — train
 
 ```bash
 git pull                           # get the latest dload.lock pins
-dload pull DREGON-LM               # fetch shards into the local cache
 python train.py experiment=b1_dccrn_rps_dregon
-# On a Slurm cluster, wrap the last line:
-#   ./scripts/sbatch.sh -- python train.py experiment=b1_dccrn_rps_dregon
+# Remote GPU (Slurm / Colab / Kaggle): submit the same command via omnirun —
+# see "Job running (omnirun)" below.
 ```
 
-`dload pull NAME` fetches the pinned (or latest) version of a dataset into the
-local shard cache. How training code consumes dload-managed datasets (the
-streaming/`Pipeline` layer, `dload.Repository.open()`) is still under
-construction; until it lands, the datasets under `data/` are used as plain
-local directories.
-<!-- TODO(dload-docs): expand after streams layer lands -->
+There is usually no separate download step: training code consumes
+dload-managed datasets directly (next section), fetching shards lazily into
+the local cache. `dload pull NAME` still exists for eagerly prefetching the
+pinned version or inspecting data by hand.
+
+### How training code consumes dload datasets
+
+`src/data_processing/streams.py` is the project's only seam between dload's
+`(key, {field: bytes})` sample world and the `td.Frame` data model (full API
+in its module docstring):
+
+- **`DloadFrameDataset`** — a torch `IterableDataset` usable directly as a
+  Hydra `_target_` in `conf/data/*.yaml`. Streams a dataset by name; the
+  version resolves via the `dload.lock` pin (override with `version:`).
+  Decoding dispatches on the manifest `meta.layout`: `tdframe-v1` datasets
+  decode via the generic Frame codec (`sample_to_frame`), everything else via
+  the DREGON-LM file-stem convention (`decode_dregon_lm`). Stream knobs:
+  `shuffle` (False / True / int seed), `shuffle_buffer`, `prefetch`, `take`,
+  `repeat`. Reference config: `conf/data/dregon_lm_v4_stream.yaml` — train is
+  an infinite shuffled stream (`repeat: true`), so the experiment **must set
+  `samples_per_validation`** (same contract as online-mix). RAM note: the
+  shuffle buffer holds *raw* samples (~0.8 MB each for V4) — 512 ≈ 400 MB;
+  keep it ≤512 on small machines.
+- **Pipeline combinators** — `to_frames` / `frame_windows` / `mix_frames` /
+  `resample_frames` compose dload `Pipeline`s into windowed/mixed Frame
+  streams; `iter_published_frames(name)` iterates a published `tdframe-v1`
+  dataset as decoded Frames.
+- **`dload:` URIs** — `resolve_source()` lets any path-shaped config knob
+  (`data_dir`, `root`, `dregon_dir`, `michaels_dir`) accept
+  `dload:NAME[@VERSION][/subpath]`: the dataset is materialized once into the
+  cache (`ensure_local`, version-addressed, idempotent) and the local path is
+  returned. Path-based loaders need no dload awareness.
+- **`frames:NAME[@VERSION]` specs** — `noise_rps_dataset` and online-mix
+  `kind: frames` noise sources consume the published rich-frame datasets
+  (`DREGON-frames`, `michaels-frames`) directly; see
+  `src/data_processing/AGENTS.md`.
+
+Measured on the V4 stream (laptop ↔ R2): cold time-to-first-sample ~6 s per
+shard, warm epochs ~18× faster than cold, ~48 MB/s sustained download;
+bounded-budget cache eviction verified working.
 
 At training end, the best checkpoint is automatically logged as a wandb
 artifact (aliased `best` and `latest`).
@@ -103,11 +144,22 @@ for run_id in ['abc123', 'def456']:
 
 ## Disk management
 
-**dload shard cache** — content-addressed, deduplicated. `dload status` shows
-usage; `dload cache` subcommands manage it. `dload gc` deletes *remote* shards
-referenced by no manifest of any dataset (destructive housekeeping — use
-deliberately).
-<!-- TODO(dload-docs): expand after streams layer lands -->
+**dload shard cache** — content-addressed, deduplicated, eviction-bounded.
+`dload status` shows usage; `dload cache` subcommands manage it. `dload gc`
+deletes *remote* shards referenced by no manifest of any dataset (destructive
+housekeeping — use deliberately). Two env vars control the cache (put them in
+`.env`, see `.env.example`):
+
+- `DLOAD_CACHE_DIR` — cache root; put it on a big/fast partition on GPU boxes.
+- `DLOAD_CACHE_BUDGET` — local eviction budget (e.g. `20G`, or `unlimited`).
+
+Per-machine recommendations:
+
+| Machine | Setting |
+|---|---|
+| Laptop / small box | `DLOAD_CACHE_BUDGET` ≥ `1.5G` — the floor for streaming (must hold the `prefetch=3` shard window); keep `shuffle_buffer` ≤ 512 |
+| Apocrita | `DLOAD_CACHE_DIR=/gpfs/scratch/acw592/dload-cache`, `DLOAD_CACHE_BUDGET=unlimited` (3 TB scratch) |
+| Colab / Kaggle | ephemeral disks — forward overrides per job via `omnirun submit --env DLOAD_CACHE_BUDGET=...` if needed |
 
 **wandb cache** (default `~/.cache/wandb/artifacts/`). Override with
 `WANDB_CACHE_DIR=/big/disk/wandb`. To cap size:
@@ -116,10 +168,45 @@ deliberately).
 export WANDB_CACHE_SIZE=50GB   # wandb enforces LRU above this
 ```
 
-**On-the-fly streaming** — dload's streaming layer (lazy shard fetch as the
-DataLoader reads, LRU-capped local cache) is the intended replacement for the
-old rclone-mount trick; it is still under construction.
-<!-- TODO(dload-docs): expand after streams layer lands -->
+**On-the-fly streaming** — landed; it replaces the old rclone-mount trick.
+`DloadFrameDataset` (see "How training code consumes dload datasets" above)
+fetches shards lazily as the DataLoader reads and evicts under
+`DLOAD_CACHE_BUDGET`. Keep the budget ≥ `1.5G` locally so the prefetch window
+fits; on big scratch set it `unlimited` and warm epochs run at local-disk
+speed (~18× faster than cold, measured).
+
+## Job running (omnirun)
+
+Remote GPU jobs are submitted with **omnirun** (installed as a `uv tool`).
+Backend definitions live in the user-global `~/.config/omnirun/config.toml`:
+
+| Backend | What it is |
+|---|---|
+| `apocrita-short` | Apocrita Slurm, `gpushort` partition, ≤ 1 h |
+| `apocrita-long` | Apocrita Slurm, `sae` partition, long jobs |
+| `colab` | Colab T4 — needs the local keep-alive daemon running; T4 allocation is a lottery (503s) |
+| `kaggle` | Kaggle P100 — kernel source cap ~1 MB, needs the slim-snapshot clone recipe (strip `notebooks/ writing/ tests/ docs/ .pi/ scripts/ uv.lock`, orphan commit, no origin, `env kind = system`) |
+
+The committed repo-level `omnirun.toml` holds job *defaults* only
+(`outputs = results/**`, 1 GPU, 1 h, `env kind = auto`).
+
+```bash
+omnirun submit --backend apocrita-short --gpus 1 --time 30m --yes -- \
+    python train.py experiment=<name>
+omnirun ps                    # all jobs;  omnirun status/logs <job> for one
+omnirun pull <job>            # collect the job's results/** locally
+omnirun backends check        # re-establish the SSH ControlMaster after expiry
+```
+
+- Requires a **clean, pushed HEAD** (`--push`/`--dirty` exist; prefer clean —
+  `train.py` errors on a dirty tree anyway).
+- On the cluster each job runs in a shared worktree
+  `$PROJECT_ROOT/.trees/<sha12>`, reusing the checkout's `.venv`
+  (`uv sync --frozen`).
+- `.env` ships with every job automatically — R2 + WANDB credentials travel,
+  so dload streaming and wandb logging work on any backend.
+- Legacy fallback on an Apocrita login node: `./scripts/sbatch.sh` (and
+  `./scripts/sync_results.sh` to rsync results back). Prefer omnirun.
 
 ## Training artifacts (checkpoints + val samples) → R2
 
