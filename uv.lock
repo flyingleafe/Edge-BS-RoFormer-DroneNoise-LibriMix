@@ -900,16 +900,16 @@ wheels = [
 
 [[package]]
 name = "dload-ml"
-version = "0.1.0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
     { name = "click" },
     { name = "msgpack" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/2d/e1ef7676f878e06f82fac0caf0b7cb11404f5f2c563dae4c9321ef9a36a5/dload_ml-0.1.0.tar.gz", hash = "sha256:f164f0883f728cb76cf3262a354464aabd70b0a17a69f50a7a01a513c721a04f", size = 165169, upload-time = "2026-07-06T18:51:42.29Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/b9/9945419f96f762c3a9fe4ed8aaab1dc01c583dbfe481702ae9be2f8c5993/dload_ml-0.2.0.tar.gz", hash = "sha256:907961f9d4e94858810f15fe1f33d8049db8a1d4a2effcea23afd3c8384231ce", size = 175452, upload-time = "2026-07-07T14:09:50.628Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/18/f0f8cc35efefcf9869d66269cf7489d9125590ff975f41f529162bbab283/dload_ml-0.1.0-py3-none-any.whl", hash = "sha256:471406d4d2eff6a73e792c2a3c0b57ac284c2dd03446b696accdccb0640e8b66", size = 38357, upload-time = "2026-07-06T18:51:41.115Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/fa/3f1de3ad21f7f80bf70ccf221f34465fad5212c141aaeee18bdef0871fca/dload_ml-0.2.0-py3-none-any.whl", hash = "sha256:3a37c73c3a6caed93991648ab7f66b4f33f663db75df5e88f72733ed6e39eff6", size = 41459, upload-time = "2026-07-07T14:09:49.681Z" },
 ]
 
 [[package]]
