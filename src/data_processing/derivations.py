@@ -386,14 +386,22 @@ SPECS: dict[str, dict[str, Any]] = {
         },
     },
     # DN-LM: absent from the bucket → fresh materialization (no adoption).
-    # PROVISIONAL recipe_version 1: confirm the drone-noise source subpath /
-    # any drone-only label filtering before the first `derive` run.
+    # Noise source = drone-only. The raw `drone_audio` dataset (Sara Al-Emadi
+    # DroneAudioDataset) mixes real drone recordings with ESC-50 / white-noise /
+    # silence negatives under `*/unknown/`; the paper's DN-LM used only the
+    # drone class (the CLI's HF path filters label==1). So we point noise_subpath
+    # at `Binary_Drone_Audio/yes_drone` (the 1332 label-1 recordings; equals the
+    # bebop_1+membo_1 union) rather than globbing the whole tree — which would
+    # contaminate the "noise" with non-drone audio. Sizes 6480/720 follow the
+    # paper's "2 hours" (README + AGENTS); a 10× scale-up (64800) existed in the
+    # deleted replicate_paper.py but is not the canonical figure.
     "DN-LM-train": {
         "generator": "dn_lm",
         "fields": _DN_LM_FIELDS,
         "adopt_only": False,
-        "note": "PROVISIONAL: review noise source (drone_audio) before first "
-        "materialization; bump recipe_version if the recipe changes.",
+        "note": "Drone-only noise from drone_audio/Binary_Drone_Audio/yes_drone "
+        "(label-1 recordings; excludes ESC-50/WN 'unknown'). Fresh "
+        "materialization; bump recipe_version on any recipe change.",
         "gen": {
             "recipe_version": 1,
             "seed": 42,
@@ -410,6 +418,7 @@ SPECS: dict[str, dict[str, Any]] = {
                 "speech_distance_range": [5.0, 20.0],
                 "noise_distance": 0.5,
                 "speech_subpath": "LibriSpeech/train-clean-100",
+                "noise_subpath": "Binary_Drone_Audio/yes_drone",
             },
         },
     },
@@ -417,8 +426,9 @@ SPECS: dict[str, dict[str, Any]] = {
         "generator": "dn_lm",
         "fields": _DN_LM_FIELDS,
         "adopt_only": False,
-        "note": "PROVISIONAL: review noise source (drone_audio) before first "
-        "materialization; bump recipe_version if the recipe changes.",
+        "note": "Drone-only noise from drone_audio/Binary_Drone_Audio/yes_drone "
+        "(label-1 recordings; excludes ESC-50/WN 'unknown'). Fresh "
+        "materialization; bump recipe_version on any recipe change.",
         "gen": {
             "recipe_version": 1,
             "seed": 43,
@@ -435,6 +445,7 @@ SPECS: dict[str, dict[str, Any]] = {
                 "speech_distance_range": [5.0, 20.0],
                 "noise_distance": 0.5,
                 "speech_subpath": "LibriSpeech/train-clean-100",
+                "noise_subpath": "Binary_Drone_Audio/yes_drone",
             },
         },
     },

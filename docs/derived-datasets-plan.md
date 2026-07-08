@@ -25,9 +25,15 @@ Companion to `docs/data-and-artifacts.md` § "Derived datasets".
 - **Adopted the four active V4 pins in place** (`DREGON-LM-V4-{train,valid}`,
   `-michaels-{train,valid}`): derivation refs now point at the historical
   uploads. Verified each pinned manifest is `layout='sample-dir-v1'` first.
-- **DN-LM specs declared but PROVISIONAL** (`recipe_version 1`): the drone-noise
-  source (`drone_audio`) / any drone-only filtering must be reviewed before the
-  first `scripts/derive.py derive DN-LM-train`, which must run on a big box.
+- **DN-LM specs finalized** (`recipe_version 1`, drone-only): noise source is
+  `drone_audio/Binary_Drone_Audio/yes_drone` (the 1332 label-1 drone
+  recordings), **not** the whole `drone_audio` tree — the raw dataset mixes in
+  ESC-50/white-noise/silence negatives under `*/unknown/`, which the paper's
+  DN-LM (CLI HF path, `label==1`) excluded. Sizes 6480/720 follow the paper's
+  "2 hours" (README + AGENTS); the 64800 figure from the deleted
+  `replicate_paper.py` was a 10× scale-up, not canonical. Materialize on a big
+  box: `python scripts/derive.py derive DN-LM-{train,valid}` (streams
+  LibriSpeech + drone_audio via dload).
 
 Deviations from the original design below: the pure cores were **reused from**
 the CLIs via a small `sys.path` shim rather than hoisted into the package (the
