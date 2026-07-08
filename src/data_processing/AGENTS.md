@@ -412,7 +412,7 @@ distinguish them:
 
 After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 
-### Catalog (pinned in `dload.lock` — 24 datasets)
+### Catalog (pinned in `dload.lock` — 26 datasets)
 
 - **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
   `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
@@ -422,6 +422,8 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
   `DREGON-LM-V3-{train,valid}`, `DREGON-LM-V4-{train,valid}`,
   `DREGON-LM-V4-michaels-{train,valid}`, `DREGON-LM-test-{train,valid}`,
   `DREGON-LM-rps_{eval_long,eval_specific,train_specific}_samples`.
+- **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):
+  `DN-LM-{train,valid}` (6480/720, drone-only noise; no `rps` field).
 - **Rich frames** (2, `tdframe-v1`): `DREGON-frames`, `michaels-frames`.
 
 Consumption paths: `DloadFrameDataset` / `dload:NAME[@VER][/subpath]` URIs /
