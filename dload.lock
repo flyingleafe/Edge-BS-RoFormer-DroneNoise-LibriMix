@@ -1,5 +1,7 @@
 # Pinned dataset versions, managed by `dload pin`.
 [datasets]
+DN-LM-train = "4576c1679b3b0ba1b4b56232fa4a524c96bd8a84baa9c5af22b9f1221aa1bb4d"
+DN-LM-valid = "f6e7038600b9b0e36743daacadfd36c5714b7cda71200668d8c612b001b0794c"
 DREGON = "db39bcf762d0b2beb3433fc2760da6a55e078f8134f8bb074ee8bf985a5ffc03"
 DREGON-LM-V2-train = "8a81bf7b7b5dc8a86178627b981786439d4430dcf43542d958817faf7de3d5df"
 DREGON-LM-V2-valid = "1eb8384871be0325804e3eac58281151580c59c7d4ad147dabcf3e91ca654822"
