@@ -19,7 +19,6 @@ from glob import glob
 import librosa
 import numpy as np
 import soundfile as sf
-from torchcodec.decoders import AudioDecoder
 from tqdm import tqdm
 
 HF_DATASET_PREFIX = "hf:"
@@ -44,6 +43,11 @@ def load_audio(path, target_sr=16000, mono=True):
 
 def load_audio_from_hf_item(item, target_sr=16000, mono=True):
     """Load audio from a Hugging Face dataset item."""
+    # Deferred: torchcodec (→ torch) is only needed on the HF-noise path, so
+    # the pure mixing core (reused by data_processing.derivations) stays
+    # importable without pulling torch. See render_dn_lm_sample.
+    from torchcodec.decoders import AudioDecoder
+
     audio = item.get("audio")
 
     if isinstance(audio, AudioDecoder):
@@ -224,6 +228,59 @@ def mix_audio(speech, noise, target_snr=None):
     return mixture, speech, noise
 
 
+def mix_dn_lm(
+    speech,
+    noise,
+    *,
+    target_length,
+    speech_distance_range=(5, 20),
+    noise_distance=0.5,
+    target_snr_range=(-30, 0),
+):
+    """Core DN-LM mix of one already-loaded (speech, noise) pair — no I/O.
+
+    Does length adjustment, normalization, inverse-distance attenuation, SNR
+    mixing and anti-clip scaling; returns ``(arrays, actual_snr,
+    speech_distance)`` where ``arrays`` has mono ``vocals``/``noise``/
+    ``mixture``. Shared by the disk-writing CLI (:func:`create_dataset`) and
+    the dload derived-dataset generator (``data_processing.derivations``).
+    Advances ``np.random``/``random`` exactly as the original inline loop
+    body did — the caller performs the speech/noise *file* draws first, so
+    keep this call order stable.
+    """
+    speech = adjust_length(speech, target_length)
+    noise = adjust_length(noise, target_length)
+
+    speech = normalize_audio(speech)
+    noise = normalize_audio(noise)
+
+    speech_distance = random.uniform(*speech_distance_range)
+    speech_attenuated = apply_distance_attenuation(speech, speech_distance)
+    noise_attenuated = apply_distance_attenuation(noise, noise_distance)
+
+    if target_snr_range:
+        target_snr = random.uniform(*target_snr_range)
+        mixture, speech_final, noise_final = mix_audio(
+            speech_attenuated, noise_attenuated, target_snr=target_snr
+        )
+    else:
+        mixture, speech_final, noise_final = mix_audio(
+            speech_attenuated, noise_attenuated, target_snr=None
+        )
+
+    actual_snr = calculate_snr(speech_final, noise_final)
+
+    max_val = max(np.abs(mixture).max(), np.abs(speech_final).max(), np.abs(noise_final).max())
+    if max_val > 1.0:
+        scale = 0.95 / max_val
+        mixture = mixture * scale
+        speech_final = speech_final * scale
+        noise_final = noise_final * scale
+
+    arrays = {"vocals": speech_final, "noise": noise_final, "mixture": mixture}
+    return arrays, float(actual_snr), float(speech_distance)
+
+
 def create_dataset(
     speech_dir,
     noise_dir,
@@ -336,45 +393,20 @@ def create_dataset(
             print(f"Error loading audio: {e}")
             continue
 
-        # Adjust length
-        speech = adjust_length(speech, target_length)
-        noise = adjust_length(noise, target_length)
-
-        # Normalize
-        speech = normalize_audio(speech)
-        noise = normalize_audio(noise)
-
-        # Apply distance attenuation
-        speech_distance = random.uniform(*speech_distance_range)
-        speech_attenuated = apply_distance_attenuation(speech, speech_distance)
-        noise_attenuated = apply_distance_attenuation(noise, noise_distance)
-
-        # Mix with target SNR or natural
-        if target_snr_range:
-            target_snr = random.uniform(*target_snr_range)
-            mixture, speech_final, noise_final = mix_audio(
-                speech_attenuated, noise_attenuated, target_snr=target_snr
-            )
-        else:
-            mixture, speech_final, noise_final = mix_audio(
-                speech_attenuated, noise_attenuated, target_snr=None
-            )
-
-        # Calculate actual SNR
-        actual_snr = calculate_snr(speech_final, noise_final)
-
-        # Normalize mixture to prevent clipping
-        max_val = max(np.abs(mixture).max(), np.abs(speech_final).max(), np.abs(noise_final).max())
-        if max_val > 1.0:
-            scale = 0.95 / max_val
-            mixture *= scale
-            speech_final *= scale
-            noise_final *= scale
+        # Length/normalize/attenuate/mix/anti-clip (shared with derivations).
+        arrays, actual_snr, speech_distance = mix_dn_lm(
+            speech,
+            noise,
+            target_length=target_length,
+            speech_distance_range=speech_distance_range,
+            noise_distance=noise_distance,
+            target_snr_range=target_snr_range,
+        )
 
         # Save audio files
-        sf.write(os.path.join(sample_dir, "vocals.wav"), speech_final, sample_rate)
-        sf.write(os.path.join(sample_dir, "noise.wav"), noise_final, sample_rate)
-        sf.write(os.path.join(sample_dir, "mixture.wav"), mixture, sample_rate)
+        sf.write(os.path.join(sample_dir, "vocals.wav"), arrays["vocals"], sample_rate)
+        sf.write(os.path.join(sample_dir, "noise.wav"), arrays["noise"], sample_rate)
+        sf.write(os.path.join(sample_dir, "mixture.wav"), arrays["mixture"], sample_rate)
 
         noise_source = os.path.basename(noise_path) if noise_path else f"hf#idx={noise_index}"
         metadata.append(
@@ -423,13 +455,13 @@ def main():
         "--train_samples",
         type=int,
         default=6480,
-        help="Number of training samples (90% of 2 hours at 1s each)",
+        help="Number of training samples (90%% of 2 hours at 1s each)",
     )
     parser.add_argument(
         "--valid_samples",
         type=int,
         default=720,
-        help="Number of validation samples (10% of 2 hours at 1s each)",
+        help="Number of validation samples (10%% of 2 hours at 1s each)",
     )
     parser.add_argument(
         "--sample_duration", type=float, default=1.0, help="Duration of each sample in seconds"

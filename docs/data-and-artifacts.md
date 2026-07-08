@@ -67,6 +67,46 @@ Every commit on the same dataset name produces a new version; the git diff on
 and version history; `--recipe FILE` (or the Python-API equivalent) stores the
 producing script/config verbatim alongside the version.
 
+### Derived datasets (memoized generation pipelines)
+
+Our mixed datasets (DREGON-LM, DN-LM) are also expressible as dload **derived
+datasets** (`Repository.derive`, dload ≥ 0.3.0): a finite deterministic
+pipeline that dload runs once, commits as a normal content-addressed version,
+and memoizes by *fingerprint* — every later caller of the identical pipeline
+hits the same snapshot instead of recomputing. The durable, reviewed
+declarations live in `src/data_processing/derivations.py` (`SPECS`): one frozen
+JSON spec per dataset (all generation params + seed + `recipe_version` +
+resolved parent pins), plus module-level generator functions that reuse the
+same per-sample mixing cores the disk-writing CLIs use. Driver:
+`scripts/derive.py`.
+
+```bash
+python scripts/derive.py list --check-remote -v   # specs, fingerprints, ref status
+python scripts/derive.py derive DN-LM-train        # materialize + pin a new dataset
+python scripts/derive.py adopt DREGON-LM-V4-train  # dry-run: adopt an existing pin
+python scripts/derive.py adopt DREGON-LM-V4-train --commit
+```
+
+Two modes:
+
+- **`derive`** materializes a genuinely new dataset (e.g. **DN-LM**, absent from
+  the bucket) — runs the generator, commits, forwards the `sample-dir-v1`
+  manifest meta + the spec as recipe, and pins it. Must run on a box with the
+  parent data + enough disk (materialization streams LibriSpeech/DREGON via
+  dload); the small-RAM dev box cannot. Submit it via omnirun if needed.
+- **`adopt`** (adopt-in-place) points a dataset's *derivation ref*
+  (`datasets/<name>/derived/<fingerprint>`) at its existing `dload.lock` pin
+  instead of re-materializing. Used for the historical `DREGON-LM-V4-*` uploads:
+  re-deriving would upload a near-duplicate (our RNG is not byte-stable across
+  environments). Offline except the ref write (additive, reversible, uploads
+  nothing); **dry-run by default**, writes with `--commit`. The four active V4
+  pins (`DREGON-LM-V4-{train,valid}`, `-michaels-{train,valid}`) are adopted.
+
+**Bump a spec's `recipe_version`** on any behavioral change to a generator — the
+fingerprint keys on the spec, so an unbumped edit silently serves the stale
+snapshot. `derivations.py` stays importable without torch, so fingerprinting /
+`adopt` run anywhere. Full design + gotchas: `docs/derived-datasets-plan.md`.
+
 ### Morning on GPU server — train
 
 ```bash

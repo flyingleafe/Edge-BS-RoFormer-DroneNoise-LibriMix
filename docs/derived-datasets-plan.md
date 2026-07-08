@@ -1,7 +1,44 @@
 # Plan: DN-LM + DREGON-LM as dload derived datasets
 
-Status: **designed, not implemented** (2026-07-07). Blocked on one small
-upstream dload change (below). Companion to `docs/data-and-artifacts.md`.
+Status: **implemented** (2026-07-08). The upstream blocker landed in
+**dload-ml 0.3.0** (`derive()` now forwards `meta=`/`recipe=` to `commit()`,
+merging user meta under the reserved derivation keys — see dload issue #2).
+Companion to `docs/data-and-artifacts.md` § "Derived datasets".
+
+## What shipped (2026-07-08)
+
+- `src/data_processing/derivations.py` — module-level generator functions
+  (`generate_dregon_lm_split`, `generate_dn_lm_split`) yielding `sample-dir-v1`
+  samples, + the `SPECS` registry (frozen JSON specs with params/seed/
+  `recipe_version`/resolved parent pins), + `build_pipeline`/`dataset_meta`/
+  `fingerprint` helpers. Kept torch-free (heavy cores imported lazily) so
+  fingerprinting/adoption run on any box.
+- Shared per-sample cores factored out of the disk-writing CLIs and reused by
+  the generators (no duplicated mixing math, RNG order preserved so the CLIs'
+  output is unchanged): `render_multichannel_sample` in
+  `scripts/create_dregon_librimix.py`, `mix_dn_lm` in `scripts/create_dataset.py`
+  (whose `torchcodec` import is now deferred to the HF path).
+- `scripts/derive.py` — `list` / `derive` / `adopt` driver.
+- `tests/data_processing/test_derivations.py` — specs integrity, fingerprint
+  stability/uniqueness, `recipe_version` sensitivity, wav encoding, and a
+  streams round-trip proving the emitted convention decodes + reconstructs.
+- **Adopted the four active V4 pins in place** (`DREGON-LM-V4-{train,valid}`,
+  `-michaels-{train,valid}`): derivation refs now point at the historical
+  uploads. Verified each pinned manifest is `layout='sample-dir-v1'` first.
+- **DN-LM specs declared but PROVISIONAL** (`recipe_version 1`): the drone-noise
+  source (`drone_audio`) / any drone-only filtering must be reviewed before the
+  first `scripts/derive.py derive DN-LM-train`, which must run on a big box.
+
+Deviations from the original design below: the pure cores were **reused from**
+the CLIs via a small `sys.path` shim rather than hoisted into the package (the
+~2-day refactor); a future cleanup can hoist them and drop the shim. The
+michaels/real-valid splits are **adopt-only** (the synthesized generator does
+not reproduce composed-noise-pool / raw-clip splits) — fine, since adoption
+never runs the generator.
+
+---
+
+_Original plan (2026-07-07), kept for context:_
 
 ## The feature (dload 0.2.0)
 
@@ -42,14 +79,16 @@ generation scripts, with resolved parent pins carried *inside* the spec dict
   DN-LM-{train,valid}; first `scripts/derive.py DN-LM-train` materializes and
   shares it; unblocks the A1/A2 replication rows.
 
-## Blocker (upstream, dload 0.2.1)
+## Blocker (RESOLVED in dload-ml 0.3.0)
 
-`derive()` hardcodes the manifest meta to `{derived_from, fingerprint, tag}`
-and forwards no `meta=`/`recipe=` to `commit()`. Our consumers *require*
+`derive()` used to hardcode the manifest meta to `{derived_from, fingerprint,
+tag}` and forward no `meta=`/`recipe=` to `commit()`. Our consumers *require*
 manifest meta: `meta["fields"]`/`meta["meta_sample"]` (ensure_local file
-reconstruction) and `meta["layout"]` (tdframe decode dispatch). Needed
-upstream: merge user `meta=` under the derivation keys + forward `recipe=`.
-Half a day in dload, then this plan is unblocked.
+reconstruction) and `meta["layout"]` (decode dispatch). **Fixed upstream**
+(dload issue #2): `derive(name, pipe, *, meta=None, recipe=None, ...)` now
+forwards both to `commit()`, merging user `meta` under the reserved derivation
+keys (`derived_from`/`fingerprint`/`tag` win on conflict). `derivations.py`
+passes the `sample-dir-v1` meta via `dataset_meta(name)`.
 
 ## Gotchas to respect when implementing
 
