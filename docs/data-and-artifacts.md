@@ -223,7 +223,8 @@ Backend definitions live in the user-global `~/.config/omnirun/config.toml`:
 | Backend | What it is |
 |---|---|
 | `apocrita-short` | Apocrita Slurm, `gpushort` partition, ≤ 1 h |
-| `apocrita-long` | Apocrita Slurm, `sae` partition, long jobs |
+| `apocrita-long` | Apocrita Slurm, `sae` partition (GPU), long jobs — GPU-only, don't use for CPU work |
+| `apocrita-cpu` | Apocrita Slurm, `compute` partition — **CPU-only**, open-access, ≤ 10 days. For dataset generation / preprocessing (`scripts/derive.py derive`, etc.); submit with `--gpus 0` so GPU partitions stay free |
 | `colab` | Colab T4 — needs the local keep-alive daemon running; T4 allocation is a lottery (503s) |
 | `kaggle` | Kaggle P100 — kernel source cap ~1 MB, needs the slim-snapshot clone recipe (strip `notebooks/ writing/ tests/ docs/ .pi/ scripts/ uv.lock`, orphan commit, no origin, `env kind = system`) |
 
@@ -247,7 +248,17 @@ omnirun backends check        # re-establish the SSH ControlMaster after expiry
   so dload streaming and wandb logging work on any backend.
 - The `sae` partition (`apocrita-long`) **requires** `account =
   "pilot_sae_gpu"` in the backend config — `sbatch` rejects the submission
-  otherwise.
+  otherwise. `sae` is GPU and account-gated — reserve it for real GPU jobs.
+- **CPU-only jobs go to `apocrita-cpu`** (the open-access `compute` partition,
+  no account, ≤ 10 days), submitted with `--gpus 0`. Dataset materialization is
+  the canonical case — e.g. build DN-LM from its derived-dataset spec:
+  ```bash
+  omnirun submit --backend apocrita-cpu --gpus 0 --time 3h --yes -- \
+      bash -lc 'python scripts/derive.py derive DN-LM-train --no-pin && \
+                python scripts/derive.py derive DN-LM-valid --no-pin'
+  # then locally, once it succeeds: pull the new versions from R2 into the lock
+  dload pin DN-LM-train && dload pin DN-LM-valid && git add dload.lock
+  ```
 - Shared same-SHA worktree warts: a crashed run's `results/<exp>` dir
   persists in the worktree and **poisons retries at the same SHA**
   (`FileExistsError`) — work around with a `results_root=...` override. Also
