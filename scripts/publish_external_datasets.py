@@ -50,11 +50,15 @@ def _iter_samples(name: str, raw_dir: Path) -> Iterator[Sample]:
         seen.add(key)
         fields = streams.frame_to_sample(frame)
         del frame
-        if n % 500 == 0:
-            print(f"  {name}: built {n} samples...", flush=True)
         yield key, fields
         del fields
-        gc.collect()
+        # Reclaim the large audio buffers periodically, not every sample: a full
+        # gc.collect() costs ~30 ms, so per-sample it dominated the loop (~100 min
+        # of pure GC for the 180k-clip drone set). Every 500 bounds memory just as
+        # well while removing that overhead.
+        if n % 500 == 0:
+            print(f"  {name}: built {n} samples...", flush=True)
+            gc.collect()
 
 
 def cmd_list(_: argparse.Namespace) -> None:
