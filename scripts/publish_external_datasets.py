@@ -75,7 +75,7 @@ def cmd_download(args: argparse.Namespace) -> None:
 
 def cmd_publish(args: argparse.Namespace) -> None:
     raw_dir = Path(args.raw) if args.raw else REPO_ROOT / ".cache" / "external_raw" / args.name
-    if not raw_dir.exists():
+    if not ext.get(args.name).streaming and not raw_dir.exists():
         raise SystemExit(f"raw dir {raw_dir} does not exist — run `download {args.name}` first")
     repo = streams.open_repository()
     print(f"Publishing {args.name} from {raw_dir} ...", flush=True)

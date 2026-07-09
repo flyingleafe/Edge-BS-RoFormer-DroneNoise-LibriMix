@@ -79,22 +79,41 @@ def test_build_mimii_and_roundtrip(tmp_path):
     )
 
 
-def test_build_drone_detection_reads_labels(tmp_path):
-    import csv
+def test_decode_drone_detection_row():
+    """HF parquet row (audio bytes + int label) → mono Frame with class."""
+    import io
 
-    (tmp_path / "audio").mkdir()
-    for i, _label in enumerate([1, 0]):
-        audio = (np.random.default_rng(i).standard_normal((800, 1)) * 0.1).astype(np.float32)
-        sf.write(str(tmp_path / "audio" / f"clip_{i}.wav"), audio, SR)
-    with open(tmp_path / "metadata.csv", "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["file_name", "label"])
-        w.writerow(["audio/clip_0.wav", 1])
-        w.writerow(["audio/clip_1.wav", 0])
+    buf = io.BytesIO()
+    audio = (np.random.default_rng(0).standard_normal((800, 1)) * 0.1).astype(np.float32)
+    sf.write(buf, audio, SR, format="WAV")
+    for label, expect in [(1, "drone"), (0, "no_drone")]:
+        row = {"audio": {"bytes": buf.getvalue(), "path": "clip.wav"}, "label": label}
+        key, frame = ext._decode_drone_detection_row(3, row)
+        assert frame["meta"]["label"]["class"] == expect
+        assert frame["meta"]["label"]["raw_label"] == label
+        assert frame["audio"].dims == ("time",)  # mono
+        assert key.startswith("000003_clip")
 
-    frames = dict(ext.build_drone_detection(tmp_path))
-    assert len(frames) == 2
-    classes = {f["meta"]["label"]["class"] for f in frames.values()}
-    assert classes == {"drone", "no_drone"}
-    for f in frames.values():
-        assert f["audio"].dims == ("time",)  # mono
+
+def test_decode_droneaudioset_row_multichannel():
+    """HF parquet row (decoded array + file_path) → multichannel Frame with
+    subset/throttle/mic-distance parsed from the path."""
+    arr = (np.random.default_rng(1).standard_normal((4, 2000)) * 0.1).tolist()  # (C, T)
+    row = {
+        "audio": {"array": arr, "sampling_rate": 48000, "path": "x.wav"},
+        "file_path": "drone-only/drone2-only/mic-dist-50cm/throttle-low/mic0-x.wav",
+        "data_type": "drone",
+    }
+    key, frame = ext._decode_droneaudioset_row(7, row)
+    assert frame["audio"].dims == ("mic", "time")
+    assert frame["audio"].shape == (4, 2000)
+    assert frame["meta"]["observation"]["mic_to_source_m"] == 0.5
+    assert frame["meta"]["operating"]["throttle"] == "low"
+    assert frame["meta"]["label"]["subset"] == "drone-only"
+    assert frame["meta"]["system"]["drone_token"] == "drone2"
+
+
+def test_hf_datasets_marked_streaming():
+    assert ext.get("drone-detection-samples").streaming
+    assert ext.get("DroneAudioSet").streaming
+    assert not ext.get("MIMII").streaming

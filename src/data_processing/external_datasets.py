@@ -63,6 +63,7 @@ class ExternalDataset:
     provenance: dict[str, Any]
     modality: str = "audio"
     fields: tuple[str, ...] = ("audio",)
+    streaming: bool = False  # builder streams from the hub; no local raw dir
 
 
 # ─── Frame-building helpers ────────────────────────────────────────────────────
@@ -340,83 +341,122 @@ def build_aerosonicdb(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
         yield _safe_key(rid), _audio_frame(audio, sr, meta)
 
 
-def _load_audiofolder_labels(raw_dir: Path) -> dict[str, str]:
-    """Map basename/relpath → label from any HF ``audiofolder`` metadata csv."""
-    import pandas as pd
+# -- HuggingFace parquet datasets (streamed from the hub, no local raw dir) --
+#
+# Both HF datasets are parquet-only (no raw wav tree): drone-detection embeds
+# audio as encoded bytes + an int label; DroneAudioSet embeds a decoded
+# (channel, time) array + sampling_rate + file_path. We stream the parquet
+# shards row-batched straight from the hub (low memory, nothing on scratch) and
+# decode each row. The per-row decoders are pure (testable without network).
 
-    labels: dict[str, str] = {}
-    for csv in raw_dir.rglob("metadata*.csv"):
-        df = pd.read_csv(csv)
-        df.columns = [str(c).lower() for c in df.columns]
-        file_col = next(
-            (c for c in ("file_name", "file", "filename", "path") if c in df.columns), None
-        )
-        label_col = next((c for c in ("label", "class", "target") if c in df.columns), None)
-        if file_col is None or label_col is None:
-            continue
-        for _, row in df.iterrows():
-            name = str(row[file_col])
-            labels[name] = str(row[label_col])
-            labels[Path(name).name] = str(row[label_col])
-    return labels
+
+def _row_audio_from_bytes(audio_struct: dict) -> tuple[np.ndarray, int]:
+    """HF ``Audio`` struct ``{bytes, path}`` → ``((C, T) float32, sr)``."""
+    import io
+
+    import soundfile as sf
+
+    raw, sr = sf.read(io.BytesIO(audio_struct["bytes"]), dtype="float32", always_2d=True)
+    return np.ascontiguousarray(raw.T), int(sr)
+
+
+def _row_audio_from_array(audio_struct: dict) -> tuple[np.ndarray, int]:
+    """HF decoded ``Audio`` struct ``{array, sampling_rate}`` → ``((C, T), sr)``.
+
+    Orients so the smaller axis is channels (channels ≤ time for real audio)."""
+    arr = np.asarray(audio_struct["array"], dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr[None, :]
+    elif arr.ndim == 2 and arr.shape[0] > arr.shape[1]:
+        arr = arr.T
+    return np.ascontiguousarray(arr), int(audio_struct["sampling_rate"])
+
+
+def _decode_drone_detection_row(idx: int, row: dict) -> tuple[str, td.Frame]:
+    audio, sr = _row_audio_from_bytes(row["audio"])
+    label = row.get("label")
+    cls = None if label is None else ("drone" if int(label) == 1 else "no_drone")
+    path = row["audio"].get("path") or f"row_{idx}"
+    rid = f"{idx:06d}_{Path(str(path)).stem}"
+    meta = _meta_frame(
+        rid,
+        "drone-detection-samples",
+        system={"category": "drone"},
+        observation={"type": "unknown", "source_motion": "unknown", "relative_trajectory": "none"},
+        label={"class": cls, "raw_label": None if label is None else int(label)},
+        extra={"raw_path": str(path)},
+    )
+    return _safe_key(rid), _audio_frame(audio, sr, meta)
+
+
+def _decode_droneaudioset_row(idx: int, row: dict) -> tuple[str, td.Frame]:
+    audio, sr = _row_audio_from_array(row["audio"])
+    fp = str(row.get("file_path") or row["audio"].get("path") or f"row_{idx}")
+    low = fp.lower()
+    subsets = ("drone-with-source", "drone-only", "source-only", "ground-truth")
+    subset = next((s for s in subsets if s in low), row.get("data_type"))
+    dtok = re.search(r"drone\d", low)
+    dist_m = None
+    mdist = re.search(r"mic-?dist-?(\d+)\s*cm", low)
+    if mdist:
+        dist_m = int(mdist.group(1)) / 100.0
+    throttle = next((t for t in ("low", "high") if f"throttle-{t}" in low), None)
+    rid = f"{idx:06d}_{fp}"
+    meta = _meta_frame(
+        rid,
+        "DroneAudioSet",
+        system={"category": "drone", "drone_token": None if dtok is None else dtok.group(0)},
+        observation={
+            "type": "rig_mounted_static",
+            "source_motion": "static",
+            "mic_to_source_m": dist_m,
+            "relative_trajectory": "none",
+        },
+        operating={"throttle": throttle},
+        label={"subset": subset, "data_type": row.get("data_type")},
+        extra={"raw_path": fp},
+    )
+    return _safe_key(rid), _audio_frame(audio, sr, meta)
+
+
+def _iter_hf_parquet(
+    repo_id: str, pattern: str, decode: Callable[[int, dict], tuple[str, td.Frame]], batch_size: int
+) -> Iterator[tuple[str, td.Frame]]:
+    """Stream ``decode(idx, row)`` over every parquet shard of a hub dataset."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+    base = f"datasets/{repo_id}"
+    idx = 0
+    for path in sorted(fs.glob(f"{base}/{pattern}")):
+        with fs.open(path) as fh:
+            for batch in pq.ParquetFile(fh).iter_batches(batch_size=batch_size):
+                for row in batch.to_pylist():
+                    yield decode(idx, row)
+                    idx += 1
 
 
 def build_drone_detection(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
-    """geronimobasso drone-audio-detection-samples: mono 16 kHz, binary label."""
-    labels = _load_audiofolder_labels(raw_dir)
-    for wav in _iter_audio_files(raw_dir):
-        rel = wav.relative_to(raw_dir)
-        raw_label = labels.get(str(rel)) or labels.get(wav.name)
-        cls = None
-        if raw_label is not None:
-            cls = "drone" if str(raw_label).strip() in ("1", "1.0", "drone") else "no_drone"
-        audio, sr = _read_audio_file(wav)
-        meta = _meta_frame(
-            str(rel),
-            "drone-detection-samples",
-            system={"category": "drone"},
-            observation={
-                "type": "unknown",
-                "source_motion": "unknown",
-                "relative_trajectory": "none",
-            },
-            label={"class": cls, "raw_label": None if raw_label is None else str(raw_label)},
-            extra={"raw_relpath": str(rel)},
-        )
-        yield _safe_key(str(rel)), _audio_frame(audio, sr, meta)
+    """geronimobasso drone-audio-detection-samples (HF parquet, streamed): mono
+    16 kHz clips, binary drone/no-drone. ``raw_dir`` unused (hub-streamed)."""
+    del raw_dir
+    yield from _iter_hf_parquet(
+        "geronimobasso/drone-audio-detection-samples",
+        "data/*.parquet",
+        _decode_drone_detection_row,
+        batch_size=16,
+    )
 
 
 def build_droneaudioset(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
-    """DroneAudioSet: rig-mounted static drone; parse subset/drone/throttle/mic
-    distance from the path; audio params read from each wav."""
-    subsets = ("drone-with-source", "drone-only", "source-only", "ground-truth")
-    for wav in _iter_audio_files(raw_dir):
-        rel = wav.relative_to(raw_dir)
-        low = "/".join(rel.parts).lower()
-        subset = next((s for s in subsets if s in low), None)
-        drone_tok = next((p for p in rel.parts if re.search(r"drone\d", p, re.IGNORECASE)), None)
-        dist_m = None
-        mdist = re.search(r"mic-?dist-?(\d+)\s*cm", low)
-        if mdist:
-            dist_m = int(mdist.group(1)) / 100.0
-        throttle = next((t for t in ("low", "high") if f"throttle-{t}" in low), None)
-        audio, sr = _read_audio_file(wav)
-        rid = str(rel)
-        meta = _meta_frame(
-            rid,
-            "DroneAudioSet",
-            system={"category": "drone", "drone_token": drone_tok},
-            observation={
-                "type": "rig_mounted_static",
-                "source_motion": "static",
-                "mic_to_source_m": dist_m,
-                "relative_trajectory": "none",
-            },
-            operating={"throttle": throttle},
-            label={"subset": subset},
-            extra={"raw_relpath": rid},
-        )
-        yield _safe_key(rid), _audio_frame(audio, sr, meta)
+    """DroneAudioSet (HF parquet, streamed): rig-mounted static drone; subset +
+    throttle + mic distance from ``file_path``; multichannel arrays. Batch size 1
+    — rows carry large multichannel arrays. ``raw_dir`` unused (hub-streamed)."""
+    del raw_dir
+    yield from _iter_hf_parquet(
+        "ahlab-drone-project/DroneAudioSet", "*/*.parquet", _decode_droneaudioset_row, batch_size=1
+    )
 
 
 def build_hornbase(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
@@ -591,6 +631,7 @@ EXTERNAL_SPECS: dict[str, ExternalDataset] = {
             "channels": "varies (verify per file)",
             "description": "Drone speech-enhancement dataset: 2 quads, 2 throttles, 3 rooms; drone-only/source-only/mixed/ground-truth subsets.",
         },
+        streaming=True,
     ),
     "drone-detection-samples": ExternalDataset(
         name="drone-detection-samples",
@@ -606,6 +647,7 @@ EXTERNAL_SPECS: dict[str, ExternalDataset] = {
             "channels": 1,
             "description": "180k mono 16 kHz clips, binary drone/no-drone; provenance mixed (attribution may flow through).",
         },
+        streaming=True,
     ),
     "HornBase": ExternalDataset(
         name="HornBase",
@@ -683,10 +725,16 @@ def dataset_meta(name: str) -> dict[str, Any]:
 
 
 def download_dataset(name: str, dest: Path) -> Path:
-    """Fetch + (optionally) extract ``name``'s raw files into ``dest``."""
+    """Fetch + (optionally) extract ``name``'s raw files into ``dest``.
+
+    A no-op for ``streaming`` datasets (their builder reads from the hub)."""
     from data_processing import downloaders
 
-    spec = get(name).download
+    entry = get(name)
+    if entry.streaming:
+        print(f"{name}: hub-streamed at build time — nothing to pre-download")
+        return Path(dest)
+    spec = entry.download
     dest = Path(dest)
     if spec.kind == "zenodo":
         downloaders.zenodo_fetch(spec.params["record_id"], dest, files=spec.params.get("files"))
