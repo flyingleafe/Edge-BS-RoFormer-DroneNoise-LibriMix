@@ -414,18 +414,23 @@ def _decode_droneaudioset_row(idx: int, row: dict) -> tuple[str, td.Frame]:
 
 
 def _arrow_list_scalar_to_ct(scalar: Any) -> np.ndarray:
-    """A parquet ``list<list<double>>`` audio scalar → ``(C, T) float32`` via
-    arrow buffers (no Python-list materialization — critical for long
-    multichannel clips, where ``to_pylist`` would build millions of floats)."""
-    channels = [
-        np.asarray(inner.values.to_numpy(zero_copy_only=False), dtype=np.float32)
-        for inner in scalar.values
-    ]
-    if not channels:
+    """A parquet ``list<list<double>>`` audio scalar → ``(C, T) float32``.
+
+    Reads the flat child buffer once and reshapes — no per-element/per-row-dim
+    Python iteration (the earlier ``for inner in scalar.values`` iterated the
+    *outer* dimension, catastrophic when DroneAudioSet stores samples-major, so
+    the outer list is millions long). Works for either orientation; the axis
+    that comes out larger is time, so channels end up first."""
+    inner = scalar.values  # ListArray: n_outer inner lists (all equal length)
+    n_outer = len(inner)
+    # .flatten() respects this row's offsets (unlike .values, which returns the
+    # whole column's child buffer); it's a C-level concat, no Python iteration.
+    flat = np.asarray(inner.flatten().to_numpy(zero_copy_only=False), dtype=np.float32)
+    if n_outer == 0 or flat.size == 0:
         return np.zeros((1, 0), dtype=np.float32)
-    audio = np.stack(channels)  # outer list = channels (small), inner = samples
-    if audio.ndim == 2 and audio.shape[0] > audio.shape[1]:
-        audio = audio.T
+    audio = flat.reshape(n_outer, flat.size // n_outer)
+    if audio.shape[0] > audio.shape[1]:
+        audio = audio.T  # make channels (the smaller axis) first
     return np.ascontiguousarray(audio)
 
 

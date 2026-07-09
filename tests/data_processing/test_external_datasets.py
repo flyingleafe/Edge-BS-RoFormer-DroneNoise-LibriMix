@@ -176,6 +176,23 @@ def test_build_droneaudioset_arrow_path(tmp_path):
     assert frame["meta"]["label"]["subset"] == "drone-only"
 
 
+def test_build_droneaudioset_samples_major(tmp_path):
+    """Real DroneAudioSet is samples-major (outer list = time). The reshape
+    path must not iterate the huge outer dim and must still yield (C, T)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tc = np.random.default_rng(3).standard_normal((500, 2)) * 0.1  # (T, C) samples-major
+    audio = {"array": tc.tolist(), "sampling_rate": 16000, "path": "z.wav"}
+    table = pa.table({"audio": [audio], "file_path": ["drone-only/z.wav"], "data_type": ["drone"]})
+    (tmp_path / "drone-only").mkdir()
+    pq.write_table(table, str(tmp_path / "drone-only" / "s.parquet"))
+
+    frames = list(ext.build_droneaudioset(tmp_path))
+    assert len(frames) == 1
+    assert frames[0][1]["audio"].shape == (2, 500)  # transposed to (C, T)
+
+
 def test_build_hustmotor_parses_header_and_channels(tmp_path):
     """HUST .txt: text header then tab-separated time,X,Y,Z,Sound → acoustic
     (Sound) as audio + 3-axis vibration track; sr from the time increment."""
