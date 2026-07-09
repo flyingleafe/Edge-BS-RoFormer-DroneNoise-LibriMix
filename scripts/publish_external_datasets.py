@@ -25,7 +25,6 @@ See ``docs/external-datasets-plan.md``. Harmonicity is measured separately
 from __future__ import annotations
 
 import argparse
-import gc
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -48,17 +47,14 @@ def _iter_samples(name: str, raw_dir: Path) -> Iterator[Sample]:
         if key in seen:
             raise ValueError(f"{name}: duplicate sample key {key!r}")
         seen.add(key)
-        fields = streams.frame_to_sample(frame)
-        del frame
-        yield key, fields
-        del fields
-        # Reclaim the large audio buffers periodically, not every sample: a full
-        # gc.collect() costs ~30 ms, so per-sample it dominated the loop (~100 min
-        # of pure GC for the 180k-clip drone set). Every 500 bounds memory just as
-        # well while removing that overhead.
+        # Refcounting frees each frame the instant it goes out of scope (verified
+        # flat RSS with the cyclic GC fully disabled, zero uncollectable cycles),
+        # and dload buffers samples into an on-disk shard file — so peak memory is
+        # bounded regardless. No manual gc needed; the old per-sample gc.collect()
+        # was ~100 min of pure GC for the 180k-clip drone set and reclaimed nothing.
         if n % 500 == 0:
             print(f"  {name}: built {n} samples...", flush=True)
-            gc.collect()
+        yield key, streams.frame_to_sample(frame)
 
 
 def cmd_list(_: argparse.Namespace) -> None:
