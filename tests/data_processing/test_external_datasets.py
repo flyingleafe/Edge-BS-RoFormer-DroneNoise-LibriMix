@@ -21,7 +21,7 @@ def test_registry_integrity():
     for name, spec in ext.EXTERNAL_SPECS.items():
         assert spec.name == name
         assert callable(spec.builder)
-        assert spec.download.kind in {"zenodo", "mendeley", "hf", "gdrive"}
+        assert spec.download.kind in {"zenodo", "mendeley", "hf", "gdrive", "http"}
         for key in ("source_url", "license", "description"):
             assert spec.provenance.get(key), f"{name} missing provenance[{key!r}]"
 
@@ -234,3 +234,52 @@ def test_build_kaist_reads_signal_struct(tmp_path):
     assert int(frame["audio"].tindex.sr) == 51200
     assert frame["meta"]["label"]["fault"] == "BPFI"
     assert frame["meta"]["label"]["severity"] == "03"
+
+
+def test_build_spcup19_wav_team(tmp_path):
+    """SPCUP19 wav-shipping team → one frame per wav with drone/condition meta."""
+    team = tmp_path / "Idea_ssu"
+    team.mkdir()
+    audio = (np.random.default_rng(0).standard_normal((44100, 1)) * 0.1).astype(np.float32)
+    sf.write(str(team / "free_flight_1.wav"), audio, 44100)
+    frames = dict(ext.build_spcup19_egonoise(tmp_path))
+    assert len(frames) == 1
+    frame = next(iter(frames.values()))
+    assert frame["audio"].dims == ("time",)
+    assert int(frame["audio"].tindex.sr) == 44100
+    assert frame["meta"]["system"]["make_model"].startswith("DJI Phantom 4")
+    assert frame["meta"]["system"]["team"] == "Idea_ssu"
+    assert frame["meta"]["operating"]["condition"] == "free_flight"
+
+
+def test_build_spcup19_mat_team(tmp_path):
+    """SPCUP19 .mat-shipping team (nested struct) → audio extracted via the
+    generic walk; Fs propagated; mic positions captured into meta."""
+    from scipy.io import savemat
+
+    team = tmp_path / "ChuMS"
+    team.mkdir()
+    sig = (np.random.default_rng(1).standard_normal((16000, 8)) * 0.1).astype(np.float64)
+    savemat(
+        str(team / "UAV_rotor_recordings.mat"),
+        {
+            "TestResults": {
+                "Test": {"Data": {"RawTruncatedCalibrated": sig, "Fs": 48000}},
+                "MicPositions": np.zeros((8, 3)),
+            }
+        },
+    )
+    frames = dict(ext.build_spcup19_egonoise(tmp_path))
+    assert len(frames) >= 1
+    frame = next(iter(frames.values()))
+    assert frame["audio"].dims == ("mic", "time")
+    assert frame["audio"].shape == (8, 16000)  # oriented channels-first
+    assert int(frame["audio"].tindex.sr) == 48000
+    assert frame["meta"]["system"]["team"] == "ChuMS"
+    assert "mic_positions" in frame["meta"]  # captured from the .mat
+
+
+def test_spcup19_registered_with_http_download():
+    spec = ext.get("SPCUP19-egonoise")
+    assert spec.download.kind == "http"
+    assert len(spec.download.params["urls"]) == 10  # 10 teams

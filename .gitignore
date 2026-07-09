@@ -5,6 +5,10 @@
 /datasets/*
 wandb/
 results/
+# dload / online-mix / download scratch caches
+.cache/
+# omnirun shared worktrees
+.trees/
 .direnv/
 .env
 *.xml
