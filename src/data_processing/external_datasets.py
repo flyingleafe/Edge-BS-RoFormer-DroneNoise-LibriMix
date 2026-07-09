@@ -672,6 +672,7 @@ def _spcup19_condition(name: str) -> str | None:
         ("free_flight", "free_flight"),
         ("free-flight", "free_flight"),
         ("stationary", "stationary"),
+        ("static", "stationary"),
         ("hover", "hover"),
         ("spinn", "spinning"),
         ("spin", "spinning"),
@@ -679,6 +680,9 @@ def _spcup19_condition(name: str) -> str | None:
         ("updown", "up_down"),
         ("takeoff", "takeoff"),
         ("landing", "landing"),
+        ("single rotor", "single_rotor"),
+        ("single_rotor", "single_rotor"),
+        ("calibration", "calibration"),
     )
     return next((cond for key, cond in table if key in low), None)
 
@@ -773,9 +777,11 @@ def _find_mic_positions(d: dict) -> list | None:
 
 
 def _spcup19_mat_recordings(
-    mat_path: Path, team: str, info: dict
+    mat_path: Path, team: str, info: dict, rel_stem: str | None = None
 ) -> Iterator[tuple[str, td.Frame]]:
     from scipy.io import loadmat
+
+    stem = rel_stem or mat_path.stem
 
     try:
         d = loadmat(str(mat_path), squeeze_me=True, struct_as_record=False)
@@ -800,38 +806,56 @@ def _spcup19_mat_recordings(
         yield _spcup19_frame(
             team,
             info,
-            f"{mat_path.stem}_{path}",
+            f"{stem}_{path}",
             audio,
             sr or 48000,
-            condition=_spcup19_condition(path) or _spcup19_condition(mat_path.stem),
+            condition=_spcup19_condition(path) or _spcup19_condition(stem),
             relpath=f"{mat_path.name}:{path}",
             mic_positions=mic,
         )
 
 
+def _dedup_key(seen: dict[str, int], key: str) -> str:
+    """Return ``key`` the first time, then ``key_2``/``key_3``/… on collision."""
+    n = seen.get(key, 0)
+    seen[key] = n + 1
+    return key if n == 0 else f"{key}_{n + 1}"
+
+
 def build_spcup19_egonoise(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
     """SPCUP19 egonoise: 10 team packages under ``raw_dir/<team>/``. Loose .wav →
-    one recording each; .mat → generic resilient extraction (see helpers)."""
+    one recording each; .mat → generic resilient extraction (see helpers).
+
+    Teams lay files out in *scenario subdirs* (``static clean/1.wav``,
+    ``ego-noise/single rotors/1.wav``, …) that reuse bare-integer stems, so keys
+    are derived from the **team-relative path** (not the stem) — and the subdir
+    tokens feed condition detection. A final per-team dedup guard suffixes any
+    residual collision so the publish never aborts on a duplicate key."""
     for team, info in _SPCUP19_TEAMS.items():
         team_dir = Path(raw_dir) / team
         if not team_dir.exists():
             continue
+        seen: dict[str, int] = {}
         for wav in sorted(team_dir.rglob("*.wav")):
             try:
                 audio, sr = _read_audio_file(wav)
             except Exception:  # noqa: BLE001
                 continue
-            yield _spcup19_frame(
+            rel = wav.relative_to(team_dir).with_suffix("")  # e.g. "static clean/1"
+            key, frame = _spcup19_frame(
                 team,
                 info,
-                wav.stem,
+                str(rel),
                 audio,
                 sr,
-                condition=_spcup19_condition(wav.name),
+                condition=_spcup19_condition(str(rel)),
                 relpath=str(wav.relative_to(raw_dir)),
             )
+            yield _dedup_key(seen, key), frame
         for mat in sorted(team_dir.rglob("*.mat")):
-            yield from _spcup19_mat_recordings(mat, team, info)
+            rel_stem = str(mat.relative_to(team_dir).with_suffix(""))
+            for key, frame in _spcup19_mat_recordings(mat, team, info, rel_stem):
+                yield _dedup_key(seen, key), frame
 
 
 # ─── Registry ──────────────────────────────────────────────────────────────────

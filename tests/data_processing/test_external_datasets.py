@@ -279,6 +279,28 @@ def test_build_spcup19_mat_team(tmp_path):
     assert "mic_positions" in frame["meta"]  # captured from the .mat
 
 
+def test_build_spcup19_wav_nested_subdirs_unique_keys(tmp_path):
+    """AGH-shaped layout: scenario subdirs reuse bare-integer stems
+    (``static clean/1.wav``, ``ego-noise/single rotors/1.wav``). Keys must be
+    unique (derived from the team-relative path) and the subdir must feed the
+    condition — regression for the ``AGH__1`` duplicate-key publish abort."""
+    team = tmp_path / "AGH"
+    subdirs = ["static clean", "static corrupted", "calibration", "ego-noise/single rotors"]
+    audio = np.zeros((16000, 8), dtype=np.float32)
+    for sd in subdirs:
+        d = team / sd
+        d.mkdir(parents=True)
+        for i in (0, 1):
+            sf.write(str(d / f"{i}.wav"), audio, 16000)
+    frames = list(ext.build_spcup19_egonoise(tmp_path))
+    keys = [k for k, _ in frames]
+    assert len(keys) == len(subdirs) * 2 == 8
+    assert len(set(keys)) == len(keys)  # no collisions
+    assert "AGH__static_clean__0" in keys
+    conds = {f["meta"]["operating"]["condition"] for _, f in frames if "operating" in f["meta"]}
+    assert {"stationary", "calibration", "single_rotor"} <= conds
+
+
 def test_spcup19_registered_with_http_download():
     spec = ext.get("SPCUP19-egonoise")
     assert spec.download.kind == "http"
