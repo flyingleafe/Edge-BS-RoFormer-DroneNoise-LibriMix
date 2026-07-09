@@ -706,6 +706,14 @@ def download_dataset(name: str, dest: Path) -> Path:
     else:
         raise ValueError(f"unknown download kind {spec.kind!r}")
     if spec.extract:
+        # Extract each zip then delete it, so peak disk ≈ the extracted size
+        # rather than zips + extracted (matters for MIMII's ~100 GB). A re-run
+        # re-downloads any deleted zip (size-match skip only helps if kept), an
+        # acceptable trade for one-shot publishing on quota'd scratch.
         for zip_path in sorted(dest.glob("*.zip")):
-            downloaders.extract_zip(zip_path, dest / zip_path.stem)
+            marker = dest / zip_path.stem / ".extracted"
+            if not marker.exists():
+                downloaders.extract_zip(zip_path, dest / zip_path.stem)
+                marker.touch()
+            zip_path.unlink(missing_ok=True)
     return dest
