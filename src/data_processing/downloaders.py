@@ -130,12 +130,15 @@ def mendeley_fetch(
     return dest
 
 
-def hf_fetch(repo_id: str, dest: Path, *, allow_patterns: list[str] | None = None) -> Path:
+def hf_fetch(
+    repo_id: str, dest: Path, *, allow_patterns: list[str] | None = None, max_workers: int = 4
+) -> Path:
     """Snapshot a HuggingFace *dataset* repo into ``dest`` (raw files).
 
     Uses ``huggingface_hub.snapshot_download`` (resumable, dedup via the hub
-    cache); ``allow_patterns`` restricts which paths are pulled. A private repo
-    needs ``HF_TOKEN`` in the environment.
+    cache); ``allow_patterns`` restricts which paths are pulled, ``max_workers``
+    bounds concurrency (kept low to stay within job memory limits). A private
+    repo needs ``HF_TOKEN`` in the environment.
     """
     from huggingface_hub import snapshot_download
 
@@ -146,6 +149,7 @@ def hf_fetch(repo_id: str, dest: Path, *, allow_patterns: list[str] | None = Non
         repo_type="dataset",
         local_dir=str(dest),
         allow_patterns=allow_patterns,
+        max_workers=max_workers,
     )
     return dest
 

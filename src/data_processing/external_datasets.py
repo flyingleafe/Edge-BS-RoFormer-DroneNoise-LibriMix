@@ -405,44 +405,35 @@ def _decode_droneaudioset_row(idx: int, row: dict) -> tuple[str, td.Frame]:
     return _safe_key(rid), _audio_frame(audio, sr, meta)
 
 
-def _iter_hf_parquet(
-    repo_id: str, pattern: str, decode: Callable[[int, dict], tuple[str, td.Frame]], batch_size: int
+def _iter_local_parquet(
+    raw_dir: Path, decode: Callable[[int, dict], tuple[str, td.Frame]], batch_size: int
 ) -> Iterator[tuple[str, td.Frame]]:
-    """Stream ``decode(idx, row)`` over every parquet shard of a hub dataset."""
-    import pyarrow.parquet as pq
-    from huggingface_hub import HfFileSystem
+    """``decode(idx, row)`` over every snapshotted parquet shard under ``raw_dir``.
 
-    fs = HfFileSystem()
-    base = f"datasets/{repo_id}"
+    Reads local files (snapshot-downloaded first) — bulk download + local reads
+    are far faster and more reliable than per-row fsspec range requests over
+    throttled unauthenticated HF (which time out on the 180k-row set)."""
+    import pyarrow.parquet as pq
+
     idx = 0
-    for path in sorted(fs.glob(f"{base}/{pattern}")):
-        with fs.open(path) as fh:
-            for batch in pq.ParquetFile(fh).iter_batches(batch_size=batch_size):
-                for row in batch.to_pylist():
-                    yield decode(idx, row)
-                    idx += 1
+    for path in sorted(Path(raw_dir).rglob("*.parquet")):
+        for batch in pq.ParquetFile(str(path)).iter_batches(batch_size=batch_size):
+            for row in batch.to_pylist():
+                yield decode(idx, row)
+                idx += 1
 
 
 def build_drone_detection(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
-    """geronimobasso drone-audio-detection-samples (HF parquet, streamed): mono
-    16 kHz clips, binary drone/no-drone. ``raw_dir`` unused (hub-streamed)."""
-    del raw_dir
-    yield from _iter_hf_parquet(
-        "geronimobasso/drone-audio-detection-samples",
-        "data/*.parquet",
-        _decode_drone_detection_row,
-        batch_size=16,
-    )
+    """geronimobasso drone-audio-detection-samples (HF parquet): mono 16 kHz
+    clips, binary drone/no-drone. Reads snapshotted parquet under ``raw_dir``."""
+    yield from _iter_local_parquet(raw_dir, _decode_drone_detection_row, batch_size=16)
 
 
 def build_droneaudioset(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
-    """DroneAudioSet (HF parquet, streamed): rig-mounted static drone; subset +
-    throttle + mic distance from ``file_path``; multichannel arrays. Batch size 1
-    — rows carry large multichannel arrays. ``raw_dir`` unused (hub-streamed)."""
-    del raw_dir
-    yield from _iter_hf_parquet(
-        "ahlab-drone-project/DroneAudioSet", "*/*.parquet", _decode_droneaudioset_row, batch_size=1
-    )
+    """DroneAudioSet (HF parquet): rig-mounted static drone; subset + throttle +
+    mic distance from ``file_path``; multichannel arrays. Batch size 1 — rows
+    carry large multichannel arrays. Reads snapshotted parquet under ``raw_dir``."""
+    yield from _iter_local_parquet(raw_dir, _decode_droneaudioset_row, batch_size=1)
 
 
 def build_hornbase(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
@@ -657,7 +648,6 @@ EXTERNAL_SPECS: dict[str, ExternalDataset] = {
             "channels": "varies (verify per file)",
             "description": "Drone speech-enhancement dataset: 2 quads, 2 throttles, 3 rooms; drone-only/source-only/mixed/ground-truth subsets.",
         },
-        streaming=True,
     ),
     "drone-detection-samples": ExternalDataset(
         name="drone-detection-samples",
@@ -673,7 +663,6 @@ EXTERNAL_SPECS: dict[str, ExternalDataset] = {
             "channels": 1,
             "description": "180k mono 16 kHz clips, binary drone/no-drone; provenance mixed (attribution may flow through).",
         },
-        streaming=True,
     ),
     "HornBase": ExternalDataset(
         name="HornBase",

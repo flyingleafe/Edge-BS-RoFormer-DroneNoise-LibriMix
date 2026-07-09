@@ -113,10 +113,35 @@ def test_decode_droneaudioset_row_multichannel():
     assert frame["meta"]["system"]["drone_token"] == "drone2"
 
 
-def test_hf_datasets_marked_streaming():
-    assert ext.get("drone-detection-samples").streaming
-    assert ext.get("DroneAudioSet").streaming
-    assert not ext.get("MIMII").streaming
+def test_no_datasets_are_streaming():
+    # HF parquet datasets snapshot-download then read local (faster/reliable than
+    # per-row fsspec range reads over throttled HF).
+    assert all(not ext.get(n).streaming for n in ext.list_names())
+
+
+def test_build_drone_detection_from_local_parquet(tmp_path):
+    """The parquet builder reads snapshotted local shards (audio bytes + label)."""
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    buf = io.BytesIO()
+    audio = (np.random.default_rng(0).standard_normal((800, 1)) * 0.1).astype(np.float32)
+    sf.write(buf, audio, SR, format="WAV")
+    rows = {
+        "audio": [
+            {"bytes": buf.getvalue(), "path": "a.wav"},
+            {"bytes": buf.getvalue(), "path": "b.wav"},
+        ],
+        "label": [1, 0],
+    }
+    (tmp_path / "data").mkdir()
+    pq.write_table(pa.table(rows), str(tmp_path / "data" / "train-00000.parquet"))
+
+    frames = dict(ext.build_drone_detection(tmp_path))
+    assert len(frames) == 2
+    assert {f["meta"]["label"]["class"] for f in frames.values()} == {"drone", "no_drone"}
 
 
 def test_build_hustmotor_parses_header_and_channels(tmp_path):
