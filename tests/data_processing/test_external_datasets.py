@@ -144,6 +144,38 @@ def test_build_drone_detection_from_local_parquet(tmp_path):
     assert {f["meta"]["label"]["class"] for f in frames.values()} == {"drone", "no_drone"}
 
 
+def test_build_droneaudioset_arrow_path(tmp_path):
+    """DroneAudioSet parquet (list<list<double>> audio) read via arrow buffers,
+    not to_pylist — the fix for the huge-array hang. Multichannel + path meta."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    arr = np.random.default_rng(2).standard_normal((2, 500)) * 0.1  # (C, T)
+    audio = {"array": arr.tolist(), "sampling_rate": 48000, "path": "x.wav"}
+    table = pa.table(
+        {
+            "audio": [audio, audio],
+            "file_path": [
+                "drone-only/mic-dist-25cm/throttle-high/x.wav",
+                "source-only/y.wav",
+            ],
+            "data_type": ["drone", "source"],
+        }
+    )
+    (tmp_path / "drone-only").mkdir()
+    pq.write_table(table, str(tmp_path / "drone-only" / "train_001.parquet"))
+
+    frames = list(ext.build_droneaudioset(tmp_path))
+    assert len(frames) == 2
+    _, frame = frames[0]
+    assert frame["audio"].dims == ("mic", "time")
+    assert frame["audio"].shape == (2, 500)
+    assert int(frame["audio"].tindex.sr) == 48000
+    assert frame["meta"]["observation"]["mic_to_source_m"] == 0.25
+    assert frame["meta"]["operating"]["throttle"] == "high"
+    assert frame["meta"]["label"]["subset"] == "drone-only"
+
+
 def test_build_hustmotor_parses_header_and_channels(tmp_path):
     """HUST .txt: text header then tab-separated time,X,Y,Z,Sound → acoustic
     (Sound) as audio + 3-axis vibration track; sr from the time increment."""

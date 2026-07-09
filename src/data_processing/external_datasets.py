@@ -375,12 +375,14 @@ def _decode_drone_detection_row(idx: int, row: dict) -> tuple[str, td.Frame]:
     return _safe_key(rid), _audio_frame(audio, sr, meta)
 
 
-def _decode_droneaudioset_row(idx: int, row: dict) -> tuple[str, td.Frame]:
-    audio, sr = _row_audio_from_array(row["audio"])
-    fp = str(row.get("file_path") or row["audio"].get("path") or f"row_{idx}")
+def _droneaudioset_frame(
+    idx: int, audio: np.ndarray, sr: int, file_path: str | None, data_type: str | None
+) -> tuple[str, td.Frame]:
+    """Build a DroneAudioSet frame from already-decoded audio + row fields."""
+    fp = str(file_path or f"row_{idx}")
     low = fp.lower()
     subsets = ("drone-with-source", "drone-only", "source-only", "ground-truth")
-    subset = next((s for s in subsets if s in low), row.get("data_type"))
+    subset = next((s for s in subsets if s in low), data_type)
     dtok = re.search(r"drone\d", low)
     dist_m = None
     mdist = re.search(r"mic-?dist-?(\d+)\s*cm", low)
@@ -399,10 +401,32 @@ def _decode_droneaudioset_row(idx: int, row: dict) -> tuple[str, td.Frame]:
             "relative_trajectory": "none",
         },
         operating={"throttle": throttle},
-        label={"subset": subset, "data_type": row.get("data_type")},
+        label={"subset": subset, "data_type": data_type},
         extra={"raw_path": fp},
     )
     return _safe_key(rid), _audio_frame(audio, sr, meta)
+
+
+def _decode_droneaudioset_row(idx: int, row: dict) -> tuple[str, td.Frame]:
+    audio, sr = _row_audio_from_array(row["audio"])
+    fp = row.get("file_path") or row["audio"].get("path")
+    return _droneaudioset_frame(idx, audio, sr, fp, row.get("data_type"))
+
+
+def _arrow_list_scalar_to_ct(scalar: Any) -> np.ndarray:
+    """A parquet ``list<list<double>>`` audio scalar → ``(C, T) float32`` via
+    arrow buffers (no Python-list materialization — critical for long
+    multichannel clips, where ``to_pylist`` would build millions of floats)."""
+    channels = [
+        np.asarray(inner.values.to_numpy(zero_copy_only=False), dtype=np.float32)
+        for inner in scalar.values
+    ]
+    if not channels:
+        return np.zeros((1, 0), dtype=np.float32)
+    audio = np.stack(channels)  # outer list = channels (small), inner = samples
+    if audio.ndim == 2 and audio.shape[0] > audio.shape[1]:
+        audio = audio.T
+    return np.ascontiguousarray(audio)
 
 
 def _iter_local_parquet(
@@ -431,9 +455,29 @@ def build_drone_detection(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
 
 def build_droneaudioset(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
     """DroneAudioSet (HF parquet): rig-mounted static drone; subset + throttle +
-    mic distance from ``file_path``; multichannel arrays. Batch size 1 — rows
-    carry large multichannel arrays. Reads snapshotted parquet under ``raw_dir``."""
-    yield from _iter_local_parquet(raw_dir, _decode_droneaudioset_row, batch_size=1)
+    mic distance from ``file_path``; multichannel arrays.
+
+    The audio arrays are huge, so the ``audio.array`` struct field is read via
+    arrow buffers (``_arrow_list_scalar_to_ct``) rather than ``to_pylist`` —
+    only the small ``file_path``/``sampling_rate``/``data_type`` columns are
+    materialized to Python."""
+    import pyarrow.parquet as pq
+
+    idx = 0
+    for path in sorted(Path(raw_dir).rglob("*.parquet")):
+        pf = pq.ParquetFile(str(path))
+        for batch in pf.iter_batches(batch_size=8):
+            names = set(batch.schema.names)
+            audio_col = batch.column("audio")
+            arrays = audio_col.field("array")
+            srs = audio_col.field("sampling_rate").to_pylist()
+            n = batch.num_rows
+            fpaths = batch.column("file_path").to_pylist() if "file_path" in names else [None] * n
+            dtypes = batch.column("data_type").to_pylist() if "data_type" in names else [None] * n
+            for i in range(n):
+                audio = _arrow_list_scalar_to_ct(arrays[i])
+                yield _droneaudioset_frame(idx, audio, int(srs[i]), fpaths[i], dtypes[i])
+                idx += 1
 
 
 def build_hornbase(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
