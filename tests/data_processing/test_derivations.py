@@ -10,6 +10,7 @@ imports ``streams`` (→ torch) lazily inside the test body, so
 from __future__ import annotations
 
 import io
+import subprocess
 import sys
 
 import dload
@@ -22,7 +23,11 @@ SR = 16000
 
 
 def test_import_is_torch_free():
-    assert "torch" not in sys.modules, "importing derivations must not pull torch"
+    # Check a *fresh* interpreter: pytest shares sys.modules across the session,
+    # so a sibling test file that imports torch would otherwise false-fail this.
+    code = "import sys, data_processing.derivations as _; sys.exit('torch' in sys.modules)"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, f"importing derivations pulled torch:\n{r.stderr}"
 
 
 def test_wav_bytes_roundtrip_mono_and_multichannel():

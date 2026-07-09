@@ -251,6 +251,15 @@ wheels = [
 ]
 
 [[package]]
+name = "array-api-compat"
+version = "1.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/12/65d297d3e425cb7fe5247b7ec14b4ed83539e9b5e89b65c15ea7ee274182/array_api_compat-1.15.0.tar.gz", hash = "sha256:53c5f922491bf15f62847afafc4e39eedfae57d218988fefb8cce39c2a9b3dea", size = 129305, upload-time = "2026-06-07T20:53:24.964Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/16/1a8fd2b19544b84575cf84ef7aa3ad4c173b756d5f087c91f85d1b295777/array_api_compat-1.15.0-py3-none-any.whl", hash = "sha256:7b1b9c53269061403fd5f45a8de349f16e7887653328bfa0c5f2d45299ff0a8e", size = 79113, upload-time = "2026-06-07T20:53:23.621Z" },
+]
+
+[[package]]
 name = "arrow"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1021,7 +1030,7 @@ requires-dist = [
     { name = "rotary-embedding-torch", specifier = "==0.8.6" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "soundfile", specifier = "==0.13.1" },
-    { name = "tdseries", specifier = ">=0.1.1" },
+    { name = "tdseries", specifier = ">=0.2.0" },
     { name = "thop", specifier = "==0.1.1.post2209072238" },
     { name = "torch", specifier = "==2.7" },
     { name = "torch-log-wmse", specifier = "==0.3.0" },
@@ -4175,14 +4184,15 @@ wheels = [
 
 [[package]]
 name = "tdseries"
-version = "0.1.1"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "array-api-compat" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c7/72/4190e6897264fb12257d56b00f9c1e36a23a4273d4e39afe91b26b44ada5/tdseries-0.1.1.tar.gz", hash = "sha256:45c5392ce079e5ad1ee7d6140ae40c88f304da701ed2c5e1fd3b68396f1a98ef", size = 74851, upload-time = "2026-07-02T22:25:05.544Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/b2/b9b1a0d1bcf69628772c12f6df5a9457c5d196cb3f6aa0b27984f488d241/tdseries-0.2.0.tar.gz", hash = "sha256:1d4be0790eb52dfc6cb2daa0eb61b1d88bd7815a79603aa81609a04117d72f3c", size = 94208, upload-time = "2026-07-09T13:14:52.865Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/d3/0c06155e8e8757ce38c575942b23b0fc6a24b8818648104a7005fe3615da/tdseries-0.1.1-py3-none-any.whl", hash = "sha256:855fc22a90a50f1821e068500c77a7f6329b8fcb70f1ab4dfbe2e54763cc243c", size = 24322, upload-time = "2026-07-02T22:25:04.625Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/ec/d585c0ca45274e5e4ead6f5f3b30e7217e2ef0a7627d023752dfe37e964b/tdseries-0.2.0-py3-none-any.whl", hash = "sha256:d3d5b2c54414161478ebd7102683ee51e98df3459b9712743f40b4c6e5e8a266", size = 25237, upload-time = "2026-07-09T13:14:51.99Z" },
 ]
 
 [[package]]
