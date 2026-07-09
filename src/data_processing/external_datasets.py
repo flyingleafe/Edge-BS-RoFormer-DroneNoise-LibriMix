@@ -170,20 +170,6 @@ def _find_csv(root: Path, name: str) -> Path | None:
     return None
 
 
-def _largest_numeric_1d(mat: dict[str, Any]) -> np.ndarray | None:
-    """Pick the largest real numeric array from a ``loadmat`` dict, flattened."""
-    best: np.ndarray | None = None
-    for key, value in mat.items():
-        if key.startswith("__") or not isinstance(value, np.ndarray):
-            continue
-        if not np.issubdtype(value.dtype, np.number):
-            continue
-        flat = np.asarray(value, dtype=np.float64).reshape(-1)
-        if best is None or flat.size > best.size:
-            best = flat
-    return best
-
-
 # ─── Per-dataset builders ──────────────────────────────────────────────────────
 
 _MIMII_MACHINES = ("fan", "pump", "slider", "valve", "gearbox", "bearing")
@@ -487,13 +473,23 @@ def build_hornbase(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
 
 def build_kaist_acoustic(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
     """KAIST rotating machine (acoustic.zip): mic sound-pressure in ``.mat``,
-    51.2 kHz, 0 Nm. Filename ``<load>Nm_<fault>_<severity>``."""
+    ~51.2 kHz, 0 Nm. Each file has one ``Signal`` struct with ``y_values.values``
+    (the pressure vector) and ``x_values.increment`` (sample period). Filename
+    ``<load>Nm_<fault>[_<severity>]``."""
     from scipy.io import loadmat
 
     for mat in sorted(raw_dir.rglob("*.mat")):
-        signal = _largest_numeric_1d(loadmat(str(mat)))
-        if signal is None or signal.size == 0:
+        d = loadmat(str(mat), squeeze_me=True, struct_as_record=False)
+        sig = d.get("Signal")
+        if sig is None or not hasattr(sig, "y_values"):
             continue
+        values = np.asarray(sig.y_values.values, dtype=np.float32).reshape(-1)
+        if values.size == 0:
+            continue
+        sr = 51200
+        inc = getattr(getattr(sig, "x_values", None), "increment", None)
+        if inc is not None and float(inc) > 0:
+            sr = int(round(1.0 / float(inc)))
         rid = mat.stem
         toks = rid.split("_")
         load_tok = next((t for t in toks if t.lower().endswith("nm")), None)
@@ -513,13 +509,44 @@ def build_kaist_acoustic(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
             },
             extra={"raw_relpath": str(mat.relative_to(raw_dir))},
         )
-        yield _safe_key(rid), _audio_frame(signal[None, :].astype(np.float32), 51200, meta)
+        yield _safe_key(rid), _audio_frame(values[None, :], sr, meta)
+
+
+def _read_hust_txt(path: Path) -> tuple[np.ndarray, np.ndarray | None, int] | None:
+    """Parse a HUSTmotor ``.txt`` (text header + tab-separated
+    ``time, X, Y, Z, Sound``). Returns ``(acoustic (1,N), vibration (3,N)|None,
+    sr)`` — the acoustic ``Sound`` channel is the last column."""
+    data_start: int | None = None
+    with open(path) as fh:
+        for i, line in enumerate(fh):
+            parts = line.strip().split("\t")
+            if len(parts) >= 2:
+                try:
+                    [float(x) for x in parts]
+                    data_start = i
+                    break
+                except ValueError:
+                    continue
+    if data_start is None:
+        return None
+    arr = np.loadtxt(str(path), skiprows=data_start, delimiter="\t")
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    time = arr[:, 0]
+    sr = 25600
+    if len(time) > 2:
+        dt = float(np.median(np.diff(time)))
+        if dt > 0:
+            sr = int(round(1.0 / dt))
+    acoustic = arr[:, -1][None, :].astype(np.float32)  # "Sound" = last data column
+    vibration = arr[:, 1:-1].T.astype(np.float32) if arr.shape[1] > 2 else None  # X, Y, Z
+    return acoustic, vibration, sr
 
 
 def build_hustmotor(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
-    """HUSTmotor: 25.6 kHz numeric ``.txt`` (6 health × 4 speeds). Channel roles
-    (vibration vs acoustic) are unconfirmed — kept as (channel, time) with a
-    meta flag."""
+    """HUSTmotor: 25.6 kHz instrument ``.txt`` (6 health × 4 speeds). Columns are
+    ``time, X, Y, Z, Sound`` — ``audio`` is the acoustic ``Sound`` channel; the
+    3-axis vibration is kept as a separate ``vibration`` track."""
     health_map = {
         "H": "healthy",
         "BF": "bearing_fault",
@@ -529,11 +556,10 @@ def build_hustmotor(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
         "UNBAL": "voltage_unbalance",
     }
     for txt in sorted(raw_dir.rglob("*.txt")):
-        try:
-            data = np.loadtxt(str(txt))
-        except ValueError:
+        parsed = _read_hust_txt(txt)
+        if parsed is None:
             continue
-        arr = data.T if data.ndim == 2 else data[None, :]  # (C, N)
+        acoustic, vibration, sr = parsed
         rid = txt.stem
         toks = re.split(r"[_\-]", rid)
         health = next((health_map[t.upper()] for t in toks if t.upper() in health_map), None)
@@ -547,14 +573,14 @@ def build_hustmotor(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
                 "source_motion": "static",
                 "relative_trajectory": "none",
             },
-            operating={"speed_hz": speed},
+            operating={"speed": speed, "mic_channel": "Sound"},
             label={"health": health},
-            extra={
-                "raw_relpath": str(txt.relative_to(raw_dir)),
-                "channel_roles": "unconfirmed_vibration+acoustic",
-            },
+            extra={"raw_relpath": str(txt.relative_to(raw_dir)), "vibration_channels": "X,Y,Z"},
         )
-        yield _safe_key(rid), _audio_frame(arr.astype(np.float32), 25600, meta)
+        frame = _audio_frame(acoustic, sr, meta)
+        if vibration is not None:
+            frame = frame.with_entry("vibration", td.uniform(vibration, sr, dims=("axis", "time")))
+        yield _safe_key(rid), frame
 
 
 # ─── Registry ──────────────────────────────────────────────────────────────────

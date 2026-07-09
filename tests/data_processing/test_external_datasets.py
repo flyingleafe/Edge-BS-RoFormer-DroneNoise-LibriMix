@@ -117,3 +117,46 @@ def test_hf_datasets_marked_streaming():
     assert ext.get("drone-detection-samples").streaming
     assert ext.get("DroneAudioSet").streaming
     assert not ext.get("MIMII").streaming
+
+
+def test_build_hustmotor_parses_header_and_channels(tmp_path):
+    """HUST .txt: text header then tab-separated time,X,Y,Z,Sound → acoustic
+    (Sound) as audio + 3-axis vibration track; sr from the time increment."""
+    n, sr = 500, 25600
+    t = np.arange(n) / sr
+    cols = np.stack([t, t * 0 + 1, t * 0 + 2, t * 0 + 3, np.sin(2 * np.pi * 50 * t)], axis=1)
+    header = "Title:\tBF_10HZ\nDAQ Settings:\nChannels:\nLegend\tX\tY\tZ\tSound\n"
+    header += "Time (seconds) and Data Channels\n"
+    lines = header + "\n".join("\t".join(f"{v:.8f}" for v in row) for row in cols)
+    (tmp_path / "Raw data").mkdir()
+    (tmp_path / "Raw data" / "BF_10HZ.txt").write_text(lines)
+
+    frames = dict(ext.build_hustmotor(tmp_path))
+    assert len(frames) == 1
+    frame = next(iter(frames.values()))
+    assert frame["audio"].dims == ("time",)
+    assert frame["audio"].shape == (n,)  # the Sound channel
+    assert frame["vibration"].shape == (3, n)  # X, Y, Z
+    assert frame["meta"]["label"]["health"] == "bearing_fault"
+    # the "Sound" column is the 50 Hz sine, not a constant vibration axis
+    assert float(np.std(np.asarray(frame["audio"].data))) > 0.1
+
+
+def test_build_kaist_reads_signal_struct(tmp_path):
+    """KAIST .mat: Signal struct with y_values.values + x_values.increment."""
+    from scipy.io import savemat
+
+    arr = np.sin(2 * np.pi * 100 * np.arange(2000) / 51200).astype(np.float64)
+    aco = tmp_path / "acoustic"
+    aco.mkdir()
+    savemat(
+        str(aco / "0Nm_BPFI_03.mat"),
+        {"Signal": {"x_values": {"increment": 1.0 / 51200}, "y_values": {"values": arr}}},
+    )
+    frames = dict(ext.build_kaist_acoustic(tmp_path))
+    assert len(frames) == 1
+    frame = next(iter(frames.values()))
+    assert frame["audio"].shape == (2000,)
+    assert int(frame["audio"].tindex.sr) == 51200
+    assert frame["meta"]["label"]["fault"] == "BPFI"
+    assert frame["meta"]["label"]["severity"] == "03"
