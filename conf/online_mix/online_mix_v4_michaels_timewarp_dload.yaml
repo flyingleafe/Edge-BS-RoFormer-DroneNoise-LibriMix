@@ -1,0 +1,68 @@
+# E5 time-warp policy, dload-portable variant for backends without GPFS or a
+# local data/ checkout (colab / kaggle / vast). Mirrors
+# online_mix_v4_michaels_timewarp.yaml exactly, with every source streamed
+# from R2 via dload (creds ship in .env): noise from the published tdframe-v1
+# frame datasets (fixes baked in at publish time), speech from the raw
+# librispeech dataset materialized by resolve_source. Read-only — nothing is
+# written back to R2.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260617
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      min_motor_rps: 30.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      # Michael's FLY125 motor telemetry hovers around 29 RPS; do not apply the
+      # DREGON >30 RPS in-flight threshold to it.
+      min_motor_rps: 0.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  stages:
+    # First 50k samples = 10 validation intervals at samples_per_validation=5000:
+    # random speech/noise mixtures, no augmentation.
+    - until: 50000
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+
+    # Afterward, keep the same mixture distribution; augment 50% of samples
+    # (one uniformly-chosen mixture-level augmentation), and independently
+    # time-warp 50% of noise chunks (noise+RPS pair, before mixing):
+    # alpha(t) = c + a*sin(2*pi*f*t + phi), |alpha - 1| <= 0.12, label
+    # becomes alpha(t) * r(tau(t)) — see data_processing/time_warp.py.
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
+          - channel_drop: {max_channels: 1}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
