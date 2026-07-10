@@ -120,17 +120,16 @@ def _solve_phasors_lstsq(framed_phasors, wav, window_len, hop_len, method: str =
 
     audio_rearranged = rearrange(windowed_audio, "... t w -> ... t w 1")
 
-    if method == "normal":
-        # Ridge-regularised normal equations: orders of magnitude faster than
-        # the SVD drivers on CPU for the typical (frames, window, tracks)
-        # batch, at the cost of a tiny bias at near-collinear columns
-        # (crossing rotors) which the ridge keeps benign.
-        a_t = sincos_rearranged.transpose(-2, -1)
-        gram = a_t @ sincos_rearranged
-        rhs = a_t @ audio_rearranged
-        diag_mean = gram.diagonal(dim1=-2, dim2=-1).mean(-1, keepdim=True).unsqueeze(-1)
-        eye = torch.eye(gram.shape[-1], device=gram.device, dtype=gram.dtype)
-        V = torch.linalg.solve(gram + 1e-4 * diag_mean * eye, rhs)
+    if method in ("gelsy", "normal"):
+        # Pivoted-QR driver: ~100x faster than gelsd on CPU for the typical
+        # (frames, window, tracks) batch AND robust to rank deficiency
+        # (duplicate / near-coincident harmonic tracks), unlike the previous
+        # ridge normal-equations path ("normal" is kept as a deprecated alias)
+        # whose torch.linalg.solve crashed on exactly-collinear tracks.
+        if sincos_rearranged.device.type == "cpu":
+            V = torch.linalg.lstsq(sincos_rearranged, audio_rearranged, driver="gelsy").solution
+        else:
+            V = good_lstsq(sincos_rearranged, audio_rearranged).solution
     elif method == "lstsq":
         V = good_lstsq(sincos_rearranged, audio_rearranged).solution
     else:
@@ -186,8 +185,9 @@ def lstsq_VP_transform(
 ):
     """Project the wav onto the variable I/Q phasor planes via least squares.
 
-    ``method="normal"`` solves ridge-regularised normal equations instead of
-    the SVD drivers — much faster on CPU, use for metrics/analysis loops.
+    ``method="gelsy"`` uses the pivoted-QR driver instead of the default SVD
+    ones — much faster on CPU and robust to duplicate/collinear tracks; use
+    for metrics/analysis loops. (``"normal"`` is a deprecated alias.)
     """
     if center:
         pd = (window_len // 2, window_len // 2)

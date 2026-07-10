@@ -426,7 +426,7 @@ def harmonic_lsq_residual(
             window_len=window_len,
             hop_len=hop_len,
             sr=cfg.sample_rate,
-            method="normal",
+            method="gelsy",
         )
         recon = inverse_VP_transform(
             freqs, v, window_len=window_len, hop_len=hop_len, sr=cfg.sample_rate
