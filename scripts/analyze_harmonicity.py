@@ -63,10 +63,23 @@ def _meta_group_get(frame: Any, group: str, key: str) -> Any:
     return sub[key]
 
 
-def analyze_dataset(name: str, max_samples: int | None, seed: int) -> list[dict[str, Any]]:
-    """Score up to ``max_samples`` shuffled clips of one published dataset."""
+def analyze_dataset(
+    name: str, max_samples: int | None, seed: int, shuffle_buffer: int = 256
+) -> list[dict[str, Any]]:
+    """Score up to ``max_samples`` shuffled clips of one published dataset.
+
+    ``shuffle_buffer`` is kept small on purpose: dload also shuffles *shard*
+    order, so a modest item buffer still samples representatively across the
+    whole dataset — while the default 4096 would buffer that many decoded frames
+    before emitting one, which for 8-ch MIMII (~5 MB/frame) is ~21 GB and OOMs
+    the job. 256 frames caps it at ~1.3 GB even for the multichannel sets.
+    """
     ds = streams.DloadFrameDataset(
-        name, shuffle=seed, take=max_samples, decoder=streams.decode_tdframe
+        name,
+        shuffle=seed,
+        shuffle_buffer=shuffle_buffer,
+        take=max_samples,
+        decoder=streams.decode_tdframe,
     )
     rows: list[dict[str, Any]] = []
     for frame in ds:
@@ -109,6 +122,12 @@ def main() -> None:
     parser.add_argument("--max-per-dataset", type=int, default=1000)
     parser.add_argument("--all", action="store_true", help="score every sample (ignore the cap)")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--shuffle-buffer",
+        type=int,
+        default=256,
+        help="dload item shuffle buffer (small on purpose — see analyze_dataset)",
+    )
     parser.add_argument("--out", default="results/harmonicity")
     args = parser.parse_args()
 
@@ -121,7 +140,7 @@ def main() -> None:
     for name in args.datasets:
         print(f"Analyzing {name} (cap={cap}) ...", flush=True)
         try:
-            rows = analyze_dataset(name, cap, args.seed)
+            rows = analyze_dataset(name, cap, args.seed, shuffle_buffer=args.shuffle_buffer)
         except Exception as exc:  # noqa: BLE001 - one bad dataset shouldn't sink the run
             print(f"  {name}: FAILED ({type(exc).__name__}: {exc})", flush=True)
             continue
