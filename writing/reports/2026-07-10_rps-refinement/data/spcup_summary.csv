@@ -1,0 +1,8 @@
+recording_id,team,drone,condition,n_channels,native_sr,seg_start_s,seg_len_s,base_primary,base_chosen,octave_ambiguity,chosen_r,base_speeds,mean_confidence,residual_chosen,n_effective,collision_unresolved,refused
+Diagonal_Unloading__recordings__flight__square_10m,Diagonal_Unloading,DJI Phantom 4 PRO,,8,48000,31.2,25.0,48.95,48.95,False,1,49.4,0.3448,0.6334,1,False,False
+AGH__ego-noise__mic_array__1,AGH,quadrotor (unspecified),,8,44100,4.0,25.0,30.05,30.05,False,1,28.2,0.2317,0.4219,1,False,False
+KU_Leuven__SPCUP19_KU_Leuven_Team_1_recording,KU_Leuven,MikroKopter MK EASY Quadro V3,,8,44100,0.0,16.6,46.7,46.7,False,2,"42.5, 46.2",0.5085,0.5599,1,False,False
+Idea_ssu__free_flight_1,Idea_ssu,DJI Phantom 4 (GL300C),free_flight,1,44100,20.0,25.0,45.7,45.7,False,1,44.0,0.0182,0.5897,1,False,True
+Maverick__5,Maverick,YH-19HW quadcopter,,3,44100,19.8,25.0,50.95,50.95,False,1,49.7,0.0351,0.8419,1,False,False
+Shout_COOEE__SPCUP19_Shout_COOEE_StaticSubmission1,Shout_COOEE,Intel Aero RTF,stationary,8,44100,26.6,25.0,60.0,60.0,False,1,60.3,0.1045,0.7754,1,False,False
+AGH__calibration__1,AGH,quadrotor (unspecified),calibration,8,44100,25.5,25.0,118.6,118.6,False,1,118.6,0.1332,0.8959,1,False,False
