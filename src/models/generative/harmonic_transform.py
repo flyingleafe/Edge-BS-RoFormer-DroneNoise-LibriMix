@@ -110,7 +110,7 @@ def _apply_phasors_to_wav(framed_phasors, wav, window_len, hop_len):
     return (framed_phasors * wav_unfold).sum(-1)
 
 
-def _solve_phasors_lstsq(framed_phasors, wav, window_len, hop_len):
+def _solve_phasors_lstsq(framed_phasors, wav, window_len, hop_len, method: str = "lstsq"):
     c = framed_phasors.shape[-4]
     sincos = torch.view_as_real(framed_phasors)
 
@@ -120,7 +120,21 @@ def _solve_phasors_lstsq(framed_phasors, wav, window_len, hop_len):
 
     audio_rearranged = rearrange(windowed_audio, "... t w -> ... t w 1")
 
-    V = good_lstsq(sincos_rearranged, audio_rearranged).solution
+    if method == "normal":
+        # Ridge-regularised normal equations: orders of magnitude faster than
+        # the SVD drivers on CPU for the typical (frames, window, tracks)
+        # batch, at the cost of a tiny bias at near-collinear columns
+        # (crossing rotors) which the ridge keeps benign.
+        a_t = sincos_rearranged.transpose(-2, -1)
+        gram = a_t @ sincos_rearranged
+        rhs = a_t @ audio_rearranged
+        diag_mean = gram.diagonal(dim1=-2, dim2=-1).mean(-1, keepdim=True).unsqueeze(-1)
+        eye = torch.eye(gram.shape[-1], device=gram.device, dtype=gram.dtype)
+        V = torch.linalg.solve(gram + 1e-4 * diag_mean * eye, rhs)
+    elif method == "lstsq":
+        V = good_lstsq(sincos_rearranged, audio_rearranged).solution
+    else:
+        raise ValueError(f"unknown lstsq method: {method!r}")
     V = torch.nan_to_num(V, 0.0)
     V = torch.view_as_complex(rearrange(V, "... t (c h k) 1 -> ... c h t k", c=c, k=2))
     return V / 1.5
@@ -161,9 +175,20 @@ def VP_transform(
 
 
 def lstsq_VP_transform(
-    freqs, wav, window_len=2048, hop_len=512, center=False, antialias=True, sr: int = 16000
+    freqs,
+    wav,
+    window_len=2048,
+    hop_len=512,
+    center=False,
+    antialias=True,
+    sr: int = 16000,
+    method: str = "lstsq",
 ):
-    """Project the wav onto the variable I/Q phasor planes via least squares."""
+    """Project the wav onto the variable I/Q phasor planes via least squares.
+
+    ``method="normal"`` solves ridge-regularised normal equations instead of
+    the SVD drivers — much faster on CPU, use for metrics/analysis loops.
+    """
     if center:
         pd = (window_len // 2, window_len // 2)
         wav = F.pad(wav, pd, "constant", 0)
@@ -171,7 +196,7 @@ def lstsq_VP_transform(
     phasors_framed = _framed_phasors(
         freqs, window_len, hop_len, center=center, antialias=antialias, sr=sr
     )
-    return _solve_phasors_lstsq(phasors_framed, wav, window_len, hop_len)
+    return _solve_phasors_lstsq(phasors_framed, wav, window_len, hop_len, method=method)
 
 
 def inverse_VP_transform(

@@ -385,55 +385,59 @@ def harmonic_lsq_residual(
     cfg: RefineConfig,
     *,
     k_max: int | None = None,
-    block_s: float = 0.25,
+    window_len: int = 2048,
+    hop_len: int = 512,
 ) -> dict[str, Any]:
-    """Joint block-wise linear least-squares harmonic fit; returns residual ratio.
+    """Joint per-frame least-squares harmonic fit; returns the residual ratio.
 
-    Given trajectories ``r_frames`` (R, N) on the frame grid, build per-block
-    design matrices of cos/sin columns along every harmonic track
-    (phase = 2 pi k * integral of r) and solve for all track amplitudes
-    **jointly** — this is the linear (variable-projection) half of the
-    separable problem, and it handles overlapping/crossing harmonics
-    correctly where independent per-track demodulation double-counts.
-    Amplitudes are piecewise-constant per block (``block_s`` seconds).
-    ``residual_energy / signal_energy`` drops as trajectories approach truth.
+    Thin wrapper over the project's VP-transform primitives
+    (``models.generative.harmonic_transform.lstsq_VP_transform`` /
+    ``inverse_VP_transform``, cf. ``experiments/kalman_harmonic/phase0.py``):
+    build harmonic frequency series ``k * r_i(t)`` for all rotors, solve the
+    windowed I/Q amplitudes of **all rotors and harmonics jointly** per frame
+    (the linear, variable-projection half of the problem — overlapping and
+    crossing rotor harmonics are attributed correctly), reconstruct by
+    overlap-add and report ``residual_energy / signal_energy``. This is the
+    same harmonic basis the generative models synthesise in, so the metric is
+    directly comparable across the project. Drops as trajectories approach
+    the truth.
     """
-    x = np.asarray(audio, dtype=np.float64)
+    from models.generative.dsp import harmonic_freq_series
+    from models.generative.harmonic_transform import (
+        inverse_VP_transform,
+        lstsq_VP_transform,
+    )
+
+    x = np.asarray(audio, dtype=np.float32)
     if x.ndim == 2:
         x = x[0]
-    sr = cfg.sample_rate
-    t = np.arange(len(x)) / sr
+    t = np.arange(len(x)) / cfg.sample_rate
+    r_t = np.stack(
+        [np.interp(t, frame_times, r_frames[i]) for i in range(r_frames.shape[0])]
+    ).astype(np.float32)
     kk = int(min(k_max or cfg.k_max, cfg.k_max))
-    f_hi = min(cfg.f_max, 0.95 * sr / 2)
 
-    # Continuous phase per rotor (global cumsum keeps blocks phase-coherent).
-    phases = []
-    k_valid: list[list[int]] = []
-    for i in range(r_frames.shape[0]):
-        r_t = np.interp(t, frame_times, r_frames[i])
-        phases.append(2 * np.pi * np.cumsum(r_t) / sr)
-        f_med = float(np.median(r_frames[i]))
-        k_valid.append([k for k in range(1, kk + 1) if cfg.f_min <= k * f_med <= f_hi])
-
-    block = max(16, int(round(block_s * sr)))
-    resynth = np.zeros_like(x)
-    n_tracks = sum(len(ks) for ks in k_valid)
-    for s in range(0, len(x), block):
-        sl = slice(s, min(s + block, len(x)))
-        cols = []
-        for i, ks in enumerate(k_valid):
-            ph = phases[i][sl]
-            for k in ks:
-                cols.append(np.cos(k * ph))
-                cols.append(np.sin(k * ph))
-        if not cols:
-            continue
-        a_mat = np.stack(cols, axis=1)
-        coef, *_ = np.linalg.lstsq(a_mat, x[sl], rcond=1e-8)
-        resynth[sl] = a_mat @ coef
-    residual = x - resynth
+    wav = torch.as_tensor(x)
+    freqs = harmonic_freq_series(torch.as_tensor(r_t), kk)  # (R, K, T)
+    with torch.no_grad():
+        v = lstsq_VP_transform(
+            freqs,
+            wav,
+            window_len=window_len,
+            hop_len=hop_len,
+            sr=cfg.sample_rate,
+            method="normal",
+        )
+        recon = inverse_VP_transform(
+            freqs, v, window_len=window_len, hop_len=hop_len, sr=cfg.sample_rate
+        )
+    if recon.dim() > wav.dim():
+        recon = recon.sum(0)  # sum per-rotor components
+    n = min(recon.shape[-1], wav.shape[-1])
+    resid = wav[..., :n] - recon[..., :n]
+    x_energy = float(torch.sum(wav[..., :n] ** 2))
     return {
-        "residual_ratio": float(np.sum(residual**2) / max(np.sum(x**2), 1e-12)),
-        "harmonic_energy_ratio": float(np.sum(resynth**2) / max(np.sum(x**2), 1e-12)),
-        "n_tracks": n_tracks,
+        "residual_ratio": float(torch.sum(resid**2)) / max(x_energy, 1e-12),
+        "harmonic_energy_ratio": float(torch.sum(recon[..., :n] ** 2)) / max(x_energy, 1e-12),
+        "n_tracks": int(freqs.shape[0] * freqs.shape[1]),
     }
