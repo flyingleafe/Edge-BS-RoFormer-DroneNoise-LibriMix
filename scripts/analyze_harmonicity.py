@@ -37,6 +37,7 @@ DEFAULT_DATASETS = [
     "AeroSonicDB",
     "DroneAudioSet",
     "drone-detection-samples",
+    "SPCUP19-egonoise",
     "HornBase",
     "KAIST-rotating-acoustic",
     "HUSTmotor",
