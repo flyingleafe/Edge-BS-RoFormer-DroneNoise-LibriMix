@@ -27,7 +27,10 @@ This module holds the concrete adapters wired into ``conf/data/``:
   its ``(audio, rps)``-tensor-stream interface is a public contract used
   elsewhere) and packs each yielded pair into a ``td.Frame``. The online
   mixer's public interface has no per-sample metadata beyond the tensors
-  themselves, so ``"meta"`` is an empty nested Frame here.
+  themselves, so ``"meta"`` is an empty nested Frame here — except with
+  ``flatten_channels=True``, which expands each multichannel chunk into
+  per-mic mono Frames tagged ``meta.channel`` (the legacy training-loop
+  flatten semantics, mirroring ``DregonLMFrameDataset``'s flag).
 - :class:`NoiseGenFrameDataset` — wraps
   ``data_processing.noise_rps_dataset.NoiseRPSDataset``/
   ``build_noise_rps_datasets`` (DREGON `in_flight_noise` + Michael's chunk
@@ -268,39 +271,60 @@ class DNLMFrameDataset(Dataset):
 
 class OnlineMixFrameDataset(IterableDataset):
     """Wraps :class:`~data_processing.online_mixing.OnlineMixIterableDataset`,
-    packing each ``(audio, rps)`` tensor pair into a per-sample ``td.Frame``."""
+    packing each ``(audio, rps)`` tensor pair into a per-sample ``td.Frame``.
 
-    def __init__(self, inner: OnlineMixIterableDataset) -> None:
+    ``flatten_channels=True`` reproduces the legacy ``train_rps_predictor.py``
+    channel-as-extra-batch-item semantics at the *data* level, mirroring
+    :class:`DregonLMFrameDataset`'s flag: each multichannel ``(C, T)`` chunk is
+    expanded into ``C`` mono-view Frames (one per mic, ``meta.channel`` tagged),
+    all broadcasting the chunk's single RPS target. Mono ``(T,)`` chunks pass
+    through unchanged. Mono RPS models (``('time',)`` input spec) require this
+    over multichannel sources — without it validation fails on the
+    ``(mic, time)`` mixture dims. Default ``False`` keeps the raw multichannel
+    stream byte-identical to before.
+    """
+
+    def __init__(self, inner: OnlineMixIterableDataset, *, flatten_channels: bool = False) -> None:
         self.inner = inner
+        self.flatten_channels = bool(flatten_channels)
 
     @classmethod
-    def from_config(cls, cfg: Any) -> OnlineMixFrameDataset:
-        return cls(OnlineMixIterableDataset.from_config(cfg))
+    def from_config(cls, cfg: Any, *, flatten_channels: bool = False) -> OnlineMixFrameDataset:
+        return cls(OnlineMixIterableDataset.from_config(cfg), flatten_channels=flatten_channels)
 
     @classmethod
-    def from_yaml(cls, path: str) -> OnlineMixFrameDataset:
+    def from_yaml(cls, path: str, *, flatten_channels: bool = False) -> OnlineMixFrameDataset:
         """Load an online-mix policy YAML (e.g. ``conf/online_mix/online_mix_*.yaml``)
         and build the dataset from it — the ``_target_`` this module's
         ``conf/data/online_mix_*.yaml`` configs actually use, since a Hydra
-        component config carries a config *path*, not an inlined policy tree."""
+        component config carries a config *path*, not an inlined policy tree.
+        ``flatten_channels`` sits next to ``path`` in the Hydra ``params``."""
         from omegaconf import OmegaConf
 
-        return cls.from_config(OmegaConf.load(path))
+        return cls.from_config(OmegaConf.load(path), flatten_channels=flatten_channels)
 
     def __iter__(self):
         for audio, rps in self.inner:
-            yield self._pack(audio, rps)
+            audio_np = audio.numpy() if isinstance(audio, torch.Tensor) else np.asarray(audio)
+            rps_np = rps.numpy() if isinstance(rps, torch.Tensor) else np.asarray(rps)
+            if self.flatten_channels and audio_np.ndim == 2 and audio_np.shape[0] > 1:
+                for channel in range(audio_np.shape[0]):
+                    yield self._pack(
+                        audio_np[channel : channel + 1], rps_np, meta={"channel": channel}
+                    )
+            else:
+                yield self._pack(audio_np, rps_np)
 
-    def _pack(self, audio: torch.Tensor, rps: torch.Tensor) -> td.Frame:
-        audio_np = audio.numpy() if isinstance(audio, torch.Tensor) else np.asarray(audio)
-        rps_np = rps.numpy() if isinstance(rps, torch.Tensor) else np.asarray(rps)
+    def _pack(
+        self, audio_np: np.ndarray, rps_np: np.ndarray, *, meta: dict[str, Any] | None = None
+    ) -> td.Frame:
         return td.Frame(
             {
                 "mixture": _audio_series(audio_np, self.inner.sample_rate),
                 "rps": _rps_series(
                     rps_np, sample_rate=self.inner.sample_rate, hop_length=self.inner.hop_length
                 ),
-                "meta": td.Frame({}),
+                "meta": td.Frame(dict(meta or {})),
             }
         )
 

@@ -7,7 +7,11 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 
-from data_processing.frame_datasets import DregonLMFrameDataset, NoiseGenFrameDataset
+from data_processing.frame_datasets import (
+    DregonLMFrameDataset,
+    NoiseGenFrameDataset,
+    OnlineMixFrameDataset,
+)
 from data_processing.frames import get_meta
 from data_processing.noise_rps_dataset import NoiseRPSDataset, _ChunkSource
 
@@ -89,6 +93,104 @@ def test_default_dataset_unaffected_by_flatten_channels_flag(tmp_path):
     ds = DregonLMFrameDataset(root, channel=0)
     assert len(ds) == 3
     assert "channel" not in ds[0]["meta"]
+
+
+# ─── OnlineMixFrameDataset.flatten_channels ────────────────────────────────────
+
+
+def _online_mix_frame_dataset(*, channels: int, flatten_channels: bool) -> OnlineMixFrameDataset:
+    """OnlineMixFrameDataset over a tiny synthetic in-memory noise pool."""
+    import tdseries as td
+
+    from data_processing.online_mixing import OnlineMixIterableDataset, TimeFrameNoisePool
+
+    rng = np.random.default_rng(0)
+    dur_s = 3.0
+    n = int(dur_s * SR)
+    if channels == 1:
+        audio = td.uniform(
+            (0.1 * rng.standard_normal(n)).astype(np.float32), SR, dims=("time",), t_start=0.0
+        )
+    else:
+        audio = td.uniform(
+            (0.1 * rng.standard_normal((channels, n))).astype(np.float32),
+            SR,
+            dims=("mic", "time"),
+            t_start=0.0,
+        )
+    n_motor = 60
+    rps = td.events(
+        np.linspace(0.0, dur_s, n_motor, endpoint=False),
+        np.tile(np.arange(4, dtype=np.float32)[:, None] + 50.0, (1, n_motor)),
+        dims=("rotor", "time"),
+        t_start=0.0,
+        t_end=dur_s,
+    )
+    frame = td.Frame({"audio": audio, "rps": rps})
+    pool = TimeFrameNoisePool([frame], min_motor_rps=0.0, duration_s=1.0)
+    inner = OnlineMixIterableDataset(
+        pool, None, policy={"source_prob": 0.0}, base_seed=11, duration_s=1.0, sample_rate=SR
+    )
+    return OnlineMixFrameDataset(inner, flatten_channels=flatten_channels)
+
+
+def test_online_mix_flatten_yields_c_mono_frames_per_chunk():
+    import itertools
+
+    ds = _online_mix_frame_dataset(channels=4, flatten_channels=True)
+    frames = list(itertools.islice(iter(ds), 8))  # 2 chunks x 4 mics
+
+    for i, frame in enumerate(frames):
+        assert frame["mixture"].dims == ("time",)
+        assert get_meta(frame, "channel") == i % 4
+
+    # All 4 mono views of one chunk broadcast the identical rps target.
+    rps_first = np.asarray(frames[0]["rps"].data)
+    for frame in frames[1:4]:
+        np.testing.assert_array_equal(np.asarray(frame["rps"].data), rps_first)
+
+    # The mono views come from different mics (audio differs across channels).
+    assert not np.array_equal(
+        np.asarray(frames[0]["mixture"].data), np.asarray(frames[1]["mixture"].data)
+    )
+
+
+def test_online_mix_flatten_matches_unflattened_channels():
+    import itertools
+
+    flat = _online_mix_frame_dataset(channels=4, flatten_channels=True)
+    raw = _online_mix_frame_dataset(channels=4, flatten_channels=False)
+    flat_frames = list(itertools.islice(iter(flat), 4))
+    (raw_frame,) = list(itertools.islice(iter(raw), 1))
+
+    raw_audio = np.asarray(raw_frame["mixture"].data)  # (4, T)
+    assert raw_frame["mixture"].dims == ("mic", "time")
+    for ch, frame in enumerate(flat_frames):
+        np.testing.assert_array_equal(np.asarray(frame["mixture"].data), raw_audio[ch])
+        np.testing.assert_array_equal(
+            np.asarray(frame["rps"].data), np.asarray(raw_frame["rps"].data)
+        )
+
+
+def test_online_mix_default_false_is_unchanged_multichannel_stream():
+    import itertools
+
+    ds = _online_mix_frame_dataset(channels=4, flatten_channels=False)
+    frames = list(itertools.islice(iter(ds), 2))
+    for frame in frames:
+        assert frame["mixture"].dims == ("mic", "time")
+        assert frame["mixture"].data.shape == (4, SR)
+        assert "channel" not in frame["meta"]
+
+
+def test_online_mix_flatten_mono_passthrough():
+    import itertools
+
+    ds = _online_mix_frame_dataset(channels=1, flatten_channels=True)
+    frames = list(itertools.islice(iter(ds), 2))
+    for frame in frames:
+        assert frame["mixture"].dims == ("time",)
+        assert "channel" not in frame["meta"]
 
 
 # ─── NoiseGenFrameDataset (E1-E3) ──────────────────────────────────────────────
