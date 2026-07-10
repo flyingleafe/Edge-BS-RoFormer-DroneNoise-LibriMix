@@ -192,3 +192,33 @@ def test_online_mix_dataloader_batches_multichannel_tensors(tmp_path):
     assert rps.shape == (4, 4, 32)
     assert audio.dtype == torch.float32
     assert rps.dtype == torch.float32
+
+
+def test_audio_source_pool_packed_cache_skips_unreadable_files(tmp_path):
+    source_dir = tmp_path / "sources_corrupt"
+    cache_dir = tmp_path / "cache_corrupt"
+    source_dir.mkdir()
+    sr = 16000
+    for i in range(3):
+        sf.write(source_dir / f"ok_{i}.wav", np.linspace(-0.1, 0.1, sr, dtype=np.float32), sr)
+    # Deliberately corrupt file (garbage bytes, .wav extension) — must be
+    # skipped with a warning, not kill the cache build (corrupt-flac-in-
+    # librispeech scenario).
+    (source_dir / "bad.wav").write_bytes(b"RIFFgarbage-not-audio")
+    cfg = {
+        "root": str(source_dir),
+        "glob": "*.wav",
+        "cache": {"mode": "packed_int16", "dir": str(cache_dir)},
+    }
+
+    pool1 = AudioFileSourcePool.from_config(cfg, duration_s=1.0, sample_rate=sr)
+    assert len(pool1.files) == 3
+    assert all(p.name.startswith("ok_") for p in pool1.files)
+    assert pool1._packed_index is not None and len(pool1._packed_index) == 3
+
+    # Reuse path must drop the same files via the manifest, keeping the packed
+    # index aligned with self.files.
+    pool2 = AudioFileSourcePool.from_config(cfg, duration_s=1.0, sample_rate=sr)
+    assert len(pool2.files) == 3
+    sample = pool2.sample_array(np.random.default_rng(0), channels=2, mode="shared")
+    assert sample.shape == (2, sr)

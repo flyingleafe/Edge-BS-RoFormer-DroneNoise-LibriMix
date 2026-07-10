@@ -546,16 +546,28 @@ class AudioFileSourcePool:
             tmp_manifest = cache_path / "manifest.json.tmp"
             offsets: list[tuple[int, int]] = []
             offset = 0
+            kept: list[Path] = []
+            skipped: list[str] = []
             with open(tmp_data, "wb") as f:
                 for i, path in enumerate(self.files, start=1):
-                    audio = self._load_one(path)
+                    try:
+                        audio = self._load_one(path)
+                    except Exception as exc:
+                        # Corpora ship with the odd unreadable file (e.g. a
+                        # corrupt flac in the librispeech dload copy); one bad
+                        # file must not kill a multi-hour cache build.
+                        print(f"Warning: skipping unreadable source file {path}: {exc}")
+                        skipped.append(str(path))
+                        continue
                     audio_i16 = np.clip(audio, -1.0, 1.0)
                     audio_i16 = np.round(audio_i16 * 32767.0).astype(np.int16)
                     offsets.append((offset, int(audio_i16.shape[0])))
                     f.write(audio_i16.tobytes(order="C"))
                     offset += int(audio_i16.shape[0])
+                    kept.append(path)
                     if i == 1 or i % 1000 == 0 or i == len(self.files):
                         print(f"  cached {i}/{len(self.files)} source files")
+            self.files = kept
             index = np.asarray(offsets, dtype=np.int64)
             with open(tmp_index, "wb") as f:
                 np.save(f, index)
@@ -566,6 +578,9 @@ class AudioFileSourcePool:
                 "n_files": len(self.files),
                 "total_samples": int(offset),
                 "fingerprint": fingerprint,
+                # Recorded so the reuse path drops the same files: the packed
+                # index rows must stay aligned with self.files.
+                "skipped": skipped,
             }
             tmp_manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             tmp_data.replace(data_path)
@@ -573,8 +588,18 @@ class AudioFileSourcePool:
             tmp_manifest.replace(manifest_path)
         else:
             print(f"Reusing source cache at {cache_path}")
+            manifest_skipped = set(
+                json.loads(manifest_path.read_text(encoding="utf-8")).get("skipped", [])
+            )
+            if manifest_skipped:
+                self.files = [p for p in self.files if str(p) not in manifest_skipped]
 
         packed_index = np.load(index_path)
+        if len(packed_index) != len(self.files):
+            raise ValueError(
+                f"packed cache at {cache_path} has {len(packed_index)} entries but "
+                f"{len(self.files)} source files resolved — stale/foreign cache?"
+            )
         self._packed_index = packed_index
         total_samples = int(packed_index[:, 1].sum())
         self._packed_data = np.memmap(data_path, dtype=np.int16, mode="r", shape=(total_samples,))
