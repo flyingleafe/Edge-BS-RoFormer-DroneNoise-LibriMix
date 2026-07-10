@@ -11,10 +11,12 @@ REPORT_ASSETS = SLIDE_DIR.parents[1] / "reports/2026-07-06_gp-rotor-noise/assets
 
 NAMES = [
     "noise_gen_diagram.png",
+    "noise_gen_diagram_positional.png",
     "noise_gen_spec_dregon.png",
     "noise_gen_spec_michaels.png",
     "e3_smoothness_sweep.png",
     "e4_aug_degradation.png",
+    "e4_pit_curves.png",
     "gp_qd2026_tiers.png",
     "gp_overview.png",
     "gp_v1_v2_rmse.png",
