@@ -415,7 +415,7 @@ distinguish them:
 
 After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 
-### Catalog (pinned in `dload.lock` — 26 datasets)
+### Catalog (pinned in `dload.lock` — 35 datasets)
 
 - **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
   `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
@@ -428,6 +428,22 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 - **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):
   `DN-LM-{train,valid}` (6480/720, drone-only noise; no `rps` field).
 - **Rich frames** (2, `tdframe-v1`): `DREGON-frames`, `michaels-frames`.
+- **External harmonic-noise datasets** (9, `tdframe-v1`; registry
+  `external_datasets.py`, driver `scripts/publish_external_datasets.py`, see
+  `docs/external-datasets-plan.md` + [[external-harmonic-datasets]] memory):
+  `MIMII` (54057; industrial fan/pump/slider/valve, 8-ch 16 kHz 10 s, 3 SNR
+  tiers), `MIMII-DG` (17999; fan/gearbox/bearing/slider/valve mono, domain-shift
+  sections), `drone-detection-samples` (180320; mono 16 kHz binary
+  drone/no-drone), `DroneAudioSet` (2313; 2 quads × 2 throttles × 3 rooms, 8-ch,
+  drone-only/source-only/mixed subsets), `AeroSonicDB` (1895; aircraft flyover +
+  rich aircraft/engine/prop meta), `SPCUP19-egonoise` (278; 10 heterogeneous
+  drone-team ego-noise rigs, 1–16 ch, mic geometry in meta where exposed),
+  `HornBase` (1080; horn/not-horn — tonal, not rotating-source), `HUSTmotor`
+  (24; 6 health states × 4 speeds, acoustic + X/Y/Z vibration),
+  `KAIST-rotating-acoustic` (5; sound-pressure at 3010 RPM). Every recording
+  Frame carries `system`/`observation`/`operating`/`label` meta (make/model, how
+  observed — onboard vs flyover — SNR, condition). Harmonicity measured
+  separately (`harmonicity.py`, analysis stage).
 
 Consumption paths: `DloadFrameDataset` / `dload:NAME[@VER][/subpath]` URIs /
 `frames:NAME` specs — see `streams.py`'s module docstring and
