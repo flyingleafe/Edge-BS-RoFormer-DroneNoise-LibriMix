@@ -1,0 +1,24 @@
+# @package _global_
+# E5 time-warp arm — simple_conv_v2 (base) with the time-varying time-warp
+# augmentation on the noise+RPS pair (data online_mix_v4_michaels_timewarp).
+# A/B comparison baseline (same model, no warp): c10_arch_sweep_online with
+# model=simple_conv_v2. Settings mirror that baseline for a fair comparison.
+# Cluster: python train.py experiment=e5_timewarp_scv2 \
+#   data.train.params.path=conf/online_mix/online_mix_v4_michaels_timewarp_gpfs.yaml \
+#   data.valid.params.data_dir=dload:DREGON-LM-V4-michaels-valid
+defaults:
+  - override /data: online_mix_v4_michaels_timewarp
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e5_timewarp_scv2
+epochs: 200
+patience: 50
+batch_size: 32
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

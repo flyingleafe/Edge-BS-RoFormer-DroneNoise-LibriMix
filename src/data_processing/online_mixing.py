@@ -40,6 +40,12 @@ from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
 from data_processing.frames import get_meta, resample_audio_series, with_meta
 from data_processing.michaels import load_michaels_timeframes
 from data_processing.streams import iter_published_frames, resolve_source
+from data_processing.time_warp import (
+    WarpParams,
+    apply_time_warp,
+    sample_warp_params,
+    source_duration_s,
+)
 
 
 @runtime_checkable
@@ -661,6 +667,25 @@ def _mix_at_source_to_noise_snr(
     return (noise + source * scale.astype(np.float32)).astype(np.float32)
 
 
+def _maybe_sample_time_warp(
+    spec: Mapping[str, Any] | None,
+    rng: np.random.Generator,
+) -> WarpParams | None:
+    """Fire-and-sample the noise time-warp, mirroring ``_apply_one_augmentation``.
+
+    Draws the single fire-decision random only when ``spec`` is present with a
+    positive probability (Python ``and`` short-circuits, so an absent key or
+    ``probability <= 0`` consumes no RNG and keeps the stream byte-identical to
+    the un-warped path). On a hit, the warp parameters are then drawn.
+    """
+    if not spec:
+        return None
+    probability = float(spec.get("probability", 0.0))
+    if probability <= 0.0 or rng.random() >= probability:
+        return None
+    return sample_warp_params(spec, rng)
+
+
 def _apply_one_augmentation(
     audio: np.ndarray,
     spec: Mapping[str, Any] | None,
@@ -782,7 +807,26 @@ class OnlineMixIterableDataset(IterableDataset):
     def generate_sample(self, global_sample_id: int) -> tuple[torch.Tensor, torch.Tensor]:
         rng = make_rng(self.base_seed, int(global_sample_id))
         policy = _resolve_policy(self.policy, int(global_sample_id))
-        noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
+
+        # Time-varying time-warp of the noise+RPS pair (before extraction/mixing).
+        # The single fire decision is drawn exactly like `_apply_one_augmentation`:
+        # when the key is absent or probability 0, no rng is consumed here and the
+        # downstream stream is byte-identical to the un-warped path.
+        warp = _maybe_sample_time_warp(
+            cast("Mapping[str, Any] | None", policy.get("noise_time_warp")), rng
+        )
+        if warp is not None:
+            noise_tf = self.noise_pool.sample_timeframe(
+                rng, source_duration_s(self.duration_s, warp)
+            )
+            noise_tf = apply_time_warp(
+                noise_tf,
+                warp,
+                target_len=self.target_len,
+                sample_rate=self.sample_rate,
+            )
+        else:
+            noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
         audio_track = noise_tf["audio"]
         noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
         n_frames = noise_audio.shape[-1] // self.hop_length + 1

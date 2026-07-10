@@ -1,0 +1,27 @@
+# E5 online-mixed RPS training stream (DREGON in_flight_noise minus room1 +
+# Michael's FLY125, LibriSpeech speech) with the time-varying time-warp
+# augmentation on the noise+RPS pair (see
+# conf/online_mix/online_mix_v4_michaels_timewarp.yaml), and a FIXED, non-mixed
+# validation split (DREGON-LM-V4-michaels/valid) — see data_processing/AGENTS.md
+# § "Online Mixing for RPS Prediction": never use an advancing online stream for
+# validation/early-stopping. Cluster runs override
+# data.train.params.path=conf/online_mix/online_mix_v4_michaels_timewarp_gpfs.yaml.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/online_mix_v4_michaels_timewarp.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    # See dregon_lm_v4_michaels.yaml: restores the legacy per-mic flatten
+    # semantics for the 8-channel RealValid split (dropped in the tdseries
+    # port; mono models crash on (B, 8, T) without it).
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
