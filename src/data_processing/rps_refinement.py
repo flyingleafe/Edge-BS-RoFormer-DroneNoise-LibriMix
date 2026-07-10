@@ -23,10 +23,14 @@ trajectory corrections):
   magnitude-regularised.
 - :func:`comb_confidence` — per-window comb-contrast score (fit quality vs.
   off-comb reference shifts); gate for accepting refined labels.
-- :func:`harmonic_lsq_residual` — coherent linear least-squares fit of
-  per-harmonic complex envelopes by heterodyne demodulation at the (possibly
-  refined) trajectories; the residual-energy ratio is the fit metric that
+- :func:`harmonic_lsq_residual` — joint linear least-squares harmonic fit
+  (VP-transform primitives); the residual-energy ratio is the fit metric that
   improves when trajectories get closer to the truth.
+- :func:`refine_coherent` — stage D: phase-slope refinement by narrowband
+  harmonic demodulation. Reads *phase*, not magnitude ridges, so it stays
+  unbiased where the magnitude stages fail (tightly-paired rotors whose
+  low/mid harmonics merge — e.g. DREGON's ~0.65 rev/s pairs). Needs a good
+  init (telemetry or stages A–C); precision ≪ 0.1 rev/s.
 
 Conventions: trajectories are in rev/s with harmonics at ``k * r`` Hz
 (k = 1..K; blade-pass harmonics are simply the strong even/blade multiples),
@@ -37,7 +41,7 @@ array plus a trajectory sampled on the STFT frame grid.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -52,6 +56,7 @@ __all__ = [
     "refine_trajectories",
     "comb_confidence",
     "harmonic_lsq_residual",
+    "refine_coherent",
     "RefinementResult",
 ]
 
@@ -441,3 +446,73 @@ def harmonic_lsq_residual(
         "harmonic_energy_ratio": float(torch.sum(recon[..., :n] ** 2)) / max(x_energy, 1e-12),
         "n_tracks": int(freqs.shape[0] * freqs.shape[1]),
     }
+
+
+def refine_coherent(
+    audio: np.ndarray,
+    r_frames: np.ndarray,
+    frame_times: np.ndarray,
+    cfg: RefineConfig,
+    *,
+    k_min: int = 6,
+    k_max: int | None = None,
+    bandwidth_hz: float = 3.0,
+    n_iter: int = 4,
+    smooth_s: float = 0.25,
+    max_step: float = 0.5,
+) -> np.ndarray:
+    """Stage D: coherent phase-slope refinement by harmonic demodulation.
+
+    For each rotor and harmonic ``k``, demodulate the (mono) signal by the
+    current track phase and low-pass to a narrow band (``bandwidth_hz``); if
+    the track is off by ``delta`` rev/s the complex envelope rotates at
+    ``k * delta`` Hz, so its phase slope is a direct, *local* estimate of the
+    trajectory error — precision grows with ``k`` (Fisher weights
+    ``k^2 |z|^2``), and the narrow band structurally rejects the neighbouring
+    rotor's comb for ``k >= bandwidth / pair_separation`` — the twin-capture
+    failure mode of magnitude-comb refinement on tightly paired quadrotors
+    (measured on DREGON: rotor pairs ~0.65 rev/s apart) cannot occur.
+
+    Returns the refined ``(R, N)`` trajectory on the frame grid. Iterative
+    (default 4 rounds), each round clipped to ``max_step`` rev/s and smoothed
+    over ``smooth_s`` seconds. Unlike the magnitude stages this reads *phase*,
+    so it needs a good init (within ~``bandwidth_hz / k_max`` of the truth —
+    run after stages A–C or from near-truth telemetry).
+    """
+    from scipy.signal import butter, filtfilt
+
+    x = np.asarray(audio, dtype=np.float64)
+    if x.ndim == 2:
+        x = x[0]
+    sr = cfg.sample_rate
+    t_s = np.arange(len(x)) / sr
+    kk = int(min(k_max or 40, cfg.k_max))
+    ba = cast("tuple[np.ndarray, np.ndarray]", butter(2, bandwidth_hz / (sr / 2)))
+    b, a = ba
+    smooth_n = max(1, int(round(smooth_s * sr)))
+    kernel = np.ones(smooth_n) / smooth_n
+    f_hi = min(cfg.f_max, 0.95 * sr / 2)
+
+    r = r_frames.astype(np.float64).copy()
+    for _ in range(n_iter):
+        for i in range(r.shape[0]):
+            r_t = np.interp(t_s, frame_times, r[i])
+            phase1 = 2 * np.pi * np.cumsum(r_t) / sr
+            num = np.zeros(len(x) - 1)
+            den = np.zeros(len(x) - 1)
+            f_med = float(np.median(r[i]))
+            for k in range(k_min, kk + 1):
+                if not (cfg.f_min <= k * f_med <= f_hi):
+                    continue
+                z = filtfilt(b, a, x * np.exp(-1j * k * phase1))
+                dphi = np.diff(np.unwrap(np.angle(z)))
+                inst_err_hz = dphi * sr / (2 * np.pi)
+                w = (np.abs(z[1:]) ** 2) * k * k
+                # per-harmonic rev/s error estimate = inst envelope rotation / k
+                num += w * (inst_err_hz / k)
+                den += w
+            delta = num / np.maximum(den, 1e-18)
+            delta = np.convolve(delta, kernel, mode="same")
+            delta = np.clip(delta, -max_step, max_step)
+            r[i] += np.interp(frame_times, t_s[1:], delta)
+    return r
