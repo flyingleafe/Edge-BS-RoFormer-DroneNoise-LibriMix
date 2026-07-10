@@ -34,9 +34,17 @@ from models.generative.harmonic_transform import (
     lstsq_VP_transform,
 )
 
-from .filter import TrackerConfig, kalman_harmonic_track
+from .filter import TrackerConfig, kalman_harmonic_track, kalman_harmonic_track_joint
 
 N_BLADES = 2  # DJI-Matrice-style two-bladed props; fundamental = N_BLADES * RPS
+
+
+def _si_sdr(reference: torch.Tensor, estimate: torch.Tensor, skip: int = 0, tail: int = 0) -> float:
+    # metrics.separation.si_sdr wants 2D (channels, samples). `skip` drops the
+    # convergence warm-up and `tail` the un-reconstructed lstsq frame tail from
+    # the score — applied to every method equally.
+    end = reference.shape[-1] - tail
+    return float(si_sdr(reference.numpy()[None, skip:end], estimate.numpy()[None, skip:end]))
 
 
 # --------------------------------------------------------------------------
@@ -114,8 +122,9 @@ def corrupt_rps(rps: torch.Tensor, rel_sigma: float, sr: int, g: torch.Generator
 # --------------------------------------------------------------------------
 
 
-def enhance_kalman(wav, rps_meas, n_harmonics, sr, cfg: TrackerConfig):
-    out = kalman_harmonic_track(wav, N_BLADES * rps_meas, n_harmonics, sr=sr, cfg=cfg)
+def enhance_kalman(wav, rps_meas, n_harmonics, sr, cfg: TrackerConfig, joint: bool = False):
+    track = kalman_harmonic_track_joint if joint else kalman_harmonic_track
+    out = track(wav, N_BLADES * rps_meas, n_harmonics, sr=sr, cfg=cfg)
     return out["enhanced"]
 
 
@@ -123,6 +132,9 @@ def enhance_lstsq(wav, rps_meas, n_harmonics, sr, window_len=2048, hop_len=512):
     freqs = harmonic_freq_series(N_BLADES * rps_meas, n_harmonics)  # [R, H, T]
     V = lstsq_VP_transform(freqs, wav, window_len=window_len, hop_len=hop_len, sr=sr)
     noise_hat = inverse_VP_transform(freqs, V, window_len=window_len, hop_len=hop_len, sr=sr)
+    # inverse_VP keeps the leading rotor/channel dim ([R, T']); total noise = sum
+    if noise_hat.dim() > wav.dim():
+        noise_hat = noise_hat.sum(0)
     L = min(noise_hat.shape[-1], wav.shape[-1])
     enhanced = wav.clone()
     enhanced[..., :L] = wav[..., :L] - noise_hat[..., :L]
@@ -147,6 +159,17 @@ def main():
     ap.add_argument(
         "--sigmas", type=float, nargs="+", default=[0.0, 0.002, 0.005, 0.01, 0.02, 0.05]
     )
+    ap.add_argument(
+        "--warmup",
+        type=float,
+        default=0.5,
+        help="seconds excluded from SI-SDR (filter convergence; applied to all methods)",
+    )
+    ap.add_argument(
+        "--joint",
+        action="store_true",
+        help="use the per-order R×R joint filter instead of the diagonal one",
+    )
     args = ap.parse_args()
 
     g = torch.Generator().manual_seed(args.seed)
@@ -170,21 +193,42 @@ def main():
     mix = speech + noise
 
     cfg = TrackerConfig()
+    # (p_base, p_h2_scale) grid for the "matched" tracker (p set from the known
+    # RPS error spec — the card's task-3 knob check: optimum p should track σ²;
+    # the h²-scaled component is the physically-motivated form of the widening).
+    p_grid = [(pb, ph2) for pb in [2e-8, 3e-7, 5e-6] for ph2 in [0.0, 2e-8, 1e-7, 5e-7]]
+    fixed_key = f"{cfg.p_base:.1e}/{cfg.p_h2_scale:.1e}"
+    skip = int(args.warmup * sr)
+    tail = 2048 + 512  # lstsq frame tail is returned unprocessed — score past it
     rows = []
     for sigma in args.sigmas:
         rps_meas = corrupt_rps(rps_true, sigma, sr, g)
-        enh_kf = enhance_kalman(mix, rps_meas, args.n_harmonics, sr, cfg)
         enh_ls = enhance_lstsq(mix, rps_meas, args.n_harmonics, sr)
+        by_p = {}
+        for pb, ph2 in p_grid:
+            cfg_p = TrackerConfig(gamma=cfg.gamma, p_base=pb, p_h2_scale=ph2)
+            enh_p = enhance_kalman(mix, rps_meas, args.n_harmonics, sr, cfg_p, joint=args.joint)
+            by_p[f"{pb:.1e}/{ph2:.1e}"] = _si_sdr(speech, enh_p, skip, tail)
+        if fixed_key not in by_p:
+            enh_p = enhance_kalman(mix, rps_meas, args.n_harmonics, sr, cfg, joint=args.joint)
+            by_p[fixed_key] = _si_sdr(speech, enh_p, skip, tail)
+        best_p = max(by_p, key=lambda k: by_p[k])
         row = {
             "sigma": sigma,
-            "si_sdr_unprocessed": float(si_sdr(speech.numpy(), mix.numpy())),
-            "si_sdr_kalman": float(si_sdr(speech.numpy(), enh_kf.numpy())),
-            "si_sdr_lstsq": float(si_sdr(speech.numpy(), enh_ls.numpy())),
+            "si_sdr_unprocessed": _si_sdr(speech, mix, skip, tail),
+            "si_sdr_kalman": by_p[fixed_key],  # fixed oracle-tuned p
+            "si_sdr_kalman_matched": by_p[best_p],
+            "best_p": best_p,
+            "kalman_by_p": by_p,
+            "si_sdr_lstsq": _si_sdr(speech, enh_ls, skip, tail),
         }
         rows.append(row)
         print(
             f"sigma={sigma:6.3%}  unproc={row['si_sdr_unprocessed']:7.2f}  "
-            f"kalman={row['si_sdr_kalman']:7.2f}  lstsq={row['si_sdr_lstsq']:7.2f}  [dB SI-SDR]"
+            f"kalman={row['si_sdr_kalman']:7.2f}  "
+            f"kalman_matched={row['si_sdr_kalman_matched']:7.2f} (p={best_p})  "
+            f"lstsq={row['si_sdr_lstsq']:7.2f}  [dB SI-SDR]",
+            flush=True,
         )
 
     out = Path(args.out)
@@ -198,17 +242,34 @@ def main():
         import matplotlib.pyplot as plt
 
         s = [r["sigma"] * 100 for r in rows]
-        plt.figure(figsize=(6, 4))
-        plt.plot(s, [r["si_sdr_kalman"] for r in rows], "o-", label="Kalman tracker")
-        plt.plot(s, [r["si_sdr_lstsq"] for r in rows], "s-", label="lstsq_VP")
-        plt.plot(s, [r["si_sdr_unprocessed"] for r in rows], "k--", label="unprocessed")
-        plt.xlabel("RPS drift σ (% of true RPS)")
-        plt.ylabel("SI-SDR (dB)")
-        plt.title(f"Harmonic subtraction vs RPS error (SNR {args.snr_db} dB)")
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(out / "sweep.png", dpi=150)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
+        ax1.plot(s, [r["si_sdr_kalman"] for r in rows], "o-", label="Kalman (fixed p)")
+        ax1.plot(
+            s, [r["si_sdr_kalman_matched"] for r in rows], "^-", label="Kalman (p matched to σ)"
+        )
+        ax1.plot(s, [r["si_sdr_lstsq"] for r in rows], "s-", label="lstsq_VP")
+        ax1.plot(s, [r["si_sdr_unprocessed"] for r in rows], "k--", label="unprocessed")
+        ax1.set_xlabel("RPS drift σ (% of true RPS)")
+        ax1.set_ylabel("SI-SDR (dB)")
+        ax1.set_title(f"Harmonic subtraction vs RPS error (SNR {args.snr_db} dB)")
+        ax1.legend()
+        ax1.grid(alpha=0.3)
+        # p-sweep panel: SI-SDR vs effective p at the top harmonic (h=25) per σ
+        # (the bandwidth/robustness knob; keys are "p_base/p_h2_scale")
+        h_top = args.n_harmonics
+        for r in rows:
+            pts = sorted(
+                (float(k.split("/")[0]) + float(k.split("/")[1]) * h_top**2, v)
+                for k, v in r["kalman_by_p"].items()
+            )
+            ax2.semilogx([x for x, _ in pts], [v for _, v in pts], "o", label=f"σ={r['sigma']:.1%}")
+        ax2.set_xlabel(f"effective p at h={h_top}")
+        ax2.set_ylabel("SI-SDR (dB)")
+        ax2.set_title("p sweep per drift level")
+        ax2.legend(fontsize=8)
+        ax2.grid(alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out / "sweep.png", dpi=150)
         print(f"wrote {out / 'sweep.png'}")
     except Exception as e:  # plotting is optional
         print(f"(no plot: {e})")

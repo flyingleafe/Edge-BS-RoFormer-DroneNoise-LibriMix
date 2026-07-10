@@ -86,6 +86,7 @@ Explicitly considered and not chosen for this round; re-evaluate at mid-point re
 - Multimodal (visual / video) — DREGON video unreliable; different PhD.
 - Foundation-model SE fine-tuning — guaranteed mediocre, no novel angle. Reserved as Plan D ingredient.
 - Active noise cancellation using RPS — different problem (intervention, not post-hoc).
+- RPS-driven Kalman harmonic tracker ("complex-KLA" filter) — **tested and killed at its Phase-0 gate (2026-07-10, K2)**: causal per-harmonic Kalman tracking matches framed lstsq_VP under oracle RPS (needs the per-order joint update) but degrades *faster* than lstsq under RPS drift — process-noise widening cannot absorb systematic rotation error. Full post-mortem + salvage lessons for any learned (KLA-layer) revival: `docs/experiments/bets/kalman-harmonic-tracker.md`.
 
 ### Sequencing (indicative)
 

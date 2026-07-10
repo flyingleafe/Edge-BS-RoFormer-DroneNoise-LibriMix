@@ -41,11 +41,20 @@ import torch
 
 @dataclass
 class TrackerConfig:
-    gamma: float = 10.0  # amplitude mean-reversion rate [1/s] (~1/coherence time)
-    p_base: float = 1e-7  # process-noise floor per step (phase-drift slack)
-    p_h2_scale: float = 1e-8  # h²-scaled component: p_k = p_base + p_h2_scale·h²
+    # γ must stay well below the tracking bandwidth k·sr (k ≈ √(p·q)), else the
+    # steady-state amplitude estimate is biased low by k/(1−ā(1−k)).
+    # Defaults = oracle-RPS optimum from the phase-0 tuning grid (−10 dB SNR
+    # synthetic); under known RPS error, p is the robustness knob — raise it
+    # (or p_h2_scale, the physically-motivated h² form) with the error spec.
+    gamma: float = 0.1  # amplitude mean-reversion rate [1/s] (~1/coherence time)
+    p_base: float = 2e-8  # process-noise floor per step (phase-drift slack)
+    p_h2_scale: float = 0.0  # h²-scaled component: p_k = p_base + p_h2_scale·h²
     meas_prec: float | None = None  # q; None → 1/var(wav) (speech+broadband floor)
-    init_prec: float = 1e-4  # λ_0: nearly flat prior over amplitudes
+    # λ_0: None → K/(2·var(wav)), the prior matching E|c_k|² if the mixture
+    # power were spread evenly over the K channels. A flat prior (tiny λ_0)
+    # makes every channel claim the whole signal at t=0 → a 1/t-decaying
+    # over-subtraction transient that dominates short clips.
+    init_prec: float | None = None
 
 
 def harmonic_phases(fund_freqs: torch.Tensor, n_harmonics: int, sr: int) -> torch.Tensor:
@@ -101,8 +110,13 @@ def kalman_harmonic_track(
     y = demod.reshape(K, T)
     rot_f = rot.reshape(K, T)
 
+    lam0 = (
+        cfg.init_prec
+        if cfg.init_prec is not None
+        else K / (2.0 * wav.to(torch.float64).var().item())
+    )
     eta = torch.zeros(K, dtype=torch.complex128, device=dev)
-    lam = torch.full((K,), cfg.init_prec, dtype=torch.float64, device=dev)
+    lam = torch.full((K,), lam0, dtype=torch.float64, device=dev)
 
     noise_hat = torch.empty(T, dtype=torch.float64, device=dev)
     c_post = torch.empty(K, T, dtype=torch.complex128, device=dev)
@@ -132,4 +146,76 @@ def kalman_harmonic_track(
         "enhanced": enhanced.to(wav.dtype),
         "c_post": c_post.reshape(R, H, T),
         "lam": lam_out.reshape(R, H, T),
+    }
+
+
+@torch.no_grad()
+def kalman_harmonic_track_joint(
+    wav: torch.Tensor,  # [T] real mixture
+    fund_freqs: torch.Tensor,  # [R, T] fundamental (= n_blades·RPS) in Hz
+    n_harmonics: int,
+    sr: int = 16000,
+    cfg: TrackerConfig | None = None,
+) -> dict:
+    """Per-order R×R *joint* variant of `kalman_harmonic_track`.
+
+    The diagonal filter treats each (rotor, harmonic) channel independently,
+    so the four near-coincident rotor combs fight over shared energy. Here the
+    R rotor amplitudes of each harmonic order share a joint R×R Gaussian: the
+    scalar sample v_t is observed through the steering vector
+    d_r = e^{−iφ_{r,h}} (measurement z = 2v ≈ d^H c + noise), and the update
+    is the rank-1 Kalman/Sherman–Morrison step — the diagonal filter is
+    exactly this with the off-diagonal covariance dropped. Orders remain
+    independent (they are far apart in frequency).
+    """
+    cfg = cfg or TrackerConfig()
+    T = wav.shape[-1]
+    R = fund_freqs.shape[0]
+    H = n_harmonics
+    dev = wav.device
+
+    phi = harmonic_phases(fund_freqs, H, sr)  # [R,H,T] f64
+    d = torch.exp(-1j * phi).permute(1, 0, 2)  # steering vectors [H,R,T]
+
+    h_idx = torch.arange(1, H + 1, dtype=torch.float64, device=dev)
+    freqs = h_idx[None, :, None] * fund_freqs.to(torch.float64)[:, None, :]
+    alive = (freqs < sr / 2).permute(1, 0, 2)  # [H,R,T]
+    d = torch.where(alive, d, torch.zeros_like(d))  # dead channels observe nothing
+
+    abar = float(torch.exp(torch.tensor(-cfg.gamma / sr)))
+    a2 = abar * abar
+    q = cfg.meas_prec if cfg.meas_prec is not None else 1.0 / wav.to(torch.float64).var().item()
+    p = (cfg.p_base + cfg.p_h2_scale * h_idx**2).view(H, 1, 1)  # [H,1,1]
+    lam0 = (
+        cfg.init_prec
+        if cfg.init_prec is not None
+        else (R * H) / (2.0 * wav.to(torch.float64).var().item())
+    )
+
+    eye = torch.eye(R, dtype=torch.complex128, device=dev).expand(H, R, R)
+    P = eye.clone() / lam0  # covariance [H,R,R]
+    mu = torch.zeros(H, R, dtype=torch.complex128, device=dev)
+
+    z = 2.0 * wav.to(torch.float64)
+    noise_hat = torch.empty(T, dtype=torch.float64, device=dev)
+
+    for t in range(T):
+        dt = d[:, :, t]  # [H,R]
+        # ---- predict ----
+        mu = abar * mu
+        P = a2 * P + p * eye
+        # strictly causal noise prediction from the prior mean
+        noise_hat[t] = (dt.conj() * mu).sum().real
+        # ---- rank-1 update: z_t = d^H c + noise, var 1/q ----
+        Pd = torch.einsum("hij,hj->hi", P, dt)  # [H,R]
+        s = (dt.conj() * Pd).sum(-1).real + 1.0 / q  # innovation variance [H]
+        gain = Pd / s.unsqueeze(-1).to(Pd.dtype)  # [H,R]
+        innov = z[t] - (dt.conj() * mu).sum(-1)  # [H] (z enters each order)
+        mu = mu + gain * innov.unsqueeze(-1)
+        P = P - torch.einsum("hi,hj->hij", gain, Pd.conj())
+
+    enhanced = wav.to(torch.float64) - noise_hat
+    return {
+        "noise_hat": noise_hat.to(wav.dtype),
+        "enhanced": enhanced.to(wav.dtype),
     }

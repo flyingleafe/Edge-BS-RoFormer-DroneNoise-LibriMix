@@ -1,6 +1,10 @@
 # Bet — RPS-driven Kalman harmonic tracker ("complex-KLA" filter)
 
-Status: **drafted** (2026-07-10, not yet started; Phase-0 code scaffolded)
+Status: **killed at Phase-0 gate (K2)** (2026-07-10; H1 passed via the joint
+per-order variant, H2 refuted — see Running notes for the verdict and the
+salvage lessons for the KLA-layer ambition).
+**Checkpoint write-up:** [`../kalman-harmonic-tracker-phase0.md`](../kalman-harmonic-tracker-phase0.md)
+(motivation/results/conclusion + the ranked mitigation list for any revival).
 Owner: DM · Time budget: **Phase 0 = 3 working days**, hard-capped; Phase 1
 only if Phase 0 passes its gate.
 
@@ -140,3 +144,76 @@ Runner: `python -m experiments.kalman_harmonic.phase0` (synthetic default;
 
 - 2026-07-10 — card drafted; Phase-0 scaffolded in
   `src/experiments/kalman_harmonic/` (filter + synthetic runner). Not run yet.
+- 2026-07-10 — **Phase 0 executed; bet killed at K2.** Full data:
+  `results/kalman_harmonic_phase0{,_joint}/`. Synthetic scene per MVP (4
+  rotors ~90 RPS, 25 harmonics, ±30 % AM at 0.5–1.5 Hz, speech proxy at
+  −10 dB, 4 s; SI-SDR scored past a 0.5 s warm-up and the lstsq frame tail,
+  same region for all methods).
+
+  **Scaffold fixes before science**: (a) `inverse_VP_transform` returns
+  per-rotor waveforms → sum over rotors; (b) `si_sdr` needs 2D input; (c) the
+  drafted flat prior (`init_prec=1e-4`) made all R·H channels claim the whole
+  signal at t=0 — a 1/t over-subtraction transient that alone produced −30 dB
+  SI-SDR. Principled fix: λ₀ = K/(2·var), i.e. prior matches mixture power
+  spread over channels. (d) γ=10/s exceeded the tracking bandwidth → the
+  steady-state amplitude estimate is biased low by k/(1−ā(1−k)) ≈ 0.1 — γ
+  must sit well below k·sr; tuned optimum γ ≈ 0.03–0.1/s.
+
+  **H1 / K1 — PASS, but only with the per-order R×R joint update.** Oracle
+  RPS, after the one budgeted tuning round (γ, p grid): diagonal tracker
+  +2.07 dB vs lstsq_VP +5.60 dB (unproc −9.59) — the diagonal approximation
+  costs 3.5 dB, exactly the predicted "coincident combs fight" failure. K1's
+  prescribed escape (per-order joint update, `kalman_harmonic_track_joint`:
+  scalar sample observed through the R-rotor steering vector, rank-1
+  Sherman–Morrison update; the diagonal filter is this minus off-diagonal
+  covariance) recovers +4.62 dB — within 1 dB of lstsq, causal, streaming,
+  lstsq-free. Notably its optimum p is ~15× wider than the diagonal's: the
+  joint solve removes the speech-double-counting penalty of bandwidth.
+
+  **H2 / K2 — FAIL (the core robustness claim is false).** Under slow
+  multiplicative RPS drift (OU, τ=0.5 s), both filters *collapse faster than
+  lstsq*, not slower. Joint tracker, best (p_base, p_h2) per σ vs lstsq
+  (recorded sweep, `results/kalman_harmonic_phase0_joint/`):
+  σ=0.2 %: −2.83 vs **+2.02** (retains 48 % of oracle gain vs lstsq's 76 %);
+  σ=1 %: −7.22 vs −6.79 (17 % vs 18 % — both dead). H2 required ≥70 %
+  retention at 1 %. (For completeness: at σ≥2 % the matched tracker does edge
+  past lstsq — −7.39/−7.75 vs −7.30/−8.02 at 2 %/5 % — i.e. its curve is
+  eventually flatter, but only after both methods have collapsed to ~2 dB of
+  gain at −10 dB SNR; this does not rescue H2's claim where enhancement is
+  meaningful.) The p-knob *does* behave as theorized (optimum p_h2 grows
+  with σ, h²-scaling beats uniform widening by ~3 dB at σ=0.2 %) — but it
+  cannot rescue the mechanism, because **isotropic process noise is the wrong
+  model for a systematic rotation**: a frequency error of Δf makes the target
+  phasor rotate coherently at 2π·h·Δf; a first-order loop must widen its
+  bandwidth past that rate to follow, and at σ=0.2 % that is already ~0.4·h
+  Hz — by h≈25 the required bandwidth admits more speech than the harmonic it
+  removes. Framed lstsq re-fits amplitudes from scratch every 128 ms window
+  (effective bandwidth ~8 Hz, *jointly* over all 100 components), which under
+  drift is simply a better bias-variance point than any recursive
+  exponential-forgetting tracker with fixed rotation.
+
+  **Salvage — what this means for the KLA-attention-layer ambition** (the
+  reason this bet existed): the measured failure is structural, not a tuning
+  artifact, and it localizes precisely:
+  1. *Diagonal linear attention over near-coincident oscillators is
+     insufficient* — the joint R×R (matrix-valued state per order) update is
+     worth 2.5 dB at oracle. A KLA-style layer for this problem needs
+     block-diagonal, not scalar-diagonal, state; rank-1 information updates
+     keep it scan-friendly (matrix Riccati/Möbius composition).
+  2. *Uncertainty gates (p_t, q_t) cannot absorb RPS error* — the layer must
+     be able to correct the **rotation itself** (token-dependent complex
+     transition a_t with a learned Δphase, i.e. a learned PLL discriminator /
+     second-order loop). This is representable in the KLA parameterization
+     (a_t is already token-dependent) but was explicitly out of Phase-0's
+     no-learning scope — and without it the mechanism loses to a framed
+     re-fit at 0.2 % RPS error, far below real tacho/pseudo-RPS accuracy.
+  3. *Strict causality was the premise that failed*, and it is also the
+     harshest deployment constraint; a fixed-lag smoother (~100 ms lookahead,
+     = chunked bidirectional scan in layer form) would reclaim much of the
+     lstsq advantage while staying streaming. Untested here (budget).
+
+  Verdict: the Phase-0 *filter* is dead as a bet (K2 explicit: the
+  causal/streaming advantage alone does not justify a slot). Any revival must
+  lead with learned rotation correction (point 2) — which is a different bet,
+  with H2 replaced by "a small encoder can regress Δphase from the
+  innovation", and should cite this card's numbers as its baseline.
