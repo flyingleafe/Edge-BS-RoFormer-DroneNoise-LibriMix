@@ -13,8 +13,50 @@ from __future__ import annotations
 
 from typing import Any
 
+import librosa
 import numpy as np
 import tdseries as td
+
+
+def audio_series(audio: np.ndarray, sample_rate: int) -> td.Series:
+    """``(C, T)`` -> mono ``(time,)`` Series (``C == 1``) or ``(mic, time)``.
+
+    The one canonical audio-array-to-Series convention shared by every
+    dataset adapter (``frame_datasets``) and the dload bridge (``streams``);
+    matches ``tasks.task``'s ``n_channels=None`` vs ``n_channels=C`` split.
+    """
+    if audio.shape[0] == 1:
+        return td.uniform(audio[0], sample_rate, dims=("time",), t_start=0.0)
+    return td.uniform(audio, sample_rate, dims=("mic", "time"), t_start=0.0)
+
+
+def rps_series(rps: np.ndarray, *, sample_rate: int, hop_length: int) -> td.Series:
+    """``(rotor, n_frames)`` array -> Series on the exact ``sr/hop`` STFT grid."""
+    n_frames = rps.shape[-1]
+    idx = td.GridIndex.create((sample_rate, hop_length), n_frames, t_start=0)
+    return td.Series(rps, ("rotor", "time"), {"time": idx})
+
+
+def resample_audio_series(series: td.Series, sample_rate: int) -> td.Series:
+    """Resample a uniformly-sampled audio Series to ``sample_rate``.
+
+    The same audio-fidelity resampling the folder loaders apply
+    (``dregon.load_timeframe(target_sr=...)``,
+    ``michaels.load_michaels_timeframes(sr=...)``): ``librosa.resample`` with
+    ``res_type="soxr_hq"`` along the last (time) axis — **not** the linear
+    ``tdseries`` resample, which is feature-grade only. Dims and the absolute
+    ``t_start`` are preserved; a no-op when the rate already matches.
+    """
+    idx = series.tindex
+    if not isinstance(idx, td.GridIndex):
+        raise ValueError("resample_audio_series requires a uniformly-sampled (GridIndex) Series")
+    if idx.sr == sample_rate:
+        return series
+    data = np.asarray(series.data, dtype=np.float32)
+    resampled = librosa.resample(
+        data, orig_sr=float(idx.sr), target_sr=int(sample_rate), axis=-1, res_type="soxr_hq"
+    )
+    return td.uniform(resampled, int(sample_rate), dims=series.dims, t_start=series.t_start)
 
 
 def get_meta(frame: td.Frame, key: str, default: Any = None) -> Any:

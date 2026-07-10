@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
@@ -37,8 +37,9 @@ if load_dotenv is not None:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
-from data_processing.frames import get_meta, with_meta
+from data_processing.frames import get_meta, resample_audio_series, with_meta
 from data_processing.michaels import load_michaels_timeframes
+from data_processing.streams import iter_published_frames, resolve_source
 
 
 @runtime_checkable
@@ -169,6 +170,74 @@ def interpolate_rps_to_stft_grid(
     return rps.interpolate(frame_times).astype(np.float32)
 
 
+#: Rotor-track entry names recognised in published rich frames, in preference
+#: order: the generic ``rps`` (michaels-frames), then DREGON-frames'
+#: ``motors_command`` (the canonical, *already cleaned* track — mirrors the
+#: ``kind: dregon`` rps-key choice), then ``motors_measured``.
+_PUBLISHED_RPS_KEYS = ("rps", "motors_command", "motors_measured")
+
+
+def _adapt_published_frame(frame: td.Frame, *, sample_rate: int) -> td.Frame | None:
+    """Rich published recording -> the minimal (audio + rps) Frame the pool slices.
+
+    Published rich-frame datasets (``scripts/publish_frame_datasets.py``:
+    ``DREGON-frames`` / ``michaels-frames``) carry their fixes baked in —
+    DREGON's ``motors_command`` is already ``clean_command_spikes``-cleaned and
+    michaels' ``rps`` is already aligned. The rotor track is therefore stored
+    under the generic ``rps`` name, which ``_resolve_motor_tracks`` treats as
+    needing **no** cleaning, so no fix logic is re-applied at load time.
+    Everything else (IMU, raw telemetry, geometry, per-sample clocks) is
+    dropped so the pool keeps only what it slices; audio is soxr-resampled to
+    the pool ``sample_rate`` (same handling as the folder loaders'
+    ``target_sr``). Returns ``None`` for frames without audio or a rotor track
+    (e.g. clean-source recordings).
+    """
+    if "audio" not in frame:
+        return None
+    rps_key = next((k for k in _PUBLISHED_RPS_KEYS if k in frame), None)
+    if rps_key is None:
+        return None
+    entries: dict[str, Any] = {
+        "audio": resample_audio_series(cast(td.Series, frame["audio"]), sample_rate),
+        "rps": frame[rps_key],
+    }
+    if "meta" in frame:
+        entries["meta"] = frame["meta"]
+    return td.Frame(entries)
+
+
+def _iter_published_noise_frames(
+    dataset: str,
+    version: str | None,
+    *,
+    sample_rate: int,
+    splits: list[str] | None,
+    recording_ids: set[str] | None,
+    exclude_recording_ids: set[str] | None,
+    take: int | None,
+) -> Iterator[td.Frame]:
+    """Lazily adapt a published ``tdframe-v1`` dataset for the noise pool.
+
+    One rich frame is decoded at a time and immediately reduced by
+    :func:`_adapt_published_frame`, so the pool never holds more than one
+    full recording's extra telemetry in memory.
+    """
+    kept = 0
+    for frame in iter_published_frames(dataset, version, splits=splits):
+        rid = str(get_meta(frame, "recording_id", ""))
+        if recording_ids is not None and rid not in recording_ids:
+            continue
+        if exclude_recording_ids is not None and rid in exclude_recording_ids:
+            continue
+        adapted = _adapt_published_frame(frame, sample_rate=sample_rate)
+        if adapted is None:
+            continue
+        yield adapted
+        kept += 1
+        if take is not None and kept >= int(take):
+            return
+
+
 class TimeFrameNoisePool:
     """Randomly slice existing aligned noise ``td.Frame`` recordings."""
 
@@ -228,7 +297,9 @@ class TimeFrameNoisePool:
             return combined
 
         kind = _cfg_get(cfg, "kind", "dregon")
-        root = Path(_cfg_get(cfg, "root", "data"))
+        # `root` may be a plain path (unchanged behaviour) or a `dload:NAME`
+        # URI materialized to a local tree first.
+        root = resolve_source(_cfg_get(cfg, "root", "data"))
         min_motor_rps = float(_cfg_get(cfg, "min_motor_rps", 30.0))
         if kind == "dregon":
             splits = _cfg_get(cfg, "splits", None)
@@ -270,6 +341,31 @@ class TimeFrameNoisePool:
                     tf for tf in selected if str(get_meta(tf, "recording_id", "")) not in excluded
                 ]
             frames = selected
+        elif kind == "frames":
+            # Published rich-frame dataset (tdframe-v1; see
+            # scripts/publish_frame_datasets.py). Fixes are baked in at publish
+            # time — nothing is re-cleaned here (`_adapt_published_frame`).
+            dataset = _cfg_get(cfg, "dataset", None)
+            if not dataset:
+                raise ValueError("noise source kind 'frames' requires a 'dataset' name")
+            splits = _cfg_get(cfg, "splits", None)
+            split = _cfg_get(cfg, "split", None)
+            if splits is None and split is not None:
+                splits = [split]
+            ids = _cfg_get(cfg, "recording_ids", None)
+            exclude_ids = _cfg_get(cfg, "exclude_recording_ids", None)
+            take = _cfg_get(cfg, "take", None)
+            frames = _iter_published_noise_frames(
+                str(dataset),
+                _cfg_get(cfg, "version", None),
+                sample_rate=sample_rate,
+                splits=[str(s) for s in splits] if splits is not None else None,
+                recording_ids={str(x) for x in ids} if ids is not None else None,
+                exclude_recording_ids=(
+                    {str(x) for x in exclude_ids} if exclude_ids is not None else None
+                ),
+                take=int(take) if take is not None else None,
+            )
         else:
             raise ValueError(f"unsupported noise source kind: {kind!r}")
         return cls(frames, min_motor_rps=min_motor_rps, duration_s=duration_s)
@@ -393,7 +489,7 @@ class AudioFileSourcePool:
     @classmethod
     def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> AudioFileSourcePool:
         cfg = _to_plain(cfg)
-        root = Path(_cfg_get(cfg, "root", "."))
+        root = resolve_source(_cfg_get(cfg, "root", "."))
         globs = _cfg_get(cfg, "globs", None)
         glob_one = _cfg_get(cfg, "glob", None)
         if globs is None:

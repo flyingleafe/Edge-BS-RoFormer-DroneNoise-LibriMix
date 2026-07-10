@@ -17,6 +17,11 @@ formats before any experiment can run.
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's. |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` exposed as a noise **source** (`kind: generated`). One background **spawn** producer process (the only extra CUDA context) renders chunks into a **shared-memory ring buffer**; fork `DataLoader` workers read finished chunks (lock-free seqlock). RPS excitation is synthetic-intermittent (`rps_synthesis`) and doubles as the exact label. See § "Generated noise source". |
 | `external_recordings.py` | Loads external DJI recordings as `TimeFrame`. |
+| `streams.py` | dload ↔ tdseries bridge: `DloadFrameDataset` (stream R2-hosted datasets as `td.Frame`s), the generic `tdframe-v1` Frame codec, pipeline combinators (`to_frames`/`frame_windows`/`mix_frames`/`resample_frames`), `ensure_local`/`resolve_source` (`dload:` URIs). See § "Publishing datasets to dload" + `docs/data-and-artifacts.md`. |
+| `derivations.py` | dload **derived-dataset** declarations: module-level generator functions (`generate_dregon_lm_split`/`generate_dn_lm_split`, yielding `sample-dir-v1` samples) + the `SPECS` registry (frozen JSON specs: params/seed/`recipe_version`/resolved parent pins) + `build_pipeline`/`dataset_meta`/`fingerprint`. Reuses the CLIs' per-sample cores (`render_multichannel_sample`, `mix_dn_lm`) via a lazy `sys.path` shim (stays torch-free for offline fingerprinting). Driver: `scripts/derive.py` (`list`/`derive`/`adopt`). See `docs/derived-datasets-plan.md` + `docs/data-and-artifacts.md` § "Derived datasets". |
+| `external_datasets.py` | **External harmonic-noise dataset registry** (`EXTERNAL_SPECS`): per dataset a pinned `DownloadSpec` (zenodo/mendeley/hf/gdrive + provenance/license) and a `builder(raw_dir) -> Iterator[(key, td.Frame)]` producing rich `tdframe-v1` recording Frames (audio Series + documented `mic_pos`/`source_pos` + nested `meta` with `system`/`observation`/`operating`/`label` groups). Torch-free (numpy/soundfile/scipy/pandas lazy). Driver: `scripts/publish_external_datasets.py`. See `docs/external-datasets-plan.md`. |
+| `downloaders.py` | Reproducible fetch helpers (thin wrappers, no bespoke sync): `zenodo_fetch`/`http_fetch`/`mendeley_fetch` (`requests`), `hf_fetch` (`huggingface_hub.snapshot_download`), `gdrive_fetch` (`gdown`), `extract_zip`. Idempotent (size-match skip); heavy imports deferred. |
+| `harmonicity.py` | `measure_harmonicity(audio, sr)` → `Harmonicity` (f0, `harmonic_energy_ratio`, `harmonic_to_noise_db`, `n_prominent_harmonics`, `spectral_flatness`) via Welch-PSD + HPS f0 + prominence-gated comb. Torch-free; the **analysis-stage** measure of "how harmonic" a noise source is (not baked into publish). |
 | `__init__.py` | Package init |
 
 ---
@@ -288,6 +293,41 @@ Benchmark notes:
 - Fixed precomputed loader is about `21 batch/s` / `5394 audio-clip/s`.
 Optimize only behind the same public API.
 
+### Published rich-frame noise source (`kind: frames`)
+
+The fixed rich-frame datasets published by `scripts/publish_frame_datasets.py`
+(`DREGON-frames`, `michaels-frames`; dload `tdframe-v1` layout, decoded by
+`data_processing.streams`) can feed the noise pool directly. **Fixes are baked
+in at publish time** — DREGON `motors_command` is already
+`clean_command_spikes`-cleaned, michaels `rps` is already aligned — so the
+loader re-applies nothing: it renames the rotor track to the generic `rps`
+entry (the no-cleaning path of `_resolve_motor_tracks`), keeps only
+`audio` + `rps` + `meta` per recording (IMU/GPS/raw telemetry dropped, one
+frame decoded at a time), and soxr-resamples audio to the pool `sample_rate`.
+
+```yaml
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames        # dload dataset name (tdframe-v1)
+      # version: <manifest hash>    # optional; default = dload.lock pin / latest
+      splits: [in_flight_noise]     # optional filter on frame meta.split
+      exclude_recording_ids: [free-flight_nosource_room1]
+      min_motor_rps: 30.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]       # bare published ids (not michaels_FLY125)
+```
+
+Also accepts `split` (singular), `recording_ids`, and `take` (cap the number
+of recordings). Nuance vs `kind: dregon`: after adaptation there is no
+separate `motors_measured` detect track, so the in-flight window is detected
+on the cleaned `motors_command` — the command's trailing logging freeze is not
+trimmed (same behaviour as the command-only room2 recordings). Likewise,
+`noise_rps_dataset.build_noise_rps_datasets` accepts
+`dregon_dir="frames:DREGON-frames[@VERSION]"` /
+`michaels_dir="frames:michaels-frames"` in place of local folders.
+
 ## Multichannel Training & Evaluation Wiring
 
 ### Training (unified `train.py`, via `data_processing.frame_datasets.DregonLMFrameDataset`)
@@ -347,21 +387,76 @@ Aggregate has both `n_samples` (distinct samples) and `n_rows` (= n_samples × C
 
 ---
 
-## Publishing a processed dataset
+## Publishing datasets to dload (three conventions)
 
-```bash
-dvc add datasets/DREGON-LM-RealValid && dvc push
-git add datasets/DREGON-LM-RealValid.dvc datasets/.gitignore
-git commit -m "dataset: DREGON-LM-RealValid" && git push
-```
+Datasets are managed by `dload` (PyPI `dload-ml`); the R2 remote (bucket
+`ml-data-new`) lives in `dload.toml`, version pins in `dload.lock` (repo
+root). Three publishing conventions exist — pick by dataset shape, because
+consumers (`streams.ensure_local` / `DloadFrameDataset` decode dispatch)
+distinguish them:
 
-See `docs/data-and-artifacts.md` for the end-to-end CPU → GPU → laptop flow.
+1. **Raw recording dirs** (`data/DREGON`, `data/librispeech`, …) — the CLI:
+   `dload commit NAME --from data/NAME`. Sample key = file relpath minus
+   extension, field name = the extension. Caveat: the CLI does **not** skip
+   hidden files — `drone_audio` needed a custom walker.
+2. **Derived sample-dir datasets** (`datasets/DREGON-LM-*` — one
+   `sample_NNNNN/` dir per sample, published per split) — the **Python API**
+   (`dload.Repository.commit` over a sample generator): key = `sample_NNNNN`,
+   fields = file *stems* (`mixture`/`noise`/`rps`/`vocals`; the manifest
+   `meta["fields"]` records stem→extension), plus a dataset-level `_meta`
+   sample. The `dload commit --from` CLI convention **cannot** produce this
+   layout (it keys by full relpath) — do not use it for sample-dir datasets;
+   write a small publish script against the Python API instead.
+3. **Rich frame datasets** (`DREGON-frames`, `michaels-frames`) —
+   `scripts/publish_frame_datasets.py`: one sample per *recording*, serialized
+   with the generic Frame codec (`streams.frame_to_sample`, manifest
+   `meta.layout = "tdframe-v1"`), fixes baked in (`clean_command_spikes`,
+   michaels alignment), the script source stored as the version's recipe.
+
+After any commit: `dload pin NAME && git add dload.lock` and commit+push.
+
+### Catalog (pinned in `dload.lock` — 35 datasets)
+
+- **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
+  `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
+  `zenodo_drone_noises`.
+- **Derived DREGON-LM** (15, sample-dir convention, per split):
+  `DREGON-LM-{train,valid}`, `DREGON-LM-V2-{train,valid}`,
+  `DREGON-LM-V3-{train,valid}`, `DREGON-LM-V4-{train,valid}`,
+  `DREGON-LM-V4-michaels-{train,valid}`, `DREGON-LM-test-{train,valid}`,
+  `DREGON-LM-rps_{eval_long,eval_specific,train_specific}_samples`.
+- **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):
+  `DN-LM-{train,valid}` (6480/720, drone-only noise; no `rps` field).
+- **Rich frames** (2, `tdframe-v1`): `DREGON-frames`, `michaels-frames`.
+- **External harmonic-noise datasets** (9, `tdframe-v1`; registry
+  `external_datasets.py`, driver `scripts/publish_external_datasets.py`, see
+  `docs/external-datasets-plan.md` + [[external-harmonic-datasets]] memory):
+  `MIMII` (54057; industrial fan/pump/slider/valve, 8-ch 16 kHz 10 s, 3 SNR
+  tiers), `MIMII-DG` (17999; fan/gearbox/bearing/slider/valve mono, domain-shift
+  sections), `drone-detection-samples` (180320; mono 16 kHz binary
+  drone/no-drone), `DroneAudioSet` (2313; 2 quads × 2 throttles × 3 rooms, 8-ch,
+  drone-only/source-only/mixed subsets), `AeroSonicDB` (1895; aircraft flyover +
+  rich aircraft/engine/prop meta), `SPCUP19-egonoise` (278; 10 heterogeneous
+  drone-team ego-noise rigs, 1–16 ch, mic geometry in meta where exposed),
+  `HornBase` (1080; horn/not-horn — tonal, not rotating-source), `HUSTmotor`
+  (24; 6 health states × 4 speeds, acoustic + X/Y/Z vibration),
+  `KAIST-rotating-acoustic` (5; sound-pressure at 3010 RPM). Every recording
+  Frame carries `system`/`observation`/`operating`/`label` meta (make/model, how
+  observed — onboard vs flyover — SNR, condition). Harmonicity measured
+  separately (`harmonicity.py`, analysis stage).
+
+Consumption paths: `DloadFrameDataset` / `dload:NAME[@VER][/subpath]` URIs /
+`frames:NAME` specs — see `streams.py`'s module docstring and
+`docs/data-and-artifacts.md` (end-to-end flow, cache env vars, measured
+streaming numbers).
 
 ---
 
 ## Gotchas
 
-- **Datasets are gitignored** — create locally or `dvc pull` before training.
+- **Datasets are gitignored** — create locally, `dload pull <name>`, or stream/reference via `data_processing.streams` (`conf/data/*_stream.yaml`, `dload:` URIs) before training.
+- **`michaels_dir` in `conf/data/noise_rps_dregon_michaels*.yaml` is stale**: those configs set `michaels_dir: data/new-drone-noises`, but `load_michaels_timeframes` hardcodes `recording_with_motor_speed/`-relative paths — the value is effectively ignored; don't copy it into new configs (behavior intentionally left unchanged, flagged here).
+- **`new-drone-noises` coverage**: 103 of its 108 recordings have **no alignment constants** — only the aligned ones (FLY124/FLY125 via `MICHAELS_FILES`) are in `michaels-frames`; the rest exist raw-only in the `new-drone-noises` dload dataset.
 - **`motors_command` trailing freeze**: the last 45–1577 samples are identical
   (logger stopped).  `_find_inflight_window` strips this when using `motors_measured`;
   when only command is available, the end trim is effectively 0 s.  **Never use

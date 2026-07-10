@@ -208,7 +208,9 @@ def load_michaels_timeframes(
     (motor speeds Series, ``(4, M)`` in rev/s), aligned exactly as in
     `notebooks/michael_data_analysis.ipynb`.
     """
-    root = Path(data_root) if data_root is not None else _DATA_ROOT
+    from data_processing.streams import resolve_source
+
+    root = resolve_source(data_root) if data_root is not None else _DATA_ROOT
     frames: list[td.Frame] = []
     for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
         frames.append(

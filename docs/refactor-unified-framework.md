@@ -327,7 +327,8 @@ Decided 2026-07-03. These shape interfaces; no code for them exists yet:
 Also decided: LoRA fine-tuning keeps a config seam (`lora.*`) in the
 unified trainer; multi-GPU validation is dropped; checkpoints AND selected
 validation samples are uploaded as artifacts to Cloudflare R2 (bucket
-`ml-data`, creds via `.env`: `R2_ACCOUNT_ID` + AWS keys, s3fs client).
+`ml-data`, creds via `.env`: `R2_ACCOUNT_ID` + AWS keys, boto3 client —
+originally s3fs, later ported to boto3 to resolve a dependency conflict).
 
 ## Execution waves
 

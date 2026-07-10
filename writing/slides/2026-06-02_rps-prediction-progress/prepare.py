@@ -15,7 +15,7 @@ DATA DEPENDENCY: these figures read model checkpoints from ``results/`` and audi
 from ``datasets/``. Sync those first, e.g.::
 
     ./scripts/sync_results.sh        # legacy rsync fallback
-    # or: dvc pull                   # datasets
+    # or: dload pull <name>          # datasets (see dload.lock for names)
 
 Run from this deck directory with the repo root on PYTHONPATH::
 

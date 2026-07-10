@@ -15,6 +15,10 @@ valid:
     n_fft: 2048
     hop_length: 512
     sample_rate: 16000
+    # See dregon_lm_v4_michaels.yaml: restores the legacy per-mic flatten
+    # semantics for the 8-channel RealValid split (dropped in the tdseries
+    # port; mono models crash on (B, 8, T) without it).
+    flatten_channels: true
   iterable: false
 batch_size: null
 num_workers: null

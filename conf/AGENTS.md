@@ -10,7 +10,7 @@ Historical experiments are catalogued in `REPLICATION.md` (repo root).
 
 | Group | Meaning |
 |---|---|
-| `data/` | Dataset source (folder datasets via `frame_datasets`, online-mix wrappers referencing `conf/online_mix/*.yaml` policies) |
+| `data/` | Dataset source (folder datasets via `frame_datasets`, dload streaming via `data_processing.streams`, online-mix wrappers referencing `conf/online_mix/*.yaml` policies) |
 | `model/` | Task name + task params + model instantiation via `_target_` into `models.registry` — either `build_model` (native RPS registry, flat `params`), or `build_legacy_inline` (`params.model_type` + the ZFTurbo config tree inlined under `params.config`, routed through `utils.build_model_from_config`; this replaced the former `legacy_config_path`→`configs/*.yaml` indirection) |
 | `loss/` | Loss composition (entries instantiate `src/losses` Frame adapters; multiple terms via `losses.composite`) |
 | `metrics/` | MetricSuite membership (must include the monitor metric) |
@@ -29,6 +29,27 @@ Historical experiments are catalogued in `REPLICATION.md` (repo root).
   test) and exits — run this before submitting a GPU job.
 - Rates in configs are exact rationals: write `[16000, 512]`-style pairs,
   never `31.25`.
+
+## Streaming data configs (dload)
+
+- **Stream pattern** — `conf/data/dregon_lm_v4_stream.yaml` streams
+  DREGON-LM-V4 straight from the R2 store via
+  `data_processing.streams.DloadFrameDataset` (no `datasets/` checkout
+  needed); output Frames are structurally identical to the folder config
+  (`conf/data/dregon_lm_v4.yaml`). Contract: train is an infinite shuffled
+  stream (`repeat: true`), so the experiment **must set
+  `samples_per_validation`** (same as the online-mix configs); valid is a
+  finite ordered pass. Versions resolve via the repo-root `dload.lock` pin;
+  add `version: <sha-prefix>` under `params` to override. RAM note: the
+  shuffle buffer holds raw samples (~0.8 MB each for V4) — keep
+  `shuffle_buffer` ≤ 512 on small machines (512 ≈ 400 MB).
+- **`dload:` URI overrides** — any path-shaped value in `conf/data/*.yaml`
+  (`data_dir`, `root`, `dregon_dir`, `michaels_dir`) also accepts
+  `dload:NAME[@VERSION][/subpath]` (materialized once into the dload cache
+  via `streams.resolve_source`); `noise_rps_dataset` configs additionally
+  accept `frames:NAME[@VERSION]` specs for the published rich-frame datasets.
+  So any folder-based data config runs checkout-free with a one-line CLI
+  override, e.g. `data.train.params.data_dir=dload:DREGON-LM-V4-train`.
 
 ## Adding an experiment
 

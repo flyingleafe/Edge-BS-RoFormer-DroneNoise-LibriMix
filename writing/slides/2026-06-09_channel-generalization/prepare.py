@@ -9,7 +9,7 @@ The figures depend on synced ``results/`` (model checkpoints) and
 ``datasets/`` (DREGON-LM-V4) data. Sync them first::
 
     ./scripts/sync_results.sh
-    dvc pull
+    dload pull <name>   # datasets; see dload.lock for names
 
 Run from the deck directory with the repo root on ``PYTHONPATH`` (the Makefile
 does this for you)::

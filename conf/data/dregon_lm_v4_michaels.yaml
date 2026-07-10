@@ -34,6 +34,12 @@ valid:
     n_fft: 2048
     hop_length: 512
     sample_rate: 16000
+    # Legacy train_rps_predictor.py flattened 8-ch valid batches to per-mic
+    # items inside its eval loop; the tdseries port moved channel handling
+    # into dataset params but dropped it here — without this, validation
+    # feeds (B, 8, T) into mono models and stft crashes. flatten_channels
+    # reproduces the historical all-8-mic validation semantics exactly.
+    flatten_channels: true
   iterable: false
 batch_size: null
 num_workers: null

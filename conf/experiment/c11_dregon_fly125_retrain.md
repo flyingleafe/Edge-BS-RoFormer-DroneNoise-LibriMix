@@ -22,3 +22,13 @@ evaluate with `python eval.py experiment=c11_dregon_fly125_retrain`.
 ## Conclusion
 
 Closed the cross-drone gap: FLY124 PIT RMSE **7.96 -> 1.63**, R^2 **0.52 -> 0.96** (small in-domain V4 regression from an epoch-20 early stop).
+
+## Replication note (2026-07-07)
+
+Directionally replicated via omnirun on apocrita-long + dload data (W&B `nn17a6u0`, commit bf0ebc6): post-hoc `eval.py` on `dload:DREGON-LM-V4-valid` gave PIT RMSE 3.18 / R² 0.65 (channel 0) vs. the reference 2.77 — the in-domain regression vs. the 1.62 V4 baseline is confirmed. Caveats for future replicators:
+
+- **This yaml is not a faithful hyperparameter record of the historical run**: it sets `epochs: 50` / `batch_size: 32`, while the historical W&B run used epochs=200, batch_size=16 (early-stopped around epoch 20).
+- The reference 2.77 came from a post-hoc eval script that is not in the repo — its provenance is the report, not a re-runnable command.
+- The historical run validated per-mic-flattened (legacy loop); the replica evaluated channel 0 only, and the ch0-trained replica does not generalize across mics (flattened eval RMSE 9.38).
+
+The michaels valid-split crash this replication exposed is fixed (`flatten_channels`, commit ffba378). See REPLICATION.md § C11.

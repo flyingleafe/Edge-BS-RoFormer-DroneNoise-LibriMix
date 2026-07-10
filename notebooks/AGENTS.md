@@ -21,6 +21,6 @@ Jupyter notebooks provide interactive exploration that scripts and CLI tools can
 
 ## Gotchas
 
-- Notebooks may reference `results/` data that needs syncing first (`./scripts/sync_results.sh`)
+- Notebooks may reference `results/` data that needs syncing first (`omnirun pull <job>`; legacy rsync fallback `./scripts/sync_results.sh`)
 - `.ipynb_checkpoints/` is gitignored
 - For publication figures, prefer `eval.py` + `src/plots` comparison plots (absorbs the former `generate_comparison.py`/`plot_per_snr.py`) — see `generate-model-comparisons` skill

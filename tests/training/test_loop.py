@@ -14,7 +14,7 @@ import math
 
 import training.loop as loop_module
 from tests.training.conftest import make_tiny_config
-from tests.training.test_artifacts import FakeFS
+from tests.training.test_artifacts import FakeS3Client
 from training.artifacts import ArtifactStore
 from training.loop import run_training
 
@@ -87,9 +87,9 @@ def test_run_training_uploads_best_checkpoint_to_injected_artifact_store(tmp_pat
     fake_wandb = _FakeWandb()
     monkeypatch.setattr(loop_module, "wandb", fake_wandb)
 
-    fs = FakeFS()
+    client = FakeS3Client()
     experiment_name = "tiny_loop_artifacts"
-    store = ArtifactStore(experiment_name=experiment_name, fs=fs, enabled=True)
+    store = ArtifactStore(experiment_name=experiment_name, client=client, enabled=True)
 
     cfg = make_tiny_config(
         results_root=str(tmp_path),
@@ -104,7 +104,9 @@ def test_run_training_uploads_best_checkpoint_to_injected_artifact_store(tmp_pat
     run_training(cfg, artifact_store=store)
 
     ckpt_key = f"ml-data/artifacts/{experiment_name}/checkpoints/best.ckpt"
-    assert ckpt_key in fs.files, f"expected checkpoint at {ckpt_key}, got keys: {list(fs.files)}"
+    assert ckpt_key in client.objects, (
+        f"expected checkpoint at {ckpt_key}, got keys: {list(client.objects)}"
+    )
 
     assert fake_wandb.last_run is not None
     recorded_uri = fake_wandb.last_run.summary.get("r2/best_checkpoint")
@@ -115,9 +117,9 @@ def test_run_training_val_sample_logging_and_upload_when_enabled(tmp_path, monke
     fake_wandb = _FakeWandb()
     monkeypatch.setattr(loop_module, "wandb", fake_wandb)
 
-    fs = FakeFS()
+    client = FakeS3Client()
     experiment_name = "tiny_loop_val_samples"
-    store = ArtifactStore(experiment_name=experiment_name, fs=fs, enabled=True)
+    store = ArtifactStore(experiment_name=experiment_name, client=client, enabled=True)
 
     cfg = make_tiny_config(
         results_root=str(tmp_path),
@@ -135,6 +137,6 @@ def test_run_training_val_sample_logging_and_upload_when_enabled(tmp_path, monke
     audio_rows = [row for row in fake_wandb.logged if any(k.startswith("val/") for k in row)]
     assert audio_rows, "expected at least one wandb.log call carrying val/ sample keys"
 
-    # And the same samples reached the (fake) R2 filesystem as a manifest.
-    manifest_keys = [k for k in fs.files if k.endswith("manifest.json")]
-    assert manifest_keys, f"expected a val_samples manifest.json, got keys: {list(fs.files)}"
+    # And the same samples reached the (fake) R2 client as a manifest.
+    manifest_keys = [k for k in client.objects if k.endswith("manifest.json")]
+    assert manifest_keys, f"expected a val_samples manifest.json, got keys: {list(client.objects)}"

@@ -77,8 +77,10 @@ def load_geometry(
 
         return _mich()
     from data_processing.dregon import get_geometry as _dreg
+    from data_processing.streams import resolve_source
 
-    return _dreg(Path(dregon_dir))
+    # `dregon_dir` may be a plain path or a `dload:NAME[/sub]` URI.
+    return _dreg(resolve_source(dregon_dir))
 
 
 def _build_generator(params: dict[str, Any], device: str):

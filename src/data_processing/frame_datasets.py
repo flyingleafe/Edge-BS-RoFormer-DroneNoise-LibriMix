@@ -55,10 +55,12 @@ import numpy as np
 import soundfile as sf
 import tdseries as td
 import torch
-import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset
 
+from data_processing.frames import audio_series as _audio_series
+from data_processing.frames import rps_series as _rps_series
 from data_processing.online_mixing import OnlineMixIterableDataset
+from data_processing.streams import resolve_source, stretch_rps_to_frames
 
 __all__ = [
     "DregonLMFrameDataset",
@@ -70,20 +72,6 @@ __all__ = [
 DEFAULT_N_FFT = 2048
 DEFAULT_HOP_LENGTH = 512
 DEFAULT_SAMPLE_RATE = 16000
-
-
-def _audio_series(audio: np.ndarray, sample_rate: int) -> td.Series:
-    """``(C, T)`` -> mono ``(time,)`` Series (``C == 1``) or ``(mic, time)``."""
-    if audio.shape[0] == 1:
-        return td.uniform(audio[0], sample_rate, dims=("time",), t_start=0.0)
-    return td.uniform(audio, sample_rate, dims=("mic", "time"), t_start=0.0)
-
-
-def _rps_series(rps: np.ndarray, *, sample_rate: int, hop_length: int) -> td.Series:
-    """``(rotor, n_frames)`` array -> Series on the exact ``sr/hop`` STFT grid."""
-    n_frames = rps.shape[-1]
-    idx = td.GridIndex.create((sample_rate, hop_length), n_frames, t_start=0)
-    return td.Series(rps, ("rotor", "time"), {"time": idx})
 
 
 class DregonLMFrameDataset(Dataset):
@@ -126,7 +114,9 @@ class DregonLMFrameDataset(Dataset):
         channel: int | None = None,
         flatten_channels: bool = False,
     ) -> None:
-        self.data_dir = Path(data_dir)
+        # `dload:NAME[/subpath]` URIs materialize to a local tree first
+        # (data_processing.streams.resolve_source); plain paths pass through.
+        self.data_dir = resolve_source(data_dir)
         self.n_fft = int(n_fft)
         self.hop_length = int(hop_length)
         self.sample_rate = int(sample_rate)
@@ -188,16 +178,7 @@ class DregonLMFrameDataset(Dataset):
         n_frames = audio.shape[-1] // self.hop_length + 1
         # Shape-stretch resample (endpoint-to-endpoint), matching
         # train_rps_predictor.py::DREGONRPSDataset — see class docstring.
-        rps = (
-            F.interpolate(
-                torch.from_numpy(rps_raw).unsqueeze(0),
-                size=n_frames,
-                mode="linear",
-                align_corners=False,
-            )
-            .squeeze(0)
-            .numpy()
-        )
+        rps = stretch_rps_to_frames(rps_raw, n_frames)
 
         meta = dict(self._meta.get(d.name, {}))
         meta.setdefault("recording_id", d.name)
@@ -235,7 +216,7 @@ class DNLMFrameDataset(Dataset):
         *,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
     ) -> None:
-        self.data_dir = Path(data_dir)
+        self.data_dir = resolve_source(data_dir)
         self.sample_rate = int(sample_rate)
         self.samples = sorted(
             Path(d)
@@ -384,9 +365,9 @@ class NoiseGenFrameDataset(Dataset):
                 f"deterministic — see class docstring); got {inner.channel_policy!r}"
             )
         self.inner = inner
-        self.dregon_dir = dregon_dir
+        self.dregon_dir = resolve_source(dregon_dir) if dregon_dir is not None else None
         origins = {r.origin for r in inner.records}
-        self._geometry = {o: _noise_gen_geometry(o, dregon_dir) for o in origins}
+        self._geometry = {o: _noise_gen_geometry(o, self.dregon_dir) for o in origins}
 
     def __len__(self) -> int:
         return len(self.inner)
@@ -429,6 +410,8 @@ class NoiseGenFrameDataset(Dataset):
         """Build the *train* split — see :func:`build_valid` for the pair."""
         from data_processing.noise_rps_dataset import build_noise_rps_datasets
 
+        dregon_dir = resolve_source(dregon_dir) if dregon_dir is not None else None
+        michaels_dir = resolve_source(michaels_dir) if michaels_dir is not None else None
         train_ds, _val_ds = build_noise_rps_datasets(
             dregon_dir=dregon_dir,
             michaels_dir=michaels_dir,
@@ -465,6 +448,8 @@ class NoiseGenFrameDataset(Dataset):
         module gives ``train:``/``valid:`` independent ``_target_`` specs."""
         from data_processing.noise_rps_dataset import build_noise_rps_datasets
 
+        dregon_dir = resolve_source(dregon_dir) if dregon_dir is not None else None
+        michaels_dir = resolve_source(michaels_dir) if michaels_dir is not None else None
         _train_ds, val_ds = build_noise_rps_datasets(
             dregon_dir=dregon_dir,
             michaels_dir=michaels_dir,

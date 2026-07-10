@@ -846,6 +846,104 @@ def adjust_length_mc(audio: np.ndarray, target_length: int) -> np.ndarray:
     return audio
 
 
+def render_multichannel_sample(
+    noise_records: list[td.Frame],
+    speech_files: list[str],
+    *,
+    target_length: int,
+    sample_rate: int,
+    sample_duration: float,
+    snr_range: tuple[float, float],
+    speech_per_channel: str,
+    source_white_noise_prob: float,
+    white_noise_prob: float,
+    white_noise_snr: float,
+    min_motor_rps: float,
+) -> tuple[dict[str, np.ndarray], dict]:
+    """Render ONE multichannel DREGON-LibriMix sample — no disk I/O.
+
+    Returns ``(arrays, meta)`` where ``arrays`` holds ``mixture``/``vocals``/
+    ``noise`` each ``(T, C)`` interleaved float32 plus ``rps`` ``(4, M)``, and
+    ``meta`` is the per-sample metadata dict (without the ``id`` key, which the
+    caller adds). Shared by the disk-writing CLI
+    (:func:`create_dregon_librimix_multichannel`) and the dload derived-dataset
+    generator (``data_processing.derivations.generate_dregon_lm_split``).
+
+    Advances ``random``/``np.random`` in exactly the order the original inline
+    loop did (record pick → chunk extraction retries → per-channel source draw
+    → per-channel SNR), so routing the CLI through it does not change its
+    output for a given seed + ``speech_files`` order. Keep that order stable.
+    """
+    record = random.choice(noise_records)
+    noise = None
+    for _ in range(20):
+        try:
+            noise, rps, noise_meta = extract_multichannel_noise_chunk(
+                record,
+                duration_sec=sample_duration,
+                min_motor_rps=min_motor_rps,
+            )
+            break
+        except ValueError:
+            record = random.choice(noise_records)
+    else:
+        raise ValueError("Could not find a valid noise chunk after 20 attempts")
+
+    noise = adjust_length_mc(noise, target_length)  # (C, T)
+    C = noise.shape[0]
+    # Per-channel peak normalization
+    noise = noise / np.maximum(np.abs(noise).max(axis=1, keepdims=True), 1e-10)
+
+    def _draw_source(force_wn: bool = False) -> np.ndarray:
+        """Return a normalised 1-D source signal."""
+        if force_wn or (source_white_noise_prob > 0 and random.random() < source_white_noise_prob):
+            src = np.random.randn(target_length).astype(np.float32)
+        else:
+            src = load_audio(random.choice(speech_files), target_sr=sample_rate, mono=True)
+            src = adjust_length(src, target_length)
+        return normalize_audio(src)
+
+    if speech_per_channel == "shared":
+        # One source decision for the whole sample.
+        is_wn = source_white_noise_prob > 0 and random.random() < source_white_noise_prob
+        shared_src = _draw_source(force_wn=is_wn)
+        speech_channels = [shared_src.copy() for _ in range(C)]
+    else:  # independent
+        speech_channels = [_draw_source() for _ in range(C)]
+
+    mix_ch, voc_ch, noi_ch = [], [], []
+    per_channel_snr = []
+    for ch in range(C):
+        speech = speech_channels[ch]
+        if white_noise_prob > 0 and random.random() < white_noise_prob:
+            speech = normalize_audio(generate_white_noise(target_length, white_noise_snr, speech))
+        target_snr = float(np.random.uniform(snr_range[0], snr_range[1]))
+        mixture, speech_scaled, noise_scaled = mix_at_snr(speech, noise[ch], target_snr)
+        mix_ch.append(mixture)
+        voc_ch.append(speech_scaled)
+        noi_ch.append(noise_scaled)
+        per_channel_snr.append(calculate_snr(speech_scaled, noise_scaled))
+
+    arrays = {
+        "mixture": np.stack(mix_ch, axis=1).astype(np.float32),
+        "vocals": np.stack(voc_ch, axis=1).astype(np.float32),
+        "noise": np.stack(noi_ch, axis=1).astype(np.float32),
+        "rps": rps,
+    }
+    meta = {
+        "n_channels": int(C),
+        "input_snr_per_channel": [float(s) for s in per_channel_snr],
+        "input_snr": float(np.mean(per_channel_snr)),
+        "speech_per_channel": speech_per_channel,
+        "source_white_noise_prob": source_white_noise_prob,
+        "noise_source": noise_meta["recording_id"],
+        "noise_start_time": noise_meta.get("start_time", 0.0),
+        "motor_sample_rate": noise_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
+        "rps_shape": list(rps.shape),
+    }
+    return arrays, meta
+
+
 def create_dregon_librimix_multichannel(
     speech_dir: Path,
     dregon_dir: Path,
@@ -924,86 +1022,26 @@ def create_dregon_librimix_multichannel(
         sample_dir = split_dir / sample_id
         sample_dir.mkdir(exist_ok=True)
 
-        # --- Multi-channel in-flight noise ---
-        record = random.choice(noise_records)
-        noise = None
-        for _ in range(20):
-            try:
-                noise, rps, noise_meta = extract_multichannel_noise_chunk(
-                    record,
-                    duration_sec=sample_duration,
-                    min_motor_rps=min_motor_rps,
-                )
-                break
-            except ValueError:
-                record = random.choice(noise_records)
-        else:
-            raise ValueError("Could not find a valid noise chunk after 20 attempts")
-
-        noise = adjust_length_mc(noise, target_length)  # (C, T)
-        C = noise.shape[0]
-        # Per-channel peak normalization
-        noise = noise / np.maximum(np.abs(noise).max(axis=1, keepdims=True), 1e-10)
-
-        # --- Per-channel source (speech or white noise) ---
-        def _draw_source(force_wn: bool = False) -> np.ndarray:
-            """Return a normalised 1-D source signal."""
-            if force_wn or (
-                source_white_noise_prob > 0 and random.random() < source_white_noise_prob
-            ):
-                src = np.random.randn(target_length).astype(np.float32)
-            else:
-                src = load_audio(random.choice(speech_files), target_sr=sample_rate, mono=True)
-                src = adjust_length(src, target_length)
-            return normalize_audio(src)
-
-        if speech_per_channel == "shared":
-            # One source decision for the whole sample.
-            is_wn = source_white_noise_prob > 0 and random.random() < source_white_noise_prob
-            shared_src = _draw_source(force_wn=is_wn)
-            speech_channels = [shared_src.copy() for _ in range(C)]
-        else:  # independent
-            speech_channels = [_draw_source() for _ in range(C)]
-
-        mix_ch, voc_ch, noi_ch = [], [], []
-        per_channel_snr = []
-        for ch in range(C):
-            speech = speech_channels[ch]
-            if white_noise_prob > 0 and random.random() < white_noise_prob:
-                speech = normalize_audio(
-                    generate_white_noise(target_length, white_noise_snr, speech)
-                )
-            target_snr = float(np.random.uniform(snr_range[0], snr_range[1]))
-            mixture, speech_scaled, noise_scaled = mix_at_snr(speech, noise[ch], target_snr)
-            mix_ch.append(mixture)
-            voc_ch.append(speech_scaled)
-            noi_ch.append(noise_scaled)
-            per_channel_snr.append(calculate_snr(speech_scaled, noise_scaled))
-
-        # Stack to (T, C) for soundfile interleaved write
-        mixture_mc = np.stack(mix_ch, axis=1).astype(np.float32)
-        vocals_mc = np.stack(voc_ch, axis=1).astype(np.float32)
-        noise_mc = np.stack(noi_ch, axis=1).astype(np.float32)
-
-        sf.write(sample_dir / "vocals.wav", vocals_mc, sample_rate)
-        sf.write(sample_dir / "noise.wav", noise_mc, sample_rate)
-        sf.write(sample_dir / "mixture.wav", mixture_mc, sample_rate)
-        np.save(sample_dir / "rps.npy", rps)
-
-        metadata_list.append(
-            {
-                "id": sample_id,
-                "n_channels": int(C),
-                "input_snr_per_channel": [float(s) for s in per_channel_snr],
-                "input_snr": float(np.mean(per_channel_snr)),
-                "speech_per_channel": speech_per_channel,
-                "source_white_noise_prob": source_white_noise_prob,
-                "noise_source": noise_meta["recording_id"],
-                "noise_start_time": noise_meta.get("start_time", 0.0),
-                "motor_sample_rate": noise_meta.get("motor_sample_rate", MOTOR_SAMPLE_RATE),
-                "rps_shape": list(rps.shape),
-            }
+        arrays, sample_meta = render_multichannel_sample(
+            noise_records,
+            speech_files,
+            target_length=target_length,
+            sample_rate=sample_rate,
+            sample_duration=sample_duration,
+            snr_range=snr_range,
+            speech_per_channel=speech_per_channel,
+            source_white_noise_prob=source_white_noise_prob,
+            white_noise_prob=white_noise_prob,
+            white_noise_snr=white_noise_snr,
+            min_motor_rps=min_motor_rps,
         )
+
+        sf.write(sample_dir / "vocals.wav", arrays["vocals"], sample_rate)
+        sf.write(sample_dir / "noise.wav", arrays["noise"], sample_rate)
+        sf.write(sample_dir / "mixture.wav", arrays["mixture"], sample_rate)
+        np.save(sample_dir / "rps.npy", arrays["rps"])
+
+        metadata_list.append({"id": sample_id, **sample_meta})
 
     metadata_path = output_dir / "metadata.json"
     if metadata_path.exists():

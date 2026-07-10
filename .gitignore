@@ -1,14 +1,14 @@
 *.pyc
-# data/ and datasets/ contents are tracked by DVC; only the .dvc pointer files
-# and the DVC-managed nested .gitignore files live in git.
+# data/ and datasets/ contents are managed by dload (PyPI dload-ml); the
+# remote + pinned dataset versions live in dload.toml / dload.lock at repo root.
 /data/*
-!/data/.gitignore
-!/data/*.dvc
 /datasets/*
-!/datasets/.gitignore
-!/datasets/*.dvc
 wandb/
 results/
+# dload / online-mix / download scratch caches
+.cache/
+# omnirun shared worktrees
+.trees/
 .direnv/
 .env
 *.xml
