@@ -430,13 +430,25 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
     """
     cfg = _to_plain(cfg)
     items = list(cfg) if isinstance(cfg, list) else [cfg]
-    gen_items = [c for c in items if _cfg_get(c, "kind") == "generated"]
-    if not gen_items:
+    # Synthetic (infinite) noise sources, each with its own pool class:
+    #   kind: generated    -> trained PositionalHarmonicNoiseGen (GeneratedNoisePool)
+    #   kind: static_comb  -> analytic static-comb model (StaticCombNoisePool, E8)
+    synth_kinds = {"generated", "static_comb"}
+    synth_items = [c for c in items if _cfg_get(c, "kind") in synth_kinds]
+    if not synth_items:
         return TimeFrameNoisePool.from_config(cfg, duration_s=duration_s, sample_rate=sample_rate)
 
-    from data_processing.generated_noise import GeneratedNoisePool
+    def _build_synth(c: Any):
+        kind = _cfg_get(c, "kind")
+        if kind == "generated":
+            from data_processing.generated_noise import GeneratedNoisePool
 
-    real_items = [c for c in items if _cfg_get(c, "kind") != "generated"]
+            return GeneratedNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
+        from data_processing.rotor_spectral_model import StaticCombNoisePool
+
+        return StaticCombNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
+
+    real_items = [c for c in items if _cfg_get(c, "kind") not in synth_kinds]
     pools: list[Any] = []
     weights: list[float] = []
     if real_items:
@@ -446,10 +458,8 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
             )
         )
         weights.append(sum(float(_cfg_get(c, "weight", 1.0)) for c in real_items))
-    for c in gen_items:
-        pools.append(
-            GeneratedNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
-        )
+    for c in synth_items:
+        pools.append(_build_synth(c))
         weights.append(float(_cfg_get(c, "weight", 1.0)))
     if len(pools) == 1:
         return pools[0]

@@ -1,0 +1,335 @@
+"""Static rotor-spectral noise model — the *simplest* generator that forces
+harmonic tracking.
+
+Motivation (E8). A neural noise generator trained to match real drone noise
+(``PositionalHarmonicNoiseGen``) still fails to teach an RPS predictor that
+transfers to real data (E7: real val PIT MSE ~222, R^2 -10.5, both PIT). The
+hypothesis: on generated data the predictor *reverse-engineers the amplitude
+dynamics* (harmonic/noise amplitudes that co-vary with RPS) instead of tracking
+the harmonic comb's *frequency* — and that amplitude->RPS shortcut does not
+exist in real recordings.
+
+This module removes the shortcut by construction:
+
+* **Static harmonic comb.** Per clip, a fixed per-harmonic amplitude profile
+  ``a_k`` (k = 1..K) that is **constant in time and independent of RPS**. The
+  comb sits at ``k * rps(t)`` (matching the neural gen's ``f0 = rps``
+  convention, ``harmonic_gen_new.py``: ``f0s = ms``), so the *only* cue for RPS
+  is the comb's frequency spacing.
+* **Static broadband floor.** A fixed pink-ish spectrum at a level such that
+  **at least ``min_harm_above_floor`` (default 30%) of the in-band harmonics of
+  every rotor clear the floor** — harmonics stay trackable, but (like real
+  recordings) the high ones may wash out.
+* **Wide profile variety.** Each clip samples a fresh profile (rolloff, blade
+  emphasis, per-harmonic irregularity, floor level/tilt) drawn *widely* across
+  ranges calibrated from real DREGON + Michael's noise, so the predictor cannot
+  memorise one envelope — yet within a clip amplitudes carry zero RPS info.
+
+The RPS trajectory (``data_processing.rps_synthesis``) drives the comb and is
+the exact, noise-free label. ``StaticCombNoisePool`` exposes the same
+``sample_timeframe(rng, duration_s) -> td.Frame`` interface as the other noise
+pools (``kind: static_comb``); synthesis is cheap analytic numpy, so it runs
+directly in the DataLoader workers — no GPU, no producer process.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+import tdseries as td
+
+from data_processing import rps_synthesis
+from data_processing.frames import make_recording_frame
+
+# ── Profile sampling ────────────────────────────────────────────────────────
+
+
+@dataclass
+class ProfileRanges:
+    """Sampling ranges for the static rotor-spectral profile, wide enough to
+    span (and slightly exceed) what is measured on real DREGON + Michael's.
+
+    Defaults are lightly calibrated (see ``estimate_profile_stats`` +
+    ``scripts``/diagnostics); override via config to widen/narrow the family.
+    """
+
+    # Harmonic amplitude rolloff a_k ~ k**(-p); larger p = faster high-harmonic
+    # decay. Real single-rotor combs measure p ~ 0.6..1.6.
+    rolloff_p: tuple[float, float] = (0.4, 1.9)
+    # Per-harmonic static irregularity (dB, Gaussian) — spectral "texture".
+    harm_jitter_db: tuple[float, float] = (2.0, 8.0)
+    # Blade multiplicity: emphasise harmonics whose index is a multiple of b
+    # (blade-pass dominance). b sampled from this set; emphasis strength in dB.
+    blade_counts: tuple[int, ...] = (1, 2, 3)
+    blade_emphasis_db: tuple[float, float] = (0.0, 10.0)
+    # Broadband floor: PSD ~ f**(-tilt); level in dB relative to the comb's
+    # median in-band harmonic amplitude (negative = floor below the comb).
+    # Calibrated to real single-rotor DREGON/Michael's: floor sits only
+    # -1.6..-11.6 dB below the comb (a high floor => realistic washout).
+    floor_tilt: tuple[float, float] = (0.0, 1.5)
+    floor_rel_db: tuple[float, float] = (-16.0, -1.0)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> ProfileRanges:
+        if not d:
+            return cls()
+        f = cls()
+        for k, v in d.items():
+            if hasattr(f, k):
+                setattr(f, k, tuple(v) if isinstance(v, (list, tuple)) else v)
+        return f
+
+
+@dataclass
+class RotorProfile:
+    """A concrete static per-rotor spectral profile for one clip."""
+
+    a_k: np.ndarray  # (K,) harmonic amplitudes (linear), a_1 normalised to 1
+    floor_tilt: float  # PSD ~ f**(-tilt)
+    floor_level: float  # broadband floor amplitude scale (linear, rel to comb)
+    frac_above_floor: float = field(default=0.0)  # diagnostic
+
+
+def sample_profile(
+    rng: np.random.Generator,
+    ranges: ProfileRanges,
+    *,
+    n_harmonics: int,
+    ref_rps: float,
+    sample_rate: int,
+    min_harm_above_floor: float = 0.30,
+) -> RotorProfile:
+    """Draw one static rotor profile, enforcing the >=``min_harm_above_floor``
+    fraction of in-band harmonics above the broadband floor.
+
+    ``ref_rps`` (rev/s) sets which harmonics are in-band (k*ref_rps < Nyquist)
+    for the floor-coverage constraint; the profile itself is RPS-independent.
+    """
+    K = int(n_harmonics)
+    k = np.arange(1, K + 1, dtype=np.float64)
+
+    p = rng.uniform(*ranges.rolloff_p)
+    a = k ** (-p)
+    # Blade-pass emphasis: boost every b-th harmonic.
+    b = int(rng.choice(ranges.blade_counts))
+    emph_db = rng.uniform(*ranges.blade_emphasis_db)
+    if b > 1 and emph_db > 0:
+        a[(np.arange(1, K + 1) % b) == 0] *= 10.0 ** (emph_db / 20.0)
+    # Static per-harmonic irregularity (fixed for the clip).
+    jit_db = rng.uniform(*ranges.harm_jitter_db)
+    a *= 10.0 ** (rng.normal(0.0, jit_db, size=K) / 20.0)
+    a /= a[0] if a[0] > 0 else 1.0  # normalise fundamental to 1
+
+    tilt = rng.uniform(*ranges.floor_tilt)
+    floor_rel_db = rng.uniform(*ranges.floor_rel_db)
+
+    # In-band harmonic mask (k*ref_rps below Nyquist).
+    nyq = sample_rate / 2.0
+    in_band = (k * max(ref_rps, 1e-6)) < nyq
+    n_band = int(in_band.sum()) or 1
+
+    # The floor's amplitude at harmonic k scales as (k*ref_rps)**(-tilt/2)
+    # (amplitude ~ sqrt(PSD)); normalise so floor_level multiplies a reference.
+    fk = (k * max(ref_rps, 1e-6)) ** (-tilt / 2.0)
+    fk /= fk[0] if fk[0] > 0 else 1.0
+    comb_ref = float(np.median(a[in_band])) if n_band else 1.0
+
+    def frac_above(level: float) -> float:
+        floor_amp = level * comb_ref * fk
+        return float(np.mean((a > floor_amp)[in_band]))
+
+    level = 10.0 ** (floor_rel_db / 20.0)
+    # If too few harmonics clear the floor, lower the floor until >= target.
+    guard = 0
+    while frac_above(level) < min_harm_above_floor and guard < 60:
+        level *= 10.0 ** (-1.0 / 20.0)  # -1 dB
+        guard += 1
+    frac = frac_above(level)
+
+    return RotorProfile(
+        a_k=a.astype(np.float32),
+        floor_tilt=float(tilt),
+        floor_level=float(level * comb_ref),
+        frac_above_floor=frac,
+    )
+
+
+# ── Synthesis ───────────────────────────────────────────────────────────────
+
+
+def _comb_waveform(
+    rps: np.ndarray, a_k: np.ndarray, sample_rate: int, rng: np.random.Generator
+) -> np.ndarray:
+    """Additive harmonic comb for one rotor: sum_k a_k sin(k*phase + phi_k),
+    with ``phase`` the integral of ``2*pi*rps`` and above-Nyquist harmonics
+    zeroed per time step. ``rps`` is (T,) rev/s. Returns (T,)."""
+    T = rps.shape[-1]
+    phase = 2.0 * np.pi * np.cumsum(rps) / sample_rate  # fundamental phase (T,)
+    K = a_k.shape[0]
+    out = np.zeros(T, dtype=np.float64)
+    nyq = sample_rate / 2.0
+    for i in range(K):
+        kf = (i + 1) * rps  # instantaneous harmonic freq (T,)
+        amp = np.where(kf < nyq, a_k[i], 0.0)
+        if not np.any(amp):
+            continue
+        out += amp * np.sin((i + 1) * phase + rng.uniform(0.0, 2.0 * np.pi))
+    return out
+
+
+def _floor_waveform(
+    n: int, tilt: float, level: float, sample_rate: int, rng: np.random.Generator
+) -> np.ndarray:
+    """Broadband floor: white noise shaped to PSD ~ f**(-tilt), scaled so its
+    RMS ~= ``level`` (matched to the comb reference in ``sample_profile``)."""
+    white = rng.standard_normal(n)
+    spec = np.fft.rfft(white)
+    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+    shape = np.ones_like(freqs)
+    nz = freqs > 0
+    shape[nz] = freqs[nz] ** (-tilt / 2.0)
+    shape[~nz] = 0.0  # drop DC
+    shaped = np.fft.irfft(spec * shape, n=n)
+    rms = float(np.sqrt(np.mean(shaped**2))) or 1.0
+    return (shaped / rms * level).astype(np.float64)
+
+
+# ── Pool ────────────────────────────────────────────────────────────────────
+
+
+class StaticCombNoisePool:
+    """Analytic static-comb + broadband-floor noise source (``kind:
+    static_comb``). Same ``sample_timeframe`` interface as the other pools."""
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 16000,
+        duration_s: float = 1.0,
+        n_harmonics: int = 100,
+        n_mics: int = 8,
+        n_rotors: int = 4,
+        min_harm_above_floor: float = 0.30,
+        aggressiveness: float = 1.0,
+        drone_profile_range: tuple[float, float] = (0.0, 1.0),
+        mic_gain_db: tuple[float, float] = (-12.0, 0.0),
+        ranges: ProfileRanges | dict[str, Any] | None = None,
+        seed: int = 0,
+    ):
+        self.sample_rate = int(sample_rate)
+        self.chunk_s = float(duration_s)
+        self.n_harmonics = int(n_harmonics)
+        self.n_mics = int(n_mics)
+        self.n_rotors = int(n_rotors)
+        self.min_harm_above_floor = float(min_harm_above_floor)
+        self.aggressiveness = float(aggressiveness)
+        self.drone_profile_range: tuple[float, float] = (
+            float(drone_profile_range[0]),
+            float(drone_profile_range[1]),
+        )
+        self.mic_gain_db: tuple[float, float] = (float(mic_gain_db[0]), float(mic_gain_db[1]))
+        self.ranges = (
+            ranges if isinstance(ranges, ProfileRanges) else ProfileRanges.from_dict(ranges)
+        )
+        self._base_seed = int(seed)
+        # Placeholder geometry (analytic model: mic/rotor positions are not used
+        # for synthesis, only carried in frame meta for interface parity).
+        self.mic_pos = np.zeros((self.n_mics, 3), dtype=np.float64)
+        self.rotor_pos = np.zeros((self.n_rotors, 3), dtype=np.float64)
+
+    @classmethod
+    def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> StaticCombNoisePool:
+        def g(key, default=None):
+            if isinstance(cfg, dict):
+                return cfg.get(key, default)
+            return getattr(cfg, key, default)
+
+        rps = g("rps", {}) or {}
+        ranges = g("profile_ranges")
+        if ranges is not None and not isinstance(ranges, dict):
+            from data_processing.generated_noise import _to_plain
+
+            ranges = _to_plain(ranges)
+
+        def _pair(key: str, default: tuple[float, float]) -> tuple[float, float]:
+            v = g(key, default)
+            return (float(v[0]), float(v[1]))
+
+        return cls(
+            sample_rate=sample_rate,
+            duration_s=duration_s,
+            n_harmonics=int(g("n_harmonics", 100)),
+            n_mics=int(g("n_mics", 8)),
+            n_rotors=int(g("n_rotors", 4)),
+            min_harm_above_floor=float(g("min_harm_above_floor", 0.30)),
+            aggressiveness=float(rps.get("aggressiveness", 1.0)),
+            drone_profile_range=_pair("drone_profile_range", (0.0, 1.0)),
+            mic_gain_db=_pair("mic_gain_db", (-12.0, 0.0)),
+            ranges=ranges,
+            seed=int(g("seed", 0)),
+        )
+
+    def close(self) -> None:  # interface parity with GeneratedNoisePool
+        return None
+
+    def render(
+        self, rng: np.random.Generator, duration_s: float
+    ) -> tuple[np.ndarray, np.ndarray, list[RotorProfile]]:
+        """Render (audio (M,T), rps (R,T), per-rotor profiles) — factored out of
+        ``sample_timeframe`` so diagnostics can inspect the profiles."""
+        T = int(round(duration_s * self.sample_rate))
+        blend = float(rng.uniform(*self.drone_profile_range))
+        rps = rps_synthesis.generate_intermittent_batch(
+            1,
+            duration_s,
+            self.sample_rate,
+            drone_profile=blend,
+            aggressiveness=self.aggressiveness,
+            rng=rng,
+        )[0]  # (R, T)
+        R = rps.shape[0]
+
+        combs = np.empty((R, T), dtype=np.float64)
+        floors = np.empty((R, T), dtype=np.float64)
+        profiles: list[RotorProfile] = []
+        for r in range(R):
+            ref_rps = float(np.median(rps[r]))
+            prof = sample_profile(
+                rng,
+                self.ranges,
+                n_harmonics=self.n_harmonics,
+                ref_rps=ref_rps,
+                sample_rate=self.sample_rate,
+                min_harm_above_floor=self.min_harm_above_floor,
+            )
+            profiles.append(prof)
+            combs[r] = _comb_waveform(rps[r], prof.a_k, self.sample_rate, rng)
+            floors[r] = _floor_waveform(T, prof.floor_tilt, prof.floor_level, self.sample_rate, rng)
+
+        # Per-mic linear mix of rotor combs+floors with sampled per-(mic,rotor) gains.
+        lo, hi = self.mic_gain_db
+        gains = 10.0 ** (rng.uniform(lo, hi, size=(self.n_mics, R)) / 20.0)
+        audio = np.empty((self.n_mics, T), dtype=np.float32)
+        per_rotor = combs + floors  # (R, T)
+        for m in range(self.n_mics):
+            audio[m] = (gains[m][:, None] * per_rotor).sum(axis=0).astype(np.float32)
+        # Normalise to a sane level (unit-ish RMS per clip).
+        rms = float(np.sqrt(np.mean(audio**2))) or 1.0
+        audio = (audio / rms * 0.1).astype(np.float32)
+        return audio, rps.astype(np.float32), profiles
+
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
+        audio, rps, _ = self.render(rng, duration_s)
+        audio_us = td.uniform(
+            np.ascontiguousarray(audio), self.sample_rate, dims=("mic", "time"), t_start=0.0
+        )
+        t = np.arange(audio.shape[-1], dtype=np.float64) / self.sample_rate
+        rps_es = td.events(t, np.ascontiguousarray(rps), dims=("rotor", "time"), t_start=0.0)
+        return make_recording_frame(
+            {"audio": audio_us, "rps": rps_es},
+            meta={"recording_id": "static_comb"},
+            mic_pos=self.mic_pos,
+            rotor_pos=self.rotor_pos,
+        )

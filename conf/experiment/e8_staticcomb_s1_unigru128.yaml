@@ -1,0 +1,26 @@
+# @package _global_
+# E8 STAGE 1 (unigru128) — RPS predictor trained on the analytic STATIC-COMB noise
+# model ONLY (static, RPS-independent amplitudes; >=30% harmonics above floor;
+# profiles sampled widely across real-calibrated DREGON<->Michael's ranges),
+# validated on the FIXED REAL DREGON+Michael's split. Tests whether FORCING
+# harmonic-frequency tracking transfers to real, where the E7 neural-generated
+# arm failed (real val PIT MSE ~222, R2 -10.5). Model simple_conv_v2_uni_gru128 = the C10 real-data winner (PIT MSE 7.33).
+# No augmentation. Cloud: override train policy to the _dload twin + valid to
+# dload. Full batch: docs/experiments/e8-static-comb.md.
+defaults:
+  - override /data: rps_static_comb_only
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e8_staticcomb_s1_unigru128
+epochs: 100
+patience: 8
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

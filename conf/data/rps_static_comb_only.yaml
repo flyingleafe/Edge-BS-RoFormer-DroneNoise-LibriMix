@@ -1,0 +1,28 @@
+# E8 data — RPS-predictor training stream fed ONLY by the analytic static-comb
+# noise model (conf/online_mix/rps_static_comb_only.yaml; no real recordings in
+# the noise pool), with a FIXED, non-mixed REAL validation split
+# (DREGON-LM-V4-michaels/valid). Tests whether FORCING harmonic-frequency
+# tracking (static, RPS-independent amplitudes; harmonics guaranteed above floor)
+# lets a predictor trained on synthetic noise transfer to real data — the E7
+# neural-generated arm did not (real val PIT MSE ~222, R2 -10.5).
+#
+# Cloud: override the train policy to the _dload twin, e.g.
+#   data.train.params.path=conf/online_mix/rps_static_comb_only_dload.yaml
+#   "data.valid.params.data_dir='dload:DREGON-LM-V4-michaels-valid'"
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/rps_static_comb_only.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
