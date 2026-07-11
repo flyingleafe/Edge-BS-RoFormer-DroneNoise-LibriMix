@@ -4,7 +4,8 @@
 #let fig(path, caption) = figure(image(path, width: 92%), caption: caption)
 
 #show: report.with(
-  title: [Tuning the Comb: RPS Trajectory Refinement by Spectral Alignment],
+  title: [How Good Are Our RPS Labels? A Comb-Alignment Audit
+    (and Why Refinement Buys Little)],
   authors: (
     "Dmitrii Mukhutdinov": author-meta("project"),
   ),
@@ -12,24 +13,28 @@
     "project": "Harmonic Noise Suppression Project",
   ),
   abstract: [
-    Rotor-speed (RPS) labels for drone audio come from telemetry, and telemetry
-    is imperfect: clocks drift against the audio, commanded speeds differ from
-    actual ones, and some logs tick only 29 times per second. A label error of
-    a few tenths of rev/s is invisible at the fundamental but displaces the
-    #emph[k]-th rotor harmonic by #emph[k]-times that error in Hz — enough to
-    knock mid-frequency harmonics several spectrogram bins off their true
-    location. We present a #emph[refinement] procedure that takes trajectories
-    close to the truth (telemetry, or a trained predictor on unlabeled audio)
-    and tunes them against the recording itself, by maximising spectrogram
-    log-magnitude along the harmonic comb. The method is a separable
-    nonlinear least-squares problem: amplitudes and phases enter linearly and
-    are solved in closed form; only a low-dimensional spline correction per
-    rotor is optimised by gradient descent. We validate on DREGON recordings
-    that carry both #emph[commanded] and #emph[measured] rotor speeds (refining
-    the former toward the latter without ever seeing it), demonstrate blind
-    annotation of unlabeled SPCup ego-noise, and map the operating envelope:
-    how far the initialisation may stray, how much non-harmonic energy the
-    method tolerates, and what it costs to run.
+    We suspected our rotor-speed (RPS) labels of sabotaging generator
+    training: a label error of a few tenths of rev/s displaces the
+    #emph[k]-th rotor harmonic by #emph[k]-times that error in Hz — enough
+    to knock mid-frequency harmonics off their spectral peaks. To test
+    this we built a comb-alignment refinement stack (a home-grown instance
+    of #emph[tacholess order tracking]) and audited the labels against the
+    audio itself, using DREGON recordings that log both #emph[commanded]
+    and #emph[measured] rotor speeds as a natural experiment. *The verdict
+    goes against the hypothesis*: our telemetry labels are already
+    essentially unbiased (+0.02 rev/s), the residual error is fast zero-mean
+    jitter that no spectral refinement can recover on this airframe, and
+    the magnitude-based refiner is actively #emph[biased] (−0.44 rev/s) by
+    DREGON's tightly-paired rotors. The practical outputs are therefore a
+    #emph[negative result with consequences] — the mid-harmonic washout in
+    generator training is better explained by label-invisible #emph[jitter
+    linewidth] than by label error, moving the fix into the generator — plus
+    a modest toolbox: per-recording clock alignment, a comb-presence
+    verifier that honestly refuses non-harmonic audio, and a quantified
+    operating envelope. Blind #emph[trajectory] annotation of unlabeled
+    recordings is *not* demonstrated: on maneuvering SPCup recordings the
+    refiner recovers mean base speeds, not maneuvers; a Vold-Kalman-class
+    coupled order tracker is the right instrument if that is ever needed.
   ],
   keywords: ("RPS estimation", "harmonic comb", "label refinement",
              "order tracking", "variable projection"),
@@ -79,10 +84,13 @@ the optimal response to a misaligned harmonic is to #emph[suppress] it — a
 candidate explanation for the washed-out mid-frequency harmonics we observed
 when training the noise generator.
 
-Refined labels therefore pay three times over: cleaner targets for the
-generator, a lower error floor for the RPS predictors, and — because the
-refinement objective doubles as a #emph[verifier] — a way to annotate
-unlabeled recordings initialised from a half-trained predictor.
+#emph[If] labels were substantially wrong, refining them would pay three
+times over: cleaner targets for the generator, a lower error floor for the
+RPS predictors, and — because the refinement objective doubles as a
+#emph[verifier] — a route to annotating unlabeled recordings. That was the
+hypothesis. The rest of this report builds the instrument, and then reports
+honestly that the hypothesis fails: the labels were already good, and the
+instrument's real yield is the audit itself.
 
 = The method
 
@@ -290,7 +298,7 @@ unrecoverable from magnitude or narrowband phase alike. The honest summary:
   linewidth (stochastic phase diffusion growing with $k$), not in ever
   better labels.
 
-= Blind annotation of unlabeled recordings (SPCup)
+= Unlabeled recordings (SPCup): comb detection, not annotation
 
 For unlabeled data there is no telemetry to start from, so the pipeline
 gains a blind initialisation: scan a constant base speed $r_0$ over
@@ -299,37 +307,44 @@ candidates — $2 r_0$'s harmonics are a subset of $r_0$'s, so the scan alone
 cannot always tell them apart), then select the rotor count $R in {1, 2, 4}$
 by the residual-improvement elbow of the joint LSQ fit.
 
+Let us be precise about what this achieves — and what it does not. On seven
+recordings spanning six different SPCup team rigs (1–8 channels):
+
+- *Comb detection and mean base speed work.* Five recordings yield sharp
+  scan peaks at plausible quad base speeds (28–60 rev/s), one resolving two
+  overlapping combs (KU Leuven, 42.5 + 46.2 rev/s). One monotone recording
+  with no comb structure is #emph[refused] (confidence 0.018) rather than
+  guessed, and a calibration-tone control that fools the confidence gate is
+  caught by its poor LSQ residual (0.90) — the two gates are complementary.
+- *Trajectory tracking through maneuvers does #emph[not] work* — and the
+  spectrograms make this plain (@spcup). The KU Leuven recording visibly
+  maneuvers, yet the refined tracks move by only ±1.3 rev/s peak-to-peak:
+  starting from a #emph[constant] init, the coarse stage's ±2 rev/s window
+  and the spline stage's smoothness prior simply cannot follow real flight
+  dynamics. What is delivered is a #emph[mean operating point with a
+  presence certificate], not a trajectory label.
+
+So the honest use of this machinery on unlabeled data is #emph[triage]:
+finding which recordings contain harmonic rotor noise, at what base speed,
+with a refusal mode — useful for corpus curation (e.g. selecting external
+recordings for generator-training codebooks, where near-stationary segments
+with a known operating point are exactly what is wanted). It is #emph[not]
+an annotation pipeline for maneuvering flight. If per-frame trajectories on
+unlabeled maneuvering data are ever genuinely needed, the right instrument
+is a coupled multi-order tracker of the Vold-Kalman family (next section),
+initialised by this scan — not more iterations of this refiner.
+
 #figure(
   image("assets/spcup.png", width: 100%),
-  caption: [Blind annotation of two unlabeled SPCup recordings, one lock and
-    one refusal. #emph[Left:] the base-speed scan sweeps a single constant
-    rotor speed $r_0$ and scores the harmonic comb it implies against the
-    audio. KU Leuven (blue) produces a sharp peak at 46.7 rev/s — a real comb
-    — and is annotated; the mono Idea_ssu clip (red) has no sharp peak, scores
-    a confidence of only 0.02, and is #emph[refused] rather than guessed.
-    #emph[Right:] the KU Leuven recording (0–1.5 kHz) with the two refined
-    harmonic combs (42.5 and 46.2 rev/s) overlaid — both sets of tracks ride
-    the spectral ridges, a genuine two-rotor resolution. #emph[Takeaway:] the
-    verifier locks when there is a comb and declines when there is not, and it
-    is the declining that makes the predictor-bootstrap loop safe.],
+  caption: [What blind "annotation" actually delivers, honestly rendered.
+    #emph[Left:] the base-speed scan — KU Leuven (blue) produces a sharp
+    peak (a real comb, annotated with its mean base speed); the mono
+    Idea_ssu clip (red) has no peak and is #emph[refused] (confidence
+    0.02). #emph[Right:] the KU Leuven spectrogram with the refined combs
+    overlaid: the recording clearly maneuvers (the ridges bend), while the
+    refined tracks stay nearly straight — mean base speed is recovered,
+    the maneuvers are not. Detection works; trajectory tracking does not.],
 ) <spcup>
-
-On seven recordings spanning six different SPCup team rigs (1–8 channels)
-— the two extremes shown in @spcup:
-
-- *Five lock cleanly* with plausible quad base speeds (28–60 rev/s),
-  confidences 0.10–0.51, and harmonic tracks visibly riding the spectral
-  ridges — including one genuine two-comb resolution (KU Leuven, 42.5 +
-  46.2 rev/s).
-- *One refuses honestly*: a monotone mono recording with no comb structure
-  gets confidence 0.018 — below any reasonable gate — and is rejected
-  rather than annotated. This is the property that makes the
-  predictor-bootstrap loop safe: the verifier declines what it cannot
-  verify.
-- *One control catches a trap*: a calibration recording locks onto
-  calibration-tone harmonics with non-trivial confidence but a #emph[poor
-  LSQ residual] (0.90) — the two gates disagree, and the fit metric wins.
-  Confidence and residual are complementary, not redundant.
 
 = Operating envelope
 
@@ -396,8 +411,12 @@ harmonics to $k = 40$), plus wall-clock cost:
 
 = Discussion
 
-The exercise set out to build a label polisher and ended up building a
-#emph[measurement instrument]. Its verdicts:
+A blunt ledger first. As a #emph[tool for better labels] — the original
+goal — this failed: annotated corpora did not get better-fitting labels
+(telemetry was already at the recoverable optimum), and unlabeled
+maneuvering recordings did not get trajectories (only operating points).
+What the exercise actually paid for is the #emph[audit result] and its
+consequences:
 
 + *Label quality was not the bottleneck we thought.* DREGON command
   telemetry is bias-free to 0.04 rev/s; Michael's manual alignment holds to
@@ -406,22 +425,37 @@ The exercise set out to build a label polisher and ended up building a
   #emph[jitter linewidth] — label-invisible fast speed fluctuation that
   broadens real harmonics in a way a cleanly-conditioned oscillator bank
   cannot imitate. The actionable fix is a linewidth/phase-diffusion
-  parameter in the generator's emitter, increasing with harmonic index.
-+ *The bootstrap loop for unlabeled data is viable today* — with three
-  gates in series: comb confidence (rejects non-harmonic audio), rotor
-  uniqueness (rejects identity capture), joint LSQ residual (rejects
-  spurious locks like the calibration-tone trap). A half-trained predictor
-  provides initialisation within the ±3 rev/s basin on stable flight; the
-  refiner provides sub-0.1 rev/s labels where all three gates pass, and
-  silence elsewhere. Silence is a feature.
+  parameter in the generator's emitter, increasing with harmonic index —
+  and #emph[not] further label work. Testing this hypothesis cost one day;
+  building generator v2 on the wrong premise would have cost weeks.
 + *Twin-paired airframes set a hard limit* on per-rotor label precision
   from audio alone: below the pair-resolution harmonic, rotors are
-  acoustically one object. Any future per-rotor claim (localisation,
-  per-rotor RPS at low k) has to reckon with this.
+  acoustically one object, and magnitude-ridge methods are actively biased
+  there. Any future per-rotor claim (localisation, per-rotor RPS at low k)
+  has to reckon with this.
++ *What survives as tooling* is modest: the clock aligner (stage A; found
+  offsets up to 0.21 s, which during maneuvers is a multi-rev/s label
+  error), and the presence/refusal gates for corpus triage. A bootstrap
+  loop feeding a predictor with #emph[refined trajectories] is *not*
+  supported by these results — at most a loop feeding it
+  #emph[near-stationary segments with verified operating points].
 
-*Off-the-shelf accounting*: the coherent machinery is classical — computed
-order tracking and Vold-Kalman order filtering from rotating-machinery
-diagnostics; variable projection from separable least squares. No
-maintained Python package covers joint multi-rotor refinement with
-telemetry priors, so the ~500-line module wraps the project's existing
-VP-transform primitives rather than importing a new dependency.
+== Relation to existing work
+
+This module is a home-grown instance of #emph[tacholess / computed order
+tracking] from rotating-machinery diagnostics, with a telemetry prior. The
+established tool for the part that defeated us — jointly tracking multiple
+close, time-varying, crossing orders through maneuvers — is the
+*Vold-Kalman order filter* (coupled multi-order formulation) and its
+descendants; our stage D is essentially the classical phase-based tacho
+correction, and stages B–C a simplistic magnitude variant that the
+validation showed to be biased in exactly the regime VK was designed for.
+We did not benchmark against a proper VK implementation; the honest
+statement is that this report characterises a #emph[baseline-grade]
+reimplementation, and any future need for blind trajectory annotation
+should start from the VK literature (no maintained Python implementation
+exists, which is a porting task, not a research one), initialised by our
+base-speed scan and gated by our verifier. The variable-projection
+structure (linear amplitudes/phases, closed-form inner solve) is standard
+separable least squares and is the one piece worth keeping regardless — it
+now also powers the fit metric in the generator's own basis.

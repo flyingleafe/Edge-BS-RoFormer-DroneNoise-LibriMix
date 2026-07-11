@@ -402,17 +402,19 @@ def fig_spcup() -> None:
     axS.set_title("Blind base-speed scan: a real comb makes a sharp peak", fontsize=10)
     axS.legend(loc="lower right", fontsize=8)
 
-    # --- Right: KU Leuven spectrogram with the two refined combs. ---------
+    # --- Right: KU Leuven spectrogram, zoomed to a few high harmonics so the
+    # mismatch is visible: the ridges bend (maneuvers), the refined tracks do
+    # not follow — the refiner recovers a mean operating point only.
     seg = np.load(spc / "segments" / f"{ku_name}.npz", allow_pickle=True)
     audio = seg["audio"].astype(np.float32)
     cfg = RefineConfig()
     spec = compute_logmag(audio, cfg)
     logmag = spec.logmag.mean(dim=0).numpy()  # average over mics
-    f_hi = 1500.0
-    b1 = int(f_hi / spec.bin_hz)
-    crop = logmag[:b1, :]
+    f_lo, f_hi = 780.0, 1280.0  # harmonics k≈18..30 of ~43 rev/s
+    b0, b1 = int(f_lo / spec.bin_hz), int(f_hi / spec.bin_hz)
+    crop = logmag[b0:b1, :]
     ft = spec.frame_times
-    extent = (float(ft[0]), float(ft[-1]), 0.0, f_hi)
+    extent = (float(ft[0]), float(ft[-1]), f_lo, f_hi)
     axSp.imshow(
         crop,
         origin="lower",
@@ -430,25 +432,34 @@ def fig_spcup() -> None:
         first = True
         for k in range(1, cfg.k_max + 1):
             track = k * r_ref[i]
-            if track.min() > f_hi:
-                break
+            if track.max() < f_lo or track.min() > f_hi:
+                continue
             axSp.plot(
                 rt,
                 track,
                 color=comb_cols[i % len(comb_cols)],
-                lw=0.8,
-                alpha=0.85,
-                label=f"comb {i + 1}: {speeds[i]:.1f} rev/s" if first else None,
+                lw=1.5,
+                ls=(0, (5, 3)),
+                alpha=0.95,
+                label=f"comb {i + 1}: {speeds[i]:.1f} rev/s (near-flat)" if first else None,
             )
             first = False
-    axSp.set_ylim(0, f_hi)
+    axSp.annotate(
+        "ridges bend (maneuver)\ntracks do not follow",
+        xy=(7.3, 1130.0),
+        xytext=(9.6, 1215.0),
+        fontsize=9,
+        color="white",
+        arrowprops=dict(arrowstyle="->", color="white", lw=1.2),
+    )
+    axSp.set_ylim(f_lo, f_hi)
     axSp.set_xlabel("time [s]")
     axSp.set_ylabel("frequency [Hz]")
-    axSp.set_title("KU Leuven: two refined harmonic combs ride the ridges", fontsize=10)
-    axSp.legend(loc="upper right", fontsize=8, framealpha=0.85)
+    axSp.set_title("KU Leuven: mean speed recovered; maneuvers not tracked", fontsize=10)
+    axSp.legend(loc="lower right", fontsize=8, framealpha=0.85)
 
     fig.suptitle(
-        "SPCup blind annotation: the verifier locks when there is a comb and declines when there is not",
+        "SPCup blind analysis: comb detection and refusal work; trajectory tracking does not",
         fontsize=11,
     )
     fig.tight_layout()

@@ -39,10 +39,14 @@ synthesizes in). 8 unit tests; scripts `rps_refinement_{validation,spcup,robustn
   jitter smears harmonic k=30 by ±18 Hz → generator renders clean tones the
   loss then suppresses. Fix belongs in the generator: per-harmonic
   linewidth/phase-diffusion ∝ k, not better labels.
-- **SPCup blind annotation** (7 recs, 6 rigs): 5 lock (28–60 rev/s, one true
-  two-comb resolution), 1 honest refusal (conf 0.018), 1 calibration-tone
-  trap caught by LSQ residual. Bootstrap loop viable with three gates:
-  confidence + rotor uniqueness + LSQ residual.
+- **SPCup blind analysis** (7 recs, 6 rigs): comb DETECTION + mean base
+  speed work (5 lock incl. a two-comb resolution; 1 honest refusal at conf
+  0.018; calibration-tone trap caught by LSQ residual). **Trajectory
+  tracking through maneuvers does NOT work** — KU Leuven visibly maneuvers
+  while refined tracks move ±1.3 rev/s p2p (constant init + ±2 grid +
+  smoothness prior structurally cannot follow flight dynamics). Use only
+  as corpus TRIAGE (presence certificate + operating point); for real
+  blind trajectories, port a Vold-Kalman-class coupled order tracker.
 - **Envelope**: capture basin = coarse grid range exactly (±3/±6); noise
   floor ≈ 0 dB harmonic SNR (white/pink), +5 dB (speech-shaped); confidence
   gate 0.17 → 95% precision / 80% recall, blind to identity capture; cost
@@ -50,9 +54,14 @@ synthesizes in). 8 unit tests; scripts `rps_refinement_{validation,spcup,robustn
 
 ## Conclusion
 
-Refinement pays as clock aligner (offsets to 0.21 s found), verifier, and
-blind annotator — not as a label polisher on DREGON/Michael's, whose
-telemetry is already within the refiner's noise floor. Trust stage D over
+As a label improver this FAILED everywhere it was aimed (annotated data:
+no better labels; unlabeled maneuvering data: operating points only) — the
+method is a baseline-grade reimplementation of tacholess order tracking,
+not benchmarked against the established Vold-Kalman coupled order filter,
+which is the right instrument for the parts that defeated it. What pays is
+the AUDIT RESULT (labels near-unbiased; washout = jitter linewidth →
+generator fix) plus modest tooling: clock aligner (offsets to 0.21 s) and
+presence/refusal triage gates. Trust stage D over
 B+C wherever they disagree. Report:
 `writing/reports/2026-07-10_rps-refinement/` (10 pp, figures from
 `results/rps_refinement/**`). Next for the generator thread: per-harmonic
