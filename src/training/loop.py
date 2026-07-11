@@ -29,11 +29,11 @@ from typing import Any
 
 import tdseries as td
 import torch
-import wandb
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import tqdm
 
+import wandb
 from data_processing.collate import batch_size as frame_batch_size
 from data_processing.collate import frame_collate, slice_sample
 from tasks.codecs import Codec
@@ -227,6 +227,7 @@ def _validate(
     model: torch.nn.Module,
     codec: Codec,
     task: Task,
+    loss_fn: torch.nn.Module,
     valid_loader: DataLoader,
     metric_suite: Any,
     device: torch.device,
@@ -234,17 +235,28 @@ def _validate(
     epoch: int,
     artifacts_cfg: Any,
     artifact_store: ArtifactStore,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], float]:
+    """Run the metric suite over the validation set AND accumulate the mean
+    training-loss value on it (``val/loss``). Returns ``(metrics, val_loss)``;
+    ``val_loss`` is logged additively and never feeds early stopping (that
+    still watches ``monitor`` — a metric-suite key or ``"loss"`` = *train*
+    loss — see ``run_training``)."""
     model.eval()
     pairs: list[tuple[td.Frame, td.Frame]] = []
+    total_loss = 0.0
+    count = 0
     with torch.no_grad():
         for batch in valid_loader:
             batch = _to_device(batch, device)
             pred_frame = _forward(codec, model, batch, device=device, amp=amp)
+            loss = loss_fn(pred_frame, batch)
+            total_loss += float(loss.detach().item())
+            count += 1
             pred_cpu = pred_frame.map_data(lambda t: t.detach().cpu())
             batch_cpu = batch.map_data(lambda t: t.detach().cpu())
             for pred_i, target_i in zip(_iter_samples(pred_cpu), _iter_samples(batch_cpu)):
                 pairs.append((pred_i, target_i))
+    val_loss = total_loss / max(count, 1)
     result = metric_suite.evaluate(pairs)
 
     num_val_samples = int(getattr(artifacts_cfg, "num_val_samples", 0) or 0)
@@ -264,7 +276,7 @@ def _validate(
         except Exception:
             logger.warning("validation-sample logging failed for epoch %d", epoch, exc_info=True)
 
-    return result.aggregate("mean")
+    return result.aggregate("mean"), val_loss
 
 
 # ─── Checkpointing ──────────────────────────────────────────────────────────────
@@ -417,10 +429,11 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             grad_accum_steps=max(1, cfg.grad_accum_steps),
             epoch=epoch,
         )
-        val_metrics = _validate(
+        val_metrics, val_loss = _validate(
             model=model,
             codec=codec,
             task=task,
+            loss_fn=loss_fn,
             valid_loader=valid_loader,
             metric_suite=metric_suite,
             device=device,
@@ -438,6 +451,7 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             {
                 "epoch": epoch,
                 "train/loss": train_loss,
+                "val/loss": val_loss,
                 "lr": lr,
                 **{f"val/{k}": v for k, v in val_metrics.items()},
             }

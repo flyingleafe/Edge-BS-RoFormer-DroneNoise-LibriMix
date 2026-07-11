@@ -64,6 +64,12 @@ def test_run_training_writes_checkpoints_and_produces_finite_loss(tmp_path, monk
     assert len(train_losses) == 2  # one per epoch
     assert all(math.isfinite(v) for v in train_losses)
 
+    # The training loss is also evaluated on validation data and logged as
+    # val/loss (additive; early stopping still watches `monitor`).
+    val_losses = [row["val/loss"] for row in fake_wandb.logged if "val/loss" in row]
+    assert len(val_losses) == 2  # one per epoch
+    assert all(math.isfinite(v) for v in val_losses)
+
     assert "best_mse" in result
     assert math.isfinite(result["best_mse"])
     assert math.isfinite(result["final_epoch"])

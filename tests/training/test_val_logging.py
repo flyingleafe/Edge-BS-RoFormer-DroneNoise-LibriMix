@@ -12,14 +12,15 @@ from typing import Any
 
 import numpy as np
 import tdseries as td
-import wandb
 
+import wandb
 from tasks.spec import FrameSpec
 from tasks.task import Task
 from training.val_logging import log_validation_samples, select_val_sample_indices
 
 RPS_TASK = Task(name="rps_prediction", input_spec=FrameSpec({}), output_spec=FrameSpec({}))
 SE_TASK = Task(name="speech_enhancement", input_spec=FrameSpec({}), output_spec=FrameSpec({}))
+NOISE_GEN_TASK = Task(name="noise_generation", input_spec=FrameSpec({}), output_spec=FrameSpec({}))
 OTHER_TASK = Task(name="salience_rps", input_spec=FrameSpec({}), output_spec=FrameSpec({}))
 
 
@@ -79,6 +80,28 @@ def _rps_pair(
     target = td.Frame({"mixture": mixture, "rps": gt, "meta": td.Frame(meta)})
     pred_frame = td.Frame({"rps_pred": pred})
     return pred_frame, target
+
+
+def _noise_gen_audio(seed: int, duration_s: float = 0.5, sample_rate: int = 16000) -> np.ndarray:
+    n = int(round(duration_s * sample_rate))
+    rng = np.random.default_rng(seed)
+    return rng.standard_normal(n).astype(np.float32) * 0.05
+
+
+def _noise_gen_pair(
+    sample_id: str, drone: str, *, sample_rate: int = 16000
+) -> tuple[td.Frame, td.Frame, np.ndarray, np.ndarray]:
+    """A noise_generation (pred, target) pair with DIFFERENT real/generated
+    audio (1-D so ``_audio_to_mono`` is an exact passthrough), plus the two
+    raw arrays for equality assertions."""
+    real = _noise_gen_audio(0)
+    generated = _noise_gen_audio(1)
+    assert not np.array_equal(real, generated)
+    real_series = td.uniform(real, sample_rate, dims=("time",), t_start=0.0)
+    gen_series = td.uniform(generated, sample_rate, dims=("time",), t_start=0.0)
+    target = td.Frame({"audio": real_series, "meta": td.Frame({"id": sample_id, "drone": drone})})
+    pred_frame = td.Frame({"audio": gen_series})
+    return pred_frame, target, real, generated
 
 
 def _se_pair(sample_id: str, input_snr: float | None) -> tuple[td.Frame, td.Frame]:
@@ -207,6 +230,46 @@ def test_log_validation_samples_speech_enhancement_builds_triple():
     for vs in uploaded:
         assert set(vs.audio) == {"mixture", "target", "output"}
         assert vs.metrics == {}  # no metric_suite passed
+
+
+# ─── log_validation_samples: noise_generation ───────────────────────────────
+
+
+def test_log_validation_samples_noise_generation_logs_real_and_generated():
+    pred, target, real, generated = _noise_gen_pair("sample_000", drone="dregon")
+    logged: list[dict[str, Any]] = []
+    store = _FakeStore()
+
+    log_validation_samples(
+        task=NOISE_GEN_TASK,
+        pairs=[(pred, target)],
+        epoch=4,
+        num_samples=1,
+        log_fn=logged.append,
+        artifact_store=store,
+    )
+
+    assert len(logged) == 1
+    payload = logged[0]
+    real_keys = [k for k in payload if k.endswith("/real")]
+    gen_keys = [k for k in payload if k.endswith("/generated")]
+    assert len(real_keys) == 1
+    assert len(gen_keys) == 1
+    assert isinstance(payload[real_keys[0]], wandb.Audio)
+    assert isinstance(payload[gen_keys[0]], wandb.Audio)
+    # No leftover "mixture" key from the old fallback path.
+    assert not any(k.endswith("/mixture") for k in payload)
+
+    # The archived ValSample carries both arrays, each equal to its source and
+    # distinct from the other (the original bug logged the real audio only).
+    _epoch, uploaded = store.calls[0]
+    (vs,) = uploaded
+    assert set(vs.audio) == {"real", "generated"}
+    got_real, _sr_r = vs.audio["real"]
+    got_gen, _sr_g = vs.audio["generated"]
+    assert np.array_equal(got_real, real)
+    assert np.array_equal(got_gen, generated)
+    assert not np.array_equal(got_real, got_gen)
 
 
 # ─── Generic behavior ────────────────────────────────────────────────────────

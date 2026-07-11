@@ -35,8 +35,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import tdseries as td
-import wandb
 
+import wandb
 from data_processing.frames import get_meta
 from tasks.task import Task
 from training.artifacts import ValSample
@@ -220,6 +220,43 @@ def _fill_rps_overlay(
     return True
 
 
+def _fill_noise_gen_pair(
+    vs: ValSample,
+    payload: dict[str, Any],
+    pred: td.Frame,
+    target: td.Frame,
+    caption: str,
+    epoch: int,
+) -> bool:
+    """noise_generation-style: the REAL recorded drone noise (``target["audio"]``)
+    alongside the model's GENERATED noise (``pred["audio"]``).
+
+    Fixes the confusing fallback where noise_generation samples were routed
+    through :func:`_fill_mixture_only` and logged the real recording under a
+    ``"mixture"`` key (so validation "samples" looked like the untouched input
+    audio). Captions carry the drone name (``meta.drone``) and epoch so the
+    real/generated pair is unambiguous in wandb."""
+    if "audio" not in target or "audio" not in pred:
+        return False
+    real_series = target["audio"]
+    sr = _sample_rate(real_series)
+    real = _audio_to_mono(real_series)
+    generated = _audio_to_mono(pred["audio"])
+
+    drone = get_meta(target, "drone", None)
+    tag = f"{caption} — ep{epoch}"
+    if drone is not None:
+        tag = f"{drone} {tag}"
+
+    vs.audio["real"] = (real, sr)
+    vs.audio["generated"] = (generated, sr)
+    payload[f"val/{vs.sample_id}/real"] = wandb.Audio(real, sample_rate=sr, caption=f"real {tag}")
+    payload[f"val/{vs.sample_id}/generated"] = wandb.Audio(
+        generated, sample_rate=sr, caption=f"generated {tag}"
+    )
+    return True
+
+
 def _fill_mixture_only(
     vs: ValSample, payload: dict[str, Any], target: td.Frame, caption: str
 ) -> bool:
@@ -299,6 +336,8 @@ def log_validation_samples(
             built = _fill_rps_overlay(vs, payload, pred, target, caption)
         elif task.name == "speech_enhancement":
             built = _fill_audio_triple(vs, payload, pred, target, caption)
+        elif task.name == "noise_generation":
+            built = _fill_noise_gen_pair(vs, payload, pred, target, caption, epoch)
         if not built:
             built = _fill_mixture_only(vs, payload, target, caption)
         if built:
