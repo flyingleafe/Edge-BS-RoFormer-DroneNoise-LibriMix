@@ -14,8 +14,8 @@ defaults:
   - override /metrics: noise_gen_spectral
 
 experiment_name: e6_noisegen_baseline
-epochs: 200
-patience: 20
+epochs: 60
+patience: 8  # val mrstft plateaus by ep ~12 with ±1 noise (E6 curves); 20 was 2x too patient
 batch_size: 32
 grad_clip: 1.0
 optim:
