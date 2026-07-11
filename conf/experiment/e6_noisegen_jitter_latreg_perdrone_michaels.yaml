@@ -1,0 +1,34 @@
+# @package _global_
+# E6 diagnostic — per-drone adaptive-σ generator trained on MICHAEL'S ONLY (a
+# single codebook embedding, so multi-drone adaptation is out of the picture).
+# Identical to e6_noisegen_jitter_latreg_perdrone except: data is Michael's-only
+# (noise_rps_michaels_only) and drone_names is overridden to [michaels] (one
+# code, one learnable jitter σ). Purpose: test whether the two-drone codebook
+# sharing contributes to the mid/high-harmonic washout — if the harmonics are
+# just as weak with a single drone, the culprit is the generator/loss, not
+# multi-drone adaptation. Same latent-reg knobs, same schedule.
+defaults:
+  - override /data: noise_rps_michaels_only
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e6_noisegen_jitter_latreg_perdrone_michaels
+
+# single-drone codebook: one embedding + one learnable σ (irrelevant sharing)
+model:
+  params:
+    drone_names: [michaels]
+
+epochs: 60
+patience: 8
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

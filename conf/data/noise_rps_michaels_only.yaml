@@ -1,0 +1,39 @@
+# Michael's-only noise-generation data (SINGLE drone) — diagnostic variant of
+# noise_rps_dregon_michaels_swapped with dregon_dir dropped, so only Michael's
+# recordings (FLY124/FLY125) feed both train and valid. Isolates whether the
+# two-drone codebook sharing/adaptation contributes to the mid/high-harmonic
+# washout: with one embedding, cross-drone adaptation is out of the picture.
+# Same swapped time-split (val_at_start=true: val = first val_pct of each
+# recording's time axis, train = the rest) as the two-drone config.
+#
+# build_noise_rps_datasets accepts dregon_dir=null (michaels-only). Stream on
+# cluster/cloud backends with `data.{train,valid}.params.michaels_dir=frames:michaels-frames`
+# (no dregon override needed — it stays null).
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: null
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: null
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null
