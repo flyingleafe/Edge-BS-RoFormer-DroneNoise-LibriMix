@@ -25,3 +25,7 @@ optim:
   lr: 0.001
   monitor: mrstft
   monitor_mode: max
+
+# fp16 autocast breaks the emitter: freqs_to_phasors uses a complex cumprod
+# and "cumprod_cuda" is not implemented for ComplexHalf.
+amp: false
