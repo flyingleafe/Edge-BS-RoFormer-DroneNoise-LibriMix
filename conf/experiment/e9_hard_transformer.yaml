@@ -1,0 +1,26 @@
+# @package _global_
+# E9 — transformer RPS predictor on the "hard" COMBINED generated-noise task:
+# 50% neural generator (E7 vicinal interp) + 50% analytic static-comb (E8),
+# random LibriSpeech mixtures, and mixture-level augmentation on 50% of samples
+# from the start. Forces the model to cope with both noise families at once so
+# it cannot lean on either source's shortcut; validated on the fixed REAL
+# DREGON+Michael's split. Patience 20 (train longer than E7/E8's 5/8). The new
+# last.ckpt (converged on generated) is what we inspect for the sim->real
+# transfer diagnostic. Full batch: docs/experiments/e9-hard-combined.md.
+defaults:
+  - override /data: rps_hard_combined
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e9_hard_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

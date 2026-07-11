@@ -1,0 +1,23 @@
+# E9 data — RPS-predictor training stream on the "hard" COMBINED generated-noise
+# task (conf/online_mix/rps_hard_combined.yaml: 50% neural generator + 50%
+# static-comb + LibriSpeech + 50% augmentation), with a FIXED, non-mixed REAL
+# validation split (DREGON-LM-V4-michaels/valid). The neural-generator source
+# needs a GPU producer (device cuda:0). Cloud: override train policy to the
+# _dload twin + valid to dload.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/rps_hard_combined.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
