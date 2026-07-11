@@ -1,0 +1,27 @@
+# @package _global_
+# E6 — RPS-JITTER + LATENT-REGULARISATION arm. Identical to e6_noisegen_jitter
+# except /model: positional_harmonic_gen_cond_jitter_latreg, which adds two
+# opt-in latent-space regularisers on top of the OU RPS-jitter: vicinal
+# conditioning noise (z_noise_std=0.1, relative to the code RMS, train-only)
+# and spectral norm on the FiLM generator (film_spectral_norm=true —
+# NEW-training-only, spectral norm changes state-dict keys). Goal: a decoder
+# smooth around each of the 2 drone codes, so later vicinal sampling /
+# interpolation in z-space behaves. Built on the jitter arm; if the 3-arm
+# ablation crowns randphase instead, rebase this on that model. See
+# e6_noisegen_baseline for the shared setup.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped
+  - override /model: positional_harmonic_gen_cond_jitter_latreg
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e6_noisegen_jitter_latreg
+epochs: 200
+patience: 20
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max

@@ -323,6 +323,7 @@ class JointAmplitudePredictor(nn.Module):
         predict_f0s=False,
         z_dim=0,
         film=False,
+        film_spectral_norm=False,
         **kwargs,
     ):
         super().__init__()
@@ -364,6 +365,15 @@ class JointAmplitudePredictor(nn.Module):
                 self.film_gen.weight.mul_(0.1)
                 self.film_gen.bias[:last_ch].fill_(1.0)
                 self.film_gen.bias[last_ch:].zero_()
+            if film_spectral_norm:
+                # Bound the Lipschitz constant of the z -> (gamma, beta) map so
+                # the decoder stays smooth around each conditioning code (vicinal
+                # sampling / interpolation regulariser). NOTE: the spectral-norm
+                # parametrization changes state-dict keys (weight ->
+                # parametrizations.weight.original + power-iteration buffers), so
+                # this is a NEW-training-only option — plain checkpoints do not
+                # load into it and vice versa.
+                self.film_gen = torch.nn.utils.parametrizations.spectral_norm(self.film_gen)
             self.harm_out = nn.Linear(last_ch, n_harmonics * n_oscillators)
             self.noise_out = nn.Linear(last_ch, noise_amps)
         else:

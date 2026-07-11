@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import torch
 from torch import nn
 
 from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
@@ -220,12 +221,31 @@ class _CodebookConditionedNoiseGen(nn.Module):
     drone *name* via the codebook, then calls the generator — matching
     :class:`tasks.codecs.NoiseGenerationCodec`'s ``conditioned=True`` call
     convention (``model(rps, rel_pos, drone_names)``).
+
+    ``z_noise_std`` (opt-in, default off) is **vicinal conditioning noise**:
+    with only 2 codebook entries the decoder sees exactly 2 points in z-space,
+    so nothing constrains its behaviour *around* each code — later vicinal
+    sampling / interpolation between drones would step into unregularised
+    territory. When ``z_noise_std > 0`` and the module is in training mode,
+    ``eps ~ N(0, (z_noise_std * RMS(z))^2 I)`` is added to each sample's code
+    before it reaches the emitter's FiLM. The scale is **relative** (a fraction
+    of the per-sample code RMS, ``||z|| / sqrt(d)``): ``DroneCodebook`` codes
+    are initialised tiny (``init_std=0.01``) and grow freely during training,
+    so an *absolute* std would start out dominating the code and end up
+    negligible — a relative one keeps the vicinal ball a constant fraction of
+    the code's own magnitude throughout. Recommended value 0.1 (a 10%
+    perturbation). The RMS factor is detached, so the noise scale does not
+    feed gradients back into the code. Off at eval (no override — vicinal
+    noise is purely a training-time smoothness prior).
     """
 
-    def __init__(self, generator: nn.Module, codebook: nn.Module) -> None:
+    def __init__(
+        self, generator: nn.Module, codebook: nn.Module, *, z_noise_std: float = 0.0
+    ) -> None:
         super().__init__()
         self.generator = generator
         self.codebook = codebook
+        self.z_noise_std = float(z_noise_std)
 
     def forward(
         self,
@@ -235,6 +255,9 @@ class _CodebookConditionedNoiseGen(nn.Module):
         **kwargs: Any,
     ) -> Any:
         z = self.codebook(list(drone_names))
+        if self.z_noise_std > 0.0 and self.training:
+            rms = z.detach().pow(2).mean(dim=-1, keepdim=True).sqrt()
+            z = z + torch.randn_like(z) * (self.z_noise_std * rms)
         return self.generator(rps, rel_pos, z=z, **kwargs)
 
 
@@ -249,6 +272,8 @@ def build_noise_gen_model(
     use_random_phases: bool = False,
     rps_jitter_sigma: float = 0.0,
     rps_jitter_tau: float = 0.05,
+    z_noise_std: float = 0.0,
+    film_spectral_norm: bool = False,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -268,6 +293,19 @@ def build_noise_gen_model(
     (``sigma`` in rev/s, ``tau`` in seconds; calibrated by
     ``scripts/calibrate_rps_jitter.py``). All are training-time augmentations
     (off at eval unless explicitly overridden per-call).
+
+    Two opt-in **latent-space regularisers** smooth the decoder around the (few)
+    codebook codes, so later vicinal sampling / interpolation in z-space behaves:
+
+    - ``z_noise_std``: vicinal conditioning noise — relative-scale Gaussian
+      perturbation of the code ``z`` during training only; see
+      :class:`_CodebookConditionedNoiseGen` (requires ``cond_dim > 0``;
+      recommended 0.1).
+    - ``film_spectral_norm``: wraps the emitter's FiLM generator Linear
+      (``z -> (gamma, beta)``) in ``torch.nn.utils.parametrizations.spectral_norm``,
+      bounding the Lipschitz constant of the z-conditioning path. **Changes
+      state-dict keys** — new-training-only, not loadable into/from plain
+      checkpoints.
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
@@ -281,8 +319,11 @@ def build_noise_gen_model(
         use_random_phases=use_random_phases,
         rps_jitter_sigma=rps_jitter_sigma,
         rps_jitter_tau=rps_jitter_tau,
+        film_spectral_norm=film_spectral_norm,
     )
     if cond_dim <= 0:
+        if z_noise_std > 0.0:
+            raise ValueError("z_noise_std > 0 requires cond_dim > 0 (a conditioning code)")
         return generator
     if not drone_names:
         raise ValueError("cond_dim > 0 requires drone_names (DroneCodebook keys)")
@@ -290,7 +331,7 @@ def build_noise_gen_model(
     from tasks.noise_generation import DroneCodebook
 
     codebook = DroneCodebook(cond_dim, names=list(drone_names))
-    return _CodebookConditionedNoiseGen(generator, codebook)
+    return _CodebookConditionedNoiseGen(generator, codebook, z_noise_std=z_noise_std)
 
 
 def build_noise_gen_loss(

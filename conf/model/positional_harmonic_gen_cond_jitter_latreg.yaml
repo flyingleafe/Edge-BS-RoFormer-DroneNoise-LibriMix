@@ -1,0 +1,37 @@
+# positional_harmonic_gen — RPS-jitter model + latent-space regularisation.
+# Copy of positional_harmonic_gen_cond_jitter.yaml (OU RPS-jitter injection,
+# sigma/tau from scripts/calibrate_rps_jitter.py) plus two opt-in regularisers
+# that smooth the decoder around the 2 codebook codes (dregon/michaels) so
+# later vicinal sampling / interpolation in z-space behaves:
+#
+# * z_noise_std: 0.1 — vicinal conditioning noise: during training, each
+#   sample's code z gets eps ~ N(0, (0.1 * RMS(z))^2 I) before the emitter's
+#   FiLM (off at eval). RELATIVE scale: DroneCodebook codes start tiny
+#   (init_std=0.01) and grow freely during training, so an absolute std would
+#   first dominate then vanish; 0.1 = a constant 10% perturbation of the
+#   code's own magnitude. See models.registry._CodebookConditionedNoiseGen.
+# * film_spectral_norm: true — spectral norm on the emitter's FiLM generator
+#   Linear (z -> gamma/beta), bounding the Lipschitz constant of the
+#   z-conditioning path. CHECKPOINT COMPAT: spectral norm changes state-dict
+#   keys (weight -> parametrizations.weight.original + _u/_v buffers), so this
+#   is a NEW-training-only option — do not load plain positional_harmonic_gen
+#   checkpoints into this model or vice versa.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+  rps_jitter_sigma: 0.6
+  rps_jitter_tau: 0.016
+  z_noise_std: 0.1
+  film_spectral_norm: true
+model_type: null
+legacy_config_path: null

@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from torch.nn.utils import parametrize
 
 from models.generative import HarmonicNoiseGenNew, PositionalHarmonicNoiseGen
 from models.generative.dsp import harmonic_freq_series, oscillator_bank
@@ -213,7 +214,12 @@ def test_build_noise_gen_model_plumbs_random_phases():
 
 @pytest.mark.parametrize(
     "experiment",
-    ["e6_noisegen_baseline", "e6_noisegen_randphase", "e6_noisegen_jitter"],
+    [
+        "e6_noisegen_baseline",
+        "e6_noisegen_randphase",
+        "e6_noisegen_jitter",
+        "e6_noisegen_jitter_latreg",
+    ],
 )
 def test_e6_experiments_compose(experiment: str):
     from hydra import compose, initialize_config_dir
@@ -230,3 +236,129 @@ def test_e6_experiments_compose(experiment: str):
             config_name="config", overrides=[f"experiment={experiment}", "validate_only=true"]
         )
         OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+
+
+# ---------------------------------------------------------------------------
+# (e) latent-space regularisation: vicinal z-noise + FiLM spectral norm
+# ---------------------------------------------------------------------------
+
+
+class _SpyGenerator(torch.nn.Module):
+    """Stub generator that records the z it receives (z-level determinism spy)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.zs: list[torch.Tensor] = []
+
+    def forward(self, rps, rel_pos, z=None, **kwargs):
+        assert z is not None
+        self.zs.append(z.detach().clone())
+        return torch.zeros(rps.shape[0], rps.shape[-1])
+
+
+def _spy_wrapper(z_noise_std: float):
+    from models.registry import _CodebookConditionedNoiseGen
+    from tasks.noise_generation import DroneCodebook
+
+    torch.manual_seed(0)
+    codebook = DroneCodebook(16, names=["dregon", "michaels"])
+    spy = _SpyGenerator()
+    model = _CodebookConditionedNoiseGen(spy, codebook, z_noise_std=z_noise_std)
+    return model, spy, codebook
+
+
+def test_z_noise_train_perturbs_eval_passes_codebook_entry():
+    model, spy, codebook = _spy_wrapper(z_noise_std=0.1)
+    rps = torch.full((2, 4, 1000), 80.0)
+    rel = torch.randn(2, 8, 4, 3) * 0.1 + 0.3
+    names = ["dregon", "michaels"]
+    clean = codebook(names).detach()
+
+    model.train()
+    model(rps, rel, names)
+    model(rps, rel, names)
+    z1, z2 = spy.zs[-2], spy.zs[-1]
+    assert not torch.allclose(z1, z2)  # fresh noise per call
+    assert not torch.allclose(z1, clean)  # perturbed away from the codebook entry
+
+    model.eval()
+    model(rps, rel, names)
+    assert torch.allclose(spy.zs[-1], clean)  # eval: exact codebook entry
+
+
+def test_z_noise_scale_is_relative_to_code_rms():
+    model, spy, codebook = _spy_wrapper(z_noise_std=0.1)
+    # pin a code to a known magnitude so RMS(z) is exact
+    with torch.no_grad():
+        codebook.codes["dregon"].fill_(2.0)  # RMS = 2.0 -> noise std = 0.2
+    rps = torch.full((1, 4, 100), 80.0)
+    rel = torch.randn(1, 8, 4, 3) * 0.1 + 0.3
+    model.train()
+    n_calls = 400
+    for _ in range(n_calls):
+        model(rps, rel, ["dregon"])
+    clean = codebook(["dregon"]).detach()
+    eps = torch.stack(spy.zs) - clean  # [n_calls, 1, 16]
+    assert eps.std().item() == pytest.approx(0.1 * 2.0, rel=0.15)
+
+
+def test_z_noise_zero_is_identity_in_train():
+    model, spy, codebook = _spy_wrapper(z_noise_std=0.0)
+    rps = torch.full((1, 4, 100), 80.0)
+    rel = torch.randn(1, 8, 4, 3) * 0.1 + 0.3
+    model.train()
+    model(rps, rel, ["dregon"])
+    assert torch.allclose(spy.zs[-1], codebook(["dregon"]).detach())
+
+
+def test_z_noise_requires_cond_dim():
+    with pytest.raises(ValueError, match="z_noise_std"):
+        build_noise_gen_model("positional_harmonic_gen", cond_dim=0, z_noise_std=0.1)
+
+
+def test_film_spectral_norm_bounds_singular_value():
+    torch.manual_seed(0)
+    model = build_noise_gen_model(
+        "positional_harmonic_gen",
+        cond_dim=16,
+        drone_names=["dregon", "michaels"],
+        film_spectral_norm=True,
+    )
+    film_gen = _emitter_of(model).net.film_gen
+    assert parametrize.is_parametrized(film_gen, "weight")
+    # each .weight access in training mode runs one power iteration; a few
+    # passes converge the sigma estimate, after which sigma_max(W) <= 1 + 1e-3
+    model.train()
+    with torch.no_grad():
+        for _ in range(30):
+            _ = film_gen.weight
+        sigma_max = torch.linalg.matrix_norm(film_gen.weight, ord=2).item()
+    assert sigma_max <= 1.0 + 1e-3
+
+
+def test_film_spectral_norm_off_by_default():
+    model = build_noise_gen_model(
+        "positional_harmonic_gen", cond_dim=16, drone_names=["dregon", "michaels"]
+    )
+    assert not parametrize.is_parametrized(_emitter_of(model).net.film_gen)
+
+
+def test_latreg_model_forward_smoke():
+    # full config-surface build (jitter + z-noise + spectral norm) must run
+    # train-mode forward and produce finite audio.
+    torch.manual_seed(0)
+    model = build_noise_gen_model(
+        "positional_harmonic_gen",
+        cond_dim=16,
+        drone_names=["dregon", "michaels"],
+        rps_jitter_sigma=0.6,
+        rps_jitter_tau=0.016,
+        z_noise_std=0.1,
+        film_spectral_norm=True,
+    )
+    model.train()
+    rps = torch.full((2, 4, 8000), 80.0)
+    rel = torch.randn(2, 8, 4, 3) * 0.1 + 0.3
+    out = model(rps, rel, ["dregon", "michaels"])
+    assert out.shape == (2, 8, 8000)
+    assert torch.isfinite(out).all()
