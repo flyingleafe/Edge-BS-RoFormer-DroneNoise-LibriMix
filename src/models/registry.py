@@ -246,6 +246,9 @@ def build_noise_gen_model(
     use_diff_noise: bool = True,
     cond_dim: int = 0,
     drone_names: list[str] | None = None,
+    use_random_phases: bool = False,
+    rps_jitter_sigma: float = 0.0,
+    rps_jitter_tau: float = 0.05,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -256,6 +259,15 @@ def build_noise_gen_model(
     see that class's docstring for why the codebook now lives inside the
     model rather than external to it. ``cond_dim == 0`` (single-drone,
     unconditioned) returns the bare generator, ``drone_names`` ignored.
+
+    The three emitter augmentation knobs are forwarded to the wrapped
+    :class:`~models.generative.HarmonicNoiseGenNew` (via
+    :class:`~models.generative.PositionalHarmonicNoiseGen`'s ``**kwargs``):
+    ``use_random_phases`` (STFT-phase scrambling of the harmonic bank) and the
+    ``rps_jitter_sigma``/``rps_jitter_tau`` Ornstein-Uhlenbeck RPS perturbation
+    (``sigma`` in rev/s, ``tau`` in seconds; calibrated by
+    ``scripts/calibrate_rps_jitter.py``). All are training-time augmentations
+    (off at eval unless explicitly overridden per-call).
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
@@ -266,6 +278,9 @@ def build_noise_gen_model(
         n_harmonics=n_harmonics,
         use_diff_noise=use_diff_noise,
         cond_dim=cond_dim,
+        use_random_phases=use_random_phases,
+        rps_jitter_sigma=rps_jitter_sigma,
+        rps_jitter_tau=rps_jitter_tau,
     )
     if cond_dim <= 0:
         return generator

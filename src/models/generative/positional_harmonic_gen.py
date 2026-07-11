@@ -236,6 +236,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         *,
         initial_phases: torch.Tensor | None = ...,
         return_dict: Literal[False] = ...,
+        rps_jitter: bool | None = ...,
     ) -> torch.Tensor: ...
     @overload
     def emit(
@@ -245,6 +246,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         *,
         initial_phases: torch.Tensor | None = ...,
         return_dict: Literal[True],
+        rps_jitter: bool | None = ...,
     ) -> dict[str, torch.Tensor]: ...
     def emit(
         self,
@@ -253,6 +255,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         *,
         initial_phases: torch.Tensor | None = None,
         return_dict: bool = False,
+        rps_jitter: bool | None = None,
     ):
         """Synthesise each rotor's source waveform (radiated at the rotor).
 
@@ -290,9 +293,13 @@ class PositionalHarmonicNoiseGen(nn.Module):
                 )
             ip_folded = initial_phases.reshape(b * r, 1, initial_phases.shape[-1])
         if not return_dict:
-            src = self.emitter(folded, z=z_folded, initial_phases=ip_folded)  # [B*R, T]
+            src = self.emitter(
+                folded, z=z_folded, initial_phases=ip_folded, rps_jitter=rps_jitter
+            )  # [B*R, T]
             return src.reshape(b, r, t)
-        out = self.emitter(folded, z=z_folded, initial_phases=ip_folded, return_dict=True)
+        out = self.emitter(
+            folded, z=z_folded, initial_phases=ip_folded, return_dict=True, rps_jitter=rps_jitter
+        )
         harm_amps = out["harm_amps"]  # [B*R, O, H, t_a]
         noise_amps = out["noise_amps"]  # [B*R, F, t_n]
         return {
@@ -309,6 +316,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         *,
         initial_phases: torch.Tensor | None = None,
         return_dict: bool = False,
+        rps_jitter: bool | None = None,
     ):
         """Render drone noise at the observation point(s).
 
@@ -341,10 +349,14 @@ class PositionalHarmonicNoiseGen(nn.Module):
             z = None  # unconditioned: ignore any code passed in
 
         if return_dict:
-            emitted = self.emit(rps, z=z, initial_phases=initial_phases, return_dict=True)
+            emitted = self.emit(
+                rps, z=z, initial_phases=initial_phases, return_dict=True, rps_jitter=rps_jitter
+            )
             sources = emitted["sources"]  # [B, R, T]
         else:
-            sources = self.emit(rps, z=z, initial_phases=initial_phases)  # [B, R, T]
+            sources = self.emit(
+                rps, z=z, initial_phases=initial_phases, rps_jitter=rps_jitter
+            )  # [B, R, T]
         audio = propagate(
             sources,
             rel_pos,

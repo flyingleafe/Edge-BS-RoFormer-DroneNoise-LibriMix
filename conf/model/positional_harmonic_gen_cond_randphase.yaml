@@ -1,0 +1,23 @@
+# positional_harmonic_gen — conditioned generator + STFT random-phase branch.
+# Copy of positional_harmonic_gen_conditioned.yaml with `use_random_phases:
+# true`: HarmonicNoiseGenNew scrambles the harmonic bank's STFT phases each
+# training step (heavier than the always-on per-harmonic initial-phase
+# augmentation). One of the three E6 generator arms (baseline / random-phase /
+# rps-jitter) that differ ONLY in this model flag. See
+# models.registry.build_noise_gen_model.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+  use_random_phases: true
+model_type: null
+legacy_config_path: null

@@ -1,0 +1,24 @@
+# @package _global_
+# E6 — generator-augmentation ablation, RPS-JITTER arm. Identical to
+# e6_noisegen_baseline except /model: positional_harmonic_gen_cond_jitter (an
+# Ornstein-Uhlenbeck perturbation sigma=0.6 rev/s, tau=0.016 s injected into
+# the conditioning RPS inside the emitter — calibrated by
+# scripts/calibrate_rps_jitter.py). This broadens harmonic k by +/- k*sigma Hz
+# to match real-rotor jitter and counter the mid-k harmonic washout. See
+# e6_noisegen_baseline for the shared setup and ablation rationale.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped
+  - override /model: positional_harmonic_gen_cond_jitter
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e6_noisegen_jitter
+epochs: 200
+patience: 20
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max

@@ -1,0 +1,25 @@
+# @package _global_
+# E6 — generator-augmentation ablation, BASELINE arm. Same setup as E3
+# (swapped/corrected DREGON split, DREGON in_flight + Michael's FLY-series,
+# per-drone conditioned cond_dim=16) but WITHOUT the Stage-2 smoothness
+# regularisers: the plain multi-scale STFT loss from E2. The three E6 arms
+# (baseline / randphase / jitter) are identical except for the /model flag, so
+# any spectral-val difference is attributable to the generator augmentation
+# alone. This arm is the un-augmented reference (always-on per-harmonic
+# initial-phase augmentation only — the HarmonicNoiseGenNew default).
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped
+  - override /model: positional_harmonic_gen_conditioned
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e6_noisegen_baseline
+epochs: 200
+patience: 20
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max

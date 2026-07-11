@@ -1,0 +1,31 @@
+# positional_harmonic_gen — conditioned generator + RPS-jitter injection.
+# Copy of positional_harmonic_gen_conditioned.yaml with an Ornstein-Uhlenbeck
+# perturbation added to the conditioning RPS inside the emitter (train-time
+# augmentation, off at eval). This broadens harmonic k by +/- k*sigma Hz —
+# reproducing the real-rotor jitter that telemetry-conditioned generation
+# cannot know, and countering the mid-k "harmonic washout".
+#
+# sigma/tau from scripts/calibrate_rps_jitter.py on the 5 DREGON refined-RPS
+# validation recordings (results/rps_refinement/jitter_calibration.json):
+# pooled sigma ~= 0.82 rev/s (an UPPER BOUND — the measured telemetry includes
+# sensor noise) and pooled tau ~= 16 ms (grid-limited by the 32 ms frame grid).
+# sigma is de-rated to 0.6 rev/s (the sensor-noise-corrected project figure);
+# tau rounded to 0.016 s. One of the three E6 arms that differ ONLY in this
+# model flag. See models.registry.build_noise_gen_model.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+  rps_jitter_sigma: 0.6
+  rps_jitter_tau: 0.016
+model_type: null
+legacy_config_path: null

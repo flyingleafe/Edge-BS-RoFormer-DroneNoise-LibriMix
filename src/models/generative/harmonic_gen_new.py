@@ -61,6 +61,8 @@ class HarmonicNoiseGenNew(nn.Module):
         use_diff_noise=True,
         use_random_phases=False,
         use_z=False,
+        rps_jitter_sigma: float = 0.0,
+        rps_jitter_tau: float = 0.05,
         stft_window_len=2048,
         stft_hop_len=512,
         sample_rate: int = 16000,
@@ -76,6 +78,8 @@ class HarmonicNoiseGenNew(nn.Module):
         self.use_diff_noise = use_diff_noise
         self.use_random_phases = use_random_phases
         self.use_z = use_z
+        self.rps_jitter_sigma = float(rps_jitter_sigma)
+        self.rps_jitter_tau = float(rps_jitter_tau)
         self.sample_rate = sample_rate
 
         if use_random_phases:
@@ -85,6 +89,57 @@ class HarmonicNoiseGenNew(nn.Module):
             self.istft = TA.transforms.InverseSpectrogram(
                 n_fft=stft_window_len, hop_length=stft_hop_len
             )
+
+    def _apply_rps_jitter(self, f0s: torch.Tensor) -> torch.Tensor:
+        """Add a stochastic Ornstein-Uhlenbeck perturbation to the fundamental.
+
+        Real rotor speeds carry a fast zero-mean jitter that telemetry-conditioned
+        generation cannot know; it broadens the ``k``-th harmonic by ``+/- k *
+        sigma`` Hz. Adding ``delta(t)`` to the fundamental ``f0s`` (which is then
+        multiplied by the harmonic index in :func:`harmonic_freq_series`) makes
+        every harmonic of a rotor share one *coherent*, frequency-proportional
+        broadening -- exactly the physical effect. See
+        ``scripts/calibrate_rps_jitter.py`` for how ``sigma``/``tau`` were fit.
+
+        The OU sample obeys the Euler-Maruyama recursion::
+
+            delta[n+1] = delta[n] * (1 - dt/tau) + sigma * sqrt(2*dt/tau) * N(0,1)
+            delta[0]   ~ N(0, sigma)
+
+        Cost note: ``f0s`` arrives at audio rate (``sample_rate``), but the jitter
+        bandwidth is ``~1/(2*pi*tau)`` (a few Hz), so an audio-rate scan would be
+        wasteful and numerically pointless. We instead run the recursion on a
+        coarse control grid (``dt ~ tau/10``, so Euler stays accurate) and linearly
+        interpolate up to audio rate. ``delta`` carries no gradient (pure noise);
+        adding it leaves ``f0s``'s autograd graph intact.
+
+        Injecting on ``f0s`` (not on the raw ``ms`` fed to the amplitude net) keeps
+        the predicted ``harm_amps``/``noise_amps`` -- and therefore the Stage-2
+        smoothness regularisers -- unaffected.
+        """
+        b, o, t = f0s.shape
+        tau = self.rps_jitter_tau
+        sigma = self.rps_jitter_sigma
+        duration = t / self.sample_rate
+
+        # control grid: dt ~ tau/10 (Euler-accurate), but never coarser than 50 Hz.
+        ctrl_dt = min(tau / 10.0, 1.0 / 50.0)
+        n_intervals = max(1, int(np.ceil(duration / ctrl_dt)))
+        n_ctrl = n_intervals + 1
+        dt = duration / n_intervals  # exact grid spanning the clip
+        alpha = 1.0 - dt / tau
+        noise_scale = sigma * float(np.sqrt(2.0 * dt / tau))
+
+        bo = b * o
+        eps = torch.randn(bo, n_intervals, device=f0s.device, dtype=f0s.dtype)
+        d = sigma * torch.randn(bo, device=f0s.device, dtype=f0s.dtype)
+        cols = [d]
+        for n in range(n_intervals):
+            d = d * alpha + noise_scale * eps[:, n]
+            cols.append(d)
+        delta = torch.stack(cols, dim=1).reshape(bo, 1, n_ctrl)  # [B*O, 1, n_ctrl]
+        delta = F.interpolate(delta, size=t, mode="linear", align_corners=True)
+        return f0s + delta.reshape(b, o, t)
 
     def gen_harm_noise(self, freqs, amps, initial_phases=None):
         harm_noise = oscillator_bank(
@@ -100,7 +155,7 @@ class HarmonicNoiseGenNew(nn.Module):
 
         return harm_noise
 
-    def forward(self, ms, z=None, initial_phases=None, return_dict=False):
+    def forward(self, ms, z=None, initial_phases=None, return_dict=False, rps_jitter=None):
         """Synthesise audio from motor speeds.
 
         Initial harmonic phases (``[*freqs.shape[:-1]]`` = per (batch, oscillator,
@@ -112,6 +167,11 @@ class HarmonicNoiseGenNew(nn.Module):
           rely on a fixed phase alignment);
         * else, in **eval** mode phases are **zero** (deterministic, reproducible
           synthesis).
+
+        RPS jitter (``rps_jitter_sigma > 0``) mirrors the same train/eval
+        convention: a fresh OU perturbation is added to the fundamental in
+        **training** mode and **off** at eval, unless ``rps_jitter`` overrides it
+        (``True``/``False``). See :meth:`_apply_rps_jitter`.
         """
         b, o, t = ms.shape
 
@@ -120,6 +180,10 @@ class HarmonicNoiseGenNew(nn.Module):
             harm_amps, noise_amps, f0s = self.net(ms, z)
         else:
             harm_amps, noise_amps, f0s = self.net(ms)
+
+        do_jitter = self.training if rps_jitter is None else rps_jitter
+        if self.rps_jitter_sigma > 0.0 and do_jitter:
+            f0s = self._apply_rps_jitter(f0s)
 
         freqs = harmonic_freq_series(f0s, self.n_harmonics)
 

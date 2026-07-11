@@ -1,0 +1,22 @@
+# @package _global_
+# E6 — generator-augmentation ablation, RANDOM-PHASE arm. Identical to
+# e6_noisegen_baseline except /model: positional_harmonic_gen_cond_randphase
+# (HarmonicNoiseGenNew use_random_phases=true — STFT-phase scrambling of the
+# harmonic bank each training step). See e6_noisegen_baseline for the shared
+# setup and ablation rationale.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped
+  - override /model: positional_harmonic_gen_cond_randphase
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e6_noisegen_randphase
+epochs: 200
+patience: 20
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
