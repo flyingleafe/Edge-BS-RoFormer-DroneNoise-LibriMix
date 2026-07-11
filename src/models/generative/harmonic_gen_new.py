@@ -90,7 +90,9 @@ class HarmonicNoiseGenNew(nn.Module):
                 n_fft=stft_window_len, hop_length=stft_hop_len
             )
 
-    def _apply_rps_jitter(self, f0s: torch.Tensor) -> torch.Tensor:
+    def _apply_rps_jitter(
+        self, f0s: torch.Tensor, sigma: float | torch.Tensor | None = None
+    ) -> torch.Tensor:
         """Add a stochastic Ornstein-Uhlenbeck perturbation to the fundamental.
 
         Real rotor speeds carry a fast zero-mean jitter that telemetry-conditioned
@@ -101,6 +103,16 @@ class HarmonicNoiseGenNew(nn.Module):
         broadening -- exactly the physical effect. See
         ``scripts/calibrate_rps_jitter.py`` for how ``sigma``/``tau`` were fit.
 
+        ``sigma`` (rev/s) defaults to the module scalar ``self.rps_jitter_sigma``
+        but may be a **per-sample tensor** broadcastable to the folded batch
+        ``B*O`` — this is how a learnable *per-drone* linewidth (one sigma per
+        codebook entry, resolved upstream in
+        :class:`~models.registry._CodebookConditionedNoiseGen`) reaches the
+        emitter. It factors cleanly out of the OU recursion: ``delta = sigma * u``
+        where ``u`` is the unit-innovation OU path below, so a per-sample sigma is
+        just a post-hoc broadcast multiply and stays fully differentiable w.r.t.
+        sigma (the innovation noise ``u`` carries no gradient).
+
         The OU sample obeys the Euler-Maruyama recursion::
 
             delta[n+1] = delta[n] * (1 - dt/tau) + sigma * sqrt(2*dt/tau) * N(0,1)
@@ -110,8 +122,9 @@ class HarmonicNoiseGenNew(nn.Module):
         bandwidth is ``~1/(2*pi*tau)`` (a few Hz), so an audio-rate scan would be
         wasteful and numerically pointless. We instead run the recursion on a
         coarse control grid (``dt ~ tau/10``, so Euler stays accurate) and linearly
-        interpolate up to audio rate. ``delta`` carries no gradient (pure noise);
-        adding it leaves ``f0s``'s autograd graph intact.
+        interpolate up to audio rate. ``u`` carries no gradient (pure noise);
+        adding ``sigma * u`` leaves ``f0s``'s autograd graph intact and lets sigma
+        gradients flow when sigma is a learnable parameter.
 
         Injecting on ``f0s`` (not on the raw ``ms`` fed to the amplitude net) keeps
         the predicted ``harm_amps``/``noise_amps`` -- and therefore the Stage-2
@@ -119,7 +132,8 @@ class HarmonicNoiseGenNew(nn.Module):
         """
         b, o, t = f0s.shape
         tau = self.rps_jitter_tau
-        sigma = self.rps_jitter_sigma
+        if sigma is None:
+            sigma = self.rps_jitter_sigma
         duration = t / self.sample_rate
 
         # control grid: dt ~ tau/10 (Euler-accurate), but never coarser than 50 Hz.
@@ -128,32 +142,40 @@ class HarmonicNoiseGenNew(nn.Module):
         n_ctrl = n_intervals + 1
         dt = duration / n_intervals  # exact grid spanning the clip
         alpha = 1.0 - dt / tau
-        noise_scale = sigma * float(np.sqrt(2.0 * dt / tau))
+        base_scale = float(np.sqrt(2.0 * dt / tau))  # sigma factored out (unit path)
 
         bo = b * o
         eps = torch.randn(bo, n_intervals, device=f0s.device, dtype=f0s.dtype)
-        d0 = sigma * torch.randn(bo, device=f0s.device, dtype=f0s.dtype)
+        u0 = torch.randn(bo, device=f0s.device, dtype=f0s.dtype)  # unit-variance N(0,1)
 
-        # Closed-form OU instead of a Python scan (the scan was ~n_intervals tiny
-        # kernel launches — the "1287 small muls" hotspot on GPU):
-        #   delta[n] = alpha^n * delta[0] + noise_scale * sum_{j<n} alpha^j eps[n-1-j]
-        # The alpha^j term is a causal FIR on eps; alpha in (0, 1) so the kernel
-        # decays and is truncated where it underflows fp32 (no alpha^{-n}
-        # division => overflow-free), reproducing the scan to ~1e-6.
+        # Closed-form unit-innovation OU instead of a Python scan (the scan was
+        # ~n_intervals tiny kernel launches — the "1287 small muls" hotspot on
+        # GPU): with sigma factored out,
+        #   u[n] = alpha^n * u[0] + base_scale * sum_{j<n} alpha^j eps[n-1-j]
+        # and delta = sigma * u. The alpha^j term is a causal FIR on eps; alpha in
+        # (0, 1) so the kernel decays and is truncated where it underflows fp32
+        # (no alpha^{-n} division => overflow-free), reproducing the scan to ~1e-6.
         if 0.0 < alpha < 1.0:
             kernel_len = min(n_intervals, int(np.ceil(np.log(1e-8) / np.log(alpha))) + 1)
         else:
             kernel_len = 1
         j = torch.arange(kernel_len, device=f0s.device, dtype=f0s.dtype)
-        kernel = noise_scale * (alpha**j)
+        kernel = base_scale * (alpha**j)
         eps_pad = F.pad(eps, (kernel_len - 1, 0))
         fir = F.conv1d(eps_pad.unsqueeze(1), kernel.flip(0).view(1, 1, kernel_len)).squeeze(
             1
-        )  # [bo, n_intervals], = delta[1..n_intervals] noise part
+        )  # [bo, n_intervals], = u[1..n_intervals] noise part
         n_idx = torch.arange(n_ctrl, device=f0s.device, dtype=f0s.dtype)
-        decay = (alpha**n_idx) * d0.unsqueeze(-1)  # alpha^n * delta[0], [bo, n_ctrl]
+        decay = (alpha**n_idx) * u0.unsqueeze(-1)  # alpha^n * u[0], [bo, n_ctrl]
         noise_part = F.pad(fir, (1, 0))  # prepend n=0 (no noise) -> [bo, n_ctrl]
-        delta = (decay + noise_part).reshape(bo, 1, n_ctrl)  # [B*O, 1, n_ctrl]
+        u = (decay + noise_part).reshape(bo, 1, n_ctrl)  # unit OU path [B*O, 1, n_ctrl]
+
+        # Scale by sigma (scalar or per-sample [bo]); sigma gradients pass through.
+        if torch.is_tensor(sigma):
+            sig_col = sigma.reshape(bo, 1, 1).to(dtype=u.dtype, device=u.device)
+        else:
+            sig_col = sigma
+        delta = sig_col * u  # [B*O, 1, n_ctrl]
         delta = F.interpolate(delta, size=t, mode="linear", align_corners=True)
         return f0s + delta.reshape(b, o, t)
 
@@ -175,7 +197,15 @@ class HarmonicNoiseGenNew(nn.Module):
 
         return harm_noise
 
-    def forward(self, ms, z=None, initial_phases=None, return_dict=False, rps_jitter=None):
+    def forward(
+        self,
+        ms,
+        z=None,
+        initial_phases=None,
+        return_dict=False,
+        rps_jitter=None,
+        rps_jitter_sigma=None,
+    ):
         """Synthesise audio from motor speeds.
 
         Initial harmonic phases (``[*freqs.shape[:-1]]`` = per (batch, oscillator,
@@ -188,10 +218,13 @@ class HarmonicNoiseGenNew(nn.Module):
         * else, in **eval** mode phases are **zero** (deterministic, reproducible
           synthesis).
 
-        RPS jitter (``rps_jitter_sigma > 0``) mirrors the same train/eval
-        convention: a fresh OU perturbation is added to the fundamental in
-        **training** mode and **off** at eval, unless ``rps_jitter`` overrides it
-        (``True``/``False``). See :meth:`_apply_rps_jitter`.
+        RPS jitter mirrors the same train/eval convention: a fresh OU perturbation
+        is added to the fundamental in **training** mode and **off** at eval,
+        unless ``rps_jitter`` overrides it (``True``/``False``). The linewidth
+        ``sigma`` is the module scalar ``self.rps_jitter_sigma`` unless a
+        per-sample ``rps_jitter_sigma`` tensor is passed (a learnable per-drone
+        sigma, resolved upstream) — the tensor replaces the scalar. See
+        :meth:`_apply_rps_jitter`.
         """
         b, o, t = ms.shape
 
@@ -202,8 +235,12 @@ class HarmonicNoiseGenNew(nn.Module):
             harm_amps, noise_amps, f0s = self.net(ms)
 
         do_jitter = self.training if rps_jitter is None else rps_jitter
-        if self.rps_jitter_sigma > 0.0 and do_jitter:
-            f0s = self._apply_rps_jitter(f0s)
+        # A per-sample sigma tensor (learnable per-drone linewidth) replaces the
+        # scalar; jitter is active if either source is switched on.
+        sigma = self.rps_jitter_sigma if rps_jitter_sigma is None else rps_jitter_sigma
+        sigma_active = rps_jitter_sigma is not None or self.rps_jitter_sigma > 0.0
+        if do_jitter and sigma_active:
+            f0s = self._apply_rps_jitter(f0s, sigma)
 
         freqs = harmonic_freq_series(f0s, self.n_harmonics)
 

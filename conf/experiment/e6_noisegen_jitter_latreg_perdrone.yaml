@@ -1,0 +1,30 @@
+# @package _global_
+# E6 follow-up — PER-DRONE LEARNABLE RPS-jitter sigma. Identical to
+# e6_noisegen_jitter_latreg (the E6 winner) except /model:
+# positional_harmonic_gen_cond_jitter_latreg_perdrone, which makes the OU jitter
+# linewidth a learnable per-drone parameter instead of the single global
+# sigma=0.6. Goal: break the FLY124 four-way tie — the DREGON-calibrated global
+# sigma did not transfer to the M100 at idle, so let each drone learn its own
+# harmonic linewidth. Everything else (swapped DREGON+Michael's split, z-noise +
+# spectral-norm FiLM latent reg, loss, schedule) is unchanged from the winner.
+# See e6_noisegen_baseline for the shared setup.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e6_noisegen_jitter_latreg_perdrone
+epochs: 60
+patience: 8
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter: freqs_to_phasors uses a complex cumprod
+# and "cumprod_cuda" is not implemented for ComplexHalf.
+amp: false

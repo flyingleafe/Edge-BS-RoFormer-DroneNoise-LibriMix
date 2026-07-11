@@ -27,12 +27,16 @@ here. All three are exposed from this module so callers have one place to look.
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import nn
 
 from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
+
+if TYPE_CHECKING:
+    from tasks.noise_generation import DroneCodebook
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
     DCCRNEncRPS,
@@ -237,15 +241,58 @@ class _CodebookConditionedNoiseGen(nn.Module):
     perturbation). The RMS factor is detached, so the noise scale does not
     feed gradients back into the code. Off at eval (no override — vicinal
     noise is purely a training-time smoothness prior).
+
+    ``learn_rps_jitter_sigma`` (opt-in) makes the OU jitter linewidth a
+    **learnable per-drone** parameter instead of the single global scalar baked
+    into the emitter. The physical jitter amplitude differs by airframe/throttle
+    regime (a DREGON-calibrated sigma did not transfer to the M100 at idle in
+    E6), so one sigma per codebook entry lets each drone's linewidth be fit
+    jointly with everything else. A raw scalar per drone name is kept here (next
+    to the codebook, so it is trained and persisted through the single-model
+    contract) and mapped to a positive sigma via ``softplus``; the resolved
+    per-sample sigma ``[B]`` is threaded into the generator forward
+    (``rps_jitter_sigma=``), folded onto the rotor axis by
+    :meth:`~models.generative.PositionalHarmonicNoiseGen.emit`, and replaces the
+    emitter's scalar. Like the codebook it is **name-keyed** (few-shot: freeze
+    everything, add a drone's code + sigma, fit just those). ``sigma`` gradients
+    flow because :meth:`_apply_rps_jitter` factors sigma out of the (gradient-free)
+    OU innovation path. It respects the same train/eval gate as the scalar jitter:
+    active only when the emitter would apply jitter (training, or an explicit
+    ``rps_jitter=True`` override at eval).
     """
 
     def __init__(
-        self, generator: nn.Module, codebook: nn.Module, *, z_noise_std: float = 0.0
+        self,
+        generator: nn.Module,
+        codebook: nn.Module,
+        *,
+        z_noise_std: float = 0.0,
+        learn_rps_jitter_sigma: bool = False,
+        rps_jitter_sigma_init: float = 0.6,
     ) -> None:
         super().__init__()
         self.generator = generator
         self.codebook = codebook
         self.z_noise_std = float(z_noise_std)
+        self.learn_rps_jitter_sigma = bool(learn_rps_jitter_sigma)
+        self.log_jitter_sigma: nn.ParameterDict | None = None
+        if self.learn_rps_jitter_sigma:
+            # softplus^{-1}(init) so the initial resolved sigma == the calibrated
+            # scalar; one raw scalar per codebook name (few-shot / name-keyed).
+            cb = cast("DroneCodebook", codebook)
+            init = float(rps_jitter_sigma_init)
+            raw0 = float(math.log(math.expm1(init))) if init > 0 else -10.0
+            self.log_jitter_sigma = nn.ParameterDict(
+                {cb._key(name): nn.Parameter(torch.tensor(raw0)) for name in cb.names()}
+            )
+
+    def _resolve_jitter_sigma(self, drone_names: list[str]) -> torch.Tensor | None:
+        """Per-sample learnable linewidth ``[B]`` (softplus of the per-drone raw)."""
+        if self.log_jitter_sigma is None:
+            return None
+        cb = cast("DroneCodebook", self.codebook)
+        raws = torch.stack([self.log_jitter_sigma[cb._key(n)] for n in drone_names], dim=0)
+        return nn.functional.softplus(raws)  # [B], strictly positive
 
     def forward(
         self,
@@ -258,6 +305,9 @@ class _CodebookConditionedNoiseGen(nn.Module):
         if self.z_noise_std > 0.0 and self.training:
             rms = z.detach().pow(2).mean(dim=-1, keepdim=True).sqrt()
             z = z + torch.randn_like(z) * (self.z_noise_std * rms)
+        sigma = self._resolve_jitter_sigma(list(drone_names))
+        if sigma is not None:
+            kwargs.setdefault("rps_jitter_sigma", sigma)
         return self.generator(rps, rel_pos, z=z, **kwargs)
 
 
@@ -272,6 +322,7 @@ def build_noise_gen_model(
     use_random_phases: bool = False,
     rps_jitter_sigma: float = 0.0,
     rps_jitter_tau: float = 0.05,
+    learn_rps_jitter_sigma: bool = False,
     z_noise_std: float = 0.0,
     film_spectral_norm: bool = False,
 ) -> nn.Module:
@@ -306,6 +357,14 @@ def build_noise_gen_model(
       bounding the Lipschitz constant of the z-conditioning path. **Changes
       state-dict keys** — new-training-only, not loadable into/from plain
       checkpoints.
+
+    ``learn_rps_jitter_sigma`` promotes the OU linewidth from the single global
+    ``rps_jitter_sigma`` scalar to a **learnable per-drone** parameter (one per
+    codebook entry, initialised from ``rps_jitter_sigma`` and fit jointly). The
+    per-drone raws live on the :class:`_CodebookConditionedNoiseGen` wrapper (see
+    its docstring); ``rps_jitter_tau`` stays shared. Requires ``cond_dim > 0``.
+    Adds new state-dict keys (``log_jitter_sigma.*``) — not loadable into/from a
+    fixed-sigma checkpoint, so train from scratch (or ``strict=False``).
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
@@ -324,6 +383,8 @@ def build_noise_gen_model(
     if cond_dim <= 0:
         if z_noise_std > 0.0:
             raise ValueError("z_noise_std > 0 requires cond_dim > 0 (a conditioning code)")
+        if learn_rps_jitter_sigma:
+            raise ValueError("learn_rps_jitter_sigma requires cond_dim > 0 (per-drone codebook)")
         return generator
     if not drone_names:
         raise ValueError("cond_dim > 0 requires drone_names (DroneCodebook keys)")
@@ -331,7 +392,13 @@ def build_noise_gen_model(
     from tasks.noise_generation import DroneCodebook
 
     codebook = DroneCodebook(cond_dim, names=list(drone_names))
-    return _CodebookConditionedNoiseGen(generator, codebook, z_noise_std=z_noise_std)
+    return _CodebookConditionedNoiseGen(
+        generator,
+        codebook,
+        z_noise_std=z_noise_std,
+        learn_rps_jitter_sigma=learn_rps_jitter_sigma,
+        rps_jitter_sigma_init=rps_jitter_sigma,
+    )
 
 
 def build_noise_gen_loss(

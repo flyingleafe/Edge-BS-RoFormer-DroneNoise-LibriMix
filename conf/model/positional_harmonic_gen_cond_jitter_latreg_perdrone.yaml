@@ -1,0 +1,36 @@
+# positional_harmonic_gen — per-drone LEARNABLE RPS-jitter + latent-space reg.
+# Copy of positional_harmonic_gen_cond_jitter_latreg.yaml (OU RPS-jitter + z-noise
+# + spectral-norm FiLM — the E6 winner) with ONE change: learn_rps_jitter_sigma.
+#
+# The E6 jitter arm used a single global sigma=0.6, calibrated on DREGON. It won
+# every DREGON band but was a four-way tie on FLY124 (out-of-train M100 at idle) —
+# a DREGON-calibrated linewidth does not transfer to a different airframe/throttle
+# regime. learn_rps_jitter_sigma promotes sigma to a LEARNABLE PER-DRONE parameter
+# (one softplus-positive scalar per codebook entry, initialised from
+# rps_jitter_sigma below and fit jointly with the codes). Each drone learns its
+# own harmonic linewidth; rps_jitter_tau stays shared.
+#
+# CHECKPOINT COMPAT: adds new state-dict keys (log_jitter_sigma.dregon/.michaels)
+# on top of the spectral-norm rename, so this is a NEW-training-only model — do
+# not load a fixed-sigma checkpoint into it (or use strict=False). See
+# models.registry.build_noise_gen_model / _CodebookConditionedNoiseGen.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+  rps_jitter_sigma: 0.6          # per-drone sigma INIT (all drones start here)
+  rps_jitter_tau: 0.016
+  learn_rps_jitter_sigma: true   # <-- the one new knob vs jitter_latreg
+  z_noise_std: 0.1
+  film_spectral_norm: true
+model_type: null
+legacy_config_path: null

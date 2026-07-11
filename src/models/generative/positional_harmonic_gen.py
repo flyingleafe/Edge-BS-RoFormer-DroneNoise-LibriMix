@@ -237,6 +237,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         initial_phases: torch.Tensor | None = ...,
         return_dict: Literal[False] = ...,
         rps_jitter: bool | None = ...,
+        rps_jitter_sigma: torch.Tensor | None = ...,
     ) -> torch.Tensor: ...
     @overload
     def emit(
@@ -247,6 +248,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         initial_phases: torch.Tensor | None = ...,
         return_dict: Literal[True],
         rps_jitter: bool | None = ...,
+        rps_jitter_sigma: torch.Tensor | None = ...,
     ) -> dict[str, torch.Tensor]: ...
     def emit(
         self,
@@ -256,6 +258,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         initial_phases: torch.Tensor | None = None,
         return_dict: bool = False,
         rps_jitter: bool | None = None,
+        rps_jitter_sigma: torch.Tensor | None = None,
     ):
         """Synthesise each rotor's source waveform (radiated at the rotor).
 
@@ -283,6 +286,11 @@ class PositionalHarmonicNoiseGen(nn.Module):
         b, r, t = rps.shape
         folded = rps.reshape(b * r, 1, t)  # rotor axis -> batch, single-rotor net
         z_folded = z.repeat_interleave(r, dim=0) if z is not None else None  # [B*R, d]
+        # A per-clip (per-drone) sigma broadcasts to every rotor of the clip, so
+        # it folds into the batch exactly like z: [B] -> [B*R].
+        sigma_folded = (
+            rps_jitter_sigma.repeat_interleave(r, dim=0) if rps_jitter_sigma is not None else None
+        )
         # Fold rotor into batch and add the single-oscillator axis: [B,R,H] ->
         # [B*R, 1, H], matching the emitter's freqs [B*R, O=1, H, t].
         ip_folded = None
@@ -294,11 +302,20 @@ class PositionalHarmonicNoiseGen(nn.Module):
             ip_folded = initial_phases.reshape(b * r, 1, initial_phases.shape[-1])
         if not return_dict:
             src = self.emitter(
-                folded, z=z_folded, initial_phases=ip_folded, rps_jitter=rps_jitter
+                folded,
+                z=z_folded,
+                initial_phases=ip_folded,
+                rps_jitter=rps_jitter,
+                rps_jitter_sigma=sigma_folded,
             )  # [B*R, T]
             return src.reshape(b, r, t)
         out = self.emitter(
-            folded, z=z_folded, initial_phases=ip_folded, return_dict=True, rps_jitter=rps_jitter
+            folded,
+            z=z_folded,
+            initial_phases=ip_folded,
+            return_dict=True,
+            rps_jitter=rps_jitter,
+            rps_jitter_sigma=sigma_folded,
         )
         harm_amps = out["harm_amps"]  # [B*R, O, H, t_a]
         noise_amps = out["noise_amps"]  # [B*R, F, t_n]
@@ -317,6 +334,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         initial_phases: torch.Tensor | None = None,
         return_dict: bool = False,
         rps_jitter: bool | None = None,
+        rps_jitter_sigma: torch.Tensor | None = None,
     ):
         """Render drone noise at the observation point(s).
 
@@ -350,12 +368,21 @@ class PositionalHarmonicNoiseGen(nn.Module):
 
         if return_dict:
             emitted = self.emit(
-                rps, z=z, initial_phases=initial_phases, return_dict=True, rps_jitter=rps_jitter
+                rps,
+                z=z,
+                initial_phases=initial_phases,
+                return_dict=True,
+                rps_jitter=rps_jitter,
+                rps_jitter_sigma=rps_jitter_sigma,
             )
             sources = emitted["sources"]  # [B, R, T]
         else:
             sources = self.emit(
-                rps, z=z, initial_phases=initial_phases, rps_jitter=rps_jitter
+                rps,
+                z=z,
+                initial_phases=initial_phases,
+                rps_jitter=rps_jitter,
+                rps_jitter_sigma=rps_jitter_sigma,
             )  # [B, R, T]
         audio = propagate(
             sources,
