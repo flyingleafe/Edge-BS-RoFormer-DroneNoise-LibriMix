@@ -329,6 +329,22 @@ class OnlineMixFrameDataset(IterableDataset):
         )
 
 
+def _resolve_noise_dir(d: str | Path | None) -> str | Path | None:
+    """resolve_source, except ``frames:NAME[@VER]`` specs pass through verbatim.
+
+    ``resolve_source`` would wrap the spec in a Path, defeating the
+    string-prefix dispatch in ``noise_rps_dataset.build_noise_rps_datasets``
+    (and the geometry dispatch above).
+    """
+    if d is None:
+        return None
+    from data_processing.noise_rps_dataset import FRAMES_SPEC_PREFIX
+
+    if isinstance(d, str) and d.startswith(FRAMES_SPEC_PREFIX):
+        return d
+    return resolve_source(d)
+
+
 _FRAMES_GEOMETRY_CACHE: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
 
@@ -423,7 +439,7 @@ class NoiseGenFrameDataset(Dataset):
                 f"deterministic — see class docstring); got {inner.channel_policy!r}"
             )
         self.inner = inner
-        self.dregon_dir = resolve_source(dregon_dir) if dregon_dir is not None else None
+        self.dregon_dir = _resolve_noise_dir(dregon_dir)
         origins = {r.origin for r in inner.records}
         self._geometry = {o: _noise_gen_geometry(o, self.dregon_dir) for o in origins}
 
@@ -468,8 +484,8 @@ class NoiseGenFrameDataset(Dataset):
         """Build the *train* split — see :func:`build_valid` for the pair."""
         from data_processing.noise_rps_dataset import build_noise_rps_datasets
 
-        dregon_dir = resolve_source(dregon_dir) if dregon_dir is not None else None
-        michaels_dir = resolve_source(michaels_dir) if michaels_dir is not None else None
+        dregon_dir = _resolve_noise_dir(dregon_dir)
+        michaels_dir = _resolve_noise_dir(michaels_dir)
         train_ds, _val_ds = build_noise_rps_datasets(
             dregon_dir=dregon_dir,
             michaels_dir=michaels_dir,
@@ -506,8 +522,8 @@ class NoiseGenFrameDataset(Dataset):
         module gives ``train:``/``valid:`` independent ``_target_`` specs."""
         from data_processing.noise_rps_dataset import build_noise_rps_datasets
 
-        dregon_dir = resolve_source(dregon_dir) if dregon_dir is not None else None
-        michaels_dir = resolve_source(michaels_dir) if michaels_dir is not None else None
+        dregon_dir = _resolve_noise_dir(dregon_dir)
+        michaels_dir = _resolve_noise_dir(michaels_dir)
         _train_ds, val_ds = build_noise_rps_datasets(
             dregon_dir=dregon_dir,
             michaels_dir=michaels_dir,

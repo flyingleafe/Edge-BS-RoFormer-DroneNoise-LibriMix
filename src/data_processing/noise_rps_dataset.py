@@ -403,14 +403,19 @@ def build_noise_rps_datasets(
     for src in sources:
         tf = src.frame
         cut = src.duration * (1.0 - val_pct) if not val_at_start else src.duration * val_pct
+        # Open-ended slices: recordings with absolute epoch timestamps (the
+        # published tdframe-v1 frames) sit at ~1e18 ticks, beyond float64
+        # integer precision — round-tripping t_start/t_end through float
+        # overshoots the boundary by a few ticks and raises DomainError.
+        # Only the interior cut point may round-trip.
         if val_at_start:
             # Val: [t_start, t_start+cut]  |  Train: [t_start+cut, t_end]
-            val_tf = tf.time[tf.t_start : tf.t_start + cut]
-            train_tf = tf.time[tf.t_start + cut : tf.t_end]
+            val_tf = tf.time[: tf.t_start + cut]
+            train_tf = tf.time[tf.t_start + cut :]
         else:
             # Train: [t_start, t_start+cut]  |  Val: [t_start+cut, t_end]
-            train_tf = tf.time[tf.t_start : tf.t_start + cut]
-            val_tf = tf.time[tf.t_start + cut : tf.t_end]
+            train_tf = tf.time[: tf.t_start + cut]
+            val_tf = tf.time[tf.t_start + cut :]
         if train_tf["audio"].duration >= chunk_size / sample_rate:
             train_sources.append(_wrap_frame(train_tf, origin=src.origin, rps_key=src.rps_key))
         if val_tf["audio"].duration >= chunk_size / sample_rate:
