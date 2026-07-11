@@ -1,7 +1,7 @@
 ---
 experiment: e5_timewarp_scv2
 training_config: conf/experiment/e5_timewarp_scv2.yaml
-batch: docs/experiments/simpleconv-rps-architecture-search.md
+batch: docs/experiments/e5-timewarp.md
 ---
 
 # `e5_timewarp_scv2`
@@ -18,4 +18,6 @@ Hydra wiring — data `online_mix_v4_michaels_timewarp` · model `simple_conv_v2
 
 ## Conclusion
 
-Pending. Comparison baseline: `c10_arch_sweep_online` with `model=simple_conv_v2`.
+**Win: −9%.** Best val PIT MSE **8.849** (ep31) vs baseline 9.707 (`e5_baseline_scv2`).
+Run crashed at ep66 but the best-val was reached and plateaued well before, so
+the number stands. See [E5 batch doc](../../docs/experiments/e5-timewarp.md).

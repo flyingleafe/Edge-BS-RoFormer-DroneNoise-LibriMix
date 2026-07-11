@@ -1,7 +1,7 @@
 ---
 experiment: e5_timewarp_uni_gru128
 training_config: conf/experiment/e5_timewarp_uni_gru128.yaml
-batch: docs/experiments/simpleconv-rps-architecture-search.md
+batch: docs/experiments/e5-timewarp.md
 ---
 
 # `e5_timewarp_uni_gru128`
@@ -18,4 +18,9 @@ Hydra wiring — data `online_mix_v4_michaels_timewarp` · model `simple_conv_v2
 
 ## Conclusion
 
-Pending. Comparison baseline: `c10_uni_gru128_online` (PIT MSE 7.33).
+**Tie.** Best val PIT MSE **10.331** (ep24) vs same-framework baseline 10.454
+(`e5_baseline_uni_gru128`, ep22) — −1%, within noise. The small causal GRU has
+little capacity to overfit the trajectory set, so time-warp buys almost nothing
+here (contrast scv2/transformer, which win). The legacy `c10_uni_gru128_online`
+7.33 is a *different-pipeline* number and not comparable. See
+[E5 batch doc](../../docs/experiments/e5-timewarp.md).

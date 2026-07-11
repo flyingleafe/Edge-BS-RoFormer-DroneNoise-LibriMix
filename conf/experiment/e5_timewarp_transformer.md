@@ -1,7 +1,7 @@
 ---
 experiment: e5_timewarp_transformer
 training_config: conf/experiment/e5_timewarp_transformer.yaml
-batch: docs/experiments/simpleconv-rps-architecture-search.md
+batch: docs/experiments/e5-timewarp.md
 ---
 
 # `e5_timewarp_transformer`
@@ -18,4 +18,10 @@ Hydra wiring — data `online_mix_v4_michaels_timewarp` · model `simple_conv_v2
 
 ## Conclusion
 
-Pending. Comparison baseline: `c10_arch_sweep_online` with `model=simple_conv_v2_transformer` (PIT MSE 8.46).
+**Big win: −26%, best model overall.** Best val PIT MSE **8.737** (RMSE 2.70,
+ep80) vs same-framework baseline 11.759 (`e5_baseline_transformer`, ep79). The
+Transformer baseline is the *worst* of the three heads despite the most capacity
+(overfits the limited trajectory set); time-warp rescues it to the best result to
+date. Both runs hit gpushort walltime at ep115, but best-vals (ep79–80) had
+plateaued before. The legacy 8.46 is a different-pipeline number, not comparable.
+See [E5 batch doc](../../docs/experiments/e5-timewarp.md).
