@@ -325,7 +325,27 @@ def load_published_noise_sources(
         }
         if "meta" in tf:
             entries["meta"] = tf["meta"]
-        sources.append(_wrap_frame(td.Frame(entries), origin=origin, rps_key=rps_key))
+        frame = td.Frame(entries)
+        # The published audio can span more than the telemetry (e.g. michaels
+        # rps starts after the audio) — chunks sampled outside the overlap
+        # would carry an empty motor slice (upsample_rps_to_audio_rate
+        # IndexError). Trim to the common window, with a small inward margin
+        # so absolute epoch boundaries (~1e18 ticks) never round-trip through
+        # float exactly (cf. the open-ended-slice fix in
+        # build_noise_rps_datasets).
+        # NB: for a StampIndex telemetry series t_start/t_end are the DOMAIN
+        # bounds (= the container's), not the first/last stamp — DREGON
+        # motors_measured stamps start seconds after the audio. Use the
+        # actual stamps.
+        stamps = np.asarray(cast(Any, frame[rps_key]).tindex.abs_stamps, dtype=np.float64)
+        if stamps.size < 2:
+            continue
+        margin = 0.01
+        lo = max(float(frame["audio"].t_start), float(stamps[0])) + margin
+        hi = min(float(frame["audio"].t_end), float(stamps[-1])) - margin
+        if hi - lo < 1.0:
+            continue
+        sources.append(_wrap_frame(frame.time[lo:hi], origin=origin, rps_key=rps_key))
     return sources
 
 
