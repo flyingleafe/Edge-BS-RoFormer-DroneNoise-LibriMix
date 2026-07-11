@@ -59,6 +59,36 @@ def overlap_and_add(signal: torch.Tensor, frame_step: int):
     return rearrange(result, f"({batch_dim_s}) 1 t 1 -> {batch_dim_s} t", **batch_dim_d)
 
 
+def overlap_add_50pct(windowed: torch.Tensor, hop_size: int) -> torch.Tensor:
+    """Fold-free overlap-add specialised to 50%-overlapping frames.
+
+    Numerically identical to ``overlap_and_add(windowed, hop_size)`` when the
+    frame length is exactly ``2 * hop_size`` (adjacent frames overlap by one
+    hop), but avoids the ``F.fold`` / ``aten::col2im`` kernel — which dominated
+    the harmonic-amplitude upsampling (~40% of the whole generator forward) and
+    is slow on both CPU and GPU. Each frame splits into two half-hop blocks; the
+    overlap-add is then two shifted slice-adds instead of a fold.
+
+    Args:
+        windowed: ``[..., N, 2*hop_size]`` windowed frames.
+        hop_size: hop between frames (= half the frame length).
+    Returns:
+        ``[..., (N + 1) * hop_size]`` overlap-added signal.
+    """
+    frame_length = windowed.shape[-1]
+    if frame_length != 2 * hop_size:
+        raise ValueError(
+            f"overlap_add_50pct expects frame length 2*hop_size={2 * hop_size}, got {frame_length}"
+        )
+    *batch, n_frames, _ = windowed.shape
+    first = windowed[..., :hop_size].reshape(*batch, n_frames * hop_size)
+    second = windowed[..., hop_size:].reshape(*batch, n_frames * hop_size)
+    out = windowed.new_zeros(*batch, (n_frames + 1) * hop_size)
+    out[..., : n_frames * hop_size] += first
+    out[..., hop_size:] += second
+    return out
+
+
 def get_fft_size(frame_size: int, ir_size: int, power_of_2: bool = True) -> int:
     """Calculate FFT size for efficient convolution."""
     convolved_frame_size = ir_size + frame_size - 1

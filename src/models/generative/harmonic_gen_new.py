@@ -132,12 +132,28 @@ class HarmonicNoiseGenNew(nn.Module):
 
         bo = b * o
         eps = torch.randn(bo, n_intervals, device=f0s.device, dtype=f0s.dtype)
-        d = sigma * torch.randn(bo, device=f0s.device, dtype=f0s.dtype)
-        cols = [d]
-        for n in range(n_intervals):
-            d = d * alpha + noise_scale * eps[:, n]
-            cols.append(d)
-        delta = torch.stack(cols, dim=1).reshape(bo, 1, n_ctrl)  # [B*O, 1, n_ctrl]
+        d0 = sigma * torch.randn(bo, device=f0s.device, dtype=f0s.dtype)
+
+        # Closed-form OU instead of a Python scan (the scan was ~n_intervals tiny
+        # kernel launches — the "1287 small muls" hotspot on GPU):
+        #   delta[n] = alpha^n * delta[0] + noise_scale * sum_{j<n} alpha^j eps[n-1-j]
+        # The alpha^j term is a causal FIR on eps; alpha in (0, 1) so the kernel
+        # decays and is truncated where it underflows fp32 (no alpha^{-n}
+        # division => overflow-free), reproducing the scan to ~1e-6.
+        if 0.0 < alpha < 1.0:
+            kernel_len = min(n_intervals, int(np.ceil(np.log(1e-8) / np.log(alpha))) + 1)
+        else:
+            kernel_len = 1
+        j = torch.arange(kernel_len, device=f0s.device, dtype=f0s.dtype)
+        kernel = noise_scale * (alpha**j)
+        eps_pad = F.pad(eps, (kernel_len - 1, 0))
+        fir = F.conv1d(eps_pad.unsqueeze(1), kernel.flip(0).view(1, 1, kernel_len)).squeeze(
+            1
+        )  # [bo, n_intervals], = delta[1..n_intervals] noise part
+        n_idx = torch.arange(n_ctrl, device=f0s.device, dtype=f0s.dtype)
+        decay = (alpha**n_idx) * d0.unsqueeze(-1)  # alpha^n * delta[0], [bo, n_ctrl]
+        noise_part = F.pad(fir, (1, 0))  # prepend n=0 (no noise) -> [bo, n_ctrl]
+        delta = (decay + noise_part).reshape(bo, 1, n_ctrl)  # [B*O, 1, n_ctrl]
         delta = F.interpolate(delta, size=t, mode="linear", align_corners=True)
         return f0s + delta.reshape(b, o, t)
 
