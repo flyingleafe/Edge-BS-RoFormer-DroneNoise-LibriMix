@@ -329,6 +329,36 @@ class OnlineMixFrameDataset(IterableDataset):
         )
 
 
+_FRAMES_GEOMETRY_CACHE: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _frames_spec_geometry(spec: str) -> tuple[np.ndarray, np.ndarray]:
+    """Geometry from a published ``frames:NAME[@VER]`` dataset.
+
+    The tdframe-v1 recording frames carry ``mic_pos``/``rotor_pos`` entries
+    baked in at publish time (``frames.make_recording_frame``), so a raw data
+    tree (``micPos.txt``) is not needed — required for dload-streamed training
+    on backends without a local checkout. Decoding a recording just for its
+    geometry is wasteful, hence the module-level cache (train+valid datasets
+    share it).
+    """
+    if spec not in _FRAMES_GEOMETRY_CACHE:
+        from data_processing.noise_rps_dataset import _parse_frames_spec
+        from data_processing.streams import iter_published_frames
+
+        name, version = _parse_frames_spec(spec)
+        for tf in iter_published_frames(name, version):
+            if "mic_pos" in tf and "rotor_pos" in tf:
+                _FRAMES_GEOMETRY_CACHE[spec] = (
+                    np.asarray(tf["mic_pos"].data, dtype=np.float64),
+                    np.asarray(tf["rotor_pos"].data, dtype=np.float64),
+                )
+                break
+        else:
+            raise ValueError(f"no recording in {spec!r} carries mic_pos/rotor_pos geometry")
+    return _FRAMES_GEOMETRY_CACHE[spec]
+
+
 def _noise_gen_geometry(
     origin: str, dregon_dir: str | Path | None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -340,6 +370,10 @@ def _noise_gen_geometry(
     if origin == "dregon":
         if dregon_dir is None:
             raise ValueError("dregon_dir is required to build geometry for 'dregon'-origin chunks")
+        from data_processing.noise_rps_dataset import FRAMES_SPEC_PREFIX
+
+        if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
+            return _frames_spec_geometry(dregon_dir)
         from data_processing.dregon import get_geometry
 
         return get_geometry(Path(dregon_dir))
