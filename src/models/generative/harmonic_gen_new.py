@@ -147,11 +147,15 @@ class HarmonicNoiseGenNew(nn.Module):
         )
 
         if self.use_random_phases:
+            n = harm_noise.shape[-1]
             mag = self.stft(harm_noise).abs()
             ang = torch.exp(1j * (torch.randn_like(mag) * torch.pi))
 
             S = mag * ang
-            harm_noise = self.istft(S)
+            # length= keeps the roundtrip sample-exact; without it istft
+            # returns full frames only (e.g. 16000 -> 15872) and the sum with
+            # the broadband branch shape-crashes.
+            harm_noise = self.istft(S, n)
 
         return harm_noise
 
