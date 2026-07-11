@@ -1,0 +1,24 @@
+# @package _global_
+# E7 curriculum STAGE 1 (transformer) — RPS predictor trained on GENERATED noise
+# ONLY, validated on the FIXED REAL DREGON+Michael's split. Sibling of
+# e7_gencurric_s1_unigru128 with the simple_conv_v2_transformer head (the E5
+# time-warp best-overall arch). Early-stopped at patience 5; best.ckpt
+# warm-starts e7_gencurric_s2_transformer.
+# Full batch: docs/experiments/e7-gen-curriculum.md.
+defaults:
+  - override /data: rps_generated_only_interp
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e7_gencurric_s1_transformer
+epochs: 100
+patience: 5
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

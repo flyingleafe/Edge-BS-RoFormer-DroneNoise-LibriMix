@@ -276,6 +276,25 @@ Determinism caveat: a live (`refresh: true`) stream is **not** seed-reproducible
 (buffer contents depend on timing) — keep validation on real/fixed sources, or use
 `refresh: false`.
 
+**Vicinal `interp` mode** (E7 — `conf/online_mix/rps_generated_only_interp.yaml`):
+instead of one fixed `drone`, an `interp:` sub-block makes each producer batch
+sample a *novel* drone along the DREGON↔Michael's embedding segment, so the
+consumer (e.g. an RPS predictor) sees a continuum of timbres/geometries. Per
+batch: draw `α ~ U(alpha.low, alpha.high)`; `z = (1−α)·z0 + α·z1 +
+N(0, embedding_noise·‖z1−z0‖)`; `rotor_interp` linearly interpolates rotor
+positions at α; `jitter_sigma: interp` blends the learned per-drone OU σ at α
+(or a float, or `off`) and is forced ON at eval; `mic_sampling` picks a rig
+(`rigs`, `prob`) **independently** of α and jitters each mic by
+`N(0, jitter_std m)` — the vicinity of the real arrays. `endpoints` are codebook
+names. α also feeds the `rps_synthesis` `drone_profile` blend. Requires a
+**flat conditioned checkpoint** (`_CodebookConditionedNoiseGen` state_dict with
+`codebook.codes.*` + optional `log_jitter_sigma.*`; the modern `training.loop`
+format) — `_load_generator` rebuilds the exact composite via
+`models.registry.build_noise_gen_model` (spectral-norm / per-drone-σ aware),
+so the reduced `save_bundle` (no σ) is single-drone only. `checkpoint` accepts
+an `r2://` URI (auto-downloaded via `training.artifacts.resolve_checkpoint_uri`);
+set `dregon_dir: dload:DREGON` on cloud so the producer can load DREGON geometry.
+
 Benchmark notes:
 - Noise-gen inference (`PositionalHarmonicNoiseGen`, 236k params, mostly FFTs) is
   ~128 ms per 1 s 8-mic chunk on CPU (batched); GPU is far faster, which is why the

@@ -67,6 +67,23 @@ def _ensure_src_on_path() -> None:
             sys.path.insert(0, p)
 
 
+def _to_plain(cfg: Any) -> Any:
+    """Convert an OmegaConf node (or nested dict/list) to plain Python
+    containers so it pickles cleanly into the spawn producer process."""
+    try:
+        from omegaconf import DictConfig, ListConfig, OmegaConf
+
+        if isinstance(cfg, (DictConfig, ListConfig)):
+            return OmegaConf.to_container(cfg, resolve=True)
+    except Exception:
+        pass
+    if isinstance(cfg, dict):
+        return {k: _to_plain(v) for k, v in cfg.items()}
+    if isinstance(cfg, (list, tuple)):
+        return [_to_plain(v) for v in cfg]
+    return cfg
+
+
 def load_geometry(
     drone: str, dregon_dir: str | Path = "data/DREGON"
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -83,31 +100,111 @@ def load_geometry(
     return _dreg(resolve_source(dregon_dir))
 
 
-def _build_generator(params: dict[str, Any], device: str):
-    """Load the model + codebook bundle and validate the requested drone."""
+class _GenBundle:
+    """Everything the producer needs from a generator checkpoint: the emitter,
+    each drone's conditioning code ``z`` and learned jitter ``sigma``, plus the
+    codebook dimensionality/names."""
+
+    __slots__ = ("model", "z_map", "sigma_map", "cond_dim", "names")
+
+    def __init__(self, model, z_map, sigma_map, cond_dim, names):
+        self.model = model
+        self.z_map: dict[str, torch.Tensor] = z_map
+        self.sigma_map: dict[str, float | None] = sigma_map
+        self.cond_dim = int(cond_dim)
+        self.names = list(names)
+
+
+def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
+    """Load a trained generator, its per-drone codes and learned jitter σ.
+
+    Handles both checkpoint formats transparently:
+
+    * the modern flat ``_CodebookConditionedNoiseGen.state_dict()`` (keys
+      ``generator.*`` + ``codebook.codes.<name>`` + optional
+      ``log_jitter_sigma.<name>``) — the one the unified ``training.loop``
+      writes, and the only one carrying the learned per-drone σ; and
+    * the legacy ``save_bundle`` dict ``{model, codebook, cond_dim,
+      drone_names}`` (no σ → resolves to ``None``).
+
+    ``params['checkpoint']`` may be a local path or an ``r2://`` URI.
+    """
     _ensure_src_on_path()
     from models.generative import PositionalHarmonicNoiseGen
-    from tasks.noise_generation import DroneCodebook
+    from training.artifacts import resolve_checkpoint_uri
 
-    bundle = torch.load(params["checkpoint"], map_location=device, weights_only=False)
-    cond_dim = int(bundle["cond_dim"])
-    model = PositionalHarmonicNoiseGen(
-        sample_rate=params["sample_rate"],
-        n_harmonics=params["n_harmonics"],
-        use_diff_noise=not params["no_diff_noise"],
-        cond_dim=cond_dim,
-    )
-    model.load_state_dict(bundle["model"])
-    model.to(device).eval()  # eval => deterministic modules; phase variety is explicit below
-    names = list(bundle["drone_names"])
-    if params["drone"] not in names:
-        raise ValueError(
-            f"drone {params['drone']!r} not in checkpoint codebook {names}; "
-            "the generated source must name a drone the checkpoint was trained on"
+    ckpt_path = resolve_checkpoint_uri(params["checkpoint"])
+    obj = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    def _build_emitter(cond_dim: int) -> Any:
+        return PositionalHarmonicNoiseGen(
+            sample_rate=params["sample_rate"],
+            n_harmonics=params["n_harmonics"],
+            use_diff_noise=not params["no_diff_noise"],
+            cond_dim=cond_dim,
         )
-    codebook = DroneCodebook(cond_dim, names=names).to(device)
-    codebook.load_state_dict(bundle["codebook"])
-    return model, codebook
+
+    is_bundle = (
+        isinstance(obj, dict) and "model" in obj and "codebook" in obj and "drone_names" in obj
+    )
+    if is_bundle:
+        from tasks.noise_generation import DroneCodebook
+
+        cond_dim = int(obj["cond_dim"])
+        names = list(obj["drone_names"])
+        model = _build_emitter(cond_dim)
+        model.load_state_dict(obj["model"])
+        codebook = DroneCodebook(cond_dim, names=names).to(device)
+        codebook.load_state_dict(obj["codebook"])
+        with torch.no_grad():
+            z_map = {n: codebook([n])[0].detach().clone() for n in names}
+        sigma_map: dict[str, float | None] = {n: None for n in names}
+    else:
+        # Flat _CodebookConditionedNoiseGen state_dict. The FiLM generator may
+        # be spectral-norm parametrized (E6 latreg) and the wrapper may carry
+        # per-drone log_jitter_sigma — plain PositionalHarmonicNoiseGen keys
+        # won't match. So rebuild the exact composite via the registry (which
+        # applies the same spectral-norm/codebook/σ structure), load strictly,
+        # then extract the emitter + codes + learned σ.
+        from models.registry import build_noise_gen_model
+
+        sd = obj  # flat state_dict
+        code_keys = [k for k in sd if k.startswith("codebook.codes.")]
+        if not code_keys:
+            raise ValueError(
+                "generated-noise checkpoint is neither a save_bundle nor a "
+                "conditioned state_dict (no 'codebook.codes.*' keys)"
+            )
+        names = [k[len("codebook.codes.") :] for k in code_keys]
+        cond_dim = int(sd[code_keys[0]].shape[-1])
+        film_sn = any(".parametrizations." in k for k in sd)
+        learn_sig = any(k.startswith("log_jitter_sigma.") for k in sd)
+        composite: Any = build_noise_gen_model(
+            str(params.get("model_name", "positional_harmonic_gen")),
+            sample_rate=params["sample_rate"],
+            n_harmonics=params["n_harmonics"],
+            use_diff_noise=not params["no_diff_noise"],
+            cond_dim=cond_dim,
+            drone_names=names,
+            rps_jitter_sigma=float(params.get("rps_jitter_sigma_init", 0.6)),
+            rps_jitter_tau=float(params.get("rps_jitter_tau", 0.016)),
+            learn_rps_jitter_sigma=learn_sig,
+            z_noise_std=0.0,  # inference: we inject our own vicinal z-noise
+            film_spectral_norm=film_sn,
+        )
+        composite.load_state_dict(sd)
+        composite.to(device).eval()
+        model = composite.generator
+        with torch.no_grad():
+            z_map = {n: composite.codebook([n])[0].detach().clone() for n in names}
+            sig_t = composite._resolve_jitter_sigma(names) if learn_sig else None
+        sigma_map = {
+            n: (float(sig_t[i]) if sig_t is not None else None) for i, n in enumerate(names)
+        }
+
+    model.to(device).eval()  # eval => deterministic modules; phase/jitter variety is explicit below
+    z_map = {n: v.to(device).float() for n, v in z_map.items()}
+    return _GenBundle(model, z_map, sigma_map, cond_dim, names)
 
 
 def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> None:
@@ -122,14 +219,11 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
 
     device = params["device"]
     try:
-        model, codebook = _build_generator(params, device)
+        gb = _load_generator(params, device)
     except Exception as exc:  # surface the cause; readers time out on an empty buffer
         print(f"[generated-noise producer] failed to start: {exc}", file=sys.stderr)
         raise
-
-    mic_pos, rotor_pos = load_geometry(params["drone"], params["dregon_dir"])
-    rel = torch.from_numpy(geometry_to_rel_pos(mic_pos, rotor_pos)).float().to(device)  # (M,R,3)
-    n_rotors = rotor_pos.shape[0]
+    model = gb.model
     n_harm = params["n_harmonics"]
 
     audio_buf = shared["audio"]
@@ -145,32 +239,125 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
     duration_s = params["chunk_s"]
     sr = params["sample_rate"]
     rng = np.random.default_rng(params["seed"])
-    blend = _DRONE_PROFILE_BLEND.get(params["drone"], 0.0)
+
+    def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """One producer batch → ``(rps_np (bs,R,T), rel_b, z, sigma_t|None)``."""
+        raise NotImplementedError  # replaced below by the mode-specific sampler
+
+    interp = params.get("interp")
+    if interp:
+        # -- Vicinal embedding + geometry sampling along the DREGON↔Michael's
+        #    segment. Per batch: draw one α; build z as a Gaussian ball around
+        #    the segment point z(α); interpolate rotor positions and jitter σ at
+        #    the same α; per chunk pick a mic-array rig and jitter each mic.
+        e0, e1 = interp["endpoints"]
+        z0, z1 = gb.z_map[e0], gb.z_map[e1]
+        seg_len = float((z1 - z0).norm().item()) or 1.0
+        s0, s1 = gb.sigma_map.get(e0), gb.sigma_map.get(e1)
+        rot0 = np.asarray(load_geometry(e0, params["dregon_dir"])[1], dtype=np.float64)  # (R,3)
+        rot1 = np.asarray(load_geometry(e1, params["dregon_dir"])[1], dtype=np.float64)
+        n_rotors = int(rot0.shape[0])
+        mic_cfg = interp["mic_sampling"]
+        rigs = list(mic_cfg["rigs"])
+        rig_probs = np.asarray(mic_cfg.get("prob", [1.0 / len(rigs)] * len(rigs)), dtype=np.float64)
+        rig_probs = rig_probs / rig_probs.sum()
+        mic_arrays = {rig: load_geometry(rig, params["dregon_dir"])[0] for rig in rigs}  # (M,3)
+        n_mics = int(mic_arrays[rigs[0]].shape[0])
+        mic_jit = float(mic_cfg.get("jitter_std", 0.0))
+        a_lo, a_hi = float(interp["alpha"]["low"]), float(interp["alpha"]["high"])
+        emb_noise = float(interp.get("embedding_noise", 0.0))
+        rotor_interp = bool(interp.get("rotor_interp", True))
+        js = interp.get("jitter_sigma", "interp")
+
+        def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+            alpha = float(rng.uniform(a_lo, a_hi))
+            z_base = (1.0 - alpha) * z0 + alpha * z1
+            if emb_noise > 0.0:
+                z_base = z_base + torch.from_numpy(
+                    rng.normal(0.0, emb_noise * seg_len, size=int(z_base.shape[-1]))
+                ).float().to(device)
+            z = z_base.unsqueeze(0).expand(gen_bs, -1)
+            rotor_pos = (
+                (1.0 - alpha) * rot0 + alpha * rot1
+                if rotor_interp
+                else (rot1 if alpha >= 0.5 else rot0)
+            )
+            sig_val: float | None
+            if js == "interp" and s0 is not None and s1 is not None:
+                sig_val = (1.0 - alpha) * s0 + alpha * s1
+            elif isinstance(js, (int, float)):
+                sig_val = float(js)
+            else:
+                sig_val = None
+            # α doubles as the rps_synthesis drone_profile blend (0=DREGON, 1=Michael's).
+            rps_np = rps_synthesis.generate_intermittent_batch(
+                gen_bs,
+                duration_s,
+                sr,
+                drone_profile=alpha,
+                aggressiveness=params["aggressiveness"],
+                rng=rng,
+            )
+            rels = np.empty((gen_bs, n_mics, n_rotors, 3), dtype=np.float32)
+            for b in range(gen_bs):
+                rig = rigs[int(rng.choice(len(rigs), p=rig_probs))]
+                mic_b = mic_arrays[rig] + rng.normal(0.0, mic_jit, mic_arrays[rig].shape)
+                rels[b] = geometry_to_rel_pos(mic_b, rotor_pos)
+            rel_b = torch.from_numpy(rels).to(device)
+            sigma_t = (
+                torch.full((gen_bs,), float(sig_val), device=device)
+                if sig_val is not None
+                else None
+            )
+            return rps_np, rel_b, z, sigma_t
+    else:
+        drone = params["drone"]
+        z_single = gb.z_map[drone]
+        sigma_single = gb.sigma_map.get(drone)
+        mic_pos, rotor_pos_s = load_geometry(drone, params["dregon_dir"])
+        rel = torch.from_numpy(geometry_to_rel_pos(mic_pos, rotor_pos_s)).float().to(device)
+        n_rotors = int(rotor_pos_s.shape[0])
+        blend = _DRONE_PROFILE_BLEND.get(drone, 0.0)
+
+        def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+            rps_np = rps_synthesis.generate_intermittent_batch(
+                gen_bs,
+                duration_s,
+                sr,
+                drone_profile=blend,
+                aggressiveness=params["aggressiveness"],
+                rng=rng,
+            )  # (bs, R, T)
+            rel_b = rel.unsqueeze(0).expand(gen_bs, -1, -1, -1)
+            z = z_single.unsqueeze(0).expand(gen_bs, -1)
+            sigma_t = (
+                torch.full((gen_bs,), float(sigma_single), device=device)
+                if sigma_single is not None
+                else None
+            )
+            return rps_np, rel_b, z, sigma_t
 
     while bool(run[0].item()):
-        rps_np = rps_synthesis.generate_intermittent_batch(
-            gen_bs,
-            duration_s,
-            sr,
-            drone_profile=blend,
-            aggressiveness=params["aggressiveness"],
-            rng=rng,
-        )  # (bs, R, T)
+        rps_np, rel_b, z, sigma_t = _gen_batch()
         rps_t = torch.from_numpy(rps_np).float().to(device)
-        rel_b = rel.unsqueeze(0).expand(gen_bs, -1, -1, -1)
-        z = codebook([params["drone"]] * gen_bs).to(device)
         init_phase = None
         if params["random_phase"]:
             # Per-chunk random harmonic phases decorrelate the waveform texture
             # even at identical RPS — extra augmentation variety (model stays in
-            # eval, so this is the ONLY stochastic knob).
+            # eval, so this is the ONLY stochastic knob besides α + geometry).
             init_phase = (
                 torch.from_numpy(rng.uniform(0.0, 2.0 * np.pi, size=(gen_bs, n_rotors, n_harm)))
                 .float()
                 .to(device)
             )
+        kwargs: dict[str, Any] = {"initial_phases": init_phase}
+        if sigma_t is not None:
+            # Force the OU linewidth ON at eval (the emitter's gate is
+            # training-only unless rps_jitter is explicitly overridden).
+            kwargs["rps_jitter"] = True
+            kwargs["rps_jitter_sigma"] = sigma_t
         with torch.no_grad():
-            audio = model(rps_t, rel_b, z, initial_phases=init_phase).cpu()  # (bs, M, T)
+            audio = model(rps_t, rel_b, z, **kwargs).cpu()  # (bs, M, T)
 
         for b in range(gen_bs):
             i = int(write_pos[0].item())
@@ -209,7 +396,15 @@ class GeneratedNoisePool:
         dregon_dir: str | Path = "data/DREGON",
         seed: int = 0,
         warmup_timeout_s: float = 60.0,
+        interp: dict[str, Any] | None = None,
     ):
+        # In interp mode the producer varies z/geometry per chunk; ``drone`` is
+        # only the *nominal* rig used to size the ring buffer + reconstruct frame
+        # meta (both rigs share M=8/R=4, so any endpoint works). Default it to
+        # the first segment endpoint.
+        self.interp = dict(interp) if interp else None
+        if self.interp and (not drone or drone == "dregon"):
+            drone = str(self.interp["endpoints"][0])
         self.drone = str(drone)
         self.sample_rate = int(sample_rate)
         self.chunk_s = float(duration_s)
@@ -245,6 +440,7 @@ class GeneratedNoisePool:
             "device": str(device),
             "dregon_dir": str(dregon_dir),
             "seed": int(seed),
+            "interp": self.interp,
         }
         self._proc: Any = None
         self._owner_pid = None
@@ -283,9 +479,12 @@ class GeneratedNoisePool:
         checkpoint = g("checkpoint")
         if not checkpoint:
             raise ValueError("generated noise source requires 'checkpoint'")
+        interp_cfg = g("interp")
+        interp = _to_plain(interp_cfg) if interp_cfg else None
         return cls(
             checkpoint=checkpoint,
             drone=g("drone", "dregon"),
+            interp=interp,
             sample_rate=sample_rate,
             duration_s=duration_s,
             n_harmonics=int(g("n_harmonics", 100)),

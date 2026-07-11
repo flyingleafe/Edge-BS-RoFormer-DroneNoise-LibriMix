@@ -1,0 +1,27 @@
+# @package _global_
+# E7 curriculum STAGE 1 (uni_gru128) — RPS predictor trained on GENERATED noise
+# ONLY (vicinally sampled along the DREGON↔Michael's embedding segment; see
+# conf/data/rps_generated_only_interp.yaml), validated on the FIXED REAL
+# DREGON+Michael's split. Pure sim-to-real probe: how close to the real-data
+# baseline (C10 uni_gru128 online: PIT MSE 7.33) can a gen-only-trained
+# predictor get? Early-stopped at patience 5 (curriculum hand-off); its best.ckpt
+# warm-starts STAGE 2 (e7_gencurric_s2_unigru128, real-only fine-tune). No
+# augmentation. Cloud: override the train policy to the _dload twin + valid to
+# dload (see the data config header). Full batch: docs/experiments/e7-gen-curriculum.md.
+defaults:
+  - override /data: rps_generated_only_interp
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e7_gencurric_s1_unigru128
+epochs: 100
+patience: 5
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

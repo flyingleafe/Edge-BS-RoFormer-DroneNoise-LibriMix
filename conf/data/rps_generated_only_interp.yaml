@@ -1,0 +1,33 @@
+# E7 curriculum STAGE 1 data — RPS-predictor training stream fed ONLY by the
+# vicinally-sampled generated noise source (conf/online_mix/
+# rps_generated_only_interp.yaml; no real recordings in the noise pool), with a
+# FIXED, non-mixed REAL validation split (DREGON-LM-V4-michaels/valid — both the
+# DREGON and Michael's rigs). This is the pure sim-to-real probe: does gen-only
+# training reach a reasonable PIT MSE on real data? Never validate on the live
+# generated stream (not seed-reproducible). Stage 2 (real-only fine-tune) reuses
+# conf/data/online_mix_v4_michaels_no_aug.yaml.
+#
+# Cloud backends: override the policy path to the _dload twin, e.g.
+#   data.train.params.path=conf/online_mix/rps_generated_only_interp_dload.yaml
+#   "data.valid.params.data_dir='dload:DREGON-LM-V4-michaels-valid'"
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/rps_generated_only_interp.yaml
+    # Mono RPS models need per-mic flattening of the 8-channel stream (each mic
+    # becomes its own mono sample — legacy training-loop semantics).
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    # Restore per-mic flatten for the 8-channel RealValid split (mono models
+    # crash on (B, 8, T) without it).
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

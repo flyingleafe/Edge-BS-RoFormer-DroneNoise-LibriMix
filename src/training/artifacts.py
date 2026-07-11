@@ -92,6 +92,42 @@ def _load_r2_env() -> dict[str, str] | None:
     }
 
 
+def resolve_checkpoint_uri(uri: str | Path, cache_dir: str | Path | None = None) -> str:
+    """Resolve a checkpoint reference to a local file path.
+
+    A plain path is returned unchanged. An ``r2://<bucket>/<key>`` URI is
+    downloaded (once, cached) via a boto3 client built from ``.env`` R2 creds
+    and the local cache path is returned. Used for warm-start
+    (``cfg.checkpoint``) and for the generated-noise producer's checkpoint,
+    so both work identically on a laptop or a fresh cloud GPU box.
+    """
+    uri = str(uri)
+    if not uri.startswith("r2://"):
+        return uri
+    bucket, _, key = uri[len("r2://") :].partition("/")
+    if not bucket or not key:
+        raise ValueError(f"malformed r2:// checkpoint uri: {uri!r}")
+    cache = Path(cache_dir) if cache_dir else Path(".cache") / "r2_checkpoints"
+    cache.mkdir(parents=True, exist_ok=True)
+    dst = cache / f"{bucket}__{key.replace('/', '__')}"
+    if dst.exists():
+        return str(dst)
+    env = _load_r2_env()
+    if env is None:
+        raise RuntimeError(f"r2:// checkpoint {uri!r} requested but R2 creds missing in .env")
+    import boto3
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=f"https://{env['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        aws_access_key_id=env["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
+    client.download_file(bucket, key, str(dst))
+    return str(dst)
+
+
 class ArtifactStore:
     """Upload checkpoints and validation samples to Cloudflare R2.
 

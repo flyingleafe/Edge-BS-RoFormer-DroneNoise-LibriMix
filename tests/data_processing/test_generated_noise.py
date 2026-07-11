@@ -40,6 +40,32 @@ def _tiny_bundle(tmp_path, *, drone: str = "michaels", n_harm: int = 8, cond_dim
     return path
 
 
+def _tiny_flat_conditioned(
+    tmp_path, *, drones=("dregon", "michaels"), n_harm: int = 8, cond_dim: int = 8
+) -> str:
+    """A flat `_CodebookConditionedNoiseGen` state_dict (the modern checkpoint
+    format) with per-drone learnable σ + spectral-norm FiLM — exercises the
+    `_load_generator` flat/registry-rebuild branch the interp mode relies on."""
+    from models.registry import build_noise_gen_model
+
+    composite = build_noise_gen_model(
+        "positional_harmonic_gen",
+        sample_rate=16000,
+        n_harmonics=n_harm,
+        use_diff_noise=True,
+        cond_dim=cond_dim,
+        drone_names=list(drones),
+        rps_jitter_sigma=0.6,
+        rps_jitter_tau=0.016,
+        learn_rps_jitter_sigma=True,
+        z_noise_std=0.1,
+        film_spectral_norm=True,
+    )
+    path = str(tmp_path / "tiny_flat_gen.pt")
+    torch.save(composite.state_dict(), path)
+    return path
+
+
 def _make_pool(
     tmp_path,
     *,
@@ -146,6 +172,56 @@ def test_unknown_drone_rejected(tmp_path):
             pool.sample_timeframe(np.random.default_rng(0), 0.25)
         finally:
             pool.close()
+
+
+@pytest.mark.skipif(
+    not Path("data/DREGON").is_dir(),
+    reason="interp mode loads both DREGON + Michael's geometry (needs data/DREGON)",
+)
+def test_generated_pool_interp_mode_yields_wellformed_timeframe(tmp_path):
+    """Vicinal embedding + geometry sampling along the DREGON↔Michael's segment:
+    the producer must load the flat conditioned checkpoint, interpolate z/rotor/σ,
+    sample a mic rig, and still emit a well-formed (audio, exact-RPS) Frame."""
+    from data_processing.generated_noise import GeneratedNoisePool
+
+    ck = _tiny_flat_conditioned(tmp_path)
+    pool = GeneratedNoisePool(
+        ck,
+        drone="dregon",  # nominal; interp overrides per-chunk
+        device="cpu",
+        n_harmonics=8,
+        duration_s=0.25,
+        dregon_dir="data/DREGON",
+        n_slots=8,
+        gen_batch=2,
+        warmup=2,
+        warmup_timeout_s=60.0,
+        seed=1,
+        interp={
+            "endpoints": ["dregon", "michaels"],
+            "alpha": {"low": 0.0, "high": 1.0},
+            "embedding_noise": 0.15,
+            "rotor_interp": True,
+            "jitter_sigma": "interp",
+            "mic_sampling": {
+                "rigs": ["dregon", "michaels"],
+                "prob": [0.5, 0.5],
+                "jitter_std": 0.02,
+            },
+        },
+    )
+    try:
+        assert pool.interp is not None
+        tf = pool.sample_timeframe(np.random.default_rng(0), 0.25)
+        assert isinstance(tf, td.Frame)
+        audio = tf["audio"]
+        assert audio.data.shape == (8, int(round(0.25 * 16000)))
+        assert np.isfinite(np.asarray(audio.data)).all()
+        rps = _rps_values(tf)
+        assert rps.shape[0] == 4  # 4 rotors, time-last
+        assert rps.min() >= 25.0 and rps.max() <= 130.0
+    finally:
+        pool.close()
 
 
 # --- MixedNoisePool / dispatch (no GPU, no spawn) --------------------------------

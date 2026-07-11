@@ -1,0 +1,22 @@
+# @package _global_
+# E7 curriculum STAGE 2 (transformer) — REAL-ONLY fine-tune warm-started from
+# e7_gencurric_s1_transformer's best.ckpt. Sibling of e7_gencurric_s2_unigru128.
+# Full batch: docs/experiments/e7-gen-curriculum.md.
+defaults:
+  - override /data: online_mix_v4_michaels_no_aug
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e7_gencurric_s2_transformer
+checkpoint: r2://ml-data/artifacts/e7_gencurric_s1_transformer/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

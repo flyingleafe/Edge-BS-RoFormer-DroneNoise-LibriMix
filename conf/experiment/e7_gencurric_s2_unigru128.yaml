@@ -1,0 +1,29 @@
+# @package _global_
+# E7 curriculum STAGE 2 (uni_gru128) — REAL-ONLY fine-tune warm-started from the
+# STAGE-1 gen-only checkpoint. Loads e7_gencurric_s1_unigru128's best.ckpt
+# (cfg.checkpoint → training.loop._warm_start; fresh optimizer/scheduler/
+# early-stopping), then trains on the real DREGON(-room1)+Michael's FLY125
+# stream (online_mix_v4_michaels_no_aug, no augmentation) with renewed patience
+# 20. Tests whether gen-only pretraining is a better init than from-scratch for
+# the real-data RPS task. Same fixed real validation split.
+# Full batch: docs/experiments/e7-gen-curriculum.md.
+defaults:
+  - override /data: online_mix_v4_michaels_no_aug
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e7_gencurric_s2_unigru128
+# Warm-start from STAGE 1's best checkpoint (R2 URI — portable across machines;
+# resolve_checkpoint_uri downloads + caches it). Requires STAGE 1 to have run.
+checkpoint: r2://ml-data/artifacts/e7_gencurric_s1_unigru128/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -286,6 +286,28 @@ def _save_checkpoint(model: torch.nn.Module, path: Path) -> None:
     torch.save(model.state_dict(), path)
 
 
+def _warm_start(model: torch.nn.Module, checkpoint: str, device: torch.device) -> None:
+    """Initialise ``model`` weights from a prior checkpoint before training.
+
+    Enables a two-stage curriculum as two independent runs (fresh optimizer,
+    scheduler, and early-stopping): stage 2 sets ``checkpoint=`` to stage 1's
+    ``best.ckpt`` (local path or ``r2://…`` URI). Loaded ``strict=False`` so a
+    LoRA-wrapped or partially-changed head degrades to a warning rather than a
+    hard failure."""
+    from training.artifacts import resolve_checkpoint_uri
+
+    path = resolve_checkpoint_uri(checkpoint)
+    state = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    result = model.load_state_dict(state, strict=False)
+    missing, unexpected = result.missing_keys, result.unexpected_keys
+    print(
+        f"[warm-start] loaded weights from {checkpoint} "
+        f"(missing={len(missing)}, unexpected={len(unexpected)})"
+    )
+
+
 def _upload_checkpoint_and_record(
     *, store: ArtifactStore, upload_enabled: bool, path: Path, run: Any, summary_key: str
 ) -> None:
@@ -337,6 +359,8 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
     model = instantiate_model(cfg.model)
     model = maybe_apply_lora(model, cfg.lora)
     model = model.to(device)
+    if getattr(cfg, "checkpoint", None):
+        _warm_start(model, str(cfg.checkpoint), device)
     loss_fn = build_losses(cfg.loss).to(device)
     metric_suite = build_metrics(cfg.metrics)
 

@@ -1,0 +1,65 @@
+# E7 curriculum, STAGE 1 — RPS-predictor training on GENERATED noise ONLY (no
+# real recordings in the noise pool). The generated source is the per-drone
+# adaptive-σ generator (e6_noisegen_jitter_latreg_perdrone) sampled *vicinally*
+# along the DREGON↔Michael's embedding segment, so training sees a continuum of
+# drone timbres + geometries rather than the two fixed real rigs:
+#
+#   • embedding: z(α) = (1-α)·z_dregon + α·z_michaels + N(0, 0.15·‖z1-z0‖),
+#     α ~ U(0,1) per batch (α also drives the rps_synthesis drone_profile blend);
+#   • rotor positions: linearly interpolated along the same α;
+#   • mic array: a rig (DREGON or Michael's) chosen 50/50 *independently* of α,
+#     with each mic jittered by N(0, 2 cm) — vicinity of the real arrays;
+#   • RPS jitter: the learned per-drone OU linewidth σ, interpolated at α,
+#     applied to the excitation before synthesis (audio has realistic linewidth;
+#     the clean synthetic RPS trajectory remains the exact label).
+#
+# This is the pure sim-to-real test: can a predictor trained ONLY on generated
+# data reach a reasonable PIT MSE on the real (DREGON+Michael's) validation set?
+# Validation stays fixed/real (conf/data/rps_generated_only_interp.yaml). The
+# live generated stream is not seed-reproducible (refresh: true) — never validate
+# on it. Cloud/portable twin: rps_generated_only_interp_dload.yaml.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260711
+
+sources:
+  noise:
+    - kind: generated
+      checkpoint: omnirun-outputs/r2-artifacts/e6_noisegen_jitter_latreg_perdrone_best.ckpt
+      n_harmonics: 100                # MUST match the checkpoint's training value
+      device: cuda:0                  # the ONE extra CUDA context (producer)
+      gen_batch: 32
+      random_phase: true              # per-chunk harmonic phases => extra texture
+      refresh: true                   # live stream (set false for a fixed bank)
+      rps:
+        kind: synthetic_intermittent  # calibrated OU + Poisson maneuvers (α-blended)
+        aggressiveness: 1.0
+      interp:
+        endpoints: [dregon, michaels] # codebook names defining the segment
+        alpha: {low: 0.0, high: 1.0}  # uniform α along the segment (per batch)
+        embedding_noise: 0.15         # Gaussian std around z(α), in units of ‖z1-z0‖
+        rotor_interp: true            # interpolate rotor positions at α
+        jitter_sigma: interp          # blend learned per-drone σ at α ('off' / a float also ok)
+        mic_sampling:
+          rigs: [dregon, michaels]    # sample mic array from the vicinity of either rig
+          prob: [0.5, 0.5]            # rig choice prob (independent of α)
+          jitter_std: 0.02            # per-mic 3D Gaussian std (meters)
+      buffer:
+        slots: 512
+        warmup: 32
+
+  speech:
+    - kind: audio_files
+      root: data/librispeech/LibriSpeech/train-clean-100
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false
