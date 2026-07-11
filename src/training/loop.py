@@ -6,7 +6,8 @@ Covers the union of behaviors of the three old trainers (``train.py``,
 (online-mixing) datasets, AMP autocast + ``GradScaler``, gradient
 accumulation, grad-norm clipping, an optimizer factory ported from
 ``train.py::get_optimizer``, ``ReduceLROnPlateau`` + early stopping on a
-configurable monitor metric, checkpointing (``best.ckpt`` + periodic
+configurable monitor metric, checkpointing (``best.ckpt`` best-monitor +
+``last.ckpt`` latest-epoch + optional periodic
 ``ep{N}_{monitor}_{value:.4f}.ckpt``), and wandb logging (run name =
 experiment name, git commit hash, dirty-tree guard, run-id file for the
 job runner to pick up — mirrors ``train.py::wandb_init``).
@@ -507,6 +508,22 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
                 run=run,
                 summary_key=f"r2/checkpoint_ep{epoch}",
             )
+
+        # Always keep the *latest* weights (overwritten each epoch, uploaded so a
+        # reclaimed cloud session doesn't lose it). ``best.ckpt`` tracks the best
+        # monitor metric (often an early epoch); ``last.ckpt`` is the model as
+        # actually converged on the *training* distribution — needed e.g. to
+        # inspect what a model fit to generated data learned (train loss keeps
+        # dropping long after val plateaus).
+        last_ckpt_path = run_dir / "last.ckpt"
+        _save_checkpoint(model, last_ckpt_path)
+        _upload_checkpoint_and_record(
+            store=store,
+            upload_enabled=cfg.artifacts.upload_checkpoints,
+            path=last_ckpt_path,
+            run=run,
+            summary_key="r2/last_checkpoint",
+        )
 
         if no_improve >= cfg.patience:
             break
