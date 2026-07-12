@@ -1,0 +1,25 @@
+# @package _global_
+# E11 — transformer RPS predictor on the FULL-FLIGHT combined noise task WITH
+# augmentation. 50% neural generator (e11_noisegen_silence: emitter silence-fade
+# so zero RPS => true silence) + 50% static-comb, both full-flight RPS, +
+# LibriSpeech, + augmentation from the start. Validated on the FULL-envelope real
+# split. Fixes E10's two problems: (1) generator now silent at zero RPS,
+# (2) augmentation restored to close the sim->real texture gap that made E10
+# under-predict cruise (~51 vs 80).
+defaults:
+  - override /data: e11_full_aug
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e11_full_aug_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
