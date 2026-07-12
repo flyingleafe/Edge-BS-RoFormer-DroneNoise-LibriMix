@@ -22,10 +22,15 @@
     never learned take-off, landing, or silence; and (3) a generator that could not
     fall *silent* when the rotors stopped. We also rediscover an old lesson the hard
     way --- data augmentation is not "making the task harder", it is what stops a
-    model from memorising quirks of the synthetic sound. The final recipe ---
-    pre-train on full-flight synthetic noise, then fine-tune on real recordings ---
-    matches the best real-only model on cruise while handling the take-off, landing,
-    and ground regimes that real-only training cannot.
+    model from memorising quirks of the synthetic sound. The punchline is a
+    diagnostic: models trained this way do #emph[not] "collapse to guessing the
+    average" --- they genuinely track rotor speed across the whole flight. The real
+    bottleneck was simpler --- #emph[training coverage] of the low-speed regimes ---
+    and the cheapest fix wins: stop *trimming* the take-off ramp out of the real
+    recordings. A model trained on the whole real flight (nothing synthetic) roughly
+    quarters the error of the cruise-only baseline. Synthetic full-flight noise still
+    helps, and remains the only option for regimes real data cannot supply --- but
+    where the real ramp exists, keeping it beats simulating it.
   ],
   keywords: ("drone noise", "rotor speed estimation", "sim-to-real", "data augmentation"),
 )
@@ -156,47 +161,93 @@ of the final recipe.
     model memorises synthetic texture instead of the transferable comb-spacing cue.],
 ) <fig-trainval>
 
-= Results
+= Do the models actually predict, or just guess the average?
 
-We compare two ways to get a full-flight-capable model, both scored on the #emph[full]
-validation set (ground, warm-up, cruise, landing) and broken down by flight regime:
+Before comparing recipes, a worry worth killing. When a model scores badly on a set
+that is mostly one regime (cruise), a classic failure is that it has quietly learned to
+output a single safe number --- roughly the average rotor speed --- and given up on
+telling regimes apart. If that were happening here, our whole enterprise would be
+pointless.
 
-- #strong[Real-only + time-warp] (the baseline): train only on real recordings with
-  time-warp augmentation. This is the strongest thing achievable without synthetic data.
-- #strong[Full-flight curriculum] (ours): pre-train on full-flight synthetic noise (fixed
-  silent generator + analytic comb, with augmentation), then fine-tune on the same real
-  recordings with time-warp.
+It is not happening (@fig-tracking). Plotting each model's #emph[mean prediction] against
+the #emph[true mean] for each regime, the curves climb from ground to warm-up to cruise
+rather than sitting flat at the global average (#box[$approx 49$] rev/s). Every model ---
+even the weak cruise-only baseline --- reads #box[$approx 79$] on cruise clips whose truth
+is #box[$79$]. The models genuinely respond to rotor speed; they differ only in how well
+they handle the low-speed end, where they read too high (baseline) or a little too low
+(the full-flight-trained ones).
+
+#figure(
+  image("assets/tracking.png", width: 78%),
+  caption: [Mean predicted versus mean true rotor speed, per regime (Transformer). All
+    three training recipes track the true speed (curves rise with the truth, not flat at
+    the #box[$approx 49$] global mean) --- no model has collapsed to guessing the average.
+    They differ at the low-speed end: the cruise-only baseline over-reads a near-silent
+    drone (ground truth #box[$0$] #sym.arrow predicts #box[$48$]); the full-flight recipes
+    pull that down toward zero.],
+) <fig-tracking>
+
+= Results: three ways to cover the flight
+
+Given the models can predict, the real question is #emph[coverage]: which training data
+teaches the low-speed regimes? We compare three recipes, all scored on the #emph[full]
+validation set and broken down by regime:
+
+- #strong[Real-only, cruise-trained] (the baseline): real recordings with time-warp, but
+  with the usual #box[$>= 30$]-rev/s filter that #emph[trims the take-off ramp away]. This
+  is what the pipeline did by default --- and it means the model never sees low speed.
+- #strong[Sim full-flight curriculum]: pre-train on full-flight #emph[synthetic] noise
+  (the fixed silent generator + analytic comb, with augmentation), then fine-tune on real.
+- #strong[Real full-flight]: the #emph[same] real recordings and recipe as the baseline,
+  but keep the whole powered envelope (drop the #box[$30$]-rev/s trim to #box[$0$]) so the
+  real take-off ramp becomes training data. Nothing synthetic.
 
 #figure(
   image("assets/regime_comparison.png", width: 98%),
-  caption: [Per-regime PIT-MSE on the full validation set (lower is better), real-only
-    baseline versus the full-flight curriculum. Both handle #emph[cruise]; only the
-    curriculum handles warm-up and ground, which real training data barely contains.],
+  caption: [Per-regime PIT-MSE on the full validation set (log scale, lower better),
+    averaged over the three model sizes. Every recipe handles cruise; the two that see
+    low-speed data in training (synthetic curriculum, or the kept real ramp) cut warm-up
+    and especially ground error by large factors. Keeping the #emph[real] ramp wins.],
 ) <fig-results>
 
 #include "assets/results_table.typ"
 
-The pattern (@fig-results) is the whole point. Real-only models are excellent on
-*cruise* --- which is almost all of what real recordings contain --- but collapse on
-*warm-up* and *ground*, predicting cruise-like speeds on a nearly-silent recording,
-because they have essentially never seen those regimes. The full-flight curriculum matches
-the baseline on cruise while bringing warm-up and ground errors down by a large factor,
-because its synthetic pre-training supplied unlimited examples of exactly those rare
-regimes.
+Three things stand out (@fig-results, @tab-results). #strong[First], everyone is good at
+cruise (PIT-MSE #box[$approx 15$--$45$]) --- unsurprising, since cruise is almost all of
+what any drone recording contains. #strong[Second], the cruise-only baseline is a disaster
+off cruise: on ground clips (a near-silent, landed drone) it confidently predicts
+cruise-like speeds, for a PIT-MSE up to #box[$2450$] --- it has simply never seen a slow
+rotor. #strong[Third], and the point of the whole report: the best model overall is the
+#emph[real full-flight] Transformer, at an aggregate PIT-MSE of #box[$approx 80$] --- it
+nearly matches the baseline on cruise (#box[$20$] vs #box[$15$]) while cutting warm-up
+(#box[$149$] vs #box[$385$]) and ground (#box[$375$] vs #box[$2450$]) dramatically. It
+roughly #emph[quarters] the baseline's overall error, using no synthetic data at all ---
+only the real ramp the baseline was throwing away.
+
+The synthetic curriculum also beats the cruise-only baseline (e.g. Transformer aggregate
+#box[$132$] vs #box[$338$]), confirming that #emph[any] low-speed coverage helps. But where
+the real ramp exists, keeping it beats simulating it. The one regime nobody nails is
+#emph[true silence]: a genuinely stopped drone (#box[$0$] rev/s) still draws a #box[$10$--$15$]
+rev/s guess from even the best model, because near-silent audio carries almost no
+comb to read. That residual is exactly the kind of gap a synthetic generator --- which can
+manufacture unlimited perfectly-silent examples --- is best placed to close.
 
 = Takeaways
 
 + #strong[Audit the metric before the model.] A handful of mislabelled ground clips made
   a working model look like a total failure and sent us down three blind alleys.
-+ #strong[If you want a behaviour at test time, it must exist in training.] Cruise-only
-  synthetic data cannot teach take-off, landing, or silence, no matter how much of it you
-  make.
-+ #strong[Respect the physics.] A generator that cannot be silent teaches that silence is
-  not zero speed; fixing it at the emitter, where the artefact lives, is cleaner than any
-  downstream patch.
++ #strong[Check for mean-collapse explicitly.] A bad aggregate on a lopsided test set
+  invites the story "the model just predicts the average". Plotting predicted-vs-true per
+  regime refuted it in one figure --- the models track; they were only starved of
+  low-speed training data.
++ #strong[Coverage beats cleverness --- and the cheapest coverage was already in hand.]
+  The low-speed failure was not sim-to-real and not an unlearnable task; it was a
+  #box[$30$]-rev/s filter silently deleting the real take-off ramp. Removing one threshold
+  did more than a whole synthetic-data pipeline.
 + #strong[Augmentation reduces the sim-to-real gap; it does not raise difficulty.]
   Removing it to "keep things simple" reintroduced exactly the overfitting we were trying
   to avoid.
-+ #strong[Synthetic data buys coverage, not accuracy.] Its win is the rare regimes real
-  data lacks; on the common regime (cruise), a good real-only model is already strong, and
-  the fair comparison must be made on the whole envelope.
++ #strong[Synthetic data earns its keep on the regimes reality cannot supply.] It beats
+  the cruise-only baseline and, for true silence --- where no real recording carries a
+  readable signal --- it is the only source of clean examples. But it is a complement to
+  real coverage, not a substitute for keeping the real data you already have.
