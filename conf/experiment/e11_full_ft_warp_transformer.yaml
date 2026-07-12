@@ -1,0 +1,24 @@
+# @package _global_
+# E11 sim->real curriculum STAGE 2 (transformer): real-finetune with time-warp,
+# warm-started from e11_full_aug_transformer (full-flight sim pretrain). Trains on the
+# SAME real+timewarp policy as the e11_real_warp baseline, so the ONLY difference
+# vs the baseline is the sim pretraining — a clean test of whether full-flight
+# pretraining helps. Validated on the FULL-envelope real split.
+defaults:
+  - override /data: e11_real_warp
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e11_full_ft_warp_transformer
+checkpoint: r2://ml-data/artifacts/e11_full_aug_transformer/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
