@@ -210,10 +210,17 @@ class PositionalHarmonicNoiseGen(nn.Module):
         ref_distance: float = 1.0,
         eps: float = 1e-6,
         cond_dim: int = 0,
+        silence_fade_rps: float = 10.0,
         **kwargs,
     ):
         super().__init__()
         self.cond_dim = cond_dim
+        # Below `silence_fade_rps` the per-rotor emitted source is smoothly faded
+        # to zero (reaching exact silence at rps=0), so a stopped rotor makes no
+        # sound. Without this the harmonic bank collapses to a DC pedestal at
+        # rps=0 (frozen phase => sin(phi)=const), which is unphysical and taught
+        # RPS predictors that silence != zero RPS. 0 disables the fade.
+        self.silence_fade_rps = float(silence_fade_rps)
         if emitter is None:
             emitter_kwargs: dict = dict(
                 n_harmonics=n_harmonics, sample_rate=sample_rate, n_oscillators=1, **kwargs
@@ -384,6 +391,13 @@ class PositionalHarmonicNoiseGen(nn.Module):
                 rps_jitter=rps_jitter,
                 rps_jitter_sigma=rps_jitter_sigma,
             )  # [B, R, T]
+        # Smooth silence fade: per-rotor source -> 0 as rps -> 0, full amplitude
+        # by `silence_fade_rps` (smoothstep). Emitter-level, so every component
+        # (harmonic bank + broadband residual) vanishes when a rotor is stopped.
+        if self.silence_fade_rps > 0.0:
+            g = (rps / self.silence_fade_rps).clamp(0.0, 1.0)
+            gate = g * g * (3.0 - 2.0 * g)  # smoothstep(0,1): C1, 0 at 0, 1 at fade_rps
+            sources = sources * gate
         audio = propagate(
             sources,
             rel_pos,

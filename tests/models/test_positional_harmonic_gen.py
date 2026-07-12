@@ -307,3 +307,35 @@ def test_per_rotor_sources_track_their_speed():
         band = (freqs > 10.0) & (freqs < 1.5 * f0)
         peak = freqs[band][np.argmax(mag[band])]
         assert peak == pytest.approx(f0, abs=3.0)
+
+
+def test_silence_fade_zero_rps_is_silent():
+    """Emitter-level silence fade: rps=0 -> exact silence; full amplitude by
+    silence_fade_rps; smooth (monotonic) ramp in between."""
+    torch.manual_seed(0)
+    model = PositionalHarmonicNoiseGen(n_harmonics=32, sample_rate=16000, silence_fade_rps=10.0)
+    model.eval()
+    T = 16000
+    rel = torch.zeros(1, 1, 3)
+    rel[..., 0] = 1.0  # 1 m in front
+    levels, rms = [0.0, 5.0, 10.0, 40.0], []
+    with torch.no_grad():
+        for v in levels:
+            rps = torch.full((1, 1, T), v)
+            audio = model(rps, rel)
+            rms.append(float(audio.pow(2).mean().sqrt()))
+    assert rms[0] == 0.0  # rps=0 -> exact silence
+    assert rms[1] < rms[2] < rms[3]  # smooth monotonic ramp up
+    assert rms[2] > 0.0  # audible by the fade rps
+
+
+def test_silence_fade_disabled_passthrough():
+    """silence_fade_rps=0 disables the gate (rps=0 not forced silent)."""
+    torch.manual_seed(0)
+    model = PositionalHarmonicNoiseGen(n_harmonics=32, sample_rate=16000, silence_fade_rps=0.0)
+    model.eval()
+    rel = torch.zeros(1, 1, 3)
+    rel[..., 0] = 1.0
+    with torch.no_grad():
+        audio = model(torch.zeros(1, 1, 4000), rel)  # rps=0
+    assert float(audio.abs().max()) > 0.0  # DC pedestal present when gate off

@@ -325,6 +325,7 @@ def build_noise_gen_model(
     learn_rps_jitter_sigma: bool = False,
     z_noise_std: float = 0.0,
     film_spectral_norm: bool = False,
+    silence_fade_rps: float = 10.0,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -379,6 +380,7 @@ def build_noise_gen_model(
         rps_jitter_sigma=rps_jitter_sigma,
         rps_jitter_tau=rps_jitter_tau,
         film_spectral_norm=film_spectral_norm,
+        silence_fade_rps=silence_fade_rps,
     )
     if cond_dim <= 0:
         if z_noise_std > 0.0:
