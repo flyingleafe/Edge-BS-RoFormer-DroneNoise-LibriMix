@@ -1,0 +1,13 @@
+{
+  "_note": "Per-regime PIT-MSE on DREGON-LM-V4-michaels-valid-full. baseline = E5 timewarp ckpts re-eval; curriculum = e11_full_ft_warp (filled when runs finish).",
+  "baseline": {
+    "transformer": {"cruise": 15.3, "warmup": 384.9, "ground": 2450.0, "agg": 338.4},
+    "uni_gru128":  {"cruise": 14.6, "warmup": 389.0, "ground": 1658.3, "agg": 253.0},
+    "scv2":        {"cruise": 15.7, "warmup": 241.9, "ground": 1227.8, "agg": 183.4}
+  },
+  "curriculum": {
+    "transformer": {"cruise": null, "warmup": null, "ground": null, "agg": null},
+    "uni_gru128":  {"cruise": null, "warmup": null, "ground": null, "agg": null},
+    "scv2":        {"cruise": null, "warmup": null, "ground": null, "agg": null}
+  }
+}
