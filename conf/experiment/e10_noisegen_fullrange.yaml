@@ -1,0 +1,28 @@
+# @package _global_
+# E10 — retrain the per-drone noise generator on the FULL RPS range so it learns
+# that low/zero RPS means (near-)silence, before it is driven by full-flight RPS
+# trajectories. Identical to e6_noisegen_jitter_latreg_perdrone (same model /
+# loss / schedule) except /data: noise_rps_dregon_michaels_fullrange, whose
+# balance_rps sampling flattens each recording's RPS histogram so warm-up /
+# takeoff / landing / rotors-off regions are well represented (proportional
+# sampling saw them <1% of the time). Cloud: stream sources from the published
+# frame datasets (dregon_dir=frames:DREGON-frames, michaels_dir=frames:michaels-frames).
+defaults:
+  - override /data: noise_rps_dregon_michaels_fullrange
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: e10_noisegen_fullrange
+epochs: 60
+patience: 8
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (complex cumprod not implemented for ComplexHalf).
+amp: false

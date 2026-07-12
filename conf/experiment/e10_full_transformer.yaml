@@ -1,0 +1,25 @@
+# @package _global_
+# E10 — transformer RPS predictor on the FULL-FLIGHT combined noise task, NO
+# augmentation: 50% neural generator (retrained full RPS range) + 50% static-comb,
+# both driven by full-flight RPS (ground->warm-up->takeoff->cruise->landing->
+# ground), mixed with LibriSpeech. Validated on the FULL-envelope real split
+# (dload:DREGON-LM-V4-michaels-valid-full). Keeps the task simple (no aug, no
+# shortcuts) — prior "overfits" were domain mismatch, addressed here by covering
+# the whole flight envelope + zero->silence rather than by making the task harder.
+defaults:
+  - override /data: e10_full_flight
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e10_full_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

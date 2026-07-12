@@ -1,0 +1,72 @@
+# E10 (kaggle/P100 twin) — FULL-FLIGHT combined noise task, NO augmentation.
+# 50% neural generator (retrained on the full RPS range, e10_noisegen_fullrange)
+# + 50% analytic static-comb, BOTH driven by full-flight RPS trajectories
+# (ground -> warm-up -> takeoff -> cruise -> landing -> ground), mixed with random
+# LibriSpeech at -30..0 dB. No augmentations, no hard shortcuts — the previous
+# "overfits" were domain mismatch, so we keep the task simple and just reduce the
+# mismatch (full envelope + zero->silence). Validation is the fixed FULL-envelope
+# real split (dload:DREGON-LM-V4-michaels-valid-full).
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+
+sources:
+  noise:
+    # --- 50%: neural generator (full RPS range), full-flight excitation ---
+    - kind: generated
+      weight: 1.0
+      checkpoint: r2://ml-data/artifacts/e10_noisegen_fullrange/checkpoints/best.ckpt
+      n_harmonics: 100
+      device: cuda:0
+      dregon_dir: "dload:DREGON"
+      gen_batch: 16  # P100 16GB (kaggle): avoid noise-gen OOM
+      random_phase: true
+      refresh: true
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_fs: 200.0
+      interp:
+        endpoints: [dregon, michaels]
+        alpha: {low: 0.0, high: 1.0}
+        embedding_noise: 0.15
+        rotor_interp: true
+        jitter_sigma: interp
+        mic_sampling:
+          rigs: [dregon, michaels]
+          prob: [0.5, 0.5]
+          jitter_std: 0.02
+      buffer: {slots: 512, warmup: 32}
+
+    # --- 50%: analytic static-comb, full-flight excitation (zero -> silence) ---
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  # Single stage, NO augmentation — random speech/noise mixtures only.
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false
