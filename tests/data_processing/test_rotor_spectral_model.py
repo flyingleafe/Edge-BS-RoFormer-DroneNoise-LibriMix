@@ -71,3 +71,74 @@ def test_build_noise_pool_dispatches_static_comb():
         sample_rate=16000,
     )
     assert isinstance(pool, StaticCombNoisePool)
+
+
+# ── RPS-amplitude scaling + full-flight windowing (physical plausibility) ──────
+
+
+def test_full_flight_windows_reach_low_and_zero_rps():
+    """full_flight windowing visits warm-up/ground; intermittent stays at cruise."""
+    ff = StaticCombNoisePool(
+        sample_rate=16000,
+        duration_s=1.0,
+        n_harmonics=48,
+        n_mics=2,
+        rps_kind="full_flight",
+        flight_reuse=64,
+        seed=0,
+    )
+    rng = np.random.default_rng(1)
+    means = np.array([ff.render(rng, 1.0)[1].mean() for _ in range(150)])
+    assert means.min() < 20.0  # some warm-up/ground windows
+    assert means.max() > 60.0  # some cruise windows
+
+    cruise = StaticCombNoisePool(
+        sample_rate=16000, duration_s=1.0, n_harmonics=48, n_mics=2, seed=0
+    )
+    rng2 = np.random.default_rng(1)
+    cmeans = np.array([cruise.render(rng2, 1.0)[1].mean() for _ in range(40)])
+    assert cmeans.min() > 40.0  # intermittent never leaves the hover regime
+
+
+def test_zero_rps_segment_is_silent():
+    """Within a window straddling the ground (rps=0) and rotors-on (rps>0), the
+    zero-RPS part is ~silent (amplitude ~ rps^p, so rps=0 => no sound)."""
+    ff = StaticCombNoisePool(
+        sample_rate=16000,
+        duration_s=3.0,
+        n_harmonics=48,
+        n_mics=2,
+        rps_kind="full_flight",
+        flight_reuse=2,
+        seed=0,
+    )
+    rng = np.random.default_rng(0)
+    for _ in range(300):
+        audio, rps, _ = ff.render(rng, 3.0)
+        mono = audio.mean(0)
+        mrps = rps.mean(0)
+        zero = mrps < 1.0
+        on = mrps > 25.0  # rotors on (idle/ramp/cruise)
+        if zero.sum() > 300 and on.sum() > 300:
+            rms_zero = float(np.sqrt(np.mean(mono[zero] ** 2)))
+            rms_on = float(np.sqrt(np.mean(mono[on] ** 2)))
+            assert rms_zero < 0.05 * rms_on  # ground part is essentially silent
+            return
+    raise AssertionError("no window straddling zero-RPS and rotors-on was drawn")
+
+
+def test_amp_scaling_config_wired():
+    cfg = {
+        "kind": "static_comb",
+        "n_harmonics": 32,
+        "n_mics": 2,
+        "amp_rps_exponent": 3.0,
+        "amp_rps_ref": 70.0,
+        "rps": {"kind": "full_flight", "flight_reuse": 8},
+    }
+    pool = StaticCombNoisePool.from_config(cfg, duration_s=1.0, sample_rate=16000)
+    assert pool.amp_rps_exponent == 3.0 and pool.amp_rps_ref == 70.0
+    assert pool.rps_kind == "full_flight" and pool.flight_reuse == 8
+    # dispatch through build_noise_pool still yields a static_comb pool.
+    disp = build_noise_pool(cfg, duration_s=1.0, sample_rate=16000)
+    assert isinstance(disp, StaticCombNoisePool)

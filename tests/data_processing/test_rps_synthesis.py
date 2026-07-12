@@ -301,3 +301,48 @@ def test_intermittent_batch_shape_and_reproducibility():
 def test_intermittent_rejects_profile_and_drone_profile_together():
     with pytest.raises(ValueError, match="either profile or drone_profile"):
         generate_intermittent(1.0, 50.0, profile=DREGON_PROFILE, drone_profile=0.5, rng=0)
+
+
+# ── Full-flight model ─────────────────────────────────────────────────────────
+
+
+def test_full_flight_starts_and_ends_at_zero():
+    from data_processing.rps_synthesis import generate_full_flight
+
+    w = generate_full_flight(60.0, 100.0, profile=DREGON_PROFILE, rng=0)  # (4, M)
+    assert w.shape == (NUM_ROTORS, 6000)
+    assert (w >= 0.0).all()
+    mean = w.mean(0)
+    assert mean[:50].mean() < 1.0  # first 0.5 s: rotors off (ground)
+    assert mean[-50:].mean() < 1.0  # last 0.5 s: rotors off (ground)
+
+
+def test_full_flight_covers_all_regimes():
+    from data_processing.rps_synthesis import generate_full_flight
+
+    w = generate_full_flight(90.0, 100.0, profile=DREGON_PROFILE, rng=3)
+    mean = w.mean(0)
+    hover = DREGON_PROFILE.common.trim
+    assert (mean < 1.0).any()  # zero (ground)
+    assert ((mean > 0.30 * hover) & (mean < 0.6 * hover)).any()  # idle/warm-up plateau
+    assert (mean > 0.85 * hover).any()  # hover/cruise
+    assert mean.max() <= DREGON_PROFILE.rps_max
+
+
+def test_full_flight_sampled_duration_and_too_short():
+    from data_processing.rps_synthesis import generate_full_flight
+
+    w = generate_full_flight(None, 50.0, drone_profile=0.5, rng=1)
+    assert w.shape[0] == NUM_ROTORS and w.shape[1] > 50 * 20  # at least ~20 s total
+    with pytest.raises(ValueError, match="too short"):
+        generate_full_flight(4.0, 50.0, profile=DREGON_PROFILE, rng=0)
+
+
+def test_full_flight_reproducible_and_profile_exclusive():
+    from data_processing.rps_synthesis import generate_full_flight
+
+    a = generate_full_flight(40.0, 50.0, profile=MICHAELS_PROFILE, rng=7)
+    b = generate_full_flight(40.0, 50.0, profile=MICHAELS_PROFILE, rng=7)
+    assert np.array_equal(a, b)
+    with pytest.raises(ValueError, match="either profile or drone_profile"):
+        generate_full_flight(40.0, 50.0, profile=DREGON_PROFILE, drone_profile=0.5, rng=0)

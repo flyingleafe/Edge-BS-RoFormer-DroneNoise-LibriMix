@@ -56,6 +56,53 @@ from data_processing.frames import make_recording_frame
 # keyed by codebook drone name. Unknown names default to the DREGON end (0.0).
 _DRONE_PROFILE_BLEND = {"dregon": 0.0, "michaels": 1.0}
 
+
+def _rps_excitation_batch(
+    rps_kind: str,
+    gen_bs: int,
+    duration_s: float,
+    sr: int,
+    *,
+    drone_profile: float,
+    aggressiveness: float,
+    rng: np.random.Generator,
+    flight_fs: float = 200.0,
+) -> np.ndarray:
+    """RPS excitation for one producer batch → ``(gen_bs, R, T)`` at audio rate.
+
+    ``synthetic_intermittent`` = cruise-only (each item a fresh hover trajectory);
+    ``full_flight`` generates ONE full flight (ground→warm-up→takeoff→cruise→
+    landing→ground) at a modest ``flight_fs`` and windows ``gen_bs`` slices from
+    it, so the batch spans the low-/zero-RPS regimes (the generator can then be
+    driven into silence at zero RPS — provided it was trained on those regions).
+    """
+    if rps_kind == "synthetic_intermittent":
+        return rps_synthesis.generate_intermittent_batch(
+            gen_bs,
+            duration_s,
+            sr,
+            drone_profile=drone_profile,
+            aggressiveness=aggressiveness,
+            rng=rng,
+        )
+    if rps_kind != "full_flight":
+        raise ValueError(f"unsupported rps.kind {rps_kind!r}")
+    flight = rps_synthesis.generate_full_flight(
+        None, flight_fs, drone_profile=drone_profile, aggressiveness=aggressiveness, rng=rng
+    )  # (R, Nlow)
+    r_n, n_low = flight.shape
+    t_low = np.arange(n_low) / flight_fs
+    total_s = float(t_low[-1])
+    n_t = int(round(duration_s * sr))
+    out = np.empty((gen_bs, r_n, n_t), dtype=np.float32)
+    max_start = max(0.0, total_s - duration_s)
+    for b in range(gen_bs):
+        start = float(rng.uniform(0.0, max_start)) if max_start > 0 else 0.0
+        t_win = start + np.arange(n_t) / sr
+        out[b] = np.stack([np.interp(t_win, t_low, flight[r]) for r in range(r_n)])
+    return out
+
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -290,13 +337,15 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
             else:
                 sig_val = None
             # α doubles as the rps_synthesis drone_profile blend (0=DREGON, 1=Michael's).
-            rps_np = rps_synthesis.generate_intermittent_batch(
+            rps_np = _rps_excitation_batch(
+                params["rps_kind"],
                 gen_bs,
                 duration_s,
                 sr,
                 drone_profile=alpha,
                 aggressiveness=params["aggressiveness"],
                 rng=rng,
+                flight_fs=params["flight_fs"],
             )
             rels = np.empty((gen_bs, n_mics, n_rotors, 3), dtype=np.float32)
             for b in range(gen_bs):
@@ -320,13 +369,15 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
         blend = _DRONE_PROFILE_BLEND.get(drone, 0.0)
 
         def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-            rps_np = rps_synthesis.generate_intermittent_batch(
+            rps_np = _rps_excitation_batch(
+                params["rps_kind"],
                 gen_bs,
                 duration_s,
                 sr,
                 drone_profile=blend,
                 aggressiveness=params["aggressiveness"],
                 rng=rng,
+                flight_fs=params["flight_fs"],
             )  # (bs, R, T)
             rel_b = rel.unsqueeze(0).expand(gen_bs, -1, -1, -1)
             z = z_single.unsqueeze(0).expand(gen_bs, -1)
@@ -387,6 +438,8 @@ class GeneratedNoisePool:
         n_harmonics: int = 100,
         no_diff_noise: bool = False,
         aggressiveness: float = 1.0,
+        rps_kind: str = "synthetic_intermittent",
+        flight_fs: float = 200.0,
         random_phase: bool = True,
         n_slots: int = 512,
         gen_batch: int = 32,
@@ -434,6 +487,8 @@ class GeneratedNoisePool:
             "n_harmonics": int(n_harmonics),
             "no_diff_noise": bool(no_diff_noise),
             "aggressiveness": float(aggressiveness),
+            "rps_kind": str(rps_kind),
+            "flight_fs": float(flight_fs),
             "random_phase": bool(random_phase),
             "gen_batch": int(gen_batch),
             "refresh": bool(refresh),
@@ -471,9 +526,10 @@ class GeneratedNoisePool:
 
         rps = g("rps", {}) or {}
         rps_kind = rps.get("kind", "synthetic_intermittent")
-        if rps_kind != "synthetic_intermittent":
+        if rps_kind not in ("synthetic_intermittent", "full_flight"):
             raise ValueError(
-                f"generated noise supports rps.kind 'synthetic_intermittent' only, got {rps_kind!r}"
+                "generated noise supports rps.kind 'synthetic_intermittent' or "
+                f"'full_flight', got {rps_kind!r}"
             )
         buf = g("buffer", {}) or {}
         checkpoint = g("checkpoint")
@@ -490,6 +546,8 @@ class GeneratedNoisePool:
             n_harmonics=int(g("n_harmonics", 100)),
             no_diff_noise=bool(g("no_diff_noise", False)),
             aggressiveness=float(rps.get("aggressiveness", 1.0)),
+            rps_kind=str(rps_kind),
+            flight_fs=float(rps.get("flight_fs", 200.0)),
             random_phase=bool(g("random_phase", True)),
             n_slots=int(buf.get("slots", 512)),
             gen_batch=int(g("gen_batch", 32)),

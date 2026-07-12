@@ -587,3 +587,156 @@ def generate_intermittent_batch(
             for _ in range(n_trajectories)
         ]
     )
+
+
+# =============================================================================
+# Full-flight model (ground -> warm-up -> takeoff -> cruise -> landing -> ground)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class FlightPhaseRanges:
+    """Sampling ranges (seconds) for the phases of one full flight.
+
+    The common-mode rotor speed traces ``0 (ground) -> idle (warm-up) -> hover
+    (cruise) -> idle -> 0 (ground)``; ``idle_frac`` is the warm-up/idle rotor
+    speed as a fraction of the profile's hover level (real DJI warm-up sits at
+    ~0.45x hover, e.g. ~36 of ~80 rev/s). Differential maneuvering is confined to
+    the cruise phase. Defaults are loosely calibrated to the DREGON/Michael's
+    recordings (warm-up 5-30 s, takeoff/landing ramps 2-4 s).
+    """
+
+    pre_ground_s: tuple[float, float] = (0.5, 3.0)
+    spinup_s: tuple[float, float] = (0.6, 1.8)
+    warmup_s: tuple[float, float] = (3.0, 25.0)
+    takeoff_s: tuple[float, float] = (1.5, 4.0)
+    cruise_s: tuple[float, float] = (20.0, 120.0)  # used only when duration is None
+    landing_s: tuple[float, float] = (1.5, 4.5)
+    spindown_s: tuple[float, float] = (0.6, 2.0)
+    post_ground_s: tuple[float, float] = (0.5, 3.0)
+    idle_frac: tuple[float, float] = (0.38, 0.52)
+
+
+def generate_full_flight(
+    duration: float | None,
+    fs: float,
+    *,
+    profile: DroneProfile | None = None,
+    drone_profile: float | None = None,
+    aggressiveness: float = 1.0,
+    phases: FlightPhaseRanges | None = None,
+    rng: np.random.Generator | int | None = None,
+) -> np.ndarray:
+    """Generate one *full-flight* ``(4, M)`` rotor-speed trajectory spanning the
+    whole envelope: ground (rotors off, **zero RPS**) -> warm-up idle -> takeoff
+    ramp -> cruise (the intermittent hover model) -> landing ramp -> ground.
+
+    Unlike :func:`generate_intermittent` (which holds hover the whole time), this
+    reaches the low-/zero-RPS regimes a real recording contains, so a model
+    trained on it sees warm-up, takeoff, landing and silence — not just cruise.
+
+    Args:
+        duration: total length in seconds. If ``None``, a realistic total is
+            sampled from ``phases`` (cruise drawn from ``cruise_s``); if given,
+            the cruise phase absorbs whatever remains after the other phases
+            (raising if the fixed phases already exceed ``duration``).
+        fs: sample rate (Hz); ``M = round(total * fs)``.
+        profile / drone_profile: airframe, as in :func:`generate_intermittent`.
+        aggressiveness: scales cruise maneuvering only.
+        phases: :class:`FlightPhaseRanges` overriding the phase-duration ranges.
+        rng: ``np.random.Generator``, int seed, or ``None``.
+
+    Returns:
+        ``(4, M)`` rotor speeds (rev/s), clamped to ``[0, profile.rps_max]``;
+        endpoints are ~0 (rotors off).
+    """
+    if fs <= 0.0:
+        raise ValueError("fs must be positive")
+    if aggressiveness < 0.0:
+        raise ValueError("aggressiveness must be non-negative")
+    if profile is not None and drone_profile is not None:
+        raise ValueError("pass either profile or drone_profile, not both")
+    if profile is None:
+        profile = DREGON_PROFILE if drone_profile is None else blend_profiles(t=drone_profile)
+    phases = phases or FlightPhaseRanges()
+    generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
+
+    def _u(rng_range: tuple[float, float]) -> float:
+        return float(generator.uniform(*rng_range))
+
+    # Phase durations (seconds). Cruise either fills the requested duration or is
+    # sampled when duration is None.
+    pre_g = _u(phases.pre_ground_s)
+    spinup = _u(phases.spinup_s)
+    warmup = _u(phases.warmup_s)
+    takeoff = _u(phases.takeoff_s)
+    landing = _u(phases.landing_s)
+    spindown = _u(phases.spindown_s)
+    post_g = _u(phases.post_ground_s)
+    fixed = pre_g + spinup + warmup + takeoff + landing + spindown + post_g
+    if duration is None:
+        cruise = _u(phases.cruise_s)
+        total = fixed + cruise
+    else:
+        total = float(duration)
+        cruise = total - fixed
+        if cruise <= 0.0:
+            raise ValueError(
+                f"duration {total:.1f}s too short for the fixed phases ({fixed:.1f}s); "
+                "shorten phase ranges or pass a longer duration"
+            )
+
+    n = int(round(total * fs))
+    dt = 1.0 / fs
+    t = np.arange(n, dtype=np.float64) * dt
+
+    hover = profile.common.trim
+    idle = _u(phases.idle_frac) * hover
+
+    # Common-mode envelope: piecewise-linear through the phase breakpoints.
+    bt = np.cumsum([0.0, pre_g, spinup, warmup, takeoff, cruise, landing, spindown, post_g])
+    bl = np.array([0.0, 0.0, idle, idle, hover, hover, idle, 0.0, 0.0])
+    envelope = np.interp(t, bt, bl)
+
+    # Cruise gate (maneuvers/jitter only while hovering); soft edges come from the
+    # motor low-pass below. Rotors-spinning gate keeps the ground exactly silent.
+    cruise_start, cruise_end = bt[4], bt[5]
+    cruise_gate = ((t >= cruise_start) & (t < cruise_end)).astype(np.float64)
+    spin_gate = ((t >= bt[1]) & (t < bt[7])).astype(np.float64)  # spinup_start..spindown_end
+
+    # Common mode = envelope + gated zero-mean maneuver pulses + gated cruise jitter.
+    common_pulses = (
+        _telegraph_setpoint(
+            profile.common, n, dt, generator, rate_scale=aggressiveness, amp_scale=aggressiveness
+        )
+        - profile.common.trim
+    )
+    common_jitter = _ou_path(
+        OUModeParams(mean=0.0, std=profile.common.cruise_std, tau=profile.cruise_tau),
+        n,
+        dt,
+        generator,
+        std_scale=1.0,
+    )
+    modes = [envelope + cruise_gate * common_pulses + spin_gate * common_jitter]
+
+    # Differential modes (roll/pitch/yaw): trim + maneuvers + jitter, confined to
+    # cruise (near-zero attitude control on the ground / during warm-up).
+    for params in (profile.roll, profile.pitch, profile.yaw):
+        setpoint = _telegraph_setpoint(
+            params, n, dt, generator, rate_scale=aggressiveness, amp_scale=aggressiveness
+        )
+        jitter = _ou_path(
+            OUModeParams(mean=0.0, std=params.cruise_std, tau=profile.cruise_tau),
+            n,
+            dt,
+            generator,
+            std_scale=1.0,
+        )
+        modes.append(cruise_gate * (setpoint + jitter))
+
+    # Motor/airframe lag rounds the ramp corners and gate edges (realistic
+    # spin-up/down and fade-in of control authority).
+    lagged = np.stack([_first_order_lowpass(m, profile.motor_tau, dt) for m in modes])
+    w = rps_from_modes(lagged)
+    return np.clip(w, 0.0, profile.rps_max)

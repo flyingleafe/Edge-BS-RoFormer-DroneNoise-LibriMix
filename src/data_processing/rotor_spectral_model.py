@@ -213,6 +213,11 @@ class StaticCombNoisePool:
         n_rotors: int = 4,
         min_harm_above_floor: float = 0.30,
         aggressiveness: float = 1.0,
+        amp_rps_exponent: float = 2.5,
+        amp_rps_ref: float = 80.0,
+        rps_kind: str = "synthetic_intermittent",
+        flight_fs: float = 200.0,
+        flight_reuse: int = 32,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
         mic_gain_db: tuple[float, float] = (-12.0, 0.0),
         ranges: ProfileRanges | dict[str, Any] | None = None,
@@ -225,6 +230,20 @@ class StaticCombNoisePool:
         self.n_rotors = int(n_rotors)
         self.min_harm_above_floor = float(min_harm_above_floor)
         self.aggressiveness = float(aggressiveness)
+        # Physically-plausible amplitude scaling: rotor aeroacoustic sound power
+        # ~ tip-speed^~5 => pressure amplitude ~ rps^~2.5; zero rps => silence.
+        self.amp_rps_exponent = float(amp_rps_exponent)
+        self.amp_rps_ref = float(amp_rps_ref)
+        # RPS excitation: "synthetic_intermittent" (cruise-only, per-window) or
+        # "full_flight" (ground->warm-up->takeoff->cruise->landing->ground; a low-
+        # rate flight is generated once per `flight_reuse` windows and windowed, so
+        # windows visit the low-/zero-RPS regimes). `flight_fs` is the internal
+        # trajectory rate (RPS is slow; upsampled per window).
+        self.rps_kind = str(rps_kind)
+        self.flight_fs = float(flight_fs)
+        self.flight_reuse = int(flight_reuse)
+        self._flight: dict[str, Any] | None = None  # cached full-flight state
+        self._flight_uses = 0
         self.drone_profile_range: tuple[float, float] = (
             float(drone_profile_range[0]),
             float(drone_profile_range[1]),
@@ -265,6 +284,11 @@ class StaticCombNoisePool:
             n_rotors=int(g("n_rotors", 4)),
             min_harm_above_floor=float(g("min_harm_above_floor", 0.30)),
             aggressiveness=float(rps.get("aggressiveness", 1.0)),
+            amp_rps_exponent=float(g("amp_rps_exponent", 2.5)),
+            amp_rps_ref=float(g("amp_rps_ref", 80.0)),
+            rps_kind=str(rps.get("kind", "synthetic_intermittent")),
+            flight_fs=float(rps.get("flight_fs", 200.0)),
+            flight_reuse=int(rps.get("flight_reuse", 32)),
             drone_profile_range=_pair("drone_profile_range", (0.0, 1.0)),
             mic_gain_db=_pair("mic_gain_db", (-12.0, 0.0)),
             ranges=ranges,
@@ -274,28 +298,63 @@ class StaticCombNoisePool:
     def close(self) -> None:  # interface parity with GeneratedNoisePool
         return None
 
+    def _sample_rps_window(self, rng: np.random.Generator, T: int, duration_s: float) -> np.ndarray:
+        """Return one ``(R, T)`` rps window at audio rate.
+
+        ``synthetic_intermittent`` generates a fresh cruise-only window directly;
+        ``full_flight`` windows a cached low-rate full flight (regenerated every
+        ``flight_reuse`` calls), so successive windows visit warm-up / takeoff /
+        cruise / landing / ground (zero RPS) in proportion to their durations.
+        """
+        if self.rps_kind != "full_flight":
+            blend = float(rng.uniform(*self.drone_profile_range))
+            return rps_synthesis.generate_intermittent_batch(
+                1,
+                duration_s,
+                self.sample_rate,
+                drone_profile=blend,
+                aggressiveness=self.aggressiveness,
+                rng=rng,
+            )[0]
+
+        if self._flight is None or self._flight_uses >= self.flight_reuse:
+            blend = float(rng.uniform(*self.drone_profile_range))
+            # low-rate trajectory (RPS is slow; the per-sample motor low-pass is a
+            # python loop, so audio-rate over a whole flight would be too slow).
+            flight = rps_synthesis.generate_full_flight(
+                None,
+                self.flight_fs,
+                drone_profile=blend,
+                aggressiveness=self.aggressiveness,
+                rng=rng,
+            )  # (R, Nlow)
+            self._flight = {"rps": flight, "t_low": np.arange(flight.shape[1]) / self.flight_fs}
+            self._flight_uses = 0
+        self._flight_uses += 1
+        flight = self._flight["rps"]
+        t_low = self._flight["t_low"]
+        total_s = float(t_low[-1])
+        max_start = max(0.0, total_s - duration_s)
+        start_s = float(rng.uniform(0.0, max_start)) if max_start > 0 else 0.0
+        t_win = start_s + np.arange(T) / self.sample_rate
+        return np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
+
     def render(
         self, rng: np.random.Generator, duration_s: float
     ) -> tuple[np.ndarray, np.ndarray, list[RotorProfile]]:
         """Render (audio (M,T), rps (R,T), per-rotor profiles) — factored out of
         ``sample_timeframe`` so diagnostics can inspect the profiles."""
         T = int(round(duration_s * self.sample_rate))
-        blend = float(rng.uniform(*self.drone_profile_range))
-        rps = rps_synthesis.generate_intermittent_batch(
-            1,
-            duration_s,
-            self.sample_rate,
-            drone_profile=blend,
-            aggressiveness=self.aggressiveness,
-            rng=rng,
-        )[0]  # (R, T)
+        rps = self._sample_rps_window(rng, T, duration_s)  # (R, T)
         R = rps.shape[0]
 
         combs = np.empty((R, T), dtype=np.float64)
         floors = np.empty((R, T), dtype=np.float64)
         profiles: list[RotorProfile] = []
         for r in range(R):
-            ref_rps = float(np.median(rps[r]))
+            # Floor in-band constraint is defined at (near-)hover, so low/zero-RPS
+            # windows still get a sensible profile.
+            ref_rps = max(float(np.median(rps[r])), 0.25 * self.amp_rps_ref)
             prof = sample_profile(
                 rng,
                 self.ranges,
@@ -308,11 +367,20 @@ class StaticCombNoisePool:
             combs[r] = _comb_waveform(rps[r], prof.a_k, self.sample_rate, rng)
             floors[r] = _floor_waveform(T, prof.floor_tilt, prof.floor_level, self.sample_rate, rng)
 
+        # Physically-plausible amplitude: scale each rotor's whole contribution
+        # (comb AND floor) by (rps/ref)^p, so level rises with rps and is exactly
+        # zero at zero rps (rotor off => silence) — the cue is monotonic and
+        # consistent between synthetic and real, unlike the neural gen's arbitrary
+        # amplitude dynamics. Within a steady (cruise) clip rps ~ const, so this is
+        # ~flat and carries little RPS info; it only bites in the transition/ground
+        # windows a full-flight trajectory now visits.
+        amp = (np.maximum(rps, 0.0) / self.amp_rps_ref) ** self.amp_rps_exponent  # (R, T)
+
         # Per-mic linear mix of rotor combs+floors with sampled per-(mic,rotor) gains.
         lo, hi = self.mic_gain_db
         gains = 10.0 ** (rng.uniform(lo, hi, size=(self.n_mics, R)) / 20.0)
         audio = np.empty((self.n_mics, T), dtype=np.float32)
-        per_rotor = combs + floors  # (R, T)
+        per_rotor = (combs + floors) * amp  # (R, T)
         for m in range(self.n_mics):
             audio[m] = (gains[m][:, None] * per_rotor).sum(axis=0).astype(np.float32)
         # Normalise to a sane level (unit-ish RMS per clip).

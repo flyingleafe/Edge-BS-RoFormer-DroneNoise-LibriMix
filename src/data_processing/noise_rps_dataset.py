@@ -126,6 +126,8 @@ class NoiseRPSDataset(Dataset):
         seed: int | None = None,
         channel_policy: Literal["first", "random"] = "first",
         rps_normalize: float | None = None,
+        balance_rps: bool = False,
+        rps_bins: int = 8,
     ):
         if not records:
             raise ValueError("NoiseRPSDataset got no records")
@@ -135,6 +137,13 @@ class NoiseRPSDataset(Dataset):
         self.samples_per_epoch = int(samples_per_epoch)
         self.channel_policy = channel_policy
         self.rps_normalize = rps_normalize
+        # When True, chunk-start positions are drawn to *flatten the RPS
+        # histogram* per record, so the brief low-/zero-RPS regions (warm-up,
+        # takeoff, landing, rotors-off) are represented far more than their tiny
+        # share of wall-clock time — the generator must see them to learn that
+        # zero RPS means silence. Off => uniform-in-time (proportional) sampling.
+        self.balance_rps = bool(balance_rps)
+        self.rps_bins = int(rps_bins)
         self._chunk_duration_sec = self.chunk_size / self.sample_rate
 
         # Filter records that are too short to chunk.
@@ -150,12 +159,66 @@ class NoiseRPSDataset(Dataset):
         self.weights = weights / weights.sum()
 
         self.rng = np.random.default_rng(seed)
+        # Per-record (candidate_start_rel, weight) for RPS-balanced sampling.
+        self._start_sampler: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        if self.balance_rps:
+            for i, src in enumerate(self.records):
+                self._start_sampler[i] = self._build_start_sampler(src)
 
     def __len__(self):
         return self.samples_per_epoch
 
+    def _valid_start_window(self, src: _ChunkSource) -> tuple[float, float]:
+        """Relative [lo, hi] chunk-start range (audio-frame seconds) — the
+        audio∩motor overlap minus one chunk length."""
+        tf = src.frame
+        audio_start = tf["audio"].t_start
+        motor_track = tf[src.rps_key]
+        valid_start = max(audio_start, motor_track.t_start)
+        valid_end = min(tf["audio"].t_end, motor_track.t_end)
+        return valid_start - audio_start, valid_end - audio_start - self._chunk_duration_sec
+
+    def _build_start_sampler(self, src: _ChunkSource) -> tuple[np.ndarray, np.ndarray]:
+        """Candidate chunk-start positions + inverse-RPS-frequency weights.
+
+        Evaluates mean-window RPS on a coarse grid of starts, bins it, and weights
+        each candidate by ``1 / (#candidates in its bin)`` so every RPS level —
+        including the rare zero/warm-up regions — is drawn about equally often.
+        """
+        rel_lo, rel_hi = self._valid_start_window(src)
+        if rel_hi <= rel_lo:
+            return np.array([max(rel_lo, 0.0)]), np.array([1.0])
+        tf = src.frame
+        motor = tf[src.rps_key]
+        m_ts = np.asarray(cast(td.StampIndex, motor.tindex).abs_stamps, dtype=np.float64)
+        m_val = np.asarray(motor.data, dtype=np.float64)  # (4, M)
+        if m_ts.size == 0:
+            return np.array([rel_lo]), np.array([1.0])
+        m_mean = m_val.mean(axis=0)  # (M,) mean over rotors
+        a0 = tf["audio"].t_start
+        # ~4 candidate starts per chunk length, capped for memory.
+        n_cand = int(min(4000, max(8, (rel_hi - rel_lo) / self._chunk_duration_sec * 4)))
+        starts = np.linspace(rel_lo, rel_hi, n_cand)
+        # mean RPS over each candidate window [start, start+chunk].
+        win = self._chunk_duration_sec
+        abs_starts = a0 + starts
+        lo_idx = np.searchsorted(m_ts, abs_starts)
+        hi_idx = np.searchsorted(m_ts, abs_starts + win)
+        cand_rps = np.array(
+            [
+                m_mean[lo:hi].mean() if hi > lo else m_mean[min(lo, len(m_mean) - 1)]
+                for lo, hi in zip(lo_idx, hi_idx, strict=False)
+            ]
+        )
+        # Inverse-frequency weights over RPS bins (flatten the histogram).
+        edges = np.linspace(0.0, max(cand_rps.max(), 1e-6), self.rps_bins + 1)
+        bin_idx = np.clip(np.digitize(cand_rps, edges) - 1, 0, self.rps_bins - 1)
+        counts = np.bincount(bin_idx, minlength=self.rps_bins).astype(np.float64)
+        w = 1.0 / np.maximum(counts[bin_idx], 1.0)
+        return starts, w / w.sum()
+
     def _extract_chunk(
-        self, src: _ChunkSource
+        self, src: _ChunkSource, rec_idx: int = -1
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Returns (audio [T], rps_motor_rate [4, M], audio_ts [T], motor_ts [M])."""
         tf = src.frame
@@ -167,15 +230,12 @@ class NoiseRPSDataset(Dataset):
 
         # Compute valid time window (intersection of audio and motor domains).
         audio_start = tf["audio"].t_start
-        audio_end = tf["audio"].t_end
-        motor_track = tf[src.rps_key]
-        motor_start = motor_track.t_start
-        motor_end = motor_track.t_end
-        valid_start = max(audio_start, motor_start)
-        valid_end = min(audio_end, motor_end)
-        rel_lo = valid_start - audio_start
-        rel_hi = valid_end - audio_start - self._chunk_duration_sec
-        start = float(self.rng.uniform(rel_lo, rel_hi))
+        if self.balance_rps and rec_idx in self._start_sampler:
+            starts, sw = self._start_sampler[rec_idx]
+            start = float(self.rng.choice(starts, p=sw))
+        else:
+            rel_lo, rel_hi = self._valid_start_window(src)
+            start = float(self.rng.uniform(rel_lo, rel_hi))
 
         # Slice both audio and motors simultaneously.
         sliced = tf.time[audio_start + start : audio_start + start + self._chunk_duration_sec]
@@ -193,6 +253,11 @@ class NoiseRPSDataset(Dataset):
             if motor_s.data is not None
             else np.zeros((4, 0), dtype=np.float32)
         )
+        # An empty motor slice (no telemetry sample landed in this window — can
+        # happen at a sparse-telemetry edge) is unusable; raise so __getitem__
+        # retries cleanly instead of an IndexError downstream in upsampling.
+        if motor_ts.size == 0 or rps.shape[-1] == 0:
+            raise ValueError("empty motor slice for chunk window")
 
         # Length normalisation — chunks can be off by 1 sample due to int cast
         if len(audio) > self.chunk_size:
@@ -216,9 +281,9 @@ class NoiseRPSDataset(Dataset):
         src_idx = int(self.rng.choice(len(self.records), p=self.weights))
         src = self.records[src_idx]
 
-        for _ in range(4):  # a few retries if a record fails for some reason
+        for _ in range(8):  # a few retries if a record/chunk fails for some reason
             try:
-                audio, rps, audio_ts, motor_ts = self._extract_chunk(src)
+                audio, rps, audio_ts, motor_ts = self._extract_chunk(src, src_idx)
                 break
             except ValueError:
                 src_idx = int(self.rng.choice(len(self.records), p=self.weights))

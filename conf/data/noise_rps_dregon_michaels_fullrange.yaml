@@ -1,0 +1,41 @@
+# Noise-generation data variant that trains the generator on the FULL RPS range
+# of every recording — including the brief low-/warm-up/takeoff/landing and
+# rotors-off (zero-RPS) regions, not just cruise. Same sources/split as
+# noise_rps_dregon_michaels_swapped.yaml, but `balance_rps: true` draws chunk
+# starts to flatten each recording's RPS histogram (low/zero regions are ~0.3-15%
+# of wall-clock time, so proportional sampling under-represents them). Rationale:
+# for a generator driven by full-flight RPS trajectories (rps_synthesis
+# generate_full_flight) to emit silence at zero RPS, it must have SEEN zero/low
+# RPS in training. Empirically lifts mean-RPS<40 coverage ~15% -> ~50% and
+# mean<10 ~0.8% -> ~10%. (True rotors-off is data-limited; the recordings are
+# mostly airborne.)
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: data/DREGON
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+    balance_rps: true
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: data/DREGON
+    michaels_dir: data/new-drone-noises
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+    balance_rps: true
+  iterable: false
+batch_size: null
+num_workers: null
