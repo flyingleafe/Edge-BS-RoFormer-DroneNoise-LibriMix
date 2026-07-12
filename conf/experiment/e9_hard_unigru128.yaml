@@ -1,0 +1,25 @@
+# @package _global_
+# E9 — uni_gru128 RPS predictor on the "hard" COMBINED generated-noise task:
+# 50% neural generator (E7 vicinal interp) + 50% analytic static-comb (E8),
+# random LibriSpeech mixtures, and mixture-level augmentation on 50% of samples
+# from the start. Sibling of e9_hard_transformer / e9_hard_scv2. Validated on
+# the CLEAN free-flight-only real split (DREGON-LM-V4-michaels-valid, rebuilt
+# with min_motor_rps=50 to drop FLY124 ground warm-up). Stage 1 of the sim->real
+# curriculum; stage 2 (real finetune) = e9_hard_unigru128_ft_real.
+defaults:
+  - override /data: rps_hard_combined
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e9_hard_unigru128
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
