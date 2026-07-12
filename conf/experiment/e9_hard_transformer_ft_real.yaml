@@ -1,0 +1,24 @@
+# @package _global_
+# E9 sim->real curriculum STAGE 2 (transformer) — REAL-ONLY fine-tune, warm-started
+# from e9_hard_transformer's best.ckpt (stage 1: hard combined generated noise).
+# Trains on real DREGON+FLY125 online mix (no aug, michaels free-flight only),
+# validated on the clean free-flight DREGON-LM-V4-michaels split. Renewed
+# patience 20. Sibling of e9_hard_{transformer,unigru128,scv2}_ft_real.
+defaults:
+  - override /data: e9_real_ft
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e9_hard_transformer_ft_real
+checkpoint: r2://ml-data/artifacts/e9_hard_transformer/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

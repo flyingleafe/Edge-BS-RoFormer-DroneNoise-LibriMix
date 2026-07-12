@@ -1,0 +1,45 @@
+# E9 sim->real curriculum STAGE 2 — REAL-ONLY fine-tune online-mix policy (local
+# roots). Same sources as online_mix_v4_michaels_train_no_room1_no_aug.yaml
+# (DREGON in_flight_noise minus free-flight_nosource_room1 + Michael's FLY125 +
+# LibriSpeech, no augmentation), EXCEPT michaels min_motor_rps is 50 (not 0):
+# FLY125 warms up on the ground at ~35 rev/s (DJI flyCState==AssitedTakeoff) then
+# flies at ~80 (GPS_Atti) — the old `0.0` (with a comment conflating the ~29 Hz
+# telemetry RATE with RPS) let that warm-up into training. A 50 floor drops it,
+# matching the free-flight-only validation fix (min_motor_rps 30->50). Dedicated
+# file so the shared E4 no_aug A/B baseline is left untouched. Cloud twin:
+# e9_real_ft_dload.yaml.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+
+sources:
+  noise:
+    - kind: dregon
+      root: data
+      split: in_flight_noise
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      min_motor_rps: 30.0
+      download: false
+    - kind: michaels
+      root: data
+      ids: [FLY125]
+      # FLY125 flies at ~80 rev/s; the ~35 rev/s stretch is ground warm-up
+      # (AssitedTakeoff). Trim it with a 50 rev/s free-flight floor. (The ~29 in
+      # the old comment was the telemetry sample RATE in Hz, not an RPS value.)
+      min_motor_rps: 50.0
+  speech:
+    - kind: audio_files
+      root: data/librispeech/LibriSpeech/train-clean-100
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false

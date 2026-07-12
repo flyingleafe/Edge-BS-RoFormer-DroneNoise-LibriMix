@@ -1,0 +1,24 @@
+# E9 sim->real curriculum STAGE 2 data — real-only online-mix fine-tune stream
+# (conf/online_mix/e9_real_ft.yaml: DREGON in_flight_noise + Michael's FLY125 +
+# LibriSpeech, NO augmentation, michaels min_motor_rps=50 so FLY125 ground
+# warm-up is excluded) with the FIXED, free-flight-only real validation split
+# (clean DREGON-LM-V4-michaels/valid, min_motor_rps=50). Cloud: override train
+# policy to e9_real_ft_dload.yaml + valid to dload:DREGON-LM-V4-michaels-valid.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/e9_real_ft.yaml
+    # Mono RPS models need per-mic flattening of the 8-channel stream.
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: datasets/DREGON-LM-V4-michaels/valid
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

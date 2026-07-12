@@ -1,0 +1,40 @@
+# E9 sim->real curriculum STAGE 2 — REAL-ONLY fine-tune online-mix policy,
+# dload-portable variant (colab/kaggle/apocrita without a local data/ checkout).
+# Mirrors e9_real_ft.yaml but streams every source from R2: noise from the
+# published tdframe-v1 frame datasets (fixes baked in at publish time), speech
+# from the raw librispeech dataset. No augmentation. michaels min_motor_rps=50
+# drops FLY125 ground warm-up (~35 rev/s AssitedTakeoff) — see e9_real_ft.yaml.
+# Read-only; nothing written back to R2.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      min_motor_rps: 30.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      # FLY125 flies at ~80 rev/s; ~35 rev/s is ground warm-up (AssitedTakeoff).
+      # 50 rev/s free-flight floor trims it. (~29 was the telemetry rate in Hz.)
+      min_motor_rps: 50.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false
