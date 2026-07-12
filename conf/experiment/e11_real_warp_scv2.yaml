@@ -1,0 +1,22 @@
+# @package _global_
+# E11 real-only BASELINE (scv2) with time-warp — the comparison point for the
+# sim->real full-flight curriculum. Real DREGON+FLY125 online mix + E5 time-warp
+# + augmentation, NO synthetic noise, NO warm-start. Validated on the FULL
+# envelope real split (same as the full-flight models) for a fair comparison.
+defaults:
+  - override /data: e11_real_warp
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e11_real_warp_scv2
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

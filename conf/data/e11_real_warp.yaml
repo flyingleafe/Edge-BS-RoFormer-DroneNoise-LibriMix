@@ -1,0 +1,22 @@
+# E11 real-data-only BASELINE with time-warp (the comparison point for the
+# sim->real full-flight curriculum). Real DREGON+FLY125 online mix with the E5
+# time-warp + augmentation recipe (online_mix_v4_michaels_timewarp), validated on
+# the FULL-envelope real split so it is directly comparable to the full-flight
+# models. No synthetic noise, no warm-start.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/online_mix_v4_michaels_timewarp_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
