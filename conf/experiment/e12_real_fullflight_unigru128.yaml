@@ -1,0 +1,25 @@
+# @package _global_
+# E12 real-data FULL-FLIGHT diagnostic (unigru128). Same online-mix + time-warp
+# recipe as the E11 real-only baseline, but the real DREGON noise source keeps
+# its WHOLE envelope (min_motor_rps: 0) so training sees real ground/warm-up/
+# take-off windows, not just cruise. No synthetic noise, no warm-start.
+# Question: can a model trained on the REAL full flight predict the low-RPS
+# regimes, or does it still collapse toward the mean? Validated on the FULL
+# envelope real split (valid-full, FLY124) for direct comparison.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: e12_real_fullflight_unigru128
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
