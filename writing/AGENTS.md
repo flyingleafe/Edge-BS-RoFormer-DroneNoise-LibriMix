@@ -147,6 +147,7 @@ check: report.pdf
 
 | Skill | When to use |
 |-------|-------------|
+| `writeup` | End-to-end deck/report creation with inventory, narrative checkpoint, restricted creator agent, and critic refinement loop (see `.claude/skills/writeup/SKILL.md` and `.claude/workflows/writeup-build.js`). The two scaffolding skills below are its building blocks. |
 | `create-typst-report` | Scaffold a new `writing/reports/<date>_<title>/` directory with Typst source, Makefile, and `prepare.py` stub. |
 | `create-typst-slides` | Scaffold a new `writing/slides/<date>_<title>/` directory with Typst/Touying source, Makefile, and `prepare.py` stub. |
 

@@ -43,6 +43,7 @@ Route to the right skill (table below), execute, and close with `record-and-reme
 
 | Skill | When to use |
 |-------|-------------|
+| `writeup` | Produce a complete slide deck or report end-to-end: work inventory since the last artifact → narrative (user checkpoint) → restricted creator agent + adversarial critic loop (dynamic workflow `writeup-build`). Use this — not the scaffolding skills below — whenever a whole deck/report is wanted. |
 | `run-experiment` | Task requires training a model, running evaluation, orchestrating an experiment |
 | `generate-model-comparisons` | Publication-ready plots/tables from eval results |
 | `create-typst-report` | Create a new Typst report in `writing/reports/` |
@@ -67,8 +68,8 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 | **Running an experiment** (train / eval / orchestrate) | `run-experiment` | `conf/AGENTS.md` (the Hydra experiment tree — `conf/experiment/`). Run directly with `python train.py experiment=<name>` on a local GPU; for remote GPU (Slurm/Colab/Kaggle) submit the same command via `omnirun` (Key Facts below). Legacy: `./scripts/sbatch.sh`, the `autoresearch` extension. |
 | **Running online-mixed RPS-predictor training** (random mixtures each epoch, fixed validation, curriculum/augment stages) | `run-experiment` | `src/data_processing/AGENTS.md` § "Online Mixing for RPS Prediction" **first**, then `conf/AGENTS.md`, then `python train.py experiment=<name>` with a `conf/data` entry that wraps `OnlineMixIterableDataset` (policy YAMLs live at `conf/online_mix/*.yaml`; `samples_per_validation` set in `conf/config.yaml`/the experiment file). |
 | **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `eval.py` + `src/plots` comparison plots. |
-| **Producing a presentation / slides** | `create-typst-slides` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`. |
-| **Producing a report** | `create-typst-report` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`. |
+| **Producing a presentation / slides** | `writeup` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`; scaffolding recipe used by the creator agent is `create-typst-slides`. |
+| **Producing a report** | `writeup` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`; scaffolding recipe used by the creator agent is `create-typst-report`. |
 | **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `src/fwh_rotor_sim/AGENTS.md`. |
 | **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (dload + W&B artifacts + `omnirun pull`; legacy rsync fallback). |
 

@@ -12,6 +12,19 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/writeup-guard.py\" --scope=global || printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"writeup-guard crashed; denying fail-closed. Fix .claude/hooks/writeup-guard.py.\"}}'",
+            "timeout": 30,
+            "statusMessage": "writeup jail"
+          }
+        ]
+      }
     ]
   }
 }
