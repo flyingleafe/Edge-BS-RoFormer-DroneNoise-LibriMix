@@ -372,10 +372,32 @@ def download_dregon_dataset(
 # =============================================================================
 
 
+def _correct_mic_frame(mic_pos: np.ndarray) -> np.ndarray:
+    """Reconcile the shipped ``micPos`` frame with ``rotorsPos``.
+
+    DREGON's shipped ``micPos.txt`` / ``coordinates.mat['micPos']`` is expressed
+    in a frame rotated **180° about the z axis** relative to ``rotorsPos`` (the
+    two arrays use opposite x/y axis conventions). Left uncorrected, a free-field
+    ``1/r + delay`` propagation predicts inter-mic delays that are *anti*-correlated
+    with the measured GCC-PHAT TDOAs (correlation −0.55); applying the 180° flip
+    restores agreement (+0.93). Established by the Stage-0 RTF study on the
+    constant-speed single-motor recordings — see
+    ``notebooks/stage0_rotor_rtf.ipynb`` / ``notebooks/geom_calibration.py`` and
+    memory ``stage0-rtf-freefield-validation``. A 180° z-rotation negates x and y
+    and leaves z unchanged; it only affects the mic↔rotor *relative* frame, which
+    is all the propagation model uses.
+    """
+    out = np.asarray(mic_pos, dtype=np.float64).copy()
+    out[:, 0] = -out[:, 0]
+    out[:, 1] = -out[:, 1]
+    return out
+
+
 def get_geometry(dregon_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(mic_positions, rotor_positions)``.
 
-    mic_positions: (8, 3)  — microphone xyz
+    mic_positions: (8, 3)  — microphone xyz, frame-corrected via
+                   :func:`_correct_mic_frame` (180° z-flip to match rotorsPos)
     rotor_positions: (4, 3) — rotor xyz
     """
     mic_pos_path = dregon_dir / "micPos.txt"
@@ -387,6 +409,8 @@ def get_geometry(dregon_dir: Path) -> tuple[np.ndarray, np.ndarray]:
         mic_pos = scipy.io.loadmat(str(coord_mat_path))["micPos"]
     else:
         raise FileNotFoundError("Neither micPos.txt nor coordinates.mat found")
+
+    mic_pos = _correct_mic_frame(mic_pos)
 
     if coord_mat_path.exists():
         rotor_pos = scipy.io.loadmat(str(coord_mat_path))["rotorsPos"]
@@ -451,6 +475,7 @@ def load_timeframe(
         mic_pos = (
             _parse_mic_positions_txt(mic_pp) if mic_pp.suffix == ".txt" else np.loadtxt(mic_pp)
         )
+        mic_pos = _correct_mic_frame(mic_pos)  # 180° z-flip to match rotorsPos frame
         rotor_pos = _load_rotor_positions(sample["rotor_positions_path"])
 
     # --- audio ---------------------------------------------------------------

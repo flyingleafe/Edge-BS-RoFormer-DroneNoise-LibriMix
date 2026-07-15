@@ -1,0 +1,7 @@
+ M src/data_processing/michaels.py
+?? notebooks/geom_calibration.ipynb
+?? notebooks/geom_calibration.py
+?? notebooks/stage0_rotor_rtf.ipynb
+?? notebooks/stage0_rtf_utils.py
+?? tests/test_geom_calibration.py
+?? writing/reports/2026-07-15_mic-array-geometry-calibration/

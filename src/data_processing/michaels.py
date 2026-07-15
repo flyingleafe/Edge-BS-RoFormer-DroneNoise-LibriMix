@@ -57,8 +57,12 @@ MICHAELS_FILES = [
 
 # ── Array / airframe geometry ───────────────────────────────────────────────
 # Body frame: X = forward, Y = left, Z = up; origin at the drone body centre
-# (rotor plane). The microphone array is a vertical ring (plane = Y-Z, normal
-# +X) mounted forward of and above the body. Constants read from
+# (rotor plane). The microphone array is a HORIZONTAL ring (plane = X-Y, normal
+# +Z) mounted forward of and above the body: the array photo is a top-down shot
+# in which the ring appears face-on as a full circle (a vertical ring would be
+# edge-on), and its extent is labelled in both X (width) and Y (height). It sits
+# 33 cm above and ~30 cm forward of the body, cleanly above the rotor downwash.
+# Constants read from
 # `data/recording_with_motor_speed/Microphone_Array_Configuration.jpeg`;
 # wheelbase from the DJI Matrice 100 (the airframe in the rig photos).
 
@@ -91,21 +95,24 @@ def get_geometry() -> tuple[np.ndarray, np.ndarray]:
     can populate the ``"mic_pos"`` / ``"rotor_pos"`` Frame entries the same way
     DREGON does.
 
-    Microphones: 8 evenly-spaced points on a vertical ring (radius 82.5 mm),
-    numbered counter-clockwise starting 22.5° left of top, with the ring centre
-    ``ARRAY_OFFSET_FORWARD`` forward (the spec's 20 cm front-edge gap + the body's
-    forward half-extent) and 330 mm above the body.
+    Microphones: 8 evenly-spaced points on a HORIZONTAL ring (radius 82.5 mm) in
+    the X-Y plane (normal +Z), numbered counter-clockwise starting 22.5° left of
+    top, with the ring centre ``ARRAY_OFFSET_FORWARD`` forward (the spec's 20 cm
+    front-edge gap + the body's forward half-extent) and 330 mm above the body.
+    The exact in-plane orientation / handedness of the numbering is refined from
+    audio by the geometry self-calibration (notebooks/geom_calibration.py).
 
     Rotors: X-quad, arms at ±45°, motor radius ``(W/2)·cos45°`` per horizontal
     axis, at body height (z = 0). Ordered to match the ``rps`` rows
     (``ROTOR_ORDER``: RFront, LFront, LBack, RBack).
     """
-    # Microphones — ring in the Y-Z plane (u = lateral -> +Y, v = vertical -> +Z).
+    # Microphones — HORIZONTAL ring in the X-Y plane (normal +Z); z is constant.
+    # Photo axes map as image-up -> +X (forward), image-right -> -Y (lateral).
     theta = np.deg2rad(112.5 + 45.0 * np.arange(N_MICS))  # mic 1 at 112.5°, CCW
-    u = MIC_ARRAY_RADIUS * np.cos(theta)
-    v = MIC_ARRAY_RADIUS * np.sin(theta)
+    fwd = MIC_ARRAY_RADIUS * np.sin(theta)  # image-up component -> +X (forward)
+    lat = MIC_ARRAY_RADIUS * np.cos(theta)  # image-right component -> -Y (lateral)
     mic_positions = np.stack(
-        [np.full(N_MICS, ARRAY_OFFSET_FORWARD), u, ARRAY_OFFSET_UP + v], axis=-1
+        [ARRAY_OFFSET_FORWARD + fwd, -lat, np.full(N_MICS, ARRAY_OFFSET_UP)], axis=-1
     )  # (8, 3)
 
     # Rotors — X-config; per-axis offset a = (W/2)·cos45°.
