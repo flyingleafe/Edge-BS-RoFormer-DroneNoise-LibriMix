@@ -48,6 +48,8 @@ dependencies = [
     "dload-ml>=0.3.0",
     "requests>=2.32",
     "gdown>=5.2",
+    "gpytorch>=1.15.2",
+    "pywavelets>=1.9.0",
 ]
 
 [project.scripts]
