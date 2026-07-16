@@ -75,11 +75,19 @@ BASELINE_MIC = (-30.0, 0.0)  # phase-alignment reference (paper baseline)
 # ════════════════════════════════════════════════════════════════════════════
 # Data loading (dload ``jasa-flyovers``)
 # ════════════════════════════════════════════════════════════════════════════
-def load_flyovers(dataset: str = "jasa-flyovers") -> dict[int, dict]:
-    """Load every flyover from the dload dataset, keyed by ``round(speed)``.
+def load_flyovers(
+    dataset: str = "jasa-flyovers",
+    speeds: set[int] | None = None,
+    arrays: tuple[str, ...] = ("tonal", "broadband"),
+) -> dict[int, dict]:
+    """Load flyovers from the dload dataset, keyed by ``round(speed)``.
 
-    Each value holds ``tonal``/``broadband``/``audio`` ``(O, N)``, ``mics``
-    ``(O, 3)`` and the scenario ``meta`` dict.
+    ``speeds`` optionally restricts which flyovers are decoded (memory: the full
+    10-speed set with ``audio`` is ~2.7 GB and OOMs a default cluster job).
+    ``arrays`` selects which per-mic signals to materialise (``audio`` is not
+    needed for training/eval).  Signals are stored ``float32``; ``mics`` is
+    always kept.  ``NpzFile`` lazy-loads keys, so unrequested arrays are never
+    read into memory.
     """
     import dload
 
@@ -90,16 +98,18 @@ def load_flyovers(dataset: str = "jasa-flyovers") -> dict[int, dict]:
     out: dict[int, dict] = {}
     for _key, fields in ds.samples():
         meta = dload.codecs.json_from(fields["meta"])
+        sp = round(float(meta["speed"]))
+        if speeds is not None and sp not in speeds:
+            continue
         arr = np.load(io.BytesIO(fields["arrays"]))
-        out[round(float(meta["speed"]))] = {
+        rec = {
             "meta": meta,
-            "tonal": np.asarray(arr["tonal"], dtype=np.float64),
-            "broadband": np.asarray(arr["broadband"], dtype=np.float64),
-            "audio": np.asarray(arr["audio"], dtype=np.float64),
-            "mics": np.asarray(arr["mics"], dtype=np.float64),
-            "band_centers": np.asarray(arr["band_centers"], dtype=np.float64),
             "speed": float(meta["speed"]),
+            "mics": np.asarray(arr["mics"], dtype=np.float64),
         }
+        for name in arrays:
+            rec[name] = np.asarray(arr[name], dtype=np.float32)
+        out[sp] = rec
     return out
 
 

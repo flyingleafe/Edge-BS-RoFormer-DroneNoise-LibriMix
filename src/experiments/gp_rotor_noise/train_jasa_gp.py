@@ -121,8 +121,9 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    flyovers = J.load_flyovers()
-    print(f"[train] loaded speeds {sorted(flyovers)}")
+    need = {round(v) for v in (*J.TRAIN_SPEEDS, *J.TEST_SPEEDS)}
+    flyovers = J.load_flyovers(speeds=need)
+    print(f"[train] loaded speeds {sorted(flyovers)} (tonal+broadband only)")
     cfg = J.JasaGPConfig(n_harm=args.n_harm, iters=args.iters, verbose=True)
     model = J.JasaGPModel(cfg)
     t0 = time.time()
