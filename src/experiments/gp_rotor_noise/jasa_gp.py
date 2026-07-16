@@ -169,28 +169,96 @@ def fourier_design(t: np.ndarray, n_harm: int, bpf: float = BPF_HZ) -> np.ndarra
     return np.stack(rows, axis=0)  # (2H+1, N)
 
 
-def first_bpf_phase(sig: np.ndarray, bpf: float = BPF_HZ) -> float:
-    """Phase [rad] of the fundamental BPF component via a one-bin DFT."""
+def _fundamental_sincos(sig: np.ndarray, bpf: float = BPF_HZ) -> tuple[float, float]:
+    """Project ``sig`` onto ``(sin, cos)`` at the BPF -> (a1, b1) amplitudes.
+
+    Same ``(sin, cos)`` basis and column order as :func:`fourier_design`, so the
+    fundamental phase ``atan2(b1, a1)`` is consistent between the time-domain
+    (:func:`align_fundamental_time`) and coefficient-space (:func:`align_coeffs`)
+    alignment paths.
+    """
     n = sig.shape[-1]
     t = np.arange(n) / FS
-    return float(np.angle(np.sum(sig * np.exp(-2j * np.pi * bpf * t))))
+    w = 2 * np.pi * bpf
+    a1 = (2.0 / n) * float(np.sum(sig * np.sin(w * t)))
+    b1 = (2.0 / n) * float(np.sum(sig * np.cos(w * t)))
+    return a1, b1
 
 
-def phase_align(sig: np.ndarray, target_phase: float, bpf: float = BPF_HZ) -> np.ndarray:
-    """Circularly shift ``sig`` so its first-BPF phase equals ``target_phase``."""
-    ph = first_bpf_phase(sig, bpf)
-    dphi = (target_phase - ph + np.pi) % (2 * np.pi) - np.pi
-    n_shift = int(round(dphi / (2 * np.pi * bpf) * FS))
-    return np.roll(sig, n_shift)
+def first_bpf_phase(sig: np.ndarray, bpf: float = BPF_HZ) -> float:
+    """Fundamental BPF phase ``atan2(b1, a1)`` [rad] in the ``(sin, cos)`` basis."""
+    a1, b1 = _fundamental_sincos(sig, bpf)
+    return float(np.arctan2(b1, a1))
 
 
-def fit_coeffs(tonal: np.ndarray, n_harm: int, bpf: float = BPF_HZ) -> np.ndarray:
-    """Least-squares Fourier coefficient vector ``w in R^(2H+1)`` for one signal."""
+def align_fundamental_time(sig: np.ndarray, bpf: float = BPF_HZ) -> np.ndarray:
+    """Shift ``sig`` (exact fractional FFT delay) so its fundamental phase is 0.
+
+    The paper's phase-alignment convention (Sec. II C): remove the arbitrary
+    time origin (here, the random Griffin-Lim / de-Doppler offset) by matching
+    the fundamental BPF phase to a common reference.  A delay ``tau = phi/omega``
+    drives ``atan2(b1, a1) -> 0`` (fundamental becomes ``+sin``), matching
+    :func:`align_coeffs`.  Fractional-delay via a spectral phase ramp avoids the
+    integer-sample rounding of ``np.roll``.
+    """
+    phi = first_bpf_phase(sig, bpf)
+    tau = phi / (2 * np.pi * bpf)
+    n = sig.shape[-1]
+    freqs = np.fft.rfftfreq(n, 1.0 / FS)
+    spec = np.fft.rfft(sig) * np.exp(-2j * np.pi * freqs * tau)
+    return np.fft.irfft(spec, n)
+
+
+def align_coeffs(w: np.ndarray, n_harm: int) -> np.ndarray:
+    """De-rotate a Fourier coefficient vector so the fundamental phase is 0.
+
+    Exact coefficient-space equivalent of :func:`align_fundamental_time`: a time
+    shift that zeroes the fundamental phase ``phi1`` rotates harmonic ``k`` by
+    ``k*phi1``.  This makes ``A_1 = |C_1| > 0``, ``B_1 = 0`` and de-rotates the
+    higher harmonics consistently, so the per-coefficient GP sees a *coherent*
+    (sign-consistent, smooth) spatial field instead of sign-mixed phasors.
+    Layout: ``w = [mean, A_1, B_1, A_2, B_2, ...]``.
+    """
+    a1, b1 = w[1], w[2]
+    phi1 = np.arctan2(b1, a1)
+    out = w.copy()
+    for k in range(1, n_harm + 1):
+        a, b = w[1 + 2 * (k - 1)], w[2 + 2 * (k - 1)]
+        c, s = np.cos(k * phi1), np.sin(k * phi1)
+        out[1 + 2 * (k - 1)] = a * c + b * s
+        out[2 + 2 * (k - 1)] = b * c - a * s
+    return out
+
+
+def estimate_f0(sig: np.ndarray, bpf_nom: float = BPF_HZ, rel: float = 0.06, pad: int = 8) -> float:
+    """Precise fundamental BPF [Hz] via a zero-padded windowed FFT peak.
+
+    The CONA flyover's emitted BPF drifts from the nominal 33.55 Hz (rotor trim +
+    residual Doppler at these low speeds).  Fitting the Fourier comb at the true
+    ``f0`` is essential: a ~1% error compounds over harmonics and by ``k~12`` the
+    design misses the spectral peak.  Searched within ``+/- rel`` of ``bpf_nom``.
+    """
+    n = sig.shape[-1]
+    big = n * pad
+    spec = np.abs(np.fft.rfft((sig - sig.mean()) * np.hanning(n), big))
+    freqs = np.fft.rfftfreq(big, 1.0 / FS)
+    m = (freqs >= bpf_nom * (1 - rel)) & (freqs <= bpf_nom * (1 + rel))
+    return float(freqs[m][int(np.argmax(spec[m]))])
+
+
+def fit_coeffs(
+    tonal: np.ndarray, n_harm: int, bpf: float = BPF_HZ, align: bool = True
+) -> np.ndarray:
+    """Least-squares Fourier coefficient vector ``w in R^(2H+1)`` for one signal.
+
+    With ``align=True`` the fundamental phase is zeroed (:func:`align_coeffs`) so
+    coefficients are coherent across microphones and velocities.
+    """
     n = tonal.shape[-1]
     t = np.arange(n) / FS
     A = fourier_design(t, n_harm, bpf).T  # (N, 2H+1)
     w, *_ = np.linalg.lstsq(A, tonal, rcond=None)
-    return w
+    return align_coeffs(w, n_harm) if align else w
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -257,6 +325,7 @@ class JasaGPModel:
         self.y_mean: np.ndarray | None = None
         self.y_std: np.ndarray | None = None
         self.target_phase: float = 0.0
+        self.f0_ref: float = self.cfg.bpf  # median training comb spacing (set in _assemble)
         # broadband: per-(mic,V) sigma_b table + averaged colored magnitude spectrum
         self.sigma_b_mean: float = 0.0
         self.bb_freqs: np.ndarray | None = None  # rfft freqs for colored synth
@@ -266,19 +335,11 @@ class JasaGPModel:
     def _assemble(self, flyovers: dict[int, dict]):
         """Build (X, W, sigma_b) design points from the aft-region train speeds."""
         cfg = self.cfg
-        # global baseline phase (mic (-30,0), lowest available train speed's signal)
-        base_speed = min(cfg.train_speeds)
-        base = flyovers[round(base_speed)]
-        b_i = int(
-            (
-                (base["mics"][:, 0] - BASELINE_MIC[0]) ** 2
-                + (base["mics"][:, 1] - BASELINE_MIC[1]) ** 2
-            ).argmin()
-        )
-        b_dd, _ = dedoppler(base["tonal"][b_i], BASELINE_MIC, base_speed)
-        self.target_phase = first_bpf_phase(b_dd, cfg.bpf)
+        # global convention: every signal is aligned to fundamental phase 0 in
+        # coefficient space (see fit_coeffs/align_coeffs), so no baseline mic is needed.
+        self.target_phase = 0.0
 
-        xs, ws, sbs = [], [], []
+        xs, ws, sbs, f0s = [], [], [], []
         bb_accum = None
         bb_count = 0
         for v in cfg.train_speeds:
@@ -289,10 +350,11 @@ class JasaGPModel:
             for i in idx:
                 mic_xy = (float(mics[i, 0]), float(mics[i, 1]))
                 dd, _ = dedoppler(fl["tonal"][i], mic_xy, v)
-                dd = phase_align(dd, self.target_phase, cfg.bpf)
-                w = fit_coeffs(dd, cfg.n_harm, cfg.bpf)
+                f0 = estimate_f0(dd, cfg.bpf)  # true comb spacing (trim + residual Doppler)
+                w = fit_coeffs(dd, cfg.n_harm, f0)  # fit at f0; aligns fundamental phase to 0
                 xs.append([mic_xy[0], mic_xy[1], v])
                 ws.append(w)
+                f0s.append(f0)
                 sbs.append(float(np.std(fl["broadband"][i])))
                 # accumulate colored broadband magnitude (de-Dopplered) for synth
                 bb_dd, _ = dedoppler(fl["broadband"][i], mic_xy, v)
@@ -303,7 +365,8 @@ class JasaGPModel:
         W = np.asarray(ws, dtype=np.float64)
         sb = np.asarray(sbs, dtype=np.float64)
         self.sigma_b_mean = float(sb.mean())
-        n = flyovers[round(base_speed)]["tonal"].shape[-1]
+        self.f0_ref = float(np.median(f0s))  # representative comb spacing for synthesis
+        n = flyovers[round(min(cfg.train_speeds))]["tonal"].shape[-1]
         self.bb_freqs = np.fft.rfftfreq(n, 1.0 / FS)
         self.bb_mag = bb_accum / max(bb_count, 1)
         return X, W, sb
@@ -389,19 +452,21 @@ class JasaGPModel:
         rps: np.ndarray | None = None,
         broadband: str = "colored",
         seed: int = 0,
+        bpf: float | None = None,
     ) -> np.ndarray:
         """Render a pressure time series at listener ``(x, y)`` for flight speed ``v``.
 
         ``rps`` optionally supplies a per-sample rotor speed [rev/s] (length
         ``round(duration*FS)``) to frequency-modulate the comb; otherwise the
-        hover BPF is held.  ``broadband``: ``"none"``, ``"white"`` (paper
-        ``N(0, sigma_b^2)``) or ``"colored"`` (shaped by the learned broadband
-        magnitude spectrum).
+        comb is held at ``bpf`` (default the training reference ``f0_ref``).
+        ``broadband``: ``"none"``, ``"white"`` (paper ``N(0, sigma_b^2)``) or
+        ``"colored"`` (shaped by the learned broadband magnitude spectrum).
         """
         n = int(round(duration * FS))
         t = np.arange(n) / FS
         w = self.predict_coeffs(x, y, v)
-        F = self._fourier_from_rps(t, rps, self.cfg.bpf)  # (2H+1, n)
+        comb = self.f0_ref if bpf is None else bpf
+        F = self._fourier_from_rps(t, rps, comb)  # (2H+1, n)
         tonal = F.T @ w  # (n,)
         out = tonal.copy()
         if broadband != "none":
@@ -439,6 +504,7 @@ class JasaGPModel:
             "y_mean": self.y_mean,
             "y_std": self.y_std,
             "target_phase": self.target_phase,
+            "f0_ref": self.f0_ref,
             "sigma_b_mean": self.sigma_b_mean,
             "bb_freqs": self.bb_freqs,
             "bb_mag": self.bb_mag,
@@ -462,6 +528,7 @@ class JasaGPModel:
             "bb_mag",
         ):
             setattr(m, k, state[k])
+        m.f0_ref = state.get("f0_ref", m.cfg.bpf)
         tx = state["train_x"]
         ty = state["train_y"]
         model, likelihood, _tx, _ty = _make_gp(

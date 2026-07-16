@@ -34,16 +34,20 @@ EVAL_MICS = [(-30, 0), (-50, 0), (-70, 0), (-90, 0), (-140, 0), (-30, 20), (-30,
 
 
 def _loudness_db(x: np.ndarray) -> float:
-    """RMS sound-pressure level [dB re 20 uPa] (a fast loudness proxy)."""
-    return float(20.0 * np.log10(np.sqrt(np.mean(x**2)) / 20e-6 + 1e-12))
+    """AC RMS sound-pressure level [dB re 20 uPa] (mean removed: DC is inaudible)."""
+    ac = x - np.mean(x)
+    return float(20.0 * np.log10(np.sqrt(np.mean(ac**2)) / 20e-6 + 1e-12))
 
 
-def _true_aligned_tonal(model: J.JasaGPModel, fl: dict, mic_xy, v: float) -> np.ndarray:
-    """Ground-truth tonal at a mic, de-Dopplerized + phase-aligned like training."""
+def _true_aligned_tonal(
+    model: J.JasaGPModel, fl: dict, mic_xy, v: float
+) -> tuple[np.ndarray, float]:
+    """Ground-truth tonal at a mic (de-Dopplerized + fundamental-phase-aligned) and its f0."""
     mics = fl["mics"]
     i = int(((mics[:, 0] - mic_xy[0]) ** 2 + (mics[:, 1] - mic_xy[1]) ** 2).argmin())
     dd, _ = J.dedoppler(fl["tonal"][i], mic_xy, v)
-    return J.phase_align(dd, model.target_phase, model.cfg.bpf)
+    f0 = J.estimate_f0(dd, model.cfg.bpf)
+    return J.align_fundamental_time(dd, f0), f0
 
 
 def evaluate(model: J.JasaGPModel, flyovers: dict, out: Path) -> list[dict]:
@@ -52,8 +56,8 @@ def evaluate(model: J.JasaGPModel, flyovers: dict, out: Path) -> list[dict]:
         fl = flyovers[round(v)]
         fig, axs = plt.subplots(len(EVAL_MICS), 2, figsize=(13, 2.1 * len(EVAL_MICS)))
         for r, (x, y) in enumerate(EVAL_MICS):
-            yt = _true_aligned_tonal(model, fl, (x, y), v)
-            yp = model.synthesize(x, y, float(v), duration=1.0, rps=None, broadband="none")
+            yt, f0 = _true_aligned_tonal(model, fl, (x, y), v)
+            yp = model.synthesize(x, y, float(v), duration=1.0, rps=None, broadband="none", bpf=f0)
             n = min(len(yt), len(yp))
             yt, yp = yt[:n], yp[:n]
             corr = float(np.corrcoef(yt, yp)[0, 1])
@@ -94,8 +98,8 @@ def evaluate(model: J.JasaGPModel, flyovers: dict, out: Path) -> list[dict]:
         xs = np.arange(-140, -20, 10)
         lt, lp = [], []
         for x in xs:
-            yt = _true_aligned_tonal(model, fl, (x, 0), v)
-            yp = model.synthesize(int(x), 0, float(v), duration=1.0, broadband="none")
+            yt, f0 = _true_aligned_tonal(model, fl, (x, 0), v)
+            yp = model.synthesize(int(x), 0, float(v), duration=1.0, broadband="none", bpf=f0)
             lt.append(_loudness_db(yt))
             lp.append(_loudness_db(yp[: len(yt)]))
         ax.plot(xs, lt, "s--", label=f"true V={round(v)}", alpha=0.6)
