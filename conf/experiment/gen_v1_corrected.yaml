@@ -18,9 +18,13 @@ defaults:
 
 experiment_name: gen_v1_corrected
 
+# batch 16 x grad_accum 2 = effective batch 32 (identical optimizer steps &
+# averaged gradient to v2's batch-32) at ~half peak GPU memory, so it fits any
+# backend incl. the 14.5 GB Colab T4 — lets omnirun place it unpinned without OOM.
 epochs: 60
 patience: 8
-batch_size: 32
+batch_size: 16
+grad_accum_steps: 2
 grad_clip: 1.0
 optim:
   optimizer: adam
