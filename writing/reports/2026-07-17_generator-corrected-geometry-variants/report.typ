@@ -12,16 +12,19 @@
     We retrain the RPS-conditioned drone-noise generator on the *corrected* DREGON +
     Michael's microphone-array geometry — the 180° mic-frame fix established by the
     Stage-0 self-calibration study — and evaluate three variants against the old
-    wrong-geometry generator by valid multi-scale STFT (MSSTFT) on the swapped
-    DREGON + Michael's split: (v1) the corrected-geometry baseline, (v2) v1 plus
-    learnable *per-rotor sub-embeddings* $z_r = z_"drone" + delta z_r$, and (v3) v1
-    plus an additive, physics-gated *wind-wake channel*. Per-rotor sub-embeddings
-    give the clearest and most consistent improvement (mrstft $8.47 -> 8.94$); the
-    wind channel does not help on this hover-dominated data and is the weakest
-    variant, consistent with its flow field being dormant at zero airspeed; and the
-    geometry correction itself is roughly neutral on these magnitude metrics — as
-    expected, since the correction is fundamentally a phase/delay fix that a
-    magnitude spectrogram loss cannot see.
+    wrong-geometry generator by the MR-STFT quality metric on the *free-flight*
+    (mean RPS $>= 45$) subset of the swapped DREGON + Michael's validation set:
+    (v1) the corrected-geometry baseline, (v2) v1 plus learnable *per-rotor
+    sub-embeddings* $z_r = z_"drone" + delta z_r$, and (v3) v1 plus an additive,
+    physics-gated *wind-wake channel*. Restricting to free flight is essential: the
+    swapped split's ``val_at_start`` holds out the *start* of each recording, which
+    is takeoff/idle, and scoring there is dominated by near-silence and swamps the
+    effects we care about. On free-flight clips the *corrected-geometry* model (v1,
+    mrstft $5.22$) clearly beats the old wrong-geometry generator ($4.51$) — the
+    geometry fix helps, as physics demands. Per-rotor sub-embeddings do *not* beat
+    plain v1 in flight ($4.82$; they had looked best only on the idle-dominated
+    set), and the wind channel is the weakest variant ($3.44$), consistent with its
+    flow field being dormant at the zero relative airspeed of hover.
   ],
   keywords: ("drone noise", "generative model", "microphone array", "per-rotor conditioning", "wind noise"),
 )
@@ -99,100 +102,113 @@ not exercised on the swapped split, which lacks reliable airspeed.
 
 = Results
 
-All four models are scored on the same corrected-geometry swapped validation set
-($n = 128$ 1-second multichannel clips) with the exact training-time computation:
-the multi-scale STFT loss (lower = better) and the rescaled MR-STFT quality metric
-(`mrstft`, higher = better, the training monitor). @tab-results and @fig-bars
-summarise; @fig-spec shows the generated vs. real log-STFT magnitude side by side.
+== Scoring on free flight, not idle
+
+The models must be compared on the regime we care about. The swapped split sets
+``val_at_start = true``, holding out the *first* slice of each recording — and
+DREGON/Michael's recordings *begin* with several seconds of pre-takeoff idle and
+ramp-up. Measured on the raw valid set the median mean-RPS is only $15$ for DREGON
+and $35$ for Michael's, and most clips are near-silent idle; a magnitude metric
+there is dominated by how well each model reproduces *silence*, which is both easy
+and uninformative, and it inverts the rankings. We therefore score on the
+*free-flight* subset — clips with mean RPS $>= 45$ ($n = 48$ per variant across
+both drones) — and illustrate with free-flight clips only.
 
 #figure(
-  caption: [Per-variant results. `mrstft` (the training monitor) and MSSTFT loss are
-  measured on the corrected-geometry valid set ($n = 128$). "train best mrstft" is
-  each run's own best epoch; the OLD value is on its *own* wrong-geometry validation
-  and is not directly comparable.],
+  caption: [Per-variant MR-STFT quality on the free-flight subset (mean RPS $>= 45$,
+  $n = 48$). "train best mrstft" is each run's own best epoch (on its own valid, so
+  the OLD value — on wrong geometry — is not directly comparable); "flight mrstft"
+  is the free-flight score computed here. Higher is better.],
   table(
-    columns: (auto, auto, auto, auto, auto),
-    align: (left, center, center, center, center),
-    table.header([*variant*], [*epochs*], [*train best mrstft*], [*eval mrstft* #sym.arrow.t], [*eval MSSTFT loss* #sym.arrow.b]),
-    [OLD (wrong geom)], [\~32], [9.34#super[\*]], [8.58], [*5.56*],
-    [v1 — corrected], [32], [9.20], [8.47], [7.04],
-    [*v2 — +per-rotor*], [52], [*9.70*], [*8.94*], [6.96],
-    [v3 — +wind], [\~30], [8.83], [8.08], [7.08],
+    columns: (auto, auto, auto, auto),
+    align: (left, center, center, left),
+    table.header([*variant*], [*epochs*], [*flight mrstft* #sym.arrow.t], [*note*]),
+    [OLD (wrong geom)], [\~32], [4.51], [wrong-geometry baseline],
+    [*v1 — corrected*], [32], [*5.22*], [best in flight — geometry fix helps],
+    [v2 — +per-rotor], [52], [4.82], [helped on idle, not in flight],
+    [v3 — +wind], [\~30], [3.44], [weakest — wind dormant at hover],
   ),
 ) <tab-results>
 
 #figure(
-  image("assets/msstft_bars.png", width: 100%),
-  caption: [Generator variants on the corrected-geometry swapped valid set.
-  Per-rotor sub-embeddings (v2, green) are best on the quality metric; the wind
-  variant (v3) is weakest. The MSSTFT loss panel disagrees on the OLD baseline
-  (see the Discussion).],
+  image("assets/msstft_bars.png", width: 72%),
+  caption: [MR-STFT quality on the free-flight subset. The corrected-geometry
+  baseline (v1) is best and clearly beats the old wrong-geometry generator; the
+  wind variant (v3) is weakest.],
 ) <fig-bars>
 
 #figure(
   image("assets/spectrograms.png", width: 92%),
-  caption: [Real (top) vs. generated log-STFT magnitude, one DREGON and one
-  Michael's clip, for each model. v2 (+per-rotor) reproduces the richest,
-  most real-like harmonic texture on both drones; OLD and v1 are moderate (OLD
-  captures Michael's silence$->$onset and the bright low band); v3 (+wind) is the
-  flattest and least structured.],
+  caption: [Real (top) vs. generated log-STFT magnitude on *free-flight* clips, one
+  DREGON and one Michael's, for each model. All three corrected models reproduce
+  the continuous broadband + tonal structure of real flight noise; v3 (+wind) is
+  visibly the flattest.],
 ) <fig-spec>
 
 Three findings stand out:
 
-+ *Per-rotor sub-embeddings clearly help.* v2 is the best variant on both the
-  quality metric (mrstft $8.94$ vs. v1's $8.47$ and OLD's $8.58$) and, visibly, in
-  the spectrograms — its output has the harmonic striations and broadband texture
-  the flatter v1/OLD outputs lack. Letting each rotor own its timbre is the single
-  most useful change.
++ *The geometry correction helps.* On free flight the corrected-geometry baseline
+  (v1, mrstft $5.22$) is the best model and clearly beats the old wrong-geometry
+  generator ($4.51$). This is the physically expected result, and it only becomes
+  visible once idle clips are excluded — on the raw (idle-heavy) valid set the two
+  were indistinguishable and the ranking even inverted. The earlier impression that
+  "corrected geometry made things worse" was an artefact of scoring on takeoff/idle.
 
-+ *The wind channel does not help here.* v3 is the weakest variant (mrstft $8.08$)
-  and its spectrogram is the flattest. This is expected: on hover-dominated data
-  the physics gate places little flow, so the wind channel is near-dormant and only
-  adds a small incoherent floor that slightly dilutes the coherent fit. Its value
-  is contingent on free-flight airspeed, which this split does not provide.
++ *Per-rotor sub-embeddings do not help in flight.* v2 ($4.82$) sits *below* plain
+  v1 in flight, despite having looked best on the idle-dominated set. Letting each
+  rotor own its timbre apparently buys fit on the low-RPS/idle regime (where subtle
+  per-rotor differences at start-up matter) but not in cruise; on this data it is at
+  best neutral and slightly regresses the flight fit. We would not carry it forward
+  without evidence on more flight data.
 
-+ *The geometry correction is neutral on these metrics.* v1 (corrected) is
-  statistically on top of OLD (mrstft $8.47$ vs. $8.58$; the spectrograms are
-  near-indistinguishable). This is the expected outcome, discussed next.
++ *The wind channel is the weakest.* v3 ($3.44$) is clearly worst and its
+  spectrogram is the flattest. This is expected: with $V_"rel" = 0$ at hover the
+  physics gate places little flow, so the wind channel is near-dormant and only adds
+  an incoherent floor that dilutes the coherent fit. Its value is contingent on
+  free-flight airspeed the swapped split does not provide.
 
 = Discussion <sec-discussion>
 
-*Why the geometry fix does not move MSSTFT.* The Stage-0 correction is, in
-physical terms, a *phase/delay* fix: the 180° frame error inverts the sign of the
-inter-microphone TDOAs but barely changes each microphone's distance-based
-*level*. MSSTFT and MR-STFT are *magnitude* losses — they discard phase — and a
-single channel's magnitude spectrum is dominated by the RPS-driven harmonic
-amplitudes, which the emitter learns geometry-independently (the emitter produces
-a source "as radiated"; geometry enters only in the subsequent propagation). So
-correcting the geometry leaves the per-channel magnitude essentially unchanged,
-and a magnitude metric cannot register the improvement. The correction's real
-value is in *propagation and inter-channel coherence* — where Stage-0 already
-demonstrated it (TDOA correlation $-0.55 -> +0.93$) — not in the single-channel
-spectral magnitude this generator is trained on. A fair verdict is therefore *not*
-"the fix was useless" but "MSSTFT is the wrong instrument to see it"; a coherence-
-or phase-aware metric would be needed.
+*The evaluation regime was the whole story.* The single most important lesson here
+is methodological: scoring generative fidelity on the swapped ``val_at_start`` set
+means scoring on takeoff/idle, where the signal is near-silence and every model
+"wins" trivially. That regime inverted the rankings — it made the corrected
+geometry look worse than the wrong geometry, which is physically nonsensical — and
+produced a misleading illustration clip. Restricting to free flight (RPS $>= 45$)
+removes the confound and recovers the sensible ordering. Any future generator
+comparison on these recordings must condition on the flight regime, not average
+over idle.
 
-*The loss/quality disagreement on OLD.* The two magnitude metrics rank the top two
-models differently: MR-STFT puts v2 first and OLD second, while the raw MSSTFT loss
-puts OLD lowest (best). The spectrograms explain it — OLD reproduces a notably
-*brighter low-frequency band*, which the multi-scale L1 magnitude loss (summed
-across bands) rewards, whereas the rescaled MR-STFT metric weights the mid/high
-harmonic structure where v2 wins. We treat MR-STFT as primary (it is the training
-monitor), but the disagreement is a reminder that a single scalar spectral loss is
-a coarse proxy for perceptual/behavioural fidelity.
+*The geometry fix helps, as it must.* Once idle is excluded, v1 (corrected) is the
+best model and beats OLD by $0.7$ mrstft. The 180° mic-frame correction changes the
+rotor$->$mic distances and delays that drive propagation; on real flight noise —
+rich, broadband, multi-tonal — getting that propagation right measurably improves
+the fit. (The correction's largest effect is still on *phase/inter-channel* TDOAs,
+which Stage-0 quantified at correlation $-0.55 -> +0.93$; the flight-regime
+magnitude gain is a welcome, and consistent, second signal.)
 
-*Limitations.* (i) The comparison is single-channel magnitude only; the geometry
-fix and the wind channel's incoherence both live in multi-channel structure that
-MSSTFT ignores. (ii) v3's wind channel is evaluated only at hover; the free-flight
-regime that would activate it (via the grey-box dynamics module) is untested here.
-(iii) v1/v3 used gradient accumulation (batch 16 × 2 = effective batch 32) to fit
-memory-constrained backends; this is numerically equivalent to v2's batch 32, but
-worth noting.
+*Per-rotor sub-embeddings are regime-dependent — treat with caution.* The reversal
+between idle (v2 best) and flight (v2 below v1) is the kind of result that warns
+against over-fitting a metric on the wrong distribution. The extra per-rotor
+capacity seems to help model start-up/idle asymmetries between rotors but does not
+transfer to cruise, where the four rotors are near-identical. We would re-test it on
+a flight-heavy split before adopting it.
 
-*Takeaway.* Of the three innovations, *per-rotor sub-embeddings* is the clear win
-and should be carried forward. The *wind channel* is architecturally sound and
-physically validated (the gate predicts real per-mic flow noise), but needs
-free-flight data to pay off. The *geometry correction* is important for the
-project's downstream propagation/localization goals, but is invisible to — and
-should not be judged by — a single-channel magnitude metric.
+*Limitations.* (i) $n = 48$ flight clips is modest; the v1-vs-v2 gap ($0.4$) is
+suggestive, not decisive, though v1-vs-OLD ($0.7$) and the v3 deficit are clearer.
+(ii) The metric is single-channel magnitude; the geometry fix's inter-channel
+benefit and the wind channel's incoherence both live in multi-channel structure it
+cannot see, so this understates the geometry gain and gives the wind channel no way
+to demonstrate its distinctive property. (iii) v3's wind channel is evaluated only
+at hover; the free-flight airspeed that would activate it (via the grey-box
+dynamics module) is absent from this data. (iv) v1/v3 used gradient accumulation
+(batch $16 times 2 =$ effective batch $32$), numerically equivalent to v2's
+batch $32$.
+
+*Takeaway.* The *geometry correction* is validated and should stay: it improves the
+generator on the flight regime and underpins the project's propagation/localization
+goals. *Per-rotor sub-embeddings* are not a clear win and should not be adopted on
+this evidence. The *wind channel* is architecturally sound and physically validated
+(its gate predicts real per-mic flow noise at Spearman $0.92$), but it cannot pay
+off without free-flight data and a coherence-aware objective — the concrete next
+step for that line of work.
