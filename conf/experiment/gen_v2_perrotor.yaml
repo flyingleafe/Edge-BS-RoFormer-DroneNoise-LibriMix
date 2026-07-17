@@ -1,0 +1,27 @@
+# @package _global_
+# Generator retrain variant 2/3 — corrected geometry + PER-ROTOR SUB-EMBEDDINGS.
+# Identical to gen_v1_corrected (E6 per-drone winner, swapped DREGON+Michael's
+# split streamed from the corrected `frames:` datasets) except the model adds
+# learnable per-rotor deltas: z_r = z_drone + δz_r (positional_harmonic_gen_
+# cond_jitter_latreg_perdrone_perrotor). Isolates the effect of per-rotor
+# conditioning on top of the geometry fix (vs v1). Same schedule as v1.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone_perrotor
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_v2_perrotor
+
+epochs: 60
+patience: 8
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

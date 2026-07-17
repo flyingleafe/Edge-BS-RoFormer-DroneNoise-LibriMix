@@ -269,11 +269,25 @@ class _CodebookConditionedNoiseGen(nn.Module):
         z_noise_std: float = 0.0,
         learn_rps_jitter_sigma: bool = False,
         rps_jitter_sigma_init: float = 0.6,
+        per_rotor_deltas: bool = False,
+        cond_dim: int = 0,
+        n_rotors: int = 4,
     ) -> None:
         super().__init__()
         self.generator = generator
         self.codebook = codebook
         self.z_noise_std = float(z_noise_std)
+        # Per-rotor sub-embeddings: the emitter code becomes z_r = z_drone + δz_r,
+        # where δz_r is a learnable per-rotor delta SHARED across drones (rotor
+        # identity — position/manufacturing timbre — is drone-independent). Zero
+        # init ⇒ starts identical to the per-clip model, a strict generalisation;
+        # each rotor's delta then diverges under its own position/RPS gradients.
+        self.per_rotor_deltas = bool(per_rotor_deltas)
+        self.rotor_deltas: nn.Parameter | None = None
+        if self.per_rotor_deltas:
+            if cond_dim <= 0:
+                raise ValueError("per_rotor_deltas requires cond_dim > 0")
+            self.rotor_deltas = nn.Parameter(torch.zeros(n_rotors, cond_dim))
         self.learn_rps_jitter_sigma = bool(learn_rps_jitter_sigma)
         self.log_jitter_sigma: nn.ParameterDict | None = None
         if self.learn_rps_jitter_sigma:
@@ -305,6 +319,9 @@ class _CodebookConditionedNoiseGen(nn.Module):
         if self.z_noise_std > 0.0 and self.training:
             rms = z.detach().pow(2).mean(dim=-1, keepdim=True).sqrt()
             z = z + torch.randn_like(z) * (self.z_noise_std * rms)
+        if self.rotor_deltas is not None:
+            # z_drone [B, d] -> per-rotor z_r [B, R, d] = z_drone + δz_r
+            z = z.unsqueeze(1) + self.rotor_deltas.unsqueeze(0)
         sigma = self._resolve_jitter_sigma(list(drone_names))
         if sigma is not None:
             kwargs.setdefault("rps_jitter_sigma", sigma)
@@ -326,6 +343,8 @@ def build_noise_gen_model(
     z_noise_std: float = 0.0,
     film_spectral_norm: bool = False,
     silence_fade_rps: float = 10.0,
+    per_rotor_deltas: bool = False,
+    n_rotors: int = 4,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -400,6 +419,9 @@ def build_noise_gen_model(
         z_noise_std=z_noise_std,
         learn_rps_jitter_sigma=learn_rps_jitter_sigma,
         rps_jitter_sigma_init=rps_jitter_sigma,
+        per_rotor_deltas=per_rotor_deltas,
+        cond_dim=cond_dim,
+        n_rotors=n_rotors,
     )
 
 
