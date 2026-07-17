@@ -1,0 +1,712 @@
+"""
+Wind-wake noise channel for the rotor-noise generator.
+
+The coherent generator (:class:`PositionalHarmonicNoiseGen`) maps rotor-speed
+trajectories to a *propagating* acoustic field: a single emitter per rotor, then
+``1/r`` spreading and a delay to every microphone. Real ego-noise carries a
+second thing that no shared-emitter + propagation model can produce — **flow
+noise** (pseudo-sound): the turbulent downwash of a rotor striking a diaphragm
+directly. It does not propagate (no ``1/r``, no inter-mic delay) and it is
+**spatially incoherent** (``γ²`` collapses at low frequency), so it must live in
+its own additive channel outside the coherent path.
+
+Design (see the branch design note ``wind_model_design.html``)
+-------------------------------------------------------------
+Physics decides *where* the air flows and *how fast*; a small learned head
+decides only *what that flow does to a microphone*. Three modules in series,
+then an additive mix at each mic:
+
+- **A — RPS → airspeed** (:class:`QuadDynamics`, physics). The four rotor speeds
+  are a quadrotor's control inputs, so a calibrated grey-box rigid-body model
+  turns them into the body-frame relative wind ``V_rel(t)`` that bends the wake.
+  Hover / a static rig ⇒ ``V_rel = 0`` and this module is skipped.
+- **B — wake flow field** (:func:`wake_flow_speed`, physics, no learned params
+  except three interpretable aero constants). Each rotor emits a downwash column
+  along its thrust axis, bent downstream by ``V_rel``; a microphone's local flow
+  speed is the induced velocity times a smooth in-column gate. Rotors superpose
+  incoherently. Everything is closed-form and differentiable in the calibrated
+  positions.
+- **C — flow → microphone transduction** (:class:`WindTransduction`, learned).
+  The only part fit from audio: how a flow of speed ``U`` becomes low-frequency
+  pressure at a diaphragm — dynamic pressure ``q = ½ρU²`` sets the level, ``U/ℓ``
+  sets a corner frequency, and a learned low-pass shapes the band. A slow
+  Ornstein–Uhlenbeck envelope on ``U`` models wake meander (gust intermittency).
+  The noise is realized **independently per microphone**, so the channel is
+  incoherent by construction.
+
+Because exposure is a geometric function, an array *in* the wake (DREGON) gets
+gusts and an array *above/forward* of the disk (Michael's) gets near-silence,
+with no per-array tuning — this is the design's central generalization claim and
+the thing the CPU de-risk in ``scripts/wind_wake_validation.py`` checks.
+
+Contract
+--------
+:class:`WindWakeChannel` mirrors :class:`PositionalHarmonicNoiseGen`'s inputs:
+RPS ``[B, R, T]`` at audio rate plus geometry, output per-mic audio ``[B, M, T]``.
+Nothing beyond RPS + geometry is needed at inference; the auxiliary telemetry
+(IMU / DJI logs) only calibrates the physics during training.
+"""
+
+from __future__ import annotations
+
+from typing import Literal, overload
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from .dsp import frequency_filter
+
+Scalar = torch.Tensor | float
+
+SPEED_OF_SOUND = 343.0
+RHO_AIR = 1.204  # kg/m^3, sea-level air density (for dynamic pressure q = ½ρU²)
+GRAVITY = 9.81  # m/s^2
+
+
+def _pos(raw: torch.Tensor) -> torch.Tensor:
+    """Map an unconstrained parameter to a strictly-positive value (softplus)."""
+    return F.softplus(raw) + 1e-6
+
+
+def _as_batched(x: torch.Tensor, batch: int, name: str, last: int = 3) -> torch.Tensor:
+    """Promote a per-clip geometry tensor ``[N, last]`` to ``[B, N, last]``.
+
+    Accepts an already-batched ``[B, N, last]`` unchanged. Keeps the caller from
+    having to broadcast static geometry (the common case: one rig for the whole
+    batch).
+    """
+    if x.dim() == 2:
+        if x.shape[-1] != last:
+            raise ValueError(f"{name} last dim must be {last}, got {tuple(x.shape)}")
+        return x.unsqueeze(0).expand(batch, -1, -1)
+    if x.dim() == 3:
+        if x.shape[0] not in (1, batch) or x.shape[-1] != last:
+            raise ValueError(
+                f"{name} must be [{batch}, N, {last}] (or [N, {last}]), got {tuple(x.shape)}"
+            )
+        return x.expand(batch, -1, -1) if x.shape[0] == 1 else x
+    raise ValueError(f"{name} must be 2-D or 3-D, got {tuple(x.shape)}")
+
+
+# ---------------------------------------------------------------------------
+# Module B — wake flow field (physics)
+# ---------------------------------------------------------------------------
+
+
+def induced_velocity(rps: torch.Tensor, rotor_radius: torch.Tensor, k: Scalar) -> torch.Tensor:
+    """Rotor induced (downwash) velocity, ``v_i = k · rps · R``.
+
+    A tip-speed-proportional surrogate for momentum-theory hover induced velocity
+    (``v_i ∝ √(T/ρA)`` with ``T ∝ (ΩR)²`` ⇒ ``v_i ∝ ΩR ∝ rps·R``). The absolute
+    scale is folded into the learned dimensionless ``k`` (and later absorbed by
+    the transduction gain), so only the *relative* dependence on rps and radius
+    is physical here.
+
+    Args:
+        rps: ``[...]`` rotor speed in rev/s.
+        rotor_radius: scalar or broadcastable rotor radius in metres.
+        k: scalar induced-velocity coefficient.
+
+    Returns:
+        ``[...]`` induced velocity in m/s (same shape as ``rps``).
+    """
+    return k * rps * rotor_radius
+
+
+@overload
+def wake_flow_speed(
+    mic_pos: torch.Tensor,
+    rotor_pos: torch.Tensor,
+    rotor_axis: torch.Tensor,
+    rotor_radius: Scalar,
+    rps: torch.Tensor,
+    *,
+    k: Scalar,
+    alpha: Scalar,
+    beta: Scalar,
+    gate_softness: Scalar,
+    v_rel: torch.Tensor | None = ...,
+    c_free: Scalar | None = ...,
+    return_per_rotor: Literal[False] = ...,
+) -> torch.Tensor: ...
+@overload
+def wake_flow_speed(
+    mic_pos: torch.Tensor,
+    rotor_pos: torch.Tensor,
+    rotor_axis: torch.Tensor,
+    rotor_radius: Scalar,
+    rps: torch.Tensor,
+    *,
+    k: Scalar,
+    alpha: Scalar,
+    beta: Scalar,
+    gate_softness: Scalar,
+    v_rel: torch.Tensor | None = ...,
+    c_free: Scalar | None = ...,
+    return_per_rotor: Literal[True],
+) -> tuple[torch.Tensor, torch.Tensor]: ...
+def wake_flow_speed(
+    mic_pos: torch.Tensor,
+    rotor_pos: torch.Tensor,
+    rotor_axis: torch.Tensor,
+    rotor_radius: Scalar,
+    rps: torch.Tensor,
+    *,
+    k: Scalar,
+    alpha: Scalar,
+    beta: Scalar,
+    gate_softness: Scalar,
+    v_rel: torch.Tensor | None = None,
+    c_free: Scalar | None = None,
+    return_per_rotor: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Per-microphone local flow speed ``U_m(t)`` from the bent-wake-column model.
+
+    For rotor ``r`` at ``p_r`` with unit downwash axis ``a_r`` and induced
+    velocity ``v_i``, the wake convects along ``ĉ_r = normalize(2 v_i a_r +
+    V_rel)`` — the classic ``2 v_i`` far-wake speed plus the freestream, which
+    tilts the column by the skew angle ``χ = atan(|V_⊥| / 2 v_i)``. For a
+    microphone at ``q_m`` with displacement ``d = q_m − p_r``:
+
+    - along-axis distance ``s = d · ĉ_r`` (downstream ⇒ ``s > 0``),
+    - perpendicular distance ``ρ = ‖d − s ĉ_r‖``,
+    - in-column gate ``g = σ(s / gate_softness) · exp(−ρ² / 2(αR)²) · (1 + β s₊)⁻¹``.
+
+    The mic flow speed is ``U_{m,r} = v_i · g``; rotors superpose **incoherently**
+    ``U_m = √(Σ_r U_{m,r}² + U_free²)``, where the optional direct-freestream term
+    ``U_free = c_free · |V_rel|`` accounts for wind striking an exposed mic even
+    outside any column. In hover (``V_rel = 0``) the freestream term vanishes and
+    ``ĉ_r = a_r``, recovering a straight downwash column — the regime the DREGON
+    single-motor de-risk validates.
+
+    All arguments broadcast over a leading batch ``B`` and a trailing (frame /
+    time) axis ``L``; positions are static per clip.
+
+    Args:
+        mic_pos: ``[B, M, 3]`` microphone positions (m).
+        rotor_pos: ``[B, R, 3]`` rotor-hub positions (m).
+        rotor_axis: ``[B, R, 3]`` unit downwash direction per rotor (points the
+            way the air is pushed; for an upright rig ``[0, 0, −1]``).
+        rotor_radius: ``[B, R]`` or scalar rotor radius (m).
+        rps: ``[B, R, L]`` rotor speed in rev/s at the evaluation (frame) rate.
+        k, alpha, beta, gate_softness: aero constants (positive scalars).
+        v_rel: ``[B, L, 3]`` or ``[B, 3]`` world-frame relative wind (m/s), or
+            ``None`` for hover / static (⇒ 0).
+        c_free: optional scalar freestream-coupling coefficient (needs ``v_rel``).
+        return_per_rotor: also return the per-rotor ``U_{m,r}`` tensor.
+
+    Returns:
+        ``U_m`` ``[B, M, L]``; or ``(U_m, U_per_rotor[B, M, R, L])`` if
+        ``return_per_rotor``.
+    """
+    b, r, _ = rps.shape
+    dtype, device = rps.dtype, rps.device
+
+    if rotor_axis.dim() == 2:
+        rotor_axis = rotor_axis.unsqueeze(0).expand(b, -1, -1)
+    axis = F.normalize(rotor_axis, dim=-1)  # [B, R, 3]
+
+    if not torch.is_tensor(rotor_radius):
+        rotor_radius = torch.as_tensor(rotor_radius, dtype=dtype, device=device)
+    radius = (
+        rotor_radius.expand(b, r) if rotor_radius.dim() else rotor_radius.reshape(1, 1).expand(b, r)
+    )
+
+    v_i = induced_velocity(rps, radius.unsqueeze(-1), k)  # [B, R, L]
+
+    # Convection direction ĉ_r(t). With v_rel it bends; add a [B,R,L,3] axis.
+    conv = 2.0 * v_i.unsqueeze(-1) * axis.unsqueeze(2)  # [B, R, L, 3]
+    if v_rel is not None:
+        vr = v_rel.unsqueeze(1) if v_rel.dim() == 2 else v_rel  # [B,1|L,3] -> broadcast on R,L
+        vr = vr.reshape(b, 1, -1, 3)  # [B,1,1|L,3]
+        conv = conv + vr
+    chat = F.normalize(conv, dim=-1)  # [B, R, L, 3]
+
+    # Displacement rotor -> mic, [B, R, M, 3]
+    d = mic_pos.unsqueeze(1) - rotor_pos.unsqueeze(2)  # [B, R, M, 3]
+    d = d.unsqueeze(3)  # [B, R, M, 1, 3] to broadcast against chat's L
+    chat_e = chat.unsqueeze(2)  # [B, R, 1, L, 3]
+    s = (d * chat_e).sum(-1)  # along-axis distance [B, R, M, L]
+    perp_vec = d - s.unsqueeze(-1) * chat_e  # [B, R, M, L, 3]
+    perp = torch.linalg.vector_norm(perp_vec, dim=-1)  # [B, R, M, L]
+
+    width = (alpha * radius).reshape(b, r, 1, 1).clamp_min(1e-4)  # [B, R, 1, 1]
+    downstream = torch.sigmoid(s / gate_softness)  # smooth 𝟙[s>0]
+    radial = torch.exp(-(perp**2) / (2.0 * width**2))
+    decay = 1.0 / (1.0 + beta * F.relu(s))
+    gate = downstream * radial * decay  # [B, R, M, L]
+
+    u_per_rotor = v_i.unsqueeze(2) * gate  # [B, R, M, L]
+    u_sq = (u_per_rotor**2).sum(1)  # incoherent sum over rotors -> [B, M, L]
+
+    if c_free is not None and v_rel is not None:
+        vmag = torch.linalg.vector_norm(
+            v_rel if v_rel.dim() == 3 else v_rel.unsqueeze(1), dim=-1
+        )  # [B, L] or [B,1]
+        u_free = (c_free * vmag).reshape(b, 1, -1)  # [B,1,L|1]
+        u_sq = u_sq + u_free**2
+
+    u = torch.sqrt(u_sq.clamp_min(0.0) + 1e-12)  # [B, M, L]
+    if return_per_rotor:
+        return u, u_per_rotor.transpose(1, 2)  # [B, M, L], [B, M, R, L]
+    return u
+
+
+# ---------------------------------------------------------------------------
+# Module A — RPS → airspeed (grey-box quadrotor dynamics)
+# ---------------------------------------------------------------------------
+
+
+class QuadDynamics(nn.Module):
+    """Grey-box quadrotor forward dynamics: per-rotor RPS → world-frame velocity.
+
+    A *reduced* rigid-body model — enough to turn the four control inputs into the
+    relative wind that bends the wake, not a full flight simulator. Thrust and
+    reaction torque are quadratic in rps (``T_i = c_T rps_i²``); the net vertical
+    thrust drives vertical acceleration about a hover anchor, and the thrust
+    *imbalance* across the (calibrated) rotor positions produces roll/pitch
+    torques that tilt the body, redirecting thrust into horizontal acceleration.
+    Double-integrating gives world velocity ``v(t)``; with still indoor air the
+    body-frame relative wind is ``V_rel = −Rᵀ v`` (returned in the world frame for
+    the wake model, small-angle so ``R ≈ I`` here).
+
+    The physically-meaningful constants (``c_T/m``, inertia, drag, the hover rps)
+    are parameters to be **calibrated against IMU / DJI logs at training time**;
+    this module only defines the differentiable forward map and its hover anchor.
+    It is *not* exercised by the static de-risk (``V_rel = 0`` there); it exists so
+    the same channel is motion-aware for free-flight clips.
+
+    Args:
+        n_rotors: number of rotors (4).
+        hover_rps: rps at which total thrust balances gravity (anchors ``c_T/m``).
+        spin_dirs: ``+1/−1`` per rotor for reaction-torque yaw (unused for wake).
+    """
+
+    def __init__(
+        self,
+        n_rotors: int = 4,
+        hover_rps: float = 90.0,
+        spin_dirs: tuple[int, ...] | None = None,
+    ):
+        super().__init__()
+        self.n_rotors = n_rotors
+        self.hover_rps = float(hover_rps)
+        # c_T/m fixed by the hover anchor: n_rotors · (c_T/m) · hover_rps² = g.
+        ct_over_m = GRAVITY / (n_rotors * hover_rps**2)
+        self.log_ct_over_m = nn.Parameter(torch.log(torch.tensor(ct_over_m)))
+        # Inertia-normalised torque gain and linear drag — free, calibrated later.
+        self.log_torque_gain = nn.Parameter(torch.log(torch.tensor(ct_over_m * 4.0)))
+        self.log_drag = nn.Parameter(torch.log(torch.tensor(0.5)))
+        if spin_dirs is None:
+            spin_dirs = tuple((-1) ** i for i in range(n_rotors))
+        self.register_buffer("spin_dirs", torch.tensor(spin_dirs, dtype=torch.float32))
+
+    def forward(
+        self,
+        rps: torch.Tensor,
+        rotor_pos: torch.Tensor,
+        dt: float,
+    ) -> torch.Tensor:
+        """Integrate world-frame velocity from a per-rotor rps trajectory.
+
+        Args:
+            rps: ``[B, R, L]`` rotor speed (rev/s) at frame rate.
+            rotor_pos: ``[B, R, 3]`` or ``[R, 3]`` rotor-hub positions (m); the
+                in-plane offset from the centroid is the moment arm.
+            dt: seconds between frames (``1 / frame_rate``).
+
+        Returns:
+            ``V_rel`` ``[B, L, 3]`` world-frame relative wind (still-air ⇒ minus
+            the ground velocity).
+        """
+        b, _, ll = rps.shape
+        rotor_pos = _as_batched(rotor_pos, b, "rotor_pos")
+        ct_over_m = torch.exp(self.log_ct_over_m)
+        torque_gain = torch.exp(self.log_torque_gain)
+        drag = torch.exp(self.log_drag)
+
+        thrust = ct_over_m * rps**2  # [B, R, L] (per-mass)
+        total_thrust = thrust.sum(1)  # [B, L]
+
+        # Moment arms about the rotor centroid (in-plane x, y).
+        arms = rotor_pos - rotor_pos.mean(1, keepdim=True)  # [B, R, 3]
+        # Roll/pitch angular accel from thrust imbalance: τ = Σ arm × (thrust ẑ).
+        # (thrust ẑ) × arm gives torque about x,y; use arm_x,y directly.
+        tau_x = torque_gain * (arms[..., 1].unsqueeze(-1) * thrust).sum(1)  # [B, L]
+        tau_y = -torque_gain * (arms[..., 0].unsqueeze(-1) * thrust).sum(1)  # [B, L]
+
+        # Integrate tilt (small-angle): angular accel -> angular vel -> angle.
+        roll = torch.cumsum(torch.cumsum(tau_x, dim=1) * dt, dim=1) * dt  # [B, L]
+        pitch = torch.cumsum(torch.cumsum(tau_y, dim=1) * dt, dim=1) * dt  # [B, L]
+
+        # Small-angle horizontal accel = g·tilt; vertical accel = thrust − g.
+        vel = rps.new_zeros(b, 3)
+        vs = []
+        for t in range(ll):
+            a = torch.stack(
+                [
+                    GRAVITY * torch.sin(pitch[:, t]),
+                    -GRAVITY * torch.sin(roll[:, t]),
+                    total_thrust[:, t] - GRAVITY,
+                ],
+                dim=-1,
+            )  # [B, 3]
+            vel = vel + (a - drag * vel) * dt
+            vs.append(vel)
+        v = torch.stack(vs, dim=1)  # [B, L, 3] — stack (not in-place) keeps autograd
+        return -v  # still air: airspeed = -ground velocity
+
+
+# ---------------------------------------------------------------------------
+# Module C — flow -> microphone transduction (learned)
+# ---------------------------------------------------------------------------
+
+
+def ou_envelope(
+    shape: tuple[int, ...],
+    tau: torch.Tensor,
+    sigma: torch.Tensor,
+    dt: float,
+    *,
+    generator: torch.Generator | None = None,
+    device=None,
+    dtype=None,
+) -> torch.Tensor:
+    """Sample a slow, positive Ornstein–Uhlenbeck meander envelope (mean ≈ 1).
+
+    Log-domain OU: ``x_{t+1} = x_t e^{−dt/τ} + √(1−e^{−2dt/τ}) σ ε``. Exponentiated
+    and de-biased so ``E[g] ≈ 1``, giving a multiplicative gust envelope on the
+    flow speed. Time is the **last** axis.
+
+    Args:
+        shape: output shape ``[..., L]``.
+        tau: OU correlation time (s, positive).
+        sigma: log-amplitude of the meander (positive).
+        dt: seconds per frame.
+        generator: optional RNG for reproducibility.
+
+    Returns:
+        Envelope tensor of ``shape``, strictly positive.
+    """
+    ll = shape[-1]
+    a = torch.exp(-dt / tau)
+    noise_scale = torch.sqrt((1.0 - a**2).clamp_min(1e-8)) * sigma
+    eps = torch.randn(shape, generator=generator, device=device, dtype=dtype)
+    xt = torch.zeros(shape[:-1], device=device, dtype=dtype)
+    xs = [xt]
+    for t in range(1, ll):
+        xt = a * xt + noise_scale * eps[..., t]
+        xs.append(xt)
+    x = torch.stack(xs, dim=-1)  # [..., L] — stack (not in-place) keeps autograd
+    return torch.exp(x - 0.5 * sigma**2)
+
+
+class WindTransduction(nn.Module):
+    """Learned map from per-mic flow speed ``U_m(t)`` to incoherent wind audio.
+
+    A microphone/windscreen property (hence **shared across drones**): dynamic
+    pressure ``q = ½ρU²`` sets the band level ``A·(q+ε)^γ``; the corner frequency
+    ``f_c = f_floor + c_fc·U`` scales with flow speed; and a learned low-pass
+    ``H(f) = (1 + (f/f_c)²)^(−p/2)`` shaped by a small residual MLP over
+    ``log(f/f_c)`` sets the spectral roll-off. The band magnitude is realized as
+    **independent** filtered white noise per microphone, so the channel is
+    spatially incoherent by construction. A slow OU envelope on ``U`` adds gust
+    intermittency.
+
+    Args:
+        sample_rate: audio rate (Hz).
+        n_freqs: filter magnitude grid size (0..Nyquist).
+        n_env: envelope / filter-frame rate (frames per clip).
+        rho: air density for ``q`` (kg/m³).
+        mlp_hidden: hidden width of the shape-residual MLP (0 disables it).
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        n_freqs: int = 65,
+        n_env: int = 64,
+        rho: float = RHO_AIR,
+        mlp_hidden: int = 16,
+    ):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.n_freqs = n_freqs
+        self.n_env = n_env
+        self.rho = rho
+
+        # Positive-constrained physical parameters (softplus of these raws).
+        self.raw_level = nn.Parameter(torch.tensor(0.0))  # A ~ 0.69
+        self.raw_gamma = nn.Parameter(torch.tensor(0.0))  # γ ~ 0.69 (near 0.5–1)
+        self.raw_order = nn.Parameter(torch.tensor(0.54))  # p ~ 1.0 (softplus(.54)≈1)
+        self.raw_fc = nn.Parameter(torch.tensor(2.0))  # c_fc Hz per (m/s)
+        self.raw_ffloor = nn.Parameter(torch.tensor(2.0))  # f_floor Hz
+        self.raw_tau = nn.Parameter(torch.tensor(0.0))  # OU τ (s)
+        self.raw_sigma = nn.Parameter(torch.tensor(-1.0))  # OU σ (small)
+
+        freqs = torch.linspace(0.0, sample_rate / 2, n_freqs)
+        self.register_buffer("freqs", freqs)
+
+        self.shape_mlp: nn.Sequential | None = None
+        if mlp_hidden > 0:
+            out = nn.Linear(mlp_hidden, 1)
+            # Start as a no-op so the parametric low-pass is the prior at init.
+            nn.init.zeros_(out.weight)
+            nn.init.zeros_(out.bias)
+            self.shape_mlp = nn.Sequential(nn.Linear(1, mlp_hidden), nn.GELU(), out)
+        self.log_mlp_gate = nn.Parameter(torch.tensor(-2.0))  # small residual
+
+    def filter_mags(self, u: torch.Tensor) -> torch.Tensor:
+        """Per-mic, per-frame magnitude response from flow speed ``U``.
+
+        Args:
+            u: ``[B, M, n_env]`` flow speed (m/s).
+
+        Returns:
+            ``[B, M, n_env, n_freqs]`` magnitude response on a 0..Nyquist grid.
+        """
+        level_c = _pos(self.raw_level)
+        gamma = _pos(self.raw_gamma)
+        order = _pos(self.raw_order)
+        c_fc = _pos(self.raw_fc)
+        f_floor = _pos(self.raw_ffloor)
+
+        q = 0.5 * self.rho * u**2  # [B, M, n_env]
+        eps = 1e-8
+        level = level_c * ((q + eps).pow(gamma) - eps**gamma)  # 0 at U=0, smooth
+        f_c = (f_floor + c_fc * u).clamp_min(1e-3)  # [B, M, n_env]
+
+        # Normalised frequency u_f = f / f_c, shape [B, M, n_env, n_freqs].
+        freqs = torch.linspace(
+            0.0, self.sample_rate / 2, self.n_freqs, device=u.device, dtype=u.dtype
+        )
+        f = freqs.reshape(1, 1, 1, -1)
+        u_f = f / f_c.unsqueeze(-1)
+        low_pass = (1.0 + u_f**2).pow(-order / 2.0)
+
+        mlp = self.shape_mlp
+        if mlp is not None:
+            log_uf = torch.log(u_f.clamp_min(1e-4)).unsqueeze(-1)  # [...,1]
+            residual = mlp(log_uf).squeeze(-1)  # [B,M,n_env,n_freqs]
+            low_pass = low_pass * torch.exp(torch.sigmoid(self.log_mlp_gate) * residual)
+
+        return level.unsqueeze(-1) * low_pass  # [B, M, n_env, n_freqs]
+
+    def forward(
+        self,
+        u: torch.Tensor,
+        n_samples: int,
+        dt: float,
+        *,
+        noise: torch.Tensor | None = None,
+        apply_gust: bool = True,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Synthesize incoherent per-mic wind audio from flow speed.
+
+        Args:
+            u: ``[B, M, n_env]`` per-mic flow speed (m/s).
+            n_samples: output length ``T``.
+            dt: seconds per envelope frame (for the OU gust).
+            noise: optional ``[B, M, T]`` white-noise excitation (else drawn); pass
+                it to control/seed the realization (e.g. reproducible synthesis).
+            apply_gust: multiply ``U`` by an OU meander envelope before transducing.
+            generator: RNG for the gust envelope and the default noise draw.
+
+        Returns:
+            ``[B, M, T]`` wind audio, independent (incoherent) across mics.
+        """
+        b, m, _ = u.shape
+        device, dtype = u.device, u.dtype
+        if apply_gust:
+            g = ou_envelope(
+                (b, m, self.n_env),
+                _pos(self.raw_tau),
+                _pos(self.raw_sigma),
+                dt,
+                generator=generator,
+                device=device,
+                dtype=dtype,
+            )
+            u = u * g
+
+        mags = self.filter_mags(u)  # [B, M, n_env, n_freqs]
+        mags = mags.reshape(b * m, self.n_env, self.n_freqs)
+        if noise is None:
+            noise = torch.randn(b, m, n_samples, device=device, dtype=dtype, generator=generator)
+        noise = noise.reshape(b * m, n_samples)
+        wind = frequency_filter(noise, mags)  # [B*M, T]
+        return wind.reshape(b, m, n_samples)
+
+
+# ---------------------------------------------------------------------------
+# Top module — RPS + geometry -> incoherent per-mic wind
+# ---------------------------------------------------------------------------
+
+
+class WindWakeChannel(nn.Module):
+    """RPS + geometry → additive, incoherent per-microphone wind-noise channel.
+
+    Ties modules A/B/C together and exposes the same ``rps + geometry → [B, M, T]``
+    contract as :class:`PositionalHarmonicNoiseGen`, so its output is simply
+    **added** to the coherent generator's output at each microphone. The physics
+    (wake geometry, quad dynamics) carries no per-array switches: which mics get
+    gusts is decided entirely by geometry, so joint DREGON + Michael's training
+    needs the same forward path for both.
+
+    Args:
+        sample_rate: audio rate (Hz).
+        n_rotors: rotors per drone.
+        rotor_radius: default rotor radius (m); override per call.
+        n_freqs / n_env: transduction filter grid / frame rate.
+        use_dynamics: attach :class:`QuadDynamics` (module A). If False, only the
+            hover / static path is available (``v_rel`` must be given or 0).
+        hover_rps: hover anchor for the dynamics.
+        mlp_hidden: transduction shape-residual MLP width.
+    """
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 16000,
+        n_rotors: int = 4,
+        rotor_radius: float = 0.127,  # ~10-inch prop, DREGON-scale
+        n_freqs: int = 65,
+        n_env: int = 64,
+        use_dynamics: bool = False,
+        hover_rps: float = 90.0,
+        mlp_hidden: int = 16,
+    ):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.n_rotors = n_rotors
+        self.rotor_radius = float(rotor_radius)
+        self.n_env = n_env
+
+        # Aero constants (positive via softplus of these raws).
+        self.raw_k = nn.Parameter(torch.tensor(0.54))  # k ~ 1.0
+        self.raw_alpha = nn.Parameter(torch.tensor(-0.43))  # α ~ 0.5 (wake width /R)
+        self.raw_beta = nn.Parameter(torch.tensor(-1.0))  # β decay, small
+        self.raw_gate = nn.Parameter(torch.tensor(-2.3))  # gate softness ~0.1 m
+        self.raw_cfree = nn.Parameter(torch.tensor(-2.3))  # freestream coupling
+
+        self.transduction = WindTransduction(
+            sample_rate=sample_rate, n_freqs=n_freqs, n_env=n_env, mlp_hidden=mlp_hidden
+        )
+        self.dynamics = (
+            QuadDynamics(n_rotors=n_rotors, hover_rps=hover_rps) if use_dynamics else None
+        )
+
+    def flow_speed(
+        self,
+        rps: torch.Tensor,
+        mic_pos: torch.Tensor,
+        rotor_pos: torch.Tensor,
+        *,
+        rotor_axis: torch.Tensor | None = None,
+        rotor_radius: torch.Tensor | float | None = None,
+        v_rel: torch.Tensor | None = None,
+        return_per_rotor: bool = False,
+    ):
+        """Compute per-mic flow speed ``U_m`` at envelope rate (module B).
+
+        ``rps`` is ``[B, R, T]`` at audio rate; it is average-pooled to ``n_env``
+        frames. ``v_rel`` may be given directly, or computed from the dynamics
+        module when attached. Returns ``U_m`` ``[B, M, n_env]``.
+        """
+        if rps.dim() != 3:
+            raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
+        b = rps.shape[0]
+        mic_pos = _as_batched(mic_pos, b, "mic_pos")
+        rotor_pos = _as_batched(rotor_pos, b, "rotor_pos")
+        if rotor_axis is None:
+            rotor_axis = (
+                rps.new_tensor([0.0, 0.0, -1.0]).reshape(1, 1, 3).expand(b, self.n_rotors, 3)
+            )
+        rr = self.rotor_radius if rotor_radius is None else rotor_radius
+        if not torch.is_tensor(rr):
+            rr = rps.new_tensor(float(rr))
+
+        rps_env = F.adaptive_avg_pool1d(rps, self.n_env)  # [B, R, n_env]
+
+        if v_rel is None and self.dynamics is not None:
+            # V_rel is slow, so integrate the dynamics at the coarse envelope rate
+            # (n_env steps) rather than audio rate (T steps) — same trajectory,
+            # ~T/n_env cheaper, and keeps the Python loop CPU-light.
+            t_audio = rps.shape[-1]
+            env_dt = (t_audio / self.sample_rate) / self.n_env
+            v_rel = self.dynamics(rps_env, rotor_pos, env_dt)  # [B, n_env, 3]
+
+        c_free = _pos(self.raw_cfree) if v_rel is not None else None
+        return wake_flow_speed(
+            mic_pos,
+            rotor_pos,
+            rotor_axis,
+            rr,
+            rps_env,
+            k=_pos(self.raw_k),
+            alpha=_pos(self.raw_alpha),
+            beta=_pos(self.raw_beta),
+            gate_softness=_pos(self.raw_gate),
+            v_rel=v_rel,
+            c_free=c_free,
+            return_per_rotor=return_per_rotor,
+        )
+
+    def forward(
+        self,
+        rps: torch.Tensor,
+        mic_pos: torch.Tensor,
+        rotor_pos: torch.Tensor,
+        *,
+        rotor_axis: torch.Tensor | None = None,
+        rotor_radius: torch.Tensor | float | None = None,
+        v_rel: torch.Tensor | None = None,
+        n_samples: int | None = None,
+        noise: torch.Tensor | None = None,
+        apply_gust: bool = True,
+        generator: torch.Generator | None = None,
+        return_dict: bool = False,
+    ):
+        """Render the incoherent per-mic wind channel.
+
+        Args:
+            rps: ``[B, R, T]`` rotor speed (rev/s) at audio rate.
+            mic_pos: ``[B, M, 3]`` or ``[M, 3]`` microphone positions (m).
+            rotor_pos: ``[B, R, 3]`` or ``[R, 3]`` rotor-hub positions (m).
+            rotor_axis: optional ``[B, R, 3]`` / ``[R, 3]`` unit downwash dirs
+                (default straight down ``[0, 0, −1]``).
+            rotor_radius: optional rotor radius override (m).
+            v_rel: optional world-frame relative wind ``[B, n_env, 3]`` / ``[B, 3]``;
+                if None and the dynamics module is attached it is derived from RPS,
+                else hover (0).
+            n_samples: output length ``T`` (defaults to the rps length).
+            noise: optional ``[B, M, T]`` white-noise excitation (seed control).
+            apply_gust: apply the OU gust envelope.
+            generator: RNG for the gust and default noise draw.
+            return_dict: also return the intermediate ``flow_speed`` / ``filter_mags``.
+
+        Returns:
+            ``[B, M, T]`` wind audio, or a dict with ``{"wind", "flow_speed",
+            "filter_mags"}``.
+        """
+        t = rps.shape[-1] if n_samples is None else n_samples
+        dt = self.n_env and (t / self.sample_rate) / self.n_env  # seconds per env frame
+        u = self.flow_speed(
+            rps,
+            mic_pos,
+            rotor_pos,
+            rotor_axis=rotor_axis,
+            rotor_radius=rotor_radius,
+            v_rel=v_rel,
+        )  # [B, M, n_env]
+        assert isinstance(u, torch.Tensor)  # return_per_rotor not passed
+        wind = self.transduction(u, t, dt, noise=noise, apply_gust=apply_gust, generator=generator)
+        if return_dict:
+            return {
+                "wind": wind,
+                "flow_speed": u,
+                "filter_mags": self.transduction.filter_mags(u),
+            }
+        return wind
