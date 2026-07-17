@@ -56,6 +56,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .dsp import frequency_filter
+from .positional_harmonic_gen import PositionalHarmonicNoiseGen
 
 Scalar = torch.Tensor | float
 
@@ -200,6 +201,44 @@ def wake_flow_speed(
         ``U_m`` ``[B, M, L]``; or ``(U_m, U_per_rotor[B, M, R, L])`` if
         ``return_per_rotor``.
     """
+    # Rotor -> mic displacement d[b, r, m] = mic_m − rotor_r  → [B, R, M, 3].
+    disp = mic_pos.unsqueeze(1) - rotor_pos.unsqueeze(2)
+    return _flow_speed_from_disp(
+        disp,
+        rotor_axis,
+        rotor_radius,
+        rps,
+        k=k,
+        alpha=alpha,
+        beta=beta,
+        gate_softness=gate_softness,
+        v_rel=v_rel,
+        c_free=c_free,
+        return_per_rotor=return_per_rotor,
+    )
+
+
+def _flow_speed_from_disp(
+    disp: torch.Tensor,
+    rotor_axis: torch.Tensor,
+    rotor_radius: Scalar,
+    rps: torch.Tensor,
+    *,
+    k: Scalar,
+    alpha: Scalar,
+    beta: Scalar,
+    gate_softness: Scalar,
+    v_rel: torch.Tensor | None = None,
+    c_free: Scalar | None = None,
+    return_per_rotor: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Core wake-gate evaluation from a precomputed rotor→mic displacement.
+
+    Shared by :func:`wake_flow_speed` (which builds ``disp`` from absolute
+    positions) and :meth:`WindWakeChannel.flow_speed_rel` (which gets ``disp``
+    from the generator's ``rel_pos``). ``disp`` is ``[B, R, M, 3]`` (rotor r →
+    mic m); everything else matches :func:`wake_flow_speed`.
+    """
     b, r, _ = rps.shape
     dtype, device = rps.dtype, rps.device
 
@@ -223,9 +262,7 @@ def wake_flow_speed(
         conv = conv + vr
     chat = F.normalize(conv, dim=-1)  # [B, R, L, 3]
 
-    # Displacement rotor -> mic, [B, R, M, 3]
-    d = mic_pos.unsqueeze(1) - rotor_pos.unsqueeze(2)  # [B, R, M, 3]
-    d = d.unsqueeze(3)  # [B, R, M, 1, 3] to broadcast against chat's L
+    d = disp.unsqueeze(3)  # [B, R, M, 1, 3] to broadcast against chat's L
     chat_e = chat.unsqueeze(2)  # [B, R, 1, L, 3]
     s = (d * chat_e).sum(-1)  # along-axis distance [B, R, M, L]
     perp_vec = d - s.unsqueeze(-1) * chat_e  # [B, R, M, L, 3]
@@ -710,3 +747,141 @@ class WindWakeChannel(nn.Module):
                 "filter_mags": self.transduction.filter_mags(u),
             }
         return wind
+
+    def flow_speed_rel(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        *,
+        rotor_axis: torch.Tensor | None = None,
+        rotor_radius: torch.Tensor | float | None = None,
+        v_rel: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Per-mic flow speed ``U_m`` from the generator's ``rel_pos`` (module B).
+
+        ``rel_pos`` is the coherent generator's rotor→mic vector, either
+        ``[B, M, R, 3]`` (M observers) or ``[B, R, 3]`` (single observer). It *is*
+        the wake-gate displacement, so no absolute positions are needed. Hover by
+        default (``v_rel=0``); pass ``v_rel`` for free-flight. Returns
+        ``[B, M, n_env]``.
+        """
+        if rps.dim() != 3:
+            raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
+        b = rps.shape[0]
+        if rel_pos.dim() == 3:  # [B, R, 3] single observer -> disp [B, R, 1, 3]
+            disp = rel_pos.unsqueeze(2)
+        elif rel_pos.dim() == 4:  # [B, M, R, 3] -> [B, R, M, 3]
+            disp = rel_pos.transpose(1, 2)
+        else:
+            raise ValueError(
+                f"rel_pos must be [B, M, R, 3] or [B, R, 3], got {tuple(rel_pos.shape)}"
+            )
+
+        if rotor_axis is None:
+            rotor_axis = (
+                rps.new_tensor([0.0, 0.0, -1.0]).reshape(1, 1, 3).expand(b, self.n_rotors, 3)
+            )
+        rr = self.rotor_radius if rotor_radius is None else rotor_radius
+        if not torch.is_tensor(rr):
+            rr = rps.new_tensor(float(rr))
+        rps_env = F.adaptive_avg_pool1d(rps, self.n_env)  # [B, R, n_env]
+        c_free = _pos(self.raw_cfree) if v_rel is not None else None
+        u = _flow_speed_from_disp(
+            disp,
+            rotor_axis,
+            rr,
+            rps_env,
+            k=_pos(self.raw_k),
+            alpha=_pos(self.raw_alpha),
+            beta=_pos(self.raw_beta),
+            gate_softness=_pos(self.raw_gate),
+            v_rel=v_rel,
+            c_free=c_free,
+        )
+        assert isinstance(u, torch.Tensor)
+        return u
+
+    def forward_rel(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        *,
+        v_rel: torch.Tensor | None = None,
+        n_samples: int | None = None,
+        noise: torch.Tensor | None = None,
+        apply_gust: bool = True,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Wind audio from the generator's ``rel_pos`` — matches the coherent
+        generator's output shape (``[B, M, T]``, or ``[B, T]`` for a single
+        observer) so it can be summed directly onto it.
+        """
+        single = rel_pos.dim() == 3
+        t = rps.shape[-1] if n_samples is None else n_samples
+        dt = (t / self.sample_rate) / self.n_env
+        u = self.flow_speed_rel(rps, rel_pos, v_rel=v_rel)  # [B, M, n_env]
+        wind = self.transduction(u, t, dt, noise=noise, apply_gust=apply_gust, generator=generator)
+        return wind.squeeze(1) if single else wind
+
+
+class PositionalHarmonicPlusWindGen(nn.Module):
+    """Coherent position-aware generator **plus** the additive wind-wake channel.
+
+    Composes :class:`PositionalHarmonicNoiseGen` (harmonic bank + broadband, the
+    coherent propagated field) with a :class:`WindWakeChannel` (incoherent flow
+    noise), summed at each microphone. Exposes the exact
+    :class:`tasks.noise_generation` contract ``forward(rps, rel_pos, z=None) →
+    [B, M, T]`` — a drop-in for the coherent generator — so the codebook
+    conditioner, codec, and training loop are unchanged. Per-drone conditioning
+    ``z`` drives only the coherent emitter; the wind transduction is drone-shared
+    (a microphone property), so it takes no ``z``.
+
+    Extra kwargs (``**coherent_kwargs``) flow to the coherent generator (matching
+    :func:`models.registry.build_noise_gen_model`'s call), so this class slots
+    into ``NOISE_GEN_MODEL_REGISTRY`` next to the bare generator.
+    """
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 16000,
+        n_harmonics: int = 100,
+        cond_dim: int = 0,
+        n_rotors: int = 4,
+        wind_n_env: int = 64,
+        wind_n_freqs: int = 65,
+        wind_use_dynamics: bool = False,
+        wind_mlp_hidden: int = 16,
+        **coherent_kwargs,
+    ):
+        super().__init__()
+        self.coherent = PositionalHarmonicNoiseGen(
+            sample_rate=sample_rate, n_harmonics=n_harmonics, cond_dim=cond_dim, **coherent_kwargs
+        )
+        self.wind = WindWakeChannel(
+            sample_rate=sample_rate,
+            n_rotors=n_rotors,
+            n_env=wind_n_env,
+            n_freqs=wind_n_freqs,
+            use_dynamics=wind_use_dynamics,
+            mlp_hidden=wind_mlp_hidden,
+        )
+
+    def forward(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+        *,
+        return_dict: bool = False,
+        **kwargs,
+    ):
+        """``[B, M, T]`` = coherent(rps, rel_pos, z) + wind(rps, rel_pos)."""
+        wind = self.wind.forward_rel(rps, rel_pos)
+        if return_dict:
+            out = self.coherent(rps, rel_pos, z=z, return_dict=True, **kwargs)
+            out["audio"] = out["audio"] + wind
+            out["wind"] = wind
+            return out
+        coherent = self.coherent(rps, rel_pos, z=z, **kwargs)
+        return coherent + wind

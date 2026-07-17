@@ -254,3 +254,56 @@ def test_gradients_flow(use_dynamics):
     if use_dynamics:
         assert ch.dynamics is not None
         assert ch.dynamics.log_ct_over_m.grad is not None
+
+
+# ---------------------------------------------------------------------------
+# Composed generator: coherent + wind (PositionalHarmonicPlusWindGen)
+# ---------------------------------------------------------------------------
+
+
+def test_plus_wind_matches_task_contract_and_adds_wind():
+    """forward(rps, rel_pos [B,M,R,3], z) -> [B,M,T] = coherent + wind."""
+    from models.generative.wind_wake_gen import PositionalHarmonicPlusWindGen
+
+    torch.manual_seed(0)
+    m = PositionalHarmonicPlusWindGen(sample_rate=16000, n_harmonics=8, cond_dim=4, n_rotors=4)
+    m.eval()
+    b, mm, r, t = 2, 8, 4, 2048
+    rps = torch.rand(b, r, t) * 40 + 50
+    rel = torch.randn(b, mm, r, 3) * 0.2
+    z = torch.randn(b, 4)
+    torch.manual_seed(1)
+    out = m(rps, rel, z)
+    assert out.shape == (b, mm, t)
+    # forward = coherent + wind: reconstruct with the same seed
+    torch.manual_seed(1)
+    wind = m.wind.forward_rel(rps, rel)
+    coherent = m.coherent(rps, rel, z=z)
+    assert torch.allclose(out, coherent + wind, atol=1e-4)
+    assert float((out - coherent).abs().mean()) > 0  # wind actually contributes
+
+
+def test_plus_wind_single_observer_shape():
+    from models.generative.wind_wake_gen import PositionalHarmonicPlusWindGen
+
+    m = PositionalHarmonicPlusWindGen(sample_rate=16000, n_harmonics=8, cond_dim=0, n_rotors=4)
+    m.eval()
+    rps = torch.rand(2, 4, 2048) * 40 + 50
+    rel = torch.randn(2, 4, 3) * 0.2  # [B, R, 3] single observer
+    out = m(rps, rel)
+    assert out.shape == (2, 2048)
+
+
+def test_plus_wind_gradients_reach_both_paths():
+    from models.generative.wind_wake_gen import PositionalHarmonicPlusWindGen
+
+    m = PositionalHarmonicPlusWindGen(sample_rate=16000, n_harmonics=8, cond_dim=4, n_rotors=4)
+    m.train()
+    rps = torch.rand(2, 4, 2048) * 40 + 50
+    rel = torch.randn(2, 8, 4, 3) * 0.2
+    z = torch.randn(2, 4)
+    m(rps, rel, z).pow(2).mean().backward()
+    assert m.wind.transduction.raw_level.grad is not None
+    assert m.wind.raw_k.grad is not None and m.wind.raw_k.grad != 0
+    g = [p.grad for p in m.coherent.parameters() if p.grad is not None]
+    assert len(g) > 0

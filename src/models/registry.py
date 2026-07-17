@@ -33,7 +33,11 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 from torch import nn
 
-from models.generative import MultiScaleSTFT, PositionalHarmonicNoiseGen
+from models.generative import (
+    MultiScaleSTFT,
+    PositionalHarmonicNoiseGen,
+    PositionalHarmonicPlusWindGen,
+)
 
 if TYPE_CHECKING:
     from tasks.noise_generation import DroneCodebook
@@ -206,6 +210,7 @@ def get_rps_model(
 # Verbatim copy of the former train_noise_generation.py::MODEL_REGISTRY.
 NOISE_GEN_MODEL_REGISTRY: dict[str, Any] = {
     "positional_harmonic_gen": PositionalHarmonicNoiseGen,
+    "positional_harmonic_wind_gen": PositionalHarmonicPlusWindGen,
 }
 
 
