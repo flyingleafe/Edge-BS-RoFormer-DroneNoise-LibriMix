@@ -292,7 +292,18 @@ class PositionalHarmonicNoiseGen(nn.Module):
             raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
         b, r, t = rps.shape
         folded = rps.reshape(b * r, 1, t)  # rotor axis -> batch, single-rotor net
-        z_folded = z.repeat_interleave(r, dim=0) if z is not None else None  # [B*R, d]
+        # z may be per-clip ``[B, d]`` (same code for every rotor — the default) or
+        # per-rotor ``[B, R, d]`` (per-rotor sub-embeddings ``z_r = z_drone + δz_r``):
+        # the former is broadcast across the folded rotor axis, the latter folds
+        # its own axis in directly so each rotor's emitter sees its own code.
+        if z is None:
+            z_folded = None
+        elif z.dim() == 3:
+            if z.shape[:2] != (b, r):
+                raise ValueError(f"per-rotor z must be [B={b}, R={r}, d], got {tuple(z.shape)}")
+            z_folded = z.reshape(b * r, z.shape[-1])  # [B*R, d]
+        else:
+            z_folded = z.repeat_interleave(r, dim=0)  # [B, d] -> [B*R, d]
         # A per-clip (per-drone) sigma broadcasts to every rotor of the clip, so
         # it folds into the batch exactly like z: [B] -> [B*R].
         sigma_folded = (

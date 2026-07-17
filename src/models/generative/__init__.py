@@ -53,6 +53,13 @@ from .positional_harmonic_gen import (
     fractional_delay,
     propagate,
 )
+from .wind_wake_gen import (
+    PositionalHarmonicPlusWindGen,
+    QuadDynamics,
+    WindTransduction,
+    WindWakeChannel,
+    wake_flow_speed,
+)
 
 __all__ = [
     "PropellerNoiseGen",
@@ -78,4 +85,9 @@ __all__ = [
     "PositionalHarmonicNoiseGen",
     "fractional_delay",
     "propagate",
+    "PositionalHarmonicPlusWindGen",
+    "WindWakeChannel",
+    "WindTransduction",
+    "QuadDynamics",
+    "wake_flow_speed",
 ]

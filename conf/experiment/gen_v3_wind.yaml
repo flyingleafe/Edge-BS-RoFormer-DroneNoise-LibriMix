@@ -1,0 +1,30 @@
+# @package _global_
+# Generator retrain variant 3/3 — corrected geometry + WIND-WAKE CHANNEL.
+# Identical to gen_v1_corrected (E6 per-drone winner, swapped DREGON+Michael's
+# split streamed from the corrected `frames:` datasets) except the model adds the
+# additive, incoherent wind-wake flow-noise channel
+# (positional_harmonic_wind_gen_perdrone). Isolates the effect of modelling the
+# flow-noise residual on top of the geometry fix (vs v1). Same schedule as v1.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream
+  - override /model: positional_harmonic_wind_gen_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_v3_wind
+
+# batch 16 x grad_accum 2 = effective batch 32 (matches v2) at ~half peak GPU
+# memory, so it fits any backend incl. the 14.5 GB Colab T4 (unpinned, no OOM).
+epochs: 60
+patience: 8
+batch_size: 16
+grad_accum_steps: 2
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

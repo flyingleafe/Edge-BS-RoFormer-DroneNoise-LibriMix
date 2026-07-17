@@ -1,0 +1,36 @@
+# Swapped DREGON+Michael's noise-generation split, STREAMED from R2 via the
+# corrected-geometry published frame datasets (`frames:DREGON-frames` /
+# `frames:michaels-frames`, pinned in dload.lock to the 180°-fixed DREGON +
+# horizontal-ring Michael's versions — commit 3a4a82e). Identical split logic to
+# conf/data/noise_rps_dregon_michaels_swapped.yaml (val_at_start=true), but the
+# `frames:` specs make it run on ANY omnirun backend (no local data/ needed) and
+# guarantee the CORRECTED mic-array geometry is baked into every chunk. Use this
+# for the corrected-geometry generator retrains (variants v1/v2/v3).
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: frames:michaels-frames
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: frames:michaels-frames
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

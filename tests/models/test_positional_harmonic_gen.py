@@ -8,12 +8,26 @@ emit/propagate composition + output shapes of
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+from typing import cast
+
 import numpy as np
 import pytest
 import torch
 
-from models.generative import HarmonicNoiseGenNew, PositionalHarmonicNoiseGen, smoothness_penalty
-from models.generative.positional_harmonic_gen import (
+# `models` resolves to the main checkout via the editable install; prepend this
+# worktree's src so the per-rotor-sub-embedding changes here are exercised.
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from models.generative import (  # noqa: E402
+    HarmonicNoiseGenNew,
+    PositionalHarmonicNoiseGen,
+    smoothness_penalty,
+)
+from models.generative.positional_harmonic_gen import (  # noqa: E402
     SPEED_OF_SOUND,
     fractional_delay,
     propagate,
@@ -339,3 +353,80 @@ def test_silence_fade_disabled_passthrough():
     with torch.no_grad():
         audio = model(torch.zeros(1, 1, 4000), rel)  # rps=0
     assert float(audio.abs().max()) > 0.0  # DC pedestal present when gate off
+
+
+# ---------------------------------------------------------------------------
+# Per-rotor sub-embeddings (z_r = z_drone + δz_r)
+# ---------------------------------------------------------------------------
+
+
+def test_per_rotor_z_folds_distinct_codes():
+    """emit accepts per-rotor z [B, R, d] and gives each rotor its own code."""
+    torch.manual_seed(0)
+    # deterministic emitter (no random broadband branch) so emit is reproducible
+    model = PositionalHarmonicNoiseGen(
+        n_harmonics=8, sample_rate=SR, cond_dim=4, use_diff_noise=False
+    )
+    model.eval()
+    b, r, t = 2, 4, 2048
+    rps = torch.rand(b, r, t) * 40 + 50
+    z_per_rotor = torch.randn(b, r, 4)
+    # zeroing one rotor's code delta must only change that rotor's source
+    src_a = model.emit(rps, z=z_per_rotor)
+    z2 = z_per_rotor.clone()
+    z2[:, 1] += 3.0
+    src_b = model.emit(rps, z=z2)
+    assert src_a.shape == (b, r, t)
+    assert not torch.allclose(src_a[:, 1], src_b[:, 1])  # rotor 1 changed
+    assert torch.allclose(src_a[:, 0], src_b[:, 0])  # rotor 0 unchanged
+
+
+def test_per_rotor_z_shape_validated():
+    model = PositionalHarmonicNoiseGen(n_harmonics=8, sample_rate=SR, cond_dim=4)
+    rps = torch.rand(2, 4, 1024) * 40 + 50
+    with pytest.raises(ValueError, match="per-rotor z"):
+        model.emit(rps, z=torch.randn(2, 3, 4))  # R mismatch
+
+
+def test_codebook_per_rotor_deltas_generalize_perdrone():
+    """δz zero-init ⇒ per-rotor model matches the per-drone model at init;
+    δz then receives distinct per-rotor gradients."""
+    from models.registry import _CodebookConditionedNoiseGen, build_noise_gen_model
+
+    def _build(**extra) -> _CodebookConditionedNoiseGen:
+        return cast(
+            _CodebookConditionedNoiseGen,
+            build_noise_gen_model(
+                "positional_harmonic_gen",
+                sample_rate=SR,
+                n_harmonics=8,
+                cond_dim=8,
+                drone_names=["dregon", "michaels"],
+                use_diff_noise=False,
+                **extra,
+            ),
+        )
+
+    torch.manual_seed(1)
+    base = _build()
+    torch.manual_seed(1)
+    perrotor = _build(per_rotor_deltas=True, n_rotors=4)
+    deltas = perrotor.rotor_deltas
+    assert deltas is not None
+    assert deltas.shape == (4, 8)
+    assert float(deltas.abs().sum()) == 0.0  # zero-init
+
+    b, r, t = 2, 4, 2048
+    rps = torch.rand(b, r, t) * 40 + 50
+    rel = torch.randn(b, r, 3) * 0.2
+    names = ["dregon", "michaels"]
+    base.eval()
+    perrotor.eval()
+    with torch.no_grad():
+        assert torch.allclose(base(rps, rel, names), perrotor(rps, rel, names), atol=1e-5)
+
+    perrotor.train()
+    perrotor(rps, rel, names).pow(2).mean().backward()
+    g = deltas.grad
+    assert g is not None and float(g.abs().sum()) > 0
+    assert not torch.allclose(g[0], g[1])  # rotors get distinct gradients
