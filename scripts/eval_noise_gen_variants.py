@@ -37,7 +37,6 @@ from hydra.core.global_hydra import GlobalHydra  # noqa: E402
 
 from training.config import (  # noqa: E402
     build_dataset,
-    build_losses,
     build_metrics,
     build_task_and_codec,
     instantiate_model,
@@ -89,16 +88,34 @@ def _compose(exp: str, ckpt: str, val_samples: int):
         )
 
 
+def _rps_mean(frame) -> float:
+    """Mean rotor speed (rev/s) of a sample — used to select the free-flight
+    regime (>=~45) and exclude the idle/takeoff segments that dominate the
+    val_at_start swapped split."""
+    try:
+        return float(np.asarray(frame["rps"].data).mean())
+    except Exception:  # noqa: BLE001
+        return float("nan")
+
+
 def eval_variant(
-    exp: str, ckpt: str, *, device: torch.device, val_samples: int, batch_size: int
-) -> tuple[float, dict[str, float], list]:
-    """Return ``(val_loss, metrics, pairs)`` — mean MSSTFT loss, the metric-suite
-    aggregate (incl. ``mrstft``), and the per-sample ``(pred, target)`` frames."""
+    exp: str,
+    ckpt: str,
+    *,
+    device: torch.device,
+    val_samples: int,
+    batch_size: int,
+    min_flight_rps: float,
+) -> tuple[float, int, list]:
+    """Score one variant on the *free-flight* subset (mean RPS >= ``min_flight_rps``)
+    of the corrected-geometry swapped valid set. Returns ``(mrstft, n_flight, pairs)``
+    where ``pairs`` are the flight-only ``(pred, target)`` sample frames. We report
+    only the ``mrstft`` metric (the training monitor); the raw MSSTFT *loss* is a
+    different STFT implementation and is intentionally not reported alongside it."""
     cfg = _compose(exp, ckpt, val_samples)
     _task, codec = build_task_and_codec(cfg.model)
     model = instantiate_model(cfg.model).to(device)
     _warm_start(model, str(cfg.checkpoint), device)
-    loss_fn = build_losses(cfg.loss).to(device)
     metric_suite = build_metrics(cfg.metrics)
     valid_loader = _make_loader(
         build_dataset(cfg.data.valid), batch_size=batch_size, num_workers=0, shuffle=False
@@ -106,27 +123,29 @@ def eval_variant(
 
     model.eval()
     pairs: list = []
-    total_loss, count = 0.0, 0
     with torch.no_grad():
         for batch in valid_loader:
             batch = _to_device(batch, device)
             pred = _forward(codec, model, batch, device=device, amp=False)
-            total_loss += float(loss_fn(pred, batch).detach().item())
-            count += 1
             pred_cpu = pred.map_data(lambda t: t.detach().cpu())
             batch_cpu = batch.map_data(lambda t: t.detach().cpu())
-            pairs.extend(zip(_iter_samples(pred_cpu), _iter_samples(batch_cpu)))
-    val_loss = total_loss / max(count, 1)
-    metrics = metric_suite.evaluate(pairs).aggregate("mean")
-    return val_loss, metrics, pairs
+            for pi, ti in zip(_iter_samples(pred_cpu), _iter_samples(batch_cpu)):
+                if _rps_mean(ti) >= min_flight_rps:  # free-flight only
+                    pairs.append((pi, ti))
+    metrics = metric_suite.evaluate(pairs).aggregate("mean") if pairs else {}
+    mrstft = float(metrics.get("mrstft", float("nan")))
+    return mrstft, len(pairs), pairs
 
 
 def _drone_of(frame) -> str:
-    meta = getattr(frame, "meta", {}) or {}
-    for key in ("drone", "origin", "recording_id", "dataset"):
-        v = meta.get(key) if hasattr(meta, "get") else None
-        if isinstance(v, str):
-            return "michaels" if "FLY" in v or "michael" in v.lower() else "dregon"
+    """DREGON vs Michael's from geometry (frame meta is empty on the stream): the
+    Michael's mic ring sits at z≈0.33 m, DREGON's mics at z≈0."""
+    try:
+        if "mic_pos" in frame:
+            z = float(np.asarray(frame["mic_pos"].data)[:, 2].mean())
+            return "michaels" if z > 0.15 else "dregon"
+    except Exception:  # noqa: BLE001
+        pass
     return "dregon"
 
 
@@ -187,39 +206,50 @@ def render_spectrograms(results: dict[str, list], sr: int, out_path: Path) -> No
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=list(VARIANTS))
-    ap.add_argument("--val-samples", type=int, default=128)
+    ap.add_argument("--val-samples", type=int, default=512)
     ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument(
+        "--min-flight-rps",
+        type=float,
+        default=45.0,
+        help="score only free-flight samples (mean RPS >= this); "
+        "excludes the idle/takeoff segments the val_at_start split holds out",
+    )
     ap.add_argument("--out", type=Path, default=_ROOT / "gen_eval")
     ap.add_argument("--no-spectrograms", action="store_true")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    rows: list[tuple[str, float, float]] = []
+    rows: list[tuple[str, float, int]] = []
     pairs_by_variant: dict[str, list] = {}
     for name in args.variants:
         exp, ckpt = VARIANTS[name]
         print(f"=== {name}  ({exp}) ===")
         try:
-            val_loss, metrics, pairs = eval_variant(
-                exp, ckpt, device=device, val_samples=args.val_samples, batch_size=args.batch_size
+            mrstft, n_flight, pairs = eval_variant(
+                exp,
+                ckpt,
+                device=device,
+                val_samples=args.val_samples,
+                batch_size=args.batch_size,
+                min_flight_rps=args.min_flight_rps,
             )
         except Exception as e:  # noqa: BLE001
             print(f"  FAILED: {type(e).__name__}: {e}")
             continue
-        mrstft = float(metrics.get("mrstft", float("nan")))
-        rows.append((name, val_loss, mrstft))
+        rows.append((name, mrstft, n_flight))
         pairs_by_variant[name] = pairs
-        print(f"  val MSSTFT loss = {val_loss:.4f}   mrstft = {mrstft:.3f}   (n={len(pairs)})")
+        print(f"  mrstft = {mrstft:.3f}   (free-flight n={n_flight}, RPS>={args.min_flight_rps:g})")
 
-    print("\n" + "=" * 60)
-    print(f"{'variant':<16} {'MSSTFT loss ↓':>14} {'mrstft ↑':>10}")
-    print("-" * 60)
-    for name, vl, mr in rows:
-        print(f"{name:<16} {vl:>14.4f} {mr:>10.3f}")
+    print("\n" + "=" * 52)
+    print(f"{'variant':<16} {'mrstft ↑':>10} {'n_flight':>10}")
+    print("-" * 52)
+    for name, mr, n in rows:
+        print(f"{name:<16} {mr:>10.3f} {n:>10d}")
     csv = args.out / "msstft_comparison.csv"
     csv.write_text(
-        "variant,msstft_loss,mrstft\n" + "".join(f"{n},{vl:.6f},{mr:.6f}\n" for n, vl, mr in rows)
+        "variant,mrstft,n_flight\n" + "".join(f"{n},{mr:.6f},{nf}\n" for n, mr, nf in rows)
     )
     print(f"\ntable -> {csv}")
 

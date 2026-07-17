@@ -50,8 +50,8 @@ def _read_csv() -> dict[str, dict[str, float]]:
     with open(ASSETS / "msstft_comparison.csv") as f:
         for r in csv.DictReader(f):
             rows[r["variant"]] = {
-                "msstft_loss": float(r["msstft_loss"]),
                 "mrstft": float(r["mrstft"]),
+                "n_flight": float(r.get("n_flight", 0)),
             }
     return rows
 
@@ -63,34 +63,25 @@ def main() -> None:
     labels = [LABELS[n] for n in names]
     colors = [COLORS[n] for n in names]
     x = range(len(names))
+    n_flight = int(next(iter(data.values()))["n_flight"]) if data else 0
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.6))
-
+    fig, ax = plt.subplots(1, 1, figsize=(5.2, 3.8))
     mr = [data[n]["mrstft"] for n in names]
-    ax1.bar(x, mr, color=colors)
-    ax1.set_title("MR-STFT quality (higher = better)")
-    ax1.set_ylabel("mrstft  [0–100 rescaled]")
-    ax1.set_ylim(min(mr) - 0.4, max(mr) + 0.3)
+    ax.bar(x, mr, color=colors, width=0.62)
+    ax.set_title("MR-STFT quality on free-flight clips (higher = better)", fontsize=10)
+    ax.set_ylabel("mrstft  [0–100 rescaled]")
+    lo, hi = min(mr), max(mr)
+    ax.set_ylim(lo - 0.6, hi + 0.4)
     for xi, v in zip(x, mr):
-        ax1.text(xi, v + 0.03, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
-
-    ls = [data[n]["msstft_loss"] for n in names]
-    ax2.bar(x, ls, color=colors)
-    ax2.set_title("Multi-scale STFT loss (lower = better)")
-    ax2.set_ylabel("MSSTFT loss")
-    ax2.set_ylim(0, max(ls) + 0.8)
-    for xi, v in zip(x, ls):
-        ax2.text(xi, v + 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
-
-    for ax in (ax1, ax2):
-        ax.set_xticks(list(x))
-        ax.set_xticklabels(labels, fontsize=9)
-        ax.spines[["top", "right"]].set_visible(False)
+        ax.text(xi, v + 0.03, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.spines[["top", "right"]].set_visible(False)
 
     fig.suptitle(
-        "Generator variants on the corrected-geometry swapped valid set (n=128)", fontsize=11
+        f"Generator variants — free-flight subset (RPS≥45, n={n_flight}/variant)", fontsize=11
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     out = ASSETS / "msstft_bars.png"
     fig.savefig(out, dpi=150)
     print(f"wrote {out}")

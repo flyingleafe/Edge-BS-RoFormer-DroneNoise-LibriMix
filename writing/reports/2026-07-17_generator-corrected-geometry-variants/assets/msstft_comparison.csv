@@ -1,5 +1,5 @@
-variant,msstft_loss,mrstft
-old_wronggeom,5.563651,8.581211
-v1_corrected,7.039420,8.472890
-v2_perrotor,6.956831,8.938033
-v3_wind,7.077557,8.074570
+variant,mrstft,n_flight
+old_wronggeom,4.509311,48
+v1_corrected,5.221362,48
+v2_perrotor,4.819959,48
+v3_wind,3.444950,48
