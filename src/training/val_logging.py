@@ -35,8 +35,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import tdseries as td
-
 import wandb
+
 from data_processing.frames import get_meta
 from tasks.task import Task
 from training.artifacts import ValSample
@@ -165,13 +165,13 @@ def _fill_audio_triple(
     vs.audio["mixture"] = (mixture, sr)
     vs.audio["target"] = (clean, sr)
     vs.audio["output"] = (output, sr)
-    payload[f"val/{vs.sample_id}/mixture"] = wandb.Audio(
+    payload[f"samples/{vs.sample_id}/mixture"] = wandb.Audio(
         mixture, sample_rate=sr, caption=f"mixture {caption}"
     )
-    payload[f"val/{vs.sample_id}/target"] = wandb.Audio(
+    payload[f"samples/{vs.sample_id}/target"] = wandb.Audio(
         clean, sample_rate=sr, caption=f"target {caption}"
     )
-    payload[f"val/{vs.sample_id}/output"] = wandb.Audio(
+    payload[f"samples/{vs.sample_id}/output"] = wandb.Audio(
         output, sample_rate=sr, caption=f"output {caption}"
     )
     return True
@@ -188,7 +188,7 @@ def _fill_rps_overlay(
     sr = _sample_rate(mixture_series)
     mono = _audio_to_mono(mixture_series)
     vs.audio["mixture"] = (mono, sr)
-    payload[f"val/{vs.sample_id}/mixture"] = wandb.Audio(
+    payload[f"samples/{vs.sample_id}/mixture"] = wandb.Audio(
         mono, sample_rate=sr, caption=f"mixture {caption}"
     )
 
@@ -210,7 +210,7 @@ def _fill_rps_overlay(
             fig.savefig(buf, format="png", dpi=110)
             plt.close(fig)
             vs.figures["rps_overlay"] = buf.getvalue()
-            payload[f"val/{vs.sample_id}/rps_overlay"] = image
+            payload[f"samples/{vs.sample_id}/rps_overlay"] = image
         except Exception:
             logger.warning(
                 "val_logging: failed to build RPS overlay figure for sample %s",
@@ -250,8 +250,10 @@ def _fill_noise_gen_pair(
 
     vs.audio["real"] = (real, sr)
     vs.audio["generated"] = (generated, sr)
-    payload[f"val/{vs.sample_id}/real"] = wandb.Audio(real, sample_rate=sr, caption=f"real {tag}")
-    payload[f"val/{vs.sample_id}/generated"] = wandb.Audio(
+    payload[f"samples/{vs.sample_id}/real"] = wandb.Audio(
+        real, sample_rate=sr, caption=f"real {tag}"
+    )
+    payload[f"samples/{vs.sample_id}/generated"] = wandb.Audio(
         generated, sample_rate=sr, caption=f"generated {tag}"
     )
     return True
@@ -267,7 +269,7 @@ def _fill_mixture_only(
             sr = _sample_rate(series)
             mono = _audio_to_mono(series)
             vs.audio["mixture"] = (mono, sr)
-            payload[f"val/{vs.sample_id}/mixture"] = wandb.Audio(
+            payload[f"samples/{vs.sample_id}/mixture"] = wandb.Audio(
                 mono, sample_rate=sr, caption=f"mixture {caption}"
             )
             return True

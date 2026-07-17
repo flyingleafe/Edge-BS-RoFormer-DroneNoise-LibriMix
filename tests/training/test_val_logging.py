@@ -12,8 +12,8 @@ from typing import Any
 
 import numpy as np
 import tdseries as td
-
 import wandb
+
 from tasks.spec import FrameSpec
 from tasks.task import Task
 from training.val_logging import log_validation_samples, select_val_sample_indices
@@ -338,4 +338,6 @@ def test_log_validation_samples_sample_id_falls_back_when_meta_id_missing():
 
     assert len(logged) == 1
     keys = list(logged[0].keys())
-    assert any(k.startswith("val/val_ep3_000/") for k in keys)
+    # media samples use the "samples/" prefix (distinct from the "val/" scalar
+    # charts they used to mask in wandb)
+    assert any(k.startswith("samples/val_ep3_000/") for k in keys)
