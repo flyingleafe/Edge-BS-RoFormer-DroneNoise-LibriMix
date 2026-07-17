@@ -106,12 +106,16 @@ def eval_variant(
     val_samples: int,
     batch_size: int,
     min_flight_rps: float,
-) -> tuple[float, int, list]:
+    illustration_frames: dict | None = None,
+) -> tuple[float, int, dict]:
     """Score one variant on the *free-flight* subset (mean RPS >= ``min_flight_rps``)
-    of the corrected-geometry swapped valid set. Returns ``(mrstft, n_flight, pairs)``
-    where ``pairs`` are the flight-only ``(pred, target)`` sample frames. We report
-    only the ``mrstft`` metric (the training monitor); the raw MSSTFT *loss* is a
-    different STFT implementation and is intentionally not reported alongside it."""
+    of the corrected-geometry swapped valid set, and — if ``illustration_frames``
+    are given — generate audio for those clips too. Returns
+    ``(mrstft, n_flight, {drone: (real_1d, gen_1d)})``. We report only the ``mrstft``
+    metric (the training monitor); the raw MSSTFT *loss* is a different STFT
+    implementation and is intentionally not reported alongside it."""
+    from data_processing.collate import frame_collate
+
     cfg = _compose(exp, ckpt, val_samples)
     _task, codec = build_task_and_codec(cfg.model)
     model = instantiate_model(cfg.model).to(device)
@@ -134,7 +138,16 @@ def eval_variant(
                     pairs.append((pi, ti))
     metrics = metric_suite.evaluate(pairs).aggregate("mean") if pairs else {}
     mrstft = float(metrics.get("mrstft", float("nan")))
-    return mrstft, len(pairs), pairs
+
+    illust_gen: dict = {}
+    if illustration_frames:
+        with torch.no_grad():
+            for drone, f in illustration_frames.items():
+                batch = _to_device(frame_collate([f]), device)
+                pred = _forward(codec, model, batch, device=device, amp=False)
+                gen = pred.map_data(lambda t: t.detach().cpu())["audio"].data
+                illust_gen[drone] = (_mic0(f["audio"].data), _mic0(gen))
+    return mrstft, len(pairs), illust_gen
 
 
 def _drone_of(frame) -> str:
@@ -149,56 +162,125 @@ def _drone_of(frame) -> str:
     return "dregon"
 
 
-def _logspec(audio: np.ndarray, n_fft: int = 1024) -> np.ndarray:
+SPEC_FMAX = 4000.0  # repo convention (make_log_spectrogram_series default) — the
+# band where the rotor harmonic stack lives; above it is essentially broadband.
+
+
+def _spectrogram(
+    audio: np.ndarray, sr: int = 16000, n_fft: int = 2048, hop: int = 512, fmax: float = SPEC_FMAX
+):
+    """dB log-STFT with real Hz / seconds axes, matching the repo's spectrogram
+    convention (``src/plots/timeframe`` ``make_spectrogram_series``: n_fft=2048,
+    hop=512, ``20*log10``, ``fmax=4000``). Cropping to ``fmax`` spreads the
+    ~80 Hz-spaced rotor harmonics over the axis so they resolve as distinct
+    horizontal lines. Returns ``(S_dB[freq,time], freqs_Hz, times_s)``."""
     if audio.ndim > 1:
-        audio = audio[0]
-    x = torch.as_tensor(audio, dtype=torch.float32)
-    spec = torch.stft(
-        x, n_fft=n_fft, hop_length=n_fft // 4, window=torch.hann_window(n_fft), return_complex=True
+        audio = audio[0]  # first microphone
+    x = torch.as_tensor(np.ascontiguousarray(audio), dtype=torch.float32)
+    X = torch.stft(
+        x,
+        n_fft=n_fft,
+        hop_length=hop,
+        window=torch.hann_window(n_fft),
+        return_complex=True,
+        center=True,
     )
-    return torch.log1p(spec.abs()).numpy()
+    s = 20.0 * np.log10(np.abs(X.numpy()) + 1e-8)  # [freq, time]
+    nyq = sr / 2.0
+    max_bin = max(1, min(int(round(fmax / nyq * s.shape[0])), s.shape[0]))
+    s = s[:max_bin]
+    freqs = np.linspace(0.0, fmax, s.shape[0])
+    times = np.arange(s.shape[1]) * hop / sr
+    return s, freqs, times
 
 
-def render_spectrograms(results: dict[str, list], sr: int, out_path: Path) -> None:
-    """Grid: rows = variants (+ a 'real' row), cols = one dregon + one michaels
-    sample; log-STFT magnitude. Uses the first sample of each drone per variant."""
+def _mic0(a) -> np.ndarray:
+    """Reduce audio to the first microphone's 1-D waveform (handles [B,M,T]/[M,T]/[T])."""
+    a = np.asarray(a)
+    while a.ndim > 1:
+        a = a[0]
+    return a
+
+
+def find_illustration_frames(seconds: int, sr: int, min_flight_rps: float, take: int = 96):
+    """Find one clean *mid-flight* clip per drone for illustration. The swapped
+    ``val_at_start`` split holds out only takeoff, so sustained-cruise clips live
+    in the TRAIN region — we build that pool at ``seconds``-long chunks, scan the
+    first ``take``, and keep the highest mean-RPS clip per drone. These clips are
+    *illustrative* (the model saw this region in training); the held-out metric is
+    the separate free-flight score. Returns ``({drone: Frame}, {drone: rps})``."""
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=str(_ROOT / "conf"), version_base=None):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "experiment=gen_v1_corrected",
+                "data=noise_rps_dregon_michaels_swapped_stream",
+                f"data.train.params.chunk_size={seconds * sr}",
+                "data.train.params.train_samples=512",
+                "logging.enabled=false",
+                "artifacts.enabled=false",
+            ],
+        )
+    ds = build_dataset(cfg.data.train)
+    best: dict[str, tuple[float, object]] = {}
+    for i in range(take):
+        try:
+            f = ds[i]  # type: ignore[index]
+        except (IndexError, KeyError, StopIteration):
+            break
+        d = _drone_of(f)
+        r = _rps_mean(f)
+        if r >= min_flight_rps and (d not in best or r > best[d][0]):
+            best[d] = (r, f)
+    frames = {d: fr for d, (_, fr) in best.items()}
+    rps = {d: r for d, (r, _) in best.items()}
+    return frames, rps
+
+
+def render_spectrograms(illust: dict, rps_by_drone: dict, sr: int, seconds: int, out_path: Path):
+    """Grid: rows = REAL + each variant, cols = one mid-flight DREGON + Michael's
+    clip. dB log-STFT to ``SPEC_FMAX`` (repo convention, harmonics resolve),
+    real Hz/seconds axes. ``illust`` = ``{variant: {drone: (real_1d, gen_1d)}}``."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    names = list(results)
+    names = list(illust)
     drones = ["dregon", "michaels"]
-    # pick a fixed real target per drone (from the first variant's pairs)
-    ref_pairs = results[names[0]]
-    real_by_drone = {}
-    for _pred, tgt in ref_pairs:
-        d = _drone_of(tgt)
-        if d not in real_by_drone and "audio" in tgt:
-            real_by_drone[d] = np.asarray(tgt["audio"].data)
+    real_by_drone = {d: rg[0] for d, rg in illust[names[0]].items()}
     nrows = len(names) + 1
-    fig, axes = plt.subplots(nrows, 2, figsize=(9, 2.4 * nrows), squeeze=False)
+
+    def _draw(ax, audio, is_bottom):
+        s, fr, tm = _spectrogram(audio, sr)
+        vmax = float(s.max())
+        ax.pcolormesh(tm, fr, s, cmap="magma", vmin=vmax - 70.0, vmax=vmax, shading="auto")
+        ax.set_ylim(0, SPEC_FMAX)
+        if is_bottom:
+            ax.set_xlabel("Time (s)")
+
+    fig, axes = plt.subplots(nrows, 2, figsize=(11, 1.95 * nrows), squeeze=False)
     for c, d in enumerate(drones):
         real = real_by_drone.get(d)
         ax = axes[0][c]
         if real is not None:
-            ax.imshow(_logspec(real), origin="lower", aspect="auto", cmap="magma")
-        ax.set_title(f"REAL — {d}")
-        ax.set_ylabel("real" if c == 0 else "")
-        for r, name in enumerate(names, start=1):
-            gen = None
-            for pred, tgt in results[name]:
-                if _drone_of(tgt) == d and "audio" in pred:
-                    gen = np.asarray(pred["audio"].data)
-                    break
-            axc = axes[r][c]
+            _draw(ax, real, False)
+        ax.set_title(f"REAL — {d}  (RPS≈{rps_by_drone.get(d, 0):.0f})")
+        if c == 0:
+            ax.set_ylabel("real\nFreq (Hz)", fontsize=8)
+        for r_i, name in enumerate(names, start=1):
+            axc = axes[r_i][c]
+            gen = illust[name].get(d, (None, None))[1]
             if gen is not None:
-                axc.imshow(_logspec(gen), origin="lower", aspect="auto", cmap="magma")
-            axc.set_ylabel(name if c == 0 else "")
-            axc.set_xticks([])
-            axc.set_yticks([])
-    fig.suptitle("Generated vs real noise — log-STFT magnitude (corrected geometry valid)")
-    fig.tight_layout(rect=(0, 0, 1, 0.98))
+                _draw(axc, gen, r_i == nrows - 1)
+            if c == 0:
+                axc.set_ylabel(f"{name}\nFreq (Hz)", fontsize=8)
+    fig.suptitle(
+        f"Generated vs real drone noise — {seconds}s mid-flight clip, dB log-STFT "
+        f"(n_fft=2048, 0–{SPEC_FMAX:.0f} Hz)"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.99))
     fig.savefig(out_path, dpi=120)
     print(f"\nspectrogram grid -> {out_path}")
 
@@ -216,30 +298,46 @@ def main() -> None:
         "excludes the idle/takeoff segments the val_at_start split holds out",
     )
     ap.add_argument("--out", type=Path, default=_ROOT / "gen_eval")
+    ap.add_argument(
+        "--illustrate-seconds",
+        type=int,
+        default=8,
+        help="length (s) of the mid-flight illustration clip",
+    )
     ap.add_argument("--no-spectrograms", action="store_true")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    illust_frames: dict = {}
+    rps_by_drone: dict = {}
+    if not args.no_spectrograms:
+        print(f"finding {args.illustrate_seconds}s mid-flight illustration clips ...")
+        illust_frames, rps_by_drone = find_illustration_frames(
+            args.illustrate_seconds, 16000, args.min_flight_rps
+        )
+        print(f"  clips: {[(d, f'{r:.0f} rps') for d, r in rps_by_drone.items()]}")
+
     rows: list[tuple[str, float, int]] = []
-    pairs_by_variant: dict[str, list] = {}
+    illust_by_variant: dict[str, dict] = {}
     for name in args.variants:
         exp, ckpt = VARIANTS[name]
         print(f"=== {name}  ({exp}) ===")
         try:
-            mrstft, n_flight, pairs = eval_variant(
+            mrstft, n_flight, illust_gen = eval_variant(
                 exp,
                 ckpt,
                 device=device,
                 val_samples=args.val_samples,
                 batch_size=args.batch_size,
                 min_flight_rps=args.min_flight_rps,
+                illustration_frames=illust_frames or None,
             )
         except Exception as e:  # noqa: BLE001
             print(f"  FAILED: {type(e).__name__}: {e}")
             continue
         rows.append((name, mrstft, n_flight))
-        pairs_by_variant[name] = pairs
+        illust_by_variant[name] = illust_gen
         print(f"  mrstft = {mrstft:.3f}   (free-flight n={n_flight}, RPS>={args.min_flight_rps:g})")
 
     print("\n" + "=" * 52)
@@ -253,8 +351,14 @@ def main() -> None:
     )
     print(f"\ntable -> {csv}")
 
-    if not args.no_spectrograms and pairs_by_variant:
-        render_spectrograms(pairs_by_variant, sr=16000, out_path=args.out / "spectrograms.png")
+    if not args.no_spectrograms and any(illust_by_variant.values()):
+        render_spectrograms(
+            illust_by_variant,
+            rps_by_drone,
+            16000,
+            args.illustrate_seconds,
+            args.out / "spectrograms.png",
+        )
 
 
 if __name__ == "__main__":

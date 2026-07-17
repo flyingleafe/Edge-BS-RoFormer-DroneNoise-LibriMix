@@ -138,11 +138,18 @@ both drones) — and illustrate with free-flight clips only.
 ) <fig-bars>
 
 #figure(
-  image("assets/spectrograms.png", width: 92%),
-  caption: [Real (top) vs. generated log-STFT magnitude on *free-flight* clips, one
-  DREGON and one Michael's, for each model. All three corrected models reproduce
-  the continuous broadband + tonal structure of real flight noise; v3 (+wind) is
-  visibly the flattest.],
+  image("assets/spectrograms.png", width: 96%),
+  caption: [Real (top) vs. generated, an 8-second *mid-flight cruise* clip
+  (RPS $approx 81$) per drone, dB log-STFT to 4 kHz (the repo spectrogram
+  convention; the band where the rotor harmonics live). Harmonic stacks are
+  clearly visible — evenly spaced horizontal lines from the rotor fundamental up.
+  Real noise mixes those harmonics with a broadband floor; v1/OLD reproduce the
+  mix; *v2 (+per-rotor)* generates the *strongest, most regular* harmonic lines,
+  especially on Michael's — arguably over-tonal relative to the real broadband
+  content; *v3 (+wind)* is the flattest and most washed-out. These clips come
+  from the training region (the swapped split holds out only takeoff, so no
+  held-out sustained-cruise data exists) and are illustrative — the quantitative
+  comparison is the held-out free-flight metric above.],
 ) <fig-spec>
 
 Three findings stand out:
