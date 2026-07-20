@@ -219,6 +219,9 @@ hand-retuned per-regime knobs (gate 30↔8, bw 1.5↔7).
 
 ### Sweep protocol (uni-cpu / free-GPU CPU jobs)
 
+*(see §8 below for the CPU fast-inference paths added after the profiling
+study — the sweeps should run with the new defaults)*
+
 Arms {baseline, T, C, N, K} and their compositions (T+C+N+K = candidate
 final) × recordings {DREGON nosource/speech-low/whitenoise-low room1,
 FLY124 cruise window} × init {blind}. Metrics: pooled + per-rotor err_sm vs
@@ -226,3 +229,49 @@ telemetry truth, twin-resolution flag, capture rate. Success: beat
 blindvit2dsp's DREGON 0.68 pooled or prove no arm composition does;
 FLY124: all 4 rotors < 2 rev/s (twin recovered) or documented impossibility.
 Spatial-DP (blindvit2dsp) remains a separate arm to compose with T/C/N/K.
+
+---
+
+## 8 · CPU inference fast paths (2026-07-20)
+
+Profiling study (`scripts/vk_bench.py`, `results/vk_bench/profile_report.*`):
+refine-config rtf 0.037 (54–58 % in SuperLU `gstrf` on the coupled-group
+normal equations, 29 % in full-length demod FFTs); blind-config rtf 0.35
+(FFT-dominated). No thread scaling ⇒ algorithmic changes only:
+
+1. **Banded Hermitian solver** (`VKConfig.solver = "banded"`, default). With
+   time-major interleaved unknowns (`index = t·g + a`) the coupled-group
+   system is Hermitian PD *banded* — prior blocks at offsets `g`/`2g`,
+   same-time coupling at offsets `1..g−1`, bandwidth `p·g`, zero fill-in —
+   assembled directly in LAPACK banded storage, factorized by
+   `cholesky_banded`/`cho_solve_banded`. Agrees with splu to ~1e-8 relative;
+   5–10× faster even at laptop scale (splu's track-major fill-in is far worse
+   on the cluster). Non-PD (decimation artefacts) ⇒ automatic per-group splu
+   fallback; `solver="splu"` keeps the reference path for A/B.
+2. **Far-pair coupling pruning** (`VKConfig.prune_far_pairs`, default on).
+   Pairs with no co-valid samples contribute exactly zero and are always
+   skipped; pairs whose instantaneous separation never drops below
+   1.25 × the 0.45·fs_env demod cutoff can only pick up spectral leakage
+   (~1e-3) in `LP[conj(c_m) c_n]` and are skipped behind the flag. This cuts
+   the *pair* share of full-length demods, which dominates the demod cost in
+   richly-coupled (refine) configs. Synthetic A/B: no measurable trajectory
+   change (< 1e-8 rev/s RMS).
+3. **FIR polyphase decimation** (`VKConfig.lp_mode = "fir"`): two-stage
+   linear-phase Kaiser decimators (passband edge 0.45·fs_env = the brickwall
+   cutoff, stopband edge 0.55·fs_env, 70 dB; odd-length type-I taps ⇒ integer
+   group delay, exactly compensated by `resample_poly` — phase error < 1e-6
+   rad on in-band tones, so phase-slope updates stay unbiased). **Not the
+   default**: measured *slower* than the batched pocketfft brickwall
+   (≈ 4.3–5.6 vs 3.3 ms per 20 s signal — scipy's `upfirdn` kernel cannot
+   beat pocketfft's SIMD even at ¼ the nominal MACs), and its transition
+   band perturbs blind-capture trajectories by ~2.5e-3 rev/s RMS vs the
+   brickwall (refine: 2.8e-4). Kept behind the flag for A/B.
+4. `_freq_update`'s small real SPD pentadiagonal solve moved from splu to
+   `solveh_banded` (numerically identical), and FFT worker counts are clamped
+   to the process CPU affinity (cgroup-restricted Slurm allocations were
+   oversubscribed by `OMP_NUM_THREADS`-many pocketfft workers).
+
+Regression protocol: `scripts/vk_bench.py` gained `--solver`, `--lp-mode`,
+`--no-prune`, `--out-suffix` (A/B without clobbering the recorded reference
+npz). Gate: pooled MAE-vs-stored-ref within 1e-3 rev/s of the recorded
+`profile_report.json` values on all 4 cases × 2 configs.

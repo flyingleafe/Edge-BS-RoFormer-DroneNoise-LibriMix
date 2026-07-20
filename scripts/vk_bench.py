@@ -46,6 +46,12 @@ Modes:
                          runs anywhere in <1 min with no data access; writes
                          ``profile_report_synthetic.json``/``.txt``.
 
+Optimization A/B knobs (fast-inference work): ``--solver banded|splu``,
+``--lp-mode fft|fir|iir`` and ``--no-prune`` override the corresponding
+``VKConfig`` fields on both config families; ``--out-suffix _foo`` suffixes
+every output file (report + per-run npz) so a re-bench does not clobber the
+recorded regression references.
+
 Run: ``.venv/bin/python scripts/vk_bench.py [--quick | --synthetic]``
 """
 
@@ -238,6 +244,7 @@ def run_one(
     cfg_name: str,
     cfg: VKConfig,
     out_dir: Path,
+    suffix: str = "",
 ) -> dict[str, Any]:
     """Profile one ``vk_track`` run and save its regression-reference npz."""
     audio = np.atleast_2d(audio)
@@ -265,7 +272,7 @@ def run_one(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        out_dir / f"{label}_{cfg_name}.npz",
+        out_dir / f"{label}_{cfg_name}{suffix}.npz",
         frame_times=frame_times,
         r_init=r_init,
         r_refined=res.r_refined,
@@ -303,7 +310,7 @@ def run_one(
     return row
 
 
-def run_real_case(case: str, dur_s: float) -> list[dict[str, Any]]:
+def run_real_case(case: str, dur_s: float, suffix: str = "") -> list[dict[str, Any]]:
     """Load one wholerec case (npz trajectories + streamed audio), run both configs."""
     z = load_case_npz(case)
     ft, r_init_full, r_vk_full = z["ft"], z["r_init"], z["r_vk"]
@@ -322,7 +329,7 @@ def run_real_case(case: str, dur_s: float) -> list[dict[str, Any]]:
     rows = []
     for cfg_name, cfg in CONFIGS.items():
         init = r_init if cfg_name == "refine" else r_init + BLIND_INIT_OFFSET
-        rows.append(run_one(case, audio, ft_w, init, r_ref, cfg_name, cfg, OUT_DIR))
+        rows.append(run_one(case, audio, ft_w, init, r_ref, cfg_name, cfg, OUT_DIR, suffix))
     return rows
 
 
@@ -354,18 +361,18 @@ def synthetic_signal(
     return audio, ft, r_true_ft
 
 
-def run_synthetic() -> list[dict[str, Any]]:
+def run_synthetic(suffix: str = "") -> list[dict[str, Any]]:
     """Self-test: same machinery, no data access, <1 min anywhere."""
     audio, ft, r_true = synthetic_signal()
     # Scaled-down cousins of the two families (only 8 harmonics exist).
     cfgs = {
-        "refine": replace(REFINE_CFG, k_min=1, k_max=8, n_outer=3),
-        "blind": replace(BLIND_CFG, k_min=1, k_max=8, n_outer=4),
+        "refine": replace(CONFIGS["refine"], k_min=1, k_max=8, n_outer=3),
+        "blind": replace(CONFIGS["blind"], k_min=1, k_max=8, n_outer=4),
     }
     rows = []
     for cfg_name, cfg in cfgs.items():
         init = r_true + (0.5 if cfg_name == "refine" else BLIND_INIT_OFFSET)
-        rows.append(run_one("synthetic", audio, ft, init, r_true, cfg_name, cfg, OUT_DIR))
+        rows.append(run_one("synthetic", audio, ft, init, r_true, cfg_name, cfg, OUT_DIR, suffix))
     return rows
 
 
@@ -438,19 +445,53 @@ def main() -> None:
         default=None,
         help="restrict to these cases (default: all; useful for resubmitting leftovers)",
     )
+    ap.add_argument(
+        "--solver",
+        choices=["banded", "splu"],
+        default=None,
+        help="override VKConfig.solver on both config families (A/B)",
+    )
+    ap.add_argument(
+        "--lp-mode",
+        choices=["fft", "fir", "iir"],
+        default=None,
+        help="override VKConfig.lp_mode on both config families (A/B)",
+    )
+    ap.add_argument(
+        "--no-prune",
+        action="store_true",
+        help="disable VKConfig.prune_far_pairs on both config families (A/B)",
+    )
+    ap.add_argument(
+        "--out-suffix",
+        default="",
+        help="suffix for every output file (report + npz) — keeps re-bench "
+        "runs from clobbering the recorded regression references",
+    )
     args = ap.parse_args()
 
+    overrides: dict[str, Any] = {}
+    if args.solver is not None:
+        overrides["solver"] = args.solver
+    if args.lp_mode is not None:
+        overrides["lp_mode"] = args.lp_mode
+    if args.no_prune:
+        overrides["prune_far_pairs"] = False
+    if overrides:
+        for name in list(CONFIGS):
+            CONFIGS[name] = replace(CONFIGS[name], **overrides)
+
     if args.synthetic:
-        rows = run_synthetic()
-        write_report(rows, suffix="_synthetic")
+        rows = run_synthetic(suffix=args.out_suffix)
+        write_report(rows, suffix="_synthetic" + args.out_suffix)
         return
 
     cases = [QUICK_CASE] if args.quick else (args.cases or list(CASES))
     dur = 10.0 if args.quick else args.duration
     rows: list[dict[str, Any]] = []
     for case in cases:
-        rows.extend(run_real_case(case, dur))
-        write_report(rows)  # incremental: partial report survives a timeout
+        rows.extend(run_real_case(case, dur, suffix=args.out_suffix))
+        write_report(rows, suffix=args.out_suffix)  # partial report survives a timeout
 
 
 if __name__ == "__main__":
