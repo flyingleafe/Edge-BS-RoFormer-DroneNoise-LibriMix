@@ -1,0 +1,17 @@
+# @package _global_
+# F1 SGMSE+ (score-based diffusion, OUVE SDE + NCSN++ ~65M, from scratch @16kHz) — Pass B (all harmonic noises (category-uniform)) — the diversity arm. Blind SE (no RPS).
+# See docs/experiments/f1-se-blind-baselines.md.
+defaults:
+  - override /data: se_baselines_b
+  - override /model: f1_sgmse
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: f1_sgmse_b
+amp: false  # complex STFT + diffusion score-matching (ComplexHalf gaps under autocast)
+samples_per_validation: 5000
+epochs: 80
+patience: 8
+optim:
+  monitor: si_sdr
+  monitor_mode: max

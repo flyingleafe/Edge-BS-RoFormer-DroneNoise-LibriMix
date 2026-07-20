@@ -64,6 +64,15 @@ the same architecture set, both scored on the same two fixed validation sets:
   `random_polarity` (the E5 workhorses) are used.
 - `zenodo_drone_noises` excluded from `audio_pool` (published as a single ZIP
   blob, not per-file audio).
+- **SGMSE+ trains via a bespoke score-matching loop** (`scripts/train_sgmse.py`),
+  not `train.py`: the discriminative training loop cannot host score-based
+  diffusion (needs the clean target fed in during training for the DSM loss,
+  sampling only at eval, and a scalar loss the Series-based spec-validation
+  doesn't model). Final scoring stays on `eval.py` (the SE codec calls
+  `model(x)` with no target → the model runs the reverse-SDE sampler → enhanced).
+  Caveat: a 65 M NCSN++ trained from scratch needs days of GPU (the SGMSE papers
+  train ~160 epochs); within the queue budget it will be **undertrained** — its
+  floor is reported with that caveat, as a compute-bounded generative baseline.
 
 ## Results
 

@@ -214,6 +214,11 @@ def build_model_from_config(model_type: str, config: DictConfig) -> nn.Module:
         from models.diffusion_buffer import DiffusionBufferModel
 
         model = DiffusionBufferModel(config)
+    elif model_type == "sgmse":
+        # SGMSE+ score-based diffusion SE model (OUVE SDE + NCSN++ backbone)
+        from models.sgmse import SGMSEModel
+
+        model = SGMSEModel(config)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")

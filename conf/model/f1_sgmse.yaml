@@ -1,0 +1,70 @@
+# SGMSE+ (Richter et al., IEEE TASLP 2023) — score-based diffusion speech
+# enhancement, trained FROM SCRATCH at native 16 kHz. Faithful OUVE SDE + full
+# NCSN++ backbone (~65M params). Mirrors a2_diffusion_buffer_bbed's envelope:
+# built via models.registry.build_legacy_inline -> utils.build_model_from_config
+# (model_type: sgmse). forward(mix, target) returns the DSM (sigma^2-weighted)
+# scalar loss; forward(mix) runs the PC reverse-SDE sampler -> enhanced waveform
+# (~30 min/utterance at N=30). See src/models/sgmse/model.py.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.registry.build_legacy_inline
+params:
+  model_type: sgmse
+  config:
+    audio:
+      sample_rate: 16000
+      hop_length: 128
+      n_fft: 510
+      num_channels: 1
+      stft:
+        n_fft: 510
+        win_length: 510
+        hop_length: 128
+        window: hann_periodic
+    preprocessing:
+      magnitude_compression:
+        beta: 0.15   # spec_factor c
+        alpha: 0.5   # spec_abs_exponent
+    sde:
+      type: ouve
+      theta: 1.5
+      sigma_min: 0.05
+      sigma_max: 0.5
+      N: 30
+      t_eps: 0.03
+    model:
+      name: ncsnpp
+      nf: 128
+      ch_mult:
+      - 1
+      - 1
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      num_res_blocks: 2
+      attn_resolutions:
+      - 16
+      scale_by_sigma: true
+      fourier_scale: 16
+      image_size: 256
+      embedding_type: fourier
+      dropout: 0.0
+      ema_decay: 0.999
+    sampling:
+      predictor: reverse_diffusion
+      corrector: ald
+      snr: 0.5
+      corrector_steps: 1
+      denoise: true
+    training:
+      optimizer: adam
+      lr: 0.0001
+      ema_momentum: 0.999
