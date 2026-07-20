@@ -61,15 +61,17 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 
 from data_processing.frames import audio_series as _audio_series
+from data_processing.frames import get_meta
 from data_processing.frames import rps_series as _rps_series
 from data_processing.online_mixing import OnlineMixIterableDataset
-from data_processing.streams import resolve_source, stretch_rps_to_frames
+from data_processing.streams import iter_published_frames, resolve_source, stretch_rps_to_frames
 
 __all__ = [
     "DregonLMFrameDataset",
     "DNLMFrameDataset",
     "OnlineMixFrameDataset",
     "NoiseGenFrameDataset",
+    "SEValidFrameDataset",
 ]
 
 DEFAULT_N_FFT = 2048
@@ -269,6 +271,56 @@ class DNLMFrameDataset(Dataset):
         )
 
 
+class SEValidFrameDataset(Dataset):
+    """Map-style dataset over a published ``tdframe-v1`` **SE valid** set.
+
+    The fixed speech-enhancement validation sets (``SE-valid-drone`` /
+    ``SE-valid-harmonic``, built by ``scripts/build_se_valid.py``) publish one
+    sample per mixture as a Frame carrying ``mixture`` (noisy) + ``target``
+    (clean speech as mixed) audio Series and a ``meta`` sub-Frame with
+    ``input_snr`` / ``category`` / ``noise_source`` / ``id``. These are exactly
+    the entries the ``speech_enhancement`` codec (``mixture`` in) and
+    ``losses.MaskedLoss`` / separation metrics (``target``) consume, and
+    ``eval.py`` groups per-SNR on ``meta.input_snr``.
+
+    The sets are small (a few hundred–few thousand short clips), so all frames
+    are streamed once via :func:`iter_published_frames` and held in memory for
+    O(1), worker-safe random access — portable to any backend (streams from R2
+    via dload; no local checkout needed). ``category`` filters to one Pass-B
+    category (used to score per-category transfer on ``SE-valid-harmonic``).
+    """
+
+    def __init__(
+        self,
+        dataset: str,
+        *,
+        version: str | None = None,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+        category: str | None = None,
+    ) -> None:
+        self.dataset = str(dataset)
+        self.sample_rate = int(sample_rate)
+        self.category = category
+        self._frames: list[td.Frame] = []
+        for frame in iter_published_frames(self.dataset, version):
+            if "mixture" not in frame or "target" not in frame:
+                continue
+            if category is not None and str(get_meta(frame, "category", "")) != category:
+                continue
+            self._frames.append(frame)
+        if not self._frames:
+            raise ValueError(
+                f"SE valid dataset {self.dataset!r} yielded no usable frames"
+                + (f" for category={category!r}" if category else "")
+            )
+
+    def __len__(self) -> int:
+        return len(self._frames)
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        return self._frames[idx]
+
+
 class OnlineMixFrameDataset(IterableDataset):
     """Wraps :class:`~data_processing.online_mixing.OnlineMixIterableDataset`,
     packing each ``(audio, rps)`` tensor pair into a per-sample ``td.Frame``.
@@ -304,6 +356,9 @@ class OnlineMixFrameDataset(IterableDataset):
         return cls.from_config(OmegaConf.load(path), flatten_channels=flatten_channels)
 
     def __iter__(self):
+        if getattr(self.inner, "task", "rps_prediction") == "speech_enhancement":
+            yield from self._iter_se()
+            return
         for audio, rps in self.inner:
             audio_np = audio.numpy() if isinstance(audio, torch.Tensor) else np.asarray(audio)
             rps_np = rps.numpy() if isinstance(rps, torch.Tensor) else np.asarray(rps)
@@ -314,6 +369,24 @@ class OnlineMixFrameDataset(IterableDataset):
                     )
             else:
                 yield self._pack(audio_np, rps_np)
+
+    def _iter_se(self):
+        """Speech-enhancement stream: the inner mixer yields ``(mixture, clean)``
+        pairs; pack them into the ``{"mixture", "target"}`` Frame the SE task /
+        ``losses.MaskedLoss`` consume (the DN-LM ``DNLMFrameDataset`` layout).
+        ``flatten_channels`` is a no-op — the SE stream is single-channel."""
+        for mixture, target in self.inner:
+            mixture_np = (
+                mixture.numpy() if isinstance(mixture, torch.Tensor) else np.asarray(mixture)
+            )
+            target_np = target.numpy() if isinstance(target, torch.Tensor) else np.asarray(target)
+            yield td.Frame(
+                {
+                    "mixture": _audio_series(mixture_np, self.inner.sample_rate),
+                    "target": _audio_series(target_np, self.inner.sample_rate),
+                    "meta": td.Frame({}),
+                }
+            )
 
     def _pack(
         self, audio_np: np.ndarray, rps_np: np.ndarray, *, meta: dict[str, Any] | None = None

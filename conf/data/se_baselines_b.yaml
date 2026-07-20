@@ -1,0 +1,18 @@
+# F1 Pass B data: all-harmonic online-mix SE stream (train) + fixed
+# SE-valid-drone (valid / early-stop monitor — same as Pass A, so the two
+# passes are model-selected identically for the drone-floor comparison).
+# See conf/online_mix/se_all_harmonic.yaml and
+# docs/experiments/f1-se-blind-baselines.md.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/se_all_harmonic.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.SEValidFrameDataset
+  params:
+    dataset: SE-valid-drone
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

@@ -1,0 +1,17 @@
+# @package _global_
+# F1 DCUNet (complex UNet; 2023 benchmark winner, continuity anchor) — Pass A (drone noises only). Blind SE (no RPS).
+# See docs/experiments/f1-se-blind-baselines.md.
+defaults:
+  - override /data: se_baselines_a
+  - override /model: a1_baseline_dcunet
+  - override /loss: masked_mse
+  - override /metrics: separation_basic
+
+experiment_name: f1_dcunet_a
+amp: false  # complex STFT/iSTFT (ComplexHalf gaps under autocast)
+samples_per_validation: 5000
+epochs: 80
+patience: 8
+optim:
+  monitor: si_sdr
+  monitor_mode: max

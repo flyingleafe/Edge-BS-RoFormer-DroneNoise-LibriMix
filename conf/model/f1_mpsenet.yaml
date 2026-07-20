@@ -1,0 +1,23 @@
+# MP-SENet generator (Lu et al., Interspeech 2023) as a speech-enhancement
+# baseline. Generator-only (no MetricGAN discriminator) — the generator is a
+# complete waveform->waveform enhancement network. STFT/iSTFT are internal, so
+# the model plugs straight into SpeechEnhancementCodec (mono (B,1,T) in, (B,T)
+# out). See src/models/mpsenet.py for the faithful spec + documented deviations.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.mpsenet.build_mpsenet
+params:
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+  dense_channel: 64
+  num_tsconformers: 4
+  compress_factor: 0.3
+  beta: 2.0
+  conformer_dropout: 0.2

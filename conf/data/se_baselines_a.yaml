@@ -1,0 +1,17 @@
+# F1 Pass A data: drone-only online-mix SE stream (train) + fixed SE-valid-drone
+# (valid / early-stop monitor). See conf/online_mix/se_drone_only.yaml and
+# docs/experiments/f1-se-blind-baselines.md. `samples_per_validation` (the
+# online "epoch" size for this infinite stream) is set in the experiment file.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/se_drone_only.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.SEValidFrameDataset
+  params:
+    dataset: SE-valid-drone
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

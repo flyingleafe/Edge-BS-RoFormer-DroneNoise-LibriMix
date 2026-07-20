@@ -12,7 +12,10 @@ This is intentionally the simplest implementation of the online-mixing design:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -37,9 +40,14 @@ if load_dotenv is not None:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 from data_processing.dregon import clean_command_spikes, load_dregon_timeframes
-from data_processing.frames import get_meta, resample_audio_series, with_meta
+from data_processing.frames import audio_series, get_meta, resample_audio_series, with_meta
 from data_processing.michaels import load_michaels_timeframes
-from data_processing.streams import iter_published_frames, resolve_source
+from data_processing.streams import (
+    iter_published_frames,
+    open_repository,
+    resolve_source,
+    sample_to_frame,
+)
 from data_processing.time_warp import (
     WarpParams,
     apply_time_warp,
@@ -430,25 +438,29 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
     """
     cfg = _to_plain(cfg)
     items = list(cfg) if isinstance(cfg, list) else [cfg]
-    # Synthetic (infinite) noise sources, each with its own pool class:
+    # Standalone pools, each with its own pool class (not merged into the shared
+    # duration-weighted TimeFrameNoisePool):
     #   kind: generated    -> trained PositionalHarmonicNoiseGen (GeneratedNoisePool)
     #   kind: static_comb  -> analytic static-comb model (StaticCombNoisePool, E8)
-    synth_kinds = {"generated", "static_comb"}
-    synth_items = [c for c in items if _cfg_get(c, "kind") in synth_kinds]
-    if not synth_items:
+    #   kind: audio_pool   -> lazy dload-backed audio dataset (DloadAudioPool, F1 SE)
+    standalone_kinds = {"generated", "static_comb", "audio_pool"}
+    standalone_items = [c for c in items if _cfg_get(c, "kind") in standalone_kinds]
+    if not standalone_items:
         return TimeFrameNoisePool.from_config(cfg, duration_s=duration_s, sample_rate=sample_rate)
 
-    def _build_synth(c: Any):
+    def _build_standalone(c: Any):
         kind = _cfg_get(c, "kind")
         if kind == "generated":
             from data_processing.generated_noise import GeneratedNoisePool
 
             return GeneratedNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
+        if kind == "audio_pool":
+            return DloadAudioPool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
         from data_processing.rotor_spectral_model import StaticCombNoisePool
 
         return StaticCombNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
 
-    real_items = [c for c in items if _cfg_get(c, "kind") not in synth_kinds]
+    real_items = [c for c in items if _cfg_get(c, "kind") not in standalone_kinds]
     pools: list[Any] = []
     weights: list[float] = []
     if real_items:
@@ -458,8 +470,8 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
             )
         )
         weights.append(sum(float(_cfg_get(c, "weight", 1.0)) for c in real_items))
-    for c in synth_items:
-        pools.append(_build_synth(c))
+    for c in standalone_items:
+        pools.append(_build_standalone(c))
         weights.append(float(_cfg_get(c, "weight", 1.0)))
     if len(pools) == 1:
         return pools[0]
@@ -516,6 +528,15 @@ class AudioFileSourcePool:
                 p for p in root.glob(str(pattern)) if p.suffix.lower() in cls.AUDIO_SUFFIXES
             )
         files = sorted(set(files))
+        # Leak-free speaker split: drop any file whose path contains one of the
+        # held-out tokens (e.g. LibriSpeech speaker ids reserved for the SE valid
+        # set). Matched as path-string substrings so ``/103/`` etc. work.
+        exclude = _cfg_get(cfg, "exclude", None) or _cfg_get(cfg, "exclude_speakers", None)
+        if exclude:
+            tokens = [str(t) for t in exclude]
+            files = [p for p in files if not any(f"/{t}/" in f"/{p.as_posix()}/" for t in tokens)]
+            if not files:
+                raise ValueError("source pool empty after applying 'exclude' filter")
         cache_cfg = _cfg_get(cfg, "cache", {}) or {}
         cache_mode = str(_cfg_get(cache_cfg, "mode", "none"))
         cache_dir = _cfg_get(cache_cfg, "dir", ".cache/online_mix_sources")
@@ -657,6 +678,222 @@ class AudioFileSourcePool:
         return np.stack([self.sample_mono(rng) for _ in range(channels)], axis=0).astype(np.float32)
 
 
+class DloadAudioPool:
+    """Telemetry-free noise pool over an arbitrary dload dataset (``kind: audio_pool``).
+
+    Streams audio lazily at *shard* granularity: one shard (~128 MB) is pinned
+    and read through dload's ``PackReader``, giving O(1) random access to every
+    sample it holds before the next shard is fetched. The whole dataset is never
+    materialized, so this works on the 258 GiB ``MIMII`` / 88 GiB
+    ``DroneAudioSet`` pools where :class:`TimeFrameNoisePool` (which holds every
+    recording in RAM) would OOM.
+
+    Each draw picks a random *recording* (shard weighted by its sample count,
+    then a uniform sample within the shard), a random channel for multichannel
+    audio, resamples to the pool ``sample_rate`` (soxr_hq), and loops/pads to the
+    requested duration. The returned Frame has only an ``audio`` track (no rotor
+    telemetry) — usable for ``speech_enhancement`` mixing, which skips RPS
+    interpolation, but not for RPS prediction.
+
+    Supports both published ``tdframe-v1`` datasets (audio under the ``audio``
+    entry) and raw one-file-per-sample datasets (audio field named by extension,
+    e.g. ``wav``/``flac``). Zip-blob datasets (``zenodo_drone_noises``) are not
+    supported.
+    """
+
+    AUDIO_EXTS = ("wav", "flac", "ogg", "mp3")
+
+    def __init__(
+        self,
+        dataset: str,
+        *,
+        version: str | None = None,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+        channel: str | int = "random",
+        reader_cache: int = 2,
+        holdout: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.dataset = str(dataset)
+        self.version = version
+        self.sample_rate = int(sample_rate)
+        self.channel = channel
+        self.reader_cache = max(1, int(reader_cache))
+        # Leak-free train/valid split. Preferred: reserve the last ``valid_shards``
+        # *whole shards* (= whole recording groups) as the valid partition and
+        # everything before as train — so the fixed SE valid set never shares a
+        # recording with the training stream AND the valid build pulls at most
+        # ``valid_shards`` shards even on 2003-shard MIMII. Fallback for datasets
+        # with too few shards to reserve one (``n_shards <= valid_shards``, e.g.
+        # single-shard KAIST/HUSTmotor): a per-shard sample-index split (first
+        # ``1-fraction`` train, last ``fraction`` valid). ``None`` = use all.
+        frac = 0.1
+        side: str | None = None
+        valid_shards = 1
+        if holdout:
+            frac = float(_cfg_get(holdout, "fraction", 0.1))
+            if not 0.0 < frac < 1.0:
+                raise ValueError(f"audio_pool holdout.fraction must be in (0,1), got {frac}")
+            side = str(_cfg_get(holdout, "split", "train"))
+            if side not in {"train", "valid"}:
+                raise ValueError(f"audio_pool holdout.split must be 'train'/'valid', got {side!r}")
+            valid_shards = max(1, int(_cfg_get(holdout, "valid_shards", 1)))
+
+        repo = open_repository()
+        manifest = repo.manifest(self.dataset, self.version)
+        shards = list(manifest.shards)
+        if not shards:
+            raise ValueError(f"audio_pool dataset {self.dataset!r} has no shards")
+        meta = getattr(manifest, "meta", None) or {}
+        self._layout = meta.get("layout")
+        self.num_samples = int(getattr(manifest, "num_samples", 0)) or sum(
+            int(s.num_samples) for s in shards
+        )
+
+        # Apply the shard-level split (or arm the index-split fallback).
+        self._holdout_frac: float | None = None
+        self._holdout_side: str | None = None
+        if side is not None and len(shards) > valid_shards:
+            shards = shards[-valid_shards:] if side == "valid" else shards[:-valid_shards]
+        elif side is not None:
+            self._holdout_frac = frac  # single-shard fallback: split by sample index
+            self._holdout_side = side
+
+        # Plain, picklable state (crosses the DataLoader fork); the shard structs
+        # are dataclasses of str/int.
+        self._shards = shards
+        nsamp = np.array([max(1, int(s.num_samples)) for s in shards], dtype=np.float64)
+        self._shard_weights = nsamp / nsamp.sum()
+        # Per-process handles, (re)created lazily so they never cross the fork.
+        self._pid: int | None = None
+        self._repo: Any = None
+        self._lru: OrderedDict[str, tuple[Any, Any]] | None = None
+
+    @classmethod
+    def from_config(cls, cfg: Any, *, duration_s: float, sample_rate: int) -> DloadAudioPool:
+        cfg = _to_plain(cfg)
+        dataset = _cfg_get(cfg, "dataset", None)
+        if not dataset:
+            raise ValueError("noise source kind 'audio_pool' requires a 'dataset' name")
+        # `duration_s` is accepted for a uniform pool-builder signature; the slice
+        # length is taken from the per-call `sample_timeframe(duration_s)` instead.
+        return cls(
+            str(dataset),
+            version=_cfg_get(cfg, "version", None),
+            sample_rate=sample_rate,
+            channel=_cfg_get(cfg, "channel", "random"),
+            reader_cache=int(_cfg_get(cfg, "reader_cache", 2)),
+            holdout=_cfg_get(cfg, "holdout", None),
+        )
+
+    def _index_range(self, n: int) -> tuple[int, int]:
+        """The [lo, hi) sample-index window active for this pool's holdout side."""
+        if self._holdout_frac is None or n <= 1:
+            return 0, n
+        cut = int(np.floor(n * (1.0 - self._holdout_frac)))
+        cut = min(max(1, cut), n - 1)  # both sides non-empty when n >= 2
+        return (cut, n) if self._holdout_side == "valid" else (0, cut)
+
+    def _ensure_process(self) -> None:
+        pid = os.getpid()
+        if self._pid != pid:
+            self._pid = pid
+            self._repo = open_repository()
+            self._lru = OrderedDict()
+
+    def _reader(self, shard_idx: int):
+        from dload.pack import PackReader
+
+        self._ensure_process()
+        assert self._lru is not None
+        shard = self._shards[shard_idx]
+        cached = self._lru.get(shard.digest)
+        if cached is not None:
+            self._lru.move_to_end(shard.digest)
+            return cached[1]
+        pin = self._repo.open_shard(shard)
+        reader = PackReader(pin.path)
+        self._lru[shard.digest] = (pin, reader)
+        while len(self._lru) > self.reader_cache:
+            _digest, (old_pin, old_reader) = self._lru.popitem(last=False)
+            try:
+                old_reader.close()
+            finally:
+                old_pin.release()
+        return reader
+
+    def _decode(self, key: str, fields: Mapping[str, bytes]) -> tuple[np.ndarray, int] | None:
+        """Decode one sample to ``((C, T), sr)``, or ``None`` if it holds no audio.
+
+        Some datasets interleave non-audio samples (e.g. ``new-drone-noises``
+        ships flight-log ``csv`` samples alongside ``wav``); the caller redraws
+        on ``None`` rather than crashing.
+        """
+        if self._layout == "tdframe-v1":
+            frame = sample_to_frame(fields)
+            if "audio" not in frame:
+                return None
+            series = frame["audio"]
+            arr = np.asarray(series.data, dtype=np.float32)
+            sr = int(cast(td.GridIndex, series.tindex).sr)
+            return arr, sr
+        ext = next((e for e in self.AUDIO_EXTS if e in fields), None)
+        if ext is None:
+            return None
+        raw, sr = sf.read(io.BytesIO(fields[ext]), dtype="float32", always_2d=True)  # (T, C)
+        return np.ascontiguousarray(raw.T), int(sr)  # (C, T)
+
+    def _fit_length(
+        self, mono: np.ndarray, target_len: int, rng: np.random.Generator
+    ) -> np.ndarray:
+        length = int(mono.shape[0])
+        if length == 0:
+            return np.zeros(target_len, dtype=np.float32)
+        if length == target_len:
+            return np.ascontiguousarray(mono, dtype=np.float32)
+        if length > target_len:
+            start = int(rng.integers(0, length - target_len + 1))
+            return np.ascontiguousarray(mono[start : start + target_len], dtype=np.float32)
+        reps = int(np.ceil(target_len / length))
+        tiled = np.tile(mono, reps)
+        start = int(rng.integers(0, tiled.shape[0] - target_len + 1))
+        return np.ascontiguousarray(tiled[start : start + target_len], dtype=np.float32)
+
+    def _sample_mono(self, rng: np.random.Generator, target_len: int) -> np.ndarray:
+        decoded = None
+        for _ in range(32):  # redraw past non-audio samples (e.g. csv flight logs)
+            shard_idx = int(rng.choice(len(self._shards), p=self._shard_weights))
+            reader = self._reader(shard_idx)
+            n = len(reader.keys)
+            lo, hi = self._index_range(n)
+            idx = int(rng.integers(lo, hi))
+            key, fields = reader.read(idx)
+            decoded = self._decode(key, fields)
+            if decoded is not None:
+                break
+        if decoded is None:
+            raise ValueError(f"audio_pool {self.dataset!r}: no audio sample found in 32 draws")
+        arr, sr = decoded
+        if arr.ndim == 2:
+            if isinstance(self.channel, str) and self.channel == "random":
+                c = int(rng.integers(0, arr.shape[0]))
+            else:
+                c = int(self.channel) % arr.shape[0]
+            mono = arr[c]
+        else:
+            mono = arr
+        mono = np.ascontiguousarray(mono, dtype=np.float32)
+        if sr != self.sample_rate:
+            mono = librosa.resample(
+                mono, orig_sr=float(sr), target_sr=self.sample_rate, res_type="soxr_hq"
+            )
+        return self._fit_length(mono, target_len, rng)
+
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
+        target_len = int(round(duration_s * self.sample_rate))
+        mono = self._sample_mono(rng, target_len)
+        return td.Frame({"audio": audio_series(mono[None, :], self.sample_rate)})
+
+
 def _sample_snr_db(policy: Mapping[str, Any], rng: np.random.Generator) -> float:
     spec = policy.get("snr_db", {"uniform": {"low": -30.0, "high": 0.0}})
     if isinstance(spec, (int, float)):
@@ -684,13 +921,21 @@ def _resolve_policy(policy: Mapping[str, Any], global_sample_id: int) -> Mapping
     return stages[-1]
 
 
-def _mix_at_source_to_noise_snr(
+def _scale_source_to_snr(
     source: np.ndarray,
     noise: np.ndarray,
     snr_db: float,
     *,
     per_channel: bool = False,
 ) -> np.ndarray:
+    """Return ``source * scale`` — the clean source as it appears in the mixture.
+
+    ``scale`` is chosen so that ``source * scale`` sits at ``snr_db`` relative to
+    ``noise`` (globally, or per channel when ``per_channel``). The mixture is
+    then ``noise + scaled_source``; the *scaled* source is the correct clean
+    reference for speech-enhancement targets (SI-SDR is computed against exactly
+    the speech component present in the mixture, up to added augmentation).
+    """
     eps = 1e-12
     if per_channel:
         noise_power = np.mean(noise.astype(np.float64) ** 2, axis=1, keepdims=True)
@@ -699,7 +944,19 @@ def _mix_at_source_to_noise_snr(
         noise_power = np.array([[np.mean(noise.astype(np.float64) ** 2)]])
         source_power = np.array([[np.mean(source.astype(np.float64) ** 2)]])
     scale = np.sqrt((noise_power * (10.0 ** (float(snr_db) / 10.0))) / (source_power + eps))
-    return (noise + source * scale.astype(np.float32)).astype(np.float32)
+    return (source * scale.astype(np.float32)).astype(np.float32)
+
+
+def _mix_at_source_to_noise_snr(
+    source: np.ndarray,
+    noise: np.ndarray,
+    snr_db: float,
+    *,
+    per_channel: bool = False,
+) -> np.ndarray:
+    return (noise + _scale_source_to_snr(source, noise, snr_db, per_channel=per_channel)).astype(
+        np.float32
+    )
 
 
 def _maybe_sample_time_warp(
@@ -765,8 +1022,75 @@ def _apply_one_augmentation(
     return out.astype(np.float32, copy=False)
 
 
+def _apply_one_augmentation_pair(
+    mixture: np.ndarray,
+    target: np.ndarray,
+    spec: Mapping[str, Any] | None,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply one augmentation to the ``(mixture, clean target)`` pair *identically*.
+
+    For speech enhancement the clean target is the speech component present in
+    the mixture, so any post-mix transform must hit both signals with the same
+    parameters — otherwise the pair stops being consistent (SI-SDR would be
+    computed against a differently-scaled reference). ``random_gain`` and
+    ``random_polarity`` are scalar multiplications applied to both; ``channel_drop``
+    zeros the same channels in both (a no-op for the mono SE stream). Draws the
+    same RNG sequence as :func:`_apply_one_augmentation` so behaviour is
+    predictable. Unsupported augmentations raise (SE configs list only the
+    supported ones).
+    """
+    if not spec:
+        return mixture, target
+    probability = float(spec.get("probability", 0.0))
+    if probability <= 0.0 or rng.random() >= probability:
+        return mixture, target
+    choices = list(spec.get("choices", []))
+    if not choices:
+        return mixture, target
+    choice = choices[int(rng.integers(0, len(choices)))]
+    if isinstance(choice, str):
+        name, params = choice, {}
+    elif isinstance(choice, Mapping):
+        if len(choice) != 1:
+            raise ValueError(f"augmentation choice must have one key, got {choice!r}")
+        name, params = next(iter(choice.items()))
+        params = params or {}
+    else:
+        raise ValueError(f"unsupported augmentation choice: {choice!r}")
+
+    mix = mixture.copy()
+    tgt = target.copy()
+    if name == "random_gain":
+        min_db = float(params.get("min_db", -6.0))
+        max_db = float(params.get("max_db", 6.0))
+        gain = np.float32(10.0 ** (float(rng.uniform(min_db, max_db)) / 20.0))
+        mix *= gain
+        tgt *= gain
+    elif name == "random_polarity":
+        mix *= -1.0
+        tgt *= -1.0
+    elif name == "channel_drop":
+        if mix.shape[0] <= 1:
+            return mix, tgt
+        max_channels = int(params.get("max_channels", 1))
+        n_drop = int(rng.integers(1, min(max_channels, mix.shape[0] - 1) + 1))
+        drop = rng.choice(mix.shape[0], size=n_drop, replace=False)
+        mix[drop, :] = 0.0
+        tgt[drop, :] = 0.0
+    else:
+        raise ValueError(f"unsupported SE augmentation: {name!r}")
+    return mix.astype(np.float32, copy=False), tgt.astype(np.float32, copy=False)
+
+
 class OnlineMixIterableDataset(IterableDataset):
-    """Infinite online-mixing stream yielding ``(audio, rps_target)`` tensors."""
+    """Infinite online-mixing stream yielding ``(audio, rps_target)`` tensors.
+
+    With ``task="speech_enhancement"`` the stream instead yields
+    ``(mixture, clean_target)`` — the clean target being the gain-scaled speech
+    exactly as mixed (plus any post-mix augmentation) — and RPS interpolation is
+    skipped entirely (so telemetry-free ``kind: audio_pool`` noise sources work).
+    """
 
     def __init__(
         self,
@@ -780,6 +1104,7 @@ class OnlineMixIterableDataset(IterableDataset):
         n_fft: int = DEFAULT_N_FFT,
         hop_length: int = DEFAULT_HOP_LENGTH,
         start_sample_id: int = 0,
+        task: str = "rps_prediction",
     ):
         self.noise_pool = noise_pool
         self.source_pool = source_pool
@@ -790,6 +1115,11 @@ class OnlineMixIterableDataset(IterableDataset):
         self.n_fft = int(n_fft)
         self.hop_length = int(hop_length)
         self.start_sample_id = int(start_sample_id)
+        self.task = str(task)
+        if self.task not in {"rps_prediction", "speech_enhancement"}:
+            raise ValueError(f"unsupported online-mix task: {self.task!r}")
+        if self.task == "speech_enhancement" and self.source_pool is None:
+            raise ValueError("speech_enhancement online mixing requires a sources.speech pool")
         self.target_len = int(round(self.duration_s * self.sample_rate))
 
     @classmethod
@@ -801,6 +1131,7 @@ class OnlineMixIterableDataset(IterableDataset):
         hop_length = int(_cfg_get(cfg, "hop_length", DEFAULT_HOP_LENGTH))
         base_seed = int(_cfg_get(cfg, "base_seed", 1234))
         start_sample_id = int(_cfg_get(cfg, "start_sample_id", 0))
+        task = str(_cfg_get(cfg, "task", "rps_prediction"))
         policy = cast(Mapping[str, Any], _cfg_get(cfg, "policy", {}))
 
         sources = _cfg_get(cfg, "sources", {})
@@ -827,6 +1158,7 @@ class OnlineMixIterableDataset(IterableDataset):
             n_fft=n_fft,
             hop_length=hop_length,
             start_sample_id=start_sample_id,
+            task=task,
         )
 
     def __iter__(self):
@@ -840,6 +1172,11 @@ class OnlineMixIterableDataset(IterableDataset):
             yield self.generate_sample(global_sample_id)
 
     def generate_sample(self, global_sample_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.task == "speech_enhancement":
+            return self._generate_se_sample(global_sample_id)
+        return self._generate_rps_sample(global_sample_id)
+
+    def _generate_rps_sample(self, global_sample_id: int) -> tuple[torch.Tensor, torch.Tensor]:
         rng = make_rng(self.base_seed, int(global_sample_id))
         policy = _resolve_policy(self.policy, int(global_sample_id))
 
@@ -897,3 +1234,45 @@ class OnlineMixIterableDataset(IterableDataset):
         if int(round(audio_sr)) != self.sample_rate:
             raise ValueError(f"noise audio sr {audio_sr} != configured {self.sample_rate}")
         return torch.from_numpy(mixture), torch.from_numpy(rps)
+
+    def _generate_se_sample(self, global_sample_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Yield ``(mixture, clean_target)`` for speech-enhancement training.
+
+        The clean target is the speech component exactly as mixed into the
+        mixture (gain-scaled to the drawn SNR, plus any post-mix augmentation
+        applied identically to both). No RPS is interpolated, so telemetry-free
+        ``kind: audio_pool`` noise sources are supported. Speech is always drawn
+        (a clean reference is required); ``source_prob`` is ignored here.
+        """
+        assert self.source_pool is not None  # enforced in __init__
+        rng = make_rng(self.base_seed, int(global_sample_id))
+        policy = _resolve_policy(self.policy, int(global_sample_id))
+
+        noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
+        audio_track = noise_tf["audio"]
+        audio_sr = cast(td.GridIndex, audio_track.tindex).sr
+        if int(round(audio_sr)) != self.sample_rate:
+            raise ValueError(f"noise audio sr {audio_sr} != configured {self.sample_rate}")
+        noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
+        # The SE stream is single-channel: pick a random mic from multichannel
+        # noise sources (DREGON/Michael's 8-ch frames) so the mixture/target are
+        # mono (1, T) — the codec's mono speech-enhancement contract.
+        if noise_audio.shape[0] > 1:
+            ch = int(rng.integers(0, noise_audio.shape[0]))
+            noise_audio = np.ascontiguousarray(noise_audio[ch : ch + 1])
+
+        source = self.source_pool.sample_array(rng, channels=1, mode="independent")
+        snr_db = _sample_snr_db(policy, rng)
+        per_channel = bool(policy.get("snr_per_channel", False))
+        scaled_source = _scale_source_to_snr(source, noise_audio, snr_db, per_channel=per_channel)
+        mixture = (noise_audio + scaled_source).astype(np.float32)
+
+        mixture, target = _apply_one_augmentation_pair(
+            mixture,
+            scaled_source,
+            cast(Mapping[str, Any] | None, policy.get("augmentations")),
+            rng,
+        )
+        return torch.from_numpy(np.ascontiguousarray(mixture)), torch.from_numpy(
+            np.ascontiguousarray(target)
+        )
