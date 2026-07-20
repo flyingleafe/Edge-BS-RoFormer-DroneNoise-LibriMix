@@ -84,17 +84,32 @@ class SeedConfig:
     k_scan: int = 40  # harmonics sampled by the scan
     f_min: float = 60.0
     f_max: float = 6000.0
+    scan_f_max: float | None = 1200.0  # scan/completeness tooth-band cap (Hz).
+    # A k-count-only cap makes a small base average its 40 teeth over the
+    # energetic low band while a large base dilutes into the dead high band —
+    # the small-base subharmonic bias that put FLY124's primary at 30.35
+    # (= 91.8/3). Capping the BAND scores every base on comparable spectrum;
+    # None restores the historical k-only behaviour (vk_blind_annotation).
     whiten_hz: float = 150.0  # running-median window subtracted from log-mag
     peak_min_sep: float = 1.5  # rev/s between scan peaks
     peak_prominence_frac: float = 0.03  # of the score range
     octave_rel: float = 0.9  # prefer the half base when it scores >= this
     octave_tol: float = 1.0  # rev/s tolerance for the half-base peak match
+    octave_up_rel: float = 0.7  # subharmonic-up promotion: when a peak near
+    # m*base (m = 2, 3) scores >= this fraction of the top peak, the larger
+    # base is the physical rotor (the submultiple inherits every m-th tooth)
     # baseline (legacy) R=4 init — two rotors per harmonically-unrelated peak
     harm_guard: float = 1.5  # rev/s: 2nd peak must not be a half/double of 1st
     pair_nudge: float = 0.5  # rev/s: 2 rotors per chosen peak at peak -/+ nudge
     blind_offsets: tuple[float, ...] = (-1.5, -0.5, 0.5, 1.5)  # 1-peak fallback
     # arm T — shared-template matched filter
     template_floor: float = 0.02  # â_k < floor * max(â) → unvalidated tooth
+    t_conf_min: float = 6.0  # template gate: min primary-peak z-score (vs the
+    # scan-score distribution) — a low-contrast primary yields a noise
+    # template that poisons the matched re-scan (FLY124/whitenoise failure)
+    t_cos_min: float = 0.7  # template gate: min cosine between the top-2
+    # confident candidates' templates (shared-blades premise check); on
+    # disagreement arm T falls back to the flat scan
     template_fs_env: float = 40.0  # envelope rate for template demod: the
     # 0.45 * fs_env LP cutoff (18 Hz) must exclude the *neighbouring* tooth
     # (>= scan_lo = 30 Hz away) or its envelope bleeds into every weak tooth
@@ -168,9 +183,12 @@ def _tooth_values(
     """``(K,)`` interpolated whitened values at ``k * base`` + validity mask."""
     n_f = len(white_vec)
     freqs_max = (n_f - 1) * bin_hz
+    f_hi = min(cfg.f_max, freqs_max)
+    if cfg.scan_f_max is not None:
+        f_hi = min(f_hi, cfg.scan_f_max)
     ks = np.arange(1, cfg.k_scan + 1)
     f = ks * base
-    valid = (f >= cfg.f_min) & (f <= min(cfg.f_max, freqs_max))
+    valid = (f >= cfg.f_min) & (f <= f_hi)
     idx = np.clip(f, 0.0, freqs_max) / bin_hz
     j = np.floor(idx).astype(int)
     frac = idx - j
@@ -227,19 +245,37 @@ def scan_peaks(grid: np.ndarray, scores: np.ndarray, cfg: SeedConfig | None = No
 
 def _pick_primary(
     grid: np.ndarray, peak_speeds: np.ndarray, peak_scores: np.ndarray, cfg: SeedConfig
-) -> tuple[float, bool]:
-    """Top peak with octave-down disambiguation (a true base at b/2 implies the
-    b comb is its even-harmonic subset)."""
-    base, octave = float(peak_speeds[0]), False
+) -> tuple[float, bool, bool]:
+    """Top peak with subharmonic-up promotion + octave-down disambiguation.
+
+    Up promotion first: an integer submultiple of the true base inherits
+    every m-th tooth of the true comb (plus whatever its extra low teeth
+    graze) and can top the flat scan — FLY124's 30.35 = 91.8/3. When a peak
+    near ``m * base`` (m = 3, 2) scores at least ``octave_up_rel`` of the
+    top, the larger base is the physical rotor. Then the octave-down guard
+    (a true base at b/2 implies the b comb is its even-harmonic subset).
+    Returns ``(base, octave_down, promoted_up)``.
+    """
+    base, score0 = float(peak_speeds[0]), float(peak_scores[0])
+    promoted = False
+    for m in (3.0, 2.0):
+        up = m * base
+        if up > float(grid[-1]) + cfg.harm_guard:
+            continue
+        d = np.abs(peak_speeds - up)
+        j = int(np.argmin(d))
+        if float(d[j]) <= cfg.harm_guard and float(peak_scores[j]) >= cfg.octave_up_rel * score0:
+            base, promoted = float(peak_speeds[j]), True
+            break
+    octave = False
     half = base / 2.0
     if half >= float(grid[0]):
         d = np.abs(peak_speeds - half)
         j = int(np.argmin(d))
-        if float(d[j]) <= cfg.octave_tol and float(peak_scores[j]) >= cfg.octave_rel * float(
-            peak_scores[0]
-        ):
+        base_score = float(peak_scores[int(np.argmin(np.abs(peak_speeds - base)))])
+        if float(d[j]) <= cfg.octave_tol and float(peak_scores[j]) >= cfg.octave_rel * base_score:
             base, octave = float(peak_speeds[j]), True
-    return base, octave
+    return base, octave, promoted
 
 
 # ---------------------------------------------------------------------------
@@ -469,27 +505,43 @@ def auto_knobs(
 
 
 def _harmonic_alias_filter(
-    bases: np.ndarray, scores: np.ndarray, cfg: SeedConfig
+    bases: np.ndarray, scores: np.ndarray, cfg: SeedConfig, primary: float | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Drop candidates at an integer ratio (2 or 3) of a stronger one.
+    """Drop candidates at a low-order ratio (3:2, 2 or 3) of a stronger one.
 
     The legacy init applied the half/double guard when picking its second
     peak (a peak at b/2 of a stronger peak is its subharmonic alias, not a
     rotor); the count-prior path (arm N) needs the same guard over the whole
-    candidate list — extended to ratio 3, reachable inside the scan band
-    (e.g. 91/3 ≈ 30.3) — else a subharmonic fills a rotor slot ahead of a
-    twin duplicate. Arm C's completeness check is the principled superset
-    for hole-riddled aliases at non-integer ratios (e.g. FLY124's 3:2).
+    candidate list — extended to ratio 3 (reachable inside the scan band,
+    e.g. 91/3 ≈ 30.3) and to 3:2 (FLY124's 60.7 ≈ (2/3)×91; a 3:2-related
+    comb shares half/a-third of its teeth and sits exactly on arm C's
+    completeness knife-edge). Rotors of one drone in cruise lie within
+    ~1.25× of each other (DREGON 75/86, FLY124 74/91), so a 3:2 ratio
+    between scan candidates is an alias prior, not a plausible rotor pair.
+    ``primary`` (the elected base, possibly promoted over a higher-scoring
+    submultiple) is kept first so its subharmonics are shadowed even when
+    they out-score it. Relatedness is checked against every *stronger*
+    candidate — kept or itself dropped — because dropping an alias must not
+    un-shadow the alias's own multiples (e.g. 57.6 = (2/3)x86 dropped, its
+    double 115.2 must stay dropped too).
     """
+    order = list(np.argsort(scores)[::-1])
+    if primary is not None and len(bases):
+        pi = int(np.argmin(np.abs(np.asarray(bases) - primary)))
+        if abs(float(bases[pi]) - primary) <= cfg.peak_min_sep and pi in order:
+            order.remove(pi)
+            order.insert(0, pi)
     keep: list[int] = []
-    for i in np.argsort(scores)[::-1]:
+    seen: list[int] = []
+    for i in order:
         b = float(bases[i])
         related = any(
             abs(m * b - float(bases[j])) < cfg.harm_guard
             or abs(b - m * float(bases[j])) < cfg.harm_guard
-            for j in keep
-            for m in (2.0, 3.0)
+            for j in seen
+            for m in (1.5, 2.0, 3.0)
         )
+        seen.append(int(i))
         if not related:
             keep.append(int(i))
     keep_sorted = sorted(keep)
@@ -526,6 +578,65 @@ def _legacy_init4(
     return np.clip(init4, cfg.scan_lo, cfg.scan_hi)
 
 
+def _gated_template(
+    audio: np.ndarray,
+    fs: float,
+    base: float,
+    peak_speeds: np.ndarray,
+    peak_scores: np.ndarray,
+    scores_flat: np.ndarray,
+    cfg: SeedConfig,
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    """Confidence-gated shared template for arm T (coordinator fix #3).
+
+    A template estimated from a wrong or weak primary *restricts* the
+    matched re-scan and poisons every downstream arm, so T only engages when
+    (a) the primary's scan contrast is confident (z-score of its peak score
+    against the whole scan-score distribution >= ``t_conf_min``) and (b) the
+    top-2 confident candidates' templates agree (cosine >= ``t_cos_min`` —
+    the shared-blades premise §7.1 rests on, checked instead of assumed).
+    When both top-2 are confident and agree, their templates are averaged
+    (stabilises the estimate). Returns ``(template | None, gate diag)``.
+    """
+    med = float(np.median(scores_flat))
+    mad = 1.4826 * float(np.median(np.abs(scores_flat - med)))
+    mad = max(mad, 1e-12)
+
+    def zscore(speed: float) -> float:
+        j = int(np.argmin(np.abs(peak_speeds - speed)))
+        return (float(peak_scores[j]) - med) / mad
+
+    z1 = zscore(base)
+    diag: dict[str, Any] = {"z_primary": z1, "z_second": None, "cos": None, "combined": False}
+    if z1 < cfg.t_conf_min:
+        diag.update(applied=False, reason=f"primary contrast z={z1:.1f} < {cfg.t_conf_min}")
+        return None, diag
+    tpl1 = estimate_template(audio, fs, base, cfg)
+    second = None
+    for spd in peak_speeds:  # score-descending already
+        if abs(float(spd) - base) >= cfg.dedup_rps:
+            second = float(spd)
+            break
+    if second is not None:
+        z2 = zscore(second)
+        diag["z_second"] = z2
+        if z2 >= cfg.t_conf_min:
+            tpl2 = estimate_template(audio, fs, second, cfg)
+            n1, n2 = float(np.linalg.norm(tpl1)), float(np.linalg.norm(tpl2))
+            cos = float(np.dot(tpl1, tpl2) / (n1 * n2)) if n1 > 0 and n2 > 0 else 0.0
+            diag["cos"] = cos
+            if cos < cfg.t_cos_min:
+                diag.update(
+                    applied=False, reason=f"template disagreement cos={cos:.2f} < {cfg.t_cos_min}"
+                )
+                return None, diag
+            s = tpl1 + tpl2  # both sum to 1 -> equal-weight average
+            tpl1 = s / max(float(s.sum()), 1e-12)
+            diag["combined"] = True
+    diag.update(applied=True, reason="")
+    return tpl1, diag
+
+
 def blind_seed(
     audio: np.ndarray,
     fs: float,
@@ -535,10 +646,11 @@ def blind_seed(
 ) -> SeedResult:
     """Blind per-rotor base-speed seeding with the §7 arm set.
 
-    ``arms`` ⊆ {"T", "C", "N", "K"} (empty = the validated pre-§7 baseline).
-    Returns sorted seed bases (constant per rotor — the capture phase adds
-    the time dimension), per-candidate scores/flags, the template (arm T),
-    auto knobs (arm K) and a diagnostics dict.
+    ``arms`` ⊆ {"T", "C", "N", "K"} (empty = the validated pre-§7 baseline
+    on the band-capped scan — see ``SeedConfig.scan_f_max``). Returns sorted
+    seed bases (constant per rotor — the capture phase adds the time
+    dimension), per-candidate scores/flags, the template (arm T), auto knobs
+    (arm K) and a diagnostics dict.
     """
     cfg = cfg or SeedConfig()
     arm_set = frozenset(arms)
@@ -553,15 +665,23 @@ def blind_seed(
     pk = scan_peaks(grid, scores_flat, cfg)
     order = np.argsort(scores_flat[pk])[::-1]
     peak_speeds, peak_scores = grid[pk][order], scores_flat[pk][order]
-    base, octave = _pick_primary(grid, peak_speeds, peak_scores, cfg)
+    base, octave, promoted = _pick_primary(grid, peak_speeds, peak_scores, cfg)
 
     template: np.ndarray | None = None
+    tgate: dict[str, Any] = {}
     scores_used = scores_flat
     if "T" in arm_set:
-        template = estimate_template(audio, fs, base, cfg)
-        scores_used = comb_scan(wvec, bin_hz, grid, cfg, template=template)
-        pk_used = scan_peaks(grid, scores_used, cfg)
-        cand_b, cand_s = grid[pk_used], scores_used[pk_used]
+        # The gate's top-2 comparison must not pick an integer-ratio alias of
+        # the primary as the "second rotor" — filter the flat peaks first.
+        tg_b, tg_s = _harmonic_alias_filter(peak_speeds, peak_scores, cfg, primary=base)
+        tg_o = np.argsort(tg_s)[::-1]
+        template, tgate = _gated_template(audio, fs, base, tg_b[tg_o], tg_s[tg_o], scores_flat, cfg)
+        if template is not None:
+            scores_used = comb_scan(wvec, bin_hz, grid, cfg, template=template)
+            pk_used = scan_peaks(grid, scores_used, cfg)
+            cand_b, cand_s = grid[pk_used], scores_used[pk_used]
+        else:  # gate tripped -> flat-scan fallback
+            cand_b, cand_s = peak_speeds, peak_scores
     else:
         cand_b, cand_s = peak_speeds, peak_scores
     if not np.any(np.abs(cand_b - base) <= cfg.peak_min_sep):
@@ -573,10 +693,11 @@ def blind_seed(
     # Completeness presence spectrum: per-frequency time-quantile (wander-
     # robust — see the completeness docstring); the scan keeps the time-mean.
     qvec = np.quantile(white, cfg.tooth_quantile, axis=1)
-    # Integer-ratio alias guard against the FULL candidate list (arm N path):
-    # a stronger peak shadows its sub/superharmonic even when C later rejects
-    # the stronger peak itself.
-    filt_b, _ = _harmonic_alias_filter(cand_b, cand_s, cfg)
+    # Integer-ratio alias guard against the FULL candidate list, primary
+    # pre-kept (a promoted primary must shadow the higher-scoring submultiple
+    # it was promoted over); a stronger peak shadows its sub/superharmonic
+    # even when C later rejects the stronger peak itself.
+    filt_b, _ = _harmonic_alias_filter(cand_b, cand_s, cfg, primary=base)
     filt_set = {float(v) for v in filt_b}
 
     candidates: list[dict[str, Any]] = []
@@ -584,7 +705,7 @@ def blind_seed(
         frac, n_present, n_teeth = completeness(qvec, bin_hz, float(b), cfg, template=template)
         is_primary = abs(float(b) - base) <= cfg.peak_min_sep
         accepted, reason = True, ""
-        if ("N" in arm_set or n_rotors != 4) and float(b) not in filt_set and not is_primary:
+        if float(b) not in filt_set and not is_primary:
             accepted, reason = False, "integer-ratio alias of a stronger peak"
         elif "C" in arm_set and frac < cfg.c_min and not is_primary:
             accepted, reason = False, f"completeness {frac:.2f} < {cfg.c_min}"
@@ -638,6 +759,8 @@ def blind_seed(
             "scores_used": scores_used,
             "primary": base,
             "octave": octave,
+            "promoted_up": promoted,
+            "template_gate": tgate,
             "peak_speeds": peak_speeds,
             "peak_scores": peak_scores,
             **knob_diag,

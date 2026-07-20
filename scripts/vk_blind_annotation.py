@@ -1715,40 +1715,44 @@ def _pair_score_2d_spatial(
     return score
 
 
-def run_vit2dsp(rid: str) -> str:
-    """Worker: blind init -> Viterbi c(t) -> SPATIAL joint 2-rotor Viterbi ->
-    midband (bw 6) -> refine; stop-at-best reporting."""
-    cond = "blindvit2dsp"
-    path = OUT_DIR / f"{rid}__{cond}.npz"
-    if path.exists():
-        return str(path)
-    prep = prepare_recording(rid)
-    scan = get_scan(rid)
-    r0 = build_init(prep, "blind", scan)
+def vit2dsp_pipeline(
+    prep: Prepared,
+    r0: np.ndarray,
+    weights: np.ndarray,
+    phys_map: np.ndarray,
+    midband_cfg: VKConfig | None = None,
+    refine_cfg: VKConfig | None = None,
+) -> tuple[list[tuple[str, np.ndarray]], Any, dict[str, Any], float, float]:
+    """The spatial-DP ladder from an arbitrary 4-track blind init.
+
+    Viterbi pair-mean c(t) -> SPATIAL joint 2-rotor Viterbi (per-rotor
+    1/d^2 mic mixes) -> midband (bw 6) -> refine. Extracted from the
+    validated ``run_vit2dsp`` worker (blindvit2dsp, DREGON pooled err_sm
+    0.688) so other callers (the §7 blind-seeding sweep) can compose their
+    own seeding with this ladder. ``weights``: (n_mics, 4) per-rotor mic
+    weights; ``phys_map``: (4,) track -> physical rotor (weights column).
+    Returns ``(stages, final VKResult, extras, wall_scan_s, wall_vk_s)``.
+    """
     lm_avg, bin_hz, st = _whitened_spec(prep)
     lm_multi, _, _ = _whitened_spec_multi(prep)
-    weights = _rotor_mic_weights()  # (8, 4)
     ks = np.arange(1, 31)
     deltas = np.arange(-VIT2D_DELTA, VIT2D_DELTA + VIT2D_STEP / 2, VIT2D_STEP)
-
     r_cur = r0.copy()
     order = np.argsort(r_cur.mean(axis=1))
     pairs = [(int(order[0]), int(order[1])), (int(order[2]), int(order[3]))]
-    # Track -> physical rotor assignment (PIT vs measured; experiment-level).
-    p = pit_perm(r0, prep.r_meas, prep.edge)
-    inv = np.empty(4, dtype=int)
-    for truth_row, track_row in enumerate(list(p)):
-        inv[track_row] = truth_row
-    print(f"[{rid}] track->physical rotor map: {inv.tolist()}", flush=True)
-    print(f"[{rid}] mic weights per rotor (cols):\n{np.round(weights, 3)}", flush=True)
 
     stages: list[tuple[str, np.ndarray]] = [("init", r_cur.copy())]
     tic = time.perf_counter()
     r_cur, c_trajs = _vit_stage1(prep, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
     stages.append(("viterbi_c", r_cur.copy()))
-    extras: dict[str, Any] = {"vit2d_deltas": deltas, "mic_weights": weights, "phys_map": inv}
+    extras: dict[str, Any] = {
+        "vit2d_deltas": deltas,
+        "mic_weights": weights,
+        "phys_map": phys_map,
+        "pairs": np.array(pairs),
+    }
     for pi, pair in enumerate(pairs):
-        rot_a, rot_b = int(inv[pair[0]]), int(inv[pair[1]])
+        rot_a, rot_b = int(phys_map[pair[0]]), int(phys_map[pair[1]])
         lm_a = np.tensordot(weights[:, rot_a], lm_multi, axes=(0, 0))  # (F, N)
         lm_b = np.tensordot(weights[:, rot_b], lm_multi, axes=(0, 0))
         centers, cube_a = _tooth_cube(lm_a, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
@@ -1780,11 +1784,35 @@ def run_vit2dsp(rid: str) -> str:
     wall_scan = time.perf_counter() - tic
 
     tic = time.perf_counter()
-    mid = vk_track(prep.audio, r_cur, prep.ft, MIDBAND_CFGS[0])
+    mid = vk_track(prep.audio, r_cur, prep.ft, midband_cfg or MIDBAND_CFGS[0])
     stages.append(("midband_bw6", mid.r_refined.copy()))
-    ref = vk_track(prep.audio, mid.r_refined, prep.ft, REFINE_CFG)
+    ref = vk_track(prep.audio, mid.r_refined, prep.ft, refine_cfg or REFINE_CFG)
     stages.append(("refine", ref.r_refined.copy()))
     wall_vk = time.perf_counter() - tic
+    return stages, ref, extras, wall_scan, wall_vk
+
+
+def run_vit2dsp(rid: str) -> str:
+    """Worker: blind init -> Viterbi c(t) -> SPATIAL joint 2-rotor Viterbi ->
+    midband (bw 6) -> refine; stop-at-best reporting."""
+    cond = "blindvit2dsp"
+    path = OUT_DIR / f"{rid}__{cond}.npz"
+    if path.exists():
+        return str(path)
+    prep = prepare_recording(rid)
+    scan = get_scan(rid)
+    r0 = build_init(prep, "blind", scan)
+    weights = _rotor_mic_weights()  # (8, 4)
+    # Track -> physical rotor assignment (PIT vs measured; experiment-level).
+    p = pit_perm(r0, prep.r_meas, prep.edge)
+    inv = np.empty(4, dtype=int)
+    for truth_row, track_row in enumerate(list(p)):
+        inv[track_row] = truth_row
+    print(f"[{rid}] track->physical rotor map: {inv.tolist()}", flush=True)
+    print(f"[{rid}] mic weights per rotor (cols):\n{np.round(weights, 3)}", flush=True)
+
+    stages, ref, extras, wall_scan, wall_vk = vit2dsp_pipeline(prep, r0, weights, inv)
+    pairs = [tuple(int(v) for v in row) for row in extras.pop("pairs")]
 
     def pit_errs(traj: np.ndarray) -> tuple[float, float]:
         pp = pit_perm(traj, prep.r_meas, prep.edge)
