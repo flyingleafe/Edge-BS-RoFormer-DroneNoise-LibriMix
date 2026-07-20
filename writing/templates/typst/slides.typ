@@ -2,7 +2,7 @@
 // Framework: Touying (https://touying-typ.github.io/)
 // Theme: simple (https://touying-typ.github.io/docs/themes/simple)
 
-#import "@preview/touying:0.6.1": *
+#import "@preview/touying:0.7.4": *
 #import themes.simple: *
 
 #let hns-slide(
@@ -55,6 +55,10 @@
   author: none,
   date: none,
   aspect-ratio: "16-9",
+  // Render `#speaker-note[...]` blocks into the PDF for review/handout.
+  // `none` (default) = clean deck, notes only in the pdfpc metadata;
+  // `bottom` / `right` = notes visible on each page. Set via `--input notes=1`.
+  show-notes: none,
   body,
 ) = {
   // Custom init: smaller font, left-aligned, tighter spacing
@@ -75,6 +79,7 @@
     config-common(
       slide-fn: hns-slide,
       new-section-slide-fn: none,
+      show-notes-on-second-screen: show-notes,
     ),
     config-methods(
       init: custom-init,

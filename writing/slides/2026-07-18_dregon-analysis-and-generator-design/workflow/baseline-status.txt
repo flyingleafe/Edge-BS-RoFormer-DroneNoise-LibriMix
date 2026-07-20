@@ -1,0 +1,3 @@
+ M notebooks/jasa_gp_interactive.ipynb
+?? writing/reports/2026-07-18_dregon-analysis-and-generator-design/
+?? writing/slides/2026-07-18_dregon-analysis-and-generator-design/
