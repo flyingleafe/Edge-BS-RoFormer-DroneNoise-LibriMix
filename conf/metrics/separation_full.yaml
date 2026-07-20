@@ -1,0 +1,17 @@
+# Full speech-enhancement metric suite for F1 eval: SI-SDR + SDR + PESQ (wideband
+# 16 kHz) + eSTOI. Slower than separation_basic (PESQ/STOI resample per pair), so
+# use at EVAL time (`python eval.py ... metrics=separation_full`), not training.
+# Set optim.monitor: si_sdr / monitor_mode: max when used as a training suite.
+terms:
+  - name: si_sdr
+    _target_: metrics.SISDRMetric
+    params: {n_channels: null, sr: [16000, 1]}
+  - name: sdr
+    _target_: metrics.SDRMetric
+    params: {n_channels: null, sr: [16000, 1]}
+  - name: pesq
+    _target_: metrics.PESQMetric
+    params: {n_channels: null, sr: [16000, 1]}
+  - name: estoi
+    _target_: metrics.ESTOIMetric
+    params: {n_channels: null, sr: [16000, 1]}

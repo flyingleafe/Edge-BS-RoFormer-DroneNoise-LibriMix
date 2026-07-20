@@ -1,0 +1,76 @@
+**Status:** in progress · 2026-07-20 – present · plan:
+[`docs/se-baselines-plan.md`](../se-baselines-plan.md) (Track 1 M1.1–M1.4 of
+`docs/three-track-plan-2026-07-20.md`)
+
+# F1 — SE blind (no-RPS) baselines on our data
+
+## Motivation
+
+Establish the **blind** (no-RPS) speech-enhancement floor on our harmonic-noise
+data with modern architectures, so every later RPS-informed claim is measured
+against an honest, strong no-side-information baseline. Two training passes over
+the same architecture set, both scored on the same two fixed validation sets:
+
+- **Pass A (`f1_<arch>_a`) — drone noises only**: the drone-focused floor.
+- **Pass B (`f1_<arch>_b`) — all harmonic noises, category-uniform**: does
+  *diverse* harmonic noise help models on drone noise (transferable harmonic
+  structure) or hurt (capacity dilution)? Pass B − Pass A on `SE-valid-drone`
+  answers the diversity question; the per-category breakdown on
+  `SE-valid-harmonic` shows which categories transfer.
+
+## Architecture set
+
+| Arch | Family | Source | Params |
+|---|---|---|---|
+| `edge_bs_rof` (reuses `a1_edge_bs_rof_fa` model) | band-split transformer | in repo (Paper 1) | — |
+| `dcunet` (reuses `a1_baseline_dcunet` model) | complex UNet | in repo | — |
+| `tfgridnet` (`f1_tfgridnet`) | dense full+sub-band dual-path | port (ESPnet V1, mid-size) | 8.38 M |
+| `mpsenet` (`f1_mpsenet`) | parallel magnitude+phase | port (yxlu-0102/MP-SENet, generator-only) | 1.71 M |
+| `sgmse` (`f1_sgmse`) | score-based diffusion (generative) | port (sp-uhh/sgmse), trained from scratch | — |
+| noisy input, Wiener | floors | trivial anchors | — |
+
+## Setup
+
+- **Data**: online-mixed SE stream (`OnlineMixIterableDataset` SE-target mode:
+  yields `(mixture, clean_speech)`), 16 kHz mono, 1 s chunks, SNR ~ U(−30, 0) dB,
+  `random_gain`/`random_polarity` augmentation. Noise pools:
+  - Pass A (`conf/online_mix/se_drone_only.yaml`): DREGON + Michael's real
+    drone frames (train recordings) + `audio_pool` over `drone_audio`,
+    `DroneAudioSet`, `SPCUP19-egonoise`, `new-drone-noises` — roughly uniform
+    over sub-datasets.
+  - Pass B (`conf/online_mix/se_all_harmonic.yaml`): category-uniform over
+    6 categories — drone (= Pass A pool), MIMII, MIMII-DG, AeroSonicDB (aircraft),
+    motors (HUSTmotor + KAIST), horns (HornBase). Category-uniform weighting keeps
+    258 GiB MIMII from dominating.
+- **Validation (fixed, published, pinned)**: `SE-valid-drone` and
+  `SE-valid-harmonic`, built by `scripts/build_se_valid.py`: held-out noise
+  (per-shard/recording holdout) × held-out LibriSpeech speakers, SNR grid
+  {−30,−25,−20,−15,−10,−5,0} dB, ≥50 mixtures/point/category, deterministic. Both
+  passes monitor/early-stop on `SE-valid-drone` (`si_sdr`, max) — the primary
+  drone floor — and are evaluated on **both** valids for the final tables.
+  Published + pinned: `SE-valid-drone@68a9b184fcc5` (350 mixtures),
+  `SE-valid-harmonic@855bdcd731fe` (2100 mixtures, 6 categories).
+- **Loss/metrics**: `masked_mse` train loss; `separation_basic` (si_sdr, sdr)
+  during training; `separation_full` (+ pesq, estoi) at eval. Noisy + Wiener
+  anchors in every table (`scripts/eval_se_anchors.py`).
+
+### Deliberate deviations from the plan
+
+- **MIMII is one category** (fan/pump/valve/slider combined), not four —
+  category-uniform weighting already prevents domination and answers the
+  diversity question; a per-machine split was a nice-to-have.
+- **No time-warp augmentation** in the SE passes: `apply_time_warp` requires a
+  rotor track, which telemetry-free `audio_pool` noise lacks. `random_gain` +
+  `random_polarity` (the E5 workhorses) are used.
+- `zenodo_drone_noises` excluded from `audio_pool` (published as a single ZIP
+  blob, not per-file audio).
+
+## Results
+
+_(pending — Pass A / Pass B runs on the `uni` backend; per-SNR floor tables,
+the diversity delta on `SE-valid-drone`, and the per-category transfer table on
+`SE-valid-harmonic` land here + the full Typst report.)_
+
+## Conclusion
+
+_(pending)_

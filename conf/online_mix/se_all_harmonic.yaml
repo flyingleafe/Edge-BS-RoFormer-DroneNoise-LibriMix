@@ -1,0 +1,100 @@
+# F1 Pass B — all-harmonic SE online-mix policy (blind, no RPS).
+# Same SE-target stream as Pass A, but noise is drawn CATEGORY-UNIFORM over
+# 6 categories so the 258 GiB MIMII cannot dominate: each category's source
+# weights sum to 1.0.
+#   drone   = DREGON + Michael's + drone_audio + DroneAudioSet + SPCUP19 +
+#             new-drone-noises  (6 sources, each 1/6; the DREGON+Michael's real
+#             pool is merged, so its aggregate weight is 2/6)
+#   mimii   = MIMII (1.0)
+#   mimii_dg= MIMII-DG (1.0)
+#   aircraft= AeroSonicDB (1.0)
+#   motors  = HUSTmotor + KAIST-rotating-acoustic (0.5 each)
+#   horns   = HornBase (1.0)
+# See docs/experiments/f1-se-blind-baselines.md.
+
+task: speech_enhancement
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260720
+
+sources:
+  noise:
+    # --- category: drone (sum 1.0) ---
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids: [free-flight_nosource_room1]
+      min_motor_rps: 30.0
+      weight: 0.16667
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+      weight: 0.16667
+    - kind: audio_pool
+      dataset: drone_audio
+      holdout: {split: train, valid_shards: 2}
+      weight: 0.16667
+    - kind: audio_pool
+      dataset: DroneAudioSet
+      holdout: {split: train, valid_shards: 2}
+      weight: 0.16667
+    - kind: audio_pool
+      dataset: SPCUP19-egonoise
+      holdout: {split: train, valid_shards: 2}
+      weight: 0.16667
+    - kind: audio_pool
+      dataset: new-drone-noises
+      holdout: {split: train, valid_shards: 2}
+      weight: 0.16667
+    # --- category: mimii (1.0) ---
+    - kind: audio_pool
+      dataset: MIMII
+      holdout: {split: train, valid_shards: 2}
+      weight: 1.0
+    # --- category: mimii_dg (1.0) ---
+    - kind: audio_pool
+      dataset: MIMII-DG
+      holdout: {split: train, valid_shards: 2}
+      weight: 1.0
+    # --- category: aircraft (1.0) ---
+    - kind: audio_pool
+      dataset: AeroSonicDB
+      holdout: {split: train, valid_shards: 2}
+      weight: 1.0
+    # --- category: motors (0.5 + 0.5) ---
+    - kind: audio_pool
+      dataset: HUSTmotor
+      holdout: {split: train, valid_shards: 2}
+      weight: 0.5
+    - kind: audio_pool
+      dataset: KAIST-rotating-acoustic
+      holdout: {split: train, valid_shards: 2}
+      weight: 0.5
+    # --- category: horns (1.0) ---
+    - kind: audio_pool
+      dataset: HornBase
+      holdout: {split: train, valid_shards: 2}
+      weight: 1.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      exclude:
+        [19, 89, 211, 307, 445, 831, 1098, 1502, 1898, 2182, 2764, 3168, 3526,
+         3982, 4267, 4813, 5322, 5703, 6081, 6476, 7067, 7312, 7800, 8238, 8630]
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false
+  augmentations:
+    probability: 0.5
+    choices:
+      - random_gain: {min_db: -6.0, max_db: 6.0}
+      - random_polarity: {}

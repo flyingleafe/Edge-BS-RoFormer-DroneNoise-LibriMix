@@ -1,0 +1,25 @@
+# TF-GridNet (V1) mid-size, faithful ESPnet port — direct complex spectral
+# mapping speech enhancer. ~8.2M params. STFT native 16 kHz (n_fft=512,
+# hop=128, win=512, sqrt-Hann, center=True → F=257). See src/models/tfgridnet.py.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.tfgridnet.build_tfgridnet
+params:
+  n_srcs: 1
+  n_fft: 512
+  hop_length: 128
+  win_length: 512
+  n_layers: 6
+  lstm_hidden_units: 192
+  attn_n_head: 4
+  attn_approx_qk_dim: 512
+  emb_dim: 48
+  emb_ks: 4
+  emb_hs: 1
+  eps: 1.0e-5
