@@ -312,6 +312,55 @@ Benchmark notes:
 - Fixed precomputed loader is about `21 batch/s` / `5394 audio-clip/s`.
 Optimize only behind the same public API.
 
+### Speech-enhancement target mode (`task: speech_enhancement`) — F1 baselines
+
+The online mixer doubles as a **speech-enhancement** training stream. Set
+`task: speech_enhancement` at the top of the policy YAML and
+`OnlineMixIterableDataset` yields `(mixture, clean_speech)` instead of
+`(audio, rps_target)`: the clean target is the gain-scaled speech exactly as
+mixed (SNR of the returned pair == the drawn SNR), post-mix augmentation
+(`random_gain`/`random_polarity`) is applied *identically* to mixture and
+target, and RPS interpolation is skipped (so telemetry-free noise sources
+work). The stream is **mono** — a random mic channel is picked from
+multichannel noise (DREGON/Michael's 8-ch). `OnlineMixFrameDataset` packs each
+pair into a `{mixture, target, meta}` Frame (the DN-LM layout the SE task /
+`losses.MaskedLoss` consume). Speech always drawn (a clean reference is
+required). See `conf/online_mix/se_{drone_only,all_harmonic}.yaml`,
+`docs/experiments/f1-se-blind-baselines.md`.
+
+### Telemetry-free audio noise pool (`kind: audio_pool`)
+
+A dload-backed audio dataset exposed as a noise pool **without** any rotor
+telemetry (`DloadAudioPool`): random recording (shard weighted by sample
+count), random channel, resample to 16 kHz, loop/pad to the chunk. Streams
+lazily at *shard* granularity via dload's `PackReader` (never materializes the
+whole dataset — works on 258 GiB MIMII / 88 GiB DroneAudioSet where
+`TimeFrameNoisePool` would OOM). Handles both `tdframe-v1` (audio under the
+`audio` entry) and raw-audio datasets; skips non-audio samples (e.g.
+`new-drone-noises` csv flight logs); zip-blob datasets (`zenodo_drone_noises`)
+unsupported. Usable only for `speech_enhancement` (no rotor track).
+
+```yaml
+sources:
+  noise:
+    - kind: audio_pool
+      dataset: MIMII                 # any dload dataset name
+      channel: random               # or an int
+      holdout: {split: train, valid_shards: 2}   # leak-free train/valid split
+      weight: 1.0                   # per-source weight in the MixedNoisePool
+```
+
+`holdout` reserves the last `valid_shards` whole shards (= whole recording
+groups) as the *valid* partition and the rest as *train* (single-shard
+datasets fall back to a per-shard sample-index split at `fraction`, default
+0.1). `scripts/build_se_valid.py` uses `split: valid` with the same
+`valid_shards` to build the fixed SE valid sets, kept complementary to the
+training pools' `split: train`. `AudioFileSourcePool` also gained an
+`exclude:` list (path-substring drop) — used to hold LibriSpeech speakers out
+of training speech. The map-style `SEValidFrameDataset` streams a published SE
+valid set (`SE-valid-drone` / `SE-valid-harmonic`) as `{mixture, target, meta}`
+frames for `eval.py`.
+
 ### Published rich-frame noise source (`kind: frames`)
 
 The fixed rich-frame datasets published by `scripts/publish_frame_datasets.py`
