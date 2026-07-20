@@ -431,6 +431,13 @@ def main() -> None:
     ap.add_argument("--quick", action="store_true", help="single case, first 10 s")
     ap.add_argument("--synthetic", action="store_true", help="tiny local self-test (no data)")
     ap.add_argument("--duration", type=float, default=20.0, help="window length (s)")
+    ap.add_argument(
+        "--cases",
+        nargs="+",
+        choices=sorted(CASES),
+        default=None,
+        help="restrict to these cases (default: all; useful for resubmitting leftovers)",
+    )
     args = ap.parse_args()
 
     if args.synthetic:
@@ -438,7 +445,7 @@ def main() -> None:
         write_report(rows, suffix="_synthetic")
         return
 
-    cases = [QUICK_CASE] if args.quick else list(CASES)
+    cases = [QUICK_CASE] if args.quick else (args.cases or list(CASES))
     dur = 10.0 if args.quick else args.duration
     rows: list[dict[str, Any]] = []
     for case in cases:
