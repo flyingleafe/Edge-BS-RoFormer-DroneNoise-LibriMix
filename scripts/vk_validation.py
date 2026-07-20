@@ -169,9 +169,18 @@ def smooth_frames(x: np.ndarray, win: int = SMOOTH_FRAMES) -> np.ndarray:
     return np.stack([np.convolve(row, ker, mode="same") for row in x])
 
 
-def prepare_recording(rid: str, seg_len: float = SEG_LEN_S) -> Prepared:
-    """Load a recording, estimate tau, cut the mid-flight evaluation segment."""
-    dregon_dir = Path("data") / "DREGON"
+def prepare_recording(
+    rid: str, seg_len: float = SEG_LEN_S, dregon_dir: str | Path = Path("data") / "DREGON"
+) -> Prepared:
+    """Load a recording, estimate tau, cut the mid-flight evaluation segment.
+
+    ``dregon_dir`` accepts a plain path or a ``dload:DREGON`` URI (resolved via
+    ``data_processing.streams.resolve_source``) so remote jobs without a
+    ``data/`` checkout can stream the dataset.
+    """
+    from data_processing.streams import resolve_source
+
+    dregon_dir = resolve_source(dregon_dir)
     by_id = {s["recording_id"]: s for s in discover_recordings(dregon_dir)}
     frame = load_timeframe(by_id[rid], geometry=get_geometry(dregon_dir), target_sr=SR)
     audio = np.asarray(frame["audio"].data)

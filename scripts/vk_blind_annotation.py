@@ -202,6 +202,23 @@ HARM_GUARD = 1.5  # rev/s: 2nd init peak must not be a half/double of the 1st
 PAIR_NUDGE = 0.5  # rev/s: 2 rotors per chosen peak at peak -/+ nudge
 BLIND_OFFSETS = (-1.5, -0.5, 0.5, 1.5)  # fallback when only one peak exists
 
+# Shared scan machinery now lives in data_processing.vk_blind_seeding (design
+# §7 blind seeding v2); the historical constants above are wired through
+# explicitly so the two places cannot drift apart.
+from data_processing.vk_blind_seeding import SeedConfig as _SeedConfig  # noqa: E402
+
+_SEED_CFG = _SeedConfig(
+    scan_lo=SCAN_LO,
+    scan_hi=SCAN_HI,
+    scan_step=SCAN_STEP,
+    k_scan=SCAN_K_MAX,
+    whiten_hz=WHITEN_HZ,
+    octave_rel=OCTAVE_REL,
+    harm_guard=HARM_GUARD,
+    pair_nudge=PAIR_NUDGE,
+    blind_offsets=BLIND_OFFSETS,
+)
+
 # Reference points (results/vk_tracking/validation/summary.json).
 REFERENCE = {
     "telemetry_refine_pooled": {"err": 0.604, "bias": -0.075},
@@ -219,49 +236,32 @@ def _whitened_spec(prep: Prepared) -> tuple[np.ndarray, float, np.ndarray]:
     The raw ``comb_score`` scan is envelope-dominated on DREGON (see the module
     docstring) — whitening subtracts a running median over frequency
     (``WHITEN_HZ`` window) so comb scores measure line evidence above the
-    local background.
+    local background. Now a thin wrapper over
+    ``data_processing.vk_blind_seeding.whitened_logmag`` (the scan machinery's
+    shared home since blind seeding v2, design §7); ``_SEED_CFG`` reproduces
+    this script's historical constants exactly.
     """
-    from scipy.ndimage import median_filter
+    from data_processing.vk_blind_seeding import whitened_logmag
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
-
-    cfg = RefineConfig(sample_rate=SR, device="cpu")
-    spec = compute_logmag(prep.audio, cfg)
-    lm = spec.logmag.cpu().numpy()  # (C, F, N)
-    bin_hz = float(spec.bin_hz)
-    win = int(round(WHITEN_HZ / bin_hz)) | 1
-    white = (lm - median_filter(lm, size=(1, win, 1))).mean(axis=0)  # (F, N)
-    st = np.asarray(spec.frame_times, dtype=np.float64)
-    return white, bin_hz, st
+    return whitened_logmag(prep.audio, float(SR), _SEED_CFG)
 
 
 def _comb_scan(white_vec: np.ndarray, bin_hz: float, grid: np.ndarray) -> np.ndarray:
-    """Whitened comb score of each constant base in ``grid`` (k=1..SCAN_K_MAX)."""
-    n_f = len(white_vec)
-    freqs_max = (n_f - 1) * bin_hz
-    ks = np.arange(1, SCAN_K_MAX + 1)
-    scores = np.empty(len(grid))
-    for gi, b in enumerate(grid):
-        f = ks * b
-        m = (f >= 60.0) & (f <= min(6000.0, freqs_max))
-        idx = f[m] / bin_hz
-        j = np.floor(idx).astype(int)
-        frac = idx - j
-        scores[gi] = float(
-            ((1 - frac) * white_vec[j] + frac * white_vec[np.minimum(j + 1, n_f - 1)]).mean()
-        )
-    return scores
+    """Whitened comb score of each constant base in ``grid`` (k=1..SCAN_K_MAX).
+
+    Delegates to ``vk_blind_seeding.comb_scan`` (flat template = numerically
+    identical to the historical implementation).
+    """
+    from data_processing.vk_blind_seeding import comb_scan
+
+    return comb_scan(white_vec, bin_hz, grid, _SEED_CFG)
 
 
 def _scan_peaks(grid: np.ndarray, scores: np.ndarray) -> np.ndarray:
     """Indices of local maxima (>=1.5 rev/s apart), fallback to the argmax."""
-    from scipy.signal import find_peaks
+    from data_processing.vk_blind_seeding import scan_peaks
 
-    rng = float(scores.max() - scores.min())
-    idx_pk, _ = find_peaks(scores, prominence=max(1e-4, 0.03 * rng), distance=int(1.5 / SCAN_STEP))
-    if len(idx_pk) == 0:
-        idx_pk = np.array([int(np.argmax(scores))])
-    return idx_pk
+    return scan_peaks(grid, scores, _SEED_CFG)
 
 
 def blind_scan(prep: Prepared) -> dict[str, Any]:
