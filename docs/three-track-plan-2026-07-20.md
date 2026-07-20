@@ -159,6 +159,29 @@ metrics. Disjoint metrics and data.
 | W3 | Pass B finishes; M1.5b oracle run on Pass-A winner | M1.4 analysis + diversity answer; M3.4 gate; M2.4 design |
 | End W3 | — | Reports per track; **overdue mid-point portfolio review → rewrite GOALS.md portfolio** with these results |
 
+## Literature evidence (2026-07-20 bibliography sweep)
+
+- **Gulli et al. 2025, exact conditioning deltas** (full text in library):
+  rotor-vs-blind SI-SDR gain is largest at the lowest SNRs and on weaker
+  architectures — on their strongest model (DCCRN) +39.9% at −30 dB shrinking
+  to +0.9…+5% at −10…0 dB; STOI/PESQ deltas mixed-sign. First and only
+  controlled side-info-vs-blind ablation in drone SE; the classical
+  motor-guided line (Schmidt dictionary IROS'16, Hioka/Yen PSD-Wiener) never
+  reported one.
+- **Parametric-harmonic-subtraction + neural enhancement: the niche is
+  EMPTY.** No published work subtracts a parametric harmonic noise model
+  before/inside a neural enhancer at any SNR (external + library search).
+  M1.5a (VK-reconstruct subtraction) would be first — novel if it works.
+- **Multichannel + deep + low-SNR drone SE: unoccupied.** Best published
+  multichannel results remain classical BSS (Wang & Cavallaro TASLP 2020,
+  SNR < −15 dB); Gulli is single-mic and defers multichannel; the 2023
+  benchmark is single-channel by design. Phase-2 multichannel baselines on
+  our 8-mic data would occupy an empty cell.
+- **Rotor geometry as a spatial prior for suppression: nobody does it.**
+  Closest is DOA-sector weighting for localization. Consistent with the
+  project's SRP-floor finding that the rigid-geometry prior is the open
+  lever — a second empty novelty slot, enabled by our corrected geometry.
+
 ## Standing decisions
 - Every comparison reports per-SNR SI-SDR / eSTOI / PESQ with the noisy+Wiener
   anchors; no aggregate-only claims (Gulli lesson: percentage aggregates at
