@@ -224,9 +224,7 @@ def phase_breakdown(prof: cProfile.Profile) -> tuple[dict[str, float], str]:
     raw: dict[tuple[str, int, str], tuple[int, int, float, float, Any]] = ps.stats  # type: ignore[attr-defined]
     phases: dict[str, float] = {}
     for phase, names in PHASE_FUNCS.items():
-        phases[phase] = sum(
-            entry[3] for (_file, _line, name), entry in raw.items() if name in names
-        )
+        phases[phase] = sum(entry[3] for loc, entry in raw.items() if loc[2] in names)
     ps.sort_stats("tottime").print_stats(25)
     return phases, stream.getvalue()
 
@@ -309,7 +307,7 @@ def run_real_case(case: str, dur_s: float) -> list[dict[str, Any]]:
     """Load one wholerec case (npz trajectories + streamed audio), run both configs."""
     z = load_case_npz(case)
     ft, r_init_full, r_vk_full = z["ft"], z["r_init"], z["r_vk"]
-    _dataset, _key, min_rps = CASES[case]
+    min_rps = CASES[case][2]
     t0 = pick_window(ft, r_init_full, dur_s, min_rps)
     mask = (ft >= t0) & (ft < t0 + dur_s)
     ft_w = ft[mask] - t0
