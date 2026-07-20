@@ -168,3 +168,61 @@ data):
   already near-truth (DREGON audit result), the decisive comparison is on
   *Michael's* 29 Hz telemetry (genuine headroom between samples) and SPCup
   (no labels at all) — frame conclusions accordingly.
+
+---
+
+## 7 · Blind seeding v2 — shared-comb prior (design, 2026-07-20)
+
+Goal (campaign criterion 2.2): exhaust non-learning accuracy improvements for
+blind annotation across drones. Root-cause inventory from the blind runs:
+FLY124's failure is a *seeding* failure (a hole-riddled alias comb at
+(2/3)×91 ≈ 60.7 outscored the real weak 81-rotor because the flat-mean scan
+score never checks comb completeness); DREGON twins collapse to pair-mean when
+initialized blind. Coupled VK itself splits twins once both are seeded — the
+gap is purely in seeding. Four additions, each an independently sweepable arm:
+
+### 7.1 Shared-template matched-filter scan (arm T)
+
+All rotors of a drone share blade geometry → harmonic amplitude profile is
+identical up to per-rotor gain + mild perturbation (exactly what
+PositionalHarmonicNoiseGen models). Two-stage scan:
+
+1. Flat scan (existing) → capture the single most confident rotor → estimate
+   the template `â_k = median_t |x_k(t)| / Σ_k median_t |x_k(t)|` over its
+   locked harmonics (k in the validated band).
+2. Re-scan for remaining rotors with the matched-filter score
+   `S(f₀) = Σ_k â_k · W(k f₀) / ‖â‖` (W = whitened mag spectrum) instead of
+   the flat mean. Sensitivity to weak combs rises because energy lands where
+   the template expects it.
+
+### 7.2 Alias/completeness rejection (arm C)
+
+Reject a candidate base f₀ if the fraction of its teeth with energy above the
+local floor is < c_min (default 0.5) within the scan band — the 60.7 alias
+(energy only at every 3rd tooth) fails this while true weak combs pass; the
+threshold is calibrated against the real single-rotor measurements (77–100%
+teeth above floor).
+
+### 7.3 Rotor-count prior with duplicate seeding (arm N)
+
+Dedup scan peaks at 4 rev/s (near-duplicate suppression). If #peaks < R,
+seed the missing rotors AT the strongest surviving bases (+split_eps nudge)
+— the coupled solve + `_break_symmetry` then separates true twins. Never
+invent a 5th base; never leave a rotor unseeded.
+
+### 7.4 Auto-knobs (arm K)
+
+Derive per-recording: `update_gate` from the scan-score noise floor
+(gate = μ_noise + 3σ_noise of detuned-comb scores); capture `bw_hz` from the
+scan peak width; keep the annealing schedules as-is. Removes the two
+hand-retuned per-regime knobs (gate 30↔8, bw 1.5↔7).
+
+### Sweep protocol (uni-cpu / free-GPU CPU jobs)
+
+Arms {baseline, T, C, N, K} and their compositions (T+C+N+K = candidate
+final) × recordings {DREGON nosource/speech-low/whitenoise-low room1,
+FLY124 cruise window} × init {blind}. Metrics: pooled + per-rotor err_sm vs
+telemetry truth, twin-resolution flag, capture rate. Success: beat
+blindvit2dsp's DREGON 0.68 pooled or prove no arm composition does;
+FLY124: all 4 rotors < 2 rev/s (twin recovered) or documented impossibility.
+Spatial-DP (blindvit2dsp) remains a separate arm to compose with T/C/N/K.
