@@ -26,6 +26,7 @@ from losses.salience import (
     auto_pos_weight,
     salience_bce_loss,
 )
+from losses.sisdr import SISDRLoss, si_sdr_loss
 from losses.spectral import (
     AuraMRSTFTLoss,
     MultiScaleSTFT,
@@ -46,6 +47,8 @@ __all__ = [
     "segmented_pit_mse",
     "SmoothnessPenalty",
     "smoothness_penalty",
+    "SISDRLoss",
+    "si_sdr_loss",
     "SalienceBCELoss",
     "SalienceRPSBCELoss",
     "auto_pos_weight",

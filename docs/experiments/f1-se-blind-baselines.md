@@ -50,9 +50,18 @@ the same architecture set, both scored on the same two fixed validation sets:
   drone floor — and are evaluated on **both** valids for the final tables.
   Published + pinned: `SE-valid-drone@68a9b184fcc5` (350 mixtures),
   `SE-valid-harmonic@855bdcd731fe` (2100 mixtures, 6 categories).
-- **Loss/metrics**: `masked_mse` train loss; `separation_basic` (si_sdr, sdr)
-  during training; `separation_full` (+ pesq, estoi) at eval. Noisy + Wiener
-  anchors in every table (`scripts/eval_se_anchors.py`).
+- **Loss/metrics**: `si_sdr_mrstft` composite train loss (negative SI-SDR +
+  multi-resolution STFT); `separation_basic` (si_sdr, sdr) during training;
+  `separation_full` (+ pesq, estoi) at eval. Noisy + Wiener anchors in every
+  table (`scripts/eval_se_anchors.py`).
+  - **Why not masked_mse**: the first pass used masked_mse (Paper-1-consistent);
+    the resulting dcunet floor came out ~at the *noisy* floor on SI-SDR/eSTOI
+    (SDR improved +6–10 dB — it denoises — but scale-invariant metrics did not,
+    and `val/si_sdr` *degraded* with training). At ultra-low SNR MSE rewards
+    attenuation-toward-silence, not intelligibility, so it fails to establish a
+    meaningful floor. Switched to the metric-aligned SI-SDR + spectral composite
+    (`losses.SISDRLoss`, standard for SE). The masked_mse dcunet result is kept
+    as the motivating comparison.
 
 ### Deliberate deviations from the plan
 
