@@ -77,6 +77,8 @@ __all__ = [
     "completeness",
     "count_prior",
     "residual_rescan",
+    "track_comb_confidence",
+    "stage_guard",
     "auto_knobs",
     "blind_seed",
 ]
@@ -147,6 +149,22 @@ class SeedConfig:
     # bound: subharmonic aliases of the used combs are already dead in the
     # residual (their teeth ARE the masked combs' teeth), while a true
     # low-side comb shadowed by a near-2x neighbour must stay recoverable
+    # blind per-track stage guard (vit2dsp-ladder robustness; see stage_guard)
+    guard_basin: float = 3.0  # rev/s: a per-stage track move beyond this is
+    # suspect — capture basins are ~2-3 rev/s, larger jumps are re-captures
+    guard_drop: float = 0.5  # revert when confidence falls below this
+    # fraction of its pre-stage value (the "collapse" clause)
+    guard_dup_tol: float = 1.5  # rev/s: a big-moving track that lands within
+    # this of ANOTHER track it was not already sharing a comb with has
+    # re-captured onto an occupied comb — revert regardless of confidence
+    # (measured on the r4 FLY124 collapse: the 82.4 track jumped 9.6 onto
+    # the 91 comb and its comb confidence IMPROVED, 0.069 -> 0.082 — comb
+    # evidence alone cannot veto a landing on a STRONGER comb)
+    guard_shifts: tuple[float, ...] = (-2.0, -1.35, -0.75, 0.75, 1.35, 2.0)
+    # off-comb contrast shifts for the guard confidence (rps_refinement's
+    # comb_confidence convention)
+    guard_k_max: int = 30  # harmonics for the guard confidence (full f_max
+    # band — before/after compare the SAME base region, no small-base bias)
     # arm K — auto-knobs
     gate_offsets: tuple[float, ...] = (-3.7, -2.3, 2.3, 3.7)  # detuned bases
     gate_k_max: int = 30  # harmonics used for the gate calibration
@@ -477,6 +495,111 @@ def residual_rescan(
         order = np.argsort(fz)[::-1]
         fb, fz = fb[order], fz[order]
     return scores_res, fb, fz
+
+
+# ---------------------------------------------------------------------------
+# blind per-track stage guard
+
+
+def track_comb_confidence(
+    white: np.ndarray,
+    bin_hz: float,
+    st: np.ndarray,
+    ft: np.ndarray,
+    r: np.ndarray,
+    cfg: SeedConfig | None = None,
+) -> np.ndarray:
+    """``(R,)`` blind per-track comb confidence along trajectories.
+
+    Mean whitened log-mag along each track's comb minus the median over the
+    ``guard_shifts`` off-comb trajectories (``comb_confidence``'s contrast
+    convention on the whitened spectrogram). ``white``: (F, N) whitened
+    spectrogram on frame grid ``st``; ``r``: (R, len(ft)) rev/s.
+    """
+    cfg = cfg or SeedConfig()
+    n_f = white.shape[0]
+    fmax = min(cfg.f_max, (n_f - 1) * bin_hz)
+    ks = np.arange(1, cfg.guard_k_max + 1)
+    cols = np.arange(white.shape[1])
+    deltas = np.array([0.0, *cfg.guard_shifts])
+    confs = np.empty(r.shape[0])
+    for i in range(r.shape[0]):
+        r_spec = np.interp(st, ft, r[i])
+        vals = np.empty(len(deltas))
+        for di, d in enumerate(deltas):
+            f = ks[:, None] * (r_spec + d)[None, :]
+            valid = (f >= cfg.f_min) & (f <= fmax)
+            idx = np.clip(f, 0.0, fmax) / bin_hz
+            j = np.floor(idx).astype(int)
+            frac = idx - j
+            v = (1 - frac) * white[j, cols] + frac * white[np.minimum(j + 1, n_f - 1), cols]
+            vals[di] = float(np.nanmean(np.where(valid, v, np.nan)))
+        confs[i] = vals[0] - float(np.median(vals[1:]))
+    return confs
+
+
+def stage_guard(
+    r_before: np.ndarray,
+    r_after: np.ndarray,
+    white: np.ndarray,
+    bin_hz: float,
+    st: np.ndarray,
+    ft: np.ndarray,
+    cfg: SeedConfig | None = None,
+) -> tuple[np.ndarray, list[int], dict[str, Any]]:
+    """Blind per-track revert of a ladder stage's damage (no truth used).
+
+    A stage may improve three tracks and destroy the fourth (r4 FLY124:
+    the joint-DP re-captured the weak 82.4 track onto the strong 91 comb,
+    viterbi_c pooled 1.03 -> vit2dsp 3.25). Per track, revert to the
+    pre-stage trajectory when any of:
+
+    1. it moved > ``guard_basin`` AND landed within ``guard_dup_tol`` of
+       another track it was not already sharing a comb with (re-capture
+       onto an occupied comb — triggers even when raw comb confidence
+       IMPROVES, which it does when the destination comb is stronger);
+    2. its confidence collapsed below ``guard_drop`` x the pre-stage value;
+    3. it moved > ``guard_basin`` without any confidence gain.
+
+    Returns ``(guarded trajectories, reverted track indices, diagnostics)``.
+    Measured on the recorded r4 stage snaps: rule 1 fires exactly on the
+    collapsed track at the vit2dsp stage; no rule fires anywhere else.
+    """
+    cfg = cfg or SeedConfig()
+    conf_b = track_comb_confidence(white, bin_hz, st, ft, r_before, cfg)
+    conf_a = track_comb_confidence(white, bin_hz, st, ft, r_after, cfg)
+    n = r_before.shape[0]
+    out = r_after.copy()
+    reverted: list[int] = []
+    reasons: list[str] = []
+    for i in range(n):
+        moved = float(np.mean(np.abs(r_after[i] - r_before[i])))
+        occupied = False
+        for j in range(n):
+            if j == i:
+                continue
+            d_after = float(np.mean(np.abs(r_after[i] - r_after[j])))
+            d_before = float(np.mean(np.abs(r_before[i] - r_before[j])))
+            if d_after < cfg.guard_dup_tol and d_before >= cfg.guard_dup_tol:
+                occupied = True
+                break
+        reason = ""
+        if moved > cfg.guard_basin and occupied:
+            reason = f"moved {moved:.1f} onto an occupied comb"
+        elif conf_b[i] > 0 and conf_a[i] < cfg.guard_drop * conf_b[i]:
+            reason = f"confidence collapsed {conf_b[i]:.3f} -> {conf_a[i]:.3f}"
+        elif moved > cfg.guard_basin and conf_a[i] <= conf_b[i]:
+            reason = f"moved {moved:.1f} without confidence gain"
+        if reason:
+            out[i] = r_before[i]
+            reverted.append(i)
+            reasons.append(f"track {i}: {reason}")
+    diag = {
+        "conf_before": [round(float(v), 4) for v in conf_b],
+        "conf_after": [round(float(v), 4) for v in conf_a],
+        "reasons": reasons,
+    }
+    return out, reverted, diag
 
 
 # ---------------------------------------------------------------------------

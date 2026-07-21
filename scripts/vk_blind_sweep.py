@@ -274,7 +274,16 @@ def run_pipeline(
         ref_cfg = REFINE_CFG if gate is None else replace(REFINE_CFG, update_gate=gate)
         tic = time.perf_counter()
         stages, _, _, wall_scan, wall_vk = vit2dsp_pipeline(
-            prep_run, r0, weights[:channels], phys_map, midband_cfg=mid_cfg, refine_cfg=ref_cfg
+            prep_run,
+            r0,
+            weights[:channels],
+            phys_map,
+            midband_cfg=mid_cfg,
+            refine_cfg=ref_cfg,
+            stage_guard=True,  # blind per-track revert of stage damage (the
+            # r4 FLY124 finding: viterbi_c tracked all 4 rotors at pooled
+            # 1.03, then the joint-DP re-captured the weak track onto the
+            # 91 comb — a stage-robustness failure, not an information one)
         )
         timings = {"wall_seed_s": wall_seed, "wall_capture_s": wall_scan, "wall_refine_s": wall_vk}
         return seed, r0, stages[1:], timings  # drop the duplicate "init" stage

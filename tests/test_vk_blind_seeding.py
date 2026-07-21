@@ -212,6 +212,36 @@ def test_residual_rescan_recovers_shadowed_comb():
     assert np.any(np.abs(res_r.bases - 84.0) <= 1.5), f"84 lost by R: {res_r.bases}"
 
 
+def test_stage_guard_reverts_recaptured_track():
+    """(g) Blind stage guard: an aggressive stage pulls the weak track of a
+    strong+weak neighbour pair onto the strong comb — the guard reverts that
+    track (and only that track) to its pre-stage trajectory, blind."""
+    from data_processing.vk_blind_seeding import stage_guard, whitened_logmag
+
+    cfg = SeedConfig()
+    profile = profile_flat()
+    y = synth_combs(6.0, [91.0, 82.7], [1.0, 0.4], profile, noise_scale=0.15, seed=6)
+    white, bin_hz, st = whitened_logmag(y, FS, cfg)
+    ft = st.copy()
+    n = len(ft)
+
+    r_before = np.stack([np.full(n, 82.4), np.full(n, 91.0)])  # weak track a
+    # touch off its comb (as a coarse stage leaves it)
+    # aggressive stage output: weak track re-captured onto the strong comb
+    # (raw comb confidence IMPROVES there — the occupancy rule must fire)
+    r_bad = np.stack([np.full(n, 91.05), np.full(n, 91.0)])
+    guarded, reverted, diag = stage_guard(r_before, r_bad, white, bin_hz, st, ft, cfg)
+    assert reverted == [0], f"expected track 0 reverted, got {reverted} ({diag['reasons']})"
+    assert np.allclose(guarded[0], r_before[0]) and np.allclose(guarded[1], r_bad[1])
+
+    # negative control: a stage that CORRECTS the weak track onto its own
+    # comb (confidence gain, no occupancy) must pass untouched
+    r_good = np.stack([np.full(n, 82.7), np.full(n, 91.0)])
+    guarded2, reverted2, _ = stage_guard(r_before, r_good, white, bin_hz, st, ft, cfg)
+    assert reverted2 == [], f"guard falsely reverted {reverted2}"
+    assert np.allclose(guarded2, r_good)
+
+
 def test_auto_gate_between_hand_tuned_values():
     """(e) Detuned-comb noise-floor calibration lands between the hand-tuned
     gates 8 and 30 for a mid-SNR synthetic case."""

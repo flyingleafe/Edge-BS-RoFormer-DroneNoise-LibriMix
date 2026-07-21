@@ -1727,6 +1727,7 @@ def vit2dsp_pipeline(
     phys_map: np.ndarray,
     midband_cfg: VKConfig | None = None,
     refine_cfg: VKConfig | None = None,
+    stage_guard: bool = False,
 ) -> tuple[list[tuple[str, np.ndarray]], Any, dict[str, Any], float, float]:
     """The spatial-DP ladder from an arbitrary 4-track blind init.
 
@@ -1736,8 +1737,17 @@ def vit2dsp_pipeline(
     0.688) so other callers (the §7 blind-seeding sweep) can compose their
     own seeding with this ladder. ``weights``: (n_mics, 4) per-rotor mic
     weights; ``phys_map``: (4,) track -> physical rotor (weights column).
+    ``stage_guard=True`` applies the blind per-track guard
+    (``vk_blind_seeding.stage_guard``) after every stage: a track that a
+    stage re-captured onto an occupied comb, or whose comb confidence
+    collapsed, is reverted to its pre-stage trajectory (the r4 FLY124
+    failure: viterbi_c tracked all four rotors at pooled 1.03, then the
+    joint-DP pulled the weak 82.4 track onto the 91 comb). Default False =
+    the validated guard-less behaviour.
     Returns ``(stages, final VKResult, extras, wall_scan_s, wall_vk_s)``.
     """
+    from data_processing.vk_blind_seeding import stage_guard as _guard_fn
+
     lm_avg, bin_hz, st = _whitened_spec(prep)
     lm_multi, _, _ = _whitened_spec_multi(prep)
     ks = np.arange(1, 31)
@@ -1747,8 +1757,21 @@ def vit2dsp_pipeline(
     pairs = [(int(order[0]), int(order[1])), (int(order[2]), int(order[3]))]
 
     stages: list[tuple[str, np.ndarray]] = [("init", r_cur.copy())]
+    guard_log: dict[str, Any] = {}
+
+    def _apply_guard(label: str, r_prev: np.ndarray, r_new: np.ndarray) -> np.ndarray:
+        if not stage_guard:
+            return r_new
+        guarded, reverted, gdiag = _guard_fn(r_prev, r_new, lm_avg, bin_hz, st, prep.ft, _SEED_CFG)
+        guard_log[f"guard_reverted_{label}"] = np.array(reverted, dtype=np.int64)
+        if reverted:
+            print(f"[stage_guard | {label}] reverted {gdiag['reasons']}", flush=True)
+        return guarded
+
     tic = time.perf_counter()
+    r_prev = r_cur.copy()
     r_cur, c_trajs = _vit_stage1(prep, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
+    r_cur = _apply_guard("viterbi_c", r_prev, r_cur)
     stages.append(("viterbi_c", r_cur.copy()))
     extras: dict[str, Any] = {
         "vit2d_deltas": deltas,
@@ -1756,6 +1779,10 @@ def vit2dsp_pipeline(
         "phys_map": phys_map,
         "pairs": np.array(pairs),
     }
+    # Pair means from the (possibly guard-reverted) stage-1 output — equals
+    # _vit_stage1's own c_trajs when no track was reverted.
+    c_trajs = [r_cur[list(pair)].mean(axis=0) for pair in pairs]
+    r_prev = r_cur.copy()
     for pi, pair in enumerate(pairs):
         rot_a, rot_b = int(phys_map[pair[0]]), int(phys_map[pair[1]])
         lm_a = np.tensordot(weights[:, rot_a], lm_multi, axes=(0, 0))  # (F, N)
@@ -1785,15 +1812,19 @@ def vit2dsp_pipeline(
         extras[f"vit2d_s1a_p{pi}"] = np.nansum(cube_a, axis=1).astype(np.float32)  # (W, D)
         extras[f"vit2d_s1b_p{pi}"] = np.nansum(cube_b, axis=1).astype(np.float32)
         extras[f"vit2d_rots_p{pi}"] = np.array([rot_a, rot_b])
+    r_cur = _apply_guard("vit2dsp", r_prev, r_cur)
     stages.append(("vit2dsp", r_cur.copy()))
     wall_scan = time.perf_counter() - tic
 
     tic = time.perf_counter()
     mid = vk_track(prep.audio, r_cur, prep.ft, midband_cfg or MIDBAND_CFGS[0])
-    stages.append(("midband_bw6", mid.r_refined.copy()))
-    ref = vk_track(prep.audio, mid.r_refined, prep.ft, refine_cfg or REFINE_CFG)
-    stages.append(("refine", ref.r_refined.copy()))
+    r_mid = _apply_guard("midband_bw6", r_cur, mid.r_refined)
+    stages.append(("midband_bw6", r_mid.copy()))
+    ref = vk_track(prep.audio, r_mid, prep.ft, refine_cfg or REFINE_CFG)
+    r_ref = _apply_guard("refine", r_mid, ref.r_refined)
+    stages.append(("refine", r_ref.copy()))
     wall_vk = time.perf_counter() - tic
+    extras.update(guard_log)
     return stages, ref, extras, wall_scan, wall_vk
 
 
