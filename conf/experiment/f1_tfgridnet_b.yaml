@@ -4,7 +4,7 @@
 defaults:
   - override /data: se_baselines_b
   - override /model: f1_tfgridnet
-  - override /loss: masked_mse
+  - override /loss: si_sdr_mrstft
   - override /metrics: separation_basic
 
 experiment_name: f1_tfgridnet_b
