@@ -5,8 +5,8 @@
 #let notes-mode = sys.inputs.at("notes", default: none)
 
 #show: hns-slides.with(
-  title: [The rotor comb, three ways],
-  subtitle: [A physics-structured generator #sym.dot.c blind order tracking #sym.dot.c a literature baseline],
+  title: [RPS prediction and drone noise generation progress],
+  subtitle: [Attempts to improve generator #sym.dot.c Another approach to RPS prediction #sym.dot.c GP noise model analysis #sym.dot.c Back to basics],
   author: [Dmitrii Mukhutdinov],
   date: [2026-07-18],
   show-notes: if notes-mode != none { bottom } else { none },
@@ -19,20 +19,16 @@
 #v(1em)
 
 + *Generative model* #sym.dash.em audit + fix the physics-structured generator.
+  + Found bugs with array geometry annotations...
+  + Attempts to improve the expressivity of the model + wind noise modeling attempt
 + *Blind order tracking* #sym.dash.em per-rotor RPS from audio alone.
-+ *Literature baseline* #sym.dash.em reproduce JASA-GP as a reference.
+  + Can we optimize trajectories __directly__ to simply match the harmonic comb?
+  + How good the result could be with that approach?
++ *Literature baseline* #sym.dash.em reproduce JASA-GP as a reference
+  + Also fit GP model to our drone setups (approximate) and see results
 
 #speaker-note[
-  The week's recurring object is the *rotor comb*: a rotor at N rev/s radiates a
-  tone at N Hz plus harmonics — four rotors, four interleaved combs.
-
-  Why a generator: real drone-corrupted speech is scarce; we need training data
-  across 0 to −30 dB SNR, so a faithful ego-noise generator is a real research
-  object.
-
-  The threads couple: thread 1 yields a per-rotor emitter template; thread 2's one
-  failure mode needs exactly that template; thread 3 is an independent external
-  check.
+  Here is what I did
 ]
 
 = A physics-structured generator, answerable to data
@@ -48,11 +44,7 @@ One emitter per rotor, propagated free-field. Three assumptions testable on DREG
 + a *coherent, propagating* field is complete
 
 #speaker-note[
-  Emitter = harmonic comb + broadband per rotor; propagation = $1\/r$ amplitude +
-  $r\/c$ delay per mic. A physics-structured model is a strength: each assumption
-  is falsifiable. DREGON is the testbed — constant-speed single-motor recordings +
-  a documented array geometry. The next slides audit the three assumptions in
-  order. Each needed a correction or extension.
+  Problem: why mid-range harmonics are so bad? Let us try to understand
 ]
 
 = Assumption 1 — geometry: a small error is not benign
@@ -62,57 +54,55 @@ One emitter per rotor, propagated free-field. Three assumptions testable on DREG
 #keyline[Symptom: systematically weak mid-frequency harmonics. #h(0.6em) $Delta phi.alt(f) = 2 pi f delta$.]
 
 #speaker-note[
-  A position error is a delay error δ; phase effect ∝ frequency (Δφ = 2π f δ).
-  15-sample error at 44.1 kHz (≈340 µs) = 12° at 100 Hz, 122° at 1 kHz, crosses
-  180° (full inversion) before 1.6 kHz. Past inversion a coherent subtraction adds
-  instead of cancelling. Hence the weak mid-frequency harmonics — the readable
-  symptom that prompted the geometry audit.
+  Hypothesis 1: rotor and mic positions are not precise, so TDOA errors between real and simulated sound are large
+  in comparison with mid-range harmonic fequencies
 ]
 
-= Geometry: a 180° array-frame mismatch
+= Geometry errors found (huge!) in DREGON annotations
 
 #figure(image("assets/geo_frame_alignment.png", width: 74%))
 
 #keyline[Predicted vs. measured TDOA: $r = -0.56 arrow.r +0.93$ at $183 degree$.]
 
 #speaker-note[
-  Predicted TDOA (shipped positions) vs measured (GCC-PHAT on single-motor cuts)
-  anti-correlate (−0.56) — the fingerprint of a frame flip, not random error.
-  Sweeping a rigid mic-frame z-rotation peaks at +0.93 at 183° ≈ 180°: micPos and
-  rotorsPos sit in frames ~180° apart about z. All downstream work uses the
-  corrected frame.
+  How we checked: on DREGON, we have single-motor recordings, so can compare TDOA
+  estimates from GCC-PHAT with provided mic positions easily enough (showing figures).
+  And turns out the microphones should be rotated 180° about z for TDOAs to make sense!
+  (show relevant correlation plots + mic + rotor positions 3d plot)
 ]
 
-= Geometry: fine calibration, and one limit
+= Geometry errors found (silly) in Michael's annotations
+
+#speaker-note[
+  In Michael's case, the mic array annotation just had a bug (swapped coordinates) so it was
+  as if circular array was put vertically, not horizontally. But this was understood just visually,
+  TDOA correlation optimization does not work for Michael's because no single-rotor recordings (hard).
+  (see plot of mic + rotor positions)
+]
+
+= Geometry: fine calibration
 
 #align(center, image("assets/geo_summary.png", height: 64%))
 
 #keyline[DREGON: bundle adjustment, moves $<= 2.2$ cm. #h(0.6em) Michael's: not identifiable.]
 
 #speaker-note[
-  Bundle adjustment refines each mic within the corrected frame: residual 38.3° →
-  28.8°, moves ≤ 2.2 cm; synthetic control recovers to 0.36 cm (optimiser correct;
-  leftover ~25° is free-field model mismatch, not a bug). Michael's: a
-  vertical→horizontal plane bug fixable from the rig photo, but audio
-  self-calibration is not identifiable — all rotors on one side, no angular
-  diversity. Both fixes now in get_geometry + the published `frames:` datasets.
+  Here we say how we can __optimise__ the mic positions further using TDOA correlation maximization,
+  using formulas and the figure of mic positions before and after optimisation.
 ]
 
-= Assumption 2 — are the four rotors one source?
+= Hypothesis 2 — rotors are individuals
 
 #figure(image("assets/fig_per_rotor.png", width: 74%))
 
 #keyline[Level-normalised *timbre* differs by *6.8 dB RMS*.]
 
 #speaker-note[
-  Each motor's solo recording at a matched 70 Hz fundamental, read at its nearest
-  mic, divided by its own fundamental (removes 1/r level → leaves timbre). Rotor 2
-  has a much richer comb; spread 6.8 dB RMS over harmonics 2–12. Caveat: folds in
-  residual nearest-mic geometry + real unit-to-unit variation — either way, one
-  shared code can't represent four distinct sources.
+  Show rotor spectras figures (individual recordings) at same speeds, demonstrating that
+  harmonics and broadband components have different amplitude distributions.
 ]
 
-= Assumption 2 — per-rotor sub-embeddings
+= Treating rotors individually: per-rotor sub-embeddings
 
 #v(1em)
 $ z_r = z_"drone" + delta z_r, quad delta z in RR^(R times d) $
@@ -122,33 +112,28 @@ $ z_r = z_"drone" + delta z_r, quad delta z in RR^(R times d) $
 - zero-initialised — a strict generalisation of the shared-code model
 
 #speaker-note[
-  $delta z_r$ = small per-rotor delta, one per rotor. Zero-init → at start exactly
-  the old shared-code model, so it can't hurt and only adds capacity. Shared across
-  drones because rotor identity is an airframe property. The analysis proves the
-  need; the variant scoreboard decides whether it pays off.
+  Show schema of drone noise generator model (see prev slides) with per-rotor sub-embeddings ADDED and emphasized,
+  + with formula on how the losses change (how we keep sub-embedding delta small)
 ]
 
-= Assumption 3 — a wind channel (incoherent flow noise)
+= Hypothesis 3: wind noise confusing the model
 
 #figure(image("assets/fig_wind_schema.png", width: 78%))
 
 #keyline[Physics fixes where the flow lands; a small learned head fits what it does to a mic.]
 
 #speaker-note[
-  Flow noise doesn't propagate (no 1/r, no delay) and is spatially incoherent
-  (γ²→0), so it can't come from the coherent path — it needs an additive channel.
-  A: RPS→airspeed (physics, zero at hover); B: wake flow field (physics, geometric
-  in-column gate); C: flow→pressure (the only learned part; incoherent per mic).
-  De-risk: the geometric gate predicts DREGON's measured per-mic floor at Spearman
-  0.92 vs 1/r 0.74; Michael's out-of-wake predicted near-silent. Exposure comes for
-  free from geometry — the generalisation claim.
+  Mid-range harmonics were much weaker on DREGON, and DREGON has wind noise, so maybe that is why the model struggles.
+  Let's actually add the physically-plausible wind noise model additively on top!
 ]
 
 = What the data said back: generator variants
 
 #figure(
   table(
-    columns: 3, align: (left, center, left), stroke: 0.5pt,
+    columns: 3,
+    align: (left, center, left),
+    stroke: 0.5pt,
     table.header([*variant*], [*free-flight MR-STFT* #sym.arrow.t], [*reading*]),
     [OLD (wrong geometry)], [4.51], [pre-fix baseline],
     [*v1 — corrected geometry*], [*5.22*], [*best — geometry fix helps*],
@@ -160,16 +145,21 @@ $ z_r = z_"drone" + delta z_r, quad delta z in RR^(R times d) $
 #keyline[Free-flight only ($n = 48$); the idle-heavy full set inverts the ranking.]
 
 #speaker-note[
-  MR-STFT = multi-scale spectrogram match, higher better. Free-flight only (RPS ≥
-  45, n = 48) because on idle a magnitude metric rewards reproducing silence, which
-  inverts the ranking. Geometry (5.22 > 4.51): permanent. Per-rotor (4.82): rotors
-  distinct but near-identical in cruise → helps idle/startup, not flight; re-test
-  on flight-heavy data. Wind (3.44): dormant at hover, adds an incoherent floor
-  that dilutes the fit; needs free-flight airspeed + a coherence-aware loss. Gate
-  itself validated at Spearman 0.92. Detail: companion report 2026-07-17.
+  Here we display FREE-FLIGHT segments: real and corresponding generations for each model variant -
+  old (before modifications), v1 (geometry fix), v2 (per-rotor sub-embeddings), v3 (wind noise model).
+  Top row - DREGON, bottom row - Michael's
+  Under each spectrogram of generated noise - mrSTFT loss against the real noise.
 ]
 
-= Thread 2 — blind per-rotor order tracking
+= Generator improvements: discussion
+
++ TBD
+
+#speaker-note[
+  Here we list possible reasons why sub-embeddings and wind noise model worked badly.
+]
+
+= Work thread 2: Optimizing for best RPS trajectory
 
 #v(0.8em)
 
@@ -179,84 +169,127 @@ Coupled Vold–Kalman, built from the published math (not PyVKF / GPL-3):
 - *sparse coupling* term between nearby tracks
 
 #speaker-note[
-  Order tracking = following each comb's frequency over time. PyVKF is GPL-3 and
-  solves the full audio-rate system (~16M unknowns per 25 s clip) with frequencies
-  as inputs, not tracked. Ours works on a decimated envelope grid (~200k) and adds
-  a coupling term — the new part, next slide.
+  Main idea here: we definitely can somehow calculate __how good given RPS trajectory set explains the noise__, right?
+
+  THEN IN THE NEXT FEW SLIDES: we step by step, starting from old idea of least-squares VP transform,
+  explain in detail, step by step, with formulas, what is our method (Viterbi peak tracking + Vold-Kalman coupled order matching optimization),
+  how it works, which steps are involved. An undergrad should be able to follow the presentation and understand everything.
+  A final slide should be slide with the results: mean absolute errors for telemetry-init refinement + blind re-annotation on DREGON and Michael's real noise,
+  and output RPS trajectories overlaid over real ones (figures).
 ]
 
-= Coupling: overlapping rotors explain away shared energy
+// = Coupling: overlapping rotors explain away shared energy
 
-#figure(image("assets/vk_coupling_schematic.png", width: 82%))
+// #figure(image("assets/vk_coupling_schematic.png", width: 82%))
 
-#speaker-note[
-  Off-diagonal coupling forces overlapping tracks to split shared spectral energy
-  (explaining-away) instead of both claiming all of it. The earlier heuristic comb
-  refinement lacked this and biased tight rotor pairs toward their mean. Hardest
-  exactly on a twin pair — the next slide.
-]
+// #speaker-note[
+//   Off-diagonal coupling forces overlapping tracks to split shared spectral energy
+//   (explaining-away) instead of both claiming all of it. The earlier heuristic comb
+//   refinement lacked this and biased tight rotor pairs toward their mean. Hardest
+//   exactly on a twin pair — the next slide.
+// ]
 
-= Blind re-annotation: where it works, where it breaks
+// = Blind re-annotation: where it works, where it breaks
 
-#align(center, image("assets/vk_blind_dregon.png", height: 66%))
+// #align(center, image("assets/vk_blind_dregon.png", height: 66%))
 
-#keyline[DREGON *4/4* @ *0.68 rev/s*. #h(0.8em) FLY124 *3/4*; the twin pair shares one comb.]
+// #keyline[DREGON *4/4* @ *0.68 rev/s*. #h(0.8em) FLY124 *3/4*; the twin pair shares one comb.]
 
-#speaker-note[
-  DREGON free-flight, 25 s, no telemetry: all 4 rotors, pooled error 0.68 rev/s.
-  FLY124 cruise (~74/74/81/91 rev/s): 3 recover (91→0.8, 74→1.0, 81→1.3); the 4th
-  fails because two rotors at ~74/74 share one comb — only one track seeds, the
-  other lands on a spurious ~60 Hz peak. The fix is a shared per-rotor comb prior =
-  the thread-1 sub-embeddings. The two threads meet.
-]
+// #speaker-note[
+//   DREGON free-flight, 25 s, no telemetry: all 4 rotors, pooled error 0.68 rev/s.
+//   FLY124 cruise (~74/74/81/91 rev/s): 3 recover (91→0.8, 74→1.0, 81→1.3); the 4th
+//   fails because two rotors at ~74/74 share one comb — only one track seeds, the
+//   other lands on a spurious ~60 Hz peak. The fix is a shared per-rotor comb prior =
+//   the thread-1 sub-embeddings. The two threads meet.
+// ]
 
-= The floor: fine RPS jitter is below resolution
+// = The floor: fine RPS jitter is below resolution
 
-#v(0.8em)
+// #v(0.8em)
 
-$0.68$ rev/s is the achievable *floor*, not a tuning gap.
+// $0.68$ rev/s is the achievable *floor*, not a tuning gap.
 
-- the smooth blind answer fits *better* than the true jittery telemetry
-  ($0.99196$ vs $0.99376$)
-- holds in *every band* after stripping wind (ratios $0.87$–$0.81$)
+// - the smooth blind answer fits *better* than the true jittery telemetry
+//   ($0.99196$ vs $0.99376$)
+// - holds in *every band* after stripping wind (ratios $0.87$–$0.81$)
 
-#speaker-note[
-  The objective's minimum is genuinely not at the true RPS: a flexible envelope
-  re-absorbs ~0.74 rev/s of real jitter, so the smooth answer has the lower data
-  residual even full-band. Concentrating on the comb (strip wind) doesn't rescue
-  it: high-pass >0.5 kHz ratio 0.874, band-pass 1–3 kHz 0.810 — smooth still wins.
-  Jitter is invisible to the comb model, not merely masked. Bounds any audio-only
-  tracker.
-]
+// #speaker-note[
+//   The objective's minimum is genuinely not at the true RPS: a flexible envelope
+//   re-absorbs ~0.74 rev/s of real jitter, so the smooth answer has the lower data
+//   residual even full-band. Concentrating on the comb (strip wind) doesn't rescue
+//   it: high-pass >0.5 kHz ratio 0.874, band-pass 1–3 kHz 0.810 — smooth still wins.
+//   Jitter is invisible to the comb model, not merely masked. Bounds any audio-only
+//   tracker.
+// ]
 
-= Thread 3 — a literature baseline (JASA-GP)
+= Work thread 3: a literature baseline (JASA-GP)
 
 #figure(image("assets/jasa_gp_eval_slim.png", width: 70%))
 
 #keyline[Lee et al., *JASA* 2026. #h(0.4em) `jasa-flyovers`, 256 mics. Held-out $V = 7$.]
 
 #speaker-note[
-  Lee et al., JASA 159(4):3418, 2026; jasa-flyovers = 10 CONA quadrotor flyovers,
-  V = 1..10 m/s, 256 ground mics. Pipeline: de-Doppler → estimate f0 →
-  least-squares Fourier coefficients at k·f0 (24 harmonics) → Matérn-5/2 GP over
-  (x, y, V); broadband separate. The literature's strongest comb model — a fair
-  baseline and an independent generation route vs our emitter + propagation.
+  First slide: formulas explaining how GP model works
 ]
 
-= JASA-GP: getting the replication faithful
-
-#figure(image("assets/jasa_gp_loudness.png", width: 62%))
-
-#keyline[After 3 fixes: correlation $0.41 arrow.r 0.70$, loudness $9.3 arrow.r 3.0$ dB.]
+= JASA-GP: original data replication
 
 #speaker-note[
-  Out of the box ~4× too quiet. Fixes: (1) a np.roll sign bug mixed phasor signs
-  before GP averaging → exact coefficient-space alignment; (2) per-signal f0 (a
-  pinned comb drifts ~12 bins at the top harmonic); (3) loudness on the AC part
-  only (CONA carries a large inaudible DC offset). Result matches the paper's
-  held-out fit. Deliverable: jasa_gp_interactive.ipynb — plotly 3D, rotor-speed FM,
-  per-point audio, to A/B against our generator.
+  Second slide: figure + formulas describing CONA framework and how the synthetic audio is being produced by it,
+  + illustration of NASA quadrotor and its stats (the original training data described)
 ]
+
+= Adapting the recipe to our use case
+
+#speaker-note[
+  Third slide: figures showing DREGON and Michael's drones, which of their characteristics are input into CONA,
+  how varying speeds are handled, how the observation points are placed around the drone positions.
+]
+
+= Results
+
+#speaker-note[
+  Spectrogram comparison: real, best deep generator, CONA auralized over same RPS trajectories, GP generation results over same RPS trajectories.
+  For generated data, mrstft loss against real is given under each spectrogram.
+]
+
+= Discussion
+
+#speaker-note[
+  What we can say about the GP generator performance? Is it good or is training data (CONA recordings) just not matching the real one?
+]
+
+
+= Initiated work: wider baselines on noise suppression
+
+#speaker-note[
+  We need to understand now - pivot away from noise suppression completely or not, and for that,
+  we need to at least show usefulness of reusing RPS data for noise suppression; but even before that,
+  we need proper up-to-date audio-only baselines. Here is the table of which models we scheduled to run
+  and the training protocol.
+]
+
+= Initiated work: RPS predictor achieving parity with VK optimization
+
+#speaker-note[
+  Main problem with VK optimization (speed) and limits to which we can optimize (numerical estimations);
+  quick bullet list of ideas on how to improve the RPS predictor to match VK performance (while still being fast).
+]
+
+// = JASA-GP: getting the replication faithful
+
+// #figure(image("assets/jasa_gp_loudness.png", width: 62%))
+
+// #keyline[After 3 fixes: correlation $0.41 arrow.r 0.70$, loudness $9.3 arrow.r 3.0$ dB.]
+
+// #speaker-note[
+//   Out of the box ~4× too quiet. Fixes: (1) a np.roll sign bug mixed phasor signs
+//   before GP averaging → exact coefficient-space alignment; (2) per-signal f0 (a
+//   pinned comb drifts ~12 bins at the top harmonic); (3) loudness on the AC part
+//   only (CONA carries a large inaudible DC offset). Result matches the paper's
+//   held-out fit. Deliverable: jasa_gp_interactive.ipynb — plotly 3D, rotor-speed FM,
+//   per-point audio, to A/B against our generator.
+// ]
 
 = Takeaways
 
