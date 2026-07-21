@@ -31,18 +31,22 @@ sources:
     - kind: audio_pool
       dataset: drone_audio
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
     - kind: audio_pool
       dataset: DroneAudioSet
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
     - kind: audio_pool
       dataset: SPCUP19-egonoise
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
     - kind: audio_pool
       dataset: new-drone-noises
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
   speech:
     - kind: audio_files

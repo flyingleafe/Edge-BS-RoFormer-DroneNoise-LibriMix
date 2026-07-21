@@ -34,47 +34,57 @@ sources:
     - kind: audio_pool
       dataset: drone_audio
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 0.16667
     - kind: audio_pool
       dataset: DroneAudioSet
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 0.16667
     - kind: audio_pool
       dataset: SPCUP19-egonoise
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 0.16667
     - kind: audio_pool
       dataset: new-drone-noises
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 0.16667
     # --- category: mimii (1.0) ---
     - kind: audio_pool
       dataset: MIMII
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
     # --- category: mimii_dg (1.0) ---
     - kind: audio_pool
       dataset: MIMII-DG
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
     # --- category: aircraft (1.0) ---
     - kind: audio_pool
       dataset: AeroSonicDB
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
     # --- category: motors (0.5 + 0.5) ---
     - kind: audio_pool
       dataset: HUSTmotor
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 0.5
     - kind: audio_pool
       dataset: KAIST-rotating-acoustic
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 0.5
     # --- category: horns (1.0) ---
     - kind: audio_pool
       dataset: HornBase
       holdout: {split: train, valid_shards: 2}
+      max_shards: 24
       weight: 1.0
   speech:
     - kind: audio_files
