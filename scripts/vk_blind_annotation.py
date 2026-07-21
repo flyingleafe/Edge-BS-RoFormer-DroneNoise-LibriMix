@@ -83,6 +83,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Pin this repo's src/ ahead of the .venv's absolute-path editable install
+# (omnirun worktrees reuse the login checkout's .venv — without the pin,
+# data_processing imports resolve to the login checkout's code, not this
+# tree's; see the vk_blind_sweep.py round-2 post-mortem).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from vk_validation import (  # noqa: E402
     DREGON_TARGETS,

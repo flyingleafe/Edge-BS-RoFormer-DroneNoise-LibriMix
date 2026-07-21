@@ -45,6 +45,11 @@ Run:
   ... --quick                       # one recording (nosource), 10 s segment
   ... --synthetic-selftest          # 5 s synthetic 4-rotor mixture, no data
   ... --arms baseline,T+C+N+K --ladders plain    # subsets
+  ... --recordings free-flight_whitenoise-low_room1,FLY124-cruise  # partial rerun
+Startup prints ``[vk_blind_sweep] seeding module: <file> | scan_f_max=...`` —
+grep it in job logs to verify the band-capped seeding module is the one
+actually imported (the .venv's absolute-path editable install can otherwise
+shadow a worktree's src/; guarded by the sys.path pin below).
 Remote (CPU): omnirun submit --backend uni-cpu --gpus 0 --time 48h --yes -- \
   python scripts/vk_blind_sweep.py --dregon-dir dload:DREGON \
   --michaels-root dload:recording_with_motor_speed --jobs 8
@@ -76,6 +81,14 @@ from typing import Any  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Pin THIS repo's src/ ahead of site-packages: the project is installed
+# editable with an ABSOLUTE path into the checkout that owns .venv, so
+# omnirun worktree jobs (which reuse the login checkout's .venv) would
+# otherwise import data_processing from the login checkout at whatever
+# commit it happens to have — exactly how sweep round 2 (python-e972ab) ran
+# the new script with the OLD seeding module (stale scan, junk
+# FLY124/whitenoise seeds). Module-level so spawned workers re-execute it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from vk_blind_annotation import (  # noqa: E402
     CAPTURE_CFG,
@@ -637,10 +650,34 @@ def synthetic_selftest(opts: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Provenance banner (grep "seeding module:"): which vk_blind_seeding file
+    # was ACTUALLY imported and its effective scan band cap — the round-2
+    # sweep silently ran a stale module via the .venv's absolute-path
+    # editable install; this line makes that regression impossible to miss.
+    import data_processing.vk_blind_seeding as _seeding
+
+    scan_f_max = getattr(SEED_CFG, "scan_f_max", None)
+    print(
+        f"[vk_blind_sweep] seeding module: {_seeding.__file__} | scan_f_max={scan_f_max}",
+        flush=True,
+    )
+    if scan_f_max is None:
+        raise SystemExit(
+            "stale data_processing.vk_blind_seeding imported (no/None scan_f_max) — "
+            "the band-capped scan is not in effect; check the sys.path pin above"
+        )
+
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--arms", default=",".join(ARM_SETS), help="comma-separated arm subset")
     ap.add_argument(
         "--ladders", default=",".join(LADDERS), help="comma-separated base-ladder subset"
+    )
+    ap.add_argument(
+        "--recordings",
+        default="",
+        help="comma-separated recording subset (of DREGON rids + FLY124-cruise); "
+        "default: all — use for partial reruns, e.g. "
+        "--recordings free-flight_whitenoise-low_room1,FLY124-cruise",
     )
     ap.add_argument("--dregon-dir", default="data/DREGON", help="path or dload:DREGON")
     ap.add_argument(
@@ -670,6 +707,12 @@ def main() -> None:
     if bad:
         raise SystemExit(f"unknown ladders {bad}; valid: {list(LADDERS)}")
     rids = [DREGON_RIDS[0]] if opts.quick else DREGON_RIDS + [FLY124_RID]
+    if opts.recordings:
+        wanted = [r for r in opts.recordings.split(",") if r]
+        bad_r = [r for r in wanted if r not in DREGON_RIDS + [FLY124_RID]]
+        if bad_r:
+            raise SystemExit(f"unknown recordings {bad_r}; valid: {DREGON_RIDS + [FLY124_RID]}")
+        rids = wanted
     if opts.quick:
         opts.seg_len = 10.0
 
