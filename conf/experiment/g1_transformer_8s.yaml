@@ -1,0 +1,23 @@
+# @package _global_
+# G1 (VK-parity) — E12 real full-flight recipe with 8 s training chunks.
+# Sibling of g1_transformer_4s (see that file + docs/experiments/g1-vk-parity.md
+# for motivation); chunk length equals the 8 s evaluation clips of the
+# VK-comparison protocol, so training and inference lengths match exactly.
+# Batch size 16 -> 4 for the 8x-longer chunks (T4/P100 16 GB).
+defaults:
+  - override /data: g1_real_fullflight_8s
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g1_transformer_8s
+epochs: 200
+patience: 20
+batch_size: 4
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

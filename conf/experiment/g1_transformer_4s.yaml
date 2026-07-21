@@ -1,0 +1,26 @@
+# @package _global_
+# G1 (VK-parity) — E12 real full-flight recipe with 4 s training chunks.
+# Phase-A test-time smoothing of the 1 s-chunk E12 transformer plateaued at
+# ~2.7-3 rev/s pooled MAE on the DREGON cruise VK-comparison clips (blind-VK
+# bar 0.68-0.74) — smoothing cannot fix errors that are systematic within a
+# window, so give the model longer native context instead. Everything else
+# (online-mix DREGON whole-envelope + FLY125, time-warp + gain/polarity/
+# channel-drop augs, valid-full validation) matches E12; batch size drops
+# 16 -> 8 for the 4x-longer chunks (T4/P100 16 GB).
+defaults:
+  - override /data: g1_real_fullflight_4s
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g1_transformer_4s
+epochs: 200
+patience: 20
+batch_size: 8
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
