@@ -11,9 +11,9 @@ experiment_name: f1_tfgridnet_b
 amp: false  # complex STFT/iSTFT (ComplexHalf gaps under autocast)
 batch_size: 4  # TF-GridNet is memory-heavy (batch 16 OOMs @ 63GB); effective 16 via grad accum
 grad_accum_steps: 4
-samples_per_validation: 5000
-epochs: 80
-patience: 8
+samples_per_validation: 20000
+epochs: 100
+patience: 20
 optim:
   monitor: si_sdr
   monitor_mode: max
