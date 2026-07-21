@@ -123,6 +123,8 @@ ARM_SETS: dict[str, frozenset[str]] = {
     "T+C": frozenset("TC"),
     "T+C+N": frozenset("TCN"),
     "T+C+N+K": frozenset("TCNK"),
+    "R": frozenset("R"),
+    "K+R": frozenset("KR"),
 }
 LADDERS = ("plain", "vit2dsp")
 DREGON_RIDS = [

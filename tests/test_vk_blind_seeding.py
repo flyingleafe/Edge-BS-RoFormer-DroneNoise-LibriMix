@@ -177,6 +177,41 @@ def test_count_prior_duplicates_twin_pair():
     assert np.any(np.abs(res.bases - 101.0) <= 1.0), f"101 rotor unseeded: {res.bases}"
 
 
+def test_residual_rescan_recovers_shadowed_comb():
+    """(f) Arm R: a weak comb at a near-2x ratio under a strong neighbour is
+    invisible to the plain seeding (the integer-ratio guard shadows it / the
+    doublet structure never looks there); masking the seeded combs and
+    re-scanning the residual recovers it (the FLY124 4th-base mechanism)."""
+    cfg = SeedConfig()
+    profile = profile_flat()
+    # rotors 78 / 84 / 91 + weak 45.9: |2 x 45.9 - 91| = 0.8 < harm_guard,
+    # so the plain machinery shadows 45.9 as a subharmonic of the strong 91
+    # (and the legacy doublet structure never seeds a 3rd distinct comb
+    # anyway). After masking the seeded combs, 45.9's odd teeth dominate the
+    # residual; the span prior is one-sided (high side only) precisely so a
+    # low-side comb under a near-2x neighbour stays recoverable.
+    y = synth_combs(
+        6.0,
+        [78.0, 84.0, 91.0, 45.9],
+        [0.6, 0.75, 1.0, 0.35],
+        profile,
+        noise_scale=0.1,
+        seed=5,
+    )
+    res_plain = blind_seed(y, FS, 4, cfg, arms=())
+    assert not np.any(np.abs(res_plain.bases - 45.9) <= 1.5), (
+        f"plain seeding unexpectedly found the shadowed comb: {res_plain.bases}"
+    )
+    res_r = blind_seed(y, FS, 4, cfg, arms={"R"})
+    assert np.any(np.abs(res_r.bases - 45.9) <= 1.5), (
+        f"arm R failed to recover the shadowed comb: {res_r.bases} "
+        f"(residual diag: {res_r.diagnostics.get('residual_new')})"
+    )
+    # the confirmed combs must survive the re-seed
+    assert np.any(np.abs(res_r.bases - 91.0) <= 1.5), f"91 lost by R: {res_r.bases}"
+    assert np.any(np.abs(res_r.bases - 84.0) <= 1.5), f"84 lost by R: {res_r.bases}"
+
+
 def test_auto_gate_between_hand_tuned_values():
     """(e) Detuned-comb noise-floor calibration lands between the hand-tuned
     gates 8 and 30 for a mid-SNR synthetic case."""

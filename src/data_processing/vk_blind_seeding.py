@@ -20,6 +20,14 @@ shared home of that machinery):
   the missing rotors AT the strongest surviving bases (±``split_nudge``);
   the coupled solve + ``_break_symmetry`` separates true twins. Never invent
   an extra base; never leave a rotor unseeded.
+- **arm R** — residual re-scan (round-4 addition, coordinator-directed):
+  after seeding commits to a set of distinct combs, mask their teeth in the
+  whitened spectrum, re-run the band-capped scan on the residual, and
+  re-seed with any newly exposed comb (a rotor shadowed by a stronger
+  near-integer neighbour — FLY124's 81.3 under 91.8/75.2 — dominates the
+  residual once the others are explained away); remaining slots are
+  duplicated starting at the lowest-scoring used base (a merged twin pair
+  under-scores an equally loud single comb).
 - **arm K** (§7.4) — auto-knobs: per-recording ``update_gate`` from the
   noise floor of the gate's own statistic (periodogram peak/median ratio of
   detuned-comb demod bands with predicted comb lines masked, μ + 3σ) and
@@ -68,6 +76,7 @@ __all__ = [
     "estimate_template",
     "completeness",
     "count_prior",
+    "residual_rescan",
     "auto_knobs",
     "blind_seed",
 ]
@@ -123,6 +132,21 @@ class SeedConfig:
     # arm N — rotor-count prior
     dedup_rps: float = 4.0  # near-duplicate peak suppression (rev/s)
     split_nudge: float = 0.1  # duplicate-seed nudge (± around the pair base)
+    # arm R — residual re-scan
+    r_mask_hz: float = 6.0  # half-width (Hz) of the tooth mask around every
+    # already-seeded comb's harmonics (covers the ~8 Hz Hann main lobe core;
+    # wander tails leak but only near the parent base, and new-comb candidates
+    # must be >= dedup_rps away)
+    r_z_min: float = 3.0  # residual peak acceptance: robust z-score vs the
+    # residual scan-score distribution (FLY124's hidden 81.3 comb re-scans at
+    # z 3.2-3.8 once 91.8/75.2 are masked; wander-tail junk stays below 3)
+    r_span_pad: float = 1.15  # one-sided rotor-band prior on residual combs:
+    # reject candidates ABOVE the strongest used base x this factor (cruise
+    # quadrotor bases sit within ~1.25x — same prior as the 3:2 alias guard;
+    # kills e.g. speech-low's 105.85 residual junk at z 3.1). No low-side
+    # bound: subharmonic aliases of the used combs are already dead in the
+    # residual (their teeth ARE the masked combs' teeth), while a true
+    # low-side comb shadowed by a near-2x neighbour must stay recoverable
     # arm K — auto-knobs
     gate_offsets: tuple[float, ...] = (-3.7, -2.3, 2.3, 3.7)  # detuned bases
     gate_k_max: int = 30  # harmonics used for the gate calibration
@@ -385,6 +409,74 @@ def count_prior(
         seeds.append(anchor + sign * cfg.split_nudge * ((cycle + 1) // 2))
         dup += 1
     return np.sort(np.asarray(seeds))
+
+
+# ---------------------------------------------------------------------------
+# arm R — residual re-scan
+
+
+def _mask_comb_teeth(
+    vec: np.ndarray, bin_hz: float, bases: np.ndarray, cfg: SeedConfig
+) -> np.ndarray:
+    """Zero the whitened spectrum within ``r_mask_hz`` of every tooth of
+    ``bases`` (the whitened floor is ~0, so zeroing = explaining away)."""
+    out = vec.copy()
+    n_f = len(vec)
+    f_hi = min(cfg.f_max, (n_f - 1) * bin_hz)
+    if cfg.scan_f_max is not None:
+        f_hi = min(f_hi, cfg.scan_f_max)
+    for b in np.asarray(bases, dtype=np.float64):
+        for k in range(1, cfg.k_scan + 1):
+            f = k * float(b)
+            if f > f_hi + cfg.r_mask_hz:
+                break
+            lo = max(0, int(np.floor((f - cfg.r_mask_hz) / bin_hz)))
+            hi = min(n_f - 1, int(np.ceil((f + cfg.r_mask_hz) / bin_hz)))
+            out[lo : hi + 1] = 0.0
+    return out
+
+
+def residual_rescan(
+    white_vec: np.ndarray,
+    bin_hz: float,
+    grid: np.ndarray,
+    used_bases: np.ndarray,
+    cfg: SeedConfig | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Band-capped comb scan of the residual spectrum (§7 arm R).
+
+    Masks every already-seeded comb's teeth and re-scans: a rotor whose comb
+    was shadowed in the full spectrum (out-scored, integer-ratio-filtered, or
+    merged with a stronger neighbour) dominates the residual once the
+    explained combs are removed — the FLY124 4th-base mechanism (81.3
+    re-scans at z ~3.5 once 91.8/75.2 are masked). Returns
+    ``(residual scores on grid, accepted new bases, their z-scores)``:
+    accepted = robust z >= ``r_z_min``, at least ``dedup_rps`` from every
+    used base (closer residual peaks are wander tails / twin residue, not
+    distinct combs), and mutually alias-filtered (masking already removed
+    pure aliases OF the used combs, so no filter against those is applied —
+    a shadowed true comb at a near-integer ratio must be recoverable).
+    """
+    cfg = cfg or SeedConfig()
+    masked = _mask_comb_teeth(white_vec, bin_hz, np.asarray(used_bases), cfg)
+    scores_res = comb_scan(masked, bin_hz, grid, cfg)
+    med = float(np.median(scores_res))
+    mad = 1.4826 * float(np.median(np.abs(scores_res - med)))
+    pk = scan_peaks(grid, scores_res, cfg)
+    rb, rs = grid[pk], scores_res[pk]
+    rz = (rs - med) / max(mad, 1e-12)
+    used_arr = np.asarray(used_bases, dtype=np.float64)
+    far = np.array([np.min(np.abs(used_arr - b)) >= cfg.dedup_rps for b in rb], dtype=bool)
+    in_span = rb <= float(used_arr.max()) * cfg.r_span_pad
+    sel = (rz >= cfg.r_z_min) & far & in_span
+    fb, fs2, fz = rb[sel], rs[sel], rz[sel]
+    if len(fb):
+        kept_b, _ = _harmonic_alias_filter(fb, fs2, cfg)
+        keep_mask = np.isin(fb, kept_b)
+        fb, fz = fb[keep_mask], fz[keep_mask]
+        order = np.argsort(fz)[::-1]
+        fb, fz = fb[order], fz[order]
+    return scores_res, fb, fz
 
 
 # ---------------------------------------------------------------------------
@@ -654,9 +746,9 @@ def blind_seed(
     """
     cfg = cfg or SeedConfig()
     arm_set = frozenset(arms)
-    unknown = arm_set - {"T", "C", "N", "K"}
+    unknown = arm_set - {"T", "C", "N", "K", "R"}
     if unknown:
-        raise ValueError(f"unknown arms {sorted(unknown)} (expected subset of T/C/N/K)")
+        raise ValueError(f"unknown arms {sorted(unknown)} (expected subset of T/C/N/K/R)")
 
     white, bin_hz, _ = whitened_logmag(audio, fs, cfg)
     wvec = white.mean(axis=1)
@@ -732,6 +824,46 @@ def blind_seed(
     else:
         bases_out = _legacy_init4(base, surv_b, surv_s, cfg)
 
+    res_diag: dict[str, Any] = {}
+    if "R" in arm_set:
+        # arm R: mask the combs the seeds already commit to, re-scan the
+        # residual, and re-seed — distinct confirmed combs first (used, then
+        # newly exposed residual combs), remaining slots duplicated starting
+        # at the LOWEST-scoring used base: a merged twin pair spreads its
+        # energy over two offset combs, so a pair's peak under-scores an
+        # equally loud single comb (FLY124: pair 75.2 at 0.265 vs single
+        # 91.8 at 0.389; sweep-refutable heuristic).
+        tol = cfg.pair_nudge + cfg.split_nudge + 1e-6
+        used = [
+            (float(c["base"]), float(c["score"]))
+            for c in surv
+            if float(np.min(np.abs(bases_out - float(c["base"])))) <= tol
+        ]
+        if used:
+            used_b = np.array([b for b, _ in used])
+            scores_res, new_b, new_z = residual_rescan(wvec, bin_hz, grid, used_b, cfg)
+            distinct = [b for b, _ in sorted(used, key=lambda t: -t[1])]
+            for b in new_b:
+                if len(distinct) >= n_rotors:
+                    break
+                distinct.append(float(b))
+            seeds_r = list(distinct[:n_rotors])
+            anchors = [b for b, _ in sorted(used, key=lambda t: t[1])]  # score asc
+            dup = 0
+            while len(seeds_r) < n_rotors:
+                anchor = anchors[dup % len(anchors)]
+                cycle = dup // len(anchors) + 1
+                sign = 1.0 if cycle % 2 == 1 else -1.0
+                seeds_r.append(anchor + sign * cfg.split_nudge * ((cycle + 1) // 2))
+                dup += 1
+            bases_out = np.sort(np.asarray(seeds_r))
+            res_diag = {
+                "residual_used": [round(b, 2) for b in used_b],
+                "residual_new": [round(float(b), 2) for b in new_b],
+                "residual_new_z": [round(float(z), 2) for z in new_z],
+                "residual_scores": scores_res,
+            }
+
     update_gate: float | None = None
     bw_hz: float | None = None
     knob_diag: dict[str, Any] = {}
@@ -763,6 +895,7 @@ def blind_seed(
             "template_gate": tgate,
             "peak_speeds": peak_speeds,
             "peak_scores": peak_scores,
+            **res_diag,
             **knob_diag,
         },
     )
