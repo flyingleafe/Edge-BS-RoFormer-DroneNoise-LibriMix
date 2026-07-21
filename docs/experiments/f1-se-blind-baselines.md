@@ -64,6 +64,11 @@ the same architecture set, both scored on the same two fixed validation sets:
   `random_polarity` (the E5 workhorses) are used.
 - `zenodo_drone_noises` excluded from `audio_pool` (published as a single ZIP
   blob, not per-file audio).
+- **`audio_pool` training pool capped at `max_shards: 24`** per dataset: a
+  random shard is drawn per sample, so an uncapped pool over 258 GiB MIMII /
+  88 GiB DroneAudioSet would stream nearly the whole dataset from R2 over a run
+  (infeasible I/O). 24 shards ≈ hundreds of diverse recordings — ample for a
+  noise-augmentation pool — and bounds the pull to ~3 GB/dataset.
 - **SGMSE+ trains via a bespoke score-matching loop** (`scripts/train_sgmse.py`),
   not `train.py`: the discriminative training loop cannot host score-based
   diffusion (needs the clean target fed in during training for the DSM loss,

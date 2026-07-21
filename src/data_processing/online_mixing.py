@@ -712,12 +712,21 @@ class DloadAudioPool:
         channel: str | int = "random",
         reader_cache: int = 2,
         holdout: Mapping[str, Any] | None = None,
+        max_shards: int | None = None,
     ) -> None:
         self.dataset = str(dataset)
         self.version = version
         self.sample_rate = int(sample_rate)
         self.channel = channel
         self.reader_cache = max(1, int(reader_cache))
+        # Cap the number of (post-holdout) shards actually streamed. A random
+        # shard is drawn per sample, so an uncapped pool over a 2003-shard /
+        # 258 GiB dataset (MIMII) would, over a full run, pull essentially the
+        # whole dataset from R2 (coupon-collector) — infeasible I/O + cache
+        # thrash. For a noise-*augmentation* pool a bounded, diverse shard
+        # subset (e.g. 24 shards ≈ hundreds of recordings) is plenty. ``None`` =
+        # all shards (fine for small datasets).
+        self._max_shards = int(max_shards) if max_shards else None
         # Leak-free train/valid split. Preferred: reserve the last ``valid_shards``
         # *whole shards* (= whole recording groups) as the valid partition and
         # everything before as train — so the fixed SE valid set never shares a
@@ -758,6 +767,11 @@ class DloadAudioPool:
             self._holdout_frac = frac  # single-shard fallback: split by sample index
             self._holdout_side = side
 
+        # Bound the streamed shard set (train side) to keep the total R2 pull
+        # feasible; the valid side already reserves only ``valid_shards``.
+        if self._max_shards is not None and side != "valid" and len(shards) > self._max_shards:
+            shards = shards[: self._max_shards]
+
         # Plain, picklable state (crosses the DataLoader fork); the shard structs
         # are dataclasses of str/int.
         self._shards = shards
@@ -783,6 +797,7 @@ class DloadAudioPool:
             channel=_cfg_get(cfg, "channel", "random"),
             reader_cache=int(_cfg_get(cfg, "reader_cache", 2)),
             holdout=_cfg_get(cfg, "holdout", None),
+            max_shards=_cfg_get(cfg, "max_shards", None),
         )
 
     def _index_range(self, n: int) -> tuple[int, int]:
