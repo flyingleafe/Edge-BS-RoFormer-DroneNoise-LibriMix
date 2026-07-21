@@ -54,6 +54,12 @@ the same architecture set, both scored on the same two fixed validation sets:
   multi-resolution STFT); `separation_basic` (si_sdr, sdr) during training;
   `separation_full` (+ pesq, estoi) at eval. Noisy + Wiener anchors in every
   table (`scripts/eval_se_anchors.py`).
+  - **Training length matches the 2023 IEEE Access 12-model benchmark**
+    (Mukhutdinov et al., where DCUNet won): epoch duration ≈ their ~1,300
+    steps/epoch (`samples_per_validation: 20000` → ~1,250 steps at batch 16),
+    early-stop patience NE=30 (`patience: 30`), LR-on-plateau patience Nα=15
+    (`optim.patience: 15`), cap 150 epochs. The first pass early-stopped at ~85k
+    samples (12 min) — patience 8 on a noisy val metric fired on noise.
   - **Why not masked_mse**: the first pass used masked_mse (Paper-1-consistent);
     the resulting dcunet floor came out ~at the *noisy* floor on SI-SDR/eSTOI
     (SDR improved +6–10 dB — it denoises — but scale-invariant metrics did not,
