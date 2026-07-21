@@ -10,11 +10,12 @@ defaults:
 experiment_name: f1_edge_bs_rof_a
 amp: false  # complex STFT/iSTFT (ComplexHalf gaps under autocast)
 samples_per_validation: 20000
-epochs: 100
-patience: 20
+epochs: 150
+patience: 30
 optim:
   monitor: si_sdr
   monitor_mode: max
+  patience: 15
 model:
   params:
     config:
