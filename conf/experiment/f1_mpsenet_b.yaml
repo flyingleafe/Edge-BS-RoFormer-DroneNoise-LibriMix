@@ -9,9 +9,9 @@ defaults:
 
 experiment_name: f1_mpsenet_b
 amp: false  # complex STFT/iSTFT (ComplexHalf gaps under autocast)
-samples_per_validation: 5000
-epochs: 80
-patience: 8
+samples_per_validation: 20000
+epochs: 100
+patience: 20
 optim:
   monitor: si_sdr
   monitor_mode: max
