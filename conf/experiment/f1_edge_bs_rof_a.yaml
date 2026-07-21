@@ -15,3 +15,8 @@ patience: 8
 optim:
   monitor: si_sdr
   monitor_mode: max
+model:
+  params:
+    config:
+      model:
+        flash_attn: false  # framework's pre-run CPU 1-batch validation has no flash SDPA backend
