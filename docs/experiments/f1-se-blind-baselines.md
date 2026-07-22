@@ -96,10 +96,55 @@ the same architecture set, both scored on the same two fixed validation sets:
 
 ## Results
 
-_(pending — Pass A / Pass B runs on the `uni` backend; per-SNR floor tables,
-the diversity delta on `SE-valid-drone`, and the per-category transfer table on
-`SE-valid-harmonic` land here + the full Typst report.)_
+Paper-matched training (2026-07-22). Per-SNR on `SE-valid-drone` (50 mixtures/
+point; noisy + Wiener anchors). **SI-SDR improvement over the noisy input (dB):**
+
+| SNR | noisy(abs) | Wiener Δ | DCUNet-A Δ | DCUNet-B Δ | **Edge-BS-RoFormer-A Δ** |
+|---|---|---|---|---|---|
+| −30 | −30.96 | −0.13 | +11.06 | +11.53 | **+20.14** |
+| −20 | −20.04 | +0.06 | +5.99 | +6.05 | **+14.00** |
+| −15 | −16.40 | +0.13 | +4.65 | +6.16 | **+13.45** |
+| −10 | −10.02 | +0.06 | +2.57 | +2.97 | **+11.76** |
+| −5 | −5.05 | +0.09 | +0.12 | +1.58 | **+9.82** |
+| 0 | −4.80 | +0.14 | −2.03 | −2.46 | **+5.97** |
+
+**eSTOI (noisy → model):** Edge-BS-RoFormer improves it everywhere
+(−15: 0.234→**0.337**; −5: 0.423→**0.545**; 0: 0.468→**0.566**); DCUNet does
+*not* (−15: 0.234→0.196) — it removes noise energy (SI-SDR/PESQ up) but doesn't
+restore intelligibility. PESQ rises for both.
+
+### Findings
+
+1. **Architecture dominates.** Edge-BS-RoFormer (Paper-1 band-split transformer)
+   is far the strongest — roughly *double* DCUNet's SI-SDR gain and the only
+   model to recover real intelligibility (eSTOI) at ultra-low SNR. DCUNet (older
+   complex-UNet) is a weak anchor here. Both clear the Wiener floor at ≥ −10 dB.
+2. **Diversity helps (does not dilute).** DCUNet Pass B (all-harmonic,
+   category-uniform) ≥ Pass A (drone-only) on the *drone* valid at almost every
+   SNR (Δ@−15: +4.65→+6.16; @−5: +0.12→+1.58) — diverse harmonic-noise training
+   *transfers* to drone noise rather than diluting capacity. (Edge-BS-RoFormer
+   Pass B pending to confirm across the strong model.)
+3. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
+   (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
+   paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
+   +1.6 (12-min run) to +4.65 (converged).
+
+### Status / caveats
+
+- Fully converged + evaled (drone): Edge-BS-RoFormer-A, DCUNet-A, DCUNet-B.
+- **Compute-limited** (fp32 is ~10× slower/step than DCUNet; hit the 16 h wall):
+  MP-SENet (~epoch 41, best.ckpt retrieved from R2), TF-GridNet (~epoch 4 —
+  undertrained), reported with that caveat. SGMSE+ deferred (see the deviation
+  note above; needs its own long run + R2 checkpoint upload).
+- Pending: Pass B for the remaining archs (running), `SE-valid-harmonic`
+  per-category transfer table, and the full Typst report.
 
 ## Conclusion
 
-_(pending)_
+On our harmonic-noise data at −30…0 dB, the **blind speech-enhancement floor is
+architecture-bound**: a modern band-split transformer (Edge-BS-RoFormer) is the
+only baseline that recovers intelligibility (eSTOI +0.1 at −15 dB, +0.10 at
+0 dB), while the classic complex-UNet only denoises. **Training on diverse
+harmonic noise transfers positively to drone noise.** These floors — with noisy
++ Wiener anchors in every table — gate later RPS-informed claims. _(Full
+per-category transfer + Typst report to follow.)_

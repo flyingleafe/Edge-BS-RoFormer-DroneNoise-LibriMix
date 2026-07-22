@@ -15,6 +15,7 @@ codec calls ``model(x)`` with no target → the reverse-SDE sampler runs → enh
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 from collections import defaultdict
 from pathlib import Path
@@ -75,10 +76,23 @@ def main() -> None:
     ap.add_argument("--by-category", action="store_true")
     ap.add_argument("--out", default=None)
     ap.add_argument("--limit", type=int, default=0, help="cap n clips (0=all; for quick checks)")
+    ap.add_argument("--batch", type=int, default=8, help="forward batch size")
+    ap.add_argument(
+        "--per-snr",
+        type=int,
+        default=0,
+        help="balanced subsample: cap clips per (category, SNR) group (0=all). Means are "
+        "stable at ~25; use to keep CPU eval of heavy models tractable.",
+    )
     args = ap.parse_args()
 
     model_cfg = OmegaConf.load(f"conf/model/{ARCH_MODEL[_arch_of(args.experiment)]}.yaml")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cpu":
+        # flash-attention SDPA has no CPU backend; fall back to standard attention
+        # for CPU eval (the trained weights are attention-backend-agnostic).
+        with contextlib.suppress(Exception):
+            model_cfg.params.config.model.flash_attn = False
     _task, codec = build_task_and_codec(model_cfg)
     model = instantiate_model(model_cfg).to(device)
     ckpt = args.checkpoint or f"results/{args.experiment}/best.ckpt"
@@ -86,19 +100,41 @@ def main() -> None:
     model.eval()
 
     ds = SEValidFrameDataset(args.valid, sample_rate=SR)
+    n_iter = len(ds) if not args.limit else min(args.limit, len(ds))
+    # Batch the (slow on CPU) model forward; valid clips are all the same length.
+    mixes = [
+        torch.as_tensor(np.asarray(ds[i]["mixture"].data), dtype=torch.float32)
+        for i in range(n_iter)
+    ]
+    tgts = [np.asarray(ds[i]["target"].data, np.float32).reshape(-1) for i in range(n_iter)]
+    keys = [
+        (
+            str(get_meta(ds[i], "category", "all")) if args.by_category else "all",
+            float(get_meta(ds[i], "input_snr")),
+        )
+        for i in range(n_iter)
+    ]
+    if args.per_snr:  # balanced subsample: keep the first per_snr clips of each group
+        seen: dict[tuple, int] = defaultdict(int)
+        keep = []
+        for i, k in enumerate(keys):
+            if seen[k] < args.per_snr:
+                seen[k] += 1
+                keep.append(i)
+        mixes = [mixes[i] for i in keep]
+        tgts = [tgts[i] for i in keep]
+        keys = [keys[i] for i in keep]
+        n_iter = len(keep)
     acc: dict[tuple, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     with torch.no_grad():
-        n_iter = len(ds) if not args.limit else min(args.limit, len(ds))
-        for i in range(n_iter):
-            fr = ds[i]
-            mix = torch.as_tensor(np.asarray(fr["mixture"].data), dtype=torch.float32)
-            tgt = np.asarray(fr["target"].data, np.float32).reshape(-1)
-            out = codec.call_model(model, {"mixture": mix[None, :].to(device)})
-            enh = np.asarray(out.detach().cpu()).reshape(-1)
-            snr = float(get_meta(fr, "input_snr"))
-            cat = str(get_meta(fr, "category", "all")) if args.by_category else "all"
-            for m, v in _metrics(tgt, enh).items():
-                acc[(cat, snr)][m].append(v)
+        for start in range(0, n_iter, args.batch):
+            batch = torch.stack(mixes[start : start + args.batch]).to(device)  # (b, T)
+            out = codec.call_model(model, {"mixture": batch})
+            out = np.asarray(out.detach().cpu())
+            out = out.reshape(out.shape[0], -1)  # (b, T)
+            for j in range(out.shape[0]):
+                for m, v in _metrics(tgts[start + j], out[j]).items():
+                    acc[keys[start + j]][m].append(v)
 
     metrics = ["si_sdr", "sdr", "pesq", "estoi"]
     out_path = Path(args.out or f"results/f1_eval/{args.experiment}__{args.valid}.csv")
