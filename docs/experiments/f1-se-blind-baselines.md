@@ -1,6 +1,7 @@
 **Status:** in progress · 2026-07-20 – present · plan:
 [`docs/se-baselines-plan.md`](../se-baselines-plan.md) (Track 1 M1.1–M1.4 of
-`docs/three-track-plan-2026-07-20.md`)
+`docs/three-track-plan-2026-07-20.md`) · **report:**
+[`writing/reports/2026-07-22_se-blind-baselines/`](../../writing/reports/2026-07-22_se-blind-baselines/report.pdf)
 
 # F1 — SE blind (no-RPS) baselines on our data
 
