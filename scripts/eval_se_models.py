@@ -15,6 +15,7 @@ codec calls ``model(x)`` with no target → the reverse-SDE sampler runs → enh
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 from collections import defaultdict
 from pathlib import Path
@@ -79,6 +80,11 @@ def main() -> None:
 
     model_cfg = OmegaConf.load(f"conf/model/{ARCH_MODEL[_arch_of(args.experiment)]}.yaml")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cpu":
+        # flash-attention SDPA has no CPU backend; fall back to standard attention
+        # for CPU eval (the trained weights are attention-backend-agnostic).
+        with contextlib.suppress(Exception):
+            model_cfg.params.config.model.flash_attn = False
     _task, codec = build_task_and_codec(model_cfg)
     model = instantiate_model(model_cfg).to(device)
     ckpt = args.checkpoint or f"results/{args.experiment}/best.ckpt"
