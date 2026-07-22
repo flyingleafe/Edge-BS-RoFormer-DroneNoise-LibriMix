@@ -96,55 +96,71 @@ the same architecture set, both scored on the same two fixed validation sets:
 
 ## Results
 
-Paper-matched training (2026-07-22). Per-SNR on `SE-valid-drone` (50 mixtures/
-point; noisy + Wiener anchors). **SI-SDR improvement over the noisy input (dB):**
+Paper-matched training (2026-07-22). Per-SNR on `SE-valid-drone`; all models on
+the **same 25 mixtures/point** (fair cross-model subset — 50-vs-25 mixing is
+unfair because SI-SDR is high-variance at 0 dB; the 25-subset ranking is stable,
+absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
 
-| SNR | noisy(abs) | Wiener Δ | DCUNet-A Δ | DCUNet-B Δ | **Edge-BS-RoFormer-A Δ** |
+**SI-SDR improvement over noisy input (dB):**
+
+| SNR | Wiener | **MP-SENet-A** | TF-GridNet-A | Edge-BS-RoF-A | DCUNet-A | DCUNet-B |
+|---|---|---|---|---|---|---|
+| −30 | −0.1 | **+23.2** | +17.0 | +21.1 | +10.2 | +11.9 |
+| −20 | +0.1 | **+18.5** | +11.9 | +13.9 | +6.0 | +6.0 |
+| −15 | +0.1 | **+21.4** | +16.8 | +14.4 | +5.0 | +7.6 |
+| −10 | +0.1 | **+17.9** | +13.7 | +12.6 | +2.7 | +3.9 |
+| −5 | +0.1 | **+14.0** | +11.6 | +9.6 | −0.2 | +0.7 |
+| 0 | +0.1 | **+16.6** | +14.5 | +11.1 | +2.7 | +2.2 |
+
+**eSTOI (noisy → model):**
+
+| SNR | noisy | MP-SENet | TF-GridNet | Edge-BS-RoF | DCUNet-A |
 |---|---|---|---|---|---|
-| −30 | −30.96 | −0.13 | +11.06 | +11.53 | **+20.14** |
-| −20 | −20.04 | +0.06 | +5.99 | +6.05 | **+14.00** |
-| −15 | −16.40 | +0.13 | +4.65 | +6.16 | **+13.45** |
-| −10 | −10.02 | +0.06 | +2.57 | +2.97 | **+11.76** |
-| −5 | −5.05 | +0.09 | +0.12 | +1.58 | **+9.82** |
-| 0 | −4.80 | +0.14 | −2.03 | −2.46 | **+5.97** |
-
-**eSTOI (noisy → model):** Edge-BS-RoFormer improves it everywhere
-(−15: 0.234→**0.337**; −5: 0.423→**0.545**; 0: 0.468→**0.566**); DCUNet does
-*not* (−15: 0.234→0.196) — it removes noise energy (SI-SDR/PESQ up) but doesn't
-restore intelligibility. PESQ rises for both.
+| −15 | 0.234 | **0.540** | 0.436 | 0.370 | 0.228 |
+| −10 | 0.276 | **0.643** | 0.533 | 0.454 | 0.249 |
+| −5 | 0.423 | **0.693** | 0.603 | 0.534 | 0.350 |
+| 0 | 0.468 | **0.789** | 0.687 | 0.609 | 0.418 |
 
 ### Findings
 
-1. **Architecture dominates.** Edge-BS-RoFormer (Paper-1 band-split transformer)
-   is far the strongest — roughly *double* DCUNet's SI-SDR gain and the only
-   model to recover real intelligibility (eSTOI) at ultra-low SNR. DCUNet (older
-   complex-UNet) is a weak anchor here. Both clear the Wiener floor at ≥ −10 dB.
+1. **Architecture dominates, and the newer SE ports win.** Ranking
+   **MP-SENet > TF-GridNet ≳ Edge-BS-RoFormer ≫ DCUNet**. MP-SENet (parallel
+   magnitude+phase, 2023) is far the strongest — SI-SDR +21 dB and eSTOI
+   0.234→0.540 at −15 dB — and **both ports beat the Paper-1 Edge-BS-RoFormer**.
+   Notably MP-SENet and TF-GridNet were *compute-limited* (see caveats), so their
+   true ceiling is **higher** than shown. DCUNet (older complex-UNet) barely
+   lifts intelligibility (≈ noisy eSTOI) — it denoises (SI-SDR/PESQ up) but does
+   not restore speech. All beat the Wiener floor at ≥ −10 dB.
 2. **Diversity helps (does not dilute).** DCUNet Pass B (all-harmonic,
    category-uniform) ≥ Pass A (drone-only) on the *drone* valid at almost every
-   SNR (Δ@−15: +4.65→+6.16; @−5: +0.12→+1.58) — diverse harmonic-noise training
-   *transfers* to drone noise rather than diluting capacity. (Edge-BS-RoFormer
-   Pass B pending to confirm across the strong model.)
+   SNR (Δ@−15: +5.0→+7.6) — diverse harmonic-noise training *transfers* to drone
+   noise rather than diluting capacity. (Confirming across the stronger archs is
+   pending their Pass B runs.)
 3. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
    (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
    paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
-   +1.6 (12-min run) to +4.65 (converged).
+   +1.6 (12-min run) to +5.0 (converged).
 
 ### Status / caveats
 
 - Fully converged + evaled (drone): Edge-BS-RoFormer-A, DCUNet-A, DCUNet-B.
-- **Compute-limited** (fp32 is ~10× slower/step than DCUNet; hit the 16 h wall):
-  MP-SENet (~epoch 41, best.ckpt retrieved from R2), TF-GridNet (~epoch 4 —
-  undertrained), reported with that caveat. SGMSE+ deferred (see the deviation
-  note above; needs its own long run + R2 checkpoint upload).
-- Pending: Pass B for the remaining archs (running), `SE-valid-harmonic`
-  per-category transfer table, and the full Typst report.
+- **Compute-limited** (fp32 is ~10× slower/step than DCUNet — MP-SENet 1.5 it/s,
+  TF-GridNet slower at batch 4; hit the 16 h wall so marked "failed" but their
+  best.ckpt was recovered from R2): MP-SENet-A (~epoch 41), TF-GridNet-A
+  (undertrained). **Their reported numbers are lower bounds.** SGMSE+ deferred.
+- Eval is CPU-bound here (heavy fp32 forwards); the 2100-clip `SE-valid-harmonic`
+  per-category transfer table needs GPU eval (follow-up).
+- Pending: Pass B for the stronger archs (running), harmonic transfer, Typst
+  report.
 
 ## Conclusion
 
 On our harmonic-noise data at −30…0 dB, the **blind speech-enhancement floor is
-architecture-bound**: a modern band-split transformer (Edge-BS-RoFormer) is the
-only baseline that recovers intelligibility (eSTOI +0.1 at −15 dB, +0.10 at
-0 dB), while the classic complex-UNet only denoises. **Training on diverse
-harmonic noise transfers positively to drone noise.** These floors — with noisy
-+ Wiener anchors in every table — gate later RPS-informed claims. _(Full
-per-category transfer + Typst report to follow.)_
+architecture-bound and set by the newer SE models**: **MP-SENet** (parallel
+magnitude+phase) is the strongest baseline (eSTOI 0.23→0.54 at −15 dB, 0.47→0.79
+at 0 dB), with **TF-GridNet and both beating the Paper-1 Edge-BS-RoFormer** even
+while compute-limited; the classic complex-UNet (DCUNet) only denoises without
+restoring intelligibility. **Training on diverse harmonic noise transfers
+positively to drone noise.** These floors — with noisy + Wiener anchors in every
+table — gate later RPS-informed claims. _(Full per-category transfer + Typst
+report to follow; fp16 training would let the heavy models fully converge.)_
