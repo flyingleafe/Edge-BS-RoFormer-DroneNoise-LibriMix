@@ -132,13 +132,25 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
    true ceiling is **higher** than shown. DCUNet (older complex-UNet) barely
    lifts intelligibility (≈ noisy eSTOI) — it denoises (SI-SDR/PESQ up) but does
    not restore speech. All beat the Wiener floor at ≥ −10 dB.
-2. **Diversity is architecture-dependent (helps weak, hurts strong).** On the
+2. **Diversity is capacity-dependent (helps only the weak model).** On the
    *drone* valid, DCUNet Pass B (all-harmonic) ≥ Pass A (drone-only) at most SNRs
-   (Δ SI-SDR@−15: +5.0→+7.6) — extra harmonic data helps the under-fitting model.
-   But **Edge-BS-RoFormer Pass B is markedly *worse*** (Δ@−15: +14.4→+10.0; eSTOI
-   0.370→0.334) — under equal budget, diverse noise dilutes the strong model's
-   drone-specific capacity. So data breadth should scale *with*, not substitute
-   for, architecture/budget. (MP-SENet/TF-GridNet Pass B pending to confirm.)
+   (Δ SI-SDR@−15: +2.5) — extra harmonic data helps the under-fitting model. But
+   **all three stronger ports are hurt or unmoved** — the split is clean across
+   every arch. Δ SI-SDR B−A (dB), per SNR {−30,−25,−20,−15,−10,−5,0}:
+
+   | arch | −30 | −25 | −20 | −15 | −10 | −5 | 0 |
+   |---|---|---|---|---|---|---|---|
+   | DCUNet (weak) | +1.7 | −0.0 | −0.0 | **+2.5** | +1.2 | +0.9 | −0.6 |
+   | MP-SENet | −3.6 | −4.6 | −4.3 | −2.6 | −1.4 | −0.1 | +0.0 |
+   | TF-GridNet | −1.1 | −0.8 | −1.3 | −2.2 | −3.6 | −2.3 | −1.3 |
+   | Edge-BS-RoF | −3.6 | −4.5 | −6.3 | −4.4 | −2.9 | −3.0 | −1.3 |
+
+   Edge-BS-RoFormer and TF-GridNet also lose eSTOI across the board (Edge-BS-RoF
+   −0.036 @−15, TF-GridNet −0.031); MP-SENet is flat on eSTOI. Under equal budget,
+   diverse noise dilutes drone-specific capacity — data breadth should scale
+   *with*, not substitute for, architecture/budget. (MP-SENet/TF-GridNet Pass B
+   read from best-drone-valid checkpoints while their runs continue; matched to
+   same-regime Pass A ckpts, so the direction is a fair within-arch comparison.)
 3. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
    (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
    paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
@@ -153,8 +165,9 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
   (undertrained). **Their reported numbers are lower bounds.** SGMSE+ deferred.
 - Eval is CPU-bound here (heavy fp32 forwards); the 2100-clip `SE-valid-harmonic`
   per-category transfer table needs GPU eval (follow-up).
-- Pending: Pass B for the stronger archs (running), harmonic transfer, Typst
-  report.
+- Pass B complete on drone valid for all four discriminative archs (dcunet, edge,
+  mpsenet, tfgridnet — the last two from best-drone-valid ckpts while jobs run).
+- Pending: `SE-valid-harmonic` per-category transfer table, SGMSE+.
 
 ## Conclusion
 
@@ -163,11 +176,10 @@ architecture-bound and set by the newer SE models**: **MP-SENet** (parallel
 magnitude+phase) is the strongest baseline (eSTOI 0.23→0.54 at −15 dB, 0.47→0.79
 at 0 dB), with **TF-GridNet and both beating the Paper-1 Edge-BS-RoFormer** even
 while compute-limited; the classic complex-UNet (DCUNet) only denoises without
-restoring intelligibility. **The value of diverse-harmonic training is
-architecture-dependent** — it helps the weak DCUNet but *dilutes* the strong
-Edge-BS-RoFormer on drone noise, so data breadth must scale with capacity, not
-replace it. These floors — with noisy + Wiener anchors in every table — gate
-later RPS-informed claims. Report:
-`writing/reports/2026-07-22_se-blind-baselines/`. _(Per-category harmonic
-transfer + MP-SENet/TF-GridNet Pass B to follow; fp16 would let the heavy models
-fully converge.)_
+restoring intelligibility. **Diverse-harmonic training is capacity-dependent** —
+it helps only the weak DCUNet and *dilutes* all three stronger ports (MP-SENet,
+TF-GridNet, Edge-BS-RoFormer) on drone noise; the split is clean across every
+arch, so data breadth must scale with capacity, not replace it. These floors —
+with noisy + Wiener anchors in every table — gate later RPS-informed claims.
+Report: `writing/reports/2026-07-22_se-blind-baselines/`. _(Per-category harmonic
+transfer table to follow; fp16 would let the heavy models fully converge.)_
