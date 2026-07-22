@@ -132,11 +132,13 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
    true ceiling is **higher** than shown. DCUNet (older complex-UNet) barely
    lifts intelligibility (≈ noisy eSTOI) — it denoises (SI-SDR/PESQ up) but does
    not restore speech. All beat the Wiener floor at ≥ −10 dB.
-2. **Diversity helps (does not dilute).** DCUNet Pass B (all-harmonic,
-   category-uniform) ≥ Pass A (drone-only) on the *drone* valid at almost every
-   SNR (Δ@−15: +5.0→+7.6) — diverse harmonic-noise training *transfers* to drone
-   noise rather than diluting capacity. (Confirming across the stronger archs is
-   pending their Pass B runs.)
+2. **Diversity is architecture-dependent (helps weak, hurts strong).** On the
+   *drone* valid, DCUNet Pass B (all-harmonic) ≥ Pass A (drone-only) at most SNRs
+   (Δ SI-SDR@−15: +5.0→+7.6) — extra harmonic data helps the under-fitting model.
+   But **Edge-BS-RoFormer Pass B is markedly *worse*** (Δ@−15: +14.4→+10.0; eSTOI
+   0.370→0.334) — under equal budget, diverse noise dilutes the strong model's
+   drone-specific capacity. So data breadth should scale *with*, not substitute
+   for, architecture/budget. (MP-SENet/TF-GridNet Pass B pending to confirm.)
 3. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
    (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
    paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
@@ -161,7 +163,11 @@ architecture-bound and set by the newer SE models**: **MP-SENet** (parallel
 magnitude+phase) is the strongest baseline (eSTOI 0.23→0.54 at −15 dB, 0.47→0.79
 at 0 dB), with **TF-GridNet and both beating the Paper-1 Edge-BS-RoFormer** even
 while compute-limited; the classic complex-UNet (DCUNet) only denoises without
-restoring intelligibility. **Training on diverse harmonic noise transfers
-positively to drone noise.** These floors — with noisy + Wiener anchors in every
-table — gate later RPS-informed claims. _(Full per-category transfer + Typst
-report to follow; fp16 training would let the heavy models fully converge.)_
+restoring intelligibility. **The value of diverse-harmonic training is
+architecture-dependent** — it helps the weak DCUNet but *dilutes* the strong
+Edge-BS-RoFormer on drone noise, so data breadth must scale with capacity, not
+replace it. These floors — with noisy + Wiener anchors in every table — gate
+later RPS-informed claims. Report:
+`writing/reports/2026-07-22_se-blind-baselines/`. _(Per-category harmonic
+transfer + MP-SENet/TF-GridNet Pass B to follow; fp16 would let the heavy models
+fully converge.)_
