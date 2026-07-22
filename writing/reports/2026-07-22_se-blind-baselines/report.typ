@@ -20,9 +20,9 @@
     (MP-SENet, TF-GridNet) beat the in-house Edge-BS-RoFormer — even while
     compute-limited — while the classic complex-UNet (DCUNet) only removes noise
     energy without restoring intelligibility. Whether training on *diverse*
-    harmonic noise helps on drone noise is *architecture-dependent* — it aids the
-    capacity-limited DCUNet but dilutes the strong Edge-BS-RoFormer. These floors
-    gate later rotor-informed claims.
+    harmonic noise helps on drone noise is *capacity-dependent* — it aids only
+    the capacity-limited DCUNet and dilutes all three stronger ports (MP-SENet,
+    TF-GridNet, Edge-BS-RoFormer). These floors gate later rotor-informed claims.
   ],
   keywords: ("speech enhancement", "drone ego-noise", "ultra-low SNR", "SI-SDR", "blind baselines"),
 )
@@ -137,29 +137,35 @@ rise) without restoring speech.
   caption: [Absolute eSTOI (higher = more intelligible), noisy input vs models.],
 ) <tbl:estoi>
 
-*Diversity verdict — architecture-dependent (@tbl:div).* We compare each model's
+*Diversity verdict — capacity-dependent (@tbl:div).* We compare each model's
 drone-only pool (Pass A) against the all-harmonic pool (Pass B), scored on the
-drone valid (both passes select the best drone-valid checkpoint). The verdict
-*reverses* with model capacity: for the weak *DCUNet*, Pass B $>=$ Pass A at most
-SNRs (Δ SI-SDR at −15 dB: +5.0 → +7.6) — the extra harmonic data helps a model
-that under-fits drone noise alone. For the strong *Edge-BS-RoFormer*, Pass B is
-markedly *worse* (Δ at −15 dB: +14.4 → +10.0; eSTOI 0.370 → 0.334) — under an
-equal training budget, diverse noise dilutes its drone-specific capacity. The
+drone valid (both passes select the best drone-valid checkpoint, and both are the
+same compute-limited regime, so the delta is a fair within-architecture
+comparison). The verdict splits cleanly by capacity: for the weak *DCUNet*,
+Pass B $>=$ Pass A at most SNRs (Δ SI-SDR at −15 dB: +2.5) — extra harmonic data
+helps a model that under-fits drone noise alone. But *all three stronger ports
+are hurt or unmoved*: Edge-BS-RoFormer and TF-GridNet lose SI-SDR at every SNR
+and eSTOI across the board (Edge-BS-RoF eSTOI −0.036 at −15 dB, TF-GridNet
+−0.031), while MP-SENet loses SI-SDR at low SNR and is flat on eSTOI. Under an
+equal training budget, diverse noise dilutes drone-specific capacity; the
 transferable structure of rotating-source harmonics helps only when the model is
-capacity-limited on the target; a capable model does better *focusing* on the
+capacity-limited on the target. A capable model does better *focusing* on the
 target noise.
 
 #figure(
   table(
     columns: 8,
     align: (left, center, center, center, center, center, center, center),
-    table.header([model], [−30], [−25], [−20], [−15], [−10], [−5], [0]),
-    [DCUNet (B−A)], [+1.7], [−0.0], [−0.0], [*+2.5*], [+1.2], [+0.9], [−0.6],
-    [Edge-BS-RoF (B−A)], [−3.6], [−4.5], [−6.3], [*−4.4*], [−2.9], [−3.0], [−1.3],
+    table.header([model (B−A)], [−30], [−25], [−20], [−15], [−10], [−5], [0]),
+    [DCUNet (weak)], [*+1.7*], [−0.0], [−0.0], [*+2.5*], [*+1.2*], [*+0.9*], [−0.6],
+    [MP-SENet], [−3.6], [−4.6], [−4.3], [−2.6], [−1.4], [−0.1], [+0.0],
+    [TF-GridNet], [−1.1], [−0.8], [−1.3], [−2.2], [−3.6], [−2.3], [−1.3],
+    [Edge-BS-RoF], [−3.6], [−4.5], [−6.3], [−4.4], [−2.9], [−3.0], [−1.3],
   ),
   caption: [Diversity delta: Δ SI-SDR of Pass B (all-harmonic) minus Pass A
-    (drone-only) on the drone valid (dB). Positive = diversity helps. It helps
-    the weak DCUNet, hurts the strong Edge-BS-RoFormer.],
+    (drone-only) on the drone valid (dB). Positive (bold) = diversity helps.
+    It helps only the capacity-limited DCUNet; the three stronger ports are
+    hurt or unmoved.],
 ) <tbl:div>
 
 *Loss and length matter.* On DCUNet, masked-MSE gave a floor essentially at the
@@ -183,19 +189,23 @@ attenuation.
 That MP-SENet and TF-GridNet win *while compute-limited* (the caveats below) means
 their true ceiling is higher still. The diversity result cautions against a
 one-size-fits-all data recipe: broadening training to many harmonic-noise
-families helps a capacity-limited model but *hurts* a strong one on the target
-noise, so data breadth should scale with — not substitute for — architecture and
-training budget. Confirming this reversal on MP-SENet / TF-GridNet is the natural
-next step.
+families helps only the capacity-limited DCUNet and *hurts or fails to help* all
+three stronger ports on the target noise. The split is clean across every model
+we ran, so data breadth should scale with — not substitute for — architecture and
+training budget.
 
 == Status and caveats
 The MP-SENet and TF-GridNet numbers are *lower bounds*: `amp`-off fp32 makes them
 $tilde.op 10 times$ slower per step than DCUNet (MP-SENet 1.5 it/s; TF-GridNet
 slower at batch 4), so both hit the wall-clock wall before convergence; their
 best checkpoints were recovered from object storage. fp16 training (STFT kept in
-fp32) would let them converge and would likely widen their lead. SGMSE+ (65 M,
-score-matching) is deferred — it needs a bespoke training loop and a multi-day
-budget. The per-category *harmonic-noise* transfer table (2100 clips) and Pass B
-for the stronger architectures are follow-ups pending GPU-side evaluation.
+fp32) would let them converge and would likely widen their lead. The Pass B
+deltas for the compute-limited MP-SENet and TF-GridNet are read from their
+best-drone-valid checkpoints while their runs continue, matched against the
+same-regime Pass A checkpoints; the direction of the diversity effect is stable,
+absolute magnitudes may tighten as they converge. SGMSE+ (65 M, score-matching)
+is deferred — it needs a bespoke training loop and a multi-day budget. The
+per-category *harmonic-noise* transfer table (2100 clips) is a follow-up pending
+GPU-side evaluation.
 
 #bibliography("refs.bib", style: "ieee")
