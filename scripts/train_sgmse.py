@@ -18,6 +18,7 @@ calls ``model(x)`` with no target → the model samples → enhanced).
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -58,6 +59,60 @@ def _stream(policy_name: str, local_speech: bool):
     return OnlineMixFrameDataset.from_config(cfg)
 
 
+def _r2_client():
+    """Boto3 client for the checkpoint bucket (ml-data), or None if no creds.
+
+    Creds ship with every omnirun job via .env; fall back to parsing .env so a
+    bare run still works. Periodic upload is what lets a cancelled job's progress
+    survive — ``omnirun pull`` is unreliable and best/last.ckpt only live in the
+    job's ``results/`` otherwise.
+    """
+    acct = os.environ.get("R2_ACCOUNT_ID")
+    if not acct and Path(".env").exists():
+        for line in Path(".env").read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip())
+        acct = os.environ.get("R2_ACCOUNT_ID")
+    if not acct:
+        return None
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{acct}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def _r2_upload(client, exp: str, local: Path, name: str) -> None:
+    if client is None:
+        return
+    try:
+        client.upload_file(str(local), "ml-data", f"artifacts/{exp}/checkpoints/{name}")
+        print(f"[sgmse] uploaded {name} -> R2", flush=True)
+    except Exception as e:  # noqa: BLE001 - upload is best-effort
+        print(f"[sgmse] R2 upload failed ({name}): {e}", flush=True)
+
+
+def _r2_resume(client, exp: str, run_dir: Path, model, device) -> bool:
+    if client is None:
+        return False
+    key = f"artifacts/{exp}/checkpoints/last.ckpt"
+    try:
+        client.head_object(Bucket="ml-data", Key=key)
+    except Exception:  # noqa: BLE001 - no prior ckpt is the normal cold-start case
+        return False
+    dst = run_dir / "last.ckpt"
+    client.download_file("ml-data", key, str(dst))
+    model.load_state_dict(torch.load(dst, map_location=device, weights_only=True))
+    print("[sgmse] resumed from R2 last.ckpt", flush=True)
+    return True
+
+
 def _sisdr(model, vds, n, device) -> float:
     model.eval()
     idxs = list(range(0, len(vds), max(1, len(vds) // n)))[:n]
@@ -87,6 +142,12 @@ def main() -> None:
     ap.add_argument("--results-root", default="results")
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--max-seconds", type=float, default=0.0, help="wall-clock cap (0=off)")
+    ap.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="cold-start even if an R2 last.ckpt exists (default: resume so chunked "
+        "wall-clock-limited jobs accumulate weights across restarts).",
+    )
     args = ap.parse_args()
 
     p = args.experiment.rsplit("_", 1)[-1]
@@ -109,6 +170,9 @@ def main() -> None:
 
     run_dir = Path(args.results_root) / args.experiment
     run_dir.mkdir(parents=True, exist_ok=True)
+    r2 = _r2_client()
+    if not args.no_resume:
+        _r2_resume(r2, args.experiment, run_dir, model, device)
     run = None
     if args.wandb:
         import wandb
@@ -149,15 +213,20 @@ def main() -> None:
             if run:
                 run.log({"val/si_sdr": sisdr}, step=step)
             torch.save(model.state_dict(), run_dir / "last.ckpt")
+            _r2_upload(r2, args.experiment, run_dir / "last.ckpt", "last.ckpt")
             if sisdr > best:
                 best = sisdr
                 torch.save(model.state_dict(), run_dir / "best.ckpt")
+                _r2_upload(r2, args.experiment, run_dir / "best.ckpt", "best.ckpt")
                 print(f"[sgmse] new best si_sdr {best:.3f} -> best.ckpt", flush=True)
         if args.max_seconds and (time.time() - t0) > args.max_seconds:
             print(f"[sgmse] wall-clock cap hit at step {step}", flush=True)
             torch.save(model.state_dict(), run_dir / "last.ckpt")
+            _r2_upload(r2, args.experiment, run_dir / "last.ckpt", "last.ckpt")
             break
     print("[sgmse] done", flush=True)
+    torch.save(model.state_dict(), run_dir / "last.ckpt")
+    _r2_upload(r2, args.experiment, run_dir / "last.ckpt", "last.ckpt")
 
 
 if __name__ == "__main__":
