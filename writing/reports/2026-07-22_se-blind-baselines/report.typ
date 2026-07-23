@@ -2,7 +2,7 @@
 
 #show: report.with(
   title: [Blind Speech-Enhancement Floors under Harmonic Rotor Noise\
-    #text(size: 12pt)[A five-architecture, two-pass baseline study on drone and harmonic noise]],
+    #text(size: 12pt)[A two-pass baseline study of four discriminative architectures on drone and harmonic noise]],
   authors: (
     "Dmitrii Mukhutdinov": author-meta("project"),
   ),
@@ -11,10 +11,12 @@
   ),
   abstract: [
     We establish the *blind* (no rotor-speed side information) speech-enhancement
-    floor on our ultra-low-SNR (−30…0 dB) harmonic-noise data with five modern
-    architectures, trained in two passes — on drone noise only, and on a
-    category-uniform mix of nine harmonic-noise families — and scored on a
-    fixed, held-out validation set against noisy-input and Wiener anchors.
+    floor on our ultra-low-SNR (−30…0 dB) harmonic-noise data with four modern
+    discriminative architectures (a fifth, the score-based SGMSE+, is ported but
+    its multi-day training is deferred), each trained in two passes — on drone
+    noise only, and on a category-uniform mix of harmonic-noise families — and
+    scored on fixed, held-out drone and per-family validation sets against
+    noisy-input and Wiener anchors.
     The floor is strongly *architecture-bound*: MP-SENet (parallel
     magnitude+phase) is the strongest baseline, and both ported models
     (MP-SENet, TF-GridNet) beat the in-house Edge-BS-RoFormer — even while
