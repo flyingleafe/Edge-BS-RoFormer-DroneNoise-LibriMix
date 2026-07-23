@@ -2,7 +2,7 @@
 
 #show: report.with(
   title: [Blind Speech-Enhancement Floors under Harmonic Rotor Noise\
-    #text(size: 12pt)[A two-pass baseline study of four discriminative architectures on drone and harmonic noise]],
+    #text(size: 12pt)[A two-pass baseline study of five architectures on drone and harmonic noise]],
   authors: (
     "Dmitrii Mukhutdinov": author-meta("project"),
   ),
@@ -11,12 +11,12 @@
   ),
   abstract: [
     We establish the *blind* (no rotor-speed side information) speech-enhancement
-    floor on our ultra-low-SNR (−30…0 dB) harmonic-noise data with four modern
-    discriminative architectures (a fifth, the score-based SGMSE+, is ported but
-    its multi-day training is deferred), each trained in two passes — on drone
-    noise only, and on a category-uniform mix of harmonic-noise families — and
-    scored on fixed, held-out drone and per-family validation sets against
-    noisy-input and Wiener anchors.
+    floor on our ultra-low-SNR (−30…0 dB) harmonic-noise data with five modern
+    architectures — four discriminative models and the score-based generative
+    SGMSE+ — each trained in two passes (on drone noise only, and on a
+    category-uniform mix of harmonic-noise families) and scored on fixed,
+    held-out drone and per-family validation sets against noisy-input and Wiener
+    anchors.
     The floor is strongly *architecture-bound*: MP-SENet (parallel
     magnitude+phase) is the strongest baseline, and both ported models
     (MP-SENet, TF-GridNet) beat the in-house Edge-BS-RoFormer — even while
@@ -24,7 +24,10 @@
     energy without restoring intelligibility. Whether training on *diverse*
     harmonic noise helps on drone noise is *capacity-dependent* — it aids only
     the capacity-limited DCUNet and dilutes all three stronger ports (MP-SENet,
-    TF-GridNet, Edge-BS-RoFormer). These floors gate later rotor-informed claims.
+    TF-GridNet, Edge-BS-RoFormer). Trained from scratch on the same budget, the
+    generative SGMSE+ does not reach viability — its sampler stays below the
+    noisy floor — so the blind floor here is a discriminative result. These
+    floors gate later rotor-informed claims.
   ],
   keywords: ("speech enhancement", "drone ego-noise", "ultra-low SNR", "SI-SDR", "blind baselines"),
 )
@@ -71,7 +74,8 @@ Five blind (no-RPS) waveform-in/waveform-out models: *Edge-BS-RoFormer*
 full+sub-band dual-path, mid-size $tilde.op 8.4$ M, ported), *MP-SENet* (parallel
 magnitude+phase, $tilde.op 1.7$ M, ported), *DCUNet* (complex U-Net, the 2023
 benchmark winner @mukhutdinov2023 — a continuity anchor), and *SGMSE+*
-(score-based diffusion, ported, trained from scratch; deferred; see the caveats below).
+(score-based diffusion, ported, trained from scratch via a bespoke score-matching
+loop; @tbl:sgmse and the caveats below).
 
 == Loss and training
 An initial masked-MSE pass produced floors *at* the noisy level (at ultra-low
@@ -234,6 +238,38 @@ neither holds.
     stochastic MIMII families lose for the strong models.],
 ) <tbl:harmtransfer>
 
+== The generative baseline: SGMSE+ from scratch
+The fifth architecture, SGMSE+, is score-based diffusion — a different training
+paradigm (denoising score-matching + a reverse-SDE sampler at inference), trained
+here from scratch via a bespoke loop. @tbl:sgmse reports it on the drone valid
+against the noisy anchor. The result is unambiguous: *the reverse-SDE output is
+below the noisy input at every SNR* — SI-SDR is 25–30 dB worse and eSTOI collapses
+to ≈ 0 (no intelligibility). The training signal explains why: the score net's
+loss drops sharply in the first ~2k steps and then the validation SI-SDR stays
+*flat across training* — the model learns the score field but the sampler never
+converges to clean speech within budget. A 65 M NCSN++ trained from scratch needs
+orders of magnitude more compute than the discriminative models (the SGMSE
+papers train ≈ 100× longer); under an equal budget it is *not viable*. This is a
+useful negative control: the blind floor on our data is set by discriminative
+enhancement, not by a from-scratch generative model.
+
+#figure(
+  table(
+    columns: 5,
+    align: (left, center, center, center, center),
+    table.header([SNR], [noisy SI-SDR], [SGMSE+ SI-SDR], [noisy eSTOI], [SGMSE+ eSTOI]),
+    [−30], [−31.0], [−57.2], [0.046], [0.008],
+    [−20], [−20.0], [−42.7], [0.112], [−0.003],
+    [−15], [−16.4], [−40.2], [0.234], [−0.002],
+    [−10], [−10.0], [−34.1], [0.276], [−0.002],
+    [−5], [−5.1], [−31.4], [0.423], [0.001],
+    [0], [−4.8], [−29.9], [0.468], [0.008],
+  ),
+  caption: [SGMSE+ (Pass B, from-scratch score diffusion) vs the noisy anchor on
+    `SE-valid-drone`. The undertrained sampler is *below* the noisy input
+    everywhere (eSTOI ≈ 0) — a compute-bounded non-viable baseline, not a floor.],
+) <tbl:sgmse>
+
 = Discussion
 
 The blind floor on our data is set by the *newer* speech-enhancement
@@ -263,10 +299,12 @@ fp32) would let them converge and would likely widen their lead. The Pass B
 deltas for the compute-limited MP-SENet and TF-GridNet are read from their
 best-drone-valid checkpoints while their runs continue, matched against the
 same-regime Pass A checkpoints; the direction of the diversity effect is stable,
-absolute magnitudes may tighten as they converge. SGMSE+ (65 M, score-matching)
-is deferred — it needs a bespoke training loop and a multi-day budget. The
-per-category harmonic tables use a balanced 15-clips/(family, SNR) subsample for
-CPU tractability; the difficulty ordering is stable, per-cell absolutes carry the
-usual small-sample variance.
+absolute magnitudes may tighten as they converge. SGMSE+ (@tbl:sgmse) is
+evaluated at ≈ 40 k score-matching steps of its 200 k-step budget; its validation
+SI-SDR is flat from step 2 k, so the non-viability is a property of the
+compute budget, not the checkpoint — training continues but the trajectory shows
+no learning of enhancement. The per-category harmonic tables use a balanced
+15-clips/(family, SNR) subsample for CPU tractability; the difficulty ordering is
+stable, per-cell absolutes carry the usual small-sample variance.
 
 #bibliography("refs.bib", style: "ieee")
