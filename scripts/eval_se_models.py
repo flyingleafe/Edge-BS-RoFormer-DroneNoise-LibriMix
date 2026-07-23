@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -38,6 +39,46 @@ ARCH_MODEL = {
     "mpsenet": "f1_mpsenet",
     "sgmse": "f1_sgmse",
 }
+
+
+def _r2_client():
+    """Boto3 client for the ml-data bucket, or None if no creds. Lets a cluster
+    eval job self-fetch a ckpt uploaded by training and push its result CSV back
+    (omnirun pull is unreliable). Creds ship via .env with omnirun jobs."""
+    acct = os.environ.get("R2_ACCOUNT_ID")
+    if not acct and Path(".env").exists():
+        for line in Path(".env").read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip())
+        acct = os.environ.get("R2_ACCOUNT_ID")
+    if not acct:
+        return None
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{acct}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def _maybe_fetch_ckpt(exp: str, ckpt: str) -> str:
+    """If ckpt is missing locally, download artifacts/<exp>/checkpoints/<name>
+    from R2 (its basename). No-op when the file already exists."""
+    if Path(ckpt).exists():
+        return ckpt
+    client = _r2_client()
+    if client is None:
+        return ckpt
+    key = f"artifacts/{exp}/checkpoints/{Path(ckpt).name}"
+    Path(ckpt).parent.mkdir(parents=True, exist_ok=True)
+    client.download_file("ml-data", key, ckpt)
+    print(f"[eval] fetched {key} from R2 -> {ckpt}", flush=True)
+    return ckpt
 
 
 def _arch_of(experiment: str) -> str:
@@ -84,6 +125,12 @@ def main() -> None:
         help="balanced subsample: cap clips per (category, SNR) group (0=all). Means are "
         "stable at ~25; use to keep CPU eval of heavy models tractable.",
     )
+    ap.add_argument(
+        "--r2-upload",
+        action="store_true",
+        help="upload the result CSV to R2 artifacts/<exp>/eval/<basename> after writing "
+        "(so a cluster GPU eval job's output survives the broken omnirun pull).",
+    )
     args = ap.parse_args()
 
     model_cfg = OmegaConf.load(f"conf/model/{ARCH_MODEL[_arch_of(args.experiment)]}.yaml")
@@ -95,7 +142,9 @@ def main() -> None:
             model_cfg.params.config.model.flash_attn = False
     _task, codec = build_task_and_codec(model_cfg)
     model = instantiate_model(model_cfg).to(device)
-    ckpt = args.checkpoint or f"results/{args.experiment}/best.ckpt"
+    ckpt = _maybe_fetch_ckpt(
+        args.experiment, args.checkpoint or f"results/{args.experiment}/best.ckpt"
+    )
     model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.eval()
 
@@ -149,6 +198,15 @@ def main() -> None:
             row += [f"{float(np.nanmean(vals[m])):.4f}" if vals[m] else "nan" for m in metrics]
             w.writerow(row)
     print(f"wrote {out_path} ({len(acc)} groups)")
+    # Echo the CSV to stdout so the result is recoverable from `omnirun logs`
+    # even without R2 (and readable at a glance).
+    print("----- CSV -----\n" + out_path.read_text() + "----- END CSV -----", flush=True)
+    if args.r2_upload:
+        client = _r2_client()
+        if client is not None:
+            key = f"artifacts/{args.experiment}/eval/{out_path.name}"
+            client.upload_file(str(out_path), "ml-data", key)
+            print(f"[eval] uploaded result -> R2 {key}", flush=True)
 
 
 if __name__ == "__main__":
