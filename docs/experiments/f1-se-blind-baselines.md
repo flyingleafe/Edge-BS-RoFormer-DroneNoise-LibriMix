@@ -167,6 +167,15 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
    (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
    paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
    +1.6 (12-min run) to +5.0 (converged).
+5. **SGMSE+ from scratch is non-viable in this budget (negative control).**
+   The score-diffusion 5th arch, trained via the bespoke DSM loop, sits **below
+   the noisy input at every SNR** (Pass B: SI-SDR −30…−57 vs noisy −5…−31; eSTOI
+   ≈ 0 vs noisy 0.05→0.47). Its val SI-SDR is **flat from step 2k** (loss drops
+   sharply then the sampler never converges to clean speech) — a 65M NCSN++ needs
+   ~100× more compute than the discriminative models. So the blind floor here is
+   a *discriminative* result; from-scratch generative SE is not competitive in
+   the available budget. (Evaluated at ~40k of 200k steps; trajectory flat, so
+   the checkpoint isn't the limiter.)
 
 ### Status / caveats
 
@@ -174,13 +183,18 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
 - **Compute-limited** (fp32 is ~10× slower/step than DCUNet — MP-SENet 1.5 it/s,
   TF-GridNet slower at batch 4; hit the 16 h wall so marked "failed" but their
   best.ckpt was recovered from R2): MP-SENet-A (~epoch 41), TF-GridNet-A
-  (undertrained). **Their reported numbers are lower bounds.** SGMSE+ deferred.
+  (undertrained). **Their reported numbers are lower bounds.** SGMSE+ trained but
+  non-viable (Finding #5).
 - Eval is CPU-bound here (heavy fp32 forwards); `SE-valid-harmonic` per-category
   tables use a balanced 15-clips/(family,SNR) subsample for tractability.
 - Pass A + Pass B complete on **both** valids (drone + harmonic per-category) for
   all four discriminative archs (mpsenet/tfgridnet from best-drone-valid ckpts).
-- Pending: SGMSE+ (deferred, multi-day bespoke DSM loop); fp16 to fully converge
-  the heavy ports (their numbers are lower bounds).
+- SGMSE+ trained (resume+R2-upload added to train_sgmse.py) + GPU-evaled (Pass B):
+  non-viable (below noisy, eSTOI≈0). GPU eval REQUIRED (sampler ~30min/utt on CPU);
+  eval_se_models.py self-fetches ckpt from R2 + `--r2-upload`. Pass A still queued
+  (expected equivalent); SGMSE+ jobs run to 200k, re-eval at completion if changed.
+- Pending: fp16 to fully converge the heavy ports (numbers are lower bounds);
+  optional SGMSE+ full-200k re-eval + Pass A.
 
 ## Conclusion
 
@@ -192,7 +206,11 @@ while compute-limited; the classic complex-UNet (DCUNet) only denoises without
 restoring intelligibility. **Diverse-harmonic training is capacity-dependent** —
 it helps only the weak DCUNet and *dilutes* all three stronger ports (MP-SENet,
 TF-GridNet, Edge-BS-RoFormer) on drone noise; the split is clean across every
-arch, so data breadth must scale with capacity, not replace it. These floors —
-with noisy + Wiener anchors in every table — gate later RPS-informed claims.
-Report: `writing/reports/2026-07-22_se-blind-baselines/`. _(Per-category harmonic
-transfer table to follow; fp16 would let the heavy models fully converge.)_
+arch, so data breadth must scale with capacity, not replace it. Per family,
+**harmonic structure — not loudness — is what SE exploits** (tonal
+motors/aircraft/horns recover far better than stochastic MIMII). The 5th arch,
+**from-scratch SGMSE+, is non-viable in this budget** (below noisy, eSTOI≈0) — the
+blind floor here is discriminative. These floors — with noisy + Wiener anchors in
+every table — gate later RPS-informed claims. Report:
+`writing/reports/2026-07-22_se-blind-baselines/`. _(SGMSE+ Pass A + full-200k
+re-eval optional; fp16 would let the heavy models fully converge.)_
