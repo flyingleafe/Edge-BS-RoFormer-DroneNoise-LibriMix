@@ -230,6 +230,34 @@ blindvit2dsp's DREGON 0.68 pooled or prove no arm composition does;
 FLY124: all 4 rotors < 2 rev/s (twin recovered) or documented impossibility.
 Spatial-DP (blindvit2dsp) remains a separate arm to compose with T/C/N/K.
 
+### 7.5 Outcome (sweeps of 2026-07-20…23) — criterion closed
+
+Sweep verdicts (`results/vk_blind_sweep_r2..r6/`): **T/C/N refuted** (no
+composition beat the band-capped baseline scan); **K adopted** (drone-agnostic,
+zero accuracy cost, wins whitenoise); the decisive levers were three additions
+*outside* the original arm list:
+
+1. **Band-capped scan** (`scan_f_max=1200`): the FLY124 seeding failure was a
+   scan-band *bias* (low-f0 aliases outscore the true comb), not an SNR floor —
+   whitenoise-low went 22.1 → 0.74 with the cap alone.
+2. **Arm R — residual re-scan**: re-scan the whitened spectrum after
+   subtracting seeded combs; recovers combs shadowed by stronger neighbours
+   (FLY124's 4th rotor at 82.7, invisible to the first-pass scan).
+3. **Stage guard** (`stage_guard=True` in the vit2dsp ladder, commit 6277fb0):
+   blind per-track revert of ladder stages that destroy a track, detected by
+   comb-occupancy drop (raw confidence *improves* during the failure — the
+   re-captured track sits on a louder comb). Round-5 (pre-guard, live) showed
+   viterbi_c holding FLY124 pooled 1.026 before refine re-captured rotor 2
+   onto the 91 Hz comb (9.69); round-6 (guarded, live) confirms the guard
+   converts that into the final result.
+
+Final blind numbers, no telemetry: DREGON 0.680 / 0.701 / 0.744 rev/s pooled
+(twins resolved on 2/3); **FLY124-cruise 1.027 pooled**, per-rotor
+0.67 / 1.19 / 1.22 / 1.03, capture 4/4 (r6 `sweep_report.csv`, arms R and K+R
+identical). The "all 4 rotors < 2 rev/s" bar is cleared; baseline-arm 3.24
+persists only because its 4th rotor is never seeded (guard cannot invent a
+missing seed) — R is therefore load-bearing, K optional-but-free.
+
 ---
 
 ## 8 · CPU inference fast paths (2026-07-20)
