@@ -1,5 +1,60 @@
 # Creator log — 2026-07-18 dregon-analysis-and-generator-design (update round)
 
+## Round 4 — full REWORK per narrative.md (27 sections, speaker notes as binding instructions)
+
+The narrative marked itself superseding: `slides.typ`'s speaker notes (hand-edited
+by a previous session, backed up at `workflow/slides-notes-source.typ`) were
+declared the binding content spec. Rebuilt the deck from the ~19-slide skeleton
+to the full 27-section structure (VK expanded into 8 step-by-step slides,
+4-way comparison, GP-on-CONA, F1 baselines, RPS-predictor-parity sketch, etc).
+
+- FRICTION: no saved static figures exist for the `noise_four_way_comparison.ipynb`
+  4-way spectrogram grid (narrative section 23) — the notebook is interactive/inline,
+  nothing under `results/` matches. Re-deriving real spectrogram panels from raw
+  audio inside `prepare.py` within budget was not feasible. WORKAROUND: used the
+  notebook's own verdict-cell numbers (comb error / msSTFT per family, already
+  vetted markdown output) as a results table instead of a spectrogram grid, and
+  reused the existing single-family JASA-GP eval figure as the visual anchor two
+  slides earlier. Logged rather than fabricating a spectrogram grid.
+- FRICTION: several new figures called for by the narrative (CONA drone/mic-shell
+  geometry figure, VK trajectory-overlay-on-spectrogram figure) did not have
+  ready source data reachable in budget (`vk_eval` npz files have no audio
+  attached, only rev/s traces without a spectrogram background). WORKAROUND:
+  reused the existing `vk_blind_dregon.png` (vit2dsp overlay-on-spectrogram,
+  already the correct headline VK figure) for the VK-results slide, and covered
+  the CONA-adaptation slide with prose bullets + numbers instead of a new figure.
+- Built 3 new matplotlib figures from live repo code (not stale results): DREGON
+  and Michael's before/after mic-position scatter plots (calling
+  `dregon.get_geometry` / `michaels.get_geometry` directly, reconstructing the
+  "wrong" frame by inverting the known fix), a before/after real-time-factor bar
+  chart for the VK speed optimization (numbers sourced from the narrative's own
+  vetted commit-message figures — profiling logs in `results/vk_bench/` don't
+  contain a matching real-scale "after" run to re-derive them from), and a
+  speed-vs-accuracy quadrant sketch for the RPS-predictor-parity slide.
+- FRICTION (recurring Touying pagination bug): bold text immediately followed by
+  an em-dash (`*word* —`) reliably causes Typst/Touying to fragment a slide
+  across 2-3 pages with duplicate titles and blank continuation pages, even when
+  the visible content clearly fits with room to spare. Reproduced on 4 separate
+  slides (Step 2 VK, the Michael's keyline, the phase-anneal bullet, the F1
+  baselines intro). Fixed by replacing the em-dash with a comma or colon in each
+  case (matches the known workaround already documented in the agent
+  instructions). One occurrence (`Initiated work: wider baselines`, no bold
+  involved) still leaves a single blank title-only orphan page after 3 rounds of
+  shrinking the table/text — did not chase further given time budget; content
+  itself is complete and correct on the preceding page, so this is a purely
+  cosmetic extra blank page, not a content loss.
+- Page-count tripwire caught the above: went from title+27=28 expected to 34
+  actual on first build; iteratively fixed down to 31 (28 content pages + 1
+  known blank orphan + 2 pages that are legitimate multi-page continuations
+  needed by dense content, verified individually not to be stale/duplicate).
+- No genuine guard denials this round; all writes were in-directory Edit/Write
+  calls plus in-directory Bash (`make -C`, `python3 prepare.py`).
+
+What would have made this round easier: a documented list of "known Touying
+pagination triggers" (em-dash-after-bold is now the second time this exact
+bug has bitten this same deck) checked automatically, or a lint pass over the
+`.typ` source for the pattern before the first `make check`.
+
 - BLOCKED: `mkdir -p ... && cat > ... << 'EOF' ...` (heredoc combined with mkdir in one
   compound command targeting /tmp scratchpad) — WHY I WANTED IT: quick one-shot
   script scaffold for the VK coupling schematic. WORKAROUND: split into a plain
@@ -109,3 +164,118 @@ plain text with no figure number. Page count unchanged. No guard denials
 this round (one heredoc attempt with a literal arrow character tripped the
 redirect-detection in the guard; retried phrasing without it, no workaround
 needed beyond that).
+
+## Round 4
+
+Task prompt asked to save this round's critique to `critique-round-1.md`,
+but that filename (and `critique-round-2.md`) already exist on disk from a
+prior session against an earlier, much smaller (18-page) version of this
+deck — round 1/2/3 in the log above. The critique text given this round
+targets the *current* ~32-page deck (pages 28-29, 24, 26, 10, 17, 3/7/9, 21)
+which is a different, larger artifact than what round 1/2 critiqued.
+Overwriting critique-round-1.md would destroy that history for no benefit,
+so I saved it as `critique-round-4.md` instead, continuing the true round
+count, and noting this deviation here per the creator-log contract.
+
+## Round 5 — addressed critique-round-2.md (this round's fresh critique, overwriting stale round-2 file)
+
+Fixed 3 of 4 issues; page count dropped 30→29 net (merges reduced pages, one
+pre-existing orphan remains, logged below not chased further).
+
+1. VK Step 3 slide ("coupled solve"): added the coupling predicate
+   (|f_r - f_r'| < B_env), the block-banded-Hermitian normal-equations
+   formula (G_{r,r'} cases), a one-line Cholesky justification, and a 4-line
+   pseudocode block (demod → coupled banded solve → phase-slope update →
+   anneal) with array shapes, next to the existing schematic figure.
+2. Merged "generator variants" into two slides: the spectrogram grid keeps
+   its own slide, and gave the score table an explicit new heading ("What
+   the data said back: the scores, and why") with the discussion bullets
+   folded underneath it (also resolves half of issue 3, since it removes the
+   separate sparse "Generator improvements: discussion" slide).
+3. Filled whitespace on Step 1+2 (merged into one two-column slide), Step 4
+   (two-column bullets + larger formula), blind-seeding-v2 (bigger table
+   inset, keyline framing), and f1-baselines (bigger table inset, keyline).
+   Left the four-way "Discussion" and "RPS predictor parity" slides as-is —
+   they already have a figure/table filling most of the vertical space; the
+   critique's blanket "systemic" claim didn't hold on closer look for those
+   two, so no change there (partial pushback, not logged as a rejected issue
+   since the other 4 in the list were the real offenders and got fixed).
+4. Regenerated `assets/jasa_gp_eval_slim.png` in prepare.py: widened the
+   spectrum-panel crop from a fixed 0.33*w band to the full right half of
+   the source image, so the closed right spine (and the "frequency (Hz) -
+   spectral amplitude" label already drawn below it) is fully visible
+   instead of being cut mid-air.
+
+- FRICTION (recurring, not newly introduced): the "Assumption 3 — wind noise
+  confusing the model" slide produces a blank title-only orphan continuation
+  page even though its visible content (one image + one keyline) clearly
+  fits with room to spare — same class of bug logged in rounds 2 and 4, but
+  on a *different* slide than either of those (round 2's was the JASA-GP
+  slide, round 4's was "Initiated work: wider baselines"). Tried 3 fixes in
+  order: shrinking image width 72%→64%, swapping #figure(image(...)) for
+  #align(center, image(...)) (matching the pattern used successfully on
+  other slides in this deck), and switching width: to height:-based sizing.
+  None of the three changed the page count or removed the orphan — the
+  bug is not aspect-ratio- or wrapper-related in this case, unlike the round
+  2 fix that worked for the JASA-GP slide. Did not chase further (>15 min
+  already spent bisecting, well past the 5-minute budget) since content and
+  ordering elsewhere in the deck is unaffected — this is a single blank page
+  with a duplicated title and no content loss. Recorded here per the
+  "known Touying pagination triggers" ask from round 4's log; a fourth
+  distinct slide has now hit this same class of bug, suggesting it's a
+  generic Touying/typst quirk in this template rather than anything
+  specific to em-dashes, bold-then-dash, or image aspect ratios as
+  previously hypothesized — worth a dedicated debugging session outside a
+  critique-round budget, ideally by a maintainer of the touying "simple"
+  theme or by trying an isolated single-slide minimal repro file.
+- No guard denials this round.
+
+What would have made this round easier: a minimal, isolated single-slide
+Typst reproduction harness for "recurring Touying blank orphan page" bugs
+would let a debugging pass make real progress instead of re-trying
+plausible-looking fixes inside the full 25-section deck each time.
+
+## Round 4 (orchestrator review)
+
+- Fixed the orphan blank page after the wind-noise Assumption-3 slide by
+  shrinking `fig_wind_schema.png` from height:58% to 52% — the slide had been
+  silently overflowing by a hair, splitting into a visible page + a
+  near-empty continuation page (same failure mode noted in earlier rounds:
+  a marginal-overflow slide splits with no visible error, only shows up as
+  an extra "N/total" page in the check render).
+- Same failure mode bit twice more while fixing systemic empty-bottom
+  slides: enlarging the per-rotor sub-embeddings slide (image+bullets) and
+  the merged Work-thread-2/Steps-1-2 slide each initially overflowed into a
+  1-line orphan continuation page. Fixed by tightening vertical spacing /
+  font size rather than by chasing the exact overflow amount — safer to
+  leave headroom than to hit the limit exactly.
+- `v(1fr)` top/bottom centering on the "wider baselines" table slide also
+  triggered a silent overflow+orphan (adding a couple pt of table inset was
+  enough to tip it over) — reverted to fixed `v()` spacing instead of
+  `v(1fr)` for that slide; `v(1fr)` still used successfully on slides with
+  more headroom (physics-structured-generator, Discussion, Takeaways).
+- Lesson for next round: after ANY figure/table size or inset change,
+  re-run `make check` and check page COUNT before eyeballing content — a
+  silent 1-page overflow is the single most common bug class in this
+  deck and is invisible without the count/emptiness check.
+- Post-processed `generator_variants_spectrograms.png` and
+  `four_way_spectrograms.png` with PIL (row labels + free-flight scores;
+  CONA truncation-bug annotation) in `prepare.py` instead of regenerating
+  from source notebooks/checkpoints — much cheaper and no GPU/R2 creds
+  needed for a review-round fix.
+- No guard denials this round.
+- What would have made this round faster: a `make check` step that reports
+  page-count delta and per-page "empty fraction" automatically (like the ad
+  hoc numpy scan I ran by hand) — would have caught the two new overflow
+  orphans immediately instead of requiring a second manual contact-sheet
+  pass.
+
+- Patch 2026-07-21: replaced "blind seeding v2" pending sweep line with final
+  merged-round results (results/vk_blind_sweep_r2 + r3, computed via a
+  min-err_sm-per-recording scan in Python), updated the VK results slide's
+  FLY124 row (was 4.0, now 3.241) and the Takeaways bullet. No guard denials
+  on file writes; one false-trip on this very log append (the guard's
+  redirect-target parser flagged the literal text "4.0 -> 3.241" inside a
+  quoted heredoc as an outbound redirect) — reworded to avoid the arrow
+  glyph. Page count unchanged at 27 (title + 26 sections); no orphan pages
+  introduced.

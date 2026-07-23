@@ -1,50 +1,176 @@
-# Narrative — The rotor comb, three ways: generate it, read it, borrow it
+# Narrative — RPS prediction and drone noise generation progress (REWORK)
 kind: slides
-audience: You / advisor — already saw this deck's original generator arc (geometry fix, per-rotor sub-embeddings, wind channel). This UPDATE keeps that spine intact and folds in the two other threads from the week: 2026-07-15 Vold–Kalman order tracking, 2026-07-16 JASA-GP replication.
-through-line: The harmonic comb is the one object all week's work shares. The generator *writes* the comb — its structure forced by DREGON's data (the existing arc). Vold–Kalman order tracking *reads the comb back* with no telemetry, and its one failure (twin rotors) is exactly what the generator's per-rotor prior is built to fix — the two threads close a loop. JASA-GP is a faithful physics+GP *alternative* comb model from the literature, now reproducible in-repo as a listening baseline. Three activities, one comb, feeding each other.
+audience: supervisor + research group; know the project premise (RPS-informed SE),
+saw the 2026-07-13 deck (sim2real RPS story) and 2026-07-06 (GP/FWH). General
+technical audience — every method slide must be followable by an undergrad.
+through-line: We audited the physics-structured generator against real data
+(geometry fixed for good; per-rotor + wind well-motivated but not yet wins),
+built a principled blind RPS tracker (coupled Vold–Kalman) that we then made
+10× faster and systematically de-biased, reproduced the JASA-GP literature
+baseline and trained it on setup-matched CONA auralizations — and the 4-way
+comparison (real/CONA/deep/GP on the same RPS) crowns the deep generator while
+exposing the ONE dominant realism gap all synthetics share: spatial coherence
+(wind). Meanwhile two new fronts opened: modern blind-SE baselines (f1) and a
+VK-parity RPS predictor plan.
 
-## THIS IS AN UPDATE, NOT A NEW DECK
-- Target: `writing/slides/2026-07-18_dregon-analysis-and-generator-design/slides.typ` (already exists, 8 content sections, renders 12 pages).
-- KEEP the existing 8 generator sections essentially as they are (light touch only: you MAY add a one-line opening "map" and retitle the deck — see below). Do NOT rewrite the geometry/per-rotor/wind content; it is already reviewed and good.
-- ADD the new material: ~3 slides on Vold–Kalman blind order tracking, ~2 on JASA-GP, and revise the final Takeaways slide to synthesise all three threads.
-- Retitle (default, apply it): title → "The rotor comb, three ways"; subtitle → something like "Generate it · read it back · borrow the literature's baseline". Keep author/date lines. Add a single opening bullet or sentence on slide 1 framing the comb as the shared object across the three threads.
-
-## Figure pipeline
-- Existing figures are copied by `prepare.py` from the companion report's `assets/`. For the NEW figures, EXTEND `prepare.py` to also copy from `results/`:
-  - VK / blind re-annotation overlays: `results/vk_tracking/blind_annotation/blind_vs_gt_nosource.png` (DREGON, the clean success), and `results/vk_tracking/blind_annotation/blind_hard.png` and/or `results/vk_tracking/blind_annotation/fix_blindfixA_free-flight_nosource_room1.png` (FLY124 / harder case). Inspect these PNGs first and pick the clearest one or two.
-  - JASA-GP: `results/jasa_gp/eval_V7.png` (held-out flyover fit) and `results/jasa_gp/loudness.png` (loudness map). `results/jasa_gp/eval_metrics.json` has per-point corr/loudness numbers.
-- If a copied figure is unreadable at slide size (dense multi-panel), prefer regenerating a slimmed single-panel version with a small script rather than shrinking it. Use `improve-plot-visibility` judgement.
-- Run `make figures` (which runs `prepare.py`) then `make check` to render `check/page-*.png`; VIEW every changed/new page before declaring done.
+**BINDING SOURCE: the speaker notes in slides.typ (backup:
+workflow/slides-notes-source.typ). Each note is an INSTRUCTION for what its
+slide must show. Style law: figures + formulas dominate; text only as anchors.
+The notes remain in the deck as the speaker script (may be lightly edited for
+accuracy, never deleted). This REWORK supersedes the previous narrative in this
+file — rearrangement and figure remakes are expected, the old "keep as is"
+constraint no longer applies.**
 
 ## Sections (ordered)
 
-Spine — existing generator arc, KEEP (deck sections 1–8):
-1. A physics-structured generator, answerable to data — three testable assumptions — existing propagation eqn.
-2. Geometry: a small error is diagnostic — freq-proportional phase error — `assets/geo_propagation_phase.png`.
-3. Geometry: the 180° frame mismatch — anti-correlation, peak +0.93 at 183° — `assets/geo_frame_alignment.png`.
-4. Geometry: the fine fix + honest limit — bundle adjustment (DREGON), non-identifiability (Michael's) — `assets/geo_summary.png`.
-5. Are the four rotors one source? — 6.8 dB RMS timbre difference — `assets/fig_per_rotor.png`.
-6. …so: per-rotor sub-embeddings — learnable zero-init per-rotor delta.
-7. A wind channel — incoherent flow noise needs its own additive channel — `assets/fig_wind_schema.png`.
-8. From analysis to variants — 3 variants scored on free-flight MR-STFT; geometry vindicated (OLD 4.51 → v1 5.22, v2 4.82, v3 3.44).
-
-NEW thread A — reading the comb back (Vold–Kalman order tracking):
-9. Reading the comb backwards — message: can we recover per-rotor RPS from audio ALONE, no telemetry? Coupled Vold–Kalman (VK) order tracking, built from published math (Vold & Leuridan 1993; Tuma 2005). PyVKF rejected: GPL-3 + full T·M audio-rate system ≈16M unknowns, frequencies are inputs (no tracking loop). Our design: demodulate+decimate to an envelope grid (unknowns T·M → ~200k), sparse coupling groups; the off-diagonal coupling term makes overlapping tracks COMPETE (explaining-away) — the fix for the twin-capture bias that killed the earlier heuristic comb refinement. — evidence: functional / coupling schematic (a clean 1-panel diagram; can be a small matplotlib or typst-drawn figure — the coupling term J[a] = Σ|y − Σ Re[a_m c_m]|² + Σρ²‖Δ²a_m‖²). Source: `docs/vk-order-tracking-design.md`, `scripts/vk_blind_annotation.py`.
-10. Blind re-annotation: where it works, where it breaks — message: DREGON free-flight (nosource, 25 s): all 4 rotors recovered, pooled err 0.68 rev/s (spatial-DP arm), combs ride the ridges. FLY124 free-flight CRUISE (~74/74/81/91 rev/s — NOT idle): 3 of 4 rotors to ~1 rev/s (91→0.8, 74→1.0, 81→1.3); the 4th fails because a TWIN pair (~74/74) seeds only ONE track from a buried comb, and the second twin's init lands on a spurious alias peak (~60 Hz). So the real story is TWIN SEEDING, not total failure — and its fix is a shared per-rotor comb-shape prior, i.e. the generator's own per-rotor amplitude template (PositionalHarmonicNoiseGen). The two threads close a loop. — evidence: `results/vk_tracking/blind_annotation/blind_vs_gt_nosource.png` (DREGON success) + FLY124 harder overlay. Source: memory blind-reannotation-dregon-vs-fly124.
-11. The honest limit: fine jitter is below the floor — message: 0.68 rev/s is the achievable FLOOR, not a tuning gap. The objective's minimum is NOT at true RPS: the smooth-carrier + flexible-envelope fit out-explains the real 0.74 rev/s jitter (data residual LOWER at the smooth blind answer 0.99196 than at true jittery telemetry 0.99376). Comb is <1% of full-band energy; strip wind (high-pass) and it is ~19% of mid-band, residual 0.990 → 0.874 (hp>0.5k) → 0.810 (bp 1–3k), but the smooth path still wins in every band. Jitter is invisible to the comb model, not hidden by wind. — evidence: the residual-vs-band numbers as a tiny table or inline. (If the deck runs long, MERGE this into §10 as the closing caveat.)
-
-NEW thread B — a physics baseline we can now reproduce (JASA-GP):
-12. Borrowing the literature's best: JASA-GP — message: faithful replication of Lee et al. (JASA 159(4):3418, 2026) GP rotor-noise model on the `jasa-flyovers` dataset (10 CONA quadrotor flyovers, V=1..10 m/s, 256 ground mics). Pipeline: per-(mic,V) de-Doppler → estimate f0 → lstsq Fourier coeffs at k·f0 (H=24) → Matérn-5/2 GP over (x,y,V) predicting the coeff vector; broadband synthesised separately. A physics+GP flyover comb model — a complement/comparator to our own emitter+propagation generator. — evidence: `results/jasa_gp/eval_V7.png` (held-out flyover, V=7 not in training).
-13. Getting it faithful + a listening deliverable — message: three fixes took amplitude prediction from ~4× under to faithful, matching the paper's Fig 5/7 (held-out AC corr 0.41→0.70, loudness err 9.3→3.0 dB): (1) a np.roll SIGN bug in phase alignment → sign-mixed phasors → GP shrinkage, replaced with exact coefficient-space alignment; (2) per-signal f0 estimation (a pinned 33.55 Hz comb drifts off the bin by k≈12); (3) measure loudness on the AC part (CONA "tonal" has a large inaudible DC). Deliverable = interactive 3D listening notebook (`notebooks/jasa_gp_interactive.ipynb`: plotly 3D + rotor-speed FM + audio/spectrogram). — evidence: `results/jasa_gp/loudness.png` + optional notebook screenshot.
-
-Close:
-14. Takeaways (REVISE the existing takeaways slide) — message: one comb, three activities that feed each other. (a) Generator structure is data-forced and validated (geometry fix permanent; per-rotor + wind well-motivated, payoff regime-dependent). (b) VK reads per-rotor RPS to 0.68 rev/s blind — at the achievable floor — and its twin-seeding failure directly motivates the generator's per-rotor comb prior. (c) JASA-GP gives a faithful physics baseline + a listening tool. Next: shared-comb prior to close the twin gap; free-flight airspeed + coherence-aware loss for the wind channel.
+1. **This week: the rotor comb, three ways (+ two initiated)** — message: three
+   work threads + two initiated programs — evidence: text overview only (the
+   one text-allowed slide) — sources: existing slide 1, extend with initiated
+   work bullets.
+2. **Generator: the model and the mid-harmonic symptom** — message: physics
+   structure makes assumptions testable; weak mid-harmonics started the audit —
+   evidence: propagation formula + (existing) geo_propagation_phase.png —
+   sources: 2026-07-18 report §1–2.
+3. **Geometry bug: DREGON 183°** — message: TDOA anti-correlation → frame
+   rotation — evidence: geo_frame_alignment.png + NEW 3-D mic+rotor positions
+   figure (before/after frame fix) per note — sources: 07-15 report assets +
+   dregon.get_geometry.
+4. **Geometry bug: Michael's plane swap** — message: vertical↔horizontal ring
+   coding bug, found visually; TDOA method not identifiable here (no
+   single-rotor recs) — evidence: NEW mic+rotor 3-D positions figure (wrong vs
+   fixed plane) — sources: 07-15 report §5, michaels.get_geometry.
+5. **Fine calibration (DREGON)** — message: coherence-weighted phase bundle
+   adjustment, ≤2.2 cm moves, synthetic control 0.36 cm — evidence: objective
+   formula + geo_summary.png or before/after positions figure — sources: 07-15
+   report §4.
+6. **Rotors are individuals** — message: 6.8 dB RMS timbre spread — evidence:
+   fig_per_rotor.png (existing) — sources: 07-18 report §3.
+7. **Per-rotor sub-embeddings** — message: z_r = z_drone + δz_r — evidence:
+   NEW generator schema figure with the sub-embedding block added+highlighted,
+   + the δz regularization formula per note — sources: gen_v2 config,
+   models/generative.
+8. **Wind channel** — message: physics places flow, learned head transduces —
+   evidence: fig_wind_schema.png (existing) + gate validation number (Spearman
+   0.92) — sources: 07-17/07-18 reports.
+9. **Variants: what the data said** — message: v1 (geometry) wins in flight;
+   idle-heavy set inverts ranking — evidence: NEW spectrogram grid per note:
+   rows DREGON/Michael's, columns real | OLD | v1 | v2 | v3, mrstft under each
+   generated panel (assets from 07-17 report / its prepare.py can be re-run;
+   free-flight clips) — sources: 07-17 report.
+10. **Generator discussion** — message: WHY v2/v3 underperformed: v2 helps only
+    idle asymmetries (regime-dependent); v3 dormant at hover AND invisible to a
+    single-channel magnitude loss; today's coherence measurement (real MSC 0.05
+    vs deep 0.69 low-band) proves wind is the dominant residual gap — evidence:
+    small MSC bar/table from the 4-way notebook — sources: 07-17 discussion +
+    notebooks/noise_four_way_comparison.ipynb.
+11. **VK thread opener: score a trajectory by how well it explains the audio** —
+    message: generative residual as the objective — evidence: signal model
+    formula y = Σ Re[a·exp(jφ)], residual functional — sources:
+    docs/vk-order-tracking-design.md §1.
+12. **Step 1: envelopes by least squares (VP)** — message: given frequencies,
+    amplitudes/phases are a linear solve — evidence: VP/lstsq formula, tiny
+    schematic — sources: design doc predecessor + §1.
+13. **Step 2: demodulate + decimate** — message: envelopes are narrowband →
+    16M unknowns become 200k — evidence: demod formula z=LP[y·conj(c)] +
+    fs_env grid cartoon — sources: design §2.1.
+14. **Step 3: coupled solve** — message: nearby tracks compete for shared
+    energy (explaining-away); block-banded Hermitian system — evidence:
+    coupling predicate + matrix-structure figure (banded blocks) — sources:
+    design §2.2 (the commented-out vk_coupling_schematic.png may be revived or
+    remade).
+15. **Step 4: frequency update by phase slope + annealing** — message: phase
+    slope δ̂ = angle(x_{t+1}·conj(x_t))·fs_env/(2πk), Fisher-weighted fused,
+    k_max annealed — evidence: the two formulas + capture-basin cartoon —
+    sources: design §2.3.
+16. **VK results** — message: telemetry-init refinement at the jitter floor;
+    blind re-annotation numbers — evidence: table (DREGON refine err 0.604 vs
+    command 0.609; blind DREGON 0.68 [spatial-DP arm]; FLY124 cruise pooled 4.0
+    with 3/4 rotors ~1) + NEW trajectory-overlay figure (refined vs telemetry
+    over spectrogram, one DREGON + one FLY124 panel; npz in results/vk_eval +
+    results/vk_tracking/blind_annotation) — sources: vk_valid_comparison.csv,
+    blind_annotation fix_summary.
+17. **Today: 10× faster VK** — message: profile → banded Hermitian Cholesky
+    (2.9×) + pair pruning (1.7×) + fixes ⇒ refine rtf 0.037→0.38, blind
+    0.34→0.95, RSS halved, results bit-identical — evidence: before/after
+    per-phase bar + rtf table — sources: results/vk_bench/profile_report.*,
+    commit 1ca7581.
+18. **Today: blind seeding v2** — message: FLY124's failure was a scan-band
+    bias (alias 91/3 outscored the real comb); band-capped matched-filter scan
+    fixes seeding (both twin pairs found); arms T/C/N/K + spatial-DP ladder in
+    a 64-run sweep NOW RUNNING — evidence: seed-before/after table
+    ([30.0,30.85,91.3,92.3] → [74.7,75.7,91.3,92.3] vs truth
+    [73.9,74.5,81.3,91.0]) + round-1 arm table; mark round-2 cell "(sweep in
+    flight)" — sources: a894501 commit message, round-1
+    omnirun-outputs/python-27f6d4 sweep_report.csv.
+19. **JASA-GP: the model** — message: GP over (mic pos, condition, time) with
+    BPF-informed Fourier kernel — evidence: kernel formulas — sources:
+    src/experiments/gp_rotor_noise/jasa_gp.py + 07-06 report.
+20. **CONA + original data** — message: how CONA auralizes (FW-H F1A tonal +
+    BPM broadband + Griffin-Lim); NASA 1-Pax quad, 256 ground mics — evidence:
+    pipeline schematic + jasa_gp_eval_slim.png (existing) — sources: auraflow
+    jasa module docs, 07-06 report.
+21. **Adapting to our rigs** — message: DREGON + Matrice-100 reconstructed in
+    CONA; prescribed constant RPS 40–85 (static-stand protocol); 64 shell mics;
+    40-case dataset generated TODAY — evidence: NEW figure: the two drones'
+    geometry + mic shells + rps grid; dataset card (40 cases, 2 s, 44.1 kHz) —
+    sources: auraflow drone_egonoise.py docstring, drone-egonoise@2e6644161ce1.
+22. **GP trained on it** — message: dregon GP: seed-holdout corr 0.75 /
+    rel_resid 3.7%; held-out rps-60 interpolation corr 0.87 / 1.8% (matrice100
+    training queued) — evidence: overlay PNG from
+    omnirun-outputs/python-fbd20f/results/gp_egonoise/dregon/ — sources:
+    eval_metrics.json.
+23. **RESULTS: the 4-way comparison** — message: same GT RPS, same mic — deep
+    generator closest by far — evidence: spectrogram grid real|CONA|deep|GP
+    with comb-mask + msSTFT numbers under each (deep 7.0/8.2/9.5 dB, msSTFT
+    6.9; GP 39.1/26.8/19.1, 15.6; CONA 50.1/52.9/52.0, 30.9) — export figures
+    from notebooks/noise_four_way_comparison.ipynb / four_way_lib.py —
+    sources: notebook (commit 41a941a).
+24. **Discussion: is the GP bad, or its data?** — message: the gap is largely
+    CONA's, inherited: BPF-only (even-k) harmonics from identical-blade FW-H,
+    no jitter linewidth, resolution-limited comb, broadband truncation bug;
+    plus GP high-harmonic shrinkage; AND the coherence finding again — all
+    three synthetics far too coherent (wind channel = the lever) — evidence:
+    small table of gaps (CONA-structural vs GP-regression vs deep-residual) —
+    sources: notebook verdict cells.
+25. **Initiated: f1 blind-SE baselines** — message: modern no-RPS floor before
+    any RPS-informed claim; 5 archs × 2 passes (drone-only vs all-harmonic
+    category-uniform); valid sets published; anchors done; runs queued —
+    evidence: arch table (from f1 batch doc: Edge-BS-RoFormer, TF-GridNet
+    8.38M, MP-SENet 1.71M, DCUNet, SGMSE+ 65.6M from-scratch) + protocol
+    one-liner + anchor floor row — sources:
+    docs/experiments/f1-se-blind-baselines.md, results/f1_tables/f1_tables.md.
+26. **Initiated: RPS predictor to VK parity** — message: VK is accurate but
+    (pre-optimization) slow and non-causal; predictor ideas: longer temporal
+    context (VK integrates 20 s vs 1 s chunks), comb-structured front-end,
+    VK-distilled training targets, VK-annotated unlabeled data — evidence:
+    speed/accuracy quadrant sketch (VK vs neural now vs target) — sources:
+    campaign notes; keep to one slide.
+27. **Takeaways** — message: geometry fixed for good; wind = the one shared
+    realism gap (now measured); VK now fast + de-biased, sweep closing; deep
+    generator confirmed best-in-class vs literature baseline; two programs
+    running toward the SE decision — sources: all above.
 
 ## Cut (considered, excluded)
-- The KILLED Kalman harmonic tracker (07-10, pre-window, superseded by VK) — one line max only if it aids the VK motivation; do not give it a slide.
-- SPCup annotation outputs — a deliverable detail; fold into §10 as a byproduct if space allows.
-- Full VK normal-equations math — one schematic (§9) suffices; equations belong in a report.
+- Koopman/bidirectional-latent survey — literature only, no results; one
+  spoken mention at takeaways if at all.
+- Kalman-tracker post-mortem, E5–E12 sim2real story — covered by the 07-13 deck.
+- Gulli-paper reconciliation + oracle-SE negative evidence — belongs to the SE
+  decision deck once f1 floors exist; here only as one motivation line on
+  slide 25.
+- The commented-out jitter-floor slide — keep commented (speaker may revive).
 
-## Notes
-- Narrative was NOT user-reviewed (10-min checkpoint elapsed with no reply). Defaults applied: retitle to "The rotor comb, three ways"; 3 VK slides + 2 JASA-GP slides.
-- Every new numeric claim must trace to a source above; mark anything you cannot verify against a file/results dir with `[TODO verify]`.
+## Open questions for the user
+- none — speaker notes are binding and complete.
+
+## NON-NEGOTIABLE REVIEW CRITERIA (user-added mid-build; creator and critic MUST enforce)
+1. The VK method slides (sections 11–15) must explain the process at
+   REIMPLEMENTATION fidelity: a reader should be able to rebuild the tracker
+   from the slides alone. Pseudocode blocks are explicitly welcome (e.g. the
+   outer loop: demod → coupled banded solve → phase-slope update → anneal;
+   with shapes/grids annotated). Prefer one honest pseudocode block over prose.
+2. No large unused white space on any slide — fill with the figure/formula at
+   larger scale, or merge sparse slides.
+3. ZERO unbacked statements: every claim on a slide must be supported by a
+   number or plot VISIBLE on that slide (or explicitly marked as pending, e.g.
+   "sweep in flight"). If a claim has no demonstrable number/figure, either
+   produce the figure or cut the claim.

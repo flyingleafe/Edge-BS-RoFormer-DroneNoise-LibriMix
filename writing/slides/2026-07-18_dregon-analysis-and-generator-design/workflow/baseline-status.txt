@@ -1,3 +1,4 @@
- M notebooks/jasa_gp_interactive.ipynb
-?? writing/reports/2026-07-18_dregon-analysis-and-generator-design/
-?? writing/slides/2026-07-18_dregon-analysis-and-generator-design/
+ M writing/slides/2026-07-18_dregon-analysis-and-generator-design/workflow/baseline-status.txt
+ M writing/slides/2026-07-18_dregon-analysis-and-generator-design/workflow/inventory.md
+ M writing/slides/2026-07-18_dregon-analysis-and-generator-design/workflow/narrative.md
+?? writing/slides/2026-07-18_dregon-analysis-and-generator-design/workflow/slides-notes-source.typ
