@@ -1,0 +1,21 @@
+# G1 real-data FULL-FLIGHT training stream, 8 s chunks (VK-parity batch).
+# Same as conf/data/e12_real_fullflight.yaml but the online-mix policy uses
+# duration_s: 4.0. Validation unchanged (DREGON-LM-V4-michaels-valid-full,
+# 8 s clips) so scores stay comparable with E12 and the phase-A eval.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/g1_real_fullflight_8s_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
