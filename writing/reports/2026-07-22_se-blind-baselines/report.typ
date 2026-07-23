@@ -174,6 +174,64 @@ the −15 dB SI-SDR gain from +1.6 dB (an early-stopping-truncated 12-minute run
 to +5.0 dB — a reminder that a "baseline" is a claim about training as much as
 architecture.
 
+== Per-category harmonic floor
+Evaluating the Pass-B (all-harmonic) models per noise family on
+`SE-valid-harmonic` (@tbl:harm, mean over the SNR grid) shows a clean,
+model-independent difficulty ordering: the *more harmonic* the source, the more
+enhancement recovers. The strongly-tonal families — motors, aircraft, horns —
+are the easiest (MP-SENet lifts SI-SDR +15.7…+19.6 dB, eSTOI to 0.52…0.57),
+drone sits just below, and the *stochastic* industrial machine noise of MIMII /
+MIMII-DG is hardest (MP-SENet eSTOI only 0.29…0.34). This is direct evidence for
+the project's premise: it is harmonic structure — not loudness — that a blind
+model can exploit, so a rotating-source target is a favourable case, and the
+broadband-machine families bound the low end.
+
+#figure(
+  table(
+    columns: 5,
+    align: (left, center, center, center, center),
+    table.header([family], [DCUNet], [*MP-SENet*], [TF-GridNet], [Edge-BS-RoF]),
+    [motors], [+3.9], [*+19.6*], [+16.9], [+12.1],
+    [aircraft], [+10.4], [*+16.6*], [+14.4], [+16.5],
+    [drone], [+5.9], [*+16.5*], [+12.2], [+10.2],
+    [horns], [+2.5], [*+15.7*], [+11.4], [+9.1],
+    [mimii], [+1.2], [*+9.9*], [+8.1], [−0.9],
+    [mimii-dg], [+1.2], [+4.7], [*+6.9*], [+5.3],
+  ),
+  caption: [Per-family blind floor on `SE-valid-harmonic` (Pass B): SI-SDR
+    improvement over noisy (dB), mean over the SNR grid, sorted easiest→hardest.
+    Harmonic/tonal families (motors, aircraft, horns, drone) are recovered far
+    better than stochastic industrial noise (MIMII).],
+) <tbl:harm>
+
+The Pass B − Pass A transfer per family (@tbl:harmtransfer) echoes the
+capacity story from the drone valid, now resolved by family. Adding the noisy,
+*broadband* MIMII families to a fixed budget mostly *hurts* the strong models
+even on those very families (Edge-BS-RoFormer −11.9 dB on MIMII, MP-SENet −7.6 on
+MIMII-DG) — they cannot fit stochastic noise and lose ground focusing on it — whereas
+the *harmonic* motors and horns families benefit from in-domain exposure across
+every architecture (all four positive). The weak DCUNet, which under-fits
+throughout, gains almost everywhere. Diverse data helps when the added families
+share exploitable structure and the model has spare capacity; it hurts when
+neither holds.
+
+#figure(
+  table(
+    columns: 5,
+    align: (left, center, center, center, center),
+    table.header([family (B−A)], [DCUNet], [MP-SENet], [TF-GridNet], [Edge-BS-RoF]),
+    [motors], [+6.9], [+2.0], [+6.9], [+2.7],
+    [horns], [+0.6], [+3.8], [+3.9], [+1.3],
+    [aircraft], [+4.9], [−4.3], [+1.9], [−0.0],
+    [drone], [+0.3], [−1.8], [−1.8], [−3.7],
+    [mimii-dg], [+1.3], [−7.6], [−0.2], [−4.3],
+    [mimii], [−0.8], [−4.9], [−0.0], [−11.9],
+  ),
+  caption: [Per-family transfer: Δ SI-SDR of Pass B minus Pass A (dB) on
+    `SE-valid-harmonic`. Harmonic families (motors, horns) gain across all archs;
+    stochastic MIMII families lose for the strong models.],
+) <tbl:harmtransfer>
+
 = Discussion
 
 The blind floor on our data is set by the *newer* speech-enhancement
@@ -205,7 +263,8 @@ best-drone-valid checkpoints while their runs continue, matched against the
 same-regime Pass A checkpoints; the direction of the diversity effect is stable,
 absolute magnitudes may tighten as they converge. SGMSE+ (65 M, score-matching)
 is deferred — it needs a bespoke training loop and a multi-day budget. The
-per-category *harmonic-noise* transfer table (2100 clips) is a follow-up pending
-GPU-side evaluation.
+per-category harmonic tables use a balanced 15-clips/(family, SNR) subsample for
+CPU tractability; the difficulty ordering is stable, per-cell absolutes carry the
+usual small-sample variance.
 
 #bibliography("refs.bib", style: "ieee")

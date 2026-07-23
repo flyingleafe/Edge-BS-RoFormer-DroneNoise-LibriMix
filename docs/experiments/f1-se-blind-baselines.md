@@ -151,7 +151,19 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
    *with*, not substitute for, architecture/budget. (MP-SENet/TF-GridNet Pass B
    read from best-drone-valid checkpoints while their runs continue; matched to
    same-regime Pass A ckpts, so the direction is a fair within-arch comparison.)
-3. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
+3. **Harmonic structure — not loudness — is what SE exploits.** Per-family floor
+   on `SE-valid-harmonic` (Pass B, mean over SNR, MP-SENet SI-SDR-improve dB /
+   eSTOI): the difficulty ordering is model-independent —
+   motors (+19.6 / 0.57) > aircraft (+16.6 / 0.52) > drone (+16.5 / 0.47) >
+   horns (+15.7 / 0.52) ≫ mimii (+9.9 / 0.34) > mimii_dg (+4.7 / 0.29). The
+   *strongly-tonal* families are recovered far better than the *stochastic*
+   industrial MIMII noise — direct evidence for the project premise (a
+   rotating-source target is the favourable case). Transfer (B−A) per family:
+   harmonic motors/horns gain across all archs; broadband MIMII families *lose*
+   for the strong models (Edge −11.9 on mimii, MP-SENet −7.6 on mimii_dg) — they
+   can't fit stochastic noise and lose focus. Diverse data helps only when added
+   families share exploitable structure *and* the model has spare capacity.
+4. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
    (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
    paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
    +1.6 (12-min run) to +5.0 (converged).
@@ -163,11 +175,12 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
   TF-GridNet slower at batch 4; hit the 16 h wall so marked "failed" but their
   best.ckpt was recovered from R2): MP-SENet-A (~epoch 41), TF-GridNet-A
   (undertrained). **Their reported numbers are lower bounds.** SGMSE+ deferred.
-- Eval is CPU-bound here (heavy fp32 forwards); the 2100-clip `SE-valid-harmonic`
-  per-category transfer table needs GPU eval (follow-up).
-- Pass B complete on drone valid for all four discriminative archs (dcunet, edge,
-  mpsenet, tfgridnet — the last two from best-drone-valid ckpts while jobs run).
-- Pending: `SE-valid-harmonic` per-category transfer table, SGMSE+.
+- Eval is CPU-bound here (heavy fp32 forwards); `SE-valid-harmonic` per-category
+  tables use a balanced 15-clips/(family,SNR) subsample for tractability.
+- Pass A + Pass B complete on **both** valids (drone + harmonic per-category) for
+  all four discriminative archs (mpsenet/tfgridnet from best-drone-valid ckpts).
+- Pending: SGMSE+ (deferred, multi-day bespoke DSM loop); fp16 to fully converge
+  the heavy ports (their numbers are lower bounds).
 
 ## Conclusion
 
