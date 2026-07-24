@@ -48,9 +48,12 @@ Modes:
 
 Optimization A/B knobs (fast-inference work): ``--solver banded|splu``,
 ``--lp-mode fft|fir|iir`` and ``--no-prune`` override the corresponding
-``VKConfig`` fields on both config families; ``--out-suffix _foo`` suffixes
-every output file (report + per-run npz) so a re-bench does not clobber the
-recorded regression references.
+``VKConfig`` fields on both config families; ``--backend torch`` routes the
+numeric kernels through ``data_processing.vk_torch`` with ``--device
+auto|cpu|cuda`` and ``--dtype complex128|complex64`` (GPU benchmarking:
+submit the same command with ``--backend torch --device cuda`` via omnirun);
+``--out-suffix _foo`` suffixes every output file (report + per-run npz) so a
+re-bench does not clobber the recorded regression references.
 
 Run: ``.venv/bin/python scripts/vk_bench.py [--quick | --synthetic]``
 """
@@ -137,8 +140,9 @@ CONFIGS: dict[str, VKConfig] = {"refine": REFINE_CFG, "blind": BLIND_CFG}
 PHASE_FUNCS: dict[str, tuple[str, ...]] = {
     "total_vk_track": ("vk_track",),
     "envelope_solve": ("vk_envelopes",),
-    "demodulate": ("demodulate", "_demod_tracks_fft"),
-    "fft_lp_decimate": ("_fft_lp_decimate",),
+    "demodulate": ("demodulate", "_demod_tracks_fft", "demod_tracks"),
+    "fft_lp_decimate": ("_fft_lp_decimate", "_fft_lp_decimate_t"),
+    "group_solve": ("_solve_group_banded", "_solve_group_splu", "solve_group"),
     "freq_update": ("_freq_update",),
     "reconstruct": ("vk_reconstruct",),
     "residual_demod": ("_demod_residual",),
@@ -463,6 +467,24 @@ def main() -> None:
         help="disable VKConfig.prune_far_pairs on both config families (A/B)",
     )
     ap.add_argument(
+        "--backend",
+        choices=["scipy", "torch"],
+        default=None,
+        help="override VKConfig.backend on both config families (A/B)",
+    )
+    ap.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default=None,
+        help="override VKConfig.device (torch backend only)",
+    )
+    ap.add_argument(
+        "--dtype",
+        choices=["complex128", "complex64"],
+        default=None,
+        help="override VKConfig.torch_dtype (torch group-solve precision)",
+    )
+    ap.add_argument(
         "--out-suffix",
         default="",
         help="suffix for every output file (report + npz) — keeps re-bench "
@@ -477,6 +499,12 @@ def main() -> None:
         overrides["lp_mode"] = args.lp_mode
     if args.no_prune:
         overrides["prune_far_pairs"] = False
+    if args.backend is not None:
+        overrides["backend"] = args.backend
+    if args.device is not None:
+        overrides["device"] = args.device
+    if args.dtype is not None:
+        overrides["torch_dtype"] = args.dtype
     if overrides:
         for name in list(CONFIGS):
             CONFIGS[name] = replace(CONFIGS[name], **overrides)

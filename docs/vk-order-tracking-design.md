@@ -303,3 +303,49 @@ Regression protocol: `scripts/vk_bench.py` gained `--solver`, `--lp-mode`,
 `--no-prune`, `--out-suffix` (A/B without clobbering the recorded reference
 npz). Gate: pooled MAE-vs-stored-ref within 1e-3 rev/s of the recorded
 `profile_report.json` values on all 4 cases × 2 configs.
+
+---
+
+## 9 · Torch (GPU) inference path (2026-07-24)
+
+`VKConfig.backend = "torch"` routes the three hot numeric kernels through the
+new `data_processing/vk_torch.py` (numpy-in/numpy-out, so the driver keeps its
+state and the scipy path stays the untouched default):
+
+1. **Demodulation** (`demod_tracks` / `demod_cross`) — batched conj-phasor
+   multiply + the same FFT brickwall + zoom-IFFT decimation as
+   `_fft_lp_decimate` (complex64 FFT stage, float64 phases, identical bin
+   selection). Carriers are direct `exp(-1j·k·φ)` (`torch.polar`) instead of
+   the CPU rotor-major recursion — same result up to complex64 rounding.
+2. **Coupled-group solve** (`solve_group`) — torch has no banded Cholesky, so
+   the time-major banded system (§8.1: same-time coupling offsets `1..g−1`,
+   p=2 prior offsets `g`/`2g`) is reformulated **block-tridiagonally**: time
+   samples are paired into `2g` super-states, which absorbs the `t−2` prior
+   band into the adjacent super-block; block-Thomas with a dense
+   `torch.linalg.cholesky` per super-block (sequential over ~`T_env/2`
+   pairs, all channels per factorization). Non-PD ⇒ `np.linalg.LinAlgError`
+   ⇒ the driver's existing splu fallback, exactly like the banded path.
+3. **Frequency update** (`freq_update`) — gate periodogram, SNR shrinkage and
+   Fisher-weighted slope fusion as batched torch reductions (`np.median`
+   semantics re-implemented — `torch.median` takes the lower middle); the
+   closing `(3, T_env)` pentadiagonal solve + grid interp stay on CPU scipy
+   (O(T_env) scalar-sequential; a GPU launch per Thomas step would dwarf the
+   two-vector transfer).
+
+Knobs: `VKConfig.device` (`"auto"`/`"cpu"`/`"cuda"[:N]`) and
+`VKConfig.torch_dtype` (`"complex128"` matches scipy; `"complex64"` runs the
+group solve in single precision — demod is complex64-FFT/complex128-out and
+phases/updates float64 in both backends). `backend="torch"` requires
+`lp_mode="fft"` (the only demod path it mirrors). `vk_reconstruct` and the
+confidence pass stay numpy (not on the profiled hot path).
+
+Regression: `vk_bench.py` gained `--backend scipy|torch`, `--device
+auto|cpu|cuda`, `--dtype complex128|complex64`; same gate as §8 (pooled
+MAE-vs-stored-ref within 1e-3 rev/s of the recorded `profile_report.json`
+values, all 4 cases × 2 configs). Synthetic + twin-pair parity
+(`tests/test_vk_tracking.py::test_torch_backend_matches_scipy`):
+torch/complex128 tracks scipy to < 1e-6 rev/s MAE, complex64 to < 1e-3.
+Cluster benchmark via the pin-and-probe wrapper (`scripts/vk_bench_job.sh`,
+successor of `vk_bench_opt_job.sh`): `omnirun submit --backend <backend>
+[--gpus 1] -- bash scripts/vk_bench_job.sh --backend torch --device
+cpu|cuda [--dtype complex64] --out-suffix _<tag>`.

@@ -168,3 +168,34 @@ def test_config_rejects_too_small_bandwidth():
     y = np.zeros(int(dur * FS))
     with pytest.raises(ValueError, match="bandwidth too small"):
         vk_track(y, np.full((1, len(frame_times)), 45.0), frame_times, make_cfg(bw_hz=1e-9))
+
+
+def test_torch_backend_matches_scipy():
+    """``backend="torch"`` (CPU, complex128) reproduces the scipy path on the
+    twin-pair scenario — the case that exercises every routed kernel: batched
+    demod, cross-term demod, the coupled-group block-tridiagonal solve, and
+    the phase-slope update. complex64 stays within the 1e-3 rev/s regression
+    tolerance of the bench gate."""
+    pytest.importorskip("torch")
+    dur = 6.0
+    t, frame_times, _ = make_grid(dur)
+    speeds = (45.0, 45.65)
+    y = synth_comb(t, [np.full_like(t, s) for s in speeds], snr_db=10.0, seed=1)
+    r_init = np.full((2, len(frame_times)), np.mean(speeds))
+    cfgs = {
+        "scipy": make_cfg(n_outer=6),
+        "torch": make_cfg(n_outer=6, backend="torch", device="cpu"),
+        "torch64": make_cfg(n_outer=6, backend="torch", device="cpu", torch_dtype="complex64"),
+    }
+    ref = vk_track(y, r_init, frame_times, cfgs["scipy"]).r_refined
+    got = vk_track(y, r_init, frame_times, cfgs["torch"]).r_refined
+    mae128 = float(np.mean(np.abs(got - ref)))
+    assert mae128 < 1e-6, f"torch/complex128 deviates from scipy: MAE {mae128:.2e} rev/s"
+    got64 = vk_track(y, r_init, frame_times, cfgs["torch64"]).r_refined
+    mae64 = float(np.mean(np.abs(got64 - ref)))
+    assert mae64 < 1e-3, f"torch/complex64 deviates from scipy: MAE {mae64:.2e} rev/s"
+
+
+def test_torch_backend_requires_fft_lp_mode():
+    with pytest.raises(ValueError, match="lp_mode"):
+        VKConfig(backend="torch", lp_mode="iir")

@@ -29,10 +29,18 @@ can actually beat inside the lowpass band (``VKConfig.prune_far_pairs``), and
 the demod lowpass is selectable between the batched FFT brickwall and a
 two-stage linear-phase FIR polyphase decimator (``VKConfig.lp_mode``).
 
+GPU inference path (2026-07-24): ``VKConfig.backend = "torch"`` routes the
+three hot numeric kernels — demodulation, the coupled-group solve (as a
+block-tridiagonal block-Thomas system; torch has no banded Cholesky) and the
+phase-slope frequency update — through :mod:`data_processing.vk_torch`
+(``device``/``torch_dtype`` knobs). Orchestration, annealing and all config
+stay in this module; the scipy path is untouched and remains the default.
+
 Conventions match ``rps_refinement.py``: trajectories in rev/s with harmonics
 at ``k * r`` Hz, arrays time-last, mono-or-multichannel audio plus a
-trajectory sampled on an arbitrary time grid. The core is numpy + scipy only
-(float64 solver, no torch) — it is an offline annotation tool.
+trajectory sampled on an arbitrary time grid. The core is numpy + scipy by
+default (float64 solver; torch only imported behind ``backend="torch"``) —
+it is an offline annotation tool.
 """
 
 from __future__ import annotations
@@ -116,12 +124,35 @@ class VKConfig:
     # skipping them removes the dominant share of full-length pair demods in
     # richly-coupled configs. Pairs with no co-valid samples are always
     # skipped (their contribution is exactly zero).
+    backend: str = "scipy"  # numeric-kernel backend: "scipy" = the numpy/scipy
+    # paths above (default); "torch" = route demodulation, the coupled-group
+    # solve (block-tridiagonal Thomas — torch has no banded Cholesky) and the
+    # frequency update through data_processing.vk_torch (GPU-capable; CPU
+    # torch works for testing). Orchestration stays here either way; torch
+    # requires lp_mode="fft" (the only demod path it mirrors) and keeps the
+    # splu fallback for numerically non-PD groups.
+    device: str = "auto"  # torch backend only: "auto" (cuda when available,
+    # else cpu), "cpu", "cuda", or an explicit "cuda:N"
+    torch_dtype: str = "complex128"  # torch group-solve precision:
+    # "complex128" (matches scipy) | "complex64" (single-precision solve;
+    # demod stays complex64-FFT/complex128-out and phases/updates float64 in
+    # both backends, exactly like the scipy fast path)
 
     def __post_init__(self) -> None:
         if self.lp_mode not in ("fft", "fir", "iir"):
             raise ValueError(f"unknown lp_mode {self.lp_mode!r} (expected 'fft', 'fir' or 'iir')")
         if self.solver not in ("banded", "splu"):
             raise ValueError(f"unknown solver {self.solver!r} (expected 'banded' or 'splu')")
+        if self.backend not in ("scipy", "torch"):
+            raise ValueError(f"unknown backend {self.backend!r} (expected 'scipy' or 'torch')")
+        if self.torch_dtype not in ("complex128", "complex64"):
+            raise ValueError(
+                f"unknown torch_dtype {self.torch_dtype!r} (expected 'complex128' or 'complex64')"
+            )
+        if self.backend == "torch" and self.lp_mode != "fft":
+            raise ValueError(
+                f"backend='torch' mirrors lp_mode='fft' only, got lp_mode={self.lp_mode!r}"
+            )
 
 
 @dataclass
@@ -639,7 +670,11 @@ def vk_envelopes(
     f_hi = min(cfg.f_max, 0.45 * cfg.fs)
     valid = (f >= cfg.f_min) & (f <= f_hi) & (r_dec[rotor] >= cfg.min_rps)
 
-    if cfg.lp_mode in ("fft", "fir"):
+    if cfg.backend == "torch":
+        from . import vk_torch  # lazy: torch only needed when requested
+
+        z = vk_torch.demod_tracks(y, phase, rotor, k, cfg)
+    elif cfg.lp_mode in ("fft", "fir"):
         z = _demod_tracks_fft(y, phase, rotor, k, cfg)
     else:
         z = demodulate(y, k[:, None] * phase[rotor], cfg)
@@ -699,7 +734,14 @@ def vk_envelopes(
         # memory-bounded batches — the per-pair exp + audio-rate filter of
         # the reference path dominated the whole solve for coupled groups.
         cross: dict[tuple[int, int], np.ndarray] = {}
-        if pair_list and sos is None:  # lp_mode "fft" / "fir"
+        if pair_list and cfg.backend == "torch":
+            from . import vk_torch
+
+            gd = vk_torch.demod_cross(
+                phase, rotor, k, [(group[a], group[b]) for a, b in pair_list], n_env, cfg
+            )
+            cross = {pair: gd[i] for i, pair in enumerate(pair_list)}
+        elif pair_list and sos is None:  # lp_mode "fft" / "fir"
             carr = dict(_track_carriers(phase, rotor, k, group, sign=1.0))
             chunk_p = max(1, int(128e6 / (max(1, n_t) * 8)))
             cs = np.empty((min(chunk_p, len(pair_list)), n_t), dtype=np.complex64)
@@ -717,7 +759,14 @@ def vk_envelopes(
                 cross[(a, b)] = _lp_decimate(np.exp(1j * dphi), cast(np.ndarray, sos), stride)
         z_g = z[:, group]  # (C, g, T_env)
         sol: np.ndarray | None = None
-        if cfg.solver == "banded":
+        if cfg.backend == "torch":
+            from . import vk_torch
+
+            try:
+                sol = vk_torch.solve_group(d2td2_diags, rho, w, cross, z_g, cfg)
+            except np.linalg.LinAlgError:
+                sol = None  # numerically non-PD: use the reference path below
+        elif cfg.solver == "banded":
             try:
                 sol = _solve_group_banded(d2td2_diags, rho, w, cross, z_g)
             except np.linalg.LinAlgError:
@@ -797,6 +846,10 @@ def vk_reconstruct(env: Envelopes, n_samples: int | None = None) -> np.ndarray:
 
 def _demod_residual(resid: np.ndarray, env: Envelopes, cfg: VKConfig) -> np.ndarray:
     """Demodulate a residual into every track's band (mode-dispatched)."""
+    if cfg.backend == "torch":
+        from . import vk_torch
+
+        return vk_torch.demod_tracks(resid, env.phase, env.rotor, env.k, cfg)
     if cfg.lp_mode in ("fft", "fir"):
         return _demod_tracks_fft(resid, env.phase, env.rotor, env.k, cfg)
     return demodulate(resid, env.k[:, None] * env.phase[env.rotor], cfg)
@@ -863,6 +916,10 @@ def _freq_update(
     (``cfg.update_gate`` on the periodogram peak/median ratio) — no comb,
     and a rotor without a comb must not drift (design §3 / test 5).
     """
+    if cfg.backend == "torch":
+        from . import vk_torch
+
+        return vk_torch.freq_update(env, rotor_idx, lam, cfg, z_res)
     sel = np.where(env.rotor == rotor_idx)[0]
     if len(sel) == 0:
         return None
