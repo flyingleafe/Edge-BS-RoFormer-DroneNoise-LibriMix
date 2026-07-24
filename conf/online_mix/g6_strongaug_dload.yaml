@@ -1,0 +1,73 @@
+# G6 — E12 real full-flight policy with the STRONG noise-augmentation family
+# (criterion 2.3; docs/experiments/g1-vk-parity.md § Phase G6). Sources and the
+# TWO-STAGE schedule are byte-identical to e12_real_fullflight_dload.yaml — G5
+# showed the 50k-sample unaugmented warmup is load-bearing (augs-from-0 made
+# best val WORSE, 117.9 vs 63.7) — but the augmented stage's family content is
+# replaced: the weak mixture-level choices (polarity = exact no-op for mag/IF
+# front-ends, gain = log-offset; only channel_drop did anything) give way to
+# six NOISE-chunk transforms (policy.noise_augmentations, applied to the
+# noise+RPS pair BEFORE mixing — data_processing/noise_augmentations.py):
+# freq_scale (comb/pitch scale, labels scaled too — new (audio, RPS) pairs),
+# spectral_recolor, random_reverb, tooth_dropout (label-aware harmonic
+# masking), spec_mask, floor_inject. noise_time_warp stays on top, unchanged.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260724
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  stages:
+    # First 50k samples = 10 validation intervals at samples_per_validation=5000:
+    # random speech/noise mixtures, no augmentation (the load-bearing warmup).
+    - until: 50000
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+
+    # Afterward: same mixture distribution; 70% of noise chunks get one strong
+    # noise-level augmentation, and independently 50% get the E5/E11/E12
+    # time-warp (noise+RPS pair) — the warp is kept as-is on top.
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      noise_augmentations:
+        probability: 0.7
+        choices:
+          - freq_scale: {alpha_low: 0.75, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+          - tooth_dropout: {max_teeth: 4, max_harmonic: 25, halfwidth_bins: 2}
+          - spec_mask: {max_freq_masks: 3, freq_width_hz: [50.0, 400.0], max_time_masks: 2, time_width_ms: 100.0}
+          - floor_inject: {tilt_low: 0.0, tilt_high: 2.0, level_low_db: -20.0, level_high_db: 0.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

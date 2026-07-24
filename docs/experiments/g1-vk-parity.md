@@ -206,3 +206,53 @@ augmentation) is now measured; the residual 3.4x gap is structural at this
 model scale and data volume. Remaining levers are programs, not configs:
 VK-distilled labels / VK-annotated unlabeled data (semi-supervised scale),
 or a VK-hybrid inference design. Parity is NOT achieved.
+
+## Phase G6 (strong augmentation families) — 2026-07-24
+
+Every arm in the ledger overfits the same way: train keeps falling while val
+roughly doubles within ~20 epochs of best. Two measured facts frame the fix:
+
+- **The schedule is load-bearing (G5).** Removing the E12 two-stage
+  curriculum's 50k-sample unaugmented warmup (augs + time-warp from
+  sample 0, `g5_augfrom0_*`) made things WORSE — best val/mse 117.9 vs the
+  warmup counterpart's 63.7. So G6 keeps the E12 schedule untouched.
+- **The family content is provably weak.** Of the augmented stage's choices,
+  `random_polarity` is an *exact no-op* for magnitude and
+  instantaneous-frequency front-ends, `random_gain` is a log-magnitude
+  offset; only `channel_drop` and the mild ±12% `noise_time_warp` change
+  anything the predictor can see. Overfit onset was effectively
+  un-regularized.
+
+G6 therefore replaces the augmented stage's *content* with six strong
+**noise-chunk** transforms (`data_processing/noise_augmentations.py`,
+`policy.noise_augmentations`, probability 0.7, one uniform choice per hit —
+applied to the noise+RPS pair *before* mixing because two of them touch the
+labels; time-warp kept as-is on top):
+
+| Aug | Effect | Labels |
+|---|---|---|
+| `freq_scale` | resample by α ~ U(0.75, 1.3), no duration preservation — comb/pitch scale | × α (+ time-compress; padded tail rps 0) |
+| `spectral_recolor` | smooth random EQ, U(−8, +8) dB at 10 log-spaced anchors 30 Hz–8 kHz, per channel | unchanged |
+| `random_reverb` | FFT-convolve with synthetic RIRs (RT60 U(0.1, 0.8) s, DRR U(3, 15) dB, exp-decay colored tails; 200-RIR deterministic bank), RMS renormalized | unchanged |
+| `tooth_dropout` | zero ±2 STFT bins around k·rps_r(t) for 1–4 random (rotor, k ≤ 25) teeth — label-aware | unchanged |
+| `spec_mask` | SpecAugment: 1–3 freq bands (50–400 Hz) + 0–2 time masks (≤100 ms) zeroed | unchanged |
+| `floor_inject` | add 1/f^tilt colored floor (tilt U(0, 2)) at U(−20, 0) dB rel chunk RMS | unchanged |
+
+`freq_scale` is the key one — it manufactures genuinely new (audio, RPS)
+pairs, attacking trajectory memorization directly; `tooth_dropout` /
+`spec_mask` / `floor_inject` force redundancy across teeth;
+`spectral_recolor` / `random_reverb` break timbre/channel memorization.
+
+**Arms** (E12 recipe otherwise; policy `g6_strongaug_dload.yaml`, data
+`g6_strongaug`): `g6_strongaug_transformer` (baseline model) and
+`g6_strongaug_if` (`simple_conv_v2_transformer_if` — the current best arm,
+protocol MAE 2.481, best val 63.7).
+
+**Success gate:** best val/mse below the warmup counterparts (baseline family
+65–79 / IF 63.7) with a later best epoch; then the vk_valid_comparison
+protocol eval (`scripts/rps_predictor_vk_eval.py`) vs the ledger bars
+(E12-smoothed 2.62, IF 2.481; VK 0.68–0.74 / 1.03).
+
+### G6 result
+
+(pending)

@@ -1219,6 +1219,20 @@ class OnlineMixIterableDataset(IterableDataset):
             )
         else:
             noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
+
+        # Strong noise-chunk augmentations (G6): applied to the noise+RPS pair
+        # BEFORE mixing (freq_scale rescales the labels, tooth_dropout reads
+        # them), unlike `policy.augmentations` which is post-mix. Same
+        # fire/choice contract; absent key consumes no RNG.
+        from data_processing.noise_augmentations import maybe_apply_noise_augmentation
+
+        noise_tf = maybe_apply_noise_augmentation(
+            noise_tf,
+            cast("Mapping[str, Any] | None", policy.get("noise_augmentations")),
+            rng,
+            target_len=self.target_len,
+            sample_rate=self.sample_rate,
+        )
         audio_track = noise_tf["audio"]
         noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
         n_frames = noise_audio.shape[-1] // self.hop_length + 1

@@ -1,0 +1,25 @@
+# @package _global_
+# G6 — strong augmentation families, baseline transformer arm (criterion 2.3;
+# docs/experiments/g1-vk-parity.md § Phase G6). Identical to the E12 recipe
+# except the online-mix policy's augmented stage swaps the weak mixture-level
+# family (polarity/gain no-ops for mag+IF front-ends) for six strong
+# NOISE-chunk transforms (freq_scale with label rescale, spectral_recolor,
+# random_reverb, tooth_dropout, spec_mask, floor_inject) at probability 0.7.
+# The load-bearing 50k unaugmented warmup (G5) and the time-warp are kept.
+defaults:
+  - override /data: g6_strongaug
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g6_strongaug_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
