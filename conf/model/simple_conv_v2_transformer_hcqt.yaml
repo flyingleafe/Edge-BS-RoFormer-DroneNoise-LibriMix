@@ -1,0 +1,20 @@
+# simple_conv_v2_transformer_hcqt — rps_prediction, G2a front-end arm of the
+# VK-parity campaign (criterion 2.3; docs/experiments/g1-vk-parity.md § Phase
+# G2). Same trunk/task params as simple_conv_v2_transformer.yaml — only
+# `params.name` differs: the model swaps the log-STFT front-end for the
+# harmonic-stacked HCQT (nnAudio, native 16 kHz, fmin=32.7, harmonics
+# auto-derived to [1,2,3] under Nyquist → 6 input channels), time-interpolated
+# onto the same [16000, 512] output grid, so loss/metrics/valid are untouched.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer_hcqt
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

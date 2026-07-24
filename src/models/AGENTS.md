@@ -40,6 +40,7 @@ Build via: `from models.frontends import build_frontend; fe = build_frontend(nam
 |-----|-------|----------------|-------------|-------------|
 | `stft_mag` | STFTMag | 1 | n_fft//2+1 | log₁₊ magnitude |
 | `stft_magphase` | STFTMagPhase | 3 | n_fft//2+1 | log mag + cos(θ) + sin(θ) |
+| `stft_mag_if` | STFTMagIF | 2 | n_fft//2+1 | log₁₊ mag + instantaneous-frequency deviation (fractional bins; all-torch wrap, no numpy unwrap) |
 | `hcqt` | HCQTFrontEnd | H or 2H | 360·bpo/60 | Harmonic CQT (librosa). `phase=True`→2H |
 
 ### Using a front-end
@@ -105,6 +106,8 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `simple_conv_v2_causal_gru` | Time-causal STFT framing + left-padded temporal conv encoder + unidirectional GRU |
 | `simple_conv_v2_causal_gru96` | `simple_conv_v2_causal_gru` with wider unidirectional GRU (`hidden_ch=96`) |
 | `simple_conv_v2_transformer` | `simple_conv_v2` encoder/pool + Transformer temporal head |
+| `simple_conv_v2_transformer_hcqt` | `simple_conv_v2_transformer` trunk on a harmonic-stacked HCQT front-end (nnAudio, 16 kHz native, fmin 32.7, harmonics [1,2,3] ⇒ 6 ch; hop-256 features time-interpolated onto the hop-512 output grid) — G2a VK-parity front-end arm |
+| `simple_conv_v2_transformer_if` | `simple_conv_v2_transformer` trunk on the `stft_mag_if` front-end (log-mag + IF deviation, 2 ch, same STFT grid) — G2b VK-parity front-end arm |
 | `simple_conv_v2_local_attn` | `simple_conv_v2` encoder/pool + local-window Transformer temporal head |
 | `simple_conv_v2_multires` | `simple_conv_v2` with concatenated long/short-window STFT magnitude inputs |
 | `simple_conv_v2_dwt` | `simple_conv_v2` with a lightweight Haar-like temporal wavelet branch |
