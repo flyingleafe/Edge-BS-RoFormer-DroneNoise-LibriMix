@@ -1308,6 +1308,34 @@ class SimpleConvV2TransformerIF(SimpleConvV2Transformer):
         )
 
 
+class SimpleConvV2TransformerComb(SimpleConvV2Transformer):
+    """G4 front-end arm: SimpleConvV2Transformer trunk on the whitened comb
+    matched-filter + IF-consensus front-end (VK-parity campaign, criterion 2.3).
+
+    G2 verdict (docs/experiments/g1-vk-parity.md): IF phase evidence helps
+    (first arm to beat the baseline) but constant-Q harmonic stacking hurts —
+    the missing ingredient is harmonic AGGREGATION on the LINEAR frequency
+    grid. ``comb_if`` performs exactly that: the trainable analogue of the
+    blind VK tracker's whitened comb scan (mean whitened log-mag over comb
+    teeth per candidate f0, teeth capped at 1200 Hz), plus a Fisher
+    k²-weighted IF frequency-consensus channel and the stage-guard occupancy
+    fraction — 3 channels over a 30..120 rev/s ×0.25 f0 grid (361 rows).
+
+    The trunk therefore operates in f0-space where each rotor is a ridge;
+    the time grid and output contract are unchanged (same hop-512 frames as
+    the baseline / stft_mag_if arms).
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("comb_if", n_fft=n_fft, hop_length=hop_length)
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+
+
 class SimpleConvV2LocalAttention(nn.Module):
     """SimpleConvV2 encoder/pool with local-window Transformer temporal attention."""
 
@@ -2248,6 +2276,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_v2_transformer_hcqt": SimpleConvV2TransformerHCQT,
     "simple_conv_v2_transformer_if": SimpleConvV2TransformerIF,
+    "simple_conv_v2_transformer_comb": SimpleConvV2TransformerComb,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_v2_dwt": SimpleConvV2Wavelet,

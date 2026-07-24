@@ -17,11 +17,7 @@ Contract
             # time-grid length for a given input length
 """
 
-from typing import Optional
-
-import torch
 import torch.nn as nn
-from torch import Tensor
 
 # ── Base class ───────────────────────────────────────────────────────────────
 
@@ -82,7 +78,6 @@ def _ensure_imported():
     global _IMPORTED
     if _IMPORTED:
         return
-    from . import hcqt as _  # noqa: F401
-    from . import stft as _  # noqa: F401
+    from . import comb, hcqt, stft  # noqa: F401
 
     _IMPORTED = True

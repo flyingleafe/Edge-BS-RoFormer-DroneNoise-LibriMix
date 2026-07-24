@@ -123,3 +123,37 @@ parity. Next lever (G4): harmonic aggregation on the LINEAR grid (comb
 matched-filter stacking over an f0 grid, the trainable analogue of the VK
 whitened scan) combined with the IF channel — attacks the aggregation
 ingredient without CQT smearing.
+
+## Phase G4 (comb matched-filter front-end)
+
+Hypothesis, from the G2 evidence split: the trunk needs harmonic
+aggregation like VK's whitened scan, but on the LINEAR frequency grid
+(constant-Q smears sub-rev/s structure — G2a refuted), composed with the
+IF machinery that already helped (G2b). The `comb_if` front-end computes,
+per candidate f0 (30..120 rev/s, step 0.25 → 361 rows) and frame:
+
+1. **comb score** — mean whitened log-mag over teeth k·f0 ≤ 1200 Hz
+   (whitening = running median over frequency, 150 Hz window — the
+   `vk_blind_seeding.whitened_logmag` recipe; interpolated tooth gather =
+   `_tooth_values`, precomputed as index/weight buffers, one fused gather
+   per forward);
+2. **frequency consensus** — per-tooth IF deviation → rev/s (IF·Δf/k),
+   Fisher magnitude·k²-weighted mean, clamped ±2 rev/s;
+3. **occupancy** — fraction of teeth above the frame's spectrum median
+   (the stage-guard tooth statistic).
+
+| experiment | model key | front-end |
+|---|---|---|
+| `g4_comb_transformer` | `simple_conv_v2_transformer_comb` | `comb_if` (3 ch × 361 f0 rows, hop-512 grid) |
+
+Everything else mirrors `e12_real_fullflight_transformer` exactly (same
+`e12_real_fullflight` stream, 1 s chunks, pit_mse, augs, patience 20). The
+trunk operates in f0-space where each rotor is a ridge — the network's job
+reduces from "learn harmonic geometry" to "track ridges and resolve the
+4-rotor assignment". Success criterion unchanged.
+
+Status: built (front-end + model + configs committed); training not yet
+submitted. Front-end sanity (unit-tested): a synthetic 4-rotor comb at
+[45, 62.5, 80, 105] rev/s yields comb-score NMS peaks at exactly those
+rows; a comb offset +0.2 rev/s from a grid row reads +0.206 in the
+consensus channel; occupancy 0.95 at the true row vs 0.33 off-comb.
