@@ -1358,15 +1358,26 @@ class SimpleConvV2TransformerPyramid(SimpleConvV2Transformer):
     log-frequency axis (340 rows, ~48 bins/octave — comb patterns become
     shift-equivariant in f0) and the standard hop-512 time grid.
 
-    The trunk is unchanged (in_ch=8 via the frontend-aware first conv);
+    The trunk is unchanged (in_ch adapts via the frontend-aware first conv);
     output contract identical to the baseline / stft_mag_if arms.
+
+    G8a2: ``collapse_bands`` (default True) rides through to the front-end —
+    the masked per-band tensors are summed into 2 dense channels (in_ch=2)
+    instead of the G8a 8-channel concat, whose 6-of-8 exactly-zero channels
+    per row trained violently unstably (val 142→659 swings — see
+    docs/experiments/g1-vk-parity.md § G8a result). ``collapse_bands=False``
+    reproduces the dead G8a model (in_ch=8; A/B + G8a checkpoint loading).
     """
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+    def __init__(
+        self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, collapse_bands=True
+    ):
         if frontend is None:
             from models.frontends import build_frontend
 
-            frontend = build_frontend("pyramid_if", hop_length=hop_length)
+            frontend = build_frontend(
+                "pyramid_if", hop_length=hop_length, collapse_bands=collapse_bands
+            )
         super().__init__(
             n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
         )

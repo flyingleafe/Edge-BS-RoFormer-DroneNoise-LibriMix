@@ -1,0 +1,27 @@
+# @package _global_
+# G8a2 — dense-collapsed multi-resolution pyramid (criterion 2.3; see
+# docs/experiments/g1-vk-parity.md § "G8a result + G8a2"). G8a trained
+# violently unstably (best val 142.5 at ep 10; 142→619→652→180→659, wandb
+# 1m7nguxw): since the bands PARTITION the log-f rows, 6 of the 8 concat
+# channels were exactly zero at every row — the first conv saw mostly zeros
+# with hard band edges. Fix: `collapse_bands: true` sums the masked per-band
+# tensors into 2 dense channels (mag + IF over the full 340-row axis; the
+# partition makes the sum exact). Everything else mirrors
+# e12_real_fullflight_transformer verbatim (weak-aug default policy).
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_pyramid
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g8a2_pyramid_dense_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

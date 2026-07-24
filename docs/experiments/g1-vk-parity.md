@@ -285,3 +285,22 @@ params (the overfitting constraint). Experiment `g8a_pyramid_transformer`
 (model `simple_conv_v2_transformer_pyramid`, in_ch=8, trunk unchanged),
 E12 weak-aug recipe verbatim. Gate: val < 63.7 (g2_if) and protocol
 DREGON < 2.48; then G8b (+harmonic fusion).
+
+### G8a result + G8a2 (dense collapse)
+
+G8a REFUTED as built (wandb 1m7nguxw): best val/mse 142.5 (mae 6.67) at
+epoch 10, violently unstable curve (142→619→652→180→659). Diagnosis
+(design flaw in the channel layout, not in the resolution allocation):
+the four bands PARTITION the 340 log-f rows, so in the 8-channel concat
+exactly one band's (mag, IF) pair is nonzero at every row — the first
+conv saw 6-of-8 exactly-zero channels with hard band edges, and the
+support pattern rather than the content dominated its input statistics.
+
+G8a2 = minimal fix: `collapse_bands: true` (now the `pyramid_if` default)
+SUMS the masked per-band tensors into 2 dense channels (mag + IF over the
+full log-f axis). The row-mask partition (coverage == 1, unit-asserted)
+makes the sum exact — no double counting; per-band resolution allocation
+is unchanged, so C1 is still what is being tested. Experiment
+`g8a2_pyramid_dense_transformer` (in_ch=2), E12 weak-aug recipe verbatim;
+`collapse_bands: false` reproduces the dead G8a arm / loads its ckpt.
+Gate unchanged: stable val < 63.7 (g2_if), protocol DREGON < 2.48.
