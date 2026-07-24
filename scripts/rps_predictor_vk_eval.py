@@ -275,6 +275,29 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/c11_dregon_fly125_retrain/checkpoints/best.ckpt",
         None,
     ),
+    # G1 phase-B (VK-parity): E12 recipe retrained with 4 s / 8 s native
+    # context (wandb 9pf3rpoh / 4bwjujj7). best = early-stop optimum
+    # (ep 16 / ep 8), last = final epoch (36 / 28).
+    "g1_transformer_4s_best": (
+        "g1_transformer_4s",
+        "r2://ml-data/artifacts/g1_transformer_4s/checkpoints/best.ckpt",
+        None,
+    ),
+    "g1_transformer_4s_last": (
+        "g1_transformer_4s",
+        "r2://ml-data/artifacts/g1_transformer_4s/checkpoints/last.ckpt",
+        None,
+    ),
+    "g1_transformer_8s_best": (
+        "g1_transformer_8s",
+        "r2://ml-data/artifacts/g1_transformer_8s/checkpoints/best.ckpt",
+        None,
+    ),
+    "g1_transformer_8s_last": (
+        "g1_transformer_8s",
+        "r2://ml-data/artifacts/g1_transformer_8s/checkpoints/last.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
