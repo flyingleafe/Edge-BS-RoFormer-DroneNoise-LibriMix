@@ -304,3 +304,16 @@ is unchanged, so C1 is still what is being tested. Experiment
 `g8a2_pyramid_dense_transformer` (in_ch=2), E12 weak-aug recipe verbatim;
 `collapse_bands: false` reproduces the dead G8a arm / loads its ckpt.
 Gate unchanged: stable val < 63.7 (g2_if), protocol DREGON < 2.48.
+
+### G8a2 result (2026-07-24) — dense collapse does not rescue the pyramid
+
+Training 7n0z01gy: best val 155.4 at epoch 1, unstable throughout. With
+G4a/G4b and G8a this establishes a lever-class pattern: WARPED-AXIS
+front-ends (candidate-f0 grid, log-frequency pyramid) consistently fail to
+train on the SimpleConvV2Transformer trunk under the E12 recipe, while
+linear-STFT front-ends (mag, mag+IF) train stably. The G8 design's C1
+substrate is closed as-built; C2 is blocked with it. C3 (Fisher-weighted
+coarse-to-fine decode) survives as a LINEAR-AXIS design: coarse posterior
+from low harmonics + per-harmonic IF refinement can be built directly on
+stft_mag_if features without any axis warp. Neural floor remains g2_if
+2.481.
