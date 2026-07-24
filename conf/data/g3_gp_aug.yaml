@@ -1,0 +1,23 @@
+# G3 — E12 real full-flight training stream + GP-noise augmentation share
+# (conf/online_mix/g3_gp_aug_dload.yaml: real sources identical to the E12
+# baseline, plus ~1/3 GP-generated noise chunks with exact synthetic RPS
+# labels). Validation identical to E12: the fixed FULL-envelope real split
+# (FLY124 — no leakage), so scores are directly comparable to
+# e12_real_fullflight_*.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/g3_gp_aug_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
