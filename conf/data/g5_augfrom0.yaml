@@ -1,0 +1,22 @@
+# G5: E12 full-flight stream with augmentation from sample 0 (no warmup stage).
+# as the E11 real-only baseline, but the DREGON noise source keeps its whole
+# envelope (min_motor_rps: 0.0), so training sees real ground/warm-up/take-off
+# windows. Diagnostic: can a model trained on the REAL full flight predict the
+# low-RPS regimes? Validated on the FULL envelope real split (FLY124).
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/g5_augfrom0_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
