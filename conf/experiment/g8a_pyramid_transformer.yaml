@@ -1,0 +1,28 @@
+# @package _global_
+# G8a — multi-resolution STFT pyramid front-end (C1 of
+# docs/g8-hierarchical-frontend-design.md; criterion 2.3, batch doc
+# docs/experiments/g1-vk-parity.md § G8a). Mirrors
+# e12_real_fullflight_transformer EXACTLY (same e12_real_fullflight
+# online-mix stream — the weak-aug default policy, G6 closed the strong-aug
+# question negatively — 1 s chunks, pit_mse, patience 20) except the model:
+# the trunk gets `pyramid_if` — per-band resolution allocation (fine Hz at
+# the fundamental via n_fft 8192, fine time + IF sub-bin at high harmonics
+# via 2048/1024) on a shift-equivariant log-frequency axis. Isolates the
+# resolution fix; gate: val < 63.7 (g2_if) and protocol DREGON < 2.48.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_pyramid
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g8a_pyramid_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

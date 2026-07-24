@@ -268,3 +268,20 @@ content (six strong families regularize the post-best trajectory but worsen
 the optimum). Ledger unchanged: neural floor 2.481, VK bars 0.68–0.74/1.03.
 Open: G8 hierarchical front-end (docs/g8-hierarchical-frontend-design.md)
 and the VK-distillation data program.
+
+### G8a (pyramid) — hypothesis
+
+C1 of docs/g8-hierarchical-frontend-design.md, isolated: the single-window
+STFT cannot serve fundamentals (need fine Hz; 7.8 Hz bins are coarse
+against a 0.7 rev/s bar) and high harmonics (need fine time + IF sub-bin)
+at once, and constant-Q allocates backwards (G2a). `pyramid_if` = four
+parallel STFTs (8192/4096/2048/1024, hop n_fft/4, bands 30-250/250-1000/
+1000-2000/2000-4000 Hz), per-band log1p-mag + IF (G2b estimator, each
+band's own scaling), fixed-interpolated onto a geometric log-f axis
+(340 rows ≈48 bins/oct — comb patterns become f0-shift-equivariant, the
+substrate for C2) and the hop-512 grid; band channels zeroed outside their
+own rows so the 8192-band's 512 ms smear stays at k≤2. Zero front-end
+params (the overfitting constraint). Experiment `g8a_pyramid_transformer`
+(model `simple_conv_v2_transformer_pyramid`, in_ch=8, trunk unchanged),
+E12 weak-aug recipe verbatim. Gate: val < 63.7 (g2_if) and protocol
+DREGON < 2.48; then G8b (+harmonic fusion).

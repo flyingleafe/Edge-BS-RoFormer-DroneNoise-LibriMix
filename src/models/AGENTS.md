@@ -42,6 +42,7 @@ Build via: `from models.frontends import build_frontend; fe = build_frontend(nam
 | `stft_magphase` | STFTMagPhase | 3 | n_fft//2+1 | log mag + cos(θ) + sin(θ) |
 | `stft_mag_if` | STFTMagIF | 2 | n_fft//2+1 | log₁₊ mag + instantaneous-frequency deviation (fractional bins; all-torch wrap, no numpy unwrap) |
 | `hcqt` | HCQTFrontEnd | H or 2H | 360·bpo/60 | Harmonic CQT (librosa). `phase=True`→2H |
+| `pyramid_if` | PyramidIFFrontEnd | 8 | 340 (log-f rows) | Multi-resolution STFT pyramid: 4 bands (n_fft 8192/4096/2048/1024, 30-250/250-1000/1-2k/2-4k Hz), per-band log1p-mag + IF, fixed-interp onto a geometric log-f axis + hop-512 grid (G8a) |
 | `comb_if` | CombIFFrontEnd | 4 (3 if `coord_channel=False`) | 361 (f0 rows) | Whitened comb matched-filter + Fisher-weighted IF consensus + occupancy + CoordConv row-f0 channel (G4b) over a 30..120 rev/s ×0.25 candidate-f0 grid (VK-scan analogue, linear grid, teeth ≤1200 Hz) |
 
 ### Using a front-end
@@ -109,6 +110,7 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `simple_conv_v2_transformer` | `simple_conv_v2` encoder/pool + Transformer temporal head |
 | `simple_conv_v2_transformer_hcqt` | `simple_conv_v2_transformer` trunk on a harmonic-stacked HCQT front-end (nnAudio, 16 kHz native, fmin 32.7, harmonics [1,2,3] ⇒ 6 ch; hop-256 features time-interpolated onto the hop-512 output grid) — G2a VK-parity front-end arm |
 | `simple_conv_v2_transformer_if` | `simple_conv_v2_transformer` trunk on the `stft_mag_if` front-end (log-mag + IF deviation, 2 ch, same STFT grid) — G2b VK-parity front-end arm |
+| `simple_conv_v2_transformer_pyramid` | `simple_conv_v2_transformer` trunk on the `pyramid_if` multi-resolution pyramid front-end (8 ch × 340 log-f rows, zero front-end params) — G8a VK-parity arm |
 | `simple_conv_v2_transformer_comb` | `simple_conv_v2_transformer` trunk on the `comb_if` front-end (whitened comb score + IF consensus + occupancy + coord channel, 4 ch × 361 f0 rows; `coord_channel=False` → 3-ch G4a variant) — G4/G4b VK-parity front-end arm |
 | `simple_conv_v2_local_attn` | `simple_conv_v2` encoder/pool + local-window Transformer temporal head |
 | `simple_conv_v2_multires` | `simple_conv_v2` with concatenated long/short-window STFT magnitude inputs |
