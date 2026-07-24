@@ -75,7 +75,7 @@ MSE against `rps_gt: (B, 4, T)`.  PIT-MSE variant also supported
   `src/models/<subdir>/rps_predictor.py`.
 - **Front-end** (if new TF transform needed): `src/models/frontends/<name>.py`,
   subclass `SpectralFrontEnd`, decorate with `@register_frontend`.
-  Existing: `stft_mag`, `stft_magphase`, `stft_mag_if`, `hcqt`.
+  Existing: `stft_mag`, `stft_magphase`, `stft_mag_if`, `hcqt`, `comb_if`.
 
 ## Front-end integration
 

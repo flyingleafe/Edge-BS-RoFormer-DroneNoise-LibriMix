@@ -1,0 +1,27 @@
+# @package _global_
+# G4 — comb matched-filter front-end arm of the VK-parity push (criterion
+# 2.3; see docs/experiments/g1-vk-parity.md § Phase G4). Mirrors
+# e12_real_fullflight_transformer EXACTLY (same e12_real_fullflight online-mix
+# stream, 1 s chunks, pit_mse, augs, patience 20) except the model: the
+# simple_conv_v2_transformer trunk gets the `comb_if` front-end — whitened
+# comb scores + Fisher-weighted IF frequency consensus + occupancy on a dense
+# candidate-f0 grid (the trainable analogue of the blind VK whitened scan,
+# composed with the G2b IF machinery). G2 showed IF evidence helps and
+# constant-Q stacking hurts; G4 adds harmonic aggregation on the LINEAR grid.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_comb
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g4_comb_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

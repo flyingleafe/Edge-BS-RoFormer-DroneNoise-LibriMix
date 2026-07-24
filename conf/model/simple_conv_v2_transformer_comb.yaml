@@ -1,0 +1,21 @@
+# simple_conv_v2_transformer_comb — rps_prediction, G4 front-end arm of the
+# VK-parity campaign (criterion 2.3; docs/experiments/g1-vk-parity.md § Phase
+# G4). Same trunk/task params as simple_conv_v2_transformer.yaml — only
+# `params.name` differs: the model swaps the log-STFT front-end for `comb_if`
+# (whitened comb matched-filter + IF frequency-consensus + occupancy, 3
+# channels over a 30..120 rev/s ×0.25 candidate-f0 grid = 361 rows; teeth
+# capped at 1200 Hz, the trainable analogue of the blind VK whitened scan).
+# Same hop-512 time grid, so loss/metrics/valid are untouched.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer_comb
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null
