@@ -10,15 +10,16 @@ export const meta = {
 //   kind          "slides" | "report"
 //   rounds        max critic rounds (default 3)
 //   prevArtifacts repo-relative dirs of the 2-3 most recent artifacts of the same kind
-if (!args || !args.dir || !args.kind) {
+const _args = typeof args === 'string' ? JSON.parse(args) : args
+if (!_args || !_args.dir || !_args.kind) {
   throw new Error(
     'writeup-build needs args {dir, kind, rounds?, prevArtifacts?}. Run /writeup phases 1-4 first (inventory -> narrative -> user checkpoint -> arm target.json), then launch this workflow.',
   )
 }
-const dir = args.dir
-const kind = args.kind
-const maxRounds = args.rounds || 3
-const prev = (args.prevArtifacts || []).join(', ') || '(none listed)'
+const dir = _args.dir
+const kind = _args.kind
+const maxRounds = _args.rounds || 3
+const prev = (_args.prevArtifacts || []).join(', ') || '(none listed)'
 const doc = kind === 'slides' ? 'slides.typ' : 'report.typ'
 
 // ---- preflight: the jail must be armed for exactly this dir ----------------
