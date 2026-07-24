@@ -1345,6 +1345,33 @@ class SimpleConvV2TransformerComb(SimpleConvV2Transformer):
         )
 
 
+class SimpleConvV2TransformerPyramid(SimpleConvV2Transformer):
+    """G8a front-end arm: SimpleConvV2Transformer trunk on the multi-resolution
+    STFT pyramid front-end (C1 of docs/g8-hierarchical-frontend-design.md).
+
+    The single-window STFT cannot serve fundamentals (need fine FREQUENCY,
+    tolerate slow time) and high harmonics (need fine TIME + IF sub-bin,
+    tolerate coarse bins) at once, and constant-Q allocates backwards (G2a
+    refuted). ``pyramid_if`` runs four parallel STFTs (n_fft 8192/4096/2048/
+    1024, each used only in its band 30-250/250-1000/1000-2000/2000-4000 Hz),
+    each contributing log1p-mag + IF channels, resampled onto a common
+    log-frequency axis (340 rows, ~48 bins/octave — comb patterns become
+    shift-equivariant in f0) and the standard hop-512 time grid.
+
+    The trunk is unchanged (in_ch=8 via the frontend-aware first conv);
+    output contract identical to the baseline / stft_mag_if arms.
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("pyramid_if", hop_length=hop_length)
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+
+
 class SimpleConvV2LocalAttention(nn.Module):
     """SimpleConvV2 encoder/pool with local-window Transformer temporal attention."""
 
@@ -2286,6 +2313,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_transformer_hcqt": SimpleConvV2TransformerHCQT,
     "simple_conv_v2_transformer_if": SimpleConvV2TransformerIF,
     "simple_conv_v2_transformer_comb": SimpleConvV2TransformerComb,
+    "simple_conv_v2_transformer_pyramid": SimpleConvV2TransformerPyramid,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_v2_dwt": SimpleConvV2Wavelet,

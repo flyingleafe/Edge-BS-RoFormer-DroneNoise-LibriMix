@@ -1,0 +1,22 @@
+# simple_conv_v2_transformer_pyramid — rps_prediction, G8a front-end arm
+# (criterion 2.3; docs/g8-hierarchical-frontend-design.md § C1, batch doc
+# docs/experiments/g1-vk-parity.md § G8a). Same trunk/task params as
+# simple_conv_v2_transformer.yaml — only `params.name` differs: the model
+# swaps the log-STFT front-end for `pyramid_if` — four parallel STFTs
+# (n_fft 8192/4096/2048/1024, each cropped to its band 30-250/250-1000/
+# 1000-2000/2000-4000 Hz), per-band log1p-mag + IF channels, resampled onto
+# a common log-frequency axis (340 rows, ~48 bins/octave) and the standard
+# hop-512 time grid → 8 input channels, zero front-end params.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer_pyramid
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null
