@@ -35,11 +35,15 @@ resampled onto:
   confined to its own (slow-moving, k≤2) rows and cannot leak into the
   high bands.
 
-Output ``(B, 8, 340, T)`` — channel order
+Output (``T = n_samples // hop_length + 1``): with ``collapse_bands=True``
+(default, G8a2) the masked band tensors are SUMMED into ``(B, 2, 340, T)``
+— dense ``[mag, if]`` over the full log-f axis (the row-mask partition makes
+the sum exact); with ``collapse_bands=False`` (the dead G8a arm) they are
+concatenated into ``(B, 8, 340, T)``, channel order
 ``[mag_b0, if_b0, mag_b1, if_b1, mag_b2, if_b2, mag_b3, if_b3]`` (b0 = the
-30-250 Hz / n_fft 8192 band), ``T = n_samples // hop_length + 1``. Zero
-trainable parameters; all torch, on-device (``torch.remainder`` IF wrap, no
-numpy unwrap sync).
+30-250 Hz / n_fft 8192 band) — which left 6 of 8 channels exactly zero at
+every row and trained violently unstably. Zero trainable parameters; all
+torch, on-device (``torch.remainder`` IF wrap, no numpy unwrap sync).
 """
 
 import math
@@ -56,7 +60,7 @@ class PyramidIFFrontEnd(SpectralFrontEnd):
     """Octave-banded multi-window STFT pyramid + per-band IF (key ``pyramid_if``)."""
 
     key = "pyramid_if"
-    out_channels = 8
+    out_channels = 2  # 2*n_bands when collapse_bands=False (set per instance)
 
     def __init__(
         self,
@@ -65,7 +69,18 @@ class PyramidIFFrontEnd(SpectralFrontEnd):
         n_ffts: tuple[int, ...] = (8192, 4096, 2048, 1024),
         band_edges: tuple[float, ...] = (30.0, 250.0, 1000.0, 2000.0, 4000.0),
         bins_per_octave: float = 48.0,
+        collapse_bands: bool = True,
     ):
+        """``collapse_bands`` (default True — G8a2): SUM the masked per-band
+        tensors instead of concatenating, yielding 2 dense channels (mag + IF
+        over the full log-f axis). The row masks partition the axis (each row
+        belongs to exactly one band, coverage == 1), so the sum is exact — no
+        double counting; per-band resolution allocation is unchanged. G8a's
+        8-channel concat left 6 of 8 channels exactly zero at every row (hard
+        band edges), which trained violently unstably (val 142→659 swings —
+        docs/experiments/g1-vk-parity.md § G8a result). ``collapse_bands=False``
+        reproduces the dead G8a front-end (A/B + loading the G8a checkpoint).
+        """
         super().__init__()
         if len(band_edges) != len(n_ffts) + 1:
             raise ValueError("band_edges must have len(n_ffts) + 1 entries")
@@ -74,7 +89,8 @@ class PyramidIFFrontEnd(SpectralFrontEnd):
         self.n_ffts = tuple(n_ffts)
         self.band_edges = tuple(band_edges)
         self.n_bands = len(n_ffts)
-        self.out_channels = 2 * self.n_bands
+        self.collapse_bands = collapse_bands
+        self.out_channels = 2 if collapse_bands else 2 * self.n_bands
 
         f_min, f_max = band_edges[0], band_edges[-1]
         n_rows = int(round(math.log2(f_max / f_min) * bins_per_octave)) + 1
@@ -161,4 +177,8 @@ class PyramidIFFrontEnd(SpectralFrontEnd):
                     x.reshape(bsz, c * r, t_b), size=t_out, mode="linear", align_corners=False
                 ).reshape(bsz, c, r, t_out)
             outs.append(x * self.get_buffer(f"row_mask_{b}")[None, None, :, None])
+        if self.collapse_bands:
+            # Row masks partition the axis → the sum is exact (no double
+            # counting): dense (B, 2, R, T), each row filled by its one band.
+            return torch.stack(outs, dim=0).sum(dim=0)
         return torch.cat(outs, dim=1)  # (B, 2*n_bands, R, T)
