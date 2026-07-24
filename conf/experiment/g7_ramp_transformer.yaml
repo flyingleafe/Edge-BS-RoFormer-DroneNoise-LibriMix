@@ -1,0 +1,22 @@
+# @package _global_
+# G7 — ramped strong-augmentation arm (criterion 2.3; docs/experiments/
+# g1-vk-parity.md § Phase G6/G7). Identical to g6_strongaug_transformer except the
+# online-mix policy inserts a mild ramp stage (50k-100k, p=0.3, reduced
+# ranges) between the plain warmup and full-strength augmentation.
+defaults:
+  - override /data: g7_ramp
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g7_ramp_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

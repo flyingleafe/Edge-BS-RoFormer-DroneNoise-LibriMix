@@ -1,0 +1,92 @@
+# G7 — the G6 strong-augmentation policy with a RAMP stage: plain warmup
+# (<50k samples) -> mild strong-augs at p=0.3 with reduced ranges (50k-100k)
+# -> full G6 strength (>=100k). Motivation: G5 showed cold-start augmentation
+# destabilizes optimization (transformer diverged); the G6 step-function
+# introduction at 50k risks a milder version of the same shock. Sources are
+# byte-identical to e12_real_fullflight_dload.yaml (all dload: URIs -
+# cluster-portable).
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260724
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  stages:
+    # First 50k samples = 10 validation intervals at samples_per_validation=5000:
+    # random speech/noise mixtures, no augmentation (the load-bearing warmup).
+    - until: 50000
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+
+    # Ramp stage (G7): 50k-100k samples — the strong family enters at reduced
+    # probability and mild parameter ranges, so the step from plain warmup to
+    # full-strength augmentation (which G5 showed can destabilize optimization
+    # when applied cold) becomes a two-step staircase.
+    - until: 100000
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      noise_augmentations:
+        probability: 0.3
+        choices:
+          - freq_scale: {alpha_low: 0.9, alpha_high: 1.11}
+          - spectral_recolor: {gain_db: 4.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.4, drr_low_db: 8.0, drr_high_db: 15.0}
+          - tooth_dropout: {max_teeth: 2, max_harmonic: 25, halfwidth_bins: 2}
+          - spec_mask: {max_freq_masks: 1, freq_width_hz: [50.0, 200.0], max_time_masks: 1, time_width_ms: 60.0}
+          - floor_inject: {tilt_low: 0.0, tilt_high: 2.0, level_low_db: -20.0, level_high_db: -8.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
+
+    # Full strength from 100k on (identical to the G6 strong stage).
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      noise_augmentations:
+        probability: 0.7
+        choices:
+          - freq_scale: {alpha_low: 0.75, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+          - tooth_dropout: {max_teeth: 4, max_harmonic: 25, halfwidth_bins: 2}
+          - spec_mask: {max_freq_masks: 3, freq_width_hz: [50.0, 400.0], max_time_masks: 2, time_width_ms: 100.0}
+          - floor_inject: {tilt_low: 0.0, tilt_high: 2.0, level_low_db: -20.0, level_high_db: 0.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
