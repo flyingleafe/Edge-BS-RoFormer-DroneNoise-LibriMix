@@ -483,7 +483,7 @@ distinguish them:
 
 After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 
-### Catalog (pinned in `dload.lock` — 35 datasets)
+### Catalog (pinned in `dload.lock` — 38 datasets)
 
 - **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
   `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
@@ -496,7 +496,7 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 - **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):
   `DN-LM-{train,valid}` (6480/720, drone-only noise; no `rps` field).
 - **Rich frames** (2, `tdframe-v1`): `DREGON-frames`, `michaels-frames`.
-- **External harmonic-noise datasets** (9, `tdframe-v1`; registry
+- **External harmonic-noise datasets** (10, `tdframe-v1`; registry
   `external_datasets.py`, driver `scripts/publish_external_datasets.py`, see
   `docs/external-datasets-plan.md` + [[external-harmonic-datasets]] memory):
   `MIMII` (54057; industrial fan/pump/slider/valve, 8-ch 16 kHz 10 s, 3 SNR
@@ -508,10 +508,17 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
   drone-team ego-noise rigs, 1–16 ch, mic geometry in meta where exposed),
   `HornBase` (1080; horn/not-horn — tonal, not rotating-source), `HUSTmotor`
   (24; 6 health states × 4 speeds, acoustic + X/Y/Z vibration),
-  `KAIST-rotating-acoustic` (5; sound-pressure at 3010 RPM). Every recording
-  Frame carries `system`/`observation`/`operating`/`label` meta (make/model, how
-  observed — onboard vs flyover — SNR, condition). Harmonicity measured
-  separately (`harmonicity.py`, analysis stage).
+  `KAIST-rotating-acoustic` (5; sound-pressure at 3010 RPM), `AVQ` (12;
+  audio-visual quadrotor — onboard 8-ch array, 44.1 kHz, rotor ego-noise + a
+  moving speech source; labeled seqs carry `angle_vad` DOA/VAD + `mic_pos`;
+  builder `build_avq`, http+extract). Every recording Frame carries
+  `system`/`observation`/`operating`/`label` meta (make/model, how observed —
+  onboard vs flyover — SNR, condition). Harmonicity measured separately
+  (`harmonicity.py`, analysis stage).
+- **Byte-exact raw companions** (1, raw-files convention): `AVQ-raw` (26; the
+  AVQ videos + `cameraParams.mat` + `.docx` docs + raw mic_pos/angle_vad/
+  av_calibration mats — everything except the per-channel `MONO-*.wav`, which is
+  the audio in `AVQ`). Publisher `scripts/publish_avq_raw.py`.
 
 Consumption paths: `DloadFrameDataset` / `dload:NAME[@VER][/subpath]` URIs /
 `frames:NAME` specs — see `streams.py`'s module docstring and
