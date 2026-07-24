@@ -1,0 +1,26 @@
+# @package _global_
+# G4b — comb front-end + coordinate channel (criterion 2.3; see
+# docs/experiments/g1-vk-parity.md § Phase G4 / G4b). Identical to
+# g4_comb_transformer (which mirrors e12_real_fullflight_transformer verbatim)
+# except the model config: `comb_if` gains a CoordConv-style 4th channel (row
+# f0 / 100, constant over time). G4a trained to ~predict-the-mean (best
+# val/mse 576.5 at ep 4, flat after) — the trunk's frequency pooling averages
+# away the row axis that carries the answer in f0-space; the coordinate
+# channel makes ridge position an explicit feature.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_comb_coord
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g4b_comb_coord_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

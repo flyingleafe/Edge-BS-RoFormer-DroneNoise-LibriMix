@@ -170,3 +170,16 @@ readout. Fix under test (G4b): a 4th coordinate channel (each row's f0 in
 rev/s, normalized) — with it, rps ≈ coord + consensus at the comb-score
 argmax becomes a near-linear readout. Epochs are also ~9x slower than the
 family (gather cost at train shapes); acceptable for a verdict run.
+
+### G4b (coordinate channel) — hypothesis
+
+Minimal delta on `comb_if`: a CoordConv-style 4th channel = each row's f0
+in rev/s / 100, constant over time (`coord_channel: true`, now the
+front-end default; `false` reproduces G4a for A/B). The G4a failure mode —
+frequency pooling averaging away the row axis that carries the answer —
+disappears if position is an explicit feature: ``rps ≈ coord·100 +
+consensus`` at the comb-score argmax is a near-linear readout for the
+head. Experiment `g4b_comb_coord_transformer` (model config
+`simple_conv_v2_transformer_comb_coord`), everything else identical to
+G4a. First gate: val must beat the 576.5 mse / 15.4 mae_frame
+predict-the-mean plateau by a wide margin before protocol eval.

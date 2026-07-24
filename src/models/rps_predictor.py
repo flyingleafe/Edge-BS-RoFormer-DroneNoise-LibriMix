@@ -1324,13 +1324,22 @@ class SimpleConvV2TransformerComb(SimpleConvV2Transformer):
     The trunk therefore operates in f0-space where each rotor is a ridge;
     the time grid and output contract are unchanged (same hop-512 frames as
     the baseline / stft_mag_if arms).
+
+    G4b: ``coord_channel`` (default True) rides through to the front-end's
+    CoordConv-style 4th channel (row f0 / 100, constant over time) — the G4a
+    training refutation showed the trunk cannot read WHERE the ridge is once
+    frequency pooling averages the row axis away; the coordinate channel
+    makes the position an explicit feature. ``coord_channel=False``
+    reproduces the 3-channel G4a model (A/B + G4a checkpoint loading).
     """
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, coord_channel=True):
         if frontend is None:
             from models.frontends import build_frontend
 
-            frontend = build_frontend("comb_if", n_fft=n_fft, hop_length=hop_length)
+            frontend = build_frontend(
+                "comb_if", n_fft=n_fft, hop_length=hop_length, coord_channel=coord_channel
+            )
         super().__init__(
             n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
         )
