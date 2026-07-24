@@ -17,6 +17,7 @@ formats before any experiment can run.
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's. |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` exposed as a noise **source** (`kind: generated`). One background **spawn** producer process (the only extra CUDA context) renders chunks into a **shared-memory ring buffer**; fork `DataLoader` workers read finished chunks (lock-free seqlock). RPS excitation is synthetic-intermittent (`rps_synthesis`) and doubles as the exact label. See § "Generated noise source". |
 | `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP (`experiments.gp_rotor_noise.train_egonoise_gp.EgonoiseGPModel`) exposed as a noise **source** (`kind: gp`, G3). GP evaluated once at init into a coefficient table; per-chunk pure-numpy FM synthesis in the DataLoader workers (like `rotor_spectral_model.py`'s static comb). Exact synthetic RPS labels. See § "GP rotor-noise source". |
+| `noise_augmentations.py` | Strong **noise-chunk** augmentation family (`policy.noise_augmentations`, G6): freq_scale (comb/pitch scale with exact label rescale), spectral_recolor, random_reverb (synthetic-RIR bank), tooth_dropout (label-aware harmonic notching), spec_mask, floor_inject. Applied to the noise+RPS pair BEFORE mixing (unlike the post-mix `policy.augmentations`); same `probability`+`choices` schema. See § "Strong noise augmentations". |
 | `external_recordings.py` | Loads external DJI recordings as `TimeFrame`. |
 | `streams.py` | dload ↔ tdseries bridge: `DloadFrameDataset` (stream R2-hosted datasets as `td.Frame`s), the generic `tdframe-v1` Frame codec, pipeline combinators (`to_frames`/`frame_windows`/`mix_frames`/`resample_frames`), `ensure_local`/`resolve_source` (`dload:` URIs). See § "Publishing datasets to dload" + `docs/data-and-artifacts.md`. |
 | `derivations.py` | dload **derived-dataset** declarations: module-level generator functions (`generate_dregon_lm_split`/`generate_dn_lm_split`, yielding `sample-dir-v1` samples) + the `SPECS` registry (frozen JSON specs: params/seed/`recipe_version`/resolved parent pins) + `build_pipeline`/`dataset_meta`/`fingerprint`. Reuses the CLIs' per-sample cores (`render_multichannel_sample`, `mix_dn_lm`) via a lazy `sys.path` shim (stays torch-free for offline fingerprinting). Driver: `scripts/derive.py` (`list`/`derive`/`adopt`). See `docs/derived-datasets-plan.md` + `docs/data-and-artifacts.md` § "Derived datasets". |
@@ -335,6 +336,29 @@ labels), `broadband`, `rps.kind: synthetic_intermittent` **only** (GP support
 is rps 40–85; no full-flight excitation). Policy example:
 `conf/online_mix/g3_gp_aug_dload.yaml`; batch doc
 `docs/experiments/g3-gp-curriculum.md`.
+
+### Strong noise augmentations (`policy.noise_augmentations`) — G6
+
+`data_processing/noise_augmentations.py`: six strong transforms of the
+**noise chunk** (audio + RPS pair, applied before speech mixing — unlike
+`policy.augmentations`, which is post-mix on the mixture and provably weak
+for RPS prediction: polarity is an exact no-op for mag/IF front-ends, gain a
+log-offset). Same `probability` + `choices` fire/choice schema; on a hit the
+chunk Frame is rebuilt in `time_warp.apply_time_warp`'s output convention
+(audio exactly `target_len` + a clean uniform 100 Hz `rps` track), so
+downstream mixing/target interpolation are untouched. The six: `freq_scale`
+(resample by α∈U(0.75,1.3) without duration preservation; labels ×α,
+zero-padded tail gets rps 0 — the one that manufactures new (audio, RPS)
+pairs), `spectral_recolor` (smooth random EQ ±8 dB, 10 log-spaced anchors,
+per channel), `random_reverb` (deterministic 200-RIR synthetic bank: RT60
+U(0.1,0.8) s, DRR U(3,15) dB, exp-decay colored tails; RMS renormalized),
+`tooth_dropout` (zero ±2 STFT bins around k·rps_r(t), 1–4 random teeth k≤25 —
+label-aware), `spec_mask` (SpecAugment bands/time masks), `floor_inject`
+(1/f^tilt floor at U(−20,0) dB rel RMS). STFT ops run on the model's own
+2048/512 grid. Keep the 50k unaugmented warmup stage — G5 measured it as
+load-bearing. Policy: `conf/online_mix/g6_strongaug_dload.yaml`; batch doc
+`docs/experiments/g1-vk-parity.md` § "Phase G6"; tests
+`tests/test_noise_augmentations.py`.
 
 ### Speech-enhancement target mode (`task: speech_enhancement`) — F1 baselines
 

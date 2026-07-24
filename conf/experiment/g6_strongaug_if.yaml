@@ -1,0 +1,24 @@
+# @package _global_
+# G6 — strong augmentation families, IF-front-end arm (criterion 2.3;
+# docs/experiments/g1-vk-parity.md § Phase G6). The current best protocol arm
+# (g2_if: DREGON-cruise MAE 2.481) with the augmented stage's family content
+# replaced by the six strong NOISE-chunk transforms at probability 0.7
+# (conf/online_mix/g6_strongaug_dload.yaml). Warmup schedule + time-warp kept
+# (G5: removing the warmup made val WORSE, 117.9 vs 63.7).
+defaults:
+  - override /data: g6_strongaug
+  - override /model: simple_conv_v2_transformer_if
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g6_strongaug_if
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
