@@ -315,6 +315,17 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/g3_gp_aug_transformer/checkpoints/best.ckpt",
         None,
     ),
+    # G6 strong-augmentation arms (wandb 03zhc73x / t53eoon4).
+    "g6_strongaug_if_best": (
+        "g6_strongaug_if",
+        "r2://ml-data/artifacts/g6_strongaug_if/checkpoints/best.ckpt",
+        None,
+    ),
+    "g6_strongaug_transformer_best": (
+        "g6_strongaug_transformer",
+        "r2://ml-data/artifacts/g6_strongaug_transformer/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
