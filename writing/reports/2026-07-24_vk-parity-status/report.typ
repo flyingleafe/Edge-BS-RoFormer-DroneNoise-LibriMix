@@ -425,7 +425,7 @@ lever. A secondary finding: the `last`-epoch checkpoints of both new arms
 degrade sharply relative to `best` (e.g. up to 8.27 rev/s raw, DREGON,
 8s/ch0/last) — early stopping matters more than context length here.
 
-*Phase G2 — front-end arms (trained; protocol eval in flight).* The working
+*Phase G2 — front-end arms (measured).* The working
 hypothesis: the front-end is the bottleneck, not training length or
 smoothing. The magnitude-STFT front-end has no built-in harmonic aggregation
 and no sub-bin frequency precision — exactly the two properties the VK
@@ -486,9 +486,12 @@ Why this form and not the obvious alternatives:
   that same ramp: frame pairs independent, errors confined, values bounded,
   fully on-device (no sequential `np.unwrap`).
 
-First evidence: best validation MSE 63.7 (mae 4.61 rev/s per frame) — the
-best of the transformer family so far (g1 arms: 68.8 / 79.3). Whether that
-translates to the protocol clips is exactly what the pending eval measures.
+Result: best validation MSE 63.7 — best of the transformer family — and on
+the protocol clips DREGON 3.082 raw / *2.481* smoothed (chmean/med20), the
+first arm to beat the baseline at all (3.186 / 2.62). The phase evidence is
+directionally right, but the gain is marginal against a 3.4x gap, and FLY124
+regresses (1.55 $arrow.r$ 2.33). The front-end alone, at this capacity and
+data scale, does not close parity.
 
 *Parked, not being pursued right now:* VK-distilled training labels, and
 using VK to annotate otherwise-unlabeled data for training. Both are
@@ -515,8 +518,11 @@ because the error is systematic, not jitter; longer context actively hurts.
 The G2 front-end arms (harmonic-stacked HCQT + instantaneous-frequency
 channel) target the front-end directly, on the hypothesis that the model
 lacks the two structural ingredients — harmonic aggregation, sub-bin
-frequency resolution — that make VK itself accurate. Both are trained; at
-the validation level the IF arm leads the whole transformer family (63.7)
-while HCQT fails (195.5), consistent with the constant-Q resolution
-argument. The protocol eval against the VK bars is in flight; that number
-is the open item to report on next.
+frequency resolution — that make VK itself accurate. Both are measured: HCQT is
+refuted (protocol 3.32 best, worse than baseline everywhere — the
+constant-Q resolution argument held), and the IF channel is the first arm
+to improve on the baseline at all (2.481 vs 2.62 smoothed DREGON) but only
+marginally, with FLY124 regressing. The gap to the VK bars remains ~3.4x.
+Next: harmonic aggregation on the _linear_ grid (a comb matched-filter
+front-end over an $f_0$ grid — the trainable analogue of VK's whitened
+scan) combined with the IF channel.
