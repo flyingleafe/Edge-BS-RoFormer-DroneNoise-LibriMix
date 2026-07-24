@@ -24,4 +24,9 @@ vk_valid_comparison protocol eval (`scripts/rps_predictor_vk_eval.py`) vs the
 
 ## Conclusion
 
-(pending)
+Refuted as an optimum-improver. Training 03zhc73x: best val 71.8 (ep 12,
+just after aug onset — no boundary instability) vs weak-aug 63.7; post-best
+degradation slower (117 at ep 32 vs 150 at ep 37). Protocol (python-722878):
+best DREGON 2.982 (chmean/med20) vs g2_if's 2.481; FLY124 raw 1.791 (par
+with E12). Strong augmentation regularizes the trajectory but worsens the
+optimum.

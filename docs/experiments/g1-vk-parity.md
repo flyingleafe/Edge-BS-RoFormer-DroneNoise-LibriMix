@@ -256,3 +256,15 @@ protocol eval (`scripts/rps_predictor_vk_eval.py`) vs the ledger bars
 ### G6 result
 
 (pending)
+
+### G6 result (2026-07-24) — strong augmentation refuted; augmentation class closed
+
+Protocol (python-722878): g6_strongaug_if best DREGON 2.982 / FLY124 1.791;
+g6_strongaug_transformer 3.370 / 2.694 — neither beats g2_if (2.481). With
+G5 (cold-start destabilizes; transformer diverged) this closes the
+augmentation lever class in both dimensions: schedule (warmup is
+load-bearing, ramp unnecessary — no boundary instability observed) and
+content (six strong families regularize the post-best trajectory but worsen
+the optimum). Ledger unchanged: neural floor 2.481, VK bars 0.68–0.74/1.03.
+Open: G8 hierarchical front-end (docs/g8-hierarchical-frontend-design.md)
+and the VK-distillation data program.

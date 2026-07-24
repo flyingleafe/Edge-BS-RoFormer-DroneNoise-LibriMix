@@ -27,4 +27,9 @@ later best epoch, then the vk_valid_comparison protocol eval
 
 ## Conclusion
 
-(pending)
+Refuted. Training t53eoon4: best val 89.1 at epoch 4 — INSIDE the
+plain warmup, before the strong family even fired. Protocol
+(python-722878): best DREGON 3.370, FLY124 2.694 — worse than the E12
+baseline everywhere. Together with the IF arm and G5: the augmentation
+lever class (schedule and content) is exhausted — weak-aug g2_if (2.481)
+remains the neural floor; the binding constraint is the real-data pool.
