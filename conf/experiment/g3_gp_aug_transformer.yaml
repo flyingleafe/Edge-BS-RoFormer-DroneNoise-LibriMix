@@ -1,0 +1,27 @@
+# @package _global_
+# G3 — the E12 real full-flight transformer recipe with a GP-noise augmentation
+# share (campaign criterion 3.4): ~1/3 of noise chunks come from the per-drone
+# egonoise GPs (kind: gp, exact synthetic RPS labels), real shares identical to
+# the E12 baseline. Question: does clean, physics-anchored GP comb noise
+# transfer better than static-comb (E8: helped transformer only) or deep-gen
+# noise (E7: failed sim2real)? Compare against e12_real_fullflight_transformer
+# on the same valid split + the vk-parity protocol eval
+# (scripts/rps_predictor_vk_eval.py; E12 DREGON-cruise MAE 3.186 raw / 2.62
+# smoothed).
+defaults:
+  - override /data: g3_gp_aug
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g3_gp_aug_transformer
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

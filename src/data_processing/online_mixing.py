@@ -442,8 +442,9 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
     # duration-weighted TimeFrameNoisePool):
     #   kind: generated    -> trained PositionalHarmonicNoiseGen (GeneratedNoisePool)
     #   kind: static_comb  -> analytic static-comb model (StaticCombNoisePool, E8)
+    #   kind: gp           -> egonoise-GP coefficient table (GPRotorNoisePool, G3)
     #   kind: audio_pool   -> lazy dload-backed audio dataset (DloadAudioPool, F1 SE)
-    standalone_kinds = {"generated", "static_comb", "audio_pool"}
+    standalone_kinds = {"generated", "static_comb", "gp", "audio_pool"}
     standalone_items = [c for c in items if _cfg_get(c, "kind") in standalone_kinds]
     if not standalone_items:
         return TimeFrameNoisePool.from_config(cfg, duration_s=duration_s, sample_rate=sample_rate)
@@ -456,6 +457,10 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
             return GeneratedNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
         if kind == "audio_pool":
             return DloadAudioPool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
+        if kind == "gp":
+            from data_processing.gp_noise import GPRotorNoisePool
+
+            return GPRotorNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
         from data_processing.rotor_spectral_model import StaticCombNoisePool
 
         return StaticCombNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)

@@ -16,6 +16,7 @@ formats before any experiment can run.
 | `michaels.py` | Michael's drone-noise dataset (DJI WAVs + flight-controller CSVs in `data/new-drone-noises/`). Uses its own local `MotorData` dataclass. `get_geometry()` returns the DJI Matrice 100 rig geometry (8-mic ring + 4 rotors; from `data/recording_with_motor_speed/` photos), and `load_michaels_timeframe` populates `global_data` with `mic_positions`/`rotor_positions` (rotor order RFront, LFront, LBack, RBack). |
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's. |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` exposed as a noise **source** (`kind: generated`). One background **spawn** producer process (the only extra CUDA context) renders chunks into a **shared-memory ring buffer**; fork `DataLoader` workers read finished chunks (lock-free seqlock). RPS excitation is synthetic-intermittent (`rps_synthesis`) and doubles as the exact label. See § "Generated noise source". |
+| `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP (`experiments.gp_rotor_noise.train_egonoise_gp.EgonoiseGPModel`) exposed as a noise **source** (`kind: gp`, G3). GP evaluated once at init into a coefficient table; per-chunk pure-numpy FM synthesis in the DataLoader workers (like `rotor_spectral_model.py`'s static comb). Exact synthetic RPS labels. See § "GP rotor-noise source". |
 | `external_recordings.py` | Loads external DJI recordings as `TimeFrame`. |
 | `streams.py` | dload ↔ tdseries bridge: `DloadFrameDataset` (stream R2-hosted datasets as `td.Frame`s), the generic `tdframe-v1` Frame codec, pipeline combinators (`to_frames`/`frame_windows`/`mix_frames`/`resample_frames`), `ensure_local`/`resolve_source` (`dload:` URIs). See § "Publishing datasets to dload" + `docs/data-and-artifacts.md`. |
 | `derivations.py` | dload **derived-dataset** declarations: module-level generator functions (`generate_dregon_lm_split`/`generate_dn_lm_split`, yielding `sample-dir-v1` samples) + the `SPECS` registry (frozen JSON specs: params/seed/`recipe_version`/resolved parent pins) + `build_pipeline`/`dataset_meta`/`fingerprint`. Reuses the CLIs' per-sample cores (`render_multichannel_sample`, `mix_dn_lm`) via a lazy `sys.path` shim (stays torch-free for offline fingerprinting). Driver: `scripts/derive.py` (`list`/`derive`/`adopt`). See `docs/derived-datasets-plan.md` + `docs/data-and-artifacts.md` § "Derived datasets". |
@@ -311,6 +312,29 @@ Benchmark notes:
   `ONLINE_MIX_SOURCE_CACHE_DIR` in `.env` to place this cache on another partition.
 - Fixed precomputed loader is about `21 batch/s` / `5394 audio-clip/s`.
 Optimize only behind the same public API.
+
+### GP rotor-noise source (`kind: gp`) — G3
+
+`data_processing/gp_noise.py` (`GPRotorNoisePool`): the per-drone **egonoise
+GP** checkpoints (`train_egonoise_gp.py`; `r2://ml-data/artifacts/gp_egonoise/
+{dregon,matrice100}/best.pt`) as an online-mix noise source with exact
+synthetic RPS labels. Architecture mirrors the static comb, not the neural
+producer: the GP posterior is batch-queried **once at pool init** on a dense
+rps grid at the rig mic positions and reduced to a `(G, M, 2H+1)` coefficient
+table (~1.6 MB, picklable; the gpytorch model is dropped), so per-chunk
+synthesis is pure numpy in the fork workers (~200 ms per 1 s 8-mic chunk):
+rps-interpolate coefficients at the chunk-mean rps, FM-synthesize the comb at
+`render_fs` 24 kHz (anti-aliased), add the checkpoint's σ_b(rps) colored
+broadband, decimate to 16 kHz, normalize global RMS. Key config: `checkpoint`
+(r2:// ok), `drone` (dregon/michaels — geometry + `rps_synthesis` profile),
+`mic_mode: shell` (default — rig mics projected radially onto the GP's
+training shell; native rig positions are ~3 lengthscales out-of-support and
+mean-revert), `rotor_mode: per_rotor` (default — Σ_r S(mic, rps_r)/R, exact
+non-degenerate per-rotor labels; `mean` = four_way_lib convention, degenerate
+labels), `broadband`, `rps.kind: synthetic_intermittent` **only** (GP support
+is rps 40–85; no full-flight excitation). Policy example:
+`conf/online_mix/g3_gp_aug_dload.yaml`; batch doc
+`docs/experiments/g3-gp-curriculum.md`.
 
 ### Speech-enhancement target mode (`task: speech_enhancement`) — F1 baselines
 
