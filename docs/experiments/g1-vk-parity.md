@@ -183,3 +183,26 @@ head. Experiment `g4b_comb_coord_transformer` (model config
 `simple_conv_v2_transformer_comb_coord`), everything else identical to
 G4a. First gate: val must beat the 576.5 mse / 15.4 mae_frame
 predict-the-mean plateau by a wide margin before protocol eval.
+
+### G4b result (2026-07-24) — coord channel does NOT rescue it; G4 family refuted
+
+Training 5f4yvaiz: best val/mse 803.2 / mae_frame 14.5 (ep 10), noisy-flat
+from epoch 1 — no better than G4a (576.5/15.4). The position-readout
+diagnosis was insufficient: the ridge-space representation on this trunk
+fails to train regardless. A design mismatch noted post-hoc: the f0 grid
+(30–120 rev/s) cannot represent the E12 full-flight stream's sub-30
+segments (idle/warmup, ~a third of the envelope) — the front-end emits no
+evidence there — though this alone cannot explain a 10x val gap vs the
+baseline (65). Verdict: the comb-matched-filter front-end family (G4a,
+G4b) is refuted as-built at this capacity/recipe.
+
+## Criterion 2.3 ledger (2026-07-24)
+
+Measured levers, best DREGON-cruise protocol MAE: smoothing 2.62 · context
+4s/8s 2.87 (worse) · HCQT 3.32 (worse) · IF channel **2.481** (best) ·
+comb ridge ±coord — dead at val · GP-noise aug 3.13 (worse). VK bars
+0.68–0.74 / 1.03. Every cheap lever (test-time, recipe, front-end,
+augmentation) is now measured; the residual 3.4x gap is structural at this
+model scale and data volume. Remaining levers are programs, not configs:
+VK-distilled labels / VK-annotated unlabeled data (semi-supervised scale),
+or a VK-hybrid inference design. Parity is NOT achieved.
