@@ -425,16 +425,70 @@ lever. A secondary finding: the `last`-epoch checkpoints of both new arms
 degrade sharply relative to `best` (e.g. up to 8.27 rev/s raw, DREGON,
 8s/ch0/last) — early stopping matters more than context length here.
 
-*In build now, no numbers yet:* the working hypothesis is
-that the front-end is the bottleneck, not training length or smoothing. The
-current magnitude-STFT front-end has no built-in harmonic aggregation and no
-sub-bin frequency precision — exactly the two properties the VK tracker's
-whitened-comb scan and phase-slope update rely on. Two arms:
+*Phase G2 — front-end arms (trained; protocol eval in flight).* The working
+hypothesis: the front-end is the bottleneck, not training length or
+smoothing. The magnitude-STFT front-end has no built-in harmonic aggregation
+and no sub-bin frequency precision — exactly the two properties the VK
+tracker's whitened-comb scan and phase-slope update rely on. Two arms, both
+the E12 recipe with only the front-end swapped:
 
-- *G2a — harmonic-stacked HCQT front-end*, giving the model per-harmonic
-  channels analogous to VK's per-track envelopes.
-- *G2b — instantaneous-frequency phase channels*, giving the model
-  sub-bin frequency information analogous to VK's phase-slope update.
+*G2a — harmonic-stacked HCQT front-end*: per-harmonic channels analogous to
+VK's per-track envelopes. A structural caveat was raised against it before
+results: constant-Q resolution is _backwards_ for comb precision. At the
+$approx 80$ Hz fundamental a 60-bins/octave CQT resolves $approx 1$ Hz
+(fine), but at harmonic $k = 20$ ($approx 1600$ Hz) a bin is $approx 18$ Hz
+wide — and the high harmonics are where the precision lives (0.7 rev/s
+$arrow.r$ 14 Hz at $k = 20$). VK gets its accuracy from Fisher-weighting
+the _high_-$k$ phase slopes; constant-Q smears precisely those. Earlier
+salience baselines on this front-end also failed (multif0 4.03 rev/s RMSE at
+best). First evidence agrees: validation MSE 195.5 vs the baseline family's
+63–79 (protocol eval pending).
+
+*G2b — instantaneous-frequency (IF) channel*: the log-magnitude STFT plus a
+second channel holding, per bin and hop, the _sub-bin frequency offset_. Let
+$h$ be the hop, $N$ the FFT size, and $X[k,t]$ the STFT. The measured
+per-hop phase advance in bin $k$ is compared with the advance a tone sitting
+exactly at that bin's centre frequency would produce, and the wrapped
+difference is rescaled to fractional bins:
+
+$ Delta phi.alt[k,t] &= angle X[k,t] - angle X[k,t-1] &" (measured advance)" \
+  d[k,t] &= "wrap"_([-pi,pi)) (Delta phi.alt[k,t] - 2 pi h k \/ N) quad &" (deviation from bin centre)" \
+  "IF"[k,t] &= d[k,t] dot N / (2 pi h) &" (offset in fractional bins)" $
+
+A tone exactly at bin centre gives $"IF" = 0$; a tone 0.3 bins high gives
+$+0.3$ (unit-tested to $5 dot 10^(-6)$). With the project default
+$h = N\/4$ the channel is bounded to $[-2, 2)$ — a well-scaled input with
+no further normalisation. This is precisely the estimator VK's own
+frequency update applies to envelopes ($angle (x_(t+1) overline(x)_t) dot
+f_s^"env" \/ 2 pi k$, §Tutorial II) — the arm hands the network VK's
+phase-slope evidence per bin instead of hoping convolutions rediscover it.
+
+Why this form and not the obvious alternatives:
+
+- _Full complex spectrogram (Re/Im channels)._ Absolute phase is pointwise
+  uninformative — it depends on window start time and initial signal phase;
+  the frequency information lives in the *temporal derivative* of phase.
+  From Re/Im the network must learn to form the conjugate product across
+  frames, subtract each bin's expected rotation $2 pi h k \/ N$ (a per-row
+  constant it has to memorise), and handle the wrap — second-order features
+  buried in early conv layers whose receptive fields mostly see the noise
+  floor between comb teeth.
+- _Raw phase channel._ Per bin, phase is a wrapped sawtooth advancing
+  $approx 2 pi h k \/ N$ per frame — multiple wraps every few frames for
+  most bins, i.e. aliased high-frequency stripes with no locally smooth
+  structure. Same learn-to-differentiate burden, worse conditioning.
+- _Unwrapped phase channel._ The unwrapped ramp's slope is the frequency,
+  but its values grow unboundedly ($approx 12600$ rad over 1 s in a 2 kHz
+  bin — hopeless input scaling), and unwrapping is sequential and
+  error-propagating: one noisy frame injects a $plus.minus 2 pi$ step that
+  corrupts the rest of the ramp — and at drone SNRs most bins sit at the
+  noise floor most frames. The IF deviation is the _local_ derivative of
+  that same ramp: frame pairs independent, errors confined, values bounded,
+  fully on-device (no sequential `np.unwrap`).
+
+First evidence: best validation MSE 63.7 (mae 4.61 rev/s per frame) — the
+best of the transformer family so far (g1 arms: 68.8 / 79.3). Whether that
+translates to the protocol clips is exactly what the pending eval measures.
 
 *Parked, not being pursued right now:* VK-distilled training labels, and
 using VK to annotate otherwise-unlabeled data for training. Both are
@@ -458,8 +512,11 @@ lever tried (longer native context) is worse still (2.87 / 1.90). Two
 training-side levers (test-time smoothing, longer
 native context) have been tried and neither closes it — smoothing saturates
 because the error is systematic, not jitter; longer context actively hurts.
-The next step in build (G2: harmonic-stacked HCQT + instantaneous-frequency
-phase channels) targets the front-end directly, on the hypothesis that the
-model currently lacks the two structural ingredients — harmonic aggregation,
-sub-bin frequency resolution — that make VK itself accurate. No results yet;
-this is the open item to report on next.
+The G2 front-end arms (harmonic-stacked HCQT + instantaneous-frequency
+channel) target the front-end directly, on the hypothesis that the model
+lacks the two structural ingredients — harmonic aggregation, sub-bin
+frequency resolution — that make VK itself accurate. Both are trained; at
+the validation level the IF arm leads the whole transformer family (63.7)
+while HCQT fails (195.5), consistent with the constant-Q resolution
+argument. The protocol eval against the VK bars is in flight; that number
+is the open item to report on next.
