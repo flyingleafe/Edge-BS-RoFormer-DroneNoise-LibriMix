@@ -23,4 +23,9 @@ epoch; then the vk_valid_comparison protocol eval vs the VK bars
 
 ## Conclusion
 
-(pending)
+Refuted, emphatically. Training 24zqoix7 CRASHED at epoch 8
+(best val/mse 523.6 at ep 4, val 729 at crash) — the plain transformer with
+augmentation from sample 0 never found the basic comb->RPS mapping and
+diverged. Together with the IF arm: the E12 two-stage curriculum's plain
+warmup is load-bearing for optimization stability; the augmentation LEVER is
+content (see Phase G6 strong families), not schedule.

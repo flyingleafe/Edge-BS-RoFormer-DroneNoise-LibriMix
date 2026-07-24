@@ -23,4 +23,6 @@ epoch; then the vk_valid_comparison protocol eval vs the VK bars
 
 ## Conclusion
 
-(pending)
+Refuted. Training lqrhvu8z: best val/mse 117.9 (mae 7.58) at epoch 5
+vs the two-stage counterpart's 63.7 at ep 17; val exploded to 592 by ep 25.
+Removing the warmup makes both the optimum and the overfit trajectory worse.
