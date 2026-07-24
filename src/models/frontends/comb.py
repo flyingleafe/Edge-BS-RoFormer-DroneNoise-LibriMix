@@ -53,10 +53,20 @@ from . import SpectralFrontEnd, register_frontend
 
 @register_frontend
 class CombIFFrontEnd(SpectralFrontEnd):
-    """Whitened comb matched-filter + IF-consensus front-end (key ``comb_if``)."""
+    """Whitened comb matched-filter + IF-consensus front-end (key ``comb_if``).
+
+    ``coord_channel`` (default True — G4b) appends a 4th, CoordConv-style
+    position channel: each row's f0 value in rev/s divided by 100, constant
+    over time. Rationale (G4a verdict, docs/experiments/g1-vk-parity.md): in
+    f0-space the answer IS the position along the row axis, but the trunk's
+    frequency pooling averages that axis away — with the coordinate channel,
+    ``rps ≈ coord·100 + consensus`` at the comb-score argmax becomes a
+    near-linear readout for the head. ``coord_channel=False`` reproduces the
+    3-channel G4a front-end for A/B (and for loading G4a checkpoints).
+    """
 
     key = "comb_if"
-    out_channels = 3
+    out_channels = 3  # 4 when coord_channel=True (set per instance)
 
     def __init__(
         self,
@@ -69,12 +79,15 @@ class CombIFFrontEnd(SpectralFrontEnd):
         max_harmonic_hz: float = 1200.0,
         whiten_hz: float = 150.0,
         consensus_clamp: float = 2.0,
+        coord_channel: bool = True,
     ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.sample_rate = sample_rate
         self.consensus_clamp = consensus_clamp
+        self.coord_channel = coord_channel
+        self.out_channels = 4 if coord_channel else 3
 
         bin_hz = sample_rate / n_fft
         self.bin_hz = bin_hz
@@ -119,6 +132,10 @@ class CombIFFrontEnd(SpectralFrontEnd):
         self.register_buffer("mask", mask)
         self.register_buffer("inv_count", 1.0 / mask.sum(dim=1).clamp(min=1.0))
         self.register_buffer("harm", harm)
+
+        # CoordConv-style row-position channel: f0 in rev/s, normalized /100.
+        self.coord: Tensor
+        self.register_buffer("coord", f0 / 100.0)
 
     def num_frames(self, n_samples: int) -> int:
         return n_samples // self.hop_length + 1
@@ -195,4 +212,8 @@ class CombIFFrontEnd(SpectralFrontEnd):
         thr = white.median(dim=1, keepdim=True).values.unsqueeze(1)  # (B, 1, 1, T)
         occ = ((teeth_w > thr).float() * m).sum(dim=2) * inv_n
 
-        return torch.stack([comb, consensus, occ], dim=1)  # (B, 3, R, T)
+        channels = [comb, consensus, occ]
+        if self.coord_channel:
+            # 4. row coordinate: f0/100 rev/s, constant over batch and time.
+            channels.append(self.coord[None, :, None].expand_as(comb))
+        return torch.stack(channels, dim=1)  # (B, 3 or 4, R, T)

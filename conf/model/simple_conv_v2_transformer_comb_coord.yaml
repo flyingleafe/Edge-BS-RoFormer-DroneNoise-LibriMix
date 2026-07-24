@@ -1,0 +1,23 @@
+# simple_conv_v2_transformer_comb_coord — rps_prediction, G4b front-end arm
+# (criterion 2.3; docs/experiments/g1-vk-parity.md § Phase G4 / G4b). Same as
+# simple_conv_v2_transformer_comb.yaml plus `coord_channel: true` passed
+# EXPLICITLY: the `comb_if` front-end appends a CoordConv-style 4th channel
+# (each row's f0 in rev/s / 100, constant over time). G4a refuted the
+# 3-channel comb model at val (~predict-the-mean): in f0-space the answer is
+# the position along the row axis, which the trunk's frequency pooling
+# averages away — with the coordinate channel, rps ≈ coord·100 + consensus at
+# the comb-score argmax is a near-linear readout for the head.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer_comb
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  coord_channel: true
+model_type: null
+legacy_config_path: null

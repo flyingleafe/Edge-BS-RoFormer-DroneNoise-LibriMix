@@ -32,16 +32,37 @@ def _comb_signal(f0s: list[float], amp_decay: float = 0.5, phase_step: float = 0
 def test_comb_if_registered_shape_and_finite():
     fe = build_frontend("comb_if")
     assert isinstance(fe, CombIFFrontEnd)
-    assert fe.out_channels == 3
+    assert fe.out_channels == 4  # G4b default: coord channel on
     assert fe.n_rows == 361  # 30..120 rev/s, step 0.25
     audio = torch.randn(2, SR)
     out = fe(audio)
-    assert out.shape == (2, 3, 361, SR // 512 + 1)
+    assert out.shape == (2, 4, 361, SR // 512 + 1)
     assert torch.isfinite(out).all()
     # bounded auxiliary channels
     assert out[:, 1].abs().max() <= 2.0 + 1e-5  # consensus clamp (rev/s)
     assert out[:, 2].min() >= 0.0 and out[:, 2].max() <= 1.0  # occupancy fraction
     assert fe.num_frames(SR) == SR // 512 + 1
+
+
+def test_comb_if_coord_channel_values():
+    """G4b: coord channel rows equal the f0 grid / 100, constant over time
+    and batch; coord_channel=False reproduces the 3-channel G4a front-end."""
+    fe = build_frontend("comb_if")
+    assert isinstance(fe, CombIFFrontEnd)
+    out = fe(torch.randn(2, SR))
+    coord = out[:, 3]  # (B, R, T)
+    expected = fe.get_buffer("f0_grid") / 100.0  # (R,)
+    assert torch.allclose(coord[0, :, 0], expected)
+    assert torch.allclose(coord, expected[None, :, None].expand_as(coord))
+    assert coord.std(dim=-1).max() == 0.0  # constant in time
+    assert abs(float(coord[0, 0, 0]) - 0.30) < 1e-6  # 30 rev/s row
+    assert abs(float(coord[0, -1, 0]) - 1.20) < 1e-6  # 120 rev/s row
+
+    fe3 = build_frontend("comb_if", coord_channel=False)
+    assert isinstance(fe3, CombIFFrontEnd)
+    assert fe3.out_channels == 3
+    out3 = fe3(torch.randn(1, SR))
+    assert out3.shape == (1, 3, 361, SR // 512 + 1)
 
 
 def test_comb_score_peaks_at_true_f0_rows():
@@ -93,10 +114,14 @@ def test_registry_builds_comb_model():
 
 def test_comb_transformer_forward_and_step():
     torch.manual_seed(0)
-    model = SimpleConvV2TransformerComb()  # default 2048/512 grid
+    model = SimpleConvV2TransformerComb()  # default 2048/512 grid, coord on
     block = model.encoder[0]
     assert isinstance(block, ResidualConvBlock2d)
-    assert block.conv.in_channels == 3
+    assert block.conv.in_channels == 4
+    # A/B: coord_channel=False reproduces the 3-channel G4a model
+    block3 = SimpleConvV2TransformerComb(coord_channel=False).encoder[0]
+    assert isinstance(block3, ResidualConvBlock2d)
+    assert block3.conv.in_channels == 3
     audio = torch.randn(2, SR)
     out = model(audio)
     assert out.shape == (2, 4, SR // 512 + 1)
