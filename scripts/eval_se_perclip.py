@@ -111,9 +111,22 @@ def _metrics(ref: np.ndarray, est: np.ndarray) -> dict[str, float]:
     return out
 
 
-def _estimates_model(method: str, ds, idxs, batch_size: int, device) -> list[np.ndarray]:
-    """Run the model forward over the selected clips, return per-clip estimates."""
-    model_cfg = OmegaConf.load(f"conf/model/{ARCH_MODEL[_arch_of(method)]}.yaml")
+def _estimates_model(
+    method: str,
+    ds,
+    idxs,
+    batch_size: int,
+    device,
+    model_cfg_path: str | None = None,
+    ckpt_path: str | None = None,
+) -> list[np.ndarray]:
+    """Run the model forward over the selected clips, return per-clip estimates.
+
+    ``model_cfg_path``/``ckpt_path`` override the ARCH_MODEL lookup and the
+    default checkpoint path — needed for custom experiment names (e.g.
+    ``f1_dcunet_a_lossA``) whose arch can't be parsed from the name."""
+    cfg_name = model_cfg_path or f"conf/model/{ARCH_MODEL[_arch_of(method)]}.yaml"
+    model_cfg = OmegaConf.load(cfg_name)
     if device.type == "cpu":
         with contextlib.suppress(Exception):
             model_cfg.params.config.model.flash_attn = False
@@ -121,7 +134,7 @@ def _estimates_model(method: str, ds, idxs, batch_size: int, device) -> list[np.
 
     _, codec = build_task_and_codec(model_cfg)
     model = instantiate_model(model_cfg).to(device)
-    ckpt = _maybe_fetch_ckpt(method, f"results/{method}/best.ckpt")
+    ckpt = _maybe_fetch_ckpt(method, ckpt_path or f"results/{method}/best.ckpt")
     model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.eval()
     mixes = [torch.as_tensor(np.asarray(ds[i]["mixture"].data), dtype=torch.float32) for i in idxs]
@@ -158,6 +171,10 @@ def main() -> None:
     ap.add_argument("--out", default=None)
     ap.add_argument("--r2-upload", action="store_true")
     ap.add_argument("--threads", type=int, default=0, help="torch CPU threads (0=leave default)")
+    ap.add_argument(
+        "--model-cfg", default=None, help="override conf/model/*.yaml (custom exp names)"
+    )
+    ap.add_argument("--checkpoint", default=None, help="override the checkpoint path")
     args = ap.parse_args()
 
     if args.threads:
@@ -170,7 +187,9 @@ def main() -> None:
     if args.method in ANCHORS:
         ests = _estimates_anchor(args.method, ds, idxs)
     else:
-        ests = _estimates_model(args.method, ds, idxs, args.batch, device)
+        ests = _estimates_model(
+            args.method, ds, idxs, args.batch, device, args.model_cfg, args.checkpoint
+        )
 
     out_path = Path(args.out or f"results/f1_perclip/{args.method}__{args.valid}.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
