@@ -38,3 +38,37 @@ valid `dload:DREGON-LM-V4-michaels-valid-full`, patience 20).
 Pooled per-clip PIT-MAE on the VK-comparison DREGON cruise clips
 (phase-A eval script, `none` and best smoothing arm) at or below ~1.1 rev/s
 (1.5x the blind-VK bar); FLY124 cruise must stay below 3.24.
+
+## Phase B result (2026-07-24) — hypothesis REFUTED
+
+Trainings (kaggle P100, wandb `9pf3rpoh` 4s / `4bwjujj7` 8s; first
+submission pair died because an unanchored `data` pattern in
+`.git/info/exclude` had silently kept `conf/data/g1_*.yaml` out of the
+repo — fixed in b4a3eee): 4s early-stopped ep 36 (best ep 16), 8s ep 28
+(best ep 8). Eval: `python-267f52`,
+`omnirun-outputs/python-267f52/results/rps_predictor_vk_eval/`.
+
+Best pooled per-clip PIT-MAE (rev/s) across all input/aggregation arms:
+
+| model | best arm | DREGON cruise | FLY124 cruise |
+|---|---|---|---|
+| E12 baseline (1 s) | none | 3.186 | 1.766 |
+| E12 + phase-A smoothing | med | 2.62 | 1.55 |
+| g1 4 s best.ckpt | chmean/stitchmed | 3.043 | 2.094 |
+| **g1 8 s best.ckpt** | chmean/med2 | **2.872** | 1.898 |
+| g1 4 s / 8 s last.ckpt | — | 3.554 / 7.071 | (overfit) |
+| VK telemetry-init | — | 0.729 | 0.283 |
+| VK blind (guarded, §7.5) | — | 0.68–0.74 | **1.027** |
+
+Native 4/8 s context does not close the gap: the best phase-B number
+(2.87) is *worse* than phase-A smoothing of the 1 s model (2.62), and
+`last` checkpoints degrade sharply (context length trades against
+optimization stability at fixed compute). The systematic within-window
+error is therefore NOT a context-length artifact. FLY124 note: the
+stage-guarded blind VK (1.027) now beats every neural variant there too —
+both halves of the parity criterion are open.
+
+**Conclusion:** criterion 2.3 fails via the context lever. Remaining
+parity ideas (from the campaign plan, unexplored): comb-structured
+front-end, VK-distilled training targets, VK-annotated unlabeled data —
+each a larger build than a config change; park for a deliberate decision.
