@@ -1179,8 +1179,11 @@ class SimpleConvV2Transformer(nn.Module):
             frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
         self.frontend = frontend
 
+        # First block adapts to the front-end's channel count (1 for the
+        # default stft_mag — weight-identical to pre-G2 checkpoints).
+        in_ch = getattr(frontend, "out_channels", 1)
         enc_spec = [
-            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (in_ch, 64, (7, 5), (2, 1), (3, 2)),
             (64, 128, (7, 5), (2, 1), (3, 2)),
             (128, 128, (5, 3), (2, 1), (2, 1)),
             (128, 128, (5, 3), (2, 1), (2, 1)),
@@ -1210,6 +1213,99 @@ class SimpleConvV2Transformer(nn.Module):
         """Load state dict with legacy checkpoint remap."""
         state_dict = _remap_legacy_state_dict(state_dict)
         return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2TransformerHCQT(SimpleConvV2Transformer):
+    """G2a front-end arm: SimpleConvV2Transformer trunk on a harmonic-stacked
+    HCQT front-end (VK-parity campaign, criterion 2.3).
+
+    Hypothesis under test: the log-magnitude STFT front-end is the parity
+    bottleneck because the trunk has no harmonically *aligned* evidence — the
+    HCQT stacks log-spaced CQT copies at ``fmin*h`` so all harmonics of a
+    candidate f0 line up on the same frequency bin across channels
+    (``models/multif0`` HCQT, nnAudio backend — all-torch on-device,
+    including the fixed ``_phase_diff_torch`` phase path; the front-end is a
+    few percent of the model's compute).
+
+    Native 16 kHz, no resampling (``sr=input_sr=16000``); ``fmin=32.7`` (C1)
+    matches the multif0 checkpoint convention. At 16 kHz / 6 octaves the
+    harmonics auto-derive to [1, 2, 3] under Nyquist → 6 channels (mag +
+    dphase per harmonic). The HCQT runs on its own 256-sample hop; features
+    are linearly interpolated along time onto the model's STFT output grid
+    (``n_samples // hop_length + 1``) before the encoder, so the output
+    contract and the PIT-MSE target grid are unchanged.
+    """
+
+    def __init__(
+        self,
+        n_fft=2048,
+        hop_length=512,
+        num_rotors=4,
+        frontend=None,
+        fmin=32.7,
+        n_octaves=6,
+        over_sample=5,
+        harmonics=None,
+        hcqt_hop_length=256,
+        phase=True,
+    ):
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend(
+                "hcqt",
+                sr=16000,
+                input_sr=16000,
+                fmin=fmin,
+                n_octaves=n_octaves,
+                over_sample=over_sample,
+                harmonics=harmonics,
+                hop_length=hcqt_hop_length,
+                phase=phase,
+            )
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
+
+    def forward(self, audio):
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        t_out = audio.shape[-1] // self.hop_length + 1
+        x = self.frontend(audio)  # (B, 2H, F_cqt, T_hcqt)
+        if x.shape[-1] != t_out:
+            b, c, fbins, t = x.shape
+            x = F.interpolate(
+                x.reshape(b, c * fbins, t), size=t_out, mode="linear", align_corners=False
+            ).reshape(b, c, fbins, t_out)
+
+        h = x
+        for block in self.encoder:
+            h = block(h)
+
+        h = self.freq_pool(h)  # (B, 128, T)
+        return self.head(h)  # (B, 4, T)
+
+
+class SimpleConvV2TransformerIF(SimpleConvV2Transformer):
+    """G2b front-end arm: SimpleConvV2Transformer trunk on the IF-augmented
+    STFT front-end (VK-parity campaign, criterion 2.3).
+
+    Hypothesis under test: the magnitude STFT lacks sub-bin frequency
+    precision (one bin at n_fft=2048 / 16 kHz is 7.8 Hz, far coarser than
+    the ~0.7 rev/s blind-VK bar). ``stft_mag_if`` channel-concatenates the
+    standard instantaneous-frequency estimator (per-hop phase difference,
+    wrapped, as deviation from bin center in fractional bins) with the log
+    magnitude — same STFT grid as the baseline, so nothing else changes.
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("stft_mag_if", n_fft=n_fft, hop_length=hop_length)
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+        )
 
 
 class SimpleConvV2LocalAttention(nn.Module):
@@ -2150,6 +2246,8 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_causal_gru": SimpleConvV2CausalGRU,
     "simple_conv_v2_causal_gru96": SimpleConvV2CausalGRU96,
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
+    "simple_conv_v2_transformer_hcqt": SimpleConvV2TransformerHCQT,
+    "simple_conv_v2_transformer_if": SimpleConvV2TransformerIF,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_v2_dwt": SimpleConvV2Wavelet,

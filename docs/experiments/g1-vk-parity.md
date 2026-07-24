@@ -72,3 +72,31 @@ both halves of the parity criterion are open.
 parity ideas (from the campaign plan, unexplored): comb-structured
 front-end, VK-distilled training targets, VK-annotated unlabeled data —
 each a larger build than a config change; park for a deliberate decision.
+
+## Phase G2 (front-end arms)
+
+Phases A and B established that the within-window error is systematic and
+NOT a context-length or aggregation artifact. G2 tests the remaining
+campaign-plan lever: the **magnitude-STFT front-end is the bottleneck**.
+Two independent deficits, one arm each:
+
+- the trunk has no **harmonically aligned evidence aggregation** — VK
+  integrates a full comb of harmonics per rotor, while a plain spectrogram
+  makes the CNN learn harmonic geometry from scratch;
+- the trunk has no **sub-bin frequency precision** — one bin at
+  n_fft=2048/16 kHz is 7.8 Hz, so magnitude alone cannot resolve the
+  ~0.7 rev/s scale of the VK bar.
+
+| experiment | model key | front-end |
+|---|---|---|
+| `g2_hcqt_transformer` | `simple_conv_v2_transformer_hcqt` | HCQT (nnAudio, 16 kHz native, fmin 32.7, 6 oct x 60 bins/oct, harmonics [1,2,3], mag+dphase = 6 ch, hop 256 time-interpolated onto the hop-512 grid) |
+| `g2_if_transformer` | `simple_conv_v2_transformer_if` | `stft_mag_if` (log-mag + instantaneous-frequency deviation in fractional bins, 2 ch, same 2048/512 grid) |
+
+Everything else mirrors `e12_real_fullflight_transformer` exactly (same
+`e12_real_fullflight` online-mix stream, 1 s chunks, pit_mse, augs,
+patience 20) to isolate the front-end effect. Success criterion unchanged
+(§ above): pooled per-clip PIT-MAE on the VK-comparison DREGON cruise clips
+at or below ~1.1 rev/s, FLY124 cruise below the guarded blind-VK 1.027.
+
+Status: built (front-ends + models + configs committed); trainings not yet
+submitted.
