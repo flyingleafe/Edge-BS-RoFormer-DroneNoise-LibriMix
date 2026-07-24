@@ -94,3 +94,16 @@ numbers (and does not regress FLY124-cruise 1.766/1.55).
 ## Conclusion
 
 _Pending run._
+
+## Result (2026-07-24) — definite negative
+
+Training 9wwaa7vb (38 epochs, best ep 18, val/mse 65.3). Protocol eval
+`python-e1e448`: raw DREGON 3.960 / FLY124 1.747; best smoothed DREGON
+3.132 (chmean/stitchmed) vs the E12 baseline's 3.186 raw / 2.62 smoothed
+and FLY124 1.766/1.55. Verdict: adding GP-generated noise at the E4 1/3
+share does NOT improve the RPS predictor on real data — DREGON degrades
+(smoothed 2.62→3.13), FLY124 is a wash (1.75 vs 1.77 raw). Consistent
+with the E7/E8 pattern: synthetic noise families whose fine structure
+diverges from real (GP: even-harmonics-only, frozen-at-mean-rps
+amplitudes) dilute rather than augment. Campaign criterion 3.4 is closed
+with this negative.

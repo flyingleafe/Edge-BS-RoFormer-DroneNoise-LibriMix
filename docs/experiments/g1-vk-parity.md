@@ -100,3 +100,26 @@ at or below ~1.1 rev/s, FLY124 cruise below the guarded blind-VK 1.027.
 
 Status: built (front-ends + models + configs committed); trainings not yet
 submitted.
+
+## Phase G2 result (2026-07-24) — HCQT refuted; IF marginal new best
+
+Protocol eval `python-e1e448` (all smoothing arms), best cells:
+
+| model | raw DREGON | best DREGON | best FLY124 |
+|---|---|---|---|
+| E12 baseline | 3.186 | 2.62 | 1.55 |
+| g2_hcqt_best | 4.203 | 3.323 | 2.317 |
+| g2_if_best | 3.082 | **2.481** (chmean/med20) | 2.325 |
+| VK bars | — | 0.68–0.74 | 1.027 |
+
+G2a (HCQT) is refuted on every pool — consistent with the constant-Q
+resolution argument (bins ~18 Hz at k=20 where 0.7 rev/s = 14 Hz) and the
+prior salience-baseline failures; val MSE 195.5 had already signalled it.
+G2b (IF) is the first arm to beat the baseline at all (DREGON 2.62→2.481,
+raw 3.186→3.082) — the phase evidence is directionally right — but the
+effect is marginal against a 3.4× gap, and FLY124 regresses (1.55→2.33).
+The front-end alone, at this capacity and data scale, does not close
+parity. Next lever (G4): harmonic aggregation on the LINEAR grid (comb
+matched-filter stacking over an f0 grid, the trainable analogue of the VK
+whitened scan) combined with the IF channel — attacks the aggregation
+ingredient without CQT smearing.
