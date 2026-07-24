@@ -157,3 +157,16 @@ submitted. Front-end sanity (unit-tested): a synthetic 4-rotor comb at
 [45, 62.5, 80, 105] rev/s yields comb-score NMS peaks at exactly those
 rows; a comb offset +0.2 rev/s from a grid row reads +0.206 in the
 consensus channel; occupancy 0.95 at the true row vs 0.33 off-comb.
+
+### G4a result (2026-07-24) — as-built REFUTED at val; diagnosis: position readout
+
+Training 2qnc8y8v: best val/mse 576.5 / mae_frame 15.4 at epoch 4, then no
+improvement for 20 epochs (early-stop ep 24). 15.4 rev/s mae ≈ predicting a
+near-constant — the model never learned to read the ridge position. Probable
+cause: in f0-space the answer IS the position along the row axis, but the
+trunk's freq-pool averages that axis away; the spectrogram baseline encodes
+speed in translation-covariant texture instead and never needs positional
+readout. Fix under test (G4b): a 4th coordinate channel (each row's f0 in
+rev/s, normalized) — with it, rps ≈ coord + consensus at the comb-score
+argmax becomes a near-linear readout. Epochs are also ~9x slower than the
+family (gather cost at train shapes); acceptable for a verdict run.
