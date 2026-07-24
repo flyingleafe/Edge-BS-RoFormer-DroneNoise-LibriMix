@@ -298,6 +298,23 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/g1_transformer_8s/checkpoints/last.ckpt",
         None,
     ),
+    # G2 front-end arms (wandb 5c4p0rim / 4ki6b5ky) and the G3 GP-noise
+    # augmentation arm (9wwaa7vb) — all E12 recipe, early-stop best ckpts.
+    "g2_hcqt_best": (
+        "g2_hcqt_transformer",
+        "r2://ml-data/artifacts/g2_hcqt_transformer/checkpoints/best.ckpt",
+        None,
+    ),
+    "g2_if_best": (
+        "g2_if_transformer",
+        "r2://ml-data/artifacts/g2_if_transformer/checkpoints/best.ckpt",
+        None,
+    ),
+    "g3_gp_aug_best": (
+        "g3_gp_aug_transformer",
+        "r2://ml-data/artifacts/g3_gp_aug_transformer/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
