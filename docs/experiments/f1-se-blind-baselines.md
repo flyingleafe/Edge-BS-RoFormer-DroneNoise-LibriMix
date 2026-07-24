@@ -189,10 +189,12 @@ while removing noise energy.)
    *Tested and refuted (2026-07-24):* the composite's MRSTFT term dominates the
    SI-SDR term's gradient at the model output by 4× (−30 dB) → **54×** (0 dB),
    which looks like a cause of over-suppression — but retraining DCUNet to
-   convergence on **pure SI-SDR** (`conf/loss/si_sdr.yaml`, job
-   `f1-dcunet-lossa`, early-stop ep60) matches the composite within ~0.1 dB at
-   0 dB (−2.07 vs −2.17) and is *worse* on eSTOI (0.386 vs 0.410). A
-   down-weighted composite (`si_sdr_mrstft_w0p05`, ratio 53×→2.5×) was also run.
+   convergence under **three** objectives moves 0 dB SI-SDR only between
+   −2.17 (original composite), −2.07 (**pure SI-SDR**, `conf/loss/si_sdr.yaml`,
+   job `f1-dcunet-lossa`, early-stop ep60) and −1.37 (**MRSTFT ×0.05**,
+   `si_sdr_mrstft_w0p05`, ratio 53×→2.5×, job `f1-dcunet-lossc2`) — a <1 dB
+   spread, **all still below the noisy input (−0.00)**, with eSTOI 0.410 / 0.386
+   / 0.397 vs noisy 0.497.
    Also refuted: train/eval length mismatch (feeding 1 s halves, matching the
    training chunk, scores *worse* than whole 2 s clips: −3.7 vs −1.0 at 0 dB).
    **DCUNet's high-SNR degradation is an architecture/training-regime trait**

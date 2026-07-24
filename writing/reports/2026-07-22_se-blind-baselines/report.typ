@@ -223,12 +223,16 @@ a "baseline" is a claim about training as much as architecture. We tested
 whether the composite's spectral term was itself the limit: its multi-resolution
 STFT term dominates the SI-SDR term's gradient at the model output by 4× at
 −30 dB rising to 54× at 0 dB, which would plausibly drive a masking model toward
-over-suppression. It does not: retraining DCUNet to convergence on *pure*
-negative SI-SDR reproduces the composite within ≈0.1 dB at 0 dB and is slightly
-*worse* on eSTOI (0.386 vs 0.410). DCUNet's high-SNR degradation is therefore a
-property of the architecture in this training regime — a 2.8 M-parameter complex
-mask fitted over SNR $~ cal(U)(−30, 0)$ dB learns a suppression strength tuned to
-the low-SNR bulk — not an artefact of the objective.
+over-suppression. It does not. Retraining DCUNet to convergence under three
+objectives — the original composite, *pure* negative SI-SDR, and the composite
+with its spectral term down-weighted $times 0.05$ (which brings the gradient
+ratio at 0 dB from 54× to 2.5×) — moves 0 dB SI-SDR only between −2.17, −2.07 and
+−1.37 dB, all still *below* the noisy input, and leaves eSTOI at 0.41/0.39/0.40
+against a noisy 0.50. A $< 1$ dB spread, with the ordering unchanged. DCUNet's
+high-SNR degradation is therefore a property of the architecture in this training
+regime — a 2.8 M-parameter complex mask fitted over SNR $~ cal(U)(−30, 0)$ dB
+learns a suppression strength tuned to the low-SNR bulk — not an artefact of the
+objective.
 
 == Per-category harmonic floor
 Evaluating the Pass-B (all-harmonic) models per noise family on
