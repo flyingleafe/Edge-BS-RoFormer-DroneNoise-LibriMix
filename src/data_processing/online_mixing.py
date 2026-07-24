@@ -962,6 +962,23 @@ def _scale_source_to_snr(
     return (source * scale.astype(np.float32)).astype(np.float32)
 
 
+# A draw at or below this mean power is digital silence. Silent draws must never
+# reach _scale_source_to_snr: it scales the SOURCE by sqrt(noise_power/...), so a
+# silent NOISE draw yields scale == 0 -> the clean target AND the mixture both
+# become all-zeros (a completely empty training/valid sample). Measured on the
+# drone pool, `drone_audio` alone contributes ~5.8% silent draws, which zeroed
+# ~1.4% of SE-valid-drone; with an SI-SDR loss such a sample returns a constant
+# 10*log10(eps) = +80 dB with zero gradient, and with a magnitude loss it
+# actively teaches "output silence".
+_MIN_DRAW_POWER = 1e-12
+_MAX_DRAW_RETRIES = 8
+
+
+def _is_silent(x: np.ndarray) -> bool:
+    """True when ``x`` carries no usable energy (digital silence)."""
+    return float(np.mean(np.asarray(x, dtype=np.float64) ** 2)) <= _MIN_DRAW_POWER
+
+
 def _mix_at_source_to_noise_snr(
     source: np.ndarray,
     noise: np.ndarray,
@@ -1263,20 +1280,27 @@ class OnlineMixIterableDataset(IterableDataset):
         rng = make_rng(self.base_seed, int(global_sample_id))
         policy = _resolve_policy(self.policy, int(global_sample_id))
 
-        noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
-        audio_track = noise_tf["audio"]
-        audio_sr = cast(td.GridIndex, audio_track.tindex).sr
-        if int(round(audio_sr)) != self.sample_rate:
-            raise ValueError(f"noise audio sr {audio_sr} != configured {self.sample_rate}")
-        noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
-        # The SE stream is single-channel: pick a random mic from multichannel
-        # noise sources (DREGON/Michael's 8-ch frames) so the mixture/target are
-        # mono (1, T) — the codec's mono speech-enhancement contract.
-        if noise_audio.shape[0] > 1:
-            ch = int(rng.integers(0, noise_audio.shape[0]))
-            noise_audio = np.ascontiguousarray(noise_audio[ch : ch + 1])
+        # Redraw past digitally-silent noise/speech: either one would make
+        # _scale_source_to_snr collapse the sample to all-zeros (see _is_silent).
+        # Some pools genuinely contain silence (`drone_audio` ~5.8% of draws), so
+        # this is a data fact to reject, not an error to raise.
+        for _attempt in range(_MAX_DRAW_RETRIES):
+            noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
+            audio_track = noise_tf["audio"]
+            audio_sr = cast(td.GridIndex, audio_track.tindex).sr
+            if int(round(audio_sr)) != self.sample_rate:
+                raise ValueError(f"noise audio sr {audio_sr} != configured {self.sample_rate}")
+            noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
+            # The SE stream is single-channel: pick a random mic from multichannel
+            # noise sources (DREGON/Michael's 8-ch frames) so the mixture/target are
+            # mono (1, T) — the codec's mono speech-enhancement contract.
+            if noise_audio.shape[0] > 1:
+                ch = int(rng.integers(0, noise_audio.shape[0]))
+                noise_audio = np.ascontiguousarray(noise_audio[ch : ch + 1])
 
-        source = self.source_pool.sample_array(rng, channels=1, mode="independent")
+            source = self.source_pool.sample_array(rng, channels=1, mode="independent")
+            if not _is_silent(noise_audio) and not _is_silent(source):
+                break
         snr_db = _sample_snr_db(policy, rng)
         per_channel = bool(policy.get("snr_per_channel", False))
         scaled_source = _scale_source_to_snr(source, noise_audio, snr_db, per_channel=per_channel)

@@ -365,3 +365,52 @@ def test_source_pool_exclude_speakers(tmp_path):
     )
     assert all("/200/" not in p.as_posix() for p in pool.files)
     assert any("/103/" in p.as_posix() for p in pool.files)
+
+
+# ─── Silent-draw rejection (the all-zero-sample bug) ────────────────────────────
+
+
+class _SilentThenRealNoisePool:
+    """Yields digital silence for the first ``n_silent`` draws, then real audio.
+
+    Models the real `drone_audio` pool, ~5.8% of whose 1 s draws are digitally
+    silent."""
+
+    def __init__(self, real: np.ndarray, n_silent: int, sample_rate: int = SR):
+        self._real = np.ascontiguousarray(real, dtype=np.float32)
+        self._left = int(n_silent)
+        self._sr = sample_rate
+        self.draws = 0
+
+    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
+        n = int(round(duration_s * self._sr))
+        self.draws += 1
+        if self._left > 0:
+            self._left -= 1
+            a = np.zeros((1, n), np.float32)
+        else:
+            a = self._real[:, :n]
+        return td.Frame({"audio": td.uniform(a[0], self._sr, dims=("time",), t_start=0.0)})
+
+
+def test_se_mode_redraws_past_silent_noise_instead_of_zeroing_the_sample():
+    """A silent NOISE draw makes _scale_source_to_snr scale the speech by 0, so
+    BOTH target and mixture become all-zeros — a completely empty sample. The
+    stream must reject such draws and redraw."""
+    rng = np.random.default_rng(0)
+    real = 0.1 * rng.standard_normal((1, SR)).astype(np.float32)
+    speech = rng.standard_normal(SR).astype(np.float32)
+    pool = _SilentThenRealNoisePool(real, n_silent=3)
+    ds = OnlineMixIterableDataset(
+        pool,  # type: ignore[arg-type]
+        _StubSourcePool(speech),  # type: ignore[arg-type]
+        policy={"snr_db": 0.0},
+        base_seed=123,
+        duration_s=1.0,
+        sample_rate=SR,
+        task="speech_enhancement",
+    )
+    mix, tgt = ds.generate_sample(0)
+    assert pool.draws > 3, "expected the silent draws to be rejected and redrawn"
+    assert float(np.mean(tgt.numpy() ** 2)) > 0.0, "clean target was zeroed by a silent noise draw"
+    assert float(np.mean(mix.numpy() ** 2)) > 0.0, "mixture was zeroed by a silent noise draw"

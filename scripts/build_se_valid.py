@@ -46,8 +46,10 @@ import tdseries as td
 import data_processing.streams as streams
 from data_processing.frames import audio_series
 from data_processing.online_mixing import (
+    _MAX_DRAW_RETRIES,
     AudioFileSourcePool,
     _extract_audio_array,
+    _is_silent,
     _scale_source_to_snr,
     build_noise_pool,
 )
@@ -138,9 +140,16 @@ def _iter_category_samples(
     idx = 0
     for snr in SNR_GRID:
         for _ in range(per_snr):
-            noise_tf = noise_pool.sample_timeframe(rng, duration_s)
-            noise = _mono(_extract_audio_array(noise_tf, target_len=target_len), rng)
-            speech = speech_pool.sample_mono(rng)
+            # Reject digitally-silent draws: a silent NOISE draw makes
+            # _scale_source_to_snr return scale == 0, zeroing BOTH the target and
+            # the mixture (the v1 sets shipped 5 such empty clips, which alone
+            # shifted the 0 dB noisy anchor by 4.8 dB). See _is_silent.
+            for _attempt in range(_MAX_DRAW_RETRIES):
+                noise_tf = noise_pool.sample_timeframe(rng, duration_s)
+                noise = _mono(_extract_audio_array(noise_tf, target_len=target_len), rng)
+                speech = speech_pool.sample_mono(rng)
+                if not _is_silent(noise) and not _is_silent(speech):
+                    break
             scaled = _scale_source_to_snr(speech[None, :], noise[None, :], float(snr))[0]
             mixture = (noise + scaled).astype(np.float32)
             sample_id = f"{category}_snr{snr:+03d}_{idx:04d}"
