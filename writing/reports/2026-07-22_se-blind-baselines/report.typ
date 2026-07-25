@@ -22,7 +22,9 @@
     (MP-SENet, TF-GridNet) are competitive with or ahead of the in-house
     Edge-BS-RoFormer — even while compute-limited — while the classic
     complex-UNet (DCUNet) removes noise energy at low SNR but *degrades* the
-    input above −5 dB and never restores intelligibility. Whether training on *diverse*
+    input above −5 dB and never restores intelligibility — far short of the same
+    model's published result on this task, which we attribute to our training
+    configuration rather than the architecture. Whether training on *diverse*
     harmonic noise helps on drone noise is *capacity-dependent* — it aids only
     the capacity-limited DCUNet and dilutes all three stronger ports (MP-SENet,
     TF-GridNet, Edge-BS-RoFormer). Trained from scratch on the same budget, the
@@ -229,10 +231,23 @@ with its spectral term down-weighted $times 0.05$ (which brings the gradient
 ratio at 0 dB from 54× to 2.5×) — moves 0 dB SI-SDR only between −2.17, −2.07 and
 −1.37 dB, all still *below* the noisy input, and leaves eSTOI at 0.41/0.39/0.40
 against a noisy 0.50. A $< 1$ dB spread, with the ordering unchanged. DCUNet's
-high-SNR degradation is therefore a property of the architecture in this training
-regime — a 2.8 M-parameter complex mask fitted over SNR $~ cal(U)(−30, 0)$ dB
-learns a suppression strength tuned to the low-SNR bulk — not an artefact of the
-objective.
+high-SNR degradation is therefore not an artefact of the objective.
+
+*It is, however, very likely an artefact of the rest of our setup.* The same
+architecture is the top performer of the 2023 benchmark @mukhutdinov2023, where
+DCUNet reaches SI-SDR $+3.7$ dB and eSTOI $0.4$ at −15 dB input — against
+$−10.4$ dB and $0.20$ here, a $approx 14$ dB gap. That study differs from ours in
+much more than the loss: it runs at *8 kHz* (we use 16 kHz), gives DCUNet an
+STFT of 64 ms/16 ms (ours is 128 ms/32 ms — *four times* coarser in time), trains
+on *3 s* crops (ours 1 s), samples SNR from $cal(U)(−25, −5)$ rather than
+$cal(U)(−30, 0)$, and draws noise from a *single* drone's ego-noise rather than
+six pooled datasets. Any of these could plausibly cost a complex-masking UNet
+its high-SNR behaviour. We therefore treat the DCUNet row of this report as a
+*property of this training configuration, not of the architecture*, and a
+replication of the published setup is in progress to identify which factor is
+responsible. The other three architectures share the same configuration, so
+their absolute numbers carry the same caveat, though their *relative* ordering is
+measured under matched conditions and is unaffected.
 
 == Per-category harmonic floor
 Evaluating the Pass-B (all-harmonic) models per noise family on
