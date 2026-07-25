@@ -5,11 +5,16 @@
 
 Two things the raw CSVs do not say on their own:
 
-* **Whether an arm collapsed.** `gain_db` (output/target energy ratio) and
-  `corr` (|<est,ref>|/||est|| ||ref||) are printed next to SI-SDR precisely
-  because a low SI-SDR alone cannot distinguish a degenerate near-null output
-  from an honest-but-distorted one. A collapsed arm shows corr -> 0 with `sdr`
-  pinned near 0 dB regardless of input SNR.
+* **What KIND of wrong an arm is.** `gain_db` (output/target energy ratio) and
+  `corr` (|<est,ref>|/||est|| ||ref||) are printed next to SI-SDR because a low
+  SI-SDR alone cannot distinguish a degenerate near-null output from an
+  over-loud residual-noise one -- the quadratic in ||est|| has two roots and
+  both reproduce any given (sdr, si_sdr) pair. Note `sdr ~ 0 dB` does NOT by
+  itself imply collapse: the measured arms sit at sdr ~ 0 with gain_db ~ 0,
+  i.e. output AT target level. Read gain_db, do not infer from sdr.
+* **PESQ on the paper's terms.** `pesq` is wideband (16 kHz); the 2023 survey
+  ran at 8 kHz, so its 1.9 is NARROWBAND. `pesq_nb` is the like-for-like column
+  and is what PAPER_AT_MINUS15 compares against.
 * **Whether it beats doing nothing.** Every metric is shown as a delta against
   the `noisy` anchor on the SAME valid set, because "SI-SDR improves with SNR"
   is trivially true and the only interesting question is the margin over the
@@ -29,10 +34,11 @@ from pathlib import Path
 
 import pandas as pd
 
-METRICS = ["si_sdr", "sdr", "pesq", "estoi", "gain_db", "corr"]
+METRICS = ["si_sdr", "sdr", "pesq", "pesq_nb", "estoi", "gain_db", "corr"]
 # Mukhutdinov et al. 2023 (IEEE Access), DCUNet at -15 dB input SNR. Measured at
 # 8 kHz on TIMIT and on a different drone (AS), so a reference point, not a bar.
-PAPER_AT_MINUS15 = {"si_sdr": 3.7, "estoi": 0.4, "pesq": 1.9}
+# The paper ran at 8 kHz, so its PESQ is NARROWBAND -> compare against pesq_nb.
+PAPER_AT_MINUS15 = {"si_sdr": 3.7, "estoi": 0.4, "pesq_nb": 1.9}
 
 
 def load(directory: Path) -> pd.DataFrame:
@@ -90,7 +96,7 @@ def main() -> None:
             print(f"\n-- {method}")
             show = gm[have].round(3)
             if method != "noisy" and not anchor.empty:
-                for m in ("si_sdr", "estoi", "pesq"):
+                for m in ("si_sdr", "estoi", "pesq", "pesq_nb"):
                     if m in show.columns and m in anchor.columns:
                         show[f"d_{m}"] = (gm[m] - anchor[m]).round(3)
             print(show.to_string())

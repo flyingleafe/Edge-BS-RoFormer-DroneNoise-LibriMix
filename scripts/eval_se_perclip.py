@@ -43,7 +43,7 @@ ARCH_MODEL = {
     "mpsenet": "f1_mpsenet",
     "sgmse": "f1_sgmse",
 }
-METRICS = ["si_sdr", "sdr", "pesq", "estoi", "gain_db", "corr"]
+METRICS = ["si_sdr", "sdr", "pesq", "pesq_nb", "estoi", "gain_db", "corr"]
 
 
 def _r2_client():
@@ -119,6 +119,23 @@ def _metrics(ref: np.ndarray, est: np.ndarray) -> dict[str, float]:
         out["estoi"] = float(stoi(ref, est, SR, extended=True))
     except Exception:
         out["estoi"] = float("nan")
+    # `pesq` above is WIDEBAND (metrics.separation.pesq picks "wb" at >=16 kHz).
+    # The 2023 survey ran everything at 8 kHz, so its PESQ is NARROWBAND, and
+    # PESQ-NB scores systematically higher than PESQ-WB on identical audio —
+    # enough to account for a whole point. Reporting both makes the comparison
+    # against the paper a like-for-like one instead of an apples-to-oranges gap.
+    try:
+        import librosa
+
+        out["pesq_nb"] = float(
+            pesq(
+                librosa.resample(ref, orig_sr=SR, target_sr=8000),
+                librosa.resample(est, orig_sr=SR, target_sr=8000),
+                8000,  # already at 8 kHz -> the wrapper keeps it there and picks "nb"
+            )
+        )
+    except Exception:
+        out["pesq_nb"] = float("nan")
     return out
 
 
