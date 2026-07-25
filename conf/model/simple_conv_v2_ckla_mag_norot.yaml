@@ -1,0 +1,19 @@
+# simple_conv_v2_ckla_mag_norot — rps_prediction, the rotation=False control
+# of the CKLA campaign (docs/ckla-design.md §5 ladder item 1). Identical to
+# simple_conv_v2_ckla_mag except the complex rotation path is removed at
+# train time (no ω0/s/W_ω; the scan is the exact real-KLA flat recursion).
+# Decides whether the complex path is load-bearing after P0b's eval-time
+# ablation measured a null delta on the trained P0 model.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_mag_norot
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

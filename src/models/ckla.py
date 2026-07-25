@@ -162,11 +162,20 @@ class ComplexKLALayer(nn.Module):
 
     Set ``layer.capture = []`` to record the post-cast scan inputs each
     forward (opt-in analysis/test tap, mirrors the fkla layer's).
+
+    ``rotation=False`` removes the complex path entirely at TRAIN time (no
+    ω0/s/W_ω parameters; the scan runs with cos ω = 1, sin ω = 0, i.e. the
+    exact real-KLA flat recursion) — the design §5 ladder-item-1 control
+    that decides whether the complex rotation is load-bearing (the P0b
+    eval-time ablation measured a null delta on the trained P0 model).
     """
 
-    def __init__(self, d_model: int, n_state: int = 16, conv_kernel: int = 4):
+    def __init__(
+        self, d_model: int, n_state: int = 16, conv_kernel: int = 4, rotation: bool = True
+    ):
         super().__init__()
         self.d_model, self.n_state = d_model, n_state
+        self.rotation = rotation
 
         self.conv = nn.Conv1d(
             d_model, d_model, conv_kernel, groups=d_model, padding=conv_kernel - 1, bias=True
@@ -175,13 +184,14 @@ class ComplexKLALayer(nn.Module):
         self.q_proj = nn.Linear(d_model, n_state, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.lamv_proj = nn.Linear(d_model, d_model, bias=True)
-        # Rotation projection: zero-init weight AND bias so ω_t = ω0 at start.
-        self.omega_proj = nn.Linear(d_model, n_state, bias=True)
-        nn.init.zeros_(self.omega_proj.weight)
-        nn.init.zeros_(self.omega_proj.bias)
-        # Per-slot gate on the rotation excursion (init small) + ring init ω0.
-        self.s = nn.Parameter(torch.full((n_state,), 0.1))
-        self.omega0 = nn.Parameter(torch.linspace(0.0, math.pi, n_state))
+        if rotation:
+            # Rotation projection: zero-init weight AND bias so ω_t = ω0 at start.
+            self.omega_proj = nn.Linear(d_model, n_state, bias=True)
+            nn.init.zeros_(self.omega_proj.weight)
+            nn.init.zeros_(self.omega_proj.bias)
+            # Per-slot gate on the rotation excursion (init small) + ring init ω0.
+            self.s = nn.Parameter(torch.full((n_state,), 0.1))
+            self.omega0 = nn.Parameter(torch.linspace(0.0, math.pi, n_state))
 
         self.mix = nn.Linear(2 * d_model, d_model, bias=False)
         self.gate_proj = nn.Linear(d_model, d_model, bias=False)
@@ -220,7 +230,10 @@ class ComplexKLALayer(nn.Module):
         q = F.normalize(self.q_proj(h), dim=-1)
         v = self.v_proj(h)
         lam_v = F.softplus(self.lamv_proj(h)) + 1e-4
-        omega = self.omega0 + self.s * self.omega_proj(h)  # (B, T, N)
+        if self.rotation:
+            omega = self.omega0 + self.s * self.omega_proj(h)  # (B, T, N)
+        else:
+            omega = torch.zeros(*h.shape[:2], self.n_state, dtype=h.dtype, device=h.device)
 
         abar_mag, pbar = self.ou_discretise()
         # fp32 discipline for the scan algebra: under bf16/fp16 autocast the
@@ -293,10 +306,13 @@ class TemporalCKLAHead(nn.Module):
         num_rotors: int = 4,
         n_layers: int = 2,
         n_state: int = 16,
+        rotation: bool = True,
     ):
         super().__init__()
         self.in_proj = nn.Linear(in_ch, d_model)
-        self.blocks = nn.ModuleList(CKLABlock(d_model, n_state=n_state) for _ in range(n_layers))
+        self.blocks = nn.ModuleList(
+            CKLABlock(d_model, n_state=n_state, rotation=rotation) for _ in range(n_layers)
+        )
         self.norm = nn.RMSNorm(d_model)
         self.proj = nn.Linear(d_model, num_rotors)
 
@@ -332,6 +348,7 @@ class SimpleConvV2CKLA(nn.Module):
         d_model: int = 128,
         n_layers: int = 2,
         n_state: int = 16,
+        rotation: bool = True,
     ):
         super().__init__()
         self.n_fft = n_fft
@@ -365,6 +382,7 @@ class SimpleConvV2CKLA(nn.Module):
             num_rotors=num_rotors,
             n_layers=n_layers,
             n_state=n_state,
+            rotation=rotation,
         )
 
     def forward(self, audio: Tensor) -> Tensor:

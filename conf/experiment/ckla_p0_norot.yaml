@@ -1,0 +1,26 @@
+# @package _global_
+# CKLA P0 rotation-off control (docs/ckla-design.md §5 ladder item 1, batch
+# docs/experiments/ckla.md). EXACT clone of ckla_p0_staticcomb except the
+# model: simple_conv_v2_ckla_mag_norot — the complex rotation path removed at
+# train time, so the temporal head is an exact real-KLA filter bank. P0b's
+# eval-time ablation on the trained P0 model measured a NULL rotation delta;
+# this arm decides whether that holds under training dynamics too. Equal
+# scores ⇒ the P0 win belongs to the KLA uncertainty-gated recurrence, not
+# the complex extension.
+defaults:
+  - override /data: rps_static_comb_only
+  - override /model: simple_conv_v2_ckla_mag_norot
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p0_norot
+epochs: 100
+patience: 8
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

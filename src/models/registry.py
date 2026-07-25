@@ -117,6 +117,13 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     # plus a stft_mag variant (P1 ablation 5 — front-end interaction check).
     "simple_conv_v2_ckla": SimpleConvV2CKLA,
     "simple_conv_v2_ckla_mag": lambda **kw: SimpleConvV2CKLA(frontend_key="stft_mag", **kw),
+    # rotation=False controls (design §5 item 1): the scan degenerates to the
+    # exact real-KLA recursion — decides whether the complex path is
+    # load-bearing (P0b eval-time ablation measured a null delta).
+    "simple_conv_v2_ckla_norot": lambda **kw: SimpleConvV2CKLA(rotation=False, **kw),
+    "simple_conv_v2_ckla_mag_norot": lambda **kw: SimpleConvV2CKLA(
+        frontend_key="stft_mag", rotation=False, **kw
+    ),
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_v2_dwt": SimpleConvV2Wavelet,
