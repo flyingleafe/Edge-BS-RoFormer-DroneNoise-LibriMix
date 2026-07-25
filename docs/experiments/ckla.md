@@ -27,7 +27,38 @@ epochs (wandb), the transfer read is the fixed real valid.
 
 ## Results
 
-_Pending._
+### P0 — `ckla_p0_staticcomb` (kaggle `python-9d450c`, wandb `jcrr4tqe`, 2026-07-25)
+
+Trained stably (fp32 scan under amp, lr 1e-3, no divergence); early-stopped
+ep 15, ~2 min/epoch on P100.
+
+**On-distribution (train PIT-MSE, same static-comb stream — the clean
+comparison):** CKLA reaches train ≈ 3.4 by **epoch 3**; the E8 transformer
+(`2sabeq2g`) needs **~23 epochs** to reach the same level (ep 3–7 window:
+CKLA 3.3–4.8 vs transformer 8.4–12.7; E8 uni_gru128 never got below ~9).
+≈7× faster epoch-convergence to an equal-or-lower floor → gates (a)+(b)
+of design §4 passed decisively.
+
+**Real-valid transfer (caveat — valid sets differ):** CKLA best val/mse
+**21.7** (rmse 4.48, R² at last ep −0.52) on the CLEAN
+`DREGON-LM-V4-michaels-valid` (pin b6ece43d) vs E8 transformer's recorded
+188.7 on the *contaminated* pre-cleanup valid — NOT directly comparable.
+For scale: the E9 hard-combined transformer (50% neural gen + 50%
+static-comb + augs) scored ~20.7 on the clean valid; CKLA matches that
+from static-comb-only training with no augmentation. Fair rescore of the
+E8 transformer ckpts on the clean valid: uni-cpu job `bash-4fe1ac`
+(_pending_).
+
+### P0b — capture boundary + rotation ablation
+
+uni-cpu job `python-20c95f`: `scripts/ckla_capture_boundary.py`, CKLA-P0
+best vs E8-transformer best, drift (aggressiveness 0.25–4) × SNR (+10…−20),
+16 clips/cell, `--ablate-rotation`. _Pending._
+
+### P1 — `ckla_p1_if` (kaggle `python-3fd926`)
+
+Launched on gates (a)+(b) without waiting for P0b (diagnostics cannot
+reverse the on-distribution result). _Pending._
 
 ## Conclusion
 
