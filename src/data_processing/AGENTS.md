@@ -357,9 +357,22 @@ sample key is kept when it *equals* or *contains* a listed entry (exact key or
 substring), `exclude_keys` applied last. Keys are shard-local (the manifest has
 no key list), so filtering stays shard-lazy: a shard is dropped (draw weight
 zeroed) the first time it is opened and found to hold no match, and the draw
-retried. Used by the F2 replication to take only the 5 AVQ *ego-noise*
-sequences (`conf/online_mix/se_avq_survey.yaml`); the other 7 AVQ recordings
-contain the speech source.
+retried.
+
+**Cost, and when to publish a subset instead.** Because the manifest has no key
+list, *every* shard must be opened (i.e. downloaded) at least once before the
+pool knows it holds nothing wanted. Filtering a many-shard dataset down to a few
+recordings therefore pays the dataset's full download for a tiny slice. The F2
+replication originally selected the 5 AVQ *ego-noise* sequences this way
+(`dataset: AVQ`, `channel: 0`, `include_keys: [S1_seq1, …]`) and paid ~4 GiB
+across 11 shards for ~12 minutes of audio — and hit a second problem: AVQ's
+352 MB shard is a 42-part multipart upload whose ETag s3transfer rejects on some
+boto3 builds (Kaggle), aborting the download of a perfectly intact object. Both
+costs vanish if the wanted audio is its own dataset, so it now reads the
+purpose-built **`AVQ-egonoise`** (see Catalog) with no `include_keys`/`channel`
+at all. Rule of thumb: use `include_keys` for ad-hoc/exploratory restriction;
+publish a derived subset (`scripts/publish_avq_egonoise.py` is the template)
+once a fixed small selection becomes an experiment's durable noise pool.
 
 `holdout` reserves the last `valid_shards` whole shards (= whole recording
 groups) as the *valid* partition and the rest as *train* (single-shard
@@ -369,10 +382,10 @@ datasets fall back to a per-shard sample-index split at `fraction`, default
 training pools' `split: train`. `AudioFileSourcePool` also gained an
 `exclude:` list (path-substring drop) — used to hold LibriSpeech speakers out
 of training speech. The map-style `SEValidFrameDataset` streams a published SE
-valid set (`SE-valid-drone` / `SE-valid-harmonic`) as `{mixture, target, meta}`
-frames for `eval.py`; `local_root=<dir>` instead reads an **unpublished** set
-from a local dload repository (`streams.local_repository`, written by
-`build_se_valid.py --local-repo`) — the F2 `SE-valid-avq-survey` path. The
+valid set (`SE-valid-drone` / `SE-valid-harmonic` / `SE-valid-avq-survey`) as
+`{mixture, target, meta}` frames for `eval.py`; `local_root=<dir>` instead reads
+an **unpublished** set from a local dload repository
+(`streams.local_repository`, written by `build_se_valid.py --local-repo`). The
 builder's rate / SNR grid / duration are per-target-set presets
 (`DATASET_PRESETS`, CLI-overridable), so 8 kHz replications reuse it unchanged.
 
@@ -498,15 +511,16 @@ distinguish them:
 
 After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 
-### Catalog (pinned in `dload.lock` — 38 datasets)
+### Catalog (pinned in `dload.lock` — 42 datasets)
 
 - **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
   `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
   `zenodo_drone_noises`.
-- **Derived DREGON-LM** (15, sample-dir convention, per split):
+- **Derived DREGON-LM** (16, sample-dir convention, per split):
   `DREGON-LM-{train,valid}`, `DREGON-LM-V2-{train,valid}`,
   `DREGON-LM-V3-{train,valid}`, `DREGON-LM-V4-{train,valid}`,
-  `DREGON-LM-V4-michaels-{train,valid}`, `DREGON-LM-test-{train,valid}`,
+  `DREGON-LM-V4-michaels-{train,valid}`, `DREGON-LM-V4-michaels-valid-full`,
+  `DREGON-LM-test-{train,valid}`,
   `DREGON-LM-rps_{eval_long,eval_specific,train_specific}_samples`.
 - **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):
   `DN-LM-{train,valid}` (6480/720, drone-only noise; no `rps` field).
@@ -534,6 +548,24 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
   AVQ videos + `cameraParams.mat` + `.docx` docs + raw mic_pos/angle_vad/
   av_calibration mats — everything except the per-channel `MONO-*.wav`, which is
   the audio in `AVQ`). Publisher `scripts/publish_avq_raw.py`.
+- **Purpose-built derived subsets** (1, `tdframe-v1`): `AVQ-egonoise` (5; the
+  pure rotor ego-noise sequences of `AVQ` — `S1_seq1`/`S1_seq2`/`S1_seq3`/
+  `S2_seq1`/`S2_seq2`, the only AVQ recordings *without* an `angle_vad` entry
+  and therefore without the speech source — **channel 0 only, 16 kHz mono**,
+  705 s in one 43 MiB shard, AVQ's per-recording `meta` + provenance kept).
+  Publisher `scripts/publish_avq_egonoise.py`. It exists so the F2 pools
+  (`conf/online_mix/se_avq_survey.yaml`, `se_survey_alldrone.yaml`,
+  `se_survey_allharmonic.yaml`, `scripts/build_se_valid.py`'s `avq_ego`
+  category) can be a plain `audio_pool` with **no `include_keys` and no
+  `channel`**: manifests carry no key list, so key filtering over `AVQ` had to
+  download all 11 shards (~4 GiB) to find those 5 recordings, and one AVQ shard
+  is a 352 MB **multipart** object that s3transfer's ETag validation rejects on
+  some boto3 builds (Kaggle: `S3DownloadFailedError ... did not match expected
+  ETag`) — a false alarm (the object's sha256 matches its content address), but
+  a fatal one on those backends. `AVQ`/`AVQ-raw` are unchanged.
+- **Fixed SE validation sets** (3, `tdframe-v1`, `{mixture,target,meta}` per
+  clip; builder `scripts/build_se_valid.py`): `SE-valid-drone`,
+  `SE-valid-harmonic` (F1), `SE-valid-avq-survey` (F2, 250 clips).
 
 Consumption paths: `DloadFrameDataset` / `dload:NAME[@VER][/subpath]` URIs /
 `frames:NAME` specs — see `streams.py`'s module docstring and

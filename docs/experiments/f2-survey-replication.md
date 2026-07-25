@@ -31,7 +31,7 @@ for the target numbers).
 |---|---|---|
 | Sample rate | 8 kHz (everything resampled) | **16 kHz** — the project's native rate (deliberate deviation, see below) |
 | Speech | TIMIT, 90 % train / 10 % held out | **LibriSpeech train-clean-100** (TIMIT is not in our data lake), 25 of 246 speakers (~10 %) held out |
-| Noise | 5 drone ego-noise sequences, **first channel only** | AVQ `S1_seq1`, `S1_seq2`, `S1_seq3`, `S2_seq1`, `S2_seq2`, channel 0 |
+| Noise | 5 drone ego-noise sequences, **first channel only** | AVQ `S1_seq1`, `S1_seq2`, `S1_seq3`, `S2_seq1`, `S2_seq2`, channel 0 — published as the standalone `AVQ-egonoise` dataset (see § The noise dataset) |
 | Train/valid noise | the **same** 5 recordings for both; only speech is split | same |
 | Crop | T = 24000 samples = 3.0 s | same 3.0 s, i.e. T = 48000 samples @ 16 kHz |
 | Train SNR | U(−25, −5) dB, mixed on the fly | same |
@@ -58,17 +58,46 @@ landing far below still points at our pipeline, not at DCUNet.
 | Experiment | `conf/experiment/f2_dcunet_avq_survey.yaml` |
 | Model | `conf/model/f2_dcunet_survey.yaml` (16 kHz / n_fft 1024 / hop 256 / dim_f 512, chunk 48000) |
 | Data | `conf/data/f2_avq_survey.yaml` |
-| Train stream | `conf/online_mix/se_avq_survey.yaml` (`kind: audio_pool`, `include_keys` = the 5 ego-noise keys, `channel: 0`) |
-| Valid set | `scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-local` → `SE-valid-avq-survey` (250 clips) |
+| Train stream | `conf/online_mix/se_avq_survey.yaml` (`kind: audio_pool`, `dataset: AVQ-egonoise` — no key/channel filtering) |
+| Noise dataset | `AVQ-egonoise` (dload, pinned) — publisher `scripts/publish_avq_egonoise.py` |
+| Valid set | `scripts/build_se_valid.py --dataset avq --publish` → `SE-valid-avq-survey` (250 clips) |
 | Loss / metrics | `si_sdr` / `separation_basic` (`separation_full` at eval for PESQ/eSTOI) |
 
 Run:
 
 ```bash
-python scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-local   # once
+python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey  # once
 python train.py experiment=f2_dcunet_avq_survey
 python eval.py  experiment=f2_dcunet_avq_survey metrics=separation_full
 ```
+
+## The noise dataset: `AVQ-egonoise`
+
+All three arms draw their AVQ noise from **`AVQ-egonoise`**, a small derived
+dataset published by `scripts/publish_avq_egonoise.py` that contains *exactly*
+what this batch consumes: the 5 pure ego-noise sequences of `AVQ`
+(`S1_seq1`/`S1_seq2`/`S1_seq3`/`S2_seq1`/`S2_seq2` — the only AVQ recordings
+without an `angle_vad` entry, i.e. the only ones without the speech source),
+**channel 0 only**, `soxr_hq`-resampled to **16 kHz mono**. 705 s in total: one
+43 MiB shard, 5 samples, each carrying AVQ's per-recording `meta` plus
+provenance (`source_dataset`/`source_version`/`source_channel`).
+
+It exists for two concrete reasons, both costs of the previous
+`dataset: AVQ` + `channel: 0` + `include_keys: [...]` formulation:
+
+1. **Shard scan.** A dload manifest carries no per-shard key list, so keys are
+   only known once a shard is opened. Filtering by key therefore forced the
+   pool to download all **11 AVQ shards (~4 GiB** of 8-ch 44.1 kHz audio) to
+   discover which hold the 5 wanted sequences — for ~12 minutes of audio.
+2. **Multipart ETag.** AVQ's largest shard is a 352 MB, 42-part multipart
+   upload. s3transfer's ETag validation on some boto3 builds (as shipped in the
+   Kaggle image) rejects a multipart ETag outright:
+   `S3DownloadFailedError ... did not match expected ETag`. The object is **not
+   corrupt** — its sha256 matches its content-address digest — but the download
+   fails on those backends regardless. `AVQ-egonoise`'s single 43 MiB shard is a
+   single-part upload, so the check cannot fire.
+
+`AVQ` and `AVQ-raw` are untouched and remain the canonical full dataset.
 
 ## Pre-flight diagnostic: the noise pool is NOT the cause
 
@@ -173,7 +202,8 @@ two batches.
   never share a speaker.
 - **AVQ instead of the paper's AS drone.** The 5 AVQ ego-noise sequences are the
   closest onboard-array ego-noise recordings we have published; the other 7 AVQ
-  recordings contain the speech source and are excluded by key.
+  recordings contain the speech source and are excluded — by construction, since
+  the pools read the derived `AVQ-egonoise` dataset (§ The noise dataset).
 - **Infinite online stream, not a fixed epoch.** The paper mixes on the fly too;
   our stream is infinite, so `samples_per_validation` defines the epoch. It is
   set to 41580 samples (≈1300 steps at batch 32) — the paper's own epoch (10
@@ -185,8 +215,17 @@ two batches.
   `UserWarning: DCUNet output length mismatch: output=47872, input=48000,
   diff=-128. Consider adjusting chunk_size.` once per process. Kept as-is
   because T = 3.0 s is the paper's crop; a hop-aligned 47872 would silence it.
-- **Valid set is published + pinned** (`SE-valid-avq-survey@a88d9204506d`), so it
-  streams from R2 on any backend. Rebuild with
+- **Valid set is published + pinned** (`SE-valid-avq-survey@95378d78ccf1`), so it
+  streams from R2 on any backend. (It was rebuilt on `AVQ-egonoise`, replacing
+  `@a88d9204506d`: same 5 recordings, same channel 0, same 16 kHz, same seed and
+  SNR grid, but the noise draws land on different offsets because the pool's
+  shard layout changed — so the set is distributionally identical, not
+  clip-identical, and the pre-flight diagnostic table above was measured on the
+  predecessor build. Checked: the rebuilt set's noisy anchors are
+  −25.10/−19.96/−15.05/−10.02/−4.99 dB SI-SDR and eSTOI
+  0.019/0.059/**0.125**/0.229/0.306, matching the old build's
+  0.022/0.058/**0.121**/0.218/0.310 — the −15 dB eSTOI calibration against the
+  paper's 0.1 baseline still holds.) Rebuild with
   `python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey`;
   an unpublished local build can be read with a `local_root: <dir>` param.
 

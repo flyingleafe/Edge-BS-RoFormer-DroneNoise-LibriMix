@@ -13,9 +13,16 @@
 #   - train SNR ~ U(-25, -5) dB, mixed on the fly;
 #   - no augmentation (the paper describes none).
 #
-# The 5 AVQ ego-noise sequences are selected by `include_keys`; the other 7 AVQ
-# recordings contain the speech source and must never enter the noise pool.
-# See docs/experiments/f2-survey-replication.md.
+# The noise pool is `AVQ-egonoise` — a purpose-built derived dataset holding
+# EXACTLY the wanted audio (the 5 pure ego-noise sequences of AVQ, channel 0,
+# 16 kHz mono, ~705 s / 43 MiB in one shard; the other 7 AVQ recordings contain
+# the speech source and are simply not in it). It replaces the former
+# `dataset: AVQ` + `channel: 0` + `include_keys: [...]` entry: dload manifests
+# carry no per-shard key list, so key filtering had to OPEN all 11 AVQ shards
+# (~4 GiB) to find the 5 sequences, and one of those is a 352 MB multipart
+# object that s3transfer's ETag check rejects on some boto3 builds (Kaggle).
+# Publisher: scripts/publish_avq_egonoise.py. See
+# docs/experiments/f2-survey-replication.md.
 
 task: speech_enhancement
 sample_rate: 16000
@@ -25,11 +32,10 @@ base_seed: 20260725
 sources:
   noise:
     - kind: audio_pool
-      dataset: AVQ
-      channel: 0 # paper uses the first array channel only
-      # Exact sample keys of the 5 pure ego-noise sequences (the remaining
-      # AVQ recordings carry the speech source).
-      include_keys: [S1_seq1, S1_seq2, S1_seq3, S2_seq1, S2_seq2]
+      # The whole dataset IS the wanted audio: the 5 pure ego-noise sequences,
+      # first array channel only (the paper's choice), 16 kHz mono. Hence no
+      # `include_keys` and no `channel`.
+      dataset: AVQ-egonoise
       weight: 1.0
   speech:
     - kind: audio_files

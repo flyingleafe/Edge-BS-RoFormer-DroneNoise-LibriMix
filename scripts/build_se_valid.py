@@ -13,7 +13,8 @@ datasets, each sample a mixture Frame ``{mixture, target, meta}`` consumed by
 - **SE-valid-avq-survey** (F2) — the fixed valid set of the Mukhutdinov et al.
   2023 IEEE Access replication: 16 kHz (project-native; the paper's 8 kHz is
   deliberately not replicated), 3.0 s, SNR grid {−25,−20,−15,−10,−5} dB,
-  noise = the 5 AVQ ego-noise sequences, first channel only. Per the paper the
+  noise = the 5 AVQ ego-noise sequences, first channel only (the purpose-built
+  ``AVQ-egonoise`` dataset). Per the paper the
   *same* noise recordings feed train and valid (only the speech is split), so
   this category deliberately has **no** noise holdout. See
   ``docs/experiments/f2-survey-replication.md``.
@@ -74,9 +75,15 @@ from utils.paths import get_data_root
 SR = 16000
 SNR_GRID = [-30, -25, -20, -15, -10, -5, 0]
 
-# AVQ ego-noise sequences (the other 7 AVQ recordings contain the speech
-# source). Same list as conf/online_mix/se_avq_survey.yaml's include_keys.
-AVQ_EGO_NOISE_KEYS = ["S1_seq1", "S1_seq2", "S1_seq3", "S2_seq1", "S2_seq2"]
+# The F2 noise pool: `AVQ-egonoise` is a purpose-built derived dataset holding
+# exactly the 5 pure ego-noise sequences of AVQ (S1_seq1/2/3, S2_seq1/2 — the
+# other 7 AVQ recordings contain the speech source), channel 0 only, 16 kHz
+# mono. Using it instead of `AVQ` + include_keys/channel avoids opening all 11
+# AVQ shards (~4 GiB) just to locate those 5 recordings and dodges the 352 MB
+# multipart shard that s3transfer's ETag check rejects on some boto3 builds.
+# Publisher: scripts/publish_avq_egonoise.py. Same dataset as the training
+# stream `conf/online_mix/se_avq_survey.yaml`.
+AVQ_EGO_NOISE_DATASET = "AVQ-egonoise"
 
 # LibriSpeech train-clean-100 speaker ids reserved for validation (every 10th
 # id, sorted numerically — 25 of 246). Training excludes these (policy
@@ -120,15 +127,10 @@ CATEGORY_NOISE: dict[str, list[dict]] = {
     ],
     "horns": [{"kind": "audio_pool", "dataset": "HornBase", "holdout": HOLDOUT_VALID}],
     # F2 replication: no noise holdout on purpose — the paper reuses the same 5
-    # ego-noise recordings for train and valid and splits only the speech.
-    "avq_ego": [
-        {
-            "kind": "audio_pool",
-            "dataset": "AVQ",
-            "channel": 0,
-            "include_keys": AVQ_EGO_NOISE_KEYS,
-        }
-    ],
+    # ego-noise recordings for train and valid and splits only the speech. The
+    # dataset already IS those 5 recordings' channel 0 at 16 kHz, so no
+    # include_keys/channel filtering (see AVQ_EGO_NOISE_DATASET above).
+    "avq_ego": [{"kind": "audio_pool", "dataset": AVQ_EGO_NOISE_DATASET}],
 }
 
 HARMONIC_CATEGORIES = ["drone", "mimii", "mimii_dg", "aircraft", "motors", "horns"]

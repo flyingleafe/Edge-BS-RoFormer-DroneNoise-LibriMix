@@ -26,12 +26,14 @@ base_seed: 20260725
 sources:
   noise:
     # --- step-1 in-domain source, kept so this pool is a superset ---
+    # `AVQ-egonoise` = exactly the 5 pure ego-noise sequences of AVQ, channel 0,
+    # 16 kHz mono (~705 s, one 43 MiB shard) — so no `include_keys`/`channel`
+    # filtering is needed. It exists because key filtering over `AVQ` had to open
+    # all 11 shards (~4 GiB) to locate those 5 recordings, and one AVQ shard is a
+    # 352 MB multipart object rejected by s3transfer's ETag check on some boto3
+    # builds (Kaggle). Publisher: scripts/publish_avq_egonoise.py.
     - kind: audio_pool
-      dataset: AVQ
-      channel: 0 # paper uses the first array channel only
-      # Exact sample keys of the 5 pure ego-noise sequences (the remaining
-      # AVQ recordings carry the speech source).
-      include_keys: [S1_seq1, S1_seq2, S1_seq3, S2_seq1, S2_seq2]
+      dataset: AVQ-egonoise
       weight: 1.0
     # --- the F1 Pass A drone pool, verbatim ---
     # Real target-domain drones (valid holds out room1 + FLY124).
