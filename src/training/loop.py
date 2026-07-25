@@ -30,11 +30,11 @@ from typing import Any
 
 import tdseries as td
 import torch
+import wandb
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import tqdm
 
-import wandb
 from data_processing.collate import batch_size as frame_batch_size
 from data_processing.collate import frame_collate, slice_sample
 from tasks.codecs import Codec
@@ -287,6 +287,75 @@ def _save_checkpoint(model: torch.nn.Module, path: Path) -> None:
     torch.save(model.state_dict(), path)
 
 
+# ``train_state.pt`` is deliberately SEPARATE from ``last.ckpt`` rather than a
+# richer dict inside it: every existing consumer (eval.py, _warm_start,
+# scripts/eval_se_perclip.py, the R2 artifact store) reads the .ckpt files as
+# bare state_dicts, so widening them would ripple. This file holds only the
+# bookkeeping needed to continue an interrupted run.
+TRAIN_STATE_NAME = "train_state.pt"
+
+
+def _save_train_state(
+    path: Path,
+    *,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+    scaler: GradScaler,
+    epoch: int,
+    best_metric: float | None,
+    no_improve: int,
+) -> None:
+    """Persist everything needed to continue training after ``epoch``."""
+    tmp = path.with_suffix(".pt.tmp")
+    torch.save(
+        {
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
+            "next_epoch": epoch + 1,
+            "best_metric": best_metric,
+            "no_improve": no_improve,
+        },
+        tmp,
+    )
+    tmp.replace(path)  # atomic: a job killed mid-save leaves the old state intact
+
+
+def _load_train_state(
+    run_dir: Path,
+    *,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+    scaler: GradScaler,
+    device: torch.device,
+) -> tuple[int, float | None, int]:
+    """Restore an interrupted run in place; return ``(start_epoch, best, no_improve)``.
+
+    Returns ``(0, None, 0)`` when there is nothing to resume from, so a first
+    launch with ``resume=true`` (the safe default for preemptible queues) just
+    starts normally.
+    """
+    state_path = run_dir / TRAIN_STATE_NAME
+    weights_path = run_dir / "last.ckpt"
+    if not state_path.exists() or not weights_path.exists():
+        return 0, None, 0
+    state = torch.load(state_path, map_location=device, weights_only=False)
+    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=False))
+    optimizer.load_state_dict(state["optimizer"])
+    scheduler.load_state_dict(state["scheduler"])
+    scaler.load_state_dict(state["scaler"])
+    start_epoch = int(state["next_epoch"])
+    logger.info(
+        "resuming %s at epoch %d (best=%s, no_improve=%d)",
+        run_dir.name,
+        start_epoch,
+        state["best_metric"],
+        state["no_improve"],
+    )
+    return start_epoch, state["best_metric"], int(state["no_improve"])
+
+
 def _warm_start(model: torch.nn.Module, checkpoint: str, device: torch.device) -> None:
     """Initialise ``model`` weights from a prior checkpoint before training.
 
@@ -415,6 +484,12 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
     wandb_mode = (
         cfg.logging.mode if cfg.logging.mode else (None if cfg.logging.enabled else "disabled")
     )
+    # On a preemptible queue the same experiment is relaunched many times; reuse
+    # the recorded run id so the chained segments form ONE continuous curve
+    # instead of N truncated ones. `resume="allow"` still creates the run if the
+    # id is unknown to the backend.
+    run_id_file = run_dir / "wandb_run_id.txt"
+    prior_run_id = run_id_file.read_text().strip() if cfg.resume and run_id_file.exists() else ""
     run = wandb.init(
         entity=cfg.logging.entity,
         project=cfg.logging.project,
@@ -423,15 +498,27 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
         tags=[task.name, *list(cfg.logging.tags or [])],
         dir=str(run_dir),
         config={"git_commit": commit, "experiment_name": cfg.experiment_name},
+        id=prior_run_id or None,
+        resume="allow" if prior_run_id else None,
     )
     if run is not None and getattr(run, "id", None):
         (run_dir / "wandb_run_id.txt").write_text(run.id)
 
     monitor = cfg.optim.monitor
-    best_metric: float | None = None
-    no_improve = 0
-    epoch = 0
-    for epoch in range(cfg.epochs):
+    start_epoch, best_metric, no_improve = (
+        _load_train_state(
+            run_dir,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            device=device,
+        )
+        if cfg.resume
+        else (0, None, 0)
+    )
+    epoch = start_epoch
+    for epoch in range(start_epoch, cfg.epochs):
         if train_iterable:
             assert train_iter is not None and batches_per_epoch is not None
             batches = _take(train_iter, batches_per_epoch)
@@ -523,6 +610,18 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             path=last_ckpt_path,
             run=run,
             summary_key="r2/last_checkpoint",
+        )
+        # Written last, and atomically: it is the marker that `last.ckpt` for
+        # this epoch is complete, so a job killed mid-epoch resumes from the
+        # previous one rather than from half-written weights.
+        _save_train_state(
+            run_dir / TRAIN_STATE_NAME,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            epoch=epoch,
+            best_metric=best_metric,
+            no_improve=no_improve,
         )
 
         if no_improve >= cfg.patience:

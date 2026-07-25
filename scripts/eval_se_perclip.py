@@ -43,7 +43,7 @@ ARCH_MODEL = {
     "mpsenet": "f1_mpsenet",
     "sgmse": "f1_sgmse",
 }
-METRICS = ["si_sdr", "sdr", "pesq", "estoi"]
+METRICS = ["si_sdr", "sdr", "pesq", "estoi", "gain_db", "corr"]
 
 
 def _r2_client():
@@ -96,9 +96,20 @@ def _metrics(ref: np.ndarray, est: np.ndarray) -> dict[str, float]:
     est = np.asarray(est, np.float32).reshape(-1)
     n = min(ref.shape[0], est.shape[0])
     ref, est = ref[:n], est[:n]
+    # `gain_db` and `corr` separate the two ways a model can score badly, which
+    # (sdr, si_sdr) alone cannot: the pair is consistent with BOTH a near-null
+    # estimate and an over-loud one (the quadratic in ||est|| has two roots).
+    # A model collapsed toward silence shows gain_db << 0 with sdr pinned at
+    # ~0 dB across every input SNR (since ||ref - est||^2 -> ||ref||^2);
+    # a model that is merely distorted shows gain_db ~ 0 and low corr.
+    ref_e = float(np.sum(ref**2))
+    est_e = float(np.sum(est**2))
+    eps = 1e-12
     out = {
         "si_sdr": float(si_sdr(ref[None, :], est[None, :])),
         "sdr": float(np.asarray(sdr(ref[None, None, :], est[None, None, :])).reshape(-1)[0]),
+        "gain_db": 10.0 * float(np.log10((est_e + eps) / (ref_e + eps))),
+        "corr": float(abs(np.dot(ref, est)) / (np.sqrt(ref_e * est_e) + eps)),
     }
     try:
         out["pesq"] = float(pesq(ref, est, SR))
