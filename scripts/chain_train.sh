@@ -78,6 +78,13 @@ if [ -n "${CHAIN_WAIT_FOR:-}" ]; then
     echo "CHAIN $PREFIX: run already complete"
     exit 0
   fi
+  # A cancel is a deliberate stop, so honour it here too — not only in the loop
+  # below. Without this, cancelling the attached segment to free a GPU slot
+  # makes the driver helpfully submit a replacement and take the slot back.
+  if [ "$LAST_STATE" = cancelled ]; then
+    echo "CHAIN $PREFIX: attached segment cancelled — stopping chain"
+    exit 0
+  fi
   START_AT=2
 fi
 
