@@ -393,7 +393,21 @@ exposure, not difficulty. At −15 dB input:
 | `avq_ego_s2` — **never seen** | **−9.30** | +5.67 | **0.168** | **+0.046** | 0.344 |
 
 **A 12.9 dB SI-SDR and 0.17 eSTOI gap between recordings of the same drone**,
-differing only by session. On the seen half the model reproduces step 1's
+differing only by session.
+
+The control that closes it: **step 1, which trained on all five recordings,
+scored on the same split set**. If `avq_ego_s2` were simply the harder half, its
+gap would persist for step 1 too. It does not — at −15 dB:
+
+| model | trained on | `avq_ego_s1` | `avq_ego_s2` | gap |
+|---|---|---|---|---|
+| step 1 | all 5 recordings | +4.42 dB / eSTOI 0.391 | +4.12 dB / 0.375 | **0.3 dB / 0.016** |
+| step 1b | `S1` only | +3.60 dB / 0.339 | **−9.30 dB / 0.168** | **12.9 dB / 0.171** |
+
+Same clips, same architecture, same loss and schedule; the only difference is
+whether session 2 was in the training pool. Step 1 is indifferent to which half
+it is scored on; step 1b falls off a cliff on the half it never saw. The gap is
+therefore caused by training exposure alone. On the seen half the model reproduces step 1's
 behaviour almost exactly (+3.60 vs +3.82 SI-SDR); on the unseen half it falls to
 roughly what the broad-pool arms achieve (arm 2 scored −9.64 SI-SDR / ΔeSTOI
 +0.006 at the same point).
