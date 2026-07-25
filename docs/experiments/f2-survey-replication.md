@@ -141,48 +141,49 @@ Consequence for the ladder: steps 2–3 are no longer the prime suspects. Their
 role shifts from *finding* the culprit to *confirming* that the corrected recipe
 survives broader noise.
 
-### What the F1 failure actually looks like: collapse toward a null estimate
+### What the F1 failure actually looks like
 
-The same F1 per-clip CSVs carry a second, sharper signal, visible only when
-`sdr` and `si_sdr` are read *together*. The two differ in one respect: `si_sdr`
-rescales the reference to the estimate's level, `sdr` does not. So for an
-estimate `ŝ = αs + e` (with `e ⊥ s`):
+`si_sdr` rescales the reference to the estimate's level; `sdr` does not. For an
+estimate `s_hat = a*s + e` (with `e` orthogonal to `s`):
 
 ```
-SI-SDR = α²‖s‖² / ‖e‖²            SDR = ‖s‖² / ((1−α)²‖s‖² + ‖e‖²)
+SI-SDR = a^2||s||^2 / ||e||^2        SDR = ||s||^2 / ((1-a)^2||s||^2 + ||e||^2)
 ```
 
-As `ŝ → 0` (α → 0, ‖e‖ → 0), SI-SDR → −∞ while **SDR → ‖s‖²/‖s‖² = 0 dB**. A
-model that emits near-silence therefore parks at SDR ≈ 0 dB *regardless of input
-SNR*, because its output has stopped contributing to the error at all. That is
-exactly F1 DCUNet's signature — and it is not shared by the models that work:
+Two consequences worth stating because both were initially got wrong here:
 
-| model (F1, `SE-valid-drone`) | −20 | −15 | −10 | −5 | 0 dB |
-|---|---|---|---|---|---|
-| MP-SENet | +1.95 | +5.69 | +7.54 | +9.42 | +11.15 |
-| Edge-BS-RoFormer | +0.67 | +2.70 | +3.72 | +6.06 | +6.76 |
-| **DCUNet (`f1_dcunet_a`)** | **−1.30** | **−0.73** | **−0.54** | **−0.57** | **−0.49** |
+1. **`SI-SDR >= SDR` is FALSE.** The correct bound is
+   `SDR_lin <= SI-SDR_lin + 1`. F1 DCUNet's (sdr −0.85, si_sdr −12.99) at −15 dB
+   satisfies it and is not anomalous.
+2. **`sdr ~ 0 dB` does NOT imply a near-null output.** The quadratic in
+   ||s_hat|| has two roots — a near-null estimate and an over-loud one — and both
+   reproduce any given (sdr, si_sdr) pair. F1 DCUNet's `sdr` being pinned near
+   0 dB across a 20 dB input range was read here as proof of collapse toward
+   silence; **that reading was retracted** once `gain_db` was measured. The F2
+   all-harmonic arm shows `sdr` = −0.39 at −10 dB — the supposedly diagnostic
+   value — with `gain_db` = −0.22, i.e. output energy *at target level*. The
+   models sit on the **over-loud residual-noise** root, not the null root.
 
-The working models' SDR tracks the input SNR over a 9–10 dB span; DCUNet's moves
-by 0.8 dB across the entire range and never leaves the neighbourhood of 0 dB.
-Together with eSTOI *below* the noisy input at every SNR and PESQ barely above
-it, this says the F1 DCUNet did not learn a bad mask — it learned to output
-almost nothing. Note this also explains why the loss A/B (§ `f1-se-blind-baselines.md`)
-came out flat: all three arms had collapsed the same way, so swapping the loss
-moved a metric that was already pinned by degeneracy.
+So `scripts/eval_se_perclip.py` now records **`gain_db`**
+(10 log10 ||s_hat||^2/||s||^2) and **`corr`** (|<s_hat,s>| / ||s_hat|| ||s||)
+alongside the four headline metrics. Every F2 eval reports them, so "what kind
+of wrong is it?" is answered by a column rather than by inference.
 
-`(sdr, si_sdr)` cannot *prove* this on its own — the quadratic above has two
-roots, a near-null estimate and an over-loud one, and both reproduce any given
-pair. So `scripts/eval_se_perclip.py` now also records **`gain_db`**
-(10 log₁₀ ‖ŝ‖²/‖s‖², the output/target energy ratio) and **`corr`**
-(|⟨ŝ,s⟩| / ‖ŝ‖‖s‖), which separate the roots directly. Every F2 eval reports
-them, so "did it collapse?" is answered by a column rather than by inference.
+What survives, and is the real finding, is a metric split rather than a
+degeneracy — Δ against the noisy anchor at −15 dB, each model on the pool it was
+trained on:
 
-**This is the sharpest available pass/fail for step 1**: if the survey recipe
-trains a DCUNet whose `gain_db` sits near 0 dB with `sdr` rising across the SNR
-range, the collapse was configuration-induced and F1's DCUNet number is an
-artefact. If step 1 collapses *too*, the cause is upstream of any of the
-paper-vs-F1 differences and lives in our DCUNet implementation or task wiring.
+| model | ΔSI-SDR | ΔeSTOI | ΔPESQ |
+|---|---|---|---|
+| F2 arm 3 (survey recipe, broad harmonic pool) | +5.34 | **−0.005** | +0.03 |
+| F1 DCUNet (old recipe, broad harmonic pool) | +1.20 | **−0.035** | +0.06 |
+| F1 **MP-SENet** (same broad harmonic pool) | **+16.13** | **+0.216** | +0.27 |
+
+The survey recipe repairs DCUNet substantially — ΔSI-SDR goes from erratic and
+sometimes negative to a consistent +3…+7.7 dB across the grid, and eSTOI stops
+being actively degraded. But DCUNet still buys **no intelligibility at any SNR**,
+where MP-SENet trained on the same data gains +0.11…+0.26 eSTOI. That, not a
+collapsed output, is the gap to explain.
 
 ## Running the ladder: why it is chained 1-hour segments
 
