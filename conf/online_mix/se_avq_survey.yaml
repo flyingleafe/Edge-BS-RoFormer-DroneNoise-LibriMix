@@ -1,0 +1,54 @@
+# F2 — online-mix SE policy replicating Mukhutdinov et al. 2023 (IEEE Access,
+# "Deep Learning Models for Single-Channel Speech Enhancement on Drones"),
+# with the AVQ ego-noise recordings standing in for the survey's drone noise.
+#
+# Paper setup reproduced here:
+#   - everything at 8 kHz, 3.0 s crops (T = 24000 samples);
+#   - noise = the drone ego-noise recordings, FIRST CHANNEL ONLY, reused for
+#     BOTH train and valid (only the speech is split);
+#   - speech = TIMIT 90/10 split -> substituted by LibriSpeech train-clean-100,
+#     with the same held-out ~10% of speakers the F1 SE valid sets reserve;
+#   - train SNR ~ U(-25, -5) dB, mixed on the fly;
+#   - no augmentation (the paper describes none).
+#
+# The 5 AVQ ego-noise sequences are selected by `include_keys`; the other 7 AVQ
+# recordings contain the speech source and must never enter the noise pool.
+# See docs/experiments/f2-survey-replication.md.
+
+task: speech_enhancement
+sample_rate: 8000
+duration_s: 3.0
+base_seed: 20260725
+
+sources:
+  noise:
+    - kind: audio_pool
+      dataset: AVQ
+      channel: 0 # paper uses the first array channel only
+      # Exact sample keys of the 5 pure ego-noise sequences (the remaining
+      # AVQ recordings carry the speech source).
+      include_keys: [S1_seq1, S1_seq2, S1_seq3, S2_seq1, S2_seq2]
+      weight: 1.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      # Held-out valid speakers (every 10th id, sorted) — identical list to
+      # conf/online_mix/se_drone_only.yaml and scripts/build_se_valid.py's
+      # HELDOUT_SPEAKERS, so train/valid speech never overlap.
+      exclude:
+        [19, 89, 211, 307, 445, 831, 1098, 1502, 1898, 2182, 2764, 3168, 3526,
+         3982, 4267, 4813, 5322, 5703, 6081, 6476, 7067, 7312, 7800, 8238, 8630]
+      # No packed cache: this stream is mono (one utterance per sample, vs the
+      # 8-channel RPS streams' eight), so direct FLAC decode keeps up, and an
+      # 8 kHz cache would duplicate the existing 16 kHz ones on disk.
+      cache:
+        mode: none
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -25.0, high: -5.0}
+  speech_per_channel: independent
+  snr_per_channel: false
+  # No augmentations — the paper mentions none.

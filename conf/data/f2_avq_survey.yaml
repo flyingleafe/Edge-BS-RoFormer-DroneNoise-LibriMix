@@ -1,0 +1,24 @@
+# F2 data: the Mukhutdinov et al. 2023 (IEEE Access) survey setup — online-mix
+# SE stream over the 5 AVQ ego-noise sequences (train) + the fixed
+# SE-valid-avq-survey set (valid / early-stop monitor). Everything at 8 kHz,
+# 3.0 s (24000-sample) crops. See conf/online_mix/se_avq_survey.yaml and
+# docs/experiments/f2-survey-replication.md. `samples_per_validation` (the
+# online "epoch" size for this infinite stream) is set in the experiment file.
+#
+# The valid set is published + pinned (`SE-valid-avq-survey@eb8953d0ece5`), so it
+# streams from R2 on any backend. Rebuild it with
+#   python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey
+# (a `local_root: <dir>` param reads an unpublished build from a local dload repo).
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/se_avq_survey.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.SEValidFrameDataset
+  params:
+    dataset: SE-valid-avq-survey
+    sample_rate: 8000
+  iterable: false
+batch_size: null
+num_workers: null

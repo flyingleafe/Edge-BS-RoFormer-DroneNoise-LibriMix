@@ -10,6 +10,12 @@ datasets, each sample a mixture Frame ``{mixture, target, meta}`` consumed by
   the SNR grid. The drone-focused floor + the Pass-B−Pass-A diversity delta.
 - **SE-valid-harmonic** — the same protocol per Pass-B category (drone + the
   harmonic categories), for the per-category transfer table.
+- **SE-valid-avq-survey** (F2) — the fixed valid set of the Mukhutdinov et al.
+  2023 IEEE Access replication: 8 kHz, 3.0 s, SNR grid {−25,−20,−15,−10,−5} dB,
+  noise = the 5 AVQ ego-noise sequences, first channel only. Per the paper the
+  *same* noise recordings feed train and valid (only the speech is split), so
+  this category deliberately has **no** noise holdout. See
+  ``docs/experiments/f2-survey-replication.md``.
 
 Leak-free splits:
 - **Noise**: every ``audio_pool`` source draws its *valid* side of the per-shard
@@ -31,6 +37,11 @@ Run (needs R2 creds in ``.env``; pulls a few shards per source):
     python scripts/build_se_valid.py --dataset both --publish
     dload pin SE-valid-drone && dload pin SE-valid-harmonic
     git add dload.lock && git commit
+
+Build a set **without publishing** (local dload repository, consumed by
+``SEValidFrameDataset(local_root=...)``):
+
+    python scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-local
 """
 
 from __future__ import annotations
@@ -38,6 +49,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 from collections.abc import Iterator
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -55,8 +67,15 @@ from data_processing.online_mixing import (
 )
 from utils.paths import get_data_root
 
+# Defaults of the F1 sets; every builder function takes the rate/grid as an
+# argument, so other replications (F2: 8 kHz, narrower grid) reuse the code
+# without changing these.
 SR = 16000
 SNR_GRID = [-30, -25, -20, -15, -10, -5, 0]
+
+# AVQ ego-noise sequences (the other 7 AVQ recordings contain the speech
+# source). Same list as conf/online_mix/se_avq_survey.yaml's include_keys.
+AVQ_EGO_NOISE_KEYS = ["S1_seq1", "S1_seq2", "S1_seq3", "S2_seq1", "S2_seq2"]
 
 # LibriSpeech train-clean-100 speaker ids reserved for validation (every 10th
 # id, sorted numerically — 25 of 246). Training excludes these (policy
@@ -99,12 +118,47 @@ CATEGORY_NOISE: dict[str, list[dict]] = {
         {"kind": "audio_pool", "dataset": "KAIST-rotating-acoustic", "holdout": HOLDOUT_VALID},
     ],
     "horns": [{"kind": "audio_pool", "dataset": "HornBase", "holdout": HOLDOUT_VALID}],
+    # F2 replication: no noise holdout on purpose — the paper reuses the same 5
+    # ego-noise recordings for train and valid and splits only the speech.
+    "avq_ego": [
+        {
+            "kind": "audio_pool",
+            "dataset": "AVQ",
+            "channel": 0,
+            "include_keys": AVQ_EGO_NOISE_KEYS,
+        }
+    ],
 }
 
 HARMONIC_CATEGORIES = ["drone", "mimii", "mimii_dg", "aircraft", "motors", "horns"]
 
+# Per-target-set defaults (name, categories, sample rate, SNR grid, duration).
+DATASET_PRESETS: dict[str, dict] = {
+    "drone": {
+        "name": "SE-valid-drone",
+        "categories": ["drone"],
+        "sample_rate": SR,
+        "snr_grid": SNR_GRID,
+        "duration_s": 2.0,
+    },
+    "harmonic": {
+        "name": "SE-valid-harmonic",
+        "categories": HARMONIC_CATEGORIES,
+        "sample_rate": SR,
+        "snr_grid": SNR_GRID,
+        "duration_s": 2.0,
+    },
+    "avq": {
+        "name": "SE-valid-avq-survey",
+        "categories": ["avq_ego"],
+        "sample_rate": 8000,
+        "snr_grid": [-25, -20, -15, -10, -5],
+        "duration_s": 3.0,
+    },
+}
 
-def _heldout_speech_pool(duration_s: float) -> AudioFileSourcePool:
+
+def _heldout_speech_pool(duration_s: float, sample_rate: int = SR) -> AudioFileSourcePool:
     root = get_data_root() / "data" / "librispeech" / "LibriSpeech" / "train-clean-100"
     if not root.is_dir():
         raise FileNotFoundError(
@@ -116,7 +170,7 @@ def _heldout_speech_pool(duration_s: float) -> AudioFileSourcePool:
     if not files:
         raise ValueError("no held-out speaker files found")
     return AudioFileSourcePool(
-        sorted(files), sample_rate=SR, duration_s=duration_s, cache_mode="none"
+        sorted(files), sample_rate=sample_rate, duration_s=duration_s, cache_mode="none"
     )
 
 
@@ -128,17 +182,26 @@ def _mono(audio: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 
 
 def _iter_category_samples(
-    category: str, *, per_snr: int, duration_s: float, seed: int
+    category: str,
+    *,
+    per_snr: int,
+    duration_s: float,
+    seed: int,
+    sample_rate: int = SR,
+    snr_grid: list[int] | None = None,
 ) -> Iterator[tuple[str, dict]]:
-    target_len = int(round(duration_s * SR))
-    noise_pool = build_noise_pool(CATEGORY_NOISE[category], duration_s=duration_s, sample_rate=SR)
-    speech_pool = _heldout_speech_pool(duration_s)
+    snr_grid = list(SNR_GRID if snr_grid is None else snr_grid)
+    target_len = int(round(duration_s * sample_rate))
+    noise_pool = build_noise_pool(
+        CATEGORY_NOISE[category], duration_s=duration_s, sample_rate=sample_rate
+    )
+    speech_pool = _heldout_speech_pool(duration_s, sample_rate)
     # Deterministic per (category) RNG so the set is fixed/reproducible. Uses a
     # stable digest (Python's hash() is per-process randomized via PYTHONHASHSEED).
     digest = hashlib.blake2b(f"{seed}:{category}".encode(), digest_size=8).digest()
     rng = np.random.default_rng(int.from_bytes(digest, "little"))
     idx = 0
-    for snr in SNR_GRID:
+    for snr in snr_grid:
         for _ in range(per_snr):
             # Reject digitally-silent draws: a silent NOISE draw makes
             # _scale_source_to_snr return scale == 0, zeroing BOTH the target and
@@ -155,8 +218,8 @@ def _iter_category_samples(
             sample_id = f"{category}_snr{snr:+03d}_{idx:04d}"
             frame = td.Frame(
                 {
-                    "mixture": audio_series(mixture[None, :], SR),
-                    "target": audio_series(scaled[None, :].astype(np.float32), SR),
+                    "mixture": audio_series(mixture[None, :], sample_rate),
+                    "target": audio_series(scaled[None, :].astype(np.float32), sample_rate),
                     "meta": td.Frame(
                         {
                             "recording_id": sample_id,
@@ -171,26 +234,58 @@ def _iter_category_samples(
             idx += 1
 
 
-def _publish(name: str, categories: list[str], *, per_snr, duration_s, seed, publish: bool):
+def _publish(
+    name: str,
+    categories: list[str],
+    *,
+    per_snr,
+    duration_s,
+    seed,
+    publish: bool,
+    sample_rate: int = SR,
+    snr_grid: list[int] | None = None,
+    local_repo: str | None = None,
+    limit: int | None = None,
+):
+    """Build ``name`` and commit it to R2 (``publish``), to a local dload
+    repository (``local_repo``), or neither (dry run: a few samples/category).
+    ``limit`` caps the number of samples per category (smoke builds)."""
+    snr_grid = list(SNR_GRID if snr_grid is None else snr_grid)
+
     def gen() -> Iterator[tuple[str, dict]]:
         for cat in categories:
             print(f"  [{name}] category={cat} ...")
-            yield from _iter_category_samples(
-                cat, per_snr=per_snr, duration_s=duration_s, seed=seed
+            it = _iter_category_samples(
+                cat,
+                per_snr=per_snr,
+                duration_s=duration_s,
+                seed=seed,
+                sample_rate=sample_rate,
+                snr_grid=snr_grid,
             )
+            if limit is not None:
+                it = islice(it, limit)
+            yield from it
 
-    if not publish:
+    if not publish and local_repo is None:
         # Dry run: exercise a few samples per category without committing.
         n = 0
         for cat in categories:
-            it = _iter_category_samples(cat, per_snr=2, duration_s=duration_s, seed=seed)
+            it = _iter_category_samples(
+                cat,
+                per_snr=2,
+                duration_s=duration_s,
+                seed=seed,
+                sample_rate=sample_rate,
+                snr_grid=snr_grid,
+            )
             for _ in range(2):
                 next(it)
                 n += 1
         print(f"[dry-run] {name}: built {n} sample(s) across {len(categories)} categories OK")
         return
 
-    repo = streams.open_repository()
+    repo = streams.local_repository(local_repo) if local_repo else streams.open_repository()
     recipe = Path(__file__).read_text(encoding="utf-8")
     manifest = repo.commit(
         name,
@@ -199,47 +294,70 @@ def _publish(name: str, categories: list[str], *, per_snr, duration_s, seed, pub
             streams.LAYOUT_META_KEY: streams.TDFRAME_LAYOUT,
             "description": (
                 f"SE blind-baseline validation set ({name}): held-out noise x held-out "
-                f"LibriSpeech speakers, SNR grid {SNR_GRID} dB, {per_snr}/point/category, "
-                f"{duration_s}s @ {SR} Hz mono. Frame {{mixture,target,meta}}."
+                f"LibriSpeech speakers, SNR grid {snr_grid} dB, {per_snr}/point/category, "
+                f"{duration_s}s @ {sample_rate} Hz mono. Frame {{mixture,target,meta}}."
             ),
             "source": "scripts/build_se_valid.py",
-            "snr_grid": SNR_GRID,
+            "snr_grid": snr_grid,
             "categories": categories,
             "per_snr": per_snr,
             "duration_s": duration_s,
+            "sample_rate": sample_rate,
         },
         recipe=recipe,
         progress=print,
     )
-    print(f"{name}@{manifest.version[:12]}: {manifest.num_samples} samples")
+    where = f"local:{local_repo}" if local_repo else "r2"
+    print(f"[{where}] {name}@{manifest.version[:12]}: {manifest.num_samples} samples")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Build/publish the SE validation sets.")
-    p.add_argument("--dataset", choices=["drone", "harmonic", "both"], default="both")
+    p.add_argument("--dataset", choices=["drone", "harmonic", "avq", "both"], default="both")
     p.add_argument("--per-snr", type=int, default=50)
-    p.add_argument("--duration", type=float, default=2.0)
+    p.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="clip length in s (default: the target set's preset — 2.0 for the F1 sets, 3.0 for avq)",
+    )
+    p.add_argument(
+        "--sample-rate", type=int, default=None, help="default: preset (16000; avq: 8000)"
+    )
+    p.add_argument(
+        "--snr-grid",
+        type=int,
+        nargs="+",
+        default=None,
+        help="default: preset (-30..0 step 5; avq: -25..-5 step 5)",
+    )
     p.add_argument("--seed", type=int, default=20260720)
+    p.add_argument("--limit", type=int, default=None, help="cap samples per category (smoke build)")
+    p.add_argument(
+        "--local-repo",
+        default=None,
+        help="commit to a local dload repository at this path instead of R2 "
+        "(consumed via SEValidFrameDataset(local_root=...)); no publishing",
+    )
     p.add_argument("--publish", action="store_true", help="commit to dload (else dry-run)")
     args = p.parse_args()
 
-    if args.dataset in ("drone", "both"):
+    targets = ["drone", "harmonic"] if args.dataset == "both" else [args.dataset]
+    for target in targets:
+        preset = DATASET_PRESETS[target]
         _publish(
-            "SE-valid-drone",
-            ["drone"],
+            preset["name"],
+            list(preset["categories"]),
             per_snr=args.per_snr,
-            duration_s=args.duration,
+            duration_s=args.duration if args.duration is not None else preset["duration_s"],
             seed=args.seed,
             publish=args.publish,
-        )
-    if args.dataset in ("harmonic", "both"):
-        _publish(
-            "SE-valid-harmonic",
-            HARMONIC_CATEGORIES,
-            per_snr=args.per_snr,
-            duration_s=args.duration,
-            seed=args.seed,
-            publish=args.publish,
+            sample_rate=(
+                args.sample_rate if args.sample_rate is not None else preset["sample_rate"]
+            ),
+            snr_grid=args.snr_grid if args.snr_grid is not None else preset["snr_grid"],
+            local_repo=args.local_repo,
+            limit=args.limit,
         )
 
 

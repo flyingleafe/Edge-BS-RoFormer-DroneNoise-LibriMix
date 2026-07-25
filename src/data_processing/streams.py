@@ -84,6 +84,7 @@ except ImportError:  # pragma: no cover - python-dotenv is a project dependency.
 
 __all__ = [
     "open_repository",
+    "local_repository",
     "stretch_rps_to_frames",
     "audio_series_from_bytes",
     "rps_series_from_bytes",
@@ -136,6 +137,28 @@ def open_repository() -> dload.Repository:
         repo.lock_path = REPO_ROOT / "dload.lock"
         _repository = repo
     return _repository
+
+
+def local_repository(root: str | Path) -> dload.Repository:
+    """A ``dload.Repository`` backed by a plain local directory instead of R2.
+
+    Same pack/manifest format as the shared remote, just written under ``root``
+    (``root/remote`` + ``root/cache``), so a dataset built here can later be
+    published unchanged. Used for datasets that are built and consumed on one
+    machine without being published — e.g. a replication's fixed SE valid set
+    (``scripts/build_se_valid.py --local-repo``, consumed by
+    :class:`data_processing.frame_datasets.SEValidFrameDataset` with
+    ``local_root``). Relative roots resolve against the repo root, so the
+    location is cwd-independent (Hydra chdirs).
+    """
+    from dload.cache import ShardCache
+    from dload.remote import LocalRemote
+
+    base = Path(root)
+    if not base.is_absolute():
+        base = REPO_ROOT / base
+    (base / "remote").mkdir(parents=True, exist_ok=True)
+    return dload.Repository(LocalRemote(base / "remote"), ShardCache(base / "cache", None))
 
 
 # ─── Decoders: raw sample bytes → tdseries ─────────────────────────────────────
@@ -493,6 +516,7 @@ def iter_published_frames(
     version: str | None = None,
     *,
     splits: Iterable[str] | None = None,
+    repo: dload.Repository | None = None,
 ) -> Iterator[td.Frame]:
     """Stream a published ``tdframe-v1`` dataset as decoded ``td.Frame``s.
 
@@ -502,9 +526,11 @@ def iter_published_frames(
     of full recordings rather than a torch dataset. ``splits`` filters on each
     frame's ``meta.split`` (frames without the key are dropped when a filter
     is given). Exactly one decoded frame is alive per iteration — callers
-    should subset what they keep before pulling the next one.
+    should subset what they keep before pulling the next one. ``repo`` overrides
+    the shared R2 repository (e.g. :func:`local_repository` for an unpublished,
+    locally-built dataset).
     """
-    ds = open_repository().dataset(str(dataset), version)
+    ds = (repo or open_repository()).dataset(str(dataset), version)
     manifest_meta = ds.manifest.meta if isinstance(ds.manifest.meta, dict) else {}
     if manifest_meta.get(LAYOUT_META_KEY) != TDFRAME_LAYOUT:
         raise ValueError(

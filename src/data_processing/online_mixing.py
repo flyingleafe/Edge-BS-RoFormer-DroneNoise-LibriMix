@@ -699,6 +699,16 @@ class DloadAudioPool:
     entry) and raw one-file-per-sample datasets (audio field named by extension,
     e.g. ``wav``/``flac``). Zip-blob datasets (``zenodo_drone_noises``) are not
     supported.
+
+    ``include_keys`` / ``exclude_keys`` restrict the pool to specific
+    recordings: a sample key is kept when it *equals* or *contains* any listed
+    entry (exact key or substring — ``S1_seq`` selects ``S1_seq1``/``S1_seq2``/
+    ``…``), with ``exclude_keys`` applied after ``include_keys``. Matching stays
+    shard-lazy: sample keys are only known once a shard's ``PackReader`` is
+    open, so a shard is dropped (its draw weight zeroed) the first time it is
+    opened and found to hold no matching key, and the draw is retried. The
+    manifest carries no key list, so with a small ``include_keys`` over a
+    many-shard dataset the first draws may still touch non-matching shards.
     """
 
     AUDIO_EXTS = ("wav", "flac", "ogg", "mp3")
@@ -713,12 +723,16 @@ class DloadAudioPool:
         reader_cache: int = 2,
         holdout: Mapping[str, Any] | None = None,
         max_shards: int | None = None,
+        include_keys: Iterable[str] | None = None,
+        exclude_keys: Iterable[str] | None = None,
     ) -> None:
         self.dataset = str(dataset)
         self.version = version
         self.sample_rate = int(sample_rate)
         self.channel = channel
         self.reader_cache = max(1, int(reader_cache))
+        self.include_keys = [str(k) for k in include_keys] if include_keys else []
+        self.exclude_keys = [str(k) for k in exclude_keys] if exclude_keys else []
         # Cap the number of (post-holdout) shards actually streamed. A random
         # shard is drawn per sample, so an uncapped pool over a 2003-shard /
         # 258 GiB dataset (MIMII) would, over a full run, pull essentially the
@@ -777,6 +791,9 @@ class DloadAudioPool:
         self._shards = shards
         nsamp = np.array([max(1, int(s.num_samples)) for s in shards], dtype=np.float64)
         self._shard_weights = nsamp / nsamp.sum()
+        # Per-shard allowed sample indices under include/exclude_keys, filled in
+        # the first time each shard is opened (keys are a shard-local property).
+        self._allowed: dict[int, np.ndarray] = {}
         # Per-process handles, (re)created lazily so they never cross the fork.
         self._pid: int | None = None
         self._repo: Any = None
@@ -798,7 +815,43 @@ class DloadAudioPool:
             reader_cache=int(_cfg_get(cfg, "reader_cache", 2)),
             holdout=_cfg_get(cfg, "holdout", None),
             max_shards=_cfg_get(cfg, "max_shards", None),
+            include_keys=_cfg_get(cfg, "include_keys", None),
+            exclude_keys=_cfg_get(cfg, "exclude_keys", None),
         )
+
+    def _key_allowed(self, key: str) -> bool:
+        """Exact-or-substring match against ``include_keys`` / ``exclude_keys``."""
+        if self.include_keys and not any(p == key or p in key for p in self.include_keys):
+            return False
+        return not any(p == key or p in key for p in self.exclude_keys)
+
+    def _allowed_indices(self, shard_idx: int, reader: Any) -> np.ndarray:
+        """Sample indices of ``shard_idx`` passing the holdout window + key filter."""
+        cached = self._allowed.get(shard_idx)
+        if cached is not None:
+            return cached
+        keys = list(reader.keys)
+        lo, hi = self._index_range(len(keys))
+        if self.include_keys or self.exclude_keys:
+            idx = np.array(
+                [i for i in range(lo, hi) if self._key_allowed(str(keys[i]))], dtype=np.int64
+            )
+        else:
+            idx = np.arange(lo, hi, dtype=np.int64)
+        self._allowed[shard_idx] = idx
+        return idx
+
+    def _drop_shard(self, shard_idx: int) -> None:
+        """Zero a shard's draw weight (it holds no key matching the filter)."""
+        weights = np.array(self._shard_weights, dtype=np.float64, copy=True)
+        weights[shard_idx] = 0.0
+        total = weights.sum()
+        if total <= 0.0:
+            raise ValueError(
+                f"audio_pool {self.dataset!r}: no sample matches include_keys="
+                f"{self.include_keys!r} / exclude_keys={self.exclude_keys!r}"
+            )
+        self._shard_weights = weights / total
 
     def _index_range(self, n: int) -> tuple[int, int]:
         """The [lo, hi) sample-index window active for this pool's holdout side."""
@@ -878,9 +931,11 @@ class DloadAudioPool:
         for _ in range(32):  # redraw past non-audio samples (e.g. csv flight logs)
             shard_idx = int(rng.choice(len(self._shards), p=self._shard_weights))
             reader = self._reader(shard_idx)
-            n = len(reader.keys)
-            lo, hi = self._index_range(n)
-            idx = int(rng.integers(lo, hi))
+            allowed = self._allowed_indices(shard_idx, reader)
+            if allowed.size == 0:  # no key here matches the filter -> never draw it again
+                self._drop_shard(shard_idx)
+                continue
+            idx = int(allowed[int(rng.integers(0, allowed.size))])
             key, fields = reader.read(idx)
             decoded = self._decode(key, fields)
             if decoded is not None:

@@ -347,8 +347,19 @@ sources:
       dataset: MIMII                 # any dload dataset name
       channel: random               # or an int
       holdout: {split: train, valid_shards: 2}   # leak-free train/valid split
+      include_keys: [S1_seq1]       # optional: restrict to named recordings
+      exclude_keys: []              # optional: drop named recordings
       weight: 1.0                   # per-source weight in the MixedNoisePool
 ```
+
+`include_keys` / `exclude_keys` restrict the pool to specific recordings — a
+sample key is kept when it *equals* or *contains* a listed entry (exact key or
+substring), `exclude_keys` applied last. Keys are shard-local (the manifest has
+no key list), so filtering stays shard-lazy: a shard is dropped (draw weight
+zeroed) the first time it is opened and found to hold no match, and the draw
+retried. Used by the F2 replication to take only the 5 AVQ *ego-noise*
+sequences (`conf/online_mix/se_avq_survey.yaml`); the other 7 AVQ recordings
+contain the speech source.
 
 `holdout` reserves the last `valid_shards` whole shards (= whole recording
 groups) as the *valid* partition and the rest as *train* (single-shard
@@ -359,7 +370,11 @@ training pools' `split: train`. `AudioFileSourcePool` also gained an
 `exclude:` list (path-substring drop) — used to hold LibriSpeech speakers out
 of training speech. The map-style `SEValidFrameDataset` streams a published SE
 valid set (`SE-valid-drone` / `SE-valid-harmonic`) as `{mixture, target, meta}`
-frames for `eval.py`.
+frames for `eval.py`; `local_root=<dir>` instead reads an **unpublished** set
+from a local dload repository (`streams.local_repository`, written by
+`build_se_valid.py --local-repo`) — the F2 `SE-valid-avq-survey` path. The
+builder's rate / SNR grid / duration are per-target-set presets
+(`DATASET_PRESETS`, CLI-overridable), so 8 kHz replications reuse it unchanged.
 
 ### Published rich-frame noise source (`kind: frames`)
 

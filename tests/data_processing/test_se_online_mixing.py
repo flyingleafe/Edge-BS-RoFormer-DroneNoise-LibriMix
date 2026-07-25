@@ -349,6 +349,59 @@ def test_audio_pool_holdout_train_valid_are_disjoint(patched_repo):
     assert train_seen | valid_seen == _fingerprints(DloadAudioPool("AP-HOLD", sample_rate=SR))
 
 
+def test_audio_pool_include_keys_restricts_to_named_recordings(patched_repo):
+    # F2 replication: the AVQ pool must use only the 5 ego-noise sequences (the
+    # other recordings contain speech). Keys are shard-local, so the pool learns
+    # which shards hold a match lazily and stops drawing the others.
+    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(4)]
+    _publish_tdframe_audio(patched_repo, "AP-INC", recs)
+    pool = DloadAudioPool("AP-INC", sample_rate=SR, include_keys=["r1", "r3"])
+    seen = _fingerprints(pool)
+    assert seen == {round(0.02, 4), round(0.04, 4)}  # r1, r3 only
+
+
+def test_audio_pool_exclude_keys_and_substring_matching(patched_repo):
+    # Entries match a key exactly OR as a substring: "seq" drops both seq* recs.
+    recs = [
+        ("S1_seq1", 0.01 * np.ones((1, SR), np.float32), SR),
+        ("S1_seq2", 0.02 * np.ones((1, SR), np.float32), SR),
+        ("S2_speech", 0.03 * np.ones((1, SR), np.float32), SR),
+    ]
+    _publish_tdframe_audio(patched_repo, "AP-EXC", recs)
+    assert _fingerprints(DloadAudioPool("AP-EXC", sample_rate=SR, exclude_keys=["seq"])) == {
+        round(0.03, 4)
+    }
+    assert _fingerprints(DloadAudioPool("AP-EXC", sample_rate=SR, include_keys=["S1_seq"])) == {
+        round(0.01, 4),
+        round(0.02, 4),
+    }
+    # include then exclude: exclude wins on the overlap.
+    pool = DloadAudioPool(
+        "AP-EXC", sample_rate=SR, include_keys=["S1_seq1", "S1_seq2"], exclude_keys=["S1_seq2"]
+    )
+    assert _fingerprints(pool) == {round(0.01, 4)}
+
+
+def test_audio_pool_include_keys_matching_nothing_raises(patched_repo):
+    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(2)]
+    _publish_tdframe_audio(patched_repo, "AP-INC-EMPTY", recs)
+    pool = DloadAudioPool("AP-INC-EMPTY", sample_rate=SR, include_keys=["nope"])
+    with pytest.raises(ValueError, match="no sample matches include_keys"):
+        pool.sample_timeframe(np.random.default_rng(0), 0.25)
+
+
+def test_audio_pool_include_keys_from_config(patched_repo):
+    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(3)]
+    _publish_tdframe_audio(patched_repo, "AP-INC-CFG", recs)
+    pool = DloadAudioPool.from_config(
+        {"kind": "audio_pool", "dataset": "AP-INC-CFG", "channel": 0, "include_keys": ["r2"]},
+        duration_s=0.25,
+        sample_rate=SR,
+    )
+    assert pool.include_keys == ["r2"]
+    assert _fingerprints(pool) == {round(0.03, 4)}
+
+
 def test_source_pool_exclude_speakers(tmp_path):
     import soundfile as _sf
 
