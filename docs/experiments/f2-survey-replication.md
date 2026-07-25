@@ -132,6 +132,78 @@ Consequence for the ladder: steps 2–3 are no longer the prime suspects. Their
 role shifts from *finding* the culprit to *confirming* that the corrected recipe
 survives broader noise.
 
+### What the F1 failure actually looks like: collapse toward a null estimate
+
+The same F1 per-clip CSVs carry a second, sharper signal, visible only when
+`sdr` and `si_sdr` are read *together*. The two differ in one respect: `si_sdr`
+rescales the reference to the estimate's level, `sdr` does not. So for an
+estimate `ŝ = αs + e` (with `e ⊥ s`):
+
+```
+SI-SDR = α²‖s‖² / ‖e‖²            SDR = ‖s‖² / ((1−α)²‖s‖² + ‖e‖²)
+```
+
+As `ŝ → 0` (α → 0, ‖e‖ → 0), SI-SDR → −∞ while **SDR → ‖s‖²/‖s‖² = 0 dB**. A
+model that emits near-silence therefore parks at SDR ≈ 0 dB *regardless of input
+SNR*, because its output has stopped contributing to the error at all. That is
+exactly F1 DCUNet's signature — and it is not shared by the models that work:
+
+| model (F1, `SE-valid-drone`) | −20 | −15 | −10 | −5 | 0 dB |
+|---|---|---|---|---|---|
+| MP-SENet | +1.95 | +5.69 | +7.54 | +9.42 | +11.15 |
+| Edge-BS-RoFormer | +0.67 | +2.70 | +3.72 | +6.06 | +6.76 |
+| **DCUNet (`f1_dcunet_a`)** | **−1.30** | **−0.73** | **−0.54** | **−0.57** | **−0.49** |
+
+The working models' SDR tracks the input SNR over a 9–10 dB span; DCUNet's moves
+by 0.8 dB across the entire range and never leaves the neighbourhood of 0 dB.
+Together with eSTOI *below* the noisy input at every SNR and PESQ barely above
+it, this says the F1 DCUNet did not learn a bad mask — it learned to output
+almost nothing. Note this also explains why the loss A/B (§ `f1-se-blind-baselines.md`)
+came out flat: all three arms had collapsed the same way, so swapping the loss
+moved a metric that was already pinned by degeneracy.
+
+`(sdr, si_sdr)` cannot *prove* this on its own — the quadratic above has two
+roots, a near-null estimate and an over-loud one, and both reproduce any given
+pair. So `scripts/eval_se_perclip.py` now also records **`gain_db`**
+(10 log₁₀ ‖ŝ‖²/‖s‖², the output/target energy ratio) and **`corr`**
+(|⟨ŝ,s⟩| / ‖ŝ‖‖s‖), which separate the roots directly. Every F2 eval reports
+them, so "did it collapse?" is answered by a column rather than by inference.
+
+**This is the sharpest available pass/fail for step 1**: if the survey recipe
+trains a DCUNet whose `gain_db` sits near 0 dB with `sdr` rising across the SNR
+range, the collapse was configuration-induced and F1's DCUNet number is an
+artefact. If step 1 collapses *too*, the cause is upstream of any of the
+paper-vs-F1 differences and lives in our DCUNet implementation or task wiring.
+
+## Running the ladder: why it is chained 1-hour segments
+
+Slurm's `sae` partition (omnirun backend `uni`, the only long-GPU route) is
+currently 162 jobs deep, and its own start estimate for this batch's first job
+was **~36 h out**. `gpushort` (backend `uni-gpushort`) has idle nodes but a hard
+**1 h** wall clock, which used to be useless for training because `resume=true`
+only unlocked a non-empty run directory — it did **not** reload weights, so every
+relaunch restarted from epoch 0.
+
+`src/training/loop.py` now implements real resume: optimizer, LR-scheduler, AMP
+scaler, next epoch, best metric and the early-stopping counter are written to
+`train_state.pt` in the run dir — atomically, and *after* `last.ckpt`, so a job
+killed mid-epoch resumes from the last fully-written one — and restored when
+`resume=true` finds them. The W&B run id is reused, so chained segments form one
+continuous curve instead of N truncated ones. `best.ckpt`/`last.ckpt` stay bare
+`state_dict`s, so no existing consumer (eval, `_warm_start`, the R2 artifact
+store) changes.
+
+Consequence: each arm runs as a chain of ~55 min `gpushort` jobs against the
+**same revision** (omnirun reuses the shared worktree `.trees/<sha12>`, so the
+run dir and its `train_state.pt` persist across segments), submitted with
+`--after <prev> --dep-failure ignore` so the next segment starts once the
+previous is merely *finished*:
+
+```bash
+omnirun submit --backend uni-gpushort --gpus 1 --time 55m --name f2-avq-s1 \
+  --env PYTHONPATH=src -- python train.py experiment=f2_dcunet_avq_survey resume=true
+```
+
 ## Planned arms — the noise-pool ladder
 
 The replication is step 1 of a three-step ladder that walks the *training noise
