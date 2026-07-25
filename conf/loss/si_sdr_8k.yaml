@@ -1,0 +1,12 @@
+# Pure negative SI-SDR at 8 kHz — identical to `conf/loss/si_sdr.yaml` except
+# for the declared Frame rate. SI-SDR itself is rate-agnostic, but the Frame
+# spec must match the stream's actual rate, so the 8 kHz replications (the F2
+# survey arms) need their own group entry rather than an inline per-experiment
+# override. See docs/experiments/f2-survey-replication.md.
+terms:
+  - name: si_sdr
+    _target_: losses.SISDRLoss
+    weight: 1.0
+    params:
+      n_channels: null
+      sr: [8000, 1]

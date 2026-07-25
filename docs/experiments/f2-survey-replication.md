@@ -32,7 +32,7 @@ changing as little as possible, and one thing at a time afterwards.
 | Crop | T = 24000 samples = 3.0 s | same |
 | Train SNR | U(−25, −5) dB, mixed on the fly | same |
 | Valid | fixed mixtures at SNR ∈ {−25,−20,−15,−10,−5} dB | same, 50 clips/point = 250 clips |
-| Loss | SI-SDR only | `conf/loss/si_sdr.yaml` (rate overridden to 8 kHz) |
+| Loss | SI-SDR only | `conf/loss/si_sdr_8k.yaml` (the 8 kHz twin of `si_sdr.yaml`) |
 | Model | DCUNet-10 (10 complex conv layers) | `model_type: dcunet`, `dcunet_num_encoder_layers: 5` (5 enc + 5 dec = 10) |
 | STFT | 64 ms window / 16 ms hop | n_fft 512, hop 128, dim_f 256 @ 8 kHz |
 | Optim | Adam, lr 1e-3, plateau patience 5 (×0.1), early-stop patience 10, batch 32 | same |
@@ -54,7 +54,7 @@ pipeline, not at DCUNet.
 | Data | `conf/data/f2_avq_survey.yaml` |
 | Train stream | `conf/online_mix/se_avq_survey.yaml` (`kind: audio_pool`, `include_keys` = the 5 ego-noise keys, `channel: 0`) |
 | Valid set | `scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-local` → `SE-valid-avq-survey` (250 clips) |
-| Loss / metrics | `si_sdr` / `separation_basic` (`separation_full` at eval for PESQ/eSTOI) |
+| Loss / metrics | `si_sdr_8k` / `separation_basic_8k` (`separation_full` at eval for PESQ/eSTOI) |
 
 Run:
 
@@ -63,6 +63,51 @@ python scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-lo
 python train.py experiment=f2_dcunet_avq_survey
 python eval.py  experiment=f2_dcunet_avq_survey metrics=separation_full
 ```
+
+## Planned arms — the noise-pool ladder
+
+The replication is step 1 of a three-step ladder that walks the *training noise
+distribution* from the paper's setting to F1's, one step at a time. Everything
+else is frozen: same model (`f2_dcunet_survey`, DCUNet-10), same loss
+(`si_sdr_8k`), same 8 kHz rate, same 3.0 s / 24000-sample crop, same train SNR
+range U(−25, −5) dB, same optimizer and schedule (Adam 1e-3, plateau ×0.1
+patience 5, early stop patience 10, batch 32, `samples_per_validation: 41580`),
+same speech source and same 25 held-out speakers — **and the same fixed
+validation set**.
+
+| Step | Experiment | Training noise pool | Online-mix policy |
+|---|---|---|---|
+| 1 | `f2_dcunet_avq_survey` | AVQ ego-noise only (5 sequences, channel 0) | `conf/online_mix/se_avq_survey.yaml` |
+| 2 | `f2_dcunet_alldrone` | **all drone** noise (F1 Pass A pool) + AVQ | `conf/online_mix/se_survey_alldrone.yaml` |
+| 3 | `f2_dcunet_allharmonic` | **all harmonic** noise, category-uniform (F1 Pass B pool) + AVQ | `conf/online_mix/se_survey_allharmonic.yaml` |
+
+Each pool is a strict **superset** of the previous one — AVQ is carried into
+steps 2 and 3 (in step 3 inside the `drone` category, with that category's
+weights renormalised to 1/7 each so it still sums to 1.0 and MIMII cannot
+dominate). So the manipulation is purely *additive*: step 2 adds drone
+diversity, step 3 adds non-drone harmonic sources, and neither removes the
+in-domain source. A drop from step 1 to step 2/3 therefore measures the cost of
+noise-distribution breadth at fixed capacity, not a domain shift away from the
+test condition.
+
+**All three arms validate on the same fixed `SE-valid-avq-survey` set**
+(250 clips at SNR {−25,−20,−15,−10,−5} dB, 8 kHz) — `conf/data/f2_avq_survey.yaml`,
+`f2_alldrone.yaml` and `f2_allharmonic.yaml` differ only in the `train:` block.
+This is deliberate. Holding validation fixed is what makes the training-noise
+pool the single manipulated variable: the monitored metric (`si_sdr`, max), the
+LR-on-plateau trigger and the early-stopping criterion are all measured on
+exactly the same distribution in each arm, so both the final numbers *and* the
+optimisation trajectories (epochs to best, LR-drop points) are comparable. A
+per-arm valid set matched to its own training pool would instead confound
+"trained on more noise" with "scored on a different, generally harder test".
+
+**Target numbers.** The pass condition for step 1 is the paper's DCUNet result
+at −15 dB input SNR: SI-SDR **+3.7 dB**, eSTOI **0.4**, PESQ **1.9** (AVQ should
+be no harder than the paper's AS drone). For steps 2 and 3 the number to watch
+is the *delta* against step 1 on the identical valid set, and how far step 3
+lands from the F1 DCUNet numbers in `f1-se-blind-baselines.md` — step 3 is the
+F1 noise distribution under the survey protocol, so it is the bridge between the
+two batches.
 
 ## Deliberate deviations (and why)
 
@@ -75,17 +120,19 @@ python eval.py  experiment=f2_dcunet_avq_survey metrics=separation_full
   recordings contain the speech source and are excluded by key.
 - **Infinite online stream, not a fixed epoch.** The paper mixes on the fly too;
   our stream is infinite, so `samples_per_validation` defines the epoch. It is
-  set to 20000 samples (≈625 steps at batch 32) — the F1 convention.
+  set to 41580 samples (≈1300 steps at batch 32) — the paper's own epoch (10
+  passes over its 4158 training utterances), used because both patiences
+  (Nα = 5, NE = 10) are counted in epochs. Same value in all three arms.
 - **8 ms zero-padded tail.** 24000 is not a multiple of the 128-sample hop
   (24000/128 = 187.5), so the iSTFT returns 23936 samples and DCUNet zero-pads
   the last 64 (8 ms, 0.27 % of the clip) back to 24000, emitting
   `UserWarning: DCUNet output length mismatch: output=23936, input=24000,
   diff=-64. Consider adjusting chunk_size.` once per process. Kept as-is because
   T = 24000 is the paper's number; a hop-aligned 23936 would silence it.
-- **Valid set not published to dload** (yet) — it lives in a local dload
-  repository under `datasets/se-valid-local` and is read via
-  `SEValidFrameDataset(local_root=...)`. Publish (`--publish`) + `dload pin`
-  before running on remote backends, since the local repo does not ship.
+- **Valid set is published + pinned** (`SE-valid-avq-survey@eb8953d0ece5`), so it
+  streams from R2 on any backend. Rebuild with
+  `python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey`;
+  an unpublished local build can be read with a `local_root: <dir>` param.
 
 ## Results
 

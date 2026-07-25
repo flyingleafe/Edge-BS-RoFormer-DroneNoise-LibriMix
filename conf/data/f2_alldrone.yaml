@@ -1,0 +1,27 @@
+# F2 step 2 data: the Mukhutdinov et al. 2023 (IEEE Access) survey setup with
+# the training noise widened from AVQ-only to ALL DRONE noise sources.
+# Everything at 8 kHz, 3.0 s (24000-sample) crops. See
+# conf/online_mix/se_survey_alldrone.yaml and
+# docs/experiments/f2-survey-replication.md. `samples_per_validation` (the
+# online "epoch" size for this infinite stream) is set in the experiment file.
+#
+# VALID SET IS DELIBERATELY UNCHANGED. All three F2 steps validate on the same
+# fixed `SE-valid-avq-survey` set (250 clips, SNR {-25,-20,-15,-10,-5} dB,
+# 8 kHz). Holding validation identical across the arms is what makes the
+# training-noise pool the single manipulated variable: the monitored metric,
+# the LR-on-plateau trigger and the early-stopping criterion are then measured
+# on exactly the same distribution in every arm, so the step-to-step deltas are
+# directly comparable and are not confounded by a shifted valid distribution.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/se_survey_alldrone.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.SEValidFrameDataset
+  params:
+    dataset: SE-valid-avq-survey
+    sample_rate: 8000
+  iterable: false
+batch_size: null
+num_workers: null
