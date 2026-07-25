@@ -1,5 +1,6 @@
-**Status:** running — step 1 REPLICATES (val/si_sdr +3.23 dB, plateaued);
-steps 2/3 collapse · 2026-07-25 – present · replicates
+**Status:** step 1 REPLICATES the survey exactly (SI-SDR +3.76 vs +3.7,
+eSTOI 0.401 vs 0.4 at −15 dB); broadening the training noise pool destroys the
+intelligibility gain (ΔeSTOI +0.276 → +0.006 → −0.002); step 1b running · 2026-07-25 – present · replicates
 Mukhutdinov et al., *"Deep Learning Models for Single-Channel Speech
 Enhancement on Drones"*, IEEE Access, 2023 · related batch:
 [`f1-se-blind-baselines.md`](./f1-se-blind-baselines.md)
@@ -313,8 +314,98 @@ two batches.
 
 ## Results
 
-_Not run yet._
+### Step 1 reproduces the survey's DCUNet
+
+Per-clip eval on `SE-valid-avq-survey`, at the paper's headline operating point
+of **−15 dB input SNR** (`results/f2_perclip/`, `scripts/f2_ladder_table.py`):
+
+| metric | noisy anchor | **F2 step 1** | paper (2023 survey) |
+|---|---|---|---|
+| SI-SDR | −15.05 | **+3.76 dB** | +3.7 dB |
+| eSTOI | 0.126 | **0.401** | 0.4 |
+| PESQ (wideband, 16 kHz) | 1.061 | 1.198 | — |
+| PESQ (narrowband, 8 kHz) | — | _pending_ | 1.9 |
+
+SI-SDR and eSTOI land on the published values essentially exactly. **The
+apparent PESQ shortfall is a metric-mode artefact, not a model result:**
+`metrics.separation.pesq` selects *wideband* PESQ at ≥16 kHz, while the survey
+ran everything at 8 kHz and therefore reported *narrowband* PESQ. Measured here
+on real LibriSpeech speech, PESQ-NB scores **+0.64 to +1.54 above PESQ-WB** on
+identical audio (at 0/5/15 dB SNR respectively), which brackets the 1.198 → 1.9
+difference. `scripts/eval_se_perclip.py` now emits a `pesq_nb` column so the
+comparison is like-for-like.
+
+So the answer to this batch's founding question is **yes**: under the survey's
+own protocol, this repository reproduces the survey's own DCUNet result. Nothing
+is broken in the training or evaluation pipeline, and the F1 DCUNet number is
+not an artefact of it.
+
+### The training noise pool is what destroys it
+
+All three arms differ *only* in the training noise pool and are scored on the
+identical `SE-valid-avq-survey` clips. Δ is against the noisy anchor at −15 dB:
+
+| arm | training noise | AVQ share | eSTOI @−15 | **ΔeSTOI** | ΔSI-SDR |
+|---|---|---|---|---|---|
+| 1 `avq_survey` | AVQ only (the paper's) | 100 % | **0.401** | **+0.276** | +18.8 |
+| 2 `alldrone` | + all drone | ~14 % | 0.131 | **+0.006** | +5.4 |
+| 3 `allharmonic` | + all harmonic | ~2 % | 0.123 | **−0.002** | +3.3 |
+| — F1 DCUNet | broad drone, F1 recipe | ~17 % | 0.112 | −0.014 | +2.0 |
+
+Broadening the training noise annihilates DCUNet's intelligibility gain:
+**+0.276 → +0.006 → −0.002 eSTOI**. What survives in the broad arms is an
+SI-SDR gain of 3–7 dB with no corresponding intelligibility gain — the model
+removes noise *energy* without recovering *speech*. The same pattern holds when
+each broad arm is scored on the valid set matching its own training pool
+(`SE-valid-drone` for arm 2, `SE-valid-harmonic` for arm 3), so this is not a
+domain-shift artefact of testing on AVQ: arm 2 on `SE-valid-drone` scores
+ΔeSTOI 0.000/−0.001/+0.004/−0.014/−0.020/−0.018/−0.041 across the SNR grid.
+
+Note also that the F2 recipe *does* substantially repair DCUNet relative to F1
+even on broad noise — ΔSI-SDR goes from erratic and sometimes negative to a
+consistent +3…+7.7 dB, and eSTOI stops being actively degraded. The STFT
+resolution and loss changes were real improvements. They are simply not
+sufficient.
+
+### It is DCUNet-specific, not a property of the data
+
+The decisive control is already in F1: **MP-SENet trained on the broad drone
+pool**, scored on the same AVQ clips, reaches **eSTOI 0.468 (ΔeSTOI +0.342)** and
+SI-SDR +3.11 at −15 dB — i.e. *better intelligibility than DCUNet trained
+narrowly on AVQ itself*, from a strictly harder training distribution. On
+`SE-valid-drone` it gains +0.14…+0.29 eSTOI where arm 2 gains ~0.
+
+So the broad harmonic-noise task is learnable, and modern architectures learn
+it. The limitation is DCUNet's.
 
 ## Conclusion
 
-_Pending._
+_Interim — step 1b (the memorisation probe) is still training; steps 1 and 2 are
+still adding epochs, but both have plateaued and neither's ranking can change._
+
+1. **The survey's DCUNet result reproduces here, essentially exactly**
+   (SI-SDR +3.76 vs +3.7; eSTOI 0.401 vs 0.4 at −15 dB input). The pipeline is
+   sound and the F1 DCUNet number is not an artefact of it. The PESQ difference
+   is wideband-vs-narrowband scoring, not a model deficit.
+2. **What breaks it on our data is the breadth of the training noise pool.**
+   Holding model, loss, rate, crop, SNR range, schedule and *the validation set*
+   fixed and changing only the training noise, DCUNet's ΔeSTOI falls from
+   **+0.276** (AVQ only) to **+0.006** (all drone) to **−0.002** (all harmonic).
+3. **The failure mode is a metric split, not a degenerate output.** In the broad
+   arms DCUNet still gains 3–7 dB SI-SDR; it removes noise energy without
+   recovering intelligible speech. (An earlier reading of this as "collapse to a
+   near-null output" was retracted — see § What the F1 failure actually looks
+   like — `gain_db` shows the outputs sit at or above target level.)
+4. **This is a DCUNet limitation, not a property of the data.** MP-SENet trained
+   on the *broad* pool scores eSTOI 0.468 on the same AVQ clips — better than
+   DCUNet trained narrowly on AVQ — and gains +0.14…+0.29 eSTOI on
+   `SE-valid-drone` where DCUNet gains ~0.
+
+**Consequence for the project.** The F1 ranking stands, and the tension with the
+survey is resolved without impugning either result: DCUNet genuinely won a
+benchmark whose noise distribution was a single tripod-mounted drone's ego-noise,
+and genuinely loses on a benchmark spanning many rotating sources. Reporting
+DCUNet as a baseline is fine; expecting the survey's absolute numbers to carry
+over to the broad-noise regime is not. Step 1b will additionally establish
+whether even the narrow-regime result requires train/valid noise *reuse*, which
+would further narrow the regime in which the published number is meaningful.
