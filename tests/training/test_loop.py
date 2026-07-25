@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+import torch
+
 import training.loop as loop_module
 from tests.training.conftest import make_tiny_config
 from tests.training.test_artifacts import FakeS3Client
@@ -196,3 +198,40 @@ def test_resume_on_a_fresh_run_dir_starts_from_zero(tmp_path, monkeypatch):
     run_training(cfg)
 
     assert [row["epoch"] for row in fake_wandb.logged if "epoch" in row] == [0, 1]
+
+
+def test_resume_after_early_stop_exits_without_training(tmp_path, monkeypatch):
+    """A chain of short segments must stop by itself once the run has converged.
+
+    Early stopping is checked at the END of an epoch, so a resumed already-done
+    run would otherwise train one full epoch before re-discovering it was done —
+    once per queued segment, indefinitely.
+    """
+    monkeypatch.setattr(loop_module, "wandb", (fake_wandb := _FakeWandb()))
+
+    def cfg_for(epochs: int):
+        cfg = make_tiny_config(
+            results_root=str(tmp_path),
+            experiment_name="tiny_done",
+            epochs=epochs,
+            n_train=6,
+            n_valid=4,
+        )
+        cfg.patience = 1  # so the tiny run early-stops within its epoch budget
+        return cfg
+
+    run_training(cfg_for(3))
+    # The tiny model improves every epoch, so drive it to the converged state
+    # directly rather than contriving a plateau.
+    state_path = tmp_path / "tiny_done" / "train_state.pt"
+    state = torch.load(state_path, weights_only=False)
+    state["no_improve"] = 1
+    torch.save(state, state_path)
+
+    fake_wandb.logged.clear()
+    cfg = cfg_for(10)
+    cfg.resume = True
+    result = run_training(cfg)
+
+    assert [row for row in fake_wandb.logged if "epoch" in row] == []  # no epoch ran
+    assert math.isfinite(result["best_mse"])

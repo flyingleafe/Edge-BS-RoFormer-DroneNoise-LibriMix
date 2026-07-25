@@ -518,6 +518,20 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
         else (0, None, 0)
     )
     epoch = start_epoch
+    # A resumed run may already be finished. Detect it *before* training so a
+    # chain of short segments is self-terminating: without this, every further
+    # segment would train one epoch, re-hit the early-stop check at the end of
+    # it, and exit — burning a full epoch per segment forever.
+    if best_metric is not None and (no_improve >= cfg.patience or start_epoch >= cfg.epochs):
+        reason = "early stopping" if no_improve >= cfg.patience else "epoch budget"
+        logger.info(
+            "%s already complete at epoch %d (%s); nothing to resume",
+            cfg.experiment_name,
+            start_epoch,
+            reason,
+        )
+        wandb.finish()
+        return {f"best_{monitor}": best_metric, "final_epoch": float(start_epoch)}
     for epoch in range(start_epoch, cfg.epochs):
         if train_iterable:
             assert train_iter is not None and batches_per_epoch is not None
