@@ -326,6 +326,18 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/g6_strongaug_transformer/checkpoints/best.ckpt",
         None,
     ),
+    # CKLA P1 (wandb s4u1tb7w) — complex-KLA temporal head on the E12 recipe
+    # (docs/experiments/ckla.md). best = ep 22 val optimum, last = ep 42.
+    "ckla_p1_best": (
+        "ckla_p1_if",
+        "r2://ml-data/artifacts/ckla_p1_if/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_p1_last": (
+        "ckla_p1_if",
+        "r2://ml-data/artifacts/ckla_p1_if/checkpoints/last.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
