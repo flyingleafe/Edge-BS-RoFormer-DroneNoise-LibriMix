@@ -61,5 +61,20 @@ Either way the answer is quantified in dB rather than argued.
 
 ## Conclusion
 
-_Pending — built and validated (`validate_only` passes); queued behind the
-step 1–3 chains._
+**Large gap — the survey's headline depends on train/valid noise reuse.** At
+−15 dB input (epoch-7 checkpoint, 250 clips per category, unprocessed halves
+equally hard: noisy SI-SDR −14.93 vs −14.97, eSTOI 0.114 vs 0.122):
+
+| category | SI-SDR | ΔSI-SDR | eSTOI | ΔeSTOI | corr |
+|---|---|---|---|---|---|
+| `avq_ego_s1` — seen | **+3.60** | +18.53 | **0.339** | **+0.225** | 0.823 |
+| `avq_ego_s2` — unseen | **−9.30** | +5.67 | **0.168** | **+0.046** | 0.344 |
+
+**12.9 dB SI-SDR and 0.17 eSTOI** between two sessions of the same drone. On the
+seen half the model reproduces step 1 (+3.60 vs +3.82); on the unseen half it
+lands on the broad-pool arms (arm 2: −9.64 / +0.006). So DCUNet's score tracks
+whether it trained on the specific recording under test, not pool breadth — and
+under the F1 held-out-noise protocol the published number is not reachable. That
+protocol was never unfair to DCUNet, only stricter.
+
+See `docs/experiments/f2-survey-replication.md` § Step 1b.

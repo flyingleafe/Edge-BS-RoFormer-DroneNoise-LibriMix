@@ -378,46 +378,97 @@ consistent +3…+7.7 dB, and eSTOI stops being actively degraded. The STFT
 resolution and loss changes were real improvements. They are simply not
 sufficient.
 
+### Step 1b: the replication is a SEEN-NOISE result
+
+`f2_dcunet_avq_heldout` is step 1 with one change — training noise is AVQ
+session 1 only (`S1_seq1/2/3`), session 2 held out — scored on
+`SE-valid-avq-split`, whose two categories are the seen and unseen recordings.
+Unprocessed, the halves are equally hard (noisy SI-SDR −14.93 vs −14.97, eSTOI
+0.114 vs 0.122 at −15 dB; 250 clips each), so any difference is training
+exposure, not difficulty. At −15 dB input:
+
+| category | SI-SDR | ΔSI-SDR | eSTOI | ΔeSTOI | corr |
+|---|---|---|---|---|---|
+| `avq_ego_s1` — **seen in training** | **+3.60** | +18.53 | **0.339** | **+0.225** | 0.823 |
+| `avq_ego_s2` — **never seen** | **−9.30** | +5.67 | **0.168** | **+0.046** | 0.344 |
+
+**A 12.9 dB SI-SDR and 0.17 eSTOI gap between recordings of the same drone**,
+differing only by session. On the seen half the model reproduces step 1's
+behaviour almost exactly (+3.60 vs +3.82 SI-SDR); on the unseen half it falls to
+roughly what the broad-pool arms achieve (arm 2 scored −9.64 SI-SDR / ΔeSTOI
++0.006 at the same point).
+
+That equivalence is the key observation: **DCUNet's score is governed by whether
+it was trained on the specific noise recording it is being tested on, not by how
+broad the pool was.** The step 1→2→3 "breadth" effect and this seen/unseen gap
+are the same phenomenon — in step 1 every validation recording was in training,
+which is the survey's protocol; in every other arm the effective exposure to the
+test recording is low or nil.
+
 ### It is DCUNet-specific, not a property of the data
 
-The decisive control is already in F1: **MP-SENet trained on the broad drone
-pool**, scored on the same AVQ clips, reaches **eSTOI 0.468 (ΔeSTOI +0.342)** and
-SI-SDR +3.11 at −15 dB — i.e. *better intelligibility than DCUNet trained
-narrowly on AVQ itself*, from a strictly harder training distribution. On
-`SE-valid-drone` it gains +0.14…+0.29 eSTOI where arm 2 gains ~0.
+The decisive control is already in F1, and it is stronger than it first looks:
+`conf/online_mix/se_drone_only.yaml` contains **no AVQ at all** (AVQ was added to
+the project after F1 ran). So **MP-SENet had never heard this drone** when it was
+scored on the AVQ clips — for it, all of AVQ is unseen noise — and it still
+reaches **eSTOI 0.468 (ΔeSTOI +0.342)** and SI-SDR +3.11 at −15 dB.
+
+Put beside step 1b, on *unseen* rotor noise at −15 dB:
+
+| model | AVQ in its training? | ΔeSTOI | SI-SDR |
+|---|---|---|---|
+| **MP-SENet** (F1, broad drone pool) | **never** | **+0.342** | +3.11 |
+| **DCUNet** (step 1b) | same drone, other session | **+0.046** | −9.30 |
+
+MP-SENet generalises to a drone it has never heard better than DCUNet
+generalises across two sessions of a drone it *has*. On `SE-valid-drone`
+MP-SENet gains +0.14…+0.29 eSTOI where arm 2 gains ~0.
 
 So the broad harmonic-noise task is learnable, and modern architectures learn
 it. The limitation is DCUNet's.
 
 ## Conclusion
 
-_Interim — step 1b (the memorisation probe) is still training; steps 1 and 2 are
-still adding epochs, but both have plateaued and neither's ranking can change._
+_Step 1b's numbers are from its epoch-7 checkpoint (still training when scored);
+the gap is far too large for further epochs to change its sign or order of
+magnitude, but the exact figures will be refreshed at convergence._
 
-1. **The survey's DCUNet result reproduces here, essentially exactly**
-   on the two metrics that carry the claim (SI-SDR +3.82 vs +3.7; eSTOI 0.408
-   vs 0.4 at −15 dB input). The pipeline is sound and the F1 DCUNet number is not
-   an artefact of it. PESQ is short by ~0.36 even after correcting the
-   wideband/narrowband mismatch, which is not fully explained.
-2. **What breaks it on our data is the breadth of the training noise pool.**
-   Holding model, loss, rate, crop, SNR range, schedule and *the validation set*
-   fixed and changing only the training noise, DCUNet's ΔeSTOI falls from
-   **+0.276** (AVQ only) to **+0.006** (all drone) to **−0.002** (all harmonic).
-3. **The failure mode is a metric split, not a degenerate output.** In the broad
-   arms DCUNet still gains 3–7 dB SI-SDR; it removes noise energy without
-   recovering intelligible speech. (An earlier reading of this as "collapse to a
-   near-null output" was retracted — see § What the F1 failure actually looks
-   like — `gain_db` shows the outputs sit at or above target level.)
-4. **This is a DCUNet limitation, not a property of the data.** MP-SENet trained
-   on the *broad* pool scores eSTOI 0.468 on the same AVQ clips — better than
-   DCUNet trained narrowly on AVQ — and gains +0.14…+0.29 eSTOI on
-   `SE-valid-drone` where DCUNet gains ~0.
+1. **The survey's DCUNet result reproduces here** on the two metrics that carry
+   the claim: SI-SDR **+3.82** vs the paper's +3.7, eSTOI **0.408** vs 0.4, at
+   −15 dB input. Nothing is wrong with this repository's training or evaluation
+   pipeline, and the F1 DCUNet number is not an artefact of it. PESQ remains
+   ~0.36 short after correcting the wideband/narrowband mismatch, unexplained.
 
-**Consequence for the project.** The F1 ranking stands, and the tension with the
-survey is resolved without impugning either result: DCUNet genuinely won a
-benchmark whose noise distribution was a single tripod-mounted drone's ego-noise,
-and genuinely loses on a benchmark spanning many rotating sources. Reporting
-DCUNet as a baseline is fine; expecting the survey's absolute numbers to carry
-over to the broad-noise regime is not. Step 1b will additionally establish
-whether even the narrow-regime result requires train/valid noise *reuse*, which
-would further narrow the regime in which the published number is meaningful.
+2. **That result is a *seen-noise* result.** Holding out 2 of the 5 ego-noise
+   recordings — same drone, different session — costs **12.9 dB SI-SDR** and
+   **0.17 eSTOI** at −15 dB (step 1b: +3.60 → −9.30, 0.339 → 0.168), on halves
+   that are equally hard unprocessed. The survey validates on the same
+   recordings it trains on, so its headline is measured in the leaked condition.
+
+3. **Breadth and leakage are the same phenomenon.** Step 1b's unseen half
+   (−9.30 dB, ΔeSTOI +0.046) lands on top of the broad-pool arms (arm 2: −9.64,
+   +0.006). What governs DCUNet's score is not how broad the training pool was
+   but whether it was trained on the *specific recording* it is tested on. The
+   step 1→2→3 collapse (ΔeSTOI +0.28 → +0.01 → −0.00) is that same effect seen
+   through dilution of the in-domain recording's share.
+
+4. **The failure mode is a metric split, not a degenerate output.** On unseen
+   noise DCUNet still gains 3–7 dB SI-SDR while gaining ~0 eSTOI: it removes
+   noise energy without recovering intelligible speech. (An earlier reading of
+   this as "collapse to a near-null output" was retracted — `gain_db` shows the
+   outputs at or above target level.)
+
+5. **This is DCUNet's limitation, not the data's.** F1's drone pool contains no
+   AVQ whatsoever, so MP-SENet had *never heard this drone* and still reaches
+   ΔeSTOI **+0.342** on it — generalising to an unseen drone better than DCUNet
+   generalises between two sessions of a drone it was trained on.
+
+**Answer to the batch's question.** Comparable results cannot be achieved on our
+training setup because our protocol holds noise recordings out and the survey's
+does not. DCUNet earns the survey's numbers by learning the specific ego-noise
+recordings it is scored against; strip that and it retains an energy-domain gain
+with essentially no intelligibility gain, whatever the pool. Both published
+results are therefore correct and not in conflict — they measure different
+things. For this project's purposes (C1: unseen rotating sources) DCUNet is not
+a competitive baseline, and the F1 ranking stands; MP-SENet and TF-GridNet are
+the architectures that actually generalise across rotor noise.
