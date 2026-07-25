@@ -276,18 +276,18 @@ broadband-machine families bound the low end.
   caption: [Per-family blind floor on `SE-valid-harmonic` (Pass B): SI-SDR
     improvement over noisy (dB), mean over the SNR grid, sorted easiest→hardest.
     Harmonic/tonal families (motors, aircraft, horns, drone) are recovered far
-    better than stochastic industrial noise (MIMII). TF-GridNet's Pass-B
-    harmonic evaluation is still pending and is omitted rather than quoted from
-    the superseded subsampled run.],
+    better than stochastic industrial noise (MIMII), where TF-GridNet and
+    Edge-BS-RoFormer end up *below* the noisy input.],
 ) <tbl:harm>
 
 The Pass B − Pass A transfer per family (@tbl:harmtransfer) echoes the
 capacity story from the drone valid, now resolved by family. Adding the noisy,
 *broadband* MIMII families to a fixed budget mostly *hurts* the strong models
-even on those very families (Edge-BS-RoFormer −11.6 dB on MIMII, MP-SENet −9.9 on
-MIMII-DG) — they cannot fit stochastic noise and lose ground focusing on it — whereas
+even on those very families (TF-GridNet −14.5 dB on MIMII, Edge-BS-RoFormer
+−11.6, MP-SENet −9.9 on MIMII-DG) — they cannot fit stochastic noise and lose
+ground focusing on it — whereas
 the *harmonic* motors and horns families benefit from in-domain exposure across
-every architecture (all four positive). The weak DCUNet, which under-fits
+every architecture (all four positive on both). The weak DCUNet, which under-fits
 throughout, gains almost everywhere. Diverse data helps when the added families
 share exploitable structure and the model has spare capacity; it hurts when
 neither holds.
@@ -374,10 +374,7 @@ absolute magnitudes may tighten as they converge. SGMSE+ (@tbl:sgmse) is
 evaluated at ≈ 40 k score-matching steps of its 200 k-step budget; its validation
 SI-SDR is flat from step 2 k, so the non-viability is a property of the
 compute budget, not the checkpoint — training continues but the trajectory shows
-no learning of enhancement. TF-GridNet's Pass-B evaluation on
-`SE-valid-harmonic` had not completed at the time of writing and is omitted from
-@tbl:harm / @tbl:harmtransfer rather than quoted from the superseded run.
-Separately, TF-GridNet's training jobs each cold-started (checkpoint resume was
+no learning of enhancement. TF-GridNet's training jobs each cold-started (checkpoint resume was
 off) and were killed at the wall clock after ≈ 4 of 150 epochs, so its numbers
 are the weakest-supported of the four discriminative models.
 
