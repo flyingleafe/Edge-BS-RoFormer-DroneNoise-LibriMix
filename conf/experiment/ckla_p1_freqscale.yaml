@@ -1,0 +1,33 @@
+# @package _global_
+# CKLA P1 freq-scale-only augmentation arm (docs/experiments/ckla.md §
+# mechanistic levers). Exact clone of ckla_p1_if except the train policy:
+# e12_fullflight_freqscale_dload adds the ONE augmentation that forces
+# comb-spacing reading (freq_scale, noise+RPS pair scaled together, labels
+# *= alpha, alpha in [0.85, 1.18], p=0.5). The activation analysis measured
+# both trained archs ignoring a x1.02 frequency scaling (~0.05% response vs
+# ideal 2%) — amplitude-anchored to the training RPS prior. G6 bundled
+# freq_scale with 5 other transforms (net negative); solo it is untested.
+# Post-training check: rerun the scale-response probe
+# (scripts/ckla_activation_analysis.py §A6) — success = response moves
+# toward the ideal alpha line, plus vk_eval gains.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p1_freqscale
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -1,0 +1,23 @@
+# simple_conv_v2_ckla_pnoise — rps_prediction, CKLA head with LIVE process
+# noise: p_init 1.0 instead of the KLA default 0.01 (discretised p̄ ≈ 0.01 vs
+# ~1e-6). The activation analysis (docs/experiments/ckla-activation-analysis.md
+# §A2) measured the default head degenerating into clip-scale accumulators —
+# λ grows all clip (1e3–1e5), Kalman gain φ/λ collapses to 1e-7..1e-4, no
+# tracking bandwidth at steady state — the direct suspect for losing to the
+# transformer on within-clip-drifting DREGON cruise while winning on
+# near-constant-RPS FLY124. p_init 1.0 bounds λ* ≈ 1/p̄ ≈ 100 so the gain
+# stays ~1e-2 and the head can track drift; p remains learnable either way.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+model_type: null
+legacy_config_path: null

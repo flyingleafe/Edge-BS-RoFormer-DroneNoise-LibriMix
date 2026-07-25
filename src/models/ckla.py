@@ -241,7 +241,12 @@ class ComplexKLALayer(nn.Module):
     """
 
     def __init__(
-        self, d_model: int, n_state: int = 16, conv_kernel: int = 4, rotation: bool = True
+        self,
+        d_model: int,
+        n_state: int = 16,
+        conv_kernel: int = 4,
+        rotation: bool = True,
+        p_init: float = 0.01,
     ):
         super().__init__()
         self.d_model, self.n_state = d_model, n_state
@@ -268,12 +273,19 @@ class ComplexKLALayer(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.norm = nn.RMSNorm(d_model)
 
-        # OU params: γ log-spaced (S4D-style), p = 0.01, Δ log-uniform in
-        # [0.001, 0.1] (KLA Table 10); stored in softplus-inverse form.
+        # OU params: γ log-spaced (S4D-style), p init = ``p_init``, Δ
+        # log-uniform in [0.001, 0.1] (KLA Table 10); stored in
+        # softplus-inverse form. The KLA default p_init=0.01 gives a
+        # near-zero discretised process noise p̄ ~ 1e-6..1e-4, under which λ
+        # accumulates all clip (gain φ/λ → 1e-6, the measured P1 pathology —
+        # docs/experiments/ckla-activation-analysis.md §A2: the head
+        # degenerates to clip-scale accumulators with no tracking
+        # bandwidth). Larger p_init bounds λ at a steady state and keeps the
+        # Kalman gain alive — the ckla_p1_pnoise arm.
         a0 = torch.logspace(math.log10(0.5), math.log10(8.0), n_state)
         a0 = a0.unsqueeze(-1).expand(n_state, d_model).contiguous()
         self.a_param = nn.Parameter(torch.log(torch.expm1(a0)))
-        self.p_param = nn.Parameter(torch.log(torch.expm1(torch.full((n_state, d_model), 0.01))))
+        self.p_param = nn.Parameter(torch.log(torch.expm1(torch.full((n_state, d_model), p_init))))
         dt0 = torch.exp(
             torch.rand(n_state, d_model) * (math.log(0.1) - math.log(0.001)) + math.log(0.001)
         )
@@ -387,11 +399,13 @@ class TemporalCKLAHead(nn.Module):
         n_layers: int = 2,
         n_state: int = 16,
         rotation: bool = True,
+        p_init: float = 0.01,
     ):
         super().__init__()
         self.in_proj = nn.Linear(in_ch, d_model)
         self.blocks = nn.ModuleList(
-            CKLABlock(d_model, n_state=n_state, rotation=rotation) for _ in range(n_layers)
+            CKLABlock(d_model, n_state=n_state, rotation=rotation, p_init=p_init)
+            for _ in range(n_layers)
         )
         self.norm = nn.RMSNorm(d_model)
         self.proj = nn.Linear(d_model, num_rotors)
@@ -429,6 +443,7 @@ class SimpleConvV2CKLA(nn.Module):
         n_layers: int = 2,
         n_state: int = 16,
         rotation: bool = True,
+        p_init: float = 0.01,
     ):
         super().__init__()
         self.n_fft = n_fft
@@ -463,6 +478,7 @@ class SimpleConvV2CKLA(nn.Module):
             n_layers=n_layers,
             n_state=n_state,
             rotation=rotation,
+            p_init=p_init,
         )
 
     def forward(self, audio: Tensor) -> Tensor:
