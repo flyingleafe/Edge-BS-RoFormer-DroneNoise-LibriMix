@@ -1,0 +1,17 @@
+# simple_conv_v2_ckla_norot — rps_prediction, rotation=False control on the
+# stft_mag_if front-end (docs/ckla-design.md §5 ladder item 1): the exact
+# real-KLA head, for attributing the complex path's share on the REAL
+# protocol (P1). See simple_conv_v2_ckla_mag_norot.yaml for the P0 twin.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_norot
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

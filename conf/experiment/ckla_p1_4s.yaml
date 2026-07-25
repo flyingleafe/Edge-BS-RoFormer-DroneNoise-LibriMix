@@ -1,0 +1,26 @@
+# @package _global_
+# CKLA P1 4-second-context arm (batch docs/experiments/ckla.md). The 1 s
+# ckla_p1_if run split the ledger: dregon_cruise 2.87 (vs g2_if floor 2.481)
+# but fly124_cruise 1.39 (vs 2.33 — new best by 40%). Longer context was
+# refuted FOR THE TRANSFORMER (g1: 2.87 at 4 s/8 s), but the CKLA head is a
+# recurrent uncertainty-gated tracker — integration over longer native
+# context is its natural regime, and 4 s clips are where the P0b capture
+# analysis showed it locking. Combines the g1_transformer_4s data recipe
+# (4 s chunks, batch 8) with the CKLA model + stft_mag_if front-end.
+defaults:
+  - override /data: g1_real_fullflight_4s
+  - override /model: simple_conv_v2_ckla
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p1_4s
+epochs: 200
+patience: 20
+batch_size: 8
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

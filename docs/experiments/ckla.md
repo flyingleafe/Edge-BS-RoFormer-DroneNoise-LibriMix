@@ -94,10 +94,28 @@ directions (eval-time ablation null + train-time control identical). The
 complex hypothesis now rests on the 4 s pair `ckla_p0_4s` /
 `ckla_p0_4s_norot` (kaggle `python-72ff01` / `python-761e7f`).
 
-### P1 — `ckla_p1_if` (kaggle `python-3fd926`)
+### P1 — `ckla_p1_if` (kaggle `python-3fd926`, wandb `s4u1tb7w`, DONE + vk_eval'd)
 
-Launched on gates (a)+(b) without waiting for P0b (diagnostics cannot
-reverse the on-distribution result). _Pending._
+Trained 42 ep (best full-envelope val/mse 85.2 @ ep 22, then the familiar
+overfit drift). vk_eval (uni-cpu `python-9d2f30`, results
+`results/ckla_p1_vk_eval` on the job worktree; pull blocked by local
+omnirun tmp disk-full — read via ssh):
+
+| pool | g2_if floor | ckla_p1_best | VK bars |
+|---|---|---|---|
+| dregon_cruise | **2.481** | 2.87 (chmean+ma2; 3.02 stitch) | 0.68–0.74 |
+| fly124_cruise | 2.33 | **1.36–1.39** (stitch/stitchmed) | 1.027 blind / 0.282 telem |
+
+Pure head swap at identical front-end: **DREGON cruise +0.39 worse than
+the floor; FLY124 cruise 40% better — the best neural cross-drone score
+of the campaign**, within 0.35 of the blind-VK bar on that pool. The
+Kalman-structured head generalizes across drones far better than
+attention. `ckla_p1_last` confirms the pattern (dregon 3.03–3.06, fly124
+1.36–1.44).
+
+Levers launched next: `ckla_p1_4s` (4 s native context — refuted for the
+transformer, untested for a recurrent tracker), `ckla_p1_norot`
+(complex-path attribution on real data).
 
 ## Conclusion
 

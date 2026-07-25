@@ -1,0 +1,24 @@
+# @package _global_
+# Rotation-off twin of ckla_p1_if (batch docs/experiments/ckla.md): exact
+# clone except model simple_conv_v2_ckla_norot (real-KLA head, no complex
+# path). Attributes the complex rotation's share of the P1 real-protocol
+# scores (dregon_cruise 2.87 / fly124_cruise 1.39). At 1 s static-comb the
+# rotation measured exactly nothing (ckla_p0_norot 21.51 vs 21.70); this
+# decides whether that holds on real data too.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_norot
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p1_norot
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
