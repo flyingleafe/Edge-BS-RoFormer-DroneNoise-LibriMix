@@ -41,6 +41,7 @@ from models.generative import (
 
 if TYPE_CHECKING:
     from tasks.noise_generation import DroneCodebook
+from models.ckla import SimpleConvV2CKLA
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
     DCCRNEncRPS,
@@ -112,6 +113,10 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_v2_transformer_if": SimpleConvV2TransformerIF,
     "simple_conv_v2_transformer_comb": SimpleConvV2TransformerComb,
     "simple_conv_v2_transformer_pyramid": SimpleConvV2TransformerPyramid,
+    # CKLA head arms (docs/ckla-design.md §3): default stft_mag_if front-end,
+    # plus a stft_mag variant (P1 ablation 5 — front-end interaction check).
+    "simple_conv_v2_ckla": SimpleConvV2CKLA,
+    "simple_conv_v2_ckla_mag": lambda **kw: SimpleConvV2CKLA(frontend_key="stft_mag", **kw),
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_v2_dwt": SimpleConvV2Wavelet,

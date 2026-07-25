@@ -1,0 +1,20 @@
+# simple_conv_v2_ckla — rps_prediction, CKLA architecture bet
+# (docs/ckla-design.md §3). Same trunk/task params as
+# simple_conv_v2_transformer_if.yaml — only `params.name` differs: the
+# temporal transformer head is replaced by the complex-KLA head
+# (TemporalCKLAHead, 2× CKLABlock, d_model=128, n_state=16) on the same
+# `stft_mag_if` front-end (n_fft=2048/hop=512 grid), so loss/metrics/valid
+# are untouched.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

@@ -1,0 +1,19 @@
+# simple_conv_v2_ckla_mag — rps_prediction, CKLA front-end interaction
+# ablation (docs/ckla-design.md §5, ladder item 5). Identical to
+# simple_conv_v2_ckla.yaml except `params.name`: the model swaps the
+# `stft_mag_if` front-end for plain `stft_mag` (log magnitude only, 1
+# channel, same n_fft=2048/hop=512 STFT grid), so loss/metrics/valid are
+# untouched.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_mag
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

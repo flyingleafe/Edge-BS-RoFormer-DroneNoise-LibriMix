@@ -13,6 +13,7 @@ src/models/
   multif0/              Multi-F0 HCQT + CNN (Cuesta et al. ISMIR 2020)
   basic_pitch/          Basic Pitch note transcription, PyTorch port (Bittner et al. ICASSP 2022)
   rps_predictor.py      SimpleConv* family + DCUNet/DCCRN encoders (RPS)
+  ckla.py               Complex Kalman Linear Attention head + SimpleConvV2CKLA (docs/ckla-design.md)
   dcunet.py             DCUNet (speech enhancement)
   dccrn.py              DCCRN
   dcunet_refactored.py  DCUNetRefactored, DCCRNRefactored
@@ -112,6 +113,8 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `simple_conv_v2_transformer_if` | `simple_conv_v2_transformer` trunk on the `stft_mag_if` front-end (log-mag + IF deviation, 2 ch, same STFT grid) — G2b VK-parity front-end arm |
 | `simple_conv_v2_transformer_pyramid` | `simple_conv_v2_transformer` trunk on the `pyramid_if` multi-resolution pyramid front-end (dense 2 ch × 340 log-f rows, zero front-end params; `collapse_bands=False` → 8-ch dead-G8a variant) — G8a/G8a2 VK-parity arm |
 | `simple_conv_v2_transformer_comb` | `simple_conv_v2_transformer` trunk on the `comb_if` front-end (whitened comb score + IF consensus + occupancy + coord channel, 4 ch × 361 f0 rows; `coord_channel=False` → 3-ch G4a variant) — G4/G4b VK-parity front-end arm |
+| `simple_conv_v2_ckla` | `simple_conv_v2_transformer` trunk with the temporal head replaced by a complex-KLA scan head (`ckla.py::TemporalCKLAHead` — flat complex-OU Kalman linear attention, input-dependent per-slot rotation; docs/ckla-design.md) on the `stft_mag_if` front-end |
+| `simple_conv_v2_ckla_mag` | `simple_conv_v2_ckla` on the plain `stft_mag` front-end (1 ch) — front-end interaction ablation (design §5 ladder item 5) |
 | `simple_conv_v2_local_attn` | `simple_conv_v2` encoder/pool + local-window Transformer temporal head |
 | `simple_conv_v2_multires` | `simple_conv_v2` with concatenated long/short-window STFT magnitude inputs |
 | `simple_conv_v2_dwt` | `simple_conv_v2` with a lightweight Haar-like temporal wavelet branch |
