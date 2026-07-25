@@ -81,26 +81,44 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dir", default="results/f2_perclip")
     ap.add_argument("--csv", default=None, help="also write the tidy table here")
+    ap.add_argument(
+        "--by-category",
+        action="store_true",
+        help=(
+            "split each table by the clip's `category` as well as its SNR. Needed for "
+            "SE-valid-avq-split, whose avq_ego_s1 (noise seen in training) and "
+            "avq_ego_s2 (noise never seen) categories ARE the measurement — the gap "
+            "between them, for one model, is the memorisation term."
+        ),
+    )
     args = ap.parse_args()
 
     df = drop_silent(load(Path(args.dir)))
     have = [m for m in METRICS if m in df.columns]
-    grouped = df.groupby(["valid", "method", "input_snr"])[have].mean().reset_index()
+    keys = (
+        ["valid", "method", "category", "input_snr"]
+        if args.by_category
+        else ["valid", "method", "input_snr"]
+    )
+    grouped = df.groupby(keys)[have].mean().reset_index()
 
     pd.set_option("display.width", 220)
     for valid, g in grouped.groupby("valid"):
         print(f"\n{'=' * 100}\n{valid}\n{'=' * 100}")
-        anchor = g[g["method"] == "noisy"].set_index("input_snr")
-        for method, gm in g.groupby("method"):
-            gm = gm.set_index("input_snr").sort_index()
-            print(f"\n-- {method}")
+        by = ["method", "category"] if args.by_category else ["method"]
+        anchor_keys = ["category", "input_snr"] if args.by_category else ["input_snr"]
+        anchor = g[g["method"] == "noisy"].set_index(anchor_keys)
+        for method, gm in g.groupby(by if len(by) > 1 else "method"):
+            label = " / ".join(str(x) for x in method) if isinstance(method, tuple) else str(method)
+            gm = gm.set_index(anchor_keys).sort_index()
+            print(f"\n-- {label}")
             show = gm[have].round(3)
-            if method != "noisy" and not anchor.empty:
+            if "noisy" not in label.split(" / ")[0] and not anchor.empty:
                 for m in ("si_sdr", "estoi", "pesq", "pesq_nb"):
                     if m in show.columns and m in anchor.columns:
                         show[f"d_{m}"] = (gm[m] - anchor[m]).round(3)
             print(show.to_string())
-            if valid == "SE-valid-avq-survey" and -15.0 in gm.index and method != "noisy":
+            if valid == "SE-valid-avq-survey" and -15.0 in gm.index and label != "noisy":
                 row = gm.loc[-15.0]
                 deltas = ", ".join(
                     f"{m} {row[m]:.3f} vs paper {v}"

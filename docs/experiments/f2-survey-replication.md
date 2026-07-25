@@ -1,5 +1,5 @@
 **Status:** step 1 REPLICATES the survey exactly (SI-SDR +3.76 vs +3.7,
-eSTOI 0.401 vs 0.4 at −15 dB); broadening the training noise pool destroys the
+eSTOI 0.408 vs 0.4 at −15 dB); broadening the training noise pool destroys the
 intelligibility gain (ΔeSTOI +0.276 → +0.006 → −0.002); step 1b running · 2026-07-25 – present · replicates
 Mukhutdinov et al., *"Deep Learning Models for Single-Channel Speech
 Enhancement on Drones"*, IEEE Access, 2023 · related batch:
@@ -321,19 +321,30 @@ of **−15 dB input SNR** (`results/f2_perclip/`, `scripts/f2_ladder_table.py`):
 
 | metric | noisy anchor | **F2 step 1** | paper (2023 survey) |
 |---|---|---|---|
-| SI-SDR | −15.05 | **+3.76 dB** | +3.7 dB |
-| eSTOI | 0.126 | **0.401** | 0.4 |
-| PESQ (wideband, 16 kHz) | 1.061 | 1.198 | — |
-| PESQ (narrowband, 8 kHz) | — | _pending_ | 1.9 |
+| SI-SDR | −15.05 | **+3.82 dB** | +3.7 dB ✓ |
+| eSTOI | 0.126 | **0.408** | 0.4 ✓ |
+| PESQ (wideband, 16 kHz) | 1.061 | 1.201 | — |
+| PESQ (narrowband, 8 kHz) | 1.196 | **1.538** | 1.9 ✗ |
 
-SI-SDR and eSTOI land on the published values essentially exactly. **The
-apparent PESQ shortfall is a metric-mode artefact, not a model result:**
-`metrics.separation.pesq` selects *wideband* PESQ at ≥16 kHz, while the survey
-ran everything at 8 kHz and therefore reported *narrowband* PESQ. Measured here
-on real LibriSpeech speech, PESQ-NB scores **+0.64 to +1.54 above PESQ-WB** on
-identical audio (at 0/5/15 dB SNR respectively), which brackets the 1.198 → 1.9
-difference. `scripts/eval_se_perclip.py` now emits a `pesq_nb` column so the
-comparison is like-for-like.
+**SI-SDR and eSTOI land on the published values essentially exactly.** PESQ does
+not, and the discrepancy is only *partly* a metric artefact — stated precisely
+because it is easy to overclaim here:
+
+- `metrics.separation.pesq` selects **wideband** PESQ at ≥16 kHz, whereas the
+  survey ran at 8 kHz and therefore reported **narrowband** PESQ. Measured on
+  real LibriSpeech speech, PESQ-NB scores **+0.64 to +1.54 above PESQ-WB** on
+  identical audio (at 0/5/15 dB SNR). `eval_se_perclip.py` now emits `pesq_nb`.
+- Scoring like-for-like moves step 1 from 1.201 to **1.538**, closing roughly
+  **half** of the 0.70 gap to 1.9. **A residual ~0.36 remains unexplained by
+  bandwidth alone.** Plausible contributors, none of them measured here: the
+  speech corpus (LibriSpeech vs TIMIT), the drone (AVQ vs the paper's AS), our
+  audio being 16 kHz decimated to 8 kHz rather than natively 8 kHz, and step 1
+  having been stopped while still creeping upward (its `val/si_sdr` was still
+  improving in the third decimal when the run was cancelled to free GPU quota).
+
+So the replication is **exact on the two metrics that carry the claim** — the
+SI-SDR improvement and the intelligibility improvement — and short on PESQ by an
+amount that bandwidth mode explains about half of.
 
 So the answer to this batch's founding question is **yes**: under the survey's
 own protocol, this repository reproduces the survey's own DCUNet result. Nothing
@@ -347,7 +358,7 @@ identical `SE-valid-avq-survey` clips. Δ is against the noisy anchor at −15 d
 
 | arm | training noise | AVQ share | eSTOI @−15 | **ΔeSTOI** | ΔSI-SDR |
 |---|---|---|---|---|---|
-| 1 `avq_survey` | AVQ only (the paper's) | 100 % | **0.401** | **+0.276** | +18.8 |
+| 1 `avq_survey` | AVQ only (the paper's) | 100 % | **0.408** | **+0.282** | +18.9 |
 | 2 `alldrone` | + all drone | ~14 % | 0.131 | **+0.006** | +5.4 |
 | 3 `allharmonic` | + all harmonic | ~2 % | 0.123 | **−0.002** | +3.3 |
 | — F1 DCUNet | broad drone, F1 recipe | ~17 % | 0.112 | −0.014 | +2.0 |
@@ -384,9 +395,10 @@ _Interim — step 1b (the memorisation probe) is still training; steps 1 and 2 a
 still adding epochs, but both have plateaued and neither's ranking can change._
 
 1. **The survey's DCUNet result reproduces here, essentially exactly**
-   (SI-SDR +3.76 vs +3.7; eSTOI 0.401 vs 0.4 at −15 dB input). The pipeline is
-   sound and the F1 DCUNet number is not an artefact of it. The PESQ difference
-   is wideband-vs-narrowband scoring, not a model deficit.
+   on the two metrics that carry the claim (SI-SDR +3.82 vs +3.7; eSTOI 0.408
+   vs 0.4 at −15 dB input). The pipeline is sound and the F1 DCUNet number is not
+   an artefact of it. PESQ is short by ~0.36 even after correcting the
+   wideband/narrowband mismatch, which is not fully explained.
 2. **What breaks it on our data is the breadth of the training noise pool.**
    Holding model, loss, rate, crop, SNR range, schedule and *the validation set*
    fixed and changing only the training noise, DCUNet's ΔeSTOI falls from
