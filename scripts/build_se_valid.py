@@ -131,6 +131,27 @@ CATEGORY_NOISE: dict[str, list[dict]] = {
     # dataset already IS those 5 recordings' channel 0 at 16 kHz, so no
     # include_keys/channel filtering (see AVQ_EGO_NOISE_DATASET above).
     "avq_ego": [{"kind": "audio_pool", "dataset": AVQ_EGO_NOISE_DATASET}],
+    # The memorisation probe (F2 step 1b). The survey trains and validates on the
+    # SAME 5 ego-noise recordings, so its DCUNet may simply have learned those
+    # recordings rather than a transferable denoiser. Splitting the 5 by SESSION
+    # — train on S1 only, score both halves — turns that into a measurement: for
+    # ONE model, `avq_ego_s1` is noise it saw in training and `avq_ego_s2` is
+    # noise it did not, with the held-out speakers common to both, so the gap
+    # between the two categories is the memorisation term and nothing else.
+    "avq_ego_s1": [
+        {
+            "kind": "audio_pool",
+            "dataset": AVQ_EGO_NOISE_DATASET,
+            "include_keys": ["S1_seq1", "S1_seq2", "S1_seq3"],
+        }
+    ],
+    "avq_ego_s2": [
+        {
+            "kind": "audio_pool",
+            "dataset": AVQ_EGO_NOISE_DATASET,
+            "include_keys": ["S2_seq1", "S2_seq2"],
+        }
+    ],
 }
 
 HARMONIC_CATEGORIES = ["drone", "mimii", "mimii_dg", "aircraft", "motors", "horns"]
@@ -154,6 +175,15 @@ DATASET_PRESETS: dict[str, dict] = {
     "avq": {
         "name": "SE-valid-avq-survey",
         "categories": ["avq_ego"],
+        "sample_rate": SR,
+        "snr_grid": [-25, -20, -15, -10, -5],
+        "duration_s": 3.0,
+    },
+    # Same rate/grid/duration as `avq`, but split by session so one eval yields
+    # both the seen-noise and unseen-noise halves (see CATEGORY_NOISE above).
+    "avq_split": {
+        "name": "SE-valid-avq-split",
+        "categories": ["avq_ego_s1", "avq_ego_s2"],
         "sample_rate": SR,
         "snr_grid": [-25, -20, -15, -10, -5],
         "duration_s": 3.0,
@@ -316,7 +346,9 @@ def _publish(
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Build/publish the SE validation sets.")
-    p.add_argument("--dataset", choices=["drone", "harmonic", "avq", "both"], default="both")
+    p.add_argument(
+        "--dataset", choices=["drone", "harmonic", "avq", "avq_split", "both"], default="both"
+    )
     p.add_argument("--per-snr", type=int, default=50)
     p.add_argument(
         "--duration",
