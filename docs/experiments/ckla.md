@@ -82,10 +82,17 @@ identical clean valid): CKLA best MSE **21.74** / rmse 4.48 / mae_clip
 
 **Interpretation:** the P0 win belongs (so far) to the KLA
 uncertainty-gated recurrence, not the complex extension — plausibly
-because 1 s clips (T≈32) give phase accumulation nothing to do. Controls:
-`ckla_p0_norot` (train-time rotation-off at 1 s, kaggle `python-3c4ae9`);
-4 s pair `ckla_p0_4s` / `ckla_p0_4s_norot` staged (T≈126 — the fair
-context for rotation).
+because 1 s clips (T≈32) give phase accumulation nothing to do.
+
+### `ckla_p0_norot` — train-time rotation-off control (kaggle `python-3c4ae9`, wandb `08k0ct9x`, DONE)
+
+Best val/mse **21.51** (ep 4) vs rotation-on **21.70** (ep 7); train
+convergence identical (~3.4 by ep 3–4 both arms). **At 1 s context the
+complex rotation contributes exactly nothing** — proven from both
+directions (eval-time ablation null + train-time control identical). The
+1 s P0 win is entirely the real-KLA uncertainty-gated recurrence. The
+complex hypothesis now rests on the 4 s pair `ckla_p0_4s` /
+`ckla_p0_4s_norot` (kaggle `python-72ff01` / `python-761e7f`).
 
 ### P1 — `ckla_p1_if` (kaggle `python-3fd926`)
 
