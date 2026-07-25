@@ -1,0 +1,30 @@
+# @package _global_
+# CKLA P0 4-second-context arm (batch docs/experiments/ckla.md § context
+# arm). Same as ckla_p0_staticcomb but the train stream serves 4 s clips
+# (rps_static_comb_only_4s_dload policy, T≈126 frames): the context length
+# where the complex rotation path can accumulate phase across meaningful
+# within-clip drift. Paired with ckla_p0_4s_norot — the rotation-on/off gap
+# AT 4 s is the fair test of the complex extension (at 1 s it measured
+# null). Submit with the 4s policy override (this config bakes it in via
+# data.train.params.path below).
+defaults:
+  - override /data: rps_static_comb_only
+  - override /model: simple_conv_v2_ckla_mag
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p0_4s
+epochs: 100
+patience: 8
+batch_size: 8
+num_workers: 6
+samples_per_validation: 5000
+data:
+  train:
+    params:
+      path: conf/online_mix/rps_static_comb_only_4s_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

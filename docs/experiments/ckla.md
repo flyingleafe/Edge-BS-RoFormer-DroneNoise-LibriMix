@@ -58,11 +58,34 @@ block): graceful degradation — MAE 1.3–1.8 rev/s locked at aggressiveness
 ≤ 1, 3.3 at 2, capture lost only at 4; interference axis monotone and
 mild. Rerun with `--mem 16`: `python-91cd13`.
 
-### P0b — capture boundary + rotation ablation
+### P0b — capture boundary + rotation ablation (uni-cpu `python-91cd13`, DONE)
 
-uni-cpu job `python-20c95f`: `scripts/ckla_capture_boundary.py`, CKLA-P0
-best vs E8-transformer best, drift (aggressiveness 0.25–4) × SNR (+10…−20),
-16 clips/cell, `--ablate-rotation`. _Pending._
+`scripts/ckla_capture_boundary.py`, drift (aggressiveness 0.25–4) × SNR
+(+10…−20 dB speech-rel), 16×4 s clips/cell, outputs in
+`results/ckla_capture_boundary/` (pull via `omnirun pull python-91cd13`).
+
+1. **CKLA locks, the transformer never does.** CKLA: lock fraction
+   0.38–0.69 / MAE 1.3–1.8 rev/s at aggressiveness ≤ 1, degrading
+   gracefully (3.3 at agg 2) to capture loss at agg 4 (15.6). E8
+   transformer: lock fraction **0.00 in every cell**, MAE 3.3–5.2 — never
+   a sustained lock even at the easiest cell. Gate (c) passed.
+2. **Rotation ablation is NULL.** Zeroing s/ω0/W_ω on the trained model:
+   ΔMAE within ±0.03 everywhere. Gate (d) FAILED — the trained model does
+   not use the complex path.
+3. **Parameter forensics** (best.ckpt): ω0 at ring init, s ≈ init 0.1,
+   W_ω grew only to ~0.03 from zero-init, OU decay/noise params ≈ init.
+   The model trained its projections, not its dynamics.
+
+**Symmetric-harness confirmation** (`bash-94cdbf`, eval.py both models,
+identical clean valid): CKLA best MSE **21.74** / rmse 4.48 / mae_clip
+2.76 / **R² +0.50** vs E8 transformer best 85.4 / 9.01 / 7.90 / −1.37.
+
+**Interpretation:** the P0 win belongs (so far) to the KLA
+uncertainty-gated recurrence, not the complex extension — plausibly
+because 1 s clips (T≈32) give phase accumulation nothing to do. Controls:
+`ckla_p0_norot` (train-time rotation-off at 1 s, kaggle `python-3c4ae9`);
+4 s pair `ckla_p0_4s` / `ckla_p0_4s_norot` staged (T≈126 — the fair
+context for rotation).
 
 ### P1 — `ckla_p1_if` (kaggle `python-3fd926`)
 

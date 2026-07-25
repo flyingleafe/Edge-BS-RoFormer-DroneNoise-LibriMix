@@ -1,0 +1,27 @@
+# @package _global_
+# Rotation-off pair of ckla_p0_4s (batch docs/experiments/ckla.md § context
+# arm): identical 4 s static-comb stream, model simple_conv_v2_ckla_mag_norot
+# (exact real-KLA head). The ckla_p0_4s − ckla_p0_4s_norot gap is the fair
+# measurement of the complex rotation's contribution at a context length
+# where phase accumulation is possible.
+defaults:
+  - override /data: rps_static_comb_only
+  - override /model: simple_conv_v2_ckla_mag_norot
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p0_4s_norot
+epochs: 100
+patience: 8
+batch_size: 8
+num_workers: 6
+samples_per_validation: 5000
+data:
+  train:
+    params:
+      path: conf/online_mix/rps_static_comb_only_4s_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

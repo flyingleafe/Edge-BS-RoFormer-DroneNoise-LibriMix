@@ -1,0 +1,54 @@
+# E8 4s twin (CKLA context arm) — RPS-predictor training on the analytic STATIC-COMB
+# 4-SECOND clips (duration_s: 4.0, T~126 frames vs the 1 s E8 default) — the
+# context length where the CKLA rotation path has room to accumulate phase
+# (docs/ckla-design.md; batch docs/experiments/ckla.md § context arm).
+# Otherwise byte-identical to rps_static_comb_only_dload.yaml.
+# noise model ONLY; speech streamed from R2. See rps_static_comb_only.yaml.
+# The simplest generator that FORCES harmonic tracking: a static (time-constant,
+# RPS-independent) harmonic comb at k*rps + a static broadband floor, with the
+# comb/floor mix constrained so >=30% of each rotor's harmonics clear the floor.
+# Amplitudes carry ZERO RPS information within a clip, so the only cue for RPS is
+# the comb's frequency spacing — removing the amplitude-dynamics shortcut that we
+# believe kills sim->real transfer for the neural generator (E7). Profile shapes
+# (rolloff/blade-emphasis/irregularity/floor) are sampled widely per clip across
+# ranges calibrated to real DREGON + Michael's single-rotor combs.
+# See data_processing/rotor_spectral_model.py + docs/experiments/e8-static-comb.md.
+#
+# Validation stays fixed/real (conf/data/rps_static_comb_only.yaml). No neural
+# checkpoint, no GPU producer, no geometry — pure analytic synthesis in the
+# DataLoader workers. Cloud twin: rps_static_comb_only_dload.yaml.
+
+sample_rate: 16000
+duration_s: 4.0
+base_seed: 20260711
+
+sources:
+  noise:
+    - kind: static_comb
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30      # >=30% of each rotor's harmonics above floor
+      drone_profile_range: [0.0, 1.0] # rps_synthesis blend span (DREGON<->Michael's)
+      mic_gain_db: [-12.0, 0.0]       # per-(mic,rotor) gain spread => array-mix variety
+      rps:
+        kind: synthetic_intermittent  # same RPS driver as the neural gen (isolates the amplitude fix)
+        aggressiveness: 1.0
+      # profile_ranges:               # optional override of the real-calibrated defaults
+      #   rolloff_p: [0.4, 1.9]
+      #   floor_rel_db: [-16.0, -1.0]
+
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  source_prob: 1.0
+  snr_db:
+    uniform: {low: -30.0, high: 0.0}
+  speech_per_channel: independent
+  snr_per_channel: false
