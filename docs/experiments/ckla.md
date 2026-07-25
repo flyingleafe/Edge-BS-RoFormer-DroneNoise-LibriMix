@@ -45,9 +45,18 @@ of design §4 passed decisively.
 188.7 on the *contaminated* pre-cleanup valid — NOT directly comparable.
 For scale: the E9 hard-combined transformer (50% neural gen + 50%
 static-comb + augs) scored ~20.7 on the clean valid; CKLA matches that
-from static-comb-only training with no augmentation. Fair rescore of the
-E8 transformer ckpts on the clean valid: uni-cpu job `bash-4fe1ac`
-(_pending_).
+from static-comb-only training with no augmentation.
+
+**Fair rescore (uni-cpu `bash-653c8d`, eval.py, identical clean valid):**
+E8 transformer best.ckpt → MSE **85.4**, rmse 9.01, mae_clip 7.90,
+R² −1.37. CKLA P0 best (train-time val) → MSE **21.7**, rmse 4.48,
+mae_clip 4.54 — **~4× lower MSE / 2× lower RMSE** at identical training
+data and protocol. (E8 has no last.ckpt — predates the feature. Symmetric
+eval.py scoring of the CKLA ckpt: `bash-94cdbf`.) Gate (c) supported by
+the partial capture table (job `python-20c95f` OOM'd after the CKLA
+block): graceful degradation — MAE 1.3–1.8 rev/s locked at aggressiveness
+≤ 1, 3.3 at 2, capture lost only at 4; interference axis monotone and
+mild. Rerun with `--mem 16`: `python-91cd13`.
 
 ### P0b — capture boundary + rotation ablation
 
