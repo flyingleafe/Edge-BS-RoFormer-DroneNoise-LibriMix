@@ -70,6 +70,39 @@ python train.py experiment=f2_dcunet_avq_survey
 python eval.py  experiment=f2_dcunet_avq_survey metrics=separation_full
 ```
 
+## Pre-flight diagnostic: the noise pool is NOT the cause
+
+Before spending GPU time on the ladder, the **existing F1 DCUNet checkpoint**
+(trained on the broad 6-dataset drone pool, 1 s crops, SI-SDR+MRSTFT loss) was
+scored on the **AVQ-only** valid set — the paper's own noise. If the F1 floor had
+been caused by noise-pool breadth, this should have looked much healthier.
+
+It does not (16 kHz, 3 s, n=50/SNR; `results/f2_diag/`):
+
+| SNR | noisy SI-SDR | F1 DCUNet | Δ | noisy eSTOI | F1 DCUNet |
+|---|---|---|---|---|---|
+| −25 | −25.76 | −24.02 | +1.7 | 0.022 | 0.016 |
+| −20 | −20.41 | −17.00 | +3.4 | 0.058 | 0.051 |
+| −15 | −15.07 | −12.99 | +2.1 | 0.121 | **0.101** |
+| −10 | −9.99 | −7.50 | +2.5 | 0.218 | 0.201 |
+| −5 | −5.00 | −3.61 | +1.4 | 0.310 | 0.276 |
+
+On the paper's own noise the F1 model gains *less* SI-SDR than it does on the
+broad pool (+2.1 vs +4.7 dB at −15 dB) and still pushes **eSTOI below the noisy
+input at every SNR**. So the six-dataset pool was never the problem: the cause is
+in the model/training configuration — STFT resolution, 1 s crops, SNR range or
+loss — which is exactly what step 1 changes.
+
+**A useful side-effect: the valid set is calibrated against the paper.** Its
+noisy eSTOI at −15 dB is **0.121**, essentially the paper's quoted **0.1**
+baseline. The test condition therefore matches the published one closely, so
+"eSTOI 0.121 → ~0.4 at −15 dB" is a fair bar at 16 kHz and any shortfall is the
+model's, not a mismatched benchmark.
+
+Consequence for the ladder: steps 2–3 are no longer the prime suspects. Their
+role shifts from *finding* the culprit to *confirming* that the corrected recipe
+survives broader noise.
+
 ## Planned arms — the noise-pool ladder
 
 The replication is step 1 of a three-step ladder that walks the *training noise
