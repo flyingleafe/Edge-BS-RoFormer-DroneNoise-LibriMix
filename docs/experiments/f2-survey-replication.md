@@ -1,4 +1,5 @@
-**Status:** scaffolded (not yet run) · 2026-07-25 – present · replicates
+**Status:** running — step 1 REPLICATES (val/si_sdr +3.23 dB, plateaued);
+steps 2/3 collapse · 2026-07-25 – present · replicates
 Mukhutdinov et al., *"Deep Learning Models for Single-Channel Speech
 Enhancement on Drones"*, IEEE Access, 2023 · related batch:
 [`f1-se-blind-baselines.md`](./f1-se-blind-baselines.md)
@@ -99,7 +100,7 @@ It exists for two concrete reasons, both costs of the previous
 
 `AVQ` and `AVQ-raw` are untouched and remain the canonical full dataset.
 
-## Pre-flight diagnostic: the noise pool is NOT the cause
+## Pre-flight diagnostic (conclusion since retracted)
 
 Before spending GPU time on the ladder, the **existing F1 DCUNet checkpoint**
 (trained on the broad 6-dataset drone pool, 1 s crops, SI-SDR+MRSTFT loss) was
@@ -118,9 +119,17 @@ It does not (16 kHz, 3 s, n=50/SNR; `results/f2_diag/`):
 
 On the paper's own noise the F1 model gains *less* SI-SDR than it does on the
 broad pool (+2.1 vs +4.7 dB at −15 dB) and still pushes **eSTOI below the noisy
-input at every SNR**. So the six-dataset pool was never the problem: the cause is
-in the model/training configuration — STFT resolution, 1 s crops, SNR range or
-loss — which is exactly what step 1 changes.
+input at every SNR**.
+
+> ⚠ **RETRACTED (2026-07-25, by the ladder's own results).** This section
+> originally concluded from the table above that "the six-dataset pool was never
+> the problem". That inference does not hold. The test scores a model *already
+> trained* on the broad pool against a narrow valid set, so it measures
+> **test-set difficulty**, not **training-pool breadth** — and a model damaged
+> during training stays damaged whichever set you score it on. It was never
+> capable of exonerating the training pool. Steps 1–3, which vary the training
+> pool directly, show the pool is in fact the dominant factor (§ Results).
+> What the table *does* still establish is the valid-set calibration below.
 
 **A useful side-effect: the valid set is calibrated against the paper.** Its
 noisy eSTOI at −15 dB is **0.121**, essentially the paper's quoted **0.1**
