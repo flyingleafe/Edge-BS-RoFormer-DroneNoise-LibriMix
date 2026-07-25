@@ -11,7 +11,8 @@ datasets, each sample a mixture Frame ``{mixture, target, meta}`` consumed by
 - **SE-valid-harmonic** — the same protocol per Pass-B category (drone + the
   harmonic categories), for the per-category transfer table.
 - **SE-valid-avq-survey** (F2) — the fixed valid set of the Mukhutdinov et al.
-  2023 IEEE Access replication: 8 kHz, 3.0 s, SNR grid {−25,−20,−15,−10,−5} dB,
+  2023 IEEE Access replication: 16 kHz (project-native; the paper's 8 kHz is
+  deliberately not replicated), 3.0 s, SNR grid {−25,−20,−15,−10,−5} dB,
   noise = the 5 AVQ ego-noise sequences, first channel only. Per the paper the
   *same* noise recordings feed train and valid (only the speech is split), so
   this category deliberately has **no** noise holdout. See
@@ -68,8 +69,8 @@ from data_processing.online_mixing import (
 from utils.paths import get_data_root
 
 # Defaults of the F1 sets; every builder function takes the rate/grid as an
-# argument, so other replications (F2: 8 kHz, narrower grid) reuse the code
-# without changing these.
+# argument, so other replications (F2: same 16 kHz rate, narrower SNR grid,
+# 3.0 s crops) reuse the code without changing these.
 SR = 16000
 SNR_GRID = [-30, -25, -20, -15, -10, -5, 0]
 
@@ -151,7 +152,7 @@ DATASET_PRESETS: dict[str, dict] = {
     "avq": {
         "name": "SE-valid-avq-survey",
         "categories": ["avq_ego"],
-        "sample_rate": 8000,
+        "sample_rate": SR,
         "snr_grid": [-25, -20, -15, -10, -5],
         "duration_s": 3.0,
     },

@@ -3,7 +3,9 @@
 # with the AVQ ego-noise recordings standing in for the survey's drone noise.
 #
 # Paper setup reproduced here:
-#   - everything at 8 kHz, 3.0 s crops (T = 24000 samples);
+#   - everything at 16 kHz (the project's native rate — the paper's 8 kHz is
+#     NOT replicated, see docs/experiments/f2-survey-replication.md), 3.0 s
+#     crops (T = 48000 samples);
 #   - noise = the drone ego-noise recordings, FIRST CHANNEL ONLY, reused for
 #     BOTH train and valid (only the speech is split);
 #   - speech = TIMIT 90/10 split -> substituted by LibriSpeech train-clean-100,
@@ -16,7 +18,7 @@
 # See docs/experiments/f2-survey-replication.md.
 
 task: speech_enhancement
-sample_rate: 8000
+sample_rate: 16000
 duration_s: 3.0
 base_seed: 20260725
 
@@ -40,8 +42,7 @@ sources:
         [19, 89, 211, 307, 445, 831, 1098, 1502, 1898, 2182, 2764, 3168, 3526,
          3982, 4267, 4813, 5322, 5703, 6081, 6476, 7067, 7312, 7800, 8238, 8630]
       # No packed cache: this stream is mono (one utterance per sample, vs the
-      # 8-channel RPS streams' eight), so direct FLAC decode keeps up, and an
-      # 8 kHz cache would duplicate the existing 16 kHz ones on disk.
+      # 8-channel RPS streams' eight), so direct FLAC decode keeps up.
       cache:
         mode: none
 

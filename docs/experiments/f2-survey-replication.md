@@ -19,42 +19,48 @@ data/regime difference; if we cannot, something in our training or evaluation
 pipeline is off and every F1 number inherits the defect.
 
 So this batch is a *faithful* re-run of the paper's DCUNet setup, deliberately
-changing as little as possible, and one thing at a time afterwards.
+changing as little as possible, and one thing at a time afterwards. The one
+up-front exception is the sample rate: we run at the project-native **16 kHz**
+rather than the paper's 8 kHz, keeping the paper's STFT resolution in
+milliseconds (see § Deliberate deviations for the reasoning and its consequence
+for the target numbers).
 
 ## The paper's setup (ground truth for this replication)
 
 | Item | Paper | Here |
 |---|---|---|
-| Sample rate | 8 kHz (everything resampled) | same |
+| Sample rate | 8 kHz (everything resampled) | **16 kHz** — the project's native rate (deliberate deviation, see below) |
 | Speech | TIMIT, 90 % train / 10 % held out | **LibriSpeech train-clean-100** (TIMIT is not in our data lake), 25 of 246 speakers (~10 %) held out |
 | Noise | 5 drone ego-noise sequences, **first channel only** | AVQ `S1_seq1`, `S1_seq2`, `S1_seq3`, `S2_seq1`, `S2_seq2`, channel 0 |
 | Train/valid noise | the **same** 5 recordings for both; only speech is split | same |
-| Crop | T = 24000 samples = 3.0 s | same |
+| Crop | T = 24000 samples = 3.0 s | same 3.0 s, i.e. T = 48000 samples @ 16 kHz |
 | Train SNR | U(−25, −5) dB, mixed on the fly | same |
 | Valid | fixed mixtures at SNR ∈ {−25,−20,−15,−10,−5} dB | same, 50 clips/point = 250 clips |
-| Loss | SI-SDR only | `conf/loss/si_sdr_8k.yaml` (the 8 kHz twin of `si_sdr.yaml`) |
+| Loss | SI-SDR only | `conf/loss/si_sdr.yaml` (the standard 16 kHz group) |
 | Model | DCUNet-10 (10 complex conv layers) | `model_type: dcunet`, `dcunet_num_encoder_layers: 5` (5 enc + 5 dec = 10) |
-| STFT | 64 ms window / 16 ms hop | n_fft 512, hop 128, dim_f 256 @ 8 kHz |
+| STFT | 64 ms window / 16 ms hop | **the same 64 ms / 16 ms**, i.e. n_fft 1024, hop 256, dim_f 512 @ 16 kHz |
 | Optim | Adam, lr 1e-3, plateau patience 5 (×0.1), early-stop patience 10, batch 32 | same |
 
 **Replication target.** The paper reports DCUNet at **−15 dB input SNR**:
 SI-SDR **+3.7 dB**, eSTOI **0.4**, PESQ **1.9**. Caveat: the paper's headline
 numbers are on a *different* drone (the AS dataset), whereas we substitute AVQ —
 AVQ's ego-noise is a comparatively benign, stationary onboard recording, so if
-anything the AVQ validation should be **easier** than the paper's. Reaching or
-beating the target is the pass condition; landing far below it points at our
-pipeline, not at DCUNet.
+anything the AVQ validation should be **easier** than the paper's. Second
+caveat: those numbers were measured at 8 kHz on TIMIT and we run at 16 kHz on
+LibriSpeech, so they are a **reference point rather than an exact bar** (see
+§ Deliberate deviations). Landing near or above them is the pass condition;
+landing far below still points at our pipeline, not at DCUNet.
 
 ## Wiring
 
 | Component | Config |
 |---|---|
 | Experiment | `conf/experiment/f2_dcunet_avq_survey.yaml` |
-| Model | `conf/model/f2_dcunet_survey.yaml` (8 kHz / 512 / 128 / 256, chunk 24000) |
+| Model | `conf/model/f2_dcunet_survey.yaml` (16 kHz / n_fft 1024 / hop 256 / dim_f 512, chunk 48000) |
 | Data | `conf/data/f2_avq_survey.yaml` |
 | Train stream | `conf/online_mix/se_avq_survey.yaml` (`kind: audio_pool`, `include_keys` = the 5 ego-noise keys, `channel: 0`) |
 | Valid set | `scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-local` → `SE-valid-avq-survey` (250 clips) |
-| Loss / metrics | `si_sdr_8k` / `separation_basic_8k` (`separation_full` at eval for PESQ/eSTOI) |
+| Loss / metrics | `si_sdr` / `separation_basic` (`separation_full` at eval for PESQ/eSTOI) |
 
 Run:
 
@@ -69,7 +75,7 @@ python eval.py  experiment=f2_dcunet_avq_survey metrics=separation_full
 The replication is step 1 of a three-step ladder that walks the *training noise
 distribution* from the paper's setting to F1's, one step at a time. Everything
 else is frozen: same model (`f2_dcunet_survey`, DCUNet-10), same loss
-(`si_sdr_8k`), same 8 kHz rate, same 3.0 s / 24000-sample crop, same train SNR
+(`si_sdr`), same 16 kHz rate, same 3.0 s / 48000-sample crop, same train SNR
 range U(−25, −5) dB, same optimizer and schedule (Adam 1e-3, plateau ×0.1
 patience 5, early stop patience 10, batch 32, `samples_per_validation: 41580`),
 same speech source and same 25 held-out speakers — **and the same fixed
@@ -91,7 +97,7 @@ noise-distribution breadth at fixed capacity, not a domain shift away from the
 test condition.
 
 **All three arms validate on the same fixed `SE-valid-avq-survey` set**
-(250 clips at SNR {−25,−20,−15,−10,−5} dB, 8 kHz) — `conf/data/f2_avq_survey.yaml`,
+(250 clips at SNR {−25,−20,−15,−10,−5} dB, 16 kHz) — `conf/data/f2_avq_survey.yaml`,
 `f2_alldrone.yaml` and `f2_allharmonic.yaml` differ only in the `train:` block.
 This is deliberate. Holding validation fixed is what makes the training-noise
 pool the single manipulated variable: the monitored metric (`si_sdr`, max), the
@@ -111,6 +117,23 @@ two batches.
 
 ## Deliberate deviations (and why)
 
+- **16 kHz, not the paper's 8 kHz — but the paper's STFT in milliseconds.**
+  The survey's 8 kHz is a literal detail of that study, not a property worth
+  replicating: the project's native rate is 16 kHz and the in-repo Paper-1
+  replication already trains DCUNet successfully there (SI-SDR **−8.09 dB**
+  overall on DN-LM, ahead of Edge-BS-RoFormer at **−9.94 dB**). So this batch
+  runs at 16 kHz while preserving what actually defines the paper's front-end —
+  its STFT *resolution in time*: window 64 ms / hop 16 ms, which at 16 kHz is
+  n_fft **1024** / hop **256** (it was 512/128 at 8 kHz). Note that this is 2x
+  finer in time than the F1 SE baseline's n_fft 2048 / hop 512 (128 ms / 32 ms),
+  so the F2 arms are not merely F1 with a different noise pool.
+  *Consequence, stated honestly:* the paper's absolute targets (SI-SDR +3.7 dB,
+  eSTOI 0.4, PESQ 1.9 at −15 dB) were measured **at 8 kHz on TIMIT**, so at
+  16 kHz on LibriSpeech they are a **reference point, not an exact bar** — both
+  the bandwidth (the model must now also reconstruct 4–8 kHz, and eSTOI/PESQ are
+  computed over a wider band) and the speech corpus differ. Read the targets as
+  an order-of-magnitude pass condition: landing near them means the pipeline is
+  sound, landing far below still points at our pipeline.
 - **LibriSpeech instead of TIMIT.** TIMIT is not in the data lake. The speech
   split is by *speaker* (the F1 `HELDOUT_SPEAKERS` list, 25 of 246 ≈ 10 %),
   which is stricter than the paper's 90/10 utterance split — train and valid
@@ -123,13 +146,13 @@ two batches.
   set to 41580 samples (≈1300 steps at batch 32) — the paper's own epoch (10
   passes over its 4158 training utterances), used because both patiences
   (Nα = 5, NE = 10) are counted in epochs. Same value in all three arms.
-- **8 ms zero-padded tail.** 24000 is not a multiple of the 128-sample hop
-  (24000/128 = 187.5), so the iSTFT returns 23936 samples and DCUNet zero-pads
-  the last 64 (8 ms, 0.27 % of the clip) back to 24000, emitting
-  `UserWarning: DCUNet output length mismatch: output=23936, input=24000,
-  diff=-64. Consider adjusting chunk_size.` once per process. Kept as-is because
-  T = 24000 is the paper's number; a hop-aligned 23936 would silence it.
-- **Valid set is published + pinned** (`SE-valid-avq-survey@eb8953d0ece5`), so it
+- **8 ms zero-padded tail.** 48000 is not a multiple of the 256-sample hop
+  (48000/256 = 187.5), so the iSTFT returns 47872 samples and DCUNet zero-pads
+  the last 128 (8 ms, 0.27 % of the clip) back to 48000, emitting
+  `UserWarning: DCUNet output length mismatch: output=47872, input=48000,
+  diff=-128. Consider adjusting chunk_size.` once per process. Kept as-is
+  because T = 3.0 s is the paper's crop; a hop-aligned 47872 would silence it.
+- **Valid set is published + pinned** (`SE-valid-avq-survey@a88d9204506d`), so it
   streams from R2 on any backend. Rebuild with
   `python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey`;
   an unpublished local build can be read with a `local_root: <dir>` param.

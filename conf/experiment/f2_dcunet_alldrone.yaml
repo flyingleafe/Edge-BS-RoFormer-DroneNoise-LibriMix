@@ -1,7 +1,7 @@
 # @package _global_
 # F2 step 2 — the Mukhutdinov et al. 2023 (IEEE Access) DCUNet survey setup,
 # UNCHANGED except that the training noise pool is widened from AVQ-only to all
-# drone noise sources: 8 kHz, 3 s crops, all-drone noise x LibriSpeech, SNR
+# drone noise sources: 16 kHz, 3 s crops, all-drone noise x LibriSpeech, SNR
 # U(-25,-5) dB online, SI-SDR loss, Adam 1e-3, plateau patience 5 (x0.1),
 # early stop patience 10, batch 32. Valid set is the same fixed
 # SE-valid-avq-survey as step 1.
@@ -9,8 +9,8 @@
 defaults:
   - override /data: f2_alldrone
   - override /model: f2_dcunet_survey
-  - override /loss: si_sdr_8k
-  - override /metrics: separation_basic_8k
+  - override /loss: si_sdr
+  - override /metrics: separation_basic
 
 experiment_name: f2_dcunet_alldrone
 amp: false # complex STFT/iSTFT (ComplexHalf gaps under autocast)

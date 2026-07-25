@@ -1,13 +1,13 @@
 # F2 step 3 data: the Mukhutdinov et al. 2023 (IEEE Access) survey setup with
 # the training noise widened from AVQ-only to ALL HARMONIC noise sources
-# (category-uniform pool). Everything at 8 kHz, 3.0 s (24000-sample) crops.
+# (category-uniform pool). Everything at 16 kHz, 3.0 s (48000-sample) crops.
 # See conf/online_mix/se_survey_allharmonic.yaml and
 # docs/experiments/f2-survey-replication.md. `samples_per_validation` (the
 # online "epoch" size for this infinite stream) is set in the experiment file.
 #
 # VALID SET IS DELIBERATELY UNCHANGED. All three F2 steps validate on the same
 # fixed `SE-valid-avq-survey` set (250 clips, SNR {-25,-20,-15,-10,-5} dB,
-# 8 kHz). Holding validation identical across the arms is what makes the
+# 16 kHz). Holding validation identical across the arms is what makes the
 # training-noise pool the single manipulated variable: the monitored metric,
 # the LR-on-plateau trigger and the early-stopping criterion are then measured
 # on exactly the same distribution in every arm, so the step-to-step deltas are
@@ -21,7 +21,7 @@ valid:
   _target_: data_processing.frame_datasets.SEValidFrameDataset
   params:
     dataset: SE-valid-avq-survey
-    sample_rate: 8000
+    sample_rate: 16000
   iterable: false
 batch_size: null
 num_workers: null

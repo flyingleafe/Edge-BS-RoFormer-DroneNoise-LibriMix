@@ -1,15 +1,15 @@
 # @package _global_
 # F2 — faithful replication of the DCUNet setup of Mukhutdinov et al. 2023
 # (IEEE Access, "Deep Learning Models for Single-Channel Speech Enhancement on
-# Drones"): 8 kHz, 3 s crops, AVQ ego-noise (channel 0) x LibriSpeech, SNR
+# Drones"): 16 kHz, 3 s crops, AVQ ego-noise (channel 0) x LibriSpeech, SNR
 # U(-25,-5) dB online, SI-SDR loss, Adam 1e-3, plateau patience 5 (x0.1),
 # early stop patience 10, batch 32.
 # See docs/experiments/f2-survey-replication.md.
 defaults:
   - override /data: f2_avq_survey
   - override /model: f2_dcunet_survey
-  - override /loss: si_sdr_8k
-  - override /metrics: separation_basic_8k
+  - override /loss: si_sdr
+  - override /metrics: separation_basic
 
 experiment_name: f2_dcunet_avq_survey
 amp: false # complex STFT/iSTFT (ComplexHalf gaps under autocast)
