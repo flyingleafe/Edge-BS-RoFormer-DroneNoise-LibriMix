@@ -117,6 +117,20 @@ Levers launched next: `ckla_p1_4s` (4 s native context — refuted for the
 transformer, untested for a recurrent tracker), `ckla_p1_norot`
 (complex-path attribution on real data).
 
+### Mechanistic activation analysis (2026-07-26, DONE)
+
+Full §6-kit instrumentation of the trained `ckla_p1_if` head on 12 real
+valid clips — see **[`ckla-activation-analysis.md`](./ckla-activation-analysis.md)**
+(tooling: `scripts/ckla_activation_analysis.py` + `return_state`/
+`capture_state` taps in `src/models/ckla.py`). Headlines: the head is a
+fixed multi-horizon accumulator bank with a regime-level gate (gain φ/λ →
+10⁻⁶, static slot mix, λ_v constant within cruise); rotation IS weakly
+load-bearing on real DREGON (+0.31 PIT-MAE when zeroed, ω-excursions
+track GT RPS at r = 0.82 in layer 2) unlike the P0 null, but null on
+FLY124; and BOTH ckla_p1 and g2_if ignore a ×1.02 frequency scaling
+(≈0.05% response vs ideal 2%) while CKLA is *more* gain/recoloring
+sensitive — the "CKLA = comb-reader" cross-drone hypothesis is refuted.
+
 ## Conclusion
 
 _Pending._

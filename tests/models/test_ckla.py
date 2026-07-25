@@ -231,7 +231,54 @@ def test_registry_builds_both_variants():
     assert m_mag.frontend.out_channels == 1  # stft_mag
 
 
-# ─── 6. Rotation is wired ────────────────────────────────────────────────────
+# ─── 6. State instrumentation (return_state / capture_state) ────────────────
+
+
+def test_return_state_parity_and_shapes():
+    rng = np.random.default_rng(42)
+    B, T, N, D = 2, 17, 4, 8
+    abar_mag, omega, pbar, k, v, lam_v, q = _random_inputs(rng, B, T, N, D)
+    y_re0, y_im0 = _torch_scan(abar_mag, omega, pbar, k, v, lam_v, q, dtype=torch.float64)
+
+    am, cw, sw, pb, kk, vv, lv, qq = (
+        torch.as_tensor(a, dtype=torch.float64)
+        for a in (abar_mag, np.cos(omega), np.sin(omega), pbar, k, v, lam_v, q)
+    )
+    y_re, y_im, state = complex_kla_scan(am, cw, sw, pb, kk, vv, lv, qq, return_state=True)
+    # Default path must be byte-identical: same ops, same order.
+    assert torch.equal(y_re, y_re0) and torch.equal(y_im, y_im0)
+    for name in ("lam", "eta_re", "eta_im"):
+        assert state[name].shape == (B, T, N, D)
+    assert state["contrib"].shape == (B, T, N)
+    assert (state["lam"] >= 0).all()
+    # contrib_t[n] = q_t[n]·‖μ_t[n,:]‖ — recompute at the last step.
+    mu_re = state["eta_re"][:, -1] / state["lam"][:, -1].clamp(min=1e-6)
+    mu_im = state["eta_im"][:, -1] / state["lam"][:, -1].clamp(min=1e-6)
+    expect = torch.as_tensor(q, dtype=torch.float64)[:, -1] * (mu_re**2 + mu_im**2).sum(-1).sqrt()
+    np.testing.assert_allclose(state["contrib"][:, -1].numpy(), expect.numpy(), rtol=1e-10)
+
+
+def test_layer_capture_state():
+    torch.manual_seed(0)
+    layer = ComplexKLALayer(32, n_state=8)
+    x = torch.randn(2, 20, 32)
+    with torch.no_grad():
+        y_plain = layer(x)
+        layer.capture = []
+        layer.capture_state = True
+        y_cap = layer(x)
+    assert torch.equal(y_plain, y_cap)  # capture must not perturb the output
+    cap = layer.capture[-1]
+    assert cap["omega"].shape == (2, 20, 8)
+    assert cap["lam"].shape == (2, 20, 8, 32)
+    assert cap["eta_re"].shape == (2, 20, 8, 32)
+    assert cap["eta_im"].shape == (2, 20, 8, 32)
+    assert cap["contrib"].shape == (2, 20, 8)
+    # omega is the pre-cos/sin phase: cos(omega) must equal the captured cos_w.
+    np.testing.assert_allclose(np.cos(cap["omega"].numpy()), cap["cos_w"].numpy(), atol=1e-6)
+
+
+# ─── 7. Rotation is wired ────────────────────────────────────────────────────
 
 
 def test_rotation_shift_changes_output():

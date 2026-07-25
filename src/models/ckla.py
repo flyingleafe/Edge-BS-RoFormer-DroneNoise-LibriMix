@@ -54,6 +54,7 @@ front-end that beat baseline). Registry keys ``simple_conv_v2_ckla`` /
 from __future__ import annotations
 
 import math
+from typing import Literal, overload
 
 import torch
 import torch.nn.functional as F
@@ -66,6 +67,37 @@ from models.rps_predictor import (
 )
 
 
+@overload
+def complex_kla_scan(
+    abar_mag: Tensor,
+    cos_w: Tensor,
+    sin_w: Tensor,
+    pbar: Tensor,
+    k: Tensor,
+    v: Tensor,
+    lam_v: Tensor,
+    q: Tensor,
+    eps: float = ...,
+    return_state: Literal[False] = ...,
+) -> tuple[Tensor, Tensor]: ...
+
+
+@overload
+def complex_kla_scan(
+    abar_mag: Tensor,
+    cos_w: Tensor,
+    sin_w: Tensor,
+    pbar: Tensor,
+    k: Tensor,
+    v: Tensor,
+    lam_v: Tensor,
+    q: Tensor,
+    eps: float = ...,
+    *,
+    return_state: Literal[True],
+) -> tuple[Tensor, Tensor, dict[str, Tensor]]: ...
+
+
 def complex_kla_scan(
     abar_mag: Tensor,
     cos_w: Tensor,
@@ -76,7 +108,8 @@ def complex_kla_scan(
     lam_v: Tensor,
     q: Tensor,
     eps: float = 1e-6,
-) -> tuple[Tensor, Tensor]:
+    return_state: bool = False,
+) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, dict[str, Tensor]]:
     """Flat complex-KLA scan (design §1). Sequential loop over T, fp32/fp64.
 
     The complex transition is split as ā_t = abar_mag · (cos ω_t + i sin ω_t):
@@ -100,11 +133,20 @@ def complex_kla_scan(
         Value and evidence precision per channel; lam_v > 0.
     eps : float
         Readout dead-zone: μ = η / max(λ, eps).
+    return_state : bool
+        When True, additionally return a dict of per-step stacked internals
+        (§6 diagnostics): ``lam``, ``eta_re``, ``eta_im`` — each (B, T, N, D)
+        post-update — and ``contrib`` (B, T, N), the per-slot readout
+        contribution q_t[n] · ‖μ_t[n, :]‖ (L2 over channels of the complex
+        posterior mean). The default path is byte-identical to
+        ``return_state=False`` — the extra tensors are only stacked, never
+        enter the y computation.
 
     Returns
     -------
     (y_re, y_im) : each (B, T, D)
         Real/imaginary parts of the readout y_t[d] = Σ_n q_t[n] · μ_t[n, d].
+        With ``return_state=True`` a third element, the state dict above.
     """
     B, T, _ = k.shape
     D = v.shape[-1]
@@ -120,6 +162,10 @@ def complex_kla_scan(
 
     ys_re: list[Tensor] = []
     ys_im: list[Tensor] = []
+    st_lam: list[Tensor] = []
+    st_eta_re: list[Tensor] = []
+    st_eta_im: list[Tensor] = []
+    st_contrib: list[Tensor] = []
     for t in range(T):
         k_t = k[:, t, :, None]  # (B, N, 1)
         q_t = q[:, t, :, None]
@@ -141,7 +187,26 @@ def complex_kla_scan(
         ys_re.append((q_t * (eta_re / lam_safe)).sum(dim=1))  # (B, D)
         ys_im.append((q_t * (eta_im / lam_safe)).sum(dim=1))
 
-    return torch.stack(ys_re, dim=1), torch.stack(ys_im, dim=1)
+        if return_state:
+            # Diagnostics only — never feeds back into the y path above.
+            st_lam.append(lam)
+            st_eta_re.append(eta_re)
+            st_eta_im.append(eta_im)
+            mu_re = eta_re / lam_safe
+            mu_im = eta_im / lam_safe
+            mu_norm = torch.sqrt((mu_re * mu_re + mu_im * mu_im).sum(dim=-1))  # (B, N)
+            st_contrib.append(q[:, t] * mu_norm)
+
+    y_re, y_im = torch.stack(ys_re, dim=1), torch.stack(ys_im, dim=1)
+    if not return_state:
+        return y_re, y_im
+    state = {
+        "lam": torch.stack(st_lam, dim=1),  # (B, T, N, D)
+        "eta_re": torch.stack(st_eta_re, dim=1),
+        "eta_im": torch.stack(st_eta_im, dim=1),
+        "contrib": torch.stack(st_contrib, dim=1),  # (B, T, N)
+    }
+    return y_re, y_im, state
 
 
 class ComplexKLALayer(nn.Module):
@@ -161,7 +226,12 @@ class ComplexKLALayer(nn.Module):
     storage and init.
 
     Set ``layer.capture = []`` to record the post-cast scan inputs each
-    forward (opt-in analysis/test tap, mirrors the fkla layer's).
+    forward (opt-in analysis/test tap, mirrors the fkla layer's). Setting
+    ``layer.capture_state = True`` alongside additionally records the scan
+    internals (``lam``/``eta_re``/``eta_im`` (B, T, N, D), per-slot readout
+    contributions ``contrib`` (B, T, N)) plus the pre-cos/sin rotation phase
+    ``omega`` (B, T, N) in the same captured dict — the §6 activation-analysis
+    tap. ``capture_state`` has no effect while ``capture`` is None.
 
     ``rotation=False`` removes the complex path entirely at TRAIN time (no
     ω0/s/W_ω parameters; the scan runs with cos ω = 1, sin ω = 0, i.e. the
@@ -210,6 +280,7 @@ class ComplexKLALayer(nn.Module):
         self.dt_param = nn.Parameter(torch.log(torch.expm1(dt0)))
 
         self.capture: list[dict[str, Tensor]] | None = None
+        self.capture_state: bool = False
 
     def ou_discretise(self) -> tuple[Tensor, Tensor]:
         """(abar_mag, pbar), both (n_state, d_model): e^{−γΔ} and the OU
@@ -262,7 +333,16 @@ class ComplexKLALayer(nn.Module):
                 }
             )
 
-        y_re, y_im = complex_kla_scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
+        if self.capture is not None and self.capture_state:
+            y_re, y_im, state = complex_kla_scan(
+                abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q, return_state=True
+            )
+            rec = self.capture[-1]
+            rec["omega"] = omega.detach().cpu()
+            for name, tens in state.items():
+                rec[name] = tens.detach().cpu()
+        else:
+            y_re, y_im = complex_kla_scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
         y = self.mix(torch.cat([y_re, y_im], dim=-1))
         y = self.norm(y) * F.silu(self.gate_proj(x))
         return self.out_proj(y)
