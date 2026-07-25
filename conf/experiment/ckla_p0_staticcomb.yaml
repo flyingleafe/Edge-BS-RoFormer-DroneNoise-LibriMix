@@ -1,0 +1,27 @@
+# @package _global_
+# CKLA P0 — the synthetic-comb gate for the complex-Kalman-linear-attention
+# head (docs/ckla-design.md §4, batch docs/experiments/ckla.md). EXACT clone
+# of e8_staticcomb_s1_transformer except the model: simple_conv_v2_ckla_mag
+# (same SimpleConvV2 trunk + stft_mag front-end, temporal head = stacked
+# ComplexKLA blocks instead of the 2-layer transformer). Static-comb noise
+# has zero amplitude→RPS shortcut, so the only cue is comb spacing — exactly
+# the tracking task the complex-OU inductive bias claims to own. Compare
+# train-dist PIT-MSE vs the E8 transformer arm at common epochs; real valid
+# is the transfer read.
+defaults:
+  - override /data: rps_static_comb_only
+  - override /model: simple_conv_v2_ckla_mag
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p0_staticcomb
+epochs: 100
+patience: 8
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

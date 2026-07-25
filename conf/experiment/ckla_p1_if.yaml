@@ -1,0 +1,27 @@
+# @package _global_
+# CKLA P1 — the real-protocol arm of the complex-Kalman-linear-attention
+# campaign (docs/ckla-design.md §5, batch docs/experiments/ckla.md). Mirrors
+# g2_if_transformer EXACTLY (same e12_real_fullflight online-mix stream,
+# pit_mse, patience 20) except the model: simple_conv_v2_ckla — the same
+# SimpleConvV2 trunk + stft_mag_if front-end (the only front-end that beat
+# baseline, G2b), temporal head = stacked ComplexKLA blocks (complex-OU
+# filter bank with input-dependent rotation) instead of the 2-layer
+# transformer. Bars: g2_if 2.481 (dregon_cruise) / 2.33 (fly124_cruise) on
+# scripts/rps_predictor_vk_eval.py.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p1_if
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
