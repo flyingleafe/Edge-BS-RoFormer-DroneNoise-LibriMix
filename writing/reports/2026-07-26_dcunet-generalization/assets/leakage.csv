@@ -1,0 +1,7 @@
+quantity,value
+"distinct noise clips in the pool","1332"
+"distinct underlying drone recordings","257"
+"training draws / validation draws","6480 / 720"
+"validation clips whose NOISE clip is also in train","714 / 720  (99.2%)"
+"validation clips reusing an EXACT train utterance","149 / 720  (20.7%)"
+"speaker overlap between train and valid","~100% (no speaker split)"
