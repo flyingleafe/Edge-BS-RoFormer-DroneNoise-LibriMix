@@ -26,13 +26,17 @@
     the five ego-noise recordings — of the *same drone*, differing only by
     recording session — costs *12.9 dB SI-SDR and 0.17 eSTOI*, while a control
     model trained on all five scores the two halves within 0.3 dB of each other.
-    The same mechanism explains the DN-LM result. DN-LM's train and validation
-    splits are generated from an identical specification differing only in random
-    seed, so *99.2%* of validation clips reuse a noise recording seen in
-    training and speaker overlap is total. Both prior benchmarks measure DCUNet
-    in the leaked condition; our held-out-noise benchmark does not, and the
-    ranking inverts accordingly — DCUNet is first of four on DN-LM and last of
-    four on ours, where it pushes eSTOI *below* the unprocessed input.
+    The same mechanism accounts for our DN-LM result. Our re-creation of DN-LM
+    generates its train and validation splits from an identical specification
+    differing only in random seed, so *99.2%* of validation clips reuse a noise
+    recording seen in training and speaker overlap is total. We are careful about
+    attribution here: the original Edge-BS-RoFormer repository publishes neither
+    the dataset nor a builder for it, and our re-creation *inverts* the paper's
+    headline comparison (Edge-BS-RoFormer 3.55 dB behind DCUNet at −15 dB, where
+    the paper reports it 2.2 dB ahead), so the leak is demonstrably ours and the
+    original split is unknown. DCUNet is first of four on our leaked
+    re-creation and last of four on our held-out benchmark, where it pushes
+    eSTOI *below* the unprocessed input.
     Mechanically, the failure is a split between two axes usually assumed to move
     together: on unseen noise DCUNet still removes 3–7 dB of noise *energy* while
     recovering essentially no *intelligibility*. This is specific to DCUNet, not
@@ -59,15 +63,16 @@
      all five scores the two halves within *0.3 dB / 0.016 eSTOI*, so the held-out
      half is not intrinsically harder.
 
-  3. *Both prior benchmarks are leaked on the noise axis.* The survey reuses its
-     five noise recordings between train and validation by design. DN-LM's two
-     splits come from one specification differing only in seed — *99.2%* of
-     validation clips reuse a training noise clip, and every one of the 257
-     underlying recordings appears in training.
+  3. *The survey's benchmark leaks noise by design*, reusing its five recordings
+     between train and validation. *Our DN-LM re-creation leaks it too* — both
+     splits come from one specification differing only in seed, so *99.2%* of
+     validation clips reuse a training noise clip. The *original* DN-LM ships no
+     dataset and no builder, and our re-creation inverts the paper's headline
+     comparison, so that leak is ours and theirs is unknown.
 
-  4. *The ranking inverts with leakage.* DCUNet is *1st of 4* on DN-LM
-     (leaked) and *last of 4* on our held-out benchmark, where its eSTOI (0.193)
-     falls *below* the unprocessed input (0.233).
+  4. *The ranking inverts with leakage.* DCUNet is *1st of 4* on our leaked
+     DN-LM re-creation and *last of 4* on our held-out benchmark, where its
+     eSTOI (0.193) falls *below* the unprocessed input (0.233).
 
   5. *The failure mode is a metric split, not a broken output.* On unseen noise
      DCUNet still gains 3–7 dB SI-SDR while gaining $approx 0$ eSTOI: it removes noise
@@ -88,9 +93,10 @@ this project:
 - The *2023 IEEE Access survey* @survey (this project's own prior work) reports
   DCUNet as the *best* of twelve models on drone ego-noise, reaching SI-SDR
   +3.7 dB, eSTOI 0.4 and PESQ 1.9 at −15 dB input.
-- Our *Paper-1 replication* on the DN-LM dataset put DCUNet *first* of four
-  models on SI-SDR and STOI, ahead of the Edge-BS-RoFormer that study was
-  built around.
+- Our *Paper-1 replication*, on our own re-creation of the DN-LM dataset, put
+  DCUNet *first* of four models on SI-SDR and STOI, ahead of the
+  Edge-BS-RoFormer that study was built around — the reverse of what that paper
+  reports.
 
 Either our pipeline was broken, or the three benchmarks were not measuring the
 same thing. This report establishes that it is the latter, and identifies
@@ -108,8 +114,8 @@ This is the whole story in one table, so it comes first.
     table.header([*Benchmark*], [*Noise held out?*], [*Speech held out?*], [*How the split is made*]),
     [2023 survey @survey], [*No* — by design], [Yes (90/10 utterances)],
     [The same 5 ego-noise recordings are used for train *and* validation; only the speech is split.],
-    [DN-LM (Paper 1)], [*No*], [*No*],
-    [`DN-LM-train` and `DN-LM-valid` are the *same generator spec*, differing only in `seed: 42 → 43`. Both draw uniformly from the same file lists.],
+    [DN-LM — *our re-creation*], [*No*], [*No*],
+    [`DN-LM-train` and `DN-LM-valid` are the *same generator spec*, differing only in `seed: 42 → 43`. Both draw uniformly from the same file lists. The *original* dataset is unpublished (no data, no builder), so its split is unknown.],
     [SE-valid-drone / -harmonic (F1)], [*Yes* — whole recordings], [Yes (25 of 246 speakers)],
     [Per-dataset shard holdout: validation draws recordings that training never sees.],
     [SE-valid-avq-split (this report)], [*Both, separately*], [Yes (same 25 speakers)],
@@ -304,21 +310,22 @@ validation mixture therefore contains noise the model was trained on. By the
 measurement in Result 2, that is worth roughly *13 dB SI-SDR and 0.17 eSTOI* to
 DCUNet.
 
-== DN-LM (the Edge-BS-RoFormer replication)
+== DN-LM — *our re-creation*, and an important caveat
 
-This one is not a protocol choice but a property of the generator. `DN-LM-train`
-and `DN-LM-valid` are declared by the *same* derived-dataset specification —
-identical LibriSpeech pin, identical `drone_audio` pin, identical subpaths and
-mixing parameters. The only differences are `seed: 42 → 43` and
-`num_samples: 6480 → 720`. Both splits then draw, uniformly and with
-replacement, from the same two file lists.
+Here the leak is not a protocol choice but a property of the generator — and,
+crucially, of *our* generator. `DN-LM-train` and `DN-LM-valid` are declared by
+the *same* derived-dataset specification in
+`src/data_processing/derivations.py` — identical LibriSpeech pin, identical
+`drone_audio` pin, identical subpaths and mixing parameters. The only differences
+are `seed: 42 → 43` and `num_samples: 6480 → 720`. Both splits then draw,
+uniformly and with replacement, from the same two file lists.
 
 #figure(
   table(
     columns: 2,
     align: (left, right),
     stroke: 0.5pt + luma(180),
-    table.header([*DN-LM leakage*], [*Value*]),
+    table.header([*DN-LM leakage (our re-creation)*], [*Value*]),
     [distinct noise clips in the pool], [1332],
     [distinct underlying drone recordings], [257],
     [training draws / validation draws], [6480 / 720],
@@ -326,14 +333,47 @@ replacement, from the same two file lists.
     [validation clips reusing an *exact* train utterance], [149 / 720 (20.7%)],
     [speaker overlap], [$approx 100%$ (no speaker split)],
   ),
-  caption: [Leakage arithmetic for DN-LM. With 6480 draws from 1332 clips, the
-    probability that a given clip is never drawn in training is
+  caption: [Leakage arithmetic for our DN-LM re-creation. With 6480 draws from
+    1332 clips, the probability that a given clip is never drawn in training is
     $(1 - 1\/1332)^6480 = 0.0077$; all 257 underlying recordings appear in
     training with near-certainty.],
 )
 
-DN-LM is therefore *more* leaked than the survey, not less: it leaks the speaker
-set and a fifth of the exact utterances in addition to the noise.
+#block(fill: rgb("#fffdf0"), inset: 9pt, radius: 4pt, width: 100%, stroke: 0.5pt + rgb("#b58900"))[
+  *This leak is ours, and must not be attributed to the published work.* The
+  original Edge-BS-RoFormer repository ships *neither the DN-LM dataset nor any
+  script that builds it* — `datasets/` is in its `.gitignore`, there are no
+  releases and no dataset link, and the repository is 78 KB of code. Its
+  `dataset.py` simply takes a training directory and a validation directory,
+  so the split is entirely a property of a data-preparation step that was never
+  published. Our DN-LM is therefore an independent re-creation
+  (`scripts/create_dataset.py`), and the 99.2% figure above characterises *it*.
+
+  There is positive evidence that the two differ. The paper reports
+  Edge-BS-RoFormer *beating* DCUNet by *2.2 dB* SI-SDR at −15 dB input. On our
+  re-creation, at the same operating point, Edge-BS-RoFormer comes in *3.55 dB
+  behind* DCUNet — a *5.75 dB swing with the sign reversed*:
+
+  #align(center, table(
+    columns: 4,
+    align: (left, center, center, center),
+    stroke: 0.5pt + luma(180),
+    table.header([*At −15 dB input*], [*DCUNet*], [*Edge-BS-RoFormer*], [*Δ*]),
+    [our DN-LM re-creation (n = 128)], [−7.90], [−11.45], [*−3.55 dB*],
+    [paper's reported claim], [—], [—], [*+2.20 dB*],
+  ))
+
+  We did not reproduce the paper's headline comparison, so our re-creation is
+  demonstrably not their dataset. The *direction* of the discrepancy is what
+  leakage predicts — leakage flatters the memorisation-prone model most, and
+  DCUNet is exactly that model by the measurement in Result 2 — but this is
+  suggestive, not proof, and the original dataset's split remains *unknown*
+  rather than shown to be sound or unsound.
+]
+
+The practical consequence is confined but real: *conclusions this project has
+drawn from its own DN-LM re-creation are unsafe*, DCUNet's first-place finish
+there most of all.
 
 == The ranking inverts with leakage
 
@@ -368,8 +408,9 @@ of *0.233*: it is not merely unhelpful but actively harmful to intelligibility.
   our pipeline is sound.
 - Holding out noise recordings of the same drone costs DCUNet 12.9 dB SI-SDR and
   0.17 eSTOI, with a control excluding "the held-out half is harder".
-- DN-LM's train/valid splits share 99.2% of noise clips and $approx 100%$ of speakers,
-  measured from the generator specification and the source file inventory.
+- *Our re-creation of* DN-LM shares 99.2% of noise clips and $approx 100%$ of
+  speakers between train and valid, measured from the generator specification and
+  the source file inventory.
 - At least one modern architecture (MP-SENet) does generalise to unheard rotor
   noise on this data, so the task is learnable.
 
@@ -380,6 +421,10 @@ of *0.233*: it is not merely unhelpful but actively harmful to intelligibility.
   cross-band mixing are all untested candidates.
 - Whether the survey's *absolute* PESQ is reachable: ≈0.36 of the gap survives the
   wideband/narrowband correction and is unexplained.
+- *Whether the original DN-LM dataset was leaked.* Its data and construction are
+  unpublished. Our re-creation is leaked and does not reproduce the paper's
+  headline ranking, which shows the two differ but says nothing about which way
+  the original was split.
 - Whether DCUNet's broad-pool arms would improve with much longer training. They
   early-stopped or plateaued with validation degrading while training loss fell,
   which argues against it, but no long-run was done.
@@ -401,9 +446,10 @@ of *0.233*: it is not merely unhelpful but actively harmful to intelligibility.
   build or cite*, and state it explicitly in every results table. Two of the
   three benchmarks in this project's own lineage leak it, and the leak is worth
   more than the difference between architectures.
-+ *Re-examine any other conclusion drawn from DN-LM*, since its leakage affects
-  every model measured on it, not only DCUNet — though it should flatter
-  memorisation-prone models most.
++ *Re-examine any conclusion drawn from our DN-LM re-creation*, since its
+  leakage affects every model measured on it, not only DCUNet — though it should
+  flatter memorisation-prone models most. Rebuilding it with a recording-level
+  and speaker-level holdout is cheap and would make it usable again.
 
 = Reproducing this
 

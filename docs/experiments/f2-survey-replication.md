@@ -441,12 +441,12 @@ MP-SENet gains +0.14…+0.29 eSTOI where arm 2 gains ~0.
 So the broad harmonic-noise task is learnable, and modern architectures learn
 it. The limitation is DCUNet's.
 
-### The DN-LM benchmark is leaked too — and more so
+### Our DN-LM re-creation is leaked too — but the leak is OURS
 
 The same question applies to this project's *other* prior DCUNet result: the
 Paper-1 (Edge-BS-RoFormer) replication on DN-LM, where DCUNet ranked **first** of
-four on SI-SDR and STOI. It is leaked as well, and not by protocol choice but as
-a property of the generator: `DN-LM-train` and `DN-LM-valid` are declared by the
+four on SI-SDR and STOI. Our re-creation of that dataset is leaked as well, not
+by protocol choice but as a property of the generator: `DN-LM-train` and `DN-LM-valid` are declared by the
 **same** derived-dataset spec in `src/data_processing/derivations.py` — identical
 LibriSpeech pin, identical `drone_audio` pin, identical subpaths and mixing
 params — differing only in `seed: 42 → 43` and `num_samples: 6480 → 720`. Both
@@ -479,9 +479,10 @@ the noise.
 | TF-GridNet | — | −2.57 — 3rd |
 
 On the held-out benchmark DCUNet's eSTOI is 0.193 against an unprocessed 0.233 —
-actively harmful to intelligibility. Consequence: any conclusion drawn from DN-LM
-inherits this leak for *every* model measured on it, though it should flatter
-memorisation-prone models most.
+actively harmful to intelligibility. Consequence: any conclusion drawn from **our
+DN-LM re-creation** inherits this leak for *every* model measured on it, though
+it should flatter memorisation-prone models most. Rebuilding it with
+recording-level and speaker-level holdout is cheap and would make it usable.
 
 Full write-up: `writing/reports/2026-07-26_dcunet-generalization/`.
 
