@@ -1,0 +1,30 @@
+# @package _global_
+# Transformer-IF control in the FREQ-SCALE training regime (CKLA campaign,
+# docs/experiments/ckla.md). Exact clone of g2_if_transformer (the current
+# neural champion: full-envelope val/mse 63.7, dregon_cruise 2.481) with the
+# train policy swapped to e12_fullflight_freqscale_dload — the same solo
+# freq-scale augmentation the ckla_p1_freqscale arm used (63.0). Makes the
+# freqscale comparison matched: transformer+freqscale vs CKLA+freqscale
+# isolates the head under identical spacing pressure, and tests whether the
+# augmentation alone lifts the transformer past its own floor.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_if
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g2_if_freqscale
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
