@@ -1,0 +1,23 @@
+# @package _global_
+# Edge-BS-RoFormer-RPS on the plain E12 protocol (docs/experiments/ckla.md §
+# comparison ladder). Same stream/loss/schedule as every P1 arm; model =
+# the Paper-1 SE trunk with an RPS head (conf/model/edge_bs_rof_rps.yaml).
+# Baseline cell for the rotary-embedding harmonic-tracking claim; the
+# freqscale twin is ebsrof_rps_freqscale.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: edge_bs_rof_rps
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ebsrof_rps_e12
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

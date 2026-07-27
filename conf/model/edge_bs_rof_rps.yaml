@@ -1,0 +1,21 @@
+# edge_bs_rof_rps — rps_prediction: the Edge-BS-RoFormer trunk (Liu et al.,
+# Drones 2025 — the Paper-1 SE architecture, F1 a1_edge_bs_rof_fa_rope48
+# configuration: dim 48, depth 3, RoPE on both axes, flash attention) with
+# the mask estimators replaced by a band-attention pool + linear RPS head
+# (src/models/edge_bs_rof/rps.py). Tests the paper's claim that rotary
+# time/freq embeddings help track harmonic lines — on the task where the
+# target IS the harmonic-line trajectory. Phase-aware by construction
+# (internal complex STFT, re/im per band).
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: edge_bs_rof_rps
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

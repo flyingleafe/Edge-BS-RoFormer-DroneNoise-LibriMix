@@ -1,0 +1,26 @@
+# @package _global_
+# Edge-BS-RoFormer-RPS in the freq-scale regime — the matched-comparison
+# cell the user requested: same solo spacing-pressure augmentation as
+# ckla_p1_freqscale and g2_if_freqscale, so the three heads (CKLA /
+# transformer / roformer) are compared under identical training conditions.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: edge_bs_rof_rps
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ebsrof_rps_freqscale
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

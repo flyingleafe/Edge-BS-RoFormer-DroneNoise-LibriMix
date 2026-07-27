@@ -87,7 +87,16 @@ from models.rps_predictor import (
 )
 from models.salience_rps import BasicPitchSalience, LateDeepSalience
 
+
 # Verbatim copy of the former train_rps_predictor.py::MODEL_REGISTRY.
+def _build_edge_bs_rof_rps(**kw: Any):
+    """Lazy builder — the roformer stack imports beartype/einops/
+    rotary_embedding_torch, which the rest of the registry never needs."""
+    from models.edge_bs_rof.rps import BSRoformerRPS
+
+    return BSRoformerRPS(**kw)
+
+
 RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv": SimpleConv,
     "simple_conv_v2": SimpleConvV2,
@@ -124,6 +133,11 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_v2_ckla_mag_norot": lambda **kw: SimpleConvV2CKLA(
         frontend_key="stft_mag", rotation=False, **kw
     ),
+    # Edge-BS-RoFormer trunk adapted to RPS (models/edge_bs_rof/rps.py):
+    # the paper's rotary-embedding harmonic-tracking claim, tested on the
+    # task where the target IS the harmonic-line trajectory. Lazy import —
+    # the roformer stack pulls beartype/einops/rotary_embedding_torch.
+    "edge_bs_rof_rps": _build_edge_bs_rof_rps,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,
     "simple_conv_v2_multires": SimpleConvV2MultiRes,
     "simple_conv_v2_dwt": SimpleConvV2Wavelet,
