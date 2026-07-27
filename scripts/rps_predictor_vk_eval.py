@@ -350,6 +350,14 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_p1_freqscale/checkpoints/best.ckpt",
         None,
     ),
+    # Protocol-B (legacy-equivalent epochs/batch, augs live from epoch 10):
+    # the pnoise arm re-run — interim reads use whatever best.ckpt the
+    # still-training kaggle job has uploaded; re-eval after it finishes.
+    "ckla_pnoise_pb_best": (
+        "ckla_p1_pnoise",
+        "r2://ml-data/artifacts/ckla_p1_pnoise_pb/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
