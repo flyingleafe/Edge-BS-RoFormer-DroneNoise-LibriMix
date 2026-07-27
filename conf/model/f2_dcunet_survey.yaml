@@ -1,0 +1,67 @@
+# F2 — DCUNet-10 exactly as in Mukhutdinov et al. 2023 (IEEE Access, "Deep
+# Learning Models for Single-Channel Speech Enhancement on Drones").
+# Copy of conf/model/a1_baseline_dcunet.yaml with ONLY the paper's audio
+# front-end changed:
+#   - 16 kHz everywhere — the project's native rate, NOT the paper's 8 kHz. The
+#     8 kHz choice is a literal detail of the 2023 survey that is not worth
+#     replicating (our own Paper-1 replication trains DCUNet at 16 kHz fine);
+#     see docs/experiments/f2-survey-replication.md § Deliberate deviations.
+#   - the paper's STFT is preserved in TIME units, not sample units: window
+#     64 ms / hop 16 ms -> n_fft 1024, hop_length 256 @ 16 kHz (it was 512/128
+#     @ 8 kHz), dim_f = n_fft/2 = 512. This is 2x finer in time than the F1
+#     baseline's n_fft 2048 / hop 512 (128 ms / 32 ms).
+#   - T = 48000 samples = 3.0 s crops -> dim_t = 48000/256 + 1 = 188 STFT
+#     frames (torch.stft, center=True; verified empirically). NOTE: DCUNet's
+#     STFTProcessor reads only n_fft/hop_length/dim_f — dim_t is carried for
+#     bookkeeping/other models.
+# DCUNet-10 = 10 complex conv layers = 5 encoder + 5 decoder layers, i.e. the
+# default dcunet_num_encoder_layers (5) of the original config. See
+# docs/experiments/f2-survey-replication.md.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.registry.build_legacy_inline
+params:
+  model_type: dcunet
+  config:
+    audio:
+      chunk_size: 48000
+      dim_f: 512
+      dim_t: 188
+      hop_length: 256
+      n_fft: 1024
+      num_channels: 1
+      sample_rate: 16000
+      min_mean_abs: 0.0
+    model: dcunet
+    training:
+      batch_size: 32
+      gradient_accumulation_steps: 1
+      grad_clip: 0
+      instruments:
+      - vocals
+      - noise
+      lr: 0.001
+      patience: 5
+      reduce_factor: 0.1
+      target_instrument: vocals
+      num_epochs: 1000
+      num_steps: 200
+      q: 0.95
+      coarse_loss_clip: true
+      ema_momentum: 0.999
+      optimizer: adam
+      other_fix: false
+      use_amp: false
+      early_stop:
+        enabled: true
+        patience: 10
+        metric: si-sdr
+    inference:
+      batch_size: 10
+      num_overlap: 4

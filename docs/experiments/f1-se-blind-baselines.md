@@ -97,53 +97,72 @@ the same architecture set, both scored on the same two fixed validation sets:
 
 ## Results
 
-Paper-matched training (2026-07-22). Per-SNR on `SE-valid-drone`; all models on
-the **same 25 mixtures/point** (fair cross-model subset — 50-vs-25 mixing is
-unfair because SI-SDR is high-variance at 0 dB; the 25-subset ranking is stable,
-absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
+> ⚠ **CORRECTED 2026-07-24 — the numbers below replace the original ones.**
+> Two defects invalidated the first revision: (1) a **mixing-pipeline bug** —
+> `_scale_source_to_snr` guards only the denominator, so a *digitally silent
+> noise draw* (`drone_audio`, ~6% of 1 s draws) zeroed the clean target **and**
+> the mixture; 5/350 `SE-valid-drone` clips are empty this way, 3 of them at
+> 0 dB, and because SI-SDR vs an all-zero reference hits the −80 dB floor they
+> dragged **every** method's 0 dB mean down by ~5 dB (the noisy anchor read
+> −4.8 dB instead of −0.0) — this alone manufactured the apparent
+> "non-monotonic 0 dB dip"; and (2) `--per-snr N` evaluation took the **first**
+> N clips per group, which is not a random sample (at 0 dB the first 25 differ
+> from the last 25 by ~10 dB). Pipeline fixed + regression-tested (commit on
+> `se-baselines`); the published valid sets still contain the empty clips and
+> need a rebuild+repin.
+
+Paper-matched training (2026-07-22), corrected 2026-07-24. Per-SNR on
+`SE-valid-drone`, **per-clip over the full 345-clip set** (5 corrupt clips
+excluded). Noisy + Wiener anchors.
 
 **SI-SDR improvement over noisy input (dB):**
 
 | SNR | Wiener | **MP-SENet-A** | TF-GridNet-A | Edge-BS-RoF-A | DCUNet-A | DCUNet-B |
 |---|---|---|---|---|---|---|
-| −30 | −0.1 | **+23.2** | +17.0 | +21.1 | +10.2 | +11.9 |
-| −20 | +0.1 | **+18.5** | +11.9 | +13.9 | +6.0 | +6.0 |
-| −15 | +0.1 | **+21.4** | +16.8 | +14.4 | +5.0 | +7.6 |
-| −10 | +0.1 | **+17.9** | +13.7 | +12.6 | +2.7 | +3.9 |
-| −5 | +0.1 | **+14.0** | +11.6 | +9.6 | −0.2 | +0.7 |
-| 0 | +0.1 | **+16.6** | +14.5 | +11.1 | +2.7 | +2.2 |
+| −30 | −0.1 | **+23.3** | +15.4 | +20.1 | +11.1 | +11.5 |
+| −25 | −0.0 | **+19.0** | +12.7 | +16.1 | +8.3 | +8.5 |
+| −20 | +0.1 | **+18.3** | +11.6 | +14.0 | +6.0 | +6.0 |
+| −15 | +0.1 | **+19.5** | +14.3 | +13.7 | +4.7 | +6.3 |
+| −10 | +0.1 | **+17.0** | +13.4 | +11.8 | +2.6 | +3.0 |
+| −5 | +0.1 | **+13.9** | +11.9 | +9.8 | +0.1 | +1.6 |
+| 0 | +0.1 | **+11.7** | +9.7 | +6.3 | **−2.2** | **−2.6** |
 
 **eSTOI (noisy → model):**
 
 | SNR | noisy | MP-SENet | TF-GridNet | Edge-BS-RoF | DCUNet-A |
 |---|---|---|---|---|---|
-| −15 | 0.234 | **0.540** | 0.436 | 0.370 | 0.228 |
-| −10 | 0.276 | **0.643** | 0.533 | 0.454 | 0.249 |
-| −5 | 0.423 | **0.693** | 0.603 | 0.534 | 0.350 |
-| 0 | 0.468 | **0.789** | 0.687 | 0.609 | 0.418 |
+| −15 | 0.239 | **0.516** | 0.404 | 0.344 | 0.200 |
+| −10 | 0.276 | **0.564** | 0.464 | 0.388 | 0.220 |
+| −5 | 0.423 | **0.708** | 0.616 | 0.545 | 0.362 |
+| 0 | 0.497 | **0.779** | 0.681 | 0.602 | 0.410 |
+
+(DCUNet is **below the noisy input on eSTOI at every SNR** — it damages speech
+while removing noise energy.)
 
 ### Findings
 
 1. **Architecture dominates, and the newer SE ports win.** Ranking
-   **MP-SENet > TF-GridNet ≳ Edge-BS-RoFormer ≫ DCUNet**. MP-SENet (parallel
-   magnitude+phase, 2023) is far the strongest — SI-SDR +21 dB and eSTOI
-   0.234→0.540 at −15 dB — and **both ports beat the Paper-1 Edge-BS-RoFormer**.
+   **MP-SENet > {TF-GridNet, Edge-BS-RoFormer} ≫ DCUNet** (Edge-BS-RoFormer is
+   stronger below −20 dB, TF-GridNet from −15 dB up). MP-SENet (parallel
+   magnitude+phase, 2023) is far the strongest — SI-SDR +19.5 dB and eSTOI
+   0.239→0.516 at −15 dB — and **both ports are competitive with or ahead of the
+   Paper-1 Edge-BS-RoFormer**.
    Notably MP-SENet and TF-GridNet were *compute-limited* (see caveats), so their
    true ceiling is **higher** than shown. DCUNet (older complex-UNet) barely
    lifts intelligibility (≈ noisy eSTOI) — it denoises (SI-SDR/PESQ up) but does
    not restore speech. All beat the Wiener floor at ≥ −10 dB.
 2. **Diversity is capacity-dependent (helps only the weak model).** On the
    *drone* valid, DCUNet Pass B (all-harmonic) ≥ Pass A (drone-only) at most SNRs
-   (Δ SI-SDR@−15: +2.5) — extra harmonic data helps the under-fitting model. But
+   (Δ SI-SDR@−15: +1.5) — extra harmonic data helps the under-fitting model. But
    **all three stronger ports are hurt or unmoved** — the split is clean across
    every arch. Δ SI-SDR B−A (dB), per SNR {−30,−25,−20,−15,−10,−5,0}:
 
    | arch | −30 | −25 | −20 | −15 | −10 | −5 | 0 |
    |---|---|---|---|---|---|---|---|
-   | DCUNet (weak) | +1.7 | −0.0 | −0.0 | **+2.5** | +1.2 | +0.9 | −0.6 |
-   | MP-SENet | −3.6 | −4.6 | −4.3 | −2.6 | −1.4 | −0.1 | +0.0 |
-   | TF-GridNet | −1.1 | −0.8 | −1.3 | −2.2 | −3.6 | −2.3 | −1.3 |
-   | Edge-BS-RoF | −3.6 | −4.5 | −6.3 | −4.4 | −2.9 | −3.0 | −1.3 |
+   | DCUNet (weak) | **+0.5** | **+0.2** | **+0.1** | **+1.5** | **+0.4** | **+1.5** | −0.5 |
+   | MP-SENet | −4.8 | −3.1 | −4.6 | −2.8 | −1.4 | +0.4 | +0.1 |
+   | TF-GridNet | −0.8 | −0.4 | −1.3 | −1.8 | −0.8 | −0.6 | −0.1 |
+   | Edge-BS-RoF | −3.8 | −4.6 | −5.0 | −3.8 | −4.0 | −2.7 | −1.6 |
 
    Edge-BS-RoFormer and TF-GridNet also lose eSTOI across the board (Edge-BS-RoF
    −0.036 @−15, TF-GridNet −0.031); MP-SENet is flat on eSTOI. Under equal budget,
@@ -154,19 +173,33 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
 3. **Harmonic structure — not loudness — is what SE exploits.** Per-family floor
    on `SE-valid-harmonic` (Pass B, mean over SNR, MP-SENet SI-SDR-improve dB /
    eSTOI): the difficulty ordering is model-independent —
-   motors (+19.6 / 0.57) > aircraft (+16.6 / 0.52) > drone (+16.5 / 0.47) >
-   horns (+15.7 / 0.52) ≫ mimii (+9.9 / 0.34) > mimii_dg (+4.7 / 0.29). The
+   motors (+19.8 / 0.58) > aircraft (+16.9 / 0.52) > horns (+15.8 / 0.51) >
+   drone (+15.2 / 0.47) ≫ mimii (+9.8 / 0.34) > mimii_dg (+2.1 / 0.28). The
    *strongly-tonal* families are recovered far better than the *stochastic*
    industrial MIMII noise — direct evidence for the project premise (a
    rotating-source target is the favourable case). Transfer (B−A) per family:
    harmonic motors/horns gain across all archs; broadband MIMII families *lose*
-   for the strong models (Edge −11.9 on mimii, MP-SENet −7.6 on mimii_dg) — they
+   for the strong models (Edge −11.6 on mimii, MP-SENet −9.9 on mimii_dg) — they
    can't fit stochastic noise and lose focus. Diverse data helps only when added
    families share exploitable structure *and* the model has spare capacity.
-4. **Loss + training length matter a lot.** masked-MSE gave ~noisy floors
-   (attenuation, not intelligibility); the SI-SDR+MRSTFT composite + the
-   paper-length schedule (NE=30 / Nα=15) turned DCUNet's −15 dB SI-SDR gain from
-   +1.6 (12-min run) to +5.0 (converged).
+4. **Loss + training length matter — but the loss is NOT DCUNet's ceiling.**
+   masked-MSE gave ~noisy floors (attenuation, not intelligibility); the
+   SI-SDR+MRSTFT composite + the paper-length schedule (NE=30 / Nα=15) turned
+   DCUNet's −15 dB SI-SDR gain from +1.6 (12-min run) to +4.7 (converged).
+   *Tested and refuted (2026-07-24):* the composite's MRSTFT term dominates the
+   SI-SDR term's gradient at the model output by 4× (−30 dB) → **54×** (0 dB),
+   which looks like a cause of over-suppression — but retraining DCUNet to
+   convergence under **three** objectives moves 0 dB SI-SDR only between
+   −2.17 (original composite), −2.07 (**pure SI-SDR**, `conf/loss/si_sdr.yaml`,
+   job `f1-dcunet-lossa`, early-stop ep60) and −1.37 (**MRSTFT ×0.05**,
+   `si_sdr_mrstft_w0p05`, ratio 53×→2.5×, job `f1-dcunet-lossc2`) — a <1 dB
+   spread, **all still below the noisy input (−0.00)**, with eSTOI 0.410 / 0.386
+   / 0.397 vs noisy 0.497.
+   Also refuted: train/eval length mismatch (feeding 1 s halves, matching the
+   training chunk, scores *worse* than whole 2 s clips: −3.7 vs −1.0 at 0 dB).
+   **DCUNet's high-SNR degradation is an architecture/training-regime trait**
+   (2.8M complex mask fitted over SNR~U(−30,0) learns a suppression strength
+   tuned to the low-SNR bulk), not a loss artefact.
 5. **SGMSE+ from scratch is non-viable in this budget (negative control).**
    The score-diffusion 5th arch, trained via the bespoke DSM loop, sits **below
    the noisy input at every SNR** (Pass B: SI-SDR −30…−57 vs noisy −5…−31; eSTOI
@@ -200,10 +233,11 @@ absolute Δ at 0 dB carries ±few-dB variance). Noisy + Wiener anchors.
 
 On our harmonic-noise data at −30…0 dB, the **blind speech-enhancement floor is
 architecture-bound and set by the newer SE models**: **MP-SENet** (parallel
-magnitude+phase) is the strongest baseline (eSTOI 0.23→0.54 at −15 dB, 0.47→0.79
-at 0 dB), with **TF-GridNet and both beating the Paper-1 Edge-BS-RoFormer** even
-while compute-limited; the classic complex-UNet (DCUNet) only denoises without
-restoring intelligibility. **Diverse-harmonic training is capacity-dependent** —
+magnitude+phase) is the strongest baseline (eSTOI 0.24→0.52 at −15 dB, 0.50→0.78
+at 0 dB), with **TF-GridNet and Edge-BS-RoFormer competitive behind it** (Edge
+stronger below −20 dB, TF-GridNet above) even while compute-limited; the classic
+complex-UNet (DCUNet) denoises at low SNR but **degrades the input above −5 dB**
+and sits below the noisy eSTOI everywhere. **Diverse-harmonic training is capacity-dependent** —
 it helps only the weak DCUNet and *dilutes* all three stronger ports (MP-SENet,
 TF-GridNet, Edge-BS-RoFormer) on drone noise; the split is clean across every
 arch, so data breadth must scale with capacity, not replace it. Per family,

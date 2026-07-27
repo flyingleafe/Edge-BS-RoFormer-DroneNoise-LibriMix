@@ -1,0 +1,11 @@
+# Pure negative SI-SDR — the metric-aligned SE objective, matching what the
+# prior working DCUNet runs effectively optimized (SI-SDR-scheduled). No
+# magnitude term, so no scale-sensitive gradient that pulls a masking model
+# toward silence. DCUNet loss A/B arm (a). See docs/experiments/f1-se-blind-baselines.md.
+terms:
+  - name: si_sdr
+    _target_: losses.SISDRLoss
+    weight: 1.0
+    params:
+      n_channels: null
+      sr: [16000, 1]

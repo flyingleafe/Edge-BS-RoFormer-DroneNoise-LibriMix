@@ -35,6 +35,11 @@ class MultiScaleSTFT(nn.Module):
         n_ffts: list of FFT/window sizes.
         hop_sizes: list of hop sizes (defaults to n_fft // 4 each).
         log_weight: weight on the log-magnitude component.
+        lin_weight: weight on the linear-magnitude component. The linear term is
+            scale-SENSITIVE (raw magnitudes), so on quiet ultra-low-SNR targets
+            it dominates the gradient and pulls a masking model toward
+            attenuation-toward-silence (see docs/experiments/f1-se-blind-baselines.md
+            DCUNet loss diagnosis). Set to 0.0 for a scale-robust log-only term.
         loss_type: 'L1' or 'L2'.
     """
 
@@ -43,6 +48,7 @@ class MultiScaleSTFT(nn.Module):
         n_ffts: list[int] | None = None,
         hop_sizes: list[int] | None = None,
         log_weight: float = 1.0,
+        lin_weight: float = 1.0,
         loss_type: str = "L1",
         eps: float = 1e-8,
     ):
@@ -55,6 +61,7 @@ class MultiScaleSTFT(nn.Module):
         self.n_ffts = n_ffts
         self.hop_sizes = hop_sizes
         self.log_weight = log_weight
+        self.lin_weight = lin_weight
         self.loss_type = loss_type
         self.eps = eps
         # Buffers for windows (registered so they move with `.to(device)`)
@@ -84,7 +91,7 @@ class MultiScaleSTFT(nn.Module):
             log = _mean_diff(
                 torch.log(s_est + self.eps), torch.log(s_tgt + self.eps), self.loss_type
             )
-            loss = loss + lin + self.log_weight * log
+            loss = loss + self.lin_weight * lin + self.log_weight * log
         return loss
 
 

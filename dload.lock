@@ -1,5 +1,8 @@
 # Pinned dataset versions, managed by `dload pin`.
 [datasets]
+AVQ = "50dd53d1a6c0ab81fe02e4a40a57557a0a2b1c1b85152470edd12aa6d0725f39"
+AVQ-egonoise = "b43b374b007a0d5c9575dd2feacd31a05097d0c436629819b936273f17cf7703"
+AVQ-raw = "0e17e52b16c32f50dbe0d98024bf44797b731fab1df0b7d79c67c64c1444fb36"
 AeroSonicDB = "0d5543419ea5aa56ea163ec960ef4f5d156dcbac1629cdeaaf8c5e4fd7bcd9e7"
 DN-LM-train = "4576c1679b3b0ba1b4b56232fa4a524c96bd8a84baa9c5af22b9f1221aa1bb4d"
 DN-LM-valid = "f6e7038600b9b0e36743daacadfd36c5714b7cda71200668d8c612b001b0794c"
@@ -27,6 +30,8 @@ HornBase = "e93aaf40c10e9fb4a1f0478ba24d85c7e1559e5a053bcb49ccb2fda7fe237f42"
 KAIST-rotating-acoustic = "8137bf61f54c3e0a20a48692e0f47414ddcd5ce2c3fc3d185fb353ca30e9f873"
 MIMII = "eaf18a10897c895886573497f3812258fa05769f50a35f2c6b48ade27bc33ea5"
 MIMII-DG = "5aa904eb94fcbbcd504b2f2da149f29f2ec03f1fd1357fe50f95583d1338766f"
+SE-valid-avq-split = "681bf90cf1c69c3e07947db2155ee7b859ac3d480dfa6580ba107149f353dffc"
+SE-valid-avq-survey = "95378d78ccf177b99cd3da020e3a1cacb5ccbe5ceb8ca141755955b8b69ea72f"
 SE-valid-drone = "68a9b184fcc50740038b9b2d03a5eaef658c95a01517067002cf378fafb438ac"
 SE-valid-harmonic = "855bdcd731fe89f31b25863368bfe57cc54d424838a2b85a259c3e74bf92b754"
 SPCUP19-egonoise = "043e0a4e8264ebed3588c7706f6b23d25164e442d0e8129a7602f05b2852298b"

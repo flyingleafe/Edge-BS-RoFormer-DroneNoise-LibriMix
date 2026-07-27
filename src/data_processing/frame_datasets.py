@@ -64,7 +64,12 @@ from data_processing.frames import audio_series as _audio_series
 from data_processing.frames import get_meta
 from data_processing.frames import rps_series as _rps_series
 from data_processing.online_mixing import OnlineMixIterableDataset
-from data_processing.streams import iter_published_frames, resolve_source, stretch_rps_to_frames
+from data_processing.streams import (
+    iter_published_frames,
+    local_repository,
+    resolve_source,
+    stretch_rps_to_frames,
+)
 
 __all__ = [
     "DregonLMFrameDataset",
@@ -288,6 +293,10 @@ class SEValidFrameDataset(Dataset):
     O(1), worker-safe random access — portable to any backend (streams from R2
     via dload; no local checkout needed). ``category`` filters to one Pass-B
     category (used to score per-category transfer on ``SE-valid-harmonic``).
+
+    ``local_root`` reads the set from a local (unpublished) dload repository
+    built by ``scripts/build_se_valid.py --local-repo`` instead of R2 — the
+    replication path for a valid set that is not (yet) published.
     """
 
     def __init__(
@@ -297,12 +306,15 @@ class SEValidFrameDataset(Dataset):
         version: str | None = None,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         category: str | None = None,
+        local_root: str | None = None,
     ) -> None:
         self.dataset = str(dataset)
         self.sample_rate = int(sample_rate)
         self.category = category
+        self.local_root = local_root
+        repo = local_repository(local_root) if local_root else None
         self._frames: list[td.Frame] = []
-        for frame in iter_published_frames(self.dataset, version):
+        for frame in iter_published_frames(self.dataset, version, repo=repo):
             if "mixture" not in frame or "target" not in frame:
                 continue
             if category is not None and str(get_meta(frame, "category", "")) != category:

@@ -1,0 +1,22 @@
+# SI-SDR (primary) + the full linear+log multi-scale STFT term DOWN-WEIGHTED to
+# 0.05, so its gradient is comparable to (not 4-54x larger than) SI-SDR's. Blunt
+# compromise arm keeping the exact composite shape but rebalanced. DCUNet loss
+# A/B arm (c). See docs/experiments/f1-se-blind-baselines.md (loss diagnosis).
+terms:
+  - name: si_sdr
+    _target_: losses.SISDRLoss
+    weight: 1.0
+    params:
+      n_channels: null
+      sr: [16000, 1]
+  - name: mrstft
+    _target_: losses.MultiScaleSTFTLoss
+    weight: 0.05
+    params:
+      n_channels: null
+      sr: [16000, 1]
+      pred_key: enhanced
+      target_key: target
+      n_ffts: [2048, 1024, 512, 256, 128]
+      log_weight: 1.0
+      loss_type: L1

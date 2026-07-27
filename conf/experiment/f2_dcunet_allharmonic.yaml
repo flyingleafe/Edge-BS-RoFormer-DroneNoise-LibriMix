@@ -1,0 +1,31 @@
+# @package _global_
+# F2 step 3 — the Mukhutdinov et al. 2023 (IEEE Access) DCUNet survey setup,
+# UNCHANGED except that the training noise pool is widened from AVQ-only to the
+# full category-uniform harmonic pool: 16 kHz, 3 s crops, all-harmonic noise x
+# LibriSpeech, SNR U(-25,-5) dB online, SI-SDR loss, Adam 1e-3, plateau
+# patience 5 (x0.1), early stop patience 10, batch 32. Valid set is the same
+# fixed SE-valid-avq-survey as steps 1 and 2.
+# See docs/experiments/f2-survey-replication.md.
+defaults:
+  - override /data: f2_allharmonic
+  - override /model: f2_dcunet_survey
+  - override /loss: si_sdr
+  - override /metrics: separation_basic
+
+experiment_name: f2_dcunet_allharmonic
+amp: false # complex STFT/iSTFT (ComplexHalf gaps under autocast)
+batch_size: 32
+epochs: 150
+patience: 10
+# The paper defines one epoch as 10 full passes over the 4158 training
+# utterances (~35 h of audio); at 3 s/sample that is 41580 samples ~ 1300 steps
+# at batch 32. Epoch size matters here because BOTH patiences (Nalpha=5,
+# NE=10) are counted in epochs.
+samples_per_validation: 41580
+optim:
+  optimizer: adam # the paper's optimizer (not adamw)
+  lr: 1.0e-3
+  patience: 5 # LR-on-plateau patience, epochs
+  factor: 0.1
+  monitor: si_sdr
+  monitor_mode: max

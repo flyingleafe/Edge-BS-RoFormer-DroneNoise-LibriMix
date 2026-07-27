@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+import torch
+
 import training.loop as loop_module
 from tests.training.conftest import make_tiny_config
 from tests.training.test_artifacts import FakeS3Client
@@ -146,3 +148,90 @@ def test_run_training_val_sample_logging_and_upload_when_enabled(tmp_path, monke
     # And the same samples reached the (fake) R2 client as a manifest.
     manifest_keys = [k for k in client.objects if k.endswith("manifest.json")]
     assert manifest_keys, f"expected a val_samples manifest.json, got keys: {list(client.objects)}"
+
+
+def test_resume_continues_from_the_saved_epoch_instead_of_restarting(tmp_path, monkeypatch):
+    """A relaunch with resume=true must pick up where the last one stopped.
+
+    This is what makes preemptible/short-time-limit queues usable: before, an
+    interrupted run restarted from scratch (`resume` only unlocked the run dir),
+    so a 1 h wall-clock limit capped total training at 1 h no matter how many
+    times it was relaunched.
+    """
+    fake_wandb = _FakeWandb()
+    monkeypatch.setattr(loop_module, "wandb", fake_wandb)
+
+    def cfg_for(epochs: int):
+        return make_tiny_config(
+            results_root=str(tmp_path),
+            experiment_name="tiny_resume",
+            epochs=epochs,
+            n_train=6,
+            n_valid=4,
+        )
+
+    run_training(cfg_for(2))
+    run_dir = tmp_path / "tiny_resume"
+    assert (run_dir / "train_state.pt").is_file()
+
+    first_epochs = [row["epoch"] for row in fake_wandb.logged if "epoch" in row]
+    assert first_epochs == [0, 1]
+
+    fake_wandb.logged.clear()
+    cfg = cfg_for(4)
+    cfg.resume = True
+    run_training(cfg)
+
+    # Epochs 2 and 3 only — not 0..3 again.
+    assert [row["epoch"] for row in fake_wandb.logged if "epoch" in row] == [2, 3]
+
+
+def test_resume_on_a_fresh_run_dir_starts_from_zero(tmp_path, monkeypatch):
+    """resume=true is the safe default to submit with, so it must be a no-op
+    when there is nothing to resume from."""
+    monkeypatch.setattr(loop_module, "wandb", (fake_wandb := _FakeWandb()))
+
+    cfg = make_tiny_config(
+        results_root=str(tmp_path), experiment_name="tiny_fresh", epochs=2, n_train=6, n_valid=4
+    )
+    cfg.resume = True
+    run_training(cfg)
+
+    assert [row["epoch"] for row in fake_wandb.logged if "epoch" in row] == [0, 1]
+
+
+def test_resume_after_early_stop_exits_without_training(tmp_path, monkeypatch):
+    """A chain of short segments must stop by itself once the run has converged.
+
+    Early stopping is checked at the END of an epoch, so a resumed already-done
+    run would otherwise train one full epoch before re-discovering it was done —
+    once per queued segment, indefinitely.
+    """
+    monkeypatch.setattr(loop_module, "wandb", (fake_wandb := _FakeWandb()))
+
+    def cfg_for(epochs: int):
+        cfg = make_tiny_config(
+            results_root=str(tmp_path),
+            experiment_name="tiny_done",
+            epochs=epochs,
+            n_train=6,
+            n_valid=4,
+        )
+        cfg.patience = 1  # so the tiny run early-stops within its epoch budget
+        return cfg
+
+    run_training(cfg_for(3))
+    # The tiny model improves every epoch, so drive it to the converged state
+    # directly rather than contriving a plateau.
+    state_path = tmp_path / "tiny_done" / "train_state.pt"
+    state = torch.load(state_path, weights_only=False)
+    state["no_improve"] = 1
+    torch.save(state, state_path)
+
+    fake_wandb.logged.clear()
+    cfg = cfg_for(10)
+    cfg.resume = True
+    result = run_training(cfg)
+
+    assert [row for row in fake_wandb.logged if "epoch" in row] == []  # no epoch ran
+    assert math.isfinite(result["best_mse"])

@@ -22,7 +22,14 @@ seed: 0
 validate_only: false
 allow_dirty: false
 resume: false
-results_root: results
+# Default `results`, i.e. inside the checkout. Override with RESULTS_ROOT to put
+# runs somewhere stable: omnirun pins each job to a revision and gives that
+# revision its own worktree, so a run dir under the checkout is NOT shared
+# between jobs at different commits — which silently breaks `resume=true`
+# chaining (the new segment finds no train_state.pt and restarts at epoch 0).
+# Point RESULTS_ROOT at a path outside the worktree (e.g. the cluster scratch)
+# and a chain resumes correctly no matter how the code moves underneath it.
+results_root: ${oc.env:RESULTS_ROOT,results}
 epochs: 100
 batch_size: 16
 num_workers: 4

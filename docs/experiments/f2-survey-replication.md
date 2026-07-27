@@ -1,0 +1,556 @@
+**Status:** step 1 REPLICATES the survey exactly (SI-SDR +3.76 vs +3.7,
+eSTOI 0.408 vs 0.4 at −15 dB); broadening the training noise pool destroys the
+intelligibility gain (ΔeSTOI +0.276 → +0.006 → −0.002); step 1b running · 2026-07-25 – present · replicates
+Mukhutdinov et al., *"Deep Learning Models for Single-Channel Speech
+Enhancement on Drones"*, IEEE Access, 2023 · related batch:
+[`f1-se-blind-baselines.md`](./f1-se-blind-baselines.md)
+
+# F2 — replication of the 2023 IEEE Access drone-SE survey (DCUNet arm)
+
+## Motivation
+
+F1 found DCUNet to be the **weakest** of five modern architectures on our data
+— it denoises at low SNR but sits below the noisy input on eSTOI everywhere and
+degrades SI-SDR above −5 dB (see `f1-se-blind-baselines.md` § Findings 1 & 4).
+That is awkward, because the 2023 IEEE Access survey — the project's own prior
+work, whose 12-model benchmark DCUNet *won* — reports a clearly positive DCUNet
+result on drone ego-noise. Before any further conclusion is drawn from the F1
+ranking, we need to know whether we can **reproduce the survey's own DCUNet
+number under the survey's own protocol**. If we can, the F1 result is a genuine
+data/regime difference; if we cannot, something in our training or evaluation
+pipeline is off and every F1 number inherits the defect.
+
+So this batch is a *faithful* re-run of the paper's DCUNet setup, deliberately
+changing as little as possible, and one thing at a time afterwards. The one
+up-front exception is the sample rate: we run at the project-native **16 kHz**
+rather than the paper's 8 kHz, keeping the paper's STFT resolution in
+milliseconds (see § Deliberate deviations for the reasoning and its consequence
+for the target numbers).
+
+## The paper's setup (ground truth for this replication)
+
+| Item | Paper | Here |
+|---|---|---|
+| Sample rate | 8 kHz (everything resampled) | **16 kHz** — the project's native rate (deliberate deviation, see below) |
+| Speech | TIMIT, 90 % train / 10 % held out | **LibriSpeech train-clean-100** (TIMIT is not in our data lake), 25 of 246 speakers (~10 %) held out |
+| Noise | 5 drone ego-noise sequences, **first channel only** | AVQ `S1_seq1`, `S1_seq2`, `S1_seq3`, `S2_seq1`, `S2_seq2`, channel 0 — published as the standalone `AVQ-egonoise` dataset (see § The noise dataset) |
+| Train/valid noise | the **same** 5 recordings for both; only speech is split | same |
+| Crop | T = 24000 samples = 3.0 s | same 3.0 s, i.e. T = 48000 samples @ 16 kHz |
+| Train SNR | U(−25, −5) dB, mixed on the fly | same |
+| Valid | fixed mixtures at SNR ∈ {−25,−20,−15,−10,−5} dB | same, 50 clips/point = 250 clips |
+| Loss | SI-SDR only | `conf/loss/si_sdr.yaml` (the standard 16 kHz group) |
+| Model | DCUNet-10 (10 complex conv layers) | `model_type: dcunet`, `dcunet_num_encoder_layers: 5` (5 enc + 5 dec = 10) |
+| STFT | 64 ms window / 16 ms hop | **the same 64 ms / 16 ms**, i.e. n_fft 1024, hop 256, dim_f 512 @ 16 kHz |
+| Optim | Adam, lr 1e-3, plateau patience 5 (×0.1), early-stop patience 10, batch 32 | same |
+
+**Replication target.** The paper reports DCUNet at **−15 dB input SNR**:
+SI-SDR **+3.7 dB**, eSTOI **0.4**, PESQ **1.9**. Caveat: the paper's headline
+numbers are on a *different* drone (the AS dataset), whereas we substitute AVQ —
+AVQ's ego-noise is a comparatively benign, stationary onboard recording, so if
+anything the AVQ validation should be **easier** than the paper's. Second
+caveat: those numbers were measured at 8 kHz on TIMIT and we run at 16 kHz on
+LibriSpeech, so they are a **reference point rather than an exact bar** (see
+§ Deliberate deviations). Landing near or above them is the pass condition;
+landing far below still points at our pipeline, not at DCUNet.
+
+## Wiring
+
+| Component | Config |
+|---|---|
+| Experiment | `conf/experiment/f2_dcunet_avq_survey.yaml` |
+| Model | `conf/model/f2_dcunet_survey.yaml` (16 kHz / n_fft 1024 / hop 256 / dim_f 512, chunk 48000) |
+| Data | `conf/data/f2_avq_survey.yaml` |
+| Train stream | `conf/online_mix/se_avq_survey.yaml` (`kind: audio_pool`, `dataset: AVQ-egonoise` — no key/channel filtering) |
+| Noise dataset | `AVQ-egonoise` (dload, pinned) — publisher `scripts/publish_avq_egonoise.py` |
+| Valid set | `scripts/build_se_valid.py --dataset avq --publish` → `SE-valid-avq-survey` (250 clips) |
+| Loss / metrics | `si_sdr` / `separation_basic` (`separation_full` at eval for PESQ/eSTOI) |
+
+Run:
+
+```bash
+python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey  # once
+python train.py experiment=f2_dcunet_avq_survey
+python eval.py  experiment=f2_dcunet_avq_survey metrics=separation_full
+```
+
+## The noise dataset: `AVQ-egonoise`
+
+All three arms draw their AVQ noise from **`AVQ-egonoise`**, a small derived
+dataset published by `scripts/publish_avq_egonoise.py` that contains *exactly*
+what this batch consumes: the 5 pure ego-noise sequences of `AVQ`
+(`S1_seq1`/`S1_seq2`/`S1_seq3`/`S2_seq1`/`S2_seq2` — the only AVQ recordings
+without an `angle_vad` entry, i.e. the only ones without the speech source),
+**channel 0 only**, `soxr_hq`-resampled to **16 kHz mono**. 705 s in total: one
+43 MiB shard, 5 samples, each carrying AVQ's per-recording `meta` plus
+provenance (`source_dataset`/`source_version`/`source_channel`).
+
+It exists for two concrete reasons, both costs of the previous
+`dataset: AVQ` + `channel: 0` + `include_keys: [...]` formulation:
+
+1. **Shard scan.** A dload manifest carries no per-shard key list, so keys are
+   only known once a shard is opened. Filtering by key therefore forced the
+   pool to download all **11 AVQ shards (~4 GiB** of 8-ch 44.1 kHz audio) to
+   discover which hold the 5 wanted sequences — for ~12 minutes of audio.
+2. **Multipart ETag.** AVQ's largest shard is a 352 MB, 42-part multipart
+   upload. s3transfer's ETag validation on some boto3 builds (as shipped in the
+   Kaggle image) rejects a multipart ETag outright:
+   `S3DownloadFailedError ... did not match expected ETag`. The object is **not
+   corrupt** — its sha256 matches its content-address digest — but the download
+   fails on those backends regardless. `AVQ-egonoise`'s single 43 MiB shard is a
+   single-part upload, so the check cannot fire.
+
+`AVQ` and `AVQ-raw` are untouched and remain the canonical full dataset.
+
+## Pre-flight diagnostic (conclusion since retracted)
+
+Before spending GPU time on the ladder, the **existing F1 DCUNet checkpoint**
+(trained on the broad 6-dataset drone pool, 1 s crops, SI-SDR+MRSTFT loss) was
+scored on the **AVQ-only** valid set — the paper's own noise. If the F1 floor had
+been caused by noise-pool breadth, this should have looked much healthier.
+
+It does not (16 kHz, 3 s, n=50/SNR; `results/f2_diag/`):
+
+| SNR | noisy SI-SDR | F1 DCUNet | Δ | noisy eSTOI | F1 DCUNet |
+|---|---|---|---|---|---|
+| −25 | −25.76 | −24.02 | +1.7 | 0.022 | 0.016 |
+| −20 | −20.41 | −17.00 | +3.4 | 0.058 | 0.051 |
+| −15 | −15.07 | −12.99 | +2.1 | 0.121 | **0.101** |
+| −10 | −9.99 | −7.50 | +2.5 | 0.218 | 0.201 |
+| −5 | −5.00 | −3.61 | +1.4 | 0.310 | 0.276 |
+
+On the paper's own noise the F1 model gains *less* SI-SDR than it does on the
+broad pool (+2.1 vs +4.7 dB at −15 dB) and still pushes **eSTOI below the noisy
+input at every SNR**.
+
+> ⚠ **RETRACTED (2026-07-25, by the ladder's own results).** This section
+> originally concluded from the table above that "the six-dataset pool was never
+> the problem". That inference does not hold. The test scores a model *already
+> trained* on the broad pool against a narrow valid set, so it measures
+> **test-set difficulty**, not **training-pool breadth** — and a model damaged
+> during training stays damaged whichever set you score it on. It was never
+> capable of exonerating the training pool. Steps 1–3, which vary the training
+> pool directly, show the pool is in fact the dominant factor (§ Results).
+> What the table *does* still establish is the valid-set calibration below.
+
+**A useful side-effect: the valid set is calibrated against the paper.** Its
+noisy eSTOI at −15 dB is **0.121**, essentially the paper's quoted **0.1**
+baseline. The test condition therefore matches the published one closely, so
+"eSTOI 0.121 → ~0.4 at −15 dB" is a fair bar at 16 kHz and any shortfall is the
+model's, not a mismatched benchmark.
+
+Consequence for the ladder: steps 2–3 are no longer the prime suspects. Their
+role shifts from *finding* the culprit to *confirming* that the corrected recipe
+survives broader noise.
+
+### What the F1 failure actually looks like
+
+`si_sdr` rescales the reference to the estimate's level; `sdr` does not. For an
+estimate `s_hat = a*s + e` (with `e` orthogonal to `s`):
+
+```
+SI-SDR = a^2||s||^2 / ||e||^2        SDR = ||s||^2 / ((1-a)^2||s||^2 + ||e||^2)
+```
+
+Two consequences worth stating because both were initially got wrong here:
+
+1. **`SI-SDR >= SDR` is FALSE.** The correct bound is
+   `SDR_lin <= SI-SDR_lin + 1`. F1 DCUNet's (sdr −0.85, si_sdr −12.99) at −15 dB
+   satisfies it and is not anomalous.
+2. **`sdr ~ 0 dB` does NOT imply a near-null output.** The quadratic in
+   ||s_hat|| has two roots — a near-null estimate and an over-loud one — and both
+   reproduce any given (sdr, si_sdr) pair. F1 DCUNet's `sdr` being pinned near
+   0 dB across a 20 dB input range was read here as proof of collapse toward
+   silence; **that reading was retracted** once `gain_db` was measured. The F2
+   all-harmonic arm shows `sdr` = −0.39 at −10 dB — the supposedly diagnostic
+   value — with `gain_db` = −0.22, i.e. output energy *at target level*. The
+   models sit on the **over-loud residual-noise** root, not the null root.
+
+So `scripts/eval_se_perclip.py` now records **`gain_db`**
+(10 log10 ||s_hat||^2/||s||^2) and **`corr`** (|<s_hat,s>| / ||s_hat|| ||s||)
+alongside the four headline metrics. Every F2 eval reports them, so "what kind
+of wrong is it?" is answered by a column rather than by inference.
+
+What survives, and is the real finding, is a metric split rather than a
+degeneracy — Δ against the noisy anchor at −15 dB, each model on the pool it was
+trained on:
+
+| model | ΔSI-SDR | ΔeSTOI | ΔPESQ |
+|---|---|---|---|
+| F2 arm 3 (survey recipe, broad harmonic pool) | +5.34 | **−0.005** | +0.03 |
+| F1 DCUNet (old recipe, broad harmonic pool) | +1.20 | **−0.035** | +0.06 |
+| F1 **MP-SENet** (same broad harmonic pool) | **+16.13** | **+0.216** | +0.27 |
+
+The survey recipe repairs DCUNet substantially — ΔSI-SDR goes from erratic and
+sometimes negative to a consistent +3…+7.7 dB across the grid, and eSTOI stops
+being actively degraded. But DCUNet still buys **no intelligibility at any SNR**,
+where MP-SENet trained on the same data gains +0.11…+0.26 eSTOI. That, not a
+collapsed output, is the gap to explain.
+
+## Running the ladder: why it is chained 1-hour segments
+
+Slurm's `sae` partition (omnirun backend `uni`, the only long-GPU route) is
+currently 162 jobs deep, and its own start estimate for this batch's first job
+was **~36 h out**. `gpushort` (backend `uni-gpushort`) has idle nodes but a hard
+**1 h** wall clock, which used to be useless for training because `resume=true`
+only unlocked a non-empty run directory — it did **not** reload weights, so every
+relaunch restarted from epoch 0.
+
+`src/training/loop.py` now implements real resume: optimizer, LR-scheduler, AMP
+scaler, next epoch, best metric and the early-stopping counter are written to
+`train_state.pt` in the run dir — atomically, and *after* `last.ckpt`, so a job
+killed mid-epoch resumes from the last fully-written one — and restored when
+`resume=true` finds them. The W&B run id is reused, so chained segments form one
+continuous curve instead of N truncated ones. `best.ckpt`/`last.ckpt` stay bare
+`state_dict`s, so no existing consumer (eval, `_warm_start`, the R2 artifact
+store) changes.
+
+Consequence: each arm runs as a chain of ~55 min `gpushort` jobs against the
+**same revision** (omnirun reuses the shared worktree `.trees/<sha12>`, so the
+run dir and its `train_state.pt` persist across segments), submitted with
+`--after <prev> --dep-failure ignore` so the next segment starts once the
+previous is merely *finished*:
+
+```bash
+omnirun submit --backend uni-gpushort --gpus 1 --time 55m --name f2-avq-s1 \
+  --env PYTHONPATH=src -- python train.py experiment=f2_dcunet_avq_survey resume=true
+```
+
+## Planned arms — the noise-pool ladder
+
+The replication is step 1 of a three-step ladder that walks the *training noise
+distribution* from the paper's setting to F1's, one step at a time. Everything
+else is frozen: same model (`f2_dcunet_survey`, DCUNet-10), same loss
+(`si_sdr`), same 16 kHz rate, same 3.0 s / 48000-sample crop, same train SNR
+range U(−25, −5) dB, same optimizer and schedule (Adam 1e-3, plateau ×0.1
+patience 5, early stop patience 10, batch 32, `samples_per_validation: 41580`),
+same speech source and same 25 held-out speakers — **and the same fixed
+validation set**.
+
+| Step | Experiment | Training noise pool | Online-mix policy |
+|---|---|---|---|
+| 1 | `f2_dcunet_avq_survey` | AVQ ego-noise only (5 sequences, channel 0) | `conf/online_mix/se_avq_survey.yaml` |
+| 2 | `f2_dcunet_alldrone` | **all drone** noise (F1 Pass A pool) + AVQ | `conf/online_mix/se_survey_alldrone.yaml` |
+| 3 | `f2_dcunet_allharmonic` | **all harmonic** noise, category-uniform (F1 Pass B pool) + AVQ | `conf/online_mix/se_survey_allharmonic.yaml` |
+
+Each pool is a strict **superset** of the previous one — AVQ is carried into
+steps 2 and 3 (in step 3 inside the `drone` category, with that category's
+weights renormalised to 1/7 each so it still sums to 1.0 and MIMII cannot
+dominate). So the manipulation is purely *additive*: step 2 adds drone
+diversity, step 3 adds non-drone harmonic sources, and neither removes the
+in-domain source. A drop from step 1 to step 2/3 therefore measures the cost of
+noise-distribution breadth at fixed capacity, not a domain shift away from the
+test condition.
+
+**All three arms validate on the same fixed `SE-valid-avq-survey` set**
+(250 clips at SNR {−25,−20,−15,−10,−5} dB, 16 kHz) — `conf/data/f2_avq_survey.yaml`,
+`f2_alldrone.yaml` and `f2_allharmonic.yaml` differ only in the `train:` block.
+This is deliberate. Holding validation fixed is what makes the training-noise
+pool the single manipulated variable: the monitored metric (`si_sdr`, max), the
+LR-on-plateau trigger and the early-stopping criterion are all measured on
+exactly the same distribution in each arm, so both the final numbers *and* the
+optimisation trajectories (epochs to best, LR-drop points) are comparable. A
+per-arm valid set matched to its own training pool would instead confound
+"trained on more noise" with "scored on a different, generally harder test".
+
+**Target numbers.** The pass condition for step 1 is the paper's DCUNet result
+at −15 dB input SNR: SI-SDR **+3.7 dB**, eSTOI **0.4**, PESQ **1.9** (AVQ should
+be no harder than the paper's AS drone). For steps 2 and 3 the number to watch
+is the *delta* against step 1 on the identical valid set, and how far step 3
+lands from the F1 DCUNet numbers in `f1-se-blind-baselines.md` — step 3 is the
+F1 noise distribution under the survey protocol, so it is the bridge between the
+two batches.
+
+## Deliberate deviations (and why)
+
+- **16 kHz, not the paper's 8 kHz — but the paper's STFT in milliseconds.**
+  The survey's 8 kHz is a literal detail of that study, not a property worth
+  replicating: the project's native rate is 16 kHz and the in-repo Paper-1
+  replication already trains DCUNet successfully there (SI-SDR **−8.09 dB**
+  overall on DN-LM, ahead of Edge-BS-RoFormer at **−9.94 dB**). So this batch
+  runs at 16 kHz while preserving what actually defines the paper's front-end —
+  its STFT *resolution in time*: window 64 ms / hop 16 ms, which at 16 kHz is
+  n_fft **1024** / hop **256** (it was 512/128 at 8 kHz). Note that this is 2x
+  finer in time than the F1 SE baseline's n_fft 2048 / hop 512 (128 ms / 32 ms),
+  so the F2 arms are not merely F1 with a different noise pool.
+  *Consequence, stated honestly:* the paper's absolute targets (SI-SDR +3.7 dB,
+  eSTOI 0.4, PESQ 1.9 at −15 dB) were measured **at 8 kHz on TIMIT**, so at
+  16 kHz on LibriSpeech they are a **reference point, not an exact bar** — both
+  the bandwidth (the model must now also reconstruct 4–8 kHz, and eSTOI/PESQ are
+  computed over a wider band) and the speech corpus differ. Read the targets as
+  an order-of-magnitude pass condition: landing near them means the pipeline is
+  sound, landing far below still points at our pipeline.
+- **LibriSpeech instead of TIMIT.** TIMIT is not in the data lake. The speech
+  split is by *speaker* (the F1 `HELDOUT_SPEAKERS` list, 25 of 246 ≈ 10 %),
+  which is stricter than the paper's 90/10 utterance split — train and valid
+  never share a speaker.
+- **AVQ instead of the paper's AS drone.** The 5 AVQ ego-noise sequences are the
+  closest onboard-array ego-noise recordings we have published; the other 7 AVQ
+  recordings contain the speech source and are excluded — by construction, since
+  the pools read the derived `AVQ-egonoise` dataset (§ The noise dataset).
+- **Infinite online stream, not a fixed epoch.** The paper mixes on the fly too;
+  our stream is infinite, so `samples_per_validation` defines the epoch. It is
+  set to 41580 samples (≈1300 steps at batch 32) — the paper's own epoch (10
+  passes over its 4158 training utterances), used because both patiences
+  (Nα = 5, NE = 10) are counted in epochs. Same value in all three arms.
+- **8 ms zero-padded tail.** 48000 is not a multiple of the 256-sample hop
+  (48000/256 = 187.5), so the iSTFT returns 47872 samples and DCUNet zero-pads
+  the last 128 (8 ms, 0.27 % of the clip) back to 48000, emitting
+  `UserWarning: DCUNet output length mismatch: output=47872, input=48000,
+  diff=-128. Consider adjusting chunk_size.` once per process. Kept as-is
+  because T = 3.0 s is the paper's crop; a hop-aligned 47872 would silence it.
+- **Valid set is published + pinned** (`SE-valid-avq-survey@95378d78ccf1`), so it
+  streams from R2 on any backend. (It was rebuilt on `AVQ-egonoise`, replacing
+  `@a88d9204506d`: same 5 recordings, same channel 0, same 16 kHz, same seed and
+  SNR grid, but the noise draws land on different offsets because the pool's
+  shard layout changed — so the set is distributionally identical, not
+  clip-identical, and the pre-flight diagnostic table above was measured on the
+  predecessor build. Checked: the rebuilt set's noisy anchors are
+  −25.10/−19.96/−15.05/−10.02/−4.99 dB SI-SDR and eSTOI
+  0.019/0.059/**0.125**/0.229/0.306, matching the old build's
+  0.022/0.058/**0.121**/0.218/0.310 — the −15 dB eSTOI calibration against the
+  paper's 0.1 baseline still holds.) Rebuild with
+  `python scripts/build_se_valid.py --dataset avq --publish && dload pin SE-valid-avq-survey`;
+  an unpublished local build can be read with a `local_root: <dir>` param.
+
+## Results
+
+### Step 1 reproduces the survey's DCUNet
+
+Per-clip eval on `SE-valid-avq-survey`, at the paper's headline operating point
+of **−15 dB input SNR** (`results/f2_perclip/`, `scripts/f2_ladder_table.py`):
+
+| metric | noisy anchor | **F2 step 1** | paper (2023 survey) |
+|---|---|---|---|
+| SI-SDR | −15.05 | **+3.82 dB** | +3.7 dB ✓ |
+| eSTOI | 0.126 | **0.408** | 0.4 ✓ |
+| PESQ (wideband, 16 kHz) | 1.061 | 1.201 | — |
+| PESQ (narrowband, 8 kHz) | 1.196 | **1.538** | 1.9 ✗ |
+
+**SI-SDR and eSTOI land on the published values essentially exactly.** PESQ does
+not, and the discrepancy is only *partly* a metric artefact — stated precisely
+because it is easy to overclaim here:
+
+- `metrics.separation.pesq` selects **wideband** PESQ at ≥16 kHz, whereas the
+  survey ran at 8 kHz and therefore reported **narrowband** PESQ. Measured on
+  real LibriSpeech speech, PESQ-NB scores **+0.64 to +1.54 above PESQ-WB** on
+  identical audio (at 0/5/15 dB SNR). `eval_se_perclip.py` now emits `pesq_nb`.
+- Scoring like-for-like moves step 1 from 1.201 to **1.538**, closing roughly
+  **half** of the 0.70 gap to 1.9. **A residual ~0.36 remains unexplained by
+  bandwidth alone.** Plausible contributors, none of them measured here: the
+  speech corpus (LibriSpeech vs TIMIT), the drone (AVQ vs the paper's AS), our
+  audio being 16 kHz decimated to 8 kHz rather than natively 8 kHz, and step 1
+  having been stopped while still creeping upward (its `val/si_sdr` was still
+  improving in the third decimal when the run was cancelled to free GPU quota).
+
+So the replication is **exact on the two metrics that carry the claim** — the
+SI-SDR improvement and the intelligibility improvement — and short on PESQ by an
+amount that bandwidth mode explains about half of.
+
+So the answer to this batch's founding question is **yes**: under the survey's
+own protocol, this repository reproduces the survey's own DCUNet result. Nothing
+is broken in the training or evaluation pipeline, and the F1 DCUNet number is
+not an artefact of it.
+
+### The training noise pool is what destroys it
+
+All three arms differ *only* in the training noise pool and are scored on the
+identical `SE-valid-avq-survey` clips. Δ is against the noisy anchor at −15 dB:
+
+| arm | training noise | AVQ share | eSTOI @−15 | **ΔeSTOI** | ΔSI-SDR |
+|---|---|---|---|---|---|
+| 1 `avq_survey` | AVQ only (the paper's) | 100 % | **0.408** | **+0.282** | +18.9 |
+| 2 `alldrone` | + all drone | ~14 % | 0.131 | **+0.006** | +5.4 |
+| 3 `allharmonic` | + all harmonic | ~2 % | 0.123 | **−0.002** | +3.3 |
+| — F1 DCUNet | broad drone, F1 recipe | ~17 % | 0.112 | −0.014 | +2.0 |
+
+Broadening the training noise annihilates DCUNet's intelligibility gain:
+**+0.276 → +0.006 → −0.002 eSTOI**. What survives in the broad arms is an
+SI-SDR gain of 3–7 dB with no corresponding intelligibility gain — the model
+removes noise *energy* without recovering *speech*. The same pattern holds when
+each broad arm is scored on the valid set matching its own training pool
+(`SE-valid-drone` for arm 2, `SE-valid-harmonic` for arm 3), so this is not a
+domain-shift artefact of testing on AVQ: arm 2 on `SE-valid-drone` scores
+ΔeSTOI 0.000/−0.001/+0.004/−0.014/−0.020/−0.018/−0.041 across the SNR grid.
+
+Note also that the F2 recipe *does* substantially repair DCUNet relative to F1
+even on broad noise — ΔSI-SDR goes from erratic and sometimes negative to a
+consistent +3…+7.7 dB, and eSTOI stops being actively degraded. The STFT
+resolution and loss changes were real improvements. They are simply not
+sufficient.
+
+### Step 1b: the replication is a SEEN-NOISE result
+
+`f2_dcunet_avq_heldout` is step 1 with one change — training noise is AVQ
+session 1 only (`S1_seq1/2/3`), session 2 held out — scored on
+`SE-valid-avq-split`, whose two categories are the seen and unseen recordings.
+Unprocessed, the halves are equally hard (noisy SI-SDR −14.93 vs −14.97, eSTOI
+0.114 vs 0.122 at −15 dB; 250 clips each), so any difference is training
+exposure, not difficulty. At −15 dB input:
+
+| category | SI-SDR | ΔSI-SDR | eSTOI | ΔeSTOI | corr |
+|---|---|---|---|---|---|
+| `avq_ego_s1` — **seen in training** | **+3.60** | +18.53 | **0.339** | **+0.225** | 0.823 |
+| `avq_ego_s2` — **never seen** | **−9.30** | +5.67 | **0.168** | **+0.046** | 0.344 |
+
+**A 12.9 dB SI-SDR and 0.17 eSTOI gap between recordings of the same drone**,
+differing only by session.
+
+The control that closes it: **step 1, which trained on all five recordings,
+scored on the same split set**. If `avq_ego_s2` were simply the harder half, its
+gap would persist for step 1 too. It does not — at −15 dB:
+
+| model | trained on | `avq_ego_s1` | `avq_ego_s2` | gap |
+|---|---|---|---|---|
+| step 1 | all 5 recordings | +4.42 dB / eSTOI 0.391 | +4.12 dB / 0.375 | **0.3 dB / 0.016** |
+| step 1b | `S1` only | +3.60 dB / 0.339 | **−9.30 dB / 0.168** | **12.9 dB / 0.171** |
+
+Same clips, same architecture, same loss and schedule; the only difference is
+whether session 2 was in the training pool. Step 1 is indifferent to which half
+it is scored on; step 1b falls off a cliff on the half it never saw. The gap is
+therefore caused by training exposure alone. On the seen half the model reproduces step 1's
+behaviour almost exactly (+3.60 vs +3.82 SI-SDR); on the unseen half it falls to
+roughly what the broad-pool arms achieve (arm 2 scored −9.64 SI-SDR / ΔeSTOI
++0.006 at the same point).
+
+That equivalence is the key observation: **DCUNet's score is governed by whether
+it was trained on the specific noise recording it is being tested on, not by how
+broad the pool was.** The step 1→2→3 "breadth" effect and this seen/unseen gap
+are the same phenomenon — in step 1 every validation recording was in training,
+which is the survey's protocol; in every other arm the effective exposure to the
+test recording is low or nil.
+
+### It is DCUNet-specific, not a property of the data
+
+The decisive control is already in F1, and it is stronger than it first looks:
+`conf/online_mix/se_drone_only.yaml` contains **no AVQ at all** (AVQ was added to
+the project after F1 ran). So **MP-SENet had never heard this drone** when it was
+scored on the AVQ clips — for it, all of AVQ is unseen noise — and it still
+reaches **eSTOI 0.468 (ΔeSTOI +0.342)** and SI-SDR +3.11 at −15 dB.
+
+Put beside step 1b, on *unseen* rotor noise at −15 dB:
+
+| model | AVQ in its training? | ΔeSTOI | SI-SDR |
+|---|---|---|---|
+| **MP-SENet** (F1, broad drone pool) | **never** | **+0.342** | +3.11 |
+| **DCUNet** (step 1b) | same drone, other session | **+0.046** | −9.30 |
+
+MP-SENet generalises to a drone it has never heard better than DCUNet
+generalises across two sessions of a drone it *has*. On `SE-valid-drone`
+MP-SENet gains +0.14…+0.29 eSTOI where arm 2 gains ~0.
+
+So the broad harmonic-noise task is learnable, and modern architectures learn
+it. The limitation is DCUNet's.
+
+### DN-LM is leaked by its published protocol
+
+The same question applies to this project's *other* prior DCUNet result: the
+Paper-1 (Edge-BS-RoFormer) replication on DN-LM, where DCUNet ranked **first** of
+four on SI-SDR and STOI. The DN-LM paper (Liu et al., *Drones* 2025, §3.5)
+describes the construction directly:
+
+> "speech and UAV noise samples were **randomly selected from** LibriSpeech and
+> DroneAudioDataset…"
+>
+> "a **2 h synthetic dataset** … was constructed **and partitioned into training
+> and validation sets at a 9:1 ratio**"
+
+The order is the point: mixtures are synthesised first, by drawing at random from
+the **full** source pools, and the *resulting mixtures* are then split 9:1. No
+speaker holdout and no noise-recording holdout is described anywhere. A random
+partition of one pool of mixtures cannot produce either. The paper's Figure 3
+presents the two splits as having near-identical SNR distributions (train −16.4,
+valid −16.5 dB), "a statistically consistent data foundation" — which is exactly
+what a random split of a single pool gives.
+
+Our re-creation implements that faithfully, arithmetic included: 2 h at 1 s is
+**7200 clips**, and 9:1 is **6480 / 720** — our exact split sizes. Measured on
+the same corpora:
+
+| DN-LM leakage under the published protocol | value |
+|---|---|
+| distinct noise clips in the pool | 1332 |
+| distinct underlying drone recordings | 257 |
+| train draws / valid draws | 6480 / 720 |
+| valid clips whose noise clip is **also** in train | **714 / 720 (99.2 %)** |
+| valid clips reusing an **exact** train utterance | 149 / 720 (20.7 %) |
+| speaker overlap | ~100 % (no speaker split) |
+
+DN-LM is therefore **more** leaked than the survey: it shares noise recordings,
+speakers, and a fifth of the exact utterances.
+
+> ⚠ **Two caveats.** (i) We assess the *described protocol*, not the released
+> data: the repo (`NonTrivialLiu/Edge-BS-RoFormer-DroneNoise-LibriMix`, checked
+> 2026-07-26) ships neither the dataset nor a builder — `datasets/` is
+> gitignored, no releases, no link, and `dataset.py` just takes train/valid
+> dirs. An undocumented source-level partition would void the leak.
+> (ii) **We did not reproduce the paper's ranking**: it reports
+> Edge-BS-RoFormer **+2.2 dB** over DCUNet at −15 dB, while on ours
+> Edge-BS-RoFormer is **3.55 dB behind** (n=128) — a 5.75 dB sign-reversed
+> swing. Since we implement the same described protocol, that is unlikely to be
+> a dataset difference; our Edge-BS-RoFormer training was compute-limited (see
+> the F1 report). **Unresolved.**
+
+**The ranking inverts with leakage**, which is the cleanest summary of this batch:
+
+| model | DN-LM SI-SDR / STOI (leaked) | SE-valid-drone SI-SDR (held out) |
+|---|---|---|
+| **DCUNet** | **−8.09 / 0.541 — 1st** | **−10.88 — last** |
+| Edge-BS-RoFormer | −9.94 / 0.529 — 2nd | −2.13 — 2nd |
+| HTDemucs | −10.10 / 0.503 — 3rd | — |
+| DPTNet | −33.39 / 0.302 — 4th | — |
+| MP-SENet | — | **+2.27 — 1st** |
+| TF-GridNet | — | −2.57 — 3rd |
+
+On the held-out benchmark DCUNet's eSTOI is 0.193 against an unprocessed 0.233 —
+actively harmful to intelligibility. Consequence: conclusions drawn from DN-LM
+inherit this leak for *every* model measured on it, though it should flatter
+memorisation-prone models most. Rebuilding our copy with recording-level and
+speaker-level holdout is cheap and would make it usable.
+
+Full write-up: `writing/reports/2026-07-26_dcunet-generalization/`.
+
+## Conclusion
+
+_Step 1b's numbers are from its epoch-7 checkpoint (still training when scored);
+the gap is far too large for further epochs to change its sign or order of
+magnitude, but the exact figures will be refreshed at convergence._
+
+1. **The survey's DCUNet result reproduces here** on the two metrics that carry
+   the claim: SI-SDR **+3.82** vs the paper's +3.7, eSTOI **0.408** vs 0.4, at
+   −15 dB input. Nothing is wrong with this repository's training or evaluation
+   pipeline, and the F1 DCUNet number is not an artefact of it. PESQ remains
+   ~0.36 short after correcting the wideband/narrowband mismatch, unexplained.
+
+2. **That result is a *seen-noise* result.** Holding out 2 of the 5 ego-noise
+   recordings — same drone, different session — costs **12.9 dB SI-SDR** and
+   **0.17 eSTOI** at −15 dB (step 1b: +3.60 → −9.30, 0.339 → 0.168), on halves
+   that are equally hard unprocessed. The survey validates on the same
+   recordings it trains on, so its headline is measured in the leaked condition.
+
+3. **Breadth and leakage are the same phenomenon.** Step 1b's unseen half
+   (−9.30 dB, ΔeSTOI +0.046) lands on top of the broad-pool arms (arm 2: −9.64,
+   +0.006). What governs DCUNet's score is not how broad the training pool was
+   but whether it was trained on the *specific recording* it is tested on. The
+   step 1→2→3 collapse (ΔeSTOI +0.28 → +0.01 → −0.00) is that same effect seen
+   through dilution of the in-domain recording's share.
+
+4. **The failure mode is a metric split, not a degenerate output.** On unseen
+   noise DCUNet still gains 3–7 dB SI-SDR while gaining ~0 eSTOI: it removes
+   noise energy without recovering intelligible speech. (An earlier reading of
+   this as "collapse to a near-null output" was retracted — `gain_db` shows the
+   outputs at or above target level.)
+
+5. **This is DCUNet's limitation, not the data's.** F1's drone pool contains no
+   AVQ whatsoever, so MP-SENet had *never heard this drone* and still reaches
+   ΔeSTOI **+0.342** on it — generalising to an unseen drone better than DCUNet
+   generalises between two sessions of a drone it was trained on.
+
+**Answer to the batch's question.** Comparable results cannot be achieved on our
+training setup because our protocol holds noise recordings out and the survey's
+does not. DCUNet earns the survey's numbers by learning the specific ego-noise
+recordings it is scored against; strip that and it retains an energy-domain gain
+with essentially no intelligibility gain, whatever the pool. Both published
+results are therefore correct and not in conflict — they measure different
+things. For this project's purposes (C1: unseen rotating sources) DCUNet is not
+a competitive baseline, and the F1 ranking stands; MP-SENet and TF-GridNet are
+the architectures that actually generalise across rotor noise.

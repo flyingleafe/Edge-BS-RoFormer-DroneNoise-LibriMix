@@ -1,0 +1,33 @@
+# F2 step 1b (memorisation probe) data: the survey setup with training noise
+# restricted to AVQ session 1, validated on SE-valid-avq-split whose two
+# categories are the SEEN (avq_ego_s1) and UNSEEN (avq_ego_s2) ego-noise
+# sessions. The gap between those categories is the measurement. Otherwise
+# identical to f2_avq_survey.yaml. Original header follows.
+#
+# F2 data: the Mukhutdinov et al. 2023 (IEEE Access) survey setup — online-mix
+# SE stream over the 5 AVQ ego-noise sequences (train; the `AVQ-egonoise`
+# dataset — see conf/online_mix/se_avq_s1.yaml) + the fixed
+# SE-valid-avq-split set (valid / early-stop monitor). Everything at 16 kHz
+# (the project's native rate — the paper's 8 kHz is deliberately not
+# replicated), 3.0 s (48000-sample) crops. See
+# conf/online_mix/se_avq_s1.yaml and
+# docs/experiments/f2-survey-replication.md. `samples_per_validation` (the
+# online "epoch" size for this infinite stream) is set in the experiment file.
+#
+# The valid set is published + pinned (`SE-valid-avq-split@95378d78ccf1`), so it
+# streams from R2 on any backend. Rebuild it with
+#   python scripts/build_se_valid.py --dataset avq_split --publish && dload pin SE-valid-avq-split
+# (a `local_root: <dir>` param reads an unpublished build from a local dload repo).
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/se_avq_s1.yaml
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.SEValidFrameDataset
+  params:
+    dataset: SE-valid-avq-split
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null
