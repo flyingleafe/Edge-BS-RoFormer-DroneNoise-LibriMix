@@ -258,7 +258,9 @@ def run_pipeline(
     """seed → ladder; returns (seed, r0, [(stage label, traj)], timings)."""
     audio = prep.audio[:channels]
     tic = time.perf_counter()
-    seed = blind_seed(audio, float(SR), 4, SEED_CFG, arms=arms)
+    # "B" (bandwidth adaptation) only toggles the VK refine/midband configs below;
+    # blind_seed validates arms against T/C/N/K/R and must not see it.
+    seed = blind_seed(audio, float(SR), 4, SEED_CFG, arms=arms - {"B"})
     wall_seed = time.perf_counter() - tic
 
     r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
