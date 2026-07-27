@@ -1,0 +1,88 @@
+# FREQ-SCALE v2 (2026-07-28): fire on EVERY post-warmup chunk (p=1.0) over
+# the full range alpha in [0.7, 1.3]. The v1 policy (p=0.5, [0.85, 1.18])
+# left ~63% of all training chunks unscaled and capped shifts at +-18%, and
+# the trained transformer measurably kept its amplitude anchor (predictions
+# do not follow a scaled comb). v2 removes the unscaled majority: the prior
+# is no longer a winning strategy on ANY post-warmup sample.
+# E12 full-flight policy + FREQ-SCALE-ONLY noise augmentation (CKLA campaign,
+# docs/experiments/ckla.md § amplitude-anchor arm). The activation analysis
+# measured that BOTH trained archs ignore a x1.02 frequency scaling (~0.05%
+# response vs the ideal 2%) — predictions are anchored to the training RPS
+# prior via amplitude/timbre cues, not comb spacing. This policy attacks that
+# anchor with the ONE augmentation that forces spacing-reading: freq_scale
+# (noise+RPS pair rescaled together, labels *= alpha), solo — G6 bundled it
+# with 5 other transforms (net negative); solo it is untested. Everything
+# else identical to e12_real_fullflight_dload.yaml.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+  speech:
+    - kind: audio_files
+      root: "dload:librispeech/LibriSpeech/train-clean-100"
+      glob: "**/*.flac"
+      cache:
+        mode: packed_int16
+        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
+
+policy:
+  stages:
+    # First 50k samples = 10 validation intervals at samples_per_validation=5000:
+    # random speech/noise mixtures, no augmentation.
+    # Stage boundary in GENERATED CHUNKS. Under the legacy-equivalent epoch
+    # semantics (samples_per_validation 40000 frames = 5000 chunks/epoch at 8
+    # mics, batch_size 128 frames = 16 chunks) this is epoch 10 — the boundary
+    # the value always intended. The data-level flatten refactor had silently
+    # redefined epochs to 5000 FRAMES (625 chunks), pushing this to epoch ~80
+    # (docs/experiments/ckla.md § THE STAGING BUG); the fix is restoring epoch
+    # semantics, not rescaling the boundary.
+    - until: 50000
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+
+    # Afterward: same mixture distribution; augment 50% of samples, and
+    # independently time-warp 50% of noise chunks (noise+RPS pair) — matches the
+    # E5/E11 time-warp recipe exactly.
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
+          # channel_drop REMOVED (2026-07-27): with flatten_channels each
+          # zeroed channel becomes a mono training frame of pure silence
+          # carrying nonzero RPS labels (~2% of post-warmup frames) —
+          # contradicts the silence==zero-RPS convention and trains
+          # prior-regression. Designed for multichannel models; harmful here.
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
