@@ -250,6 +250,16 @@ on full-envelope val confirms the cross-hardware variance estimate: most
 campaign effect sizes are below the single-run resolution. All further
 ledger claims require n ≥ 3 seeds under protocol-B.
 
+### Protocol-B interim cruise read (2026-07-27 late, Slurm 20934632)
+
+`ckla_p1_pnoise_pb` ep-14-best checkpoint (run still improving, full-envelope
+31.6): dregon_cruise **2.75** (stitchmed) / fly124_cruise **1.25** (stitch) /
+all_37 **2.95**. Protocol-A pnoise's cruise-vs-envelope trade-off is GONE —
+live gain + firing augs + legacy batch regime hold both pools (vs A-pnoise
+3.94/2.38/17.5). Remaining dregon gap to the OLD floor (2.481, old-protocol
+number — fair floor = g2_if_pb, queued) is 0.27 ≈ the single-seed cruise σ;
+the B-seed fleet decides. Best fly124 number of the campaign.
+
 ## Conclusion
 
 _Being rewritten in light of the staging bug + replicate statistics.
