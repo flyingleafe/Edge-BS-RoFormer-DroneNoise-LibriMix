@@ -98,6 +98,8 @@ HELDOUT_SPEAKERS = [
 # bounds the valid build to ~2 shards/dataset even on 2003-shard MIMII). Training
 # uses the complementary shards (holdout.split=train, same valid_shards).
 HOLDOUT_VALID = {"split": "valid", "valid_shards": 2}
+# The complementary (training) side — what the models actually saw.
+HOLDOUT_TRAIN = {"split": "train", "valid_shards": 2}
 
 # Per-category noise-source specs consumed by `build_noise_pool`. Every
 # audio_pool draws its valid holdout side; drone real-frames are held out by id.
@@ -117,6 +119,32 @@ CATEGORY_NOISE: dict[str, list[dict]] = {
         },
         {"kind": "audio_pool", "dataset": "drone_audio", "holdout": HOLDOUT_VALID},
         {"kind": "audio_pool", "dataset": "DroneAudioSet", "holdout": HOLDOUT_VALID},
+    ],
+    # The generalization probe's IN-DISTRIBUTION arm: a byte-for-byte mirror of
+    # the F1 Pass-A *training* noise pool (conf/online_mix/se_drone_only.yaml) —
+    # the complementary side of every holdout the `drone` category above uses.
+    # Pairing it with the SAME held-out speakers means the only thing that
+    # differs between `drone_seen` and `drone` is whether the model was trained
+    # on those noise recordings. Used by notebooks/generalization_lib.py; not
+    # published as a dataset (generated on demand).
+    "drone_seen": [
+        {
+            "kind": "frames",
+            "dataset": "DREGON-frames",
+            "splits": ["in_flight_noise"],
+            "exclude_recording_ids": ["free-flight_nosource_room1"],
+            "min_motor_rps": 30.0,
+        },
+        {
+            "kind": "frames",
+            "dataset": "michaels-frames",
+            "recording_ids": ["FLY125"],
+            "min_motor_rps": 0.0,
+        },
+        {"kind": "audio_pool", "dataset": "drone_audio", "holdout": HOLDOUT_TRAIN},
+        {"kind": "audio_pool", "dataset": "DroneAudioSet", "holdout": HOLDOUT_TRAIN},
+        {"kind": "audio_pool", "dataset": "SPCUP19-egonoise", "holdout": HOLDOUT_TRAIN},
+        {"kind": "audio_pool", "dataset": "new-drone-noises", "holdout": HOLDOUT_TRAIN},
     ],
     "mimii": [{"kind": "audio_pool", "dataset": "MIMII", "holdout": HOLDOUT_VALID}],
     "mimii_dg": [{"kind": "audio_pool", "dataset": "MIMII-DG", "holdout": HOLDOUT_VALID}],
