@@ -21,6 +21,7 @@ from data_processing.noise_augmentations import (
     _spec_mask,
     _spectral_recolor,
     _tooth_dropout,
+    freq_scale_source_factor,
     maybe_apply_noise_augmentation,
 )
 
@@ -286,3 +287,25 @@ def test_maybe_apply_no_fire_returns_same_frame():
         )
         is frame
     )
+
+
+# ── freq_scale_source_factor ────────────────────────────────────────────────
+
+
+def test_freq_scale_source_factor_handles_block_lists():
+    single = {"probability": 1.0, "choices": [{"freq_scale": {"alpha_high": 1.3}}]}
+    blocks = [
+        {"probability": 1.0, "choices": [{"freq_scale": {"alpha_high": 1.3}}]},
+        {"probability": 0.5, "choices": [{"freq_scale": {"alpha_high": 1.2}}]},
+    ]
+    no_fs = [
+        {"probability": 1.0, "choices": ["spec_mask"]},
+        {"probability": 0.7, "choices": [{"floor_inject": {}}]},
+    ]
+
+    assert freq_scale_source_factor(single) == 1.3
+    # A list of blocks compounds: the oversampling factor is the PRODUCT of
+    # the per-block worst cases (each block may compress the chunk in turn).
+    assert abs(freq_scale_source_factor(blocks) - 1.3 * 1.2) < 1e-12
+    assert freq_scale_source_factor(no_fs) == 1.0
+    assert freq_scale_source_factor(None) == 1.0

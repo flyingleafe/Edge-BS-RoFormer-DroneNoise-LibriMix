@@ -78,40 +78,79 @@ def _stage_blocks(policy: Mapping[str, Any]) -> list[Any]:
     return list(stages) if stages else [policy]
 
 
-def _key_probability(stage: Mapping[str, Any], key: str) -> float:
-    spec = stage.get(key)
-    if not isinstance(spec, Mapping):
+def _spec_blocks(spec: Any) -> list[Any]:
+    """Blocks of one augmentation key: a list-valued spec is N sequential blocks."""
+    if isinstance(spec, list):
+        return list(spec)
+    return [spec]
+
+
+def _block_probability(block: Any, key: str) -> float:
+    """Fire probability of one block; a ramp counts as its max(start, end)."""
+    if not isinstance(block, Mapping):
         return 0.0
-    p = float(spec.get("probability", 0.0))
-    if key != "noise_time_warp" and not spec.get("choices"):
+    p = block.get("probability", 0.0)
+    if isinstance(p, Mapping):
+        ramp = p.get("ramp", {})
+        p = max(float(ramp.get("start", 0.0)), float(ramp.get("end", 1.0)))
+    else:
+        p = float(p)
+    if key != "noise_time_warp" and not block.get("choices"):
         return 0.0  # a block with no choices never changes anything
     return min(max(p, 0.0), 1.0)
 
 
-def _label_rule(policy: Mapping[str, Any], key: str) -> str | None:
-    """PASS/FAIL rule for the label-diff count of ``key``, or None (report only).
+def _key_probability(stage: Mapping[str, Any], key: str) -> float:
+    """Combined any-block fire probability of ``key``: 1 - prod(1 - p_i)."""
+    p_miss = 1.0
+    for block in _spec_blocks(stage.get(key)):
+        p_miss *= 1.0 - _block_probability(block, key)
+    return 1.0 - p_miss
+
+
+def _row_probability(stage: Mapping[str, Any], key: str, block_idx: int | None) -> float:
+    """Fire probability of one measured row: a single block, or the combined key."""
+    if block_idx is None:
+        return _key_probability(stage, key)
+    blocks = _spec_blocks(stage.get(key))
+    if block_idx >= len(blocks):
+        return 0.0
+    return _block_probability(blocks[block_idx], key)
+
+
+def _label_rule(policy: Mapping[str, Any], key: str, block_idx: int | None = None) -> str | None:
+    """PASS/FAIL rule for the label-diff count of one row, or None (report only).
 
     ``augmentations`` is post-mix on the mixture only — labels must NEVER
-    change ("zero"). A ``noise_augmentations`` block whose every choice is
-    ``freq_scale`` must change labels on EVERY fire whose chunk has nonzero
-    RPS ("match_fired") — the check that label augmentation actually reaches
-    the targets. (All-zero-RPS chunks — full-flight policies with
-    ``min_motor_rps: 0`` contain pre-takeoff ground windows — are exempt:
-    ``0 * alpha == 0``.)
+    change ("zero"). A ``noise_augmentations`` row (one block of a list, or a
+    single-mapping key) whose every choice is ``freq_scale`` must change
+    labels on EVERY fire whose chunk has nonzero RPS ("match_fired") — the
+    check that label augmentation actually reaches the targets. (All-zero-RPS
+    chunks — full-flight policies with ``min_motor_rps: 0`` contain
+    pre-takeoff ground windows — are exempt: ``0 * alpha == 0``.) A row whose
+    every choice is label-preserving (no ``freq_scale``) must NEVER change
+    labels ("zero"). Mixed rows get no rule.
     """
     if key == "augmentations":
         return "zero"
     if key != "noise_augmentations":
         return None
+    names: set[str] = set()
     for stage in _stage_blocks(policy):
-        spec = stage.get(key)
-        if not isinstance(spec, Mapping):
-            continue
-        for choice in spec.get("choices", []):
-            name = choice if isinstance(choice, str) else next(iter(choice))
-            if name != "freq_scale":
-                return None
-    return "match_fired"
+        blocks = _spec_blocks(stage.get(key))
+        sel = blocks if block_idx is None else blocks[block_idx : block_idx + 1]
+        for block in sel:
+            if not isinstance(block, Mapping):
+                continue
+            for choice in block.get("choices", []):
+                names.add(choice if isinstance(choice, str) else next(iter(choice)))
+    if not names:
+        return None
+    if "freq_scale" not in names:
+        return "zero"
+    if names == {"freq_scale"}:
+        return "match_fired"
+    return None
 
 
 def _fire_verdict(k: int, n: int, p: float) -> bool:
@@ -158,21 +197,33 @@ def load_experiment(name: str) -> tuple[str, bool, int | None]:
     )
 
 
-def make_control(ds: Any, key: str) -> Any | None:
+def make_control(ds: Any, key: str, block_idx: int | None = None) -> Any | None:
     """A dataset sharing ``ds``'s pools whose ``key`` blocks never fire.
 
-    Returns None when ``key`` has probability 0 / is absent in every stage
-    (the control would be byte-identical to the real stream).
+    With ``block_idx`` only that block of a list-valued ``key`` is disabled
+    (the per-block control: real-vs-control outputs then differ iff exactly
+    that block fired — a missed block consumes the same single fire draw in
+    both streams, so they stay byte-identical through it). Ramp-valued
+    probabilities are replaced by the float NEVER_FIRE_P (the real stream's
+    ramp floor keeps its draw consumed, so the streams stay draw-aligned).
+    Returns None when the selected block(s) have probability 0 / are absent
+    in every stage (the control would be byte-identical to the real stream).
     """
     from data_processing.online_mixing import OnlineMixIterableDataset
 
     policy = copy.deepcopy(ds.policy)
     changed = False
     for stage in _stage_blocks(policy):
-        spec = stage.get(key)
-        if isinstance(spec, dict) and float(spec.get("probability", 0.0)) > 0.0:
-            spec["probability"] = NEVER_FIRE_P
-            changed = True
+        blocks = _spec_blocks(stage.get(key))
+        for i, block in enumerate(blocks):
+            if block_idx is not None and i != block_idx:
+                continue
+            if not isinstance(block, dict):
+                continue
+            p = block.get("probability", 0.0)
+            if isinstance(p, Mapping) or float(p) > 0.0:
+                block["probability"] = NEVER_FIRE_P
+                changed = True
     if not changed:
         return None
     return OnlineMixIterableDataset(
@@ -307,21 +358,56 @@ def main() -> int:
                 f"stage {i} boundary at effective epoch {epoch:.1f} "
                 f"(> {args.warn_boundary_epoch:g}) — staging-bug territory, check units"
             )
+    # Probability ramps live INSIDE a stage (they do not move stage
+    # boundaries); report each one with its window in chunks and epochs.
+    for i, stage in enumerate(stages, start=1):
+        for key in AUG_KEYS:
+            spec = stage.get(key)
+            blocks = _spec_blocks(spec)
+            for j, block in enumerate(blocks):
+                if not isinstance(block, Mapping):
+                    continue
+                p = block.get("probability")
+                if not (isinstance(p, Mapping) and "ramp" in p):
+                    continue
+                ramp = p["ramp"]
+                a, b = float(ramp["from"]), float(ramp["until"])
+                label = f"{key}[{j}]" if isinstance(spec, list) else key
+                print(
+                    f"  ramp: stage {i} {label}: "
+                    f"p {float(ramp.get('start', 0.0)):g} -> {float(ramp.get('end', 1.0)):g} "
+                    f"over chunks {a:g}..{b:g} "
+                    f"(epochs {a * fpc / spe:.2f}..{b * fpc / spe:.2f})"
+                )
 
     # ── [3] empirical fire rates per probed epoch ──────────────────────────
-    present_keys = [
-        k for k in AUG_KEYS if any(_key_probability(s, k) > 0.0 for s in _stage_blocks(policy))
-    ]
-    absent_keys = [k for k in AUG_KEYS if k not in present_keys]
-    controls = {k: make_control(ds, k) for k in present_keys}
+    # One measured row per key — except a LIST-valued key (sequential blocks),
+    # which gets one row PER BLOCK, each against its own per-block control
+    # (disabling all blocks at once would only measure the combined rate and
+    # hide e.g. a ramped block behind an always-on one).
+    rows: list[tuple[str, int | None, str]] = []  # (key, block_idx, display label)
+    absent_keys: list[str] = []
+    for k in AUG_KEYS:
+        if any(isinstance(s.get(k), list) for s in _stage_blocks(policy)):
+            n_blocks = max(len(_spec_blocks(s.get(k))) for s in _stage_blocks(policy))
+            rows += [
+                (k, i, f"{k}[{i}]")
+                for i in range(n_blocks)
+                if any(_row_probability(s, k, i) > 0.0 for s in _stage_blocks(policy))
+            ]
+        elif any(_key_probability(s, k) > 0.0 for s in _stage_blocks(policy)):
+            rows.append((k, None, k))
+        else:
+            absent_keys.append(k)
+    controls = {(k, b): make_control(ds, k, b) for k, b, _ in rows}
     assert all(c is not None for c in controls.values())
 
     print(f"\n[3] Empirical fire rates ({args.probes} probes/epoch)")
     for k in absent_keys:
         print(f"  {k}: absent (p=0) in every stage — structural 0, not measured")
-    if present_keys:
+    if rows:
         print(
-            f"  {'epoch':<7}{'chunk ids':<16}{'stage':<7}{'key':<22}"
+            f"  {'epoch':<7}{'chunk ids':<16}{'stage':<7}{'key':<25}"
             f"{'p_cfg':<8}{'fired':<10}{'rate':<8}{'label-diff':<12}verdict"
         )
     t3 = time.perf_counter()
@@ -334,8 +420,8 @@ def main() -> int:
                 real_cache[gid] = ds.generate_sample(gid)
         sidx = {stage_index(policy, gid) for gid in ids}
         stage_str = "/".join(str(s) for s in sorted(sidx))
-        for key in present_keys:
-            ctl = controls[key]
+        for key, bidx, row_label in rows:
+            ctl = controls[(key, bidx)]
             assert ctl is not None
             fired = 0
             label_diff = 0
@@ -350,11 +436,13 @@ def main() -> int:
                         fired_nonzero_rps += 1
                 if not _tensors_equal(rl, cl):
                     label_diff += 1
+            # _resolve_policy materializes ramps to floats for each probed id,
+            # so the per-id average follows the ramp within the epoch window.
             p_cfg = float(
-                sum(_key_probability(_resolve_policy(policy, g), key) for g in ids) / len(ids)
+                sum(_row_probability(_resolve_policy(policy, g), key, bidx) for g in ids) / len(ids)
             )
             ok = _fire_verdict(fired, len(ids), p_cfg)
-            rule = _label_rule(policy, key)
+            rule = _label_rule(policy, key, bidx)
             label_ok = True
             if rule == "zero":
                 label_ok = label_diff == 0
@@ -364,7 +452,7 @@ def main() -> int:
             if verdict == "FAIL":
                 expect = fired_nonzero_rps if rule == "match_fired" else 0
                 failures.append(
-                    f"epoch {epoch:g} {key}: fired {fired}/{len(ids)} vs p_cfg={p_cfg:.2f}"
+                    f"epoch {epoch:g} {row_label}: fired {fired}/{len(ids)} vs p_cfg={p_cfg:.2f}"
                     + (
                         ""
                         if label_ok
@@ -372,7 +460,7 @@ def main() -> int:
                     )
                 )
             print(
-                f"  {epoch:<7g}{f'{ids[0]}..{ids[-1]}':<16}{stage_str:<7}{key:<22}"
+                f"  {epoch:<7g}{f'{ids[0]}..{ids[-1]}':<16}{stage_str:<7}{row_label:<25}"
                 f"{p_cfg:<8.2f}{f'{fired}/{len(ids)}':<10}{fired / len(ids):<8.3f}"
                 f"{f'{label_diff}/{len(ids)}':<12}{verdict}"
             )

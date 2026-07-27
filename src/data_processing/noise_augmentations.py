@@ -66,7 +66,7 @@ byte-identical.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import numpy as np
@@ -242,16 +242,24 @@ def _freq_scale(
     return out, new_label
 
 
-def freq_scale_source_factor(spec: Mapping[str, Any] | None) -> float:
+def freq_scale_source_factor(
+    spec: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+) -> float:
     """Worst-case duration-compression factor of a noise-augmentation spec.
 
     ``freq_scale`` with alpha > 1 shortens the chunk by up to ``alpha_high``;
     the noise window must be oversampled by this factor so the augmented
     chunk still covers the training duration without padding. 1.0 when no
-    freq_scale choice is present.
+    freq_scale choice is present. A LIST of blocks (applied sequentially)
+    compounds: the factor is the PRODUCT of the per-block worst cases.
     """
     if not spec:
         return 1.0
+    if not isinstance(spec, Mapping):
+        factor = 1.0
+        for block in spec:
+            factor *= freq_scale_source_factor(block)
+        return factor
     factor = 1.0
     for choice in spec.get("choices", []) or []:
         if isinstance(choice, str):

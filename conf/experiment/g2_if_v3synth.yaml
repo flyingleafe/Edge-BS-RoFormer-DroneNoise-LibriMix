@@ -1,0 +1,25 @@
+# @package _global_
+# Synthesis-first v3 arm (single stage: freq_scale+time_warp always on from
+# sample 0, corruption pack + post-mix ramp 0->0.7 over epochs 5->25; see
+# conf/online_mix/e12_fullflight_v3_synthfirst_dload.yaml).
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_if
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: g2_if_v3synth
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_v3_synthfirst_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

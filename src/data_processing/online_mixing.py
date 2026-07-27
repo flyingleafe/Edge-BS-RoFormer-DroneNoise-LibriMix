@@ -979,21 +979,84 @@ def _sample_snr_db(policy: Mapping[str, Any], rng: np.random.Generator) -> float
     raise ValueError(f"unsupported snr_db spec: {spec!r}")
 
 
+#: Floor for a ramped probability: a ramp NEVER resolves to exactly 0.0, so the
+#: block consumes its single fire-decision RNG draw on every sample. This keeps
+#: the per-sample RNG structure identical on both sides of the ramp window (no
+#: draw-count discontinuity at ``from``) and keeps check_stream's 1e-9 control
+#: stream draw-aligned with the real stream throughout the run.
+_RAMP_PROBABILITY_FLOOR = 1e-9
+
+#: Policy keys whose value is a probabilistic augmentation block —
+#: ``noise_augmentations`` may also be a LIST of blocks (applied sequentially).
+_AUG_BLOCK_KEYS = ("augmentations", "noise_augmentations", "noise_time_warp")
+
+
+def _resolve_probability(value: Any, global_sample_id: int) -> float:
+    """Resolve a ``probability`` field — a plain float, or a linear-ramp mapping.
+
+    Ramp form ``{ramp: {from: A, until: B, start: p0, end: p1}}`` interpolates
+    linearly between ``(A, p0)`` and ``(B, p1)`` in global sample ids, clamped
+    to the segment endpoints outside ``[A, B]`` and floored at
+    ``_RAMP_PROBABILITY_FLOOR`` (see its comment for the RNG rationale).
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, Mapping) and "ramp" in value:
+        ramp = cast(Mapping[str, Any], value["ramp"])
+        x0, x1 = float(ramp["from"]), float(ramp["until"])
+        y0, y1 = float(ramp.get("start", 0.0)), float(ramp.get("end", 1.0))
+        gid = float(global_sample_id)
+        if gid <= x0:
+            p = y0
+        elif gid >= x1:
+            p = y1
+        else:
+            p = y0 + (y1 - y0) * (gid - x0) / (x1 - x0)
+        return max(p, _RAMP_PROBABILITY_FLOOR)
+    raise ValueError(f"unsupported probability spec: {value!r}")
+
+
+def _materialize_ramps(stage: Mapping[str, Any], global_sample_id: int) -> Mapping[str, Any]:
+    """Resolve any ramp-valued ``probability`` in ``stage`` to a float.
+
+    Returns ``stage`` itself when nothing is ramped; otherwise a shallow copy
+    with fresh block dicts — the source policy is never mutated (it is shared
+    across samples and workers).
+    """
+    out: dict[str, Any] | None = None
+    for key in _AUG_BLOCK_KEYS:
+        spec = stage.get(key)
+        blocks = spec if isinstance(spec, list) else [spec] if isinstance(spec, Mapping) else []
+        if not any(isinstance(b.get("probability"), Mapping) for b in blocks):
+            continue
+        new_blocks = [
+            {**b, "probability": _resolve_probability(b["probability"], global_sample_id)}
+            if isinstance(b.get("probability"), Mapping)
+            else b
+            for b in blocks
+        ]
+        if out is None:
+            out = dict(stage)
+        out[key] = new_blocks if isinstance(spec, list) else new_blocks[0]
+    return out if out is not None else stage
+
+
 def _resolve_policy(policy: Mapping[str, Any], global_sample_id: int) -> Mapping[str, Any]:
     """Resolve constant or staged policy for a global sample id.
 
     Phase-1 schedules are intentionally simple: a list of stages with ``until``
     sample ids.  The first stage whose ``until`` is ``None`` or greater than the
-    current id is active.
+    current id is active.  Ramp-valued probabilities in the selected stage are
+    materialized to floats for this id (on a copy — the policy is not mutated).
     """
     stages = policy.get("stages") if isinstance(policy, Mapping) else None
     if not stages:
-        return policy
+        return _materialize_ramps(policy, global_sample_id)
     for stage in stages:
         until = stage.get("until")
         if until is None or int(global_sample_id) < int(until):
-            return stage
-    return stages[-1]
+            return _materialize_ramps(stage, global_sample_id)
+    return _materialize_ramps(stages[-1], global_sample_id)
 
 
 def _scale_source_to_snr(
@@ -1300,8 +1363,12 @@ class OnlineMixIterableDataset(IterableDataset):
         # freq_scale (alpha > 1) COMPRESSES the chunk; oversample the noise
         # window by the worst-case factor so the augmented chunk still covers
         # the training duration and the final target_len extraction CROPS
-        # instead of zero-padding audio + zeroing the label tail.
-        aug_spec = cast("Mapping[str, Any] | None", policy.get("noise_augmentations"))
+        # instead of zero-padding audio + zeroing the label tail. For a LIST of
+        # blocks the factor is the product of per-block worst cases.
+        aug_spec = policy.get("noise_augmentations")
+        aug_blocks: list[Mapping[str, Any]] = (
+            list(aug_spec) if isinstance(aug_spec, list) else [aug_spec] if aug_spec else []
+        )
         aug_factor = freq_scale_source_factor(aug_spec)
         base_duration_s = self.duration_s * aug_factor
         base_len = int(round(base_duration_s * self.sample_rate))
@@ -1325,16 +1392,18 @@ class OnlineMixIterableDataset(IterableDataset):
         # Strong noise-chunk augmentations (G6): applied to the noise+RPS pair
         # BEFORE mixing (freq_scale rescales the labels, tooth_dropout reads
         # them), unlike `policy.augmentations` which is post-mix. Same
-        # fire/choice contract; absent key consumes no RNG. The pair is
-        # extracted at the OVERSAMPLED base_len; the true target_len crop
-        # happens downstream in `_extract_audio_array`.
-        noise_tf = maybe_apply_noise_augmentation(
-            noise_tf,
-            aug_spec,
-            rng,
-            target_len=base_len,
-            sample_rate=self.sample_rate,
-        )
+        # fire/choice contract; absent key consumes no RNG. A list of blocks is
+        # applied SEQUENTIALLY in list order, each with its own fire decision
+        # and choice draws. The pair is extracted at the OVERSAMPLED base_len;
+        # the true target_len crop happens downstream in `_extract_audio_array`.
+        for aug_block in aug_blocks:
+            noise_tf = maybe_apply_noise_augmentation(
+                noise_tf,
+                aug_block,
+                rng,
+                target_len=base_len,
+                sample_rate=self.sample_rate,
+            )
         audio_track = noise_tf["audio"]
         noise_audio = _extract_audio_array(noise_tf, target_len=self.target_len)
         n_frames = noise_audio.shape[-1] // self.hop_length + 1

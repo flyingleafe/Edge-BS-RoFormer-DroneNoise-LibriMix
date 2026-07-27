@@ -13,6 +13,7 @@ from data_processing.online_mixing import (
     OnlineMixIterableDataset,
     TimeFrameNoisePool,
     _resolve_policy,
+    _resolve_probability,
 )
 
 
@@ -222,3 +223,95 @@ def test_audio_source_pool_packed_cache_skips_unreadable_files(tmp_path):
     assert len(pool2.files) == 3
     sample = pool2.sample_array(np.random.default_rng(0), channels=2, mode="shared")
     assert sample.shape == (2, sr)
+
+
+def test_resolve_probability_ramp_interpolation():
+    ramp = {"ramp": {"from": 25_000, "until": 125_000, "start": 0.0, "end": 0.7}}
+
+    assert _resolve_probability(0.5, 0) == 0.5
+    assert _resolve_probability(1, 0) == 1.0
+    # Before/at the window start: clamped to `start` but FLOORED at 1e-9 — a
+    # ramp never resolves to exactly 0.0 (the fire draw must stay consumed).
+    assert _resolve_probability(ramp, 0) == 1e-9
+    assert _resolve_probability(ramp, 25_000) == 1e-9
+    # Inside: linear interpolation.
+    assert abs(_resolve_probability(ramp, 75_000) - 0.35) < 1e-12
+    assert abs(_resolve_probability(ramp, 100_000) - 0.525) < 1e-12
+    # At/after the window end: clamped to `end`.
+    assert _resolve_probability(ramp, 125_000) == 0.7
+    assert _resolve_probability(ramp, 10_000_000) == 0.7
+
+
+def test_resolve_policy_materializes_ramps_without_mutation():
+    ramp = {"ramp": {"from": 100, "until": 200, "start": 0.0, "end": 1.0}}
+    policy = {
+        "stages": [
+            {
+                "until": None,
+                "augmentations": {"probability": ramp, "choices": ["random_polarity"]},
+                "noise_augmentations": [
+                    {"probability": 1.0, "choices": ["spec_mask"]},
+                    {"probability": ramp, "choices": ["floor_inject"]},
+                ],
+            }
+        ]
+    }
+
+    resolved = _resolve_policy(policy, 150)
+
+    assert resolved["augmentations"]["probability"] == 0.5
+    assert resolved["noise_augmentations"][0]["probability"] == 1.0
+    assert resolved["noise_augmentations"][1]["probability"] == 0.5
+    # The source policy is never mutated (it is shared across samples/workers).
+    stage = policy["stages"][0]
+    assert stage["augmentations"]["probability"] is ramp
+    assert stage["noise_augmentations"][1]["probability"] is ramp
+    # Non-ramped blocks are reused as-is; ramped ones are fresh copies.
+    assert resolved["noise_augmentations"][0] is stage["noise_augmentations"][0]
+    assert resolved["noise_augmentations"][1] is not stage["noise_augmentations"][1]
+
+
+def test_noise_augmentation_list_blocks_apply_sequentially(tmp_path):
+    noise_pool = TimeFrameNoisePool([_make_noise_tf()], min_motor_rps=0.0, duration_s=1.0)
+    source_pool = _make_source_pool(tmp_path)
+
+    def make_ds(p_fs: float, p_floor: float) -> OnlineMixIterableDataset:
+        return OnlineMixIterableDataset(
+            noise_pool,
+            source_pool,
+            policy={
+                "source_prob": 1.0,
+                "snr_db": -10.0,
+                "speech_per_channel": "shared",
+                "noise_augmentations": [
+                    {
+                        "probability": p_fs,
+                        "choices": [{"freq_scale": {"alpha_low": 1.2, "alpha_high": 1.2}}],
+                    },
+                    {
+                        "probability": p_floor,
+                        "choices": [
+                            {"floor_inject": {"level_low_db": -6.0, "level_high_db": -6.0}}
+                        ],
+                    },
+                ],
+            },
+            base_seed=7,
+            duration_s=1.0,
+            sample_rate=16000,
+            hop_length=512,
+        )
+
+    both = make_ds(1.0, 1.0).generate_sample(5)
+    fs_only = make_ds(1.0, 1e-9).generate_sample(5)
+    neither = make_ds(1e-9, 1e-9).generate_sample(5)
+
+    # Block 2 (floor_inject) fires ON TOP of block 1's output: audio differs,
+    # labels are preserved (floor_inject is label-preserving).
+    assert not torch.equal(both[0], fs_only[0])
+    assert torch.allclose(both[1], fs_only[1], rtol=1e-4, atol=1e-4)
+    # Block 1 (freq_scale, fixed alpha 1.2) rescales the labels vs the no-fire
+    # stream (same noise slice — the fire decision is drawn after sourcing).
+    assert not torch.equal(fs_only[1], neither[1])
+    ratio = (fs_only[1] / neither[1]).numpy()
+    assert np.allclose(ratio, 1.2, atol=0.02)
