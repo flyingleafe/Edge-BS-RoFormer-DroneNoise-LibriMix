@@ -801,7 +801,10 @@ def main() -> None:  # noqa: PLR0915
 
     # ═══ A6: amplitude-shortcut sensitivity ════════════════════════════════
     emit("\n═══ A6 — amplitude-shortcut sensitivity ═══")
-    sens_models = [n for n in ("ckla_p1", "g2_if") if n in models]
+    # A6 runs on every loaded model (was a hard-coded ("ckla_p1", "g2_if")
+    # pair, which silently dropped the lever arms in the 20930287 probe run —
+    # the freqscale model's scale response is the aug's success metric).
+    sens_models = list(models)
     a6: dict[str, Any] = {}
     emit(
         f"{'model':<10}{'recolor+6':>11}{'recolor-6':>11}{'gain+6':>9}{'gain-6':>9}"

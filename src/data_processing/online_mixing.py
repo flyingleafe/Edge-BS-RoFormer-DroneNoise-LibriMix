@@ -1153,6 +1153,22 @@ class OnlineMixIterableDataset(IterableDataset):
         start_sample_id = int(_cfg_get(cfg, "start_sample_id", 0))
         task = str(_cfg_get(cfg, "task", "rps_prediction"))
         policy = cast(Mapping[str, Any], _cfg_get(cfg, "policy", {}))
+        # Provenance print: which policy this PROCESS actually trains on.
+        # Added while diagnosing the pnfs anomaly (a freqscale-policy job
+        # whose 40-epoch history was bit-identical to the plain-policy twin);
+        # one line per dataset build, mirrors the cache messages.
+        stages = policy.get("stages") if isinstance(policy, Mapping) else None
+        stage_desc = (
+            " | ".join(
+                f"until={s.get('until')}:" + ",".join(sorted(k for k in s if k != "until"))
+                for s in stages
+            )
+            if stages
+            else "flat:" + ",".join(sorted(policy))
+            if isinstance(policy, Mapping)
+            else "?"
+        )
+        print(f"[online-mix] task={task} base_seed={base_seed} stages: {stage_desc}", flush=True)
 
         sources = _cfg_get(cfg, "sources", {})
         noise_cfg = _cfg_get(sources, "noise", None)

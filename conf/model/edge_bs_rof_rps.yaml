@@ -17,5 +17,9 @@ params:
   n_fft: 2048
   hop_length: 512
   num_rotors: 4
+  # SDPA math kernel everywhere: the training loop's one-batch CPU smoke
+  # test has no flash backend (validation refused to train), and at this
+  # scale (T~32 frames x 62 bands) flash attention buys nothing on GPU.
+  flash_attn: false
 model_type: null
 legacy_config_path: null
