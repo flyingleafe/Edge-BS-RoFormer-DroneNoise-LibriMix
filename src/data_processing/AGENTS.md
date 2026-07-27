@@ -472,6 +472,40 @@ trimmed (same behaviour as the command-only room2 recordings). Likewise,
 `dregon_dir="frames:DREGON-frames[@VERSION]"` /
 `michaels_dir="frames:michaels-frames"` in place of local folders.
 
+## Stream sanity-checking (`scripts/check_stream.py`)
+
+**Rule: run this against any new or edited online-mix policy BEFORE submitting
+training jobs, and re-run it whenever the data path is refactored** (loader,
+wrapper, flattening, policy resolution). It exists because of the CKLA staging
+bug (docs/experiments/ckla.md § "THE STAGING BUG"): `flatten_channels=True`
+turns each generated chunk into C=8 training frames, so `until:` stage
+boundaries (in chunk units) sat at effective epoch ~80 instead of 10 and the
+staged augmentations silently never fired for ~3 weeks of experiments —
+config inspection and the provenance print both looked correct; only the
+stream itself showed the truth.
+
+```bash
+python scripts/check_stream.py --policy conf/online_mix/<name>.yaml \
+    --flatten --samples-per-epoch 5000 --epochs 0 5 10 12 [--probes 48]
+python scripts/check_stream.py --experiment <name>   # checks exactly what
+    # `train.py experiment=<name>` trains on (policy path, flatten_channels,
+    # samples_per_validation pulled from the composed Hydra config)
+```
+
+It measures, on the actually-generated stream: (1) the chunk→frame expansion
+ratio C; (2) each stage boundary in chunks / frames / effective epochs (WARN
+beyond `--warn-boundary-epoch`); (3) **empirical** per-key fire rates of
+`augmentations` / `noise_augmentations` / `noise_time_warp` at the probed
+epochs vs the configured probabilities (exact binomial test), plus the
+label-diff rate (freq_scale must change labels on every nonzero-RPS fire —
+all-zero-RPS full-flight chunks are exempt, `0*alpha == 0`; post-mix augs
+must never touch labels);
+(4) per-id determinism. Nonzero exit on any FAIL — usable as a submission
+gate. Fire detection compares each sample against a control stream whose aug
+block has `probability: 1e-9` (never removes the key — a present-but-missed
+block still consumes the fire-decision RNG draw, so stripping it would shift
+the whole downstream RNG stream and fake a ~1.0 rate).
+
 ## Multichannel Training & Evaluation Wiring
 
 ### Training (unified `train.py`, via `data_processing.frame_datasets.DregonLMFrameDataset`)
