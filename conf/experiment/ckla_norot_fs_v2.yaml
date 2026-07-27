@@ -1,0 +1,26 @@
+# @package _global_
+# Rotation ablation of the freq-scale v2 winner: identical to
+# ckla_pnoise_fs_v2 except model rotation disabled (omega ≡ 0 — plain-KLA
+# dynamics in the same code path). Isolates what the complex rotation buys
+# on the scale-following criterion.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_pnoise_norot
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_norot_fs_v2
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_v2_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
