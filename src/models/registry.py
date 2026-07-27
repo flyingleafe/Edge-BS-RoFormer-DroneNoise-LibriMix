@@ -42,6 +42,7 @@ from models.generative import (
 if TYPE_CHECKING:
     from tasks.noise_generation import DroneCodebook
 from models.ckla import SimpleConvV2CKLA
+from models.fkla import FKLARPSModel
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
     DCCRNEncRPS,
@@ -133,6 +134,9 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_v2_ckla_mag_norot": lambda **kw: SimpleConvV2CKLA(
         frontend_key="stft_mag", rotation=False, **kw
     ),
+    # Vendored flat-KLA (kla-loglinear@11e5a39, src/models/fkla/) plain-KLA
+    # arm — cross-implementation companion to the norot controls.
+    "simple_conv_v2_fkla": FKLARPSModel,
     # Edge-BS-RoFormer trunk adapted to RPS (models/edge_bs_rof/rps.py):
     # the paper's rotary-embedding harmonic-tracking claim, tested on the
     # task where the target IS the harmonic-line trajectory. Lazy import —

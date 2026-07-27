@@ -1,0 +1,22 @@
+# simple_conv_v2_fkla — rps_prediction, vendored flat-KLA head
+# (kla-loglinear@11e5a39, src/models/fkla/): the independent plain-KLA (real
+# OU, non-rotating) implementation inside the exact SimpleConvV2CKLA wrapper —
+# cross-implementation ablation arm against simple_conv_v2_ckla_pnoise /
+# _pnoise_norot. p_init 1.0 mirrors the pnoise gain fix (the vendored layer's
+# upstream default is the KLA-paper 0.01, whose discretised p̄ ~ 1e-6 collapses
+# the Kalman gain — docs/experiments/ckla-activation-analysis.md §A2); no
+# rotation/omega knobs exist on this head (flat KLA is real by construction).
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_fkla
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+model_type: null
+legacy_config_path: null
