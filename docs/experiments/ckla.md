@@ -126,6 +126,15 @@ data's nature (near-stationary RPS within clips). The 4 s rotation-off
 twin was descoped after the queue stall (below); the rotation question at
 4 s is subsumed by the real-protocol twins.
 
+**4 s rotation attribution (eval-time, 2026-07-27, laptop light run):**
+ablating the rotation path on the 4 s-trained `last.ckpt` (ep 8): ΔMAE
+±0.05 across agg {0.5, 1, 2} × SNR {0, −10} — **null at 4 s as well**
+(rotation params ≈ init: |s| 0.09–0.10, |W_ω| 0.04–0.05, ω0 drift ≤0.06).
+The rotation-attribution matrix on synthetic is now closed at both
+contexts; the only measured causal rotation effect remains real DREGON
+(+0.31, activation analysis §A4). The descoped `ckla_p0_4s_norot`
+training twin is fully redundant.
+
 **Infra postmortem (2026-07-27):** the kaggle job finished but omnirun kept
 it "running" — a ghost that starved the whole queue for ~1.5 days; on top,
 the hetzner omnirun daemon's disk hit 99% (18 G of accumulated
