@@ -76,6 +76,24 @@ MODELS: dict[str, tuple[str, str]] = {
         "ckla_p1_pnoise",
         "r2://ml-data/artifacts/ckla_p1_pnoise/checkpoints/best.ckpt",
     ),
+    # Freq-scale v2 (p=1.0, alpha [0.7,1.3]) and v3 synthesis-first arms —
+    # the scale-response probe (analysis 6) is their success criterion.
+    "g2_if_freqscale_v2": (
+        "g2_if_freqscale_v2",
+        "r2://ml-data/artifacts/g2_if_freqscale_v2/checkpoints/best.ckpt",
+    ),
+    "ckla_pnoise_fs_v2": (
+        "ckla_pnoise_fs_v2",
+        "r2://ml-data/artifacts/ckla_pnoise_fs_v2/checkpoints/best.ckpt",
+    ),
+    "g2_if_v3synth": (
+        "g2_if_v3synth",
+        "r2://ml-data/artifacts/g2_if_v3synth/checkpoints/best.ckpt",
+    ),
+    "ckla_pnoise_v3synth": (
+        "ckla_pnoise_v3synth",
+        "r2://ml-data/artifacts/ckla_pnoise_v3synth/checkpoints/best.ckpt",
+    ),
     "ckla_freqscale": (
         "ckla_p1_freqscale",
         "r2://ml-data/artifacts/ckla_p1_freqscale/checkpoints/best.ckpt",

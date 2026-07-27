@@ -369,6 +369,29 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/g2_if_freqscale/checkpoints/best.ckpt",
         None,
     ),
+    # Freq-scale v2 (p=1.0, alpha [0.7,1.3], hard 5-epoch warmup) and v3
+    # synthesis-first (freq_scale+warp always-on from sample 0, corruption
+    # ramp 0->0.7 over epochs 5->25) arms:
+    "g2_if_freqscale_v2_best": (
+        "g2_if_freqscale_v2",
+        "r2://ml-data/artifacts/g2_if_freqscale_v2/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_pnoise_fs_v2_best": (
+        "ckla_pnoise_fs_v2",
+        "r2://ml-data/artifacts/ckla_pnoise_fs_v2/checkpoints/best.ckpt",
+        None,
+    ),
+    "g2_if_v3synth_best": (
+        "g2_if_v3synth",
+        "r2://ml-data/artifacts/g2_if_v3synth/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_pnoise_v3synth_best": (
+        "ckla_pnoise_v3synth",
+        "r2://ml-data/artifacts/ckla_pnoise_v3synth/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
