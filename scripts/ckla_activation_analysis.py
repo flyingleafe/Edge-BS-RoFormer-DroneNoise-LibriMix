@@ -81,7 +81,18 @@ MODELS: dict[str, tuple[str, str]] = {
         "r2://ml-data/artifacts/ckla_p1_freqscale/checkpoints/best.ckpt",
     ),
 }
-CKLA_MODELS = ("ckla_p1", "ckla_p0")
+# Names routed through the CKLA instrumented forward. Membership is also
+# checked structurally at dispatch (any model whose head is a
+# TemporalCKLAHead) so newly-registered CKLA arms (ckla_pnoise,
+# ckla_freqscale, ...) are not silently sent down the transformer-taps path
+# — that mis-dispatch crashed the first lever-probe run (Slurm 20928550).
+CKLA_MODELS = ("ckla_p1", "ckla_p0", "ckla_pnoise", "ckla_freqscale")
+
+
+def _is_ckla(model) -> bool:
+    from models.ckla import TemporalCKLAHead
+
+    return isinstance(getattr(model, "head", None), TemporalCKLAHead)
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -513,7 +524,7 @@ def main() -> None:  # noqa: PLR0915
     taps: dict[str, dict[str, dict[str, np.ndarray]]] = {}
     for name, model in models.items():
         preds[name], taps[name] = {}, {}
-        if name in CKLA_MODELS:
+        if name in CKLA_MODELS or _is_ckla(model):
             ckla_caps[name] = {}
             for cid in clip_ids:
                 p, layers, tp = ckla_forward_instrumented(model, audio[cid])

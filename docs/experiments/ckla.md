@@ -158,6 +158,44 @@ FLY124; and BOTH ckla_p1 and g2_if ignore a ×1.02 frequency scaling
 (≈0.05% response vs ideal 2%) while CKLA is *more* gain/recoloring
 sensitive — the "CKLA = comb-reader" cross-drone hypothesis is refuted.
 
+### Mechanistic levers — full-envelope AND cruise-pool results (2026-07-27)
+
+Both levers, trained on gpushort (Slurm 20927842/20927843 via legacy
+sbatch after a first-run cache race; wandb `smwulrhf` / `hilihk2v`):
+
+**Full-envelope val (fixed valid-full, PIT-MSE, best epoch)** — the levers
+work exactly as designed: base `ckla_p1_if` 85.2 → `ckla_p1_freqscale`
+**63.0** (ep 11) → `ckla_p1_pnoise` **44.8** (ep 39). Matched-protocol
+transformer baselines: uni_gru128 172.3 / transformer-mag 72.7 /
+transformer-IF (g2_if) 63.7. **pnoise 44.8 vs 63.7 = −30% at fully
+matched conditions** (same stream/front-end/schedule; only the head + one
+init constant differ) — the first clean architecture win of the campaign.
+
+**Cruise pools (vk_eval, Slurm 20928550) — the ledger metric INVERTS:**
+
+| arm | dregon_cruise best | fly124_cruise best |
+|---|---|---|
+| g2_if floor | **2.481** | 2.33 |
+| CKLA base | 2.87 | **1.36** |
+| CKLA pnoise | 3.94 (all arms ≥3.94) | 2.38 |
+| CKLA freqscale | 2.60 (raw/none!) | 2.19 (ma5) |
+
+Mechanistic synthesis: the cruise pools reward maximal within-clip
+averaging (near-constant RPS) — the base model's accumulator degeneration
+IS the fly124 1.36 win, and both levers destroy it by restoring
+bandwidth. Full-envelope val rewards tracking — the levers win there.
+The two metrics pull the gain knob in opposite directions. Notably
+freqscale's best dregon cell is the RAW (unsmoothed) arm at 2.60 — closest
+CKLA has come to the 2.481 floor, and consistent with spacing-reading
+producing intrinsically stabler per-frame estimates. freqscale gives back
+the fly124 accumulator win (2.19 vs 1.36).
+
+Probe stage of the eval job crashed on a script dispatch bug
+(`transformer_forward_taps` applied to a CKLA model) — λ-gain and
+scale-response verification pending a fixed re-run.
+
 ## Conclusion
 
-_Pending._
+_Pending: pnfs (combined), pnoise_norot (live-gain rotation attribution),
+g2_if_freqscale (matched transformer control), ebsrof arms (Slurm
+20930163/20930164), probe re-run._
