@@ -161,6 +161,84 @@ def test_white_noise_no_hallucination():
     )
 
 
+def wobble_fixture(dur: float = 10.0, snr_db: float = 10.0, seed: int = 0):
+    """Design-test-1 fixture: single rotor, ±2 rev/s wobble, biased init."""
+    t, frame_times, edge = make_grid(dur)
+    r_true = 45.0 + 2.0 * np.sin(2 * np.pi * 0.3 * t)
+    y = synth_comb(t, [r_true], snr_db=snr_db, seed=seed)
+    r_init = np.full((1, len(frame_times)), 46.5)
+    truth = np.interp(frame_times, t, r_true)
+    return y, r_init, frame_times, edge, truth
+
+
+def test_bw_adapt_off_is_inert():
+    """``bw_adapt=False`` must leave results bit-identical to the default
+    config regardless of the clamp knob (regression guard: at implementation
+    time the off path was additionally verified byte-identical to the
+    pre-change code on this fixture and the twin-pair fixture)."""
+    y, r_init, frame_times, _, _ = wobble_fixture(dur=8.0)
+    res_a = vk_track(y, r_init, frame_times, make_cfg())
+    res_b = vk_track(y, r_init, frame_times, make_cfg(bw_adapt=False, bw_adapt_clamp=2.0))
+    assert np.array_equal(res_a.r_refined, res_b.r_refined)
+    assert np.array_equal(res_a.r_env, res_b.r_env)
+    assert np.array_equal(res_a.envelopes.x, res_b.envelopes.x)
+    assert res_a.residual_ratios == res_b.residual_ratios
+    assert "bw_gain" not in res_a.extras and "bw_adapt_factors" not in res_a.extras
+    # neutral adaptation (clamp = 1 pins every gain at 1) exercises the
+    # per-track-rho^2 solver path and must reproduce the scalar path
+    res_n = vk_track(y, r_init, frame_times, make_cfg(bw_adapt=True, bw_adapt_clamp=1.0))
+    assert np.allclose(res_n.r_refined, res_a.r_refined, rtol=0, atol=1e-9)
+    assert np.allclose(res_n.envelopes.x, res_a.envelopes.x, rtol=0, atol=1e-9)
+
+
+def test_bw_adapt_converges_factors_lock():
+    """``bw_adapt=True`` on a clean comb: still converges (error <= 1.2x the
+    non-adapted run), factors > 1 early (band narrows during capture) and
+    -> ~1 at lock, cumulative gain within the clamp."""
+    y, r_init, frame_times, edge, truth = wobble_fixture()
+    cfg = make_cfg()
+    res0 = vk_track(y, r_init, frame_times, cfg)
+    res1 = vk_track(y, r_init, frame_times, make_cfg(bw_adapt=True))
+    rms0 = float(np.sqrt(np.mean((res0.r_refined[0, edge] - truth[edge]) ** 2)))
+    rms1 = float(np.sqrt(np.mean((res1.r_refined[0, edge] - truth[edge]) ** 2)))
+    assert rms1 < 0.05, f"adapted run failed to converge (RMS {rms1:.4f})"
+    assert rms1 <= 1.2 * rms0, f"adapted RMS {rms1:.4f} worse than 1.2x baseline {rms0:.4f}"
+
+    facs = res1.extras["bw_adapt_factors"]
+    assert len(facs) == cfg.n_outer
+    first = facs[0][np.isfinite(facs[0])]
+    last = facs[-1][np.isfinite(facs[-1])]
+    assert len(first) and len(last)
+    assert float(np.median(first)) > 1.02, "capture-phase factors should exceed 1"
+    assert np.all(np.abs(last - 1.0) < 0.05), f"factors not ~1 at lock: {last}"
+    gain = res1.extras["bw_gain"]
+    assert gain.shape == (1, cfg.k_max - cfg.k_min + 1)
+    clamp = cfg.bw_adapt_clamp
+    assert np.all(gain >= clamp**-2 - 1e-12) and np.all(gain <= clamp**2 + 1e-12)
+
+
+def test_bw_adapt_clamp_respected_heavy_noise():
+    """Adversarial fixture (comb at −10 dB SNR): noise-dominated bands push
+    the factors up round after round — the cumulative gain must saturate at
+    the clamp, never exceed it."""
+    dur = 6.0
+    t, frame_times, _ = make_grid(dur)
+    y = synth_comb(t, [np.full_like(t, 45.0)], snr_db=-10.0, seed=7)
+    r_init = np.full((1, len(frame_times)), 45.0)
+    clamp = 1.2
+    res = vk_track(y, r_init, frame_times, make_cfg(bw_adapt=True, bw_adapt_clamp=clamp))
+    gain = res.extras["bw_gain"]
+    assert np.all(np.isfinite(gain))
+    assert np.all(gain >= clamp**-2 - 1e-12), f"gain below clamp floor: {gain.min()}"
+    assert np.all(gain <= clamp**2 + 1e-12), f"gain above clamp ceiling: {gain.max()}"
+    assert np.isclose(gain.max(), clamp**2), "clamp never engaged — fixture not adversarial"
+
+
+def test_config_rejects_bad_bw_adapt_clamp():
+    with pytest.raises(ValueError, match="bw_adapt_clamp"):
+        VKConfig(bw_adapt_clamp=0.5)
+
+
 def test_config_rejects_too_small_bandwidth():
     """The Tuma denominator positivity check must raise with the actual limit."""
     dur = 2.0
