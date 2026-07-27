@@ -65,7 +65,11 @@ policy:
         choices:
           - random_gain: {min_db: -6.0, max_db: 6.0}
           - random_polarity: {}
-          - channel_drop: {max_channels: 1}
+          # channel_drop REMOVED (2026-07-27): with flatten_channels each
+          # zeroed channel becomes a mono training frame of pure silence
+          # carrying nonzero RPS labels (~2% of post-warmup frames) —
+          # contradicts the silence==zero-RPS convention and trains
+          # prior-regression. Designed for multichannel models; harmful here.
       noise_augmentations:
         probability: 0.5
         choices:
