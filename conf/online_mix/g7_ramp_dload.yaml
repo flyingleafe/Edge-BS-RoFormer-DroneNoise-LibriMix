@@ -35,7 +35,14 @@ policy:
   stages:
     # First 50k samples = 10 validation intervals at samples_per_validation=5000:
     # random speech/noise mixtures, no augmentation (the load-bearing warmup).
-    - until: 50000
+    # ⚠️ STAGE BOUNDARY IS IN GENERATED CHUNKS, NOT TRAINING FRAMES.
+    # With flatten_channels=true on the 8-mic E12 sources each chunk yields
+    # 8 mono frames, so the boundary in FRAMES is 8x this value. 6250 chunks
+    # = 50k frames = 10 epochs at samples_per_validation 5000 — the boundary
+    # the '50000' value was always believed to be. (The old value put stage 2
+    # at epoch ~80; no run ever reached it — docs/experiments/ckla.md
+    # § THE STAGING BUG.)
+    - until: 6250
       source_prob: 1.0
       snr_db:
         uniform: {low: -30.0, high: 0.0}
@@ -46,7 +53,7 @@ policy:
     # probability and mild parameter ranges, so the step from plain warmup to
     # full-strength augmentation (which G5 showed can destabilize optimization
     # when applied cold) becomes a two-step staircase.
-    - until: 100000
+    - until: 12500  # chunks (=100k frames /8)
       source_prob: 1.0
       snr_db:
         uniform: {low: -30.0, high: 0.0}
