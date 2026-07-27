@@ -116,12 +116,26 @@ class VKConfig:
     # skipping them removes the dominant share of full-length pair demods in
     # richly-coupled configs. Pairs with no co-valid samples are always
     # skipped (their contribution is exactly zero).
+    bw_adapt: bool = False  # IAVKF-style per-track bandwidth adaptation
+    # (Jiang, Chen & Wang, IEEE TII 2024, eqs 25-27): after each outer-round
+    # envelope solve, each track's selectivity rho_m^2 is multiplied by the
+    # orthogonal factor |<z_m, a_m>| / <a_m, a_m> computed in the demodulated
+    # domain (a_m = x_m / 2, the envelope on z's scale, over the round's valid
+    # samples). The factor is >= ~1 while the envelope is still over-smoothed
+    # relative to the in-band observation and -> 1 at lock, so the band
+    # narrows early and stabilises. The cumulative gain is a persistent
+    # per-(rotor, harmonic) state applied ON TOP of the annealing schedule's
+    # per-round bw_hz — annealing and adaptation compose, they do not fight.
+    bw_adapt_clamp: float = 4.0  # cumulative rho_m^2 adaptation is clamped to
+    # [rho0^2 / clamp^2, rho0^2 * clamp^2] (rho0 = the schedule's selectivity)
 
     def __post_init__(self) -> None:
         if self.lp_mode not in ("fft", "fir", "iir"):
             raise ValueError(f"unknown lp_mode {self.lp_mode!r} (expected 'fft', 'fir' or 'iir')")
         if self.solver not in ("banded", "splu"):
             raise ValueError(f"unknown solver {self.solver!r} (expected 'banded' or 'splu')")
+        if self.bw_adapt_clamp < 1.0:
+            raise ValueError(f"bw_adapt_clamp must be >= 1, got {self.bw_adapt_clamp}")
 
 
 @dataclass
@@ -191,6 +205,17 @@ def _tuma_rho(bw_hz: float, fs_env: float, p: int) -> float:
             f"is ~{bw_min:.3g} Hz"
         )
     return rho
+
+
+def _tuma_bw(rho: np.ndarray, fs_env: float, p: int) -> np.ndarray:
+    """Inverse of :func:`_tuma_rho`: −3 dB bandwidth (Hz) from selectivity.
+
+    Vectorised over ``rho``; used to report the *effective* per-track
+    bandwidth when ``bw_adapt`` rescales rho away from the schedule's value
+    (feeds the noise-equivalent-bandwidth normalisation of the envelope SNR).
+    """
+    arg = 0.5 * (np.sqrt(np.sqrt(2.0) - 1.0) / np.asarray(rho, dtype=np.float64)) ** (1.0 / p)
+    return 2.0 * fs_env / np.pi * np.arcsin(np.minimum(arg, 1.0))
 
 
 def _vk_noise_bandwidth(bw_hz: float, fs_env: float, p: int) -> float:
@@ -449,7 +474,7 @@ def _coupling_groups(f: np.ndarray, valid: np.ndarray, couple_hz: float) -> list
 def _solve_group_splu(
     d2td2: sparse.csr_array,
     eye: Any,
-    rho: float,
+    rho2: float | np.ndarray,
     w: list[np.ndarray],
     cross: dict[tuple[int, int], np.ndarray],
     z_g: np.ndarray,
@@ -457,15 +482,17 @@ def _solve_group_splu(
     """Reference coupled-group solve: track-major sparse LU (SuperLU).
 
     ``z_g``: (C, g, T_env) demodulated observations of the group's tracks;
-    returns ``(g, T_env, C)`` envelopes. Verbatim the original formulation —
-    kept as the A/B reference (``cfg.solver == "splu"``) and as the fallback
-    when the banded Cholesky reports a numerically non-PD system.
+    ``rho2``: squared selectivity, scalar or per-track ``(g,)`` (bandwidth
+    adaptation); returns ``(g, T_env, C)`` envelopes. Verbatim the original
+    formulation — kept as the A/B reference (``cfg.solver == "splu"``) and as
+    the fallback when the banded Cholesky reports a numerically non-PD system.
     """
     g = len(w)
     n_ch, _, n_env = z_g.shape
-    reg = (rho**2) * d2td2 + 1e-8 * eye  # eps keeps masked spans well-posed
+    r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     blocks: list[list[Any]] = [[None] * g for _ in range(g)]
     for a in range(g):
+        reg = float(r2[a]) * d2td2 + 1e-8 * eye  # eps keeps masked spans well-posed
         blocks[a][a] = (reg + sparse.diags_array(w[a])).astype(np.complex128)
     for (a, b), g_mn in cross.items():
         blocks[a][b] = sparse.diags_array(w[a] * w[b] * g_mn)
@@ -479,7 +506,7 @@ def _solve_group_splu(
 
 def _solve_group_banded(
     d2td2_diags: tuple[np.ndarray, np.ndarray, np.ndarray],
-    rho: float,
+    rho2: float | np.ndarray,
     w: list[np.ndarray],
     cross: dict[tuple[int, int], np.ndarray],
     z_g: np.ndarray,
@@ -505,10 +532,13 @@ def _solve_group_banded(
     u = 2 * g  # p = 2 time-blocks of superdiagonals
     n = g * n_env
     ab = np.zeros((u + 1, n), dtype=np.complex128)  # ab[u + i - j, j] = A[i, j]
-    diag = (rho**2) * d0[:, None] + 1e-8 + np.stack(w, axis=-1)  # (T_env, g)
+    # Per-track squared selectivity (scalar rho2 broadcasts; the products
+    # below are bitwise identical to the former scalar formulation).
+    r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
+    diag = d0[:, None] * r2[None, :] + 1e-8 + np.stack(w, axis=-1)  # (T_env, g)
     ab[u] = diag.reshape(-1)
-    ab[u - g, g:] = np.repeat((rho**2) * d1, g)
-    ab[0, 2 * g :] = np.repeat((rho**2) * d2, g)
+    ab[u - g, g:] = np.repeat(d1, g) * np.tile(r2, n_env - 1)
+    ab[0, 2 * g :] = np.repeat(d2, g) * np.tile(r2, n_env - 2)
     for (a, b), g_mn in cross.items():  # a < b: upper triangle, offset b - a
         ab[u - (b - a), b::g] = w[a] * w[b] * g_mn
     cb = cholesky_banded(ab, lower=False)  # raises LinAlgError if not PD
@@ -600,12 +630,17 @@ def vk_envelopes(
     *,
     k_hi: int | None = None,
     bw_hz: float | None = None,
+    rho2_gain: np.ndarray | None = None,
 ) -> Envelopes:
     """One coupled VK-2 envelope solve (all coupling groups) given trajectories.
 
     ``audio``: ``(T,)`` or ``(C, T)``; ``r``: ``(R, T)`` rev/s at *audio* rate.
     ``k_hi`` / ``bw_hz`` override ``cfg.k_max`` / ``cfg.bw_hz`` (used by the
-    outer loop's annealing schedule). Solves, per coupling group and channel,
+    outer loop's annealing schedule); ``rho2_gain`` is an optional ``(M,)``
+    per-track multiplicative gain on the squared selectivity ``rho^2`` (the
+    outer loop's ``bw_adapt`` state — applied on top of whatever bandwidth
+    the schedule sets, and reflected in ``bw_track`` via the inverse Tuma
+    relation). Solves, per coupling group and channel,
 
         (rho^2 D2' D2 + diag(w) + coupling) x = 2 w z
 
@@ -631,6 +666,8 @@ def vk_envelopes(
     couple_hz = fs_env / 2.0 if cfg.couple_hz is None else cfg.couple_hz
 
     rotor, k = _track_table(r.shape[0], cfg.k_min, k_top)
+    if rho2_gain is not None and len(rho2_gain) != len(rotor):
+        raise ValueError(f"rho2_gain has {len(rho2_gain)} entries, expected {len(rotor)} tracks")
     phase = 2.0 * np.pi * np.cumsum(r, axis=-1) / cfg.fs  # (R, T) fundamental phase
 
     # Track validity mask on the envelope grid (design §3).
@@ -690,6 +727,10 @@ def vk_envelopes(
                     bw_g = min(bw_g, max(cfg.bw_hz, cfg.sep_bw_factor * sep))
         bw_track[group] = bw_g
         rho = _tuma_rho(bw_g, fs_env, cfg.p)
+        rho2: float | np.ndarray = rho**2
+        if rho2_gain is not None:
+            rho2 = rho2 * np.asarray(rho2_gain, dtype=np.float64)[group]
+            bw_track[group] = _tuma_bw(np.sqrt(rho2), fs_env, cfg.p)
         pair_list = [
             pair for pair, sep in pair_sep.items() if not (cfg.prune_far_pairs and sep >= prune_hz)
         ]
@@ -719,11 +760,11 @@ def vk_envelopes(
         sol: np.ndarray | None = None
         if cfg.solver == "banded":
             try:
-                sol = _solve_group_banded(d2td2_diags, rho, w, cross, z_g)
+                sol = _solve_group_banded(d2td2_diags, rho2, w, cross, z_g)
             except np.linalg.LinAlgError:
                 sol = None  # numerically non-PD: use the reference path below
         if sol is None:
-            sol = _solve_group_splu(d2td2, eye, rho, w, cross, z_g)
+            sol = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g)
         for a in range(g):
             x[:, group[a]] = sol[a].T
 
@@ -953,6 +994,37 @@ def _confidence(env: Envelopes, cfg: VKConfig, z_res: np.ndarray) -> tuple[np.nd
     return conf, centers
 
 
+def _bw_adapt_factors(env: Envelopes) -> np.ndarray:
+    """IAVKF orthogonal factor per track, in the demodulated domain.
+
+    ``factor_m = |<z_m, a_m>| / <a_m, a_m>`` with ``a_m = x_m / 2`` (the
+    solved envelope on the observation scale — ``z ≈ a / 2`` at lock; cf.
+    Jiang, Chen & Wang 2024 eqs 25–27, where the reconstructed component is
+    correlated against the analytic signal), inner products taken over
+    channels and the track's *valid* envelope samples of this round. The
+    factor is > 1 while the solve still over-smooths the in-band observation
+    (the smoother's eigenvalues are in [0, 1], so ``<z, Sz> >= <Sz, Sz>``)
+    and → 1 at lock. NaN marks skipped tracks: no valid samples, degenerate
+    ``<a, a> ≈ 0``, or non-finite inner products.
+    """
+    n_tracks = env.x.shape[1]
+    fac = np.full(n_tracks, np.nan)
+    for m in range(n_tracks):
+        v = env.valid[m]
+        if not v.any():
+            continue
+        a = 0.5 * env.x[:, m][:, v]  # (C, n_valid) envelope on z's scale
+        z = env.z[:, m][:, v]
+        den = float(np.sum(np.abs(a) ** 2))
+        if not np.isfinite(den) or den <= _TINY:
+            continue
+        num = float(np.abs(np.vdot(a, z)))  # |<z, a>|, summed over channels
+        if not np.isfinite(num):
+            continue
+        fac[m] = num / den
+    return fac
+
+
 def vk_track(
     audio: np.ndarray,
     r_init: np.ndarray,
@@ -966,11 +1038,16 @@ def vk_track(
     predictor's output). Runs ``cfg.n_outer`` rounds of (1) coupled envelope
     solve given the current trajectories, (2) Fisher-weighted phase-slope
     frequency update (clipped to ``cfg.max_step`` per round), with the
-    ``k_max`` / bandwidth annealing schedule for basin capture. The result
-    carries the refined trajectories on both the input grid and the dense
-    envelope grid, the final envelopes, per-round residual ratios
-    ``||y - y_hat||^2 / ||y||^2``, the windowed confidence, and the
-    coupling-group log.
+    ``k_max`` / bandwidth annealing schedule for basin capture. With
+    ``cfg.bw_adapt`` each round additionally rescales every track's squared
+    selectivity by its IAVKF orthogonal factor (:func:`_bw_adapt_factors`),
+    accumulated in a persistent per-(rotor, harmonic) gain (clamped to
+    ``[clamp^-2, clamp^2]``) that composes multiplicatively with the annealed
+    per-round bandwidth. The result carries the refined trajectories on both
+    the input grid and the dense envelope grid, the final envelopes,
+    per-round residual ratios ``||y - y_hat||^2 / ||y||^2``, the windowed
+    confidence, and the coupling-group log (plus, under ``bw_adapt``, the
+    per-round factors and final gain in ``extras``).
     """
     y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[:_MAX_CHANNELS]
     r_init = np.atleast_2d(np.asarray(r_init, dtype=np.float64))
@@ -995,11 +1072,29 @@ def vk_track(
     residual_ratios: list[float] = []
     max_deltas: list[float] = []
     groups_log: list[list[list[tuple[int, int]]]] = []
+    # IAVKF bandwidth-adaptation state: persistent per-(rotor, harmonic)
+    # multiplicative gain on rho^2, applied on top of the annealed bandwidth.
+    n_k_full = cfg.k_max - cfg.k_min + 1
+    bw_gain = np.ones((r_env.shape[0], n_k_full)) if cfg.bw_adapt else None
+    gain_lo, gain_hi = cfg.bw_adapt_clamp**-2, cfg.bw_adapt_clamp**2
+    adapt_factors: list[np.ndarray] = []
     env: Envelopes | None = None
     for rd in range(cfg.n_outer):
         _break_symmetry(r_env, cfg)
         r_aud = np.stack([np.interp(t_aud, t_env, r_env[i]) for i in range(r_env.shape[0])])
-        env = vk_envelopes(y, r_aud, cfg, k_hi=ks[rd], bw_hz=bws[rd])
+        gain_vec = None
+        if bw_gain is not None:
+            rot_rd, k_rd = _track_table(r_env.shape[0], cfg.k_min, min(int(ks[rd]), cfg.k_max))
+            gain_vec = bw_gain[rot_rd, k_rd - cfg.k_min]
+        env = vk_envelopes(y, r_aud, cfg, k_hi=ks[rd], bw_hz=bws[rd], rho2_gain=gain_vec)
+        if bw_gain is not None:
+            fac = _bw_adapt_factors(env)
+            ok = np.isfinite(fac) & (fac > 0)
+            idx_r, idx_k = env.rotor[ok], env.k[ok] - cfg.k_min
+            bw_gain[idx_r, idx_k] = np.clip(bw_gain[idx_r, idx_k] * fac[ok], gain_lo, gain_hi)
+            full = np.full((r_env.shape[0], n_k_full), np.nan)
+            full[env.rotor, env.k - cfg.k_min] = fac
+            adapt_factors.append(full)
         recon = vk_reconstruct(env, n_samples=n_t)
         residual_ratios.append(float(np.sum((y - recon) ** 2)) / max(y_energy, _TINY))
         # Residual demodulated into each track's band: the reference against
@@ -1039,5 +1134,14 @@ def vk_track(
         confidence=conf,
         conf_times=conf_times,
         groups_log=groups_log,
-        extras={"k_schedule": ks, "bw_schedule": bws, "lambda_schedule": lams},
+        extras={
+            "k_schedule": ks,
+            "bw_schedule": bws,
+            "lambda_schedule": lams,
+            **(
+                {"bw_adapt_factors": adapt_factors, "bw_gain": bw_gain}
+                if bw_gain is not None
+                else {}
+            ),
+        },
     )
