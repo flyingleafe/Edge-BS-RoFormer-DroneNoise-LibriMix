@@ -225,7 +225,16 @@ each track ($z_m = \mathrm{LP}[\,y\,\overline{c_m}\,]$, zero-phase), decimate
 to an envelope rate $\fsenv$ of 100--200\,Hz, and solve on the decimated
 grid. The coupling coefficient survives decimation exactly for those pairs
 whose instantaneous separation falls below $\fsenv/2$ --- precisely the
-pairs that interfere. Tracks are partitioned into coupling groups by
+pairs that interfere. The decimated problem is not an approximation of
+convenience: restricted to envelopes bandlimited below $\fsenv/2$ --- the
+subspace the smoothness prior already enforces --- minimizing
+\eqref{eq:vk2} at audio rate and minimizing its decimated counterpart are
+the same problem, since every component the demodulating low-pass discards
+is orthogonal to that subspace and shifts $J$ by a constant. The full-rate
+signal still anchors each outer round: convergence is monitored by the
+audio-rate residual ratio $\lVert y - \hat{y} \rVert^2 / \lVert y
+\rVert^2$ of the full reconstruction, and carriers are re-derived at audio
+rate from every updated trajectory. Tracks are partitioned into coupling groups by
 union--find on this predicate; each group yields a Hermitian
 positive-definite \emph{banded} system under time-major ordering of the
 unknowns, factorized by banded Cholesky. Pairs whose separation never
