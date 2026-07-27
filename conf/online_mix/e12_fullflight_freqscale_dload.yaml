@@ -37,14 +37,14 @@ policy:
   stages:
     # First 50k samples = 10 validation intervals at samples_per_validation=5000:
     # random speech/noise mixtures, no augmentation.
-    # ⚠️ STAGE BOUNDARY IS IN GENERATED CHUNKS, NOT TRAINING FRAMES.
-    # With flatten_channels=true on the 8-mic E12 sources each chunk yields
-    # 8 mono frames, so the boundary in FRAMES is 8x this value. 6250 chunks
-    # = 50k frames = 10 epochs at samples_per_validation 5000 — the boundary
-    # the '50000' value was always believed to be. (The old value put stage 2
-    # at epoch ~80; no run ever reached it — docs/experiments/ckla.md
-    # § THE STAGING BUG.)
-    - until: 6250
+    # Stage boundary in GENERATED CHUNKS. Under the legacy-equivalent epoch
+    # semantics (samples_per_validation 40000 frames = 5000 chunks/epoch at 8
+    # mics, batch_size 128 frames = 16 chunks) this is epoch 10 — the boundary
+    # the value always intended. The data-level flatten refactor had silently
+    # redefined epochs to 5000 FRAMES (625 chunks), pushing this to epoch ~80
+    # (docs/experiments/ckla.md § THE STAGING BUG); the fix is restoring epoch
+    # semantics, not rescaling the boundary.
+    - until: 50000
       source_prob: 1.0
       snr_db:
         uniform: {low: -30.0, high: 0.0}

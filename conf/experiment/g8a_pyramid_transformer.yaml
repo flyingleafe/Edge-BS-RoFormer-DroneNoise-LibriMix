@@ -18,9 +18,9 @@ defaults:
 experiment_name: g8a_pyramid_transformer
 epochs: 200
 patience: 20
-batch_size: 16
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
 num_workers: 6
-samples_per_validation: 5000
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
 optim:
   lr: 0.001
   weight_decay: 0.0001
