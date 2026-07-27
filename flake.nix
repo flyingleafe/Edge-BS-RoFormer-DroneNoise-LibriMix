@@ -80,28 +80,13 @@
             # includes chromium + headless_shell (required by default launch()).
             python312Packages.playwright
             playwright-driver.browsers
-            # LaTeX toolchain for building the papers/ directory.
-            # scheme-medium does NOT include IEEEtran; use a custom combination that
-            # extends scheme-medium with IEEEtran and a few useful extras.
-            (texlive.combine {
-              inherit (texlive)
-                scheme-full
-                ieeetran
-                biblatex
-                biber
-                cm-super
-                cmap
-                latexmk
-                # QD_2026.cls requirements not in scheme-medium
-                footmisc
-                moresize
-                diagbox
-                eepic
-                apacite
-                nimbus15
-                anyfontsize
-                appendix;
-            })
+            # LaTeX toolchain for writing/papers: Tectonic — a self-contained
+            # modern engine (XeTeX core) that fetches packages on demand into
+            # its own cache, replacing the multi-GB texlive.combine set.
+            # Build: `tectonic main.tex` (or `tectonic -X compile`); biblatex
+            # workflows use `tectonic -X build` with a Tectonic.toml, classic
+            # bibtex ones just work via the automatic rerun logic.
+            tectonic
 	    # easier latex for easier docs
 	    typst
             # for looking at resulting pdfs
