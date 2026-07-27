@@ -260,6 +260,23 @@ live gain + firing augs + legacy batch regime hold both pools (vs A-pnoise
 number — fair floor = g2_if_pb, queued) is 0.27 ≈ the single-seed cruise σ;
 the B-seed fleet decides. Best fly124 number of the campaign.
 
+### Clean-pipeline protocol-B ledger (2026-07-27/28, single seeds)
+
+Full-envelope best / cruise pools (dregon, fly124; best smoothing arm):
+
+| arm | envelope | dregon | fly124 |
+|---|---|---|---|
+| old g2_if floor | 63.7 | **2.481** | 2.33 |
+| **pnoise_pb (gain fix, 48 ep)** | **29.4** | **2.64** | **1.10** |
+| pnfs_pb (gain fix + freq-scale, capped 35 ep) | 32.9 | 3.11 | 1.26 |
+| g2_if_freqscale (capped 40 ep) | 37.6 | 3.23 | 1.52 |
+
+**Freq-scale consistently trades cruise precision for envelope tracking**
+(every arm it touches gains envelope, loses cruise); the levers do NOT
+compose on cruise. pnoise_pb stands alone: dregon within single-seed σ of
+the old floor, fly124 at 1.10 = within 0.08 of the blind-VK bar (1.027).
+Caveats: single seeds; freq-scale arms wall-capped younger than pnoise.
+
 ## Conclusion
 
 _Being rewritten in light of the staging bug + replicate statistics.
