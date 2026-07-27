@@ -68,6 +68,18 @@ MODELS: dict[str, tuple[str, str]] = {
         "g2_if_transformer",
         "r2://ml-data/artifacts/g2_if_transformer/checkpoints/best.ckpt",
     ),
+    # Mechanistic-lever arms (docs/experiments/ckla.md): the λ-gain probe
+    # (analysis 2) on ckla_pnoise verifies the gain stays alive; the
+    # scale-response probe (analysis 6) on ckla_freqscale verifies the
+    # amplitude anchor broke.
+    "ckla_pnoise": (
+        "ckla_p1_pnoise",
+        "r2://ml-data/artifacts/ckla_p1_pnoise/checkpoints/best.ckpt",
+    ),
+    "ckla_freqscale": (
+        "ckla_p1_freqscale",
+        "r2://ml-data/artifacts/ckla_p1_freqscale/checkpoints/best.ckpt",
+    ),
 }
 CKLA_MODELS = ("ckla_p1", "ckla_p0")
 

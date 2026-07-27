@@ -1,0 +1,28 @@
+# @package _global_
+# CKLA P1 combined arm: BOTH mechanistic levers (docs/experiments/ckla.md).
+# p_init 1.0 (live Kalman gain — pnoise arm hit best full-envelope val/mse
+# 44.8 vs base 85.2) + freq-scale-only augmentation (spacing pressure —
+# freqscale arm hit 63.0). The mechanisms are independent (state dynamics
+# vs training distribution), so the combination is the natural next arm: a
+# filter that can track drift, forced to read comb spacing.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_pnoise
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p1_pnfs
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

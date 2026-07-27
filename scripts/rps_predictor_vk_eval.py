@@ -338,6 +338,18 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_p1_if/checkpoints/last.ckpt",
         None,
     ),
+    # Mechanistic-lever arms (wandb smwulrhf / hilihk2v): p_init 1.0 gain
+    # restoration and freq-scale-only augmentation — docs/experiments/ckla.md.
+    "ckla_pnoise_best": (
+        "ckla_p1_pnoise",
+        "r2://ml-data/artifacts/ckla_p1_pnoise/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_freqscale_best": (
+        "ckla_p1_freqscale",
+        "r2://ml-data/artifacts/ckla_p1_freqscale/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
