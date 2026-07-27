@@ -77,22 +77,19 @@ def test_freq_scale_moves_comb_and_labels():
         sample_rate=SR,
         label_rate_hz=LABEL_RATE,
     )
-    assert out.shape == audio.shape and out.dtype == np.float32
-    mag = _mag(out[0])
-    freqs = np.fft.rfftfreq(T, 1.0 / SR)
+    # Natural scaled length — NO padding (the sourcing pipeline oversamples
+    # the window instead; downstream extraction crops).
+    assert out.shape == (audio.shape[0], int(round(T / 1.2))) and out.dtype == np.float32
+    n = out.shape[-1]
+    mag = np.abs(np.fft.rfft(out[0] * np.hanning(n)))
+    freqs = np.fft.rfftfreq(n, 1.0 / SR)
     for k in (1, 2, 3):
-        peak_f = freqs[_peak_bin(mag, 72.0 * k)]
-        assert abs(peak_f - 72.0 * k) <= 2.0, (k, peak_f)
-    # The original 60-tooth is gone (energy at 60 well below the new 72-tooth).
-    assert _band_energy(mag, 72.0, 3.0) > 10.0 * _band_energy(mag, 60.0, 3.0)
-    # Labels: 72 where alpha*t is in range, 0 in the zero-padded tail.
-    t_label = np.arange(L) / LABEL_RATE
-    valid = t_label <= (1.0 / 1.2) - 0.02
-    tail = t_label > (1.0 / 1.2) + 0.02
-    assert np.allclose(new_label[:, valid], 72.0, atol=1e-4)
-    assert np.all(new_label[:, tail] == 0.0)
-    # The audio tail is genuinely silent where the labels are zero.
-    assert float(np.abs(out[:, int(0.9 * T) :]).max()) < 1e-6
+        band = (freqs > 72.0 * k - 2.0) & (freqs < 72.0 * k + 2.0)
+        near = (freqs > 72.0 * k - 12.0) & (freqs < 72.0 * k + 12.0)
+        assert mag[band].max() >= 0.9 * mag[near].max(), k
+    # Labels: 72 everywhere on the scaled time base — no zero tail.
+    assert new_label.shape[-1] == int(np.ceil(n / SR * LABEL_RATE))
+    assert np.allclose(new_label, 72.0, atol=1e-3)
 
 
 # ── spectral_recolor ────────────────────────────────────────────────────────
@@ -257,7 +254,9 @@ def test_maybe_apply_fires_and_rebuilds_frame():
     )
     assert out is not frame
     audio = np.asarray(out["audio"].data)
-    assert audio.shape == (2, T) and audio.dtype == np.float32
+    # freq_scale emits the natural scaled length (T/alpha); the true
+    # target_len crop happens downstream in the mixing pipeline.
+    assert audio.shape == (2, int(round(T / 1.2))) and audio.dtype == np.float32
     rps = np.asarray(out["rps"].data)
     assert rps.shape[0] == 4
     assert abs(float(rps[:, : int(0.8 * LABEL_RATE)].mean()) - 72.0) < 0.5

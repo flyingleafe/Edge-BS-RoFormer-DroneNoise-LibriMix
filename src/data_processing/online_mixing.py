@@ -1292,33 +1292,47 @@ class OnlineMixIterableDataset(IterableDataset):
         # The single fire decision is drawn exactly like `_apply_one_augmentation`:
         # when the key is absent or probability 0, no rng is consumed here and the
         # downstream stream is byte-identical to the un-warped path.
+        from data_processing.noise_augmentations import (
+            freq_scale_source_factor,
+            maybe_apply_noise_augmentation,
+        )
+
+        # freq_scale (alpha > 1) COMPRESSES the chunk; oversample the noise
+        # window by the worst-case factor so the augmented chunk still covers
+        # the training duration and the final target_len extraction CROPS
+        # instead of zero-padding audio + zeroing the label tail.
+        aug_spec = cast("Mapping[str, Any] | None", policy.get("noise_augmentations"))
+        aug_factor = freq_scale_source_factor(aug_spec)
+        base_duration_s = self.duration_s * aug_factor
+        base_len = int(round(base_duration_s * self.sample_rate))
+
         warp = _maybe_sample_time_warp(
             cast("Mapping[str, Any] | None", policy.get("noise_time_warp")), rng
         )
         if warp is not None:
             noise_tf = self.noise_pool.sample_timeframe(
-                rng, source_duration_s(self.duration_s, warp)
+                rng, source_duration_s(base_duration_s, warp)
             )
             noise_tf = apply_time_warp(
                 noise_tf,
                 warp,
-                target_len=self.target_len,
+                target_len=base_len,
                 sample_rate=self.sample_rate,
             )
         else:
-            noise_tf = self.noise_pool.sample_timeframe(rng, self.duration_s)
+            noise_tf = self.noise_pool.sample_timeframe(rng, base_duration_s)
 
         # Strong noise-chunk augmentations (G6): applied to the noise+RPS pair
         # BEFORE mixing (freq_scale rescales the labels, tooth_dropout reads
         # them), unlike `policy.augmentations` which is post-mix. Same
-        # fire/choice contract; absent key consumes no RNG.
-        from data_processing.noise_augmentations import maybe_apply_noise_augmentation
-
+        # fire/choice contract; absent key consumes no RNG. The pair is
+        # extracted at the OVERSAMPLED base_len; the true target_len crop
+        # happens downstream in `_extract_audio_array`.
         noise_tf = maybe_apply_noise_augmentation(
             noise_tf,
-            cast("Mapping[str, Any] | None", policy.get("noise_augmentations")),
+            aug_spec,
             rng,
-            target_len=self.target_len,
+            target_len=base_len,
             sample_rate=self.sample_rate,
         )
         audio_track = noise_tf["audio"]

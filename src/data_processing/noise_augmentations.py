@@ -212,23 +212,57 @@ def _freq_scale(
     T = audio.shape[-1]
     # Playback at alpha x speed: all frequencies (and the comb) scale by alpha,
     # duration scales by 1/alpha. soxr takes (T, C) float32 and float rates.
+    #
+    # The output keeps its NATURAL scaled length (T/alpha) — no padding.
+    # The sourcing pipeline oversamples the noise window by the worst-case
+    # compression factor (``source_factor`` below, wired into
+    # ``_generate_rps_sample``), so for every alpha <= alpha_high the scaled
+    # chunk still covers the training duration and the downstream
+    # ``target_len`` extraction CROPS instead of zero-padding. (The previous
+    # fit-to-input-length behaviour zero-padded audio AND zeroed the label
+    # tail whenever alpha > 1 — training saw silence+0-RPS tails on roughly
+    # half the fires.)
     y = soxr.resample(np.ascontiguousarray(audio.T), float(sample_rate), sample_rate / alpha).T
-    out = _fit_len(np.asarray(y, dtype=np.float32), T)
+    out = np.ascontiguousarray(np.asarray(y, dtype=np.float32))
+    T_out = out.shape[-1]
 
-    # Labels: r_new(t) = alpha * r_old(alpha * t); the zero-padded audio tail
-    # (alpha > 1) is silence => rps 0 there, consistent with the zero-rps ==
-    # silence amplitude convention used by the synthetic pools.
+    # Labels on the scaled time base, covering the full scaled duration:
+    # r_new(t) = alpha * r_old(alpha * t).
     L = label.shape[-1]
-    t_label = np.arange(L, dtype=np.float64) / float(label_rate_hz)
+    t_label_src = np.arange(L, dtype=np.float64) / float(label_rate_hz)
+    L_out = max(1, int(np.ceil(T_out / float(sample_rate) * float(label_rate_hz))))
+    t_label_out = np.arange(L_out, dtype=np.float64) / float(label_rate_hz)
     dur = T / float(sample_rate)
-    src_t = alpha * t_label
-    in_range = src_t <= dur + 1e-9
-    new_label = np.empty_like(label)
+    src_t = np.minimum(alpha * t_label_out, dur)
+    new_label = np.empty((label.shape[0], L_out), dtype=np.float32)
     for r in range(label.shape[0]):
-        new_label[r] = np.where(
-            in_range, alpha * np.interp(src_t, t_label, label[r].astype(np.float64)), 0.0
-        ).astype(np.float32)
+        new_label[r] = (alpha * np.interp(src_t, t_label_src, label[r].astype(np.float64))).astype(
+            np.float32
+        )
     return out, new_label
+
+
+def freq_scale_source_factor(spec: Mapping[str, Any] | None) -> float:
+    """Worst-case duration-compression factor of a noise-augmentation spec.
+
+    ``freq_scale`` with alpha > 1 shortens the chunk by up to ``alpha_high``;
+    the noise window must be oversampled by this factor so the augmented
+    chunk still covers the training duration without padding. 1.0 when no
+    freq_scale choice is present.
+    """
+    if not spec:
+        return 1.0
+    factor = 1.0
+    for choice in spec.get("choices", []) or []:
+        if isinstance(choice, str):
+            name, params = choice, {}
+        elif isinstance(choice, Mapping) and len(choice) == 1:
+            name, params = next(iter(choice.items()))
+        else:
+            continue
+        if name == "freq_scale":
+            factor = max(factor, float((params or {}).get("alpha_high", 1.3)))
+    return factor
 
 
 def _spectral_recolor(
