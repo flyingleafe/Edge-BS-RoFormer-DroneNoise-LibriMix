@@ -112,6 +112,11 @@ class BSRoformerRPS(nn.Module):
 
         self.pool = BandAttentionPool(dim, heads=pool_heads)
         self.head = nn.Linear(dim, num_rotors)
+        # Zero-centered init vs ~75 rev/s targets makes the first epochs pure
+        # DC-offset learning (measured: fresh init predicts mean −0.1, initial
+        # loss ≈ 75² ≈ 5.6k; the lr-1e-4 debug run burned 4 epochs pushing the
+        # mean through the weights while the bias sat at 0.1). Start at cruise.
+        nn.init.constant_(self.head.bias, 75.0)
 
     def forward(self, audio: Tensor) -> Tensor:
         """audio (B, N) or (B, 1, N) → (B, num_rotors, T), T = N // hop + 1.
