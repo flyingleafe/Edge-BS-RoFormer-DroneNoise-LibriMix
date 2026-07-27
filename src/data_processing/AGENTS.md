@@ -347,9 +347,10 @@ log-offset). Same `probability` + `choices` fire/choice schema; on a hit the
 chunk Frame is rebuilt in `time_warp.apply_time_warp`'s output convention
 (audio exactly `target_len` + a clean uniform 100 Hz `rps` track), so
 downstream mixing/target interpolation are untouched. The six: `freq_scale`
-(resample by α∈U(0.75,1.3) without duration preservation; labels ×α,
-zero-padded tail gets rps 0 — the one that manufactures new (audio, RPS)
-pairs), `spectral_recolor` (smooth random EQ ±8 dB, 10 log-spaced anchors,
+(resample by α∈U(0.75,1.3) at natural scaled length — the sourcing pipeline
+oversamples the noise window by α_high so the downstream target_len crop
+never pads; labels ×α on the scaled time base — the one that manufactures
+new (audio, RPS) pairs), `spectral_recolor` (smooth random EQ ±8 dB, 10 log-spaced anchors,
 per channel), `random_reverb` (deterministic 200-RIR synthetic bank: RT60
 U(0.1,0.8) s, DRR U(3,15) dB, exp-decay colored tails; RMS renormalized),
 `tooth_dropout` (zero ±2 STFT bins around k·rps_r(t), 1–4 random teeth k≤25 —
