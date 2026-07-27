@@ -117,6 +117,24 @@ Levers launched next: `ckla_p1_4s` (4 s native context — refuted for the
 transformer, untested for a recurrent tracker), `ckla_p1_norot`
 (complex-path attribution on real data).
 
+### `ckla_p0_4s` — 4 s synthetic context arm (kaggle `python-72ff01`, wandb `my6d6emg`, DONE)
+
+Best val/mse **23.97 at epoch 0**, then monotone overfit (110 by ep 8,
+run cut by the 9 h kaggle cap at ~1 h/epoch). vs the 1 s arms' 21.5–21.7:
+**4 s native context bought nothing on static-comb** — consistent with the
+data's nature (near-stationary RPS within clips). The 4 s rotation-off
+twin was descoped after the queue stall (below); the rotation question at
+4 s is subsumed by the real-protocol twins.
+
+**Infra postmortem (2026-07-27):** the kaggle job finished but omnirun kept
+it "running" — a ghost that starved the whole queue for ~1.5 days; on top,
+the hetzner omnirun daemon's disk hit 99% (18 G of accumulated
+`/var/lib/omnirun/artifacts`), failing every placement with ENOSPC (also
+the earlier `omnirun pull` failure). Ghost + stale queue cancelled;
+`ckla_p1_pnoise` / `ckla_p1_freqscale` resubmitted (colab T4) and place as
+soon as the disk is freed (cleanup needs user authorization — pre-fix F1
+artifacts ≤ 07-22 are the safe 8 G).
+
 ### Mechanistic activation analysis (2026-07-26, DONE)
 
 Full §6-kit instrumentation of the trained `ckla_p1_if` head on 12 real
