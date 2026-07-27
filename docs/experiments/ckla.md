@@ -232,8 +232,28 @@ variance floor is admissible without seed replicates; (c) the aug-lever
 conclusions (G6 "refuted") need re-examination — G6's own staging must be
 checked.
 
+### Protocol-A seed replicates (2026-07-27, partial — 3 jobs lost to a
+transient CUDA-allocation glitch; groups include the seed-0 runs)
+
+Full-envelope best val/mse, interim protocol (frame-epochs, 6250 boundary):
+
+| group | n | mean ± std | values |
+|---|---|---|---|
+| CKLA pnoise | 2 | 57.7 ± 18.2 | 44.8, 70.6 |
+| CKLA pnoise norot | 3 | 62.5 ± 16.1 | 56.7, 50.2, 80.7 |
+| g2_if transformer | 2 | 85.6 ± 31.0 | 63.7, 107.6 |
+
+**The seed-0 rotation gap (44.8 vs 56.7, "+21%") dissolves into seed
+noise** — distributions overlap. CKLA-vs-transformer (57.7 vs 85.6)
+remains directionally favorable but unresolved at this n. Seed σ ≈ 16–31
+on full-envelope val confirms the cross-hardware variance estimate: most
+campaign effect sizes are below the single-run resolution. All further
+ledger claims require n ≥ 3 seeds under protocol-B.
+
 ## Conclusion
 
-_Being rewritten in light of the staging bug. Open: probes2 (checkpoint
-properties, still valid), g2_if_freqscale (now a transformer variance
-replicate), ebsrof debugging (failed to learn: val ~1150 flat)._
+_Being rewritten in light of the staging bug + replicate statistics.
+Open: protocol-B runs (kaggle, seed 0 — epoch-time sizing for the B-seed
+fleet), probes2 (checkpoint properties, still valid), g2_if_freqscale
+(transformer variance replicate), ebsrof debugging (failed to learn:
+val ~1150 flat)._
