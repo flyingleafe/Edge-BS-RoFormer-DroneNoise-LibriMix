@@ -125,6 +125,10 @@ ARM_SETS: dict[str, frozenset[str]] = {
     "T+C+N+K": frozenset("TCNK"),
     "R": frozenset("R"),
     "K+R": frozenset("KR"),
+    # B = IAVKF-style bandwidth adaptation (VKConfig.bw_adapt) on the
+    # midband/refine stages — orthogonality fixed-point per-track gain.
+    "R+B": frozenset("RB"),
+    "K+R+B": frozenset("KRB"),
 }
 LADDERS = ("plain", "vit2dsp")
 DREGON_RIDS = [
@@ -272,6 +276,11 @@ def run_pipeline(
             phys_map[track_row] = truth_row
         mid_cfg = MIDBAND_CFGS[0] if gate is None else replace(MIDBAND_CFGS[0], update_gate=gate)
         ref_cfg = REFINE_CFG if gate is None else replace(REFINE_CFG, update_gate=gate)
+        if "B" in arms:
+            # Arm B: bandwidth adaptation on the tracking stages; capture
+            # keeps its deliberately wide annealed band untouched.
+            mid_cfg = replace(mid_cfg, bw_adapt=True)
+            ref_cfg = replace(ref_cfg, bw_adapt=True)
         tic = time.perf_counter()
         stages, _, _, wall_scan, wall_vk = vit2dsp_pipeline(
             prep_run,
@@ -297,6 +306,8 @@ def run_pipeline(
         # keeps its narrow de-biasing band.
         cap_cfg = replace(cap_cfg, update_gate=gate, bw_hz=float(seed.bw_hz or 1.5))
         ref_cfg = replace(ref_cfg, update_gate=gate)
+    if "B" in arms:
+        ref_cfg = replace(ref_cfg, bw_adapt=True)
     tic = time.perf_counter()
     cap = vk_track(audio, r0, prep.ft, cap_cfg)
     wall_cap = time.perf_counter() - tic
