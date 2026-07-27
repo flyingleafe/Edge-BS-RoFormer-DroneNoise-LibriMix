@@ -194,8 +194,46 @@ Probe stage of the eval job crashed on a script dispatch bug
 (`transformer_forward_taps` applied to a CKLA model) — λ-gain and
 scale-response verification pending a fixed re-run.
 
+### ⚠️ THE STAGING BUG (2026-07-27, found via the pnfs bit-identity anomaly)
+
+`ckla_p1_pnfs` (freqscale policy, config-verified loaded, provenance-print
+verified in-process) trained **bit-identical to plain-policy
+`ckla_p1_pnoise` for 40 epochs** — twice (pnfs and the instrumented
+pnfs2). Root cause: `OnlineMixFrameDataset(flatten_channels=True)` expands
+each generated chunk into **C = 8 mono frames** (measured: 8.0 exactly on
+the E12 stream), so the training loop consumes 8 frames per global sample
+id — the policy's `until: 50000` boundary sits at **epoch ~80**, not 10.
+No E12-family run ever exceeded 57 epochs. **Stage 2 (augmentations,
+noise_augmentations, noise_time_warp) has never fired in ANY E12-recipe
+experiment.**
+
+Blast radius:
+1. **Every "weak-aug + time-warp" E12 description is wrong** — all arms
+   trained on plain mixtures throughout (incl. base e12, g1 4s/8s, g2,
+   g3, g6-if-staged, freqscale, pnoise, pnfs, norot arms).
+2. **The freqscale attribution collapses**: `ckla_p1_freqscale` (63.0,
+   dregon 2.60) trained UNAUGMENTED — its differences vs base
+   `ckla_p1_if` (85.2, dregon 2.87) are pure cross-hardware run variance
+   (A100 vs P100, same effective config, seed 0).
+3. **Which yields the campaign's first honest same-config variance
+   estimate**: full-envelope ±22 MSE, dregon_cruise ±0.27, fly124_cruise
+   ±0.8 — LARGER than several ledger margins (IF-channel Δ0.14; the
+   fly124 1.36-vs-2.33 "win" Δ1.0 borderline; pnoise-vs-norot rotation
+   gap Δ11.9 full-envelope — all within or near the variance floor).
+4. Same-hardware same-seed runs are bit-deterministic (pnfs ≡ pnoise ≡
+   pnfs2) — which masked the variance until the accidental replicas.
+5. What stands: P0 synthetic margins (7×/4×/lock-vs-never — far above any
+   noise floor), all activation-analysis mechanistic measurements, the
+   pnoise gain-alive verification, G5's stage-1-augs-diverge observation.
+
+Consequences: (a) stage boundaries need frame-accurate semantics (or
+until values divided by the channel count); (b) NO ledger claim below the
+variance floor is admissible without seed replicates; (c) the aug-lever
+conclusions (G6 "refuted") need re-examination — G6's own staging must be
+checked.
+
 ## Conclusion
 
-_Pending: pnfs (combined), pnoise_norot (live-gain rotation attribution),
-g2_if_freqscale (matched transformer control), ebsrof arms (Slurm
-20930163/20930164), probe re-run._
+_Being rewritten in light of the staging bug. Open: probes2 (checkpoint
+properties, still valid), g2_if_freqscale (now a transformer variance
+replicate), ebsrof debugging (failed to learn: val ~1150 flat)._
