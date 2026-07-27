@@ -358,6 +358,17 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_p1_pnoise_pb/checkpoints/best.ckpt",
         None,
     ),
+    # Clean-pipeline arms (channel_drop-free, padding-free freq_scale):
+    "ckla_pnfs_pb_best": (
+        "ckla_p1_pnfs",
+        "r2://ml-data/artifacts/ckla_p1_pnfs_pb/checkpoints/best.ckpt",
+        None,
+    ),
+    "g2_if_freqscale_best": (
+        "g2_if_freqscale",
+        "r2://ml-data/artifacts/g2_if_freqscale/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
