@@ -1,0 +1,21 @@
+# simple_conv_v2_ckla_pnoise_norot — rps_prediction: p_init 1.0 (live Kalman
+# gain) AND rotation removed (exact real-KLA head). Every rotation null so
+# far was measured in the gain-collapsed accumulator regime where the state
+# barely updates — with the gain alive (ckla_p1_pnoise best 44.8 vs base
+# 85.2) rotation gets its first fair test. This is the rotation-off control
+# of that regime: ckla_p1_pnoise − ckla_p1_pnoise_norot = the complex
+# path's contribution in a working filter.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_norot
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+model_type: null
+legacy_config_path: null

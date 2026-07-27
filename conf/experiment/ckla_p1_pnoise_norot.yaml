@@ -1,0 +1,25 @@
+# @package _global_
+# Rotation-off control IN THE LIVE-GAIN REGIME (docs/experiments/ckla.md).
+# All previous rotation nulls (synthetic 1 s/4 s, real 1 s: norot 83.9 vs
+# base 85.2) were measured with the gain collapsed to 1e-7..1e-4, where the
+# state barely integrates and rotation structurally cannot matter. With
+# p_init 1.0 the filter tracks (pnoise best 44.8) — this arm removes
+# rotation there. pnoise − pnoise_norot = the complex extension's true
+# contribution in a working filter; the goal-deciding attribution cell.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_pnoise_norot
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_p1_pnoise_norot
+epochs: 200
+patience: 20
+batch_size: 16
+num_workers: 6
+samples_per_validation: 5000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
