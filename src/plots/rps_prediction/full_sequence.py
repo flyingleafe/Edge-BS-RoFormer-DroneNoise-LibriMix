@@ -92,7 +92,10 @@ def plot_full_sequence(
         normalized=True,
     )
     S = torch.abs(X).numpy()
-    log_mag = np.log1p(S.T)
+    # torch.stft returns (freq, time) — exactly the row/column layout
+    # imshow(origin="lower", extent=[0, dur, 0, f_max]) expects. The old
+    # transpose here swapped the axes (time rendered vertically).
+    log_mag = np.log1p(S)
     vmin = np.percentile(log_mag, 2)
     vmax = np.percentile(log_mag, 99)
     ax.imshow(

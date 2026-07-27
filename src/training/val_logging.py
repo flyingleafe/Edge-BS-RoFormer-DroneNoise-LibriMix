@@ -35,8 +35,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import tdseries as td
-import wandb
 
+import wandb
 from data_processing.frames import get_meta
 from tasks.task import Task
 from training.artifacts import ValSample
@@ -65,26 +65,42 @@ class ArtifactSink(Protocol):
 def select_val_sample_indices(targets: Sequence[td.Frame], num_samples: int) -> list[int]:
     """Pick up to ``num_samples`` indices into ``targets``.
 
-    SNR-stratified (spread across low/mid/high buckets by ``input_snr``
-    meta) when every target carries that tag; otherwise the first
-    ``num_samples`` indices, in order. Deterministic given the same
-    ``targets`` ordering — the validation loader is not shuffled, so the
-    same samples are picked epoch over epoch (stable evolution in wandb, as
-    the old ``seed=0`` selection intended).
+    Stratified across low/mid/high buckets of a per-target scalar:
+    mean ground-truth RPS when targets carry an ``"rps"`` entry (so the
+    logged overlays always span idle AND in-flight windows — the old
+    first-N fallback pinned every logged sample to the zero-RPS ground
+    segments that open the unshuffled valid-full split), else ``input_snr``
+    meta, else the first ``num_samples`` indices. Deterministic given the
+    same ``targets`` ordering — the validation loader is not shuffled, so
+    the same samples are picked epoch over epoch (stable evolution in
+    wandb, as the old ``seed=0`` selection intended).
     """
     n = len(targets)
     if num_samples <= 0 or n == 0:
         return []
     num_samples = min(num_samples, n)
 
-    snr_values: list[float] = []
-    for t in targets:
-        snr = get_meta(t, "input_snr", None)
-        if snr is None:
-            return list(range(num_samples))
-        snr_values.append(float(snr))
+    def _mean_rps(t: td.Frame) -> float | None:
+        if "rps" not in t:
+            return None
+        data = t["rps"].data
+        if data is None:
+            return None
+        arr = np.asarray(data, dtype=np.float32)
+        return float(arr.mean()) if arr.size else None
 
-    order = sorted(range(n), key=lambda i: snr_values[i])
+    values: list[float] = []
+    rps_vals = [_mean_rps(t) for t in targets]
+    if all(v is not None for v in rps_vals):
+        values = [float(v) for v in rps_vals if v is not None]
+    else:
+        for t in targets:
+            snr = get_meta(t, "input_snr", None)
+            if snr is None:
+                return list(range(num_samples))
+            values.append(float(snr))
+
+    order = sorted(range(n), key=lambda i: values[i])
     n_buckets = min(3, num_samples)
     buckets = [[int(i) for i in b] for b in np.array_split(np.array(order), n_buckets)]
 
