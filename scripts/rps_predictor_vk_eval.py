@@ -392,6 +392,27 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_pnoise_v3synth/checkpoints/best.ckpt",
         None,
     ),
+    # Readout-family arms (phase-differential readout, docs/experiments/ckla.md):
+    "ckla_phaseonly_best": (
+        "ckla_phaseonly_fs_v2",
+        "r2://ml-data/artifacts/ckla_phaseonly_fs_v2/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_phaseonly_s1c_best": (
+        "ckla_phaseonly_fs_v2",
+        "r2://ml-data/artifacts/ckla_phaseonly_fs_v2_s1c/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_norot_fs_v2_best": (
+        "ckla_norot_fs_v2",
+        "r2://ml-data/artifacts/ckla_norot_fs_v2_b/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_norot_fs_v2_s2_best": (
+        "ckla_norot_fs_v2",
+        "r2://ml-data/artifacts/ckla_norot_fs_v2_s2/checkpoints/best.ckpt",
+        None,
+    ),
 }
 
 POOLS: dict[str, Any] = {
