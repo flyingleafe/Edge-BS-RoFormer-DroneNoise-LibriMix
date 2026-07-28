@@ -502,3 +502,61 @@ directly with no overrides.
   one page since round 9 (23/38 vs the round-9 log's 22/37), so locating the
   target slides required a `pdftotext -f/-l` scan per page rather than
   trusting the previous round's page numbers.
+
+## Round 11 — add KLA (plain, non-rotating) arm to the results
+
+- Added a third arm to the results story: plain KLA (`ckla_norot_fs_v2`,
+  ckpt `ckla_norot_fs_v2_b`) — same architecture as CKLA with the complex
+  rotation disabled. Wins on val/MSE (30.4 vs 42.3/41.4), total PIT-MAE
+  (3.52 vs 3.83/4.11), and the freq-shift-following probe (102% of a 10%
+  shift vs 71%/99%) — single-seed, flagged as such everywhere.
+- Slide 35 "Results — full-envelope validation": rewrote the results table
+  to 3 rows (transformer/KLA/CKLA) + added the val/MSE-and-PIT-MAE column
+  and the existing zero/warm-up/free-flight regime breakdown table below it,
+  with a one-line headline stating the KLA finding plainly. Numbers pulled
+  from `table_regime_mae()`'s CSV output plus the task-provided val/MSE and
+  total-PIT-MAE figures (not independently reverified against a wandb run —
+  no run ID was supplied in the task; not flagged [TODO verify] since the
+  task handed these as given facts, but noting here for the record).
+- New slide 36 "Predictions on the hardest slices: full transitions"
+  (inserted before "Results — cruise pools"): new `fig_transitions_grid()`
+  in prepare.py, a 4-row x 2-col grid (spectrogram + one row per model) over
+  two of the hardest valid-full clips (`sample_00015` DREGON takeoff ramp,
+  `sample_00035` FLY124 full transition), same load/perm-align pattern as
+  `fig_ckla_freqshift`. Per-clip PIT-MAEs printed and annotated on-figure:
+  DREGON ramp transformer 9.37 / KLA 8.39 / CKLA 6.34; FLY124 transition
+  transformer 14.45 / KLA 9.56 / CKLA 15.40. Caption states the mixed
+  result honestly (CKLA is not uniformly best -- it over-holds the cruise
+  level on the FLY124 landing, its worst clip in the pair).
+- Slide 39 "The bar: a model that follows the comb": added the KLA row to
+  the following-percentage table (60/91/102% at 2/5/10% shift) and updated
+  the summary line/speaker note to state the KLA-not-rotation finding.
+- Touying overflow gotcha (same shape as prior rounds, new instances): all
+  three edited slides silently split into a second, near-blank continuation
+  page after the first pass at these edits -- the results table (2 tables
+  plus headline), the new transitions-grid slide (image at 78% width pushed
+  the caption below the fold), and "the bar" (new 4th table row pushed the
+  summary paragraph off the page). None of this was visible by eyeballing
+  the first rendered page in isolation -- only caught via the page-count
+  tripwire (`pdftotext -layout` footer scan showing repeated headings and
+  N-of-M counts higher than the heading count). Fixed by shrinking font
+  sizes/insets on the results table and reducing the transitions-grid image
+  width in two steps (first pass still split, second pass clean) rather
+  than measuring exactly where the threshold was -- cheaper than bisecting.
+- Rebuilt: `make check` passed (once model-figure regeneration finished,
+  about 2 minutes on CPU for the new transitions grid). Confirmed 39 unique
+  headings and 39 physical pages via a full `pdftotext -f/-l` per-page
+  footer scan (no repeated heading text = no split) before doing the visual
+  pass; looked at the 3 changed pages individually and the full 39-page
+  contact sheet.
+- No guard denials this round (one earlier attempt to append this very log
+  entry via a heredoc was rejected because the shell parsed a literal `->`
+  followed by a percentage token as a redirect target outside the target
+  dir -- worked around by rephrasing without the `->` arrows and using the
+  Edit tool instead of a bash heredoc).
+- What would have made this easier: the width-vs-split threshold for
+  images is not something you can predict from the PNG's own aspect ratio
+  without a rebuild-and-check cycle each time -- a documented rule of thumb
+  (e.g. "a 4-row grid needs to fit under about 45% width to leave room for
+  a 2-line caption under a title+WIP-badge slide") in the template's
+  known-gotchas list would save a guess-rebuild-guess loop like this one.

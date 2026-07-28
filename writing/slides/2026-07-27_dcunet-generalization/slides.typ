@@ -37,9 +37,9 @@
     [SI-SDR + MR-STFT],
 
     [*Edge-BS-RoFormer*],
-    [band-split transformer with rotary attention],
+    [band-split transformer with rotary attention (1.92 M)],
     [2025],
-    [Paper 1's own model on this task],
+    [Recent model specifically for drone noises, we already tried to reproduce that paper],
     [SI-SDR + MR-STFT],
 
     [*DCUNet*],
@@ -188,9 +188,9 @@
     *What prior work reports*
     #v(0.3em)
     #text(size: 0.88em)[
-      - 2023 IEEE Access survey, at −15 dB: SI-SDR *+3.7 dB*, eSTOI *0.4* ---
+      - Our 2023 IEEE Access survey, at −15 dB: SI-SDR *+3.7 dB*, eSTOI *0.4* ---
         best of twelve models.
-      - Paper 1 / DN-LM: DCUNet ranks *1st of four* on SI-SDR and STOI.
+      - Edge-BS-RoFormer paper: DCUNet ranks *2nd of four* on SI-SDR and STOI.
     ]
   ],
   [
@@ -217,7 +217,7 @@
   says it is the worst of five.
 ]
 
-= The survey's number reproduces exactly
+= But our previous results on the same data are reproducible
 
 #text(size: 0.92em)[
   Same model, loss, crop, SNR range and schedule as the survey --- and, as the
@@ -230,7 +230,7 @@
   columns: 4,
   align: (left, center, center, center),
   stroke: 0.5pt + luma(180),
-  table.header([*at −15 dB input*], [*do nothing*], [*ours*], [*published*]),
+  table.header([*at −15 dB input*], [*do nothing*], [*ours (new)*], [*ours (published)*]),
   [SI-SDR (dB)], [−15.05], [*+3.82*], [+3.7],
   [eSTOI], [0.126], [*0.408*], [0.4],
 ))
@@ -530,7 +530,7 @@ need the RPS label directly).
   )
 ])
 
-#v(0.5em)
+#v(0.2em)
 
 #align(center, text(size: 0.95em)[*Where the error actually moved* --- PIT-MAE (rev/s), per frame regime])
 
@@ -551,10 +551,11 @@ need the RPS label directly).
     [zero RPS (GT $approx 0$)], [6.19], [6.41], [30.49], [#good[4.99]],
     [warm-up ($0 <$ RPS $< 50$)], [11.02], [15.83], [5.32], [#good[3.29]],
     [free flight (RPS $gt.eq 50$)], [3.03], [3.24], [2.96], [3.11],
+    [_VK blind, cruise reference_], table.cell(colspan: 2)[_0.69_], table.cell(colspan: 2)[_1.03_],
   )
 ])
 
-#v(0.4em)
+// #v(0.4em)
 
 #align(center, text(size: 0.95em)[
   Uniform scaling costs *DREGON* everywhere (worst at warm-up, 11.0 -> 15.8)
@@ -618,7 +619,8 @@ need the RPS label directly).
   #text(size: 1.6em, weight: "bold")[Novel architecture attempts]
   #v(0.5em)
   #text(size: 1.05em)[
-    Inspired by recent results in iterative blind motor speeds annotation
+    Inspired by recent results in iterative blind motor speeds annotation + by recently read papers on neural
+    architectures.
   ]
 ]
 
@@ -972,110 +974,127 @@ need the RPS label directly).
 
 = Results — full-envelope validation
 
-#wip[WIP — runs in flight, no conclusions]
+#wip[WIP — KLA single-seed; transformer/CKLA 3-seed]
 
-#v(0.2em)
+#align(center, text(size: 0.82em)[
+  Removing the rotation (plain KLA) is the best model on every axis measured
+  so far --- the Kalman-scan recurrence plus uniform scaling is the active
+  ingredient, not the complex rotation.
+])
 
-#align(center, table(
-  columns: 3,
-  align: (left, center, left),
-  stroke: 0.5pt + luma(180),
-  inset: 7pt,
-  table.header([*arm, uniform freq-scale v2*], [*val/MSE*], [*note*]),
-  [transformer (no CKLA)], [42.3], [matched baseline, same v2 regime],
-  [CKLA (gain-fixed), current run], [*41.4*], [still improving],
-))
+#v(0.15em)
 
-#speaker-note[
-  Full-envelope validation MSE, lower is better. Both arms now trained under
-  the uniform freq-scale v2 regime (probability 1.0, alpha in [0.7, 1.3] on
-  every post-warmup chunk) — internally the CKLA arm is `ckla_pnoise_fs_v2`.
-  This is a like-for-like comparison, not the old protocol-B snapshot: CKLA
-  edges the matched transformer (41.4 vs 42.3), but both numbers are the
-  best checkpoint of runs that have not finished improving, so treat the
-  margin as noise until it replicates.
-]
+#align(center, text(size: 0.85em)[
+  #table(
+    columns: 4,
+    align: (left, center, center, left),
+    stroke: 0.5pt + luma(180),
+    inset: 5pt,
+    table.header([*arm, uniform freq-scale v2*], [*val/MSE*], [*total PIT-MAE*], [*note*]),
+    [transformer (no CKLA)], [42.3], [3.83], [seeds 42.3/38.4/42.7],
+    [KLA (rotation off)], [*30.4*], [*3.52*], [single seed],
+    [CKLA (rotation on)], [41.4], [4.11], [seeds 41.4/52.8/53.2],
+  )
+])
 
-= Results — cruise pools
+#v(0.15em)
 
-#wip[WIP — updating for uniform v2; numbers below are the previous arm]
-
-#v(0.2em)
-
-#align(center, table(
-  columns: 3,
-  align: (left, center, center),
-  stroke: 0.5pt + luma(180),
-  inset: 7pt,
-  table.header([*pool (PIT-MAE, rev/s)*], [*CKLA, protocol-B (pre-v2)*], [*for reference*]),
-  [DREGON cruise], [2.75], [neural floor 2.481 · VK 0.68–0.74],
-  [FLY124 cruise], [1.25], [neural floor 2.33 · VK 1.027],
-))
-
-#text(size: 0.78em)[
-  PIT-MAE = mean abs. error after permutation-aligning predicted rotor tracks
-  to ground truth; neural floor = best prior transformer arm. The current
-  checkpoint (`ckla_pnoise_fs_v2`) has not been run over these cruise pools
-  yet: do not read these as its numbers.
-]
-
-#speaker-note[
-  These two numbers are carried over from the earlier gain-fixed / protocol-B
-  CKLA arm, computed before the uniform freq-scale v2 regime existed — kept
-  here only to show scale against the neural floor and the Vold-Kalman blind
-  bars, not as a claim about the current best checkpoint (`ckla_pnoise_fs_v2`).
-  That model's cruise-pool accuracy is still being evaluated; do not present
-  2.75 / 1.25 as if they were fs_v2's numbers. No conclusion is being drawn
-  on this slide until the re-eval lands.
-]
-
-= Results — one prediction, one clip
-
-#wip[WIP — snapshot from the pre-v2 arm, illustration only]
-
-#align(center, image("assets/ckla_prediction_overlay.png", width: 44%))
+#align(center, text(size: 0.6em)[
+  #table(
+    columns: 7,
+    align: (left,) + (center,) * 6,
+    stroke: 0.5pt + luma(180),
+    inset: 3.5pt,
+    table.header(
+      [*model*],
+      table.cell(colspan: 2)[*zero*],
+      table.cell(colspan: 2)[*warm-up*],
+      table.cell(colspan: 2)[*free flight*],
+    ),
+    [], [DREGON], [FLY124], [DREGON], [FLY124], [DREGON], [FLY124],
+    [transformer], [6.41], [4.99], [15.83], [3.29], [3.24], [3.11],
+    [KLA], [5.04], [2.29], [11.82], [3.58], [3.82], [1.85],
+    [CKLA], [9.09], [4.35], [9.00], [6.99], [3.46], [1.79],
+    [VK blind (cruise ref.)], [—], [—], [—], [—], [0.69], [1.03],
+  )
+])
+#align(center, text(
+  size: 0.55em,
+  fill: luma(100),
+)[VK blind annotation runs on cruise windows only (needs a live comb); its per-rotor err#sub[sm] on the same recordings is the accuracy reference.])
 
 #speaker-note[
-  This snapshot is still the earlier gain-fixed / protocol-B checkpoint, one
-  DREGON cruise clip covering a takeoff ramp: dashed is ground truth, solid
-  is the prediction, permutation-aligned. It has not been regenerated for
-  `ckla_pnoise_fs_v2` — shown only to illustrate what the model's output
-  shape currently looks like, not as a quantitative claim about the current
-  best checkpoint.
+  Full-envelope validation MSE (lower is better) and total PIT-MAE over all
+  37 valid-full clips (per-frame |err| after per-clip permutation alignment),
+  now with a third arm: plain KLA is the same CKLA architecture with the
+  complex rotation disabled (omega ≡ 0), trained under the identical uniform
+  freq-scale v2 regime. KLA wins on both summary metrics and on most of the
+  regime breakdown — the recurrent Kalman-scan structure plus uniform-scale
+  training is doing the work, not the learned rotation. CKLA is worst on
+  total PIT-MAE despite having the most seeds; its regime table shows it
+  trading DREGON zero/warm-up accuracy for gains elsewhere. KLA numbers are
+  single-seed — read the margin as promising, not settled, until it
+  replicates.
 ]
 
-= The bar: a model that follows the comb
+= Predictions on the hardest slices: full transitions
 
-#wip[WIP — single-seed; replicates + cruise eval running]
+#align(center, image("assets/transitions_grid.png", width: 44%))
 
-#align(center, image("assets/ckla_freqshift.png", width: 56%))
+#align(center, text(size: 0.62em)[
+  Solid = prediction, dotted = ground truth, one column per clip. KLA and
+  CKLA both hug the DREGON takeoff ramp more tightly than the transformer
+  (PIT-MAE 8.4 / 6.3 vs 9.4); on the FLY124 landing, KLA tracks the descent
+  fastest (9.6) while CKLA over-holds the cruise level into the drop (15.4),
+  worse than the transformer (14.5) on this clip.
+])
 
-#align(center, text(size: 0.62em, fill: luma(90))[
+#speaker-note[
+  Two of the hardest slices in the valid-full set: a DREGON takeoff ramp
+  (ground truth roughly 2 to 89 rev/s) and a FLY124 full transition (ramp up,
+  cruise, then landing back near zero). Row 1 is the spectrogram of the
+  clip; rows 2 to 4 are each model's prediction (solid, permutation-aligned
+  to ground truth) over the ground truth (dotted), one row per model. On the
+  DREGON ramp all three models track the shape reasonably, with KLA and CKLA
+  both closer than the transformer. On the FLY124 clip the story is mixed:
+  KLA is the fastest to follow the drop back to idle, while CKLA is slowest
+  to let go of the cruise level (its worst clip PIT-MAE in this pair, 15.4),
+  which is the same pattern the DREGON zero/warm-up regime numbers show —
+  CKLA is not uniformly better, it is a different bias.
+]
+
+= Do the model variants follow the frequencies better?
+
+#wip[WIP — KLA single-seed; fkla cross-check training]
+
+#align(center, image("assets/ckla_freqshift.png", width: 55%))
+
+#align(center, text(size: 0.56em, fill: luma(90))[
   This one clip: pred ×1.095 at the 10% shift, close to ideal --- the table
   below is the 12-clip probe average, which is what the following
   percentages are computed from.
 ])
 
-#v(0.2em)
-
-#align(center, text(size: 0.66em)[
+#align(center, text(size: 0.62em)[
   #table(
     columns: 4,
     align: (left, center, center, center),
     stroke: 0.5pt + luma(180),
-    inset: 3.5pt,
+    inset: 3pt,
     table.header([*model*], [$times 1.02$], [$times 1.05$], [$times 1.10$]),
     [transformer, old regime], [#sym.times\1.0006 (3%)], [#sym.times\1.0010 (2%)], [#sym.times\1.0024 (2%)],
     [transformer, uniform v2], [#sym.times\1.0084 (42%)], [#sym.times\1.0276 (55%)], [#sym.times\1.0707 (71%)],
+    [KLA, uniform v2], [#sym.times\1.0120 (60%)], [#sym.times\1.0457 (91%)], [#sym.times\1.1022 (102%)],
     [CKLA, uniform v2], [#sym.times\1.0135 (68%)], [#sym.times\1.0454 (91%)], [#sym.times\1.0992 (99%)],
   )
 ])
 
-#align(center, text(size: 0.68em)[
-  Under uniform scaling the CKLA layer follows 99% of a 10% shift --- it
-  tracks the comb, and out-tracks the matched transformer at every shift
-  size. Numbers are single-seed (replicates running); cruise-pool accuracy
-  vs the VK floor is still being evaluated.
+#align(center, text(size: 0.6em)[
+  Under uniform scaling all three recurrent-regime models follow the comb;
+  plain KLA follows fully (102% of a 10% shift) while also scoring the best
+  accuracy --- the rotation is not the active ingredient. CKLA matches KLA
+  on following (99%) but not on accuracy. Single-seed for KLA; CKLA/
+  transformer numbers are 3-seed.
 ])
 
 #speaker-note[
@@ -1083,18 +1102,39 @@ need the RPS label directly).
   really tracks the comb must move its prediction when the comb moves. Scale-
   response probe on 12 held-out clips, "following" = (ratio − 1) / (ideal
   ratio − 1) against a shift of ×1.02 / ×1.05 / ×1.10. Any pre-v2 training
-  regime, transformer or CKLA, sits at the training-distribution mean —
-  effectively 0% following at every shift size. Switching to uniform
-  freq-scale augmentation (probability 1.0, alpha drawn uniformly in
-  [0.7, 1.3], on every post-warmup chunk, not just some) is what breaks
-  that amplitude anchor for both arms, and CKLA benefits more at every
-  shift size: 68/91/99% of the 2/5/10% shifts versus 42/55/71% for the
-  matched transformer under the identical regime. Probe PIT-MAE over the
-  same 12 clips: transformer v2 3.20 rev/s, CKLA v2 3.00 rev/s — CKLA is
-  also the more accurate of the two here. All numbers are single-seed and
-  the checkpoints are not fully converged, so read this as a promising
-  direction, not a result: full following of the comb (100%) is still the
-  open bar, and cruise-pool accuracy against the Vold-Kalman floor has not
-  been re-evaluated for this regime yet.
+  regime sits at the training-distribution mean — effectively 0% following
+  at every shift size. Switching to uniform freq-scale augmentation
+  (probability 1.0, alpha drawn uniformly in [0.7, 1.3], on every
+  post-warmup chunk, not just some) is what breaks that amplitude anchor,
+  and both recurrent arms benefit more than the transformer at every shift
+  size: transformer 42/55/71%, KLA 60/91/102%, CKLA 68/91/99% at 2/5/10%
+  shift. Plain KLA — the same architecture with the complex rotation
+  disabled — fully follows the largest shift and also has the best envelope
+  MSE and total PIT-MAE of the three arms (previous slide), which argues
+  the Kalman-scan recurrence and the uniform-scale training regime are the
+  active ingredients, not the learned rotation. At alpha=1.10 on the
+  final (last.ckpt) checkpoints, seed-robustness is transformer 84/85/73%
+  (n=3), CKLA 78/82/69% (n=3), KLA 85% (n=1) — the KLA number is a single
+  seed and needs replicates before this is a settled result. An
+  independent flat-KLA implementation (fkla, vendored from kla-loglinear)
+  is training as a cross-check but has only completed 8 epochs so far
+  (~6x slower per step) — too early to score.
 ]
 
+= Where the new models sit against VK: speed vs accuracy
+
+#figure(image("assets/speed_accuracy_vk.png", width: 62%))
+
+#align(center, text(size: 0.8em)[
+  All three neural arms run \~130$times$ faster than real time on one CPU core; blind VK needs \~4 s per second of audio.
+  The accuracy gap to VK on free flight is now \~2--3 rev/s, closed from \~8 at the start of the campaign.
+])
+
+#speaker-note[
+  x: CPU compute per second of audio (log), measured on the same 8 s valid clip
+  (forward pass, warm cache): transformer 0.029, KLA 0.032, CKLA 0.034 s/s.
+  VK blind = ~4 s/s (post-optimization, banded Cholesky). y: free-flight MAE
+  averaged over the DREGON and FLY124 columns of the regime table; VK point =
+  cruise-window blind err_sm (0.688/1.027). Different metrics on overlapping
+  but not identical windows — positions, not a strict same-protocol curve.
+]

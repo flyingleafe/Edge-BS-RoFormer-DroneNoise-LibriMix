@@ -619,6 +619,100 @@ def fig_ckla_freqshift() -> None:
     plt.close(fig)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Part 2C — KLA (plain, non-rotating Kalman linear attention) row: added
+# 2026-07-28 round. Same best.ckpt per arm as the results table.
+# ═══════════════════════════════════════════════════════════════════════════
+
+KLA_CKPT = "r2://ml-data/artifacts/ckla_norot_fs_v2_b/checkpoints/best.ckpt"
+KLA_EXP = "ckla_norot_fs_v2"
+
+THREE_MODELS = [
+    ("transformer", "g2_if_freqscale_v2", NEW_CKPT),
+    ("KLA", KLA_EXP, KLA_CKPT),
+    ("CKLA", CKLA_EXP, CKLA_CKPT),
+]
+
+TRANSITION_CLIPS = (
+    ("DREGON — takeoff ramp", "sample_00015"),
+    ("FLY124 — full transition", "sample_00035"),
+)
+
+
+def fig_transitions_grid() -> None:
+    """4 rows x 2 cols: row 1 spectrogram, rows 2-4 = transformer / KLA / CKLA
+    predictions (solid) over GT (dotted), one column per hardest transition
+    clip. All rows share the time axis per column. Annotates each prediction
+    row with its clip PIT-MAE."""
+    import rps_predictor_vk_eval as vk
+    import torch
+
+    audio, gt = vk.load_clip_data("dload:DREGON-LM-V4-michaels-valid-full")
+    models = [(name, vk.load_model(exp, ckpt, "cpu")) for name, exp, ckpt in THREE_MODELS]
+
+    clips = []
+    for title, cid in TRANSITION_CLIPS:
+        a = audio[cid][0].copy()
+        g = gt[cid].astype(np.float64)
+        preds = []
+        for name, model in models:
+            with torch.no_grad():
+                p = model(torch.from_numpy(a[None, :]))[0].numpy().astype(np.float64)
+            p = vk.perm_align(p, g)
+            mae = float(np.abs(p - g).mean())
+            preds.append((name, p, mae))
+            print(f"  {title:<28} {name:<12} clip PIT-MAE = {mae:.2f} rev/s")
+        clips.append((title, a, g, preds))
+
+    n = len(clips)
+    fig, axes = plt.subplots(
+        4,
+        n,
+        figsize=(6.2 * n, 9.6),
+        sharex="col",
+        gridspec_kw={"height_ratios": (1.4, 1.0, 1.0, 1.0)},
+    )
+    t_max = max(len(a) / RPS_SR for _, a, _, _ in clips)
+    rps_max = max(float(g.max()) for _, _, g, _ in clips) * 1.08
+    t_gt_len = clips[0][2].shape[-1]
+    t_gt = np.arange(t_gt_len) / RPS_FRAME_HZ
+    for i, (title, a, g, preds) in enumerate(clips):
+        f, t, s_db = _spec_db(a)
+        axes[0, i].pcolormesh(t, f, s_db, vmin=-70, vmax=10, cmap="magma", shading="auto")
+        axes[0, i].set_ylim(0, 1200)
+        axes[0, i].set_xlim(0, t_max)
+        axes[0, i].set_title(title, fontsize=14)
+        axes[0, i].grid(False)
+        for row, (name, p, mae) in enumerate(preds, start=1):
+            ax = axes[row, i]
+            t_p = np.arange(p.shape[-1]) / RPS_FRAME_HZ
+            for r in range(4):
+                ax.plot(t_gt, g[r], color=ROTOR_COLORS[r], lw=1.4, ls=":", alpha=0.7)
+                ax.plot(t_p, p[r], color=ROTOR_COLORS[r], lw=2.0)
+            ax.set_ylim(0, rps_max)
+            ax.set_xlim(0, t_max)
+            ax.text(
+                0.02,
+                0.86,
+                f"PIT-MAE {mae:.2f} rev/s",
+                transform=ax.transAxes,
+                fontsize=11,
+                color=INK,
+            )
+            if i == 0:
+                ax.set_ylabel(f"{name}\nrev/s", fontsize=13)
+            else:
+                ax.tick_params(labelleft=False)
+        axes[3, i].set_xlabel("s")
+        if i == 0:
+            axes[0, i].set_ylabel("Hz")
+        else:
+            axes[0, i].tick_params(labelleft=False)
+    fig.subplots_adjust(wspace=0.07, hspace=0.14, left=0.1, right=0.995, top=0.95, bottom=0.06)
+    fig.savefig(ASSETS / "transitions_grid.png", dpi=150)
+    plt.close(fig)
+
+
 def fig_ckla_prediction_overlay() -> None:
     import rps_predictor_vk_eval as vk
     import torch
@@ -1485,6 +1579,7 @@ def main() -> None:
         "overlay": fig_ckla_prediction_overlay,
         "regime_table": table_regime_mae,
         "ckla_freqshift": fig_ckla_freqshift,
+        "transitions_grid": fig_transitions_grid,
     }
     allsteps = {**steps, **model_steps}
     if selected:
