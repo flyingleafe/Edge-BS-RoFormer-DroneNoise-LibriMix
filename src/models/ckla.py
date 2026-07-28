@@ -209,6 +209,46 @@ def complex_kla_scan(
     return y_re, y_im, state
 
 
+def phase_diff_features(y_re: Tensor, y_im: Tensor) -> tuple[Tensor, Tensor]:
+    """Angle-first-differential features of a complex readout sequence.
+
+    Per token (dim=1) and per complex channel, the one-step phase
+    differential of y is d_t = y_t · conj(y_{t−1}) with y_{−1} := y_0, so
+    arg d_0 = 0. If the state phasor tracks a rotor, arg d_t is its angular
+    velocity per frame — arg(d_t)·frame_rate/2π is the tracked instantaneous
+    frequency — which the plain [Re, Im] readout discards (it passes the
+    ω-oscillation through as feature noise instead).
+
+    Parameters
+    ----------
+    y_re, y_im : (B, T, D)
+        Real/imaginary parts of the readout sequence.
+
+    Returns
+    -------
+    (arg_d, mag) : each (B, T, D)
+        ``arg_d`` = atan2(Im d, Re d) ∈ (−π, π] (exactly 0 at t = 0;
+        torch.atan2(0, 0) = 0 so no eps guard is needed) and
+        ``mag`` = |y| computed as sqrt(|y|² + 1e−12) for gradient safety
+        at y = 0.
+    """
+    prev_re = torch.cat([y_re[:, :1], y_re[:, :-1]], dim=1)
+    prev_im = torch.cat([y_im[:, :1], y_im[:, :-1]], dim=1)
+    d_re = y_re * prev_re + y_im * prev_im
+    d_im = y_im * prev_re - y_re * prev_im
+    arg_d = torch.atan2(d_im, d_re)
+    mag = torch.sqrt(y_re * y_re + y_im * y_im + 1e-12)
+    return arg_d, mag
+
+
+# mix-layer input width per readout mode, in units of d_model.
+_READOUT_FEATURES: dict[str, int] = {
+    "complex_mean": 2,  # [Re y, Im y]
+    "phase_diff": 4,  # [Re y, Im y, arg d, |y|]
+    "phase_only": 2,  # [|y|, arg d]
+}
+
+
 class ComplexKLALayer(nn.Module):
     """Complex-KLA sequence mixer (design §2).
 
@@ -238,6 +278,17 @@ class ComplexKLALayer(nn.Module):
     exact real-KLA flat recursion) — the design §5 ladder-item-1 control
     that decides whether the complex rotation is load-bearing (the P0b
     eval-time ablation measured a null delta on the trained P0 model).
+
+    ``readout`` selects what the mix layer sees of the complex readout y:
+
+    - ``"complex_mean"`` (default): [Re y, Im y] → Linear(2·d_model, d_model)
+      — the original path, byte-identical.
+    - ``"phase_diff"``: [Re y, Im y, arg d, |y|] with d_t = y_t·conj(y_{t−1})
+      (see ``phase_diff_features``) → Linear(4·d_model, d_model). Exposes the
+      state phasor's angular velocity — the tracked instantaneous frequency —
+      alongside the raw quadratures.
+    - ``"phase_only"``: [|y|, arg d] → Linear(2·d_model, d_model). Drops the
+      raw quadratures entirely: the readout is rotation-invariant.
     """
 
     def __init__(
@@ -247,10 +298,14 @@ class ComplexKLALayer(nn.Module):
         conv_kernel: int = 4,
         rotation: bool = True,
         p_init: float = 0.01,
+        readout: str = "complex_mean",
     ):
         super().__init__()
+        if readout not in _READOUT_FEATURES:
+            raise ValueError(f"readout must be one of {sorted(_READOUT_FEATURES)}, got {readout!r}")
         self.d_model, self.n_state = d_model, n_state
         self.rotation = rotation
+        self.readout = readout
 
         self.conv = nn.Conv1d(
             d_model, d_model, conv_kernel, groups=d_model, padding=conv_kernel - 1, bias=True
@@ -268,7 +323,7 @@ class ComplexKLALayer(nn.Module):
             self.s = nn.Parameter(torch.full((n_state,), 0.1))
             self.omega0 = nn.Parameter(torch.linspace(0.0, math.pi, n_state))
 
-        self.mix = nn.Linear(2 * d_model, d_model, bias=False)
+        self.mix = nn.Linear(_READOUT_FEATURES[readout] * d_model, d_model, bias=False)
         self.gate_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.norm = nn.RMSNorm(d_model)
@@ -355,7 +410,15 @@ class ComplexKLALayer(nn.Module):
                 rec[name] = tens.detach().cpu()
         else:
             y_re, y_im = complex_kla_scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
-        y = self.mix(torch.cat([y_re, y_im], dim=-1))
+        if self.readout == "complex_mean":
+            feats = torch.cat([y_re, y_im], dim=-1)
+        elif self.readout == "phase_diff":
+            arg_d, mag = phase_diff_features(y_re, y_im)
+            feats = torch.cat([y_re, y_im, arg_d, mag], dim=-1)
+        else:  # phase_only
+            arg_d, mag = phase_diff_features(y_re, y_im)
+            feats = torch.cat([mag, arg_d], dim=-1)
+        y = self.mix(feats)
         y = self.norm(y) * F.silu(self.gate_proj(x))
         return self.out_proj(y)
 
@@ -400,11 +463,12 @@ class TemporalCKLAHead(nn.Module):
         n_state: int = 16,
         rotation: bool = True,
         p_init: float = 0.01,
+        readout: str = "complex_mean",
     ):
         super().__init__()
         self.in_proj = nn.Linear(in_ch, d_model)
         self.blocks = nn.ModuleList(
-            CKLABlock(d_model, n_state=n_state, rotation=rotation, p_init=p_init)
+            CKLABlock(d_model, n_state=n_state, rotation=rotation, p_init=p_init, readout=readout)
             for _ in range(n_layers)
         )
         self.norm = nn.RMSNorm(d_model)
@@ -444,6 +508,7 @@ class SimpleConvV2CKLA(nn.Module):
         n_state: int = 16,
         rotation: bool = True,
         p_init: float = 0.01,
+        readout: str = "complex_mean",
     ):
         super().__init__()
         self.n_fft = n_fft
@@ -479,6 +544,7 @@ class SimpleConvV2CKLA(nn.Module):
             n_state=n_state,
             rotation=rotation,
             p_init=p_init,
+            readout=readout,
         )
 
     def forward(self, audio: Tensor) -> Tensor:

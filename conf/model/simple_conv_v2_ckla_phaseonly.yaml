@@ -1,0 +1,21 @@
+# simple_conv_v2_ckla_phaseonly — rps_prediction: CKLA head with p_init 1.0
+# (live Kalman gain, as simple_conv_v2_ckla_pnoise), rotation ON, and the
+# readout switched to "phase_only": the mix layer sees only
+# [|y|, arg(y_t·conj(y_{t−1}))] (Linear(2·d_model, d_model)) — the raw
+# quadratures are dropped entirely, making the readout invariant to the
+# state's absolute rotation phase. Aggressive variant of the phase_diff
+# arm: keeps only the tracked instantaneous frequency + envelope.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_phaseonly
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+model_type: null
+legacy_config_path: null

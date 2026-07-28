@@ -20,6 +20,7 @@ from models.ckla import (
     SimpleConvV2CKLA,
     TemporalCKLAHead,
     complex_kla_scan,
+    phase_diff_features,
 )
 from models.rps_predictor import SimpleConvV2Transformer
 
@@ -292,3 +293,121 @@ def test_rotation_shift_changes_output():
             mixer.omega0.add_(2.0)
         y2 = model(audio)
     assert (y1 - y2).abs().max().item() > 1e-5
+
+
+# ─── 8. Phase-differential readout ───────────────────────────────────────────
+
+
+def test_default_readout_param_names_unchanged():
+    """readout="complex_mean" must be the pre-change layer exactly: same
+    parameter names, same mix shape (byte-identical default code path)."""
+    torch.manual_seed(0)
+    d_model, n_state = 32, 8
+    layer = ComplexKLALayer(d_model, n_state=n_state)
+    assert layer.readout == "complex_mean"
+    expected = {
+        "conv.weight",
+        "conv.bias",
+        "k_proj.weight",
+        "q_proj.weight",
+        "v_proj.weight",
+        "lamv_proj.weight",
+        "lamv_proj.bias",
+        "omega_proj.weight",
+        "omega_proj.bias",
+        "s",
+        "omega0",
+        "mix.weight",
+        "gate_proj.weight",
+        "out_proj.weight",
+        "norm.weight",
+        "a_param",
+        "p_param",
+        "dt_param",
+    }
+    assert set(layer.state_dict().keys()) == expected
+    assert layer.mix.weight.shape == (d_model, 2 * d_model)
+
+
+def test_readout_rejects_unknown():
+    with pytest.raises(ValueError, match="readout"):
+        ComplexKLALayer(32, readout="argmax")
+
+
+@pytest.mark.parametrize("readout,mix_mult", [("phase_diff", 4), ("phase_only", 2)])
+def test_phase_readout_layer_forward_and_grads(readout, mix_mult):
+    torch.manual_seed(0)
+    d_model = 32
+    layer = ComplexKLALayer(d_model, n_state=8, readout=readout)
+    assert layer.mix.weight.shape == (d_model, mix_mult * d_model)
+    x = torch.randn(2, 20, d_model, requires_grad=True)
+    y = layer(x)
+    assert y.shape == (2, 20, d_model)
+    assert torch.isfinite(y).all()
+    y.pow(2).mean().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    for name, p in layer.named_parameters():
+        if p.grad is not None:
+            assert torch.isfinite(p.grad).all(), f"non-finite grad in {name}"
+
+
+@pytest.mark.parametrize("readout", ["phase_diff", "phase_only"])
+def test_phase_readout_model_end_to_end(readout):
+    torch.manual_seed(0)
+    model = SimpleConvV2CKLA(n_fft=256, hop_length=64, readout=readout)
+    audio = torch.randn(2, 8000)
+    out = model(audio)
+    assert out.shape[:2] == (2, 4)
+    assert torch.isfinite(out).all()
+    out.pow(2).mean().backward()
+    for name, p in model.named_parameters():
+        if p.grad is not None:
+            assert torch.isfinite(p.grad).all(), f"non-finite grad in {name}"
+
+
+def test_phase_diff_features_recovers_rotation_rate():
+    """Feed a pure rotating phasor y_t = A·e^{iωt}: arg d must recover ω per
+    step (and 0 at t = 0), mag must recover A."""
+    B, T, D = 2, 30, 3
+    omegas = torch.tensor([0.3, -1.1, 2.5])  # per-channel rotation rates
+    amps = torch.tensor([1.0, 0.5, 3.0])
+    t = torch.arange(T, dtype=torch.float32)[None, :, None]  # (1, T, 1)
+    phase = omegas[None, None, :] * t
+    y_re = (amps * torch.cos(phase)).expand(B, T, D)
+    y_im = (amps * torch.sin(phase)).expand(B, T, D)
+
+    arg_d, mag = phase_diff_features(y_re, y_im)
+    assert arg_d.shape == (B, T, D) and mag.shape == (B, T, D)
+    # d_0 = y_0·conj(y_0) ⇒ arg exactly 0.
+    assert torch.equal(arg_d[:, 0], torch.zeros(B, D))
+    # One-step differential recovers the (wrapped) rotation rate.
+    wrapped = torch.atan2(torch.sin(omegas), torch.cos(omegas))
+    torch.testing.assert_close(
+        arg_d[:, 1:], wrapped[None, None, :].expand(B, T - 1, D), atol=1e-5, rtol=0
+    )
+    torch.testing.assert_close(mag, amps[None, None, :].expand(B, T, D), atol=1e-5, rtol=0)
+
+
+def test_phase_diff_features_zero_input_is_finite():
+    y = torch.zeros(1, 5, 4, requires_grad=True)
+    arg_d, mag = phase_diff_features(y, y)
+    assert torch.equal(arg_d, torch.zeros(1, 5, 4))  # atan2(0, 0) = 0
+    # |y| is guarded by sqrt(|y|² + 1e−12): grad finite even at y = 0.
+    # (arg d's grad at the exact origin is NaN by atan2's nature — measure
+    # zero; the spec deliberately leaves it unguarded.)
+    mag.sum().backward()
+    grad = y.grad
+    assert grad is not None and torch.isfinite(grad).all()
+
+
+def test_registry_builds_phase_readout_variants():
+    from models.registry import build_model
+
+    for name, readout in [
+        ("simple_conv_v2_ckla_phasediff", "phase_diff"),
+        ("simple_conv_v2_ckla_phaseonly", "phase_only"),
+    ]:
+        m = build_model(name, n_fft=256, hop_length=64, num_rotors=4, p_init=1.0)
+        assert isinstance(m, SimpleConvV2CKLA)
+        for mixer in _mixers(m):
+            assert mixer.readout == readout

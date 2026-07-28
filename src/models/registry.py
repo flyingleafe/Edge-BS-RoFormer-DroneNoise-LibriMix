@@ -134,6 +134,15 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_v2_ckla_mag_norot": lambda **kw: SimpleConvV2CKLA(
         frontend_key="stft_mag", rotation=False, **kw
     ),
+    # Phase-differential readout arms: feed the mix layer the angle first
+    # differential arg(y_t·conj(y_{t−1})) — the state phasor's angular
+    # velocity, i.e. the tracked instantaneous frequency — instead of (or in
+    # addition to) the raw [Re y, Im y] quadratures (ckla.py::
+    # phase_diff_features). Mechanistic candidate for why rotation-on lost
+    # to plain KLA: the mean readout discards the phase velocity and passes
+    # the ω-oscillation through as feature noise.
+    "simple_conv_v2_ckla_phasediff": lambda **kw: SimpleConvV2CKLA(readout="phase_diff", **kw),
+    "simple_conv_v2_ckla_phaseonly": lambda **kw: SimpleConvV2CKLA(readout="phase_only", **kw),
     # Vendored flat-KLA (kla-loglinear@11e5a39, src/models/fkla/) plain-KLA
     # arm — cross-implementation companion to the norot controls.
     "simple_conv_v2_fkla": FKLARPSModel,

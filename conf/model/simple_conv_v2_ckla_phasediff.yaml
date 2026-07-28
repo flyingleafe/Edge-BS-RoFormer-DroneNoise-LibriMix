@@ -1,0 +1,22 @@
+# simple_conv_v2_ckla_phasediff — rps_prediction: CKLA head with p_init 1.0
+# (live Kalman gain, as simple_conv_v2_ckla_pnoise), rotation ON, and the
+# readout switched to "phase_diff": the mix layer sees
+# [Re y, Im y, arg(y_t·conj(y_{t−1})), |y|] (Linear(4·d_model, d_model))
+# instead of the plain [Re y, Im y]. If the state phasor tracks a rotor, the
+# informative quantity is its angular velocity — arg d_t·frame_rate/2π is
+# the tracked instantaneous frequency — which the complex-mean readout
+# discards while passing the ω-oscillation through as feature noise.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_phasediff
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+model_type: null
+legacy_config_path: null
