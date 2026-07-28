@@ -227,15 +227,20 @@ def phase_diff_features(y_re: Tensor, y_im: Tensor) -> tuple[Tensor, Tensor]:
     Returns
     -------
     (arg_d, mag) : each (B, T, D)
-        ``arg_d`` = atan2(Im d, Re d) ∈ (−π, π] (exactly 0 at t = 0;
-        torch.atan2(0, 0) = 0 so no eps guard is needed) and
+        ``arg_d`` = atan2(Im d, Re d) ∈ (−π, π] (exactly 0 at t = 0) and
         ``mag`` = |y| computed as sqrt(|y|² + 1e−12) for gradient safety
-        at y = 0.
+        at y = 0. Where |d| is (near-)zero the angle is undefined and
+        atan2's *backward* is NaN even if the forward value is masked out —
+        so the inputs themselves are replaced by the constant (1, 0) there
+        (no grad path through the dead branch), yielding arg 0.
     """
     prev_re = torch.cat([y_re[:, :1], y_re[:, :-1]], dim=1)
     prev_im = torch.cat([y_im[:, :1], y_im[:, :-1]], dim=1)
     d_re = y_re * prev_re + y_im * prev_im
     d_im = y_im * prev_re - y_re * prev_im
+    alive = (d_re * d_re + d_im * d_im) > 1e-24
+    d_re = torch.where(alive, d_re, torch.ones_like(d_re))
+    d_im = torch.where(alive, d_im, torch.zeros_like(d_im))
     arg_d = torch.atan2(d_im, d_re)
     mag = torch.sqrt(y_re * y_re + y_im * y_im + 1e-12)
     return arg_d, mag
