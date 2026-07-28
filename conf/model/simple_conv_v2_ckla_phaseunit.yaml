@@ -1,0 +1,22 @@
+# simple_conv_v2_ckla_phaseunit — rps_prediction: CKLA head with p_init 1.0
+# (live Kalman gain, as simple_conv_v2_ckla_pnoise), rotation ON, and the
+# readout switched to "phase_unit": the mix layer sees
+# [Re d̂, Im d̂, |y|] with d̂ = unit phase differential y_t·conj(y_{t−1})/|·|
+# (Linear(3·d_model, d_model)) — same carrier-free information as
+# phase_only's arg d (the tracked instantaneous frequency + envelope) but
+# continuous across the ±π wrap: atan2's wrap discontinuity produced
+# gradient spikes that NaN'd phase_only training on some seeds.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_phaseunit
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+model_type: null
+legacy_config_path: null

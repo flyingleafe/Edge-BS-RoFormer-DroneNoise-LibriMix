@@ -143,6 +143,7 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     # the ω-oscillation through as feature noise.
     "simple_conv_v2_ckla_phasediff": lambda **kw: SimpleConvV2CKLA(readout="phase_diff", **kw),
     "simple_conv_v2_ckla_phaseonly": lambda **kw: SimpleConvV2CKLA(readout="phase_only", **kw),
+    "simple_conv_v2_ckla_phaseunit": lambda **kw: SimpleConvV2CKLA(readout="phase_unit", **kw),
     # Vendored flat-KLA (kla-loglinear@11e5a39, src/models/fkla/) plain-KLA
     # arm — cross-implementation companion to the norot controls.
     "simple_conv_v2_fkla": FKLARPSModel,

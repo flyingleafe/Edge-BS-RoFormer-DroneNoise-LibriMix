@@ -1,0 +1,25 @@
+# @package _global_
+# Phase-only readout arm on the freq-scale v2 protocol (p=1.0,
+# alpha [0.7, 1.3] — every post-warmup chunk scaled; see
+# conf/online_mix/e12_fullflight_freqscale_v2_dload.yaml).
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_phaseunit
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_phaseunit_fs_v2
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_v2_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -247,10 +247,32 @@ def phase_diff_features(y_re: Tensor, y_im: Tensor) -> tuple[Tensor, Tensor]:
 
 
 # mix-layer input width per readout mode, in units of d_model.
+def phase_unit_features(y_re: Tensor, y_im: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Continuous variant of :func:`phase_diff_features`: the *unit* phase
+    differential d̂ = d/|d| instead of arg d. Carries the same information
+    (a pure phase-increment phasor, carrier-free) with no ±π wrap
+    discontinuity and smooth gradients everywhere — atan2's wrap produced
+    gradient spikes that NaN'd phase_only training on some seeds.
+
+    Returns (Re d̂, Im d̂, |y|), each (B, T, D); d̂ = (1, 0) where |d| ≈ 0.
+    """
+    prev_re = torch.cat([y_re[:, :1], y_re[:, :-1]], dim=1)
+    prev_im = torch.cat([y_im[:, :1], y_im[:, :-1]], dim=1)
+    d_re = y_re * prev_re + y_im * prev_im
+    d_im = y_im * prev_re - y_re * prev_im
+    mag_d = torch.sqrt(d_re * d_re + d_im * d_im + 1e-24)
+    alive = mag_d > 1e-12
+    u_re = torch.where(alive, d_re / mag_d, torch.ones_like(d_re))
+    u_im = torch.where(alive, d_im / mag_d, torch.zeros_like(d_im))
+    mag = torch.sqrt(y_re * y_re + y_im * y_im + 1e-12)
+    return u_re, u_im, mag
+
+
 _READOUT_FEATURES: dict[str, int] = {
     "complex_mean": 2,  # [Re y, Im y]
     "phase_diff": 4,  # [Re y, Im y, arg d, |y|]
     "phase_only": 2,  # [|y|, arg d]
+    "phase_unit": 3,  # [Re d̂, Im d̂, |y|] — continuous, no wrap discontinuity
 }
 
 
@@ -420,6 +442,9 @@ class ComplexKLALayer(nn.Module):
         elif self.readout == "phase_diff":
             arg_d, mag = phase_diff_features(y_re, y_im)
             feats = torch.cat([y_re, y_im, arg_d, mag], dim=-1)
+        elif self.readout == "phase_unit":
+            u_re, u_im, mag = phase_unit_features(y_re, y_im)
+            feats = torch.cat([u_re, u_im, mag], dim=-1)
         else:  # phase_only
             arg_d, mag = phase_diff_features(y_re, y_im)
             feats = torch.cat([mag, arg_d], dim=-1)
