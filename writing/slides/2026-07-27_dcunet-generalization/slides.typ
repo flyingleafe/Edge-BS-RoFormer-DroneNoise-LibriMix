@@ -590,9 +590,9 @@ need the RPS label directly).
 #align(center, image("assets/freqshift_both.png", width: 62%))
 
 #align(center, text(size: 0.72em)[
-  This clip: truth rises 80.4 → 82.0 → 88.4 rev/s. Old regime still drifts the
-  *wrong* way (80.2 → 77.4 → 70.6). Uniform v2 moves in the *right* direction
-  at 2% (80.7 → 80.8) before slipping back at 10% (→ 78.5) --- across a
+  This clip: truth rises 80.2 → 81.9 → 88.3 rev/s. Old regime still drifts the
+  *wrong* way (80.1 → 80.1 → 80.2, flat). Uniform v2 moves in the *right*
+  direction at every shift (80.8 → 80.9 → 86.2, ×1.067 at 10%) --- across a
   12-clip probe the same v2 checkpoint follows *42%* of a 2% shift and *71%*
   of a 10% shift (the old regime followed ~0% either way).
 ])
@@ -600,13 +600,11 @@ need the RPS label directly).
 #speaker-note[
   Same probe, both models, same clip. Top row spectrogram, middle row the
   old-regime prediction, bottom row uniform v2. The old regime is unchanged
-  from before: it still sits near the training-distribution mean and drifts
-  down as truth climbs. Uniform v2 is a real change, not a wash — it moves
-  the right way at the small, physically-plausible 2% shift, though this
-  particular clip undershoots at 10%, which is exactly the kind of per-clip
-  variance you'd expect from a single probe. The number to trust is the
-  12-clip average computed the same way: 42% of a 2% shift followed, 71% of
-  a 10% shift, versus essentially 0% under the old regime. So: "does not
+  from before: it still sits near the training-distribution mean and barely
+  moves as truth climbs. Uniform v2 is a real change, not a wash — it moves
+  the right way at every shift size, more so the larger the shift, matching
+  the 12-clip average computed the same way: 42% of a 2% shift followed, 71%
+  of a 10% shift, versus essentially 0% under the old regime. So: "does not
   respond" is no longer the right read — "partially responds, and more so
   the larger the shift" is. Why 2%: it is inside the physically plausible
   rotor-speed band, so the ideal response is unambiguous; 10% is shown
@@ -1053,7 +1051,7 @@ need the RPS label directly).
 #align(center, image("assets/ckla_freqshift.png", width: 56%))
 
 #align(center, text(size: 0.62em, fill: luma(90))[
-  This one clip undershoots (pred ×0.981 at the 10% shift) --- the table
+  This one clip: pred ×1.095 at the 10% shift, close to ideal --- the table
   below is the 12-clip probe average, which is what the following
   percentages are computed from.
 ])

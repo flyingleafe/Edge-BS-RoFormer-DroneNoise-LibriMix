@@ -361,39 +361,77 @@ OLD_CKPT = "r2://ml-data/artifacts/g2_if_transformer/checkpoints/best.ckpt"
 NEW_CKPT = "r2://ml-data/artifacts/g2_if_freqscale_v2/checkpoints/best.ckpt"
 NEW_EXP = "g2_if_freqscale_v2"
 
+# Verified construction (2026-07-28 correction of round 9): round 9 shifted
+# frequencies DOWN, not up — soxr resample_poly-equivalent arg order was
+# backwards, giving the illusory "slips back at 10%" symptom. The correct
+# construction (matches scripts/ckla_activation_analysis.py::freq_scale and
+# the 12-clip probe that produced the headline percentages): resample_poly
+# with up > down makes the clip SHORTER, i.e. plays back faster, i.e. every
+# frequency scales up by up/down. Truth on a shifted panel is simply GT x
+# ratio (no re-derivation needed — the shift doesn't touch label timing,
+# only what "correct" prediction means); ground truth for the probe clip
+# doesn't need re-cropping since we don't attempt to align pred/label frame
+# counts, only report the scalar mean-ratio each model actually produced.
+FREQSHIFT_CLIP = "sample_00005"
+FREQSHIFT_CASES = (
+    ("no shift", 1.0, None),
+    ("2% shift", 1.02, (50, 51)),
+    ("10% shift", 1.10, (10, 11)),
+)
+
+
+def _load_verified_clip(clip_id: str = FREQSHIFT_CLIP) -> tuple[np.ndarray, np.ndarray]:
+    """Ch0 audio (128000,) float32 + GT rps (4, 251) float32 for one clip of
+    the valid-full set, loaded exactly as
+    scripts/rps_predictor_vk_eval.py::load_clip_data does."""
+    import rps_predictor_vk_eval as vk
+
+    audio, gt = vk.load_clip_data("dload:DREGON-LM-V4-michaels-valid-full")
+    return audio[clip_id][0].copy(), gt[clip_id]
+
+
+def _shift_up_down(audio: np.ndarray, up: int, down: int) -> np.ndarray:
+    import scipy.signal as sps
+
+    return sps.resample_poly(audio.astype(np.float64), up, down).astype(np.float32)
+
 
 def fig_freqshift_both() -> None:
     """Same probe, both regimes: old (no freq_scale) vs new (freq_scale
     firing). Row 1 = spectrogram of the clip, row 2 = old-regime prediction,
-    row 3 = new-regime prediction. Dashed = ground truth."""
+    row 3 = new-regime prediction. Dashed = ground truth (scaled by the
+    nominal shift ratio); annotated ratio is the model's own
+    mean(pred_shifted)/mean(pred_base)."""
     import rps_predictor_vk_eval as vk
     import torch
 
-    audio, label = load_sample()
+    audio, gt = _load_verified_clip()
     models = [
         ("old regime — no freq_scale", vk.load_model("g2_if_transformer", OLD_CKPT, "cpu")),
         ("uniform freq_scale (v2)", vk.load_model(NEW_EXP, NEW_CKPT, "cpu")),
     ]
-    win = audio.shape[-1]
-    t_max = win / RPS_SR / 1.10
-    n_valid = int(np.floor(t_max * RPS_FRAME_HZ))
+
+    def predict(m, a: np.ndarray) -> np.ndarray:
+        with torch.no_grad():
+            return m(torch.from_numpy(a[None, :]))[0].numpy()
 
     cases = []
-    for name, ratio in (("no shift", 1.0), ("2% shift", 1.02), ("10% shift", 1.10)):
-        a, lab = (audio, label) if ratio == 1.0 else _freq_shift_numpy(audio, label, ratio)
-        preds = []
-        for _, m in models:
-            with torch.no_grad():
-                p = m(torch.from_numpy(a[None, :]))[0].numpy()
-            preds.append(vk.perm_align(p.astype(np.float64), lab.astype(np.float64))[:, :n_valid])
-        cases.append((name, a, lab[:, :n_valid], preds))
+    for name, ratio, ud in FREQSHIFT_CASES:
+        a = audio if ud is None else _shift_up_down(audio, *ud)
+        preds = [predict(m, a) for _, m in models]
+        cases.append((name, ratio, a, preds))
 
+    base_preds = [float(np.mean(p)) for p in cases[0][3]]
+    t_max = max(len(a) / RPS_SR for _, _, a, _ in cases)
+    t_gt = np.arange(gt.shape[-1]) / RPS_FRAME_HZ
     rps_max = (
-        max(max(float(lab.max()), *(float(p.max()) for p in ps)) for _, _, lab, ps in cases) * 1.06
+        max(
+            max(float(gt.max() * ratio), *(float(p.max()) for p in preds))
+            for _, ratio, _, preds in cases
+        )
+        * 1.06
     )
-    rps_min = (
-        min(min(float(lab.min()), *(float(p.min()) for p in ps)) for _, _, lab, ps in cases) * 0.94
-    )
+    rps_min = 0.0
     fig, axes = plt.subplots(
         3,
         len(cases),
@@ -401,31 +439,35 @@ def fig_freqshift_both() -> None:
         sharex="col",
         gridspec_kw={"height_ratios": (1.5, 1.0, 1.0)},
     )
-    for i, (name, a, lab, preds) in enumerate(cases):
+    for i, (name, ratio, a, preds) in enumerate(cases):
         f, t, s_db = _spec_db(a)
         axes[0, i].pcolormesh(t, f, s_db, vmin=-70, vmax=10, cmap="magma", shading="auto")
         axes[0, i].set_ylim(0, 1200)
         axes[0, i].set_title(name, fontsize=15)
         axes[0, i].grid(False)
-        t_l = np.arange(lab.shape[-1]) / RPS_FRAME_HZ
+        t_p = np.arange(preds[0].shape[-1]) / RPS_FRAME_HZ
+        gt_scaled = gt * ratio
         for row, (mname, _) in enumerate(models, start=1):
             ax = axes[row, i]
             for r in range(4):
-                ax.plot(t_l, lab[r], color=ROTOR_COLORS[r], lw=1.4, ls="--", alpha=0.7)
-                ax.plot(t_l, preds[row - 1][r], color=ROTOR_COLORS[r], lw=2.2)
+                ax.plot(t_gt, gt_scaled[r], color=ROTOR_COLORS[r], lw=1.4, ls="--", alpha=0.7)
+                ax.plot(t_p, preds[row - 1][r], color=ROTOR_COLORS[r], lw=2.2)
             ax.set_ylim(rps_min, rps_max)
             ax.set_xlim(0, t_max)
-            m_gt = float(np.mean(lab))
+            m_gt = float(np.mean(gt_scaled))
             m_pr = float(np.mean(preds[row - 1]))
+            ratio_obs = m_pr / base_preds[row - 1]
             ax.text(
                 0.02,
                 0.06,
-                f"mean truth {m_gt:.1f} · mean pred {m_pr:.1f} rev/s",
+                f"truth {m_gt:.1f} · pred {m_pr:.1f} rev/s\npred ×{ratio_obs:.3f} (ideal ×{ratio:.2f})",
                 transform=ax.transAxes,
                 fontsize=11,
                 color=INK,
             )
-            print(f"  {name:>10} | {mname:<32} GT {m_gt:6.2f}  pred {m_pr:6.2f}")
+            print(
+                f"  {name:>10} | {mname:<32} GT {m_gt:6.2f}  pred {m_pr:6.2f}  ratio {ratio_obs:.4f}"
+            )
             if i == 0:
                 ax.set_ylabel(mname.split(" — ")[0] + "\nrev/s", fontsize=13)
         axes[2, i].set_xlabel("s")
@@ -511,29 +553,27 @@ CKLA_EXP = "ckla_pnoise_fs_v2"
 
 def fig_ckla_freqshift() -> None:
     """ITEM 3 probe: does the current best CKLA model follow a frequency
-    shift? Same machinery/axes as ``fig_freqshift_both``, one model row.
-    Whatever it does is what gets drawn — the scale ratio is printed and
-    annotated on the panel."""
+    shift? Same verified construction as ``fig_freqshift_both`` (2026-07-28
+    correction — see its docstring), one model row. Whatever it does is what
+    gets drawn — the scale ratio is printed and annotated on the panel."""
     import rps_predictor_vk_eval as vk
     import torch
 
-    audio, label = load_sample()
+    audio, gt = _load_verified_clip()
     model = vk.load_model(CKLA_EXP, CKLA_CKPT, "cpu")
-    win = audio.shape[-1]
-    t_max = win / RPS_SR / 1.10
-    n_valid = int(np.floor(t_max * RPS_FRAME_HZ))
 
     cases = []
-    for name, ratio in (("no shift", 1.0), ("2% shift", 1.02), ("10% shift", 1.10)):
-        a, lab = (audio, label) if ratio == 1.0 else _freq_shift_numpy(audio, label, ratio)
+    for name, ratio, ud in FREQSHIFT_CASES:
+        a = audio if ud is None else _shift_up_down(audio, *ud)
         with torch.no_grad():
             p = model(torch.from_numpy(a[None, :]))[0].numpy()
-        p = vk.perm_align(p.astype(np.float64), lab.astype(np.float64))[:, :n_valid]
-        cases.append((name, ratio, a, lab[:, :n_valid], p))
+        cases.append((name, ratio, a, p))
 
-    base_pred = float(np.mean(cases[0][4]))
-    rps_max = max(max(float(lab.max()), float(p.max())) for _, _, _, lab, p in cases) * 1.06
-    rps_min = min(min(float(lab.min()), float(p.min())) for _, _, _, lab, p in cases) * 0.94
+    base_pred = float(np.mean(cases[0][3]))
+    t_max = max(len(a) / RPS_SR for _, _, a, _ in cases)
+    t_gt = np.arange(gt.shape[-1]) / RPS_FRAME_HZ
+    rps_max = max(max(float(gt.max() * ratio), float(p.max())) for _, ratio, _, p in cases) * 1.06
+    rps_min = 0.0
     fig, axes = plt.subplots(
         2,
         len(cases),
@@ -541,7 +581,7 @@ def fig_ckla_freqshift() -> None:
         sharex="col",
         gridspec_kw={"height_ratios": (1.4, 1.0)},
     )
-    for i, (name, ratio, a, lab, p) in enumerate(cases):
+    for i, (name, ratio, a, p) in enumerate(cases):
         f, t, s_db = _spec_db(a)
         axes[0, i].pcolormesh(t, f, s_db, vmin=-70, vmax=10, cmap="magma", shading="auto")
         axes[0, i].set_ylim(0, 1200)
@@ -549,14 +589,15 @@ def fig_ckla_freqshift() -> None:
         axes[0, i].set_xlim(0, t_max)
         axes[0, i].grid(False)
         ax = axes[1, i]
-        t_l = np.arange(lab.shape[-1]) / RPS_FRAME_HZ
+        t_p = np.arange(p.shape[-1]) / RPS_FRAME_HZ
+        gt_scaled = gt * ratio
         for r in range(4):
-            ax.plot(t_l, lab[r], color=ROTOR_COLORS[r], lw=1.4, ls="--", alpha=0.7)
-            ax.plot(t_l, p[r], color=ROTOR_COLORS[r], lw=2.2)
+            ax.plot(t_gt, gt_scaled[r], color=ROTOR_COLORS[r], lw=1.4, ls="--", alpha=0.7)
+            ax.plot(t_p, p[r], color=ROTOR_COLORS[r], lw=2.2)
         ax.set_ylim(rps_min, rps_max)
         ax.set_xlim(0, t_max)
         ax.set_xlabel("s")
-        m_gt, m_pr = float(np.mean(lab)), float(np.mean(p))
+        m_gt, m_pr = float(np.mean(gt_scaled)), float(np.mean(p))
         ratio_obs = m_pr / base_pred
         ax.text(
             0.02,

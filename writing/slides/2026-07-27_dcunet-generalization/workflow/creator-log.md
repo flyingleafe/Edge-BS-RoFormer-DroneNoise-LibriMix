@@ -455,3 +455,50 @@ directly with no overrides.
   whether the single illustrative clip was expected to reproduce the
   12-clip average, or whether disagreement was anticipated, would have
   saved that back-and-forth.
+
+## Round 10 — correction: fix the freqshift figure construction (bug from round 9)
+
+- Root cause confirmed: round 9's `_freq_shift_numpy` (soxr resample to a
+  *lower* target rate, `RPS_SR / ratio`) was being read as shifting frequency
+  up by `ratio`, but the single-clip illustration disagreed with the verified
+  12-clip probe (which used a different, correct construction) badly enough
+  at 10% (×0.981 instead of ~×1.10-ideal) that it looked like real per-clip
+  variance rather than a sign/direction bug. Task handoff nailed the actual
+  bug: this was two different codepaths computing the shift, and one of them
+  was wrong.
+- Rewrote both `fig_freqshift_both` and `fig_ckla_freqshift` in prepare.py to
+  use the exact verified construction: `vk.load_clip_data("dload:DREGON-LM-
+  V4-michaels-valid-full")` for clip `sample_00005` (not the local
+  `DregonLMFrameDataset` + `load_sample()` used before), `scipy.signal.
+  resample_poly(audio, up, down)` with `(50, 51)` for +2% and `(10, 11)` for
+  +10% (this matches `scripts/ckla_activation_analysis.py::freq_scale`,
+  confirming round 9's soxr path was the odd one out), and truth on a
+  shifted panel drawn as `GT * ratio` rather than re-derived/time-warped.
+  Checkpoints/experiments unchanged (`g2_if_transformer`,
+  `g2_if_freqscale_v2`, `ckla_pnoise_fs_v2`).
+- Regenerated ratios now match the task's verified numbers exactly: this
+  clip transformer v2 truth 80.2→88.3, pred ×1.067 at 10%; CKLA truth
+  80.2→88.3, pred ×1.095 at 10% (task's independent check on this same
+  checkpoint/clip gave 80.7→88.4, ×1.095 — matches to 3 sig figs). Both now
+  agree with the 12-clip-average headline stats instead of contradicting
+  them.
+- Removed the "single clip disagrees with the average, trust the 12-clip
+  number" reconciliation language from both slide captions/speaker notes
+  (slides 22 "The uniform regime partially follows the shift" and 37 "The
+  bar: a model that follows the comb") — nothing to reconcile now. Captions
+  still cite the 12-clip averages (42/55/71% transformer, 68/91/99% CKLA) as
+  the headline; the table on slide 37 (verbatim numbers from a prior round)
+  was left untouched since the task scoped this round to the two figures
+  only.
+- Rebuilt: `make check` passed, deck still 38 physical pages (title + 37
+  headings), pages 23 and 38 (the two changed slides) verified at full
+  resolution — no page splits, spectrogram/prediction panels render cleanly,
+  annotated ratios match the reported numbers.
+- No guard denials this round.
+- What would have made this easier: nothing new — the fix was
+  well-specified (exact function signature, exact checkpoints, exact
+  expected numbers) so this was a same-shape swap with no exploration
+  needed. The one paper-cut was that the deck's slide headings shifted by
+  one page since round 9 (23/38 vs the round-9 log's 22/37), so locating the
+  target slides required a `pdftotext -f/-l` scan per page rather than
+  trusting the previous round's page numbers.

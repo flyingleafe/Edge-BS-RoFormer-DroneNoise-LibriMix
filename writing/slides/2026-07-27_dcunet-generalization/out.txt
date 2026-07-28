@@ -1,0 +1,503 @@
+Progress report: RPS prediction and drone noise
+                  suppression
+   Surprising revisit into baselines + some interesting results in RPS prediction
+                                Dmitrii Mukhutdinov
+                                     2026-07-27
+Noise suppression baselines
+
+model            architecture                                                                                            year why it is here                      train loss
+MP-SENet         parallel magnitude + phase                                                                              2023 modern strong SE baseline           SI-SDR + MR-STFT
+                 decoders, conformer trunk (1.71
+                 M)
+TF-GridNet1      dense full-band + sub-band dual-                                                                        2023 modern strong SE baseline           SI-SDR + MR-STFT
+                 path RNN (8.38 M)
+Edge-BS-RoFormer band-split transformer with                                                                             2025 Paper 1′s own model on this task    SI-SDR + MR-STFT
+                 rotary attention
+DCUNet           complex-valued U-Net, complex                                                                           2019 winner of our 2023 12-model drone   SI-SDR + MR-STFT
+                 ratio mask (2.81 M)                                                                                          survey
+SGMSE+2          score-based diffusion, NCSN++                                                                           2022 generative contrast to the          denoising score matching
+                 backbone (65 M)                                                                                              discriminative four
+
+
+
+
+1Did not fully train - training hits cluster time limits / there are some bugs with resuming. Results are lower-bounds
+2Only one iteration on training setup complete. Diffusion training is hard. Results are not ready.
+
+
+                                                                                                                                                                                     1 / 37
+The data: online mixing, held-out noise
+Training stream (mixed fresh every sample)                       Validation — fixed, published, pinned
+
+draw noise    1 s from a weighted pool                           SE-valid-drone        350 mixtures, drone noise
+draw speech   LibriSpeech train-clean-100, 221 of 246 speakers   SE-valid-harmonic     2100 mixtures, 6 categories
+draw SNR      𝒰︀(−30, 0) dB                                      holdout               noise recordings/shards and 25
+mix           scale noise to that SNR, add                                             speakers never in training
+augment       𝑝 = 0.5: random gain ±6 dB, or polarity flip       SNR grid              −30, −25, −20, −15, −10, −5, 0 dB, ≥50
+                                                                                       clips each
+Two noise pools = the two passes
+                                                                 Training parameters
+A — drone only   DREGON + Michael’s real drone flights, plus
+                 drone_audio, DroneAudioSet, SPCUP19-            audio         16 kHz mono, 1 s chunks
+                 egonoise, new-drone-noises                      batch         16
+B — all harmonic pool A, plus MIMII, MIMII-DG, AeroSonicDB       epoch         20 000 samples ≈ 1250 steps
+                 (aircraft), motors (HUST + KAIST), horns —      optimiser     AdamW, lr 10−3
+                 uniform over the 6 categories                   LR schedule   ×0.5 on plateau, patience 15
+                                                                 early stop    patience 30, cap 150 epochs
+                                                                 monitor       SI-SDR on SE-valid-drone
+
+
+
+
+                                                                                                                        2 / 37
+Pass A (drone-only pool) — results per SNR
+
+
+
+
+  SE-valid-drone, 345 clips. MP-SENet and TF-GridNet were compute-limited — their curves are lower bounds. SGMSE+ Pass A was not
+                                                            evaluated.
+
+                                                                                                                              3 / 37
+Pass B (all-harmonic pool) — results per SNR
+
+
+
+
+Same valid set, same colours. SGMSE+ from scratch sits far below the input at every SNR — a compute-bounded negative control, not a usable
+                                                                  baseline.
+
+                                                                                                                                     4 / 37
+Why is DCUNet so bad here?
+What prior work reports                                           What we measure on held-out noise
+
+• 2023 IEEE Access survey, at −15 dB: SI-SDR +3.7 dB, eSTOI 0.4   • SE-valid-drone: DCUNet last of five, SI-SDR −10.88 dB.
+  — best of twelve models.                                        • eSTOI 0.193 against an unprocessed 0.233 — it removes
+• Paper 1 / DN-LM: DCUNet ranks 1st of four on SI-SDR and           intelligibility.
+  STOI.
+
+
+                               Either our pipeline is broken, or the benchmarks are not
+                                              measuring the same thing.
+
+
+
+
+                                                                                                                         5 / 37
+The survey’s number reproduces exactly
+Same model, loss, crop, SNR range and schedule as the survey and, as the survey does, the same five ego-noise recordings for
+training and validation.
+
+                                    at −15 dB input do nothing ours published
+                                    SI-SDR (dB)       −15.05   +3.82  +3.7
+                                    eSTOI              0.126   0.408   0.4
+
+                                   So the pipeline is fine. The difference is in the data.
+
+
+
+
+                                                                                                                       6 / 37
+Same drone, one session held out
+
+
+
+
+                    Train on AVQ session 1 only, score both halves. Everything else identical.
+
+
+
+
+                                                                                                 7 / 37
+The control: session 2 is not the harder half
+
+
+
+
+             Unprocessed the halves are identical: SI-SDR −14.93 vs −14.97, eSTOI 0.114 vs 0.122, 250 clips each.
+
+
+
+
+                                                                                                                    8 / 37
+Breadth is the same effect, diluted
+
+
+
+
+         AVQ share of training 100% → 14% → 2%. The unseen half (−9.30 dB) lands on the broad-pool arms (−9.64 dB).
+
+
+
+
+                                                                                                                      9 / 37
+An architecture that was never shown this drone
+
+
+
+                                              F1′s drone pool contains no AVQ audio at all — MP-SENet had
+                                              never heard this drone.
+
+                                              At −15 dB, ΔeSTOI: MP-SENet +0.342 vs DCUNet +0.046.
+
+                                              MP-SENet generalises to an unheard drone better than DCUNet
+                                              generalises between two sessions of a drone it trained on.
+
+
+
+
+                                                                                                      10 / 37
+What the outputs look like — −15 dB input
+
+
+
+
+                                            11 / 37
+What the outputs look like — −5 dB input
+
+
+
+
+                                           12 / 37
+What is not established
+• Why DCUNet specifically fails to generalise. Capacity (2.81 M params), the complex-mask formulation, no cross-
+  band mixing — all untested candidates.
+• Whether Edge-BS-RoFormer or MP-SENet would memorise under equally narrow training. Not tested — there is no
+  narrowly-trained checkpoint for either.
+• Whether the released DN-LM data matches its published description (neither data nor builder is shipped).
+• The published papers are not wrong. They measure performance on seen noise; we measure it on unseen noise.
+  Both are correct within their protocols.
+
+
+
+
+                                                                                                           13 / 37
+                             Part 2
+        From SE baselines to the RPS-parity campaign
+
+Predicting rotor speed from audio: augmentations, architecture, results
+
+
+
+
+                                                                          14 / 37
+Augmentations — the base set
+For weeks, mixture-level augmentations ran post-mix, on the (mixture,
+target) pair.
+
+
+            transform       what it does
+            random_gain     scale the pair by a random ±6 dB gain
+            random_polarity flip the sign of the whole pair
+            channel_drop    zero 1+ mic channels in both mixture and target
+            noise_time_warp resample the noise (and its RPS label) by a slowly time-varying rate, ±12%
+
+
+
+
+                                                                                                         15 / 37
+Augmentations — the base set, visually
+Clean vs. each base transform on the same clip — spectrogram (top) and the 4 motor-speed tracks (bottom). Same axes
+and the same fixed dB scale throughout, so the two rows of every column line up exactly.
+
+
+
+
+                                                                                                             16 / 37
+Augmentations — the expanded set
+Six noise-level transforms, applied to the noise before mixing (two of them need the RPS label directly).
+
+              transform        what it does
+              freq_scale       resample noise + RPS pair by α U(0.75, 1.3) — a genuine comb rescale
+              spectral_recolor smooth random per-channel EQ curve, ±8 dB
+              random_reverb    convolve with a synthetic room impulse response
+              tooth_dropout    zero 1–4 label-aware harmonic bins (rotor, harmonic) pairs
+              spec_mask        SpecAugment-style random frequency/time blocks zeroed
+              floor_inject     add colored-noise floor, −20 to 0 dB relative RMS
+
+
+
+
+                                                                                                            17 / 37
+Augmentations — the expanded set, visually (1/2)
+
+
+
+
+                                                   18 / 37
+Augmentations — the expanded set, visually (2/2)
+
+
+
+
+                                                   19 / 37
+Predictions under frequency shift
+A model trained without freq_scale, on a clip unshifted / shifted 2% / shifted 10%. Dashed = ground truth, solid = prediction, same axes
+throughout.
+
+
+
+
+   Why 2%: it stays inside the physically plausible rotor-speed band, so the ideal response is unambiguous. 10% is out-of-band, shown only because the failure is then
+                                                                            obvious to the eye.
+
+
+
+
+                                                                                                                                                                20 / 37
+Fixing the augmentation regime moved the score
+                                                                                           WIP — the uniform-v2 run is days old
+
+
+                 same architecture, same data              old regime              uniform v2
+                 frequency-scale augmentation               never fired   on every chunk, 𝛼 ∈ [0.7, 1.3]
+                 full-envelope validation MSE                  63.7                    42.3
+                 PIT-MAE over all 37 valid clips (rev/s)       4.72                    3.83
+
+                        Where the error actually moved — PIT-MAE (rev/s), per frame regime
+
+                               per-frame regime        DREGON Michael’s FLY124
+                                                       old   v2   old    v2
+                               zero RPS (GT ≈ 0)      6.19 6.41 30.49   4.99
+                               warm-up (0 < RPS < 50) 11.02 15.83 5.32  3.29
+                               free flight (RPS ≥ 50) 3.03 3.24 2.96    3.11
+
+  Uniform scaling costs DREGON everywhere (worst at warm-up, 11.0 -> 15.8) and still buys FLY124 almost everything,
+   especially the idle frames (30.5 -> 5.0). The total goes down only because FLY124′s gain is larger than DREGON’s loss.
+
+                                                                                                                        21 / 37
+The uniform regime partially follows the shift
+
+
+
+
+ This clip: truth rises 80.2 → 81.9 → 88.3 rev/s. Old regime still drifts the wrong way (80.1 → 80.1 → 80.2, flat). Uniform v2 moves in the right direction at every
+shift (80.8 → 80.9 → 86.2, ×1.067 at 10%) — across a 12-clip probe the same v2 checkpoint follows 42% of a 2% shift and 71% of a 10% shift (the old regime followed
+                                                                              0% either way).
+
+
+
+                                                                                                                                                            22 / 37
+          Novel architecture attempts
+Inspired by recent results in iterative blind motor speeds annotation
+
+
+
+
+                                                                        23 / 37
+How we do iterative RPS trajectories optimization, recap
+
+
+
+
+                                                                                                      2
+                                           𝐽 [𝑎] = ∑| 𝑦(𝑡) − ∑ Re[𝑎𝑚 (𝑡)𝑐𝑚 (𝑡)] |2 + ∑ 𝜌𝑚
+                                                                                        2
+                                                                                          ‖Δ𝑝 𝑎𝑚 ‖
+                                                    𝑡          𝑚                        𝑚
+
+ A rotor radiates a comb; the gap between teeth is its speed. Explain the recording with a few smooth envelopes, then re-read the spacing from the
+                                                                 residual, and repeat.
+
+
+
+
+                                                                                                                                             24 / 37
+Vold–Kalman began life as a Kalman filter
+
+
+
+
+Vold’s 1993 algorithm was a sequential Kalman filter plus a backward smoother: state = one order’s complex envelope under an integrated- random-walk prior; the
+                                        tachometer supplies a known carrier 𝐻(𝑛) = [𝑒𝑖𝜑(𝑛) , 0, …] in the measurement row.
+
+                          1993 recursive solver                   modern batch solver (what we run)
+                          predict–update, one sample at a time    banded regularised least squares, one shot over the whole record
+                          Riccati covariance recursion            𝑂(𝑁 ) sparse linear solve
+                          one order at a time                     all orders jointly
+
+                                               The model never changed — only the solver did: recursion → batch.
+
+
+
+
+                                                                                                                                                       25 / 37
+One stochastic model underneath: the Ornstein–Uhlenbeck process
+
+
+
+
+                                                    𝑥𝑛+1 = 𝑒−𝛾Δ𝑡 𝑥𝑛 + 𝑤    (real),   𝑧𝑛+1 = 𝑒(−𝛾+𝑖𝜔)Δ𝑡 𝑧𝑛 + 𝑤   (complex)
+
+                                     The complex OU process is the canonical stochastic model of a tone at frequency 𝜔 with linewidth 𝛾 .
+
+VK-2, batch                                                   Vold 1993, recursive                               CKLA, learned
+demodulate by the known carrier, then globally smooth the     carrier in the measurement row, run as a recursion rotation in the state transition, everything else learned
+residual
+
+
+
+
+                                                                                                                                                                 26 / 37
+Recent work (2026): Attention layer replacement based on Kalman filter
+
+
+
+
+Linear attention rediscovered the Kalman filter — a decaying state with input-dependent, learned gains — which makes the 1993-style recursion
+                                                attractive again: differentiable, causal, streaming.
+
+                              per token is                    in plain words
+                                   𝑎̄    state decay          how much of the old belief survives one frame
+                                   𝑝̄    process noise        how much the state is allowed to drift on its own
+                               𝜑 = 𝑘 𝜆𝑣 evidence precision
+                                      2
+                                                              how much this frame is worth trusting
+                               𝜅 = 𝑘𝜆𝑣 𝑣 evidence             what this frame actually claims
+
+
+                                                                                                                                      27 / 37
+The recursion, and how it is read out
+
+
+
+
+                                                 𝜆                      𝜂
+                                       𝜆→              + 𝜑,    𝜂 → 𝑎̄ 2       +𝜅
+                                             𝑎2̄ + 𝑝𝜆̄               𝑎̄ + 𝑝𝜆̄
+
+                                                        𝜂
+                                                  𝜇=      ,   𝑦 = ∑ 𝑞𝜇
+                                                        𝜆
+
+In words: fade what you believed, add what this frame is evidence for, divide to read out the estimate — and the query reads
+                                      it out gated by the layer’s own confidence.
+
+
+
+
+                                                                                                                      28 / 37
+This replaces attention
+
+
+
+
+ Same residual and MLP scaffolding — only the mixer changes. The recursion is associative, so it runs as a parallel prefix (Möbius)
+                                scan: linear in sequence length, no Python loop at training time.
+
+
+
+
+                                                                                                                             29 / 37
+Why the state should rotate
+
+
+
+
+A rotor harmonic is not a fading number — it is a phasor going round at a rate set by the rotor speed. A real state can hold its loudness but
+                                                              not its phase.
+This is the complex-OU process from three slides back, put inside a layer.
+
+
+
+
+                                                                                                                                      30 / 37
+CKLA: one step fades and turns
+
+
+
+
+                                                        𝑎̄ = 𝑒(−𝛾+𝑖𝜔)Δ𝑡
+
+                                                       Σ → |𝑎|̄ 2 Σ + 𝑝 ̄
+
+                                 Top: 𝛾 fades the state, 𝜔 turns it — both predicted per frame.
+                                 Bottom: rotation is unitary, so only |𝑎|̄ 2 enters the variance.
+
+The precision recursion is identical to plain KLA’s. Complex tracking costs the same; only the information vector picks up a unit-
+                                                       modulus multiplier.
+
+
+
+
+                                                                                                                           31 / 37
+The network steers the filter
+
+
+
+
+        1993 filter needed…                         CKLA answer
+        a tachometer for the carrier                𝜔𝑡 predicted by the network — the network is the tachometer
+        a fixed bandwidth 𝜆 / ill-conditioned 𝑄-𝑅   per-token learned gains — the streaming twin of iterative bandwidth adaptation
+        one order at a time (crossings leak)        many complex state channels + a learned query readout
+
+
+
+
+                                                                                                                                     32 / 37
+Why it must be steerable: phase error accumulates
+
+
+
+
+A fixed, slightly wrong rate de-coheres: the error grows without bound while the filter’s confidence grows too. Illustration, not a measurement.
+  Stacking is the counter-measure — an early block locks coarsely, later blocks condition their rotation on that belief and correct it.
+                               Recursive (1993) → batch (1997–today) → recursive again, with the unknowns learned.
+
+
+
+
+                                                                                                                                         33 / 37
+Results — full-envelope validation
+                                                                               WIP — runs in flight, no conclusions
+
+
+               arm, uniform freq-scale v2       val/MSE note
+               transformer (no CKLA)             42.3   matched baseline, same v2 regime
+               CKLA (gain-fixed), current run    41.4   still improving
+
+
+
+
+                                                                                                            34 / 37
+Results — cruise pools
+                                                                                 WIP — updating for uniform v2; numbers below are the previous arm
+
+
+                  pool (PIT-MAE, rev/s) CKLA, protocol-B (pre-v2)                                     for reference
+                  DREGON cruise                                    2.75                    neural floor 2.481 · VK 0.68–0.74
+                  FLY124 cruise                                    1.25                       neural floor 2.33 · VK 1.027
+
+PIT-MAE = mean abs. error after permutation-aligning predicted rotor tracks to ground truth; neural floor = best prior transformer arm. The current
+checkpoint (ckla_pnoise_fs_v2) has not been run over these cruise pools yet: do not read these as its numbers.
+
+
+
+
+                                                                                                                                               35 / 37
+Results — one prediction, one clip
+                                     WIP — snapshot from the pre-v2 arm, illustration only
+
+
+
+
+                                                                                   36 / 37
+The bar: a model that follows the comb
+                                                                                                                            WIP — single-seed; replicates + cruise eval running
+
+
+
+
+           This one clip: pred ×1.095 at the 10% shift, close to ideal — the table below is the 12-clip probe average, which is what the following percentages are computed from.
+
+                                                        model                       × 1.02        × 1.05        × 1.10
+                                                        transformer, old regime ×1.0006 (3%) ×1.0010 (2%) ×1.0024 (2%)
+                                                        transformer, uniform v2 ×1.0084 (42%) ×1.0276 (55%) ×1.0707 (71%)
+                                                        CKLA, uniform v2        ×1.0135 (68%) ×1.0454 (91%) ×1.0992 (99%)
+
+ Under uniform scaling the CKLA layer follows 99% of a 10% shift — it tracks the comb, and out-tracks the matched transformer at every shift size. Numbers are single-seed
+                                            (replicates running); cruise-pool accuracy vs the VK floor is still being evaluated.
+
+
+                                                                                                                                                                                    37 / 37
+
