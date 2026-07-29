@@ -115,6 +115,22 @@ telemetry, pooled (arm `none`). Steady = DREGON w1/w2 ×3 + FLY124 w3–5
 | VK neural-bases seeded | 7.298 | 1.586 | | |
 | VK telemetry-init (oracle) | 0.851 | 0.784 | 0.87 | 0.70 |
 
+**2026-07-29 additions (VK-improvement program)**:
+
+| row | dregon_cruise | fly124_cruise |
+|---|---|---|
+| VK blind_fullrange v2 (ramp-capable blind) | **1.807** | 2.699 |
+| neural_traj + pi_kalman joint (smoke windows) | flat | **0.859** |
+
+blind_fullrange = coarse full-range Viterbi + BPF octave check + rumble-band
+energy bridge + DP trust gates (df231a0): every ramp/warmup window 15–36 →
+2.9–4.0, steady windows exactly blind_KR. pi_kalman = phase-increment ML
+frequency tracker (per-harmonic random-walk model): FLY124 gains −0.14/−0.16;
+DREGON blocked by the DISPLACED-COMB property (low harmonics k=2–13 sit
+0.3–0.5 rev/s below the mechanical comb in translating flight — 4-probe
+verified, estimator exonerated, hover 3–4× weaker; audio-locked refiners
+cannot beat ~0.6 vs raw telemetry there).
+
 Findings:
 1. **Blind VK's headline number was a mid-flight-segment artifact**: it
    scores ~1.0 on steady cruise windows (consistent with 0.688-vs-smoothed
