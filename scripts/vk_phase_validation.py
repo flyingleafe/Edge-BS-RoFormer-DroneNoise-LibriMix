@@ -58,7 +58,12 @@ floor/ceiling), ``stage_d`` (``refine_coherent`` with its defaults),
 ``iter_warp`` (``data_processing.warp_refinement.iter_warp_refine`` —
 iterated angular-resampling / generalized-demodulation refinement,
 coarse-to-fine in harmonic order; per-round per-order lock diagnostics are
-stored in the run NPZ as ``diag``), ``vk_refine`` (``vk_track`` with the
+stored in the run NPZ as ``diag``), ``pi_kalman``
+(``data_processing.phase_increment_tracker.pi_kalman_refine`` — ML
+instantaneous frequency from per-harmonic envelope phase increments fused
+by an RTS-smoothed random-walk Kalman posterior; per-harmonic diffusion
+rates ``q_k`` estimated from the data and stored in the run NPZ ``diag``),
+``vk_refine`` (``vk_track`` with the
 campaign REFINE config), and ``vk_capture_refine`` (annealed CAPTURE then
 REFINE — offsets where the refine basin ~bw/(2k) cannot reach). Inits for
 S0-S2: truth + {0, 0.3, 1.0, 2.0} rev/s constant offsets (capture from +2.0
@@ -134,6 +139,10 @@ from vk_blind_annotation import (
 )
 
 from data_processing import rps_synthesis  # noqa: E402
+from data_processing.phase_increment_tracker import (  # noqa: E402
+    DEFAULTS as PI_KALMAN_DEFAULTS,
+)
+from data_processing.phase_increment_tracker import pi_kalman_refine  # noqa: E402
 from data_processing.rps_refinement import (  # noqa: E402
     RefineConfig,
     compute_logmag,
@@ -753,6 +762,9 @@ def _run_method(cell: Cell, method: str, r0: np.ndarray) -> tuple[np.ndarray, fl
     if method == "iter_warp":
         r_hat, diag = iter_warp_refine(cell.audio, r0, cell.ft, sr=SR)
         return r_hat, float("nan"), diag
+    if method == "pi_kalman":
+        r_hat, diag = pi_kalman_refine(cell.audio, r0, cell.ft, sr=SR)
+        return r_hat, float("nan"), diag
     if method == "vk_refine":
         res = vk_track(cell.audio, r0, cell.ft, REFINE_CFG)
         return res.r_refined, float(np.mean(res.confidence)), {}
@@ -857,7 +869,7 @@ def run_one(spec: RunSpec) -> list[dict[str, Any]]:
 
 
 def methods_for(offset: float, smoke: bool) -> list[str]:
-    base = ["init", "stage_d", "iter_warp", "vk_refine"]
+    base = ["init", "stage_d", "iter_warp", "pi_kalman", "vk_refine"]
     if smoke:  # smoke also probes the annealed capture at +1.0 (basin check)
         return base + (["vk_capture_refine"] if offset > 0 else [])
     return base + (["vk_capture_refine"] if offset in CAPTURE_OFFSETS else [])
@@ -1048,6 +1060,7 @@ def main() -> None:
             "eval_env": asdict(EVAL_ENV_CFG),
             "stage_d": asdict(STAGE_D_CFG),
             "iter_warp": {"rungs": [asdict(g) for g in WARP_RUNGS]},
+            "pi_kalman": dict(PI_KALMAN_DEFAULTS),
         },
         "grid": {
             "ks": list(KS),
