@@ -46,6 +46,10 @@ Run:
   ... --synthetic-selftest          # 5 s synthetic 4-rotor mixture, no data
   ... --arms baseline,T+C+N+K --ladders plain    # subsets
   ... --recordings free-flight_whitenoise-low_room1,FLY124-cruise  # partial rerun
+  ... --seed neural --arms baseline              # neural-seeded (blind_seed replaced
+      # by an rps_predictor_vk_eval checkpoint's stitched chmean predictions on the
+      # window; --seed neural:<model_key> picks the checkpoint, --neural-init
+      # {traj,bases} the ladder-init shape; protocol otherwise identical)
 Startup prints ``[vk_blind_sweep] seeding module: <file> | scan_f_max=...`` —
 grep it in job logs to verify the band-capped seeding module is the one
 actually imported (the .venv's absolute-path editable install can otherwise
@@ -144,6 +148,8 @@ FLY124_WINDOW = (76.0, 92.0)  # seconds on the audio clock: mid-cruise, <=20 s
 # window short. See project memory "blind-reannotation-dregon-vs-fly124".)
 
 _PREP_FIELDS = ("tau", "seg_lo", "seg_hi", "audio", "ft", "r_init", "r_meas", "r_meas_sm", "edge")
+NEURAL_SEED_CACHE_DIR = OUT_DIR / "neural_seed_cache"
+DEFAULT_NEURAL_MODEL = "ckla_phaseonly_best"
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +235,62 @@ def get_prep(rid: str, opts: argparse.Namespace) -> Prepared:
 
 
 # ---------------------------------------------------------------------------
+# neural seeding (--seed neural[:<model_key>]) — replaces blind_seed with a
+# checkpoint's predictions on the protocol window; everything downstream
+# (ladders, arms, metrics, outputs) stays protocol-identical.
+
+
+def neural_prep_tag(rid: str, opts: argparse.Namespace) -> str:
+    return f"{rid}@{opts.seg_len:g}s" if rid != FLY124_RID else rid
+
+
+def get_neural_traj(rid: str, opts: argparse.Namespace) -> tuple[np.ndarray, float]:
+    """``(4, len(prep.ft))`` neural trajectory on the window + forward wall (s).
+
+    Forward path mirrors ``scripts/neural_seeded_vk.py`` / the vk_eval
+    ``stitch`` arm in ``chmean`` mode: sliding 8 s windows (hop 1.024 s) over
+    the window audio, all mics forwarded and permutation-aligned to mic 0
+    per window, windows PIT-aligned to the running stitched mean, per-frame
+    mean, then interpolated onto ``prep.ft``. NPZ-cached per (window, model)
+    so spawned workers never load torch.
+    """
+    path = NEURAL_SEED_CACHE_DIR / f"{neural_prep_tag(rid, opts)}__{opts.neural_model}.npz"
+    if path.exists():
+        with np.load(path) as z:
+            return z["traj"], float(z["wall_s"])
+    import rps_predictor_vk_eval as vk_eval
+    import torch
+
+    prep = get_prep(rid, opts)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    experiment, ckpt_uri, _ = vk_eval.MODELS[opts.neural_model]
+    tic = time.perf_counter()
+    model = vk_eval.load_model(experiment, ckpt_uri, device)
+    audio32 = np.ascontiguousarray(np.asarray(prep.audio, dtype=np.float32))
+    win_frames = vk_eval.DEFAULT_WIN_FRAMES
+    f_total = audio32.shape[-1] // vk_eval.HOP + 1
+    if f_total < win_frames:
+        raise ValueError(
+            f"{rid}: window has {f_total} frames < the 8 s model window ({win_frames})"
+        )
+    starts = vk_eval.window_starts(f_total, win_frames, vk_eval.DEFAULT_SLIDE_FRAMES)
+    preds = vk_eval.predict_windows(model, audio32, starts, "chmean", device, 16, win_frames)
+    stack = vk_eval.stitch_stack(preds, starts, f_total, win_frames)
+    traj_f = np.nanmean(stack, axis=0)  # (4, f_total) on the model frame grid
+    times = np.arange(f_total) * vk_eval.FRAME_S
+    traj = np.stack([np.interp(prep.ft, times, traj_f[i]) for i in range(4)])
+    wall = time.perf_counter() - tic
+    print(
+        f"[neural seed | {rid}] {opts.neural_model} medians "
+        f"{np.round(np.median(traj, axis=1), 2)} ({wall:.0f}s, {device})",
+        flush=True,
+    )
+    NEURAL_SEED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez(path, traj=traj, wall_s=np.float64(wall))
+    return traj, wall
+
+
+# ---------------------------------------------------------------------------
 # pipeline + metrics
 
 
@@ -254,16 +316,33 @@ def run_pipeline(
     channels: int,
     ladder: str,
     weights: np.ndarray | None = None,
+    neural: tuple[np.ndarray, float] | None = None,
+    neural_init: str = "traj",
 ) -> tuple[SeedResult, np.ndarray, list[tuple[str, np.ndarray]], dict[str, Any]]:
-    """seed → ladder; returns (seed, r0, [(stage label, traj)], timings)."""
-    audio = prep.audio[:channels]
-    tic = time.perf_counter()
-    # "B" (bandwidth adaptation) only toggles the VK refine/midband configs below;
-    # blind_seed validates arms against T/C/N/K/R and must not see it.
-    seed = blind_seed(audio, float(SR), 4, SEED_CFG, arms=arms - {"B"})
-    wall_seed = time.perf_counter() - tic
+    """seed → ladder; returns (seed, r0, [(stage label, traj)], timings).
 
-    r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
+    ``neural``: optional ``(traj (4, N), forward wall s)`` replacing
+    ``blind_seed`` (``--seed neural``): seed bases = window-median per rotor;
+    the ladder init ``r0`` is the full neural trajectory (``neural_init ==
+    "traj"``) or the constant bases (``"bases"``, the blind protocol's
+    shape). Seed-derived arm knobs (K's auto gate/bw, T's template) do not
+    exist in neural mode — those arms degrade to baseline seeding-wise.
+    """
+    audio = prep.audio[:channels]
+    if neural is not None:
+        traj, wall_seed = neural
+        med = np.median(traj, axis=1)
+        seed = SeedResult(
+            bases=np.sort(med), candidates=[], template=None, update_gate=None, bw_hz=None
+        )
+        r0 = traj.copy() if neural_init == "traj" else np.repeat(med[:, None], len(prep.ft), axis=1)
+    else:
+        tic = time.perf_counter()
+        # "B" (bandwidth adaptation) only toggles the VK refine/midband configs
+        # below; blind_seed validates arms against T/C/N/K/R and must not see it.
+        seed = blind_seed(audio, float(SR), 4, SEED_CFG, arms=arms - {"B"})
+        wall_seed = time.perf_counter() - tic
+        r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
     gate = seed.update_gate if ("K" in arms and seed.update_gate is not None) else None
     prep_run = replace(prep, audio=audio)
 
@@ -348,8 +427,10 @@ def traj_metrics(traj: np.ndarray, prep: Prepared) -> dict[str, Any]:
 
 
 def job_tag(rid: str, ladder: str, arm_name: str, opts: argparse.Namespace) -> str:
-    base = f"{rid}@{opts.seg_len:g}s" if rid != FLY124_RID else rid
-    return f"{base}__{ladder}__{arm_name}"
+    tag = f"{neural_prep_tag(rid, opts)}__{ladder}__{arm_name}"
+    if getattr(opts, "neural_model", None):
+        tag += f"__nseed-{opts.neural_model}-{opts.neural_init}"
+    return tag
 
 
 def run_job(rid: str, ladder: str, arm_name: str, opts: argparse.Namespace) -> str:
@@ -359,8 +440,9 @@ def run_job(rid: str, ladder: str, arm_name: str, opts: argparse.Namespace) -> s
         return str(path)
     prep = get_prep(rid, opts)
     weights = rotor_mic_weights(rid, opts) if ladder == "vit2dsp" else None
+    neural = get_neural_traj(rid, opts) if getattr(opts, "neural_model", None) else None
     seed, r0, stages, timings = run_pipeline(
-        prep, ARM_SETS[arm_name], opts.channels, ladder, weights
+        prep, ARM_SETS[arm_name], opts.channels, ladder, weights, neural, opts.neural_init
     )
     print(
         f"[{rid} | {ladder} | {arm_name}] seeds {np.round(seed.bases, 2)} "
@@ -464,6 +546,9 @@ def write_report(
             "seg_len_s": opts.seg_len,
             "channels": opts.channels,
             "capture_rate_thresh": CAPTURE_RATE_THRESH,
+            "seed": getattr(opts, "seed", "blind"),
+            "neural_model": getattr(opts, "neural_model", None),
+            "neural_init": getattr(opts, "neural_init", None),
             "seed_config": asdict(SEED_CFG),
             "capture_config": asdict(CAPTURE_CFG),
             "refine_config": asdict(REFINE_CFG),
@@ -705,6 +790,20 @@ def main() -> None:
     )
     ap.add_argument("--dregon-dir", default="data/DREGON", help="path or dload:DREGON")
     ap.add_argument(
+        "--seed",
+        default="blind",
+        help="'blind' (default: the scan-based blind_seed) or 'neural[:<model_key>]' — "
+        f"replace blind_seed with a checkpoint's predictions (default model "
+        f"{DEFAULT_NEURAL_MODEL}; keys per rps_predictor_vk_eval.MODELS)",
+    )
+    ap.add_argument(
+        "--neural-init",
+        default="traj",
+        choices=["bases", "traj"],
+        help="neural-seed ladder init: full (4, N) trajectories ('traj', default) or "
+        "constant window-median bases ('bases', the blind protocol's r0 shape)",
+    )
+    ap.add_argument(
         "--michaels-root", default="data", help="path or dload:recording_with_motor_speed"
     )
     ap.add_argument("--seg-len", type=float, default=25.0, help="DREGON segment length (s)")
@@ -717,6 +816,19 @@ def main() -> None:
         help="run the whole pipeline on a 5 s synthetic 4-rotor mixture (no real data)",
     )
     opts = ap.parse_args()
+
+    opts.neural_model = None
+    if opts.seed != "blind":
+        mode, _, model_key = opts.seed.partition(":")
+        if mode != "neural":
+            raise SystemExit(f"unknown --seed {opts.seed!r} (expected 'blind' or 'neural[:key]')")
+        opts.neural_model = model_key or DEFAULT_NEURAL_MODEL
+        import rps_predictor_vk_eval as vk_eval
+
+        if opts.neural_model not in vk_eval.MODELS:
+            raise SystemExit(
+                f"unknown model {opts.neural_model!r}; known: {sorted(vk_eval.MODELS)}"
+            )
 
     if opts.synthetic_selftest:
         synthetic_selftest(opts)
@@ -743,6 +855,9 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for rid in rids:  # prep serially first (heavy load + resample, cached)
         get_prep(rid, opts)
+    if opts.neural_model:  # neural forwards serially too (torch stays out of workers)
+        for rid in rids:
+            get_neural_traj(rid, opts)
 
     jobs = [
         (rid, ladder, arm)
