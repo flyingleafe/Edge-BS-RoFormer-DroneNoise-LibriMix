@@ -398,6 +398,17 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/e12_real_fullflight_unigru128/checkpoints/best.ckpt",
         None,
     ),
+    # Beat-VK scoreboard regime-matched arms (fs_v2 clones, docs/experiments/beat-vk.md):
+    "scv2_fs_v2_best": (
+        "scv2_fs_v2",
+        "r2://ml-data/artifacts/scv2_fs_v2/checkpoints/best.ckpt",
+        None,
+    ),
+    "unigru128_fs_v2_best": (
+        "unigru128_fs_v2",
+        "r2://ml-data/artifacts/unigru128_fs_v2/checkpoints/best.ckpt",
+        None,
+    ),
     # Beat-VK retrain arms (docs/experiments/beat-vk.md):
     "ckla_phaseonly_avq_best": (
         "ckla_phaseonly_avq",
