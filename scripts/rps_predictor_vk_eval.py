@@ -392,6 +392,17 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_pnoise_v3synth/checkpoints/best.ckpt",
         None,
     ),
+    # Beat-VK retrain arms (docs/experiments/beat-vk.md):
+    "ckla_phaseonly_avq_best": (
+        "ckla_phaseonly_avq",
+        "r2://ml-data/artifacts/ckla_phaseonly_avq/checkpoints/best.ckpt",
+        None,
+    ),
+    "ckla_phaseonly_4s_best": (
+        "ckla_phaseonly_4s",
+        "r2://ml-data/artifacts/ckla_phaseonly_4s/checkpoints/best.ckpt",
+        None,
+    ),
     # Readout-family arms (phase-differential readout, docs/experiments/ckla.md):
     "ckla_phaseonly_best": (
         "ckla_phaseonly_fs_v2",
