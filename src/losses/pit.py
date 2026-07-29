@@ -295,6 +295,14 @@ class RPSMSELoss:
             raise ValueError(
                 f"RPSMSELoss shape mismatch: pred {tuple(est.shape)} vs target {tuple(tgt.shape)}"
             )
+        # Under AMP the model output is half precision while the GT target
+        # stays fp32. ``F.mse_loss``'s backward demands *exactly* matching
+        # dtypes ("Found dtype Float but expected Half" at ``.backward()``),
+        # unlike the promoting elementwise ops :class:`PITMSELoss` is built
+        # from — so apply the same type promotion ``est - tgt`` would get.
+        if est.dtype != tgt.dtype:
+            dtype = torch.promote_types(est.dtype, tgt.dtype)
+            est, tgt = est.to(dtype), tgt.to(dtype)
         return torch.nn.functional.mse_loss(est, tgt)
 
 
