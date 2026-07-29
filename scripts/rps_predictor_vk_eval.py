@@ -431,6 +431,11 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_phaseonly_fs_v2_s1c/checkpoints/best.ckpt",
         None,
     ),
+    "ckla_phonly_long_best": (
+        "ckla_phaseonly_fs_v2",
+        "r2://ml-data/artifacts/ckla_phaseonly_fs_v2_long/checkpoints/best.ckpt",
+        None,
+    ),
     "ckla_norot_fs_v2_best": (
         "ckla_norot_fs_v2",
         "r2://ml-data/artifacts/ckla_norot_fs_v2_b/checkpoints/best.ckpt",
