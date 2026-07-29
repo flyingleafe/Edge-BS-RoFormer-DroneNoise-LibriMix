@@ -145,6 +145,32 @@ Findings:
 4. Longer training windows are the strongest neural lever found (1 s → 4 s:
    3.22/1.28 → 2.55/1.08; anchor collapse half-fixed); 8 s arm training.
 
-## Conclusion
+## Conclusion (VK-improvement program, 2026-07-29)
 
-(pending)
+Both arms of the program's disjunction were achieved in their respective
+domains:
+
+**Much better performance** (fixed raw protocol): blind VK pooled DREGON
+6.80 → **1.81** (blind_fullrange: coarse full-range Viterbi + BPF octave
+check + rumble-band energy bridge + DP trust gates; all ramp/warmup
+catastrophes 15–36 → 2.9–4.0, steady windows bit-identical to blind_KR).
+FLY124 refinement: neural tracks 1.016 → **0.859** (pi_kalman joint).
+
+**Definitive ceiling for iterative phase optimization on real free-flight
+data**, four-layered: (1) per-harmonic phase coherence at telemetry-truth
+is ~absent on free-flight audio (lock ≈0.1 @k1–2, ≈0.03 @k≥5; single
+motors reach 0.24-0.67 — the method chain is validated there);
+(2) coherent array combination cannot restore it (self-steered upper
+bound ≈0.10 @k1–2; delay-and-sum no gain); (3) the strong low harmonics
+that DO exist are DISPLACED 0.3–0.5 rev/s below the mechanical comb in
+translating flight (4-probe verified, estimator exonerated, hover 3–4×
+weaker) — audio-locked refiners are charged this bias by any
+telemetry-referenced metric; (4) decoherence budgets measured (k≤5
+coherent, τ_k ≈ 0.4–1.7 s at k=8–40 on motors/flight) — these bound
+coherent integration for any future method. The phase-increment ML
+tracker (pi_kalman) is the best-in-class refiner this ceiling admits:
+only method capturing under noise on synthetic, best lock on motors,
+FLY124 gains real, DREGON blocked by (3) not by estimation.
+
+Remaining open (nice-to-have, running): S3b/S3c mechanism attribution
+(masking vs aero vs translation), CRB tie-in from measured budgets.
