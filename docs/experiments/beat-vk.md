@@ -95,7 +95,39 @@ bar first — R1 quantifies how much of VK's edge is seeding vs precision.
 
 ## Results
 
-(pending)
+### Full scoreboard on the fixed raw protocol (2026-07-29)
+
+`beatvk-valid-raw@268c766052cb`, 15 windows, per-window PIT-MAE vs RAW
+telemetry, pooled (arm `none`). Steady = DREGON w1/w2 ×3 + FLY124 w3–5
+(excludes each recording's ramp window + FLY124 warmup).
+
+| row | dregon_cruise | fly124_cruise | steady DREGON | steady FLY124 |
+|---|---|---|---|---|
+| **CKLA phase-only 4 s** | **2.546** | **1.077** | 2.15 | **0.74** |
+| scv2 (fs_v2) | 2.856 | 2.407 | | |
+| CKLA mean (fs_v2) | 3.065 | 1.403 | | |
+| KLA (fs_v2) | 3.129 | 1.517 | | |
+| CKLA phase-only 1 s | 3.224 | 1.282 | | |
+| transformer (fs_v2) | 3.384 | 2.923 | | |
+| uni_gru128 (fs_v2) | 4.247 | 2.267 | | |
+| VK blind (baseline / R / KR seeds) | 6.80–6.82 | 2.77–3.89 | **1.03** | 1.91 |
+| VK neural-traj seeded | 2.658 | 1.403 | | |
+| VK neural-bases seeded | 7.298 | 1.586 | | |
+| VK telemetry-init (oracle) | 0.851 | 0.784 | 0.87 | 0.70 |
+
+Findings:
+1. **Blind VK's headline number was a mid-flight-segment artifact**: it
+   scores ~1.0 on steady cruise windows (consistent with 0.688-vs-smoothed
+   + the raw jitter floor) but fails catastrophically on every ramp window
+   (15–23 MAE) and rails at the scan floor on warmup (33–36) — pooled
+   full-coverage 6.8. Neural seeding degrades gracefully instead (max 6.9).
+2. **CKLA-4s is the best non-oracle row on both pooled cruise metrics**,
+   and on steady FLY124 windows it MATCHES the telemetry-init oracle
+   (0.74 vs 0.70) while beating blind VK (1.91).
+3. The remaining VK edge is steady-DREGON only: blind 1.03 vs neural 2.15
+   (oracle 0.87) — the anchor-miss + fluctuation-tracking gap.
+4. Longer training windows are the strongest neural lever found (1 s → 4 s:
+   3.22/1.28 → 2.55/1.08; anchor collapse half-fixed); 8 s arm training.
 
 ## Conclusion
 
