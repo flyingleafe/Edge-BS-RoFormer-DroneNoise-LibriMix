@@ -39,11 +39,15 @@ recovery (not just frequency) from fully-synthetic to real data:
 
 Methods per run: ``init`` (metrics of the init trajectory as-is — the metric
 floor/ceiling), ``stage_d`` (``refine_coherent`` with its defaults),
-``vk_refine`` (``vk_track`` with the campaign REFINE config), and
-``vk_capture_refine`` (annealed CAPTURE then REFINE — offsets where the
-refine basin ~bw/(2k) cannot reach). Inits for S0-S2: truth + {0, 0.3, 1.0,
-2.0} rev/s constant offsets (capture from +2.0 only, as specified; the smoke
-mode also runs it from +1.0).
+``iter_warp`` (``data_processing.warp_refinement.iter_warp_refine`` —
+iterated angular-resampling / generalized-demodulation refinement,
+coarse-to-fine in harmonic order; per-round per-order lock diagnostics are
+stored in the run NPZ as ``diag``), ``vk_refine`` (``vk_track`` with the
+campaign REFINE config), and ``vk_capture_refine`` (annealed CAPTURE then
+REFINE — offsets where the refine basin ~bw/(2k) cannot reach). Inits for
+S0-S2: truth + {0, 0.3, 1.0, 2.0} rev/s constant offsets (capture from +2.0
+only, as specified; the smoke mode also runs it from +1.0). ``--methods``
+restricts the per-run method set (e.g. ``--methods init,stage_d,iter_warp``).
 
 Metrics with GT (S0-S2): edge-trimmed IF MAE (rev/s); shaft-phase circular
 RMSE after fitting the initial phase phi0 that maximises coherence, plus the
@@ -115,6 +119,8 @@ from data_processing.vk_tracking import (  # noqa: E402
     vk_reconstruct,
     vk_track,
 )
+from data_processing.warp_refinement import DEFAULT_RUNGS as WARP_RUNGS  # noqa: E402
+from data_processing.warp_refinement import iter_warp_refine  # noqa: E402
 
 SR = 16000
 FRAME_HOP_S = 0.032  # evaluation grid (campaign convention)
@@ -562,19 +568,22 @@ def _pit_align(r_hat: np.ndarray, r_true_ft: np.ndarray, edge: np.ndarray) -> np
 # One run
 
 
-def _run_method(cell: Cell, method: str, r0: np.ndarray) -> tuple[np.ndarray, float]:
-    """Execute one method from init ``r0``; returns (trajectory, confidence)."""
+def _run_method(cell: Cell, method: str, r0: np.ndarray) -> tuple[np.ndarray, float, dict]:
+    """Execute one method from init ``r0``; returns (trajectory, confidence, extras)."""
     if method == "init":
-        return r0.copy(), float("nan")
+        return r0.copy(), float("nan"), {}
     if method == "stage_d":
-        return refine_coherent(cell.audio, r0, cell.ft, STAGE_D_CFG), float("nan")
+        return refine_coherent(cell.audio, r0, cell.ft, STAGE_D_CFG), float("nan"), {}
+    if method == "iter_warp":
+        r_hat, diag = iter_warp_refine(cell.audio, r0, cell.ft, sr=SR)
+        return r_hat, float("nan"), diag
     if method == "vk_refine":
         res = vk_track(cell.audio, r0, cell.ft, REFINE_CFG)
-        return res.r_refined, float(np.mean(res.confidence))
+        return res.r_refined, float(np.mean(res.confidence)), {}
     if method == "vk_capture_refine":
         cap = vk_track(cell.audio, r0, cell.ft, CAPTURE_CFG)
         res = vk_track(cell.audio, cap.r_refined, cell.ft, REFINE_CFG)
-        return res.r_refined, float(np.mean(res.confidence))
+        return res.r_refined, float(np.mean(res.confidence)), {}
     raise ValueError(f"unknown method {method!r}")
 
 
@@ -583,7 +592,7 @@ def run_one(spec: RunSpec) -> list[dict[str, Any]]:
     cell = spec.cell
     r0 = cell.r_init_base + spec.offset
     tic = time.perf_counter()
-    r_hat, conf = _run_method(cell, spec.method, r0)
+    r_hat, conf, extras = _run_method(cell, spec.method, r0)
     wall = time.perf_counter() - tic
 
     ft = cell.ft
@@ -645,6 +654,7 @@ def run_one(spec: RunSpec) -> list[dict[str, Any]]:
         r_init=r0,
         r_hat=r_hat,
         r_ref_ft=r_ref_ft if r_ref_ft is not None else np.zeros(0),
+        diag=json.dumps(extras),
     )
 
     lead = rows[0]
@@ -671,7 +681,7 @@ def run_one(spec: RunSpec) -> list[dict[str, Any]]:
 
 
 def methods_for(offset: float, smoke: bool) -> list[str]:
-    base = ["init", "stage_d", "vk_refine"]
+    base = ["init", "stage_d", "iter_warp", "vk_refine"]
     if smoke:  # smoke also probes the annealed capture at +1.0 (basin check)
         return base + (["vk_capture_refine"] if offset > 0 else [])
     return base + (["vk_capture_refine"] if offset in CAPTURE_OFFSETS else [])
@@ -683,10 +693,13 @@ def build_specs(opts: argparse.Namespace, out_dir: Path) -> list[RunSpec]:
     if unknown:
         raise SystemExit(f"unknown stages {unknown}; expected subset of {ALL_STAGES}")
     specs: list[RunSpec] = []
+    allowed = {m.strip() for m in opts.methods.split(",") if m.strip()} if opts.methods else None
 
     def add(cell: Cell, offsets: tuple[float, ...], smoke: bool = False) -> None:
         for off in offsets:
             for method in methods_for(off, smoke):
+                if allowed is not None and method not in allowed:
+                    continue
                 specs.append(RunSpec(cell=cell, method=method, offset=off, out_dir=str(out_dir)))
 
     if opts.smoke:
@@ -794,6 +807,11 @@ def main() -> None:
     ap.add_argument("--out", default="results/vk_phase_validation", help="output directory")
     ap.add_argument("--quick", action="store_true", help="reduced grid per stage")
     ap.add_argument(
+        "--methods",
+        default="",
+        help="comma-separated method filter (default: all methods per rung)",
+    )
+    ap.add_argument(
         "--smoke",
         action="store_true",
         help="S0 clean/no-jitter cell only, inits {truth, truth+1.0}, all methods",
@@ -838,6 +856,7 @@ def main() -> None:
             "capture": asdict(CAPTURE_CFG),
             "eval_env": asdict(EVAL_ENV_CFG),
             "stage_d": asdict(STAGE_D_CFG),
+            "iter_warp": {"rungs": [asdict(g) for g in WARP_RUNGS]},
         },
         "grid": {
             "ks": list(KS),
