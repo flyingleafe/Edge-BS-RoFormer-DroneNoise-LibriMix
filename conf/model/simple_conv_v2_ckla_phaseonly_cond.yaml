@@ -1,0 +1,26 @@
+# simple_conv_v2_ckla_phaseonly_cond — rps_prediction (conditional refiner):
+# the phase-only CKLA backbone (p_init 1.0, rotation ON, readout
+# [|y|, arg d]) extended with a corrupted-RPS conditioning input: the (4, F)
+# track is MLP-embedded per frame and concatenated to the pooled trunk
+# features before the temporal head, and the output is a bounded residual on
+# the conditioning (cond + max_delta * tanh(head)) — output rotor order ==
+# conditioning rotor order, so training uses the plain non-PIT loss
+# (conf/loss/mse_cond.yaml). task_params.use_cond wires the rps_cond entry
+# through the task spec and codec.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+  use_cond: true
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_ckla_phaseonly_cond
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  p_init: 1.0
+  cond_embed_dim: 32
+  max_delta: 3.0
+model_type: null
+legacy_config_path: null

@@ -177,7 +177,12 @@ class SpeechEnhancementCodec:
 
 
 class RPSPredictionCodec:
-    """Codec for ``tasks.task.rps_prediction``: mixture in, ``rps_pred`` out."""
+    """Codec for ``tasks.task.rps_prediction``: mixture in, ``rps_pred`` out.
+
+    ``use_cond=True`` (the conditional-refiner variant — see
+    ``tasks.task.rps_prediction``) additionally pulls ``"rps_cond"`` and calls
+    ``model(mixture, cond)``.
+    """
 
     def __init__(
         self,
@@ -185,13 +190,18 @@ class RPSPredictionCodec:
         n_channels: int | None = None,
         sr: tuple[int, int] = AUDIO_RATE,
         frame_rate: tuple[int, int] | None = None,
+        use_cond: bool = False,
     ) -> None:
         self.sr = sr
         self.frame_rate = frame_rate
+        self.use_cond = use_cond
         self._audio_dims = _audio_dims(n_channels)
 
     def to_inputs(self, batch: td.Frame) -> dict[str, torch.Tensor]:
-        return {"mixture": get_tensor(batch, "mixture")}
+        inputs = {"mixture": get_tensor(batch, "mixture")}
+        if self.use_cond:
+            inputs["rps_cond"] = get_tensor(batch, "rps_cond")
+        return inputs
 
     def to_frame(self, outputs: Any, batch: td.Frame) -> td.Frame:
         rps_pred, _aux = _split_model_output(outputs)
@@ -200,6 +210,8 @@ class RPSPredictionCodec:
         )
 
     def call_model(self, model: Any, inputs: dict[str, torch.Tensor]) -> Any:
+        if self.use_cond:
+            return model(inputs["mixture"], inputs["rps_cond"])
         return model(inputs["mixture"])
 
 

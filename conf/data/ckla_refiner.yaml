@@ -1,0 +1,29 @@
+# Conditional-refiner data: the E12 real-full-flight stream on the freq-scale
+# v2 policy (fs_v2, WITHOUT the AVQ source — the conf chain of
+# ckla_phaseonly_fs_v2), plus the rps_corruption seam: every Frame carries an
+# extra rps_cond entry (corrupted copy of the RPS target,
+# data_processing/rps_corruption.py) and its rps target is re-emitted in
+# conditioning order. Train corruption is seeded per (chunk id, channel);
+# valid corruption is seeded per dataset index -> FIXED per validation sample
+# across epochs (comparable early stopping).
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/e12_fullflight_freqscale_v2_dload.yaml
+    flatten_channels: true
+    rps_corruption:
+      seed: 20260729
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+    rps_corruption:
+      seed: 777
+  iterable: false
+batch_size: null
+num_workers: null

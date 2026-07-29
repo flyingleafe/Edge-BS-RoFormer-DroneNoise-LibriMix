@@ -592,3 +592,115 @@ class SimpleConvV2CKLA(nn.Module):
         convention — harmless for CKLA checkpoints, which are all post-refactor)."""
         state_dict = _remap_legacy_state_dict(state_dict)
         return super().load_state_dict(state_dict, strict=strict)
+
+
+class SimpleConvV2CKLACond(SimpleConvV2CKLA):
+    """Conditional RPS **refiner**: ``forward(audio, cond) -> refined track``.
+
+    The phase-only CKLA backbone extended with a corrupted-track conditioning
+    input (registry key ``simple_conv_v2_ckla_phaseonly_cond``). Campaign
+    rationale: classical refinement (VK refine / stage D) cannot pull a track
+    with 0.5–2 rev/s error toward the truth on real audio although the comb
+    information is present at high precision, so this model LEARNS the pull:
+    train on ``(audio, corrupt(GT)) -> GT``
+    (``data_processing.rps_corruption``), infer with a real coarse track
+    (blind-VK Viterbi ~0.7 err / neural predictor 1–2.5 err) as ``cond``.
+
+    Design choices (vs the plain CKLA model):
+
+    - **Conditioning fusion**: the ``(B, R, F)`` conditioning track is
+      normalised by ``cond_norm`` (rev/s scale, default 100 — keeps the MLP
+      input O(1)), embedded per frame by a small 2-layer MLP to
+      ``cond_embed_dim`` channels, linearly resampled onto the trunk's frame
+      grid when the counts differ, and **concatenated along the feature dim**
+      with the pooled trunk features before the temporal head (the head's
+      ``in_ch`` grows to ``128 + cond_embed_dim``) — mirroring how existing
+      fusion concatenates along channels before a trunk.
+    - **Residual output**: the head predicts a bounded correction,
+      ``out = cond + max_delta · tanh(head(...))`` (``max_delta`` ~3 rev/s).
+      Residual over absolute for two reasons: (a) the refinement regime is
+      *local* by construction — corruption ≤ ~2.5 rev/s offset + OU ≤ 1.5σ —
+      and bounding the output to a tube around the conditioning makes
+      "ignore the conditioning and re-predict from audio" impossible, which
+      is exactly the failure mode that would collapse this back into the
+      (weaker) unconditional predictor; (b) identity is the zero-weight
+      solution, so early training cannot be worse than the coarse track.
+    - **Rotor identity**: output row ``i`` corresponds to conditioning row
+      ``i`` (the residual ties them structurally), so training uses a plain
+      non-PIT MSE (``losses.RPSMSELoss``) against the GT aligned to the
+      conditioning order (the corruption seam emits it that way).
+    """
+
+    def __init__(
+        self,
+        n_fft: int = 2048,
+        hop_length: int = 512,
+        num_rotors: int = 4,
+        frontend: nn.Module | None = None,
+        frontend_key: str = "stft_mag_if",
+        d_model: int = 128,
+        n_layers: int = 2,
+        n_state: int = 16,
+        rotation: bool = True,
+        p_init: float = 0.01,
+        readout: str = "complex_mean",
+        cond_embed_dim: int = 32,
+        cond_norm: float = 100.0,
+        max_delta: float = 3.0,
+    ):
+        super().__init__(
+            n_fft=n_fft,
+            hop_length=hop_length,
+            num_rotors=num_rotors,
+            frontend=frontend,
+            frontend_key=frontend_key,
+            d_model=d_model,
+            n_layers=n_layers,
+            n_state=n_state,
+            rotation=rotation,
+            p_init=p_init,
+            readout=readout,
+        )
+        self.cond_embed_dim = int(cond_embed_dim)
+        self.cond_norm = float(cond_norm)
+        self.max_delta = float(max_delta)
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(num_rotors, cond_embed_dim),
+            nn.SiLU(),
+            nn.Linear(cond_embed_dim, cond_embed_dim),
+        )
+        # Rebuild the head with the widened input (parent built it at 128).
+        self.head = TemporalCKLAHead(
+            in_ch=128 + self.cond_embed_dim,
+            d_model=d_model,
+            num_rotors=num_rotors,
+            n_layers=n_layers,
+            n_state=n_state,
+            rotation=rotation,
+            p_init=p_init,
+            readout=readout,
+        )
+
+    def forward(self, audio: Tensor, cond: Tensor) -> Tensor:  # type: ignore[override]
+        """``audio (B, T_samples)`` + ``cond (B, R, F_cond)`` → ``(B, R, T)``.
+
+        ``cond`` is linearly resampled to the trunk's frame count ``T`` when
+        ``F_cond != T`` (endpoint-aligned — the dataset target and the STFT
+        grid share phase 0, and off-by-one frame counts only arise from
+        centering conventions).
+        """
+        x = self.frontend(audio)  # (B, C, F, T)
+        h = x
+        for block in self.encoder:
+            h = block(h)
+        h = self.freq_pool(h)  # (B, 128, T)
+        t_frames = h.shape[-1]
+
+        if cond.dim() != 3 or cond.shape[1] != self.num_rotors:
+            raise ValueError(f"cond must be (B, {self.num_rotors}, F), got {tuple(cond.shape)}")
+        c = cond.to(h.dtype)
+        if c.shape[-1] != t_frames:
+            c = F.interpolate(c, size=t_frames, mode="linear", align_corners=True)
+        emb = self.cond_mlp((c / self.cond_norm).transpose(1, 2)).transpose(1, 2)  # (B, E, T)
+        delta = self.head(torch.cat([h, emb], dim=1))  # (B, R, T)
+        return c + self.max_delta * torch.tanh(delta)

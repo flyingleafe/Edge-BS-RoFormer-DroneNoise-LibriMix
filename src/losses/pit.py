@@ -263,10 +263,46 @@ class SegmentedPITMSELoss:
         return segmented_pit_mse(est, tgt, merge_mask)
 
 
+class RPSMSELoss:
+    """Plain (non-PIT) MSE between ``pred[pred_key]`` and ``target[target_key]``.
+
+    For the conditional RPS *refiner* (``simple_conv_v2_ckla_phaseonly_cond``):
+    the model's output row ``i`` corresponds to its conditioning row ``i`` by
+    construction (bounded residual on the conditioning track), and the
+    corruption seam (``data_processing.rps_corruption``) emits the ground
+    truth already permuted to the conditioning order — so no permutation
+    search is wanted: a PIT loss would silently forgive identity swaps the
+    refiner is supposed to be pinned against.
+    """
+
+    def __init__(
+        self,
+        *,
+        rate: tuple[int, int] | None = None,
+        pred_key: str = "rps_pred",
+        target_key: str = "rps",
+    ) -> None:
+        self.pred_key = pred_key
+        self.target_key = target_key
+        spec = rps_series_spec(rate)
+        self.requires_pred = FrameSpec({pred_key: spec})
+        self.requires_target = FrameSpec({target_key: spec})
+
+    def __call__(self, pred: td.Frame, target: td.Frame) -> torch.Tensor:
+        est = _batched_rps(get_tensor(pred, self.pred_key))
+        tgt = _batched_rps(get_tensor(target, self.target_key))
+        if est.shape != tgt.shape:
+            raise ValueError(
+                f"RPSMSELoss shape mismatch: pred {tuple(est.shape)} vs target {tuple(tgt.shape)}"
+            )
+        return torch.nn.functional.mse_loss(est, tgt)
+
+
 __all__ = [
     "pairwise_mse",
     "pit_mse_loss",
     "segmented_pit_mse",
     "PITMSELoss",
+    "RPSMSELoss",
     "SegmentedPITMSELoss",
 ]

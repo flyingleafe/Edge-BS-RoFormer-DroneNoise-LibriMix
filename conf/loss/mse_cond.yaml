@@ -1,0 +1,12 @@
+# Plain (non-PIT) MSE between rps_pred (model output) and rps (dataset
+# target) — the conditional-refiner training loss. The refiner's output row i
+# corresponds to conditioning row i (bounded residual), and the corruption
+# seam emits the GT already in conditioning order, so a permutation search
+# would forgive exactly the identity errors the refiner must be pinned
+# against.
+terms:
+  - name: rps_mse
+    _target_: losses.RPSMSELoss
+    weight: 1.0
+    params:
+      rate: [16000, 512]

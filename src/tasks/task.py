@@ -66,14 +66,24 @@ def rps_prediction(
     n_channels: int | None = None,
     sr: tuple[int, int] = AUDIO_RATE,
     frame_rate: tuple[int, int] | None = None,
+    use_cond: bool = False,
 ) -> Task:
     """Drone-noise mixture in, per-rotor rotation speeds out (on the STFT
-    frame grid — pass ``frame_rate=(sr, hop)`` for the exact rate)."""
+    frame grid — pass ``frame_rate=(sr, hop)`` for the exact rate).
+
+    ``use_cond=True`` is the conditional-*refiner* variant: the model
+    additionally consumes ``rps_cond`` — a coarse/corrupted RPS track on the
+    same frame grid — and its output rows follow the conditioning's rotor
+    order (so the training loss is plain, non-PIT — ``losses.RPSMSELoss``).
+    """
+    inputs: dict[str, SeriesSpec | FrameSpec] = {
+        "mixture": SeriesSpec(dims=_audio_dims(n_channels), time="grid", rate=sr)
+    }
+    if use_cond:
+        inputs["rps_cond"] = _rps_spec(frame_rate)
     return Task(
         name="rps_prediction",
-        input_spec=FrameSpec(
-            {"mixture": SeriesSpec(dims=_audio_dims(n_channels), time="grid", rate=sr)}
-        ),
+        input_spec=FrameSpec(inputs),
         output_spec=FrameSpec({"rps_pred": _rps_spec(frame_rate)}),
     )
 

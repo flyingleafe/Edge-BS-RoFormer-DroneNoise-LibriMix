@@ -14,6 +14,7 @@ from losses.composite import CompositeLoss, LossTerm
 from losses.masked import MaskedLoss, masked_loss
 from losses.pit import (
     PITMSELoss,
+    RPSMSELoss,
     SegmentedPITMSELoss,
     pairwise_mse,
     pit_mse_loss,
@@ -41,6 +42,7 @@ __all__ = [
     "MaskedLoss",
     "masked_loss",
     "PITMSELoss",
+    "RPSMSELoss",
     "SegmentedPITMSELoss",
     "pairwise_mse",
     "pit_mse_loss",

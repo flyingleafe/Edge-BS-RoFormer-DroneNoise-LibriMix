@@ -41,7 +41,7 @@ from models.generative import (
 
 if TYPE_CHECKING:
     from tasks.noise_generation import DroneCodebook
-from models.ckla import SimpleConvV2CKLA
+from models.ckla import SimpleConvV2CKLA, SimpleConvV2CKLACond
 from models.fkla import FKLARPSModel
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
@@ -144,6 +144,12 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_v2_ckla_phasediff": lambda **kw: SimpleConvV2CKLA(readout="phase_diff", **kw),
     "simple_conv_v2_ckla_phaseonly": lambda **kw: SimpleConvV2CKLA(readout="phase_only", **kw),
     "simple_conv_v2_ckla_phaseunit": lambda **kw: SimpleConvV2CKLA(readout="phase_unit", **kw),
+    # Conditional RPS refiner (ckla.py::SimpleConvV2CKLACond): phase-only
+    # CKLA backbone + corrupted-track conditioning (concat before the head)
+    # + bounded residual output — forward(audio, cond), plain non-PIT loss.
+    "simple_conv_v2_ckla_phaseonly_cond": lambda **kw: SimpleConvV2CKLACond(
+        readout="phase_only", **kw
+    ),
     # Vendored flat-KLA (kla-loglinear@11e5a39, src/models/fkla/) plain-KLA
     # arm — cross-implementation companion to the norot controls.
     "simple_conv_v2_fkla": FKLARPSModel,
