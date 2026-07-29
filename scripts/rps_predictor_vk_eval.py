@@ -392,6 +392,12 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_pnoise_v3synth/checkpoints/best.ckpt",
         None,
     ),
+    # Beat-VK scoreboard row (E12 uni_gru128 — architectural-diversity slot):
+    "e12_unigru128_best": (
+        "e12_real_fullflight_unigru128",
+        "r2://ml-data/artifacts/e12_real_fullflight_unigru128/checkpoints/best.ckpt",
+        None,
+    ),
     # Beat-VK retrain arms (docs/experiments/beat-vk.md):
     "ckla_phaseonly_avq_best": (
         "ckla_phaseonly_avq",
