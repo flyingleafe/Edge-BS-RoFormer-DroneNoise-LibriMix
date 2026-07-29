@@ -664,7 +664,7 @@ def pi_kalman_refine(
     *,
     n_iter: int = 3,
     fs_env: float = 62.5,
-    band_hz: float = 6.0,
+    band_hz: float | tuple[float, ...] = 6.0,
     off_comb_hz: float = 11.0,
     k_max: int = 40,
     f_max: float = 6000.0,
@@ -693,7 +693,14 @@ def pi_kalman_refine(
         fs_env: target envelope/measurement frame rate (Hz); the actual rate
             is ``sr / round(sr / fs_env)`` (62.5 Hz = 16 ms at 16 kHz).
         band_hz: demodulation half-band (Hz) — envelopes keep ``+-band_hz``
-            around each harmonic.
+            around each harmonic. A tuple gives a per-iteration schedule
+            (last entry repeats), wide -> narrow: wide bands admit large
+            initial detunings (capture), the narrow final band excludes
+            near-line contamination — twin lines and the low-side
+            modulation sidebands real flight audio carries at a ~constant
+            -1..-3 Hz offset from every harmonic, which a band-mean
+            estimator would otherwise integrate as a coherent downward
+            bias (the S4 free-flight finding).
         off_comb_hz: offset of the noise-floor probe demodulation (Hz);
             must exceed ``band_hz`` (else the probe band contains the comb
             line itself) and stay well below the fundamental.
@@ -736,8 +743,9 @@ def pi_kalman_refine(
     ft = np.asarray(ft, dtype=np.float64)
     if r.shape[-1] != len(ft):
         raise ValueError(f"r_init has {r.shape[-1]} frames, ft has {len(ft)}")
-    if off_comb_hz <= band_hz:
-        raise ValueError(f"off_comb_hz={off_comb_hz} must exceed band_hz={band_hz}")
+    bands = tuple(float(b) for b in (band_hz if isinstance(band_hz, tuple) else (band_hz,)))
+    if off_comb_hz <= max(bands):
+        raise ValueError(f"off_comb_hz={off_comb_hz} must exceed band_hz={max(bands)}")
     if pair_mode not in ("gate", "joint"):
         raise ValueError(f"unknown pair_mode {pair_mode!r} (expected 'gate' or 'joint')")
     n_t = x.shape[-1]
@@ -750,16 +758,17 @@ def pi_kalman_refine(
         raise ValueError(f"clip too short: {n_env} envelope frames at fs_env={fs_e:.1f}")
     t_env = np.arange(n_env) * dt
     t_mid = t_env[:-1] + 0.5 * dt  # increments live between envelope samples
-    band_cyc = band_hz / sr
     y32 = x.astype(np.float32)
     n_trim = max(1, int(round(edge_trim_s * fs_e)))
     q_step = sigma_process**2 * dt
     p0 = sigma_prior**2
     schedule = [int(min(k_caps[min(j, len(k_caps) - 1)], k_max)) for j in range(n_iter)]
+    band_schedule = [bands[min(j, len(bands) - 1)] for j in range(n_iter)]
 
     rotor_diags: list[dict[str, Any]] = [{"rotor": i, "iters": []} for i in range(r.shape[0])]
     pair_diags: list[list[dict[str, Any]]] = []
     for it, k_cap in enumerate(schedule):
+        band_it = band_schedule[it]
         joint_obs: dict[int, list[tuple[int, float, float]]] = {}
         if pair_mode == "joint":
             it_pair_diags: list[dict[str, Any]] = []
@@ -776,7 +785,7 @@ def pi_kalman_refine(
                     n_env,
                     dt,
                     k_cap,
-                    band_hz=band_hz,
+                    band_hz=band_it,
                     f_max=f_max,
                     guard_hz=guard_hz,
                     min_rate=min_rate,
@@ -802,9 +811,9 @@ def pi_kalman_refine(
                 n_env,
                 dt,
                 t_mid,
-                band_cyc,
+                band_it / sr,
                 k_cap,
-                band_hz=band_hz,
+                band_hz=band_it,
                 off_comb_hz=off_comb_hz,
                 f_max=f_max,
                 guard_hz=guard_hz,
@@ -828,7 +837,7 @@ def pi_kalman_refine(
         "params": {
             "n_iter": n_iter,
             "fs_env": fs_env,
-            "band_hz": band_hz,
+            "band_hz": list(bands),
             "off_comb_hz": off_comb_hz,
             "k_max": k_max,
             "f_max": f_max,

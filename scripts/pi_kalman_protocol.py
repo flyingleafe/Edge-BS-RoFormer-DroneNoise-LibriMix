@@ -83,6 +83,7 @@ def refine_recording(
     *,
     pair_mode: str,
     n_iter: int,
+    band_hz: float | tuple[float, ...],
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
     """Refine the selected windows of one recording.
 
@@ -109,7 +110,7 @@ def refine_recording(
         r0 = np.vstack([np.interp(ft_w, ft_init, rps_init[r]) for r in range(N_ROTORS)])
         tic = time.perf_counter()
         r_hat, diag = pi_kalman_refine(
-            clip, r0, ft_w - start, sr=SR, n_iter=n_iter, pair_mode=pair_mode
+            clip, r0, ft_w - start, sr=SR, n_iter=n_iter, pair_mode=pair_mode, band_hz=band_hz
         )
         wall = time.perf_counter() - tic
         mask = (tg >= start - 1e-6) & (tg < end - 1e-6)
@@ -146,6 +147,11 @@ def main() -> None:
     )
     ap.add_argument("--pair-mode", default="gate", choices=("gate", "joint"))
     ap.add_argument("--n-iter", type=int, default=3)
+    ap.add_argument(
+        "--band-hz",
+        default="6",
+        help="demod half-band (Hz): one float or a comma list = per-iteration schedule",
+    )
     ap.add_argument("--dataset-version", default=None, help="beatvk-valid-raw version override")
     ap.add_argument("--tag", default=None, help="run name (default: <init stem>_<pair-mode>)")
     ap.add_argument("--out", default="results/pi_kalman_protocol", help="output root")
@@ -180,9 +186,17 @@ def main() -> None:
         ]
         if not windows:
             continue
+        bands = tuple(float(b) for b in str(args.band_hz).split(","))
+        band_hz = bands[0] if len(bands) == 1 else bands
         ft_init, rps_init = preds[rid]
         tg, rps_out, meta = refine_recording(
-            rec, ft_init, rps_init, windows, pair_mode=args.pair_mode, n_iter=args.n_iter
+            rec,
+            ft_init,
+            rps_init,
+            windows,
+            pair_mode=args.pair_mode,
+            n_iter=args.n_iter,
+            band_hz=band_hz,
         )
         np.savez(traj_dir / f"{rid}.npz", ft=tg, rps=rps_out)
         run_meta[rid] = meta
@@ -241,6 +255,7 @@ def main() -> None:
         "init": args.init,
         "pair_mode": args.pair_mode,
         "n_iter": args.n_iter,
+        "band_hz": args.band_hz,
         "dataset": {"name": beatvk_eval.DATASET, "version": recs[0]["dataset_version"]},
         "windows": args.windows,
         "rows_before": rows_before,
