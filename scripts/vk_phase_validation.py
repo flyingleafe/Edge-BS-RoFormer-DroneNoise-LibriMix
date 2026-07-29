@@ -440,10 +440,17 @@ def build_s3_cells(dregon_dir: str, quick: bool) -> list[Cell]:
     return cells
 
 
-def build_s4_cell() -> Cell:
+def build_s4_cell(dregon_dir: str = "data/DREGON") -> Cell:
     """One 16 s cruise window of the vk_blind_annotation prep segment,
     init = tau-aligned cleaned command telemetry (the campaign's init)."""
-    prep = prepare_flight_recording(S4_RID)
+    try:
+        prep = prepare_flight_recording(S4_RID)
+    except KeyError:
+        # No local data/DREGON checkout (cluster): bypass the annotation
+        # prep cache and load via the dload-capable validation loader.
+        from vk_validation import prepare_recording as _prep_dir
+
+        prep = _prep_dir(S4_RID, dregon_dir=dregon_dir)
     start = max(0.0, (float(prep.ft[-1]) - S4_WIN_S) / 2.0)
     a0 = int(round(start * SR))
     audio = prep.audio[:, a0 : a0 + int(S4_WIN_S * SR)].astype(np.float64)
@@ -727,7 +734,7 @@ def build_specs(opts: argparse.Namespace, out_dir: Path) -> list[RunSpec]:
             add(cell, S3_OFFSETS)
 
     if "S4" in stages:
-        add(build_s4_cell(), (0.0,))
+        add(build_s4_cell(opts.dregon_dir), (0.0,))
 
     return specs
 
