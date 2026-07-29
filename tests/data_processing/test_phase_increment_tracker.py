@@ -115,6 +115,44 @@ def test_heavy_diffusion_recovers_slow_rate():
     assert 4.0 < q10 < 120.0  # truth 20 rad^2/s; order-of-magnitude calibration
 
 
+def test_joint_mode_tracks_fully_collided_twins():
+    """Tight twin pair at a CONSTANT split of 0.7 rev/s (one shaft
+    trajectory, twin = shaft + 0.7) with a comb of ONLY k <= 10: from a
+    differential init (+0.3 / -0.2 — track split 0.2) every signal-bearing
+    harmonic is twin-collided, so gate mode has nothing to measure and
+    plateaus at the init error; joint mode must resolve the two-tone
+    mixtures and track BOTH rotors to < 0.15."""
+    rng = np.random.default_rng(11)
+    shaft = ladder._synth_rps(DUR_S, 21, (80.0,))[0]
+    r_aud = np.stack([shaft, shaft + 0.7])  # (2, T), split exactly 0.7
+    n = r_aud.shape[-1]
+    sig = np.zeros(n)
+    for i in range(2):
+        phase = 2.0 * np.pi * np.cumsum(r_aud[i]) / SR
+        for k in range(1, 11):
+            sig += (1.0 / k) * np.cos(k * phase + rng.uniform(0.0, 2.0 * np.pi))
+    sig += 0.01 * rng.standard_normal(n)
+    ft = ladder._frame_grid(n)
+    t_aud = np.arange(n) / SR
+    truth_ft = ladder._interp_rows(ft, t_aud, r_aud)
+    edge = (ft > EDGE_S) & (ft < ft[-1] - EDGE_S)
+    init = truth_ft + np.asarray([0.3, -0.2])[:, None]  # differential error
+
+    r_gate, _ = pi_kalman_refine(sig[None], init.copy(), ft, sr=SR)
+    r_joint, diag = pi_kalman_refine(sig[None], init.copy(), ft, sr=SR, pair_mode="joint")
+    for i in range(2):
+        mae_gate = float(np.mean(np.abs(r_gate[i] - truth_ft[i])[edge]))
+        mae_joint = float(np.mean(np.abs(r_joint[i] - truth_ft[i])[edge]))
+        assert mae_joint < 0.15
+        assert mae_joint < mae_gate  # gate mode plateaus (near-no-op here)
+        maes = [float(np.mean(np.abs(r_joint[i] - truth_ft[j])[edge])) for j in range(2)]
+        assert int(np.argmin(maes)) == i  # order assignment keeps identity
+    # Pair diagnostics report the measured split near the true 0.7 rev/s.
+    last_pair = diag["pairs"][-1][0]
+    assert last_pair["n_windows_locked"] > 0
+    assert 0.55 < last_pair["split_meas_med"] < 0.85
+
+
 def test_twin_pair_no_cross_capture():
     """Two rotors 1 rev/s apart, comb up to k=40: truth-init refinement must
     stay on its own rotor (the twin guard excludes colliding harmonics)."""

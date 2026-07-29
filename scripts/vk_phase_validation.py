@@ -63,6 +63,9 @@ stored in the run NPZ as ``diag``), ``pi_kalman``
 instantaneous frequency from per-harmonic envelope phase increments fused
 by an RTS-smoothed random-walk Kalman posterior; per-harmonic diffusion
 rates ``q_k`` estimated from the data and stored in the run NPZ ``diag``),
+``pi_kalman_joint`` (the same with ``pair_mode="joint"`` — tight twin
+pairs' self-collided harmonics contribute two-tone rate observations
+instead of being gated away),
 ``vk_refine`` (``vk_track`` with the
 campaign REFINE config), and ``vk_capture_refine`` (annealed CAPTURE then
 REFINE — offsets where the refine basin ~bw/(2k) cannot reach). Inits for
@@ -765,6 +768,9 @@ def _run_method(cell: Cell, method: str, r0: np.ndarray) -> tuple[np.ndarray, fl
     if method == "pi_kalman":
         r_hat, diag = pi_kalman_refine(cell.audio, r0, cell.ft, sr=SR)
         return r_hat, float("nan"), diag
+    if method == "pi_kalman_joint":
+        r_hat, diag = pi_kalman_refine(cell.audio, r0, cell.ft, sr=SR, pair_mode="joint")
+        return r_hat, float("nan"), diag
     if method == "vk_refine":
         res = vk_track(cell.audio, r0, cell.ft, REFINE_CFG)
         return res.r_refined, float(np.mean(res.confidence)), {}
@@ -869,7 +875,7 @@ def run_one(spec: RunSpec) -> list[dict[str, Any]]:
 
 
 def methods_for(offset: float, smoke: bool) -> list[str]:
-    base = ["init", "stage_d", "iter_warp", "pi_kalman", "vk_refine"]
+    base = ["init", "stage_d", "iter_warp", "pi_kalman", "pi_kalman_joint", "vk_refine"]
     if smoke:  # smoke also probes the annealed capture at +1.0 (basin check)
         return base + (["vk_capture_refine"] if offset > 0 else [])
     return base + (["vk_capture_refine"] if offset in CAPTURE_OFFSETS else [])
