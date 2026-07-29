@@ -171,21 +171,43 @@ ALL_ARMS = (*BLIND_ARM_SETS, FULLRANGE_ARM, *NEURAL_ARMS, "telem_init")
 #       HALVED windows, restricted to median +- 16 rev/s: in the BPF-only
 #       regime full-range magnitude evidence is structurally
 #       octave-attracted, and +-16 still covers the warmup ramps;
-#   (c) an ENERGY-TIMED BRIDGE: through the middle of a takeoff ramp the
-#       narrowband evidence vanishes under the broadband spool-up whoosh (the
-#       DP then times the low->high transition ~1.5 s late), but total
-#       acoustic power tracks rps steeply — when the DP path contains a
-#       > 20 rev/s two-plateau jump, the transition is re-timed by the
-#       high-band (2-6 kHz) energy profile between the two plateaus' energy
-#       levels (power-law c_lo * (c_hi/c_lo)^alpha mapping), with a
-#       catch-up hold at c_hi until the DP path rejoins it.
+#   (c) TWO TRUST GATES on the DP path (the first full 15-window run showed
+#       the coarse DP must not override a good constant seed): a STEADY gate
+#       — path span (p98 - p2) < COARSE_SPAN_MIN means there is no ramp to
+#       track, use the exact blind_KR constant init (removes coarse wobble
+#       on every steady window); and a DISTRUST gate — |median(path) -
+#       median(bases)| > COARSE_MED_SHIFT_MAX means the DP abandoned the
+#       seed structure (FLY124 w3/w4: asymmetric seeds — a dup pair at 74 +
+#       singles 82.7/92.35 — let the DP park the tight pair on the dominant
+#       91.5 comb, shifting c by +17 and turning MAE 1.18 into 15.6; on
+#       every well-behaved window the shift is <= 1.1, on the broken ones
+#       16-17), fall back to the constant init;
+#   (d) an ENERGY-TIMED TAKEOFF BRIDGE: through the middle of a takeoff ramp
+#       the narrowband evidence vanishes under the broadband spool-up whoosh
+#       (the DP times the low->high transition ~1.5 s late, or idles on an
+#       alias when a masker buries the idle comb), but acoustic power tracks
+#       rps steeply. When the DP path contains a > 20 rev/s two-plateau jump
+#       AND the window has a >= BRIDGE_IDLE_MIN_S low-energy idle phase (the
+#       takeoff-from-idle signature; without it the bridge must stay off —
+#       it mangled FLY124 w2's maneuver window when keyed on energy alone),
+#       the pre-cruise path is rebuilt from the ENERGY_BAND (50-200 Hz rotor
+#       rumble — monotone in rps even under the speech / white-noise masker
+#       recordings, where the first-run 2-6 kHz band was flooded) profile:
+#       idle frames -> c_lo from a constant-c re-scan of the idle frames
+#       restricted to <= BRIDGE_IDLE_C_FRAC * c_hi (the DP's own low plateau
+#       is junk exactly when a masker hides the idle comb), transition
+#       frames -> power-law c_lo * (c_hi/c_lo)^alpha, then a catch-up hold
+#       at c_hi (median DP path over sustained-high-energy frames) until the
+#       DP path rejoins it.
 #
-# Ladder init: r0[i](t) = coarse_c(t) + (base_i - median(bases)), clamped at
-# 0 — on steady cruise coarse_c(t) ~= median(bases) and the init reduces to
-# blind_KR's constant bases. The standard vit2dsp ladder runs on top,
-# unchanged. Measured init PIT-MAE vs raw telemetry (recorded blind_KR FINAL
-# MAE in parens): nosource w0 3.17 (15.4), w1 1.18 (1.02), FLY124 w0 3.96
-# (35.8), w1 1.73 (33.2), w2 5.36 (5.36).
+# Ladder init: r0[i](t) = base_i + (coarse_c(t) - median(coarse_c)), clamped
+# at 0 — anchored on the SEED bases (not on the path), so any residual
+# constant DP offset cancels; gated windows reduce to blind_KR's constant
+# init exactly. The standard vit2dsp ladder runs on top, unchanged.
+# Measured init PIT-MAE vs raw telemetry (recorded blind_KR FINAL MAE in
+# parens): nosource w0 3.45 (15.4), speech w0 2.82 (16.8), whitenoise w0
+# 4.32 (23.1), FLY124 w0 3.96 (35.8), w1 1.73 (33.2), w2 5.4-class (5.36);
+# every steady window gated to the exact blind_KR init.
 COARSE_LO, COARSE_HI, COARSE_STEP = 12.0, 120.0, 0.5
 COARSE_K_MAX = 8  # low harmonics: wide basins, coarse evidence
 COARSE_F_MIN = 20.0  # below the seed's 60 Hz floor — keeps the k1/k2 teeth
@@ -201,10 +223,21 @@ COARSE_LINE_HALF_HZ = 1.5  # line-strength readout half-width around b / 2b
 COARSE_RESTRICT = 16.0  # +- grid half-range around median(bases) when halved
 COARSE_ADAPTIVE_F_TOP = 360.0  # halved grid only: use k up to f_top/c
 COARSE_ADAPTIVE_K_CAP = 24  # (band-matched tooth count, clip 8..24)
-ENERGY_BAND = (2000.0, 6000.0)  # bridge energy band (drone hiss, little speech)
+COARSE_SPAN_MIN = 8.0  # steady gate: path span (p98 - p2) below this = no
+# ramp (steady windows measure <= 6.5; the smallest true ramp, FLY124 w0's
+# warmup spool-up, measures 10.0)
+COARSE_MED_SHIFT_MAX = 5.0  # distrust gate: |median(path) - median(bases)|
+# above this = the DP abandoned the seeds (<= 1.1 good, 16-17 broken)
+ENERGY_BAND = (50.0, 200.0)  # bridge energy band: rotor rumble — monotone in
+# rps and the strongest-contrast band on every recording incl. the speech /
+# white-noise masker ones (2-6 kHz is flooded by the white-noise source)
 ENERGY_SMOOTH_FRAMES = 11
 BRIDGE_JUMP_MIN = 20.0  # rev/s: min two-plateau jump to re-time
 BRIDGE_SUSTAIN_S = 0.5  # alpha >= 0.9 must hold this long to anchor c_hi
+BRIDGE_IDLE_MIN_S = 1.0  # min low-energy (alpha <= 0.1) idle phase before the
+# spool-up for the bridge to engage at all (takeoff-from-idle signature)
+BRIDGE_IDLE_C_FRAC = 0.45  # idle re-scan restricted to c <= this * c_hi
+# (excludes the c_hi/2 sub-multiple attractor)
 BRIDGE_REJOIN_TOL = 5.0  # rev/s: catch-up hold until the DP path is this close
 BRIDGE_MIN_CONTRAST = 0.5  # min log-energy gap between plateaus to trust
 
@@ -318,27 +351,35 @@ def _viterbi_frames(s: np.ndarray, c_grid: np.ndarray, gamma: float) -> np.ndarr
     return c_grid[path]
 
 
-def _energy_bridge(path: np.ndarray, energy: np.ndarray, frame_s: float) -> tuple[np.ndarray, str]:
-    """Re-time a two-plateau takeoff jump in ``path`` by the energy profile.
+def _energy_bridge(
+    path: np.ndarray,
+    fsc: np.ndarray,
+    c_grid: np.ndarray,
+    energy: np.ndarray,
+    frame_s: float,
+) -> tuple[np.ndarray, str]:
+    """Rebuild the pre-cruise part of a takeoff window from the energy profile.
 
-    See the constants block: alpha(t) = clipped normalized high-band energy
-    between the low/high plateau levels; within [last alpha<=0.1, first
-    sustained alpha>=0.9] the path becomes c_lo * (c_hi/c_lo)^alpha, then
-    holds c_hi until the DP path rejoins it. No-op when the path has no
-    > BRIDGE_JUMP_MIN two-plateau structure or the energy contrast is weak.
+    See the constants block item (d): requires a > BRIDGE_JUMP_MIN
+    two-plateau DP path, usable energy contrast, a sustained high-energy
+    (cruise) run AND a >= BRIDGE_IDLE_MIN_S idle phase; then idle frames get
+    c_lo from a restricted constant-c re-scan of the idle frames (the DP's
+    own low plateau is junk when a masker hides the idle comb), transition
+    frames get the power-law energy mapping, and c_hi is held until the DP
+    path rejoins it. Any unmet requirement returns the path unchanged.
     """
     from scipy.ndimage import median_filter
 
     if float(path.max() - path.min()) < BRIDGE_JUMP_MIN:
         return path, "no-op"
     cmid = float(path.max() + path.min()) / 2.0
-    c_lo = float(np.median(path[path < cmid]))
-    c_hi = float(np.median(path[path >= cmid]))
-    if c_hi - c_lo < BRIDGE_JUMP_MIN:
+    c_lo_p = float(np.median(path[path < cmid]))
+    c_hi_p = float(np.median(path[path >= cmid]))
+    if c_hi_p - c_lo_p < BRIDGE_JUMP_MIN:
         return path, "no-op"
     e_sm = median_filter(energy, size=ENERGY_SMOOTH_FRAMES)
-    e_lo = float(np.median(e_sm[np.abs(path - c_lo) < 3.0]))
-    e_hi = float(np.median(e_sm[np.abs(path - c_hi) < 3.0]))
+    e_lo = float(np.percentile(e_sm, 2))
+    e_hi = float(np.percentile(e_sm, 90))
     if e_hi - e_lo < BRIDGE_MIN_CONTRAST:
         return path, "no-contrast"
     alpha = np.clip((e_sm - e_lo) / (e_hi - e_lo), 0.0, 1.0)
@@ -352,18 +393,27 @@ def _energy_bridge(path: np.ndarray, energy: np.ndarray, frame_s: float) -> tupl
             break
     if t_hi0 is None:
         return path, "no-hi-run"
-    lo_before = np.where(alpha[:t_hi0] <= 0.1)[0]
-    t_lo1 = int(lo_before[-1]) if len(lo_before) else 0
+    c_hi = float(np.median(path[alpha >= 0.9]))
+    idle = np.zeros(len(path), dtype=bool)
+    idle[:t_hi0] = alpha[:t_hi0] <= 0.1
+    if float(idle.sum()) * frame_s < BRIDGE_IDLE_MIN_S:
+        return path, "no-idle"
+    sel = c_grid <= BRIDGE_IDLE_C_FRAC * c_hi
+    s_idle = fsc[:, idle].mean(axis=1)
+    c_lo = float(c_grid[sel][int(np.argmax(s_idle[sel]))])
     out = path.copy()
-    c_fix = c_lo * (c_hi / c_lo) ** alpha
-    out[t_lo1 : t_hi0 + 1] = c_fix[t_lo1 : t_hi0 + 1]
+    out[idle] = c_lo
+    trans = np.zeros(len(path), dtype=bool)
+    trans[:t_hi0] = (alpha[:t_hi0] > 0.1) & (alpha[:t_hi0] < 0.9)
+    a_resc = np.clip((alpha - 0.1) / 0.8, 0.0, 1.0)
+    out[trans] = c_lo * (c_hi / c_lo) ** a_resc[trans]
     t = t_hi0
     while t < len(path) and abs(float(path[t]) - c_hi) > BRIDGE_REJOIN_TOL:
         out[t] = c_hi
         t += 1
     return out, (
-        f"bridge [{t_lo1 * frame_s:.2f},{t_hi0 * frame_s:.2f}]s catchup->{t * frame_s:.2f}s "
-        f"c_lo={c_lo:.1f} c_hi={c_hi:.1f}"
+        f"bridge hi0={t_hi0 * frame_s:.2f}s catchup->{t * frame_s:.2f}s "
+        f"c_lo={c_lo:.1f} c_hi={c_hi:.1f} idle={float(idle.sum()) * frame_s:.1f}s"
     )
 
 
@@ -408,15 +458,32 @@ def fullrange_init(
     s = (fsc - med_f) / np.maximum(peak_f - med_f, COARSE_NORM_SOFT * glob)
     path = _viterbi_frames(s, c_grid, COARSE_GAMMA)
     frame_s = float(st2[1] - st2[0]) if len(st2) > 1 else FRAME_S
-    path, bridge_info = _energy_bridge(path, energy, frame_s)
-    coarse = np.interp(prep.ft, st2, path)
-    r0 = np.maximum(coarse[None, :] + offsets[:, None], 0.0)
+
+    # Trust gates (constants block item (c)): a coarse path only overrides
+    # the constant blind_KR init when it tracks a real ramp AND kept the
+    # seed structure.
+    span = float(np.percentile(path, 98) - np.percentile(path, 2))
+    shift = abs(float(np.median(path)) - med)
+    if span < COARSE_SPAN_MIN or shift > COARSE_MED_SHIFT_MAX:
+        mode = "const-steady" if span < COARSE_SPAN_MIN else "const-distrust"
+        coarse = np.full(len(prep.ft), med)
+        r0 = np.repeat(bases[:, None], len(prep.ft), axis=1)
+        bridge_info = "gated"
+    else:
+        mode = "coarse"
+        path, bridge_info = _energy_bridge(path, fsc, c_grid, energy, frame_s)
+        coarse = np.interp(prep.ft, st2, path)
+        # Anchor on the SEED bases: residual constant DP offsets cancel.
+        r0 = np.maximum(bases[:, None] + (coarse - float(np.median(path)))[None, :], 0.0)
     diag = {
         "coarse_c": coarse,
         "coarse_bpf_ratio": ratio,
         "coarse_halved": halved,
         "coarse_grid": (float(lo), float(hi)),
         "coarse_bridge": bridge_info,
+        "coarse_mode": mode,
+        "coarse_span": span,
+        "coarse_shift": shift,
     }
     return r0, seed, diag
 
@@ -683,11 +750,12 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
     }
     coarse_msg = ""
     if coarse_diag:
-        span = np.round(np.percentile(coarse_diag["coarse_c"], [0, 50, 100]), 1)
+        cspan = np.round(np.percentile(coarse_diag["coarse_c"], [0, 50, 100]), 1)
         coarse_msg = (
-            f" coarse[halved={coarse_diag['coarse_halved']} "
+            f" coarse[{coarse_diag['coarse_mode']} halved={coarse_diag['coarse_halved']} "
             f"bpf_ratio={coarse_diag['coarse_bpf_ratio']:.2f} "
-            f"{coarse_diag['coarse_bridge']} c min/med/max {span}]"
+            f"span={coarse_diag['coarse_span']:.1f} shift={coarse_diag['coarse_shift']:.1f} "
+            f"{coarse_diag['coarse_bridge']} c min/med/max {cspan}]"
         )
     print(
         f"[{rid} w{widx:02d} | {arm}] seeds {np.round(seed.bases, 2)} gate={seed.update_gate} "
@@ -721,6 +789,9 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
                 "coarse_halved": np.bool_(coarse_diag["coarse_halved"]),
                 "coarse_grid": np.asarray(coarse_diag["coarse_grid"]),
                 "coarse_bridge": np.str_(coarse_diag["coarse_bridge"]),
+                "coarse_mode": np.str_(coarse_diag["coarse_mode"]),
+                "coarse_span": np.float64(coarse_diag["coarse_span"]),
+                "coarse_shift": np.float64(coarse_diag["coarse_shift"]),
             }
             if coarse_diag
             else {}
