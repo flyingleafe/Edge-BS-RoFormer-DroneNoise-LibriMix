@@ -125,9 +125,11 @@ def _label_rule(policy: Mapping[str, Any], key: str, block_idx: int | None = Non
     change ("zero"). A ``noise_augmentations`` row (one block of a list, or a
     single-mapping key) whose every choice is ``freq_scale`` must change
     labels on EVERY fire whose chunk has nonzero RPS ("match_fired") — the
-    check that label augmentation actually reaches the targets. (All-zero-RPS
-    chunks — full-flight policies with ``min_motor_rps: 0`` contain
-    pre-takeoff ground windows — are exempt: ``0 * alpha == 0``.) A row whose
+    check that label augmentation actually reaches the targets. (Chunks whose
+    labels are all-zero in BOTH the real and the control stream — full-flight
+    policies with ``min_motor_rps: 0`` contain pre-takeoff ground windows —
+    are exempt: ``0 * alpha == 0``. A control-zero chunk whose scaled crop
+    gains flight content still counts as label-bearing.) A row whose
     every choice is label-preserving (no ``freq_scale``) must NEVER change
     labels ("zero"). Mixed rows get no rule.
     """
@@ -432,7 +434,14 @@ def main() -> int:
                 this_fired = not (_tensors_equal(ra, ca) and _tensors_equal(rl, cl))
                 if this_fired:
                     fired += 1
-                    if bool(torch.any(cl != 0)):
+                    # A fire is label-bearing when EITHER stream's labels are
+                    # nonzero: freq_scale re-crops the oversampled source
+                    # window, so a chunk whose unscaled (control) crop is
+                    # all-zero RPS — a full-flight ground span — can
+                    # legitimately gain nonzero labels when compression pulls
+                    # flight content into the window. Only both-zero chunks
+                    # are exempt (0 * alpha == 0).
+                    if bool(torch.any(cl != 0)) or bool(torch.any(rl != 0)):
                         fired_nonzero_rps += 1
                 if not _tensors_equal(rl, cl):
                     label_diff += 1

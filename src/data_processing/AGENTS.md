@@ -465,7 +465,15 @@ sources:
 ```
 
 Also accepts `split` (singular), `recording_ids`, and `take` (cap the number
-of recordings). Nuance vs `kind: dregon`: after adaptation there is no
+of recordings). A real source (`dregon`/`michaels`/`frames`) that sets an
+**explicit `weight`** becomes its own sub-pool in a `MixedNoisePool` at that
+pool-level weight instead of joining the duration-weighted real merge (whose
+weight stays 1.0 per unweighted item) — the knob that lets a long auxiliary
+corpus enter at a modest share, e.g. `AVQ-egonoise-vkrps` (~617 s) at
+`weight: 0.5` vs the merged DREGON+michaels 2.0 in
+`conf/online_mix/beatvk_avq_dload.yaml` (= 20% of noise chunks; being mono,
+~3% of training frames under `flatten_channels`). Unweighted-only source
+lists behave exactly as before. Nuance vs `kind: dregon`: after adaptation there is no
 separate `motors_measured` detect track, so the in-flight window is detected
 on the cleaned `motors_command` — the command's trailing logging freeze is not
 trimmed (same behaviour as the command-only room2 recordings). Likewise,
@@ -594,7 +602,7 @@ distinguish them:
 
 After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 
-### Catalog (pinned in `dload.lock` — 42 datasets)
+### Catalog (pinned in `dload.lock` — 43 datasets)
 
 - **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
   `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
@@ -631,7 +639,7 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
   AVQ videos + `cameraParams.mat` + `.docx` docs + raw mic_pos/angle_vad/
   av_calibration mats — everything except the per-channel `MONO-*.wav`, which is
   the audio in `AVQ`). Publisher `scripts/publish_avq_raw.py`.
-- **Purpose-built derived subsets** (1, `tdframe-v1`): `AVQ-egonoise` (5; the
+- **Purpose-built derived subsets** (2, `tdframe-v1`): `AVQ-egonoise` (5; the
   pure rotor ego-noise sequences of `AVQ` — `S1_seq1`/`S1_seq2`/`S1_seq3`/
   `S2_seq1`/`S2_seq2`, the only AVQ recordings *without* an `angle_vad` entry
   and therefore without the speech source — **channel 0 only, 16 kHz mono**,
@@ -646,6 +654,17 @@ After any commit: `dload pin NAME && git add dload.lock` and commit+push.
   some boto3 builds (Kaggle: `S3DownloadFailedError ... did not match expected
   ETag`) — a false alarm (the object's sha256 matches its content address), but
   a fatal one on those backends. `AVQ`/`AVQ-raw` are unchanged.
+  `AVQ-egonoise-vkrps` (7; `AVQ-egonoise` joined with the blind-VK RPS
+  **pseudo-labels** of `scripts/vk_pseudolabel.py` @ fa5053fc — one Frame per
+  contiguous accepted segment, recordings split at NaN/refused spans (a frame
+  is accepted iff all 4 rotor labels are finite), segments >= 10 s kept:
+  ~617 s total, one 38 MiB shard. Each Frame: mono 16 kHz `audio` + `rps`
+  `(rotor, time)` StampIndex Series on the 0.032 s grid (michaels-frames
+  events convention, no-cleaning `_resolve_motor_tracks` path) + provenance
+  meta (annotator commit, `refuse_conf`, per-segment mean VK confidence).
+  Publisher `scripts/publish_avq_vkrps.py`; consumed as `kind: frames` in
+  `conf/online_mix/beatvk_avq_dload.yaml` (beat-VK R2 arm). Labels are
+  cruise-only (66–117 rev/s), not telemetry — treat as pseudo-ground-truth.
 - **Fixed SE validation sets** (3, `tdframe-v1`, `{mixture,target,meta}` per
   clip; builder `scripts/build_se_valid.py`): `SE-valid-drone`,
   `SE-valid-harmonic` (F1), `SE-valid-avq-survey` (F2, 250 clips).

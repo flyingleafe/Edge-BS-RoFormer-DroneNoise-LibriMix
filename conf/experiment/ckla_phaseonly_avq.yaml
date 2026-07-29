@@ -1,0 +1,28 @@
+# @package _global_
+# Phase-only readout arm on the fs_v2 protocol + VK pseudo-labeled AVQ
+# ego-noise as an extra real noise source (beat-VK R2 arm; see
+# conf/online_mix/beatvk_avq_dload.yaml — AVQ-egonoise-vkrps at weight 0.5
+# vs the merged DREGON+michaels pool's 2.0, i.e. 20% of noise chunks).
+# Clone of ckla_phaseonly_fs_v2 pointing at the new policy.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_phaseonly
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_phaseonly_avq
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+grad_clip: 1.0  # phase_only readout: atan2 near zero phasor -> exploding grads (NaN killed a seed run); clip at 1.0
+data:
+  train:
+    params:
+      path: conf/online_mix/beatvk_avq_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

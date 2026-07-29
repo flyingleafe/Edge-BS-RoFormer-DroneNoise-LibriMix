@@ -427,14 +427,20 @@ class MixedNoisePool:
 def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
     """Build a noise pool from a source spec (or list), dispatching on ``kind``.
 
-    Real sources (``dregon``/``michaels``) are merged into one
-    :class:`TimeFrameNoisePool` (duration-weighted across recordings, unchanged).
-    Any ``kind: generated`` source becomes a
-    :class:`data_processing.generated_noise.GeneratedNoisePool`; when generated
-    and real sources are mixed, they are combined in a :class:`MixedNoisePool`
-    with pool-level ``weight`` (default ``1.0`` per source item — so a bare
-    ``[dregon, generated]`` list is a 50/50 mix). The pure-real path is
-    byte-for-byte the old behaviour.
+    Real sources (``dregon``/``michaels``/``frames``) without an explicit
+    ``weight`` are merged into one :class:`TimeFrameNoisePool`
+    (duration-weighted across recordings, unchanged). A real source that DOES
+    set ``weight`` becomes its own :class:`TimeFrameNoisePool` sub-pool at
+    that pool-level weight instead of joining the duration-weighted merge —
+    the knob that lets a long auxiliary corpus (e.g. the ~617 s VK
+    pseudo-labeled ``AVQ-egonoise-vkrps``) enter at a modest share instead of
+    dominating by duration. Any ``kind: generated`` source becomes a
+    :class:`data_processing.generated_noise.GeneratedNoisePool`; when several
+    pools coexist they are combined in a :class:`MixedNoisePool` with
+    pool-level ``weight`` (default ``1.0`` per source item — so a bare
+    ``[dregon, generated]`` list is a 50/50 mix, and the merged unweighted
+    real pool weighs ``1.0`` per merged item, as before). The pure-real,
+    all-unweighted path is byte-for-byte the old behaviour.
     """
     cfg = _to_plain(cfg)
     items = list(cfg) if isinstance(cfg, list) else [cfg]
@@ -446,7 +452,13 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
     #   kind: audio_pool   -> lazy dload-backed audio dataset (DloadAudioPool, F1 SE)
     standalone_kinds = {"generated", "static_comb", "gp", "audio_pool"}
     standalone_items = [c for c in items if _cfg_get(c, "kind") in standalone_kinds]
-    if not standalone_items:
+    real_items = [c for c in items if _cfg_get(c, "kind") not in standalone_kinds]
+    # Real items with an EXPLICIT weight leave the duration-weighted merge and
+    # become their own weighted sub-pool (see docstring). No existing policy
+    # sets `weight` on a real item, so the split preserves all prior streams.
+    weighted_real = [c for c in real_items if _cfg_get(c, "weight", None) is not None]
+    merged_real = [c for c in real_items if _cfg_get(c, "weight", None) is None]
+    if not standalone_items and not weighted_real:
         return TimeFrameNoisePool.from_config(cfg, duration_s=duration_s, sample_rate=sample_rate)
 
     def _build_standalone(c: Any):
@@ -465,16 +477,20 @@ def build_noise_pool(cfg: Any, *, duration_s: float, sample_rate: int):
 
         return StaticCombNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
 
-    real_items = [c for c in items if _cfg_get(c, "kind") not in standalone_kinds]
     pools: list[Any] = []
     weights: list[float] = []
-    if real_items:
+    if merged_real:
         pools.append(
             TimeFrameNoisePool.from_config(
-                real_items, duration_s=duration_s, sample_rate=sample_rate
+                merged_real, duration_s=duration_s, sample_rate=sample_rate
             )
         )
-        weights.append(sum(float(_cfg_get(c, "weight", 1.0)) for c in real_items))
+        weights.append(sum(float(_cfg_get(c, "weight", 1.0)) for c in merged_real))
+    for c in weighted_real:
+        pools.append(
+            TimeFrameNoisePool.from_config(c, duration_s=duration_s, sample_rate=sample_rate)
+        )
+        weights.append(float(_cfg_get(c, "weight", 1.0)))
     for c in standalone_items:
         pools.append(_build_standalone(c))
         weights.append(float(_cfg_get(c, "weight", 1.0)))
