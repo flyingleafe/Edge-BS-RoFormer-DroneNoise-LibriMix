@@ -31,6 +31,22 @@ recovery (not just frequency) from fully-synthetic to real data:
       audio against the RECOVERED phase, residual harmonic-energy drop under
       phase-locked comb subtraction, and VK confidence. Init = the nominal
       setpoint from the recording id, and nominal +-1.
+  S3b real 4-motor static DREGON (``motor_allMotors_70``): all 4 motors at
+      nominal 70 on the ground, same treatment as S3 but with 4 rotor tracks
+      (init = the constant nominal per rotor; the S3 finding is true speed
+      ~ 0.98x nominal, so inits are nominal and nominal-1). Isolates
+      multi-rotor masking from flight. No GT -> no PIT (rotors start
+      identical and are reported by index). Identical inits are structurally
+      unrefinable by iter_warp (twin rejection excludes every window), so a
+      second ``|stag`` cell staggers the init per rotor (S3B_STAGGER) as the
+      degeneracy-breaking control.
+  S3c real quasi-stationary flight (``hovering_nosource_room2``, command
+      telemetry only): init = tau-aligned ``clean_command_spikes``-cleaned
+      command on a 16 s mid-recording window (the free-flight prep
+      conventions, but the in-flight mask uses command only — this recording
+      has no ``motors_measured``). Isolates aero loading + minor motion from
+      translation. The S3b->S3c->S4 deltas decompose the S3->S4 collapse
+      into masking vs aero-load phase noise vs translation/Doppler.
   S4  one 16 s cruise window of ``free-flight_nosource_room1`` (the
       ``vk_blind_annotation`` prep segment), init = tau-aligned command
       telemetry: same S3-style no-GT metrics — the S3->S4 delta isolates
@@ -57,7 +73,15 @@ No-GT lock metrics (all stages, so S2->S3 bridges sim->real on the SAME
 metric): lock_k = |mean_t z_k| / mean_t |z_k| of the demodulated envelope
 z_k = LP[x e^{-i k phi_hat}]; S3/S4 additionally report the harmonic-energy
 drop (dB) after subtracting the coupled-VK comb reconstruction at the
-recovered trajectory, and the VKResult confidence.
+recovered trajectory, and the VKResult confidence. Two decoherence
+diagnostics ride on the SAME envelopes: (a) an off-comb noise floor —
+lock{k}_off re-demodulates at k phi_hat + 2 pi Delta t (Delta = 3 Hz, off
+every comb line) and lock{k}_corr = sqrt(max(lock^2 - lock_off^2, 0)) is the
+bias-corrected lock; (b) a coherence-time curve — L(T) = mean over disjoint
+spans of length T of |mean_span z| / mean|z|, T in {0.125..8} s, stored as
+the compact-JSON column ``coh_time`` ({k: {T: L}} per rotor row). L(T) decays
+with T at the rate the comb decoheres, so the rung-to-rung curves separate
+fast phase noise (short plateaus) from slow drift (long plateaus).
 
 Everything is deterministic (fixed per-cell seeds; the generator renders
 under ``torch.manual_seed``). Per-run NPZs with the refined trajectories go
@@ -110,7 +134,12 @@ from vk_blind_annotation import (
 )
 
 from data_processing import rps_synthesis  # noqa: E402
-from data_processing.rps_refinement import RefineConfig, refine_coherent  # noqa: E402
+from data_processing.rps_refinement import (  # noqa: E402
+    RefineConfig,
+    compute_logmag,
+    estimate_clock_offset,
+    refine_coherent,
+)
 from data_processing.vk_tracking import (  # noqa: E402
     VKConfig,
     _demod_tracks_fft,
@@ -150,8 +179,28 @@ S3_MOTORS_FULL = tuple(f"motor_Motor{m}_{s}" for m in (1, 2, 3, 4) for s in (50,
 S3_MOTORS_QUICK = ("motor_Motor1_50", "motor_Motor1_70", "motor_Motor1_90")
 S3_OFFSETS = (0.0, -1.0, 1.0)
 
+S3B_RID = "motor_allMotors_70"  # all 4 motors static at nominal 70
+S3B_OFFSETS = (0.0, -1.0)  # true speed ~ 0.98x nominal (S3 finding)
+# Degeneracy-breaking control: 4 identical inits are structurally unrefinable
+# by iter_warp (every order of every rotor collides with its 3 twins ->
+# _order_collides excludes ALL windows; measured no-op). The staggered arm
+# spreads the init per rotor so the refiner can engage; at offset -1.0 it
+# brackets the observed comb fundamentals (~67.6-69.9 Hz on this recording).
+S3B_STAGGER = (-0.6, -0.2, 0.2, 0.6)
+
+S3C_RID = "hovering_nosource_room2"  # flying but quasi-stationary, command-only
+S3C_WIN_S = 16.0
+DREGON_MIN_RPS = 30.0  # in-flight mask threshold (vk_validation convention)
+
 S4_RID = "free-flight_nosource_room1"
 S4_WIN_S = 16.0
+
+# Decoherence diagnostics (computed from the SAME demodulated envelopes as
+# lock_k): disjoint-span coherence-time curve L(T), and the off-comb noise
+# floor at k phi + 2 pi OFF_COMB_HZ t (3 Hz sits off every comb line for all
+# k at the ladder's rotor speeds and off the twin-pair beat spacings).
+COH_SPANS_S = (0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+OFF_COMB_HZ = 3.0
 
 INIT_OFFSETS = (0.0, 0.3, 1.0, 2.0)
 CAPTURE_OFFSETS = (2.0,)  # vk_capture_refine runs from these inits only
@@ -168,7 +217,7 @@ EVAL_ENV_CFG = VKConfig(
     n_outer=1,
 )
 
-ALL_STAGES = ("S0", "S1", "S2", "S3", "S4")
+ALL_STAGES = ("S0", "S1", "S2", "S3", "S3b", "S3c", "S4")
 CSV_FIELDS = (
     "stage",
     "cell",
@@ -187,15 +236,13 @@ CSV_FIELDS = (
     "c10",
     "c20",
     "c40",
-    "lock1",
-    "lock2",
-    "lock5",
-    "lock10",
-    "lock20",
-    "lock40",
+    *(f"lock{k}" for k in KS),
+    *(f"lock{k}_off" for k in KS),
+    *(f"lock{k}_corr" for k in KS),
     "harm_drop_db",
     "confidence",
     "twin_capture",
+    "coh_time",  # compact JSON {k: {T_s: L}} — keep last (long column)
 )
 
 
@@ -446,6 +493,102 @@ def build_s3_cells(dregon_dir: str, quick: bool) -> list[Cell]:
     return cells
 
 
+def build_s3b_cells(dregon_dir: str) -> list[Cell]:
+    """All 4 motors static at nominal 70 (``motor_allMotors_70``) — S3 treatment
+    with 4 rotor tracks. No GT -> no PIT; rotors by index. Two cells: the
+    spec'd degenerate init (all rotors at the same constant — twin rejection
+    makes iter_warp a measured no-op there) and the ``|stag`` control with
+    per-rotor S3B_STAGGER added so refinement can engage."""
+    from data_processing.dregon import discover_recordings, get_geometry, load_timeframe
+    from data_processing.streams import resolve_source
+
+    ddir = Path(resolve_source(dregon_dir))
+    by_id = {s["recording_id"]: s for s in discover_recordings(ddir)}
+    sample = by_id[S3B_RID]
+    frame = load_timeframe(sample, geometry=get_geometry(ddir), target_sr=SR)
+    audio = np.asarray(frame["audio"].data, dtype=np.float64)
+    n_seg = int(S3_DUR_S * SR)
+    lo = max(0, (audio.shape[-1] - n_seg) // 2)  # mid-recording segment
+    audio = audio[:, lo : lo + n_seg]
+    nominal = float(sample["motor_speed"])
+    ft = _frame_grid(audio.shape[-1])
+    flat = np.full((4, len(ft)), nominal)
+    stag = flat + np.asarray(S3B_STAGGER)[:, None]
+    cells = []
+    for suffix, base in (("", flat), ("|stag", stag)):
+        cells.append(
+            Cell(
+                stage="S3b",
+                cell_id=S3B_RID + suffix,
+                audio=audio,
+                ft=ft,
+                r_init_base=base,
+                r_true_aud=None,
+                with_energy_drop=True,
+                meta={"nominal": nominal, "seg_lo_s": lo / SR, "stagger": bool(suffix)},
+            )
+        )
+    return cells
+
+
+def build_s3c_cell(dregon_dir: str) -> Cell:
+    """Quasi-stationary flight (``hovering_nosource_room2``), command-only.
+
+    Free-flight prep conventions (tau via stage-A ``estimate_clock_offset``,
+    ``clean_command_spikes``-cleaned command interpolated to the frame grid)
+    but the in-flight mask uses the command alone — this recording carries no
+    ``motors_measured``. One 16 s mid-recording window of the in-flight span.
+    """
+    from data_processing.dregon import (
+        clean_command_spikes,
+        discover_recordings,
+        get_geometry,
+        load_timeframe,
+    )
+    from data_processing.streams import resolve_source
+
+    ddir = Path(resolve_source(dregon_dir))
+    by_id = {s["recording_id"]: s for s in discover_recordings(ddir)}
+    frame = load_timeframe(by_id[S3C_RID], geometry=get_geometry(ddir), target_sr=SR)
+    audio = np.asarray(frame["audio"].data, dtype=np.float64)
+    t0 = float(frame["audio"].tindex.t_start)
+    command = np.asarray(frame["motors_command"].data)
+    mt = np.asarray(frame["motors_command"].tindex.abs_stamps) - t0
+    command_clean = clean_command_spikes(command)
+
+    idx = np.where(np.median(command, axis=0) > DREGON_MIN_RPS)[0]
+    t_lo = float(mt[idx[0]]) + 0.2
+    t_hi = float(mt[idx[-1]]) - 0.2
+
+    # Stage-A clock offset from the cleaned command, channel 0, first 30 s of
+    # the in-flight window — identical to vk_validation.prepare_recording.
+    cfg_r = RefineConfig()
+    spec0 = compute_logmag(audio[:1, int(t_lo * SR) : int(min(t_lo + 30.0, t_hi) * SR)], cfg_r)
+    tau, _, _ = estimate_clock_offset(spec0, mt - t_lo, command_clean, cfg_r)
+
+    mid = 0.5 * (t_lo + t_hi)
+    seg_lo = max(t_lo, mid - S3C_WIN_S / 2.0)
+    seg_hi = min(t_hi, seg_lo + S3C_WIN_S)
+    a0, a1 = int(round(seg_lo * SR)), int(round(seg_hi * SR))
+    seg = audio[:, a0:a1]
+    ft = _frame_grid(seg.shape[-1])
+    r_init = np.stack([np.interp(ft + seg_lo + tau, mt, command_clean[i]) for i in range(4)])
+    return Cell(
+        stage="S3c",
+        cell_id=f"{S3C_RID}@{seg_lo:.1f}s",
+        audio=seg,
+        ft=ft,
+        r_init_base=r_init,
+        r_true_aud=None,
+        with_energy_drop=True,
+        meta={
+            "window_start_s": float(seg_lo),
+            "tau": float(tau),
+            "mean_command_rps": float(r_init.mean()),
+        },
+    )
+
+
 def build_s4_cell(dregon_dir: str = "data/DREGON") -> Cell:
     """One 16 s cruise window of the vk_blind_annotation prep segment,
     init = tau-aligned cleaned command telemetry (the campaign's init)."""
@@ -502,16 +645,24 @@ def _phase_stats(r_hat_ft: np.ndarray, ft: np.ndarray, r_true_aud: np.ndarray) -
     return out
 
 
-def _lock_stats(cell: Cell, r_hat_ft: np.ndarray) -> list[dict[str, float]]:
+def _lock_stats(cell: Cell, r_hat_ft: np.ndarray) -> list[dict[str, Any]]:
     """Per-rotor lock quality of the audio against the recovered phase.
 
     lock_k = |mean_t z| / mean_t |z| of the demodulated, decimated envelope
     z = LP[x e^{-i k phi_hat}] (channel-averaged, envelope-grid edges trimmed).
+    Rides two decoherence diagnostics on the same envelopes:
+
+    * lock{k}_off — the same statistic demodulated at k phi_hat +
+      2 pi OFF_COMB_HZ t (off every comb line): the finite-length noise
+      floor of lock. lock{k}_corr = sqrt(max(lock^2 - lock_off^2, 0)).
+    * ``coh_time`` (compact JSON {k: {T_s: L}}) — L(T) = mean over disjoint
+      spans of length T of |mean_span z| / mean|z|, T in COH_SPANS_S; the
+      span-length lock curve whose decay rate is the comb's coherence time.
     """
     n_t = cell.audio.shape[-1]
     t_aud = np.arange(n_t) / SR
     phases: list[np.ndarray] = []
-    index: list[tuple[int, int]] = []  # (rotor, k) per track row
+    index: list[tuple[int, int, bool]] = []  # (rotor, k, off_comb) per track row
     for i in range(r_hat_ft.shape[0]):
         r_aud = np.interp(t_aud, cell.ft, r_hat_ft[i])
         phi = 2.0 * np.pi * np.cumsum(r_aud) / SR
@@ -519,16 +670,41 @@ def _lock_stats(cell: Cell, r_hat_ft: np.ndarray) -> list[dict[str, float]]:
         for k in KS:
             if k * mean_r <= F_MAX:
                 phases.append(k * phi)
-                index.append((i, k))
+                index.append((i, k, False))
+                phases.append(k * phi + 2.0 * np.pi * OFF_COMB_HZ * t_aud)
+                index.append((i, k, True))
     z = demodulate(cell.audio, np.stack(phases), EVAL_ENV_CFG)  # (C, M, T_env)
     stride = max(1, int(round(SR / EVAL_ENV_CFG.fs_env)))
+    fs_env = SR / stride
     n_trim = int(round(ENV_TRIM_S * SR / stride))
     zt = z[..., n_trim : z.shape[-1] - n_trim]
-    lock = np.abs(zt.mean(axis=-1)) / np.maximum(np.abs(zt).mean(axis=-1), 1e-30)  # (C, M)
-    lock_c = lock.mean(axis=0)  # channel average
-    rows: list[dict[str, float]] = [{} for _ in range(r_hat_ft.shape[0])]
-    for m, (i, k) in enumerate(index):
+    denom = np.maximum(np.abs(zt).mean(axis=-1), 1e-30)  # (C, M)
+    lock_c = (np.abs(zt.mean(axis=-1)) / denom).mean(axis=0)  # (M,) channel average
+    n_rotors = r_hat_ft.shape[0]
+    rows: list[dict[str, Any]] = [{} for _ in range(n_rotors)]
+    coh: list[dict[str, dict[str, float]]] = [{} for _ in range(n_rotors)]
+    n_env = zt.shape[-1]
+    for m, (i, k, off_comb) in enumerate(index):
+        if off_comb:
+            rows[i][f"lock{k}_off"] = float(lock_c[m])
+            continue
         rows[i][f"lock{k}"] = float(lock_c[m])
+        curve: dict[str, float] = {}
+        for span_s in COH_SPANS_S:
+            n_span = int(round(span_s * fs_env))
+            n_spans = n_env // n_span
+            if n_span < 1 or n_spans < 1:
+                continue  # span longer than the trimmed envelope
+            zs = zt[:, m, : n_spans * n_span].reshape(zt.shape[0], n_spans, n_span)
+            span_lock = np.abs(zs.mean(axis=-1)) / denom[:, m][:, None]  # (C, n_spans)
+            curve[f"{span_s:g}"] = round(float(span_lock.mean()), 6)
+        coh[i][str(k)] = curve
+    for i in range(n_rotors):
+        for k in KS:
+            l_on, l_off = rows[i].get(f"lock{k}"), rows[i].get(f"lock{k}_off")
+            if l_on is not None and l_off is not None:
+                rows[i][f"lock{k}_corr"] = float(np.sqrt(max(l_on**2 - l_off**2, 0.0)))
+        rows[i]["coh_time"] = json.dumps(coh[i], separators=(",", ":"))
     return rows
 
 
@@ -743,8 +919,18 @@ def build_specs(opts: argparse.Namespace, out_dir: Path) -> list[RunSpec]:
                 add(cell, (0.0, 1.0) if opts.quick else INIT_OFFSETS)
 
     if "S3" in stages:
+        keep = {r.strip() for r in opts.s3_recordings.split(",") if r.strip()}
         for cell in build_s3_cells(opts.dregon_dir, opts.quick):
+            if keep and cell.cell_id not in keep:
+                continue
             add(cell, S3_OFFSETS)
+
+    if "S3b" in stages:
+        for cell in build_s3b_cells(opts.dregon_dir):
+            add(cell, S3B_OFFSETS)
+
+    if "S3c" in stages:
+        add(build_s3c_cell(opts.dregon_dir), (0.0,))
 
     if "S4" in stages:
         add(build_s4_cell(opts.dregon_dir), (0.0,))
@@ -778,7 +964,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     numeric = [
         f
         for f in CSV_FIELDS
-        if f not in ("stage", "cell", "method", "init_offset", "rotor", "gt_kind")
+        if f not in ("stage", "cell", "method", "init_offset", "rotor", "gt_kind", "coh_time")
     ]
     groups: dict[tuple[str, str, str, float], list[dict[str, Any]]] = {}
     for r in rows:
@@ -824,6 +1010,11 @@ def main() -> None:
     )
     ap.add_argument("--device", default="cpu", help="torch device for the generator render")
     ap.add_argument("--dregon-dir", default="data/DREGON", help="path or dload:DREGON")
+    ap.add_argument(
+        "--s3-recordings",
+        default="",
+        help="comma-separated S3 recording-id filter (default: the full/quick S3 set)",
+    )
     ap.add_argument("--workers", type=int, default=4, help="parallel worker processes")
     opts = ap.parse_args()
 
@@ -863,6 +1054,9 @@ def main() -> None:
             "init_offsets": list(INIT_OFFSETS),
             "jitter": {"sigma_revs": JITTER_SIGMA, "tau_s": JITTER_TAU},
             "s2_means": list(S2_MEANS),
+            "coh_spans_s": list(COH_SPANS_S),
+            "off_comb_hz": OFF_COMB_HZ,
+            "s3b_offsets": list(S3B_OFFSETS),
         },
         "wall_s": round(time.perf_counter() - tic, 1),
         "results": summarize(rows),
