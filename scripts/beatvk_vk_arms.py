@@ -16,6 +16,12 @@ Arms (``--arms``), differing ONLY in the seed/ladder-init:
   seed bases (the blind protocol's r0 shape). ``blind_KR`` splices the seed's
   auto ``update_gate`` into the ladder's midband + refine configs (the sweep's
   arm-K behaviour on the vit2dsp ladder).
+* ``blind_fullrange`` — blind_KR with a prepended BPF octave check on the
+  seed bases (FLY124-warmup fix) and a COARSE FULL-RANGE Viterbi pass
+  (12-120 rev/s, frame-rate, slope-tolerant, energy-timed takeoff bridge)
+  that re-centres the seed bases onto a time-varying coarse c(t), so
+  takeoff/warmup ramps inside a window are reachable by the ladder (see the
+  ``COARSE_*`` constants block for mechanism + measured numbers).
 * ``neural_traj`` / ``neural_bases`` — the ``--neural-model`` checkpoint's
   stitched chmean prediction on the window (``rps_predictor_vk_eval``
   conventions: sliding 251-frame windows, 32-frame hop, all mics
@@ -105,7 +111,11 @@ from vk_blind_annotation import (  # noqa: E402
 from vk_blind_sweep import SEED_CFG  # noqa: E402  (identical seed config)
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
-from data_processing.vk_blind_seeding import SeedResult, blind_seed  # noqa: E402
+from data_processing.vk_blind_seeding import (  # noqa: E402
+    SeedResult,
+    blind_seed,
+    whitened_logmag,
+)
 
 DEFAULT_OUT = Path("results/beatvk_vk_arms")
 DEFAULT_NEURAL_MODEL = "ckla_phaseonly_best"
@@ -119,7 +129,296 @@ BLIND_ARM_SETS: dict[str, frozenset[str]] = {
     "blind_KR": frozenset({"K", "R"}),
 }
 NEURAL_ARMS = ("neural_traj", "neural_bases")
-ALL_ARMS = (*BLIND_ARM_SETS, *NEURAL_ARMS, "telem_init")
+FULLRANGE_ARM = "blind_fullrange"
+ALL_ARMS = (*BLIND_ARM_SETS, FULLRANGE_ARM, *NEURAL_ARMS, "telem_init")
+
+# ---------------------------------------------------------------------------
+# blind_fullrange: coarse full-range pass (ramp-following, octave-corrected)
+#
+# Two diagnosed failure modes of the blind arms on the frozen protocol:
+#
+# 1. RAMP WINDOWS (DREGON w0s: takeoff ~15 -> 80 rev/s inside the 16 s
+#    window). The seeder's hypothesis class is constant bases from the
+#    TIME-AVERAGED spectrum (cruise-dominated) and the ladder's Viterbi
+#    stages only track +-6 rev/s around them (VIT2D_DELTA) — the ramp is
+#    outside the tracked state space entirely (blind_KR MAE 15.4-23.1).
+# 2. FLY124 WARMUP windows (true shaft ~31-41 rev/s). The warmup spectrum
+#    contains ONLY even shaft harmonics (blade-pass lines of the 2-blade
+#    props: 62.5/72.3/82 Hz + their multiples; measured, zero odd-line
+#    energy), so the scan's octave-up promotion commits to the 2x bases and
+#    MAE rails at 33-36. Pure comb evidence CANNOT resolve this octave; the
+#    discriminator is physical: for a candidate base b, if the line AT b is
+#    STRONGER than the line at 2b, then b is itself the blade-pass comb and
+#    the shaft is b/2 (at cruise the BPF line 2b dominates the shaft line b:
+#    measured ratios v(b)/v(2b) <= 0.93 on every cruise window vs >= 1.87 on
+#    every warmup window; threshold 1.4).
+#
+# blind_fullrange therefore prepends to blind_KR:
+#   (a) the BPF octave check above — median ratio over unique seed bases
+#       >= COARSE_HALVE_RATIO halves ALL bases (and drops the K-gate, which
+#       was calibrated on the rejected bases);
+#   (b) a coarse slope-tolerant Viterbi c(t) over an fft2048 whitened
+#       spectrogram at the native 32 ms frame rate (window-averaged surfaces
+#       smear a 30 rev/s-per-second ramp into invisibility; at 2048/32 ms the
+#       k<=8 comb sweep is ~1 bin per frame), scoring the RIGID additive
+#       union template r0(c) = c + (bases - median(bases)) with a
+#       positive-half-tooth contrast (on-teeth mean minus max(0, .) mean at
+#       (k-0.5) teeth — penalizes sub-multiple aliases without the
+#       whitening-dip artifact that a signed contrast has), per-frame
+#       soft-normalized so weak-evidence ramp frames still express their
+#       preference. Grid: full 12-120 rev/s (floor 12 excludes the low-c
+#       GCD-alias zone where k<=8 teeth all fall into LF rumble) — or, for
+#       HALVED windows, restricted to median +- 16 rev/s: in the BPF-only
+#       regime full-range magnitude evidence is structurally
+#       octave-attracted, and +-16 still covers the warmup ramps;
+#   (c) an ENERGY-TIMED BRIDGE: through the middle of a takeoff ramp the
+#       narrowband evidence vanishes under the broadband spool-up whoosh (the
+#       DP then times the low->high transition ~1.5 s late), but total
+#       acoustic power tracks rps steeply — when the DP path contains a
+#       > 20 rev/s two-plateau jump, the transition is re-timed by the
+#       high-band (2-6 kHz) energy profile between the two plateaus' energy
+#       levels (power-law c_lo * (c_hi/c_lo)^alpha mapping), with a
+#       catch-up hold at c_hi until the DP path rejoins it.
+#
+# Ladder init: r0[i](t) = coarse_c(t) + (base_i - median(bases)), clamped at
+# 0 — on steady cruise coarse_c(t) ~= median(bases) and the init reduces to
+# blind_KR's constant bases. The standard vit2dsp ladder runs on top,
+# unchanged. Measured init PIT-MAE vs raw telemetry (recorded blind_KR FINAL
+# MAE in parens): nosource w0 3.17 (15.4), w1 1.18 (1.02), FLY124 w0 3.96
+# (35.8), w1 1.73 (33.2), w2 5.36 (5.36).
+COARSE_LO, COARSE_HI, COARSE_STEP = 12.0, 120.0, 0.5
+COARSE_K_MAX = 8  # low harmonics: wide basins, coarse evidence
+COARSE_F_MIN = 20.0  # below the seed's 60 Hz floor — keeps the k1/k2 teeth
+# of warmup/ramp bases in band (the whitened floor is ~0 there)
+COARSE_NFFT = 2048  # 7.8 Hz bins, 0.128 s window: a 30 rev/s-per-second ramp
+# sweeps ~1 bin per k<=8 tooth per frame (8192 smears it over ~26 bins)
+COARSE_SMOOTH_FRAMES = 3  # light time smoothing of per-frame node scores
+COARSE_NORM_SOFT = 0.3  # soft floor (x global median contrast) on the
+# per-frame (score - median) / (peak - median) normalization
+COARSE_GAMMA = 0.4  # transition cost per rev/s of |dc| per 32 ms frame
+COARSE_HALVE_RATIO = 1.4  # BPF octave check threshold on median v(b)/v(2b)
+COARSE_LINE_HALF_HZ = 1.5  # line-strength readout half-width around b / 2b
+COARSE_RESTRICT = 16.0  # +- grid half-range around median(bases) when halved
+COARSE_ADAPTIVE_F_TOP = 360.0  # halved grid only: use k up to f_top/c
+COARSE_ADAPTIVE_K_CAP = 24  # (band-matched tooth count, clip 8..24)
+ENERGY_BAND = (2000.0, 6000.0)  # bridge energy band (drone hiss, little speech)
+ENERGY_SMOOTH_FRAMES = 11
+BRIDGE_JUMP_MIN = 20.0  # rev/s: min two-plateau jump to re-time
+BRIDGE_SUSTAIN_S = 0.5  # alpha >= 0.9 must hold this long to anchor c_hi
+BRIDGE_REJOIN_TOL = 5.0  # rev/s: catch-up hold until the DP path is this close
+BRIDGE_MIN_CONTRAST = 0.5  # min log-energy gap between plateaus to trust
+
+
+def _coarse_spec(audio: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
+    """Short-FFT spectrogram for the coarse pass.
+
+    Returns ``(whitened (F, N), bin_hz, frame_times (N,), energy (N,))`` —
+    channel-mean whitened log-mag (running-median-over-frequency subtracted,
+    same whitening as the seed scan but at COARSE_NFFT) plus the channel-mean
+    RAW log-mag averaged over ENERGY_BAND (the bridge timing signal).
+    """
+    from scipy.ndimage import median_filter
+
+    from data_processing.rps_refinement import RefineConfig, compute_logmag
+
+    rcfg = RefineConfig(sample_rate=SR, n_fft=COARSE_NFFT, device="cpu")
+    spec = compute_logmag(audio, rcfg)
+    lm_raw = spec.logmag.cpu().numpy()  # (C, F, N)
+    bin_hz = float(spec.bin_hz)
+    win = int(round(SEED_CFG.whiten_hz / bin_hz)) | 1
+    white = (lm_raw - median_filter(lm_raw, size=(1, win, 1))).mean(axis=0)
+    freqs = np.arange(white.shape[0]) * bin_hz
+    band = (freqs >= ENERGY_BAND[0]) & (freqs <= ENERGY_BAND[1])
+    energy = lm_raw.mean(axis=0)[band].mean(axis=0)
+    st = np.asarray(spec.frame_times, dtype=np.float64)
+    return white, bin_hz, st, energy
+
+
+def _bpf_octave_ratio(prep: Prepared, bases: np.ndarray) -> float:
+    """Median over unique seed bases of line strength v(b) / v(2b).
+
+    Lines are read off the 8192-FFT whitened time-mean (the seed scan's
+    resolution — warmup lines are narrow; 2048 washes them out), max within
+    +-COARSE_LINE_HALF_HZ. See the constants block for the physics.
+    """
+    lm8, bin8, _ = whitened_logmag(prep.audio, float(SR), SEED_CFG)
+    vec = lm8.mean(axis=1)
+
+    def line(f: float) -> float:
+        lo = max(0, int(np.floor((f - COARSE_LINE_HALF_HZ) / bin8)))
+        hi = min(len(vec) - 1, int(np.ceil((f + COARSE_LINE_HALF_HZ) / bin8)))
+        return float(vec[lo : hi + 1].max())
+
+    uniq: list[float] = []
+    for b in np.sort(np.asarray(bases, dtype=np.float64)):
+        if all(abs(float(b) - u) > 1.0 for u in uniq):
+            uniq.append(float(b))
+    return float(np.median([line(b) / max(line(2.0 * b), 1e-6) for b in uniq]))
+
+
+def _coarse_frame_scores(
+    lm: np.ndarray, bin_hz: float, offsets: np.ndarray, c_grid: np.ndarray, adaptive_k: bool
+) -> np.ndarray:
+    """``(D, N)`` per-frame union-comb contrast of the template ``c + offsets``.
+
+    Score = mean whitened value over on-teeth (k * (c + offset)) minus the
+    mean POSITIVE whitened value over half-teeth ((k - 0.5) * (c + offset)).
+    ``adaptive_k`` (halved/restricted grid only) uses k up to
+    COARSE_ADAPTIVE_F_TOP / c so every c is scored on a comparable band.
+    """
+    n_f, n = lm.shape
+    fmax = min(6000.0, (n_f - 1) * bin_hz)
+
+    def comb_mean(freqs: np.ndarray, pos_only: bool) -> np.ndarray:
+        f = freqs[(freqs >= COARSE_F_MIN) & (freqs <= fmax)]
+        if len(f) == 0:
+            return np.zeros(n)
+        idx = f / bin_hz
+        j = np.floor(idx).astype(int)
+        frac = (idx - j)[:, None]
+        vals = (1 - frac) * lm[j] + frac * lm[np.minimum(j + 1, n_f - 1)]
+        if pos_only:
+            vals = np.maximum(vals, 0.0)
+        return vals.mean(axis=0)
+
+    out = np.empty((len(c_grid), n))
+    off_arr = np.asarray(offsets, dtype=np.float64)
+    for ci, c in enumerate(c_grid):
+        r = float(c) + off_arr
+        k_max = COARSE_K_MAX
+        if adaptive_k:
+            k_max = int(
+                np.clip(
+                    np.floor(COARSE_ADAPTIVE_F_TOP / max(float(c), 1.0)),
+                    COARSE_K_MAX,
+                    COARSE_ADAPTIVE_K_CAP,
+                )
+            )
+        ks = np.arange(1, k_max + 1, dtype=np.float64)
+        out[ci] = comb_mean((ks[:, None] * r[None, :]).ravel(), False) - comb_mean(
+            ((ks - 0.5)[:, None] * r[None, :]).ravel(), True
+        )
+    return out
+
+
+def _viterbi_frames(s: np.ndarray, c_grid: np.ndarray, gamma: float) -> np.ndarray:
+    """Max-sum DP over the (frame, c) lattice; returns the c path (N,)."""
+    n_d, n = s.shape
+    trans = gamma * np.abs(c_grid[None, :] - c_grid[:, None])
+    cost = s[:, 0].copy()
+    ptr = np.zeros((n, n_d), dtype=int)
+    for t in range(1, n):
+        m = cost[:, None] - trans
+        ptr[t] = np.argmax(m, axis=0)
+        cost = s[:, t] + np.max(m, axis=0)
+    path = np.empty(n, dtype=int)
+    path[-1] = int(np.argmax(cost))
+    for t in range(n - 1, 0, -1):
+        path[t - 1] = ptr[t][path[t]]
+    return c_grid[path]
+
+
+def _energy_bridge(path: np.ndarray, energy: np.ndarray, frame_s: float) -> tuple[np.ndarray, str]:
+    """Re-time a two-plateau takeoff jump in ``path`` by the energy profile.
+
+    See the constants block: alpha(t) = clipped normalized high-band energy
+    between the low/high plateau levels; within [last alpha<=0.1, first
+    sustained alpha>=0.9] the path becomes c_lo * (c_hi/c_lo)^alpha, then
+    holds c_hi until the DP path rejoins it. No-op when the path has no
+    > BRIDGE_JUMP_MIN two-plateau structure or the energy contrast is weak.
+    """
+    from scipy.ndimage import median_filter
+
+    if float(path.max() - path.min()) < BRIDGE_JUMP_MIN:
+        return path, "no-op"
+    cmid = float(path.max() + path.min()) / 2.0
+    c_lo = float(np.median(path[path < cmid]))
+    c_hi = float(np.median(path[path >= cmid]))
+    if c_hi - c_lo < BRIDGE_JUMP_MIN:
+        return path, "no-op"
+    e_sm = median_filter(energy, size=ENERGY_SMOOTH_FRAMES)
+    e_lo = float(np.median(e_sm[np.abs(path - c_lo) < 3.0]))
+    e_hi = float(np.median(e_sm[np.abs(path - c_hi) < 3.0]))
+    if e_hi - e_lo < BRIDGE_MIN_CONTRAST:
+        return path, "no-contrast"
+    alpha = np.clip((e_sm - e_lo) / (e_hi - e_lo), 0.0, 1.0)
+    n_sus = max(1, int(round(BRIDGE_SUSTAIN_S / frame_s)))
+    t_hi0 = None
+    run = 0
+    for i, m in enumerate(alpha >= 0.9):
+        run = run + 1 if m else 0
+        if run >= n_sus:
+            t_hi0 = i - n_sus + 1
+            break
+    if t_hi0 is None:
+        return path, "no-hi-run"
+    lo_before = np.where(alpha[:t_hi0] <= 0.1)[0]
+    t_lo1 = int(lo_before[-1]) if len(lo_before) else 0
+    out = path.copy()
+    c_fix = c_lo * (c_hi / c_lo) ** alpha
+    out[t_lo1 : t_hi0 + 1] = c_fix[t_lo1 : t_hi0 + 1]
+    t = t_hi0
+    while t < len(path) and abs(float(path[t]) - c_hi) > BRIDGE_REJOIN_TOL:
+        out[t] = c_hi
+        t += 1
+    return out, (
+        f"bridge [{t_lo1 * frame_s:.2f},{t_hi0 * frame_s:.2f}]s catchup->{t * frame_s:.2f}s "
+        f"c_lo={c_lo:.1f} c_hi={c_hi:.1f}"
+    )
+
+
+def fullrange_init(
+    prep: Prepared, seed: SeedResult
+) -> tuple[np.ndarray, SeedResult, dict[str, Any]]:
+    """blind_fullrange ladder init (mechanism: the COARSE_* constants block).
+
+    Returns ``(r0 (4, N), effective seed, coarse diagnostics)``. The
+    effective seed differs from the input only when the BPF octave check
+    halves the bases (update_gate dropped — the K calibration ran on the
+    rejected 2x bases).
+    """
+    bases = np.sort(np.asarray(seed.bases, dtype=np.float64))
+    ratio = _bpf_octave_ratio(prep, bases)
+    halved = ratio >= COARSE_HALVE_RATIO
+    if halved:
+        bases = bases / 2.0
+        seed = SeedResult(
+            bases=bases.copy(),
+            candidates=seed.candidates,
+            template=seed.template,
+            update_gate=None,
+            bw_hz=seed.bw_hz,
+        )
+    med = float(np.median(bases))
+    offsets = bases - med
+    if halved:
+        lo = max(COARSE_LO, med - COARSE_RESTRICT)
+        hi = min(COARSE_HI, med + COARSE_RESTRICT)
+    else:
+        lo, hi = COARSE_LO, COARSE_HI
+    c_grid = np.arange(lo, hi + COARSE_STEP / 2, COARSE_STEP)
+
+    lm2, bin2, st2, energy = _coarse_spec(prep.audio)
+    fsc = _coarse_frame_scores(lm2, bin2, offsets, c_grid, adaptive_k=halved)
+    kern = np.ones(COARSE_SMOOTH_FRAMES) / COARSE_SMOOTH_FRAMES
+    fsc = np.apply_along_axis(lambda r: np.convolve(r, kern, mode="same"), 1, fsc)
+    med_f = np.median(fsc, axis=0, keepdims=True)
+    peak_f = fsc.max(axis=0, keepdims=True)
+    glob = float(np.median(peak_f - med_f))
+    s = (fsc - med_f) / np.maximum(peak_f - med_f, COARSE_NORM_SOFT * glob)
+    path = _viterbi_frames(s, c_grid, COARSE_GAMMA)
+    frame_s = float(st2[1] - st2[0]) if len(st2) > 1 else FRAME_S
+    path, bridge_info = _energy_bridge(path, energy, frame_s)
+    coarse = np.interp(prep.ft, st2, path)
+    r0 = np.maximum(coarse[None, :] + offsets[:, None], 0.0)
+    diag = {
+        "coarse_c": coarse,
+        "coarse_bpf_ratio": ratio,
+        "coarse_halved": halved,
+        "coarse_grid": (float(lo), float(hi)),
+        "coarse_bridge": bridge_info,
+    }
+    return r0, seed, diag
 
 
 # ---------------------------------------------------------------------------
@@ -336,12 +635,16 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
     with np.load(weights_path(out, rid)) as z:
         weights = z["weights"][: cfg["channels"]]
 
-    arms = BLIND_ARM_SETS.get(arm, frozenset())
-    if arm in BLIND_ARM_SETS:
+    arms = BLIND_ARM_SETS.get(arm, frozenset({"K", "R"}) if arm == FULLRANGE_ARM else frozenset())
+    coarse_diag: dict[str, Any] = {}
+    if arm in BLIND_ARM_SETS or arm == FULLRANGE_ARM:
         tic = time.perf_counter()
         seed = blind_seed(prep.audio, float(SR), N_ROTORS, SEED_CFG, arms=arms)
+        if arm == FULLRANGE_ARM:
+            r0, seed, coarse_diag = fullrange_init(prep, seed)
+        else:
+            r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
         wall_seed = time.perf_counter() - tic
-        r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
     else:
         if arm == "telem_init":
             traj, wall_seed = prep.r_meas.copy(), 0.0
@@ -378,10 +681,18 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
         for k, arr in extras.items()
         if k.startswith("guard_reverted_")
     }
+    coarse_msg = ""
+    if coarse_diag:
+        span = np.round(np.percentile(coarse_diag["coarse_c"], [0, 50, 100]), 1)
+        coarse_msg = (
+            f" coarse[halved={coarse_diag['coarse_halved']} "
+            f"bpf_ratio={coarse_diag['coarse_bpf_ratio']:.2f} "
+            f"{coarse_diag['coarse_bridge']} c min/med/max {span}]"
+        )
     print(
         f"[{rid} w{widx:02d} | {arm}] seeds {np.round(seed.bases, 2)} gate={seed.update_gate} "
         f"seed {wall_seed:.0f}s scan {wall_scan:.0f}s vk {wall_vk:.0f}s "
-        f"guard={{{', '.join(f'{k}:{v}' for k, v in guard.items() if v)}}}",
+        f"guard={{{', '.join(f'{k}:{v}' for k, v in guard.items() if v)}}}{coarse_msg}",
         flush=True,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +714,17 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
         wall_seed_s=np.float64(wall_seed),
         wall_scan_s=np.float64(wall_scan),
         wall_vk_s=np.float64(wall_vk),
+        **(
+            {
+                "coarse_c": coarse_diag["coarse_c"],
+                "coarse_bpf_ratio": np.float64(coarse_diag["coarse_bpf_ratio"]),
+                "coarse_halved": np.bool_(coarse_diag["coarse_halved"]),
+                "coarse_grid": np.asarray(coarse_diag["coarse_grid"]),
+                "coarse_bridge": np.str_(coarse_diag["coarse_bridge"]),
+            }
+            if coarse_diag
+            else {}
+        ),
     )
     return str(path)
 
