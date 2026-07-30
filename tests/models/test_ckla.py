@@ -20,6 +20,7 @@ from models.ckla import (
     SimpleConvV2CKLA,
     TemporalCKLAHead,
     complex_kla_scan,
+    complex_kla_scan_parallel,
     phase_diff_features,
 )
 from models.rps_predictor import SimpleConvV2Transformer
@@ -262,6 +263,9 @@ def test_return_state_parity_and_shapes():
 def test_layer_capture_state():
     torch.manual_seed(0)
     layer = ComplexKLALayer(32, n_state=8)
+    # capture_state routes through the sequential reference scan; pin the
+    # plain forward to it too so the no-perturbation check stays byte-exact.
+    layer.use_parallel_scan = False
     x = torch.randn(2, 20, 32)
     with torch.no_grad():
         y_plain = layer(x)
@@ -411,3 +415,158 @@ def test_registry_builds_phase_readout_variants():
         assert isinstance(m, SimpleConvV2CKLA)
         for mixer in _mixers(m):
             assert mixer.readout == readout
+
+
+# ─── 9. Parallel (associative-scan) path ─────────────────────────────────────
+
+
+def _edge_inputs(rng, B, T, N, D):
+    """Random inputs seeded with the adversarial structure the parallel scan
+    must survive: whole zero-φ steps (k = 0), p̄ near 0, |ā| near 1."""
+    abar_mag, omega, pbar, k, v, lam_v, q = _random_inputs(rng, B, T, N, D)
+    abar_mag[: max(1, N // 3)] = 1.0 - 1e-6  # near-unit decay
+    pbar[N // 2 :] = 1e-12  # near-zero process noise
+    k[:, ::3, :] = 0.0  # φ = κ = 0 on every third step
+    return abar_mag, omega, pbar, k, v, lam_v, q
+
+
+def _torch_inputs(
+    np_inputs, dtype, requires_grad=False
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """(abar_mag, omega, pbar, k, v, lam_v, q) → the 8 scan tensor args."""
+    abar_mag, omega, pbar, k, v, lam_v, q = np_inputs
+    am, cw, sw, pb, kk, vv, lv, qq = (
+        torch.as_tensor(a, dtype=dtype)
+        for a in (abar_mag, np.cos(omega), np.sin(omega), pbar, k, v, lam_v, q)
+    )
+    if requires_grad:
+        am, cw, sw, pb, kk, vv, lv, qq = (
+            t.clone().requires_grad_(True) for t in (am, cw, sw, pb, kk, vv, lv, qq)
+        )
+    return am, cw, sw, pb, kk, vv, lv, qq
+
+
+@pytest.mark.parametrize("T", [1, 2, 3, 31, 250])
+def test_parallel_scan_matches_sequential_forward(T):
+    rng = np.random.default_rng(123 + T)
+    B, N, D = 3, 16, 32
+    inputs = _edge_inputs(rng, B, T, N, D)
+    for dtype in (torch.float64, torch.float32):
+        tens = _torch_inputs(inputs, dtype)
+        y_re_s, y_im_s = complex_kla_scan(*tens)
+        y_re_p, y_im_p = complex_kla_scan_parallel(*tens)
+        np.testing.assert_allclose(y_re_p.numpy(), y_re_s.numpy(), rtol=1e-4, atol=1e-5)
+        np.testing.assert_allclose(y_im_p.numpy(), y_im_s.numpy(), rtol=1e-4, atol=1e-5)
+
+
+_GRAD_NAMES = ("abar_mag", "cos_w", "sin_w", "pbar", "k", "v", "lam_v", "q")
+
+
+@pytest.mark.parametrize("T", [3, 31, 250])
+def test_parallel_scan_grads_match_sequential(T):
+    rng = np.random.default_rng(31 + T)
+    B, N, D = 3, 16, 32
+    inputs = _edge_inputs(rng, B, T, N, D)
+    w_re = rng.standard_normal((B, T, D))
+    w_im = rng.standard_normal((B, T, D))
+
+    def grads(fn, dtype):
+        tens = _torch_inputs(inputs, dtype, requires_grad=True)
+        y_re, y_im = fn(*tens)
+        wr = torch.as_tensor(w_re, dtype=dtype)
+        wi = torch.as_tensor(w_im, dtype=dtype)
+        ((y_re * wr).mean() + (y_im * wi).mean()).backward()
+        out = []
+        for t in tens:
+            assert t.grad is not None
+            out.append(t.grad.double().numpy())
+        return out
+
+    # fp64 (strictest case): elementwise parallel == sequential.
+    truth = grads(complex_kla_scan, torch.float64)
+    par64 = grads(complex_kla_scan_parallel, torch.float64)
+    for name, g_s, g_p in zip(_GRAD_NAMES, truth, par64):
+        np.testing.assert_allclose(
+            g_p, g_s, rtol=1e-3, atol=1e-5, err_msg=f"fp64 grad mismatch: {name}"
+        )
+
+    # fp32 (the training dtype): elementwise comparison of two fp32 graphs is
+    # dominated by summation-order rounding on near-zero entries, so measure
+    # each implementation against the fp64 truth instead — the parallel
+    # scan's rounding error must stay within a small factor of the
+    # sequential loop's own (measured ≤ ~2.3× across inputs and T).
+    seq32 = grads(complex_kla_scan, torch.float32)
+    par32 = grads(complex_kla_scan_parallel, torch.float32)
+    for name, g_t, g_s, g_p in zip(_GRAD_NAMES, truth, seq32, par32):
+        err_seq = np.abs(g_s - g_t).max()
+        err_par = np.abs(g_p - g_t).max()
+        scale = np.abs(g_t).max()
+        assert err_par <= max(4 * err_seq, 1e-6 * scale, 1e-7), (
+            f"fp32 grad {name}: parallel err {err_par:.3e} vs sequential err {err_seq:.3e} "
+            f"(scale {scale:.3e})"
+        )
+
+
+def test_parallel_return_state_falls_back_to_sequential():
+    rng = np.random.default_rng(5)
+    inputs = _edge_inputs(rng, 2, 17, 4, 8)
+    tens = _torch_inputs(inputs, torch.float64)
+    y_re_s, y_im_s, st_s = complex_kla_scan(*tens, return_state=True)
+    y_re_p, y_im_p, st_p = complex_kla_scan_parallel(*tens, return_state=True)
+    assert torch.equal(y_re_p, y_re_s) and torch.equal(y_im_p, y_im_s)
+    for name in ("lam", "eta_re", "eta_im", "contrib"):
+        assert torch.equal(st_p[name], st_s[name])
+
+
+def test_layer_parallel_default_and_env_optout(monkeypatch):
+    assert ComplexKLALayer(16, n_state=4).use_parallel_scan is True
+    monkeypatch.setenv("CKLA_SEQUENTIAL_SCAN", "1")
+    assert ComplexKLALayer(16, n_state=4).use_parallel_scan is False
+
+
+def test_head_parallel_matches_sequential_path():
+    torch.manual_seed(0)
+    head = TemporalCKLAHead(in_ch=64, d_model=64, num_rotors=4, n_layers=2, n_state=8)
+    x = torch.randn(2, 64, 50)
+    with torch.no_grad():
+        y_par = head(x)  # default: parallel scan
+        for blk in head.blocks:
+            mixer = blk.mixer
+            assert isinstance(mixer, ComplexKLALayer)
+            assert mixer.use_parallel_scan
+            mixer.use_parallel_scan = False
+        y_seq = head(x)
+    torch.testing.assert_close(y_par, y_seq, rtol=1e-4, atol=1e-5)
+
+
+def test_parallel_scan_span_overflow_guard_finite():
+    """Small ā with tiny-nonzero k: span-gain products overflow fp32 in a naive
+    associative scan (the sequential loop never materializes them). The combine's
+    1e10 magnitude caps must keep the parallel output finite; outputs are allowed
+    to differ from sequential here (both are in a diverged regime)."""
+    torch.manual_seed(0)
+    B, T, N, D = 2, 250, 8, 16
+    cos_w, sin_w = torch.ones(B, T, N), torch.zeros(B, T, N)
+    v = torch.randn(B, T, D)
+    lam_v = torch.rand(B, T, D) + 0.5
+    q = torch.randn(B, T, N)
+    for a_val in (0.3, 0.5, 0.7):
+        a = torch.full((N, D), a_val)
+        p = torch.full((N, D), 1e-12)
+        k = torch.rand(B, T, N) * 1e-15
+        y_re, y_im = complex_kla_scan_parallel(a, cos_w, sin_w, p, k, v, lam_v, q)
+        assert torch.isfinite(y_re).all() and torch.isfinite(y_im).all()
+        # k exactly zero: sequential is exactly zero and parallel must match it.
+        kz = torch.zeros(B, T, N)
+        yz_re, yz_im = complex_kla_scan_parallel(a, cos_w, sin_w, p, kz, v, lam_v, q)
+        assert torch.equal(yz_re, torch.zeros_like(yz_re))
+        assert torch.equal(yz_im, torch.zeros_like(yz_im))

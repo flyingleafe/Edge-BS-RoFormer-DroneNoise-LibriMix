@@ -6,6 +6,10 @@ Linear Attention, arXiv 2602.10743) as implemented in the ``fkla`` project's
 recursion only (no Fenwick tree: our sequences are ~126–250 STFT frames,
 where a sequential fp32 scan over T is cheap and exact) and generalize the
 per-cell latent from a real Gaussian information pair to a **complex** one.
+The sequential loop is the reference; training/inference use the equivalent
+log-depth associative scan ``complex_kla_scan_parallel`` by default (the loop
+is kernel-launch-bound on GPU — T × ~15 tiny kernels; opt out via
+``layer.use_parallel_scan = False`` or env ``CKLA_SEQUENTIAL_SCAN=1``).
 
 State grid G = (N, D): N state-expansion slots × D value channels. Per (n, d)
 cell the latent is (η ∈ ℂ, λ ∈ ℝ≥0). The only change vs the real KLA flat
@@ -54,6 +58,8 @@ front-end that beat baseline). Registry keys ``simple_conv_v2_ckla`` /
 from __future__ import annotations
 
 import math
+import os
+from collections.abc import Callable
 from typing import Literal, overload
 
 import torch
@@ -207,6 +213,199 @@ def complex_kla_scan(
         "contrib": torch.stack(st_contrib, dim=1),  # (B, T, N)
     }
     return y_re, y_im, state
+
+
+_Elems = tuple[Tensor, ...]
+
+
+def _assoc_scan(combine: Callable[[_Elems, _Elems], _Elems], elems: _Elems) -> _Elems:
+    """Inclusive associative scan along dim 1 (time), log-depth pairwise style.
+
+    ``combine(earlier, later)`` composes two scan elements ("apply *earlier*
+    first, then *later*") and must be associative. Work is O(T) combines
+    (T/2 + T/4 + … down-sweep plus the same up), depth is ⌈log₂ T⌉ — each
+    level a handful of batched tensor ops over the whole remaining sequence,
+    instead of the sequential loop's ~15 tiny kernels *per step*.
+    """
+    T = elems[0].shape[1]
+    if T == 1:
+        return elems
+    even = tuple(e[:, 0::2] for e in elems)  # x₀, x₂, …  (⌈T/2⌉)
+    odd = tuple(e[:, 1::2] for e in elems)  # x₁, x₃, …  (⌊T/2⌋)
+    n_pairs = odd[0].shape[1]
+    # Down-sweep: pair-reduce, then scan the half-length sequence.
+    reduced = combine(tuple(e[:, :n_pairs] for e in even), odd)
+    odd_scan = _assoc_scan(combine, reduced)  # inclusive results at 1, 3, 5, …
+    # Up-sweep: even positions. r₀ = x₀; r_{2i} = x_{2i} ∘ r_{2i−1}.
+    n_even = even[0].shape[1]
+    if n_even > 1:
+        tail = combine(tuple(s[:, : n_even - 1] for s in odd_scan), tuple(e[:, 1:] for e in even))
+        even_res = tuple(torch.cat([e[:, :1], t], dim=1) for e, t in zip(even, tail))
+    else:
+        even_res = even  # T == 2: only r₀ = x₀ on the even side
+    # Interleave: even results at 0, 2, …; odd results at 1, 3, …
+    out: list[Tensor] = []
+    for ev, od in zip(even_res, odd_scan):
+        if ev.shape[1] == od.shape[1]:
+            merged = torch.stack([ev, od], dim=2).flatten(1, 2)
+        else:  # T odd — even side has one trailing element
+            merged = torch.stack([ev[:, :-1], od], dim=2).flatten(1, 2)
+            merged = torch.cat([merged, ev[:, -1:]], dim=1)
+        out.append(merged)
+    return tuple(out)
+
+
+def _mobius_combine(earlier: _Elems, later: _Elems) -> _Elems:
+    """Compose two 2×2 Möbius matrices (λ pass): M = M_later · M_earlier.
+
+    Möbius maps are projective — M and c·M act identically — so after every
+    combine the matrix is renormalized by the max-abs of its four entries
+    (clamped, detached: the output is exactly scale-invariant, so detaching
+    the normalizer changes no gradient). This keeps entries O(1) across the
+    scan and prevents fp32 overflow/underflow over hundreds of steps.
+    """
+    a1, b1, c1, d1 = earlier
+    a2, b2, c2, d2 = later
+    a = a2 * a1 + b2 * c1
+    b = a2 * b1 + b2 * d1
+    c = c2 * a1 + d2 * c1
+    d = c2 * b1 + d2 * d1
+    norm = torch.maximum(torch.maximum(a.abs(), b.abs()), torch.maximum(c.abs(), d.abs()))
+    norm = norm.clamp(min=1e-30).detach()
+    return a / norm, b / norm, c / norm, d / norm
+
+
+def _linrec_combine(earlier: _Elems, later: _Elems) -> _Elems:
+    """Compose two steps of the complex linear recurrence η ← g·η + κ:
+    (g, κ)_later ∘ (g, κ)_earlier = (g_l·g_e, g_l·κ_e + κ_l), in explicit
+    (re, im) pairs — no torch complex dtypes (autocast/fp32 discipline)."""
+    g1r, g1i, k1r, k1i = earlier
+    g2r, g2i, k2r, k2i = later
+    gr = g2r * g1r - g2i * g1i
+    gi = g2r * g1i + g2i * g1r
+    kr = g2r * k1r - g2i * k1i + k2r
+    ki = g2r * k1i + g2i * k1r + k2i
+    # Span overflow guard. |g| = ā/den exceeds 1 while λ is still small
+    # (den < ā); over a long such stretch the *span product* — and the κ
+    # accumulator it multiplies, which compounds across scan levels — can
+    # overflow fp32, though the sequential loop (which never materializes span
+    # products) stays finite (NaN observed at ā≤0.5, k~1e-15, T=250). Cap both
+    # composed magnitudes at 1e10: all downstream products/sums then stay
+    # ≤~1e21 ≪ fp32 max, and the cap is exactly inactive (scale = 1) in every
+    # non-diverged regime — trained-net η/κ are O(1–100). Where active, the
+    # true value is astronomically diverged; we only keep it finite. Detached:
+    # no gradient through the rescale.
+    gmag = torch.maximum(gr.abs(), gi.abs())
+    gscale = (1e10 / gmag.clamp(min=1e10)).detach()
+    kmag = torch.maximum(kr.abs(), ki.abs())
+    kscale = (1e10 / kmag.clamp(min=1e10)).detach()
+    return gr * gscale, gi * gscale, kr * kscale, ki * kscale
+
+
+@overload
+def complex_kla_scan_parallel(
+    abar_mag: Tensor,
+    cos_w: Tensor,
+    sin_w: Tensor,
+    pbar: Tensor,
+    k: Tensor,
+    v: Tensor,
+    lam_v: Tensor,
+    q: Tensor,
+    eps: float = ...,
+    return_state: Literal[False] = ...,
+) -> tuple[Tensor, Tensor]: ...
+
+
+@overload
+def complex_kla_scan_parallel(
+    abar_mag: Tensor,
+    cos_w: Tensor,
+    sin_w: Tensor,
+    pbar: Tensor,
+    k: Tensor,
+    v: Tensor,
+    lam_v: Tensor,
+    q: Tensor,
+    eps: float = ...,
+    *,
+    return_state: Literal[True],
+) -> tuple[Tensor, Tensor, dict[str, Tensor]]: ...
+
+
+def complex_kla_scan_parallel(
+    abar_mag: Tensor,
+    cos_w: Tensor,
+    sin_w: Tensor,
+    pbar: Tensor,
+    k: Tensor,
+    v: Tensor,
+    lam_v: Tensor,
+    q: Tensor,
+    eps: float = 1e-6,
+    return_state: bool = False,
+) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, dict[str, Tensor]]:
+    """Parallel (associative-scan) version of :func:`complex_kla_scan`.
+
+    Same signature, same math, same fp32/fp64 discipline — but log-depth in T
+    instead of a Python loop, so it is not kernel-launch-bound on GPU (the
+    sequential loop is T × ~15 tiny elementwise kernels; this is ~⌈log₂ T⌉
+    levels of batched ops over the whole sequence). Two passes:
+
+    **Pass 1 (λ):** λ_t = λ_{t−1}/(a² + p̄λ_{t−1}) + φ_t is a Möbius
+    (linear-fractional) map of λ_{t−1}, i.e. the 2×2 matrix
+    ``[[1 + φ_t p̄, φ_t a²], [p̄, a²]]`` acting projectively; composition is
+    matrix product, scanned with :func:`_assoc_scan` (max-abs renormalization
+    per combine — projectively free). λ_t is read off the cumulative matrix
+    applied to λ₀ = 0, then re-derived by one exact recurrence step from
+    λ_{t−1} so the readout matches the sequential rounding profile.
+
+    **Pass 2 (η):** with λ_{t−1} known, den_t is explicit and the complex
+    recurrence η_t = (ā rot_t/den_t)·η_{t−1} + κ_t is a first-order linear
+    scan with the standard (g, κ) combine.
+
+    ``return_state=True`` falls back to the sequential reference (diagnostics
+    path — perf-irrelevant, keeps the stacked-internals contract exact).
+    """
+    if return_state:
+        return complex_kla_scan(
+            abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q, eps, return_state=True
+        )
+    B, T, N = k.shape
+    D = v.shape[-1]
+
+    a2 = (abar_mag * abar_mag)[None, None]  # (1, 1, N, D)
+    p = pbar[None, None]  # (1, 1, N, D)
+    k4 = k.unsqueeze(-1)  # (B, T, N, 1)
+    lv4 = lam_v.unsqueeze(2)  # (B, T, 1, D)
+    v4 = v.unsqueeze(2)
+    phi = k4 * k4 * lv4  # (B, T, N, D)
+    kappa_re = k4 * lv4 * v4  # κ_im = 0 (real value path)
+
+    # Pass 1: Möbius scan for λ. Leaf matrices M_t = [[1+φp̄, φa²], [p̄, a²]].
+    m_a = 1.0 + phi * p
+    m_b = phi * a2
+    m_c = p.expand(B, T, N, D)
+    m_d = a2.expand(B, T, N, D)
+    _, cum_b, _, cum_d = _assoc_scan(_mobius_combine, (m_a, m_b, m_c, m_d))
+    # λ_t = (A·λ₀ + B)/(C·λ₀ + D) at λ₀ = 0 → B/D. D > 0 mathematically
+    # (all entries ≥ 0, D ≥ Π a² > 0); the clamp only guards fp underflow.
+    lam_scan = cum_b / cum_d.clamp(min=1e-30)
+    lam_prev = F.pad(lam_scan[:, :-1], (0, 0, 0, 0, 1, 0))  # λ_{t−1}, λ₀ = 0
+    den = a2 + p * lam_prev
+    lam = lam_prev / den + phi  # one exact sequential step from λ_{t−1}
+
+    # Pass 2: linear complex scan for η with per-step gain g_t = ā·rot_t/den_t.
+    g_re = abar_mag * cos_w.unsqueeze(-1) / den  # (B, T, N, D)
+    g_im = abar_mag * sin_w.unsqueeze(-1) / den
+    _, _, eta_re, eta_im = _assoc_scan(
+        _linrec_combine, (g_re, g_im, kappa_re, torch.zeros_like(kappa_re))
+    )
+
+    lam_safe = lam.clamp(min=eps)
+    y_re = torch.einsum("btn,btnd->btd", q, eta_re / lam_safe)
+    y_im = torch.einsum("btn,btnd->btd", q, eta_im / lam_safe)
+    return y_re, y_im
 
 
 def phase_diff_features(y_re: Tensor, y_im: Tensor) -> tuple[Tensor, Tensor]:
@@ -375,6 +574,14 @@ class ComplexKLALayer(nn.Module):
 
         self.capture: list[dict[str, Tensor]] | None = None
         self.capture_state: bool = False
+        # Parallel (associative-scan) path by default — the sequential loop is
+        # kernel-launch-bound on GPU. Opt out per module (attribute) or
+        # globally via env CKLA_SEQUENTIAL_SCAN=1.
+        self.use_parallel_scan: bool = os.environ.get("CKLA_SEQUENTIAL_SCAN", "0").lower() not in (
+            "1",
+            "true",
+            "yes",
+        )
 
     def ou_discretise(self) -> tuple[Tensor, Tensor]:
         """(abar_mag, pbar), both (n_state, d_model): e^{−γΔ} and the OU
@@ -436,7 +643,8 @@ class ComplexKLALayer(nn.Module):
             for name, tens in state.items():
                 rec[name] = tens.detach().cpu()
         else:
-            y_re, y_im = complex_kla_scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
+            scan = complex_kla_scan_parallel if self.use_parallel_scan else complex_kla_scan
+            y_re, y_im = scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
         if self.readout == "complex_mean":
             feats = torch.cat([y_re, y_im], dim=-1)
         elif self.readout == "phase_diff":
