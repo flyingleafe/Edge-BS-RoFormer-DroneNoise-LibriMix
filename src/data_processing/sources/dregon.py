@@ -568,6 +568,49 @@ def build_frame(sample: dict, geometry: tuple[np.ndarray, np.ndarray]) -> td.Fra
     )
 
 
+def load_dregon_timeframes(
+    data_dir: Path | str,
+    *,
+    splits: list[str] | None = None,
+    target_sr: int | None = None,
+    download: bool = True,
+) -> list[td.Frame]:
+    """Load all DREGON recordings in *splits* as a flat ``list[td.Frame]``.
+
+    Parameters
+    ----------
+    data_dir : Path | str
+        Root data directory (contains ``DREGON/`` subdirectory) or the DREGON
+        tree itself (when the directory ends with ``DREGON``).
+    splits : list[str] | None
+        Which splits to load (e.g. ``["in_flight_noise"]``). ``None`` = all.
+    target_sr : int | None
+        Resample audio to this rate.
+    download : bool
+        Download missing data if ``True``.
+    """
+    data_dir = Path(data_dir)
+    if data_dir.name == "DREGON":
+        dregon_dir = data_dir
+    else:
+        dregon_dir = data_dir / "DREGON"
+    if download:
+        download_dregon(data_dir if data_dir.name != "DREGON" else data_dir.parent)
+    geometry = get_geometry(dregon_dir)
+    all_samples = discover_recordings(dregon_dir)
+    if splits is not None:
+        split_set = set(splits)
+        all_samples = [s for s in all_samples if s["split"] in split_set]
+    frames: list[td.Frame] = []
+    for s in all_samples:
+        try:
+            tf = load_timeframe(s, geometry=geometry, target_sr=target_sr)
+            frames.append(tf)
+        except Exception as e:
+            print(f"Warning: skipping {s.get('recording_id', '?')}: {e}")
+    return frames
+
+
 def build(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
     """Yield ``(recording_id, frame)`` for every discovered recording."""
     raw_dir = Path(raw_dir)

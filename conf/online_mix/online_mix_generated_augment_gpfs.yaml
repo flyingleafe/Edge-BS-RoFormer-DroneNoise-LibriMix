@@ -15,16 +15,15 @@ base_seed: 20260702
 sources:
   noise:
     # --- real recordings ---
-    - kind: dregon
-      root: /gpfs/scratch/acw592/data
-      split: in_flight_noise
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
       exclude_recording_ids:
         - free-flight_nosource_room1
       min_motor_rps: 30.0
-      download: false
-    - kind: michaels
-      root: /gpfs/scratch/acw592/data
-      ids: [FLY125]
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
       min_motor_rps: 0.0
 
     # --- generated Michael's (weight 0.5 -> ~33% of noise batches) ---
@@ -45,13 +44,8 @@ sources:
         warmup: 32
 
   speech:
-    - kind: audio_files
-      root: /gpfs/scratch/acw592/data/librispeech/LibriSpeech/train-clean-100-readable
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: /gpfs/scratch/acw592/cache/online_mix_sources
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   source_prob: 1.0
   snr_db:

@@ -47,9 +47,8 @@ sources:
       include_keys: [S1_seq1, S1_seq2, S1_seq3]
       weight: 1.0
   speech:
-    - kind: audio_files
-      root: "dload:librispeech/LibriSpeech/train-clean-100"
-      glob: "**/*.flac"
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
       # Held-out valid speakers (every 10th id, sorted) — identical list to
       # conf/online_mix/se_drone_only.yaml and data_processing.derivations (se_valid generator)'s
       # HELDOUT_SPEAKERS, so train/valid speech never overlap.
@@ -58,9 +57,6 @@ sources:
          3982, 4267, 4813, 5322, 5703, 6081, 6476, 7067, 7312, 7800, 8238, 8630]
       # No packed cache: this stream is mono (one utterance per sample, vs the
       # 8-channel RPS streams' eight), so direct FLAC decode keeps up.
-      cache:
-        mode: none
-
 policy:
   source_prob: 1.0
   snr_db:

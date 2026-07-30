@@ -15,28 +15,22 @@ base_seed: 20260712
 
 sources:
   noise:
-    - kind: dregon
-      root: data
-      split: in_flight_noise
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
       exclude_recording_ids:
         - free-flight_nosource_room1
       min_motor_rps: 30.0
-      download: false
-    - kind: michaels
-      root: data
-      ids: [FLY125]
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
       # FLY125 flies at ~80 rev/s; the ~35 rev/s stretch is ground warm-up
       # (AssitedTakeoff). Trim it with a 50 rev/s free-flight floor. (The ~29 in
       # the old comment was the telemetry sample RATE in Hz, not an RPS value.)
       min_motor_rps: 50.0
   speech:
-    - kind: audio_files
-      root: data/librispeech/LibriSpeech/train-clean-100
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   source_prob: 1.0
   snr_db:

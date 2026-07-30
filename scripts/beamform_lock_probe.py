@@ -109,14 +109,14 @@ BUDGET_S = 1800.0  # ~30 min local budget; beyond it windows are thinned
 
 
 def dregon_geometry(dregon_dir: str) -> tuple[np.ndarray, np.ndarray]:
-    from data_processing.dregon import get_geometry
+    from data_processing.sources.dregon import get_geometry
     from data_processing.streams import resolve_source
 
     return get_geometry(Path(resolve_source(dregon_dir)))
 
 
 def fly124_geometry() -> tuple[np.ndarray, np.ndarray]:
-    from data_processing.michaels import get_geometry
+    from data_processing.sources.michaels import get_geometry
 
     return get_geometry()
 

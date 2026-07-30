@@ -18,8 +18,8 @@ DEVICE = "cuda:0"
 CKPT = "/gpfs/scratch/acw592/results/noise_gen_sweep/baseline/best_positional_harmonic_gen.pt"
 
 from data_processing import rps_synthesis
-from data_processing.dregon import get_geometry as dregon_geom
-from data_processing.michaels import get_geometry as michaels_geom
+from data_processing.sources.dregon import get_geometry as dregon_geom
+from data_processing.sources.michaels import get_geometry as michaels_geom
 from models.generative import PositionalHarmonicNoiseGen
 from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
 

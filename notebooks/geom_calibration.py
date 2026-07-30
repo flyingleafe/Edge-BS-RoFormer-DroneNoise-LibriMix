@@ -326,7 +326,7 @@ def calibrate_dregon_positions(
     this applied 183° on top of the *raw* shipped frame; the 3° beyond the true
     180° flip was sweep noise the refiner now absorbs.)
     """
-    from data_processing.dregon import get_geometry
+    from data_processing.sources.dregon import get_geometry
 
     dd = s0.find_dregon_dir(Path(dregon_dir)) if dregon_dir else s0.find_dregon_dir()
     mic_raw, rotor_pos = get_geometry(dd)
@@ -589,15 +589,15 @@ def calibrate_michaels_positions(
     detection reference and as the bundle-adjustment prior anchor. The detected
     gross z-rotation orients the array before fine refinement.
     """
-    from data_processing.michaels import (
+    from data_processing.sources.michaels import (
         MICHAELS_FILES,
-        _load_michaels_data_raw,
+        load_raw_aligned,
         get_geometry,
     )
 
     root = find_data_root(data_root) if data_root is None else Path(data_root)
     wav_rel, csv_rel, off, dil = MICHAELS_FILES[recording_index]
-    wav, ts, ms, sr = _load_michaels_data_raw(root / wav_rel, root / csv_rel, off, dil, sr=None)
+    wav, ts, ms, sr = load_raw_aligned(root / wav_rel, root / csv_rel, off, dil, sr=None)
     mic_nominal, rotor_pos = get_geometry()
 
     records = extract_michaels_rotor_rtfs(

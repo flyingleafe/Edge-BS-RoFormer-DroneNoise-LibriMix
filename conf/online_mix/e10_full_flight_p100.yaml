@@ -56,13 +56,8 @@ sources:
         flight_reuse: 32
 
   speech:
-    - kind: audio_files
-      root: "dload:librispeech/LibriSpeech/train-clean-100"
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   # Single stage, NO augmentation — random speech/noise mixtures only.
   source_prob: 1.0

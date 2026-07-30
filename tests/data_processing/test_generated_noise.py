@@ -16,7 +16,7 @@ import tdseries as td
 import torch
 
 from data_processing.frames import get_meta
-from data_processing.online_mixing import MixedNoisePool, build_noise_pool
+from data_processing.online_mixing import build_noise_stream
 
 
 def _tiny_bundle(tmp_path, *, drone: str = "michaels", n_harm: int = 8, cond_dim: int = 8) -> str:
@@ -224,7 +224,7 @@ def test_generated_pool_interp_mode_yields_wellformed_timeframe(tmp_path):
         pool.close()
 
 
-# --- MixedNoisePool / dispatch (no GPU, no spawn) --------------------------------
+# --- engine dispatch (no GPU, no spawn) --------------------------------
 
 
 class _DummyPool:
@@ -236,37 +236,19 @@ class _DummyPool:
         return self.tag
 
 
-def test_mixed_noise_pool_selects_by_weight_and_aggregates_records():
-    a = _DummyPool("a", records=[{"x": 1}])
-    b = _DummyPool("b", records=[{"y": 2}])
-    pool = MixedNoisePool([a, b], [0.0, 1.0])
-    assert all(pool.sample_timeframe(np.random.default_rng(i), 1.0) == "b" for i in range(5))
-    assert pool.records == [{"x": 1}, {"y": 2}]
-
-
-def test_build_noise_pool_dispatches_mixed(monkeypatch):
-    import data_processing.generated_noise as gn
+def test_build_noise_stream_dispatches_engines(monkeypatch):
+    # A generated/static engine spec becomes a random_stream.map(render)
+    # sub-stream; an all-engine list is a single-stream pipeline.
     import data_processing.online_mixing as om
 
     monkeypatch.setattr(
-        om.TimeFrameNoisePool,
-        "from_config",
-        classmethod(lambda cls, cfg, **kw: _DummyPool("real")),
+        om, "_build_engine", lambda cfg, **kw: _DummyPool(str(cfg.get("kind")))
     )
-    monkeypatch.setattr(
-        gn.GeneratedNoisePool,
-        "from_config",
-        classmethod(lambda cls, cfg, **kw: _DummyPool("gen")),
+    stream, ceiling = build_noise_stream(
+        [{"kind": "generated", "weight": 3.0}], sample_rate=16000, window_s=1.0, seed=0
     )
-    real_only = build_noise_pool([{"kind": "dregon"}], duration_s=1.0, sample_rate=16000)
-    assert isinstance(real_only, _DummyPool) and real_only.tag == "real"
+    import itertools
 
-    mixed = build_noise_pool(
-        [{"kind": "dregon"}, {"kind": "generated", "weight": 3.0}],
-        duration_s=1.0,
-        sample_rate=16000,
-    )
-    assert isinstance(mixed, MixedNoisePool)
-    assert len(mixed.pools) == 2
-    # real default weight 1.0 vs generated 3.0 -> 0.25 / 0.75
-    np.testing.assert_allclose(mixed.weights, [0.25, 0.75])
+    frames = list(itertools.islice(iter(stream), 3))
+    assert all(f == "generated" for f in frames)
+    assert ceiling == 8

@@ -9,7 +9,7 @@ import pytest
 
 
 def test_parse_mic_positions_txt_valid(tmp_path):
-    from data_processing.dregon import _parse_mic_positions_txt
+    from data_processing.sources.dregon import _parse_mic_positions_txt
 
     content = """\
 micPositions = [
@@ -30,7 +30,7 @@ micPositions = [
 
 
 def test_parse_mic_positions_txt_no_matrix_raises(tmp_path):
-    from data_processing.dregon import _parse_mic_positions_txt
+    from data_processing.sources.dregon import _parse_mic_positions_txt
 
     p = tmp_path / "micPos.txt"
     p.write_text("garbage content without matrix")
@@ -42,7 +42,7 @@ def test_parse_mic_positions_txt_no_matrix_raises(tmp_path):
 
 
 def test_clean_command_spikes_removes_spikes():
-    from data_processing.dregon import clean_command_spikes
+    from data_processing.sources.dregon import clean_command_spikes
 
     signal = np.ones((4, 100), dtype=np.float64)
     signal[:, 50] = 100.0  # spike across all rotors
@@ -52,7 +52,7 @@ def test_clean_command_spikes_removes_spikes():
 
 
 def test_clean_command_spikes_noop_on_clean():
-    from data_processing.dregon import clean_command_spikes
+    from data_processing.sources.dregon import clean_command_spikes
 
     signal = np.ones((4, 100), dtype=np.float64)
     cleaned = clean_command_spikes(signal, kernel=5)
@@ -63,7 +63,7 @@ def test_clean_command_spikes_noop_on_clean():
 
 
 def test_download_file_skips_existing(tmp_path):
-    from data_processing.dregon import _download_file
+    from data_processing.sources.dregon import _download_file
 
     dest = tmp_path / "test.wav"
     dest.write_text("dummy")
@@ -75,7 +75,7 @@ def test_download_file_skips_existing(tmp_path):
 
 
 def test_discover_recordings_finds_dirs(tmp_path):
-    from data_processing.dregon import discover_recordings
+    from data_processing.sources.dregon import discover_recordings
 
     # Create a minimal DREGON mirror
     rec_dir = tmp_path / "free-flight_speech-high_room1"

@@ -1,3 +1,5 @@
+**[2026-07 refactor]** This file is partially stale — see `docs/refactor-data-pipelines.md` for the current data-layer architecture. The uniform `sources/` registry replaces the former per-dataset modules (`dregon.py`, `michaels.py`, `external_datasets.py`, `external_recordings.py`); all derived datasets are declared as dload pipeline specs in `derivations.py` and materialized via `scripts/derive.py` (the former creation CLIs and publisher scripts are deleted). The per-sample mixing cores are in `mixing.py`. Consumption (streams, online mixing, frame datasets) is updated to the new uniform conventions throughout.
+
 # data_processing/ — Dataset Creation and RPS Processing
 
 Contains scripts and modules for creating and processing training datasets.

@@ -1690,7 +1690,7 @@ def _whitened_spec_multi(prep: Prepared) -> tuple[np.ndarray, float, np.ndarray]
 
 def _rotor_mic_weights(prep_dir: str = "data/DREGON") -> np.ndarray:
     """``(8 mics, 4 rotors)`` weights ∝ 1/d^2, normalized per rotor."""
-    from data_processing.dregon import get_geometry
+    from data_processing.sources.dregon import get_geometry
 
     mic, rot = get_geometry(Path(prep_dir))
     d = np.linalg.norm(mic[:, None, :] - rot[None, :, :], axis=2)

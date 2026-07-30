@@ -16,15 +16,14 @@ base_seed: 20260702
 sources:
   noise:
     # --- real recordings (weight defaults to 1.0 per source item) ---
-    - kind: dregon
-      root: data
-      split: in_flight_noise
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
       exclude_recording_ids: [free-flight_nosource_room1]
       min_motor_rps: 30.0
-      download: false
-    - kind: michaels
-      root: data
-      ids: [FLY125]
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
       min_motor_rps: 0.0
 
     # --- generated source: ~1/3 of noise batches (weight 1.0 vs 2.0 real) ---
@@ -45,13 +44,8 @@ sources:
         warmup: 32                    # min filled slots before sampling starts
 
   speech:
-    - kind: audio_files
-      root: data/librispeech/LibriSpeech/train-clean-100
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   source_prob: 1.0
   snr_db:

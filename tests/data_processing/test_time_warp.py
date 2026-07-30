@@ -11,7 +11,6 @@ from __future__ import annotations
 import numpy as np
 import tdseries as td
 
-from data_processing.online_mixing import OnlineMixIterableDataset, TimeFrameNoisePool
 from data_processing.time_warp import (
     DEFAULT_DEV_CONST,
     DEFAULT_DEV_SINE,
@@ -175,21 +174,37 @@ def test_default_alpha_stays_within_bounds_over_many_draws():
 # ─── 4. No-op path: byte-identical to the un-warped stream ──────────────────────
 
 
-def _online_dataset(policy: dict, base_seed: int = 4321) -> OnlineMixIterableDataset:
-    frame = _make_noise_frame(channels=2, duration_s=3.0, rid="pool")
-    pool = TimeFrameNoisePool([frame], min_motor_rps=0.0, duration_s=1.0)
-    return OnlineMixIterableDataset(
-        pool,
-        None,
-        policy=policy,
-        base_seed=base_seed,
-        duration_s=1.0,
-        sample_rate=SR,
-        hop_length=512,
+def _online_frames(policy: dict, base_seed: int = 4321, n: int = 6, repo=None, rid="pool"):
+    """The first ``n`` sample Frames of the compiled online-mix pipeline over a
+    one-recording synthetic frames dataset (local dload repo)."""
+    import data_processing.streams as streams
+    from data_processing.frame_datasets import OnlineMixFrameDataset
+
+    if repo is None:
+        raise ValueError("pass the patched_repo fixture")
+    frame = _make_noise_frame(channels=2, duration_s=3.0, rid=rid)
+    repo.commit(
+        f"TW-{rid}",
+        [(rid, streams.frame_to_sample(frame))],
+        meta={"layout": streams.TDFRAME_LAYOUT},
     )
+    cfg = {
+        "sample_rate": SR,
+        "duration_s": 1.0,
+        "base_seed": base_seed,
+        "sources": {
+            "noise": [
+                {"kind": "frames", "dataset": f"TW-{rid}", "min_motor_rps": 0.0}
+            ]
+        },
+        "policy": policy,
+    }
+    import itertools
+
+    return list(itertools.islice(iter(OnlineMixFrameDataset.from_config(cfg)), n))
 
 
-def test_absent_key_is_bit_identical_to_baseline():
+def test_absent_key_is_bit_identical_to_baseline(patched_repo):
     # A policy with an augmentation but NO noise_time_warp key must not consume
     # any warp RNG; two datasets built identically must produce identical output.
     policy = {
@@ -199,60 +214,62 @@ def test_absent_key_is_bit_identical_to_baseline():
             "choices": [{"random_gain": {"min_db": -6.0, "max_db": 6.0}}],
         },
     }
-    ds_a = _online_dataset(policy)
-    ds_b = _online_dataset(dict(policy))
-    for sid in range(6):
-        a_audio, a_rps = ds_a.generate_sample(sid)
-        b_audio, b_rps = ds_b.generate_sample(sid)
-        np.testing.assert_array_equal(a_audio.numpy(), b_audio.numpy())
-        np.testing.assert_array_equal(a_rps.numpy(), b_rps.numpy())
+    run_a = _online_frames(policy, repo=patched_repo, rid="a")
+    run_b = _online_frames(dict(policy), repo=patched_repo, rid="a")
+    for fa, fb in zip(run_a, run_b):
+        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(np.asarray(fa["rps"].data), np.asarray(fb["rps"].data))
 
 
-def test_probability_zero_warp_is_bit_identical_to_no_key():
+def test_probability_zero_warp_is_bit_identical_to_no_key(patched_repo):
     # noise_time_warp with probability 0 must draw no RNG => identical to no key.
     base_policy = {"source_prob": 0.0}
     warp_policy = {"source_prob": 0.0, "noise_time_warp": {"probability": 0.0}}
-    ds_base = _online_dataset(base_policy)
-    ds_warp = _online_dataset(warp_policy)
-    for sid in range(6):
-        a_audio, a_rps = ds_base.generate_sample(sid)
-        b_audio, b_rps = ds_warp.generate_sample(sid)
-        np.testing.assert_array_equal(a_audio.numpy(), b_audio.numpy())
-        np.testing.assert_array_equal(a_rps.numpy(), b_rps.numpy())
+    run_base = _online_frames(base_policy, repo=patched_repo, rid="b")
+    run_warp = _online_frames(warp_policy, repo=patched_repo, rid="b")
+    for fa, fb in zip(run_base, run_warp):
+        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(np.asarray(fa["rps"].data), np.asarray(fb["rps"].data))
 
 
 # ─── 5. Integration: probability 1.0 over a synthetic pool ──────────────────────
 
 
-def test_integration_prob_one_shapes_and_scaled_labels():
+def test_integration_prob_one_shapes_and_scaled_labels(patched_repo):
     rps_base = np.array([40.0, 50.0, 60.0, 70.0], dtype=np.float64)
-    frame = _make_noise_frame(channels=2, rps_base=rps_base, duration_s=3.0, rid="pool")
-    pool = TimeFrameNoisePool([frame], min_motor_rps=0.0, duration_s=1.0)
+    import data_processing.streams as streams
 
-    warp_ds = OnlineMixIterableDataset(
-        pool,
-        None,
-        policy={"source_prob": 0.0, "noise_time_warp": {"probability": 1.0}},
-        base_seed=99,
-        duration_s=1.0,
-        sample_rate=SR,
-        hop_length=512,
-    )
-    plain_ds = OnlineMixIterableDataset(
-        pool,
-        None,
-        policy={"source_prob": 0.0},
-        base_seed=99,
-        duration_s=1.0,
-        sample_rate=SR,
-        hop_length=512,
+    frame = _make_noise_frame(channels=2, rps_base=rps_base, duration_s=3.0, rid="warp1")
+    patched_repo.commit(
+        "TW-warp1", [("warp1", streams.frame_to_sample(frame))], meta={"layout": "tdframe-v1"}
     )
 
-    audio, rps = warp_ds.generate_sample(0)
+    def _cfg(policy):
+        return {
+            "sample_rate": SR,
+            "duration_s": 1.0,
+            "base_seed": 99,
+            "sources": {
+                "noise": [{"kind": "frames", "dataset": "TW-warp1", "min_motor_rps": 0.0}]
+            },
+            "policy": policy,
+        }
+
+    from data_processing.frame_datasets import OnlineMixFrameDataset
+
+    warp_frame = next(
+        iter(
+            OnlineMixFrameDataset.from_config(
+                _cfg({"source_prob": 0.0, "noise_time_warp": {"probability": 1.0}})
+            )
+        )
+    )
+    plain_frame = next(iter(OnlineMixFrameDataset.from_config(_cfg({"source_prob": 0.0}))))
+
+    audio = np.asarray(warp_frame["mixture"].data)
+    rps_np = np.asarray(warp_frame["rps"].data)
     assert audio.shape == (2, SR)
-    assert rps.shape == (4, SR // 512 + 1)
-
-    rps_np = rps.numpy()
+    assert rps_np.shape == (4, SR // 512 + 1)
     bound = DEFAULT_DEV_CONST + DEFAULT_DEV_SINE
     # Constant source rps => warped label is alpha(t) * rps_base, so per-rotor
     # values stay within the +-12% band of the source constant.
@@ -261,8 +278,8 @@ def test_integration_prob_one_shapes_and_scaled_labels():
         assert np.all(rps_np[i] <= base_val * (1.0 + bound) + 1e-3)
 
     # Warped audio differs from the un-warped audio.
-    plain_audio, _ = plain_ds.generate_sample(0)
-    assert not np.allclose(audio.numpy(), plain_audio.numpy())
+    plain_audio = np.asarray(plain_frame["mixture"].data)
+    assert not np.allclose(audio, plain_audio)
 
 
 # ─── 6. Multichannel coherence ──────────────────────────────────────────────────

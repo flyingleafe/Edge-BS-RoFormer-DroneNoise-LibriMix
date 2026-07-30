@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
 import sys
 import time
 from collections import Counter
@@ -56,7 +57,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_ROOT / ".env", override=False)
 
-import torch  # noqa: E402
+import numpy as np  # noqa: E402
 
 #: Policy keys that are probabilistic augmentation blocks (fire/choice schema).
 AUG_KEYS = ("augmentations", "noise_augmentations", "noise_time_warp")
@@ -165,10 +166,6 @@ def _fire_verdict(k: int, n: int, p: float) -> bool:
     return float(binomtest(k, n, p).pvalue) >= P_VALUE_FLOOR
 
 
-def _tensors_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
-    return a.shape == b.shape and bool(torch.equal(a, b))
-
-
 def load_experiment(name: str) -> tuple[str, bool, int | None]:
     """(policy_path, flatten_channels, samples_per_validation) of an experiment.
 
@@ -199,8 +196,8 @@ def load_experiment(name: str) -> tuple[str, bool, int | None]:
     )
 
 
-def make_control(ds: Any, key: str, block_idx: int | None = None) -> Any | None:
-    """A dataset sharing ``ds``'s pools whose ``key`` blocks never fire.
+def make_control_cfg(cfg: dict[str, Any], key: str, block_idx: int | None = None) -> dict[str, Any] | None:
+    """A copy of ``cfg`` whose ``key`` blocks never fire.
 
     With ``block_idx`` only that block of a list-valued ``key`` is disabled
     (the per-block control: real-vs-control outputs then differ iff exactly
@@ -211,9 +208,8 @@ def make_control(ds: Any, key: str, block_idx: int | None = None) -> Any | None:
     Returns None when the selected block(s) have probability 0 / are absent
     in every stage (the control would be byte-identical to the real stream).
     """
-    from data_processing.online_mixing import OnlineMixIterableDataset
-
-    policy = copy.deepcopy(ds.policy)
+    cfg = copy.deepcopy(cfg)
+    policy = cfg.get("policy", {})
     changed = False
     for stage in _stage_blocks(policy):
         blocks = _spec_blocks(stage.get(key))
@@ -228,18 +224,7 @@ def make_control(ds: Any, key: str, block_idx: int | None = None) -> Any | None:
                 changed = True
     if not changed:
         return None
-    return OnlineMixIterableDataset(
-        ds.noise_pool,
-        ds.source_pool,
-        policy=policy,
-        base_seed=ds.base_seed,
-        duration_s=ds.duration_s,
-        sample_rate=ds.sample_rate,
-        n_fft=ds.n_fft,
-        hop_length=ds.hop_length,
-        start_sample_id=ds.start_sample_id,
-        task=ds.task,
-    )
+    return cfg
 
 
 def stage_index(policy: Mapping[str, Any], gid: int) -> int:
@@ -252,6 +237,33 @@ def stage_index(policy: Mapping[str, Any], gid: int) -> int:
         if until is None or int(gid) < int(until):
             return i
     return len(stages)
+
+
+def _probe_frames(cfg: dict[str, Any], start: int, n: int) -> list[Any]:
+    """The first ``n`` chunk frames of a freshly-built stream whose id stream
+    starts at ``start`` (real and control probes rebuilt with the same start
+    and seeds are draw-aligned — see the module docstring)."""
+    from data_processing.frame_datasets import OnlineMixFrameDataset
+
+    probe = {**cfg, "start_sample_id": int(start)}
+    ds = OnlineMixFrameDataset.from_config(probe, flatten_channels=False)
+    return list(itertools.islice(iter(ds), int(n)))
+
+
+def _frame_arrays(frame: Any) -> tuple[np.ndarray, np.ndarray | None]:
+    mix = np.asarray(frame["mixture"].data)
+    rps = np.asarray(frame["rps"].data) if "rps" in frame else None
+    return mix, rps
+
+
+def _frames_equal(a: Any, b: Any) -> bool:
+    am, ar = _frame_arrays(a)
+    bm, br = _frame_arrays(b)
+    if am.shape != bm.shape or not np.array_equal(am, bm):
+        return False
+    if (ar is None) != (br is None):
+        return False
+    return ar is None or (ar.shape == br.shape and np.array_equal(ar, br))
 
 
 def main() -> int:
@@ -313,7 +325,8 @@ def main() -> int:
 
     from omegaconf import OmegaConf
 
-    from data_processing.online_mixing import OnlineMixIterableDataset, _resolve_policy, make_rng
+    from data_processing.frames import get_meta
+    from data_processing.online_mixing import _resolve_policy, make_rng
 
     # Self-check: the per-sample RNG must be a pure function of (seed, id).
     assert make_rng(1, 7).random() == make_rng(1, 7).random(), "make_rng is not deterministic"
@@ -322,16 +335,18 @@ def main() -> int:
     print(f"flatten_channels={flatten} samples_per_epoch={spe} probes={args.probes}")
 
     t_build = time.perf_counter()
-    ds = OnlineMixIterableDataset.from_config(OmegaConf.load(str(policy_path)))
-    print(f"[build] pools ready in {time.perf_counter() - t_build:.1f} s (task={ds.task})")
-    policy = ds.policy
+    cfg = dict(OmegaConf.to_container(OmegaConf.load(str(policy_path)), resolve=True))
+    policy = cfg.get("policy", {})
+    task = str(cfg.get("task", "rps_prediction"))
+    print(f"[build] policy loaded in {time.perf_counter() - t_build:.1f} s (task={task})")
 
     # ── [1] frame expansion ratio C ────────────────────────────────────────
     t1 = time.perf_counter()
     chan_counts: Counter[int] = Counter()
-    for gid in range(args.c_chunks):
-        audio, _labels = ds.generate_sample(gid)
-        chan_counts[int(audio.shape[0]) if audio.ndim >= 2 else 1] += 1
+    chunk_frames = _probe_frames(cfg, 0, args.c_chunks)
+    for f in chunk_frames:
+        mix = f["mixture"]
+        chan_counts[int(mix.dim_size("mic")) if "mic" in mix.dims else 1] += 1
     modal_c = chan_counts.most_common(1)[0][0]
     fpc = modal_c if (flatten and modal_c > 1) else 1  # training frames per generated chunk
     print(f"\n[1] Frame expansion ({args.c_chunks} chunks, {time.perf_counter() - t1:.1f} s)")
@@ -383,10 +398,6 @@ def main() -> int:
                 )
 
     # ── [3] empirical fire rates per probed epoch ──────────────────────────
-    # One measured row per key — except a LIST-valued key (sequential blocks),
-    # which gets one row PER BLOCK, each against its own per-block control
-    # (disabling all blocks at once would only measure the combined rate and
-    # hide e.g. a ramped block behind an always-on one).
     rows: list[tuple[str, int | None, str]] = []  # (key, block_idx, display label)
     absent_keys: list[str] = []
     for k in AUG_KEYS:
@@ -401,8 +412,8 @@ def main() -> int:
             rows.append((k, None, k))
         else:
             absent_keys.append(k)
-    controls = {(k, b): make_control(ds, k, b) for k, b, _ in rows}
-    assert all(c is not None for c in controls.values())
+    control_cfgs = {(k, b): make_control_cfg(cfg, k, b) for k, b, _ in rows}
+    assert all(c is not None for c in control_cfgs.values())
 
     print(f"\n[3] Empirical fire rates ({args.probes} probes/epoch)")
     for k in absent_keys:
@@ -413,42 +424,43 @@ def main() -> int:
             f"{'p_cfg':<8}{'fired':<10}{'rate':<8}{'label-diff':<12}verdict"
         )
     t3 = time.perf_counter()
-    real_cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
     for epoch in args.epochs:
         start = int(round(epoch * spe / fpc))
-        ids = list(range(start, start + args.probes))
-        for gid in ids:
-            if gid not in real_cache:
-                real_cache[gid] = ds.generate_sample(gid)
+        real = _probe_frames(cfg, start, args.probes)
+        ids = [int(get_meta(f, "sample_id", start + i)) for i, f in enumerate(real)]
         sidx = {stage_index(policy, gid) for gid in ids}
         stage_str = "/".join(str(s) for s in sorted(sidx))
+        control_cache: dict[tuple[str, int | None], list[Any]] = {}
         for key, bidx, row_label in rows:
-            ctl = controls[(key, bidx)]
-            assert ctl is not None
+            ctl_cfg = control_cfgs[(key, bidx)]
+            assert ctl_cfg is not None
+            ctl = control_cache.setdefault((key, bidx), _probe_frames(ctl_cfg, start, args.probes))
             fired = 0
             label_diff = 0
-            fired_nonzero_rps = 0  # fires on chunks whose labels are not all-zero
-            for gid in ids:
-                ra, rl = real_cache[gid]
-                ca, cl = ctl.generate_sample(gid)
-                this_fired = not (_tensors_equal(ra, ca) and _tensors_equal(rl, cl))
+            fired_nonzero_rps = 0
+            for rf, cf in zip(real, ctl):
+                rm, rl = _frame_arrays(rf)
+                cm, cl = _frame_arrays(cf)
+                this_fired = not (
+                    np.array_equal(rm, cm)
+                    and (rl is None and cl is None or np.array_equal(rl, cl))
+                )
                 if this_fired:
                     fired += 1
                     # A fire is label-bearing when EITHER stream's labels are
-                    # nonzero: freq_scale re-crops the oversampled source
-                    # window, so a chunk whose unscaled (control) crop is
-                    # all-zero RPS — a full-flight ground span — can
-                    # legitimately gain nonzero labels when compression pulls
-                    # flight content into the window. Only both-zero chunks
-                    # are exempt (0 * alpha == 0).
-                    if bool(torch.any(cl != 0)) or bool(torch.any(rl != 0)):
+                    # nonzero (see the historical comment: freq_scale re-crops,
+                    # so a control-side all-zero crop can gain flight content).
+                    if (cl is not None and bool(np.any(cl != 0))) or (
+                        rl is not None and bool(np.any(rl != 0))
+                    ):
                         fired_nonzero_rps += 1
-                if not _tensors_equal(rl, cl):
+                if rl is not None and cl is not None and not np.array_equal(rl, cl):
                     label_diff += 1
             # _resolve_policy materializes ramps to floats for each probed id,
             # so the per-id average follows the ramp within the epoch window.
             p_cfg = float(
-                sum(_row_probability(_resolve_policy(policy, g), key, bidx) for g in ids) / len(ids)
+                sum(_row_probability(_resolve_policy(policy, g), key, bidx) for g in ids)
+                / max(1, len(ids))
             )
             ok = _fire_verdict(fired, len(ids), p_cfg)
             rule = _label_rule(policy, key, bidx)
@@ -470,28 +482,28 @@ def main() -> int:
                 )
             print(
                 f"  {epoch:<7g}{f'{ids[0]}..{ids[-1]}':<16}{stage_str:<7}{row_label:<25}"
-                f"{p_cfg:<8.2f}{f'{fired}/{len(ids)}':<10}{fired / len(ids):<8.3f}"
+                f"{p_cfg:<8.2f}{f'{fired}/{len(ids)}':<10}{fired / max(1, len(ids)):<8.3f}"
                 f"{f'{label_diff}/{len(ids)}':<12}{verdict}"
             )
     print(f"  ({time.perf_counter() - t3:.1f} s)")
 
     # ── [4] determinism ────────────────────────────────────────────────────
     t4 = time.perf_counter()
-    all_ids = sorted(real_cache) or [0]
-    step = max(1, len(all_ids) // max(1, args.determinism_ids))
-    det_ids = all_ids[::step][: args.determinism_ids]
-    bad = []
-    for gid in det_ids:
-        ra, rl = real_cache.get(gid) or ds.generate_sample(gid)
-        a2, l2 = ds.generate_sample(gid)
-        if not (_tensors_equal(ra, a2) and _tensors_equal(rl, l2)):
-            bad.append(gid)
+    det_start = int(round(min(args.epochs) * spe / fpc))
+    det_n = min(args.probes, max(2, args.determinism_ids))
+    run_a = _probe_frames(cfg, det_start, det_n)
+    run_b = _probe_frames(cfg, det_start, det_n)
+    bad = [
+        i
+        for i, (fa, fb) in enumerate(zip(run_a, run_b))
+        if not _frames_equal(fa, fb)
+    ]
     det_ok = not bad
     if not det_ok:
-        failures.append(f"determinism: ids {bad} not bit-identical on regeneration")
+        failures.append(f"determinism: probe offsets {bad} not bit-identical on rebuild")
     print(
         f"\n[4] Determinism: {'PASS' if det_ok else 'FAIL'} "
-        f"({len(det_ids) - len(bad)}/{len(det_ids)} ids bit-identical, "
+        f"({det_n - len(bad)}/{det_n} probed samples bit-identical across rebuilds, "
         f"{time.perf_counter() - t4:.1f} s)"
     )
 

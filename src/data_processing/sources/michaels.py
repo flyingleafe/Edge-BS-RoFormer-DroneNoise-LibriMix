@@ -293,6 +293,47 @@ def build(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
         yield rid, build_frame(raw_dir, wav_rel, csv_rel, time_offset, time_dilation)
 
 
+def load_michaels_timeframes(
+    data_root: str | Path | None = None,
+    sr: int | None = 16000,
+) -> list[td.Frame]:
+    """Load FLY124/FLY125 as aligned recording ``td.Frame``s at sample rate
+    ``sr`` (or native rate when ``None``). "data_root" is the
+    ``recording_with_motor_speed`` raw tree (default: R2 via ``dload:``).
+
+    Each frame holds 8-channel ``audio`` + ``rps`` (aligned, rev/s) + ``meta``.
+    """
+    from data_processing.streams import resolve_source
+
+    if data_root is not None:
+        root = resolve_source(data_root)
+    else:
+        from data_processing import sources
+
+        root = sources.raw_root("michaels")
+    frames: list[td.Frame] = []
+    for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
+        wav, ts, ms, raw_sr = load_raw_aligned(
+            root / wav_rel,
+            root / csv_rel,
+            time_offset=time_offset,
+            time_dilation=time_dilation,
+            sr=sr,
+        )
+        meta = {"recording_id": Path(csv_rel).stem}
+        mic_pos, rotor_pos = get_geometry()
+        frames.append(
+            make_recording_frame(
+                {"audio": td.uniform(wav, raw_sr, dims=("mic", "time"), t_start=0.0),
+                 "rps": td.events(ts, ms, dims=("rotor", "time"), t_start=0.0)},
+                meta=meta,
+                mic_pos=mic_pos,
+                rotor_pos=rotor_pos,
+            )
+        )
+    return frames
+
+
 # ─── Registry provenance ──────────────────────────────────────────────────────
 # (entry assembled in sources/__init__.py)
 

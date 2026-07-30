@@ -40,7 +40,7 @@ sys.path.insert(0, str(_ROOT / "notebooks"))
 
 from stage0_rtf_utils import find_dregon_dir, load_motor  # noqa: E402
 
-from data_processing import dregon, michaels  # noqa: E402
+from data_processing.sources import dregon, michaels  # noqa: E402
 from models.generative.wind_wake_gen import wake_flow_speed  # noqa: E402
 
 # Physically-motivated gate parameters (NOT fit — the point is that geometry

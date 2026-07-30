@@ -98,13 +98,20 @@ def test_default_dataset_unaffected_by_flatten_channels_flag(tmp_path):
 # ─── OnlineMixFrameDataset.flatten_channels ────────────────────────────────────
 
 
-def _online_mix_frame_dataset(*, channels: int, flatten_channels: bool) -> OnlineMixFrameDataset:
-    """OnlineMixFrameDataset over a tiny synthetic in-memory noise pool."""
+_published_by_repo: dict[int, set[str]] = {}
+
+
+def _publish_synthetic_recording(repo, *, channels: int, dataset_name: str):
+    key = id(repo)
+    rset = _published_by_repo.setdefault(key, set())
+    if dataset_name in rset:
+        return
+    rset.add(dataset_name)
+    """Publish a one-recording synthetic frames dataset (deterministic seed)."""
     import tdseries as td
+    import data_processing.streams as streams
 
-    from data_processing.online_mixing import OnlineMixIterableDataset, TimeFrameNoisePool
-
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(0)  # fixed seed: the same audio every call
     dur_s = 3.0
     n = int(dur_s * SR)
     if channels == 1:
@@ -126,18 +133,35 @@ def _online_mix_frame_dataset(*, channels: int, flatten_channels: bool) -> Onlin
         t_start=0.0,
         t_end=dur_s,
     )
-    frame = td.Frame({"audio": audio, "rps": rps})
-    pool = TimeFrameNoisePool([frame], min_motor_rps=0.0, duration_s=1.0)
-    inner = OnlineMixIterableDataset(
-        pool, None, policy={"source_prob": 0.0}, base_seed=11, duration_s=1.0, sample_rate=SR
+    rid = f"rec_{channels}ch"
+    frame = td.Frame({"audio": audio, "rps": rps, "meta": td.Frame({"recording_id": rid})})
+    repo.commit(
+        dataset_name,
+        [(rid, streams.frame_to_sample(frame))],
+        meta={"layout": streams.TDFRAME_LAYOUT},
     )
-    return OnlineMixFrameDataset(inner, flatten_channels=flatten_channels)
 
 
-def test_online_mix_flatten_yields_c_mono_frames_per_chunk():
+def _online_mix_frame_dataset(repo, *, channels: int, flatten_channels: bool) -> OnlineMixFrameDataset:
+    """Build an OnlineMixFrameDataset over a previously published frames dataset."""
+    dataset = f"SYNTH-FLAT-{channels}CH"
+    _publish_synthetic_recording(repo, channels=channels, dataset_name=dataset)
+    cfg = {
+        "sample_rate": SR,
+        "duration_s": 1.0,
+        "base_seed": 11,
+        "sources": {
+            "noise": [{"kind": "frames", "dataset": dataset, "min_motor_rps": 0.0}],
+        },
+        "policy": {"source_prob": 0.0},
+    }
+    return OnlineMixFrameDataset.from_config(cfg, flatten_channels=flatten_channels)
+
+
+def test_online_mix_flatten_yields_c_mono_frames_per_chunk(patched_repo):
     import itertools
 
-    ds = _online_mix_frame_dataset(channels=4, flatten_channels=True)
+    ds = _online_mix_frame_dataset(patched_repo, channels=4, flatten_channels=True)
     frames = list(itertools.islice(iter(ds), 8))  # 2 chunks x 4 mics
 
     for i, frame in enumerate(frames):
@@ -155,16 +179,19 @@ def test_online_mix_flatten_yields_c_mono_frames_per_chunk():
     )
 
 
-def test_online_mix_flatten_matches_unflattened_channels():
+def test_online_mix_flatten_matches_unflattened_channels(patched_repo):
+    """The flatten function, applied to a raw frame, yields the per-channel
+    mono views as separate frames (audio and rps byte-identical)."""
     import itertools
 
-    flat = _online_mix_frame_dataset(channels=4, flatten_channels=True)
-    raw = _online_mix_frame_dataset(channels=4, flatten_channels=False)
-    flat_frames = list(itertools.islice(iter(flat), 4))
+    from data_processing.frame_datasets import _flatten_frame_channels
+
+    raw = _online_mix_frame_dataset(patched_repo, channels=4, flatten_channels=False)
     (raw_frame,) = list(itertools.islice(iter(raw), 1))
 
     raw_audio = np.asarray(raw_frame["mixture"].data)  # (4, T)
     assert raw_frame["mixture"].dims == ("mic", "time")
+    flat_frames = _flatten_frame_channels(raw_frame)
     for ch, frame in enumerate(flat_frames):
         np.testing.assert_array_equal(np.asarray(frame["mixture"].data), raw_audio[ch])
         np.testing.assert_array_equal(
@@ -172,10 +199,10 @@ def test_online_mix_flatten_matches_unflattened_channels():
         )
 
 
-def test_online_mix_default_false_is_unchanged_multichannel_stream():
+def test_online_mix_default_false_is_unchanged_multichannel_stream(patched_repo):
     import itertools
 
-    ds = _online_mix_frame_dataset(channels=4, flatten_channels=False)
+    ds = _online_mix_frame_dataset(patched_repo, channels=4, flatten_channels=False)
     frames = list(itertools.islice(iter(ds), 2))
     for frame in frames:
         assert frame["mixture"].dims == ("mic", "time")
@@ -183,10 +210,10 @@ def test_online_mix_default_false_is_unchanged_multichannel_stream():
         assert "channel" not in frame["meta"]
 
 
-def test_online_mix_flatten_mono_passthrough():
+def test_online_mix_flatten_mono_passthrough(patched_repo):
     import itertools
 
-    ds = _online_mix_frame_dataset(channels=1, flatten_channels=True)
+    ds = _online_mix_frame_dataset(patched_repo, channels=1, flatten_channels=True)
     frames = list(itertools.islice(iter(ds), 2))
     for frame in frames:
         assert frame["mixture"].dims == ("time",)

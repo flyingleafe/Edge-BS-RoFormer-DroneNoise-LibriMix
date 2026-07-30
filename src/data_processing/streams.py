@@ -618,9 +618,9 @@ def _sample_snr_db(
 def _mix_frame_pair(
     snr_db: Any, seed: int, entry: str, speech_frame: td.Frame, noise_frame: td.Frame
 ) -> td.Frame:
-    # Lazy import: online_mixing imports this module for resolve_source; the
+    # Lazy import: online_mixing imports this module for the repository; the
     # SNR-mixing math is shared in the other direction only at call time.
-    from data_processing.online_mixing import _mix_at_source_to_noise_snr
+    from data_processing.mixing import mix_at_source_to_noise_snr as _mix_sn
 
     speech = _audio_ct(speech_frame[entry])
     noise_series = noise_frame[entry]
@@ -643,7 +643,7 @@ def _mix_frame_pair(
         )
     )
     snr = _sample_snr_db(snr_db, rng)
-    mixture = _mix_at_source_to_noise_snr(speech, noise, snr)
+    mixture = _mix_sn(speech, noise, snr)
     if len(noise_series.dims) == 1:
         mixture = mixture[0]
     mixed = td.Series(mixture, noise_series.dims, {"time": noise_series.tindex})

@@ -24,13 +24,8 @@ sources:
       recording_ids: [FLY125]
       min_motor_rps: 0.0
   speech:
-    - kind: audio_files
-      root: "dload:librispeech/LibriSpeech/train-clean-100"
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   stages:
     # First 50k samples = 10 validation intervals at samples_per_validation=5000:

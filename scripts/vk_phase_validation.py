@@ -470,7 +470,7 @@ def build_gen_cell(
 
 
 def build_s3_cells(dregon_dir: str, quick: bool) -> list[Cell]:
-    from data_processing.dregon import discover_recordings, get_geometry, load_timeframe
+    from data_processing.sources.dregon import discover_recordings, get_geometry, load_timeframe
     from data_processing.streams import resolve_source
 
     ddir = Path(resolve_source(dregon_dir))
@@ -511,7 +511,7 @@ def build_s3b_cells(dregon_dir: str) -> list[Cell]:
     spec'd degenerate init (all rotors at the same constant — twin rejection
     makes iter_warp a measured no-op there) and the ``|stag`` control with
     per-rotor S3B_STAGGER added so refinement can engage."""
-    from data_processing.dregon import discover_recordings, get_geometry, load_timeframe
+    from data_processing.sources.dregon import discover_recordings, get_geometry, load_timeframe
     from data_processing.streams import resolve_source
 
     ddir = Path(resolve_source(dregon_dir))
@@ -551,7 +551,7 @@ def build_s3c_cell(dregon_dir: str) -> Cell:
     but the in-flight mask uses the command alone — this recording carries no
     ``motors_measured``. One 16 s mid-recording window of the in-flight span.
     """
-    from data_processing.dregon import (
+    from data_processing.sources.dregon import (
         clean_command_spikes,
         discover_recordings,
         get_geometry,

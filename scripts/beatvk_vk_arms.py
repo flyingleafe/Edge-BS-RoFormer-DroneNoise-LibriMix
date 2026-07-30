@@ -545,11 +545,11 @@ def rotor_mic_weights(rid: str, dregon_dir: str) -> np.ndarray:
     exactly ``vk_blind_sweep.rotor_mic_weights`` keyed by the frozen-protocol
     recording ids (FLY124 -> Michael's geometry, else DREGON)."""
     if rid == FLY124_REC:
-        from data_processing.michaels import get_geometry
+        from data_processing.sources.michaels import get_geometry
 
         mic, rot = get_geometry()
     else:
-        from data_processing.dregon import get_geometry
+        from data_processing.sources.dregon import get_geometry
         from data_processing.streams import resolve_source
 
         mic, rot = get_geometry(Path(resolve_source(dregon_dir)))

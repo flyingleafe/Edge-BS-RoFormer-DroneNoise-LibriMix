@@ -1,163 +1,137 @@
-"""Speech-enhancement online mixing (F1 baselines).
+"""Tests for the speech-enhancement online-mix task and the ``audio_pool``
+noise source (telemetry-free dload audio datasets).
 
-Two features under test, both added for the blind SE-baseline program
-(``docs/se-baselines-plan.md``):
-
-- **SE-target mode** of :class:`OnlineMixIterableDataset` — with
-  ``task="speech_enhancement"`` the stream yields ``(mixture, clean_target)``
-  instead of ``(audio, rps_target)``; the clean target is the gain-scaled speech
-  exactly as mixed (SNR of the returned pair == the drawn SNR), post-mix
-  augmentation is applied identically to mixture and target, and RPS is skipped.
-- **``kind: audio_pool``** (:class:`DloadAudioPool`) — a telemetry-free,
-  lazily-streamed dload-backed noise pool (random recording, random channel,
-  resample, loop/pad), exercised against a hermetic ``LocalRemote`` bucket for
-  both ``tdframe-v1`` and raw-audio publishing conventions.
+All streams are compiled pipelines over synthetic local-repo datasets (see
+``conftest.py``); the pure mixing helpers (``_apply_one_augmentation_pair``,
+``_scale_source_to_snr``) are unit-tested directly.
 """
 
 from __future__ import annotations
 
+import itertools
 import io
 
 import numpy as np
 import pytest
 import soundfile as sf
 import tdseries as td
-from dload.cache import ShardCache
-from dload.remote import LocalRemote
-from dload.repo import Repository
 
 import data_processing.streams as streams
-from data_processing.frame_datasets import OnlineMixFrameDataset
-from data_processing.frames import make_recording_frame
+from data_processing.frames import audio_series, make_recording_frame
 from data_processing.online_mixing import (
-    DloadAudioPool,
-    OnlineMixIterableDataset,
     _apply_one_augmentation_pair,
     _scale_source_to_snr,
+    build_online_mix_pipeline,
 )
 
-SR = 16000
+from .conftest import SPEECH_DATASET, SR, speech_dataset  # noqa: F401
 
 
-# ─── Stub pools (hermetic, no dload) for the SE-mode mixing tests ───────────────
+def _se_cfg(noise, **over):
+    cfg = {
+        "sample_rate": SR,
+        "duration_s": 1.0,
+        "base_seed": 123,
+        "task": "speech_enhancement",
+        "sources": {
+            "noise": noise,
+            "speech": [{"dataset": SPEECH_DATASET, "subpath": "LibriSpeech/train-clean-100"}],
+        },
+        "policy": {"snr_db": -10.0},
+    }
+    cfg.update(over)
+    return cfg
 
 
-class _StubNoisePool:
-    """Fixed-content noise pool: returns the same audio Frame each draw."""
-
-    def __init__(self, audio: np.ndarray, sample_rate: int = SR):
-        self._audio = np.ascontiguousarray(audio, dtype=np.float32)  # (C, T)
-        self._sr = sample_rate
-
-    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
-        n = int(round(duration_s * self._sr))
-        a = self._audio[:, :n]
-        if a.shape[0] == 1:
-            series = td.uniform(a[0], self._sr, dims=("time",), t_start=0.0)
-        else:
-            series = td.uniform(a, self._sr, dims=("mic", "time"), t_start=0.0)
-        return td.Frame({"audio": series})
+def _take(cfg, n, start=0):
+    pipe = build_online_mix_pipeline({**cfg, "start_sample_id": start})
+    return list(itertools.islice(iter(pipe), n))
 
 
-class _StubSourcePool:
-    """Fixed-content speech pool."""
-
-    def __init__(self, audio: np.ndarray, sample_rate: int = SR):
-        self._audio = np.ascontiguousarray(audio, dtype=np.float32)  # (T,)
-        self._sr = sample_rate
-
-    def sample_array(self, rng, *, channels, mode="independent"):
-        return np.tile(self._audio[None, :], (channels, 1)).astype(np.float32)
-
-
-def _se_dataset(policy, *, noise=None, speech=None, duration_s=1.0):
-    rng = np.random.default_rng(0)
-    noise = noise if noise is not None else 0.1 * rng.standard_normal((1, SR)).astype(np.float32)
-    speech = speech if speech is not None else rng.standard_normal(SR).astype(np.float32)
-    return OnlineMixIterableDataset(
-        _StubNoisePool(noise),
-        _StubSourcePool(speech),  # type: ignore[arg-type]
-        policy=policy,
-        base_seed=123,
-        duration_s=duration_s,
-        sample_rate=SR,
-        task="speech_enhancement",
-    )
+def _snr_db_of(frame) -> float:
+    mix = np.asarray(frame["mixture"].data, dtype=np.float64)
+    tgt = np.asarray(frame["target"].data, dtype=np.float64)
+    noise = mix - tgt
+    return float(10.0 * np.log10(np.mean(tgt**2) / np.mean(noise**2)))
 
 
 # ─── SE-target mode ─────────────────────────────────────────────────────────────
 
 
-def test_se_mode_yields_mixture_and_clean_target_shapes():
-    ds = _se_dataset({"snr_db": -10.0})
-    mix, tgt = ds.generate_sample(0)
-    assert mix.shape == (1, SR)
-    assert tgt.shape == (1, SR)
-    assert mix.dtype == tgt.dtype
+def test_se_mode_yields_mixture_and_clean_target_shapes(speech_dataset):  # noqa: F811
+    frames = _take(_se_cfg([{"kind": "audio_pool", "dataset": SPEECH_DATASET}]), 2)
+    f = frames[0]
+    assert set(f.keys()) == {"mixture", "target", "meta"}
+    assert f["mixture"].dims == ("time",)
+    assert np.asarray(f["mixture"].data).shape == (SR,)
+    assert np.asarray(f["target"].data).shape == (SR,)
 
 
-def test_se_mode_returned_pair_snr_matches_drawn_snr():
-    # Fixed scalar SNR, no augmentation: the clean target sits at exactly the
-    # requested SNR relative to the noise component (mixture - target).
+def test_se_mode_returned_pair_snr_matches_drawn_snr(speech_dataset):  # noqa: F811
     for snr in (-30.0, -12.5, 0.0):
-        ds = _se_dataset({"snr_db": snr})
-        mix, tgt = ds.generate_sample(3)
-        noise = (mix - tgt).numpy()
-        got = 10.0 * np.log10(np.mean(tgt.numpy() ** 2) / np.mean(noise**2))
-        assert abs(got - snr) < 1e-2, (snr, got)
-
-
-def test_se_mode_multichannel_noise_reduced_to_mono():
-    # Real DREGON/Michael's noise is 8-channel; the SE stream must pick one mic
-    # so mixture/target are mono (1, T) — the codec's mono SE contract.
-    rng = np.random.default_rng(0)
-    noise8 = 0.1 * rng.standard_normal((8, SR)).astype(np.float32)
-    ds = _se_dataset({"snr_db": -10.0}, noise=noise8)
-    mix, tgt = ds.generate_sample(0)
-    assert mix.shape == (1, SR)
-    assert tgt.shape == (1, SR)
-
-
-def test_se_mode_requires_speech_pool():
-    with pytest.raises(ValueError, match="requires a sources.speech pool"):
-        OnlineMixIterableDataset(
-            _StubNoisePool(np.zeros((1, SR), np.float32)),
-            None,
-            task="speech_enhancement",
-            sample_rate=SR,
+        frames = _take(
+            _se_cfg([{"kind": "audio_pool", "dataset": SPEECH_DATASET}], policy={"snr_db": snr}),
+            3,
         )
+        for f in frames:
+            assert abs(_snr_db_of(f) - snr) < 1e-2, (snr, _snr_db_of(f))
 
 
-def test_se_mode_is_deterministic():
-    ds = _se_dataset({"snr_db": {"uniform": {"low": -30.0, "high": 0.0}}})
-    m1, t1 = ds.generate_sample(9)
-    m2, t2 = ds.generate_sample(9)
-    assert np.allclose(m1.numpy(), m2.numpy())
-    assert np.allclose(t1.numpy(), t2.numpy())
-
-
-def test_rps_mode_unchanged_default_task():
-    # Default task is still rps_prediction and still yields a (audio, rps) pair.
+def test_se_mode_multichannel_noise_reduced_to_mono(patched_repo, speech_dataset):  # noqa: F811
+    # Multichannel tdframe noise -> the SE stream picks one mic (mono contract).
     rng = np.random.default_rng(0)
-    noise = 0.1 * rng.standard_normal((1, SR)).astype(np.float32)
-
-    class _NoisePoolWithRps(_StubNoisePool):
-        def sample_timeframe(self, rng, duration_s):
-            fr = super().sample_timeframe(rng, duration_s)
-            n_frames = self._audio.shape[-1] // 512 + 1
-            rps = td.Series(
-                np.full((4, n_frames), 30.0, np.float32),
-                ("rotor", "time"),
-                {"time": td.GridIndex.create((SR, 512), n_frames, t_start=0)},
-            )
-            return td.Frame({"audio": fr["audio"], "rps": rps})
-
-    ds = OnlineMixIterableDataset(
-        _NoisePoolWithRps(noise), None, sample_rate=SR, task="rps_prediction"
+    arr = (0.1 * rng.standard_normal((4, 2 * SR))).astype(np.float32)
+    frame = make_recording_frame(
+        {"audio": td.uniform(arr, SR, dims=("mic", "time"), t_start=0.0)},
+        meta={"recording_id": "multi"},
     )
-    audio, rps = ds.generate_sample(0)
-    assert audio.shape == (1, SR)
-    assert rps.shape[0] == 4
+    patched_repo.commit(
+        "SE-MULTI", [("multi", streams.frame_to_sample(frame))], meta={"layout": "tdframe-v1"}
+    )
+    frames = _take(_se_cfg([{"kind": "audio_pool", "dataset": "SE-MULTI"}]), 2)
+    assert all(f["mixture"].dims == ("time",) for f in frames)
+
+
+def test_se_mode_requires_speech_pool(patched_repo, speech_dataset):  # noqa: F811
+    cfg = _se_cfg([{"kind": "audio_pool", "dataset": SPEECH_DATASET}])
+    del cfg["sources"]["speech"]
+    with pytest.raises(ValueError, match="requires a sources.speech pool"):
+        build_online_mix_pipeline(cfg)
+
+
+def test_se_mode_is_deterministic(speech_dataset):  # noqa: F811
+    cfg = _se_cfg(
+        [{"kind": "audio_pool", "dataset": SPEECH_DATASET}],
+        policy={"snr_db": {"uniform": {"low": -30.0, "high": 0.0}}},
+    )
+    a = _take(cfg, 4)
+    b = _take(cfg, 4)
+    for fa, fb in zip(a, b):
+        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(np.asarray(fa["target"].data), np.asarray(fb["target"].data))
+
+
+def test_se_mode_silent_noise_never_zeroes_the_sample(patched_repo, speech_dataset):  # noqa: F811
+    """A silent noise chunk would collapse the clean target to all-zeros via
+    the source-to-noise scaling; the silence filter keeps such chunks out of
+    the stream entirely (the all-zero-sample bug)."""
+    silent = np.zeros((1, 2 * SR), np.float32)
+    rng = np.random.default_rng(0)
+    real = (0.1 * rng.standard_normal((1, 2 * SR))).astype(np.float32)
+    samples = []
+    for key, arr in (("silent", silent), ("real", real)):
+        frame = make_recording_frame(
+            {"audio": td.uniform(arr[0], SR, dims=("time",), t_start=0.0)},
+            meta={"recording_id": key},
+        )
+        samples.append((key, streams.frame_to_sample(frame)))
+    patched_repo.commit("SE-SILENT", samples, meta={"layout": "tdframe-v1"})
+
+    frames = _take(_se_cfg([{"kind": "audio_pool", "dataset": "SE-SILENT"}]), 6)
+    assert frames, "stream yielded nothing"
+    for f in frames:
+        assert float(np.mean(np.asarray(f["target"].data) ** 2)) > 0.0
+        assert float(np.mean(np.asarray(f["mixture"].data) ** 2)) > 0.0
 
 
 # ─── augmentation consistency ───────────────────────────────────────────────────
@@ -170,9 +144,7 @@ def test_augmentation_pair_applies_identical_transform():
     spec = {"probability": 1.0, "choices": [{"random_gain": {"min_db": -6, "max_db": 6}}]}
     mix2, tgt2 = _apply_one_augmentation_pair(mixture.copy(), target.copy(), spec, rng)
     # The gain factor is identical on both, so the ratio target/mixture is preserved.
-    ratio_before = target / mixture
-    ratio_after = tgt2 / mix2
-    assert np.allclose(ratio_before, ratio_after, atol=1e-5)
+    np.testing.assert_allclose(target / mixture, tgt2 / mix2, atol=1e-5)
 
 
 def test_augmentation_pair_polarity_flips_both():
@@ -182,39 +154,23 @@ def test_augmentation_pair_polarity_flips_both():
     mix2, tgt2 = _apply_one_augmentation_pair(
         mixture.copy(), target.copy(), spec, np.random.default_rng(0)
     )
-    assert np.allclose(mix2, -mixture)
-    assert np.allclose(tgt2, -target)
+    np.testing.assert_allclose(mix2, -mixture)
+    np.testing.assert_allclose(tgt2, -target)
 
 
-def test_augmentation_preserves_se_pair_snr():
-    # With augmentation on, the SNR of the (mixture, target) pair is unchanged,
-    # because the same scalar hits both signals.
-    ds = _se_dataset(
-        {
+def test_augmentation_preserves_se_pair_snr(speech_dataset):  # noqa: F811
+    cfg = _se_cfg(
+        [{"kind": "audio_pool", "dataset": SPEECH_DATASET}],
+        policy={
             "snr_db": -8.0,
             "augmentations": {
                 "probability": 1.0,
                 "choices": [{"random_gain": {"min_db": -6, "max_db": 6}}, "random_polarity"],
             },
-        }
+        },
     )
-    mix, tgt = ds.generate_sample(2)
-    noise = (mix - tgt).numpy()
-    got = 10.0 * np.log10(np.mean(tgt.numpy() ** 2) / np.mean(noise**2))
-    assert abs(got - (-8.0)) < 1e-2
-
-
-# ─── OnlineMixFrameDataset SE packing ───────────────────────────────────────────
-
-
-def test_frame_dataset_se_packs_mixture_target():
-    cfg_ds = _se_dataset({"snr_db": -10.0})
-    fds = OnlineMixFrameDataset(cfg_ds)
-    frame = next(iter(fds))
-    assert set(frame.keys()) == {"mixture", "target", "meta"}
-    assert frame["mixture"].dims == ("time",)
-    assert frame["target"].dims == ("time",)
-    assert np.asarray(frame["mixture"].data).shape == (SR,)
+    for f in _take(cfg, 3):
+        assert abs(_snr_db_of(f) - (-8.0)) < 1e-2
 
 
 # ─── _scale_source_to_snr ───────────────────────────────────────────────────────
@@ -227,35 +183,22 @@ def test_scale_source_to_snr_global_and_per_channel():
     scaled = _scale_source_to_snr(source, noise, -6.0)
     got = 10.0 * np.log10(np.mean(scaled**2) / np.mean(noise**2))
     assert abs(got - (-6.0)) < 1e-3
+
     scaled_pc = _scale_source_to_snr(source, noise, -6.0, per_channel=True)
     for c in range(2):
         got_c = 10.0 * np.log10(np.mean(scaled_pc[c] ** 2) / np.mean(noise[c] ** 2))
         assert abs(got_c - (-6.0)) < 1e-3
 
 
-# ─── DloadAudioPool (hermetic LocalRemote) ──────────────────────────────────────
-
-
-@pytest.fixture
-def patched_repo(tmp_path, monkeypatch) -> Repository:
-    repo = Repository(
-        LocalRemote(tmp_path / "remote"),
-        ShardCache(tmp_path / "cache", None),
-        lock_path=tmp_path / "dload.lock",
-    )
-    monkeypatch.setattr(streams, "_repository", repo)
-    return repo
+# ─── audio_pool source ──────────────────────────────────────────────────────────
 
 
 def _publish_tdframe_audio(repo, name, recs):
     """recs: list[(key, (C,T) float32 array, sr)] -> tdframe-v1 dataset."""
     samples = []
     for key, arr, sr in recs:
-        dims = ("time",) if arr.shape[0] == 1 else ("mic", "time")
-        data = arr[0] if arr.shape[0] == 1 else arr
         frame = make_recording_frame(
-            {"audio": td.uniform(data, sr, dims=dims, t_start=0.0)},
-            meta={"recording_id": key},
+            {"audio": audio_series(arr, sr)}, meta={"recording_id": key}
         )
         samples.append((key, streams.frame_to_sample(frame)))
     repo.commit(name, samples, meta={"layout": streams.TDFRAME_LAYOUT})
@@ -271,199 +214,118 @@ def _publish_raw_audio(repo, name, recs):
     repo.commit(name, samples, meta={})
 
 
-def test_audio_pool_tdframe_multichannel_resample_and_loop(patched_repo):
-    # 2-channel 44.1 kHz recording, 0.5 s long -> must resample to 16 k and loop
-    # to fill a 1 s chunk.
+def _chunk_fingerprints(cfg, n=12):
+    """Distinct per-chunk max-abs values over the first n chunks (each fixture
+    recording is a distinct constant amplitude, so this identifies recordings)."""
+    frames = _take(cfg, n)
+    return {round(float(np.abs(np.asarray(f["mixture"].data)).max()), 2) for f in frames}
+
+
+def test_audio_pool_tdframe_multichannel_resample_and_loop(patched_repo, speech_dataset):  # noqa: F811
+    # 2-channel 44.1 kHz recording, 0.5 s long -> resampled to 16 k and looped
+    # to fill a 1 s chunk (then mixed mono for SE).
     sr = 44100
     arr = np.stack(
         [np.sin(np.linspace(0, 20, sr // 2)), np.cos(np.linspace(0, 20, sr // 2))]
     ).astype(np.float32)
     _publish_tdframe_audio(patched_repo, "AP-TDF", [("recA", arr, sr)])
-    pool = DloadAudioPool("AP-TDF", sample_rate=SR)
-    assert pool._layout == "tdframe-v1"
-    frame = pool.sample_timeframe(np.random.default_rng(0), 1.0)
-    audio = frame["audio"]
-    assert audio.dims == ("time",)
-    assert np.asarray(audio.data).shape == (SR,)  # looped/padded to 1 s @ 16 k
-    assert int(audio.tindex.sr) == SR
+    frames = _take(_se_cfg([{"kind": "audio_pool", "dataset": "AP-TDF"}]), 3)
+    assert all(np.asarray(f["mixture"].data).shape == (SR,) for f in frames)
 
 
-def test_audio_pool_raw_layout(patched_repo):
+def test_audio_pool_raw_layout(patched_repo, speech_dataset):  # noqa: F811
     arr = np.random.default_rng(0).standard_normal((SR * 2, 1)).astype(np.float32)  # (T, C=1)
     _publish_raw_audio(patched_repo, "AP-RAW", [("recA", arr, SR)])
-    pool = DloadAudioPool("AP-RAW", sample_rate=SR)
-    assert pool._layout is None
-    frame = pool.sample_timeframe(np.random.default_rng(0), 1.0)
-    assert np.asarray(frame["audio"].data).shape == (SR,)
+    frames = _take(_se_cfg([{"kind": "audio_pool", "dataset": "AP-RAW"}]), 2)
+    assert all(np.asarray(f["mixture"].data).shape == (SR,) for f in frames)
 
 
-def test_audio_pool_skips_non_audio_samples(patched_repo):
+def test_audio_pool_skips_non_audio_samples(patched_repo, speech_dataset):  # noqa: F811
     # Datasets like new-drone-noises interleave csv flight-log samples with wav;
     # the pool must skip the non-audio ones, not crash.
     arr = np.random.default_rng(0).standard_normal((SR, 1)).astype(np.float32)
-    import io as _io
-
-    import soundfile as _sf
-
-    buf = _io.BytesIO()
-    _sf.write(buf, arr, SR, format="WAV", subtype="FLOAT")
+    buf = io.BytesIO()
+    sf.write(buf, arr, SR, format="WAV", subtype="FLOAT")
     samples = [("wavA", {"wav": buf.getvalue()}), ("logB", {"csv": b"t,rps\n0,30\n"})]
     patched_repo.commit("AP-MIXED", samples, meta={})
-    pool = DloadAudioPool("AP-MIXED", sample_rate=SR)
-    for _ in range(20):  # would raise on the csv sample without the skip
-        frame = pool.sample_timeframe(np.random.default_rng(0), 0.5)
-        assert np.asarray(frame["audio"].data).shape == (SR // 2,)
+    frames = _take(_se_cfg([{"kind": "audio_pool", "dataset": "AP-MIXED"}]), 4)
+    assert len(frames) == 4
 
 
-def test_audio_pool_shard_weighting_covers_all_records(patched_repo):
-    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(4)]
-    _publish_tdframe_audio(patched_repo, "AP-MULTI", recs)
-    pool = DloadAudioPool("AP-MULTI", sample_rate=SR)
-    assert pool.num_samples == 4
-    rng = np.random.default_rng(0)
-    seen = set()
-    for _ in range(200):
-        frame = pool.sample_timeframe(rng, 0.25)
-        # each record is a distinct constant amplitude -> identify by max abs
-        seen.add(round(float(np.abs(frame["audio"].data).max()), 4))
-    assert len(seen) == 4  # all four recordings are reachable
-
-
-def _fingerprints(pool, n=300):
-    rng = np.random.default_rng(0)
-    seen = set()
-    for _ in range(n):
-        frame = pool.sample_timeframe(rng, 0.25)
-        seen.add(round(float(np.abs(frame["audio"].data).max()), 4))
-    return seen
-
-
-def test_audio_pool_holdout_train_valid_are_disjoint(patched_repo):
-    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(4)]
-    _publish_tdframe_audio(patched_repo, "AP-HOLD", recs)
-    train = DloadAudioPool("AP-HOLD", sample_rate=SR, holdout={"fraction": 0.5, "split": "train"})
-    valid = DloadAudioPool("AP-HOLD", sample_rate=SR, holdout={"fraction": 0.5, "split": "valid"})
-    train_seen, valid_seen = _fingerprints(train), _fingerprints(valid)
-    assert train_seen and valid_seen
-    assert train_seen.isdisjoint(valid_seen)  # no recording reused across the split
-    assert train_seen | valid_seen == _fingerprints(DloadAudioPool("AP-HOLD", sample_rate=SR))
-
-
-def test_audio_pool_include_keys_restricts_to_named_recordings(patched_repo):
-    # F2 replication: the AVQ pool must use only the 5 ego-noise sequences (the
-    # other recordings contain speech). Keys are shard-local, so the pool learns
-    # which shards hold a match lazily and stops drawing the others.
-    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(4)]
-    _publish_tdframe_audio(patched_repo, "AP-INC", recs)
-    pool = DloadAudioPool("AP-INC", sample_rate=SR, include_keys=["r1", "r3"])
-    seen = _fingerprints(pool)
-    assert seen == {round(0.02, 4), round(0.04, 4)}  # r1, r3 only
-
-
-def test_audio_pool_exclude_keys_and_substring_matching(patched_repo):
-    # Entries match a key exactly OR as a substring: "seq" drops both seq* recs.
+def test_audio_pool_include_and_exclude_keys(patched_repo, speech_dataset):  # noqa: F811
+    # Keys match exactly OR as a substring; exclude wins on overlap.
     recs = [
         ("S1_seq1", 0.01 * np.ones((1, SR), np.float32), SR),
         ("S1_seq2", 0.02 * np.ones((1, SR), np.float32), SR),
         ("S2_speech", 0.03 * np.ones((1, SR), np.float32), SR),
     ]
     _publish_tdframe_audio(patched_repo, "AP-EXC", recs)
-    assert _fingerprints(DloadAudioPool("AP-EXC", sample_rate=SR, exclude_keys=["seq"])) == {
-        round(0.03, 4)
-    }
-    assert _fingerprints(DloadAudioPool("AP-EXC", sample_rate=SR, include_keys=["S1_seq"])) == {
-        round(0.01, 4),
-        round(0.02, 4),
-    }
-    # include then exclude: exclude wins on the overlap.
-    pool = DloadAudioPool(
-        "AP-EXC", sample_rate=SR, include_keys=["S1_seq1", "S1_seq2"], exclude_keys=["S1_seq2"]
+
+    # exclude by substring: "seq" drops both seq* recs -> only S2_speech mixes in
+    cfg = _se_cfg(
+        [{"kind": "audio_pool", "dataset": "AP-EXC", "exclude_keys": ["seq"], "channel": 0}],
+        policy={"snr_db": -40.0},  # speech far below noise: noise amplitude dominates the max
     )
-    assert _fingerprints(pool) == {round(0.01, 4)}
+    seen = _chunk_fingerprints(cfg)
+    assert seen == {round(0.03, 2)}
 
-
-def test_audio_pool_include_keys_matching_nothing_raises(patched_repo):
-    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(2)]
-    _publish_tdframe_audio(patched_repo, "AP-INC-EMPTY", recs)
-    pool = DloadAudioPool("AP-INC-EMPTY", sample_rate=SR, include_keys=["nope"])
-    with pytest.raises(ValueError, match="no sample matches include_keys"):
-        pool.sample_timeframe(np.random.default_rng(0), 0.25)
-
-
-def test_audio_pool_include_keys_from_config(patched_repo):
-    recs = [(f"r{i}", (0.01 * (i + 1)) * np.ones((1, SR), np.float32), SR) for i in range(3)]
-    _publish_tdframe_audio(patched_repo, "AP-INC-CFG", recs)
-    pool = DloadAudioPool.from_config(
-        {"kind": "audio_pool", "dataset": "AP-INC-CFG", "channel": 0, "include_keys": ["r2"]},
-        duration_s=0.25,
-        sample_rate=SR,
+    cfg = _se_cfg(
+        [{"kind": "audio_pool", "dataset": "AP-EXC", "include_keys": ["S1_seq"], "channel": 0}],
+        policy={"snr_db": -40.0},
     )
-    assert pool.include_keys == ["r2"]
-    assert _fingerprints(pool) == {round(0.03, 4)}
+    assert _chunk_fingerprints(cfg) == {round(0.01, 2), round(0.02, 2)}
 
-
-def test_source_pool_exclude_speakers(tmp_path):
-    import soundfile as _sf
-
-    from data_processing.online_mixing import AudioFileSourcePool
-
-    for spk in ("103", "1034", "200"):
-        d = tmp_path / spk / "chap"
-        d.mkdir(parents=True)
-        _sf.write(d / f"{spk}-0.flac", np.zeros(SR, np.float32), SR)
-    pool = AudioFileSourcePool.from_config(
-        {"root": str(tmp_path), "glob": "**/*.flac", "exclude": ["200"]},
-        duration_s=1.0,
-        sample_rate=SR,
+    cfg = _se_cfg(
+        [
+            {
+                "kind": "audio_pool",
+                "dataset": "AP-EXC",
+                "include_keys": ["S1_seq1", "S1_seq2"],
+                "exclude_keys": ["S1_seq2"],
+                "channel": 0,
+            }
+        ],
+        policy={"snr_db": -40.0},
     )
-    assert all("/200/" not in p.as_posix() for p in pool.files)
-    assert any("/103/" in p.as_posix() for p in pool.files)
+    assert _chunk_fingerprints(cfg) == {round(0.01, 2)}
 
 
-# ─── Silent-draw rejection (the all-zero-sample bug) ────────────────────────────
+def test_audio_pool_holdout_shard_split(patched_repo, speech_dataset):  # noqa: F811
+    # Multi-shard dataset: the last `valid_shards` whole shards are the valid
+    # partition; train gets the complement. Four 1-sample shards.
+    repo = patched_repo
+    samples = []
+    for i in range(4):
+        arr = (0.01 * (i + 1)) * np.ones((1, SR), np.float32)
+        frame = make_recording_frame(
+            {"audio": audio_series(arr, SR)}, meta={"recording_id": f"r{i}"}
+        )
+        samples.append((f"r{i}", streams.frame_to_sample(frame)))
+    repo.commit("AP-HOLD", samples, meta={"layout": streams.TDFRAME_LAYOUT}, target_shard_size=1)
 
-
-class _SilentThenRealNoisePool:
-    """Yields digital silence for the first ``n_silent`` draws, then real audio.
-
-    Models the real `drone_audio` pool, ~5.8% of whose 1 s draws are digitally
-    silent."""
-
-    def __init__(self, real: np.ndarray, n_silent: int, sample_rate: int = SR):
-        self._real = np.ascontiguousarray(real, dtype=np.float32)
-        self._left = int(n_silent)
-        self._sr = sample_rate
-        self.draws = 0
-
-    def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
-        n = int(round(duration_s * self._sr))
-        self.draws += 1
-        if self._left > 0:
-            self._left -= 1
-            a = np.zeros((1, n), np.float32)
-        else:
-            a = self._real[:, :n]
-        return td.Frame({"audio": td.uniform(a[0], self._sr, dims=("time",), t_start=0.0)})
-
-
-def test_se_mode_redraws_past_silent_noise_instead_of_zeroing_the_sample():
-    """A silent NOISE draw makes _scale_source_to_snr scale the speech by 0, so
-    BOTH target and mixture become all-zeros — a completely empty sample. The
-    stream must reject such draws and redraw."""
-    rng = np.random.default_rng(0)
-    real = 0.1 * rng.standard_normal((1, SR)).astype(np.float32)
-    speech = rng.standard_normal(SR).astype(np.float32)
-    pool = _SilentThenRealNoisePool(real, n_silent=3)
-    ds = OnlineMixIterableDataset(
-        pool,  # type: ignore[arg-type]
-        _StubSourcePool(speech),  # type: ignore[arg-type]
-        policy={"snr_db": 0.0},
-        base_seed=123,
-        duration_s=1.0,
-        sample_rate=SR,
-        task="speech_enhancement",
+    train_cfg = _se_cfg(
+        [
+            {
+                "kind": "audio_pool",
+                "dataset": "AP-HOLD",
+                "channel": 0,
+                "holdout": {"split": "train", "valid_shards": 1},
+            }
+        ],
+        policy={"snr_db": -40.0},
     )
-    mix, tgt = ds.generate_sample(0)
-    assert pool.draws > 3, "expected the silent draws to be rejected and redrawn"
-    assert float(np.mean(tgt.numpy() ** 2)) > 0.0, "clean target was zeroed by a silent noise draw"
-    assert float(np.mean(mix.numpy() ** 2)) > 0.0, "mixture was zeroed by a silent noise draw"
+    valid_cfg = _se_cfg(
+        [
+            {
+                "kind": "audio_pool",
+                "dataset": "AP-HOLD",
+                "channel": 0,
+                "holdout": {"split": "valid", "valid_shards": 1},
+            }
+        ],
+        policy={"snr_db": -40.0},
+    )
+    train_seen, valid_seen = _chunk_fingerprints(train_cfg), _chunk_fingerprints(valid_cfg)
+    assert train_seen and valid_seen
+    assert train_seen.isdisjoint(valid_seen)
+    assert valid_seen == {round(0.04, 2)}  # the last shard's recording
