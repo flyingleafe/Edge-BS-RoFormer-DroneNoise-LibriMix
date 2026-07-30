@@ -529,10 +529,12 @@ def test_parallel_return_state_falls_back_to_sequential():
         assert torch.equal(st_p[name], st_s[name])
 
 
-def test_layer_parallel_default_and_env_optout(monkeypatch):
-    assert ComplexKLALayer(16, n_state=4).use_parallel_scan is True
-    monkeypatch.setenv("CKLA_SEQUENTIAL_SCAN", "1")
+def test_layer_parallel_optin_and_env(monkeypatch):
+    # Parallel scan is opt-in (span-product blowup on real batches — see the
+    # attribute note in ComplexKLALayer.__init__); sequential is the default.
     assert ComplexKLALayer(16, n_state=4).use_parallel_scan is False
+    monkeypatch.setenv("CKLA_PARALLEL_SCAN", "1")
+    assert ComplexKLALayer(16, n_state=4).use_parallel_scan is True
 
 
 def test_head_parallel_matches_sequential_path():
@@ -540,13 +542,13 @@ def test_head_parallel_matches_sequential_path():
     head = TemporalCKLAHead(in_ch=64, d_model=64, num_rotors=4, n_layers=2, n_state=8)
     x = torch.randn(2, 64, 50)
     with torch.no_grad():
-        y_par = head(x)  # default: parallel scan
+        y_seq = head(x)  # default: sequential scan (CPU input)
         for blk in head.blocks:
             mixer = blk.mixer
             assert isinstance(mixer, ComplexKLALayer)
-            assert mixer.use_parallel_scan
-            mixer.use_parallel_scan = False
-        y_seq = head(x)
+            assert not mixer.use_parallel_scan
+            mixer.use_parallel_scan = True
+        y_par = head(x)
     torch.testing.assert_close(y_par, y_seq, rtol=1e-4, atol=1e-5)
 
 

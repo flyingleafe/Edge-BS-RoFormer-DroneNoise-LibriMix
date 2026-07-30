@@ -6,10 +6,13 @@ Linear Attention, arXiv 2602.10743) as implemented in the ``fkla`` project's
 recursion only (no Fenwick tree: our sequences are ~126–250 STFT frames,
 where a sequential fp32 scan over T is cheap and exact) and generalize the
 per-cell latent from a real Gaussian information pair to a **complex** one.
-The sequential loop is the reference; training/inference use the equivalent
-log-depth associative scan ``complex_kla_scan_parallel`` by default (the loop
-is kernel-launch-bound on GPU — T × ~15 tiny kernels; opt out via
-``layer.use_parallel_scan = False`` or env ``CKLA_SEQUENTIAL_SCAN=1``).
+The sequential loop is the reference (it is kernel-launch-bound on GPU —
+T × ~15 tiny kernels); on CUDA the fused Triton op (``models.ckla_triton``,
+same stepwise arithmetic, one launch) is used by default (opt out via
+``CKLA_NO_TRITON=1``). The log-depth associative scan
+``complex_kla_scan_parallel`` is opt-in only (``CKLA_PARALLEL_SCAN=1``): its
+span-gain products can blow up where the stepwise recurrences stay finite —
+see the note at its ``use_parallel_scan`` attribute.
 
 State grid G = (N, D): N state-expansion slots × D value channels. Per (n, d)
 cell the latent is (η ∈ ℂ, λ ∈ ℝ≥0). The only change vs the real KLA flat
@@ -594,10 +597,15 @@ class ComplexKLALayer(nn.Module):
 
         self.capture: list[dict[str, Tensor]] | None = None
         self.capture_state: bool = False
-        # Parallel (associative-scan) path by default — the sequential loop is
-        # kernel-launch-bound on GPU. Opt out per module (attribute) or
-        # globally via env CKLA_SEQUENTIAL_SCAN=1.
-        self.use_parallel_scan: bool = os.environ.get("CKLA_SEQUENTIAL_SCAN", "0").lower() not in (
+        # Parallel (associative-scan) path is OPT-IN (attr or env
+        # CKLA_PARALLEL_SCAN=1). It materializes span-gain products the
+        # sequential loop never forms; in transient regimes (λ still small,
+        # |g|>1) their magnitude — and exponentially-amplified fp32 rounding —
+        # produced forward NaNs on real 8 s training batches where the
+        # sequential loop (and the Triton kernel, which replicates it
+        # stepwise) stayed finite. Safe for short-T/CPU experimentation only
+        # until a log-space-gain rewrite.
+        self.use_parallel_scan: bool = os.environ.get("CKLA_PARALLEL_SCAN", "0").lower() in (
             "1",
             "true",
             "yes",

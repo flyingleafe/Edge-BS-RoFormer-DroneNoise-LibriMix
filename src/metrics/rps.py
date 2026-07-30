@@ -39,6 +39,12 @@ def _align(pred: np.ndarray, target: np.ndarray, pit: bool) -> np.ndarray:
     """
     if not pit:
         return target
+    if not np.isfinite(pred).all():
+        # A non-finite prediction would crash the Hungarian assignment inside
+        # align_rps_to_gt and kill the whole run mid-validation. Any alignment
+        # is as good as another for a NaN/inf prediction — the metric comes
+        # out nan either way; skip the assignment and let it.
+        return target
     return align_rps_to_gt(target, pred)
 
 
