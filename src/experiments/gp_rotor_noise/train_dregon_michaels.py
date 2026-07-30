@@ -28,17 +28,16 @@ from pathlib import Path
 
 import numpy as np
 
-from data_processing import dregon as D
-from data_processing.dregon import load_dregon_timeframes
-from data_processing.michaels import get_geometry as michaels_geometry
-from data_processing.michaels import load_michaels_timeframes
+from data_processing import sources
 from experiments.gp_rotor_noise.gp_rotor_noise import GPRotorNoiseConfig, GPRotorNoiseModel
 
 SR = 16000
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DATA_ROOT = PROJECT_ROOT / "data"
-DREGON_DIR = DATA_ROOT / "DREGON"
-MICHAELS_DR = DATA_ROOT  # uses MICHAELS_FILES relative paths under data/
+
+
+def _recording_frames(source: str, splits: list[str] | None = None) -> list:
+    """Published frames for a rig, audio resampled to SR (fixes baked in)."""
+    return list(sources.iter_recording_frames(source, splits=splits, sample_rate=SR))
 
 
 def upsample_rps_to_audio_rate(
@@ -68,14 +67,12 @@ def dregon_train_sources(
     `D.get_geometry(dregon_dir)` but the GP only uses mic_pos + rotor factor idx,
     so this is fine.
     """
-    frames = load_dregon_timeframes(DATA_ROOT, splits=list(splits), target_sr=SR, download=False)
+    frames = [tf for tf in _recording_frames("DREGON", list(splits)) if "motors_measured" in tf]
     if not frames:
-        raise RuntimeError(f"No DREGON frames loaded from {DREGON_DIR}")
-    mic_pos = D.get_geometry(DREGON_DIR)[0].astype(np.float32)
-    sources = []
+        raise RuntimeError("No DREGON in-flight frames with motors_measured in DREGON-frames")
+    mic_pos = np.asarray(frames[0]["mic_pos"].data, dtype=np.float32)
+    out = []
     for tf in frames:
-        if "motors_measured" not in tf:
-            continue
         dur = tf["audio"].t_end - tf["audio"].t_start
         cut = _val_at_start_cut(dur, val_pct=val_pct)
         train_tf = tf.time[tf["audio"].t_start + cut : tf["audio"].t_end]
@@ -91,7 +88,7 @@ def dregon_train_sources(
             continue
         audio_ts = np.arange(audio.shape[-1]) / SR
         rps_audio = upsample_rps_to_audio_rate(motor_data, motor_ts - motor_ts[0], audio_ts)
-        sources.append(
+        out.append(
             {
                 "audio": audio,
                 "rps_audio": rps_audio,
@@ -99,14 +96,14 @@ def dregon_train_sources(
                 "recording_id": tf["meta"]["recording_id"],
             }
         )
-    return sources, mic_pos
+    return out, mic_pos
 
 
 def michaels_train_sources(val_pct: float = 0.1) -> tuple[list[dict], np.ndarray]:
     """Load both Michael's recordings, swapped-split training halves."""
-    mic_pos = michaels_geometry()[0].astype(np.float32)
-    tfs = load_michaels_timeframes(data_root=DATA_ROOT, sr=SR)
-    sources = []
+    mic_pos = sources.geometry("michaels")[0].astype(np.float32)
+    tfs = _recording_frames("michaels")
+    out = []
     for tf in tfs:
         dur = tf["audio"].t_end - tf["audio"].t_start
         cut = _val_at_start_cut(dur, val_pct=val_pct)
@@ -119,10 +116,10 @@ def michaels_train_sources(val_pct: float = 0.1) -> tuple[list[dict], np.ndarray
         audio_ts = np.arange(audio.shape[-1]) / SR
         rps_audio = upsample_rps_to_audio_rate(motor_data, motor_ts - motor_ts[0], audio_ts)
         rid = tf["meta"].get("recording_id", "")
-        sources.append(
+        out.append(
             {"audio": audio, "rps_audio": rps_audio, "mic_pos": mic_pos, "recording_id": rid}
         )
-    return sources, mic_pos
+    return out, mic_pos
 
 
 def _fit_and_save(name: str, sources: list[dict], out_root: Path, cfg: GPRotorNoiseConfig) -> None:

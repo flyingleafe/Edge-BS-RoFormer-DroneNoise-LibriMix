@@ -38,7 +38,7 @@ from typing import Any, cast
 import numpy as np
 import tdseries as td
 
-from data_processing.dregon import clean_command_spikes
+from data_processing.sources.dregon import clean_command_spikes
 from data_processing.frames import get_meta
 
 DEFAULT_DEV_CONST = 0.08

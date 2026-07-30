@@ -562,9 +562,9 @@ def _noise_gen_geometry(
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(mic_positions, rotor_positions)`` for a ``NoiseRPSDataset`` chunk origin."""
     if origin == "michaels":
-        from data_processing.michaels import get_geometry
+        from data_processing import sources
 
-        return get_geometry()
+        return sources.geometry("michaels")
     if origin == "dregon":
         if dregon_dir is None:
             raise ValueError("dregon_dir is required to build geometry for 'dregon'-origin chunks")
@@ -572,9 +572,10 @@ def _noise_gen_geometry(
 
         if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
             return _frames_spec_geometry(dregon_dir)
-        from data_processing.dregon import get_geometry
+        from data_processing import sources
+        from data_processing.streams import resolve_source
 
-        return get_geometry(Path(dregon_dir))
+        return sources.dregon.get_geometry(resolve_source(dregon_dir))
     raise ValueError(
         f"unknown NoiseRPSDataset chunk origin {origin!r}; expected 'dregon' or 'michaels'"
     )
