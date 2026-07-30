@@ -420,6 +420,11 @@ MODELS: dict[str, tuple[str, str, int | None]] = {
         "r2://ml-data/artifacts/ckla_phaseonly_4s/checkpoints/best.ckpt",
         None,
     ),
+    "ckla_phaseonly_8s_best": (
+        "ckla_phaseonly_8s",
+        "r2://ml-data/artifacts/ckla_phaseonly_8s/checkpoints/best.ckpt",
+        None,
+    ),
     # Readout-family arms (phase-differential readout, docs/experiments/ckla.md):
     "ckla_phaseonly_best": (
         "ckla_phaseonly_fs_v2",

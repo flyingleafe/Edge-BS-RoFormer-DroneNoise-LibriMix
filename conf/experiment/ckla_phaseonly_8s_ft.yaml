@@ -1,0 +1,30 @@
+# @package _global_
+# 8 s context arm, ATTEMPT 2: warm-started from ckla_phaseonly_4s best.ckpt
+# at 5x reduced LR. The from-scratch 8 s run (ckla_phaseonly_8s) peaked at
+# epoch ~1 and then degraded monotonically (final val diverged) — an
+# optimization failure at lr 1e-3 with only 2 chunks/step, not an
+# architectural negative. This run tests the 4->8 s context extension with
+# the optimization problem removed.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_phaseonly
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ckla_phaseonly_8s_ft
+checkpoint: r2://ml-data/artifacts/ckla_phaseonly_4s/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics); per-step memory matches fs_v2
+num_workers: 6
+samples_per_validation: 40000
+grad_clip: 1.0  # phase_only readout: atan2 near zero phasor -> exploding grads
+data:
+  train:
+    params:
+      path: conf/online_mix/e12_fullflight_freqscale_v2_8s_dload.yaml
+optim:
+  lr: 0.0002  # 5x below the diverged from-scratch run; fine-tune regime
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

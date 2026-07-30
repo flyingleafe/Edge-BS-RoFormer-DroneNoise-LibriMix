@@ -131,6 +131,30 @@ DREGON blocked by the DISPLACED-COMB property (low harmonics k=2–13 sit
 verified, estimator exonerated, hover 3–4× weaker; audio-locked refiners
 cannot beat ~0.6 vs raw telemetry there).
 
+**2026-07-30 additions**:
+
+| row | dregon_cruise | fly124_cruise |
+|---|---|---|
+| CKLA phase-only 8 s (from scratch, DIVERGED) | 3.102 | 1.154 |
+
+- The from-scratch 8 s arm failed to train: best val at epoch ~1
+  (best_mse 44.5), monotonic degradation after, final val diverged. An
+  optimization failure (lr 1e-3 at 2 chunks/step), not an architectural
+  negative — retried as `ckla_phaseonly_8s_ft` (warm-start from the 4 s
+  best, lr 2e-4).
+- Converged 1 s phase-only (`ckla_phonly_long`, 37-clip vk_eval protocol):
+  3.369/1.351 — no better than its wall-capped checkpoint. Convergence was
+  not the constraint; context length is.
+- **S3b/S3c mechanism attribution landed**
+  (`results/vk_phase_validation_decomp`): single motors lock 0.72–0.88
+  (k=1–2, iter_warp) but **four motors running simultaneously on the
+  static bench already collapse lock to 0.02–0.09** (staggered setpoints
+  included; iter_warp identical to init — no capture). Hover (S3c) and
+  free flight (S4) sit at the same floor. The coherence collapse of
+  ceiling layer (1) is therefore **multi-rotor mutual interference**, not
+  per-rotor aero noise (trackable alone) and not translation (which only
+  adds the displaced-comb bias on top).
+
 Findings:
 1. **Blind VK's headline number was a mid-flight-segment artifact**: it
    scores ~1.0 on steady cruise windows (consistent with 0.688-vs-smoothed
