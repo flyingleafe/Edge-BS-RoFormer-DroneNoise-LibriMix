@@ -1,9 +1,13 @@
-"""Benchmark: sequential vs parallel (associative-scan) complex-KLA scan.
+"""Benchmark: sequential vs parallel (associative-scan) vs fused-Triton CKLA scan.
 
 Times forward+backward of ``models.ckla.complex_kla_scan`` (Python loop over
-T) against ``complex_kla_scan_parallel`` (log-depth associative scan) at the
+T) against ``complex_kla_scan_parallel`` (log-depth associative scan) and,
+on CUDA, ``models.ckla_triton.complex_kla_scan_triton`` (single fused
+scan+readout kernel per direction, chunked-recompute backward) at the
 training-relevant size B=32, T=250, N=16, D=128 (8 s context at hop 512),
-on CPU and, when available, CUDA.
+on CPU and, when available, CUDA. The Triton arm is CUDA-only (the CPU
+interpreter is a debugging tool, orders of magnitude off) and skipped
+cleanly elsewhere.
 
 Kernel-count reasoning
 ----------------------
@@ -94,6 +98,18 @@ def main() -> None:
         print(
             f"  {device.type:4s}: sequential {t_seq * 1e3:8.1f} ms | "
             f"parallel {t_par * 1e3:8.1f} ms | speedup {t_seq / t_par:5.2f}x"
+        )
+        if device.type != "cuda":
+            continue
+        from models.ckla_triton import HAS_TRITON, complex_kla_scan_triton
+
+        if not HAS_TRITON:
+            print("  cuda: triton not installed — skipping the triton arm")
+            continue
+        t_tri = bench(complex_kla_scan_triton, inputs, device, args.repeats)
+        print(
+            f"  {device.type:4s}: triton     {t_tri * 1e3:8.1f} ms | "
+            f"speedup vs sequential {t_seq / t_tri:5.2f}x, vs parallel {t_par / t_tri:5.2f}x"
         )
 
 

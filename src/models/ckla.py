@@ -72,6 +72,26 @@ from models.rps_predictor import (
     _remap_legacy_state_dict,
 )
 
+_TritonScan = Callable[..., tuple[Tensor, Tensor]]
+_triton_scan_cache: _TritonScan | Literal[False] | None = None
+
+
+def _get_triton_scan() -> _TritonScan | None:
+    """Lazy accessor for the fused Triton op (``models.ckla_triton``).
+
+    Deferred so that CPU-only imports of this module never pay the triton
+    import cost; returns None when triton is unavailable.
+    """
+    global _triton_scan_cache
+    if _triton_scan_cache is None:
+        try:
+            from models.ckla_triton import HAS_TRITON, complex_kla_scan_triton
+
+            _triton_scan_cache = complex_kla_scan_triton if HAS_TRITON else False
+        except ImportError:  # pragma: no cover - ckla_triton ships with this repo
+            _triton_scan_cache = False
+    return _triton_scan_cache if _triton_scan_cache else None
+
 
 @overload
 def complex_kla_scan(
@@ -582,6 +602,15 @@ class ComplexKLALayer(nn.Module):
             "true",
             "yes",
         )
+        # Fused Triton scan (models/ckla_triton.py) on CUDA by default — one
+        # kernel per forward/backward instead of the parallel scan's ~log T
+        # levels. Opt out per module (attribute) or globally via env
+        # CKLA_NO_TRITON=1. CPU inputs always fall through to the torch paths.
+        self.use_triton_scan: bool = os.environ.get("CKLA_NO_TRITON", "0").lower() not in (
+            "1",
+            "true",
+            "yes",
+        )
 
     def ou_discretise(self) -> tuple[Tensor, Tensor]:
         """(abar_mag, pbar), both (n_state, d_model): e^{−γΔ} and the OU
@@ -643,8 +672,12 @@ class ComplexKLALayer(nn.Module):
             for name, tens in state.items():
                 rec[name] = tens.detach().cpu()
         else:
-            scan = complex_kla_scan_parallel if self.use_parallel_scan else complex_kla_scan
-            y_re, y_im = scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
+            triton_scan = _get_triton_scan() if (self.use_triton_scan and k.is_cuda) else None
+            if triton_scan is not None:
+                y_re, y_im = triton_scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
+            else:
+                scan = complex_kla_scan_parallel if self.use_parallel_scan else complex_kla_scan
+                y_re, y_im = scan(abar_mag, cos_w, sin_w, pbar, k, v, lam_v, q)
         if self.readout == "complex_mean":
             feats = torch.cat([y_re, y_im], dim=-1)
         elif self.readout == "phase_diff":

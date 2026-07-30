@@ -9,7 +9,9 @@ equivalence check.
 
 from __future__ import annotations
 
+import importlib
 import math
+import os
 
 import numpy as np
 import pytest
@@ -570,3 +572,146 @@ def test_parallel_scan_span_overflow_guard_finite():
         yz_re, yz_im = complex_kla_scan_parallel(a, cos_w, sin_w, p, kz, v, lam_v, q)
         assert torch.equal(yz_re, torch.zeros_like(yz_re))
         assert torch.equal(yz_im, torch.zeros_like(yz_im))
+
+
+# ─── 10. Fused Triton op (CPU interpreter + CUDA) ────────────────────────────
+
+
+def _load_ckla_triton(interpret: bool):
+    """(Re)import ``models.ckla_triton`` with TRITON_INTERPRET set/cleared.
+
+    Triton picks interpreter vs compiled mode at ``@triton.jit`` decoration
+    time, so the env var must be in place before the module (re)import.
+    """
+    if interpret:
+        os.environ["TRITON_INTERPRET"] = "1"
+    else:
+        os.environ.pop("TRITON_INTERPRET", None)
+    import models.ckla_triton as mod
+
+    return importlib.reload(mod)
+
+
+def _interp_probe_reason() -> str | None:
+    """None iff the triton CPU interpreter can run the fused op end-to-end."""
+    try:
+        mod = _load_ckla_triton(interpret=True)
+        if not mod.HAS_TRITON:
+            return "triton not installed"
+        n, d = 2, 3
+        y_re, y_im = mod.complex_kla_scan_triton(
+            torch.full((n, d), 0.5),
+            torch.ones(1, 3, n),
+            torch.zeros(1, 3, n),
+            torch.full((n, d), 0.1),
+            torch.ones(1, 3, n),
+            torch.ones(1, 3, d),
+            torch.ones(1, 3, d),
+            torch.ones(1, 3, n),
+            BD=4,
+            BT=2,
+        )
+        if not (torch.isfinite(y_re).all() and torch.isfinite(y_im).all()):
+            return "triton CPU interpreter produced non-finite output"
+        return None
+    except Exception as exc:  # pragma: no cover - env-dependent escape hatch
+        return f"triton CPU interpreter unavailable: {exc!r}"
+
+
+_TRITON_INTERP_SKIP = _interp_probe_reason()
+_interp = pytest.mark.skipif(_TRITON_INTERP_SKIP is not None, reason=str(_TRITON_INTERP_SKIP))
+
+# B=2, N=8, D=20 with BD=8 exercises D-masking (20 = 2·8 + 4); BT=4 with
+# T ∈ {1, 5, 31} exercises T-chunk padding in both kernels.
+_TRITON_B, _TRITON_N, _TRITON_D = 2, 8, 20
+
+
+@_interp
+@pytest.mark.parametrize("T", [1, 5, 31])
+def test_triton_interp_forward_matches_sequential(T):
+    mod = _load_ckla_triton(interpret=True)
+    rng = np.random.default_rng(9000 + T)
+    inputs = _random_inputs(rng, _TRITON_B, T, _TRITON_N, _TRITON_D)
+    tens = _torch_inputs(inputs, torch.float32)
+    y_re_s, y_im_s = complex_kla_scan(*tens)
+    y_re_t, y_im_t = mod.complex_kla_scan_triton(*tens, BD=8, BT=4)
+    np.testing.assert_allclose(y_re_t.numpy(), y_re_s.numpy(), rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(y_im_t.numpy(), y_im_s.numpy(), rtol=1e-4, atol=1e-5)
+
+
+@_interp
+@pytest.mark.parametrize("T", [1, 5, 31])
+def test_triton_interp_grads_match_sequential(T):
+    mod = _load_ckla_triton(interpret=True)
+    rng = np.random.default_rng(9100 + T)
+    inputs = _random_inputs(rng, _TRITON_B, T, _TRITON_N, _TRITON_D)
+    w_re = torch.as_tensor(rng.standard_normal((_TRITON_B, T, _TRITON_D)), dtype=torch.float32)
+    w_im = torch.as_tensor(rng.standard_normal((_TRITON_B, T, _TRITON_D)), dtype=torch.float32)
+
+    def grads(fn, **kw):
+        tens = _torch_inputs(inputs, torch.float32, requires_grad=True)
+        y_re, y_im = fn(*tens, **kw)
+        ((y_re * w_re).sum() + (y_im * w_im).sum()).backward()
+        out = []
+        for t in tens:
+            assert t.grad is not None
+            out.append(t.grad.numpy())
+        return out
+
+    g_seq = grads(complex_kla_scan)
+    g_tri = grads(mod.complex_kla_scan_triton, BD=8, BT=4)
+    for name, g_s, g_t in zip(_GRAD_NAMES, g_seq, g_tri):
+        np.testing.assert_allclose(
+            g_t, g_s, rtol=1e-3, atol=1e-5, err_msg=f"triton grad mismatch: {name}"
+        )
+
+
+@_interp
+def test_triton_interp_zero_k_gives_exact_zero_y():
+    mod = _load_ckla_triton(interpret=True)
+    rng = np.random.default_rng(9200)
+    abar_mag, omega, pbar, k, v, lam_v, q = _random_inputs(rng, _TRITON_B, 9, _TRITON_N, _TRITON_D)
+    k = np.zeros_like(k)
+    tens = _torch_inputs((abar_mag, omega, pbar, k, v, lam_v, q), torch.float32)
+    y_re, y_im = mod.complex_kla_scan_triton(*tens, BD=8, BT=4)
+    assert torch.equal(y_re, torch.zeros_like(y_re))
+    assert torch.equal(y_im, torch.zeros_like(y_im))
+
+
+def test_layer_triton_default_and_env_optout(monkeypatch):
+    assert ComplexKLALayer(16, n_state=4).use_triton_scan is True
+    monkeypatch.setenv("CKLA_NO_TRITON", "1")
+    assert ComplexKLALayer(16, n_state=4).use_triton_scan is False
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for compiled triton op")
+def test_triton_cuda_matches_sequential():
+    mod = _load_ckla_triton(interpret=False)
+    if not mod.HAS_TRITON:
+        pytest.skip("triton not installed")
+    rng = np.random.default_rng(4242)
+    B, T, N, D = 4, 250, 16, 128
+    inputs = _random_inputs(rng, B, T, N, D)
+    w_re = torch.as_tensor(rng.standard_normal((B, T, D)), dtype=torch.float32, device="cuda")
+    w_im = torch.as_tensor(rng.standard_normal((B, T, D)), dtype=torch.float32, device="cuda")
+
+    def run(fn, **kw):
+        tens = tuple(t.cuda().requires_grad_(True) for t in _torch_inputs(inputs, torch.float32))
+        y_re, y_im = fn(*tens, **kw)
+        ((y_re * w_re).sum() + (y_im * w_im).sum()).backward()
+        grads = []
+        for t in tens:
+            assert t.grad is not None
+            grads.append(t.grad.cpu().numpy())
+        return y_re.detach().cpu().numpy(), y_im.detach().cpu().numpy(), grads
+
+    yr_s, yi_s, g_seq = run(complex_kla_scan)
+    yr_t, yi_t, g_tri = run(mod.complex_kla_scan_triton)
+    np.testing.assert_allclose(yr_t, yr_s, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(yi_t, yi_s, rtol=1e-4, atol=1e-5)
+    # T=250 fp32 accumulation: grads compared at a slightly looser atol than
+    # the small interpreter sizes (summation-order rounding over 250 steps).
+    for name, g_s, g_t in zip(_GRAD_NAMES, g_seq, g_tri):
+        np.testing.assert_allclose(
+            g_t, g_s, rtol=1e-3, atol=1e-4, err_msg=f"triton CUDA grad mismatch: {name}"
+        )
