@@ -104,10 +104,10 @@ def find_cruise_window(
     RPS lies inside ``rps_range`` (the CONA sweep support). Uses the telemetry
     series directly (cheap). Returns ``(start_s, rps_mean, rps_maxstd)``.
     """
-    from data_processing.online_mixing import _resolve_motor_tracks
     from data_processing.sources.dregon import clean_command_spikes
+    from data_processing.mixing import resolve_motor_tracks
 
-    _, rps_key, needs_clean = _resolve_motor_tracks(tf)
+    _, rps_key, needs_clean = resolve_motor_tracks(tf)
     rps_series = tf[rps_key]
     if needs_clean:
         rps_series = rps_series.map_data(clean_command_spikes)

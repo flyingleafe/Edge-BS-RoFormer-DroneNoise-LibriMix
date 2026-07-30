@@ -2,8 +2,8 @@
 noise source (telemetry-free dload audio datasets).
 
 All streams are compiled pipelines over synthetic local-repo datasets (see
-``conftest.py``); the pure mixing helpers (``_apply_one_augmentation_pair``,
-``_scale_source_to_snr``) are unit-tested directly.
+``conftest.py``); the pure mixing helpers (``_apply_one_augmentation``,
+``mixing.scale_source_to_snr``) are unit-tested directly.
 """
 
 from __future__ import annotations
@@ -18,11 +18,8 @@ import tdseries as td
 
 import data_processing.streams as streams
 from data_processing.frames import audio_series, make_recording_frame
-from data_processing.online_mixing import (
-    _apply_one_augmentation_pair,
-    _scale_source_to_snr,
-    build_online_mix_pipeline,
-)
+from data_processing.mixing import scale_source_to_snr
+from data_processing.online_mixing import _apply_one_augmentation, build_online_mix_pipeline
 
 from .conftest import SPEECH_DATASET, SR, speech_dataset  # noqa: F401
 
@@ -144,7 +141,7 @@ def test_augmentation_pair_applies_identical_transform():
     mixture = rng.standard_normal((1, 100)).astype(np.float32)
     target = 0.3 * mixture  # target is a scaled component of the mixture
     spec = {"probability": 1.0, "choices": [{"random_gain": {"min_db": -6, "max_db": 6}}]}
-    mix2, tgt2 = _apply_one_augmentation_pair(mixture.copy(), target.copy(), spec, rng)
+    mix2, tgt2 = _apply_one_augmentation((mixture, target), spec, rng)
     # The gain factor is identical on both, so the ratio target/mixture is preserved.
     np.testing.assert_allclose(target / mixture, tgt2 / mix2, atol=1e-5)
 
@@ -153,9 +150,7 @@ def test_augmentation_pair_polarity_flips_both():
     mixture = np.array([[1.0, -2.0, 3.0]], np.float32)
     target = np.array([[0.5, -1.0, 1.5]], np.float32)
     spec = {"probability": 1.0, "choices": ["random_polarity"]}
-    mix2, tgt2 = _apply_one_augmentation_pair(
-        mixture.copy(), target.copy(), spec, np.random.default_rng(0)
-    )
+    mix2, tgt2 = _apply_one_augmentation((mixture, target), spec, np.random.default_rng(0))
     np.testing.assert_allclose(mix2, -mixture)
     np.testing.assert_allclose(tgt2, -target)
 
@@ -175,18 +170,18 @@ def test_augmentation_preserves_se_pair_snr(speech_dataset):  # noqa: F811
         assert abs(_snr_db_of(f) - (-8.0)) < 1e-2
 
 
-# ─── _scale_source_to_snr ───────────────────────────────────────────────────────
+# ─── scale_source_to_snr ───────────────────────────────────────────────────────
 
 
 def test_scale_source_to_snr_global_and_per_channel():
     rng = np.random.default_rng(4)
     noise = rng.standard_normal((2, SR)).astype(np.float32)
     source = rng.standard_normal((2, SR)).astype(np.float32)
-    scaled = _scale_source_to_snr(source, noise, -6.0)
+    scaled = scale_source_to_snr(source, noise, -6.0)
     got = 10.0 * np.log10(np.mean(scaled**2) / np.mean(noise**2))
     assert abs(got - (-6.0)) < 1e-3
 
-    scaled_pc = _scale_source_to_snr(source, noise, -6.0, per_channel=True)
+    scaled_pc = scale_source_to_snr(source, noise, -6.0, per_channel=True)
     for c in range(2):
         got_c = 10.0 * np.log10(np.mean(scaled_pc[c] ** 2) / np.mean(noise[c] ** 2))
         assert abs(got_c - (-6.0)) < 1e-3

@@ -371,16 +371,6 @@ def find_data_root(start: Path | str | None = None) -> Path:
     raise FileNotFoundError(f"Could not locate data/recording_with_motor_speed from {here}")
 
 
-def _michaels_path(root: Path, rel: str) -> Path:
-    """Resolve a `MICHAELS_FILES` entry under `root`.
-
-    Registry paths are relative to the ``recording_with_motor_speed`` raw root;
-    `root` may be either that tree or the ``data/`` dir that contains it.
-    """
-    direct = root / rel
-    return direct if direct.exists() else root / "recording_with_motor_speed" / rel
-
-
 def _harmonic_comb(freqs: np.ndarray, f0_t: np.ndarray, fmax: float, tol_hz: float) -> np.ndarray:
     """Boolean ``(F, T)`` mask: bins within ``tol_hz`` of any harmonic ``k·f0_t``."""
     kmax = int(fmax // max(float(f0_t.max()), 1.0)) + 1
@@ -603,12 +593,13 @@ def calibrate_michaels_positions(
         MICHAELS_FILES,
         get_geometry,
         load_raw_aligned,
+        resolve_raw_root,
     )
 
-    root = find_data_root(data_root) if data_root is None else Path(data_root)
+    root = resolve_raw_root(find_data_root() if data_root is None else data_root)
     wav_rel, csv_rel, off, dil = MICHAELS_FILES[recording_index]
     wav, ts, ms, sr = load_raw_aligned(
-        _michaels_path(root, wav_rel), _michaels_path(root, csv_rel), off, dil, sr=None
+        root / wav_rel, root / csv_rel, off, dil, sr=None
     )
     mic_nominal, rotor_pos = get_geometry()
 

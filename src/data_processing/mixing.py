@@ -114,34 +114,20 @@ def calculate_snr(speech: np.ndarray, noise: np.ndarray) -> float:
     return 10 * np.log10(speech_power / max(noise_power, 1e-10))
 
 
-def mix_at_snr(
-    speech: np.ndarray,
-    noise: np.ndarray,
-    target_snr: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Mix speech and noise at a target SNR (scales the NOISE to hit it).
+def scale_noise_to_snr(speech: np.ndarray, noise: np.ndarray, target_snr: float) -> np.ndarray:
+    """``noise * scale`` so ``speech`` sits ``target_snr`` dB above it.
 
-    Returns ``(mixture, scaled_speech, scaled_noise)``; anti-clipping scales
-    everything down jointly if the mixture peaks above 0.95.
+    The offline (LibriMix) convention: the SPEECH is the reference and the
+    noise is scaled onto it — the mirror of :func:`scale_source_to_snr`, which
+    the online/streaming path uses. A silent speech or noise draw is a no-op
+    (there is no finite scale that hits the target).
     """
     speech_power = np.sum(speech**2)
     noise_power = np.sum(noise**2)
-
-    if noise_power > 0 and speech_power > 0:
-        target_noise_power = speech_power / (10 ** (target_snr / 10))
-        scale = np.sqrt(target_noise_power / noise_power)
-        noise = noise * scale
-
-    mixture = speech + noise
-
-    max_val = np.abs(mixture).max()
-    if max_val > 0.95:
-        scale_factor = 0.95 / max_val
-        mixture = mixture * scale_factor
-        speech = speech * scale_factor
-        noise = noise * scale_factor
-
-    return mixture.astype(np.float32), speech.astype(np.float32), noise.astype(np.float32)
+    if noise_power <= 0 or speech_power <= 0:
+        return noise
+    target_noise_power = speech_power / (10 ** (target_snr / 10))
+    return noise * np.sqrt(target_noise_power / noise_power)
 
 
 def mix_audio(
@@ -154,29 +140,36 @@ def mix_audio(
     Kept faithful to the Paper-1 recipe byte-for-byte.
     """
     if target_snr is not None:
-        speech_power = np.sum(speech**2)
-        noise_power = np.sum(noise**2)
-        if noise_power > 0 and speech_power > 0:
-            target_noise_power = speech_power / (10 ** (target_snr / 10))
-            scale = np.sqrt(target_noise_power / noise_power)
-            noise = noise * scale
+        noise = scale_noise_to_snr(speech, noise, target_snr)
+    return speech + noise, speech, noise
 
-    mixture = speech + noise
-    return mixture, speech, noise
+
+def mix_at_snr(
+    speech: np.ndarray,
+    noise: np.ndarray,
+    target_snr: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The DREGON-LM mix: :func:`mix_audio` plus anti-clip scaling.
+
+    Returns ``(mixture, scaled_speech, scaled_noise)``; anti-clipping scales
+    all three down jointly if the mixture peaks above 0.95.
+    """
+    mixture, speech, noise = mix_audio(speech, noise, target_snr=target_snr)
+
+    max_val = np.abs(mixture).max()
+    if max_val > 0.95:
+        scale_factor = 0.95 / max_val
+        mixture = mixture * scale_factor
+        speech = speech * scale_factor
+        noise = noise * scale_factor
+
+    return mixture.astype(np.float32), speech.astype(np.float32), noise.astype(np.float32)
 
 
 def generate_white_noise(length: int, snr_db: float, speech: np.ndarray) -> np.ndarray:
     """White noise mixed with ``speech`` at ``snr_db`` (noise below speech)."""
-    speech_power = np.sum(speech**2)
     noise = np.random.randn(length).astype(np.float32)
-    noise_power = np.sum(noise**2)
-
-    if noise_power > 0 and speech_power > 0:
-        target_noise_power = speech_power / (10 ** (snr_db / 10))
-        scale = np.sqrt(target_noise_power / noise_power)
-        noise = noise * scale
-
-    return (speech + noise).astype(np.float32)
+    return (speech + scale_noise_to_snr(speech, noise, snr_db)).astype(np.float32)
 
 
 # ─── Source-to-noise SNR (the online/streaming convention) ────────────────────

@@ -10,14 +10,19 @@ imports ``streams`` (→ torch) lazily inside the test body, so
 from __future__ import annotations
 
 import io
+import itertools
 import subprocess
 import sys
+from pathlib import Path
 
 import dload
 import numpy as np
+import pytest
 import soundfile as sf
 
 import data_processing.derivations as der
+
+from .conftest import speech_dataset  # noqa: F401
 
 SR = 16000
 
@@ -104,13 +109,19 @@ def test_fingerprint_tracks_recipe_version(monkeypatch):
     assert der.fingerprint(name) != before
 
 
+def _lock_datasets() -> dict[str, str]:
+    """``dload.lock``'s pinned ``{dataset: version}``, repo-root relative."""
+    import tomllib
+
+    lock_path = Path(der.__file__).resolve().parents[2] / "dload.lock"
+    with lock_path.open("rb") as fh:
+        return tomllib.load(fh)["datasets"]
+
+
 def test_parents_match_dload_lock():
     """Pin-drift guard: PARENTS must carry the current dload.lock versions.
     Update deliberately — a change mints new derivation identities."""
-    import tomllib
-
-    with open("dload.lock", "rb") as fh:
-        lock = tomllib.load(fh)["datasets"]
+    lock = _lock_datasets()
     for key, uri in der.PARENTS.items():
         name, _, sha = uri.removeprefix("dload:").partition("@")
         assert lock.get(name) == sha, (
@@ -121,12 +132,9 @@ def test_parents_match_dload_lock():
 def test_lock_coverage():
     """Every dload.lock dataset is covered: a derivation spec, a raw source
     registry entry (or its frames dataset), or a declared historical pin."""
-    import tomllib
-
     from data_processing import sources
 
-    with open("dload.lock", "rb") as fh:
-        lock = tomllib.load(fh)["datasets"]
+    lock = _lock_datasets()
     frames_names = {s.frames_name for s in sources.REGISTRY.values()}
     for name in lock:
         covered = (
@@ -209,3 +217,61 @@ def test_sample_convention_roundtrips_through_streams(tmp_path, monkeypatch):
     assert (root / "sample_00000" / "rps.npy").exists()
     assert (root / "sample_00000" / "meta.json").exists()
     assert (root / "metadata.json").exists()  # from the _meta bookkeeping sample
+
+
+def test_se_valid_category_grid_and_snr(patched_repo, speech_dataset):  # noqa: F811
+    """``iter_se_valid_category`` yields per_snr clips per grid point, each at
+    its grid SNR, with the clean target being the mixture's speech component.
+
+    Guards the SE-valid rebuild path (the replacement for the deleted
+    ``scripts/build_se_valid.py``) — see ``data_processing.derivations``.
+    """
+    from .conftest import SPEECH_DATASET
+
+    snr_grid = [-20.0, -5.0]
+    clips = list(
+        der.iter_se_valid_category(
+            "probe",
+            [{"kind": "audio_pool", "dataset": SPEECH_DATASET}],
+            per_snr=2,
+            snr_grid=snr_grid,
+            duration_s=0.5,
+            sample_rate=SR,
+            seed=7,
+            heldout_speakers=["19"],
+            librispeech=SPEECH_DATASET,
+        )
+    )
+    assert len(clips) == 2 * len(snr_grid)
+    assert [k for k, _ in clips] == [
+        "probe_snr-20_0000",
+        "probe_snr-20_0001",
+        "probe_snr-05_0002",
+        "probe_snr-05_0003",
+    ]
+    for _, frame in clips:
+        mixture = np.asarray(frame["mixture"].data, np.float32).reshape(-1)
+        target = np.asarray(frame["target"].data, np.float32).reshape(-1)
+        snr = float(frame["meta"]["input_snr"])
+        assert snr in snr_grid
+        noise = mixture - target
+        assert 10.0 * np.log10(np.mean(target**2) / np.mean(noise**2)) == pytest.approx(
+            snr, abs=1e-2
+        )
+
+
+def test_se_valid_speaker_holdout_is_respected(patched_repo, speech_dataset):  # noqa: F811
+    """The valid speech pool draws ONLY the held-out speakers — the guarantee
+    that no speaker is shared with a training policy's ``exclude`` list."""
+    from data_processing.online_mixing import build_speech_stream
+
+    from .conftest import SPEECH_DATASET
+
+    pipe = build_speech_stream(
+        {"dataset": SPEECH_DATASET, "subpath": "LibriSpeech/train-clean-100", "include": ["19"]},
+        sample_rate=SR,
+        window_s=0.5,
+        lanes=1,
+        seed=3,
+    )
+    assert len(list(itertools.islice(pipe, 6))) == 6  # cycles the 4 speaker-19 files

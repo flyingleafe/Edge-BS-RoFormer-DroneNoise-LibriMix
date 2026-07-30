@@ -18,7 +18,7 @@ This module holds the concrete adapters wired into ``conf/data/``:
   ``sample_*/{mixture.wav,vocals.wav,noise.wav}`` (no ``rps.npy`` — DN-LM
   predates per-sample RPS labels), emitting ``{"mixture", "target", "meta"}``
   (``"target"`` = clean ``vocals.wav``, matching ``losses.MaskedLoss``'s
-  default ``target_key``). ``scripts/create_dataset.py`` writes one
+  default ``target_key``). The ``dn_lm`` derivation writes one
   ``metadata.json`` **inside each split directory** (``{"train": [...]}`` /
   ``{"valid": [...]}``), unlike ``DregonLMFrameDataset``'s sibling-of-both-
   splits layout — see :meth:`DNLMFrameDataset._load_metadata`.
@@ -89,7 +89,7 @@ class DregonLMFrameDataset(Dataset):
     containing ``sample_*/`` subdirectories, each with ``mixture.wav`` and
     ``rps.npy``. Per-sample metadata is read once from the sibling
     ``metadata.json`` (``{"train": [{"id": ..., "input_snr": ...}, ...],
-    "valid": [...]}}`` — see ``scripts/create_dregon_librimix.py``) and merged under
+    "valid": [...]}}`` — see ``derivations.generate_dregon_lm_split``) and merged under
     ``"meta"``; absent when no ``metadata.json`` exists.
 
     ``channel``, when set, selects one mic channel (``audio[channel]``) from
@@ -235,7 +235,7 @@ class DNLMFrameDataset(Dataset):
     labels — there is no ``rps.npy`` and no ``"rps"`` Frame entry, matching
     ``tasks.task.speech_enhancement``'s ``use_rps=False`` default. Per-sample
     metadata (``input_snr``, ``speech_source``, ``noise_source``,
-    ``speech_distance``) is read from ``scripts/create_dataset.py``'s per-split
+    ``speech_distance``) is read from the ``dn_lm`` derivation's per-split
     ``metadata.json`` (``{"<split>": [{"id": ..., ...}, ...]}``, written
     *inside* the split directory itself — unlike ``DregonLMFrameDataset``'s
     dataset-root-level file shared by both splits).
@@ -301,7 +301,7 @@ class SEValidFrameDataset(Dataset):
     """Map-style dataset over a published ``tdframe-v1`` **SE valid** set.
 
     The fixed speech-enhancement validation sets (``SE-valid-drone`` /
-    ``SE-valid-harmonic``, built by ``scripts/build_se_valid.py``) publish one
+    ``SE-valid-harmonic``, built by ``derivations.generate_se_valid``) publish one
     sample per mixture as a Frame carrying ``mixture`` (noisy) + ``target``
     (clean speech as mixed) audio Series and a ``meta`` sub-Frame with
     ``input_snr`` / ``category`` / ``noise_source`` / ``id``. These are exactly
@@ -316,7 +316,7 @@ class SEValidFrameDataset(Dataset):
     category (used to score per-category transfer on ``SE-valid-harmonic``).
 
     ``local_root`` reads the set from a local (unpublished) dload repository
-    built by ``scripts/build_se_valid.py --local-repo`` instead of R2 — the
+    committed to a local repository (``streams.local_repository``) instead of R2 — the
     replication path for a valid set that is not (yet) published.
     """
 

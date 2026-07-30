@@ -23,7 +23,7 @@ from data_processing.frames import get_meta
 SR = 16000
 CLIP_SECONDS = 2.0
 # category -> (human noise family, source dload datasets) — mirrors
-# build_se_valid.CATEGORY_NOISE. Held-out = last 2 whole shards of each dataset.
+# derivations.SE_CATEGORY_NOISE. Held-out = last 2 whole shards of each dataset.
 CATEGORY_SOURCES: dict[str, tuple[str, str]] = {
     "drone": (
         "rotating UAV noise",

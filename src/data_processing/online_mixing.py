@@ -64,7 +64,8 @@ except ImportError:  # pragma: no cover - python-dotenv is a project dependency.
 if load_dotenv is not None:
     # Let configs use ${oc.env:...} values from the project .env while still
     # respecting variables already provided by the shell/job launcher.
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    # <repo>/src/data_processing/online_mixing.py -> <repo>/.env (parents[2]).
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 from data_processing import mixing
 from data_processing.frames import (
@@ -73,7 +74,6 @@ from data_processing.frames import (
     rps_series,
 )
 from data_processing.mixing import (
-    MAX_DRAW_RETRIES,
     find_inflight_window,
     is_silent,
     mix_at_source_to_noise_snr,
@@ -90,15 +90,6 @@ from data_processing.time_warp import (
     apply_time_warp,
     sample_warp_params,
 )
-
-# Back-compat aliases for long-lived private names (tests, streams.mix_frames,
-# time_warp docstring). New code imports these from data_processing.mixing.
-_resolve_motor_tracks = resolve_motor_tracks
-_inflight_window = find_inflight_window
-_mix_at_source_to_noise_snr = mix_at_source_to_noise_snr
-_scale_source_to_snr = scale_source_to_snr
-_is_silent = is_silent
-_MAX_DRAW_RETRIES = MAX_DRAW_RETRIES
 
 DEFAULT_SAMPLE_RATE = 16_000
 DEFAULT_DURATION_S = 1.0
@@ -352,32 +343,31 @@ _AUDIO_EXTS = ("wav", "flac", "ogg", "mp3")
 
 def _holdout_shards(
     manifest: Any, holdout: Mapping[str, Any] | None, max_shards: Any
-) -> tuple[Any, tuple[int, int] | None]:
+) -> tuple[Any, bool]:
     """Shard-level train/valid split + shard cap.
 
-    Returns ``(manifest_or_subset, index_range_or_none)``: multi-shard datasets
+    Returns ``(manifest_subset, needs_index_window)``: multi-shard datasets
     reserve the last ``valid_shards`` whole shards (= whole recording groups)
     as the valid partition; ``max_shards`` caps the train side (a bounded
     shard subset of a huge dataset is plenty for a noise-augmentation pool and
     keeps the total R2 pull feasible). Datasets with too few shards to reserve
-    one fall back to a per-shard sample-index window (returned as ``(lo_frac,
-    hi_frac)`` and applied by key membership at filter time).
+    one cannot split by shard, so the flag asks the caller for the per-shard
+    sample-index fallback (:func:`_index_window_keys`).
     """
     side = str(_cfg_get(holdout, "split", "")) if holdout else ""
     valid_shards = max(1, int(_cfg_get(holdout, "valid_shards", 1))) if holdout else 1
     shards = list(manifest.shards)
-    index_range: tuple[int, int] | None = None
+    needs_index_window = False
     if side in {"train", "valid"} and len(shards) > valid_shards:
         shards = shards[-valid_shards:] if side == "valid" else shards[:-valid_shards]
     elif side in {"train", "valid"}:
         frac = float(_cfg_get(holdout, "fraction", 0.1))
         if not 0.0 < frac < 1.0:
             raise ValueError(f"audio_pool holdout.fraction must be in (0,1), got {frac}")
-        index_range = (0, 1)  # marker; the exact window is applied per shard below
+        needs_index_window = True
     if side != "valid" and max_shards is not None and len(shards) > int(max_shards):
         shards = shards[: int(max_shards)]
-    sub = _dc_replace(manifest, shards=tuple(shards))
-    return sub, index_range
+    return _dc_replace(manifest, shards=tuple(shards)), needs_index_window
 
 
 def _key_in_index_window(
@@ -387,10 +377,10 @@ def _key_in_index_window(
     sample: tuple[str, dict[str, bytes]],
 ) -> bool:
     """Sample filter: exact-or-substring key match against include/exclude,
-    optionally narrowed to the holdout window's allowed key set."""
+    additionally narrowed to the holdout window's allowed key set."""
     key = str(sample[0])
-    if allowed_keys is not None:
-        return key in allowed_keys
+    if allowed_keys is not None and key not in allowed_keys:
+        return False
     if include and not any(p == key or p in key for p in include):
         return False
     return not any(p == key or p in key for p in exclude)
@@ -520,17 +510,20 @@ def _audio_pool_stream(
         raise ValueError("noise source kind 'audio_pool' requires a 'dataset' name")
     repo = open_repository()
     manifest = repo.manifest(dataset, _cfg_get(spec, "version", None))
-    sub_manifest, index_window = _holdout_shards(
-        manifest, _cfg_get(spec, "holdout", None), _cfg_get(spec, "max_shards", None)
+    holdout = _cfg_get(spec, "holdout", None)
+    sub_manifest, needs_index_window = _holdout_shards(
+        manifest, holdout, _cfg_get(spec, "max_shards", None)
     )
     if not sub_manifest.shards:
         raise ValueError(f"audio_pool dataset {dataset!r} has no shards after the holdout split")
     layout = (manifest.meta or {}).get("layout")
     allowed_keys: frozenset[str] | None = None
-    if index_window is not None:
-        frac = float(_cfg_get(_cfg_get(spec, "holdout"), "fraction", 0.1))
+    if needs_index_window:
         allowed_keys = _index_window_keys(
-            repo, sub_manifest, str(_cfg_get(_cfg_get(spec, "holdout"), "split")), frac
+            repo,
+            sub_manifest,
+            str(_cfg_get(holdout, "split")),
+            float(_cfg_get(holdout, "fraction", 0.1)),
         )
     include = tuple(str(k) for k in (_cfg_get(spec, "include_keys", None) or ()))
     exclude = tuple(str(k) for k in (_cfg_get(spec, "exclude_keys", None) or ()))
@@ -688,11 +681,15 @@ def _decode_speech_chunk(
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
-def _speech_key_allowed(subpath: str | None, exclude: tuple[str, ...], sample: Any) -> bool:
-    key = str(sample[0])
-    if subpath and f"/{subpath.strip('/')}/" not in f"/{key}/":
+def _speech_key_allowed(
+    subpath: str | None, include: tuple[str, ...], exclude: tuple[str, ...], sample: Any
+) -> bool:
+    key = f"/{sample[0]}/"
+    if subpath and f"/{subpath.strip('/')}/" not in key:
         return False
-    return not any(f"/{t}/" in f"/{key}/" for t in exclude)
+    if include and not any(f"/{t}/" in key for t in include):
+        return False
+    return not any(f"/{t}/" in key for t in exclude)
 
 
 def build_speech_stream(
@@ -701,6 +698,11 @@ def build_speech_stream(
     """The speech utterance stream: a dload audio dataset (librispeech pins),
     shuffled + repeated, decoded and cut per encounter.
 
+    ``include`` / ``exclude`` are path-token filters (speaker ids) — the
+    complementary halves of the train/valid speaker split: training policies
+    ``exclude`` the held-out speakers, the SE-valid derivation ``include``
+    exactly those.
+
     ``lanes`` > 1 batches consecutive utterances into C-lane lists (the
     ``speech_per_channel: independent`` draw); the render fn tiles lane 0 for
     ``shared``.
@@ -708,6 +710,7 @@ def build_speech_stream(
     spec = _to_plain(spec)
     dataset = str(_cfg_get(spec, "dataset", "librispeech"))
     subpath = _cfg_get(spec, "subpath", "LibriSpeech/train-clean-100")
+    include = tuple(str(t) for t in (_cfg_get(spec, "include", None) or ()))
     exclude = tuple(str(t) for t in (_cfg_get(spec, "exclude", None) or ()))
     window_len = int(round(window_s * sample_rate))
 
@@ -722,7 +725,7 @@ def build_speech_stream(
         ),
         shard=True,
     )
-    pipe = pipe.filter(partial(_speech_key_allowed, subpath, exclude))
+    pipe = pipe.filter(partial(_speech_key_allowed, subpath, include, exclude))
     pipe = dload.zip_with(
         partial(_decode_speech_chunk, sample_rate, window_len, layout),
         pipe,
@@ -790,98 +793,69 @@ def _maybe_sample_time_warp(
     return sample_warp_params(spec, rng)
 
 
+def _augmentation_draw(
+    spec: Mapping[str, Any] | None, rng: np.random.Generator
+) -> tuple[str, Mapping[str, Any]] | None:
+    """Fire the block and pick a choice — ``None`` when it does not fire.
+
+    Consumes exactly the historical draws (one fire decision, then one choice
+    index), which the ``check_stream`` control-stream methodology depends on.
+    """
+    if not spec:
+        return None
+    probability = float(spec.get("probability", 0.0))
+    if probability <= 0.0 or rng.random() >= probability:
+        return None
+    choices = list(spec.get("choices", []))
+    if not choices:
+        return None
+    choice = choices[int(rng.integers(0, len(choices)))]
+    if isinstance(choice, str):
+        return choice, {}
+    if isinstance(choice, Mapping):
+        if len(choice) != 1:
+            raise ValueError(f"augmentation choice must have one key, got {choice!r}")
+        name, params = next(iter(choice.items()))
+        return str(name), params or {}
+    raise ValueError(f"unsupported augmentation choice: {choice!r}")
+
+
 def _apply_one_augmentation(
-    audio: np.ndarray,
+    signals: tuple[np.ndarray, ...],
     spec: Mapping[str, Any] | None,
     rng: np.random.Generator,
-) -> np.ndarray:
-    if not spec:
-        return audio
-    probability = float(spec.get("probability", 0.0))
-    if probability <= 0.0 or rng.random() >= probability:
-        return audio
-    choices = list(spec.get("choices", []))
-    if not choices:
-        return audio
-    choice = choices[int(rng.integers(0, len(choices)))]
-    if isinstance(choice, str):
-        name, params = choice, {}
-    elif isinstance(choice, Mapping):
-        if len(choice) != 1:
-            raise ValueError(f"augmentation choice must have one key, got {choice!r}")
-        name, params = next(iter(choice.items()))
-        params = params or {}
-    else:
-        raise ValueError(f"unsupported augmentation choice: {choice!r}")
+) -> tuple[np.ndarray, ...]:
+    """Apply one post-mix augmentation *identically* to every array in
+    ``signals`` — one array for the RPS stream (the mixture), two for the SE
+    stream (mixture + clean target, which must stay the mixture's speech
+    component exactly)."""
+    drawn = _augmentation_draw(spec, rng)
+    if drawn is None:
+        return signals
+    name, params = drawn
 
-    out = audio.copy()
-    if name == "random_gain":
-        min_db = float(params.get("min_db", -6.0))
-        max_db = float(params.get("max_db", 6.0))
-        gain = 10.0 ** (float(rng.uniform(min_db, max_db)) / 20.0)
-        out *= np.float32(gain)
-    elif name == "random_polarity":
-        out *= -1.0
-    elif name == "channel_drop":
-        if out.shape[0] <= 1:
-            return out
-        max_channels = int(params.get("max_channels", 1))
-        n_drop = int(rng.integers(1, min(max_channels, out.shape[0] - 1) + 1))
-        drop = rng.choice(out.shape[0], size=n_drop, replace=False)
-        out[drop, :] = 0.0
-    else:
-        raise ValueError(f"unsupported augmentation: {name!r}")
-    return out.astype(np.float32, copy=False)
-
-
-def _apply_one_augmentation_pair(
-    mixture: np.ndarray,
-    target: np.ndarray,
-    spec: Mapping[str, Any] | None,
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Apply one augmentation to the ``(mixture, clean target)`` pair *identically*."""
-    if not spec:
-        return mixture, target
-    probability = float(spec.get("probability", 0.0))
-    if probability <= 0.0 or rng.random() >= probability:
-        return mixture, target
-    choices = list(spec.get("choices", []))
-    if not choices:
-        return mixture, target
-    choice = choices[int(rng.integers(0, len(choices)))]
-    if isinstance(choice, str):
-        name, params = choice, {}
-    elif isinstance(choice, Mapping):
-        if len(choice) != 1:
-            raise ValueError(f"augmentation choice must have one key, got {choice!r}")
-        name, params = next(iter(choice.items()))
-        params = params or {}
-    else:
-        raise ValueError(f"unsupported augmentation choice: {choice!r}")
-
-    mix = mixture.copy()
-    tgt = target.copy()
+    out = tuple(x.copy() for x in signals)
     if name == "random_gain":
         min_db = float(params.get("min_db", -6.0))
         max_db = float(params.get("max_db", 6.0))
         gain = np.float32(10.0 ** (float(rng.uniform(min_db, max_db)) / 20.0))
-        mix *= gain
-        tgt *= gain
+        for x in out:
+            x *= gain
     elif name == "random_polarity":
-        mix *= -1.0
-        tgt *= -1.0
+        for x in out:
+            x *= -1.0
     elif name == "channel_drop":
-        if mix.shape[0] <= 1:
-            return mix, tgt
+        n_ch = out[0].shape[0]
+        if n_ch <= 1:
+            return out
         max_channels = int(params.get("max_channels", 1))
-        n_drop = int(rng.integers(1, min(max_channels, mix.shape[0] - 1) + 1))
-        drop = rng.choice(mix.shape[0], size=n_drop, replace=False)
-        mix[drop, :] = 0.0
-        tgt[drop, :] = 0.0
+        n_drop = int(rng.integers(1, min(max_channels, n_ch - 1) + 1))
+        drop = rng.choice(n_ch, size=n_drop, replace=False)
+        for x in out:
+            x[drop, :] = 0.0
     else:
-        raise ValueError(f"unsupported SE augmentation: {name!r}")
-    return mix.astype(np.float32, copy=False), tgt.astype(np.float32, copy=False)
+        raise ValueError(f"unsupported augmentation: {name!r}")
+    return tuple(x.astype(np.float32, copy=False) for x in out)
 
 
 def _render_rps_sample(
@@ -944,8 +918,8 @@ def _render_rps_sample(
                 per_channel=bool(policy.get("snr_per_channel", False)),
             )
 
-    mixture = _apply_one_augmentation(
-        mixture,
+    (mixture,) = _apply_one_augmentation(
+        (mixture,),
         cast(Mapping[str, Any], policy.get("augmentations")),
         rng,
     )
@@ -998,9 +972,8 @@ def _render_se_sample(
     )
     mixture = (noise_audio + scaled_source).astype(np.float32)
 
-    mixture, target = _apply_one_augmentation_pair(
-        mixture,
-        scaled_source,
+    mixture, target = _apply_one_augmentation(
+        (mixture, scaled_source),
         cast(Mapping[str, Any], policy.get("augmentations")),
         rng,
     )
@@ -1078,13 +1051,12 @@ def build_online_mix_pipeline(cfg: Any) -> dload.Pipeline:
             lanes=lanes,
             seed=dload.seeded(base_seed, "speech"),
         )
-    if task == "speech_enhancement" and speech_stream is None:
-        raise ValueError("speech_enhancement online mixing requires a sources.speech pool")
-
-    # Silence rejection (SE only): filtered upstream so a silent chunk never
-    # enters a sample (a silent NOISE draw would collapse the clean target to
-    # all-zeros via the source-to-noise scaling — see mixing.is_silent).
     if task == "speech_enhancement":
+        if speech_stream is None:
+            raise ValueError("speech_enhancement online mixing requires a sources.speech pool")
+        # Silence rejection (SE only): filtered upstream so a silent chunk never
+        # enters a sample (a silent NOISE draw would collapse the clean target to
+        # all-zeros via the source-to-noise scaling — see mixing.is_silent).
         target_len = int(round(duration_s * sample_rate))
         noise_stream = noise_stream.filter(partial(_nonsilent_frame, target_len))
         speech_stream = speech_stream.filter(_nonsilent_lanes)
@@ -1103,14 +1075,11 @@ def build_online_mix_pipeline(cfg: Any) -> dload.Pipeline:
     }
     render = _render_se_sample if task == "speech_enhancement" else _render_rps_sample
     if speech_stream is not None:
-        pipe = dload.zip_with(partial(render, static), ids, noise_stream, speech_stream)
-    else:
-        pipe = dload.zip_with(partial(_render_no_speech, static), ids, noise_stream)
-    return pipe
+        return dload.zip_with(partial(render, static), ids, noise_stream, speech_stream)
+    return dload.zip_with(partial(_render_no_lanes, render, static), ids, noise_stream)
 
 
-def _render_no_speech(static: Mapping[str, Any], gid: int, noise_tf: td.Frame) -> td.Frame:
-    render = _render_se_sample if static["task"] == "speech_enhancement" else _render_rps_sample
+def _render_no_lanes(render: Any, static: Mapping[str, Any], gid: int, noise_tf: td.Frame):
     return render(static, gid, noise_tf, [])
 
 

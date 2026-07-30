@@ -109,7 +109,7 @@ def source_duration_s(base_duration_s: float, params: WarpParams) -> float:
 def _resolve_rps_track(frame: td.Frame) -> tuple[str, bool]:
     """Return ``(rps_key, needs_cleaning)`` for the source noise Frame.
 
-    Mirrors :func:`data_processing.online_mixing._resolve_motor_tracks` but is
+    Mirrors :func:`data_processing.mixing.resolve_motor_tracks` but is
     inlined here to avoid a circular import (that module imports this one).
     """
     if "motors_command" in frame or "motors_measured" in frame:
@@ -140,7 +140,7 @@ def apply_time_warp(
       ``t_i = i / sample_rate``, exactly ``target_len`` samples long;
     - ``rps``: a generic *already-clean* rotor track on a uniform
       ``label_rate_hz`` grid holding ``alpha(t) * r(tau(t))``. Naming it ``rps``
-      routes it through the no-cleaning branch of ``_resolve_motor_tracks``.
+      routes it through the no-cleaning branch of ``resolve_motor_tracks``.
 
     The original motor tracks are dropped so the rotor track resolves
     unambiguously downstream. ``meta`` is carried through when present.

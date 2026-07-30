@@ -55,7 +55,7 @@ for p in (str(ROOT / "src"), str(ROOT / "scripts")):
 
 SR = 16000
 
-# condition key -> (build_se_valid category, human label, short blurb)
+# condition key -> (derivations.SE_CATEGORY_NOISE category, human label, short blurb)
 CONDITIONS: dict[str, tuple[str, str, str]] = {
     "seen": ("drone_seen", "SEEN noise", "the training pool itself"),
     "unseen_rec": ("drone", "UNSEEN recordings", "held-out recordings, same datasets"),
@@ -109,18 +109,27 @@ def draw_samples(
     condition: str, *, n_per_snr: int, snrs: list[int], duration_s: float = 2.0, seed: int = 12345
 ) -> list[tuple[float, int, np.ndarray, np.ndarray]]:
     """Generate mixtures for one condition. Returns (snr, idx, mixture, target)."""
-    import build_se_valid as bsv  # noqa: PLC0415
-
-    from data_processing import streams  # noqa: PLC0415
+    from data_processing.derivations import (  # noqa: PLC0415
+        PARENTS,
+        SE_CATEGORY_NOISE,
+        SE_HELDOUT_SPEAKERS,
+        iter_se_valid_category,
+    )
 
     category = CONDITIONS[condition][0]
     out = []
-    for _, sample in bsv._iter_category_samples(
-        category, per_snr=n_per_snr, duration_s=duration_s, seed=seed, snr_grid=list(snrs)
+    for _, frame in iter_se_valid_category(
+        category,
+        SE_CATEGORY_NOISE[category],
+        per_snr=n_per_snr,
+        snr_grid=[float(s) for s in snrs],
+        duration_s=duration_s,
+        sample_rate=SR,
+        seed=seed,
+        heldout_speakers=SE_HELDOUT_SPEAKERS,
+        librispeech=PARENTS["librispeech"],
     ):
-        frame = streams.sample_to_frame(sample)
-        meta = frame["meta"]
-        snr = float(meta["input_snr"])
+        snr = float(frame["meta"]["input_snr"])
         mix = np.asarray(frame["mixture"].data, np.float32).reshape(-1)
         tgt = np.asarray(frame["target"].data, np.float32).reshape(-1)
         out.append((snr, len([o for o in out if o[0] == snr]), mix, tgt))

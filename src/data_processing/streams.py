@@ -146,7 +146,7 @@ def local_repository(root: str | Path) -> dload.Repository:
     (``root/remote`` + ``root/cache``), so a dataset built here can later be
     published unchanged. Used for datasets that are built and consumed on one
     machine without being published — e.g. a replication's fixed SE valid set
-    (``scripts/build_se_valid.py --local-repo``, consumed by
+    (``streams.local_repository``, consumed by
     :class:`data_processing.frame_datasets.SEValidFrameDataset` with
     ``local_root``). Relative roots resolve against the repo root, so the
     location is cwd-independent (Hydra chdirs).
@@ -666,7 +666,7 @@ def mix_frames(
 
     ``dload.zip_with`` over two Frame pipelines: for each pair, scale the
     speech ``entry`` track to a sampled source-to-noise SNR (the project's
-    standard ``_mix_at_source_to_noise_snr`` math, i.e. noise level is the
+    standard ``mix_at_source_to_noise_snr`` math, i.e. noise level is the
     reference) and add it onto the noise Frame — which therefore *keeps* its
     aligned RPS/telemetry tracks and gains ``meta.input_snr`` /
     ``meta.speech_id``. ``snr_db`` may be a constant, a ``(low, high)``

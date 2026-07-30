@@ -385,7 +385,7 @@ def load_published_noise_sources(
     """Load a published rich-frame dataset (``frames:NAME[@VERSION]``).
 
     The dload/tdframe-v1 counterpart of the folder loaders above (see
-    ``scripts/publish_frame_datasets.py``): streams the dataset via
+    the ``source_frames`` derivation): streams the dataset via
     ``streams.iter_published_frames``, keeps only the ``audio`` + ``rps_key``
     tracks (+ ``meta``) of each recording — the published frames carry their
     fixes baked in, so nothing is re-cleaned here — and soxr-resamples audio
