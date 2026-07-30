@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -583,7 +585,14 @@ def _load_ckla_triton(interpret: bool):
     """(Re)import ``models.ckla_triton`` with TRITON_INTERPRET set/cleared.
 
     Triton picks interpreter vs compiled mode at ``@triton.jit`` decoration
-    time, so the env var must be in place before the module (re)import.
+    time, so the env var must be in place before the (re)import. NOTE:
+    importing the interpreter monkey-patches triton globals in-process and
+    breaks compiled-mode codegen for the remainder of the process
+    ("block_argument has no attribute 'dtype'") — which is why the
+    CUDA-compiled equivalence test runs scripts/check_ckla_triton_equiv.py
+    in a clean subprocess, never inline here. (Loading the interpreter copy
+    under an alias module name does not work either: the two copies fight
+    over triton's global state and the interpreter run itself breaks.)
     """
     if interpret:
         os.environ["TRITON_INTERPRET"] = "1"
@@ -688,32 +697,25 @@ def test_layer_triton_default_and_env_optout(monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for compiled triton op")
 def test_triton_cuda_matches_sequential():
-    mod = _load_ckla_triton(interpret=False)
-    if not mod.HAS_TRITON:
-        pytest.skip("triton not installed")
-    rng = np.random.default_rng(4242)
-    B, T, N, D = 4, 250, 16, 128
-    inputs = _random_inputs(rng, B, T, N, D)
-    w_re = torch.as_tensor(rng.standard_normal((B, T, D)), dtype=torch.float32, device="cuda")
-    w_im = torch.as_tensor(rng.standard_normal((B, T, D)), dtype=torch.float32, device="cuda")
+    """CUDA-compiled equivalence, via subprocess.
 
-    def run(fn, **kw):
-        tens = tuple(t.cuda().requires_grad_(True) for t in _torch_inputs(inputs, torch.float32))
-        y_re, y_im = fn(*tens, **kw)
-        ((y_re * w_re).sum() + (y_im * w_im).sum()).backward()
-        grads = []
-        for t in tens:
-            assert t.grad is not None
-            grads.append(t.grad.cpu().numpy())
-        return y_re.detach().cpu().numpy(), y_im.detach().cpu().numpy(), grads
-
-    yr_s, yi_s, g_seq = run(complex_kla_scan)
-    yr_t, yi_t, g_tri = run(mod.complex_kla_scan_triton)
-    np.testing.assert_allclose(yr_t, yr_s, rtol=1e-4, atol=1e-5)
-    np.testing.assert_allclose(yi_t, yi_s, rtol=1e-4, atol=1e-5)
-    # T=250 fp32 accumulation: grads compared at a slightly looser atol than
-    # the small interpreter sizes (summation-order rounding over 250 steps).
-    for name, g_s, g_t in zip(_GRAD_NAMES, g_seq, g_tri):
-        np.testing.assert_allclose(
-            g_t, g_s, rtol=1e-3, atol=1e-4, err_msg=f"triton CUDA grad mismatch: {name}"
-        )
+    Deliberately NOT inline: the interpreter-mode tests above import
+    triton's CPU interpreter, which monkey-patches triton globals and
+    breaks compiled-mode codegen for the rest of the process
+    ("block_argument has no attribute 'dtype'"). A clean subprocess runs
+    scripts/check_ckla_triton_equiv.py (fwd + all-8-input grads at
+    B=4, T=250, N=16, D=128; exit 3 = no CUDA -> skip).
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = {k: v for k, v in os.environ.items() if k != "TRITON_INTERPRET"}
+    env["PYTHONPATH"] = os.path.join(repo, "src")
+    proc = subprocess.run(
+        [sys.executable, os.path.join(repo, "scripts", "check_ckla_triton_equiv.py")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=600,
+    )
+    if proc.returncode == 3:
+        pytest.skip(f"no CUDA/triton: {proc.stdout.strip()}")
+    assert proc.returncode == 0, f"equivalence check failed:\n{proc.stdout}\n{proc.stderr}"
