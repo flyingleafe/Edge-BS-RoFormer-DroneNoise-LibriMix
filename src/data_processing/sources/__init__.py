@@ -135,7 +135,10 @@ REGISTRY: dict[str, SourceDataset] = {
             provenance=aerosonicdb.PROVENANCE,
             download=DownloadSpec(
                 "zenodo",
-                {"record_id": 8371595, "files": ["audio.zip", "sample_meta.csv", "aircraft_meta.csv"]},
+                {
+                    "record_id": 8371595,
+                    "files": ["audio.zip", "sample_meta.csv", "aircraft_meta.csv"],
+                },
                 extract=True,
             ),
             builder=aerosonicdb.build,
@@ -155,7 +158,9 @@ REGISTRY: dict[str, SourceDataset] = {
         SourceDataset(
             name="HornBase",
             provenance=hornbase.PROVENANCE,
-            download=DownloadSpec("mendeley", {"dataset_id": "y5stjsnp8s", "version": 2}, extract=True),
+            download=DownloadSpec(
+                "mendeley", {"dataset_id": "y5stjsnp8s", "version": 2}, extract=True
+            ),
             builder=hornbase.build,
         ),
         SourceDataset(

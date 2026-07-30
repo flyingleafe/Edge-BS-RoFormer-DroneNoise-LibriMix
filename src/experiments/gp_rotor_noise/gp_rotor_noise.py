@@ -73,12 +73,12 @@ import pywt
 import torch
 from gpytorch.kernels import IndexKernel, MaternKernel, ScaleKernel
 
-from data_processing import sources
 from data_processing.sources.michaels import (
     MICHAELS_FILES,
     NUM_ROTORS,
     get_geometry,
     load_raw_aligned,
+    resolve_raw_root,
 )
 
 N_MICS_DEFAULT = 8
@@ -97,7 +97,7 @@ def _load_full(config):
     """Load one Michael's recording; return segment audio, aligned RPS, raw."""
     sr = config.sr
     wav_path, csv_path, toff, tdil = MICHAELS_FILES[config.recording]
-    raw_root = sources.raw_root("michaels")
+    raw_root = resolve_raw_root()
 
     wav, ts, ms, _ = load_raw_aligned(
         raw_root / wav_path,

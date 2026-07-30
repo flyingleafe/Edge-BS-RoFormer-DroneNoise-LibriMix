@@ -241,9 +241,7 @@ def test_build_noise_stream_dispatches_engines(monkeypatch):
     # sub-stream; an all-engine list is a single-stream pipeline.
     import data_processing.online_mixing as om
 
-    monkeypatch.setattr(
-        om, "_build_engine", lambda cfg, **kw: _DummyPool(str(cfg.get("kind")))
-    )
+    monkeypatch.setattr(om, "_build_engine", lambda cfg, **kw: _DummyPool(str(cfg.get("kind"))))
     stream, ceiling = build_noise_stream(
         [{"kind": "generated", "weight": 3.0}], sample_rate=16000, window_s=1.0, seed=0
     )

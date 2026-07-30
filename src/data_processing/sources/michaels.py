@@ -286,8 +286,29 @@ def build_frame(
     return make_recording_frame(tracks, meta=meta, mic_pos=mic_pos, rotor_pos=rotor_pos)
 
 
+def resolve_raw_root(data_root: str | Path | None = None) -> Path:
+    """The tree ``MICHAELS_FILES``' relative paths resolve against.
+
+    ``None`` -> the dload raw pin (``sources.raw_root("michaels")``). A given
+    root may be the ``recording_with_motor_speed`` tree itself, a ``dload:``
+    URI, or an enclosing checkout ``data/`` dir — the nested tree is descended
+    into when present, so the historical ``data/``-relative call convention
+    keeps working. Mirrors :func:`sources.dregon._dregon_dir`.
+    """
+    if data_root is None:
+        from data_processing import sources
+
+        return Path(sources.raw_root("michaels"))
+    from data_processing.streams import resolve_source
+
+    root = Path(resolve_source(data_root))
+    nested = root / "recording_with_motor_speed"
+    return nested if nested.is_dir() else root
+
+
 def build(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
     """Yield ``(recording_id, frame)`` for each aligned recording."""
+    raw_dir = resolve_raw_root(raw_dir)
     for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
         rid = Path(csv_rel).stem
         yield rid, build_frame(raw_dir, wav_rel, csv_rel, time_offset, time_dilation)
@@ -298,19 +319,12 @@ def load_michaels_timeframes(
     sr: int | None = 16000,
 ) -> list[td.Frame]:
     """Load FLY124/FLY125 as aligned recording ``td.Frame``s at sample rate
-    ``sr`` (or native rate when ``None``). "data_root" is the
-    ``recording_with_motor_speed`` raw tree (default: R2 via ``dload:``).
+    ``sr`` (or native rate when ``None``). ``data_root`` is resolved by
+    :func:`resolve_raw_root` (default: the dload raw pin).
 
     Each frame holds 8-channel ``audio`` + ``rps`` (aligned, rev/s) + ``meta``.
     """
-    from data_processing.streams import resolve_source
-
-    if data_root is not None:
-        root = resolve_source(data_root)
-    else:
-        from data_processing import sources
-
-        root = sources.raw_root("michaels")
+    root = resolve_raw_root(data_root)
     frames: list[td.Frame] = []
     for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
         wav, ts, ms, raw_sr = load_raw_aligned(
@@ -324,8 +338,10 @@ def load_michaels_timeframes(
         mic_pos, rotor_pos = get_geometry()
         frames.append(
             make_recording_frame(
-                {"audio": td.uniform(wav, raw_sr, dims=("mic", "time"), t_start=0.0),
-                 "rps": td.events(ts, ms, dims=("rotor", "time"), t_start=0.0)},
+                {
+                    "audio": td.uniform(wav, raw_sr, dims=("mic", "time"), t_start=0.0),
+                    "rps": td.events(ts, ms, dims=("rotor", "time"), t_start=0.0),
+                },
                 meta=meta,
                 mic_pos=mic_pos,
                 rotor_pos=rotor_pos,
@@ -348,5 +364,3 @@ PROVENANCE: dict[str, Any] = {
     "sample_rate": 44100,
     "channels": 8,
 }
-
-

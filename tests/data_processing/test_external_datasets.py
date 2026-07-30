@@ -11,10 +11,15 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 
-from data_processing import sources
-from data_processing.sources import _common
-from data_processing.sources import mimii, droneaudio, aerosonicdb, hornbase, hustmotor, kaist, spcup19
-from data_processing import streams
+from data_processing import sources, streams
+from data_processing.sources import (
+    _common,
+    droneaudio,
+    hustmotor,
+    kaist,
+    mimii,
+    spcup19,
+)
 
 SR = 16000
 
@@ -23,7 +28,13 @@ def test_registry_integrity():
     for name, spec in sources.REGISTRY.items():
         assert spec.name == name
         assert spec.builder is None or callable(spec.builder)
-        assert spec.download is None or spec.download.kind in {"zenodo", "mendeley", "hf", "gdrive", "http"}
+        assert spec.download is None or spec.download.kind in {
+            "zenodo",
+            "mendeley",
+            "hf",
+            "gdrive",
+            "http",
+        }
         for key in ("description",):
             assert key in spec.provenance or key == "license", f"{name} missing provenance[{key!r}]"
 

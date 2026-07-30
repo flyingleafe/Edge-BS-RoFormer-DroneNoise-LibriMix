@@ -196,7 +196,9 @@ def load_experiment(name: str) -> tuple[str, bool, int | None]:
     )
 
 
-def make_control_cfg(cfg: dict[str, Any], key: str, block_idx: int | None = None) -> dict[str, Any] | None:
+def make_control_cfg(
+    cfg: dict[str, Any], key: str, block_idx: int | None = None
+) -> dict[str, Any] | None:
     """A copy of ``cfg`` whose ``key`` blocks never fire.
 
     With ``block_idx`` only that block of a list-valued ``key`` is disabled
@@ -442,8 +444,7 @@ def main() -> int:
                 rm, rl = _frame_arrays(rf)
                 cm, cl = _frame_arrays(cf)
                 this_fired = not (
-                    np.array_equal(rm, cm)
-                    and (rl is None and cl is None or np.array_equal(rl, cl))
+                    np.array_equal(rm, cm) and (rl is None and cl is None or np.array_equal(rl, cl))
                 )
                 if this_fired:
                     fired += 1
@@ -493,11 +494,7 @@ def main() -> int:
     det_n = min(args.probes, max(2, args.determinism_ids))
     run_a = _probe_frames(cfg, det_start, det_n)
     run_b = _probe_frames(cfg, det_start, det_n)
-    bad = [
-        i
-        for i, (fa, fb) in enumerate(zip(run_a, run_b))
-        if not _frames_equal(fa, fb)
-    ]
+    bad = [i for i, (fa, fb) in enumerate(zip(run_a, run_b)) if not _frames_equal(fa, fb)]
     det_ok = not bad
     if not det_ok:
         failures.append(f"determinism: probe offsets {bad} not bit-identical on rebuild")

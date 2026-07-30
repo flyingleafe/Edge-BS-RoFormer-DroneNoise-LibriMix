@@ -40,20 +40,27 @@ server, source it yourself (`set -a; . ./.env; set +a`) before invoking
 
 ### Overnight on CPU server — process and publish a dataset
 
-Three publishing conventions exist — pick by dataset shape (full detail:
-`src/data_processing/AGENTS.md` § "Publishing datasets to dload"):
+**Raw trees** are committed once with the CLI: `dload commit NAME --from
+data/NAME` (key = relpath minus extension, field = the extension; the CLI does
+not skip hidden files), then referenced by a `data_processing.sources` registry
+entry's `raw_dataset`.
 
-1. **Raw recording dirs** (`data/*`) — the CLI: `dload commit NAME --from
-   data/NAME` (key = relpath minus extension, field = the extension; the CLI
-   does not skip hidden files).
-2. **Derived sample-dir datasets** (`datasets/DREGON-LM-*`) — the Python API
-   (`dload.Repository.commit` over a generator; key = `sample_NNNNN`, fields =
-   file stems, plus a `_meta` sample). The CLI `--from` convention **cannot**
-   produce this layout — write a small publish script.
-3. **Rich frame datasets** — `scripts/publish_frame_datasets.py`
-   (`tdframe-v1` Frame codec, fixes baked in, script source as recipe).
+**Everything else is a derivation** — declared as a frozen spec in
+`data_processing.derivations.SPECS` and materialized only through the single
+driver (full detail: `src/data_processing/AGENTS.md` § "Publishing datasets to
+dload", architecture: `docs/refactor-data-pipelines.md`):
 
-Whatever the convention, finish by pinning:
+```bash
+python scripts/derive.py list --check-remote -v   # specs + fingerprints + refs
+python scripts/derive.py derive <NAME>            # materialize + commit + pin
+python scripts/derive.py adopt  <NAME> --commit   # ref an existing historical pin
+```
+
+Manifest layouts: `sample-dir-v1` (DREGON-LM / DN-LM mixes), `tdframe-v1`
+(rich per-recording Frames), `raw-files` / `pcm16-mono-v1` (byte passthrough /
+decoded PCM cache).
+
+Whatever the route, finish by pinning:
 
 ```bash
 dload pin DREGON-LM-V4-train

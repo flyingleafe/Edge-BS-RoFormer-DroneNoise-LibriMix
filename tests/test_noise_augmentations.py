@@ -262,9 +262,10 @@ def test_maybe_apply_fires_and_rebuilds_frame():
     assert rps.shape[0] == 4
     assert abs(float(rps[:, : int(0.8 * LABEL_RATE)].mean()) - 72.0) < 0.5
     # The rebuilt frame slots into the downstream interpolation path.
-    from data_processing.online_mixing import _resolve_motor_tracks, interpolate_rps_to_stft_grid
+    from data_processing.mixing import resolve_motor_tracks
+    from data_processing.online_mixing import interpolate_rps_to_stft_grid
 
-    assert _resolve_motor_tracks(out)[1] == "rps"
+    assert resolve_motor_tracks(out)[1] == "rps"
     grid = interpolate_rps_to_stft_grid(out, n_frames=32, hop_length=512)
     assert grid.shape == (4, 32) and np.isfinite(grid).all()
 

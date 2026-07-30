@@ -24,6 +24,9 @@ Generator families (all module-level, hence fingerprintable):
 - ``generate_frame_subset`` — a filtered/transformed subset of a published
   frames dataset (AVQ-egonoise: key filter + channel pick + resample).
 - ``generate_raw_subset`` — a byte-exact raw-file subset (AVQ-raw).
+- ``generate_pcm16_mono`` — a memoized mono int16 decode of a raw-audio
+  dataset (``librispeech-pcm16``; the derived-dataset form of the deleted
+  bespoke ``packed_int16`` speech cache).
 - ``generate_beatvk_valid`` — the frozen beat-VK raw validation set (a pure
   frames→frames transform over pinned parents).
 - ``generate_se_valid`` — the fixed SE validation sets (held-out noise ×
@@ -60,7 +63,6 @@ re-derived, which would upload a near-duplicate copy. See
 from __future__ import annotations
 
 import io
-import json
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -112,6 +114,12 @@ def _sample_dir_meta(fields: dict[str, str]) -> dict[str, Any]:
         "fields": dict(fields),
         "meta_sample": {"key": "_meta", "fields": {"metadata": "metadata.json"}},
     }
+
+
+def _split_dload_uri(uri: str) -> tuple[str, str | None]:
+    """``"dload:NAME@sha"`` -> ``("NAME", "sha")``; a bare name -> version ``None``."""
+    name, _, version = str(uri).removeprefix("dload:").partition("@")
+    return name, version or None
 
 
 def _resolve_librispeech(parent_uri: str, subpath: str | None) -> list[str]:
@@ -199,9 +207,7 @@ def generate_dregon_lm_split(gen: dict[str, Any]) -> Iterator[Sample]:
         return
 
     # ── synthesized split ────────────────────────────────────────────────────
-    speech_files = _resolve_librispeech(
-        gen["parents"]["librispeech"], params.get("speech_subpath")
-    )
+    speech_files = _resolve_librispeech(gen["parents"]["librispeech"], params.get("speech_subpath"))
     snr_range = (float(params["snr_range"][0]), float(params["snr_range"][1]))
     for idx in range(int(gen["num_samples"])):
         sample_id = f"sample_{idx:05d}"
@@ -252,9 +258,7 @@ def generate_dn_lm_split(gen: dict[str, Any]) -> Iterator[Sample]:
     sample_rate = int(params["sample_rate"])
     target_length = int(float(params["sample_duration"]) * sample_rate)
 
-    speech_files = _resolve_librispeech(
-        gen["parents"]["librispeech"], params.get("speech_subpath")
-    )
+    speech_files = _resolve_librispeech(gen["parents"]["librispeech"], params.get("speech_subpath"))
 
     noise_root = resolve_source(gen["parents"]["noise"])
     noise_subpath = params.get("noise_subpath")
@@ -319,10 +323,7 @@ def generate_source_frames(gen: dict[str, Any]) -> Iterator[Sample]:
 
     name = gen["source"]
     raw = gen.get("raw") or {}
-    if raw.get("kind") == "dload":
-        root = resolve_source(raw["uri"])
-    else:
-        root = sources.raw_root(name)
+    root = resolve_source(raw["uri"]) if raw.get("kind") == "dload" else sources.raw_root(name)
     for key, frame in sources.get(name).builder(root):  # type: ignore[misc]
         yield key, frame_to_sample(frame)
 
@@ -348,9 +349,7 @@ def generate_frame_subset(gen: dict[str, Any]) -> Iterator[Sample]:
     )
     from data_processing.streams import frame_to_sample, iter_published_frames
 
-    parent = str(gen["parent"])
-    name = parent.removeprefix("dload:")
-    name, _, version = name.partition("@")
+    name, version = _split_dload_uri(str(gen["parent"]))
     include = [str(k) for k in gen["include_keys"]]
     wanted = set(include)
     seen: set[str] = set()
@@ -358,7 +357,7 @@ def generate_frame_subset(gen: dict[str, Any]) -> Iterator[Sample]:
     sample_rate = int(gen.get("sample_rate", 0)) or None
     forbid = set(gen.get("forbid_entries", []))
     meta_updates = dict(gen.get("meta_updates", {}))
-    for frame in iter_published_frames(name, version or None):
+    for frame in iter_published_frames(name, version):
         rid = str(get_meta(frame, "recording_id", ""))
         if rid not in wanted:
             continue
@@ -425,6 +424,46 @@ def generate_raw_subset(gen: dict[str, Any]) -> Iterator[Sample]:
         yield key, {ext: p.read_bytes()}
 
 
+# ─── Decoded-speech cache (memoized decode+resample) ──────────────────────────
+
+#: Manifest layout of :func:`generate_pcm16_mono` output — the decode dispatch
+#: key in ``online_mixing._decode_speech_chunk``.
+PCM16_LAYOUT = "pcm16-mono-v1"
+
+
+def generate_pcm16_mono(gen: dict[str, Any]) -> Iterator[Sample]:
+    """Decode a raw-audio dload dataset once to mono int16 PCM at a fixed rate.
+
+    This is the derived-dataset form of the deleted bespoke ``packed_int16``
+    speech cache: the online mixer's per-encounter FLAC decode + resample is
+    pure, deterministic preprocessing, which is exactly what
+    ``Repository.derive`` memoizes. Consumed by pointing a policy's
+    ``sources.speech[].dataset`` at this dataset instead of ``librispeech``;
+    ``online_mixing._decode_speech_chunk`` dispatches on the manifest layout,
+    so nothing else changes. It matters for the 8-lane RPS streams, which
+    decode one utterance per mic per sample.
+
+    ``gen``: ``parent`` (dload URI), ``sample_rate``, optional ``subpath``.
+    """
+    import librosa
+
+    from data_processing.streams import resolve_source
+
+    root = Path(resolve_source(gen["parent"]))
+    subpath = gen.get("subpath")
+    audio_root = root / subpath if subpath else root
+    sample_rate = int(gen["sample_rate"])
+    for path in sorted(p for ext in ("*.wav", "*.flac") for p in audio_root.rglob(ext)):
+        audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1)
+        if int(sr) != sample_rate:
+            audio = librosa.resample(audio, orig_sr=float(sr), target_sr=float(sample_rate))
+        pcm = np.clip(audio * 32767.0, -32768.0, 32767.0).astype(np.int16)
+        key = str(path.relative_to(root).with_suffix("")).replace("\\", "/")
+        yield key, {"pcm": pcm.tobytes()}
+
+
 # ─── beat-VK frozen validation set ────────────────────────────────────────────
 
 _BEATVK_WINDOW_S = 16.0
@@ -434,9 +473,7 @@ _BEATVK_GROUND_MAX = 5.0  # mean rps below -> "ground"
 _BEATVK_WARMUP_MAX = 45.0  # mean rps below -> "warmup"; else "cruise"
 
 
-def _trim_constant_runs(
-    ts: np.ndarray, vals: np.ndarray
-) -> tuple[float, float, float, float]:
+def _trim_constant_runs(ts: np.ndarray, vals: np.ndarray) -> tuple[float, float, float, float]:
     """Trim leading/trailing exact-constant telemetry runs (logger not live)."""
     same = np.all(vals[:, 1:] == vals[:, :-1], axis=0)  # (M-1,) consecutive equality
     lead = 0
@@ -535,21 +572,21 @@ def generate_beatvk_valid(gen: dict[str, Any]) -> Iterator[Sample]:
     telemetry (re-anchored to t=0) + a frozen 16 s window manifest, built from
     pinned frames datasets (``gen["recordings"]`` = ``[[parent, key, rps_entry],
     ...]``; ``gen["parents"]`` pins them)."""
+    from data_processing.frames import get_meta
     from data_processing.streams import frame_to_sample, iter_published_frames
 
     parents = gen["parents"]
     for parent, key, rps_entry in gen["recordings"]:
-        uri = parents[parent]
-        name = uri.removeprefix("dload:")
-        name, _, version = name.partition("@")
+        name, version = _split_dload_uri(parents[parent])
         seen = False
-        for frame in iter_published_frames(name, version or None):
-            rid = str(frame.get("meta", {}).get("recording_id", "")) if "meta" in frame else ""
+        for frame in iter_published_frames(name, version):
+            rid = str(get_meta(frame, "recording_id", ""))
             if rid != key:
                 continue
             seen = True
-            yield key, frame_to_sample(
-                _beatvk_frame(name, version or "lock-pin", key, rps_entry, frame)
+            yield (
+                key,
+                frame_to_sample(_beatvk_frame(name, version or "lock-pin", key, rps_entry, frame)),
             )
             break
         if not seen:
@@ -590,6 +627,10 @@ SE_HELDOUT_SPEAKERS = [
 #: complementary ``split: train`` side. Real DREGON/michaels drone noise is
 #: held out by *recording id* (valid: room1 + FLY124; train: the rest/FLY125).
 _SE_HOLDOUT_VALID = {"split": "valid", "valid_shards": 2}
+#: The complementary (training) side — what the models actually saw.
+_SE_HOLDOUT_TRAIN = {"split": "train", "valid_shards": 2}
+#: LibriSpeech subtree the speaker-split speech is drawn from.
+_LIBRISPEECH_SUBPATH = "LibriSpeech/train-clean-100"
 SE_CATEGORY_NOISE: dict[str, list[dict[str, Any]]] = {
     "drone": [
         {
@@ -609,14 +650,37 @@ SE_CATEGORY_NOISE: dict[str, list[dict[str, Any]]] = {
     ],
     "mimii": [{"kind": "audio_pool", "dataset": "MIMII", "holdout": _SE_HOLDOUT_VALID}],
     "mimii_dg": [{"kind": "audio_pool", "dataset": "MIMII-DG", "holdout": _SE_HOLDOUT_VALID}],
-    "aircraft": [
-        {"kind": "audio_pool", "dataset": "AeroSonicDB", "holdout": _SE_HOLDOUT_VALID}
-    ],
+    "aircraft": [{"kind": "audio_pool", "dataset": "AeroSonicDB", "holdout": _SE_HOLDOUT_VALID}],
     "motors": [
         {"kind": "audio_pool", "dataset": "HUSTmotor", "holdout": _SE_HOLDOUT_VALID},
         {"kind": "audio_pool", "dataset": "KAIST-rotating-acoustic", "holdout": _SE_HOLDOUT_VALID},
     ],
     "horns": [{"kind": "audio_pool", "dataset": "HornBase", "holdout": _SE_HOLDOUT_VALID}],
+    # The generalization probe's IN-DISTRIBUTION arm: a byte-for-byte mirror of
+    # the F1 Pass-A *training* noise pool (conf/online_mix/se_drone_only.yaml) —
+    # the complementary side of every holdout the `drone` category uses. Paired
+    # with the SAME held-out speakers, so the only thing differing between
+    # `drone_seen` and `drone` is whether the model trained on that noise.
+    # Consumed on demand by notebooks/generalization_lib.py; NOT published.
+    "drone_seen": [
+        {
+            "kind": "frames",
+            "dataset": "DREGON-frames",
+            "splits": ["in_flight_noise"],
+            "exclude_recording_ids": ["free-flight_nosource_room1"],
+            "min_motor_rps": 30.0,
+        },
+        {
+            "kind": "frames",
+            "dataset": "michaels-frames",
+            "recording_ids": ["FLY125"],
+            "min_motor_rps": 0.0,
+        },
+        {"kind": "audio_pool", "dataset": "drone_audio", "holdout": _SE_HOLDOUT_TRAIN},
+        {"kind": "audio_pool", "dataset": "DroneAudioSet", "holdout": _SE_HOLDOUT_TRAIN},
+        {"kind": "audio_pool", "dataset": "SPCUP19-egonoise", "holdout": _SE_HOLDOUT_TRAIN},
+        {"kind": "audio_pool", "dataset": "new-drone-noises", "holdout": _SE_HOLDOUT_TRAIN},
+    ],
     # F2 replication: no noise holdout on purpose — the paper reuses the same 5
     # ego-noise recordings for train and valid and splits only the speech.
     "avq_ego": [{"kind": "audio_pool", "dataset": "AVQ-egonoise"}],
@@ -633,16 +697,128 @@ SE_CATEGORY_NOISE: dict[str, list[dict[str, Any]]] = {
 }
 
 
+def _se_valid_frame(
+    category: str,
+    sample_rate: int,
+    snr_grid: list[float],
+    per_snr: int,
+    index: int,
+    noise_tf: td.Frame,
+    speech_lanes: list[np.ndarray],
+    u_channel: float,
+) -> td.Frame:
+    """One fixed SE-valid clip: mono noise + speech scaled to the grid SNR."""
+    from data_processing.frames import audio_series
+    from data_processing.mixing import scale_source_to_snr
+
+    snr = float(snr_grid[index // per_snr])
+    noise = np.asarray(noise_tf["audio"].data, dtype=np.float32)
+    if noise.ndim == 2:
+        noise = noise[int(float(u_channel) * noise.shape[0]) % noise.shape[0]]
+    noise = np.ascontiguousarray(noise)[None, :]
+    target = scale_source_to_snr(np.asarray(speech_lanes[0], np.float32)[None, :], noise, snr)
+    sample_id = f"{category}_snr{int(snr):+03d}_{index:04d}"
+    return td.Frame(
+        {
+            "mixture": audio_series((noise + target).astype(np.float32), sample_rate),
+            "target": audio_series(target, sample_rate),
+            "meta": td.Frame(
+                {
+                    "recording_id": sample_id,
+                    "id": sample_id,
+                    "input_snr": snr,
+                    "category": category,
+                }
+            ),
+        }
+    )
+
+
+def iter_se_valid_category(
+    category: str,
+    noise_specs: list[dict[str, Any]],
+    *,
+    per_snr: int,
+    snr_grid: list[float],
+    duration_s: float,
+    sample_rate: int,
+    seed: int,
+    heldout_speakers: list[str],
+    librispeech: str,
+) -> Iterator[tuple[str, td.Frame]]:
+    """Yield one category's fixed SE-valid clips as ``(sample_id, Frame)``.
+
+    Built from the *same* stream builders the training policies compile to
+    (:mod:`data_processing.online_mixing`), with the complementary filters:
+    the noise pools take the ``split: valid`` side of every holdout and the
+    speech stream ``include``s exactly the held-out speakers. Silent draws are
+    filtered upstream — a silent noise draw would zero both the mixture and
+    the clean target through the source-to-noise scaling (the bug that
+    invalidated the v1 sets; see ``mixing.MIN_DRAW_POWER``).
+
+    Public so the generalization probe (``notebooks/generalization_lib.py``)
+    can materialize unpublished categories (e.g. ``drone_seen``) on demand.
+    """
+    import itertools
+
+    from data_processing.online_mixing import (
+        _nonsilent_frame,
+        _nonsilent_lanes,
+        build_noise_stream,
+        build_speech_stream,
+    )
+
+    cseed = dload.seeded(seed, "se-valid", category)
+    target_len = int(round(duration_s * sample_rate))
+    noise, _ = build_noise_stream(
+        noise_specs, sample_rate=sample_rate, window_s=duration_s, seed=cseed
+    )
+    speech = build_speech_stream(
+        {
+            "dataset": _split_dload_uri(librispeech)[0],
+            "version": _split_dload_uri(librispeech)[1],
+            "subpath": _LIBRISPEECH_SUBPATH,
+            "include": list(heldout_speakers),
+        },
+        sample_rate=sample_rate,
+        window_s=duration_s,
+        lanes=1,
+        seed=dload.seeded(cseed, "speech"),
+    )
+    pipe = dload.zip_with(
+        partial(_se_valid_frame, category, sample_rate, list(snr_grid), int(per_snr)),
+        dload.from_iterable(itertools.count),
+        noise.filter(partial(_nonsilent_frame, target_len)),
+        speech.filter(_nonsilent_lanes),
+        dload.random_stream(dload.seeded(cseed, "channel")),
+    )
+    for frame in itertools.islice(pipe, int(per_snr) * len(snr_grid)):
+        yield str(frame["meta"]["id"]), frame
+
+
 def generate_se_valid(gen: dict[str, Any]) -> Iterator[Sample]:
     """A fixed SE validation set: held-out noise x held-out LibriSpeech
     speakers over an SNR grid — ``{mixture, target, meta}`` frames.
 
-    NOTE: the body is wired to the online-mix stream builders
-    (``noise_chunk_stream``); until then it raises. Adopt-only specs — the
-    fingerprint identity is what the adoption needs.
+    ``gen``: ``categories`` + ``category_noise`` (the per-category valid-side
+    noise specs), ``heldout_speakers``, ``librispeech`` (pinned dload URI),
+    ``per_snr`` / ``snr_grid`` / ``duration_s`` / ``sample_rate``, ``seed``.
     """
-    raise RuntimeError("generate_se_valid is wired in the stream rewrite commit")
-    yield  # pragma: no cover - generator form required for fingerprinting
+    from data_processing.streams import frame_to_sample
+
+    for category in gen["categories"]:
+        for sample_id, frame in iter_se_valid_category(
+            category,
+            gen["category_noise"][category],
+            per_snr=int(gen["per_snr"]),
+            snr_grid=[float(s) for s in gen["snr_grid"]],
+            duration_s=float(gen["duration_s"]),
+            sample_rate=int(gen["sample_rate"]),
+            seed=int(gen["seed"]),
+            heldout_speakers=list(gen["heldout_speakers"]),
+            librispeech=str(gen["librispeech"]),
+        ):
+            yield sample_id, frame_to_sample(frame)
 
 
 # ─── Spec registry ────────────────────────────────────────────────────────────
@@ -1071,14 +1247,27 @@ SPECS: dict[str, dict[str, Any]] = {
             "recipe_version": 1,
             "seed": 20260720,
             "categories": ["avq_ego_s1", "avq_ego_s2"],
-            "category_noise": {
-                k: SE_CATEGORY_NOISE[k] for k in ("avq_ego_s1", "avq_ego_s2")
-            },
+            "category_noise": {k: SE_CATEGORY_NOISE[k] for k in ("avq_ego_s1", "avq_ego_s2")},
             "heldout_speakers": SE_HELDOUT_SPEAKERS,
             "librispeech": PARENTS["librispeech"],
             "per_snr": 50,
             "snr_grid": [-25, -20, -15, -10, -5],
             "duration_s": 3.0,
+            "sample_rate": 16000,
+        },
+    },
+    # ── Decoded-speech cache (derivable; not yet materialized) ──────────────
+    "librispeech-pcm16": {
+        "generator": "pcm16_mono",
+        "adopt_only": False,
+        "note": "Memoized mono int16 decode of the librispeech pin at 16 kHz — "
+        "the derived-dataset replacement for the deleted bespoke packed_int16 "
+        "speech cache. Point a policy's sources.speech[].dataset here to skip "
+        "per-encounter FLAC decode (matters for 8-lane RPS streams).",
+        "gen": {
+            "recipe_version": 1,
+            "parent": PARENTS["librispeech"],
+            "subpath": _LIBRISPEECH_SUBPATH,
             "sample_rate": 16000,
         },
     },
@@ -1133,6 +1322,7 @@ _GENERATORS = {
     "source_frames": generate_source_frames,
     "frame_subset": generate_frame_subset,
     "raw_subset": generate_raw_subset,
+    "pcm16_mono": generate_pcm16_mono,
     "beatvk_valid": generate_beatvk_valid,
     "avq_vkrps": generate_avq_vkrps,
     "se_valid": generate_se_valid,
@@ -1145,6 +1335,7 @@ _LAYOUTS = {
     "source_frames": "tdframe-v1",
     "frame_subset": "tdframe-v1",
     "raw_subset": "raw-files",
+    "pcm16_mono": PCM16_LAYOUT,
     "beatvk_valid": "tdframe-v1",
     "avq_vkrps": "tdframe-v1",
     "se_valid": "tdframe-v1",
