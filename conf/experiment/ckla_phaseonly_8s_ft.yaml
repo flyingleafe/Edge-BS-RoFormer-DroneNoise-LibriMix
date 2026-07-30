@@ -15,7 +15,10 @@ experiment_name: ckla_phaseonly_8s_ft
 checkpoint: r2://ml-data/artifacts/ckla_phaseonly_4s/checkpoints/best.ckpt
 epochs: 200
 patience: 20
-batch_size: 16  # frames (= 2 chunks x 8 mics); per-step memory matches fs_v2
+batch_size: 32  # frames (= 4 chunks x 8 mics); 2x the fs_v2 B*T memory point.
+# The CKLA scan is kernel-launch-bound at T=250 (Python loop over t), so step
+# time is ~independent of batch — B=32 doubles throughput on the same wall
+# clock. Needs a >=20GB card.
 num_workers: 6
 samples_per_validation: 40000
 grad_clip: 1.0  # phase_only readout: atan2 near zero phasor -> exploding grads
