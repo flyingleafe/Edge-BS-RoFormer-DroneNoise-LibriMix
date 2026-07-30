@@ -16,7 +16,7 @@
 #
 # The valid set is published + pinned (`SE-valid-avq-split@95378d78ccf1`), so it
 # streams from R2 on any backend. Rebuild it with
-#   python scripts/build_se_valid.py --dataset avq_split --publish && dload pin SE-valid-avq-split
+#   python data_processing.derivations (se_valid generator) --dataset avq_split --publish && dload pin SE-valid-avq-split
 # (a `local_root: <dir>` param reads an unpublished build from a local dload repo).
 train:
   _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml

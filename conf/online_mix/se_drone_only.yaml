@@ -27,7 +27,7 @@ sources:
       min_motor_rps: 0.0
       weight: 1.0
     # Open drone-noise datasets (train side of the per-shard/recording holdout;
-    # valid_shards: 2 kept complementary to scripts/build_se_valid.py).
+    # valid_shards: 2 kept complementary to data_processing.derivations (se_valid generator)).
     - kind: audio_pool
       dataset: drone_audio
       holdout: {split: train, valid_shards: 2}

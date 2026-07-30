@@ -2,7 +2,7 @@
 # (e12_fullflight_freqscale_v2_dload.yaml, byte-identical policy/stages) plus
 # ONE new real noise source: AVQ-egonoise-vkrps — AVQ rotor ego-noise (mono
 # 16 kHz) carrying blind-VK RPS pseudo-labels (scripts/vk_pseudolabel.py,
-# published by scripts/publish_avq_vkrps.py; 7 contiguous accepted segments,
+# published by data_processing.derivations (avq_vkrps spec; annotator scripts/vk_pseudolabel.py); 7 contiguous accepted segments,
 # ~617 s, refused/NaN spans dropped at publish time).
 #
 # Weighting: a real source with an EXPLICIT `weight` becomes its own sub-pool

@@ -4,7 +4,7 @@
 # 8-mic multichannel, command RPS. `channel: 0` selects one mic (mono
 # models — no channel-flattening trick, see data_processing/AGENTS.md
 # § "Multichannel Training & Evaluation Wiring"). See REPLICATION.md § C1/C4.
-# Create: python create_dregon_librimix.py \
+# Create: python data_processing.derivations (dregon_lm generator) \
 #   --speech_dir data/librispeech/LibriSpeech/train-clean-100 \
 #   --dregon_dir data/DREGON --output_dir datasets/DREGON-LM-V2-0pct \
 #   --num_train 6000 --num_valid 600 --motor_combo_fraction 0.0

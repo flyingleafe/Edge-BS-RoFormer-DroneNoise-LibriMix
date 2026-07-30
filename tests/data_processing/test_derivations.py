@@ -44,24 +44,46 @@ def test_wav_bytes_roundtrip_mono_and_multichannel():
 def test_dataset_meta_shape():
     for name in der.SPECS:
         meta = der.dataset_meta(name)
-        assert meta["layout"] == "sample-dir-v1"
-        assert meta["fields"] == der.SPECS[name]["fields"]
-        assert meta["meta_sample"] == {"key": "_meta", "fields": {"metadata": "metadata.json"}}
-        assert "mixture" in meta["fields"]
+        assert meta["layout"] == der.spec_layout(name)
+        if meta["layout"] == "sample-dir-v1":
+            assert meta["fields"] == der.SPECS[name]["fields"]
+            assert meta["meta_sample"] == {
+                "key": "_meta",
+                "fields": {"metadata": "metadata.json"},
+            }
+            assert "mixture" in meta["fields"]
 
 
 def test_specs_integrity():
     for name, entry in der.SPECS.items():
         assert entry["generator"] in der._GENERATORS, name
-        assert entry["fields"], name
         assert isinstance(entry["adopt_only"], bool), name
         gen = entry["gen"]
-        for key in ("recipe_version", "seed", "num_samples", "split", "parents", "params"):
-            assert key in gen, f"{name} missing gen[{key!r}]"
-        assert gen["split"] in ("train", "valid"), name
+        assert "recipe_version" in gen, f"{name} missing gen['recipe_version']"
+        kind = entry["generator"]
+        if kind in ("dregon_lm", "dn_lm"):
+            assert entry["fields"], name
+            for key in ("seed", "num_samples", "split", "parents", "params"):
+                assert key in gen, f"{name} missing gen[{key!r}]"
+            assert gen["split"] in ("train", "valid"), name
+        elif kind == "se_valid":
+            for key in ("seed", "categories", "category_noise", "per_snr", "snr_grid"):
+                assert key in gen, f"{name} missing gen[{key!r}]"
+        elif kind in ("source_frames", "raw_subset"):
+            assert "source" in gen, f"{name} missing gen['source']"
+        elif kind == "frame_subset":
+            assert "parent" in gen and "include_keys" in gen, name
+        elif kind == "beatvk_valid":
+            assert "parents" in gen and "recordings" in gen, name
         # Parents are pinned dload URIs, never local data/ paths.
-        for uri in gen["parents"].values():
-            assert uri.startswith("dload:") and "@" in uri, f"{name}: {uri}"
+        for key in ("parents",):
+            for uri in (gen.get(key) or {}).values():
+                assert uri.startswith("dload:") and "@" in uri, f"{name}: {uri}"
+        for key in ("parent",):
+            if gen.get(key):
+                assert gen[key].startswith("dload:") and "@" in gen[key], name
+        for spec in gen.get("noise_sources") or []:
+            assert "@" in spec["dataset"], f"{name}: unpinned noise source {spec}"
 
 
 def test_fingerprint_stable_and_unique():
@@ -80,6 +102,36 @@ def test_fingerprint_tracks_recipe_version(monkeypatch):
     bumped["gen"] = {**bumped["gen"], "recipe_version": 999}
     monkeypatch.setitem(der.SPECS, name, bumped)
     assert der.fingerprint(name) != before
+
+
+def test_parents_match_dload_lock():
+    """Pin-drift guard: PARENTS must carry the current dload.lock versions.
+    Update deliberately — a change mints new derivation identities."""
+    import tomllib
+
+    lock = tomllib.load(open("dload.lock", "rb"))["datasets"]
+    for key, uri in der.PARENTS.items():
+        name, _, sha = uri.removeprefix("dload:").partition("@")
+        assert lock.get(name) == sha, f"PARENTS[{key!r}] stale: {sha[:12]} != lock {lock.get(name, '')[:12]}"
+
+
+def test_lock_coverage():
+    """Every dload.lock dataset is covered: a derivation spec, a raw source
+    registry entry (or its frames dataset), or a declared historical pin."""
+    import tomllib
+
+    from data_processing import sources
+
+    lock = tomllib.load(open("dload.lock", "rb"))["datasets"]
+    frames_names = {s.frames_name for s in sources.REGISTRY.values()}
+    for name in lock:
+        covered = (
+            name in der.SPECS
+            or name in sources.REGISTRY
+            or name in frames_names
+            or name in der.HISTORICAL_PINS
+        )
+        assert covered, f"{name}: no spec, source entry, or historical-pin declaration"
 
 
 def test_build_pipeline_is_fingerprintable():

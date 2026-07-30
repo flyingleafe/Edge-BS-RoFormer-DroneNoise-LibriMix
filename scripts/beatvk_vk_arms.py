@@ -5,7 +5,7 @@ Runs the validated vit2dsp VK ladder (``vk_blind_annotation.vit2dsp_pipeline``,
 exactly as ``scripts/vk_blind_sweep.py`` composes it: geometry 1/d² mic
 weights, PIT phys_map, ``stage_guard=True``, seed auto-knobs spliced when
 present) on EVERY manifest 16 s window of every recording of the frozen
-dataset published by ``scripts/publish_beatvk_valid.py``, one independent run
+dataset published by ``data_processing.derivations (beatvk_valid generator)``, one independent run
 per (recording × window × arm), and assembles per-arm NPZ trajectory files in
 the exact format ``scripts/beatvk_eval.py --pred npz:<dir>`` consumes.
 

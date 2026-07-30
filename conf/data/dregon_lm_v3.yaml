@@ -9,7 +9,7 @@
 # (SS_total ~ 0); trust MSE/MAE over R² for this dataset.
 # Create: python create_dregon_librimix_v3.py (superseded script; if absent,
 # the closest modern equivalent is
-# `create_dregon_librimix.py --duration 1.0 --num_train 6000 --num_valid 600`).
+# `data_processing.derivations (dregon_lm generator) --duration 1.0 --num_train 6000 --num_valid 600`).
 train:
   _target_: data_processing.frame_datasets.DregonLMFrameDataset
   params:
