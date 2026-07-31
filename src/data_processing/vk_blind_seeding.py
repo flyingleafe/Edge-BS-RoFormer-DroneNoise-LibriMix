@@ -132,8 +132,39 @@ class SeedConfig:
     # catch teeth a wandering line only visits, low enough that an alias's
     # occasionally-grazed teeth do not count (0.8 lets 3:2 aliases through)
     # arm N — rotor-count prior
-    dedup_rps: float = 4.0  # near-duplicate peak suppression (rev/s)
+    dedup_rps: float = 2.5  # near-duplicate peak suppression (rev/s). Was 4.0,
+    # which structurally forbade admitting a rotor 2-3 rev/s from a used base —
+    # i.e. exactly the spacing a quadrotor's rotors sit at during cruise, so a
+    # genuinely missing rotor could never be re-scanned in (WP7/WP8). 2.5 is
+    # bit-identical on all 15 real protocol windows (seed stage and the
+    # `baseline` chain) and lifts the synthetic battery (all-15 refine_v2 pooled
+    # PIT-MAE 2.190 -> 2.039). Below 2.0 FLY124 admits a 90.35 comb 2.0 rev/s
+    # from its 92.35 base — two seeds on one comb, MAE 1.23 -> 4.70.
     split_nudge: float = 0.1  # duplicate-seed nudge (± around the pair base)
+    prefer_distinct_candidate: bool = False  # when a slot would be filled with
+    # a ``split_nudge`` DUPLICATE of an already-used base, first try to promote
+    # the best *accepted distinct* candidate that clears every already-chosen
+    # seed by ``min_sep_rps``; fall back to the duplicate only if none exists.
+    # Rationale (docs/experiments/rps-refine-precision.md WP7): the duplicate
+    # is a deliberate "cannot find a 4th comb" filler, but in 4 of 5 diagnosed
+    # windows the genuinely missing rotor WAS already an accepted candidate and
+    # was discarded in favour of duplicating the loudest peak — and nothing
+    # downstream can invent a comb. Default False = historical behaviour.
+    min_sep_rps: float = 2.0  # rev/s a promoted distinct candidate must clear
+    # every already-chosen seed by. 2.0 is the minimum pairwise rotor
+    # separation the synthetic battery assumes distinct rotors have; below it a
+    # "new" comb is more likely the same rotor seen through a displaced peak
+    # (and two tracks on one comb is the measured FLY124 collapse mode).
+    promote_z_min: float = 2.0  # robust z (vs the flat scan-score
+    # distribution) a promoted candidate must reach. Measured (WP8): accepted
+    # candidates sitting on a genuine unseeded rotor score z 2.2-4.0, while the
+    # junk further down the accepted list sits at z <= 1.4 (dregon_ramp's 66.25
+    # at 0.93, synth01's 68.10 at -0.07, FLY124's 102.60 at -0.49).
+    promote_span: float = 1.30  # max/min base ratio the promoted seed set may
+    # span — a quadrotor's four bases sit within ~1.25x (same prior as
+    # `r_span_pad` and the lab's RESEED3_MAX_SPAN). Without it synth01 promotes
+    # a 113.55 rev/s ridge against bases at 72-86 and FLY124 a 102.6 one: any
+    # peak far outside the band is a wander tail or noise ridge, never a rotor.
     # arm R — residual re-scan
     r_mask_hz: float = 6.0  # half-width (Hz) of the tooth mask around every
     # already-seeded comb's harmonics (covers the ~8 Hz Hann main lobe core;
@@ -392,6 +423,40 @@ def completeness(
 # arm N — rotor-count prior with duplicate seeding
 
 
+def _promote_distinct(
+    seeds: list[float], pool: list[tuple[float, float]], cfg: SeedConfig
+) -> float | None:
+    """Pop the best pooled ``(base, z)`` admissible as a DISTINCT extra seed.
+
+    Admissible = at least ``min_sep_rps`` from every already-chosen seed,
+    robust ``z >= promote_z_min``, and inside the rotor band (max/min base
+    ratio of the resulting set ``<= promote_span``). ``pool`` is
+    score-descending, so the first admissible entry is the best distinct comb
+    the scan found. ``None`` = nothing distinct is left, i.e. the
+    ``split_nudge`` duplicate is genuinely the only option (the case arm N was
+    designed for). Both extra guards are measured necessities, not decoration
+    — see the two knobs' comments in :class:`SeedConfig`.
+    """
+    for i, (b, z) in enumerate(pool):
+        if z < cfg.promote_z_min:
+            continue
+        if any(abs(b - s) < cfg.min_sep_rps for s in seeds):
+            continue
+        lo, hi = min(b, *seeds), max(b, *seeds)
+        if hi / max(lo, 1e-9) > cfg.promote_span:
+            continue
+        pool.pop(i)
+        return b
+    return None
+
+
+def _robust_z(values: np.ndarray) -> np.ndarray:
+    """``(v - median) / (1.4826 * MAD)`` — the module's contrast convention."""
+    med = float(np.median(values))
+    mad = 1.4826 * float(np.median(np.abs(values - med)))
+    return (values - med) / max(mad, 1e-12)
+
+
 def count_prior(
     bases: np.ndarray | Iterable[float],
     scores: np.ndarray | Iterable[float],
@@ -404,23 +469,39 @@ def count_prior(
     the missing rotors AT the strongest surviving bases with alternating
     ±``split_nudge`` (growing every full duplication cycle) — the coupled
     solve + ``_break_symmetry`` separates true twins from there. Never a base
-    beyond the surviving peaks; never an unseeded rotor.
+    beyond the surviving peaks; never an unseeded rotor. With
+    ``prefer_distinct_candidate`` a still-unused candidate that clears every
+    chosen seed by ``min_sep_rps`` is promoted ahead of the duplicate.
     """
     cfg = cfg or SeedConfig()
     b = np.asarray(list(bases), dtype=np.float64)
     s = np.asarray(list(scores), dtype=np.float64)
     if len(b) == 0:
         raise ValueError("count_prior needs at least one candidate base")
+    order = [int(i) for i in np.argsort(s)[::-1]]
     kept: list[float] = []
-    for i in np.argsort(s)[::-1]:
+    for i in order:
         bi = float(b[i])
         if all(abs(bi - kb) >= cfg.dedup_rps for kb in kept):
             kept.append(bi)
         if len(kept) == n_rotors:
             break
     seeds = list(kept)
+    # Promotion pool: the candidates dedup/trimming left unused, score-first.
+    # z is taken against the CANDIDATE score distribution here (count_prior
+    # never sees the full scan); `blind_seed` uses the stronger scan-wide null.
+    zs = _robust_z(s)
+    pool: list[tuple[float, float]] = (
+        [(float(b[i]), float(zs[i])) for i in order if float(b[i]) not in kept]
+        if cfg.prefer_distinct_candidate
+        else []
+    )
     dup = 0
     while len(seeds) < n_rotors:
+        pick = _promote_distinct(seeds, pool, cfg)
+        if pick is not None:
+            seeds.append(pick)
+            continue
         anchor = kept[dup % len(kept)]  # strongest surviving bases first
         cycle = dup // len(kept) + 1
         sign = 1.0 if cycle % 2 == 1 else -1.0
@@ -972,8 +1053,30 @@ def blind_seed(
                 distinct.append(float(b))
             seeds_r = list(distinct[:n_rotors])
             anchors = [b for b, _ in sorted(used, key=lambda t: t[1])]  # score asc
+            # Distinct-candidate promotion (see SeedConfig.prefer_distinct_
+            # candidate): the accepted candidates the seed set never used, in
+            # score order — the missing rotor is usually already among them.
+            z_flat = _robust_z(scores_flat)
+            pool: list[tuple[float, float]] = (
+                [
+                    (
+                        float(c["base"]),
+                        float(z_flat[int(np.argmin(np.abs(grid - float(c["base"]))))]),
+                    )
+                    for c in sorted(surv, key=lambda c: -float(c["score"]))
+                    if all(abs(float(c["base"]) - v) > 1e-9 for v in seeds_r)
+                ]
+                if cfg.prefer_distinct_candidate
+                else []
+            )
+            promoted_r: list[float] = []
             dup = 0
             while len(seeds_r) < n_rotors:
+                pick = _promote_distinct(seeds_r, pool, cfg)
+                if pick is not None:
+                    seeds_r.append(pick)
+                    promoted_r.append(pick)
+                    continue
                 anchor = anchors[dup % len(anchors)]
                 cycle = dup // len(anchors) + 1
                 sign = 1.0 if cycle % 2 == 1 else -1.0
@@ -984,6 +1087,7 @@ def blind_seed(
                 "residual_used": [round(b, 2) for b in used_b],
                 "residual_new": [round(float(b), 2) for b in new_b],
                 "residual_new_z": [round(float(z), 2) for z in new_z],
+                "residual_promoted": [round(float(b), 2) for b in promoted_r],
                 "residual_scores": scores_res,
             }
 
