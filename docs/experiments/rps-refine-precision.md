@@ -1568,6 +1568,29 @@ score surface, so it needs no `blind_seed` at all.
 | FLY124 w04 | cruise | 25.42 | 0.79 | 0.32 | 1.09 | 22.8 45.9 61.2 91.5 |
 | FLY124 w05 | cruise | 18.32 | 1.02 | 0.39 | 0.85 | 37.4 46.4 74.9 92.0 |
 
+**Versus the current coarse init** (`fullrange_init`, same stage, same metric —
+run on the two canonical lab reference windows; the control needs `blind_seed`,
+which the joint search does not, and that asymmetry cost 226-301 s per window
+here):
+
+| window | | coarse init | joint_beam |
+|---|---|---|---|
+| nosource w00 (ramp) | PIT-MAE | **3.45** | 39.64 |
+| | std_ratio | 1.03 | 0.35 |
+| | per-rotor shape_corr | **0.95 / 0.95 / 0.95 / 0.95** | 0.92 / 0.80 / 0.95 / 0.85 |
+| nosource w01 (steady) | PIT-MAE | **1.15** | 22.57 |
+| | std_ratio | 0.00 | 1.08 |
+| | per-rotor shape_corr | **-0.00 / 0.01 / 0.00 / -0.01** | 0.43 / 0.41 / 0.07 / 0.28 |
+
+The control's own columns are WP3's diagnosis reproduced exactly, and they are
+worth keeping on the record: on the ramp the four coarse shape correlations are
+**identical to two decimals** (the single-scalar DP state made visible), and on
+the steady window the trust gate fires (`coarse_mode = const-steady`) so the
+init is four *constant* lines with `std_ratio` 0.00 and no shape at all. The
+joint tracker breaks both — its four correlations genuinely differ — and is
+still 11x and 20x worse in absolute error. That is the whole result in one
+table: **the shared-shape constraint was never the binding one.**
+
 | pool | init PIT-MAE | std_ratio | shape_corr | corr spread |
 |---|---|---|---|---|
 | dregon (9) | **26.03** | 0.88 | 0.16 | 0.54 |
