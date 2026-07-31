@@ -1654,6 +1654,244 @@ it is worth re-measuring, in order of how much they are load-bearing:
    `tau ~ 1.8 s` and `sigma ~ 0.77` rev/s, contribute more than ~1 cost unit
    against an emission budget of ~6000.
 
+## WP18 — the across-harmonic covariance of the rate opinions, MEASURED (2026-07-31)
+
+The Fisher-weighted phase-slope stage weights harmonic `k` by `k²|p_k|`
+(`vk_tracking._freq_update`: `w = kf**2 * np.abs(prod)`), a weight derived by
+assuming each harmonic's phase error is independent additive noise. The
+INSERT-D analysis argued that arrival-time jitter breaks that: harmonic `k`'s
+phase error is `2πk·r·n_t`, and dividing by `k` to get a *rate* opinion cancels
+the `k`, so writing `δ̂_k = δ + J + e_k` the covariance across harmonics is
+rank-one plus diagonal, `Σ = σ_J²·11ᵀ + diag(v_k)`, with a fused variance
+`1/W + σ_J²` — an irreducible floor, and a saturation harmonic `k*`.
+
+Measured, not assumed. Tooling `scripts/phase_noise_cov/` (+
+`tests/test_phase_noise_cov.py`), results `results/phase_noise_covariance/`
+(job `python-47e101`, 12 min, uni-cpu) and
+`results/phase_noise_covariance_framegrid/` (`python-f86558`).
+
+**Method.** Per (window, rotor, channel): demodulate `k = 1..30` along the
+window's best trajectory, brickwall to the arm's band `B_k`, form
+`δ̂_k[t] = arg(z_k[t+1] z̄_k[t])·f_env/(2πk)` at the stage's own `f_env = 62.5`
+Hz, and take the K×K covariance with **pairwise-complete** observations under
+the existing per-frame twin gate. Moment fit: `σ_J² = mean(off-diagonals)`,
+`v_k = C_kk − σ_J²` (robust: median). Three things the naive recipe gets wrong:
+
+- **`v_k` needs no time high-pass.** `δ` is common across harmonics, so it
+  lands in the rank-one term and cancels out of `v_k = C_kk − common_k` at any
+  cutoff. `v_k` is therefore read at `f_c = 0` — the FULL in-band variance,
+  which is what a weight needs. Only `σ_J²` needs the cutoff, and it is
+  reported as a *curve* rather than one number: the cutoff **is** the
+  operational boundary between "slow enough for the stage to track" and
+  "irreducible".
+- **k-scaled arms filter the common term per harmonic**, so `C_ij` measures the
+  common power up to `min(B_i, B_j)`; the common estimate is read off partners
+  whose band is at least as wide. Falls back to the plain off-diagonal mean for
+  a fixed band.
+- **"Are the off-diagonals constant?" is unanswerable without the estimator's
+  own scatter.** A time block bootstrap (6 blocks) supplies per-entry standard
+  errors; fit quality is a χ² in those units, and everything that reads a
+  *shape* off the common term is gated at 3 SE. Without this the raw residual
+  is ≈1 no matter how right the model is.
+
+### The control says the estimator does not manufacture a common term
+
+Synthetic locked-phase comb, 4 rotors, demodulated along the **exact**
+trajectory, with the OU shaft band-limited at 8 Hz (WP4 item 5's physical
+convention), ± a known arrival-time jitter `n(t)`:
+
+| control (8 units each) | fixB1.5 | fixB6 | kscale0.5 |
+|---|---|---|---|
+| null, 20 dB | −5e-6 ± 1.1e-5 (z −0.4) | −9.7e-5 ± 1.8e-4 (z −0.4) | −1.3e-4 ± 1.8e-4 (z −0.7) |
+| null, 0 dB | −1.4e-5 ± 1.5e-5 (z −1.1) | 4.0e-5 ± 2.4e-4 (z 0.2) | 1.6e-4 ± 2.0e-4 (z 0.9) |
+| **100 µs jitter, 20 dB** | 1.1e-4 ± 3.6e-5 (z 2.7) | **4.0e-3 ± 6.6e-4 (z 6.2)** | 2.2e-3 ± 5.1e-4 (z 5.2) |
+
+The null reads **zero to within one standard error at every band**, and an
+injected shaft jitter is recovered at z = 6.2 with `k* = 15` and a 70 % floor
+share. That is what makes the real-data numbers below citable.
+
+*This control only became null after two fixes, both of which matter for real
+data.* With the OU drive left white to 250 Hz and the carrier taken off the
+0.032 s frame grid, the null measured `σ_c² = 5.3e-3` — **as large as a 100 µs
+jitter**. Shaft motion above the frame-grid Nyquist is un-representable, and the
+residual FM it leaves is common to every harmonic, so it would have been booked
+as `σ_J²`. Hence the carrier is the highest-rate trajectory available (DREGON's
+native ~929 Hz `motors_measured`, the synthetic's exact one). *On real DREGON
+this turns out not to matter* — the framegrid control job reproduces
+`σ_c² = 3.1e-5` (vs 3.1e-5) at B = 1.5 and 8.9e-4 (vs 8.1e-4) at B = 6 — which
+independently confirms WP4's reality check that the *synthetic's* drive was the
+unphysical part, not real shafts.
+
+### Coverage is the first result: the fixed band starves itself
+
+Usable harmonics of 30 after the twin gate (median over units; DREGON's
+median minimum rotor split is **0.42** rev/s, Michael's **1.05**):
+
+| group | units | fixB1.5 | fixB3 | fixB6 | fixB12 | kscale0.1 | kscale0.25 | kscale0.5 |
+|---|---|---|---|---|---|---|---|---|
+| DREGON (indoor, 9 windows) | 36 | 20.5 | 19.0 | 15.0 | **0** | 21.0 | 21.0 | 12.0 |
+| Michael's (outdoor, 13 windows) | 52 | 19.0 | 18.0 | 14.5 | **1** (4/52 fit at all) | 19.0 | 19.0 | 11.0 |
+
+At a fixed band the twin-collision radius in rev/s is `B/k` — it **shrinks on
+exactly the harmonics the weighting favours**. At the `pi_kalman` default
+`band_hz = 6` half the comb is already gone; at 12 Hz the harmonic set is
+empty on every DREGON unit and all but four of Michael's. This is the same
+starvation WP1-B measured from the other side (twin-gated 80–84 %), and it is
+an argument for k-scaling on its own: `B_k = k·B_0` holds the collision radius
+at `B_0` for every `k`.
+
+### The weight curve — and the stage's weight is effectively flat
+
+`v_k` is smooth, monotone, and nearly identical indoors and outdoors. At
+`B = 1.5` Hz it falls by 167× between k = 2 and k = 30; under `B_k = 0.25k` it
+is nearly **flat** (0.119 → 0.051 over the same range). Fitted exponents of
+`1/v_k ∝ k^α·P_k` (median over units, `P_k` = noise-subtracted in-band
+harmonic power; `α_raw` is the same fit *without* the `P_k` term):
+
+| group | arm | α | IQR | R² | α_raw |
+|---|---|---|---|---|---|
+| DREGON | fixB1.5 | 3.96 | 0.63 | 0.87 | **1.97** |
+| DREGON | fixB3 | 3.52 | 0.36 | 0.84 | 2.00 |
+| DREGON | fixB6 | 3.60 | 0.98 | 0.75 | 2.00 |
+| DREGON | kscale0.25 | 1.39 | 0.35 | 0.58 | 0.29 |
+| DREGON | kscale0.5 | 1.67 | 0.62 | 0.60 | 0.29 |
+| Michael's | fixB1.5 | 3.02 | 1.18 | 0.75 | **1.50** |
+| Michael's | fixB3 | 3.03 | 1.09 | 0.75 | 1.51 |
+| Michael's | fixB6 | 3.17 | 1.63 | 0.73 | 1.46 |
+| Michael's | kscale0.25 | 0.55 | 0.59 | 0.13 | −0.26 |
+| Michael's | kscale0.5 | −0.14 | 0.46 | 0.03 | −0.51 |
+
+Read `α_raw`, because it is the weight itself: **the empirically optimal weight
+is `w_k = 1/v_k ∝ k^2.0` (DREGON) / `k^1.5` (Michael's), with NO `|p_k|`
+factor.** The stage uses `k²|p_k|`, and on these recordings `|p_k| ∝ k^-2` (the
+harmonic amplitudes decay as 1/k), so **the stage's weight is effectively flat
+in k where the data says it should rise as k²**. That is the concrete defect:
+not the exponent 2, but the extra amplitude factor multiplying it.
+
+Under k-scaling `α_raw` collapses to ≈ 0 — every harmonic carries roughly equal
+information — and R² collapses with it (0.03–0.58), i.e. under a k-scaled band
+*no power law describes the weight at all*, which is a stronger version of the
+INSERT-D claim than it made. The measured exponent SHIFT from fixed to k-scaled
+is **−1.7 (DREGON) / −2.0 (Michael's)**, not the predicted −1: the derivation
+in INSERT-D neglects the band factor `1 - sinc(2BΔt)` that `pi_kalman` already
+carries as `c_noise`, which makes `v_k` scale nearer `B³` than `B`.
+
+### σ_J², k\*, and the floor share — mostly NOT resolved
+
+`σ_J²` (rev²/s²) against the high-pass cutoff, pooled median ± block-bootstrap
+SE, with the z of the `f_c = 0` value:
+
+| group | arm | fc=0 | fc=0.5 | fc=1 | fc=2 | fc=3 | z(fc0) |
+|---|---|---|---|---|---|---|---|
+| DREGON | fixB1.5 | 3.1e-5 ± 9.2e-5 | 6e-6 ± 9.6e-5 | — | — | — | **0.33** |
+| DREGON | fixB3 | 1.7e-4 ± 2.3e-4 | 1.3e-4 | 3.3e-5 | — | — | 0.80 |
+| DREGON | fixB6 | 8.1e-4 ± 4.8e-4 | 6.3e-4 | 5.4e-4 | 2.8e-4 | 1.5e-4 | 1.75 |
+| Michael's | fixB1.5 | 2.6e-4 ± 1.3e-4 | 1.2e-4 | — | — | — | 1.96 |
+| Michael's | fixB3 | 8.1e-4 ± 3.5e-4 | 5.9e-4 | 3.8e-4 | — | — | 2.39 |
+| Michael's | fixB6 | 1.1e-3 ± 7.6e-4 | 7.8e-4 | 7.5e-4 | 5.6e-4 | 3.9e-4 | 1.67 |
+
+Per unit, the common term clears 3 SE in **0 of 36** DREGON units and **14 of
+52** Michael's units at the stage's narrow band. Consequently:
+
+- **`k*` does not exist within k ≤ 30 on DREGON at all**, and on Michael's it
+  lands at 26.5–30 in the 2–4 % of units where it is resolvable. *The
+  information does not saturate over the harmonic range the stage uses.*
+- The floor share `σ_J²/(1/W + σ_J²)` over `k ≥ 6`, **conditioned on the units
+  where the term resolves** (so an upper bound), is 0.20 (DREGON, fixB6) and
+  0.35–0.39 (Michael's). At `f_c = 2` it halves, to 0.11 / 0.20.
+- The cutoff sweep does not plateau — `σ_J²` keeps falling as the cutoff rises,
+  over the whole range the band admits. **The δ/J separation the design asked
+  for does not succeed on this data**; every number above is an upper bound on
+  the genuinely irreducible part, and the honest reading is that most of the
+  common term is slow, i.e. trackable trajectory error rather than a floor.
+
+### Rank-one-plus-diagonal is NOT the right shape — the model is too simple
+
+This is the finding, and it goes against the design.
+
+| group | arm | χ² | excess/σ | rank-1 frac | β | corr(a_k, SNR_k) | corr(C, min k) | corr(C, \|Δk\|) |
+|---|---|---|---|---|---|---|---|---|
+| DREGON | fixB1.5 | 2.51 | 18.0 | 0.23 | — | — | −0.03 | −0.03 |
+| DREGON | fixB6 | 2.34 | 2.08 | 0.23 | −1.98 | 0.32 | −0.12 | −0.09 |
+| DREGON | kscale0.25 | 2.35 | 5.95 | 0.13 | 0.16 | −0.12 | 0.05 | −0.05 |
+| Michael's | fixB1.5 | 4.43 | 4.10 | 0.27 | −1.21 | 0.53 | −0.14 | −0.14 |
+| Michael's | fixB6 | 2.83 | 2.95 | 0.25 | −1.52 | 0.49 | −0.13 | −0.10 |
+| Michael's | kscale0.25 | 2.66 | 3.20 | 0.15 | −0.23 | 0.21 | −0.005 | −0.14 |
+
+- **The off-diagonals are not constant.** χ² = 2.3–4.4 against 1.0 for a
+  constant within estimator noise, and the excess scatter is 1.6–18× the fitted
+  common value itself.
+- **The best rank-one explains only 12–27 % of the off-diagonal energy.** A
+  single shared term does not describe what is there.
+- **Where the loading is resolvable it is β ≈ −1.2 to −2.0, not 0.** A *delay*
+  disturbance loads uniformly (β = 0); a shared *phase* disturbance would load
+  as 1/k (β = −1). The measurement is nearer the phase reading — but
+  `corr(a_k, SNR_k) = 0.32–0.53` says the same shape is at least partly the
+  wrapped-phase increment decorrelating at the harmonics whose envelope SNR is
+  ≈ 1 (see the SNR column of the `v_k` curves: SNR drops to ~1 above k ≈ 12).
+  The two cannot be separated at this SNR, and neither supports the uniform
+  loading the derivation assumes.
+- No clean alternative structure either: the off-diagonals correlate with
+  neither `min(i,j)` nor `|i−j|` beyond |r| ≤ 0.16.
+
+**So the INSERT-D consequence that survives is the weight shape (`w_k ∝ 1/v_k`,
+measured), and the consequence that does not is the floor.** There is no
+well-resolved single common term to put on the diagonal as `W_eff`, and no
+saturation harmonic to cap `k` at, on either dataset.
+
+### The indoor/outdoor contrast: half the prediction holds
+
+Prediction: DREGON is indoors and reverberant → a larger *dispersive*
+(diagonal, `v_k`) term; Michael's is outdoors → a relatively larger
+*delay-like* (rank-one) term.
+
+| quantity | indoor (DREGON) | outdoor (Michael's) | ratio |
+|---|---|---|---|
+| σ_c² @ fixB1.5, fc 0 | 8.6e-6 | 4.2e-5 | **4.9×** |
+| σ_c² @ fixB3, fc 0 | 7.7e-5 | 1.9e-4 | 2.5× |
+| σ_c² @ fixB6, fc 0 | 5.3e-4 | 4.3e-4 | 0.8× |
+| median `v_k` @ fixB1.5 | 0.0128 | 0.0135 | 1.05× |
+| median `v_k` @ fixB6 | 0.1150 | 0.1170 | 1.02× |
+| channel coherence of the common term | **0.065** | **0.237** | 3.6× |
+
+- **The rank-one half holds directionally**: the common term is 2.5–4.9× larger
+  outdoors at the narrow bands, and it is 3.6× more coherent across
+  microphones there — outdoors the disturbance looks more like one shared
+  arrival-time process, indoors it is nearly mic-private. Both point the way
+  the model predicts.
+- **The dispersive half is refuted.** `v_k` is the same indoors and outdoors to
+  within 5 % at every band. Reverberation does not measurably raise the
+  per-harmonic term. Note the caveat that cuts the other way too: DREGON is
+  room 1 only (`beatvk-valid-raw` carries no room-2 recording), so this is
+  "one reverberant room vs outdoors", not the two-room contrast.
+- **And the strongest single number contradicts the mechanism outright:** the
+  channel coherence is 0.065 / 0.237, against 0.81–0.94 on the synthetic
+  control where the jitter is shaft-borne by construction. Shaft timing jitter
+  is one number for the whole aircraft and must appear identically at every
+  microphone. It does not. Whatever common term exists on real recordings is
+  **predominantly per-microphone**, i.e. propagation/turbulence rather than
+  shaft jitter — which is also why it is slow enough to keep shrinking as the
+  high-pass cutoff rises.
+
+### What this means for the stage
+
+1. **Fix the weight, not the floor.** Replace `k²|p_k|` with the measured
+   `1/v_k`. The concrete change is dropping the `|p_k|` factor (or replacing it
+   with a per-harmonic SNR term), because `k²|p_k|` is flat in `k` on real
+   recordings while the optimum rises as `k^1.5–2.0`.
+2. **Do not add a `W_eff` floor and do not cap `k`.** Neither is supported:
+   `σ_J²` is unresolved on DREGON and marginal on Michael's, `k*` is beyond the
+   harmonic range in use, and the rank-one shape itself fails at χ² 2.3–4.4.
+3. **k-scale the band.** It is the only change that improves *coverage* — the
+   binding constraint at every band tested — and under it the weight becomes
+   flat in `k`, which is a far more robust thing to implement than a fitted
+   exponent.
+4. **The residual honest gap**: the wrapped-phase decorrelation at SNR ≈ 1
+   contaminates both the loading shape and the high-k end of `v_k`. Separating
+   it needs either a higher-SNR regime or a von-Mises (not Gaussian) increment
+   likelihood; until then the `β ≈ −1` reading must not be quoted as evidence
+   for a shared-phase disturbance.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
