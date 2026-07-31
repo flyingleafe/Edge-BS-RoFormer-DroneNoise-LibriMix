@@ -1,9 +1,14 @@
 """Michael's drone-noise source — uniform registry entry.
 
 8-channel DJI Matrice 100 in-flight recordings + flight-controller CSV logs
-(per-motor rotation speed in RPM), manually aligned via per-file
-``time_offset`` / ``time_dilation`` constants (tuned in
-``notebooks/michael_data_analysis.ipynb``, reproduced verbatim).
+(per-motor rotation speed in RPM). The audio and telemetry clocks are *not*
+aligned by default — a per-file ``time_offset`` (seconds) plus a
+``time_dilation`` clock-rate factor brings them into register, and the logged
+speeds themselves are low by a small multiplicative factor
+(``MICHAELS_RPS_SCALE``). All three constants are **measured**, not hand-tuned:
+see the block comment above :data:`MICHAELS_FILES` and
+``docs/experiments/rps-refine-precision.md`` §§ WP13 (timing + the model form)
+and WP14 (the rev/s magnitudes, refit on 13 windows).
 
 Raw layout (dload dataset ``recording_with_motor_speed``):
   - ``recording_1/124.wav`` + ``recording_1/FLY124.csv``
@@ -37,13 +42,63 @@ import tdseries as td
 
 from data_processing.frames import make_recording_frame
 
-# (wav_path, csv_path, time_offset_sec, time_dilation) — manual alignment
-# constants, copied verbatim from `michael_data_analysis.ipynb`. Paths are
-# relative to the raw root (the `recording_with_motor_speed` tree).
+# ── Measured alignment / label calibration (2026-07-31) ─────────────────────
+#
+# Referee: the LABEL-FREE Vold-Kalman reconstruction residual ||x - x_hat||/||x||
+# (k = 1..30) of the harmonic model built ALONG a candidate telemetry
+# trajectory, scored on contiguous 16 s windows of the frozen beat-VK window
+# protocol. Only the TELEMETRY is shifted/scaled; our own blind RPS estimate is
+# never consulted.
+#
+# TIMING — both recordings show a clock DILATION error (the audio-optimal lag
+# drifts linearly with time), not a constant offset. Folding the fitted
+# lag(t) = a + b*t into this loader's parameterisation gives
+#     time_dilation_new = time_dilation_old / (1 - b)
+#     time_offset_new   = time_offset_old  - a / (1 - b)
+#
+#   FLY124 — 4 cruise windows, OLS b = +0.65356 ms/s, a = -86.131 ms,
+#     R^2 = 0.942, residual RMS 2.90 ms vs 12.04 ms for a constant-lag model.
+#     (-20.84, 1.001) -> (-20.753813, 1.001654644).
+#   FLY125 — 9 cruise windows, OLS b = +0.37656 ms/s, a = -172.086 ms,
+#     R^2 = 0.923, residual RMS 4.49 ms vs 16.19 ms constant-lag.
+#     (-26.51, 1.0048) -> (-26.337849, 1.005178509).
+#
+# VALUE — the logged speeds are LOW by ~0.55-0.65 rev/s at cruise (DREGON shows
+# the opposite sign, so this is a Michael's-rig property, not a referee bias).
+# Additive vs multiplicative is statistically unresolved in the cruise band; we
+# ship the MULTIPLICATIVE form on physical grounds, because these frames cover
+# the WHOLE recording including warm-up and ground idle, where an additive
+# +0.6 rev/s would corrupt a near-stationary rotor's label (and manufacture
+# harmonics at a standstill) while a scale correctly vanishes as rps -> 0.
+#
+# DEGENERACY — the global gain is not separable from a sample-clock error, so
+# this constant is a *label-for-this-audio* correction, not proof that the ESC
+# is miscalibrated. Per-rotor constants are NOT identifiable (between-rotor
+# spread < within-rotor scatter) and a per-rotor lag is refuted three ways.
+#
+# (wav_path, csv_path, time_offset_sec, time_dilation) — paths relative to the
+# raw root (the `recording_with_motor_speed` tree).
 MICHAELS_FILES = [
-    ("recording_1/124.wav", "recording_1/FLY124.csv", -20.84, 1.001),
-    ("recording_2/125.wav", "recording_2/FLY125.csv", -26.51, 1.0048),
+    ("recording_1/124.wav", "recording_1/FLY124.csv", -20.753813, 1.001654644),
+    ("recording_2/125.wav", "recording_2/FLY125.csv", -26.337849, 1.005178509),
 ]
+
+#: Per-recording MULTIPLICATIVE rev/s correction, keyed by CSV stem (the
+#: recording id). Applied to the rotor speeds in :func:`load_raw_aligned`, so
+#: every consumer of ``rps`` gets calibrated labels. Recordings without a
+#: measured constant (the 103 unaligned ``new-drone-noises`` logs) fall back to
+#: 1.0. Both values are the WP14 13-window global refit over non-twin rotors;
+#: they supersede 1.00839 / 1.00690 (WP13, 2-4 windows, twin-contaminated).
+MICHAELS_RPS_SCALE: dict[str, float] = {
+    "FLY124": 1.00698,  # g = 0.698 % +- 0.069 -> +0.558 rev/s at 80 rev/s
+    "FLY125": 1.00706,  # g = 0.706 % +- 0.034 -> +0.565 rev/s at 80 rev/s
+}
+
+
+def rps_scale_for(csv_path: str | Path) -> float:
+    """Calibrated rev/s scale for a recording, from its CSV stem (1.0 if none)."""
+    return MICHAELS_RPS_SCALE.get(Path(csv_path).stem.upper(), 1.0)
+
 
 # ── Array / airframe geometry ───────────────────────────────────────────────
 # Body frame: X = forward, Y = left, Z = up; origin at the drone body centre
@@ -104,12 +159,19 @@ def load_raw_aligned(
     time_offset: float = 0.0,
     time_dilation: float = 1.0,
     sr: int | None = None,
+    rps_scale: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-    """Load + align one recording — verbatim port of the notebook function.
+    """Load + align one recording — port of the notebook function.
+
+    ``rps_scale`` defaults to the recording's calibrated
+    :data:`MICHAELS_RPS_SCALE` entry (``None`` -> looked up from the CSV stem);
+    pass an explicit float (``1.0``) to score a hypothesis against the
+    uncalibrated telemetry.
 
     Returns ``(wav (C, N) at sr, ts (M,) aligned motor timestamps, ms (4, M)
-    motor speeds in rev/s, sr)``.
+    motor speeds in rev/s (calibrated), sr)``.
     """
+    scale = rps_scale_for(csv_path) if rps_scale is None else float(rps_scale)
     wav, sample_rate = lr.load(str(wav_path), sr=sr, mono=False)
     if len(wav.shape) == 1:
         wav = wav[None, :]
@@ -137,7 +199,7 @@ def load_raw_aligned(
     ts[0 : jump_idx + 2] = np.linspace(ts[0], ts[jump_idx + 2], jump_idx + 2)
     ts *= time_dilation
 
-    ms = np.asarray(cut_csv[ms_cols], dtype=np.float64).T / 60
+    ms = np.asarray(cut_csv[ms_cols], dtype=np.float64).T / 60 * scale
     return wav, ts, ms, int(sample_rate)
 
 
@@ -263,6 +325,10 @@ def build_frame(
         "csv": csv_rel,
         "time_offset": float(time_offset),
         "time_dilation": float(time_dilation),
+        # The measured rev/s calibration baked into `rps` (2026-07-31). Frames
+        # published before that date carry 1.0 (uncalibrated) labels; this field
+        # is how a consumer tells the two apart.
+        "rps_scale": rps_scale_for(csv_path),
         "sample_rate": int(sample_rate),
         "n_csv_rows": int(len(full_csv)),
         "n_csv_rows_aligned": int(len(cut)),
@@ -279,6 +345,20 @@ def build_frame(
                 "Series labelled with the original column names; bool/string "
                 "columns as one (time,) Series each; all-NaN rows dropped per "
                 "block (DatCon logs sensors at different rates)"
+            ),
+            "calibration": (
+                "time_offset/time_dilation/rps_scale are MEASURED constants "
+                "(MICHAELS_FILES + MICHAELS_RPS_SCALE, 2026-07-31): the "
+                "audio-optimal telemetry lag was scanned per 16 s cruise window "
+                "with the label-free VK reconstruction residual and regressed on "
+                "window time (dilation, R^2 0.94/0.92, residual RMS 2.9/4.5 ms vs "
+                "12.0/16.2 ms for a constant lag), and the rev/s labels carry a "
+                "multiplicative correction (additive-vs-multiplicative was a "
+                "statistical tie, resolved for multiplicative so the correction "
+                "vanishes at rps -> 0). The canonical `rps` entry is CORRECTED; "
+                "the `motor_speed` block holds the raw uncalibrated "
+                "`Motor:Speed:*` CSV columns (RPM). See "
+                "docs/experiments/rps-refine-precision.md sec. WP13."
             ),
         },
     }

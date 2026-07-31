@@ -84,7 +84,7 @@ PARENTS = {
     "librispeech": "dload:librispeech@b674a6d0c4e9d598e7f12400d75e7f21b9bea72845aa3bcb37f5b96d56f73783",
     "drone_audio": "dload:drone_audio@b6c77a68c55dedec11750a3784c10833e7db981fab6ef00380300a9e4d382b95",
     "DREGON-frames": "dload:DREGON-frames@298e77d4cb96fd1fcce052360b6c669ea403596c89aaed8c00e1e83d1d159279",
-    "michaels-frames": "dload:michaels-frames@d7425a5cef7b243f997b22fbe90400b6f0c8c1db2515dc5116bfff5724def3be",
+    "michaels-frames": "dload:michaels-frames@fdef818432e99f0909762b9a9d45b76ae95ef3d1f1b7b9aa8012bcc91cd9200a",
     "AVQ": "dload:AVQ@50dd53d1a6c0ab81fe02e4a40a57557a0a2b1c1b85152470edd12aa6d0725f39",
     "AVQ-egonoise": "dload:AVQ-egonoise@b43b374b007a0d5c9575dd2feacd31a05097d0c436629819b936273f17cf7703",
 }
@@ -1054,10 +1054,15 @@ SPECS: dict[str, dict[str, Any]] = {
         "generator": "source_frames",
         "adopt_only": True,
         "note": "Adopt-in-place (published by the deleted "
-        "scripts/publish_frame_datasets.py; the sources.michaels builder "
-        "reproduces it).",
+        "scripts/publish_frame_datasets.py). The sources.michaels builder "
+        "reproduces the tracks and the meta, except that the provenance strings "
+        "name the current builder rather than the deleted script. "
+        "recipe_version 2 = the measured telemetry calibration of 2026-07-31 "
+        "(MICHAELS_FILES offsets/dilations + the new MICHAELS_RPS_SCALE); "
+        "version 1 frames carry uncalibrated labels, so every number derived "
+        "from them is stale.",
         "gen": {
-            "recipe_version": 1,
+            "recipe_version": 2,
             "source": "michaels",
             "raw": {
                 "kind": "dload",

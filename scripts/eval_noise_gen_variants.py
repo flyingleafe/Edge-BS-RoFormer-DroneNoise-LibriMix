@@ -69,6 +69,18 @@ VARIANTS: dict[str, tuple[str, str]] = {
         "gen_v3_wind",
         "r2://ml-data/artifacts/gen_v3_wind/checkpoints/best.ckpt",
     ),
+    # Retrains on the RECALIBRATED Michael's labels (michaels-frames
+    # fdef818432e9). Same archs as v1/v2 — only the labels differ. NOTE these
+    # score against a valid set that also moved, so compare them to v1/v2 as
+    # "each model against the labels it was trained with", per drone.
+    "v1_recal": (
+        "gen_v1_recal",
+        "r2://ml-data/artifacts/gen_v1_recal/checkpoints/best.ckpt",
+    ),
+    "v2_recal": (
+        "gen_v2_recal",
+        "r2://ml-data/artifacts/gen_v2_recal/checkpoints/best.ckpt",
+    ),
 }
 
 
@@ -107,13 +119,18 @@ def eval_variant(
     batch_size: int,
     min_flight_rps: float,
     illustration_frames: dict | None = None,
-) -> tuple[float, int, dict]:
+) -> tuple[dict[str, tuple[float, int]], dict]:
     """Score one variant on the *free-flight* subset (mean RPS >= ``min_flight_rps``)
     of the corrected-geometry swapped valid set, and — if ``illustration_frames``
-    are given — generate audio for those clips too. Returns
-    ``(mrstft, n_flight, {drone: (real_1d, gen_1d)})``. We report only the ``mrstft``
-    metric (the training monitor); the raw MSSTFT *loss* is a different STFT
-    implementation and is intentionally not reported alongside it."""
+    are given — generate audio for those clips too.
+
+    Returns ``({group: (mrstft, n)}, {drone: (real_1d, gen_1d)})``, where
+    ``group`` is ``"all"`` plus one key per drone (``dregon``/``michaels``,
+    resolved from the clip geometry by :func:`_drone_of`). The per-drone split
+    is what makes a Michael's-only claim testable — the pooled number mixes two
+    rigs whose label quality differs. We report only the ``mrstft`` metric (the
+    training monitor); the raw MSSTFT *loss* is a different STFT implementation
+    and is intentionally not reported alongside it."""
     from data_processing.collate import frame_collate
 
     cfg = _compose(exp, ckpt, val_samples)
@@ -136,8 +153,19 @@ def eval_variant(
             for pi, ti in zip(_iter_samples(pred_cpu), _iter_samples(batch_cpu)):
                 if _rps_mean(ti) >= min_flight_rps:  # free-flight only
                     pairs.append((pi, ti))
-    metrics = metric_suite.evaluate(pairs).aggregate("mean") if pairs else {}
-    mrstft = float(metrics.get("mrstft", float("nan")))
+
+    def _score(subset: list) -> tuple[float, int]:
+        if not subset:
+            return float("nan"), 0
+        agg = metric_suite.evaluate(subset).aggregate("mean")
+        return float(agg.get("mrstft", float("nan"))), len(subset)
+
+    scores: dict[str, tuple[float, int]] = {"all": _score(pairs)}
+    by_drone: dict[str, list] = {}
+    for pi, ti in pairs:
+        by_drone.setdefault(_drone_of(ti), []).append((pi, ti))
+    for drone in sorted(by_drone):
+        scores[drone] = _score(by_drone[drone])
 
     illust_gen: dict = {}
     if illustration_frames:
@@ -147,7 +175,7 @@ def eval_variant(
                 pred = _forward(codec, model, batch, device=device, amp=False)
                 gen = pred.map_data(lambda t: t.detach().cpu())["audio"].data
                 illust_gen[drone] = (_mic0(f["audio"].data), _mic0(gen))
-    return mrstft, len(pairs), illust_gen
+    return scores, illust_gen
 
 
 def _drone_of(frame) -> str:
@@ -318,13 +346,13 @@ def main() -> None:
         )
         print(f"  clips: {[(d, f'{r:.0f} rps') for d, r in rps_by_drone.items()]}")
 
-    rows: list[tuple[str, float, int]] = []
+    rows: list[tuple[str, dict[str, tuple[float, int]]]] = []
     illust_by_variant: dict[str, dict] = {}
     for name in args.variants:
         exp, ckpt = VARIANTS[name]
         print(f"=== {name}  ({exp}) ===")
         try:
-            mrstft, n_flight, illust_gen = eval_variant(
+            scores, illust_gen = eval_variant(
                 exp,
                 ckpt,
                 device=device,
@@ -336,18 +364,34 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"  FAILED: {type(e).__name__}: {e}")
             continue
-        rows.append((name, mrstft, n_flight))
+        rows.append((name, scores))
         illust_by_variant[name] = illust_gen
-        print(f"  mrstft = {mrstft:.3f}   (free-flight n={n_flight}, RPS>={args.min_flight_rps:g})")
+        for group, (mr, n) in scores.items():
+            print(
+                f"  {group:<9} mrstft = {mr:.3f}   (free-flight n={n}, RPS>={args.min_flight_rps:g})"
+            )
 
-    print("\n" + "=" * 52)
-    print(f"{'variant':<16} {'mrstft ↑':>10} {'n_flight':>10}")
-    print("-" * 52)
-    for name, mr, n in rows:
-        print(f"{name:<16} {mr:>10.3f} {n:>10d}")
+    groups = ["all"] + sorted({g for _, s in rows for g in s if g != "all"})
+    header = "".join(f"{g + ' ↑':>12}{'n':>7}" for g in groups)
+    width = 16 + len(groups) * 19
+    print("\n" + "=" * width)
+    print(f"{'variant':<16}{header}")
+    print("-" * width)
+    for name, scores in rows:
+        cells = "".join(
+            f"{scores.get(g, (float('nan'), 0))[0]:>12.3f}{scores.get(g, (0, 0))[1]:>7d}"
+            for g in groups
+        )
+        print(f"{name:<16}{cells}")
     csv = args.out / "msstft_comparison.csv"
     csv.write_text(
-        "variant,mrstft,n_flight\n" + "".join(f"{n},{mr:.6f},{nf}\n" for n, mr, nf in rows)
+        "variant,group,mrstft,n_flight\n"
+        + "".join(
+            f"{name},{g},{scores[g][0]:.6f},{scores[g][1]}\n"
+            for name, scores in rows
+            for g in groups
+            if g in scores
+        )
     )
     print(f"\ntable -> {csv}")
 

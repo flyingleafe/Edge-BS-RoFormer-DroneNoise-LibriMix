@@ -1,0 +1,38 @@
+# @package _global_
+# Generator retrain on RECALIBRATED Michael's labels. Architecture, split and
+# schedule are byte-identical to gen_v1_corrected; the ONLY difference is the
+# data underneath: `frames:michaels-frames` now resolves to the corrected pin
+# (dload.lock fdef818432e9, derivations recipe_version 2), whose FLY124/FLY125
+# `rps` track carries the measured timing (dilation, residual 2.9/4.5 ms vs
+# 12.0/16.2 ms) and rev/s (x1.00698 / x1.00706) calibration of 2026-07-31.
+#
+# Purpose: isolate the effect of the label fix alone. gen_v1_corrected was
+# trained AND scored on stale labels, so the honest comparison is each model
+# against the labels it was trained with, per drone (DREGON is unaffected by the
+# fix and acts as the control arm; Michael's is where an improvement is
+# expected). A separate name keeps the old R2 artifact intact for that
+# comparison.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_v1_recal
+
+# batch 16 x grad_accum 2 = effective batch 32 (identical optimizer steps &
+# averaged gradient to v2's batch-32) at ~half peak GPU memory, so it fits any
+# backend incl. the 14.5 GB Colab T4 — lets omnirun place it unpinned without OOM.
+epochs: 60
+patience: 8
+batch_size: 16
+grad_accum_steps: 2
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false
