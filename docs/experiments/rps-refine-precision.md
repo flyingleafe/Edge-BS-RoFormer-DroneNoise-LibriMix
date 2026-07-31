@@ -811,6 +811,148 @@ pseudo-labels from AVQ audio, no michaels telemetry in the product — but the
 annotator's *validation* numbers on FLY124 are stale), and every michaels
 *audio* artefact (audio itself never changed, only the label clock/scale).
 
+## WP14 — the value model challenged, and settled: ONE global scale, no per-rotor terms (2026-07-31)
+
+WP13's rev/s calibration was fitted from 2–4 windows per recording, and its
+`prot` points looked like they carried *per-rotor* structure (FLY124 rotor0
+0.50/0.58 vs rotor2 0.91/0.84 — a 4–5× separation against their own scatter,
+and *anti*-correlated with rotor speed, which contradicts a multiplicative
+scale). The competing hypothesis was that the residual is not a calibration
+error at all but a **per-rotor lag** between the ESC-reported speed and the
+physical rotor — DREGON's `motors_command` vs `motors_measured` situation.
+
+Both were tested. Sweep `scripts/michaels_calib/run_perrotor.py` (job
+`python-ace021`, uni-cpu 16 cores, 22 min, 156 units), verdict tables
+`scripts/michaels_calib/analyze_perrotor.py`. Baseline = **raw** rev/s
+(`rps_scale=1.0`) with the shipped `time_offset`/`time_dilation`, all **13**
+cruise windows (4 FLY124 + 9 FLY125), 4 rotors each. Rotors 1/3
+(LFront/RBack) are the near-equal-speed twin pair the audio cannot resolve —
+flagged everywhere, excluded from every fit.
+
+### The ESC signal chain, from the CSV alone (no audio)
+
+- Log rate 29.58 / 29.53 Hz (1 ms clock quantisation). `Motor:Speed` is
+  **integer RPM** — 1 RPM = 0.0167 rev/s, 40× finer than the disputed 0.6 —
+  and is *not* a reciprocal-period lattice.
+- **Zero-order hold at ~17.0 Hz**: only 57.2–57.7 % of log frames change
+  value, hold runs are essentially all exactly 1 frame. **All four rotors
+  update on the SAME frames** (P(j changes | i changes) = 0.986–0.993 vs
+  0.574 if independent) → the ESC telemetry block is sampled synchronously,
+  there is **no round-robin stagger** and hence no per-rotor sampling-phase
+  lag. The ZOH's ~29 ms mean staleness is *common* and already absorbed by
+  `time_offset`.
+- Command→response lag (`MotorCtrl:PWM` → `Motor:Speed`, z-scored, detrended;
+  PWM is duty, so only the *timing* relation is meaningful): FLY124 50/63/58/76 ms,
+  FLY125 60/70/83/85 ms (RFront/LFront/LBack/RBack) — **same rank order in both
+  recordings**, so a ~25 ms per-rotor spread in the total command→report delay
+  is real. It mixes the mechanical time constant, any reporting delay and the
+  ZOH; the CSV cannot separate them.
+- **The arithmetic that kills the lag hypothesis a priori**: cruise
+  `d(rps)/dt` has RMS 15.3–19.2 rev/s² but **mean −0.08…+0.43 rev/s²**. A lag
+  τ makes the error `−τ·ṙ`, so at τ = 30 ms it is 0.46–0.57 rev/s **RMS** but
+  0.0003–0.013 rev/s in the **mean**. The disputed offsets are +0.5…+0.9 rev/s
+  *constant and positive* — 40–600× more than any plausible lag can bias.
+- Back-EMF cross-check (`Motor:Volts`·PWM/100 − I·R, per-rotor Kv): **cannot
+  resolve a 0.8 % scale error.** Fitted Kv spans 4–8 % between rotors and is
+  not even stable between recordings (LFront 345 → 310 RPM/V); residual RMS
+  0.57–0.79 rev/s. Its one durable output: with a shared Kv/R the per-rotor
+  residual means are reproducible across both recordings (LBack +0.68 always
+  highest, RBack −0.79/−0.58 always lowest, ±0.7 rev/s) — i.e. per-rotor
+  differences of a few tenths of a rev/s are physically ORDINARY for this rig
+  and are not evidence of a telemetry fault. `Motor:V_out` is **not** an
+  independent voltage (V_out ≈ 1.32 × PWM in every rotor).
+
+### A — per-rotor offsets are NOT distinguishable (raw baseline, all windows)
+
+| rec | rotor | n | mean rps | mean b | sd b | b/rps |
+|---|---|---|---|---|---|---|
+| FLY124 | RFront | 4 | 90.59 | 0.551 | 0.059 | 0.608 % |
+| FLY124 | LBack | 4 | 80.42 | 0.650 | 0.252 | 0.808 % |
+| FLY124 | *LFront (twin)* | 4 | 73.84 | *0.551* | *0.141* | — |
+| FLY124 | *RBack (twin)* | 4 | 74.85 | *0.800* | *0.501* | — |
+| FLY125 | RFront | 9 | 90.42 | 0.584 | 0.070 | 0.646 % |
+| FLY125 | LBack | 9 | 81.16 | 0.635 | 0.148 | 0.782 % |
+| FLY125 | *LFront (twin)* | 9 | 73.81 | *0.631* | *0.101* | — |
+| FLY125 | *RBack (twin)* | 9 | 74.91 | *0.634* | *0.764* | — |
+
+**Between-rotor spread is SMALLER than within-rotor scatter**: 0.099 vs 0.155
+(FLY124), 0.051 vs 0.109 (FLY125) — ratios 0.64 and 0.47. The apparent
+per-rotor structure in WP13 was a 2-window artefact. Adding per-rotor constants
+buys **0 %** (FLY125) / 4 % (FLY124) of rms over one global constant. The
+twin rotors are exactly where the wild scatter still lives (RBack sd 0.50 /
+0.76), as expected.
+
+Model rms on the non-twin points: FLY124 additive 0.166 / multiplicative 0.175
+/ free line 0.164 / per-rotor const 0.159; FLY125 0.112 / 0.123 / 0.109 /
+0.109. After refitting one global scale the residual rms (0.175 / 0.123) equals
+the estimator's own per-window scatter — **there is no structure left to model**.
+
+### B/C/D — the lag hypothesis is refuted, three independent ways
+
+- **Acceleration split** (the `off` scan keeps per-frame residuals, so the
+  apparent offset is re-minimised on any frame subset). Well-observed rotors,
+  b(ṙ>0) − b(ṙ<0): +0.026 / +0.040 (FLY124 RFront/LBack), −0.014 / +0.075
+  (FLY125) → implied τ = **−3.6…+0.8 ms**, inconsistent in sign and 20× below
+  the measured 60–85 ms command→report delays. b at low |ṙ| vs high |ṙ| is
+  flat (0.548 vs 0.557; 0.585 vs 0.576). **A calibration offset is flat in
+  this split; it is.**
+- **Per-rotor lag scan**: RFront −1.3 ± 1.8 ms (FLY124), +1.0 ± 4.0 ms
+  (FLY125); LBack −14.9 ± 19.8 / +8.2 ± 16.1 ms — all consistent with zero.
+- **Joint (τ_r, b_r) grid**: from the (0,0) origin, the offset axis alone buys
+  Δrecon 0.0104 / 0.0092; the lag axis alone buys **0.0000** (4 dp); both
+  together equal the offset alone. `argmin τ = 0` for every well-observed
+  rotor. **The offset carries 100 % of the explanatory power.**
+
+### The global magnitude, refitted on 13 windows
+
+| rec | fitted g (non-twin) | scale | shipped | residual after shipped | after refit |
+|---|---|---|---|---|---|
+| FLY124 | 0.698 % ± 0.069 | 1.00698 | 1.00839 | mean **−0.117**, rms 0.213 | +0.004, rms 0.175 |
+| FLY125 | 0.706 % ± 0.034 | 1.00706 | 1.00690 | mean +0.017, rms 0.124 | +0.003, rms 0.123 |
+
+FLY125's shipped constant is **confirmed** (0.5 σ). FLY124's is **~0.14 pp too
+high** — a +0.12 rev/s over-correction at cruise, the same sign and order as
+the −0.18 rev/s residual the `--post-shipped` validation already flagged. The
+two recordings' refitted gains agree to 0.008 pp, which the shipped pair did
+not (0.15 pp apart).
+
+### Additive vs multiplicative: still a tie, now leaning slightly additive
+
+The only lever is RFront (90.5) vs LBack (80.8): multiplicative predicts the
+faster rotor needs **more** correction (+0.07 rev/s), additive predicts equal.
+Observed contrast is **negative** in both recordings: −0.099 ± 0.129 (−1.3 σ
+from multiplicative, −0.8 σ from additive) and −0.051 ± 0.054 (−2.1 σ / −0.9 σ).
+Stouffer-combined: −2.4 σ from multiplicative, −1.2 σ from additive. Weak, and
+the direction (faster rotor needs *less*) is what *neither* model predicts.
+
+Two arguments keep the multiplicative form anyway:
+1. **Warm-up/idle safety** (the WP13 reason, unchanged): a scale vanishes at
+   rps → 0, an additive +0.6 rev/s invents motion on a stationary rotor, and
+   the published frames cover the ground/warm-up span.
+2. **The global error is degenerate with a clock error, which is exactly
+   multiplicative.** With εa = audio sample-rate error, εt = telemetry-clock
+   error, εr = ESC rev/s scale error: `time_dilation − 1 ≈ εa − εt` and the
+   audio-optimal gain `g ≈ −εa − εr`. Measured D−1 = +0.165 % / +0.518 %,
+   g = +0.84 % / +0.69 %. Setting εr = 0 gives εa = −0.84 / −0.69 % (same
+   device, agree to 0.15 pp) and εt = −1.00 / −1.21 % (agree to 0.21 pp);
+   setting εa = 0 gives εr = −0.84 / −0.69 % and εt = −0.17 / −0.52 % (0.35 pp).
+   Both self-consistent, not separable — but under **either** the correction is
+   exactly multiplicative and vanishes at rps → 0. It also means the constant
+   is a *label-for-this-audio* correction, not proof the telemetry is wrong.
+   And no clock hypothesis can produce a per-rotor difference: εa is common to
+   all four rotors.
+
+### Verdict
+
+**The shipped model FORM is right: one global multiplicative scale per
+recording.** Per-rotor constant offsets are not identifiable (between-rotor
+spread < within-rotor scatter) and a per-rotor lag is refuted outright. The
+only defect is FLY124's **magnitude**: 1.00839 should be **1.00698**
+(+0.12 rev/s over-correction at cruise, ~1/5 of the error it removed, inside
+the per-window scatter). FLY125's 1.00690 stands. Changing FLY124 means
+another `michaels-frames` republish + `dload pin` — worth folding in the next
+time that dataset is republished anyway rather than on its own.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
