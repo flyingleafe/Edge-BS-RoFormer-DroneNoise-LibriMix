@@ -1,0 +1,33 @@
+# @package _global_
+# Generator retrain on RECALIBRATED Michael's labels — per-rotor sub-embedding
+# arm. Architecture, split and schedule are byte-identical to gen_v2_perrotor
+# (z_r = z_drone + delta z_r on top of the v1 arch); the ONLY difference is the
+# corrected `frames:michaels-frames` pin. See gen_v1_recal.yaml for the full
+# rationale.
+#
+# Why this arm is worth re-running rather than dropped: v2 beat v1 at idle but
+# lost to it in free flight, which is exactly the pattern a timing error would
+# manufacture — a lag hurts most where d(rps)/dt is large (the transitions the
+# idle segment is full of), and the per-rotor deltas are the only free
+# parameters positioned to absorb a per-rotor label defect. Corrected labels
+# therefore test whether per-rotor conditioning was real or was compensation.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone_perrotor
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_v2_recal
+
+epochs: 60
+patience: 8
+batch_size: 32
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

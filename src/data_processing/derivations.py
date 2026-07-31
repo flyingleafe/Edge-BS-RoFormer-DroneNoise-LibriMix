@@ -1054,10 +1054,15 @@ SPECS: dict[str, dict[str, Any]] = {
         "generator": "source_frames",
         "adopt_only": True,
         "note": "Adopt-in-place (published by the deleted "
-        "scripts/publish_frame_datasets.py; the sources.michaels builder "
-        "reproduces it).",
+        "scripts/publish_frame_datasets.py). The sources.michaels builder "
+        "reproduces the tracks and the meta, except that the provenance strings "
+        "name the current builder rather than the deleted script. "
+        "recipe_version 2 = the measured telemetry calibration of 2026-07-31 "
+        "(MICHAELS_FILES offsets/dilations + the new MICHAELS_RPS_SCALE); "
+        "version 1 frames carry uncalibrated labels, so every number derived "
+        "from them is stale.",
         "gen": {
-            "recipe_version": 1,
+            "recipe_version": 2,
             "source": "michaels",
             "raw": {
                 "kind": "dload",

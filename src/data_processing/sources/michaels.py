@@ -161,6 +161,9 @@ def load_raw_aligned(
 
     ``rps_scale`` defaults to the recording's calibrated
     :data:`MICHAELS_RPS_SCALE` entry (``None`` -> looked up from the CSV stem);
+        # The measured rev/s calibration baked into `rps` (2026-07-31). Frames
+        # published before that date carry 1.0 (uncalibrated) labels; this field
+        # is how a consumer tells the two apart.
     pass an explicit float (e.g. ``1.0``) to score a hypothesis against the
     uncalibrated telemetry.
 
