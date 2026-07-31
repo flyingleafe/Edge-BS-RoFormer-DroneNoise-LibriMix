@@ -136,6 +136,7 @@ from data_processing.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,
     stage_guard,
+    track_comb_confidence,
     whitened_logmag,
 )
 from data_processing.vk_tracking import (  # noqa: E402
@@ -648,6 +649,8 @@ def m2_residual(
     n_sweeps: int = 1,
     damp: float = 1.0,
     tag: str = "M2",
+    spec: tuple[np.ndarray, float, np.ndarray] | None = None,
+    proposals: list[dict[str, Any]] | None = None,
 ) -> tuple[np.ndarray, list[float]]:
     """M2 — residual-audio pi_kalman (fine decoupling).
 
@@ -658,9 +661,24 @@ def m2_residual(
     reconstruction diverges (resid/orig RMS > M2_RESID_GUARD, the dregon
     cancelling mode) subtraction is skipped and the plain audio is used.
     `damp` scales the applied correction (oscillation damper).
+
+    **Move gate** (WP15): a rotor's proposal is applied only if it passes
+    :func:`m2_gate_reject` — a blind, per-rotor veto of re-captures, which is
+    what M2 does on well-tracked steady windows (it is a *fine* decoupling
+    stage; a 1.5-2.4 rev/s "correction" is the track sliding onto a
+    neighbouring line, not a bias removal). ``M2_GATE = "off"`` restores the
+    ungated WP6/WP12 behaviour bit-exactly.
+
+    `spec` = the whitened coarse spectrogram `(lm, bin_hz, st)` the gate's
+    comb-confidence term needs (computed here when omitted). `proposals`, if
+    given, is filled with one dict per (sweep, rotor) recording the raw
+    proposal and the gate decision — the offline gate-design dump.
     """
     r = r_ft.copy()
     ratios: list[float] = []
+    if M2_GATE != "off" and spec is None:
+        lm_g, bin_g, st_g, _ = _coarse_spec(prep.audio)
+        spec = (lm_g, bin_g, st_g)
     for sw in range(n_sweeps):
         for rot in range(N_ROTORS):
             resid, ratio = _sibling_residual(prep, r, rot)
@@ -679,8 +697,108 @@ def m2_residual(
                 )[0][0]
             else:
                 r_new = pit.pi_kalman_refine(resid, r.copy(), prep.ft, sr=SR, **PK_WIDE)[0][rot]
-            r[rot] = r[rot] + damp * (r_new - r[rot])
+            r_prop = r[rot] + damp * (r_new - r[rot])
+            reject, gdiag = m2_gate_reject(r, rot, r_prop, spec, prep)
+            if proposals is not None:
+                proposals.append(
+                    {
+                        "sweep": sw + 1,
+                        "rotor": rot,
+                        "ratio": round(ratio, 4),
+                        "recon_failed": bool(failed),
+                        "r_before": r[rot].astype(np.float32),
+                        "r_prop": r_prop.astype(np.float32),
+                        "rejected": bool(reject),
+                        **gdiag,
+                    }
+                )
+            if reject:
+                print(
+                    f"    [{tag} sw{sw + 1} rot{rot}] gate REJECT: {gdiag.get('reason', '')}",
+                    flush=True,
+                )
+                continue
+            r[rot] = r_prop
     return r, ratios
+
+
+# --- the M2 move gate ------------------------------------------------------
+#
+# Measured (WP15, `results/refine_gate_probe`): on the 15-window real protocol
+# M2-solo is a net LOSS — it costs +0.29..+0.55 rev/s on all six steady DREGON
+# cruise windows and helps only marginally (<= 0.08) on the ramp ones, because
+# with two tight twin pairs the sibling reconstruction explains only ~1/3 of
+# the RMS (resid/orig 0.64-0.67) and the wide first PK_WIDE band (12 Hz at
+# k <= 4 = +-12 rev/s of capture at k=1) lets the single-track solve slide onto
+# a neighbouring line.  The damage signature is unambiguous: ONE or TWO rotors
+# acquire a 1.2-2.4 rev/s NEGATIVE bias while the others barely move.
+#
+# The gate is therefore a *scale* veto, not a quality veto: M2 exists to remove
+# sibling-interference bias, which WP3 measured at 0.3-0.5 rev/s.  A proposal
+# an order of magnitude larger than that is a re-capture.
+M2_GATE = "off"  # "off" = ungated (WP6/WP12 behaviour) | "move" = the scale veto
+#: When set (``--m2-dump``), every M2 proposal is written here as an NPZ so any
+#: accept/reject rule can be scored OFFLINE against the truth without re-running
+#: the 115 s chain per variant (the gate-design loop).
+M2_DUMP_PATH: Path | None = None
+M2_MOVE_MAX = 0.75  # rev/s: max accepted |mean move| of one M2 proposal
+M2_DUP_TOL = 1.5  # rev/s: reject a proposal landing this close to a sibling
+# it was not already sharing a comb with (`SeedConfig.guard_dup_tol`'s rule,
+# applied at M2 scale — the ladder's own guard uses a 3.0 rev/s move floor and
+# so cannot see M2-scale re-captures at all)
+
+
+def m2_gate_reject(
+    r: np.ndarray,
+    rot: int,
+    r_prop: np.ndarray,
+    spec: tuple[np.ndarray, float, np.ndarray] | None,
+    prep: Prepared,
+) -> tuple[bool, dict[str, Any]]:
+    """Blind per-rotor veto of an M2 proposal.  ``(reject, diagnostics)``.
+
+    Two rules, both scale-based and both truth-free:
+
+    1. **move** — ``mean |r_prop - r[rot]| > M2_MOVE_MAX``.  A fine-decoupling
+       correction is 0.1-0.5 rev/s; more than that is a capture event.
+    2. **occupied comb** — the proposal ends within ``M2_DUP_TOL`` of a sibling
+       track it was not already that close to (`stage_guard` rule 1, at M2
+       scale).  This is the mechanism, not just the symptom: the solve is
+       rewarded for putting two tracks on one strong comb.
+
+    Comb confidences before/after are recorded (never used as a veto): on the
+    measured failures the destination comb is STRONGER, so confidence rises —
+    the WP8/`stage_guard` lesson that comb evidence cannot veto a landing on a
+    better comb.
+    """
+    move = float(np.mean(np.abs(r_prop - r[rot])))
+    occupied = False
+    for j in range(N_ROTORS):
+        if j == rot:
+            continue
+        d_after = float(np.mean(np.abs(r_prop - r[j])))
+        d_before = float(np.mean(np.abs(r[rot] - r[j])))
+        if d_after < M2_DUP_TOL <= d_before:
+            occupied = True
+            break
+    diag: dict[str, Any] = {"move": round(move, 4), "occupied": occupied}
+    if spec is not None:
+        lm, bin_hz, st = spec
+        r_after = r.copy()
+        r_after[rot] = r_prop
+        cb = track_comb_confidence(lm, bin_hz, st, prep.ft, r, vba._SEED_CFG)[rot]
+        ca = track_comb_confidence(lm, bin_hz, st, prep.ft, r_after, vba._SEED_CFG)[rot]
+        diag["conf_before"] = round(float(cb), 4)
+        diag["conf_after"] = round(float(ca), 4)
+    if M2_GATE == "off":
+        return False, diag
+    if move > M2_MOVE_MAX:
+        diag["reason"] = f"move {move:.2f} > {M2_MOVE_MAX} (re-capture, not decoupling)"
+        return True, diag
+    if occupied:
+        diag["reason"] = f"move {move:.2f} onto an occupied comb"
+        return True, diag
+    return False, diag
 
 
 def min_pair_split(r: np.ndarray) -> float:
@@ -1409,16 +1527,58 @@ def run_v2_chain(
         rec.add(f"m1_r{rd}", r)
         rounds.append({"round": rd, "m1": m1_diag, "mae_after": r3(rec.stages[-1]["pooled_mae"])})
     r_m1 = r.copy()
-    r, ratios = m2_residual(prep, r, mode="solo", n_sweeps=1, tag="M2")
+    proposals: list[dict[str, Any]] = []
+    r, ratios = m2_residual(
+        prep, r, mode="solo", n_sweeps=1, tag="M2", spec=spec, proposals=proposals
+    )
     rec.add("m2_solo", r)
+    if M2_DUMP_PATH is not None:
+        _dump_m2_proposals(prep, r_m1, proposals)
     diag: dict[str, Any] = {
         "rounds": rounds,
         "n_m1_rounds": n_rounds,
         "m2_mode": "solo",
         "m2_ratios": ratios,
+        "m2_gate": M2_GATE,
+        "m2_proposals": [
+            {k: v for k, v in p.items() if not isinstance(v, np.ndarray)} for p in proposals
+        ],
         "subbin": M1_SUBBIN,
     }
     return r, diag, r_m1
+
+
+def _dump_m2_proposals(
+    prep: Prepared, r_entry: np.ndarray, proposals: list[dict[str, Any]]
+) -> None:
+    """Write the M2 entry tracks + every per-rotor proposal to ``M2_DUMP_PATH``.
+
+    Everything an offline gate study needs: the M1 output the proposals are
+    relative to, each proposal's replacement row, its blind diagnostics, and
+    the truth (`r_meas` + `edge`) so a candidate rule's final PIT-MAE is exactly
+    computable without re-running the chain.
+    """
+    assert M2_DUMP_PATH is not None
+    M2_DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "rid": prep.rid,
+        "ft": prep.ft,
+        "edge": prep.edge,
+        "r_meas": prep.r_meas,
+        "r_entry": r_entry,
+        "rotor": np.array([p["rotor"] for p in proposals]),
+        "sweep": np.array([p["sweep"] for p in proposals]),
+        "ratio": np.array([p["ratio"] for p in proposals]),
+        "move": np.array([p["move"] for p in proposals]),
+        "occupied": np.array([p["occupied"] for p in proposals]),
+        "rejected": np.array([p["rejected"] for p in proposals]),
+        "conf_before": np.array([p.get("conf_before", np.nan) for p in proposals]),
+        "conf_after": np.array([p.get("conf_after", np.nan) for p in proposals]),
+        "r_before": np.stack([p["r_before"] for p in proposals]),
+        "r_prop": np.stack([p["r_prop"] for p in proposals]),
+    }
+    np.savez_compressed(M2_DUMP_PATH, **payload)
+    print(f"  [M2] proposals dumped -> {M2_DUMP_PATH}", flush=True)
 
 
 def gt_aligned(prep: Prepared, r: np.ndarray) -> np.ndarray:
@@ -1758,6 +1918,25 @@ def main() -> None:
         "'a,b,c,d;a,b,c,d;...'.  Used only in the pool-escape branch, to pick "
         "which track to vacate by sorted-rank deviation.",
     )
+    ap.add_argument(
+        "--m2-gate",
+        choices=("off", "move"),
+        default=None,
+        help="refine_v2/v3: per-rotor veto of an M2 proposal. 'move' rejects a "
+        "proposal whose |mean move| exceeds --m2-move-max or which lands on a "
+        "sibling's comb; 'off' = the ungated WP6/WP12 behaviour (current default)",
+    )
+    ap.add_argument(
+        "--m2-move-max",
+        type=float,
+        default=None,
+        help=f"--m2-gate move: max accepted |mean move| in rev/s (default {M2_MOVE_MAX})",
+    )
+    ap.add_argument(
+        "--m2-dump",
+        default=None,
+        help="write every M2 proposal (+ truth) to this NPZ for offline gate scoring",
+    )
     ap.add_argument("--pk-kwargs", default=None, help="JSON kwargs for pi_kalman_refine")
     ap.add_argument("--pk-repeat", type=int, default=1, help="sequential pi_kalman calls")
     ap.add_argument(
@@ -1814,6 +1993,14 @@ def main() -> None:
         print(f"beatvk prep cache: {args.beatvk_out} (seeds cached beside it)")
     if args.no_subbin:
         globals()["M1_SUBBIN"] = False
+    if args.m2_gate is not None:
+        globals()["M2_GATE"] = args.m2_gate
+        print(f"M2 gate: {args.m2_gate}")
+    if args.m2_move_max is not None:
+        globals()["M2_MOVE_MAX"] = float(args.m2_move_max)
+        print(f"M2 move ceiling: {args.m2_move_max} rev/s")
+    if args.m2_dump:
+        globals()["M2_DUMP_PATH"] = Path(args.m2_dump)
     m3_pool = tuple(float(s) for s in args.m3_pool.split(",") if s.strip()) if args.m3_pool else ()
     if m3_pool:
         print(f"M3 cross-window proposal pool: {list(m3_pool)}")
