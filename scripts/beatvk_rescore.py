@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -70,6 +71,10 @@ DEFAULT_OUT = Path("results/beatvk_rescore")
 #: regenerable intermediates and `omnirun pull` copies all of results/**.
 DEFAULT_PREP_ROOT = Path(".cache/beatvk_rescore_prep")
 CHAINS = ("baseline", "refine_v2", "refine_v3")
+#: Protocol builds a unit can be scored on. `new` = the current pin; `old` =
+#: the pre-recalibration pin; `swap` = new audio + new labels but the OLD
+#: build's blind seeds (the seeding-flip control).
+TAGS = ("new", "old", "swap")
 FLY124 = arms.FLY124_REC
 #: pre-recalibration `beatvk-valid-raw` (old FLY124 labels), for attribution.
 OLD_VERSION = "268c766052cb045ac1a6483ea41fa051a776ea5a5b0c07440afa412d7a3665f7"
@@ -293,6 +298,13 @@ def main() -> None:
         help="skip the cross-window-seeded refine_v3 arm on FLY124 cruise",
     )
     ap.add_argument(
+        "--no-seed-swap",
+        dest="seed_swap",
+        action="store_false",
+        help="skip the 'swap' build (new audio+labels, OLD-build blind seeds), "
+        "which separates a seeding flip from the label correction",
+    )
+    ap.add_argument(
         "--prep-only",
         action="store_true",
         help="build both prep caches, print the old-vs-new window/label diff, exit "
@@ -350,6 +362,29 @@ def main() -> None:
         print(f"\n[prep-only] wrote {out}/prep_diff.json")
         return
 
+    # -- 1b. the seed-swap counterfactual build: the NEW audio + NEW labels,
+    # seeded with the OLD build's blind seeds.  The 86 ms realignment can flip
+    # a window's blind seed outright (FLY124 w03: the 82.7 rev/s 4th rotor is
+    # replaced by a spurious 54.45), and that is a seeding lottery, not a
+    # consequence of the label correction.  This build charges the difference
+    # to seeding so the two effects can be reported apart.
+    swap_out = prep_root / "prep_swap"
+    if args.seed_swap and args.old_version:
+        (swap_out / "prep_cache").mkdir(parents=True, exist_ok=True)
+        for src in sorted((new_out / "prep_cache").glob("*.npz")):
+            dst = swap_out / "prep_cache" / src.name
+            if not dst.exists():
+                shutil.copy2(src, dst)
+        shutil.copy2(new_out / "manifest.json", swap_out / "manifest.json")
+        (swap_out / "seed_cache").mkdir(parents=True, exist_ok=True)
+        n_seeds = 0
+        for src in sorted((old_out / "seed_cache").glob("*.npz")):
+            dst = swap_out / "seed_cache" / src.name
+            if not dst.exists():
+                shutil.copy2(src, dst)
+            n_seeds += 1
+        print(f"[prep] {swap_out}: new audio/labels + {n_seeds} OLD-build seeds", flush=True)
+
     # -- 2. the grid: (labels x chain x window)
     units: list[tuple] = []
     for chain in chains:
@@ -359,6 +394,8 @@ def main() -> None:
         if args.old_version:  # only FLY124 — DREGON labels are invariant
             for widx in jobs_windows[FLY124]:
                 units.append((old_out, "old", chain, FLY124, widx, [], ""))
+                if args.seed_swap:
+                    units.append((swap_out, "swap", chain, FLY124, widx, [], ""))
     print(f"[grid] {len(units)} units on {args.jobs} workers", flush=True)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futs = [
@@ -385,21 +422,30 @@ def main() -> None:
     if not args.no_m3_pool_arm and "refine_v3" in chains:
         manifest = json.loads((new_out / "manifest.json").read_text())["recordings"][FLY124]
         cruise = [int(w["index"]) for w in manifest["windows"] if w["regime"] == "cruise"]
-        means = {}
-        for widx in cruise:
-            u = read_unit(out, unit_name("new", "refine_v3", FLY124, widx))
-            if u:
-                means[f"w{widx:02d}"] = u["final_means"]
+        builds = [(new_out, "new")] + (
+            [(swap_out, "swap")] if args.seed_swap and args.old_version else []
+        )
         jobs2 = []
-        for widx in cruise:
-            key = f"w{widx:02d}"
-            if key not in means:
-                continue
-            pool_bases = cross_window_pool(means, exclude=key)
-            ref = ";".join(",".join(f"{v:.3f}" for v in ms) for k, ms in means.items() if k != key)
-            extra = ["--m3-pool", ",".join(f"{b:.3f}" for b in pool_bases), "--m3-ref", ref]
-            pool_rows[key] = {"pool": pool_bases, "ref_windows": [k for k in means if k != key]}
-            jobs2.append((new_out, "new", "refine_v3", FLY124, widx, extra, "_pool"))
+        for prep_out, tag in builds:
+            means = {}
+            for widx in cruise:
+                u = read_unit(out, unit_name(tag, "refine_v3", FLY124, widx))
+                if u:
+                    means[f"w{widx:02d}"] = u["final_means"]
+            for widx in cruise:
+                key = f"w{widx:02d}"
+                if key not in means:
+                    continue
+                pool_bases = cross_window_pool(means, exclude=key)
+                ref = ";".join(
+                    ",".join(f"{v:.3f}" for v in ms) for k, ms in means.items() if k != key
+                )
+                extra = ["--m3-pool", ",".join(f"{b:.3f}" for b in pool_bases), "--m3-ref", ref]
+                pool_rows[f"{tag}/{key}"] = {
+                    "pool": pool_bases,
+                    "ref_windows": [k for k in means if k != key],
+                }
+                jobs2.append((prep_out, tag, "refine_v3", FLY124, widx, extra, "_pool"))
         print(f"[grid] {len(jobs2)} cross-window-seeded units", flush=True)
         with ThreadPoolExecutor(max_workers=args.jobs) as pool_ex:
             futs = [
@@ -412,7 +458,7 @@ def main() -> None:
 
     # -- 4. summary
     table: dict[str, Any] = {}
-    for tag in ("new", "old"):
+    for tag in TAGS:
         for chain in chains:
             for arm in ("", "_pool"):
                 for rid, widxs in jobs_windows.items():
@@ -445,7 +491,7 @@ def main() -> None:
         "fly124_all": (lambda r: r == FLY124, None),
     }
     agg: dict[str, Any] = {}
-    for tag in ("new", "old"):
+    for tag in TAGS:
         for chain in [c for c in chains] + ["refine_v3_pool"]:
             for gname, (pred, regime) in groups.items():
                 rows = sel(tag, chain, pred, regime)
@@ -472,7 +518,7 @@ def main() -> None:
     print(hdr)
     for rid, widxs in jobs_windows.items():
         for widx in widxs:
-            for tag in ("new", "old"):
+            for tag in TAGS:
                 cells, regime = [], "?"
                 for chain in list(chains) + ["refine_v3_pool"]:
                     key = unit_name(
