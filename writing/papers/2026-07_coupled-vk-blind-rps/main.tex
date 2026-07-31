@@ -73,10 +73,18 @@ error from benchmark artifact and establishes oracle floors
 The same label-free referee detects and corrects real errors in the
 reference telemetry of two outdoor recordings: a drifting clock
 ($R^2 = 0.94/0.92$) and a ${\sim}0.7\%$ rate scale, whose correction alone
-improves pooled cruise error by 8.4\%. We report the reconstructed pipeline
-honestly: on the full fifteen-window protocol it does \emph{not} beat the
-blind baseline, winning on ramps and losing 0.3--0.5\revps{} on steady
-windows.
+improves pooled cruise error by 8.5\% --- the single largest improvement we
+obtain on that recording, and one that changes no estimator. We report the
+reconstructed pipeline honestly. As first measured it lost
+$0.3$--$0.5\revps$ to the blind baseline on steady windows; that regression
+localizes entirely to one sibling-subtraction stage whose premise --- a
+clean sibling reconstruction --- fails on tight twin pairs, and a truth-free
+per-rotor gate that declines $54$ of $60$ proposals removes it. The chain
+then \emph{ties} the blind baseline on the indoor corpus
+($1.825 \to 1.819\revps$, i.e.\ it no longer subtracts precision rather than
+adding any) and improves on it on the cross-drone recording's cruise
+windows, by $1.6\%$ at the default settings and by $23\%$
+($2.418 \to 1.864\revps$) with an optional cross-window seeding rule.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -183,14 +191,20 @@ The contributions are:
   cannot separate; pointed at the \emph{telemetry} it detects and corrects
   real defects in the reference itself --- a drifting clock and a
   ${\sim}0.7\%$ rate scale on two outdoor recordings, whose correction
-  alone improves pooled cruise error by 8.4\%.
+  alone improves pooled cruise error by 8.5\%, more than any estimator
+  change reported here.
 \end{enumerate}
 
-We report negative results as results. The reconstructed pipeline built on
-this analysis does not currently beat the blind baseline on the full
-fifteen-window protocol; it wins on ramp windows and loses 0.3--0.5\revps{}
-on steady ones, and Sections~\ref{sec:scoreboard} and~\ref{sec:discussion}
-say so plainly and locate the mechanism.
+We report negative results as results, and the most useful ones here turned
+out to be diagnoses rather than verdicts. The reconstructed pipeline built
+on this analysis first measured $0.3$--$0.5\revps$ \emph{worse} than the
+blind baseline on steady windows. Locating that regression --- it is one
+stage, and its own premise is testable without labels --- converts it into
+a tie on the indoor corpus and a $23\%$ improvement on the cross-drone
+recording, and the same exercise exposed a blind seeding decision that had
+been settled by $0.06\%$ of a score. Sections~\ref{sec:negative}
+and~\ref{sec:discussion} report both the before and the after, and say
+plainly which pool is a tie and which is a win.
 
 \section{Related Work}
 
@@ -786,7 +800,21 @@ comb aliases of \emph{lower} fundamentals begin to outscore true combs,
 and the cap alone repaired the corpus where naive scanning failed
 outright. Because a strong rotor can shadow a weaker one at a nearby
 fundamental, seeding proceeds in rounds: after each acceptance the seeded
-comb is subtracted in the whitened domain and the residual re-scanned.
+comb is subtracted in the whitened domain and the residual re-scanned. What
+a round may accept is bounded by two plausibility priors, both of them the
+same physical statement --- the rotors of one airframe in cruise lie within
+${\sim}1.25\times$ of each other --- and both added after the failure
+analysed in Section~\ref{sec:negative}. First, a \emph{span} prior: a
+residual candidate may not stretch the accepted set's max/min ratio beyond
+$1.45$ (the widest set any protocol window seeds is $1.31$), with an
+exemption for a candidate at ${\sim}\tfrac12$ or ${\sim}\tfrac13$ of a used
+base, since a comb whose teeth are masked away with a stronger comb's is
+precisely the shadowed case the re-scan exists to recover and can only ever
+appear far below the band. Second, \emph{mutual dedup}: accepted candidates
+are separated from each other by the same $2.5\revps$ already enforced
+against used bases, because two residual peaks closer than that are one
+broad ridge read twice, and accepting both spends two rotor slots on one
+physical rotor.
 Finally, the multi-stage refinement ladder that runs downstream is
 wrapped in a per-track guard: a stage whose output drops a track's comb
 \emph{occupancy} --- the fraction of its harmonics found above the local
@@ -1766,13 +1794,18 @@ jitter floor that a smoothed-reference score does not.
 Correcting the two constants moves the reference and, because the same
 constants set where each window's audio is cut, the audio. The two cannot
 be separated from each other by this experiment; both together improve
-pooled FLY124 cruise error from $2.644$ to $\mathbf{2.421}\revps$
-($-8.4\%$), with every seed-stable window improving individually. It is
+pooled FLY124 cruise error from $2.644$ to $\mathbf{2.418}\revps$
+($-8.5\%$), with \emph{every} cruise window improving individually. It is
 the largest single improvement reported anywhere in this paper for the
 cross-drone recording, and no estimator was changed to obtain it. The
 caveat is equally instructive and is documented in
-Section~\ref{sec:scoreboard}: the 86\,ms audio realignment also flips one
-window's blind seed, which costs more than the correction gains.
+Section~\ref{sec:negative}: the 86\,ms audio realignment also flips one
+window's blind seed, and as first measured that flip cost more than the
+correction gained. The flip was a $0.06\%$ tie in the seeder's residual
+re-scan, now removed by the two plausibility priors of
+Section~\ref{sec:seeding}; the $2.418$ above is the repaired measurement,
+and it reproduces the independent seed-held control ($2.421$) to
+$0.003\revps$.
 
 \section{Experiments: A Progressive Ladder}
 \label{sec:validation}
@@ -2092,7 +2125,10 @@ augmentation. Four findings.
     recording and FLY124 w3--w5 (excludes ramp and warmup windows). Bold
     = best non-oracle entry per column. \textbf{The DREGON columns are
     current}; the FLY124 columns were scored on the \emph{pre}-correction
-    pin \texttt{@268c766} and are
+    pin \texttt{@268c766}. The blind-VK FLY124 entries are superseded by the
+    corrected-pin re-score of Table~\ref{tab:negative} (blind cruise pool
+    $2.418$, all six windows $2.827$, on a chain that additionally closes
+    with one pi\_kalman pass); the neural rows remain
     \pending{re-score on \texttt{@54849c13}} --- see
     Section~\ref{sec:protocol}.}
   \label{tab:scoreboard}
@@ -2144,73 +2180,153 @@ steady FLY124 windows the best neural row \emph{matches} the
 telemetry-initialized oracle (0.74 vs.\ 0.70) while beating blind VK
 (1.91).
 
-\subsection{The negative result: the reconstructed chain does not beat the
-  blind baseline}
+\subsection{The reconstructed chain: a regression, its two mechanisms, and
+  where it lands}
 \label{sec:negative}
 
 The analysis of Sections~\ref{sec:vkrefine}--\ref{sec:pikalman} was
 assembled into a reconstructed chain: drop the inert frequency update,
-decouple the per-rotor trajectories by residual corridor DP, and finish
-with one sibling-subtracted phase-increment pass. Tuned on the synthetic
-batteries and on two real windows it improved pooled error by
+decouple the per-rotor trajectories by residual corridor DP (M1), and
+finish with one sibling-subtracted phase-increment pass (M2). Tuned on the
+synthetic batteries and on two real windows it improved pooled error by
 $12$--$23\%$ at a fraction of the runtime. On the full fifteen-window
-protocol it does not hold, and Table~\ref{tab:negative} is the result.
+protocol that generalization did not hold: as first measured the chain lost
+to the blind baseline on both pools, and on DREGON it degraded every steady
+window by $0.3$--$0.5\revps$. Table~\ref{tab:negative} keeps that
+measurement as the ``before'' column and reports what two fixes bought.
+Neither fix is a change to the refinement: one is in the blind seeder, one
+is an acceptance test on M2's own premise.
 
 \begin{table}[t]
   \centering
-  \caption{Reconstructed chain vs.\ blind baseline, pooled PIT-MAE
-    (rev/s) on the corrected pin. FLY124 figures are given both as
-    measured and with one window's blind seed held at its pre-build value
-    (see text) --- the seed flip is a lottery unrelated to the refinement.}
+  \caption{Reconstructed chain vs.\ blind baseline, pooled PIT-MAE (rev/s)
+    on the corrected pin. \emph{Before} = as first measured (superseded:
+    it carries the flipped w03 blind seed and an ungated M2). \emph{After}
+    = with the two seeder priors of Section~\ref{sec:seeding}; DREGON is
+    unaffected by them, by construction. ``gated'' = the chain with the
+    truth-free M2 gate; ``$+$xwin'' = that arm plus cross-window seeding,
+    which is off by default and assumes several cruise windows of one
+    recording (see text). Bold = best per row among the arms that are
+    available by default.}
   \label{tab:negative}
   \footnotesize
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{lccc}
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{lcccccc}
     \toprule
-    Pool & baseline & reconstructed & verdict \\
+    & \multicolumn{2}{c}{before} & \multicolumn{4}{c}{after} \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-7}
+    Pool & base & chain & base & chain & gated & $+$xwin \\
     \midrule
-    DREGON cruise (9 windows)   & \textbf{1.825} & 2.089 & loses \\
-    FLY124 cruise (4), measured & \textbf{3.992} & 4.011 & loses \\
-    FLY124 cruise (4), seed held & \textbf{2.421} & 2.519 & loses \\
+    DREGON cruise (9) & 1.825 & 2.089 & 1.825 & 2.089 & \textbf{1.819} & --- \\
+    FLY124 cruise (4) & 3.992 & 4.011 & 2.418 & 2.510 & \textbf{2.380} & 1.864 \\
+    FLY124 warmup (2) & 3.644 & 5.262 & 3.644 & 5.262 & \textbf{3.605} & --- \\
+    All fifteen       & 2.646 & 3.025 & 2.226 & 2.624 & \textbf{2.207} & --- \\
     \bottomrule
   \end{tabular}
 \end{table}
 
+\subsubsection{The seed that decided the FLY124 pool was a coin flip}
+The entire ``before'' FLY124 column is one window. On w03 the residual
+re-scan's admissible set is three candidates, and the top two --- $54.45$
+and $82.65\revps$ --- were separated by $\mathbf{0.06\%}$ \emph{of score}
+($z$ $3.198$ vs.\ $3.199$). The $86$\,ms audio realignment induced by the
+telemetry correction (Section~\ref{sec:telemetry}) moved both scores by
+${\approx}1.5\%$ and reversed their order, taking the window from $1.148$
+to $7.273\revps$ and the pool from $2.644$ to $3.992$. The historically
+``good'' seed was therefore never a property of the seeder: it won a coin
+flip, and the recalibration lost it. Nothing about thresholds, scan windows
+or normalization was on a knife edge --- the \emph{ranking} was. We record
+this as a general robustness statement about blind seeding rather than as a
+bug report: a stage whose two leading hypotheses differ by a part in a
+thousand of a low-contrast score is, in effect, unrefereed, and a $6\revps$
+per-rotor outcome should not turn on it. What repairs it are the two
+plausibility priors of Section~\ref{sec:seeding}, both missing by omission
+rather than by design --- the span bound (which rejects $54.45$ beside a
+used $92.35$, span $1.696$, while admitting $82.65$ at span $1.245$), and
+mutual dedup among accepted candidates (without which, once $54.45$ is
+gone, its former $3{:}2$ alias $80.90$ un-shadows and arm~R spends two
+rotor slots on the same physical rotor). Verified seed-by-seed on all
+fifteen windows $\times$ both protocol builds, $29$ of $30$ seed sets are
+bit-identical to the shipped seeder, including the old build reproducing
+its historical w03 seed; the one change is the intended one. w03 lands at
+$\mathbf{0.978}$, better than the $1.148$ it scored \emph{before} the
+recalibration --- the label correction showing through once the seed is
+right --- and w05's cross-window repair fires again ($3.030 \to 0.972$)
+because w03 once more supplies the second vote for the ${\sim}82\revps$
+base. The honest residue is that the prior only removes the
+\emph{implausible} candidate: $82.65$ still beats $80.90$ by $4.7\%$ of a
+low-contrast score, and the true fourth rotor is near $80.7$, which is why
+w03's fourth-rotor error sits near $1.0$ rather than near $0.3\revps$.
+
+\subsubsection{The steady-window regression is entirely M2}
 The per-window breakdown names the mechanism rather than leaving it as a
 pooled regression. On DREGON the chain wins $2$ of $9$ windows and loses
 $7$; the two wins are ramp windows (e.g.\ $3.272 \to 3.197$) and every
-loss is a steady window, degraded by $0.3$--$0.5\revps$. Stage-by-stage,
-the corridor DP is a \emph{no-op} on 8 of the 9 DREGON windows --- its
-surface-quality gate skips all four rotors, so the hypothesis that it
-displaces an already-correct rotor is refuted --- and the entire
-regression is the final sibling-subtracted pass. Its per-rotor
-decomposition is diagnostic: on each steady window one or two rotors
-acquire a $1.2$--$2.4\revps$ \emph{negative} bias while the others barely
-move. That is a capture event, not a bias correction. The cause is
-capture range again, from the other side: DREGON cruise is two tight twin
-pairs, so the siblings' reconstruction explains only about a third of the
-RMS, and a wide first band ($12$\,Hz at $k \le 4$, i.e.\ $\pm12\revps$ at
-$k = 1$) lets a single-track solve on a residual that still contains the
-twin's comb slide onto it. On ramp windows the failure is different: the
-reconstruction diverges, its guard trips, and the ungated fallback runs a
-wide tracker on the plain audio --- not a decoupling step at all.
+loss is a steady window. Stage-by-stage, the corridor DP M1 is a
+\emph{no-op} on 8 of the 9 DREGON windows --- its surface-quality gate
+skips all four rotors (surface qualities $0.077$--$0.150$ against a $0.15$
+floor), and on the one window where a rotor clears the floor, moving it
+costs $+0.011$. The hypothesis that M1 displaces an already-correct rotor
+is thus refuted, and the entire regression is M2, at $+0.29$ to
+$+0.55\revps$ on \emph{every} steady window. Its per-rotor decomposition is
+diagnostic: one or two rotors acquire a $1.2$--$2.4\revps$ \emph{negative}
+bias while the others barely move. That is a capture event, not a bias
+correction. The cause is capture range again, from the other side: DREGON
+cruise is two tight twin pairs, so the siblings' reconstruction explains
+only about a third of the RMS (residual-to-signal ratios $0.645$--$0.722$
+on every steady window), and a wide first band ($12$\,Hz at $k \le 4$,
+i.e.\ $\pm12\revps$ at $k = 1$) lets a single-track solve on a residual
+that still contains the twin's comb slide onto it. On ramp windows the
+failure is different in kind: the reconstruction diverges, its guard trips,
+and the ungated fallback runs a wide tracker on the \emph{plain audio} ---
+not a decoupling step at all. That is the FLY124 w01 case,
+$2.128 \to 4.824$.
 
-Two lessons, both worth more than the pooled number. First, a stage tuned
-on synthetic batteries plus two real windows generalized to neither
-corpus; the fifteen-window protocol exists precisely to catch that, and it
-did. Second, a truth-free acceptance gate --- decline the pass when the
-sibling reconstruction diverged, when the proposed move exceeds
-$0.5\revps$ (an order of magnitude above the $0.3$--$0.5\revps$ sibling
-bias the pass exists to remove), or when it lands on a sibling's comb ---
-restores parity: pooled $1.822$ / $3.912$, a maximum single-window loss of
-$+0.019$ against $+2.702$ ungated. That gate rejects $54$ of $60$
-per-rotor proposals, which is the honest description of what it achieves:
-it makes the pass a near-no-op, i.e.\ ``never worse than baseline'', not a
-new source of gain. We note, and decline to use, a rule that scores
-slightly better still: comb confidence before and after. It is better on
-these windows and it points the wrong way in principle --- the destination
-of a bad capture event is a \emph{stronger} comb, so confidence rises
-exactly when it should fall.
+\subsubsection{A gate on M2's own premise}
+Both readings are testable without labels, which gives three truth-free
+per-rotor rules: decline the pass when the sibling reconstruction diverged
+(rather than falling back to plain audio), when the proposed mean move
+exceeds $0.5\revps$ (an order of magnitude above the $0.3$--$0.5\revps$
+sibling bias the pass exists to remove; the offline optimum is a plateau
+from $0.25$ to $0.75$), and when the proposal lands on a sibling's comb.
+The gate rejects $\mathbf{54}$ of $\mathbf{60}$ per-rotor proposals, with a
+worst single-window loss of $+0.019\revps$ against $+2.702$ ungated. That
+is the honest description of what it achieves: it makes M2 a near-no-op on
+real data --- ``never worse than baseline'', not a new source of gain. It
+is a real-data switch and ships off by default, because on the synthetic
+battery, where the sibling reconstruction is clean and M2 does pay, the
+same gate costs ${\approx}6\%$. We note, and decline to use, a rule that
+scores slightly better still ($2.608$ pooled): comb confidence before and
+after. It is better on these windows and it points the wrong way in
+principle --- the destination of a bad capture event is a \emph{stronger}
+comb, so confidence rises exactly when it should fall.
+
+\subsubsection{Where the chain lands}
+On DREGON the verdict is unchanged and should be stated as such: $1.825 \to
+1.819$ is a tie ($-0.3\%$), so the chain adds no precision over blind VK
+there. What the gate achieves is that it no longer \emph{subtracts} any ---
+the $0.264\revps$ regression is gone and the chain is at or below baseline
+on $8$ of $9$ windows. The genuine win is FLY124 cruise: baseline $2.418$,
+gated chain $2.380$ ($-1.6\%$), and $\mathbf{1.864}$ ($\mathbf{-23\%}$)
+with cross-window seeding, whose ungated counterpart is $1.995$. That last
+figure carries assumptions and we quote it nowhere without them: it pools a
+${\sim}82\revps$ base across windows of the \emph{same} recording, requires
+those windows to be cruise and the sorted rotor-rank identity to be stable
+across them, requires the blind seeder to have found the fourth rotor at
+all, and it is off by default. Pooled over all fifteen windows the chain
+moves $2.226 \to 2.207$.
+
+Two lessons survive the repair, both worth more than the pooled number.
+First, a stage tuned on synthetic batteries plus two real windows
+generalized to neither corpus; the fifteen-window protocol exists precisely
+to catch that, and it did. Second, the interventions that actually moved
+the cross-drone number were audits of the pipeline's \emph{inputs}, not of
+its estimator. Against the pre-recalibration baseline of $2.644$, the label
+and alignment correction is worth $-0.226\revps$ and the gate a further
+$-0.038$; the seeder priors are worth $-1.574$, but that is the repair of a
+loss the realignment itself induced, so the three do not add. On this
+corpus, at this stage, auditing the labels and the seeder paid better than
+refining the tracker.
 
 For continuity with the earlier evaluation regime: under the 20\,s
 guarded-blind protocol scored against smoothed telemetry, the blind
@@ -2220,36 +2336,45 @@ free-flight recordings (twin pair resolved on two of three) and
 captured); the same-clip telemetry-initialized references are 0.729 and
 0.282\revps. The FLY124 numbers there predate the telemetry recalibration.
 
-\subsection{The label correction, and a seeding lottery}
+\subsection{Label correction versus estimator work: the attribution}
 \label{sec:labelresult}
 
 Section~\ref{sec:telemetry}'s correction is scored here because it is the
 one intervention in this paper that improves the cross-drone recording
-without touching the estimator. Cleanly separated on FLY124 cruise pooled,
-baseline chain: pre-recalibration $2.644$; the label and alignment
-correction alone $\mathbf{2.421}$ ($-0.223$, $-8.4\%$); the incidental
-blind-seeding flip it triggers $+1.571$; as measured $3.992$. Every
-seed-stable window improves individually ($5.070 \to 4.995$,
-$0.983 \to 0.747$, $3.375 \to 2.954$), consistent with labels now
-${\approx}0.56\revps$ closer to truth and $31$--$62$\,ms better timed. The
-refinement chain shows the same split ($2.702 \to 2.519$, $-6.8\%$).
+without touching the estimator, and because it is --- still, after the
+fixes of Section~\ref{sec:negative} --- the largest such improvement we
+obtained. On FLY124 cruise pooled, baseline chain: pre-recalibration
+$2.644$; with the corrected labels, corrected alignment and the repaired
+seeder, $\mathbf{2.418}$ ($-0.226$, $-\mathbf{8.5\%}$). The independent
+seed-held control, which runs the corrected audio and labels with the
+pre-build's blind seeds, gives $2.421$ --- the two agree to $0.003\revps$,
+which is the tightest evidence available that the gain is the labels and
+not the seeding. \emph{Every} cruise window improves individually
+($5.070 \to 4.995$, $1.148 \to 0.978$, $0.983 \to 0.747$,
+$3.375 \to 2.954$), consistent with labels now ${\approx}0.56\revps$ closer
+to truth and $31$--$62$\,ms better timed. The refinement chain shows the
+same split ($2.702 \to 2.510$, $-7.1\%$).
 
-The flip deserves its own sentence because it is a lesson about blind
-seeding rather than about labels. The $86$\,ms audio realignment changes
-exactly \emph{one} window's blind seed, and it does so because the
-residual re-scan there was adjudicating a $0.06\%$ tie between two
-candidates; the realignment moved both scores by ${\approx}1.5\%$ and
-reversed the order. The seed that was ``good'' before was not a property
-of the seeder --- it won a coin flip. Restoring it puts that window at its
-best value ever ($0.986$), and because the lost rotor is also the one a
-cross-window corroboration rule depends on, its loss propagates to a
-second window. A rotor-band plausibility prior (reject a residual
-candidate that would stretch the seed set's max/min beyond $1.45$)
-removes the implausible candidate and nothing else on all fifteen windows,
-but honestly it only prevents a catastrophic answer; the remaining choice
-is still decided by $4.7\%$ of a low-contrast score. Low-contrast residual
-ranking is the structural weakness of blind seeding, and none of the work
-in this paper fixes it.
+Set against that, the estimator-side contributions on the same pool are
+$-0.038\revps$ from the M2 gate at default settings, and $-0.554$ from
+cross-window seeding under assumptions the default configuration cannot
+make (Section~\ref{sec:negative}). Only the latter exceeds the label
+correction, and it is not a default. The order of operations this implies
+for practice is stated in Section~\ref{sec:discussion}: audit the reference
+before refining the tracker.
+
+What the correction also did was expose a lottery. Its $86$\,ms audio
+realignment changed exactly \emph{one} window's blind seed, at a cost of
+$+1.571\revps$ pooled --- seven times the correction's gain --- because
+the residual re-scan there was adjudicating a $0.06\%$ tie
+(Section~\ref{sec:negative}). That is repaired, and w03 now scores $0.978$
+against the $1.148$ it scored before the recalibration. But the repair is
+narrow by construction: the span prior removes the \emph{implausible}
+candidate, and the remaining choice on that window is still decided by
+$4.7\%$ of a low-contrast score --- landing on a base ${\approx}1.9\revps$
+above the true fourth rotor. Low-contrast residual ranking is the
+structural weakness of blind seeding; this paper bounds how wrong it can
+be, and does not make it right.
 
 \subsection{Decoherence budgets}
 \label{sec:budgets}
@@ -2322,7 +2447,7 @@ mono cell, comparable to iter\_warp.
 \section{Discussion}
 \label{sec:discussion}
 
-\subsection{What the negative result does and does not say}
+\subsection{What the chain's scoreboard does and does not say}
 
 Section~\ref{sec:negative} is the outcome a reader should weigh most
 carefully, so it is worth stating precisely what it licenses. It does
@@ -2332,23 +2457,35 @@ three independent instruments, the capture arithmetic that explains it is
 elementary, and the phase-increment tracker built from that arithmetic is
 the only local stage that captures under noise on synthetic data and the
 only one whose answer on real bench motors is
-initialization-independent. It says that the \emph{assembled} chain, tuned
-on synthetic batteries plus two real windows, generalizes to neither real
-corpus at the default settings, and that its failure is a capture event of
-exactly the kind the capture-range account predicts --- a wide first band
-on a residual that still contains a twin's comb. The diagnosis and the
-pipeline are, at this stage, on different footings; the paper reports both
-at their own footing.
+initialization-independent. Nor does it say the assembled chain now
+dominates: on DREGON it \emph{ties} the blind baseline
+($1.825 \to 1.819\revps$), which means it adds no precision there, and the
+achievement of the acceptance gate is only that it stops the chain
+subtracting any. What it does say is that the chain's initial regression
+was a capture event of exactly the kind the capture-range account predicts
+--- a wide first band on a residual that still contains a twin's comb ---
+that this diagnosis was reachable without labels, and that acting on it
+converts the regression into a tie on one corpus and a win on the other
+($2.418 \to 2.380$ at defaults, $1.864$ with cross-window seeding).
+Diagnosis and pipeline began this paper on different footings; they end it
+closer together, and the paper reports each at its own footing.
 
-Three practical consequences follow. Widening a band to buy capture range
+Four practical consequences follow. Widening a band to buy capture range
 is not free when the interference is a near-coincident sibling, because
 the sibling is inside the widened band by construction --- the $k$-scaled
 bandwidth of~\eqref{eq:kscaled} preserves twin discrimination, but only
 relative to what the fundamental had, and at $k = 1$ on a twin pair that
 is not much. Truth-free acceptance gates recover parity but do so by
 declining, which is a way of not being worse rather than a way of being
-better. And the single largest cross-drone improvement in this paper came
-from correcting the \emph{labels}, not the estimator.
+better; the gain they license is bounded by how often the stage was right,
+which on real windows was $6$ times in $60$. Blind seeding decisions
+should be reported with their \emph{margins}: a stage whose two leading
+hypotheses differ by $0.06\%$ of score is unrefereed, and a pooled number
+resting on one such decision is not a measurement of the estimator. And
+the single largest cross-drone improvement in this paper came from
+correcting the \emph{labels}, not the estimator --- $-8.5\%$ on the cruise
+pool, against $-1.6\%$ from the estimator change that survived contact
+with the full protocol.
 
 \subsection{What is proven, measured, and assumed}
 
@@ -2393,7 +2530,14 @@ a matching lower bound.
 For annotation practice the measured pipeline is: \emph{full-range comb DP
 for the global stage, phase-increment tracking (pair-joint) for the local
 stage}, with the frequency-update loop removed and any
-sibling-subtraction pass behind a truth-free acceptance gate. Run the
+sibling-subtraction pass behind a truth-free acceptance gate --- and, on
+real data, with the seeder's plausibility priors enabled
+(Section~\ref{sec:seeding}), since the one-window seed they protect was
+worth more than every estimator change in this paper combined. Where several cruise windows of the same
+recording are available and rotor rank is stable across them, corroborating
+seeds across windows is the largest estimator-side gain we measure
+($-23\%$ on the cross-drone cruise pool), and it is worth nothing when the
+seeder misses a rotor. Run the
 coupled VK envelope solve when the reconstructed harmonic waveform itself
 is needed (comb subtraction, resynthesis) and as the referee of
 Section~\ref{sec:referee}; do not run it as a rate refiner. Where any
@@ -2411,7 +2555,11 @@ Two live gaps. Ramp windows: the best tracker sits at
 tracking-under-nonstationarity problem. And blind seeding on a weak fourth
 rotor, where the residual re-scan is adjudicating ties of a few percent
 of a low-contrast score --- the one place where an outright wrong answer,
-rather than an imprecise one, is still routine.
+rather than an imprecise one, is still routine. The plausibility priors of
+Section~\ref{sec:seeding} bound how wrong that answer can be; they do not
+make the ranking informative, and a genuinely refereed residual decision
+(a second modality, a longer horizon, or a learned prior) is the missing
+piece.
 
 \subsection{Limitations}
 
@@ -2421,9 +2569,13 @@ S4 rung is not measured, so every statement in Section~\ref{sec:jitter}
 about $\sigma_J^2$ on \emph{real} data is a prediction. The FLY124
 telemetry constants rest on four cruise windows, and the label change and
 the audio realignment they induce cannot be separated from each other by
-our experiment --- only both-together from the seeding flip; on the one
-warm-up window where both-together is a loss ($3.988 \to 5.166$ at an
-unchanged seed) we have no explanation. The octave discriminator of
+our experiment --- only both-together from the seeding flip the realignment
+triggered; on the one warm-up window where both-together is a loss
+($3.988 \to 5.166$ at an unchanged seed) we have no explanation. The
+seeder priors that repair that flip were verified seed-by-seed on the
+fifteen real windows only, so their effect on the synthetic battery's
+seeds --- and hence the exact size of the gate's ${\approx}6\%$ synthetic
+cost --- is a within-build comparison, not a cross-version one. The octave discriminator of
 Section~\ref{sec:fullrange} encodes a two-bladed-propeller prior. The
 $q_k$ estimates are in-band by construction, so high-$k$ budgets are
 lower bounds on diffusion. The displaced-comb consequence cuts both ways:
@@ -2460,10 +2612,17 @@ ${\approx}0.2$ at 0\,dB with four rotors, proved by an oracle that equals
 the blind result --- and a label-free referee that both establishes those
 floors and, pointed at the reference instead of the estimator, found and
 corrected a drifting clock and a $0.7\%$ rate scale in real telemetry.
-What we do not yet have is a reconstructed pipeline that beats the blind
-baseline on the full protocol: it wins on ramps and loses on steady
-windows, for a reason the capture-range account predicts. Reporting that
-plainly is the point. The measurements delimit the task --- per-harmonic
+The reconstructed pipeline first measured \emph{worse} than the blind
+baseline on steady windows, for a reason the capture-range account
+predicts; localizing that regression to one stage and gating it on its own
+label-free premise leaves the chain tied with the baseline on the indoor
+corpus and ahead of it on the cross-drone recording, by $23\%$ where
+several cruise windows of one recording can corroborate a seed. Reporting
+both the before and the after plainly is the point --- as is the finding
+that the largest single gain on that recording came from correcting the
+reference, and the second largest from two missing plausibility priors in
+the seeder, neither of them a change to the estimator. The measurements
+delimit the task --- per-harmonic
 coherence budgets of 0.4--1.7\,s, no rescue from coherent array
 combination, and an acoustic comb displaced 0.3--0.5\revps{} from the
 mechanical one in translating flight --- and within those limits
