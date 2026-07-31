@@ -144,6 +144,11 @@ from data_processing.vk_tracking import (  # noqa: E402
     vk_track,
 )
 
+#: Directory holding the beat-VK per-window prep cache (`prep_cache/*.npz` +
+#: `*__weights.npz`) that `real:`/`dregon_ramp`/`fly124_cruise` windows read.
+#: Overridable with ``--beatvk-out`` so the same chain can be scored against a
+#: DIFFERENT protocol build (e.g. pre- vs post-recalibration labels) without
+#: disturbing the production cache — see `scripts/beatvk_rescore.py`.
 BEATVK_OUT = Path("results/beatvk_vk_arms")
 LAB_OUT = Path("results/rps_refine_lab")
 N_ROTORS = 4
@@ -282,12 +287,17 @@ def get_seed(name: str, prep: Prepared, use_cache: bool, cfg: SeedConfig = SEED_
     print(f"  blind_seed {time.perf_counter() - tic:.0f}s", flush=True)
     if use_cache:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic: several chains on the SAME window run concurrently under
+        # scripts/beatvk_rescore.py and would otherwise race on this file, so a
+        # reader could pick up a half-written NPZ.
+        tmp = path.with_suffix(f".{os.getpid()}.tmp.npz")
         np.savez(
-            path,
+            tmp,
             bases=np.asarray(seed.bases, dtype=np.float64),
             update_gate=np.float64(np.nan if seed.update_gate is None else seed.update_gate),
             bw_hz=np.float64(np.nan if seed.bw_hz is None else seed.bw_hz),
         )
+        os.replace(tmp, path)
     return seed
 
 
@@ -1766,8 +1776,17 @@ def main() -> None:
         help="SeedConfig.promote_span override (rotor-band ratio; default 1.30)",
     )
     ap.add_argument("--out", default=None, help="JSON output path")
+    ap.add_argument(
+        "--beatvk-out",
+        default=None,
+        help="override BEATVK_OUT: the directory whose prep_cache/ the real: "
+        "windows are read from (a different protocol build)",
+    )
     args = ap.parse_args()
 
+    if args.beatvk_out:
+        globals()["BEATVK_OUT"] = Path(args.beatvk_out)
+        print(f"beatvk prep cache: {args.beatvk_out}")
     if args.no_subbin:
         globals()["M1_SUBBIN"] = False
     m3_pool = tuple(float(s) for s in args.m3_pool.split(",") if s.strip()) if args.m3_pool else ()
