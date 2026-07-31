@@ -362,17 +362,29 @@ def summarise(results: Path) -> dict[str, Any]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="joint_beam sweep / protocol driver")
-    ap.add_argument(
-        "--mode", choices=("sweep", "protocol", "init", "summarise"), default="sweep"
-    )
+    ap.add_argument("--mode", choices=("sweep", "protocol", "init", "summarise"), default="sweep")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--results", default=None)
     ap.add_argument("--arms", default=None, help="comma list overriding the mode's arms")
     ap.add_argument("--windows", default=None, help="comma list overriding the mode's windows")
     ap.add_argument("--v2-rounds", type=int, default=1, help="M1 rounds (WP6 real default: 1)")
+    ap.add_argument(
+        "--build-preps",
+        action="store_true",
+        help="materialise the beat-VK prep cache first.  REQUIRED on a cluster: "
+        "`results/beatvk_vk_arms/prep_cache` is a gitignored local artefact, so a "
+        "fresh worktree has no windows to score and every unit dies on "
+        "FileNotFoundError (a whole job's worth, silently, because per-unit "
+        "exceptions are caught and written as .err files).",
+    )
     args = ap.parse_args()
 
     results = Path(args.results or f"results/jb_{args.mode}")
+    if args.build_preps:
+        import beatvk_rescore as brs  # noqa: PLC0415
+        from beatvk_vk_arms import DEFAULT_OUT  # noqa: PLC0415
+
+        brs.build_prep_cache(Path(DEFAULT_OUT), None, brs.resolve_dregon_dir())
     if args.mode == "summarise":
         s = summarise(results)
         (results / "summary.json").write_text(json.dumps(s, indent=1))
