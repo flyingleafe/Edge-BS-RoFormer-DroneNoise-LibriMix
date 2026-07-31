@@ -59,12 +59,22 @@ inertness we report is an unexamined capture-range assumption in a
 published method rather than a defect of our implementation. We replace
 the loop with a phase-increment maximum-likelihood tracker
 whose bandwidth schedule makes the radius explicit, and we correct the
-information model that motivates high-harmonic weighting: arrival-time
-jitter makes per-harmonic rate errors \emph{correlated}, giving a
-rank-one-plus-diagonal covariance, an irreducible variance floor
-$\sigma_J^2$ that no number of harmonics can lower, and a natural
-$k$-scaled bandwidth $B_k = kB_0$ under which capture range, captured
-energy fraction and the weight exponent all become $k$-independent. A
+information model that motivates high-harmonic weighting --- and then
+measure the correction. Arrival-time jitter makes per-harmonic rate errors
+\emph{correlated}, giving a rank-one-plus-diagonal covariance whose
+predicted consequences we measure on 88 units and mostly refute: the
+common term clears its own error on 0 of 36 indoor units, the information
+does not saturate within $k \le 30$, and the term is not shaft-borne
+(channel coherence $0.065$ indoors against $0.81$--$0.94$ on a control
+with injected shaft jitter), so neither a variance floor nor a cap on $k$
+is supported. The same measurement exposes a larger weight defect --- the
+deployed $k^2|p_k|$ is \emph{flat} in $k$ where the evidence says the
+weight should rise as $k^{2.0}$ (indoor) / $k^{1.5}$ (outdoor) --- and
+confirms the $k$-scaled bandwidth $B_k = kB_0$, under which capture range,
+captured energy fraction and the weight exponent all become
+$k$-independent and which alone keeps the twin-collision gate from
+starving the comb (0 of 30 harmonics usable at $B = 12$\,Hz on every
+indoor unit). A
 progressive ladder --- locked-phase noiseless, four rotors at 0\,dB,
 physically band-limited shafts, timing jitter --- separates estimator
 error from benchmark artifact and establishes oracle floors
@@ -172,17 +182,24 @@ The contributions are:
   arithmetic exposes is an unexamined capture-range assumption in a
   published method rather than a claim that its reported results are
   wrong.
-\item \textbf{A corrected information model for phase-slope weighting}
-  (Section~\ref{sec:fisher}). Arrival-time jitter contributes a phase error
-  proportional to $k$, which the conversion to rev/s divides out exactly:
-  the per-harmonic rate errors are therefore \emph{correlated}, with
-  covariance $\Sigma = \sigma_J^2 \mathbf{1}\mathbf{1}^{\!\top} +
-  \operatorname{diag}(v_k)$. The relative weights survive, but the fused
-  variance becomes $1/W + \sigma_J^2$ --- an irreducible floor and an
-  information saturation point $k^\ast$ --- and the natural
-  parameterization is a $k$-scaled bandwidth $B_k = kB_0$, under which
-  capture range, captured energy fraction and the weight exponent all
-  become $k$-independent together.
+\item \textbf{A corrected information model for phase-slope weighting,
+  and its measurement} (Sections~\ref{sec:fisher} and~\ref{sec:s4res}).
+  Arrival-time jitter contributes a phase error proportional to $k$, which
+  the conversion to rev/s divides out exactly: the per-harmonic rate errors
+  would therefore be \emph{correlated}, with covariance
+  $\Sigma = \sigma_J^2 \mathbf{1}\mathbf{1}^{\!\top} +
+  \operatorname{diag}(v_k)$, the relative weights surviving but the fused
+  variance becoming $1/W + \sigma_J^2$ --- an irreducible floor and an
+  information saturation point $k^\ast$. Measured on 36 indoor and 52
+  outdoor units, that consequence does not hold: no floor resolves, no
+  $k^\ast$ exists within $k \le 30$, and the rank-one shape itself fails.
+  What does hold is the weight shape, $w_k \propto 1/v_k$ measured rather
+  than derived --- which exposes a larger defect, since the deployed
+  $k^2|p_k|$ is flat in $k$ where the optimum rises as $k^{2.0}$/$k^{1.5}$
+  --- and the $k$-scaled bandwidth $B_k = kB_0$, under which capture range,
+  captured energy fraction and the weight exponent all become
+  $k$-independent together, and which alone preserves harmonic coverage
+  under the twin-collision gate.
 \item \textbf{Methodology: a label-free referee}
   (Section~\ref{sec:referee}). The VK reconstruction residual
   $\|x - \hat{x}\|/\|x\|$ needs no reference track, so it can be pointed at
@@ -481,7 +498,7 @@ assumption --- that each harmonic's phase is corrupted only by additive
 background noise, \emph{independently} of the others --- which real
 recordings do not satisfy, and the next subsection corrects it.
 
-\subsection{Correlated harmonic errors: a rank-one information floor}
+\subsection{Correlated harmonic errors: a predicted rank-one floor, measured}
 \label{sec:jitter}
 
 Model the disturbance not as phase noise but as jitter in \emph{arrival
@@ -529,15 +546,16 @@ variance does not. With $W = \sum_k 1/v_k$,
   \operatorname{Var}(\hat\delta) = \frac{1}{W} + \sigma_J^2 ,
   \label{eq:varfloor}
 \end{equation}
-not $1/W$. There is a floor no number of harmonics can lower, because they
-all share the same $J$; past the point where $1/W$ falls below
-$\sigma_J^2$, extra harmonics buy nothing and the information
-\emph{saturates} at a finite $k^\ast$. This matters operationally because
-$W$ is exactly the quantity a Fisher-weighted stage places on the diagonal
-of its normal equations (Section~\ref{sec:staged}): overstating it makes
-the solve trust the data relative to the smoothness prior, so the stage
-chases shaft jitter instead of smoothing it, and does so most where the
-most harmonics were piled on. The correct diagonal is
+not $1/W$. On this model there is a floor no number of harmonics can
+lower, because they all share the same $J$; past the point where $1/W$
+falls below $\sigma_J^2$, extra harmonics would buy nothing and the
+information would \emph{saturate} at a finite $k^\ast$. That would matter
+operationally, because $W$ is exactly the quantity a Fisher-weighted stage
+places on the diagonal of its normal equations
+(Section~\ref{sec:staged}): overstating it makes the solve trust the data
+relative to the smoothness prior, so the stage would chase shaft jitter
+instead of smoothing it, and would do so most where the most harmonics
+were piled on. The corrected diagonal would then be
 $W_{\mathrm{eff}} = (1/W + \sigma_J^2)^{-1}$.
 
 Not every phase disturbance lands in $J$. The axis that matters is not how
@@ -554,6 +572,69 @@ immediately: a \emph{static} transfer function contributes a fixed phase
 offset per harmonic, which a phase \emph{increment} differences away
 exactly. Reverberation matters because the platform moves, not because the
 room is reverberant.
+
+\subsubsection*{The same model, measured}
+Everything above is prediction. It was then measured --- 36 DREGON units
+and 52 Michael's units, 8 microphones, $k = 1\ldots30$, at the stage's own
+$62.5$\,Hz frame rate; protocol in Section~\ref{sec:s4}, numbers in
+Section~\ref{sec:s4res} --- and the measurement contradicts most of it.
+The derivation is kept because it is what the measurement tested; the
+floor is not confirmed.
+
+\emph{The weighting is wrong, but not for the reason predicted, and the
+real defect is larger.} The measured per-harmonic variance falls steeply
+with harmonic order, $v_k \propto k^{-2.0}$ indoors and $k^{-1.5}$
+outdoors, so the optimal weight rises as $k^{2.0}$/$k^{1.5}$ --- with no
+amplitude factor at all. The stage weights by $k^2|p_k|$, and in this data
+$|p_k| \propto k^{-2}$. The two cancel: the stage's effective weight is
+flat in $k$ exactly where the evidence says it should rise as $k^2$. The
+defect is the amplitude factor, not the exponent --- the opposite of what
+the prediction said, and worth more.
+
+\emph{There is no measurable floor at the stage's own bandwidth.} The
+common term is not resolved above its own error on 0 of 36 DREGON units at
+$B = 1.5$\,Hz, and on only 14 of 52 Michael's units. Its share of the
+total is at most $0.20$ (indoor) / $0.39$ (outdoor) over $k \ge 6$, and
+those are upper bounds because the high-pass cutoff sweep never plateaus:
+$\sigma_J^2$ keeps falling as the cutoff rises, meaning most of what it
+captures is slow, i.e.\ ordinary trajectory error rather than jitter. Do
+not add a $W_{\mathrm{eff}}$ floor.
+
+\emph{Information does not saturate.} $k^\ast$ lies beyond $k = 30$ on
+both datasets, so over the range the stage actually uses, more harmonics
+keep helping. Do not cap $k$.
+
+\emph{The rank-one-plus-diagonal model does not describe the data.} The
+off-diagonals are not constant ($\chi^2$ of $2.3$--$4.4$ against their own
+bootstrap error, where $1.0$ would be constant within noise); the best
+rank-one term explains only 12--27\% of off-diagonal energy; and its
+loading goes as $k^{-1.2}\ldots k^{-2.0}$ rather than the uniform loading
+a pure delay requires. Part of that shape is the wrapped phase increment
+decorrelating where envelope SNR approaches 1 (above $k \approx 12$), so
+the non-uniform loading must \emph{not} be quoted as evidence for a shared
+disturbance. No alternative structure fits either.
+
+\emph{And the common term is not the shaft.} This is the measurement that
+settles it: a single shaft's timing error must appear identically at every
+microphone. On the synthetic control with known jitter, the common term's
+channel coherence is $0.81$--$0.94$. On real recordings it is $0.065$
+indoors and $0.237$ outdoors. Whatever common component exists is
+predominantly \emph{per-microphone} --- propagation and turbulence --- not
+shaft timing. That also explains why it shrinks as the cutoff rises.
+
+\emph{Indoor versus outdoor: half the prediction.} The delay-like half
+holds directionally --- the common term is $2.5$--$4.9\times$ larger
+outdoors at narrow bands and $3.6\times$ more channel-coherent. The
+dispersive half is refuted: $v_k$ is identical indoors and outdoors to
+within 5\% at every band, so reverberation does not raise the
+per-harmonic term as predicted. The caveat cuts the other way too: the
+protocol carries only one reverberant room.
+
+The honest summary is that the phase-noise reasoning identified the right
+place to look and the wrong mechanism. A correlated term exists but is
+small, is not the shaft, and does not bound the estimator over the
+harmonic range in use; the weighting is badly wrong for a simpler reason
+that the same measurement exposed.
 
 \subsection{$k$-scaled bandwidth}
 \label{sec:kscaled}
@@ -605,9 +686,29 @@ it, and the diagonal \emph{is} $v_k$. One trap in that fit: the true
 $\delta(t)$ is also shared across harmonics, so signal and jitter are
 confounded in the rank-one term; they separate in time, since the signal is
 smooth at a few hertz while the jitter is fast, so fitting the covariance
-on time-high-passed opinions isolates $\sigma_J^2$. This measurement is
-the S4 rung of Section~\ref{sec:ladder} and is
-\pending{S4 timing-jitter measurement --- see Section~\ref{sec:s4}}.
+on time-high-passed opinions isolates $\sigma_J^2$. That measurement is
+the S4 rung of Section~\ref{sec:ladder}, and it has been run
+(Section~\ref{sec:s4res}). Measured, $1/v_k \propto k^{2.0}$ indoors and
+$k^{1.5}$ outdoors at a fixed band, with no amplitude factor --- so the
+weight is a power law after all, and the deployed $k^2|p_k|$ is wrong by
+its \emph{amplitude} factor rather than by its exponent.
+
+The measurement confirms~\eqref{eq:kscaled} twice over, and the second
+reason is stronger than the first. Under $B_k = 0.25k$ the fitted exponent
+collapses to ${\approx}0$: every harmonic carries roughly equal
+information, which is a more robust thing to implement than a fitted
+exponent. And at a fixed band the twin-collision gate destroys coverage.
+Of 30 harmonics, DREGON keeps $20.5$ at $B = 1.5$\,Hz, $15$ at $B = 6$ and
+\emph{0} at $B = 12$ on every single unit; Michael's keeps $19$ / $14.5$ /
+$1$. The collision radius in rev/s is $B/k$, so it shrinks on precisely
+the harmonics the weighting favors, and $k$-scaling is what holds it
+constant --- the starvation of Section~\ref{sec:vkrefine} seen from the
+other side, and the binding constraint at every band tested. The measured
+exponent shift from a fixed to a $k$-scaled band is $-1.7$ (DREGON) /
+$-2.0$ (Michael's), not the $-1$ that~\eqref{eq:kweight} predicts: the
+derivation above neglects the band factor
+$1 - \operatorname{sinc}(2B\Delta t)$ of~\eqref{eq:incvar}, which makes
+$v_k$ scale nearer $B^3$ than $B$.
 
 \section{The Estimation Structure}
 \label{sec:structure}
@@ -1198,8 +1299,11 @@ trajectory-following demodulator removes by construction. Independent
 arrival-time jitter --- the $J$ term of~\eqref{eq:jitteropinion} --- is
 \emph{not} a function of $r(t)$, so no trajectory-following demodulator
 removes it, and our synthetic contains none of it. The conclusion above is
-therefore established for frequency-modulation smearing and unsupported
-for timing jitter.
+therefore established for frequency-modulation smearing and, on its own
+evidence, unsupported for timing jitter. That gap is closed separately by
+the S4 measurement of Section~\ref{sec:s4res}: on real recordings the
+shared term is not shaft-borne either, so no timing-jitter mechanism
+rescues the phase-noise explanation.
 
 \subsection{Generation 2: Fisher-weighted phase slopes (stage D)}
 \label{sec:staged}
@@ -1262,15 +1366,17 @@ noise-dominated samples, and slips are catastrophic unbounded errors that
 quadratic weighting does not reject. (ii) Per-harmonic phase diffusion,
 whose phase slope is white noise scaled by the diffusion rate ---
 informative about nothing, yet weighted by $k^2|z_k|^2$ as if it were pure
-track error. (iii) The rank-one term: $W[t]$
-in~\eqref{eq:pentasys} is exactly the quantity that~\eqref{eq:varfloor}
-says is overstated, so the solve trusts the data relative to the prior and
-chases shaft jitter, worst where the most harmonics were pooled. The
-corrected diagonal is $W_{\mathrm{eff}}$, and harmonics should be capped
-where the information saturates rather than at an arbitrary $k_{\max}$;
-the collision thresholds, which are in absolute hertz today, must then
-scale with $k$ too, or the wider high-$k$ filters would quietly begin
-admitting neighbours. Stage D is the cautionary tale: right weights, no
+track error. (iii) The weight itself. Measured
+(Section~\ref{sec:s4res}), $1/v_k$ rises as $k^{2.0}$ indoors and
+$k^{1.5}$ outdoors with no amplitude factor, while $|p_k| \propto k^{-2}$
+on these recordings --- so the deployed $k^2|p_k|$ is \emph{flat} in $k$
+where it should rise as $k^2$, and every harmonic is weighted as if it
+were as informative as the fundamental. The fix is to drop the $|p_k|$
+factor, not to install the $W_{\mathrm{eff}}$ floor
+of~\eqref{eq:varfloor}: the measurement resolves no floor to install and
+no saturation point at which to cap $k$. The collision thresholds, which
+are in absolute hertz today, must scale with $k$ alongside the bandwidth,
+or the wider high-$k$ filters would quietly begin admitting neighbours. Stage D is the cautionary tale: right weights, no
 model of when the weights lie.
 
 \subsection{Generation 3: angular resampling (iter\_warp)}
@@ -1818,8 +1924,8 @@ that the rung on which a method breaks identifies the assumption it
 violates and --- equally important --- so that error can be attributed
 either to the estimator or to the benchmark. Rungs S1--S3 are synthetic
 and are stated as \emph{floors}: what is achievable, not what we achieve.
-S4 adds the nuisance that motivates Section~\ref{sec:jitter} and is not
-yet measured. The real-data rungs then bridge to flight.
+S4 adds the nuisance that motivates Section~\ref{sec:jitter} and is now
+measured. The real-data rungs then bridge to flight.
 
 \subsubsection{S1 --- locked phase, noiseless: the estimator floor}
 \label{sec:s1}
@@ -1860,8 +1966,8 @@ wrong. Results are reported against both conventions.
 
 \subsubsection{S4 --- arrival-time jitter}
 \label{sec:s4}
-The rung that tests Section~\ref{sec:jitter}, and the one this draft does
-not yet have. S1--S3 all lock every harmonic's phase to the shaft integral,
+The rung that tests Section~\ref{sec:jitter}. S1--S3 all lock every
+harmonic's phase to the shaft integral,
 so their only phase variation is a deterministic function of the
 trajectory --- which a trajectory-following demodulator removes by
 construction (Section~\ref{sec:vkrefine}). Independent arrival-time jitter
@@ -1870,15 +1976,34 @@ our synthetics contain any. S4 injects a timing error $n_t$ of controlled
 variance into the shaft-angle advance, then measures the empirical
 cross-harmonic covariance of the per-harmonic opinions
 $\hat\delta_k(t)$~\eqref{eq:jitteropinion} on time-high-passed data and
-fits it as rank-one plus diagonal. Three predictions are on the record and
-will be scored: that the rank-one component $\sigma_J^2$ is non-zero on
+fits it as rank-one plus diagonal. Three predictions were on the record and
+have been scored: that the rank-one component $\sigma_J^2$ is non-zero on
 \emph{real} data and not merely on the injected synthetic; that the fused
 variance saturates at a finite $k^\ast$ rather than continuing to fall as
 $1/W$; and that under the $k$-scaled bandwidth~\eqref{eq:kscaled} the
 empirically optimal weight exponent moves from $k^2$ toward $k$, as
-predicted by~\eqref{eq:kweight}. Measured values:
-\pending{S4 --- $\sigma_J^2$ on synthetic and on DREGON/FLY124 cruise;
-$k^\ast$; fitted weight exponent under fixed vs.\ $k$-scaled bandwidth}.
+predicted by~\eqref{eq:kweight}. The rung is run on 36 DREGON and 52
+Michael's units, 8 microphones, $k = 1\ldots30$, at the stage's own
+$62.5$\,Hz frame rate, with per-entry standard errors from a six-block
+time bootstrap --- so that ``are the off-diagonals constant?'' is asked
+against the estimator's own scatter rather than against zero. The first
+two predictions fail and the third holds with a larger exponent shift than
+predicted; Section~\ref{sec:s4res}.
+
+\emph{A caveat any similar measurement must observe.} The null control
+read zero only after two fixes, and the failure mode is subtle enough to
+generalize. With the synthetic's shaft driven white to 250\,Hz and the
+carrier taken off the frame grid, the null measured $5.3\times10^{-3}$ ---
+as large as a genuine 100\,$\mu$s jitter. Trajectory motion above the
+frame-grid Nyquist is common to every harmonic, so an estimator like this
+books it as shaft jitter. Any measurement of a ``common'' phase term must
+therefore be run against a band-limited control on the analysis grid, or
+it will find a floor that is an artifact of its own sampling. Hence the
+carrier here is the highest-rate trajectory available: DREGON's native
+$929$\,Hz measured-speed track, the synthetic's exact one. On real DREGON
+that choice changes nothing ($3.1\times10^{-5}$ either way), which
+confirms independently that the \emph{synthetic's} drive was unphysical,
+not that real shafts are.
 
 \subsubsection{Real data}
 \label{sec:realdata}
@@ -2056,9 +2181,47 @@ it is proved by an oracle rather than asserted.
   \end{tabular}
 \end{table}
 
-\subsubsection{S4}
-\pending{S4 timing-jitter rung --- $\sigma_J^2$, $k^\ast$, weight
-exponent; see Section~\ref{sec:s4}}.
+\subsubsection{S4 --- the correlated-error model, mostly refuted}
+\label{sec:s4res}
+The control first. On the synthetic comb demodulated along the
+\emph{exact} trajectory, with the shaft band-limited at 8\,Hz, the
+estimated common term reads zero to within one standard error at every
+band ($|z| \le 1.1$), while an injected 100\,$\mu$s shaft jitter is
+recovered at $z = 6.2$, with $k^\ast = 15$ and a 70\% floor share. The
+estimator neither manufactures a common term nor misses one.
+
+On real data it finds almost none. The common term clears $3$ standard
+errors on \textbf{0 of 36} DREGON units at $B = 1.5$\,Hz and on 14 of 52
+Michael's units; its share of the fused variance over $k \ge 6$ is at most
+$0.20$ (DREGON) and $0.35$--$0.39$ (Michael's), and halves again at a
+$2$\,Hz high-pass. The cutoff sweep never plateaus, so those shares are
+upper bounds and most of what they contain is slow --- trackable
+trajectory error rather than an irreducible floor. No $k^\ast$ exists
+within $k \le 30$ on DREGON at all, and on Michael's it lands at
+$26.5$--$30$ in the few percent of units where it resolves. The
+rank-one-plus-diagonal \emph{shape} fails on its own terms: $\chi^2$ of
+$2.3$--$4.4$ against the bootstrap error, a best rank-one term explaining
+12--27\% of off-diagonal energy, and a loading exponent of $-1.2$ to
+$-2.0$ instead of the $0$ a pure delay requires. Decisively, the common
+term's coherence across the 8 microphones is $0.065$ indoors and $0.237$
+outdoors, against $0.81$--$0.94$ on the injected control: a single shaft's
+timing error must appear identically at every microphone, and this one
+does not.
+
+The third prediction holds, and more strongly than it was stated. At a
+fixed band the empirically optimal weight is $1/v_k \propto k^{2.0}$
+(DREGON) / $k^{1.5}$ (Michael's) with \emph{no} amplitude factor, against
+the deployed $k^2|p_k|$ with $|p_k| \propto k^{-2}$ --- an effectively
+flat weight. Under $B_k = 0.25k$ the exponent collapses to ${\approx}0$
+(fit $R^2$ $0.03$--$0.58$: under a $k$-scaled band no power law describes
+the weight at all), a shift of $-1.7$/$-2.0$ rather than the predicted
+$-1$. Coverage moves the same way: of 30 harmonics the twin gate leaves
+$20.5$ / $15$ / \emph{0} on DREGON at $B = 1.5$ / $6$ / $12$\,Hz and $19$
+/ $14.5$ / $1$ on Michael's, while $k$-scaling holds the collision radius
+constant. Section~\ref{sec:jitter} carries the interpretation; the
+operational consequence is that the amplitude factor should be dropped and
+the band $k$-scaled, and that neither a variance floor nor a cap on $k$ is
+supported.
 
 \subsection{Ladder: capture and lock}
 \label{sec:ladderresults}
@@ -2508,14 +2671,19 @@ the Viterbi path's global optimality on its own discretized objective.
 \ref{tab:scoreboard}, \ref{tab:referee}, \ref{tab:floors}
 and~\ref{tab:negative}; the three inertness confirmations; the
 oracle floors; the telemetry calibration and its controls; the $q_k$
-budgets; the array counterfactual; and the displaced-comb property.
+budgets; the array counterfactual; the displaced-comb property; and the
+cross-harmonic covariance of Section~\ref{sec:jitter}, on 88 real units
+against a jitter-injected control (Section~\ref{sec:s4res}).
 \emph{Assumed:} ideal low-pass shapes in both correction factors (real
 filters are not brick-wall; the constants shift by $O(10\%)$); Brownian
 $b_k$ (the truth may be OU-like or heavier-tailed, in which case $q_k$
 measures the \emph{in-band} diffusion only); Gaussianity wherever a
-Kalman step is used; and, throughout Section~\ref{sec:jitter}, that
-arrival-time jitter is a good model of the shared disturbance --- which is
-the assumption S4 exists to test. \emph{Open:} the Cram\'er--Rao
+Kalman step is used. \emph{Tested and rejected:} that arrival-time jitter
+is a good model of the shared disturbance --- the assumption S4 existed to
+test. The common term is per-microphone rather than shaft-borne, is not
+resolved at the stage's own bandwidth, and does not have the rank-one
+shape; what survives Section~\ref{sec:jitter} is the measured weight
+$w_k \propto 1/v_k$ and the $k$-scaled band. \emph{Open:} the Cram\'er--Rao
 computation from the measured $(\tau_k, \snr_k)$ budgets. The classical
 single-tone bound scales as $1/(\snr \cdot T^3)$~\cite{rife1974single};
 phase diffusion caps the effective $T$ at $\tau_k$, and assembling the
@@ -2565,8 +2733,13 @@ piece.
 
 The free-flight phase measurements rest on a single cruise window; the
 real-data breadth is motors and one flight per rung, not a corpus. The
-S4 rung is not measured, so every statement in Section~\ref{sec:jitter}
-about $\sigma_J^2$ on \emph{real} data is a prediction. The FLY124
+S4 rung is measured, but two of its readings remain contaminated by the
+wrapped phase increment decorrelating where envelope SNR approaches 1
+(above $k \approx 12$): the loading shape and the high-$k$ end of $v_k$.
+Separating that needs a higher-SNR regime or a von Mises rather than
+Gaussian increment likelihood, and until then the $\beta \approx -1$
+loading must not be read as evidence for a shared-phase disturbance. Its
+indoor/outdoor contrast also rests on a single reverberant room. The FLY124
 telemetry constants rest on four cruise windows, and the label change and
 the audio realignment they induce cannot be separated from each other by
 our experiment --- only both-together from the seeding flip the realignment
@@ -2603,10 +2776,17 @@ should be stated. We give the replacement --- a phase-increment tracker
 whose bandwidth schedule follows from the same arithmetic, and which is
 the same banded algebra as the envelope solve it replaces the loop in ---
 and we correct the information model that motivates high-harmonic
-weighting: shared arrival-time jitter makes per-harmonic errors
-correlated, which leaves the weight \emph{shape} intact but installs a
-floor $\sigma_J^2$ that no number of harmonics lowers, and makes
-$B_k = kB_0$ the natural parameterization. Around the estimator we give
+weighting --- then measure the correction and report where it fails.
+Shared arrival-time jitter would make per-harmonic errors correlated,
+leaving the weight \emph{shape} intact but installing a floor
+$\sigma_J^2$ that no number of harmonics lowers. On 88 real units it does
+not: no floor resolves, the information does not saturate within
+$k \le 30$, and the common term is per-microphone rather than shaft-borne,
+so neither a variance floor nor a cap on $k$ is warranted. What the
+measurement does establish is that the deployed weight $k^2|p_k|$ is flat
+in $k$ where the evidence says it should rise as $k^{2.0}$/$k^{1.5}$, and
+that $B_k = kB_0$ is the natural parameterization --- the only change that
+improves harmonic coverage instead of degrading it. Around the estimator we give
 honest floors --- $0.055\revps$ to hold an exact initialization,
 ${\approx}0.2$ at 0\,dB with four rotors, proved by an oracle that equals
 the blind result --- and a label-free referee that both establishes those
