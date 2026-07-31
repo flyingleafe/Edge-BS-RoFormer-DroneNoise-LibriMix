@@ -35,7 +35,11 @@ sys.path.insert(0, str(_ROOT / "src"))
 from hydra import compose, initialize_config_dir  # noqa: E402
 from hydra.core.global_hydra import GlobalHydra  # noqa: E402
 
-from training.config import (  # noqa: E402
+from losses.spectral_likelihood import SpectralLikelihood  # noqa: E402
+from tasks.codecs import build_codec  # noqa: E402
+from training.config import (  # noqa: E402  # noqa: E402
+    _coerce_rate_params,
+    _to_dict,
     build_dataset,
     build_metrics,
     build_task_and_codec,
@@ -81,6 +85,27 @@ VARIANTS: dict[str, tuple[str, str]] = {
         "gen_v2_recal",
         "r2://ml-data/artifacts/gen_v2_recal/checkpoints/best.ckpt",
     ),
+    # The wind-channel 2x2: {1, 8} observers x {no wind, wind}, all trained
+    # under the Rice/Whittle spectral likelihood. See
+    # docs/experiments/wind-channel-likelihood.md — w1/w3 are the controls that
+    # make w2/w4 attributable, and the per-drone split is the readout (DREGON
+    # sits in the rotor wake, Michael's array does not).
+    "w1_lik": (
+        "gen_w1_lik_nowind",
+        "r2://ml-data/artifacts/gen_w1_lik_nowind/checkpoints/best.ckpt",
+    ),
+    "w2_lik_wind": (
+        "gen_w2_lik_wind",
+        "r2://ml-data/artifacts/gen_w2_lik_wind/checkpoints/best.ckpt",
+    ),
+    "w3_lik_mm": (
+        "gen_w3_lik_nowind_mm",
+        "r2://ml-data/artifacts/gen_w3_lik_nowind_mm/checkpoints/best.ckpt",
+    ),
+    "w4_lik_wind_mm": (
+        "gen_w4_lik_wind_mm",
+        "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt",
+    ),
 }
 
 
@@ -98,6 +123,13 @@ def _compose(exp: str, ckpt: str, val_samples: int):
                 "artifacts.enabled=false",
             ],
         )
+
+
+def _codec_params(model_cfg) -> dict:
+    """The ``task_params`` a codec is built from — mirrors
+    ``training.config.build_task_and_codec`` so the scoring codec matches the
+    variant's own conditioning/rate settings exactly."""
+    return _coerce_rate_params(_to_dict(model_cfg).get("task_params", {}) or {})
 
 
 def _rps_mean(frame) -> float:
@@ -119,22 +151,40 @@ def eval_variant(
     batch_size: int,
     min_flight_rps: float,
     illustration_frames: dict | None = None,
-) -> tuple[dict[str, tuple[float, int]], dict]:
+) -> tuple[dict[str, tuple[float, float, int]], dict]:
     """Score one variant on the *free-flight* subset (mean RPS >= ``min_flight_rps``)
     of the corrected-geometry swapped valid set, and — if ``illustration_frames``
     are given — generate audio for those clips too.
 
-    Returns ``({group: (mrstft, n)}, {drone: (real_1d, gen_1d)})``, where
+    Returns ``({group: (mrstft, nll, n)}, {drone: (real_1d, gen_1d)})``, where
     ``group`` is ``"all"`` plus one key per drone (``dregon``/``michaels``,
     resolved from the clip geometry by :func:`_drone_of`). The per-drone split
     is what makes a Michael's-only claim testable — the pooled number mixes two
-    rigs whose label quality differs. We report only the ``mrstft`` metric (the
-    training monitor); the raw MSSTFT *loss* is a different STFT implementation
-    and is intentionally not reported alongside it."""
+    rigs whose label quality differs.
+
+    **Two numbers, and the second is the trustworthy one.** ``mrstft`` is kept
+    for continuity with the earlier reports, but it compares one *realization*
+    of the generator with the recording, and a magnitude distance systematically
+    prefers an UNDER-DISPERSED model: for a stochastic bin, a deterministic
+    prediction at the Rayleigh median beats one at the correct RMS (0.370 vs
+    0.393 mean |.| distance), and a correctly-calibrated model that actually
+    samples scores worst of all (0.520). A model that fixes the -1.6 dB
+    stochastic-power bias can therefore look like a regression under mrstft.
+
+    ``nll`` is the held-out Rice/Whittle negative log-likelihood — a proper
+    scoring rule, minimized by the *true* distribution — computed identically
+    for every variant through ``spectral_stats`` (every generator here has it,
+    including the magnitude-trained ones). Lower is better. When the two
+    disagree, ``nll`` is the one to believe."""
     from data_processing.collate import frame_collate
 
     cfg = _compose(exp, ckpt, val_samples)
     _task, codec = build_task_and_codec(cfg.model)
+    # A second codec forced into distributional mode, so the proper scoring rule
+    # can be evaluated for variants whose own config is not distributional.
+    nll_codec = build_codec("noise_generation", **_codec_params(cfg.model))
+    nll_codec.distributional = True
+    nll_core = SpectralLikelihood(n_ffts=(2048, 512)).to(device)
     model = instantiate_model(cfg.model).to(device)
     _warm_start(model, str(cfg.checkpoint), device)
     metric_suite = build_metrics(cfg.metrics)
@@ -144,23 +194,49 @@ def eval_variant(
 
     model.eval()
     pairs: list = []
+    nll_items: list = []
     with torch.no_grad():
         for batch in valid_loader:
             batch = _to_device(batch, device)
             pred = _forward(codec, model, batch, device=device, amp=False)
             pred_cpu = pred.map_data(lambda t: t.detach().cpu())
             batch_cpu = batch.map_data(lambda t: t.detach().cpu())
-            for pi, ti in zip(_iter_samples(pred_cpu), _iter_samples(batch_cpu)):
+            # Proper scoring rule, on the same batch and the same free-flight
+            # selection: ask the model for its predicted distribution and score
+            # the recording's likelihood under it.
+            stats = _forward(nll_codec, model, batch, device=device, amp=False)
+            stats_cpu = stats.map_data(lambda t: t.detach().cpu())
+            for pi, ti, si in zip(
+                _iter_samples(pred_cpu), _iter_samples(batch_cpu), _iter_samples(stats_cpu)
+            ):
                 if _rps_mean(ti) >= min_flight_rps:  # free-flight only
                     pairs.append((pi, ti))
+                    nll_items.append((si, ti))
 
-    def _score(subset: list) -> tuple[float, int]:
+    def _nll_of(si, ti) -> float:
+        tgt = torch.as_tensor(np.asarray(ti["audio"].data))[None].to(device)
+        coh = torch.as_tensor(np.asarray(si["coherent"].data))[None].to(device)
+        mags = torch.as_tensor(np.asarray(si["noise_mags"].data))[None].to(device)
+        with torch.no_grad():
+            return float(
+                nll_core(
+                    tgt.reshape(-1, tgt.shape[-1]),
+                    coh.reshape(-1, coh.shape[-1]),
+                    mags.reshape(-1, mags.shape[-2], mags.shape[-1]),
+                )
+            )
+
+    nll_by_id = {id(ti): _nll_of(si, ti) for si, ti in nll_items}
+
+    def _score(subset: list) -> tuple[float, float, int]:
         if not subset:
-            return float("nan"), 0
+            return float("nan"), float("nan"), 0
         agg = metric_suite.evaluate(subset).aggregate("mean")
-        return float(agg.get("mrstft", float("nan"))), len(subset)
+        nlls = [nll_by_id[id(ti)] for _pi, ti in subset if id(ti) in nll_by_id]
+        nll = float(np.mean(nlls)) if nlls else float("nan")
+        return float(agg.get("mrstft", float("nan"))), nll, len(subset)
 
-    scores: dict[str, tuple[float, int]] = {"all": _score(pairs)}
+    scores: dict[str, tuple[float, float, int]] = {"all": _score(pairs)}
     by_drone: dict[str, list] = {}
     for pi, ti in pairs:
         by_drone.setdefault(_drone_of(ti), []).append((pi, ti))
@@ -366,28 +442,29 @@ def main() -> None:
             continue
         rows.append((name, scores))
         illust_by_variant[name] = illust_gen
-        for group, (mr, n) in scores.items():
+        for group, (mr, nll, n) in scores.items():
             print(
-                f"  {group:<9} mrstft = {mr:.3f}   (free-flight n={n}, RPS>={args.min_flight_rps:g})"
+                f"  {group:<9} mrstft = {mr:8.3f}   nll = {nll:9.3f}   "
+                f"(free-flight n={n}, RPS>={args.min_flight_rps:g})"
             )
 
     groups = ["all"] + sorted({g for _, s in rows for g in s if g != "all"})
-    header = "".join(f"{g + ' ↑':>12}{'n':>7}" for g in groups)
-    width = 16 + len(groups) * 19
-    print("\n" + "=" * width)
-    print(f"{'variant':<16}{header}")
-    print("-" * width)
-    for name, scores in rows:
-        cells = "".join(
-            f"{scores.get(g, (float('nan'), 0))[0]:>12.3f}{scores.get(g, (0, 0))[1]:>7d}"
-            for g in groups
-        )
-        print(f"{name:<16}{cells}")
+    nan3 = (float("nan"), float("nan"), 0)
+    for label, idx, arrow in (("mrstft", 0, "↑ (biased — see docstring)"), ("nll", 1, "↓ proper")):
+        header = "".join(f"{g:>13}" for g in groups)
+        width = 18 + len(groups) * 13
+        print("\n" + "=" * width)
+        print(f"{label} {arrow}")
+        print(f"{'variant':<18}{header}")
+        print("-" * width)
+        for name, scores in rows:
+            cells = "".join(f"{scores.get(g, nan3)[idx]:>13.3f}" for g in groups)
+            print(f"{name:<18}{cells}")
     csv = args.out / "msstft_comparison.csv"
     csv.write_text(
-        "variant,group,mrstft,n_flight\n"
+        "variant,group,mrstft,nll,n_flight\n"
         + "".join(
-            f"{name},{g},{scores[g][0]:.6f},{scores[g][1]}\n"
+            f"{name},{g},{scores[g][0]:.6f},{scores[g][1]:.6f},{scores[g][2]}\n"
             for name, scores in rows
             for g in groups
             if g in scores

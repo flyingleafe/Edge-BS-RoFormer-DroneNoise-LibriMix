@@ -1,0 +1,38 @@
+# Rice/Whittle spectral likelihood for noise-generation — the objective that
+# replaces conf/loss/multiscale_stft.yaml for models with a stochastic branch.
+#
+# The multi-scale magnitude loss compares ONE realization of the generator with
+# ONE realization of the recording. For the harmonic bank that is correct; for
+# the broadband residual and the wind channel it is not, because no model can
+# reproduce the particular gust the microphone happened to catch. Two measured
+# consequences (tests/losses/test_spectral_likelihood.py):
+#   * the fitted power of a purely stochastic component converges to the
+#     Rayleigh MEDIAN, i.e. ln2 (-1.6 dB) below the truth, at any capacity;
+#   * the gradient on those branches is dominated by draw-to-draw difference
+#     rather than by parameter error.
+#
+# Here the generator predicts a DISTRIBUTION instead: `coherent` (the harmonic
+# bank propagated to each mic) is the mean, `noise_mags` (the analytic spectral
+# envelope of every stochastic branch, never sampled) is the variance, and the
+# unknown absolute rotor phase is marginalized out. That marginalization is what
+# makes the objective Rice rather than Gaussian, and it degenerates to exactly
+# the Whittle likelihood on bins where the coherent part is absent.
+#
+# Requires task_params.distributional=true on the model config, which switches
+# NoiseGenerationCodec to `model.spectral_stats(...)`.
+terms:
+  - name: likelihood
+    _target_: losses.SpectralLikelihoodLoss
+    weight: 1.0
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      target_key: audio
+      coherent_key: coherent
+      noise_key: noise_mags
+      # Two scales: 2048 resolves the ~80 Hz rotor comb (7.8 Hz/bin), 512
+      # conditions the broadband envelope. Averaging scales is an ensemble of
+      # likelihoods rather than a joint one — use a single entry for a strictly
+      # proper likelihood.
+      n_ffts: [2048, 512]
+      hop_ratio: 0.25

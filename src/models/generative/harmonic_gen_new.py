@@ -286,6 +286,12 @@ class HarmonicNoiseGenNew(nn.Module):
                 "f0s": f0s,
                 "harm_noise": harm_noise,
                 "diff_noise": diff_noise,
+                # The DETERMINISTIC part alone (harmonic bank, no filtered-noise
+                # draw). `losses.spectral_likelihood` needs the coherent and
+                # stochastic components separated: the former is the distribution's
+                # mean, the latter contributes only variance and is never compared
+                # realization-to-realization.
+                "coherent": harm_noise.sum(-2),
                 "audio": audio,
             }
 

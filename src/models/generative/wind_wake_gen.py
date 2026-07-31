@@ -51,6 +51,7 @@ from __future__ import annotations
 
 from typing import Literal, overload
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -430,7 +431,12 @@ def ou_envelope(
     a = torch.exp(-dt / tau)
     noise_scale = torch.sqrt((1.0 - a**2).clamp_min(1e-8)) * sigma
     eps = torch.randn(shape, generator=generator, device=device, dtype=dtype)
-    xt = torch.zeros(shape[:-1], device=device, dtype=dtype)
+    # Start FROM the stationary distribution N(0, sigma^2) rather than from 0.
+    # Starting at 0 biases the opening frames toward g = exp(-sigma^2/2) < 1 and,
+    # worse, makes the sampler's marginal disagree with the stationary marginal
+    # that `WindTransduction.expected_mags` integrates over — so the likelihood
+    # would be fitting a slightly different process than the synthesizer draws.
+    xt = eps[..., 0] * sigma
     xs = [xt]
     for t in range(1, ll):
         xt = a * xt + noise_scale * eps[..., t]
@@ -529,6 +535,67 @@ class WindTransduction(nn.Module):
             low_pass = low_pass * torch.exp(torch.sigmoid(self.log_mlp_gate) * residual)
 
         return level.unsqueeze(-1) * low_pass  # [B, M, n_env, n_freqs]
+
+    def expected_mags(
+        self,
+        u: torch.Tensor,
+        *,
+        apply_gust: bool = True,
+        n_quad: int = 9,
+    ) -> torch.Tensor:
+        """RMS magnitude response, with the gust **marginalized out**.
+
+        The gust is the reason the sampling path cannot be used as a training
+        target: it is an unobservable latent, so no realization of it is the
+        "right" one. What the likelihood needs is the response averaged over the
+        gust distribution, ``sqrt(E_g[|H(U g)|^2])``.
+
+        ``g = exp(x - s^2/2)`` with ``x ~ N(0, s^2)``, and ``H`` depends on ``g``
+        nonlinearly (through both the band level ``q^gamma`` and the corner
+        ``f_c``), so the expectation has no closed form. It is computed by
+        Gauss--Hermite quadrature, which for a smooth integrand against a
+        Gaussian is accurate to machine precision at a handful of nodes — far
+        cheaper and lower-variance than Monte Carlo over gust draws.
+
+        This is a *moment* match: the marginal is a scale mixture of Rayleighs
+        rather than a Rayleigh, so matching ``E[power]`` is exact in the second
+        moment and approximate in the tails. That is the right trade here, since
+        the Whittle term the variance feeds is a second-moment statistic.
+
+        **Validity range.** The band level goes as ``U^(2*gamma)``, so the gust
+        enters the *power* as ``g^(4*gamma)`` and its expectation is the
+        log-normal moment ``exp(p(p-1) s^2 / 2)`` with ``p = 4*gamma``. That
+        grows quickly: at the default ``gamma ~ 0.69`` it is 1.3x at ``s = 0.31``
+        (the initialization) but 14x at ``s = 1.0``, where the predicted power is
+        carried by rare gusts. In that regime the moment match is a poor summary
+        of a tail-dominated mixture *and* the quadrature needs many more nodes
+        (measured: 9 nodes are exact at ``s = 0.31``, 0.3% off at ``s = 0.69``,
+        17% off at ``s = 1.04``). ``tests/models/test_generative_spectral_stats``
+        asserts convergence over the range the model actually occupies; if a
+        training run drives the learned gust ``sigma`` far past ~0.7, this
+        approximation — not the optimizer — is the thing to revisit.
+
+        Args:
+            u: ``[B, M, n_env]`` flow speed (m/s).
+            apply_gust: marginalize over the OU gust (False = gust-free response).
+            n_quad: Gauss--Hermite nodes. See the validity note above.
+
+        Returns:
+            ``[B, M, n_env, n_freqs]`` RMS magnitude response.
+        """
+        if not apply_gust:
+            return self.filter_mags(u)
+        sigma = _pos(self.raw_sigma)
+        nodes, weights = np.polynomial.hermite_e.hermegauss(int(n_quad))
+        nodes_t = u.new_tensor(nodes)
+        weights_t = u.new_tensor(weights)
+        weights_t = weights_t / weights_t.sum()
+        power = torch.zeros_like(self.filter_mags(u))
+        for node, weight in zip(nodes_t, weights_t):
+            # x = sigma * node  (HermiteE nodes are already unit-variance scaled)
+            g = torch.exp(sigma * node - 0.5 * sigma**2)
+            power = power + weight * self.filter_mags(u * g).pow(2)
+        return power.clamp_min(0.0).sqrt()
 
     def forward(
         self,
@@ -823,6 +890,43 @@ class WindWakeChannel(nn.Module):
         wind = self.transduction(u, t, dt, noise=noise, apply_gust=apply_gust, generator=generator)
         return wind.squeeze(1) if single else wind
 
+    def expected_mags_rel(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        *,
+        v_rel: torch.Tensor | None = None,
+        apply_gust: bool = True,
+        n_quad: int = 5,
+    ) -> torch.Tensor:
+        """Gust-marginalized RMS magnitude response per microphone.
+
+        The distributional counterpart of :meth:`forward_rel`: same flow-speed
+        physics, but returns the *spectral envelope* of the channel instead of
+        one realization of it. ``[B, M, n_env, n_freqs]``. See
+        :meth:`WindTransduction.expected_mags`.
+        """
+        u = self.flow_speed_rel(rps, rel_pos, v_rel=v_rel)  # [B, M, n_env]
+        return self.transduction.expected_mags(u, apply_gust=apply_gust, n_quad=n_quad)
+
+
+def _resample_envelope(mags: torch.Tensor, frames: int, freqs: int) -> torch.Tensor:
+    """Resample a ``[B, M, n_frames, n_freqs]`` magnitude envelope onto a new grid.
+
+    Both axes are uniform over fixed physical spans (the clip duration and
+    ``0..Nyquist``), so a plain bilinear resize is the correct resampling.
+    """
+    if mags.shape[-2] == frames and mags.shape[-1] == freqs:
+        return mags
+    b, m = mags.shape[0], mags.shape[1]
+    out = F.interpolate(
+        mags.reshape(b * m, 1, mags.shape[-2], mags.shape[-1]),
+        size=(frames, freqs),
+        mode="bilinear",
+        align_corners=True,
+    )
+    return out.reshape(b, m, frames, freqs)
+
 
 class PositionalHarmonicPlusWindGen(nn.Module):
     """Coherent position-aware generator **plus** the additive wind-wake channel.
@@ -885,3 +989,48 @@ class PositionalHarmonicPlusWindGen(nn.Module):
             return out
         coherent = self.coherent(rps, rel_pos, z=z, **kwargs)
         return coherent + wind
+
+    def spectral_stats(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+        *,
+        v_rel: torch.Tensor | None = None,
+        n_quad: int = 5,
+        **kwargs,
+    ) -> dict[str, torch.Tensor]:
+        """Predict the observed field as a distribution (mean + variance).
+
+        This is the training-time counterpart of :meth:`forward` and the reason
+        the wind channel can be fitted at all. Wind is *stochastic and
+        unobservable*: the recording contains one gust realization that no model
+        can reproduce, so comparing a synthesized gust to it — which
+        :class:`losses.MultiScaleSTFTLoss` does — measures mostly the difference
+        between two independent draws. The gradient is then dominated by that
+        difference rather than by any parameter error, and the fitted level is
+        biased low (see :mod:`losses.spectral_likelihood`).
+
+        Here nothing is sampled. The wind contributes only **power**, added to
+        the coherent generator's own broadband branch — the two are independent,
+        so their powers sum:
+
+            noise_mags^2 = coherent_broadband^2 + wind^2
+
+        Returns ``{"coherent": [B, M, T], "noise_mags": [B, M, n_env, F]}``.
+        """
+        stats = self.coherent.spectral_stats(rps, rel_pos, z=z, **kwargs)
+        wind_mags = self.wind.expected_mags_rel(rps, rel_pos, v_rel=v_rel, n_quad=n_quad)
+        base = stats["noise_mags"]  # [B, M, t_n, F_g]
+        # Both envelopes are uniform over the same spans (clip duration,
+        # 0..Nyquist), so they can be resampled onto a common grid — but always
+        # onto the FINER of the two. Downsampling either one would discard
+        # resolution the model actually has, and (with align_corners sampling
+        # rather than averaging) would quietly lose power in the process.
+        frames = max(base.shape[-2], wind_mags.shape[-2])
+        freqs = max(base.shape[-1], wind_mags.shape[-1])
+        total = (
+            _resample_envelope(base, frames, freqs).pow(2)
+            + _resample_envelope(wind_mags, frames, freqs).pow(2)
+        ).clamp_min(0.0)
+        return {"coherent": stats["coherent"], "noise_mags": total.sqrt()}

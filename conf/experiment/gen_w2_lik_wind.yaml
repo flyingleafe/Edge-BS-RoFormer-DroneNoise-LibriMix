@@ -1,0 +1,45 @@
+# @package _global_
+# W2 — the additive wind-wake channel, trained under the Rice/Whittle spectral
+# likelihood (conf/loss/spectral_likelihood.yaml) instead of the multi-scale
+# magnitude loss that the original v3_wind arm used.
+#
+# Why the original wind arm lost (free-flight mrstft 3.44, the worst of the four
+# corrected-geometry variants): wind gusts are stochastic and unobservable, so
+# scoring a synthesized gust against the single gust the microphone caught
+# measures mostly the difference between two independent draws. The wind
+# parameters received a gradient dominated by that difference, and any level
+# they did learn was biased low by ln2 (-1.6 dB) — the Rayleigh-median bias
+# measured in tests/losses/test_spectral_likelihood.py. Under the likelihood
+# nothing is sampled: the wake physics predicts a VARIANCE and is scored on it.
+#
+# Falsifiable expectation, from the pre-training de-risk (Spearman 0.92 for the
+# wake gate against the DREGON per-mic low-band floor, vs 0.74 for a plain 1/r
+# control; Michael's array sits OUT of the wake with max predicted exposure
+# 0.006 m/s):
+#   * DREGON  — mics inside the rotor wake -> the channel has something to
+#     explain -> should IMPROVE over W1.
+#   * MICHAEL'S — array out of the wake -> the channel should be inert ->
+#     should be UNCHANGED against W1, not worse.
+# A wind arm that helps DREGON at Michael's expense would mean the channel is
+# acting as free capacity rather than as the physics it claims to be, which is
+# why the per-drone split in scripts/eval_noise_gen_variants.py is the readout.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream
+  - override /model: positional_harmonic_wind_gen_perdrone_lik
+  - override /loss: spectral_likelihood
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_w2_lik_wind
+
+epochs: 60
+patience: 8
+batch_size: 16
+grad_accum_steps: 2
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false

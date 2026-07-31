@@ -1,0 +1,41 @@
+# @package _global_
+# gen_w3_lik_nowind_mm — spectral likelihood, MULTI-OBSERVER (all 8 mics), WITHOUT the wind channel.
+#
+# the multi-observer control: it is what W4 must be measured against, since rendering 8 mics changes the fit of the coherent broadband branch too.
+#
+# Two things had to be true before the wind channel could work, and the single-
+# microphone arms (gen_w1/gen_w2) hold only the first:
+#   1. It must be FITTABLE. Gusts are stochastic, so scoring a synthesized gust
+#      against the one the mic caught measures draw-vs-draw difference; the
+#      fitted level is biased low by ln2 (-1.6 dB) and the gradient is noise.
+#      conf/loss/spectral_likelihood.yaml fixes that by scoring a predicted
+#      variance instead of a realization.
+#   2. It must be IDENTIFIABLE. The wind is distinguished from the coherent
+#      generator's own broadband branch only by its SPATIAL law — a wake-gated,
+#      per-mic-incoherent field against a 1/r-propagated one. With M=1 that
+#      difference is invisible and the wind is just another broadband shape
+#      competing with a more flexible learned 60-band filter. Multi-observer
+#      training is what gives it something only it can explain.
+#
+# Batch 4 x accum 8 = effective 32, matching the single-mic arms' optimizer
+# steps; the 8x audio per item is paid for with the smaller batch.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic
+  - override /model: positional_harmonic_gen_perdrone_lik
+  - override /loss: spectral_likelihood
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_w3_lik_nowind_mm
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false

@@ -34,6 +34,12 @@ from losses.spectral import (
     MultiScaleSTFTLoss,
     multistft_reshape,
 )
+from losses.spectral_likelihood import (
+    SpectralLikelihood,
+    SpectralLikelihoodLoss,
+    rice_nll,
+    split_coherence,
+)
 
 __all__ = [
     "Loss",
@@ -58,5 +64,9 @@ __all__ = [
     "AuraMRSTFTLoss",
     "MultiScaleSTFT",
     "MultiScaleSTFTLoss",
+    "SpectralLikelihood",
+    "SpectralLikelihoodLoss",
+    "rice_nll",
+    "split_coherence",
     "multistft_reshape",
 ]

@@ -106,7 +106,11 @@ class NoiseRPSDataset(Dataset):
             time, so __len__ controls dataloader iters per epoch.
         seed: optional seed for reproducible sampling.
         channel_policy: 'first' uses channel 0 always; 'random' picks a random
-            channel from each record.
+            channel from each record; 'all' keeps EVERY channel, returning
+            ``audio`` as ``(C, T)`` instead of ``(T,)``. 'all' is what
+            multi-observer noise generation needs: a channel model whose
+            spatial law differs from the coherent field's ``1/r`` (the wind-wake
+            gate, say) is simply unidentifiable from a single microphone.
         rps_normalize: divide rps by this value before returning (useful for
             scale-stabilising downstream networks; the harmonic synth needs raw
             Hz, but small auxiliary networks benefit from normalisation).
@@ -122,7 +126,7 @@ class NoiseRPSDataset(Dataset):
         sample_rate: int = 16000,
         samples_per_epoch: int = 1024,
         seed: int | None = None,
-        channel_policy: Literal["first", "random"] = "first",
+        channel_policy: Literal["first", "random", "all"] = "first",
         rps_normalize: float | None = None,
         balance_rps: bool = False,
         rps_bins: int = 8,
@@ -218,10 +222,16 @@ class NoiseRPSDataset(Dataset):
     def _extract_chunk(
         self, src: _ChunkSource, rec_idx: int = -1
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Returns (audio [T], rps_motor_rate [4, M], audio_ts [T], motor_ts [M])."""
+        """Returns (audio, rps_motor_rate [4, M], audio_ts [T], motor_ts [M]).
+
+        ``audio`` is ``[T]`` for the single-channel policies and ``[C, T]`` for
+        ``channel_policy='all'``.
+        """
         tf = src.frame
         # Random channel within record
-        if self.channel_policy == "random" and src.n_channels > 1:
+        if self.channel_policy == "all":
+            ch = slice(None)
+        elif self.channel_policy == "random" and src.n_channels > 1:
             ch = int(self.rng.integers(0, src.n_channels))
         else:
             ch = 0
@@ -240,7 +250,7 @@ class NoiseRPSDataset(Dataset):
 
         audio_s = sliced["audio"]
         # audio data is (channels, N) — axis 0 = channels, axis -1 = time
-        audio = np.asarray(audio_s.data)[ch, :]
+        audio = np.asarray(audio_s.data)[ch, :]  # [T], or [C, T] for 'all'
         audio_ts = cast(td.GridIndex, audio_s.tindex).sample_times()
 
         motor_s = sliced[src.rps_key]
@@ -257,15 +267,19 @@ class NoiseRPSDataset(Dataset):
         if motor_ts.size == 0 or rps.shape[-1] == 0:
             raise ValueError("empty motor slice for chunk window")
 
-        # Length normalisation — chunks can be off by 1 sample due to int cast
-        if len(audio) > self.chunk_size:
-            audio = audio[: self.chunk_size]
+        # Length normalisation — chunks can be off by 1 sample due to int cast.
+        # Time is the LAST axis, which is the only one present for the mono
+        # policies and the second of two under `channel_policy='all'`.
+        n_samples = audio.shape[-1]
+        if n_samples > self.chunk_size:
+            audio = audio[..., : self.chunk_size]
             audio_ts = audio_ts[: self.chunk_size]
-        elif len(audio) < self.chunk_size:
+        elif n_samples < self.chunk_size:
             # Pad audio + audio_ts (extrapolate by sample dt)
-            pad = self.chunk_size - len(audio)
+            pad = self.chunk_size - n_samples
             dt = 1.0 / self.sample_rate
-            audio = np.concatenate([audio, np.zeros(pad, dtype=audio.dtype)])
+            pad_shape = (*audio.shape[:-1], pad)
+            audio = np.concatenate([audio, np.zeros(pad_shape, dtype=audio.dtype)], axis=-1)
             audio_ts = np.concatenate([audio_ts, audio_ts[-1] + dt * np.arange(1, pad + 1)])
         return (
             audio.astype(np.float32),

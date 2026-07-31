@@ -367,13 +367,10 @@ class _CodebookConditionedNoiseGen(nn.Module):
         raws = torch.stack([self.log_jitter_sigma[cb._key(n)] for n in drone_names], dim=0)
         return nn.functional.softplus(raws)  # [B], strictly positive
 
-    def forward(
-        self,
-        rps: Any,
-        rel_pos: Any,
-        drone_names: list[str],
-        **kwargs: Any,
-    ) -> Any:
+    def _resolve_conditioning(self, drone_names: list[str], kwargs: dict[str, Any]) -> torch.Tensor:
+        """Per-sample code ``z`` (plus the per-drone jitter sigma, threaded into
+        ``kwargs``) — shared by :meth:`forward` and :meth:`spectral_stats` so the
+        two cannot drift apart."""
         z = self.codebook(list(drone_names))
         if self.z_noise_std > 0.0 and self.training:
             rms = z.detach().pow(2).mean(dim=-1, keepdim=True).sqrt()
@@ -384,7 +381,35 @@ class _CodebookConditionedNoiseGen(nn.Module):
         sigma = self._resolve_jitter_sigma(list(drone_names))
         if sigma is not None:
             kwargs.setdefault("rps_jitter_sigma", sigma)
+        return z
+
+    def forward(
+        self,
+        rps: Any,
+        rel_pos: Any,
+        drone_names: list[str],
+        **kwargs: Any,
+    ) -> Any:
+        z = self._resolve_conditioning(list(drone_names), kwargs)
         return self.generator(rps, rel_pos, z=z, **kwargs)
+
+    def spectral_stats(
+        self,
+        rps: Any,
+        rel_pos: Any,
+        drone_names: list[str],
+        **kwargs: Any,
+    ) -> Any:
+        """Conditioned passthrough to the generator's distributional prediction
+        (see ``models.generative`` ``spectral_stats``), so a codebook-conditioned
+        model can be trained by :class:`losses.SpectralLikelihoodLoss`."""
+        fn = getattr(self.generator, "spectral_stats", None)
+        if fn is None:
+            raise TypeError(
+                f"wrapped generator {type(self.generator).__name__} has no `spectral_stats`"
+            )
+        z = self._resolve_conditioning(list(drone_names), kwargs)
+        return fn(rps, rel_pos, z=z, **kwargs)
 
 
 def build_noise_gen_model(

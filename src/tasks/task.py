@@ -112,6 +112,7 @@ def noise_generation(
     sr: tuple[int, int] = AUDIO_RATE,
     conditioned: bool = False,
     return_dict: bool = False,
+    distributional: bool = False,
 ) -> Task:
     """RPS trajectories + array geometry in, synthesized drone noise at
     each microphone out.
@@ -127,8 +128,16 @@ def noise_generation(
     model's own ``cond_dim > 0``; ``return_dict`` must match whether the
     loss needs the emitter's ``harm_amps``/``noise_amps`` (E3's smoothness
     regularisers) — see ``src/tasks/noise-generation/AGENTS.md``.
+
+    ``distributional`` likewise does not change this Frame contract: it makes
+    the codec ask the model for a *distribution* (a coherent mean plus a
+    stochastic spectral envelope) instead of a single realization, adding the
+    extra ``coherent``/``noise_mags`` pred entries that
+    :class:`losses.SpectralLikelihoodLoss` consumes. ``audio`` is still emitted,
+    so metrics are unaffected. See :mod:`losses.spectral_likelihood` for why
+    fitting the stochastic branches needs it.
     """
-    del conditioned, return_dict
+    del conditioned, return_dict, distributional
     return Task(
         name="noise_generation",
         input_spec=FrameSpec(
