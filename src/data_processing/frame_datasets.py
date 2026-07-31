@@ -578,16 +578,21 @@ class NoiseGenFrameDataset(Dataset):
     per-draw ``origin`` — already exactly the codebook key convention used
     by ``conf/online_mix/noise_gen_online_dregon_michaels*.yaml`` historically).
 
-    **Single-microphone limitation**: ``NoiseRPSDataset`` already reduces
-    each draw to one selected audio channel (``channel_policy``) without
-    reporting *which* physical index was picked — so this adapter only
-    supports ``channel_policy="first"`` (channel 0, deterministic): both
-    the audio target and ``mic_pos`` are row 0 of the recording's geometry.
-    This is a real reduction from the historical online-mixing noise-gen
-    trainer, which rendered all 8 mics jointly (native multi-observer) —
-    see REPLICATION.md § E2/E3 for the caveat; extending
-    ``NoiseRPSDataset`` to report the drawn channel index is the natural
-    follow-up if full multichannel noise-gen training is needed.
+    **Channel policy.** ``channel_policy="first"`` (the default) keeps the
+    historical single-microphone behaviour: channel 0 and row 0 of the
+    recording's geometry. ``channel_policy="all"`` renders **every** microphone
+    jointly, restoring the native multi-observer training the pre-Hydra
+    trainer did.
+
+    The distinction is not cosmetic. Anything whose spatial signature differs
+    from the coherent field's ``1/r`` law — the wind-wake channel above all,
+    whose whole claim is a wake-gated, per-microphone-incoherent field — is
+    **unidentifiable from one microphone**: with ``M = 1`` it degenerates into
+    just another broadband shape, competing against the far more flexible
+    learned noise filter, and it will lose. Multi-observer training is what
+    gives such a component something only it can explain. ``"random"`` is
+    rejected because the inner dataset does not report which index it drew, so
+    the geometry could not be matched to the audio.
     """
 
     def __init__(
@@ -600,10 +605,12 @@ class NoiseGenFrameDataset(Dataset):
 
         if not isinstance(inner, NoiseRPSDataset):
             raise TypeError(f"NoiseGenFrameDataset wraps a NoiseRPSDataset, got {type(inner)}")
-        if inner.channel_policy != "first":
+        if inner.channel_policy not in ("first", "all"):
             raise ValueError(
-                "NoiseGenFrameDataset requires channel_policy='first' (mic index 0 "
-                f"deterministic — see class docstring); got {inner.channel_policy!r}"
+                "NoiseGenFrameDataset requires channel_policy='first' (mic index 0) "
+                "or 'all' (every mic, multi-observer) — 'random' does not report "
+                f"which index it drew, so geometry cannot be matched; got "
+                f"{inner.channel_policy!r}"
             )
         self.inner = inner
         self.dregon_dir = _resolve_noise_dir(dregon_dir)
@@ -616,10 +623,15 @@ class NoiseGenFrameDataset(Dataset):
     def __getitem__(self, idx: int) -> td.Frame:
         item = self.inner[idx]
         rps = np.asarray(item["rps"], dtype=np.float32)  # (rotor, T) Hz at audio rate
-        audio = np.asarray(item["audio"], dtype=np.float32)[None, :]  # (1, T) -> single mic
+        audio = np.asarray(item["audio"], dtype=np.float32)
         origin = str(item["origin"])
         mic_pos_full, rotor_pos = self._geometry[origin]
-        mic_pos = np.asarray(mic_pos_full[:1], dtype=np.float32)  # (1, 3) — channel 0 only
+        if self.inner.channel_policy == "all":
+            audio = np.atleast_2d(audio)  # (M, T) — every mic
+            mic_pos = np.asarray(mic_pos_full[: audio.shape[0]], dtype=np.float32)
+        else:
+            audio = audio[None, :]  # (1, T) — channel 0 only
+            mic_pos = np.asarray(mic_pos_full[:1], dtype=np.float32)
         rotor_pos = np.asarray(rotor_pos, dtype=np.float32)
         sample_rate = self.inner.sample_rate
 
@@ -646,6 +658,7 @@ class NoiseGenFrameDataset(Dataset):
         val_pct: float = 0.1,
         val_at_start: bool = False,
         seed: int = 42,
+        channel_policy: str = "first",
         **dataset_kwargs: Any,
     ) -> NoiseGenFrameDataset:
         """Build the *train* split — see :func:`build_valid` for the pair."""
@@ -663,7 +676,7 @@ class NoiseGenFrameDataset(Dataset):
             val_pct=val_pct,
             val_at_start=val_at_start,
             seed=seed,
-            channel_policy="first",
+            channel_policy=channel_policy,
             **dataset_kwargs,
         )
         return cls(train_ds, dregon_dir=dregon_dir)
@@ -681,6 +694,7 @@ class NoiseGenFrameDataset(Dataset):
         val_pct: float = 0.1,
         val_at_start: bool = False,
         seed: int = 42,
+        channel_policy: str = "first",
         **dataset_kwargs: Any,
     ) -> NoiseGenFrameDataset:
         """Build the *valid* split — same call as :meth:`build_train`, source
@@ -701,7 +715,7 @@ class NoiseGenFrameDataset(Dataset):
             val_pct=val_pct,
             val_at_start=val_at_start,
             seed=seed,
-            channel_policy="first",
+            channel_policy=channel_policy,
             **dataset_kwargs,
         )
         return cls(val_ds, dregon_dir=dregon_dir)

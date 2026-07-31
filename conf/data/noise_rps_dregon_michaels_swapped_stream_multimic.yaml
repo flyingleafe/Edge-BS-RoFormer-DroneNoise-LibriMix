@@ -1,0 +1,54 @@
+# MULTI-OBSERVER variant of noise_rps_dregon_michaels_swapped_stream.yaml:
+# identical split, sources and pins, but `channel_policy: all` keeps EVERY
+# microphone instead of channel 0, so the model is trained as the native
+# multi-observer generator it was designed to be.
+#
+# Why this matters for the wind channel specifically: the wind-wake field is
+# distinguished from the coherent generator's own broadband branch ONLY by its
+# spatial law (a wake-gated, per-mic-incoherent field vs a 1/r-propagated one).
+# With a single microphone that difference is invisible, the wind reduces to
+# just another broadband shape competing against a more flexible learned
+# 60-band filter, and it cannot win. Multi-observer training is what gives it
+# something only it can explain.
+#
+# Cost: 8x the rendered audio per item (the propagation is M inverse FFTs on a
+# shared set of R forward FFTs, so it is sub-linear in M, but not free) —
+# batch_size is reduced accordingly in the experiment configs that use this.
+# Swapped DREGON+Michael's noise-generation split, STREAMED from R2 via the
+# corrected-geometry published frame datasets (`frames:DREGON-frames` /
+# `frames:michaels-frames`, pinned in dload.lock to the 180°-fixed DREGON +
+# horizontal-ring Michael's versions — commit 3a4a82e). Identical split logic to
+# conf/data/noise_rps_dregon_michaels_swapped.yaml (val_at_start=true), but the
+# `frames:` specs make it run on ANY omnirun backend (no local data/ needed) and
+# guarantee the CORRECTED mic-array geometry is baked into every chunk. Use this
+# for the corrected-geometry generator retrains (variants v1/v2/v3).
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: frames:michaels-frames
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    channel_policy: all
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: frames:michaels-frames
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    channel_policy: all
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

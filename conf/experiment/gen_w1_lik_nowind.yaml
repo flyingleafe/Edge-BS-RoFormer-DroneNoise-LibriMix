@@ -1,0 +1,33 @@
+# @package _global_
+# W1 — CONTROL for the wind arm: the E6 per-drone architecture (no wind
+# channel) trained under the Rice/Whittle spectral likelihood instead of the
+# multi-scale magnitude loss.
+#
+# Purpose: the likelihood changes how BOTH stochastic branches are fitted — the
+# generator's own broadband residual as well as the wind. Without this arm, any
+# improvement in W2 could not be attributed: it might be the wind channel, or it
+# might be that the broadband residual finally stopped being fitted 1.6 dB low.
+# W1 measures the objective's effect alone; W2 - W1 is the wind channel's.
+#
+# Same data, split and schedule as gen_v1_recal, so it is directly comparable to
+# it — that pair isolates the loss, since the model is identical.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream
+  - override /model: positional_harmonic_gen_perdrone_lik
+  - override /loss: spectral_likelihood
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_w1_lik_nowind
+
+epochs: 60
+patience: 8
+batch_size: 16
+grad_accum_steps: 2
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false

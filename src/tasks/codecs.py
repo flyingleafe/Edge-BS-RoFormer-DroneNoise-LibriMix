@@ -242,6 +242,27 @@ class SalienceRPSCodec:
         return model(inputs["mixture"])
 
 
+def _sample_from_stats(coherent: torch.Tensor, noise_mags: torch.Tensor) -> torch.Tensor:
+    """Draw one realization from a predicted (mean, envelope) pair.
+
+    Used *only* to give the magnitude metrics something to score in
+    distributional mode — the loss never sees it. Each microphone gets its own
+    excitation, which is right for the incoherent branches (wind is incoherent
+    by construction, and the per-rotor broadband residuals are independent).
+
+    Args:
+        coherent: ``[B, M, T]`` deterministic component.
+        noise_mags: ``[B, M, n_frames, n_freqs]`` stochastic magnitude response.
+    """
+    from models.generative.dsp import frequency_filter
+
+    b, m, t = coherent.shape
+    mags = noise_mags.reshape(b * m, noise_mags.shape[-2], noise_mags.shape[-1])
+    excitation = torch.randn(b * m, t, device=coherent.device, dtype=coherent.dtype)
+    noise = frequency_filter(excitation, mags).reshape(b, m, t)
+    return coherent + noise
+
+
 class NoiseGenerationCodec:
     """Codec for ``tasks.task.noise_generation``: RPS + geometry in, ``audio`` out.
 
@@ -272,11 +293,13 @@ class NoiseGenerationCodec:
         sr: tuple[int, int] = AUDIO_RATE,
         conditioned: bool = False,
         return_dict: bool = False,
+        distributional: bool = False,
         default_drone: str = "dregon",
     ) -> None:
         self.sr = sr
         self.conditioned = conditioned
         self.return_dict = return_dict
+        self.distributional = distributional
         self.default_drone = default_drone
 
     def to_inputs(self, batch: td.Frame) -> dict[str, Any]:
@@ -306,12 +329,46 @@ class NoiseGenerationCodec:
                 entries["noise_amps"] = td.wrap(
                     outputs["noise_amps"], dims=("batch", "rotor", None, None)
                 )
+            # Distributional mode: the predicted mean and the stochastic
+            # branches' spectral envelope, which SpectralLikelihoodLoss scores
+            # instead of `audio`. `coherent` is a waveform (so it carries the
+            # audio rate); `noise_mags` is a (frame, freq) envelope on its own
+            # grid, hence untyped trailing dims.
+            if "coherent" in outputs:
+                entries["coherent"] = _batched_series(
+                    outputs["coherent"], ("batch", "mic", "time"), self.sr
+                )
+            if "noise_mags" in outputs:
+                entries["noise_mags"] = td.wrap(
+                    outputs["noise_mags"], dims=("batch", "mic", None, None)
+                )
             return td.Frame(entries)
         audio, _aux = _split_model_output(outputs)
         return td.Frame({"audio": _batched_series(audio, ("batch", "mic", "time"), self.sr)})
 
     def call_model(self, model: Any, inputs: dict[str, torch.Tensor]) -> Any:
         kwargs: dict[str, Any] = {}
+        if self.distributional:
+            # Ask for the predicted DISTRIBUTION rather than one realization:
+            # a coherent mean plus the stochastic branches' spectral envelope,
+            # with nothing sampled. `losses.SpectralLikelihoodLoss` scores that
+            # directly; see its module docstring for why sampling here would
+            # bias the fitted noise level low and swamp its gradient.
+            fn = getattr(model, "spectral_stats", None)
+            if fn is None:
+                raise TypeError(
+                    f"{type(model).__name__} has no `spectral_stats`; a distributional "
+                    "codec needs a model that can predict a mean and a variance "
+                    "(see models.generative.PositionalHarmonicNoiseGen.spectral_stats)"
+                )
+            if self.conditioned:
+                out = fn(inputs["rps"], inputs["rel_pos"], inputs["drone_names"])
+            else:
+                out = fn(inputs["rps"], inputs["rel_pos"])
+            # A realization for the magnitude metrics only — never for the loss.
+            out = dict(out)
+            out["audio"] = _sample_from_stats(out["coherent"], out["noise_mags"])
+            return out
         if self.return_dict:
             kwargs["return_dict"] = True
         if self.conditioned:

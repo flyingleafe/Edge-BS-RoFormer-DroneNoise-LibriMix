@@ -339,6 +339,9 @@ class PositionalHarmonicNoiseGen(nn.Module):
         noise_amps = out["noise_amps"]  # [B*R, F, t_n]
         return {
             "sources": out["audio"].reshape(b, r, t),
+            # The deterministic half of each rotor's source, kept separate so
+            # `spectral_stats` can propagate it as the distribution's mean.
+            "coherent": out["coherent"].reshape(b, r, t),
             "harm_amps": harm_amps.reshape(b, r, *harm_amps.shape[1:]),
             "noise_amps": noise_amps.reshape(b, r, *noise_amps.shape[1:]),
         }
@@ -425,3 +428,75 @@ class PositionalHarmonicNoiseGen(nn.Module):
                 "noise_amps": emitted["noise_amps"],
             }
         return audio
+
+    def spectral_stats(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+        *,
+        initial_phases: torch.Tensor | None = None,
+        rps_jitter: bool | None = None,
+        rps_jitter_sigma: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Predict the observed field as a *distribution*, not a realization.
+
+        Returns the two quantities :mod:`losses.spectral_likelihood` needs:
+
+        - ``coherent`` ``[B, M, T]`` — the harmonic bank propagated to each
+          microphone. Deterministic given the rotor phases, so it is the mean of
+          the complex spectrum.
+        - ``noise_mags`` ``[B, M, t_n, F]`` — the magnitude response of the
+          *stochastic* broadband branch at each microphone. Never sampled.
+
+        The broadband residual is drawn independently per rotor, so propagation
+        adds **powers** rather than amplitudes: with the ``1/r`` weights
+        ``a_{m,r}`` of :func:`propagate`, the observed noise power at microphone
+        ``m`` is ``sum_r a_{m,r}^2 * noise_amps_r(f)^2``. The per-rotor delays
+        are irrelevant here — they rotate phase, and phase carries no power.
+        """
+        if self.cond_dim > 0:
+            if z is None:
+                raise ValueError("model built with cond_dim>0 requires a conditioning code z")
+        else:
+            z = None
+
+        emitted = self.emit(
+            rps,
+            z=z,
+            initial_phases=initial_phases,
+            return_dict=True,
+            rps_jitter=rps_jitter,
+            rps_jitter_sigma=rps_jitter_sigma,
+        )
+        coherent_src = emitted["coherent"]  # [B, R, T]
+        noise_amps = emitted["noise_amps"]  # [B, R, F, t_n]
+
+        if self.silence_fade_rps > 0.0:
+            g = (rps / self.silence_fade_rps).clamp(0.0, 1.0)
+            gate = g * g * (3.0 - 2.0 * g)  # [B, R, T]
+            coherent_src = coherent_src * gate
+            # The same gate multiplies the broadband branch; at the noise-frame
+            # rate it scales POWER by gate^2, so pool the gate then square it.
+            gate_n = torch.nn.functional.adaptive_avg_pool1d(gate, noise_amps.shape[-1])
+            noise_amps = noise_amps * gate_n.unsqueeze(-2)
+
+        coherent = propagate(
+            coherent_src,
+            rel_pos,
+            sample_rate=self.sample_rate,
+            c=self.speed_of_sound,
+            ref_distance=self.ref_distance,
+            eps=self.eps,
+        )
+
+        single = rel_pos.dim() == 3
+        rp = rel_pos.unsqueeze(1) if single else rel_pos  # [B, M, R, 3]
+        dist = torch.linalg.vector_norm(rp, dim=-1).clamp_min(self.eps)  # [B, M, R]
+        amp2 = (self.ref_distance / dist).pow(2)  # [B, M, R]
+        # [B, M, R] x [B, R, F, t] -> [B, M, F, t] power sum over rotors.
+        power = torch.einsum("bmr,brft->bmft", amp2, noise_amps.pow(2))
+        noise_mags = power.clamp_min(0.0).sqrt().transpose(-1, -2)  # [B, M, t_n, F]
+        if single:
+            coherent = coherent if coherent.dim() == 3 else coherent.unsqueeze(1)
+        return {"coherent": coherent, "noise_mags": noise_mags}
