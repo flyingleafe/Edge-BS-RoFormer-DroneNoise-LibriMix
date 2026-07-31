@@ -129,15 +129,24 @@ def noise_generation(
     loss needs the emitter's ``harm_amps``/``noise_amps`` (E3's smoothness
     regularisers) — see ``src/tasks/noise-generation/AGENTS.md``.
 
-    ``distributional`` likewise does not change this Frame contract: it makes
-    the codec ask the model for a *distribution* (a coherent mean plus a
-    stochastic spectral envelope) instead of a single realization, adding the
-    extra ``coherent``/``noise_mags`` pred entries that
-    :class:`losses.SpectralLikelihoodLoss` consumes. ``audio`` is still emitted,
-    so metrics are unaffected. See :mod:`losses.spectral_likelihood` for why
-    fitting the stochastic branches needs it.
+    ``distributional`` **does** widen the output contract, unlike the two
+    above: the codec asks the model for a *distribution* — a coherent mean plus
+    the stochastic branches' spectral envelope — instead of a single
+    realization, and :class:`losses.SpectralLikelihoodLoss` requires both as
+    pred entries. They are declared here so the pipeline validator can check
+    that the model actually produces what the loss consumes, rather than
+    failing at the first backward pass. ``audio`` is still emitted (a sample
+    drawn from the predicted distribution), so metrics are unaffected. See
+    :mod:`losses.spectral_likelihood` for why fitting the stochastic branches
+    needs this.
     """
-    del conditioned, return_dict, distributional
+    del conditioned, return_dict
+    outputs = {"audio": SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)}
+    if distributional:
+        outputs["coherent"] = SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)
+        # (frame, freq) magnitude envelope on the model's own grid — not a time
+        # series on the audio clock, hence untyped trailing dims and no rate.
+        outputs["noise_mags"] = SeriesSpec(dims=("batch", "mic", None, None), time=None)
     return Task(
         name="noise_generation",
         input_spec=FrameSpec(
@@ -147,9 +156,7 @@ def noise_generation(
                 "rotor_pos": SeriesSpec(dims=("batch", "rotor", None), time=None),
             }
         ),
-        output_spec=FrameSpec(
-            {"audio": SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)}
-        ),
+        output_spec=FrameSpec(outputs),
     )
 
 
