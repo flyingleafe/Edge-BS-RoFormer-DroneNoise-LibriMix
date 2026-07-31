@@ -174,7 +174,7 @@ def _demod(
     """
     n_ch, n_t = y32.shape
     z = np.empty((n_ch, len(ks), n_env), dtype=np.complex128)
-    chunk = max(1, int(96e6 / (max(1, n_ch) * max(1, n_t) * 8)))
+    chunk = max(1, int(24e6 / (max(1, n_ch) * max(1, n_t) * 8)))
     buf = np.empty((n_ch, min(chunk, len(ks)), n_t), dtype=np.complex64)
     idxs: list[int] = []
 
@@ -683,6 +683,10 @@ def _saturation(kk: np.ndarray, v: np.ndarray, per_cut: dict[str, Any]) -> dict[
     k_ok = kk_s[ok]
     for tag, fit in per_cut.items():
         s2 = fit.get("sigma_c2_mean")
+        # An UNRESOLVED common term has no saturation harmonic: reporting one
+        # off a value consistent with zero would invent a floor.
+        if (fit.get("sigma_c2_signif") or 0.0) < 3.0:
+            s2 = None
         if s2 is None or not np.isfinite(s2) or s2 <= 0:
             out[f"k_star_fc{tag}"] = None
             continue
