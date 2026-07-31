@@ -3,7 +3,9 @@
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{microtype}
+\usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
 
 \graphicspath{{figures/}}
@@ -13,11 +15,17 @@
 \newcommand{\lockk}{\ensuremath{\mathrm{lock}_k}}
 \newcommand{\snr}{\ensuremath{\mathrm{SNR}}}
 
+% ---------------------------------------------------------------------------
+% DRAFT MARKER.  \pending{...} flags a number or claim whose measurement has
+% not yet landed.  Every such site states what will be measured and why.
+% Remove this macro (and every use of it) before submission.
+% ---------------------------------------------------------------------------
+\newcommand{\pending}[1]{{\color{gray}\textsf{\small[pending: #1]}}}
+
 \begin{document}
 
-\title{Blind Rotor-Rate Tracking from Multirotor Ego-Noise: Coupled
-  Order-Domain Estimation, Phase-Increment Refinement, and the Audio
-  Information Ceiling}
+\title{Capture Range Organizes Blind Multi-Rotor Rate Tracking: Why the
+  Vold--Kalman Frequency Loop Cannot Operate Blind, and What Replaces It}
 
 \author{Dmitrii~Mukhutdinov%
   \thanks{D.~Mukhutdinov is with the Centre for Intelligent Sensing, Queen
@@ -28,36 +36,47 @@
 \begin{abstract}
 Per-rotor rotational speed (RPS) parameterizes the harmonic structure of
 multirotor ego-noise and conditions modern drone-audition systems, yet
-synchronized telemetry is rarely recorded. We develop a fully blind
-estimator of all four rotor-rate trajectories of a quadrotor from its
-acoustic ego-noise, and we characterize the information limits of the task.
-The method is organized by a single structural observation: the joint
-likelihood over rate trajectories and per-harmonic complex amplitudes is
-conditionally linear in the amplitudes --- the Vold--Kalman (VK) envelope
-solve is the exact amplitude step --- while the rate block is multimodal at
-every scale (octave ambiguities, twin rotors, comb aliases, ramps). The
-estimator is therefore a homotopy from a global, discrete, magnitude-domain
-comb search (a whitened comb Viterbi extended to full-range ramp tracking
-with a blade-passage octave test, an energy-timed takeoff bridge, and trust
-gates) to a local, continuous, phase-domain refinement. We derive four
-generations of the local step under increasingly honest measurement models,
-culminating in a phase-increment maximum-likelihood tracker with a
-per-harmonic phase-diffusion model, data-estimated diffusion rates, and a
-pair-joint mode for twin rotors justified by a two-phasor winding argument.
-A progressive synthetic-to-real validation ladder with per-harmonic lock
-and coherence-time metrics, and a frozen full-coverage protocol scored
-against raw telemetry, quantify each design choice. Full-coverage blind
-pooled error on DREGON free flight improves from 6.80 to
-1.81\revps{}; phase-increment refinement improves cross-drone neural
-tracks from 1.016 to 0.859\revps. Measured per-harmonic decoherence
-budgets, an array-combination counterfactual, and a displaced-comb property
-of the sound field in translating flight together bound what any
-audio-locked method can achieve against a telemetry reference.
+synchronized telemetry is rarely recorded. We study the fully blind
+recovery of all four rotor-rate trajectories of a quadrotor from its
+acoustic ego-noise and organize the problem by a single quantity:
+\emph{capture range}. Each stage of a staged rate estimator is
+characterized by a capture range, a resolution, and an analysis bandwidth,
+and the staging exists because no single mechanism has all three. Read
+through that lens, the classical Vold--Kalman (VK) frequency-update loop is
+structurally unable to operate blind: its capture radius is $B/(2k)$, which
+at our informative harmonics is $0.13\revps$ against blind track errors of
+$0.5$--$1.5\revps$, so the loop is inert --- confirmed by an instrumented
+per-factor audit, by an ablation that reproduces the unrefined pipeline to
+$\pm0.003\revps$, and by a label-free reconstruction referee that cannot
+distinguish its output from its input. This does not contradict prior
+adaptive-VK work, which either estimates instantaneous frequency outside
+the filter or manages the same radius implicitly by starting with a wide
+band. We replace the loop with a phase-increment maximum-likelihood tracker
+whose bandwidth schedule makes the radius explicit, and we correct the
+information model that motivates high-harmonic weighting: arrival-time
+jitter makes per-harmonic rate errors \emph{correlated}, giving a
+rank-one-plus-diagonal covariance, an irreducible variance floor
+$\sigma_J^2$ that no number of harmonics can lower, and a natural
+$k$-scaled bandwidth $B_k = kB_0$ under which capture range, captured
+energy fraction and the weight exponent all become $k$-independent. A
+progressive ladder --- locked-phase noiseless, four rotors at 0\,dB,
+physically band-limited shafts, timing jitter --- separates estimator
+error from benchmark artifact and establishes oracle floors
+($0.055\revps$ to hold an exact initialization; ${\approx}0.2\revps$ at
+0\,dB with four rotors, proved by an oracle that equals the blind result).
+The same label-free referee detects and corrects real errors in the
+reference telemetry of two outdoor recordings: a drifting clock
+($R^2 = 0.94/0.92$) and a ${\sim}0.7\%$ rate scale, whose correction alone
+improves pooled cruise error by 8.4\%. We report the reconstructed pipeline
+honestly: on the full fifteen-window protocol it does \emph{not} beat the
+blind baseline, winning on ramps and losing 0.3--0.5\revps{} on steady
+windows.
 \end{abstract}
 
 \begin{IEEEkeywords}
-Order tracking, Vold--Kalman filter, drone audition, ego-noise, rotor speed
-estimation, harmonic analysis, instantaneous frequency, phase noise.
+Order tracking, Vold--Kalman filter, capture range, drone audition,
+ego-noise, rotor speed estimation, harmonic analysis, instantaneous
+frequency, phase noise, label quality.
 \end{IEEEkeywords}
 
 \section{Introduction}
@@ -84,69 +103,85 @@ trajectories be recovered from the acoustic recording alone, reliably
 enough to serve as ground-truth annotation for datasets that lack
 telemetry --- and where does the recoverable accuracy saturate?}
 
-This paper answers both halves. The estimator builds on the Vold--Kalman
-(VK) order-tracking filter~\cite{vold1993high}, adapted to the multirotor
-acoustic setting in the ways summarized below, and is developed under one
-organizing thesis (Section~\ref{sec:structure}): every tracker we deploy
---- the comb-matched Viterbi ridge, the coupled VK envelope filter and its
-``refine'' step, a Fisher-weighted phase-slope refiner, an
-angular-resampling refiner, and a phase-increment Kalman tracker --- is an
-approximate maximizer of \emph{one} joint likelihood over two blocks of
-unknowns, the rate trajectories $r_i(t)$ and the per-harmonic complex
-amplitudes $A_{i,k}(t)$. Given the rates, the amplitude problem is exactly
-solvable linear least squares (the VK filter). Given the amplitudes, the
-rate problem is violently non-convex, so it splits into a global, discrete,
-magnitude-based search and a local, continuous, phase-based refinement.
-The refinement variants are four generations of the same conditional
-update, distinguished only by the honesty of their measurement models; the
-last generation is the only one that survives real flight audio.
+The estimator we study builds on the Vold--Kalman (VK) order-tracking
+filter~\cite{vold1993high}. Its architecture follows from one structural
+fact (Section~\ref{sec:structure}): the joint likelihood over the rate
+trajectories $r_i(t)$ and the per-harmonic complex amplitudes $A_{i,k}(t)$
+is conditionally linear in the amplitudes --- the VK envelope solve is the
+exact amplitude step --- while the rate block is violently non-convex, so
+it splits into a global, discrete, magnitude-based search and a local,
+continuous, phase-based refinement.
+
+What organizes the resulting ladder, and what this paper argues should be
+stated first about any such estimator, is \emph{capture range}: the largest
+initialization error from which a stage still converges. Every stage buys
+resolution by narrowing an analysis band, and every narrowing costs capture
+range; no mechanism in the ladder has wide capture, fine resolution and
+usable bandwidth at once, which is exactly why there is a ladder. Once the
+ladder is read that way, a specific classical component fails a specific
+arithmetic test. The VK ``refine'' step --- the loop that reads a rate
+correction off the solved envelope's phase slope --- has capture radius
+$B/(2k)$, which at the harmonics that carry the information is
+$0.13\revps$, an order of magnitude below the errors a blind global stage
+actually leaves. Under blind conditions the loop therefore does nothing at
+all, which we establish three independent ways. This is a statement about
+the \emph{blind} operating point, not about the prior work: the
+adaptive-VK literature either estimates instantaneous frequency (IF)
+outside the filter~\cite{li2020vkswt} or manages the same radius
+implicitly, by starting the iteration with a deliberately wide
+band~\cite{jiang2024iavkf}.
 
 The contributions are:
 \begin{enumerate}
-\item \textbf{A frozen full-coverage raw-telemetry protocol} for blind
-  rotor-rate evaluation: a pinned dataset, a fixed manifest of 16\,s
-  windows tiling entire recordings --- warmup and takeoff ramps included
-  --- and per-window permutation-invariant mean absolute error against
-  \emph{raw} interpolated telemetry, with any smoothing applied to
-  predictions only. Full coverage exposes failure modes that mid-flight
-  evaluation segments hide: the previous blind headline was a
-  segment-selection artifact (Section~\ref{sec:scoreboard}).
-\item \textbf{A ramp-capable blind pipeline} (\emph{fullrange}): a coarse
-  full-range frame-rate comb Viterbi with a slope-tolerant transition
-  model, a blade-passage-frequency octave test resolving the
-  even-harmonic-only warmup regime, an energy-timed takeoff bridge through
-  the spool-up masking gap, and two trust gates that revert the coarse path
-  to the constant blind seed whenever it is not needed or not trustworthy.
-  Pooled full-coverage blind error on DREGON drops from 6.80 to
-  1.81\revps{} with steady windows bit-identical to the previous blind
-  configuration.
-\item \textbf{A phase-validation ladder methodology} (S0--S4) that walks
-  from a fully controlled synthetic comb to real free flight in steps that
-  each add one nuisance, scored by per-harmonic coherence $C_k$, the
-  reference-free lock statistic $\lockk$, an off-comb-corrected variant,
-  and a coherence-time curve $L(T)$ --- isolating \emph{which} rung breaks
-  each method.
-\item \textbf{A phase-increment maximum-likelihood tracker}
-  (\emph{pi\_kalman}) whose generative model includes a per-harmonic phase
-  random walk with data-estimated diffusion rates $q_k$, whose increment
-  variance carries two analytically derived band-limiting factors, and
-  which handles twin rotors by a pair-joint two-tone spectral mode
-  justified by a winding-number argument. It is the only local stage that
-  captures rate offsets under noise, and it improves cross-drone
-  neural-seeded tracks from 1.016 to 0.859\revps{} on the frozen protocol.
-\item \textbf{An audio-information ceiling for phase-locked refinement on
-  free flight}, established by measurement: per-harmonic coherence at
-  telemetry truth is nearly absent on free-flight audio; coherent array
-  combination cannot restore it; the strong low harmonics that do exist
-  are \emph{displaced} 0.3--0.5\revps{} below the mechanical comb in
-  translating flight, so any audio-locked refiner is charged this bias by
-  a telemetry-referenced metric; and the measured decoherence budgets
-  $\tau_k$ bound coherent integration for any future method.
+\item \textbf{A capture-range account of the staged estimator}
+  (Section~\ref{sec:structure}). Each stage --- blind comb scan, coarse
+  full-range comb Viterbi, residual corridor DP, VK frequency update,
+  Fisher-weighted phase slopes, angular resampling, phase-increment
+  tracker --- is characterized by capture range, resolution and analysis
+  bandwidth, and the three are shown to trade off against one another
+  (Table~\ref{tab:capture}). The ladder is a consequence of that table,
+  not a heuristic.
+\item \textbf{A diagnosis: the VK frequency-update loop is inert under
+  blind conditions} (Section~\ref{sec:vkrefine}). The arithmetic is
+  $\delta_{\max} \approx B/(2k)$; the measurements are (i) an instrumented
+  per-factor audit showing the fused phase-slope RMS is
+  $0.003$--$0.008\revps$ against true errors of $0.55$--$1.5\revps$, with
+  $0$ of $25$ harmonics in band, (ii) an ablation in which disabling the
+  loop reproduces the full pipeline to $\pm0.003\revps$, and (iii) a
+  label-free reconstruction referee that scores the refined and unrefined
+  trajectories identically to four decimal places.
+\item \textbf{A corrected information model for phase-slope weighting}
+  (Section~\ref{sec:fisher}). Arrival-time jitter contributes a phase error
+  proportional to $k$, which the conversion to rev/s divides out exactly:
+  the per-harmonic rate errors are therefore \emph{correlated}, with
+  covariance $\Sigma = \sigma_J^2 \mathbf{1}\mathbf{1}^{\!\top} +
+  \operatorname{diag}(v_k)$. The relative weights survive, but the fused
+  variance becomes $1/W + \sigma_J^2$ --- an irreducible floor and an
+  information saturation point $k^\ast$ --- and the natural
+  parameterization is a $k$-scaled bandwidth $B_k = kB_0$, under which
+  capture range, captured energy fraction and the weight exponent all
+  become $k$-independent together.
+\item \textbf{Methodology: a label-free referee}
+  (Section~\ref{sec:referee}). The VK reconstruction residual
+  $\|x - \hat{x}\|/\|x\|$ needs no reference track, so it can be pointed at
+  either side of the comparison. Pointed at estimators it establishes
+  oracle floors and adjudicates stages that a telemetry-referenced metric
+  cannot separate; pointed at the \emph{telemetry} it detects and corrects
+  real defects in the reference itself --- a drifting clock and a
+  ${\sim}0.7\%$ rate scale on two outdoor recordings, whose correction
+  alone improves pooled cruise error by 8.4\%.
 \end{enumerate}
+
+We report negative results as results. The reconstructed pipeline built on
+this analysis does not currently beat the blind baseline on the full
+fifteen-window protocol; it wins on ramp windows and loses 0.3--0.5\revps{}
+on steady ones, and Sections~\ref{sec:scoreboard} and~\ref{sec:discussion}
+say so plainly and locate the mechanism.
 
 \section{Related Work}
 
 \subsection{Vold--Kalman order tracking}
+\label{sec:related-vk}
 
 The VK filter was introduced for high-slew-rate order extraction in
 automotive testing~\cite{vold1993high} and extended shortly after to
@@ -156,21 +191,94 @@ in~\cite{herlufsen1999characteristics,tuma2000characteristics}. The
 second-generation formulation minimizes a data-fidelity term plus a
 difference-operator smoothness penalty on complex envelopes, which is the
 form we build on. A line of adaptive variants followed: angular-displacement
-and angular-velocity reformulations~\cite{pan2007adaptive,pan2010extended},
-kernel corrections for the imaginary-part error of incomplete complex
-bases~\cite{zhu2023splitcossin}, and ridge-detection-initialized IF
-estimation via synchrosqueezing~\cite{wang2020vkifsep}. Closest to our
-refinement loop is the iterative adaptive VK filter (IAVKF) of Jiang et
-al.~\cite{jiang2024iavkf}, which alternates envelope extraction with an IF
-correction computed from the unwrapped envelope phase and adapts the filter
-bandwidth through an orthogonality fixed point. Our local stage shares the
-same core observation --- the recovered envelope's phase slope \emph{is}
-the IF error --- but differs structurally: IAVKF extracts independent
-components one at a time by greedy peeling, whereas our components are
-constrained to integer combs of four latent fundamentals and are solved
-jointly with explicit cross-track coupling. The distinction matters
-precisely in our regime, where dozens of harmonics from four
-near-coincident combs overlap and greedy subtraction is unreliable.
+and angular-velocity reformulations~\cite{pan2007adaptive,pan2010extended}
+and kernel corrections for the imaginary-part error of incomplete complex
+bases~\cite{zhu2023splitcossin}. Two members of this line are the direct
+references for the present work, and they occupy opposite positions on the
+question this paper is about.
+
+\subsubsection{IF estimated outside the filter}
+Li, Han and Wang~\cite{li2020vkswt} feed VK an IF obtained from a
+synchrosqueezed wavelet transform (SWT) with an adaptive multi-ridge peak
+detector, and then reuse that same IF curve as each component's own
+order-tracking reference. The VK filter itself is adopted as an
+off-the-shelf block: the paper writes the second-difference structural
+equation $\nabla^2 A_k(n) = \varepsilon_k(n)$ and the data equation
+$\boldsymbol{X} = \boldsymbol{A}\boldsymbol{B} + \boldsymbol{\delta}$, and
+proceeds directly to the reconstruction $\boldsymbol{S} =
+\boldsymbol{A}\boldsymbol{B}$ --- no cost functional, no weighting factor,
+no normal equations, and no statement of how the system is solved. What
+matters for us is architectural rather than notational: the pipeline is
+strictly feed-forward. \emph{The IF is estimated once, upstream, and
+handed to VK as a fixed parameter; nothing returns from the envelopes to
+the IF.} A ridge estimator has essentially unbounded capture range --- it
+finds the ridge wherever it sits in the plane --- so their result, that VK
+separates well when handed a good IF, is not in tension with ours. We
+confirm the same thing independently: envelope quality improves
+monotonically with trajectory quality (Section~\ref{sec:referee}). Our
+negative result concerns a component their pipeline does not contain.
+
+\subsubsection{IF refined inside the filter}
+The iterative adaptive VK filter (IAVKF) of Jiang, Chen and
+Wang~\cite{jiang2024iavkf} \emph{does} contain it, and is therefore the
+closest prior art. IAVKF augments the model with a per-component initial
+phase $\theta_{n0}$ and absorbs both it and the IF error into the
+\emph{complex} envelope, so that the unwrapped envelope-phase derivative is
+exactly the IF error; that increment is then smoothed by a second,
+IF-domain VK problem and added to the carrier, inside a single loop that
+also re-estimates the bandwidth. This is, mechanism for mechanism, the
+``refine'' step we report inert (Section~\ref{sec:vkrefine}). The two
+results are reconciled by three differences, all of which bear on capture
+range. First, IAVKF peels components greedily, one at a time, and its own
+stated limitation is that it ``cannot properly handle nonstationary signals
+with overlapping IFs'' --- which is precisely the quadrotor twin pair, two
+fundamentals under $1\revps$ apart whose $k$-th teeth are never
+separable by peeling; our solve is joint, with explicit cross-track
+coupling. Second, its bandwidth adaptation is a single per-component scalar
+$\alpha_n$ driven to an orthogonality fixed point
+$\alpha_n^{k+1} = \alpha_n^{k}\,(\hat{\mathbf{x}}_n^{k})^{\!H}
+\hat{\mathbf{x}} / (\hat{\mathbf{x}}_n^{k})^{\!H}\hat{\mathbf{x}}_n^{k}$,
+which increases monotonically and so contracts the band from wide to
+narrow. This is exactly a capture-range schedule --- and the paper says as
+much operationally, advising a smaller $\alpha_n^0$ (a wider band) ``when
+the initial IF significantly differs from the true one'' --- but it is
+never analyzed as one, and no capture bound is quoted. Third, and most
+importantly for the argument of Section~\ref{sec:fisher}, the adapted
+bandwidth carries \emph{no dependence on harmonic order}. With two or three
+low-order components at 0\,dB that is harmless; with twenty-five harmonics
+of four combs, where the displacement of harmonic $k$ under a rate error is
+$k\delta$, a common bandwidth means the capture radius collapses as $1/k$
+on exactly the harmonics the weighting favors. Our $k$-scaled bandwidth
+$B_k = kB_0$ is the response, and it is a direct answer to the
+bandwidth-selection problem IAVKF sets out to solve, arrived at from the
+comb structure rather than from an orthogonality residual.
+
+\subsection{Ridge extraction and tacholess speed estimation}
+
+Because the alternative to refining an IF is estimating it outright, the
+ridge literature is the relevant competitor to our global stage. Iatsenko,
+McClintock and Stefanovska~\cite{iatsenko2016ridges} give the canonical
+adaptive treatment: a parameter-free ridge extraction combining dynamic
+path optimization with fixed-point iteration, which is the mechanism
+IAVKF's and~\cite{li2020vkswt}'s front ends rely on. Automated and adaptive
+ridge extraction has since been targeted specifically at rotating
+machinery without a tachometer~\cite{aare2023ridge}, which is the closest
+prior art to our blind setting: an adaptive edge-detection strategy plus a
+core function built from the analyzed signal's own instantaneous
+characteristics, so that no parameter tuning is needed. Our global stage
+(Section~\ref{sec:global}) is a ridge search too, with one structural
+difference that the multirotor case forces: a single-component ridge
+detector has no way to prefer a shaft comb over its own blade-passage
+octave, or to keep four near-coincident combs apart, so we score
+\emph{comb} hypotheses --- entire integer families tied to one latent
+fundamental --- rather than individual lines. Where individual lines do
+overlap, ridge path regrouping~\cite{chen2017rprg} resolves the crossings
+by regrouping ridge curves according to their variation rates at
+intersections; our twin-pair treatment (Section~\ref{sec:pairs}) faces the
+harder version of the same problem, since the twin fundamentals do not
+cross transversally but stay within a filter bandwidth of each other for
+whole windows, and we resolve it by a two-tone spectral fit assigned by
+order rather than by continuation.
 
 \subsection{Nonstationary harmonic analysis}
 
@@ -194,7 +302,7 @@ framing adds is an explicit per-measurement noise model --- in particular
 the per-harmonic phase diffusion of Section~\ref{sec:pikalman}, which no
 fixed transform accounts for.
 
-\subsection{Tacholess and multiharmonic frequency tracking}
+\subsection{Multiharmonic frequency tracking}
 
 Recovering the reference speed without a tachometer is a recognized problem
 in machine monitoring; see~\cite{peeters2019tacholess} for a review
@@ -340,10 +448,138 @@ carried by harmonic $k$ scales as
   \propto k^2\, |z_k|^2 .
   \label{eq:fisherweight}
 \end{equation}
-This is why every phase method favors high harmonics --- and why
-per-harmonic phase noise, which grows as $k$ times any shaft-referenced
-wander, is so destructive: it attacks exactly the harmonics that carry the
-information.
+This is the standard argument for favoring high harmonics. It rests on an
+assumption --- that each harmonic's phase is corrupted only by additive
+background noise, \emph{independently} of the others --- which real
+recordings do not satisfy, and the next subsection corrects it.
+
+\subsection{Correlated harmonic errors: a rank-one information floor}
+\label{sec:jitter}
+
+Model the disturbance not as phase noise but as jitter in \emph{arrival
+time}: the observed shaft angle advances by $r(t)(\Delta t + n_t)$ with a
+small random timing error $n_t$. Harmonic $k$ then picks up a phase error
+\begin{equation}
+  \varepsilon_k(t) = 2\pi k\, r\, n_t ,
+  \label{eq:jitterphase}
+\end{equation}
+which grows in proportion to $k$ --- so the premise that high harmonics
+carry proportionally more information is not automatic. The consequence,
+however, is not the obvious one. Writing the increment measurement of
+harmonic $k$ as
+\begin{equation}
+  \Delta\psi_k(t) = 2\pi k\, \delta\, \Delta t
+  + 2\pi k\, r\,(n_{t+1} - n_t) + \nu_k ,
+  \label{eq:jitterinc}
+\end{equation}
+with $\nu_k$ the additive-noise contribution, and dividing by
+$2\pi k \Delta t$ to obtain that harmonic's opinion about the rate error,
+\begin{equation}
+  \hat\delta_k = \delta
+  + \underbrace{\frac{r\,(n_{t+1}-n_t)}{\Delta t}}_{J}
+  + \underbrace{\frac{\nu_k}{2\pi k\,\Delta t}}_{e_k} .
+  \label{eq:jitteropinion}
+\end{equation}
+The timing term has \emph{no $k$ left in it}: dividing by $k$ cancelled
+exactly the $k$ that multiplied it in~\eqref{eq:jitterphase}. There is one
+shaft and one timing error, so $J$ is the \emph{same number for every
+harmonic}. The per-harmonic rate errors are correlated, not independent,
+and with $\operatorname{Var}(J) = \sigma_J^2$ and
+$\operatorname{Var}(e_k) = v_k$ the covariance across harmonics is
+rank-one plus diagonal,
+\begin{equation}
+  \Sigma = \sigma_J^2\, \mathbf{1}\mathbf{1}^{\!\top}
+  + \operatorname{diag}(v_k) .
+  \label{eq:rankone}
+\end{equation}
+Solving the weighted least-squares problem under~\eqref{eq:rankone} gives
+two results, and only the second is a surprise. The optimal relative
+weights are unchanged, $w_k \propto 1/v_k$ --- the \emph{shape} of the
+$k^2$ weighting of~\eqref{eq:fisherweight} survives. But the fused
+variance does not. With $W = \sum_k 1/v_k$,
+\begin{equation}
+  \operatorname{Var}(\hat\delta) = \frac{1}{W} + \sigma_J^2 ,
+  \label{eq:varfloor}
+\end{equation}
+not $1/W$. There is a floor no number of harmonics can lower, because they
+all share the same $J$; past the point where $1/W$ falls below
+$\sigma_J^2$, extra harmonics buy nothing and the information
+\emph{saturates} at a finite $k^\ast$. This matters operationally because
+$W$ is exactly the quantity a Fisher-weighted stage places on the diagonal
+of its normal equations (Section~\ref{sec:staged}): overstating it makes
+the solve trust the data relative to the smoothness prior, so the stage
+chases shaft jitter instead of smoothing it, and does so most where the
+most harmonics were piled on. The correct diagonal is
+$W_{\mathrm{eff}} = (1/W + \sigma_J^2)^{-1}$.
+
+Not every phase disturbance lands in $J$. The axis that matters is not how
+a disturbance scales with $k$ but whether it is \emph{shared}.
+\emph{Delay-like} disturbances --- a changing direct path as the drone
+translates, large-eddy turbulence, shaft jitter --- act as a fluctuating
+propagation time, so their phase error is $2\pi f\,\Delta t$, proportional
+to $k$, and cancels on division: these land in $\sigma_J^2$ and are
+irreducible. \emph{Dispersive} disturbances --- direct/reflected
+interference, scattering resonances, small-scale turbulence --- perturb
+phase in a way that is not a pure delay, so the residual differs between
+harmonics: these land in $v_k$ and do average down. One reassurance follows
+immediately: a \emph{static} transfer function contributes a fixed phase
+offset per harmonic, which a phase \emph{increment} differences away
+exactly. Reverberation matters because the platform moves, not because the
+room is reverberant.
+
+\subsection{$k$-scaled bandwidth}
+\label{sec:kscaled}
+
+The same model dictates the analysis bandwidth. A fixed half-width $B$
+retains harmonic $k$ only while $k|\delta| < B$, so the capture range is
+$B/k$: it shrinks on exactly the harmonics the weighting favors, which is
+the arithmetic behind Section~\ref{sec:vkrefine}. Setting
+\begin{equation}
+  B_k = k\, B_0
+  \label{eq:kscaled}
+\end{equation}
+makes the capture range $B_0$ for every harmonic. The separation argument
+survives: two rotors' $k$-th teeth are $k|r_i - r_j|$ apart, so a
+$k$-scaled filter preserves exactly the discrimination the fundamental had,
+while same-rotor neighbours sit $r \approx 74$--$91$\,Hz away, which
+$kB_0$ does not reach until $k \approx 100$, far beyond the harmonics in
+use. It also changes the exponent: wider filters admit noise in proportion
+to $k$, so $\snr_k$ falls as $1/k$, $v_k \propto 1/(k P_k)$, and
+\begin{equation}
+  w_k \propto k\,|p_k| \quad\text{rather than}\quad k^2 |p_k| .
+  \label{eq:kweight}
+\end{equation}
+Finally, the timing model predicts each harmonic's \emph{line} is itself
+$k$ times wider, so a fixed filter captures a shrinking fraction of each
+higher harmonic while a $k$-scaled one captures a constant fraction.
+Capture range, captured energy fraction and the weighting exponent become
+$k$-independent \emph{together} --- a sign that~\eqref{eq:kscaled} is the
+natural parameterization rather than a patch. Note that this is a
+different answer to the bandwidth question than IAVKF's per-component
+orthogonality fixed point~\cite{jiang2024iavkf}, which adapts one scalar
+per component with no order dependence; the two are compatible, since
+$B_0$ could itself be adapted that way.
+
+A final caution, which is why no fixed power of $k$ is right either.
+Harmonic amplitude falls with $k$ faster than the broadband floor falls
+with frequency, so $\snr_k$ drops at high $k$; at low $k$ the harmonics sit
+in the rumble and wind band where the floor is large. $\snr_k$ is therefore
+\emph{not monotonic} --- it peaks in the middle --- and no $k^\alpha$ law
+describes it. Our own pipeline encodes this without saying so: the refine
+stage starts at $k_{\min} = 6$ and the capture stage's configuration is
+named \emph{midband}. Those constants are a hand-tuned
+signal-to-noise-versus-$k$ curve. The principled replacement is not to
+derive the weights but to \emph{measure} them: demodulate along a good
+trajectory, form each harmonic's opinion $\hat\delta_k(t)$, and fit the
+empirical cross-harmonic covariance as rank-one plus diagonal. The
+rank-one part \emph{is} $\sigma_J^2$, whatever mixture of physics produced
+it, and the diagonal \emph{is} $v_k$. One trap in that fit: the true
+$\delta(t)$ is also shared across harmonics, so signal and jitter are
+confounded in the rank-one term; they separate in time, since the signal is
+smooth at a few hertz while the jitter is fast, so fitting the covariance
+on time-high-passed opinions isolates $\sigma_J^2$. This measurement is
+the S4 rung of Section~\ref{sec:ladder} and is
+\pending{S4 timing-jitter measurement --- see Section~\ref{sec:s4}}.
 
 \section{The Estimation Structure}
 \label{sec:structure}
@@ -388,6 +624,106 @@ flow. The four local-stage variants of Section~\ref{sec:local} are four
 generations of the \emph{same} conditional update, distinguished only by
 how honestly they model the measurement --- and the frozen-protocol
 measurements of Section~\ref{sec:results} adjudicate between them.
+
+\subsection{Capture range, resolution, bandwidth}
+\label{sec:capture}
+
+The second structural fact has an operational form that we take as this
+paper's organizing quantity. Call the \emph{capture range} of a stage the
+largest initialization error from which it still converges to the correct
+mode. Every stage in the pipeline buys resolution by narrowing an analysis
+band, either literally (a demodulating low-pass) or effectively (a longer
+analysis window, a finer grid); and every narrowing costs capture range,
+because a rate error $\delta$ displaces harmonic $k$ by $k\delta$\,Hz and
+a band of half-width $B$ retains it only while $k|\delta| < B$. The
+recurring bound is therefore
+\begin{equation}
+  \delta_{\max} \;\approx\; \frac{B}{k},
+  \label{eq:captureband}
+\end{equation}
+halved when the criterion is that the line stay within the band's
+\emph{half}-width. Resolution moves the opposite way: a magnitude peak of
+width ${\sim}1/T_w$ localizes frequency only to
+${\sim}1/(T_w\sqrt{\snr})$, so precision demands long windows or narrow
+bands, i.e.\ small capture range. And a third quantity is independent of
+both: the \emph{trajectory bandwidth} a stage can follow --- a stage
+solving one estimate per 16\,s window cannot represent a takeoff ramp, no
+matter how wide its capture range or how fine its resolution.
+
+Table~\ref{tab:capture} places every stage of the pipeline on these three
+axes. Read as a whole it explains the architecture: no row has all three,
+the rows are ordered by decreasing capture range and increasing
+resolution, and each stage exists to hand the next one an error inside its
+capture range. It also predicts, before any experiment, which stage will
+fail on which data --- and the row that fails is the VK frequency update
+(Section~\ref{sec:vkrefine}), whose capture radius is two to ten times
+smaller than the errors the global stage actually leaves.
+
+\begin{table*}[t]
+  \centering
+  \caption{Every stage on three axes. Capture range is the largest
+    initialization error from which the stage converges; resolution is the
+    best measured accuracy the stage attains in its own regime;
+    bandwidth is the highest trajectory rate-of-change it can represent.
+    ``$B/k$ form'' entries follow~\eqref{eq:captureband} with the stage's
+    own $B$ and its informative $k$. Blind global-stage output error at
+    steady cruise is $0.95$--$1.15\revps$, which is the number every
+    local stage must be able to capture.}
+  \label{tab:capture}
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.155\textwidth}
+                    >{\raggedright\arraybackslash}p{0.215\textwidth}
+                    >{\raggedright\arraybackslash}p{0.185\textwidth}
+                    >{\raggedright\arraybackslash}p{0.155\textwidth}
+                    >{\raggedright\arraybackslash}p{0.185\textwidth}@{}}
+    \toprule
+    Stage & Mechanism & Capture range & Resolution & Analysis bandwidth \\
+    \midrule
+    Blind comb scan (\S\ref{sec:seeding})
+      & matched comb filter, dense grid, cap 1.2\,kHz
+      & whole dictionary
+      & one constant per window
+      & none (8192-pt time mean) \\[2pt]
+    Coarse comb Viterbi (\S\ref{sec:fullrange})
+      & DP over 12--120\revps{} grid, rigid union template
+      & unbounded within grid
+      & 0.5\revps{} grid step
+      & 2048-pt, 7.8\,Hz bins, 32\,ms hop \\[2pt]
+    Ladder comb DP (\S\ref{sec:viterbi})
+      & DP in $\pm6\revps$ around constant bases
+      & $\pm6\revps$
+      & 0.95--1.15\revps{} (steady window)
+      & frame rate; penalty $\gamma$ \\[2pt]
+    Residual corridor DP (\S\ref{sec:negative})
+      & per-rotor DP, sibling teeth masked
+      & $\pm8$ then $\pm4\revps$
+      & 0.25 then 0.1\revps{} grid
+      & frame rate \\
+    \midrule
+    VK frequency update (\S\ref{sec:vkrefine})
+      & in-band phase slope on VK envelopes
+      & $B/(2k) = 0.13\revps$ ($B{=}1.5$\,Hz, $k{\ge}6$)
+      & --- (inert; see text)
+      & 1.5\,Hz envelope band \\[2pt]
+    Fisher phase slopes (\S\ref{sec:staged})
+      & unwrapped IF, Fisher fusion, pentadiagonal solve
+      & $B/k \approx 0.5\revps$ ($B{=}3$\,Hz, $k{=}6$)
+      & exact when noiseless
+      & 3\,Hz envelope band \\[2pt]
+    Angular resampling (\S\ref{sec:iterwarp})
+      & order-spectrum peak within a search band
+      & $\pm2.5 \to \pm0.6\revps$ (rung schedule)
+      & 0.04\revps{} at 0\,dB
+      & window 3\,s $\to$ 0.375\,s \\[2pt]
+    Phase-increment tracker (\S\ref{sec:pikalman})
+      & wrapped increments, Kalman/RTS, band schedule
+      & $B_k/k$: $\pm12\revps$ at $k{\le}4$, $B{=}12$\,Hz
+      & 0.055\revps{} (holds exact init)
+      & 12 $\to$ 2.5\,Hz schedule \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
 
 \section{Global Stage: Comb-Matched Dynamic Programming}
 \label{sec:global}
@@ -603,15 +939,75 @@ second-difference penalty acts as a fourth-order low-pass on each
 $A_{i,k}$ whose equivalent bandwidth shrinks as $\rho_{i,k}$ grows, so
 $\rho_{i,k}$ \emph{is} the per-harmonic analysis bandwidth in disguise,
 chosen from a target $-3$\,dB bandwidth by the standard
-relation~\cite{tuma2000characteristics}. The objective is quadratic; its
-normal equations form a block system whose diagonal blocks are banded and
-whose off-diagonal blocks carry the interference terms
-$\overline{c_m} c_n$ between carriers $c_m(t) =
-e^{\mathrm{j}k_m\hat\varphi_{i_m}(t)}$. Retaining the off-diagonal
-coupling is what allows two tracks separated by less than a filter
-bandwidth to divide energy correctly instead of both claiming it --- the
-``explaining-away'' that makes VK the classical tool for crossing orders,
-and that a quadrotor's interlaced combs make mandatory.
+relation~\cite{tuma2000characteristics}.
+
+\subsubsection{Normal equations and their structure}
+Index the tracks by $m = (i,k)$, $m = 1,\ldots,M$, and collect each
+track's carrier into a diagonal matrix and its envelope into a vector,
+\begin{align}
+  C_m &= \operatorname{diag}\big(e^{\mathrm{j}\theta_m[0]},\ldots,
+  e^{\mathrm{j}\theta_m[N-1]}\big), \nonumber\\
+  x_m &= \big(x_m[0],\ldots,x_m[N-1]\big)^{\!\top},
+  \label{eq:carriermat}
+\end{align}
+with $\theta_m[n] = k\hat\varphi_i(t_n)$. Stacking
+$x = (x_1;\ldots;x_M)$, $C = [\,C_1\;\cdots\;C_M\,]$ and
+$R = \operatorname{blkdiag}(\rho_1^2 D_2^{\mathsf H}D_2, \ldots,
+\rho_M^2 D_2^{\mathsf H}D_2)$, objective~\eqref{eq:vk2} is
+$J(x) = \|y - Cx\|^2 + x^{\mathsf H}Rx$, and setting
+$\partial J/\partial x^{\mathsf H} = 0$ gives the normal equations
+\begin{equation}
+  \big(C^{\mathsf H}C + R\big)\, x = C^{\mathsf H} y .
+  \label{eq:normaleq}
+\end{equation}
+The right-hand side is the recording demodulated by each track's own
+carrier, i.e.\ exactly~\eqref{eq:envelope} before low-passing. The matrix
+on the left has only two kinds of entry. The block linking track $m$ to
+track $m'$ is
+\begin{equation}
+  C_m^{\mathsf H} C_{m'} = \operatorname{diag}
+  \big(e^{\,\mathrm{j}(\theta_{m'}[n] - \theta_m[n])}\big)_{n=0}^{N-1},
+  \label{eq:crossblock}
+\end{equation}
+which is \emph{diagonal}: two tracks meet only at the same sample. Its
+entries have unit magnitude and an angle that advances at the frequency
+gap between the tracks. The blocks $\rho_m^2 D_2^{\mathsf H}D_2$ are banded
+in time with stencil $[1,-4,6,-4,1]$, and always within one track.
+
+\subsubsection{Why time-major ordering}
+Number the unknowns time-major, $\operatorname{idx}(m,n) = nM + m$ --- every
+track at sample 0, then every track at sample 1. Cross-track entries then
+sit at index distance $< M$ and within-track entries at distance $M$ and
+$2M$, so nothing reaches further than
+\begin{equation}
+  q = 2M
+  \label{eq:halfband}
+\end{equation}
+and the system is Hermitian positive definite \emph{banded} with
+half-bandwidth $2M$, factorized by banded Cholesky in $O(N q^2)$. Order
+the unknowns the other way --- all of track 1, then all of track 2 --- and
+the same cross-track entries land at distance $N$, a quarter of a million
+for a 16\,s window: equally sparse, and useless to a banded solver. The
+interleaving is not a storage trick, it is what makes the cost linear
+rather than cubic in record length.
+
+\subsubsection{Coupling, and when it becomes singular}
+Retaining the off-diagonal blocks~\eqref{eq:crossblock} is what allows two
+tracks separated by less than a filter bandwidth to divide energy
+correctly instead of both claiming it --- the ``explaining-away'' that
+makes VK the classical tool for crossing orders, and that a quadrotor's
+interlaced combs make mandatory. It is also where the failure mode lives.
+When two tracks nearly coincide, the angle
+in~\eqref{eq:crossblock} barely turns over the window, the entry stays near
+$1$, and the two columns of $C$ become nearly parallel: the system is
+near-singular and its minimum-norm solution is a large,
+mutually-cancelling pair of envelopes. The reconstruction then contains
+more energy than the recording. We observe this directly --- on a DREGON
+ramp window the reconstruction residual ratio is $1.82$, meaning the
+harmonic model \emph{added} 82\% energy rather than explaining any
+(Section~\ref{sec:referee}) --- and it is why a rate-refinement stage
+that improves the trajectory can improve the amplitude model by a factor
+of two without touching the amplitude solver at all.
 
 Solving~\eqref{eq:vk2} at audio rate for $R \times K \approx 100$ tracks
 is unnecessary: the envelopes are narrowband by construction. We
@@ -640,51 +1036,128 @@ Note precisely what this solves and what it does not: it is the optimal
 The remainder of this section is the history of doing the other
 conditional step --- the rate update given the envelopes --- correctly.
 
-\subsection{Generation 1: VK-refine}
+\subsection{Generation 1: the VK frequency update is inert under blind
+  conditions}
 \label{sec:vkrefine}
 
 The classical refine step reads rate corrections from the solved
 envelopes: if the track is off by $\delta$, each $\hat A_{i,k}(t)$
 rotates at $k\delta$\,Hz (the arrow logic of Section~\ref{sec:demod}), so
-read the rotation, average over $k$ with weights, nudge $\hat r$, and
-iterate; each outer iteration clips the applied correction (default
-$0.5\revps$) and re-derives carriers. Fused across a comb tied to one
-latent fundamental --- rather than one free IF per component as in
-IAVKF~\cite{jiang2024iavkf} --- this is where the rotor constraint adds
-noise robustness. Two design choices nonetheless make the step fragile,
-and both are now measured facts rather than suspicions.
+read the rotation, fuse over $k$ with the weights
+of~\eqref{eq:fisherweight}, nudge $\hat r$, and iterate; each outer
+iteration multiplies the correction by a Wiener-shrink confidence
+$g = \snr/(1{+}\snr)$, clips it (default $0.5\revps$), passes it through a
+periodogram gate, and re-derives the carriers. This is the same loop as
+IAVKF's~\cite{jiang2024iavkf} --- envelope solve, unwrapped
+envelope-phase derivative, smoothed IF increment, rebuild carriers --- with
+the difference that our corrections are fused across a comb tied to one
+latent fundamental rather than estimated per free component.
 
-\subsubsection{Capture radius} The envelope solve only reconstructs
-content within its bandwidth $B_k \approx 1.5$\,Hz of the assumed tooth
-position. A rate error $\delta$ displaces harmonic $k$ by $k\delta$\,Hz;
-once $k\delta \gtrsim B_k/2$ the true energy is simply \emph{outside} the
-solved envelope --- the arrow contains noise, and no amount of iteration
-recovers. The basin is
+\subsubsection{The arithmetic}
+The envelope solve only reconstructs content within its bandwidth
+$B \approx 1.5$\,Hz of the assumed tooth position. A rate error $\delta$
+displaces harmonic $k$ by $k\delta$\,Hz; once $k\delta \gtrsim B/2$ the
+true energy lies \emph{outside} the solved envelope, the arrow contains
+noise, and no amount of iteration recovers. The basin is the
+half-width case of~\eqref{eq:captureband},
 \begin{equation}
   \delta_{\max} \approx \frac{B}{2k},
   \label{eq:basin}
 \end{equation}
-which with $B = 1.5$\,Hz and the informative harmonics $k \ge 6$ is under
-$0.13\revps$. Probes confirm: a constant $+0.3\revps$ offset is returned
-uncorrected.
+which at $B = 1.5$\,Hz and the informative harmonics $k \ge 6$ is under
+$0.13\revps$. The blind global stage delivers errors of
+$0.55$--$1.5\revps$. The loop is therefore being asked to correct errors
+four to twelve times its own capture radius --- and, being an in-band
+estimator, it does not fail loudly. It reports convergence.
 
-\subsubsection{Gate miscalibration} The refine multiplies its correction
-by a Wiener-shrink confidence $g = \snr/(1+\snr)$. This is the right
-Bayesian instinct with the wrong noise model: on real flight audio the
-\emph{long-horizon} envelope SNR is ${\sim}0.03$ --- because of phase
-decoherence, not absence of signal --- so $g \approx 0$ and the step is
-inert, measured on every real recording including from telemetry-truth
-initialization. The information is present at short lags; the gate throws
-it away because the model has no concept of ``coherent for half a second,
-then re-randomized.''
+\subsubsection{Confirmation 1: an instrumented per-factor audit}
+Every multiplicative factor in the step was logged across three 16\,s
+windows $\times$ five refine rounds $\times$ four rotors. The suspected
+suppressors are all innocent: the no-comb gate never fired, the
+$0.5\revps$ clip never engaged, the Wiener shrink is a mild ${\times}2$,
+and the smoothing solve attenuates by only ${\times}1.2$--$1.6$. The raw
+Fisher-fused slope RMS entering the smoother is $0.003$--$0.008\revps$
+against true track errors of $0.55$--$1.5\revps$ --- a shortfall of two to
+three orders of magnitude that exists \emph{before} any gate or
+smoother touches it. The cause is exactly~\eqref{eq:basin}: at the final
+bandwidth of 1.5\,Hz, \emph{$0$ of $25$ harmonics} have $|k\delta|$ in
+band anywhere in any window. Meanwhile $61$--$93\%$ of the same harmonics
+lie inside the much wider $\pm45$\,Hz demodulation brickwall --- and that
+wider band is what the gate tests. So the gate sees a healthy comb, the
+step sees nothing, and the loop reports that it has converged in its own
+narrow-band terms. It has: the residual is invisible to it.
 
-Annealing the harmonic range (early iterations use a small $K_{\max}$ and
-a stiff trajectory prior, widening as the track locks --- the
+\subsubsection{Confirmation 2: ablation}
+Disabling the frequency update entirely (\texttt{no\_refine}) reproduces
+the full pipeline's per-window error to within $\pm0.003\revps$ on every
+window tested. Five refine rounds move the trajectory by
+$\Delta \approx 0.002$--$0.004\revps$ per round, and on one real cruise
+window the five rounds together make the answer very slightly
+\emph{worse}. The stage is not weakly helpful; it is a no-op.
+
+\subsubsection{Confirmation 3: the label-free referee}
+The third check is independent of any reference track. A VK envelope set
+is a \emph{readout} of (audio, trajectory, configuration), so the
+reconstruction residual $\|x - \hat{x}\|/\|x\|$ measures how much of the
+recording the harmonic model explains, with no telemetry involved
+(Section~\ref{sec:referee}). Running the refine rounds changes that
+residual by $\approx 0$ --- on one real cruise window it is identical to
+four decimal places (0.5774 before, 0.5774 after). A trajectory update
+that genuinely improved the track would improve the envelopes, because the
+envelopes are downstream of it; a phase-increment update on the same
+window improves the residual to 0.5300. Three instruments, three different
+kinds of evidence, one verdict.
+
+\subsubsection{Why this is not a contradiction of prior work}
+The result is specific to the \emph{blind} operating point, and it is
+consistent with both VK references of Section~\ref{sec:related-vk}.
+\cite{li2020vkswt} contains no such loop at all: its IF comes from an SWT
+ridge detector whose capture range is the whole time--frequency plane.
+IAVKF~\cite{jiang2024iavkf} contains the loop but begins with a
+deliberately wide band --- its own guidance is to reduce $\alpha_n^0$ when
+the initial IF is far from the truth --- so its bandwidth adaptation
+\emph{is} a capture schedule, and the fact that it is never described as
+one is precisely what makes the failure easy to inherit. Its components
+are also few and of low order, where~\eqref{eq:basin} is not yet binding.
+Annealing the harmonic range in our own loop (small $K_{\max}$ and a stiff
+trajectory prior early, widening as the track locks --- the
 capture-versus-resolution compromise of extended Kalman comb
-trackers~\cite{streit1992multiharmonic}, resolved schedule-wise) widens
-the basin~\eqref{eq:basin} but does not repair the gate. So ``VK refine''
-$=$ (exact linear amplitude solve) $+$ (a local, narrow-basin,
-miscalibrated rate step): keep the first half.
+trackers~\cite{streit1992multiharmonic}) widens the basin in the same way,
+and is the correct instinct; the point of this paper is that the
+schedule should be derived from~\eqref{eq:basin} and the twin separation
+rather than tuned, which is what Section~\ref{sec:pikalman} does.
+
+The conclusion is narrow and practical. ``VK refine'' $=$ (exact linear
+amplitude solve) $+$ (a local, narrow-basin rate step). Keep the first
+half: the envelope solve is still the reconstruction engine and the
+referee (Section~\ref{sec:referee}) is built on it. Drop the second half;
+it costs runtime and buys $\pm0.003\revps$.
+
+\subsubsection{A ruled-out explanation: phase noise}
+One hypothesis had to be eliminated before~\eqref{eq:basin} could be
+credited, because it predicts the same symptom. If shaft jitter broadened
+each harmonic line beyond the envelope band, the energy would be
+out-of-band for a reason having nothing to do with track error. It does
+not. On a synthetic in which comb and noise are kept separate and VK is
+run with the \emph{exact} trajectory, the fraction of comb energy captured
+at $B = 1.5$\,Hz is $100.0\%$ at $0.2\times$, $1\times$ and $3\times$ the
+nominal shaft jitter (up to a per-rotor std of $6.9\revps$), and
+$97.6\%$ at 0\,dB broadband SNR. The reason is structural: VK demodulates
+\emph{along the trajectory}, by $k\!\int\! r\,dt$, so a correct
+demodulation removes the frequency modulation by construction and the line
+is narrow in the envelope domain however much the shaft wanders. Phase
+noise would bite only if we demodulated at a constant frequency.
+
+This test has a limitation that we state rather than hide, because it is
+what motivates the S4 rung of Section~\ref{sec:ladder}: the synthetic
+locks every harmonic's phase to $2\pi\!\int\! r\,d\tau$, so its only phase
+variation is a deterministic function of the trajectory, which a
+trajectory-following demodulator removes by construction. Independent
+arrival-time jitter --- the $J$ term of~\eqref{eq:jitteropinion} --- is
+\emph{not} a function of $r(t)$, so no trajectory-following demodulator
+removes it, and our synthetic contains none of it. The conclusion above is
+therefore established for frequency-modulation smearing and unsupported
+for timing jitter.
 
 \subsection{Generation 2: Fisher-weighted phase slopes (stage D)}
 \label{sec:staged}
@@ -697,21 +1170,66 @@ phase derivative,
   \operatorname{unwrap}\big(\arg z_k(t)\big),
   \label{eq:staged}
 \end{equation}
-fuse across $k$ and channels with exactly the Fisher
-weights~\eqref{eq:fisherweight} under a smoothness-regularized
-(pentadiagonal) solve per rotor, clip, iterate. On clean synthetic data
-this is nearly optimal and fully captures a 1\revps{} offset. But it has
-no per-measurement variance model: the weights assume the phase-noise
-law~\eqref{eq:phasenoise} \emph{always} holds, i.e., that $z_k$ is
-signal-dominated. Two things break it, both measured on the ladder
-(Section~\ref{sec:ladderresults}): any real broadband floor --- it stalls
+and fuse across $k$ and channels with the Fisher
+weights~\eqref{eq:fisherweight} under a smoothness prior.
+
+\subsubsection{From the cost to a pentadiagonal system}
+Every track gives one noisy opinion per sample about the same unknown
+curve $\delta(t)$, so the fusion is
+\begin{equation}
+  J(\delta) = \sum_t \sum_k w_k[t]\,
+  \big(\hat\delta_k[t] - \delta[t]\big)^2
+  + \lambda\, \|D_2\,\delta\|^2 .
+  \label{eq:stagedcost}
+\end{equation}
+Expanding the inner sum at one $t$ and completing the square, with
+\begin{equation}
+  W[t] = \sum_k w_k[t], \qquad
+  \bar\delta[t] = \frac{\sum_k w_k[t]\,\hat\delta_k[t]}{W[t]},
+  \label{eq:suffstat}
+\end{equation}
+gives $\sum_k w_k(\hat\delta_k - \delta)^2 = W[t](\delta[t] -
+\bar\delta[t])^2 + \mathrm{const}$: the weighted mean and the total weight
+are \emph{sufficient statistics}, so a hundred harmonics collapse to two
+numbers per sample with no approximation. Differentiating the collapsed
+cost yields
+\begin{equation}
+  \big(\operatorname{diag}(W) + \lambda\, D_2^{\mathsf T} D_2\big)\,
+  \delta = W \odot \bar\delta ,
+  \label{eq:pentasys}
+\end{equation}
+the same shape as~\eqref{eq:normaleq} --- a data term on the diagonal plus
+a smoothness term --- but with one unknown per sample instead of $M$, so
+the matrix is real, symmetric and \emph{pentadiagonal} ($q = 2$), interior
+row $[\lambda,\, -4\lambda,\, W[t]{+}6\lambda,\, -4\lambda,\, \lambda]$,
+positive definite as soon as any $W[t] > 0$, and solved by the same banded
+Cholesky. The behaviour where evidence is missing is the reason to solve a
+system rather than smooth $\bar\delta$ directly: as $W[t] \to 0$ the row
+is governed by $\lambda D_2^{\mathsf T}D_2$, whose null space is the
+straight lines, so the solution interpolates across the gap instead of
+collapsing to zero.
+
+\subsubsection{What breaks}
+The machinery is sound; the inputs are not. Stage D has no per-measurement
+variance model --- the weights assume the phase-noise
+law~\eqref{eq:phasenoise} \emph{always} holds, i.e.\ that $z_k$ is
+signal-dominated. Three things break it, and the third is the subject of
+Section~\ref{sec:jitter}. (i) Any real broadband floor: the stage stalls
 already at $+10$\,dB SNR, because \texttt{unwrap} commits cycle slips on
 noise-dominated samples, and slips are catastrophic unbounded errors that
-quadratic weighting does not reject --- and per-harmonic phase diffusion,
-whose phase slope is white noise scaled by the diffusion rate,
-informative about nothing, yet weighted by $k^2|z_k|^2$ as if it were
-pure track error. Stage D is the cautionary tale: right weights, no model
-of when the weights lie.
+quadratic weighting does not reject. (ii) Per-harmonic phase diffusion,
+whose phase slope is white noise scaled by the diffusion rate ---
+informative about nothing, yet weighted by $k^2|z_k|^2$ as if it were pure
+track error. (iii) The rank-one term: $W[t]$
+in~\eqref{eq:pentasys} is exactly the quantity that~\eqref{eq:varfloor}
+says is overstated, so the solve trusts the data relative to the prior and
+chases shaft jitter, worst where the most harmonics were pooled. The
+corrected diagonal is $W_{\mathrm{eff}}$, and harmonics should be capped
+where the information saturates rather than at an arbitrary $k_{\max}$;
+the collision thresholds, which are in absolute hertz today, must then
+scale with $k$ too, or the wider high-$k$ filters would quietly begin
+admitting neighbours. Stage D is the cautionary tale: right weights, no
+model of when the weights lie.
 
 \subsection{Generation 3: angular resampling (iter\_warp)}
 \label{sec:iterwarp}
@@ -835,26 +1353,103 @@ $c_{\mathrm{diff}} \to 1$ --- the unfiltered Brownian increment variance
 $q\Delta t$, as it must. At our $B\Delta t$, $c_{\mathrm{diff}} \approx
 0.19$.
 
-\subsubsection{Estimation}
-With mean and variance in hand, estimation is textbook. The state is the
-rate error $\delta r(t)$, a random walk with process variance
-$\sigma_p^2 \Delta t$ per step; each frame supplies one measurement per
-surviving (channel, harmonic) pair, with per-measurement variance from
-\eqref{eq:incvar} --- the in-band noise floor $\snr_k$ is estimated from
-an \emph{off-comb} demodulation at $k\hat\varphi + 2\pi \Delta_{\!f} t$
-($\Delta_{\!f} = 3$\,Hz, off every comb line), and frames whose envelope
-sits at or below that floor are gated out. The scalar Kalman update is
-one line of Gaussian algebra --- posterior precision is the sum of
-precisions,
+\subsubsection{From the cost to a tridiagonal system}
+Sections~\ref{sec:vksolve} and~\ref{sec:staged} both ended at a banded
+linear system, and so does this one. Two things constrain the unknown
+$\delta[t]$: every phase increment is a noisy measurement of it, and a
+rotor's rate error should not jump between frames. Writing $h_k = 2\pi
+k\,\Delta t$ for the gain that turns a rate error into a phase step,
+$R_{ck}[t]$ for the measurement variance~\eqref{eq:incvar}, and
+$q = \sigma_p^2 \Delta t$ for the random-walk strength,
+\begin{multline}
+  J(\delta) = \sum_t \sum_{c,k}
+  \frac{\big(\Delta\psi_{ck}[t] - h_k\,\delta[t]\big)^2}{2 R_{ck}[t]} \\
+  + \sum_t \frac{\big(\delta[t] - \delta[t{-}1]\big)^2}{2q}
+  + \frac{\delta[0]^2}{2 P_0} .
+  \label{eq:pikcost}
+\end{multline}
+Because every measurement touches exactly one time index, the first term
+collapses --- as in~\eqref{eq:suffstat} --- into two numbers per frame,
 \begin{equation}
-  P_{t|t}^{-1} = P_{t|t-1}^{-1} + \sum_{c,k}
+  I[t] = \sum_{c,k} \frac{h_k^2}{R_{ck}[t]}, \qquad
+  m[t] = \sum_{c,k} \frac{h_k\,\Delta\psi_{ck}[t]}{R_{ck}[t]},
+  \label{eq:infoform}
+\end{equation}
+the total precision available at frame $t$ and the precision-weighted
+evidence. Differentiating, with $D_1$ the first-difference operator,
+\begin{equation}
+  \Big(\operatorname{diag}(I) + \tfrac{1}{q}\,
+  D_1^{\mathsf T} D_1\Big)\,\delta = m ,
+  \label{eq:tridiagsys}
+\end{equation}
+whose stencil $[-1, 2, -1]$ makes it symmetric \emph{tridiagonal}, half
+bandwidth $1$. The in-band noise floor $\snr_k$ in $R_{ck}$ is estimated
+from an \emph{off-comb} demodulation at $k\hat\varphi + 2\pi\Delta_{\!f}t$
+($\Delta_{\!f} = 3$\,Hz, off every comb line), and frames whose envelope
+sits at or below that floor are gated out.
+
+\subsubsection{The Kalman filter \emph{is} the banded solve}
+We do not factor~\eqref{eq:tridiagsys}; we run a forward pass and a
+backward pass. These are not a different algorithm. \emph{The forward
+Kalman recursion is forward elimination on~\eqref{eq:tridiagsys}, and the
+Rauch--Tung--Striebel smoother is the back substitution.} For a
+tridiagonal matrix that elimination is the Thomas algorithm, which is
+banded Cholesky at half-bandwidth $1$. Concretely, the forward step is one
+line of Gaussian algebra --- posterior precision is the sum of precisions,
+\begin{equation}
+  P_{t|t}^{-1} = P_{t|t-1}^{-1} + I[t]
+  = P_{t|t-1}^{-1} + \sum_{c,k}
   \frac{(2\pi \Delta t\, k)^2}{\operatorname{Var}[\Delta\psi_{c,k}(t)]},
   \label{eq:kalman}
 \end{equation}
-followed by a standard Rauch--Tung--Striebel backward pass so every
-estimate uses the whole window; then $\hat r \mathrel{+}= \delta r$
-(clipped) and the next outer iteration re-demodulates. Three ingredients
-close the loop.
+and the backward pass distributes the whole window's information to every
+frame. Two practical reasons prefer the recursive form anyway: it streams,
+so it needs no full matrix and could run causally; and it produces the
+posterior variances $P_{s}[t]$ for free, which a plain solve would not.
+
+Table~\ref{tab:threestages} states the consequence. The three refinement
+stages of this paper are one algebra --- a data term on the diagonal plus
+a difference-operator prior, solved by banded elimination --- and they
+differ in only two respects that matter. The \emph{order of the prior}:
+$D_2$ prefers straight lines and $D_1$ prefers flat ones, so the
+phase-increment tracker is the more conservative extrapolator where
+evidence is missing. And the \emph{bandwidth schedule} that decides which
+measurements exist at all, which Section~\ref{sec:vkrefine} showed to be
+decisive.
+
+\begin{table}[t]
+  \centering
+  \caption{Three stages, one algebra. $M$ = number of tracks in a coupling
+    group; $N$ = samples.}
+  \label{tab:threestages}
+  \footnotesize
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.20\columnwidth}
+                    >{\raggedright\arraybackslash}p{0.22\columnwidth}
+                    >{\raggedright\arraybackslash}p{0.26\columnwidth}
+                    >{\raggedright\arraybackslash}p{0.24\columnwidth}@{}}
+    \toprule
+    Stage & Prior & Matrix & Solved by \\
+    \midrule
+    VK envelopes \eqref{eq:normaleq}
+      & $D_2$ on each envelope
+      & Hermitian banded, $q{=}2M$
+      & banded Cholesky \\[2pt]
+    Fisher slopes \eqref{eq:pentasys}
+      & $D_2$ on the correction
+      & real penta\-diagonal, $q{=}2$
+      & banded Cholesky \\[2pt]
+    Phase increments \eqref{eq:tridiagsys}
+      & $D_1$ on the error state
+      & real tridiagonal, $q{=}1$
+      & forward--backward recursion \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Closing the loop}
+After the smoother, $\hat r \mathrel{+}= \delta r$ (clipped) and the next
+outer iteration re-demodulates. Three ingredients close the loop.
 \emph{(i) Data-estimated $q_k$:} run a first pass with $q = 0$, measure
 the robust (median-absolute-deviation) excess of the residual variance of
 $\Delta\psi_k$ over the SNR-predicted noise term, and set $q_k =
@@ -916,58 +1511,295 @@ unit-harmonic measurements. The mixture's phase increments are
 deliberately \emph{not} used as a pair-mean measurement --- that is the
 content of~\eqref{eq:winding}.
 
-\section{Validation Methodology}
+\section{A Label-Free Referee}
+\label{sec:referee}
+
+Every number in Section~\ref{sec:results} is scored against telemetry, and
+telemetry is not truth. It has a clock, a quantizer, and a calibration,
+and Section~\ref{sec:telemetry} shows that on two of our four recordings
+all three were wrong. Before that can be established --- or before two
+estimator variants that differ by less than the reference's own noise can
+be ranked --- an instrument is needed that does not consult the reference
+at all.
+
+\subsection{The reconstruction residual}
+\label{sec:residual}
+
+The instrument follows from the two-block structure. A VK envelope set is
+a \emph{readout} of the triple (audio, trajectory, configuration): given a
+trajectory, the envelopes are the exact conditional minimizer
+of~\eqref{eq:normaleq}, and nothing about them is fitted to any reference.
+Define
+\begin{equation}
+  \mathcal{R}\big(r(\cdot)\big) =
+  \frac{\|x - \hat{x}_{r}\|}{\|x\|},
+  \qquad
+  \hat{x}_r = \textstyle\sum_{i,k} \operatorname{Re}
+  \big[\hat A_{i,k}\, e^{\mathrm{j}k\varphi_i}\big],
+  \label{eq:referee}
+\end{equation}
+the fraction of the recording that a harmonic model built on trajectory
+$r$ fails to explain (fixed configuration, $k = 1..30$). Lower is better;
+$\mathcal{R} > 1$ means the reconstruction \emph{added} energy, the
+near-singular cancelling mode of Section~\ref{sec:vksolve}. Two properties
+make it usable as a referee. It is label-free, so it can be pointed at
+either side of an audio-versus-telemetry comparison. And it is monotone in
+trajectory quality --- which is not an assumption but the thing that must
+be checked, and is (Table~\ref{tab:referee}): on every window a
+phase-increment refinement improves it, and on the DREGON ramp window it
+converts a diverging reconstruction ($1.8191$) into a working one
+($0.9898$).
+
+\begin{table}[t]
+  \centering
+  \caption{The referee~\eqref{eq:referee} across three 16\,s windows.
+    Lower explains more of the recording. The synthetic column's
+    theoretical floor for perfect comb removal at 0\,dB is $0.7071$.
+    VK-refine is the inertness confirmation of
+    Section~\ref{sec:vkrefine}; the last column is the telemetry
+    trajectory where one exists.}
+  \label{tab:referee}
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lcccc}
+    \toprule
+    Window & entry & +VK-refine & +phase-incr. & telemetry \\
+    \midrule
+    Synthetic, 0\,dB & 0.7066 & 0.7068 & \textbf{0.6845} & 0.6606 \\
+    FLY124 cruise    & 0.5774 & 0.5774 & \textbf{0.5300} & 0.5498 \\
+    DREGON ramp      & 1.8191 & 1.8138 & \textbf{0.9898} & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Three readings of Table~\ref{tab:referee} carry the rest of this section.
+First, VK-refine changes the amplitude model by nothing --- identical to
+four decimals on FLY124 --- so the refine rounds can be dropped with no
+amplitude cost, which is the third confirmation of
+Section~\ref{sec:vkrefine}. Second, the refinement stages can be ranked
+without telemetry, which matters on recordings whose telemetry is under
+suspicion. Third, and least comfortable: on FLY124 \emph{our estimated
+trajectory explains the audio better than the telemetry does}
+($0.5300$ vs $0.5498$). That is suggestive, not conclusive, since our
+trajectory is fitted to the audio while the telemetry is independent ---
+which is exactly why the telemetry investigation below is conducted with
+controls rather than with this number alone.
+
+\subsection{Oracle floors}
+\label{sec:oracle}
+
+The same instrument gives the ladder its floors. An \emph{oracle} arm
+reconstructs a rotor's siblings from ground-truth trajectories, subtracts
+them from the audio, and refines the remaining rotor on the residual; the
+gap between the oracle and the blind chain is then the part of the error
+attributable to inter-rotor interference, and the oracle's own score is a
+bound that no sibling-handling scheme can beat. This decomposition is what
+turns ``the estimator is not accurate enough'' into a statement with a
+denominator, and it is what Section~\ref{sec:s2} uses to prove --- rather
+than assert --- that $0.2\revps$ is the floor of a 0\,dB four-rotor
+benchmark.
+
+\subsection{Auditing the reference: telemetry calibration}
+\label{sec:telemetry}
+
+Pointed at the telemetry, the referee scans a candidate correction (a time
+shift, a dilation, a rate scale) and reports which value of it lets the
+audio be explained best. Only the telemetry moves; the audio and the
+estimator are fixed. Applied to the two outdoor recordings of the
+cross-drone platform (FLY124, FLY125; DJI Matrice~100, 8-mic ring,
+flight-controller telemetry at ${\approx}29$\,Hz), it finds two distinct
+defects.
+
+\subsubsection{A drifting clock, not a constant lag}
+Scanning a pure time shift per cruise window returns lags that are not
+constant but \emph{drift linearly with recording time}: on FLY124 four
+cruise windows give $-61.83$ to $-31.77$\,ms with OLS slope
+$+0.654$\,ms/s and intercept $-86.1$\,ms ($R^2 = 0.94$); on FLY125 nine
+windows give $-158.35$ to $-105.54$\,ms with slope $+0.377$\,ms/s and
+intercept $-172.1$\,ms ($R^2 = 0.92$). The discriminating control is the
+model comparison: the linear model's residual RMS is $2.90$ and
+$4.49$\,ms against $12.04$ and $16.19$\,ms for the best constant lag ---
+a $4.1\times$ and $3.6\times$ improvement, on 4 and 9 points respectively.
+This is a clock-rate error, so the loader's telemetry-to-audio map
+$W = d\tau + (\text{ts}_0 - \text{offset})$ absorbs it as
+$d_{\mathrm{new}} = d_{\mathrm{old}}/(1-b)$,
+$\text{offset}_{\mathrm{new}} = \text{offset}_{\mathrm{old}} - a/(1-b)$
+for a fit $\mathrm{lag}(t) = a + bt$, giving corrected constants
+$(-20.753813,\, 1.001654644)$ and $(-26.337849,\, 1.005178509)$.
+
+\subsubsection{A rate scale}
+Independently, the telemetry reads \emph{low} at cruise on both
+recordings. Fitting one global gain over all 13 cruise windows, excluding
+the twin-pair rotors the audio cannot resolve, gives
+$0.698\% \pm 0.069$ and $0.706\% \pm 0.034$ --- two independent fits
+agreeing to $0.008$ percentage points. Three controls constrain the model.
+(i) \emph{Per-rotor} offsets are not identifiable: the between-rotor
+spread ($0.099$, $0.051\revps$) is smaller than the within-rotor scatter
+($0.155$, $0.109$), and adding per-rotor constants buys $0$--$4\%$ of RMS
+over one global constant. (ii) The competing hypothesis --- a per-rotor
+lag between the ESC-reported and physical speed --- is refuted three ways:
+splitting by the sign of $\dot r$ gives implied $\tau$ of
+$-3.6$ to $+0.8$\,ms, a per-rotor lag scan returns values consistent with
+zero, and on a joint $(\tau_r, b_r)$ grid the offset axis carries $100\%$
+of the explanatory power ($\Delta\mathcal{R} = 0.0104$ / $0.0092$) while
+the lag axis carries $0.0000$ to four decimals. The arithmetic also kills
+it a priori: cruise $\dot r$ has RMS $15$--$19\revps^2$ but mean
+$-0.08$ to $+0.43\revps^2$, so a $30$\,ms lag biases the mean by
+$0.0003$--$0.013\revps$, two to three orders below the disputed
+$+0.5$--$0.9$. (iii) After applying the fitted constants, a re-run on all
+13 windows leaves a residual lag RMS of $3.40$ / $3.22$\,ms --- the level
+of the fit's own residual, with no monotone per-window trend --- and a
+residual rate offset of $-0.054$ / $-0.009\revps$, i.e.\ about a tenth of
+what was removed.
+
+\subsubsection{What the correction is, and is not}
+The form is multiplicative for two reasons, one physical and one
+algebraic. Physically, the published frames span ground idle and warm-up:
+an additive $+0.6\revps$ would invent motion on a stationary rotor,
+whereas a scale vanishes as $r \to 0$. Algebraically, the global gain is
+degenerate with a sample-clock error, which is exactly multiplicative:
+with $\varepsilon_a$ an audio sample-rate error, $\varepsilon_t$ a
+telemetry-clock error and $\varepsilon_r$ an ESC scale error,
+\begin{equation}
+  d - 1 \approx \varepsilon_a - \varepsilon_t, \qquad
+  g \approx -\varepsilon_a - \varepsilon_r ,
+  \label{eq:clockdegeneracy}
+\end{equation}
+and the two recordings are self-consistent under either
+$\varepsilon_r = 0$ or $\varepsilon_a = 0$. We therefore state the
+conclusion in its weak form: this is a \emph{label-for-this-audio}
+correction, not proof that the flight controller is miscalibrated. It is
+also worth noting what~\eqref{eq:clockdegeneracy} independently implies:
+$\varepsilon_a$ is common to all four rotors, so no clock hypothesis can
+produce a per-rotor difference --- corroborating (i) above from a
+different direction. Honest limits: a direct additive-versus-multiplicative
+discriminator has no statistical power here (the per-rotor optima are
+dominated by per-rotor acoustic strength, with observed spread
+$6$--$17\times$ what either model predicts), and the FLY124 constants rest
+on four cruise windows.
+
+\subsubsection{DREGON: a different defect}
+The indoor corpus shows neither problem --- its telemetry is logged at
+1\,kHz and needs no realignment --- but it has one of its own, visible
+from the CSV alone. Its \texttt{motors\_measured} channel lies on a
+\emph{reciprocal-period lattice}: a period counter uniform in $1/v$ at
+$42\,\mu$s, giving a quantization step of $0.28\revps$ at $80\revps$, and
+updating at only $44$--$45$\,Hz with zero-order hold between updates. A
+32\,ms increment is therefore one or two lattice steps, which is the
+documented $\pm0.6\revps$ fast jitter of the DREGON reference, and it is
+why every raw-referenced score in Section~\ref{sec:results} carries a
+jitter floor that a smoothed-reference score does not.
+
+\subsubsection{Effect on the scoreboard}
+Correcting the two constants moves the reference and, because the same
+constants set where each window's audio is cut, the audio. The two cannot
+be separated from each other by this experiment; both together improve
+pooled FLY124 cruise error from $2.644$ to $\mathbf{2.421}\revps$
+($-8.4\%$), with every seed-stable window improving individually. It is
+the largest single improvement reported anywhere in this paper for the
+cross-drone recording, and no estimator was changed to obtain it. The
+caveat is equally instructive and is documented in
+Section~\ref{sec:scoreboard}: the 86\,ms audio realignment also flips one
+window's blind seed, which costs more than the correction gains.
+
+\section{Experiments: A Progressive Ladder}
 \label{sec:validation}
 
-\subsection{The phase-validation ladder}
+\subsection{Structure of the ladder}
 \label{sec:ladder}
 
-Whether the machinery recovers instantaneous \emph{phase} --- not just
-frequency --- is tested on a progressive-difficulty ladder in which each
-stage adds one nuisance, so the rung that breaks a method identifies its
-failing assumption:
-\begin{itemize}
-\item \textbf{S0} --- pure additive comb under full control: $1/k$
-  harmonic amplitudes on a realistically aggressive synthetic rate
-  trajectory at mean 80\revps, gridded over broadband SNR
-  $\{\text{clean}, 10, 0, -10\,\mathrm{dB}\}$ $\times$ harmonic jitter
-  $\{$none; coherent (shared shaft Ornstein--Uhlenbeck); per-harmonic
-  (independent per-harmonic OU calibrated to the $\pm0.6\revps$ IF spread
-  observed in DREGON telemetry)$\}$.
-\item \textbf{S1} --- a trained neural noise generator, one rotor, with
-  its learned per-drone linewidth on; truth shaft phase is the input RPS
-  integral, and the generator's own linewidth is part of the measurement.
-\item \textbf{S2} --- the generator with four rotors at the DREGON twin
-  structure $\{74.0, 74.7, 85.3, 86.3\}\revps$, 8 microphones:
-  permutation-aligned metrics plus a twin-capture indicator.
-\item \textbf{S3} --- real single-motor bench recordings (8\,ch,
-  16\,kHz, setpoints 50--90\revps): no ground-truth phase, so
-  recovered-IF stability, lock of the audio against the recovered phase,
-  residual harmonic-energy drop under phase-locked comb subtraction, and
-  tracker confidence. Initializations: the nominal setpoint and nominal
-  $\pm1\revps$.
-\item \textbf{S3b} --- real four-motor static recording (all motors at
-  nominal 70 on the ground): isolates multi-rotor masking from flight.
-  Identical inits are structurally unrefinable for twin-gated methods, so
-  a staggered-init cell is the degeneracy-breaking control.
-\item \textbf{S3c} --- real quasi-stationary hover (command telemetry
-  only): isolates aerodynamic loading and minor motion from translation.
-  The S3b$\to$S3c$\to$S4 deltas decompose the sim-to-real collapse into
-  masking vs.\ aero-load phase noise vs.\ translation/Doppler.
-\item \textbf{S4} --- one 16\,s cruise window of DREGON free flight,
-  initialized from tau-aligned command telemetry; IF MAE against the
-  measured-speed track is also reported since it exists there.
-\end{itemize}
-Methods per run: the initialization as-is (the metric floor), stage D,
-iter\_warp, pi\_kalman (and its pair-joint variant), VK-refine, and
-annealed capture-plus-refine. Synthetic inits are truth plus constant
-offsets $\{0, 0.3, 1.0, 2.0\}\revps$. Everything is deterministic (fixed
-per-cell seeds).
+The experiments are organized by difficulty, one nuisance per rung, so
+that the rung on which a method breaks identifies the assumption it
+violates and --- equally important --- so that error can be attributed
+either to the estimator or to the benchmark. Rungs S1--S3 are synthetic
+and are stated as \emph{floors}: what is achievable, not what we achieve.
+S4 adds the nuisance that motivates Section~\ref{sec:jitter} and is not
+yet measured. The real-data rungs then bridge to flight.
+
+\subsubsection{S1 --- locked phase, noiseless: the estimator floor}
+\label{sec:s1}
+One rotor, an additive $1/k$ comb on a synthetic rate trajectory at mean
+$80\revps$, every harmonic's phase locked to $2\pi\!\int\! r\,d\tau$, and
+no broadband noise. This rung asks only whether the estimator can hold and
+recover a trajectory it is given the information to hold. Initializations
+are truth plus constant offsets $\{0, 0.3, 1.0, 1.5, 2.0\}\revps$; the
+$0$ cell measures the floor and the others measure capture range.
+
+\subsubsection{S2 --- four rotors at 0\,dB: inter-rotor interference}
+\label{sec:s2}
+Four rotors at the DREGON twin structure
+$\{74.0, 74.7, 85.3, 86.3\}\revps$ with a broadband floor, gridded over
+comb-versus-noise SNR $\{0, 10, 20, 40\}$\,dB. The distinguishing arm is
+the \emph{oracle} of Section~\ref{sec:oracle}: siblings reconstructed from
+ground-truth trajectories and subtracted before refinement. Comparing
+oracle against blind at each SNR separates ``the sibling combs are in the
+way'' from ``the noise is in the way'', and the SNR at which the two arms
+meet is the point past which no sibling-handling scheme can help.
+
+\subsubsection{S3 --- physically band-limited shafts: the benchmark
+  artifact}
+\label{sec:s3}
+Identical to S2 except that the rate trajectory is low-passed at a cutoff
+$f_c \in \{5, 8, 12, \infty\}$\,Hz \emph{before} the audio is synthesized
+and before the ground truth is defined. A rotor has inertia and cannot
+follow a white drive; a benchmark whose generator ignores that, and which
+then point-samples the reference onto the analysis frame grid without an
+anti-alias filter, charges the estimator for trajectory content no
+estimator could recover. The sweep over $f_c$ quantifies how much of a
+reported error is this artifact. The calibration control is
+\emph{real} telemetry: DREGON's 1\,kHz measured-speed track has $82\%$ of
+its AC power below 5\,Hz against the unlimited synthetic's $97\%$, i.e.\
+real shafts are, if anything, \emph{rougher} than the synthetic --- so the
+roughness is realistic and it is the \emph{sampling} convention that is
+wrong. Results are reported against both conventions.
+
+\subsubsection{S4 --- arrival-time jitter}
+\label{sec:s4}
+The rung that tests Section~\ref{sec:jitter}, and the one this draft does
+not yet have. S1--S3 all lock every harmonic's phase to the shaft integral,
+so their only phase variation is a deterministic function of the
+trajectory --- which a trajectory-following demodulator removes by
+construction (Section~\ref{sec:vkrefine}). Independent arrival-time jitter
+is not a function of $r(t)$, so no such demodulator removes it, and none of
+our synthetics contain any. S4 injects a timing error $n_t$ of controlled
+variance into the shaft-angle advance, then measures the empirical
+cross-harmonic covariance of the per-harmonic opinions
+$\hat\delta_k(t)$~\eqref{eq:jitteropinion} on time-high-passed data and
+fits it as rank-one plus diagonal. Three predictions are on the record and
+will be scored: that the rank-one component $\sigma_J^2$ is non-zero on
+\emph{real} data and not merely on the injected synthetic; that the fused
+variance saturates at a finite $k^\ast$ rather than continuing to fall as
+$1/W$; and that under the $k$-scaled bandwidth~\eqref{eq:kscaled} the
+empirically optimal weight exponent moves from $k^2$ toward $k$, as
+predicted by~\eqref{eq:kweight}. Measured values:
+\pending{S4 --- $\sigma_J^2$ on synthetic and on DREGON/FLY124 cruise;
+$k^\ast$; fitted weight exponent under fixed vs.\ $k$-scaled bandwidth}.
+
+\subsubsection{Real data}
+\label{sec:realdata}
+Two corpora, deliberately unlike each other. \textbf{DREGON} is indoor and
+reverberant, a quadrotor in free flight in a room, 8 microphones at
+44.1\,kHz resampled to 16\,kHz, with per-rotor telemetry logged at 1\,kHz
+--- accurate in time, but quantized onto the reciprocal-period lattice of
+Section~\ref{sec:telemetry}. Three free-flight recordings are used
+(no interferer, speech interferer, white-noise interferer).
+\textbf{Michael's recordings} (FLY124, FLY125) are outdoor, an unrelated
+DJI Matrice~100 with an 8-mic ring and flight-controller telemetry at
+${\approx}29$\,Hz --- coarse in time, and, as Section~\ref{sec:telemetry}
+established, initially miscalibrated in both clock and scale. Between them
+they separate reverberation from wind, indoor from outdoor, and a fast
+accurate reference from a slow one. Four intermediate real rungs isolate
+the mechanism of the coherence collapse: single motors on the bench
+(8\,ch, setpoints $50$--$90\revps$, no ground-truth phase, so scored by
+recovered-IF stability and lock); all four motors running statically on
+the ground; quasi-stationary hover; and free flight. The successive deltas
+decompose the collapse into multi-rotor masking, aerodynamic loading, and
+translation.
 
 \subsection{Metrics}
 \label{sec:metrics}
 
-With ground truth (S0--S2): edge-trimmed IF MAE (rev/s); shaft-phase
+With ground truth (S1--S3): edge-trimmed IF MAE (rev/s); shaft-phase
 circular RMSE after fitting the initial phase that maximizes coherence,
 plus accumulated phase drift in revolutions; and per-harmonic coherence
 \begin{equation}
@@ -976,8 +1808,8 @@ plus accumulated phase drift in revolutions; and per-harmonic coherence
   k \in \{1, 2, 5, 10, 20, 40\}.
   \label{eq:ck}
 \end{equation}
-Without ground truth (all stages, so S2$\to$S3 bridges simulation to
-reality on the same metric): the lock statistic~\eqref{eq:lock} of the
+Without ground truth (every rung, so that the synthetic-to-real crossing
+is made on one unchanged metric): the lock statistic~\eqref{eq:lock} of the
 demodulated envelopes. Two decoherence diagnostics ride on the same
 envelopes: (a) an off-comb noise floor --- re-demodulating at
 $k\hat\varphi + 2\pi\Delta_{\!f} t$ ($\Delta_{\!f} = 3$\,Hz, off every
@@ -995,7 +1827,7 @@ plateaus) from slow drift (long plateaus).
 
 End-to-end trackers are compared on a frozen protocol designed to remove
 every degree of evaluator freedom: a content-addressed dataset pin
-(\texttt{beatvk-valid-raw@268c766}) covering three DREGON free-flight
+(\texttt{beatvk-valid-raw}) covering three DREGON free-flight
 recordings (no interferer, speech interferer, white-noise interferer;
 8\,mics, 44.1\,kHz resampled to 16\,kHz) and one recording of an
 unrelated DJI Matrice~100 (FLY124; 8-mic ring, flight-controller
@@ -1012,14 +1844,116 @@ stitched over the manifest windows; the scorer edge-clamps outside
 covered spans. The ``steady'' subset (DREGON w1/w2 of each recording;
 FLY124 w3--w5) excludes each recording's ramp window and FLY124's warmup.
 The raw reference matters: DREGON's measured-speed track carries
-$\pm0.6\revps$ zero-mean fast jitter, so raw-referenced scores include a
-jitter floor that smoothed-reference scores do not --- earlier
-guarded-blind results (0.688 pooled DREGON cruise, 1.027 FLY124 cruise on
-20\,s windows) were scored against smoothed telemetry and are consistent
-with the ${\sim}1.0$ steady-window raw scores reported below.
+$\pm0.6\revps$ zero-mean fast jitter --- now explained, as the
+reciprocal-period lattice of Section~\ref{sec:telemetry} --- so
+raw-referenced scores include a jitter floor that smoothed-reference
+scores do not. Earlier guarded-blind results (0.688 pooled DREGON cruise,
+1.027 FLY124 cruise on 20\,s windows) were scored against smoothed
+telemetry and are consistent with the ${\sim}1.0$ steady-window raw scores
+reported below; the 1.027 figure additionally predates the telemetry
+recalibration and comes from a different (20\,s sweep) protocol, so it is
+quoted only for continuity
+(\pending{20\,s guarded-blind bar re-run on the corrected loader}).
+
+One consequence of Section~\ref{sec:telemetry} is a protocol change and
+must be stated up front, because it partitions the numbers below. The
+frozen pin was rebuilt on the corrected telemetry constants
+(\texttt{@268c766} $\to$ \texttt{@54849c13}). Window boundaries, window
+count and regime tags are unchanged on all fifteen windows, and the nine
+DREGON windows are bit-identical in audio \emph{and} labels, so every
+DREGON number is directly comparable across the two builds. The six FLY124
+windows are not: their labels rose $+0.23$ to $+0.56\revps$ and their
+audio moved $86.188$\,ms earlier in the recording (a pure displacement,
+cross-correlation $r = 0.9997$, identical on all six). FLY124 figures
+below are therefore labelled \emph{pre} or \emph{post}; the neural
+reference rows of Table~\ref{tab:scoreboard} were scored on the \emph{pre}
+build and their FLY124 column is
+\pending{neural scoreboard re-scored on \texttt{@54849c13}}.
 
 \section{Results}
 \label{sec:results}
+
+\subsection{S1--S3: floors, and how much of the error is the benchmark}
+\label{sec:floors}
+
+\subsubsection{S1 --- the estimator floor is 0.055, not 0.4}
+Given an exact initialization and asked only to hold it, the
+phase-increment tracker ends the window $0.055\revps$ from truth. Constant
+offsets up to $\pm1\revps$ are removed to ${\approx}0.1$; the capture
+boundary lies near $1.5\revps$, and $2.0$ is outside it. (This is the
+four-rotor configuration, where the twin gate withholds the low harmonics
+that carry the widest capture; a single isolated comb at 0\,dB captures
+$+2.0$ to $0.08$, Table~\ref{tab:ladder}.) Precision is
+therefore not intrinsically limited by the estimator at this rung, which
+is what makes the remaining rungs interpretable: whatever error appears
+later is attributable to something the rung added.
+
+Two properties of the estimator surface here and both are design
+constraints. First, \emph{iteration is harmful}. Every schedule peaks
+after \emph{one} application and then degrades monotonically ---
+$0.167 \to 0.196 \to 0.226 \to 0.244 \to 0.268\revps$ over five repeats
+--- because each pass injects ${\approx}0.05\revps$ of fresh estimation
+noise that accumulates additively in the track. The correct design is one
+pass, no convergence loop, no polish. Second, the residual is
+\emph{SNR-independent}: from a shape-deficient initialization it lands at
+$0.413$ at 0\,dB, $0.334$ at 10\,dB, $0.337$ at 20\,dB and $0.336$ at
+40\,dB. Whatever it is, it is not measurement noise.
+
+\subsubsection{S3 --- it is a bandwidth limit, and partly a benchmark
+  artifact}
+Decomposing that residual by frequency band settles it. Below 0.5\,Hz the
+estimator recovers $99.9\%$ of the ground truth's trajectory power
+(error-to-truth power ratio $0.001$--$0.006$); at 2--4\,Hz the ratio is
+${\approx}0.2$; above 8\,Hz it is ${\approx}1.0$, i.e.\ nothing is
+recovered. The ground truth holds $70.7\%$ of its power below 0.5\,Hz, but
+$47\%$ of the \emph{residual} sits in the 8--16\,Hz band --- the frame-grid
+Nyquist edge. Neither cause is the estimator's: the generator's
+Ornstein--Uhlenbeck drive is white to the 250\,Hz synthesis rate, which a
+real rotor's inertia cannot follow, and the reference is point-sampled onto
+the 31.25\,Hz frame grid with no anti-alias filter, folding it all back in.
+Band-limiting the shaft before synthesis moves the numbers as predicted:
+$f_c = \infty$ gives $0.354$, $f_c = 12$\,Hz gives $0.277$, $f_c = 8$\,Hz
+gives $0.221$, $f_c = 5$\,Hz gives $0.186$ (all at 40\,dB, one pass). The
+calibration control keeps this honest --- real DREGON telemetry has
+\emph{more} high-frequency content than the synthetic ($82\%$ of AC power
+below 5\,Hz against $97\%$) --- so the synthetic's roughness is fair and it
+is the sampling convention that inflates the score.
+
+\subsubsection{S2 --- what remains is inter-rotor interference, until it
+  is not}
+On clean band-limited four-rotor data an oracle that reconstructs and
+removes the siblings from ground truth reaches $0.081\revps$, against
+$0.193$ for the plain chain and $0.157$ for a blind single-rotor residual
+refinement: at high SNR, sibling removal is worth roughly a factor of two
+and the blind chain leaves most of it unclaimed. At 0\,dB the two arms
+\emph{meet} --- oracle $0.201$ against blind $0.203$ --- so additive noise
+dominates and no sibling scheme can do better. This is the useful form of
+the result: $0.2\revps$ is the floor of a 0\,dB four-rotor benchmark, and
+it is proved by an oracle rather than asserted.
+
+\begin{table}[t]
+  \centering
+  \caption{Floors from S1--S3, stated as what is achievable rather than
+    what is achieved. Any claim of ``near-perfect'' on synthetic data must
+    state its SNR and its ground-truth sampling convention.}
+  \label{tab:floors}
+  \footnotesize
+  \begin{tabular}{lc}
+    \toprule
+    Condition & Achievable (rev/s) \\
+    \midrule
+    S1: exact init, hold                          & 0.055 \\
+    S3: $f_c{=}5$\,Hz, 40\,dB, oracle sibling removal & 0.081 \\
+    S3: $f_c{=}5$\,Hz, 40\,dB, blind residual refine  & 0.157 \\
+    S2: $f_c{=}5$\,Hz, \textbf{0\,dB}, oracle $=$ blind & ${\approx}0.20$ \\
+    Unlimited OU $+$ point-sampled truth, 0\,dB   & ${\approx}0.35$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{S4}
+\pending{S4 timing-jitter rung --- $\sigma_J^2$, $k^\ast$, weight
+exponent; see Section~\ref{sec:s4}}.
 
 \subsection{Ladder: capture and lock}
 \label{sec:ladderresults}
@@ -1043,10 +1977,10 @@ property of Section~\ref{sec:displaced}, not by estimation.
 
 \begin{table*}[t]
   \centering
-  \caption{The phase-validation ladder: IF MAE (rev/s) except where
+  \caption{Capture and lock across the ladder: IF MAE (rev/s) except where
     noted; ``capture $+x$'' = initialization offset $x\revps$ from truth.
-    Bold = best. The free-flight row is the single S4 window; the frozen
-    protocol rows are pooled over the manifest windows.}
+    Bold = best. The free-flight row is a single 16\,s cruise window; the
+    frozen-protocol rows are pooled over the manifest windows.}
   \label{tab:ladder}
   \footnotesize
   \setlength{\tabcolsep}{4.5pt}
@@ -1060,7 +1994,7 @@ property of Section~\ref{sec:displaced}, not by estimation.
     Synthetic, per-harmonic jitter, $+1.0$ & 1.00 & 0.78 & \textbf{0.04} & 0.09--0.14 \\
     Real bench motor, $\mathrm{lock}_{10}$ from nominal $\pm1$ & 0.014--0.10 & 0.013--0.13 & 0.11--0.28 & \textbf{0.40} (all inits agree) \\
     Real free flight, from telemetry truth & inert (0.599$\to$0.58) & inert & degrades (0.73) & 0.67 (lock $\uparrow$, \S\ref{sec:displaced}) \\
-    Frozen protocol, FLY124 pooled (refining neural tracks) & --- & --- & --- & 1.016 $\to$ \textbf{0.859} \\
+    Frozen protocol \emph{pre}, FLY124 (refining neural tracks) & --- & --- & --- & 1.016 $\to$ \textbf{0.859} \\
     Frozen protocol, DREGON cruise pooled & --- & --- & --- & flat (displaced comb) \\
     \bottomrule
   \end{tabular}
@@ -1084,7 +2018,11 @@ augmentation. Four findings.
   \caption{Full scoreboard on the frozen full-coverage raw-telemetry
     protocol: pooled PIT-MAE (rev/s). Steady = DREGON w1/w2 of each
     recording and FLY124 w3--w5 (excludes ramp and warmup windows). Bold
-    = best non-oracle entry per column.}
+    = best non-oracle entry per column. \textbf{The DREGON columns are
+    current}; the FLY124 columns were scored on the \emph{pre}-correction
+    pin \texttt{@268c766} and are
+    \pending{re-score on \texttt{@54849c13}} --- see
+    Section~\ref{sec:protocol}.}
   \label{tab:scoreboard}
   \begin{tabular}{lcccc}
     \toprule
@@ -1134,13 +2072,112 @@ steady FLY124 windows the best neural row \emph{matches} the
 telemetry-initialized oracle (0.74 vs.\ 0.70) while beating blind VK
 (1.91).
 
+\subsection{The negative result: the reconstructed chain does not beat the
+  blind baseline}
+\label{sec:negative}
+
+The analysis of Sections~\ref{sec:vkrefine}--\ref{sec:pikalman} was
+assembled into a reconstructed chain: drop the inert frequency update,
+decouple the per-rotor trajectories by residual corridor DP, and finish
+with one sibling-subtracted phase-increment pass. Tuned on the synthetic
+batteries and on two real windows it improved pooled error by
+$12$--$23\%$ at a fraction of the runtime. On the full fifteen-window
+protocol it does not hold, and Table~\ref{tab:negative} is the result.
+
+\begin{table}[t]
+  \centering
+  \caption{Reconstructed chain vs.\ blind baseline, pooled PIT-MAE
+    (rev/s) on the corrected pin. FLY124 figures are given both as
+    measured and with one window's blind seed held at its pre-build value
+    (see text) --- the seed flip is a lottery unrelated to the refinement.}
+  \label{tab:negative}
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lccc}
+    \toprule
+    Pool & baseline & reconstructed & verdict \\
+    \midrule
+    DREGON cruise (9 windows)   & \textbf{1.825} & 2.089 & loses \\
+    FLY124 cruise (4), measured & \textbf{3.992} & 4.011 & loses \\
+    FLY124 cruise (4), seed held & \textbf{2.421} & 2.519 & loses \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The per-window breakdown names the mechanism rather than leaving it as a
+pooled regression. On DREGON the chain wins $2$ of $9$ windows and loses
+$7$; the two wins are ramp windows (e.g.\ $3.272 \to 3.197$) and every
+loss is a steady window, degraded by $0.3$--$0.5\revps$. Stage-by-stage,
+the corridor DP is a \emph{no-op} on 8 of the 9 DREGON windows --- its
+surface-quality gate skips all four rotors, so the hypothesis that it
+displaces an already-correct rotor is refuted --- and the entire
+regression is the final sibling-subtracted pass. Its per-rotor
+decomposition is diagnostic: on each steady window one or two rotors
+acquire a $1.2$--$2.4\revps$ \emph{negative} bias while the others barely
+move. That is a capture event, not a bias correction. The cause is
+capture range again, from the other side: DREGON cruise is two tight twin
+pairs, so the siblings' reconstruction explains only about a third of the
+RMS, and a wide first band ($12$\,Hz at $k \le 4$, i.e.\ $\pm12\revps$ at
+$k = 1$) lets a single-track solve on a residual that still contains the
+twin's comb slide onto it. On ramp windows the failure is different: the
+reconstruction diverges, its guard trips, and the ungated fallback runs a
+wide tracker on the plain audio --- not a decoupling step at all.
+
+Two lessons, both worth more than the pooled number. First, a stage tuned
+on synthetic batteries plus two real windows generalized to neither
+corpus; the fifteen-window protocol exists precisely to catch that, and it
+did. Second, a truth-free acceptance gate --- decline the pass when the
+sibling reconstruction diverged, when the proposed move exceeds
+$0.5\revps$ (an order of magnitude above the $0.3$--$0.5\revps$ sibling
+bias the pass exists to remove), or when it lands on a sibling's comb ---
+restores parity: pooled $1.822$ / $3.912$, a maximum single-window loss of
+$+0.019$ against $+2.702$ ungated. That gate rejects $54$ of $60$
+per-rotor proposals, which is the honest description of what it achieves:
+it makes the pass a near-no-op, i.e.\ ``never worse than baseline'', not a
+new source of gain. We note, and decline to use, a rule that scores
+slightly better still: comb confidence before and after. It is better on
+these windows and it points the wrong way in principle --- the destination
+of a bad capture event is a \emph{stronger} comb, so confidence rises
+exactly when it should fall.
+
 For continuity with the earlier evaluation regime: under the 20\,s
 guarded-blind protocol scored against smoothed telemetry, the blind
 tracker attains 0.680/0.701/0.744\revps{} pooled on the three DREGON
 free-flight recordings (twin pair resolved on two of three) and
 1.027\revps{} on FLY124 cruise (per-rotor 0.67/1.19/1.22/1.03, all four
 captured); the same-clip telemetry-initialized references are 0.729 and
-0.282\revps.
+0.282\revps. The FLY124 numbers there predate the telemetry recalibration.
+
+\subsection{The label correction, and a seeding lottery}
+\label{sec:labelresult}
+
+Section~\ref{sec:telemetry}'s correction is scored here because it is the
+one intervention in this paper that improves the cross-drone recording
+without touching the estimator. Cleanly separated on FLY124 cruise pooled,
+baseline chain: pre-recalibration $2.644$; the label and alignment
+correction alone $\mathbf{2.421}$ ($-0.223$, $-8.4\%$); the incidental
+blind-seeding flip it triggers $+1.571$; as measured $3.992$. Every
+seed-stable window improves individually ($5.070 \to 4.995$,
+$0.983 \to 0.747$, $3.375 \to 2.954$), consistent with labels now
+${\approx}0.56\revps$ closer to truth and $31$--$62$\,ms better timed. The
+refinement chain shows the same split ($2.702 \to 2.519$, $-6.8\%$).
+
+The flip deserves its own sentence because it is a lesson about blind
+seeding rather than about labels. The $86$\,ms audio realignment changes
+exactly \emph{one} window's blind seed, and it does so because the
+residual re-scan there was adjudicating a $0.06\%$ tie between two
+candidates; the realignment moved both scores by ${\approx}1.5\%$ and
+reversed the order. The seed that was ``good'' before was not a property
+of the seeder --- it won a coin flip. Restoring it puts that window at its
+best value ever ($0.986$), and because the lost rotor is also the one a
+cross-window corroboration rule depends on, its loss propagates to a
+second window. A rotor-band plausibility prior (reject a residual
+candidate that would stretch the seed set's max/min beyond $1.45$)
+removes the implausible candidate and nothing else on all fifteen windows,
+but honestly it only prevents a catastrophic answer; the remaining choice
+is still decided by $4.7\%$ of a low-contrast score. Low-contrast residual
+ranking is the structural weakness of blind seeding, and none of the work
+in this paper fixes it.
 
 \subsection{Decoherence budgets}
 \label{sec:budgets}
@@ -1213,97 +2250,153 @@ mono cell, comparable to iter\_warp.
 \section{Discussion}
 \label{sec:discussion}
 
+\subsection{What the negative result does and does not say}
+
+Section~\ref{sec:negative} is the outcome a reader should weigh most
+carefully, so it is worth stating precisely what it licenses. It does
+\emph{not} say that the analysis of Sections~\ref{sec:vkrefine}
+and~\ref{sec:jitter} is wrong: the VK frequency update is inert under
+three independent instruments, the capture arithmetic that explains it is
+elementary, and the phase-increment tracker built from that arithmetic is
+the only local stage that captures under noise on synthetic data and the
+only one whose answer on real bench motors is
+initialization-independent. It says that the \emph{assembled} chain, tuned
+on synthetic batteries plus two real windows, generalizes to neither real
+corpus at the default settings, and that its failure is a capture event of
+exactly the kind the capture-range account predicts --- a wide first band
+on a residual that still contains a twin's comb. The diagnosis and the
+pipeline are, at this stage, on different footings; the paper reports both
+at their own footing.
+
+Three practical consequences follow. Widening a band to buy capture range
+is not free when the interference is a near-coincident sibling, because
+the sibling is inside the widened band by construction --- the $k$-scaled
+bandwidth of~\eqref{eq:kscaled} preserves twin discrimination, but only
+relative to what the fundamental had, and at $k = 1$ on a twin pair that
+is not much. Truth-free acceptance gates recover parity but do so by
+declining, which is a way of not being worse rather than a way of being
+better. And the single largest cross-drone improvement in this paper came
+from correcting the \emph{labels}, not the estimator.
+
 \subsection{What is proven, measured, and assumed}
 
-The ceiling argument of Section~\ref{sec:results} is assembled from
-pieces of different epistemic strength, and it is worth being explicit.
-\emph{Derived exactly:} the demodulation algebra
+The claims here are of different epistemic strength and it is worth being
+explicit. \emph{Derived exactly:} the demodulation algebra
 (Section~\ref{sec:demod}); the phase-noise law and Fisher weights to
 first order in noise~\eqref{eq:phasenoise}--\eqref{eq:fisherweight}; the
-sinc correlation factor and the $c_{\mathrm{diff}}$ integral under the
-ideal-band assumption \eqref{eq:incvar}--\eqref{eq:cdiff}; the two-phasor
-winding argument~\eqref{eq:winding}; the parabolic
-vertex~\eqref{eq:parabola}; and the Viterbi path's global optimality on
-its own discretized objective. \emph{Measured} (frozen protocol and
-ladder; single seeds; one free-flight window for S4): every number in
-Tables~\ref{tab:ladder}--\ref{tab:scoreboard}; the ${\sim}0.03$
-long-horizon envelope confidence that inertizes VK-refine; the $q_k$
-budgets on motors and flight; the array counterfactual; and the
-displaced-comb property. \emph{Assumed:} ideal low-pass shapes in both
-correction factors (real filters are not brick-wall; the constants shift
-by $O(10\%)$); Brownian $b_k$ (the truth may be OU-like or
-heavier-tailed, in which case $q_k$ measures the \emph{in-band} diffusion
-only, and high-$k$ budgets saturate once decoherence exits the band); and
-Gaussianity wherever a Kalman step is used. \emph{Open:} the
-Cram\'er--Rao computation from the measured $(\tau_k, \snr_k)$ budgets.
-The classical single-tone bound scales as
-$1/(\snr \cdot T^3)$~\cite{rife1974single}; phase diffusion caps the
-effective $T$ at $\tau_k$, and assembling the per-harmonic,
-per-window bound from the measured budgets is the remaining piece of a
-definitive ceiling statement --- currently the ceiling is established by
-counterfactual measurement, not by a matching lower bound. Mechanism
-attribution of the decoherence (masking vs.\ aerodynamic loading vs.\
-translation; the S3b/S3c rungs) is likewise ongoing.
+rank-one-plus-diagonal covariance and its variance
+floor~\eqref{eq:rankone}--\eqref{eq:varfloor}, given the arrival-time
+jitter model; the banded structure and half-bandwidth of all three normal
+equation systems, and the identification of the Kalman/RTS pair with
+forward elimination and back substitution
+on~\eqref{eq:tridiagsys}; the capture bound~\eqref{eq:captureband} and its
+half-width case~\eqref{eq:basin}; the sinc correlation factor and the
+$c_{\mathrm{diff}}$ integral under the ideal-band assumption
+\eqref{eq:incvar}--\eqref{eq:cdiff}; the two-phasor winding
+argument~\eqref{eq:winding}; the parabolic vertex~\eqref{eq:parabola}; and
+the Viterbi path's global optimality on its own discretized objective.
+\emph{Measured:} every number in Tables~\ref{tab:ladder},
+\ref{tab:scoreboard}, \ref{tab:referee}, \ref{tab:floors}
+and~\ref{tab:negative}; the three inertness confirmations; the
+oracle floors; the telemetry calibration and its controls; the $q_k$
+budgets; the array counterfactual; and the displaced-comb property.
+\emph{Assumed:} ideal low-pass shapes in both correction factors (real
+filters are not brick-wall; the constants shift by $O(10\%)$); Brownian
+$b_k$ (the truth may be OU-like or heavier-tailed, in which case $q_k$
+measures the \emph{in-band} diffusion only); Gaussianity wherever a
+Kalman step is used; and, throughout Section~\ref{sec:jitter}, that
+arrival-time jitter is a good model of the shared disturbance --- which is
+the assumption S4 exists to test. \emph{Open:} the Cram\'er--Rao
+computation from the measured $(\tau_k, \snr_k)$ budgets. The classical
+single-tone bound scales as $1/(\snr \cdot T^3)$~\cite{rife1974single};
+phase diffusion caps the effective $T$ at $\tau_k$, and assembling the
+per-harmonic, per-window bound from the measured budgets is the remaining
+piece of a definitive ceiling statement
+(\pending{CRB assembled from the measured $(\tau_k,\snr_k)$ budgets}).
+Currently the ceiling is established by counterfactual measurement, not by
+a matching lower bound.
 
 \subsection{Practical recommendation}
 
-For annotation practice the measured pipeline is: \emph{full-range comb
-DP for the global stage, pi\_kalman (pair-joint) for the local stage};
-run the coupled VK envelope solve only when the reconstructed harmonic
-waveform itself is needed (comb subtraction, resynthesis), since as a
-rate refiner its bolt-on step is inert on real data. Where any per-rotor
-rate prior is available --- telemetry of any quality, or a neural
-regressor's output --- seed with it: on the frozen protocol,
-neural-trajectory seeding dominates blind seeding on both pools at a
-fraction of the cost, and telemetry-initialized refinement remains the
-accuracy reference (0.851/0.784 pooled). Ramp windows remain the live
-gap: the best tracker sits at 2.9--4.0\revps{} against a 0.7--0.9
-oracle there, a tracking-under-nonstationarity problem currently being
-attacked from the learned side (longer-context regressors), the five
-refinement variants having collectively located the information ceiling
-near cruise.
+For annotation practice the measured pipeline is: \emph{full-range comb DP
+for the global stage, phase-increment tracking (pair-joint) for the local
+stage}, with the frequency-update loop removed and any
+sibling-subtraction pass behind a truth-free acceptance gate. Run the
+coupled VK envelope solve when the reconstructed harmonic waveform itself
+is needed (comb subtraction, resynthesis) and as the referee of
+Section~\ref{sec:referee}; do not run it as a rate refiner. Where any
+per-rotor rate prior is available --- telemetry of any quality, or a
+neural regressor's output --- seed with it: neural-trajectory seeding
+dominates blind seeding on both pools at a fraction of the cost, and
+telemetry-initialized refinement remains the accuracy reference
+(0.851 DREGON / 0.784 FLY124 pooled, the latter on the \emph{pre} build). And audit the reference before trusting a
+sub-\revps{} comparison: the referee of Section~\ref{sec:referee} costs
+one VK solve per candidate constant, and on this corpus it was worth more
+than any estimator change we made.
+
+Two live gaps. Ramp windows: the best tracker sits at
+2.9--4.0\revps{} against a 0.7--0.9 oracle, a
+tracking-under-nonstationarity problem. And blind seeding on a weak fourth
+rotor, where the residual re-scan is adjudicating ties of a few percent
+of a low-contrast score --- the one place where an outright wrong answer,
+rather than an imprecise one, is still routine.
 
 \subsection{Limitations}
 
-The free-flight phase measurements rest on a single S4 window (one 16\,s
-cruise segment); the ladder's real-data breadth is motors and one flight
-per rung, not a corpus. The octave discriminator of
-Section~\ref{sec:fullrange} encodes a two-bladed-propeller prior;
-three-bladed platforms shift the even-harmonic argument. The $q_k$
-estimates are in-band by construction and saturate once decoherence
-leaves the analysis band, so high-$k$ budgets are lower bounds on
-diffusion. The displaced-comb consequence cuts both ways: it exonerates
-audio trackers on DREGON but also means audio-derived annotation of
-translating flight carries a 0.3--0.5\revps{} bias relative to shaft
-truth, whose physical origin (convective/Doppler geometry of the
-dominant sources) we have characterized empirically but not yet
-modeled. The method remains non-causal and offline; the twin ambiguity
-survives on one of three DREGON recordings in the guarded-blind
+The free-flight phase measurements rest on a single cruise window; the
+real-data breadth is motors and one flight per rung, not a corpus. The
+S4 rung is not measured, so every statement in Section~\ref{sec:jitter}
+about $\sigma_J^2$ on \emph{real} data is a prediction. The FLY124
+telemetry constants rest on four cruise windows, and the label change and
+the audio realignment they induce cannot be separated from each other by
+our experiment --- only both-together from the seeding flip; on the one
+warm-up window where both-together is a loss ($3.988 \to 5.166$ at an
+unchanged seed) we have no explanation. The octave discriminator of
+Section~\ref{sec:fullrange} encodes a two-bladed-propeller prior. The
+$q_k$ estimates are in-band by construction, so high-$k$ budgets are
+lower bounds on diffusion. The displaced-comb consequence cuts both ways:
+it exonerates audio trackers on DREGON but also means audio-derived
+annotation of translating flight carries a 0.3--0.5\revps{} bias relative
+to shaft truth, whose physical origin we have characterized empirically
+but not modeled. The method remains non-causal and offline; the twin
+ambiguity survives on one of three DREGON recordings in the guarded-blind
 configuration; and aggressive maneuvering shrinks every capture margin
 involved.
 
 \section{Conclusion}
 
-Order tracking, developed for shafts with tachometers, transfers to
-fully blind acoustic annotation of multirotor flight --- provided the
-estimator respects the two-block structure of the likelihood. The
-amplitude block is exactly solvable and should never be approximated;
-the rate block is multimodal and must be attacked globally in magnitude
-before locally in phase; and the local step succeeds exactly to the
-degree that its measurement model tells the truth about noise,
-decoherence, and twin interference. The resulting pipeline --- full-range
-comb dynamic programming with physical octave and energy priors,
-followed by a phase-increment tracker with a data-estimated per-harmonic
-diffusion model --- annotates full recordings, ramps included, at
-1.81\revps{} pooled blind on DREGON and refines cross-drone tracks to
-0.859\revps, while running on CPU at batch-annotation speeds. Around the
-estimator, the measurements delimit the task itself: per-harmonic
-coherence budgets of 0.4--1.7\,s at the informative harmonics, no rescue
-from coherent array combination, and an acoustic comb displaced
-0.3--0.5\revps{} from the mechanical one in translating flight. Within
-those limits, rotor-speed side information stops being a dataset rarity
-and becomes something that can be manufactured, with stated error bars
-and stated bias, for any recording of a flying machine.
+Blind multi-rotor rate tracking is organized by capture range. Stating a
+stage's capture range, resolution and trajectory bandwidth together
+explains why a ladder is necessary, predicts which stage will fail on
+which data, and --- applied to the classical Vold--Kalman
+frequency-update loop --- shows that it cannot operate blind: its capture
+radius $B/(2k)$ is $0.13\revps$ where the errors are $0.5$--$1.5$, and
+three independent instruments confirm that under blind conditions it does
+nothing. This is not a contradiction of the adaptive-VK literature, which
+either estimates instantaneous frequency outside the filter or manages the
+same radius implicitly by starting wide; it is an argument that the radius
+should be stated. We give the replacement --- a phase-increment tracker
+whose bandwidth schedule follows from the same arithmetic, and which is
+the same banded algebra as the envelope solve it replaces the loop in ---
+and we correct the information model that motivates high-harmonic
+weighting: shared arrival-time jitter makes per-harmonic errors
+correlated, which leaves the weight \emph{shape} intact but installs a
+floor $\sigma_J^2$ that no number of harmonics lowers, and makes
+$B_k = kB_0$ the natural parameterization. Around the estimator we give
+honest floors --- $0.055\revps$ to hold an exact initialization,
+${\approx}0.2$ at 0\,dB with four rotors, proved by an oracle that equals
+the blind result --- and a label-free referee that both establishes those
+floors and, pointed at the reference instead of the estimator, found and
+corrected a drifting clock and a $0.7\%$ rate scale in real telemetry.
+What we do not yet have is a reconstructed pipeline that beats the blind
+baseline on the full protocol: it wins on ramps and loses on steady
+windows, for a reason the capture-range account predicts. Reporting that
+plainly is the point. The measurements delimit the task --- per-harmonic
+coherence budgets of 0.4--1.7\,s, no rescue from coherent array
+combination, and an acoustic comb displaced 0.3--0.5\revps{} from the
+mechanical one in translating flight --- and within those limits
+rotor-speed side information can be manufactured, with stated error bars
+and a stated bias, for any recording of a flying machine.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
