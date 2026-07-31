@@ -737,7 +737,16 @@ are indistinguishable in the cruise band where they were measured, but the
 published frames span the WHOLE recording — ground idle, warm-up, spin-down. An
 additive +0.6 rev/s would corrupt a near-stationary rotor's label and
 manufacture harmonics at a standstill; a scale correctly vanishes as rps → 0.
-Shipped: FLY124 ×1.00839, FLY125 ×1.00690 (+0.671 / +0.552 rev/s at 80 rev/s).
+Shipped at the time: FLY124 ×1.00839, FLY125 ×1.00690 (+0.671 / +0.552 rev/s at
+80 rev/s).
+
+> **SUPERSEDED (WP14, same day).** The *form* — one global multiplicative scale
+> per recording — survived; the *magnitudes* did not. These two came from a 2–4
+> window per-rotor mean that included the twin-pair rotors, and disagreed by
+> 0.15 pp. The refit over all 13 cruise windows, non-twin rotors only, ships
+> **FLY124 ×1.00698** and **FLY125 ×1.00706** (0.008 pp apart). Everything below
+> in WP13 describes the state as measured then; read WP14 for what is shipped
+> now.
 
 ### Applied
 
@@ -786,6 +795,12 @@ well inside the 0.94 rev/s per-rotor spread that made the additive/multiplicativ
 test powerless in the first place, and is ~5× smaller than the error it removed
 — not worth a second fit on the same four windows. Flagged, not chased.
 
+> **Chased anyway, in WP14** — the 13-window sweep was run for the per-rotor
+> question and re-measured the global gain for free. The flag was right:
+> FLY124's scale is 0.14 pp too high. Both scales are now refit (see WP14
+> § "Applied"); `python-b7e225` is the `--post-shipped` re-validation on the
+> corrected labels.
+
 `windows.selfcheck()` now rebuilds explicitly at `FROZEN_BEATVK_CONSTANTS`
 (−20.84, 1.001, scale 1.0), since the frozen beat-VK prep cache predates the
 calibration and can no longer match the shipped constants by construction.
@@ -793,7 +808,10 @@ calibration and can no longer match the shipped constants by construction.
 ### Stale artefacts (blast radius — NOTHING regenerated here)
 
 Everything built from Michael's telemetry before `michaels-frames@a7a951b94808`
-carries labels late by 31–158 ms and low by ~0.55–0.67 rev/s at cruise.
+carries labels late by 31–158 ms and low by ~0.55–0.67 rev/s at cruise. (WP14
+later republished as `fdef818432e9` with the refitted rev/s scales — a further
+−0.11 rev/s on FLY124 / +0.013 rev/s on FLY125 at cruise. Anything rebuilt
+against `a7a951b94808` is *nearly* current; anything older is not.)
 
 | artefact | how stale | to rebuild |
 |---|---|---|
@@ -905,7 +923,7 @@ the estimator's own per-window scatter — **there is no structure left to model
 
 ### The global magnitude, refitted on 13 windows
 
-| rec | fitted g (non-twin) | scale | shipped | residual after shipped | after refit |
+| rec | fitted g (non-twin) | scale (now shipped) | was shipped | residual after the OLD scale | after refit |
 |---|---|---|---|---|---|
 | FLY124 | 0.698 % ± 0.069 | 1.00698 | 1.00839 | mean **−0.117**, rms 0.213 | +0.004, rms 0.175 |
 | FLY125 | 0.706 % ± 0.034 | 1.00706 | 1.00690 | mean +0.017, rms 0.124 | +0.003, rms 0.123 |
@@ -947,11 +965,39 @@ Two arguments keep the multiplicative form anyway:
 **The shipped model FORM is right: one global multiplicative scale per
 recording.** Per-rotor constant offsets are not identifiable (between-rotor
 spread < within-rotor scatter) and a per-rotor lag is refuted outright. The
-only defect is FLY124's **magnitude**: 1.00839 should be **1.00698**
+only defect is the **magnitude**: FLY124's 1.00839 was 0.14 pp too high
 (+0.12 rev/s over-correction at cruise, ~1/5 of the error it removed, inside
-the per-window scatter). FLY125's 1.00690 stands. Changing FLY124 means
-another `michaels-frames` republish + `dload pin` — worth folding in the next
-time that dataset is republished anyway rather than on its own.
+the per-window scatter), and FLY125's 1.00690 was confirmed at 0.5 σ but is
+worth replacing anyway so both constants come from the *same* fit.
+
+### Applied (2026-07-31, commit on `michaels-label-calibration`)
+
+`src/data_processing/michaels.py`:
+
+| recording | was | now | source |
+|---|---|---|---|
+| FLY124 | 1.00839 | **1.00698** | 13-window global refit, non-twin rotors (g = 0.698 % ± 0.069) |
+| FLY125 | 1.00690 | **1.00706** | same fit (g = 0.706 % ± 0.034) |
+
+Rationale kept in the loader's block comment: the two refits agree to 0.008 pp
+(one shared cause), the superseded pair was a 2–4 window per-rotor mean
+contaminated by the twin rotors and disagreed by 0.15 pp, and the whole global
+gain is degenerate with a sample-clock error — so it is a *label-for-this-audio*
+correction, and, since a clock error is common to all four rotors, that same
+degeneracy independently supports the global-only verdict.
+
+`michaels-frames` republished at **`fdef818432e9`** (was `a7a951b94808`) and
+re-pinned in `dload.lock`. Verified on the published frames: `rps` is
+**bitwise-exactly** `(raw Motor:Speed RPM / 60) × scale` on both recordings,
+`meta.rps_scale` carries the new value, and CSV completeness is unchanged
+(230 columns → 212 numeric channels across 18 per-sensor-block Series + 14
+bool/string Series; only `ConvertDatV3` and `4.2.1` absent, both all-empty).
+Re-validation: job `python-b7e225` (`--post-shipped`, uni-cpu).
+
+The WP13 "stale artefacts" table still applies verbatim — every entry in it now
+also predates this second label change, and the two `michaels-frames` versions
+differ by −0.14 pp on FLY124 / +0.016 pp on FLY125 (−0.11 / +0.013 rev/s at
+cruise), i.e. small next to the 0.55–0.67 rev/s WP13 already moved.
 
 ## Work packages
 

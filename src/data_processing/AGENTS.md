@@ -579,13 +579,23 @@ Aggregate has both `n_samples` (distinct samples) and `n_rows` (= n_samples × C
 `michaels.py` ships three per-recording constants, all now measured against the
 label-free VK reconstruction residual (sweep `scripts/michaels_calib/`, results
 `omnirun-outputs/python-519b66/results/michaels_calib/summary.json`, full write-up
-`docs/experiments/rps-refine-precision.md` § WP13). They replace the hand-tuned
-pair that `notebooks/michael_data_analysis.ipynb` originated.
+`docs/experiments/rps-refine-precision.md` §§ WP13 (timing + model form) and
+WP14 (the rev/s magnitudes, refit)). They replace the hand-tuned pair that
+`notebooks/michael_data_analysis.ipynb` originated.
 
 | recording | `time_offset` | `time_dilation` | `MICHAELS_RPS_SCALE` |
 |---|---|---|---|
-| FLY124 | −20.753813 (was −20.84) | 1.001654644 (was 1.001) | ×1.00839 |
-| FLY125 | −26.337849 (was −26.51) | 1.005178509 (was 1.0048) | ×1.00690 |
+| FLY124 | −20.753813 (was −20.84) | 1.001654644 (was 1.001) | ×1.00698 (was ×1.00839) |
+| FLY125 | −26.337849 (was −26.51) | 1.005178509 (was 1.0048) | ×1.00706 (was ×1.00690) |
+
+**Scale supersession (WP14, 2026-07-31).** The rev/s scales shipped first
+(×1.00839 / ×1.00690) came from a 2–4 window *per-rotor* mean that included the
+near-equal-speed twin rotors (LFront/RBack), which the audio cannot resolve;
+those two values disagreed by 0.15 pp and FLY124's was 0.14 pp too high (a
++0.12 rev/s over-correction at cruise — the defect `--post-shipped` flagged as
+−0.18 rev/s residual). Both are now **one global fit per recording over all 13
+cruise windows, non-twin rotors only**: g = 0.698 % ± 0.069 (FLY124) and
+0.706 % ± 0.034 (FLY125), agreeing to 0.008 pp. Timing constants are unchanged.
 
 - **Timing was a DILATION error on both**: the audio-optimal telemetry lag drifts
   linearly with time (+0.654 ms/s FLY124 over w02–w05, +0.377 ms/s FLY125 over
@@ -593,10 +603,18 @@ pair that `notebooks/michael_data_analysis.ipynb` originated.
   constant lag). Folded in via `time_dilation/(1−b)`, `time_offset − a/(1−b)`
   (`scripts/michaels_calib/fit.py:fit_lag`, same function for both recordings).
 - **Values were ~0.6 rev/s LOW at cruise.** Additive vs multiplicative is a
-  statistical tie (opposite verdicts on the two recordings, 4 % and 0.04 %
-  margins, discriminator R² 0.01); shipped as MULTIPLICATIVE because the frames
-  cover warm-up/idle, where a scale vanishes at rps → 0 but an additive +0.6
-  rev/s would invent motion.
+  statistical tie (the per-rotor discriminator has no power: free-line R² ≈ 0.01,
+  observed per-rotor spread 6–17× what either model predicts); shipped as
+  MULTIPLICATIVE because the frames cover warm-up/idle, where a scale vanishes
+  at rps → 0 but an additive +0.6 rev/s would invent motion. WP14 adds a second
+  reason: the global gain is **degenerate with a sample-clock error**
+  (`dilation − 1 ≈ εa − εt`, `g ≈ −εa − εr`), which is exactly multiplicative —
+  so the constant is a *label-for-this-audio* correction, not proof the ESC is
+  miscalibrated. That degeneracy also backs the **global-only** model form: a
+  clock error is common to all four rotors and cannot produce a per-rotor
+  difference. Per-rotor constants are separately unidentifiable (between-rotor
+  spread 0.099/0.051 < within-rotor scatter 0.155/0.109) and a per-rotor lag is
+  refuted three ways (WP14 §§ A–D).
 - **Where it is applied**: inside `_load_michaels_data_raw` (keyed by CSV stem
   via `rps_scale_for()`), so every consumer — `load_michaels_timeframe(s)`,
   `publish_frame_datasets.py`, `create_dregon_librimix.py`, the online-mix
@@ -607,11 +625,12 @@ pair that `notebooks/michael_data_analysis.ipynb` originated.
   `rps`, like DREGON's `motors_command_raw`), and anything that parses the CSV
   itself. Frame `meta` records `time_offset` / `time_dilation` / `rps_scale` +
   a `provenance.calibration` note.
-- **Validated** (`--post-shipped`, 13 cruise windows, job `python-0445f6`):
-  residual lag RMS 3.0 ms (FLY124) / 3.3 ms (FLY125) — at the fit's own residual
-  level, drift gone — and residual value offset +0.004 rev/s on FLY125,
-  −0.18 rev/s on FLY124 (a known small over-correction, ~5× smaller than the
-  error removed and well inside the per-rotor spread). Re-run with
+- **Validated** (`--post-shipped`, 13 cruise windows). Timing, job
+  `python-0445f6`: residual lag RMS 3.0 ms (FLY124) / 3.3 ms (FLY125) — at the
+  fit's own residual level, drift gone. Values, same job on the *old* scales:
+  +0.004 rev/s (FLY125) but −0.18 rev/s (FLY124), the over-correction WP14 then
+  traced and fixed; job `python-b7e225` re-runs it on the refitted scales
+  (expect ≈ 0 on both). Re-run with
   `python scripts/michaels_calib/run_sweep.py --post-shipped`.
 - **Anything built from Michael's telemetry before 2026-07-31 is stale** —
   `beatvk-valid-raw`, `results/beatvk_vk_arms`, `DREGON-LM-V4-michaels*`, and
