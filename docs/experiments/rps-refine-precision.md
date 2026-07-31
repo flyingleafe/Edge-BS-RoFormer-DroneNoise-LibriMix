@@ -1022,6 +1022,282 @@ also predates this second label change, and the two `michaels-frames` versions
 differ by −0.14 pp on FLY124 / +0.016 pp on FLY125 (−0.11 / +0.013 rev/s at
 cruise), i.e. small next to the 0.55–0.67 rev/s WP13 already moved.
 
+## WP15 — the w03 seed flip was a coin flip; the steady-window loss is all M2 (2026-07-31)
+
+The two open items the beat-VK re-score left (`docs/experiments/beat-vk.md`
+§ "Protocol recalibrated and re-scored"). Driver `scripts/refine_gate_probe.py`;
+jobs **`python-74f6e0`** (diagnostics: the full arm-R residual scan per window
+per build + every M2 proposal dumped next to the truth) and **`python-5d65f0`**
+(the re-score with both fixes). Both diagnostics are *dumps*, so every
+candidate rule below was scored offline, exactly, without re-running the chain.
+
+### (a) FLY124 w03 — arm R was adjudicating a 0.06 % tie
+
+The residual re-scan's admissible set (robust z ≥ 3.0, ≥ `dedup_rps` from every
+used base, ≤ 1.15 × the highest used base) on w03 is **three** candidates, and
+arm R takes the highest-z one:
+
+| build | 54.45 | 82.65/82.70 | 80.90 | taken |
+|---|---|---|---|---|
+| pre-recalibration (`@268c7660`) | z 3.198, score 0.05303 | z **3.199**, score **0.05306** | z 3.024 | 82.70 ✓ |
+| post-recalibration (`@54849c13`) | z **3.235**, score **0.05228** | z 3.207, score 0.05150 | z 3.062 | 54.45 ✗ |
+
+The two leaders are separated by **0.06 % of score** in the old build. The
+86.188 ms realignment moved both by ~1.5 % and reversed the order. So the
+"good" pre-recalibration seed was never a property of the seeder — it won a
+coin flip, and the recalibration lost it. Nothing about thresholds, scan
+windows or energy normalisation is on a knife edge; the *ranking* is.
+
+**Fix — the rotor-band prior arm R was missing on the low side.**
+`SeedConfig.r_span_max = 1.45`: reject a residual candidate that would stretch
+the seed set's max/min beyond that ratio. 54.45 against a used 92.35 spans
+**1.696**; 82.65 spans 1.245. The prior is the same physical one already
+encoded in `r_span_pad` (1.15), `promote_span` (1.30) and
+`_harmonic_alias_filter` ("rotors of one drone in cruise lie within ~1.25×"),
+and 1.45 is loose: the widest set any real protocol window seeds is 1.31
+(FLY124 warm-up w00/w01).
+
+Verified at the seed stage on **all 15 real windows × both protocol builds**:
+the nine DREGON windows admit **no** residual candidate at all (their seeds are
+two `split_nudge` twin pairs — arm R's `residual_new` is empty), FLY124
+w00/w01/w04 have exactly one admissible candidate each at span 1.22–1.31, and
+w02/w05 none. The bound therefore changes w03 and nothing else.
+
+*Honest caveat:* the fix removes the *implausible* candidate, it does not make
+the remaining choice robust. 82.65 still beats 80.90 by only 4.7 % of z, and
+the true 4th rotor is at ~80.7 — i.e. arm R picks a base ~1.9 rev/s high, which
+is exactly why w03's 4th-rotor MAE lands near 1.0 rather than near 0.3. The
+low-contrast residual ranking is the structural weakness; `r_span_max` only
+stops it from being catastrophically wrong.
+
+### (b) The steady-window regression is M2 — M1 is a no-op
+
+Per-stage, from the re-score's own JSONs (`capture → m1_r1 → m2_solo`,
+`--v2-rounds 1`), on the nine DREGON windows:
+
+| window | capture | M1 | M2-solo | ΔM1 | ΔM2 |
+|---|---|---|---|---|---|
+| nosource w00 (ramp) | 3.272 | 3.272 | 3.197 | 0.000 | **−0.075** |
+| nosource w01 | 1.021 | 1.032 | 1.472 | +0.011 | **+0.440** |
+| nosource w02 | 0.999 | 0.999 | 1.320 | 0.000 | **+0.321** |
+| speech-low w00 (ramp) | 2.850 | 2.850 | 2.952 | 0.000 | +0.102 |
+| speech-low w01 | 1.045 | 1.045 | 1.333 | 0.000 | **+0.288** |
+| speech-low w02 | 0.995 | 0.995 | 1.404 | 0.000 | **+0.409** |
+| whitenoise w00 (ramp) | 4.046 | 4.046 | 4.032 | 0.000 | −0.014 |
+| whitenoise w01 | 0.979 | 0.979 | 1.531 | 0.000 | **+0.552** |
+| whitenoise w02 | 1.153 | 1.153 | 1.561 | 0.000 | **+0.408** |
+
+**M1 moves nothing on 8 of 9 DREGON windows** — its surface-quality gate
+skips ALL FOUR rotors on 8 of them (`quals` 0.077–0.150 against the 0.15
+absolute floor; only `nosource w01` has a rotor above it, and moving that one
+costs +0.011),
+so hypothesis (i) — "M1's corridor moves a rotor that was already correct" — is
+refuted. Every rev/s of the regression is M2, and the per-rotor decomposition
+names the mechanism: on each steady window **one or two rotors acquire a
+1.2–2.4 rev/s NEGATIVE bias** while the others barely move (nosource w01 rotor
+bias −0.31/−0.68 → −1.52/−2.16; whitenoise w01 +0.29/−0.59 → −1.20/−2.36).
+That is a capture event, not a bias correction — hypothesis (ii).
+
+Why: DREGON cruise is two tight twin pairs, so the siblings' VK reconstruction
+explains only about a third of the RMS (`m2_ratios` **0.645–0.722** on every
+steady window), and `PK_WIDE`'s first band is 12 Hz at k ≤ 4 = ±12 rev/s of
+capture at k = 1. A single-track solve on a residual that still contains the
+twin's comb slides onto it. Hypothesis (iii) (the surface-quality gate) is not
+in play at all — that gate belongs to M1.
+
+The ramp windows are a *different* failure: there `m2_ratios` are 2.7–134, the
+`M2_RESID_GUARD` trips, and the ungated code falls back to running the wide
+pi_kalman on the **plain audio** — i.e. not a decoupling step at all. That is
+where FLY124 w01 goes 2.128 → 4.824 and w00 5.082 → 5.701.
+
+### (c) The gate: M2 declines when its own premise fails
+
+Scored offline over all 60 real-window proposals
+(`results/refine_gate_probe/m2`), rebuilding the M2 output under each rule:
+
+| rule | dregon_cruise (9) | fly124_cruise (4) | all 15 | vs baseline (W/T/L) | max loss |
+|---|---|---|---|---|---|
+| baseline chain | 1.825 | 3.992 | 2.646 | — | — |
+| M1 output (drop M2) | 1.819 | 3.940 | 2.623 | 8/2/5 | +0.014 |
+| **M2 ungated (as shipped)** | **2.089** | **4.011** | **3.025** | **3/0/12** | **+2.702** |
+| recon-ok only | 2.088 | 4.011 | 2.843 | 4/0/11 | +0.613 |
+| **recon-ok + move ≤ 0.5 + occupied** | **1.822** | **3.912** | **2.617** | **8/1/6** | **+0.019** |
+| recon-ok + move ≤ 0.75 + occupied | 1.835 | 3.920 | 2.627 | 7/0/8 | +0.040 |
+| recon-ok + move ≤ 1.0 + occupied | 1.844 | 3.895 | 2.626 | 6/0/9 | +0.082 |
+
+Shipped as `--m2-gate move` (`M2_GATE`, default still `off` so every recorded
+WP6–WP12 number stays reproducible). Three truth-free per-rotor rules:
+
+0. **no residual, no M2** — if the sibling reconstruction diverged, decline
+   instead of falling back to the plain audio (the ramp failure above);
+1. **move** — reject `mean |Δ| > M2_MOVE_MAX = 0.5` rev/s. M2 exists to remove
+   sibling-interference bias, which WP3 measured at 0.3–0.5 rev/s; an order of
+   magnitude more is a re-capture. The offline optimum is a **plateau** from
+   0.25 to 0.75 (2.617–2.627 pooled), so 0.5 is both the middle of the measured
+   plateau and the physical scale;
+2. **occupied comb** — reject a proposal landing within 1.5 rev/s of a sibling
+   it was not already that close to (`stage_guard`'s rule 1 at M2 scale — the
+   ladder's own guard has a 3.0 rev/s move floor and cannot see M2-scale
+   re-captures). *Inert on all 15 windows*, kept because it is the mechanism.
+
+Comb confidence before/after is recorded but **not** used as a veto: it is a
+*better* rule than the move test on these windows (all-15 2.608), and that is
+precisely the WP8 trap — the destination of a bad M2 move is a stronger comb,
+so confidence rises when it should not. The 0.009 rev/s it buys is not worth
+depending on a statistic that is known to point the wrong way.
+
+**What the gate is, honestly:** on real windows it turns M2 into a near-no-op
+(it rejects **54 of the 60** per-rotor proposals), so gated `refine_v2` ≈ its own M1 output ≈ the
+baseline chain. That is the intended outcome — "never worse than baseline" —
+not a new source of gain.
+
+## WP16 — the joint-tracker mode prior: NOT SUPPORTED by the telemetry (2026-07-31)
+
+A joint 4-rotor beam-search tracker was designed to replace the coarse stage's
+single shared trajectory `c(t)` (WP3's "all four rotors share one shape by
+construction"). Its load-bearing idea was a transition prior in
+control-allocation mode space — with `B = rps_synthesis.MIXER`, `BᵀB = 4I`:
+
+```
+Δm = Bᵀ Δw / 4            T(w_t | w_{t−1}) = Σ_i ψ_i(Δm_i / σ_i)
+```
+
+cheap along the common mode, expensive along roll/pitch/yaw, so that a move
+*correlated* across rotors costs little while the same move on one rotor alone
+is heavily penalised. The design set its own precondition: `σ_common / σ_diff`
+measured from real telemetry should be **3–10**, and if it came out ≈ 1 the
+premise was wrong.
+
+**It comes out at 1.0 (DREGON) to 1.9 (Michael's).** Measurement:
+`scripts/mode_covariance_calib.py` (`--json results/mode_covariance_calib.json`),
+run locally in ~40 s over every recording with rotor telemetry. Per-frame
+(32 ms, the scorer's grid) increments, robust scale MAD × 1.4826, cruise =
+every rotor ≥ 50 rev/s:
+
+| recording (telemetry) | n | σ_common | σ_roll | σ_pitch | σ_yaw | σ_diff | **ratio** |
+|---|---|---|---|---|---|---|---|
+| DREGON nosource_room1 `measured` | 1851 | 0.5200 | 0.5256 | 0.5282 | 0.4903 | 0.5150 | **1.01** |
+| DREGON speech-high_room1 `measured` | 1316 | 0.5289 | 0.5304 | 0.5323 | 0.4836 | 0.5159 | **1.02** |
+| DREGON speech-low_room1 `measured` | 1558 | 0.5088 | 0.5281 | 0.5493 | 0.4988 | 0.5258 | **0.97** |
+| DREGON whitenoise-high_room1 `measured` | 1460 | 0.5373 | 0.4943 | 0.5148 | 0.4939 | 0.5011 | **1.07** |
+| DREGON whitenoise-low_room1 `measured` | 1541 | 0.5386 | 0.5187 | 0.5146 | 0.4780 | 0.5041 | **1.07** |
+| michaels FLY124 | 2325 | 0.2359 | 0.1445 | 0.1171 | 0.1008 | 0.1221 | **1.93** |
+| michaels FLY125 | 4860 | 0.2250 | 0.1554 | 0.1394 | 0.1147 | 0.1376 | **1.64** |
+
+Ramp regime (takeoff/landing, mean > 5 rev/s and not yet cruise), same
+convention — note MAD removes the sustained ramp *drift*, so these are the
+fluctuation about it, not the ramp itself:
+
+| recording | n | σ_common | σ_diff | ratio |
+|---|---|---|---|---|
+| DREGON nosource_room1 | 101 | 0.0722 | 0.0616 | 1.17 |
+| DREGON speech-high_room1 | 95 | 0.1218 | 0.0706 | 1.73 |
+| DREGON speech-low_room1 | 122 | 0.1250 | 0.0563 | 2.22 |
+| DREGON whitenoise-high_room1 | 116 | 0.0913 | 0.0583 | 1.57 |
+| DREGON whitenoise-low_room1 | 160 | 0.0566 | 0.0459 | 1.23 |
+| michaels FLY124 | 1079 | 0.0112 | 0.0096 | 1.16 |
+| michaels FLY125 | 582 | 0.0131 | 0.0114 | 1.15 |
+
+### Why this kills the mechanism, quantitatively
+
+Rotor identity is arbitrary under PIT, and only the differential *subspace*
+(the orthogonal complement of the all-ones vector) is permutation-invariant —
+so a usable prior must share **one** σ_d across roll/pitch/yaw (verified: the
+ratio is identical to 3 dp over all 24 rotor permutations, and the three
+measured σ's differ by ≤ 8 % on DREGON anyway). With a quadratic ψ:
+
+```
+move δ on ALL FOUR rotors : (δ/σ_c)²
+move δ on ONE rotor       : (δ²/16)(1/σ_c² + 3/σ_d²)
+cost(one)/cost(four)      = 1/16 + (3/16)(σ_c/σ_d)²
+```
+
+The prior only prefers the correlated move above **σ_c/σ_d = √5 = 2.236**.
+Measured, the ratio is 0.97–1.07 (DREGON) and 1.64–1.93 (Michael's), giving
+cost(one)/cost(four) of **0.24–0.29** and **0.57–0.75**. *The prior as
+specified makes an uncorrelated single-rotor move CHEAPER than the correlated
+move it was designed to prefer, on every recording we have.* This is not a
+tuning failure — it is what the increment statistics are.
+
+### It is not an artefact — four checks
+
+- **Rotor ordering** is irrelevant: σ_common is permutation-invariant by
+  construction and the measured ratio is constant to 3 dp over all 24
+  permutations.
+- **Lag**: the ratio rises only weakly with lag — DREGON 1.01 → 1.43 from
+  32 ms to 1.024 s; Michael's peaks at 2.19 (FLY124, 0.128 s) and falls back
+  to 1.73 at 1 s. It never reaches 3.
+- **Shaft band-limit** (a real rotor cannot follow a white drive, WP4 item 5):
+  zero-phase lowpass at fc = 12/8/5/2 Hz gives DREGON 0.99/1.03/1.11/1.52 and
+  Michael's FLY124 1.93/2.01/2.19/1.91. Same answer.
+- **Telemetry quantisation** *is* real and does inflate DREGON's isotropy —
+  `motors_measured` is a **reciprocal-period lattice** (a period counter:
+  `1/v` uniformly spaced at 42 µs), giving a **0.28 rev/s** step at 80 rev/s
+  and updating at only **44–45 Hz** with ZOH in between. A 32 ms increment is
+  therefore 1–2 lattice steps ≈ the measured 0.5 MAD, isotropic across rotors
+  by construction. (This is the same defect as the documented "DREGON GT
+  carries ±0.6 rev/s fast jitter".) But Michael's is 1 RPM = 0.0168 rev/s,
+  quantisation-free at this scale, and it still says **1.6–1.9**. Correcting
+  DREGON via the −0.5 lag-1 autocorrelation signature of white noise gives a
+  "dynamic" ratio of 1.35–1.90. Every route lands in 1.0–2.2.
+
+DREGON `motors_command` (a second, independent telemetry channel — run the
+script without `--measured-only`) agrees: cruise ratios 0.96–1.05 on the five
+room1 recordings. The one outlier in the whole set is
+`free-flight_nosource_room2[command]` at 2.26 — the only recording with *no*
+`motors_measured`, and its ratio decays to 0.97 by a 1 s lag, so it is not a
+counterexample either. Command-track *ramp* rows are meaningless (the
+documented leading/trailing logging freeze makes the differential modes
+exactly zero) and are excluded.
+
+### What IS true, and where the anisotropy actually lives
+
+The design's *intuition* is right; it was attached to the wrong statistic.
+
+- **Trajectory-amplitude** anisotropy over a cruise segment is real:
+  σ_common / σ_diff = **2.61–3.80** (DREGON `measured`, 5 recordings) and
+  **1.85–2.79** (Michael's). This corroborates `rps_synthesis.DEFAULT_CONFIG`
+  (common std 4.0 vs diff rms ≈ 1.03, ratio 3.9), which was itself calibrated
+  from DREGON.
+- **Ramp excursions are overwhelmingly common-mode**: over the takeoff the
+  common mode swings 54–57 rev/s (DREGON) / 42–50 (Michael's) while each
+  differential mode swings 0.9–8.4 — an excursion ratio of **7.7–14.2**.
+- **ψ_common must indeed be heavy-tailed**: during a takeoff |Δm_common| has
+  p50 0.04, p90 1.3, p99 3.8 and max 7.7 rev/s per 32 ms frame on DREGON — a
+  **15 σ** event against the cruise σ_common; on Michael's FLY124 the max is
+  19.2 rev/s = **219 σ**. A Gaussian common mode would flatten every ramp.
+
+The gap between these two facts is the whole finding: **the anisotropy is in
+the mode LEVEL (an OU restoring force on the differential modes), not in the
+mode INCREMENT.** A first-order Markov prior on increments cannot express it —
+by construction it only sees Δ. To get the leverage the design wanted you would
+need a prior on the differential mode *magnitude* relative to its own running
+mean, and even then the honest leverage is the amplitude ratio (2.6–3.8 on
+DREGON, 1.9–2.8 on Michael's), i.e. the very bottom of the design's expected
+3–10 band, not the middle.
+
+### Consequence
+
+The tracker was **not built**. The design's own stop rule fired, and the
+break-even algebra above says the prior would have pushed in the wrong
+direction. Two things survive the measurement and are worth stating separately,
+because they are independent of the mode prior:
+
+1. **The joint search itself.** Breaking the shared-shape constraint — four
+   independent per-rotor trajectories, top-k peak candidates, local-move
+   candidates for coasting, an overlap repulsion, beam search — needs no mode
+   anisotropy at all. An *isotropic* per-rotor smoothness prior would do, and
+   its σ is now calibrated: the **per-rotor** increment scale at 32 ms is
+   0.31–0.37 rev/s at a physical band-limit (fc 5 Hz; 0.38–0.57 at fc 8;
+   Michael's raw 0.31–0.33, DREGON raw 1.00–1.04 but quantisation-dominated).
+   A 2 rev/s single-frame jump is then a 3.5–6.5 σ event under a plain
+   isotropic prior — meaningful suppression, and the mode decomposition buys
+   only 1.0–2.2× on top of it. The mode structure is not what would make the
+   joint search work or fail.
+2. **The diagnosis that motivated it stands** — WP3's shared-shape defect and
+   WP15's finding that M1 is gated off on 8 of 9 DREGON windows are unchanged.
+   What is now measured is that *this particular* prior is not the lever.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified

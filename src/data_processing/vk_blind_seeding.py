@@ -196,9 +196,12 @@ class SeedConfig:
     # nine DREGON windows admit no residual candidate at all, and FLY124
     # w00/w01/w04's single candidate each sits at span 1.22-1.31.
     #
-    # (Subharmonic aliases of the used combs are already dead in the residual —
-    # their teeth ARE the masked combs' teeth — so the low side needs no
-    # separate alias guard, only this plausibility bound.)
+    # EXEMPT: a candidate at ~1/2 or ~1/3 of a used base (within `harm_guard`).
+    # That is the one physically-motivated way a true comb can appear far below
+    # the band — masking removes its even/third teeth along with its shadowing
+    # neighbour's, so it survives on the remaining ones — and it is the case
+    # arm R was built for (`test_residual_rescan_recovers_shadowed_comb`). The
+    # spurious w03 ridge is not one: 92.35/54.45 = 1.696, 74.2/54.45 = 1.363.
     # blind per-track stage guard (vit2dsp-ladder robustness; see stage_guard)
     guard_basin: float = 3.0  # rev/s: a per-stage track move beyond this is
     # suspect — capture basins are ~2-3 rev/s, larger jumps are re-captures
@@ -590,9 +593,16 @@ def residual_rescan(
     far = np.array([np.min(np.abs(used_arr - b)) >= cfg.dedup_rps for b in rb], dtype=bool)
     u_lo, u_hi = float(used_arr.min()), float(used_arr.max())
     in_span = rb <= u_hi * cfg.r_span_pad
-    # ... and the resulting seed set must still look like ONE drone's rotors
+    # ... and the resulting seed set must still look like ONE drone's rotors,
+    # UNLESS the candidate is the shadowed-submultiple case arm R exists for:
+    # a comb at ~1/2 or ~1/3 of a used base has its even/third teeth masked
+    # away with that base's, so it can only ever appear far below the band.
     span = np.maximum(u_hi, rb) / np.maximum(np.minimum(u_lo, rb), 1e-9)
-    in_span &= span <= cfg.r_span_max
+    submultiple = np.array(
+        [any(abs(u - m * b) <= cfg.harm_guard for u in used_arr for m in (2.0, 3.0)) for b in rb],
+        dtype=bool,
+    )
+    in_span &= (span <= cfg.r_span_max) | submultiple
     sel = (rz >= cfg.r_z_min) & far & in_span
     fb, fs2, fz = rb[sel], rs[sel], rz[sel]
     if len(fb):
