@@ -60,21 +60,16 @@ published method rather than a defect of our implementation. We replace
 the loop with a phase-increment maximum-likelihood tracker
 whose bandwidth schedule makes the radius explicit, and we correct the
 information model that motivates high-harmonic weighting --- and then
-measure the correction. Arrival-time jitter makes per-harmonic rate errors
-\emph{correlated}, giving a rank-one-plus-diagonal covariance whose
-predicted consequences we measure on 88 units and mostly refute: the
-common term clears its own error on 0 of 36 indoor units, the information
-does not saturate within $k \le 30$, and the term is not shaft-borne
-(channel coherence $0.065$ indoors against $0.81$--$0.94$ on a control
-with injected shaft jitter), so neither a variance floor nor a cap on $k$
-is supported. The same measurement exposes a larger weight defect --- the
-deployed $k^2|p_k|$ is \emph{flat} in $k$ where the evidence says the
-weight should rise as $k^{2.0}$ (indoor) / $k^{1.5}$ (outdoor) --- and
-confirms the $k$-scaled bandwidth $B_k = kB_0$, under which capture range,
-captured energy fraction and the weight exponent all become
-$k$-independent and which alone keeps the twin-collision gate from
-starving the comb (0 of 30 harmonics usable at $B = 12$\,Hz on every
-indoor unit). A
+measure the correction. Arrival-time jitter would make per-harmonic rate
+errors \emph{correlated}, giving a rank-one-plus-diagonal covariance and
+an irreducible variance floor; measured on 88 units the floor does not
+resolve, the information does not saturate within $k \le 30$, and the
+common term is per-microphone rather than shaft-borne, so neither a
+variance floor nor a cap on $k$ is supported. What the same measurement
+does establish is a larger defect --- the deployed weight $k^2|p_k|$ is
+\emph{flat} in $k$ where the optimum rises as $k^{2.0}$/$k^{1.5}$ --- and
+the $k$-scaled bandwidth $B_k = kB_0$, which alone keeps the
+twin-collision gate from starving the comb. A
 progressive ladder --- locked-phase noiseless, four rotors at 0\,dB,
 physically band-limited shafts, timing jitter --- separates estimator
 error from benchmark artifact and establishes oracle floors
