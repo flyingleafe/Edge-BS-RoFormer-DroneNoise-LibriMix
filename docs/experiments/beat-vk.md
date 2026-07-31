@@ -95,17 +95,175 @@ bar first — R1 quantifies how much of VK's edge is seeding vs precision.
 
 ## Results
 
-### Full scoreboard on the fixed raw protocol (2026-07-29)
+### Protocol recalibrated and re-scored (2026-07-31)
 
-> ⚠️ **Every `fly124_*` column below is STALE as of 2026-07-31.** Michael's
-> telemetry was recalibrated (measured clock dilation + a ~0.67 rev/s
-> multiplicative label deficit — `docs/experiments/rps-refine-precision.md`
-> § WP13), so the FLY124 ground truth these numbers were scored against was
-> late by 31–62 ms and low by ~0.67 rev/s. `beatvk-valid-raw@268c766052cb` and
-> the `results/beatvk_vk_arms` prep cache both predate the fix; the **1.027
-> blind-VK FLY124 bar** and every FLY124 model row must be re-scored on a
-> republished protocol before they mean anything. DREGON columns (and the
-> 0.688 bar) are unaffected.
+Michael's telemetry was recalibrated (clock dilation + a +0.698 % rev/s scale
+— `docs/experiments/rps-refine-precision.md` §§ WP13/WP14) and the frozen
+protocol was republished from `michaels-frames@fdef818432e9`:
+
+**`beatvk-valid-raw@268c766052cb` → `@54849c13ed3a`.**
+
+Driver `scripts/beatvk_rescore.py`; jobs `python-7553a8` (first clean run),
+`python-764ca5` (final, adds the seed-swap control). Every `fly124_*` figure
+in the 2026-07-29 scoreboard below predates this pin.
+
+**What moved in the protocol itself** (`--prep-only` diff, recorded in
+`results/beatvk_rescore_v4/summary.json → prep_diff`):
+
+- **Window boundaries and window count are UNCHANGED on all 15 windows.**
+  FLY124 still tiles `[0,16) … [80,96)` — 6 windows, 2 warmup + 4 cruise;
+  the three DREGON recordings still 3 + 3 + 3 at unchanged offsets. The
+  FLY124 eval span grew 109.413 → 109.485 s, nowhere near a 7th window.
+  Regime tags are unchanged. So the protocol measures the same thing.
+- **DREGON is bit-identical** — audio *and* labels, on all 9 windows
+  (asserted by the driver, which aborts on any DREGON difference). No DREGON
+  number in this document changes, and the 0.688 DREGON bar stands.
+- FLY124 labels rose **+0.235 / +0.232** rev/s (warmup w00/w01) and
+  **+0.521 … +0.564** rev/s (cruise w02–w05), and are re-timed by the
+  dilation.
+- **The FLY124 window AUDIO also moved**, which is why this needed a
+  re-score and not a re-grade. `time_offset` −20.84 → −20.753813 changes how
+  much of the WAV `michaels._load_michaels_data_raw` trims off the head, so
+  every FLY124 window now cuts audio **86.188 ms earlier** in the recording
+  — a pure displacement (cross-correlation r = 0.9997), identical on all six
+  windows.
+
+**Re-scored table** (per-window final PIT-MAE vs RAW telemetry,
+`--v2-rounds 1` = the WP6/WP12 real-data default). *pre* = the frozen
+`@268c7660` build, *post* = `@54849c13`, *fixed-seed* = post audio + post
+labels run with the pre-build's blind seeds (the seeding control, below).
+
+| window | regime | baseline pre | **baseline post** | v2/v3 pre | **v2/v3 post** | baseline fixed-seed | v2/v3 fixed-seed |
+|---|---|---|---|---|---|---|---|
+| nosource w00 | cruise¹ | 3.262 | **3.262** | 3.197 | **3.197** | — | — |
+| nosource w01 | cruise | 1.023 | **1.023** | 1.472 | **1.472** | — | — |
+| nosource w02 | cruise | 1.019 | **1.019** | 1.320 | **1.320** | — | — |
+| speech-low w00 | cruise¹ | 2.862 | **2.862** | 2.952 | **2.952** | — | — |
+| speech-low w01 | cruise | 1.049 | **1.049** | 1.333 | **1.333** | — | — |
+| speech-low w02 | cruise | 1.006 | **1.006** | 1.404 | **1.404** | — | — |
+| whitenoise-low w00 | cruise¹ | 4.063 | **4.063** | 4.032 | **4.032** | — | — |
+| whitenoise-low w01 | cruise | 0.993 | **0.993** | 1.531 | **1.531** | — | — |
+| whitenoise-low w02 | cruise | 1.151 | **1.151** | 1.561 | **1.561** | — | — |
+| FLY124 w00 | warmup | 3.988 | **5.166** | 4.973 | **5.701** | 5.166 | 5.701 |
+| FLY124 w01 | warmup | 2.057 | **2.122** | 4.565 | **4.824** | 1.797 | 4.647 |
+| FLY124 w02 | cruise | 5.070 | **4.995** | 5.214 | **5.155** | 4.995 | 5.155 |
+| FLY124 w03 | cruise | 1.148 | **7.273** | 1.130 | **7.016** | **0.986** | **1.047** |
+| FLY124 w04 | cruise | 0.983 | **0.747** | 1.087 | **0.843** | 0.747 | 0.843 |
+| FLY124 w05 | cruise | 3.375 | **2.954** | 3.378 | **3.030** | 2.954 | 3.030 |
+
+| pool | baseline pre | **baseline post** | v2/v3 pre | **v2/v3 post** | baseline fixed-seed | v2/v3 fixed-seed |
+|---|---|---|---|---|---|---|
+| dregon_cruise (9) | 1.825 | **1.825** | 2.089 | **2.089** | — | — |
+| fly124_cruise (4) | 2.644 | **3.992** | 2.702 | **4.011** | **2.421** | 2.519 |
+| fly124_warmup (2) | 3.022 | **3.644** | 4.769 | **5.262** | 3.482 | 5.174 |
+| fly124_all (6) | 2.770 | **3.876** | 3.391 | **4.428** | 2.774 | 3.404 |
+
+¹ tagged `cruise` by the protocol (window-mean rps 59.8–67.6 ≥ 45), but these are each recording's takeoff-ramp window — the `dregon_ramp` lab window is `nosource w00`.
+
+`refine_v2` and `refine_v3` are **identical on every one of the 15 real
+windows** — M3 no-ops on all of them, as WP7/WP12 already recorded.
+
+Cross-window-seeded `refine_v3` (`--m3-pool` / `--m3-ref`, OFF by default and
+off for every headline number above), FLY124 cruise only:
+
+| window | v3 post | v3 post + cross-window | v3 fixed-seed + cross-window |
+|---|---|---|---|
+| w02 | 5.155 | 5.155 | 5.155 |
+| w03 | 7.016 | 7.016 | 1.047 |
+| w04 | 0.843 | 0.843 | 0.843 |
+| w05 | 3.030 | 3.030 | **0.972** |
+| **pooled (4)** | 4.011 | 4.011 | **2.004** |
+
+**Harness validation.** The *pre* column reproduces every recorded historical
+number exactly: baseline `nosource w00` 3.262 and `FLY124 w03` 1.148 (the
+`BASELINE_REF` trace references), refine_v2/v3 `FLY124 w03` 1.130 / `w04`
+1.087 / `w05` 3.378 (WP12's 1.130 / 1.087 / 3.380), and `nosource w00`
+3.197 (WP8's real-pair mean 2.163 = ½(3.197 + 1.130)). The re-score is
+therefore the same measurement, on different data.
+
+#### The FLY124 regression is a blind-SEEDING flip, not the labels
+
+The 86 ms realignment changes **one** window's blind seed, and it is enough
+to swamp the pooled number:
+
+| window | pre-build seed | post-build seed |
+|---|---|---|
+| w00 | 63.2, 63.3, 72.5, 82.5 | identical |
+| w01 | 63.2, 63.3, 72.65, **82.8** | 63.2, 63.3, 72.65, **82.75** |
+| w02 | 75.25, 75.35, 93.75, 93.85 | identical |
+| **w03** | 74.2, 74.3, **82.7**, 92.35 | **54.45**, 74.2, 74.3, 92.35 |
+| w04 | 75.0, 75.1, 82.25, 91.45 | identical |
+| w05 | 75.2, 75.3, 91.8, 91.9 | identical |
+
+w03's 82.7 rev/s base is the comb-invisible 4th rotor that WP8 records as
+recoverable *only* by arm R's residual re-scan; on the realigned audio the
+re-scan takes a spurious 54.45 instead. Running the corrected audio and
+corrected labels with the pre-build's seed (the "fixed-seed" column) puts
+w03 at **0.986 / 1.047 — its best value ever**, better than the 1.148 /
+1.130 it scored pre-recalibration.
+
+The failure also propagates: with w03 mis-tracked, the ~82 rev/s base loses
+the second window vote `cross_window_pool` requires, so the WP12 repair that
+recovered w05 no longer fires. Restore w03's seed and w05 goes
+**3.030 → 0.972** (WP12's old-label recovery was 3.380 → 1.147).
+
+#### Label fix vs estimator work — the attribution
+
+Cleanly separable, on FLY124 cruise pooled (baseline chain):
+
+| effect | Δ |
+|---|---|
+| pre-recalibration | 2.644 |
+| **the label + alignment correction alone** (fixed-seed) | **2.421 (−0.223, −8.4 %)** |
+| the w03 blind-seeding flip it happens to trigger | +1.571 |
+| as measured today | 3.992 |
+
+So the recalibration itself **improves** FLY124: at cruise every
+seed-stable window gets better (w02 5.070 → 4.995, w04 0.983 → 0.747, w05
+3.375 → 2.954), consistent with labels that are now ~0.56 rev/s closer to
+the truth and 31–62 ms better timed. The pooled regression is entirely the
+seeding lottery on one window. Refinement shows the same split: 2.702 →
+2.519 (−6.8 %) from the labels, 4.011 as measured.
+
+Honest limit of the attribution: the label change and the 86 ms audio shift
+come from the *same two constants*, so this experiment cannot separate them
+from each other — only both-together from the seeding flip. Warm-up is the
+one place where "both-together" is a loss: w00 goes 3.988 → 5.166 at an
+*unchanged* seed, so on that window the corrected protocol genuinely scores
+worse and no seed effect explains it. Not chased.
+
+#### Where the blind bar now sits, and whether we beat it
+
+- **Blind VK on FLY124 cruise, fixed raw protocol: 3.992** as measured
+  (2.421 with the seeding flip removed). Pre-recalibration it was 2.644.
+- **Blind VK on DREGON cruise: 1.825**, unchanged (bit-identical inputs) and
+  consistent with the 1.807 recorded for the `blind_fullrange` v2 arm
+  without the closing `pi_kalman` pass.
+- **The refinement chain does NOT beat the blind bar** on either pool at the
+  default settings: DREGON 2.089 vs 1.825, FLY124 cruise 4.011 vs 3.992
+  (2.519 vs 2.421 fixed-seed). On DREGON it loses 7 of 9 windows — it wins
+  only 2 of 9 windows — two of the three takeoff-ramp windows — and
+  degrades every steady one by 0.3–0.5 rev/s. The WP4–WP12 chain was tuned on synthetic batteries plus **two**
+  real windows; on the full 15-window protocol that generalization does not
+  hold.
+- **The one arm that does beat it** is `refine_v3` with cross-window seeding
+  on FLY124 cruise: **2.004 vs the 2.421 blind bar** (−17 %), and only when
+  the blind seeder finds the 4th rotor. It is off by default, it needs the
+  three WP12 assumptions (same recording, cruise, stable sorted-rank
+  identity), and it is worth exactly nothing when seeding fails.
+
+**Not re-measured, still stale:** the **1.027** FLY124 bar quoted in this
+document's Goal section comes from a *different* protocol — the 20 s
+`vk_blind_sweep` r6 cruise clips (`docs/vk-order-tracking-design.md` § 7.5),
+not the fixed raw protocol — and was not re-run here. Treat it as
+pre-recalibration until `vk_blind_sweep` is re-run on the corrected loader.
+
+### Full scoreboard on the fixed raw protocol (2026-07-29) — PRE-RECALIBRATION
+
+> Kept for history. Every `fly124_*` column below was scored against
+> `beatvk-valid-raw@268c766052cb`, i.e. the old FLY124 labels *and* the old
+> audio alignment; see the re-scored table above for what these become.
+> DREGON columns are unaffected and remain current.
 
 `beatvk-valid-raw@268c766052cb`, 15 windows, per-window PIT-MAE vs RAW
 telemetry, pooled (arm `none`). Steady = DREGON w1/w2 ×3 + FLY124 w3–5

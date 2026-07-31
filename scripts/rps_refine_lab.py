@@ -179,7 +179,22 @@ TRACE_MODES = (86.0, 0.0, -5.5, -2.5)
 # JSONs' meta.final_pit_mae.pi_smoothed), "tgrid" = the trace's 400-point
 # uniform visualization grid (the numbers quoted in
 # docs/experiments/rps-refine-precision.md: 3.214 / 1.140).
+#
+# `fly124_cruise` MOVED with the protocol republish (`beatvk-valid-raw`
+# 268c7660 -> 54849c13, docs/experiments/beat-vk.md § "Protocol recalibrated
+# and re-scored"): the recalibrated `time_offset` cuts every FLY124 window
+# 86.188 ms earlier in the WAV, which flips that window's blind seed (the
+# comb-invisible 4th rotor 82.7 -> a spurious 54.45) and costs 1.148 -> 7.273.
+# The pre-recalibration pair is kept below because it is still what the OLD
+# build produces, and reproducing it is how the re-score harness was validated.
+# `dregon_ramp` is unaffected — DREGON telemetry was never recalibrated.
 BASELINE_REF = {
+    "dregon_ramp": {"ft": 3.262, "tgrid": 3.214},
+    "fly124_cruise": {"ft": 7.273, "tgrid": 7.267},
+}
+#: The same two windows on `beatvk-valid-raw@268c766052cb` (pass
+#: `--beatvk-out` at a prep cache built from that pin to reproduce).
+BASELINE_REF_PRE_RECALIB = {
     "dregon_ramp": {"ft": 3.262, "tgrid": 3.214},
     "fly124_cruise": {"ft": 1.148, "tgrid": 1.140},
 }
