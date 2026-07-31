@@ -10,7 +10,8 @@ CSV logs per-motor rotation speed (RPM). The audio and telemetry clocks are
 `time_dilation` clock-rate factor brings them into register, and the logged
 speeds themselves are low by a small multiplicative factor (`MICHAELS_RPS_SCALE`).
 All three constants are now **measured**, not hand-tuned: see the block comment
-above `MICHAELS_FILES` and `docs/experiments/rps-refine-precision.md` § WP13.
+above `MICHAELS_FILES` and `docs/experiments/rps-refine-precision.md` §§ WP13
+(timing + the model form) and WP14 (the rev/s magnitudes, refit on 13 windows).
 
 `load_michaels_timeframes()` returns a list of two `td.Frame`s, one per
 recording, each holding:
@@ -67,22 +68,40 @@ _DATA_ROOT = Path(os.environ.get("DATA_ROOT", Path(__file__).resolve().parent.pa
 #     RMS 4.49 ms vs 16.19 ms constant-lag. (-26.51, 1.0048) ->
 #     (-26.337849, 1.005178509); dilation multiplier x1.000377.
 #
-# VALUE — the logged speeds are LOW by ~0.55-0.68 rev/s at cruise (DREGON shows
+# VALUE — the logged speeds are LOW by ~0.55-0.65 rev/s at cruise (DREGON shows
 # the opposite sign, so this is a Michael's-rig property, not a referee bias).
 # Whether the error is additive (b_r = const) or multiplicative (b_r = g·rps_r)
 # is statistically UNRESOLVED: the per-rotor discriminator (`prot`, regressing
 # each rotor's optimal offset on its own mean rps over the 74-91 rev/s cruise
-# spread) returns "additive" for FLY124 by a 4 % RMS margin (0.2939 vs 0.30557)
-# and "multiplicative" for FLY125 by 0.04 % (0.38621 vs 0.38607) — a tie; the
-# free-line fits have R^2 0.013 / 0.004 (no significant dependence on rotor mean
-# rps) and the observed per-rotor spread (0.94 / 1.96 rev/s) dwarfs what either
-# model predicts (0.147 / 0.117), i.e. the discriminator has no power here.
-# We ship the MULTIPLICATIVE form: the two are indistinguishable in the cruise
-# band where they were measured, but these frames cover the WHOLE recording
-# including warm-up and ground idle, where an additive +0.6 rev/s would corrupt
-# a near-stationary rotor's label (and manufacture harmonics at a standstill)
-# while a scale correctly vanishes as rps -> 0. Fitted g: 0.008387 (FLY124,
-# +0.671 rev/s at 80) and 0.006904 (FLY125, +0.552 rev/s at 80).
+# spread) has no power — the free-line fits explain ~1 % of the variance and the
+# observed per-rotor spread dwarfs what either model predicts (WP13 table).
+# We ship the MULTIPLICATIVE form on physical grounds: the two are
+# indistinguishable in the cruise band where they were measured, but these
+# frames cover the WHOLE recording including warm-up and ground idle, where an
+# additive +0.6 rev/s would corrupt a near-stationary rotor's label (and
+# manufacture harmonics at a standstill) while a scale correctly vanishes as
+# rps -> 0.
+#
+# MAGNITUDE (refit, WP14) — the shipped gains below come from ONE global fit per
+# recording over ALL 13 cruise windows (4 FLY124 + 9 FLY125), non-twin rotors
+# only: g = 0.698 % ± 0.069 (FLY124) and 0.706 % ± 0.034 (FLY125). The two
+# recordings agree to 0.008 pp — the signature of a single shared cause. The
+# earlier shipped pair (1.00839 / 1.00690) came from a 2-4 window per-rotor
+# `prot` mean that included the near-equal-speed twin rotors (LFront/RBack),
+# whose per-rotor estimates the audio cannot resolve; those two values disagreed
+# by 0.15 pp and FLY124's was 0.14 pp too high (a +0.12 rev/s over-correction at
+# cruise, the same defect the `--post-shipped` validation flagged as -0.18
+# rev/s). Per-rotor constants are NOT identifiable (between-rotor spread
+# 0.099/0.051 < within-rotor scatter 0.155/0.109) and a per-rotor lag is refuted
+# three independent ways — see WP14.
+#
+# DEGENERACY — the global gain is not separable from a sample-clock error. With
+# εa = audio sample-rate error, εt = telemetry-clock error, εr = ESC rev/s scale
+# error: `time_dilation - 1 ≈ εa - εt` and the audio-optimal gain `g ≈ -εa - εr`.
+# Both εr = 0 and εa = 0 give self-consistent solutions, so this constant is a
+# *label-for-this-audio* correction, not proof the ESC is miscalibrated. That
+# same degeneracy independently supports the global-only verdict: a clock error
+# is common to all four rotors and cannot manufacture a per-rotor difference.
 #
 # (wav_path, csv_path, time_offset_sec, time_dilation)
 MICHAELS_FILES = [
@@ -104,9 +123,11 @@ MICHAELS_FILES = [
 #: recording id). Applied to the rotor speeds in `_load_michaels_data_raw`, so
 #: every consumer of `rps` gets calibrated labels. Recordings without a measured
 #: constant (the 103 unaligned `new-drone-noises` logs) fall back to 1.0.
+#: Both values are the WP14 13-window global refit (see the MAGNITUDE note
+#: above); they supersede 1.00839 / 1.00690 (WP13, 2-4 windows, twin-contaminated).
 MICHAELS_RPS_SCALE: dict[str, float] = {
-    "FLY124": 1.00839,  # g = 0.008387 -> +0.671 rev/s at 80 rev/s
-    "FLY125": 1.00690,  # g = 0.006904 -> +0.552 rev/s at 80 rev/s
+    "FLY124": 1.00698,  # g = 0.698 % ± 0.069 -> +0.558 rev/s at 80 rev/s
+    "FLY125": 1.00706,  # g = 0.706 % ± 0.034 -> +0.565 rev/s at 80 rev/s
 }
 
 
