@@ -625,12 +625,22 @@ cruise windows, non-twin rotors only**: g = 0.698 % ± 0.069 (FLY124) and
   `rps`, like DREGON's `motors_command_raw`), and anything that parses the CSV
   itself. Frame `meta` records `time_offset` / `time_dilation` / `rps_scale` +
   a `provenance.calibration` note.
-- **Validated** (`--post-shipped`, 13 cruise windows). Timing, job
-  `python-0445f6`: residual lag RMS 3.0 ms (FLY124) / 3.3 ms (FLY125) — at the
-  fit's own residual level, drift gone. Values, same job on the *old* scales:
-  +0.004 rev/s (FLY125) but −0.18 rev/s (FLY124), the over-correction WP14 then
-  traced and fixed; job `python-b7e225` re-runs it on the refitted scales
-  (expect ≈ 0 on both). Re-run with
+- **Validated** (`--post-shipped`, 13 cruise windows, no edge hits) — job
+  `python-b7e225` on the currently shipped constants:
+
+  | recording | n | resid lag mean / RMS / max | resid value offset mean | (on the old scales, `python-0445f6`) |
+  |---|---|---|---|---|
+  | FLY124 | 4 | −2.92 / 3.40 / 4.29 ms | **−0.054 rev/s** | −0.178 rev/s |
+  | FLY125 | 9 | +1.21 / 3.22 / 8.04 ms | **−0.009 rev/s** | +0.004 rev/s |
+
+  Timing stays closed (residual lag RMS at the fit's own 2.9 / 4.5 ms residual
+  level, no drift). The value error is now ≈ 0 on both: FLY124's residual fell
+  3.3× (−0.178 → −0.054 rev/s, ~1/10 of the 0.56 rev/s the calibration removes)
+  and FLY125's is unchanged within noise. The −0.054 leftover is a hair larger
+  than the +0.004 the WP14 refit projected, because the two estimators differ —
+  the refit fits per-rotor `prot` offsets on non-twin rotors, this scan is one
+  global offset over all four including the unresolvable twin pair. Both are far
+  inside the 0.175–0.213 rev/s per-window scatter. Re-run with
   `python scripts/michaels_calib/run_sweep.py --post-shipped`.
 - **Anything built from Michael's telemetry before 2026-07-31 is stale** —
   `beatvk-valid-raw`, `results/beatvk_vk_arms`, `DREGON-LM-V4-michaels*`, and

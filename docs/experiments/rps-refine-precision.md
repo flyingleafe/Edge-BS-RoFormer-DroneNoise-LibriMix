@@ -992,7 +992,30 @@ re-pinned in `dload.lock`. Verified on the published frames: `rps` is
 `meta.rps_scale` carries the new value, and CSV completeness is unchanged
 (230 columns → 212 numeric channels across 18 per-sensor-block Series + 14
 bool/string Series; only `ConvertDatV3` and `4.2.1` absent, both all-empty).
-Re-validation: job `python-b7e225` (`--post-shipped`, uni-cpu).
+
+### Re-validated on the corrected labels (job `python-b7e225`, 636 s, uni-cpu)
+
+`run_sweep.py --post-shipped`, 13 cruise windows, no edge hits:
+
+| recording | n | resid lag mean / RMS / max | resid value offset mean | resid value max | (old scales, `python-0445f6`) |
+|---|---|---|---|---|---|
+| FLY124 | 4 | −2.92 / 3.40 / 4.29 ms | **−0.054** rev/s | 0.120 | −0.178 rev/s |
+| FLY125 | 9 | +1.21 / 3.22 / 8.04 ms | **−0.009** rev/s | 0.096 | +0.004 rev/s |
+
+Timing is untouched and still closed (residual lag RMS at the 2.9 / 4.5 ms level
+of the dilation fit's own residual; FLY124's per-window residuals
++0.03/−3.29/−4.11/−4.29 ms carry no monotone drift). **FLY124's value error fell
+3.3×**, −0.178 → −0.054 rev/s, i.e. ~1/10 of the 0.56 rev/s the calibration
+removes; FLY125 is unchanged within noise (+0.004 → −0.009).
+
+The −0.054 rev/s leftover is slightly more than the +0.004 the refit projected,
+and the reason is that the two estimators are not the same measurement: the
+refit regresses per-rotor `prot` offsets on the **non-twin** rotors, whereas this
+scan finds one global offset over **all four**, including the twin pair whose
+individual estimates the audio cannot resolve (RBack's sd alone is 0.50 / 0.76
+rev/s). Both numbers sit well inside the 0.175–0.213 rev/s per-window scatter,
+so there is no residual structure left to chase — consistent with WP14's finding
+that the refit residual already equals the estimator's own noise.
 
 The WP13 "stale artefacts" table still applies verbatim — every entry in it now
 also predates this second label change, and the two `michaels-frames` versions
