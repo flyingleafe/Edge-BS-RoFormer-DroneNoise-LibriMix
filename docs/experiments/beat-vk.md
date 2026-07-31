@@ -182,6 +182,7 @@ number exactly: baseline `nosource w00` 3.262 and `FLY124 w03` 1.148 (the
 therefore the same measurement, on different data.
 
 #### The FLY124 regression is a blind-SEEDING flip, not the labels
+*(FIXED — see "Both fixes in" below; w03 now seeds 82.65 and scores 0.978.)*
 
 The 86 ms realignment changes **one** window's blind seed, and it is enough
 to swamp the pooled number:
@@ -245,7 +246,8 @@ worse and no seed effect explains it. Not chased.
   only 2 of 9 windows — two of the three takeoff-ramp windows — and
   degrades every steady one by 0.3–0.5 rev/s. The WP4–WP12 chain was tuned on synthetic batteries plus **two**
   real windows; on the full 15-window protocol that generalization does not
-  hold.
+  hold. *(Superseded below: the 0.3–0.5 rev/s is entirely M2, and the
+  `--m2-gate move` arm removes it — DREGON 1.819, FLY124 cruise 2.380.)*
 - **The one arm that does beat it** is `refine_v3` with cross-window seeding
   on FLY124 cruise: **2.004 vs the 2.421 blind bar** (−17 %), and only when
   the blind seeder finds the 4th rotor. It is off by default, it needs the
@@ -257,6 +259,80 @@ document's Goal section comes from a *different* protocol — the 20 s
 `vk_blind_sweep` r6 cruise clips (`docs/vk-order-tracking-design.md` § 7.5),
 not the fixed raw protocol — and was not re-run here. Treat it as
 pre-recalibration until `vk_blind_sweep` is re-run on the corrected loader.
+
+### Both fixes in (2026-07-31) — the seed flip repaired, M2 gated
+
+> This supersedes the two paragraphs above about the FLY124 regression and
+> about the chain not beating the bar. Driver `scripts/refine_gate_probe.py`;
+> jobs **`python-74f6e0`** (diagnostics), **`python-5d65f0`** (first re-score,
+> which exposed a second seeder defect), **`python-cf3bbc`** (this table).
+> Mechanism: `docs/experiments/rps-refine-precision.md` § WP15.
+
+**Fix 1 — the w03 blind seed was a coin flip, twice over.** arm R's residual
+re-scan offered 54.45 and 82.7 **tied to within 0.06 % of score**; the 86 ms
+realignment moved both by ~1.5 % and reversed the order. Nothing was on a
+knife edge except the *ranking*. Two guards, both missing by omission:
+`SeedConfig.r_span_max = 1.45` (an accepted residual comb may not stretch the
+seed set's max/min past a quadrotor's rotor band — 54.45 beside 92.35 spans
+1.696 against the ~1.25× real rotors sit within) and **mutual dedup of the
+accepted residual candidates** at the `dedup_rps = 2.5` the *used* bases
+already enforce (with 54.45 gone, 80.90 stopped being filtered as its 3:2
+alias, and arm R took two bases 1.75 rev/s apart — one rotor, two slots).
+Verified at the seed stage on all 15 windows × both protocol builds: **29 of
+30 seed sets bit-identical**, including the old build's w03 reproducing its
+historical `[74.2, 74.3, 82.70, 92.35]`. The one change is the new build's
+w03, `[54.45, 74.2, 74.3, 92.35]` → `[74.2, 74.3, 82.65, 92.35]`.
+
+**Fix 2 — M2 declines when its own premise fails** (`--m2-gate move`). The
+steady-window regression is **entirely M2**: M1 no-ops on 8 of 9 DREGON
+windows (its surface-quality gate skips all four rotors), while M2-solo costs
+0.29–0.55 rev/s on every steady DREGON window and up to +2.70 on FLY124
+warm-up. Mechanism: DREGON cruise is two tight twin pairs, so the siblings'
+reconstruction explains only ~⅓ of the RMS and `PK_WIDE`'s 12 Hz first band
+lets a single-track solve slide onto the twin's comb — one or two rotors pick
+up a 1.2–2.4 rev/s negative bias. Three truth-free per-rotor rules (no
+residual → skip; mean move > 0.5 rev/s → reject; landing on a sibling's comb →
+reject) reject 54 of 60 proposals, i.e. the chain becomes ≈ its own M1 output.
+
+**Re-scored, `--v2-rounds 1`** (*pre* = the `python-764ca5` columns above):
+
+| pool | pre baseline | pre v2/v3 | **baseline** | **v2/v3** | **v2/v3 gated** | v3 + cross-window | v3 gated + cross-window |
+|---|---|---|---|---|---|---|---|
+| dregon_cruise (9) | 1.825 | 2.089 | **1.825** | 2.089 | **1.819** | — | — |
+| fly124_cruise (4) | 3.992 | 4.011 | **2.418** | 2.510 | **2.380** | 1.995 | **1.864** |
+| fly124_warmup (2) | 3.644 | 5.262 | 3.644 | 5.262 | 3.605 | — | — |
+| all 15 | 2.646 | 3.025 | **2.226** | 2.624 | **2.207** | — | — |
+
+Per-window, the two that moved: **FLY124 w03 7.273 → 0.978** (baseline;
+1.012 refine, 1.038 gated) — better than the 1.148 it scored *before* the
+recalibration, which is the label correction showing through — and **w05's
+WP12 cross-window repair fires again, 3.030 → 0.972** (0.901 gated), because
+w03 once more supplies the second vote for the ~82 base. The recovered blind
+baseline reproduces the seed-swap control (2.418 vs 2.421).
+
+**Against the three bars:**
+
+- **DREGON cruise, bar 1.825:** gated chain **1.819**. A tie (−0.3 %), not a
+  win — but the 0.264 rev/s regression is gone, and the chain is now ≤ the
+  baseline on 8 of 9 windows with a worst case of +0.019.
+- **FLY124 cruise, bar 2.421 (fixed-seed reference):** blind baseline
+  re-measures at **2.418**, the gated chain at **2.380** (−1.6 %), and the
+  cross-window-seeded gated `refine_v3` at **1.864 (−23 %)**.
+- **Pooled all-15:** 2.226 → **2.207**.
+
+So: the seed fix is worth **1.574 rev/s** on the FLY124 cruise pool and the
+gate turns a −0.26/−0.09 rev/s regression into a tie-or-small-win. The only
+arm that *beats* a bar by a real margin is still cross-window-seeded
+`refine_v3` on FLY124 cruise, and it still needs the three WP12 assumptions
+(same recording, cruise, stable sorted-rank identity) plus a blind seeder that
+finds the 4th rotor. On DREGON the honest verdict is unchanged: the
+refinement chain does not add precision over blind VK — the gate's achievement
+is that it no longer subtracts any.
+
+The gate is **off by default** (`M2_GATE = "off"`), because on the 13-window
+synthetic battery — where the sibling reconstruction is clean and M2 does pay
+— it costs ~6 % (refine_v2 2.196 → 2.318, refine_v3 1.767 → 1.872). Treat
+`--m2-gate move` as a real-data switch, exactly like `--v2-rounds 1`.
 
 ### Full scoreboard on the fixed raw protocol (2026-07-29) — PRE-RECALIBRATION
 

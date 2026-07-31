@@ -1188,6 +1188,74 @@ depending on a statistic that is known to point the wrong way.
 baseline chain. That is the intended outcome — "never worse than baseline" —
 not a new source of gain.
 
+### (d) The span bound alone was not enough — arm R then took the rotor TWICE
+
+The first re-score (`python-5d65f0`) came back with w03 at **1.821**, not the
+~0.99 the seed-swap control had promised, and the seed explained why:
+`[74.2, 80.9, 82.65, 92.35]`. Removing 54.45 had un-shadowed **80.90**, which
+`_harmonic_alias_filter` had been dropping as 54.45's 3:2 alias (80.9/54.45 =
+1.486). arm R then accepted *both* 82.65 and 80.90 — 1.75 rev/s apart, both
+sitting on the same ~80.7 rotor — which spent two rotor slots on one physical
+rotor and left the 74/75 twin pair with a single track (final means
+`[74.28, 81.02, 81.83, 91.50]`, one rotor at MAE 5.11).
+
+Second guard: **mutual dedup of the accepted residual candidates**, contrast
+first, at the same `dedup_rps = 2.5` the *used* bases already enforce. The
+existing rule ("closer residual peaks are wander tails / twin residue, not
+distinct combs") was simply never applied between two NEW combs. With it, w03
+accepts `[82.65]` alone. Replayed over all 30 window-builds: **29 bit-identical
+to the shipped seeder, and the old build's w03 back to its historical
+`[82.70]`** — the tightest available proof that the change is the intended
+one-window repair.
+
+### (e) Re-scored, both fixes in (`python-cf3bbc`)
+
+Per-window final PIT-MAE vs RAW telemetry, `--v2-rounds 1`. *pre* = the
+`python-764ca5` re-score (flipped seed, ungated M2). `refine_v3 ≡ refine_v2` on
+all 15 windows, as before.
+
+| window | regime | pre baseline | pre v2/v3 | **baseline** | **v2/v3** | **v2/v3 gated** |
+|---|---|---|---|---|---|---|
+| nosource w00 | ramp | 3.262 | 3.197 | 3.262 | 3.196 | 3.272 |
+| nosource w01 | cruise | 1.023 | 1.472 | 1.023 | 1.472 | **1.032** |
+| nosource w02 | cruise | 1.019 | 1.320 | 1.019 | 1.320 | **0.999** |
+| speech-low w00 | ramp | 2.862 | 2.952 | 2.862 | 2.952 | **2.850** |
+| speech-low w01 | cruise | 1.049 | 1.333 | 1.049 | 1.333 | **1.045** |
+| speech-low w02 | cruise | 1.006 | 1.404 | 1.006 | 1.404 | **0.995** |
+| whitenoise w00 | ramp | 4.063 | 4.032 | 4.059¹ | 4.032 | 4.046 |
+| whitenoise w01 | cruise | 0.993 | 1.531 | 0.993 | 1.531 | **0.979** |
+| whitenoise w02 | cruise | 1.151 | 1.561 | 1.151 | 1.561 | 1.153 |
+| FLY124 w00 | warmup | 3.988→5.166 | 4.973→5.701 | 5.166 | 5.701 | **5.082** |
+| FLY124 w01 | warmup | 2.057→2.122 | 4.565→4.824 | 2.122 | 4.824 | **2.128** |
+| FLY124 w02 | cruise | 4.995 | 5.155 | 4.995 | 5.155 | **4.802** |
+| **FLY124 w03** | cruise | **7.273** | **7.016** | **0.978** | **1.012** | 1.038 |
+| FLY124 w04 | cruise | 0.747 | 0.843 | 0.747 | 0.843 | **0.714** |
+| FLY124 w05 | cruise | 2.954 | 3.030 | 2.954 | 3.030 | 2.966 |
+
+¹ the only cell that does not reproduce bit-exactly (4.063 → 4.059, 0.1 %):
+run-to-run BLAS-reduction jitter, identical seed and identical inputs.
+
+| pool | pre baseline | pre v2/v3 | **baseline** | **v2/v3** | **v2/v3 gated** | v3 + cross-window | v3 gated + cross-window |
+|---|---|---|---|---|---|---|---|
+| dregon_cruise (9) | 1.825 | 2.089 | **1.825** | 2.089 | **1.819** | — | — |
+| fly124_cruise (4) | 3.992 | 4.011 | **2.418** | 2.510 | **2.380** | 1.995 | **1.864** |
+| fly124_warmup (2) | 3.644 | 5.262 | 3.644 | 5.262 | 3.605 | — | — |
+| all 15 | 2.646 | 3.025 | **2.226** | 2.624 | **2.207** | — | — |
+
+The seed fix alone is worth **1.574 rev/s** on the FLY124 cruise pool
+(3.992 → 2.418), and the recovered blind baseline reproduces the seed-swap
+control (2.421) to 0.003. **w05's WP12 cross-window repair fires again**
+(3.030 → 0.972 ungated, 0.901 gated) now that w03 supplies the second vote for
+the ~82 base.
+
+**Cost on synthetic, measured in the same job:** the gate costs ~6 % on the
+13-window battery (refine_v2 2.196 → 2.318, refine_v3 1.767 → 1.872) — M2 does
+pay there, where the sibling reconstruction is clean. Hence `M2_GATE` ships
+`off` and `--m2-gate move` is a real-data switch, exactly like `--v2-rounds 1`.
+*Limitation:* the seeder change was verified seed-by-seed only on the 15 real
+windows; its effect on the synthetic battery's seeds was not isolated, so the
+synthetic column is a within-job gate comparison, not a cross-version one.
+
 ## WP16 — the joint-tracker mode prior: NOT SUPPORTED by the telemetry (2026-07-31)
 
 A joint 4-rotor beam-search tracker was designed to replace the coarse stage's
