@@ -20,10 +20,19 @@ Both questions this answers were raised by `docs/experiments/beat-vk.md`
    itself — lands in an NPZ next to the truth.  Any accept/reject rule is then
    scorable offline at zero further compute.
 
-Run (the grid is ~45 units of 50-190 s each)::
+3. **The re-score with both fixes in.**  Stage ``rescore`` runs every arm
+   (baseline / refine_v2 / refine_v3, each gated and ungated, plus the
+   cross-window-seeded refine_v3 of WP12) over all 15 protocol windows and over
+   the lab's 13-window synthetic set, and prints the comparison table together
+   with the seed bases the fixed seeder produces — the verification that the
+   arm-R change touches w03 and nothing else.
+
+Run (stage 1+2 ~45 units, stage 3 ~90, each 50-190 s)::
 
     omnirun submit --backend uni-cpu --gpus 0 --cpus 16 --mem 24 --time 3h \\
-        -- python scripts/refine_gate_probe.py --jobs 8
+        -- python scripts/refine_gate_probe.py --jobs 8 --stages seed,m2
+    omnirun submit --backend uni-cpu --gpus 0 --cpus 16 --mem 24 --time 4h \\
+        -- python scripts/refine_gate_probe.py --jobs 8 --stages seed,rescore
 
 Restartable: a unit whose output exists is skipped.
 """
@@ -206,6 +215,199 @@ def run_m2_unit(prep_out: Path, rid: str, widx: int, out: Path, threads: int) ->
 
 
 # ---------------------------------------------------------------------------
+# stage `rescore` — the fixed protocol, every arm, on all 15 real windows
+#
+# ARMS: name -> (chain, extra rps_refine_lab args).  `_gated` = the M2 move
+# gate (WP15).  The cross-window-seeded refine_v3 arm is assembled separately
+# (its --m3-pool/--m3-ref depend on the OTHER windows' results).
+
+ARMS: dict[str, tuple[str, list[str]]] = {
+    "baseline": ("baseline", []),
+    "refine_v2": ("refine_v2", ["--v2-rounds", "1"]),
+    "refine_v2_gated": ("refine_v2", ["--v2-rounds", "1", "--m2-gate", "move"]),
+    "refine_v3": ("refine_v3", ["--v2-rounds", "1"]),
+    "refine_v3_gated": ("refine_v3", ["--v2-rounds", "1", "--m2-gate", "move"]),
+}
+#: The lab's own 13-window synthetic set (WP6/WP7/WP8 "all 15" minus the two
+#: real windows) — the gate's cost where M2 was measured to PAY.
+SYNTH_WINDOWS = "synth,synthbl,synth_trace"
+
+
+def run_lab_unit(
+    prep_out: Path | None,
+    name: str,
+    chain: str,
+    windows: str,
+    extra: list[str],
+    out: Path,
+    threads: int,
+) -> bool:
+    jpath = out / "raw" / f"{name}.json"
+    if jpath.exists():
+        return True
+    jpath.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable,
+        str(REPO / "scripts" / "rps_refine_lab.py"),
+        "--chain",
+        chain,
+        "--windows",
+        windows,
+        "--out",
+        str(jpath),
+        *extra,
+    ]
+    if prep_out is not None:
+        cmd += ["--beatvk-out", str(prep_out)]
+    env = {**os.environ}
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        env[k] = str(threads)
+    log = out / "logs" / f"{name}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    tic = time.perf_counter()
+    with open(log, "w") as fh:
+        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env, check=False)
+    ok = proc.returncode == 0 and jpath.exists()
+    print(
+        f"[unit] {name}: {'ok' if ok else f'FAILED rc={proc.returncode}'} "
+        f"({time.perf_counter() - tic:.0f}s)",
+        flush=True,
+    )
+    return ok
+
+
+def read_unit(out: Path, name: str) -> dict[str, Any] | None:
+    jpath = out / "raw" / f"{name}.json"
+    if not jpath.exists():
+        return None
+    doc = json.loads(jpath.read_text())
+    rows = {}
+    for wname, res in doc["windows"].items():
+        rows[wname] = {
+            "final": res["final_pooled_mae"],
+            "seed_bases": res["meta"]["seed_bases"],
+            "final_means": res["meta"]["final_means"],
+            "regime": res["meta"].get("regime"),
+            "wall_s": res["meta"]["wall_s"],
+        }
+    return rows
+
+
+def stage_rescore(out: Path, prep_out: Path, jobs: int, threads: int, do_synth: bool) -> list[str]:
+    """Every arm x every real window (+ the synthetic set for the gate's cost)."""
+    windows = _windows(prep_out)
+    units: list[tuple] = [
+        (prep_out, f"{arm}__{rid}__w{widx:02d}", chain, f"real:{rid}:{widx}", extra)
+        for arm, (chain, extra) in ARMS.items()
+        for rid, widxs in windows.items()
+        for widx in widxs
+    ]
+    if do_synth:
+        units += [
+            (None, f"synth__{arm}", chain, SYNTH_WINDOWS, extra)
+            for arm, (chain, extra) in ARMS.items()
+            if arm != "baseline"
+        ]
+    print(f"[grid] {len(units)} rescore units on {jobs} workers", flush=True)
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        oks = list(
+            pool.map(lambda u: run_lab_unit(u[0], u[1], u[2], u[3], u[4], out, threads), units)
+        )
+    failed = [u[1] for u, ok in zip(units, oks) if not ok]
+
+    # cross-window-seeded refine_v3 on the FLY124 cruise windows (WP12), gated
+    # and ungated — reported separately, off by default.
+    from rps_refine_lab import cross_window_pool
+
+    manifest = json.loads((prep_out / "manifest.json").read_text())["recordings"]
+    fly = "FLY124"
+    cruise = [int(w["index"]) for w in manifest[fly]["windows"] if w["regime"] == "cruise"]
+    units2: list[tuple] = []
+    for arm in ("refine_v3", "refine_v3_gated"):
+        means = {}
+        for widx in cruise:
+            u = read_unit(out, f"{arm}__{fly}__w{widx:02d}")
+            if u:
+                means[f"w{widx:02d}"] = next(iter(u.values()))["final_means"]
+        for widx in cruise:
+            key = f"w{widx:02d}"
+            if key not in means:
+                continue
+            pool_bases = cross_window_pool(means, exclude=key)
+            ref = ";".join(",".join(f"{v:.3f}" for v in m) for k, m in means.items() if k != key)
+            extra = [
+                *ARMS[arm][1],
+                "--m3-pool",
+                ",".join(f"{b:.3f}" for b in pool_bases),
+                "--m3-ref",
+                ref,
+            ]
+            units2.append(
+                (
+                    prep_out,
+                    f"{arm}_pool__{fly}__w{widx:02d}",
+                    "refine_v3",
+                    f"real:{fly}:{widx}",
+                    extra,
+                )
+            )
+    print(f"[grid] {len(units2)} cross-window units", flush=True)
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        oks2 = list(
+            pool.map(lambda u: run_lab_unit(u[0], u[1], u[2], u[3], u[4], out, threads), units2)
+        )
+    return failed + [u[1] for u, ok in zip(units2, oks2) if not ok]
+
+
+def summarize(out: Path, prep_out: Path) -> None:
+    windows = _windows(prep_out)
+    arms = list(ARMS) + ["refine_v3_pool", "refine_v3_gated_pool"]
+    table: dict[str, dict[str, float]] = {}
+    seeds: dict[str, list[float]] = {}
+    for arm in arms:
+        for rid, widxs in windows.items():
+            for widx in widxs:
+                u = read_unit(out, f"{arm}__{rid}__w{widx:02d}")
+                if not u:
+                    continue
+                (row,) = u.values()
+                table.setdefault(f"{rid}__w{widx:02d}", {})[arm] = row["final"]
+                seeds.setdefault(f"{rid}__w{widx:02d}", row["seed_bases"])
+    regimes: dict[str, str] = {}
+    for w in table:
+        u = read_unit(out, f"baseline__{w}")
+        regimes[w] = next(iter(u.values()))["regime"] if u else "?"
+    print("\n===== per-window final PIT-MAE =====")
+    print(f"{'window':<38s}{'regime':<8s}" + "".join(f"{a:>22s}" for a in arms))
+    for w in sorted(table):
+        print(
+            f"{w:<38s}{regimes[w]:<8s}"
+            + "".join(f"{table[w][a]:22.3f}" if a in table[w] else f"{'--':>22s}" for a in arms)
+        )
+    groups = {
+        "dregon_cruise": lambda w, r: not w.startswith("FLY124") and r == "cruise",
+        "fly124_cruise": lambda w, r: w.startswith("FLY124") and r == "cruise",
+        "fly124_warmup": lambda w, r: w.startswith("FLY124") and r == "warmup",
+        "fly124_all": lambda w, r: w.startswith("FLY124"),
+        "all15": lambda w, r: True,
+    }
+    print("\n===== pooled =====")
+    print(f"{'pool':<20s}" + "".join(f"{a:>22s}" for a in arms))
+    for gname, pred in groups.items():
+        sel = [w for w in table if pred(w, regimes[w])]
+        cells = []
+        for a in arms:
+            vals = [table[w][a] for w in sel if a in table[w]]
+            cells.append(
+                f"{np.mean(vals):22.3f}" if len(vals) == len(sel) and vals else f"{'--':>22s}"
+            )
+        print(f"{gname:<20s}" + "".join(cells))
+    print("\n===== seed bases (fixed seeder) =====")
+    for w in sorted(seeds):
+        print(f"  {w:<38s} {seeds[w]}")
+    (out / "summary.json").write_text(
+        json.dumps({"windows": table, "regimes": regimes, "seeds": seeds}, indent=1)
+    )
 
 
 def main() -> None:
@@ -215,6 +417,7 @@ def main() -> None:
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--stages", default="seed,m2")
+    ap.add_argument("--no-synth", action="store_true", help="rescore: skip the synthetic set")
     ap.add_argument("--unit", default=None, help="internal: run ONE seed unit in-process")
     args = ap.parse_args()
 
@@ -307,6 +510,12 @@ def main() -> None:
                 pool.map(lambda u: run_m2_unit(u[0], u[1], u[2], u[3], args.threads), units2)
             )
         failed += [f"m2/{u[1]}/w{u[2]:02d}" for u, ok in zip(units2, oks) if not ok]
+
+    if "rescore" in stages:
+        failed += stage_rescore(
+            out, prep_root / "prep_new", args.jobs, args.threads, not args.no_synth
+        )
+        summarize(out, prep_root / "prep_new")
 
     print(f"\nfailed units: {failed or 'none'}")
 

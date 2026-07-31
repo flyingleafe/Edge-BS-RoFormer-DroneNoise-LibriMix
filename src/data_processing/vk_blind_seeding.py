@@ -176,10 +176,29 @@ class SeedConfig:
     r_span_pad: float = 1.15  # one-sided rotor-band prior on residual combs:
     # reject candidates ABOVE the strongest used base x this factor (cruise
     # quadrotor bases sit within ~1.25x — same prior as the 3:2 alias guard;
-    # kills e.g. speech-low's 105.85 residual junk at z 3.1). No low-side
-    # bound: subharmonic aliases of the used combs are already dead in the
-    # residual (their teeth ARE the masked combs' teeth), while a true
-    # low-side comb shadowed by a near-2x neighbour must stay recoverable
+    # kills e.g. speech-low's 105.85 residual junk at z 3.1). The low side is
+    # bounded by `r_span_max` instead of by a mirrored pad, because a comb
+    # BELOW the used bases is only implausible in proportion to how far the
+    # whole seed set would then have to stretch
+    r_span_max: float = 1.45  # rotor-band SPAN prior on residual combs: reject
+    # a candidate that would stretch max/min over the used bases beyond this
+    # ratio. A quadrotor's four bases sit within ~1.25x (the same physical
+    # prior as `promote_span` 1.30 and the 3:2 alias guard); the widest set any
+    # of the 15 real protocol windows actually seeds is 1.31 (FLY124 warm-up
+    # w00/w01), so 1.45 is loose by design. MEASURED NECESSITY: on FLY124 w03
+    # the residual scan offers two candidates that are TIED to within 0.06 % of
+    # score — the true comb-invisible 4th rotor at 82.7 (span 1.245) and a
+    # spurious 54.45 ridge (span 1.696). Before this bound the seeder took
+    # whichever won that coin flip; the 86 ms audio realignment of the label
+    # recalibration flipped it and cost the FLY124 cruise pool +1.571 rev/s
+    # (docs/experiments/beat-vk.md). Checked at the seed stage on all 15 real
+    # windows x both protocol builds: this changes w03 and nothing else — the
+    # nine DREGON windows admit no residual candidate at all, and FLY124
+    # w00/w01/w04's single candidate each sits at span 1.22-1.31.
+    #
+    # (Subharmonic aliases of the used combs are already dead in the residual —
+    # their teeth ARE the masked combs' teeth — so the low side needs no
+    # separate alias guard, only this plausibility bound.)
     # blind per-track stage guard (vit2dsp-ladder robustness; see stage_guard)
     guard_basin: float = 3.0  # rev/s: a per-stage track move beyond this is
     # suspect — capture basins are ~2-3 rev/s, larger jumps are re-captures
@@ -552,9 +571,12 @@ def residual_rescan(
     ``(residual scores on grid, accepted new bases, their z-scores)``:
     accepted = robust z >= ``r_z_min``, at least ``dedup_rps`` from every
     used base (closer residual peaks are wander tails / twin residue, not
-    distinct combs), and mutually alias-filtered (masking already removed
-    pure aliases OF the used combs, so no filter against those is applied —
-    a shadowed true comb at a near-integer ratio must be recoverable).
+    distinct combs), inside the rotor band (``r_span_pad`` above the highest
+    used base, and a total set span of at most ``r_span_max`` — the guard that
+    decides FLY124 w03's near-tied 82.7-vs-54.45 pair), and mutually
+    alias-filtered (masking already removed pure aliases OF the used combs, so
+    no filter against those is applied — a shadowed true comb at a
+    near-integer ratio must be recoverable).
     """
     cfg = cfg or SeedConfig()
     masked = _mask_comb_teeth(white_vec, bin_hz, np.asarray(used_bases), cfg)
@@ -566,7 +588,11 @@ def residual_rescan(
     rz = (rs - med) / max(mad, 1e-12)
     used_arr = np.asarray(used_bases, dtype=np.float64)
     far = np.array([np.min(np.abs(used_arr - b)) >= cfg.dedup_rps for b in rb], dtype=bool)
-    in_span = rb <= float(used_arr.max()) * cfg.r_span_pad
+    u_lo, u_hi = float(used_arr.min()), float(used_arr.max())
+    in_span = rb <= u_hi * cfg.r_span_pad
+    # ... and the resulting seed set must still look like ONE drone's rotors
+    span = np.maximum(u_hi, rb) / np.maximum(np.minimum(u_lo, rb), 1e-9)
+    in_span &= span <= cfg.r_span_max
     sel = (rz >= cfg.r_z_min) & far & in_span
     fb, fs2, fz = rb[sel], rs[sel], rz[sel]
     if len(fb):

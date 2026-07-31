@@ -698,7 +698,7 @@ def m2_residual(
             else:
                 r_new = pit.pi_kalman_refine(resid, r.copy(), prep.ft, sr=SR, **PK_WIDE)[0][rot]
             r_prop = r[rot] + damp * (r_new - r[rot])
-            reject, gdiag = m2_gate_reject(r, rot, r_prop, spec, prep)
+            reject, gdiag = m2_gate_reject(r, rot, r_prop, spec, prep, recon_failed=failed)
             if proposals is not None:
                 proposals.append(
                     {
@@ -741,7 +741,11 @@ M2_GATE = "off"  # "off" = ungated (WP6/WP12 behaviour) | "move" = the scale vet
 #: accept/reject rule can be scored OFFLINE against the truth without re-running
 #: the 115 s chain per variant (the gate-design loop).
 M2_DUMP_PATH: Path | None = None
-M2_MOVE_MAX = 0.75  # rev/s: max accepted |mean move| of one M2 proposal
+M2_MOVE_MAX = 0.5  # rev/s: max accepted |mean move| of one M2 proposal.  WP3
+# measured sibling-interference bias at 0.3-0.5 rev/s, and the offline sweep
+# over all 60 real-window proposals (`results/refine_gate_probe/m2`) puts the
+# optimum flat between 0.25 and 0.75 — 0.5 is the middle of that plateau and
+# the physical scale at the same time
 M2_DUP_TOL = 1.5  # rev/s: reject a proposal landing this close to a sibling
 # it was not already sharing a comb with (`SeedConfig.guard_dup_tol`'s rule,
 # applied at M2 scale — the ladder's own guard uses a 3.0 rev/s move floor and
@@ -754,11 +758,18 @@ def m2_gate_reject(
     r_prop: np.ndarray,
     spec: tuple[np.ndarray, float, np.ndarray] | None,
     prep: Prepared,
+    recon_failed: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     """Blind per-rotor veto of an M2 proposal.  ``(reject, diagnostics)``.
 
-    Two rules, both scale-based and both truth-free:
+    Three rules, all scale-based and all truth-free:
 
+    0. **no residual, no M2** — the sibling reconstruction diverged
+       (``resid/orig > M2_RESID_GUARD``).  The ungated code falls back to the
+       PLAIN audio there, which is not a decoupling step at all but an
+       unconstrained wide pi_kalman on a window the ladder already struggled
+       with; measured cost on FLY124 w01, +2.70 rev/s.  M2's premise is void,
+       so M2 declines.
     1. **move** — ``mean |r_prop - r[rot]| > M2_MOVE_MAX``.  A fine-decoupling
        correction is 0.1-0.5 rev/s; more than that is a capture event.
     2. **occupied comb** — the proposal ends within ``M2_DUP_TOL`` of a sibling
@@ -792,6 +803,9 @@ def m2_gate_reject(
         diag["conf_after"] = round(float(ca), 4)
     if M2_GATE == "off":
         return False, diag
+    if recon_failed:
+        diag["reason"] = "sibling reconstruction diverged — no residual to refine on"
+        return True, diag
     if move > M2_MOVE_MAX:
         diag["reason"] = f"move {move:.2f} > {M2_MOVE_MAX} (re-capture, not decoupling)"
         return True, diag
