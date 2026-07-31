@@ -43,7 +43,7 @@ from __future__ import annotations
 import itertools
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import torch
@@ -266,6 +266,150 @@ class EmissionCfg:
         return np.arange(self.lo, self.hi + self.step / 2, self.step)
 
 
+class CombTables(NamedTuple):
+    """Per-(grid speed, harmonic) tooth values, bin ids and weights.
+
+    Everything the union-comb emission needs, precomputed once per window:
+
+    - ``v_on`` / ``v_half``: ``(D, K, T)`` the (band-pooled, interpolated)
+      whitened value at the on-tooth ``k*c`` and at the half-tooth
+      ``(k-0.5)*c`` (the latter clamped at 0, as the contrast has always done);
+    - ``bid_on`` / ``bid_half``: ``(D, K)`` the ROUNDED bin index of each tooth,
+      which is the identity a union has to deduplicate on;
+    - ``w``: ``(D, K)`` per-tooth weight, normalised so that
+      ``sum_k w[d, k] == 1`` over that speed's VALID teeth.  That normalisation
+      is what makes the union score reduce exactly to ``sum_r S(c_r)`` when the
+      four combs are disjoint, so the two are directly comparable and
+      ``lambda_e`` keeps its meaning.
+    """
+
+    v_on: torch.Tensor
+    v_half: torch.Tensor
+    bid_on: torch.Tensor
+    bid_half: torch.Tensor
+    w: torch.Tensor
+
+
+#: Bin id given to a tooth outside ``[f_min, f_max]``.  Sorts last and carries
+#: zero weight, so it can never join a union.
+_INVALID_BIN = 1 << 20
+
+
+def comb_tables(
+    lm: torch.Tensor,
+    bin_hz: float,
+    cfg: EmissionCfg,
+    grid: torch.Tensor | None = None,
+) -> CombTables:
+    """Precompute :class:`CombTables` for every grid speed and harmonic."""
+    device, dtype = lm.device, lm.dtype
+    g = (
+        torch.as_tensor(cfg.grid(), device=device, dtype=dtype)
+        if grid is None
+        else grid.to(device=device, dtype=dtype)
+    )
+    n_f = lm.shape[0]
+    fmax = min(cfg.f_max, (n_f - 1) * bin_hz)
+    ks = torch.arange(1, cfg.k_max + 1, device=device, dtype=dtype)
+    if cfg.b0_rps <= 0:
+        offs = torch.zeros(1, device=device, dtype=dtype)
+    else:
+        n_band = cfg.n_band or max(5, int(math.ceil(4.0 * cfg.k_max * cfg.b0_rps / bin_hz)) + 1)
+        offs = torch.linspace(-1.0, 1.0, n_band, device=device, dtype=dtype)
+    if cfg.k_weight == "k":
+        w_k = ks.clone()
+    elif cfg.k_weight == "uniform":
+        w_k = torch.ones_like(ks)
+    else:  # pragma: no cover - guarded by the config surface
+        raise ValueError(f"unknown k_weight {cfg.k_weight!r}")
+
+    def pooled(
+        mult: torch.Tensor, pos_only: bool
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        centre = mult[None, :] * g[:, None]  # (D, K)
+        band = offs[None, None, :] * (cfg.b0_rps * ks[None, :, None])  # (1, K, P)
+        freqs = centre[:, :, None] + band  # (D, K, P)
+        valid = (centre >= cfg.f_min) & (centre <= fmax)  # (D, K)
+        idx = freqs.clamp(0.0, fmax) / bin_hz
+        j = idx.floor().clamp(0, n_f - 2).long()
+        frac = (idx - j).unsqueeze(-1)
+        vals = ((1.0 - frac) * lm[j] + frac * lm[j + 1]).amax(dim=2)  # (D, K, T)
+        if pos_only:
+            vals = vals.clamp_min(0.0)
+        vals = torch.where(valid[:, :, None], vals, torch.zeros_like(vals))
+        bid = torch.where(
+            valid,
+            (centre / bin_hz).round().long(),
+            torch.full_like(valid, _INVALID_BIN, dtype=torch.long),
+        )
+        return vals, bid, valid
+
+    v_on, bid_on, valid = pooled(ks, pos_only=False)
+    v_half, bid_half, _ = pooled(ks - 0.5, pos_only=True)
+    wv = w_k[None, :] * valid.to(dtype)
+    w = wv / wv.sum(dim=1, keepdim=True).clamp_min(1e-12)  # (D, K)
+    return CombTables(v_on, v_half, bid_on, bid_half, w)
+
+
+def comb_scores_from_tables(tab: CombTables) -> torch.Tensor:
+    """``(D, T)`` single-rotor comb contrast — the shortlist bound."""
+    w = tab.w[:, :, None]
+    return (w * tab.v_on).sum(dim=1) - (w * tab.v_half).sum(dim=1)
+
+
+def union_emission(
+    tab: CombTables, w_idx: torch.Tensor, t: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(N,)`` UNION-comb emission of ``N`` four-rotor assignments at frame ``t``.
+
+    ``w_idx`` is ``(N, 4)`` of grid indices.  Every spectrogram bin is counted
+    **once**, no matter how many of the four rotors claim it.
+
+    This replaces ``sum_r S(c_r)``, and it is not an optimisation — it is the
+    correctness fix.  A sum of single-rotor scores double-counts shared teeth,
+    so a comb at ``c/2`` (which shares every SECOND tooth with a comb at ``c``)
+    is nearly free to add while sitting 40 rev/s away, where no distance-based
+    repulsion can see it.  Measured consequence of the sum form: 52 % of tracks
+    landed at a small-integer ratio of a sibling and 45 % below 55 rev/s, i.e.
+    the four tracks collapsed onto one comb's subharmonic family (21/42/85).
+
+    Implementation: gather the ``4K`` teeth of each assignment, sort by
+    ``(bin id, -k)``, and keep the first of each bin group.  Sorting on
+    ``bid * 64 + (k_max - k)`` makes the highest harmonic win a collision, which
+    is the highest-weight claim under ``k_weight="k"`` up to the per-speed
+    normalisation.  Exact, and — because it runs only on the shortlisted
+    proposals — cheap: a ``(4096, 32)`` sort per frame.
+
+    Normalisation is inherited from :class:`CombTables`: disjoint combs give
+    exactly ``sum_r S(c_r)``, four identical combs give exactly ``S(c)``.
+
+    Returns ``(score, comb_mass)``.  ``comb_mass`` is the surviving weight sum —
+    4.0 when the four combs are disjoint, 1.0 when they coincide — i.e. the
+    EFFECTIVE number of distinct combs the assignment explains.  The caller
+    needs it because :func:`normalise_scores` is affine, ``(x - med)/denom``,
+    and the ``med`` shift has to be applied once per distinct comb: four for a
+    disjoint assignment, one for a degenerate one.  Getting that wrong silently
+    re-introduces a bias for or against degeneracy.
+    """
+    n_k = tab.v_on.shape[1]
+
+    def side(vals: torch.Tensor, bid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        v = (tab.w[w_idx] * vals[w_idx, :, t]).reshape(w_idx.shape[0], -1)  # (N, 4K)
+        b = bid[w_idx].reshape(w_idx.shape[0], -1)
+        key = b * 64 + (n_k - torch.arange(n_k, device=b.device)).repeat(NUM_ROTORS)
+        order = key.argsort(dim=1)
+        b_s, v_s = b.gather(1, order), v.gather(1, order)
+        keep = torch.ones_like(b_s, dtype=torch.bool)
+        keep[:, 1:] = b_s[:, 1:] != b_s[:, :-1]
+        keep &= b_s != _INVALID_BIN
+        w_s = tab.w[w_idx].reshape(w_idx.shape[0], -1).gather(1, order)
+        return (v_s * keep).sum(dim=1), (w_s * keep).sum(dim=1)
+
+    on, mass = side(tab.v_on, tab.bid_on)
+    half, _ = side(tab.v_half, tab.bid_half)
+    return on - half, mass
+
+
 def comb_scores(
     lm: torch.Tensor,
     bin_hz: float,
@@ -331,16 +475,21 @@ def normalise_scores(s: torch.Tensor, cfg: EmissionCfg) -> torch.Tensor:
     emission is scale-free and ``lambda_e`` means the same thing on every
     window.
     """
-    if cfg.smooth_frames > 1:
-        k = torch.ones(1, 1, cfg.smooth_frames, device=s.device, dtype=s.dtype)
-        k = k / cfg.smooth_frames
-        s = torch.nn.functional.conv1d(s[:, None, :], k, padding=cfg.smooth_frames // 2)[
-            :, 0, : s.shape[1]
-        ]
+    s = _smooth_frames(s, cfg)
     med = s.median(dim=0, keepdim=True).values
     peak = s.max(dim=0, keepdim=True).values
     glob = (peak - med).median()
     return (s - med) / (peak - med).clamp_min(cfg.norm_soft * glob)
+
+
+def _smooth_frames(s: torch.Tensor, cfg: EmissionCfg) -> torch.Tensor:
+    """Boxcar-smooth a ``(D, T)`` surface over frames (the coarse convention)."""
+    if cfg.smooth_frames <= 1:
+        return s
+    k = torch.ones(1, 1, cfg.smooth_frames, device=s.device, dtype=s.dtype) / cfg.smooth_frames
+    return torch.nn.functional.conv1d(s[:, None, :], k, padding=cfg.smooth_frames // 2)[
+        :, 0, : s.shape[1]
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -366,15 +515,19 @@ class BeamCfg:
     #: Emission weight against the transition cost.  Only the ratio to
     #: ``OUPrior.s_scale`` matters; see that field for the measurement.
     lambda_e: float = 3.0
-    #: Width of the shared-evidence (overlap) kernel, rev/s.  See
-    #: :func:`_emission_net` — this is the ONLY overlap knob, and it is a
-    #: property of the score surface (how wide a comb peak is), not a taste
-    #: parameter.  A k <= 8 comb on 7.8 Hz bins resolves to about ``bin/k_max``
-    #: ~ 1 rev/s, so 0.8 is a half-width of that scale.
-    overlap_sigma_rps: float = 0.8
-    #: Multiplier on the overlap correction.  1.0 removes exactly the
-    #: double-counted evidence; > 1 additionally repels.
-    overlap_gain: float = 1.0
+    #: Rotor-band prior ON THE ASSIGNMENT (not on seed bases): four rotors of
+    #: ONE drone lie within a narrow speed ratio.  ``span_soft`` is the shipped
+    #: seeder value (`SeedConfig.r_span_max`); beyond it the assignment pays
+    #: ``span_gain * (span - span_soft)^2`` per frame, and beyond ``span_hard``
+    #: it is rejected outright.  Soft rather than hard at 1.45 because a takeoff
+    #: legitimately widens the spread while the rotors spin up at different
+    #: rates; the widest set any real protocol window seeds is 1.31.
+    #:
+    #: This is the cheap half of the subharmonic fix — the `21/42/85` family
+    #: spans 4.0 and dies here before the union score is even evaluated.
+    span_soft: float = 1.45
+    span_gain: float = 4.0
+    span_hard: float = 2.5
     #: Beam de-duplication resolution, rev/s.  Without it the beam fills with
     #: near-identical copies of one hypothesis and silently loses diversity.
     dedup_rps: float = 0.25
@@ -466,47 +619,39 @@ def _mode_cost(
     return c0 + cost.sum(dim=-1)
 
 
-def _overlap(s_r: torch.Tensor, w: torch.Tensor, cfg: BeamCfg) -> torch.Tensor:
-    """Evidence that ``sum_r S(c_r)`` counts twice.  ``w``, ``s_r`` are ``(..., 4)``.
+def _to_idx(w: torch.Tensor, grid: torch.Tensor) -> torch.Tensor:
+    """Grid indices of a speed assignment.  ``w`` is ``(..., 4)``."""
+    return ((w - grid[0]) / (grid[1] - grid[0])).round().long().clamp(0, len(grid) - 1)
 
-    ``P_overlap = gain * sum_{r<s} max(min(S_r, S_s), 0) * exp(-d^2 / 2 sigma^2)``
 
-    Design §2 offered a distance-only soft repulsion (v1) and left the exact
-    union-comb score as a follow-up (v2).  v1 measurably does not work here,
-    and the reason is a genuine conflict rather than bad tuning: the emission
-    ``sum_r S(c_r, t)`` double-counts one comb's evidence out to the width of
-    the score peak (~1-2 rev/s on a k <= 8 comb over 7.8 Hz bins), but a
-    distance-only penalty wide enough to cover that also charges the GENUINE
-    twins that real quadrotors run 0.5-2 rev/s apart.  Measured on the unit
-    tests: at ``r1 = 1.0`` the tracker put three tracks across one hump and
-    dropped a real 96 rev/s rotor; at ``r1 = 2.0`` a real twin pair pays a
-    constant ~0.46/frame just for existing.
+def _sum_scores(s_t: torch.Tensor, grid: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+    """``sum_r S(c_r)`` — the (double-counting) upper bound on the union score."""
+    return s_t[_to_idx(w, grid)].sum(dim=-1)
 
-    This form resolves the conflict because it is not a repulsion at all — it
-    is a correction for the specific quantity that is wrong.  At zero
-    separation it removes exactly the duplicated score (``gain = 1`` cancels the
-    double count identically), and where the scores are low it is small, so a
-    track is never pushed onto empty grid to escape it.  It is the cheap
-    diagonal of the union-comb score: no extra spectrogram reads, just the
-    per-rotor values already gathered.
+
+def _norm_affine(s: torch.Tensor, cfg: EmissionCfg) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-frame ``(scale, shift)`` of :func:`normalise_scores`.
+
+    The union score is computed from the RAW tables, so it has to be put on the
+    normalised scale by hand.  ``normalise_scores`` is affine per frame,
+    ``(x - med) / denom``; a union of four combs carries four copies of the
+    shift, hence the ``NUM_ROTORS * shift`` at the call sites.  Frame smoothing
+    is skipped here — it mixes frames and has no per-frame affine form — so with
+    ``smooth_frames > 1`` the union is normalised by the UNSMOOTHED statistics.
+    Both terms then use one consistent scale, which is what ``lambda_e`` needs.
     """
-    iu = torch.triu_indices(NUM_ROTORS, NUM_ROTORS, offset=1, device=w.device)
-    # Index the 6 pairs BEFORE the exp: on the local family this is a
-    # (B, m^4, 4, 4) tensor, and doing it the other way spends 2.7x the work.
-    lo = torch.minimum(s_r[..., iu[0]], s_r[..., iu[1]]).clamp_min(0.0)
-    d = w[..., iu[0]] - w[..., iu[1]]
-    k = torch.exp(-(d**2) / (2.0 * cfg.overlap_sigma_rps**2))
-    return cfg.overlap_gain * (lo * k).sum(dim=-1)
+    med = s.median(dim=0, keepdim=True).values
+    peak = s.max(dim=0, keepdim=True).values
+    glob = (peak - med).median()
+    denom = (peak - med).clamp_min(cfg.norm_soft * glob)
+    return (1.0 / denom)[0], (-med / denom)[0]
 
 
-def _emission_net(
-    s_t: torch.Tensor, grid: torch.Tensor, w: torch.Tensor, cfg: BeamCfg
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(net emission, overlap penalty)`` of an assignment.  ``w`` is ``(..., 4)``."""
-    idx = ((w - grid[0]) / (grid[1] - grid[0])).round().long().clamp(0, len(grid) - 1)
-    s_r = s_t[idx]
-    ov = _overlap(s_r, w, cfg)
-    return s_r.sum(dim=-1) - ov, ov
+def _band_penalty(w: torch.Tensor, cfg: BeamCfg) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(penalty, reject)`` of the rotor-band prior.  ``w`` is ``(..., 4)``."""
+    span = w.amax(dim=-1) / w.amin(dim=-1).clamp_min(1e-6)
+    pen = cfg.span_gain * (span - cfg.span_soft).clamp_min(0.0) ** 2
+    return pen, span > cfg.span_hard
 
 
 def joint_beam_track(
@@ -536,7 +681,12 @@ def joint_beam_track(
     dev = torch.device(device)
     lm_t = torch.as_tensor(np.ascontiguousarray(lm), device=dev, dtype=torch.float32)
     grid = torch.as_tensor(emis.grid(), device=dev, dtype=torch.float32)
-    scores = normalise_scores(comb_scores(lm_t, bin_hz, emis, grid), emis)  # (D, T)
+    tab = comb_tables(lm_t, bin_hz, emis, grid)
+    raw = comb_scores_from_tables(tab)
+    scores = normalise_scores(raw, emis)  # (D, T) — peaks + the shortlist bound
+    # The union score is built from the SAME tables, so it must carry the same
+    # per-frame normalisation or `lambda_e` would mean two different things.
+    nrm_a, nrm_b = _norm_affine(raw, emis)  # per-frame affine of normalise_scores
     n_t = scores.shape[1]
 
     a_np, s_np = ou.coefficients()
@@ -553,8 +703,12 @@ def joint_beam_track(
     pk0 = _frame_peaks(scores[:, 0], grid, beam)
     sets0 = pk0[_subsets(len(pk0)).to(dev)]  # (Q, 4)
     sets0, _ = torch.sort(sets0, dim=-1)
-    e0, _ = _emission_net(scores[:, 0], grid, sets0, beam)
-    cost0 = -beam.lambda_e * e0
+    idx0 = _to_idx(sets0, grid)
+    pen0, rej0 = _band_penalty(sets0, beam)
+    u0, m0 = union_emission(tab, idx0, 0)
+    e0 = nrm_a[0] * u0 + m0 * nrm_b[0]
+    cost0 = -beam.lambda_e * e0 + pen0
+    cost0 = torch.where(rej0, torch.full_like(cost0, float("inf")), cost0)
     keep = torch.topk(-cost0, min(beam.width, len(cost0))).indices
     cur_w = sets0[keep].double().float()
     cur_c = cost0[keep].double()
@@ -574,7 +728,8 @@ def joint_beam_track(
         "k_weight": emis.k_weight,
     }
     n_distinct: list[int] = []
-    rep_active: list[float] = []
+    n_rejected: list[float] = []
+    shared: list[float] = []
 
     for t in range(1, n_t):
         s_t = scores[:, t]
@@ -596,10 +751,9 @@ def joint_beam_track(
         c_loc = (
             cur_c[:, None]
             + _mode_cost(cur_w[:, None, :], w_loc, mu[:, None, :], a, s, ou.huber_knee).double()
-            + (-beam.lambda_e * _emission_net(s_t, grid, w_loc, beam)[0]).double()
         )
         prop_w = w_loc.reshape(-1, NUM_ROTORS)
-        prop_c = c_loc.reshape(-1)
+        prop_base = c_loc.reshape(-1)
         prop_p = torch.arange(n_b, device=dev).repeat_interleave(w_loc.shape[1])
 
         # ---- family (a): global peak assignments, exact best-of-24
@@ -618,14 +772,42 @@ def joint_beam_track(
         )  # (n_g, Q, 24)
         best_c, best_p = c_tr.min(dim=2)
         w_best = w_perm[torch.arange(len(sets), device=dev)[None, :], best_p]  # (n_g,Q,4)
-        c_gl = (
-            cur_c[gsel][:, None]
-            + best_c.double()
-            + (-beam.lambda_e * _emission_net(s_t, grid, w_best, beam)[0]).double()
-        )
+        c_gl = cur_c[gsel][:, None] + best_c.double()
         prop_w = torch.cat([prop_w, w_best.reshape(-1, NUM_ROTORS)])
-        prop_c = torch.cat([prop_c, c_gl.reshape(-1)])
+        prop_base = torch.cat([prop_base, c_gl.reshape(-1)])
         prop_p = torch.cat([prop_p, gsel.repeat_interleave(w_best.shape[1])])
+
+        # ---- rotor-band prior, then shortlist on the CHEAP bound, then
+        #      re-rank the shortlist with the EXACT union-comb emission.
+        #
+        # `sum_r S(c_r)` upper bounds the union score (it double-counts shared
+        # teeth and can never undercount), so ranking by it is an optimistic
+        # bound and the shortlist is admissible.  The band prior is applied
+        # FIRST and on every proposal because it is pure arithmetic and it is
+        # what removes the subharmonic family before it can crowd the
+        # shortlist — a `21/42/85` assignment spans 4.0 and is rejected outright.
+        pen, rej = _band_penalty(prop_w, beam)
+        prop_base = prop_base + pen.double()
+        # The union is evaluated on EVERY surviving proposal, not on a
+        # shortlist.  A shortlist has to be ranked by something cheap, and the
+        # only cheap thing available is `sum_r S(c_r)` — which is precisely the
+        # double-counting score the union exists to replace, so duplicates
+        # inflate their own bound and crowd the shortlist out.  Measured: with
+        # a 16x shortlist the synthetic four-shape battery dropped from 4/4
+        # rotors tracked to 1/4, while exact evaluation restores it.  With the
+        # band prior filtering first and `n_local = 3` the proposal count is
+        # ~64k per frame and the extra cost is one (64k, 32) sort.
+        keep_p = ~rej
+        prop_w, prop_base, prop_p = prop_w[keep_p], prop_base[keep_p], prop_p[keep_p]
+        if len(prop_w) == 0:  # pragma: no cover - the band prior never empties
+            prop_w, prop_base, prop_p = cur_w, cur_c, torch.arange(n_b, device=dev)
+            prop_c = prop_base
+        else:
+            u_raw, u_mass = union_emission(tab, _to_idx(prop_w, grid), t)
+            e_union = nrm_a[t] * u_raw + u_mass * nrm_b[t]
+            prop_c = prop_base - (beam.lambda_e * e_union).double()
+            shared.append(float((_sum_scores(s_t, grid, prop_w) - e_union).clamp_min(0).mean()))
+        n_rejected.append(float(rej.float().mean()))
 
         # ---- keep the cheapest, de-duplicate, keep B
         #
@@ -634,8 +816,8 @@ def joint_beam_track(
         # of a (200k, 4) array and measured at 72 % of the whole tracker's
         # runtime.  Shortlisting with topk first and hashing the rounded state
         # into ONE int64 makes the unique a 1-D operation over `width * 8` rows.
-        n_short = min(len(prop_c), beam.width * 8)
-        short = torch.topk(-prop_c, n_short, sorted=True).indices  # cost-ascending
+        n_short = len(prop_c)
+        short = torch.argsort(prop_c)  # cost-ascending
         key = (prop_w[short] / beam.dedup_rps).round().to(torch.int64)
         key1 = (key * _HASH_MULT.to(dev)).sum(dim=-1)
         _, inv = torch.unique(key1, return_inverse=True)
@@ -653,8 +835,6 @@ def joint_beam_track(
         n_b = cur_w.shape[0]
         states[t, :n_b] = cur_w
         parents[t, :n_b] = par
-        ov = _emission_net(s_t, grid, cur_w, beam)[1]
-        rep_active.append(float((ov > 0.05).float().mean()))
 
     # -- backtrack
     best = int(torch.argmin(cur_c).item())
@@ -674,7 +854,8 @@ def joint_beam_track(
             "final_cost_p90_minus_best": float(np.percentile(fc, 90) - fc.min()),
             "beam_distinct_mean": float(np.mean(n_distinct)) if n_distinct else 0.0,
             "beam_distinct_min": int(np.min(n_distinct)) if n_distinct else 0,
-            "repulsion_active_frac": float(np.mean(rep_active)) if rep_active else 0.0,
+            "band_rejected_frac": float(np.mean(n_rejected)) if n_rejected else 0.0,
+            "shared_evidence_mean": float(np.mean(shared)) if shared else 0.0,
             "means": [round(float(v), 3) for v in np.sort(traj.mean(axis=1))],
             "stds": [round(float(v), 3) for v in traj.std(axis=1)],
         }
