@@ -607,8 +607,12 @@ pair that `notebooks/michael_data_analysis.ipynb` originated.
   `rps`, like DREGON's `motors_command_raw`), and anything that parses the CSV
   itself. Frame `meta` records `time_offset` / `time_dilation` / `rps_scale` +
   a `provenance.calibration` note.
-- **Validate** with `python scripts/michaels_calib/run_sweep.py --post-shipped`
-  (residual lag and residual offset should both be ≈ 0).
+- **Validated** (`--post-shipped`, 13 cruise windows, job `python-0445f6`):
+  residual lag RMS 3.0 ms (FLY124) / 3.3 ms (FLY125) — at the fit's own residual
+  level, drift gone — and residual value offset +0.004 rev/s on FLY125,
+  −0.18 rev/s on FLY124 (a known small over-correction, ~5× smaller than the
+  error removed and well inside the per-rotor spread). Re-run with
+  `python scripts/michaels_calib/run_sweep.py --post-shipped`.
 - **Anything built from Michael's telemetry before 2026-07-31 is stale** —
   `beatvk-valid-raw`, `results/beatvk_vk_arms`, `DREGON-LM-V4-michaels*`, and
   any published FLY124 label-accuracy number.

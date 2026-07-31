@@ -760,11 +760,32 @@ figure, no rps), the `motor_speed` block above, and
 `-20.84/1.001` and `-26.51/1.0048` — it is the historical origin of the
 hand-tuned pair, left as a record).
 
-### Validation
+### Validation — the correction closes the gap (job `python-0445f6`, 596 s)
 
 `run_sweep.py --post-shipped` re-runs the `post` stage (residual lag + residual
 global offset) on every cruise window of both recordings, rebuilt with whatever
-`michaels.py` now ships. Expect residual lag ≈ 0 and residual b ≈ 0.
+`michaels.py` now ships. Results
+(`omnirun-outputs/python-0445f6/results/michaels_calib_post/summary.json`,
+13 windows, no edge hits):
+
+| recording | n | resid lag mean | resid lag RMS | resid lag max | resid b mean | resid b max | (was) |
+|---|---|---|---|---|---|---|---|
+| FLY124 | 4 | −2.47 ms | 2.98 ms | 3.95 ms | −0.178 rev/s | 0.239 | lag −62…−32 ms, b +0.68 |
+| FLY125 | 9 | +1.27 ms | 3.29 ms | 8.35 ms | +0.004 rev/s | 0.107 | lag −158…−106 ms, b +0.55 |
+
+Timing is closed on both: the residual lag RMS (3.0 / 3.3 ms) is at the level of
+the fit's own residual (2.9 / 4.5 ms), i.e. the dilation model absorbed the whole
+drift, and the systematic per-window trend is gone (FLY124 w02→w05 residuals
++0.28/−3.95/−3.64/−2.55 ms, no monotone drift; FLY125 spans ±8 ms with no slope).
+
+FLY125's value error is closed exactly (mean +0.004 rev/s). **FLY124 is left
+~0.18 rev/s over-corrected** — consistent by construction: the shipped scale came
+from the per-rotor `prot` mean (0.680 at cruise), whereas the global-offset scans
+(`val` on w03/w04: 0.513 / 0.608) preferred ~0.56. The gap, 0.1–0.2 rev/s, is
+well inside the 0.94 rev/s per-rotor spread that made the additive/multiplicative
+test powerless in the first place, and is ~5× smaller than the error it removed
+— not worth a second fit on the same four windows. Flagged, not chased.
+
 `windows.selfcheck()` now rebuilds explicitly at `FROZEN_BEATVK_CONSTANTS`
 (−20.84, 1.001, scale 1.0), since the frozen beat-VK prep cache predates the
 calibration and can no longer match the shipped constants by construction.
