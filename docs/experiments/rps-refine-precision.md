@@ -769,13 +769,26 @@ global offset) on every cruise window of both recordings, rebuilt with whatever
 (−20.84, 1.001, scale 1.0), since the frozen beat-VK prep cache predates the
 calibration and can no longer match the shipped constants by construction.
 
-### Stale artefacts
+### Stale artefacts (blast radius — NOTHING regenerated here)
 
-Everything built from Michael's telemetry before this commit carries labels that
-are late by 30–160 ms and low by ~0.6 rev/s: the frozen `beatvk-valid-raw`
-protocol and its `results/beatvk_vk_arms` prep cache, the `docs/experiments/beat-vk.md`
-scoreboard rows involving FLY124, the `DREGON-LM-V4-michaels*` dataset variants,
-and any paper number quoting FLY124 label accuracy. Nothing is regenerated here.
+Everything built from Michael's telemetry before `michaels-frames@a7a951b94808`
+carries labels late by 31–158 ms and low by ~0.55–0.67 rev/s at cruise.
+
+| artefact | how stale | to rebuild |
+|---|---|---|
+| `beatvk-valid-raw` (dload pin `268c7660`) | its FLY124 `rps` was copied from `michaels-frames`; window boundaries also shift (the eval span is derived from the telemetry) | `python scripts/publish_beatvk_valid.py` then `dload pin beatvk-valid-raw` |
+| `results/beatvk_vk_arms/` (manifest + 120 MB `prep_cache` + `runs`) | frozen at the old constants; `windows.selfcheck()` is now pinned to `FROZEN_BEATVK_CONSTANTS` for exactly this reason | `scripts/beatvk_vk_arms.py` (re-prep + re-score) |
+| `docs/experiments/beat-vk.md` scoreboard | every `fly124_cruise` / steady-FLY124 column, incl. the **1.027 blind-VK bar** and the 1.29/1.33 neural rows, was scored against the old labels; the DREGON columns and the 0.688 bar are unaffected | re-score after the two rows above |
+| `writing/papers/2026-07_coupled-vk-blind-rps/main.tex` | the FLY124 columns/rows (1.027, 1.016 → 0.859, the w0–w2 table) and the prose around them | after re-scoring |
+| `scripts/rps_predictor_vk_eval.py` (`michaels_FLY124` rows of the hardcoded per-sample table, ~L232–246) | baked GT means/stds from old labels (e.g. cruise 80.374 → ≈ 81.0) | regenerate the table |
+| `DREGON-LM-V4-michaels-{train,valid,valid-full}` | offline `rps.npy` baked from the loader. Local copy: **1552 / 9000 train** samples are `michaels_FLY125`; the local valid splits are DREGON-only, but the *published* pins may differ — verify before relying on that | `scripts/create_dregon_librimix.py` (canonical command in `data_processing/AGENTS.md`) |
+| online-mix policies using `kind: michaels` / `kind: frames + michaels-frames` (`g1_*`, `g3_gp_aug`, `g5`, `g6`, `g7_ramp`, `e9_real_ft*`, `e12_*`, `beatvk_avq_dload`, `online_mix_v4_michaels_timewarp*`, …) | none pins an explicit `version:`, so they follow `dload.lock` and pick the corrected frames up **automatically** — i.e. models trained before this pin were trained on different labels | nothing to change; note the discontinuity |
+| GP egonoise `matrice100` checkpoint (`r2://ml-data/artifacts/gp_egonoise/matrice100`) + the noise generators' michaels codebook entries | fitted against old labels (rps → spectrum mapping shifted by ~0.6 rev/s) | retrain if the ~0.8 % rps shift matters |
+
+Believed **unaffected**: DREGON-only results, `AVQ-egonoise-vkrps` (blind
+pseudo-labels from AVQ audio, no michaels telemetry in the product — but the
+annotator's *validation* numbers on FLY124 are stale), and every michaels
+*audio* artefact (audio itself never changed, only the label clock/scale).
 
 ## Work packages
 

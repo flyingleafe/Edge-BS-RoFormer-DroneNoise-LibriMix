@@ -197,7 +197,9 @@ def _adapt_published_frame(frame: td.Frame, *, sample_rate: int) -> td.Frame | N
     Published rich-frame datasets (``scripts/publish_frame_datasets.py``:
     ``DREGON-frames`` / ``michaels-frames``) carry their fixes baked in —
     DREGON's ``motors_command`` is already ``clean_command_spikes``-cleaned and
-    michaels' ``rps`` is already aligned. The rotor track is therefore stored
+    michaels' ``rps`` is already aligned AND rev/s-calibrated (the measured
+    ``MICHAELS_FILES``/``MICHAELS_RPS_SCALE`` constants, 2026-07-31 — frames
+    published before that pin carry uncalibrated labels). The rotor track is therefore stored
     under the generic ``rps`` name, which ``_resolve_motor_tracks`` treats as
     needing **no** cleaning, so no fix logic is re-applied at load time.
     Everything else (IMU, raw telemetry, geometry, per-sample clocks) is
