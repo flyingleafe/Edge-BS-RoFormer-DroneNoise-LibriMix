@@ -259,6 +259,61 @@ def ramp_stats(ft: np.ndarray, wf: np.ndarray) -> dict[str, Any]:
     }
 
 
+def ou_fit(m: np.ndarray) -> dict[str, Any]:
+    """Fit a 4-D OU process to the mode trajectories, immune to white label noise.
+
+    The per-frame increment scale is NOT a usable estimator here: DREGON's
+    reciprocal-period lattice puts ~0.5 rev/s of white noise into every mode
+    equally (see `quantisation`), which biases tau low and does it worst for
+    the small-amplitude differential modes.  White noise contributes ONLY to
+    the lag-0 autocovariance, so fit the decay on lags >= `LAG_MIN`:
+
+        c(L) = V_true * exp(-L*dt/tau)        (L >= 1)
+        c(0) = V_true + V_noise
+
+    giving tau from the slope, the noise-free level variance V_true from the
+    intercept, and V_noise for free.  Returns per-mode
+    ``(tau, sigma_level, sigma_noise, a, s)`` where ``a = exp(-dt/tau)`` and
+    ``s = sigma_level*sqrt(1-a^2)`` is the OU innovation scale of the
+    discrete-time transition the tracker uses.
+    """
+    lag_min, lag_max = 2, 64
+    out: dict[str, Any] = {}
+    for i in range(4):
+        x = m[i] - m[i].mean()
+        n = len(x)
+        cov = np.array([float(np.dot(x[: n - L], x[L:]) / (n - L)) for L in range(lag_max + 1)])
+        pos = np.arange(lag_min, lag_max + 1)
+        pos = pos[cov[lag_min:] > 0.05 * max(cov[lag_min], 1e-12)]
+        if len(pos) < 4:
+            out[MODES[i]] = {}
+            continue
+        A = np.stack([np.ones(len(pos)), -pos * FRAME_S], axis=1)
+        coef, *_ = np.linalg.lstsq(A, np.log(cov[pos]), rcond=None)
+        v_true = float(np.exp(coef[0]))
+        tau = float(1.0 / max(coef[1], 1e-9))
+        a = float(np.exp(-FRAME_S / tau))
+        out[MODES[i]] = {
+            "tau_s": round(tau, 3),
+            "sigma_level": round(float(np.sqrt(v_true)), 4),
+            "sigma_noise": round(float(np.sqrt(max(cov[0] - v_true, 0.0))), 4),
+            "a": round(a, 6),
+            "s_innov": round(float(np.sqrt(v_true * (1.0 - a * a))), 4),
+        }
+    if all(out.get(k) for k in MODES):
+        # tau*V is the quantity the SUSTAINED-offset discrimination depends on
+        tv = {k: out[k]["tau_s"] * out[k]["sigma_level"] ** 2 for k in MODES}
+        tv_d = float(np.mean([tv[k] for k in MODES[1:]]))
+        r_ou = tv["common"] / max(tv_d, 1e-12)
+        out["discrimination"] = {
+            "tauV_common": round(tv["common"], 4),
+            "tauV_diff_mean": round(tv_d, 4),
+            "R_ou": round(r_ou, 2),
+            "sustained_cost_one_over_four": round(1 / 16 + 3 / 16 * r_ou, 2),
+        }
+    return out
+
+
 def analyse(tag: str, ts: np.ndarray, w: np.ndarray) -> dict[str, Any]:
     ft, wf = frame_grid(ts, w)
     masks = regime_masks(wf)
@@ -284,6 +339,7 @@ def analyse(tag: str, ts: np.ndarray, w: np.ndarray) -> dict[str, Any]:
             "diff_rms": round(dr, 3),
             "ratio": round(rt, 2),
         }
+        res["ou"] = ou_fit(m_cruise)
         res["lags"] = lag_table(m_cruise)
         res["bandlimited"] = bandlimited_table(wf[:, sl])
         res["perm_ratio_range"] = [
@@ -424,6 +480,34 @@ def main() -> None:
             f"{r['tag']:<44s} {q['n_unique']:7d} {q['step_at_80rps']:8.4f} "
             f"{str(q['reciprocal_lattice']):>7s} {q['change_rate_hz']:10.1f}"
         )
+
+    print(
+        f"\n{'=' * 100}\nOU FIT (noise-immune, lags 2-64): tau / sigma_level / label-noise / "
+        f"innovation s\n{'=' * 100}"
+    )
+    print(
+        f"{'recording':<40s} {'mode':<7s} {'tau_s':>7s} {'sig_lvl':>8s} "
+        f"{'sig_noise':>10s} {'a':>9s} {'s_innov':>8s}"
+    )
+    for r in results:
+        ou = r.get("ou")
+        if not ou:
+            continue
+        for k in MODES:
+            e = ou.get(k)
+            if not e:
+                continue
+            print(
+                f"{r['tag'][:40]:<40s} {k:<7s} {e['tau_s']:7.3f} {e['sigma_level']:8.4f} "
+                f"{e['sigma_noise']:10.4f} {e['a']:9.6f} {e['s_innov']:8.4f}"
+            )
+        d = ou.get("discrimination")
+        if d:
+            print(
+                f"{'':<40s} {'-> R_ou = tauV_c/tauV_d =':<7s} {d['R_ou']:.2f}   "
+                f"sustained cost(one rotor)/cost(all four) = "
+                f"{d['sustained_cost_one_over_four']:.2f}"
+            )
 
     print(f"\n{'=' * 100}\nBREAK-EVEN of the proposed mode-space transition cost\n{'=' * 100}")
     print("  quadratic psi, one sigma_d shared by roll/pitch/yaw (forced: rotor identity")

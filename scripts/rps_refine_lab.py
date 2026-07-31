@@ -61,6 +61,17 @@ Chains:
              rotor — the one whose leave-one-out removal least increases the
              residual, i.e. a duplicate seed whose comb its twin also owns —
              then corridor-tracks it; up to 3 iterations.
+  joint_beam WP17: replace `fullrange_init` + the viterbi_c / vit2dsp ladder
+             stages with a JOINT 4-rotor beam search over the full speed vector
+             (data_processing.joint_beam_tracker), then feed the existing
+             capture -> M1 -> M2 stages unchanged.  The coarse DP's state is one
+             scalar c(t), so all four tracks share one shape by construction
+             (WP3); this searches four independent trajectories under an OU
+             control-mode prior (cheap along the common mode, mean-reverting on
+             the differential modes) with a soft shared-evidence correction.
+             Needs NO seed for its own stage — the candidates come from the
+             score surface — which also removes the seeding lottery WP15 found
+             on FLY124 w03.
 
 For synthetic windows an ORACLE floor is also reported: M2 run from the
 chain's own M1 output (or, for chains without M1, from the track entering the
@@ -125,6 +136,12 @@ from vk_blind_sweep import SEED_CFG  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 import data_processing.phase_increment_tracker as pit  # noqa: E402
+from data_processing.joint_beam_tracker import (  # noqa: E402
+    BeamCfg,
+    EmissionCfg,
+    OUPrior,
+    joint_beam_track,
+)
 from data_processing.rps_synthesis import (  # noqa: E402
     MIXER,
     OUModeParams,
@@ -169,6 +186,7 @@ CHAINS = (
     "reseed_alt",
     "refine_v2",
     "refine_v3",
+    "joint_beam",
 )
 DEFAULT_PK: dict[str, Any] = {"n_iter": 3, "band_hz": 6.0}  # trace/baseline call
 AGGR_CYCLE = (0.7, 1.0, 1.4)
@@ -339,7 +357,12 @@ def run_ladder(
     rec: Recorder,
     do_capture: bool,
     do_refine: bool,
+    skip_dp: bool = False,
 ) -> np.ndarray:
+    """The vit2dsp ladder.  ``skip_dp`` drops stages 1-2 (the shared-c Viterbi
+    and the spatial joint 2-rotor DP) so a different init stage can supply the
+    entry tracks; the VK capture/refine stages and their `stage_guard` are
+    untouched, which is what keeps `joint_beam` comparable to `refine_v2`."""
     lm_avg, bin_hz, st = vba._whitened_spec(prep)
     lm_multi, _, _ = vba._whitened_spec_multi(prep)
     ks = np.arange(1, 31)
@@ -357,15 +380,16 @@ def run_ladder(
         return guarded
 
     # -- stage 1: Viterbi pair-mean c(t)
-    r_prev = r_cur.copy()
-    r_cur, _ = vba._vit_stage1(prep, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
-    r_cur = guard("viterbi_c", r_prev, r_cur)
-    rec.add("viterbi_c", r_cur)
+    if not skip_dp:
+        r_prev = r_cur.copy()
+        r_cur, _ = vba._vit_stage1(prep, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
+        r_cur = guard("viterbi_c", r_prev, r_cur)
+        rec.add("viterbi_c", r_cur)
 
     # -- stage 2: spatial joint 2-rotor Viterbi
     c_trajs = [r_cur[list(pair)].mean(axis=0) for pair in pairs]
     r_prev = r_cur.copy()
-    for pi, pair in enumerate(pairs):
+    for pi, pair in [] if skip_dp else list(enumerate(pairs)):
         rot_a, rot_b = int(phys_map[pair[0]]), int(phys_map[pair[1]])
         lm_a = np.tensordot(weights[:, rot_a], lm_multi, axes=(0, 0))
         lm_b = np.tensordot(weights[:, rot_b], lm_multi, axes=(0, 0))
@@ -384,8 +408,9 @@ def run_ladder(
         d2 = np.interp(prep.ft, centers, deltas[d2_idx.astype(int)])
         r_cur[pair[0]] = np.maximum(c_trajs[pi] + d1, 0.0)
         r_cur[pair[1]] = np.maximum(c_trajs[pi] + d2, 0.0)
-    r_cur = guard("vit2dsp", r_prev, r_cur)
-    rec.add("vit2dsp", r_cur)
+    if not skip_dp:
+        r_cur = guard("vit2dsp", r_prev, r_cur)
+        rec.add("vit2dsp", r_cur)
 
     # -- stage 3/4: midband VK capture + refine VK (each skippable)
     if do_capture:
@@ -447,6 +472,15 @@ PK_POLISH: dict[str, Any] = {
     "off_comb_hz": 11.0,
     "pair_mode": "gate",
 }
+
+# joint_beam (WP17) knobs — see data_processing.joint_beam_tracker for what each
+# one means and the measurement behind its default.  Overridable from the CLI so
+# the emission/prior balance can be swept on the cluster without code edits.
+JB_OU: dict[str, Any] = {}
+JB_EMIS: dict[str, Any] = {}
+JB_BEAM: dict[str, Any] = {}
+JB_DEVICE = "cpu"
+
 
 # refine_v2 (WP4): M1 corridor rounds only — coarse capture then a fine
 # corridor — followed by exactly ONE M2-solo pass.  ALT_ROUNDS' rounds 3/4 and
@@ -1656,12 +1690,38 @@ def run_chain(
     t_start = time.perf_counter()
     rec = Recorder(prep)
 
+    joint_chain = chain == "joint_beam"
     seed = get_seed(name, prep, seed_cache, seed_cfg)
     bases0 = np.sort(np.asarray(seed.bases, dtype=np.float64))
     rec.add("seed", np.repeat(bases0[:, None], len(prep.ft), axis=1))
 
-    r0, seed_eff, coarse_diag = fullrange_init(prep, seed)
-    rec.add("coarse_init", r0)
+    spec_c: tuple[np.ndarray, float, np.ndarray] | None = None
+    jb_diag: dict[str, Any] | None = None
+    if joint_chain:
+        # The joint search needs NO seed bases: its candidates come from the
+        # score surface itself.  `seed` is still computed because the midband
+        # VK capture stage downstream reads its `update_gate` calibration, and
+        # so the seed row stays in the per-stage table for comparability.
+        lm_c, bin_c, st_c, _ = _coarse_spec(prep.audio)
+        spec_c = (lm_c, bin_c, st_c)
+        t_jb = time.perf_counter()
+        r0, jb_diag = joint_beam_track(
+            lm_c,
+            bin_c,
+            st_c,
+            prep.ft,
+            ou=OUPrior(**JB_OU),
+            emis=EmissionCfg(**JB_EMIS),
+            beam=BeamCfg(**JB_BEAM),
+            device=JB_DEVICE,
+        )
+        assert jb_diag is not None
+        jb_diag["wall_s"] = round(time.perf_counter() - t_jb, 1)
+        seed_eff, coarse_diag = seed, {"coarse_mode": "joint_beam"}
+        rec.add("joint_beam", r0)
+    else:
+        r0, seed_eff, coarse_diag = fullrange_init(prep, seed)
+        rec.add("coarse_init", r0)
 
     gate = seed_eff.update_gate
     mid_cfg = MIDBAND_CFGS[0] if gate is None else dc_replace(MIDBAND_CFGS[0], update_gate=gate)
@@ -1674,20 +1734,32 @@ def run_chain(
         phys_map[track_row] = truth_row
 
     alt_chain = chain in ("alt_loop", "reseed_alt")
-    v2_chain = chain in ("refine_v2", "refine_v3")
+    v2_chain = chain in ("refine_v2", "refine_v3", "joint_beam")
     vk_stages = chain == "baseline" or (chain == "pk_custom" and not skip_capture)
     # alt / v2 chains enter from the ladder WITH midband capture but WITHOUT
     # the (measured no-op, WP1) VK refine rounds.
     do_capture = vk_stages or chain == "no_refine" or alt_chain or v2_chain
     do_refine = vk_stages
-    r = run_ladder(prep, r0, weights, phys_map, mid_cfg, ref_cfg, rec, do_capture, do_refine)
+    r = run_ladder(
+        prep,
+        r0,
+        weights,
+        phys_map,
+        mid_cfg,
+        ref_cfg,
+        rec,
+        do_capture,
+        do_refine,
+        skip_dp=joint_chain,
+    )
 
     alt_diag: dict[str, Any] | None = None
     if alt_chain:
         r, alt_diag, r_entry = run_alt_chain(prep, r, rec, reseed=chain == "reseed_alt")
     elif v2_chain:
-        lm_c, bin_c, st_c, _ = _coarse_spec(prep.audio)
-        spec_c = (lm_c, bin_c, st_c)
+        if spec_c is None:
+            lm_c, bin_c, st_c, _ = _coarse_spec(prep.audio)
+            spec_c = (lm_c, bin_c, st_c)
         force_pass: frozenset[int] = frozenset()
         m3_diag: dict[str, Any] | None = None
         if chain == "refine_v3":
@@ -1697,6 +1769,8 @@ def run_chain(
         )
         if m3_diag is not None:
             alt_diag["m3"] = m3_diag
+        if jb_diag is not None:
+            alt_diag["joint_beam"] = jb_diag
     else:
         # Chains without an M1 stage: the oracle entry is the track that goes
         # into the final estimator call.
@@ -1951,6 +2025,26 @@ def main() -> None:
         default=None,
         help="write every M2 proposal (+ truth) to this NPZ for offline gate scoring",
     )
+    ap.add_argument(
+        "--jb-ou",
+        default=None,
+        help="joint_beam: JSON kwargs for OUPrior (tau_common/tau_diff/"
+        "sigma_level_diff/s_random_walk/s_scale/huber_knee)",
+    )
+    ap.add_argument(
+        "--jb-emis",
+        default=None,
+        help="joint_beam: JSON kwargs for EmissionCfg (lo/hi/step/k_max/b0_rps/"
+        "n_band/k_weight) — b0_rps is the k-scaled-bandwidth lever",
+    )
+    ap.add_argument(
+        "--jb-beam",
+        default=None,
+        help="joint_beam: JSON kwargs for BeamCfg (width/n_global/n_peaks/"
+        "n_local/local_half_rps/lambda_e/overlap_sigma_rps/overlap_gain/"
+        "dedup_rps/mu_mode)",
+    )
+    ap.add_argument("--jb-device", default="cpu", help="joint_beam: torch device")
     ap.add_argument("--pk-kwargs", default=None, help="JSON kwargs for pi_kalman_refine")
     ap.add_argument("--pk-repeat", type=int, default=1, help="sequential pi_kalman calls")
     ap.add_argument(
@@ -2045,6 +2139,13 @@ def main() -> None:
     seed_cfg = dc_replace(SEED_CFG, **seed_overrides) if seed_overrides else SEED_CFG
     if seed_overrides:
         print(f"seed config overrides: {seed_overrides} (cache tag {seed_cfg_tag(seed_cfg)})")
+
+    for flag, target in (("jb_ou", "JB_OU"), ("jb_emis", "JB_EMIS"), ("jb_beam", "JB_BEAM")):
+        raw = getattr(args, flag)
+        if raw:
+            globals()[target] = json.loads(raw)
+            print(f"joint_beam {target}: {globals()[target]}")
+    globals()["JB_DEVICE"] = args.jb_device
 
     pk_kwargs = dict(DEFAULT_PK)
     if args.pk_kwargs:
