@@ -176,12 +176,21 @@ def _build_dregon(cache: Path) -> None:
     """Materialize the prep NPZs (streams ``beatvk-valid-raw`` if needed)."""
     import beatvk_vk_arms as bva
 
-    man = bva.window_manifest(cache, None, set(DREGON_RECS))
+    man = bva.load_manifest(cache, set(DREGON_RECS), None)
     jobs = {
         rid: [int(w["index"]) for w in man["recordings"][rid]["windows"]]
         for rid in DREGON_RECS
         if rid in man["recordings"]
     }
+    # build_preps also writes per-recording mic weights, and computing those
+    # for DREGON materializes the whole ~GB dataset just to read its geometry.
+    # Nothing here uses them (the covariance is per channel, unweighted), so a
+    # placeholder is written first and the download is skipped entirely.
+    (cache / "prep_cache").mkdir(parents=True, exist_ok=True)
+    for rid in jobs:
+        wp = bva.weights_path(cache, rid)
+        if not wp.exists():
+            np.savez(wp, weights=np.full((8, N_ROTORS), 1.0 / 8.0))
     bva.build_preps(cache, jobs, None, "dload:DREGON")
 
 
@@ -189,13 +198,32 @@ def _build_dregon(cache: Path) -> None:
 # Michael's — outdoor
 
 
+def _load_michaels_calib_windows() -> Any:
+    """``scripts/michaels_calib/windows.py``, loaded BY PATH.
+
+    A plain ``import windows`` would return *this* module: both files are named
+    ``windows`` and both directories are on ``sys.path``, so whichever imports
+    first wins ``sys.modules`` and the Michael's arm would silently rebuild
+    itself out of the DREGON loader.
+    """
+    import importlib.util
+
+    path = REPO / "scripts/michaels_calib/windows.py"
+    spec = importlib.util.spec_from_file_location("michaels_calib_windows", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["michaels_calib_windows"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def michaels_windows(
     cache_dir: Path = REPO / ".cache/phase_noise_cov",
     rids: tuple[str, ...] = ("FLY124", "FLY125"),
 ) -> list[AnalysisWindow]:
     """Every CRUISE window of both Michael's recordings, calibrated telemetry."""
-    import windows as MW  # scripts/michaels_calib/windows.py
-
+    MW = _load_michaels_calib_windows()
     cache_dir.mkdir(parents=True, exist_ok=True)
     man = MW.build_cache(cache_dir, rids=rids)
     out: list[AnalysisWindow] = []
