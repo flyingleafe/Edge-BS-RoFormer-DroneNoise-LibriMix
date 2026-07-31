@@ -611,6 +611,19 @@ def residual_rescan(
         fb, fz = fb[keep_mask], fz[keep_mask]
         order = np.argsort(fz)[::-1]
         fb, fz = fb[order], fz[order]
+        # Mutual dedup, contrast-first, at the SAME `dedup_rps` the used bases
+        # get: two residual peaks closer than that are one comb read twice (the
+        # scan grid straddling a broad ridge), and accepting both spends two
+        # rotor slots on one physical rotor.  MEASURED on FLY124 w03: 82.65 and
+        # 80.90 are 1.75 rev/s apart and both sit on the same ~80.7 rotor;
+        # seeding both left the 74/75 twin pair with a single track and cost
+        # 0.99 -> 1.82 rev/s.  Historically this was masked — the spurious 54.45
+        # ridge shadowed 80.90 as its 3:2 alias — so removing 54.45 exposed it.
+        keep: list[int] = []
+        for i in range(len(fb)):
+            if all(abs(float(fb[i]) - float(fb[j])) >= cfg.dedup_rps for j in keep):
+                keep.append(i)
+        fb, fz = fb[keep], fz[keep]
     return scores_res, fb, fz
 
 
