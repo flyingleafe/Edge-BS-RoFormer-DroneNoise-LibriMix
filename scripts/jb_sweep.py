@@ -16,6 +16,19 @@ Two modes:
     frozen at frame 0 or tracked, and whether mean-reverting the COMMON mode
     (which the WP16 measurement says would flatten ramps) actually hurts.
 
+``--mode init``
+    **Init quality only** (design §6 item 1) — the honest test of the idea, and
+    the cheap one: run ONLY the init stage and score its trajectory against the
+    telemetry.  No VK capture, no M1, no M2, and — for ``joint_beam`` — no
+    ``blind_seed``, because the joint search takes its candidates from the score
+    surface rather than from seed bases.  A window costs seconds instead of two
+    minutes, so the whole 15-window protocol runs anywhere.  Reports PIT-MAE
+    plus the two structural numbers that say whether the shared-shape defect is
+    fixed: per-rotor ``std_ratio`` (should approach 1) and the SPREAD of the
+    four shape correlations (the coarse stage makes them nearly identical by
+    construction, so a larger spread is the point).  ``fullrange_init`` is
+    scored alongside on any window whose blind seed is already cached.
+
 ``--mode protocol``
     One or more named arms plus a ``refine_v2`` control on the full 15-window
     real protocol, the synthetic battery, the band-limited battery and the
@@ -109,6 +122,64 @@ ARMS: dict[str, dict[str, Any]] = {
 
 #: Arms carried into `--mode protocol` by default (plus the control).
 PROTOCOL_ARMS = ("jb_default",)
+
+
+def init_unit(task: tuple[str, str, Path]) -> tuple[str, str, str]:
+    """One (arm, window) INIT-ONLY pair: run the init stage, score it, stop."""
+    arm, window, results = task
+    out = unit_path(results, arm, window)
+    if out.exists():
+        return arm, window, "skip"
+    tic = time.perf_counter()
+    try:
+        import rps_refine_lab as lab
+        from beatvk_vk_arms import _coarse_spec, fullrange_init
+
+        from data_processing.joint_beam_tracker import (
+            BeamCfg,
+            EmissionCfg,
+            OUPrior,
+            joint_beam_track,
+        )
+
+        _, rid, widx = window.split(":")
+        prep, _weights, meta = lab.real_window(rid, int(widx))
+        rec: dict[str, Any] = {"arm": arm, "window": window, "regime": meta.get("regime")}
+        if arm == "fullrange_init":
+            # The control DOES need `blind_seed` (~1 min/window, cached).  That
+            # asymmetry is itself a result: the joint search needs no seed.
+            seed = lab.get_seed(f"{rid}_w{int(widx):02d}", prep, True)
+            r0, _, diag = fullrange_init(prep, seed)
+            rec["coarse_mode"] = diag["coarse_mode"]
+        else:
+            cfg = ARMS.get(arm, {})
+            lm, bin_hz, st, _ = _coarse_spec(prep.audio)
+            r0, diag = joint_beam_track(
+                lm,
+                bin_hz,
+                st,
+                prep.ft,
+                ou=OUPrior(**cfg.get("ou", {})),
+                emis=EmissionCfg(**cfg.get("emis", {})),
+                beam=BeamCfg(**cfg.get("beam", {})),
+            )
+            rec["jb"] = diag
+        rec.update(lab.stage_metrics(r0, prep))
+        per = rec["per_rotor"]
+        corrs = [q["shape_corr"] for q in per if q["shape_corr"] is not None]
+        rec["std_ratio_mean"] = float(np.mean([q["std_ratio"] for q in per]))
+        rec["shape_corr_mean"] = float(np.mean(corrs)) if corrs else None
+        rec["shape_corr_spread"] = float(np.ptp(corrs)) if len(corrs) > 1 else None
+        rec["wall_s"] = round(time.perf_counter() - tic, 1)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(lab.r3(rec), indent=1))
+        os.replace(tmp, out)
+        return arm, window, "ok"
+    except Exception:  # noqa: BLE001
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.with_suffix(".err").write_text(traceback.format_exc())
+        return arm, window, "ERROR"
 
 
 def unit_path(results: Path, arm: str, window: str) -> Path:
@@ -208,6 +279,35 @@ RAMP_WINDOWS = frozenset(
 )
 
 
+def summarise_init(results: Path) -> dict[str, Any]:
+    rows = [json.loads(f.read_text()) for f in sorted((results / "raw").glob("*.json"))]
+    arms: dict[str, Any] = {}
+    for arm in sorted({r["arm"] for r in rows}):
+        sel = [r for r in rows if r["arm"] == arm]
+        agg: dict[str, Any] = {}
+        for pool in sorted({_pool_of(r["window"], None) for r in sel}):
+            grp = [r for r in sel if _pool_of(r["window"], None) == pool]
+            agg[pool] = {
+                "n": len(grp),
+                "mae": round(float(np.mean([r["pooled_mae"] for r in grp])), 3),
+                "std_ratio": round(float(np.mean([r["std_ratio_mean"] for r in grp])), 3),
+                "shape_corr": round(float(np.mean([r["shape_corr_mean"] for r in grp])), 3),
+                "corr_spread": round(float(np.mean([r["shape_corr_spread"] for r in grp])), 3),
+            }
+        for tag, want in (("ramp", True), ("steady", False)):
+            grp = [r for r in sel if (r["window"] in RAMP_WINDOWS) is want]
+            if grp:
+                agg[tag] = {
+                    "n": len(grp),
+                    "mae": round(float(np.mean([r["pooled_mae"] for r in grp])), 3),
+                    "std_ratio": round(float(np.mean([r["std_ratio_mean"] for r in grp])), 3),
+                    "corr_spread": round(float(np.mean([r["shape_corr_spread"] for r in grp])), 3),
+                }
+        agg["wall_s"] = round(float(np.mean([r["wall_s"] for r in sel])), 1)
+        arms[arm] = agg
+    return {"rows": rows, "arms": arms}
+
+
 def summarise(results: Path) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for f in sorted((results / "raw").glob("*.json")):
@@ -262,7 +362,9 @@ def summarise(results: Path) -> dict[str, Any]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="joint_beam sweep / protocol driver")
-    ap.add_argument("--mode", choices=("sweep", "protocol", "summarise"), default="sweep")
+    ap.add_argument(
+        "--mode", choices=("sweep", "protocol", "init", "summarise"), default="sweep"
+    )
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--results", default=None)
     ap.add_argument("--arms", default=None, help="comma list overriding the mode's arms")
@@ -277,7 +379,10 @@ def main() -> None:
         print(json.dumps(s["pools"], indent=1))
         return
 
-    if args.mode == "sweep":
+    if args.mode == "init":
+        arms = ["jb_default", "jb_b0_100", "fullrange_init"]
+        windows = list(REAL_WINDOWS)
+    elif args.mode == "sweep":
         arms = list(ARMS)
         windows = list(SWEEP_WINDOWS)
     else:
@@ -287,6 +392,19 @@ def main() -> None:
         arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     if args.windows:
         windows = [w.strip() for w in args.windows.split(",") if w.strip()]
+
+    if args.mode == "init":
+        itasks = [(a, w, results) for a in arms for w in windows]
+        print(f"{len(itasks)} init units, {args.jobs} jobs")
+        t0 = time.perf_counter()
+        with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+            for fut in as_completed({pool.submit(init_unit, t): t for t in itasks}):
+                arm, window, status = fut.result()
+                print(f"[{time.perf_counter() - t0:6.0f}s] {status:7s} {arm} {window}", flush=True)
+        s = summarise_init(results)
+        (results / "summary.json").write_text(json.dumps(s, indent=1))
+        print(json.dumps(s["arms"], indent=1))
+        return
 
     tasks = [(a, w, results, args.v2_rounds) for a in arms for w in windows]
     print(f"{len(tasks)} units ({len(arms)} arms x {len(windows)} windows), {args.jobs} jobs")

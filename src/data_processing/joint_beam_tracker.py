@@ -355,7 +355,13 @@ class BeamCfg:
     n_global: int = 32  #: states that also get the expensive peak family
     n_peaks: int = 15  #: top-k local maxima per frame
     peak_sep_rps: float = 0.2  #: minimum separation between reported peaks
-    n_local: int = 5  #: grid points per rotor in the local family
+    #: Grid points per rotor in the local family (the family size is n_local^4).
+    #: Measured at 3, not the design's 5: on a real 16 s window the local family
+    #: is the dominant cost (5 -> 3 is 123 -> 60 s/window) and 3 is no worse on
+    #: the synthetic battery — identical shape correlations and mean error, and
+    #: it actually RESOLVES the twin case that 5 and 7 lose, because a wider
+    #: per-frame reach lets a track wander onto a neighbour's hump.
+    n_local: int = 3
     local_half_rps: float = 1.5  #: local-move window half-width
     #: Emission weight against the transition cost.  Only the ratio to
     #: ``OUPrior.s_scale`` matters; see that field for the measurement.
@@ -378,6 +384,10 @@ class BeamCfg:
     mu_mode: str = "frame0"
     mu_tau_s: float = 8.0
 
+
+#: Radix for hashing a rounded 4-rotor state into one int64.  The grid tops out
+#: at 120 rev/s and `dedup_rps` is >= 0.05, so an index never reaches 4096.
+_HASH_MULT: torch.Tensor = torch.tensor([1, 4096, 4096**2, 4096**3], dtype=torch.int64)
 
 _PERMS: torch.Tensor = torch.tensor(
     list(itertools.permutations(range(NUM_ROTORS))), dtype=torch.long
@@ -480,11 +490,13 @@ def _overlap(s_r: torch.Tensor, w: torch.Tensor, cfg: BeamCfg) -> torch.Tensor:
     diagonal of the union-comb score: no extra spectrogram reads, just the
     per-rotor values already gathered.
     """
-    lo = torch.minimum(s_r[..., :, None], s_r[..., None, :]).clamp_min(0.0)
-    d = w[..., :, None] - w[..., None, :]
-    k = torch.exp(-(d**2) / (2.0 * cfg.overlap_sigma_rps**2))
     iu = torch.triu_indices(NUM_ROTORS, NUM_ROTORS, offset=1, device=w.device)
-    return cfg.overlap_gain * (lo * k)[..., iu[0], iu[1]].sum(dim=-1)
+    # Index the 6 pairs BEFORE the exp: on the local family this is a
+    # (B, m^4, 4, 4) tensor, and doing it the other way spends 2.7x the work.
+    lo = torch.minimum(s_r[..., iu[0]], s_r[..., iu[1]]).clamp_min(0.0)
+    d = w[..., iu[0]] - w[..., iu[1]]
+    k = torch.exp(-(d**2) / (2.0 * cfg.overlap_sigma_rps**2))
+    return cfg.overlap_gain * (lo * k).sum(dim=-1)
 
 
 def _emission_net(
@@ -615,13 +627,24 @@ def joint_beam_track(
         prop_c = torch.cat([prop_c, c_gl.reshape(-1)])
         prop_p = torch.cat([prop_p, gsel.repeat_interleave(w_best.shape[1])])
 
-        # ---- de-duplicate, then keep the B cheapest
-        order = torch.argsort(prop_c)
-        key = (prop_w[order] / beam.dedup_rps).round().to(torch.int64)
-        _, first = np.unique(key.cpu().numpy(), axis=0, return_index=True)
-        sel = order[torch.as_tensor(np.sort(first), device=dev)]
-        n_distinct.append(int(len(sel)))
-        sel = sel[torch.topk(-prop_c[sel], min(beam.width, len(sel))).indices]
+        # ---- keep the cheapest, de-duplicate, keep B
+        #
+        # Order matters for cost, not just correctness: a full argsort +
+        # `np.unique(axis=0)` over the ~200k proposals of one frame is a lexsort
+        # of a (200k, 4) array and measured at 72 % of the whole tracker's
+        # runtime.  Shortlisting with topk first and hashing the rounded state
+        # into ONE int64 makes the unique a 1-D operation over `width * 8` rows.
+        n_short = min(len(prop_c), beam.width * 8)
+        short = torch.topk(-prop_c, n_short, sorted=True).indices  # cost-ascending
+        key = (prop_w[short] / beam.dedup_rps).round().to(torch.int64)
+        key1 = (key * _HASH_MULT.to(dev)).sum(dim=-1)
+        _, inv = torch.unique(key1, return_inverse=True)
+        rank = torch.arange(n_short, device=dev)
+        first = torch.full((int(inv.max()) + 1,), n_short, dtype=torch.long, device=dev)
+        first.scatter_reduce_(0, inv, rank, reduce="amin")
+        first = first.sort().values
+        n_distinct.append(int(len(first)))
+        sel = short[first[: min(beam.width, len(first))]]
 
         cur_w = prop_w[sel]
         cur_c = prop_c[sel]

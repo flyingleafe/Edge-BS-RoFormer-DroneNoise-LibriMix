@@ -1403,6 +1403,234 @@ because they are independent of the mode prior:
    WP15's finding that M1 is gated off on 8 of 9 DREGON windows are unchanged.
    What is now measured is that *this particular* prior is not the lever.
 
+## WP17 — the OU-corrected joint tracker: prior fixed, but 100x too weak (2026-07-31)
+
+WP16 killed the *increment* form of the joint tracker's mode prior. The
+correction is right and was implemented: the proposal was a 4-D **OU** process
+and WP16's design spec had kept only its diffusion half, dropping the
+mean-reversion term — which is exactly where the measured anisotropy lives.
+Full discrete-time OU, per mode, with `a = exp(-dt/tau)` and
+`s = sigma_level*sqrt(1-a^2)`:
+
+```
+residual_i = m_i(t) - a_i m_i(t-1) - (1-a_i) mu_i        cost = sum_i psi_i(residual_i / s_i)
+```
+
+Implemented in `src/data_processing/joint_beam_tracker.py` (torch,
+device-agnostic), wired as lab chain `joint_beam`, 39 unit tests in
+`tests/test_joint_beam_tracker.py`, swept by `scripts/jb_sweep.py`.
+
+### The fit: tau per mode alongside sigma
+
+`scripts/mode_covariance_calib.py`, cruise segments, fitted from the
+autocovariance decay over lags 2-64 so the reciprocal-period label noise (which
+contributes only at lag 0) does not bias tau. `s` is the implied per-frame
+innovation scale at dt = 32 ms.
+
+| recording | mode | tau (s) | sigma_level | label noise | a | s |
+|---|---|---|---|---|---|---|
+| DREGON nosource_room1 | common | 1.518 | 1.597 | 1.825 | 0.9791 | 0.324 |
+| | roll / pitch / yaw | 1.946 / 1.811 / 2.803 | 0.546 / 0.437 / 0.909 | 0.44 / 0.49 / 0.87 | | 0.098 / 0.081 / 0.137 |
+| DREGON speech-high_room1 | common | 0.875 | 3.698 | 0.585 | 0.9641 | 0.982 |
+| | roll / pitch / yaw | 1.550 / 2.397 / 1.324 | 0.443 / 0.822 / 1.134 | 0.58 / 0.50 / 0.40 | | 0.089 / 0.134 / 0.246 |
+| DREGON speech-low_room1 | common | 0.708 | 2.528 | 0.988 | 0.9558 | 0.743 |
+| | roll / pitch / yaw | 1.246 / 1.105 / 0.908 | 0.946 / 1.015 / 0.930 | 0.38 / 0.34 / 0.43 | | 0.212 / 0.241 / 0.243 |
+| DREGON whitenoise-high_room1 | common | 1.448 | 3.121 | 2.011 | 0.9781 | 0.649 |
+| | roll / pitch / yaw | 2.249 / 3.713 / 0.790 | 0.657 / 0.305 / 1.123 | 0.48 / 0.64 / 0.76 | | 0.110 / 0.040 / 0.313 |
+| DREGON whitenoise-low_room1 | common | 1.283 | 1.784 | 2.145 | 0.9754 | 0.394 |
+| | roll / pitch / yaw | 1.108 / 2.093 / 2.747 | 0.646 / 0.689 / 0.781 | 0.45 / 0.46 / 1.02 | | 0.153 / 0.120 / 0.118 |
+| michaels FLY124 | common | 0.641 | 3.644 | 0.000 | 0.9513 | 1.123 |
+| | roll / pitch / yaw | 1.176 / 1.173 / 0.707 | 1.035 / 0.918 / 1.291 | 0.60 / 0.32 / 0.34 | | 0.238 / 0.212 / 0.380 |
+| michaels FLY125 | common | 0.177 | 2.163 | 0.000 | 0.8344 | 1.192 |
+| | roll / pitch / yaw | 2.089 / 1.969 / 1.175 | 0.506 / 0.626 / 0.981 | 0.43 / 0.47 / 0.87 | | 0.088 / 0.112 / 0.226 |
+
+Shipped defaults (DREGON medians, one scale shared by roll/pitch/yaw — forced,
+see below): **tau_diff 1.81 s, sigma_level_diff 0.77 rev/s**, common mode a
+random walk at 0.39 rev/s per frame.
+
+Three things the fit itself says:
+
+- **tau_common is NOT >> tau_diff.** The design's expectation was
+  `tau_c/tau_d ~ 14`; measured, the differential taus are as long as or longer
+  than the common one on 5 of 7 recordings (`R_ou = tau_c V_c / tau_d V_d`
+  ranges 1.02-18.29, median 4.47). Under the *symmetric* OU the coordinator
+  specified, the sustained-offset cost ratio `1/16 + (3/16) R_ou` comes out at
+  **0.25-3.49, median 0.90** — still around break-even.
+- **The label-noise column is why the increment estimator failed** — DREGON's
+  fitted noise (0.34-2.15) is comparable to or larger than the signal it sits
+  on, and it is isotropic across modes by construction.
+- The implied `s` for the differential modes (0.08-0.38) agrees with the
+  independently measured band-limited (fc 5 Hz) increment scale (0.09-0.11), so
+  the fit is self-consistent.
+
+### The verdict: the ratio bar is cleared, the MAGNITUDE bar is not
+
+Making the common mode a **random walk** (which WP16's ramp measurements force
+— a finite `tau_common` charges ~170 cost units to hold a 56 rev/s takeoff over
+a 16 s window and flattens it) does deliver the qualitative discrimination the
+design wanted: a sustained *common* offset is free, a sustained *single-rotor*
+offset is charged forever, so the ratio is **infinite**. Unit-tested.
+
+But the magnitude is what decides beam search, and it is negligible. Summing
+the per-frame OU cost of *holding* a single-rotor offset `delta` over a window
+of duration `T` gives `3 T delta^2 / (64 tau_d sigma_d^2)`:
+
+| offset held for a 16 s window | at the fitted sigma (0.77) | at the tracker's working slack (x3) |
+|---|---|---|
+| 1 rev/s | 0.70 | 0.08 |
+| 2 rev/s | 2.80 | 0.31 |
+| 4 rev/s | 11.2 | 1.24 |
+
+Against an emission budget of `lambda_e (3) x 4 rotors x 500 frames = 6000` for
+the window, in which one rotor moving a single grid step typically changes the
+emission by O(150-750). **The mean-reversion term is 2-3 orders of magnitude
+too weak to arbitrate a comb assignment.** This is not tuning: the cost scales
+as `T delta^2 / (tau sigma^2)`, so making it competitive needs
+`sigma_d ~ 0.05` rev/s (15x below the measurement) or `tau_d ~ 8 ms` (200x
+shorter). The telemetry says otherwise, on every recording.
+
+So the corrected prior is the right *form* — WP16's diagnosis was accurate and
+the mean-reversion term is where the anisotropy lives — but the anisotropy that
+is actually there is far too small to be the mechanism that stops a rotor
+sliding onto a neighbour's comb.
+
+### What the implementation had to settle, and what it measured on the way
+
+Four decisions the design did not cover, each forced by a measurement:
+
+1. **One tau and one sigma shared by roll/pitch/yaw.** Rotor identity is
+   arbitrary under PIT and a relabelling maps the differential subspace to
+   itself by an orthogonal `M = Bd^T P Bd / 4`, so per-mode scales make the
+   answer depend on a meaningless labelling. Unit-tested over all 24
+   permutations, with a companion test showing per-mode scales break it. Costs
+   nothing: the fitted per-mode taus have no consistent ordering across
+   recordings.
+2. **Overlap is a double-count correction, not a repulsion.** Design §2 v1 (a
+   distance-only soft repulsion) measurably cannot do both jobs: a radius wide
+   enough to stop three tracks stacking on one hump also charges the genuine
+   twins real quadrotors run 0.5-2 rev/s apart, and at `r1 = 1.0` with
+   `gain = 2` the tracker preferred to park a track on EMPTY grid (101 rev/s)
+   rather than sit beside its twin at 75. Replaced by
+   `sum_{r<s} max(min(S_r,S_s),0) exp(-d^2/2 sigma^2)`, which removes exactly
+   the duplicated evidence at zero separation and vanishes where the scores are
+   weak. This is the cheap diagonal of design §2's v2 union-comb score.
+3. **The k-scaled analysis bandwidth (`B_k = k B0`) is a LOSS here, and the
+   reason is structural.** It is a capture device — it helps an estimator that
+   must find a tooth near where it currently thinks the rotor is. This stage is
+   a dense search over an explicit 12-120 rev/s grid, so it never has to
+   capture anything, and widening the band only blurs the surface it searches.
+   The *emission's own ceiling* (per-frame argmax within +-3 rev/s of truth,
+   correlated against the true per-rotor shape) falls monotonically:
+   b0 = 0 -> 0.92/0.83/0.97/0.98, 0.25 -> 0.83/0.74/0.97/0.98, 0.5 ->
+   0.77/0.71/0.95/0.95, 1.0 -> 0.65/0.83/0.93/0.90. Implemented and kept as the
+   A/B lever (`EmissionCfg.b0_rps`, exact reproduction of
+   `_single_comb_scores` at 0), defaulted OFF. Its separate claim — that with a
+   k-scaled band the capture radius stops shrinking as `bin/k` — is unit-tested
+   and true; it is just not what this stage needs. A by-product worth keeping:
+   a fixed 5 samples across the pooled band UNDER-samples it at high k (at
+   k = 16, b0 = 1.5 the spacing is 1.5 bins, wider than the spectral line, and
+   the pooled max misses the tooth it was widened to catch, 0.93 -> 0.30), so
+   the sample count is now derived from `k_max * b0 / bin_hz`.
+4. **`n_local = 3`, not the design's 5.** The local family dominates cost
+   (123 -> 60 s per 16 s window) and 3 is no worse on the synthetic battery —
+   identical shape correlations and mean error, and it actually RESOLVES the
+   twin case that 5 and 7 lose, because a wider per-frame reach lets a track
+   wander onto a neighbour's hump.
+
+Also, on the emission/prior balance: at the fitted (truth) innovation scales the
+prior is too stiff for a rotor to follow its own comb across the 0.5 rev/s grid.
+Worst per-rotor shape correlation on the synthetic wiggle battery, by `s_scale`
+at `lambda_e = 3`: 1.0 -> 0.30, **2.0 -> 0.94**, 3.0 -> 0.94, 6.0 -> 0.94; at
+`s_scale = 2, lambda_e = 1` it is 0.40. Shipped `s_scale = 3`.
+
+### Measured: init quality on the 15-window real protocol — a 5-10x REGRESSION
+
+`scripts/jb_sweep.py --mode init` scores the trajectory immediately after the
+init stage, with no VK capture / M1 / M2 (design §6 item 1). Cheap by
+construction — and for `joint_beam`, seedless: its candidates come from the
+score surface, so it needs no `blind_seed` at all.
+
+| window | regime | init PIT-MAE | std_ratio | shape_corr | corr spread | final means (rev/s) |
+|---|---|---|---|---|---|---|
+| nosource w00 | ramp | 39.64 | 0.35 | 0.88 | 0.14 | 95.3 105.5 111.8 116.2 |
+| nosource w01 | steady | 22.57 | 1.08 | 0.30 | 0.36 | 21.2 42.9 82.8 86.3 |
+| nosource w02 | steady | 29.27 | 0.84 | 0.13 | 0.51 | 21.1 42.3 57.2 83.9 |
+| speech-low w00 | ramp | 29.74 | 0.10 | −0.14 | 0.65 | 19.9 42.3 56.5 83.2 |
+| speech-low w01 | steady | 13.96 | 2.21 | −0.09 | 0.41 | 42.7 71.1 84.9 102.6 |
+| speech-low w02 | steady | 23.64 | 1.23 | −0.03 | 0.88 | 21.0 42.5 77.8 85.4 |
+| whitenoise w00 | ramp | 38.88 | 0.10 | 0.44 | 0.85 | 19.7 28.4 53.0 117.5 |
+| whitenoise w01 | steady | 13.64 | 1.09 | −0.03 | 0.73 | 42.5 56.8 83.3 86.3 |
+| whitenoise w02 | steady | 22.92 | 0.92 | −0.02 | 0.29 | 42.9 85.8 103.1 118.7 |
+| FLY124 w00 | warmup | 10.01 | 0.50 | −0.26 | 0.18 | 14.6 24.1 30.8 37.5 |
+| FLY124 w01 | warmup | 17.38 | 0.70 | 0.18 | 0.78 | 34.6 40.5 67.1 73.5 |
+| FLY124 w02 | cruise | 30.54 | 0.80 | 0.35 | 0.66 | 22.3 42.2 91.6 114.8 |
+| FLY124 w03 | cruise | 15.33 | 0.82 | 0.60 | 0.68 | 23.1 75.5 90.3 92.2 |
+| FLY124 w04 | cruise | 25.42 | 0.79 | 0.32 | 1.09 | 22.8 45.9 61.2 91.5 |
+| FLY124 w05 | cruise | 18.32 | 1.02 | 0.39 | 0.85 | 37.4 46.4 74.9 92.0 |
+
+| pool | init PIT-MAE | std_ratio | shape_corr | corr spread |
+|---|---|---|---|---|
+| dregon (9) | **26.03** | 0.88 | 0.16 | 0.54 |
+| fly124_cruise (4) | **22.40** | 0.86 | 0.42 | 0.82 |
+| ramp (5) | 27.13 | 0.35 | 0.22 | 0.52 |
+| steady (10) | 21.56 | 1.08 | 0.19 | 0.65 |
+
+Against a `fullrange_init` coarse init of ~3-5 and a *whole-chain* baseline of
+DREGON cruise 1.825 / FLY124 cruise 2.418, this is a **5-10x regression**. No
+downstream stage recovers it — WP7 established that nothing below the init
+invents a comb — so the end-of-chain run was not spent.
+
+The `std_ratio` / `shape_corr` columns are the part worth reading carefully.
+The shared-shape defect IS gone in the literal sense the design asked for: the
+four shape correlations now differ by 0.14-1.09 where the coarse stage makes
+them near-identical by construction, and `std_ratio` is 0.84-2.21 on steady
+windows rather than one shared value. But they differ because they are
+**wrong**, not because they are individuated: `shape_corr` is ~0 or negative on
+6 of 10 steady windows. Shape diversity is necessary, not sufficient, and this
+is the case that separates the two.
+
+### Why it fails: the emission double-counts across OCTAVES, not just neighbours
+
+The failure is legible in the means column. **52 % of tracks sit at a small
+integer ratio (x1.5, x2, x3, x4) of a sibling, and 45 % land below 55 rev/s**,
+where this airframe has no rotor at all. Repeatedly the four tracks come out as
+`21 / 42 / 85 / …` — the subharmonic family of one true ~85 rev/s comb.
+
+The mechanism is design §2's own caveat, one octave out. `E = sum_r S(c_r, t)`
+double-counts shared evidence, and a comb at `c/2` shares *every other tooth*
+with a comb at `c` — so two tracks an octave apart score nearly twice for one
+comb while sitting 40 rev/s apart, where any distance-based overlap kernel
+(v1, and my score-scaled repair of it) sees nothing at all. Both forms only
+police *co-located* rotors. The union-comb score (design §2 v2) is the one that
+handles shared teeth exactly, and this measurement says it is not an optional
+follow-up for a seedless wide-grid joint search — it is a precondition.
+
+The existing chain never had this problem because it never had this freedom:
+`blind_seed` supplies bases pre-filtered for aliases (`_harmonic_alias_filter`,
+the 3:2 guard, `r_span_pad`/`r_span_max`), and `fullrange_init` adds the BPF
+octave check (`COARSE_HALVE_RATIO`) and a rotor-band-restricted grid. Dropping
+the seed — advertised as a benefit, since it removes the WP15 seeding lottery —
+also dropped every alias defence the pipeline has, and the joint search walked
+straight into the hole they were dug for.
+
+### Status and what would have to change
+
+`joint_beam` is committed, tested and wired, and it is **not** a candidate for
+the production chain at these numbers. Three things would have to land before
+it is worth re-measuring, in order of how much they are load-bearing:
+
+1. **Union-comb emission** (design §2 v2) — score the union of the assignment's
+   teeth so an octave pair cannot bank the same evidence twice. Expensive per
+   proposal, which is exactly why the design deferred it; the measurement says
+   it cannot be deferred.
+2. **A rotor-band prior on the assignment** — the seeder's own physical prior
+   (four rotors of one drone lie within ~1.25-1.45x) applied to the beam state
+   rather than to seed bases. Cheap, and it kills the `21/42/85` family outright.
+3. Only then is it meaningful to ask whether the OU prior helps — and per the
+   magnitude table above, the answer is that it cannot, at the measured
+   `tau ~ 1.8 s` and `sigma ~ 0.77` rev/s, contribute more than ~1 cost unit
+   against an emission budget of ~6000.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
