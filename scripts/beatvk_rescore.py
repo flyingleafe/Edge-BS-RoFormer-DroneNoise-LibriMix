@@ -362,30 +362,8 @@ def main() -> None:
         print(f"\n[prep-only] wrote {out}/prep_diff.json")
         return
 
-    # -- 1b. the seed-swap counterfactual build: the NEW audio + NEW labels,
-    # seeded with the OLD build's blind seeds.  The 86 ms realignment can flip
-    # a window's blind seed outright (FLY124 w03: the 82.7 rev/s 4th rotor is
-    # replaced by a spurious 54.45), and that is a seeding lottery, not a
-    # consequence of the label correction.  This build charges the difference
-    # to seeding so the two effects can be reported apart.
-    swap_out = prep_root / "prep_swap"
-    if args.seed_swap and args.old_version:
-        (swap_out / "prep_cache").mkdir(parents=True, exist_ok=True)
-        for src in sorted((new_out / "prep_cache").glob("*.npz")):
-            dst = swap_out / "prep_cache" / src.name
-            if not dst.exists():
-                shutil.copy2(src, dst)
-        shutil.copy2(new_out / "manifest.json", swap_out / "manifest.json")
-        (swap_out / "seed_cache").mkdir(parents=True, exist_ok=True)
-        n_seeds = 0
-        for src in sorted((old_out / "seed_cache").glob("*.npz")):
-            dst = swap_out / "seed_cache" / src.name
-            if not dst.exists():
-                shutil.copy2(src, dst)
-            n_seeds += 1
-        print(f"[prep] {swap_out}: new audio/labels + {n_seeds} OLD-build seeds", flush=True)
-
     # -- 2. the grid: (labels x chain x window)
+    swap_out = prep_root / "prep_swap"
     units: list[tuple] = []
     for chain in chains:
         for rid, widxs in jobs_windows.items():
@@ -394,8 +372,6 @@ def main() -> None:
         if args.old_version:  # only FLY124 — DREGON labels are invariant
             for widx in jobs_windows[FLY124]:
                 units.append((old_out, "old", chain, FLY124, widx, [], ""))
-                if args.seed_swap:
-                    units.append((swap_out, "swap", chain, FLY124, widx, [], ""))
     print(f"[grid] {len(units)} units on {args.jobs} workers", flush=True)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futs = [
@@ -416,6 +392,46 @@ def main() -> None:
         ]
         results = [f.result() for f in futs]
     failed = [n for n, ok in results if not ok]
+
+    # -- 2b. the seed-swap control: the NEW audio + NEW labels, run with the
+    # OLD build's blind seeds.  The 86 ms realignment can flip a window's blind
+    # seed outright (FLY124 w03: the 82.7 rev/s 4th rotor — the one WP8 records
+    # as recoverable only by arm R's residual re-scan — is replaced by a
+    # spurious 54.45), and that is a seeding lottery, not a consequence of the
+    # label correction.  This build charges the difference to seeding so the
+    # two effects can be reported apart.  It MUST be assembled after the grid:
+    # the old build's seed cache is only populated by the old units themselves.
+    if args.seed_swap and args.old_version:
+        (swap_out / "prep_cache").mkdir(parents=True, exist_ok=True)
+        for src in sorted((new_out / "prep_cache").glob("*.npz")):
+            dst = swap_out / "prep_cache" / src.name
+            if not dst.exists():
+                shutil.copy2(src, dst)
+        shutil.copy2(new_out / "manifest.json", swap_out / "manifest.json")
+        (swap_out / "seed_cache").mkdir(parents=True, exist_ok=True)
+        swapped = []
+        for src in sorted((old_out / "seed_cache").glob("*.npz")):
+            shutil.copy2(src, swap_out / "seed_cache" / src.name)  # overwrite: old wins
+            swapped.append(src.stem)
+        if not swapped:
+            raise SystemExit("seed-swap build has no OLD-build seeds to copy — grid did not seed")
+        print(
+            f"[prep] {swap_out}: new audio/labels + {len(swapped)} OLD seeds {swapped}", flush=True
+        )
+        units2 = [
+            (swap_out, "swap", chain, FLY124, widx, [], "")
+            for chain in chains
+            for widx in jobs_windows[FLY124]
+        ]
+        print(f"[grid] {len(units2)} seed-swap units", flush=True)
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futs = [
+                pool.submit(
+                    run_unit, out, po, tag, ch, rid, w, args.v2_rounds, args.threads, ex, arm
+                )
+                for po, tag, ch, rid, w, ex, arm in units2
+            ]
+            failed += [n for n, ok in (f.result() for f in futs) if not ok]
 
     # -- 3. cross-window-seeded refine_v3 on FLY124 cruise (reported separately)
     pool_rows: dict[str, Any] = {}
