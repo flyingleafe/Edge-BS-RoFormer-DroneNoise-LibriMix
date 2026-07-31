@@ -1892,6 +1892,101 @@ Prediction: DREGON is indoors and reverberant → a larger *dispersive*
    likelihood; until then the `β ≈ −1` reading must not be quoted as evidence
    for a shared-phase disturbance.
 
+## WP19 — union-comb emission: the subharmonic collapse is fixed, the tracker still loses (2026-07-31)
+
+WP17's failure was diagnosed as an emission defect, and both fixes landed
+(`3a43156`): the **union-comb emission** (`union_emission` — each spectrogram
+bin counted once however many rotors claim it, so a comb at `c/2` can no longer
+bank the teeth it shares with `c`) and the **assignment-level rotor-band prior**
+(`_band_penalty` — the seeder's own `r_span_max = 1.45`, soft, applied to the
+four-tuple rather than to seed bases).
+
+Measured on the cluster, job **`jbinit2-359409`** (uni-cpu, 45 units, init stage
+only, all 15 real protocol windows):
+
+| pool | `fullrange_init` | joint_beam (WP17, sum) | **joint_beam (union + band)** | union, `b0 = 1.0` |
+|---|---|---|---|---|
+| dregon_cruise (9) | **1.98** | 26.03 | 17.41 | 21.27 |
+| fly124_cruise (4) | **2.85** | 22.40 | 5.92 | 9.19 |
+| ramp (5) | **3.38** | 27.13 | 27.85 | 41.27 |
+| steady (10) | **1.87** | 21.56 | 9.21 | 13.30 |
+
+**The fix works, and it is not enough.** The subharmonic collapse is gone —
+where WP17 produced `21 / 42 / 85`, every window now returns a physically
+plausible four-tuple (all tracks >= 33 rev/s, the band prior rejecting 56 % of
+proposals on the ramp window), and FLY124 cruise improves **3.8x**. On the two
+best windows the tracker now finds the right rotors outright: w03
+`[74.7, 75.5, 90.7, 91.8]` and w04 `[74.3, 75.7, 91.0, 92.3]` against a truth of
+`[73.96, 74.85, 80.73, 90.79]` — the twin pair correctly resolved, with the
+known comb-invisible ~81 rev/s rotor replaced by a duplicate of the strong 91
+comb (the same rotor WP8/WP12 record as recoverable only by arm R's residual
+re-scan). But `fullrange_init` still wins every pool, by 2.1x on FLY124 cruise
+and 8.8x on DREGON, so the end-of-chain protocol was not run.
+
+Structurally the goal is met and it does not rescue the result: `std_ratio`
+1.34 vs the coarse init's 0.33 (0.18 on steady windows, i.e. the trust gate
+makes it near-constant lines), and shape-correlation spread 0.79 vs 0.10. The
+four rotors genuinely stop sharing one shape — and are still 9x worse in
+absolute error. Same lesson as WP17, now on a sound emission.
+
+**The k-scaled analysis bandwidth is settled, negatively, on real data too:**
+`b0 = 1.0` is worse than `b0 = 0` in every pool (17.41 -> 21.27, 5.92 -> 9.19),
+confirming on the 15-window protocol what the synthetic ceiling already showed.
+It is a capture device, and a dense grid search has nothing to capture. (Its
+separate claim — that a fixed bandwidth leaves no usable harmonics under a twin
+gate — stands and is WP18's territory, not this stage's.)
+
+### Why this is the place to stop
+
+The remaining gap is not the prior (WP17's arithmetic caps its contribution at
+~1 cost unit against an emission budget of 6000) and no longer the emission's
+double-counting. It is that a seedless full-range search has to solve, from the
+score surface alone and in one pass, the problem the existing chain solves with
+a seeder plus four downstream repair stages: `blind_seed`'s alias filters and
+octave check, the trust gates, M1's sibling masking, M2, and M3's verified
+re-seed. Each of those exists because a measurement demanded it. Replacing all
+of them at once was the wrong unit of change; the shared-shape defect WP3
+identified is real but was never the binding constraint.
+
+`joint_beam` stays in the tree as a tested, documented negative result and a
+reusable component (the union emission and the band prior are both independently
+useful, and `comb_tables` is a cheap exact tooth-level scorer). It is **not** a
+production candidate.
+
+### Reconciling WP16's "isotropic" with WP17's fitted anisotropy
+
+The two sections measure different things and only appear to disagree.
+
+WP16 measured **raw per-frame increments** and found them isotropic
+(sigma_c/sigma_d = 0.97-1.07 on DREGON). WP17's **autocovariance fit excludes
+lag 0**, and therefore the label noise, giving implied differential `s` of
+0.08-0.38 against a common `s` of 0.32-1.19 — a ratio near 3.
+
+DREGON's telemetry is the reason. `motors_measured` is a reciprocal-period
+lattice with a **0.28 rev/s step at 80 rev/s, updated at 44 Hz**, so the
+quantisation noise is (a) comparable in size to the true 32 ms increments and
+(b) isotropic across rotors by construction. It therefore dominates the raw
+increment statistic and drags every mode's sigma to the same value, masking the
+real anisotropy. Michael's telemetry (1 RPM = 0.0168 rev/s, quantisation-free at
+this scale) already showed the raw ratio rising to 1.6-1.9, which is the same
+story at a lower noise level.
+
+Both statements are correct as measured, and the practical conclusion is
+unchanged: WP16's verdict was about the **increment** prior, which is the
+quantity the raw statistic bounds, and that verdict survives — a first-order
+Markov prior on increments cannot express a level anisotropy no matter how the
+noise is handled. WP17's fit is what a mean-reversion term needs, and its own
+magnitude arithmetic is what rules it out.
+
+### Verification: `rps_refine_lab` is trustworthy again
+
+The WP17 note that byte-identity of the existing chains was structural but
+unconfirmed is now closed. Same job, after the sweep: `--chain baseline` on both
+canonical windows reproduces the references exactly —
+**dregon_ramp 3.262 (trace 3.262) PASS, tgrid 3.214 PASS; fly124_cruise 0.978
+(post-WP15 reference 0.978) PASS, tgrid 0.966 PASS**. The `skip_dp` parameter
+added to `run_ladder` for `joint_beam` does not disturb any existing chain.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
