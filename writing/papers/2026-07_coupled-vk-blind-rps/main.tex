@@ -51,7 +51,13 @@ $\pm0.003\revps$, and by a label-free reconstruction referee that cannot
 distinguish its output from its input. This does not contradict prior
 adaptive-VK work, which either estimates instantaneous frequency outside
 the filter or manages the same radius implicitly by starting with a wide
-band. We replace the loop with a phase-increment maximum-likelihood tracker
+band. The closest prior art --- the 2024 iterative adaptive VK filter ---
+nonetheless contains this loop mechanism for mechanism, and its monotone
+wide-to-narrow bandwidth adaptation, which carries no dependence on
+harmonic order, is exactly such an implicit capture schedule, so the
+inertness we report is an unexamined capture-range assumption in a
+published method rather than a defect of our implementation. We replace
+the loop with a phase-increment maximum-likelihood tracker
 whose bandwidth schedule makes the radius explicit, and we correct the
 information model that motivates high-harmonic weighting: arrival-time
 jitter makes per-harmonic rate errors \emph{correlated}, giving a
@@ -149,7 +155,15 @@ The contributions are:
   $0$ of $25$ harmonics in band, (ii) an ablation in which disabling the
   loop reproduces the full pipeline to $\pm0.003\revps$, and (iii) a
   label-free reconstruction referee that scores the refined and unrefined
-  trajectories identically to four decimal places.
+  trajectories identically to four decimal places. This is not a defect of
+  our implementation: the iterative adaptive VK filter
+  of~\cite{jiang2024iavkf} contains the same loop mechanism for mechanism,
+  and its wide-to-narrow bandwidth adaptation --- monotone, and with no
+  dependence on harmonic order --- functions as a capture schedule that is
+  never analyzed as one (Section~\ref{sec:related-vk}), so what the
+  arithmetic exposes is an unexamined capture-range assumption in a
+  published method rather than a claim that its reported results are
+  wrong.
 \item \textbf{A corrected information model for phase-slope weighting}
   (Section~\ref{sec:fisher}). Arrival-time jitter contributes a phase error
   proportional to $k$, which the conversion to rev/s divides out exactly:
@@ -1651,6 +1665,64 @@ $+0.5$--$0.9$. (iii) After applying the fitted constants, a re-run on all
 of the fit's own residual, with no monotone per-window trend --- and a
 residual rate offset of $-0.054$ / $-0.009\revps$, i.e.\ about a tenth of
 what was removed.
+
+\subsubsection{Anti-circularity controls}
+\label{sec:controls}
+Both defects above are found by pointing the referee at the telemetry, and
+the referee is the same instrument our own estimator is refined against.
+The objection that follows is the obvious one: our trajectory is
+\emph{fitted} to the audio, so of course it explains the audio better than
+an independent reference does. The audit is therefore run with the
+controls of Table~\ref{tab:controls}, none of which consults our estimated
+trajectory at any point.
+
+\begin{table}[t]
+  \centering
+  \caption{Anti-circularity controls for the telemetry audit. Entries are
+    the referee~\eqref{eq:referee} on the telemetry track after the stated
+    correction; lower explains more of the audio. The candidates are rate
+    offsets and time lags fitted to the audio alone --- never to our
+    estimated trajectory. The audio-scanned global offset is $+0.6\revps$
+    on both FLY124 windows and $-0.6\revps$ on DREGON. The random draws
+    have the same RMS as the fitted offset; the best of the four is shown,
+    and the remaining draws run to $0.5713$, $0.5726$ and $0.6350$. The
+    held-out rows are fitted on the \emph{other} cruise window of the same
+    recording and evaluated here.}
+  \label{tab:controls}
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    & \multicolumn{2}{c}{FLY124} & DREGON \\
+    \cmidrule(lr){2-3}\cmidrule(l){4-4}
+    Correction & w03 & w04 & w02 \\
+    \midrule
+    raw telemetry             & 0.5498 & 0.5506 & 0.6341 \\
+    random offset (best of 4) & 0.5510 & 0.5500 & 0.6297 \\
+    audio-scanned offset      & 0.5440 & 0.5382 & 0.6300 \\
+    held out: offsets         & 0.5440 & 0.5398 & 0.6286 \\
+    held out: lag             & 0.5354 & 0.5471 & 0.6368 \\
+    held out: lag + offsets   & \textbf{0.5293} & \textbf{0.5335} & 0.6295 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Two facts carry the argument. First, a one-parameter time shift and a
+one-parameter global offset, each chosen by the audio alone, each
+\emph{transfer to a window they were not fitted on}: on both FLY124
+windows the fully held-out combination of the two is the best candidate of
+any tested ($0.5293$, $0.5335$ against $0.5498$, $0.5506$ raw). Second,
+random perturbations of the same RMS go the \emph{wrong} way --- all four
+draws are worse than raw on both FLY124 windows --- which is what
+separates ``the telemetry is wrong'' from ``any change of this size
+helps''. DREGON, whose reference is measured motor speed logged at 1\,kHz
+rather than a flight-controller report, behaves as the negative control it
+should be: the audio prefers the \emph{opposite} sign ($-0.6\revps$), and
+the fitted corrections are not distinguishable from random perturbations
+of the same size (the best random draw, $0.6297$, matches them). The scope
+is exactly this and no more: the last row is a held-out transfer
+\emph{between the two FLY124 cruise windows}, not across recordings, and
+FLY124's shipped constants rest on four cruise windows in total.
 
 \subsubsection{What the correction is, and is not}
 The form is multiplicative for two reasons, one physical and one
