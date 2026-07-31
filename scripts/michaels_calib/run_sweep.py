@@ -32,6 +32,16 @@ Typical cluster invocation (CPU-only, no GPU)::
 
     omnirun submit --backend uni-cpu --gpus 0 --cpus 16 --mem 24 --time 6h -- \\
         python scripts/michaels_calib/run_sweep.py --jobs 16
+
+**After** the constants have been applied to ``michaels.py``, ``--post-shipped``
+re-runs only the ``post`` stage on every cruise window of both recordings, on
+windows built with whatever the loader now ships (offset, dilation AND the rev/s
+scale, which lives inside ``_load_michaels_data_raw``). Success = residual lag
+and residual offset both ≈ 0::
+
+    omnirun submit --backend uni-cpu --gpus 0 --cpus 16 --mem 24 --time 4h -- \\
+        python scripts/michaels_calib/run_sweep.py --jobs 16 --post-shipped \\
+            --results results/michaels_calib_post --cache .cache/michaels_calib_post
 """
 
 from __future__ import annotations
@@ -51,6 +61,8 @@ import traceback  # noqa: E402
 from concurrent.futures import ProcessPoolExecutor, as_completed  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
+
+import numpy as np  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -207,6 +219,14 @@ def main() -> None:
         help="after fitting, rebuild both recordings with the PROPOSED constants and "
         "re-scan for residual lag/offset (adds a second load+resample pass)",
     )
+    ap.add_argument(
+        "--post-shipped",
+        action="store_true",
+        help="ONLY validate the constants currently shipped in "
+        "src/data_processing/michaels.py (offset, dilation AND the rev/s scale): "
+        "run the `post` stage on every cruise window of both recordings and stop. "
+        "Success = residual lag and residual offset both ~0.",
+    )
     ap.add_argument("--force", action="store_true", help="recompute units that already have JSON")
     ap.add_argument("--selftest", action="store_true", help="resolve data, build cache, then stop")
     args = ap.parse_args()
@@ -256,6 +276,72 @@ def main() -> None:
 
     def pending(name: str, stage: str) -> bool:
         return args.force or not unit_path(raw_dir, name, stage).exists()
+
+    # ── post-only: validate whatever michaels.py currently ships ─────────────
+    # The prep cache above was built with the SHIPPED constants, and the rev/s
+    # calibration lives inside `_load_michaels_data_raw`, so these windows carry
+    # the fully corrected labels: a residual scan on them IS the validation.
+    if args.post_shipped:
+        summary = {
+            "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "data_root": how,
+            "mode": "post_shipped",
+            "shipped": {
+                rid: {
+                    "time_offset": rec["time_offset"],
+                    "time_dilation": rec["time_dilation"],
+                    "rps_scale": W.shipped_rps_scale(rid),
+                }
+                for rid, rec in manifest["recordings"].items()
+            },
+        }
+        tasks = []
+        for rid in manifest["recordings"]:
+            lo, hi, step = LAG_GRID[rid]
+            half = (hi - lo) / 4.0
+            tasks += [
+                {
+                    **common,
+                    "kind": "post",
+                    "name": w["name"],
+                    "stage": "post",
+                    "lo": -half,
+                    "hi": half,
+                    "step": step,
+                    "blo": args.val_lo,
+                    "bhi": args.val_hi,
+                    "bstep": args.val_step,
+                }
+                for w in cruise_windows(manifest, rid)
+                if pending(w["name"], "post")
+            ]
+        dispatch(tasks, jobs, "post-shipped")
+        rows = [json.loads(p.read_text()) for p in sorted(raw_dir.glob("*__post.json"))]
+        summary["post"] = {r["name"]: r for r in rows}
+        for rid in manifest["recordings"]:
+            sel = [r for r in rows if r["rid"] == rid]
+            if not sel:
+                continue
+            lags = [float(r["resid_lag_ms"]) for r in sel]
+            bs = [float(r["resid_b"]) for r in sel]
+            summary.setdefault("post_aggregate", {})[rid] = {
+                "n_windows": len(sel),
+                "resid_lag_ms": {
+                    "mean": round(float(np.mean(lags)), 3),
+                    "rms": round(float(np.sqrt(np.mean(np.square(lags)))), 3),
+                    "max_abs": round(float(np.max(np.abs(lags))), 3),
+                },
+                "resid_b_revps": {
+                    "mean": round(float(np.mean(bs)), 4),
+                    "max_abs": round(float(np.max(np.abs(bs))), 4),
+                },
+                "n_edge": int(sum(bool(r["edge"]) or bool(r["edge_b"]) for r in sel)),
+            }
+        summary["wall_s"] = round(time.time() - t_start, 1)
+        write_json(results / "summary.json", summary)
+        print(json.dumps(summary.get("post_aggregate", {}), indent=1), flush=True)
+        print(f"\nwrote {results / 'summary.json'} ({summary['wall_s']}s wall)", flush=True)
+        return
 
     # ── phase 1: lag scans ──────────────────────────────────────────────────
     if "lag" in stages:

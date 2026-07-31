@@ -17,7 +17,8 @@ codec (``data_processing.streams.frame_to_sample``, layout ``tdframe-v1``) so
 - **michaels-frames** — FLY124/FLY125 (``michaels.MICHAELS_FILES``), audio at
   native 44.1 kHz realigned to the flight-log clock exactly as
   ``load_michaels_timeframe`` does (window cut + leading-gap fix +
-  ``time_offset``/``time_dilation``), plus *every* remaining CSV column as
+  ``time_offset``/``time_dilation``) with the canonical ``rps`` entry carrying
+  the measured ``MICHAELS_RPS_SCALE`` rev/s calibration, plus *every* CSV column as
   aligned series on the same time base: numeric columns grouped per logical
   sensor block (``IMU_ATTI(0):*`` -> ``imu_atti``, ``Motor:Speed:*`` ->
   ``motor_speed``, ...) as ``(channel, time)`` Series with the original column
@@ -66,6 +67,9 @@ from data_processing.michaels import (
 )
 from data_processing.michaels import (
     get_geometry as michaels_geometry,
+)
+from data_processing.michaels import (
+    rps_scale_for as michaels_rps_scale_for,
 )
 
 Sample = tuple[str, dict[str, bytes]]
@@ -229,7 +233,12 @@ def build_michaels_frame(
     """One Michael's recording -> rich Frame (realigned audio + rps + full CSV)."""
     wav_path, csv_path = DATA_DIR / wav_rel, DATA_DIR / csv_rel
     # Audio + canonical rps exactly as load_michaels_timeframe builds them,
-    # but at the native sample rate (sr=None -> no resampling).
+    # but at the native sample rate (sr=None -> no resampling). The rev/s
+    # calibration (MICHAELS_RPS_SCALE) is applied inside the loader, so the
+    # canonical `rps` entry is CORRECTED while the `motor_speed` block below
+    # (the raw `Motor:Speed:*` CSV columns, in RPM) stays untouched — the same
+    # fixed/raw pairing DREGON gets with motors_command/motors_command_raw.
+    rps_scale = michaels_rps_scale_for(csv_path)
     wav, ts_rps, ms, sample_rate = _load_michaels_data_raw(
         wav_path, csv_path, time_offset=time_offset, time_dilation=time_dilation, sr=None
     )
@@ -255,6 +264,7 @@ def build_michaels_frame(
         "csv": csv_rel,
         "time_offset": float(time_offset),
         "time_dilation": float(time_dilation),
+        "rps_scale": float(rps_scale),
         "sample_rate": int(sample_rate),
         "n_csv_rows": int(len(full_csv)),
         "n_csv_rows_aligned": int(len(cut)),
@@ -271,6 +281,20 @@ def build_michaels_frame(
                 "Series labelled with the original column names; bool/string "
                 "columns as one (time,) Series each; all-NaN rows dropped per "
                 "block (DatCon logs sensors at different rates)"
+            ),
+            "calibration": (
+                "time_offset/time_dilation/rps_scale are MEASURED constants "
+                "(michaels.MICHAELS_FILES + MICHAELS_RPS_SCALE, 2026-07-31): the "
+                "audio-optimal telemetry lag was scanned per 16 s cruise window "
+                "with the label-free VK reconstruction residual and regressed on "
+                "window time (dilation, R^2 0.94/0.92, residual RMS 2.9/4.5 ms vs "
+                "12.0/16.2 ms for a constant lag), and the rev/s labels carry a "
+                "multiplicative correction (+0.671/+0.552 rev/s at 80 rev/s; "
+                "additive-vs-multiplicative was a statistical tie, resolved for "
+                "multiplicative so the correction vanishes at rps -> 0). The "
+                "canonical `rps` entry is CORRECTED; the `motor_speed` block "
+                "holds the raw uncalibrated `Motor:Speed:*` CSV columns (RPM). "
+                "See docs/experiments/rps-refine-precision.md sec. WP13."
             ),
         },
     }
@@ -326,8 +350,8 @@ def publish(dataset: str) -> None:
                 streams.LAYOUT_META_KEY: streams.TDFRAME_LAYOUT,
                 "description": (
                     "Michael's FLY124/FLY125 as rich td.Frames: realigned native-sr "
-                    "8ch audio, rps (rev/s), and every DJI flight-log CSV column as "
-                    "aligned series grouped per sensor block"
+                    "8ch audio, calibrated rps (rev/s), and every DJI flight-log CSV "
+                    "column as aligned series grouped per sensor block"
                 ),
                 "source": "data/recording_with_motor_speed (michaels.MICHAELS_FILES)",
             },

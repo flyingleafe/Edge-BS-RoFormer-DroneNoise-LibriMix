@@ -13,7 +13,7 @@ formats before any experiment can run.
 | File | Purpose |
 |------|---------|
 | `dregon.py` | DREGON dataset loading — TimeFrame-native. `load_timeframe(sample)` returns a `TimeFrame` with tracks `"audio"` (UniformSeries), `"motors_measured"` / `"motors_command"` (EventSeries), etc. Tags hold scalar metadata; `global_data` holds mic/rotor positions. |
-| `michaels.py` | Michael's drone-noise dataset (DJI WAVs + flight-controller CSVs in `data/new-drone-noises/`). Uses its own local `MotorData` dataclass. `get_geometry()` returns the DJI Matrice 100 rig geometry (8-mic ring + 4 rotors; from `data/recording_with_motor_speed/` photos), and `load_michaels_timeframe` populates `global_data` with `mic_positions`/`rotor_positions` (rotor order RFront, LFront, LBack, RBack). |
+| `michaels.py` | Michael's drone-noise dataset (DJI WAVs + flight-controller CSVs in `data/new-drone-noises/`). Uses its own local `MotorData` dataclass. `get_geometry()` returns the DJI Matrice 100 rig geometry (8-mic ring + 4 rotors; from `data/recording_with_motor_speed/` photos), and `load_michaels_timeframe` populates `global_data` with `mic_positions`/`rotor_positions` (rotor order RFront, LFront, LBack, RBack). Alignment (`MICHAELS_FILES`) and rev/s (`MICHAELS_RPS_SCALE`) constants are measured — see § "Michael's telemetry calibration". |
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's. |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` exposed as a noise **source** (`kind: generated`). One background **spawn** producer process (the only extra CUDA context) renders chunks into a **shared-memory ring buffer**; fork `DataLoader` workers read finished chunks (lock-free seqlock). RPS excitation is synthetic-intermittent (`rps_synthesis`) and doubles as the exact label. See § "Generated noise source". |
 | `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP (`experiments.gp_rotor_noise.train_egonoise_gp.EgonoiseGPModel`) exposed as a noise **source** (`kind: gp`, G3). GP evaluated once at init into a coefficient table; per-chunk pure-numpy FM synthesis in the DataLoader workers (like `rotor_spectral_model.py`'s static comb). Exact synthetic RPS labels. See § "GP rotor-noise source". |
@@ -445,7 +445,8 @@ The fixed rich-frame datasets published by `scripts/publish_frame_datasets.py`
 (`DREGON-frames`, `michaels-frames`; dload `tdframe-v1` layout, decoded by
 `data_processing.streams`) can feed the noise pool directly. **Fixes are baked
 in at publish time** — DREGON `motors_command` is already
-`clean_command_spikes`-cleaned, michaels `rps` is already aligned — so the
+`clean_command_spikes`-cleaned, michaels `rps` is already aligned **and rev/s
+calibrated** (see § "Michael's telemetry calibration") — so the
 loader re-applies nothing: it renames the rotor track to the generic `rps`
 entry (the no-cleaning path of `_resolve_motor_tracks`), keeps only
 `audio` + `rps` + `meta` per recording (IMU/GPS/raw telemetry dropped, one
@@ -573,6 +574,45 @@ Aggregate has both `n_samples` (distinct samples) and `n_rows` (= n_samples × C
 - `load_dregon_timeframes(data_dir, splits=…)` — load all recordings in splits
 - `_find_inflight_window(tf, motor_key, min_motor_rps)` — in `scripts/create_dregon_librimix.py`
 
+### Michael's telemetry calibration (FLY124 / FLY125) — MEASURED, 2026-07-31
+
+`michaels.py` ships three per-recording constants, all now measured against the
+label-free VK reconstruction residual (sweep `scripts/michaels_calib/`, results
+`omnirun-outputs/python-519b66/results/michaels_calib/summary.json`, full write-up
+`docs/experiments/rps-refine-precision.md` § WP13). They replace the hand-tuned
+pair that `notebooks/michael_data_analysis.ipynb` originated.
+
+| recording | `time_offset` | `time_dilation` | `MICHAELS_RPS_SCALE` |
+|---|---|---|---|
+| FLY124 | −20.753813 (was −20.84) | 1.001654644 (was 1.001) | ×1.00839 |
+| FLY125 | −26.337849 (was −26.51) | 1.005178509 (was 1.0048) | ×1.00690 |
+
+- **Timing was a DILATION error on both**: the audio-optimal telemetry lag drifts
+  linearly with time (+0.654 ms/s FLY124 over w02–w05, +0.377 ms/s FLY125 over
+  w01–w09; R² 0.94 / 0.92, residual RMS 2.9 / 4.5 ms vs 12.0 / 16.2 ms for a
+  constant lag). Folded in via `time_dilation/(1−b)`, `time_offset − a/(1−b)`
+  (`scripts/michaels_calib/fit.py:fit_lag`, same function for both recordings).
+- **Values were ~0.6 rev/s LOW at cruise.** Additive vs multiplicative is a
+  statistical tie (opposite verdicts on the two recordings, 4 % and 0.04 %
+  margins, discriminator R² 0.01); shipped as MULTIPLICATIVE because the frames
+  cover warm-up/idle, where a scale vanishes at rps → 0 but an additive +0.6
+  rev/s would invent motion.
+- **Where it is applied**: inside `_load_michaels_data_raw` (keyed by CSV stem
+  via `rps_scale_for()`), so every consumer — `load_michaels_timeframe(s)`,
+  `publish_frame_datasets.py`, `create_dregon_librimix.py`, the online-mix
+  `michaels` / `frames` sources — is calibrated with no call-site change.
+  Recordings with no measured constant fall back to 1.0.
+- **Not calibrated**: the raw `Motor:Speed:*` CSV columns published in
+  `michaels-frames` as the `motor_speed` block (raw counterpart of the canonical
+  `rps`, like DREGON's `motors_command_raw`), and anything that parses the CSV
+  itself. Frame `meta` records `time_offset` / `time_dilation` / `rps_scale` +
+  a `provenance.calibration` note.
+- **Validate** with `python scripts/michaels_calib/run_sweep.py --post-shipped`
+  (residual lag and residual offset should both be ≈ 0).
+- **Anything built from Michael's telemetry before 2026-07-31 is stale** —
+  `beatvk-valid-raw`, `results/beatvk_vk_arms`, `DREGON-LM-V4-michaels*`, and
+  any published FLY124 label-accuracy number.
+
 ---
 
 ## Publishing datasets to dload (three conventions)
@@ -599,7 +639,8 @@ distinguish them:
    `scripts/publish_frame_datasets.py`: one sample per *recording*, serialized
    with the generic Frame codec (`streams.frame_to_sample`, manifest
    `meta.layout = "tdframe-v1"`), fixes baked in (`clean_command_spikes`,
-   michaels alignment), the script source stored as the version's recipe.
+   michaels alignment **+ rev/s calibration**), the script source stored as the
+   version's recipe.
 
 After any commit: `dload pin NAME && git add dload.lock` and commit+push.
 

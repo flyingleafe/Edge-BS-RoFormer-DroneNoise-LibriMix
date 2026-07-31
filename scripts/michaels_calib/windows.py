@@ -20,6 +20,9 @@ frozen artefacts are not present, e.g. on a cluster worktree).
 ``time_offset`` / ``time_dilation`` / ``rps_offset`` / ``rps_scale`` are
 parameters here, so hypotheses about the shipped alignment constants can be
 built and scored **without touching** ``src/data_processing/michaels.py``.
+Since the 2026-07-31 calibration the loader itself applies a per-recording rev/s
+scale, so :func:`load_recording` defaults to CALIBRATED telemetry; ``cut_window``'s
+``rps_scale`` / ``rps_offset`` stay hypothesis knobs applied *on top* of it.
 
 Data root resolution (in order, first hit wins):
   1. ``$DATA_ROOT`` — if it actually contains the recordings;
@@ -50,7 +53,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
-from data_processing.michaels import MICHAELS_FILES  # noqa: E402
+from data_processing.michaels import MICHAELS_FILES, rps_scale_for  # noqa: E402
 
 SR = 16000
 FRAME_S = 0.032
@@ -91,6 +94,16 @@ def data_root() -> tuple[Path, str]:
             f"neither {probe_rel} nor {inner_rel} is there"
         )
     return tree, f"dload:{DATASET} -> {tree}"
+
+
+def shipped_rps_scale(rid: str) -> float:
+    """The rev/s calibration ``michaels.py`` currently ships for ``rid``.
+
+    ``_load_michaels_data_raw`` applies it internally, so windows built here
+    with the default (``rps_scale=1.0`` in :func:`cut_window`) already carry it;
+    this accessor only exists so the sweep can RECORD what it validated.
+    """
+    return rps_scale_for(SHIPPED[rid][1])
 
 
 def michaels_paths(rid: str) -> tuple[Path, Path]:
@@ -152,11 +165,16 @@ def trim_constant_runs(ts: np.ndarray, vals: np.ndarray) -> tuple[float, float]:
 
 
 def load_recording(
-    rid: str, *, time_offset: float | None = None, time_dilation: float | None = None
+    rid: str,
+    *,
+    time_offset: float | None = None,
+    time_dilation: float | None = None,
+    rps_scale: float | None = None,
 ) -> dict[str, Any]:
     """16 kHz audio + aligned telemetry + the 16 s window manifest.
 
-    Defaults to the SHIPPED constants; pass either to build a hypothesis.
+    Defaults to the SHIPPED constants (including the loader's rev/s scale); pass
+    any of the three to build a hypothesis (``rps_scale=1.0`` = raw telemetry).
     """
     import librosa as lr
 
@@ -166,7 +184,7 @@ def load_recording(
     dil = SHIPPED[rid][3] if time_dilation is None else float(time_dilation)
     wav_path, csv_path = michaels_paths(rid)
     wav, ts, ms, sr = _load_michaels_data_raw(
-        wav_path, csv_path, time_offset=off, time_dilation=dil, sr=None
+        wav_path, csv_path, time_offset=off, time_dilation=dil, sr=None, rps_scale=rps_scale
     )
     audio16 = np.atleast_2d(
         lr.resample(
@@ -308,8 +326,20 @@ def load_cached(cache_dir: Path, name: str) -> Window:
         )
 
 
+#: The alignment constants the FROZEN beat-VK artefacts were built with — the
+#: hand-tuned pre-calibration pair (with an implicit rev/s scale of 1.0). The
+#: shipped constants have since MOVED (2026-07-31 calibration), so the selfcheck
+#: must pin these explicitly or it would be comparing two different protocols.
+FROZEN_BEATVK_CONSTANTS: dict[str, tuple[float, float]] = {"FLY124": (-20.84, 1.001)}
+
+
 def selfcheck() -> bool:
-    """FLY124 rebuilt here must match the frozen beat-VK prep cache.
+    """FLY124 rebuilt at the FROZEN constants must match the beat-VK prep cache.
+
+    This validates the *rebuild machinery* (windowing, resampling, telemetry
+    interpolation), not the current constants: it deliberately rebuilds with
+    ``FROZEN_BEATVK_CONSTANTS`` and ``rps_scale=1.0``, because the frozen cache
+    predates the telemetry calibration.
 
     Returns True if the check ran and passed, False if the frozen artefacts are
     absent (cluster worktree) — never raises for a missing reference.
@@ -319,7 +349,17 @@ def selfcheck() -> bool:
         print("selfcheck: no results/beatvk_vk_arms/manifest.json — skipped", flush=True)
         return False
     ref = json.loads(man_p.read_text())["recordings"]["FLY124"]["windows"]
-    rec = load_recording("FLY124")
+    frozen_off, frozen_dil = FROZEN_BEATVK_CONSTANTS["FLY124"]
+    shipped_off, shipped_dil = SHIPPED["FLY124"][2], SHIPPED["FLY124"][3]
+    if (frozen_off, frozen_dil) != (shipped_off, shipped_dil):
+        print(
+            f"selfcheck: rebuilding at the FROZEN constants ({frozen_off}, {frozen_dil}); "
+            f"michaels.py now ships ({shipped_off}, {shipped_dil}, "
+            f"rps_scale={shipped_rps_scale('FLY124')}) — the frozen beat-VK artefacts "
+            "are STALE with respect to those",
+            flush=True,
+        )
+    rec = load_recording("FLY124", time_offset=frozen_off, time_dilation=frozen_dil, rps_scale=1.0)
     print(f"selfcheck: eval span {rec['eval_span']}", flush=True)
     worst = 0.0
     for a, b in zip(ref, rec["windows"], strict=True):

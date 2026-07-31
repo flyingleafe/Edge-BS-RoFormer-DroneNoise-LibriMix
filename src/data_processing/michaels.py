@@ -7,9 +7,10 @@ The recordings live in `data/recording_with_motor_speed/`:
 Each WAV is an 8-channel in-flight drone recording; each DJI flight-controller
 CSV logs per-motor rotation speed (RPM). The audio and telemetry clocks are
 *not* aligned by default — a per-file `time_offset` (seconds) plus a
-`time_dilation` clock-rate factor brings them into register. These constants
-were tuned **manually** (see `notebooks/michael_data_analysis.ipynb`) and are
-the values reproduced here verbatim.
+`time_dilation` clock-rate factor brings them into register, and the logged
+speeds themselves are low by a small multiplicative factor (`MICHAELS_RPS_SCALE`).
+All three constants are now **measured**, not hand-tuned: see the block comment
+above `MICHAELS_FILES` and `docs/experiments/rps-refine-precision.md` § WP13.
 
 `load_michaels_timeframes()` returns a list of two `td.Frame`s, one per
 recording, each holding:
@@ -37,22 +38,81 @@ from data_processing.frames import make_recording_frame
 # in `<repo>/data_processing/`).
 _DATA_ROOT = Path(os.environ.get("DATA_ROOT", Path(__file__).resolve().parent.parent / "data"))
 
-# (wav_path, csv_path, time_offset_sec, time_dilation) — manual alignment
-# constants, copied verbatim from `michael_data_analysis.ipynb`.
+# ── Measured alignment / label calibration (2026-07-31) ─────────────────────
+#
+# Referee: the LABEL-FREE Vold-Kalman reconstruction residual
+# ||x - x_hat||/||x|| (k = 1..30, `scripts/michaels_calib/calib.py:RECON_CFG`,
+# identical to `rps_refine_lab.RECON_CFG`) of the harmonic model built ALONG a
+# candidate telemetry trajectory, scored on contiguous 16 s windows of the
+# frozen beat-VK window protocol. Only the TELEMETRY is shifted/scaled; our own
+# blind RPS estimate is never consulted. Sweep: `scripts/michaels_calib/`,
+# raw + fits in `omnirun-outputs/python-519b66/results/michaels_calib/`.
+#
+# TIMING — both recordings show a clock DILATION error (the audio-optimal lag
+# drifts linearly with time), not a constant offset. With the old constants the
+# audio prefers the telemetry shifted by lag(t) = a + b·t seconds; folding that
+# into the loader's parameterisation gives
+#     time_dilation_new = time_dilation_old / (1 - b)
+#     time_offset_new   = time_offset_old  - a / (1 - b)
+# (`scripts/michaels_calib/fit.py:fit_lag`, used for BOTH recordings):
+#
+#   FLY124 — 4 cruise windows w02..w05 (centres 40/56/72/88 s), lags
+#     -61.83 / -49.00 / -34.61 / -31.77 ms; OLS b = +0.65356 ms/s,
+#     a = -86.131 ms, R^2 = 0.942, residual RMS 2.90 ms vs 12.04 ms for a
+#     constant-lag model. (-20.84, 1.001) -> (-20.753813, 1.001654644);
+#     dilation multiplier x1.000654. The cluster sweep independently re-measured
+#     w03/w04 at -48.51 / -34.56 ms, i.e. within 0.5 ms of the above.
+#   FLY125 — 9 cruise windows w01..w09 (centres 24..152 s), lags -158.4 ->
+#     -105.5 ms; OLS b = +0.37656 ms/s, a = -172.086 ms, R^2 = 0.923, residual
+#     RMS 4.49 ms vs 16.19 ms constant-lag. (-26.51, 1.0048) ->
+#     (-26.337849, 1.005178509); dilation multiplier x1.000377.
+#
+# VALUE — the logged speeds are LOW by ~0.55-0.68 rev/s at cruise (DREGON shows
+# the opposite sign, so this is a Michael's-rig property, not a referee bias).
+# Whether the error is additive (b_r = const) or multiplicative (b_r = g·rps_r)
+# is statistically UNRESOLVED: the per-rotor discriminator (`prot`, regressing
+# each rotor's optimal offset on its own mean rps over the 74-91 rev/s cruise
+# spread) returns "additive" for FLY124 by a 4 % RMS margin (0.2939 vs 0.30557)
+# and "multiplicative" for FLY125 by 0.04 % (0.38621 vs 0.38607) — a tie; the
+# free-line fits have R^2 0.013 / 0.004 (no significant dependence on rotor mean
+# rps) and the observed per-rotor spread (0.94 / 1.96 rev/s) dwarfs what either
+# model predicts (0.147 / 0.117), i.e. the discriminator has no power here.
+# We ship the MULTIPLICATIVE form: the two are indistinguishable in the cruise
+# band where they were measured, but these frames cover the WHOLE recording
+# including warm-up and ground idle, where an additive +0.6 rev/s would corrupt
+# a near-stationary rotor's label (and manufacture harmonics at a standstill)
+# while a scale correctly vanishes as rps -> 0. Fitted g: 0.008387 (FLY124,
+# +0.671 rev/s at 80) and 0.006904 (FLY125, +0.552 rev/s at 80).
+#
+# (wav_path, csv_path, time_offset_sec, time_dilation)
 MICHAELS_FILES = [
     (
         "recording_with_motor_speed/recording_1/124.wav",
         "recording_with_motor_speed/recording_1/FLY124.csv",
-        -20.84,
-        1.001,
+        -20.753813,
+        1.001654644,
     ),
     (
         "recording_with_motor_speed/recording_2/125.wav",
         "recording_with_motor_speed/recording_2/FLY125.csv",
-        -26.51,
-        1.0048,
+        -26.337849,
+        1.005178509,
     ),
 ]
+
+#: Per-recording MULTIPLICATIVE rev/s correction, keyed by CSV stem (the
+#: recording id). Applied to the rotor speeds in `_load_michaels_data_raw`, so
+#: every consumer of `rps` gets calibrated labels. Recordings without a measured
+#: constant (the 103 unaligned `new-drone-noises` logs) fall back to 1.0.
+MICHAELS_RPS_SCALE: dict[str, float] = {
+    "FLY124": 1.00839,  # g = 0.008387 -> +0.671 rev/s at 80 rev/s
+    "FLY125": 1.00690,  # g = 0.006904 -> +0.552 rev/s at 80 rev/s
+}
+
+
+def rps_scale_for(csv_path: str | Path) -> float:
+    """Calibrated rev/s scale for a recording, from its CSV stem (1.0 if none)."""
+    return MICHAELS_RPS_SCALE.get(Path(csv_path).stem.upper(), 1.0)
 
 
 # ── Array / airframe geometry ───────────────────────────────────────────────
@@ -134,16 +194,22 @@ def _load_michaels_data_raw(
     time_offset: float = 0.0,
     time_dilation: float = 1.0,
     sr: int | None = None,
+    rps_scale: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-    """Load + align one recording — verbatim port of the notebook function.
+    """Load + align one recording — port of the notebook function.
+
+    `rps_scale` defaults to the recording's calibrated `MICHAELS_RPS_SCALE`
+    entry (`None` -> looked up from the CSV stem); pass an explicit float (e.g.
+    ``1.0``) to score a hypothesis against the uncalibrated telemetry.
 
     Returns
     -------
     wav   : (n_channels, n_samples) audio at `sr`
     ts    : (M,) aligned motor timestamps (seconds, anchored at audio start)
-    ms    : (4, M) motor speeds in revolutions/second (RPM / 60)
+    ms    : (4, M) motor speeds in revolutions/second (RPM / 60, calibrated)
     sr    : sample rate actually used
     """
+    scale = rps_scale_for(csv_path) if rps_scale is None else float(rps_scale)
     wav, sample_rate = lr.load(str(wav_path), sr=sr, mono=False)
     if len(wav.shape) == 1:
         wav = wav[None, :]
@@ -171,7 +237,7 @@ def _load_michaels_data_raw(
     ts[0 : jump_idx + 2] = np.linspace(ts[0], ts[jump_idx + 2], jump_idx + 2)
     ts *= time_dilation
 
-    ms = np.asarray(cut_csv[ms_cols], dtype=np.float64).T / 60
+    ms = np.asarray(cut_csv[ms_cols], dtype=np.float64).T / 60 * scale
     return wav, ts, ms, int(sample_rate)
 
 
@@ -182,16 +248,23 @@ def load_michaels_timeframe(
     time_dilation: float = 1.0,
     sr: int | None = 16000,
     recording_id: str | None = None,
+    rps_scale: float | None = None,
 ) -> td.Frame:
     """Load one Michael's recording as an aligned ``td.Frame``.
 
     The frame holds an 8-channel ``audio`` Series (dims ``("mic", "time")``)
-    and an ``rps`` Series (dims ``("rotor", "time")``), built exactly as in
-    the notebook — the audio is anchored at t=0 and the RPS timestamps are
-    aligned to it via the `time_offset` / `time_dilation` constants.
+    and an ``rps`` Series (dims ``("rotor", "time")``): the audio is anchored at
+    t=0, the RPS timestamps are aligned to it via `time_offset` /
+    `time_dilation`, and the speeds carry the calibrated `rps_scale`
+    (`None` -> the recording's `MICHAELS_RPS_SCALE` entry).
     """
     wav, ts, ms, sample_rate = _load_michaels_data_raw(
-        wav_path, csv_path, time_offset=time_offset, time_dilation=time_dilation, sr=sr
+        wav_path,
+        csv_path,
+        time_offset=time_offset,
+        time_dilation=time_dilation,
+        sr=sr,
+        rps_scale=rps_scale,
     )
     audio = td.uniform(wav, sample_rate, dims=("mic", "time"))
     rps = td.events(ts, ms, dims=("rotor", "time"))
@@ -212,8 +285,9 @@ def load_michaels_timeframes(
     """Load FLY124 and FLY125 as a list of two aligned 8-channel ``td.Frame``s.
 
     Each frame contains ``audio`` (8-channel Series, ``(8, N)``) and ``rps``
-    (motor speeds Series, ``(4, M)`` in rev/s), aligned exactly as in
-    `notebooks/michael_data_analysis.ipynb`.
+    (motor speeds Series, ``(4, M)`` in rev/s), aligned and value-calibrated
+    with the measured per-recording constants (`MICHAELS_FILES` +
+    `MICHAELS_RPS_SCALE`).
     """
     from data_processing.streams import resolve_source
 

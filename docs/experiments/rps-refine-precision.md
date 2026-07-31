@@ -668,6 +668,115 @@ multiplicative ⇒ proportional to it (cruise spans 74–91 rev/s, a 23 % spread
 `src/data_processing/michaels.py` is deliberately **untouched** — applying the
 correction comes after the calibration lands.
 
+## WP13 — the calibration measured, and APPLIED to the loader (2026-07-31)
+
+Sweep result: `omnirun-outputs/python-519b66/results/michaels_calib/summary.json`
+(959 s wall, 16 cores, `uni-cpu`). Referee = the label-free VK reconstruction
+residual; only the telemetry is moved.
+
+### Timing — BOTH recordings have a clock-rate (dilation) error
+
+| recording | cruise windows | lag range | OLS slope | intercept | R² | resid RMS | vs constant-lag |
+|---|---|---|---|---|---|---|---|
+| FLY124 | 4 (w02–w05, centres 40/56/72/88 s) | −61.83 → −31.77 ms | **+0.65356 ms/s** | −86.131 ms | 0.942 | 2.90 ms | 12.04 ms |
+| FLY125 | 9 (w01–w09, centres 24–152 s) | −158.35 → −105.54 ms | **+0.37656 ms/s** | −172.086 ms | 0.923 | 4.49 ms | 16.19 ms |
+
+Both are dilation, not offset: the linear fit beats the constant-lag model by
+4.1× / 3.6× in residual RMS. FLY124's four lags are WP12's; the cluster job
+re-measured w03/w04 independently at −48.51 / −34.56 ms (vs −49.00 / −34.61),
+i.e. within 0.5 ms, so the two derivations are the same measurement.
+
+**The algebra** (`scripts/michaels_calib/fit.py:fit_lag`, applied identically to
+both recordings). With the old constants the audio prefers the telemetry shifted
+by `lag(t) = a + b·t` seconds. The loader maps a raw telemetry stamp τ to
+audio-frame time as `W = d·τ + (ts_raw[0] − time_offset)`, so absorbing the
+drift means
+
+```
+time_dilation_new = time_dilation_old / (1 − b)
+time_offset_new   = time_offset_old  − a / (1 − b)
+```
+
+FLY124 (b = 6.5356e−4 s/s, a = −0.086131 s, old = (−20.84, 1.001)):
+
+```
+1/(1−b)        = 1.00065399
+time_dilation  = 1.001   / 0.99934644 = 1.001654644
+time_offset    = −20.84 − (−0.086131)/0.99934644 = −20.84 + 0.086187 = −20.753813
+```
+
+FLY125 (b = 3.7656e−4 s/s, a = −0.172086 s, old = (−26.51, 1.0048)):
+
+```
+1/(1−b)        = 1.000376701
+time_dilation  = 1.0048 / 0.99962344 = 1.005178509
+time_offset    = −26.51 − (−0.172086)/0.99962344 = −26.51 + 0.172151 = −26.337849
+```
+
+### Value — a real ~+0.6 rev/s deficit, of an UNRESOLVED functional form
+
+Telemetry is LOW at cruise on both recordings (DREGON is biased the other way,
+so this is a rig property, not a referee bias). The additive-vs-multiplicative
+discriminator (`prot`: per-rotor optimal offset regressed on that rotor's own
+mean rps, over the 74–91 rev/s cruise spread) is **inconclusive**:
+
+| recording | additive RMS | multiplicative RMS | verdict | margin | free-line R² | predicted spread | observed spread |
+|---|---|---|---|---|---|---|---|
+| FLY124 | 0.2939 (b = 0.6796) | 0.30557 (g = 0.008387) | additive | 4 % | 0.013 | 0.147 | 0.938 |
+| FLY125 | 0.38621 (b = 0.5545) | 0.38607 (g = 0.006904) | multiplicative | 0.04 % | 0.004 | 0.117 | 1.964 |
+
+The two recordings return opposite verdicts, one of them by 0.04 % — a tie. The
+free lines explain ~1 % of the variance, and the observed per-rotor spread is
+6–17× what *either* model predicts, i.e. the per-rotor optima are dominated by
+something else (per-rotor acoustic strength / tracking) and the test has no
+statistical power. The matched `val` comparison agrees it cannot separate them
+(mean Δ ≈ −3e−4 residual, both families reaching ~0.52).
+
+**Resolved on physical grounds, not statistics: MULTIPLICATIVE.** The two forms
+are indistinguishable in the cruise band where they were measured, but the
+published frames span the WHOLE recording — ground idle, warm-up, spin-down. An
+additive +0.6 rev/s would corrupt a near-stationary rotor's label and
+manufacture harmonics at a standstill; a scale correctly vanishes as rps → 0.
+Shipped: FLY124 ×1.00839, FLY125 ×1.00690 (+0.671 / +0.552 rev/s at 80 rev/s).
+
+### Applied
+
+`src/data_processing/michaels.py`: `MICHAELS_FILES` carries the new
+offset/dilation pairs, and a new `MICHAELS_RPS_SCALE` (keyed by CSV stem, with
+`rps_scale_for()`) is applied inside `_load_michaels_data_raw`, so **every**
+consumer of the loader — `load_michaels_timeframe(s)`, `publish_frame_datasets`,
+`create_dregon_librimix`, the online-mix `michaels` source, `vk_blind_sweep`,
+`scripts/michaels_calib/windows.py` — gets calibrated labels with no call-site
+change. Unknown recordings (the 103 unaligned `new-drone-noises` logs) fall back
+to 1.0. `michaels-frames` was republished on top of this; its per-recording
+`meta` now records `rps_scale` plus a `provenance.calibration` note, and the raw
+`Motor:Speed:*` CSV columns remain **uncalibrated** in the `motor_speed` block
+(the same fixed/raw pairing DREGON has with `motors_command_raw`).
+
+Known bypass paths (read the CSV directly, so they never see the scale):
+`writing/reports/2026-06-30_synthetic-rps-trajectories/prepare.py` (RC-stick
+figure, no rps), the `motor_speed` block above, and
+`notebooks/michael_data_analysis.ipynb` (which still hardcodes the OLD
+`-20.84/1.001` and `-26.51/1.0048` — it is the historical origin of the
+hand-tuned pair, left as a record).
+
+### Validation
+
+`run_sweep.py --post-shipped` re-runs the `post` stage (residual lag + residual
+global offset) on every cruise window of both recordings, rebuilt with whatever
+`michaels.py` now ships. Expect residual lag ≈ 0 and residual b ≈ 0.
+`windows.selfcheck()` now rebuilds explicitly at `FROZEN_BEATVK_CONSTANTS`
+(−20.84, 1.001, scale 1.0), since the frozen beat-VK prep cache predates the
+calibration and can no longer match the shipped constants by construction.
+
+### Stale artefacts
+
+Everything built from Michael's telemetry before this commit carries labels that
+are late by 30–160 ms and low by ~0.6 rev/s: the frozen `beatvk-valid-raw`
+protocol and its `results/beatvk_vk_arms` prep cache, the `docs/experiments/beat-vk.md`
+scoreboard rows involving FLY124, the `DREGON-LM-V4-michaels*` dataset variants,
+and any paper number quoting FLY124 label accuracy. Nothing is regenerated here.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
