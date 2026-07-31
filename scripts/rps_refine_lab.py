@@ -151,6 +151,13 @@ from data_processing.vk_tracking import (  # noqa: E402
 #: disturbing the production cache — see `scripts/beatvk_rescore.py`.
 BEATVK_OUT = Path("results/beatvk_vk_arms")
 LAB_OUT = Path("results/rps_refine_lab")
+#: Where `get_seed` caches `blind_seed` results.  A seed is a pure function of
+#: the window AUDIO, so it must be namespaced by the prep build: two builds of
+#: the same protocol can hold DIFFERENT audio for the same (recording, window)
+#: — the FLY124 recalibration moved every window's audio 86 ms — and a shared
+#: cache silently scores one build with the other's seeds.  Measured cost of
+#: getting this wrong: FLY124 w03 seeds 82.7 vs 54.45 rev/s on its 4th rotor.
+SEED_CACHE_DIR = LAB_OUT / "seed_cache"
 N_ROTORS = 4
 CHAINS = (
     "baseline",
@@ -271,7 +278,7 @@ def seed_cfg_tag(cfg: SeedConfig) -> str:
 
 
 def get_seed(name: str, prep: Prepared, use_cache: bool, cfg: SeedConfig = SEED_CFG) -> SeedResult:
-    path = LAB_OUT / "seed_cache" / f"{name}{seed_cfg_tag(cfg)}.npz"
+    path = SEED_CACHE_DIR / f"{name}{seed_cfg_tag(cfg)}.npz"
     if use_cache and path.exists():
         with np.load(path) as z:
             gate, bw = float(z["update_gate"]), float(z["bw_hz"])
@@ -1786,7 +1793,10 @@ def main() -> None:
 
     if args.beatvk_out:
         globals()["BEATVK_OUT"] = Path(args.beatvk_out)
-        print(f"beatvk prep cache: {args.beatvk_out}")
+        # Seeds follow the audio they were computed from, never the default
+        # cache — see the SEED_CACHE_DIR comment.
+        globals()["SEED_CACHE_DIR"] = Path(args.beatvk_out) / "seed_cache"
+        print(f"beatvk prep cache: {args.beatvk_out} (seeds cached beside it)")
     if args.no_subbin:
         globals()["M1_SUBBIN"] = False
     m3_pool = tuple(float(s) for s in args.m3_pool.split(",") if s.strip()) if args.m3_pool else ()
