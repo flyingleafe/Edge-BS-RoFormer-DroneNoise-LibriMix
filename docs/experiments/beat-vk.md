@@ -97,6 +97,16 @@ bar first — R1 quantifies how much of VK's edge is seeding vs precision.
 
 ### Full scoreboard on the fixed raw protocol (2026-07-29)
 
+> ⚠️ **Every `fly124_*` column below is STALE as of 2026-07-31.** Michael's
+> telemetry was recalibrated (measured clock dilation + a ~0.67 rev/s
+> multiplicative label deficit — `docs/experiments/rps-refine-precision.md`
+> § WP13), so the FLY124 ground truth these numbers were scored against was
+> late by 31–62 ms and low by ~0.67 rev/s. `beatvk-valid-raw@268c766052cb` and
+> the `results/beatvk_vk_arms` prep cache both predate the fix; the **1.027
+> blind-VK FLY124 bar** and every FLY124 model row must be re-scored on a
+> republished protocol before they mean anything. DREGON columns (and the
+> 0.688 bar) are unaffected.
+
 `beatvk-valid-raw@268c766052cb`, 15 windows, per-window PIT-MAE vs RAW
 telemetry, pooled (arm `none`). Steady = DREGON w1/w2 ×3 + FLY124 w3–5
 (excludes each recording's ramp window + FLY124 warmup).
