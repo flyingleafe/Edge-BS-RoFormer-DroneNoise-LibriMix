@@ -829,6 +829,43 @@ pseudo-labels from AVQ audio, no michaels telemetry in the product — but the
 annotator's *validation* numbers on FLY124 are stale), and every michaels
 *audio* artefact (audio itself never changed, only the label clock/scale).
 
+
+### WP10 addendum — the anti-circularity controls (were measured, not recorded here)
+
+The FLY124 label study ran controls that this document failed to carry over, so
+a later reader (and the paper draft) could not cite them. Recording them now.
+Referee = VK reconstruction residual, lower = explains the audio better; raw
+telemetry baseline in the first row.
+
+| test | what it rules out | fly124_w03 | fly124_w04 | dregon_ns_w02 |
+|---|---|---|---|---|
+| `raw` | — | 0.5498 | 0.5506 | 0.6341 |
+| `rnd0..3` random offsets, same RMS | "any perturbation that size helps" | 0.5510 / 0.5511 / 0.5606 / 0.5713 — **all worse than raw** | 0.5500 / 0.5523 / 0.5617 / 0.5726 — **all worse** | 0.6297 / 0.6337 / 0.6338 / 0.6350 — one better |
+| `bscan` global offset chosen by AUDIO alone | circularity (never sees our estimate) | 0.5440 @ **+0.6** | 0.5382 @ **+0.6** | 0.6300 @ **−0.6** (opposite sign) |
+| `xw` offsets fitted on the *other* window | window-specific estimation noise | 0.5440 | 0.5398 | 0.6286 |
+| `xwlag` the other window's lag | same | 0.5354 | 0.5471 | 0.6368 (worse) |
+| `xwboth` other window's lag **and** offsets, fully held out | same | **0.5293** | **0.5335** | 0.6295 |
+
+*Denominator note:* percentages quoted elsewhere for `xwboth` (80 % / 62 %)
+are fractions of the gap between raw telemetry and our own audio-fitted
+trajectory — w03 (0.5498 − 0.5241) and w04 (0.5506 − 0.5230). That
+denominator involves our estimate, so for a claim that must stay free of
+circularity, quote the residuals directly instead: the fully held-out
+combination is the best of every corrected variant tested on both FLY124
+windows.
+
+Two facts carry the argument: a **one-parameter** time shift and a
+**one-parameter** global offset, each selected by the audio with no reference
+to our own trajectory, each **transferring to a window it was not fitted on**.
+Random perturbations of the same magnitude go the *wrong* way on FLY124 and are
+indistinguishable from the fitted ones on DREGON — which is the control that
+makes "the telemetry is wrong" preferable to "any change helps".
+
+*Scope caveat for citation:* `xwboth` is a genuine held-out transfer **between
+the two FLY124 cruise windows**; it is not a held-out test across recordings,
+and FLY124's constants were fitted on four cruise windows in total. State it
+that way and no more strongly.
+
 ## WP14 — the value model challenged, and settled: ONE global scale, no per-rotor terms (2026-07-31)
 
 WP13's rev/s calibration was fitted from 2–4 windows per recording, and its
