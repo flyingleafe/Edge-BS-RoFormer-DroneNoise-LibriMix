@@ -654,6 +654,121 @@ def _band_penalty(w: torch.Tensor, cfg: BeamCfg) -> tuple[torch.Tensor, torch.Te
     return pen, span > cfg.span_hard
 
 
+class Objective(NamedTuple):
+    """Everything needed to evaluate the tracker's cost at ANY trajectory.
+
+    Built once per window by :func:`build_objective`; consumed both by
+    :func:`joint_beam_track` (which searches it) and by
+    :func:`score_trajectory` (which evaluates it at a trajectory somebody else
+    produced — the ground truth, or a competing stage's output).
+
+    That second use is the whole point.  A search and its objective fail in
+    opposite directions and the fix is different for each, so the two must be
+    told apart before anything is tuned: if the TRUE trajectory scores CHEAPER
+    than the tracker's own output, the objective is right and the search lost
+    it; if it scores DEARER, no amount of search will help.
+    """
+
+    tab: CombTables
+    scores: torch.Tensor  # (D, T) normalised single-comb surface
+    nrm_a: torch.Tensor  # (T,) per-frame affine scale of `normalise_scores`
+    nrm_b: torch.Tensor  # (T,) per-frame affine shift, PER DISTINCT COMB
+    grid: torch.Tensor
+    a: torch.Tensor
+    s: torch.Tensor
+    b_mix: torch.Tensor
+    ou: OUPrior
+    emis: EmissionCfg
+    beam: BeamCfg
+
+
+def build_objective(
+    lm: np.ndarray | torch.Tensor,
+    bin_hz: float,
+    *,
+    ou: OUPrior | None = None,
+    emis: EmissionCfg | None = None,
+    beam: BeamCfg | None = None,
+    device: str = "cpu",
+) -> Objective:
+    """Assemble the emission tables, the normalisation and the OU coefficients."""
+    ou = ou or OUPrior()
+    emis = emis or EmissionCfg()
+    beam = beam or BeamCfg()
+    dev = torch.device(device)
+    lm_t = (
+        lm.to(device=dev, dtype=torch.float32)
+        if isinstance(lm, torch.Tensor)
+        else torch.as_tensor(np.ascontiguousarray(lm), device=dev, dtype=torch.float32)
+    )
+    grid = torch.as_tensor(emis.grid(), device=dev, dtype=torch.float32)
+    tab = comb_tables(lm_t, bin_hz, emis, grid)
+    raw = comb_scores_from_tables(tab)
+    scores = normalise_scores(raw, emis)
+    nrm_a, nrm_b = _norm_affine(raw, emis)
+    a_np, s_np = ou.coefficients()
+    return Objective(
+        tab=tab,
+        scores=scores,
+        nrm_a=nrm_a,
+        nrm_b=nrm_b,
+        grid=grid,
+        a=torch.as_tensor(a_np, device=dev, dtype=torch.float32),
+        s=torch.as_tensor(s_np, device=dev, dtype=torch.float32),
+        b_mix=torch.as_tensor(MIXER, device=dev, dtype=torch.float32) / NUM_ROTORS,
+        ou=ou,
+        emis=emis,
+        beam=beam,
+    )
+
+
+def score_trajectory(obj: Objective, w: np.ndarray) -> dict[str, Any]:
+    """Total and per-term cost of a ``(4, T)`` trajectory under ``obj``.
+
+    ``w`` is in rev/s on the spectrogram's OWN frame grid and is snapped to the
+    emission grid, exactly as every beam state is.  The accumulation is the
+    tracker's, term for term: ``-lambda_e * e_union`` per frame, the rotor-band
+    penalty per frame, and the OU transition cost between consecutive frames
+    with ``mu`` taken from frame 0 (``mu_mode="frame0"``) or tracked
+    (``"running"``), so ``total`` is directly comparable to the tracker's
+    ``final_cost_best``.
+    """
+    dev = obj.grid.device
+    w_t = torch.as_tensor(np.ascontiguousarray(w.T), device=dev, dtype=torch.float32)  # (T, 4)
+    n_t = min(w_t.shape[0], obj.scores.shape[1])
+    w_t = w_t[:n_t]
+    idx = _to_idx(w_t, obj.grid)
+    w_snap = obj.grid[idx]  # on-grid, which is what the beam can actually hold
+    emis_t = torch.zeros(n_t, device=dev)
+    mass_t = torch.zeros(n_t, device=dev)
+    for t in range(n_t):
+        u, m = union_emission(obj.tab, idx[t : t + 1], t)
+        emis_t[t] = obj.nrm_a[t] * u[0] + m[0] * obj.nrm_b[t]
+        mass_t[t] = m[0]
+    pen, rej = _band_penalty(w_snap, obj.beam)
+    a_mu = math.exp(-obj.ou.dt / obj.beam.mu_tau_s) if obj.beam.mu_mode == "running" else 1.0
+    mu = w_snap[0] @ obj.b_mix
+    trans = torch.zeros(n_t, device=dev)
+    for t in range(1, n_t):
+        trans[t] = _mode_cost(w_snap[t - 1], w_snap[t], mu, obj.a, obj.s, obj.ou.huber_knee)
+        mu = a_mu * mu + (1.0 - a_mu) * (w_snap[t] @ obj.b_mix)
+    e_term = -obj.beam.lambda_e * emis_t
+    total = float((e_term + pen + trans).sum())
+    return {
+        "total": total,
+        "emission": float(e_term.sum()),
+        "transition": float(trans.sum()),
+        "band": float(pen.sum()),
+        "n_rejected_frames": int(rej.sum()),
+        "comb_mass_mean": float(mass_t.mean()),
+        "per_frame": {
+            "emission": e_term.detach().cpu().numpy(),
+            "transition": trans.detach().cpu().numpy(),
+            "band": pen.detach().cpu().numpy(),
+        },
+    }
+
+
 def joint_beam_track(
     lm: np.ndarray,
     bin_hz: float,
