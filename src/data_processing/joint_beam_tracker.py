@@ -254,6 +254,25 @@ class EmissionCfg:
     #: widened to catch: measured contribution 0.93 -> 0.30).
     n_band: int = 0
     k_weight: str = "k"  # "k" | "uniform"
+    #: How the per-tooth contrasts are pooled into one score.
+    #:
+    #: ``"mean"`` (the shipped form) is a weighted mean, and its defect is that
+    #: it rewards ANY loud content at multiples of ``c``: a comb with four loud
+    #: teeth and twelve absent ones scores like one with sixteen medium teeth.
+    #: Nothing in it says *most of the predicted teeth are actually there*,
+    #: which is the property that distinguishes a rotor from a coincidence.
+    #: Measured consequence (WP20): on six windows the emission scores the TRUE
+    #: speeds barely above the per-frame median, so the objective ranks the
+    #: ground truth DEARER than the tracker's own 27 rev/s-error output.
+    #:
+    #: - ``"quantile"``: the ``pool_q`` quantile of the per-tooth contrast.  A
+    #:   real comb has most teeth present, so a low quantile stays high; a
+    #:   coincidence riding a few loud lines collapses.
+    #: - ``"frac_pos"``: the weighted fraction of teeth with positive contrast —
+    #:   scale-free, and the most direct statement of "the teeth are there".
+    pool: str = "mean"  # "mean" | "quantile" | "frac_pos"
+    #: Quantile for ``pool="quantile"`` (0.25 = the lower quartile of teeth).
+    pool_q: float = 0.25
     f_min: float = 20.0  # COARSE_F_MIN — keeps the k1/k2 teeth
     f_max: float = 6000.0
     #: Frames of boxcar smoothing before the per-frame normalisation.
@@ -351,10 +370,32 @@ def comb_tables(
     return CombTables(v_on, v_half, bid_on, bid_half, w)
 
 
-def comb_scores_from_tables(tab: CombTables) -> torch.Tensor:
-    """``(D, T)`` single-rotor comb contrast — the shortlist bound."""
+def comb_scores_from_tables(tab: CombTables, cfg: EmissionCfg | None = None) -> torch.Tensor:
+    """``(D, T)`` single-rotor comb score, pooled per :attr:`EmissionCfg.pool`.
+
+    The per-tooth contrast ``v_on[k] - v_half[k]`` is the same in every mode;
+    only the pooling over ``k`` changes.  ``"mean"`` reproduces the shipped
+    weighted mean exactly, so it stays an A/B knob.
+    """
+    cfg = cfg or EmissionCfg()
     w = tab.w[:, :, None]
-    return (w * tab.v_on).sum(dim=1) - (w * tab.v_half).sum(dim=1)
+    if cfg.pool == "mean":
+        return (w * tab.v_on).sum(dim=1) - (w * tab.v_half).sum(dim=1)
+    d = tab.v_on - tab.v_half  # (D, K, T) per-tooth contrast
+    valid = tab.w > 0  # (D, K) — teeth outside [f_min, f_max] carry no weight
+    if cfg.pool == "frac_pos":
+        hit = (d > 0).to(d.dtype) * tab.w[:, :, None]
+        return hit.sum(dim=1)  # w sums to 1 over valid teeth -> a fraction
+    if cfg.pool == "quantile":
+        # An invalid tooth must not drag the quantile down, so push it to +inf
+        # and take the quantile over the valid count only.
+        big = torch.finfo(d.dtype).max
+        dv = torch.where(valid[:, :, None], d, torch.full_like(d, big))
+        srt, _ = dv.sort(dim=1)
+        n_valid = valid.sum(dim=1).clamp_min(1)  # (D,)
+        pos = ((n_valid - 1).to(d.dtype) * cfg.pool_q).round().long()  # (D,)
+        return srt.gather(1, pos[:, None, None].expand(-1, 1, d.shape[2]))[:, 0]
+    raise ValueError(f"unknown pool {cfg.pool!r}")
 
 
 def union_emission(
@@ -531,6 +572,37 @@ class BeamCfg:
     #: Beam de-duplication resolution, rev/s.  Without it the beam fills with
     #: near-identical copies of one hypothesis and silently loses diversity.
     dedup_rps: float = 0.25
+    #: De-duplicate on the SORTED speed vector, so two states that differ only
+    #: by which row holds which rotor occupy one beam slot instead of two.
+    #:
+    #: **Not exact, and the reason is worth stating** — it looked exact and the
+    #: unit test refuted it.  The emission and the transition cost ARE
+    #: permutation-invariant (a relabelling permutes ``m_from`` and ``m_to``
+    #: together and the differential modes share one scale, see
+    #: :class:`OUPrior`), but ``mu`` is inherited from each state's OWN
+    #: ancestry, so two states that are permutations of each other NOW may carry
+    #: trims that are not permutations of each other, and their futures differ.
+    #: Merging keeps the cheaper one and discards a live hypothesis: measured
+    #: ``final_cost_best`` -226.08 with the merge against -227.04 without.
+    #:
+    #: It is offered because the trade may still be worth taking — the beam has
+    #: only ``width`` slots for a ``len(grid)^4`` space and the global family
+    #: manufactures permuted duplicates by construction (best-of-24 per PARENT,
+    #: and different parents order the same physical set differently) — but it
+    #: costs objective value, so it is OFF until a sweep shows it buys accuracy.
+    dedup_sorted: bool = False
+    #: Beam slots reserved for MARGINAL coverage rather than joint cost.
+    #:
+    #: The failure this addresses is representational, and it is the reason a
+    #: joint beam can lose to an exactly-solved 1-D DP.  ``width`` states drawn
+    #: by joint cost from a ``len(grid)^4`` space give each rotor only
+    #: ``width^(1/4)`` distinct values — 4 values per rotor at ``width = 256``.
+    #: A rotor whose evidence is momentarily weak has its alternatives crowded
+    #: out by states that differ only in a rotor that is doing well.  With a
+    #: reserve, the cheapest state holding each distinct value of each sorted
+    #: slot is admitted regardless of its joint rank, so every rotor keeps a
+    #: live set of alternatives to recover onto.  ``0`` = the plain top-B beam.
+    diversity_reserve: int = 0
     #: ``"frame0"`` freezes each state's differential trim at its own frame-0
     #: assignment; ``"running"`` tracks it with an exponential mean of length
     #: ``mu_tau_s`` (more robust to a bad frame 0, weaker against slow drift).
@@ -703,7 +775,7 @@ def build_objective(
     )
     grid = torch.as_tensor(emis.grid(), device=dev, dtype=torch.float32)
     tab = comb_tables(lm_t, bin_hz, emis, grid)
-    raw = comb_scores_from_tables(tab)
+    raw = comb_scores_from_tables(tab, emis)
     scores = normalise_scores(raw, emis)
     nrm_a, nrm_b = _norm_affine(raw, emis)
     a_np, s_np = ou.coefficients()
@@ -797,7 +869,7 @@ def joint_beam_track(
     lm_t = torch.as_tensor(np.ascontiguousarray(lm), device=dev, dtype=torch.float32)
     grid = torch.as_tensor(emis.grid(), device=dev, dtype=torch.float32)
     tab = comb_tables(lm_t, bin_hz, emis, grid)
-    raw = comb_scores_from_tables(tab)
+    raw = comb_scores_from_tables(tab, emis)
     scores = normalise_scores(raw, emis)  # (D, T) — peaks + the shortlist bound
     # The union score is built from the SAME tables, so it must carry the same
     # per-frame normalisation or `lambda_e` would mean two different things.
@@ -843,6 +915,7 @@ def joint_beam_track(
         "k_weight": emis.k_weight,
     }
     n_distinct: list[int] = []
+    marg: list[int] = []
     n_rejected: list[float] = []
     shared: list[float] = []
 
@@ -934,6 +1007,8 @@ def joint_beam_track(
         n_short = len(prop_c)
         short = torch.argsort(prop_c)  # cost-ascending
         key = (prop_w[short] / beam.dedup_rps).round().to(torch.int64)
+        if beam.dedup_sorted:
+            key, _ = key.sort(dim=-1)
         key1 = (key * _HASH_MULT.to(dev)).sum(dim=-1)
         _, inv = torch.unique(key1, return_inverse=True)
         rank = torch.arange(n_short, device=dev)
@@ -941,11 +1016,41 @@ def joint_beam_track(
         first.scatter_reduce_(0, inv, rank, reduce="amin")
         first = first.sort().values
         n_distinct.append(int(len(first)))
-        sel = short[first[: min(beam.width, len(first))]]
+        n_take = min(beam.width, len(first))
+        chosen = first[:n_take]
+        if beam.diversity_reserve > 0 and len(first) > n_take:
+            # Marginal coverage: the top-B by joint cost can hold four values of
+            # one rotor and one of another, so a rotor with momentarily weak
+            # evidence loses every alternative it would need to recover onto.
+            # Reserve slots for the cheapest state carrying each value of each
+            # SORTED slot that the plain top-B does not already carry, so the
+            # beam's per-rotor marginal stays wide even when its joint cost does
+            # not justify it.  Sorted slots (not rows) because rotor identity is
+            # arbitrary — see `dedup_sorted`.
+            n_keep = max(n_take - beam.diversity_reserve, 1)
+            head, tail = chosen[:n_keep], first[n_keep:]
+            have = key[head].reshape(-1) * NUM_ROTORS + torch.arange(NUM_ROTORS, device=dev).repeat(
+                len(head)
+            )
+            have_set = torch.unique(have)
+            cand = key[tail] * NUM_ROTORS + torch.arange(NUM_ROTORS, device=dev)[None, :]
+            novel = ~torch.isin(cand, have_set)  # (n_tail, 4)
+            # cost-ascending already, so the first hit for a value is its cheapest
+            extra = tail[novel.any(dim=1)][: n_take - n_keep]
+            chosen = torch.cat([head, extra])
+        sel = short[chosen]
 
         cur_w = prop_w[sel]
         cur_c = prop_c[sel]
         par = prop_p[sel]
+        # How wide is the beam's PER-ROTOR marginal?  `width` states drawn by
+        # joint cost from a `len(grid)^4` space give each rotor about
+        # `width^(1/4)` values, so this is the number that says whether the beam
+        # is representing a distribution or a point.  Reported as the MINIMUM
+        # over the four sorted slots, because a beam is only as good as the
+        # rotor it covers worst.
+        slot_k = (cur_w.sort(dim=-1).values / beam.dedup_rps).round().to(torch.int64)
+        marg.append(min(int(slot_k[:, i].unique().numel()) for i in range(NUM_ROTORS)))
         mu = a_mu * mu[par] + (1.0 - a_mu) * (cur_w @ b_mix)
         n_b = cur_w.shape[0]
         states[t, :n_b] = cur_w
@@ -968,6 +1073,8 @@ def joint_beam_track(
             "final_cost_spread": float(fc.max() - fc.min()),
             "final_cost_p90_minus_best": float(np.percentile(fc, 90) - fc.min()),
             "beam_distinct_mean": float(np.mean(n_distinct)) if n_distinct else 0.0,
+            "beam_marginal_min_mean": float(np.mean(marg)) if marg else 0.0,
+            "beam_marginal_min_worst": int(np.min(marg)) if marg else 0,
             "beam_distinct_min": int(np.min(n_distinct)) if n_distinct else 0,
             "band_rejected_frac": float(np.mean(n_rejected)) if n_rejected else 0.0,
             "shared_evidence_mean": float(np.mean(shared)) if shared else 0.0,

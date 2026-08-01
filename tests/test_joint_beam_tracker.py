@@ -20,6 +20,7 @@ import itertools
 import math
 import os
 import sys
+from typing import Any
 
 import numpy as np
 import pytest
@@ -369,3 +370,60 @@ def test_tracker_admits_an_unresolvable_twin_pair():
     means = np.sort(traj.mean(axis=1))
     assert ((means > 72.0) & (means < 77.0)).sum() == 2, means
     assert abs(means[2] - 82.0) < 1.0 and abs(means[3] - 90.0) < 1.0
+
+
+def test_score_trajectory_matches_the_reference_objective():
+    """`score_trajectory` is the load-bearing measurement instrument of the
+    objective-vs-search diagnosis, so it is pinned against this file's
+    independent reimplementation of the same cost."""
+    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+
+    bases = [72.0, 80.0, 88.0, 96.0]
+    lm, bin_hz, st, truth = _synth_window(bases, n_frames=30, drift=1.5)
+    emis = EmissionCfg(lo=66.0, hi=102.0, step=0.5)
+    beam, ou = BeamCfg(), OUPrior()
+    gt = np.round(truth.T / emis.step) * emis.step  # (T, 4), on grid
+    obj = jbt.build_objective(lm, bin_hz, ou=ou, emis=emis, beam=beam)
+    got = jbt.score_trajectory(obj, gt.T)
+    assert got["total"] == pytest.approx(_objective(lm, bin_hz, gt, emis, beam, ou), rel=1e-4)
+    parts = got["emission"] + got["transition"] + got["band"]
+    assert got["total"] == pytest.approx(parts, rel=1e-6)
+
+
+def test_sorted_dedup_trades_objective_value_for_marginal_width():
+    """Merging permuted states is NOT free, and this pins the trade it makes.
+
+    The merge looks exact — emission and transition cost are both
+    permutation-invariant — but `mu` is inherited from each state's own
+    ancestry, so two states that are permutations of each other now can carry
+    trims that are not, and merging discards a live hypothesis.  What it buys
+    is a wider per-rotor marginal.  Both directions are asserted so that a
+    future change cannot silently turn a measured trade into a free lunch."""
+    bases = [74.0, 76.0, 82.0, 90.0]
+    lm, bin_hz, st, _ = _synth_window(bases, n_frames=30, drift=1.0)
+    emis = EmissionCfg(lo=66.0, hi=102.0, step=0.5)
+    kw: dict[str, Any] = {"width": 64, "n_global": 8, "n_peaks": 12, "n_local": 3}
+    _, d_on = joint_beam_track(lm, bin_hz, st, st, emis=emis, beam=BeamCfg(dedup_sorted=True, **kw))
+    _, d_off = joint_beam_track(
+        lm, bin_hz, st, st, emis=emis, beam=BeamCfg(dedup_sorted=False, **kw)
+    )
+    assert d_on["beam_marginal_min_mean"] > d_off["beam_marginal_min_mean"]
+    # it costs objective value, but only marginally — a large regression here
+    # means the merge is destroying hypotheses, not just permuted copies
+    assert d_on["final_cost_best"] <= 0.99 * d_off["final_cost_best"]
+
+
+def test_diversity_reserve_widens_the_per_rotor_marginal():
+    """The reserve exists to stop a rotor's alternatives being crowded out by
+    states that differ only in a rotor that is already doing well."""
+    bases = [74.0, 76.0, 82.0, 90.0]
+    lm, bin_hz, st, _ = _synth_window(bases, n_frames=30, drift=1.0)
+    emis = EmissionCfg(lo=66.0, hi=102.0, step=0.5)
+    kw: dict[str, Any] = {"width": 64, "n_global": 8, "n_peaks": 12, "n_local": 3}
+    _, plain = joint_beam_track(lm, bin_hz, st, st, emis=emis, beam=BeamCfg(**kw))
+    _, div = joint_beam_track(
+        lm, bin_hz, st, st, emis=emis, beam=BeamCfg(diversity_reserve=32, **kw)
+    )
+    assert div["beam_marginal_min_mean"] > plain["beam_marginal_min_mean"]
+    # and the beam still holds `width` states — the reserve reallocates, not adds
+    assert div["beam_distinct_mean"] > 0

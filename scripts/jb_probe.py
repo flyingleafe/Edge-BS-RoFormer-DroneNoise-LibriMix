@@ -89,6 +89,42 @@ CEILING_CFGS: dict[str, dict[str, Any]] = {
     "nfft8192_k50": {"n_fft": 8192, "k_max": 50, "b0_rps": 0.0},
     "nfft8192_k50_b025": {"n_fft": 8192, "k_max": 50, "b0_rps": 0.25},
     "nfft4096_k30_step025": {"n_fft": 4096, "k_max": 30, "b0_rps": 0.0, "step": 0.25},
+    # --- POOLING.  The first sweep showed resolution buys at most ~1.6x while
+    # the objective ranks the ground truth DEARER than a 27 rev/s-error track,
+    # so the defect is in the score function, not the analysis.  A weighted MEAN
+    # over teeth rewards any loud content at multiples of c; a quantile or a
+    # positive-fraction demands that MOST predicted teeth are actually present,
+    # which is the property that separates a rotor from a coincidence.
+    "pool_frac_k16": {"n_fft": 4096, "k_max": 16, "b0_rps": 0.0, "pool": "frac_pos"},
+    "pool_frac_k30": {"n_fft": 4096, "k_max": 30, "b0_rps": 0.0, "pool": "frac_pos"},
+    "pool_frac_k50": {"n_fft": 4096, "k_max": 50, "b0_rps": 0.0, "pool": "frac_pos"},
+    "pool_q25_k16": {"n_fft": 4096, "k_max": 16, "b0_rps": 0.0, "pool": "quantile"},
+    "pool_q25_k30": {"n_fft": 4096, "k_max": 30, "b0_rps": 0.0, "pool": "quantile"},
+    "pool_q50_k30": {
+        "n_fft": 4096,
+        "k_max": 30,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "pool_q": 0.5,
+    },
+    "pool_q25_k50": {"n_fft": 4096, "k_max": 50, "b0_rps": 0.0, "pool": "quantile"},
+    "pool_frac_k30_step025": {
+        "n_fft": 4096,
+        "k_max": 30,
+        "b0_rps": 0.0,
+        "pool": "frac_pos",
+        "step": 0.25,
+    },
+    # --- temporal integration: the truth is stable over ~0.1-0.3 s, so a
+    # per-frame score throws away evidence the tracker has no other way to get.
+    "pool_frac_k30_sm9": {
+        "n_fft": 4096,
+        "k_max": 30,
+        "b0_rps": 0.0,
+        "pool": "frac_pos",
+        "smooth_frames": 9,
+    },
+    "mean_k16_sm9": {"n_fft": 4096, "k_max": 16, "b0_rps": 0.0, "smooth_frames": 9},
 }
 
 #: Localisation tolerances reported by `--mode ceiling`, rev/s.
@@ -355,6 +391,7 @@ def ceiling_unit(task: tuple[str, Path, str]) -> tuple[str, str]:
         from data_processing.joint_beam_tracker import (
             BeamCfg,
             EmissionCfg,
+            _smooth_frames,
             comb_scores_from_tables,
             comb_tables,
         )
@@ -373,7 +410,9 @@ def ceiling_unit(task: tuple[str, Path, str]) -> tuple[str, str]:
             emis = EmissionCfg(**kw)
             lm_t = torch.as_tensor(lm, device=device, dtype=torch.float32)
             grid_t = torch.as_tensor(emis.grid(), device=device, dtype=torch.float32)
-            surf = comb_scores_from_tables(comb_tables(lm_t, bin_hz, emis, grid_t))
+            surf = _smooth_frames(
+                comb_scores_from_tables(comb_tables(lm_t, bin_hz, emis, grid_t), emis), emis
+            )
             stats = _peak_stats(
                 surf.cpu().numpy(), emis.grid(), gt_on(prep, st), n_peaks, half_local
             )
