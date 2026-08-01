@@ -2085,6 +2085,66 @@ says *most of the predicted teeth are actually there* — which is precisely the
 property that separates a rotor from a coincidence, and precisely why a quiet
 true rotor loses to a spurious placement riding a loud neighbour's harmonics.
 
+### The pooling sweep: measured, and it is the biggest single lever so far
+
+`EmissionCfg.pool` becomes a measured knob — `"mean"` (the shipped form,
+bit-identical), `"quantile"` (the `pool_q` quantile of the per-tooth contrast)
+and `"frac_pos"` (the weighted fraction of teeth with positive contrast).
+Worst-rotor ACQUISITION, per window and averaged (job `python-d65bd8`):
+
+| cfg | FLY124 w3 | FLY124 w4 | nosrc w0 | nosrc w1 | speech w1 | synth | mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| shipped (mean, 2048, k8) | 0.128 | 0.190 | 0.232 | 0.216 | 0.214 | 0.591 | 0.262 |
+| best resolution-only (4096, k16) | 0.255 | 0.367 | 0.331 | 0.351 | 0.305 | 0.687 | 0.383 |
+| **quantile q=0.25, 4096, k16** | **0.319** | **0.497** | 0.388 | 0.361 | **0.393** | **0.731** | **0.448** |
+| quantile q=0.25, 4096, k30 | 0.293 | 0.427 | 0.283 | 0.297 | 0.343 | 0.689 | 0.389 |
+| frac_pos, 4096, k16 | 0.226 | 0.375 | 0.299 | 0.383 | 0.327 | 0.635 | 0.374 |
+| frac_pos, 4096, k50 | 0.152 | 0.198 | 0.228 | 0.204 | 0.244 | 0.275 | 0.217 |
+
+Quantile pooling at `q = 0.25` with `k <= 16` is best on five of six windows and
+2.5x shipped on the two hardest (0.128 -> 0.319, 0.190 -> 0.497).  TRACKING
+moves less — 0.312 shipped -> 0.377 — which is consistent with the mechanism:
+the pooling fixes *which candidate wins*, not how much evidence a frame carries.
+`frac_pos` is consistently worse than `quantile`, so the MAGNITUDE of a tooth
+carries information a present/absent threshold discards, and it degrades badly
+with `k` (0.217 at k=50) because a thresholded count is dominated by the many
+weak high teeth.
+
+(Note when comparing with the first sweep: the probe now applies the emission's
+own `smooth_frames` before scoring, worth a uniform +0.014 — the earlier table
+measured an unsmoothed surface.)
+
+### Carrying it into the union: QUALITY x SHARE
+
+A quantile is not a weighted sum, so the union had to be generalised, and two
+plausible forms are wrong in ways the unit tests caught before any cluster time:
+
+- *count the live rotors as the mass* — four coincident combs make four
+  identical claims per bin, the dedup awards each surviving tooth to an
+  arbitrary row, and the teeth scatter over three rotors, which then each
+  contribute a full comb's score: a degenerate assignment scored **3x** instead
+  of 1x;
+- *pool over the SURVIVING teeth* — the union deletes a different subset from
+  every rotor, so a quantile over what is left is not comparable between them,
+  and the spread assignment scored BELOW the degenerate one (-0.022 vs +0.108),
+  reintroducing exactly the collapse the union exists to prevent.
+
+The form that works separates the two jobs: **quality** is pooled over the
+rotor's OWN teeth (an intrinsic property of the comb hypothesis — "are most of
+my predicted teeth actually there?", which is what kills a subharmonic whose odd
+teeth are absent), and **share** is the fraction of its comb mass no other rotor
+already claimed (the anti-double-counting).  It reduces exactly to the shipped
+weighted sum at `pool="mean"`.
+
+One weakness is characterised rather than papered over
+(`test_quantile_pooling_is_sensitive_to_a_contaminated_half_tooth_reference`):
+on an unmasked, equal-amplitude, harmonically related toy (72/80/88/96) the
+lowest rotor's half-tooth reference lands on its siblings' teeth and a low
+quantile is driven by exactly those worst teeth, so it prefers the degenerate
+assignment there.  It does not fire on non-harmonic bases, and quantile wins on
+every real window — so it states when sibling masking must precede the pooling,
+not a reason to drop it.
+
 `EmissionCfg.pool` therefore becomes a measured knob — `"mean"` (the shipped
 form, bit-identical), `"quantile"` (the `pool_q` quantile of the per-tooth
 contrast: a real comb keeps most teeth, a coincidence collapses) and
