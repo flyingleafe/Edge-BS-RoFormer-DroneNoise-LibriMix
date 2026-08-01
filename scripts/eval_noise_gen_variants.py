@@ -109,14 +109,23 @@ VARIANTS: dict[str, tuple[str, str]] = {
 }
 
 
-def _compose(exp: str, ckpt: str, val_samples: int):
+#: Default scoring set. Deliberately the MULTI-observer stream: every generator
+#: here is geometry-driven and renders any M, so scoring all 8 microphones is
+#: strictly more informative and is the only way a channel distinguished by its
+#: *spatial* law (the wind-wake field) can show up at all. Scoring at M=1 would
+#: discard exactly the evidence the wind arm exists to provide, and would flatter
+#: single-mic-trained arms by evaluating them on their training geometry.
+DEFAULT_DATA = "noise_rps_dregon_michaels_swapped_stream_multimic"
+
+
+def _compose(exp: str, ckpt: str, val_samples: int, data: str = DEFAULT_DATA):
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(_ROOT / "conf"), version_base=None):
         return compose(
             config_name="config",
             overrides=[
                 f"experiment={exp}",
-                "data=noise_rps_dregon_michaels_swapped_stream",
+                f"data={data}",
                 f"data.valid.params.val_samples={val_samples}",
                 f"checkpoint={ckpt}",
                 "logging.enabled=false",
@@ -150,6 +159,7 @@ def eval_variant(
     val_samples: int,
     batch_size: int,
     min_flight_rps: float,
+    data: str = DEFAULT_DATA,
     illustration_frames: dict | None = None,
 ) -> tuple[dict[str, tuple[float, float, int]], dict]:
     """Score one variant on the *free-flight* subset (mean RPS >= ``min_flight_rps``)
@@ -178,7 +188,7 @@ def eval_variant(
     disagree, ``nll`` is the one to believe."""
     from data_processing.collate import frame_collate
 
-    cfg = _compose(exp, ckpt, val_samples)
+    cfg = _compose(exp, ckpt, val_samples, data)
     _task, codec = build_task_and_codec(cfg.model)
     # A second codec forced into distributional mode, so the proper scoring rule
     # can be evaluated for variants whose own config is not distributional.
@@ -320,6 +330,9 @@ def find_illustration_frames(seconds: int, sr: int, min_flight_rps: float, take:
             config_name="config",
             overrides=[
                 "experiment=gen_v1_corrected",
+                # Illustrations stay SINGLE-mic on purpose: the spectrogram grid
+                # shows channel 0 (`_mic0`), so rendering 8 mics would be wasted
+                # work. Only the scored metrics use the multi-observer stream.
                 "data=noise_rps_dregon_michaels_swapped_stream",
                 f"data.train.params.chunk_size={seconds * sr}",
                 "data.train.params.train_samples=512",
@@ -402,6 +415,12 @@ def main() -> None:
         help="score only free-flight samples (mean RPS >= this); "
         "excludes the idle/takeoff segments the val_at_start split holds out",
     )
+    ap.add_argument(
+        "--data",
+        default=DEFAULT_DATA,
+        help="conf/data entry to score on (default: the multi-observer stream — "
+        "see DEFAULT_DATA for why single-mic scoring is misleading here)",
+    )
     ap.add_argument("--out", type=Path, default=_ROOT / "gen_eval")
     ap.add_argument(
         "--illustrate-seconds",
@@ -436,6 +455,7 @@ def main() -> None:
                 val_samples=args.val_samples,
                 batch_size=args.batch_size,
                 min_flight_rps=args.min_flight_rps,
+                data=args.data,
                 illustration_frames=illust_frames or None,
             )
         except Exception as e:  # noqa: BLE001
