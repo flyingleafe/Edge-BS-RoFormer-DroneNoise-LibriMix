@@ -20,6 +20,7 @@ import itertools
 import math
 import os
 import sys
+from dataclasses import replace as dc_replace
 from typing import Any
 
 import numpy as np
@@ -427,3 +428,76 @@ def test_diversity_reserve_widens_the_per_rotor_marginal():
     assert div["beam_marginal_min_mean"] > plain["beam_marginal_min_mean"]
     # and the beam still holds `width` states — the reserve reallocates, not adds
     assert div["beam_distinct_mean"] > 0
+
+
+@pytest.mark.parametrize("pool", ["mean", "quantile", "frac_pos"])
+def test_union_accounting_survives_the_pooling_change(pool):
+    """The union's contract must hold under every pooling mode.
+
+    `comb_mass` is what the affine normalisation uses to apply the per-frame
+    median shift once per DISTINCT comb, so four coincident combs must count as
+    one and a spread assignment must agree with the verified mean path.  Getting
+    it wrong silently reintroduces a bias for or against degeneracy — the exact
+    failure the union was built to remove.
+
+    Bases are chosen with no small-integer relations.  A harmonically related
+    set is a separate case, tested below.
+    """
+    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+
+    bases = [71.0, 83.0, 91.0, 97.0]
+    lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
+    emis = EmissionCfg(lo=60.0, hi=110.0, step=0.5, pool=pool)
+    mean_emis = dc_replace(emis, pool="mean")
+    tab = jbt.comb_tables(torch.from_numpy(lm), bin_hz, emis)
+    tab_mean = jbt.comb_tables(torch.from_numpy(lm), bin_hz, mean_emis)
+    g = torch.as_tensor(emis.grid(), dtype=torch.float32)
+    spread = jbt._to_idx(torch.tensor([bases], dtype=torch.float32), g)
+    degen = jbt._to_idx(torch.tensor([[bases[0]] * 4], dtype=torch.float32), g)
+    s_spread, m_spread = jbt.union_emission(tab, spread, 4, emis)
+    s_degen, m_degen = jbt.union_emission(tab, degen, 4, emis)
+    assert float(m_degen) == pytest.approx(1.0)
+    # Four DISTINCT combs explain a little less than four even here, because
+    # some harmonics still collide — so the bar is agreement with the mean
+    # path's accounting, not a bare 4.0.
+    assert float(m_spread) == pytest.approx(
+        float(jbt.union_emission(tab_mean, spread, 4, mean_emis)[1]), rel=1e-6
+    )
+    assert 3.0 < float(m_spread) < 4.0
+    assert float(s_spread) > float(s_degen)
+
+
+def test_quantile_pooling_is_sensitive_to_a_contaminated_half_tooth_reference():
+    """A characterised weakness of quantile pooling, pinned so it stays known.
+
+    On this toy the four combs are equal-amplitude, harmonically related and
+    unmasked, so the LOWEST rotor's half-tooth reference ((k-0.5)*72) lands on
+    the higher rotors' teeth and many of its per-tooth contrasts go negative.
+    A weighted MEAN averages that away; a low quantile is driven by exactly
+    those worst teeth, so the spread assignment scores BELOW the degenerate one
+    (-0.010 vs +0.006) — the collapse the union exists to prevent.
+
+    It does not fire on non-harmonic bases (the test above) and quantile
+    pooling wins clearly on real windows (WP20: worst-rotor acquisition 0.448
+    vs 0.383 for the best mean configuration), so this is a property of an
+    unmasked harmonic toy rather than a reason to drop the pooling.  It is the
+    reason sibling masking has to come BEFORE quantile pooling is trusted on a
+    harmonically related rotor set.
+    """
+    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+
+    bases = [72.0, 80.0, 88.0, 96.0]  # every base an integer multiple of 8
+    lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
+    g_of = {}
+    for pool in ("mean", "quantile"):
+        emis = EmissionCfg(lo=60.0, hi=110.0, step=0.5, pool=pool)
+        tab = jbt.comb_tables(torch.from_numpy(lm), bin_hz, emis)
+        g = torch.as_tensor(emis.grid(), dtype=torch.float32)
+        spread = jbt._to_idx(torch.tensor([bases], dtype=torch.float32), g)
+        degen = jbt._to_idx(torch.tensor([[72.0] * 4], dtype=torch.float32), g)
+        g_of[pool] = (
+            float(jbt.union_emission(tab, spread, 4, emis)[0]),
+            float(jbt.union_emission(tab, degen, 4, emis)[0]),
+        )
+    assert g_of["mean"][0] > g_of["mean"][1]  # the mean is robust here
+    assert g_of["quantile"][0] < g_of["quantile"][1]  # the quantile is not

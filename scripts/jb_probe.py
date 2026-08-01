@@ -191,9 +191,9 @@ def unit_path(results: Path, mode: str, window: str) -> Path:
 # mode: cost
 
 
-def cost_unit(task: tuple[str, Path, str]) -> tuple[str, str]:
+def cost_unit(task: tuple[str, Path, str, str]) -> tuple[str, str]:
     """Objective value at GT vs at every stage's output, on one window."""
-    window, results, device = task
+    window, results, device, cfg_name = task
     out = unit_path(results, "cost", window)
     if out.exists():
         return window, "skip"
@@ -212,12 +212,25 @@ def cost_unit(task: tuple[str, Path, str]) -> tuple[str, str]:
         )
 
         prep, meta = load_window(window)
-        lm, bin_hz, st = _coarse_spec(prep.audio)[:3]
-        obj = build_objective(
-            lm, bin_hz, ou=OUPrior(), emis=EmissionCfg(), beam=BeamCfg(), device=device
+        # `--cfg` selects a CEILING_CFGS entry so the cost gate is evaluated on
+        # the SAME emission the ceiling sweep ranked; `n_fft` is not an
+        # EmissionCfg field, it picks the spectrogram underneath.
+        kw = dict(CEILING_CFGS[cfg_name])
+        n_fft = int(kw.pop("n_fft"))
+        emis = EmissionCfg(**kw)
+        lm, bin_hz, st = (
+            _coarse_spec(prep.audio)[:3] if n_fft == 2048 else whitened_spec(prep.audio, n_fft)
         )
+        obj = build_objective(lm, bin_hz, ou=OUPrior(), emis=emis, beam=BeamCfg(), device=device)
 
-        trajs: dict[str, np.ndarray] = {"gt": gt_on(prep, st)}
+        trajs: dict[str, np.ndarray] = {
+            "gt": gt_on(prep, st),
+            # DREGON's reciprocal-period label noise costs the TRUE trajectory
+            # 1100-1400 transition units (WP20), which is roughness the tracker
+            # is not meant to reproduce.  Scoring the smoothed telemetry too
+            # keeps the comparison from flattering the tracker.
+            "gt_smooth": np.stack([np.interp(st, prep.ft, r) for r in prep.r_meas_sm]),
+        }
         r_jb, jb_diag = joint_beam_track(
             lm,
             bin_hz,
@@ -239,6 +252,7 @@ def cost_unit(task: tuple[str, Path, str]) -> tuple[str, str]:
 
         rec: dict[str, Any] = {
             "window": window,
+            "emis_cfg": cfg_name,
             "regime": meta.get("regime"),
             "jb_diag": jb_diag,
             "n_spec_frames": int(len(st)),
@@ -377,9 +391,9 @@ def _peak_stats(
     return out
 
 
-def ceiling_unit(task: tuple[str, Path, str]) -> tuple[str, str]:
+def ceiling_unit(task: tuple[str, Path, str, str]) -> tuple[str, str]:
     """Emission ceiling of every :data:`CEILING_CFGS` entry on one window."""
-    window, results, device = task
+    window, results, device, _cfg = task
     out = unit_path(results, "ceiling", window)
     if out.exists():
         return window, "skip"
@@ -480,6 +494,12 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--device", default="cpu")
     ap.add_argument(
+        "--cfg",
+        default="shipped",
+        choices=sorted(CEILING_CFGS),
+        help="cost mode: which emission configuration to evaluate the objective on",
+    )
+    ap.add_argument(
         "--build-preps",
         action="store_true",
         help="materialise the beat-VK prep cache first.  REQUIRED on a cluster: "
@@ -497,7 +517,7 @@ def main() -> int:
 
     results = Path(args.results)
     fn = cost_unit if args.mode == "cost" else ceiling_unit
-    tasks = [(w, results, args.device) for w in args.windows]
+    tasks = [(w, results, args.device, args.cfg) for w in args.windows]
     if args.jobs <= 1:
         for t in tasks:
             print(fn(t), flush=True)

@@ -1987,6 +1987,130 @@ canonical windows reproduces the references exactly —
 (post-WP15 reference 0.978) PASS, tgrid 0.966 PASS**. The `skip_dp` parameter
 added to `run_ladder` for `joint_beam` does not disturb any existing chain.
 
+## WP20 — the objective, not the search: the tracker is right and the ask is wrong (2026-08-01)
+
+The WP19 negative result left one question open, and it is the one the whole
+joint-tracker line stands on: a beam search whose hypothesis space CONTAINS the
+staged chain's answer should not lose to it.  That objection is correct, and
+this measures which of the only two explanations holds.
+
+A tracker can be wrong two ways, and they need opposite fixes:
+
+- the SEARCH fails to find the best trajectory under its objective — fix the
+  proposals, the beam width, the diversity;
+- the OBJECTIVE prefers the wrong trajectory — no search budget can help, and
+  a *better* search makes the answer *worse*.
+
+`scripts/jb_probe.py --mode cost` decides it directly, by evaluating the
+tracker's own accumulated cost at trajectories the tracker did not produce
+(`joint_beam_tracker.score_trajectory`, pinned in the unit tests against the
+test file's independent reimplementation of the same cost).
+
+### The verdict: objective, on 6 of 6 windows, by ~2x
+
+| window | cost(GT) | cost(fullrange_init) | cost(joint_beam) | MAE fri | MAE jb |
+|---|---:|---:|---:|---:|---:|
+| FLY124 w3 | -1853 | -1077 | **-3654** | 1.43 | 3.16 |
+| FLY124 w4 | -2101 | -1373 | **-3648** | 1.15 | 3.17 |
+| DREGON nosource w0 (ramp) | **+100** | -1089 | **-3021** | 3.45 | 27.61 |
+| DREGON nosource w1 | -504 | -1465 | **-3203** | 1.15 | 8.84 |
+| DREGON speech-low w1 | -278 | -921 | **-2871** | 1.04 | 12.82 |
+| synth_trace | -3239 | — | **-3998** | — | 1.28 |
+
+The ordering is exactly inverted on every window: the trajectory with **zero**
+error is the DEAREST, the stage that wins on accuracy sits in the middle, and
+the beam's own output — 27.6 rev/s of error on the ramp — is by far the
+cheapest.  The beam is not losing the answer.  It is finding excellent minima
+of a badly wrong objective, and every representational improvement (wider beam,
+marginal coverage, better proposals) would move it further from the truth.
+
+### Which term, and by how much
+
+| window | GT emis / trans | JB emis / trans | comb mass GT / JB |
+|---|---|---|---|
+| FLY124 w3 | -2018 / 166 | -3778 / 123 | 3.63 / 3.50 |
+| DREGON w0 (ramp) | -1290 / 1390 | -3257 / 228 | 2.65 / 3.68 |
+| DREGON w1 | -1811 / 1307 | -3337 / 134 | 3.18 / 3.62 |
+| speech-low w1 | -1396 / 1118 | -3095 / 224 | 3.19 / 3.50 |
+
+**The emission is the dominant defect and it stands alone** — it prefers the
+beam's output by 1500-2000 units on every window, which is more than the whole
+gap.  It is NOT that the beam claims more distinct combs: claimed comb mass is
+comparable (2.65-3.63 GT vs 3.50-3.68 JB).  It claims combs that are *louder*.
+Read in normalised units, GT's four true rotors together collect 0.86 comb-units
+per frame on the ramp where 1.0 is the frame's single best comb — the true
+speeds sit barely above the per-frame **median** of the score surface.
+
+**The transition prior is a second, smaller defect, and it is dataset-specific.**
+GT costs 1118-1390 on the three DREGON windows against the beam's 134-228, so
+the prior is roughly 10x too stiff for the frame-level roughness of DREGON's
+labels; at FLY124 cruise the two agree (166 vs 123).  Part of that is real
+motion and part is DREGON's reciprocal-period label noise (WP16), so the
+comparison slightly flatters the beam — score a SMOOTHED GT before quoting a
+number from it.
+
+### The emission ceiling, measured independently
+
+`--mode ceiling` asks the upstream question with no tracker in the loop: for
+each (rotor, frame), is the truth proposable (a local maximum within 0.5 rev/s
+surviving into the top-`n_peaks` NMS shortlist — ACQUISITION), and does a local
+move from the truth at `t-1` land on the truth at `t` (TRACKING)?  Worst rotor
+per window, over ten analysis configurations:
+
+| cfg | FLY124 w3 | FLY124 w4 | nosrc w0 | nosrc w1 | speech w1 | synth |
+|---|---:|---:|---:|---:|---:|---:|
+| shipped (2048, k8) | 0.114 | 0.176 | 0.218 | 0.226 | 0.214 | 0.541 |
+| nfft4096 k16 (best) | 0.234 | **0.367** | 0.313 | 0.355 | 0.311 | **0.697** |
+| nfft4096 k30 step 0.25 | 0.192 | 0.267 | **0.394** | **0.363** | **0.361** | 0.513 |
+| nfft8192 k50 | 0.196 | 0.230 | 0.220 | 0.253 | 0.273 | 0.261 |
+
+Three things follow, and they agree with the cost verdict:
+
+1. **The shipped emission can propose the worst rotor on 11-23% of frames.**
+   No search can track what it cannot propose one frame in five.
+2. **Resolution is not the fix.**  The best of ten configurations reaches only
+   31-39%, i.e. ~1.6x, and past k=30 more harmonics LOSE it again — a slewing
+   rotor smears its high teeth across the analysis window faster than the extra
+   resolution buys.
+3. **The control kills the SNR explanation.**  On the clean synthetic, with
+   locked phases and rotors 3.9 rev/s apart, the worst rotor is still only 54%
+   proposable.  The score function is weak where the data is perfect.
+
+### What the mechanism is, and what changes next
+
+The score is a weighted MEAN over teeth of `white[k*c] - max(white[(k-0.5)*c], 0)`.
+A mean rewards ANY loud content at multiples of `c`: a comb with four loud teeth
+and twelve absent ones scores like one with sixteen medium teeth.  Nothing in it
+says *most of the predicted teeth are actually there* — which is precisely the
+property that separates a rotor from a coincidence, and precisely why a quiet
+true rotor loses to a spurious placement riding a loud neighbour's harmonics.
+
+`EmissionCfg.pool` therefore becomes a measured knob — `"mean"` (the shipped
+form, bit-identical), `"quantile"` (the `pool_q` quantile of the per-tooth
+contrast: a real comb keeps most teeth, a coincidence collapses) and
+`"frac_pos"` (the weighted fraction of teeth with positive contrast) — swept
+with `--mode ceiling`, whose acquisition/tracking numbers are objective-free
+and therefore a fast, honest optimisation loop.  The gate before any tracker
+re-run is the cost probe flipping: GT must become CHEAPER than the beam's own
+output.
+
+### Two beam-representation findings, recorded but not acted on
+
+The diagnosis makes both premature.  They are kept because they are measured.
+
+- **Permutation-merged dedup is NOT free.**  It looked exact — emission and
+  transition cost are both permutation-invariant — and the unit test refuted it:
+  `mu` is inherited from each state's own ancestry, so two states that are
+  permutations of each other now can carry trims that are not, and merging
+  discards a live hypothesis (`final_cost_best` -226.08 merged vs -227.04).
+  Shipped OFF (`BeamCfg.dedup_sorted`).
+- **The beam's per-rotor marginal is the representational bound.**  `width`
+  states drawn by joint cost from a `len(grid)^4` space give each rotor about
+  `width^(1/4)` distinct values — 4 per rotor at `width = 256`.
+  `beam_marginal_min_mean` now reports it, and `BeamCfg.diversity_reserve`
+  reallocates slots to marginal coverage.  Both wait on the objective.
+
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified

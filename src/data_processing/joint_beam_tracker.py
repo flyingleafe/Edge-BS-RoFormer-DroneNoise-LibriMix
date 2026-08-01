@@ -398,8 +398,42 @@ def comb_scores_from_tables(tab: CombTables, cfg: EmissionCfg | None = None) -> 
     raise ValueError(f"unknown pool {cfg.pool!r}")
 
 
+def _union_keep(tab: CombTables, w_idx: torch.Tensor) -> torch.Tensor:
+    """``(N, 4, K)`` mask: which teeth of each assignment survive the union.
+
+    A bin claimed by more than one rotor is awarded to the HIGHEST harmonic
+    (the highest-weight claim under ``k_weight="k"``), so every spectrogram bin
+    is counted once no matter how many rotors want it.  Factored out of
+    :func:`union_emission` because the non-mean pooling modes need the mask
+    itself rather than the weighted sum it feeds.
+    """
+    n_k = tab.v_on.shape[1]
+    n = w_idx.shape[0]
+    b = tab.bid_on[w_idx].reshape(n, -1)  # (N, 4K)
+    key = b * 64 + (n_k - torch.arange(n_k, device=b.device)).repeat(NUM_ROTORS)
+    order = key.argsort(dim=1)
+    b_s = b.gather(1, order)
+    keep_s = torch.ones_like(b_s, dtype=torch.bool)
+    keep_s[:, 1:] = b_s[:, 1:] != b_s[:, :-1]
+    keep_s &= b_s != _INVALID_BIN
+    keep = torch.empty_like(keep_s)
+    keep.scatter_(1, order, keep_s)  # back to (rotor, k) order
+    return keep.reshape(n, NUM_ROTORS, n_k)
+
+
+def _pool_kept(d: torch.Tensor, keep: torch.Tensor, cfg: EmissionCfg) -> torch.Tensor:
+    """``(N, 4)`` pooled per-rotor score over each rotor's SURVIVING teeth."""
+    n_keep = keep.sum(dim=2)  # (N, 4)
+    if cfg.pool == "frac_pos":
+        return ((d > 0) & keep).sum(dim=2).to(d.dtype) / n_keep.clamp_min(1)
+    big = torch.finfo(d.dtype).max
+    srt, _ = torch.where(keep, d, torch.full_like(d, big)).sort(dim=2)
+    pos = ((n_keep - 1).clamp_min(0).to(d.dtype) * cfg.pool_q).round().long()
+    return srt.gather(2, pos[:, :, None])[:, :, 0]
+
+
 def union_emission(
-    tab: CombTables, w_idx: torch.Tensor, t: int
+    tab: CombTables, w_idx: torch.Tensor, t: int, cfg: EmissionCfg | None = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """``(N,)`` UNION-comb emission of ``N`` four-rotor assignments at frame ``t``.
 
@@ -431,8 +465,39 @@ def union_emission(
     and the ``med`` shift has to be applied once per distinct comb: four for a
     disjoint assignment, one for a degenerate one.  Getting that wrong silently
     re-introduces a bias for or against degeneracy.
+
+    Under a non-``"mean"`` :attr:`EmissionCfg.pool` the union cannot be a
+    weighted sum, so it is applied per rotor over that rotor's SURVIVING teeth
+    and the results are added.  ``comb_mass`` then counts the rotors that still
+    hold at least one tooth — the same quantity the affine normalisation needs
+    (one median shift per distinct comb), and still 4 for a disjoint assignment
+    and 1 for a fully degenerate one.
     """
+    cfg = cfg or EmissionCfg()
     n_k = tab.v_on.shape[1]
+
+    if cfg.pool != "mean":
+        keep = _union_keep(tab, w_idx)  # (N, 4, K)
+        d = tab.v_on[w_idx, :, t] - tab.v_half[w_idx, :, t]  # (N, 4, K)
+        # QUALITY x SHARE, and the split is what makes the two ideas compose.
+        #
+        # Quality is pooled over the rotor's OWN teeth, not over the survivors.
+        # Pooling over survivors was the obvious thing and the unit test refuted
+        # it: the union deletes a different subset of teeth from every rotor, so
+        # a quantile over what is left is not comparable between rotors, and on
+        # the four-comb synthetic the spread assignment scored BELOW the
+        # degenerate one (-0.022 vs +0.108) — reintroducing the very collapse
+        # the union exists to prevent.  Quality is an intrinsic property of the
+        # comb hypothesis ("are most of my predicted teeth actually there?"),
+        # which is exactly what kills a subharmonic whose odd teeth are absent.
+        #
+        # Share is the fraction of its own comb mass that no other rotor already
+        # claimed, and it alone carries the anti-double-counting.  Four
+        # coincident combs then have shares summing to 1.0 and one shared
+        # quality, so the assignment scores as ONE comb, as it must.
+        own = tab.w[w_idx] > 0  # (N, 4, K) valid teeth of each rotor
+        share = (tab.w[w_idx] * keep).sum(dim=2)  # (N, 4), 1.0 if untouched
+        return (_pool_kept(d, own, cfg) * share).sum(dim=1), share.sum(dim=1)
 
     def side(vals: torch.Tensor, bid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         v = (tab.w[w_idx] * vals[w_idx, :, t]).reshape(w_idx.shape[0], -1)  # (N, 4K)
@@ -814,7 +879,7 @@ def score_trajectory(obj: Objective, w: np.ndarray) -> dict[str, Any]:
     emis_t = torch.zeros(n_t, device=dev)
     mass_t = torch.zeros(n_t, device=dev)
     for t in range(n_t):
-        u, m = union_emission(obj.tab, idx[t : t + 1], t)
+        u, m = union_emission(obj.tab, idx[t : t + 1], t, obj.emis)
         emis_t[t] = obj.nrm_a[t] * u[0] + m[0] * obj.nrm_b[t]
         mass_t[t] = m[0]
     pen, rej = _band_penalty(w_snap, obj.beam)
@@ -892,7 +957,7 @@ def joint_beam_track(
     sets0, _ = torch.sort(sets0, dim=-1)
     idx0 = _to_idx(sets0, grid)
     pen0, rej0 = _band_penalty(sets0, beam)
-    u0, m0 = union_emission(tab, idx0, 0)
+    u0, m0 = union_emission(tab, idx0, 0, emis)
     e0 = nrm_a[0] * u0 + m0 * nrm_b[0]
     cost0 = -beam.lambda_e * e0 + pen0
     cost0 = torch.where(rej0, torch.full_like(cost0, float("inf")), cost0)
@@ -991,7 +1056,7 @@ def joint_beam_track(
             prop_w, prop_base, prop_p = cur_w, cur_c, torch.arange(n_b, device=dev)
             prop_c = prop_base
         else:
-            u_raw, u_mass = union_emission(tab, _to_idx(prop_w, grid), t)
+            u_raw, u_mass = union_emission(tab, _to_idx(prop_w, grid), t, emis)
             e_union = nrm_a[t] * u_raw + u_mass * nrm_b[t]
             prop_c = prop_base - (beam.lambda_e * e_union).double()
             shared.append(float((_sum_scores(s_t, grid, prop_w) - e_union).clamp_min(0).mean()))
