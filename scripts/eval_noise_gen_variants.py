@@ -90,6 +90,10 @@ VARIANTS: dict[str, tuple[str, str]] = {
     # docs/experiments/wind-channel-likelihood.md — w1/w3 are the controls that
     # make w2/w4 attributable, and the per-drone split is the readout (DREGON
     # sits in the rotor wake, Michael's array does not).
+    "v1_recal_mm": (
+        "gen_v1_recal_mm",
+        "r2://ml-data/artifacts/gen_v1_recal_mm/checkpoints/best.ckpt",
+    ),
     "w1_lik": (
         "gen_w1_lik_nowind",
         "r2://ml-data/artifacts/gen_w1_lik_nowind/checkpoints/best.ckpt",

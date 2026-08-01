@@ -1,0 +1,36 @@
+# @package _global_
+# v1 architecture, recalibrated labels, MULTI-OBSERVER, magnitude loss.
+#
+# The missing cell of the wind study's design. gen_v1_recal is the magnitude
+# baseline but at M=1, so comparing the multi-observer likelihood arms against
+# it would conflate two changes — the objective AND the observer count. This arm
+# holds the objective fixed at the multi-scale magnitude loss and moves only the
+# observers, so:
+#   gen_v1_recal      -> gen_v1_recal_mm   = the effect of 8 microphones alone
+#   gen_v1_recal_mm   -> gen_w3_lik_nowind_mm = the effect of the objective alone
+#   gen_w3_lik_nowind_mm -> gen_w4_lik_wind_mm = the effect of the wind channel
+#
+# It is also the honest re-run of the corrected-geometry baseline: every
+# generator trained through train.py since 2026-07-03 saw channel 0 ONLY
+# (deterministic, not a random mic per draw), so seven of eight microphones were
+# never seen at all and the array carried no diversity.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_v1_recal_mm
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false
