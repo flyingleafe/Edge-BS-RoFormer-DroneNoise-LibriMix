@@ -501,3 +501,38 @@ def test_quantile_pooling_is_sensitive_to_a_contaminated_half_tooth_reference():
         )
     assert g_of["mean"][0] > g_of["mean"][1]  # the mean is robust here
     assert g_of["quantile"][0] < g_of["quantile"][1]  # the quantile is not
+
+
+def test_share_alone_orders_honest_above_parked_above_degenerate():
+    """The anti-double-counting must rank three assignments correctly with no
+    extra machinery: the honest one, one where a rotor parks ON a sibling's
+    comb, and one where all four pile onto a single comb.
+
+    This pins the reason a "score each rotor on what it UNIQUELY explains"
+    variant was tried and dropped.  The theory was that a parked rotor keeps
+    full quality (its predicted teeth ARE all there — they are the neighbour's)
+    and so collects half a comb for explaining nothing new.  `share` already
+    prevents that, and pooling over survivors instead is structurally wrong:
+    two coincident combs make the union split one comb's REAL teeth between
+    them, each pools a high quantile over its slice, and they sum to more than
+    they explain — measured at 0.302 for four-on-one against 0.241 honest.
+    """
+    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+
+    bases = [71.0, 83.0, 91.0, 97.0]
+    lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
+    emis = EmissionCfg(lo=60.0, hi=110.0, step=0.5, pool="quantile")
+    tab = jbt.comb_tables(torch.from_numpy(lm), bin_hz, emis)
+    g = torch.as_tensor(emis.grid(), dtype=torch.float32)
+
+    def score(vec):
+        idx = jbt._to_idx(torch.tensor([vec], dtype=torch.float32), g)
+        s, m = jbt.union_emission(tab, idx, 4, emis)
+        return float(s), float(m)
+
+    honest, _ = score(bases)
+    parked, m_parked = score([71.0, 83.0, 91.0, 71.0])
+    degen, m_degen = score([71.0] * 4)
+    assert honest > parked > degen
+    assert m_degen == pytest.approx(1.0)
+    assert 2.0 < m_parked < 3.0  # three distinct combs, one of them claimed twice

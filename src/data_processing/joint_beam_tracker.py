@@ -273,6 +273,16 @@ class EmissionCfg:
     pool: str = "mean"  # "mean" | "quantile" | "frac_pos"
     #: Quantile for ``pool="quantile"`` (0.25 = the lower quartile of teeth).
     pool_q: float = 0.25
+    #: (There is no knob for pooling over the union's SURVIVORS instead of the
+    #: rotor's own teeth.  It was tried, on the theory that a rotor parked on a
+    #: neighbour's comb keeps full quality under ``"own"`` and so collects half
+    #: a comb for explaining nothing new.  It is structurally wrong: two
+    #: coincident combs make the union split one comb's REAL teeth between
+    #: them, each pools a high quantile over its own slice, and they sum to
+    #: more than they explain.  Measured: four rotors piled on one comb scored
+    #: 0.302 against the honest four-comb assignment's 0.241, at mass 1.00.
+    #: ``share`` already handles the parked rotor correctly — honest 0.227 >
+    #: parked 0.166 > degenerate 0.142 — which is what the theory missed.)
     f_min: float = 20.0  # COARSE_F_MIN — keeps the k1/k2 teeth
     f_max: float = 6000.0
     #: Frames of boxcar smoothing before the per-frame normalisation.
