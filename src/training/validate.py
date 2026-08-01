@@ -8,8 +8,9 @@ Four checks, run once before any GPU time is spent (and standalone via
    input spec;
 2. the model's batched output spec, unioned with the dataset's batched spec,
    covers every loss/metric's ``requires_pred`` *and* ``requires_target``;
-3. the optimizer's scheduler ``monitor`` metric exists (either a metric-suite
-   name, or the literal ``"loss"``);
+3. the optimizer's scheduler ``monitor`` metric exists (a metric-suite name, or
+   the literals ``"loss"`` = train loss / ``"val_loss"`` = the objective on
+   held-out data);
 4. a one-batch CPU forward pass actually runs, and its output spec covers
    the task's declared output spec.
 
@@ -134,10 +135,13 @@ def validate_config(cfg: Any) -> list[str]:  # noqa: C901 - linear checklist, no
     try:
         monitor = cfg.optim.monitor
         metric_names = set(metric_suite.metrics) if metric_suite is not None else set()
-        if monitor != "loss" and monitor not in metric_names:
+        # "val_loss" is the objective on held-out data — the right monitor
+        # whenever the metric suite is not aligned with the loss being trained
+        # (see training.loop.run_training).
+        if monitor not in ("loss", "val_loss") and monitor not in metric_names:
             problems.append(
-                f"optim.monitor {monitor!r} is neither 'loss' nor a metrics.terms name "
-                f"{sorted(metric_names)}"
+                f"optim.monitor {monitor!r} is neither 'loss'/'val_loss' nor a "
+                f"metrics.terms name {sorted(metric_names)}"
             )
     except Exception as exc:
         problems.append(f"failed to read optim.monitor: {exc!r}")
