@@ -99,6 +99,26 @@ CEILING_CFGS: dict[str, dict[str, Any]] = {
     "pool_frac_k30": {"n_fft": 4096, "k_max": 30, "b0_rps": 0.0, "pool": "frac_pos"},
     "pool_frac_k50": {"n_fft": 4096, "k_max": 50, "b0_rps": 0.0, "pool": "frac_pos"},
     "pool_q25_k16": {"n_fft": 4096, "k_max": 16, "b0_rps": 0.0, "pool": "quantile"},
+    # --- ABSOLUTE normalisation.  The gate run closed 40-70% of the objective
+    # gap with quantile pooling and flipped one window, and the residual is
+    # entirely emission: the tracker still claims MORE distinct comb mass than
+    # the truth (3.80-3.86 vs 2.90-3.77), because "peak" normalisation makes
+    # the best comb of every frame score 1.0 whether or not a rotor is there.
+    "mad_q25_k16": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "norm": "mad",
+    },
+    "mad_mean_k16": {"n_fft": 4096, "k_max": 16, "b0_rps": 0.0, "norm": "mad"},
+    "mad_q25_k30": {
+        "n_fft": 4096,
+        "k_max": 30,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "norm": "mad",
+    },
     "pool_q25_k30": {"n_fft": 4096, "k_max": 30, "b0_rps": 0.0, "pool": "quantile"},
     "pool_q50_k30": {
         "n_fft": 4096,

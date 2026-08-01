@@ -280,6 +280,22 @@ class EmissionCfg:
     #: Soft floor on the per-frame normalisation denominator, x the global
     #: median contrast (COARSE_NORM_SOFT).
     norm_soft: float = 0.3
+    #: What the per-frame score is measured AGAINST.
+    #:
+    #: ``"peak"`` (the shipped form) divides by ``peak - median``, so the best
+    #: comb in every frame scores exactly 1.0 **whether or not a rotor is
+    #: there**, and the surface has no way to say "this frame contains only
+    #: three combs".  A rotor parked on any above-median structure — a
+    #: sideband, an alias, a neighbour's flank — collects real score, which is
+    #: why the tracker reliably claims more distinct comb mass than the truth
+    #: does (measured 3.80-3.86 against the truth's 2.90-3.77, WP20).
+    #:
+    #: ``"mad"`` divides by a robust scale of the whole surface
+    #: (``1.4826 * MAD``), so a score is in units of "how many noise sigmas
+    #: above the floor", a real comb reads 10+ and a spurious placement reads
+    #: 1-2.  Claiming a fourth comb that is not there then buys almost nothing,
+    #: which is the property the peak form cannot express at any ``lambda_e``.
+    norm: str = "peak"  # "peak" | "mad"
 
     def grid(self) -> np.ndarray:
         return np.arange(self.lo, self.hi + self.step / 2, self.step)
@@ -573,6 +589,24 @@ def comb_scores(
     return on - half
 
 
+def _norm_terms(s: torch.Tensor, cfg: EmissionCfg) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-frame ``(median, denominator)`` of the score normalisation.
+
+    Shared by :func:`normalise_scores` and :func:`_norm_affine` so the surface
+    the beam searches and the union score it accumulates can never drift onto
+    two different scales — which would silently change what ``lambda_e`` means.
+    """
+    med = s.median(dim=0, keepdim=True).values
+    if cfg.norm == "peak":
+        peak = s.max(dim=0, keepdim=True).values
+        glob = (peak - med).median()
+        return med, (peak - med).clamp_min(cfg.norm_soft * glob)
+    if cfg.norm == "mad":
+        mad = 1.4826 * (s - med).abs().median(dim=0, keepdim=True).values
+        return med, mad.clamp_min(cfg.norm_soft * mad.median())
+    raise ValueError(f"unknown norm {cfg.norm!r}")
+
+
 def normalise_scores(s: torch.Tensor, cfg: EmissionCfg) -> torch.Tensor:
     """Per-frame normalisation of a ``(D, N)`` score surface.
 
@@ -582,10 +616,8 @@ def normalise_scores(s: torch.Tensor, cfg: EmissionCfg) -> torch.Tensor:
     window.
     """
     s = _smooth_frames(s, cfg)
-    med = s.median(dim=0, keepdim=True).values
-    peak = s.max(dim=0, keepdim=True).values
-    glob = (peak - med).median()
-    return (s - med) / (peak - med).clamp_min(cfg.norm_soft * glob)
+    med, denom = _norm_terms(s, cfg)
+    return (s - med) / denom
 
 
 def _smooth_frames(s: torch.Tensor, cfg: EmissionCfg) -> torch.Tensor:
@@ -777,10 +809,7 @@ def _norm_affine(s: torch.Tensor, cfg: EmissionCfg) -> tuple[torch.Tensor, torch
     ``smooth_frames > 1`` the union is normalised by the UNSMOOTHED statistics.
     Both terms then use one consistent scale, which is what ``lambda_e`` needs.
     """
-    med = s.median(dim=0, keepdim=True).values
-    peak = s.max(dim=0, keepdim=True).values
-    glob = (peak - med).median()
-    denom = (peak - med).clamp_min(cfg.norm_soft * glob)
+    med, denom = _norm_terms(s, cfg)
     return (1.0 / denom)[0], (-med / denom)[0]
 
 
