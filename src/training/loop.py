@@ -238,10 +238,9 @@ def _validate(
     artifact_store: ArtifactStore,
 ) -> tuple[dict[str, float], float]:
     """Run the metric suite over the validation set AND accumulate the mean
-    training-loss value on it (``val/loss``). Returns ``(metrics, val_loss)``;
-    ``val_loss`` is logged additively and never feeds early stopping (that
-    still watches ``monitor`` — a metric-suite key or ``"loss"`` = *train*
-    loss — see ``run_training``)."""
+    training-loss value on it (``val/loss``). Returns ``(metrics, val_loss)``.
+    ``val_loss`` can drive early stopping via ``optim.monitor: val_loss`` — see
+    ``run_training`` for when that is the right choice."""
     model.eval()
     pairs: list[tuple[td.Frame, td.Frame]] = []
     total_loss = 0.0
@@ -569,7 +568,20 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             artifact_store=store,
         )
 
-        metric_value = train_loss if monitor == "loss" else val_metrics[monitor]
+        # "loss" = TRAIN loss (never early-stops in practice), "val_loss" = the
+        # objective on held-out data, anything else = a metric-suite key.
+        # Monitor `val_loss` whenever the metric suite is not aligned with the
+        # objective: scoring a *sampled* realization (mrstft) systematically
+        # prefers under-dispersed models, so a model that correctly widens its
+        # predicted variance looks worse and early-stops immediately — measured,
+        # see losses/spectral_likelihood.py and docs/experiments/
+        # wind-channel-likelihood.md.
+        if monitor == "loss":
+            metric_value = train_loss
+        elif monitor == "val_loss":
+            metric_value = val_loss
+        else:
+            metric_value = val_metrics[monitor]
         scheduler.step(metric_value)
         lr = optimizer.param_groups[0]["lr"]
 
