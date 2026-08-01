@@ -51,11 +51,17 @@ class NoiseGenerator(nn.Module):
   already carry a per-draw `origin`, `"dregon"`/`"michaels"`) and attaches
   that origin's geometry + a `meta.drone` name per sample — so DREGON and
   Michael's chunks stream together in one dataset, each with its own
-  geometry. **Caveat**: `NoiseRPSDataset` reduces each draw to one selected
-  audio channel without reporting which physical index was picked, so
-  `NoiseGenFrameDataset` only supports `channel_policy="first"` (single mic,
-  not the full 8-mic array) — see REPLICATION.md § E2/E3 for the deviation
-  from the historical online trainer's native multi-observer rendering.
+  geometry. **Channel policy**: `channel_policy="first"` (default) keeps the
+  single-microphone behaviour the Hydra migration introduced; `"all"` renders
+  every microphone jointly, restoring the historical online trainer's native
+  multi-observer rendering (see REPLICATION.md § E2/E3). `"random"` is rejected
+  — the inner dataset does not report which index it drew, so the geometry
+  could not be matched to the audio. **The choice is load-bearing for any
+  channel model**: a component distinguished from the coherent field only by
+  its *spatial* law (the wind-wake channel above all) is **unidentifiable at
+  M=1**, where it degenerates into another broadband shape competing with a far
+  more flexible learned filter. Use `"all"` whenever such a component is in
+  play — `conf/data/noise_rps_dregon_michaels_swapped_stream_multimic.yaml`.
 - **Multichannel**: all M mics are rendered **jointly** (native multi-observer),
   *not* flattened into the batch like RPS prediction. The reference model sums
   rotors in the rfft domain → M mics cost R forward + M inverse transforms.
@@ -123,12 +129,17 @@ draw came from.
   `build_noise_rps_datasets` (DREGON `in_flight_noise` + Michael's, reused
   verbatim — not the on-disk DREGON-LM `sample_*` chunk format
   `DREGONNoiseGenDataset` used historically). Emits Frames with
-  `rps (rotor,time)` at audio rate, `audio (mic,time)` (the clean target —
-  single mic only, see the `channel_policy="first"` caveat above),
+  `rps (rotor,time)` at audio rate, `audio (mic,time)` (the clean target;
+  M=1 or the full array per `channel_policy`, see above),
   `mic_pos`/`rotor_pos`, `meta.drone`.
 - **Loss**: multi-scale STFT (`losses.MultiScaleSTFTLoss`, `pred_key=
   target_key="audio"`), the mic axis folded into the batch by
-  `losses.spectral._flatten_to_2d`. Magnitude loss is blind to a *common*
+  `losses.spectral._flatten_to_2d`. For a model with a **stochastic** branch
+  (broadband residual, wind) prefer `losses.SpectralLikelihoodLoss` with
+  `task_params.distributional=true`: the magnitude loss compares one gust
+  realization to another and fits any stochastic component 1.6 dB low. That
+  flag widens the task's `output_spec` with `coherent`/`noise_psd`, which the
+  model supplies via `spectral_stats()` — see `src/losses/AGENTS.md`. Magnitude loss is blind to a *common*
   delay but sees inter-rotor delay differences (the geometric signal). E3's
   Stage-2 smoothness regularisers: `losses.SmoothnessPenalty(entry=
   "harm_amps"|"noise_amps", series_dims=..., series_time=None)` acting on
