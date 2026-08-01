@@ -59,6 +59,41 @@ quadrature over its stationary log-normal distribution
 (`WindTransduction.expected_mags`), since the level is a nonlinear function of
 flow speed and the response at the *mean* gust is not the mean response.
 
+### Making it actually train
+
+The objective as first written diverged to NaN within two epochs on **every**
+arm, including the no-wind one. Three separate causes, all found by tracing:
+
+1. **A NaN gradient through an exact zero.** `spectral_stats` returned a
+   magnitude (`power.sqrt()`) and the loss squared it back. That round trip is
+   the identity analytically, but autograd walks it stepwise: `d(sqrt)/dx` is
+   infinite at 0 while `d(x^2)/dx` is 0, so `inf * 0 = NaN` in every bin the
+   broadband branch predicts silent — about 12% of them. The loss *value* stayed
+   finite, which is why it surfaced only as a NaN gradient on the noise branch
+   while the coherent branch's gradients were clean. The interface is now
+   **power** (`noise_psd`) end to end, so the pair never exists.
+2. **Quadratic blowup at initialization.** From a random init the generator
+   emits `|audio| ~ 80` against audio of ~0.05, so `(r-a)^2/sigma2` is ~1e12 at
+   step 0 and one Adam step destroys the model. No variance floor fixes this
+   (2.6e12 at `floor_rel=1e-6`, still 2.6e7 at 1e-1) because the *mean* is what
+   is wrong. Every arm therefore warm-starts from the magnitude-trained
+   `gen_v1_recal`, which puts the ratio in the hundreds; the wind model gained a
+   load-time key remap (`generator.*` -> `generator.coherent.*`) so it can
+   consume that checkpoint at all. Measured after the fix: 48 steps, loss
+   6.53 -> 4.82, no divergence.
+3. **Gradient imbalance**, addressed with beta-NLL (Seitzer et al.): each bin's
+   term is scaled by a detached `sigma2**beta` so low-variance bins stop
+   dominating. **It is not a proper scoring rule** — it rescales the loss value,
+   preserving the optimum only for a per-bin-flexible sigma and shifting the
+   argmin when sigma is shared. Training uses `beta=0.5`; the eval's scoring
+   rule and the estimator tests pin `beta=0`.
+
+A side effect worth stating: because every arm now starts from the same
+magnitude-trained weights, these are **fine-tunes**, not from-scratch runs. That
+is a cleaner comparison for isolating the objective, but it means the numbers
+answer "does switching objective improve this model?" rather than "is this
+objective better from scratch?".
+
 ### Two bugs found on the way
 
 - `ou_envelope` started the OU log-amplitude at `x = 0` rather than from its
