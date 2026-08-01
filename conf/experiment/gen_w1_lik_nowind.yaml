@@ -27,8 +27,14 @@ grad_clip: 1.0
 optim:
   optimizer: adam
   lr: 0.001
-  monitor: mrstft
-  monitor_mode: max
+  # Monitor the OBJECTIVE, not mrstft. mrstft compares a sampled realization,
+  # so it prefers under-dispersed models: a likelihood-trained model correctly
+  # widens its predicted variance, mrstft falls, and early stopping both halts
+  # training and picks the wrong checkpoint. Observed on the first attempt --
+  # gen_w2 early-stopped at epoch 8 with mrstft BELOW the warm-start baseline.
+  # mrstft is still logged and still reported by the eval, as a cross-check.
+  monitor: val_loss
+  monitor_mode: min
 
 amp: false
 
