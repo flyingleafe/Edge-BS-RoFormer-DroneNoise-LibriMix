@@ -144,9 +144,9 @@ def noise_generation(
     outputs = {"audio": SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)}
     if distributional:
         outputs["coherent"] = SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)
-        # (frame, freq) magnitude envelope on the model's own grid — not a time
+        # (frame, freq) POWER envelope on the model's own grid — not a time
         # series on the audio clock, hence untyped trailing dims and no rate.
-        outputs["noise_mags"] = SeriesSpec(dims=("batch", "mic", None, None), time=None)
+        outputs["noise_psd"] = SeriesSpec(dims=("batch", "mic", None, None), time=None)
     return Task(
         name="noise_generation",
         input_spec=FrameSpec(

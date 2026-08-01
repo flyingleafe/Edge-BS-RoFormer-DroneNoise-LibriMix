@@ -43,3 +43,12 @@ optim:
   monitor_mode: max
 
 amp: false
+
+# WARM START — load the magnitude-trained baseline before switching objective.
+# This is required, not cosmetic: from a random init the generator emits
+# |audio| ~ 80 against audio of ~0.05, so (r - a)^2 / sigma2 is ~1e12 at step 0
+# and the first optimizer step destroys the model (measured; no variance floor
+# rescues it, because the mean is the problem). Starting from a sane mean puts
+# the ratio in the hundreds. It also sharpens the comparison: every arm then
+# begins from the same weights and differs only in objective and observers.
+checkpoint: r2://ml-data/artifacts/gen_v1_recal/checkpoints/best.ckpt

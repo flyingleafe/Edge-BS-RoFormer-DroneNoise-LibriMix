@@ -91,6 +91,43 @@ class TestLimits:
                 assert torch.isfinite(out).all(), (a, s2, out)
 
 
+class TestBoundedBelow:
+    """A learned-variance likelihood is unbounded below without a floor: where
+    the mean fits, ``log sigma2 -> -inf`` beats ``(r-a)^2/sigma2``, so the
+    optimizer buys arbitrarily negative loss by claiming infinite confidence.
+    Untreated this reached NaN within two epochs on the real data, on the
+    no-wind arm as well as the wind one — so it is the objective, not the model.
+    """
+
+    def test_shrinking_the_predicted_variance_cannot_run_away(self):
+        torch.manual_seed(0)
+        core = SpectralLikelihood(n_ffts=(256,))
+        target = torch.randn(2, 8192) * 0.05
+        coherent = target.clone()  # a PERFECT mean — the adversarial case
+        losses = [
+            float(core(target, coherent, torch.full((2, 4, 129), float(m))))
+            for m in (1e-1, 1e-3, 1e-6, 1e-12, 0.0)
+        ]
+        assert all(math.isfinite(x) for x in losses), losses
+        assert min(losses) > -1e3, f"loss ran away with the variance: {losses}"
+
+    def test_floor_tracks_the_clip_level(self):
+        """The floor is relative, so a clip scaled by 100x must not be treated
+        as 40 dB more confident — otherwise loud rigs and quiet ones would get
+        different effective objectives."""
+        torch.manual_seed(0)
+        core = SpectralLikelihood(n_ffts=(256,), beta=0.0)  # pure NLL — see above
+        target = torch.randn(1, 8192) * 0.01
+        mags = torch.full((1, 4, 129), 1e-9)
+        quiet = float(core(target, target.clone(), mags))
+        loud = float(core(target * 100, target.clone() * 100, mags * 100))
+        # Scaling everything by k shifts a log-likelihood by a constant per bin,
+        # not by an unbounded amount; the check is that both stay finite and the
+        # shift is close to the analytic 2*log(k).
+        assert math.isfinite(quiet) and math.isfinite(loud)
+        assert abs((loud - quiet) - 2 * math.log(100)) < 1.0
+
+
 class TestCoherenceSplit:
     def test_conserves_total_power(self):
         a = torch.tensor([2.0, 3.0])
@@ -195,11 +232,15 @@ class TestEndToEndFit:
         tone = 2.0 * torch.sin(2 * math.pi * 1000 * t).unsqueeze(0).expand(24, -1)
         observed = tone + noise
 
-        core = SpectralLikelihood(n_ffts=(1024,))
+        # beta=0: beta-NLL reweights the loss VALUE, which shifts the argmin
+        # when sigma is one shared scalar (it preserves the optimum only for a
+        # per-bin-flexible sigma, which is what the real model has). Estimator
+        # claims are therefore made against the pure likelihood.
+        core = SpectralLikelihood(n_ffts=(1024,), beta=0.0)
         grid = torch.linspace(0.4, 2.0, 161) * true_level
 
         def objective(level):
-            m = torch.full((24, 4, n_grid), float(level))
+            m = torch.full((24, 4, n_grid), float(level) ** 2)  # power
             return core(observed, tone, m)
 
         assert float(_fit_scalar(objective, grid)) == pytest.approx(true_level, rel=0.12)

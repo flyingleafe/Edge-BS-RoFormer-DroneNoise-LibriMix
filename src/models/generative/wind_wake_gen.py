@@ -536,7 +536,7 @@ class WindTransduction(nn.Module):
 
         return level.unsqueeze(-1) * low_pass  # [B, M, n_env, n_freqs]
 
-    def expected_mags(
+    def expected_power(
         self,
         u: torch.Tensor,
         *,
@@ -581,10 +581,12 @@ class WindTransduction(nn.Module):
             n_quad: Gauss--Hermite nodes. See the validity note above.
 
         Returns:
-            ``[B, M, n_env, n_freqs]`` RMS magnitude response.
+            ``[B, M, n_env, n_freqs]`` expected **power** response. Power rather
+            than magnitude so no ``sqrt``/square round trip sits in the graph —
+            see PositionalHarmonicNoiseGen.spectral_stats for why that matters.
         """
         if not apply_gust:
-            return self.filter_mags(u)
+            return self.filter_mags(u).pow(2)
         sigma = _pos(self.raw_sigma)
         nodes, weights = np.polynomial.hermite_e.hermegauss(int(n_quad))
         nodes_t = u.new_tensor(nodes)
@@ -592,10 +594,15 @@ class WindTransduction(nn.Module):
         weights_t = weights_t / weights_t.sum()
         power = torch.zeros_like(self.filter_mags(u))
         for node, weight in zip(nodes_t, weights_t):
-            # x = sigma * node  (HermiteE nodes are already unit-variance scaled)
-            g = torch.exp(sigma * node - 0.5 * sigma**2)
+            # x = sigma * node  (HermiteE nodes are already unit-variance scaled).
+            # The exponent is clamped because the outermost nodes sit at ~4 sigma:
+            # if training drives sigma up, exp(4 sigma) overflows and poisons the
+            # whole objective with NaN. Clamping caps the modelled gust at e^8
+            # (~3000x), far beyond any physical gust, and keeps the failure mode
+            # a bounded bias instead of a crash. See the validity note above.
+            g = torch.exp((sigma * node - 0.5 * sigma**2).clamp(-8.0, 8.0))
             power = power + weight * self.filter_mags(u * g).pow(2)
-        return power.clamp_min(0.0).sqrt()
+        return power.clamp_min(0.0)
 
     def forward(
         self,
@@ -890,7 +897,7 @@ class WindWakeChannel(nn.Module):
         wind = self.transduction(u, t, dt, noise=noise, apply_gust=apply_gust, generator=generator)
         return wind.squeeze(1) if single else wind
 
-    def expected_mags_rel(
+    def expected_power_rel(
         self,
         rps: torch.Tensor,
         rel_pos: torch.Tensor,
@@ -899,7 +906,7 @@ class WindWakeChannel(nn.Module):
         apply_gust: bool = True,
         n_quad: int = 5,
     ) -> torch.Tensor:
-        """Gust-marginalized RMS magnitude response per microphone.
+        """Gust-marginalized expected **power** per microphone.
 
         The distributional counterpart of :meth:`forward_rel`: same flow-speed
         physics, but returns the *spectral envelope* of the channel instead of
@@ -907,11 +914,11 @@ class WindWakeChannel(nn.Module):
         :meth:`WindTransduction.expected_mags`.
         """
         u = self.flow_speed_rel(rps, rel_pos, v_rel=v_rel)  # [B, M, n_env]
-        return self.transduction.expected_mags(u, apply_gust=apply_gust, n_quad=n_quad)
+        return self.transduction.expected_power(u, apply_gust=apply_gust, n_quad=n_quad)
 
 
 def _resample_envelope(mags: torch.Tensor, frames: int, freqs: int) -> torch.Tensor:
-    """Resample a ``[B, M, n_frames, n_freqs]`` magnitude envelope onto a new grid.
+    """Resample a ``[B, M, n_frames, n_freqs]`` power envelope onto a new grid.
 
     Both axes are uniform over fixed physical spans (the clip duration and
     ``0..Nyquist``), so a plain bilinear resize is the correct resampling.
@@ -970,6 +977,34 @@ class PositionalHarmonicPlusWindGen(nn.Module):
             use_dynamics=wind_use_dynamics,
             mlp_hidden=wind_mlp_hidden,
         )
+        self._register_load_state_dict_pre_hook(self._remap_coherent_only_checkpoint)
+
+    @staticmethod
+    def _remap_coherent_only_checkpoint(
+        state_dict, prefix, _local_metadata, _strict, _missing, _unexpected, _errors
+    ) -> None:
+        """Accept a *coherent-only* checkpoint by nesting its keys under ``coherent.``.
+
+        Adding the wind channel moved the generator's weights from ``<prefix>*``
+        to ``<prefix>coherent.*``, which would otherwise make every
+        magnitude-trained checkpoint silently load nothing here (``strict=False``
+        reports it, but a warm start that loads zero weights looks like a fresh
+        model, not an error). Warm-starting the wind arms from the coherent
+        baseline is exactly what makes the likelihood trainable at all — an
+        untrained mean puts ``(r - a)^2 / sigma2`` at ~1e12 and the first step
+        destroys the model — so this remap is load-bearing, not a convenience.
+
+        Only applies when the checkpoint has no ``coherent.``-prefixed keys, so a
+        native wind checkpoint is passed through untouched.
+        """
+        own = [k for k in state_dict if k.startswith(prefix)]
+        if not own or any(k.startswith(f"{prefix}coherent.") for k in own):
+            return
+        for key in own:
+            suffix = key[len(prefix) :]
+            if suffix.startswith("wind."):
+                continue
+            state_dict[f"{prefix}coherent.{suffix}"] = state_dict.pop(key)
 
     def forward(
         self,
@@ -1015,22 +1050,21 @@ class PositionalHarmonicPlusWindGen(nn.Module):
         the coherent generator's own broadband branch — the two are independent,
         so their powers sum:
 
-            noise_mags^2 = coherent_broadband^2 + wind^2
+            noise_psd = coherent_broadband_psd + wind_psd
 
-        Returns ``{"coherent": [B, M, T], "noise_mags": [B, M, n_env, F]}``.
+        Returns ``{"coherent": [B, M, T], "noise_psd": [B, M, n_env, F]}``.
         """
         stats = self.coherent.spectral_stats(rps, rel_pos, z=z, **kwargs)
-        wind_mags = self.wind.expected_mags_rel(rps, rel_pos, v_rel=v_rel, n_quad=n_quad)
-        base = stats["noise_mags"]  # [B, M, t_n, F_g]
+        wind_psd = self.wind.expected_power_rel(rps, rel_pos, v_rel=v_rel, n_quad=n_quad)
+        base = stats["noise_psd"]  # [B, M, t_n, F_g]
         # Both envelopes are uniform over the same spans (clip duration,
         # 0..Nyquist), so they can be resampled onto a common grid — but always
         # onto the FINER of the two. Downsampling either one would discard
         # resolution the model actually has, and (with align_corners sampling
         # rather than averaging) would quietly lose power in the process.
-        frames = max(base.shape[-2], wind_mags.shape[-2])
-        freqs = max(base.shape[-1], wind_mags.shape[-1])
+        frames = max(base.shape[-2], wind_psd.shape[-2])
+        freqs = max(base.shape[-1], wind_psd.shape[-1])
         total = (
-            _resample_envelope(base, frames, freqs).pow(2)
-            + _resample_envelope(wind_mags, frames, freqs).pow(2)
+            _resample_envelope(base, frames, freqs) + _resample_envelope(wind_psd, frames, freqs)
         ).clamp_min(0.0)
-        return {"coherent": stats["coherent"], "noise_mags": total.sqrt()}
+        return {"coherent": stats["coherent"], "noise_psd": total}
