@@ -169,6 +169,33 @@ identically for every variant through `spectral_stats` (every generator has it,
 including the magnitude-trained ones). **When the two disagree, `nll` is the
 one to believe.**
 
+### The bias is not hypothetical — it selected the wrong checkpoints
+
+The first attempt at these arms monitored `mrstft` (inherited from the earlier
+generator rounds). Both single-microphone arms early-stopped almost immediately,
+*below* the baseline they warm-started from:
+
+| run | monitor | best mrstft | stopped at |
+|---|---|---|---|
+| `gen_v1_recal` (magnitude loss) | mrstft | 9.149 | ep 28 |
+| `gen_w1_lik_nowind` (attempt 1) | mrstft | **8.923** | ep 10 |
+| `gen_w2_lik_wind` (attempt 1) | mrstft | **8.643** | ep 8 |
+
+That is the predicted failure, not a model failure: switching to the likelihood
+makes the model widen its predicted variance toward the correct value, `mrstft`
+falls because it rewards under-dispersion, and early stopping then both halts
+training and picks the wrong checkpoint. Monitoring a metric that is
+*anti-correlated with the objective* cannot work.
+
+`training.loop` gained `optim.monitor: val_loss` (previously only train loss —
+which never early-stops — or a metric-suite key), and all four arms use it.
+`mrstft` stays logged and reported as a cross-check.
+
+Note the ordering in that table is itself the first evidence for the
+identifiability argument: at `M = 1`, adding the wind channel made things
+**worse** (8.643 vs 8.923), which is what a component that cannot be identified
+should do — it spends variance it cannot earn back.
+
 ## Falsifiable expectation
 
 From the pre-training de-risk: the wake gate predicts the DREGON per-mic
