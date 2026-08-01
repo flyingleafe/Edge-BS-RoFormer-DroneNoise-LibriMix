@@ -150,13 +150,16 @@ class SpectralLikelihood(nn.Module):
 
     - ``coherent``: the deterministic waveform (harmonic bank, propagated) —
       its ``|STFT|`` is the Rice mean ``a``;
-    - ``noise_mags``: the magnitude response of the *stochastic* branches on a
-      uniform ``0..Nyquist`` grid, ``[..., n_env, n_grid]``, never sampled.
+    - ``noise_psd``: the **power** spectral envelope of the *stochastic*
+      branches on a uniform ``0..Nyquist`` grid, ``[..., n_env, n_grid]``, never
+      sampled. Power rather than magnitude so that no ``sqrt``/square round trip
+      sits in the graph: it is the identity analytically, but autograd evaluates
+      it stepwise and ``inf * 0 = NaN`` in every bin the model predicts silent.
 
-    ``noise_mags`` is resolution-agnostic on purpose: the loss resamples it onto
+    ``noise_psd`` is resolution-agnostic on purpose: the loss resamples it onto
     whatever STFT grid each scale uses, so the model never has to commit to the
     analysis resolution. The conversion to expected bin power is
-    ``sigma2 = noise_mags^2 * ||w||^2`` (verified against a Monte-Carlo estimate
+    ``sigma2 = noise_psd * ||w||^2`` (verified against a Monte-Carlo estimate
     in the tests) — ``||w||^2`` being the analysis window's power, the standard
     periodogram normalization for unit-variance white excitation.
 
@@ -166,11 +169,35 @@ class SpectralLikelihood(nn.Module):
     resolution while the noise envelope is better conditioned coarse; set a
     single ``n_ffts`` entry for a strictly proper likelihood.
 
+    **Why the variance needs a floor.** A likelihood with a *learned* variance is
+    unbounded below: wherever the mean fits well, ``log sigma2 -> -inf`` faster
+    than ``(r - a)^2 / sigma2`` grows, so the optimizer can drive the loss to
+    ``-inf`` by claiming infinite confidence on a handful of bins. In practice
+    this diverges to NaN within a couple of epochs (observed on both the wind
+    and no-wind arms). The floor is expressed **relative to the clip's own mean
+    observed power**, not as an absolute number: audio level varies by orders of
+    magnitude across clips and rigs, so an absolute floor is either inert on
+    loud clips or dominant on quiet ones. ``floor_rel = 1e-6`` is 60 dB below
+    the clip mean — well under any real noise floor, while still bounding the
+    objective.
+
     Args:
         n_ffts: STFT sizes to score at.
         hop_ratio: hop as a fraction of each ``n_fft``.
-        noise_floor: added to ``sigma2`` (power units) so a bin is never claimed
-            to be noise-free; also the effective dynamic-range floor.
+        floor_rel: variance floor as a fraction of the clip's mean observed bin
+            power (detached, so the floor is not itself a training target).
+        noise_floor: additional absolute power floor, guarding the degenerate
+            all-silent clip where the relative floor would be zero.
+        beta: beta-NLL gradient balancing (Seitzer et al., "On the Pitfalls of
+            Heteroscedastic Uncertainty Estimation"). Each bin's term is scaled
+            by a **detached** ``sigma2**beta``, which leaves the optimum where it
+            was but stops low-variance bins from dominating the gradient. ``0``
+            recovers the plain NLL; ``0.5`` makes the mean's gradient scale like
+            ``(r - a)/sigma`` instead of ``(r - a)/sigma^2``, which is what keeps
+            the objective usable when the mean is still far off. **Set ``0`` for
+            scoring**: the weight rescales the loss *value*, so a nonzero beta is
+            no longer a proper scoring rule and shifts the argmin whenever sigma
+            is shared across bins rather than predicted per bin.
         gamma_init: initial coherence if ``learn_coherence`` is set.
         learn_coherence: fit one global coherence scalar transferring harmonic
             power into the variance (see :func:`split_coherence`). Off by
@@ -181,14 +208,18 @@ class SpectralLikelihood(nn.Module):
         self,
         n_ffts: tuple[int, ...] | list[int] = (2048, 512),
         hop_ratio: float = 0.25,
-        noise_floor: float = 1e-8,
+        floor_rel: float = 1e-4,
+        noise_floor: float = 1e-12,
+        beta: float = 0.5,
         gamma_init: float = 0.9,
         learn_coherence: bool = False,
     ) -> None:
         super().__init__()
         self.n_ffts = tuple(int(n) for n in n_ffts)
         self.hop_ratio = float(hop_ratio)
+        self.floor_rel = float(floor_rel)
         self.noise_floor = float(noise_floor)
+        self.beta = float(beta)
         for n_fft in self.n_ffts:
             self.register_buffer(f"window_{n_fft}", torch.hann_window(n_fft), persistent=False)
         self.raw_gamma: nn.Parameter | None = None
@@ -212,15 +243,15 @@ class SpectralLikelihood(nn.Module):
         )
         return spec.abs()
 
-    def _resample_noise(self, noise_mags: torch.Tensor, n_fft: int, n_frames: int) -> torch.Tensor:
+    def _resample_noise(self, noise_psd: torch.Tensor, n_fft: int, n_frames: int) -> torch.Tensor:
         """``[B, n_env, n_grid]`` magnitude response -> ``[B, F, n_frames]``.
 
         Bilinear over (frame, frequency); both axes are uniform grids over the
         same physical spans (clip duration, ``0..Nyquist``), so a plain resize
         is the correct resampling.
         """
-        b = noise_mags.shape[0]
-        grid = noise_mags.unsqueeze(1)  # [B, 1, n_env, n_grid]
+        b = noise_psd.shape[0]
+        grid = noise_psd.unsqueeze(1)  # [B, 1, n_env, n_grid]
         out = torch.nn.functional.interpolate(
             grid, size=(n_frames, n_fft // 2 + 1), mode="bilinear", align_corners=True
         )
@@ -230,14 +261,14 @@ class SpectralLikelihood(nn.Module):
         self,
         target: torch.Tensor,
         coherent: torch.Tensor,
-        noise_mags: torch.Tensor,
+        noise_psd: torch.Tensor,
     ) -> torch.Tensor:
         """Mean NLL of ``target`` under the predicted (mean, variance) spectrum.
 
         Args:
             target: ``[B, T]`` recorded audio.
             coherent: ``[B, T]`` the generator's deterministic component.
-            noise_mags: ``[B, n_env, n_grid]`` stochastic magnitude response.
+            noise_psd: ``[B, n_env, n_grid]`` stochastic power envelope.
 
         Returns:
             Scalar loss.
@@ -247,11 +278,17 @@ class SpectralLikelihood(nn.Module):
             r = self._stft_mag(target, n_fft)
             a = self._stft_mag(coherent, n_fft)
             window_power = self._window(n_fft).to(target.dtype).pow(2).sum()
-            mags = self._resample_noise(noise_mags, n_fft, r.shape[-1])
-            sigma2 = mags.pow(2) * window_power + self.noise_floor
+            psd = self._resample_noise(noise_psd, n_fft, r.shape[-1])
+            # Per-clip relative floor — see the class docstring. Detached, so it
+            # tracks the data's scale without being something the model can move.
+            floor = self.floor_rel * r.detach().pow(2).mean(dim=(-2, -1), keepdim=True)
+            sigma2 = psd.clamp_min(0.0) * window_power + floor + self.noise_floor
             if self.raw_gamma is not None:
                 a, sigma2 = split_coherence(a, sigma2, torch.sigmoid(self.raw_gamma))
-            total = total + rice_nll(r, a, sigma2).mean()
+            nll = rice_nll(r, a, sigma2)
+            if self.beta:
+                nll = nll * sigma2.detach().pow(self.beta)
+            total = total + nll.mean()
         return total / len(self.n_ffts)
 
 
@@ -260,8 +297,8 @@ class SpectralLikelihoodLoss(nn.Module):
 
     Reads the recorded audio from ``target[target_key]`` and the generator's
     *distributional* prediction from two ``pred`` entries: ``coherent_key`` (the
-    deterministic waveform) and ``noise_key`` (the stochastic magnitude
-    response). A generator that cannot supply those two entries cannot be
+    deterministic waveform) and ``noise_key`` (the stochastic power
+    envelope). A generator that cannot supply those two entries cannot be
     trained with this loss — which is the point: predicting a distribution is a
     model capability, not a loss-side trick.
     """
@@ -273,7 +310,7 @@ class SpectralLikelihoodLoss(nn.Module):
         sr: tuple[int, int] = AUDIO_RATE,
         target_key: str = "audio",
         coherent_key: str = "coherent",
-        noise_key: str = "noise_mags",
+        noise_key: str = "noise_psd",
         **core_kwargs: Any,
     ) -> None:
         super().__init__()
@@ -288,10 +325,10 @@ class SpectralLikelihoodLoss(nn.Module):
     def forward(self, pred: td.Frame, target: td.Frame) -> torch.Tensor:
         tgt = get_tensor(target, self.target_key)
         coh = get_tensor(pred, self.coherent_key)
-        mags = get_tensor(pred, self.noise_key)
-        # Fold any microphone axis into the batch; noise_mags carries the same
+        psd = get_tensor(pred, self.noise_key)
+        # Fold any microphone axis into the batch; noise_psd carries the same
         # leading axes plus (n_env, n_grid).
         tgt2 = tgt.reshape(-1, tgt.shape[-1])
         coh2 = coh.reshape(-1, coh.shape[-1])
-        mags3 = mags.reshape(-1, mags.shape[-2], mags.shape[-1])
-        return self.core(tgt2, coh2, mags3)
+        psd3 = psd.reshape(-1, psd.shape[-2], psd.shape[-1])
+        return self.core(tgt2, coh2, psd3)

@@ -29,7 +29,7 @@ terms:
       sr: [16000, 1]
       target_key: audio
       coherent_key: coherent
-      noise_key: noise_mags
+      noise_key: noise_psd
       # Two scales: 2048 resolves the ~80 Hz rotor comb (7.8 Hz/bin), 512
       # conditions the broadband envelope. Averaging scales is an ensemble of
       # likelihoods rather than a joint one — use a single entry for a strictly

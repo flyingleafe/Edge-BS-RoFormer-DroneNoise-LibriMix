@@ -242,7 +242,7 @@ class SalienceRPSCodec:
         return model(inputs["mixture"])
 
 
-def _sample_from_stats(coherent: torch.Tensor, noise_mags: torch.Tensor) -> torch.Tensor:
+def _sample_from_stats(coherent: torch.Tensor, noise_psd: torch.Tensor) -> torch.Tensor:
     """Draw one realization from a predicted (mean, envelope) pair.
 
     Used *only* to give the magnitude metrics something to score in
@@ -252,12 +252,16 @@ def _sample_from_stats(coherent: torch.Tensor, noise_mags: torch.Tensor) -> torc
 
     Args:
         coherent: ``[B, M, T]`` deterministic component.
-        noise_mags: ``[B, M, n_frames, n_freqs]`` stochastic magnitude response.
+        noise_psd: ``[B, M, n_frames, n_freqs]`` stochastic power envelope.
     """
     from models.generative.dsp import frequency_filter
 
     b, m, t = coherent.shape
-    mags = noise_mags.reshape(b * m, noise_mags.shape[-2], noise_mags.shape[-1])
+    # Detached + eps-floored: this is a metrics-only draw, and sqrt at exactly
+    # zero has an infinite derivative (the trap the power interface exists to
+    # avoid), so it must never be on the training graph.
+    mags = noise_psd.detach().clamp_min(1e-20).sqrt()
+    mags = mags.reshape(b * m, mags.shape[-2], mags.shape[-1])
     excitation = torch.randn(b * m, t, device=coherent.device, dtype=coherent.dtype)
     noise = frequency_filter(excitation, mags).reshape(b, m, t)
     return coherent + noise
@@ -332,15 +336,15 @@ class NoiseGenerationCodec:
             # Distributional mode: the predicted mean and the stochastic
             # branches' spectral envelope, which SpectralLikelihoodLoss scores
             # instead of `audio`. `coherent` is a waveform (so it carries the
-            # audio rate); `noise_mags` is a (frame, freq) envelope on its own
+            # audio rate); `noise_psd` is a (frame, freq) envelope on its own
             # grid, hence untyped trailing dims.
             if "coherent" in outputs:
                 entries["coherent"] = _batched_series(
                     outputs["coherent"], ("batch", "mic", "time"), self.sr
                 )
-            if "noise_mags" in outputs:
-                entries["noise_mags"] = td.wrap(
-                    outputs["noise_mags"], dims=("batch", "mic", None, None)
+            if "noise_psd" in outputs:
+                entries["noise_psd"] = td.wrap(
+                    outputs["noise_psd"], dims=("batch", "mic", None, None)
                 )
             return td.Frame(entries)
         audio, _aux = _split_model_output(outputs)
@@ -367,7 +371,7 @@ class NoiseGenerationCodec:
                 out = fn(inputs["rps"], inputs["rel_pos"])
             # A realization for the magnitude metrics only — never for the loss.
             out = dict(out)
-            out["audio"] = _sample_from_stats(out["coherent"], out["noise_mags"])
+            out["audio"] = _sample_from_stats(out["coherent"], out["noise_psd"])
             return out
         if self.return_dict:
             kwargs["return_dict"] = True

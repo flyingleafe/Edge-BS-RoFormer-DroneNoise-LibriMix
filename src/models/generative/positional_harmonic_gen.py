@@ -446,8 +446,15 @@ class PositionalHarmonicNoiseGen(nn.Module):
         - ``coherent`` ``[B, M, T]`` — the harmonic bank propagated to each
           microphone. Deterministic given the rotor phases, so it is the mean of
           the complex spectrum.
-        - ``noise_mags`` ``[B, M, t_n, F]`` — the magnitude response of the
-          *stochastic* broadband branch at each microphone. Never sampled.
+        - ``noise_psd`` ``[B, M, t_n, F]`` — the **power** spectral envelope of
+          the *stochastic* broadband branch at each microphone. Never sampled.
+
+        Power, not magnitude, is the interface on purpose. The loss needs
+        ``sigma2``, so returning a magnitude would mean ``sqrt`` here and a
+        square there — analytically the identity, but autograd evaluates it
+        stepwise and ``d(sqrt)/dx`` is infinite at ``x = 0`` while
+        ``d(x^2)/dx`` is zero, giving ``inf * 0 = NaN`` in every bin where the
+        branch predicts exact silence (which it does, in ~12% of them).
 
         The broadband residual is drawn independently per rotor, so propagation
         adds **powers** rather than amplitudes: with the ``1/r`` weights
@@ -496,7 +503,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         amp2 = (self.ref_distance / dist).pow(2)  # [B, M, R]
         # [B, M, R] x [B, R, F, t] -> [B, M, F, t] power sum over rotors.
         power = torch.einsum("bmr,brft->bmft", amp2, noise_amps.pow(2))
-        noise_mags = power.clamp_min(0.0).sqrt().transpose(-1, -2)  # [B, M, t_n, F]
+        noise_psd = power.clamp_min(0.0).transpose(-1, -2)  # [B, M, t_n, F]
         if single:
             coherent = coherent if coherent.dim() == 3 else coherent.unsqueeze(1)
-        return {"coherent": coherent, "noise_mags": noise_mags}
+        return {"coherent": coherent, "noise_psd": noise_psd}

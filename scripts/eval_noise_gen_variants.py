@@ -184,7 +184,8 @@ def eval_variant(
     # can be evaluated for variants whose own config is not distributional.
     nll_codec = build_codec("noise_generation", **_codec_params(cfg.model))
     nll_codec.distributional = True
-    nll_core = SpectralLikelihood(n_ffts=(2048, 512)).to(device)
+    # beta=0: a proper scoring rule must be the unweighted likelihood.
+    nll_core = SpectralLikelihood(n_ffts=(2048, 512), beta=0.0).to(device)
     model = instantiate_model(cfg.model).to(device)
     _warm_start(model, str(cfg.checkpoint), device)
     metric_suite = build_metrics(cfg.metrics)
