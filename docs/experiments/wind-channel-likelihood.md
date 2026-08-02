@@ -235,6 +235,43 @@ discrimination therefore comes from lateral falloff between mics, matching the
 de-risk finding that the win over a `1/r` control is carried by the
 perpendicular term.
 
+## Results
+
+All variants scored on the **same** 8-microphone free-flight set
+(`--min-flight-rps 45`, n = 11 clips per drone), so the numbers are directly
+comparable. Both losses collapse every leading axis into the batch, i.e. each
+microphone is already an equally-weighted sample — the objective is compatible
+across channel counts by construction, and the only thing that differs between
+a M=1 and a M=8 *training* run is which microphones it saw.
+
+| variant | trained | loss | mrstft ↑ (all / DREGON / Michael's) | NLL ↓ (all / DREGON / Michael's) |
+|---|---|---|---|---|
+| `gen_v1_recal` | M=1 | magnitude | 4.734 / 4.294 / 5.173 | 5.909 / 2.899 / 8.918 |
+| `gen_v1_recal_mm` | M=8 | magnitude | 3.602 / 4.121 / 3.083 | 17.091 / 10.918 / 23.263 |
+| `gen_w3_lik_nowind_mm` | M=8 | **likelihood** | **7.018 / 6.814 / 7.223** | **−0.047 / −0.523 / 0.429** |
+
+**The objective is what matters.** The likelihood arm beats both magnitude
+baselines on both metrics and both drones — roughly 6 nats/bin better than the
+M=1 magnitude baseline and 17 better than the M=8 one.
+
+**More microphones did not help the magnitude loss** — `v1_recal_mm` is *worse*
+than `v1_recal` on the common set (NLL 17.1 vs 5.9). So the gain above is
+attributable to the objective, not to the extra observers. A plausible reading
+is that the Rayleigh-median bias compounds when fitting eight stochastic
+realizations instead of one; it may also be undertrained, having early-stopped
+at epoch 21 under the `mrstft` monitor.
+
+**A prediction that failed.** The metric-bias analysis above predicted `mrstft`
+would *penalize* a correctly-calibrated model, and that the two metrics would
+disagree. They do not: `mrstft` rises from 4.7 to 7.0 in step with the NLL. The
+bias is real in isolation (0.370 / 0.393 / 0.520, measured) but is swamped here
+by the likelihood model simply being better. Kept as a caveat for close calls,
+not as a reason to distrust `mrstft` outright.
+
+Caveat: n = 11 clips per drone. The gaps are far too large to be sampling
+noise, but the third digit is not meaningful.
+
 ## Conclusion
 
-_Pending runs._
+_Wind arm (`gen_w4_lik_wind_mm`) pending; `gen_w3_lik_nowind_mm` above is its
+control, so the bar is DREGON NLL −0.523 with Michael's held at 0.429._
