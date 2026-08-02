@@ -231,13 +231,13 @@ def eval_variant(
     def _nll_of(si, ti) -> float:
         tgt = torch.as_tensor(np.asarray(ti["audio"].data))[None].to(device)
         coh = torch.as_tensor(np.asarray(si["coherent"].data))[None].to(device)
-        mags = torch.as_tensor(np.asarray(si["noise_mags"].data))[None].to(device)
+        psd = torch.as_tensor(np.asarray(si["noise_psd"].data))[None].to(device)
         with torch.no_grad():
             return float(
                 nll_core(
                     tgt.reshape(-1, tgt.shape[-1]),
                     coh.reshape(-1, coh.shape[-1]),
-                    mags.reshape(-1, mags.shape[-2], mags.shape[-1]),
+                    psd.reshape(-1, psd.shape[-2], psd.shape[-1]),
                 )
             )
 
