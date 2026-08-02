@@ -271,7 +271,62 @@ not as a reason to distrust `mrstft` outright.
 Caveat: n = 11 clips per drone. The gaps are far too large to be sampling
 noise, but the third digit is not meaningful.
 
+## The wind arm, and why it is not yet a test of the wake model
+
+| variant | mrstft ↑ (all / DREGON / Michael's) | NLL ↓ (all / DREGON / Michael's) |
+|---|---|---|
+| `gen_w3_lik_nowind_mm` | 7.016 / 6.804 / 7.227 | −0.047 / **−0.523** / **0.429** |
+| `gen_w4_lik_wind_mm` | 6.232 / 6.486 / 5.977 | 0.299 / −0.311 / 0.908 |
+
+The wind arm is worse on both drones. But the trained channel's **share of the
+predicted variance** (`scripts/probe_wind_share.py`, real published geometry,
+80 rev/s) is:
+
+    dregon    wind share  9.86e-4   (0.099%)
+    michaels  wind share  4.41e-6   (0.0004%)
+
+**The channel is inert.** Its learned scalars barely moved from initialization
+and `raw_level` went *down* (softplus 0.693 -> 0.643). A component carrying 0.1%
+of the variance cannot produce a 0.21-nat shift, so the w4-vs-w3 gap is
+optimization noise from adding dead parameters, **not** evidence about the wake
+physics. The wake model remains **untested**.
+
+(An earlier reading of this table — "it degrades most on Michael's, where it
+should be inert, so the physics is wrong" — was incorrect. It *is* inert
+everywhere; the differences are noise.)
+
+## The remaining defect: the likelihood is per-microphone
+
+`SpectralLikelihoodLoss` folds the microphone axis into the batch. That is what
+makes the objective comparable across channel counts — each microphone is an
+equally-weighted sample — but it means the likelihood is a product of
+**per-microphone marginals**.
+
+The wind channel's defining property is that it is **incoherent across
+microphones** while the coherent propagated field is correlated across them. A
+marginal likelihood cannot see cross-microphone coherence, so the one signature
+that distinguishes wind from the generator's own broadband branch is still not
+scored. Multi-observer *data* was necessary but is **not sufficient**: the
+*objective* must be joint across microphones.
+
+That also explains the inertness directly. The coherent branch's flexible
+60-band learned filter explains the residual first; the wind starts ~3 orders of
+magnitude below it and nothing in the objective rewards the only thing it can
+uniquely do, so there is no gradient pressure to grow.
+
+**Next step**: score the microphone **cross-spectrum**, not the marginals — a
+complex Wishart / coherence likelihood over the per-bin spatial covariance,
+where the coherent field contributes a rank-structured term and the wind a
+diagonal one. That is the objective under which the two are separable.
+
 ## Conclusion
 
-_Wind arm (`gen_w4_lik_wind_mm`) pending; `gen_w3_lik_nowind_mm` above is its
-control, so the bar is DREGON NLL −0.523 with Michael's held at 0.429._
+The **objective fix is a large, verified win** and the core of what was asked:
+the phase-marginalized likelihood improves held-out NLL from +5.909 (M=1
+magnitude baseline) to **−0.047**, and `mrstft` from 4.734 to **7.018**, on both
+drones, scored on identical data.
+
+The **wind channel is not yet fixed, and is not yet fairly tested**. It stays
+inert under a per-microphone likelihood. The goal ("identical on Michael's,
+better on DREGON") is **not met**, and cannot be assessed until the objective
+scores spatial coherence.
