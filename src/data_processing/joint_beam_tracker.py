@@ -699,6 +699,24 @@ class BeamCfg:
     span_soft: float = 1.45
     span_gain: float = 4.0
     span_hard: float = 2.5
+    #: Let the global family put TWO rotors on the SAME peak.
+    #:
+    #: The proposal families are 4-subsets of DISTINCT peaks plus local moves,
+    #: so every assignment the beam can reach spreads its four rotors over four
+    #: separate combs.  Measured consequence: claimed comb mass sits at
+    #: 3.80-3.86 on every proposal in every window, and because the union
+    #: emission is ``(u - mass*ref)/denom``, a near-constant ``mass`` makes the
+    #: per-comb price ``ref`` shift every candidate EQUALLY — so pricing a comb
+    #: cannot reorder anything.  That is why sweeping ``claim_q`` over
+    #: 0.5/0.75/0.90/0.95 moved the objective onto the truth on two windows and
+    #: left the tracker's output bit-identical on all six.
+    #:
+    #: Drawing 4-multisets instead of 4-subsets lets the beam express "these two
+    #: rotors are on one comb" and "this frame shows three rotors, not four",
+    #: which is the hypothesis a correctly priced objective needs in order to
+    #: win anything.  Costs C(n+3, 4) instead of C(n, 4) proposals — 3060 vs
+    #: 1365 at the default ``n_peaks = 15``.
+    allow_shared_peaks: bool = False
     #: Beam de-duplication resolution, rev/s.  Without it the beam fills with
     #: near-identical copies of one hypothesis and silently loses diversity.
     dedup_rps: float = 0.25
@@ -749,8 +767,10 @@ _PERMS: torch.Tensor = torch.tensor(
 )
 
 
-def _subsets(n: int, k: int = NUM_ROTORS) -> torch.Tensor:
-    return torch.tensor(list(itertools.combinations(range(n), k)), dtype=torch.long)
+def _subsets(n: int, k: int = NUM_ROTORS, shared: bool = False) -> torch.Tensor:
+    """Index tuples of ``k`` peaks — distinct, or with repetition if ``shared``."""
+    gen = itertools.combinations_with_replacement if shared else itertools.combinations
+    return torch.tensor(list(gen(range(n), k)), dtype=torch.long)
 
 
 def _frame_peaks(s_t: torch.Tensor, grid: torch.Tensor, cfg: BeamCfg) -> torch.Tensor:
@@ -1015,7 +1035,7 @@ def joint_beam_track(
 
     # -- frame 0: all 4-subsets of the peak set, sorted (no previous state)
     pk0 = _frame_peaks(scores[:, 0], grid, beam)
-    sets0 = pk0[_subsets(len(pk0)).to(dev)]  # (Q, 4)
+    sets0 = pk0[_subsets(len(pk0), shared=beam.allow_shared_peaks).to(dev)]  # (Q, 4)
     sets0, _ = torch.sort(sets0, dim=-1)
     idx0 = _to_idx(sets0, grid)
     pen0, rej0 = _band_penalty(sets0, beam)
@@ -1075,7 +1095,7 @@ def joint_beam_track(
         n_g = min(beam.n_global, n_b)
         gsel = torch.topk(-cur_c, n_g).indices
         pk = _frame_peaks(s_t, grid, beam)
-        sets = pk[_subsets(len(pk)).to(dev)]  # (Q, 4)
+        sets = pk[_subsets(len(pk), shared=beam.allow_shared_peaks).to(dev)]  # (Q, 4)
         w_perm = sets[:, perms]  # (Q, 24, 4)
         c_tr = _mode_cost(
             cur_w[gsel][:, None, None, :],

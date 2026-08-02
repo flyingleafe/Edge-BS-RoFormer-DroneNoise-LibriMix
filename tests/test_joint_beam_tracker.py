@@ -574,3 +574,34 @@ def test_claim_q_prices_a_comb_and_norm_cannot():
     # four-comb assignment and the ones that claim less
     hi = emissions(claim_q=0.9)
     assert (hi[0] - hi[2]) < (base[0] - base[2])
+
+
+def test_shared_peaks_widen_the_reachable_comb_mass():
+    """The proposal set, not the objective, is what fixes `mass` in place.
+
+    4-subsets of DISTINCT peaks can only ever spread four rotors over four
+    combs, so every reachable assignment carries nearly the same comb mass —
+    and since the union emission is `(u - mass*ref)/denom`, a constant `mass`
+    makes the per-comb price `ref` shift every candidate equally and reorder
+    nothing.  Allowing repetition must widen the reachable mass range, which is
+    the precondition for `claim_q` to be able to change an answer at all.
+    """
+    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+
+    bases = [71.0, 83.0, 91.0, 97.0]
+    lm, bin_hz, st, _ = _synth_window(bases, n_frames=12)
+    emis = EmissionCfg(lo=60.0, hi=110.0, step=0.5, pool="quantile")
+    tab = jbt.comb_tables(torch.from_numpy(lm), bin_hz, emis)
+    g = torch.as_tensor(emis.grid(), dtype=torch.float32)
+    pk = jbt._frame_peaks(
+        jbt.normalise_scores(jbt.comb_scores_from_tables(tab, emis), emis)[:, 4],
+        g,
+        BeamCfg(),
+    )
+    spread = {}
+    for shared in (False, True):
+        sets = pk[jbt._subsets(len(pk), shared=shared)]
+        mass = jbt.union_emission(tab, jbt._to_idx(sets, g), 4, emis)[1]
+        spread[shared] = (float(mass.min()), float(mass.max()))
+    assert spread[True][0] < spread[False][0]  # low-mass hypotheses become reachable
+    assert spread[True][0] <= 1.5  # including "all four rotors on one comb"
