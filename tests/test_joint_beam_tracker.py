@@ -536,3 +536,41 @@ def test_share_alone_orders_honest_above_parked_above_degenerate():
     assert honest > parked > degen
     assert m_degen == pytest.approx(1.0)
     assert 2.0 < m_parked < 3.0  # three distinct combs, one of them claimed twice
+
+
+def test_claim_q_prices_a_comb_and_norm_cannot():
+    """The two normalisation parameters do different jobs, and only one of them
+    can change an answer.
+
+    `norm` moves the per-frame DENOMINATOR, a positive scale, so it rescales
+    every assignment's emission by the same factor and cannot reorder them.
+    `claim_q` moves the per-comb OFFSET, subtracted once per claimed comb, so
+    raising it makes an extra comb cost more and shifts the balance toward
+    assignments that explain fewer, better-evidenced combs.
+    """
+    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+
+    bases = [71.0, 83.0, 91.0, 97.0]
+    lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
+
+    def emissions(**kw):
+        emis = EmissionCfg(lo=60.0, hi=110.0, step=0.5, pool="quantile", **kw)
+        tab = jbt.comb_tables(torch.from_numpy(lm), bin_hz, emis)
+        a, b = jbt._norm_affine(jbt.comb_scores_from_tables(tab, emis), emis)
+        g = torch.as_tensor(emis.grid(), dtype=torch.float32)
+        out = []
+        for vec in ([71.0, 83.0, 91.0, 97.0], [71.0, 83.0, 91.0, 71.0], [71.0] * 4):
+            idx = jbt._to_idx(torch.tensor([vec], dtype=torch.float32), g)
+            u, m = jbt.union_emission(tab, idx, 4, emis)
+            out.append(float(a[4] * u + m * b[4]))
+        return out
+
+    base = emissions()
+    mad = emissions(norm="mad")
+    # `norm` is a pure scale: every ratio to the four-comb assignment survives
+    for x, y in zip(base[1:], mad[1:], strict=True):
+        assert x / base[0] == pytest.approx(y / mad[0], rel=1e-4)
+    # `claim_q` is not: pricing a comb higher must close the gap between the
+    # four-comb assignment and the ones that claim less
+    hi = emissions(claim_q=0.9)
+    assert (hi[0] - hi[2]) < (base[0] - base[2])

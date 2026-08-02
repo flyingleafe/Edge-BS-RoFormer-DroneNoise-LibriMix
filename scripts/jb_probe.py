@@ -112,6 +112,39 @@ CEILING_CFGS: dict[str, dict[str, Any]] = {
         "norm": "mad",
     },
     "mad_mean_k16": {"n_fft": 4096, "k_max": 16, "b0_rps": 0.0, "norm": "mad"},
+    # --- claim_q: the PRICE of claiming a comb.  The union emission is
+    # (u - mass*ref)/denom; `norm` moves denom (a pure scale, measurably unable
+    # to reorder anything) while `claim_q` moves ref, which is subtracted once
+    # per claimed comb.  This is the only parameter that can stop the tracker
+    # buying a fourth comb that is not there.
+    "q25_claim75": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "claim_q": 0.75,
+    },
+    "q25_claim90": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "claim_q": 0.90,
+    },
+    "q25_claim95": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "claim_q": 0.95,
+    },
+    "q25_claim98": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "claim_q": 0.98,
+    },
     "mad_q25_k30": {
         "n_fft": 4096,
         "k_max": 30,

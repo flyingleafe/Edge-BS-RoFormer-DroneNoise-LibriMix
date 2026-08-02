@@ -306,6 +306,23 @@ class EmissionCfg:
     #: 1-2.  Claiming a fourth comb that is not there then buys almost nothing,
     #: which is the property the peak form cannot express at any ``lambda_e``.
     norm: str = "peak"  # "peak" | "mad"
+    #: Quantile of the per-frame score surface used as the PER-COMB reference.
+    #:
+    #: This is the knob that decides how much evidence a comb must show to be
+    #: worth claiming, and it is the only one that can.  The union emission is
+    #: ``(u - mass * ref) / denom``: ``denom`` is a positive per-frame scale, so
+    #: it cannot reorder two assignments (measured — ``norm="mad"`` reproduced
+    #: the shipped trajectory bit-for-bit on all six windows), while ``ref`` is
+    #: subtracted ONCE PER CLAIMED COMB and therefore sets the price of a comb.
+    #:
+    #: At the shipped 0.5 the reference is the frame MEDIAN, so a comb worth a
+    #: median grid point is free and anything above it turns a profit — which is
+    #: exactly why the tracker claims 3.80-3.86 units of comb mass where the
+    #: truth claims 2.90-3.77.  Raising it toward a high quantile prices a comb
+    #: at what a plausible-but-spurious placement scores, so only genuinely
+    #: strong combs pay for themselves and a frame containing three rotors can
+    #: be scored as containing three.
+    claim_q: float = 0.5
 
     def grid(self) -> np.ndarray:
         return np.arange(self.lo, self.hi + self.step / 2, self.step)
@@ -606,13 +623,19 @@ def _norm_terms(s: torch.Tensor, cfg: EmissionCfg) -> tuple[torch.Tensor, torch.
     the beam searches and the union score it accumulates can never drift onto
     two different scales — which would silently change what ``lambda_e`` means.
     """
-    med = s.median(dim=0, keepdim=True).values
+    med = (
+        s.median(dim=0, keepdim=True).values
+        if cfg.claim_q == 0.5
+        else s.quantile(cfg.claim_q, dim=0, keepdim=True)
+    )
+    mid = s.median(dim=0, keepdim=True).values  # scale is always vs the median,
+    # so `claim_q` moves the OFFSET only and the two effects stay separable
     if cfg.norm == "peak":
         peak = s.max(dim=0, keepdim=True).values
-        glob = (peak - med).median()
-        return med, (peak - med).clamp_min(cfg.norm_soft * glob)
+        glob = (peak - mid).median()
+        return med, (peak - mid).clamp_min(cfg.norm_soft * glob)
     if cfg.norm == "mad":
-        mad = 1.4826 * (s - med).abs().median(dim=0, keepdim=True).values
+        mad = 1.4826 * (s - mid).abs().median(dim=0, keepdim=True).values
         return med, mad.clamp_min(cfg.norm_soft * mad.median())
     raise ValueError(f"unknown norm {cfg.norm!r}")
 
