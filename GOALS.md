@@ -78,6 +78,24 @@ Three concurrent bets, all RPS-clustered, on purpose: that is where months of pr
 - **Time budget.** ~3–4 weeks.
 - **If it works.** Strong "physics-informed methods beat ML when noise is structured" narrative. If it loses to neural, still a defensible interpretable lower bound and a transfer-doc figure.
 
+### Open thread — the additive wind-noise channel (paused 2026-08-03)
+
+- **Goal, as set.** The additive wind-noise model should reach **identical scores on Michael's and better scores on DREGON** — the asymmetry the physics predicts, since DREGON's microphones sit inside the rotor downwash and Michael's ring sits above and forward of it (measured ~7500x weaker exposure at initialisation, before any fitting).
+- **The diagnosis that was right.** Wind gusts are stochastic, so optimising the difference between real audio and synthetic audio carrying **one** random gust realisation is doomed. It is: an L1 magnitude loss fits any purely stochastic component to the Rayleigh *median*, i.e. `ln 2` = **−1.6 dB** low, at any capacity or training length.
+- **What that fix delivered.** A phase-marginalised Rice/Whittle likelihood (`src/losses/spectral_likelihood.py`) moved held-out fit from **+5.909 to −0.047** nats/bin and mrstft from **4.734 to 7.018**, on both drones. `gen_w3_lik_nowind_mm` is the best generator the project has produced. **This is a real, banked win and is independent of the wind question.**
+- **Status of the wind channel: unresolved, and no valid test yet exists.** Three comparisons, three invalidating conditions — do not read any of them as a verdict:
+
+  | attempt | wind share of predicted variance (DREGON) | why it tested nothing |
+  |---|---|---|
+  | `gen_w4` vs `gen_w3` | 0.099% | inert — too weak to move a result |
+  | `gen_s2` vs `gen_s3` | — | the zero-mean array objective had wrecked the harmonic fit |
+  | `gen_h1` vs `gen_h2` | 98.2% | dominant — the channel ate the model |
+
+- **What was established.** Identifiability is fixed: a component distinguished from the coherent field only by its *spatial* law is invisible to a per-microphone likelihood, and adding the cross-microphone (array-covariance) term takes wind from **0.099% to 98%** of predicted variance. The open variable is the weight balancing the two terms; 0.05 and ~0 (the marginal objective) bracket a usable window.
+- **Mandatory gate before any future wind comparison.** Run `scripts/probe_wind_share.py` first. A channel at 0.1% or at 98% is degenerate either way, and comparing two degenerate models says nothing. Require a modest DREGON share **and** a near-zero Michael's share — the Michael's number is the honest check, because geometry puts that array far outside the wake.
+- **If the wake gating loses a valid test**, the refuted thing is the **spatial shape** (bent-wake-column gate), not flow noise: an incoherent per-microphone term is demonstrably required — remove it entirely and the array covariance is singular. At that point the next question is physics (column model, gate shape, induced-velocity law), not another loss function.
+- **Where the detail lives.** `docs/experiments/wind-channel-likelihood.md`; explorable in `notebooks/generator_lab.ipynb`.
+
 ### Parked alternatives
 
 Explicitly considered and not chosen for this round; re-evaluate at mid-point review:
