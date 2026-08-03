@@ -118,6 +118,10 @@ VARIANTS: dict[str, tuple[str, str]] = {
         "gen_s2_spatial_wind",
         "r2://ml-data/artifacts/gen_s2_spatial_wind/checkpoints/best.ckpt",
     ),
+    "s3_spatial_uniform": (
+        "gen_s3_spatial_uniform",
+        "r2://ml-data/artifacts/gen_s3_spatial_uniform/checkpoints/best.ckpt",
+    ),
     "w4_lik_wind_mm": (
         "gen_w4_lik_wind_mm",
         "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt",

@@ -447,6 +447,7 @@ def build_noise_gen_model(
     silence_fade_rps: float = 10.0,
     per_rotor_deltas: bool = False,
     n_rotors: int = 4,
+    wind_uniform_exposure: bool = False,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -502,6 +503,9 @@ def build_noise_gen_model(
         rps_jitter_tau=rps_jitter_tau,
         film_spectral_norm=film_spectral_norm,
         silence_fade_rps=silence_fade_rps,
+        # Only the wind composite accepts this; it is the wake-model control
+        # (uniform per-mic exposure, same capacity, no geometry gating).
+        **({"wind_uniform_exposure": True} if wind_uniform_exposure else {}),
     )
     if cond_dim <= 0:
         if z_noise_std > 0.0:
