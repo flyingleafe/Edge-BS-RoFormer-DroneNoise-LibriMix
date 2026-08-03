@@ -106,6 +106,18 @@ VARIANTS: dict[str, tuple[str, str]] = {
         "gen_w3_lik_nowind_mm",
         "r2://ml-data/artifacts/gen_w3_lik_nowind_mm/checkpoints/best.ckpt",
     ),
+    # Spatial (cross-microphone) likelihood arms — the objective under which the
+    # wind channel is identifiable. Their training val_loss is NOT comparable to
+    # the marginal arms' (a different density), so they are compared to each
+    # other and, through the shared eval metrics, to everything else.
+    "s1_spatial_nowind": (
+        "gen_s1_spatial_nowind",
+        "r2://ml-data/artifacts/gen_s1_spatial_nowind/checkpoints/best.ckpt",
+    ),
+    "s2_spatial_wind": (
+        "gen_s2_spatial_wind",
+        "r2://ml-data/artifacts/gen_s2_spatial_wind/checkpoints/best.ckpt",
+    ),
     "w4_lik_wind_mm": (
         "gen_w4_lik_wind_mm",
         "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt",
