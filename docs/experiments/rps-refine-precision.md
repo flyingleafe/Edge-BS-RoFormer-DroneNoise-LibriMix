@@ -2195,6 +2195,80 @@ construction, and one more reason its comb accounting could not separate
 four rotors.
 
 
+## WP21 — exact per-rotor lattice DP: zero search error, and the defects it exposed (2026-08-03)
+
+The WP20 closure's successor design, restructured on one observation: the
+joint tracker's every pathology (union accounting, share, comb pricing,
+proposal reachability, the ``width^(1/4)`` marginal) exists only because the
+search space is the 4-rotor PRODUCT.  For one rotor the state is a scalar on
+a ~1000-point grid, so exact banded Viterbi is milliseconds per window and
+the objective-vs-search question dissolves: with exact inference, every
+failure is the objective's.  Beam search survives at the level where the
+combinatorics actually live — the extraction/assignment tree — not over
+frames.
+
+Code: `data_processing/rotor_dp.py` (`viterbi_path` exact within a hard
+±5 rev/s/frame band, Huber transition so ramps pay linear; `residual_scores`
+= single-comb quantile pooling with claimed bins excluded — the sequential
+replacement for the union machinery; `greedy_peel`).  Probe:
+`scripts/sr_dp_probe.py`, three arms per window — `oracle_masked` (each
+rotor tracked with its three siblings claimed at GT: the individual-rotor
+gate), `raw_dp`, `greedy_peel` (scored with `stage_metrics`, directly
+comparable to the WP19/WP20 scoreboard).  Emission: the WP20 ceiling winner
+(n_fft 4096, k <= 16, quantile q = 0.25), grid step 0.1.  Exactness of the
+DP is unit-tested against brute-force enumeration.  Runtime: ~11 s per 16 s
+window on a P100 including all three arms — comfortably real-time.
+
+### Run 1 (exact-bin masking): the claim mask, not the emission, was the defect
+
+Every oracle-masked DP reproduced the raw unmasked trajectory bit-for-bit,
+and the greedy peel parked all four tracks within 0.4 rev/s of one comb
+(FLY124: 91.00/91.09/91.38/91.09).  Mechanism, reproduced in a unit test: a
+candidate displaced 0.2-0.4 rev/s from a claimed comb has its high-k teeth
+on the ADJACENT rounded bin — inside the claimed tooth's Hann mainlobe — so
+a claimed comb survives as its own flanks.  This is the displaced-comb
+phenomenon of the beat-VK doc, and the joint tracker's union shares the
+defect by construction (its bin identity is the same rounding).
+
+### Run 2 (mask dilated to the mainlobe, ±2 bins): the oracle gate PASSES where a comb is visible
+
+- **Synthetic**: all four rotors MAE 0.67-0.83, hit@1.0 0.73-0.81.
+- **Speech window**: all four rotors MAE 1.2-3.1.
+- **FLY124 rotor 0**: MAE 0.54, hit@1.0 0.87.
+- **Greedy peel un-collapsed** (pair separation 0.7-2.4 rev/s) and moved the
+  scoreboard for the first time in the campaign: pooled 3.32 / 3.08 on the
+  steady DREGON / speech windows vs the joint beam's 8.73 / 8.34
+  (fullrange_init: 1.15 / 1.04).
+
+The residual failures are three separable mechanisms, no longer one mush:
+
+1. **Magnitude-invisible rotors** (FLY124 r1-r3, raw support ≈ 0): the comb
+   is not in the spectrogram, so no per-rotor search can find it.  This is
+   the entire reason fullrange_init still wins FLY124 — its shared-shape
+   band prior parks the missing rotors near the visible one.  The fix lives
+   at the tree/leaf level (structural prior for unsupported rotors), not in
+   the emission.
+2. **Twin dilation deadzone**: a 0.5 rev/s DREGON twin has ALL its k <= 16
+   teeth inside the ±2-bin dilation of its claimed sibling, so once the
+   sibling is claimed the twin is unfindable and its DP falls to a
+   subharmonic (oracle MAE 46).  Twins clear the dilation only from
+   k ≈ 20 — the masked stages need k_max ~30 even though the unmasked
+   ceiling preferred 16.
+3. **Ramp smearing** (room1:0, unchanged ~19-20): at 256 ms windows a
+   ramping comb smears its k >= 4 teeth across bins.  The n_fft 2048
+   control REFUTED the short-window fix: at 7.8 Hz bins the same ±2-bin
+   dilation wipes every neighbour's comb (oracle MAE 25-46 everywhere), and
+   the ramp does not improve either.  Ramps need a different mechanism
+   (IF-based or adaptive-window emission), not a global window change.
+
+Run 2 also showed the dilated mask's own residual hole: an impostor
+0.7 rev/s out keeps just 3 surviving teeth (k = 14-16) and still pools
+positive off the claimed teeth's jitter-broadened skirts (linewidth grows
+with k and exceeds the window mainlobe).  Fix shipped: floor any speed with
+fewer than `min_surv_teeth = 4` survivors (unit-tested: the 0.7 impostor
+floors, a 0.9 twin survives).  Arms in flight: k16 + floor (isolate the
+floor), k30 + floor (open the twin deadzone).
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
