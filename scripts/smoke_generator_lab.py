@@ -44,7 +44,7 @@ def main() -> int:
 
         def build_real(ds=dataset):
             recs = lab.recordings(ds)
-            e = lab.real_slice(ds, recs[0], 20.0, 3.0)
+            e = lab.real_slice(ds, recs[0], 20.0, 3.0)  # recordings() filters unusable ones
             excs[ds] = e
             return (
                 f"{e.label} audio{e.audio.shape} rps{e.rps.shape} "

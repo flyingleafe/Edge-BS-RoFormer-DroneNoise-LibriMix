@@ -208,11 +208,22 @@ def _frames(dataset: str) -> list:
     return list(iter_published_frames(dataset, None))
 
 
-def recordings(dataset: str) -> list[str]:
-    """Recording ids available in a published frames dataset."""
-    from data_processing.frames import get_meta
+def recordings(dataset: str, usable_only: bool = True) -> list[str]:
+    """Recording ids in a published frames dataset.
 
-    return [str(get_meta(f, "recording_id", "?")) for f in _frames(dataset)]
+    ``usable_only`` (the default) drops recordings that cannot drive a
+    generator — DREGON ships clean-source captures like
+    ``clean_chirps_45_-15_1.2`` that carry audio but **no rotor track**. Listing
+    them would put entries in the notebook's dropdown that fail on selection.
+    """
+    from data_processing.frames import PUBLISHED_RPS_KEYS, get_meta
+
+    out = []
+    for f in _frames(dataset):
+        if usable_only and not ("audio" in f and any(k in f for k in PUBLISHED_RPS_KEYS)):
+            continue
+        out.append(str(get_meta(f, "recording_id", "?")))
+    return out
 
 
 DATASETS = {"DREGON-frames": "dregon", "michaels-frames": "michaels"}
@@ -284,7 +295,17 @@ def synth_slice(
 
     rng = np.random.default_rng(seed)
     if kind == "full_flight":
-        rps = rps_synthesis.generate_full_flight(dur_s, SR, rng=rng)
+        # The full-flight trajectory walks a fixed phase sequence (ground ->
+        # warm-up -> takeoff -> cruise -> landing -> ground) with a hard minimum
+        # duration. Ask for something shorter and it raises; so synthesize at
+        # the natural length and return the requested window from the middle,
+        # which is where cruise lives.
+        full = np.asarray(rps_synthesis.generate_full_flight(None, SR, rng=rng), np.float32)
+        want = int(round(dur_s * SR))
+        if full.shape[-1] > want:
+            start = (full.shape[-1] - want) // 2
+            full = full[..., start : start + want]
+        rps = full
     else:
         rps = rps_synthesis.generate_intermittent(dur_s, SR, rng=rng, aggressiveness=aggressiveness)
     rps = np.asarray(rps, dtype=np.float32)
@@ -476,7 +497,15 @@ def _render_cona(exc: Excitation) -> np.ndarray:
     """
     from four_way_lib import cona_inventory, fetch_cona_case, nearest_cona_key, resample_to_sr
 
-    key = nearest_cona_key(cona_inventory(), exc.drone, float(exc.mean_rps), 0)
+    inv = cona_inventory()
+    drones = sorted({m["drone"] for m in inv.values()})
+    if exc.drone not in drones:
+        raise LookupError(
+            f"the published CONA set has no cases for drone={exc.drone!r} "
+            f"(available: {drones}) — it is a reference synthesis, not a model "
+            f"that can be driven from arbitrary geometry"
+        )
+    key = nearest_cona_key(inv, exc.drone, float(exc.mean_rps), 0)
     cache = _ROOT / ".cache" / "cona"
     cache.mkdir(parents=True, exist_ok=True)
     case = fetch_cona_case(key, cache)
