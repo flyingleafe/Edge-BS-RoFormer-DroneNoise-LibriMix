@@ -1,0 +1,51 @@
+# Marginal Rice likelihood + a cross-microphone coherence term, weight 0.005.
+#
+# At weight 0.05 the wind channel took 98% of predicted variance on DREGON and
+# 25% on Michaels, and the coherent branch collapsed (4.4e-3 -> 6.5e-4). A rotor
+# recording is not 98% flow noise, and Michaels sits ~7500x outside the wake at
+# init, so 25% there means the channel was acting as a general-purpose variance
+# sink. This is the sweep toward a physically plausible share.
+#
+# The pure spatial likelihood (conf/loss/spatial_likelihood.yaml) is zero-mean:
+# it folds the harmonic bank into the array COVARIANCE, i.e. it models the comb
+# as random power rather than as a deterministic mean. So it never rewards
+# getting the harmonics right, only their level — and the harmonics are the
+# dominant, most audible component. Measured consequence: models trained on it
+# alone collapse on every other criterion (mrstft 7.018 -> 3.6, marginal NLL
+# -0.047 -> 44).
+#
+# So the spatial term should AUGMENT the marginal one, not replace it. The
+# marginal Rice term keeps the coherent mean sharp (it is what made
+# gen_w3_lik_nowind_mm the best model we have); the spatial term supplies the
+# only gradient that can distinguish an incoherent per-mic field from a
+# propagated one, which is what the wind channel needs to be identifiable at all.
+#
+# This is the swept-down weight (0.005). The spatial NLL runs ~1-2 orders larger
+# than the marginal one, so 0.05 puts them within about a factor of two of each
+# other on the arms measured so far. Treat any conclusion that hinges on this
+# number as provisional.
+terms:
+  - name: likelihood
+    _target_: losses.SpectralLikelihoodLoss
+    weight: 1.0
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      target_key: audio
+      coherent_key: coherent
+      noise_key: noise_psd
+      n_ffts: [2048, 512]
+      hop_ratio: 0.25
+  - name: spatial
+    _target_: losses.SpatialLikelihoodLoss
+    weight: 0.005
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      target_key: audio
+      source_key: source_psd
+      wind_key: wind_psd
+      rel_pos_key: rel_pos
+      n_ffts: [1024]
+      hop_ratio: 0.25
+      sample_rate: 16000

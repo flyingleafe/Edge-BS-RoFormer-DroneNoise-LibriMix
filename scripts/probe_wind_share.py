@@ -27,6 +27,8 @@ CKPTS = {
     "w4 (marginal)": "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt",
     "h1 (hybrid, wake-gated)": "r2://ml-data/artifacts/gen_h1_hybrid_wind/checkpoints/best.ckpt",
     "h2 (hybrid, uniform)": "r2://ml-data/artifacts/gen_h2_hybrid_uniform/checkpoints/best.ckpt",
+    "hw_lo (wake-gated, lambda 0.005)": "r2://ml-data/artifacts/gen_hw_lo/checkpoints/best.ckpt",
+    "hu_lo (uniform, lambda 0.005)": "r2://ml-data/artifacts/gen_hu_lo/checkpoints/best.ckpt",
 }
 
 

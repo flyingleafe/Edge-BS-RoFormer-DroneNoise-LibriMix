@@ -130,6 +130,8 @@ VARIANTS: dict[str, tuple[str, str]] = {
         "gen_h2_hybrid_uniform",
         "r2://ml-data/artifacts/gen_h2_hybrid_uniform/checkpoints/best.ckpt",
     ),
+    "hw_lo": ("gen_hw_lo", "r2://ml-data/artifacts/gen_hw_lo/checkpoints/best.ckpt"),
+    "hu_lo": ("gen_hu_lo", "r2://ml-data/artifacts/gen_hu_lo/checkpoints/best.ckpt"),
     "w4_lik_wind_mm": (
         "gen_w4_lik_wind_mm",
         "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt",
