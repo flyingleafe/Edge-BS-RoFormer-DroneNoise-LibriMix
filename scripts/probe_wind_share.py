@@ -23,11 +23,15 @@ from models.registry import build_noise_gen_model  # noqa: E402
 from tasks.noise_generation import geometry_to_rel_pos  # noqa: E402
 from training.artifacts import resolve_checkpoint_uri  # noqa: E402
 
-CKPT = "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt"
+CKPTS = {
+    "w4 (marginal)": "r2://ml-data/artifacts/gen_w4_lik_wind_mm/checkpoints/best.ckpt",
+    "h1 (hybrid, wake-gated)": "r2://ml-data/artifacts/gen_h1_hybrid_wind/checkpoints/best.ckpt",
+    "h2 (hybrid, uniform)": "r2://ml-data/artifacts/gen_h2_hybrid_uniform/checkpoints/best.ckpt",
+}
 
 
-def main() -> None:
-    model = build_noise_gen_model(
+def _build(uniform: bool):
+    return build_noise_gen_model(
         "positional_harmonic_wind_gen",
         sample_rate=16000,
         n_harmonics=100,
@@ -38,14 +42,34 @@ def main() -> None:
         learn_rps_jitter_sigma=True,
         z_noise_std=0.1,
         film_spectral_norm=True,
+        wind_uniform_exposure=uniform,
     )
-    state = torch.load(resolve_checkpoint_uri(CKPT), map_location="cpu")
+
+
+def main() -> None:
+    for label, ckpt in CKPTS.items():
+        print(f"\n=== {label}")
+        _report(ckpt, uniform="uniform" in label)
+
+
+def _report(ckpt: str, uniform: bool) -> None:
+    from models.generative.wind_wake_gen import _pos
+
+    model = _build(uniform)
+    state = torch.load(resolve_checkpoint_uri(ckpt), map_location="cpu")
     for key in ("state_dict", "model"):
         if isinstance(state, dict) and key in state:
             state = state[key]
     missing, unexpected = model.load_state_dict(state, strict=False)
-    print(f"loaded (missing={len(missing)}, unexpected={len(unexpected)})")
+    if len(missing) > 20:
+        print(f"  !! {len(missing)} missing keys — build kwargs likely wrong")
     model.eval()
+    w = model.generator.wind
+    print("  learned wake params: " + "  ".join(
+        f"{n}={float(_pos(getattr(w, f'raw_{n}'))):.4f}"
+        for n in ("k", "alpha", "beta", "gate")))
+    print(f"  transduction level={float(_pos(w.transduction.raw_level)):.4f} "
+          f"gamma={float(_pos(w.transduction.raw_gamma)):.4f}")
 
     geoms = {
         "dregon": _frames_spec_geometry("frames:DREGON-frames"),
