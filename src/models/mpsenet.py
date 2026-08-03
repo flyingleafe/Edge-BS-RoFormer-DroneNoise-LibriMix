@@ -405,7 +405,11 @@ class MPSENet(nn.Module):
             x = x.squeeze(1)
         length = x.shape[-1]
 
-        noisy_mag, noisy_pha = self._stft(x)  # each (B, F, T)
+        # Complex-safe AMP boundary: STFT/iSTFT stay in fp32 (no ComplexHalf
+        # kernels under autocast); only the real-valued body autocasts. Lets
+        # the F1 configs train with amp=true (bfloat16) instead of full fp32.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            noisy_mag, noisy_pha = self._stft(x.float())  # each (B, F, T)
 
         # -> (B, 1, T, F) so channel=1, time and freq are the spatial axes.
         mag_in = noisy_mag.unsqueeze(1).permute(0, 1, 3, 2)
@@ -420,7 +424,8 @@ class MPSENet(nn.Module):
         denoised_mag = noisy_mag * mask
         denoised_pha = self.phase_decoder(feat)  # (B, F, T)
 
-        wav = self._istft(denoised_mag, denoised_pha, length)  # (B, T)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            wav = self._istft(denoised_mag.float(), denoised_pha.float(), length)  # (B, T)
         return wav
 
 

@@ -8,9 +8,17 @@ defaults:
   - override /metrics: separation_basic
 
 experiment_name: f1_tfgridnet_a
-amp: false  # complex STFT/iSTFT (ComplexHalf gaps under autocast)
-batch_size: 4  # TF-GridNet is memory-heavy (batch 16 OOMs @ 63GB); effective 16 via grad accum
-grad_accum_steps: 4
+# fp16 autocast; the model keeps STFT/iSTFT in fp32 internally (the
+# ComplexHalf gap), so amp is safe now. The first pass trained full-fp32 at
+# batch 4 and completed only ~7 epochs before the 16 h wall (still improving —
+# compute-limited, not diverged); amp + batch 8 is the throughput fix.
+amp: true
+amp_dtype: float16  # fp16 + GradScaler: cuDNN LSTM fp16 is the well-paved path
+                    # (bf16 LSTM autocast is spotty); LayerNorm-heavy blocks
+                    # keep activations bounded
+batch_size: 8  # fp32 batch 16 OOMed @ 63GB; fp16 halves activations
+grad_accum_steps: 2  # effective 16
+resume: true  # chainable across wall-limited job segments (last.ckpt)
 samples_per_validation: 20000
 epochs: 150
 patience: 30

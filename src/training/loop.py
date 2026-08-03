@@ -173,10 +173,21 @@ def _better(mode: str):
 
 
 def _forward(
-    codec: Codec, model: torch.nn.Module, batch: td.Frame, *, device: torch.device, amp: bool
+    codec: Codec,
+    model: torch.nn.Module,
+    batch: td.Frame,
+    *,
+    device: torch.device,
+    amp: bool,
+    amp_dtype: torch.dtype | None = None,
 ) -> td.Frame:
     inputs = codec.to_inputs(batch)
-    with torch.autocast(device_type=device.type, enabled=amp):
+    # dtype is only forwarded on cuda: cpu autocast supports bfloat16 only, so
+    # the cpu path keeps torch's per-device default.
+    kwargs: dict[str, Any] = (
+        {"dtype": amp_dtype} if (amp_dtype is not None and device.type == "cuda") else {}
+    )
+    with torch.autocast(device_type=device.type, enabled=amp, **kwargs):
         outputs = codec.call_model(model, inputs)
     return codec.to_frame(outputs, batch)
 
@@ -192,6 +203,7 @@ def _train_one_epoch(
     n_batches: int | None,
     device: torch.device,
     amp: bool,
+    amp_dtype: torch.dtype | None = None,
     grad_clip: float | None,
     grad_accum_steps: int,
     epoch: int,
@@ -203,7 +215,7 @@ def _train_one_epoch(
     pbar = tqdm(batches, total=n_batches, desc=f"train e{epoch}", leave=False)
     for i, batch in enumerate(pbar):
         batch = _to_device(batch, device)
-        pred_frame = _forward(codec, model, batch, device=device, amp=amp)
+        pred_frame = _forward(codec, model, batch, device=device, amp=amp, amp_dtype=amp_dtype)
         loss = loss_fn(pred_frame, batch)
         scaler.scale(loss / grad_accum_steps).backward()
 
@@ -233,6 +245,7 @@ def _validate(
     metric_suite: Any,
     device: torch.device,
     amp: bool,
+    amp_dtype: torch.dtype | None = None,
     epoch: int,
     artifacts_cfg: Any,
     artifact_store: ArtifactStore,
@@ -248,7 +261,7 @@ def _validate(
     with torch.no_grad():
         for batch in valid_loader:
             batch = _to_device(batch, device)
-            pred_frame = _forward(codec, model, batch, device=device, amp=amp)
+            pred_frame = _forward(codec, model, batch, device=device, amp=amp, amp_dtype=amp_dtype)
             loss = loss_fn(pred_frame, batch)
             total_loss += float(loss.detach().item())
             count += 1
@@ -478,7 +491,15 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             )
         batches_per_epoch = math.ceil(cfg.samples_per_validation / batch_size)
 
-    scaler = GradScaler(device.type, enabled=(cfg.amp and device.type == "cuda"))
+    amp_dtype = (
+        torch.bfloat16 if getattr(cfg, "amp_dtype", "float16") == "bfloat16" else torch.float16
+    )
+    # bfloat16 keeps fp32's exponent range — loss scaling is unnecessary, and a
+    # disabled GradScaler makes scale/unscale/step exact no-op passthroughs.
+    scaler = GradScaler(
+        device.type,
+        enabled=(cfg.amp and device.type == "cuda" and amp_dtype is torch.float16),
+    )
 
     wandb_mode = (
         cfg.logging.mode if cfg.logging.mode else (None if cfg.logging.enabled else "disabled")
@@ -550,6 +571,7 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             n_batches=n_batches,
             device=device,
             amp=cfg.amp,
+            amp_dtype=amp_dtype,
             grad_clip=cfg.grad_clip,
             grad_accum_steps=max(1, cfg.grad_accum_steps),
             epoch=epoch,
@@ -563,6 +585,7 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             metric_suite=metric_suite,
             device=device,
             amp=cfg.amp,
+            amp_dtype=amp_dtype,
             epoch=epoch,
             artifacts_cfg=cfg.artifacts,
             artifact_store=store,

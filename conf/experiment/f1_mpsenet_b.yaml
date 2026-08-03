@@ -8,7 +8,11 @@ defaults:
   - override /metrics: separation_basic
 
 experiment_name: f1_mpsenet_b
-amp: false  # complex STFT/iSTFT (ComplexHalf gaps under autocast)
+# bfloat16 autocast (STFT/iSTFT stay fp32 inside the model); the first pass
+# hit the 16 h wall at ~epoch 67 still improving — throughput fix.
+amp: true
+amp_dtype: bfloat16
+resume: true  # chainable across wall-limited job segments (last.ckpt)
 samples_per_validation: 20000
 epochs: 150
 patience: 30

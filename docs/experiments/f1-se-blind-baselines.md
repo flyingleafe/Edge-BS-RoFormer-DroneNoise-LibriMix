@@ -229,6 +229,44 @@ while removing noise energy.)
 - Pending: fp16 to fully converge the heavy ports (numbers are lower bounds);
   optional SGMSE+ full-200k re-eval + Pass A.
 
+## Rebuild on clean data (2026-08-03)
+
+### Valid sets republished
+
+`scripts/check_se_valid.py` (new integrity gate) confirmed the residual
+corruption of the *published* sets: `SE-valid-drone@68a9b184` and
+`SE-valid-harmonic@855bdcd7` each carry the same **5 all-zero clips**
+(`drone_snr-25_0094`, `drone_snr-15_0188`, `drone_snr+00_0331/0344/0348` —
+silent `drone_audio` noise draws, drone category only); `SE-valid-avq-survey`
+and `SE-valid-avq-split` are clean (built post-fix). Both corrupt sets are
+re-derived as `recipe_version: 2` specs (silent-draw filter active, no longer
+adopt-only) and re-pinned in `dload.lock`. Training-side exposure: every F1
+run trained on the pre-fix online stream saw ~6% all-zero samples from the
+`drone_audio` pool — one more reason the retrained floors below supersede the
+tables above.
+
+### TF-GridNet: diagnosis of the stalled training
+
+The `f1_tfgridnet_a` run (`xnclmiwy`) did **not** diverge or plateau: val
+si_sdr improved monotonically (−8.4 → −3.7) and the LR-plateau schedule never
+fired. It completed only **7 epochs in 15.8 h** before the wall killed it —
+vs 67 epochs for MP-SENet in the same budget. Root cause is **throughput,
+not optimization**: full-fp32 (`amp: false`, set because torch has no
+ComplexHalf STFT kernels under autocast) at batch 4 + grad-accum 4 (fp32
+batch 16 OOMed at 63 GB) ≈ 5,000 slow steps/epoch. Checked and cleared:
+loss scale (composite behaves as on the other archs), LR (1e-3, plateau
+scheduler untriggered), no NaN/instability, config otherwise identical to
+MP-SENet's.
+
+**Fix**: complex-safe AMP boundaries inside the models — `TFGridNet.forward`
+and `MPSENet.forward` now run STFT/iSTFT in fp32 under
+`autocast(enabled=False)` while the real-valued bodies autocast — plus an
+`amp_dtype` training knob (`float16` default + GradScaler; `bfloat16`
+disables the scaler). TF-GridNet trains fp16 (cuDNN LSTM fp16 is the paved
+path; oneDNN/cuDNN bf16 LSTM coverage is spotty) at batch 8 / accum 2;
+MP-SENet trains bf16. Both set `resume: true` so wall-limited segments chain
+via `last.ckpt`.
+
 ## Conclusion
 
 On our harmonic-noise data at −30…0 dB, the **blind speech-enhancement floor is

@@ -322,7 +322,12 @@ class TFGridNet(nn.Module):
         std_ = torch.std(x, dim=1, keepdim=True)  # (B, 1)
         x = x / (std_ + self.eps)
 
-        spec = self._stft(x)  # [B, F, T] complex
+        # Complex-safe AMP boundary: torch.stft/istft have no ComplexHalf
+        # kernels under autocast, so the transforms always run in fp32; only
+        # the real-valued network body below autocasts. This is what lets the
+        # F1 configs set amp=true (bfloat16) instead of full-fp32 training.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            spec = self._stft(x.float())  # [B, F, T] complex
         spec = spec.transpose(1, 2)  # [B, T, F]
 
         batch = torch.stack([spec.real, spec.imag], dim=1)  # [B, 2, T, F]
@@ -332,10 +337,11 @@ class TFGridNet(nn.Module):
             batch = block(batch)  # [B, emb_dim, T, F]
 
         batch = self.deconv(batch)  # [B, 2, T, F]
-        est_spec = torch.complex(batch[:, 0], batch[:, 1])  # [B, T, F]
-        est_spec = est_spec.transpose(1, 2).contiguous()  # [B, F, T]
-
-        out = self._istft(est_spec, length=n_samples)  # [B, T]
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            batch = batch.float()
+            est_spec = torch.complex(batch[:, 0], batch[:, 1])  # [B, T, F]
+            est_spec = est_spec.transpose(1, 2).contiguous()  # [B, F, T]
+            out = self._istft(est_spec, length=n_samples)  # [B, T]
         out = out * (std_ + self.eps)  # undo RMS normalization
         return out
 

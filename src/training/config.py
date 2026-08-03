@@ -202,6 +202,7 @@ class RootConfig:
     grad_clip: float | None = 5.0
     grad_accum_steps: int = 1
     amp: bool = True
+    amp_dtype: str = "float16"  # autocast dtype on cuda: "float16" | "bfloat16"
     samples_per_validation: int | None = None  # iterable-dataset "epoch" size
     checkpoint_every: int = 0  # 0 = only best.ckpt; N>0 = also every N epochs
     checkpoint: str | None = None  # eval.py: explicit checkpoint path override
