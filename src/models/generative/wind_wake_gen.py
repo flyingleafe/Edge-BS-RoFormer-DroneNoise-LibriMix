@@ -688,10 +688,20 @@ class WindWakeChannel(nn.Module):
         use_dynamics: bool = False,
         hover_rps: float = 90.0,
         mlp_hidden: int = 16,
+        uniform_exposure: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
         self.n_rotors = n_rotors
+        # `uniform_exposure` is the CONTROL for the wake model: every microphone
+        # is given the array-mean flow speed, so the channel keeps its full
+        # capacity (same modules, same parameter count, same RPS dependence) but
+        # loses the one thing under test — the geometry-gated variation ACROSS
+        # microphones. Comparing it against the gated version isolates the wake
+        # physics rather than the trivial question of whether an incoherent
+        # diagonal helps at all (it always does; the spatial likelihood is
+        # ill-conditioned without one, which is how this control was found).
+        self.uniform_exposure = bool(uniform_exposure)
         self.rotor_radius = float(rotor_radius)
         self.n_env = n_env
 
@@ -873,6 +883,10 @@ class WindWakeChannel(nn.Module):
             c_free=c_free,
         )
         assert isinstance(u, torch.Tensor)
+        if self.uniform_exposure:
+            # Flatten the across-microphone structure, keep the level and its
+            # RPS dependence. [B, M, n_env] -> mean over M, broadcast back.
+            u = u.mean(dim=1, keepdim=True).expand_as(u)
         return u
 
     def forward_rel(
@@ -962,6 +976,7 @@ class PositionalHarmonicPlusWindGen(nn.Module):
         wind_n_env: int = 64,
         wind_n_freqs: int = 65,
         wind_use_dynamics: bool = False,
+        wind_uniform_exposure: bool = False,
         wind_mlp_hidden: int = 16,
         **coherent_kwargs,
     ):
@@ -976,6 +991,7 @@ class PositionalHarmonicPlusWindGen(nn.Module):
             n_freqs=wind_n_freqs,
             use_dynamics=wind_use_dynamics,
             mlp_hidden=wind_mlp_hidden,
+            uniform_exposure=wind_uniform_exposure,
         )
         self._register_load_state_dict_pre_hook(self._remap_coherent_only_checkpoint)
 
