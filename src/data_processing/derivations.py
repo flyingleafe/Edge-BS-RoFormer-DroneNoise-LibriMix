@@ -1188,11 +1188,13 @@ SPECS: dict[str, dict[str, Any]] = {
     # ── Fixed SE validation sets ─────────────────────────────────────────────
     "SE-valid-drone": {
         "generator": "se_valid",
-        "adopt_only": True,
-        "note": "Adopt-in-place (published by the deleted scripts/build_se_valid.py). "
-        "Held-out drone noise x held-out LibriSpeech speakers over the SNR grid.",
+        "adopt_only": False,
+        "note": "Held-out drone noise x held-out LibriSpeech speakers over the SNR grid. "
+        "recipe_version 2: rebuilt with the silent-draw filter (the v1 upload, "
+        "adopted from the deleted scripts/build_se_valid.py, carried 5 all-zero "
+        "clips from silent drone_audio noise draws — see mixing.MIN_DRAW_POWER).",
         "gen": {
-            "recipe_version": 1,
+            "recipe_version": 2,
             "seed": 20260720,
             "categories": ["drone"],
             "category_noise": {"drone": SE_CATEGORY_NOISE["drone"]},
@@ -1206,10 +1208,12 @@ SPECS: dict[str, dict[str, Any]] = {
     },
     "SE-valid-harmonic": {
         "generator": "se_valid",
-        "adopt_only": True,
-        "note": "Adopt-in-place. Per-category harmonic-noise transfer table set.",
+        "adopt_only": False,
+        "note": "Per-category harmonic-noise transfer table set. recipe_version 2: "
+        "rebuilt with the silent-draw filter (the v1 upload carried 5 all-zero "
+        "drone-category clips — see mixing.MIN_DRAW_POWER).",
         "gen": {
-            "recipe_version": 1,
+            "recipe_version": 2,
             "seed": 20260720,
             "categories": ["drone", "mimii", "mimii_dg", "aircraft", "motors", "horns"],
             "category_noise": {
