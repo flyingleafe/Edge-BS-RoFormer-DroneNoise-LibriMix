@@ -2170,6 +2170,30 @@ The diagnosis makes both premature.  They are kept because they are measured.
   `beam_marginal_min_mean` now reports it, and `BeamCfg.diversity_reserve`
   reallocates slots to marginal coverage.  Both wait on the objective.
 
+### Closure (2026-08-03): the joint-tracker line is CLOSED on evidence
+
+The decisive arms ran the shared-peaks proposal family together with the comb
+price (`q25_shared`, `q25_claim90_shared`, `q25_claim95_shared`; jobs
+python-f49d5d / python-009564 / python-e80317).  The reachable hypothesis
+space now contains shared-comb assignments and the price makes a spurious
+fourth comb expensive — the two halves the WP20 analysis said had to move
+together.  Result: the tracker's output is **bit-identical to the frozen
+baseline on all six windows** in all three arms (pooled MAE 6.643 / 5.241 /
+21.665 / 8.733 / 8.335 / 0.437), and the objective still ranks the ground
+truth DEARER than the beam's own output on 5 of 6 windows at every price.
+Two fixes that provably improved the objective on paper (quantile pooling,
+`claim_q`) never changed a single output frame.  Nothing remains to tune:
+the joint product-space design cannot express the repair.
+
+Successor: `data_processing/rotor_dp.py` + `scripts/sr_dp_probe.py` (WP21) —
+exact per-rotor lattice DP (zero search error in the 1-D space) with
+claim-masked residual emission, beam retained only over the extraction tree.
+First probe run already localised the next defect to exact-bin claim masking
+(a claimed comb survives as its own mainlobe flanks; fixed by dilating the
+claim to +-2 bins) — a defect the joint tracker's union shares by
+construction, and one more reason its comb accounting could not separate
+four rotors.
+
 
 ## Work packages
 
