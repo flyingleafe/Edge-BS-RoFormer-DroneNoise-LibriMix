@@ -716,7 +716,14 @@ def _se_valid_frame(
     if noise.ndim == 2:
         noise = noise[int(float(u_channel) * noise.shape[0]) % noise.shape[0]]
     noise = np.ascontiguousarray(noise)[None, :]
-    target = scale_source_to_snr(np.asarray(speech_lanes[0], np.float32)[None, :], noise, snr)
+    speech = np.asarray(speech_lanes[0], np.float32)[None, :]
+    # The noise window may run one sample long (inclusive time-slice bounds);
+    # speech lanes are cut to the exact target length. Crop both to the
+    # common length so the mix broadcasts.
+    n = min(noise.shape[-1], speech.shape[-1])
+    noise = noise[:, :n]
+    speech = speech[:, :n]
+    target = scale_source_to_snr(speech, noise, snr)
     sample_id = f"{category}_snr{int(snr):+03d}_{index:04d}"
     return td.Frame(
         {

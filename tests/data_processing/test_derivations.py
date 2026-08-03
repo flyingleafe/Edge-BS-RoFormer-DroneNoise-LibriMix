@@ -275,3 +275,23 @@ def test_se_valid_speaker_holdout_is_respected(patched_repo, speech_dataset):  #
         seed=3,
     )
     assert len(list(itertools.islice(pipe, 6))) == 6  # cycles the 4 speaker-19 files
+
+
+def test_se_valid_frame_crops_the_off_by_one_noise_window():
+    """A noise window one sample longer than the speech lane (inclusive
+    time-slice bounds) must be cropped, not crash the broadcast — the defect
+    that aborted the first SE-valid v2 re-derivation."""
+    import tdseries as td
+
+    from data_processing.frames import audio_series
+
+    target_len = SR // 2
+    noise_tf = td.Frame({"audio": audio_series(np.ones((1, target_len + 1), np.float32), SR)})
+    speech = [np.full(target_len, 0.1, np.float32)]
+    frame = der._se_valid_frame("probe", SR, [-10.0], 1, 0, noise_tf, speech, 0.0)
+    mixture = np.asarray(frame["mixture"].data)
+    target = np.asarray(frame["target"].data)
+    assert mixture.shape[-1] == target_len
+    assert target.shape[-1] == target_len
+    noise = mixture - target
+    assert 10.0 * np.log10(np.mean(target**2) / np.mean(noise**2)) == pytest.approx(-10.0, abs=1e-2)
