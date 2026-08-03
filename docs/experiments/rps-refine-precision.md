@@ -2269,6 +2269,65 @@ fewer than `min_surv_teeth = 4` survivors (unit-tested: the 0.7 impostor
 floors, a 0.9 twin survives).  Arms in flight: k16 + floor (isolate the
 floor), k30 + floor (open the twin deadzone).
 
+### Visibility correction (measured): "invisible" was too strong, "faint" is right
+
+Direct measurement of the raw q25 comb score AT each rotor's GT, as a rank
+within the per-frame score distribution (FLY124 w3; step 0.1, k <= 16):
+r0 (91.5 rev/s, dominant) rank 0.96 / top-5% on 77 % of frames; r1 (73.9)
+0.87 / 42 %; r3 (75.9) 0.85 / 29 %; r2 (81.8) 0.69 / 10 %.  So FLY124's
+non-dominant rotors are **present and often in the top 5 %**, merely
+outranked in a typical frame by ~100+ grid speeds of junk around the
+dominant comb (skirts + subharmonic family) — the exact junk the survivor
+floor de-scores.  They are NOT twin-blended (2 rev/s apart separates from
+k = 5 under the dilation).  The genuine twin-blend class is DREGON's steady
+window: two true pairs at 0.43 and 0.81 rev/s separation.  Two further
+notes: the blind VK residual re-scan previously annotated all four FLY124
+rotors to ~1 rev/s, so the information is in the signal and the magnitude
+readout is the limiting factor; and `whitened_spec` MEANS over the 8 mics,
+diluting a rotor visible on few channels — per-channel pooling is an
+untried lever.  (Also: the "local max within +-0.5" ceiling statistic is
+misleading at step 0.1 — even the dominant rotor's GT is a strict local max
+on only ~8 % of frames.)
+
+### Resume state (2026-08-03 — session checkpoint)
+
+Standing goal (cleared from the session, restate to resume): *make the
+iterative RPS refinement actually precise — near-perfect on synthetic, much
+better on Michael's data*; active subgoal per the user: *make sure that
+search for individual rotors works well* (compute budget 3x realtime GPU,
+stay inside the beam-search idea).
+
+**In-flight** (kaggle, commit `d3d4387`, submitted 2026-08-03, still queued
+behind other jobs at checkpoint time — check `omnirun ps`, pull with
+`omnirun pull <job>`):
+
+- `python-1ff374` — probe with k_max 16 + `min_surv_teeth 4`
+  (`results/sr_dp_probe_k16ms4`).  Prediction: FLY124 greedy collapse at
+  ~91 breaks; r1/r3 oracle MAE drops from 16.8/14.6 toward the faint-comb
+  level; DREGON twins still fail (deadzone untouched at k16).
+- `python-e8e85c` — same + k_max 30 (`results/sr_dp_probe_k30ms4`).
+  Prediction: DREGON twin oracle MAE 46 -> low single digits; whether the
+  k30 base surface degrades the easy rotors is the open question.
+
+**Frozen comparison rows** (pooled MAE, windows in `jb_probe.WINDOWS`
+order): joint_beam 6.64 / 5.24 / 21.66 / 8.73 / 8.34 / 0.44; fullrange_init
+1.43 / 1.15 / 3.45 / 1.15 / 1.04 / —; greedy_peel run 2 (dilated mask, no
+floor) 10.65 / 15.81 / 19.05 / 3.32 / 3.08 / 1.82.
+
+**Next-step ladder** (in order, each gated on the previous):
+1. Read the two arms; update the run-2 failure taxonomy per rotor.
+2. If FLY124 stays faint-limited: per-channel pooling in `whitened_spec`
+   (max or top-quantile over mics instead of mean) — one probe arm.
+3. K-best distinct-mode extraction per peel level + beam over the
+   extraction tree + union/`claim_q` leaf scoring (the structural prior for
+   unsupported rotors lives HERE — a band prior fallback like
+   fullrange_init's, so FLY124's faint rotors get parked near the visible
+   comb instead of on junk).
+4. Ramp windows: separate mechanism (IF-based or adaptive-window emission);
+   the n_fft 2048 control refuted the global short-window fix.
+5. Hand winning trajectories to `refine_v2/v3` (one pi_kalman pass) and
+   score on the beat-VK protocol against the 0.688 / 1.027 bars.
+
 ## Work packages
 
 - **WP0 — lab harness** `scripts/rps_refine_lab.py`: repo-ified
