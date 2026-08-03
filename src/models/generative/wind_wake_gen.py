@@ -1094,5 +1094,11 @@ class PositionalHarmonicPlusWindGen(nn.Module):
         stats = self.coherent.spatial_stats(rps, rel_pos, z=z, n_fft=n_fft, **kwargs)
         wind = self.wind.expected_power_rel(rps, rel_pos, v_rel=v_rel, n_quad=n_quad)
         src = stats["source_psd"]
-        wind = _resample_envelope(wind, src.shape[-2], src.shape[-1])
-        return {"source_psd": src, "wind_psd": wind, "rel_pos": stats["rel_pos"]}
+        out = dict(stats)
+        out["wind_psd"] = _resample_envelope(wind, src.shape[-2], src.shape[-1])
+        # The mic-level marginal stats (for the metrics) must include the wind,
+        # exactly as `spectral_stats` does, or the sampled audio would omit it.
+        marginal = self.spectral_stats(rps, rel_pos, z=z, v_rel=v_rel, n_quad=n_quad, **kwargs)
+        out["coherent"] = marginal["coherent"]
+        out["noise_psd"] = marginal["noise_psd"]
+        return out

@@ -574,5 +574,10 @@ class PositionalHarmonicNoiseGen(nn.Module):
         source = (harm_psd + broadband).clamp_min(0.0).transpose(-1, -2)  # [B, R, N, F]
         single = rel_pos.dim() == 3
         rp = rel_pos.unsqueeze(1) if single else rel_pos
-        return {"source_psd": source, "rel_pos": rp}
+        # A superset of `spectral_stats`: the separated powers the spatial loss
+        # needs, PLUS the mic-level mean/variance so the audio-based metrics
+        # still have something to score without a second forward pass.
+        out = {"source_psd": source, "rel_pos": rp}
+        out.update(self.spectral_stats(rps, rel_pos, z=z, **kwargs))
+        return out
 
