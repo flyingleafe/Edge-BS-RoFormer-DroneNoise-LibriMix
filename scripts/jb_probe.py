@@ -145,6 +145,33 @@ CEILING_CFGS: dict[str, dict[str, Any]] = {
         "pool": "quantile",
         "claim_q": 0.98,
     },
+    # --- THE DECISIVE PAIR.  claim_q prices a comb correctly but cannot reorder
+    # anything while every reachable assignment carries the same comb mass, so
+    # the price and the proposal set have to move together.  Both halves are
+    # run separately so a win cannot be attributed to the wrong one.
+    "q25_shared": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "beam": {"allow_shared_peaks": True},
+    },
+    "q25_claim90_shared": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "claim_q": 0.90,
+        "beam": {"allow_shared_peaks": True},
+    },
+    "q25_claim95_shared": {
+        "n_fft": 4096,
+        "k_max": 16,
+        "b0_rps": 0.0,
+        "pool": "quantile",
+        "claim_q": 0.95,
+        "beam": {"allow_shared_peaks": True},
+    },
     "mad_q25_k30": {
         "n_fft": 4096,
         "k_max": 30,
@@ -270,11 +297,14 @@ def cost_unit(task: tuple[str, Path, str, str]) -> tuple[str, str]:
         # EmissionCfg field, it picks the spectrogram underneath.
         kw = dict(CEILING_CFGS[cfg_name])
         n_fft = int(kw.pop("n_fft"))
+        # A cfg entry may carry a `beam` sub-dict: the objective is not only the
+        # emission, and the proposal set is now the thing under test.
+        beam = BeamCfg(**kw.pop("beam", {}))
         emis = EmissionCfg(**kw)
         lm, bin_hz, st = (
             _coarse_spec(prep.audio)[:3] if n_fft == 2048 else whitened_spec(prep.audio, n_fft)
         )
-        obj = build_objective(lm, bin_hz, ou=OUPrior(), emis=emis, beam=BeamCfg(), device=device)
+        obj = build_objective(lm, bin_hz, ou=OUPrior(), emis=emis, beam=beam, device=device)
 
         trajs: dict[str, np.ndarray] = {
             "gt": gt_on(prep, st),
@@ -471,6 +501,7 @@ def ceiling_unit(task: tuple[str, Path, str, str]) -> tuple[str, str]:
         for name, kw in CEILING_CFGS.items():
             kw = dict(kw)
             n_fft = int(kw.pop("n_fft"))
+            kw.pop("beam", None)  # ceiling mode measures the emission only
             if n_fft not in specs:
                 specs[n_fft] = whitened_spec(prep.audio, n_fft)
             lm, bin_hz, st = specs[n_fft]
