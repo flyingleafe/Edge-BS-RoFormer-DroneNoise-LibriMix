@@ -134,9 +134,7 @@ def spatial_whittle_nll(
     a = ident + cmat
 
     # log det R = log det W + log det(I + C)
-    logdet = w.clamp_min(eps).log().sum(-1) + torch.log(
-        torch.linalg.det(a).abs().clamp_min(eps)
-    )
+    logdet = w.clamp_min(eps).log().sum(-1) + torch.log(torch.linalg.det(a).abs().clamp_min(eps))
 
     # x^H R^-1 x  =  x^H W^-1 x  -  (D P^{1/2 H} W^-1 x)^H (I+C)^-1 (same)
     wx = winv * xv  # [B, F, T, M, 1]

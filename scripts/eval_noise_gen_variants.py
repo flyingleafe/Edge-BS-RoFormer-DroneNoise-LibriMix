@@ -222,8 +222,9 @@ def eval_variant(
     _task, codec = build_task_and_codec(cfg.model)
     # A second codec forced into distributional mode, so the proper scoring rule
     # can be evaluated for variants whose own config is not distributional.
-    nll_codec = build_codec("noise_generation", **_codec_params(cfg.model))
-    nll_codec.distributional = True
+    nll_codec = build_codec(
+        "noise_generation", **{**_codec_params(cfg.model), "distributional": True}
+    )
     # beta=0: a proper scoring rule must be the unweighted likelihood.
     nll_core = SpectralLikelihood(n_ffts=(2048, 512), beta=0.0).to(device)
     model = instantiate_model(cfg.model).to(device)
@@ -472,7 +473,8 @@ def main() -> None:
         )
         print(f"  clips: {[(d, f'{r:.0f} rps') for d, r in rps_by_drone.items()]}")
 
-    rows: list[tuple[str, dict[str, tuple[float, int]]]] = []
+    # per group: (mrstft, nll, n_flight)
+    rows: list[tuple[str, dict[str, tuple[float, float, int]]]] = []
     illust_by_variant: dict[str, dict] = {}
     for name in args.variants:
         exp, ckpt = VARIANTS[name]

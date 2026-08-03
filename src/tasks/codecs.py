@@ -366,9 +366,7 @@ class NoiseGenerationCodec:
             if fn is None:
                 raise TypeError(f"{type(model).__name__} has no `spatial_stats`")
             args = (inputs["rps"], inputs["rel_pos"])
-            out = dict(
-                fn(*args, inputs["drone_names"]) if self.conditioned else fn(*args)
-            )
+            out = dict(fn(*args, inputs["drone_names"]) if self.conditioned else fn(*args))
             if "wind_psd" not in out:
                 # A coherent-only generator has no diagonal term; the loss floors
                 # it anyway, so an explicit zero keeps the control arm well-posed.

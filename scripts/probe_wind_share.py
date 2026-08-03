@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -66,12 +67,20 @@ def _report(ckpt: str, uniform: bool) -> None:
     if len(missing) > 20:
         print(f"  !! {len(missing)} missing keys — build kwargs likely wrong")
     model.eval()
-    w = model.generator.wind
-    print("  learned wake params: " + "  ".join(
-        f"{n}={float(_pos(getattr(w, f'raw_{n}'))):.4f}"
-        for n in ("k", "alpha", "beta", "gate")))
-    print(f"  transduction level={float(_pos(w.transduction.raw_level)):.4f} "
-          f"gamma={float(_pos(w.transduction.raw_gamma)):.4f}")
+    # `nn.Module.__getattr__` is typed `Tensor | Module`, so submodule chains
+    # need a cast before their own attributes resolve.
+    generator = cast(Any, model.generator)
+    w = cast(Any, generator.wind)
+    print(
+        "  learned wake params: "
+        + "  ".join(
+            f"{n}={float(_pos(getattr(w, f'raw_{n}'))):.4f}" for n in ("k", "alpha", "beta", "gate")
+        )
+    )
+    print(
+        f"  transduction level={float(_pos(w.transduction.raw_level)):.4f} "
+        f"gamma={float(_pos(w.transduction.raw_gamma)):.4f}"
+    )
 
     geoms = {
         "dregon": _frames_spec_geometry("frames:DREGON-frames"),
@@ -83,11 +92,11 @@ def _report(ckpt: str, uniform: bool) -> None:
         rel = geometry_to_rel_pos(mic_t, rot_t)
         rps = torch.full((1, rot_t.shape[1], 16000), 80.0)
         with torch.no_grad():
-            total = model.spectral_stats(rps, rel, [drone])["noise_psd"]
-            coherent_only = model.generator.coherent.spectral_stats(
-                rps, rel, z=model._resolve_conditioning([drone], {})
+            total = cast(Any, model).spectral_stats(rps, rel, [drone])["noise_psd"]
+            coherent_only = cast(Any, generator.coherent).spectral_stats(
+                rps, rel, z=cast(Any, model)._resolve_conditioning([drone], {})
             )["noise_psd"]
-            wind = model.generator.wind.expected_power_rel(rps, rel)
+            wind = w.expected_power_rel(rps, rel)
         tp, wp = float(total.mean()), float(wind.mean())
         print(
             f"{drone:9s} total psd {tp:12.4e} | coherent {float(coherent_only.mean()):12.4e} "

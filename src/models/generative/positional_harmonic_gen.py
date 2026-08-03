@@ -580,4 +580,3 @@ class PositionalHarmonicNoiseGen(nn.Module):
         out = {"source_psd": source, "rel_pos": rp}
         out.update(self.spectral_stats(rps, rel_pos, z=z, **kwargs))
         return out
-

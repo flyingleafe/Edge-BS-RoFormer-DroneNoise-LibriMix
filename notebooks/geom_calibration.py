@@ -598,9 +598,7 @@ def calibrate_michaels_positions(
 
     root = resolve_raw_root(find_data_root() if data_root is None else data_root)
     wav_rel, csv_rel, off, dil = MICHAELS_FILES[recording_index]
-    wav, ts, ms, sr = load_raw_aligned(
-        root / wav_rel, root / csv_rel, off, dil, sr=None
-    )
+    wav, ts, ms, sr = load_raw_aligned(root / wav_rel, root / csv_rel, off, dil, sr=None)
     mic_nominal, rotor_pos = get_geometry()
 
     records = extract_michaels_rotor_rtfs(
