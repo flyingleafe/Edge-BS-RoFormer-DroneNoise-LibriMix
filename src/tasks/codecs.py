@@ -375,6 +375,8 @@ class NoiseGenerationCodec:
                 src = out["source_psd"]
                 m = out["rel_pos"].shape[1]
                 out["wind_psd"] = src.new_zeros((src.shape[0], m, src.shape[2], src.shape[3]))
+            if "coherent" in out and "noise_psd" in out:
+                out["audio"] = _sample_from_stats(out["coherent"], out["noise_psd"])
             return out
         if self.distributional:
             # Ask for the predicted DISTRIBUTION rather than one realization:
