@@ -1,0 +1,35 @@
+# Spatial (cross-microphone) Whittle likelihood — the objective under which the
+# wind channel is identifiable at all.
+#
+# conf/loss/spectral_likelihood.yaml fixed the larger defect (fitting a
+# stochastic component to ONE realization, which biases it -1.6 dB low), but it
+# folds the mic axis into the batch and is therefore a product of PER-MICROPHONE
+# MARGINALS. The wind channel's defining property is that it is incoherent
+# ACROSS microphones while the propagated rotor field is correlated across them
+# — a marginal likelihood cannot see that, and the measured consequence is that
+# the wind trains to inertness (0.099% of predicted variance on DREGON,
+# 0.0004% on Michael's).
+#
+# Here the per-bin array covariance is modelled directly:
+#     R = sum_r d_r d_r^H P_r + diag(w)
+# with steering vectors d_r KNOWN EXACTLY from geometry. The rotors are a rank-4
+# structured term, the wind is the ONLY diagonal one, so they are separable by
+# construction. Requires task_params.spatial=true, which makes the codec ask the
+# model for source_psd / wind_psd / rel_pos separately.
+terms:
+  - name: spatial_likelihood
+    _target_: losses.SpatialLikelihoodLoss
+    weight: 1.0
+    params:
+      n_channels: 1
+      sr: [16000, 1]
+      target_key: audio
+      source_key: source_psd
+      wind_key: wind_psd
+      rel_pos_key: rel_pos
+      # One scale: this IS a proper likelihood, and averaging scales would make
+      # it an ensemble rather than a joint density. 1024 resolves the ~80 Hz
+      # rotor comb (15.6 Hz/bin) while keeping the 4x4 solves affordable.
+      n_ffts: [1024]
+      hop_ratio: 0.25
+      sample_rate: 16000

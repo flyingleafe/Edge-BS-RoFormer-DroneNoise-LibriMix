@@ -507,3 +507,72 @@ class PositionalHarmonicNoiseGen(nn.Module):
         if single:
             coherent = coherent if coherent.dim() == 3 else coherent.unsqueeze(1)
         return {"coherent": coherent, "noise_psd": noise_psd}
+
+    def spatial_stats(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+        *,
+        n_fft: int = 1024,
+        **kwargs,
+    ) -> dict[str, torch.Tensor]:
+        """Per-rotor **emitted** power, for the spatial (cross-mic) likelihood.
+
+        :meth:`spectral_stats` sums the rotors' contributions at each microphone,
+        which is right for a per-microphone marginal likelihood and destroys
+        exactly the structure :mod:`losses.spatial_likelihood` needs: there, the
+        rotors enter through *known* steering vectors as a rank-R term and the
+        wind as a diagonal one, and that is what makes them separable.
+
+        The returned power is the source **at the rotor**, before propagation —
+        the loss applies the 1/r and delay itself via the steering vectors, so
+        the two must not both apply it.
+
+        The deterministic half is taken as ``|STFT|^2`` of the harmonic bank
+        (exact, and it carries the comb structure a coarse envelope would lose);
+        the stochastic half is the analytic broadband envelope. Mixing the two
+        this way keeps the single-realization problem out of the random part
+        while staying exact on the part that has no randomness.
+
+        Returns ``{"source_psd": [B, R, t, F], "rel_pos": [B, M, R, 3]}``.
+        """
+        if self.cond_dim == 0:
+            z = None
+        emitted = self.emit(rps, z=z, return_dict=True, **kwargs)
+        coherent_src = emitted["coherent"]  # [B, R, T]
+        noise_amps = emitted["noise_amps"]  # [B, R, F_g, t_n]
+
+        if self.silence_fade_rps > 0.0:
+            g = (rps / self.silence_fade_rps).clamp(0.0, 1.0)
+            gate = g * g * (3.0 - 2.0 * g)
+            coherent_src = coherent_src * gate
+            gate_n = torch.nn.functional.adaptive_avg_pool1d(gate, noise_amps.shape[-1])
+            noise_amps = noise_amps * gate_n.unsqueeze(-2)
+
+        b, r, t = coherent_src.shape
+        window = torch.hann_window(n_fft, device=coherent_src.device, dtype=coherent_src.dtype)
+        spec = torch.stft(
+            coherent_src.reshape(b * r, t),
+            n_fft=n_fft,
+            hop_length=n_fft // 4,
+            window=window,
+            return_complex=True,
+            center=True,
+        )
+        harm_psd = spec.abs().pow(2) / window.pow(2).sum()  # [B*R, F, N]
+        harm_psd = harm_psd.reshape(b, r, harm_psd.shape[-2], harm_psd.shape[-1])
+
+        # Put the analytic broadband envelope on the same (frame, freq) grid.
+        broadband = torch.nn.functional.interpolate(
+            noise_amps.pow(2).reshape(b * r, 1, noise_amps.shape[-2], noise_amps.shape[-1]),
+            size=(harm_psd.shape[-2], harm_psd.shape[-1]),
+            mode="bilinear",
+            align_corners=True,
+        ).reshape(b, r, harm_psd.shape[-2], harm_psd.shape[-1])
+
+        source = (harm_psd + broadband).clamp_min(0.0).transpose(-1, -2)  # [B, R, N, F]
+        single = rel_pos.dim() == 3
+        rp = rel_pos.unsqueeze(1) if single else rel_pos
+        return {"source_psd": source, "rel_pos": rp}
+

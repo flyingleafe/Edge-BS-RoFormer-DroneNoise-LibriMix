@@ -1068,3 +1068,31 @@ class PositionalHarmonicPlusWindGen(nn.Module):
             _resample_envelope(base, frames, freqs) + _resample_envelope(wind_psd, frames, freqs)
         ).clamp_min(0.0)
         return {"coherent": stats["coherent"], "noise_psd": total}
+
+    def spatial_stats(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+        *,
+        v_rel: torch.Tensor | None = None,
+        n_quad: int = 9,
+        n_fft: int = 1024,
+        **kwargs,
+    ) -> dict[str, torch.Tensor]:
+        """Per-rotor source power AND per-mic wind power, kept **separate**.
+
+        This is the whole point of the spatial objective: the rotors reach the
+        array through known steering vectors (a rank-R covariance term) while the
+        wind is incoherent per microphone (a diagonal one). Summing them at the
+        microphone — which :meth:`spectral_stats` does, correctly, for a marginal
+        likelihood — is exactly what makes the wind unidentifiable.
+
+        Returns ``{"source_psd": [B, R, t, F], "wind_psd": [B, M, t, F],
+        "rel_pos": [B, M, R, 3]}`` with both powers on a common grid.
+        """
+        stats = self.coherent.spatial_stats(rps, rel_pos, z=z, n_fft=n_fft, **kwargs)
+        wind = self.wind.expected_power_rel(rps, rel_pos, v_rel=v_rel, n_quad=n_quad)
+        src = stats["source_psd"]
+        wind = _resample_envelope(wind, src.shape[-2], src.shape[-1])
+        return {"source_psd": src, "wind_psd": wind, "rel_pos": stats["rel_pos"]}

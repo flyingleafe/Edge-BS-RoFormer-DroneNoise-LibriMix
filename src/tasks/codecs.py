@@ -298,12 +298,14 @@ class NoiseGenerationCodec:
         conditioned: bool = False,
         return_dict: bool = False,
         distributional: bool = False,
+        spatial: bool = False,
         default_drone: str = "dregon",
     ) -> None:
         self.sr = sr
         self.conditioned = conditioned
         self.return_dict = return_dict
         self.distributional = distributional
+        self.spatial = spatial
         self.default_drone = default_drone
 
     def to_inputs(self, batch: td.Frame) -> dict[str, Any]:
@@ -342,6 +344,13 @@ class NoiseGenerationCodec:
                 entries["coherent"] = _batched_series(
                     outputs["coherent"], ("batch", "mic", "time"), self.sr
                 )
+            for key, dims in (
+                ("source_psd", ("batch", "rotor", None, None)),
+                ("wind_psd", ("batch", "mic", None, None)),
+                ("rel_pos", ("batch", "mic", "rotor", None)),
+            ):
+                if key in outputs:
+                    entries[key] = td.wrap(outputs[key], dims=dims)
             if "noise_psd" in outputs:
                 entries["noise_psd"] = td.wrap(
                     outputs["noise_psd"], dims=("batch", "mic", None, None)
@@ -352,6 +361,21 @@ class NoiseGenerationCodec:
 
     def call_model(self, model: Any, inputs: dict[str, torch.Tensor]) -> Any:
         kwargs: dict[str, Any] = {}
+        if self.spatial:
+            fn = getattr(model, "spatial_stats", None)
+            if fn is None:
+                raise TypeError(f"{type(model).__name__} has no `spatial_stats`")
+            args = (inputs["rps"], inputs["rel_pos"])
+            out = dict(
+                fn(*args, inputs["drone_names"]) if self.conditioned else fn(*args)
+            )
+            if "wind_psd" not in out:
+                # A coherent-only generator has no diagonal term; the loss floors
+                # it anyway, so an explicit zero keeps the control arm well-posed.
+                src = out["source_psd"]
+                m = out["rel_pos"].shape[1]
+                out["wind_psd"] = src.new_zeros((src.shape[0], m, src.shape[2], src.shape[3]))
+            return out
         if self.distributional:
             # Ask for the predicted DISTRIBUTION rather than one realization:
             # a coherent mean plus the stochastic branches' spectral envelope,
