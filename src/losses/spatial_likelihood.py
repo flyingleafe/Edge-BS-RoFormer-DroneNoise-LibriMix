@@ -63,8 +63,8 @@ import tdseries as td
 import torch
 from torch import nn
 
-from losses._common import AUDIO_RATE, audio_series_spec, get_tensor
-from tasks.spec import FrameSpec
+from losses._common import AUDIO_RATE, get_tensor
+from tasks.spec import FrameSpec, SeriesSpec
 
 __all__ = ["spatial_whittle_nll", "steering_vectors", "SpatialLikelihood", "SpatialLikelihoodLoss"]
 
@@ -265,9 +265,17 @@ class SpatialLikelihoodLoss(nn.Module):
         self.source_key = source_key
         self.wind_key = wind_key
         self.rel_pos_key = rel_pos_key
-        spec = audio_series_spec(n_channels, sr)
-        self.requires_pred = FrameSpec({source_key: spec})
-        self.requires_target = FrameSpec({target_key: spec})
+        del n_channels
+        # source_psd is a (rotor, frame, freq) envelope on the model's own grid —
+        # NOT a time series on the audio clock, so it carries untyped trailing
+        # dims and no rate. Declaring it as audio made validation reject every
+        # spatial experiment before training.
+        self.requires_pred = FrameSpec(
+            {source_key: SeriesSpec(dims=("batch", "rotor", None, None), time=None)}
+        )
+        self.requires_target = FrameSpec(
+            {target_key: SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)}
+        )
 
     def forward(self, pred: td.Frame, target: td.Frame) -> torch.Tensor:
         return self.core(

@@ -393,6 +393,24 @@ class _CodebookConditionedNoiseGen(nn.Module):
         z = self._resolve_conditioning(list(drone_names), kwargs)
         return self.generator(rps, rel_pos, z=z, **kwargs)
 
+    def spatial_stats(
+        self,
+        rps: Any,
+        rel_pos: Any,
+        drone_names: list[str],
+        **kwargs: Any,
+    ) -> Any:
+        """Conditioned passthrough to the generator's SPATIAL statistics (per-rotor
+        source power and per-mic wind power kept apart) — see
+        ``losses.spatial_likelihood``."""
+        fn = getattr(self.generator, "spatial_stats", None)
+        if fn is None:
+            raise TypeError(
+                f"wrapped generator {type(self.generator).__name__} has no `spatial_stats`"
+            )
+        z = self._resolve_conditioning(list(drone_names), kwargs)
+        return fn(rps, rel_pos, z=z, **kwargs)
+
     def spectral_stats(
         self,
         rps: Any,
