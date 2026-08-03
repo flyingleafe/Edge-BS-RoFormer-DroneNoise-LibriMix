@@ -1,0 +1,43 @@
+# @package _global_
+# gen_h2_hybrid_uniform — hybrid objective, multi-observer, UNIFORM-exposure control (gate removed, same capacity).
+#
+# The pure spatial arms (gen_s2 / gen_s3) answered the identifiability question
+# but were a net regression: the spatial likelihood is zero-mean, so it models
+# the harmonic bank as random POWER rather than as a deterministic mean and
+# never rewards getting the comb right. Both arms collapsed on every other
+# criterion (mrstft 7.018 -> ~3.6, marginal NLL -0.047 -> 44-51).
+#
+# So here the spatial term AUGMENTS the marginal one instead of replacing it:
+#   marginal Rice  — keeps the coherent mean sharp (what made gen_w3 the best
+#                    model we have)
+#   spatial (0.05) — the only gradient that separates an incoherent per-mic
+#                    field from a propagated one, which the wind channel needs
+#
+# Warm-started from gen_w3_lik_nowind_mm, NOT from the magnitude baseline: the
+# point is to start from the best coherent fit and ask whether the wind channel
+# can add to it, rather than to relearn the comb.
+#
+# gen_h1 minus gen_h2 isolates the wake geometry with capacity held fixed. The
+# spatial weight is UNTUNED — treat a conclusion that hinges on it as provisional.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic
+  - override /model: positional_harmonic_wind_gen_perdrone_hybrid_uniform
+  - override /loss: hybrid_likelihood
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_h2_hybrid_uniform
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.0003
+  monitor: val_loss
+  monitor_mode: min
+
+amp: false
+
+checkpoint: r2://ml-data/artifacts/gen_w3_lik_nowind_mm/checkpoints/best.ckpt
