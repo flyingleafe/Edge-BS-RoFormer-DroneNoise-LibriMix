@@ -159,7 +159,7 @@ DEFAULT_NEURAL_MODEL = "ckla_phaseonly_best"
 def prepare_fly124(michaels_root: str, window: tuple[float, float] = FLY124_WINDOW) -> Prepared:
     """FLY124 cruise segment as a ``Prepared`` (truth = 29 Hz telemetry ``rps``).
 
-    Loads via ``michaels.load_michaels_timeframe`` (manual audio↔telemetry
+    Loads via ``sources.michaels.load_michaels_timeframe`` (manual audio↔telemetry
     alignment constants baked in, so ``tau = 0``). ``michaels_root`` may be
     the project data root (containing ``recording_with_motor_speed/``) or the
     dataset directory itself (e.g. a dload-materialized tree).
@@ -169,10 +169,12 @@ def prepare_fly124(michaels_root: str, window: tuple[float, float] = FLY124_WIND
 
     root = resolve_source(michaels_root)
     wav_rel, csv_rel, t_off, t_dil = MICHAELS_FILES[0]  # recording_1 = FLY124
+    # MICHAELS_FILES paths are relative to the recording_with_motor_speed raw
+    # root; `root` may be that tree or the data root that contains it.
     wav, csv_p = root / wav_rel, root / csv_rel
-    if not wav.exists():  # root points AT recording_with_motor_speed
-        wav = root / Path(wav_rel).relative_to("recording_with_motor_speed")
-        csv_p = root / Path(csv_rel).relative_to("recording_with_motor_speed")
+    if not wav.exists():  # root is the data root, one level up
+        wav = root / "recording_with_motor_speed" / wav_rel
+        csv_p = root / "recording_with_motor_speed" / csv_rel
     frame = load_michaels_timeframe(
         wav, csv_p, time_offset=t_off, time_dilation=t_dil, sr=SR, recording_id="FLY124"
     )

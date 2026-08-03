@@ -590,10 +590,7 @@ def load_dregon_timeframes(
         Download missing data if ``True``.
     """
     data_dir = Path(data_dir)
-    if data_dir.name == "DREGON":
-        dregon_dir = data_dir
-    else:
-        dregon_dir = data_dir / "DREGON"
+    dregon_dir = data_dir if data_dir.name == "DREGON" else data_dir / "DREGON"
     if download:
         download_dregon(data_dir if data_dir.name != "DREGON" else data_dir.parent)
     geometry = get_geometry(dregon_dir)

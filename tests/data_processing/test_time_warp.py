@@ -192,11 +192,7 @@ def _online_frames(policy: dict, base_seed: int = 4321, n: int = 6, repo=None, r
         "sample_rate": SR,
         "duration_s": 1.0,
         "base_seed": base_seed,
-        "sources": {
-            "noise": [
-                {"kind": "frames", "dataset": f"TW-{rid}", "min_motor_rps": 0.0}
-            ]
-        },
+        "sources": {"noise": [{"kind": "frames", "dataset": f"TW-{rid}", "min_motor_rps": 0.0}]},
         "policy": policy,
     }
     import itertools
@@ -217,7 +213,9 @@ def test_absent_key_is_bit_identical_to_baseline(patched_repo):
     run_a = _online_frames(policy, repo=patched_repo, rid="a")
     run_b = _online_frames(dict(policy), repo=patched_repo, rid="a")
     for fa, fb in zip(run_a, run_b):
-        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(
+            np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data)
+        )
         np.testing.assert_array_equal(np.asarray(fa["rps"].data), np.asarray(fb["rps"].data))
 
 
@@ -228,7 +226,9 @@ def test_probability_zero_warp_is_bit_identical_to_no_key(patched_repo):
     run_base = _online_frames(base_policy, repo=patched_repo, rid="b")
     run_warp = _online_frames(warp_policy, repo=patched_repo, rid="b")
     for fa, fb in zip(run_base, run_warp):
-        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(
+            np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data)
+        )
         np.testing.assert_array_equal(np.asarray(fa["rps"].data), np.asarray(fb["rps"].data))
 
 
@@ -249,9 +249,7 @@ def test_integration_prob_one_shapes_and_scaled_labels(patched_repo):
             "sample_rate": SR,
             "duration_s": 1.0,
             "base_seed": 99,
-            "sources": {
-                "noise": [{"kind": "frames", "dataset": "TW-warp1", "min_motor_rps": 0.0}]
-            },
+            "sources": {"noise": [{"kind": "frames", "dataset": "TW-warp1", "min_motor_rps": 0.0}]},
             "policy": policy,
         }
 

@@ -8,8 +8,8 @@ All streams are compiled pipelines over synthetic local-repo datasets (see
 
 from __future__ import annotations
 
-import itertools
 import io
+import itertools
 
 import numpy as np
 import pytest
@@ -107,7 +107,9 @@ def test_se_mode_is_deterministic(speech_dataset):  # noqa: F811
     a = _take(cfg, 4)
     b = _take(cfg, 4)
     for fa, fb in zip(a, b):
-        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(
+            np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data)
+        )
         np.testing.assert_array_equal(np.asarray(fa["target"].data), np.asarray(fb["target"].data))
 
 
@@ -197,9 +199,7 @@ def _publish_tdframe_audio(repo, name, recs):
     """recs: list[(key, (C,T) float32 array, sr)] -> tdframe-v1 dataset."""
     samples = []
     for key, arr, sr in recs:
-        frame = make_recording_frame(
-            {"audio": audio_series(arr, sr)}, meta={"recording_id": key}
-        )
+        frame = make_recording_frame({"audio": audio_series(arr, sr)}, meta={"recording_id": key})
         samples.append((key, streams.frame_to_sample(frame)))
     repo.commit(name, samples, meta={"layout": streams.TDFRAME_LAYOUT})
 

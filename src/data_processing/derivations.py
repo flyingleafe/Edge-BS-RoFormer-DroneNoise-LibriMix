@@ -60,7 +60,6 @@ re-derived, which would upload a near-duplicate copy. See
 from __future__ import annotations
 
 import io
-import json
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -199,9 +198,7 @@ def generate_dregon_lm_split(gen: dict[str, Any]) -> Iterator[Sample]:
         return
 
     # ── synthesized split ────────────────────────────────────────────────────
-    speech_files = _resolve_librispeech(
-        gen["parents"]["librispeech"], params.get("speech_subpath")
-    )
+    speech_files = _resolve_librispeech(gen["parents"]["librispeech"], params.get("speech_subpath"))
     snr_range = (float(params["snr_range"][0]), float(params["snr_range"][1]))
     for idx in range(int(gen["num_samples"])):
         sample_id = f"sample_{idx:05d}"
@@ -252,9 +249,7 @@ def generate_dn_lm_split(gen: dict[str, Any]) -> Iterator[Sample]:
     sample_rate = int(params["sample_rate"])
     target_length = int(float(params["sample_duration"]) * sample_rate)
 
-    speech_files = _resolve_librispeech(
-        gen["parents"]["librispeech"], params.get("speech_subpath")
-    )
+    speech_files = _resolve_librispeech(gen["parents"]["librispeech"], params.get("speech_subpath"))
 
     noise_root = resolve_source(gen["parents"]["noise"])
     noise_subpath = params.get("noise_subpath")
@@ -319,10 +314,7 @@ def generate_source_frames(gen: dict[str, Any]) -> Iterator[Sample]:
 
     name = gen["source"]
     raw = gen.get("raw") or {}
-    if raw.get("kind") == "dload":
-        root = resolve_source(raw["uri"])
-    else:
-        root = sources.raw_root(name)
+    root = resolve_source(raw["uri"]) if raw.get("kind") == "dload" else sources.raw_root(name)
     for key, frame in sources.get(name).builder(root):  # type: ignore[misc]
         yield key, frame_to_sample(frame)
 
@@ -434,9 +426,7 @@ _BEATVK_GROUND_MAX = 5.0  # mean rps below -> "ground"
 _BEATVK_WARMUP_MAX = 45.0  # mean rps below -> "warmup"; else "cruise"
 
 
-def _trim_constant_runs(
-    ts: np.ndarray, vals: np.ndarray
-) -> tuple[float, float, float, float]:
+def _trim_constant_runs(ts: np.ndarray, vals: np.ndarray) -> tuple[float, float, float, float]:
     """Trim leading/trailing exact-constant telemetry runs (logger not live)."""
     same = np.all(vals[:, 1:] == vals[:, :-1], axis=0)  # (M-1,) consecutive equality
     lead = 0
@@ -548,8 +538,9 @@ def generate_beatvk_valid(gen: dict[str, Any]) -> Iterator[Sample]:
             if rid != key:
                 continue
             seen = True
-            yield key, frame_to_sample(
-                _beatvk_frame(name, version or "lock-pin", key, rps_entry, frame)
+            yield (
+                key,
+                frame_to_sample(_beatvk_frame(name, version or "lock-pin", key, rps_entry, frame)),
             )
             break
         if not seen:
@@ -609,9 +600,7 @@ SE_CATEGORY_NOISE: dict[str, list[dict[str, Any]]] = {
     ],
     "mimii": [{"kind": "audio_pool", "dataset": "MIMII", "holdout": _SE_HOLDOUT_VALID}],
     "mimii_dg": [{"kind": "audio_pool", "dataset": "MIMII-DG", "holdout": _SE_HOLDOUT_VALID}],
-    "aircraft": [
-        {"kind": "audio_pool", "dataset": "AeroSonicDB", "holdout": _SE_HOLDOUT_VALID}
-    ],
+    "aircraft": [{"kind": "audio_pool", "dataset": "AeroSonicDB", "holdout": _SE_HOLDOUT_VALID}],
     "motors": [
         {"kind": "audio_pool", "dataset": "HUSTmotor", "holdout": _SE_HOLDOUT_VALID},
         {"kind": "audio_pool", "dataset": "KAIST-rotating-acoustic", "holdout": _SE_HOLDOUT_VALID},
@@ -1071,9 +1060,7 @@ SPECS: dict[str, dict[str, Any]] = {
             "recipe_version": 1,
             "seed": 20260720,
             "categories": ["avq_ego_s1", "avq_ego_s2"],
-            "category_noise": {
-                k: SE_CATEGORY_NOISE[k] for k in ("avq_ego_s1", "avq_ego_s2")
-            },
+            "category_noise": {k: SE_CATEGORY_NOISE[k] for k in ("avq_ego_s1", "avq_ego_s2")},
             "heldout_speakers": SE_HELDOUT_SPEAKERS,
             "librispeech": PARENTS["librispeech"],
             "per_snr": 50,

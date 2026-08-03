@@ -62,11 +62,11 @@ import numpy as np  # noqa: E402
 import scipy.io  # noqa: E402
 from scipy.signal import filtfilt, firwin  # noqa: E402
 
+from data_processing.rps_synthesis import MIXER  # noqa: E402
 from data_processing.sources.michaels import (  # noqa: E402
     MICHAELS_FILES,
     load_raw_aligned,
 )
-from data_processing.rps_synthesis import MIXER  # noqa: E402
 
 #: The scorer's fixed evaluation grid (= 512 / 16000), the grid every RPS
 #: trajectory in this project lives on.

@@ -109,10 +109,13 @@ def test_parents_match_dload_lock():
     Update deliberately — a change mints new derivation identities."""
     import tomllib
 
-    lock = tomllib.load(open("dload.lock", "rb"))["datasets"]
+    with open("dload.lock", "rb") as fh:
+        lock = tomllib.load(fh)["datasets"]
     for key, uri in der.PARENTS.items():
         name, _, sha = uri.removeprefix("dload:").partition("@")
-        assert lock.get(name) == sha, f"PARENTS[{key!r}] stale: {sha[:12]} != lock {lock.get(name, '')[:12]}"
+        assert lock.get(name) == sha, (
+            f"PARENTS[{key!r}] stale: {sha[:12]} != lock {lock.get(name, '')[:12]}"
+        )
 
 
 def test_lock_coverage():
@@ -122,7 +125,8 @@ def test_lock_coverage():
 
     from data_processing import sources
 
-    lock = tomllib.load(open("dload.lock", "rb"))["datasets"]
+    with open("dload.lock", "rb") as fh:
+        lock = tomllib.load(fh)["datasets"]
     frames_names = {s.frames_name for s in sources.REGISTRY.values()}
     for name in lock:
         covered = (

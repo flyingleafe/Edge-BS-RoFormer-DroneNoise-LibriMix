@@ -11,7 +11,6 @@ from __future__ import annotations
 import itertools
 
 import numpy as np
-import pytest
 from omegaconf import OmegaConf
 
 from data_processing.frames import get_meta
@@ -118,7 +117,9 @@ def test_pipeline_sample_shapes_determinism_and_ids(michaels_frames_dataset, spe
     run_b = _take(cfg, 4)
 
     for fa, fb in zip(run_a, run_b):
-        np.testing.assert_array_equal(np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data))
+        np.testing.assert_array_equal(
+            np.asarray(fa["mixture"].data), np.asarray(fb["mixture"].data)
+        )
         np.testing.assert_array_equal(np.asarray(fa["rps"].data), np.asarray(fb["rps"].data))
 
     first = run_a[0]

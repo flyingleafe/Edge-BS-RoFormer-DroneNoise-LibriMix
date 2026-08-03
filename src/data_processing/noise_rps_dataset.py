@@ -26,7 +26,6 @@ import torch
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
-
 from .frames import resample_audio_series
 from .streams import iter_published_frames
 
@@ -323,8 +322,8 @@ def load_dregon_noise_sources(
     """
     if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
         return load_published_noise_sources(dregon_dir, origin="dregon")
-    from data_processing.streams import resolve_source
     from data_processing.sources.dregon import load_dregon_timeframes
+    from data_processing.streams import resolve_source
 
     dregon_dir = Path(resolve_source(dregon_dir))
     frames = load_dregon_timeframes(
@@ -352,8 +351,8 @@ def load_michaels_noise_sources(
     """
     if isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX):
         return load_published_noise_sources(michaels_dir, origin="michaels")
-    from data_processing.streams import resolve_source
     from data_processing.sources import michaels as M
+    from data_processing.streams import resolve_source
 
     frames = M.load_michaels_timeframes(data_root=resolve_source(michaels_dir), sr=sample_rate)
     return [_wrap_frame(tf, origin="michaels", rps_key="rps") for tf in frames]

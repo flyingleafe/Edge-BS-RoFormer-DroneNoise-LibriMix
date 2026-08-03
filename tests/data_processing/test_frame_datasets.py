@@ -109,6 +109,7 @@ def _publish_synthetic_recording(repo, *, channels: int, dataset_name: str):
     rset.add(dataset_name)
     """Publish a one-recording synthetic frames dataset (deterministic seed)."""
     import tdseries as td
+
     import data_processing.streams as streams
 
     rng = np.random.default_rng(0)  # fixed seed: the same audio every call
@@ -142,7 +143,9 @@ def _publish_synthetic_recording(repo, *, channels: int, dataset_name: str):
     )
 
 
-def _online_mix_frame_dataset(repo, *, channels: int, flatten_channels: bool) -> OnlineMixFrameDataset:
+def _online_mix_frame_dataset(
+    repo, *, channels: int, flatten_channels: bool
+) -> OnlineMixFrameDataset:
     """Build an OnlineMixFrameDataset over a previously published frames dataset."""
     dataset = f"SYNTH-FLAT-{channels}CH"
     _publish_synthetic_recording(repo, channels=channels, dataset_name=dataset)

@@ -61,13 +61,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from data_processing.sources.dregon import (  # noqa: E402
-    clean_command_spikes,
-    discover_recordings,
-    get_geometry,
-    load_timeframe,
-)
-from data_processing.sources.michaels import load_michaels_timeframes  # noqa: E402
 from data_processing.rps_refinement import (  # noqa: E402
     RefineConfig,
     compute_logmag,
@@ -76,6 +69,13 @@ from data_processing.rps_refinement import (  # noqa: E402
     refine_coherent,
     refine_trajectories,
 )
+from data_processing.sources.dregon import (  # noqa: E402
+    clean_command_spikes,
+    discover_recordings,
+    get_geometry,
+    load_timeframe,
+)
+from data_processing.sources.michaels import load_michaels_timeframes  # noqa: E402
 
 SR = 16000
 SEG_LEN_S = 30.0

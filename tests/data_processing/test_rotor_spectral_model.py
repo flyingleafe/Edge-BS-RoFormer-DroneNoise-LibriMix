@@ -71,7 +71,6 @@ def test_build_noise_stream_dispatches_static_comb():
         window_s=0.5,
         seed=0,
     )
-    import itertools
 
     frame = next(iter(stream))
     assert frame["audio"].data.shape == (8, int(round(0.5 * 16000)))
@@ -146,7 +145,6 @@ def test_amp_scaling_config_wired():
     assert pool.rps_kind == "full_flight" and pool.flight_reuse == 8
     # dispatch through build_noise_stream still renders static_comb chunks.
     stream, _ = build_noise_stream(cfg, sample_rate=16000, window_s=1.0, seed=0)
-    import itertools
 
     frame = next(iter(stream))
     assert frame["audio"].data.shape[-1] == 16000

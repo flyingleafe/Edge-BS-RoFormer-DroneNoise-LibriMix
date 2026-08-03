@@ -382,9 +382,7 @@ def extract_multichannel_noise_chunk(
     ``n_channels``. ``min_motor_rps`` > 0 restricts sampling to the in-flight
     window (set 30.0 to exclude takeoff/ramp-up).
     """
-    _, rps_key, needs_clean, valid_start, valid_end = _valid_span(
-        tf, duration_sec, min_motor_rps
-    )
+    _, rps_key, needs_clean, valid_start, valid_end = _valid_span(tf, duration_sec, min_motor_rps)
     start_sec = np.random.uniform(valid_start, valid_end - duration_sec)
     return _cut_chunk(tf, rps_key, needs_clean, start_sec, duration_sec)
 
@@ -396,9 +394,7 @@ def extract_non_overlapping_multichannel_chunks(
 ) -> list[tuple[np.ndarray, np.ndarray, dict]]:
     """ALL non-overlapping ``(C, N)`` chunks spanning the in-flight window, in
     order (a trailing remainder shorter than ``duration_sec`` is dropped)."""
-    _, rps_key, needs_clean, valid_start, valid_end = _valid_span(
-        tf, duration_sec, min_motor_rps
-    )
+    _, rps_key, needs_clean, valid_start, valid_end = _valid_span(tf, duration_sec, min_motor_rps)
     n_chunks = int((valid_end - valid_start) // duration_sec)
     return [
         _cut_chunk(tf, rps_key, needs_clean, valid_start + i * duration_sec, duration_sec)
@@ -435,9 +431,7 @@ def load_noise_source_frames(specs: list[dict[str, Any]], *, sample_rate: int) -
         splits = spec.get("splits")
         if splits is None and spec.get("split") is not None:
             splits = [spec["split"]]
-        wanted = (
-            {str(x) for x in spec["recording_ids"]} if spec.get("recording_ids") else None
-        )
+        wanted = {str(x) for x in spec["recording_ids"]} if spec.get("recording_ids") else None
         excluded = (
             {str(x) for x in spec["exclude_recording_ids"]}
             if spec.get("exclude_recording_ids")
@@ -684,10 +678,7 @@ def mix_dn_lm(
     speech_attenuated = apply_distance_attenuation(speech, speech_distance)
     noise_attenuated = apply_distance_attenuation(noise, noise_distance)
 
-    if target_snr_range:
-        target_snr = random.uniform(*target_snr_range)
-    else:
-        target_snr = None
+    target_snr = random.uniform(*target_snr_range) if target_snr_range else None
     mixture, speech_final, noise_final = mix_audio(
         speech_attenuated, noise_attenuated, target_snr=target_snr
     )

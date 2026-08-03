@@ -17,7 +17,6 @@ import itertools
 import numpy as np
 import pytest
 
-import data_processing.streams as streams
 from data_processing.frames import get_meta
 from data_processing.online_mixing import (
     _load_real_records,

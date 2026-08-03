@@ -49,19 +49,15 @@ from __future__ import annotations
 import glob
 import json
 import os
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import soundfile as sf
 import tdseries as td
-import torch
-from torch.utils.data import Dataset, IterableDataset
-
-from functools import partial
-from typing import cast
-
 from omegaconf import DictConfig, OmegaConf
+from torch.utils.data import Dataset, IterableDataset
 
 from data_processing.frames import audio_series as _audio_series
 from data_processing.frames import get_meta, meta_dict

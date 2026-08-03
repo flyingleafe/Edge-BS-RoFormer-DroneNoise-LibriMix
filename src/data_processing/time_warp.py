@@ -38,8 +38,8 @@ from typing import Any, cast
 import numpy as np
 import tdseries as td
 
-from data_processing.sources.dregon import clean_command_spikes
 from data_processing.frames import get_meta
+from data_processing.sources.dregon import clean_command_spikes
 
 DEFAULT_DEV_CONST = 0.08
 DEFAULT_DEV_SINE = 0.04

@@ -68,11 +68,9 @@ if load_dotenv is not None:
 
 from data_processing import mixing
 from data_processing.frames import (
-    adapt_recording_frame,
     audio_series,
     get_meta,
     rps_series,
-    with_meta,
 )
 from data_processing.mixing import (
     MAX_DRAW_RETRIES,
@@ -91,7 +89,6 @@ from data_processing.time_warp import (
     WarpParams,
     apply_time_warp,
     sample_warp_params,
-    source_duration_s,
 )
 
 # Back-compat aliases for long-lived private names (tests, streams.mix_frames,
@@ -604,9 +601,7 @@ def build_noise_stream(
     if merged_real:
         records: list[dict[str, Any]] = []
         for spec in merged_real:
-            records.extend(
-                _load_real_records(spec, sample_rate=sample_rate, window_s=window_s)
-            )
+            records.extend(_load_real_records(spec, sample_rate=sample_rate, window_s=window_s))
         streams.append(_records_window_stream(records, window_s=window_s, seed=seed))
         weights.append(float(len(merged_real)))
         ceiling = max(ceiling, _records_channels(records))
@@ -624,9 +619,7 @@ def build_noise_stream(
             )
         else:
             engine = _build_engine(c, window_s=window_s, sample_rate=sample_rate)
-            streams.append(
-                dload.random_stream(cseed).map(partial(_engine_chunk, engine, window_s))
-            )
+            streams.append(dload.random_stream(cseed).map(partial(_engine_chunk, engine, window_s)))
             ceiling = max(ceiling, 8)  # the project rigs are 8-mic
         weights.append(float(_cfg_get(c, "weight", 1.0)))
 
@@ -921,9 +914,7 @@ def _render_rps_sample(
         cast("Mapping[str, Any] | None", policy.get("noise_time_warp")), rng
     )
     if warp is not None:
-        noise_tf = apply_time_warp(
-            noise_tf, warp, target_len=base_len, sample_rate=sample_rate
-        )
+        noise_tf = apply_time_warp(noise_tf, warp, target_len=base_len, sample_rate=sample_rate)
 
     for aug_block in aug_blocks:
         noise_tf = maybe_apply_noise_augmentation(
@@ -1002,7 +993,9 @@ def _render_se_sample(
     source = speech_lanes[0]
     snr_db = _sample_snr_db(policy, rng)
     per_channel = bool(policy.get("snr_per_channel", False))
-    scaled_source = scale_source_to_snr(source[None, :], noise_audio, snr_db, per_channel=per_channel)
+    scaled_source = scale_source_to_snr(
+        source[None, :], noise_audio, snr_db, per_channel=per_channel
+    )
     mixture = (noise_audio + scaled_source).astype(np.float32)
 
     mixture, target = _apply_one_augmentation_pair(
@@ -1127,6 +1120,3 @@ def _nonsilent_frame(target_len: int, tf: td.Frame) -> bool:
 
 def _nonsilent_lanes(lanes: list[Any]) -> bool:
     return all(not is_silent(np.asarray(lane)) for lane in lanes)
-
-
-

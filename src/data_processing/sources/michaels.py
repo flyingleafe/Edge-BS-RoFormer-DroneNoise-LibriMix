@@ -372,6 +372,43 @@ def build(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
         yield rid, build_frame(raw_dir, wav_rel, csv_rel, time_offset, time_dilation)
 
 
+def load_michaels_timeframe(
+    wav_path: str | Path,
+    csv_path: str | Path,
+    time_offset: float = 0.0,
+    time_dilation: float = 1.0,
+    sr: int | None = 16000,
+    recording_id: str | None = None,
+    rps_scale: float | None = None,
+) -> td.Frame:
+    """Load one Michael's recording as an aligned ``td.Frame``.
+
+    The frame holds an 8-channel ``audio`` Series (dims ``("mic", "time")``)
+    and an ``rps`` Series (dims ``("rotor", "time")``): the audio is anchored
+    at t=0, the RPS timestamps are aligned to it via ``time_offset`` /
+    ``time_dilation``, and the speeds carry the calibrated ``rps_scale``
+    (``None`` -> the recording's :data:`MICHAELS_RPS_SCALE` entry).
+    """
+    wav, ts, ms, raw_sr = load_raw_aligned(
+        wav_path,
+        csv_path,
+        time_offset=time_offset,
+        time_dilation=time_dilation,
+        sr=sr,
+        rps_scale=rps_scale,
+    )
+    mic_pos, rotor_pos = get_geometry()
+    return make_recording_frame(
+        {
+            "audio": td.uniform(wav, raw_sr, dims=("mic", "time"), t_start=0.0),
+            "rps": td.events(ts, ms, dims=("rotor", "time"), t_start=0.0),
+        },
+        meta={"recording_id": recording_id or Path(csv_path).stem},
+        mic_pos=mic_pos,
+        rotor_pos=rotor_pos,
+    )
+
+
 def load_michaels_timeframes(
     data_root: str | Path | None = None,
     sr: int | None = 16000,
@@ -390,29 +427,16 @@ def load_michaels_timeframes(
         from data_processing import sources
 
         root = sources.raw_root("michaels")
-    frames: list[td.Frame] = []
-    for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
-        wav, ts, ms, raw_sr = load_raw_aligned(
+    return [
+        load_michaels_timeframe(
             root / wav_rel,
             root / csv_rel,
             time_offset=time_offset,
             time_dilation=time_dilation,
             sr=sr,
         )
-        meta = {"recording_id": Path(csv_rel).stem}
-        mic_pos, rotor_pos = get_geometry()
-        frames.append(
-            make_recording_frame(
-                {
-                    "audio": td.uniform(wav, raw_sr, dims=("mic", "time"), t_start=0.0),
-                    "rps": td.events(ts, ms, dims=("rotor", "time"), t_start=0.0),
-                },
-                meta=meta,
-                mic_pos=mic_pos,
-                rotor_pos=rotor_pos,
-            )
-        )
-    return frames
+        for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES
+    ]
 
 
 # ─── Registry provenance ──────────────────────────────────────────────────────

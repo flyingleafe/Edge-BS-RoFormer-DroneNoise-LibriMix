@@ -601,8 +601,8 @@ def calibrate_michaels_positions(
     """
     from data_processing.sources.michaels import (
         MICHAELS_FILES,
-        load_raw_aligned,
         get_geometry,
+        load_raw_aligned,
     )
 
     root = find_data_root(data_root) if data_root is None else Path(data_root)
