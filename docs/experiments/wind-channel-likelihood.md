@@ -321,12 +321,60 @@ diagonal one. That is the objective under which the two are separable.
 
 ## Conclusion
 
-The **objective fix is a large, verified win** and the core of what was asked:
-the phase-marginalized likelihood improves held-out NLL from +5.909 (M=1
-magnitude baseline) to **−0.047**, and `mrstft` from 4.734 to **7.018**, on both
-drones, scored on identical data.
+### The objective fix: a large, verified win
 
-The **wind channel is not yet fixed, and is not yet fairly tested**. It stays
-inert under a per-microphone likelihood. The goal ("identical on Michael's,
-better on DREGON") is **not met**, and cannot be assessed until the objective
-scores spatial coherence.
+Replacing the single-realization magnitude loss with the phase-marginalized
+Rice/Whittle likelihood improved held-out fit from **+5.909 to -0.047** nats per
+bin and mrstft from **4.734 to 7.018**, on both drones, scored on identical data.
+`gen_w3_lik_nowind_mm` is the best generator this project has produced. The
+premise behind it was correct: fitting a stochastic component to one realization
+biases it `ln 2` (-1.6 dB) low, forever.
+
+### The wind channel: refuted, on the third and fair attempt
+
+| variant | mrstft all / DREGON / Michael's | NLL all / DREGON / Michael's | own objective |
+|---|---|---|---|
+| `gen_w3_lik_nowind_mm` (no wind) | **7.000 / 6.786 / 7.214** | **-0.047 / -0.523 / 0.429** | -0.293 |
+| `gen_h1_hybrid_wind` (wake-gated) | 5.069 / 3.843 / 6.295 | 1.514 / 1.931 / 1.097 | -0.123 |
+| `gen_h2_hybrid_uniform` (uniform) | 5.728 / 5.306 / 6.149 | 0.811 / 0.740 / 0.882 | **-1.115** |
+
+**The wake gating is refuted.** With capacity matched and only the geometry gate
+differing, the uniform control wins on its own objective, on the marginal NLL,
+and on mrstft. The gap is **largest on DREGON** — precisely where the
+bent-wake-column model predicts the gating should help most (DREGON mrstft 5.306
+vs 3.843, NLL 0.740 vs 1.931). `h1` leads only on Michael's mrstft, by 0.15, and
+Michael's is where the channel should be inert. **The prediction is inverted
+where it was strongest**, which is the opposite of a weak-but-positive result.
+
+**The wind channel does not help in any form.** `w3`, with no wind at all, beats
+both hybrid arms on both metrics and both drones.
+
+### Why this verdict is trustworthy where the earlier two were not
+
+- Attempt 1 (`w4` vs `w3`) tested an **inert** component (0.099% of predicted
+  variance) — it asked nothing.
+- Attempt 2 (`s2` vs `s3`) was measured inside a model the **zero-mean** spatial
+  objective had degraded (mrstft 7.0 -> 3.6).
+- Attempt 3 (`h1` vs `h2`) warm-starts from the best model, uses an objective
+  that keeps the harmonic comb sharp *and* sees cross-microphone coherence, and
+  compares against a capacity-matched control. It is the first fair test, and it
+  agrees with attempt 2's direction.
+
+### Caveats
+
+The hybrid weight (0.05) is untuned, so `w3` versus the hybrid arms is partly an
+objective difference. `h1` versus `h2` is clean — identical objective, identical
+capacity, only the gate differs. Single seed, n = 11 clips per drone.
+
+### What this does and does not say
+
+It does **not** say flow noise is absent. An incoherent per-microphone term is
+demonstrably *required*: removing it entirely (`gen_s1`) makes the array
+covariance singular. What is refuted is the **spatial shape** — the
+bent-wake-column gate. The data wants an incoherent field; it does not want it
+shaped like a wake column.
+
+The optimization is no longer the constraint, and a fourth objective is not
+indicated. The open question is now a physics question: whether the wake
+geometry (column model, gate shape, induced-velocity law) is wrong, or whether
+flow noise simply is not the dominant residual at these microphone positions.
