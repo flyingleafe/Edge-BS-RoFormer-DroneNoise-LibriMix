@@ -66,7 +66,7 @@ NUM_ROTORS = 4
 
 # Quadrotor control-allocation mixer.  Columns = [common, roll, pitch, yaw];
 # rows = rotors in the order [RFront, LFront, LBack, RBack] (matches
-# ``data_processing.michaels.ROTOR_ORDER``).  Entries are +/-1, so the columns
+# ``data_processing.sources.michaels.ROTOR_ORDER``).  Entries are +/-1, so the columns
 # are mutually orthogonal with squared norm 4 -> B^T B = 4 I and B^-1 = B^T / 4.
 MIXER = np.array(
     [

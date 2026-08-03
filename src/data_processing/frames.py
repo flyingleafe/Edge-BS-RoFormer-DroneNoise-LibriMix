@@ -84,6 +84,41 @@ def with_meta(frame: td.Frame, **updates: Any) -> td.Frame:
     return frame.with_entry("meta", td.Frame(dict(merged)))
 
 
+#: Rotor-track entry names recognised in published recording frames, in
+#: preference order: the generic ``rps`` (michaels-frames), then DREGON-frames'
+#: ``motors_command`` (the canonical, *already cleaned* track), then
+#: ``motors_measured``.
+PUBLISHED_RPS_KEYS = ("rps", "motors_command", "motors_measured")
+
+
+def adapt_recording_frame(frame: td.Frame, *, sample_rate: int) -> td.Frame | None:
+    """Rich published recording -> the minimal (audio + rps) noise-source Frame.
+
+    Published frames datasets (``DREGON-frames`` / ``michaels-frames`` / any
+    :mod:`data_processing.sources` builder output) carry their fixes baked in
+    — DREGON's ``motors_command`` is already ``clean_command_spikes``-cleaned
+    and michaels' ``rps`` is already aligned. The rotor track is therefore
+    stored under the generic ``rps`` name, which ``mixing.resolve_motor_tracks``
+    treats as needing **no** cleaning, so no fix logic is ever re-applied at
+    load time. Everything else (IMU, raw telemetry, geometry, per-sample
+    clocks) is dropped so pools keep only what they slice; audio is
+    soxr-resampled to ``sample_rate``. Returns ``None`` for frames without
+    audio or a rotor track (e.g. clean-source recordings).
+    """
+    if "audio" not in frame:
+        return None
+    rps_key = next((k for k in PUBLISHED_RPS_KEYS if k in frame), None)
+    if rps_key is None:
+        return None
+    entries: dict[str, Any] = {
+        "audio": resample_audio_series(frame["audio"], int(sample_rate)),
+        "rps": frame[rps_key],
+    }
+    if "meta" in frame:
+        entries["meta"] = frame["meta"]
+    return td.Frame(entries)
+
+
 def make_recording_frame(
     tracks: dict[str, td.Series],
     *,

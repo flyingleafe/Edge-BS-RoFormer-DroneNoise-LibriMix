@@ -136,15 +136,14 @@ def load_geometry(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(mic_positions (M,3), rotor_positions (R,3))`` for a drone name."""
     _ensure_src_on_path()
-    if drone == "michaels":
-        from data_processing.michaels import get_geometry as _mich
+    from data_processing import sources
 
-        return _mich()
-    from data_processing.dregon import get_geometry as _dreg
+    if drone == "michaels":
+        return sources.geometry("michaels")
+    # DREGON: `dregon_dir` may be a plain path or a `dload:NAME[/sub]` URI.
     from data_processing.streams import resolve_source
 
-    # `dregon_dir` may be a plain path or a `dload:NAME[/sub]` URI.
-    return _dreg(resolve_source(dregon_dir))
+    return sources.dregon.get_geometry(resolve_source(dregon_dir))
 
 
 class _GenBundle:

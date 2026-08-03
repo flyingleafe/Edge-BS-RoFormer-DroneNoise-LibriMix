@@ -10,29 +10,21 @@ base_seed: 20260618
 
 sources:
   noise:
-    - kind: dregon
-      root: data
-      split: in_flight_noise
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
       exclude_recording_ids:
         - free-flight_nosource_room1
       min_motor_rps: 30.0
-      download: false
-    - kind: michaels
-      root: data
-      ids: [FLY125]
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
       # Michael's FLY125 motor telemetry hovers around 29 RPS; do not apply the
       # DREGON >30 RPS in-flight threshold to it.
       min_motor_rps: 0.0
   speech:
-    - kind: audio_files
-      root: data/librispeech/LibriSpeech/train-clean-100
-      glob: "**/*.flac"
-      cache:
-        # Created automatically if missing; reused between runs. Override with
-        # ONLINE_MIX_SOURCE_CACHE_DIR in .env/on the shell for another partition.
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   source_prob: 1.0
   snr_db:

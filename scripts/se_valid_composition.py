@@ -3,7 +3,7 @@
 
 Counts are read live from the published sets (``SEValidFrameDataset``); the
 source-dataset mapping per category is the one baked into
-``scripts/build_se_valid.py`` (``CATEGORY_NOISE``), reproduced here as
+``data_processing.derivations (se_valid generator)`` (``CATEGORY_NOISE``), reproduced here as
 documentation. Writes a tidy CSV (one row per category) and prints a Markdown
 table.
 

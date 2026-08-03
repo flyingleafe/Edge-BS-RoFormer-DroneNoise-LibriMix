@@ -74,7 +74,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from data_processing.dregon import (  # noqa: E402
+from data_processing.sources.dregon import (  # noqa: E402
     clean_command_spikes,
     discover_recordings,
     get_geometry,

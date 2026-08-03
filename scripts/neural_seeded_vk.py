@@ -99,17 +99,17 @@ def rotor_mic_weights(recording: str, dregon_dir: str) -> np.ndarray:
     """``(8 mics, 4 rotors)`` weights prop. to 1/d^2, normalized per rotor.
 
     Mirrors ``vk_blind_sweep.rotor_mic_weights``: DREGON geometry from
-    ``data_processing.dregon.get_geometry`` (needs the DREGON data root),
-    FLY124 from ``data_processing.michaels.get_geometry`` (no data needed).
+    ``data_processing.sources.dregon.get_geometry`` (needs the DREGON data root),
+    FLY124 from ``data_processing.sources.michaels.get_geometry`` (no data needed).
     """
     key = "fly124" if recording == "michaels_FLY124" else "dregon"
     if key not in _WEIGHTS_CACHE:
         if key == "fly124":
-            from data_processing.michaels import get_geometry
+            from data_processing.sources.michaels import get_geometry
 
             mic, rot = get_geometry()
         else:
-            from data_processing.dregon import get_geometry
+            from data_processing.sources.dregon import get_geometry
             from data_processing.streams import resolve_source
 
             mic, rot = get_geometry(Path(resolve_source(dregon_dir)))

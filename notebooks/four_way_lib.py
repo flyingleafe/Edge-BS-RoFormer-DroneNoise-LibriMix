@@ -49,7 +49,7 @@ COMB_BANDS: dict[str, range] = {
 def load_dregon_recording(project_root: Path, recording_id: str = "free-flight_nosource_room1"):
     """Load ONE DREGON in-flight recording as a ``td.Frame`` (memory-friendly:
     avoids materialising the whole split like ``load_dregon_timeframes``)."""
-    from data_processing.dregon import discover_recordings, get_geometry, load_timeframe
+    from data_processing.sources.dregon import discover_recordings, get_geometry, load_timeframe
 
     dregon_dir = Path(project_root) / "data" / "DREGON"
     geometry = get_geometry(dregon_dir)
@@ -104,7 +104,7 @@ def find_cruise_window(
     RPS lies inside ``rps_range`` (the CONA sweep support). Uses the telemetry
     series directly (cheap). Returns ``(start_s, rps_mean, rps_maxstd)``.
     """
-    from data_processing.dregon import clean_command_spikes
+    from data_processing.sources.dregon import clean_command_spikes
     from data_processing.online_mixing import _resolve_motor_tracks
 
     _, rps_key, needs_clean = _resolve_motor_tracks(tf)

@@ -37,6 +37,7 @@ from data_processing.derivations import (
     build_pipeline,
     dataset_meta,
     fingerprint,
+    spec_layout,
 )
 from data_processing.streams import open_repository
 
@@ -113,11 +114,12 @@ def cmd_adopt(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Sanity: the pinned version must exist and already carry the sample-dir-v1
-    # layout we would attach — otherwise the adopted ref would resolve to a
-    # semantically wrong manifest.
+    # Sanity: the pinned version must exist and already carry the layout the
+    # spec declares — otherwise the adopted ref would resolve to a semantically
+    # wrong manifest.
     manifest = repo.manifest(name, version)
     layout = (manifest.meta or {}).get("layout")
+    want_layout = spec_layout(name)
     print(f"{name}")
     print(f"  fingerprint : {fp}")
     print(f"  ref key     : {ref}")
@@ -125,10 +127,10 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     print(
         f"  manifest    : layout={layout!r} fields={sorted((manifest.meta or {}).get('fields', {}))}"
     )
-    if layout != "sample-dir-v1":
+    if layout != want_layout:
         print(
             f"  REFUSING: pinned manifest layout is {layout!r}, expected "
-            "'sample-dir-v1'; the spec's fields would not match.",
+            f"{want_layout!r}; the spec would not match.",
             file=sys.stderr,
         )
         return 2

@@ -164,7 +164,7 @@ def prepare_fly124(michaels_root: str, window: tuple[float, float] = FLY124_WIND
     the project data root (containing ``recording_with_motor_speed/``) or the
     dataset directory itself (e.g. a dload-materialized tree).
     """
-    from data_processing.michaels import MICHAELS_FILES, load_michaels_timeframe
+    from data_processing.sources.michaels import MICHAELS_FILES, load_michaels_timeframe
     from data_processing.streams import resolve_source
 
     root = resolve_source(michaels_root)
@@ -297,11 +297,11 @@ def get_neural_traj(rid: str, opts: argparse.Namespace) -> tuple[np.ndarray, flo
 def rotor_mic_weights(rid: str, opts: argparse.Namespace) -> np.ndarray:
     """``(n_mics, 4)`` per-rotor mic weights ∝ 1/d², normalized per rotor."""
     if rid == FLY124_RID:
-        from data_processing.michaels import get_geometry
+        from data_processing.sources.michaels import get_geometry
 
         mic, rot = get_geometry()
     else:
-        from data_processing.dregon import get_geometry
+        from data_processing.sources.dregon import get_geometry
         from data_processing.streams import resolve_source
 
         mic, rot = get_geometry(Path(resolve_source(opts.dregon_dir)))

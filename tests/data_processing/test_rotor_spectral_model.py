@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import tdseries as td
 
-from data_processing.online_mixing import build_noise_pool
+from data_processing.online_mixing import build_noise_stream
 from data_processing.rotor_spectral_model import (
     ProfileRanges,
     StaticCombNoisePool,
@@ -64,13 +64,18 @@ def test_static_comb_pool_yields_wellformed_timeframe():
     assert rps.min() >= 20.0 and rps.max() <= 200.0
 
 
-def test_build_noise_pool_dispatches_static_comb():
-    pool = build_noise_pool(
+def test_build_noise_stream_dispatches_static_comb():
+    stream, ceiling = build_noise_stream(
         {"kind": "static_comb", "n_harmonics": 32, "n_mics": 8, "n_rotors": 4},
-        duration_s=0.5,
         sample_rate=16000,
+        window_s=0.5,
+        seed=0,
     )
-    assert isinstance(pool, StaticCombNoisePool)
+    import itertools
+
+    frame = next(iter(stream))
+    assert frame["audio"].data.shape == (8, int(round(0.5 * 16000)))
+    assert ceiling == 8
 
 
 # ── RPS-amplitude scaling + full-flight windowing (physical plausibility) ──────
@@ -139,6 +144,9 @@ def test_amp_scaling_config_wired():
     pool = StaticCombNoisePool.from_config(cfg, duration_s=1.0, sample_rate=16000)
     assert pool.amp_rps_exponent == 3.0 and pool.amp_rps_ref == 70.0
     assert pool.rps_kind == "full_flight" and pool.flight_reuse == 8
-    # dispatch through build_noise_pool still yields a static_comb pool.
-    disp = build_noise_pool(cfg, duration_s=1.0, sample_rate=16000)
-    assert isinstance(disp, StaticCombNoisePool)
+    # dispatch through build_noise_stream still renders static_comb chunks.
+    stream, _ = build_noise_stream(cfg, sample_rate=16000, window_s=1.0, seed=0)
+    import itertools
+
+    frame = next(iter(stream))
+    assert frame["audio"].data.shape[-1] == 16000

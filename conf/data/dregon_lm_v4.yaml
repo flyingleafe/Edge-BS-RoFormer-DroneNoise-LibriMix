@@ -1,6 +1,6 @@
 # DREGON-LM-V4 (folder dataset): mixture.wav + rps.npy per sample_* directory.
 # See data_processing/AGENTS.md for how this dataset is created
-# (create_dregon_librimix.py) and src/data_processing/frame_datasets.py for
+# (data_processing.derivations (dregon_lm generator)) and src/data_processing/frame_datasets.py for
 # the loader (a Frame-producing port of train_rps_predictor.py's
 # DREGONRPSDataset).
 train:

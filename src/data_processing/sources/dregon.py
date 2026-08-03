@@ -1,32 +1,38 @@
-"""
-DREGON Dataset Loader — tdseries-native interface.
+"""DREGON source — uniform registry entry (no preferential treatment).
 
 DREGON: Dataset and Methods for UAV-Embedded Sound Source Localization
 https://dregon.inria.fr/datasets/dregon/
 
-Each recording is loaded as a ``td.Frame`` with entries:
-  - ``"audio"``            : Series (dims ``("mic", "time")``) at 44100 Hz
-  - ``"motors_measured"``  : Series (dims ``("rotor", "time")``)  [if available]
-  - ``"motors_command"``   : Series (dims ``("rotor", "time")``)  [if available]
-  - ``"imu_accel"``        : Series (dims ``(None, "time")``, 3 axes)  [if available]
-  - ``"imu_gyro"``         : Series (dims ``(None, "time")``, 3 axes)  [if available]
-  - ``"source_position"``  : Series (dims ``(None, "time")``, 3 axes)  [if available]
-  - ``"mic_pos"``          : invariant Series ``(8, 3)``, dims ``("mic", None)``
-  - ``"rotor_pos"``        : invariant Series ``(4, 3)``, dims ``("rotor", None)``
-  - ``"meta"``             : nested invariant Frame — ``recording_id``, ``split``,
-    ``flight_type``, ``source_type``, ``source_level``, ``room``, ``motor_id``,
-    ``motor_speed``, ``sample_rate``.
+The raw tree (dload dataset ``DREGON``) holds one ``DREGON_<recording_id>/``
+dir per in-flight recording plus ``DREGON_individual_motors_recordings/``,
+``clean_sources/``, ``emitted_signals/`` and the geometry files
+(``micPos.txt`` / ``coordinates.mat``). :func:`build` turns it into rich
+``tdframe-v1`` recording Frames (one per recording) with the canonical fixes
+baked in:
 
-All time-series are aligned to a common absolute time base (Unix timestamps),
-so ``frame.time[t_a:t_b]`` simultaneously cuts every entry.
+- ``motors_command`` is ``clean_command_spikes``-cleaned (the canonical entry
+  downstream code reads); the untouched telemetry is kept in
+  ``motors_command_raw``;
+- the raw per-sample audio clock (``audio_timestamps`` from
+  ``*_audiots.mat``) is preserved as an invariant entry;
+- geometry comes from :func:`get_geometry` (mic positions frame-corrected via
+  the 180° z-flip that reconciles ``micPos`` with ``rotorsPos``).
+
+Each frame holds ``audio`` (8-ch, native 44.1 kHz), ``motors_measured`` /
+``motors_command`` where present, ``imu_accel`` / ``imu_gyro`` /
+``source_position`` where present, ``mic_pos`` / ``rotor_pos``, and ``meta``
+(``recording_id``, ``split``, ``flight_type``, ``source_type``, ...).
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import urllib.request
+import zipfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import librosa
 import numpy as np
@@ -35,18 +41,16 @@ import soundfile as sf
 import tdseries as td
 from scipy.ndimage import median_filter
 
-from data_processing.frames import make_recording_frame
-
-# =============================================================================
-# Constants
-# =============================================================================
+from data_processing.frames import make_recording_frame, with_meta
 
 AUDIO_SAMPLE_RATE = 44100
 MOTOR_SAMPLE_RATE = 929.0  # approximate DREGON motor logging rate
 NUM_ROTORS = 4
 N_MICS = 8
 
-# -- download URL map -------------------------------------------------------
+# ── Raw-file layout constants (paths inside the raw tree) ─────────────────────
+
+CLEAN_KERNEL = 21  # clean_command_spikes median-filter kernel (its default)
 
 DREGON_BASE_URL = "http://dregon.inria.fr"
 DREGON_DATA_URL = f"{DREGON_BASE_URL}/DREGON_data"
@@ -72,8 +76,6 @@ DOWNLOAD_URLS = {
     "spinning_nosource_room2": f"{DREGON_BASE_URL}/?smd_process_download=1&download_id=370",
 }
 
-# -- split definitions -------------------------------------------------------
-
 SplitName = Literal["in_flight_source", "in_flight_noise", "noise_free", "motor", "clean_source"]
 
 SPLIT_RECORDINGS: dict[SplitName, list[str]] = {
@@ -97,9 +99,7 @@ SPLIT_RECORDINGS: dict[SplitName, list[str]] = {
 }
 
 
-# =============================================================================
-# Download & discovery (unchanged from legacy)
-# =============================================================================
+# ─── Raw download (custom fetch: some "zips" are raw wavs) ────────────────────
 
 
 def _download_file(url: str, dest: Path, desc: str | None = None) -> Path:
@@ -119,9 +119,6 @@ def _download_file(url: str, dest: Path, desc: str | None = None) -> Path:
 
 
 def _unpack_zip(zip_path: Path, dest_dir: Path) -> Path:
-    import shutil
-    import zipfile
-
     marker = dest_dir / ".unzipped"
     if marker.exists():
         return dest_dir
@@ -142,14 +139,63 @@ def _unpack_zip(zip_path: Path, dest_dir: Path) -> Path:
     return dest_dir
 
 
+def download_dregon(dest: Path) -> Path:
+    """Fetch the full DREGON raw tree into ``dest`` (idempotent)."""
+    dregon_dir = Path(dest)
+    dregon_dir.mkdir(parents=True, exist_ok=True)
+
+    _download_file(DOWNLOAD_URLS["micPos.txt"], dregon_dir / "micPos.txt", "mic positions")
+
+    ed = dregon_dir / "emitted_signals"
+    ed.mkdir(exist_ok=True)
+    _download_file(DOWNLOAD_URLS["emitted_speech"], ed / "2min_TIMIT.wav", "emitted speech")
+    _download_file(
+        DOWNLOAD_URLS["emitted_whitenoise"], ed / "2min_white_noise.wav", "emitted whitenoise"
+    )
+
+    cd = dregon_dir / "clean_sources"
+    for st in ("speech", "whitenoise", "chirps"):
+        zp = cd / f"clean_{st}.zip"
+        _download_file(DOWNLOAD_URLS[f"clean_{st}"], zp, f"clean {st}")
+        _unpack_zip(zp, cd / st)
+
+    for rid, url in DOWNLOAD_URLS.items():
+        if rid in (
+            "micPos.txt",
+            "emitted_speech",
+            "emitted_whitenoise",
+            "motors",
+        ) or rid.startswith("clean_"):
+            continue
+        rd = dregon_dir / f"DREGON_{rid}"
+        if rd.exists() and any(rd.glob("*.wav")):
+            continue
+        zp = dregon_dir / f"DREGON_{rid}.zip"
+        try:
+            _download_file(url, zp, f"recording {rid}")
+            _unpack_zip(zp, rd)
+        except Exception as e:
+            print(f"Warning: failed to download {rid}: {e}")
+
+    motors_dir = dregon_dir / "DREGON_individual_motors_recordings"
+    if not motors_dir.exists() or not any(motors_dir.rglob("*.wav")):
+        zp = dregon_dir / "motors.zip"
+        _download_file(DOWNLOAD_URLS["motors"], zp, "motor recordings")
+        _unpack_zip(zp, motors_dir)
+
+    return dregon_dir
+
+
+# ─── Discovery + geometry ─────────────────────────────────────────────────────
+
+
 def _parse_mic_positions_txt(path: Path) -> np.ndarray:
     content = path.read_text()
     match = re.search(r"\[\s*([\s\S]*?)\s*\]", content)
     if not match:
         raise ValueError(f"Could not parse micPos.txt: no matrix found in {path}")
-    matrix_content = match.group(1)
     rows = []
-    for line in matrix_content.split(";"):
+    for line in match.group(1).split(";"):
         line = re.sub(r"%.*", "", line)
         numbers = re.findall(r"-?\d+\.?\d*", line)
         if len(numbers) >= 3:
@@ -158,8 +204,7 @@ def _parse_mic_positions_txt(path: Path) -> np.ndarray:
 
 
 def _load_rotor_positions(path: str | Path) -> np.ndarray:
-    mat = scipy.io.loadmat(str(path))
-    return mat["rotorsPos"]
+    return scipy.io.loadmat(str(path))["rotorsPos"]
 
 
 def _parse_recording_id(recording_id: str) -> dict[str, str | None]:
@@ -203,12 +248,13 @@ def _parse_motor_filename(filename: str) -> tuple[int | None, int | None]:
 
 
 def discover_recordings(dregon_dir: Path) -> list[dict]:
-    """Return list of sample dicts for all recordings found under *dregon_dir*.
+    """All recordings found under the raw DREGON tree, as sample dicts.
 
-    Each dict has string keys matching the old HuggingFace schema
-    (``recording_id``, ``split``, ``audio_path``, ``audiots_path``,
-    ``imu_path``, ``motors_path``, ``sourcepos_path``, …).
+    Each dict has keys ``recording_id``, ``split``, ``audio_path``,
+    ``audiots_path``, ``imu_path``, ``motors_path``, ``sourcepos_path``,
+    ``mic_positions_path``, ``rotor_positions_path`` (+ parsed meta fields).
     """
+    dregon_dir = Path(dregon_dir)
     samples: list[dict] = []
     mic_pos_path = dregon_dir / "micPos.txt"
     coord_mat_path = dregon_dir / "coordinates.mat"
@@ -218,7 +264,6 @@ def discover_recordings(dregon_dir: Path) -> list[dict]:
         np.savetxt(mic_pos_path, mat["micPos"])
     rotor_pos_path = str(coord_mat_path) if coord_mat_path.exists() else ""
 
-    # In-flight recordings
     for split_name, recording_ids in SPLIT_RECORDINGS.items():
         for rid in recording_ids:
             rec_dir = dregon_dir / f"DREGON_{rid}"
@@ -257,7 +302,6 @@ def discover_recordings(dregon_dir: Path) -> list[dict]:
                     sample[key] = str(p)
             samples.append(sample)
 
-    # Motor recordings
     motors_dir = dregon_dir / "DREGON_individual_motors_recordings"
     if motors_dir.exists():
         for wav_file in motors_dir.rglob("*.wav"):
@@ -282,7 +326,6 @@ def discover_recordings(dregon_dir: Path) -> list[dict]:
                 }
             )
 
-    # Clean source recordings
     clean_dir = dregon_dir / "clean_sources"
     if clean_dir.exists():
         for source_type in ("speech", "whitenoise", "chirps"):
@@ -313,79 +356,12 @@ def discover_recordings(dregon_dir: Path) -> list[dict]:
     return samples
 
 
-def download_dregon_dataset(
-    data_dir: Path,
-    *,
-    download_clean_sources: bool = True,
-    download_emitted_signals: bool = True,
-) -> Path:
-    """Download the full DREGON dataset (idempotent — skips existing files)."""
-    dregon_dir = data_dir / "DREGON"
-    dregon_dir.mkdir(parents=True, exist_ok=True)
-
-    _download_file(DOWNLOAD_URLS["micPos.txt"], dregon_dir / "micPos.txt", "mic positions")
-
-    if download_emitted_signals:
-        ed = dregon_dir / "emitted_signals"
-        ed.mkdir(exist_ok=True)
-        _download_file(DOWNLOAD_URLS["emitted_speech"], ed / "2min_TIMIT.wav", "emitted speech")
-        _download_file(
-            DOWNLOAD_URLS["emitted_whitenoise"], ed / "2min_white_noise.wav", "emitted whitenoise"
-        )
-
-    if download_clean_sources:
-        cd = dregon_dir / "clean_sources"
-        for st in ("speech", "whitenoise", "chirps"):
-            zp = cd / f"clean_{st}.zip"
-            _download_file(DOWNLOAD_URLS[f"clean_{st}"], zp, f"clean {st}")
-            _unpack_zip(zp, cd / st)
-
-    for rid, url in DOWNLOAD_URLS.items():
-        if rid in (
-            "micPos.txt",
-            "emitted_speech",
-            "emitted_whitenoise",
-            "motors",
-        ) or rid.startswith("clean_"):
-            continue
-        rd = dregon_dir / f"DREGON_{rid}"
-        if rd.exists() and any(rd.glob("*.wav")):
-            continue
-        zp = dregon_dir / f"DREGON_{rid}.zip"
-        try:
-            _download_file(url, zp, f"recording {rid}")
-            _unpack_zip(zp, rd)
-        except Exception as e:
-            print(f"Warning: failed to download {rid}: {e}")
-
-    motors_dir = dregon_dir / "DREGON_individual_motors_recordings"
-    if not motors_dir.exists() or not any(motors_dir.rglob("*.wav")):
-        zp = dregon_dir / "motors.zip"
-        _download_file(DOWNLOAD_URLS["motors"], zp, "motor recordings")
-        _unpack_zip(zp, motors_dir)
-
-    return dregon_dir
-
-
-# =============================================================================
-# Geometry
-# =============================================================================
-
-
 def _correct_mic_frame(mic_pos: np.ndarray) -> np.ndarray:
-    """Reconcile the shipped ``micPos`` frame with ``rotorsPos``.
+    """Reconcile the shipped ``micPos`` frame with ``rotorsPos`` (180° z-flip).
 
-    DREGON's shipped ``micPos.txt`` / ``coordinates.mat['micPos']`` is expressed
-    in a frame rotated **180° about the z axis** relative to ``rotorsPos`` (the
-    two arrays use opposite x/y axis conventions). Left uncorrected, a free-field
-    ``1/r + delay`` propagation predicts inter-mic delays that are *anti*-correlated
-    with the measured GCC-PHAT TDOAs (correlation −0.55); applying the 180° flip
-    restores agreement (+0.93). Established by the Stage-0 RTF study on the
-    constant-speed single-motor recordings — see
-    ``notebooks/stage0_rotor_rtf.ipynb`` / ``notebooks/geom_calibration.py`` and
-    memory ``stage0-rtf-freefield-validation``. A 180° z-rotation negates x and y
-    and leaves z unchanged; it only affects the mic↔rotor *relative* frame, which
-    is all the propagation model uses.
+    DREGON's shipped ``micPos.txt`` / ``coordinates.mat['micPos']`` uses the
+    opposite x/y convention to ``rotorsPos``; the flip restores agreement with
+    measured GCC-PHAT TDOAs (notebooks/stage0_rotor_rtf.ipynb).
     """
     out = np.asarray(mic_pos, dtype=np.float64).copy()
     out[:, 0] = -out[:, 0]
@@ -394,12 +370,8 @@ def _correct_mic_frame(mic_pos: np.ndarray) -> np.ndarray:
 
 
 def get_geometry(dregon_dir: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(mic_positions, rotor_positions)``.
-
-    mic_positions: (8, 3)  — microphone xyz, frame-corrected via
-                   :func:`_correct_mic_frame` (180° z-flip to match rotorsPos)
-    rotor_positions: (4, 3) — rotor xyz
-    """
+    """``(mic_positions (8, 3), rotor_positions (4, 3))`` from the raw tree."""
+    dregon_dir = Path(dregon_dir)
     mic_pos_path = dregon_dir / "micPos.txt"
     coord_mat_path = dregon_dir / "coordinates.mat"
 
@@ -426,13 +398,10 @@ def get_geometry(dregon_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     return mic_pos, rotor_pos
 
 
-# =============================================================================
-# tdseries-native loading
-# =============================================================================
+# ─── Recording loading ────────────────────────────────────────────────────────
 
 
 def _mat_timestamps(mat_path: str | Path, field: str = "timestamps") -> np.ndarray:
-    """Load a 1-D timestamp array from a .mat file, flattening as needed."""
     data = scipy.io.loadmat(str(mat_path))
     return data[field].flatten().astype(np.float64)
 
@@ -443,31 +412,7 @@ def load_timeframe(
     geometry: tuple[np.ndarray, np.ndarray] | None = None,
     target_sr: int | None = None,
 ) -> td.Frame:
-    """Load a single DREGON recording as a ``td.Frame``.
-
-    Parameters
-    ----------
-    sample : dict
-        Sample dict as returned by ``discover_recordings``, with keys
-        ``audio_path``, ``mic_positions_path``, ``rotor_positions_path``,
-        and optional ``audiots_path``, ``imu_path``, ``motors_path``,
-        ``sourcepos_path``.
-    geometry : (mic_pos, rotor_pos) | None
-        Pre-loaded geometry.  Loaded from paths in *sample* if ``None``.
-    target_sr : int | None
-        If given, resample audio to this rate before wrapping in a Series.
-
-    Returns
-    -------
-    td.Frame
-        Entries: ``"audio"``, and optionally ``"motors_measured"``,
-        ``"motors_command"``, ``"imu_accel"``, ``"imu_gyro"``,
-        ``"source_position"``, plus ``"mic_pos"``, ``"rotor_pos"``, ``"meta"``
-        (``recording_id``, ``split``, ``flight_type``, ``source_type``,
-        ``source_level``, ``room``, ``motor_id``, ``motor_speed``,
-        ``sample_rate``).
-    """
-    # --- geometry -----------------------------------------------------------
+    """Load a single discovered DREGON recording as a ``td.Frame``."""
     if geometry is not None:
         mic_pos, rotor_pos = geometry
     else:
@@ -475,23 +420,20 @@ def load_timeframe(
         mic_pos = (
             _parse_mic_positions_txt(mic_pp) if mic_pp.suffix == ".txt" else np.loadtxt(mic_pp)
         )
-        mic_pos = _correct_mic_frame(mic_pos)  # 180° z-flip to match rotorsPos frame
+        mic_pos = _correct_mic_frame(mic_pos)
         rotor_pos = _load_rotor_positions(sample["rotor_positions_path"])
 
-    # --- audio ---------------------------------------------------------------
     audio, sr = sf.read(sample["audio_path"])  # (N,) or (N, n_ch)
-    audio = audio[np.newaxis, :] if audio.ndim == 1 else audio.T  # (n_ch, N), axis -1 = time
+    audio = audio[np.newaxis, :] if audio.ndim == 1 else audio.T  # (n_ch, N)
 
-    # Resample if requested.  ``audio`` is (n_ch, N) with time on axis=-1, so
-    # resample along axis=-1 directly — do NOT transpose, or librosa resamples
-    # the (short) channel axis and loops over millions of tiny signals.
+    # ``audio`` is (n_ch, N): resample along axis=-1 — do NOT transpose, or
+    # librosa resamples the (short) channel axis and loops over tiny signals.
     if target_sr is not None and target_sr != sr:
         audio = librosa.resample(
             audio, orig_sr=sr, target_sr=target_sr, axis=-1, res_type="soxr_hq"
         )
         sr = target_sr
 
-    # Absolute start time — from audiots.mat if available, else 0
     if sample.get("audiots_path"):
         audiots = _mat_timestamps(sample["audiots_path"], "audio_timestamps")
         t0 = float(audiots[0])
@@ -502,12 +444,10 @@ def load_timeframe(
         "audio": td.uniform(audio.astype(np.float32), sr, dims=("mic", "time"), t_start=t0),
     }
 
-    # --- motor data ----------------------------------------------------------
     if sample.get("motors_path"):
         motors_mat = scipy.io.loadmat(sample["motors_path"])
         ms = motors_mat["motor"]
         motor_ts = ms["timestamps"][0, 0].flatten().astype(np.float64)
-        # Some recordings (room2) have only 'command', not 'measured'
         has_measured = "measured" in ms.dtype.names
         # values are time-last (..., M); .mat stores (M, K) -> .T
         if has_measured:
@@ -520,7 +460,6 @@ def load_timeframe(
             motor_ts, command.T, dims=("rotor", "time"), t_start=t0
         )
 
-    # --- IMU -----------------------------------------------------------------
     if sample.get("imu_path"):
         imu = scipy.io.loadmat(sample["imu_path"])["imu"]
         imu_ts = imu["timestamps"][0, 0].flatten().astype(np.float64)
@@ -529,7 +468,6 @@ def load_timeframe(
         tracks["imu_accel"] = td.events(imu_ts, accel.T, dims=(None, "time"), t_start=t0)
         tracks["imu_gyro"] = td.events(imu_ts, gyro.T, dims=(None, "time"), t_start=t0)
 
-    # --- source position -----------------------------------------------------
     if sample.get("sourcepos_path"):
         sp = scipy.io.loadmat(sample["sourcepos_path"])["source_position"]
         sp_ts = sp["timestamps"][0, 0].flatten().astype(np.float64)
@@ -542,7 +480,6 @@ def load_timeframe(
         ).astype(np.float32)  # (M, 3)
         tracks["source_position"] = td.events(sp_ts, sp_vals.T, dims=(None, "time"), t_start=t0)
 
-    # --- meta ------------------------------------------------------------------
     meta: dict = {
         "recording_id": str(sample.get("recording_id", "")),
         "split": str(sample.get("split", "")),
@@ -563,59 +500,11 @@ def load_timeframe(
     )
 
 
-def load_dregon_timeframes(
-    data_dir: Path | str,
-    *,
-    splits: list[str] | None = None,
-    target_sr: int | None = None,
-    download: bool = True,
-) -> list[td.Frame]:
-    """Load all DREGON recordings in *splits* as a flat ``list[td.Frame]``.
-
-    Parameters
-    ----------
-    data_dir : Path
-        Root data directory (contains ``DREGON/`` subdirectory).
-    splits : list[str] | None
-        Which splits to load (e.g. ``["in_flight_noise"]``).  ``None`` = all.
-    target_sr : int | None
-        Resample audio to this rate.
-    download : bool
-        Download missing data if ``True``.
-    """
-    data_dir = Path(data_dir)
-    dregon_dir = data_dir / "DREGON"
-
-    if download:
-        download_dregon_dataset(data_dir)
-
-    geometry = get_geometry(dregon_dir)
-    all_samples = discover_recordings(dregon_dir)
-
-    if splits is not None:
-        split_set = set(splits)
-        all_samples = [s for s in all_samples if s["split"] in split_set]
-
-    frames: list[td.Frame] = []
-    for s in all_samples:
-        try:
-            tf = load_timeframe(s, geometry=geometry, target_sr=target_sr)
-            frames.append(tf)
-        except Exception as e:
-            print(f"Warning: skipping {s.get('recording_id', '?')}: {e}")
-    return frames
-
-
-# =============================================================================
-# Command-spike cleaning (preserved — used by downstream training scripts)
-# =============================================================================
+# ─── Command-spike cleaning ───────────────────────────────────────────────────
 
 
 def _find_step_artifact_length(command: np.ndarray) -> int:
-    """Detect initial constant-value logging artifact.
-
-    Returns number of leading samples to discard, or 0 if no artifact.
-    """
+    """Leading constant-value logging artifact length (0 if none)."""
     n_samples = command.shape[-1]
     if n_samples < 2:
         return 0
@@ -631,22 +520,10 @@ def _find_step_artifact_length(command: np.ndarray) -> int:
     return n_same if n_same >= 100 else 0
 
 
-def clean_command_spikes(
-    command: np.ndarray,
-    kernel: int = 21,
-) -> np.ndarray:
-    """Clean DREGON commanded rotor speeds by removing known artifacts.
+def clean_command_spikes(command: np.ndarray, kernel: int = CLEAN_KERNEL) -> np.ndarray:
+    """Clean DREGON commanded rotor speeds (leading freeze zeroed + median filter).
 
-    1. **Step artifact** — leading block of identical high command values.
-    2. **Takeoff spikes** — median filter removes impulsive outliers.
-
-    Args:
-        command: (4, n_samples) array of commanded rotor speeds (RPS, Hz).
-            Time is the LAST axis (matches the events-values convention).
-        kernel: Median filter kernel size along time axis (odd int, default 21).
-
-    Returns:
-        (4, n_samples) cleaned command array, same shape and dtype.
+    ``command`` is ``(4, M)`` with time on the LAST axis; returns the same shape.
     """
     cleaned = command.copy()
     n_step = _find_step_artifact_length(command)
@@ -654,3 +531,113 @@ def clean_command_spikes(
         cleaned[:, :n_step] = 0.0
     cleaned = median_filter(cleaned, size=(1, kernel), mode="reflect")
     return cleaned
+
+
+# ─── Builder (raw tree -> tdframe-v1 recording Frames) ───────────────────────
+
+
+def build_frame(sample: dict, geometry: tuple[np.ndarray, np.ndarray]) -> td.Frame:
+    """One DREGON recording -> rich Frame (audio + all telemetry + fixes baked in)."""
+    frame = load_timeframe(sample, geometry=geometry)
+
+    fixes: dict[str, Any] = {}
+    if "motors_command" in frame:
+        raw = frame["motors_command"]
+        frame = frame.with_entry("motors_command_raw", raw)
+        frame = frame.with_entry("motors_command", raw.map_data(clean_command_spikes))
+        fixes["motors_command"] = (
+            f"clean_command_spikes(kernel={CLEAN_KERNEL}): leading constant-value "
+            "logging artifact zeroed + median filter along time; raw values kept "
+            "in 'motors_command_raw'"
+        )
+
+    if sample.get("audiots_path"):
+        # load_timeframe only uses audiots[0] as the time anchor; keep the full
+        # per-sample clock (one Unix timestamp per audio sample) as-is.
+        stamps = scipy.io.loadmat(sample["audiots_path"])["audio_timestamps"]
+        frame = frame.with_entry(
+            "audio_timestamps", td.wrap(stamps.flatten().astype(np.float64), dims=(None,))
+        )
+
+    return with_meta(
+        frame,
+        provenance={
+            "builder": "data_processing.sources.dregon.build_frame",
+            "fixes": fixes,
+        },
+    )
+
+
+def load_dregon_timeframes(
+    data_dir: Path | str,
+    *,
+    splits: list[str] | None = None,
+    target_sr: int | None = None,
+    download: bool = True,
+) -> list[td.Frame]:
+    """Load all DREGON recordings in *splits* as a flat ``list[td.Frame]``.
+
+    Parameters
+    ----------
+    data_dir : Path | str
+        Root data directory (contains ``DREGON/`` subdirectory) or the DREGON
+        tree itself (when the directory ends with ``DREGON``).
+    splits : list[str] | None
+        Which splits to load (e.g. ``["in_flight_noise"]``). ``None`` = all.
+    target_sr : int | None
+        Resample audio to this rate.
+    download : bool
+        Download missing data if ``True``.
+    """
+    data_dir = Path(data_dir)
+    if data_dir.name == "DREGON":
+        dregon_dir = data_dir
+    else:
+        dregon_dir = data_dir / "DREGON"
+    if download:
+        download_dregon(data_dir if data_dir.name != "DREGON" else data_dir.parent)
+    geometry = get_geometry(dregon_dir)
+    all_samples = discover_recordings(dregon_dir)
+    if splits is not None:
+        split_set = set(splits)
+        all_samples = [s for s in all_samples if s["split"] in split_set]
+    frames: list[td.Frame] = []
+    for s in all_samples:
+        try:
+            tf = load_timeframe(s, geometry=geometry, target_sr=target_sr)
+            frames.append(tf)
+        except Exception as e:
+            print(f"Warning: skipping {s.get('recording_id', '?')}: {e}")
+    return frames
+
+
+def build(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
+    """Yield ``(recording_id, frame)`` for every discovered recording."""
+    raw_dir = Path(raw_dir)
+    geometry = get_geometry(raw_dir)
+    samples = sorted(discover_recordings(raw_dir), key=lambda s: str(s["recording_id"]))
+    ids = [s["recording_id"] for s in samples]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate DREGON recording ids in discover_recordings output")
+    for sample in samples:
+        yield str(sample["recording_id"]), build_frame(sample, geometry)
+
+
+# ─── Registry provenance ──────────────────────────────────────────────────────
+# (entry assembled in sources/__init__.py; raw fetch is the custom
+# download_dregon — several recordings ship as raw wavs despite the .zip URL)
+
+PROVENANCE: dict[str, Any] = {
+    "source_url": "https://dregon.inria.fr/datasets/dregon/",
+    "license": "research use (INRIA DREGON)",
+    "citation": "Deleforge et al., DREGON: Dataset and Methods for UAV-Embedded Sound Source Localization.",
+    "description": (
+        "DREGON recordings as rich td.Frames: 8ch 44.1kHz audio, motors_command "
+        "(clean_command_spikes-fixed) + motors_command_raw, "
+        "motors_measured/imu/source_position on true timestamps, "
+        "audio_timestamps, geometry, per-recording meta; plus individual-motor "
+        "runs, clean sources and emitted signals."
+    ),
+    "sample_rate": 44100,
+    "channels": 8,
+}

@@ -62,7 +62,10 @@ import numpy as np  # noqa: E402
 import scipy.io  # noqa: E402
 from scipy.signal import filtfilt, firwin  # noqa: E402
 
-from data_processing.michaels import MICHAELS_FILES, _load_michaels_data_raw  # noqa: E402
+from data_processing.sources.michaels import (  # noqa: E402
+    MICHAELS_FILES,
+    load_raw_aligned,
+)
 from data_processing.rps_synthesis import MIXER  # noqa: E402
 
 #: The scorer's fixed evaluation grid (= 512 / 16000), the grid every RPS
@@ -379,9 +382,12 @@ def load_all() -> list[tuple[str, np.ndarray, np.ndarray]]:
                     mm[key][0, 0].astype(np.float64).T,
                 )
             )
+    # MICHAELS_FILES paths are relative to the `recording_with_motor_speed`
+    # raw root (the sources-registry convention), not to <repo>/data.
+    michaels_root = REPO / "data" / "recording_with_motor_speed"
     for wav_rel, csv_rel, off, dil in MICHAELS_FILES:
-        _, ts, ms, _ = _load_michaels_data_raw(
-            REPO / "data" / wav_rel, REPO / "data" / csv_rel, off, dil, sr=16000
+        _, ts, ms, _ = load_raw_aligned(
+            michaels_root / wav_rel, michaels_root / csv_rel, off, dil, sr=16000
         )
         out.append((f"michaels/{Path(csv_rel).stem}", ts, ms))
     return out

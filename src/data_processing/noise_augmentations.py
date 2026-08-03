@@ -73,7 +73,7 @@ import numpy as np
 import scipy.signal as sps
 import tdseries as td
 
-from data_processing.dregon import clean_command_spikes
+from data_processing.sources.dregon import clean_command_spikes
 from data_processing.time_warp import DEFAULT_LABEL_RATE_HZ, _resolve_rps_track
 
 #: STFT grid for the spectral augmentations — the model's own analysis grid,

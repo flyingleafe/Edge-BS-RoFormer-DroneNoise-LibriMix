@@ -39,7 +39,7 @@ Hydra wiring — data `f2_avq_survey` (online-mix SE stream + fixed local
 `SE-valid-avq-survey`) · model `f2_dcunet_survey` · loss `si_sdr` · metrics
 `separation_basic` (the standard 16 kHz groups). Build the
 valid set once with
-`python scripts/build_se_valid.py --dataset avq --local-repo datasets/se-valid-local`,
+`python data_processing.derivations (se_valid generator) --dataset avq --local-repo datasets/se-valid-local`,
 then train with `python train.py experiment=f2_dcunet_avq_survey` and evaluate
 with `python eval.py experiment=f2_dcunet_avq_survey metrics=separation_full`.
 

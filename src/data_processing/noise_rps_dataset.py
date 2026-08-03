@@ -26,8 +26,7 @@ import torch
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
-from . import dregon as D
-from . import michaels as M
+
 from .frames import resample_audio_series
 from .streams import iter_published_frames
 
@@ -319,10 +318,16 @@ def load_dregon_noise_sources(
 ) -> list[_ChunkSource]:
     """Load all DREGON `in_flight_noise` recordings with motor data.
 
-    Uses the tdseries-native loader.
+    ``dregon_dir`` may be a ``frames:DREGON-frames[@VER]`` spec, a plain
+    path or a ``dload:...`` URI.
     """
-    dregon_dir = Path(dregon_dir)
-    frames = D.load_dregon_timeframes(
+    if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
+        return load_published_noise_sources(dregon_dir, origin="dregon")
+    from data_processing.streams import resolve_source
+    from data_processing.sources.dregon import load_dregon_timeframes
+
+    dregon_dir = Path(resolve_source(dregon_dir))
+    frames = load_dregon_timeframes(
         dregon_dir.parent,
         splits=["in_flight_noise"],
         target_sr=sample_rate,
@@ -340,8 +345,17 @@ def load_michaels_noise_sources(
     michaels_dir: str | Path,
     sample_rate: int,
 ) -> list[_ChunkSource]:
-    """Load all Michael's recordings that exist in `michaels_dir`."""
-    frames = M.load_michaels_timeframes(data_root=michaels_dir, sr=sample_rate)
+    """Load all Michael's recordings.
+
+    ``michaels_dir`` may be a ``frames:michaels-frames[@VER]`` spec, a plain
+    path or a ``dload:...`` URI.
+    """
+    if isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX):
+        return load_published_noise_sources(michaels_dir, origin="michaels")
+    from data_processing.streams import resolve_source
+    from data_processing.sources import michaels as M
+
+    frames = M.load_michaels_timeframes(data_root=resolve_source(michaels_dir), sr=sample_rate)
     return [_wrap_frame(tf, origin="michaels", rps_key="rps") for tf in frames]
 
 

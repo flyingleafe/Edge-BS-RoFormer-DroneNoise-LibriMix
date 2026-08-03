@@ -3,7 +3,7 @@
 
 Every candidate — neural RPS predictors, blind VK trackers, hybrids — is
 scored by this script on the frozen dataset published by
-``scripts/publish_beatvk_valid.py``. This file is the metric half of the
+``data_processing.derivations (beatvk_valid generator)``. This file is the metric half of the
 protocol; numbers produced any other way are not comparable.
 
 Protocol (frozen):

@@ -19,7 +19,7 @@ frozen artefacts are not present, e.g. on a cluster worktree).
 
 ``time_offset`` / ``time_dilation`` / ``rps_offset`` / ``rps_scale`` are
 parameters here, so hypotheses about the shipped alignment constants can be
-built and scored **without touching** ``src/data_processing/michaels.py``.
+built and scored **without touching** ``src/data_processing/sources/michaels.py``.
 Since the 2026-07-31 calibration the loader itself applies a per-recording rev/s
 scale, so :func:`load_recording` defaults to CALIBRATED telemetry; ``cut_window``'s
 ``rps_scale`` / ``rps_offset`` stay hypothesis knobs applied *on top* of it.
@@ -53,7 +53,10 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
 
-from data_processing.michaels import MICHAELS_FILES, rps_scale_for  # noqa: E402
+from data_processing.sources.michaels import (  # noqa: E402
+    MICHAELS_FILES,
+    rps_scale_for,
+)
 
 SR = 16000
 FRAME_S = 0.032
@@ -63,7 +66,9 @@ N_ROTORS = 4
 DATASET = "recording_with_motor_speed"
 
 #: recording id -> ``(wav_rel, csv_rel, time_offset, time_dilation)``, the
-#: SHIPPED alignment constants (imported, never re-typed).
+#: SHIPPED alignment constants (imported, never re-typed). Paths are relative
+#: to the ``recording_with_motor_speed`` raw root (the sources-registry
+#: convention), not to ``<repo>/data``.
 SHIPPED: dict[str, tuple[str, str, float, float]] = {
     "FLY124": MICHAELS_FILES[0],
     "FLY125": MICHAELS_FILES[1],
@@ -74,8 +79,8 @@ SHIPPED: dict[str, tuple[str, str, float, float]] = {
 @functools.lru_cache(maxsize=1)
 def data_root() -> tuple[Path, str]:
     """Return ``(root, how)`` — a directory under which the recordings resolve."""
-    probe_rel = Path(SHIPPED["FLY124"][0])  # recording_with_motor_speed/recording_1/124.wav
-    inner_rel = probe_rel.relative_to(DATASET)  # recording_1/124.wav
+    inner_rel = Path(SHIPPED["FLY124"][0])  # recording_1/124.wav
+    probe_rel = Path(DATASET) / inner_rel  # recording_with_motor_speed/recording_1/124.wav
 
     def ok(root: Path) -> bool:
         return (root / probe_rel).exists() or (root / inner_rel).exists()
@@ -97,9 +102,9 @@ def data_root() -> tuple[Path, str]:
 
 
 def shipped_rps_scale(rid: str) -> float:
-    """The rev/s calibration ``michaels.py`` currently ships for ``rid``.
+    """The rev/s calibration ``sources/michaels.py`` currently ships for ``rid``.
 
-    ``_load_michaels_data_raw`` applies it internally, so windows built here
+    ``load_raw_aligned`` applies it internally, so windows built here
     with the default (``rps_scale=1.0`` in :func:`cut_window`) already carry it;
     this accessor only exists so the sweep can RECORD what it validated.
     """
@@ -110,11 +115,10 @@ def michaels_paths(rid: str) -> tuple[Path, Path]:
     """``(wav, csv)`` for one recording, under whichever root resolved."""
     root, _how = data_root()
     wav_rel, csv_rel = Path(SHIPPED[rid][0]), Path(SHIPPED[rid][1])
-    wav, csv = root / wav_rel, root / csv_rel
+    wav, csv = root / DATASET / wav_rel, root / DATASET / csv_rel
     if wav.exists() and csv.exists():
         return wav, csv
-    wav = root / wav_rel.relative_to(DATASET)
-    csv = root / csv_rel.relative_to(DATASET)
+    wav, csv = root / wav_rel, root / csv_rel
     if wav.exists() and csv.exists():
         return wav, csv
     raise SystemExit(f"{rid}: no {wav_rel} (nor the dataset-root layout) under {root}")
@@ -178,12 +182,12 @@ def load_recording(
     """
     import librosa as lr
 
-    from data_processing.michaels import _load_michaels_data_raw
+    from data_processing.sources.michaels import load_raw_aligned
 
     off = SHIPPED[rid][2] if time_offset is None else float(time_offset)
     dil = SHIPPED[rid][3] if time_dilation is None else float(time_dilation)
     wav_path, csv_path = michaels_paths(rid)
-    wav, ts, ms, sr = _load_michaels_data_raw(
+    wav, ts, ms, sr = load_raw_aligned(
         wav_path, csv_path, time_offset=off, time_dilation=dil, sr=None, rps_scale=rps_scale
     )
     audio16 = np.atleast_2d(
@@ -354,7 +358,7 @@ def selfcheck() -> bool:
     if (frozen_off, frozen_dil) != (shipped_off, shipped_dil):
         print(
             f"selfcheck: rebuilding at the FROZEN constants ({frozen_off}, {frozen_dil}); "
-            f"michaels.py now ships ({shipped_off}, {shipped_dil}, "
+            f"sources/michaels.py now ships ({shipped_off}, {shipped_dil}, "
             f"rps_scale={shipped_rps_scale('FLY124')}) — the frozen beat-VK artefacts "
             "are STALE with respect to those",
             flush=True,

@@ -11,7 +11,7 @@
 # note that doc's own example command uses --output_dir datasets/DREGON-LM-V5
 # — a naming inconsistency with the "V4-michaels" name used everywhere else
 # in the historical record, see REPLICATION.md § C10/C11 caveats):
-#   python create_dregon_librimix.py --multichannel --real_valid --max_non_overlapping \
+#   python data_processing.derivations (dregon_lm generator) --multichannel --real_valid --max_non_overlapping \
 #     --output_dir datasets/DREGON-LM-V4-michaels \
 #     --num_train 6000 --duration 1.0 --num_valid 30 --valid_duration 8.0 \
 #     --min_motor_rps 30.0 --source_white_noise_prob 0.3 \

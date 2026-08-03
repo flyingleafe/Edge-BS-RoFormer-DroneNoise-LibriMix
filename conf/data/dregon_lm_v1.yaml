@@ -6,7 +6,7 @@
 # comparison — see REPLICATION.md § C1/C3/C6 caveats. Used by families
 # B1 (5a-c/6a-c/7a-c/10a-d/11a-c legacy DCUNet/DCCRN configs) and the
 # 10-variant SimpleConv arch-zoo sweep (C3/C6).
-# Create: python create_dregon_librimix.py (no flags; defaults to
+# Create: python data_processing.derivations (dregon_lm generator) (no flags; defaults to
 # datasets/DREGON-LM/{train,valid}).
 train:
   _target_: data_processing.frame_datasets.DregonLMFrameDataset

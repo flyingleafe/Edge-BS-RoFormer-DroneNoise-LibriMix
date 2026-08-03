@@ -326,7 +326,7 @@ def calibrate_dregon_positions(
     this applied 183° on top of the *raw* shipped frame; the 3° beyond the true
     180° flip was sweep noise the refiner now absorbs.)
     """
-    from data_processing.dregon import get_geometry
+    from data_processing.sources.dregon import get_geometry
 
     dd = s0.find_dregon_dir(Path(dregon_dir)) if dregon_dir else s0.find_dregon_dir()
     mic_raw, rotor_pos = get_geometry(dd)
@@ -369,6 +369,16 @@ def find_data_root(start: Path | str | None = None) -> Path:
         if cand.is_dir():
             return base / "data"
     raise FileNotFoundError(f"Could not locate data/recording_with_motor_speed from {here}")
+
+
+def _michaels_path(root: Path, rel: str) -> Path:
+    """Resolve a `MICHAELS_FILES` entry under `root`.
+
+    Registry paths are relative to the ``recording_with_motor_speed`` raw root;
+    `root` may be either that tree or the ``data/`` dir that contains it.
+    """
+    direct = root / rel
+    return direct if direct.exists() else root / "recording_with_motor_speed" / rel
 
 
 def _harmonic_comb(freqs: np.ndarray, f0_t: np.ndarray, fmax: float, tol_hz: float) -> np.ndarray:
@@ -589,15 +599,17 @@ def calibrate_michaels_positions(
     detection reference and as the bundle-adjustment prior anchor. The detected
     gross z-rotation orients the array before fine refinement.
     """
-    from data_processing.michaels import (
+    from data_processing.sources.michaels import (
         MICHAELS_FILES,
-        _load_michaels_data_raw,
+        load_raw_aligned,
         get_geometry,
     )
 
     root = find_data_root(data_root) if data_root is None else Path(data_root)
     wav_rel, csv_rel, off, dil = MICHAELS_FILES[recording_index]
-    wav, ts, ms, sr = _load_michaels_data_raw(root / wav_rel, root / csv_rel, off, dil, sr=None)
+    wav, ts, ms, sr = load_raw_aligned(
+        _michaels_path(root, wav_rel), _michaels_path(root, csv_rel), off, dil, sr=None
+    )
     mic_nominal, rotor_pos = get_geometry()
 
     records = extract_michaels_rotor_rtfs(

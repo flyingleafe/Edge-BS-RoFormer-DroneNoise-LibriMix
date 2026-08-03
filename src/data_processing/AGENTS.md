@@ -1,3 +1,5 @@
+**[2026-07 refactor]** This file is partially stale — see `docs/refactor-data-pipelines.md` for the current data-layer architecture. The uniform `sources/` registry replaces the former per-dataset modules (`dregon.py`, `michaels.py`, `external_datasets.py`, `external_recordings.py`); all derived datasets are declared as dload pipeline specs in `derivations.py` and materialized via `scripts/derive.py` (the former creation CLIs and publisher scripts are deleted). The per-sample mixing cores are in `mixing.py`. Consumption (streams, online mixing, frame datasets) is updated to the new uniform conventions throughout.
+
 # data_processing/ — Dataset Creation and RPS Processing
 
 Contains scripts and modules for creating and processing training datasets.
@@ -577,7 +579,7 @@ Aggregate has both `n_samples` (distinct samples) and `n_rows` (= n_samples × C
 
 ### Michael's telemetry calibration (FLY124 / FLY125) — MEASURED, 2026-07-31
 
-`michaels.py` ships three per-recording constants, all now measured against the
+`sources/michaels.py` ships three per-recording constants, all now measured against the
 label-free VK reconstruction residual (sweep `scripts/michaels_calib/`, results
 `omnirun-outputs/python-519b66/results/michaels_calib/summary.json`, full write-up
 `docs/experiments/rps-refine-precision.md` §§ WP13 (timing + model form) and
@@ -616,10 +618,11 @@ cruise windows, non-twin rotors only**: g = 0.698 % ± 0.069 (FLY124) and
   difference. Per-rotor constants are separately unidentifiable (between-rotor
   spread 0.099/0.051 < within-rotor scatter 0.155/0.109) and a per-rotor lag is
   refuted three ways (WP14 §§ A–D).
-- **Where it is applied**: inside `_load_michaels_data_raw` (keyed by CSV stem
-  via `rps_scale_for()`), so every consumer — `load_michaels_timeframe(s)`,
-  `publish_frame_datasets.py`, `create_dregon_librimix.py`, the online-mix
-  `michaels` / `frames` sources — is calibrated with no call-site change.
+- **Where it is applied**: inside `sources/michaels.py:load_raw_aligned`
+  (keyed by CSV stem via `rps_scale_for()`), so every consumer — the registry
+  `build()` that publishes `michaels-frames`, `load_michaels_timeframes`, the
+  `derivations.py` specs rooted on those frames, the online-mix `frames`
+  source — is calibrated with no call-site change.
   Recordings with no measured constant fall back to 1.0.
 - **Not calibrated**: the raw `Motor:Speed:*` CSV columns published in
   `michaels-frames` as the `motor_speed` block (raw counterpart of the canonical

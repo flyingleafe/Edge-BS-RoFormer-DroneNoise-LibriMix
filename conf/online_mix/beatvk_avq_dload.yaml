@@ -2,7 +2,7 @@
 # (e12_fullflight_freqscale_v2_dload.yaml, byte-identical policy/stages) plus
 # ONE new real noise source: AVQ-egonoise-vkrps — AVQ rotor ego-noise (mono
 # 16 kHz) carrying blind-VK RPS pseudo-labels (scripts/vk_pseudolabel.py,
-# published by scripts/publish_avq_vkrps.py; 7 contiguous accepted segments,
+# published by data_processing.derivations (avq_vkrps spec; annotator scripts/vk_pseudolabel.py); 7 contiguous accepted segments,
 # ~617 s, refused/NaN spans dropped at publish time).
 #
 # Weighting: a real source with an EXPLICIT `weight` becomes its own sub-pool
@@ -38,13 +38,8 @@ sources:
       min_motor_rps: 0.0
       weight: 0.5
   speech:
-    - kind: audio_files
-      root: "dload:librispeech/LibriSpeech/train-clean-100"
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   stages:
     # First 50k samples = 10 validation intervals at samples_per_validation=5000:

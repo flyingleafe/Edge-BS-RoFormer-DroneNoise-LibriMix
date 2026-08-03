@@ -13,30 +13,21 @@ base_seed: 20260617
 
 sources:
   noise:
-    - kind: dregon
-      root: data
-      split: in_flight_noise
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
       exclude_recording_ids:
         - free-flight_nosource_room1
       min_motor_rps: 30.0
-      download: false
-    - kind: michaels
-      root: data
-      ids: [FLY125]
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
       # Michael's FLY125 motor telemetry hovers around 29 RPS; do not apply the
       # DREGON >30 RPS in-flight threshold to it.
       min_motor_rps: 0.0
   speech:
-    - kind: audio_files
-      root: data/librispeech/LibriSpeech/train-clean-100
-      glob: "**/*.flac"
-      cache:
-        # Public source is the original LibriSpeech tree, not generated dataset
-        # vocals. The packed PCM16 cache is created automatically if missing and
-        # reused between runs.
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   stages:
     # First 50k samples = 10 validation intervals at samples_per_validation=5000:

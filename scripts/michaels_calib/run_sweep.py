@@ -2,7 +2,7 @@
 """Michael's telemetry calibration — the FULL sweep, one job, many cores.
 
 Answers three questions about the SHIPPED alignment constants in
-``src/data_processing/michaels.py`` (which this script never touches):
+``src/data_processing/sources/michaels.py`` (which this script never touches):
 
 1. **FLY125 has never been measured.**  Scan the audio-optimal telemetry lag on
    every cruise window and regress it on window time — a constant lag means the
@@ -223,7 +223,7 @@ def main() -> None:
         "--post-shipped",
         action="store_true",
         help="ONLY validate the constants currently shipped in "
-        "src/data_processing/michaels.py (offset, dilation AND the rev/s scale): "
+        "src/data_processing/sources/michaels.py (offset, dilation AND the rev/s scale): "
         "run the `post` stage on every cruise window of both recordings and stop. "
         "Success = residual lag and residual offset both ~0.",
     )

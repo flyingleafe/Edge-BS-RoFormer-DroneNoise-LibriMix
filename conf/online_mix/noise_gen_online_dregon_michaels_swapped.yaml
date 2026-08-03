@@ -21,9 +21,9 @@ duration_s: 1.0
 base_seed: 20260626
 
 noise_train:
-  - kind: dregon
-    root: data
-    split: in_flight_noise
+  - kind: frames
+    dataset: DREGON-frames
+    splits: [in_flight_noise]
     recording_ids:
       - free-flight_nosource_room2
       - hovering_nosource_room2
@@ -31,20 +31,18 @@ noise_train:
       - rectangle_nosource_room2
       - spinning_nosource_room2
     min_motor_rps: 30.0
-    download: false
-  - kind: michaels
-    root: data
-    ids: [FLY125]
+  - kind: frames
+    dataset: michaels-frames
+    recording_ids: [FLY125]
     min_motor_rps: 30.0
 
 noise_valid:
-  - kind: dregon
-    root: data
-    split: in_flight_noise
+  - kind: frames
+    dataset: DREGON-frames
+    splits: [in_flight_noise]
     recording_ids: [free-flight_nosource_room1]
     min_motor_rps: 30.0
-    download: false
-  - kind: michaels
-    root: data
-    ids: [FLY124]
+  - kind: frames
+    dataset: michaels-frames
+    recording_ids: [FLY124]
     min_motor_rps: 30.0

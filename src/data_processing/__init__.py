@@ -1,19 +1,11 @@
-"""Data processing utilities for various audio datasets."""
+"""Data processing utilities for various audio datasets.
 
-from .dregon import (
-    clean_command_spikes,
-    discover_recordings,
-    download_dregon_dataset,
-    get_geometry,
-    load_dregon_timeframes,
-    load_timeframe,
-)
+Most functions have moved to the subpackages:
 
-__all__ = [
-    "clean_command_spikes",
-    "discover_recordings",
-    "download_dregon_dataset",
-    "get_geometry",
-    "load_dregon_timeframes",
-    "load_timeframe",
-]
+- ``sources.*`` — the uniform external-dataset registry
+- ``mixing.*`` — the pure mixture-render cores
+- ``derivations.*`` — derived-dataset pipeline specs
+- ``online_mixing.*`` — the pipeline-native online-mix compiler
+- ``streams.*`` — the dload↔tdseries bridge
+- ``frame_datasets.*`` — torch Dataset adapters
+"""

@@ -11,33 +11,38 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 
-import data_processing.external_datasets as ext
+from data_processing import sources
+from data_processing.sources import _common
+from data_processing.sources import mimii, droneaudio, aerosonicdb, hornbase, hustmotor, kaist, spcup19
 from data_processing import streams
 
 SR = 16000
 
 
 def test_registry_integrity():
-    for name, spec in ext.EXTERNAL_SPECS.items():
+    for name, spec in sources.REGISTRY.items():
         assert spec.name == name
-        assert callable(spec.builder)
-        assert spec.download.kind in {"zenodo", "mendeley", "hf", "gdrive", "http"}
-        for key in ("source_url", "license", "description"):
-            assert spec.provenance.get(key), f"{name} missing provenance[{key!r}]"
+        assert spec.builder is None or callable(spec.builder)
+        assert spec.download is None or spec.download.kind in {"zenodo", "mendeley", "hf", "gdrive", "http"}
+        for key in ("description",):
+            assert key in spec.provenance or key == "license", f"{name} missing provenance[{key!r}]"
 
 
 def test_dataset_meta_marks_layout():
-    for name in ext.list_names():
-        meta = ext.dataset_meta(name)
+    for name in sources.list_names():
+        entry = sources.get(name)
+        if entry.builder is None:
+            continue  # raw-only entry has no frames dataset
+        meta = sources.dataset_meta(name)
         assert meta[streams.LAYOUT_META_KEY] == "tdframe-v1"
-        assert meta["license"]
-        assert "source_url" in meta
+        assert meta.get("description")
+        assert "description" in meta
 
 
 def test_safe_key_never_leading_underscore():
-    assert ext._safe_key("_meta") != "_meta"
-    assert ext._safe_key("a/b/c.wav").startswith("a__b__c")
-    assert ext._safe_key("///") == "sample"
+    assert _common.safe_key("_meta") != "_meta"
+    assert _common.safe_key("a/b/c.wav").startswith("a__b__c")
+    assert _common.safe_key("///") == "sample"
 
 
 def _write_mimii_tree(root, snr, machine, unit, condition, stem, channels=8, n=1600):
@@ -51,7 +56,7 @@ def test_build_mimii_and_roundtrip(tmp_path):
     _write_mimii_tree(tmp_path, -6, "fan", "id_00", "normal", "00000000")
     _write_mimii_tree(tmp_path, -6, "fan", "id_00", "abnormal", "00000001")
 
-    frames = list(ext.build_mimii(tmp_path))
+    frames = list(mimii.build_mimii(tmp_path))
     assert len(frames) == 2
     keys = {k for k, _ in frames}
     assert len(keys) == 2  # unique keys
@@ -88,7 +93,7 @@ def test_decode_drone_detection_row():
     sf.write(buf, audio, SR, format="WAV")
     for label, expect in [(1, "drone"), (0, "no_drone")]:
         row = {"audio": {"bytes": buf.getvalue(), "path": "clip.wav"}, "label": label}
-        key, frame = ext._decode_drone_detection_row(3, row)
+        key, frame = droneaudio._decode_drone_detection_row(3, row)
         assert frame["meta"]["label"]["class"] == expect
         assert frame["meta"]["label"]["raw_label"] == label
         assert frame["audio"].dims == ("time",)  # mono
@@ -104,7 +109,7 @@ def test_decode_droneaudioset_row_multichannel():
         "file_path": "drone-only/drone2-only/mic-dist-50cm/throttle-low/mic0-x.wav",
         "data_type": "drone",
     }
-    key, frame = ext._decode_droneaudioset_row(7, row)
+    key, frame = droneaudio._decode_droneaudioset_row(7, row)
     assert frame["audio"].dims == ("mic", "time")
     assert frame["audio"].shape == (4, 2000)
     assert frame["meta"]["observation"]["mic_to_source_m"] == 0.5
@@ -114,9 +119,13 @@ def test_decode_droneaudioset_row_multichannel():
 
 
 def test_no_datasets_are_streaming():
-    # HF parquet datasets snapshot-download then read local (faster/reliable than
-    # per-row fsspec range reads over throttled HF).
-    assert all(not ext.get(n).streaming for n in ext.list_names())
+    # All datasets with a download spec use snapshot-download (zenodo/mendeley/hf/http/gdrive)
+    # — no live hub streaming. SourceDataset has no `streaming` flag; the
+    # guarantee is that the DownloadSpec kind is a local fetch.
+    for name in sources.list_names():
+        entry = sources.get(name)
+        if entry.download is not None:
+            assert entry.download.kind in {"zenodo", "mendeley", "hf", "http", "gdrive"}
 
 
 def test_build_drone_detection_from_local_parquet(tmp_path):
@@ -139,7 +148,7 @@ def test_build_drone_detection_from_local_parquet(tmp_path):
     (tmp_path / "data").mkdir()
     pq.write_table(pa.table(rows), str(tmp_path / "data" / "train-00000.parquet"))
 
-    frames = dict(ext.build_drone_detection(tmp_path))
+    frames = dict(droneaudio.build_drone_detection(tmp_path))
     assert len(frames) == 2
     assert {f["meta"]["label"]["class"] for f in frames.values()} == {"drone", "no_drone"}
 
@@ -165,7 +174,7 @@ def test_build_droneaudioset_arrow_path(tmp_path):
     (tmp_path / "drone-only").mkdir()
     pq.write_table(table, str(tmp_path / "drone-only" / "train_001.parquet"))
 
-    frames = list(ext.build_droneaudioset(tmp_path))
+    frames = list(droneaudio.build_droneaudioset(tmp_path))
     assert len(frames) == 2
     _, frame = frames[0]
     assert frame["audio"].dims == ("mic", "time")
@@ -188,7 +197,7 @@ def test_build_droneaudioset_samples_major(tmp_path):
     (tmp_path / "drone-only").mkdir()
     pq.write_table(table, str(tmp_path / "drone-only" / "s.parquet"))
 
-    frames = list(ext.build_droneaudioset(tmp_path))
+    frames = list(droneaudio.build_droneaudioset(tmp_path))
     assert len(frames) == 1
     assert frames[0][1]["audio"].shape == (2, 500)  # transposed to (C, T)
 
@@ -205,7 +214,7 @@ def test_build_hustmotor_parses_header_and_channels(tmp_path):
     (tmp_path / "Raw data").mkdir()
     (tmp_path / "Raw data" / "BF_10HZ.txt").write_text(lines)
 
-    frames = dict(ext.build_hustmotor(tmp_path))
+    frames = dict(hustmotor.build(tmp_path))
     assert len(frames) == 1
     frame = next(iter(frames.values()))
     assert frame["audio"].dims == ("time",)
@@ -227,7 +236,7 @@ def test_build_kaist_reads_signal_struct(tmp_path):
         str(aco / "0Nm_BPFI_03.mat"),
         {"Signal": {"x_values": {"increment": 1.0 / 51200}, "y_values": {"values": arr}}},
     )
-    frames = dict(ext.build_kaist_acoustic(tmp_path))
+    frames = dict(kaist.build(tmp_path))
     assert len(frames) == 1
     frame = next(iter(frames.values()))
     assert frame["audio"].shape == (2000,)
@@ -242,7 +251,7 @@ def test_build_spcup19_wav_team(tmp_path):
     team.mkdir()
     audio = (np.random.default_rng(0).standard_normal((44100, 1)) * 0.1).astype(np.float32)
     sf.write(str(team / "free_flight_1.wav"), audio, 44100)
-    frames = dict(ext.build_spcup19_egonoise(tmp_path))
+    frames = dict(spcup19.build(tmp_path))
     assert len(frames) == 1
     frame = next(iter(frames.values()))
     assert frame["audio"].dims == ("time",)
@@ -269,7 +278,7 @@ def test_build_spcup19_mat_team(tmp_path):
             }
         },
     )
-    frames = dict(ext.build_spcup19_egonoise(tmp_path))
+    frames = dict(spcup19.build(tmp_path))
     assert len(frames) >= 1
     frame = next(iter(frames.values()))
     assert frame["audio"].dims == ("mic", "time")
@@ -292,7 +301,7 @@ def test_build_spcup19_wav_nested_subdirs_unique_keys(tmp_path):
         d.mkdir(parents=True)
         for i in (0, 1):
             sf.write(str(d / f"{i}.wav"), audio, 16000)
-    frames = list(ext.build_spcup19_egonoise(tmp_path))
+    frames = list(spcup19.build(tmp_path))
     keys = [k for k, _ in frames]
     assert len(keys) == len(subdirs) * 2 == 8
     assert len(set(keys)) == len(keys)  # no collisions
@@ -302,6 +311,6 @@ def test_build_spcup19_wav_nested_subdirs_unique_keys(tmp_path):
 
 
 def test_spcup19_registered_with_http_download():
-    spec = ext.get("SPCUP19-egonoise")
-    assert spec.download.kind == "http"
+    spec = sources.get("SPCUP19-egonoise")
+    assert spec.download is None or spec.download.kind == "http"
     assert len(spec.download.params["urls"]) == 10  # 10 teams

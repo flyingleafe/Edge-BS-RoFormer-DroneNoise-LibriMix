@@ -35,13 +35,8 @@ sources:
       #   floor_rel_db: [-16.0, -1.0]
 
   speech:
-    - kind: audio_files
-      root: "dload:librispeech/LibriSpeech/train-clean-100"
-      glob: "**/*.flac"
-      cache:
-        mode: packed_int16
-        dir: "${oc.env:ONLINE_MIX_SOURCE_CACHE_DIR,.cache/online_mix_sources}"
-
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
 policy:
   source_prob: 1.0
   snr_db:

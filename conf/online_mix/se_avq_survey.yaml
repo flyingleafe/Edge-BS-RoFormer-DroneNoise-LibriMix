@@ -21,7 +21,7 @@
 # carry no per-shard key list, so key filtering had to OPEN all 11 AVQ shards
 # (~4 GiB) to find the 5 sequences, and one of those is a 352 MB multipart
 # object that s3transfer's ETag check rejects on some boto3 builds (Kaggle).
-# Publisher: scripts/publish_avq_egonoise.py. See
+# Publisher: data_processing.derivations (frame_subset generator). See
 # docs/experiments/f2-survey-replication.md.
 
 task: speech_enhancement
@@ -38,20 +38,16 @@ sources:
       dataset: AVQ-egonoise
       weight: 1.0
   speech:
-    - kind: audio_files
-      root: "dload:librispeech/LibriSpeech/train-clean-100"
-      glob: "**/*.flac"
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
       # Held-out valid speakers (every 10th id, sorted) — identical list to
-      # conf/online_mix/se_drone_only.yaml and scripts/build_se_valid.py's
+      # conf/online_mix/se_drone_only.yaml and data_processing.derivations (se_valid generator)'s
       # HELDOUT_SPEAKERS, so train/valid speech never overlap.
       exclude:
         [19, 89, 211, 307, 445, 831, 1098, 1502, 1898, 2182, 2764, 3168, 3526,
          3982, 4267, 4813, 5322, 5703, 6081, 6476, 7067, 7312, 7800, 8238, 8630]
       # No packed cache: this stream is mono (one utterance per sample, vs the
       # 8-channel RPS streams' eight), so direct FLAC decode keeps up.
-      cache:
-        mode: none
-
 policy:
   source_prob: 1.0
   snr_db:

@@ -36,10 +36,10 @@ DEVICE = "cuda:0"
 # 1. Load noise-gen model
 # ---------------------------------------------------------------------------
 from data_processing import rps_synthesis
-from data_processing.dregon import get_geometry as dregon_geom
-from data_processing.dregon import load_dregon_timeframes
-from data_processing.michaels import get_geometry as michaels_geom
-from data_processing.michaels import load_michaels_timeframes
+from data_processing.sources.dregon import get_geometry as dregon_geom
+from data_processing.sources.dregon import load_dregon_timeframes
+from data_processing.sources.michaels import get_geometry as michaels_geom
+from data_processing.sources.michaels import load_michaels_timeframes
 from models.generative import PositionalHarmonicNoiseGen
 from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
 

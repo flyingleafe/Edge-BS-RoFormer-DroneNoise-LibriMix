@@ -22,15 +22,13 @@ This module holds the concrete adapters wired into ``conf/data/``:
   ``metadata.json`` **inside each split directory** (``{"train": [...]}`` /
   ``{"valid": [...]}``), unlike ``DregonLMFrameDataset``'s sibling-of-both-
   splits layout — see :meth:`DNLMFrameDataset._load_metadata`.
-- :class:`OnlineMixFrameDataset` — wraps
-  ``data_processing.online_mixing.OnlineMixIterableDataset`` (not modified;
-  its ``(audio, rps)``-tensor-stream interface is a public contract used
-  elsewhere) and packs each yielded pair into a ``td.Frame``. The online
-  mixer's public interface has no per-sample metadata beyond the tensors
-  themselves, so ``"meta"`` is an empty nested Frame here — except with
-  ``flatten_channels=True``, which expands each multichannel chunk into
-  per-mic mono Frames tagged ``meta.channel`` (the legacy training-loop
-  flatten semantics, mirroring ``DregonLMFrameDataset``'s flag).
+- :class:`OnlineMixFrameDataset` — wraps the compiled online-mix pipeline
+  (``data_processing.online_mixing.build_online_mix_pipeline``); the stream
+  yields per-sample ``td.Frame``s directly, with ``meta.sample_id`` carrying
+  the global chunk id. ``flatten_channels=True`` appends a ``flat_map``
+  expanding each multichannel chunk into per-mic mono Frames tagged
+  ``meta.channel`` (the legacy training-loop flatten semantics, mirroring
+  ``DregonLMFrameDataset``'s flag).
 - :class:`NoiseGenFrameDataset` — wraps
   ``data_processing.noise_rps_dataset.NoiseRPSDataset``/
   ``build_noise_rps_datasets`` (DREGON `in_flight_noise` + Michael's chunk
@@ -60,10 +58,14 @@ import tdseries as td
 import torch
 from torch.utils.data import Dataset, IterableDataset
 
+from functools import partial
+from typing import cast
+
+from omegaconf import DictConfig, OmegaConf
+
 from data_processing.frames import audio_series as _audio_series
-from data_processing.frames import get_meta
+from data_processing.frames import get_meta, meta_dict
 from data_processing.frames import rps_series as _rps_series
-from data_processing.online_mixing import OnlineMixIterableDataset
 from data_processing.streams import (
     iter_published_frames,
     local_repository,
@@ -356,30 +358,63 @@ class SEValidFrameDataset(Dataset):
         return self._frames[idx]
 
 
+def _flatten_frame_channels(frame: td.Frame) -> list[td.Frame]:
+    """Expand a multichannel sample Frame into per-mic mono-view Frames.
+
+    Each ``(mic, time)`` mixture becomes ``n_channels`` mono ``(time,)``
+    Frames (one per mic, ``meta.channel`` tagged), all broadcasting the
+    chunk's single RPS target — the legacy channel-as-extra-batch-item
+    semantics at the data level. Mono frames pass through unchanged.
+    """
+    mix = frame["mixture"]
+    if "mic" not in mix.dims or mix.dim_size("mic") <= 1:
+        return [frame]
+    sr = int(cast(td.GridIndex, mix.tindex).sr)
+    gid = get_meta(frame, "sample_id", 0)
+    data = np.asarray(mix.data)
+    out = []
+    for ch in range(mix.dim_size("mic")):
+        entries: dict[str, Any] = {"mixture": _audio_series(data[ch : ch + 1], sr)}
+        if "rps" in frame:
+            entries["rps"] = frame["rps"]
+        entries["meta"] = td.Frame({**meta_dict(frame), "sample_id": gid, "channel": ch})
+        out.append(td.Frame(entries))
+    return out
+
+
+def _corrupt_frame(
+    corruption: Any, sample_rate: int, hop_length: int, stride: int, frame: td.Frame
+) -> td.Frame:
+    """Apply the conditional-refiner RPS corruption (``rps_corruption.py``).
+
+    The corruption id derives from the sample's own metadata (``sample_id``
+    carried by the stream + ``meta.channel`` set by the flatten stage) —
+    deterministic per ``(base seed, chunk id, channel)``.
+    """
+    gid = int(get_meta(frame, "sample_id", 0))
+    channel = int(get_meta(frame, "channel", 0) or 0)
+    rps_np = np.asarray(frame["rps"].data)
+    cond, gt_aligned = corruption(rps_np, gid * stride + channel)
+    frame = frame.with_entry(
+        "rps", _rps_series(gt_aligned, sample_rate=sample_rate, hop_length=hop_length)
+    )
+    return frame.with_entry(
+        "rps_cond", _rps_series(cond, sample_rate=sample_rate, hop_length=hop_length)
+    )
+
+
 class OnlineMixFrameDataset(IterableDataset):
-    """Wraps :class:`~data_processing.online_mixing.OnlineMixIterableDataset`,
-    packing each ``(audio, rps)`` tensor pair into a per-sample ``td.Frame``.
+    """The online-mix training stream: a compiled policy pipeline as a torch
+    IterableDataset.
 
-    ``flatten_channels=True`` reproduces the legacy ``train_rps_predictor.py``
-    channel-as-extra-batch-item semantics at the *data* level, mirroring
-    :class:`DregonLMFrameDataset`'s flag: each multichannel ``(C, T)`` chunk is
-    expanded into ``C`` mono-view Frames (one per mic, ``meta.channel`` tagged),
-    all broadcasting the chunk's single RPS target. Mono ``(T,)`` chunks pass
-    through unchanged. Mono RPS models (``('time',)`` input spec) require this
-    over multichannel sources — without it validation fails on the
-    ``(mic, time)`` mixture dims. Default ``False`` keeps the raw multichannel
-    stream byte-identical to before.
-
-    ``rps_corruption`` (mapping, default ``None`` = off) is the conditional-
-    refiner seam (``data_processing.rps_corruption``, mirroring
-    :class:`DregonLMFrameDataset`'s flag): every emitted Frame additionally
-    carries ``"rps_cond"`` (a corrupted copy of the chunk's RPS target) and
-    its ``"rps"`` becomes the GT in conditioning order. The corruption id is
-    derived from the inner mixer's global chunk id (recomputed here in
-    lockstep with ``OnlineMixIterableDataset.__iter__``'s worker-aware
-    enumeration) plus the flattened channel index — deterministic per
-    ``(base seed, chunk id, channel)``, independent of worker count for the
-    chunk content (the mixer's own guarantee) and of nothing else.
+    Thin wrapper over
+    :func:`data_processing.online_mixing.build_online_mix_pipeline` (the
+    policy YAML compiles to one infinite ``dload.Pipeline`` of per-sample
+    Frames). ``flatten_channels=True`` appends the per-mic expansion as a
+    ``flat_map`` stage; ``rps_corruption`` (the conditional-refiner seam,
+    ``data_processing.rps_corruption``) appends the corruption as a ``map``
+    stage reading ids from each frame's own metadata (``meta.sample_id`` +
+    ``meta.channel``).
     """
 
     #: sub-id stride for (chunk id, channel) -> corruption sample id; any
@@ -388,20 +423,43 @@ class OnlineMixFrameDataset(IterableDataset):
 
     def __init__(
         self,
-        inner: OnlineMixIterableDataset,
+        cfg: Any,
         *,
         flatten_channels: bool = False,
         rps_corruption: dict[str, Any] | None = None,
     ) -> None:
-        self.inner = inner
-        self.flatten_channels = bool(flatten_channels)
+        from dload.torch import as_iterable_dataset
+
+        from data_processing.online_mixing import build_online_mix_pipeline
         from data_processing.rps_corruption import RPSCorruption
 
+        plain = OmegaConf.to_container(cfg, resolve=True) if isinstance(cfg, DictConfig) else cfg
+        self.sample_rate = int(plain.get("sample_rate", 16000))
+        self.hop_length = int(plain.get("hop_length", 512))
+        self.task = str(plain.get("task", "rps_prediction"))
+        self.start_sample_id = int(plain.get("start_sample_id", 0))
+        self.base_seed = int(plain.get("base_seed", 1234))
+        self.flatten_channels = bool(flatten_channels)
         self._corruption = RPSCorruption.from_config(
-            rps_corruption, frame_rate_hz=inner.sample_rate / inner.hop_length
+            rps_corruption, frame_rate_hz=self.sample_rate / self.hop_length
         )
-        if self._corruption is not None and self.inner.task != "rps_prediction":
+        if self._corruption is not None and self.task != "rps_prediction":
             raise ValueError("rps_corruption requires the rps_prediction online-mix task")
+
+        pipe = build_online_mix_pipeline(cfg)
+        if self.flatten_channels and self.task != "speech_enhancement":
+            pipe = pipe.flat_map(_flatten_frame_channels)
+        if self._corruption is not None:
+            pipe = pipe.map(
+                partial(
+                    _corrupt_frame,
+                    self._corruption,
+                    self.sample_rate,
+                    self.hop_length,
+                    self._COND_ID_STRIDE,
+                )
+            )
+        self._inner = as_iterable_dataset(pipe)
 
     @classmethod
     def from_config(
@@ -411,11 +469,7 @@ class OnlineMixFrameDataset(IterableDataset):
         flatten_channels: bool = False,
         rps_corruption: dict[str, Any] | None = None,
     ) -> OnlineMixFrameDataset:
-        return cls(
-            OnlineMixIterableDataset.from_config(cfg),
-            flatten_channels=flatten_channels,
-            rps_corruption=rps_corruption,
-        )
+        return cls(cfg, flatten_channels=flatten_channels, rps_corruption=rps_corruption)
 
     @classmethod
     def from_yaml(
@@ -438,77 +492,11 @@ class OnlineMixFrameDataset(IterableDataset):
             rps_corruption=rps_corruption,
         )
 
+    def set_epoch(self, epoch: int) -> None:
+        self._inner.set_epoch(int(epoch))
+
     def __iter__(self):
-        if getattr(self.inner, "task", "rps_prediction") == "speech_enhancement":
-            yield from self._iter_se()
-            return
-        from torch.utils.data import get_worker_info
-
-        # Recompute the inner mixer's global chunk ids in lockstep with its
-        # own worker-aware enumeration (OnlineMixIterableDataset.__iter__:
-        # gid = start + worker_id + k * num_workers) — both run in the same
-        # worker process, so the k-th chunk this iterator sees IS chunk gid.
-        info = get_worker_info()
-        worker_id = 0 if info is None else info.id
-        num_workers = 1 if info is None else info.num_workers
-        start = int(getattr(self.inner, "start_sample_id", 0))
-        for k, (audio, rps) in enumerate(self.inner):
-            chunk_gid = start + worker_id + k * num_workers
-            audio_np = audio.numpy() if isinstance(audio, torch.Tensor) else np.asarray(audio)
-            rps_np = rps.numpy() if isinstance(rps, torch.Tensor) else np.asarray(rps)
-            if self.flatten_channels and audio_np.ndim == 2 and audio_np.shape[0] > 1:
-                for channel in range(audio_np.shape[0]):
-                    yield self._pack(
-                        audio_np[channel : channel + 1],
-                        rps_np,
-                        meta={"channel": channel},
-                        cond_id=chunk_gid * self._COND_ID_STRIDE + channel,
-                    )
-            else:
-                yield self._pack(audio_np, rps_np, cond_id=chunk_gid * self._COND_ID_STRIDE)
-
-    def _iter_se(self):
-        """Speech-enhancement stream: the inner mixer yields ``(mixture, clean)``
-        pairs; pack them into the ``{"mixture", "target"}`` Frame the SE task /
-        ``losses.MaskedLoss`` consume (the DN-LM ``DNLMFrameDataset`` layout).
-        ``flatten_channels`` is a no-op — the SE stream is single-channel."""
-        for mixture, target in self.inner:
-            mixture_np = (
-                mixture.numpy() if isinstance(mixture, torch.Tensor) else np.asarray(mixture)
-            )
-            target_np = target.numpy() if isinstance(target, torch.Tensor) else np.asarray(target)
-            yield td.Frame(
-                {
-                    "mixture": _audio_series(mixture_np, self.inner.sample_rate),
-                    "target": _audio_series(target_np, self.inner.sample_rate),
-                    "meta": td.Frame({}),
-                }
-            )
-
-    def _pack(
-        self,
-        audio_np: np.ndarray,
-        rps_np: np.ndarray,
-        *,
-        meta: dict[str, Any] | None = None,
-        cond_id: int = 0,
-    ) -> td.Frame:
-        entries: dict[str, Any] = {
-            "mixture": _audio_series(audio_np, self.inner.sample_rate),
-            "rps": _rps_series(
-                rps_np, sample_rate=self.inner.sample_rate, hop_length=self.inner.hop_length
-            ),
-            "meta": td.Frame(dict(meta or {})),
-        }
-        if self._corruption is not None:
-            cond, gt_aligned = self._corruption(rps_np, cond_id)
-            entries["rps"] = _rps_series(
-                gt_aligned, sample_rate=self.inner.sample_rate, hop_length=self.inner.hop_length
-            )
-            entries["rps_cond"] = _rps_series(
-                cond, sample_rate=self.inner.sample_rate, hop_length=self.inner.hop_length
-            )
-        return td.Frame(entries)
+        yield from self._inner
 
 
 def _resolve_noise_dir(d: str | Path | None) -> str | Path | None:
@@ -562,9 +550,9 @@ def _noise_gen_geometry(
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(mic_positions, rotor_positions)`` for a ``NoiseRPSDataset`` chunk origin."""
     if origin == "michaels":
-        from data_processing.michaels import get_geometry
+        from data_processing import sources
 
-        return get_geometry()
+        return sources.geometry("michaels")
     if origin == "dregon":
         if dregon_dir is None:
             raise ValueError("dregon_dir is required to build geometry for 'dregon'-origin chunks")
@@ -572,9 +560,10 @@ def _noise_gen_geometry(
 
         if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
             return _frames_spec_geometry(dregon_dir)
-        from data_processing.dregon import get_geometry
+        from data_processing import sources
+        from data_processing.streams import resolve_source
 
-        return get_geometry(Path(dregon_dir))
+        return sources.dregon.get_geometry(resolve_source(dregon_dir))
     raise ValueError(
         f"unknown NoiseRPSDataset chunk origin {origin!r}; expected 'dregon' or 'michaels'"
     )
