@@ -95,9 +95,9 @@ def _snap_idx(gt_row: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.clip(np.round((v - grid[0]) / step), 0, len(grid) - 1).astype(np.int64)
 
 
-def dp_unit(task: tuple[str, Path, str, float, float, int]) -> tuple[str, str]:
+def dp_unit(task: tuple[str, Path, str, float, float, int, int]) -> tuple[str, str]:
     """All three arms on one window; one restartable JSON unit."""
-    window, results, device, s_rps, lambda_e, n_fft = task
+    window, results, device, s_rps, lambda_e, n_fft, k_max = task
     out = jb_probe.unit_path(results, "srdp", window)
     if out.exists():
         return window, "skip"
@@ -110,7 +110,7 @@ def dp_unit(task: tuple[str, Path, str, float, float, int]) -> tuple[str, str]:
         from data_processing.rotor_dp import LatticeCfg, greedy_peel, track_masked
 
         prep, meta = jb_probe.load_window(window)
-        emis = EmissionCfg(**EMIS_KW)
+        emis = EmissionCfg(**{**EMIS_KW, "k_max": k_max})
         lat = LatticeCfg(s_rps=s_rps, lambda_e=lambda_e)
         lm, bin_hz, st = jb_probe.whitened_spec(prep.audio, n_fft)
         gt = jb_probe.gt_on(prep, st)  # (4, T)
@@ -127,7 +127,7 @@ def dp_unit(task: tuple[str, Path, str, float, float, int]) -> tuple[str, str]:
             "regime": meta.get("regime"),
             "n_spec_frames": int(len(st)),
             "audio_s": float(st[-1]),
-            "emis_cfg": {"n_fft": n_fft, **EMIS_KW},
+            "emis_cfg": {"n_fft": n_fft, **EMIS_KW, "k_max": k_max},
             "lat_cfg": {
                 "s_rps": lat.s_rps,
                 "huber_knee": lat.huber_knee,
@@ -250,6 +250,15 @@ def main() -> int:
     ap.add_argument("--lambda-e", type=float, default=3.0, help="LatticeCfg.lambda_e override")
     ap.add_argument("--n-fft", type=int, default=N_FFT, help="analysis FFT size")
     ap.add_argument(
+        "--k-max",
+        type=int,
+        default=int(EMIS_KW["k_max"]),
+        help="highest harmonic scored.  The masked stages need high k: two "
+        "rotors 0.5 rev/s apart separate past the +-2-bin claim dilation only "
+        "from k = 20 (n_fft 4096), so k_max 16 makes a close twin unfindable "
+        "once its sibling is claimed.",
+    )
+    ap.add_argument(
         "--build-preps",
         action="store_true",
         help="materialise the beat-VK prep cache first.  REQUIRED on a cluster: "
@@ -266,7 +275,10 @@ def main() -> int:
         brs.build_prep_cache(Path(DEFAULT_OUT), None, brs.resolve_dregon_dir())
 
     results = Path(args.results)
-    tasks = [(w, results, args.device, args.s_rps, args.lambda_e, args.n_fft) for w in args.windows]
+    tasks = [
+        (w, results, args.device, args.s_rps, args.lambda_e, args.n_fft, args.k_max)
+        for w in args.windows
+    ]
     if args.jobs <= 1:
         for t in tasks:
             print(dp_unit(t), flush=True)

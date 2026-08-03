@@ -82,6 +82,17 @@ class LatticeCfg:
     #: keeps its k >= 9 teeth (n_fft 4096: k * 0.9 Hz clears 2 bins from
     #: k = 9), which is exactly the separation the masking must make.
     mask_halfwidth_bins: int = 2
+    #: Minimum surviving teeth for a residual score to count; below it the
+    #: speed is floored like a zero-survivor one.  The second probe run
+    #: measured why a dilated mask alone is not enough: on FLY124 an impostor
+    #: 0.7 rev/s from a claimed comb keeps only its k = 14-16 teeth (3 of 16)
+    #: and still pools POSITIVE off the claimed teeth's jitter-broadened
+    #: skirts — real tooth linewidth grows with k and exceeds the window
+    #: mainlobe, so a handful of barely-cleared teeth is flank energy, not
+    #: evidence.  A genuine twin must instead clear the mask on enough
+    #: independent teeth to pool over (a 0.9 rev/s twin keeps 6+ at
+    #: ``k_max = 16``, 15+ at 30).
+    min_surv_teeth: int = 4
 
 
 def viterbi_path(
@@ -139,6 +150,7 @@ def residual_scores(
     emis: EmissionCfg,
     claimed_idx: torch.Tensor,
     mask_halfwidth_bins: int = 2,
+    min_surv_teeth: int = 1,
 ) -> torch.Tensor:
     """Raw ``(D, T)`` single-comb scores with claimed teeth excluded from the pool.
 
@@ -153,9 +165,11 @@ def residual_scores(
     exclusion lets a claimed comb survive as its own flanks
     (``mask_halfwidth_bins = 0`` reproduces the exact-bin behaviour).
 
-    A speed with zero surviving teeth at a frame gets that frame's minimum
-    scored value minus 1 — the DP avoids it, but the surface stays finite so
-    ``normalise_scores``'s per-frame statistics are not poisoned by infinities.
+    A speed with fewer than ``min_surv_teeth`` surviving teeth at a frame gets
+    that frame's minimum scored value minus 1 — the DP avoids it, but the
+    surface stays finite so ``normalise_scores``'s per-frame statistics are
+    not poisoned by infinities.  See :attr:`LatticeCfg.min_surv_teeth` for why
+    a small survivor set is flank energy rather than evidence.
 
     Implementation is a loop over frames (T ~ 500-600): the claimed set is
     per-frame, and a fully vectorised form needs a ``(D, K, T, C)`` comparison
@@ -193,7 +207,7 @@ def residual_scores(
         else:  # "mean": weighted mean over survivors, weights renormalised
             w_s = tab.w * surv.to(tab.w.dtype)
             sc = (w_s * d_t).sum(dim=1) / w_s.sum(dim=1).clamp_min(1e-12)
-        has = n_surv > 0
+        has = n_surv >= min_surv_teeth
         if bool(has.all()):
             out[:, t] = sc
         else:
@@ -233,7 +247,7 @@ def track_masked(
         )
     if claimed_idx is None:
         claimed_idx = torch.zeros((0, t_n), device=device, dtype=torch.long)
-    raw = residual_scores(tab, emis, claimed_idx, lat.mask_halfwidth_bins)
+    raw = residual_scores(tab, emis, claimed_idx, lat.mask_halfwidth_bins, lat.min_surv_teeth)
     path, total = viterbi_path(normalise_scores(raw, emis), grid, lat)
     support = float(raw[path, torch.arange(t_n, device=device)].mean())
     return {

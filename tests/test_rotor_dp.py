@@ -265,3 +265,37 @@ def test_dilated_masking_kills_a_flank_impostor_but_spares_a_true_twin():
     # ...while the true twin keeps genuine support on its surviving teeth
     assert float(r_w2[i_twin].mean()) > float(r_w2[i_flank].mean()) + 0.02
     assert float(r_w2[i_twin].mean()) > 0.0
+
+
+def test_min_surviving_teeth_floors_a_barely_cleared_impostor():
+    """A dilated mask alone is not enough (second probe run): an impostor
+    0.7 rev/s from a claimed comb clears the +-2-bin dilation on only its 3
+    highest teeth, which read the claimed teeth's jitter-broadened skirts and
+    still pool positive.  Requiring a minimum survivor count floors it, while
+    a 0.9 rev/s twin keeps enough independent teeth to stay scoreable."""
+    bin_hz, n_f, n_frames = 3.90625, 2049, 4
+    lm = np.zeros((n_f, n_frames), dtype=np.float32)
+    for b in (90.0, 90.9):
+        for k in range(1, 21):
+            for t in range(n_frames):
+                _deposit(lm, t, k * b, bin_hz, amp=_amp(k))
+    emis = EmissionCfg(lo=85.0, hi=95.0, step=0.1, k_max=16, pool="quantile", pool_q=0.25)
+    grid = torch.as_tensor(emis.grid(), dtype=torch.float32)
+    tab = comb_tables(torch.from_numpy(lm), bin_hz, emis, grid)
+    i_base = _grid_index(grid, 90.0)
+    i_imp = _grid_index(grid, 90.7)  # clears the dilation only at k >= 14
+    i_twin = _grid_index(grid, 90.9)
+
+    claimed = torch.full((1, n_frames), i_base, dtype=torch.long)
+    r_any = residual_scores(tab, emis, claimed, mask_halfwidth_bins=2, min_surv_teeth=1)
+    r_min4 = residual_scores(tab, emis, claimed, mask_halfwidth_bins=2, min_surv_teeth=4)
+
+    def is_floor(r: torch.Tensor, i: int) -> bool:
+        return all(float(r[i, t]) == pytest.approx(float(r[:, t].min())) for t in range(n_frames))
+
+    # without the requirement the impostor keeps a live (non-floor) score
+    assert not is_floor(r_any, i_imp)
+    # with it, the impostor is floored while the twin stays scoreable
+    assert is_floor(r_min4, i_imp)
+    assert not is_floor(r_min4, i_twin)
+    assert float(r_min4[i_twin].mean()) > float(r_min4[i_imp].mean()) + 0.02
