@@ -8,10 +8,12 @@ defaults:
   - override /metrics: separation_basic
 
 experiment_name: f1_mpsenet_b
-# bfloat16 autocast (STFT/iSTFT stay fp32 inside the model); the first pass
-# hit the 16 h wall at ~epoch 67 still improving — throughput fix.
+# fp16 autocast + GradScaler (STFT/iSTFT stay fp32 inside the model); the
+# first pass hit the 16 h wall at ~epoch 67 still improving — throughput fix.
+# bf16 was tried first and NaN-poisoned the weights at epoch-0 step ~407
+# (no scaler step-skip in bf16); fp16's GradScaler skips overflowed steps.
 amp: true
-amp_dtype: bfloat16
+amp_dtype: float16
 resume: true  # chainable across wall-limited job segments (last.ckpt)
 samples_per_validation: 20000
 epochs: 150

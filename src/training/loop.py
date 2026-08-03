@@ -217,6 +217,14 @@ def _train_one_epoch(
         batch = _to_device(batch, device)
         pred_frame = _forward(codec, model, batch, device=device, amp=amp, amp_dtype=amp_dtype)
         loss = loss_fn(pred_frame, batch)
+        # A non-finite loss must never reach the weights: without this guard a
+        # single overflowed batch permanently NaN-poisons the model (observed
+        # under bf16 autocast, where no GradScaler step-skip exists). Drop the
+        # batch AND the partial grad-accum window.
+        if not torch.isfinite(loss.detach()):
+            logger.warning("epoch %d step %d: non-finite loss %s — batch dropped", epoch, i, loss)
+            optimizer.zero_grad(set_to_none=True)
+            continue
         scaler.scale(loss / grad_accum_steps).backward()
 
         is_last = n_batches is not None and i == n_batches - 1
