@@ -219,47 +219,57 @@ DATASETS = {"DREGON-frames": "dregon", "michaels-frames": "michaels"}
 
 
 def real_slice(dataset: str, recording_id: str, start_s: float, dur_s: float = 4.0) -> Excitation:
-    """A window of a real recording: audio, RPS and geometry, all aligned."""
-    import tdseries as td  # noqa: F401  (Frame ops below)
+    """A window of a real recording: audio, RPS and geometry, all aligned.
 
-    from data_processing.frames import get_meta
+    The rotor track is resolved through :func:`data_processing.frames.
+    adapt_recording_frame`, which is the project's canonical path: DREGON frames
+    carry `motors_command` / `motors_measured` while Michael's carry `rps`, and
+    that helper picks the right one *in preference order* and resamples the audio
+    in the same step. Reaching for a fixed entry name here — as an earlier
+    version of this function did — silently breaks on one of the two rigs.
+    """
+    from data_processing.frames import adapt_recording_frame, get_meta
 
     for frame in _frames(dataset):
         if str(get_meta(frame, "recording_id", "?")) != recording_id:
             continue
-        audio_s = frame["audio"]
-        t0 = audio_s.t_start + float(start_s)
-        window = frame.time[t0 : t0 + float(dur_s)]
+        # Geometry lives on the RAW frame; adapt_recording_frame drops it.
+        mic_pos = np.asarray(frame["mic_pos"].data, dtype=np.float32)
+        rotor_pos = np.asarray(frame["rotor_pos"].data, dtype=np.float32)
+
+        adapted = adapt_recording_frame(frame, sample_rate=SR)
+        if adapted is None:
+            raise ValueError(f"{recording_id} has no audio or no rotor track")
+
+        audio_s = adapted["audio"]
+        total = audio_s.data.shape[-1] / SR
+        dur = float(min(dur_s, total))
+        start = float(np.clip(start_s, 0.0, max(total - dur, 0.0)))
+        t0 = audio_s.t_start + start
+        window = adapted.time[t0 : t0 + dur]
+
         audio = np.asarray(window["audio"].data, dtype=np.float32)
-        rps_s = window["rps"]
-        rps = np.asarray(rps_s.data, dtype=np.float32)
-        # RPS is event-sampled telemetry; lift it to the audio grid.
+        if audio.ndim == 1:
+            audio = audio[None, :]
+        rps = np.asarray(window["rps"].data, dtype=np.float32)
+        if rps.ndim == 1:
+            rps = rps[None, :]
+
+        # The rotor track is event-sampled telemetry; lift it onto the audio grid.
         n = audio.shape[-1]
-        src_t = np.linspace(0.0, 1.0, rps.shape[-1])
-        dst_t = np.linspace(0.0, 1.0, n)
-        rps_audio = np.stack([np.interp(dst_t, src_t, r) for r in rps]).astype(np.float32)
-        native_sr = int(round(1.0 / float(audio_s.tindex.step)))
-        if native_sr != SR:
-            audio, rps_audio = _resample_pair(audio, rps_audio, native_sr)
+        src = np.linspace(0.0, 1.0, rps.shape[-1])
+        dst = np.linspace(0.0, 1.0, n)
+        rps_audio = np.stack([np.interp(dst, src, row) for row in rps]).astype(np.float32)
+
         return Excitation(
             rps=rps_audio,
-            mic_pos=np.asarray(frame["mic_pos"].data, dtype=np.float32),
-            rotor_pos=np.asarray(frame["rotor_pos"].data, dtype=np.float32),
+            mic_pos=mic_pos,
+            rotor_pos=rotor_pos,
             drone=DATASETS[dataset],
             audio=audio,
-            label=f"{recording_id} @ {start_s:.1f}s +{dur_s:.1f}s",
+            label=f"{recording_id} @ {start:.1f}s +{dur:.1f}s",
         )
     raise KeyError(f"recording {recording_id!r} not in {dataset}")
-
-
-def _resample_pair(audio: np.ndarray, rps: np.ndarray, sr_in: int):
-    import librosa
-
-    a = np.stack([librosa.resample(ch, orig_sr=sr_in, target_sr=SR) for ch in audio])
-    n = a.shape[-1]
-    idx = np.linspace(0, rps.shape[-1] - 1, n)
-    r = np.stack([np.interp(idx, np.arange(rps.shape[-1]), row) for row in rps])
-    return a.astype(np.float32), r.astype(np.float32)
 
 
 def synth_slice(
@@ -447,26 +457,34 @@ def _render_deep(spec, exc, *, alpha, offset, jitter_sigma, wind, seed):
 
 
 def _render_gp(exc: Excitation) -> np.ndarray:
+    """JASA GP field. Takes body-frame mic positions and a rotor-MEAN trajectory
+    at SR, and returns ``(M, T)`` itself — it does its own 44.1 kHz round trip."""
     from four_way_lib import load_gp, render_gp
 
     ckpt = _ROOT / "results" / "jasa_gp" / "gp.pt"
     if not ckpt.exists():
-        raise FileNotFoundError(f"GP checkpoint not at {ckpt}; see the GP report for how to fit")
-    gp = load_gp(ckpt)
-    mono = render_gp(gp, float(exc.mean_rps), exc.duration_s)
-    return np.repeat(np.asarray(mono, np.float32)[None, :], exc.mic_pos.shape[0], axis=0)
+        raise FileNotFoundError(f"no GP checkpoint at {ckpt} — see the GP report to fit one")
+    return np.asarray(render_gp(load_gp(ckpt), exc.mic_pos, exc.rps.mean(axis=0)), dtype=np.float32)
 
 
 def _render_cona(exc: Excitation) -> np.ndarray:
+    """Nearest published constant-RPS auralization, tiled to the clip length.
+
+    CONA cases are single-microphone constant-RPS renders, so this is a
+    reference synthesis rather than a per-mic prediction: the same waveform is
+    repeated across the array.
+    """
     from four_way_lib import cona_inventory, fetch_cona_case, nearest_cona_key, resample_to_sr
 
-    inv = cona_inventory(_ROOT)
-    key = nearest_cona_key(inv, exc.drone, float(exc.mean_rps))
-    case = fetch_cona_case(_ROOT, key)
-    mono = resample_to_sr(np.asarray(case["audio"], np.float32))
+    key = nearest_cona_key(cona_inventory(), exc.drone, float(exc.mean_rps), 0)
+    cache = _ROOT / ".cache" / "cona"
+    cache.mkdir(parents=True, exist_ok=True)
+    case = fetch_cona_case(key, cache)
+    mono = np.asarray(case["audio"] if isinstance(case, dict) else case, np.float32).reshape(-1)
+    mono = resample_to_sr(mono)
     n = exc.rps.shape[-1]
-    mono = np.resize(mono, n)
-    return np.repeat(mono[None, :], exc.mic_pos.shape[0], axis=0)
+    mono = np.resize(mono, n) if mono.size else np.zeros(n, np.float32)
+    return np.repeat(mono[None, :].astype(np.float32), exc.mic_pos.shape[0], axis=0)
 
 
 def _render_fwh(exc: Excitation) -> np.ndarray:
