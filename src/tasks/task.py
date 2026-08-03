@@ -113,6 +113,7 @@ def noise_generation(
     conditioned: bool = False,
     return_dict: bool = False,
     distributional: bool = False,
+    spatial: bool = False,
 ) -> Task:
     """RPS trajectories + array geometry in, synthesized drone noise at
     each microphone out.
@@ -147,6 +148,14 @@ def noise_generation(
         # (frame, freq) POWER envelope on the model's own grid — not a time
         # series on the audio clock, hence untyped trailing dims and no rate.
         outputs["noise_psd"] = SeriesSpec(dims=("batch", "mic", None, None), time=None)
+    if spatial:
+        # The SPATIAL objective needs the rotor and wind powers kept apart, plus
+        # the geometry: rotors reach the array through known steering vectors (a
+        # rank-R covariance term), wind is diagonal. Summing them at the mic —
+        # what `distributional` does — is what makes wind unidentifiable.
+        outputs["source_psd"] = SeriesSpec(dims=("batch", "rotor", None, None), time=None)
+        outputs["wind_psd"] = SeriesSpec(dims=("batch", "mic", None, None), time=None)
+        outputs["rel_pos"] = SeriesSpec(dims=("batch", "mic", "rotor", None), time=None)
     return Task(
         name="noise_generation",
         input_spec=FrameSpec(

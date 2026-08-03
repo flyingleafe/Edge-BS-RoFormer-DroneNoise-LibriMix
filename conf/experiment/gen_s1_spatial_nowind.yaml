@@ -1,0 +1,44 @@
+# @package _global_
+# gen_s1_spatial_nowind — SPATIAL (cross-microphone) likelihood, multi-observer, WITHOUT the wind channel — the control.
+#
+# Why a third objective. The marginal likelihood (gen_w3/gen_w4) was a large win
+# over the magnitude loss — held-out NLL -0.047 against +5.909 — but it folds the
+# mic axis into the batch, so it scores per-microphone marginals. The wind
+# channel is defined by being INCOHERENT ACROSS MICROPHONES while the propagated
+# rotor field is correlated across them, and a marginal likelihood cannot see
+# that. Measured: under it the wind trains to inertness, carrying 0.099% of the
+# predicted variance on DREGON and 0.0004% on Michael's, so gen_w4-vs-gen_w3 was
+# never a test of the wake model.
+#
+# Here the per-bin array covariance is modelled directly, R = sum_r d_r d_r^H P_r
+# + diag(w), with the steering vectors known exactly from geometry. Rotors are a
+# rank-4 term, wind is the only diagonal one — separable by construction, which
+# is the property tests/losses/test_spatial_likelihood.py asserts.
+#
+# Compare gen_s2 against gen_s1, NOT against the marginal arms: the objective
+# differs, so the NLL values are not commensurable across the two families. The
+# per-drone eval metric is what compares them.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic
+  - override /model: positional_harmonic_gen_perdrone_spatial
+  - override /loss: spatial_likelihood
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_s1_spatial_nowind
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: val_loss
+  monitor_mode: min
+
+amp: false
+
+# Warm start from the magnitude-trained baseline — an untrained mean puts the
+# quadratic term at ~1e12 and the first step destroys the model.
+checkpoint: r2://ml-data/artifacts/gen_v1_recal/checkpoints/best.ckpt

@@ -28,6 +28,12 @@ from losses.salience import (
     salience_bce_loss,
 )
 from losses.sisdr import SISDRLoss, si_sdr_loss
+from losses.spatial_likelihood import (
+    SpatialLikelihood,
+    SpatialLikelihoodLoss,
+    spatial_whittle_nll,
+    steering_vectors,
+)
 from losses.spectral import (
     AuraMRSTFTLoss,
     MultiScaleSTFT,
@@ -64,6 +70,10 @@ __all__ = [
     "AuraMRSTFTLoss",
     "MultiScaleSTFT",
     "MultiScaleSTFTLoss",
+    "SpatialLikelihood",
+    "SpatialLikelihoodLoss",
+    "spatial_whittle_nll",
+    "steering_vectors",
     "SpectralLikelihood",
     "SpectralLikelihoodLoss",
     "rice_nll",
