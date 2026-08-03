@@ -175,15 +175,16 @@ def test_residual_scores_with_no_claims_equals_comb_scores_from_tables():
 def test_claiming_a_comb_floors_it_and_leaves_a_disjoint_comb_unchanged():
     """The masking contract, both directions: the claimed comb's own speed has
     every valid tooth excluded (zero survivors -> the per-frame floor, exactly
-    min(scored) - 1), while a bin-disjoint comb keeps its score bit-exactly."""
+    min(scored) - 1), while a bin-disjoint comb keeps its score bit-exactly.
+    Exact-bin masking (halfwidth 0) so bin-disjointness of the toy pair holds."""
     tab, emis, grid, (c1, c2) = _two_comb_setup()
     t_n = tab.v_on.shape[2]
     i1, i2 = _grid_index(grid, c1), _grid_index(grid, c2)
 
     empty = torch.zeros((0, t_n), dtype=torch.long)
-    raw0 = residual_scores(tab, emis, empty)
+    raw0 = residual_scores(tab, emis, empty, mask_halfwidth_bins=0)
     claimed = torch.full((1, t_n), i1, dtype=torch.long)
-    raw1 = residual_scores(tab, emis, claimed)
+    raw1 = residual_scores(tab, emis, claimed, mask_halfwidth_bins=0)
 
     assert float(raw0[i1].mean()) > 0.05  # the comb is actually there
     # the disjoint comb: bit-exactly unchanged
@@ -227,3 +228,40 @@ def test_track_masked_reports_raw_support_along_the_path():
     )
     res2 = track_masked(tab, emis, LatticeCfg(), both, grid)
     assert res2["support_raw_mean"] < res["support_raw_mean"]
+
+
+def test_dilated_masking_kills_a_flank_impostor_but_spares_a_true_twin():
+    """The first probe run's measured failure, reproduced and fixed in one toy:
+    with exact-bin masking a candidate displaced 0.2 rev/s from a claimed comb
+    keeps teeth on ADJACENT bins that read the claimed teeth's mainlobe flanks,
+    so the claimed comb survives as its own flank (every oracle-masked DP
+    reproduced the raw trajectory; the greedy peel collapsed to one comb).
+    Dilating the claim by the Hann mainlobe halfwidth (+-2 bins at n_fft 4096)
+    kills the flank at every k while a genuine 0.9 rev/s twin keeps its
+    high-k teeth, whose bins clear the dilated set."""
+    bin_hz, n_f, n_frames = 3.90625, 2049, 4
+    lm = np.zeros((n_f, n_frames), dtype=np.float32)
+    for b in (90.0, 90.9):
+        for k in range(1, 21):
+            for t in range(n_frames):
+                _deposit(lm, t, k * b, bin_hz, amp=_amp(k))
+    emis = EmissionCfg(lo=85.0, hi=95.0, step=0.1, k_max=16, pool="quantile", pool_q=0.25)
+    grid = torch.as_tensor(emis.grid(), dtype=torch.float32)
+    tab = comb_tables(torch.from_numpy(lm), bin_hz, emis, grid)
+    i_base = _grid_index(grid, 90.0)
+    i_flank = _grid_index(grid, 90.2)
+    i_twin = _grid_index(grid, 90.9)
+
+    empty = torch.zeros((0, n_frames), dtype=torch.long)
+    raw0 = residual_scores(tab, emis, empty)
+    claimed = torch.full((1, n_frames), i_base, dtype=torch.long)
+    r_w0 = residual_scores(tab, emis, claimed, mask_halfwidth_bins=0)
+    r_w2 = residual_scores(tab, emis, claimed, mask_halfwidth_bins=2)
+
+    # the defect: exact-bin masking leaves the flank impostor with real score
+    assert float(r_w0[i_flank].mean()) > float(r_w2[i_flank].mean()) + 0.02
+    # the fix: at the mainlobe halfwidth the impostor loses its support...
+    assert float(r_w2[i_flank].mean()) < float(raw0[i_flank].mean()) - 0.05
+    # ...while the true twin keeps genuine support on its surviving teeth
+    assert float(r_w2[i_twin].mean()) > float(r_w2[i_flank].mean()) + 0.02
+    assert float(r_w2[i_twin].mean()) > 0.0

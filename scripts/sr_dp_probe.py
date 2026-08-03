@@ -65,6 +65,9 @@ import numpy as np  # noqa: E402
 from jb_probe import WINDOWS  # noqa: E402  (re-exported: the probe window set)
 
 #: The spectrogram the tables are built on (not an EmissionCfg field).
+#: Default; ``--n-fft 2048`` halves the analysis window for ramp windows,
+#: where a comb moving ~8 rev/s/s smears its k >= 4 teeth across several bins
+#: within a 256 ms window and the high-quantile pool goes blind.
 N_FFT = 4096
 
 #: One fixed emission — the measured winner of the jb_probe ceiling sweep —
@@ -92,9 +95,9 @@ def _snap_idx(gt_row: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.clip(np.round((v - grid[0]) / step), 0, len(grid) - 1).astype(np.int64)
 
 
-def dp_unit(task: tuple[str, Path, str, float, float]) -> tuple[str, str]:
+def dp_unit(task: tuple[str, Path, str, float, float, int]) -> tuple[str, str]:
     """All three arms on one window; one restartable JSON unit."""
-    window, results, device, s_rps, lambda_e = task
+    window, results, device, s_rps, lambda_e, n_fft = task
     out = jb_probe.unit_path(results, "srdp", window)
     if out.exists():
         return window, "skip"
@@ -109,7 +112,7 @@ def dp_unit(task: tuple[str, Path, str, float, float]) -> tuple[str, str]:
         prep, meta = jb_probe.load_window(window)
         emis = EmissionCfg(**EMIS_KW)
         lat = LatticeCfg(s_rps=s_rps, lambda_e=lambda_e)
-        lm, bin_hz, st = jb_probe.whitened_spec(prep.audio, N_FFT)
+        lm, bin_hz, st = jb_probe.whitened_spec(prep.audio, n_fft)
         gt = jb_probe.gt_on(prep, st)  # (4, T)
         grid = np.asarray(emis.grid())
 
@@ -124,7 +127,7 @@ def dp_unit(task: tuple[str, Path, str, float, float]) -> tuple[str, str]:
             "regime": meta.get("regime"),
             "n_spec_frames": int(len(st)),
             "audio_s": float(st[-1]),
-            "emis_cfg": {"n_fft": N_FFT, **EMIS_KW},
+            "emis_cfg": {"n_fft": n_fft, **EMIS_KW},
             "lat_cfg": {
                 "s_rps": lat.s_rps,
                 "huber_knee": lat.huber_knee,
@@ -188,11 +191,19 @@ def dp_unit(task: tuple[str, Path, str, float, float]) -> tuple[str, str]:
         t0 = time.perf_counter()
         gp = greedy_peel(tab, emis, lat, n_rotors=N_ROTORS, grid=grid_t)
         on_ft = np.stack([np.interp(prep.ft, st, row) for row in gp["speeds"]])
+        # per-frame minimum pairwise separation of the extracted tracks — the
+        # collapse detector (the first run put all four within 0.4 rev/s)
+        seps = [
+            np.abs(gp["speeds"][i] - gp["speeds"][j])
+            for i in range(N_ROTORS)
+            for j in range(i + 1, N_ROTORS)
+        ]
         rec["arms"]["greedy_peel"] = {
             **lab.stage_metrics(on_ft, prep),
             "supports": gp["supports"],
             "costs": gp["costs"],
             "speeds_mean": [float(v) for v in gp["speeds"].mean(axis=1)],
+            "pair_sep_min_mean": float(np.min(np.stack(seps), axis=0).mean()),
         }
         wall["greedy_peel"] = time.perf_counter() - t0
 
@@ -237,6 +248,7 @@ def main() -> int:
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--s-rps", type=float, default=0.4, help="LatticeCfg.s_rps override")
     ap.add_argument("--lambda-e", type=float, default=3.0, help="LatticeCfg.lambda_e override")
+    ap.add_argument("--n-fft", type=int, default=N_FFT, help="analysis FFT size")
     ap.add_argument(
         "--build-preps",
         action="store_true",
@@ -254,7 +266,7 @@ def main() -> int:
         brs.build_prep_cache(Path(DEFAULT_OUT), None, brs.resolve_dregon_dir())
 
     results = Path(args.results)
-    tasks = [(w, results, args.device, args.s_rps, args.lambda_e) for w in args.windows]
+    tasks = [(w, results, args.device, args.s_rps, args.lambda_e, args.n_fft) for w in args.windows]
     if args.jobs <= 1:
         for t in tasks:
             print(dp_unit(t), flush=True)

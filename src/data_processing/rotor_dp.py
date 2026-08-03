@@ -69,6 +69,19 @@ class LatticeCfg:
     max_step_rps: float = 5.0
     #: Emission weight (same convention as ``BeamCfg.lambda_e``).
     lambda_e: float = 3.0
+    #: Claim-mask half-width, in rounded spectrogram bins.  A claimed tooth
+    #: suppresses candidate teeth within this bin distance, not only its own
+    #: bin.  The value is physical: the Hann analysis window's mainlobe is
+    #: +-2 bins, so a comb displaced 0.2-0.4 rev/s from a claimed one still
+    #: reads the claimed teeth's FLANK energy — its high-k teeth land on the
+    #: adjacent bin, inside the mainlobe.  With exact-bin masking (0) the
+    #: first probe run measured the consequence: every oracle-masked DP
+    #: reproduced the raw unmasked trajectory bit-for-bit and the greedy peel
+    #: parked all four tracks within 0.4 rev/s of one comb.  At +-2 bins a
+    #: flank impostor is suppressed at EVERY k while a genuine 0.9 rev/s twin
+    #: keeps its k >= 9 teeth (n_fft 4096: k * 0.9 Hz clears 2 bins from
+    #: k = 9), which is exactly the separation the masking must make.
+    mask_halfwidth_bins: int = 2
 
 
 def viterbi_path(
@@ -121,16 +134,24 @@ def viterbi_path(
     return path, total
 
 
-def residual_scores(tab: CombTables, emis: EmissionCfg, claimed_idx: torch.Tensor) -> torch.Tensor:
+def residual_scores(
+    tab: CombTables,
+    emis: EmissionCfg,
+    claimed_idx: torch.Tensor,
+    mask_halfwidth_bins: int = 2,
+) -> torch.Tensor:
     """Raw ``(D, T)`` single-comb scores with claimed teeth excluded from the pool.
 
     ``claimed_idx`` is ``(R, T)`` long — grid indices of ``R`` already-extracted
     rotor trajectories (``R = 0`` returns :func:`comb_scores_from_tables`
     unchanged).  Per frame, the claimed bin set is the union of the claimed
-    speeds' valid on-tooth bins; every grid speed is then pooled over its OWN
-    valid teeth whose bin is NOT in that set.  Exclusion is on ROUNDED bin
-    identity (``tab.bid_on``), the same identity the joint tracker's union
-    deduplicates on, so "shares a tooth" means the same thing in both.
+    speeds' valid on-tooth bins, DILATED by ``mask_halfwidth_bins`` on each
+    side; every grid speed is then pooled over its OWN valid teeth whose bin
+    is NOT in that dilated set.  Bin identity is ``tab.bid_on``, the identity
+    the joint tracker's union deduplicates on; the dilation is what the union
+    lacked — see :attr:`LatticeCfg.mask_halfwidth_bins` for why exact-bin
+    exclusion lets a claimed comb survive as its own flanks
+    (``mask_halfwidth_bins = 0`` reproduces the exact-bin behaviour).
 
     A speed with zero surviving teeth at a frame gets that frame's minimum
     scored value minus 1 — the DP avoids it, but the surface stays finite so
@@ -151,10 +172,14 @@ def residual_scores(tab: CombTables, emis: EmissionCfg, claimed_idx: torch.Tenso
     flat_bids = tab.bid_on.reshape(-1)
     big = torch.finfo(contrast.dtype).max
     out = torch.empty((d_n, t_n), device=contrast.device, dtype=contrast.dtype)
+    dil = torch.arange(
+        -mask_halfwidth_bins, mask_halfwidth_bins + 1, device=contrast.device, dtype=torch.long
+    )
     for t in range(t_n):
         cis = claimed_idx[:, t]
         cb = tab.bid_on[cis]  # (R, K)
         cb = cb[(tab.w[cis] > 0) & (cb != _INVALID_BIN)]
+        cb = (cb[:, None] + dil[None, :]).reshape(-1)
         surv = valid & ~torch.isin(flat_bids, cb).reshape(d_n, k_n)
         n_surv = surv.sum(dim=1)
         d_t = contrast[:, :, t]
@@ -208,7 +233,7 @@ def track_masked(
         )
     if claimed_idx is None:
         claimed_idx = torch.zeros((0, t_n), device=device, dtype=torch.long)
-    raw = residual_scores(tab, emis, claimed_idx)
+    raw = residual_scores(tab, emis, claimed_idx, lat.mask_halfwidth_bins)
     path, total = viterbi_path(normalise_scores(raw, emis), grid, lat)
     support = float(raw[path, torch.arange(t_n, device=device)].mean())
     return {
