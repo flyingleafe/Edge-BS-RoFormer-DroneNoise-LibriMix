@@ -128,6 +128,17 @@ class VKConfig:
     # per-round bw_hz — annealing and adaptation compose, they do not fight.
     bw_adapt_clamp: float = 4.0  # cumulative rho_m^2 adaptation is clamped to
     # [rho0^2 / clamp^2, rho0^2 * clamp^2] (rho0 = the schedule's selectivity)
+    bw_rps: float | None = None  # k-scaled per-track bandwidth: when set, each
+    # track's target −3 dB bandwidth is k * bw_rps Hz (k = the track's harmonic
+    # index), so the capture radius is bw_rps rev/s at EVERY harmonic. This
+    # REPLACES the scalar bw_hz / anneal schedule as the band source (the
+    # anneal still applies to k_max via k_schedule); bw_adapt gains still
+    # compose multiplicatively on rho².
+    freq_weight: str = "k2_amp"  # _freq_update fusion weight: "k2_amp" =
+    # k^2 |x[t+1] conj(x[t])| (the original Fisher form); "k_beta" =
+    # k^freq_weight_beta with NO per-sample amplitude factor — the measured
+    # per-harmonic variance law (WP18) is 1/v_k ∝ k^beta with no |p_k|.
+    freq_weight_beta: float = 2.0  # the beta of the "k_beta" weight
 
     def __post_init__(self) -> None:
         if self.lp_mode not in ("fft", "fir", "iir"):
@@ -136,6 +147,12 @@ class VKConfig:
             raise ValueError(f"unknown solver {self.solver!r} (expected 'banded' or 'splu')")
         if self.bw_adapt_clamp < 1.0:
             raise ValueError(f"bw_adapt_clamp must be >= 1, got {self.bw_adapt_clamp}")
+        if self.bw_rps is not None and self.bw_rps <= 0:
+            raise ValueError(f"bw_rps must be positive when set, got {self.bw_rps}")
+        if self.freq_weight not in ("k2_amp", "k_beta"):
+            raise ValueError(
+                f"unknown freq_weight {self.freq_weight!r} (expected 'k2_amp' or 'k_beta')"
+            )
 
 
 @dataclass
@@ -205,6 +222,17 @@ def _tuma_rho(bw_hz: float, fs_env: float, p: int) -> float:
             f"is ~{bw_min:.3g} Hz"
         )
     return rho
+
+
+def _tuma_bw_min(fs_env: float, p: int) -> float:
+    """Minimum usable −3 dB bandwidth (Hz): the band where rho hits ``rho_max``.
+
+    The same limit :func:`_tuma_rho` raises at, with a small safety margin so
+    a band clipped to this floor never trips the ill-conditioning check.
+    """
+    rho_max = 1.0 / np.sqrt(np.finfo(np.float64).eps)
+    arg = 0.5 * (np.sqrt(np.sqrt(2.0) - 1.0) / rho_max) ** (1.0 / p)
+    return 2.0 * fs_env / np.pi * float(np.arcsin(arg)) * (1.0 + 1e-6)
 
 
 def _tuma_bw(rho: np.ndarray, fs_env: float, p: int) -> np.ndarray:
@@ -716,6 +744,7 @@ def vk_envelopes(
         # co-valid samples contribute exactly nothing (w_a * w_b == 0
         # everywhere) and are always skipped.
         bw_g = bw
+        sep_cap = np.inf  # the per-group separation clamp, applied to any band source
         pair_sep: dict[tuple[int, int], float] = {}
         for a in range(g):
             for b in range(a + 1, g):
@@ -724,10 +753,24 @@ def vk_envelopes(
                 if both.any():
                     sep = float(np.min(np.abs(f[m, both] - f[n, both])))
                     pair_sep[(a, b)] = sep
+                    sep_cap = min(sep_cap, max(cfg.bw_hz, cfg.sep_bw_factor * sep))
                     bw_g = min(bw_g, max(cfg.bw_hz, cfg.sep_bw_factor * sep))
-        bw_track[group] = bw_g
-        rho = _tuma_rho(bw_g, fs_env, cfg.p)
-        rho2: float | np.ndarray = rho**2
+        rho2: float | np.ndarray
+        if cfg.bw_rps is not None:
+            # k-scaled per-track band: b_m = clip(k_m * bw_rps, b_lo, b_hi),
+            # b_lo the smallest Tuma-usable band, b_hi inside the ~0.9*fs_env
+            # two-sided demod lowpass. The per-group separation clamp applies
+            # AFTER, with the same floor semantics as the scalar path.
+            b_lo = _tuma_bw_min(fs_env, cfg.p)
+            b_hi = 0.9 * fs_env
+            b_m = np.clip(k[group].astype(np.float64) * cfg.bw_rps, b_lo, b_hi)
+            b_m = np.minimum(b_m, max(sep_cap, b_lo))
+            bw_track[group] = b_m
+            rho2 = np.array([_tuma_rho(float(b), fs_env, cfg.p) for b in b_m]) ** 2
+        else:
+            bw_track[group] = bw_g
+            rho = _tuma_rho(bw_g, fs_env, cfg.p)
+            rho2 = rho**2
         if rho2_gain is not None:
             rho2 = rho2 * np.asarray(rho2_gain, dtype=np.float64)[group]
             bw_track[group] = _tuma_bw(np.sqrt(rho2), fs_env, cfg.p)
@@ -945,7 +988,12 @@ def _freq_update(
 
     prod = x[..., 1:] * np.conj(x[..., :-1])  # (C, m, T_env - 1)
     vv = (v[:, 1:] & v[:, :-1]).astype(np.float64)[None, :, :]
-    w = (kf[None, :, None] ** 2) * np.abs(prod) * vv * shrink[None, :, None]
+    if cfg.freq_weight == "k_beta":
+        # WP18: the measured per-harmonic variance law is 1/v_k ∝ k^beta with
+        # no amplitude factor — drop the per-sample |prod| term.
+        w = (kf[None, :, None] ** cfg.freq_weight_beta) * vv * shrink[None, :, None]
+    else:
+        w = (kf[None, :, None] ** 2) * np.abs(prod) * vv * shrink[None, :, None]
     delta_hat = np.angle(prod) * env.fs_env / (2.0 * np.pi * kf[None, :, None])
     num = np.sum(w * delta_hat, axis=(0, 1))
     den = np.sum(w, axis=(0, 1))  # (T_env - 1,)
