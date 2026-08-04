@@ -627,3 +627,55 @@ stage from −0.024 harm to neutral/slightly-positive on DREGON; FLY124
 machinery untouched. Realistic ceiling: DREGON cruise does not improve
 below the blind init this way — that floor is init trajectory-shape error
 plus GT jitter.
+
+## Bandwidth-and-admission revision — frozen-protocol test (2026-08-05)
+
+Question: does the revised pi_kalman (k-scaled bands `band_k = k*B0`,
+posterior-annealed bandwidth over iterations, displacement-aware low-k
+admission, collision-aware probes; tracker options commit 0e21d6e, wiring
+03318de) beat the protocol configuration on the frozen validation set.
+Jobs `bandadm-ladder-7fb2e4` + `bandadm-chans-afb8db` (uni-cpu, HEAD
+03318de, dataset pin 54849c13ed3a). Registered success criteria: FLY124
+cruise <= flagship; DREGON degradation removed (neutral vs init 1.807);
+ramps unchanged. Synthetic tiers had shown large gains (k_scaled clean
+0.091 -> 0.031, twins 0.081 -> 0.027).
+
+**Protocol ladder (blind init, PIT-MAE; init: all 2.236, dregon_cruise
+1.807, fly124_cruise 2.515)**:
+
+| variant | best all | fly124_cruise best | dregon_cruise x3 naive |
+|---|---|---|---|
+| protocol | 2.202 (peeled x3) | 2.256 (peeled x4) | 1.854 (ratchet) |
+| k_scaled | 2.235 (peeled x1) | 2.501 (peeled x4) | 1.808 (neutral) |
+| k_anneal | 2.236 | 2.504 | 1.808 (neutral) |
+| full (+admission+probes) | 2.232 | 2.502 | 1.806 (neutral) |
+
+**Verdict: the revision FAILS criterion 1 and is REJECTED for the final
+form.** All three revised variants make the iteration nearly inert on
+real data: they remove the DREGON ratchet (criterion 2 PASS, 1.86 ->
+1.81) but also remove the FLY124 twin gain (2.26 -> 2.50, criterion 1
+FAIL). Ramps unchanged on naive; peeled drifts +0.06 by x4 (criterion 3
+marginal PASS). Mechanism: the narrow annealed bands only accept
+corrections when the init comb is already near-exact — that is exactly
+the synthetic condition (hence the large synthetic gains) and exactly
+NOT the FLY124 twin condition, where capture of the 6 Hz-distant true
+line is the source of the gain. The peel-energy GUARD already gives the
+good half of this trade (init fallback on DREGON-displaced and ramp
+windows, FLY124 gains kept, guarded flagship 2.193): the revision is
+dominated by the guard and adds nothing.
+
+**Channel ablation (protocol variant, mic subsets seed 0)**: C=8 init
+1.81/2.52 (dregon/fly124 cruise); C=4: 10.28/2.56; C=2: 9.77/2.51; C=1:
+18.76/5.72. Two findings: (1) the SEED is the channel-hungry stage —
+DREGON blind capture collapses without the full 8-mic array, while
+FLY124 cruise is essentially intact at C=2; (2) the pi_kalman iteration
+itself still helps at C=1-2 on FLY124 (C=2: 2.51 -> 2.26 peeled x3), so
+the multi-channel pooling is not what makes the iteration work — this
+answers the single-channel question raised in the explainer review. The
+C=4 ramp blowup (28.7) is a seed octave failure on that specific subset,
+not an iteration effect.
+
+**Final form stays**: blind full-range Viterbi init + guarded peeled
+alternation, protocol bands (6 Hz), peel-energy guard. The k-scaled
+band option remains available as an opt-in for near-exact-init regimes
+(synthetic, telemetry-seeded), where it is strictly better.
