@@ -334,12 +334,59 @@ synthetic battery — where the sibling reconstruction is clean and M2 does pay
 — it costs ~6 % (refine_v2 2.196 → 2.318, refine_v3 1.767 → 1.872). Treat
 `--m2-gate move` as a real-data switch, exactly like `--v2-rounds 1`.
 
+### Post-recalibration neural re-score (2026-08-03/04, jobs `bash-3efa14` + `bash-ff5033`)
+
+The neural rows of the 2026-07-29 scoreboard below were scored against the
+pre-recalibration pin and were stale. This table re-scores them on
+`beatvk-valid-raw@54849c13ed3a` with the SAME scorer and settings
+(`scripts/beatvk_eval.py --pred model:<key>`, arm `none`, chmean stitched
+inference). **Sanity check passed: every DREGON column reproduces its
+2026-07-29 value exactly** (DREGON inputs are bit-identical between pins),
+so each delta below is the FLY124 label + 86 ms audio correction only.
+
+| row (registry key) | dregon_cruise | fly124_cruise | fly124 stale | Δ |
+|---|---|---|---|---|
+| **CKLA phase-only 4 s** (`ckla_phaseonly_4s_best`) | **2.546** | **1.286** | 1.077 | +0.209 |
+| CKLA phase-only 8 s (`ckla_phaseonly_8s_best`) | 3.102 | **1.218** | 1.154 | +0.064 |
+| CKLA phase-only 1 s (`ckla_phaseonly_best`) | 3.224 | 1.428 | 1.282 | +0.146 |
+| CKLA mean fs_v2 (`ckla_pnoise_fs_v2_best`) | 3.066 | 1.511 | 1.403 | +0.108 |
+| KLA fs_v2 (`ckla_norot_fs_v2_best`) | 3.129 | 1.813 | 1.517 | +0.296 |
+| scv2 fs_v2 (`scv2_fs_v2_best`) | 2.856 | 2.385 | 2.407 | −0.022 |
+| uni_gru128 fs_v2 (`unigru128_fs_v2_best`) | 4.247 | 2.255 | 2.267 | −0.012 |
+| transformer fs_v2 (`g2_if_freqscale_v2_best`) | 3.385 | 3.473 | 2.923 | +0.550 |
+
+**Hybrid refresh** (job `bash-ff5033`): `beatvk_vk_arms --arms neural_traj`
+(seeds `ckla_phaseonly_best`) on FLY124 w03+w04, then
+`pi_kalman_protocol --pair-mode joint` — the smoke-window pair of the
+2026-07-29 "neural_traj + pi_kalman joint" row. Pooled over w03+w04:
+neural track **0.869**, after pi_kalman **0.641** (was 1.016 → 0.859).
+The corrected labels improve BOTH sides of that comparison.
+
+Reading:
+
+- CKLA phase-only 4 s stays the best pooled non-oracle row on both pools.
+  The 8 s arm is now the best FLY124 pure-neural number (1.218).
+- The ranking is unchanged except the fs_v2 transformer, whose real +0.550
+  regression drops it below scv2 and uni_gru128 on FLY124.
+- The extra `ckla_norot_fs_v2_s2_best` run (3.562 / 1.787) confirms the
+  scoreboard "KLA (fs_v2)" row is the `_best` checkpoint (3.129 matches).
+- `scripts/rps_predictor_vk_eval.py`'s hardcoded `CLIPS` table (michaels
+  GT means/stds, ~L232–246) is NOT used by `beatvk_eval.py` — windows and
+  regimes come from the dataset manifest — so no constant fix was needed
+  here. That table is still stale for its own 37-clip protocol.
+- Raw reports: `results/beatvk_eval/rescore54_<key>/report.json` and
+  `results/pi_kalman_protocol/neural_smoke_rescore/report.json` in the two
+  jobs' `omnirun pull` outputs.
+
 ### Full scoreboard on the fixed raw protocol (2026-07-29) — PRE-RECALIBRATION
 
 > Kept for history. Every `fly124_*` column below was scored against
 > `beatvk-valid-raw@268c766052cb`, i.e. the old FLY124 labels *and* the old
-> audio alignment; see the re-scored table above for what these become.
-> DREGON columns are unaffected and remain current.
+> audio alignment; see the re-scored tables above for what these become.
+> DREGON columns are unaffected and remain current. **The neural rows
+> (including the 2026-07-30 8 s addition and the neural_traj + pi_kalman
+> 0.859) are SUPERSEDED by the 2026-08-03/04 re-score above.** The VK rows
+> were re-scored 2026-07-31 (also above).
 
 `beatvk-valid-raw@268c766052cb`, 15 windows, per-window PIT-MAE vs RAW
 telemetry, pooled (arm `none`). Steady = DREGON w1/w2 ×3 + FLY124 w3–5
