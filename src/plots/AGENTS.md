@@ -52,6 +52,27 @@ overrides (`coerce_frame(frame, rps="motor_speed")` or the same kwargs on
 `dwym`) are silent and win (a clobbered canonical entry moves to
 `<name>_orig`). Unknown extra timeseries are KEPT as additional tracks.
 
+## Exploration (`plots/explore.py`)
+
+Notebook data-exploration primitives (Phase 6). All four accept a dload
+dataset **name**, a map-style dataset, or any iterable of `td.Frame`s:
+
+- `explore.datasets(sizes=False)` — the `dload.lock` catalog as a pandas
+  DataFrame (`sizes=True` fetches manifests: network + credentials).
+- `explore.meta_table(x, fields=None, limit=32)` — sample `meta` as a
+  DataFrame, plus computed `entries` / `duration_s` columns.
+- `explore.grid(x, n=12, seed=None, scan=None, fmax=..., audio=...)` —
+  reservoir-sampled spectrogram thumbnails with meta captions; returns a
+  `DwymResult` (`route="grid"`). A dataset name gets a seeded streaming
+  shuffle for shard spread.
+- `explore.pick(x, index_or_query)` — one sample by index, meta-id
+  substring, or predicate; returned **coerced** (`coerce_frame`), ready for
+  `dwym` / `zoo.FrameModel`.
+
+`explore` imports `data_processing` (streams, frames) — allowed: `plots`
+sits above `data_processing` in the layer contract. Only the thumbnail grid
+layout is new rendering code; everything else delegates.
+
 ## Architecture
 
 - `timeframe/` — the layout engine. `plot_timeframe(frame, tracks=[...])`
