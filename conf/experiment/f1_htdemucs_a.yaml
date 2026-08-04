@@ -1,0 +1,29 @@
+# @package _global_
+# F1 HTDemucs v4 (hybrid time+spectrogram, ~42M) fine-tuned from the official
+# Meta music-separation checkpoint — Pass A (drone noises only). Blind SE (no RPS).
+# See docs/experiments/f1-se-blind-baselines.md and conf/experiment/f1_htdemucs_a.md.
+defaults:
+  - override /data: se_baselines_a
+  - override /model: f1_htdemucs
+  - override /loss: si_sdr_mrstft
+  - override /metrics: separation_basic
+
+experiment_name: f1_htdemucs_a
+# fp32: HTDemucs runs a complex STFT/iSTFT (cac) through the freq branch —
+# the same ComplexHalf gap that broke MP-SENet/TF-GridNet under autocast.
+# The model has no internal fp32 STFT boundary, so no AMP (do not spend
+# cluster time discovering half-precision failure modes on a fine-tune).
+amp: false
+resume: true  # chainable across wall-limited job segments (last.ckpt)
+samples_per_validation: 20000
+epochs: 150
+patience: 30
+optim:
+  # Fine-tune LR: 10x below the from-scratch F1 default (1e-3). One param
+  # group (the loop's optimizer contract), so trunk and remapped head share
+  # it; the head is warm-started from the semantically closest stems, so a
+  # separate higher head LR is not needed.
+  lr: 1.0e-4
+  monitor: si_sdr
+  monitor_mode: max
+  patience: 15

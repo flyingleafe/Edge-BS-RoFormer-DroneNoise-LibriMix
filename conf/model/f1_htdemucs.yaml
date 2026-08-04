@@ -1,0 +1,21 @@
+# HTDemucs v4 (Rouard et al., ICASSP 2023) FINE-TUNED from the official Meta
+# music-separation checkpoint (htdemucs, 955717e8-8726e21a.th: 44.1 kHz stereo,
+# 4 stems) — not trained from scratch. The wrapper
+# (src/models/htdemucs_ft.py) resamples 16 k<->44.1 k around the pretrained
+# core, duplicates mono->stereo (averages back), and warm-starts the 2-source
+# head: speech <- VOCALS stem, noise <- OTHER stem (the only source-dependent
+# tensors are decoder.3/tdecoder.3 conv_tr weight+bias). The checkpoint is
+# staged on R2 so cluster jobs need no internet; it downloads once into
+# .cache/r2_checkpoints/ via training.artifacts.resolve_checkpoint_uri.
+task: speech_enhancement
+task_params:
+  n_channels: null
+  use_rps: false
+  predict_rps: false
+  sr:
+  - 16000
+  - 1
+_target_: models.htdemucs_ft.build_htdemucs_ft
+params:
+  checkpoint: r2://ml-data/artifacts/htdemucs_pretrained/htdemucs_955717e8-8726e21a.th
+  sample_rate: 16000

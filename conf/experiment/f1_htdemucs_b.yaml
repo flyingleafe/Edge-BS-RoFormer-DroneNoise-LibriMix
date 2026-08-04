@@ -1,0 +1,23 @@
+# @package _global_
+# F1 HTDemucs v4 (hybrid time+spectrogram, ~42M) fine-tuned from the official
+# Meta music-separation checkpoint — Pass B (all harmonic noises, category-uniform).
+# Blind SE (no RPS). See docs/experiments/f1-se-blind-baselines.md and
+# conf/experiment/f1_htdemucs_a.md (design decisions apply to both passes).
+defaults:
+  - override /data: se_baselines_b
+  - override /model: f1_htdemucs
+  - override /loss: si_sdr_mrstft
+  - override /metrics: separation_basic
+
+experiment_name: f1_htdemucs_b
+# fp32: complex STFT (cac) path, no internal fp32 boundary — see f1_htdemucs_a.yaml.
+amp: false
+resume: true  # chainable across wall-limited job segments (last.ckpt)
+samples_per_validation: 20000
+epochs: 150
+patience: 30
+optim:
+  lr: 1.0e-4  # fine-tune LR — see f1_htdemucs_a.yaml
+  monitor: si_sdr
+  monitor_mode: max
+  patience: 15
