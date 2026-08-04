@@ -164,6 +164,29 @@ class ArtifactStore:
             return None
         return self._uri(key)
 
+    def upload_file(self, path: str | Path, subkey: str) -> str | None:
+        """Upload one small file under this experiment's key root.
+
+        ``subkey`` is the key suffix below ``<prefix>/<experiment_name>/``,
+        e.g. ``"eval/metrics.json"``. Returns the ``r2://...`` URI, or
+        ``None`` (disabled / missing creds / upload failed) — same defensive
+        contract as the other upload methods.
+        """
+        if not self.enabled:
+            logger.info("ArtifactStore: disabled; skipping file upload for %s", path)
+            return None
+        client = self._get_client()
+        if client is None:
+            return None
+        src = Path(path)
+        key = f"{self._key_root()}/{subkey.strip('/')}"
+        try:
+            client.upload_file(str(src), self.bucket, key)
+        except Exception:
+            logger.warning("ArtifactStore: failed to upload file %s", src, exc_info=True)
+            return None
+        return self._uri(key)
+
     def upload_val_samples(self, epoch: int, samples: Sequence[ValSample]) -> str | None:
         """Upload one epoch's validation-sample audio/figures + a manifest.
 

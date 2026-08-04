@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 import hydra
 import torch
@@ -27,6 +28,7 @@ from torch.utils.data import DataLoader
 
 from data_processing.collate import batch_size as frame_batch_size
 from data_processing.collate import frame_collate, slice_sample
+from training.artifacts import ArtifactStore
 from training.config import (
     build_dataset,
     build_metrics,
@@ -35,13 +37,16 @@ from training.config import (
     register_configs,
 )
 from training.validate import validate_config
+from utils.checkpoints import resolve_checkpoint_uri
 
 register_configs()
 
 
 def _checkpoint_path(cfg: DictConfig) -> Path:
     if cfg.checkpoint:
-        return Path(cfg.checkpoint)
+        # ``r2://`` URIs are downloaded (once, cached) to a local path;
+        # plain paths pass through unchanged.
+        return Path(resolve_checkpoint_uri(str(cfg.checkpoint)))
     return Path(cfg.results_root) / cfg.experiment_name / "best.ckpt"
 
 
@@ -105,6 +110,7 @@ def main(cfg: DictConfig) -> None:
         for i, row in enumerate(result.rows):
             writer.writerow({"sample": i, **row})
 
+    per_snr_written = False
     if any(row.get("input_snr") is not None for row in result.rows):
         grouped = result.grouped("mean")
         with open(out_dir / "per_snr.csv", "w", newline="") as f:
@@ -112,6 +118,23 @@ def main(cfg: DictConfig) -> None:
             writer.writeheader()
             for snr in sorted(grouped, key=lambda k: (k is None, k)):
                 writer.writerow({"input_snr": snr, **grouped[snr]})
+        per_snr_written = True
+
+    # Publish eval outputs next to the experiment's checkpoints on R2
+    # (``artifacts/<experiment>/eval/``) — the zoo cache harvests them, so
+    # metrics travel with the artifact store. Same defensive store as
+    # training: a no-op without creds / with artifacts.enabled=false.
+    store: Any = ArtifactStore(
+        experiment_name=cfg.experiment_name,
+        bucket=cfg.artifacts.bucket,
+        prefix=cfg.artifacts.prefix,
+        enabled=cfg.artifacts.enabled,
+    )
+    uploaded = store.upload_file(out_dir / "metrics.json", "eval/metrics.json")
+    if per_snr_written:
+        store.upload_file(out_dir / "per_snr.csv", "eval/per_snr.csv")
+    if uploaded:
+        print(f"Eval metrics uploaded to {uploaded}")
 
     print(f"Eval results written to {out_dir}")
     print(json.dumps(means, indent=2))

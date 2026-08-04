@@ -92,6 +92,7 @@ packages = [
     "src/models",
     "src/data_processing",
     "src/tracking",
+    "src/zoo",
     "src/plots",
     "src/losses",
     "src/metrics",
@@ -110,6 +111,7 @@ root_packages = [
     "metrics",
     "plots",
     "training",
+    "zoo",
     "experiments",
 ]
 include_external_packages = false
@@ -125,6 +127,7 @@ include_external_packages = false
 name = "core layers"
 type = "layers"
 layers = [
+    "zoo",
     "training",
     "plots",
     "tasks",
@@ -165,6 +168,7 @@ source_modules = [
     "metrics",
     "plots",
     "training",
+    "zoo",
 ]
 forbidden_modules = ["experiments"]
 

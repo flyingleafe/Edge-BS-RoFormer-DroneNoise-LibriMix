@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import soundfile as sf
@@ -92,6 +93,37 @@ def test_upload_checkpoint_exception_does_not_propagate(tmp_path):
     # Must not raise.
     result = store.upload_checkpoint(ckpt)
     assert result is None
+
+
+# ─── upload_file ────────────────────────────────────────────────────────────
+
+
+def test_upload_file_writes_expected_key(tmp_path):
+    metrics = tmp_path / "metrics.json"
+    metrics.write_bytes(b'{"si_sdr": 1.5}')
+    client = FakeS3Client()
+    store: Any = ArtifactStore(experiment_name="exp1", client=client, enabled=True)
+
+    uri = store.upload_file(metrics, "eval/metrics.json")
+
+    expected_key = "ml-data/artifacts/exp1/eval/metrics.json"
+    assert uri == f"r2://{expected_key}"
+    assert client.objects[expected_key] == b'{"si_sdr": 1.5}'
+
+
+def test_upload_file_disabled_and_failure_are_noops(tmp_path):
+    metrics = tmp_path / "metrics.json"
+    metrics.write_bytes(b"{}")
+
+    disabled: Any = ArtifactStore(experiment_name="exp1", client=FakeS3Client(), enabled=False)
+    assert disabled.upload_file(metrics, "eval/metrics.json") is None
+
+    failing: Any = ArtifactStore(
+        experiment_name="exp1",
+        client=FakeS3Client(fail_keys={"ml-data/artifacts/exp1/eval/metrics.json"}),
+        enabled=True,
+    )
+    assert failing.upload_file(metrics, "eval/metrics.json") is None
 
 
 # ─── upload_val_samples ─────────────────────────────────────────────────────

@@ -7,6 +7,8 @@ wandb/
 results/
 # dload / online-mix / download scratch caches
 .cache/
+# zoo checkpoint index (R2 is the source of truth; this is a local cache)
+.checkpoints-cache.json
 # omnirun shared worktrees
 .trees/
 .direnv/
