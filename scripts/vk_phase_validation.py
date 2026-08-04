@@ -55,11 +55,11 @@ recovery (not just frequency) from fully-synthetic to real data:
 
 Methods per run: ``init`` (metrics of the init trajectory as-is — the metric
 floor/ceiling), ``stage_d`` (``refine_coherent`` with its defaults),
-``iter_warp`` (``data_processing.warp_refinement.iter_warp_refine`` —
+``iter_warp`` (``tracking.warp_refinement.iter_warp_refine`` —
 iterated angular-resampling / generalized-demodulation refinement,
 coarse-to-fine in harmonic order; per-round per-order lock diagnostics are
 stored in the run NPZ as ``diag``), ``pi_kalman``
-(``data_processing.phase_increment_tracker.pi_kalman_refine`` — ML
+(``tracking.phase_increment_tracker.pi_kalman_refine`` — ML
 instantaneous frequency from per-harmonic envelope phase increments fused
 by an RTS-smoothed random-walk Kalman posterior; per-harmonic diffusion
 rates ``q_k`` estimated from the data and stored in the run NPZ ``diag``),
@@ -142,17 +142,17 @@ from vk_blind_annotation import (
 )
 
 from data_processing import rps_synthesis  # noqa: E402
-from data_processing.phase_increment_tracker import (  # noqa: E402
+from tracking.phase_increment_tracker import (  # noqa: E402
     DEFAULTS as PI_KALMAN_DEFAULTS,
 )
-from data_processing.phase_increment_tracker import pi_kalman_refine  # noqa: E402
-from data_processing.rps_refinement import (  # noqa: E402
+from tracking.phase_increment_tracker import pi_kalman_refine  # noqa: E402
+from tracking.rps_refinement import (  # noqa: E402
     RefineConfig,
     compute_logmag,
     estimate_clock_offset,
     refine_coherent,
 )
-from data_processing.vk_tracking import (  # noqa: E402
+from tracking.vk_tracking import (  # noqa: E402
     VKConfig,
     _demod_tracks_fft,
     demodulate,
@@ -160,8 +160,8 @@ from data_processing.vk_tracking import (  # noqa: E402
     vk_reconstruct,
     vk_track,
 )
-from data_processing.warp_refinement import DEFAULT_RUNGS as WARP_RUNGS  # noqa: E402
-from data_processing.warp_refinement import iter_warp_refine  # noqa: E402
+from tracking.warp_refinement import DEFAULT_RUNGS as WARP_RUNGS  # noqa: E402
+from tracking.warp_refinement import iter_warp_refine  # noqa: E402
 
 SR = 16000
 FRAME_HOP_S = 0.032  # evaluation grid (campaign convention)

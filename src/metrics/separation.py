@@ -16,8 +16,8 @@ import torch.nn.functional as F
 from pesq import pesq as _pesq_fn
 from pystoi import stoi as _stoi_fn
 
+from framespec import FrameSpec
 from metrics._common import AUDIO_RATE, audio_series_spec, get_array
-from tasks.spec import FrameSpec
 
 # ─── Pure numpy/torch functions ─────────────────────────────────────────────
 

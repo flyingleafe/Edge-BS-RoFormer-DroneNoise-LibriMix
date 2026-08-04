@@ -16,7 +16,7 @@ turn it into a *tracker* rather than a filter with known frequencies:
    solves its own coupled system.
 3. **Outer frequency loop** — VK gives envelopes given frequencies; the
    trajectory itself is refined by the phase-slope of the envelopes
-   (stage D of :mod:`data_processing.rps_refinement`, Fisher weights
+   (stage D of :mod:`tracking.rps_refinement`, Fisher weights
    ``k^2 |x|^2``), fused across channels and harmonics by a
    smoothness-regularised weighted 1-D solve, with an annealing schedule on
    ``k_max`` (and the demod/VK bandwidth) for basin capture.
@@ -260,7 +260,7 @@ def _vk_noise_bandwidth(bw_hz: float, fs_env: float, p: int) -> float:
     return fs_env * float(np.mean(h**2))
 
 
-def _second_diff(n: int) -> sparse.csr_array:
+def second_diff(n: int) -> sparse.csr_array:
     """``(n-2, n)`` second-difference operator ``[1, -2, 1]``."""
     if n < 3:
         raise ValueError(f"need at least 3 samples for a second difference, got {n}")
@@ -272,7 +272,7 @@ def _second_diff(n: int) -> sparse.csr_array:
     return d2.tocsr()
 
 
-def _stride(cfg: VKConfig) -> tuple[int, float]:
+def env_stride(cfg: VKConfig) -> tuple[int, float]:
     """Decimation stride and the *actual* envelope rate ``fs / stride``."""
     stride = max(1, int(round(cfg.fs / cfg.fs_env)))
     return stride, cfg.fs / stride
@@ -299,7 +299,7 @@ def _lp_decimate(x: np.ndarray, sos: np.ndarray, stride: int) -> np.ndarray:
     return sosfiltfilt(sos, x, axis=-1, padlen=padlen)[..., ::stride]
 
 
-def _fft_workers() -> int:
+def fft_workers() -> int:
     """FFT worker threads: follow ``OMP_NUM_THREADS`` (the same knob callers
     already use to cap BLAS), clamped to the CPUs actually available to this
     process (cgroup/affinity — oversubscribing pocketfft workers on a
@@ -335,7 +335,7 @@ def _fft_lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:
     """
     from scipy import fft as sfft
 
-    w = _fft_workers()
+    w = fft_workers()
     n_pad = stride * n_env
     xc = np.asarray(x, dtype=np.complex64)
     spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
@@ -593,7 +593,7 @@ def demodulate(audio: np.ndarray, phase: np.ndarray, cfg: VKConfig) -> np.ndarra
     phase = np.atleast_2d(np.asarray(phase, dtype=np.float64))
     if phase.shape[-1] != y.shape[-1]:
         raise ValueError(f"phase length {phase.shape[-1]} != audio length {y.shape[-1]}")
-    stride, fs_env = _stride(cfg)
+    stride, fs_env = env_stride(cfg)
     n_ch, n_t = y.shape
     n_env = len(range(0, n_t, stride))
     n_tracks = phase.shape[0]
@@ -630,7 +630,7 @@ def _demod_tracks_fft(
     lowpass-decimated in memory-bounded batches.
     """
     y32 = np.asarray(np.atleast_2d(audio), dtype=np.float32)
-    stride, _ = _stride(cfg)
+    stride, _ = env_stride(cfg)
     n_ch, n_t = y32.shape
     n_env = len(range(0, n_t, stride))
     n_tracks = len(rotor)
@@ -686,7 +686,7 @@ def vk_envelopes(
     n_t = y.shape[-1]
     if r.shape[-1] != n_t:
         raise ValueError(f"r length {r.shape[-1]} != audio length {n_t} (audio-rate expected)")
-    stride, fs_env = _stride(cfg)
+    stride, fs_env = env_stride(cfg)
     t_env = np.arange(0, n_t, stride, dtype=np.float64) / cfg.fs
     n_env = len(t_env)
     k_top = cfg.k_max if k_hi is None else min(int(k_hi), cfg.k_max)
@@ -710,7 +710,7 @@ def vk_envelopes(
         z = demodulate(y, k[:, None] * phase[rotor], cfg)
     groups = _coupling_groups(f, valid, couple_hz)
 
-    d2 = _second_diff(n_env)
+    d2 = second_diff(n_env)
     d2td2 = (d2.T @ d2).tocsr()  # banded, bandwidth 2p+1
     d2td2_diags = (
         np.asarray(d2td2.diagonal(0)),
@@ -886,7 +886,7 @@ def _demod_residual(resid: np.ndarray, env: Envelopes, cfg: VKConfig) -> np.ndar
     return demodulate(resid, env.k[:, None] * env.phase[env.rotor], cfg)
 
 
-def _k_schedule(cfg: VKConfig) -> list[int]:
+def k_schedule(cfg: VKConfig) -> list[int]:
     """Per-round ``k_max``: geometric growth for capture, else fixed."""
     if cfg.k_schedule == "fixed" or cfg.n_outer <= 1 or cfg.k_max <= cfg.k_min:
         return [cfg.k_max] * cfg.n_outer
@@ -897,7 +897,7 @@ def _k_schedule(cfg: VKConfig) -> list[int]:
     return [int(round(k_start * ratio ** (rd / (cfg.n_outer - 1)))) for rd in range(cfg.n_outer)]
 
 
-def _bw_schedule(cfg: VKConfig, fs_env: float) -> list[float]:
+def bw_schedule(cfg: VKConfig, fs_env: float) -> list[float]:
     """Per-round VK/demod bandwidth: wide → narrow alongside the ``k`` schedule.
 
     Capture requires the passband to admit the initial detuning ``k * delta0``
@@ -1003,7 +1003,7 @@ def _freq_update(
     scale = float(den[den > 0].mean())
     w_norm = den / scale
     fused = num / np.maximum(den, _TINY * scale)
-    d2 = _second_diff(len(fused))
+    d2 = second_diff(len(fused))
     d2td2 = (d2.T @ d2).tocsr()
     # Small anchor keeps delta -> 0 where no track carries evidence. The
     # system is real SPD pentadiagonal — solved directly in banded storage.
@@ -1104,12 +1104,12 @@ def vk_track(
         raise ValueError(f"r_init has {r_init.shape[-1]} frames, frame_times {len(frame_times)}")
     n_t = y.shape[-1]
     t_aud = np.arange(n_t, dtype=np.float64) / cfg.fs
-    stride, fs_env = _stride(cfg)
+    stride, fs_env = env_stride(cfg)
     t_env = np.arange(0, n_t, stride, dtype=np.float64) / cfg.fs
     r_env = np.stack([np.interp(t_env, frame_times, r_init[i]) for i in range(r_init.shape[0])])
 
-    ks = _k_schedule(cfg)
-    bws = _bw_schedule(cfg, fs_env)
+    ks = k_schedule(cfg)
+    bws = bw_schedule(cfg, fs_env)
     lams = (
         list(np.geomspace(10.0 * cfg.traj_lambda, cfg.traj_lambda, cfg.n_outer))
         if cfg.n_outer > 1

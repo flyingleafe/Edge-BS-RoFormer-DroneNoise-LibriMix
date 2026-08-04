@@ -248,7 +248,7 @@ def whitened_spec(audio: np.ndarray, n_fft: int) -> tuple[np.ndarray, float, np.
     from beatvk_vk_arms import SEED_CFG, SR
     from scipy.ndimage import median_filter
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     spec = compute_logmag(audio, RefineConfig(sample_rate=SR, n_fft=n_fft, device="cpu"))
     lm_raw = spec.logmag.cpu().numpy()
@@ -282,7 +282,7 @@ def cost_unit(task: tuple[str, Path, str, str]) -> tuple[str, str]:
         import rps_refine_lab as lab
         from beatvk_vk_arms import _coarse_spec, fullrange_init
 
-        from data_processing.joint_beam_tracker import (
+        from tracking.joint_beam_tracker import (
             BeamCfg,
             EmissionCfg,
             OUPrior,
@@ -485,7 +485,7 @@ def ceiling_unit(task: tuple[str, Path, str, str]) -> tuple[str, str]:
         import rps_refine_lab as lab
         import torch
 
-        from data_processing.joint_beam_tracker import (
+        from tracking.joint_beam_tracker import (
             BeamCfg,
             EmissionCfg,
             _smooth_frames,

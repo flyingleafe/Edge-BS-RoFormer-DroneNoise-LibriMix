@@ -87,9 +87,11 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/utils",
+    "src/framespec",
     "src/tasks",
     "src/models",
     "src/data_processing",
+    "src/tracking",
     "src/plots",
     "src/losses",
     "src/metrics",
@@ -99,7 +101,9 @@ packages = [
 [tool.importlinter]
 root_packages = [
     "utils",
+    "framespec",
     "data_processing",
+    "tracking",
     "models",
     "tasks",
     "losses",
@@ -110,16 +114,34 @@ root_packages = [
 ]
 include_external_packages = false
 
-# Baseline contracts (Phase 0 of docs/refactor-2026-08-plan.md § 3.5). Only
-# contracts that pass today are here; the layers contract lands in phase 2.
+# Contracts per docs/refactor-2026-08-plan.md § 3.5.
 # NOTE: "utils is a leaf" is deliberately absent — utils.get_model_from_config
-# lazily imports models.*, so that contract cannot pass yet.
+# lazily imports models.*, so that contract cannot pass until the Phase 3
+# registry dict-ification.
+
+# Higher layers may import lower ones, never the reverse. experiments is
+# fenced separately below. utils joins the bottom of this list once the
+# Phase 3 registry dict-ification removes its lazy models.* imports.
+[[tool.importlinter.contracts]]
+name = "core layers"
+type = "layers"
+layers = [
+    "training",
+    "plots",
+    "tasks",
+    "metrics",
+    "losses",
+    "data_processing",
+    "models",
+    "tracking",
+    "framespec",
+]
 
 [[tool.importlinter.contracts]]
-name = "nothing imports experiments"
+name = "tracking stays pure"
 type = "forbidden"
-source_modules = [
-    "utils",
+source_modules = ["tracking"]
+forbidden_modules = [
     "data_processing",
     "models",
     "tasks",
@@ -128,13 +150,23 @@ source_modules = [
     "plots",
     "training",
 ]
-forbidden_modules = ["experiments"]
 
 [[tool.importlinter.contracts]]
-name = "models must not import training"
+name = "nothing imports experiments"
 type = "forbidden"
-source_modules = ["models"]
-forbidden_modules = ["training"]
+source_modules = [
+    "utils",
+    "framespec",
+    "data_processing",
+    "tracking",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+]
+forbidden_modules = ["experiments"]
 
 [tool.ruff]
 target-version = "py312"
@@ -156,7 +188,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["utils", "tasks", "models", "data_processing"]
+known-first-party = ["utils", "framespec", "tasks", "models", "data_processing", "tracking"]
 
 [tool.ruff.lint.per-file-ignores]
 # Standalone report/slide scripts bootstrap sys.path / os.chdir / matplotlib

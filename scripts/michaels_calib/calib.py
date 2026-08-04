@@ -45,7 +45,7 @@ for _p in (str(HERE), str(REPO / "scripts"), str(REPO / "src")):
 from vk_blind_annotation import MIDBAND_CFGS  # noqa: E402
 from windows import SR, Window  # noqa: E402
 
-from data_processing.vk_tracking import vk_envelopes, vk_reconstruct  # noqa: E402
+from tracking.vk_tracking import vk_envelopes, vk_reconstruct  # noqa: E402
 
 #: Identical to ``rps_refine_lab.RECON_CFG`` (same one-line definition) — the
 #: established referee configuration of the precision campaign.

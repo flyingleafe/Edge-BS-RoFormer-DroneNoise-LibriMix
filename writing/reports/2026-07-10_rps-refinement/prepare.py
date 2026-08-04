@@ -32,7 +32,7 @@ C_D = "#1f77b4"  # stage D (coherent)
 
 def fig_method_comb() -> None:
     """Hero figure: mistuned comb misses the ridges; refinement locks it."""
-    from data_processing.rps_refinement import RefineConfig, compute_logmag, refine_trajectories
+    from tracking.rps_refinement import RefineConfig, compute_logmag, refine_trajectories
 
     sr, dur = 16000, 6.0
     t = np.arange(int(sr * dur)) / sr
@@ -362,7 +362,7 @@ def fig_confidence_gate() -> None:
 
 def fig_spcup() -> None:
     """Blind SPCup annotation: a clean two-comb lock vs an honest refusal."""
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     spc = RESULTS / "spcup"
     ku_name = "KU_Leuven__SPCUP19_KU_Leuven_Team_1_recording"

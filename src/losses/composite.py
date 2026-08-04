@@ -17,8 +17,8 @@ import tdseries as td
 import torch
 from torch import nn
 
+from framespec import FrameSpec, merge_specs
 from losses._common import Loss
-from tasks.spec import FrameSpec, merge_specs
 
 
 class LossTerm(NamedTuple):

@@ -80,8 +80,8 @@ import tdseries as td
 import torch
 from torch import nn
 
+from framespec import FrameSpec
 from losses._common import AUDIO_RATE, audio_series_spec, get_tensor
-from tasks.spec import FrameSpec
 
 __all__ = [
     "rice_nll",

@@ -79,7 +79,7 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO / "src") not in sys.path:
     sys.path.insert(0, str(_REPO / "src"))
 
-import data_processing.phase_increment_tracker as pit  # noqa: E402
+import tracking.phase_increment_tracker as pit  # noqa: E402
 
 SR = 16000
 #: Envelope/measurement grid.  Deliberately the stage's own ``fs_env`` so the
@@ -183,7 +183,7 @@ def _demod(
         b = buf[:, :m]
         if ramp is not None:
             b = b * ramp
-        z[:, idxs] = pit._zoom_lp_decimate(b, stride, n_env, band_cyc)
+        z[:, idxs] = pit.zoom_lp_decimate(b, stride, n_env, band_cyc)
         idxs.clear()
 
     cur = np.ones_like(c1)

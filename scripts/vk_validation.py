@@ -2,7 +2,7 @@
 
 Mirrors ``scripts/rps_refinement_validation.py`` (the predecessor evaluation of
 ``rps_refinement`` stages B+C / D) for the new tracker
-(``data_processing.vk_tracking``, design ``docs/vk-order-tracking-design.md``
+(``tracking.vk_tracking``, design ``docs/vk-order-tracking-design.md``
 §5.1). The 5 DREGON ``free-flight_*_room1`` recordings carry BOTH
 ``motors_command`` (the init training uses) and ``motors_measured`` (actual
 rotor speeds = ground truth):
@@ -74,18 +74,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from data_processing.rps_refinement import (  # noqa: E402
-    RefineConfig,
-    compute_logmag,
-    estimate_clock_offset,
-)
 from data_processing.sources.dregon import (  # noqa: E402
     clean_command_spikes,
     discover_recordings,
     get_geometry,
     load_timeframe,
 )
-from data_processing.vk_tracking import VKConfig, vk_track  # noqa: E402
+from tracking.rps_refinement import (  # noqa: E402
+    RefineConfig,
+    compute_logmag,
+    estimate_clock_offset,
+)
+from tracking.vk_tracking import VKConfig, vk_track  # noqa: E402
 
 SR = 16000
 SEG_LEN_S = 25.0  # ONE mid-recording segment per recording (runtime bound)

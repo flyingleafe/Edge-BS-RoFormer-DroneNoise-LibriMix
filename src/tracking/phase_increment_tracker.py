@@ -88,7 +88,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from data_processing.vk_tracking import _fft_workers
+from tracking.vk_tracking import fft_workers
 
 __all__ = ["DEFAULTS", "pi_kalman_refine"]
 
@@ -100,10 +100,10 @@ _MAX_CHANNELS = 8  # multichannel fusion cap (vk_tracking convention)
 # demodulation
 
 
-def _zoom_lp_decimate(x: np.ndarray, stride: int, n_env: int, band_cyc: float) -> np.ndarray:
+def zoom_lp_decimate(x: np.ndarray, stride: int, n_env: int, band_cyc: float) -> np.ndarray:
     """FFT brickwall lowpass (``|f| <= band_cyc`` cycles/sample) + decimate.
 
-    The zoom-IFFT of :func:`data_processing.vk_tracking._fft_lp_decimate`
+    The zoom-IFFT of :func:`tracking.vk_tracking._fft_lp_decimate`
     with a *parametric* cutoff below the decimated Nyquist: zero-pad the
     complex input to ``stride * n_env``, keep the ``+-band_cyc`` band
     (positive and negative bins — the input is complex), inverse-FFT at
@@ -111,7 +111,7 @@ def _zoom_lp_decimate(x: np.ndarray, stride: int, n_env: int, band_cyc: float) -
     """
     from scipy import fft as sfft
 
-    w = _fft_workers()
+    w = fft_workers()
     n_pad = stride * n_env
     xc = np.asarray(x, dtype=np.complex64)
     spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
@@ -156,9 +156,9 @@ def _demod_bank(
 
     def flush() -> None:
         m = len(idxs)
-        z_on[:, idxs] = _zoom_lp_decimate(buf[:, :m], stride, n_env, band_cyc)
+        z_on[:, idxs] = zoom_lp_decimate(buf[:, :m], stride, n_env, band_cyc)
         buf[:, :m] *= ramp
-        z_off[:, idxs] = _zoom_lp_decimate(buf[:, :m], stride, n_env, band_cyc)
+        z_off[:, idxs] = zoom_lp_decimate(buf[:, :m], stride, n_env, band_cyc)
         idxs.clear()
 
     cur = np.ones_like(c1)
@@ -365,7 +365,7 @@ def _pair_joint_obs(
     for k in ks_joint:
         band_k_hz = 0.5 * k * d_eff + band_hz
         phasor = np.exp(-1j * (k * phibar)).astype(np.complex64)
-        z = _zoom_lp_decimate(y32 * phasor[None, :], stride, n_env, band_k_hz / sr)  # (C, n_env)
+        z = zoom_lp_decimate(y32 * phasor[None, :], stride, n_env, band_k_hz / sr)  # (C, n_env)
         w_k_s = max(joint_win_s, 1.5 / (k * max(d_med, 1e-3)))
         n_w = int(round(w_k_s * fs_e))
         n_w = min(n_w, max(8, (n_env - 2 * n_trim) // 2))

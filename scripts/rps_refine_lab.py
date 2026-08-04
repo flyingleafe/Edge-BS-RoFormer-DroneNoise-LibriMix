@@ -63,7 +63,7 @@ Chains:
              then corridor-tracks it; up to 3 iterations.
   joint_beam WP17: replace `fullrange_init` + the viterbi_c / vit2dsp ladder
              stages with a JOINT 4-rotor beam search over the full speed vector
-             (data_processing.joint_beam_tracker), then feed the existing
+             (tracking.joint_beam_tracker), then feed the existing
              capture -> M1 -> M2 stages unchanged.  The coarse DP's state is one
              scalar c(t), so all four tracks share one shape by construction
              (WP3); this searches four independent trajectories under an OU
@@ -143,20 +143,20 @@ from vk_blind_annotation import (  # noqa: E402
 from vk_blind_sweep import SEED_CFG  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
-import data_processing.phase_increment_tracker as pit  # noqa: E402
-from data_processing.joint_beam_tracker import (  # noqa: E402
-    BeamCfg,
-    EmissionCfg,
-    OUPrior,
-    joint_beam_track,
-)
+import tracking.phase_increment_tracker as pit  # noqa: E402
 from data_processing.rps_synthesis import (  # noqa: E402
     MIXER,
     OUModeParams,
     RPSSynthConfig,
 )
 from data_processing.rps_synthesis import generate as rps_generate  # noqa: E402
-from data_processing.vk_blind_seeding import (  # noqa: E402
+from tracking.joint_beam_tracker import (  # noqa: E402
+    BeamCfg,
+    EmissionCfg,
+    OUPrior,
+    joint_beam_track,
+)
+from tracking.vk_blind_seeding import (  # noqa: E402
     SeedConfig,
     SeedResult,
     blind_seed,
@@ -164,7 +164,7 @@ from data_processing.vk_blind_seeding import (  # noqa: E402
     track_comb_confidence,
     whitened_logmag,
 )
-from data_processing.vk_tracking import (  # noqa: E402
+from tracking.vk_tracking import (  # noqa: E402
     VKConfig,
     vk_envelopes,
     vk_reconstruct,
@@ -491,7 +491,7 @@ PK_POLISH: dict[str, Any] = {
     "pair_mode": "gate",
 }
 
-# joint_beam (WP17) knobs — see data_processing.joint_beam_tracker for what each
+# joint_beam (WP17) knobs — see tracking.joint_beam_tracker for what each
 # one means and the measurement behind its default.  Overridable from the CLI so
 # the emission/prior balance can be swept on the cluster without code edits.
 JB_OU: dict[str, Any] = {}

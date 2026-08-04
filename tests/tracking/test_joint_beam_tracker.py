@@ -27,8 +27,7 @@ import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from data_processing.joint_beam_tracker import (  # noqa: E402
+from tracking.joint_beam_tracker import (
     NUM_ROTORS,
     BeamCfg,
     EmissionCfg,
@@ -39,7 +38,7 @@ from data_processing.joint_beam_tracker import (  # noqa: E402
     joint_beam_track,
     union_emission,
 )
-from data_processing.rps_synthesis import MIXER, modes_from_rps, rps_from_modes  # noqa: E402
+from tracking.rotors import MIXER, modes_from_rps, rps_from_modes
 
 FRAME_S = 0.032
 
@@ -211,7 +210,7 @@ def test_b0_zero_matches_the_lab_single_comb_score():
     """The emission must be the SAME contrast the existing chain uses, so the
     two are comparable: at b0 = 0 and uniform weights it reproduces
     ``rps_refine_lab._single_comb_scores`` on a zero base row."""
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
     import rps_refine_lab as lab  # noqa: PLC0415
 
     lm, bin_hz = _toy_spec([80.0, 84.0], n_frames=4)
@@ -304,7 +303,7 @@ def test_tracker_recovers_a_forced_single_candidate():
 
 def _objective(lm, bin_hz, W, emis, beam, ou):
     """Total cost of a trajectory ``W`` (T, 4) under the tracker's OWN objective."""
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     tab = jbt.comb_tables(torch.from_numpy(lm), bin_hz, emis)
     raw = jbt.comb_scores_from_tables(tab)
@@ -377,7 +376,7 @@ def test_score_trajectory_matches_the_reference_objective():
     """`score_trajectory` is the load-bearing measurement instrument of the
     objective-vs-search diagnosis, so it is pinned against this file's
     independent reimplementation of the same cost."""
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     bases = [72.0, 80.0, 88.0, 96.0]
     lm, bin_hz, st, truth = _synth_window(bases, n_frames=30, drift=1.5)
@@ -443,7 +442,7 @@ def test_union_accounting_survives_the_pooling_change(pool):
     Bases are chosen with no small-integer relations.  A harmonically related
     set is a separate case, tested below.
     """
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     bases = [71.0, 83.0, 91.0, 97.0]
     lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
@@ -484,7 +483,7 @@ def test_quantile_pooling_is_sensitive_to_a_contaminated_half_tooth_reference():
     reason sibling masking has to come BEFORE quantile pooling is trusted on a
     harmonically related rotor set.
     """
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     bases = [72.0, 80.0, 88.0, 96.0]  # every base an integer multiple of 8
     lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
@@ -517,7 +516,7 @@ def test_share_alone_orders_honest_above_parked_above_degenerate():
     them, each pools a high quantile over its slice, and they sum to more than
     they explain — measured at 0.302 for four-on-one against 0.241 honest.
     """
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     bases = [71.0, 83.0, 91.0, 97.0]
     lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
@@ -548,7 +547,7 @@ def test_claim_q_prices_a_comb_and_norm_cannot():
     raising it makes an extra comb cost more and shifts the balance toward
     assignments that explain fewer, better-evidenced combs.
     """
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     bases = [71.0, 83.0, 91.0, 97.0]
     lm, bin_hz, _st, _ = _synth_window(bases, n_frames=8)
@@ -586,7 +585,7 @@ def test_shared_peaks_widen_the_reachable_comb_mass():
     nothing.  Allowing repetition must widen the reachable mass range, which is
     the precondition for `claim_q` to be able to change an answer at all.
     """
-    import data_processing.joint_beam_tracker as jbt  # noqa: PLC0415
+    import tracking.joint_beam_tracker as jbt  # noqa: PLC0415
 
     bases = [71.0, 83.0, 91.0, 97.0]
     lm, bin_hz, st, _ = _synth_window(bases, n_frames=12)

@@ -111,7 +111,7 @@ from vk_blind_annotation import (  # noqa: E402
 from vk_blind_sweep import SEED_CFG  # noqa: E402  (identical seed config)
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
-from data_processing.vk_blind_seeding import (  # noqa: E402
+from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,
     whitened_logmag,
@@ -252,7 +252,7 @@ def _coarse_spec(audio: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, np.n
     """
     from scipy.ndimage import median_filter
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     rcfg = RefineConfig(sample_rate=SR, n_fft=COARSE_NFFT, device="cpu")
     spec = compute_logmag(audio, rcfg)

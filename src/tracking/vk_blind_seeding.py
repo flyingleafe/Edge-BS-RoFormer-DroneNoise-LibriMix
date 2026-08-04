@@ -65,7 +65,7 @@ from typing import Any
 
 import numpy as np
 
-from data_processing.vk_tracking import VKConfig, demodulate
+from tracking.vk_tracking import VKConfig, demodulate
 
 __all__ = [
     "SeedConfig",
@@ -259,7 +259,7 @@ def whitened_logmag(
     """
     from scipy.ndimage import median_filter
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     cfg = cfg or SeedConfig()
     rcfg = RefineConfig(sample_rate=int(round(fs)), device="cpu")

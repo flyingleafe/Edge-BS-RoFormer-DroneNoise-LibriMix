@@ -15,20 +15,17 @@ Run:  pytest tests/test_rotor_dp.py
 """
 
 import itertools
-import os
-import sys
 
 import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from data_processing.joint_beam_tracker import (  # noqa: E402
+from tracking.joint_beam_tracker import (
     EmissionCfg,
     comb_scores_from_tables,
     comb_tables,
 )
-from data_processing.rotor_dp import (  # noqa: E402
+from tracking.rotor_dp import (
     LatticeCfg,
     greedy_peel,
     residual_scores,

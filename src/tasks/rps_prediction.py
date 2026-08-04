@@ -27,6 +27,11 @@ import torch.nn as nn
 
 from data_processing.frames import get_meta, meta_dict, with_meta
 
+# Canonical home of ``align_rps_to_gt`` is ``losses.pit`` (moved in the 2026-08
+# refactor); re-exported here because plots/scripts/notebooks import it as
+# public API of this module.
+from losses.pit import align_rps_to_gt as align_rps_to_gt  # noqa: PLC0414
+
 # ── Constants ─────────────────────────────────────────────────────────────
 
 SR_AUDIO: float = 16000.0
@@ -35,66 +40,6 @@ HOP: int = 512
 FRAME_SR: Fraction = Fraction(16000, HOP)  # exact rate; ≈ 31.25 Hz — never a rounded float
 N_ROTORS: int = 4
 DEVICE: str = "cpu"  # evaluation default
-
-
-# ── Permutation alignment ─────────────────────────────────────────────────
-
-# Rotor counts are physically small (quadrotor = 4). An absurd R means the
-# caller passed a transposed (F, R) array, and the (R, R, F) pairwise cost
-# would be materialized over R = thousands of frames — fail fast instead of
-# allocating it and taking the machine down. Same guard style as
-# ``src/losses/pit.py::_MAX_PIT_SOURCES``.
-_MAX_PIT_ROTORS = 8
-
-
-def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
-    """Reorder a prediction's rotor rows to best-match the ground truth.
-
-    RPS predictors are trained with a permutation-invariant objective, so the
-    rotor *order* of a prediction is arbitrary: predicted row ``i`` does not
-    correspond to ground-truth rotor ``i``. Evaluation accounts for this by
-    searching all rotor assignments (see :func:`evaluate`'s ``pit`` branch).
-    **Any plot that overlays a prediction on the ground truth must apply the
-    same matching**, otherwise rotors appear swapped even when the prediction is
-    good.
-
-    Returns ``pred`` with its rotor rows permuted so that ``pred[k]``
-    corresponds to ``gt[k]`` under the assignment minimising total MSE. The
-    optimal linear assignment is identical to the brute-force 4!-permutation PIT
-    search used by evaluation, so plots and metrics agree.
-
-    ``pred`` and ``gt`` are ``(R, F)`` with the rotor axis FIRST; they may
-    differ in frame count (``gt`` is linearly resampled onto the prediction's
-    grid for the cost computation). If the shapes are incompatible (not 2-D,
-    mismatched/​<2 rotor counts) ``pred`` is returned unchanged. A rotor count
-    above ``_MAX_PIT_ROTORS`` raises ``ValueError`` — it means the input is
-    transposed ``(F, R)`` and matching would blow up over frames.
-    """
-    from scipy.optimize import linear_sum_assignment
-
-    pred = np.asarray(pred, dtype=np.float64)
-    gt = np.asarray(gt, dtype=np.float64)
-    if pred.ndim != 2 or gt.ndim != 2 or pred.shape[0] != gt.shape[0] or pred.shape[0] < 2:
-        return pred
-    if pred.shape[0] > _MAX_PIT_ROTORS:
-        raise ValueError(
-            f"align_rps_to_gt got R={pred.shape[0]} rotors (max {_MAX_PIT_ROTORS}). "
-            "Check the array layout — expected (R, F) with the rotor axis first; "
-            "a transposed (F, R) input would match over frames instead of rotors."
-        )
-
-    R, F = pred.shape
-    if gt.shape[1] != F:  # put GT on the prediction's frame grid
-        xp = np.linspace(0.0, 1.0, gt.shape[1])
-        xq = np.linspace(0.0, 1.0, F)
-        gt = np.vstack([np.interp(xq, xp, gt[r]) for r in range(R)])
-
-    # cost[i, j] = MSE(pred rotor i, gt rotor j); Hungarian == optimal PIT match.
-    cost = np.mean((pred[:, None, :] - gt[None, :, :]) ** 2, axis=-1)  # (R, R)
-    row, col = linear_sum_assignment(cost)
-    aligned = np.empty_like(pred)
-    aligned[col] = pred[row]
-    return aligned
 
 
 # ── Predictor protocol ────────────────────────────────────────────────────

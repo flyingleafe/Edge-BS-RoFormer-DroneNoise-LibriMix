@@ -53,7 +53,9 @@ The data layer has three layers, each declared exactly once — see
 | `noise_augmentations.py` | Strong **noise-chunk** augmentation family (`policy.noise_augmentations`, G6). See § "Strong noise augmentations". |
 | `time_warp.py` | `policy.noise_time_warp` — angular resampling of the noise+RPS pair. |
 | `harmonicity.py` | `measure_harmonicity(audio, sr)` → `Harmonicity`. Torch-free; the **analysis-stage** measure of "how harmonic" a noise source is (not baked into publish). |
-| `rps_synthesis.py`, `rps_refinement.py`, `vk_tracking.py`, `vk_blind_seeding.py`, `phase_increment_tracker.py`, `warp_refinement.py`, `collate.py` | RPS synthesis / refinement / Vold–Kalman tracking / batching (unchanged by the data refactor). |
+| `rps_synthesis.py`, `collate.py` | RPS synthesis / batching. The mixer constants (`MIXER`, `NUM_ROTORS`, `MODE_NAMES`, mode projections) live in `tracking.rotors`; `rps_synthesis` re-exports them. |
+
+Note: the VK/refinement tracking stack (`vk_tracking`, `rps_refinement`, `vk_blind_seeding`, `phase_increment_tracker`, `joint_beam_tracker`, `rotor_dp`, `warp_refinement`) moved to `src/tracking` (2026-08).
 
 
 ## DREGON Recording Inventory

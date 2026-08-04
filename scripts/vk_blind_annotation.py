@@ -1,6 +1,6 @@
 """Can the coupled VK tracker do FULL BLIND RPS annotation? (DREGON room1 GT)
 
-Tests whether ``data_processing.vk_tracking`` recovers correct rotor-speed
+Tests whether ``tracking.vk_tracking`` recovers correct rotor-speed
 trajectories from a much worse starting point than telemetry — or from none at
 all — on the 5 DREGON ``free-flight_*_room1`` recordings where
 ``motors_measured`` provides ground truth. Same 25 s mid-flight segments, tau
@@ -98,7 +98,7 @@ from vk_validation import (  # noqa: E402
     prepare_recording as _prepare_recording_uncached,
 )
 
-from data_processing.vk_tracking import (  # noqa: E402
+from tracking.vk_tracking import (  # noqa: E402
     Envelopes,
     VKConfig,
     vk_envelopes,
@@ -207,10 +207,10 @@ HARM_GUARD = 1.5  # rev/s: 2nd init peak must not be a half/double of the 1st
 PAIR_NUDGE = 0.5  # rev/s: 2 rotors per chosen peak at peak -/+ nudge
 BLIND_OFFSETS = (-1.5, -0.5, 0.5, 1.5)  # fallback when only one peak exists
 
-# Shared scan machinery now lives in data_processing.vk_blind_seeding (design
+# Shared scan machinery now lives in tracking.vk_blind_seeding (design
 # §7 blind seeding v2); the historical constants above are wired through
 # explicitly so the two places cannot drift apart.
-from data_processing.vk_blind_seeding import SeedConfig as _SeedConfig  # noqa: E402
+from tracking.vk_blind_seeding import SeedConfig as _SeedConfig  # noqa: E402
 
 _SEED_CFG = _SeedConfig(
     scan_lo=SCAN_LO,
@@ -242,11 +242,11 @@ def _whitened_spec(prep: Prepared) -> tuple[np.ndarray, float, np.ndarray]:
     docstring) — whitening subtracts a running median over frequency
     (``WHITEN_HZ`` window) so comb scores measure line evidence above the
     local background. Now a thin wrapper over
-    ``data_processing.vk_blind_seeding.whitened_logmag`` (the scan machinery's
+    ``tracking.vk_blind_seeding.whitened_logmag`` (the scan machinery's
     shared home since blind seeding v2, design §7); ``_SEED_CFG`` reproduces
     this script's historical constants exactly.
     """
-    from data_processing.vk_blind_seeding import whitened_logmag
+    from tracking.vk_blind_seeding import whitened_logmag
 
     return whitened_logmag(prep.audio, float(SR), _SEED_CFG)
 
@@ -257,14 +257,14 @@ def _comb_scan(white_vec: np.ndarray, bin_hz: float, grid: np.ndarray) -> np.nda
     Delegates to ``vk_blind_seeding.comb_scan`` (flat template = numerically
     identical to the historical implementation).
     """
-    from data_processing.vk_blind_seeding import comb_scan
+    from tracking.vk_blind_seeding import comb_scan
 
     return comb_scan(white_vec, bin_hz, grid, _SEED_CFG)
 
 
 def _scan_peaks(grid: np.ndarray, scores: np.ndarray) -> np.ndarray:
     """Indices of local maxima (>=1.5 rev/s apart), fallback to the argmax."""
-    from data_processing.vk_blind_seeding import scan_peaks
+    from tracking.vk_blind_seeding import scan_peaks
 
     return scan_peaks(grid, scores, _SEED_CFG)
 
@@ -626,10 +626,10 @@ def _smooth_deltas(
     from scipy.sparse import diags_array
     from scipy.sparse.linalg import splu
 
-    from data_processing.vk_tracking import _second_diff
+    from tracking.vk_tracking import second_diff
 
     w = weights / max(float(weights.mean()), 1e-12)
-    d2 = _second_diff(len(dvals))
+    d2 = second_diff(len(dvals))
     mat = (diags_array(w + 1e-3) + lam * (d2.T @ d2)).tocsc()
     sm = splu(mat).solve(w * dvals)
     return np.interp(ft, centers, sm)
@@ -647,7 +647,7 @@ def vk_track_scan(
     per-window deltas update ``r_i``. Returns the final trajectories and the
     per-round snapshots (element 0 = the init).
     """
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     cfg_r = RefineConfig(sample_rate=SR, device="cpu")
     y = prep.audio
@@ -1308,7 +1308,7 @@ def _beat_separation(
     envelope power |z_k|^2 is Hann-windowed, its power spectrum mapped to
     s = f/k, unit-max normalized, and fused with envelope-power weights.
     """
-    from data_processing.vk_tracking import demodulate
+    from tracking.vk_tracking import demodulate
 
     n_t = audio.shape[-1]
     t_aud = np.arange(n_t, dtype=np.float64) / float(SR)
@@ -1676,7 +1676,7 @@ def _whitened_spec_multi(prep: Prepared) -> tuple[np.ndarray, float, np.ndarray]
     """Per-channel whitened log-mag ``(C, F, N)`` + ``(bin_hz, frame_times)``."""
     from scipy.ndimage import median_filter
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     cfg = RefineConfig(sample_rate=SR, device="cpu")
     spec = compute_logmag(prep.audio, cfg)
@@ -1746,7 +1746,7 @@ def vit2dsp_pipeline(
     the validated guard-less behaviour.
     Returns ``(stages, final VKResult, extras, wall_scan_s, wall_vk_s)``.
     """
-    from data_processing.vk_blind_seeding import stage_guard as _guard_fn
+    from tracking.vk_blind_seeding import stage_guard as _guard_fn
 
     lm_avg, bin_hz, st = _whitened_spec(prep)
     lm_multi, _, _ = _whitened_spec_multi(prep)
@@ -2871,7 +2871,7 @@ def run_trace(rid: str, cond: str) -> None:
     deviation is the per-group ``sep_bw_factor`` clamp floor, which reads
     ``cfg.bw_hz`` (here the round's bw instead of the final one).
     """
-    from data_processing.vk_tracking import _bw_schedule, _k_schedule, _stride
+    from tracking.vk_tracking import bw_schedule, env_stride, k_schedule
 
     prep = prepare_recording(rid)
     scan = get_scan(rid)
@@ -2879,9 +2879,9 @@ def run_trace(rid: str, cond: str) -> None:
     snaps: list[np.ndarray] = [r_cur.copy()]
     labels: list[str] = ["init"]
     for phase, cfg in (("capture", CAPTURE_CFG), ("refine", REFINE_CFG)):
-        ks = _k_schedule(cfg)
-        _, fs_env = _stride(cfg)
-        bws = _bw_schedule(cfg, fs_env)
+        ks = k_schedule(cfg)
+        _, fs_env = env_stride(cfg)
+        bws = bw_schedule(cfg, fs_env)
         lams = (
             np.geomspace(10.0 * cfg.traj_lambda, cfg.traj_lambda, cfg.n_outer)
             if cfg.n_outer > 1

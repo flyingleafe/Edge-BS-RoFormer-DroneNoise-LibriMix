@@ -8,7 +8,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn.functional as F
-from einops import rearrange
 from scipy.fft import next_fast_len
 
 # ---------------------------------------------------------------------------
@@ -41,22 +40,9 @@ def signal_frame(signal, frame_length, frame_step, pad_end=False, pad_value=0, a
     return signal.unfold(axis, frame_length, frame_step)
 
 
-def overlap_and_add(signal: torch.Tensor, frame_step: int):
-    """Reimplementation of tf.signal.overlap_and_add using F.fold."""
-    frames, frame_length = signal.shape[-2:]
-    batch_dims = signal.shape[:-2]
-    batch_dim_d = {f"b{i}": d for i, d in enumerate(batch_dims)}
-    batch_dim_s = " ".join(batch_dim_d.keys())
-
-    output_size = (frames - 1) * frame_step + frame_length
-
-    result = F.fold(
-        rearrange(signal, f"{batch_dim_s} t f -> ({batch_dim_s}) f t"),
-        (output_size, 1),
-        kernel_size=(frame_length, 1),
-        stride=(frame_step, 1),
-    )
-    return rearrange(result, f"({batch_dim_s}) 1 t 1 -> {batch_dim_s} t", **batch_dim_d)
+# Canonical home moved to tracking.harmonic_basis (shared with the VP
+# transform); re-exported here for the existing generative-model imports.
+from tracking.harmonic_basis import overlap_and_add as overlap_and_add  # noqa: E402
 
 
 def overlap_add_50pct(windowed: torch.Tensor, hop_size: int) -> torch.Tensor:

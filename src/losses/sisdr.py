@@ -15,8 +15,8 @@ from __future__ import annotations
 import tdseries as td
 import torch
 
+from framespec import FrameSpec
 from losses._common import AUDIO_RATE, audio_series_spec, get_tensor
-from tasks.spec import FrameSpec
 
 
 def si_sdr_loss(est: torch.Tensor, ref: torch.Tensor, *, eps: float = 1e-8) -> torch.Tensor:

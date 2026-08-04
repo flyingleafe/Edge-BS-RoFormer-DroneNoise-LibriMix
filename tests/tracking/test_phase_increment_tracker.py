@@ -22,7 +22,7 @@ for _p in (str(_ROOT / "scripts"), str(_ROOT / "src")):
 
 import vk_phase_validation as ladder  # noqa: E402
 
-from data_processing.phase_increment_tracker import pi_kalman_refine  # noqa: E402
+from tracking.phase_increment_tracker import pi_kalman_refine  # noqa: E402
 
 SR = ladder.SR
 DUR_S = 12.0

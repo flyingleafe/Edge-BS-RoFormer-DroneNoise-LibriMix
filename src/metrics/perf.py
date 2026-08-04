@@ -25,7 +25,7 @@ import torch
 from torch import nn
 
 from data_processing.frames import get_meta
-from tasks.spec import SCALAR, FrameSpec
+from framespec import SCALAR, FrameSpec
 
 # ─── Pure measurement utilities ──────────────────────────────────────────────
 

@@ -48,10 +48,7 @@ from typing import Any, NamedTuple
 import numpy as np
 import torch
 
-from data_processing.rps_synthesis import MIXER
-
-NUM_ROTORS = 4
-MODE_NAMES = ("common", "roll", "pitch", "yaw")
+from tracking.rotors import MIXER, NUM_ROTORS
 
 # --------------------------------------------------------------------------
 # The OU transition prior

@@ -15,9 +15,9 @@ import tdseries as td
 import torch
 import torch.nn.functional as F
 
+from framespec import FrameSpec, SeriesSpec
 from losses._common import get_tensor
 from models.multif0.utils import cqt_freq_grid, linear_freq_grid, salience_target_from_resampled_rps
-from tasks.spec import FrameSpec, SeriesSpec
 
 # ─── Pure tensor functions ───────────────────────────────────────────────────
 

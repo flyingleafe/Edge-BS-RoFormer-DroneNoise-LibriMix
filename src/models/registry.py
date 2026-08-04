@@ -40,7 +40,7 @@ from models.generative import (
 )
 
 if TYPE_CHECKING:
-    from tasks.noise_generation import DroneCodebook
+    from models.generative.codebook import DroneCodebook
 from models.ckla import SimpleConvV2CKLA, SimpleConvV2CKLACond
 from models.fkla import FKLARPSModel
 from models.multif0.rps_predictor import MultiF0RPSPredictor
@@ -272,7 +272,7 @@ class _CodebookConditionedNoiseGen(nn.Module):
     """Bundles a position-aware generator with its external per-drone codebook.
 
     The deleted ``train_noise_generation.py`` trainer kept
-    ``tasks.noise_generation.DroneCodebook`` fully external to "the model"
+    ``models.generative.codebook.DroneCodebook`` fully external to "the model"
     (its own optimizer param group, its own bundle-file entry). The unified
     ``training.loop.run_training`` has a narrower single-model contract —
     one ``optimizer = get_optimizer(model, ...)`` over ``model.parameters()``,
@@ -454,7 +454,7 @@ def build_noise_gen_model(
     Verbatim port of the former ``train_noise_generation.py::get_model``,
     plus ``drone_names``: when ``cond_dim > 0``, the returned model is a
     :class:`_CodebookConditionedNoiseGen` wrapping the generator and a fresh
-    ``tasks.noise_generation.DroneCodebook(cond_dim, names=drone_names)`` —
+    ``models.generative.codebook.DroneCodebook(cond_dim, names=drone_names)`` —
     see that class's docstring for why the codebook now lives inside the
     model rather than external to it. ``cond_dim == 0`` (single-drone,
     unconditioned) returns the bare generator, ``drone_names`` ignored.
@@ -516,7 +516,7 @@ def build_noise_gen_model(
     if not drone_names:
         raise ValueError("cond_dim > 0 requires drone_names (DroneCodebook keys)")
 
-    from tasks.noise_generation import DroneCodebook
+    from models.generative.codebook import DroneCodebook
 
     codebook = DroneCodebook(cond_dim, names=list(drone_names))
     return _CodebookConditionedNoiseGen(

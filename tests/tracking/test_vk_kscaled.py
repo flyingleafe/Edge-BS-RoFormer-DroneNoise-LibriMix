@@ -7,14 +7,10 @@ CPU-only, sized for speed.
 Run:  pytest tests/test_vk_kscaled.py
 """
 
-import os
-import sys
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from data_processing.vk_tracking import (  # noqa: E402
+from tracking.vk_tracking import (
     VKConfig,
     _tuma_bw_min,
     vk_envelopes,

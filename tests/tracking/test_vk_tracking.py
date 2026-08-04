@@ -9,15 +9,12 @@ All deterministic (seeded) and sized for speed (8–10 s @ 16 kHz, k_max 20).
 Run:  pytest tests/test_vk_tracking.py
 """
 
-import os
-import sys
 import time
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from data_processing.vk_tracking import VKConfig, vk_track  # noqa: E402
+from tracking.vk_tracking import VKConfig, vk_track
 
 FS = 16000.0
 K_MAX = 20

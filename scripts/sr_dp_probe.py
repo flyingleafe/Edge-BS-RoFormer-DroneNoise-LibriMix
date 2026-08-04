@@ -5,7 +5,7 @@ The joint 4-rotor beam search loses to a trivial baseline, and `jb_probe --mode
 cost` can only say whether the objective PREFERS the truth to the beam's own
 output — it cannot say what an exact search would find.  For ONE rotor the
 state space is a scalar speed grid, so exact banded Viterbi
-(`data_processing.rotor_dp`) is tractable and there is zero search error by
+(`tracking.rotor_dp`) is tractable and there is zero search error by
 construction: every failure measured here is the objective's.
 
 Three arms per window, one fixed emission (the measured winner of the ceiling
@@ -106,8 +106,8 @@ def dp_unit(task: tuple[str, Path, str, float, float, int, int]) -> tuple[str, s
         import rps_refine_lab as lab
         import torch
 
-        from data_processing.joint_beam_tracker import EmissionCfg, comb_tables
-        from data_processing.rotor_dp import LatticeCfg, greedy_peel, track_masked
+        from tracking.joint_beam_tracker import EmissionCfg, comb_tables
+        from tracking.rotor_dp import LatticeCfg, greedy_peel, track_masked
 
         prep, meta = jb_probe.load_window(window)
         emis = EmissionCfg(**{**EMIS_KW, "k_max": k_max})

@@ -29,8 +29,58 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 
-from .dsp import freqs_to_phasors, harmonic_freq_series, remove_above_nyquist
-from .math_utils import overlap_and_add
+
+def harmonic_freq_series(freq: torch.Tensor, n_harmonics: int):
+    """Make N harmonics from a fundamental-frequency series.
+
+    Args:
+        freq: [..., T] instantaneous fundamental frequency (Hz)
+        n_harmonics: number of harmonics including the fundamental
+    Returns:
+        [..., N, T] frequencies of each harmonic per time step
+    """
+    coeffs = torch.arange(1, n_harmonics + 1, device=freq.device, dtype=freq.dtype)
+    return torch.matmul(coeffs.unsqueeze(-1), freq.unsqueeze(-2))
+
+
+def remove_above_nyquist(freqs, amps, sr: int):
+    """Zero amplitudes at time steps where frequency exceeds Nyquist."""
+    assert freqs.shape == amps.shape
+    return torch.where(freqs > sr / 2, torch.zeros_like(amps), amps)
+
+
+def freqs_to_phasors(freq: torch.Tensor, sr: int):
+    """Convert frequency series to rotating complex phasors (cumprod form).
+
+    ``torch.polar(1, phase_diff)`` builds each per-sample unit phasor
+    ``cos(phi) + i sin(phi)`` directly; it is **bit-identical** to the former
+    ``torch.exp(1j * phase_diff)`` (``exp`` of a purely imaginary number is that
+    same cos/sin pair) but ~2x cheaper on CPU/GPU, and it feeds the *same*
+    ``cumprod`` so every downstream consumer (oscillator bank **and** the VP
+    transform below) is numerically unchanged.
+    """
+    phase_diff = freq * 2 * torch.pi / sr
+    complex_diffs = torch.polar(torch.ones_like(phase_diff), phase_diff)
+    return torch.cumprod(complex_diffs, -1)
+
+
+def overlap_and_add(signal: torch.Tensor, frame_step: int):
+    """Reimplementation of tf.signal.overlap_and_add using F.fold."""
+    frames, frame_length = signal.shape[-2:]
+    batch_dims = signal.shape[:-2]
+    batch_dim_d = {f"b{i}": d for i, d in enumerate(batch_dims)}
+    batch_dim_s = " ".join(batch_dim_d.keys())
+
+    output_size = (frames - 1) * frame_step + frame_length
+
+    result = F.fold(
+        rearrange(signal, f"{batch_dim_s} t f -> ({batch_dim_s}) f t"),
+        (output_size, 1),
+        kernel_size=(frame_length, 1),
+        stride=(frame_step, 1),
+    )
+    return rearrange(result, f"({batch_dim_s}) 1 t 1 -> {batch_dim_s} t", **batch_dim_d)
+
 
 Solution = namedtuple("Solution", "solution")
 

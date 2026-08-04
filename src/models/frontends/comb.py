@@ -1,7 +1,7 @@
 """Comb matched-filter front-end on the linear STFT grid (G4 VK-parity arm).
 
 The trainable analogue of the blind VK tracker's whitened comb scan
-(``data_processing.vk_blind_seeding``: ``whitened_logmag`` + ``comb_scan`` /
+(``tracking.vk_blind_seeding``: ``whitened_logmag`` + ``comb_scan`` /
 ``_tooth_values`` / the stage-guard tooth statistic), composed with the IF
 (instantaneous-frequency) machinery from ``frontends.stft.STFTMagIF``.
 

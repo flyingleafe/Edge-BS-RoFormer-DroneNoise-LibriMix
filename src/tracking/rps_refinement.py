@@ -407,8 +407,8 @@ def harmonic_lsq_residual(
     directly comparable across the project. Drops as trajectories approach
     the truth.
     """
-    from models.generative.dsp import harmonic_freq_series
-    from models.generative.harmonic_transform import (
+    from tracking.harmonic_basis import (
+        harmonic_freq_series,
         inverse_VP_transform,
         lstsq_VP_transform,
     )

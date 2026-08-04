@@ -141,7 +141,7 @@ class GPRotorNoisePool:
 
         from data_processing.egonoise_gp import FS as GP_FS
         from data_processing.egonoise_gp import EgonoiseGPModel
-        from training.artifacts import resolve_checkpoint_uri
+        from utils.checkpoints import resolve_checkpoint_uri
 
         gp = EgonoiseGPModel.load(resolve_checkpoint_uri(checkpoint))
         assert gp.model is not None and gp._tx is not None

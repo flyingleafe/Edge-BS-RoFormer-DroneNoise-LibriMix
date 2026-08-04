@@ -10,13 +10,9 @@ hand-tuned 8 and 30.
 Run:  pytest tests/test_vk_blind_seeding.py
 """
 
-import os
-import sys
-
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from data_processing.vk_blind_seeding import (  # noqa: E402
+from tracking.vk_blind_seeding import (
     SeedConfig,
     auto_knobs,
     blind_seed,
@@ -216,7 +212,7 @@ def test_stage_guard_reverts_recaptured_track():
     """(g) Blind stage guard: an aggressive stage pulls the weak track of a
     strong+weak neighbour pair onto the strong comb — the guard reverts that
     track (and only that track) to its pre-stage trajectory, blind."""
-    from data_processing.vk_blind_seeding import stage_guard, whitened_logmag
+    from tracking.vk_blind_seeding import stage_guard, whitened_logmag
 
     cfg = SeedConfig()
     profile = profile_flat()

@@ -179,7 +179,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
     Per-drone conditioning is **external**: the model takes a conditioning code
     ``z`` ``(B, d)`` as an *input* (alongside ``rps`` and the geometry), exactly
     as it takes positions. It does not own a per-drone table — the ``id -> z``
-    map lives in a separate :class:`tasks.noise_generation.DroneCodebook`. This
+    map lives in a separate :class:`models.generative.codebook.DroneCodebook`. This
     keeps the model's parameter shape fixed regardless of how many drones exist,
     and enables few-shot adaptation to an unseen drone by freezing the model and
     optimising only a fresh code. ``d`` *is* architectural (it sizes the FiLM
@@ -364,7 +364,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
             rel_pos: ``[B, R, 3]`` (single point) or ``[B, M, R, 3]`` (M points):
                 vector from each rotor to the observation point(s), metres.
             z: ``[B, cond_dim]`` external per-drone conditioning code (from a
-                :class:`tasks.noise_generation.DroneCodebook`). Required iff the
+                :class:`models.generative.codebook.DroneCodebook`). Required iff the
                 model was built with ``cond_dim > 0``; ignored otherwise.
             initial_phases: optional ``[B, R, H]`` per-rotor per-harmonic initial
                 phases (radians). ``None`` (default) => random phases while

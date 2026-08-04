@@ -1,7 +1,7 @@
 """Consolidated metrics (docs/refactor-unified-framework.md § "Metrics").
 
 Every public metric is a small class declaring ``requires_pred`` /
-``requires_target`` (``tasks.spec.FrameSpec``) and
+``requires_target`` (``framespec.FrameSpec``) and
 ``__call__(pred: td.Frame, target: td.Frame) -> float`` — see
 :class:`metrics._common.Metric`. Pure numpy-level implementations (no Frame
 dependency) are also exported for direct use/testing.

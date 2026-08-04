@@ -15,7 +15,7 @@ import numpy as np
 import tdseries as td
 import torch
 
-from tasks.spec import FrameSpec, SeriesSpec
+from framespec import FrameSpec, SeriesSpec
 
 AUDIO_RATE: tuple[int, int] = (16000, 1)
 

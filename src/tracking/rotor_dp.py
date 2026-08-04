@@ -29,7 +29,7 @@ Three pieces:
   Greedy in the extraction ORDER only; each individual track is exact.
 
 Emission machinery (tables, pooling, per-frame normalisation) is reused from
-:mod:`data_processing.joint_beam_tracker` unchanged, so scores here are on
+:mod:`tracking.joint_beam_tracker` unchanged, so scores here are on
 the same scale as the joint tracker's and ``lambda_e`` keeps its meaning.
 """
 
@@ -42,7 +42,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from data_processing.joint_beam_tracker import (
+from tracking.joint_beam_tracker import (
     _INVALID_BIN,
     CombTables,
     EmissionCfg,
