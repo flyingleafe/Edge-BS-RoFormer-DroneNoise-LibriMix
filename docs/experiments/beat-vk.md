@@ -378,6 +378,96 @@ Reading:
   `results/pi_kalman_protocol/neural_smoke_rescore/report.json` in the two
   jobs' `omnirun pull` outputs.
 
+### Flagship: blind init + peeled alternation (2026-08-04) — THE DECLARED FLAGSHIP METHOD
+
+> Runner: `scripts/beatvk_flagship.py` (commit `9c2a17f`). Jobs:
+> **`flagship-main-9b8ac7`** (main), **`flagship-2xwin-5647df`** (2xwin init
+> variant), both uni-cpu, pin `beatvk-valid-raw@54849c13ed3a`. Scorer:
+> `beatvk_eval.score_recording` (the frozen scorer) on every row.
+
+**The method** (fully blind — no neural model, no telemetry):
+
+1. **Init** — the `blind_fullrange` v2 chain (blind_KR seeds + BPF octave
+   check + coarse full-range frame-Viterbi + energy bridge + DP trust gates
+   + vit2dsp ladder, stage guard on).
+2. **Peeled alternation**, per application: solve the coherent VK envelopes
+   at the current track (bw 1 Hz, k <= 40), give each rotor the audio minus
+   the OTHER rotors' comb reconstructions (twin pairs get audio minus the
+   non-pair rotors), then one full `pi_kalman` pass (pair_mode joint,
+   n_iter 3, band 6 Hz) on the peeled residuals. Iterate to plateau.
+
+**Leaderboard** (pooled window PIT-MAE, rev/s; `ramp` = the three DREGON
+w00 takeoff windows, `steady` = DREGON w01/w02 x3):
+
+| row | dregon_cruise | fly124_cruise | fly124_warmup | dregon_ramp | dregon_steady | all 15 |
+|---|---|---|---|---|---|---|
+| blind_fullrange (init only) | **1.807** | 2.515 | 3.607 | 3.362 | **1.030** | 2.236 |
+| + naive pi_kalman x1 | 1.831 | 2.339 | 3.648 | 3.365 | 1.064 | 2.209 |
+| + FLAGSHIP peeled x2 | 1.849 | 2.274 | 3.648 | 3.386 | 1.081 | **2.202** |
+| + FLAGSHIP peeled x4 | 1.865 | **2.256** | 3.679 | 3.383 | 1.105 | 2.211 |
+
+Full peeled curve (fly124_cruise): 2.515 → 2.345 → 2.274 → 2.263 → 2.256 →
+2.258; naive: → 2.339 → 2.319 → 2.293 → 2.281 → 2.285. **Plateau: x2 on the
+all-15 pool (2.202), x4 on fly124_cruise** — the alternation plateaus
+instead of degrading, and beats naive at every application count on FLY124.
+
+**Sanity gates:**
+
+- The init row reproduces the recorded blind_fullrange numbers **exactly**
+  on DREGON: pooled 1.807, per-window bit-level matches (nosource 3.2475 /
+  1.0233 / 1.0002, …). FLY124 pooled is 2.515, NOT the recorded 2.699 —
+  that number was the pre-recalibration pin with the pre-fix seeder; on the
+  corrected pin with the WP15 seed guards, w03 seeds `[74.2, 74.3, 82.65,
+  92.35]` and scores 1.168 at init.
+- **Peel energy flags** (subtraction must remove energy; flagged, not
+  averaged over): every ramp/warmup w00 window fails the gate on most
+  applications — `nosource w00` (resid ratio up to 4.96), `speech-low w00`
+  (up to 4.61), `whitenoise-low w00` (up to 14.7), `FLY124 w00` (up to
+  2.28). On a non-locked ramp track the peel is mis-phased and injects
+  energy. All cruise/steady windows pass on every application.
+
+**Per-window movers** (init → peeled x4): FLY124 w03 **1.168 → 0.772**, w04
+**0.939 → 0.513** (the twin-pair interference windows — the peel gain), w02
+4.990 → 4.741. Everything DREGON is flat-to-slightly-worse (steady 1.030 →
+1.105): pi_kalman still cannot add precision over the ladder there
+(displaced-comb + raw-jitter floor), and the flagship's honest DREGON value
+is its init. Read: **the flagship = blind_fullrange + peeled pi_kalman is
+the best fully-blind FLY124-cruise row ever measured (2.256), at an
+unchanged DREGON bar (1.807 at init; report init for DREGON).**
+
+#### 2xwin init variant (`blind_fullrange_2xwin`)
+
+Coarse-DP STFT window and hop doubled (4096/1024 — 2x finer in frequency,
+2x coarser in time), DP transition penalty gamma halved (keeps the penalty
+per rev/s of path total-variation constant relative to the per-second
+evidence at the 2x hop). Frame-count smoothing spans double in seconds
+(recorded, not adapted).
+
+| row | dregon_cruise | fly124_cruise | fly124_warmup | dregon_ramp | dregon_steady | all 15 |
+|---|---|---|---|---|---|---|
+| 2xwin init only | 3.523 | 2.475 | **3.140** | 8.142 | 1.213 | 3.192 |
+| 2xwin + peeled x4 | 3.614 | 2.262 | 3.334 | 8.239 | 1.301 | 3.216 |
+
+Per-window verdict (only 7 of 15 windows differ from the original arm —
+the trust gates reduce the rest to the identical constant init):
+
+- **Wins, FLY124 only**: w00 5.091 → 4.723, w01 2.123 → 1.557 (warmup —
+  the finer bins resolve the dense low-rev/s lines), w02 4.990 → 4.830.
+- **Losses, every DREGON window where the coarse path engages**: ramps
+  nosource w00 3.247 → 4.324, whitenoise w00 4.023 → 4.251, speech w00
+  2.816 → **15.850** (catastrophic — the 2x-coarser hop + doubled
+  bridge smoothing mistimes the takeoff), and one STEADY window,
+  nosource w02 1.000 → **2.101**: at the 2x hop the DP path wobble grows
+  past the steady gate (span 12 > 8), so the gate fails to fire and the
+  coarse path corrupts a good constant init.
+- Expected steady/twin improvement did NOT appear: on steady windows the
+  coarse stage is trust-gated OFF, so the finer frequency resolution never
+  engages there.
+
+Verdict: **not a replacement init**. As a hybrid it is only attractive
+gated to FLY124-warmup-like windows; on DREGON the ramp machinery breaks
+at the 2x hop, exactly the flagged risk.
+
 ### Full scoreboard on the fixed raw protocol (2026-07-29) — PRE-RECALIBRATION
 
 > Kept for history. Every `fly124_*` column below was scored against
