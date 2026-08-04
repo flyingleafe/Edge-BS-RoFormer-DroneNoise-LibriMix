@@ -1,0 +1,243 @@
+"""Tests for the TimeFrame stage API (``tracking.stages``).
+
+Covers: (1) the frame construction / accessor round-trip and the append-only
+``meta["tracking"]`` log; (2) a blind-seed -> VK pipeline on a synthetic
+two-rotor signal; (3) the stage guard leaving a good trajectory unvetoed;
+(4) every adapter appending its diagnostics entry. Synthetic-signal helpers
+mirror ``tests/tracking/test_vk_tracking.py`` (short signals, small ``k_max``
+— the whole module stays CPU-fast).
+
+Note: base speeds are 70 / 82 rev/s so their doubles fall OUTSIDE the blind
+scan band (30-120 rev/s) — with the test comb's flat ``1/sqrt(k)`` amplitude
+profile, a base at 45 gets out-promoted by its 2x subharmonic-up alias.
+"""
+
+import numpy as np
+import pytest
+
+from tracking.rps_refinement import RefineConfig
+from tracking.stages import (
+    blind_seed_stage,
+    get_audio,
+    get_rps,
+    guarded,
+    pi_kalman_stage,
+    pipeline,
+    refine_coherent_stage,
+    tracking_frame,
+    vk_stage,
+    warp_stage,
+    with_rps,
+)
+from tracking.vk_tracking import VKConfig
+
+FS = 16000.0
+K_MAX = 20
+
+
+def synth_comb(
+    t: np.ndarray, r_true_list: list[np.ndarray], snr_db: float, seed: int
+) -> np.ndarray:
+    """Sum of harmonic combs (k = 1..K_MAX, amps 1/sqrt(k), random phases) + noise."""
+    rng = np.random.default_rng(seed)
+    sig = np.zeros_like(t)
+    for r_true in r_true_list:
+        phase = 2 * np.pi * np.cumsum(r_true) / FS
+        for k in range(1, K_MAX + 1):
+            sig += (1.0 / np.sqrt(k)) * np.cos(k * phase + rng.uniform(0, 2 * np.pi))
+    noise = rng.standard_normal(len(t))
+    noise *= np.sqrt(np.mean(sig**2) / (10 ** (snr_db / 10)) / np.mean(noise**2))
+    return sig + noise
+
+
+DUR = 8.0
+T_AUD = np.arange(int(DUR * FS)) / FS
+R1_TRUE = 70.0 + 0.8 * np.sin(2 * np.pi * 0.2 * T_AUD)
+R2_TRUE = 82.0 + 0.6 * np.sin(2 * np.pi * 0.3 * T_AUD + 1.0)
+
+
+def make_cfg(**overrides) -> VKConfig:
+    defaults: dict = dict(fs=FS, k_max=K_MAX, n_outer=8, couple_hz=20.0)
+    defaults.update(overrides)
+    return VKConfig(**defaults)
+
+
+@pytest.fixture(scope="module")
+def two_rotor_frame():
+    """Two wobbling rotors at 70 / 82 rev/s, 10 dB SNR, no rps entry yet."""
+    y = synth_comb(T_AUD, [R1_TRUE, R2_TRUE], snr_db=10.0, seed=1)
+    return tracking_frame(y, 16000, meta={"recording_id": "synth2"})
+
+
+@pytest.fixture(scope="module")
+def seeded_frame(two_rotor_frame):
+    return blind_seed_stage(2)(two_rotor_frame)
+
+
+def _truth_on(ft: np.ndarray) -> np.ndarray:
+    """(2, N) truth, rows sorted by base speed (the seed-bases convention)."""
+    return np.stack([np.interp(ft, T_AUD, R1_TRUE), np.interp(ft, T_AUD, R2_TRUE)])
+
+
+# ---------------------------------------------------------------------------
+# 1. frame construction / accessors / meta log
+
+
+def test_tracking_frame_roundtrip():
+    sr = 16000
+    audio = np.sin(2 * np.pi * 45.0 * np.arange(sr) / sr).astype(np.float32)
+    ft = np.arange(0.0, 1.0 - 0.016, 0.032)
+    r = np.stack([np.full(len(ft), 45.0), np.full(len(ft), 52.0)])
+    frame = tracking_frame(
+        audio, sr, rps=r, frame_times=ft, rps_meas=r + 1.0, meta={"recording_id": "x"}
+    )
+
+    a, sr_out = get_audio(frame)
+    assert a.shape == (1, sr) and a.dtype == np.float32  # (T,) -> (1, T)
+    assert sr_out == float(sr)
+
+    r_out, t_out = get_rps(frame)
+    assert r_out.shape == r.shape
+    np.testing.assert_allclose(r_out, r)
+    np.testing.assert_allclose(t_out, ft, atol=2e-9)  # nanosecond-tick rounding
+
+    r_meas, _ = get_rps(frame, "rps_meas")
+    np.testing.assert_allclose(r_meas, r + 1.0)
+    assert frame["meta"]["recording_id"] == "x"
+
+
+def test_tracking_frame_requires_frame_times():
+    audio = np.zeros(1600, dtype=np.float32)
+    with pytest.raises(ValueError, match="frame_times"):
+        tracking_frame(audio, 16000, rps=np.zeros((1, 10)))
+
+
+def test_with_rps_appends_meta_without_mutation():
+    audio = np.zeros(3200, dtype=np.float32)
+    ft = np.arange(0.0, 0.2 - 0.016, 0.032)
+    r = np.full((1, len(ft)), 45.0)
+    f0 = tracking_frame(audio, 16000, rps=r, frame_times=ft, meta={"recording_id": "x"})
+
+    f1 = with_rps(f0, r + 0.5, ft, stage="a", info={"foo": 1})
+    f2 = with_rps(f1, r + 1.0, ft, stage="b", info={"bar": 2})
+
+    assert [e["stage"] for e in f2["meta"]["tracking"]] == ["a", "b"]
+    assert f2["meta"]["tracking"][0]["foo"] == 1
+    assert f2["meta"]["recording_id"] == "x"  # existing meta preserved
+    r2, _ = get_rps(f2)
+    np.testing.assert_allclose(r2, r + 1.0)
+    # append-only: earlier frames keep their own (shorter) logs
+    assert [e["stage"] for e in f1["meta"]["tracking"]] == ["a"]
+    assert "tracking" not in set(f0["meta"])
+    r0, _ = get_rps(f0)
+    np.testing.assert_allclose(r0, r)
+
+
+# ---------------------------------------------------------------------------
+# 2. blind seed -> VK pipeline
+
+
+def test_blind_seed_vk_pipeline_improves(two_rotor_frame, seeded_frame):
+    out = vk_stage(make_cfg())(seeded_frame)
+
+    r_seed, ft = get_rps(seeded_frame)
+    r_vk, ft_vk = get_rps(out)
+    np.testing.assert_allclose(ft_vk, ft, atol=2e-9)
+    edge = (ft > 0.5) & (ft < DUR - 0.5)
+    truth = _truth_on(ft)
+
+    err_seed = float(np.mean(np.abs(r_seed[:, edge] - truth[:, edge])))
+    err_vk = float(np.mean(np.abs(r_vk[:, edge] - truth[:, edge])))
+    assert err_seed < 1.0, f"blind seed missed the bases (mean err {err_seed:.2f})"
+    assert err_vk < 0.1, f"vk mean err {err_vk:.3f} exceeds 0.1"
+    assert err_vk < err_seed / 3.0, (
+        f"vk ({err_vk:.3f}) did not improve on the seed ({err_seed:.3f})"
+    )
+
+    log = out["meta"]["tracking"]
+    assert [e["stage"] for e in log] == ["blind_seed", "vk"]
+    assert len(log[0]["bases"]) == 2
+    assert np.isfinite(log[1]["confidence_mean"])
+    assert len(log[1]["residual_ratios"]) == make_cfg().n_outer
+    # the input frames are untouched
+    assert "rps" not in two_rotor_frame
+    assert [e["stage"] for e in seeded_frame["meta"]["tracking"]] == ["blind_seed"]
+
+
+def test_pipeline_composes_left_to_right(two_rotor_frame):
+    cfg = make_cfg()
+    a = pipeline(blind_seed_stage(2), vk_stage(cfg))
+    # composition == manual chaining, including the meta log order
+    out = a(two_rotor_frame)
+    assert [e["stage"] for e in out["meta"]["tracking"]] == ["blind_seed", "vk"]
+
+
+def test_vk_stage_rejects_rate_mismatch(seeded_frame):
+    with pytest.raises(ValueError, match="does not match"):
+        vk_stage(make_cfg(fs=8000.0))(seeded_frame)
+
+
+# ---------------------------------------------------------------------------
+# 3. guard
+
+
+def test_guarded_leaves_good_trajectory_unvetoed(seeded_frame):
+    out = guarded(vk_stage(make_cfg()))(seeded_frame)
+
+    log = out["meta"]["tracking"]
+    assert [e["stage"] for e in log] == ["blind_seed", "vk", "guard"]
+    assert log[-1]["reverted"] == []
+    assert log[-1]["reasons"] == []
+    assert len(log[-1]["conf_before"]) == 2
+
+    # unvetoed -> the guard keeps the vk trajectories (still near truth)
+    r_g, ft = get_rps(out)
+    edge = (ft > 0.5) & (ft < DUR - 0.5)
+    err = float(np.mean(np.abs(r_g[:, edge] - _truth_on(ft)[:, edge])))
+    assert err < 0.1, f"guarded output drifted from truth (mean err {err:.3f})"
+
+
+# ---------------------------------------------------------------------------
+# 4. refiner adapters append diagnostics
+
+
+@pytest.fixture(scope="module")
+def one_rotor_frame():
+    """4 s single rotor at a constant 45 rev/s, init biased +0.3 rev/s."""
+    dur = 4.0
+    t = np.arange(int(dur * FS)) / FS
+    y = synth_comb(t, [np.full_like(t, 45.0)], snr_db=10.0, seed=0)
+    ft = np.arange(0.0, dur - 0.016, 0.032)
+    r0 = np.full((1, len(ft)), 45.3)
+    return tracking_frame(y, 16000, rps=r0, frame_times=ft)
+
+
+@pytest.mark.parametrize(
+    ("stage_factory", "expected_name", "info_key"),
+    [
+        (lambda: pi_kalman_stage(n_iter=1, k_max=8, k_caps=(8,)), "pi_kalman", "diagnostics"),
+        (lambda: warp_stage(rounds=1), "warp", "diagnostics"),
+        (lambda: refine_coherent_stage(n_iter=1, k_min=4, k_max=10), "stage_d", "params"),
+    ],
+)
+def test_refiner_adapters_append_diagnostics(
+    one_rotor_frame, stage_factory, expected_name, info_key
+):
+    out = stage_factory()(one_rotor_frame)
+
+    entry = out["meta"]["tracking"][-1]
+    assert entry["stage"] == expected_name
+    assert info_key in entry
+
+    r_in, ft_in = get_rps(one_rotor_frame)
+    r_out, ft_out = get_rps(out)
+    assert r_out.shape == r_in.shape
+    np.testing.assert_allclose(ft_out, ft_in, atol=2e-9)
+    err_in = float(np.mean(np.abs(r_in - 45.0)))
+    err_out = float(np.mean(np.abs(r_out - 45.0)))
+    assert err_out < err_in, f"{expected_name} made the trajectory worse ({err_in} -> {err_out})"
+
+
+def test_refine_coherent_stage_rejects_rate_mismatch(one_rotor_frame):
+    with pytest.raises(ValueError, match="does not match"):
+        refine_coherent_stage(RefineConfig(sample_rate=8000))(one_rotor_frame)

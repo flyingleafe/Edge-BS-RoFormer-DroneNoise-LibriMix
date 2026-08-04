@@ -14,13 +14,32 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 | `rotor_dp.py` | Exact single-rotor Viterbi lattice: `viterbi_path`, `greedy_peel`, `track_masked`. |
 | `warp_refinement.py` | Iterated time-warp (generalized-demodulation) IF refiner: `iter_warp_refine`. |
 | `rotors.py` | Quadrotor control-allocation constants: `MIXER`, `NUM_ROTORS`, `MODE_NAMES`, `modes_from_rps`, `rps_from_modes`. `data_processing.rps_synthesis` re-exports them. |
+| `stages.py` | The TimeFrame stage API (plan §3.2): `Stage`, `tracking_frame`, `get_audio`/`get_rps`/`with_rps`, `pipeline`, and the adapters `blind_seed_stage`, `vk_stage`, `pi_kalman_stage`, `warp_stage`, `refine_coherent_stage`, `guarded`. |
 
 Tests live in `tests/tracking/`.
 
 ## Purity rule
 
-This package imports only `numpy`, `scipy`, `torch`, and `utils`. It must NOT import `data_processing`, `models`, or `training`. The permitted direction is `data_processing` → `tracking` (for example, `rps_synthesis` imports `tracking.rotors`).
+This package imports only `numpy`, `scipy`, `torch`, `tdseries`, and `utils`. It must NOT import `data_processing`, `models`, or `training`. The permitted direction is `data_processing` → `tracking` (for example, `rps_synthesis` imports `tracking.rotors`).
 
-## Coming next
+## The Stage API (`stages.py`)
 
-The Frame stage API (`Stage: td.Frame -> td.Frame` adapters in `stages.py`, named pipeline ladders in `pipelines.py`) arrives in a follow-up task — see the plan §3.2. Until then, pipeline composition stays in `scripts/` (`vk_blind_annotation.py`, `rps_refine_lab.py`).
+Every tracking stage is a callable `Stage = Callable[[td.Frame], td.Frame]`. The frame contract:
+
+- `"audio"`: `(mic, time)` float32 Series on a `GridIndex` at the audio rate (`tracking_frame` accepts `(T,)` and stores `(1, T)`).
+- `"rps"`: `(rotor, time)` float64 Series on a `StampIndex` at the trajectory frame times — the current candidate trajectories. A stage replaces this entry (via `with_rps`) and appends one `{"stage": name, ...}` diagnostics dict to the `"tracking"` list inside the invariant `"meta"` sub-Frame (append-only; frames are never mutated).
+- `"rps_meas"`: optional reference trajectories, never touched.
+
+The adapters are thin: the array cores (`vk_track`, `blind_seed`, `pi_kalman_refine`, `iter_warp_refine`, `refine_coherent`, `stage_guard`) are unchanged; all cores accept `(T,)` or `(C, T)` audio, and frame times are re-based to the audio entry's `t_start`, so time-sliced frames work. `guarded(inner)` mirrors `scripts/vk_blind_annotation.py`'s `_apply_guard`: run `inner`, then `stage_guard` on the before/after trajectories against the whitened spectrogram, reverting vetoed rotors.
+
+```python
+import tracking as trk
+
+frame = trk.tracking_frame(audio, 16000, meta={"recording_id": rid})
+run = trk.pipeline(trk.blind_seed_stage(4), trk.guarded(trk.vk_stage(trk.VKConfig())))
+out = run(frame)
+r, ft = trk.get_rps(out)               # (4, N) rev/s + frame times
+print([e["stage"] for e in out["meta"]["tracking"]])  # ['blind_seed', 'vk', 'guard']
+```
+
+Named pipeline ladders (`vit2dsp`, blind-seed arms, cd_iter) land in `pipelines.py` in a follow-up task; until then that composition stays in `scripts/` (`vk_blind_annotation.py`, `rps_refine_lab.py`).
