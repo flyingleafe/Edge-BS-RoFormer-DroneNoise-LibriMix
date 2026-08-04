@@ -51,7 +51,6 @@ Route to the right skill (table below), execute, and close with `record-and-reme
 | `reimplement-model` | Port a paper model into the project framework |
 | `create-dregon-dataset` | (Re)create any DREGON-LM dataset variant |
 | `improve-plot-visibility` | Inspect and improve generated plots |
-| `load-real-propeller-geometry` | Load real propeller chord/twist into the FWH simulator |
 
 ## Task Routing — where to look first
 
@@ -70,7 +69,6 @@ The Skills table routes by *action*; the Directory Map routes by *location*. Thi
 | **Producing reports / comparison plots / tables** | `generate-model-comparisons` (+ `improve-plot-visibility`) | Sync results first (Rule 5). Then `notebooks/AGENTS.md`; generator `eval.py` + `src/plots` comparison plots. |
 | **Producing a presentation / slides** | `writeup` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`; scaffolding recipe used by the creator agent is `create-typst-slides`. |
 | **Producing a report** | `writeup` | `writing/AGENTS.md`; results figures via `eval.py` + `src/plots`; scaffolding recipe used by the creator agent is `create-typst-report`. |
-| **FWH rotor / acoustic simulation, propeller geometry** | `load-real-propeller-geometry` | `src/fwh_rotor_sim/AGENTS.md`. |
 | **Syncing datasets / checkpoints across machines** | — | `docs/data-and-artifacts.md` (dload + W&B artifacts + `omnirun pull`; legacy rsync fallback). |
 
 ## Directory Map
@@ -83,7 +81,6 @@ Every non-gitignored directory has an `AGENTS.md` describing what it contains an
 | `src/tasks/` | Task interface definitions (what a model must implement for each ML task) | RPS prediction, speech enhancement; see `src/tasks/AGENTS.md` |
 | `conf/` | Hydra config tree — `experiment/`, `model/` (native `_target_`; legacy models inlined via `build_legacy_inline`), `data/`, `loss/`, `metrics/`, `optim/`, plus online-mix policies in `conf/online_mix/` | See `conf/AGENTS.md` |
 | `src/utils/` | The `utils` package — legacy ZFTurbo helpers in `__init__.py` | See `src/utils/AGENTS.md` for layout |
-| `src/fwh_rotor_sim/` | FWH rotor acoustic simulator (BEMT + Farassat 1A), differentiable | See `src/fwh_rotor_sim/AGENTS.md` |
 | `src/data_processing/` | Dataset creation, streaming and RPS processing | `sources/` registry (raw datasets) → `derivations.py` (derived-dataset pipeline specs) → `streams.py`/`online_mixing.py` (consumption); driver `scripts/derive.py` |
 | `scripts/` | Standalone scripts not on the train/eval path | Dataset materialization/publishing (`derive.py` — the single driver), stream sanity checks (`check_stream.py`, `check_experiment_configs.py`), legacy Slurm/sync helpers (`sbatch.sh`, `sync_results.sh` — superseded by omnirun), benchmarks |
 | `writing/` | Reports, slides, and papers (Typst + LaTeX) | See `writing/AGENTS.md` for templates, build chain, and visual-check workflow. |

@@ -94,7 +94,6 @@ packages = [
     "src/losses",
     "src/metrics",
     "src/training",
-    "src/fwh_rotor_sim",
 ]
 
 [tool.importlinter]
@@ -108,7 +107,6 @@ root_packages = [
     "plots",
     "training",
     "experiments",
-    "fwh_rotor_sim",
 ]
 include_external_packages = false
 
@@ -129,7 +127,6 @@ source_modules = [
     "metrics",
     "plots",
     "training",
-    "fwh_rotor_sim",
 ]
 forbidden_modules = ["experiments"]
 

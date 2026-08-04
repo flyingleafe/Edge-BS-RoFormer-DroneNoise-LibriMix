@@ -74,7 +74,7 @@ def main() -> int:
             return f"{a.shape} rms {float(np.sqrt(np.mean(a**2))):.2e}"
 
         got = _check(f"render[{spec.family}] {name}", render)
-        # GP/CONA/FWH need artifacts or blade geometry that may be absent; the
+        # GP/CONA need artifacts that may be absent; the
         # learned families and `real` must work.
         if spec.family in ("deep", "real"):
             ok &= got
