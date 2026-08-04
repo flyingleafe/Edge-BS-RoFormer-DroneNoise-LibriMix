@@ -48,6 +48,7 @@ The data layer has three layers, each declared exactly once — see
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's (accepts `frames:NAME[@VER]` specs, `dload:` URIs, or local paths). |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` as a noise **source** (`kind: generated`). One background **spawn** producer process renders chunks into a shared-memory ring buffer; fork DataLoader workers read finished chunks (lock-free seqlock). See § "Generated noise source". |
 | `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP as a noise **source** (`kind: gp`, G3). See § "GP rotor-noise source". |
+| `egonoise_gp.py` | The **inference core** of the per-drone egonoise GP: `EgonoiseGPConfig`, the batched Matern-5/2 constructor, `EgonoiseGPModel` (posterior-mean coefficients, broadband synthesis, (de)serialisation). Relocated here from `experiments.gp_rotor_noise.train_egonoise_gp` so `gp_noise.py` does not import the `experiments` sandbox; the training side (`fit`, streaming, CLI) stays in `experiments`, whose `EgonoiseGPModel` subclasses this one — checkpoints load in both. |
 | `rotor_spectral_model.py` | `StaticCombNoisePool` — analytic static-comb noise source (`kind: static_comb`). |
 | `rps_corruption.py` | Synthetic corruption of clean RPS tracks for the **conditional refiner**. Seeded via `make_rng(seed, sample_id)`; wired through `frame_datasets.{DregonLMFrameDataset,OnlineMixFrameDataset}(rps_corruption=...)`, which then emit an extra `rps_cond` entry. |
 | `noise_augmentations.py` | Strong **noise-chunk** augmentation family (`policy.noise_augmentations`, G6). See § "Strong noise augmentations". |
@@ -299,7 +300,8 @@ Optimize only behind the same public API.
 ### GP rotor-noise source (`kind: gp`) — G3
 
 `data_processing/gp_noise.py` (`GPRotorNoisePool`): the per-drone **egonoise
-GP** checkpoints (`train_egonoise_gp.py`; `r2://ml-data/artifacts/gp_egonoise/
+GP** checkpoints (trained by `src/experiments/gp_rotor_noise/train_egonoise_gp.py`,
+inference core `data_processing/egonoise_gp.py`; `r2://ml-data/artifacts/gp_egonoise/
 {dregon,matrice100}/best.pt`) as an online-mix noise source with exact
 synthetic RPS labels. Architecture mirrors the static comb, not the neural
 producer: the GP posterior is batch-queried **once at pool init** on a dense

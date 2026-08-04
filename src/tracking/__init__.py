@@ -6,6 +6,7 @@ Pure array code (numpy/scipy/torch). This package must not import
 
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
 from tracking.phase_increment_tracker import pi_kalman_refine
+from tracking.phase_noise import Arm, arm_covariance, demod_rotor, fit_rank_one
 from tracking.pipelines import (
     CAPTURE_CFG,
     MIDBAND_CFG,
@@ -72,6 +73,7 @@ __all__ = [
     "SEED_CFG",
     "TRACK_CFG",
     "VK37",
+    "Arm",
     "PoolSpec",
     "ProtocolSpec",
     "RefineConfig",
@@ -79,13 +81,16 @@ __all__ = [
     "Stage",
     "VKConfig",
     "WindowSpec",
+    "arm_covariance",
     "blind_seed",
     "blind_seed_stage",
     "build_objective",
     "comb_confidence",
     "compute_logmag",
+    "demod_rotor",
     "demodulate",
     "estimate_clock_offset",
+    "fit_rank_one",
     "get_audio",
     "get_protocol",
     "get_rps",

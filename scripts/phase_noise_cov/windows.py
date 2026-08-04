@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Window providers for the phase-noise covariance measurement (WP18).
 
+The estimator itself is ``tracking.phase_noise``; this module is its data
+side (recording loading + window selection), kept out of ``src/tracking``
+so the package stays pure array code.
+
 Three families, chosen so the indoor/outdoor contrast the model predicts is
 actually testable and so the estimator itself is validated against a case whose
 answer is known:

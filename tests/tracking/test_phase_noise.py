@@ -1,23 +1,16 @@
-"""WP18 — the rank-one-plus-diagonal moment estimator.
+"""WP18 — the rank-one-plus-diagonal moment estimator (``tracking.phase_noise``).
 
-The measurement it backs (``scripts/phase_noise_cov/``) claims to separate a
-harmonic-common term ``sigma_J^2`` from per-harmonic terms ``v_k`` out of one
-K x K covariance.  These tests construct data where both are known.
+The measurement it backs claims to separate a harmonic-common term
+``sigma_J^2`` from per-harmonic terms ``v_k`` out of one K x K covariance.
+These tests construct data where both are known.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "scripts" / "phase_noise_cov"))
-sys.path.insert(0, str(REPO / "src"))
-
-import estimate as E  # noqa: E402
+from tracking import phase_noise as E
 
 
 def _make(n=20000, k_n=12, sigma_j=0.3, seed=0):

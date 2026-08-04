@@ -1665,8 +1665,9 @@ the `k`, so writing `δ̂_k = δ + J + e_k` the covariance across harmonics is
 rank-one plus diagonal, `Σ = σ_J²·11ᵀ + diag(v_k)`, with a fused variance
 `1/W + σ_J²` — an irreducible floor, and a saturation harmonic `k*`.
 
-Measured, not assumed. Tooling `scripts/phase_noise_cov/` (+
-`tests/test_phase_noise_cov.py`), results `results/phase_noise_covariance/`
+Measured, not assumed. Estimator `tracking/phase_noise.py` (+
+`tests/tracking/test_phase_noise.py`), window/data side
+`scripts/phase_noise_cov/windows.py`, results `results/phase_noise_covariance/`
 (job `python-47e101`, 12 min, uni-cpu) and
 `results/phase_noise_covariance_framegrid/` (`python-f86558`).
 

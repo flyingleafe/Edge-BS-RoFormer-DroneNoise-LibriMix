@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Rank-one-plus-diagonal covariance of the per-harmonic rate opinions.
 
 WP18 of ``docs/experiments/rps-refine-precision.md``.  The Fisher-weighted
@@ -62,24 +61,21 @@ fitted **loading shape** ``a_k ∝ k^beta`` from ``log C_ij = 2 log sigma +
 log a_i + log a_j`` — ``beta = 0`` is the delay-like model this module tests,
 ``beta = -1`` would instead mean a common *phase* (not delay) disturbance.
 
-Pure numpy/scipy, CPU.
+Pure numpy/scipy, CPU.  The measurement's data side — which recordings and
+which time windows to run it over — is injected by
+``scripts/phase_noise_cov/windows.py`` (the tracking-purity split of
+``tracking.protocols``).
 """
 
 from __future__ import annotations
 
-import sys
 import warnings
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-_REPO = Path(__file__).resolve().parents[2]
-if str(_REPO / "src") not in sys.path:
-    sys.path.insert(0, str(_REPO / "src"))
-
-import tracking.phase_increment_tracker as pit  # noqa: E402
+from tracking import phase_increment_tracker as pit
 
 SR = 16000
 #: Envelope/measurement grid.  Deliberately the stage's own ``fs_env`` so the

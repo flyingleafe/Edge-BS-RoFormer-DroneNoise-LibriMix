@@ -1,10 +1,55 @@
 # Repository Refactor Plan — 2026-08-04
 
-Status: DRAFT for review. Nothing in this plan is executed yet.
 Scope: the nine points from the 2026-08-04 session, plus the test audit.
 Evidence: five parallel code surveys (VK tracking, scripts, plots+notebooks,
 model registry + fwh_rotor_sim, tests) and an AST-level import-graph scan
 (240 modules, 480 internal edges).
+
+## Status (2026-08-04)
+
+**Executed.** Phases 0–6 are merged on `worktree-refactoring`; Phase 7 (this
+closeout) is the last one. The import graph is now 179 files / 365 internal
+dependencies, and all three import-linter contracts are KEPT.
+
+| Phase | Commit(s) | What landed |
+|---|---|---|
+| 0 — safety net | `323c757` | `slow`/`network` markers + the default `-m` filter, first import contracts, cycle-edge fixes |
+| 1 — deletions | `d578cb3` | `fwh_rotor_sim` (superseded by the external `auraflow` repo), 26 dead scripts, 18 stale notebooks |
+| 2 — tracking | `f1a7350` (2a), `22d41bb` (2c), `96dc11e` (complete) | `src/tracking` + `src/framespec` extracted, the layers contract, the `Stage: Frame -> Frame` API, the vit2dsp ladder promoted to `tracking/pipelines.py` |
+| 3 — registries | `62081bb` (3a), `f2beefb` (3b) | One `models.registry.model_types()`, `utils` is a leaf, `src/zoo` over the R2 artifact store |
+| 4 — plots | `8d2ad92` | `plots.dwym` front door + `plots.coerce` + renderer consolidation |
+| 5 — scripts | `ae6979e` | Six generic tools (`se_eval`, `table`, `bench`, `probe_ckpt`, `rps_eval`, `utils.gridrun`) replace the scripts zoo; `sbatch.sh`/`sync_results.sh` retired |
+| 6 — notebooks | `699797b` | `plots.explore` primitives, focused `rps_tracking`/`noise_generation` notebooks, the SE tutorial |
+| 7 — tests + docs | *this patch* | `tracking/phase_noise.py`, the test-audit remnants, every AGENTS.md refreshed, this status section |
+
+### Known remaining debts
+
+1. **`scripts/rps_eval.py --pred model:<key>` still routes through
+   `rps_predictor_vk_eval.MODELS`** (and `beatvk_eval.preds_from_model` with
+   it). Migrating to `zoo.load` is not a drop-in: `MODELS` is a curated
+   *key → (experiment, ckpt URI, epoch)* table whose keys name published
+   result rows, and the stitched-chmean inference calls the bare `nn.Module`
+   through `vkev.predict_windows`/`stitch_stack`, not a `FrameModel`. Do it
+   together with a `zoo`-side named-checkpoint alias, once the beat-VK
+   campaign closes and its result keys stop being load-bearing.
+2. **`notebooks/speech_enhancement.ipynb` is unwritten by design** (§6 decision
+   5). It is the Phase 6 ergonomics probe: the user builds it by hand from
+   `docs/notebook-primitives-tutorial.md` and the friction list drives the
+   next ergonomics fixes. Do not write it for them.
+3. **`zoo.checkpoints()` eval-metric columns are empty** until `eval.py` runs
+   again per experiment (it uploads `eval/metrics.json` next to the
+   checkpoints) and a `zoo.refresh()` picks the new objects up.
+4. **Campaign scripts held in `scripts/`** until their campaign closes, then
+   delete or fold into a generic tool: `sr_dp_probe.py`, `jb_probe.py`
+   (the two live `utils.gridrun` exemplars), `beatvk_rescore.py`,
+   `eval_noise_gen_variants.py`, `cd_iter_sweep.sh`, plus the beat-VK core
+   (`beatvk_eval.py`, `beatvk_vk_arms.py`, `rps_predictor_vk_eval.py`,
+   `vk_blind_annotation.py`, `rps_refine_lab.py`, `vk_*.py`).
+5. **`tasks/spec.py` is still a back-compat shim** over `framespec`; remove it
+   once no config or checkpoint references the old path.
+6. **`salience_rps` has no task subdirectory** — it is documented inside
+   `src/tasks/rps-prediction/AGENTS.md` as a readout variant. Split it out if
+   it grows its own training/eval conventions.
 
 ## 1. Goals
 

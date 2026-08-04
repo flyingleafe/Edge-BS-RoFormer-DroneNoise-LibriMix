@@ -11,7 +11,10 @@ source, and optionally a refinement stage; get the protocol's pooled tables.
   mid-flight segment each).
 * ``--pred`` — where the candidate trajectories come from:
   ``model:<key>`` (a checkpoint from ``rps_predictor_vk_eval.MODELS``, run
-  with the frozen stitched-chmean inference), ``npz:<path-or-dir>``
+  with the frozen stitched-chmean inference — NOT ``zoo.load``: the keys name
+  published beat-VK result rows and the stitching calls the bare module, so
+  the migration waits for a zoo-side named-checkpoint alias, see
+  ``docs/refactor-2026-08-plan.md`` § Status debt 1), ``npz:<path-or-dir>``
   (``beatvk_eval`` NPZ layouts), or ``telem`` (the recorded telemetry init —
   raw measured for beatvk, the cleaned COMMAND labels for vk37 — the natural
   init for testing refinement stages).

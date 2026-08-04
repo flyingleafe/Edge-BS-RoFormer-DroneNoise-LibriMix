@@ -4,6 +4,17 @@ The pure-math tests (synthetic geometry recovery, Procrustes, permutation
 detection) need no dataset and run fast. Two integration smoke tests exercise
 the full DREGON / Michael's pipelines and are skipped automatically when the
 (git-ignored) recordings are not present.
+
+DELIBERATE ``notebooks/`` IMPORT — the one exception to "tests import ``src``
+only". ``geom_calibration.py`` is the **frozen** self-calibration study behind
+``writing/reports/2026-07-15_mic-array-geometry-calibration/``: its verdict
+(the DREGON 180-degree mic-frame correction and Michael's horizontal ring) was
+promoted into ``data_processing.sources.{dregon,michaels}.get_geometry`` and is
+covered there, so the module itself is not library code and is not going to be
+moved into ``src``. It stays under ``notebooks/`` next to the study, and these
+tests guard the published numbers against accidental edits. Do not "fix" the
+``sys.path`` insert below by moving the module — delete both together if the
+study is ever retired.
 """
 
 from __future__ import annotations
