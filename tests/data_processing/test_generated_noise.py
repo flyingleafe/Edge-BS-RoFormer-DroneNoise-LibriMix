@@ -18,6 +18,8 @@ import torch
 from data_processing.frames import get_meta
 from data_processing.online_mixing import build_noise_stream
 
+pytestmark = pytest.mark.slow
+
 
 def _tiny_bundle(tmp_path, *, drone: str = "michaels", n_harm: int = 8, cond_dim: int = 8) -> str:
     from models.generative import PositionalHarmonicNoiseGen

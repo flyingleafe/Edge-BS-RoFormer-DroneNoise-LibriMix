@@ -43,6 +43,18 @@
               pass_filenames = false;
               language = "system";
             };
+            lint-imports = {
+              enable = true;
+              name = "import-linter";
+              # import-linter is a project dev dependency; the devshell hook
+              # activates .venv, so the console script is on PATH.
+              entry = "lint-imports";
+              # Whole-graph contract (not per-file): run once whenever any
+              # Python module changes.
+              files = "\\.py$";
+              pass_filenames = false;
+              language = "system";
+            };
           };
         };
       in

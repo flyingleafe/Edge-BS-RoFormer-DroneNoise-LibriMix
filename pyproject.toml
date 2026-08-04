@@ -59,9 +59,10 @@ make-plot = "plots.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib -m \"not slow and not network\""
 markers = [
-    "slow: full-dataset inference (skip by default)",
+    "slow: heavy tests, excluded by default",
+    "network: touches real remote services (opt-in)",
 ]
 
 [build-system]
@@ -95,6 +96,48 @@ packages = [
     "src/training",
     "src/fwh_rotor_sim",
 ]
+
+[tool.importlinter]
+root_packages = [
+    "utils",
+    "data_processing",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+    "experiments",
+    "fwh_rotor_sim",
+]
+include_external_packages = false
+
+# Baseline contracts (Phase 0 of docs/refactor-2026-08-plan.md § 3.5). Only
+# contracts that pass today are here; the layers contract lands in phase 2.
+# NOTE: "utils is a leaf" is deliberately absent — utils.get_model_from_config
+# lazily imports models.*, so that contract cannot pass yet.
+
+[[tool.importlinter.contracts]]
+name = "nothing imports experiments"
+type = "forbidden"
+source_modules = [
+    "utils",
+    "data_processing",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+    "fwh_rotor_sim",
+]
+forbidden_modules = ["experiments"]
+
+[[tool.importlinter.contracts]]
+name = "models must not import training"
+type = "forbidden"
+source_modules = ["models"]
+forbidden_modules = ["training"]
 
 [tool.ruff]
 target-version = "py312"

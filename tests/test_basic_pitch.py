@@ -10,14 +10,12 @@ Run:  pytest tests/test_basic_pitch.py
 """
 
 import os
-import sys
 
 import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from models.basic_pitch import BasicPitch  # noqa: E402
+from models.basic_pitch import BasicPitch
 
 REF = os.path.join(os.path.dirname(__file__), "basic_pitch_ref.npz")
 TOL = 2e-3  # >> observed ~3e-6; guards against silent architecture drift

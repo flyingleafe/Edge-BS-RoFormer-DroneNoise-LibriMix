@@ -1,4 +1,4 @@
-"""Tests for data_processing.external_datasets.
+"""Tests for data_processing.sources.
 
 Registry integrity is torch-free. The build round-trip writes a synthetic
 MIMII-like tree, runs the real builder, and serializes each frame through the
@@ -323,5 +323,5 @@ def test_build_spcup19_wav_nested_subdirs_unique_keys(tmp_path):
 
 def test_spcup19_registered_with_http_download():
     spec = sources.get("SPCUP19-egonoise")
-    assert spec.download is None or spec.download.kind == "http"
+    assert spec.download is not None and spec.download.kind == "http"
     assert len(spec.download.params["urls"]) == 10  # 10 teams

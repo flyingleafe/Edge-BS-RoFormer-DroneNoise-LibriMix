@@ -199,7 +199,7 @@ class HTDemucsFineTune(nn.Module):
             self._load_pretrained(checkpoint, sources)
 
     def _load_pretrained(self, checkpoint: str, sources: list[str]) -> None:
-        from training.artifacts import resolve_checkpoint_uri
+        from utils.checkpoints import resolve_checkpoint_uri
 
         path = resolve_checkpoint_uri(checkpoint)
         pkg = torch.load(path, map_location="cpu", weights_only=False)

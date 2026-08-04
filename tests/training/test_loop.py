@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 
 import training.loop as loop_module
@@ -19,6 +20,8 @@ from tests.training.conftest import make_tiny_config
 from tests.training.test_artifacts import FakeS3Client
 from training.artifacts import ArtifactStore
 from training.loop import run_training
+
+pytestmark = pytest.mark.slow
 
 
 class _FakeRun:

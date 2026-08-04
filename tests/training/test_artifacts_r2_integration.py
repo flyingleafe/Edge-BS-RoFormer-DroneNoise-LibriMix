@@ -1,9 +1,12 @@
 """One opt-in integration test hitting real Cloudflare R2.
 
-Skipped unless ``R2_ACCOUNT_ID`` is present in the environment (loaded from
-``.env`` here, same as the real ``ArtifactStore`` does internally). Uploads
-under the ``_connectivity_check/test-artifacts/`` prefix in the ``ml-data``
-bucket and deletes everything it wrote before returning, pass or fail.
+Marked ``network`` (deselected by default, see ``addopts`` in
+``pyproject.toml``) — run with ``pytest -m network`` to opt in. When opted
+in, it is still skipped unless ``R2_ACCOUNT_ID`` is present in the
+environment (loaded from ``.env`` here, same as the real ``ArtifactStore``
+does internally). Uploads under the ``_connectivity_check/test-artifacts/``
+prefix in the ``ml-data`` bucket and deletes everything it wrote before
+returning, pass or fail.
 """
 
 from __future__ import annotations
@@ -17,10 +20,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("R2_ACCOUNT_ID"),
-    reason="R2_ACCOUNT_ID not set; skipping live Cloudflare R2 integration test",
-)
+pytestmark = [
+    pytest.mark.network,
+    pytest.mark.skipif(
+        not os.environ.get("R2_ACCOUNT_ID"),
+        reason="R2_ACCOUNT_ID not set; skipping live Cloudflare R2 integration test",
+    ),
+]
 
 
 def test_artifact_store_roundtrip_against_real_r2():
