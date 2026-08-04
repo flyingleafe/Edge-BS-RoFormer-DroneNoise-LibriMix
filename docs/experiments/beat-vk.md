@@ -579,3 +579,51 @@ FLY124 gains real, DREGON blocked by (3) not by estimation.
 
 Remaining open (nice-to-have, running): S3b/S3c mechanism attribution
 (masking vs aero vs translation), CRB tie-in from measured budgets.
+
+## DREGON-degradation discriminators (2026-08-04, three-arm study)
+
+Question: why does every pi_kalman variant slightly worsen dregon_cruise
+(blind init 1.807 → 1.83–1.87) while clearly helping FLY124. Three arms,
+predictions registered in advance; runner + raw results in the session
+scratchpad (`dregon_arms/{armA,armB,armC,armC2}.json`); instrumentation
+validated (raw-GT rescore reproduces the flagship report to <2e-3).
+
+**Arm A — high-k anchor** (k floor 16, `k_caps=(16,28,40)`, `band_hz=12`,
+`off_comb_hz=25`, joint twin path off): removes ~95% of the steady
+degradation (pooled steady +0.034 → +0.002) and beats init on the two
+worst windows (nosource w1 1.104→1.005, whitenoise w1 1.044→0.949 at ×1).
+Never improves below init pooled — no recoverable error beyond the
+displaced-set penalty.
+
+**Arm B — rescore vs low-passed GT** (butter-4 filtfilt, 1.5/0.8/0.4 Hz):
+the init→refined gap GROWS under smoothing (+0.024 raw → +0.047 @0.4 Hz,
+every arm) — the added error is low-frequency bias, not under-tracked
+fast jitter.
+
+**Arm C — hover** (`hovering_nosource_room2`, 3 ad-hoc 16 s windows,
+command-GT caveat): standard refinement NEUTRAL (w0 +0.004 vs cruise
++0.03–0.09; blind init failed capture on w1/w2 — octave-confused seed on
+the 3–4× weaker hover comb — direction read from w0 + the probe).
+Capture-safe telemetry+1.0 offset probe, 6 passes: on cruise the track
+walks down 0.06–0.1 rev/s per pass and keeps walking PAST its MAE optimum
+(bottom at ×4, rising after) toward a sub-telemetry attractor; on hover
+the pull is ~5× weaker and MAE never turns up.
+
+**Verdicts**: T3 (smoother bandwidth) REFUTED three ways (gap grows under
+smoothed GT; identical RTS with high-k anchor does not degrade; neutral on
+hover). T1 (self-consistent displaced low-k lock) SUPPORTED as the
+mechanism — the loss lives entirely in the k≤13 displaced set, and
+iteration compounds it. T2 premise CONFIRMED (displacement is real,
+translation-linked physics; nothing telemetry-referenced left to recover)
+but its "nothing to fix" conclusion REFUTED — the penalty is avoidable by
+not measuring the displaced set.
+
+**Implied final-form fix (not yet implemented)**: displacement-aware
+harmonic admission in pi_kalman — floor/down-weight k<16 (or gate low-k
+on disagreement between the k<16 and k≥16 comb-implied rates), widen the
+band to ≥10–12 Hz so on-grid high-k lines stay capturable, keep the joint
+twin path off when its harmonics fall in the displaced set. Converts the
+stage from −0.024 harm to neutral/slightly-positive on DREGON; FLY124
+machinery untouched. Realistic ceiling: DREGON cruise does not improve
+below the blind init this way — that floor is init trajectory-shape error
+plus GT jitter.
