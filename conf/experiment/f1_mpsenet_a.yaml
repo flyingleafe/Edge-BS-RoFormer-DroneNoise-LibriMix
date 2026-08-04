@@ -8,12 +8,13 @@ defaults:
   - override /metrics: separation_basic
 
 experiment_name: f1_mpsenet_a
-# fp16 autocast + GradScaler (STFT/iSTFT stay fp32 inside the model); the
-# first pass hit the 16 h wall at ~epoch 67 still improving — throughput fix.
-# bf16 was tried first and NaN-poisoned the weights at epoch-0 step ~407
-# (no scaler step-skip in bf16); fp16's GradScaler skips overflowed steps.
-amp: true
-amp_dtype: float16
+# fp32: MP-SENet does not train in half precision. Measured 2026-08-04:
+# bf16 learned fast then NaN-poisoned the weights at epoch-0 step ~407; fp16
+# + GradScaler stayed FLAT for 5 epochs (val si_sdr −36.7, no updates) — the
+# phase path (angle/atan2 around zero magnitudes) emits inf/NaN grads on
+# ~every half-precision batch, so the scaler skips every step. The fp32 run
+# converges (~epoch 67 in 16 h); resume: true chains segments instead.
+amp: false
 resume: true  # chainable across wall-limited job segments (last.ckpt)
 samples_per_validation: 20000
 epochs: 150
