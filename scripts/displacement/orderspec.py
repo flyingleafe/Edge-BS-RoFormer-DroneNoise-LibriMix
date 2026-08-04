@@ -34,7 +34,9 @@ OUT = Path(__file__).resolve().parent
 FIGS = OUT / "figs"
 sys.path.insert(0, str(ROOT / "src"))
 
-DREGON = ROOT / "data/DREGON"
+from utils.paths import get_data_path  # noqa: E402
+
+DREGON = get_data_path("DREGON")
 SAMPLES_PER_REV = 1024  # order Nyquist = 512
 ORDER_MAX = 120
 

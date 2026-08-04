@@ -38,7 +38,10 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parent
 FIGS = OUT / "figs"
 sys.path.insert(0, str(ROOT / "src"))
-DREGON = ROOT / "data/DREGON"
+
+from utils.paths import get_data_path  # noqa: E402
+
+DREGON = get_data_path("DREGON")
 
 SPR = 1024  # samples per revolution after phase resampling
 S_GRID = np.arange(0.975, 1.0251, 0.00002)

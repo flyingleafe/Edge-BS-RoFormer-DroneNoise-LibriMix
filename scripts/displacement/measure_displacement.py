@@ -32,8 +32,12 @@ import numpy as np  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-PREP = ROOT / ("omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache")
-LADDER = ROOT / "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm"
+from utils.paths import get_data_root  # noqa: E402
+
+PREP = get_data_root() / (
+    "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
+)
+LADDER = get_data_root() / "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm"
 OUT = Path(__file__).resolve().parent
 SPEC_DIR = OUT / "specs"
 

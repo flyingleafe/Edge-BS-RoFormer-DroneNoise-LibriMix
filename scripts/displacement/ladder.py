@@ -46,6 +46,8 @@ sys.path.insert(0, str(ROOT / "src"))
 import measure_displacement as M  # noqa: E402
 import nullcontrol as NC  # noqa: E402
 
+from utils.paths import get_data_path  # noqa: E402
+
 PREP2 = OUT / "prep_ladder"
 SR = M.SR
 FRAME_S = M.FRAME_S
@@ -55,7 +57,7 @@ K_SET = list(range(1, 17))  # low-k only: nothing above k~14 clears the bar
 BAR_DB = 6.0
 LOW_K = tuple(range(2, 14))
 
-DREGON_DIR = ROOT / "data/DREGON"
+DREGON_DIR = get_data_path("DREGON")
 
 # recording -> (regime family, telemetry entry)
 RECORDINGS: dict[str, tuple[str, str]] = {
