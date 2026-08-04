@@ -75,6 +75,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import argparse  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import multiprocessing  # noqa: E402
 import sys  # noqa: E402
@@ -535,11 +536,14 @@ def neural_path(out: Path, rid: str, widx: int, model: str) -> Path:
     return out / "neural_cache" / f"{rid}__w{widx:02d}__{model}.npz"
 
 
-def run_path(out: Path, rid: str, widx: int, arm: str, model: str) -> Path:
+def run_path(out: Path, rid: str, widx: int, arm: str, model: str, chan: str = "") -> Path:
+    """Run-cache path. ``chan`` is the :func:`chan_tag` mic-subset suffix --
+    a non-default subset changes the result, so it must not share a cache
+    entry with the full-array run."""
     tag = f"{rid}__w{widx:02d}__{arm}"
     if arm in NEURAL_ARMS:
         tag += f"__{model}"
-    return out / "runs" / f"{tag}.npz"
+    return out / "runs" / f"{tag}{chan}.npz"
 
 
 # ---------------------------------------------------------------------------
@@ -651,16 +655,43 @@ def build_preps(
         rec["audio"] = None
 
 
-def load_prep(out: Path, rid: str, widx: int, channels: int) -> tuple[Prepared, str]:
+def channel_subset(
+    rid: str, widx: int, n_total: int, channels: int, seed: int | None
+) -> np.ndarray:
+    """Channel indices for a window: first-``channels`` when ``seed`` is None,
+    else a per-(seed, rid, widx) random subset (the mic-count ablation).
+
+    The subset must be identical in every worker process, so the stream is
+    seeded with a stable digest -- NOT ``hash()``, which is salted per process
+    for strings.
+    """
+    if seed is None or channels >= n_total:
+        return np.arange(min(channels, n_total))
+    digest = hashlib.sha256(f"{seed}|{rid}|{widx}".encode()).digest()[:8]
+    rng = np.random.default_rng(int.from_bytes(digest, "big"))
+    return np.sort(rng.permutation(n_total)[:channels])
+
+
+def chan_tag(channels: int, seed: int | None) -> str:
+    """Cache-key suffix for a non-default mic subset ('' for the full array)."""
+    if seed is None and channels >= 8:
+        return ""
+    return f"__c{channels}" + (f"s{seed}" if seed is not None else "")
+
+
+def load_prep(
+    out: Path, rid: str, widx: int, channels: int, channel_seed: int | None = None
+) -> tuple[Prepared, str]:
     """Window prep NPZ -> ``Prepared`` (audio truncated to ``channels``) + regime."""
     with np.load(prep_path(out, rid, widx)) as z:
         start, end = float(z["start_s"]), float(z["end_s"])
+        sub = channel_subset(rid, widx, z["audio"].shape[0], channels, channel_seed)
         prep = Prepared(
             rid=f"{rid}__w{widx:02d}",
             tau=0.0,
             seg_lo=start,
             seg_hi=end,
-            audio=z["audio"][:channels],
+            audio=z["audio"][sub],
             ft=z["ft"],
             r_init=z["r_meas"].copy(),
             r_meas=z["r_meas"],
@@ -722,12 +753,16 @@ def compute_neural_seeds(
 
 def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
     out = Path(cfg["out"])
-    path = run_path(out, rid, widx, arm, cfg["neural_model"])
+    path = run_path(
+        out, rid, widx, arm, cfg["neural_model"], chan_tag(cfg["channels"], cfg.get("channel_seed"))
+    )
     if path.exists():
         return str(path)
-    prep, regime = load_prep(out, rid, widx, cfg["channels"])
+    prep, regime = load_prep(out, rid, widx, cfg["channels"], cfg.get("channel_seed"))
     with np.load(weights_path(out, rid)) as z:
-        weights = z["weights"][: cfg["channels"]]
+        w_all = z["weights"]
+        sub = channel_subset(rid, widx, w_all.shape[0], cfg["channels"], cfg.get("channel_seed"))
+        weights = w_all[sub]
 
     arms = BLIND_ARM_SETS.get(arm, frozenset({"K", "R"}) if arm in FULLRANGE_ARMS else frozenset())
     coarse_diag: dict[str, Any] = {}
@@ -853,6 +888,7 @@ def assemble(
     jobs_windows: dict[str, list[int]],
     model_key: str,
     dataset_version: str,
+    chan: str = "",
 ) -> None:
     summary: dict[str, Any] = {
         "dataset": {"name": DATASET, "version": dataset_version},
@@ -866,13 +902,13 @@ def assemble(
         "arms": {},
     }
     for arm in arm_names:
-        arm_dir = out / arm
+        arm_dir = out / (arm + chan)
         arm_dir.mkdir(parents=True, exist_ok=True)
         summary["arms"][arm] = {}
         for rid, widxs in jobs_windows.items():
             fts, trajs, rows = [], [], {}
             for widx in sorted(widxs):
-                rp = run_path(out, rid, widx, arm, model_key)
+                rp = run_path(out, rid, widx, arm, model_key, chan)
                 if not rp.exists():
                     continue
                 with np.load(rp) as z:
@@ -912,9 +948,10 @@ def assemble(
                 "windows": rows,
             }
             print(f"[assemble] {arm}/{rid}.npz: {len(fts)} windows, {ft_all.size} frames")
-    with open(out / "summary.json", "w") as f:
+    spath = out / f"summary{chan}.json"
+    with open(spath, "w") as f:
         json.dump(summary, f, indent=2)
-    print(f"[assemble] wrote {out}/summary.json", flush=True)
+    print(f"[assemble] wrote {spath}", flush=True)
 
 
 # ---------------------------------------------------------------------------

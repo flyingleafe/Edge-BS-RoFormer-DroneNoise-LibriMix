@@ -80,6 +80,20 @@ N_ROTORS: int = beatvk_eval.N_ROTORS
 PI_N_ITER = 3
 PI_BAND_HZ = 6.0
 PI_PAIR_MODE = "joint"
+# Bandwidth-and-admission revision rows (docs/experiments/beat-vk.md):
+# extra pi_kalman_refine kwargs per --pi-variant. "k_anneal"/"full" thread
+# the annealed per-rotor band_b0 across applications via band_b0_final.
+PI_VARIANTS: dict[str, dict[str, Any]] = {
+    "protocol": {},
+    "k_scaled": {"band_mode": "k_scaled"},
+    "k_anneal": {"band_mode": "k_scaled", "band_anneal": "posterior"},
+    "full": {
+        "band_mode": "k_scaled",
+        "band_anneal": "posterior",
+        "lowk_gate": "consistency",
+        "probe_mode": "clean",
+    },
+}
 # Peel settings: 1 Hz envelope bandwidth ~ 1 s coherence, inside the
 # measured 0.5-1.5 s tau_k window at k = 8-40.
 PEEL_BW_HZ = 1.0
@@ -195,15 +209,24 @@ def _install_patches() -> None:
 
 
 def run_arm(
-    clip: np.ndarray, r0: np.ndarray, ft: np.ndarray, arm: str, n_apps: int, tag: str
+    clip: np.ndarray,
+    r0: np.ndarray,
+    ft: np.ndarray,
+    arm: str,
+    n_apps: int,
+    tag: str,
+    pi_variant: str = "protocol",
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Iterate the pi_kalman stage ``n_apps`` times from ``r0``.
 
     Returns ``(iters (n_apps+1, 4, N), per-application diagnostics)``.
+    ``pi_variant`` selects a :data:`PI_VARIANTS` row; annealed variants
+    carry the per-rotor ``band_b0`` across applications.
     """
     from data_processing.phase_increment_tracker import pi_kalman_refine
 
     _install_patches()
+    pi_kwargs = dict(PI_VARIANTS[pi_variant])
     iters = [r0.copy()]
     app_diag: list[dict[str, Any]] = []
     r_cur = r0.copy()
@@ -217,7 +240,7 @@ def run_arm(
             _CTX["pair_audio"] = pair_audio
         wall_peel = time.perf_counter() - tic
         tic = time.perf_counter()
-        r_next, _ = pi_kalman_refine(
+        r_next, pi_diag = pi_kalman_refine(
             clip,
             r_cur,
             ft,
@@ -225,9 +248,13 @@ def run_arm(
             n_iter=PI_N_ITER,
             pair_mode=PI_PAIR_MODE,
             band_hz=PI_BAND_HZ,
+            **pi_kwargs,
         )
         wall_pi = time.perf_counter() - tic
         _CTX["peel_audio"] = _CTX["pair_audio"] = None
+        b0_final = pi_diag.get("band_b0_final")
+        if pi_kwargs.get("band_anneal") == "posterior" and b0_final is not None:
+            pi_kwargs["band_b0"] = tuple(b0_final)  # trust region carries over
         step = r_next - r_cur
         app_diag.append(
             {
@@ -238,6 +265,7 @@ def run_arm(
                     round(float(np.sqrt(np.mean(step[r] ** 2))), 4) for r in range(N_ROTORS)
                 ],
                 "step_mean": [round(float(np.mean(step[r])), 4) for r in range(N_ROTORS)],
+                **({"band_b0_final": b0_final} if b0_final is not None else {}),
                 **({"peel": peel_diag} if peel_diag is not None else {}),
             }
         )
@@ -259,26 +287,46 @@ def run_arm(
 # per-window job (worker process)
 
 
-def flag_path(out: Path, rid: str, widx: int, arm: str) -> Path:
-    return out / "runs" / f"{rid}__w{widx:02d}__{arm}.npz"
+def variant_tag(cfg: dict[str, Any]) -> str:
+    """Cache-key suffix for the pi_kalman variant + mic subset ('' = protocol
+    row on the full array), so rows of the ladder never share a cache entry."""
+    pi = str(cfg.get("pi_variant", "protocol"))
+    tag = "" if pi == "protocol" else f"__{pi}"
+    return tag + vka.chan_tag(int(cfg.get("channels", 8)), cfg.get("channel_seed"))
+
+
+def flag_path(out: Path, rid: str, widx: int, arm: str, suffix: str = "") -> Path:
+    return out / "runs" / f"{rid}__w{widx:02d}__{arm}{suffix}.npz"
 
 
 def run_flagship_window(rid: str, widx: int, cfg: dict[str, Any]) -> str:
     out, vk_out = Path(cfg["out"]), Path(cfg["vk_out"])
     n_apps = int(cfg["apps"])
-    arms = [a for a in cfg["arms"] if not flag_path(out, rid, widx, a).exists()]
+    suffix = variant_tag(cfg)
+    arms = [a for a in cfg["arms"] if not flag_path(out, rid, widx, a, suffix).exists()]
     if not arms:
         return "cached"
-    prep, regime = vka.load_prep(vk_out, rid, widx, channels=8)
+    channels, channel_seed = int(cfg.get("channels", 8)), cfg.get("channel_seed")
+    prep, regime = vka.load_prep(vk_out, rid, widx, channels=channels, channel_seed=channel_seed)
     clip = np.asarray(prep.audio, dtype=np.float64)
-    with np.load(vka.run_path(vk_out, rid, widx, cfg["init_arm"], cfg["neural_model"])) as z:
+    init_path = vka.run_path(
+        vk_out,
+        rid,
+        widx,
+        cfg["init_arm"],
+        cfg["neural_model"],
+        vka.chan_tag(channels, channel_seed),
+    )
+    with np.load(init_path) as z:
         ft = np.asarray(z["ft"], np.float64)
         r0 = np.asarray(z["traj"], np.float64)
         start_s = float(z["start_s"])
     tag = f"{rid} w{widx:02d}"
     for arm in arms:
-        iters, app_diag = run_arm(clip, r0, ft, arm, n_apps, tag)
-        path = flag_path(out, rid, widx, arm)
+        iters, app_diag = run_arm(
+            clip, r0, ft, arm, n_apps, tag, pi_variant=cfg.get("pi_variant", "protocol")
+        )
+        path = flag_path(out, rid, widx, arm, suffix)
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             path,
@@ -605,7 +653,11 @@ def short_name(rid: str, widx: int) -> str:
 
 
 def run_synthetic(
-    out: Path, arms: list[str], n_apps: int, init_arm: str = vka.FULLRANGE_ARM
+    out: Path,
+    arms: list[str],
+    n_apps: int,
+    init_arm: str = vka.FULLRANGE_ARM,
+    pi_variant: str = "protocol",
 ) -> dict[str, Any]:
     """The synthetic case end-to-end: blind chain + both arms + trace JSON."""
     cache = out / "runs" / "synthetic_chain.npz"
@@ -622,14 +674,15 @@ def run_synthetic(
     clip = np.asarray(prep.audio, dtype=np.float64)
     arm_iters: dict[str, np.ndarray] = {}
     arm_diags: dict[str, list[dict[str, Any]]] = {}
+    suffix = "" if pi_variant == "protocol" else f"__{pi_variant}"
     for arm in arms:
-        apath = flag_path(out, "synthetic", 0, arm)
+        apath = flag_path(out, "synthetic", 0, arm, suffix)
         if apath.exists():
             with np.load(apath) as z:
                 arm_iters[arm] = np.asarray(z["iters"], np.float64)
                 arm_diags[arm] = json.loads(str(z["app_diag"]))
             continue
-        iters, app_diag = run_arm(clip, r0, prep.ft, arm, n_apps, "synthetic")
+        iters, app_diag = run_arm(clip, r0, prep.ft, arm, n_apps, "synthetic", pi_variant)
         arm_iters[arm], arm_diags[arm] = iters, app_diag
         apath.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
@@ -661,7 +714,7 @@ def run_synthetic(
     )
     tdir = out / "traces"
     tdir.mkdir(parents=True, exist_ok=True)
-    with open(tdir / "blind_synthetic.json", "w") as f:
+    with open(tdir / f"blind_synthetic{suffix}.json", "w") as f:
         json.dump(trace, f)
     curves = {
         arm: [s["extras"]["pit_mae"]["mean"] for s in trace["arms"][arm]["snapshots"]]
@@ -691,6 +744,21 @@ def main() -> None:
         choices=list(vka.FULLRANGE_ARMS),
         help="blind init variant (2xwin = 4096/1024 coarse STFT, gamma halved)",
     )
+    ap.add_argument(
+        "--pi-variant",
+        default="protocol",
+        choices=sorted(PI_VARIANTS),
+        help="pi_kalman option set (bandwidth-and-admission revision rows)",
+    )
+    ap.add_argument(
+        "--channels", type=int, default=8, help="mic channels for init + refinement (<=8)"
+    )
+    ap.add_argument(
+        "--channel-seed",
+        type=int,
+        default=None,
+        help="random per-window mic subset seed (default: first --channels mics)",
+    )
     ap.add_argument("--no-synthetic", action="store_true")
     ap.add_argument(
         "--synthetic-only", action="store_true", help="local smoke: synthetic case only"
@@ -705,7 +773,7 @@ def main() -> None:
         raise SystemExit(f"unknown arms {unknown}; valid: {list(ARMS)}")
 
     if opts.synthetic_only:
-        run_synthetic(out, arms, opts.apps, opts.init_arm)
+        run_synthetic(out, arms, opts.apps, opts.init_arm, opts.pi_variant)
         return
 
     vk_out = Path(opts.vk_out) if opts.vk_out else out / "vk_arms"
@@ -726,12 +794,18 @@ def main() -> None:
 
     # ── stage 1: blind_fullrange init on every window (beatvk_vk_arms) ──
     vka.build_preps(vk_out, jobs_windows, opts.dataset_version, opts.dregon_dir)
-    cfg1 = {"out": str(vk_out), "channels": 8, "neural_model": vka.DEFAULT_NEURAL_MODEL}
+    cfg1 = {
+        "out": str(vk_out),
+        "channels": opts.channels,
+        "channel_seed": opts.channel_seed,
+        "neural_model": vka.DEFAULT_NEURAL_MODEL,
+    }
+    ctag = vka.chan_tag(opts.channels, opts.channel_seed)
     init_jobs = [
         (rid, widx)
         for rid, ws in jobs_windows.items()
         for widx in ws
-        if not vka.run_path(vk_out, rid, widx, opts.init_arm, cfg1["neural_model"]).exists()
+        if not vka.run_path(vk_out, rid, widx, opts.init_arm, cfg1["neural_model"], ctag).exists()
     ]
     ctx = multiprocessing.get_context("spawn")
     if init_jobs:
@@ -742,7 +816,7 @@ def main() -> None:
             ]
             for f in futs:
                 f.result()
-    vka.assemble(vk_out, [opts.init_arm], jobs_windows, cfg1["neural_model"], version)
+    vka.assemble(vk_out, [opts.init_arm], jobs_windows, cfg1["neural_model"], version, ctag)
 
     # ── stage 2: iterated arms per window ──
     cfg2 = {
@@ -752,12 +826,16 @@ def main() -> None:
         "arms": arms,
         "neural_model": vka.DEFAULT_NEURAL_MODEL,
         "init_arm": opts.init_arm,
+        "pi_variant": opts.pi_variant,
+        "channels": opts.channels,
+        "channel_seed": opts.channel_seed,
     }
+    vtag = variant_tag(cfg2)
     iter_jobs = [
         (rid, widx)
         for rid, ws in jobs_windows.items()
         for widx in ws
-        if any(not flag_path(out, rid, widx, a).exists() for a in arms)
+        if any(not flag_path(out, rid, widx, a, vtag).exists() for a in arms)
     ]
     if iter_jobs:
         print(f"[stage 2] {len(iter_jobs)} window jobs on {opts.jobs} workers", flush=True)
@@ -768,14 +846,14 @@ def main() -> None:
 
     # ── stage 3: assemble + frozen-scorer leaderboard ──
     recs = beatvk_eval.load_recordings(opts.dataset_version, set(jobs_windows), keep_audio=False)
-    init_trajs = beatvk_eval.preds_from_npz(vk_out / opts.init_arm, list(jobs_windows))
+    init_trajs = beatvk_eval.preds_from_npz(vk_out / (opts.init_arm + ctag), list(jobs_windows))
 
     def assembled(arm: str, app: int) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         trajs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         for rid, ws in jobs_windows.items():
             fts, rps = [], []
             for widx in sorted(ws):
-                with np.load(flag_path(out, rid, widx, arm)) as z:
+                with np.load(flag_path(out, rid, widx, arm, vtag)) as z:
                     fts.append(float(z["start_s"]) + np.asarray(z["ft"], np.float64))
                     rps.append(np.asarray(z["iters"], np.float64)[app])
             trajs[rid] = (np.concatenate(fts), np.concatenate(rps, axis=1))
@@ -798,7 +876,7 @@ def main() -> None:
     if "peeled" in arms:
         for rid, ws in jobs_windows.items():
             for widx in sorted(ws):
-                with np.load(flag_path(out, rid, widx, "peeled")) as z:
+                with np.load(flag_path(out, rid, widx, "peeled", vtag)) as z:
                     diags = json.loads(str(z["app_diag"]))
                 key = f"{rid}__w{widx:02d}"
                 peel_diags[key] = [d.get("peel") for d in diags]
@@ -850,11 +928,12 @@ def main() -> None:
         arm_diags: dict[str, list[dict[str, Any]]] = {}
         ft_abs = np.array([])
         for arm in arms:
-            with np.load(flag_path(out, rid, widx, arm)) as z:
+            with np.load(flag_path(out, rid, widx, arm, vtag)) as z:
                 ft_abs = float(z["start_s"]) + np.asarray(z["ft"], np.float64)
                 arm_iters[arm] = np.asarray(z["iters"], np.float64)
                 arm_diags[arm] = json.loads(str(z["app_diag"]))
-        with np.load(vka.run_path(vk_out, rid, widx, opts.init_arm, cfg1["neural_model"])) as z:
+        ipath = vka.run_path(vk_out, rid, widx, opts.init_arm, cfg1["neural_model"], ctag)
+        with np.load(ipath) as z:
             blind_info = {
                 "seed_bases": [round(float(v), 2) for v in z["seed_bases"]],
                 "coarse_mode": str(z["coarse_mode"]) if "coarse_mode" in z else None,
@@ -867,7 +946,7 @@ def main() -> None:
             "recording_id": rid,
             "window_index": widx,
             "regime": str(w["regime"]),
-            "n_channels": 8,
+            "n_channels": opts.channels,
             "blind_chain": blind_info,
             "init_arm": opts.init_arm,
         }
@@ -882,7 +961,7 @@ def main() -> None:
             arm_iters,
             arm_diags,
         )
-        fpath = tdir / f"blind_{name}.json"
+        fpath = tdir / f"blind_{name}{vtag}.json"
         with open(fpath, "w") as f:
             json.dump(trace, f)
         trace_files[name] = str(fpath)
@@ -890,15 +969,19 @@ def main() -> None:
 
     synth_summary = None
     if not opts.no_synthetic:
-        synth_summary = run_synthetic(out, arms, opts.apps, opts.init_arm)
-        trace_files["synthetic"] = str(tdir / "blind_synthetic.json")
+        synth_summary = run_synthetic(out, arms, opts.apps, opts.init_arm, opts.pi_variant)
+        stag = "" if opts.pi_variant == "protocol" else f"__{opts.pi_variant}"
+        trace_files["synthetic"] = str(tdir / f"blind_synthetic{stag}.json")
 
     report = {
         "dataset": {"name": beatvk_eval.DATASET, "version": version},
         "pipeline": {
             "init": opts.init_arm + " (beatvk_vk_arms vit2dsp chain)",
             "pi_kalman": {"n_iter": PI_N_ITER, "band_hz": PI_BAND_HZ, "pair_mode": PI_PAIR_MODE},
+            "pi_variant": {"name": opts.pi_variant, **PI_VARIANTS[opts.pi_variant]},
             "peel": {"bw_hz": PEEL_BW_HZ, "k_max": PEEL_K_MAX},
+            "channels": opts.channels,
+            "channel_seed": opts.channel_seed,
             "apps": opts.apps,
         },
         "leaderboard": leaderboard,
@@ -909,9 +992,10 @@ def main() -> None:
         "traces": trace_files,
         "synthetic": synth_summary,
     }
-    with open(out / "report.json", "w") as f:
+    rpath = out / f"report{vtag}.json"
+    with open(rpath, "w") as f:
         json.dump(report, f, indent=2)
-    print(f"\n[flagship] wrote {out}/report.json", flush=True)
+    print(f"\n[flagship] wrote {rpath}", flush=True)
 
 
 if __name__ == "__main__":
