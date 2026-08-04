@@ -6,6 +6,16 @@ Pure array code (numpy/scipy/torch). This package must not import
 
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
 from tracking.phase_increment_tracker import pi_kalman_refine
+from tracking.pipelines import (
+    CAPTURE_CFG,
+    MIDBAND_CFG,
+    MIDBAND_CFGS,
+    REFINE_CFG,
+    SEED_CFG,
+    TRACK_CFG,
+    vit2dsp_pipeline,
+    vit2dsp_stage,
+)
 from tracking.rotor_dp import greedy_peel, viterbi_path
 from tracking.rps_refinement import (
     RefineConfig,
@@ -41,7 +51,13 @@ from tracking.vk_tracking import (
 from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
+    "CAPTURE_CFG",
     "DEFAULT_HOP_S",
+    "MIDBAND_CFG",
+    "MIDBAND_CFGS",
+    "REFINE_CFG",
+    "SEED_CFG",
+    "TRACK_CFG",
     "RefineConfig",
     "SeedConfig",
     "Stage",
@@ -67,6 +83,8 @@ __all__ = [
     "refine_trajectories",
     "stage_guard",
     "tracking_frame",
+    "vit2dsp_pipeline",
+    "vit2dsp_stage",
     "viterbi_path",
     "vk_envelopes",
     "vk_reconstruct",

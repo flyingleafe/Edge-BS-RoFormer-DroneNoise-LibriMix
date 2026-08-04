@@ -15,6 +15,7 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 | `warp_refinement.py` | Iterated time-warp (generalized-demodulation) IF refiner: `iter_warp_refine`. |
 | `rotors.py` | Quadrotor control-allocation constants: `MIXER`, `NUM_ROTORS`, `MODE_NAMES`, `modes_from_rps`, `rps_from_modes`. `data_processing.rps_synthesis` re-exports them. |
 | `stages.py` | The TimeFrame stage API (plan §3.2): `Stage`, `tracking_frame`, `get_audio`/`get_rps`/`with_rps`, `pipeline`, and the adapters `blind_seed_stage`, `vk_stage`, `pi_kalman_stage`, `warp_stage`, `refine_coherent_stage`, `guarded`. |
+| `pipelines.py` | The canonical blind-annotation ladder: the FROZEN config registry (`CAPTURE_CFG`, `REFINE_CFG`, `TRACK_CFG`, `MIDBAND_CFG(S)`, `SEED_CFG` — calibrated values; changing them invalidates published annotations), the vit2dsp core (`vit2dsp_pipeline`, `vit_stage1`, `tooth_cube`, `pair_score_2d_spatial`, `joint_viterbi`, `apply_guard`, `whitened_logmag_multi`), and the Stage adapter `vit2dsp_stage` (self-seeding via `blind_seed_stage`). |
 
 Tests live in `tests/tracking/`.
 
@@ -42,4 +43,4 @@ r, ft = trk.get_rps(out)               # (4, N) rev/s + frame times
 print([e["stage"] for e in out["meta"]["tracking"]])  # ['blind_seed', 'vk', 'guard']
 ```
 
-Named pipeline ladders (`vit2dsp`, blind-seed arms, cd_iter) land in `pipelines.py` in a follow-up task; until then that composition stays in `scripts/` (`vk_blind_annotation.py`, `rps_refine_lab.py`).
+The vit2dsp ladder lives in `pipelines.py` (`vit2dsp_stage` for frames, `vit2dsp_pipeline` for arrays). `scripts/vk_blind_annotation.py` keeps thin back-compat aliases (`_SEED_CFG`, `_tooth_cube`, ...) plus everything data- or GT-bound (recording prep, mic-geometry weights, PIT scoring, superseded arms). Remaining ladders (blind-seed arms, cd_iter) stay in `scripts/rps_refine_lab.py` for now.
