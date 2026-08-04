@@ -35,9 +35,12 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import tdseries as td
-
 import wandb
+
 from data_processing.frames import get_meta
+from plots.audio import sample_rate_of, to_mono
+from plots.noise_gen import extract_noise_gen_pair
+from plots.se import extract_se_triple
 from tasks.task import Task
 from training.artifacts import ValSample
 
@@ -140,21 +143,8 @@ def _to_numpy(x: Any) -> np.ndarray:
     return np.asarray(x)
 
 
-def _audio_to_mono(series: td.Series) -> np.ndarray:
-    """Mono waveform from an ``"time"``-having ``Series``: passed through if
-    already 1-D, else averaged over every non-time axis (mirrors the old
-    ``np.mean(mix, axis=0)`` channel-collapse for multichannel audio)."""
-    arr = _to_numpy(series.data).astype(np.float32)
-    if arr.ndim == 1:
-        return arr
-    return arr.mean(axis=tuple(range(arr.ndim - 1))).astype(np.float32)
-
-
-def _sample_rate(series: td.Series) -> int:
-    tindex = series.tindex
-    if not isinstance(tindex, td.GridIndex):
-        raise TypeError(f"expected a GridIndex time axis, got {type(tindex).__name__}")
-    return int(round(float(tindex.sr)))
+# Audio-array conversions moved to ``plots.audio`` (to_mono / sample_rate_of)
+# so the plots package and this wandb adapter share one recipe.
 
 
 def _caption(sample_id: str, input_snr: float | None) -> str:
@@ -169,27 +159,19 @@ def _caption(sample_id: str, input_snr: float | None) -> str:
 def _fill_audio_triple(
     vs: ValSample, payload: dict[str, Any], pred: td.Frame, target: td.Frame, caption: str
 ) -> bool:
-    """speech_enhancement-style: mixture/target/output audio triple."""
-    if "mixture" not in target or "target" not in target or "enhanced" not in pred:
-        return False
-    mixture_series = target["mixture"]
-    sr = _sample_rate(mixture_series)
-    mixture = _audio_to_mono(mixture_series)
-    clean = _audio_to_mono(target["target"])
-    output = _audio_to_mono(pred["enhanced"])
+    """speech_enhancement-style: mixture/target/output audio triple.
 
-    vs.audio["mixture"] = (mixture, sr)
-    vs.audio["target"] = (clean, sr)
-    vs.audio["output"] = (output, sr)
-    payload[f"samples/{vs.sample_id}/mixture"] = wandb.Audio(
-        mixture, sample_rate=sr, caption=f"mixture {caption}"
-    )
-    payload[f"samples/{vs.sample_id}/target"] = wandb.Audio(
-        clean, sample_rate=sr, caption=f"target {caption}"
-    )
-    payload[f"samples/{vs.sample_id}/output"] = wandb.Audio(
-        output, sample_rate=sr, caption=f"output {caption}"
-    )
+    The triple extraction (which entries, mono collapse) lives in
+    :func:`plots.se.extract_se_triple`; only the wandb wrapping stays here.
+    """
+    triple = extract_se_triple(pred, target)
+    if triple is None:
+        return False
+    for role, (mono, sr) in triple.items():
+        vs.audio[role] = (mono, sr)
+        payload[f"samples/{vs.sample_id}/{role}"] = wandb.Audio(
+            mono, sample_rate=sr, caption=f"{role} {caption}"
+        )
     return True
 
 
@@ -201,8 +183,8 @@ def _fill_rps_overlay(
     if "mixture" not in target:
         return False
     mixture_series = target["mixture"]
-    sr = _sample_rate(mixture_series)
-    mono = _audio_to_mono(mixture_series)
+    sr = sample_rate_of(mixture_series)
+    mono = to_mono(mixture_series)
     vs.audio["mixture"] = (mono, sr)
     payload[f"samples/{vs.sample_id}/mixture"] = wandb.Audio(
         mono, sample_rate=sr, caption=f"mixture {caption}"
@@ -252,26 +234,20 @@ def _fill_noise_gen_pair(
     ``"mixture"`` key (so validation "samples" looked like the untouched input
     audio). Captions carry the drone name (``meta.drone``) and epoch so the
     real/generated pair is unambiguous in wandb."""
-    if "audio" not in target or "audio" not in pred:
+    pair = extract_noise_gen_pair(pred, target)
+    if pair is None:
         return False
-    real_series = target["audio"]
-    sr = _sample_rate(real_series)
-    real = _audio_to_mono(real_series)
-    generated = _audio_to_mono(pred["audio"])
 
     drone = get_meta(target, "drone", None)
     tag = f"{caption} — ep{epoch}"
     if drone is not None:
         tag = f"{drone} {tag}"
 
-    vs.audio["real"] = (real, sr)
-    vs.audio["generated"] = (generated, sr)
-    payload[f"samples/{vs.sample_id}/real"] = wandb.Audio(
-        real, sample_rate=sr, caption=f"real {tag}"
-    )
-    payload[f"samples/{vs.sample_id}/generated"] = wandb.Audio(
-        generated, sample_rate=sr, caption=f"generated {tag}"
-    )
+    for role, (mono, sr) in pair.items():
+        vs.audio[role] = (mono, sr)
+        payload[f"samples/{vs.sample_id}/{role}"] = wandb.Audio(
+            mono, sample_rate=sr, caption=f"{role} {tag}"
+        )
     return True
 
 
@@ -282,8 +258,8 @@ def _fill_mixture_only(
     for key in ("mixture", "audio"):
         if key in target:
             series = target[key]
-            sr = _sample_rate(series)
-            mono = _audio_to_mono(series)
+            sr = sample_rate_of(series)
+            mono = to_mono(series)
             vs.audio["mixture"] = (mono, sr)
             payload[f"samples/{vs.sample_id}/mixture"] = wandb.Audio(
                 mono, sample_rate=sr, caption=f"mixture {caption}"

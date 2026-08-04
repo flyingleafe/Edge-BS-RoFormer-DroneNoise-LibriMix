@@ -14,7 +14,8 @@ removed when that subsystem was deleted.)
 | `models/` | RPS predictor, salience-RPS, positional harmonic noise generator |
 | `tasks/` | task spec/contract, checkpoints, CLI, RPS prediction/regression, noise generation |
 | `training/` | training loop, collate, validate, val-logging, R2 artifact upload (`conftest.py` + `_fixtures.py` here) |
-| `utils/` | path helpers, plot registry, RPS plots |
+| `plots/` | plot registry, RPS plots, `plots.dwym` dispatch + `plots.coerce` coercion (moved from `tests/utils/plots/`) |
+| `utils/` | path helpers |
 | `test_basic_pitch.py`, `test_online_mixing.py`, `test_plot_timeframe.py`, `test_dataloader_benchmark.py` | standalone module tests; `basic_pitch_ref.npz` is fixture data |
 
 ## Running
