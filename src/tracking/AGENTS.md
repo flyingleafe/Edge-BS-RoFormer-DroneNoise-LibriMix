@@ -15,6 +15,7 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 | `warp_refinement.py` | Iterated time-warp (generalized-demodulation) IF refiner: `iter_warp_refine`. |
 | `rotors.py` | Quadrotor control-allocation constants: `MIXER`, `NUM_ROTORS`, `MODE_NAMES`, `modes_from_rps`, `rps_from_modes`. `data_processing.rps_synthesis` re-exports them. |
 | `stages.py` | The TimeFrame stage API (plan §3.2): `Stage`, `tracking_frame`, `get_audio`/`get_rps`/`with_rps`, `pipeline`, and the adapters `blind_seed_stage`, `vk_stage`, `pi_kalman_stage`, `warp_stage`, `refine_coherent_stage`, `guarded`. |
+| `protocols.py` | Evaluation-protocol window specs as DATA (loaders injected by scripts): `ProtocolSpec`/`WindowSpec`/`PoolSpec`, the `beatvk` + `vk37` registries (`BEATVK`, `VK37`, `PROTOCOLS`), `iter_windows`, `regime_of`, `to_frame` (frame builder via `stages.tracking_frame`), `FROZEN_FLY124_ALIGNMENT`. Consumed by `scripts/beatvk_eval.py`, `scripts/beatvk_vk_arms.py`, `scripts/vk_validation.py`, `scripts/rps_eval.py`. |
 | `pipelines.py` | The canonical blind-annotation ladder: the FROZEN config registry (`CAPTURE_CFG`, `REFINE_CFG`, `TRACK_CFG`, `MIDBAND_CFG(S)`, `SEED_CFG` — calibrated values; changing them invalidates published annotations), the vit2dsp core (`vit2dsp_pipeline`, `vit_stage1`, `tooth_cube`, `pair_score_2d_spatial`, `joint_viterbi`, `apply_guard`, `whitened_logmag_multi`), and the Stage adapter `vit2dsp_stage` (self-seeding via `blind_seed_stage`). |
 
 Tests live in `tests/tracking/`.

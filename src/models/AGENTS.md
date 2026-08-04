@@ -180,14 +180,14 @@ identical (verified to float32 precision in the since-removed `test_multif0.py` 
 per layer instead of two, and the channel concat becomes free. Checkpoints
 convert between the two layouts transparently via a `load_state_dict` pre-hook on
 `LateDeep`, so a model trained either way loads either way. Same FLOPs — the win
-is launch overhead, so benchmark on GPU (`scripts/bench_grouped_branches.py`) before
+is launch overhead, so benchmark on GPU (`scripts/bench.py --target grouped_branches`) before
 relying on it; `groups=2` can regress on some cuDNN versions.
 
 `--stacked_hcqt` (`LateDeepSalience(stacked=True)`, which rides through to
 `build_frontend("hcqt", stacked=True)` → `HCQTFrontEnd(stacked=True)`) uses
 `HCQTStacked_nnAudio`: **one** CQT (extra high bins) + harmonic freq-shifts of mag
 and phase, instead of one CQT per harmonic. ~2× faster front-end on GPU
-(`scripts/bench_cqt_gpu.py`), same `(mag, dphase)` contract and grid. It is a **lossy
+(`scripts/bench.py --target cqt`), same `(mag, dphase)` contract and grid. It is a **lossy
 approximation** at higher harmonics (h=3 mag corr ~0.977), so the features differ
 — **train from scratch**, do not load a non-stacked checkpoint into it. Composes
 with `--fused_branches`.

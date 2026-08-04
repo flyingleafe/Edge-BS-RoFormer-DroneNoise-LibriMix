@@ -275,8 +275,9 @@ omnirun backends check        # re-establish the SSH ControlMaster after expiry
   heartbeats — run `omnirun backends check` and verify via `sacct` on the
   cluster; a completed job may stay "lost" in `omnirun ps` while
   `omnirun pull` still works.
-- Legacy fallback on an Apocrita login node: `./scripts/sbatch.sh` (and
-  `./scripts/sync_results.sh` to rsync results back). Prefer omnirun.
+- The legacy helpers `scripts/sbatch.sh` / `scripts/sync_results.sh` were
+  retired in the 2026-08 refactor (git history keeps them). Use omnirun for
+  submission and `omnirun pull` for results.
 
 ## Training artifacts (checkpoints + val samples) → R2
 

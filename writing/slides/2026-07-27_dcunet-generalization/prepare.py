@@ -1032,7 +1032,7 @@ SPEC_DURATION_S = 8.0
 
 class _Arr:
     """Minimal stand-in for a tdseries audio series: only ``.data`` is used
-    by ``eval_se_perclip._estimates_model``."""
+    by ``se_eval.model_estimates``."""
 
     def __init__(self, x: np.ndarray) -> None:
         self.data = x
@@ -1092,24 +1092,20 @@ def fig_f1_spectrograms() -> None:
     idxs = list(range(len(ds)))
     names = ("DCUNet", "Edge-BS-RoFormer", "MP-SENet", "TF-GridNet")
 
-    from eval_se_perclip import (
-        ARCH_MODEL,  # type: ignore[import-not-found]
-        _estimates_model,  # type: ignore[import-not-found]
-    )
+    from se_eval import model_estimates  # type: ignore[import-not-found]
 
     ests: dict[str, list[np.ndarray]] = {}
     for name in names:
         exp = f"f1_{ARCH_SLUG[name]}_a"
-        # absolute paths: prepare.py runs from the slide dir, the eval helper
-        # resolves conf/ and results/ relative to the repo root.
-        ests[name] = _estimates_model(
+        # absolute checkpoint path: prepare.py runs from the slide dir, the
+        # eval helper resolves conf/ relative to the repo root via zoo.load.
+        ests[name] = model_estimates(
             exp,
             ds,
             idxs,
             1,
             torch.device("cpu"),
-            model_cfg_path=str(ROOT / "conf" / "model" / f"{ARCH_MODEL[ARCH_SLUG[name]]}.yaml"),
-            ckpt_path=str(ROOT / "results" / exp / "best.ckpt"),
+            ckpt=str(ROOT / "results" / exp / "best.ckpt"),
         )
 
     for row, (i, (_snr, label)) in enumerate(zip(idxs, SPEC_CLIPS, strict=True)):

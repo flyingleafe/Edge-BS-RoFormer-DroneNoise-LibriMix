@@ -22,6 +22,7 @@ preserved every legacy import while opening the namespace for future sub-package
 | Path | Purpose | Details |
 |------|---------|---------|
 | `dataloader_benchmark.py` | Reusable `benchmark_dataloader(...)` helper for finite and infinite PyTorch loaders; reports batch/example/effective-audio-clip throughput. | Use before optimizing online-mixing dataloaders. |
+| `gridrun.py` | The restartable parallel unit-JSON harness (`Unit`, `run_grid`, `add_gridrun_args`/`gridrun_from_args`): one JSON per unit under `<out>/raw/`, skip-if-exists resume, per-unit `.err` on failure, `summary.json`. Stdlib-only (utils is the bottom layer). | Replaces the ProcessPoolExecutor boilerplate ~13 scripts hand-copied; live exemplars of the pattern: `scripts/sr_dp_probe.py`, `scripts/jb_probe.py`. Used by `scripts/rps_eval.py`. |
 
 ## Adding new sub-packages
 

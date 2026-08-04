@@ -207,6 +207,9 @@ pythonVersion = "3.12"
 # Unknown), diverging from editor/hook runs.
 venvPath = "."
 venv = ".venv"
-exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
+# writing/** holds frozen report/slide scripts pinned to their publication
+# date; they reference since-refactored APIs by design (same rationale as
+# the ruff E402 exemption above).
+exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**", "writing"]
 reportMissingImports = false
 reportMissingTypeStubs = false

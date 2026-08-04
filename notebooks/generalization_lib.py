@@ -139,8 +139,8 @@ def draw_samples(
 # ── models ──────────────────────────────────────────────────────────────────
 def load_model(display_name: str, device: str = "cpu") -> tuple[Any, Any]:
     """Load one checkpoint, self-fetching ``best.ckpt`` from R2 when absent."""
-    from eval_se_perclip import _maybe_fetch_ckpt  # noqa: PLC0415
     from omegaconf import OmegaConf  # noqa: PLC0415
+    from se_eval import fetch_checkpoint  # noqa: PLC0415
 
     from training.config import build_task_and_codec, instantiate_model  # noqa: PLC0415
 
@@ -151,7 +151,7 @@ def load_model(display_name: str, device: str = "cpu") -> tuple[Any, Any]:
             model_cfg.params.config.model.flash_attn = False
     _, codec = build_task_and_codec(model_cfg)
     model = instantiate_model(model_cfg).to(device)
-    ckpt = _maybe_fetch_ckpt(exp, str(ROOT / "results" / exp / "best.ckpt"))
+    ckpt = fetch_checkpoint(exp, ROOT / "results" / exp / "best.ckpt")
     model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.eval()
     return model, codec

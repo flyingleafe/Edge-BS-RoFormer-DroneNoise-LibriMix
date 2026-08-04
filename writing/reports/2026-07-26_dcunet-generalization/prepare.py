@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Figures and tables for the DCUNet-generalization report.
 
-Reads the per-clip eval CSVs written by ``scripts/eval_se_perclip.py`` (one row
+Reads the per-clip eval CSVs written by ``scripts/se_eval.py`` (one row
 per validation clip, with ``category``/``input_snr`` metadata) straight out of
 ``results/``, so every number in the report traces to a clip-level measurement
 rather than a hand-copied summary.

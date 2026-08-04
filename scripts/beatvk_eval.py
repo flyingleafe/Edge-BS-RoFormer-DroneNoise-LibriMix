@@ -77,22 +77,26 @@ _ROOT = _HERE.parent if (_HERE.parent / "src").is_dir() else Path.cwd().resolve(
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_HERE))
 
-DATASET = "beatvk-valid-raw"
-SR = 16000
-HOP = 512
+from tracking.protocols import (  # noqa: E402  (after the sys.path pin above)
+    BEATVK,
+    BEATVK_DREGON_RECS,
+    BEATVK_FLY124_REC,
+)
+
+# Protocol constants come from the declarative spec (tracking.protocols.BEATVK);
+# the module-level names stay — half the campaign scripts import them from here.
+DATASET = BEATVK.dataset
+SR = BEATVK.sr
+HOP = BEATVK.hop_samples
 FRAME_S = HOP / SR  # 0.032 s — the fixed evaluation grid
-N_ROTORS = 4
+N_ROTORS = BEATVK.n_rotors
 # Stitched-inference parameters for model: predictions (rps_predictor_vk_eval
 # conventions: 251-frame = 8 s windows, 32-frame = 1.024 s hop).
 STITCH_WIN_FRAMES = 251
 STITCH_SLIDE_FRAMES = 32
 
-DREGON_RECS = {
-    "free-flight_nosource_room1",
-    "free-flight_speech-low_room1",
-    "free-flight_whitenoise-low_room1",
-}
-FLY124_REC = "FLY124"
+DREGON_RECS = set(BEATVK_DREGON_RECS)
+FLY124_REC = BEATVK_FLY124_REC
 
 
 def load_recordings(
