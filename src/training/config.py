@@ -14,8 +14,8 @@ exception — see :func:`instantiate_model` — because a model may come from
 either that same ``_target_`` convention (routed through
 ``models.registry.build_model`` for the RPS-model registry) *or* the legacy
 ``model_type`` + ``legacy_config_path`` path through
-``utils.get_model_from_config`` (28+ pre-existing architectures with their
-own YAML config format). ``instantiate_model`` is a small manual dispatcher
+``models.registry.LEGACY_MODEL_BUILDERS`` (pre-existing architectures with
+their own YAML config format). ``instantiate_model`` is a small manual dispatcher
 rather than a bare ``hydra.utils.instantiate(cfg.model)`` call so that
 ``ModelConfig``'s descriptive fields (``task``, ``task_params``,
 ``model_type``, ``legacy_config_path``) never leak into a component
@@ -99,7 +99,7 @@ class ModelConfig:
     # plain-kwargs constructor.
     _target_: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
-    # Path B: legacy utils.get_model_from_config dispatch.
+    # Path B: legacy models.registry.LEGACY_MODEL_BUILDERS dispatch.
     model_type: str | None = None
     legacy_config_path: str | None = None
 

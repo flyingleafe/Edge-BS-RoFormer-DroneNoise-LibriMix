@@ -3,11 +3,12 @@
 This directory holds the `utils` Python package. It is editable-installed via
 `pyproject.toml` (`[tool.hatch.build.targets.wheel] packages = [..., "src/utils"]`).
 
-`__init__.py` contains the legacy "ZFTurbo"-style helpers (model factory,
-config loader, training utilities) that used to live in `utils.py` at the
-project root. Callers — `src/models/registry.py::build_legacy_model`,
-notebooks — keep working unchanged: `from utils import
-load_config, get_model_from_config, ...`.
+`__init__.py` contains the legacy "ZFTurbo"-style helpers (config loader,
+audio I/O, `demix`/TTA inference, LoRA and weight-loading utilities) that used
+to live in `utils.py` at the project root. The model factory
+(`get_model_from_config`/`build_model_from_config`) moved to
+`src/models/registry.py::LEGACY_MODEL_BUILDERS`, so `utils` is now a **leaf
+package** — it imports no other project package.
 
 ## Why a package, not a module
 

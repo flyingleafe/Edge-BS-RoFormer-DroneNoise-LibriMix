@@ -92,7 +92,7 @@ Root-level scripts: **only** `train.py` (the only training entry point, Hydra-dr
 
 ## Key Facts
 
-- **Model types**: Registered in `utils.get_model_from_config()` (now at `src/utils/__init__.py`) — see `src/models/AGENTS.md` for full table
+- **Model types**: Unified listing `models.registry.model_types()` — merges the RPS, legacy (`LEGACY_MODEL_BUILDERS`), and noise-gen registries plus the direct `conf/model` `_target_` factories, all in `src/models/registry.py` — see `src/models/AGENTS.md` for full table
 - **Datasets**: DN-LM (Paper 1), DREGON-LM (Paper 2) — see `data_processing/AGENTS.md`. Every dataset is declared exactly once: raw sources in `src/data_processing/sources/`, derived datasets as `derivations.SPECS`; `python scripts/derive.py list|derive|adopt` is the only driver.
 - **RPS conditioning**: Rotor speed → RotorEncoder → fusion strategy — see `src/models/AGENTS.md`
 - **Online-mixed RPS training**: loader logic is `src/data_processing/online_mixing.py`; durable YAML policies live at `conf/online_mix/*.yaml`; training uses `python train.py experiment=<name>` with a `conf/data` entry that wraps `OnlineMixIterableDataset` (e.g. `conf/data/online_mix_v4_michaels.yaml`) and a fixed, non-mixed validation split. `samples_per_validation` is a top-level Hydra field (`conf/config.yaml`). Cache location is `ONLINE_MIX_SOURCE_CACHE_DIR` in `.env` (default `.cache/online_mix_sources`).

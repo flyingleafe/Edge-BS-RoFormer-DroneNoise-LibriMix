@@ -120,8 +120,7 @@ include_external_packages = false
 # registry dict-ification.
 
 # Higher layers may import lower ones, never the reverse. experiments is
-# fenced separately below. utils joins the bottom of this list once the
-# Phase 3 registry dict-ification removes its lazy models.* imports.
+# fenced separately below.
 [[tool.importlinter.contracts]]
 name = "core layers"
 type = "layers"
@@ -135,6 +134,7 @@ layers = [
     "models",
     "tracking",
     "framespec",
+    "utils",
 ]
 
 [[tool.importlinter.contracts]]

@@ -14,23 +14,29 @@ Re-exports three pre-existing model registries behind a single name lookup:
   § "Future expansions" — but report/notebook figure scripts still reconstruct
   a trained generator + its loss to load a checkpoint, e.g.
   ``notebooks/noise_gen_real_vs_generated.ipynb``);
-- the **legacy** registry (``utils.get_model_from_config``'s ``model_type``
-  dispatch — DCUNet/DCCRN/MDX23C/htdemucs/... 28+ types), reached by name
-  through :func:`build_legacy_model`.
+- the **legacy** registry (:data:`LEGACY_MODEL_BUILDERS` — the dict-ified
+  former ``utils.build_model_from_config`` if/elif chain; DCUNet/DCCRN/
+  htdemucs/sgmse/... 10 live types), reached through
+  :func:`build_legacy_model` (config file path) or
+  :func:`build_legacy_inline` (inline config).
 
 ``build_model`` only covers the RPS registry (it takes plain kwargs, no
 config file); the legacy registry needs a YAML config alongside the
 ``model_type`` string, so ``src/training/config.py`` calls
 :func:`build_legacy_model` directly for that path instead of going through
-here. All three are exposed from this module so callers have one place to look.
+here. All three are exposed from this module so callers have one place to look;
+:func:`model_types` is the unified name listing across all of them (plus the
+direct ``conf/model`` ``_target_`` factories).
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
 from models.generative import (
@@ -184,7 +190,7 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
 def build_model(name: str, **params: Any) -> nn.Module:
     """Build an RPS-family model by name (``RPS_MODEL_REGISTRY``).
 
-    For the legacy (``utils.get_model_from_config``) registry use
+    For the legacy registry (:data:`LEGACY_MODEL_BUILDERS`) use
     :func:`build_legacy_model` instead — it needs a config file, not bare
     kwargs.
     """
@@ -549,18 +555,140 @@ def build_noise_gen_loss(
     )
 
 
+# ─── Legacy (ZFTurbo-style) model registry ────────────────────────────────────
+#
+# Dict-ified from the former ``utils.build_model_from_config`` if/elif chain
+# (docs/refactor-2026-08-plan.md § "Phase 3" item 1), which made ``utils`` a
+# leaf package. Each builder takes the ZFTurbo-style config tree (``audio`` /
+# ``model`` / ``training`` sections) and keeps its model import LAZY, exactly
+# as the chain did — these stacks are heavy and at most one is needed per
+# process. The 13 dead chain branches (mdx23c, segm_models, torchseg,
+# mel_band_roformer, swin_upernet, bandit, bandit_v2, scnet_unofficial, scnet,
+# apollo, bs_mamba2, experimental_mdx23c_stht, dprnn — zero ``conf/`` /
+# ``scripts/`` / ``tests/`` references; implementation modules already
+# deleted) were dropped rather than ported.
+
+
+def _roformer_kwargs(config: DictConfig) -> dict[str, Any]:
+    """``config.model`` as plain kwargs for (Mel)BandRoformer, restoring the
+    tuple type of ``freqs_per_bands`` / ``multi_stft_resolutions_window_sizes``.
+    The legacy YAML tagged these ``!!python/tuple``; BSRoformer's beartype hints
+    require ``tuple[int, ...]``, but container coercion turns them into lists."""
+    mp = cast(dict[str, Any], OmegaConf.to_container(config.model, resolve=True))
+    for k in ("freqs_per_bands", "multi_stft_resolutions_window_sizes"):
+        v = mp.get(k)
+        if isinstance(v, list):
+            mp[k] = tuple(v)
+    return mp
+
+
+def _build_legacy_htdemucs(config: DictConfig) -> nn.Module:
+    from models.demucs4ht import get_model
+
+    return get_model(config)
+
+
+def _build_legacy_edge_bs_rof(config: DictConfig) -> nn.Module:
+    from models.edge_bs_rof import BSRoformer
+
+    return BSRoformer(**_roformer_kwargs(config))
+
+
+def _build_legacy_dcunet(config: DictConfig) -> nn.Module:
+    from models.dcunet import DCUNet
+
+    return DCUNet(cast(dict[str, Any], OmegaConf.to_container(config, resolve=True)))
+
+
+def _build_legacy_dcunet_refactored(config: DictConfig) -> nn.Module:
+    # RPS conditioning is decoder-side only.
+    from models.dcunet_refactored import DCUNetRefactored
+
+    return DCUNetRefactored(config)
+
+
+def _build_legacy_dccrn(config: DictConfig) -> nn.Module:
+    from models.dccrn import DCCRN
+
+    return DCCRN(config)
+
+
+def _build_legacy_dccrn_refactored(config: DictConfig) -> nn.Module:
+    # RPS conditioning is decoder-side only.
+    from models.dcunet_refactored import DCCRNRefactored
+
+    return DCCRNRefactored(config)
+
+
+def _build_legacy_rps_predictor(config: DictConfig) -> nn.Module:
+    # Standalone RPS predictor (real-valued encoder on log-mag spectrograms).
+    from models.rps_predictor import SimpleConv as RPSPredictor
+
+    return RPSPredictor(
+        n_fft=config.audio.n_fft,
+        hop_length=config.audio.hop_length,
+        num_rotors=getattr(config, "num_rotors", 4),
+    )
+
+
+def _build_legacy_dptnet(config: DictConfig) -> nn.Module:
+    from models.dptnet.dpt_net import DPTNet
+
+    return DPTNet(config)
+
+
+def _build_legacy_diffusion_buffer(config: DictConfig) -> nn.Module:
+    from models.diffusion_buffer import DiffusionBufferModel
+
+    return DiffusionBufferModel(config)
+
+
+def _build_legacy_sgmse(config: DictConfig) -> nn.Module:
+    from models.sgmse import SGMSEModel
+
+    return SGMSEModel(config)
+
+
+LEGACY_MODEL_BUILDERS: dict[str, Callable[[DictConfig], nn.Module]] = {
+    "htdemucs": _build_legacy_htdemucs,
+    "edge_bs_rof": _build_legacy_edge_bs_rof,
+    "dcunet": _build_legacy_dcunet,
+    "dcunet_refactored": _build_legacy_dcunet_refactored,
+    "dccrn": _build_legacy_dccrn,
+    "dccrn_refactored": _build_legacy_dccrn_refactored,
+    "rps_predictor": _build_legacy_rps_predictor,
+    "dptnet": _build_legacy_dptnet,
+    "diffusion_buffer": _build_legacy_diffusion_buffer,
+    "sgmse": _build_legacy_sgmse,
+}
+
+
+def _dispatch_legacy(model_type: str, config: DictConfig) -> nn.Module:
+    try:
+        builder = LEGACY_MODEL_BUILDERS[model_type]
+    except KeyError:
+        raise ValueError(
+            f"Unknown legacy model type {model_type!r}; "
+            f"choose one of {sorted(LEGACY_MODEL_BUILDERS)}"
+        ) from None
+    return builder(config)
+
+
 def build_legacy_model(model_type: str, config_path: str) -> nn.Module:
-    """Build a model through the legacy ``utils.get_model_from_config`` registry.
+    """Build a model through the legacy registry from a ZFTurbo-style YAML file.
 
-    Discards the returned ``DictConfig`` — in the unified framework, task/data
-    parameters come from the Hydra ``conf/`` tree, not the legacy YAML; the
-    legacy YAML is only consulted for the architecture hyperparameters the
-    model class itself needs (e.g. DCUNet's ``audio.n_fft``).
+    In the unified framework, task/data parameters come from the Hydra
+    ``conf/`` tree, not the legacy YAML; the legacy YAML is only consulted for
+    the architecture hyperparameters the model class itself needs (e.g.
+    DCUNet's ``audio.n_fft``).
     """
-    from utils import get_model_from_config
-
-    model, _config = get_model_from_config(model_type, config_path)
-    return model
+    try:
+        cfg = OmegaConf.load(config_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found at {config_path}") from None
+    if not isinstance(cfg, DictConfig):
+        raise ValueError(f"Expected a mapping config at {config_path}, got {type(cfg).__name__}")
+    return _dispatch_legacy(model_type, cfg)
 
 
 def build_legacy_inline(model_type: str, config: Any) -> nn.Module:
@@ -570,22 +698,54 @@ def build_legacy_inline(model_type: str, config: Any) -> nn.Module:
     ``config`` is the ZFTurbo-style tree (``audio`` / ``model`` / ``training``
     sections) inlined directly into a ``conf/model/*.yaml`` under ``params`` —
     identical content to the former ``configs/*.yaml`` file, just no separate
-    file. Routes through the exact same construction dispatch
-    (:func:`utils.build_model_from_config`) as the file-based path, so the
-    resulting module is bit-for-bit identical to the legacy build."""
-    from omegaconf import DictConfig, OmegaConf
-
-    from utils import build_model_from_config
-
+    file. Routes through the exact same :data:`LEGACY_MODEL_BUILDERS` dispatch
+    as the file-based path, so the resulting module is bit-for-bit identical
+    to the legacy build."""
     cfg = config if isinstance(config, DictConfig) else OmegaConf.create(config)
     if not isinstance(cfg, DictConfig):
         raise TypeError(f"inline model config must be a mapping, got {type(cfg).__name__}")
-    return build_model_from_config(model_type, cfg)
+    return _dispatch_legacy(model_type, cfg)
+
+
+# ─── Unified listing ──────────────────────────────────────────────────────────
+
+# Direct plain-kwargs factory functions referenced by ``conf/model/*.yaml``
+# ``_target_`` entries that do not route through any registry dict above.
+# Values are the dotted paths as they appear in the YAML; kept as strings so
+# listing them never triggers the (heavy) module imports.
+DIRECT_FACTORY_TYPES: dict[str, str] = {
+    "tfgridnet": "models.tfgridnet.build_tfgridnet",
+    "mpsenet": "models.mpsenet.build_mpsenet",
+    "htdemucs_ft": "models.htdemucs_ft.build_htdemucs_ft",
+}
+
+
+def model_types() -> dict[str, dict[str, str]]:
+    """Merged name listing over every model registry in the project.
+
+    Returns ``{name: {"kind": ..., "ref": ...}}`` where ``kind`` is one of
+    ``"rps"`` / ``"legacy"`` / ``"noise_gen"`` / ``"factory"`` and ``ref`` is
+    the dotted path of the registry dict (or factory function) that builds the
+    model. Pure dict merge — no model imports happen at call time.
+    """
+    listing: dict[str, dict[str, str]] = {}
+    for name in RPS_MODEL_REGISTRY:
+        listing[name] = {"kind": "rps", "ref": "models.registry.RPS_MODEL_REGISTRY"}
+    for name in LEGACY_MODEL_BUILDERS:
+        listing[name] = {"kind": "legacy", "ref": "models.registry.LEGACY_MODEL_BUILDERS"}
+    for name in NOISE_GEN_MODEL_REGISTRY:
+        listing[name] = {"kind": "noise_gen", "ref": "models.registry.NOISE_GEN_MODEL_REGISTRY"}
+    for name, ref in DIRECT_FACTORY_TYPES.items():
+        listing[name] = {"kind": "factory", "ref": ref}
+    return listing
 
 
 __all__ = [
     "RPS_MODEL_REGISTRY",
     "NOISE_GEN_MODEL_REGISTRY",
+    "LEGACY_MODEL_BUILDERS",
+    "DIRECT_FACTORY_TYPES",
+    "model_types",
     "build_model",
     "build_legacy_model",
     "build_legacy_inline",

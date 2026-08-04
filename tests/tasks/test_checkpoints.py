@@ -38,5 +38,14 @@ def test_load_model_unknown_type(tmp_path):
 
     dummy = tmp_path / "fake.pt"
     dummy.write_text("dummy")
-    with pytest.raises(ValueError, match="not yet supported"):
+    with pytest.raises(ValueError, match="Unknown model type"):
         load_model(f"unknown_model_type_xyz@{dummy}")
+
+
+def test_load_model_legacy_type_not_supported(tmp_path):
+    from tasks.checkpoints import load_model
+
+    dummy = tmp_path / "fake.pt"
+    dummy.write_text("dummy")
+    with pytest.raises(ValueError, match="not yet supported"):
+        load_model(f"dcunet@{dummy}")

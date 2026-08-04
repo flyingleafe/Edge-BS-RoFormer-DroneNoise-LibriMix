@@ -68,12 +68,11 @@ features = fe(audio)  # (B, 10, 720, T)
 
 ## Model type registry (enhancement models)
 
-From `utils.get_model_from_config()` — see `src/utils/AGENTS.md`.
+From `models.registry.LEGACY_MODEL_BUILDERS` (the dict-ified legacy `model_type` dispatch; the unified listing across all registries is `models.registry.model_types()`).
 
 | Key | Model | File | RPS support |
 |-----|-------|------|-------------|
 | `edge_bs_rof` | Edge-BS-RoFormer | `edge_bs_rof/` | No |
-| `mel_band_roformer` | MelBandRoformer | `edge_bs_rof/` | No |
 | `dcunet` | DCUNet | `dcunet.py` | Yes |
 | `dcunet_refactored` | DCUNetRefactored | `dcunet_refactored.py` | Yes |
 | `dccrn` | DCCRN | `dccrn.py` | Yes |

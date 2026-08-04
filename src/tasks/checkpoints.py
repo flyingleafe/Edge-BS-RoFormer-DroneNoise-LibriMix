@@ -33,20 +33,6 @@ def _make_rps_registry() -> dict[str, Any]:
     return dict(RPS_MODEL_REGISTRY)
 
 
-# Suppression/encoder models (from utils.get_model_from_config).
-# These are config-keyed, not name-keyed; expose a thin wrapper.
-def _make_suppression_registry() -> dict[str, Any]:
-    """Return {name: callable(**kw) -> nn.Module} for suppression models."""
-    from models import (
-        MODEL_TYPES as SUPP_MODEL_TYPES,  # pyright: ignore[reportAttributeAccessIssue]
-    )
-
-    registry: dict[str, Any] = {}
-    for name, cls in SUPP_MODEL_TYPES.items():
-        registry[name] = cls
-    return registry
-
-
 # ── Core API ──────────────────────────────────────────────────────────────
 
 
@@ -60,8 +46,9 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
         against the known model registries:
         * RPS predictors  — ``RPS_MODEL_REGISTRY`` keys from
           ``models.registry`` (e.g. ``simple_conv``, ``dccrn_enc_rps``).
-        * Suppression models — ``utils.get_model_from_config`` model-type
-          keys (e.g. ``dcunet``, ``dccrn``).
+        * Suppression models — ``models.registry.LEGACY_MODEL_BUILDERS``
+          model-type keys (e.g. ``dcunet``, ``dccrn``) — recognized but not
+          yet loadable through this path (they need a config, not bare kwargs).
     device : str
         Where to place the model (default ``"cpu"``).
 
@@ -97,18 +84,16 @@ def load_model(spec: str, device: str = "cpu") -> nn.Module:
         factory = rps_reg[model_type]
         model = factory(n_fft=2048, hop_length=512, num_rotors=4)
     else:
-        try:
-            from utils import get_model_from_config  # noqa: F401
+        from models.registry import LEGACY_MODEL_BUILDERS
 
-            # For suppression models we need a fake config; this is a
+        if model_type in LEGACY_MODEL_BUILDERS:
+            # Suppression models need a config, not bare kwargs; this is a
             # transitional path — when extended checkpoints land, the
             # config is embedded in the checkpoint.
             raise ValueError(
                 f"Suppression-model loading via Type@ckpt is not yet "
                 f"supported.  RPS types: {sorted(rps_reg)}"
             )
-        except ImportError:
-            pass
         raise ValueError(f"Unknown model type {model_type!r}.  Known RPS types: {sorted(rps_reg)}")
 
     # Load state dict.
