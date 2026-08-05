@@ -274,3 +274,92 @@ volatile cheap one.
 Caching the ENVELOPE rather than a spectrogram is the point: it preserves
 the freedom to re-window at any segment length, which was the parameter
 that mattered.
+
+## Label realignment attempted — FAILED, and the 0.542 % is downgraded (2026-08-05, third round)
+
+Plan (user's): run pi_kalman initialised FROM telemetry to realign DREGON
+labels onto the acoustic comb, then compare in the explorer. It does not
+work, for a reason that is now clear and is more useful than the plan was.
+
+**Both refinement runs failed, in opposite directions.**
+
+| arm | schedule | result |
+|---|---|---|
+| narrow | band 6/3/1.5 Hz, k_caps (24,60,100) | INERT: labels moved -0.03 % of rate, lag 0.0 s. Capture half-width at k=24 is 6/24 = 0.25 rev/s, NARROWER than the ~0.42 rev/s it was meant to find, and the k^2 weighting puts the decision on high harmonics that cannot see that far. |
+| wide | band 24/8/3 Hz, k_caps (8,24,60) | COLLAPSED: r1 -0.755 rev/s (75.55 -> 74.79 ~ r3's 74.69), r2 +0.705 (85.71 -> 86.41 ~ r0's 86.10). The rotors captured each other's combs. |
+
+**The degeneracy is structural.** The offset being chased (~0.42 rev/s) is
+the same size as the inter-rotor separation (r0-r2 = 0.397 rev/s). Any
+capture range wide enough to reach the offset is wide enough to swap
+twins. Independently confirmed by enumerating interlopers: at k=70 for r0
+there are **32 other-rotor lines within +-6 rev/s** (density grows
+LINEARLY with k — each rotor contributes a line every rate/k rev/s), and
+r0's clean window is only **-0.40 to +0.24 rev/s**, bounded by r2 at
+-0.397 and r1 at +0.239. A displacement of the size in question lands
+exactly on the twin's line. **No per-rotor, per-harmonic method can
+settle this on this recording.**
+
+**So the value itself is now uncertain by 2x.** Only estimators that lock
+rotor identity to telemetry and free ONE shared scale are well posed, and
+they do not agree:
+
+| estimator | scale |
+|---|---|
+| low-k per-unit regression (the original) | **-0.542 %** |
+| window-free order-space comb scan | -0.555 % |
+| joint 4-rotor global scale, unsmoothed | -0.430 % |
+| joint 4-rotor global scale, DP-smoothed | **-0.813 %** |
+| single strong high harmonics k=42/70 (UNSAFE, interloper-blended) | -1.1 % |
+
+Likely cause of the spread: a comb has alias ridges (s -> s(1 +- 1/k)),
+so a smoothed path can lock onto a neighbouring ridge. **The correction
+factor x0.99458 must NOT be applied or quoted as settled.** What survives
+is the sign and the order of magnitude: DREGON telemetry over-reports by
+roughly half a percent to one percent, i.e. 0.4-0.7 rev/s at cruise,
+which is still >= 2x the assumed 0.2 rev/s jitter floor and still a
+substantial fraction of the blind-VK bars. The four-way corroboration of
+the MECHANISM (tachometer lattice, command-channel agreement, audio-clock
+check) is unaffected; only the NUMBER is now soft.
+
+**Shape vs scale remains unresolved.** Per-block s(t) has std 0.45 pp
+unsmoothed — comparable to the effect — so the per-block estimator cannot
+separate genuine time variation from its own noise. With a smoothness
+prior s(t) is flat to 0.005 pp, but that flatness is imposed by the prior,
+not measured. The user's observation that the comb shows a lag and that
+telemetry overstates sharp changes is consistent with the tachometer's
+period-counting latency and its 0.269 rev/s / 49.7 Hz quantisation, but
+is NOT yet demonstrated by a fit.
+
+**What would settle it** (none available in this dataset as used):
+peel the twin before measuring (the peel is the precondition, not an
+optimisation — see the phase-tolerance note below); a recording where the
+rotors are well separated in rate; or spatial separation via the array.
+
+### Peel phase tolerance — the arithmetic that governs all of this
+
+Subtracting an estimate with complex gain error g leaves `|1-g|^2` of the
+interferer. For pure phase error phi that is `4 sin^2(phi/2)`: zero at 0,
+**exactly 1 at 60 deg (no benefit), 4 at 180 deg (+6 dB, amplification)**.
+Amplitude-only error a gives `(1-a)^2` — helps for any 0 < a < 2. So phase
+is the whole game and 60 deg is the cliff.
+
+Phase error comes from the integrated rate error, `2 pi k delta t`, which
+grows with BOTH time and harmonic order. The VK envelope absorbs drift up
+to its bandwidth, so the peel is valid only while **delta < bw / k** —
+0.1 rev/s at k=10 with bw=1 Hz, but 0.014 rev/s at k=70. That is why the
+measured peel-energy guard fires on ramp/warmup windows with residual
+ratios to 14.7 (the subtraction INJECTED 14.7x the window energy) while
+every cruise/steady window passes.
+
+**Recommended fix (not yet implemented): least-squares-projected
+subtraction.** `make_peels` currently subtracts the reconstruction
+open-loop, with nothing enforcing `|1-g| < 1`. Fitting the complex gain
+per harmonic per short block, `g = <y,s>/<s,s>`, makes the residual
+`||y||^2 - |<y,s>|^2/||s||^2 <= ||y||^2` **by construction** — subtraction
+can never inject energy, because the worst case is g -> 0 and the peel
+declines to act. The energy guard then becomes a diagnostic rather than a
+safety net, and block length replaces envelope bandwidth as the knob
+(block <~ 1/(k delta)), settable per harmonic. Twins must stay excluded:
+a sibling's reconstruction is highly correlated with the target, so an
+unconstrained LS gain would subtract the target itself. The existing
+choice to peel only NON-pair rotors for the joint pair path is correct.
