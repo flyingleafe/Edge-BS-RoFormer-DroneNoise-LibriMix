@@ -29,7 +29,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import numpy as np  # noqa: E402
 
-ROOT = Path("/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression")
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 PREP = ROOT / ("omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache")

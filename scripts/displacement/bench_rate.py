@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-ROOT = Path("/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression")
+ROOT = Path(__file__).resolve().parents[2]
 DREGON = ROOT / "data/DREGON"
 OUT = Path(__file__).resolve().parent
 

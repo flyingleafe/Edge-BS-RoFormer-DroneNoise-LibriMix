@@ -38,7 +38,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import numpy as np  # noqa: E402
 
-ROOT = Path("/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression")
+ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parent
 sys.path.insert(0, str(OUT))
 sys.path.insert(0, str(ROOT / "src"))

@@ -34,7 +34,7 @@ import numpy as np  # noqa: E402
 import scipy.io  # noqa: E402
 import soundfile as sf  # noqa: E402
 
-ROOT = Path("/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression")
+ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parent
 FIGS = OUT / "figs"
 sys.path.insert(0, str(ROOT / "src"))
