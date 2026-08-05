@@ -203,3 +203,74 @@ comb is on-grid and usable".
    cruise contrast that would test H3 does not exist in this dataset.**
 3. Whether to apply the x0.99458 correction to DREGON labels, and how to
    report every historical DREGON number if we do.
+
+## The 6 kHz question, settled (2026-08-05, second round)
+
+The user asked to see the alive 6 kHz harmonics demodulated against
+`motors_measured`, expecting the displaced oscillating ridge. **It is not
+there** — and the reason is the most useful thing this cluster produced.
+
+Averaged over ALL 12 harmonics of rotor 0 in 5.5-6.5 kHz, level at the
+displaced offset vs the identical half-integer null (where no rotor line
+can exist):
+
+| segment | at displaced offset | half-integer null |
+|---|---|---|
+| 50 ms | 0.43 dB | 0.66 dB |
+| 100 ms | 0.52 dB | 0.66 dB |
+| 150 ms | 0.60 dB | 0.70 dB |
+
+The null wins at every length. For scale, k=2 is **7.7 dB against 0.0**,
+k=4 is 4.9 against 0.4. Also checked: 0.25/0.5/1/2/4 s, all 4 rotors, all
+3 room1 recordings, incoherent averaging of 10-40 consecutive short
+segments, and all even (blade-passage) harmonics combined on a common
+rev/s axis. Nothing. **So this is not a windowing choice.**
+
+**But the comb IS at 6 kHz** — F0 shows it with no phase reference at all:
+in a plain 93 ms spectrum the corrected comb `x0.99458` lands on the 6 kHz
+ridges while the raw telemetry comb walks 33 Hz to the right of them. The
+correction is right at high k; only the demodulator fails there.
+
+**Why: the LABEL CHANNEL, not the acoustics.** `motors_measured` refreshes
+at 49.7 Hz with a 0.269 rev/s quantisation step. Integrated into a carrier
+at k~70 that is roughly a quarter-cycle of random-walk phase error per
+0.1 s segment, on top of the ~0.2 rev/s true shaft wander (14 Hz at k=70,
+comparable to the 10 Hz resolution). Spectral autocorrelation needs no
+phase reference and sees the 172 Hz spacing happily; demodulation needs
+one and cannot get it.
+
+**Two consequences worth acting on:**
+
+1. **`motors_measured` cannot support demodulation above k~20-30.** Any
+   telemetry-referenced phase method has a hard ceiling there. High-k work
+   must be phase-blind (order spectra, spectral autocorrelation, comb-scale
+   scans) or must estimate its own carrier.
+2. **The four-rotor comb self-interferes above ~4 kHz.** Inter-rotor line
+   spacing in the rescaled frame falls to 0.2-0.4 rev/s at 6 kHz —
+   comparable to the displacement itself. Any high-k per-rotor estimator
+   needs spatial separation or an explicit joint model, not a per-harmonic
+   peak search.
+
+## Tooling: envelope cache + seconds-long redraws
+
+Redraw cycles were costing ~30 minutes each, of which under a minute was
+computation. Fixed by splitting the stable expensive product from the
+volatile cheap one.
+
+- `scripts/displacement/hk_cache.py` builds `cache/` (~695 MB, ~4 min on 6
+  cores): complex64 demodulated envelopes `z[k, mic, env_sample]` with the
+  **mic axis intact**, k = 1..100, 3 room1 recordings, w01 cruise, all 4
+  rotors, envelope rate 441 Hz — plus a **half-integer null set**
+  (`*__half.npz`, carriers at k+0.5) which is what makes "is this a line"
+  answerable without assuming a noise model. Manifest records code version,
+  parameters, shapes, and that the RPS channel is `motors_measured`.
+- `scripts/displacement/replot.py` loads only the cache. **F1 is produced
+  by it, in 2.5 s cold.** Figure revisions are now a call into
+  `render_strips(...)`, not a demodulation run and not a new agent.
+- `n_avg` (incoherent averaging of consecutive short segments) cuts speckle
+  without lengthening coherent integration — the right knob for a
+  short-coherence line, and decisive in this diagnosis.
+
+Caching the ENVELOPE rather than a spectrogram is the point: it preserves
+the freedom to re-window at any segment length, which was the parameter
+that mattered.
