@@ -4,9 +4,23 @@ Pure array code (numpy/scipy/torch). This package must not import
 ``data_processing``, ``models``, or ``training`` — see ``AGENTS.md``.
 """
 
+from tracking.comb_displacement import (
+    DisplacementConfig,
+    carrier_collision_mask,
+    demod_comb_bank,
+    measure_variant,
+)
 from tracking.demod_backend import demod_backend
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
-from tracking.phase_increment_tracker import pi_kalman_refine
+from tracking.order_domain import (
+    OrderSpectrum,
+    comb_scan,
+    order_spectrum,
+    peak_orders,
+    scan_summary,
+    segment_comb_scan,
+)
+from tracking.phase_increment_tracker import demod_bank, pi_kalman_refine
 from tracking.phase_noise import Arm, arm_covariance, demod_rotor, fit_rank_one
 from tracking.pipelines import (
     ARMS,
@@ -80,8 +94,10 @@ __all__ = [
     "CAPTURE_CFG",
     "DEFAULT_HOP_S",
     "DEFAULT_PEEL_MODE",
+    "DisplacementConfig",
     "MIDBAND_CFG",
     "MIDBAND_CFGS",
+    "OrderSpectrum",
     "PEEL_MODES",
     "PI_VARIANTS",
     "PROTOCOLS",
@@ -100,9 +116,13 @@ __all__ = [
     "blind_seed",
     "blind_seed_stage",
     "build_objective",
+    "carrier_collision_mask",
     "comb_confidence",
+    "comb_scan",
     "compute_logmag",
     "demod_backend",
+    "demod_bank",
+    "demod_comb_bank",
     "demod_rotor",
     "demodulate",
     "estimate_clock_offset",
@@ -119,6 +139,9 @@ __all__ = [
     "joint_beam_track",
     "ls_project_envelopes",
     "make_peels",
+    "measure_variant",
+    "order_spectrum",
+    "peak_orders",
     "peel_alternation",
     "pi_kalman_arm_stage",
     "pi_kalman_refine",
@@ -127,6 +150,8 @@ __all__ = [
     "refine_coherent",
     "refine_coherent_stage",
     "refine_trajectories",
+    "scan_summary",
+    "segment_comb_scan",
     "stage_guard",
     "to_frame",
     "tracking_frame",

@@ -237,7 +237,7 @@ def _increment_phase(z: np.ndarray) -> np.ndarray:
     return np.arctan2(im, re)
 
 
-def _demod_bank(
+def demod_bank(
     y32: np.ndarray,
     phi: np.ndarray,
     t_aud: np.ndarray,
@@ -327,6 +327,11 @@ def _demod_bank(
     if idxs:
         flush()
     return z_on, z_off
+
+
+#: Back-compat alias. The bank became public for ``tracking.comb_displacement``;
+#: the tests and ``scripts/tracking_ref.py`` still import the private name.
+_demod_bank = demod_bank
 
 
 # ---------------------------------------------------------------------------
