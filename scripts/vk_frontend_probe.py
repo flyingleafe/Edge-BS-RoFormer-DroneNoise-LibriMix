@@ -192,12 +192,17 @@ def _count_splu_fallbacks() -> Iterator[dict[str, int]]:
 
 
 def load_window(prep_dir: Path, rid: str, widx: int, seconds: float | None) -> dict[str, Any]:
-    """One protocol window from the ``beatvk_vk_arms`` prep cache."""
+    """One protocol window: the ``beatvk_vk_arms`` prep cache, or the dataset.
+
+    The cache is the local path (it is what every beat-VK driver already
+    wrote). Off this machine there is none, and rebuilding it through
+    ``beatvk_vk_arms.build_preps`` would also resolve the raw DREGON source for
+    mic weights this probe never uses — so the fallback is
+    ``tracking_ref.load_window``, which streams only the protocol dataset.
+    """
     path = prep_dir / f"{rid}__w{widx:02d}.npz"
     if not path.exists():
-        import beatvk_vk_arms as arms
-
-        arms.build_preps(prep_dir.parent, {rid: [widx]}, None, "DREGON")
+        return _load_window_streaming(rid, widx, seconds)
     d = np.load(path, allow_pickle=False)
     n = d["audio"].shape[-1] if seconds is None else min(d["audio"].shape[-1], int(seconds * SR))
     return {
@@ -208,6 +213,26 @@ def load_window(prep_dir: Path, rid: str, widx: int, seconds: float | None) -> d
         "audio": np.asarray(d["audio"][:, :n], dtype=np.float64),
         "ft": np.asarray(d["ft"], dtype=np.float64),
         "r_meas": np.asarray(d["r_meas"], dtype=np.float64),
+    }
+
+
+def _load_window_streaming(rid: str, widx: int, seconds: float | None) -> dict[str, Any]:
+    """The prep-cache fallback: stream the protocol dataset for one window."""
+    import tracking_ref
+
+    from tracking.stages import get_audio, get_rps
+
+    frame, spec, _prov = tracking_ref.load_window(rid, widx, version=None, seconds=seconds)
+    audio, _sr = get_audio(frame)
+    r_meas, ft = get_rps(frame)
+    return {
+        "recording": rid,
+        "window": widx,
+        "regime": str(spec.regime),
+        "start_s": float(spec.start_s or 0.0),
+        "audio": np.asarray(audio, dtype=np.float64),
+        "ft": np.asarray(ft, dtype=np.float64),
+        "r_meas": np.asarray(r_meas, dtype=np.float64),
     }
 
 
