@@ -451,3 +451,20 @@ def test_demod_chunking_is_bit_identical(monkeypatch):
     for on, off in banks[1:]:
         assert np.array_equal(on, banks[0][0])
         assert np.array_equal(off, banks[0][1])
+
+
+def test_envelopes_stay_complex64_but_statistics_are_float64():
+    """The bank is complex64; a2 / dpsi keep the float64 arithmetic."""
+    from tracking.phase_increment_tracker import _abs2, _demod_bank, _increment_phase
+
+    y, phi, t, ks, stride, n_env, sr = _demod_fixture(dur=1.0)
+    z_on, z_off = _demod_bank(y, phi, t, ks, 11.0, stride, n_env, 6.0 / sr, sr=sr)
+    assert z_on.dtype == z_off.dtype == np.complex64
+    a2, dpsi = _abs2(z_on), _increment_phase(z_on)
+    assert a2.dtype == dpsi.dtype == np.float64
+    # dpsi is bit-identical to the widened-bank formulation it replaces.
+    z128 = z_on.astype(np.complex128)
+    assert np.array_equal(dpsi, np.angle(z128[..., 1:] * np.conj(z128[..., :-1])))
+    # |z|^2 agrees to the last ulp (one rounding fewer than abs()**2).
+    ref = np.abs(z128) ** 2
+    assert np.max(np.abs(a2 - ref) / np.maximum(ref, 1e-300)) < 1e-14

@@ -214,7 +214,7 @@ def _zoom_lp_decimate_bank(
 
     def _inv(band: np.ndarray) -> np.ndarray:
         dec = cast(np.ndarray, sfft.ifft(band, axis=-1, workers=w))
-        return (dec / np.complex64(stride)).astype(np.complex128)
+        return dec / np.complex64(stride)  # complex64 in, complex64 out
 
     return _inv(low), (None if probe is None else _inv(probe))
 
@@ -234,12 +234,41 @@ def zoom_lp_decimate(
     (positive and negative bins — the input is complex), inverse-FFT at
     length ``n_env`` directly. Circular edge handling; callers trim edges.
 
+    The result is **complex64**, the precision the transform actually
+    carries. Downstream code that needs float64 (variances, the Kalman)
+    computes its statistics in float64 from the components — see
+    :func:`_abs2` and :func:`_increment_phase` — rather than widening the
+    whole envelope bank.
+
     ``band_cyc_rows`` (optional, ``(x.shape[-2],)``): a per-row cutoff for
     ``(..., rows, T)`` input — the ``band_mode="k_scaled"`` path, where each
     harmonic keeps its own band. ``None`` keeps the shared-cutoff behavior
     bit-identical.
     """
     return _zoom_lp_decimate_bank(x, stride, n_env, band_cyc, band_cyc_rows)[0]
+
+
+def _abs2(z: np.ndarray) -> np.ndarray:
+    """``|z|^2`` in float64 from a complex64 envelope, without widening it."""
+    zr = z.real.astype(np.float64)
+    zi = z.imag.astype(np.float64)
+    return zr * zr + zi * zi
+
+
+def _increment_phase(z: np.ndarray) -> np.ndarray:
+    """``arg(z_t conj(z_{t-1}))`` along the last axis, in float64.
+
+    The same quantity as ``np.angle(z[..., 1:] * conj(z[..., :-1]))``, but
+    the complex product is formed from float64 components: the envelopes
+    stay complex64 (that IS the transform's precision) while every
+    measurement fed to the variance model and the Kalman smoother keeps the
+    float64 arithmetic it had when the bank was widened to complex128.
+    """
+    zr = z.real.astype(np.float64)
+    zi = z.imag.astype(np.float64)
+    re = zr[..., 1:] * zr[..., :-1] + zi[..., 1:] * zi[..., :-1]
+    im = zi[..., 1:] * zr[..., :-1] - zr[..., 1:] * zi[..., :-1]
+    return np.arctan2(im, re)
 
 
 def _demod_bank(
@@ -257,7 +286,7 @@ def _demod_bank(
 ) -> tuple[np.ndarray, np.ndarray]:
     """On-comb and off-comb envelope banks for one rotor.
 
-    Returns ``(z_on, z_off)``, each ``(C, K, n_env)`` complex128: the audio
+    Returns ``(z_on, z_off)``, each ``(C, K, n_env)`` complex64: the audio
     demodulated by ``k * phi`` (resp. ``k * phi + 2 pi off_hz t``),
     brickwall-lowpassed to ``+-band_cyc`` and decimated. Carriers come from
     the harmonic power recursion (one exp for the fundamental, complex64
@@ -281,7 +310,7 @@ def _demod_bank(
     """
     n_ch, n_t = y32.shape
     n_k = len(ks)
-    z_on = np.empty((n_ch, n_k, n_env), dtype=np.complex128)
+    z_on = np.empty((n_ch, n_k, n_env), dtype=np.complex64)
     z_off = np.empty_like(z_on)
     c1 = np.exp(-1j * phi).astype(np.complex64)
     fs = float(sr) if sr is not None else 1.0 / float(t_aud[1] - t_aud[0])
@@ -935,10 +964,10 @@ def _rotor_pass(
         y32, phi, t_aud, ks, off_comb_hz, stride, n_env, band_cyc, band_cyc_k, off_hz_k, sr
     )
     interior = slice(n_trim, max(n_trim + 1, n_env - n_trim))
-    noise_pow = np.maximum(np.mean(np.abs(z_off[..., interior]) ** 2, axis=-1), _TINY)  # (C, K)
+    noise_pow = np.maximum(np.mean(_abs2(z_off[..., interior]), axis=-1), _TINY)  # (C, K)
 
-    a2 = np.abs(z) ** 2  # (C, K, n_env)
-    dpsi = np.angle(z[..., 1:] * np.conj(z[..., :-1]))  # (C, K, n_env - 1)
+    a2 = _abs2(z)  # (C, K, n_env), float64
+    dpsi = _increment_phase(z)  # (C, K, n_env - 1)
     inv0 = 1.0 / np.maximum(a2[..., :-1], _TINY)
     inv1 = 1.0 / np.maximum(a2[..., 1:], _TINY)
     if b0 is None:
@@ -1034,9 +1063,9 @@ def _rotor_pass(
                         None,
                         sr,
                     )
-                    np_pow = np.maximum(np.mean(np.abs(zp_off[..., interior]) ** 2, axis=-1), _TINY)
-                    p_a2 = np.abs(zp) ** 2
-                    p_dpsi = np.angle(zp[..., 1:] * np.conj(zp[..., :-1]))
+                    np_pow = np.maximum(np.mean(_abs2(zp_off[..., interior]), axis=-1), _TINY)
+                    p_a2 = _abs2(zp)
+                    p_dpsi = _increment_phase(zp)
                     p_var = (
                         p_cn
                         * 0.5
