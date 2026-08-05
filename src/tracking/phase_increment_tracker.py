@@ -86,10 +86,11 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 
+from tracking.demod_backend import demod_comb, resolve, zoom_bands
 from tracking.vk_tracking import fft_worker_pool
 from tracking.vk_tracking import fft_workers as _fft_workers
 
@@ -151,72 +152,36 @@ def demod_chunk(n_ch: int, n_pad: int) -> int:
     return max(1, int(budget / (_DEMOD_WORKSPACE * max(1, n_ch) * max(1, n_pad) * 8)))
 
 
-def _copy_band(dst: np.ndarray, spec: np.ndarray, b: int, shift: int) -> None:
-    """Fill ``dst`` (last axis ``n_env``) with the ``+-b`` bins of ``spec``
-    centered on bin ``shift`` (``0`` = the band around DC).
-
-    A nonzero ``shift`` is the frequency-domain form of a time-domain
-    ``exp(-2i pi f0 t)`` demodulation: ``FFT(x e^{-2i pi f0 t})[m] =
-    X[m + shift]`` exactly, for ``shift = f0 n_pad / fs`` an integer number
-    of bins. Indices wrap (the spectrum is periodic).
-    """
-    if shift == 0:
-        dst[..., : b + 1] = spec[..., : b + 1]
-        if b > 0:
-            dst[..., -b:] = spec[..., -b:]
-        return
-    dst[..., : b + 1] = spec.take(np.arange(shift, shift + b + 1), axis=-1, mode="wrap")
-    if b > 0:
-        dst[..., -b:] = spec.take(np.arange(shift - b, shift), axis=-1, mode="wrap")
-
-
 def _zoom_lp_decimate_bank(
     x: np.ndarray,
     stride: int,
     n_env: int,
     band_cyc: float,
     band_cyc_rows: np.ndarray | None = None,
-    shift_bins: np.ndarray | int | None = None,
+    shift_cyc: np.ndarray | float | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """:func:`zoom_lp_decimate`, plus an optional shifted probe band from the
     SAME forward transform.
 
-    ``shift_bins`` (scalar or ``(x.shape[-2],)``) selects a second band
-    centered ``shift_bins`` bins away from DC — the off-comb noise probe.
-    Because a constant frequency offset is a pure bin shift (:func:`_copy_band`),
+    ``shift_cyc`` (scalar or ``(x.shape[-2],)``, cycles/sample at the audio
+    rate) selects a second band centered that far from DC — the off-comb
+    noise probe. Because a constant frequency offset is a pure bin shift,
     the probe needs no transform of its own: one forward FFT feeds both
     bands, and only the two ``n_env``-point inverses are duplicated (the
     forward transform at ``stride * n_env`` is ~99.6% of the cost).
+
+    The transform itself is :func:`tracking.demod_backend.zoom_bands`, so
+    this is the scipy *and* the torch path — the backend only changes where
+    the arithmetic runs, never which bins are kept.
     """
-    from scipy import fft as sfft
-
-    w = _fft_workers()
-    n_pad = stride * n_env
-    xc = np.asarray(x, dtype=np.complex64)
-    spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
-    shape = x.shape[:-1] + (n_env,)
-    b_max = (n_env - 1) // 2
-    low = np.zeros(shape, dtype=np.complex64)
-    probe = None if shift_bins is None else np.zeros(shape, dtype=np.complex64)
-    sh = np.asarray(0 if shift_bins is None else shift_bins, dtype=np.int64)
-    if band_cyc_rows is None and sh.ndim == 0:
-        b = min(int(np.floor(band_cyc * n_pad)), b_max)
-        _copy_band(low, spec, b, 0)
-        if probe is not None:
-            _copy_band(probe, spec, b, int(sh))
-    else:
-        for a in range(shape[-2]):
-            bc = band_cyc if band_cyc_rows is None else float(band_cyc_rows[a])
-            b = min(int(np.floor(bc * n_pad)), b_max)
-            _copy_band(low[..., a, :], spec[..., a, :], b, 0)
-            if probe is not None:
-                _copy_band(probe[..., a, :], spec[..., a, :], b, int(sh if sh.ndim == 0 else sh[a]))
-
-    def _inv(band: np.ndarray) -> np.ndarray:
-        dec = cast(np.ndarray, sfft.ifft(band, axis=-1, workers=w))
-        return dec / np.complex64(stride)  # complex64 in, complex64 out
-
-    return _inv(low), (None if probe is None else _inv(probe))
+    return zoom_bands(
+        x,
+        stride,
+        n_env,
+        band_cyc if band_cyc_rows is None else band_cyc_rows,
+        shift_cyc,
+        workers=_fft_workers(),
+    )
 
 
 def zoom_lp_decimate(
@@ -307,17 +272,29 @@ def _demod_bank(
     off-comb probe uses the SAME per-k band as the on-comb envelope.
     ``sr`` (samples/s) is needed to place the probe; it defaults to the
     rate implied by ``t_aud``.
+
+    Under the torch backend the whole bank is built on the selected device
+    (:func:`tracking.demod_backend.demod_comb`): only the ``(C, T)`` clip and
+    the fundamental phasor cross the seam, instead of a ``(C, K, T)``
+    complex64 buffer per flush.
     """
     n_ch, n_t = y32.shape
     n_k = len(ks)
-    z_on = np.empty((n_ch, n_k, n_env), dtype=np.complex64)
-    z_off = np.empty_like(z_on)
     c1 = np.exp(-1j * phi).astype(np.complex64)
     fs = float(sr) if sr is not None else 1.0 / float(t_aud[1] - t_aud[0])
-    bin_hz = fs / (stride * n_env)  # spacing of the padded transform
     offs = np.full(n_k, float(off_hz)) if off_hz_k is None else np.asarray(off_hz_k, dtype=float)
-    shifts = np.rint(offs / bin_hz).astype(np.int64)
+    bands = band_cyc if band_cyc_k is None else np.asarray(band_cyc_k, dtype=np.float64)
 
+    if resolve()[0] == "torch":
+        ka = np.asarray(ks, dtype=np.int64)
+        on, off = demod_comb(
+            y32, c1[None, :], np.zeros(n_k, dtype=np.int64), ka, stride, n_env, bands, offs / fs
+        )
+        assert off is not None
+        return on, off
+
+    z_on = np.empty((n_ch, n_k, n_env), dtype=np.complex64)
+    z_off = np.empty_like(z_on)
     chunk = demod_chunk(n_ch, stride * n_env)
     buf = np.empty((n_ch, min(chunk, n_k), n_t), dtype=np.complex64)
     idxs: list[int] = []
@@ -325,9 +302,7 @@ def _demod_bank(
     def flush() -> None:
         m = len(idxs)
         rows = None if band_cyc_k is None else band_cyc_k[idxs]
-        sh: np.ndarray | int = (
-            int(shifts[idxs[0]]) if len(set(shifts[idxs].tolist())) == 1 else shifts[idxs]
-        )
+        sh = offs[idxs[0]] / fs if len(set(offs[idxs].tolist())) == 1 else offs[idxs] / fs
         on, off = _zoom_lp_decimate_bank(buf[:, :m], stride, n_env, band_cyc, rows, sh)
         assert off is not None
         z_on[:, idxs] = on

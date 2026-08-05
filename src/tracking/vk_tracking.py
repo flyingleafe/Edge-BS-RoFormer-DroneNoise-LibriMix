@@ -50,6 +50,8 @@ from scipy.linalg import cho_solve_banded, cholesky_banded, solveh_banded
 from scipy.signal import butter, firwin, kaiserord, resample_poly, sosfiltfilt
 from scipy.sparse.linalg import splu
 
+from tracking.demod_backend import demod_comb, resolve, zoom_bands
+
 __all__ = [
     "VKConfig",
     "Envelopes",
@@ -385,24 +387,25 @@ def _fft_lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:
     computes single-precision natively); phase/cumsum precision is the
     *caller's* concern and must stay float64 upstream. Batched transforms
     use ``OMP_NUM_THREADS`` workers (the process's declared CPU budget).
-    """
-    from scipy import fft as sfft
 
-    w = fft_workers()
-    n_pad = stride * n_env
-    xc = np.asarray(x, dtype=np.complex64)
-    spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
+    The transform is dispatched through
+    :func:`tracking.demod_backend.zoom_bands`, so this is the scipy *and*
+    the torch path; ``band_env = 0.45`` is the half-band as a fraction of
+    the envelope grid, which is what makes the kept band independent of how
+    the padded length is expressed.
+    """
     if n_env < 8:  # degenerate grids: exact-but-tiny full inverse transform
+        from scipy import fft as sfft
+
+        w = fft_workers()
+        n_pad = stride * n_env
+        spec = cast(np.ndarray, sfft.fft(np.asarray(x, dtype=np.complex64), n=n_pad, axis=-1))
         f = cast(np.ndarray, sfft.fftfreq(n_pad, d=1.0))  # cycles/sample at audio rate
         spec[..., np.abs(f) > 0.45 / stride] = 0.0
         full = cast(np.ndarray, sfft.ifft(spec, axis=-1, workers=w))
         return full[..., ::stride].astype(np.complex128)
-    b = min(int(np.floor(0.45 * n_env)), (n_env - 1) // 2)  # bins per side
-    low = np.zeros(x.shape[:-1] + (n_env,), dtype=np.complex64)
-    low[..., : b + 1] = spec[..., : b + 1]
-    low[..., n_env - b :] = spec[..., n_pad - b :]
-    dec = cast(np.ndarray, sfft.ifft(low, axis=-1, workers=w))
-    return (dec / np.complex64(stride)).astype(np.complex128)
+    low, _ = zoom_bands(x, stride, n_env, band_env=0.45, workers=fft_workers())
+    return low.astype(np.complex128)
 
 
 @lru_cache(maxsize=8)
@@ -681,6 +684,12 @@ def _demod_tracks_fft(
     phase matrix or taking an exp per track: per-track conj-phasors come from
     the :func:`_track_carriers` recursion and the demodulated products are
     lowpass-decimated in memory-bounded batches.
+
+    Under the torch backend (and only for ``lp_mode="fft"``) the recursion,
+    the products and the transforms all run on the selected device
+    (:func:`tracking.demod_backend.demod_comb`), so the ``(C, T)`` clip plus
+    ``R`` fundamental phasors are the only traffic across the seam — instead
+    of one ``(C, chunk, T)`` complex64 buffer per flush.
     """
     y32 = np.asarray(np.atleast_2d(audio), dtype=np.float32)
     stride, _ = env_stride(cfg)
@@ -690,6 +699,10 @@ def _demod_tracks_fft(
     z = np.empty((n_ch, n_tracks, n_env), dtype=np.complex128)
     if n_tracks == 0:
         return z
+    if resolve()[0] == "torch" and cfg.lp_mode == "fft" and n_env >= 8:
+        c1 = np.exp(-1j * np.atleast_2d(phase)).astype(np.complex64)
+        on, _ = demod_comb(y32, c1, rotor, k, stride, n_env, band_env=0.45)
+        return on.astype(np.complex128)
     chunk = max(1, int(128e6 / (max(1, n_ch) * max(1, n_t) * 8)))
     buf = np.empty((n_ch, min(chunk, n_tracks), n_t), dtype=np.complex64)
     idxs: list[int] = []
