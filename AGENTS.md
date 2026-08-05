@@ -140,6 +140,7 @@ Root-level scripts: **only** `train.py` (the only training entry point, Hydra-dr
 4. **Code comments = concrete; AGENTS.md = conceptual/structural.**
 5. **Sync results before analysis.** `dload pull <name>` (datasets) + `omnirun pull <job>` (job outputs, `results/**`) + `wandb.use_artifact(...)` (checkpoints) — see `docs/data-and-artifacts.md`.
 6. **Record iff non-trivial.** If the task taught, solved, or revealed a gap — run `record-and-remember`. If nothing was learned, skip.
+7. **Worktrees live in `.worktrees/`** — every agent, one directory. Create one with `git worktree add .worktrees/<name> -b <branch>`, and enter it with Claude Code's `EnterWorktree` **`path`** argument. Do NOT call `EnterWorktree` with `name`: that argument hardcodes `.claude/worktrees/`, which this project does not use. The directory is not a setting in Claude Code 2.1, and a symlink at `.claude/worktrees` is refused, so this rule is the only enforcement. A worktree that holds its own `.venv` is not relocatable — after `git worktree move`, rewrite the old path inside `.venv/bin/*` and the editable-install `.pth` (or run `uv sync`).
 
 ## References
 
