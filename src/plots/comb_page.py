@@ -1162,8 +1162,15 @@ __ROWS__
 
 
 def page_title(payload: dict) -> str:
+    """The h1 / browser title.  It must not name one channel when the page
+    carries several and the reader can switch between them."""
     m = payload["meta"]
-    label = m.get("channel_label") or channel_label(m["channel"], m["n_mics"])
+    n = len(payload["spec"])
+    label = (
+        (m.get("channel_label") or channel_label(m["channel"], m["n_mics"]))
+        if n == 1
+        else f"{n} mic channels"
+    )
     return f"{m['recording']}  t={m['t0']:.3f} s  +{m['dur']:.1f} s  —  {label}"
 
 
