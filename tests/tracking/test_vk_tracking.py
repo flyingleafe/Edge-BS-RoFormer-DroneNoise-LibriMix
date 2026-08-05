@@ -10,6 +10,7 @@ Run:  pytest tests/test_vk_tracking.py
 """
 
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -243,3 +244,117 @@ def test_config_rejects_too_small_bandwidth():
     y = np.zeros(int(dur * FS))
     with pytest.raises(ValueError, match="bandwidth too small"):
         vk_track(y, np.full((1, len(frame_times)), 45.0), frame_times, make_cfg(bw_hz=1e-9))
+
+
+# ---------------------------------------------------------------------------
+# least-squares re-projection of the envelopes (the peel subtraction, issue #17)
+
+
+def two_tone(dur: float = 2.0) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Two well-separated stationary tones + their (constant) rev/s tracks.
+
+    ``(y, r_aud, e_lo, e_hi)`` — the mixture, the two rotor trajectories at
+    audio rate, and the mean energy of each tone on its own.
+    """
+    t = np.arange(int(dur * FS)) / FS
+    r_lo, r_hi = 60.0, 97.0
+    lo = 1.0 * np.cos(2 * np.pi * r_lo * t + 0.7)
+    hi = 0.6 * np.cos(2 * np.pi * r_hi * t - 1.9)
+    r_aud = np.stack([np.full_like(t, r_lo), np.full_like(t, r_hi)])
+    return lo + hi, r_aud, float(np.mean(lo**2)), float(np.mean(hi**2))
+
+
+def ls_cfg() -> VKConfig:
+    # k = 1 only: one tone per rotor, so a "component" is one tone.
+    return VKConfig(fs=FS, k_min=1, k_max=1, bw_hz=2.0, f_min=20.0, f_max=2000.0, n_outer=1)
+
+
+def test_ls_projection_recovers_a_corrupted_envelope():
+    """A mis-scaled, mis-phased envelope is re-fit onto the audio, and the
+    projected residual is never larger than the clip itself."""
+    from tracking.vk_tracking import ls_project_envelopes, vk_envelopes, vk_reconstruct
+
+    y, r_aud, _, _ = two_tone()
+    env = vk_envelopes(y, r_aud, ls_cfg())
+    # 1.6x amplitude and 2.0 rad of phase error — what an off-trajectory VK
+    # solve leaves behind. Open-loop subtraction of a component this far out of
+    # phase ADDS energy (the failure mode the projection exists to remove).
+    broken = replace(env, x=env.x * (1.6 * np.exp(1j * 2.0)))
+
+    fitted, diag = ls_project_envelopes(y, broken)
+
+    e_audio = float(np.mean(y**2))
+    e_open = float(np.mean((y - vk_reconstruct(broken, n_samples=len(y)))[0] ** 2))
+    e_ls = float(np.mean((y - vk_reconstruct(fitted, n_samples=len(y)))[0] ** 2))
+    assert e_open > e_audio, "fixture not adversarial: open-loop already removes energy"
+    assert e_ls < e_audio, "projected subtraction injected energy"
+    assert e_ls < 0.05 * e_audio, f"projection left {e_ls / e_audio:.3f} of the clip"
+    # The fit undoes the corruption: |g| ~ 1/1.6.
+    assert diag["gain_abs_mean"] == pytest.approx(1 / 1.6, rel=0.15)
+    assert diag["clipped_frac"] == 0.0
+    assert diag["n_tracks_fitted"] == 2
+
+
+def test_ls_projection_removes_one_tone_and_leaves_the_other():
+    """Peeling ONE rotor's component removes that tone's energy and nothing
+    else — the property the peel relies on."""
+    from tracking.vk_tracking import ls_project_envelopes, vk_envelopes, vk_reconstruct
+
+    y, r_aud, e_lo, e_hi = two_tone()
+    env = vk_envelopes(y, r_aud, ls_cfg())
+    fitted, _ = ls_project_envelopes(y, env)
+
+    x_hi = fitted.x.copy()
+    x_hi[:, fitted.rotor != 1, :] = 0.0  # keep only the 97 rev/s rotor
+    resid = (y - vk_reconstruct(replace(fitted, x=x_hi), n_samples=len(y)))[0]
+
+    core = slice(int(0.25 * FS), -int(0.25 * FS))  # skip the envelope edge taper
+    assert np.mean(resid**2) < np.mean(y**2)  # never injects
+    assert np.mean(resid[core] ** 2) == pytest.approx(e_lo, rel=0.05)  # the other tone survives
+    removed = np.mean(y[core] ** 2) - np.mean(resid[core] ** 2)
+    assert removed == pytest.approx(e_hi, rel=0.1)
+
+
+def test_ls_projection_is_inert_on_an_exact_fit():
+    """When the envelopes already explain the audio, every gain is ~1."""
+    from tracking.vk_tracking import ls_project_envelopes, vk_envelopes
+
+    y, r_aud, _, _ = two_tone()
+    env = vk_envelopes(y, r_aud, ls_cfg())
+
+    fitted, diag = ls_project_envelopes(y, env)
+
+    assert diag["gain_abs_mean"] == pytest.approx(1.0, abs=0.05)
+    np.testing.assert_allclose(np.abs(fitted.x), np.abs(env.x), rtol=0.15)
+
+
+def test_ls_projection_sum_never_injects_on_a_displaced_comb():
+    """The sum-level guarantee: with the trajectory displaced, subtracting the
+    open-loop comb ADDS energy; the sequentially-projected comb cannot."""
+    from tracking.vk_tracking import ls_project_envelopes, vk_envelopes, vk_reconstruct
+
+    dur, k_top = 3.0, 12
+    t = np.arange(int(dur * FS)) / FS
+    rng = np.random.default_rng(3)
+    r_true = np.array([61.0, 74.0])[:, None] + 0.6 * np.sin(2 * np.pi * 0.4 * t)[None, :]
+    y = np.zeros_like(t)
+    for i in range(2):
+        phi = 2 * np.pi * np.cumsum(r_true[i]) / FS
+        for k in range(1, k_top + 1):
+            y += np.cos(k * phi + rng.uniform(0, 2 * np.pi)) / k
+    y += rng.standard_normal(len(t)) * np.sqrt(np.mean(y**2))  # 0 dB
+
+    cfg = VKConfig(fs=FS, k_min=1, k_max=k_top, bw_hz=1.0, f_max=6000.0, n_outer=1)
+    # Solve at a displaced track, then mis-scale and mis-phase all 24
+    # envelopes: the failure the real takeoff windows show, with every
+    # component contributing to the injection at once.
+    env = vk_envelopes(y, r_true + 0.4, cfg)
+    env = replace(env, x=env.x * (1.6 * np.exp(1j * 2.0)))
+    fitted, diag = ls_project_envelopes(y, env)
+
+    e_audio = float(np.mean(y**2))
+    e_open = float(np.mean((y - vk_reconstruct(env, n_samples=len(y)))[0] ** 2))
+    e_ls = float(np.mean((y - vk_reconstruct(fitted, n_samples=len(y)))[0] ** 2))
+    assert e_open > e_audio, "fixture not adversarial: the open-loop peel already removes energy"
+    assert e_ls < e_audio, "the projected peel injected energy"
+    assert diag["e_resid_ratio"] == pytest.approx(e_ls / e_audio, rel=0.02)

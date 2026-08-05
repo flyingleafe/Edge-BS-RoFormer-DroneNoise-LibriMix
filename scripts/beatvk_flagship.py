@@ -11,16 +11,20 @@ protocol:
    telemetry.
 2. **Peeled alternation** — per application: solve the coherent VK envelopes
    at the current track (``vk_tracking.vk_envelopes``, bw 1 Hz, k <= 40),
-   give each rotor the audio minus the OTHER rotors' comb reconstructions
-   (twin pairs get audio minus the non-pair rotors), then one full
-   ``pi_kalman_refine`` pass (protocol settings: ``pair_mode=joint``,
-   ``n_iter=3`` internal demod iterations, band 6 Hz, k caps 8/20/40) on the
-   peeled residuals. Iterate to plateau (~4 applications).
+   re-fit each harmonic's complex gain onto the clip per 0.25 s block
+   (``--peel-mode ls``, the default), give each rotor the audio minus the
+   OTHER rotors' comb reconstructions (twin pairs get audio minus the
+   non-pair rotors), then one full ``pi_kalman_refine`` pass (protocol
+   settings: ``pair_mode=joint``, ``n_iter=3`` internal demod iterations,
+   band 6 Hz, k caps 8/20/40) on the peeled residuals. Iterate to plateau
+   (~4 applications).
 
 A ``naive`` arm (plain re-application, no peel) runs for comparison. The
 peel is sanity-gated per application: the subtraction must REMOVE energy
 (``e_resid_all_ratio < 1``); violations are flagged in the report, never
-averaged over silently.
+averaged over silently. ``--peel-mode open`` restores the 2026-08-04
+open-loop subtraction, whose mis-phased components could inject energy (and
+did, on every ramp/warmup window).
 
 Scoring reuses ``beatvk_eval.score_recording`` (the frozen scorer) on the
 assembled per-iteration trajectories, so the leaderboard rows are exactly
@@ -98,6 +102,13 @@ PI_VARIANTS: dict[str, dict[str, Any]] = {
 # measured 0.5-1.5 s tau_k window at k = 8-40.
 PEEL_BW_HZ = 1.0
 PEEL_K_MAX = 40
+# Peel subtraction modes (issue #17 step 4):
+#   "open" — subtract the VK reconstruction as solved (the 2026-08-04 flagship);
+#   "ls"   — re-fit each harmonic's complex gain onto the clip per time block
+#            first (tracking.vk_tracking.ls_project_envelopes), so a mis-phased
+#            component can no longer INJECT energy.
+PEEL_MODES = ("open", "ls")
+DEFAULT_PEEL_MODE = "ls"
 
 DEFAULT_OUT = Path("results/beatvk_flagship")
 DEFAULT_APPS = 5
@@ -112,7 +123,11 @@ SYNTH_SEED = 99
 
 
 def make_peels(
-    clip: np.ndarray, r_ft: np.ndarray, ft: np.ndarray, sr: int
+    clip: np.ndarray,
+    r_ft: np.ndarray,
+    ft: np.ndarray,
+    sr: int,
+    peel_mode: str = DEFAULT_PEEL_MODE,
 ) -> tuple[dict[int, np.ndarray], dict[tuple[int, int], np.ndarray], dict[str, Any]]:
     """Return ``(peel_audio, pair_audio, diag)``.
 
@@ -120,13 +135,26 @@ def make_peels(
     reconstructions; ``pair_audio[(lo, hi)]`` = the audio minus the NON-pair
     rotors' reconstructions (for the joint twin observations). ``diag``
     carries the energy bookkeeping for the peel sanity gate.
-    """
-    from tracking.vk_tracking import VKConfig, vk_envelopes, vk_reconstruct
 
+    With ``peel_mode="ls"`` the envelopes are first re-projected onto the clip
+    (per harmonic, per 0.25 s block, per channel), so what is subtracted is the
+    least-squares fit of each modelled harmonic to the audio rather than the
+    VK solve's own amplitude and phase. Which reconstruction goes into which
+    peel is UNCHANGED — in particular a rotor never sees its own comb
+    subtracted, and twins are only ever peeled of the non-pair rotors, because
+    a sibling's fit tracks the target itself.
+    """
+    from tracking.vk_tracking import VKConfig, ls_project_envelopes, vk_envelopes, vk_reconstruct
+
+    if peel_mode not in PEEL_MODES:
+        raise ValueError(f"unknown peel_mode {peel_mode!r}; valid: {list(PEEL_MODES)}")
     cfg = VKConfig(fs=float(sr), bw_hz=PEEL_BW_HZ, k_max=PEEL_K_MAX, f_max=6000.0, n_outer=1)
     t_aud = np.arange(clip.shape[-1]) / sr
     r_aud = np.vstack([np.interp(t_aud, ft, r_ft[r]) for r in range(N_ROTORS)])
     env = vk_envelopes(clip, r_aud, cfg)
+    ls_diag: dict[str, Any] | None = None
+    if peel_mode == "ls":
+        env, ls_diag = ls_project_envelopes(clip, env)
     n_t = clip.shape[-1]
     recon: dict[int, np.ndarray] = {}
     for rot in range(N_ROTORS):
@@ -135,7 +163,13 @@ def make_peels(
         recon[rot] = vk_reconstruct(dataclasses.replace(env, x=x_mask), n_samples=n_t)
     e_audio = float(np.mean(clip**2))
     peel_audio: dict[int, np.ndarray] = {}
-    diag: dict[str, Any] = {"bw_hz": PEEL_BW_HZ, "e_audio": e_audio, "per_rotor": []}
+    diag: dict[str, Any] = {
+        "bw_hz": PEEL_BW_HZ,
+        "mode": peel_mode,
+        "e_audio": e_audio,
+        "per_rotor": [],
+        **({"ls": ls_diag} if ls_diag is not None else {}),
+    }
     for rot in range(N_ROTORS):
         others = sum(recon[j] for j in range(N_ROTORS) if j != rot)
         peeled = clip - others
@@ -155,6 +189,8 @@ def make_peels(
     # The gate: a correctly-phased peel removes energy. A residual above the
     # window energy (or a per-rotor residual above it) means the peel is
     # mis-phased and would INJECT interference — flag, never average over.
+    # Under peel_mode="ls" each harmonic on its own cannot inject; a SUM of
+    # independently-fitted harmonics still can, so the gate stays.
     diag["energy_ok"] = bool(
         diag["e_resid_all_ratio"] < 1.0 and all(d["e_resid_ratio"] < 1.0 for d in diag["per_rotor"])
     )
@@ -217,6 +253,7 @@ def run_arm(
     tag: str,
     pi_variant: str = "protocol",
     band_b0: float | None = None,
+    peel_mode: str = DEFAULT_PEEL_MODE,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Iterate the pi_kalman stage ``n_apps`` times from ``r0``.
 
@@ -224,6 +261,8 @@ def run_arm(
     ``pi_variant`` selects a :data:`PI_VARIANTS` row; annealed variants
     carry the per-rotor ``band_b0`` across applications. ``band_b0``
     overrides the initial k-scaled band scale (rev/s) of that row.
+    ``peel_mode`` selects the subtraction (see :data:`PEEL_MODES`); it only
+    applies to the ``peeled`` arm.
     """
     from tracking.phase_increment_tracker import pi_kalman_refine
 
@@ -239,7 +278,7 @@ def run_arm(
         _CTX["peel_audio"] = _CTX["pair_audio"] = None
         tic = time.perf_counter()
         if arm == "peeled":
-            peel_audio, pair_audio, peel_diag = make_peels(clip, r_cur, ft, SR)
+            peel_audio, pair_audio, peel_diag = make_peels(clip, r_cur, ft, SR, peel_mode)
             _CTX["peel_audio"] = peel_audio
             _CTX["pair_audio"] = pair_audio
         wall_peel = time.perf_counter() - tic
@@ -292,13 +331,18 @@ def run_arm(
 
 
 def variant_tag(cfg: dict[str, Any]) -> str:
-    """Cache-key suffix for the pi_kalman variant + mic subset ('' = protocol
-    row on the full array), so rows of the ladder never share a cache entry."""
+    """Cache-key suffix for the pi_kalman variant + peel mode + mic subset
+    ('' = protocol row, open-loop peel, full array), so rows of the ladder
+    never share a cache entry. ``open`` keeps the empty suffix so the
+    pre-2026-08-05 run cache stays valid for the behaviour it was produced
+    with."""
     pi = str(cfg.get("pi_variant", "protocol"))
     tag = "" if pi == "protocol" else f"__{pi}"
     b0 = cfg.get("band_b0")
     if b0 is not None:
         tag += f"__b0{float(b0):g}"
+    if str(cfg.get("peel_mode", DEFAULT_PEEL_MODE)) == "ls":
+        tag += "__lspeel"
     return tag + vka.chan_tag(int(cfg.get("channels", 8)), cfg.get("channel_seed"))
 
 
@@ -339,6 +383,7 @@ def run_flagship_window(rid: str, widx: int, cfg: dict[str, Any]) -> str:
             tag,
             pi_variant=cfg.get("pi_variant", "protocol"),
             band_b0=cfg.get("band_b0"),
+            peel_mode=cfg.get("peel_mode", DEFAULT_PEEL_MODE),
         )
         path = flag_path(out, rid, widx, arm, suffix)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -581,7 +626,8 @@ def build_trace(
                 "coarse full-range Viterbi + energy bridge + DP trust gates + vit2dsp "
                 f"ladder) + iterated pi_kalman(pair_mode={PI_PAIR_MODE}, "
                 f"n_iter={PI_N_ITER}, band {PI_BAND_HZ:g} Hz); peeled arm subtracts the "
-                f"other rotors' VK comb reconstructions (bw {PEEL_BW_HZ:g} Hz) before "
+                f"other rotors' VK comb reconstructions (bw {PEEL_BW_HZ:g} Hz, "
+                f"{meta.get('peel_mode', DEFAULT_PEEL_MODE)}-mode subtraction) before "
                 "each application"
             ),
         },
@@ -673,6 +719,7 @@ def run_synthetic(
     init_arm: str = vka.FULLRANGE_ARM,
     pi_variant: str = "protocol",
     band_b0: float | None = None,
+    peel_mode: str = DEFAULT_PEEL_MODE,
 ) -> dict[str, Any]:
     """The synthetic case end-to-end: blind chain + both arms + trace JSON."""
     cache = out / "runs" / "synthetic_chain.npz"
@@ -689,7 +736,7 @@ def run_synthetic(
     clip = np.asarray(prep.audio, dtype=np.float64)
     arm_iters: dict[str, np.ndarray] = {}
     arm_diags: dict[str, list[dict[str, Any]]] = {}
-    suffix = variant_tag({"pi_variant": pi_variant, "band_b0": band_b0})
+    suffix = variant_tag({"pi_variant": pi_variant, "band_b0": band_b0, "peel_mode": peel_mode})
     for arm in arms:
         apath = flag_path(out, "synthetic", 0, arm, suffix)
         if apath.exists():
@@ -697,7 +744,9 @@ def run_synthetic(
                 arm_iters[arm] = np.asarray(z["iters"], np.float64)
                 arm_diags[arm] = json.loads(str(z["app_diag"]))
             continue
-        iters, app_diag = run_arm(clip, r0, prep.ft, arm, n_apps, "synthetic", pi_variant, band_b0)
+        iters, app_diag = run_arm(
+            clip, r0, prep.ft, arm, n_apps, "synthetic", pi_variant, band_b0, peel_mode
+        )
         arm_iters[arm], arm_diags[arm] = iters, app_diag
         apath.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
@@ -715,6 +764,7 @@ def run_synthetic(
         "n_channels": int(clip.shape[0]),
         "blind_chain": info,
         "init_arm": init_arm,
+        "peel_mode": peel_mode,
     }
     trace = build_trace(
         "synthetic",
@@ -772,6 +822,13 @@ def main() -> None:
         help="override the k-scaled band scale (rev/s) of --pi-variant (default: its own)",
     )
     ap.add_argument(
+        "--peel-mode",
+        default=DEFAULT_PEEL_MODE,
+        choices=list(PEEL_MODES),
+        help="peel subtraction: 'ls' = per-harmonic least-squares projection "
+        "(default), 'open' = the 2026-08-04 open-loop reconstruction",
+    )
+    ap.add_argument(
         "--channels", type=int, default=8, help="mic channels for init + refinement (<=8)"
     )
     ap.add_argument(
@@ -794,7 +851,9 @@ def main() -> None:
         raise SystemExit(f"unknown arms {unknown}; valid: {list(ARMS)}")
 
     if opts.synthetic_only:
-        run_synthetic(out, arms, opts.apps, opts.init_arm, opts.pi_variant, opts.band_b0)
+        run_synthetic(
+            out, arms, opts.apps, opts.init_arm, opts.pi_variant, opts.band_b0, opts.peel_mode
+        )
         return
 
     vk_out = Path(opts.vk_out) if opts.vk_out else out / "vk_arms"
@@ -851,6 +910,7 @@ def main() -> None:
         "channels": opts.channels,
         "channel_seed": opts.channel_seed,
         "band_b0": opts.band_b0,
+        "peel_mode": opts.peel_mode,
     }
     vtag = variant_tag(cfg2)
     iter_jobs = [
@@ -971,6 +1031,7 @@ def main() -> None:
             "n_channels": opts.channels,
             "blind_chain": blind_info,
             "init_arm": opts.init_arm,
+            "peel_mode": opts.peel_mode,
         }
         trace = build_trace(
             name,
@@ -992,9 +1053,15 @@ def main() -> None:
     synth_summary = None
     if not opts.no_synthetic:
         synth_summary = run_synthetic(
-            out, arms, opts.apps, opts.init_arm, opts.pi_variant, opts.band_b0
+            out, arms, opts.apps, opts.init_arm, opts.pi_variant, opts.band_b0, opts.peel_mode
         )
-        stag = variant_tag({"pi_variant": opts.pi_variant, "band_b0": opts.band_b0})
+        stag = variant_tag(
+            {
+                "pi_variant": opts.pi_variant,
+                "band_b0": opts.band_b0,
+                "peel_mode": opts.peel_mode,
+            }
+        )
         trace_files["synthetic"] = str(tdir / f"blind_synthetic{stag}.json")
 
     report = {
@@ -1007,7 +1074,7 @@ def main() -> None:
                 **PI_VARIANTS[opts.pi_variant],
                 **({} if opts.band_b0 is None else {"band_b0": opts.band_b0}),
             },
-            "peel": {"bw_hz": PEEL_BW_HZ, "k_max": PEEL_K_MAX},
+            "peel": {"bw_hz": PEEL_BW_HZ, "k_max": PEEL_K_MAX, "mode": opts.peel_mode},
             "channels": opts.channels,
             "channel_seed": opts.channel_seed,
             "apps": opts.apps,

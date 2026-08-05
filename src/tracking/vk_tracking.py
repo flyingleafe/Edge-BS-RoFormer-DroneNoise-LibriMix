@@ -38,7 +38,7 @@ trajectory sampled on an arbitrary time grid. The core is numpy + scipy only
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, cast
 
@@ -53,6 +53,7 @@ __all__ = [
     "Envelopes",
     "VKResult",
     "demodulate",
+    "ls_project_envelopes",
     "vk_envelopes",
     "vk_track",
     "vk_reconstruct",
@@ -873,6 +874,143 @@ def vk_reconstruct(env: Envelopes, n_samples: int | None = None) -> np.ndarray:
             recon[:, n_full:] += xr[:, -1:] * cr[n_full:]
             recon[:, n_full:] -= xi[:, -1:] * ci[n_full:]
     return recon.astype(np.float64)
+
+
+# ---------------------------------------------------------------------------
+# least-squares re-projection of the envelopes (peel subtraction)
+
+#: Default gain-fit block. The fit spends 2 real parameters per (channel,
+#: harmonic, block), so the block must be long enough to stay overdetermined
+#: and to resolve one harmonic from its neighbours (0.25 s -> 4 Hz at a
+#: harmonic spacing of one rev/s = 40-100 Hz), and short enough to stay inside
+#: the envelope's coherence time (~1 s at the 1 Hz peel bandwidth) so a
+#: drifting gain is still tracked.
+LS_BLOCK_S = 0.25
+
+#: Radial clamp on the fitted gain. The LS solution shrunk toward zero along
+#: its own ray still cannot increase the residual (the residual is a convex
+#: quadratic along that segment, equal to ||y||^2 at g = 0), so clamping is
+#: safe; |g| >> 1 means the block is fitting something other than the modelled
+#: component and must not be amplified into the peel.
+LS_GAIN_MAX = 4.0
+
+
+def _upsample_envelope(xm: np.ndarray, stride: int, n_t: int) -> np.ndarray:
+    """``(C, n_env)`` complex envelope -> ``(C, n_t)`` complex64 at audio rate.
+
+    Linear between knots, held constant beyond the last knot — the same
+    interpolation :func:`vk_reconstruct` applies, kept complex instead of
+    folded into the carrier.
+    """
+    n_ch, n_env = xm.shape
+    out = np.empty((n_ch, n_t), dtype=np.complex64)
+    n_full = min(n_t, (n_env - 1) * stride) if n_env > 1 else 0
+    xr = np.real(xm).astype(np.float32)
+    xi = np.imag(xm).astype(np.float32)
+    if n_full:
+        ramp = np.arange(stride, dtype=np.float32) / np.float32(stride)
+        up_r = (xr[:, :-1, None] + np.diff(xr, axis=-1)[:, :, None] * ramp).reshape(n_ch, -1)
+        up_i = (xi[:, :-1, None] + np.diff(xi, axis=-1)[:, :, None] * ramp).reshape(n_ch, -1)
+        out[:, :n_full] = up_r[:, :n_full] + 1j * up_i[:, :n_full]
+    if n_full < n_t:
+        out[:, n_full:] = xr[:, -1:] + 1j * xi[:, -1:]
+    return out
+
+
+def ls_project_envelopes(
+    audio: np.ndarray,
+    env: Envelopes,
+    *,
+    block_s: float = LS_BLOCK_S,
+    gain_max: float = LS_GAIN_MAX,
+) -> tuple[Envelopes, dict[str, Any]]:
+    """Re-fit every envelope onto ``audio`` by least squares, per time block.
+
+    Each track ``m`` contributes the waveform ``s_m = Re[x_m c_m]``. The VK
+    solve fixes ``x_m`` from the *modelled* comb; when the trajectory is
+    slightly off, ``s_m`` is mis-scaled and mis-phased, and subtracting it
+    open-loop can add energy instead of removing it. This function replaces
+    ``x_m`` by ``g x_m`` with the complex gain ``g`` that minimises
+    ``||resid - Re[g x_m c_m]||^2`` over each block of ``block_s`` seconds and
+    each channel — the exact 2-parameter (in-phase / quadrature) projection of
+    the residual onto that one harmonic's 2-D subspace.
+
+    Tracks are fitted **sequentially against a running residual** (rotor-major,
+    harmonic ascending), not independently against the clip. That ordering is
+    what makes the guarantee hold for the *sum*: each projection removes energy
+    from the residual, so ``||y - sum_m Re[g_m x_m c_m]||^2 <= ||y||^2``, and no
+    two overlapping harmonics can both claim the same energy. Fitting each
+    harmonic against the clip instead lets overlapping harmonics double-count
+    and over-subtract — measured on ``free-flight_nosource_room1`` (4 s, 8 mic,
+    telemetry track), full-comb residual ratio: 0.691 open-loop / 0.709
+    independent / **0.602** sequential on the cruise window w01, and 265.1 /
+    — / **0.892** on the takeoff window w00, where the open-loop peel injects
+    two orders of magnitude more energy than the clip holds.
+
+    Returns ``(envelopes, diag)``; the input is not mutated.
+    """
+    y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[: env.x.shape[0]]
+    n_ch = y.shape[0]
+    n_t = min(int(y.shape[-1]), int(env.phase.shape[-1]))
+    n_env = env.x.shape[-1]
+    if n_ch != env.x.shape[0]:
+        raise ValueError(f"audio has {y.shape[0]} channels, envelopes have {env.x.shape[0]}")
+    stride = int(round(float(env.t_env[1] - env.t_env[0]) * env.fs)) if n_env > 1 else 1
+    block = max(stride, int(round(block_s * env.fs)))
+    starts = np.arange(0, n_t, block)
+    n_blocks = len(starts)
+    # Sample -> block index. The gain is piecewise constant in time, so what is
+    # subtracted inside a block is exactly what was fitted there.
+    blk_env = np.minimum(np.arange(n_env) * stride // block, n_blocks - 1)
+    blk_aud = np.minimum(np.arange(n_t) // block, n_blocks - 1)
+
+    resid = y[:, :n_t].copy()
+    x_new = env.x.copy()
+    gains: list[np.ndarray] = []
+    n_clipped = 0
+    for m, carr in _track_carriers(
+        env.phase[:, :n_t], env.rotor, env.k, range(env.x.shape[1]), 1.0
+    ):
+        xm = env.x[:, m]
+        if not xm.any():  # masked / never-solved tracks stay zero
+            continue
+        u = _upsample_envelope(xm, stride, n_t) * carr[:n_t]
+        p = np.real(u).astype(np.float64)  # in-phase basis
+        q = -np.imag(u).astype(np.float64)  # quadrature basis
+        app = np.add.reduceat(p * p, starts, axis=-1)
+        aqq = np.add.reduceat(q * q, starts, axis=-1)
+        apq = np.add.reduceat(p * q, starts, axis=-1)
+        bp = np.add.reduceat(resid * p, starts, axis=-1)
+        bq = np.add.reduceat(resid * q, starts, axis=-1)
+        det = app * aqq - apq * apq
+        # Degenerate blocks (the track is invalid / silent there) keep g = 1:
+        # the component is zero anyway, so the gain cannot matter.
+        ok = det > _TINY * np.maximum(app * aqq, _TINY)
+        a = np.where(ok, (aqq * bp - apq * bq) / np.where(ok, det, 1.0), 1.0)
+        b = np.where(ok, (app * bq - apq * bp) / np.where(ok, det, 1.0), 0.0)
+        g = a + 1j * b
+        mag = np.abs(g)
+        clip = mag > gain_max
+        n_clipped += int(clip.sum())
+        g = np.where(clip, g * (gain_max / np.maximum(mag, _TINY)), g)
+        resid -= np.real(g)[:, blk_aud] * p + np.imag(g)[:, blk_aud] * q
+        x_new[:, m] = env.x[:, m] * g[:, blk_env]
+        gains.append(np.minimum(mag, gain_max))  # the gain actually applied
+
+    all_mag = np.concatenate([g.ravel() for g in gains]) if gains else np.zeros(0)
+    e_in = float(np.mean(y[:, :n_t] ** 2))
+    diag: dict[str, Any] = {
+        "block_s": block / env.fs,
+        "block_samples": int(block),
+        "n_blocks": int(n_blocks),
+        "n_tracks_fitted": len(gains),
+        "gain_abs_mean": round(float(np.mean(all_mag)), 4) if all_mag.size else None,
+        "gain_abs_p95": round(float(np.percentile(all_mag, 95)), 4) if all_mag.size else None,
+        "clipped_frac": round(n_clipped / max(all_mag.size, 1), 5),
+        # The guarantee, measured: the full-comb residual over the clip energy.
+        "e_resid_ratio": round(float(np.mean(resid**2)) / max(e_in, _TINY), 5),
+    }
+    return replace(env, x=x_new), diag
 
 
 # ---------------------------------------------------------------------------

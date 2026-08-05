@@ -56,6 +56,7 @@ from tracking.vk_blind_seeding import SeedConfig, blind_seed, stage_guard, white
 from tracking.vk_tracking import (
     VKConfig,
     demodulate,
+    ls_project_envelopes,
     vk_envelopes,
     vk_reconstruct,
     vk_track,
@@ -111,6 +112,7 @@ __all__ = [
     "vit2dsp_pipeline",
     "vit2dsp_stage",
     "viterbi_path",
+    "ls_project_envelopes",
     "vk_envelopes",
     "vk_reconstruct",
     "vk_stage",
