@@ -54,7 +54,6 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import argparse  # noqa: E402
-import dataclasses  # noqa: E402
 import json  # noqa: E402
 import multiprocessing  # noqa: E402
 import sys  # noqa: E402
@@ -75,173 +74,33 @@ import beatvk_vk_arms as vka  # noqa: E402
 from scipy.optimize import linear_sum_assignment  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
+from tracking.pipelines import (  # noqa: E402
+    ARMS,
+    DEFAULT_PEEL_MODE,
+    PEEL_BW_HZ,
+    PEEL_K_MAX,
+    PEEL_MODES,
+    PI_BAND_HZ,
+    PI_N_ITER,
+    PI_PAIR_MODE,
+    PI_VARIANTS,
+    peel_alternation,
+)
+from tracking.stages import get_rps, tracking_frame  # noqa: E402
+
 SR: int = beatvk_eval.SR
 FRAME_S: float = beatvk_eval.FRAME_S
 N_ROTORS: int = beatvk_eval.N_ROTORS
 
-# Protocol pi_kalman settings (the 0.641 row; findings.md "Iterated
-# pi_kalman: mechanism findings").
-PI_N_ITER = 3
-PI_BAND_HZ = 6.0
-PI_PAIR_MODE = "joint"
-# Bandwidth-and-admission revision rows (docs/experiments/beat-vk.md):
-# extra pi_kalman_refine kwargs per --pi-variant. "k_anneal"/"full" thread
-# the annealed per-rotor band_b0 across applications via band_b0_final.
-PI_VARIANTS: dict[str, dict[str, Any]] = {
-    "protocol": {},
-    "k_scaled": {"band_mode": "k_scaled"},
-    "k_anneal": {"band_mode": "k_scaled", "band_anneal": "posterior"},
-    "full": {
-        "band_mode": "k_scaled",
-        "band_anneal": "posterior",
-        "lowk_gate": "consistency",
-        "probe_mode": "clean",
-    },
-}
-# Peel settings: 1 Hz envelope bandwidth ~ 1 s coherence, inside the
-# measured 0.5-1.5 s tau_k window at k = 8-40.
-PEEL_BW_HZ = 1.0
-PEEL_K_MAX = 40
-# Peel subtraction modes (issue #17 step 4):
-#   "open" — subtract the VK reconstruction as solved (the 2026-08-04 flagship);
-#   "ls"   — re-fit each harmonic's complex gain onto the clip per time block
-#            first (tracking.vk_tracking.ls_project_envelopes), so a mis-phased
-#            component can no longer INJECT energy.
-PEEL_MODES = ("open", "ls")
-DEFAULT_PEEL_MODE = "ls"
-
 DEFAULT_OUT = Path("results/beatvk_flagship")
 DEFAULT_APPS = 5
-ARMS = ("naive", "peeled")
 DEFAULT_TRACES = "FLY124:3,free-flight_nosource_room1:0"
 TRACE_GRID_N = 400
 SYNTH_SEED = 99
 
 
 # ---------------------------------------------------------------------------
-# peel: VK envelope solve at the current track + per-rotor comb subtraction
-
-
-def make_peels(
-    clip: np.ndarray,
-    r_ft: np.ndarray,
-    ft: np.ndarray,
-    sr: int,
-    peel_mode: str = DEFAULT_PEEL_MODE,
-) -> tuple[dict[int, np.ndarray], dict[tuple[int, int], np.ndarray], dict[str, Any]]:
-    """Return ``(peel_audio, pair_audio, diag)``.
-
-    ``peel_audio[i]`` = the audio minus the OTHER rotors' coherent comb
-    reconstructions; ``pair_audio[(lo, hi)]`` = the audio minus the NON-pair
-    rotors' reconstructions (for the joint twin observations). ``diag``
-    carries the energy bookkeeping for the peel sanity gate.
-
-    With ``peel_mode="ls"`` the envelopes are first re-projected onto the clip
-    (per harmonic, per 0.25 s block, per channel), so what is subtracted is the
-    least-squares fit of each modelled harmonic to the audio rather than the
-    VK solve's own amplitude and phase. Which reconstruction goes into which
-    peel is UNCHANGED — in particular a rotor never sees its own comb
-    subtracted, and twins are only ever peeled of the non-pair rotors, because
-    a sibling's fit tracks the target itself.
-    """
-    from tracking.vk_tracking import VKConfig, ls_project_envelopes, vk_envelopes, vk_reconstruct
-
-    if peel_mode not in PEEL_MODES:
-        raise ValueError(f"unknown peel_mode {peel_mode!r}; valid: {list(PEEL_MODES)}")
-    cfg = VKConfig(fs=float(sr), bw_hz=PEEL_BW_HZ, k_max=PEEL_K_MAX, f_max=6000.0, n_outer=1)
-    t_aud = np.arange(clip.shape[-1]) / sr
-    r_aud = np.vstack([np.interp(t_aud, ft, r_ft[r]) for r in range(N_ROTORS)])
-    env = vk_envelopes(clip, r_aud, cfg)
-    ls_diag: dict[str, Any] | None = None
-    if peel_mode == "ls":
-        env, ls_diag = ls_project_envelopes(clip, env)
-    n_t = clip.shape[-1]
-    recon: dict[int, np.ndarray] = {}
-    for rot in range(N_ROTORS):
-        x_mask = env.x.copy()
-        x_mask[:, env.rotor != rot, :] = 0.0
-        recon[rot] = vk_reconstruct(dataclasses.replace(env, x=x_mask), n_samples=n_t)
-    e_audio = float(np.mean(clip**2))
-    peel_audio: dict[int, np.ndarray] = {}
-    diag: dict[str, Any] = {
-        "bw_hz": PEEL_BW_HZ,
-        "mode": peel_mode,
-        "e_audio": e_audio,
-        "per_rotor": [],
-        **({"ls": ls_diag} if ls_diag is not None else {}),
-    }
-    for rot in range(N_ROTORS):
-        others = sum(recon[j] for j in range(N_ROTORS) if j != rot)
-        peeled = clip - others
-        peel_audio[rot] = peeled.astype(np.float32)
-        diag["per_rotor"].append(
-            {
-                "rotor": rot,
-                "e_removed_frac": round(float(np.mean(others**2)) / e_audio, 5),
-                "e_resid_ratio": round(float(np.mean(peeled**2)) / e_audio, 5),
-            }
-        )
-    resid_all = clip - sum(recon[j] for j in range(N_ROTORS))
-    diag["e_resid_all_ratio"] = round(float(np.mean(resid_all**2)) / e_audio, 5)
-    diag["recon_energy_frac"] = [
-        round(float(np.mean(recon[j] ** 2)) / e_audio, 5) for j in range(N_ROTORS)
-    ]
-    # The gate: a correctly-phased peel removes energy. A residual above the
-    # window energy (or a per-rotor residual above it) means the peel is
-    # mis-phased and would INJECT interference — flag, never average over.
-    # Under peel_mode="ls" each harmonic on its own cannot inject; a SUM of
-    # independently-fitted harmonics still can, so the gate stays.
-    diag["energy_ok"] = bool(
-        diag["e_resid_all_ratio"] < 1.0 and all(d["e_resid_ratio"] < 1.0 for d in diag["per_rotor"])
-    )
-    pair_audio: dict[tuple[int, int], np.ndarray] = {}
-    for lo in range(N_ROTORS):
-        for hi in range(N_ROTORS):
-            if lo == hi:
-                continue
-            nonpair = sum(
-                (recon[j] for j in range(N_ROTORS) if j not in (lo, hi)),
-                np.zeros_like(clip),
-            )
-            pair_audio[(lo, hi)] = (clip - nonpair).astype(np.float32)
-    return peel_audio, pair_audio, diag
-
-
-# ---------------------------------------------------------------------------
-# peel injection: swap the per-rotor / per-pair audio into the tracker's
-# private passes (the tracker has no per-rotor-audio interface; the swap is
-# the validated instrumentation of the mechanism study).
-
-_CTX: dict[str, Any] = {"peel_audio": None, "pair_audio": None}
-_PATCHED = False
-
-
-def _install_patches() -> None:
-    global _PATCHED
-    if _PATCHED:
-        return
-    import tracking.phase_increment_tracker as pit
-
-    orig_rotor_pass = pit._rotor_pass
-    orig_pair_joint_obs = pit._pair_joint_obs
-
-    def rotor_pass_wrap(*args: Any, **kw: Any) -> Any:
-        peel = _CTX.get("peel_audio")
-        i = args[3]  # rotor index
-        if peel is not None and i in peel:
-            args = (peel[i],) + tuple(args[1:])
-        return orig_rotor_pass(*args, **kw)
-
-    def pair_joint_obs_wrap(*args: Any, **kw: Any) -> Any:
-        pair = _CTX.get("pair_audio")
-        lo, hi = args[3], args[4]
-        if pair is not None and (lo, hi) in pair:
-            args = (pair[(lo, hi)],) + tuple(args[1:])
-        return orig_pair_joint_obs(*args, **kw)
-
-    pit._rotor_pass = rotor_pass_wrap
-    pit._pair_joint_obs = pair_joint_obs_wrap
-    _PATCHED = True
+# the alternation (tracking.pipelines.peel_alternation) on window arrays
 
 
 def run_arm(
@@ -257,73 +116,30 @@ def run_arm(
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Iterate the pi_kalman stage ``n_apps`` times from ``r0``.
 
-    Returns ``(iters (n_apps+1, 4, N), per-application diagnostics)``.
-    ``pi_variant`` selects a :data:`PI_VARIANTS` row; annealed variants
-    carry the per-rotor ``band_b0`` across applications. ``band_b0``
-    overrides the initial k-scaled band scale (rev/s) of that row.
-    ``peel_mode`` selects the subtraction (see :data:`PEEL_MODES`); it only
-    applies to the ``peeled`` arm.
+    Returns ``(iters (n_apps+1, 4, N), per-application diagnostics)`` — the
+    array-level view of :func:`tracking.peel_alternation`, which is where the
+    peel, the stage and the annealing carry live. ``pi_variant`` selects a
+    :data:`tracking.PI_VARIANTS` row, ``band_b0`` overrides its initial
+    k-scaled band scale (rev/s), and ``peel_mode`` selects the subtraction
+    (:data:`tracking.PEEL_MODES`; the ``peeled`` arm only).
     """
-    from tracking.phase_increment_tracker import pi_kalman_refine
-
-    _install_patches()
-    pi_kwargs = dict(PI_VARIANTS[pi_variant])
-    if band_b0 is not None:
-        pi_kwargs["band_b0"] = float(band_b0)
-    iters = [r0.copy()]
-    app_diag: list[dict[str, Any]] = []
-    r_cur = r0.copy()
-    for app in range(1, n_apps + 1):
-        peel_diag: dict[str, Any] | None = None
-        _CTX["peel_audio"] = _CTX["pair_audio"] = None
-        tic = time.perf_counter()
-        if arm == "peeled":
-            peel_audio, pair_audio, peel_diag = make_peels(clip, r_cur, ft, SR, peel_mode)
-            _CTX["peel_audio"] = peel_audio
-            _CTX["pair_audio"] = pair_audio
-        wall_peel = time.perf_counter() - tic
-        tic = time.perf_counter()
-        r_next, pi_diag = pi_kalman_refine(
-            clip,
-            r_cur,
-            ft,
-            sr=SR,
-            n_iter=PI_N_ITER,
-            pair_mode=PI_PAIR_MODE,
-            band_hz=PI_BAND_HZ,
-            **pi_kwargs,
-        )
-        wall_pi = time.perf_counter() - tic
-        _CTX["peel_audio"] = _CTX["pair_audio"] = None
-        b0_final = pi_diag.get("band_b0_final")
-        if pi_kwargs.get("band_anneal") == "posterior" and b0_final is not None:
-            pi_kwargs["band_b0"] = tuple(b0_final)  # trust region carries over
-        step = r_next - r_cur
-        app_diag.append(
-            {
-                "app": app,
-                "wall_peel_s": round(wall_peel, 1),
-                "wall_pi_s": round(wall_pi, 1),
-                "step_rms": [
-                    round(float(np.sqrt(np.mean(step[r] ** 2))), 4) for r in range(N_ROTORS)
-                ],
-                "step_mean": [round(float(np.mean(step[r])), 4) for r in range(N_ROTORS)],
-                **({"band_b0_final": b0_final} if b0_final is not None else {}),
-                **({"peel": peel_diag} if peel_diag is not None else {}),
-            }
-        )
-        iters.append(r_next.copy())
-        r_cur = r_next
-        print(
-            f"  [{tag}/{arm}] app {app}: peel {wall_peel:.0f}s pi {wall_pi:.0f}s"
-            + (
-                f" resid_all {peel_diag['e_resid_all_ratio']:.3f} ok={peel_diag['energy_ok']}"
-                if peel_diag
-                else ""
-            ),
-            flush=True,
-        )
-    return np.stack(iters), app_diag
+    frame = tracking_frame(clip, SR, rps=r0, frame_times=ft, dtype=clip.dtype)
+    frames = peel_alternation(
+        frame,
+        n_apps,
+        arm=arm,
+        peel_mode=peel_mode,
+        pi_variant=pi_variant,
+        band_b0=band_b0,
+        n_rotors=N_ROTORS,
+        tag=tag,
+    )
+    iters = np.stack([get_rps(f)[0] for f in frames])
+    app_diag = [
+        {"app": app, **{k: v for k, v in f["meta"]["tracking"][-1].items() if k != "stage"}}
+        for app, f in enumerate(frames[1:], 1)
+    ]
+    return iters, app_diag
 
 
 # ---------------------------------------------------------------------------

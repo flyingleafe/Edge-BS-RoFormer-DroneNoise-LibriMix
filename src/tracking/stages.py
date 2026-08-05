@@ -102,18 +102,21 @@ def tracking_frame(
     frame_times: np.ndarray | None = None,
     rps_meas: np.ndarray | None = None,
     meta: Mapping[str, Any] | None = None,
+    dtype: Any = np.float32,
 ) -> td.Frame:
     """Build the canonical tracking frame from raw arrays.
 
-    ``audio`` is ``(T,)`` or ``(C, T)`` at ``sr`` (stored float32 as
-    ``(mic, time)``; a mono input becomes ``(1, T)``). ``sr`` must be exact —
+    ``audio`` is ``(T,)`` or ``(C, T)`` at ``sr`` (stored as ``dtype``
+    ``(mic, time)`` — float32 by convention; pass ``np.float64`` to keep a
+    float64 signal exactly, which :func:`get_audio` then returns unchanged).
+    A mono input becomes ``(1, T)``. ``sr`` must be exact —
     an int, an integral float, or an ``(num, den)`` rational tuple
     (``tdseries`` rejects non-integral float rates). ``rps`` / ``rps_meas``
     are ``(R, N)`` rev/s on the ``frame_times`` grid (``frame_times`` is
     required when either is given). ``meta`` seeds the invariant ``"meta"``
     sub-Frame; stage diagnostics accumulate under its ``"tracking"`` key.
     """
-    a = np.asarray(audio, dtype=np.float32)
+    a = np.asarray(audio, dtype=dtype)
     if a.ndim == 1:
         a = a[None, :]
     if a.ndim != 2:
@@ -132,13 +135,16 @@ def tracking_frame(
 def get_audio(frame: td.Frame) -> tuple[np.ndarray, float]:
     """``frame["audio"]`` as ``((C, T) float32, sample_rate)``.
 
-    A mono ``(time,)`` entry is returned as ``(1, T)``.
+    A mono ``(time,)`` entry is returned as ``(1, T)``. A float64 entry keeps
+    its precision (every core widens to float64 anyway); anything else becomes
+    float32, the storage convention.
     """
     series = frame["audio"]
     idx = series.tindex
     if not isinstance(idx, td.GridIndex):
         raise TypeError(f"'audio' must be uniformly sampled, got {type(idx).__name__}")
-    data = np.asarray(series.data, dtype=np.float32)
+    raw = np.asarray(series.data)
+    data = raw if raw.dtype == np.float64 else np.asarray(raw, dtype=np.float32)
     if data.ndim == 1:
         data = data[None, :]
     return data, float(idx.sr)

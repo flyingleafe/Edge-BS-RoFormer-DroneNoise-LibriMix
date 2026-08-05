@@ -1,11 +1,21 @@
-"""The canonical blind-annotation ladder: frozen configs + the vit2dsp pipeline.
+"""The canonical tracking ladders: frozen configs, vit2dsp, peeled alternation.
 
-This module is the durable home of the calibrated blind RPS-annotation ladder
-that ``scripts/vk_blind_annotation.py`` validated (DREGON pooled err_sm 0.688,
-condition ``blindvit2dsp``):
+Two ladders live here, both calibrated and both frozen:
 
-    blind init -> Viterbi pair-mean c(t) -> SPATIAL joint 2-rotor Viterbi
-    (per-rotor mic mixes) -> mid-band VK (bw 6) -> VK refine
+1. The blind RPS-annotation ladder that ``scripts/vk_blind_annotation.py``
+   validated (DREGON pooled err_sm 0.688, condition ``blindvit2dsp``)::
+
+       blind init -> Viterbi pair-mean c(t) -> SPATIAL joint 2-rotor Viterbi
+       (per-rotor mic mixes) -> mid-band VK (bw 6) -> VK refine
+
+2. The FLAGSHIP peeled alternation (``docs/experiments/beat-vk.md``), which
+   starts from that ladder's output and iterates::
+
+       peel (VK envelopes at the current track -> per-harmonic least-squares
+       re-fit -> subtract the OTHER rotors' combs) -> one pi_kalman pass
+
+   :func:`make_peels` is the peel, :func:`pi_kalman_arm_stage` is one
+   application as a Stage, and :func:`peel_alternation` iterates it.
 
 Two layers live here:
 
@@ -35,12 +45,15 @@ the ``tracking stays pure`` import-linter contract.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
+import tdseries as td
 
+from tracking.phase_increment_tracker import pi_kalman_refine
 from tracking.rps_refinement import RefineConfig, compute_logmag
 from tracking.stages import (
     DEFAULT_HOP_S,
@@ -52,16 +65,32 @@ from tracking.stages import (
 )
 from tracking.vk_blind_seeding import SeedConfig, whitened_logmag
 from tracking.vk_blind_seeding import stage_guard as _stage_guard_fn
-from tracking.vk_tracking import VKConfig, VKResult, vk_track
+from tracking.vk_tracking import (
+    VKConfig,
+    VKResult,
+    ls_project_envelopes,
+    vk_envelopes,
+    vk_reconstruct,
+    vk_track,
+)
 
 __all__ = [
+    "ARMS",
     "CAPTURE_CFG",
+    "DEFAULT_PEEL_MODE",
     "LADDER_N_ROTORS",
     "LadderInput",
     "MIDBAND_CFG",
     "MIDBAND_CFGS",
     "PAIRSCAN_HOP_S",
     "PAIRSCAN_WIN_S",
+    "PEEL_BW_HZ",
+    "PEEL_K_MAX",
+    "PEEL_MODES",
+    "PI_BAND_HZ",
+    "PI_N_ITER",
+    "PI_PAIR_MODE",
+    "PI_VARIANTS",
     "REFINE_CFG",
     "SEED_CFG",
     "SR",
@@ -75,8 +104,11 @@ __all__ = [
     "apply_guard",
     "joint_viterbi",
     "local_comb_frame_scores",
+    "make_peels",
     "pair_score_2d_spatial",
     "pair_surface",
+    "peel_alternation",
+    "pi_kalman_arm_stage",
     "surface_contrast",
     "tooth_cube",
     "vit2dsp_pipeline",
@@ -169,6 +201,42 @@ SEED_CFG = SeedConfig(
     pair_nudge=0.5,
     blind_offsets=(-1.5, -0.5, 0.5, 1.5),
 )
+
+# PEEL / pi_kalman: the flagship alternation's frozen settings
+# (docs/experiments/beat-vk.md). 1 Hz envelope bandwidth ~ 1 s coherence,
+# inside the measured 0.5-1.5 s tau_k window at k = 8-40.
+PEEL_BW_HZ = 1.0
+PEEL_K_MAX = 40
+#: Peel subtraction modes (issue #17 step 4):
+#: ``"open"`` subtracts the VK reconstruction as solved (the 2026-08-04
+#: flagship, whose mis-phased components could INJECT energy); ``"ls"``
+#: re-fits each harmonic's complex gain onto the clip per time block first
+#: (:func:`tracking.ls_project_envelopes`), so one component cannot.
+PEEL_MODES = ("open", "ls")
+DEFAULT_PEEL_MODE = "ls"
+
+#: Protocol pi_kalman settings (the 0.641 row; findings.md "Iterated
+#: pi_kalman: mechanism findings").
+PI_N_ITER = 3
+PI_BAND_HZ = 6.0
+PI_PAIR_MODE = "joint"
+#: Bandwidth-and-admission revision rows (docs/experiments/beat-vk.md): extra
+#: :func:`tracking.pi_kalman_refine` kwargs per variant. ``k_anneal``/``full``
+#: thread the annealed per-rotor ``band_b0`` across applications.
+PI_VARIANTS: dict[str, dict[str, Any]] = {
+    "protocol": {},
+    "k_scaled": {"band_mode": "k_scaled"},
+    "k_anneal": {"band_mode": "k_scaled", "band_anneal": "posterior"},
+    "full": {
+        "band_mode": "k_scaled",
+        "band_anneal": "posterior",
+        "lowk_gate": "consistency",
+        "probe_mode": "clean",
+    },
+}
+#: The two alternation arms: ``peeled`` (the flagship) and ``naive`` (plain
+#: re-application, the comparison arm).
+ARMS = ("naive", "peeled")
 
 # Ladder constants (calibrated with the configs above).
 PAIRSCAN_WIN_S = 1.0  # pair-template scan window (s)
@@ -692,3 +760,210 @@ def vit2dsp_stage(
         return with_rps(f, stage_snaps[-1][1], times, stage=name, info=info)
 
     return run
+
+
+# ---------------------------------------------------------------------------
+# the flagship peeled alternation
+
+
+def make_peels(
+    clip: np.ndarray,
+    r_ft: np.ndarray,
+    ft: np.ndarray,
+    sr: float,
+    peel_mode: str = DEFAULT_PEEL_MODE,
+    *,
+    n_rotors: int = LADDER_N_ROTORS,
+    bw_hz: float = PEEL_BW_HZ,
+    k_max: int = PEEL_K_MAX,
+) -> tuple[dict[int, np.ndarray], dict[tuple[int, int], np.ndarray], dict[str, Any]]:
+    """Return ``(peel_audio, pair_audio, diag)`` for one alternation step.
+
+    ``peel_audio[i]`` = the audio minus the OTHER rotors' coherent comb
+    reconstructions; ``pair_audio[(lo, hi)]`` = the audio minus the NON-pair
+    rotors' reconstructions (for the joint twin observations). ``diag``
+    carries the energy bookkeeping for the peel sanity gate. Both mappings
+    go straight into :func:`tracking.pi_kalman_refine`'s peel seam.
+
+    With ``peel_mode="ls"`` the envelopes are first re-projected onto the clip
+    (per harmonic, per 0.25 s block, per channel), so what is subtracted is the
+    least-squares fit of each modelled harmonic to the audio rather than the
+    VK solve's own amplitude and phase. Which reconstruction goes into which
+    peel is UNCHANGED — in particular a rotor never sees its own comb
+    subtracted, and twins are only ever peeled of the non-pair rotors, because
+    a sibling's fit tracks the target itself.
+    """
+    if peel_mode not in PEEL_MODES:
+        raise ValueError(f"unknown peel_mode {peel_mode!r}; valid: {list(PEEL_MODES)}")
+    cfg = VKConfig(fs=float(sr), bw_hz=bw_hz, k_max=k_max, f_max=6000.0, n_outer=1)
+    t_aud = np.arange(clip.shape[-1]) / sr
+    r_aud = np.vstack([np.interp(t_aud, ft, r_ft[r]) for r in range(n_rotors)])
+    env = vk_envelopes(clip, r_aud, cfg)
+    ls_diag: dict[str, Any] | None = None
+    if peel_mode == "ls":
+        env, ls_diag = ls_project_envelopes(clip, env)
+    n_t = clip.shape[-1]
+    recon: dict[int, np.ndarray] = {}
+    for rot in range(n_rotors):
+        x_mask = env.x.copy()
+        x_mask[:, env.rotor != rot, :] = 0.0
+        recon[rot] = vk_reconstruct(dataclasses.replace(env, x=x_mask), n_samples=n_t)
+    e_audio = float(np.mean(clip**2))
+    peel_audio: dict[int, np.ndarray] = {}
+    diag: dict[str, Any] = {
+        "bw_hz": bw_hz,
+        "mode": peel_mode,
+        "e_audio": e_audio,
+        "per_rotor": [],
+        **({"ls": ls_diag} if ls_diag is not None else {}),
+    }
+    for rot in range(n_rotors):
+        others = sum(recon[j] for j in range(n_rotors) if j != rot)
+        peeled = clip - others
+        peel_audio[rot] = peeled.astype(np.float32)
+        diag["per_rotor"].append(
+            {
+                "rotor": rot,
+                "e_removed_frac": round(float(np.mean(others**2)) / e_audio, 5),
+                "e_resid_ratio": round(float(np.mean(peeled**2)) / e_audio, 5),
+            }
+        )
+    resid_all = clip - sum(recon[j] for j in range(n_rotors))
+    diag["e_resid_all_ratio"] = round(float(np.mean(resid_all**2)) / e_audio, 5)
+    diag["recon_energy_frac"] = [
+        round(float(np.mean(recon[j] ** 2)) / e_audio, 5) for j in range(n_rotors)
+    ]
+    # The gate: a correctly-phased peel removes energy. A residual above the
+    # window energy (or a per-rotor residual above it) means the peel is
+    # mis-phased and would INJECT interference — flag, never average over.
+    # Under peel_mode="ls" each harmonic on its own cannot inject; a SUM of
+    # independently-fitted harmonics still can, so the gate stays.
+    diag["energy_ok"] = bool(
+        diag["e_resid_all_ratio"] < 1.0 and all(d["e_resid_ratio"] < 1.0 for d in diag["per_rotor"])
+    )
+    pair_audio: dict[tuple[int, int], np.ndarray] = {}
+    for lo in range(n_rotors):
+        for hi in range(n_rotors):
+            if lo == hi:
+                continue
+            nonpair = sum(
+                (recon[j] for j in range(n_rotors) if j not in (lo, hi)),
+                np.zeros_like(clip),
+            )
+            pair_audio[(lo, hi)] = (clip - nonpair).astype(np.float32)
+    return peel_audio, pair_audio, diag
+
+
+def pi_kalman_arm_stage(
+    *,
+    peel: bool = True,
+    peel_mode: str = DEFAULT_PEEL_MODE,
+    n_rotors: int = LADDER_N_ROTORS,
+    name: str | None = None,
+    **pi_kwargs: Any,
+) -> Stage:
+    """ONE application of the alternation as a Stage.
+
+    ``peel=True`` (the flagship ``peeled`` arm) runs :func:`make_peels` at the
+    frame's current trajectories and hands the per-rotor / per-pair residuals
+    to :func:`tracking.pi_kalman_refine` through its peel seam; ``peel=False``
+    is the ``naive`` arm — the same pass on the unmodified clip. Both log the
+    same entry shape: peel/pi wall times, the per-rotor step statistics, the
+    peel diagnostics (peeled arm only) and ``band_b0_final`` when the variant
+    anneals its trust region. ``pi_kwargs`` go to the core.
+    """
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, sr = get_audio(frame)
+        r_cur, times = get_rps(frame)
+        t0 = float(frame["audio"].t_start)
+        clip = np.asarray(audio, dtype=np.float64)
+        ft = times - t0
+        peel_diag: dict[str, Any] | None = None
+        seam: dict[str, Any] = {}
+        tic = time.perf_counter()
+        if peel:
+            peel_audio, pair_audio, peel_diag = make_peels(
+                clip, r_cur, ft, sr, peel_mode, n_rotors=n_rotors
+            )
+            seam = {"peel_audio": peel_audio, "pair_audio": pair_audio}
+        wall_peel = time.perf_counter() - tic
+        tic = time.perf_counter()
+        r_next, pi_diag = pi_kalman_refine(clip, r_cur, ft, sr=int(round(sr)), **seam, **pi_kwargs)
+        wall_pi = time.perf_counter() - tic
+        step = r_next - r_cur
+        b0_final = pi_diag.get("band_b0_final")
+        info: dict[str, Any] = {
+            "wall_peel_s": round(wall_peel, 1),
+            "wall_pi_s": round(wall_pi, 1),
+            "step_rms": [round(float(np.sqrt(np.mean(step[r] ** 2))), 4) for r in range(len(step))],
+            "step_mean": [round(float(np.mean(step[r])), 4) for r in range(len(step))],
+            **({"band_b0_final": b0_final} if b0_final is not None else {}),
+            **({"peel": peel_diag} if peel_diag is not None else {}),
+        }
+        return with_rps(
+            frame, r_next, times, stage=name or ("peeled" if peel else "naive"), info=info
+        )
+
+    return run
+
+
+def peel_alternation(
+    frame: td.Frame,
+    n_apps: int,
+    *,
+    arm: str = "peeled",
+    peel_mode: str = DEFAULT_PEEL_MODE,
+    pi_variant: str = "protocol",
+    band_b0: float | None = None,
+    n_rotors: int = LADDER_N_ROTORS,
+    tag: str = "",
+    verbose: bool = True,
+) -> list[td.Frame]:
+    """Iterate :func:`pi_kalman_arm_stage` ``n_apps`` times from ``frame``.
+
+    Returns the ``n_apps + 1`` frames of the alternation, ``[0]`` being the
+    input (the init) — so a caller reads trajectory ``i`` with
+    :func:`tracking.get_rps` and application ``i``'s diagnostics off the last
+    ``meta["tracking"]`` entry. ``pi_variant`` selects a :data:`PI_VARIANTS`
+    row; annealed variants carry the per-rotor ``band_b0`` posterior across
+    applications (that carry is the reason this is a driver and not a plain
+    :func:`tracking.pipeline` composition). ``band_b0`` overrides the initial
+    k-scaled band scale (rev/s) of that row.
+    """
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; valid: {list(ARMS)}")
+    if pi_variant not in PI_VARIANTS:
+        raise KeyError(f"unknown pi_variant {pi_variant!r}; known: {sorted(PI_VARIANTS)}")
+    pi_kwargs = dict(PI_VARIANTS[pi_variant])
+    if band_b0 is not None:
+        pi_kwargs["band_b0"] = float(band_b0)
+    frames = [frame]
+    for app in range(1, n_apps + 1):
+        stage = pi_kalman_arm_stage(
+            peel=arm == "peeled",
+            peel_mode=peel_mode,
+            n_rotors=n_rotors,
+            n_iter=PI_N_ITER,
+            pair_mode=PI_PAIR_MODE,
+            band_hz=PI_BAND_HZ,
+            **pi_kwargs,
+        )
+        frames.append(stage(frames[-1]))
+        info = frames[-1]["meta"]["tracking"][-1]
+        b0_final = info.get("band_b0_final")
+        if pi_kwargs.get("band_anneal") == "posterior" and b0_final is not None:
+            pi_kwargs["band_b0"] = tuple(b0_final)  # trust region carries over
+        if verbose:
+            peel_diag = info.get("peel")
+            print(
+                f"  [{tag}/{arm}] app {app}: peel {info['wall_peel_s']:.0f}s "
+                f"pi {info['wall_pi_s']:.0f}s"
+                + (
+                    f" resid_all {peel_diag['e_resid_all_ratio']:.3f} ok={peel_diag['energy_ok']}"
+                    if peel_diag
+                    else ""
+                ),
+                flush=True,
+            )
+    return frames

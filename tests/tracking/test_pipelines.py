@@ -15,11 +15,13 @@ import tdseries as td
 
 from tracking.pipelines import (
     CAPTURE_CFG,
+    DEFAULT_PEEL_MODE,
     LADDER_N_ROTORS,
     MIDBAND_CFG,
     MIDBAND_CFGS,
     PAIRSCAN_HOP_S,
     PAIRSCAN_WIN_S,
+    PEEL_MODES,
     REFINE_CFG,
     SEED_CFG,
     TRACK_CFG,
@@ -29,9 +31,11 @@ from tracking.pipelines import (
     VIT_DELTA,
     VIT_DSTEP,
     VIT_GAMMA_MULT,
+    make_peels,
+    peel_alternation,
     vit2dsp_stage,
 )
-from tracking.stages import get_rps, tracking_frame
+from tracking.stages import get_audio, get_rps, tracking_frame
 from tracking.vk_blind_seeding import SeedConfig
 
 FS = 16000.0
@@ -168,3 +172,59 @@ def test_vit2dsp_stage_rejects_wrong_track_count(two_rotor_frame):
     frame = two_rotor_frame.with_entry("rps", td.events(ft, r0, dims=("rotor", "time")))
     with pytest.raises(ValueError, match="4-track"):
         vit2dsp_stage(midband_cfg=FAST_MID, refine_cfg=FAST_REF)(frame)
+
+
+# ---------------------------------------------------------------------------
+# 3. the peeled alternation (make_peels + pi_kalman_arm_stage + the driver)
+
+
+@pytest.fixture(scope="module")
+def peel_frame(two_rotor_frame):
+    """The two-rotor frame with a slightly detuned constant init on the 32 ms grid."""
+    ft = np.arange(0.0, 5.0 - 0.016, 0.032)
+    r0 = np.stack([np.full(len(ft), 69.6), np.full(len(ft), 82.4)])
+    return two_rotor_frame.with_entry("rps", td.events(ft, r0, dims=("rotor", "time")))
+
+
+@pytest.mark.parametrize("peel_mode", list(PEEL_MODES))
+def test_make_peels_removes_energy(peel_frame, peel_mode):
+    audio, sr = get_audio(peel_frame)
+    r, ft = get_rps(peel_frame)
+    peel_audio, pair_audio, diag = make_peels(
+        np.asarray(audio, dtype=np.float64), r, ft, sr, peel_mode, n_rotors=2, k_max=K_MAX
+    )
+    assert set(peel_audio) == {0, 1}
+    assert set(pair_audio) == {(0, 1), (1, 0)}
+    assert diag["mode"] == peel_mode
+    # the gate: a correctly-phased peel takes energy OUT of the clip
+    assert diag["energy_ok"] and diag["e_resid_all_ratio"] < 1.0
+    # rotor i is never peeled of its OWN comb, so its residual keeps that energy
+    assert all(0.0 < d["e_removed_frac"] < 1.0 for d in diag["per_rotor"])
+
+
+def test_peel_alternation_logs_one_entry_per_application(peel_frame):
+    frames = peel_alternation(peel_frame, 2, arm="peeled", n_rotors=2, tag="test", verbose=False)
+
+    assert len(frames) == 3
+    assert frames[0] is peel_frame  # the init is returned untouched
+    log = frames[-1]["meta"]["tracking"]
+    assert [e["stage"] for e in log] == ["peeled", "peeled"]
+    for entry in log:
+        assert entry["peel"]["mode"] == DEFAULT_PEEL_MODE
+        assert len(entry["step_rms"]) == 2
+        assert np.isfinite(entry["wall_peel_s"]) and np.isfinite(entry["wall_pi_s"])
+    r_init, _ = get_rps(frames[0])
+    r_final, _ = get_rps(frames[-1])
+    assert np.all(np.isfinite(r_final)) and not np.allclose(r_final, r_init)
+
+
+def test_naive_arm_skips_the_peel(peel_frame):
+    frames = peel_alternation(peel_frame, 1, arm="naive", n_rotors=2, verbose=False)
+    entry = frames[-1]["meta"]["tracking"][-1]
+    assert entry["stage"] == "naive"
+    assert "peel" not in entry
+
+
+def test_peel_alternation_rejects_unknown_arm(peel_frame):
+    with pytest.raises(ValueError, match="unknown arm"):
+        peel_alternation(peel_frame, 1, arm="peel", verbose=False)

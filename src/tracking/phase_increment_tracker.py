@@ -86,6 +86,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -825,6 +826,18 @@ def _smooth_delta(
 # one (rotor, outer iteration) pass
 
 
+def _seam(y32: np.ndarray, table: Mapping[Any, np.ndarray] | None, key: Any) -> np.ndarray:
+    """``table[key]`` as float32 audio when present, else the clip ``y32``.
+
+    The peel seam of :func:`pi_kalman_refine`: one pass sees a different
+    signal from the rest of the call. Nothing else about the pass changes.
+    """
+    if table is None:
+        return y32
+    alt = table.get(key)
+    return y32 if alt is None else np.asarray(alt, dtype=np.float32)
+
+
 def _rotor_pass(
     y32: np.ndarray,
     t_aud: np.ndarray,
@@ -1199,6 +1212,8 @@ def pi_kalman_refine(
     lowk_thresh: float = 0.15,
     lowk_weight: float = 0.1,
     probe_mode: str = "fixed",
+    peel_audio: Mapping[int, np.ndarray] | None = None,
+    pair_audio: Mapping[tuple[int, int], np.ndarray] | None = None,
     fft_workers: int | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """ML instantaneous-frequency refinement by phase-increment Kalman smoothing.
@@ -1297,6 +1312,14 @@ def pi_kalman_refine(
             (fallback: the fixed offset; count in
             ``diagnostics["probe_fallbacks"]``). ``"fixed"`` keeps the
             shared ``off_comb_hz`` ramp.
+        peel_audio: optional ``{rotor: (C, T) float32}`` replacement audio
+            for that rotor's own pass — the PEEL seam. Rotor ``i`` is then
+            tracked on ``peel_audio[i]`` (the clip minus the other rotors'
+            comb reconstructions, :func:`tracking.pipelines.make_peels`)
+            instead of on ``audio``; rotors absent from the mapping keep the
+            clip. Everything else (pairing, gates, the Kalman) is unchanged.
+        pair_audio: the same seam for the ``pair_mode="joint"`` two-tone
+            observations, keyed by the ordered pair ``(lo, hi)``.
         fft_workers: explicit FFT worker threads for the whole call (the
             demodulation transforms dominate the cost). ``None`` follows the
             environment (``TRACKING_FFT_WORKERS``, else ``OMP_NUM_THREADS``,
@@ -1368,7 +1391,7 @@ def pi_kalman_refine(
                 it_pair_diags: list[dict[str, Any]] = []
                 for lo, hi in _assign_pairs(r, pair_max_split, min_rate):
                     obs, pd = _pair_joint_obs(
-                        y32,
+                        _seam(y32, pair_audio, (lo, hi)),
                         t_aud,
                         r,
                         lo,
@@ -1396,7 +1419,7 @@ def pi_kalman_refine(
                 pair_diags.append(it_pair_diags)
             for i in range(n_rot):
                 delta_ft, d = _rotor_pass(
-                    y32,
+                    _seam(y32, peel_audio, i),
                     t_aud,
                     r,
                     i,
