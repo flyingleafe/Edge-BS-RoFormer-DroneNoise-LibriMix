@@ -98,6 +98,8 @@ ARMS: dict[str, dict[str, float | None]] = {
     "wide": {"bw_rps": 2.0, "bw_hz": 90.0},
     "peel": {"bw_rps": None, "bw_hz": 1.0},
 }
+#: Cross-window aggregate written by ``--rescore`` (never a window itself).
+POOLED_NAME = "pooled.json"
 EDGE_TRIM_S = 0.5
 HP_CUT_HZ = 5.0  # smoothness-bias cutoff on the rate-observation spectrum
 
@@ -681,9 +683,11 @@ def rescore(out_dir: Path, args: argparse.Namespace) -> None:
     the per-track row is arithmetic. So a change of reference or of bucket
     definition costs seconds, not another sweep.
     """
-    paths = sorted(out_dir.glob("*.json"))
+    paths = sorted(p for p in out_dir.glob("*.json") if p.name != POOLED_NAME)
     if not paths:
         raise SystemExit(f"no window JSON in {out_dir}")
+    pooled: list[dict[str, Any]] = []
+    arms: list[str] = []
     for path in paths:
         res = json.loads(path.read_text())
         arms = [a for a in res["config"]["arms"] if a != "demod"]
@@ -693,6 +697,28 @@ def rescore(out_dir: Path, args: argparse.Namespace) -> None:
         res["summary"] = summarize(res["tracks"], argparse.Namespace(arms=arms))
         path.write_text(json.dumps(res, indent=1))
         print_table(res, arms)
+        for row in res["tracks"]:
+            pooled.append({**row, "window": res["window"]})
+    summary = summarize(pooled, argparse.Namespace(arms=arms))
+    (out_dir / POOLED_NAME).write_text(
+        json.dumps({"windows": [p.name for p in paths], "summary": summary}, indent=1)
+    )
+    print_table(
+        {
+            "window": {
+                "recording": "POOLED",
+                "window": len(paths),
+                "regime": "all",
+                "start_s": 0.0,
+            },
+            "r_mean": [],
+            "consensus_dr": {},
+            "summary": summary,
+            "tracks": pooled,
+            "pairs": [],
+        },
+        arms,
+    )
     print(f"\nrescored {len(paths)} window(s) in {out_dir}")
 
 
