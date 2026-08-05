@@ -83,7 +83,9 @@ ladder's coherence-time curves cross-check.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
+import os
 from typing import Any, cast
 
 import numpy as np
@@ -99,6 +101,54 @@ _MAX_CHANNELS = 8  # multichannel fusion cap (vk_tracking convention)
 
 # ---------------------------------------------------------------------------
 # demodulation
+
+
+#: Working-set budget of one demodulation flush (bytes) — a CACHE knob, not
+#: a memory-headroom knob. See :func:`demod_chunk` for the measurement that
+#: sets it. Override with ``TRACKING_DEMOD_BUDGET_MB``.
+DEMOD_BUDGET_BYTES = 64e6
+#: Large arrays alive during a flush: the carrier buffer, the transform's
+#: internal padded copy, and its output — all ``(C, chunk, n_pad)`` complex64.
+_DEMOD_WORKSPACE = 3
+
+
+def demod_chunk(n_ch: int, n_pad: int) -> int:
+    """Harmonics per demodulation flush under the working-set budget.
+
+    The flush transforms ``(n_ch, chunk, n_pad)`` complex64 at once, so the
+    budget divides by ``_DEMOD_WORKSPACE * n_ch * n_pad * 8`` bytes.
+    ``TRACKING_DEMOD_BUDGET_MB`` overrides :data:`DEMOD_BUDGET_BYTES`.
+
+    Batching does NOT amortize anything here: **channels are already batched
+    jointly**, so even one harmonic per flush transforms ``n_ch`` signals,
+    and each transform is a separate memory sweep either way. What the
+    budget really controls is how much of the working set fits in cache, and
+    a long-clip transform is bandwidth-bound. Measured on the frozen 16 s
+    clip (8 mics, ``n_pad`` = 256000, ``_demod_bank`` for K = 40, median of
+    5, 1 thread / 4 threads):
+
+    ======  =========  ==============  ==============
+    chunk   work set   1 thread        4 threads
+    ======  =========  ==============  ==============
+    1        49 MB      540 ms          404 ms
+    2        98 MB      550 ms          462 ms
+    5       393 MB      739 ms          528 ms
+    20      1.6 GB      813 ms          563 ms
+    40      2.0 GB      909 ms          661 ms
+    ======  =========  ==============  ==============
+
+    So the budget is set NEAR the cache, not near the RAM: bigger is
+    slower. The same shape holds at 1, 2 and 8 channels — the optimum sits
+    at a ~50 MB working set on every count, which is what the default
+    gives. (The previous 96 MB carrier-buffer rule implied a ~290 MB
+    working set, i.e. chunk 5 above.)
+    """
+    budget = DEMOD_BUDGET_BYTES
+    env = os.environ.get("TRACKING_DEMOD_BUDGET_MB")
+    if env:
+        with contextlib.suppress(ValueError):
+            budget = max(1.0, float(env)) * 1e6
+    return max(1, int(budget / (_DEMOD_WORKSPACE * max(1, n_ch) * max(1, n_pad) * 8)))
 
 
 def _copy_band(dst: np.ndarray, spec: np.ndarray, b: int, shift: int) -> None:
@@ -239,7 +289,7 @@ def _demod_bank(
     offs = np.full(n_k, float(off_hz)) if off_hz_k is None else np.asarray(off_hz_k, dtype=float)
     shifts = np.rint(offs / bin_hz).astype(np.int64)
 
-    chunk = max(1, int(96e6 / (max(1, n_ch) * max(1, n_t) * 8)))
+    chunk = demod_chunk(n_ch, stride * n_env)
     buf = np.empty((n_ch, min(chunk, n_k), n_t), dtype=np.complex64)
     idxs: list[int] = []
 

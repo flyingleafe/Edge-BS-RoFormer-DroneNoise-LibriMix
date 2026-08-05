@@ -431,3 +431,23 @@ def test_zoom_lp_decimate_bank_on_band_is_unchanged():
         on, off = _zoom_lp_decimate_bank(x, 64, 64, 6.0 / 16000, band_rows, 40)
         assert np.array_equal(plain, on)
         assert off is not None and off.shape == on.shape
+
+
+def test_demod_chunking_is_bit_identical(monkeypatch):
+    """The flush size is a cache knob only: every budget gives the same bank."""
+    from tracking.phase_increment_tracker import _demod_bank, demod_chunk
+
+    y, phi, t, ks, stride, n_env, sr = _demod_fixture(dur=1.0)
+    band_cyc = 6.0 / sr
+    banks = []
+    for mb in ("1", "8", "4096"):
+        monkeypatch.setenv("TRACKING_DEMOD_BUDGET_MB", mb)
+        banks.append(_demod_bank(y, phi, t, ks, 11.0, stride, n_env, band_cyc, sr=sr))
+    chunks = []
+    for mb in ("1", "4096"):
+        monkeypatch.setenv("TRACKING_DEMOD_BUDGET_MB", mb)
+        chunks.append(demod_chunk(y.shape[0], stride * n_env))
+    assert chunks[0] < chunks[1]  # the budget really did change the flush size
+    for on, off in banks[1:]:
+        assert np.array_equal(on, banks[0][0])
+        assert np.array_equal(off, banks[0][1])
