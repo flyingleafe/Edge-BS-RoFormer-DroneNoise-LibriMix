@@ -216,17 +216,21 @@ def run_arm(
     n_apps: int,
     tag: str,
     pi_variant: str = "protocol",
+    band_b0: float | None = None,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Iterate the pi_kalman stage ``n_apps`` times from ``r0``.
 
     Returns ``(iters (n_apps+1, 4, N), per-application diagnostics)``.
     ``pi_variant`` selects a :data:`PI_VARIANTS` row; annealed variants
-    carry the per-rotor ``band_b0`` across applications.
+    carry the per-rotor ``band_b0`` across applications. ``band_b0``
+    overrides the initial k-scaled band scale (rev/s) of that row.
     """
     from data_processing.phase_increment_tracker import pi_kalman_refine
 
     _install_patches()
     pi_kwargs = dict(PI_VARIANTS[pi_variant])
+    if band_b0 is not None:
+        pi_kwargs["band_b0"] = float(band_b0)
     iters = [r0.copy()]
     app_diag: list[dict[str, Any]] = []
     r_cur = r0.copy()
@@ -292,6 +296,9 @@ def variant_tag(cfg: dict[str, Any]) -> str:
     row on the full array), so rows of the ladder never share a cache entry."""
     pi = str(cfg.get("pi_variant", "protocol"))
     tag = "" if pi == "protocol" else f"__{pi}"
+    b0 = cfg.get("band_b0")
+    if b0 is not None:
+        tag += f"__b0{float(b0):g}"
     return tag + vka.chan_tag(int(cfg.get("channels", 8)), cfg.get("channel_seed"))
 
 
@@ -324,7 +331,14 @@ def run_flagship_window(rid: str, widx: int, cfg: dict[str, Any]) -> str:
     tag = f"{rid} w{widx:02d}"
     for arm in arms:
         iters, app_diag = run_arm(
-            clip, r0, ft, arm, n_apps, tag, pi_variant=cfg.get("pi_variant", "protocol")
+            clip,
+            r0,
+            ft,
+            arm,
+            n_apps,
+            tag,
+            pi_variant=cfg.get("pi_variant", "protocol"),
+            band_b0=cfg.get("band_b0"),
         )
         path = flag_path(out, rid, widx, arm, suffix)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -658,6 +672,7 @@ def run_synthetic(
     n_apps: int,
     init_arm: str = vka.FULLRANGE_ARM,
     pi_variant: str = "protocol",
+    band_b0: float | None = None,
 ) -> dict[str, Any]:
     """The synthetic case end-to-end: blind chain + both arms + trace JSON."""
     cache = out / "runs" / "synthetic_chain.npz"
@@ -674,7 +689,7 @@ def run_synthetic(
     clip = np.asarray(prep.audio, dtype=np.float64)
     arm_iters: dict[str, np.ndarray] = {}
     arm_diags: dict[str, list[dict[str, Any]]] = {}
-    suffix = "" if pi_variant == "protocol" else f"__{pi_variant}"
+    suffix = variant_tag({"pi_variant": pi_variant, "band_b0": band_b0})
     for arm in arms:
         apath = flag_path(out, "synthetic", 0, arm, suffix)
         if apath.exists():
@@ -682,7 +697,7 @@ def run_synthetic(
                 arm_iters[arm] = np.asarray(z["iters"], np.float64)
                 arm_diags[arm] = json.loads(str(z["app_diag"]))
             continue
-        iters, app_diag = run_arm(clip, r0, prep.ft, arm, n_apps, "synthetic", pi_variant)
+        iters, app_diag = run_arm(clip, r0, prep.ft, arm, n_apps, "synthetic", pi_variant, band_b0)
         arm_iters[arm], arm_diags[arm] = iters, app_diag
         apath.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
@@ -751,6 +766,12 @@ def main() -> None:
         help="pi_kalman option set (bandwidth-and-admission revision rows)",
     )
     ap.add_argument(
+        "--band-b0",
+        type=float,
+        default=None,
+        help="override the k-scaled band scale (rev/s) of --pi-variant (default: its own)",
+    )
+    ap.add_argument(
         "--channels", type=int, default=8, help="mic channels for init + refinement (<=8)"
     )
     ap.add_argument(
@@ -773,7 +794,7 @@ def main() -> None:
         raise SystemExit(f"unknown arms {unknown}; valid: {list(ARMS)}")
 
     if opts.synthetic_only:
-        run_synthetic(out, arms, opts.apps, opts.init_arm, opts.pi_variant)
+        run_synthetic(out, arms, opts.apps, opts.init_arm, opts.pi_variant, opts.band_b0)
         return
 
     vk_out = Path(opts.vk_out) if opts.vk_out else out / "vk_arms"
@@ -829,6 +850,7 @@ def main() -> None:
         "pi_variant": opts.pi_variant,
         "channels": opts.channels,
         "channel_seed": opts.channel_seed,
+        "band_b0": opts.band_b0,
     }
     vtag = variant_tag(cfg2)
     iter_jobs = [
@@ -969,8 +991,10 @@ def main() -> None:
 
     synth_summary = None
     if not opts.no_synthetic:
-        synth_summary = run_synthetic(out, arms, opts.apps, opts.init_arm, opts.pi_variant)
-        stag = "" if opts.pi_variant == "protocol" else f"__{opts.pi_variant}"
+        synth_summary = run_synthetic(
+            out, arms, opts.apps, opts.init_arm, opts.pi_variant, opts.band_b0
+        )
+        stag = variant_tag({"pi_variant": opts.pi_variant, "band_b0": opts.band_b0})
         trace_files["synthetic"] = str(tdir / f"blind_synthetic{stag}.json")
 
     report = {
@@ -978,7 +1002,11 @@ def main() -> None:
         "pipeline": {
             "init": opts.init_arm + " (beatvk_vk_arms vit2dsp chain)",
             "pi_kalman": {"n_iter": PI_N_ITER, "band_hz": PI_BAND_HZ, "pair_mode": PI_PAIR_MODE},
-            "pi_variant": {"name": opts.pi_variant, **PI_VARIANTS[opts.pi_variant]},
+            "pi_variant": {
+                "name": opts.pi_variant,
+                **PI_VARIANTS[opts.pi_variant],
+                **({} if opts.band_b0 is None else {"band_b0": opts.band_b0}),
+            },
             "peel": {"bw_hz": PEEL_BW_HZ, "k_max": PEEL_K_MAX},
             "channels": opts.channels,
             "channel_seed": opts.channel_seed,
