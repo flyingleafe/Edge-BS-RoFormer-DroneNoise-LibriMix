@@ -50,7 +50,7 @@ from scipy.linalg import cho_solve_banded, cholesky_banded, solveh_banded
 from scipy.signal import butter, firwin, kaiserord, resample_poly, sosfiltfilt
 from scipy.sparse.linalg import splu
 
-from tracking.demod_backend import demod_comb, resolve, zoom_bands
+from tracking.demod_backend import demod_comb, resolve, torch_device, zoom_bands
 
 __all__ = [
     "VKConfig",
@@ -1006,61 +1006,29 @@ def _ls_upsample_into(
     u += np.take(knot, ki, axis=1)
 
 
-def ls_project_envelopes(
-    audio: np.ndarray,
+def _ls_project_np(
+    y: np.ndarray,
     env: Envelopes,
     *,
-    block_s: float = LS_BLOCK_S,
-    gain_max: float = LS_GAIN_MAX,
-) -> tuple[Envelopes, dict[str, Any]]:
-    """Re-fit every envelope onto ``audio`` by least squares, per time block.
-
-    Each track ``m`` contributes the waveform ``s_m = Re[x_m c_m]``. The VK
-    solve fixes ``x_m`` from the *modelled* comb; when the trajectory is
-    slightly off, ``s_m`` is mis-scaled and mis-phased, and subtracting it
-    open-loop can add energy instead of removing it. This function replaces
-    ``x_m`` by ``g x_m`` with the complex gain ``g`` that minimises
-    ``||resid - Re[g x_m c_m]||^2`` over each block of ``block_s`` seconds and
-    each channel — the exact 2-parameter (in-phase / quadrature) projection of
-    the residual onto that one harmonic's 2-D subspace.
-
-    Tracks are fitted **sequentially against a running residual** (rotor-major,
-    harmonic ascending), not independently against the clip. That ordering is
-    what makes the guarantee hold for the *sum*: each projection removes energy
-    from the residual, so ``||y - sum_m Re[g_m x_m c_m]||^2 <= ||y||^2``, and no
-    two overlapping harmonics can both claim the same energy. Fitting each
-    harmonic against the clip instead lets overlapping harmonics double-count
-    and over-subtract — measured on ``free-flight_nosource_room1`` (4 s, 8 mic,
-    telemetry track), full-comb residual ratio: 0.691 open-loop / 0.709
-    independent / **0.602** sequential on the cruise window w01, and 265.1 /
-    — / **0.892** on the takeoff window w00, where the open-loop peel injects
-    two orders of magnitude more energy than the clip holds.
+    stride: int,
+    block: int,
+    starts: np.ndarray,
+    blk_env: np.ndarray,
+    gain_max: float,
+) -> tuple[np.ndarray, np.ndarray, int, list[np.ndarray]]:
+    """The cache-blocked numpy core of :func:`ls_project_envelopes`.
 
     Blocks are independent and channels are independent, so the per-track work
-    is a **cache-blocked** sweep: one tile of ``LS_TILE_BYTES`` at a time, the
-    basis built into preallocated buffers, all five block sums and the residual
-    update done tile-local. The loop over tracks stays — it is the sequential
-    matching pursuit itself — but it no longer streams six clip-long float64
-    arrays through DRAM per track. Bit-identical to the array-at-a-time form:
-    same products, same ``reduceat`` segments, same order of subtraction.
+    is a sweep over tiles of ``LS_TILE_BYTES``: the basis is built into
+    preallocated buffers, and all five block sums plus the residual update
+    happen tile-local. The loop over tracks stays — it is the sequential
+    matching pursuit itself.
 
-    Returns ``(envelopes, diag)``; the input is not mutated.
+    Returns ``(x_new, resid, n_clipped, per-track |g|)``.
     """
-    y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[: env.x.shape[0]]
-    n_ch = y.shape[0]
-    n_t = min(int(y.shape[-1]), int(env.phase.shape[-1]))
-    n_env = env.x.shape[-1]
-    if n_ch != env.x.shape[0]:
-        raise ValueError(f"audio has {y.shape[0]} channels, envelopes have {env.x.shape[0]}")
-    stride = int(round(float(env.t_env[1] - env.t_env[0]) * env.fs)) if n_env > 1 else 1
-    block = max(stride, int(round(block_s * env.fs)))
-    starts = np.arange(0, n_t, block)
+    n_ch, n_t = y.shape
     n_blocks = len(starts)
-    # Sample -> block index. The gain is piecewise constant in time, so what is
-    # subtracted inside a block is exactly what was fitted there.
-    blk_env = np.minimum(np.arange(n_env) * stride // block, n_blocks - 1)
-
-    resid = y[:, :n_t].copy()
+    resid = y.copy()
     x_new = env.x.copy()
 
     # Tiles: whole blocks, sized to keep one float64 working set in cache.
@@ -1146,6 +1114,171 @@ def ls_project_envelopes(
 
         x_new[:, m] = env.x[:, m] * g_all[:, blk_env]
         gains.append(mag_all)
+    return x_new, resid, n_clipped, gains
+
+
+def _ls_project_torch(
+    y: np.ndarray,
+    env: Envelopes,
+    *,
+    stride: int,
+    block: int,
+    starts: np.ndarray,
+    blk_env: np.ndarray,
+    gain_max: float,
+) -> tuple[np.ndarray, np.ndarray, int, list[np.ndarray]]:
+    """The device-agnostic torch core — same algorithm, one tile per clip.
+
+    A GPU has no cache to block for and pays for kernel launches instead, so
+    this path drops the tiling and runs every stage clip-long. The carrier
+    recursion of :func:`_track_carriers` runs on the device too, so the only
+    traffic across the seam is the clip, the envelopes and the ``R``
+    fundamental phases. Everything that would force a host sync inside the
+    track loop (the "track is all zero" test, the clip counter) is either
+    precomputed or accumulated on the device.
+
+    Not bit-identical to :func:`_ls_project_np` — the block reductions sum in
+    a different order — but the same arithmetic in the same dtypes.
+    """
+    import torch
+
+    dev = torch_device()
+    n_ch, n_t = y.shape
+    n_blocks = len(starts)
+    n_pad = n_blocks * block
+    n_tracks = int(env.x.shape[1])
+
+    resid = torch.zeros((n_ch, n_pad), dtype=torch.float64, device=dev)
+    resid[:, :n_t] = torch.from_numpy(np.ascontiguousarray(y)).to(dev)
+    rv = resid.view(n_ch, n_blocks, block)
+    # The pad tail of p/q stays zero for good: only [:, :n_t] is ever written,
+    # so a short trailing block sums exactly the samples that exist.
+    pbuf = torch.zeros((n_ch, n_pad), dtype=torch.float64, device=dev)
+    qbuf = torch.zeros((n_ch, n_pad), dtype=torch.float64, device=dev)
+    pv = pbuf.view(n_ch, n_blocks, block)
+    qv = qbuf.view(n_ch, n_blocks, block)
+
+    ramp = torch.arange(stride, device=dev, dtype=torch.float32) / float(stride)
+    phase = torch.from_numpy(np.ascontiguousarray(env.phase[:, :n_t])).to(dev)
+    fund = torch.polar(torch.ones_like(phase), phase).to(torch.complex64)
+    xs = torch.from_numpy(np.ascontiguousarray(env.x)).to(dev)
+    x_new = xs.clone()
+    blk = torch.from_numpy(np.ascontiguousarray(blk_env)).to(dev)
+    ones = torch.ones((n_ch, n_blocks), dtype=torch.float64, device=dev)
+    zeros = torch.zeros_like(ones)
+    n_clip = torch.zeros((), dtype=torch.int64, device=dev)
+
+    active = [m for m in range(n_tracks) if env.x[:, m].any()]
+    order = sorted(active, key=lambda m: (int(env.rotor[m]), int(env.k[m])))
+    cur_rotor, cur_k, carr = -1, 0, fund[0]
+    mags: list[Any] = []
+    for m in order:
+        rot, kk = int(env.rotor[m]), int(env.k[m])
+        if rot != cur_rotor:
+            carr = fund[rot] if kk == 1 else fund[rot] ** kk
+            cur_rotor, cur_k = rot, kk
+        elif kk != cur_k:
+            carr = carr * (fund[rot] ** (kk - cur_k))
+            cur_k = kk
+
+        knot = xs[:, m].to(torch.complex64)
+        dknot = torch.zeros_like(knot)
+        dknot[:, :-1] = knot[:, 1:] - knot[:, :-1]
+        u = (knot[:, :, None] + dknot[:, :, None] * ramp).reshape(n_ch, -1)[:, :n_t]
+        u = u * carr[:n_t]
+        pbuf[:, :n_t] = u.real.to(torch.float64)
+        qbuf[:, :n_t] = -u.imag.to(torch.float64)
+
+        app = (pv * pv).sum(-1)
+        aqq = (qv * qv).sum(-1)
+        apq = (pv * qv).sum(-1)
+        bp = (rv * pv).sum(-1)
+        bq = (rv * qv).sum(-1)
+        det = app * aqq - apq * apq
+        ok = det > _TINY * torch.clamp(app * aqq, min=_TINY)
+        safe = torch.where(ok, det, ones)
+        a = torch.where(ok, (aqq * bp - apq * bq) / safe, ones)
+        b = torch.where(ok, (app * bq - apq * bp) / safe, zeros)
+        mag = torch.hypot(a, b)
+        clip = mag > gain_max
+        n_clip += clip.sum()
+        shrink = torch.where(clip, gain_max / torch.clamp(mag, min=_TINY), ones)
+        a, b = a * shrink, b * shrink
+
+        rv -= a.unsqueeze(-1) * pv + b.unsqueeze(-1) * qv
+        x_new[:, m] = xs[:, m] * torch.complex(a, b)[:, blk]
+        mags.append(torch.clamp(mag, max=gain_max))
+
+    gains = [g.cpu().numpy() for g in mags]
+    return (
+        x_new.cpu().numpy().astype(np.complex128),
+        resid[:, :n_t].cpu().numpy(),
+        int(n_clip.item()),
+        gains,
+    )
+
+
+def ls_project_envelopes(
+    audio: np.ndarray,
+    env: Envelopes,
+    *,
+    block_s: float = LS_BLOCK_S,
+    gain_max: float = LS_GAIN_MAX,
+) -> tuple[Envelopes, dict[str, Any]]:
+    """Re-fit every envelope onto ``audio`` by least squares, per time block.
+
+    Each track ``m`` contributes the waveform ``s_m = Re[x_m c_m]``. The VK
+    solve fixes ``x_m`` from the *modelled* comb; when the trajectory is
+    slightly off, ``s_m`` is mis-scaled and mis-phased, and subtracting it
+    open-loop can add energy instead of removing it. This function replaces
+    ``x_m`` by ``g x_m`` with the complex gain ``g`` that minimises
+    ``||resid - Re[g x_m c_m]||^2`` over each block of ``block_s`` seconds and
+    each channel — the exact 2-parameter (in-phase / quadrature) projection of
+    the residual onto that one harmonic's 2-D subspace.
+
+    Tracks are fitted **sequentially against a running residual** (rotor-major,
+    harmonic ascending), not independently against the clip. That ordering is
+    what makes the guarantee hold for the *sum*: each projection removes energy
+    from the residual, so ``||y - sum_m Re[g_m x_m c_m]||^2 <= ||y||^2``, and no
+    two overlapping harmonics can both claim the same energy. Fitting each
+    harmonic against the clip instead lets overlapping harmonics double-count
+    and over-subtract — measured on ``free-flight_nosource_room1`` (4 s, 8 mic,
+    telemetry track), full-comb residual ratio: 0.691 open-loop / 0.709
+    independent / **0.602** sequential on the cruise window w01, and 265.1 /
+    — / **0.892** on the takeoff window w00, where the open-loop peel injects
+    two orders of magnitude more energy than the clip holds.
+
+    Two cores, selected by :func:`tracking.demod_backend.resolve` like every
+    other stage: :func:`_ls_project_np` (default, cache-blocked, bit-identical
+    to the array-at-a-time form it replaced) and :func:`_ls_project_torch`
+    (device-agnostic, clip-long, for the GPU).
+
+    Returns ``(envelopes, diag)``; the input is not mutated.
+    """
+    y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[: env.x.shape[0]]
+    n_ch = y.shape[0]
+    n_t = min(int(y.shape[-1]), int(env.phase.shape[-1]))
+    n_env = env.x.shape[-1]
+    if n_ch != env.x.shape[0]:
+        raise ValueError(f"audio has {y.shape[0]} channels, envelopes have {env.x.shape[0]}")
+    stride = int(round(float(env.t_env[1] - env.t_env[0]) * env.fs)) if n_env > 1 else 1
+    block = max(stride, int(round(block_s * env.fs)))
+    starts = np.arange(0, n_t, block)
+    n_blocks = len(starts)
+    # Sample -> block index. The gain is piecewise constant in time, so what is
+    # subtracted inside a block is exactly what was fitted there.
+    blk_env = np.minimum(np.arange(n_env) * stride // block, n_blocks - 1)
+
+    core = _ls_project_torch if resolve()[0] == "torch" else _ls_project_np
+    x_new, resid, n_clipped, gains = core(
+        y[:, :n_t],
+        env,
+        stride=stride,
+        block=block,
+        starts=starts,
+        blk_env=blk_env,
+        gain_max=gain_max,
+    )
 
     all_mag = np.concatenate([g.ravel() for g in gains]) if gains else np.zeros(0)
     e_in = float(np.mean(y[:, :n_t] ** 2))

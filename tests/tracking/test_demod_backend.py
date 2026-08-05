@@ -13,6 +13,7 @@ few seconds.
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +33,11 @@ from tracking.demod_backend import (  # noqa: E402
     zoom_bands,
 )
 from tracking.phase_increment_tracker import _demod_bank, pi_kalman_refine  # noqa: E402
-from tracking.vk_tracking import VKConfig, vk_envelopes  # noqa: E402
+from tracking.vk_tracking import (  # noqa: E402
+    VKConfig,
+    ls_project_envelopes,
+    vk_envelopes,
+)
 
 torch = pytest.importorskip("torch")
 
@@ -186,6 +191,27 @@ def test_vk_envelopes_backend_equivalence() -> None:
     assert np.array_equal(ref.valid, got.valid)
     assert _rel(ref.z, got.z) < 1e-5
     assert _rel(ref.x, got.x) < 1e-4
+
+
+def test_ls_project_backend_equivalence() -> None:
+    """The peel has no transform in it, but it has two cores — and the torch
+    one sums each block in a different order, so the gains must still agree."""
+    y, r, _ = _clip(n_ch=2)
+    cfg = VKConfig(fs=SR, fs_env=SR / STRIDE, bw_hz=1.0, k_max=8, f_min=20.0, f_max=1200.0)
+    r_aud = np.vstack([r, r + 1.7])
+    y64 = y.astype(np.float64)
+    with demod_backend(backend="scipy"):
+        env = vk_envelopes(y64, r_aud, cfg)
+        # Mis-scale and mis-phase, so the fitted gains are far from 1 and a
+        # disagreement between the cores would show.
+        env = replace(env, x=env.x * (1.6 * np.exp(1j * 2.0)))
+        ref, d_ref = ls_project_envelopes(y64, env)
+    with demod_backend(backend="torch", device="cpu"):
+        got, d_got = ls_project_envelopes(y64, env)
+    assert _rel(ref.x, got.x) < 1e-6
+    assert d_got["n_tracks_fitted"] == d_ref["n_tracks_fitted"]
+    assert d_got["clipped_frac"] == pytest.approx(d_ref["clipped_frac"], abs=1e-4)
+    assert d_got["e_resid_ratio"] == pytest.approx(d_ref["e_resid_ratio"], rel=1e-4)
 
 
 def test_pi_kalman_backend_equivalence() -> None:
