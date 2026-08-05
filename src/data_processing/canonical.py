@@ -9,8 +9,9 @@ answers for the pipeline — so the alias tables live here and
 Examples of the real entry names:
 
 * DREGON raw frames (``data_processing.sources.dregon``): ``audio``,
-  ``motors_command`` (cleaned, canonical), ``motors_measured``,
-  ``imu_accel`` / ``imu_gyro`` / ``source_position``.
+  ``motors_measured`` (the real tachometer, preferred), ``motors_command``
+  (cleaned at publish time), ``imu_accel`` / ``imu_gyro`` /
+  ``source_position``.
 * Michael's rich frames (``data_processing.sources.michaels``): ``audio``,
   ``rps`` (calibrated), plus one entry per DJI CSV sensor block — including
   ``motor_speed`` (RAW uncalibrated RPM; the calibrated track is ``rps``).
@@ -47,8 +48,8 @@ CANONICAL_ENTRIES = (
 #: Per-canonical-name alias tables, in priority order. The rotor-speed order
 #: *is* :data:`data_processing.frames.PUBLISHED_RPS_KEYS` — one source of
 #: truth, so a frame plots under the same track the pipeline reads
-#: (``motors_command`` is DREGON's cleaned canonical track,
-#: ``motors_measured`` the raw one). ``motor_speed`` is last on purpose: on
+#: (``motors_measured`` is DREGON's real tachometer, ``motors_command`` the
+#: commanded track, cleaned at publish time). ``motor_speed`` is last on purpose: on
 #: Michael's frames it is the RAW RPM block and only wins when no better
 #: track exists.
 ENTRY_ALIASES: dict[str, tuple[str, ...]] = {

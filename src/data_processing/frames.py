@@ -86,9 +86,18 @@ def with_meta(frame: td.Frame, **updates: Any) -> td.Frame:
 
 #: Rotor-track entry names recognised in published recording frames, in
 #: preference order: the generic ``rps`` (michaels-frames), then DREGON-frames'
-#: ``motors_command`` (the canonical, *already cleaned* track), then
-#: ``motors_measured``.
-PUBLISHED_RPS_KEYS = ("rps", "motors_command", "motors_measured")
+#: ``motors_measured`` (the real tachometer), then ``motors_command`` (the
+#: commanded track, *already cleaned* at publish time).
+#:
+#: ``motors_measured`` is preferred because it is what the rotors actually did:
+#: it is the track the beat-VK evaluation protocol pins as ground truth
+#: (``scripts/beatvk_eval.py``), and it shows the real spindown that the
+#: command track's trailing logging freeze hides. Only the 5 DREGON
+#: ``free-flight_*_room1`` recordings carry it; everything else falls through
+#: to ``motors_command``. The two tracks share one timestamp vector and agree
+#: to 0.04 % on average (``scripts/displacement/dregon_telemetry.md`` § 1), so
+#: the swap is a consistency fix, not a change of regime.
+PUBLISHED_RPS_KEYS = ("rps", "motors_measured", "motors_command")
 
 
 def adapt_recording_frame(frame: td.Frame, *, sample_rate: int) -> td.Frame | None:

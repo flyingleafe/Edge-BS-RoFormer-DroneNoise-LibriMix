@@ -29,7 +29,7 @@ from .conftest import DREGON_DATASET, DUR_S, MICHAELS_DATASET, SR
 
 
 def test_frames_kind_split_filter_subsetting_and_no_recleaning(
-    dregon_frames_dataset, dregon_command_values
+    dregon_frames_dataset, dregon_command_values, dregon_measured_values
 ):
     records = _load_real_records(
         {"kind": "frames", "dataset": DREGON_DATASET, "splits": ["in_flight_noise"]},
@@ -41,14 +41,18 @@ def test_frames_kind_split_filter_subsetting_and_no_recleaning(
     assert ids == ["rec_flight_a", "rec_flight_b"]  # `motor` split filtered out
 
     tf = next(r["tf"] for r in records if get_meta(r["tf"], "recording_id") == "rec_flight_a")
-    # Only what the pool slices survives; imu/raw/measured/geometry are dropped.
+    # Only what the pool slices survives; imu/raw/command/geometry are dropped.
     assert set(tf.keys()) == {"audio", "rps", "meta"}
-    # The rotor track is the published (already-fixed) motors_command,
-    # byte-for-byte — NOT the raw track, and NOT re-cleaned.
-    np.testing.assert_array_equal(np.asarray(tf["rps"].data), dregon_command_values)
+    # The rotor track is the published motors_measured (the real tachometer —
+    # PUBLISHED_RPS_KEYS prefers it), byte-for-byte and NOT cleaned.
+    np.testing.assert_array_equal(np.asarray(tf["rps"].data), dregon_measured_values)
     # Guard: a fresh clean_command_spikes pass would have altered these values,
     # so exact equality above genuinely detects double-cleaning.
-    assert not np.array_equal(clean_command_spikes(dregon_command_values), dregon_command_values)
+    assert not np.array_equal(clean_command_spikes(dregon_measured_values), dregon_measured_values)
+
+    # A recording without a measured track falls back to the cleaned command.
+    tf_b = next(r["tf"] for r in records if get_meta(r["tf"], "recording_id") == "rec_flight_b")
+    np.testing.assert_array_equal(np.asarray(tf_b["rps"].data), dregon_command_values)
 
 
 def test_frames_kind_take_and_exclude_and_ids(dregon_frames_dataset):

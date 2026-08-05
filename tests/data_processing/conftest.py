@@ -67,7 +67,13 @@ def dregon_command_values() -> np.ndarray:
 
 
 @pytest.fixture
-def dregon_frames_dataset(patched_repo, dregon_command_values):
+def dregon_measured_values() -> np.ndarray:
+    """The measured track: a different base, so preference order is observable."""
+    return _motor_values(55.0)
+
+
+@pytest.fixture
+def dregon_frames_dataset(patched_repo, dregon_command_values, dregon_measured_values):
     """DREGON-frames-style dataset: cleaned command + raw + measured + splits."""
 
     def rec(rid: str, split: str, *, seed: int, measured: bool) -> td.Frame:
@@ -77,7 +83,7 @@ def dregon_frames_dataset(patched_repo, dregon_command_values):
             "motors_command_raw": _motor_series(dregon_command_values + 100.0),
         }
         if measured:
-            tracks["motors_measured"] = _motor_series(_motor_values(55.0))
+            tracks["motors_measured"] = _motor_series(dregon_measured_values)
         return make_recording_frame(tracks, meta={"recording_id": rid, "split": split})
 
     patched_repo.commit(

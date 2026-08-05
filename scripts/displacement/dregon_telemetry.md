@@ -78,10 +78,12 @@ says that gap is essentially zero. Measuring the acoustic offset against
 against `measured`'s **-0.542 %** — a 0.15 pp difference on different unit sets,
 i.e. within the scatter of the estimator, not a channel difference.
 
-**Project-wide note:** `frames.PUBLISHED_RPS_KEYS` prefers `motors_command`
+**Project-wide note:** `frames.PUBLISHED_RPS_KEYS` preferred `motors_command`
 while the beat-VK protocol pins `motors_measured`. Since the channels agree to
-0.04 % (~0.03 rev/s), this inconsistency is real but negligible next to the bias
-documented here.
+0.04 % (~0.03 rev/s), that inconsistency was real but negligible next to the
+bias documented here. **RESOLVED 2026-08-05** (tracking-opt Phase 0): the
+preference order is now `("rps", "motors_measured", "motors_command")`, so
+training and evaluation read the same channel.
 
 ---
 

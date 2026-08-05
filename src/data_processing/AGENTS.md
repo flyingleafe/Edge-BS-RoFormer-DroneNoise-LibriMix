@@ -119,8 +119,11 @@ All recordings begin with ~5–13 s of pre-takeoff/ramp-up:
 this; `mixing.resolve_motor_tracks` picks the key — `motors_measured` for
 detection when present (it shows the real spindown), falling back to
 `motors_command`. The saved `rps.npy` always comes from `motors_command`
-(cleaner signal). Published `*-frames` datasets expose a single, already-clean
-`rps` entry, so detection there runs on the command track.
+(cleaner signal). Published `*-frames` datasets are reduced to a single `rps`
+entry by `frames.adapt_recording_frame`, which since 2026-08-05 prefers
+`motors_measured` (`frames.PUBLISHED_RPS_KEYS`) — so on the 5 room1 recordings
+that log it, both the track and the in-flight detection there are the measured
+one; every other recording falls back to the cleaned command.
 
 ---
 
@@ -459,10 +462,11 @@ corpus enter at a modest share, e.g. `AVQ-egonoise-vkrps` (~617 s) at
 `weight: 0.5` vs the merged DREGON+michaels 2.0 in
 `conf/online_mix/beatvk_avq_dload.yaml` (= 20% of noise chunks; being mono,
 ~3% of training frames under `flatten_channels`). Unweighted-only source
-lists behave exactly as before. Nuance vs `kind: dregon`: after adaptation there is no
-separate `motors_measured` detect track, so the in-flight window is detected
-on the cleaned `motors_command` — the command's trailing logging freeze is not
-trimmed (same behaviour as the command-only room2 recordings). Likewise,
+lists behave exactly as before. Nuance vs `kind: dregon`: after adaptation only
+ONE rotor track survives, so detection and labelling use the same one —
+`motors_measured` where it exists, else the cleaned `motors_command`, whose
+trailing logging freeze is then not trimmed (same behaviour as the
+command-only room2 recordings). Likewise,
 `noise_rps_dataset.build_noise_rps_datasets` accepts
 `dregon_dir="frames:DREGON-frames[@VERSION]"` /
 `michaels_dir="frames:michaels-frames"` in place of local folders.

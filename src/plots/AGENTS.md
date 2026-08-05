@@ -37,8 +37,9 @@ inline backend does not double-render). Outside notebooks: `.figure`,
 `coerce_frame(frame, **overrides)` canonicalizes raw dataset frames before
 dispatch (dwym calls it). Alias tables → canonical names:
 
-- `rps` ← `motors_command`, `motors_measured` (DREGON raw, in
-  `PUBLISHED_RPS_KEYS` order), `motor_rps`, `rotor_rps`, `rotor_speed`,
+- `rps` ← `motors_measured`, `motors_command` (DREGON raw, in
+  `PUBLISHED_RPS_KEYS` order — the real tachometer first), `motor_rps`,
+  `rotor_rps`, `rotor_speed`,
   `motor_speed` (Michael's RAW RPM block — last on purpose; the calibrated
   track on Michael's frames is already named `rps`)
 - `audio` ← `waveform`, `wav`, `mix`; plus a sole-waveform fallback (one
