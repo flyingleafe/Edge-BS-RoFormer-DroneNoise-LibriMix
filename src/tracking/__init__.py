@@ -9,6 +9,7 @@ from tracking.comb_displacement import (
     carrier_collision_mask,
     demod_comb_bank,
     measure_variant,
+    nearest_interloper_hz,
 )
 from tracking.demod_backend import demod_backend
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
@@ -140,6 +141,7 @@ __all__ = [
     "ls_project_envelopes",
     "make_peels",
     "measure_variant",
+    "nearest_interloper_hz",
     "order_spectrum",
     "peak_orders",
     "peel_alternation",

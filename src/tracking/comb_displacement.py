@@ -65,6 +65,7 @@ __all__ = [
     "combine_k",
     "demod_comb_bank",
     "measure_variant",
+    "nearest_interloper_hz",
     "profile_prominence",
     "pulse_pair",
     "ridge_from_envelope",
@@ -364,6 +365,45 @@ def carrier_collision_mask(
             fj = np.maximum(kp, 1.0) * rj
             coll |= (np.abs(fj - fi) < sep) & (fj <= cfg.f_max + sep)
     return coll
+
+
+def nearest_interloper_hz(
+    r_ft_true: np.ndarray,
+    r_row_carrier: np.ndarray,
+    rot: int,
+    ks: Sequence[int],
+    *,
+    half: bool = False,
+    f_max: float = 6000.0,
+    min_rate: float = 5.0,
+) -> np.ndarray:
+    """``(K, N)`` Hz: distance to the NEAREST foreign rotor line, per frame.
+
+    The quantitative form of :func:`carrier_collision_mask`: instead of the
+    boolean "a real line is inside the window", it returns how far the closest
+    real line of another rotor is from harmonic ``k`` of the carrier. A caller
+    that knows its own band gets its own collision rule from this
+    (``nearest < band + guard``), and a caller that wants to grade contested
+    harmonics by how close the interferer is gets that too.
+
+    Arguments and the bracketing search are those of
+    :func:`carrier_collision_mask`; ``f_max`` bounds the interferer combs
+    (lines above it are not in the audio band) and ``min_rate`` skips
+    near-silent rotors. No interferer anywhere -> ``inf``.
+    """
+    kf = np.asarray(list(ks), dtype=np.float64) + (0.5 if half else 0.0)
+    fi = kf[:, None] * np.asarray(r_row_carrier, dtype=np.float64)[None, :]
+    best = np.full(fi.shape, np.inf)
+    for j in range(r_ft_true.shape[0]):
+        if j == rot or float(np.mean(r_ft_true[j])) < min_rate:
+            continue
+        rj = np.maximum(np.asarray(r_ft_true[j], dtype=np.float64), 1e-3)[None, :]
+        base = fi / rj
+        for kp in (np.floor(base), np.ceil(base)):
+            fj = np.maximum(kp, 1.0) * rj
+            d = np.where(fj <= f_max, np.abs(fj - fi), np.inf)
+            best = np.minimum(best, d)
+    return best
 
 
 def weighted_stats(vals: np.ndarray, w: np.ndarray) -> tuple[float, float, float]:
