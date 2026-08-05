@@ -54,7 +54,6 @@ import numpy as np
 import tdseries as td
 
 from tracking.phase_increment_tracker import pi_kalman_refine
-from tracking.rps_refinement import RefineConfig, compute_logmag
 from tracking.stages import (
     DEFAULT_HOP_S,
     Stage,
@@ -63,7 +62,7 @@ from tracking.stages import (
     get_rps,
     with_rps,
 )
-from tracking.vk_blind_seeding import SeedConfig, whitened_logmag
+from tracking.vk_blind_seeding import SeedConfig, logmag_spectrogram, whitened_logmag
 from tracking.vk_blind_seeding import stage_guard as _stage_guard_fn
 from tracking.vk_tracking import (
     VKConfig,
@@ -114,6 +113,7 @@ __all__ = [
     "vit2dsp_pipeline",
     "vit2dsp_stage",
     "vit_stage1",
+    "viterbi_lattice",
     "viterbi_ridge",
     "whitened_logmag_multi",
 ]
@@ -333,22 +333,33 @@ def pair_surface(
     return np.asarray(centers), np.stack(rows)
 
 
-def viterbi_ridge(surface: np.ndarray, deltas: np.ndarray, gamma: float) -> np.ndarray:
-    """Max-sum DP over the (window, delta) lattice; returns the delta path."""
-    s_norm = surface - np.median(surface, axis=1, keepdims=True)
-    n_win, _ = s_norm.shape
-    trans = gamma * np.abs(deltas[None, :] - deltas[:, None])  # (D_prev, D_cur)
-    cost = s_norm[0].copy()
-    ptr = np.zeros((n_win, len(deltas)), dtype=int)
-    for w in range(1, n_win):
+def viterbi_lattice(surface: np.ndarray, grid: np.ndarray, gamma: float) -> np.ndarray:
+    """Max-sum DP over a ``(n_steps, D)`` lattice; returns the ``grid`` path.
+
+    THE dense L1-transition Viterbi of the blind ladders: emission
+    ``surface[t, d]``, transition cost ``gamma * |grid[d] - grid[d']|``. Every
+    blind scan (the pair-mean ridge, the coarse full-range pass) uses this
+    one; ``tracking.rotor_dp.viterbi_path`` is the different, banded-Huber
+    torch lattice of the DP tracker.
+    """
+    n_steps, _ = surface.shape
+    trans = gamma * np.abs(grid[None, :] - grid[:, None])  # (D_prev, D_cur)
+    cost = surface[0].copy()
+    ptr = np.zeros((n_steps, len(grid)), dtype=int)
+    for w in range(1, n_steps):
         m = cost[:, None] - trans
         ptr[w] = np.argmax(m, axis=0)
-        cost = s_norm[w] + np.max(m, axis=0)
-    path = np.empty(n_win, dtype=int)
+        cost = surface[w] + np.max(m, axis=0)
+    path = np.empty(n_steps, dtype=int)
     path[-1] = int(np.argmax(cost))
-    for w in range(n_win - 1, 0, -1):
+    for w in range(n_steps - 1, 0, -1):
         path[w - 1] = ptr[w][path[w]]
-    return deltas[path]
+    return grid[path]
+
+
+def viterbi_ridge(surface: np.ndarray, deltas: np.ndarray, gamma: float) -> np.ndarray:
+    """:func:`viterbi_lattice` on a per-window median-centered surface."""
+    return viterbi_lattice(surface - np.median(surface, axis=1, keepdims=True), deltas, gamma)
 
 
 def surface_contrast(surface: np.ndarray) -> float:
@@ -508,16 +519,7 @@ def whitened_logmag_multi(
     The per-channel sibling of :func:`tracking.vk_blind_seeding.whitened_logmag`
     (which channel-averages) — the spatial DP stage mixes channels per rotor.
     """
-    from scipy.ndimage import median_filter
-
-    cfg = cfg or SEED_CFG
-    rcfg = RefineConfig(sample_rate=int(round(fs)), device="cpu")
-    spec = compute_logmag(audio, rcfg)
-    lm = spec.logmag.cpu().numpy()  # (C, F, N)
-    bin_hz = float(spec.bin_hz)
-    win = int(round(cfg.whiten_hz / bin_hz)) | 1
-    white = lm - median_filter(lm, size=(1, win, 1))
-    st = np.asarray(spec.frame_times, dtype=np.float64)
+    white, _, bin_hz, st = logmag_spectrogram(audio, float(fs), cfg or SEED_CFG)
     return white, bin_hz, st
 
 

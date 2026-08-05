@@ -113,11 +113,13 @@ from tracking.pipelines import (  # noqa: E402
     REFINE_CFG,
     SEED_CFG,
     vit2dsp_pipeline,
+    viterbi_lattice,
 )
 from tracking.protocols import BEATVK, iter_windows, slice_window  # noqa: E402
 from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,
+    logmag_spectrogram,
     whitened_logmag,
 )
 
@@ -269,21 +271,13 @@ def _coarse_spec(
     same whitening as the seed scan but at COARSE_NFFT) plus the channel-mean
     RAW log-mag averaged over ENERGY_BAND (the bridge timing signal).
     """
-    from scipy.ndimage import median_filter
-
-    from tracking.rps_refinement import RefineConfig, compute_logmag
-
-    rcfg = RefineConfig(sample_rate=SR, n_fft=nfft, hop_length=hop, device="cpu")
-    spec = compute_logmag(audio, rcfg)
-    lm_raw = spec.logmag.cpu().numpy()  # (C, F, N)
-    bin_hz = float(spec.bin_hz)
-    win = int(round(SEED_CFG.whiten_hz / bin_hz)) | 1
-    white = (lm_raw - median_filter(lm_raw, size=(1, win, 1))).mean(axis=0)
-    freqs = np.arange(white.shape[0]) * bin_hz
+    white, raw, bin_hz, st = logmag_spectrogram(
+        audio, float(SR), SEED_CFG, n_fft=nfft, hop_length=hop
+    )
+    freqs = np.arange(white.shape[1]) * bin_hz
     band = (freqs >= ENERGY_BAND[0]) & (freqs <= ENERGY_BAND[1])
-    energy = lm_raw.mean(axis=0)[band].mean(axis=0)
-    st = np.asarray(spec.frame_times, dtype=np.float64)
-    return white, bin_hz, st, energy
+    energy = raw.mean(axis=0)[band].mean(axis=0)
+    return white.mean(axis=0), bin_hz, st, energy
 
 
 def _bpf_octave_ratio(prep: Prepared, bases: np.ndarray) -> float:
@@ -351,23 +345,6 @@ def _coarse_frame_scores(
             ((ks - 0.5)[:, None] * r[None, :]).ravel(), True
         )
     return out
-
-
-def _viterbi_frames(s: np.ndarray, c_grid: np.ndarray, gamma: float) -> np.ndarray:
-    """Max-sum DP over the (frame, c) lattice; returns the c path (N,)."""
-    n_d, n = s.shape
-    trans = gamma * np.abs(c_grid[None, :] - c_grid[:, None])
-    cost = s[:, 0].copy()
-    ptr = np.zeros((n, n_d), dtype=int)
-    for t in range(1, n):
-        m = cost[:, None] - trans
-        ptr[t] = np.argmax(m, axis=0)
-        cost = s[:, t] + np.max(m, axis=0)
-    path = np.empty(n, dtype=int)
-    path[-1] = int(np.argmax(cost))
-    for t in range(n - 1, 0, -1):
-        path[t - 1] = ptr[t][path[t]]
-    return c_grid[path]
 
 
 def _energy_bridge(
@@ -482,7 +459,7 @@ def fullrange_init(
     peak_f = fsc.max(axis=0, keepdims=True)
     glob = float(np.median(peak_f - med_f))
     s = (fsc - med_f) / np.maximum(peak_f - med_f, COARSE_NORM_SOFT * glob)
-    path = _viterbi_frames(s, c_grid, gamma)
+    path = viterbi_lattice(s.T, c_grid, gamma)  # (D, N) scores -> (N, D) lattice
     frame_s = float(st2[1] - st2[0]) if len(st2) > 1 else FRAME_S
 
     # Trust gates (constants block item (c)): a coarse path only overrides

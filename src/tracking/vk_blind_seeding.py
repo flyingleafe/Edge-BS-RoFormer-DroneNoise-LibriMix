@@ -60,7 +60,7 @@ Conventions match ``vk_tracking``: trajectories in rev/s, harmonics at
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -72,6 +72,7 @@ __all__ = [
     "SeedResult",
     "whitened_logmag",
     "comb_scan",
+    "logmag_spectrogram",
     "scan_peaks",
     "estimate_template",
     "completeness",
@@ -247,15 +248,22 @@ class SeedResult:
 # scan machinery (shared with scripts/vk_blind_annotation.py)
 
 
-def whitened_logmag(
-    audio: np.ndarray, fs: float, cfg: SeedConfig | None = None
-) -> tuple[np.ndarray, float, np.ndarray]:
-    """``(F, N)`` channel-averaged whitened log-mag + ``(bin_hz, frame_times)``.
+def logmag_spectrogram(
+    audio: np.ndarray,
+    fs: float,
+    cfg: SeedConfig | None = None,
+    *,
+    n_fft: int | None = None,
+    hop_length: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+    """``(white (C, F, N), raw (C, F, N), bin_hz, frame_times)``.
 
-    The raw comb score is envelope-dominated on real drone audio (low-
-    frequency rumble makes smaller bases score higher) — whitening subtracts
-    a running median over frequency (``cfg.whiten_hz`` window) so comb scores
-    measure line evidence above the local background.
+    THE whitened-spectrogram core of every blind scan. The raw comb score is
+    envelope-dominated on real drone audio (low-frequency rumble makes smaller
+    bases score higher) — whitening subtracts a running median over frequency
+    (``cfg.whiten_hz`` window) so comb scores measure line evidence above the
+    local background. ``n_fft`` / ``hop_length`` override the refine defaults
+    (the coarse full-range pass runs at a shorter window).
     """
     from scipy.ndimage import median_filter
 
@@ -263,13 +271,24 @@ def whitened_logmag(
 
     cfg = cfg or SeedConfig()
     rcfg = RefineConfig(sample_rate=int(round(fs)), device="cpu")
+    if n_fft is not None:
+        rcfg = replace(rcfg, n_fft=n_fft)
+    if hop_length is not None:
+        rcfg = replace(rcfg, hop_length=hop_length)
     spec = compute_logmag(audio, rcfg)
-    lm = spec.logmag.cpu().numpy()  # (C, F, N)
+    raw = spec.logmag.cpu().numpy()  # (C, F, N)
     bin_hz = float(spec.bin_hz)
     win = int(round(cfg.whiten_hz / bin_hz)) | 1
-    white = (lm - median_filter(lm, size=(1, win, 1))).mean(axis=0)  # (F, N)
-    st = np.asarray(spec.frame_times, dtype=np.float64)
-    return white, bin_hz, st
+    white = raw - median_filter(raw, size=(1, win, 1))
+    return white, raw, bin_hz, np.asarray(spec.frame_times, dtype=np.float64)
+
+
+def whitened_logmag(
+    audio: np.ndarray, fs: float, cfg: SeedConfig | None = None
+) -> tuple[np.ndarray, float, np.ndarray]:
+    """``(F, N)`` CHANNEL-AVERAGED whitened log-mag + ``(bin_hz, frame_times)``."""
+    white, _, bin_hz, st = logmag_spectrogram(audio, fs, cfg)
+    return white.mean(axis=0), bin_hz, st
 
 
 def _tooth_values(

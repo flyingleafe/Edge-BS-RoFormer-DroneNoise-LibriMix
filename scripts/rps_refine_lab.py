@@ -126,7 +126,6 @@ from beatvk_vk_arms import (  # noqa: E402
     FRAME_S,
     SR,
     _coarse_spec,
-    _viterbi_frames,
     fullrange_init,
     load_prep,
     weights_path,
@@ -158,6 +157,7 @@ from tracking.pipelines import (  # noqa: E402
     pair_score_2d_spatial,
     tooth_cube,
     vit_stage1,
+    viterbi_lattice,
     whitened_logmag_multi,
 )
 from tracking.vk_blind_seeding import (  # noqa: E402
@@ -655,7 +655,7 @@ def m1_corridor(
             # Re-mask/re-score against the UPDATED siblings (coordinate descent).
             lm_m = _mask_siblings(rot_lm(rot), bin_hz, r_st, rot)
             fsc = _single_comb_scores(lm_m, bin_hz, r_st[rot], d_grid)
-            d_path = _viterbi_frames(_norm_smooth(fsc), d_grid, COARSE_GAMMA)
+            d_path = viterbi_lattice(_norm_smooth(fsc).T, d_grid, COARSE_GAMMA)
             moves.append(
                 {
                     "sweep": sw + 1,
@@ -976,7 +976,7 @@ def run_reseed(
     r_st[weak] = np.full(len(st), base)
     lm_m = _mask_siblings(lm_r, bin_hz, r_st, weak)
     fsc = _single_comb_scores(lm_m, bin_hz, r_st[weak], d_grid)
-    d_path = _viterbi_frames(_norm_smooth(fsc), d_grid, COARSE_GAMMA)
+    d_path = viterbi_lattice(_norm_smooth(fsc).T, d_grid, COARSE_GAMMA)
     info["resid_quality"] = r3(float(np.median(fsc.max(axis=0) - np.median(fsc, axis=0))))
     info["corridor_d_med"] = r3(float(np.median(np.abs(d_path))))
     info["corridor_d_max"] = r3(float(np.abs(d_path).max()))
@@ -1419,7 +1419,7 @@ def m3_reseed(
                     r_st[weak] = row
                     lm_m = _mask_siblings(lm_r, bin_hz, r_st, weak)
                     fsc = _single_comb_scores(lm_m, bin_hz, row, d_grid)
-                    row = row + _viterbi_frames(_norm_smooth(fsc), d_grid, COARSE_GAMMA)
+                    row = row + viterbi_lattice(_norm_smooth(fsc).T, d_grid, COARSE_GAMMA)
                 r_try = r.copy()
                 r_try[weak] = np.interp(prep.ft, st, row)
                 # The corridor DP may land the re-seeded rotor close to a sibling.
