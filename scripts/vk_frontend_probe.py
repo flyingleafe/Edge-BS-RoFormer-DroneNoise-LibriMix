@@ -160,6 +160,74 @@ def _corr(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean((a - a.mean()) * (b - b.mean())) / (sa * sb))
 
 
+def _pulse_pair(bank: np.ndarray, k: int, fs_env: float) -> float:
+    """Coherent (pulse-pair) rate estimate of one ``(C, N)`` envelope, rev/s.
+
+    ``arg(sum_n u[n] conj(u[n-1]))`` — the ML centre of the increment
+    distribution, and the one the tracker's Kalman effectively forms. The
+    MEDIAN of wrapped increments is biased toward zero once the phasor is
+    noise-dominated (a noise phasor has winding number 0), so a per-track
+    accuracy claim must not rest on it alone.
+    """
+    lag = bank[..., 1:] * np.conj(bank[..., :-1])
+    return float(np.angle(complex(lag.sum())) * fs_env / (2.0 * np.pi * k))
+
+
+#: Telemetry rate-scale error measured by the closed comb-displacement
+#: campaign (``docs/experiments/dregon-comb-displacement.md``): DREGON
+#: over-reports by 0.542 % (CI 0.450-0.618), FLY124 by 0.063 %. The expected
+#: rate ERROR of a telemetry carrier is therefore ``-scale * r``, which is an
+#: EXTERNAL reference for the observations this probe compares.
+TELEMETRY_SCALE_ERR = {"FLY124": 0.00063}
+TELEMETRY_SCALE_ERR_DEFAULT = 0.00542
+
+
+def score_rows(
+    rows: list[dict[str, Any]],
+    ests: list[str],
+    r_mean: list[float],
+    recording: str,
+    *,
+    key: str = "pp_dr",
+) -> dict[str, Any]:
+    """Attach the two reference errors to every track and return the references.
+
+    * ``cons_err`` — distance from the incumbent front end's FUSED answer for
+      that rotor (the ``k^2``-weighted median over admitted tracks of the
+      demodulated observations). This is the internal-consistency criterion:
+      the rate error is a property of the shaft, so every harmonic must report
+      the same value, whatever k it is.
+    * ``bias_err`` — distance from the telemetry scale error measured
+      independently by the comb-displacement campaign (see
+      :data:`TELEMETRY_SCALE_ERR`). External, so it cannot be gamed by an
+      estimator that is self-consistently wrong.
+
+    Reported per rotor for every estimator, but the ``cons_err`` REFERENCE is
+    always the demodulated one — the arms are being compared against today's
+    front end, not each other's fixed points.
+    """
+    scale = TELEMETRY_SCALE_ERR.get(recording, TELEMETRY_SCALE_ERR_DEFAULT)
+    expected = {str(i): -scale * float(r_mean[i]) for i in range(len(r_mean))}
+    consensus: dict[str, Any] = {"expected": {k: round(v, 4) for k, v in expected.items()}}
+    for est in ests:
+        per_rotor: dict[str, float] = {}
+        for rot in {r["rotor"] for r in rows}:
+            sel = [r for r in rows if r["rotor"] == rot and est in r["est"]]
+            if not sel:
+                continue
+            v = np.array([float(r["est"][est][key]) for r in sel])
+            w = np.array([float(r["k"]) ** 2 for r in sel])
+            per_rotor[str(rot)] = round(_weighted_median(v, w), 4)
+        consensus[est] = per_rotor
+    for r in rows:
+        for stats in r["est"].values():
+            ref = consensus["demod"].get(str(r["rotor"]))
+            val = float(stats[key])
+            stats["cons_err"] = None if ref is None else round(abs(val - ref), 4)
+            stats["bias_err"] = round(abs(val - expected[str(r["rotor"])]), 4)
+    return consensus
+
+
 @contextmanager
 def _count_splu_fallbacks() -> Iterator[dict[str, int]]:
     """Count the coupled groups whose banded Cholesky reported a non-PD system.
@@ -382,6 +450,7 @@ def run_window(win: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
             if n_ok >= 32 and peak_ratio[a] >= args.peak_min:
                 zz = dr_z[:, a][m]
                 row["est"]["demod"] = {
+                    "pp_dr": round(_pulse_pair(z_on[:, a][:, edge], k, fs_env), 4),
                     "med_dr": round(float(np.median(zz)), 4),
                     "mad_dr": round(_mad(zz), 4),
                     "hp_frac": round(_hp_frac(dr_z[:, a], fs_env), 3),
@@ -390,6 +459,7 @@ def run_window(win: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
                 for arm in args.arms:
                     xx = arm_dr[arm][:, a][m]
                     row["est"][arm] = {
+                        "pp_dr": round(_pulse_pair(banks[(arm, rot)][:, a][:, edge], k, fs_env), 4),
                         "med_dr": round(float(np.median(xx)), 4),
                         "mad_dr": round(_mad(xx), 4),
                         "hp_frac": round(_hp_frac(arm_dr[arm][:, a], fs_env), 3),
@@ -412,22 +482,8 @@ def run_window(win: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
                     }
             rows.append(row)
 
-    # --- consensus reference per rotor (clean harmonics, k^2 weights) ----
-    consensus: dict[str, dict[str, float]] = {}
-    for est in ("demod", *args.arms):
-        per_rotor: dict[str, float] = {}
-        for rot in range(N_ROTORS):
-            sel = [r for r in rows if r["rotor"] == rot and r["clean"] and est in r["est"]]
-            if not sel:
-                continue
-            v = np.array([r["est"][est]["med_dr"] for r in sel])
-            w = np.array([float(r["k"]) ** 2 for r in sel])
-            per_rotor[str(rot)] = round(_weighted_median(v, w), 4)
-        consensus[est] = per_rotor
-    for r in rows:
-        for stats in r["est"].values():
-            ref = consensus["demod"].get(str(r["rotor"]))
-            stats["cons_err"] = None if ref is None else round(abs(float(stats["med_dr"]) - ref), 4)
+    r_mean = [round(float(np.mean(r_env[i])), 2) for i in range(N_ROTORS)]
+    consensus = score_rows(rows, ["demod", *args.arms], r_mean, win["recording"])
 
     # --- near-coincident pairs (risk 5) ---------------------------------
     pairs = _pair_report(rows, r_env, edge, phase_env, banks, args, fs_env, inc_mask)
@@ -450,7 +506,7 @@ def run_window(win: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
         },
         "wall_s": walls,
         "non_pd_groups": splu_fallbacks,
-        "r_mean": [round(float(np.mean(r_env[i])), 2) for i in range(N_ROTORS)],
+        "r_mean": r_mean,
         "consensus_dr": consensus,
         "tracks": rows,
         "pairs": pairs,
@@ -553,6 +609,7 @@ def summarize(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str,
 
             block[est] = {
                 "cons_err": med("cons_err"),
+                "bias_err": med("bias_err"),
                 "mad_dr": med("mad_dr"),
                 "hp_frac": med("hp_frac"),
                 "med_abs_diff": med("med_abs_diff"),
@@ -569,30 +626,31 @@ def print_table(res: dict[str, Any], arms: list[str]) -> None:
     print(f"  consensus dr (rev/s): {json.dumps(res['consensus_dr'])}")
     ests = ["demod", *arms]
     print(
-        "\n  [cons_err | mad_dr | hp_frac | med|A-Z| | corr | amp/demod]"
+        "\n  [cons_err | bias_err | mad_dr | hp_frac | med|A-Z| | corr | amp/demod]"
         "  (rev/s, medians over tracks)"
     )
-    print(f"  {'set':<18}{'n':>4}  " + "  ".join(f"{e:>46}" for e in ests))
+    print(f"  {'set':<18}{'n':>4}  " + "  ".join(f"{e:>54}" for e in ests))
     for label, block in res["summary"].items():
         cells = []
         for e in ests:
             b = block.get(e)
             if b is None:
-                cells.append(f"{'-':>46}")
+                cells.append(f"{'-':>54}")
                 continue
             cells.append(
-                f"{_f(b['cons_err']):>8}{_f(b['mad_dr']):>8}{_f(b['hp_frac']):>7}"
-                f"{_f(b['med_abs_diff']):>8}{_f(b['corr']):>7}{_f(b.get('amp_ratio')):>8}"
+                f"{_f(b['cons_err']):>8}{_f(b.get('bias_err')):>8}{_f(b['mad_dr']):>8}"
+                f"{_f(b['hp_frac']):>7}{_f(b['med_abs_diff']):>8}{_f(b['corr']):>7}"
+                f"{_f(b.get('amp_ratio')):>8}"
             )
         print(f"  {label:<18}{block['n_tracks']:>4}  " + "  ".join(cells))
-    print("\n  contested tracks with the strongest lines:")
+    print("\n  contested tracks with the strongest lines (pp_dr / mad_dr):")
     cont = sorted(
         [r for r in res["tracks"] if r["est"] and r["contested"]],
         key=lambda r: -r["snr_db"],
     )[:8]
     for r in cont:
         parts = " ".join(
-            f"{e}={_f(r['est'][e]['med_dr'])}/{_f(r['est'][e]['mad_dr'])}" for e in ests
+            f"{e}={_f(r['est'][e]['pp_dr'])}/{_f(r['est'][e]['mad_dr'])}" for e in ests
         )
         print(
             f"    r{r['rotor']} k={r['k']:<3} f={r['f_hz']:<7.0f} near={r['nearest_hz']:<6} "
@@ -614,6 +672,28 @@ def print_table(res: dict[str, Any], arms: list[str]) -> None:
 
 def _f(v: Any) -> str:
     return "-" if v is None or (isinstance(v, float) and not np.isfinite(v)) else f"{v:g}"
+
+
+def rescore(out_dir: Path, args: argparse.Namespace) -> None:
+    """Re-derive references, summary and table from stored per-track numbers.
+
+    The expensive half of this probe is the envelope solves; everything after
+    the per-track row is arithmetic. So a change of reference or of bucket
+    definition costs seconds, not another sweep.
+    """
+    paths = sorted(out_dir.glob("*.json"))
+    if not paths:
+        raise SystemExit(f"no window JSON in {out_dir}")
+    for path in paths:
+        res = json.loads(path.read_text())
+        arms = [a for a in res["config"]["arms"] if a != "demod"]
+        res["consensus_dr"] = score_rows(
+            res["tracks"], ["demod", *arms], res["r_mean"], res["window"]["recording"]
+        )
+        res["summary"] = summarize(res["tracks"], argparse.Namespace(arms=arms))
+        path.write_text(json.dumps(res, indent=1))
+        print_table(res, arms)
+    print(f"\nrescored {len(paths)} window(s) in {out_dir}")
 
 
 def main() -> None:
@@ -644,11 +724,20 @@ def main() -> None:
     ap.add_argument("--pair-sep-hz", type=float, default=5.0)
     ap.add_argument("--max-pairs", type=int, default=12)
     ap.add_argument("--seconds", type=float, default=None, help="truncate (smoke runs)")
+    ap.add_argument(
+        "--rescore",
+        action="store_true",
+        help="recompute the references, the summary and the table from the JSON in --out "
+        "(no audio, no solve): everything downstream of the per-track numbers",
+    )
     args = ap.parse_args()
     args.arms = [a for a in args.arms.split(",") if a]
     unknown = set(args.arms) - set(ARMS)
     if unknown:
         ap.error(f"unknown arms {sorted(unknown)}; known: {sorted(ARMS)}")
+    if args.rescore:
+        rescore(Path(args.out), args)
+        return
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
