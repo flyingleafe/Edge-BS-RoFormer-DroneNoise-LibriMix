@@ -21,6 +21,22 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 
 Tests live in `tests/tracking/`.
 
+## Performance knobs (issue #16 Tier 0)
+
+The demodulation transforms dominate `pi_kalman_refine` and `vk_envelopes`. Two knobs control them, both with measured defaults:
+
+| Knob | Default | What it does |
+|------|---------|--------------|
+| `TRACKING_FFT_WORKERS` (env), `fft_worker_pool(n)` (context manager), `pi_kalman_refine(fft_workers=n)` | 1 (or `OMP_NUM_THREADS`) | FFT worker threads, clamped to the process's CPU affinity. The default stays 1 because oversubscribing on a restricted Slurm allocation thrashes — offline and interactive callers must opt in. Bit-identical. |
+| `TRACKING_DEMOD_BUDGET_MB` (env), `DEMOD_BUDGET_BYTES` | 64 MB | Working set of one demodulation flush, i.e. how many harmonics share a transform. This is a **cache** knob, not a memory-headroom knob: channels are already batched jointly, so bigger flushes amortize nothing and only leave cache. Bit-identical. |
+
+Two properties the optimization campaign relies on, both proven by `tests/tracking/test_phase_increment_tracker.py`:
+
+- The off-comb noise probe is sliced out of the on-comb spectrum (a constant frequency offset is a pure bin shift), so a demodulation costs one forward FFT, not two. The probe offset is snapped to the bin grid.
+- Envelopes are **complex64** — the transform's own precision. Code that needs float64 (variances, gates, the Kalman) uses `_abs2` / `_increment_phase`, which compute in float64 from the components rather than widening the bank.
+
+`scripts/tracking_ref.py` is the guard: `--capture` / `--compare [--exact]` diff a frozen 16 s DREGON cruise window (`results/tracking_ref/`) array by array, and `--bench` reports per-stage wall times at several worker counts.
+
 ## Purity rule
 
 This package imports only `numpy`, `scipy`, `torch`, `tdseries`, and `utils`. It must NOT import `data_processing`, `models`, or `training`. The permitted direction is `data_processing` → `tracking` (for example, `rps_synthesis` imports `tracking.rotors`).
