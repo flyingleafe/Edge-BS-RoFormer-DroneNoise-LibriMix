@@ -729,6 +729,27 @@ Ratio measured/null = 1.00 (FLY124 1.01). The search half-width is
 min(1.5k, 8) Hz, i.e. <= 8/k rev/s, so combining ~25 harmonics averages
 per-k peak-picks of NOISE down to ~0.086 whether or not a line exists.
 
+> **SUSPENDED 2026-08-05 (same day, user review).** The "DREGON has no
+> high-k line" paragraph below is itself very likely a measurement
+> artifact and must NOT be cited. The peak-search half-width is
+> `min(1.5k, 8)` Hz (`measure_displacement.py`: `SEARCH_REVS=1.5`,
+> `SEARCH_HZ_CAP=8.0`), i.e. `min(1.5, 8/k)` rev/s — it SHRINKS as 1/k.
+> The DREGON displacement is FLAT in k at ~-0.424 rev/s, so the true line
+> leaves the search window at **k = 8/0.424 = 18.9** and is already at
+> 74% of the half-width by k=14 — exactly where "nothing above k=14" was
+> reported. On FLY124 the displacement is -0.051 rev/s, so its line stays
+> inside until k~157, which is why FLY124 "keeps a set to k~20" and
+> DREGON does not: **the dataset asymmetry is the bug's signature, not
+> physics.** (The demod BAND, `min(3k, 0.45 fs_env)`, is wide and fine;
+> only the SEARCH WINDOW is broken.) The high-k NULL EQUALITY still
+> stands as measured — but it only shows the on-comb search found noise
+> where it looked, which is expected if it looked in the wrong place.
+> Re-measurement in flight: two-pass search re-centred on
+> `k*(g_r + d_r)`, identically re-centred null, k extended to ~100 (the
+> user reports visible comb structure at ~6 kHz, i.e. k~75, far above the
+> current 3.2 kHz cap). Until it lands, treat DREGON high-k as UNKNOWN,
+> not absent.
+
 **Corroboration, stronger than the null: DREGON has no high-k line.**
 Pooled over 9 cruise windows x 4 rotors x 25 harmonics (900 units), only
 **3 of 900** harmonics with k>=16 clear 6 dB over their own in-band floor
