@@ -81,7 +81,11 @@ from tracking.protocols import (  # noqa: E402  (after the sys.path pin above)
     BEATVK,
     BEATVK_DREGON_RECS,
     BEATVK_FLY124_REC,
+    pool_means,
 )
+
+#: The two headline pools of the report table (declared in ``BEATVK.pools``).
+HEADLINE_POOLS = ("dregon_cruise", "fly124_cruise")
 
 # Protocol constants come from the declarative spec (tracking.protocols.BEATVK);
 # the module-level names stay — half the campaign scripts import them from here.
@@ -276,13 +280,10 @@ def pool_rows(rows: list[dict[str, Any]], arms: list[str]) -> dict[str, Any]:
         sub = [r for r in rows if r["arm"] == arm]
         regimes = sorted({r["regime"] for r in sub})
         recs = sorted({r["recording"] for r in sub})
+        # The headline pools are the protocol's own declared filters.
+        headline = pool_means(sub, {n: BEATVK.pools[n] for n in HEADLINE_POOLS})
         pooled[arm] = {
-            "dregon_cruise": mean_mae(
-                [r for r in sub if r["recording"] in DREGON_RECS and r["regime"] == "cruise"]
-            ),
-            "fly124_cruise": mean_mae(
-                [r for r in sub if r["recording"] == FLY124_REC and r["regime"] == "cruise"]
-            ),
+            **headline,
             "per_regime": {
                 reg: mean_mae([r for r in sub if r["regime"] == reg]) for reg in regimes
             },

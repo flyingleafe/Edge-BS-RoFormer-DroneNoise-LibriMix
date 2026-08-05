@@ -71,7 +71,6 @@ sys.path.insert(0, str(_HERE))
 
 import beatvk_eval  # noqa: E402
 import beatvk_vk_arms as vka  # noqa: E402
-from scipy.optimize import linear_sum_assignment  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 from tracking.pipelines import (  # noqa: E402
@@ -86,6 +85,8 @@ from tracking.pipelines import (  # noqa: E402
     PI_VARIANTS,
     peel_alternation,
 )
+from tracking.protocols import BEATVK, BEATVK_REPORT_POOLS, iter_windows, pit_align  # noqa: E402
+from tracking.protocols import pool_means as protocol_pool_means  # noqa: E402
 from tracking.stages import get_rps, tracking_frame  # noqa: E402
 
 SR: int = beatvk_eval.SR
@@ -334,15 +335,6 @@ def run_blind_chain(
 # scoring + assembly
 
 
-def pit_align_full(pred: np.ndarray, gt: np.ndarray) -> tuple[np.ndarray, list[int]]:
-    cost = np.array([[float(np.mean((p - g) ** 2)) for g in gt] for p in pred])
-    r_ind, c_ind = linear_sum_assignment(cost)
-    perm = np.empty(len(gt), dtype=int)
-    for r, c in zip(r_ind, c_ind):
-        perm[c] = r
-    return pred[perm], [int(x) for x in perm]
-
-
 def window_score(
     pred_ft: np.ndarray,
     ft_abs: np.ndarray,
@@ -357,7 +349,7 @@ def window_score(
     tgm = tg[mask]
     pred = np.vstack([np.interp(tgm, ft_abs, pred_ft[r]) for r in range(N_ROTORS)])
     gt = np.vstack([np.interp(tgm, gt_ts, gt_vals[r]) for r in range(N_ROTORS)])
-    aligned, perm = pit_align_full(pred, gt)
+    aligned, perm = pit_align(pred, gt)
     err = aligned - gt
     return {
         "mean": round(float(np.mean(np.abs(err))), 4),
@@ -367,23 +359,12 @@ def window_score(
     }
 
 
-POOLS: dict[str, Any] = {
-    "dregon_cruise": lambda r: r["recording"] in beatvk_eval.DREGON_RECS
-    and r["regime"] == "cruise",
-    "fly124_cruise": lambda r: r["recording"] == beatvk_eval.FLY124_REC and r["regime"] == "cruise",
-    "fly124_warmup": lambda r: r["recording"] == beatvk_eval.FLY124_REC and r["regime"] == "warmup",
-    "dregon_ramp": lambda r: r["recording"] in beatvk_eval.DREGON_RECS and r["window"] == 0,
-    "dregon_steady": lambda r: r["recording"] in beatvk_eval.DREGON_RECS and r["window"] in (1, 2),
-    "all": lambda r: True,
-}
+#: The report's window pools — declared once, in the protocol.
+POOLS = BEATVK_REPORT_POOLS
 
 
 def pool_means(rows: list[dict[str, Any]]) -> dict[str, float | None]:
-    out: dict[str, float | None] = {}
-    for name, pred in POOLS.items():
-        sel = [r["mae"] for r in rows if pred(r)]
-        out[name] = round(float(np.mean(sel)), 4) if sel else None
-    return out
+    return protocol_pool_means(rows, POOLS, ndigits=4)
 
 
 def score_row(
@@ -678,15 +659,12 @@ def main() -> None:
     version = manifest["dataset_version"]
     print(f"[flagship] {beatvk_eval.DATASET}@{version[:12]}", flush=True)
     widx_filter = {int(v) for v in opts.windows.split(",") if v} or None
+    # Window enumeration is the protocol's (tracking.protocols.iter_windows):
+    # the manifest supplies the frozen bounds, the spec the canonical order.
     jobs_windows: dict[str, list[int]] = {}
-    for rid, rec in manifest["recordings"].items():
-        if wanted is not None and rid not in wanted:
-            continue
-        idxs = [int(w["index"]) for w in rec["windows"]]
-        if widx_filter is not None:
-            idxs = [i for i in idxs if i in widx_filter]
-        if idxs:
-            jobs_windows[rid] = idxs
+    for spec in iter_windows(BEATVK, manifest["recordings"], recordings=wanted):
+        if widx_filter is None or spec.index in widx_filter:
+            jobs_windows.setdefault(spec.recording_id, []).append(spec.index)
 
     # ── stage 1: blind_fullrange init on every window (beatvk_vk_arms) ──
     vka.build_preps(vk_out, jobs_windows, opts.dataset_version, opts.dregon_dir)

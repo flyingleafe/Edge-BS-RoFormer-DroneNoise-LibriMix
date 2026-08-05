@@ -231,7 +231,8 @@ def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
     above ``_MAX_PIT_ROTORS`` raises ``ValueError`` — it means the input is
     transposed ``(F, R)`` and matching would blow up over frames.
     """
-    from scipy.optimize import linear_sum_assignment
+
+    from tracking.protocols import pit_align
 
     pred = np.asarray(pred, dtype=np.float64)
     gt = np.asarray(gt, dtype=np.float64)
@@ -250,11 +251,9 @@ def align_rps_to_gt(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
         xq = np.linspace(0.0, 1.0, F)
         gt = np.vstack([np.interp(xq, xp, gt[r]) for r in range(R)])
 
-    # cost[i, j] = MSE(pred rotor i, gt rotor j); Hungarian == optimal PIT match.
-    cost = np.mean((pred[:, None, :] - gt[None, :, :]) ** 2, axis=-1)  # (R, R)
-    row, col = linear_sum_assignment(cost)
-    aligned = np.empty_like(pred)
-    aligned[col] = pred[row]
+    # The assignment itself is tracking.protocols.pit_align — ONE Hungarian
+    # match on the per-rotor-pair MSE, shared with the tracking protocols.
+    aligned, _ = pit_align(pred, gt)
     return aligned
 
 

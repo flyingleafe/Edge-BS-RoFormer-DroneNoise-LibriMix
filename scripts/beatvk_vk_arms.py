@@ -114,7 +114,7 @@ from vk_blind_annotation import (  # noqa: E402
 from vk_blind_sweep import SEED_CFG  # noqa: E402  (identical seed config)
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
-from tracking.protocols import BEATVK, iter_windows  # noqa: E402
+from tracking.protocols import BEATVK, iter_windows, slice_window  # noqa: E402
 from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,
@@ -617,31 +617,26 @@ def build_preps(
     for rec in recs:
         rid = rec["recording_id"]
         widxs = set(missing[rid])
-        windows = {int(w["index"]): w for w in rec["windows"]}
+        specs = {s.index: s for s in iter_windows(BEATVK, {rid: {"windows": rec["windows"]}})}
         tic = time.perf_counter()
         # The protocol resample (native 44.1 kHz -> the VK pipeline's 16 kHz,
         # librosa soxr_hq — same as beatvk_eval's model: path), once per
-        # recording, then per-window slicing by sample index.
+        # recording; the per-window slicing is the protocol's own
+        # (tracking.protocols.slice_window).
         audio16 = np.atleast_2d(
             np.asarray(resample_audio_series(rec["audio"], SR).data, dtype=np.float32)
         )
         ts, vals = rec["ts"], rec["vals"]
         for widx in sorted(widxs):
-            w = windows[widx]
-            start, end = float(w["start_s"]), float(w["end_s"])
-            a0, a1 = int(round(start * SR)), int(round(end * SR))
-            if not (0 <= a0 < a1 <= audio16.shape[-1]):
-                raise ValueError(f"{rid} w{widx}: window [{start}, {end}] outside audio")
-            seg = audio16[:, a0:a1]
-            ft = np.arange(0.0, (a1 - a0) / SR - FRAME_S / 2, FRAME_S)
-            r_meas = np.stack([np.interp(ft + start, ts, vals[i]) for i in range(N_ROTORS)])
-            edge = (ft > 0.5) & (ft < ft[-1] - 0.5)
+            spec = specs[widx]
+            seg, ft, r_meas, edge = slice_window(audio16, SR, spec, ts, vals)
+            assert r_meas is not None
             np.savez(
                 prep_path(out, rid, widx),
                 allow_pickle=False,
-                start_s=np.float64(start),
-                end_s=np.float64(end),
-                regime=np.str_(w["regime"]),
+                start_s=np.float64(spec.start_s),
+                end_s=np.float64(spec.end_s),
+                regime=np.str_(spec.regime),
                 audio=seg,
                 ft=ft,
                 r_meas=r_meas,

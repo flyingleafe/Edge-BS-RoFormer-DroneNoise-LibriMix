@@ -34,12 +34,15 @@ Protocols:
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 __all__ = [
     "BEATVK",
+    "BEATVK_REPORT_POOLS",
     "FROZEN_FLY124_ALIGNMENT",
     "PROTOCOLS",
     "VK37",
@@ -48,7 +51,10 @@ __all__ = [
     "WindowSpec",
     "get_protocol",
     "iter_windows",
+    "pit_align",
+    "pool_means",
     "regime_of",
+    "slice_window",
     "to_frame",
     "window_name",
 ]
@@ -103,7 +109,7 @@ class WindowSpec:
 
 @dataclass(frozen=True)
 class PoolSpec:
-    """A named pool = a (recordings, regimes) filter over a protocol's windows.
+    """A named pool = a (recordings, regimes, window indices) window filter.
 
     ``None`` means "any". Pool means are unweighted over member windows
     (the ``beatvk_eval`` convention).
@@ -112,13 +118,20 @@ class PoolSpec:
     name: str
     recordings: frozenset[str] | None = None
     regimes: frozenset[str] | None = None
+    windows: frozenset[int] | None = None
+
+    def matches(
+        self, recording_id: str, regime: str | None = None, index: int | None = None
+    ) -> bool:
+        """Membership of one window given its identity fields."""
+        if self.recordings is not None and recording_id not in self.recordings:
+            return False
+        if self.regimes is not None and (regime is None or regime not in self.regimes):
+            return False
+        return not (self.windows is not None and (index is None or index not in self.windows))
 
     def contains(self, spec: WindowSpec) -> bool:
-        if self.recordings is not None and spec.recording_id not in self.recordings:
-            return False
-        return not (
-            self.regimes is not None and (spec.regime is None or spec.regime not in self.regimes)
-        )
+        return self.matches(spec.recording_id, spec.regime, spec.index)
 
 
 @dataclass(frozen=True)
@@ -197,6 +210,23 @@ VK37 = ProtocolSpec(
     min_motor_rps=30.0,
     smooth_frames=8,  # 0.25 s boxcar on the frame grid
 )
+
+#: The pools the beat-VK ALTERNATION report tabulates
+#: (``scripts/beatvk_flagship.py``): the protocol's own headline pools plus
+#: the FLY124 warmup regime and the DREGON ramp/steady window split (window 0
+#: of a DREGON recording is the takeoff ramp, windows 1-2 are steady flight).
+BEATVK_REPORT_POOLS: dict[str, PoolSpec] = {
+    "dregon_cruise": BEATVK.pools["dregon_cruise"],
+    "fly124_cruise": BEATVK.pools["fly124_cruise"],
+    "fly124_warmup": PoolSpec(
+        "fly124_warmup", frozenset({BEATVK_FLY124_REC}), frozenset({"warmup"})
+    ),
+    "dregon_ramp": PoolSpec("dregon_ramp", frozenset(BEATVK_DREGON_RECS), windows=frozenset({0})),
+    "dregon_steady": PoolSpec(
+        "dregon_steady", frozenset(BEATVK_DREGON_RECS), windows=frozenset({1, 2})
+    ),
+    "all": BEATVK.pools["all"],
+}
 
 PROTOCOLS: dict[str, ProtocolSpec] = {p.name: p for p in (BEATVK, VK37)}
 
@@ -299,3 +329,98 @@ def to_frame(
     return tracking_frame(
         audio, sr, rps=rps, frame_times=frame_times, rps_meas=rps_meas, meta=stamp
     )
+
+
+def slice_window(
+    audio: Any,
+    sr: float | int,
+    spec: WindowSpec,
+    ts: Any | None = None,
+    vals: Any | None = None,
+    *,
+    seconds: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
+    """Cut one protocol window out of a recording: ``(seg, ft, r_meas, edge)``.
+
+    THE window slicer of the protocols — every caller that turns a whole
+    recording into a window's arrays goes through here, so the frame grid and
+    the edge mask cannot drift between the dataset builder and its consumers.
+
+    ``audio`` is ``(T,)`` or ``(C, T)`` at ``sr``, ALREADY at the protocol's
+    rate (the resample is a ``data_processing`` concern and stays with the
+    caller). ``ts`` / ``vals`` are the recording's telemetry stamps and
+    ``(R, N)`` values; given, they are linearly interpolated onto the window
+    frame grid as ``r_meas`` (else ``None``). The grid is ``spec``'s protocol
+    hop from the window start, and ``edge`` masks the protocol's edge trim off
+    both ends. ``seconds`` truncates the slice (smoke runs only).
+    """
+    p = get_protocol(spec.protocol)
+    a = np.atleast_2d(np.asarray(audio))
+    start = float(spec.start_s or 0.0)
+    end = float(spec.end_s or 0.0)
+    a0, a1 = int(round(start * sr)), int(round(end * sr))
+    if seconds is not None:
+        a1 = min(a1, a0 + int(round(seconds * sr)))
+    if not (0 <= a0 < a1 <= a.shape[-1]):
+        raise ValueError(
+            f"{spec.name}: window [{start}, {end}] outside the {a.shape[-1]}-sample recording"
+        )
+    seg = a[:, a0:a1]
+    ft = np.arange(0.0, (a1 - a0) / sr - p.hop_s / 2, p.hop_s)
+    r_meas = None
+    if ts is not None and vals is not None:
+        vals = np.asarray(vals, dtype=np.float64)
+        r_meas = np.stack(
+            [
+                np.interp(ft + start, np.asarray(ts, dtype=np.float64), vals[i])
+                for i in range(p.n_rotors)
+            ]
+        )
+    edge = (ft > p.edge_trim_s) & (ft < ft[-1] - p.edge_trim_s)
+    return seg, ft, r_meas, edge
+
+
+def pit_align(pred: np.ndarray, gt: np.ndarray) -> tuple[np.ndarray, list[int]]:
+    """``(pred with its rotor rows permuted onto gt, the permutation)``.
+
+    THE permutation-invariant rotor assignment of the tracking stack: one
+    Hungarian match on the per-rotor-pair MSE, which is identical to the
+    brute-force PIT search over all ``R!`` permutations.  ``pred`` and ``gt``
+    are ``(R, F)`` with the rotor axis FIRST and the same frame count.
+    ``losses.pit.align_rps_to_gt`` (the frame-level entry point, which also
+    resamples and shape-guards) delegates here.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    pred = np.asarray(pred, dtype=np.float64)
+    gt = np.asarray(gt, dtype=np.float64)
+    cost = np.mean((pred[:, None, :] - gt[None, :, :]) ** 2, axis=-1)  # (R, R)
+    row, col = linear_sum_assignment(cost)
+    perm = np.empty(gt.shape[0], dtype=int)
+    perm[col] = row
+    return pred[perm], [int(v) for v in perm]
+
+
+def pool_means(
+    rows: Iterable[Mapping[str, Any]],
+    pools: Mapping[str, PoolSpec],
+    *,
+    key: str = "mae",
+    ndigits: int | None = None,
+) -> dict[str, float | None]:
+    """Unweighted mean of ``row[key]`` over each pool's member windows.
+
+    A row is one scored window: ``recording`` / ``regime`` / ``window`` plus
+    the metric. A pool with no member window scores ``None``.
+    """
+    rows = list(rows)
+    out: dict[str, float | None] = {}
+    for name, pool in pools.items():
+        sel = [
+            float(r[key])
+            for r in rows
+            if pool.matches(str(r["recording"]), r.get("regime"), r.get("window"))
+        ]
+        mean = float(np.mean(sel)) if sel else None
+        out[name] = mean if mean is None or ndigits is None else round(mean, ndigits)
+    return out

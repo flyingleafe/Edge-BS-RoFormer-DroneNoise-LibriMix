@@ -78,6 +78,7 @@ from tracking.protocols import (  # noqa: E402
     BEATVK_DREGON_RECS,
     WindowSpec,
     iter_windows,
+    slice_window,
     to_frame,
 )
 
@@ -132,20 +133,17 @@ def load_window(
 
     from data_processing.frames import resample_audio_series
 
-    # The protocol resample (native -> 16 kHz, librosa soxr_hq) then window
-    # slicing by sample index — beatvk_vk_arms.build_preps, verbatim.
+    # The protocol resample (native -> 16 kHz, librosa soxr_hq), then the
+    # protocol's own window slicer — the same call beatvk_vk_arms.build_preps
+    # makes, so this reference cannot drift from the dataset it guards.
+    # (``seconds`` is for smoke runs: a shorter clip is a DIFFERENT reference.)
     audio16 = np.atleast_2d(
         np.asarray(resample_audio_series(rec["audio"], flag.SR).data, dtype=np.float32)
     )
-    start, end = float(spec.start_s or 0.0), float(spec.end_s or 0.0)
-    a0, a1 = int(round(start * flag.SR)), int(round(end * flag.SR))
-    if seconds is not None:  # smoke runs only: a shorter clip is a DIFFERENT reference
-        a1 = min(a1, a0 + int(round(seconds * flag.SR)))
-    seg = audio16[:, a0:a1]
-    ft = np.arange(0.0, (a1 - a0) / flag.SR - flag.FRAME_S / 2, flag.FRAME_S)
-    r_meas = np.stack(
-        [np.interp(ft + start, rec["ts"], rec["vals"][i]) for i in range(flag.N_ROTORS)]
+    seg, ft, r_meas, _ = slice_window(
+        audio16, flag.SR, spec, rec["ts"], rec["vals"], seconds=seconds
     )
+    start, end = float(spec.start_s or 0.0), float(spec.end_s or 0.0)
     frame = to_frame(
         seg,
         flag.SR,
@@ -163,7 +161,7 @@ def load_window(
         "regime": spec.regime,
         "start_s": start,
         "end_s": end,
-        "clip_seconds": (a1 - a0) / flag.SR,
+        "clip_seconds": seg.shape[-1] / flag.SR,
         "n_channels": int(seg.shape[0]),
         "n_frames": int(len(ft)),
     }

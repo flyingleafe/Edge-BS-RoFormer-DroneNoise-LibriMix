@@ -129,3 +129,70 @@ def test_to_frame_round_trip() -> None:
     assert meta["window_index"] == 3
     assert meta["regime"] == "cruise"
     assert meta["start_s"] == 48.0 and meta["end_s"] == 64.0
+
+
+# ---------------------------------------------------------------------------
+# 5. the shared window slicer, the PIT assignment and the pooling rule
+
+
+def test_slice_window_grid_and_edge_mask() -> None:
+    spec = next(s for s in P.iter_windows("beatvk", _STUB_MANIFEST) if s.index == 1)
+    sr = P.BEATVK.sr
+    audio = np.arange(40 * sr, dtype=np.float32)[None, :]  # 40 s, one channel
+    ts = np.arange(0.0, 40.0, 0.01)
+    vals = np.stack([80.0 + i + 0.0 * ts for i in range(4)])
+
+    seg, ft, r_meas, edge = P.slice_window(audio, sr, spec, ts, vals)
+
+    assert seg.shape == (1, 16 * sr)  # [20, 36) s
+    assert seg[0, 0] == 20.0 * sr  # sliced by sample index off the window start
+    np.testing.assert_allclose(np.diff(ft), P.BEATVK.hop_s)
+    assert ft[0] == 0.0 and ft[-1] < 16.0  # window-relative grid
+    assert r_meas is not None and r_meas.shape == (4, len(ft))
+    np.testing.assert_allclose(r_meas[:, 0], [80.0, 81.0, 82.0, 83.0])
+    # the protocol's 0.5 s edge trim, both ends
+    assert not edge[0] and not edge[-1]
+    assert edge.sum() == int(((ft > 0.5) & (ft < ft[-1] - 0.5)).sum())
+
+
+def test_slice_window_truncation_and_bounds() -> None:
+    spec = next(s for s in P.iter_windows("beatvk", _STUB_MANIFEST) if s.index == 1)
+    sr = P.BEATVK.sr
+    audio = np.zeros((2, 40 * sr), dtype=np.float32)
+    seg, ft, r_meas, _ = P.slice_window(audio, sr, spec, seconds=4.0)
+    assert seg.shape == (2, 4 * sr) and r_meas is None and len(ft) == 125
+    with pytest.raises(ValueError, match="outside"):
+        P.slice_window(np.zeros((2, 25 * sr), dtype=np.float32), sr, spec)
+
+
+def test_pit_align_recovers_the_permutation() -> None:
+    rng = np.random.default_rng(0)
+    gt = np.stack([np.full(50, v) for v in (70.0, 75.0, 80.0, 85.0)])
+    shuffle = [2, 0, 3, 1]
+    pred = gt[shuffle] + rng.normal(0.0, 0.05, gt.shape)
+
+    aligned, perm = P.pit_align(pred, gt)
+
+    # perm undoes the shuffle: pred row perm[i] belongs to gt rotor i
+    assert [shuffle[i] for i in perm] == [0, 1, 2, 3]
+    np.testing.assert_allclose(aligned, pred[perm])
+    assert np.abs(aligned - gt).max() < 0.5
+    # the same assignment losses.pit.align_rps_to_gt exposes (it delegates here)
+    from losses.pit import align_rps_to_gt
+
+    np.testing.assert_array_equal(align_rps_to_gt(pred, gt), aligned)
+
+
+def test_pool_means_filters_by_recording_regime_and_window() -> None:
+    rows = [
+        {"recording": "free-flight_nosource_room1", "regime": "cruise", "window": 0, "mae": 2.0},
+        {"recording": "free-flight_nosource_room1", "regime": "cruise", "window": 1, "mae": 4.0},
+        {"recording": "FLY124", "regime": "warmup", "window": 0, "mae": 9.0},
+    ]
+    pooled = P.pool_means(rows, P.BEATVK_REPORT_POOLS, ndigits=4)
+    assert pooled["dregon_cruise"] == 3.0
+    assert pooled["dregon_ramp"] == 2.0  # window 0 = the takeoff ramp
+    assert pooled["dregon_steady"] == 4.0  # windows 1-2
+    assert pooled["fly124_warmup"] == 9.0
+    assert pooled["fly124_cruise"] is None  # no member window
+    assert pooled["all"] == 5.0
