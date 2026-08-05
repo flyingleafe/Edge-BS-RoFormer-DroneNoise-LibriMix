@@ -111,7 +111,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.signal import detrend, filtfilt, firwin
+from scipy.signal import detrend
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -134,12 +134,7 @@ from vk_blind_annotation import pit_perm  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 import tracking.phase_increment_tracker as pit  # noqa: E402
-from data_processing.rps_synthesis import (  # noqa: E402
-    MIXER,
-    OUModeParams,
-    RPSSynthConfig,
-)
-from data_processing.rps_synthesis import generate as rps_generate  # noqa: E402
+from data_processing.rps_synthesis import synth_comb_window  # noqa: E402
 from tracking.joint_beam_tracker import (  # noqa: E402
     BeamCfg,
     EmissionCfg,
@@ -1890,10 +1885,11 @@ def synth_window(
     fc_hz: float | None = None,
     snr_db: float = 0.0,
 ) -> tuple[Prepared, np.ndarray, dict[str, Any]]:
-    """One synthetic battery window — the trace_pipeline synth_prep generation
-    path (OU free-flight modes + locked-phase 2-blade harmonic comb) with mode
-    means drawn per window so rotor means land in ~[70, 100] rev/s with >= 2
-    rev/s pairwise separation.
+    """One synthetic battery window: a `rps_synthesis.synth_comb_window` draw
+    (OU free-flight modes + locked-phase 2-blade harmonic comb) wrapped into
+    this lab's `Prepared` container on the 31.25 Hz evaluation frame grid.
+    With `mode_means=None` the mode means are drawn per window so rotor means
+    land in ~[70, 100] rev/s with >= 2 rev/s pairwise separation.
 
     `fc_hz` band-limits the commanded shaft speed (rotor inertia) BEFORE audio
     synthesis, and GT is defined from that same band-limited trajectory — the
@@ -1903,59 +1899,20 @@ def synth_window(
     power sits at 8-16 Hz).  The random draws are unchanged by either knob, so
     `fc_hz=None, snr_db=0` reproduces the original battery bit-exactly.
     """
-    rng = np.random.default_rng(seed)
-    if mode_means is not None:
-        # Fixed modes (synth_trace = the WP1-WP3 trace/probe window).
-        m_common, m_roll, m_pitch, m_yaw = mode_means
-        rotor_means = MIXER @ np.array([m_common, m_roll, m_pitch, m_yaw])
-    else:
-        for _ in range(200):
-            m_common = rng.uniform(76.0, 94.0)
-            m_roll = rng.uniform(-3.0, 3.0)
-            m_pitch = rng.uniform(-6.0, 6.0)
-            m_yaw = rng.uniform(-4.0, 4.0)
-            rotor_means = MIXER @ np.array([m_common, m_roll, m_pitch, m_yaw])
-            seps = np.abs(rotor_means[:, None] - rotor_means[None, :])[np.triu_indices(4, 1)]
-            if rotor_means.min() >= 70.0 and rotor_means.max() <= 100.0 and seps.min() >= 2.0:
-                break
-        else:
-            raise RuntimeError(f"synth seed {seed}: no valid rotor-mean draw in 200 tries")
-
-    dur = 16.0
-    n_t = int(dur * SR)
-    t = np.arange(n_t) / SR
-    # Stds/taus = the trace_pipeline free-flight calibration (common std
-    # softened to 1.5 so a 16 s window stays in the cruise band).
-    cfg = RPSSynthConfig(
-        common=OUModeParams(mean=m_common, std=1.5, tau=0.70),
-        roll=OUModeParams(mean=m_roll, std=0.70, tau=0.60),
-        pitch=OUModeParams(mean=m_pitch, std=0.85, tau=0.75),
-        yaw=OUModeParams(mean=m_yaw, std=1.40, tau=1.00),
+    win = synth_comb_window(
+        seed,
+        aggressiveness=aggressiveness,
+        mode_means=mode_means,
+        fc_hz=fc_hz,
+        snr_db=snr_db,
+        sr=SR,
+        n_mic=2,
     )
-    fs_traj = 250.0
-    r_lo = rps_generate(dur, fs_traj, config=cfg, aggressiveness=aggressiveness, rng=rng)
-    if fc_hz is not None:  # rotor inertia: zero-phase lowpass on the shaft speed
-        taps = firwin(255, fc_hz / (fs_traj / 2), window="hamming")
-        r_lo = filtfilt(taps, [1.0], r_lo, axis=1)
-    t_lo = np.arange(r_lo.shape[1]) / fs_traj
-    r_true = np.stack([np.interp(t, t_lo, r_lo[i]) for i in range(N_ROTORS)])
-    k_max = 30
-    psi = rng.uniform(0, 2 * np.pi, (N_ROTORS, k_max))  # locked initial phases
-    # 2-blade blade-pass emphasis (even harmonics 1.6/k, odd 0.5/k) keeps the
-    # BPF octave check in its designed regime — see trace_pipeline synth_prep.
-    comb = np.zeros(n_t)
-    for i in range(N_ROTORS):
-        phi = 2 * np.pi * np.cumsum(r_true[i]) / SR
-        for k in range(1, k_max + 1):
-            amp = (1.6 if k % 2 == 0 else 0.5) / k
-            comb += amp * np.cos(k * phi + psi[i, k - 1])
-    comb_rms = float(np.sqrt(np.mean(comb**2)))
-    noise = rng.normal(0.0, comb_rms * 10 ** (-snr_db / 20.0), n_t)  # SNR vs the comb
-    x = (comb + noise).astype(np.float64)
-    audio = np.stack([x, x])
+    dur = win.meta["duration_s"]
+    n_t = win.audio.shape[1]
 
     ft = np.arange(0.0, n_t / SR - FRAME_S / 2, FRAME_S)
-    r_meas = np.stack([np.interp(ft, t, r_true[i]) for i in range(N_ROTORS)])
+    r_meas = np.stack([np.interp(ft, win.t, win.r_true[i]) for i in range(N_ROTORS)])
     edge = (ft > 0.5) & (ft < ft[-1] - 0.5)
     bl_tag = "" if fc_hz is None else f"_bl{fc_hz:g}"
     prep = Prepared(
@@ -1963,7 +1920,7 @@ def synth_window(
         tau=0.0,
         seg_lo=0.0,
         seg_hi=dur,
-        audio=audio,
+        audio=win.audio,
         ft=ft,
         r_init=r_meas.copy(),
         r_meas=r_meas,
@@ -1978,8 +1935,8 @@ def synth_window(
         "snr_db": snr_db,
         "seed": seed,
         "aggressiveness": aggressiveness,
-        "mode_means": r3([m_common, m_roll, m_pitch, m_yaw]),
-        "rotor_means": r3(np.sort(rotor_means)),
+        "mode_means": r3(list(win.mode_means)),
+        "rotor_means": r3(np.sort(win.rotor_means)),
     }
     return prep, weights, meta
 

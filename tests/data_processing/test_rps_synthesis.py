@@ -346,3 +346,77 @@ def test_full_flight_reproducible_and_profile_exclusive():
     assert np.array_equal(a, b)
     with pytest.raises(ValueError, match="either profile or drone_profile"):
         generate_full_flight(40.0, 50.0, profile=DREGON_PROFILE, drone_profile=0.5, rng=0)
+
+
+# ---------------------------------------------------------------------------
+# synthetic comb window
+
+
+def _synth(**kwargs):
+    from data_processing.rps_synthesis import synth_comb_window
+
+    # Short/cheap: 1 s at 4 kHz with 6 harmonics, not the 16 s @ 16 kHz default.
+    params = {"dur": 1.0, "sr": 4000, "k_max": 6}
+    params.update(kwargs)
+    return synth_comb_window(**params)
+
+
+def test_synth_comb_window_shapes_and_dtypes():
+    win = _synth(seed=0)
+    assert win.audio.shape == (2, 4000)
+    assert win.audio.dtype == np.float64
+    assert win.r_true.shape == (NUM_ROTORS, 4000)
+    assert win.r_true.dtype == np.float64
+    assert win.t.shape == (4000,)
+    # Every channel carries the same signal.
+    assert np.array_equal(win.audio[0], win.audio[1])
+    assert _synth(seed=0, n_mic=8).audio.shape == (8, 4000)
+    assert len(win.mode_means) == len(MODE_NAMES)
+    assert win.rotor_means.shape == (NUM_ROTORS,)
+
+
+def test_synth_comb_window_drawn_modes_respect_constraints():
+    for seed in range(6):
+        win = _synth(seed=seed)
+        rm = win.rotor_means
+        assert rm.min() >= 70.0 and rm.max() <= 100.0
+        seps = np.abs(rm[:, None] - rm[None, :])[np.triu_indices(NUM_ROTORS, 1)]
+        assert seps.min() >= 2.0
+        # The drawn means are the ones the trajectory was generated from.
+        assert np.allclose(MIXER @ np.array(win.mode_means), rm)
+
+
+def test_synth_comb_window_fixed_modes_bypass_the_draw():
+    means = (86.0, 0.0, -5.5, -2.5)
+    win = _synth(seed=99, mode_means=means)
+    assert win.mode_means == means
+    assert np.allclose(np.sort(win.rotor_means), [78.0, 83.0, 89.0, 94.0])
+
+
+def test_synth_comb_window_is_deterministic_per_seed():
+    a = _synth(seed=3)
+    b = _synth(seed=3)
+    assert np.array_equal(a.audio, b.audio)
+    assert np.array_equal(a.r_true, b.r_true)
+    c = _synth(seed=4)
+    assert not np.array_equal(a.audio, c.audio)
+
+
+def test_synth_comb_window_snr_scales_only_the_noise():
+    quiet = _synth(seed=1, mode_means=(86.0, 0.0, -5.5, -2.5), snr_db=20.0)
+    loud = _synth(seed=1, mode_means=(86.0, 0.0, -5.5, -2.5), snr_db=-20.0)
+    # Same trajectory (the draws are unchanged by the knob), different noise floor.
+    assert np.array_equal(quiet.r_true, loud.r_true)
+    assert np.std(loud.audio[0]) > 10.0 * np.std(quiet.audio[0])
+
+
+def test_synth_comb_window_lowpass_smooths_the_ground_truth():
+    # The 255-tap filter needs > 765 trajectory samples, so 4 s at 250 Hz.
+    fixed = {"seed": 2, "mode_means": (86.0, 0.0, -5.5, -2.5), "dur": 4.0, "k_max": 4}
+    plain = _synth(**fixed)
+    band = _synth(**fixed, fc_hz=5.0)
+    # The band-limited shaft speed varies less between samples.
+    assert (
+        np.abs(np.diff(band.r_true, axis=1)).mean() < np.abs(np.diff(plain.r_true, axis=1)).mean()
+    )
+    assert band.meta["shaft_fc_hz"] == 5.0

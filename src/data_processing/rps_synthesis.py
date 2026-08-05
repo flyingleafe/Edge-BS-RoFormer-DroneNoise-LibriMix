@@ -54,11 +54,23 @@ motor response, ~72 RPS hover), with ``0.5`` an in-between airframe.  Public
 surface: :class:`ManeuverModeParams`, :class:`DroneProfile`,
 :func:`blend_profiles`, :func:`generate_intermittent`,
 :func:`generate_intermittent_batch`.
+
+Synthetic comb window
+---------------------
+The tracking evaluations need a window whose rotor speeds are known *exactly*,
+not merely measured.  :func:`synth_comb_window` renders one: an OU trajectory
+(above), optionally band-limited by a shaft-inertia low-pass, driving a
+locked-phase harmonic comb with 2-blade blade-pass structure, plus white noise
+at a given comb-to-noise ratio.  It returns a :class:`SynthCombWindow` — the
+audio, the ground-truth trajectory on the audio grid, and the draw's
+provenance.  The random draws happen in a fixed order, so one seed reproduces
+one window bit-exactly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 
@@ -715,3 +727,193 @@ def generate_full_flight(
     lagged = np.stack([_first_order_lowpass(m, profile.motor_tau, dt) for m in modes])
     w = rps_from_modes(lagged)
     return np.clip(w, 0.0, profile.rps_max)
+
+
+# =============================================================================
+# Synthetic comb window (an OU trajectory rendered as audio)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class SynthCombWindow:
+    """One synthetic rotor-noise window: audio plus the trajectory that made it.
+
+    Attributes:
+        audio: ``(n_mic, N)`` float64 waveform.  Every channel carries the
+            **same** signal (no propagation model — this is a single-point
+            observation duplicated, which is what the tracking evaluations
+            expect of a synthetic window).
+        r_true: ``(4, N)`` rotor speeds (rev/s) on the *audio* sample grid —
+            the ground truth of the window, band-limited exactly as the comb
+            phase that was synthesized from it.
+        t: ``(N,)`` seconds, the audio time grid.
+        mode_means: the four control-mode means ``(common, roll, pitch, yaw)``
+            actually used (drawn or supplied).
+        rotor_means: ``(4,)`` per-rotor mean rev/s implied by ``mode_means``,
+            in rotor order (``MIXER`` rows), **unsorted**.
+        meta: provenance of the draw — seed, knobs, OU parameters, comb RMS.
+    """
+
+    audio: np.ndarray
+    r_true: np.ndarray
+    t: np.ndarray
+    mode_means: tuple[float, float, float, float]
+    rotor_means: np.ndarray
+    meta: dict[str, Any]
+
+
+#: Mode stds/taus of the synthetic comb window — the DREGON free-flight
+#: calibration, with the common-mode std softened to 1.5 rev/s so a 16 s window
+#: stays inside the cruise band instead of wandering out of it.
+SYNTH_COMB_STDS: tuple[float, float, float, float] = (1.5, 0.70, 0.85, 1.40)
+SYNTH_COMB_TAUS: tuple[float, float, float, float] = (0.70, 0.60, 0.75, 1.00)
+
+#: Sample rate of the OU trajectory before it is interpolated onto the audio grid.
+SYNTH_COMB_FS_TRAJ: float = 250.0
+
+
+def _draw_mode_means(
+    rng: np.random.Generator, seed: int
+) -> tuple[tuple[float, float, float, float], np.ndarray]:
+    """Rejection-sample the four control-mode means for a synthetic window.
+
+    Draws ``common ~ U[76, 94]``, ``roll ~ U[-3, 3]``, ``pitch ~ U[-6, 6]``,
+    ``yaw ~ U[-4, 4]`` until the implied rotor means all lie in
+    ``[70, 100]`` rev/s with at least 2 rev/s pairwise separation — the regime
+    where the four combs are individually resolvable but still overlap.
+    """
+    for _ in range(200):
+        m_common = rng.uniform(76.0, 94.0)
+        m_roll = rng.uniform(-3.0, 3.0)
+        m_pitch = rng.uniform(-6.0, 6.0)
+        m_yaw = rng.uniform(-4.0, 4.0)
+        rotor_means = MIXER @ np.array([m_common, m_roll, m_pitch, m_yaw])
+        seps = np.abs(rotor_means[:, None] - rotor_means[None, :])[np.triu_indices(4, 1)]
+        if rotor_means.min() >= 70.0 and rotor_means.max() <= 100.0 and seps.min() >= 2.0:
+            return (m_common, m_roll, m_pitch, m_yaw), rotor_means
+    raise RuntimeError(f"synth seed {seed}: no valid rotor-mean draw in 200 tries")
+
+
+def synth_comb_window(
+    seed: int,
+    *,
+    aggressiveness: float = 1.0,
+    mode_means: tuple[float, float, float, float] | None = None,
+    fc_hz: float | None = None,
+    snr_db: float = 0.0,
+    dur: float = 16.0,
+    sr: int = 16000,
+    k_max: int = 30,
+    n_mic: int = 2,
+) -> SynthCombWindow:
+    """Render one synthetic rotor-noise window with an exactly known trajectory.
+
+    The signal model, in order:
+
+      1. **Trajectory.** Four OU control modes (:func:`generate`) at
+         :data:`SYNTH_COMB_FS_TRAJ`, with :data:`SYNTH_COMB_STDS` /
+         :data:`SYNTH_COMB_TAUS` and the given (or drawn) means.
+      2. **Shaft inertia** (optional).  ``fc_hz`` zero-phase low-passes the
+         commanded shaft speed *before* audio synthesis, and the ground truth
+         is defined from that same band-limited trajectory.  Without it the OU
+         drive is white to the trajectory rate, and point-sampling the truth
+         onto a 31.25 Hz frame grid aliases all of it into the comparison band.
+      3. **Comb.** Each rotor contributes ``k = 1..k_max`` harmonics of its
+         instantaneous shaft phase, at locked (uniform-random) initial phases.
+         Amplitudes are ``1/k`` with a **2-blade blade-pass** emphasis — even
+         harmonics ``1.6/k``, odd ``0.5/k`` — so blade-pass order 2 dominates,
+         the regime the octave checks in ``tracking`` are calibrated for.
+      4. **Noise.** White Gaussian at ``comb_rms * 10 ** (-snr_db / 20)``, so
+         ``snr_db`` is the comb-to-noise ratio in dB.
+
+    The random draws happen in a fixed order — mode means (only when drawn),
+    OU trajectory, harmonic phases, noise — so ``fc_hz`` and ``snr_db`` change
+    the signal without disturbing the stream, and a given ``seed`` reproduces
+    the window bit-exactly.
+
+    Args:
+        seed: seed of the window's ``np.random.default_rng``.
+        aggressiveness: OU dynamic-std multiplier, as in :func:`generate`.
+        mode_means: fixed ``(common, roll, pitch, yaw)`` means; ``None`` draws
+            them with :func:`_draw_mode_means`.
+        fc_hz: shaft-inertia low-pass cutoff (Hz), or ``None`` for no filter.
+        snr_db: comb-to-noise ratio in dB.
+        dur: window length in seconds.
+        sr: audio sample rate (Hz).
+        k_max: highest harmonic order per rotor.
+        n_mic: number of (identical) audio channels to emit.
+
+    Returns:
+        A :class:`SynthCombWindow`.
+    """
+    rng = np.random.default_rng(seed)
+    if mode_means is not None:
+        means = (
+            float(mode_means[0]),
+            float(mode_means[1]),
+            float(mode_means[2]),
+            float(mode_means[3]),
+        )
+        rotor_means = MIXER @ np.array(list(means))
+    else:
+        means, rotor_means = _draw_mode_means(rng, seed)
+    m_common, m_roll, m_pitch, m_yaw = means
+
+    n_t = int(dur * sr)
+    t = np.arange(n_t) / sr
+    s_common, s_roll, s_pitch, s_yaw = SYNTH_COMB_STDS
+    tau_common, tau_roll, tau_pitch, tau_yaw = SYNTH_COMB_TAUS
+    cfg = RPSSynthConfig(
+        common=OUModeParams(mean=m_common, std=s_common, tau=tau_common),
+        roll=OUModeParams(mean=m_roll, std=s_roll, tau=tau_roll),
+        pitch=OUModeParams(mean=m_pitch, std=s_pitch, tau=tau_pitch),
+        yaw=OUModeParams(mean=m_yaw, std=s_yaw, tau=tau_yaw),
+    )
+    fs_traj = SYNTH_COMB_FS_TRAJ
+    r_lo = generate(dur, fs_traj, config=cfg, aggressiveness=aggressiveness, rng=rng)
+    if fc_hz is not None:  # rotor inertia: zero-phase lowpass on the shaft speed
+        from scipy.signal import filtfilt, firwin
+
+        taps = firwin(255, fc_hz / (fs_traj / 2), window="hamming")
+        r_lo = filtfilt(taps, [1.0], r_lo, axis=1)
+    t_lo = np.arange(r_lo.shape[1]) / fs_traj
+    r_true = np.stack([np.interp(t, t_lo, r_lo[i]) for i in range(NUM_ROTORS)])
+
+    psi = rng.uniform(0, 2 * np.pi, (NUM_ROTORS, k_max))  # locked initial phases
+    comb = np.zeros(n_t)
+    for i in range(NUM_ROTORS):
+        phi = 2 * np.pi * np.cumsum(r_true[i]) / sr
+        for k in range(1, k_max + 1):
+            amp = (1.6 if k % 2 == 0 else 0.5) / k
+            comb += amp * np.cos(k * phi + psi[i, k - 1])
+    comb_rms = float(np.sqrt(np.mean(comb**2)))
+    noise = rng.normal(0.0, comb_rms * 10 ** (-snr_db / 20.0), n_t)
+    x = (comb + noise).astype(np.float64)
+    audio = np.stack([x] * n_mic)
+
+    meta = {
+        "seed": seed,
+        "aggressiveness": aggressiveness,
+        "shaft_fc_hz": fc_hz,
+        "snr_db": snr_db,
+        "duration_s": dur,
+        "sample_rate": sr,
+        "k_max": k_max,
+        "n_mic": n_mic,
+        "comb_rms": comb_rms,
+        "fs_traj": fs_traj,
+        "ou_modes": {
+            name: {"mean": float(mean), "std": float(std), "tau": float(tau)}
+            for name, mean, std, tau in zip(
+                MODE_NAMES, means, SYNTH_COMB_STDS, SYNTH_COMB_TAUS, strict=True
+            )
+        },
+    }
+    return SynthCombWindow(
+        audio=audio,
+        r_true=r_true,
+        t=t,
+        mode_means=means,
+        rotor_means=rotor_means,
+        meta=meta,
+    )

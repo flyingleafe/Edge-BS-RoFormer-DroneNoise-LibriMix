@@ -97,6 +97,9 @@ DEFAULT_APPS = 5
 DEFAULT_TRACES = "FLY124:3,free-flight_nosource_room1:0"
 TRACE_GRID_N = 400
 SYNTH_SEED = 99
+# OU mode means (common, roll, pitch, yaw) of the explainer's synthetic window
+# -> per-rotor means [78, 83, 89, 94] rev/s.
+SYNTH_MODES = (86.0, 0.0, -5.5, -2.5)
 
 
 # ---------------------------------------------------------------------------
@@ -218,52 +221,28 @@ def run_flagship_window(rid: str, widx: int, cfg: dict[str, Any]) -> str:
 
 # ---------------------------------------------------------------------------
 # synthetic case — the explainer artifact's seed-99 configuration
-# (trace_pipeline.synth_prep, reproduced verbatim)
+# (generation: rps_synthesis.synth_comb_window, shared with rps_refine_lab)
 
 
 def synth_prep(seed: int = SYNTH_SEED) -> tuple[Prepared, np.ndarray, dict[str, Any]]:
-    from data_processing.rps_synthesis import OUModeParams, RPSSynthConfig
-    from data_processing.rps_synthesis import generate as rps_generate
+    from data_processing.rps_synthesis import synth_comb_window
 
-    rng = np.random.default_rng(seed)
-    dur = 16.0
-    n_t = int(dur * SR)
-    t = np.arange(n_t) / SR
-    cfg = RPSSynthConfig(
-        common=OUModeParams(mean=86.0, std=1.5, tau=0.70),
-        roll=OUModeParams(mean=0.0, std=0.70, tau=0.60),
-        pitch=OUModeParams(mean=-5.5, std=0.85, tau=0.75),
-        yaw=OUModeParams(mean=-2.5, std=1.40, tau=1.00),
-    )
     aggressiveness = 1.0
-    fs_traj = 250.0
-    r_lo = rps_generate(dur, fs_traj, config=cfg, aggressiveness=aggressiveness, rng=rng)
-    t_lo = np.arange(r_lo.shape[1]) / fs_traj
-    r_true = np.stack([np.interp(t, t_lo, r_lo[i]) for i in range(4)])
-    k_max = 30
-    psi = rng.uniform(0, 2 * np.pi, (4, k_max))  # locked initial phases
-    # 1/k envelope with the 2-blade blade-pass structure (even harmonics
-    # 1.6/k, odd 0.5/k) so the BPF octave check sees the calibrated regime.
-    comb = np.zeros(n_t)
-    for i in range(4):
-        phi = 2 * np.pi * np.cumsum(r_true[i]) / SR
-        for k in range(1, k_max + 1):
-            amp = (1.6 if k % 2 == 0 else 0.5) / k
-            comb += amp * np.cos(k * phi + psi[i, k - 1])
-    comb_rms = float(np.sqrt(np.mean(comb**2)))
-    noise = rng.normal(0.0, comb_rms, n_t)  # 0 dB SNR vs the comb
-    x = (comb + noise).astype(np.float64)
-    audio = np.stack([x, x])
+    win = synth_comb_window(
+        seed, aggressiveness=aggressiveness, mode_means=SYNTH_MODES, sr=SR, n_mic=2
+    )
+    dur = win.meta["duration_s"]
+    n_t = win.audio.shape[1]
 
     ft = np.arange(0.0, n_t / SR - FRAME_S / 2, FRAME_S)
-    r_meas = np.stack([np.interp(ft, t, r_true[i]) for i in range(4)])
+    r_meas = np.stack([np.interp(ft, win.t, win.r_true[i]) for i in range(4)])
     edge = (ft > 0.5) & (ft < ft[-1] - 0.5)
     prep = Prepared(
         rid="synthetic",
         tau=0.0,
         seg_lo=0.0,
         seg_hi=dur,
-        audio=audio,
+        audio=win.audio,
         ft=ft,
         r_init=r_meas.copy(),
         r_meas=r_meas,
@@ -277,12 +256,7 @@ def synth_prep(seed: int = SYNTH_SEED) -> tuple[Prepared, np.ndarray, dict[str, 
         "the DREGON-calibrated free-flight OU control-mode RPS generator "
         f"(rps_synthesis.generate, aggressiveness {aggressiveness}), seed {seed}",
         "rotor_mean_rev_s": [78.0, 83.0, 89.0, 94.0],
-        "ou_modes": {
-            "common": {"mean": 86.0, "std": 1.5, "tau": 0.70},
-            "roll": {"mean": 0.0, "std": 0.70, "tau": 0.60},
-            "pitch": {"mean": -5.5, "std": 0.85, "tau": 0.75},
-            "yaw": {"mean": -2.5, "std": 1.40, "tau": 1.00},
-        },
+        "ou_modes": win.meta["ou_modes"],
         "aggressiveness": aggressiveness,
     }
     return prep, weights, meta
