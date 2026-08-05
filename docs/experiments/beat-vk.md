@@ -744,11 +744,18 @@ per-k peak-picks of NOISE down to ~0.086 whether or not a line exists.
 > only the SEARCH WINDOW is broken.) The high-k NULL EQUALITY still
 > stands as measured — but it only shows the on-comb search found noise
 > where it looked, which is expected if it looked in the wrong place.
-> Re-measurement in flight: two-pass search re-centred on
-> `k*(g_r + d_r)`, identically re-centred null, k extended to ~100 (the
-> user reports visible comb structure at ~6 kHz, i.e. k~75, far above the
-> current 3.2 kHz cap). Until it lands, treat DREGON high-k as UNKNOWN,
-> not absent.
+> **RESOLVED same day** — see `docs/experiments/dregon-comb-displacement.md`.
+> The re-centred sweep (carrier at `k*s_r*g_r`, null re-centred
+> identically) changes almost nothing: DREGON k14-25 goes 4 -> 7 units
+> over the bar out of 432, null 4. **So the window bug is real but is NOT
+> the explanation for the DREGON/FLY124 asymmetry.** The actual cause is
+> COHERENCE TIME: spectral autocorrelation shows the 172 Hz blade-passage
+> comb alive at 5.5-6.5 kHz (k~75) on 0.10 s segments and gone by 1 s,
+> while `measure_displacement.py` floors its STFT segment at 1 s and
+> `combscan.py` uses 16 s. The high-k comb EXISTS (the user was right
+> about 6 kHz); our estimators were too long to see it. Physical cause:
+> ~0.2 rev/s rms shaft wander is 15 Hz of wander at k=75. Actionable:
+> high harmonics are usable with short-enough segments.
 
 **Corroboration, stronger than the null: DREGON has no high-k line.**
 Pooled over 9 cruise windows x 4 rotors x 25 harmonics (900 units), only
@@ -887,3 +894,42 @@ mildly with k (B ~ k^0.25). Fixed-Hz (k^0) is exactly right for DREGON
 and slightly conservative for Michael's; full k-scaling assumes k^1 and
 is far off for both. A principled anneal, if revisited, must shrink B in
 Hz and keep the near-flat band exponent, not flatten the rate shape.
+
+## DREGON telemetry over-reports by 0.54% (2026-08-05) — affects every DREGON number
+
+Full record: `docs/experiments/dregon-comb-displacement.md`; code and raw
+reports `scripts/displacement/`.
+
+**DREGON's rotor telemetry over-reports rotor speed by 0.542% (95% CI
+0.450-0.618%)** = a systematic label bias of 0.31-0.47 rev/s at cruise
+(mean **0.424 rev/s**). Established four ways: the reference channel
+`motors_measured` is a genuine period-counting tachometer (values lie on
+a reciprocal-integer lattice 1/(n x 42.0 us)), not a setpoint; the
+command channel agrees with it to 0.04% so H2 (commanded-vs-actual) is
+dead; the audio clock is verified nominal to 0.03% by GCC-PHAT against
+DREGON's own shipped emitted white noise, which breaks the
+telemetry-vs-clock degeneracy WP14 flagged on Michael's rig; and a
+window-free order-space comb scan independently returns -0.555%. The
+free fit has slope 0.99403 and an intercept whose CI spans zero, i.e. a
+multiplicative error. Correction: **x0.99458**.
+
+**Why this matters for the bars.** The bias is TWICE the assumed 0.2
+rev/s label-jitter floor, 23% of the blind-VK DREGON cruise bar (1.807)
+and 41% of the steady bar (1.030). A tracker recovering the true shaft
+rate exactly would still be scored ~0.42 rev/s on DREGON. Both telemetry
+channels carry it, so the `PUBLISHED_RPS_KEYS` inconsistency
+(command-preferred) vs the protocol pin (measured) is real but negligible
+beside it. DREGON labels additionally carry a 0.269 rev/s quantisation
+step at 80 rev/s refreshed at 49.7 Hz — not a bias, but the same size.
+
+FLY124's residual is -0.063%, which is both a control (the method reads
+zero where there is no error) and independent confirmation that the
+2026-07-31 Michael's recalibration worked.
+
+**Open**: pure scale vs a fixed ~1.6-tick miscount in the reciprocal
+counter fit equally well over 56-87 rev/s; H3 (a real aeroacoustic
+displacement) is unsupported but UNTESTABLE in this dataset — the bench
+recordings carry no telemetry and the room2 hover/maneuver recordings
+have no `motors_measured` and do not lock to their command channel at
+all; and whether to apply the correction to DREGON labels (and restate
+historical numbers) is a decision, not a measurement.
