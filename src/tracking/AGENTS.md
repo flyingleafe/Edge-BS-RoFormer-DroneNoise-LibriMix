@@ -60,6 +60,25 @@ So **on CPU the default stays `scipy`**: torch wins nothing consistently and los
 
 Read: `pad="fast"` is worth 4x when the bad factor is in `n_env` (1009 -> 1024) and worth **nothing** when it is in `stride` — `n_pad` is a multiple of `stride` by construction, so `706 = 2 * 353` poisons every admissible length. The 44.1 kHz Bluestein trap is fixed by the **torch backend** (3.8x), or by choosing an `fs_env` whose stride factorizes; not by padding.
 
+### On a GPU
+
+```bash
+TRACKING_BACKEND=torch TRACKING_DEVICE=cuda python <whatever>
+```
+
+Verified on `uni-gpushort` (job `bash-aaaee7`, one FFT worker for the scipy leg), same frozen clip:
+
+| Stage | scipy / CPU | torch / cuda | speedup |
+|-------|-------------|--------------|---------|
+| `zoom_lp_decimate` (8, T) | 15.4 ms | 3.6 ms | 4.3x |
+| `_demod_bank` K=40 | 795 ms | 20.3 ms | **39x** |
+| `pi_kalman_refine` (full) | 5.42 s | 0.43 s | **12.6x** |
+| `vk_envelopes` | 24.8 s | 10.8 s | 2.3x |
+| `ls_project_envelopes` | 11.2 s | 11.0 s | 1.0x (no transform in it) |
+| one peeled application, end to end | 36.0 s | 24.6 s | 1.5x |
+
+The demod itself is done: 39x on the bank, and `pi_kalman_refine` — the 16-min-per-arm call issue #16 opened on — is now under half a second. Everything below 3x is a stage the transform never dominated.
+
 ### What is left after the demod (re-profiled, torch backend, 4 threads)
 
 | Call | Total | Transform | Not the transform |
@@ -69,6 +88,8 @@ Read: `pad="fast"` is worth 4x when the bad factor is in `n_env` (1009 -> 1024) 
 | `ls_project_envelopes` | 6.86 s | none | all of it (4.36 s own + 1.37 s `_upsample_envelope` + 0.56 s `reduceat`) |
 
 So the "Python-side gating becomes the bottleneck" worry from issue #16 does **not** materialize: `_rw_kalman_rts` is 22 ms and the whole gating/observation layer is 4 % of `pi_kalman_refine`. The peel is what is left — `ls_project_envelopes` has no transform in it at all, and the coupled-group **banded Cholesky** is the dominant term of `vk_envelopes` once the FFT is on a GPU. The banded solve stays on scipy on purpose: `torch.linalg` has no banded Cholesky, the systems are `g * n_env` up to ~64000 unknowns so dense is out, and a block-tridiagonal solver of our own is exactly the bespoke code this project does not write for a 4 s term.
+
+Two smaller levers, measured but not taken: the coupling cross-phasors are still built in numpy and shipped to the device per flush (2.0 s of host work plus ~10 GB of transfer on the GPU run — fusing them into `demod_comb`'s recursion is the same pattern), and `ls_project_envelopes` is a per-track Python loop over 160 tracks that vectorizes.
 
 ### The guard
 
