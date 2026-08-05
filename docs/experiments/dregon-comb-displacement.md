@@ -441,3 +441,48 @@ per harmonic, per channel, per rotor, per iteration.
   then sits at a fixed order and ONE FFT yields all K harmonics ->
   `O(R I C T log T)`, ~80x at K=80, on CPU. `combscan.py` already does
   this resampling for the scale scan.
+
+## Where the code went (refactor phase 4b, 2026-08-05)
+
+The campaign's reusable machinery moved into `src/tracking`, and the one-off
+scripts are deleted. Git history keeps every deleted file. No finding above
+changes.
+
+| Was (`scripts/displacement/`) | Is now |
+|---|---|
+| `measure_displacement.py` + `nullcontrol.py` engines | `tracking.comb_displacement` — `DisplacementConfig`, `demod_comb_bank`, `ridge_from_envelope`, `profile_prominence`, `pulse_pair`, `carrier_collision_mask`, `weighted_stats`, `combine_k`, `measure_variant` |
+| `combscan.py` + `orderspec.py` + `shortscan.py` (three copies of one algorithm) | `tracking.order_domain` — `order_spectrum`, `comb_scan`, `segment_comb_scan`, `scan_summary`, `peak_orders` |
+| the `nullcontrol.py` driver | `scripts/displacement/nullcontrol.py`, a `utils.gridrun` CLI over the library |
+| the three order-space drivers | `scripts/displacement/combscan.py` (`--seg-s` = the short-segment scan, `--peaks` = the per-harmonic fan) |
+| `refine_labels.py` + `refine_labels_wide.py` + `refine_kscaled.py` | `scripts/displacement/refine_kscaled.py --arm TAG:BAND_MODE:B0:PAIR_MODE` (the narrow and wide arms are `fixed` band-mode settings, and the file keeps its path because issue 17 cites it) |
+| `dregon_telemetry.md` | `docs/experiments/dregon-telemetry-forensics.md` |
+| `nullcontrol.md` | `docs/experiments/dregon-comb-null-controls.md` |
+| `wiggle.md` | `docs/experiments/dregon-comb-wiggle.md` |
+| `predictions.md` | `docs/experiments/dregon-comb-wide-anneal-prediction.md` |
+
+Deleted, with the finding each one produced recorded above or in the moved
+notes: `make_figs.py` / `make_figs2.py` / `make_f7.py` (figures F1-F7),
+`recentre.py` (the REFUTED re-centring test), `retrace.py` and
+`summarize_null.py` (trace and table regeneration for the wiggle and null
+sections), `bench_rate.py` (the static bench and the audio-clock check, both in
+the telemetry-forensics note), `ladder.py` (the regime ladder and the
+scale-versus-tick-miscount fit), `hk_cache.py` and `replot.py` (the envelope
+cache and the strip renderer behind the 6 kHz verdict), `apply_refined.py` (the
+comb explorer's `--refined` does this). `hk_core.py` stays, cut down to the
+DREGON slice loader.
+
+Two things to carry into the next campaign:
+
+- The short-segment scan is NOT lost with `shortscan.py`. It is
+  `tracking.order_domain.segment_comb_scan`, and `combscan.py --seg-s 0.25`
+  runs it. The `SHORTSCAN_RESULT` placeholder in the telemetry-forensics note
+  is still open.
+- **The rotor-permutation null of issue 17 (section B, item 6) cannot be built
+  by permuting this measurement's carrier.** The measurement IS its carrier, and
+  the collision gate must skip the rotor whose line is the carrier — else the
+  carrier collides with its own line at every frame and the unit returns NaN.
+  Skip the permuted rotor instead and the "null" is the measurement of that
+  other rotor under a different name. A permutation null needs a quantity
+  attached to a rotor independently of the carrier, that is, a fitted trajectory
+  scored against telemetry. It belongs to the refinement driver, not to
+  `nullcontrol.py`.

@@ -1,12 +1,18 @@
 # Why the DREGON comb sits 0.54 % below telemetry
 
-Measured 2026-08-05. Scripts in this directory: `bench_rate.py` (static bench + audio
-clock), `ladder.py` (regime ladder + regressions), `combscan.py` (window-free
+Measured 2026-08-05. This file was `scripts/displacement/dregon_telemetry.md` until the
+2026-08-05 refactor (phase 4b) moved it here; GitHub issue 17 cites the old path.
+
+The scripts it names ran in `scripts/displacement/`: `bench_rate.py` (static bench +
+audio clock), `ladder.py` (regime ladder + regressions), `combscan.py` (window-free
 order-space scan), `recentre.py` (two-pass re-centred k sweep), `shortscan.py`
-(short-segment high-k scan), `make_f7.py` (figure F7). Numbers:
-`bench_rate.json`, `audio_clock.json`, `ladder.json`, `combscan.json`,
-`recentre.json`, `shortscan.json`. Figures: `figs/F7_regime_ladder.png`,
-`figs/F10_combscan.png`, `figs/F11_shortscan.png`.
+(short-segment high-k scan), `make_f7.py` (figure F7). Numbers: `bench_rate.json`,
+`audio_clock.json`, `ladder.json`, `combscan.json`, `recentre.json`, `shortscan.json`.
+Figures: `figs/F7_regime_ladder.png`, `figs/F10_combscan.png`, `figs/F11_shortscan.png`.
+All of those outputs were gitignored scratch, and every script except `combscan.py` is
+deleted — see `dregon-comb-displacement.md` § "Where the code went" for the map from
+each one to its successor. `combscan.py` survives as a thin CLI over
+`tracking.order_domain`, and `--seg-s 0.25` is the old `shortscan.py`.
 
 ---
 

@@ -95,7 +95,7 @@ def with_meta(frame: td.Frame, **updates: Any) -> td.Frame:
 #: command track's trailing logging freeze hides. Only the 5 DREGON
 #: ``free-flight_*_room1`` recordings carry it; everything else falls through
 #: to ``motors_command``. The two tracks share one timestamp vector and agree
-#: to 0.04 % on average (``scripts/displacement/dregon_telemetry.md`` § 1), so
+#: to 0.04 % on average (``docs/experiments/dregon-telemetry-forensics.md`` § 1), so
 #: the swap is a consistency fix, not a change of regime.
 PUBLISHED_RPS_KEYS = ("rps", "motors_measured", "motors_command")
 

@@ -1,9 +1,26 @@
-# `scripts/displacement/` — comb displacement measurement and the explorer page
+# `scripts/displacement/` — the comb-displacement drivers and the explorer page
 
-Measurement code and reports for the DREGON comb-displacement work (see
-`docs/experiments/dregon-comb-displacement.md`). This file is about the
-interactive explorer only; the analysis scripts around it document themselves in
-their own docstrings.
+Four thin drivers for the DREGON comb-displacement campaign
+(`docs/experiments/dregon-comb-displacement.md`, GitHub issue 17). **The
+algorithms are not here.** They live in `src/tracking`, and these files only
+resolve data, fan the work out and write JSON:
+
+| File | What it drives | Library behind it |
+|---|---|---|
+| `nullcontrol.py` | the per-harmonic offset measurement with its mandatory nulls (`on` / `off` / `mis`), one gridrun unit per (window, rotor) | `tracking.comb_displacement` |
+| `combscan.py` | the order-space comb-scale scan: whole window, or `--seg-s` short segments, plus `--peaks` for the per-harmonic fan | `tracking.order_domain` |
+| `refine_kscaled.py` | `pi_kalman_refine` initialized FROM telemetry, one arm per `TAG:BAND_MODE:B0:PAIR_MODE` | `tracking.phase_increment_tracker` |
+| `comb_explorer.py` | the interactive HTML page (see below), verified by `verify_page.js` | `plots.comb_page` |
+| `hk_core.py` | not a driver: the DREGON slice loader the three CLIs share | — |
+
+The three committed `*.json` files are frozen results of recorded runs
+(`kscaled_telemetry_init.json`, `global_scale.json`, `scale_shape.json`). A
+rerun writes to `results/displacement/<driver>/`, never over them.
+
+The campaign record — what was measured, what was withdrawn, and where every
+deleted script went — is `docs/experiments/dregon-comb-displacement.md`, with
+`dregon-telemetry-forensics.md`, `dregon-comb-null-controls.md` and
+`dregon-comb-wiggle.md` beside it.
 
 ## Two roots, on purpose
 
@@ -16,10 +33,6 @@ matters as soon as one runs from a git worktree:
   `omnirun-outputs/`. `data/`, `results/` and `omnirun-outputs/` are
   gitignored, so a worktree does not hold them: `$DATA_ROOT` wins, else the
   main checkout (first line of `git worktree list`).
-
-Their own outputs (`prep_ladder/`, `specs/`, `displacement.json`) are written
-next to the scripts and are gitignored — the committed `*.json` files are the
-frozen results, everything else regenerates.
 
 ## `comb_explorer.py` — the interactive page
 
@@ -47,9 +60,9 @@ fetch, no CDN) for one recording, one time slice and one microphone channel:
   frequency axis rescaled to a shaft-rate offset `(f - k g)/k` in rev/s. The
   carrier is telemetry, or the refined trajectory when the page carries one.
 
-`hk_core.py` holds the shared loaders (`available_channels`, `load_raw`,
-`phase`, `demod_spec`) for DREGON. Michael's recordings (FLY124 / FLY125) come
-from `data_processing.sources.michaels`.
+`hk_core.py` holds the DREGON loaders (`available_channels`, `load_raw`).
+Michael's recordings (FLY124 / FLY125) come from
+`data_processing.sources.michaels`.
 
 ### CLI
 
@@ -179,11 +192,12 @@ channels cost only the cheap strip FFTs.
   hash is what keeps a refined-carrier run from silently reusing the telemetry
   envelopes.
 - Without `--cache` the envelopes are always computed live. That is the default.
-- The old `hk_cache.py` cache (`cache/manifest.json`) is deliberately NOT read.
-  Its entries are decimation 100, that is a 441 Hz envelope, which gives only
-  +-2.2 rev/s of offset at k = 100. The strips must cover the full +-6 rev/s
-  bandwidth slider, so this tool demodulates at decimation 32 (1378 Hz,
-  +-7.25 rev/s even at k = 95) and ignores anything else.
+- The campaign's own envelope cache (the deleted `hk_cache.py`, which wrote
+  `cache/manifest.json`) was deliberately NOT read, and the reason still governs
+  any replacement: its entries were decimation 100, that is a 441 Hz envelope,
+  which gives only +-2.2 rev/s of offset at k = 100. The strips must cover the
+  full +-6 rev/s bandwidth slider, so this tool demodulates at decimation 32
+  (1378 Hz, +-7.25 rev/s even at k = 95) and ignores anything else.
 
 ### Size budget
 
