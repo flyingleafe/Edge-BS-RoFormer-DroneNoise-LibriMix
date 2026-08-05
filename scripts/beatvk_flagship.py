@@ -57,7 +57,6 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import multiprocessing  # noqa: E402
 import sys  # noqa: E402
-import time  # noqa: E402
 from concurrent.futures import ProcessPoolExecutor  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
@@ -292,35 +291,11 @@ def synth_prep(seed: int = SYNTH_SEED) -> tuple[Prepared, np.ndarray, dict[str, 
 def run_blind_chain(
     prep: Prepared, weights: np.ndarray, init_arm: str = vka.FULLRANGE_ARM
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """The blind_fullrange chain on an in-memory window (beatvk_vk_arms.run_job
-    logic, without the file plumbing): blind_KR seed -> fullrange init ->
-    vit2dsp ladder with stage guard."""
-    from dataclasses import replace
-
-    from vk_blind_annotation import MIDBAND_CFGS, REFINE_CFG, pit_perm, vit2dsp_pipeline
-
-    from tracking.vk_blind_seeding import blind_seed
-
-    tic = time.perf_counter()
-    seed = blind_seed(prep.audio, float(SR), N_ROTORS, vka.SEED_CFG, arms=frozenset({"K", "R"}))
-    if init_arm == vka.FULLRANGE_2X_ARM:
-        r0, seed, coarse_diag = vka.fullrange_init(
-            prep, seed, nfft=2 * vka.COARSE_NFFT, hop=1024, gamma=vka.COARSE_GAMMA / 2.0
-        )
-    else:
-        r0, seed, coarse_diag = vka.fullrange_init(prep, seed)
-    wall_seed = time.perf_counter() - tic
-    gate = seed.update_gate
-    p = pit_perm(r0, prep.r_meas, prep.edge)
-    phys_map = np.empty(N_ROTORS, dtype=int)
-    for truth_row, track_row in enumerate(list(p)):
-        phys_map[track_row] = truth_row
-    mid_cfg = MIDBAND_CFGS[0] if gate is None else replace(MIDBAND_CFGS[0], update_gate=gate)
-    ref_cfg = REFINE_CFG if gate is None else replace(REFINE_CFG, update_gate=gate)
-    tic = time.perf_counter()
-    stages, _, _, wall_scan, wall_vk = vit2dsp_pipeline(
-        prep, r0, weights, phys_map, midband_cfg=mid_cfg, refine_cfg=ref_cfg, stage_guard=True
-    )
+    """The blind_fullrange chain on an in-memory window — the same two calls
+    ``beatvk_vk_arms.run_job`` makes (seed + coarse init, then the ladder),
+    without the file plumbing."""
+    r0, seed, coarse_diag, wall_seed = vka.fullrange_seed(prep, init_arm)
+    stages, _, _, wall_scan, wall_vk = vka.run_ladder(prep, r0, weights, seed.update_gate)
     info = {
         "seed_bases": [round(float(b), 2) for b in seed.bases],
         "coarse_mode": coarse_diag.get("coarse_mode"),

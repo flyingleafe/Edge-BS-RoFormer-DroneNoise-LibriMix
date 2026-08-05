@@ -105,15 +105,15 @@ from beatvk_eval import (  # noqa: E402
     STITCH_WIN_FRAMES,
     load_recordings,
 )
-from vk_blind_annotation import (  # noqa: E402
-    MIDBAND_CFGS,
-    REFINE_CFG,
-    pit_perm,
-    vit2dsp_pipeline,
-)
-from vk_blind_sweep import SEED_CFG  # noqa: E402  (identical seed config)
+from vk_blind_annotation import pit_perm  # noqa: E402  (GT-bound, MAE-optimal PIT)
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
+from tracking.pipelines import (  # noqa: E402
+    MIDBAND_CFGS,
+    REFINE_CFG,
+    SEED_CFG,
+    vit2dsp_pipeline,
+)
 from tracking.protocols import BEATVK, iter_windows, slice_window  # noqa: E402
 from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
@@ -747,6 +747,61 @@ def compute_neural_seeds(
 # vk_blind_sweep.run_pipeline composes it (phys_map, gate splice, stage_guard)
 
 
+def fullrange_seed(
+    prep: Prepared, arm: str = FULLRANGE_ARM
+) -> tuple[np.ndarray, SeedResult, dict[str, Any], float]:
+    """The blind_fullrange init: blind_KR seed + the coarse full-range pass.
+
+    Returns ``(r0, effective seed, coarse diagnostics, wall seconds)``. Both
+    fullrange arms come through here — ``FULLRANGE_2X_ARM`` only changes the
+    coarse-DP STFT resolution and its transition penalty.
+    """
+    if arm not in FULLRANGE_ARMS:
+        raise ValueError(f"{arm!r} is not a fullrange arm; valid: {list(FULLRANGE_ARMS)}")
+    tic = time.perf_counter()
+    seed = blind_seed(prep.audio, float(SR), N_ROTORS, SEED_CFG, arms=frozenset({"K", "R"}))
+    if arm == FULLRANGE_2X_ARM:
+        r0, seed, diag = fullrange_init(
+            prep, seed, nfft=2 * COARSE_NFFT, hop=1024, gamma=COARSE_GAMMA / 2.0
+        )
+    else:
+        r0, seed, diag = fullrange_init(prep, seed)
+    return r0, seed, diag, time.perf_counter() - tic
+
+
+def run_ladder(
+    prep: Prepared,
+    r0: np.ndarray,
+    weights: np.ndarray,
+    gate: float | None = None,
+    *,
+    stage_guard: bool = True,
+) -> tuple[list[tuple[str, np.ndarray]], Any, dict[str, Any], float, float]:
+    """The vit2dsp ladder on one prepared window, as the sweep composes it.
+
+    Track -> physical rotor map: PIT vs measured truth (experiment-level,
+    exactly the validated run_vit2dsp / vk_blind_sweep methodology; per the
+    corrected-geometry rerun the assignment only provides surface diversity).
+    ``gate`` (the seed's auto ``update_gate``, arm K) is spliced into the
+    midband + refine configs.
+    """
+    p = pit_perm(r0, prep.r_meas, prep.edge)
+    phys_map = np.empty(N_ROTORS, dtype=int)
+    for truth_row, track_row in enumerate(list(p)):
+        phys_map[track_row] = truth_row
+    mid_cfg = MIDBAND_CFGS[0] if gate is None else replace(MIDBAND_CFGS[0], update_gate=gate)
+    ref_cfg = REFINE_CFG if gate is None else replace(REFINE_CFG, update_gate=gate)
+    return vit2dsp_pipeline(
+        prep,
+        r0,
+        weights,
+        phys_map,
+        midband_cfg=mid_cfg,
+        refine_cfg=ref_cfg,
+        stage_guard=stage_guard,
+    )
+
+
 def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
     out = Path(cfg["out"])
     path = run_path(
@@ -760,25 +815,18 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
         sub = channel_subset(rid, widx, w_all.shape[0], cfg["channels"], cfg.get("channel_seed"))
         weights = w_all[sub]
 
-    arms = BLIND_ARM_SETS.get(arm, frozenset({"K", "R"}) if arm in FULLRANGE_ARMS else frozenset())
     coarse_diag: dict[str, Any] = {}
-    if arm in BLIND_ARM_SETS or arm in FULLRANGE_ARMS:
+    if arm in FULLRANGE_ARMS:
+        arms = frozenset({"K", "R"})
+        r0, seed, coarse_diag, wall_seed = fullrange_seed(prep, arm)
+    elif arm in BLIND_ARM_SETS:
+        arms = BLIND_ARM_SETS[arm]
         tic = time.perf_counter()
         seed = blind_seed(prep.audio, float(SR), N_ROTORS, SEED_CFG, arms=arms)
-        if arm == FULLRANGE_ARM:
-            r0, seed, coarse_diag = fullrange_init(prep, seed)
-        elif arm == FULLRANGE_2X_ARM:
-            r0, seed, coarse_diag = fullrange_init(
-                prep,
-                seed,
-                nfft=2 * COARSE_NFFT,
-                hop=1024,
-                gamma=COARSE_GAMMA / 2.0,
-            )
-        else:
-            r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
+        r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
         wall_seed = time.perf_counter() - tic
     else:
+        arms = frozenset()
         if arm == "telem_init":
             traj, wall_seed = prep.r_meas.copy(), 0.0
         else:  # neural_traj / neural_bases
@@ -795,18 +843,7 @@ def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
         )
 
     gate = seed.update_gate if ("K" in arms and seed.update_gate is not None) else None
-    # Track -> physical rotor map: PIT vs measured truth (experiment-level,
-    # exactly the validated run_vit2dsp / vk_blind_sweep methodology; per the
-    # corrected-geometry rerun the assignment only provides surface diversity).
-    p = pit_perm(r0, prep.r_meas, prep.edge)
-    phys_map = np.empty(N_ROTORS, dtype=int)
-    for truth_row, track_row in enumerate(list(p)):
-        phys_map[track_row] = truth_row
-    mid_cfg = MIDBAND_CFGS[0] if gate is None else replace(MIDBAND_CFGS[0], update_gate=gate)
-    ref_cfg = REFINE_CFG if gate is None else replace(REFINE_CFG, update_gate=gate)
-    stages, _, extras, wall_scan, wall_vk = vit2dsp_pipeline(
-        prep, r0, weights, phys_map, midband_cfg=mid_cfg, refine_cfg=ref_cfg, stage_guard=True
-    )
+    stages, _, extras, wall_scan, wall_vk = run_ladder(prep, r0, weights, gate)
     stages = stages[1:]  # drop the duplicate "init" stage (sweep convention)
     final = stages[-1][1]
     guard = {
