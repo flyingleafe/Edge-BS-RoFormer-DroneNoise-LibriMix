@@ -4,6 +4,7 @@ Pure array code (numpy/scipy/torch). This package must not import
 ``data_processing``, ``models``, or ``training`` — see ``AGENTS.md``.
 """
 
+from tracking.demod_backend import demod_backend
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
 from tracking.phase_increment_tracker import pi_kalman_refine
 from tracking.phase_noise import Arm, arm_covariance, demod_rotor, fit_rank_one
@@ -90,6 +91,7 @@ __all__ = [
     "build_objective",
     "comb_confidence",
     "compute_logmag",
+    "demod_backend",
     "demod_rotor",
     "demodulate",
     "estimate_clock_offset",

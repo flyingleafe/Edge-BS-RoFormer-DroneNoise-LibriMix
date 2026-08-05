@@ -60,6 +60,16 @@ So **on CPU the default stays `scipy`**: torch wins nothing consistently and los
 
 Read: `pad="fast"` is worth 4x when the bad factor is in `n_env` (1009 -> 1024) and worth **nothing** when it is in `stride` — `n_pad` is a multiple of `stride` by construction, so `706 = 2 * 353` poisons every admissible length. The 44.1 kHz Bluestein trap is fixed by the **torch backend** (3.8x), or by choosing an `fs_env` whose stride factorizes; not by padding.
 
+### What is left after the demod (re-profiled, torch backend, 4 threads)
+
+| Call | Total | Transform | Not the transform |
+|------|-------|-----------|-------------------|
+| `pi_kalman_refine` | 3.36 s | 2.19 s FFT + 0.52 s carrier `mul` | **0.15 s** — gating, observations, Kalman/RTS all together |
+| `vk_envelopes` | 13.35 s | 6.00 s FFT | 3.98 s banded Cholesky, 2.04 s cross-pair phasors + bookkeeping, 0.66 s seam conversions |
+| `ls_project_envelopes` | 6.86 s | none | all of it (4.36 s own + 1.37 s `_upsample_envelope` + 0.56 s `reduceat`) |
+
+So the "Python-side gating becomes the bottleneck" worry from issue #16 does **not** materialize: `_rw_kalman_rts` is 22 ms and the whole gating/observation layer is 4 % of `pi_kalman_refine`. The peel is what is left — `ls_project_envelopes` has no transform in it at all, and the coupled-group **banded Cholesky** is the dominant term of `vk_envelopes` once the FFT is on a GPU. The banded solve stays on scipy on purpose: `torch.linalg` has no banded Cholesky, the systems are `g * n_env` up to ~64000 unknowns so dense is out, and a block-tridiagonal solver of our own is exactly the bespoke code this project does not write for a 4 s term.
+
 ### The guard
 
 `scripts/tracking_ref.py` diffs a frozen 16 s DREGON cruise window (`results/tracking_ref/`) array by array:
