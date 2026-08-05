@@ -6,7 +6,7 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 
 | Module | Purpose |
 |--------|---------|
-| `vk_tracking.py` | Coupled Vold–Kalman order tracker: `VKConfig`, `vk_track`, `vk_envelopes`, `vk_reconstruct`, `demodulate`, `ls_project_envelopes` (per-harmonic per-block least-squares re-fit of the envelopes onto the audio — the peel subtraction that cannot inject energy), plus the schedule helpers (`k_schedule`, `bw_schedule`, `env_stride`, `second_diff`, `fft_workers`). |
+| `vk_tracking.py` | Coupled Vold–Kalman order tracker: `VKConfig`, `vk_track`, `vk_envelopes`, `vk_reconstruct`, `demodulate`, `ls_project_envelopes` (per-harmonic per-block least-squares re-fit of the envelopes onto the audio — the peel subtraction that cannot inject energy; two cores, `_ls_project_np` cache-blocked and `_ls_project_torch` clip-long), plus the schedule helpers (`k_schedule`, `bw_schedule`, `env_stride`, `second_diff`, `fft_workers`). |
 | `rps_refinement.py` | Comb-spectral trajectory refinement: `RefineConfig`, `compute_logmag`, `refine_trajectories`, `refine_coherent`, `estimate_clock_offset`, `comb_confidence`. |
 | `vk_blind_seeding.py` | Blind seeding of initial trajectories: `SeedConfig`, `blind_seed`, `whitened_logmag`, `stage_guard`, `residual_rescan`. |
 | `phase_increment_tracker.py` | Phase-increment ML instantaneous-frequency tracker: `pi_kalman_refine`, `zoom_lp_decimate`. |
@@ -30,8 +30,9 @@ The demodulation transforms dominate `pi_kalman_refine` and `vk_envelopes`. Ever
 |------|---------|--------------|
 | `TRACKING_FFT_WORKERS` (env), `fft_worker_pool(n)` (context manager), `pi_kalman_refine(fft_workers=n)` | 1 (or `OMP_NUM_THREADS`) | FFT worker threads of the **scipy** backend, clamped to the process's CPU affinity. The default stays 1 because oversubscribing on a restricted Slurm allocation thrashes — offline and interactive callers must opt in. Bit-identical. |
 | `TRACKING_DEMOD_BUDGET_MB` (env), `DEMOD_BUDGET_BYTES` | 64 MB | Working set of one **scipy** demodulation flush, i.e. how many harmonics share a transform. This is a **cache** knob, not a memory-headroom knob: channels are already batched jointly, so bigger flushes amortize nothing and only leave cache. Bit-identical. |
-| `TRACKING_BACKEND` (env), `demod_backend(backend=...)` | `scipy` | `scipy` (bit-identical, the CPU default) or `torch` (device-agnostic; the GPU path). |
+| `TRACKING_BACKEND` (env), `demod_backend(backend=...)` | `scipy` | `scipy` (bit-identical, the CPU default) or `torch` (device-agnostic; the GPU path). Selects the core of `ls_project_envelopes` as well, which has no transform in it — the seam is the selection, not the kernel. |
 | `TRACKING_DEVICE` (env), `demod_backend(device=...)` | `cpu` | Torch device — `cuda` moves the carriers, the products and the transforms onto the GPU. |
+| `vk_tracking.LS_TILE_BYTES` | 256 KB | Working set of one gain-fit tile in the **numpy** peel core. A cache knob: the tile is streamed six times, so it must stay resident. Tiles are whole 0.25 s blocks, so the floor is one block. Bit-identical. |
 | `TRACKING_PAD` (env), `demod_backend(pad=...)` | `exact` | `fast` grows the envelope grid to `next_fast_len(n_env)`. NOT bit-identical (a zero tail lengthens the circular convolution), so it is opt-in. |
 | `TRACKING_TORCH_BUDGET_MB` (env), `TORCH_BUDGET_BYTES` | 512 MB | Working set of one **torch** flush — the device-memory knob (the full `(8, 40, 256000)` complex64 bank is 655 MB). |
 
@@ -66,18 +67,27 @@ Read: `pad="fast"` is worth 4x when the bad factor is in `n_env` (1009 -> 1024) 
 TRACKING_BACKEND=torch TRACKING_DEVICE=cuda python <whatever>
 ```
 
-Verified on `uni-gpushort` (job `bash-aaaee7`, one FFT worker for the scipy leg), same frozen clip:
+Verified on `uni-gpushort` (job `bash-01dc95`, one FFT worker for the scipy leg), same frozen clip:
 
 | Stage | scipy / CPU | torch / cuda | speedup |
 |-------|-------------|--------------|---------|
-| `zoom_lp_decimate` (8, T) | 15.4 ms | 3.6 ms | 4.3x |
-| `_demod_bank` K=40 | 795 ms | 20.3 ms | **39x** |
-| `pi_kalman_refine` (full) | 5.42 s | 0.43 s | **12.6x** |
-| `vk_envelopes` | 24.8 s | 10.8 s | 2.3x |
-| `ls_project_envelopes` | 11.2 s | 11.0 s | 1.0x (no transform in it) |
-| one peeled application, end to end | 36.0 s | 24.6 s | 1.5x |
+| `zoom_lp_decimate` (8, T) | 16.8 ms | 3.8 ms | 4.4x |
+| `_demod_bank` K=40 | 849 ms | 24.4 ms | **35x** |
+| `pi_kalman_refine` (full) | 5.85 s | 0.47 s | **12.3x** |
+| `vk_envelopes` | 26.0 s | 11.1 s | 2.3x |
+| `ls_project_envelopes` | 4.76 s | 0.44 s | **10.9x** |
+| one peeled application, end to end | 32.5 s | 13.9 s | 2.3x |
 
-The demod itself is done: 39x on the bank, and `pi_kalman_refine` — the 16-min-per-arm call issue #16 opened on — is now under half a second. Everything below 3x is a stage the transform never dominated.
+The demod itself is done: 35x on the bank, and `pi_kalman_refine` — the 16-min-per-arm call issue #16 opened on — is now under half a second. The peel is done too: the same clip's `ls_project_envelopes` read 11.2 s / 11.0 s / 1.0x on the previous job (`bash-aaaee7`), and the application 36.0 s / 24.6 s. What is left below 3x is a stage the transform never dominated.
+
+### The peel (`ls_project_envelopes`)
+
+It has no transform in it at all, so neither knob above touched it, and after the demod work it was the largest remaining term: 6.9-11 s per application, a Python loop over 160 tracks. The fix is not to break the loop — tracks are fitted **sequentially against a running residual** and reordering them into independent fits is measurably worse (see the docstring) — but to see that everything *inside* one iteration is independent: 64 blocks x 8 channels. Two cores now:
+
+- `_ls_project_np` (default). The naive form streamed six clip-long float64 arrays through DRAM per track, ~40 GB of traffic for the frozen clip, with a fresh 16 MB allocation per temporary. It now sweeps tiles of `LS_TILE_BYTES`, building the basis into preallocated buffers and doing all five block sums plus the residual update tile-local, and it upsamples the envelope by broadcast over a `(C, n_knots, stride)` view instead of a gather. **Bit-identical** — same products, same `reduceat` segments, same order of subtraction — which `scripts/tracking_ref.py --compare` proves at `env_x_ls` 0.000e+00. 7.22 s -> 2.59 s on this laptop, 4.76 s on the compute node.
+- `_ls_project_torch`. No tiling (a GPU has no cache to block for and pays for launches), the carrier recursion on the device, and no host sync inside the track loop. 0.44 s on `cuda`; on CPU it loses to numpy 5.66 s to 2.6 s, exactly as the transforms do, so the default stays numpy.
+
+Two numpy traps found while proving bit-identity, both worth remembering: `np.multiply(f32, f32, out=f64)` selects the **float32** loop and rounds the product before storing it (use float64 inputs or `dtype=np.float64`), and splitting numpy's complex64 multiply into real multiplies moves the result by one float32 ulp — so the basis is built with a genuine complex multiply.
 
 ### What is left after the demod (re-profiled, torch backend, 4 threads)
 
@@ -85,11 +95,11 @@ The demod itself is done: 39x on the bank, and `pi_kalman_refine` — the 16-min
 |------|-------|-----------|-------------------|
 | `pi_kalman_refine` | 3.36 s | 2.19 s FFT + 0.52 s carrier `mul` | **0.15 s** — gating, observations, Kalman/RTS all together |
 | `vk_envelopes` | 13.35 s | 6.00 s FFT | 3.98 s banded Cholesky, 2.04 s cross-pair phasors + bookkeeping, 0.66 s seam conversions |
-| `ls_project_envelopes` | 6.86 s | none | all of it (4.36 s own + 1.37 s `_upsample_envelope` + 0.56 s `reduceat`) |
+| `ls_project_envelopes` | 2.5 s | none | 0.62 s residual update, 0.53 s `<resid, p/q>`, 0.48 s basis, 0.44 s Gram, 0.22 s Re/Im split |
 
-So the "Python-side gating becomes the bottleneck" worry from issue #16 does **not** materialize: `_rw_kalman_rts` is 22 ms and the whole gating/observation layer is 4 % of `pi_kalman_refine`. The peel is what is left — `ls_project_envelopes` has no transform in it at all, and the coupled-group **banded Cholesky** is the dominant term of `vk_envelopes` once the FFT is on a GPU. The banded solve stays on scipy on purpose: `torch.linalg` has no banded Cholesky, the systems are `g * n_env` up to ~64000 unknowns so dense is out, and a block-tridiagonal solver of our own is exactly the bespoke code this project does not write for a 4 s term.
+So the "Python-side gating becomes the bottleneck" worry from issue #16 does **not** materialize: `_rw_kalman_rts` is 22 ms and the whole gating/observation layer is 4 % of `pi_kalman_refine`. What is left is the coupled-group **banded Cholesky**, the dominant term of `vk_envelopes` once the FFT is on a GPU. The banded solve stays on scipy on purpose: `torch.linalg` has no banded Cholesky, the systems are `g * n_env` up to ~64000 unknowns so dense is out, and a block-tridiagonal solver of our own is exactly the bespoke code this project does not write for a 4 s term.
 
-Two smaller levers, measured but not taken: the coupling cross-phasors are still built in numpy and shipped to the device per flush (2.0 s of host work plus ~10 GB of transfer on the GPU run — fusing them into `demod_comb`'s recursion is the same pattern), and `ls_project_envelopes` is a per-track Python loop over 160 tracks that vectorizes.
+One smaller lever, measured but not taken: the coupling cross-phasors are still built in numpy and shipped to the device per flush (2.0 s of host work plus ~10 GB of transfer on the GPU run — fusing them into `demod_comb`'s recursion is the same pattern). The peel's own floor is now the residual traffic itself: it is read twice and written once per track, and no reordering that keeps the sequential guarantee can avoid that.
 
 ### The guard
 
@@ -98,6 +108,8 @@ Two smaller levers, measured but not taken: the coupling cross-phasors are still
 - `--compare [--exact]` against the stored `.npz`. Tolerance mode uses the per-array `TOL` bar (scale-relative for the envelopes, an absolute 1e-4 rev/s for `r_next`, **zero flips** for the gate masks).
 - `--self-check --backend torch --device cuda` runs the scipy/exact leg and the selected backend in ONE process and diffs them — no 100 MB `.npz` to ship, which is how the GPU is verified.
 - `--bench [--bench-backends scipy,torch] [--bench-workers 1,4] [--bench-vk] [--bench-json PATH]` reports per-stage wall times.
+
+Both the peel cores are covered: `--compare` holds `_ls_project_np` to bit-identity, and `--self-check --backend torch --device cuda` diffs `_ls_project_torch` against it (job `bash-01dc95`: `env_x_ls` 8.5e-6 of scale, `r_next` 5.6e-6 rev/s, 0 gate flips).
 
 `env_x` carries a looser bar than `env_z` for a reason: at `bw_hz = 1` the VK normal equations have `rho^2 ~ 4e5` and a condition number ~1e7, so the solve amplifies the demod's complex64 rounding by one to three orders depending on the clip (a scipy→torch swap: `env_z` 1.5e-7 of scale, `env_x` 7.3e-7 on the full 16 s clip but 3.7e-5 on a 4 s cut). `r_next` moves 4.5e-6 rev/s and no gate flips — and `r_next` plus the gates are what the tracker consumes.
 
