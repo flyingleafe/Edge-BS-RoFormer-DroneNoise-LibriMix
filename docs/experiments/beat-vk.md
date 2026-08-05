@@ -711,3 +711,55 @@ harmonic ADMISSION, not by band choice; algorithm selection must not be
 driven by it. Wide-anneal arm (band_b0=3.0 -> posterior anneal, job
 bandadm-wide-85732e) is running as the fair test of the annealing
 property; prediction registered in scratchpad `displacement/predictions.md`.
+
+## Wide-anneal arm + why a fixed-Hz band is the principled choice (2026-08-05)
+
+Fair test of the annealing property the narrow ladder never exercised:
+start wide and let the posterior anneal shrink the trust region
+(`--band-b0 3.0`, `k_anneal`, job `bandadm-wide-85732e`, HEAD 10e7322).
+Prediction registered before the result (scratchpad
+`displacement/predictions.md`): FLY124 recovers toward the protocol 2.26;
+DREGON degrades to ~1.85.
+
+**Result — worst row of the whole ladder**, every pool degrading
+monotonically with iteration (init -> x4): all 2.236 -> 2.494,
+dregon_cruise 1.807 -> 2.201, fly124_cruise 2.515 -> 2.526 (best 2.409 at
+peeled x1), dregon_steady 1.030 -> 1.497, warmup and ramp both up.
+Prediction 1 partly right (wide start restores SOME capture: peeled x1
+2.409 beats the narrow arm's 2.509) but it never reaches protocol 2.345
+and then diverges. Prediction 2 right and worse than predicted (1.91 at
+x1, not neutral, and no plateau). Mechanism: wide bands admit noise and
+neighbouring-comb contamination, the pulse-pair estimate walks, and the
+posterior anneal then shrinks the trust region around the ALREADY
+CORRUPTED estimate — it protects the wrong lock instead of refining the
+right one.
+
+**The principled point (independent of the DREGON displacement).** In
+shaft-rate units a fixed band B Hz gives half-width B/(2k) — it shrinks
+as 1/k. WP18 measured the phase-noise covariance: optimal weight ~ 1/v_k
+~ k^2, i.e. rate variance v_k ~ k^-2 and rate std sigma_k ~ 1/k. So the
+protocol's fixed 6 Hz band is a trust region MATCHED to the measured
+per-harmonic rate uncertainty, while `band_mode="k_scaled"` is flat in
+rate (0.175 rev/s at every k for B0=0.35) and therefore mismatched by a
+factor of k — simultaneously too narrow at low k (kills FLY124 twin
+capture: +-0.18 rev/s cannot reach a line 0.5-1 rev/s away, where the
+protocol has +-1.5 at k=2 and +-0.5 at k=6) and too wide at high k
+(admits noise where the protocol allows only +-0.10 at k=30). B0=3.0
+fixes the low-k end and makes the high-k end far worse, which is exactly
+the measured outcome.
+
+| policy | rate half-width at k=2 / 6 / 30 (rev/s) |
+|---|---|
+| protocol, fixed 6 Hz | 1.50 / 0.50 / 0.100 |
+| k_scaled, B0=0.35 | 0.175 / 0.175 / 0.175 |
+| k_scaled, B0=3.0 | 1.50 / 1.50 / 0.469 |
+| measured sigma_k ~ 1/k | proportional to 1.50 / 0.50 / 0.100 |
+
+**Verdict, restated on principle rather than on DREGON.** The k-scaled
+band family is rejected because a constant rate-space trust region
+contradicts the measured k^-2 rate-variance law, not because of the
+DREGON low-k data-model mismatch (which is an ADMISSION problem — see
+the displacement section — and is handled by the peel-energy guard and,
+if wanted, by low-k gating). A principled anneal, if revisited, must
+shrink each harmonic's band along the 1/k law (i.e. anneal the fixed B
+in Hz, keeping the 1/k rate shape), not flatten it.
