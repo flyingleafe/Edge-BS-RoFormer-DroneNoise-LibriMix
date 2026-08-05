@@ -101,6 +101,74 @@ _MAX_CHANNELS = 8  # multichannel fusion cap (vk_tracking convention)
 # demodulation
 
 
+def _copy_band(dst: np.ndarray, spec: np.ndarray, b: int, shift: int) -> None:
+    """Fill ``dst`` (last axis ``n_env``) with the ``+-b`` bins of ``spec``
+    centered on bin ``shift`` (``0`` = the band around DC).
+
+    A nonzero ``shift`` is the frequency-domain form of a time-domain
+    ``exp(-2i pi f0 t)`` demodulation: ``FFT(x e^{-2i pi f0 t})[m] =
+    X[m + shift]`` exactly, for ``shift = f0 n_pad / fs`` an integer number
+    of bins. Indices wrap (the spectrum is periodic).
+    """
+    if shift == 0:
+        dst[..., : b + 1] = spec[..., : b + 1]
+        if b > 0:
+            dst[..., -b:] = spec[..., -b:]
+        return
+    dst[..., : b + 1] = spec.take(np.arange(shift, shift + b + 1), axis=-1, mode="wrap")
+    if b > 0:
+        dst[..., -b:] = spec.take(np.arange(shift - b, shift), axis=-1, mode="wrap")
+
+
+def _zoom_lp_decimate_bank(
+    x: np.ndarray,
+    stride: int,
+    n_env: int,
+    band_cyc: float,
+    band_cyc_rows: np.ndarray | None = None,
+    shift_bins: np.ndarray | int | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """:func:`zoom_lp_decimate`, plus an optional shifted probe band from the
+    SAME forward transform.
+
+    ``shift_bins`` (scalar or ``(x.shape[-2],)``) selects a second band
+    centered ``shift_bins`` bins away from DC — the off-comb noise probe.
+    Because a constant frequency offset is a pure bin shift (:func:`_copy_band`),
+    the probe needs no transform of its own: one forward FFT feeds both
+    bands, and only the two ``n_env``-point inverses are duplicated (the
+    forward transform at ``stride * n_env`` is ~99.6% of the cost).
+    """
+    from scipy import fft as sfft
+
+    w = _fft_workers()
+    n_pad = stride * n_env
+    xc = np.asarray(x, dtype=np.complex64)
+    spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
+    shape = x.shape[:-1] + (n_env,)
+    b_max = (n_env - 1) // 2
+    low = np.zeros(shape, dtype=np.complex64)
+    probe = None if shift_bins is None else np.zeros(shape, dtype=np.complex64)
+    sh = np.asarray(0 if shift_bins is None else shift_bins, dtype=np.int64)
+    if band_cyc_rows is None and sh.ndim == 0:
+        b = min(int(np.floor(band_cyc * n_pad)), b_max)
+        _copy_band(low, spec, b, 0)
+        if probe is not None:
+            _copy_band(probe, spec, b, int(sh))
+    else:
+        for a in range(shape[-2]):
+            bc = band_cyc if band_cyc_rows is None else float(band_cyc_rows[a])
+            b = min(int(np.floor(bc * n_pad)), b_max)
+            _copy_band(low[..., a, :], spec[..., a, :], b, 0)
+            if probe is not None:
+                _copy_band(probe[..., a, :], spec[..., a, :], b, int(sh if sh.ndim == 0 else sh[a]))
+
+    def _inv(band: np.ndarray) -> np.ndarray:
+        dec = cast(np.ndarray, sfft.ifft(band, axis=-1, workers=w))
+        return (dec / np.complex64(stride)).astype(np.complex128)
+
+    return _inv(low), (None if probe is None else _inv(probe))
+
+
 def zoom_lp_decimate(
     x: np.ndarray,
     stride: int,
@@ -121,26 +189,7 @@ def zoom_lp_decimate(
     harmonic keeps its own band. ``None`` keeps the shared-cutoff behavior
     bit-identical.
     """
-    from scipy import fft as sfft
-
-    w = _fft_workers()
-    n_pad = stride * n_env
-    xc = np.asarray(x, dtype=np.complex64)
-    spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
-    low = np.zeros(x.shape[:-1] + (n_env,), dtype=np.complex64)
-    if band_cyc_rows is None:
-        b = min(int(np.floor(band_cyc * n_pad)), (n_env - 1) // 2)
-        low[..., : b + 1] = spec[..., : b + 1]
-        if b > 0:
-            low[..., -b:] = spec[..., -b:]
-    else:
-        for a, bc in enumerate(band_cyc_rows):
-            b = min(int(np.floor(float(bc) * n_pad)), (n_env - 1) // 2)
-            low[..., a, : b + 1] = spec[..., a, : b + 1]
-            if b > 0:
-                low[..., a, -b:] = spec[..., a, -b:]
-    dec = cast(np.ndarray, sfft.ifft(low, axis=-1, workers=w))
-    return (dec / np.complex64(stride)).astype(np.complex128)
+    return _zoom_lp_decimate_bank(x, stride, n_env, band_cyc, band_cyc_rows)[0]
 
 
 def _demod_bank(
@@ -154,6 +203,7 @@ def _demod_bank(
     band_cyc: float,
     band_cyc_k: np.ndarray | None = None,
     off_hz_k: np.ndarray | None = None,
+    sr: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """On-comb and off-comb envelope banks for one rotor.
 
@@ -161,31 +211,33 @@ def _demod_bank(
     demodulated by ``k * phi`` (resp. ``k * phi + 2 pi off_hz t``),
     brickwall-lowpassed to ``+-band_cyc`` and decimated. Carriers come from
     the harmonic power recursion (one exp for the fundamental, complex64
-    multiplies per harmonic step — ``vk_tracking._track_carriers``' trick);
-    the off-comb carrier is the on-comb one times one shared ramp phasor,
-    so the noise-floor probe costs no extra exp.
+    multiplies per harmonic step — ``vk_tracking._track_carriers``' trick).
+
+    The off-comb probe rides at a CONSTANT frequency offset from its
+    harmonic, so it is a pure shift of the spectrum the on-comb envelope
+    already needed: both bands are sliced out of one forward transform
+    (:func:`_zoom_lp_decimate_bank`) instead of demodulating the clip twice.
+    The offset is snapped to the bin grid (``fs / (stride n_env)``, 0.06 Hz
+    on a 16 s clip) so the slice is exact; the probe only estimates the
+    in-band noise floor, whose gates carry a ``guard_hz`` margin orders of
+    magnitude larger than the snap.
 
     ``band_cyc_k`` / ``off_hz_k`` (optional, ``(len(ks),)``): per-harmonic
     demod band (cycles/sample) and per-harmonic *signed* probe offset (Hz)
     — the ``band_mode="k_scaled"`` / ``probe_mode="clean"`` paths. The
-    off-comb probe then demodulates in the SAME per-k band as the on-comb
-    envelope (one ramp phasor per unique offset). ``None`` keeps the shared
-    band / shared ramp behavior bit-identical.
+    off-comb probe uses the SAME per-k band as the on-comb envelope.
+    ``sr`` (samples/s) is needed to place the probe; it defaults to the
+    rate implied by ``t_aud``.
     """
     n_ch, n_t = y32.shape
     n_k = len(ks)
     z_on = np.empty((n_ch, n_k, n_env), dtype=np.complex128)
     z_off = np.empty_like(z_on)
     c1 = np.exp(-1j * phi).astype(np.complex64)
-    ramp = (
-        None if off_hz_k is not None else np.exp(-2j * np.pi * off_hz * t_aud).astype(np.complex64)
-    )
-    ramps: dict[float, np.ndarray] = {}
-
-    def get_ramp(off: float) -> np.ndarray:
-        if off not in ramps:
-            ramps[off] = np.exp(-2j * np.pi * off * t_aud).astype(np.complex64)
-        return ramps[off]
+    fs = float(sr) if sr is not None else 1.0 / float(t_aud[1] - t_aud[0])
+    bin_hz = fs / (stride * n_env)  # spacing of the padded transform
+    offs = np.full(n_k, float(off_hz)) if off_hz_k is None else np.asarray(off_hz_k, dtype=float)
+    shifts = np.rint(offs / bin_hz).astype(np.int64)
 
     chunk = max(1, int(96e6 / (max(1, n_ch) * max(1, n_t) * 8)))
     buf = np.empty((n_ch, min(chunk, n_k), n_t), dtype=np.complex64)
@@ -194,14 +246,13 @@ def _demod_bank(
     def flush() -> None:
         m = len(idxs)
         rows = None if band_cyc_k is None else band_cyc_k[idxs]
-        z_on[:, idxs] = zoom_lp_decimate(buf[:, :m], stride, n_env, band_cyc, rows)
-        if off_hz_k is None:
-            assert ramp is not None
-            buf[:, :m] *= ramp
-        else:
-            for a, g in enumerate(idxs):
-                buf[:, a] *= get_ramp(float(off_hz_k[g]))
-        z_off[:, idxs] = zoom_lp_decimate(buf[:, :m], stride, n_env, band_cyc, rows)
+        sh: np.ndarray | int = (
+            int(shifts[idxs[0]]) if len(set(shifts[idxs].tolist())) == 1 else shifts[idxs]
+        )
+        on, off = _zoom_lp_decimate_bank(buf[:, :m], stride, n_env, band_cyc, rows, sh)
+        assert off is not None
+        z_on[:, idxs] = on
+        z_off[:, idxs] = off
         idxs.clear()
 
     cur = np.ones_like(c1)
@@ -831,7 +882,7 @@ def _rotor_pass(
         elif bool((fallback > off_comb_hz).any()):
             off_hz_k = fallback  # k-scaled fixed probe: forced band clearance
     z, z_off = _demod_bank(
-        y32, phi, t_aud, ks, off_comb_hz, stride, n_env, band_cyc, band_cyc_k, off_hz_k
+        y32, phi, t_aud, ks, off_comb_hz, stride, n_env, band_cyc, band_cyc_k, off_hz_k, sr
     )
     interior = slice(n_trim, max(n_trim + 1, n_env - n_trim))
     noise_pow = np.maximum(np.mean(np.abs(z_off[..., interior]) ** 2, axis=-1), _TINY)  # (C, K)
@@ -931,6 +982,7 @@ def _rotor_pass(
                         band_cyc,
                         p_cyc_k,
                         None,
+                        sr,
                     )
                     np_pow = np.maximum(np.mean(np.abs(zp_off[..., interior]) ** 2, axis=-1), _TINY)
                     p_a2 = np.abs(zp) ** 2

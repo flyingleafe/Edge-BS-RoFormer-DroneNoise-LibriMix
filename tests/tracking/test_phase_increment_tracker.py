@@ -341,3 +341,93 @@ def test_twin_pair_no_cross_capture():
         maes = [float(np.mean(np.abs(r[i] - truth_ft[j])[edge])) for j in range(2)]
         assert int(np.argmin(maes)) == i  # no swap toward the twin
         assert maes[i] < 0.1
+
+
+# ---------------------------------------------------------------------------
+# demodulation-bank internals (issue #16 Tier 0)
+
+
+def _demod_fixture(sr=16000, dur=4.0, n_ch=3, k_top=24, seed=11):
+    """A 3-channel comb clip plus the args ``_demod_bank`` takes."""
+    rng = np.random.default_rng(seed)
+    n_t = int(dur * sr)
+    t = np.arange(n_t) / sr
+    r = 60.0 + 0.5 * np.sin(2.0 * np.pi * 0.3 * t)
+    phi = 2.0 * np.pi * np.cumsum(r) / sr
+    y = np.zeros((n_ch, n_t), np.float32)
+    for k in range(1, k_top + 6):
+        y += (np.cos(k * phi + rng.uniform(0.0, 2.0 * np.pi)) / k).astype(np.float32)
+    y += (rng.standard_normal((n_ch, n_t)) * 0.05).astype(np.float32)
+    stride = 256
+    return y, phi, t, list(range(1, k_top + 1)), stride, len(range(0, n_t, stride)), sr
+
+
+def _explicit_off_comb(y, phi, t, ks, off_hz, stride, n_env, band_cyc, band_cyc_k=None):
+    """The pre-optimization off-comb bank: demodulate the clip a SECOND time."""
+    from tracking.phase_increment_tracker import zoom_lp_decimate
+
+    c1 = np.exp(-1j * phi).astype(np.complex64)
+    ramp = np.exp(-2j * np.pi * off_hz * t).astype(np.complex64)
+    out = np.empty((y.shape[0], len(ks), n_env), dtype=np.complex128)
+    cur, cur_k = np.ones_like(c1), 0
+    for a, k in enumerate(ks):
+        for _ in range(k - cur_k):
+            cur = cur * c1
+        cur_k = k
+        rows = None if band_cyc_k is None else band_cyc_k[a : a + 1]
+        buf = (np.asarray(y * cur, dtype=np.complex64) * ramp)[:, None, :]
+        out[:, a : a + 1] = zoom_lp_decimate(buf, stride, n_env, band_cyc, rows)
+    return out
+
+
+def test_off_comb_probe_matches_a_second_demodulation():
+    """The probe sliced out of the on-comb spectrum IS the second demodulation.
+
+    A constant frequency offset is a pure bin shift, so one FFT serves both
+    bands (issue #16 Tier 0 item 2); with the offset on the bin grid the only
+    difference left is complex64 rounding.
+    """
+    from tracking.phase_increment_tracker import _demod_bank
+
+    y, phi, t, ks, stride, n_env, sr = _demod_fixture()
+    band_cyc, off_hz = 6.0 / sr, 11.0
+    assert (off_hz * stride * n_env / sr).is_integer()  # exactly on the bin grid
+    z_on, z_off = _demod_bank(y, phi, t, ks, off_hz, stride, n_env, band_cyc, sr=sr)
+    ref = _explicit_off_comb(y, phi, t, ks, off_hz, stride, n_env, band_cyc)
+    assert np.abs(z_off - ref).max() < 1e-6 * np.abs(ref).max()
+    # The noise floor the gates actually consume agrees to ~1e-6 relative.
+    p_new = np.mean(np.abs(z_off) ** 2, axis=-1)
+    p_ref = np.mean(np.abs(ref) ** 2, axis=-1)
+    assert np.max(np.abs(p_new - p_ref) / p_ref) < 1e-5
+    assert z_on.shape == z_off.shape == (y.shape[0], len(ks), n_env)
+
+
+def test_off_comb_probe_per_harmonic_offsets():
+    """The per-k signed probe offsets (probe_mode='clean') shift per row."""
+    from tracking.phase_increment_tracker import _demod_bank
+
+    y, phi, t, ks, stride, n_env, sr = _demod_fixture()
+    band_cyc = 6.0 / sr
+    bin_hz = sr / (stride * n_env)
+    offs = np.array([(9.0 if a % 2 else -12.0) for a in range(len(ks))])
+    assert np.allclose(offs / bin_hz, np.rint(offs / bin_hz))  # on the grid
+    _, z_off = _demod_bank(y, phi, t, ks, 11.0, stride, n_env, band_cyc, None, offs, sr)
+    for a in (0, 1, len(ks) - 1):
+        ref = _explicit_off_comb(y, phi, t, [ks[a]], float(offs[a]), stride, n_env, band_cyc)
+        assert np.abs(z_off[:, a] - ref[:, 0]).max() < 1e-5 * np.abs(ref).max()  # complex64
+
+
+def test_zoom_lp_decimate_bank_on_band_is_unchanged():
+    """The refactor must not touch the on-comb envelope: bit-identical."""
+    from tracking.phase_increment_tracker import _zoom_lp_decimate_bank, zoom_lp_decimate
+
+    rng = np.random.default_rng(3)
+    x = (rng.standard_normal((2, 5, 4096)) + 1j * rng.standard_normal((2, 5, 4096))).astype(
+        np.complex64
+    )
+    rows = np.array([2.0, 4.0, 6.0, 8.0, 10.0]) / 16000
+    for band_rows in (None, rows):
+        plain = zoom_lp_decimate(x, 64, 64, 6.0 / 16000, band_rows)
+        on, off = _zoom_lp_decimate_bank(x, 64, 64, 6.0 / 16000, band_rows, 40)
+        assert np.array_equal(plain, on)
+        assert off is not None and off.shape == on.shape
