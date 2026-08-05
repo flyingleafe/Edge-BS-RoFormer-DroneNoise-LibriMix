@@ -679,3 +679,35 @@ not an iteration effect.
 alternation, protocol bands (6 Hz), peel-energy guard. The k-scaled
 band option remains available as an opt-in for near-exact-init regimes
 (synthetic, telemetry-seeded), where it is strictly better.
+
+## Per-harmonic displacement measured + near-optimality refuted (2026-08-05)
+
+Direct measurement of the displaced comb (heterodyne each harmonic around
+k*telemetry with the tracker's demod bank, envelope-spectrum ridge ->
+shaft-rate offset; twin-collision frames gated out; 15 frozen-protocol
+windows; scripts + `displacement.json` + figures in session scratchpad
+`displacement/`).
+
+**The displacement is k-graded, not flat**: DREGON k=1-4 sit 0.5-0.6
+rev/s below telemetry, k=5-13 near -0.15, k>=16 on-grid (-0.02). Same
+profile on steady and ramp controls, so it is not cruise-only. The
+0.3-0.5 rev/s figure from the probe study holds only for k<=4. **FLY124
+carries the same signature ~3x smaller** (low-k -0.043, high-k -0.002).
+
+**Near-optimality on DREGON is REFUTED.** Three-way MAE vs telemetry,
+pooled: low-k comb 0.364 / high-k comb 0.086 / flagship blind track
+1.854 (DREGON cruise); FLY124 cruise 0.166 / 0.065 / 2.263. The high-k
+acoustic comb tracks telemetry to 0.06-0.09 rev/s in ALL 15 windows —
+below the 0.2 rev/s label-jitter floor and 20x below the blind track.
+Caveat: measured with the search window centred on telemetry, so this is
+an information-content ceiling (the audio carries the rate at high k),
+not an achieved blind result. The remaining blind error is capture/
+assignment (seed) error, not physics — measured headroom for the
+seed-first neural program.
+
+Consequence for the band debate: the displaced low-k set is a data-model
+mismatch (low harmonics do not follow shaft rate) to be handled by
+harmonic ADMISSION, not by band choice; algorithm selection must not be
+driven by it. Wide-anneal arm (band_b0=3.0 -> posterior anneal, job
+bandadm-wide-85732e) is running as the fair test of the annealing
+property; prediction registered in scratchpad `displacement/predictions.md`.
