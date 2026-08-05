@@ -27,6 +27,8 @@ Run::
     python scripts/tracking_ref.py --compare results/tracking_ref
     python scripts/tracking_ref.py --compare results/tracking_ref --exact
     python scripts/tracking_ref.py --capture /tmp/ref --seconds 2   # smoke
+    python scripts/tracking_ref.py --bench                          # per-stage ms
+    python scripts/tracking_ref.py --bench --bench-workers 1,4 --bench-vk
 
 Remote (the capture is minutes of CPU, so this is the normal path)::
 
@@ -225,6 +227,116 @@ def run_arm_one(
 
 
 # ---------------------------------------------------------------------------
+# micro-benchmark
+
+
+def _median_ms(fn: Any, iters: int) -> float:
+    """Median wall time (ms) of ``fn()`` over ``iters`` calls.
+
+    One warmup call first, unless ``iters == 1`` — the multi-second stages
+    are timed once and a warmup would double the bench's wall time.
+    """
+    if iters > 1:
+        fn()
+    samples = []
+    for _ in range(iters):
+        tic = time.perf_counter()
+        fn()
+        samples.append(time.perf_counter() - tic)
+    samples.sort()
+    return samples[len(samples) // 2] * 1e3
+
+
+def _bench_rows(frame: Any, *, channels: int, iters: int, with_vk: bool) -> list[tuple[str, float]]:
+    """Time one pass of every hot stage on ``frame`` at the CURRENT worker setting."""
+    import beatvk_flagship as flag2
+
+    from tracking.phase_increment_tracker import _demod_bank, pi_kalman_refine, zoom_lp_decimate
+    from tracking.stages import get_audio, get_rps
+    from tracking.vk_tracking import VKConfig, ls_project_envelopes, vk_envelopes
+
+    audio, sr = get_audio(frame)
+    clip = np.asarray(audio[:channels], dtype=np.float64)
+    r0, ft = get_rps(frame)
+    n_t = clip.shape[-1]
+    t_aud = np.arange(n_t) / sr
+    y32 = clip.astype(np.float32)
+    stride = max(1, int(round(sr / 62.5)))
+    n_env = len(range(0, n_t, stride))
+    ks = list(range(1, flag2.PEEL_K_MAX + 1))
+    phi = 2.0 * np.pi * np.cumsum(np.interp(t_aud, ft, r0[0])) / sr
+    band_cyc = flag2.PI_BAND_HZ / sr
+    x_one = np.asarray(y32 * np.exp(-1j * phi).astype(np.complex64), dtype=np.complex64)
+
+    rows = [
+        (
+            f"zoom_lp_decimate ({clip.shape[0]},T)",
+            _median_ms(lambda: zoom_lp_decimate(x_one, stride, n_env, band_cyc), iters),
+        ),
+        (
+            f"_demod_bank (K={len(ks)})",
+            _median_ms(
+                lambda: _demod_bank(
+                    y32, phi, t_aud, ks, flag2.PI_BAND_HZ + 5.0, stride, n_env, band_cyc
+                ),
+                1,
+            ),
+        ),
+    ]
+    if with_vk:
+        cfg = VKConfig(
+            fs=float(sr), bw_hz=flag2.PEEL_BW_HZ, k_max=flag2.PEEL_K_MAX, f_max=6000.0, n_outer=1
+        )
+        r_aud = np.vstack([np.interp(t_aud, ft, r0[r]) for r in range(flag2.N_ROTORS)])
+        rows.append(("vk_envelopes", _median_ms(lambda: vk_envelopes(clip, r_aud, cfg), 1)))
+        env = vk_envelopes(clip, r_aud, cfg)
+        rows.append(
+            ("ls_project_envelopes", _median_ms(lambda: ls_project_envelopes(clip, env), 1))
+        )
+    rows.append(
+        (
+            "pi_kalman_refine (full)",
+            _median_ms(
+                lambda: pi_kalman_refine(
+                    clip,
+                    r0,
+                    ft,
+                    sr=int(sr),
+                    n_iter=flag2.PI_N_ITER,
+                    pair_mode=flag2.PI_PAIR_MODE,
+                    band_hz=flag2.PI_BAND_HZ,
+                ),
+                1,
+            ),
+        )
+    )
+    return rows
+
+
+def bench(
+    frame: Any, *, channels: int, worker_counts: list[int], iters: int, with_vk: bool
+) -> None:
+    """Per-stage timings of the tracking hot path on the frozen clip.
+
+    Stages, innermost first: one ``zoom_lp_decimate`` call (the FFT kernel),
+    one ``_demod_bank`` flush for rotor 0 at the full harmonic cap (the
+    ``pi_kalman`` inner loop), optionally the peel's ``vk_envelopes`` +
+    ``ls_project_envelopes`` (``--bench-vk``), and the whole
+    ``pi_kalman_refine`` call. Repeated for every ``--bench-workers`` entry,
+    so the threading opt-in is measured rather than assumed.
+    """
+    from tracking.vk_tracking import fft_worker_pool
+
+    print(f"[bench] channels {channels}, iters {iters}, workers {worker_counts}")
+    for w in worker_counts:
+        with fft_worker_pool(w):
+            rows = _bench_rows(frame, channels=channels, iters=iters, with_vk=with_vk)
+        print(f"  workers={w}")
+        for label, ms in rows:
+            print(f"    {label:<26}{ms:12.1f} ms")
+
+
+# ---------------------------------------------------------------------------
 # capture / compare
 
 
@@ -316,6 +428,9 @@ def main() -> None:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--capture", metavar="OUTDIR", help="run and store the reference")
     mode.add_argument("--compare", metavar="OUTDIR", help="re-run and diff against the reference")
+    mode.add_argument(
+        "--bench", action="store_true", help="time the hot stages instead of capturing/diffing"
+    )
     ap.add_argument("--exact", action="store_true", help="--compare: demand bit-identical arrays")
     ap.add_argument(
         "--recording", default=None, help="override the recording (default: first DREGON)"
@@ -337,9 +452,18 @@ def main() -> None:
         default=None,
         help="truncate the clip (smoke runs only — a truncated clip is its own reference)",
     )
+    ap.add_argument(
+        "--bench-workers",
+        default="1,4",
+        help="--bench: comma-separated FFT worker counts (0 = the whole CPU budget)",
+    )
+    ap.add_argument("--bench-iters", type=int, default=5, help="--bench: repeats of the FFT kernel")
+    ap.add_argument(
+        "--bench-vk", action="store_true", help="--bench: also time vk_envelopes + ls_project"
+    )
     opts = ap.parse_args()
 
-    out = Path(opts.capture or opts.compare)
+    out = Path(opts.capture or opts.compare or ".")
     tic = time.perf_counter()
     frame, spec, prov = load_window(
         opts.recording, opts.window, version=opts.dataset_version, seconds=opts.seconds
@@ -352,6 +476,16 @@ def main() -> None:
         f"{prov['channels']} mics) loaded in {time.perf_counter() - tic:.0f}s",
         flush=True,
     )
+
+    if opts.bench:
+        bench(
+            frame,
+            channels=opts.channels,
+            worker_counts=[int(v) for v in str(opts.bench_workers).split(",") if v.strip()],
+            iters=opts.bench_iters,
+            with_vk=opts.bench_vk,
+        )
+        return
 
     arrays, config = run_reference(frame, peel_mode=opts.peel_mode, channels=opts.channels)
     print(f"[tracking_ref] walls: {config['wall_s']}", flush=True)

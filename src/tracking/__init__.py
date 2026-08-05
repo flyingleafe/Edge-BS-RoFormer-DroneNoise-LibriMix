@@ -56,6 +56,8 @@ from tracking.vk_blind_seeding import SeedConfig, blind_seed, stage_guard, white
 from tracking.vk_tracking import (
     VKConfig,
     demodulate,
+    fft_worker_pool,
+    fft_workers,
     ls_project_envelopes,
     vk_envelopes,
     vk_reconstruct,
@@ -91,6 +93,8 @@ __all__ = [
     "demod_rotor",
     "demodulate",
     "estimate_clock_offset",
+    "fft_worker_pool",
+    "fft_workers",
     "fit_rank_one",
     "get_audio",
     "get_protocol",

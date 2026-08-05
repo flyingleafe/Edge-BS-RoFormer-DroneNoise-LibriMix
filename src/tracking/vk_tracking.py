@@ -38,6 +38,8 @@ trajectory sampled on an arbitrary time grid. The core is numpy + scipy only
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, cast
@@ -300,19 +302,69 @@ def _lp_decimate(x: np.ndarray, sos: np.ndarray, stride: int) -> np.ndarray:
     return sosfiltfilt(sos, x, axis=-1, padlen=padlen)[..., ::stride]
 
 
-def fft_workers() -> int:
-    """FFT worker threads: follow ``OMP_NUM_THREADS`` (the same knob callers
-    already use to cap BLAS), clamped to the CPUs actually available to this
-    process (cgroup/affinity — oversubscribing pocketfft workers on a
-    restricted Slurm allocation thrashes), defaulting to 1."""
+#: Process-wide FFT worker override installed by :func:`fft_worker_pool`
+#: (``None`` = follow the environment). Read by :func:`fft_workers`.
+_FFT_WORKERS_OVERRIDE: int | None = None
+
+
+def _cpu_budget() -> int:
+    """CPUs actually available to this process (cgroup/affinity aware)."""
     try:
-        avail = len(os.sched_getaffinity(0))
+        return max(1, len(os.sched_getaffinity(0)))
     except (AttributeError, OSError):
-        avail = os.cpu_count() or 1
+        return max(1, os.cpu_count() or 1)
+
+
+def fft_workers() -> int:
+    """FFT worker threads, clamped to the CPUs available to this process.
+
+    Precedence, first hit wins:
+
+    1. the :func:`fft_worker_pool` override (the explicit in-process opt-in,
+       also what ``pi_kalman_refine(fft_workers=...)`` installs);
+    2. ``TRACKING_FFT_WORKERS`` — the explicit environment opt-in for
+       interactive/offline callers; ``"auto"`` takes the whole CPU budget;
+    3. ``OMP_NUM_THREADS`` — the knob callers already use to cap BLAS;
+    4. ``1``.
+
+    The default stays 1 on purpose: oversubscribing pocketfft workers on a
+    restricted Slurm allocation thrashes, so threads must be asked for.
+    """
+    avail = _cpu_budget()
+    if _FFT_WORKERS_OVERRIDE is not None:
+        return max(1, min(_FFT_WORKERS_OVERRIDE, avail))
+    env = os.environ.get("TRACKING_FFT_WORKERS")
+    if env is not None:
+        if env.strip().lower() == "auto":
+            return avail
+        try:
+            return max(1, min(int(env), avail))
+        except ValueError:
+            pass
     try:
         return max(1, min(int(os.environ.get("OMP_NUM_THREADS", "1")), avail))
     except ValueError:
         return 1
+
+
+@contextmanager
+def fft_worker_pool(workers: int | None) -> Iterator[int]:
+    """Run the block with an explicit FFT worker count (``None`` = no change).
+
+    ``workers <= 0`` means "the whole CPU budget". The override is
+    process-wide (the tracking stack is single-threaded numpy/scipy), and is
+    restored on exit.
+    """
+    global _FFT_WORKERS_OVERRIDE
+    if workers is None:
+        yield fft_workers()
+        return
+    prev = _FFT_WORKERS_OVERRIDE
+    _FFT_WORKERS_OVERRIDE = _cpu_budget() if workers <= 0 else int(workers)
+    try:
+        yield fft_workers()
+    finally:
+        _FFT_WORKERS_OVERRIDE = prev
 
 
 def _fft_lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:

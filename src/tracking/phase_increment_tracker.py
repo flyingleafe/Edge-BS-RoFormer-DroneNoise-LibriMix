@@ -88,7 +88,8 @@ from typing import Any, cast
 
 import numpy as np
 
-from tracking.vk_tracking import fft_workers
+from tracking.vk_tracking import fft_worker_pool
+from tracking.vk_tracking import fft_workers as _fft_workers
 
 __all__ = ["DEFAULTS", "pi_kalman_refine"]
 
@@ -122,7 +123,7 @@ def zoom_lp_decimate(
     """
     from scipy import fft as sfft
 
-    w = fft_workers()
+    w = _fft_workers()
     n_pad = stride * n_env
     xc = np.asarray(x, dtype=np.complex64)
     spec = cast(np.ndarray, sfft.fft(xc, n=n_pad, axis=-1, workers=w))
@@ -1092,6 +1093,7 @@ def pi_kalman_refine(
     lowk_thresh: float = 0.15,
     lowk_weight: float = 0.1,
     probe_mode: str = "fixed",
+    fft_workers: int | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """ML instantaneous-frequency refinement by phase-increment Kalman smoothing.
 
@@ -1189,6 +1191,12 @@ def pi_kalman_refine(
             (fallback: the fixed offset; count in
             ``diagnostics["probe_fallbacks"]``). ``"fixed"`` keeps the
             shared ``off_comb_hz`` ramp.
+        fft_workers: explicit FFT worker threads for the whole call (the
+            demodulation transforms dominate the cost). ``None`` follows the
+            environment (``TRACKING_FFT_WORKERS``, else ``OMP_NUM_THREADS``,
+            else 1 — the Slurm-safe default); ``0`` or less takes the whole
+            CPU budget. Bit-identical either way: worker count only splits
+            the batched transform, it does not change its arithmetic.
 
     Returns:
         ``(r_refined, diagnostics)`` — refined ``(R, N)`` tracks and a
@@ -1246,87 +1254,88 @@ def pi_kalman_refine(
 
     rotor_diags: list[dict[str, Any]] = [{"rotor": i, "iters": []} for i in range(n_rot)]
     pair_diags: list[list[dict[str, Any]]] = []
-    for it, k_cap in enumerate(schedule):
-        band_it = band_schedule[it]
-        joint_obs: dict[int, list[tuple[int, float, float, int]]] = {}
-        if pair_mode == "joint":
-            it_pair_diags: list[dict[str, Any]] = []
-            for lo, hi in _assign_pairs(r, pair_max_split, min_rate):
-                obs, pd = _pair_joint_obs(
+    with fft_worker_pool(fft_workers):
+        for it, k_cap in enumerate(schedule):
+            band_it = band_schedule[it]
+            joint_obs: dict[int, list[tuple[int, float, float, int]]] = {}
+            if pair_mode == "joint":
+                it_pair_diags: list[dict[str, Any]] = []
+                for lo, hi in _assign_pairs(r, pair_max_split, min_rate):
+                    obs, pd = _pair_joint_obs(
+                        y32,
+                        t_aud,
+                        r,
+                        lo,
+                        hi,
+                        ft,
+                        sr,
+                        stride,
+                        n_env,
+                        dt,
+                        k_cap,
+                        band_hz=band_it,
+                        f_max=f_max,
+                        guard_hz=guard_hz,
+                        min_rate=min_rate,
+                        joint_win_s=joint_win_s,
+                        joint_snr_min=joint_snr_min,
+                        n_trim=n_trim,
+                        pair_max_split=pair_max_split,
+                        b0=float(0.5 * (b0_arr[lo] + b0_arr[hi])) if k_scaled else None,
+                    )
+                    pd["iter"] = it + 1
+                    it_pair_diags.append(pd)
+                    for rot, lst in obs.items():
+                        joint_obs.setdefault(rot, []).extend(lst)
+                pair_diags.append(it_pair_diags)
+            for i in range(n_rot):
+                delta_ft, d = _rotor_pass(
                     y32,
                     t_aud,
                     r,
-                    lo,
-                    hi,
+                    i,
                     ft,
                     sr,
                     stride,
                     n_env,
                     dt,
+                    t_mid,
+                    band_it / sr,
                     k_cap,
                     band_hz=band_it,
+                    off_comb_hz=off_comb_hz,
                     f_max=f_max,
                     guard_hz=guard_hz,
-                    min_rate=min_rate,
-                    joint_win_s=joint_win_s,
-                    joint_snr_min=joint_snr_min,
+                    snr_gate=snr_gate,
+                    wrap_guard_rad=wrap_guard_rad,
                     n_trim=n_trim,
-                    pair_max_split=pair_max_split,
-                    b0=float(0.5 * (b0_arr[lo] + b0_arr[hi])) if k_scaled else None,
+                    q_step=q_step,
+                    p0=p0,
+                    min_rate=min_rate,
+                    extra_obs=joint_obs.get(i),
+                    b0=float(b0_arr[i]) if k_scaled else None,
+                    probe_mode=probe_mode,
+                    lowk_gate=lowk_gate,
+                    lowk_split_k=lowk_split_k,
+                    lowk_thresh=lowk_thresh,
+                    lowk_weight=lowk_weight,
                 )
-                pd["iter"] = it + 1
-                it_pair_diags.append(pd)
-                for rot, lst in obs.items():
-                    joint_obs.setdefault(rot, []).extend(lst)
-            pair_diags.append(it_pair_diags)
-        for i in range(n_rot):
-            delta_ft, d = _rotor_pass(
-                y32,
-                t_aud,
-                r,
-                i,
-                ft,
-                sr,
-                stride,
-                n_env,
-                dt,
-                t_mid,
-                band_it / sr,
-                k_cap,
-                band_hz=band_it,
-                off_comb_hz=off_comb_hz,
-                f_max=f_max,
-                guard_hz=guard_hz,
-                snr_gate=snr_gate,
-                wrap_guard_rad=wrap_guard_rad,
-                n_trim=n_trim,
-                q_step=q_step,
-                p0=p0,
-                min_rate=min_rate,
-                extra_obs=joint_obs.get(i),
-                b0=float(b0_arr[i]) if k_scaled else None,
-                probe_mode=probe_mode,
-                lowk_gate=lowk_gate,
-                lowk_split_k=lowk_split_k,
-                lowk_thresh=lowk_thresh,
-                lowk_weight=lowk_weight,
-            )
-            d["iter"] = it + 1
-            if k_scaled:
-                d["band_b0"] = round(float(b0_arr[i]), 4)
-            if delta_ft is not None:
-                step = np.clip(delta_ft, -max_step, max_step)
-                r[i] += step
-                d["step_rms"] = round(float(np.sqrt(np.mean(step**2))), 4)
-                d["step_max"] = round(float(np.max(np.abs(step))), 4)
-                if band_anneal == "posterior" and "post_std_max" in d:
-                    # Trust region: next iteration's per-k band scale from the
-                    # smoother's own posterior (never wider than the initial
-                    # capture band, floored to keep capture sane).
-                    b0_new = max(anneal_c * d["post_std_max"] + anneal_w_line, anneal_b0_floor)
-                    b0_arr[i] = min(b0_new, float(b0_init[i]))
-                    d["band_b0_next"] = round(float(b0_arr[i]), 4)
-            rotor_diags[i]["iters"].append(d)
+                d["iter"] = it + 1
+                if k_scaled:
+                    d["band_b0"] = round(float(b0_arr[i]), 4)
+                if delta_ft is not None:
+                    step = np.clip(delta_ft, -max_step, max_step)
+                    r[i] += step
+                    d["step_rms"] = round(float(np.sqrt(np.mean(step**2))), 4)
+                    d["step_max"] = round(float(np.max(np.abs(step))), 4)
+                    if band_anneal == "posterior" and "post_std_max" in d:
+                        # Trust region: next iteration's per-k band scale from the
+                        # smoother's own posterior (never wider than the initial
+                        # capture band, floored to keep capture sane).
+                        b0_new = max(anneal_c * d["post_std_max"] + anneal_w_line, anneal_b0_floor)
+                        b0_arr[i] = min(b0_new, float(b0_init[i]))
+                        d["band_b0_next"] = round(float(b0_arr[i]), 4)
+                rotor_diags[i]["iters"].append(d)
 
     diagnostics: dict[str, Any] = {
         "params": {
