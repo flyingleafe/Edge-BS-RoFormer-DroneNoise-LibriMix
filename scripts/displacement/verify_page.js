@@ -143,8 +143,21 @@ function makeDom(warns) {
 /* ── driver ───────────────────────────────────────────────────────────────── */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* The notebook widget ships the very same page inside a srcdoc iframe (that is
+ * how JupyterLab is made to execute it at all).  Unwrap it so one harness
+ * verifies both front ends: the payload contains no raw `"`, so the attribute
+ * boundary is unambiguous. */
+function unwrapSrcdoc(html) {
+  const m = html.match(/srcdoc="([^"]*)"/);
+  if (!m) return html;
+  return m[1]
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 async function verify(file) {
-  const html = fs.readFileSync(file, "utf8");
+  const html = unwrapSrcdoc(fs.readFileSync(file, "utf8"));
   const m = html.match(/<script>([\s\S]*)<\/script>/);
   if (!m) {
     // the index page is a static table; check that every link resolves
@@ -172,39 +185,59 @@ async function verify(file) {
   const try_ = (what, fn) => { try { fn(); return true; } catch (e) { fails.push(what + ": " + (e && e.stack ? e.stack.split("\n")[0] : e)); return false; } };
   let renders = 0;
 
-  // every rotor x carrier x segment x k = 1..KMAX
-  for (let r = 0; r < NROT; r++) {
-    for (const car of D.carriers.map((c) => c.id)) {
-      for (let si = 0; si < D.segs.length; si++) {
-        for (let k = 1; k <= KMAX; k++) {
-          api.set({ stripRot: r, carrier: car, segIdx: si, ks: [k] });
-          if (try_(`strips r${r} ${car} seg${si} k${k}`, api.drawStrips)) renders++;
+  // Every microphone channel the payload actually carries is driven in full:
+  // a channel that is in-page state (the notebook widget) has never been
+  // rendered until it is selected, so it needs the same sweep as the first.
+  const inPage = D.chans.filter((c) => D.spec[c.id]);
+  for (const cinfo of inPage) {
+    if (cinfo.id !== api.state().chan) {
+      await api.setChannel(cinfo.id);
+      if (api.state().chan !== cinfo.id) { fails.push(`setChannel(${cinfo.id}) did not take`); continue; }
+      if (!api.state().ready) { fails.push(`channel ${cinfo.id} never became ready`); continue; }
+    }
+    // every rotor x carrier x segment x k = 1..KMAX
+    for (let r = 0; r < NROT; r++) {
+      for (const car of D.carriers.map((c) => c.id)) {
+        for (let si = 0; si < D.segs.length; si++) {
+          for (let k = 1; k <= KMAX; k++) {
+            api.set({ stripRot: r, carrier: car, segIdx: si, ks: [k] });
+            if (try_(`strips ${cinfo.id} r${r} ${car} seg${si} k${k}`, api.drawStrips)) renders++;
+          }
         }
       }
     }
+    // several harmonics at once, both bandwidth extremes
+    for (const bw of [0.15, 6, 3.05]) {
+      api.set({ bw, ks: KS.slice(0, Math.min(6, KS.length)) });
+      try_(`strips ${cinfo.id} bw=${bw}`, api.drawStrips);
+    }
+    // an out-of-range k must leave a VISIBLE placeholder
+    api.set({ ks: [KMAX + 999] });
+    try_(`strips ${cinfo.id} out-of-range k`, api.drawStrips);
+    const host = sandbox.REG["strips"];
+    const ph = (host.children || []).filter((c) => c.className === "miss" && c.textContent);
+    if (ph.length !== 1) fails.push(`${cinfo.id}: out-of-range k rendered ${ph.length} placeholders, want 1`);
+    else if (!/not available/.test(ph[0].textContent)) fails.push("placeholder text is not explanatory: " + ph[0].textContent);
+    // every declared strip stack must have decoded, with the declared shape
+    const stacks = D.strips[cinfo.id] || {};
+    for (const key in stacks) {
+      const b = stacks[key];
+      if (b.nk !== KS.length) fails.push(`strip ${cinfo.id}/${key} carries ${b.nk} harmonics, page declares ${KS.length}`);
+    }
+    if (api.state().strips !== Object.keys(stacks).length)
+      fails.push(`${cinfo.id}: decoded ${api.state().strips} of ${Object.keys(stacks).length} strip stacks`);
+    if (!Object.keys(stacks).length) fails.push(`${cinfo.id}: no strip stacks at all`);
+    api.set({ bw: 1.5, carrier: D.carriers[0].id, stripRot: 0, segIdx: 0 });
   }
-  // several harmonics at once, both bandwidth extremes
-  for (const bw of [0.15, 6, 3.05]) {
-    api.set({ bw, ks: KS.slice(0, Math.min(6, KS.length)) });
-    try_("strips bw=" + bw, api.drawStrips);
-  }
-  // an out-of-range k must leave a VISIBLE placeholder
-  api.set({ ks: [KMAX + 999] });
-  try_("strips out-of-range k", api.drawStrips);
-  const host = sandbox.REG["strips"];
-  const ph = (host.children || []).filter((c) => c.className === "miss" && c.textContent);
-  if (ph.length !== 1) fails.push(`out-of-range k rendered ${ph.length} placeholders, want 1`);
-  else if (!/not available/.test(ph[0].textContent)) fails.push("placeholder text is not explanatory: " + ph[0].textContent);
   // k contiguity (a hole here is the silent failure this page must never have)
   const contiguous = KS.length === KMAX - KS[0] + 1;
   if (!contiguous) fails.push(`k set is NOT contiguous: ${KS.length} values over ${KS[0]}..${KMAX}`);
-  // every declared strip stack must have decoded, with the declared shape
-  for (const key in D.strips) {
-    const b = D.strips[key];
-    if (b.nk !== KS.length) fails.push(`strip ${key} carries ${b.nk} harmonics, page declares ${KS.length}`);
+  // every carrier must carry a trajectory for every rotor
+  for (const c of D.carriers) {
+    const G = D.traj.G[c.id];
+    if (!G || G.length !== NROT) fails.push(`carrier ${c.id} has ${G ? G.length : "no"} trajectories, want ${NROT}`);
+    else if (G[0].length !== D.traj.t.length) fails.push(`carrier ${c.id} trajectory is ${G[0].length} long, time axis is ${D.traj.t.length}`);
   }
-  if (api.state().strips !== Object.keys(D.strips).length)
-    fails.push(`decoded ${api.state().strips} of ${Object.keys(D.strips).length} strip stacks`);
 
   // both spectrogram transforms, at several frequency ranges and time indices
   api.set({ ks: KS.slice(0, 4), rotOn: Array.from({ length: NROT }, () => true) });
@@ -240,24 +273,30 @@ async function verify(file) {
     try_(`in-view r${r}`, () => R.rotchk.fire("click", ev("kview")));
     try_(`rotor toggle r${r}`, () => R.rotchk.fire("change", { target: { dataset: { i: String(r) }, checked: r % 2 === 0 } }));
   }
-  // the channel selector must point at pages that exist
-  const nav = M.channels || [];
+  // a channel that is NOT in this payload must be a link to a sibling file
+  // that exists; a channel that IS in the payload must not claim a file
+  const nav = D.chans || [];
   for (const c of nav) {
-    if (!fs.existsSync(path.join(path.dirname(file), c.file)))
+    if (c.file && !fs.existsSync(path.join(path.dirname(file), c.file)))
       fails.push(`channel option "${c.label}" -> ${c.file} which is not in ${path.dirname(file)}`);
+    if (!c.file && !D.spec[c.id])
+      fails.push(`channel option "${c.label}" is neither in this payload nor a link`);
   }
-  try_("channel select", () => R.chan.onchange({ target: { value: nav.length ? nav[nav.length - 1].file : "" } }));
+  try_("channel select", () => R.chan.onchange({ target: { value: nav.length ? nav[nav.length - 1].id : "" } }));
 
   process.removeAllListeners("unhandledRejection");
   if (unhandled) fails.push("unhandled rejection: " + unhandled);
   const bad = warns.filter((w) => /MISMATCH/.test(w));
   const size = fs.statSync(file).size;
+  const nStacks = inPage.reduce((a, c) => a + Object.keys(D.strips[c.id] || {}).length, 0);
   console.log(
     `\n${path.basename(file)}  ${(size / 1e6).toFixed(2)} MB\n` +
-      `  ${M.dataset}/${M.recording} t0=${M.t0} +${M.dur}s | ${M.channel_label} | rps=${M.rps_channel}\n` +
+      `  ${M.dataset}/${M.recording} t0=${M.t0} +${M.dur}s | rps=${M.rps_channel}\n` +
       `  ${NROT} rotors, k=${KS[0]}..${KMAX} (${KS.length} values, contiguous=${contiguous}), ` +
       `${D.segs.length} segment lengths, carriers=${D.carriers.map((c) => c.id).join("+")}\n` +
-      `  ${renders} render calls driven, ${Object.keys(D.strips).length} strip stacks decoded, ` +
+      `  channels in payload: ${inPage.map((c) => c.id).join(",")} ` +
+      `(+${nav.length - inPage.length} linked)\n` +
+      `  ${renders} render calls driven, ${nStacks} strip stacks decoded, ` +
       `${warns.length} page warnings (${bad.length} payload mismatches)\n` +
       `  ${fails.length ? "FAIL\n    " + fails.slice(0, 12).join("\n    ") : "PASS"}`
   );

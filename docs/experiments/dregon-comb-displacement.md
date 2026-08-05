@@ -363,3 +363,81 @@ safety net, and block length replaces envelope bandwidth as the knob
 a sibling's reconstruction is highly correlated with the target, so an
 unconstrained LS gain would subtract the target itself. The existing
 choice to peel only NON-pair rotors for the joint pair path is correct.
+
+## k-scaled bands + telemetry init: the first identity-preserving refinement (2026-08-05, fourth round)
+
+The two earlier failures (narrow = inert, wide FIXED band = rotors collapse
+onto twins) pointed at the band SHAPE, not its width. A fixed band gives
+capture `B/k` rev/s — +-3 rev/s at k=8 but +-0.3 at k=80 — so low
+harmonics roam across the twins while high ones are pinned. A k-scaled
+band gives every harmonic the SAME capture in rev/s, so the comb moves
+coherently or not at all and no single harmonic can capture a twin.
+
+Runner `scripts/displacement/refine_kscaled.py`, results
+`kscaled_telemetry_init.json`. Telemetry init, k<=80, `k_caps=(80,80,80)`.
+
+| arm | rotor order kept | r0-r2 gap | r1-r3 gap | mean shift |
+|---|---|---|---|---|
+| init (telemetry) | — | 0.397 | 0.863 | — |
+| k_scaled B0=3 | **yes** | 0.350 | 0.939 | **-0.241 %** |
+| k_scaled B0=3, pair_mode=joint | **yes** | 0.322 | 0.801 | **-0.187 %** |
+| k_scaled B0=1 | **yes** | 0.238 | 0.860 | **-0.313 %** |
+| (earlier) fixed band_hz=24 | **NO** | **-0.273** (sign flipped) | 0.079 (11x shrunk) | -0.024 % |
+
+**All three k-scaled arms preserve rotor identity and move every rotor
+DOWN by 0.19-0.31 % of rate.** First refinement that both moves and keeps
+the rotors apart. Same sign and order as the other estimators, about half
+the magnitude:
+
+| estimator | scale | identifiability |
+|---|---|---|
+| low-k per-unit regression | -0.542 % | low-k only; interloper-sparse but few lines |
+| window-free order-space scan | -0.555 % | whole comb at once |
+| joint 4-rotor global scale | -0.430 % (smoothed -0.813 %) | alias ridges |
+| **k-scaled tracker, telemetry init** | **-0.19 .. -0.31 %** | identity verified |
+| single strong high harmonics | -1.1 % | REFUTED (interloper-blended) |
+
+Caveat recorded: the tracker's delta RMS is 0.32-0.62 rev/s, far larger
+than the mean shift, because it is also smoothing telemetry's 0.269 rev/s
+quantisation staircase. **The refined tracks therefore carry TWO distinct
+corrections — a small systematic downward shift and a large de-staircasing
+— and must be reported separately, not as one number.**
+
+Note on a wrong test: `refine_kscaled.py` printed "IDENTITY COLLAPSED" for
+all three arms. That check asked which INITIAL rotor each refined rate is
+nearest to; since every rotor moved down together, r0's new value sits
+nearer r2's old value. The correct test is rotor ORDER plus inter-rotor
+GAPS, above. Beware of nearest-neighbour identity tests under a common-mode
+shift.
+
+## Why the tracker is slow (measured, 2026-08-05)
+
+`_demod_bank` FFTs `(8 ch, 2 harmonics, 705600 samples)` per flush:
+**995 ms measured**, twice per flush (on-comb + off-comb probe). 80
+harmonics x 4 rotors x 3 iterations = **15,360 full-length transforms**,
+~16 min per arm single-threaded — matching the observed 22 min with
+gating and the Kalman pass.
+
+**The waste**: `band_cyc = 28.1/44100`, so after a 705,294-point FFT we
+keep ~900 bins — **0.13 %**. ~780x more spectrum is computed than used,
+per harmonic, per channel, per rotor, per iteration.
+
+- **k is linear** in cost, driven by `k_caps` not `k_max`: the protocol
+  default (8,20,40) is 68 harmonic-iterations, (80,80,80) is 240 = 3.5x.
+- **Bandwidth is FREE**: the brickwall zeroes bins AFTER a full-length
+  transform, so B0=3 and B0=0.35 cost the same. Only `fs_env` costs
+  (via `n_env`).
+- **Complexity**: `O(R I C K T log T)` from the demod bank; observations
+  `O(R I K n_env)`, Kalman/RTS `O(R I n_env)` — negligible at
+  `n_env ~ 999` vs `T = 705,600`.
+- `chunk = 96e6/(C T 8) = 2` -> tiny FFT batches; `workers=4` measured at
+  662 ms vs 995 ms, so **threading alone is a free 1.5x** not being taken.
+- **Not GPU-optimised** (NumPy/SciPy). A `torch.fft` port of the demod
+  bank should give 30-100x on the dominant term (batched large FFTs are
+  the ideal cuFFT workload; the full batch is 3.6 GB, fits a P100 with
+  chunking).
+- **Better than GPU: remove the K factor.** Resample the audio uniformly
+  in ROTOR PHASE once per rotor per iteration (O(T log T)); every harmonic
+  then sits at a fixed order and ONE FFT yields all K harmonics ->
+  `O(R I C T log T)`, ~80x at K=80, on CPU. `combscan.py` already does
+  this resampling for the scale scan.
