@@ -63,7 +63,7 @@ Chains:
              then corridor-tracks it; up to 3 iterations.
   joint_beam WP17: replace `fullrange_init` + the viterbi_c / vit2dsp ladder
              stages with a JOINT 4-rotor beam search over the full speed vector
-             (data_processing.joint_beam_tracker), then feed the existing
+             (tracking.joint_beam_tracker), then feed the existing
              capture -> M1 -> M2 stages unchanged.  The coarse DP's state is one
              scalar c(t), so all four tracks share one shape by construction
              (WP3); this searches four independent trajectories under an OU
@@ -118,7 +118,6 @@ sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "src"))
 os.chdir(REPO)  # results/* caches are repo-relative
 
-import vk_blind_annotation as vba  # noqa: E402
 from beatvk_vk_arms import (  # noqa: E402
     COARSE_F_MIN,
     COARSE_GAMMA,
@@ -132,31 +131,36 @@ from beatvk_vk_arms import (  # noqa: E402
     load_prep,
     weights_path,
 )
-from vk_blind_annotation import (  # noqa: E402
-    MIDBAND_CFGS,
-    REFINE_CFG,
-    VIT2D_DELTA,
-    VIT2D_STEP,
-    VIT_GAMMA_MULT,
-    pit_perm,
-)
-from vk_blind_sweep import SEED_CFG  # noqa: E402
+from vk_blind_annotation import pit_perm  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
-import data_processing.phase_increment_tracker as pit  # noqa: E402
-from data_processing.joint_beam_tracker import (  # noqa: E402
-    BeamCfg,
-    EmissionCfg,
-    OUPrior,
-    joint_beam_track,
-)
+import tracking.phase_increment_tracker as pit  # noqa: E402
 from data_processing.rps_synthesis import (  # noqa: E402
     MIXER,
     OUModeParams,
     RPSSynthConfig,
 )
 from data_processing.rps_synthesis import generate as rps_generate  # noqa: E402
-from data_processing.vk_blind_seeding import (  # noqa: E402
+from tracking.joint_beam_tracker import (  # noqa: E402
+    BeamCfg,
+    EmissionCfg,
+    OUPrior,
+    joint_beam_track,
+)
+from tracking.pipelines import (  # noqa: E402
+    MIDBAND_CFGS,
+    REFINE_CFG,
+    SEED_CFG,
+    VIT2D_DELTA,
+    VIT2D_STEP,
+    VIT_GAMMA_MULT,
+    joint_viterbi,
+    pair_score_2d_spatial,
+    tooth_cube,
+    vit_stage1,
+    whitened_logmag_multi,
+)
+from tracking.vk_blind_seeding import (  # noqa: E402
     SeedConfig,
     SeedResult,
     blind_seed,
@@ -164,7 +168,7 @@ from data_processing.vk_blind_seeding import (  # noqa: E402
     track_comb_confidence,
     whitened_logmag,
 )
-from data_processing.vk_tracking import (  # noqa: E402
+from tracking.vk_tracking import (  # noqa: E402
     VKConfig,
     vk_envelopes,
     vk_reconstruct,
@@ -381,8 +385,8 @@ def run_ladder(
     and the spatial joint 2-rotor DP) so a different init stage can supply the
     entry tracks; the VK capture/refine stages and their `stage_guard` are
     untouched, which is what keeps `joint_beam` comparable to `refine_v2`."""
-    lm_avg, bin_hz, st = vba._whitened_spec(prep)
-    lm_multi, _, _ = vba._whitened_spec_multi(prep)
+    lm_avg, bin_hz, st = whitened_logmag(prep.audio, float(SR), SEED_CFG)
+    lm_multi, _, _ = whitened_logmag_multi(prep.audio, float(SR), SEED_CFG)
     ks = np.arange(1, 31)
     deltas = np.arange(-VIT2D_DELTA, VIT2D_DELTA + VIT2D_STEP / 2, VIT2D_STEP)
     r_cur = r0.copy()
@@ -390,9 +394,7 @@ def run_ladder(
     pairs = [(int(order[0]), int(order[1])), (int(order[2]), int(order[3]))]
 
     def guard(label: str, r_prev: np.ndarray, r_new: np.ndarray) -> np.ndarray:
-        guarded, reverted, gdiag = stage_guard(
-            r_prev, r_new, lm_avg, bin_hz, st, prep.ft, vba._SEED_CFG
-        )
+        guarded, reverted, gdiag = stage_guard(r_prev, r_new, lm_avg, bin_hz, st, prep.ft, SEED_CFG)
         if reverted:
             print(f"    stage_guard[{label}] reverted {reverted}: {gdiag['reasons']}", flush=True)
         return guarded
@@ -400,7 +402,7 @@ def run_ladder(
     # -- stage 1: Viterbi pair-mean c(t)
     if not skip_dp:
         r_prev = r_cur.copy()
-        r_cur, _ = vba._vit_stage1(prep, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
+        r_cur, _ = vit_stage1(prep.ft, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
         r_cur = guard("viterbi_c", r_prev, r_cur)
         rec.add("viterbi_c", r_cur)
 
@@ -411,17 +413,17 @@ def run_ladder(
         rot_a, rot_b = int(phys_map[pair[0]]), int(phys_map[pair[1]])
         lm_a = np.tensordot(weights[:, rot_a], lm_multi, axes=(0, 0))
         lm_b = np.tensordot(weights[:, rot_b], lm_multi, axes=(0, 0))
-        centers, cube_a = vba._tooth_cube(lm_a, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
-        _, cube_b = vba._tooth_cube(lm_b, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
+        centers, cube_a = tooth_cube(lm_a, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
+        _, cube_b = tooth_cube(lm_b, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
         s2 = np.stack(
             [
-                vba._pair_score_2d_spatial(cube_a[w], cube_b[w], ks, bin_hz)
+                pair_score_2d_spatial(cube_a[w], cube_b[w], ks, bin_hz)
                 for w in range(cube_a.shape[0])
             ]
         )
         flat = s2.reshape(s2.shape[0], -1)
         contrast = float(np.median(np.max(flat, axis=1)) - np.median(np.median(flat, axis=1)))
-        d1_idx, d2_idx = vba._joint_viterbi(s2, VIT_GAMMA_MULT * contrast)
+        d1_idx, d2_idx = joint_viterbi(s2, VIT_GAMMA_MULT * contrast)
         d1 = np.interp(prep.ft, centers, deltas[d1_idx.astype(int)])
         d2 = np.interp(prep.ft, centers, deltas[d2_idx.astype(int)])
         r_cur[pair[0]] = np.maximum(c_trajs[pi] + d1, 0.0)
@@ -491,7 +493,7 @@ PK_POLISH: dict[str, Any] = {
     "pair_mode": "gate",
 }
 
-# joint_beam (WP17) knobs — see data_processing.joint_beam_tracker for what each
+# joint_beam (WP17) knobs — see tracking.joint_beam_tracker for what each
 # one means and the measurement behind its default.  Overridable from the CLI so
 # the emission/prior balance can be swept on the cluster without code edits.
 JB_OU: dict[str, Any] = {}
@@ -849,8 +851,8 @@ def m2_gate_reject(
         lm, bin_hz, st = spec
         r_after = r.copy()
         r_after[rot] = r_prop
-        cb = track_comb_confidence(lm, bin_hz, st, prep.ft, r, vba._SEED_CFG)[rot]
-        ca = track_comb_confidence(lm, bin_hz, st, prep.ft, r_after, vba._SEED_CFG)[rot]
+        cb = track_comb_confidence(lm, bin_hz, st, prep.ft, r, SEED_CFG)[rot]
+        ca = track_comb_confidence(lm, bin_hz, st, prep.ft, r_after, SEED_CFG)[rot]
         diag["conf_before"] = round(float(cb), 4)
         diag["conf_after"] = round(float(ca), 4)
     if M2_GATE == "off":

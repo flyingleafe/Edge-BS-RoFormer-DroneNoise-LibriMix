@@ -2,12 +2,13 @@
 
 import json
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression/src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import hk_core as H  # noqa: E402
 import numpy as np  # noqa: E402
 
-from data_processing.phase_increment_tracker import pi_kalman_refine  # noqa: E402
+from tracking.phase_increment_tracker import pi_kalman_refine  # noqa: E402
 
 JSON_OUT = "refined_labels.json"
 

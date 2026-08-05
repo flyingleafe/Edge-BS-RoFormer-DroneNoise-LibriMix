@@ -1,6 +1,6 @@
 """Can the coupled VK tracker do FULL BLIND RPS annotation? (DREGON room1 GT)
 
-Tests whether ``data_processing.vk_tracking`` recovers correct rotor-speed
+Tests whether ``tracking.vk_tracking`` recovers correct rotor-speed
 trajectories from a much worse starting point than telemetry — or from none at
 all — on the 5 DREGON ``free-flight_*_room1`` recordings where
 ``motors_measured`` provides ground truth. Same 25 s mid-flight segments, tau
@@ -98,7 +98,7 @@ from vk_validation import (  # noqa: E402
     prepare_recording as _prepare_recording_uncached,
 )
 
-from data_processing.vk_tracking import (  # noqa: E402
+from tracking.vk_tracking import (  # noqa: E402
     Envelopes,
     VKConfig,
     vk_envelopes,
@@ -152,43 +152,49 @@ def prepare_recording(rid: str) -> Prepared:
     return prep
 
 
-# CAPTURE phase: annealed schedule (grow k_max + bandwidth), wide early bands.
-#
-# DOCUMENTED FIX #2 (capture config — the one allowed tracker-fix iteration):
-# the first full run used the literally-specified
-# ``VKConfig(fs, k_schedule="grow", n_outer=10, k_max=30, couple_hz=20)`` with
-# library defaults (k_min=1, bw_hz=1.0, max_step=0.5) — and it stalled or
-# actively repelled from EVERY non-telemetry init (5/5 jobs; e.g. offset+2 on
-# nosource: init err 1.97 -> captured 1.92, per-round max deltas 0.21->0.05
-# with mean rotor movement ~0; blind-from-near-truth got WORSE, 1.20 -> 1.50,
-# results archived under ``capture_v1_asspec/``, per-round trajectory trace in
-# ``trace_v1_*``). The capture-basin probe that validated +-2..3 rev/s
-# recovery (results/vk_tracking/validation "probe (grow schedule): basin >=
-# 2 rev/s") did NOT use those defaults — it used the grow schedule on top of
-# the refine config: ``replace(MAIN_CFG, k_schedule="grow", n_outer=12)``,
-# i.e. k_min=6 (low twin-merged harmonics excluded from the Fisher fusion),
-# bw_hz=1.5, max_step=0.3. Fix = use exactly that validated capture config.
-CAPTURE_CFG = replace(MAIN_CFG, k_schedule="grow", n_outer=12)
-REFINE_CFG = MAIN_CFG  # fixed, k_min=6, k_max=30, bw 1.5, n_outer=5, step 0.3
-
-# Wander-tracking fix experiment (coordinator-directed, blind condition only).
-# Diagnosis: refine's evidence bandwidth is +-bw/(2k) ~ 0.125 rev/s at k=6 —
-# the +-1.5 rev/s flight wander leaves the band and updates die, so blind
-# tracks flatline at the scan mean. Arm A inserts a mid-band "track" phase
-# between capture and refine: at k=6-12 a 7 Hz band reads detunings up to
-# +-0.5 rev/s and re-centers every round — wide enough to follow the wander,
-# high-enough k to reject twins.
-TRACK_CFG = VKConfig(
-    fs=float(SR),
-    k_schedule="fixed",
-    n_outer=8,
-    k_min=6,
-    k_max=12,
-    bw_hz=7.0,
-    max_step=0.5,
-    couple_hz=20.0,
-    update_gate=8.0,
+# The calibrated ladder configs (CAPTURE/REFINE/TRACK/MIDBAND/SEED) and the
+# vit2dsp ladder core moved to ``tracking.pipelines`` — the frozen
+# blind-annotation registry; changing values THERE invalidates published
+# annotations. The history behind each value (DOCUMENTED FIX #2: the
+# literally-specified capture recipe with k_min=1 library defaults stalled
+# from every non-telemetry init, archived under ``capture_v1_asspec/``; the
+# TRACK_CFG mid-band wander phase; the v5/v7 Viterbi constants) stays in the
+# arm comments below and in ``tracking/pipelines.py``. The underscored names
+# are back-compat aliases so the run_* arms and external ``vba.X`` consumers
+# keep working.
+from tracking.pipelines import (  # noqa: E402
+    CAPTURE_CFG,
+    MIDBAND_CFG,
+    MIDBAND_CFGS,
+    PAIRSCAN_HOP_S,
+    PAIRSCAN_WIN_S,
+    REFINE_CFG,
+    TRACK_CFG,
+    VIT2D_BEAM,
+    VIT2D_DELTA,
+    VIT2D_STEP,
+    VIT_DELTA,
+    VIT_GAMMA_MULT,
+    vit2dsp_pipeline,
+    vit_stage1,
+    whitened_logmag_multi,
 )
+from tracking.pipelines import SEED_CFG as _SEED_CFG  # noqa: E402
+from tracking.pipelines import joint_viterbi as _joint_viterbi  # noqa: E402
+from tracking.pipelines import local_comb_frame_scores as _local_comb_frame_scores  # noqa: E402
+from tracking.pipelines import pair_score_2d_spatial as _pair_score_2d_spatial  # noqa: E402
+from tracking.pipelines import pair_surface as _pair_surface  # noqa: E402, F401
+from tracking.pipelines import surface_contrast as _surface_contrast  # noqa: E402, F401
+from tracking.pipelines import tooth_cube as _tooth_cube  # noqa: E402
+from tracking.pipelines import viterbi_ridge as _viterbi_ridge  # noqa: E402, F401
+
+# The registry pins the exact calibrated values; the validation script's
+# MAIN_CFG is the same recipe and must not drift from it.
+assert REFINE_CFG == MAIN_CFG, "tracking.pipelines.REFINE_CFG drifted from vk_validation.MAIN_CFG"
+
+# Wander-tracking fix experiment (coordinator-directed, blind condition only):
+# TRACK_CFG (now in the registry) is the arm-A mid-band phase between capture
+# and refine — a 7 Hz band at k 6-12 follows the +-1.5 rev/s flight wander.
 FIX_TARGETS = ("free-flight_nosource_room1", "free-flight_speech-low_room1")
 # Arm B: windowed whitened scan (the scan read the base speed correctly from
 # nothing — run it per short window so it reads the wander too).
@@ -198,31 +204,17 @@ WSCAN_HOP_S = 1.0
 CONDITIONS = ("offset+2", "offset+5", "const-mean", "blind")
 N_WORKERS = 5
 
-# Blind base-speed scan (whitened; see the module docstring's documented fix).
-SCAN_LO, SCAN_HI, SCAN_STEP = 30.0, 120.0, 0.05
-SCAN_K_MAX = 40
-WHITEN_HZ = 150.0  # running-median window (Hz) subtracted from the log-mag
-OCTAVE_REL = 0.9  # prefer the half base when its score >= this fraction
-HARM_GUARD = 1.5  # rev/s: 2nd init peak must not be a half/double of the 1st
-PAIR_NUDGE = 0.5  # rev/s: 2 rotors per chosen peak at peak -/+ nudge
-BLIND_OFFSETS = (-1.5, -0.5, 0.5, 1.5)  # fallback when only one peak exists
-
-# Shared scan machinery now lives in data_processing.vk_blind_seeding (design
-# §7 blind seeding v2); the historical constants above are wired through
-# explicitly so the two places cannot drift apart.
-from data_processing.vk_blind_seeding import SeedConfig as _SeedConfig  # noqa: E402
-
-_SEED_CFG = _SeedConfig(
-    scan_lo=SCAN_LO,
-    scan_hi=SCAN_HI,
-    scan_step=SCAN_STEP,
-    k_scan=SCAN_K_MAX,
-    whiten_hz=WHITEN_HZ,
-    octave_rel=OCTAVE_REL,
-    harm_guard=HARM_GUARD,
-    pair_nudge=PAIR_NUDGE,
-    blind_offsets=BLIND_OFFSETS,
-)
+# Blind base-speed scan (whitened; see the module docstring's documented
+# fix). The pinned calibration is ``tracking.pipelines.SEED_CFG`` (imported
+# above as ``_SEED_CFG``); the historical constant names are derived from it
+# so the two places cannot drift apart.
+SCAN_LO, SCAN_HI, SCAN_STEP = _SEED_CFG.scan_lo, _SEED_CFG.scan_hi, _SEED_CFG.scan_step
+SCAN_K_MAX = _SEED_CFG.k_scan
+WHITEN_HZ = _SEED_CFG.whiten_hz  # running-median window (Hz) off the log-mag
+OCTAVE_REL = _SEED_CFG.octave_rel  # prefer the half base at >= this fraction
+HARM_GUARD = _SEED_CFG.harm_guard  # rev/s: 2nd init peak not a half/double
+PAIR_NUDGE = _SEED_CFG.pair_nudge  # rev/s: 2 rotors per peak at peak -/+ nudge
+BLIND_OFFSETS = _SEED_CFG.blind_offsets  # fallback when only one peak exists
 
 # Reference points (results/vk_tracking/validation/summary.json).
 REFERENCE = {
@@ -242,11 +234,11 @@ def _whitened_spec(prep: Prepared) -> tuple[np.ndarray, float, np.ndarray]:
     docstring) — whitening subtracts a running median over frequency
     (``WHITEN_HZ`` window) so comb scores measure line evidence above the
     local background. Now a thin wrapper over
-    ``data_processing.vk_blind_seeding.whitened_logmag`` (the scan machinery's
+    ``tracking.vk_blind_seeding.whitened_logmag`` (the scan machinery's
     shared home since blind seeding v2, design §7); ``_SEED_CFG`` reproduces
     this script's historical constants exactly.
     """
-    from data_processing.vk_blind_seeding import whitened_logmag
+    from tracking.vk_blind_seeding import whitened_logmag
 
     return whitened_logmag(prep.audio, float(SR), _SEED_CFG)
 
@@ -257,14 +249,14 @@ def _comb_scan(white_vec: np.ndarray, bin_hz: float, grid: np.ndarray) -> np.nda
     Delegates to ``vk_blind_seeding.comb_scan`` (flat template = numerically
     identical to the historical implementation).
     """
-    from data_processing.vk_blind_seeding import comb_scan
+    from tracking.vk_blind_seeding import comb_scan
 
     return comb_scan(white_vec, bin_hz, grid, _SEED_CFG)
 
 
 def _scan_peaks(grid: np.ndarray, scores: np.ndarray) -> np.ndarray:
     """Indices of local maxima (>=1.5 rev/s apart), fallback to the argmax."""
-    from data_processing.vk_blind_seeding import scan_peaks
+    from tracking.vk_blind_seeding import scan_peaks
 
     return scan_peaks(grid, scores, _SEED_CFG)
 
@@ -537,30 +529,7 @@ def _recon_per_rotor(env: Envelopes, n_rotors: int, n_t: int) -> list[np.ndarray
     return recons
 
 
-def _local_comb_frame_scores(
-    lm: np.ndarray, bin_hz: float, r_spec: np.ndarray, deltas: np.ndarray, ks: np.ndarray
-) -> np.ndarray:
-    """``(D, N)`` per-frame mean log-mag along the combs of ``r_spec + delta``.
-
-    ``r_spec`` may be ``(N,)`` (one rotor) or ``(P, N)`` (a rigid multi-rotor
-    template — e.g. a twin pair shifted together, separations frozen); the
-    comb is then the union of all P rotors' teeth.
-    """
-    r2 = np.atleast_2d(r_spec)  # (P, N)
-    n_f, n = lm.shape
-    fmax = min(6000.0, (n_f - 1) * bin_hz)
-    cols = np.arange(n)[None, :]
-    out = np.empty((len(deltas), n))
-    for di, d in enumerate(deltas):
-        f = (ks[:, None, None] * (r2 + d)[None, :, :]).reshape(-1, n)  # (K*P, N)
-        valid = (f >= 60.0) & (f <= fmax)
-        idx = np.clip(f, 0.0, fmax) / bin_hz
-        j = np.floor(idx).astype(int)
-        frac = idx - j
-        v = (1 - frac) * lm[j, cols] + frac * lm[np.minimum(j + 1, n_f - 1), cols]
-        v = np.where(valid, v, np.nan)
-        out[di] = np.nanmean(v, axis=0)
-    return out
+# _local_comb_frame_scores moved to tracking.pipelines (imported above).
 
 
 def _window_deltas(
@@ -626,10 +595,10 @@ def _smooth_deltas(
     from scipy.sparse import diags_array
     from scipy.sparse.linalg import splu
 
-    from data_processing.vk_tracking import _second_diff
+    from tracking.vk_tracking import second_diff
 
     w = weights / max(float(weights.mean()), 1e-12)
-    d2 = _second_diff(len(dvals))
+    d2 = second_diff(len(dvals))
     mat = (diags_array(w + 1e-3) + lam * (d2.T @ d2)).tocsc()
     sm = splu(mat).solve(w * dvals)
     return np.interp(ft, centers, sm)
@@ -647,7 +616,7 @@ def vk_track_scan(
     per-window deltas update ``r_i``. Returns the final trajectories and the
     per-round snapshots (element 0 = the init).
     """
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     cfg_r = RefineConfig(sample_rate=SR, device="cpu")
     y = prep.audio
@@ -826,8 +795,7 @@ def scanloop_main() -> None:
 PAIRSCAN_ROUNDS = 3  # pair-scan rounds per iteration
 PAIRSCAN_MAX_ITERS = 1  # single (pair-scan x3 -> refine) pass
 PAIRSCAN_BAR = 0.75  # experiment-level early-stop on pooled PIT err (vs truth)
-PAIRSCAN_WIN_S = 1.0
-PAIRSCAN_HOP_S = 0.25
+# PAIRSCAN_WIN_S (1.0) / PAIRSCAN_HOP_S (0.25) come from tracking.pipelines.
 PAIRSCAN_LAMBDA = 0.25  # ~1 Hz trajectory bandwidth at the 4 Hz window grid
 
 # v3 (coordinator): v2's residual decomposes into (a) pair separations frozen
@@ -841,17 +809,7 @@ PAIRSCAN_LAMBDA = 0.25  # ~1 Hz trajectory bandwidth at the 4 Hz window grid
 PAIR2D_ROUNDS = 2
 PAIR2D_SEPS = np.arange(0.6, 2.4001, 0.1)  # coarse separation grid (rev/s)
 PAIR2D_SEP_FINE = 0.02  # fine separation step (+-0.1 around the coarse argmax)
-MIDBAND_CFG = VKConfig(
-    fs=float(SR),
-    k_schedule="fixed",
-    n_outer=6,
-    k_min=6,
-    k_max=10,
-    bw_hz=4.0,
-    max_step=0.3,
-    couple_hz=20.0,
-    update_gate=8.0,
-)
+# MIDBAND_CFG comes from tracking.pipelines (k 6..10, bw 4, n_outer 6).
 
 
 def vk_track_pair(
@@ -1168,61 +1126,9 @@ VIT_SEP_KMIN = 12
 # = 0.3 x surface contrast (2.0 over-smooths), and TWO mid-band phase stages
 # (bw 6 then 4, k 6..10) before the final refine — the Viterbi path is locally
 # within +-0.5..1 so the first phase stage starts wider.
-VIT_DELTA = 6.0
-VIT_GAMMA_MULT = 0.3
-MIDBAND_CFGS = (
-    replace(MIDBAND_CFG, bw_hz=6.0, n_outer=4),
-    replace(MIDBAND_CFG, bw_hz=4.0, n_outer=4),
-)
-
-
-def _pair_surface(
-    lm: np.ndarray,
-    bin_hz: float,
-    st: np.ndarray,
-    ft: np.ndarray,
-    r_pair: np.ndarray,
-    deltas: np.ndarray,
-    ks: np.ndarray,
-    win_s: float = PAIRSCAN_WIN_S,
-    hop_s: float = PAIRSCAN_HOP_S,
-) -> tuple[np.ndarray, np.ndarray]:
-    """``(window centers (W,), scores (W, D))`` of the pair template."""
-    r_specs = np.stack([np.interp(st, ft, r_pair[j]) for j in range(r_pair.shape[0])])
-    fsc = _local_comb_frame_scores(lm, bin_hz, r_specs, deltas, ks)  # (D, N)
-    centers: list[float] = []
-    rows: list[np.ndarray] = []
-    t0 = 0.0
-    while t0 + win_s <= float(st[-1]) + 1e-9:
-        sel = (st >= t0) & (st < t0 + win_s)
-        if int(sel.sum()) >= 4:
-            centers.append(t0 + win_s / 2.0)
-            rows.append(np.nanmean(fsc[:, sel], axis=1))
-        t0 += hop_s
-    return np.asarray(centers), np.stack(rows)
-
-
-def _viterbi_ridge(surface: np.ndarray, deltas: np.ndarray, gamma: float) -> np.ndarray:
-    """Max-sum DP over the (window, delta) lattice; returns the delta path."""
-    s_norm = surface - np.median(surface, axis=1, keepdims=True)
-    n_win, _ = s_norm.shape
-    trans = gamma * np.abs(deltas[None, :] - deltas[:, None])  # (D_prev, D_cur)
-    cost = s_norm[0].copy()
-    ptr = np.zeros((n_win, len(deltas)), dtype=int)
-    for w in range(1, n_win):
-        m = cost[:, None] - trans
-        ptr[w] = np.argmax(m, axis=0)
-        cost = s_norm[w] + np.max(m, axis=0)
-    path = np.empty(n_win, dtype=int)
-    path[-1] = int(np.argmax(cost))
-    for w in range(n_win - 1, 0, -1):
-        path[w - 1] = ptr[w][path[w]]
-    return deltas[path]
-
-
-def _surface_contrast(surface: np.ndarray) -> float:
-    """Median over windows of (max - median) node score — the gamma scale."""
-    return float(np.median(np.max(surface, axis=1) - np.median(surface, axis=1)))
+# VIT_DELTA / VIT_GAMMA_MULT / MIDBAND_CFGS and the stage-1 machinery
+# (_pair_surface, _viterbi_ridge, _surface_contrast, vit_stage1) come from
+# tracking.pipelines (imported above).
 
 
 def _sep_scan(
@@ -1254,32 +1160,10 @@ def _vit_stage1(
     hop_s: float = PAIRSCAN_HOP_S,
     diag_prefix: str = "rd0",
 ) -> tuple[np.ndarray, list[np.ndarray]]:
-    """Viterbi pair-mean trajectories; returns updated tracks + per-pair c(t)."""
-    deltas = np.arange(-VIT_DELTA, VIT_DELTA + SCANLOOP_DSTEP / 2, SCANLOOP_DSTEP)
-    ks = np.arange(1, 31)
-    r_new = r0.copy()
-    c_trajs = []
-    for pi, pair in enumerate(pairs):
-        r_pair = np.stack([r0[i] for i in pair])
-        centers, surface = _pair_surface(
-            lm, bin_hz, st, prep.ft, r_pair, deltas, ks, win_s=win_s, hop_s=hop_s
-        )
-        gamma = gamma_mult * _surface_contrast(surface)
-        ridge = _viterbi_ridge(surface, deltas, gamma)
-        dc_ft = np.interp(prep.ft, centers, ridge)
-        for i in pair:
-            r_new[i] = np.maximum(r0[i] + dc_ft, 0.0)
-        c_trajs.append(r_new[list(pair)].mean(axis=0))
-        if diag is not None:
-            diag[f"{diag_prefix}_centers"] = centers
-            diag[f"{diag_prefix}_dvals_p{pi}"] = ridge
-            diag[f"{diag_prefix}_weights_p{pi}"] = np.max(surface, axis=1) - np.median(
-                surface, axis=1
-            )
-            diag[f"{diag_prefix}_r_before_p{pi}"] = r_pair.copy()
-            diag[f"{diag_prefix}_surface_p{pi}"] = surface
-            diag[f"{diag_prefix}_deltas"] = deltas
-    return r_new, c_trajs
+    """Back-compat shim: ``tracking.pipelines.vit_stage1`` (which takes ``ft``)."""
+    return vit_stage1(
+        prep.ft, r0, pairs, lm, bin_hz, st, gamma_mult, diag, win_s, hop_s, diag_prefix
+    )
 
 
 # v6 (coordinator): the magnitude template cannot resolve tight twins along an
@@ -1308,7 +1192,7 @@ def _beat_separation(
     envelope power |z_k|^2 is Hann-windowed, its power spectrum mapped to
     s = f/k, unit-max normalized, and fused with envelope-power weights.
     """
-    from data_processing.vk_tracking import demodulate
+    from tracking.vk_tracking import demodulate
 
     n_t = audio.shape[-1]
     t_aud = np.arange(n_t, dtype=np.float64) / float(SR)
@@ -1341,44 +1225,8 @@ def _beat_separation(
 # margin). Union-of-teeth score counts shared bins once (merged states are not
 # artificially favored); DP transitions are beam-limited to +-0.3 rev/s per
 # rotor per hop and allow crossing through the diagonal.
-VIT2D_DELTA = 6.0
-VIT2D_STEP = 0.1
-VIT2D_BEAM = 3  # grid steps (= 0.3 rev/s) per rotor per hop
-
-
-def _tooth_cube(
-    lm: np.ndarray,
-    bin_hz: float,
-    st: np.ndarray,
-    ft: np.ndarray,
-    c_traj: np.ndarray,
-    deltas: np.ndarray,
-    ks: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """``(window centers (W,), tooth values (W, K, D))`` along ``c(t)+delta``."""
-    n_f, n = lm.shape
-    fmax = min(6000.0, (n_f - 1) * bin_hz)
-    cols = np.arange(n)[None, :]
-    c_spec = np.interp(st, ft, c_traj)
-    vals = np.empty((len(ks), len(deltas), n))
-    for di, d in enumerate(deltas):
-        f = ks[:, None] * (c_spec + d)[None, :]  # (K, N)
-        valid = (f >= 60.0) & (f <= fmax)
-        idx = np.clip(f, 0.0, fmax) / bin_hz
-        j = np.floor(idx).astype(int)
-        frac = idx - j
-        v = (1 - frac) * lm[j, cols] + frac * lm[np.minimum(j + 1, n_f - 1), cols]
-        vals[:, di, :] = np.where(valid, v, np.nan)
-    centers: list[float] = []
-    cube: list[np.ndarray] = []
-    t0 = 0.0
-    while t0 + PAIRSCAN_WIN_S <= float(st[-1]) + 1e-9:
-        sel = (st >= t0) & (st < t0 + PAIRSCAN_WIN_S)
-        if int(sel.sum()) >= 4:
-            centers.append(t0 + PAIRSCAN_WIN_S / 2.0)
-            cube.append(np.nanmean(vals[:, :, sel], axis=2))  # (K, D)
-        t0 += PAIRSCAN_HOP_S
-    return np.asarray(centers), np.stack(cube)
+# VIT2D_DELTA / VIT2D_STEP / VIT2D_BEAM and _tooth_cube come from
+# tracking.pipelines (imported above).
 
 
 def _pair_score_2d(cube_w: np.ndarray, ks: np.ndarray, bin_hz: float) -> np.ndarray:
@@ -1404,46 +1252,7 @@ def _pair_score_2d(cube_w: np.ndarray, ks: np.ndarray, bin_hz: float) -> np.ndar
     return score
 
 
-def _joint_viterbi(s2: np.ndarray, gamma: float) -> tuple[np.ndarray, np.ndarray]:
-    """Max-sum DP over the (window, delta1, delta2) lattice; beam +-VIT2D_BEAM.
-
-    Returns the two delta paths ``(W,), (W,)`` (unordered rotor identities —
-    crossing through the diagonal is allowed and costs only the step size).
-    """
-    n_w, n_d, _ = s2.shape
-    s_norm = s2 - np.median(s2.reshape(n_w, -1), axis=1)[:, None, None]
-    offs = [
-        (a, b)
-        for a in range(-VIT2D_BEAM, VIT2D_BEAM + 1)
-        for b in range(-VIT2D_BEAM, VIT2D_BEAM + 1)
-    ]
-    cost = s_norm[0].copy()
-    ptrs = np.zeros((n_w, n_d, n_d), dtype=np.uint8)
-    neg = -1e18
-    for w in range(1, n_w):
-        best = np.full((n_d, n_d), neg)
-        bidx = np.zeros((n_d, n_d), dtype=np.uint8)
-        for oi, (a, b) in enumerate(offs):
-            shifted = np.full((n_d, n_d), neg)
-            src_i = slice(max(0, -a), n_d - max(0, a))
-            dst_i = slice(max(0, a), n_d - max(0, -a))
-            src_j = slice(max(0, -b), n_d - max(0, b))
-            dst_j = slice(max(0, b), n_d - max(0, -b))
-            shifted[dst_i, dst_j] = cost[src_i, src_j] - gamma * VIT2D_STEP * (abs(a) + abs(b))
-            upd = shifted > best
-            best[upd] = shifted[upd]
-            bidx[upd] = oi
-        ptrs[w] = bidx
-        cost = s_norm[w] + best
-    flat = int(np.argmax(cost))
-    i, j = flat // n_d, flat % n_d
-    path = np.empty((n_w, 2), dtype=int)
-    path[-1] = (i, j)
-    for w in range(n_w - 1, 0, -1):
-        a, b = offs[int(ptrs[w][i, j])]
-        i, j = i - a, j - b
-        path[w - 1] = (i, j)
-    return path[:, 0].astype(float), path[:, 1].astype(float)
+# _joint_viterbi comes from tracking.pipelines (imported above).
 
 
 def run_vit2d(rid: str) -> str:
@@ -1673,19 +1482,12 @@ def vit2d_main() -> None:
 
 
 def _whitened_spec_multi(prep: Prepared) -> tuple[np.ndarray, float, np.ndarray]:
-    """Per-channel whitened log-mag ``(C, F, N)`` + ``(bin_hz, frame_times)``."""
-    from scipy.ndimage import median_filter
+    """Per-channel whitened log-mag ``(C, F, N)`` + ``(bin_hz, frame_times)``.
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
-
-    cfg = RefineConfig(sample_rate=SR, device="cpu")
-    spec = compute_logmag(prep.audio, cfg)
-    lm = spec.logmag.cpu().numpy()  # (C, F, N)
-    bin_hz = float(spec.bin_hz)
-    win = int(round(WHITEN_HZ / bin_hz)) | 1
-    white = lm - median_filter(lm, size=(1, win, 1))
-    st = np.asarray(spec.frame_times, dtype=np.float64)
-    return white, bin_hz, st
+    Thin wrapper over ``tracking.pipelines.whitened_logmag_multi`` (the
+    ladder core's home) for the ``prep``-based arms in this script.
+    """
+    return whitened_logmag_multi(prep.audio, float(SR), _SEED_CFG)
 
 
 def _rotor_mic_weights(prep_dir: str = "data/DREGON") -> np.ndarray:
@@ -1698,134 +1500,9 @@ def _rotor_mic_weights(prep_dir: str = "data/DREGON") -> np.ndarray:
     return w / w.sum(axis=0, keepdims=True)
 
 
-def _pair_score_2d_spatial(
-    cube_a: np.ndarray, cube_b: np.ndarray, ks: np.ndarray, bin_hz: float
-) -> np.ndarray:
-    """``(D, D)`` union score with rotor-SPECIFIC tooth values (sum form).
-
-    ``score(d1, d2) = sum_k v_a(k, d1) + v_b(k, d2)``, with merged teeth
-    (``k*|d1-d2| < bin_hz``) counted once as the mean of the two rotors'
-    values. Asymmetric in (d1, d2) — the spatial weighting is what
-    distinguishes the two rotor identities.
-    """
-    n_k, n_d = cube_a.shape
-    gap = np.abs(np.arange(n_d)[None, :] - np.arange(n_d)[:, None]).astype(np.float64)
-    score = np.zeros((n_d, n_d))
-    for ki in range(n_k):
-        va = np.nan_to_num(cube_a[ki], nan=0.0)
-        vb = np.nan_to_num(cube_b[ki], nan=0.0)
-        a = va[:, None] + vb[None, :]
-        merged = gap * VIT2D_STEP * float(ks[ki]) < bin_hz
-        score += np.where(merged, 0.5 * a, a)
-    return score
-
-
-def vit2dsp_pipeline(
-    prep: Prepared,
-    r0: np.ndarray,
-    weights: np.ndarray,
-    phys_map: np.ndarray,
-    midband_cfg: VKConfig | None = None,
-    refine_cfg: VKConfig | None = None,
-    stage_guard: bool = False,
-) -> tuple[list[tuple[str, np.ndarray]], Any, dict[str, Any], float, float]:
-    """The spatial-DP ladder from an arbitrary 4-track blind init.
-
-    Viterbi pair-mean c(t) -> SPATIAL joint 2-rotor Viterbi (per-rotor
-    1/d^2 mic mixes) -> midband (bw 6) -> refine. Extracted from the
-    validated ``run_vit2dsp`` worker (blindvit2dsp, DREGON pooled err_sm
-    0.688) so other callers (the §7 blind-seeding sweep) can compose their
-    own seeding with this ladder. ``weights``: (n_mics, 4) per-rotor mic
-    weights; ``phys_map``: (4,) track -> physical rotor (weights column).
-    ``stage_guard=True`` applies the blind per-track guard
-    (``vk_blind_seeding.stage_guard``) after every stage: a track that a
-    stage re-captured onto an occupied comb, or whose comb confidence
-    collapsed, is reverted to its pre-stage trajectory (the r4 FLY124
-    failure: viterbi_c tracked all four rotors at pooled 1.03, then the
-    joint-DP pulled the weak 82.4 track onto the 91 comb). Default False =
-    the validated guard-less behaviour.
-    Returns ``(stages, final VKResult, extras, wall_scan_s, wall_vk_s)``.
-    """
-    from data_processing.vk_blind_seeding import stage_guard as _guard_fn
-
-    lm_avg, bin_hz, st = _whitened_spec(prep)
-    lm_multi, _, _ = _whitened_spec_multi(prep)
-    ks = np.arange(1, 31)
-    deltas = np.arange(-VIT2D_DELTA, VIT2D_DELTA + VIT2D_STEP / 2, VIT2D_STEP)
-    r_cur = r0.copy()
-    order = np.argsort(r_cur.mean(axis=1))
-    pairs = [(int(order[0]), int(order[1])), (int(order[2]), int(order[3]))]
-
-    stages: list[tuple[str, np.ndarray]] = [("init", r_cur.copy())]
-    guard_log: dict[str, Any] = {}
-
-    def _apply_guard(label: str, r_prev: np.ndarray, r_new: np.ndarray) -> np.ndarray:
-        if not stage_guard:
-            return r_new
-        guarded, reverted, gdiag = _guard_fn(r_prev, r_new, lm_avg, bin_hz, st, prep.ft, _SEED_CFG)
-        guard_log[f"guard_reverted_{label}"] = np.array(reverted, dtype=np.int64)
-        if reverted:
-            print(f"[stage_guard | {label}] reverted {gdiag['reasons']}", flush=True)
-        return guarded
-
-    tic = time.perf_counter()
-    r_prev = r_cur.copy()
-    r_cur, c_trajs = _vit_stage1(prep, r_cur, pairs, lm_avg, bin_hz, st, VIT_GAMMA_MULT)
-    r_cur = _apply_guard("viterbi_c", r_prev, r_cur)
-    stages.append(("viterbi_c", r_cur.copy()))
-    extras: dict[str, Any] = {
-        "vit2d_deltas": deltas,
-        "mic_weights": weights,
-        "phys_map": phys_map,
-        "pairs": np.array(pairs),
-    }
-    # Pair means from the (possibly guard-reverted) stage-1 output — equals
-    # _vit_stage1's own c_trajs when no track was reverted.
-    c_trajs = [r_cur[list(pair)].mean(axis=0) for pair in pairs]
-    r_prev = r_cur.copy()
-    for pi, pair in enumerate(pairs):
-        rot_a, rot_b = int(phys_map[pair[0]]), int(phys_map[pair[1]])
-        lm_a = np.tensordot(weights[:, rot_a], lm_multi, axes=(0, 0))  # (F, N)
-        lm_b = np.tensordot(weights[:, rot_b], lm_multi, axes=(0, 0))
-        centers, cube_a = _tooth_cube(lm_a, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
-        _, cube_b = _tooth_cube(lm_b, bin_hz, st, prep.ft, c_trajs[pi], deltas, ks)
-        s2 = np.stack(
-            [
-                _pair_score_2d_spatial(cube_a[w], cube_b[w], ks, bin_hz)
-                for w in range(cube_a.shape[0])
-            ]
-        )
-        flat = s2.reshape(s2.shape[0], -1)
-        contrast = float(np.median(np.max(flat, axis=1)) - np.median(np.median(flat, axis=1)))
-        d1_idx, d2_idx = _joint_viterbi(s2, VIT_GAMMA_MULT * contrast)
-        d1 = np.interp(prep.ft, centers, deltas[d1_idx.astype(int)])
-        d2 = np.interp(prep.ft, centers, deltas[d2_idx.astype(int)])
-        r_cur[pair[0]] = np.maximum(c_trajs[pi] + d1, 0.0)
-        r_cur[pair[1]] = np.maximum(c_trajs[pi] + d2, 0.0)
-        extras[f"vit2d_centers_p{pi}"] = centers
-        extras[f"vit2d_s2_p{pi}"] = s2.astype(np.float32)
-        extras[f"vit2d_path_p{pi}"] = np.stack(
-            [deltas[d1_idx.astype(int)], deltas[d2_idx.astype(int)]]
-        )
-        extras[f"vit2d_c_p{pi}"] = c_trajs[pi]
-        # Per-rotor 1-D surfaces for the branch diagnostic (sum over k).
-        extras[f"vit2d_s1a_p{pi}"] = np.nansum(cube_a, axis=1).astype(np.float32)  # (W, D)
-        extras[f"vit2d_s1b_p{pi}"] = np.nansum(cube_b, axis=1).astype(np.float32)
-        extras[f"vit2d_rots_p{pi}"] = np.array([rot_a, rot_b])
-    r_cur = _apply_guard("vit2dsp", r_prev, r_cur)
-    stages.append(("vit2dsp", r_cur.copy()))
-    wall_scan = time.perf_counter() - tic
-
-    tic = time.perf_counter()
-    mid = vk_track(prep.audio, r_cur, prep.ft, midband_cfg or MIDBAND_CFGS[0])
-    r_mid = _apply_guard("midband_bw6", r_cur, mid.r_refined)
-    stages.append(("midband_bw6", r_mid.copy()))
-    ref = vk_track(prep.audio, r_mid, prep.ft, refine_cfg or REFINE_CFG)
-    r_ref = _apply_guard("refine", r_mid, ref.r_refined)
-    stages.append(("refine", r_ref.copy()))
-    wall_vk = time.perf_counter() - tic
-    extras.update(guard_log)
-    return stages, ref, extras, wall_scan, wall_vk
+# _pair_score_2d_spatial and vit2dsp_pipeline come from tracking.pipelines
+# (imported above). The pipeline accepts any object with ``.audio`` / ``.ft``
+# (``Prepared`` included), so the run_* arms below call it unchanged.
 
 
 def run_vit2dsp(rid: str) -> str:
@@ -2871,7 +2548,7 @@ def run_trace(rid: str, cond: str) -> None:
     deviation is the per-group ``sep_bw_factor`` clamp floor, which reads
     ``cfg.bw_hz`` (here the round's bw instead of the final one).
     """
-    from data_processing.vk_tracking import _bw_schedule, _k_schedule, _stride
+    from tracking.vk_tracking import bw_schedule, env_stride, k_schedule
 
     prep = prepare_recording(rid)
     scan = get_scan(rid)
@@ -2879,9 +2556,9 @@ def run_trace(rid: str, cond: str) -> None:
     snaps: list[np.ndarray] = [r_cur.copy()]
     labels: list[str] = ["init"]
     for phase, cfg in (("capture", CAPTURE_CFG), ("refine", REFINE_CFG)):
-        ks = _k_schedule(cfg)
-        _, fs_env = _stride(cfg)
-        bws = _bw_schedule(cfg, fs_env)
+        ks = k_schedule(cfg)
+        _, fs_env = env_stride(cfg)
+        bws = bw_schedule(cfg, fs_env)
         lams = (
             np.geomspace(10.0 * cfg.traj_lambda, cfg.traj_lambda, cfg.n_outer)
             if cfg.n_outer > 1

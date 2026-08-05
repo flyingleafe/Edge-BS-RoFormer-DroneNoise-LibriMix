@@ -15,8 +15,8 @@ from __future__ import annotations
 import tdseries as td
 import torch
 
+from framespec import FrameSpec
 from losses._common import AUDIO_RATE, audio_series_spec, get_tensor
-from tasks.spec import FrameSpec
 
 # ─── Pure tensor function ────────────────────────────────────────────────────
 

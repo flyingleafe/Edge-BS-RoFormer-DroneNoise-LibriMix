@@ -62,22 +62,14 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-NUM_ROTORS = 4
-
-# Quadrotor control-allocation mixer.  Columns = [common, roll, pitch, yaw];
-# rows = rotors in the order [RFront, LFront, LBack, RBack] (matches
-# ``data_processing.sources.michaels.ROTOR_ORDER``).  Entries are +/-1, so the columns
-# are mutually orthogonal with squared norm 4 -> B^T B = 4 I and B^-1 = B^T / 4.
-MIXER = np.array(
-    [
-        [1.0, +1.0, +1.0, +1.0],  # RFront
-        [1.0, -1.0, +1.0, -1.0],  # LFront
-        [1.0, -1.0, -1.0, +1.0],  # LBack
-        [1.0, +1.0, -1.0, -1.0],  # RBack
-    ]
-)
-
-MODE_NAMES = ("common", "roll", "pitch", "yaw")
+# The mixer constants and mode projections moved to ``tracking.rotors`` (the
+# tracking stack needs them and must not import data_processing); re-exported
+# here so existing ``rps_synthesis`` consumers keep working.
+from tracking.rotors import MIXER as MIXER
+from tracking.rotors import MODE_NAMES as MODE_NAMES
+from tracking.rotors import NUM_ROTORS as NUM_ROTORS
+from tracking.rotors import modes_from_rps as modes_from_rps
+from tracking.rotors import rps_from_modes as rps_from_modes
 
 
 @dataclass(frozen=True)
@@ -122,23 +114,6 @@ DEFAULT_CONFIG = RPSSynthConfig(
     rps_min=30.0,
     rps_max=120.0,
 )
-
-
-def modes_from_rps(w: np.ndarray) -> np.ndarray:
-    """Project rotor speeds onto control modes: ``m = B^T w / 4``.
-
-    Args:
-        w: ``(4, M)`` rotor speeds (rev/s).
-
-    Returns:
-        ``(4, M)`` mode coefficients in the order :data:`MODE_NAMES`.
-    """
-    return (MIXER.T @ w) / NUM_ROTORS
-
-
-def rps_from_modes(m: np.ndarray) -> np.ndarray:
-    """Recover rotor speeds from control modes: ``w = B m``."""
-    return MIXER @ m
 
 
 def _estimate_mode_params(m: np.ndarray, dt: float) -> OUModeParams:

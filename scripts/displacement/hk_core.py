@@ -16,14 +16,19 @@ the channel as a keyword so a caller can be explicit.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import scipy.io
 import soundfile as sf
 
-ROOT = Path(__file__).resolve().parents[2]
-DREGON = ROOT / "data/DREGON"
+ROOT = Path(__file__).resolve().parents[2]  # this checkout (code)
+sys.path.insert(0, str(ROOT / "src"))
+
+from utils.paths import get_data_path  # noqa: E402
+
+DREGON = get_data_path("DREGON")
 OUT = Path(__file__).resolve().parent
 FIGS = OUT / "figs"
 

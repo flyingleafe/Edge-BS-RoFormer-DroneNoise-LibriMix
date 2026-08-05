@@ -11,7 +11,8 @@ import numpy as np
 import tdseries as td
 import torch
 
-from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
+from losses.pit import align_rps_to_gt
+from tasks.rps_prediction import HOP, N_FFT
 
 from .registry import PlotTrack, RenderedTrack, TrackContext, register_renderer
 

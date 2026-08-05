@@ -1,5 +1,6 @@
 """GP rotor-noise source pool (``kind: gp``) — the setup-matched egonoise GP
-(:mod:`experiments.gp_rotor_noise.train_egonoise_gp`) as an online-mix noise
+(inference core :mod:`data_processing.egonoise_gp`; trained by
+:mod:`experiments.gp_rotor_noise.train_egonoise_gp`) as an online-mix noise
 source.
 
 Motivation (G3). Neither previous synthetic family transfers to real RPS
@@ -73,7 +74,7 @@ from data_processing.generated_noise import _DRONE_PROFILE_BLEND, load_geometry
 
 
 class GPRotorNoisePool:
-    """Trained :class:`~experiments.gp_rotor_noise.train_egonoise_gp.EgonoiseGPModel`
+    """Trained :class:`~data_processing.egonoise_gp.EgonoiseGPModel`
     exposed as a ``sample_timeframe`` noise source (``kind: gp``)."""
 
     def __init__(
@@ -138,9 +139,9 @@ class GPRotorNoisePool:
         import gpytorch
         import torch
 
-        from experiments.gp_rotor_noise.train_egonoise_gp import FS as GP_FS
-        from experiments.gp_rotor_noise.train_egonoise_gp import EgonoiseGPModel
-        from training.artifacts import resolve_checkpoint_uri
+        from data_processing.egonoise_gp import FS as GP_FS
+        from data_processing.egonoise_gp import EgonoiseGPModel
+        from utils.checkpoints import resolve_checkpoint_uri
 
         gp = EgonoiseGPModel.load(resolve_checkpoint_uri(checkpoint))
         assert gp.model is not None and gp._tx is not None

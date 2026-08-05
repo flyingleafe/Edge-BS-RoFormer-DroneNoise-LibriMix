@@ -177,7 +177,7 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
     """
     _ensure_src_on_path()
     from models.generative import PositionalHarmonicNoiseGen
-    from training.artifacts import resolve_checkpoint_uri
+    from utils.checkpoints import resolve_checkpoint_uri
 
     ckpt_path = resolve_checkpoint_uri(params["checkpoint"])
     obj = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -194,7 +194,7 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
         isinstance(obj, dict) and "model" in obj and "codebook" in obj and "drone_names" in obj
     )
     if is_bundle:
-        from tasks.noise_generation import DroneCodebook
+        from models.generative.codebook import DroneCodebook
 
         cond_dim = int(obj["cond_dim"])
         names = list(obj["drone_names"])
@@ -261,7 +261,7 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
     """
     _ensure_src_on_path()
     torch.set_num_threads(1)
-    from tasks.noise_generation import geometry_to_rel_pos
+    from models.generative.codebook import geometry_to_rel_pos
 
     device = params["device"]
     try:

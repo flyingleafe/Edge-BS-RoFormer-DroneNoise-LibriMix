@@ -1,4 +1,4 @@
-"""Tests for `data_processing.dregon` — DREGON dataset loader."""
+"""Tests for `data_processing.sources.dregon` — DREGON dataset loader."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """Consolidated loss functions (docs/refactor-unified-framework.md § "Losses").
 
 Every public loss is a small class/nn.Module declaring ``requires_pred`` /
-``requires_target`` (``tasks.spec.FrameSpec``) and
+``requires_target`` (``framespec.FrameSpec``) and
 ``__call__(pred: td.Frame, target: td.Frame) -> torch.Tensor`` — see
 :class:`losses._common.Loss`. Pure tensor-level implementations (no Frame
 dependency) are also exported for direct use/testing.
@@ -16,6 +16,7 @@ from losses.pit import (
     PITMSELoss,
     RPSMSELoss,
     SegmentedPITMSELoss,
+    align_rps_to_gt,
     pairwise_mse,
     pit_mse_loss,
     segmented_pit_mse,
@@ -56,6 +57,7 @@ __all__ = [
     "PITMSELoss",
     "RPSMSELoss",
     "SegmentedPITMSELoss",
+    "align_rps_to_gt",
     "pairwise_mse",
     "pit_mse_loss",
     "segmented_pit_mse",

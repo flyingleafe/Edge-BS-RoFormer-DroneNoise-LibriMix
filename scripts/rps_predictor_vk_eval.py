@@ -732,7 +732,7 @@ def main() -> None:
                             acc += perm_align(per_clip[k, c].astype(np.float64), ref)
                         none_preds[k] = (acc / n_ch).astype(np.float32)
 
-                from tasks.rps_prediction import align_rps_to_gt
+                from losses.pit import align_rps_to_gt
 
                 for k, cid in enumerate(ids):
                     g = gt[cid]

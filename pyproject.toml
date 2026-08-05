@@ -59,9 +59,10 @@ make-plot = "plots.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib -m \"not slow and not network\""
 markers = [
-    "slow: full-dataset inference (skip by default)",
+    "slow: heavy tests, excluded by default",
+    "network: touches real remote services (opt-in)",
 ]
 
 [build-system]
@@ -72,6 +73,7 @@ build-backend = "hatchling.build"
 dev = [
     "frogmouth>=0.9.2",
     "hypothesis>=6.100",
+    "import-linter>=2.13",
     "ipympl>=0.10.0",
     "jupyter>=1.1.1",
     "pytest>=9.0.2",
@@ -85,15 +87,90 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/utils",
+    "src/framespec",
     "src/tasks",
     "src/models",
     "src/data_processing",
+    "src/tracking",
+    "src/zoo",
     "src/plots",
     "src/losses",
     "src/metrics",
     "src/training",
-    "src/fwh_rotor_sim",
 ]
+
+[tool.importlinter]
+root_packages = [
+    "utils",
+    "framespec",
+    "data_processing",
+    "tracking",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+    "zoo",
+    "experiments",
+]
+include_external_packages = false
+
+# Contracts per docs/refactor-2026-08-plan.md § 3.5.
+# NOTE: "utils is a leaf" is deliberately absent — utils.get_model_from_config
+# lazily imports models.*, so that contract cannot pass until the Phase 3
+# registry dict-ification.
+
+# Higher layers may import lower ones, never the reverse. experiments is
+# fenced separately below.
+[[tool.importlinter.contracts]]
+name = "core layers"
+type = "layers"
+layers = [
+    "zoo",
+    "training",
+    "plots",
+    "tasks",
+    "metrics",
+    "losses",
+    "data_processing",
+    "models",
+    "tracking",
+    "framespec",
+    "utils",
+]
+
+[[tool.importlinter.contracts]]
+name = "tracking stays pure"
+type = "forbidden"
+source_modules = ["tracking"]
+forbidden_modules = [
+    "data_processing",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+]
+
+[[tool.importlinter.contracts]]
+name = "nothing imports experiments"
+type = "forbidden"
+source_modules = [
+    "utils",
+    "framespec",
+    "data_processing",
+    "tracking",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+    "zoo",
+]
+forbidden_modules = ["experiments"]
 
 [tool.ruff]
 target-version = "py312"
@@ -115,7 +192,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["utils", "tasks", "models", "data_processing"]
+known-first-party = ["utils", "framespec", "tasks", "models", "data_processing", "tracking"]
 
 [tool.ruff.lint.per-file-ignores]
 # Standalone report/slide scripts bootstrap sys.path / os.chdir / matplotlib
@@ -130,6 +207,9 @@ pythonVersion = "3.12"
 # Unknown), diverging from editor/hook runs.
 venvPath = "."
 venv = ".venv"
-exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**"]
+# writing/** holds frozen report/slide scripts pinned to their publication
+# date; they reference since-refactored APIs by design (same rationale as
+# the ruff E402 exemption above).
+exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**", "writing"]
 reportMissingImports = false
 reportMissingTypeStubs = false

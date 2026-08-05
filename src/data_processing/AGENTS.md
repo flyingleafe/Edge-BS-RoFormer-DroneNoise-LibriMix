@@ -36,6 +36,7 @@ The data layer has three layers, each declared exactly once — see
 |------|---------|
 | `derivations.py` | **Every** derived dataset as a frozen dload pipeline spec (`SPECS`) + its module-level generator: `generate_dregon_lm_split` / `generate_dn_lm_split` (LibriMix-style `sample-dir-v1` mixes), `generate_source_frames` (any sources builder as a derivation), `generate_frame_subset`, `generate_raw_subset`, `generate_pcm16_mono`, `generate_beatvk_valid`, `generate_se_valid`. Also `PARENTS` (pinned parent URIs, drift-guarded by tests), `SE_CATEGORY_NOISE`/`SE_HELDOUT_SPEAKERS`, `HISTORICAL_PINS`, and `build_pipeline`/`dataset_meta`/`fingerprint`. Torch-free. Driver: `scripts/derive.py` (`list`/`derive`/`adopt`). |
 | `mixing.py` | The **single copy** of the per-sample mixing math (torch-free, disk-free): `load_audio`/`adjust_length`/`normalize_audio`, `scale_noise_to_snr`/`mix_audio`/`mix_at_snr`/`calculate_snr` (offline LibriMix convention — speech is the reference), `scale_source_to_snr`/`mix_at_source_to_noise_snr`/`is_silent` (online/streaming convention — noise is the reference), `resolve_motor_tracks`/`find_inflight_window`/`extract_multichannel_noise_chunk`, `load_noise_source_frames`, `render_multichannel_sample`, `iter_real_valid_clips`, `mix_dn_lm`. |
+| `canonical.py` | The canonical entry vocabulary (`CANONICAL_ENTRIES`, `ENTRY_ALIASES`) and `coerce_frame(frame, **overrides)`, which renames source-specific entry names (`motors_command`, `motor_speed`, `waveform`, …) onto it and warns once per applied mapping. The rotor-speed alias order **is** `frames.PUBLISHED_RPS_KEYS`, so a frame plots under the track the pipeline reads. `plots.dwym` calls it on the way in. |
 | `frames.py` | Shared `td.Frame` conventions: `audio_series`/`rps_series`/`resample_audio_series`, `get_meta`/`meta_dict`/`with_meta`, `adapt_recording_frame` (rich published recording → the minimal audio+rps noise Frame), `make_recording_frame`. |
 
 ### Layer 3 — consumption (streams, online mixing, torch Datasets)
@@ -48,12 +49,15 @@ The data layer has three layers, each declared exactly once — see
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's (accepts `frames:NAME[@VER]` specs, `dload:` URIs, or local paths). |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` as a noise **source** (`kind: generated`). One background **spawn** producer process renders chunks into a shared-memory ring buffer; fork DataLoader workers read finished chunks (lock-free seqlock). See § "Generated noise source". |
 | `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP as a noise **source** (`kind: gp`, G3). See § "GP rotor-noise source". |
+| `egonoise_gp.py` | The **inference core** of the per-drone egonoise GP: `EgonoiseGPConfig`, the batched Matern-5/2 constructor, `EgonoiseGPModel` (posterior-mean coefficients, broadband synthesis, (de)serialisation). Relocated here from `experiments.gp_rotor_noise.train_egonoise_gp` so `gp_noise.py` does not import the `experiments` sandbox; the training side (`fit`, streaming, CLI) stays in `experiments`, whose `EgonoiseGPModel` subclasses this one — checkpoints load in both. |
 | `rotor_spectral_model.py` | `StaticCombNoisePool` — analytic static-comb noise source (`kind: static_comb`). |
 | `rps_corruption.py` | Synthetic corruption of clean RPS tracks for the **conditional refiner**. Seeded via `make_rng(seed, sample_id)`; wired through `frame_datasets.{DregonLMFrameDataset,OnlineMixFrameDataset}(rps_corruption=...)`, which then emit an extra `rps_cond` entry. |
 | `noise_augmentations.py` | Strong **noise-chunk** augmentation family (`policy.noise_augmentations`, G6). See § "Strong noise augmentations". |
 | `time_warp.py` | `policy.noise_time_warp` — angular resampling of the noise+RPS pair. |
 | `harmonicity.py` | `measure_harmonicity(audio, sr)` → `Harmonicity`. Torch-free; the **analysis-stage** measure of "how harmonic" a noise source is (not baked into publish). |
-| `rps_synthesis.py`, `rps_refinement.py`, `vk_tracking.py`, `vk_blind_seeding.py`, `phase_increment_tracker.py`, `warp_refinement.py`, `collate.py` | RPS synthesis / refinement / Vold–Kalman tracking / batching (unchanged by the data refactor). |
+| `rps_synthesis.py`, `collate.py` | RPS synthesis / batching. The mixer constants (`MIXER`, `NUM_ROTORS`, `MODE_NAMES`, mode projections) live in `tracking.rotors`; `rps_synthesis` re-exports them. |
+
+Note: the VK/refinement tracking stack (`vk_tracking`, `rps_refinement`, `vk_blind_seeding`, `phase_increment_tracker`, `joint_beam_tracker`, `rotor_dp`, `warp_refinement`) moved to `src/tracking` (2026-08).
 
 
 ## DREGON Recording Inventory
@@ -297,7 +301,8 @@ Optimize only behind the same public API.
 ### GP rotor-noise source (`kind: gp`) — G3
 
 `data_processing/gp_noise.py` (`GPRotorNoisePool`): the per-drone **egonoise
-GP** checkpoints (`train_egonoise_gp.py`; `r2://ml-data/artifacts/gp_egonoise/
+GP** checkpoints (trained by `src/experiments/gp_rotor_noise/train_egonoise_gp.py`,
+inference core `data_processing/egonoise_gp.py`; `r2://ml-data/artifacts/gp_egonoise/
 {dregon,matrice100}/best.pt`) as an online-mix noise source with exact
 synthetic RPS labels. Architecture mirrors the static comb, not the neural
 producer: the GP posterior is batch-queried **once at pool init** on a dense

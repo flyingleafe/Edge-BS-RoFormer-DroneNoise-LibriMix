@@ -11,9 +11,9 @@ import numpy as np
 import tdseries as td
 import torch
 
+from models.generative.codebook import DroneCodebook, geometry_to_rel_pos
 from models.registry import build_noise_gen_model
 from tasks.codecs import NoiseGenerationCodec
-from tasks.noise_generation import DroneCodebook, geometry_to_rel_pos
 
 # ─── geometry_to_rel_pos: numpy (unbatched) + torch (batched) ────────────────
 

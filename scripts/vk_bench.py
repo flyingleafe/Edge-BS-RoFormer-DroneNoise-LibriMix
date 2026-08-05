@@ -1,7 +1,7 @@
 """Profiling / regression benchmark for the coupled Vold-Kalman tracker.
 
 Phase 1 of "VK tracker fast inference": measure where ``vk_track``
-(``data_processing.vk_tracking``) spends its time on the real whole-recording
+(``tracking.vk_tracking``) spends its time on the real whole-recording
 cases used by the prior evaluations, and pin down regression references so
 later optimizations can prove they do not change results.
 
@@ -82,7 +82,7 @@ from typing import Any  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-from data_processing.vk_tracking import VKConfig, vk_track  # noqa: E402
+from tracking.vk_tracking import VKConfig, vk_track  # noqa: E402
 
 SR = 16000
 FRAME_HOP_S = 0.032  # the wholerec / validation frame grid

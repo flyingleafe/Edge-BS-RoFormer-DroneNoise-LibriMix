@@ -14,7 +14,7 @@ Full batch context: [RPS-conditioned speech enhancement on DREGON-LM](../../docs
 
 ## Setup
 
-Standalone RPS predictor via the legacy utils.get_model_from_config rps_predictor model_type (configs/11c) on DREGON-LM.
+Standalone RPS predictor via the legacy models.registry.LEGACY_MODEL_BUILDERS rps_predictor model_type (configs/11c) on DREGON-LM.
 
 Hydra wiring — data `dregon_lm_v1` · model `b1_legacy_rps_predictor_dregon` · loss `pit_mse` · metrics `rps`. Train with `python train.py experiment=b1_legacy_rps_predictor_dregon`,
 evaluate with `python eval.py experiment=b1_legacy_rps_predictor_dregon`.

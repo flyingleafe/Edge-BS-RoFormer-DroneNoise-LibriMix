@@ -1,5 +1,5 @@
 # @package _global_
-# Standalone RPS predictor via the legacy utils.get_model_from_config rps_predictor model_type (configs/11c) on DREGON-LM.
+# Standalone RPS predictor via the legacy models.registry.LEGACY_MODEL_BUILDERS rps_predictor model_type (configs/11c) on DREGON-LM.
 defaults:
   - override /data: dregon_lm_v1
   - override /model: b1_legacy_rps_predictor_dregon

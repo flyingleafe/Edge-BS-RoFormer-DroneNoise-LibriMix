@@ -1,7 +1,7 @@
 # Native inline Hydra model config (converted from the former
 # configs/*.yaml + legacy_config_path indirection). The `config`
 # block below is the inlined ZFTurbo-style tree; it is built via
-# models.registry.build_legacy_inline -> utils.build_model_from_config,
+# models.registry.build_legacy_inline -> models.registry.LEGACY_MODEL_BUILDERS,
 # the exact same dispatch the file-based path used. See REPLICATION.md.
 task: rps_prediction
 task_params:

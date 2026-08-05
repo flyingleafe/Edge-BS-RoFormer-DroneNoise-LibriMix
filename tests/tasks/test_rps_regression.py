@@ -33,14 +33,17 @@ _DREGON_VALID = get_datasets_path("DREGON-LM/valid")
 # Golden artifacts (checkpoint + dataset + per-sample json) are gitignored
 # and machine-local; skip the whole module when they are absent instead of
 # failing on fresh clones.
-pytestmark = pytest.mark.skipif(
-    not (
-        _GOLDEN_SIMPLE_CONV_CKPT.is_file()
-        and _DREGON_VALID.is_dir()
-        and _GOLDEN_PER_SAMPLE.is_file()
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        not (
+            _GOLDEN_SIMPLE_CONV_CKPT.is_file()
+            and _DREGON_VALID.is_dir()
+            and _GOLDEN_PER_SAMPLE.is_file()
+        ),
+        reason="golden artifacts (results/ + datasets/) not present on this machine",
     ),
-    reason="golden artifacts (results/ + datasets/) not present on this machine",
-)
+]
 
 # ── Test-sized subset ────────────────────────────────────────────────────
 

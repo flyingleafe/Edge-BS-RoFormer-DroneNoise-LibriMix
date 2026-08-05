@@ -30,11 +30,11 @@ from typing import Any
 
 import tdseries as td
 import torch
+import wandb
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import tqdm
 
-import wandb
 from data_processing.collate import batch_size as frame_batch_size
 from data_processing.collate import frame_collate, slice_sample
 from tasks.codecs import Codec
@@ -309,7 +309,7 @@ def _save_checkpoint(model: torch.nn.Module, path: Path) -> None:
 
 # ``train_state.pt`` is deliberately SEPARATE from ``last.ckpt`` rather than a
 # richer dict inside it: every existing consumer (eval.py, _warm_start,
-# scripts/eval_se_perclip.py, the R2 artifact store) reads the .ckpt files as
+# scripts/se_eval.py, the R2 artifact store) reads the .ckpt files as
 # bare state_dicts, so widening them would ripple. This file holds only the
 # bookkeeping needed to continue an interrupted run.
 TRAIN_STATE_NAME = "train_state.pt"

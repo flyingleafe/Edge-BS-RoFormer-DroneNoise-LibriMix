@@ -3,7 +3,7 @@
 Ported from the inline metric computation in ``train_rps_predictor.py``
 (``evaluate()``: ``mse``/``std_mse``/``mae_frame``/``mae_clip``/``r2``/``r2_median``)
 and generalised to reuse the Hungarian-assignment alignment already used for
-*plotting* in ``src/tasks/rps_prediction.py`` (``align_rps_to_gt``), per
+*plotting* in ``src/losses/pit.py`` (``align_rps_to_gt``), per
 docs/refactor-unified-framework.md § "Metrics": "PIT alignment reuses
 align_rps_to_gt". This kills two independent PIT-search implementations
 (the brute-force 24-permutation loop in ``train_rps_predictor.py`` and
@@ -19,16 +19,16 @@ from collections.abc import Callable
 import numpy as np
 import tdseries as td
 
+from framespec import FrameSpec
+from losses.pit import align_rps_to_gt
 from metrics._common import Metric, get_array, rps_series_spec
-from tasks.rps_prediction import align_rps_to_gt
-from tasks.spec import FrameSpec
 
 # ─── Pure numpy functions ────────────────────────────────────────────────────
 
 
 def _align(pred: np.ndarray, target: np.ndarray, pit: bool) -> np.ndarray:
     """Reorder ``target``'s rotor rows to best match ``pred`` (see
-    :func:`tasks.rps_prediction.align_rps_to_gt`), or return ``target``
+    :func:`losses.pit.align_rps_to_gt`), or return ``target``
     unchanged when ``pit=False``.
 
     Note the direction: ``align_rps_to_gt(pred, gt)`` permutes *pred* to
@@ -55,7 +55,7 @@ def rps_mse(pred: np.ndarray, target: np.ndarray, pit: bool = True) -> float:
         pred: (R, T) predicted RPS.
         target: (R, T) ground-truth RPS.
         pit: if True, permute ``target``'s rotors to best match ``pred``
-            (:func:`tasks.rps_prediction.align_rps_to_gt`) before scoring.
+            (:func:`losses.pit.align_rps_to_gt`) before scoring.
     """
     target = _align(pred, target, pit)
     return float(np.mean((pred - target) ** 2))

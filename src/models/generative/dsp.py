@@ -10,45 +10,17 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .math_utils import get_fft_size, overlap_add_50pct, overlap_and_add, signal_frame
-
 # ---------------------------------------------------------------------------
 # Phase / oscillator banks
 # ---------------------------------------------------------------------------
+from utils.dsp import (
+    freqs_to_phasors,
+    harmonic_freq_series,
+    overlap_and_add,
+    remove_above_nyquist,
+)
 
-
-def harmonic_freq_series(freq: torch.Tensor, n_harmonics: int):
-    """Make N harmonics from a fundamental-frequency series.
-
-    Args:
-        freq: [..., T] instantaneous fundamental frequency (Hz)
-        n_harmonics: number of harmonics including the fundamental
-    Returns:
-        [..., N, T] frequencies of each harmonic per time step
-    """
-    coeffs = torch.arange(1, n_harmonics + 1, device=freq.device, dtype=freq.dtype)
-    return torch.matmul(coeffs.unsqueeze(-1), freq.unsqueeze(-2))
-
-
-def remove_above_nyquist(freqs, amps, sr: int):
-    """Zero amplitudes at time steps where frequency exceeds Nyquist."""
-    assert freqs.shape == amps.shape
-    return torch.where(freqs > sr / 2, torch.zeros_like(amps), amps)
-
-
-def freqs_to_phasors(freq: torch.Tensor, sr: int):
-    """Convert frequency series to rotating complex phasors (cumprod form).
-
-    ``torch.polar(1, phase_diff)`` builds each per-sample unit phasor
-    ``cos(phi) + i sin(phi)`` directly; it is **bit-identical** to the former
-    ``torch.exp(1j * phase_diff)`` (``exp`` of a purely imaginary number is that
-    same cos/sin pair) but ~2x cheaper on CPU/GPU, and it feeds the *same*
-    ``cumprod`` so every downstream consumer (oscillator bank **and** the VP
-    transform in ``harmonic_transform``) is numerically unchanged.
-    """
-    phase_diff = freq * 2 * torch.pi / sr
-    complex_diffs = torch.polar(torch.ones_like(phase_diff), phase_diff)
-    return torch.cumprod(complex_diffs, -1)
+from .math_utils import get_fft_size, overlap_add_50pct, signal_frame
 
 
 def oscillator_bank(freqs, amps, initial_phases=None, return_sum=True, sr: int = 16000):

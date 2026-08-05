@@ -7,6 +7,14 @@ wandb/
 results/
 # dload / online-mix / download scratch caches
 .cache/
+# zoo checkpoint index (R2 is the source of truth; this is a local cache)
+.checkpoints-cache.json
+# displacement-campaign scratch: the scripts write their caches and their
+# measurement output next to themselves (the committed .json files are the
+# frozen results, everything below is regenerable).
+scripts/displacement/prep_ladder/
+scripts/displacement/specs/
+scripts/displacement/displacement.json
 # omnirun shared worktrees
 .trees/
 .direnv/

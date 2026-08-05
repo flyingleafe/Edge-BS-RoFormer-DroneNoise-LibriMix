@@ -96,8 +96,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from beatvk_eval import (  # noqa: E402
     DATASET,
+    FLY124_REC,
     FRAME_S,
     HOP,
+    N_ROTORS,
     SR,
     STITCH_SLIDE_FRAMES,
     STITCH_WIN_FRAMES,
@@ -112,7 +114,8 @@ from vk_blind_annotation import (  # noqa: E402
 from vk_blind_sweep import SEED_CFG  # noqa: E402  (identical seed config)
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
-from data_processing.vk_blind_seeding import (  # noqa: E402
+from tracking.protocols import BEATVK, iter_windows  # noqa: E402
+from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,
     whitened_logmag,
@@ -120,8 +123,6 @@ from data_processing.vk_blind_seeding import (  # noqa: E402
 
 DEFAULT_OUT = Path("results/beatvk_vk_arms")
 DEFAULT_NEURAL_MODEL = "ckla_phaseonly_best"
-N_ROTORS = 4
-FLY124_REC = "FLY124"
 
 #: blind arms -> blind_seed arm sets (subset of the sweep's ARM_SETS).
 BLIND_ARM_SETS: dict[str, frozenset[str]] = {
@@ -270,7 +271,7 @@ def _coarse_spec(
     """
     from scipy.ndimage import median_filter
 
-    from data_processing.rps_refinement import RefineConfig, compute_logmag
+    from tracking.rps_refinement import RefineConfig, compute_logmag
 
     rcfg = RefineConfig(sample_rate=SR, n_fft=nfft, hop_length=hop, device="cpu")
     spec = compute_logmag(audio, rcfg)
@@ -1000,33 +1001,31 @@ def main() -> None:
     manifest = load_manifest(out, wanted, opts.dataset_version)
     version = manifest["dataset_version"]
     print(f"[beatvk_vk_arms] {DATASET}@{version[:12]}", flush=True)
-    rec_windows = {
-        rid: rec["windows"]
-        for rid, rec in manifest["recordings"].items()
-        if wanted is None or rid in wanted
-    }
-    if wanted:
-        missing = wanted - set(rec_windows)
-        if missing:
-            raise SystemExit(f"unknown recordings {sorted(missing)}")
+    # Window specs come from the declarative protocol (tracking.protocols):
+    # the manifest supplies the frozen per-window bounds, iter_windows the
+    # canonical order + recording validation.
+    try:
+        specs = list(iter_windows(BEATVK, manifest["recordings"], recordings=wanted))
+    except KeyError as exc:
+        raise SystemExit(str(exc)) from None
     if opts.list_windows:
-        for rid, windows in rec_windows.items():
-            print(f"\n{rid}:")
-            for w in windows:
-                print(
-                    f"  w{int(w['index']):02d}  [{w['start_s']:8.2f}, {w['end_s']:8.2f}) "
-                    f" {w['regime']:<7} mean_rps {w['mean_rps']:.1f}"
-                )
+        for spec in specs:
+            if spec.index == 0:
+                print(f"\n{spec.recording_id}:")
+            start = spec.start_s if spec.start_s is not None else float("nan")
+            end = spec.end_s if spec.end_s is not None else float("nan")
+            mean = spec.mean_rps if spec.mean_rps is not None else float("nan")
+            print(
+                f"  w{spec.index:02d}  [{start:8.2f}, {end:8.2f}) "
+                f" {spec.regime or '?':<7} mean_rps {mean:.1f}"
+            )
         return
 
     widx_filter = {int(v) for v in opts.windows.split(",") if v} or None
     jobs_windows: dict[str, list[int]] = {}
-    for rid, windows in rec_windows.items():
-        idxs = [int(w["index"]) for w in windows]
-        if widx_filter is not None:
-            idxs = [i for i in idxs if i in widx_filter]
-        if idxs:
-            jobs_windows[rid] = idxs
+    for spec in specs:
+        if widx_filter is None or spec.index in widx_filter:
+            jobs_windows.setdefault(spec.recording_id, []).append(spec.index)
     if not jobs_windows:
         raise SystemExit("no (recording, window) pairs selected")
 

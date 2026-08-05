@@ -21,10 +21,10 @@ import tdseries as td
 import torch
 import torch.nn.functional as F
 
+from framespec import FrameSpec, SeriesSpec
 from losses.salience import auto_pos_weight, salience_bce_loss
 from metrics._common import get_array
 from models.multif0.utils import cqt_freq_grid, linear_freq_grid, salience_target_from_resampled_rps
-from tasks.spec import FrameSpec, SeriesSpec
 
 __all__ = ["SalienceBCEMetric"]
 

@@ -1,7 +1,7 @@
 """Blind-seeding-v2 arm sweep (design §7 sweep protocol).
 
 Arms {baseline, T, C, N, K, T+C, T+C+N, T+C+N+K} of
-``data_processing.vk_blind_seeding.blind_seed`` × base ladders
+``tracking.vk_blind_seeding.blind_seed`` × base ladders
 {plain, vit2dsp} × recordings {DREGON free-flight nosource/speech-low/
 whitenoise-low room1, FLY124 cruise window}, blind init only.
 
@@ -109,8 +109,8 @@ from vk_validation import (  # noqa: E402
     smooth_frames,
 )
 
-from data_processing.vk_blind_seeding import SeedConfig, SeedResult, blind_seed  # noqa: E402
-from data_processing.vk_tracking import vk_track  # noqa: E402
+from tracking.vk_blind_seeding import SeedConfig, SeedResult, blind_seed  # noqa: E402
+from tracking.vk_tracking import vk_track  # noqa: E402
 
 SR = 16000
 OUT_DIR = Path("results/vk_blind_sweep")
@@ -765,7 +765,7 @@ def main() -> None:
     # was ACTUALLY imported and its effective scan band cap — the round-2
     # sweep silently ran a stale module via the .venv's absolute-path
     # editable install; this line makes that regression impossible to miss.
-    import data_processing.vk_blind_seeding as _seeding
+    import tracking.vk_blind_seeding as _seeding
 
     scan_f_max = getattr(SEED_CFG, "scan_f_max", None)
     print(
@@ -774,7 +774,7 @@ def main() -> None:
     )
     if scan_f_max is None:
         raise SystemExit(
-            "stale data_processing.vk_blind_seeding imported (no/None scan_f_max) — "
+            "stale tracking.vk_blind_seeding imported (no/None scan_f_max) — "
             "the band-capped scan is not in effect; check the sys.path pin above"
         )
 

@@ -121,7 +121,7 @@ def make_peels(
     rotors' reconstructions (for the joint twin observations). ``diag``
     carries the energy bookkeeping for the peel sanity gate.
     """
-    from data_processing.vk_tracking import VKConfig, vk_envelopes, vk_reconstruct
+    from tracking.vk_tracking import VKConfig, vk_envelopes, vk_reconstruct
 
     cfg = VKConfig(fs=float(sr), bw_hz=PEEL_BW_HZ, k_max=PEEL_K_MAX, f_max=6000.0, n_outer=1)
     t_aud = np.arange(clip.shape[-1]) / sr
@@ -184,7 +184,7 @@ def _install_patches() -> None:
     global _PATCHED
     if _PATCHED:
         return
-    import data_processing.phase_increment_tracker as pit
+    import tracking.phase_increment_tracker as pit
 
     orig_rotor_pass = pit._rotor_pass
     orig_pair_joint_obs = pit._pair_joint_obs
@@ -225,7 +225,7 @@ def run_arm(
     carry the per-rotor ``band_b0`` across applications. ``band_b0``
     overrides the initial k-scaled band scale (rev/s) of that row.
     """
-    from data_processing.phase_increment_tracker import pi_kalman_refine
+    from tracking.phase_increment_tracker import pi_kalman_refine
 
     _install_patches()
     pi_kwargs = dict(PI_VARIANTS[pi_variant])
@@ -437,7 +437,7 @@ def run_blind_chain(
 
     from vk_blind_annotation import MIDBAND_CFGS, REFINE_CFG, pit_perm, vit2dsp_pipeline
 
-    from data_processing.vk_blind_seeding import blind_seed
+    from tracking.vk_blind_seeding import blind_seed
 
     tic = time.perf_counter()
     seed = blind_seed(prep.audio, float(SR), N_ROTORS, vka.SEED_CFG, arms=frozenset({"K", "R"}))

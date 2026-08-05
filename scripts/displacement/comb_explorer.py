@@ -78,6 +78,7 @@ from plots.comb_page import (  # noqa: E402  (needs the sys.path line above)
     write_index,
     write_page,
 )
+from utils.paths import get_data_path  # noqa: E402
 
 # ─── Source resolution ────────────────────────────────────────────────────────
 
@@ -100,7 +101,7 @@ class Recording:
 def _michaels_entries() -> list[tuple[str, Path, Path, float, float]]:
     from data_processing.sources import michaels as MI
 
-    root = MI.resolve_raw_root(ROOT / "data")
+    root = MI.resolve_raw_root(get_data_path())
     return [
         (Path(csv_rel).stem, root / wav_rel, root / csv_rel, off, dil)
         for wav_rel, csv_rel, off, dil in MI.MICHAELS_FILES

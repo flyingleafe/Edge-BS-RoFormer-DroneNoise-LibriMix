@@ -45,11 +45,15 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-__all__ = ["ArtifactStore", "ValSample", "R2_ENV_VARS"]
+# Credential loading + r2:// checkpoint resolution live in utils.checkpoints
+# (bottom layer) so model/data code can use them without importing training;
+# re-exported here for backward compatibility.
+from utils.checkpoints import R2_ENV_VARS, resolve_checkpoint_uri
+from utils.checkpoints import load_r2_env as _load_r2_env
+
+__all__ = ["ArtifactStore", "ValSample", "R2_ENV_VARS", "resolve_checkpoint_uri"]
 
 logger = logging.getLogger(__name__)
-
-R2_ENV_VARS: tuple[str, str, str] = ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 
 @dataclass
@@ -68,64 +72,6 @@ class ValSample:
     audio: dict[str, tuple[np.ndarray, int]] = field(default_factory=dict)
     figures: dict[str, bytes] = field(default_factory=dict)
     metrics: dict[str, float] = field(default_factory=dict)
-
-
-def _load_r2_env() -> dict[str, str] | None:
-    """Load R2 credentials from the environment (``.env`` via python-dotenv).
-
-    Returns ``None`` if any of :data:`R2_ENV_VARS` is missing.
-    """
-    import os
-
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    account_id = os.environ.get("R2_ACCOUNT_ID")
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    if not account_id or not access_key or not secret_key:
-        return None
-    return {
-        "R2_ACCOUNT_ID": account_id,
-        "AWS_ACCESS_KEY_ID": access_key,
-        "AWS_SECRET_ACCESS_KEY": secret_key,
-    }
-
-
-def resolve_checkpoint_uri(uri: str | Path, cache_dir: str | Path | None = None) -> str:
-    """Resolve a checkpoint reference to a local file path.
-
-    A plain path is returned unchanged. An ``r2://<bucket>/<key>`` URI is
-    downloaded (once, cached) via a boto3 client built from ``.env`` R2 creds
-    and the local cache path is returned. Used for warm-start
-    (``cfg.checkpoint``) and for the generated-noise producer's checkpoint,
-    so both work identically on a laptop or a fresh cloud GPU box.
-    """
-    uri = str(uri)
-    if not uri.startswith("r2://"):
-        return uri
-    bucket, _, key = uri[len("r2://") :].partition("/")
-    if not bucket or not key:
-        raise ValueError(f"malformed r2:// checkpoint uri: {uri!r}")
-    cache = Path(cache_dir) if cache_dir else Path(".cache") / "r2_checkpoints"
-    cache.mkdir(parents=True, exist_ok=True)
-    dst = cache / f"{bucket}__{key.replace('/', '__')}"
-    if dst.exists():
-        return str(dst)
-    env = _load_r2_env()
-    if env is None:
-        raise RuntimeError(f"r2:// checkpoint {uri!r} requested but R2 creds missing in .env")
-    import boto3
-
-    client = boto3.client(
-        "s3",
-        endpoint_url=f"https://{env['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-        aws_access_key_id=env["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
-        region_name="auto",
-    )
-    client.download_file(bucket, key, str(dst))
-    return str(dst)
 
 
 class ArtifactStore:
@@ -215,6 +161,29 @@ class ArtifactStore:
             logger.warning(
                 "ArtifactStore: failed to upload checkpoint %s", ckpt_path, exc_info=True
             )
+            return None
+        return self._uri(key)
+
+    def upload_file(self, path: str | Path, subkey: str) -> str | None:
+        """Upload one small file under this experiment's key root.
+
+        ``subkey`` is the key suffix below ``<prefix>/<experiment_name>/``,
+        e.g. ``"eval/metrics.json"``. Returns the ``r2://...`` URI, or
+        ``None`` (disabled / missing creds / upload failed) — same defensive
+        contract as the other upload methods.
+        """
+        if not self.enabled:
+            logger.info("ArtifactStore: disabled; skipping file upload for %s", path)
+            return None
+        client = self._get_client()
+        if client is None:
+            return None
+        src = Path(path)
+        key = f"{self._key_root()}/{subkey.strip('/')}"
+        try:
+            client.upload_file(str(src), self.bucket, key)
+        except Exception:
+            logger.warning("ArtifactStore: failed to upload file %s", src, exc_info=True)
             return None
         return self._uri(key)
 

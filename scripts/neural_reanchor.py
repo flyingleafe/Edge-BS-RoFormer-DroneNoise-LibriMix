@@ -24,7 +24,7 @@ Arms:
   rows.
 * ``reanchor_4s``     — bases + detrended ``ckla_phaseonly_4s_best`` rows.
 * ``reanchor_4s_pik`` — reanchor_4s, then per-window ``pi_kalman_refine``
-  joint refinement (``data_processing.phase_increment_tracker``).
+  joint refinement (``tracking.phase_increment_tracker``).
 
 Inputs (all local; the VK ladder is never re-run):
 
@@ -214,7 +214,7 @@ def reanchor(bases_sorted: np.ndarray, neural: np.ndarray) -> np.ndarray:
 def window_pit_mae(traj: np.ndarray, r_meas: np.ndarray) -> float:
     """Informational window-grid PIT-MAE vs raw telemetry (diagnostics only;
     arm scores come from the frozen scorer)."""
-    from tasks.rps_prediction import align_rps_to_gt
+    from losses.pit import align_rps_to_gt
 
     return float(np.mean(np.abs(align_rps_to_gt(traj, r_meas) - r_meas)))
 
@@ -269,7 +269,7 @@ def pik_refine_window(
 ) -> tuple[np.ndarray, float]:
     """``pi_kalman_refine`` on one window from init ``r0``; cached by the
     init's hash so a changed A2 trajectory invalidates the cache."""
-    from data_processing.phase_increment_tracker import pi_kalman_refine
+    from tracking.phase_increment_tracker import pi_kalman_refine
 
     cache = out / "pik_cache" / f"{rid}__w{widx:02d}.npz"
     key = float(np.sum(r0))  # cheap init fingerprint

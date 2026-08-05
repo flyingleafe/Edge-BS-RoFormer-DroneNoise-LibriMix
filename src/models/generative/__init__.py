@@ -9,6 +9,8 @@ implicit dependency on global settings.
 Modules
 -------
 - `dsp`                : oscillator banks, frequency filtering, harmonic synthesis
+- `codebook`           : `DroneCodebook` (name-keyed per-drone conditioning codes)
+                         + `geometry_to_rel_pos` (mic/rotor geometry -> model input)
 - `math_utils`         : math helpers (hz<->midi, exp_sigmoid, overlap_and_add, ...)
 - `harmonic_noise_gen` : `PropellerNoiseGen`, `DroneNoiseGen` — sinusoidal harmonic
                          synthesis from RPS (the "sinusoidal modelling" half);
@@ -25,6 +27,15 @@ Modules
                          + `smoothness_penalty` (2nd-difference control-curve regulariser)
 """
 
+from utils.dsp import (
+    HarmonicTransformModule,
+    VP_transform,
+    harmonic_VP_transform,
+    inverse_VP_transform,
+    lstsq_VP_transform,
+)
+
+from .codebook import DroneCodebook, geometry_to_rel_pos
 from .filtered_noise import DroneNoisePlusFilterGen, FilteredNoiseSynth, RPSFilterNet
 from .harmonic_gen_new import (
     ConstantAmplitudePredictor,
@@ -39,13 +50,6 @@ from .harmonic_noise_gen import (
     PolynomialRegression,
     PolyWithExpLog,
     PropellerNoiseGen,
-)
-from .harmonic_transform import (
-    HarmonicTransformModule,
-    VP_transform,
-    harmonic_VP_transform,
-    inverse_VP_transform,
-    lstsq_VP_transform,
 )
 from .losses import MultiScaleSTFT, smoothness_penalty
 from .positional_harmonic_gen import (
@@ -62,6 +66,8 @@ from .wind_wake_gen import (
 )
 
 __all__ = [
+    "DroneCodebook",
+    "geometry_to_rel_pos",
     "PropellerNoiseGen",
     "DroneNoiseGen",
     "PolynomialRegression",

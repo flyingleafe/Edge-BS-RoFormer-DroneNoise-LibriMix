@@ -63,8 +63,8 @@ import tdseries as td
 import torch
 from torch import nn
 
+from framespec import FrameSpec, SeriesSpec
 from losses._common import AUDIO_RATE, get_tensor
-from tasks.spec import FrameSpec, SeriesSpec
 
 __all__ = ["spatial_whittle_nll", "steering_vectors", "SpatialLikelihood", "SpatialLikelihoodLoss"]
 

@@ -5,6 +5,22 @@ Measurement code and reports for the DREGON comb-displacement work (see
 interactive explorer only; the analysis scripts around it document themselves in
 their own docstrings.
 
+## Two roots, on purpose
+
+These scripts resolve **code** and **data** separately, and the distinction
+matters as soon as one runs from a git worktree:
+
+- code — `Path(__file__).resolve().parents[2] / "src"`, so a worktree imports
+  its own `tracking` / `data_processing`, never another checkout's;
+- data — `utils.paths.get_data_path("DREGON")` and `get_data_root()` for
+  `omnirun-outputs/`. `data/`, `results/` and `omnirun-outputs/` are
+  gitignored, so a worktree does not hold them: `$DATA_ROOT` wins, else the
+  main checkout (first line of `git worktree list`).
+
+Their own outputs (`prep_ladder/`, `specs/`, `displacement.json`) are written
+next to the scripts and are gitignored — the committed `*.json` files are the
+frozen results, everything else regenerates.
+
 ## `comb_explorer.py` — the interactive page
 
 The page — the payload builder and the one HTML/JS template — lives in

@@ -3,7 +3,8 @@
 All CPU-cheap and dataset-free: they exercise the physics (module B wake gate,
 module A grey-box dynamics), the learned transduction (module C), autograd, and
 the incoherence/silence invariants the design relies on. The real-audio geometry
-de-risk lives separately in ``scripts/wind_wake_validation.py``.
+de-risk was in ``scripts/wind_wake_validation.py`` (removed 2026-08; see git
+history).
 
 The ``models`` namespace package resolves to the *main* checkout via the editable
 install, so prepend this worktree's ``src`` to pick up the new module here.

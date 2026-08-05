@@ -19,8 +19,7 @@ touching code. Deviations require an explicit note in the final report.
    wandb run named after it, one `results/<experiment>/` subfolder.
 
 Non-goals (v1): rewriting model internals (they stay tensor-based
-`nn.Module`s); GPU re-runs of historical experiments; migrating
-`fwh_rotor_sim` (it never used `utils.data`).
+`nn.Module`s); GPU re-runs of historical experiments.
 
 ## Final layout
 

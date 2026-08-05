@@ -1,4 +1,4 @@
-# src/utils/plots/rps_prediction/full_sequence.py
+# src/plots/rps_prediction/full_sequence.py
 """3-panel full-sequence plot: spectrogram + GT-vs-pred + per-frame MSE."""
 
 from __future__ import annotations
@@ -11,14 +11,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from losses.pit import align_rps_to_gt
+from plots.timeframe.renderers import ROTOR_COLORS
 from tasks.rps_prediction import (
     HOP,
     N_FFT,
     SR_AUDIO,
-    align_rps_to_gt,
 )
 
-ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+__all__ = ["ROTOR_COLORS", "plot_full_sequence"]
 
 
 def plot_full_sequence(

@@ -28,8 +28,9 @@ import numpy as np
 import torch
 
 from metrics.separation import si_sdr
-from models.generative.dsp import harmonic_freq_series, oscillator_bank
-from models.generative.harmonic_transform import (
+from models.generative.dsp import oscillator_bank
+from utils.dsp import (
+    harmonic_freq_series,
     inverse_VP_transform,
     lstsq_VP_transform,
 )

@@ -5,18 +5,19 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Any, cast
 
+import matplotlib.axes
 import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 import tdseries as td
-import torch
 import torchaudio
 
 from data_processing.frames import with_meta
+from losses.pit import align_rps_to_gt
 from plots.timeframe import PlotTrack, plot_timeframe
-from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
-
-ROTOR_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+from plots.timeframe.registry import TrackContext, get_renderer
+from plots.timeframe.renderers import ROTOR_COLORS, make_spectrogram_series
+from tasks.rps_prediction import HOP, N_FFT
 
 
 def plot_sample_comparison(
@@ -220,21 +221,26 @@ def _plot_two_columns(
     return fig
 
 
-def _plot_spectrogram(ax, audio: np.ndarray, sr: float, t_start: float, dur: float) -> None:
-    """Draw log-magnitude spectrogram up to 4 kHz."""
-    window = torch.hann_window(N_FFT)
-    X = torch.stft(
-        torch.from_numpy(audio).float(),
-        n_fft=N_FFT,
-        hop_length=HOP,
-        window=window,
-        return_complex=True,
+def _plot_spectrogram(
+    ax: matplotlib.axes.Axes, audio: np.ndarray, sr: float, t_start: float, dur: float
+) -> None:
+    """Draw a log-magnitude spectrogram into ``ax``.
+
+    Routed through the one shared spectrogram implementation
+    (:func:`~plots.timeframe.renderers.make_spectrogram_series` + the
+    ``"audio_spectrogram"`` renderer) — the manual ``torch.stft`` copy this
+    function used to carry is gone.
+    """
+    series = td.uniform(np.asarray(audio, dtype=np.float32), sr, dims=("time",), t_start=t_start)
+    track = make_spectrogram_series(series, n_fft=N_FFT, hop_length=HOP, log=True)
+    ctx = TrackContext(
+        ax=ax,
+        name="spectrogram",
+        t_start=t_start,
+        t_end=t_start + dur,
+        style={"_hints": track.hints},
     )
-    S = torch.abs(X).numpy()
-    times = np.linspace(t_start, t_start + dur, S.shape[-1])
-    freqs = np.linspace(0, sr / 2, S.shape[0])
-    ax.pcolormesh(times, freqs, 20 * np.log10(S + 1e-8), shading="auto", cmap="magma")
-    ax.set_ylabel("Freq (Hz)")
+    get_renderer("audio_spectrogram")(track.series, ctx)
     ax.set_title("Input Spectrogram")
 
 

@@ -27,7 +27,7 @@ from typing import Any
 import torch
 
 from data_processing.collate import collate_frames
-from tasks.spec import FrameSpec, check_subsumes, merge_specs, spec_of, without_batch
+from framespec import FrameSpec, check_subsumes, merge_specs, spec_of, without_batch
 from training.config import (
     build_dataset,
     build_losses,

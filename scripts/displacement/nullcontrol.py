@@ -107,7 +107,7 @@ def bank(
     ``exp(-i (2k+1) phi/2) = exp(-i (k+1/2) phi)``. Band and decimation are
     identical to the on-comb call, so the two differ only in carrier rate.
     """
-    from data_processing.phase_increment_tracker import _demod_bank
+    from tracking.phase_increment_tracker import _demod_bank
 
     n_t = audio.shape[-1]
     t_aud = np.arange(n_t) / SR

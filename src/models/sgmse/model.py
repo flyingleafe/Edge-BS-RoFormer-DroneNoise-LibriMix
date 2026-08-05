@@ -6,8 +6,8 @@ the task-generic training loop needs no changes: ``forward(mix, target=None)``
 returns the **denoising-score-matching (sigma^2-weighted) scalar loss** when a
 clean ``target`` is given (training), and runs the **predictor-corrector reverse
 SDE sampler** to return the enhanced waveform when ``target`` is None (eval).
-Built through ``utils.build_model_from_config`` via the legacy ``model_type:
-sgmse`` registry entry (same dispatch as ``diffusion_buffer``).
+Built through ``models.registry.LEGACY_MODEL_BUILDERS`` via the legacy
+``model_type: sgmse`` registry entry (same dispatch as ``diffusion_buffer``).
 
 Pieces:
   * complex STFT (n_fft=510, hop=128, Hann, center) + magnitude compression

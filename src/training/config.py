@@ -14,8 +14,8 @@ exception — see :func:`instantiate_model` — because a model may come from
 either that same ``_target_`` convention (routed through
 ``models.registry.build_model`` for the RPS-model registry) *or* the legacy
 ``model_type`` + ``legacy_config_path`` path through
-``utils.get_model_from_config`` (28+ pre-existing architectures with their
-own YAML config format). ``instantiate_model`` is a small manual dispatcher
+``models.registry.LEGACY_MODEL_BUILDERS`` (pre-existing architectures with
+their own YAML config format). ``instantiate_model`` is a small manual dispatcher
 rather than a bare ``hydra.utils.instantiate(cfg.model)`` call so that
 ``ModelConfig``'s descriptive fields (``task``, ``task_params``,
 ``model_type``, ``legacy_config_path``) never leak into a component
@@ -99,7 +99,7 @@ class ModelConfig:
     # plain-kwargs constructor.
     _target_: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
-    # Path B: legacy utils.get_model_from_config dispatch.
+    # Path B: legacy models.registry.LEGACY_MODEL_BUILDERS dispatch.
     model_type: str | None = None
     legacy_config_path: str | None = None
 
@@ -245,8 +245,8 @@ def _to_dict(cfg: Any) -> dict[str, Any]:
 # Params that carry an exact ``(num, den)`` rate: YAML ``[16000, 512]``
 # composes as a plain Python ``list`` (``_to_dict`` already fully resolves
 # any ``ListConfig``/``DictConfig`` to plain containers), but
-# ``tasks.spec.SeriesSpec.rate`` is compared with ``!=`` against a genuine
-# *reduced* ``(num, den)`` tuple inferred from live data (``tasks.spec.spec_of``
+# ``framespec.SeriesSpec.rate`` is compared with ``!=`` against a genuine
+# *reduced* ``(num, den)`` tuple inferred from live data (``framespec.spec_of``
 # reads ``GridIndex.sr_num``/``sr_den``, which ``tdseries`` always stores in
 # lowest terms — e.g. ``(16000, 512)`` normalizes to ``(125, 4)``). A bare
 # ``tuple(v)`` would fix the list-vs-tuple mismatch but not the

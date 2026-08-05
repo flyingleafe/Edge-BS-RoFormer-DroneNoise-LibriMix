@@ -25,8 +25,9 @@ import torch
 import torch.nn.functional as F
 
 import models.generative.dsp as dsp
-from models.generative.math_utils import overlap_add_50pct, overlap_and_add
+from models.generative.math_utils import overlap_add_50pct
 from models.registry import build_noise_gen_model
+from utils.dsp import overlap_and_add
 
 SR = 16000
 RTOL, ATOL = 1e-4, 1e-5

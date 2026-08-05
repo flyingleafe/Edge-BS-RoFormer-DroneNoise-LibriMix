@@ -1,7 +1,7 @@
 # SGMSE+ (Richter et al., IEEE TASLP 2023) — score-based diffusion speech
 # enhancement, trained FROM SCRATCH at native 16 kHz. Faithful OUVE SDE + full
 # NCSN++ backbone (~65M params). Mirrors a2_diffusion_buffer_bbed's envelope:
-# built via models.registry.build_legacy_inline -> utils.build_model_from_config
+# built via models.registry.build_legacy_inline -> models.registry.LEGACY_MODEL_BUILDERS
 # (model_type: sgmse). forward(mix, target) returns the DSM (sigma^2-weighted)
 # scalar loss; forward(mix) runs the PC reverse-SDE sampler -> enhanced waveform
 # (~30 min/utterance at N=30). See src/models/sgmse/model.py.

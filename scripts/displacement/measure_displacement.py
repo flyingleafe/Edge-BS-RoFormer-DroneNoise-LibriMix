@@ -29,11 +29,15 @@ os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import numpy as np  # noqa: E402
 
-ROOT = Path("/home/flyingleafe/Research/PhD/projects/harmonic-noise-suppression")
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-PREP = ROOT / ("omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache")
-LADDER = ROOT / "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm"
+from utils.paths import get_data_root  # noqa: E402
+
+PREP = get_data_root() / (
+    "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
+)
+LADDER = get_data_root() / "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm"
 OUT = Path(__file__).resolve().parent
 SPEC_DIR = OUT / "specs"
 
@@ -85,7 +89,7 @@ def envelope_bank(
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(z (C, K, n_env), band_hz_k (K,))`` — the tracker's demod bank at
     ``k * telemetry`` with a per-harmonic band."""
-    from data_processing.phase_increment_tracker import _demod_bank
+    from tracking.phase_increment_tracker import _demod_bank
 
     n_t = audio.shape[-1]
     t_aud = np.arange(n_t) / SR
@@ -181,7 +185,7 @@ def collision_mask(r_ft: np.ndarray, rotor: int, ks: list[int]) -> np.ndarray:
     """``(K, N)`` bool: True where another rotor's harmonic enters the peak
     search window of harmonic k of ``rotor`` (the tracker's own twin rule at
     ``sep_hz = COLLISION_GUARD * search_hz(k)``)."""
-    from data_processing.phase_increment_tracker import _twin_collision_mask
+    from tracking.phase_increment_tracker import _twin_collision_mask
 
     sep = np.array([COLLISION_GUARD * search_hz(k) for k in ks], dtype=np.float64)
     return _twin_collision_mask(r_ft, rotor, len(ks), sep, f_max=6000.0, min_rate=5.0)

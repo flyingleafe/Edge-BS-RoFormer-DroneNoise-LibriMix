@@ -1,6 +1,6 @@
 """Interactive per-SNR explorer for the F1 SE blind-baselines.
 
-Backing data: the per-clip CSVs written by ``scripts/eval_se_perclip.py`` (one
+Backing data: the per-clip CSVs written by ``scripts/se_eval.py`` (one
 row per validation clip, carrying ``category`` / ``input_snr`` + SI-SDR / SDR /
 PESQ / eSTOI). Because the data is per-clip, ANY subset — a chosen set of noise
 categories, a chosen set of models, one valid set — aggregates on the fly to
@@ -73,7 +73,7 @@ def load_perclip(dirs: list[Path] | None = None) -> pd.DataFrame:
             frames.append(pd.read_csv(path))
     if not frames:
         raise FileNotFoundError(
-            f"no per-clip CSVs under {[str(d) for d in dirs]} — run scripts/eval_se_perclip.py "
+            f"no per-clip CSVs under {[str(d) for d in dirs]} — run scripts/se_eval.py "
             "or `omnirun pull f1-perclip-eval-*` first"
         )
     df = pd.concat(frames, ignore_index=True)

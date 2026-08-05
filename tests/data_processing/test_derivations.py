@@ -223,8 +223,8 @@ def test_se_valid_category_grid_and_snr(patched_repo, speech_dataset):  # noqa: 
     """``iter_se_valid_category`` yields per_snr clips per grid point, each at
     its grid SNR, with the clean target being the mixture's speech component.
 
-    Guards the SE-valid rebuild path (the replacement for the deleted
-    ``scripts/build_se_valid.py``) — see ``data_processing.derivations``.
+    Guards the SE-valid rebuild path in ``data_processing.derivations``
+    (``generate_se_valid`` / ``iter_se_valid_category``).
     """
     from .conftest import SPEECH_DATASET
 

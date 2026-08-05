@@ -39,7 +39,7 @@ def test_load_predictor_rejects_non_string_non_predictor():
 
 
 def test_align_rps_to_gt_rejects_transposed_input():
-    from tasks.rps_prediction import align_rps_to_gt
+    from losses.pit import align_rps_to_gt
 
     # A transposed (F, R) array reads as R = 100 rotors — must fail fast
     # instead of materializing a huge pairwise cost over frames.
@@ -50,7 +50,7 @@ def test_align_rps_to_gt_rejects_transposed_input():
 
 
 def test_align_rps_to_gt_permutes_rows_back():
-    from tasks.rps_prediction import align_rps_to_gt
+    from losses.pit import align_rps_to_gt
 
     gt = np.stack([np.full(32, 10.0 * (r + 1)) for r in range(4)])  # (4, 32)
     perm = [2, 0, 3, 1]

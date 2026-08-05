@@ -1,8 +1,8 @@
 """One place to drive every drone-noise generator we have.
 
 Replaces the scattered per-model notebooks (`drone_embedding_explorer`,
-`noise_gen_real_vs_generated`, `noise_four_way_comparison`, `jasa_gp_interactive`,
-`fwh_rotor_audio_generator`), several of which no longer import — they still
+`noise_gen_real_vs_generated`, `noise_four_way_comparison`,
+`jasa_gp_interactive`), several of which no longer import — they still
 reach for `data_processing.dregon` / `.michaels`, which the data-layer refactor
 moved into `data_processing.sources`.
 
@@ -26,8 +26,6 @@ that straight:
 - ``gp`` — the JASA Gaussian-process rotor model, a fitted statistical field.
 - ``cona`` — constant-RPS auralized cases from the published `drone-egonoise`
   set. Not a model we fit; a reference synthesis.
-- ``fwh`` — the Ffowcs Williams-Hawkings physics simulator. First principles,
-  no fitting.
 - ``real`` — the recording itself.
 """
 
@@ -46,7 +44,7 @@ if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
 SR = 16_000
-Family = Literal["deep", "gp", "cona", "fwh", "real"]
+Family = Literal["deep", "gp", "cona", "real"]
 
 
 # ─── Variant registry ─────────────────────────────────────────────────────────
@@ -169,11 +167,6 @@ VARIANTS: dict[str, Variant] = {
         "cona",
         "Published drone-egonoise constant-RPS cases. Nearest case to the "
         "requested mean RPS is used.",
-    ),
-    "fwh/physics simulator": Variant(
-        "fwh/physics simulator",
-        "fwh",
-        "Ffowcs Williams-Hawkings simulation from rotor geometry. No fitting.",
     ),
 }
 
@@ -428,8 +421,6 @@ def render(
         return _render_gp(exc)
     if spec.family == "cona":
         return _render_cona(exc)
-    if spec.family == "fwh":
-        return _render_fwh(exc)
     raise ValueError(f"unknown family {spec.family!r}")
 
 
@@ -439,7 +430,7 @@ def _render_deep(spec, exc, *, alpha, offset, jitter_sigma, wind, seed):
     import torch
     from torch import nn
 
-    from tasks.noise_generation import geometry_to_rel_pos
+    from models.generative.codebook import geometry_to_rel_pos
 
     model = load_variant(spec.name)
     torch.manual_seed(seed)
@@ -514,14 +505,6 @@ def _render_cona(exc: Excitation) -> np.ndarray:
     n = exc.rps.shape[-1]
     mono = np.resize(mono, n) if mono.size else np.zeros(n, np.float32)
     return np.repeat(mono[None, :].astype(np.float32), exc.mic_pos.shape[0], axis=0)
-
-
-def _render_fwh(exc: Excitation) -> np.ndarray:
-    raise NotImplementedError(
-        "The FWH simulator needs a rotor blade geometry (chord/twist) that is not "
-        "part of an Excitation. Drive it from notebooks/fwh_rotor_audio_generator.ipynb "
-        "and paste the result in, or extend Excitation with a blade spec."
-    )
 
 
 # ─── Analysis helpers ─────────────────────────────────────────────────────────

@@ -4,8 +4,8 @@ import numpy as np
 import tdseries as td
 
 from data_processing.frames import with_meta
+from framespec import FrameSpec
 from metrics.suite import MetricSuite
-from tasks.spec import FrameSpec
 
 
 class _ConstantMetric:

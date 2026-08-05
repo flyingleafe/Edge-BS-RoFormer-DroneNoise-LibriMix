@@ -1,4 +1,4 @@
-# src/utils/plots/__init__.py — shared plot registry + make_plot CLI.
+# src/plots/__init__.py — shared plot registry + lazy dwym front door.
 """Task-separated plotting — shared infrastructure.
 
 Each task sub-package exposes a ``PLOT_TYPES`` dict mapping dotted names
@@ -44,3 +44,27 @@ def get_plot_fn(name: str) -> PlotFn:
 def list_plot_types() -> list[str]:
     """Return all registered plot type names."""
     return sorted(_PLOT_TYPES)
+
+
+def __getattr__(name: str):
+    """Lazy front-door exports: ``dwym`` and ``comb_explorer``.
+
+    Loaded on first access so ``import plots`` (registry only) stays light —
+    ``dwym`` pulls in matplotlib renderers and tdseries. Entry-name coercion
+    is imported from its own package: ``data_processing.canonical``.
+    """
+    if name == "dwym":
+        from plots.dwym import dwym
+
+        # Cache the *function* on the package: the submodule import above
+        # also sets ``plots.dwym = <module>``, which would shadow the
+        # function on the next attribute lookup. Function wins.
+        globals()["dwym"] = dwym
+        return dwym
+    if name in ("comb_explorer", "discover"):
+        from plots import comb_widget
+
+        fn = getattr(comb_widget, name)
+        globals()[name] = fn
+        return fn
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

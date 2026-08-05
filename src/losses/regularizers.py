@@ -16,8 +16,8 @@ from __future__ import annotations
 import tdseries as td
 import torch
 
+from framespec import FrameSpec, SeriesSpec, TimeKind
 from losses._common import get_tensor, rps_series_spec
-from tasks.spec import FrameSpec, SeriesSpec, TimeKind
 
 # ─── Pure tensor functions ───────────────────────────────────────────────────
 
