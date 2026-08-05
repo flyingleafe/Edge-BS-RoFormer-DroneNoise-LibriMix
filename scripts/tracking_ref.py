@@ -30,9 +30,17 @@ Run::
     python scripts/tracking_ref.py --bench                          # per-stage ms
     python scripts/tracking_ref.py --bench --bench-workers 1,4 --bench-vk
 
+``--self-check`` needs no stored reference: it runs the SAME application
+twice in one process — once on the scipy/exact backend, once on whatever
+``--backend`` / ``--device`` / ``--pad-mode`` select — and diffs the two.
+That is the form the GPU verification takes, because the frozen ``.npz`` is
+~100 MB and does not travel to a compute node::
+
+    python scripts/tracking_ref.py --self-check --backend torch --device cuda
+
 Remote (the capture is minutes of CPU, so this is the normal path)::
 
-    omnirun submit --backend apocrita-cpu --gpus 0 --time 2h --yes \\
+    omnirun submit --backend apocrita-cpu --gpus 0 --time 2h \\
         --env PYTHONPATH=src -- \\
         python scripts/tracking_ref.py --capture results/tracking_ref
 """
@@ -64,6 +72,7 @@ sys.path.insert(0, str(_HERE))
 import beatvk_eval  # noqa: E402
 import beatvk_flagship as flag  # noqa: E402
 
+from tracking.demod_backend import BACKENDS, PAD_MODES, demod_backend  # noqa: E402
 from tracking.protocols import (  # noqa: E402
     BEATVK,
     BEATVK_DREGON_RECS,
@@ -75,6 +84,32 @@ from tracking.protocols import (  # noqa: E402
 REF_NAME = "tracking_ref.npz"
 #: Arrays whose exact values are the regression surface.
 DUMPED = ("env_z", "env_x", "env_x_ls", "env_valid", "env_bw_track", "env_t_env", "r0", "r_next")
+
+#: Tolerance-mode bar per dumped array: ``("scale", f)`` means ``f`` times
+#: the array's own scale (``max |ref|``), ``("abs", v)`` means ``v`` in the
+#: array's own units. Boolean arrays ignore this and demand zero flips —
+#: a gate decision must never move.
+#:
+#: ``env_x`` / ``env_x_ls`` get a looser bar than ``env_z`` on purpose, and
+#: the gap is not slack: the VK normal equations at ``bw_hz = 1`` carry
+#: ``rho^2 ~ 4e5``, so the assembled system's condition number is ~1e7 and
+#: the solve AMPLIFIES the demodulation's complex64 rounding (~1e-7 of
+#: scale, which is what ``env_z`` shows) by one to three orders, and by how
+#: much depends on the clip. Measured for a scipy->torch backend swap:
+#: ``env_z`` moves 1.5e-7 of scale on the full 16 s clip (1.2e-7 on the 4 s
+#: smoke), ``env_x`` 7.3e-7 (3.7e-5 on the smoke), ``r_next`` 4.5e-6 rev/s,
+#: and no gate flips anywhere. The tracker consumes ``r_next`` and the
+#: gates, so those carry the tight bars.
+TOL: dict[str, tuple[str, float]] = {
+    "env_z": ("scale", 1e-5),
+    "env_x": ("scale", 1e-3),
+    "env_x_ls": ("scale", 1e-3),
+    "env_bw_track": ("scale", 1e-9),
+    "env_t_env": ("scale", 1e-9),
+    "r0": ("scale", 1e-9),
+    # Half a per mille of the tracker's honest 0.2 rev/s floor.
+    "r_next": ("abs", 1e-4),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +282,20 @@ def _median_ms(fn: Any, iters: int) -> float:
     return samples[len(samples) // 2] * 1e3
 
 
+def _torch_threads(n: int) -> None:
+    """Match torch's CPU thread pool to the FFT worker count (best effort).
+
+    Without this the two backends are benched at different thread budgets
+    and the comparison says nothing about the kernels.
+    """
+    try:
+        import torch
+
+        torch.set_num_threads(max(1, n))
+    except Exception:  # torch absent or already parallel-initialized
+        pass
+
+
 def _bench_rows(frame: Any, *, channels: int, iters: int, with_vk: bool) -> list[tuple[str, float]]:
     """Time one pass of every hot stage on ``frame`` at the CURRENT worker setting."""
     import beatvk_flagship as flag2
@@ -314,7 +363,16 @@ def _bench_rows(frame: Any, *, channels: int, iters: int, with_vk: bool) -> list
 
 
 def bench(
-    frame: Any, *, channels: int, worker_counts: list[int], iters: int, with_vk: bool
+    frame: Any,
+    *,
+    channels: int,
+    worker_counts: list[int],
+    iters: int,
+    with_vk: bool,
+    backends: list[str],
+    device: str,
+    pad: str,
+    out_json: Path | None = None,
 ) -> None:
     """Per-stage timings of the tracking hot path on the frozen clip.
 
@@ -322,18 +380,65 @@ def bench(
     one ``_demod_bank`` flush for rotor 0 at the full harmonic cap (the
     ``pi_kalman`` inner loop), optionally the peel's ``vk_envelopes`` +
     ``ls_project_envelopes`` (``--bench-vk``), and the whole
-    ``pi_kalman_refine`` call. Repeated for every ``--bench-workers`` entry,
-    so the threading opt-in is measured rather than assumed.
+    ``pi_kalman_refine`` call. Repeated for every ``--bench-workers`` entry
+    and every ``--bench-backends`` entry, so both the threading opt-in and
+    the backend choice are measured rather than assumed.
+
+    ``out_json`` writes the whole grid as a record — the form the remote
+    bench comes back in (``omnirun pull``).
     """
     from tracking.vk_tracking import fft_worker_pool
 
-    print(f"[bench] channels {channels}, iters {iters}, workers {worker_counts}")
-    for w in worker_counts:
-        with fft_worker_pool(w):
-            rows = _bench_rows(frame, channels=channels, iters=iters, with_vk=with_vk)
-        print(f"  workers={w}")
-        for label, ms in rows:
-            print(f"    {label:<26}{ms:12.1f} ms")
+    print(f"[bench] channels {channels}, iters {iters}, workers {worker_counts}, {backends}")
+    record: dict[str, Any] = {
+        "channels": channels,
+        "iters": iters,
+        "device": device,
+        "pad": pad,
+        "rows": [],
+    }
+    for bk in backends:
+        for w in worker_counts:
+            _torch_threads(w)
+            dev = device if bk == "torch" else "cpu"
+            with demod_backend(backend=bk, device=dev, pad=pad), fft_worker_pool(w):
+                rows = _bench_rows(frame, channels=channels, iters=iters, with_vk=with_vk)
+            print(f"  backend={bk} device={dev} workers={w}")
+            for label, ms in rows:
+                print(f"    {label:<26}{ms:12.1f} ms", flush=True)
+                record["rows"].append(
+                    {"backend": bk, "device": dev, "workers": w, "stage": label, "ms": round(ms, 1)}
+                )
+    if out_json is not None:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(record, indent=2, sort_keys=True))
+        print(f"[bench] wrote {out_json}")
+
+
+def self_check(
+    frame: Any, *, peel_mode: str, channels: int, backend: str, device: str, pad: str, exact: bool
+) -> int:
+    """Run the application twice in one process and diff the two backends.
+
+    The reference leg is always ``scipy`` / ``exact`` — the bit-identical
+    path — so this needs no stored ``.npz`` and can therefore run on a
+    compute node that has only the checkout and the streamed clip.
+    """
+
+    tic = time.perf_counter()
+    with demod_backend(backend="scipy", device="cpu", pad="exact"):
+        ref, ref_cfg = run_reference(frame, peel_mode=peel_mode, channels=channels)
+    print(
+        f"[self-check] scipy/cpu/exact leg: {ref_cfg['wall_s']} ({time.perf_counter() - tic:.0f}s)"
+    )
+    tic = time.perf_counter()
+    with demod_backend(backend=backend, device=device, pad=pad):
+        new, new_cfg = run_reference(frame, peel_mode=peel_mode, channels=channels)
+    print(
+        f"[self-check] {backend}/{device}/{pad} leg: {new_cfg['wall_s']} "
+        f"({time.perf_counter() - tic:.0f}s)"
+    )
+    return diff_table(ref, new, exact, f"the scipy leg vs {backend}/{device}/{pad}")
 
 
 # ---------------------------------------------------------------------------
@@ -356,44 +461,59 @@ def capture(out: Path, arrays: dict[str, Any], config: dict, prov: dict[str, Any
     return path
 
 
-def compare(out: Path, arrays: dict[str, Any], config: dict, exact: bool) -> int:
-    """Diff fresh arrays against the stored reference. Returns an exit code."""
-    path = out / REF_NAME
-    if not path.is_file():
-        raise SystemExit(f"no reference at {path} — run --capture first")
+def diff_table(ref_of: dict[str, Any], new_of: dict[str, Any], exact: bool, what: str) -> int:
+    """Print the per-array diff of two array dicts. Returns an exit code.
+
+    Boolean arrays (the gate masks) report a *flip count* in the abs column
+    and a flipped fraction in the rel column — a gate flip is the thing a
+    backend change must not cause, so it is never hidden behind a tolerance.
+    """
     failures: list[str] = []
-    with np.load(path) as z:
-        stored_cfg = json.loads(str(z["config"]))
-        for key in _config_diff(stored_cfg, config):
-            print(f"  CONFIG CHANGED  {key}")
-        print(f"{'array':<16}{'shape':>18}{'max|abs|':>14}{'max|rel|':>14}   verdict")
-        print("-" * 78)
-        for name in DUMPED:
-            if name not in z:
-                failures.append(f"{name}: missing from the stored reference")
-                continue
-            ref = np.asarray(z[name])
-            new = np.asarray(arrays[name])
-            if ref.shape != new.shape:
-                failures.append(f"{name}: shape {ref.shape} -> {new.shape}")
-                print(f"{name:<16}{str(ref.shape):>18}{'—':>14}{'—':>14}   SHAPE CHANGED")
-                continue
-            d_abs, d_rel = _diffs(ref, new)
-            ok = np.array_equal(ref, new) if exact else _close(ref, new)
-            verdict = "identical" if np.array_equal(ref, new) else ("close" if ok else "DIFFERENT")
-            print(f"{name:<16}{str(ref.shape):>18}{d_abs:>14.3e}{d_rel:>14.3e}   {verdict}")
-            if not ok:
-                failures.append(f"{name}: max abs {d_abs:.3e}, max rel {d_rel:.3e}")
+    head = f"{'array':<16}{'shape':>18}{'max|abs|':>13}{'abs/scale':>12}{'max|rel|':>12}"
+    print(f"{head}   verdict")
+    print("-" * 88)
+    for name in DUMPED:
+        if name not in ref_of:
+            failures.append(f"{name}: missing from {what}")
+            continue
+        ref = np.asarray(ref_of[name])
+        new = np.asarray(new_of[name])
+        if ref.shape != new.shape:
+            failures.append(f"{name}: shape {ref.shape} -> {new.shape}")
+            print(f"{name:<16}{str(ref.shape):>18}{'—':>37}   SHAPE CHANGED")
+            continue
+        d_abs, d_rel = _diffs(ref, new)
+        d_scale = d_abs / _scale(ref)
+        ok = np.array_equal(ref, new) if exact else _close(name, ref, new)
+        verdict = "identical" if np.array_equal(ref, new) else ("close" if ok else "DIFFERENT")
+        if ref.dtype == bool:
+            verdict += f" ({int(d_abs)} flips)"
+        print(
+            f"{name:<16}{str(ref.shape):>18}{d_abs:>13.3e}{d_scale:>12.3e}"
+            f"{d_rel:>12.3e}   {verdict}"
+        )
+        if not ok:
+            failures.append(f"{name}: max abs {d_abs:.3e}, abs/scale {d_scale:.3e}")
     if failures:
         print("\nFAILED:")
         for f in failures:
             print(f"  {f}")
         return 1
-    print(
-        "\nOK — the pipeline reproduces the stored reference"
-        + (" bit-for-bit" if exact else " within tolerance")
-    )
+    print(f"\nOK — {what} reproduced" + (" bit-for-bit" if exact else " within tolerance"))
     return 0
+
+
+def compare(out: Path, arrays: dict[str, Any], config: dict, exact: bool) -> int:
+    """Diff fresh arrays against the stored reference. Returns an exit code."""
+    path = out / REF_NAME
+    if not path.is_file():
+        raise SystemExit(f"no reference at {path} — run --capture first")
+    with np.load(path) as z:
+        stored_cfg = json.loads(str(z["config"]))
+        for key in _config_diff(stored_cfg, config):
+            print(f"  CONFIG CHANGED  {key}")
+        stored = {name: np.asarray(z[name]) for name in DUMPED if name in z}
+        return diff_table(stored, arrays, exact, "the stored reference")
 
 
 def _diffs(ref: np.ndarray, new: np.ndarray) -> tuple[float, float]:
@@ -405,10 +525,22 @@ def _diffs(ref: np.ndarray, new: np.ndarray) -> tuple[float, float]:
     return float(d.max()), float((d / scale).max())
 
 
-def _close(ref: np.ndarray, new: np.ndarray) -> bool:
+def _scale(ref: np.ndarray) -> float:
+    """The array's own magnitude scale (``max |ref|``), floored away from 0."""
+    if ref.dtype == bool:
+        return max(float(ref.size), 1.0)
+    return max(float(np.abs(np.asarray(ref, dtype=np.complex128)).max()), 1e-300)
+
+
+def _close(name: str, ref: np.ndarray, new: np.ndarray) -> bool:
+    """Tolerance-mode verdict for one array, per the :data:`TOL` bar."""
     if ref.dtype == bool:
         return bool(np.array_equal(ref, new))
-    return bool(np.allclose(new, ref, rtol=1e-5, atol=1e-8))
+    kind, val = TOL.get(name, ("scale", 1e-5))
+    bar = val * _scale(ref) if kind == "scale" else val
+    return bool(
+        np.abs(np.asarray(new, np.complex128) - np.asarray(ref, np.complex128)).max() <= bar
+    )
 
 
 def _config_diff(stored: dict, fresh: dict) -> list[str]:
@@ -431,7 +563,27 @@ def main() -> None:
     mode.add_argument(
         "--bench", action="store_true", help="time the hot stages instead of capturing/diffing"
     )
+    mode.add_argument(
+        "--self-check",
+        action="store_true",
+        help="run scipy/exact and the selected backend in one process and diff them",
+    )
     ap.add_argument("--exact", action="store_true", help="--compare: demand bit-identical arrays")
+    ap.add_argument(
+        "--backend",
+        default="scipy",
+        choices=list(BACKENDS),
+        help="demodulation backend of the fresh run (default: scipy)",
+    )
+    ap.add_argument(
+        "--device", default="cpu", help="torch device of the fresh run (cpu, cuda, ...)"
+    )
+    ap.add_argument(
+        "--pad-mode",
+        default="exact",
+        choices=list(PAD_MODES),
+        help="transform-length padding of the fresh run (default: exact)",
+    )
     ap.add_argument(
         "--recording", default=None, help="override the recording (default: first DREGON)"
     )
@@ -461,6 +613,12 @@ def main() -> None:
     ap.add_argument(
         "--bench-vk", action="store_true", help="--bench: also time vk_envelopes + ls_project"
     )
+    ap.add_argument(
+        "--bench-backends",
+        default=None,
+        help="--bench: comma-separated backends (default: --backend only)",
+    )
+    ap.add_argument("--bench-json", default=None, help="--bench: write the grid to this JSON path")
     opts = ap.parse_args()
 
     out = Path(opts.capture or opts.compare or ".")
@@ -484,10 +642,32 @@ def main() -> None:
             worker_counts=[int(v) for v in str(opts.bench_workers).split(",") if v.strip()],
             iters=opts.bench_iters,
             with_vk=opts.bench_vk,
+            backends=[
+                v.strip() for v in str(opts.bench_backends or opts.backend).split(",") if v.strip()
+            ],
+            device=opts.device,
+            pad=opts.pad_mode,
+            out_json=Path(opts.bench_json) if opts.bench_json else None,
         )
         return
 
-    arrays, config = run_reference(frame, peel_mode=opts.peel_mode, channels=opts.channels)
+    if opts.self_check:
+        raise SystemExit(
+            self_check(
+                frame,
+                peel_mode=opts.peel_mode,
+                channels=opts.channels,
+                backend=opts.backend,
+                device=opts.device,
+                pad=opts.pad_mode,
+                exact=opts.exact,
+            )
+        )
+
+    _torch_threads(int(os.environ.get("OMP_NUM_THREADS", "1")))
+    with demod_backend(backend=opts.backend, device=opts.device, pad=opts.pad_mode):
+        arrays, config = run_reference(frame, peel_mode=opts.peel_mode, channels=opts.channels)
+    config["demod_backend"] = [opts.backend, opts.device, opts.pad_mode]
     print(f"[tracking_ref] walls: {config['wall_s']}", flush=True)
 
     if opts.capture:
