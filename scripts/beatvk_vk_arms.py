@@ -75,6 +75,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import argparse  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import multiprocessing  # noqa: E402
 import sys  # noqa: E402
@@ -131,7 +132,22 @@ BLIND_ARM_SETS: dict[str, frozenset[str]] = {
 }
 NEURAL_ARMS = ("neural_traj", "neural_bases")
 FULLRANGE_ARM = "blind_fullrange"
-ALL_ARMS = (*BLIND_ARM_SETS, FULLRANGE_ARM, *NEURAL_ARMS, "telem_init")
+#: blind_fullrange with a 2x longer coarse-DP STFT window (4096/1024 vs
+#: 2048/512): 2x finer in frequency (3.9 Hz bins — the k<=8 twin-separation
+#: threshold halves), 2x coarser in time. The DP transition penalty gamma is
+#: HALVED, not the per-hop allowance doubled: gamma is a cost per rev/s of
+#: |dc| per hop, so at a 2x hop the same physical ramp pays 2x |dc| per hop
+#: while contributing half as many evidence frames — halving gamma keeps the
+#: penalty per rev/s of path total-variation constant relative to the
+#: per-second comb evidence. Ramp machinery caveat (not adapted, by design):
+#: the energy bridge's second-based thresholds (BRIDGE_*_S) adapt through
+#: frame_s automatically, but COARSE_SMOOTH_FRAMES (3) and
+#: ENERGY_SMOOTH_FRAMES (11) are frame-count-based, so their effective
+#: smoothing spans double (0.13 -> 0.26 s, 0.35 -> 0.7 s) — expected
+#: neutral-to-worse on ramp windows, improvement on steady/twin windows.
+FULLRANGE_2X_ARM = "blind_fullrange_2xwin"
+FULLRANGE_ARMS = (FULLRANGE_ARM, FULLRANGE_2X_ARM)
+ALL_ARMS = (*BLIND_ARM_SETS, *FULLRANGE_ARMS, *NEURAL_ARMS, "telem_init")
 
 # ---------------------------------------------------------------------------
 # blind_fullrange: coarse full-range pass (ramp-following, octave-corrected)
@@ -243,7 +259,9 @@ BRIDGE_REJOIN_TOL = 5.0  # rev/s: catch-up hold until the DP path is this close
 BRIDGE_MIN_CONTRAST = 0.5  # min log-energy gap between plateaus to trust
 
 
-def _coarse_spec(audio: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
+def _coarse_spec(
+    audio: np.ndarray, nfft: int = COARSE_NFFT, hop: int = 512
+) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     """Short-FFT spectrogram for the coarse pass.
 
     Returns ``(whitened (F, N), bin_hz, frame_times (N,), energy (N,))`` —
@@ -255,7 +273,7 @@ def _coarse_spec(audio: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, np.n
 
     from tracking.rps_refinement import RefineConfig, compute_logmag
 
-    rcfg = RefineConfig(sample_rate=SR, n_fft=COARSE_NFFT, device="cpu")
+    rcfg = RefineConfig(sample_rate=SR, n_fft=nfft, hop_length=hop, device="cpu")
     spec = compute_logmag(audio, rcfg)
     lm_raw = spec.logmag.cpu().numpy()  # (C, F, N)
     bin_hz = float(spec.bin_hz)
@@ -419,14 +437,21 @@ def _energy_bridge(
 
 
 def fullrange_init(
-    prep: Prepared, seed: SeedResult
+    prep: Prepared,
+    seed: SeedResult,
+    *,
+    nfft: int = COARSE_NFFT,
+    hop: int = 512,
+    gamma: float = COARSE_GAMMA,
 ) -> tuple[np.ndarray, SeedResult, dict[str, Any]]:
     """blind_fullrange ladder init (mechanism: the COARSE_* constants block).
 
     Returns ``(r0 (4, N), effective seed, coarse diagnostics)``. The
     effective seed differs from the input only when the BPF octave check
     halves the bases (update_gate dropped — the K calibration ran on the
-    rejected 2x bases).
+    rejected 2x bases). ``nfft``/``hop``/``gamma`` override the coarse-DP
+    STFT resolution and transition penalty (the ``FULLRANGE_2X_ARM``
+    variant — see its constants-block comment for the gamma rescale).
     """
     bases = np.sort(np.asarray(seed.bases, dtype=np.float64))
     ratio = _bpf_octave_ratio(prep, bases)
@@ -449,7 +474,7 @@ def fullrange_init(
         lo, hi = COARSE_LO, COARSE_HI
     c_grid = np.arange(lo, hi + COARSE_STEP / 2, COARSE_STEP)
 
-    lm2, bin2, st2, energy = _coarse_spec(prep.audio)
+    lm2, bin2, st2, energy = _coarse_spec(prep.audio, nfft=nfft, hop=hop)
     fsc = _coarse_frame_scores(lm2, bin2, offsets, c_grid, adaptive_k=halved)
     kern = np.ones(COARSE_SMOOTH_FRAMES) / COARSE_SMOOTH_FRAMES
     fsc = np.apply_along_axis(lambda r: np.convolve(r, kern, mode="same"), 1, fsc)
@@ -457,7 +482,7 @@ def fullrange_init(
     peak_f = fsc.max(axis=0, keepdims=True)
     glob = float(np.median(peak_f - med_f))
     s = (fsc - med_f) / np.maximum(peak_f - med_f, COARSE_NORM_SOFT * glob)
-    path = _viterbi_frames(s, c_grid, COARSE_GAMMA)
+    path = _viterbi_frames(s, c_grid, gamma)
     frame_s = float(st2[1] - st2[0]) if len(st2) > 1 else FRAME_S
 
     # Trust gates (constants block item (c)): a coarse path only overrides
@@ -478,6 +503,9 @@ def fullrange_init(
         r0 = np.maximum(bases[:, None] + (coarse - float(np.median(path)))[None, :], 0.0)
     diag = {
         "coarse_c": coarse,
+        "coarse_nfft": nfft,
+        "coarse_hop": hop,
+        "coarse_gamma": gamma,
         "coarse_bpf_ratio": ratio,
         "coarse_halved": halved,
         "coarse_grid": (float(lo), float(hi)),
@@ -509,11 +537,14 @@ def neural_path(out: Path, rid: str, widx: int, model: str) -> Path:
     return out / "neural_cache" / f"{rid}__w{widx:02d}__{model}.npz"
 
 
-def run_path(out: Path, rid: str, widx: int, arm: str, model: str) -> Path:
+def run_path(out: Path, rid: str, widx: int, arm: str, model: str, chan: str = "") -> Path:
+    """Run-cache path. ``chan`` is the :func:`chan_tag` mic-subset suffix --
+    a non-default subset changes the result, so it must not share a cache
+    entry with the full-array run."""
     tag = f"{rid}__w{widx:02d}__{arm}"
     if arm in NEURAL_ARMS:
         tag += f"__{model}"
-    return out / "runs" / f"{tag}.npz"
+    return out / "runs" / f"{tag}{chan}.npz"
 
 
 # ---------------------------------------------------------------------------
@@ -625,16 +656,43 @@ def build_preps(
         rec["audio"] = None
 
 
-def load_prep(out: Path, rid: str, widx: int, channels: int) -> tuple[Prepared, str]:
+def channel_subset(
+    rid: str, widx: int, n_total: int, channels: int, seed: int | None
+) -> np.ndarray:
+    """Channel indices for a window: first-``channels`` when ``seed`` is None,
+    else a per-(seed, rid, widx) random subset (the mic-count ablation).
+
+    The subset must be identical in every worker process, so the stream is
+    seeded with a stable digest -- NOT ``hash()``, which is salted per process
+    for strings.
+    """
+    if seed is None or channels >= n_total:
+        return np.arange(min(channels, n_total))
+    digest = hashlib.sha256(f"{seed}|{rid}|{widx}".encode()).digest()[:8]
+    rng = np.random.default_rng(int.from_bytes(digest, "big"))
+    return np.sort(rng.permutation(n_total)[:channels])
+
+
+def chan_tag(channels: int, seed: int | None) -> str:
+    """Cache-key suffix for a non-default mic subset ('' for the full array)."""
+    if seed is None and channels >= 8:
+        return ""
+    return f"__c{channels}" + (f"s{seed}" if seed is not None else "")
+
+
+def load_prep(
+    out: Path, rid: str, widx: int, channels: int, channel_seed: int | None = None
+) -> tuple[Prepared, str]:
     """Window prep NPZ -> ``Prepared`` (audio truncated to ``channels``) + regime."""
     with np.load(prep_path(out, rid, widx)) as z:
         start, end = float(z["start_s"]), float(z["end_s"])
+        sub = channel_subset(rid, widx, z["audio"].shape[0], channels, channel_seed)
         prep = Prepared(
             rid=f"{rid}__w{widx:02d}",
             tau=0.0,
             seg_lo=start,
             seg_hi=end,
-            audio=z["audio"][:channels],
+            audio=z["audio"][sub],
             ft=z["ft"],
             r_init=z["r_meas"].copy(),
             r_meas=z["r_meas"],
@@ -696,20 +754,32 @@ def compute_neural_seeds(
 
 def run_job(rid: str, widx: int, arm: str, cfg: dict[str, Any]) -> str:
     out = Path(cfg["out"])
-    path = run_path(out, rid, widx, arm, cfg["neural_model"])
+    path = run_path(
+        out, rid, widx, arm, cfg["neural_model"], chan_tag(cfg["channels"], cfg.get("channel_seed"))
+    )
     if path.exists():
         return str(path)
-    prep, regime = load_prep(out, rid, widx, cfg["channels"])
+    prep, regime = load_prep(out, rid, widx, cfg["channels"], cfg.get("channel_seed"))
     with np.load(weights_path(out, rid)) as z:
-        weights = z["weights"][: cfg["channels"]]
+        w_all = z["weights"]
+        sub = channel_subset(rid, widx, w_all.shape[0], cfg["channels"], cfg.get("channel_seed"))
+        weights = w_all[sub]
 
-    arms = BLIND_ARM_SETS.get(arm, frozenset({"K", "R"}) if arm == FULLRANGE_ARM else frozenset())
+    arms = BLIND_ARM_SETS.get(arm, frozenset({"K", "R"}) if arm in FULLRANGE_ARMS else frozenset())
     coarse_diag: dict[str, Any] = {}
-    if arm in BLIND_ARM_SETS or arm == FULLRANGE_ARM:
+    if arm in BLIND_ARM_SETS or arm in FULLRANGE_ARMS:
         tic = time.perf_counter()
         seed = blind_seed(prep.audio, float(SR), N_ROTORS, SEED_CFG, arms=arms)
         if arm == FULLRANGE_ARM:
             r0, seed, coarse_diag = fullrange_init(prep, seed)
+        elif arm == FULLRANGE_2X_ARM:
+            r0, seed, coarse_diag = fullrange_init(
+                prep,
+                seed,
+                nfft=2 * COARSE_NFFT,
+                hop=1024,
+                gamma=COARSE_GAMMA / 2.0,
+            )
         else:
             r0 = np.repeat(seed.bases[:, None], len(prep.ft), axis=1)
         wall_seed = time.perf_counter() - tic
@@ -819,6 +889,7 @@ def assemble(
     jobs_windows: dict[str, list[int]],
     model_key: str,
     dataset_version: str,
+    chan: str = "",
 ) -> None:
     summary: dict[str, Any] = {
         "dataset": {"name": DATASET, "version": dataset_version},
@@ -832,13 +903,13 @@ def assemble(
         "arms": {},
     }
     for arm in arm_names:
-        arm_dir = out / arm
+        arm_dir = out / (arm + chan)
         arm_dir.mkdir(parents=True, exist_ok=True)
         summary["arms"][arm] = {}
         for rid, widxs in jobs_windows.items():
             fts, trajs, rows = [], [], {}
             for widx in sorted(widxs):
-                rp = run_path(out, rid, widx, arm, model_key)
+                rp = run_path(out, rid, widx, arm, model_key, chan)
                 if not rp.exists():
                     continue
                 with np.load(rp) as z:
@@ -878,9 +949,10 @@ def assemble(
                 "windows": rows,
             }
             print(f"[assemble] {arm}/{rid}.npz: {len(fts)} windows, {ft_all.size} frames")
-    with open(out / "summary.json", "w") as f:
+    spath = out / f"summary{chan}.json"
+    with open(spath, "w") as f:
         json.dump(summary, f, indent=2)
-    print(f"[assemble] wrote {out}/summary.json", flush=True)
+    print(f"[assemble] wrote {spath}", flush=True)
 
 
 # ---------------------------------------------------------------------------

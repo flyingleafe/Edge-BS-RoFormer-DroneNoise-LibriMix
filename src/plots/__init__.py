@@ -47,7 +47,7 @@ def list_plot_types() -> list[str]:
 
 
 def __getattr__(name: str):
-    """Lazy front-door exports: ``plots.dwym`` / ``plots.coerce_frame``.
+    """Lazy front-door exports: ``dwym`` / ``coerce_frame`` / ``comb_explorer``.
 
     Loaded on first access so ``import plots`` (registry only) stays light —
     ``dwym`` pulls in matplotlib renderers and tdseries.
@@ -65,4 +65,10 @@ def __getattr__(name: str):
 
         globals()["coerce_frame"] = coerce_frame
         return coerce_frame
+    if name in ("comb_explorer", "discover"):
+        from plots import comb_widget
+
+        fn = getattr(comb_widget, name)
+        globals()[name] = fn
+        return fn
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

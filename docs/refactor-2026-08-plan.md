@@ -8,8 +8,18 @@ model registry + fwh_rotor_sim, tests) and an AST-level import-graph scan
 ## Status (2026-08-04)
 
 **Executed.** Phases 0–6 are merged on `worktree-refactoring`; Phase 7 (this
-closeout) is the last one. The import graph is now 179 files / 365 internal
+closeout) is the last one. The import graph is now 181 files / 367 internal
 dependencies, and all three import-linter contracts are KEPT.
+
+`main` was merged back in on 2026-08-05 (21 commits of comb-displacement and
+flagship work). Two conflicts, both resolved toward the refactor: the
+`band_mode="k_scaled"` / `probe_mode="clean"` additions to
+`phase_increment_tracker` keep the public `zoom_lp_decimate` name (main's
+`_zoom_lp_decimate` was private), and `noise_four_way_comparison.ipynb` stays
+deleted (main's only change to it was a JSON re-serialization of markdown
+cells — no content). The main-side scripts that reached into the moved
+modules now import `tracking.*`; `plots.comb_explorer` / `plots.discover`
+join `plots.dwym` on the lazy front door.
 
 | Phase | Commit(s) | What landed |
 |---|---|---|
@@ -43,8 +53,13 @@ dependencies, and all three import-linter contracts are KEPT.
    delete or fold into a generic tool: `sr_dp_probe.py`, `jb_probe.py`
    (the two live `utils.gridrun` exemplars), `beatvk_rescore.py`,
    `eval_noise_gen_variants.py`, `cd_iter_sweep.sh`, plus the beat-VK core
-   (`beatvk_eval.py`, `beatvk_vk_arms.py`, `rps_predictor_vk_eval.py`,
-   `vk_blind_annotation.py`, `rps_refine_lab.py`, `vk_*.py`).
+   (`beatvk_eval.py`, `beatvk_vk_arms.py`, `beatvk_flagship.py`,
+   `rps_predictor_vk_eval.py`, `vk_blind_annotation.py`, `rps_refine_lab.py`,
+   `vk_*.py`), and the whole `scripts/displacement/` campaign directory
+   (~7k LOC, the DREGON comb-displacement measurement — documented by its own
+   `README.md` and `docs/experiments/dregon-comb-displacement.md`). These
+   arrived from `main` after Phase 5, so the scripts count is 67 files (30 of
+   them `displacement/`), not the 36 Phase 5 left behind.
 5. **`tasks/spec.py` is still a back-compat shim** over `framespec`; remove it
    once no config or checkpoint references the old path.
 6. **`salience_rps` has no task subdirectory** — it is documented inside

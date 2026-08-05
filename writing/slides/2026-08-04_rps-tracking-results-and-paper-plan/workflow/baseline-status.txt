@@ -1,0 +1,5 @@
+ M notebooks/generator_lab.ipynb
+ M notebooks/noise_four_way_comparison.ipynb
+ M writing/papers/2026-07_coupled-vk-blind-rps/main.tex
+?? docs/thesis-program.md
+?? writing/slides/2026-08-04_rps-tracking-results-and-paper-plan/

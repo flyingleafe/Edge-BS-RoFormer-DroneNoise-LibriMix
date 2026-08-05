@@ -378,6 +378,96 @@ Reading:
   `results/pi_kalman_protocol/neural_smoke_rescore/report.json` in the two
   jobs' `omnirun pull` outputs.
 
+### Flagship: blind init + peeled alternation (2026-08-04) — THE DECLARED FLAGSHIP METHOD
+
+> Runner: `scripts/beatvk_flagship.py` (commit `9c2a17f`). Jobs:
+> **`flagship-main-9b8ac7`** (main), **`flagship-2xwin-5647df`** (2xwin init
+> variant), both uni-cpu, pin `beatvk-valid-raw@54849c13ed3a`. Scorer:
+> `beatvk_eval.score_recording` (the frozen scorer) on every row.
+
+**The method** (fully blind — no neural model, no telemetry):
+
+1. **Init** — the `blind_fullrange` v2 chain (blind_KR seeds + BPF octave
+   check + coarse full-range frame-Viterbi + energy bridge + DP trust gates
+   + vit2dsp ladder, stage guard on).
+2. **Peeled alternation**, per application: solve the coherent VK envelopes
+   at the current track (bw 1 Hz, k <= 40), give each rotor the audio minus
+   the OTHER rotors' comb reconstructions (twin pairs get audio minus the
+   non-pair rotors), then one full `pi_kalman` pass (pair_mode joint,
+   n_iter 3, band 6 Hz) on the peeled residuals. Iterate to plateau.
+
+**Leaderboard** (pooled window PIT-MAE, rev/s; `ramp` = the three DREGON
+w00 takeoff windows, `steady` = DREGON w01/w02 x3):
+
+| row | dregon_cruise | fly124_cruise | fly124_warmup | dregon_ramp | dregon_steady | all 15 |
+|---|---|---|---|---|---|---|
+| blind_fullrange (init only) | **1.807** | 2.515 | 3.607 | 3.362 | **1.030** | 2.236 |
+| + naive pi_kalman x1 | 1.831 | 2.339 | 3.648 | 3.365 | 1.064 | 2.209 |
+| + FLAGSHIP peeled x2 | 1.849 | 2.274 | 3.648 | 3.386 | 1.081 | **2.202** |
+| + FLAGSHIP peeled x4 | 1.865 | **2.256** | 3.679 | 3.383 | 1.105 | 2.211 |
+
+Full peeled curve (fly124_cruise): 2.515 → 2.345 → 2.274 → 2.263 → 2.256 →
+2.258; naive: → 2.339 → 2.319 → 2.293 → 2.281 → 2.285. **Plateau: x2 on the
+all-15 pool (2.202), x4 on fly124_cruise** — the alternation plateaus
+instead of degrading, and beats naive at every application count on FLY124.
+
+**Sanity gates:**
+
+- The init row reproduces the recorded blind_fullrange numbers **exactly**
+  on DREGON: pooled 1.807, per-window bit-level matches (nosource 3.2475 /
+  1.0233 / 1.0002, …). FLY124 pooled is 2.515, NOT the recorded 2.699 —
+  that number was the pre-recalibration pin with the pre-fix seeder; on the
+  corrected pin with the WP15 seed guards, w03 seeds `[74.2, 74.3, 82.65,
+  92.35]` and scores 1.168 at init.
+- **Peel energy flags** (subtraction must remove energy; flagged, not
+  averaged over): every ramp/warmup w00 window fails the gate on most
+  applications — `nosource w00` (resid ratio up to 4.96), `speech-low w00`
+  (up to 4.61), `whitenoise-low w00` (up to 14.7), `FLY124 w00` (up to
+  2.28). On a non-locked ramp track the peel is mis-phased and injects
+  energy. All cruise/steady windows pass on every application.
+
+**Per-window movers** (init → peeled x4): FLY124 w03 **1.168 → 0.772**, w04
+**0.939 → 0.513** (the twin-pair interference windows — the peel gain), w02
+4.990 → 4.741. Everything DREGON is flat-to-slightly-worse (steady 1.030 →
+1.105): pi_kalman still cannot add precision over the ladder there
+(displaced-comb + raw-jitter floor), and the flagship's honest DREGON value
+is its init. Read: **the flagship = blind_fullrange + peeled pi_kalman is
+the best fully-blind FLY124-cruise row ever measured (2.256), at an
+unchanged DREGON bar (1.807 at init; report init for DREGON).**
+
+#### 2xwin init variant (`blind_fullrange_2xwin`)
+
+Coarse-DP STFT window and hop doubled (4096/1024 — 2x finer in frequency,
+2x coarser in time), DP transition penalty gamma halved (keeps the penalty
+per rev/s of path total-variation constant relative to the per-second
+evidence at the 2x hop). Frame-count smoothing spans double in seconds
+(recorded, not adapted).
+
+| row | dregon_cruise | fly124_cruise | fly124_warmup | dregon_ramp | dregon_steady | all 15 |
+|---|---|---|---|---|---|---|
+| 2xwin init only | 3.523 | 2.475 | **3.140** | 8.142 | 1.213 | 3.192 |
+| 2xwin + peeled x4 | 3.614 | 2.262 | 3.334 | 8.239 | 1.301 | 3.216 |
+
+Per-window verdict (only 7 of 15 windows differ from the original arm —
+the trust gates reduce the rest to the identical constant init):
+
+- **Wins, FLY124 only**: w00 5.091 → 4.723, w01 2.123 → 1.557 (warmup —
+  the finer bins resolve the dense low-rev/s lines), w02 4.990 → 4.830.
+- **Losses, every DREGON window where the coarse path engages**: ramps
+  nosource w00 3.247 → 4.324, whitenoise w00 4.023 → 4.251, speech w00
+  2.816 → **15.850** (catastrophic — the 2x-coarser hop + doubled
+  bridge smoothing mistimes the takeoff), and one STEADY window,
+  nosource w02 1.000 → **2.101**: at the 2x hop the DP path wobble grows
+  past the steady gate (span 12 > 8), so the gate fails to fire and the
+  coarse path corrupts a good constant init.
+- Expected steady/twin improvement did NOT appear: on steady windows the
+  coarse stage is trust-gated OFF, so the finer frequency resolution never
+  engages there.
+
+Verdict: **not a replacement init**. As a hybrid it is only attractive
+gated to FLY124-warmup-like windows; on DREGON the ramp machinery breaks
+at the 2x hop, exactly the flagged risk.
+
 ### Full scoreboard on the fixed raw protocol (2026-07-29) — PRE-RECALIBRATION
 
 > Kept for history. Every `fly124_*` column below was scored against
@@ -489,3 +579,357 @@ FLY124 gains real, DREGON blocked by (3) not by estimation.
 
 Remaining open (nice-to-have, running): S3b/S3c mechanism attribution
 (masking vs aero vs translation), CRB tie-in from measured budgets.
+
+## DREGON-degradation discriminators (2026-08-04, three-arm study)
+
+Question: why does every pi_kalman variant slightly worsen dregon_cruise
+(blind init 1.807 → 1.83–1.87) while clearly helping FLY124. Three arms,
+predictions registered in advance; runner + raw results in the session
+scratchpad (`dregon_arms/{armA,armB,armC,armC2}.json`); instrumentation
+validated (raw-GT rescore reproduces the flagship report to <2e-3).
+
+**Arm A — high-k anchor** (k floor 16, `k_caps=(16,28,40)`, `band_hz=12`,
+`off_comb_hz=25`, joint twin path off): removes ~95% of the steady
+degradation (pooled steady +0.034 → +0.002) and beats init on the two
+worst windows (nosource w1 1.104→1.005, whitenoise w1 1.044→0.949 at ×1).
+Never improves below init pooled — no recoverable error beyond the
+displaced-set penalty.
+
+**Arm B — rescore vs low-passed GT** (butter-4 filtfilt, 1.5/0.8/0.4 Hz):
+the init→refined gap GROWS under smoothing (+0.024 raw → +0.047 @0.4 Hz,
+every arm) — the added error is low-frequency bias, not under-tracked
+fast jitter.
+
+**Arm C — hover** (`hovering_nosource_room2`, 3 ad-hoc 16 s windows,
+command-GT caveat): standard refinement NEUTRAL (w0 +0.004 vs cruise
++0.03–0.09; blind init failed capture on w1/w2 — octave-confused seed on
+the 3–4× weaker hover comb — direction read from w0 + the probe).
+Capture-safe telemetry+1.0 offset probe, 6 passes: on cruise the track
+walks down 0.06–0.1 rev/s per pass and keeps walking PAST its MAE optimum
+(bottom at ×4, rising after) toward a sub-telemetry attractor; on hover
+the pull is ~5× weaker and MAE never turns up.
+
+**Verdicts**: T3 (smoother bandwidth) REFUTED three ways (gap grows under
+smoothed GT; identical RTS with high-k anchor does not degrade; neutral on
+hover). T1 (self-consistent displaced low-k lock) SUPPORTED as the
+mechanism — the loss lives entirely in the k≤13 displaced set, and
+iteration compounds it. T2 premise CONFIRMED (displacement is real,
+translation-linked physics; nothing telemetry-referenced left to recover)
+but its "nothing to fix" conclusion REFUTED — the penalty is avoidable by
+not measuring the displaced set.
+
+**Implied final-form fix (not yet implemented)**: displacement-aware
+harmonic admission in pi_kalman — floor/down-weight k<16 (or gate low-k
+on disagreement between the k<16 and k≥16 comb-implied rates), widen the
+band to ≥10–12 Hz so on-grid high-k lines stay capturable, keep the joint
+twin path off when its harmonics fall in the displaced set. Converts the
+stage from −0.024 harm to neutral/slightly-positive on DREGON; FLY124
+machinery untouched. Realistic ceiling: DREGON cruise does not improve
+below the blind init this way — that floor is init trajectory-shape error
+plus GT jitter.
+
+## Bandwidth-and-admission revision — frozen-protocol test (2026-08-05)
+
+Question: does the revised pi_kalman (k-scaled bands `band_k = k*B0`,
+posterior-annealed bandwidth over iterations, displacement-aware low-k
+admission, collision-aware probes; tracker options commit 0e21d6e, wiring
+03318de) beat the protocol configuration on the frozen validation set.
+Jobs `bandadm-ladder-7fb2e4` + `bandadm-chans-afb8db` (uni-cpu, HEAD
+03318de, dataset pin 54849c13ed3a). Registered success criteria: FLY124
+cruise <= flagship; DREGON degradation removed (neutral vs init 1.807);
+ramps unchanged. Synthetic tiers had shown large gains (k_scaled clean
+0.091 -> 0.031, twins 0.081 -> 0.027).
+
+**Protocol ladder (blind init, PIT-MAE; init: all 2.236, dregon_cruise
+1.807, fly124_cruise 2.515)**:
+
+| variant | best all | fly124_cruise best | dregon_cruise x3 naive |
+|---|---|---|---|
+| protocol | 2.202 (peeled x3) | 2.256 (peeled x4) | 1.854 (ratchet) |
+| k_scaled | 2.235 (peeled x1) | 2.501 (peeled x4) | 1.808 (neutral) |
+| k_anneal | 2.236 | 2.504 | 1.808 (neutral) |
+| full (+admission+probes) | 2.232 | 2.502 | 1.806 (neutral) |
+
+**Verdict: the revision FAILS criterion 1 and is REJECTED for the final
+form.** All three revised variants make the iteration nearly inert on
+real data: they remove the DREGON ratchet (criterion 2 PASS, 1.86 ->
+1.81) but also remove the FLY124 twin gain (2.26 -> 2.50, criterion 1
+FAIL). Ramps unchanged on naive; peeled drifts +0.06 by x4 (criterion 3
+marginal PASS). Mechanism: the narrow annealed bands only accept
+corrections when the init comb is already near-exact — that is exactly
+the synthetic condition (hence the large synthetic gains) and exactly
+NOT the FLY124 twin condition, where capture of the 6 Hz-distant true
+line is the source of the gain. The peel-energy GUARD already gives the
+good half of this trade (init fallback on DREGON-displaced and ramp
+windows, FLY124 gains kept, guarded flagship 2.193): the revision is
+dominated by the guard and adds nothing.
+
+**Channel ablation (protocol variant, mic subsets seed 0)**: C=8 init
+1.81/2.52 (dregon/fly124 cruise); C=4: 10.28/2.56; C=2: 9.77/2.51; C=1:
+18.76/5.72. Two findings: (1) the SEED is the channel-hungry stage —
+DREGON blind capture collapses without the full 8-mic array, while
+FLY124 cruise is essentially intact at C=2; (2) the pi_kalman iteration
+itself still helps at C=1-2 on FLY124 (C=2: 2.51 -> 2.26 peeled x3), so
+the multi-channel pooling is not what makes the iteration work — this
+answers the single-channel question raised in the explainer review. The
+C=4 ramp blowup (28.7) is a seed octave failure on that specific subset,
+not an iteration effect.
+
+**Final form stays**: blind full-range Viterbi init + guarded peeled
+alternation, protocol bands (6 Hz), peel-energy guard. The k-scaled
+band option remains available as an opt-in for near-exact-init regimes
+(synthetic, telemetry-seeded), where it is strictly better.
+
+## Per-harmonic displacement measured (2026-08-05) — PARTLY WITHDRAWN, see the correction below
+
+Direct measurement of the displaced comb (heterodyne each harmonic around
+k*telemetry with the tracker's demod bank, envelope-spectrum ridge ->
+shaft-rate offset; twin-collision frames gated out; 15 frozen-protocol
+windows; scripts + `displacement.json` + figures in session scratchpad
+`displacement/`).
+
+**The displacement is k-graded, not flat**: DREGON k=1-4 sit 0.5-0.6
+rev/s below telemetry, k=5-13 near -0.15, k>=16 on-grid (-0.02). Same
+profile on steady and ramp controls, so it is not cruise-only. The
+0.3-0.5 rev/s figure from the probe study holds only for k<=4. **FLY124
+carries the same signature ~3x smaller** (low-k -0.043, high-k -0.002).
+
+~~**Near-optimality on DREGON is REFUTED.** Three-way MAE vs telemetry,
+pooled: low-k comb 0.364 / high-k comb 0.086 / flagship blind track
+1.854; the high-k comb tracks telemetry to 0.06-0.09 rev/s, 20x below the
+blind track, so the remaining blind error is capture/assignment error,
+not physics.~~ **WITHDRAWN — this was a search-window artifact. See the
+correction section below. The 20x-headroom claim does not stand, and
+figure F3 must not be used.**
+
+Consequence for the band debate: the displaced low-k set is a data-model
+mismatch (low harmonics do not follow shaft rate) to be handled by
+harmonic ADMISSION, not by band choice; algorithm selection must not be
+driven by it.
+
+## CORRECTION — the high-k claim was a window artifact (2026-08-05, null controls)
+
+Same-day null controls (`displacement/nullcontrol.md`, `nullcontrol.py`,
+figures F4/F5; same 15 windows, same pin). Four controls sharing the
+measurement's band, search half-width, collision gate and weighting, with
+only the carrier changed.
+
+**The high-k number measures the search window, not the comb.** Running
+the identical pipeline at a carrier where NO rotor line can exist
+returns the same value:
+
+| DREGON cruise, high k (16-40) | MAE vs telemetry (rev/s) |
+|---|---|
+| measured, carrier k*g_r(t) | **0.0856** |
+| null, off-comb carrier (k+0.5)*g_r(t) | **0.0857** |
+| null, telemetry from a different window | 0.0845 |
+| analytic, peak uniform in the window | 0.1537 |
+
+Ratio measured/null = 1.00 (FLY124 1.01). The search half-width is
+min(1.5k, 8) Hz, i.e. <= 8/k rev/s, so combining ~25 harmonics averages
+per-k peak-picks of NOISE down to ~0.086 whether or not a line exists.
+
+> **SUSPENDED 2026-08-05 (same day, user review).** The "DREGON has no
+> high-k line" paragraph below is itself very likely a measurement
+> artifact and must NOT be cited. The peak-search half-width is
+> `min(1.5k, 8)` Hz (`measure_displacement.py`: `SEARCH_REVS=1.5`,
+> `SEARCH_HZ_CAP=8.0`), i.e. `min(1.5, 8/k)` rev/s — it SHRINKS as 1/k.
+> The DREGON displacement is FLAT in k at ~-0.424 rev/s, so the true line
+> leaves the search window at **k = 8/0.424 = 18.9** and is already at
+> 74% of the half-width by k=14 — exactly where "nothing above k=14" was
+> reported. On FLY124 the displacement is -0.051 rev/s, so its line stays
+> inside until k~157, which is why FLY124 "keeps a set to k~20" and
+> DREGON does not: **the dataset asymmetry is the bug's signature, not
+> physics.** (The demod BAND, `min(3k, 0.45 fs_env)`, is wide and fine;
+> only the SEARCH WINDOW is broken.) The high-k NULL EQUALITY still
+> stands as measured — but it only shows the on-comb search found noise
+> where it looked, which is expected if it looked in the wrong place.
+> **RESOLVED same day** — see `docs/experiments/dregon-comb-displacement.md`.
+> The re-centred sweep (carrier at `k*s_r*g_r`, null re-centred
+> identically) changes almost nothing: DREGON k14-25 goes 4 -> 7 units
+> over the bar out of 432, null 4. **So the window bug is real but is NOT
+> the explanation for the DREGON/FLY124 asymmetry.** The actual cause is
+> COHERENCE TIME: spectral autocorrelation shows the 172 Hz blade-passage
+> comb alive at 5.5-6.5 kHz (k~75) on 0.10 s segments and gone by 1 s,
+> while `measure_displacement.py` floors its STFT segment at 1 s and
+> `combscan.py` uses 16 s. The high-k comb EXISTS (the user was right
+> about 6 kHz); our estimators were too long to see it. Physical cause:
+> ~0.2 rev/s rms shaft wander is 15 Hz of wander at k=75. Actionable:
+> high harmonics are usable with short-enough segments.
+
+**Corroboration, stronger than the null: DREGON has no high-k line.**
+Pooled over 9 cruise windows x 4 rotors x 25 harmonics (900 units), only
+**3 of 900** harmonics with k>=16 clear 6 dB over their own in-band floor
+— FEWER than the off-comb null's 8. Median prominence 1.79 dB on-comb vs
+1.73 dB null. The 3-5 dB "SNR" in F2's lower panel is a noise floor's
+peak-pick bias. The window-independent pulse-pair estimator does not
+rescue the claim: it returns ~0 on the null too (in-band noise is
+symmetric), so agreement between the two estimators was never evidence.
+DREGON's only clearly usable harmonic is **k=2** (+6.1 dB over null, 89%
+of units clear the bar), with a weak group at k=4-13 and nothing above
+k=14. FLY124 carries a real set out to k≈20.
+
+**Retracted**: the three-way error decomposition and the "20x headroom /
+remaining error is estimator error, not physics" reading; also "the comb
+returns to the grid by k>=16" — the high-k offsets are small because the
+window is small. Honest statement: above k=16 the DREGON comb is not
+measurable by this demodulation, and there is no evidence either way.
+FLY124 keeps a trace (14/400 units over the bar, mean offset -0.055
+rev/s). **The seed-first neural program keeps its historical
+justification (every neural failure was a capture/assignment failure) but
+LOSES this quantitative headroom number.**
+
+**What survives and is LARGER than reported.** The low-k displacement is
+real and the pooled -0.145 was diluted by units carrying no line (they
+contribute noise centred on zero). Discriminated from the null two ways:
+the null's signed mean is +0.008 rev/s while the measurement's is -0.124;
+and 34 of 432 DREGON low-k units clear the 6 dB bar against the null's 2.
+**Restricted to those 34 real lines the offset is -0.424 rev/s**
+(pulse-pair -0.231, biased toward zero at low SNR; FLY124 -0.051 over 74
+units). So the original 4-probe "0.3-0.5 rev/s" figure was right, and the
+dilution explains the discrepancy.
+
+**Consequence for Arm A (high-k anchor) — REINTERPRETATION NEEDED.** Arm
+A ran with `k` floor 16 and `band_hz=12`. WP18 already measured 0 usable
+DREGON harmonics at B=12, and the prominence map now shows nothing
+measurable above k=14 at any band. So "the high-k anchor removes 95% of
+the degradation" most likely means **the stage was made nearly inert**,
+not that it anchored on an undisplaced high-k set. It is not fully inert
+(it beat init on two windows), so this is a hypothesis, not a verdict —
+but the T1 mechanism note above must not be read as "the k>=16 comb is
+on-grid and usable".
+
+**The wiggle is a real rate deviation, and points at the labels.** The
+k=2 ridge visibly wiggles on DREGON but not on FLY124. Four tests agree
+it is a genuine shaft-rate deviation from telemetry, not interference:
+delta_k is FLAT in k (-0.51,-0.51,-0.53,-0.34 at k=2,4,6,8, where a
+fixed-frequency artifact would give -0.51,-0.25,-0.17,-0.13); with the
+(k=2,k=4) pair fixed a priori r = +0.65..+0.83 over four windows with
+slope brackets excluding 0.5 and bracketing 1.0; the correlation tracks
+prominence; and twin beating, rotor permutation and telemetry lag are all
+ruled out. As a fraction of rate the constant part is **-0.54% on DREGON**
+(per rotor -0.55/-0.34/-0.54/-0.45%) against **-0.063% on FLY124** — the
+same defect class as Michael's +0.70% `rps_scale` (WP13/WP14), which was
+found and corrected, and never checked on DREGON. At cruise -0.54% is
+~0.42 rev/s, twice the assumed 0.2 rev/s label-jitter floor. Follow-up
+running (documentation check, static-bench single-motor measurement,
+regime ladder) to discriminate: telemetry scale error vs commanded-rather-
+than-measured setpoint vs real aeroacoustic displacement.
+
+## Wide-anneal arm + why a fixed-Hz band is the principled choice (2026-08-05)
+
+Fair test of the annealing property the narrow ladder never exercised:
+start wide and let the posterior anneal shrink the trust region
+(`--band-b0 3.0`, `k_anneal`, job `bandadm-wide-85732e`, HEAD 10e7322).
+Prediction registered before the result (scratchpad
+`displacement/predictions.md`): FLY124 recovers toward the protocol 2.26;
+DREGON degrades to ~1.85.
+
+**Result — worst row of the whole ladder**, every pool degrading
+monotonically with iteration (init -> x4): all 2.236 -> 2.494,
+dregon_cruise 1.807 -> 2.201, fly124_cruise 2.515 -> 2.526 (best 2.409 at
+peeled x1), dregon_steady 1.030 -> 1.497, warmup and ramp both up.
+Prediction 1 partly right (wide start restores SOME capture: peeled x1
+2.409 beats the narrow arm's 2.509) but it never reaches protocol 2.345
+and then diverges. Prediction 2 right and worse than predicted (1.91 at
+x1, not neutral, and no plateau). Mechanism: wide bands admit noise and
+neighbouring-comb contamination, the pulse-pair estimate walks, and the
+posterior anneal then shrinks the trust region around the ALREADY
+CORRUPTED estimate — it protects the wrong lock instead of refining the
+right one.
+
+**The principled point (independent of the DREGON displacement) — this
+was ALREADY MEASURED in WP18** (`rps-refine-precision.md` § WP18, table
+of `alpha_raw`). Two facts, both measured, both about the band:
+
+1. **A k-scaled band destroys the high-harmonic precision advantage.**
+   At a FIXED band the per-harmonic rate variance v_k falls as k^-2 —
+   fitted slope of log(1/v_k) vs log k is 1.97-2.00 (DREGON, identical at
+   B=1.5/3/6 Hz) and 1.46-1.51 (Michael's); v_k drops 167x between k=2
+   and k=30. Under k-scaled bands the same fit **collapses to ~0** (0.29
+   DREGON, -0.26/-0.51 Michael's) with R^2 falling to 0.03-0.58, i.e. no
+   power law describes the weight at all and every harmonic becomes
+   equally uninformative. Measured exponent SHIFT fixed -> k-scaled:
+   **-1.7 (DREGON) / -2.0 (Michael's)** — worse than the naive -1,
+   because v_k scales nearer B^3 than B once the `1 - sinc(2 B dt)` band
+   factor (pi_kalman's `c_noise`) is included.
+2. **Wide bands empty the harmonic set.** Usable harmonics of 30 after
+   the twin gate: DREGON **20.5 @ B=1.5, 15 @ B=6, 0 @ B=12** (median min
+   rotor split 0.42 rev/s); Michael's 19 / 14.5 / 1. At a fixed band the
+   collision radius in rev/s is B/k; a k-scaled band holds it CONSTANT at
+   B0 for every k — which is the honest argument FOR k-scaling (uniform
+   coverage), and is why the option was built. But at B0=3.0 that
+   constant radius is 3 rev/s, seven times DREGON's rotor split, at every
+   harmonic: coverage is zero everywhere. The wide-anneal divergence
+   above was predictable from this July measurement.
+
+So the trade is real, not one-sided: fixed bands keep the k^2 precision
+law but leave LOW harmonics collision-prone (radius B/k is largest
+exactly where the displaced set lives); k-scaled bands equalize coverage
+but flatten precision to nothing. Fixed wins because the precision law is
+worth more than low-k coverage — the low harmonics are the ones we least
+want on DREGON anyway.
+
+Separately (and this is a REACH argument, not the WP18 weight argument —
+do not conflate them): the band also sets how far the demodulator can
+capture a line the init missed. Rate half-width B/(2k) gives the protocol
++-1.5 rev/s at k=2 and +-0.5 at k=6, enough to reach a twin 0.5-1 rev/s
+away; k_scaled B0=0.35 gives +-0.175 everywhere and cannot. That explains
+the FLY124 result specifically.
+
+| policy | rate half-width at k=2 / 6 / 30 (rev/s) | collision radius (rev/s) |
+|---|---|---|
+| protocol, fixed 6 Hz | 1.50 / 0.50 / 0.100 | 3.0 / 1.0 / 0.20 |
+| k_scaled, B0=0.35 | 0.175 / 0.175 / 0.175 | 0.35 at every k |
+| k_scaled, B0=3.0 | 1.50 / 1.50 / 0.469 | 3.0 at every k |
+
+**Verdict, restated on principle rather than on DREGON.** The k-scaled
+band family is rejected because it flattens the MEASURED k^2 weight law
+(WP18, fact 1) and, at any B0 wide enough to capture, empties the
+harmonic set (fact 2) — not because of the DREGON low-k data-model
+mismatch, which is an ADMISSION problem (see the displacement section)
+handled by the peel-energy guard and, if wanted, by low-k gating.
+Caveat: Michael's exponent is 1.5, not 2.0, so its ideal band grows
+mildly with k (B ~ k^0.25). Fixed-Hz (k^0) is exactly right for DREGON
+and slightly conservative for Michael's; full k-scaling assumes k^1 and
+is far off for both. A principled anneal, if revisited, must shrink B in
+Hz and keep the near-flat band exponent, not flatten the rate shape.
+
+## DREGON telemetry over-reports by 0.54% (2026-08-05) — affects every DREGON number
+
+Full record: `docs/experiments/dregon-comb-displacement.md`; code and raw
+reports `scripts/displacement/`.
+
+**DREGON's rotor telemetry over-reports rotor speed by 0.542% (95% CI
+0.450-0.618%)** = a systematic label bias of 0.31-0.47 rev/s at cruise
+(mean **0.424 rev/s**). Established four ways: the reference channel
+`motors_measured` is a genuine period-counting tachometer (values lie on
+a reciprocal-integer lattice 1/(n x 42.0 us)), not a setpoint; the
+command channel agrees with it to 0.04% so H2 (commanded-vs-actual) is
+dead; the audio clock is verified nominal to 0.03% by GCC-PHAT against
+DREGON's own shipped emitted white noise, which breaks the
+telemetry-vs-clock degeneracy WP14 flagged on Michael's rig; and a
+window-free order-space comb scan independently returns -0.555%. The
+free fit has slope 0.99403 and an intercept whose CI spans zero, i.e. a
+multiplicative error. Correction: **x0.99458**.
+
+**Why this matters for the bars.** The bias is TWICE the assumed 0.2
+rev/s label-jitter floor, 23% of the blind-VK DREGON cruise bar (1.807)
+and 41% of the steady bar (1.030). A tracker recovering the true shaft
+rate exactly would still be scored ~0.42 rev/s on DREGON. Both telemetry
+channels carry it, so the `PUBLISHED_RPS_KEYS` inconsistency
+(command-preferred) vs the protocol pin (measured) is real but negligible
+beside it. DREGON labels additionally carry a 0.269 rev/s quantisation
+step at 80 rev/s refreshed at 49.7 Hz — not a bias, but the same size.
+
+FLY124's residual is -0.063%, which is both a control (the method reads
+zero where there is no error) and independent confirmation that the
+2026-07-31 Michael's recalibration worked.
+
+**Open**: pure scale vs a fixed ~1.6-tick miscount in the reciprocal
+counter fit equally well over 56-87 rev/s; H3 (a real aeroacoustic
+displacement) is unsupported but UNTESTABLE in this dataset — the bench
+recordings carry no telemetry and the room2 hover/maneuver recordings
+have no `motors_measured` and do not lock to their command channel at
+all; and whether to apply the correction to DREGON labels (and restate
+historical numbers) is a decision, not a measurement.

@@ -99,6 +99,19 @@ layout is new rendering code; everything else delegates.
   full-sequence, summary/per-SNR/curves; `slide_comparison` was deleted as
   dead code). RPS plots PIT-align predictions to GT via
   `tasks.rps_prediction.align_rps_to_gt` before drawing.
+- `comb_page.py` + `comb_widget.py` — the **comb explorer**, the one
+  non-matplotlib product here: a self-contained interactive HTML page
+  (spectrogram + STFT/synchrosqueezed toggle + per-rotor harmonic combs +
+  demodulated per-harmonic strips). `comb_page` holds the payload builder and
+  the single HTML/JS template; `comb_widget.comb_explorer(frame, t0=, dur=)`
+  is the notebook entry point over a plain `td.Frame` (auto-discovers the
+  audio entry and every rotor-speed track, ships them all as selectable
+  carriers and channels), re-exported lazily as `plots.comb_explorer` /
+  `plots.discover` next to `plots.dwym`. The file-writing CLI over the same core is
+  `scripts/displacement/comb_explorer.py`; the JS is verified by
+  `scripts/displacement/verify_page.js`. Docs:
+  `scripts/displacement/README.md`. It lives here, not in `data_processing`,
+  because it is a figure: `plots` depends on nothing in `data_processing`.
 
 ## Gotchas
 

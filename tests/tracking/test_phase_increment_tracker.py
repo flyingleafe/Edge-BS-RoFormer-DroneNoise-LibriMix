@@ -153,6 +153,172 @@ def test_joint_mode_tracks_fully_collided_twins():
     assert 0.55 < last_pair["split_meas_med"] < 0.85
 
 
+def _twin_cell(split: float = 0.7, k_top: int = 10, seed: int = 11):
+    """Tight twin pair at a constant ``split``, comb of only ``k <= k_top``."""
+    rng = np.random.default_rng(seed)
+    shaft = ladder._synth_rps(DUR_S, 21, (80.0,))[0]
+    r_aud = np.stack([shaft, shaft + split])
+    n = r_aud.shape[-1]
+    sig = np.zeros(n)
+    for i in range(2):
+        phase = 2.0 * np.pi * np.cumsum(r_aud[i]) / SR
+        for k in range(1, k_top + 1):
+            sig += (1.0 / k) * np.cos(k * phase + rng.uniform(0.0, 2.0 * np.pi))
+    sig += 0.01 * rng.standard_normal(n)
+    ft = ladder._frame_grid(n)
+    t_aud = np.arange(n) / SR
+    truth_ft = ladder._interp_rows(ft, t_aud, r_aud)
+    edge = (ft > EDGE_S) & (ft < ft[-1] - EDGE_S)
+    return sig, ft, truth_ft, edge
+
+
+def test_k_scaled_converges_within_capture():
+    """band_mode='k_scaled': from +0.25 (inside the B0 = 0.35 trust region)
+    the clean single-rotor comb converges as tightly as the fixed band."""
+    cell = _build_s0("none")
+    r, diag = pi_kalman_refine(
+        cell.audio, cell.r_init_base + 0.25, cell.ft, sr=SR, band_mode="k_scaled"
+    )
+    assert _mae(cell, r) < 0.05
+    it0 = diag["rotors"][0]["iters"][0]
+    assert "band_hz_k" in it0
+    # bands scale with k: k=8 band = 8 * 0.35 = 2.8 Hz
+    assert abs(it0["band_hz_k"]["8"] - 2.8) < 0.01
+    assert "n_band_clamped" not in it0  # no Nyquist clamp below k ~ 80
+
+
+def test_k_scaled_out_of_capture_never_worsens():
+    """From +1.0 (outside the nominal B0 = 0.35 capture range at every k)
+    the k-scaled stage must never move AWAY from truth — band-edge leakage
+    may pull it partially in, but the error must not grow."""
+    cell = _build_s0("none")
+    init = cell.r_init_base + 1.0
+    mae_init = _mae(cell, init)
+    r, _ = pi_kalman_refine(cell.audio, init.copy(), cell.ft, sr=SR, band_mode="k_scaled")
+    assert _mae(cell, r) <= mae_init + 0.05
+
+
+def test_k_scaled_unmasks_twin_low_harmonics():
+    """Twin split 0.7 with a comb of only k <= 10: the fixed 6 Hz band
+    twin-collides every harmonic (sep 7 Hz -> k < 10), so gate mode is a
+    no-op; the k-scaled separation k*0.35 + 1 un-masks k >= 3
+    (0.7k > 0.35k + 1 for k > 2.9) and gate mode converges."""
+    sig, ft, truth_ft, edge = _twin_cell()
+    init = truth_ft + np.asarray([0.15, -0.1])[:, None]
+
+    r_fix, diag_fix = pi_kalman_refine(sig[None], init.copy(), ft, sr=SR)
+    r_ks, diag_ks = pi_kalman_refine(sig[None], init.copy(), ft, sr=SR, band_mode="k_scaled")
+    it_fix = diag_fix["rotors"][0]["iters"][-1]
+    it_ks = diag_ks["rotors"][0]["iters"][-1]
+    # fixed band: every signal-bearing harmonic fully collided or gated
+    assert it_fix.get("n_meas", 0) == 0 or it_fix["n_twin_excluded"] >= 9
+    # k-scaled: k >= 3 carry measurements
+    n_k = it_ks.get("n_meas_k", {})
+    assert sum(n_k.get(str(k), 0) for k in range(3, 11)) > 0
+    for i in range(2):
+        mae_fix = float(np.mean(np.abs(r_fix[i] - truth_ft[i])[edge]))
+        mae_ks = float(np.mean(np.abs(r_ks[i] - truth_ft[i])[edge]))
+        assert mae_ks < 0.08
+        assert mae_ks < mae_fix
+
+
+def test_band_anneal_shrinks_and_converges():
+    """band_anneal='posterior': B0 shrinks across iterations (recorded per
+    iteration and in band_b0_final) without hurting convergence."""
+    cell = _build_s0("none")
+    r, diag = pi_kalman_refine(
+        cell.audio,
+        cell.r_init_base + 0.25,
+        cell.ft,
+        sr=SR,
+        band_mode="k_scaled",
+        band_anneal="posterior",
+    )
+    assert _mae(cell, r) < 0.05
+    iters = diag["rotors"][0]["iters"]
+    b0s = [d["band_b0"] for d in iters]
+    assert b0s[0] == 0.35
+    assert b0s[-1] < 0.35  # annealed down
+    final = diag["band_b0_final"][0]
+    assert 0.12 <= final <= 0.35
+
+
+def _displaced_cell(delta: float = 0.4, k_split: int = 13, seed: int = 31):
+    """DREGON-like displaced comb: harmonics k < k_split ride at r - delta,
+    k >= k_split on the true mechanical rate r."""
+    rng = np.random.default_rng(seed)
+    r_aud = ladder._synth_rps(DUR_S, 77, (80.0,))  # (1, T)
+    n = r_aud.shape[-1]
+    phi_true = 2.0 * np.pi * np.cumsum(r_aud[0]) / SR
+    phi_disp = 2.0 * np.pi * np.cumsum(r_aud[0] - delta) / SR
+    sig = np.zeros(n)
+    for k in range(1, 31):
+        phase = phi_disp if k < k_split else phi_true
+        sig += (1.0 / k) * np.cos(k * phase + rng.uniform(0.0, 2.0 * np.pi))
+    sig += 0.01 * rng.standard_normal(n)
+    ft = ladder._frame_grid(n)
+    t_aud = np.arange(n) / SR
+    truth_ft = ladder._interp_rows(ft, t_aud, r_aud)
+    return sig, ft, truth_ft
+
+
+def test_lowk_consistency_gate_blocks_displaced_pull():
+    """On a displaced comb (k < 13 at r - 0.4) truth-init refinement is
+    pulled below truth by the displaced low harmonics; the consistency gate
+    detects the low-vs-high disagreement and blocks most of the pull."""
+    sig, ft, truth_ft = _displaced_cell()
+    edge = (ft > EDGE_S) & (ft < ft[-1] - EDGE_S)
+    r_def, _ = pi_kalman_refine(sig[None], truth_ft.copy(), ft, sr=SR)
+    r_gated, diag = pi_kalman_refine(sig[None], truth_ft.copy(), ft, sr=SR, lowk_gate="consistency")
+    mae_def = float(np.mean(np.abs(r_def - truth_ft)[:, edge]))
+    mae_gated = float(np.mean(np.abs(r_gated - truth_ft)[:, edge]))
+    fired = any(d.get("lowk", {}).get("fired", False) for d in diag["rotors"][0]["iters"])
+    assert fired
+    assert mae_def > 0.1  # the displaced pull is real on this cell
+    assert mae_gated < 0.6 * mae_def
+
+
+def test_lowk_gate_is_noop_on_consistent_comb():
+    """On a clean on-grid comb the gate must not fire, and the output must
+    be BIT-IDENTICAL to the default (the FLY124 no-op requirement)."""
+    cell = _build_s0("none")
+    r_def, _ = pi_kalman_refine(cell.audio, cell.r_init_base + 0.25, cell.ft, sr=SR)
+    r_gated, diag = pi_kalman_refine(
+        cell.audio, cell.r_init_base + 0.25, cell.ft, sr=SR, lowk_gate="consistency"
+    )
+    assert not any(d.get("lowk", {}).get("fired", False) for d in diag["rotors"][0]["iters"])
+    assert np.array_equal(r_def, r_gated)
+
+
+def test_clean_probe_avoids_other_rotor_lines():
+    """Two rotors 2.75 rev/s apart: the fixed +11 Hz probe of rotor 0's
+    k = 4 sits exactly on rotor 1's k = 4 line (4 * 2.75 = 11); probe_mode
+    'clean' must move it, log zero fallbacks, and still converge."""
+    rng = np.random.default_rng(13)
+    n = int(DUR_S * SR)
+    t = np.arange(n) / SR
+    wobble = 0.05 * np.sin(2.0 * np.pi * 0.3 * t)  # near-steady cruise rates
+    r_aud = np.stack([80.0 + wobble, 82.75 + wobble])
+    sig = np.zeros(n)
+    for i in range(2):
+        phase = 2.0 * np.pi * np.cumsum(r_aud[i]) / SR
+        for k in range(1, 31):
+            sig += (1.0 / k) * np.cos(k * phase + rng.uniform(0.0, 2.0 * np.pi))
+    sig += 0.01 * rng.standard_normal(n)
+    ft = ladder._frame_grid(n)
+    t_aud = np.arange(n) / SR
+    truth_ft = ladder._interp_rows(ft, t_aud, r_aud)
+    edge = (ft > EDGE_S) & (ft < ft[-1] - EDGE_S)
+
+    r, diag = pi_kalman_refine(sig[None], truth_ft + 0.2, ft, sr=SR, probe_mode="clean")
+    it_last = diag["rotors"][0]["iters"][-1]
+    assert it_last["probe_fallbacks"] == 0
+    offs = it_last["probe_off_k"]
+    assert offs  # per-k offsets recorded
+    for i in range(2):
+        assert float(np.mean(np.abs(r[i] - truth_ft[i])[edge])) < 0.1
+
+
 def test_twin_pair_no_cross_capture():
     """Two rotors 1 rev/s apart, comb up to k=40: truth-init refinement must
     stay on its own rotor (the twin guard excludes colliding harmonics)."""
