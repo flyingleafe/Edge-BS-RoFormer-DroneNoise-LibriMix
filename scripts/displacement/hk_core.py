@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Shared core for the short-segment high-k demodulation (F1 redraw) and F0.
+"""DREGON slice loader for the comb-displacement drivers.
 
-Everything here is referenced to a rotor-speed telemetry channel.  A harmonic k
-of rotor r is demodulated by exp(-i k phi_r(t)) with phi_r(t) = 2 pi \\int g_r dt,
-g_r = the telemetry rate in rev/s.  In the demodulated envelope the TELEMETRY
-rate is exactly DC, so an envelope frequency f maps to an acoustic shaft-rate
-offset delta = f / k rev/s.
+One job: give a driver the audio of one time slice, its sample rate, and a rotor
+speed telemetry channel interpolated onto that slice's audio grid.
 
-DREGON's ``motors_measured`` is the default channel because it is the real
-tachometer.  Only the five ``free-flight_*_room1`` recordings carry it; the rest
-have ``motors_command`` only, which is a commanded value, not a measurement.
-:func:`available_channels` reports which a recording has, and ``load_raw`` takes
-the channel as a keyword so a caller can be explicit.
+``motors_measured`` is the default channel, because it is the real tachometer:
+its values lie on the reciprocal-integer lattice of a period counter. Only the
+five ``free-flight_*_room1`` recordings carry it. The rest have
+``motors_command`` only, which is a commanded value and not a measurement.
+:func:`available_channels` says which channels a recording has, and
+:func:`load_raw` takes the channel as a keyword, so a caller stays explicit.
+
+The measurement code that consumes this is ``tracking.comb_displacement`` and
+``tracking.order_domain``. Nothing here computes: this file is data resolution
+only, and it is the reason the two roots (code, data) stay separate.
 """
 
 from __future__ import annotations
@@ -29,11 +31,6 @@ sys.path.insert(0, str(ROOT / "src"))
 from utils.paths import get_data_path  # noqa: E402
 
 DREGON = get_data_path("DREGON")
-OUT = Path(__file__).resolve().parent
-FIGS = OUT / "figs"
-
-CORR = 0.99458  # measured telemetry correction (x this) - see dregon_telemetry.md
-DISP_REVS = -0.542e-2  # relative displacement (multiplicative)
 
 MEASURED = "motors_measured"
 COMMAND = "motors_command"
@@ -110,85 +107,3 @@ def _clean_command(vals: np.ndarray) -> np.ndarray:
         from scipy.signal import medfilt
 
         return np.stack([medfilt(v, 21) for v in vals])
-
-
-def phase(g_r: np.ndarray, sr: int) -> np.ndarray:
-    """Cumulative telemetry phase in radians (2 pi * revolutions)."""
-    return 2.0 * np.pi * np.cumsum(g_r) / sr
-
-
-def demod_spec(
-    audio: np.ndarray,
-    sr: int,
-    phi: np.ndarray,
-    k: int,
-    seg_s: float,
-    band_revs: float,
-    overlap: float = 0.75,
-    pad: int = 4,
-):
-    """Short-time spectrum of harmonic ``k``'s demodulated envelope.
-
-    Returns ``(t_frames_s, rev_axis, P (F, T))`` with ``P`` the power averaged
-    INCOHERENTLY over microphones, and ``rev_axis`` the offset axis in rev/s
-    (envelope Hz divided by k).  ``pad`` only interpolates the display grid; the
-    true resolution stays ``1 / seg_s / k`` rev/s.
-    """
-    n_seg = int(round(seg_s * sr))
-    n_seg -= n_seg % 2
-    hop = max(int(round(n_seg * (1.0 - overlap))), 1)
-    n = audio.shape[1]
-    starts = np.arange(0, n - n_seg + 1, hop)
-    nfft = n_seg * pad
-    freqs = np.fft.fftshift(np.fft.fftfreq(nfft, d=1.0 / sr))
-    band_hz = band_revs * k
-    keep = np.abs(freqs) <= band_hz
-    rev_axis = freqs[keep] / k
-    win = np.hanning(n_seg)
-    carrier = np.exp(-1j * k * phi)
-    acc = np.zeros((len(starts), int(keep.sum())))
-    for c in range(audio.shape[0]):
-        z = audio[c] * carrier
-        fr = np.lib.stride_tricks.sliding_window_view(z, n_seg)[::hop] * win
-        Z = np.fft.fftshift(np.fft.fft(fr, n=nfft, axis=-1), axes=-1)[:, keep]
-        acc += np.abs(Z) ** 2
-    acc /= audio.shape[0]
-    t_frames = (starts + n_seg / 2.0) / sr
-    return t_frames, rev_axis, acc.T
-
-
-def prominence(rev_axis, P, search_revs=0.85, smooth_revs=0.0):
-    """``(prom_db, peak_revs, prof_db)`` of the time-averaged demod profile.
-
-    ``prom_db`` is the peak inside +-``search_revs`` over the MEDIAN of the whole
-    displayed band (the in-band noise floor).
-    """
-    prof = P.mean(axis=1)
-    floor = float(np.median(prof))
-    prof_db = 10.0 * np.log10(prof / max(floor, 1e-300) + 1e-300)
-    if smooth_revs > 0:
-        step = float(rev_axis[1] - rev_axis[0])
-        n_sm = max(3, int(round(smooth_revs / step)) | 1)
-        kern = np.hanning(n_sm)
-        prof_db = np.convolve(prof_db, kern / kern.sum(), mode="same")
-    sw = np.abs(rev_axis) <= search_revs
-    j = int(np.argmax(prof_db[sw]))
-    return float(prof_db[sw][j]), float(rev_axis[sw][j]), prof_db
-
-
-def neighbour_lines(rates: np.ndarray, rot: int, k: int, ylim: float):
-    """Offsets (rev/s, telemetry frame of ``rot``) of every OTHER rotor's nearest
-    harmonic to ``k * g_rot``, that lands inside +-``ylim``."""
-    f0 = k * rates[rot]
-    out = []
-    for r2 in range(len(rates)):
-        if r2 == rot:
-            continue
-        kk = int(round(f0 / rates[r2]))
-        for cand in (kk - 1, kk, kk + 1):
-            if cand < 1:
-                continue
-            off = (cand * rates[r2] - f0) / k
-            if abs(off) <= ylim:
-                out.append((r2, cand, off))
-    return out
