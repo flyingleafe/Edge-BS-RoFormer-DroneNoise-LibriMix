@@ -214,7 +214,7 @@ def reanchor(bases_sorted: np.ndarray, neural: np.ndarray) -> np.ndarray:
 def window_pit_mae(traj: np.ndarray, r_meas: np.ndarray) -> float:
     """Informational window-grid PIT-MAE vs raw telemetry (diagnostics only;
     arm scores come from the frozen scorer)."""
-    from tasks.rps_prediction import align_rps_to_gt
+    from losses.pit import align_rps_to_gt
 
     return float(np.mean(np.abs(align_rps_to_gt(traj, r_meas) - r_meas)))
 

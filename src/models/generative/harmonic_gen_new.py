@@ -31,9 +31,10 @@ import torchaudio as TA
 from einops import rearrange, repeat
 from torch import nn
 
+from utils.dsp import harmonic_freq_series
+
 from .dsp import (
     frequency_filter,
-    harmonic_freq_series,
     harmonic_oscillator_bank,
     oscillator_bank,
     upsample_with_windows,

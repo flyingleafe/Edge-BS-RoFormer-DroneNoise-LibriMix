@@ -4,10 +4,10 @@ import numpy as np
 import tdseries as td
 import torch
 
+from framespec import FrameSpec, SeriesSpec
 from losses.composite import CompositeLoss, LossTerm
 from losses.masked import MaskedLoss
 from losses.regularizers import SmoothnessPenalty
-from tasks.spec import FrameSpec, SeriesSpec
 
 SR = 16000
 

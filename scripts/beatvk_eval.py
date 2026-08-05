@@ -234,7 +234,7 @@ def score_recording(
     rec: dict[str, Any], ft: np.ndarray, rps: np.ndarray, arms: list[str]
 ) -> list[dict[str, Any]]:
     """Per-window rows for one recording: one Hungarian + MAE per (window, arm)."""
-    from tasks.rps_prediction import align_rps_to_gt
+    from losses.pit import align_rps_to_gt
 
     ts, vals, windows = rec["ts"], rec["vals"], rec["windows"]
     n_frames = int(np.ceil(max(float(w["end_s"]) for w in windows) / FRAME_S)) + 1

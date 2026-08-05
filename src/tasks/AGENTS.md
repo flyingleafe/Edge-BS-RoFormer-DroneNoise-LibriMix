@@ -40,7 +40,7 @@ Training entry point for all four: `python train.py experiment=<name>`.
 |------|---------|
 | `task.py` | `Task` + the four factories + `TASK_FACTORIES` |
 | `codecs.py` | One `Codec` per task + `CODEC_FACTORIES` / `build_codec` |
-| `spec.py` | Back-compat re-export of `framespec` (`FrameSpec`/`SeriesSpec`/`TimeKind`) — the shape vocabulary lives in `src/framespec` so losses/metrics can sit below `tasks` |
+
 | `checkpoints.py` | `load_model("Type@/path/ckpt.pt")` — bare `state_dict` loading against `RPS_MODEL_REGISTRY`. For experiment-level loading (config + R2 resolution + codec) use `zoo.load` instead |
 | `rps_prediction.py` | The RPS evaluation pipeline `evaluate-rps` calls: `load_predictor`, `load_input_set`, `evaluate`, `align_rps_to_gt` |
 | `classical_rps_predictors.py` | Non-learned RPS baselines (`cepstral`, `hps`, `pyin`, `nmf`, `matched_filter`) |

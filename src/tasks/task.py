@@ -1,7 +1,7 @@
 """Task = the function type of a model over :class:`tdseries.Frame`s.
 
 A task names the entries a model consumes and produces, as
-:class:`~tasks.spec.FrameSpec`s over *batched* Frames (leading ``"batch"``
+:class:`~framespec.FrameSpec`s over *batched* Frames (leading ``"batch"``
 dim). Because concrete dims vary per experiment (mono vs multichannel
 audio, rotor count, frame rate), tasks are built by **factories** that take
 those parameters from the model config; the factory name is the task name
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tasks.spec import FrameSpec, SeriesSpec
+from framespec import FrameSpec, SeriesSpec
 
 AUDIO_RATE = (16000, 1)
 

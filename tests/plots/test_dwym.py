@@ -1,4 +1,4 @@
-"""Tests for ``plots.dwym`` dispatch and ``plots.coerce`` coercion.
+"""Tests for ``plots.dwym`` dispatch and ``data_processing.canonical`` coercion.
 
 Small synthetic frames per dispatch shape; every figure is closed at the
 end of each test (Agg backend, no display).
@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 import tdseries as td
 
-from plots.coerce import coerce_frame
 from plots.dwym import DwymResult, dwym
 
 SR = 8000
@@ -183,54 +182,6 @@ def test_dwym_result_is_dwymresult():
 
 
 # ── coercion ──────────────────────────────────────────────────────────────
-
-
-def test_coerce_motor_alias_becomes_rps_with_warning():
-    frame = td.Frame({"audio": _audio_series(), "motors_command": _rps_series()})
-    with pytest.warns(UserWarning, match="motors_command.*rps"):
-        coerced = coerce_frame(frame)
-    assert "rps" in coerced
-    assert "motors_command" not in coerced
-
-
-def test_coerce_override_is_silent_and_wins():
-    frame = td.Frame({"audio": _audio_series(), "motor_speed": _rps_series()})
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        coerced = coerce_frame(frame, rps="motor_speed")
-    assert "rps" in coerced
-    assert "motor_speed" not in coerced
-
-
-def test_coerce_keeps_unknown_entries():
-    imu = td.events(
-        np.linspace(0.0, DUR_S, 20, endpoint=False),
-        np.random.default_rng(4).standard_normal((3, 20)),
-        dims=(None, "time"),
-        t_start=0.0,
-        t_end=DUR_S,
-    )
-    frame = td.Frame({"audio": _audio_series(), "motors_measured": _rps_series(), "imu_accel": imu})
-    with pytest.warns(UserWarning):
-        coerced = coerce_frame(frame)
-    assert "imu_accel" in coerced
-    assert "rps" in coerced
-
-
-def test_coerce_sole_waveform_becomes_audio():
-    frame = td.Frame({"recording": _audio_series(channels=2), "rps": _rps_series()})
-    with pytest.warns(UserWarning, match="recording.*audio"):
-        coerced = coerce_frame(frame)
-    assert "audio" in coerced
-    assert "recording" not in coerced
-
-
-def test_coerce_missing_override_raises():
-    frame = td.Frame({"audio": _audio_series()})
-    with pytest.raises(ValueError, match="no such entry"):
-        coerce_frame(frame, rps="nope")
 
 
 def test_dwym_remap_hint_silences_and_routes():

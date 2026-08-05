@@ -11,12 +11,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from losses.pit import align_rps_to_gt
 from plots.timeframe.renderers import ROTOR_COLORS
 from tasks.rps_prediction import (
     HOP,
     N_FFT,
     SR_AUDIO,
-    align_rps_to_gt,
 )
 
 __all__ = ["ROTOR_COLORS", "plot_full_sequence"]

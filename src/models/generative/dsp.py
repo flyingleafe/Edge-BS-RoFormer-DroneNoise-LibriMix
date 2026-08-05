@@ -13,20 +13,14 @@ import torch
 # ---------------------------------------------------------------------------
 # Phase / oscillator banks
 # ---------------------------------------------------------------------------
-# Canonical home of the harmonic-basis primitives is tracking.harmonic_basis
-# (shared with the VK/refinement stack); re-exported here for the oscillator
-# bank below and the existing generative-model imports.
-from tracking.harmonic_basis import (  # noqa: E402
-    freqs_to_phasors as freqs_to_phasors,
-)
-from tracking.harmonic_basis import (
-    harmonic_freq_series as harmonic_freq_series,
-)
-from tracking.harmonic_basis import (
-    remove_above_nyquist as remove_above_nyquist,
+from utils.dsp import (
+    freqs_to_phasors,
+    harmonic_freq_series,
+    overlap_and_add,
+    remove_above_nyquist,
 )
 
-from .math_utils import get_fft_size, overlap_add_50pct, overlap_and_add, signal_frame
+from .math_utils import get_fft_size, overlap_add_50pct, signal_frame
 
 
 def oscillator_bank(freqs, amps, initial_phases=None, return_sum=True, sr: int = 16000):

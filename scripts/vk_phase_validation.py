@@ -416,7 +416,7 @@ def build_gen_cell(
     import torch
 
     from data_processing.generated_noise import load_geometry
-    from tasks.noise_generation import geometry_to_rel_pos
+    from models.generative.codebook import geometry_to_rel_pos
 
     rng = np.random.default_rng(seed)
     n_rotors = len(means)

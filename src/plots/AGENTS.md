@@ -32,7 +32,7 @@ audio entry (`_ipython_display_`; figures are closed after building so the
 inline backend does not double-render). Outside notebooks: `.figure`,
 `.figures`, `.save(path)`.
 
-## Coercion (`plots/coerce.py`)
+## Coercion (`data_processing/canonical.py`)
 
 `coerce_frame(frame, **overrides)` canonicalizes raw dataset frames before
 dispatch (dwym calls it). Alias tables → canonical names:

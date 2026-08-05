@@ -18,7 +18,7 @@ Every function accepts the same dataset forms:
 
 Heavy lifting stays where it already lives: streaming/decoding in
 ``data_processing.streams``, figure assembly in the ``plots.timeframe``
-renderers, and entry-name coercion in ``plots.coerce``. Only the thumbnail
+renderers, and entry-name coercion in ``data_processing.canonical``. Only the thumbnail
 grid layout is new here.
 """
 
@@ -34,9 +34,9 @@ import numpy as np
 import pandas as pd
 import tdseries as td
 
-from plots.audio import first_channel
-from plots.coerce import CANONICAL_ENTRIES, _audio_candidates, coerce_frame
+from data_processing.canonical import CANONICAL_ENTRIES, _audio_candidates, coerce_frame
 from plots.dwym import DwymResult, _in_ipython
+from utils.audio import first_channel
 
 __all__ = ["datasets", "meta_table", "grid", "pick"]
 
@@ -234,7 +234,7 @@ def grid(
     stream (default ``max(4 * n, 48)``; a dataset *name* additionally gets a
     seeded streaming shuffle so the scan spans shards). Hints: ``fmax``
     limits the thumbnail bandwidth; canonical-entry string remaps
-    (``audio="waveform"``) pass to :func:`plots.coerce.coerce_frame`.
+    (``audio="waveform"``) pass to :func:`data_processing.canonical.coerce_frame`.
 
     Returns a :class:`plots.dwym.DwymResult` (``route="grid"``) — it displays
     itself in IPython and offers ``.figure`` / ``.save()`` outside.
@@ -309,7 +309,7 @@ def pick(
     index_or_query: int | str | Callable[[td.Frame], bool] = 0,
     **dwym_hints: str,
 ) -> td.Frame:
-    """One sample, coerced (:func:`plots.coerce.coerce_frame`) and ready for
+    """One sample, coerced (:func:`data_processing.canonical.coerce_frame`) and ready for
     ``plots.dwym`` / ``zoo.FrameModel``.
 
     ``index_or_query`` selects the sample:

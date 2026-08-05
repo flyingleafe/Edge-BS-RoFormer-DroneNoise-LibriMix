@@ -38,11 +38,12 @@ import tdseries as td
 import wandb
 
 from data_processing.frames import get_meta
-from plots.audio import sample_rate_of, to_mono
 from plots.noise_gen import extract_noise_gen_pair
 from plots.se import extract_se_triple
 from tasks.task import Task
 from training.artifacts import ValSample
+from utils.arrays import to_numpy
+from utils.audio import sample_rate_of, to_mono
 
 __all__ = ["select_val_sample_indices", "log_validation_samples", "ArtifactSink"]
 
@@ -135,15 +136,7 @@ def select_val_sample_indices(targets: Sequence[td.Frame], num_samples: int) -> 
 # ─── Array helpers ──────────────────────────────────────────────────────────
 
 
-def _to_numpy(x: Any) -> np.ndarray:
-    if hasattr(x, "detach"):
-        x = x.detach()
-    if hasattr(x, "cpu"):
-        x = x.cpu()
-    return np.asarray(x)
-
-
-# Audio-array conversions moved to ``plots.audio`` (to_mono / sample_rate_of)
+# Audio-array conversions live in ``utils.audio`` (to_mono / sample_rate_of)
 # so the plots package and this wandb adapter share one recipe.
 
 
@@ -196,8 +189,8 @@ def _fill_rps_overlay(
 
             from plots.rps_prediction.full_sequence import plot_full_sequence
 
-            rps_gt = _to_numpy(target["rps"].data)
-            rps_pred = _to_numpy(pred["rps_pred"].data)
+            rps_gt = to_numpy(target["rps"].data)
+            rps_pred = to_numpy(pred["rps_pred"].data)
             fig = plot_full_sequence(
                 audio=mono, rps_gt=rps_gt, rps_pred=rps_pred, sr=float(sr), title=caption
             )

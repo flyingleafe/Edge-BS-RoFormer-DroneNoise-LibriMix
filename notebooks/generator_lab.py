@@ -430,7 +430,7 @@ def _render_deep(spec, exc, *, alpha, offset, jitter_sigma, wind, seed):
     import torch
     from torch import nn
 
-    from tasks.noise_generation import geometry_to_rel_pos
+    from models.generative.codebook import geometry_to_rel_pos
 
     model = load_variant(spec.name)
     torch.manual_seed(seed)

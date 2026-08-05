@@ -24,6 +24,7 @@ import numpy as np
 import tdseries as td
 import torch
 
+from losses.pit import align_rps_to_gt
 from models.multif0.utils import cqt_freq_grid
 from models.salience_rps import SalienceRPSPredictor
 from plots.timeframe import PlotTrack, plot_timeframe
@@ -32,7 +33,6 @@ from plots.timeframe.renderers import (
     make_salience_series,
     make_spectrogram_series,
 )
-from tasks.rps_prediction import align_rps_to_gt
 
 __all__ = [
     "select_channel",

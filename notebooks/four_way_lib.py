@@ -67,7 +67,7 @@ def slice_window(tf: Any, start_s: float, dur_s: float) -> dict[str, Any]:
     Same slicing/interp calls as ``noise_gen_real_vs_generated.ipynb``.
     """
     from data_processing.online_mixing import _extract_audio_array, interpolate_rps_to_stft_grid
-    from tasks.noise_generation import geometry_to_rel_pos
+    from models.generative.codebook import geometry_to_rel_pos
 
     t0 = tf["audio"].t_start
     avail = tf["audio"].t_end - t0

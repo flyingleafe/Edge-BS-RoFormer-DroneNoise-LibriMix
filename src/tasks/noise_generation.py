@@ -36,17 +36,6 @@ import torch
 
 from data_processing.frames import with_meta
 
-# Canonical home of the codebook + geometry helper is
-# ``models.generative.codebook`` (moved in the 2026-08 refactor);
-# re-exported here because scripts/notebooks/tests import them from this
-# task module.
-from models.generative.codebook import (  # noqa: PLC0414
-    DroneCodebook as DroneCodebook,
-)
-from models.generative.codebook import (
-    geometry_to_rel_pos as geometry_to_rel_pos,
-)
-
 # ── Constants ─────────────────────────────────────────────────────────────
 
 SR_AUDIO: float = 16000.0

@@ -40,11 +40,6 @@ def signal_frame(signal, frame_length, frame_step, pad_end=False, pad_value=0, a
     return signal.unfold(axis, frame_length, frame_step)
 
 
-# Canonical home moved to tracking.harmonic_basis (shared with the VP
-# transform); re-exported here for the existing generative-model imports.
-from tracking.harmonic_basis import overlap_and_add as overlap_and_add  # noqa: E402
-
-
 def overlap_add_50pct(windowed: torch.Tensor, hop_size: int) -> torch.Tensor:
     """Fold-free overlap-add specialised to 50%-overlapping frames.
 

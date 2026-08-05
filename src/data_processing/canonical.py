@@ -1,7 +1,12 @@
-"""Canonicalize raw dataset frames before ``plots.dwym`` dispatch.
+"""The canonical entry vocabulary, and how a raw frame is mapped onto it.
 
-Raw recording frames name their entries after the source dataset, not after
-the canonical plotting vocabulary. Examples of the real entry names:
+Raw recording frames name their entries after the source dataset. Which of
+those names carries the rotor speed is a *data* question, not a plotting
+one — the same question :data:`data_processing.frames.PUBLISHED_RPS_KEYS`
+answers for the pipeline — so the alias tables live here and
+``plots.dwym`` calls :func:`coerce_frame` on its way in.
+
+Examples of the real entry names:
 
 * DREGON raw frames (``data_processing.sources.dregon``): ``audio``,
   ``motors_command`` (cleaned, canonical), ``motors_measured``,
@@ -23,6 +28,8 @@ import warnings
 
 import tdseries as td
 
+from data_processing.frames import PUBLISHED_RPS_KEYS
+
 __all__ = ["CANONICAL_ENTRIES", "ENTRY_ALIASES", "coerce_frame"]
 
 #: The canonical entry vocabulary ``plots.dwym`` dispatches on.
@@ -37,16 +44,17 @@ CANONICAL_ENTRIES = (
     "generated",
 )
 
-#: Per-canonical-name alias tables, in priority order. The ``rps`` order
-#: mirrors ``data_processing.frames.PUBLISHED_RPS_KEYS`` (``motors_command``
-#: is DREGON's cleaned canonical track, ``motors_measured`` the raw one).
-#: ``motor_speed`` is last on purpose: on Michael's frames it is the RAW
-#: RPM block and only wins when no better track exists.
+#: Per-canonical-name alias tables, in priority order. The rotor-speed order
+#: *is* :data:`data_processing.frames.PUBLISHED_RPS_KEYS` — one source of
+#: truth, so a frame plots under the same track the pipeline reads
+#: (``motors_command`` is DREGON's cleaned canonical track,
+#: ``motors_measured`` the raw one). ``motor_speed`` is last on purpose: on
+#: Michael's frames it is the RAW RPM block and only wins when no better
+#: track exists.
 ENTRY_ALIASES: dict[str, tuple[str, ...]] = {
     "audio": ("waveform", "wav", "mix"),
-    "rps": (
-        "motors_command",
-        "motors_measured",
+    "rps": tuple(k for k in PUBLISHED_RPS_KEYS if k != "rps")
+    + (
         "motor_rps",
         "rotor_rps",
         "rotor_speed",
@@ -64,7 +72,7 @@ _AUDIO_RATE_FLOOR = 4000.0
 
 def _warn(alias: str, canonical: str) -> None:
     warnings.warn(
-        f"plots.coerce: using entry {alias!r} as {canonical!r} — "
+        f"coerce_frame: using entry {alias!r} as {canonical!r} — "
         f"pass {canonical}={alias!r} to make the mapping explicit",
         stacklevel=3,
     )

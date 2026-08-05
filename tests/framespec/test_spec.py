@@ -1,9 +1,9 @@
-"""Tests for the FrameSpec structural typing layer (tasks.spec)."""
+"""Tests for the FrameSpec structural typing layer (framespec)."""
 
 import numpy as np
 import tdseries as td
 
-from tasks.spec import (
+from framespec import (
     SCALAR,
     FrameSpec,
     SeriesSpec,

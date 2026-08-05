@@ -19,8 +19,9 @@ import torch
 from torch.nn.utils import parametrize
 
 from models.generative import HarmonicNoiseGenNew, PositionalHarmonicNoiseGen
-from models.generative.dsp import harmonic_freq_series, oscillator_bank
+from models.generative.dsp import oscillator_bank
 from models.registry import build_noise_gen_model
+from utils.dsp import harmonic_freq_series
 
 
 def _emitter_of(model) -> HarmonicNoiseGenNew:
@@ -257,8 +258,8 @@ class _SpyGenerator(torch.nn.Module):
 
 
 def _spy_wrapper(z_noise_std: float):
+    from models.generative.codebook import DroneCodebook
     from models.registry import _CodebookConditionedNoiseGen
-    from tasks.noise_generation import DroneCodebook
 
     torch.manual_seed(0)
     codebook = DroneCodebook(16, names=["dregon", "michaels"])

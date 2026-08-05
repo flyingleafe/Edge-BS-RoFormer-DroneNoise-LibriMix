@@ -9,7 +9,7 @@ One call covers the common figures::
                                          # the coercion warning)
     dwym(frame, renderer="timeframe")    # force a dispatch route
 
-Frame-level dispatch (on the coerced entry names, see :mod:`plots.coerce`):
+Frame-level dispatch (on the coerced entry names, see :mod:`data_processing.canonical`):
 
 ========================  =============================================
 Route (``result.route``)  Trigger / figure
@@ -35,7 +35,7 @@ route (``route`` gains a ``"multi:"`` prefix); heterogeneous dicts fall
 back to one figure per frame (``route="mixed"``).
 
 Hints: ``renderer=<route>`` forces a path; ``<canonical>="entry"`` string
-hints are entry-name remaps passed to :func:`plots.coerce.coerce_frame`;
+hints are entry-name remaps passed to :func:`data_processing.canonical.coerce_frame`;
 ``fmax``/``freqs`` shape the spectrogram/salience tracks; everything else
 flows into ``plot_timeframe`` (and from there into the existing
 ``PlotTrack.hints``/style channel of the track renderers).
@@ -59,12 +59,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tdseries as td
 
-from plots.audio import first_channel, sample_rate_of, to_mono, to_numpy
-from plots.coerce import CANONICAL_ENTRIES, coerce_frame
+from data_processing.canonical import CANONICAL_ENTRIES, coerce_frame
 from plots.noise_gen import noise_gen_comparison_tracks
 from plots.se import se_comparison_tracks
 from plots.timeframe import PlotTrack, plot_timeframe
 from plots.timeframe.renderers import make_spectrogram_series
+from utils.arrays import to_numpy
+from utils.audio import first_channel, sample_rate_of, to_mono
 
 __all__ = ["DwymResult", "dwym"]
 
@@ -168,7 +169,7 @@ def _spectrogram_track(frame: td.Frame, entry: str, hints: dict[str, Any]) -> Pl
 
 def _aligned_rps_pred_track(frame: td.Frame) -> PlotTrack:
     """The ``rps_pred`` entry as a track, PIT-aligned to GT ``rps`` if present."""
-    from tasks.rps_prediction import align_rps_to_gt
+    from losses.pit import align_rps_to_gt
 
     pred_series = frame["rps_pred"]
     pred = to_numpy(pred_series.data)
@@ -290,7 +291,7 @@ def dwym(obj: td.Frame | Sequence[td.Frame] | dict[str, td.Frame], **hints: Any)
     **hints
         ``renderer=<route>`` forces a dispatch route; canonical-entry
         string hints (``rps="motor_speed"``) remap entry names via
-        :func:`plots.coerce.coerce_frame` (and silence its warning);
+        :func:`data_processing.canonical.coerce_frame` (and silence its warning);
         everything else flows to ``plot_timeframe``/the renderers.
     """
     forced = hints.pop("renderer", None)

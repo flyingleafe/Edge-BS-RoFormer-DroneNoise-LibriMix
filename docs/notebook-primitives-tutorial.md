@@ -73,7 +73,7 @@ sample
 
 `pick` accepts an index, a substring of `meta.recording_id` / `meta.id`, or a
 predicate `fn(frame) -> bool`. The result is coerced
-(`plots.coerce.coerce_frame`), so entry names are already canonical.
+(`data_processing.canonical.coerce_frame`), so entry names are already canonical.
 
 What an SE valid frame contains:
 
@@ -167,7 +167,7 @@ use `eval.py` — it is the same suite with dataset wiring and R2 upload.
 When `dwym` guesses wrong or you need more control:
 
 - **Entry remaps**: `dwym(frame, rps="motor_speed")` — canonical-name hints
-  go to `plots.coerce.coerce_frame` and silence its warning.
+  go to `data_processing.canonical.coerce_frame` and silence its warning.
 - **Force a route**: `dwym(frame, renderer="timeframe")` — routes are
   `se` / `salience` / `noise_gen` / `rps` / `audio` / `timeframe`.
 - **Track-level control**: `plots.timeframe.plot_timeframe(frame,

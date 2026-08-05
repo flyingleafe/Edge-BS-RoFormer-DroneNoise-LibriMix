@@ -5,7 +5,7 @@ collapse to mono audio) lived in ``training.val_logging``; it moved here so
 the wandb adapter and ``plots.dwym`` share one recipe. ``val_logging`` keeps
 only the wandb wrapping.
 
-Canonical entries (see :mod:`plots.coerce`): the target/input frame carries
+Canonical entries (see :mod:`data_processing.canonical`): the target/input frame carries
 ``mixture`` + ``target``, the prediction frame carries ``enhanced``.
 """
 
@@ -16,9 +16,9 @@ from typing import Any
 import matplotlib.figure
 import tdseries as td
 
-from plots.audio import first_channel, sample_rate_of, to_mono
 from plots.timeframe import PlotTrack, plot_timeframe
 from plots.timeframe.renderers import make_spectrogram_series
+from utils.audio import first_channel, sample_rate_of, to_mono
 
 __all__ = ["extract_se_triple", "se_comparison_tracks", "plot_se_comparison"]
 

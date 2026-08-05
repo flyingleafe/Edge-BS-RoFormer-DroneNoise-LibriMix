@@ -245,8 +245,8 @@ def _to_dict(cfg: Any) -> dict[str, Any]:
 # Params that carry an exact ``(num, den)`` rate: YAML ``[16000, 512]``
 # composes as a plain Python ``list`` (``_to_dict`` already fully resolves
 # any ``ListConfig``/``DictConfig`` to plain containers), but
-# ``tasks.spec.SeriesSpec.rate`` is compared with ``!=`` against a genuine
-# *reduced* ``(num, den)`` tuple inferred from live data (``tasks.spec.spec_of``
+# ``framespec.SeriesSpec.rate`` is compared with ``!=`` against a genuine
+# *reduced* ``(num, den)`` tuple inferred from live data (``framespec.spec_of``
 # reads ``GridIndex.sr_num``/``sr_den``, which ``tdseries`` always stores in
 # lowest terms — e.g. ``(16000, 512)`` normalizes to ``(125, 4)``). A bare
 # ``tuple(v)`` would fix the list-vs-tuple mismatch but not the

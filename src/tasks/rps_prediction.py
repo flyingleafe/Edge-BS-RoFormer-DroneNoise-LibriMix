@@ -27,11 +27,6 @@ import torch.nn as nn
 
 from data_processing.frames import get_meta, meta_dict, with_meta
 
-# Canonical home of ``align_rps_to_gt`` is ``losses.pit`` (moved in the 2026-08
-# refactor); re-exported here because plots/scripts/notebooks import it as
-# public API of this module.
-from losses.pit import align_rps_to_gt as align_rps_to_gt  # noqa: PLC0414
-
 # ── Constants ─────────────────────────────────────────────────────────────
 
 SR_AUDIO: float = 16000.0

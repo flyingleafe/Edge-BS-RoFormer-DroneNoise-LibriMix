@@ -15,8 +15,9 @@ Directories mirror `src/` package by package.
 | `losses/` | spectral, SI-SDR, masked, PIT, regularizers, salience, spectral/spatial likelihood, composite |
 | `metrics/` | separation, RPS (PIT-aware), salience, perf + `MetricSuite` |
 | `models/` | RPS predictors, CKLA (+ conditional refiner), front-end arms (G2 IF/HCQT, G4 comb, G8 pyramid), salience-RPS, generative noise gen (equivalence, RPS jitter, spectral stats), the SE baselines' conf-yaml build path (MP-SENet, SGMSE, TF-GridNet, Edge-BS-RoFormer), `test_registry_listing.py` (registry ↔ `conf/model/*.yaml` cross-check) |
-| `tasks/` | `FrameSpec` typing (`test_spec.py`), `tasks.checkpoints` `Type@ckpt` loading, the live `evaluate-rps` CLI, RPS prediction + its golden-artifact regression, noise-generation codec |
-| `plots/` | plot registry, RPS plots, `plots.dwym` dispatch + `plots.coerce` coercion, `plots.explore` notebook primitives |
+| `framespec/` | `FrameSpec` structural typing (`test_spec.py`) |
+| `tasks/` | `tasks.checkpoints` `Type@ckpt` loading, the live `evaluate-rps` CLI, RPS prediction + its golden-artifact regression, noise-generation codec |
+| `plots/` | plot registry, RPS plots, `plots.dwym` dispatch + `data_processing.canonical` coercion, `plots.explore` notebook primitives |
 | `training/` | training loop, collate, `validate_config`, val-logging, R2 `ArtifactStore` (fake client; the one real-R2 test is `network`-marked). `conftest.py` + `_fixtures.py` live here |
 | `zoo/` | `zoo.cache` refresh/listing against a fake S3 client, `zoo.FrameModel` round-trip. No network |
 | `scripts/` | The importable cores of the generic tools — `se_eval.py`, `table.py`, `bench.py`/`probe_ckpt.py`. `conftest.py` puts `scripts/` on `sys.path` |

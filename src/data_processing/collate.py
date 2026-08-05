@@ -1,7 +1,7 @@
 """Batching for :class:`tdseries.Frame` samples.
 
 A dataset adapter yields one ``td.Frame`` per sample (no ``"batch"`` dim —
-see ``tasks.spec.without_batch``). :func:`collate_frames` stacks a list of
+see ``framespec.without_batch``). :func:`collate_frames` stacks a list of
 *equal-shape* per-sample Frames into one batched Frame, matching a task's
 batched ``FrameSpec`` (leading ``"batch"`` dim on every Series entry).
 

@@ -23,7 +23,7 @@ pytestmark = pytest.mark.slow
 
 def _tiny_bundle(tmp_path, *, drone: str = "michaels", n_harm: int = 8, cond_dim: int = 8) -> str:
     from models.generative import PositionalHarmonicNoiseGen
-    from tasks.noise_generation import DroneCodebook
+    from models.generative.codebook import DroneCodebook
 
     model = PositionalHarmonicNoiseGen(
         sample_rate=16000, n_harmonics=n_harm, use_diff_noise=True, cond_dim=cond_dim

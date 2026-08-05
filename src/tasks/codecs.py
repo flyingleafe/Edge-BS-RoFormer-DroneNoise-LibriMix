@@ -25,7 +25,7 @@ import torch
 
 from data_processing.frames import meta_dict
 from losses._common import get_tensor
-from tasks.noise_generation import geometry_to_rel_pos
+from models.generative.codebook import geometry_to_rel_pos
 from tasks.task import AUDIO_RATE
 
 __all__ = [

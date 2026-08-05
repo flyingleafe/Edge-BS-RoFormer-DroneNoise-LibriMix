@@ -47,10 +47,11 @@ def list_plot_types() -> list[str]:
 
 
 def __getattr__(name: str):
-    """Lazy front-door exports: ``dwym`` / ``coerce_frame`` / ``comb_explorer``.
+    """Lazy front-door exports: ``dwym`` and ``comb_explorer``.
 
     Loaded on first access so ``import plots`` (registry only) stays light —
-    ``dwym`` pulls in matplotlib renderers and tdseries.
+    ``dwym`` pulls in matplotlib renderers and tdseries. Entry-name coercion
+    is imported from its own package: ``data_processing.canonical``.
     """
     if name == "dwym":
         from plots.dwym import dwym
@@ -60,11 +61,6 @@ def __getattr__(name: str):
         # function on the next attribute lookup. Function wins.
         globals()["dwym"] = dwym
         return dwym
-    if name == "coerce_frame":
-        from plots.coerce import coerce_frame
-
-        globals()["coerce_frame"] = coerce_frame
-        return coerce_frame
     if name in ("comb_explorer", "discover"):
         from plots import comb_widget
 

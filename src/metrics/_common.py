@@ -13,9 +13,9 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 import tdseries as td
-import torch
 
 from framespec import FrameSpec, SeriesSpec
+from utils.arrays import to_numpy
 
 AUDIO_RATE: tuple[int, int] = (16000, 1)
 
@@ -35,13 +35,6 @@ def audio_series_spec(
 def rps_series_spec(rate: tuple[int, int] | None = None) -> SeriesSpec:
     """The ``SeriesSpec`` for a batched per-rotor RPS entry ``(batch, rotor, time)``."""
     return SeriesSpec(dims=("batch", "rotor", "time"), time="grid", rate=rate)
-
-
-def to_numpy(x: np.ndarray | torch.Tensor) -> np.ndarray:
-    """Coerce a Frame entry's payload (numpy or torch) to a detached numpy array."""
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
 
 
 def get_array(frame: td.Frame, key: str) -> np.ndarray:
@@ -78,7 +71,6 @@ __all__ = [
     "audio_dims",
     "audio_series_spec",
     "rps_series_spec",
-    "to_numpy",
     "get_array",
     "Metric",
 ]

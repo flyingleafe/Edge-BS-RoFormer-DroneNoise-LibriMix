@@ -74,7 +74,7 @@ def test_salience_bce_metric_spec_entries_are_batched_like_rps_metric():
     # Matches metrics.rps.RPSMetric's convention: requires_pred/requires_target
     # declare BATCHED dims (validate_config checks metrics against the batched
     # task/dataset spec) even though __call__ itself is unbatched per-sample.
-    from tasks.spec import SeriesSpec
+    from framespec import SeriesSpec
 
     metric = SalienceBCEMetric()
     pred_spec = metric.requires_pred.entries["salience"]

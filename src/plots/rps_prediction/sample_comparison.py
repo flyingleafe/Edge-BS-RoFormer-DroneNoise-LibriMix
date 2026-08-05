@@ -13,10 +13,11 @@ import tdseries as td
 import torchaudio
 
 from data_processing.frames import with_meta
+from losses.pit import align_rps_to_gt
 from plots.timeframe import PlotTrack, plot_timeframe
 from plots.timeframe.registry import TrackContext, get_renderer
 from plots.timeframe.renderers import ROTOR_COLORS, make_spectrogram_series
-from tasks.rps_prediction import HOP, N_FFT, align_rps_to_gt
+from tasks.rps_prediction import HOP, N_FFT
 
 
 def plot_sample_comparison(

@@ -5,7 +5,7 @@ lived in ``training.val_logging``; it moved here so the wandb adapter and
 ``plots.dwym`` share one recipe. ``val_logging`` keeps only the wandb
 wrapping (captions, epoch/drone tags).
 
-Canonical entries (see :mod:`plots.coerce`): the target frame carries the
+Canonical entries (see :mod:`data_processing.canonical`): the target frame carries the
 REAL recording under ``audio``; the prediction frame carries the GENERATED
 noise, also under ``audio``. A single merged frame uses ``audio`` +
 ``generated`` instead.
@@ -18,9 +18,9 @@ from typing import Any
 import matplotlib.figure
 import tdseries as td
 
-from plots.audio import first_channel, sample_rate_of, to_mono
 from plots.timeframe import PlotTrack, plot_timeframe
 from plots.timeframe.renderers import make_spectrogram_series
+from utils.audio import first_channel, sample_rate_of, to_mono
 
 __all__ = [
     "extract_noise_gen_pair",

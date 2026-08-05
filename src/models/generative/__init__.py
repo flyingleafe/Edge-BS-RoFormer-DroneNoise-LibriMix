@@ -27,7 +27,7 @@ Modules
                          + `smoothness_penalty` (2nd-difference control-curve regulariser)
 """
 
-from tracking.harmonic_basis import (
+from utils.dsp import (
     HarmonicTransformModule,
     VP_transform,
     harmonic_VP_transform,

@@ -27,7 +27,7 @@ join `plots.dwym` on the lazy front door.
 | 1 — deletions | `d578cb3` | `fwh_rotor_sim` (superseded by the external `auraflow` repo), 26 dead scripts, 18 stale notebooks |
 | 2 — tracking | `f1a7350` (2a), `22d41bb` (2c), `96dc11e` (complete) | `src/tracking` + `src/framespec` extracted, the layers contract, the `Stage: Frame -> Frame` API, the vit2dsp ladder promoted to `tracking/pipelines.py` |
 | 3 — registries | `62081bb` (3a), `f2beefb` (3b) | One `models.registry.model_types()`, `utils` is a leaf, `src/zoo` over the R2 artifact store |
-| 4 — plots | `8d2ad92` | `plots.dwym` front door + `plots.coerce` + renderer consolidation |
+| 4 — plots | `8d2ad92` | `plots.dwym` front door + `data_processing.canonical` + renderer consolidation |
 | 5 — scripts | `ae6979e` | Six generic tools (`se_eval`, `table`, `bench`, `probe_ckpt`, `rps_eval`, `utils.gridrun`) replace the scripts zoo; `sbatch.sh`/`sync_results.sh` retired |
 | 6 — notebooks | `699797b` | `plots.explore` primitives, focused `rps_tracking`/`noise_generation` notebooks, the SE tutorial |
 | 7 — tests + docs | *this patch* | `tracking/phase_noise.py`, the test-audit remnants, every AGENTS.md refreshed, this status section |
@@ -60,11 +60,24 @@ join `plots.dwym` on the lazy front door.
    `README.md` and `docs/experiments/dregon-comb-displacement.md`). These
    arrived from `main` after Phase 5, so the scripts count is 67 files (30 of
    them `displacement/`), not the 36 Phase 5 left behind.
-5. **`tasks/spec.py` is still a back-compat shim** over `framespec`; remove it
-   once no config or checkpoint references the old path.
+5. ~~`tasks/spec.py` back-compat shim~~ — **deleted** in the review round
+   below, with every other re-export the refactor had left behind.
 6. **`salience_rps` has no task subdirectory** — it is documented inside
    `src/tasks/rps-prediction/AGENTS.md` as a readout variant. Split it out if
    it grows its own training/eval conventions.
+
+### Review round (PR #14, 2026-08-05)
+
+Nine review comments, all on seams the refactor left soft. What changed:
+
+| Comment | Change |
+|---|---|
+| "unnecessary re-export" (×3: `tasks.spec`, `tasks.noise_generation` → codebook, `tasks.rps_prediction` → `align_rps_to_gt`) | Shims deleted, ~20 consumers import the canonical module. A move is not done until its callers move. |
+| "`X as X` — why?" | That is the explicit-re-export idiom, needed only *because* of a re-export. All three uses died with the shims. |
+| "shouldn't `array-api-compat` handle `to_numpy`?" | Partly: `np.asarray` already accepts a CPU tensor, but raises on one that requires grad or lives on a GPU, so the detach/host step stays. It is now one function in `utils.arrays` instead of three copies (`plots`, `metrics`, `training`). |
+| "the audio helpers belong in `utils`" | `plots/audio.py` → `utils/audio.py`. |
+| "`coerce` belongs in `data_processing` — don't we already have this?" | `plots/coerce.py` → `data_processing/canonical.py`, and yes: its rotor-speed alias order **is** `frames.PUBLISHED_RPS_KEYS` now, not a restatement of it. |
+| "`tracking.harmonic_basis` is better named `utils.dsp`" | Moved. `models.generative` no longer imports `tracking` at all — the shared DSP sits in the bottom layer, where both callers reach it. |
 
 ## 1. Goals
 
@@ -206,7 +219,7 @@ dict `{label: Frame}`:
 3. Environment awareness: `get_ipython()` detection. In a notebook, return a
    rich display object (figure + `IPython.display.Audio` players per audio
    entry). Otherwise return the bare Figure (and `make-plot` saves files).
-4. Coercion of raw frames into the common form (`plots/coerce.py`): raw
+4. Coercion of raw frames into the common form (`data_processing/canonical.py`): raw
    DREGON / Michael's frames carry many timeseries and no `rps` entry per
    se. Before dispatch, `dwym` normalizes: entry-name synonyms map to the
    canonical vocabulary (e.g. `motor_rps`/`motor_speed`/telemetry rotor
