@@ -86,11 +86,17 @@ N_ROTORS = 4
 #: campaign's window (r0 k=7 vs r1 k=8 at 1.7 Hz, r0 vs r2 at 27 Hz at k=70);
 #: FLY124 w02 is the first FLY124 cruise window.
 DEFAULT_WINDOWS = ("free-flight_nosource_room1:0", "free-flight_nosource_room1:1", "FLY124:2")
-#: ``VKConfig`` overrides per arm. ``bw_hz`` is the group-clamp floor (see the
-#: module docstring), ``bw_rps`` the k-scaled band scale.
-ARMS: dict[str, dict[str, float]] = {
+#: ``VKConfig`` overrides per arm. ``bw_rps`` (multiplied by ``--b0``) is the
+#: k-scaled band scale, ``None`` meaning "the scalar ``bw_hz`` band"; ``bw_hz``
+#: is the group-clamp floor for the k-scaled arms (see the module docstring).
+#:
+#: ``wide`` is issue #15's proposal: coupled envelopes at the tracker's own
+#: capture. ``peel`` is what the flagship actually solves today — the 1 Hz
+#: scalar band of ``pipelines.PEEL_BW_HZ`` — kept as the smoothness-bias
+#: extreme, not as a candidate front end.
+ARMS: dict[str, dict[str, float | None]] = {
     "wide": {"bw_rps": 2.0, "bw_hz": 90.0},
-    "clamped": {"bw_rps": 2.0, "bw_hz": 1.0},
+    "peel": {"bw_rps": None, "bw_hz": 1.0},
 }
 EDGE_TRIM_S = 0.5
 HP_CUT_HZ = 5.0  # smoothness-bias cutoff on the rate-observation spectrum
@@ -223,11 +229,12 @@ def run_window(win: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     splu_fallbacks: dict[str, int] = {}
     for arm in args.arms:
         over = ARMS[arm]
+        scale = over["bw_rps"]
         cfg = VKConfig(
             fs=float(SR),
             fs_env=args.fs_env,
-            bw_rps=over["bw_rps"] * args.b0,
-            bw_hz=over["bw_hz"],
+            bw_rps=None if scale is None else scale * args.b0,
+            bw_hz=float(over["bw_hz"] or 1.0),
             k_max=args.k_max,
             f_min=args.f_min,
             f_max=args.f_max,
@@ -362,6 +369,11 @@ def run_window(win: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
                         "mad_dr": round(_mad(xx), 4),
                         "hp_frac": round(_hp_frac(arm_dr[arm][:, a], fs_env), 3),
                         "amp": round(float(np.median(np.abs(banks[(arm, rot)][:, a][:, edge]))), 6),
+                        "amp_ratio": round(
+                            float(np.median(np.abs(banks[(arm, rot)][:, a][:, edge])))
+                            / max(float(np.median(np.abs(z_on[:, a][:, edge]))), 1e-30),
+                            3,
+                        ),
                         "med_abs_diff": round(float(np.median(np.abs(xx - zz))), 4),
                         "corr": round(_corr(xx, zz), 3),
                         "bw_track": round(
@@ -520,6 +532,7 @@ def summarize(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str,
                 "hp_frac": med("hp_frac"),
                 "med_abs_diff": med("med_abs_diff"),
                 "corr": med("corr"),
+                "amp_ratio": med("amp_ratio"),
             }
         out[label] = block
     return out
@@ -530,18 +543,21 @@ def print_table(res: dict[str, Any], arms: list[str]) -> None:
     print(f"\n=== {w['recording']} w{w['window']:02d} ({w['regime']}) rates {res['r_mean']} ===")
     print(f"  consensus dr (rev/s): {json.dumps(res['consensus_dr'])}")
     ests = ["demod", *arms]
-    print("\n  [cons_err | mad_dr | hp_frac | med|A-Z| | corr]  (rev/s, medians over tracks)")
-    print(f"  {'set':<18}{'n':>4}  " + "  ".join(f"{e:>34}" for e in ests))
+    print(
+        "\n  [cons_err | mad_dr | hp_frac | med|A-Z| | corr | amp/demod]"
+        "  (rev/s, medians over tracks)"
+    )
+    print(f"  {'set':<18}{'n':>4}  " + "  ".join(f"{e:>46}" for e in ests))
     for label, block in res["summary"].items():
         cells = []
         for e in ests:
             b = block.get(e)
             if b is None:
-                cells.append(f"{'-':>34}")
+                cells.append(f"{'-':>46}")
                 continue
             cells.append(
-                f"{_f(b['cons_err']):>7}{_f(b['mad_dr']):>8}{_f(b['hp_frac']):>7}"
-                f"{_f(b['med_abs_diff']):>7}{_f(b['corr']):>6}"
+                f"{_f(b['cons_err']):>8}{_f(b['mad_dr']):>8}{_f(b['hp_frac']):>7}"
+                f"{_f(b['med_abs_diff']):>8}{_f(b['corr']):>7}{_f(b.get('amp_ratio')):>8}"
             )
         print(f"  {label:<18}{block['n_tracks']:>4}  " + "  ".join(cells))
     print("\n  contested tracks with the strongest lines:")
@@ -580,7 +596,7 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--windows", default=",".join(DEFAULT_WINDOWS), help="RID:WIDX,...")
-    ap.add_argument("--arms", default="wide,clamped", help=f"subset of {sorted(ARMS)}")
+    ap.add_argument("--arms", default="wide,peel", help=f"subset of {sorted(ARMS)}")
     ap.add_argument("--out", default="results/vk_frontend_probe")
     ap.add_argument("--prep-dir", default="results/beatvk_vk_arms/prep_cache")
     ap.add_argument("--b0", type=float, default=1.0, help="demod band scale (rev/s per order)")
