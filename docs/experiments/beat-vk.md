@@ -734,32 +734,59 @@ posterior anneal then shrinks the trust region around the ALREADY
 CORRUPTED estimate — it protects the wrong lock instead of refining the
 right one.
 
-**The principled point (independent of the DREGON displacement).** In
-shaft-rate units a fixed band B Hz gives half-width B/(2k) — it shrinks
-as 1/k. WP18 measured the phase-noise covariance: optimal weight ~ 1/v_k
-~ k^2, i.e. rate variance v_k ~ k^-2 and rate std sigma_k ~ 1/k. So the
-protocol's fixed 6 Hz band is a trust region MATCHED to the measured
-per-harmonic rate uncertainty, while `band_mode="k_scaled"` is flat in
-rate (0.175 rev/s at every k for B0=0.35) and therefore mismatched by a
-factor of k — simultaneously too narrow at low k (kills FLY124 twin
-capture: +-0.18 rev/s cannot reach a line 0.5-1 rev/s away, where the
-protocol has +-1.5 at k=2 and +-0.5 at k=6) and too wide at high k
-(admits noise where the protocol allows only +-0.10 at k=30). B0=3.0
-fixes the low-k end and makes the high-k end far worse, which is exactly
-the measured outcome.
+**The principled point (independent of the DREGON displacement) — this
+was ALREADY MEASURED in WP18** (`rps-refine-precision.md` § WP18, table
+of `alpha_raw`). Two facts, both measured, both about the band:
 
-| policy | rate half-width at k=2 / 6 / 30 (rev/s) |
-|---|---|
-| protocol, fixed 6 Hz | 1.50 / 0.50 / 0.100 |
-| k_scaled, B0=0.35 | 0.175 / 0.175 / 0.175 |
-| k_scaled, B0=3.0 | 1.50 / 1.50 / 0.469 |
-| measured sigma_k ~ 1/k | proportional to 1.50 / 0.50 / 0.100 |
+1. **A k-scaled band destroys the high-harmonic precision advantage.**
+   At a FIXED band the per-harmonic rate variance v_k falls as k^-2 —
+   fitted slope of log(1/v_k) vs log k is 1.97-2.00 (DREGON, identical at
+   B=1.5/3/6 Hz) and 1.46-1.51 (Michael's); v_k drops 167x between k=2
+   and k=30. Under k-scaled bands the same fit **collapses to ~0** (0.29
+   DREGON, -0.26/-0.51 Michael's) with R^2 falling to 0.03-0.58, i.e. no
+   power law describes the weight at all and every harmonic becomes
+   equally uninformative. Measured exponent SHIFT fixed -> k-scaled:
+   **-1.7 (DREGON) / -2.0 (Michael's)** — worse than the naive -1,
+   because v_k scales nearer B^3 than B once the `1 - sinc(2 B dt)` band
+   factor (pi_kalman's `c_noise`) is included.
+2. **Wide bands empty the harmonic set.** Usable harmonics of 30 after
+   the twin gate: DREGON **20.5 @ B=1.5, 15 @ B=6, 0 @ B=12** (median min
+   rotor split 0.42 rev/s); Michael's 19 / 14.5 / 1. At a fixed band the
+   collision radius in rev/s is B/k; a k-scaled band holds it CONSTANT at
+   B0 for every k — which is the honest argument FOR k-scaling (uniform
+   coverage), and is why the option was built. But at B0=3.0 that
+   constant radius is 3 rev/s, seven times DREGON's rotor split, at every
+   harmonic: coverage is zero everywhere. The wide-anneal divergence
+   above was predictable from this July measurement.
+
+So the trade is real, not one-sided: fixed bands keep the k^2 precision
+law but leave LOW harmonics collision-prone (radius B/k is largest
+exactly where the displaced set lives); k-scaled bands equalize coverage
+but flatten precision to nothing. Fixed wins because the precision law is
+worth more than low-k coverage — the low harmonics are the ones we least
+want on DREGON anyway.
+
+Separately (and this is a REACH argument, not the WP18 weight argument —
+do not conflate them): the band also sets how far the demodulator can
+capture a line the init missed. Rate half-width B/(2k) gives the protocol
++-1.5 rev/s at k=2 and +-0.5 at k=6, enough to reach a twin 0.5-1 rev/s
+away; k_scaled B0=0.35 gives +-0.175 everywhere and cannot. That explains
+the FLY124 result specifically.
+
+| policy | rate half-width at k=2 / 6 / 30 (rev/s) | collision radius (rev/s) |
+|---|---|---|
+| protocol, fixed 6 Hz | 1.50 / 0.50 / 0.100 | 3.0 / 1.0 / 0.20 |
+| k_scaled, B0=0.35 | 0.175 / 0.175 / 0.175 | 0.35 at every k |
+| k_scaled, B0=3.0 | 1.50 / 1.50 / 0.469 | 3.0 at every k |
 
 **Verdict, restated on principle rather than on DREGON.** The k-scaled
-band family is rejected because a constant rate-space trust region
-contradicts the measured k^-2 rate-variance law, not because of the
-DREGON low-k data-model mismatch (which is an ADMISSION problem — see
-the displacement section — and is handled by the peel-energy guard and,
-if wanted, by low-k gating). A principled anneal, if revisited, must
-shrink each harmonic's band along the 1/k law (i.e. anneal the fixed B
-in Hz, keeping the 1/k rate shape), not flatten it.
+band family is rejected because it flattens the MEASURED k^2 weight law
+(WP18, fact 1) and, at any B0 wide enough to capture, empties the
+harmonic set (fact 2) — not because of the DREGON low-k data-model
+mismatch, which is an ADMISSION problem (see the displacement section)
+handled by the peel-energy guard and, if wanted, by low-k gating.
+Caveat: Michael's exponent is 1.5, not 2.0, so its ideal band grows
+mildly with k (B ~ k^0.25). Fixed-Hz (k^0) is exactly right for DREGON
+and slightly conservative for Michael's; full k-scaling assumes k^1 and
+is far off for both. A principled anneal, if revisited, must shrink B in
+Hz and keep the near-flat band exponent, not flatten the rate shape.
