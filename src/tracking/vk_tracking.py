@@ -960,26 +960,50 @@ LS_BLOCK_S = 0.25
 LS_GAIN_MAX = 4.0
 
 
-def _upsample_envelope(xm: np.ndarray, stride: int, n_t: int) -> np.ndarray:
-    """``(C, n_env)`` complex envelope -> ``(C, n_t)`` complex64 at audio rate.
+#: Target working set of one gain-fit tile, in bytes. The fit streams five
+#: ``(C, tile)`` float64 products per tile and the tile is re-read six times,
+#: so the whole tile must stay in cache — with the clip-long arrays of the
+#: naive form every one of those passes is a trip to DRAM, which is what made
+#: this stage cost 7-11 s. A quarter of a megabyte keeps eight channels of a
+#: 0.25 s block resident; below that the per-call numpy dispatch starts to
+#: show, which is why the tile is at least one block.
+LS_TILE_BYTES = 256 * 1024
 
-    Linear between knots, held constant beyond the last knot — the same
-    interpolation :func:`vk_reconstruct` applies, kept complex instead of
-    folded into the carrier.
+
+def _ls_upsample_into(
+    u: np.ndarray,
+    knot: np.ndarray,
+    dknot: np.ndarray,
+    ramp: np.ndarray,
+    stride: int,
+    s0: int,
+) -> None:
+    """Fill ``u`` ``(C, nc)`` with the linear envelope upsample of samples
+    ``s0 ... s0 + nc``.
+
+    ``knot`` is the complex64 envelope on its own grid and ``dknot`` its
+    forward difference with a **zero last column**, so the "hold constant
+    beyond the last knot" rule of :func:`vk_reconstruct` needs no special
+    case: the tail knot contributes ``knot[-1] + 0 * ramp``. ``ramp`` is the
+    ``stride``-long float32 ramp ``[0, 1/stride, ...]``.
+
+    The aligned case (the tile starts on a knot and spans whole knots) is a
+    pure broadcast over a ``(C, n_knots, stride)`` view — no gather, which is
+    what makes the basis cheap; anything else falls back to an index take.
     """
-    n_ch, n_env = xm.shape
-    out = np.empty((n_ch, n_t), dtype=np.complex64)
-    n_full = min(n_t, (n_env - 1) * stride) if n_env > 1 else 0
-    xr = np.real(xm).astype(np.float32)
-    xi = np.imag(xm).astype(np.float32)
-    if n_full:
-        ramp = np.arange(stride, dtype=np.float32) / np.float32(stride)
-        up_r = (xr[:, :-1, None] + np.diff(xr, axis=-1)[:, :, None] * ramp).reshape(n_ch, -1)
-        up_i = (xi[:, :-1, None] + np.diff(xi, axis=-1)[:, :, None] * ramp).reshape(n_ch, -1)
-        out[:, :n_full] = up_r[:, :n_full] + 1j * up_i[:, :n_full]
-    if n_full < n_t:
-        out[:, n_full:] = xr[:, -1:] + 1j * xi[:, -1:]
-    return out
+    n_ch, nc = u.shape
+    n_env = knot.shape[1]
+    if stride > 0 and s0 % stride == 0 and nc % stride == 0 and (s0 + nc) // stride <= n_env:
+        nk, j0 = nc // stride, s0 // stride
+        u3 = u.reshape(n_ch, nk, stride)
+        np.multiply(dknot[:, j0 : j0 + nk, None], ramp, out=u3)
+        u3 += knot[:, j0 : j0 + nk, None]
+        return
+    idx = np.arange(s0, s0 + nc)
+    ki = np.minimum(idx // stride, n_env - 1)
+    fr = (idx % stride).astype(np.float32) / np.float32(stride)
+    np.multiply(np.take(dknot, ki, axis=1), fr, out=u)
+    u += np.take(knot, ki, axis=1)
 
 
 def ls_project_envelopes(
@@ -1012,6 +1036,14 @@ def ls_project_envelopes(
     — / **0.892** on the takeoff window w00, where the open-loop peel injects
     two orders of magnitude more energy than the clip holds.
 
+    Blocks are independent and channels are independent, so the per-track work
+    is a **cache-blocked** sweep: one tile of ``LS_TILE_BYTES`` at a time, the
+    basis built into preallocated buffers, all five block sums and the residual
+    update done tile-local. The loop over tracks stays — it is the sequential
+    matching pursuit itself — but it no longer streams six clip-long float64
+    arrays through DRAM per track. Bit-identical to the array-at-a-time form:
+    same products, same ``reduceat`` segments, same order of subtraction.
+
     Returns ``(envelopes, diag)``; the input is not mutated.
     """
     y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[: env.x.shape[0]]
@@ -1027,10 +1059,26 @@ def ls_project_envelopes(
     # Sample -> block index. The gain is piecewise constant in time, so what is
     # subtracted inside a block is exactly what was fitted there.
     blk_env = np.minimum(np.arange(n_env) * stride // block, n_blocks - 1)
-    blk_aud = np.minimum(np.arange(n_t) // block, n_blocks - 1)
 
     resid = y[:, :n_t].copy()
     x_new = env.x.copy()
+
+    # Tiles: whole blocks, sized to keep one float64 working set in cache.
+    per_block = max(1, n_ch * block * 8)
+    tile_blocks = max(1, min(n_blocks, LS_TILE_BYTES // per_block))
+    tiles = [
+        (b0, min(b0 + tile_blocks, n_blocks), b0 * block, min((b0 + tile_blocks) * block, n_t))
+        for b0 in range(0, n_blocks, tile_blocks)
+    ]
+    n_tile = min(n_t, tile_blocks * block)
+    ubuf = np.empty((n_ch, n_tile), dtype=np.complex64)  # the complex basis u
+    ufloat = ubuf.view(np.float32)  # its (Re, Im) pairs
+    pbuf = np.empty((n_ch, n_tile), dtype=np.float64)  # in-phase basis
+    qbuf = np.empty((n_ch, n_tile), dtype=np.float64)  # quadrature basis
+    prod = np.empty((n_ch, n_tile), dtype=np.float64)  # product scratch
+    prod2 = np.empty((n_ch, n_tile), dtype=np.float64)
+    ramp = np.arange(stride, dtype=np.float32) / np.float32(stride)
+
     gains: list[np.ndarray] = []
     n_clipped = 0
     for m, carr in _track_carriers(
@@ -1039,28 +1087,65 @@ def ls_project_envelopes(
         xm = env.x[:, m]
         if not xm.any():  # masked / never-solved tracks stay zero
             continue
-        u = _upsample_envelope(xm, stride, n_t) * carr[:n_t]
-        p = np.real(u).astype(np.float64)  # in-phase basis
-        q = -np.imag(u).astype(np.float64)  # quadrature basis
-        app = np.add.reduceat(p * p, starts, axis=-1)
-        aqq = np.add.reduceat(q * q, starts, axis=-1)
-        apq = np.add.reduceat(p * q, starts, axis=-1)
-        bp = np.add.reduceat(resid * p, starts, axis=-1)
-        bq = np.add.reduceat(resid * q, starts, axis=-1)
-        det = app * aqq - apq * apq
-        # Degenerate blocks (the track is invalid / silent there) keep g = 1:
-        # the component is zero anyway, so the gain cannot matter.
-        ok = det > _TINY * np.maximum(app * aqq, _TINY)
-        a = np.where(ok, (aqq * bp - apq * bq) / np.where(ok, det, 1.0), 1.0)
-        b = np.where(ok, (app * bq - apq * bp) / np.where(ok, det, 1.0), 0.0)
-        g = a + 1j * b
-        mag = np.abs(g)
-        clip = mag > gain_max
-        n_clipped += int(clip.sum())
-        g = np.where(clip, g * (gain_max / np.maximum(mag, _TINY)), g)
-        resid -= np.real(g)[:, blk_aud] * p + np.imag(g)[:, blk_aud] * q
-        x_new[:, m] = env.x[:, m] * g[:, blk_env]
-        gains.append(np.minimum(mag, gain_max))  # the gain actually applied
+        knot = xm.astype(np.complex64)
+        dknot = np.zeros_like(knot)
+        dknot[:, :-1] = np.diff(knot, axis=-1)
+        g_all = np.empty((n_ch, n_blocks), dtype=np.complex128)
+        mag_all = np.empty((n_ch, n_blocks))
+
+        for b0, b1, s0, s1 in tiles:
+            nb, nc = b1 - b0, s1 - s0
+            u = ubuf[:, :nc]
+            _ls_upsample_into(u, knot, dknot, ramp, stride, s0)
+            u *= carr[s0:s1]
+            uv = ufloat[:, : 2 * nc].reshape(n_ch, nc, 2)
+            p, q = pbuf[:, :nc], qbuf[:, :nc]
+            np.copyto(p, uv[..., 0])  # in-phase basis
+            np.negative(uv[..., 1], out=q)  # quadrature basis
+
+            seg = starts[b0:b1] - s0
+            t, rs = prod[:, :nc], resid[:, s0:s1]
+            np.multiply(p, p, out=t)
+            app = np.add.reduceat(t, seg, axis=-1)
+            np.multiply(q, q, out=t)
+            aqq = np.add.reduceat(t, seg, axis=-1)
+            np.multiply(p, q, out=t)
+            apq = np.add.reduceat(t, seg, axis=-1)
+            np.multiply(rs, p, out=t)
+            bp = np.add.reduceat(t, seg, axis=-1)
+            np.multiply(rs, q, out=t)
+            bq = np.add.reduceat(t, seg, axis=-1)
+
+            det = app * aqq - apq * apq
+            # Degenerate blocks (the track is invalid / silent there) keep
+            # g = 1: the component is zero anyway, so the gain cannot matter.
+            ok = det > _TINY * np.maximum(app * aqq, _TINY)
+            a = np.where(ok, (aqq * bp - apq * bq) / np.where(ok, det, 1.0), 1.0)
+            b = np.where(ok, (app * bq - apq * bp) / np.where(ok, det, 1.0), 0.0)
+            g = a + 1j * b
+            mag = np.abs(g)
+            clip = mag > gain_max
+            n_clipped += int(clip.sum())
+            g = np.where(clip, g * (gain_max / np.maximum(mag, _TINY)), g)
+            g_all[:, b0:b1] = g
+            mag_all[:, b0:b1] = np.minimum(mag, gain_max)  # the gain applied
+
+            if nc == nb * block:  # whole blocks: broadcast, no per-sample gather
+                shp = (n_ch, nb, block)
+                ga, gb = np.real(g)[:, :, None], np.imag(g)[:, :, None]
+                pv, qv, rv = p.reshape(shp), q.reshape(shp), rs.reshape(shp)
+                tv, sv = t.reshape(shp), prod2[:, :nc].reshape(shp)
+            else:  # short trailing tile
+                idx = np.minimum(np.arange(nc) // block, nb - 1)
+                ga, gb = np.real(g)[:, idx], np.imag(g)[:, idx]
+                pv, qv, rv, tv, sv = p, q, rs, t, prod2[:, :nc]
+            np.multiply(pv, ga, out=tv)
+            np.multiply(qv, gb, out=sv)
+            tv += sv
+            rv -= tv
+
+        x_new[:, m] = env.x[:, m] * g_all[:, blk_env]
+        gains.append(mag_all)
 
     all_mag = np.concatenate([g.ravel() for g in gains]) if gains else np.zeros(0)
     e_in = float(np.mean(y[:, :n_t] ** 2))
