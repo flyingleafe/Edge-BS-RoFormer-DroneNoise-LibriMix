@@ -52,6 +52,19 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 ARMS = ("exact", "scale", "tach", "tach_presmooth")
+#: Arms whose experiment name is not their dataset ``label_mode``. ``tach_pure``
+#: is arm B trained with ``label_scale: 1.0`` — the staircase with no constant
+#: bias — so its data is ``tach`` at unit scale, which is what ``_dataset``
+#: builds anyway (``StaticCombGenDataset.label_scale`` defaults to 1.0, and the
+#: model readouts deliberately never pass ``--label-scale``: the fitted global
+#: frequency scale is the one nuisance parameter, estimated per arm).
+ARM_LABEL_MODE: dict[str, str] = {
+    "exact": "exact",
+    "scale": "scale",
+    "tach": "tach",
+    "tach_presmooth": "tach_presmooth",
+    "tach_pure": "tach",
+}
 #: k bands of the summary table. The loss's finest scale (n_fft 2048) has
 #: 7.8 Hz bins, and the staircase displaces harmonic k by 0.106*k Hz, so the
 #: displacement crosses half a bin near k = 37 and one bin near k = 74.
@@ -410,7 +423,7 @@ def main() -> int:
         name = f"{args.prefix}{arm}"
         print(f"[{arm}] loading {name}@{args.ckpt} ...", flush=True)
         fm = zoo.load(name, ckpt=args.ckpt, device=args.device)
-        ds = _dataset(arm, n_samples=max(args.track_windows, 1), split=args.split)
+        ds = _dataset(ARM_LABEL_MODE[arm], n_samples=max(args.track_windows, 1), split=args.split)
         line = line_readout(
             fm,
             ds,
