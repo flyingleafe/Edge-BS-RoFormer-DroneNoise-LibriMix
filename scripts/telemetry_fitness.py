@@ -11,6 +11,12 @@ question:
 
   telemetry        the window's raw ``motors_measured``, unmodified
   scale:0.99458    telemetry times a constant rate scale
+  shift:0.020      telemetry read 20 ms LATER, i.e. the trace moved earlier —
+                   the correction for a tachometer that lags the shaft by that
+                   much (a period counter reports the revolution that has just
+                   finished). Positive tau means the telemetry is LATE. The
+                   shift is an interpolation on the frame grid, never a roll of
+                   samples, so tau is free of the 32 ms grid
   lp:5             telemetry low-passed at 5 Hz (the pre-smoothing of issue 17
                    step 1 — the 0.269 rev/s / 49.7 Hz staircase is measurement
                    noise, not signal)
@@ -251,6 +257,16 @@ def build_candidate(spec: str, r: Any, ft: Any, key: str = "") -> Any:
         return r * float(rest)
     if kind == "lp":
         return presmooth(r, ft, float(rest))
+    if kind == "shift":
+        # r(t + tau), by interpolation on the frame grid. ``np.interp`` clamps
+        # at the ends, which is harmless: the largest tau of the phase-6e sweep
+        # is 0.12 s against ``FitnessConfig.edge_trim_s`` = 0.5 s of trim, so no
+        # scored block ever reads a clamped sample.
+        tau = float(rest)
+        row = np.atleast_2d(np.asarray(r, dtype=np.float64))
+        n = min(row.shape[1], np.asarray(ft).size)
+        out = np.stack([np.interp(ft[:n] + tau, ft[:n], row[i, :n]) for i in range(row.shape[0])])
+        return out if np.ndim(r) > 1 else out[0]
     if kind == "file":
         path, _, entry = rest.rpartition(":")
         with np.load(path) as z:
