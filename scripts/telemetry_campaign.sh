@@ -27,6 +27,10 @@ export TRACKING_FFT_WORKERS="${TRACKING_FFT_WORKERS:-1}"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 JOBS="${1:-16}"
+# Which stages to run: "123" is the phase-6c campaign, "4" the phase-6d
+# re-score under the ridge component (it reads stage 1's trajectories, so it
+# can run alone on a checkout that already has results/telemetry_refit).
+STAGES="${2:-123}"
 REFIT=results/telemetry_refit/campaign
 FIT=results/telemetry_fitness
 ARMS=main,nosmooth,flatk,nopeel,gate,b0_3
@@ -45,18 +49,44 @@ RAW_PROFILE=$(python -c "
 import numpy as np
 print(','.join(f'scale:{s:.4f}' for s in np.arange(0.9880, 1.00201, 0.0020)))")
 
+if [[ "$STAGES" == *1* ]]; then
 echo "== 1/3 refit  (15 windows x 6 arms)"
 python scripts/telemetry_refit.py --dataset all --arms "$ARMS" \
   --jobs "$JOBS" --build-preps --out "$REFIT"
+fi
 
+if [[ "$STAGES" == *2* ]]; then
 echo "== 2/3 score  (9 candidates x 4 controls)"
 python scripts/telemetry_fitness.py --dataset all --candidates "$CANDS" \
   --boot 500 --jobs "$JOBS" --out "$FIT/campaign"
+fi
 
+if [[ "$STAGES" == *3* ]]; then
 echo "== 3/3 profile (the one-parameter scale family)"
 python scripts/telemetry_fitness.py --dataset all --candidates "$PROFILE" \
   --controls on,offcomb --boot 500 --jobs "$JOBS" --out "$FIT/scale_profile"
 python scripts/telemetry_fitness.py --dataset all --candidates "$RAW_PROFILE" \
   --controls on,offcomb --boot 500 --jobs "$JOBS" --out "$FIT/scale_profile_raw"
+fi
+
+# ---------------------------------------------------------------------------
+# Stage 4 — the phase-6d re-score. Same units, same candidates, same controls,
+# ONE setting change and one new component:
+#
+#   b0 = 1.0 (not 0.5). The ridge reads a line against a floor taken from the
+#   SAME band, so the band must hold both. At b0 = 0.5 the floor region of the
+#   low harmonics collapses into the line region and the component cannot be
+#   read there at all — which is where the comb's energy is.
+#   The conditioning gate stays at gate_band_frac = 0.25 so components 1-3 keep
+#   the coverage the 6c reading had; the ridge has its own gate and does not use
+#   it (docs/experiments/telemetry-fitness.md § "Phase 6d").
+if [[ "$STAGES" == *4* ]]; then
+echo "== 4  6d re-score + profile under the ridge component (b0 = 1.0)"
+python scripts/telemetry_fitness.py --dataset all --candidates "$CANDS" \
+  --b0 1.0 --gate-band-frac 0.25 --boot 500 --jobs "$JOBS" --out "$FIT/campaign_6d"
+python scripts/telemetry_fitness.py --dataset all --candidates "$PROFILE" \
+  --b0 1.0 --gate-band-frac 0.25 --controls on,offcomb --boot 500 \
+  --jobs "$JOBS" --out "$FIT/scale_profile_6d"
+fi
 
 echo "campaign done: $REFIT $FIT/campaign $FIT/scale_profile $FIT/scale_profile_raw"

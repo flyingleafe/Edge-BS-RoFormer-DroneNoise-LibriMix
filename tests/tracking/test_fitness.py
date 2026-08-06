@@ -29,14 +29,22 @@ def _cfg(**over):
     return F.FitnessConfig(**base)
 
 
-def synth_window(seed: int = 0, noise: float = 0.05, n_ch: int = 2):
-    """``(audio (C, T), ft (N,), r_true (R, N))`` — a comb with a known trajectory."""
+def synth_window(seed: int = 0, noise: float = 0.05, n_ch: int = 2, rates=RATES, wobble=0.5):
+    """``(audio (C, T), ft (N,), r_true (R, N))`` — a comb with a known trajectory.
+
+    ``rates`` defaults to the well-separated pair; pass a DREGON-like twin pair
+    (with a ``wobble`` smaller than their separation, or they cross and every
+    gate closes) to exercise the two admission gates against each other.
+    """
     rng = np.random.default_rng(seed)
     n_t = int(DUR_S * SR)
     t = np.arange(n_t) / SR
     ft = np.arange(0.0, DUR_S - HOP_S / 2, HOP_S)
     r_true = np.stack(
-        [base + 0.5 * np.sin(2 * np.pi * (0.3 + 0.1 * i) * ft + i) for i, base in enumerate(RATES)]
+        [
+            base + wobble * np.sin(2 * np.pi * (0.3 + 0.1 * i) * ft + i)
+            for i, base in enumerate(rates)
+        ]
     )
     ks = np.arange(1, 26)
     audio = np.zeros((n_ch, n_t))
@@ -136,8 +144,82 @@ def test_degrees_of_freedom_are_identical_across_candidates_and_controls(window,
     for name in candidates:
         for control in ("none", "offcomb", "permute"):
             s, cells = _score(window, candidates[name], ref, control=control)
-            counts.add((s.n_cells, cells[0].shape))
+            counts.add((s.n_cells, s.n_cells_ridge, cells[0].shape))
     assert len(counts) == 1, f"the cell set moved between candidates/controls: {counts}"
+
+
+# ---------------------------------------------------------------------------
+# the ridge component (phase 6d)
+
+
+@pytest.mark.parametrize("corrupt", ["scaled", "staircase"])
+def test_ridge_ranks_truth_above_corruption(window, candidates, corrupt):
+    """The component the eye uses: line power on the carrier over the local floor."""
+    ref = candidates["truth"]
+    good, _ = _score(window, candidates["truth"], ref)
+    bad, _ = _score(window, candidates[corrupt], ref)
+    assert good.ridge > bad.ridge + 3.0, (
+        f"ridge: truth {good.ridge:.2f} vs {corrupt} {bad.ridge:.2f}"
+    )
+
+
+def test_ridge_reads_about_zero_on_the_off_comb_null(window, candidates):
+    """No line can exist at a half-integer comb, so the ratio must be ~1 (0 dB).
+
+    This is the property the median-to-mean correction buys: the raw median of
+    an exponential annulus is ln 2 of its mean and would put every pure-noise
+    cell at +1.6 dB, which is a floor the on-comb reading would have to clear.
+    """
+    for name in candidates:
+        s, _ = _score(window, candidates[name], candidates["truth"], control="offcomb")
+        assert abs(s.ridge) < 2.0, f"{name}: off-comb ridge {s.ridge:.3f} dB is not ~0"
+
+
+def test_ridge_separates_on_comb_from_its_null_far_more_than_the_shares_do(window, candidates):
+    """The 6d claim: the ridge sees a correct carrier where the shares saturate."""
+    ref = candidates["truth"]
+    on, _ = _score(window, ref, ref)
+    off, _ = _score(window, ref, ref, control="offcomb")
+    assert on.ridge - off.ridge > 10.0
+
+
+def test_ridge_gate_survives_a_twin_pair_that_empties_the_conditioning_gate():
+    """DREGON's geometry: two rotors 0.42 rev/s apart, in band at every harmonic.
+
+    The conditioning gate needs an empty band and finds none; the ridge gate
+    needs the sibling resolved away from DC and finds nearly all of them. That
+    difference is what phase 6c was blind with, so it is an assertion.
+    """
+    rates = (86.10, 85.68)
+    audio, ft, r_true = synth_window(rates=rates, wobble=0.05)
+    cfg = _cfg(b0_revs=1.0)
+    cells = F.window_cells(audio, ft, r_true, r_true, cfg=cfg)
+    conditioning = float(np.mean([c.admit.mean() for c in cells]))
+    ridge = float(np.mean([c.admit_ridge.mean() for c in cells]))
+    assert conditioning < 0.10, f"the twin geometry no longer empties the gate ({conditioning:.3f})"
+    assert ridge > 0.5, f"the ridge gate lost its coverage ({ridge:.3f})"
+    score = F.score_cells(cells, cfg=cfg)
+    assert score.ridge > 10.0, f"no lock on a twin pair's own truth ({score.ridge:.2f} dB)"
+
+
+def test_line_power_is_the_phase_seven_reading(window):
+    """One implementation: the promoted readout must equal the code it replaced."""
+    rng = np.random.default_rng(3)
+    freqs = np.linspace(0.0, 4000.0, 2001)
+    power = rng.exponential(1.0, freqs.size)
+    power[1000] += 500.0
+    for center, half_bw in ((2000.0, 8.0), (100.0, 4.0)):
+        off = freqs - center
+        band = np.abs(off) <= half_bw
+        ann = (np.abs(off) > 3.0 * half_bw) & (np.abs(off) <= 8.0 * half_bw)
+        floor = float(np.median(power[ann]))
+        resid = np.clip(power[band] - floor, 0.0, None)
+        lp = F.line_power(power, freqs, center, half_bw)
+        assert np.isclose(float(lp.total), float(resid.sum()))
+        assert np.isclose(
+            float(lp.spread_hz),
+            float(np.sqrt(np.sum(resid * off[band] ** 2) / resid.sum())),
+        )
 
 
 def test_admission_gate_keeps_some_cells(window, candidates):

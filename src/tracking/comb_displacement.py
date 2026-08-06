@@ -64,6 +64,7 @@ __all__ = [
     "carrier_collision_mask",
     "combine_k",
     "demod_comb_bank",
+    "interloper_offsets_hz",
     "measure_variant",
     "nearest_interloper_hz",
     "profile_prominence",
@@ -470,6 +471,52 @@ def nearest_interloper_hz(
             d = np.where(fj <= f_max, np.abs(fj - fi), np.inf)
             best = np.minimum(best, d)
     return best
+
+
+def interloper_offsets_hz(
+    rates: np.ndarray,
+    rate_carrier: float,
+    rot: int,
+    ks: Sequence[int],
+    *,
+    band_hz: np.ndarray,
+    half: bool = False,
+    f_max: float = 6000.0,
+    min_rate: float = 5.0,
+    margin: float = 1.5,
+) -> list[np.ndarray]:
+    """Per harmonic, the SIGNED offsets of every foreign line that lands in band.
+
+    :func:`nearest_interloper_hz` answers "how far is the closest interferer",
+    which is what a GATE needs. A caller that wants to keep the cell and merely
+    stay away from the interferer needs to know *where* it is, which is this.
+    Offsets are in Hz, relative to the carrier's own harmonic ``k rate_carrier``,
+    positive above it. Only lines inside ``margin * band_hz[k]`` are returned, so
+    the list is short (usually one per foreign rotor).
+
+    Rates are scalar per rotor (the window means): the offsets pin a floor
+    region, and a region that followed the frame-by-frame wander would not be a
+    fixed measurement geometry.
+    """
+    r = np.asarray(rates, dtype=np.float64).ravel()
+    kf = np.asarray(list(ks), dtype=np.float64) + (0.5 if half else 0.0)
+    out: list[np.ndarray] = []
+    for i, k in enumerate(kf):
+        f_i = k * float(rate_carrier)
+        offs: list[float] = []
+        lim = margin * float(band_hz[i])
+        for j in range(r.size):
+            if j == rot or r[j] < min_rate:
+                continue
+            base = f_i / max(r[j], 1e-3)
+            for kp in {int(np.floor(base)), int(np.ceil(base))}:
+                if kp < 1:
+                    continue
+                f_j = kp * r[j]
+                if f_j <= f_max and abs(f_j - f_i) <= lim:
+                    offs.append(f_j - f_i)
+        out.append(np.asarray(sorted(offs), dtype=np.float64))
+    return out
 
 
 def weighted_stats(vals: np.ndarray, w: np.ndarray) -> tuple[float, float, float]:

@@ -106,23 +106,19 @@ def _band_power(
 ) -> tuple[float, float]:
     """Floor-subtracted power in ``|f - center| <= half_bw``, and its rms spread.
 
-    The floor is the median power *density* of the annulus ``[3, 8] * half_bw``
-    on both sides — a fixed region, so the estimate is unbiased whether or not a
-    line is present. Returns ``(power, rms_offset_hz)``; the power is clipped at
-    zero and the spread is NaN when nothing survives the subtraction.
+    One line, because this measurement has ONE implementation:
+    :func:`tracking.fitness.line_power`. It was written here and promoted there
+    in phase 6d, where the tracking harness's ridge component needed the same
+    reading (a fixed band against a local floor, never a peak search) on the
+    demodulated envelope spectrum. The floor is the median power *density* of
+    the annulus ``[3, 8] * half_bw`` on both sides.
     """
-    off = freqs - center
-    band = np.abs(off) <= half_bw
-    ann = (np.abs(off) > 3.0 * half_bw) & (np.abs(off) <= 8.0 * half_bw)
-    if not band.any():
+    from tracking.fitness import line_power
+
+    lp = line_power(power, freqs, center, half_bw)
+    if lp.n_bins == 0:
         return float("nan"), float("nan")
-    floor = float(np.median(power[ann])) if ann.any() else 0.0
-    resid = np.clip(power[band] - floor, 0.0, None)
-    total = float(resid.sum())
-    if total <= 0.0:
-        return 0.0, float("nan")
-    spread = float(np.sqrt(np.sum(resid * off[band] ** 2) / total))
-    return total, spread
+    return float(lp.total), float(lp.spread_hz)
 
 
 def _frequency_scale(

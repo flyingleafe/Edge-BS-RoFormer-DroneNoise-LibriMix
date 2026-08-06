@@ -33,11 +33,23 @@ one:
    ``|z_k(t)|`` power above ``rough_cut_hz``. A correct carrier makes the
    amplitude envelope slowly varying; a wrong one beats against the line it
    missed.
+4. **Ridge concentration** (:attr:`FitnessScore.ridge`, phase 6d, and the only
+   component where MORE is better). The line power on the carrier's own ridge
+   over the LOCAL floor, in dB: ``10 log10(mean power in |f| <= dc_hz(k) /
+   floor density)``, the floor read from an annulus of the same envelope
+   spectrum with every known interferer offset excised. This is the statistic
+   the eye uses on a spectrogram — is there a line here, and how far does it
+   stand above the noise around it — and it is the Phase-7 generator readout
+   (``docs/experiments/generator-label-sensitivity.md``, self-test flat to
+   0.008 dB) moved into the demodulation domain: same fixed band, same local
+   floor, same refusal to peak-search. Components 1-3 are all SHARES of the
+   in-band power, so they saturate once the envelope is noise dominated (the
+   phase increments of a noise-dominated phasor are uniform whether or not the
+   carrier is right); component 4 does not, which is why phase 6d added it.
 
-Every one of the three is reported separately. "A more correct trajectory
-admits less variance" is a claim about all three at once, and collapsing them
-into one number would hide the case where it holds for one and fails for
-another.
+Every one of the four is reported separately. "A more correct trajectory admits
+less variance" is a claim about all of them at once, and collapsing them into
+one number would hide the case where it holds for one and fails for another.
 
 Fixed degrees of freedom
 ------------------------
@@ -48,12 +60,24 @@ trajectory and never re-derived from the candidate:
 * the per-harmonic band ``B_k = min(b0 k, band_frac rate_ref)`` Hz,
 * the envelope rate, the block partition and the edge trim,
 * the harmonic set, and
-* the **admission mask** — the conditioning gate of issue 17 §D9. Near-coincident
+* the **admission masks** — the conditioning gate of issue 17 §D9. Near-coincident
   cross-rotor pairs are excluded by
   :func:`tracking.comb_displacement.nearest_interloper_hz`, evaluated at the
   reference carriers. An admission rule that read the candidate (an envelope-SNR
   gate, say) would silently give a flexible trajectory a different, easier cell
   set — the very failure mode the issue is about.
+
+  There are TWO gates, because the two kinds of statistic need different
+  protection (phase 6d). Components 1-3 measure the shape of everything inside
+  the band, so an interferer anywhere in the band corrupts them:
+  ``admit`` requires the nearest foreign line to be outside
+  ``gate_band_frac * B_k``. Component 4 measures the power at DC against a floor
+  it reads elsewhere, so it only needs the interferer to be RESOLVED away from
+  DC and excised from the floor region: ``admit_ridge`` requires the nearest
+  foreign line to be outside ``ridge_clear * dc_hz(k)``. On a DREGON twin pair
+  the difference is 6.6 % of the cells against 96 % — and the first gate throws
+  away almost all of the comb's line energy, which is what phase 6c was blind
+  with (``docs/experiments/telemetry-fitness.md`` § "Phase 6d").
 
 What the harness deliberately does NOT use
 ------------------------------------------
@@ -125,6 +149,7 @@ import numpy as np
 from tracking.comb_displacement import (
     DisplacementConfig,
     demod_comb_bank,
+    interloper_offsets_hz,
     nearest_interloper_hz,
     pulse_pair_bank,
 )
@@ -132,19 +157,27 @@ from tracking.phase_noise import brickwall
 
 __all__ = [
     "CONTROLS",
+    "HIGHER_IS_BETTER",
     "Cells",
     "FitnessConfig",
     "FitnessScore",
     "Holdout",
+    "LinePower",
     "apply_control",
     "bootstrap_scores",
     "default_holdouts",
     "fitness_stage",
+    "line_masks",
+    "line_power",
     "residual_decompose",
     "score_cells",
     "score_window",
     "window_cells",
 ]
+
+#: The components whose GOOD direction is up. Everything else in
+#: :class:`FitnessScore` is a residual share or a mean square: less is better.
+HIGHER_IS_BETTER: frozenset[str] = frozenset({"ridge"})
 
 #: The four controls of issue 17 section B (FLY124, the fourth, is a DATA
 #: choice — every function here is recording-agnostic, so running the identical
@@ -154,9 +187,129 @@ CONTROLS: tuple[str, ...] = ("none", "offcomb", "mismatch", "permute")
 #: DREGON tachometer signature (``docs/experiments/dregon-telemetry-forensics.md``):
 #: quantisation step at 80 rev/s, refresh rate, and the implied bound on the
 #: quantisation part of a residual (half a step).
+#: Median-to-mean factor of an exponential (periodogram) bin distribution. The
+#: ridge floor is a MEDIAN over the annulus (robust to a line that slipped the
+#: excision) divided by this, which makes it an unbiased mean density — so the
+#: ridge of a pure-noise cell reads 0 dB rather than +1.6.
+_LN2 = float(np.log(2.0))
+
 TACH_STEP_REV_S = 0.269
 TACH_REFRESH_HZ = 49.7
 TACH_BOUND_REV_S = 0.5 * TACH_STEP_REV_S
+
+
+# ---------------------------------------------------------------------------
+# the line-against-a-local-floor reading (promoted from the phase-7 readout)
+
+
+@dataclass(frozen=True)
+class LinePower:
+    """One fixed band read against a local floor.
+
+    THE one implementation of "how much line is here" in this project. It was
+    written for the phase-7 generator readout
+    (``docs/experiments/generator-label-sensitivity.md``, where ``--self-test``
+    pushes the true comb through it and reads back flat to 0.008 dB) and is
+    promoted here so the tracking harness's ridge component and that readout
+    are the same estimator rather than two of them.
+
+    The band and the annulus are FIXED regions around a given centre. There is
+    deliberately no peak search: a peak-pick inside a window of half-width ``W``
+    returns about ``W / 2`` on pure noise and has already withdrawn two claims
+    in this project (``docs/experiments/dregon-comb-displacement.md``).
+
+    Attributes:
+        total: floor-subtracted band power, each bin clipped at zero. The
+            phase-7 reading — an amplitude, so a negative excursion is not an
+            amplitude.
+        raw: floor-subtracted band power without the clip. The unbiased one,
+            which is what a RATIO against the floor needs.
+        floor: the floor power DENSITY per bin.
+        n_bins: bins in the band.
+        spread_hz: rms offset of the clipped residual from the centre.
+    """
+
+    total: Any
+    raw: Any
+    floor: Any
+    n_bins: int
+    spread_hz: Any
+
+
+def line_masks(
+    freqs: np.ndarray,
+    center: float,
+    half_bw: float,
+    *,
+    annulus: tuple[float, float] = (3.0, 8.0),
+    exclude: Sequence[tuple[float, float]] = (),
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(band, annulus)`` bin masks around ``center``.
+
+    The annulus is ``annulus * half_bw`` on both sides, minus every interval of
+    ``exclude`` (absolute frequencies, low/high). ``exclude`` is how a contested
+    cell is scored instead of gated: the sibling's line is removed from the
+    FLOOR region rather than the cell from the report.
+    """
+    off = np.asarray(freqs, dtype=np.float64) - center
+    band = np.abs(off) <= half_bw
+    ann = (np.abs(off) > annulus[0] * half_bw) & (np.abs(off) <= annulus[1] * half_bw)
+    for lo, hi in exclude:
+        ann &= (freqs < lo) | (freqs > hi)
+    return band, ann
+
+
+def line_power(
+    power: np.ndarray,
+    freqs: np.ndarray | None = None,
+    center: float = 0.0,
+    half_bw: float = 0.0,
+    *,
+    annulus: tuple[float, float] = (3.0, 8.0),
+    exclude: Sequence[tuple[float, float]] = (),
+    floor_scale: float = 1.0,
+    masks: tuple[np.ndarray, np.ndarray] | None = None,
+) -> LinePower:
+    """Read the band ``|f - center| <= half_bw`` of ``power`` against its annulus.
+
+    ``power`` may carry any number of leading axes; the frequency axis is the
+    last one. The floor is the MEDIAN power density of the annulus divided by
+    ``floor_scale`` — a fixed region, so the estimate is unbiased whether or not
+    a line is present. For an exponential (periodogram) bin distribution the
+    median is ``ln 2`` of the mean, so ``floor_scale = ln 2`` turns the median
+    into an unbiased mean-density estimate; the phase-7 default of 1.0 keeps the
+    raw median, which is what a line-dominated band wants.
+    """
+    p = np.asarray(power, dtype=np.float64)
+    band, ann = (
+        masks
+        if masks is not None
+        else line_masks(
+            np.asarray(freqs, dtype=np.float64),
+            center,
+            half_bw,
+            annulus=annulus,
+            exclude=exclude,
+        )
+    )
+    n_bins = int(np.count_nonzero(band))
+    if n_bins == 0:
+        nan = np.full(p.shape[:-1], np.nan)
+        return LinePower(nan, nan, nan, 0, nan)
+    floor = (
+        np.median(p[..., ann], axis=-1) / floor_scale
+        if np.count_nonzero(ann)
+        else np.zeros(p.shape[:-1])
+    )
+    inb = p[..., band] - floor[..., None]
+    clipped = np.clip(inb, 0.0, None)
+    total = clipped.sum(axis=-1)
+    off = (np.asarray(freqs, dtype=np.float64) - center)[band] if freqs is not None else None
+    spread = np.full(p.shape[:-1], np.nan)
+    if off is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            spread = np.sqrt((clipped * off**2).sum(axis=-1) / np.where(total > 0, total, np.nan))
+    return LinePower(total, inb.sum(axis=-1), floor, n_bins, spread)
 
 
 @dataclass(frozen=True)
@@ -194,6 +347,26 @@ class FitnessConfig:
     #: rev/s — empties almost the whole harmonic set. Lowering it is the
     #: coverage-versus-purity trade, and it must be reported with the number.
     gate_band_frac: float = 1.0
+    #: The RIDGE gate (phase 6d). The ridge component reads DC against a floor
+    #: it takes from elsewhere in the band, so it does not need an empty band —
+    #: it needs the interferer RESOLVED away from DC and excised from the floor
+    #: region. Harmonic ``k`` is admitted when the nearest foreign line is
+    #: farther than ``ridge_clear * dc_hz(k)``, which on a DREGON twin pair
+    #: (0.42 rev/s against a DC region of 0.10 rev/s) admits nearly everything
+    #: above the block's own resolution floor.
+    ridge_clear: float = 2.0
+    #: The ridge floor annulus, as a fraction of the band half-width. It stays
+    #: inside the band: outside it the zoom filter has rolled off and the floor
+    #: there is the filter's shape, not the recording's noise. Its inner edge is
+    #: pushed out to ``dc_hz + res_hz`` as well, so the floor region and the line
+    #: region never overlap — at low ``k`` the resolution floor makes ``dc_hz``
+    #: comparable to the band, and an annulus inside the line is a floor
+    #: estimate made of the line.
+    floor_frac: tuple[float, float] = (0.25, 0.9)
+    #: A ridge cell needs a floor to be read against. Fewer annulus bins than
+    #: this (BEFORE the interferer excisions, so the count does not follow the
+    #: candidate) and the cell leaves the ridge gate.
+    min_floor_bins: int = 4
     min_clear_frac: float = 0.9
     edge_trim_s: float = 0.5
     min_rate: float = 5.0
@@ -336,7 +509,10 @@ class Cells:
     pp_dr: np.ndarray  # (C, K, B) coherent pulse-pair centre, rev/s
     pp_coh: np.ndarray  # (C, K, B) pulse-pair coherence
     snr: np.ndarray  # (C, K, B) in-band signal / off-comb noise power
-    admit: np.ndarray  # (K, B) bool
+    ridge: np.ndarray  # (C, K, B) dB, DC line density over the local floor
+    line_pow: np.ndarray  # (C, K, B) floor-subtracted line power, absolute
+    admit: np.ndarray  # (K, B) bool — components 1-3
+    admit_ridge: np.ndarray  # (K, B) bool — component 4 (phase 6d)
     block_t: np.ndarray  # (B, 2) block time spans, seconds
     diag: dict[str, Any] = field(default_factory=dict)
 
@@ -368,23 +544,40 @@ def admission(
     *,
     cfg: FitnessConfig,
     rate_ref: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """``((K, B) admit, (K, N) nearest-interloper Hz)`` from the REFERENCE only.
+    dc_hz: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``((K, B) admit, (K, B) admit_ridge, (K, N) nearest-interloper Hz)``.
 
-    The conditioning gate of issue 17 §D9: harmonic ``k`` is admitted in a block
-    when no other rotor's real line comes within
-    ``gate_band_frac * B_k + guard_hz`` of it for at least ``min_clear_frac``
-    of the block's frames, and when ``k rate_ref`` is
-    still inside the audio band. Nothing here reads the candidate, which is what
-    keeps the degrees of freedom identical across candidates.
+    Both gates read the REFERENCE only, which is what keeps the degrees of
+    freedom identical across candidates, and both require ``k rate_ref`` to be
+    inside the audio band.
+
+    ``admit`` is the conditioning gate of issue 17 §D9: no other rotor's real
+    line within ``gate_band_frac * B_k + guard_hz`` for at least
+    ``min_clear_frac`` of the block's frames. Components 1-3 read the whole
+    band, so they need the whole band clean.
+
+    ``admit_ridge`` (phase 6d) is the same rule at the ridge component's own
+    scale: no foreign line within ``ridge_clear * dc_hz(k)``. The ridge reads DC
+    against a floor taken from elsewhere in the band, so an interferer that is
+    RESOLVED away from DC (and excised from the floor region, see
+    :func:`demod_cells`) costs it nothing. ``dc_hz`` is the near-DC half-width
+    already floored at the block's own resolution, so a block too short to
+    resolve the interferer gates itself out.
     """
     ks = cfg.ks
     nearest = nearest_interloper_hz(
         reference, reference[rot], rot, ks, f_max=cfg.f_max, min_rate=cfg.min_rate
     )
     clear = nearest > (cfg.gate_band_frac * band_hz[:, None] + cfg.guard_hz)
+    clear_ridge = (
+        nearest > cfg.ridge_clear * np.asarray(dc_hz, dtype=np.float64)[:, None]
+        if dc_hz is not None
+        else clear
+    )
     stride_s = cfg.stride / cfg.sr
     admit = np.zeros((len(ks), len(blocks)), dtype=bool)
+    admit_ridge = np.zeros_like(admit)
     for b, sl in enumerate(blocks):
         t0, t1 = sl.start * stride_s, (sl.stop - 1) * stride_s
         sel = (ft >= t0) & (ft <= t1)
@@ -392,9 +585,11 @@ def admission(
             sel = np.zeros(ft.size, dtype=bool)
             sel[min(int(t0 / max(ft[1] - ft[0], 1e-9)), ft.size - 1)] = True
         admit[:, b] = clear[:, sel].mean(axis=1) >= cfg.min_clear_frac
+        admit_ridge[:, b] = clear_ridge[:, sel].mean(axis=1) >= cfg.min_clear_frac
     in_band = np.array([k * rate_ref <= cfg.f_max for k in ks], dtype=bool)
     admit &= in_band[:, None]
-    return admit, nearest
+    admit_ridge &= in_band[:, None]
+    return admit, admit_ridge, nearest
 
 
 def demod_cells(
@@ -445,8 +640,6 @@ def demod_cells(
     )
     noise_pow = np.maximum(np.mean(np.abs(z_off) ** 2, axis=-1), 1e-30)  # (C, K)
 
-    admit, nearest = admission(reference, ft, skip, blocks, band_hz, cfg=cfg, rate_ref=rate_ref)
-
     n_ch, n_k = z_on.shape[0], len(ks)
     n_b = len(blocks)
     length = blocks[0].stop - blocks[0].start
@@ -462,12 +655,62 @@ def demod_cells(
     hi_mask = rfreq >= cfg.rough_cut_hz
     pos_mask = rfreq > 0
 
+    #: Hann on the ridge spectrum only. A rectangular block leaks a strong DC
+    #: line at -13 dB into the first sidelobe and decays 6 dB/octave, which puts
+    #: the LINE into the floor region and compresses the very ratio the
+    #: component reports; Hann is -31 dB and 18 dB/octave. Components 1-3 are
+    #: shares of the same total and keep the untapered spectrum.
+    taper = np.hanning(length)
+    taper /= np.sqrt(np.mean(taper**2))
+
+    # The ridge component's floor region, per harmonic. The annulus is a fixed
+    # fraction of the band; the excisions are the foreign lines that land in it.
+    # Their POSITIONS are (reference fact) - (this carrier), so a candidate whose
+    # band sits elsewhere excises the interferer where it actually is — the only
+    # candidate-dependent quantity here is the one that defines the candidate.
+    rate_car = float(np.mean(np.asarray(carrier, dtype=np.float64)))
+    offs = interloper_offsets_hz(
+        np.mean(np.atleast_2d(reference), axis=1),
+        rate_car,
+        skip,
+        ks,
+        band_hz=band_hz,
+        half=half,
+        f_max=cfg.f_max,
+        min_rate=cfg.min_rate,
+    )
+    ridge_masks: list[tuple[np.ndarray, np.ndarray]] = []
+    floor_ok = np.zeros(n_k, dtype=bool)
+    for i in range(n_k):
+        lo_hz = max(cfg.floor_frac[0] * band_hz[i], dc_hz[i] + res_hz)
+        hi_hz = cfg.floor_frac[1] * band_hz[i]
+        d = max(dc_hz[i], 1e-12)
+        band_m, ann_m = line_masks(
+            freqs, 0.0, float(dc_hz[i]), annulus=(float(lo_hz / d), float(hi_hz / d))
+        )
+        floor_ok[i] = np.count_nonzero(ann_m) >= cfg.min_floor_bins
+        # The excisions are applied on top, and only where something survives:
+        # a floor made of the sibling's line is worse than a wider floor, but an
+        # EMPTY floor is worse than both, and the fallback is the conservative
+        # direction (a contaminated floor can only lower the ridge).
+        keep = ann_m.copy()
+        for o in offs[i]:
+            keep &= (freqs < o - dc_hz[i]) | (freqs > o + dc_hz[i])
+        ridge_masks.append((band_m, keep if np.count_nonzero(keep) >= 2 else ann_m))
+
+    admit, admit_ridge, nearest = admission(
+        reference, ft, skip, blocks, band_hz, cfg=cfg, rate_ref=rate_ref, dc_hz=dc_hz
+    )
+    admit_ridge &= floor_ok[:, None]
+
     bb = np.empty((n_ch, n_k, n_b))
     ph = np.empty((n_ch, n_k, n_b))
     ro = np.empty((n_ch, n_k, n_b))
     pp = np.empty((n_ch, n_k, n_b))
     coh = np.empty((n_ch, n_k, n_b))
     snr = np.empty((n_ch, n_k, n_b))
+    ridge = np.empty((n_ch, n_k, n_b))
+    line_pw = np.empty((n_ch, n_k, n_b))
 
     for b, sl in enumerate(blocks):
         zb = np.asarray(z_on[:, :, sl], dtype=np.complex128)
@@ -488,6 +731,20 @@ def demod_cells(
         pa = np.abs(np.fft.rfft(amp, axis=-1)) ** 2
         ro[:, :, b] = pa[..., hi_mask].sum(-1) / np.maximum(pa[..., pos_mask].sum(-1), 1e-300)
         snr[:, :, b] = np.mean(np.abs(zb) ** 2, axis=-1) / noise_pow
+        # 4. ridge concentration: DC line density over the local floor, in dB
+        pwt = np.abs(np.fft.fft(zb * taper, axis=-1)) ** 2
+        for i in range(n_k):
+            lp = line_power(pwt[:, i, :], masks=ridge_masks[i], floor_scale=_LN2)
+            dens = (lp.raw + lp.floor * lp.n_bins) / max(lp.n_bins, 1)
+            ridge[:, i, b] = 10.0 * np.log10(
+                np.maximum(dens, 1e-300) / np.maximum(lp.floor, 1e-300)
+            )
+            line_pw[:, i, b] = lp.total
+
+    # A harmonic with no floor region has no ridge reading, and NaN is the only
+    # honest value: a ratio against an empty annulus is a division by the clamp.
+    ridge[:, ~floor_ok, :] = np.nan
+    line_pw[:, ~floor_ok, :] = np.nan
 
     stride_s = cfg.stride / cfg.sr
     block_t = np.array([[sl.start * stride_s, (sl.stop - 1) * stride_s] for sl in blocks])
@@ -502,7 +759,10 @@ def demod_cells(
         pp_dr=pp,
         pp_coh=coh,
         snr=snr,
+        ridge=ridge,
+        line_pow=line_pw,
         admit=admit,
+        admit_ridge=admit_ridge,
         block_t=block_t,
         diag={
             "skip": int(skip),
@@ -512,11 +772,31 @@ def demod_cells(
             "res_hz": round(float(res_hz), 4),
             "dc_hz": np.round(dc_hz, 3).tolist(),
             "admit_frac": round(float(admit.mean()), 4),
+            "admit_frac_ridge": round(float(admit_ridge.mean()), 4),
+            # What share of the comb's line energy the phase-6c gate could see.
+            # This is the number that made phase 6c blind, so it travels with
+            # every unit rather than living in a one-off analysis.
+            "line_share_gated": _line_share(line_pw, admit),
+            "line_share_ridge": _line_share(line_pw, admit_ridge),
             "median_nearest_hz": round(float(np.median(nearest[np.isfinite(nearest)])), 2)
             if np.isfinite(nearest).any()
             else None,
         },
     )
+
+
+def _mean_or_none(vals: Sequence[Any]) -> float | None:
+    v = np.asarray([x for x in vals if isinstance(x, (int, float))], dtype=np.float64)
+    v = v[np.isfinite(v)]
+    return round(float(v.mean()), 4) if v.size else None
+
+
+def _line_share(line_pw: np.ndarray, mask: np.ndarray) -> float | None:
+    """Share of the window's total floor-subtracted line power inside ``mask``."""
+    tot = float(np.nansum(line_pw))
+    if not np.isfinite(tot) or tot <= 0:
+        return None
+    return round(float(np.nansum(line_pw * mask[None, :, :]) / tot), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +850,10 @@ class FitnessScore:
     pp_abs: float
     snr_median: float
     n_cells: int
+    #: dB, and the ONE component where more is better (:data:`HIGHER_IS_BETTER`).
+    ridge: float = float("nan")
+    #: Cells behind ``ridge``. It has its own gate, so it is its own count.
+    n_cells_ridge: int = 0
     per_rotor: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -577,10 +861,12 @@ class FitnessScore:
             "broadband": _r(self.broadband, 6),
             "phase_noise": _r(self.phase_noise, 6),
             "roughness": _r(self.roughness, 6),
+            "ridge": _r(self.ridge, 5),
             "pp_dr": _r(self.pp_dr, 5),
             "pp_abs": _r(self.pp_abs, 5),
             "snr_median": _r(self.snr_median, 4),
             "n_cells": self.n_cells,
+            "n_cells_ridge": self.n_cells_ridge,
             "per_rotor": self.per_rotor,
         }
 
@@ -589,6 +875,7 @@ class FitnessScore:
             "broadband": self.broadband,
             "phase_noise": self.phase_noise,
             "roughness": self.roughness,
+            "ridge": self.ridge,
         }[name]
 
 
@@ -605,15 +892,20 @@ def _wmean(vals: np.ndarray, w: np.ndarray) -> float:
 
 def _cell_weights(
     cells: Cells, holdout: Holdout, cfg: FitnessConfig, extra: np.ndarray | None = None
-) -> tuple[np.ndarray, np.ndarray]:
-    """``(uniform weight, k^exp weight)`` over the admitted, scored cells."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(uniform, k^exp, ridge-gated)`` weights over the scored cells.
+
+    The third uses the ridge gate rather than the conditioning gate — the two
+    statistics need different protection, see :func:`admission`.
+    """
     n_ch, n_k, n_b = cells.shape
-    w = holdout.score_mask(n_ch, cells.ks, n_b).astype(np.float64)
-    w *= cells.admit[None, :, :].astype(np.float64)
+    base = holdout.score_mask(n_ch, cells.ks, n_b).astype(np.float64)
     if extra is not None:
-        w = w * extra
+        base = base * extra
+    w = base * cells.admit[None, :, :].astype(np.float64)
+    wr = base * cells.admit_ridge[None, :, :].astype(np.float64)
     kw = np.asarray(cells.ks, dtype=np.float64)[None, :, None] ** cfg.phase_weight_exp
-    return w, w * kw
+    return w, w * kw, wr
 
 
 def score_cells(
@@ -631,27 +923,32 @@ def score_cells(
     counts, and nothing else should use it.
     """
     per_rotor: dict[str, dict[str, Any]] = {}
-    acc: dict[str, list[float]] = {k: [] for k in ("bb", "ph", "ro", "pp", "ppa", "snr")}
+    acc: dict[str, list[float]] = {k: [] for k in ("bb", "ph", "ro", "rd", "pp", "ppa", "snr")}
     n_cells = 0
+    n_cells_ridge = 0
     for i, c in enumerate(cells):
-        w, kw = _cell_weights(c, holdout, cfg, None if extra is None else extra[i])
+        w, kw, wr = _cell_weights(c, holdout, cfg, None if extra is None else extra[i])
         vals = {
             "bb": _wmean(c.broadband, w),
             "ph": _wmean(c.phase_ms, kw),
             "ro": _wmean(c.roughness, w),
+            "rd": _wmean(c.ridge, wr),
             "pp": _wmean(c.pp_dr, kw),
             "ppa": _wmean(np.abs(c.pp_dr), kw),
             "snr": _wmean(c.snr, w),
         }
         n_cells += int(np.count_nonzero(w > 0))
+        n_cells_ridge += int(np.count_nonzero(wr > 0))
         for k, v in vals.items():
             acc[k].append(v)
         per_rotor[str(c.rotor)] = {
             "broadband": _r(vals["bb"], 6),
             "phase_noise": _r(vals["ph"], 6),
             "roughness": _r(vals["ro"], 6),
+            "ridge": _r(vals["rd"], 5),
             "pp_dr": _r(vals["pp"], 5),
             "n_cells": int(np.count_nonzero(w > 0)),
+            "n_cells_ridge": int(np.count_nonzero(wr > 0)),
         }
 
     def m(key: str) -> float:
@@ -662,10 +959,12 @@ def score_cells(
         broadband=m("bb"),
         phase_noise=m("ph"),
         roughness=m("ro"),
+        ridge=m("rd"),
         pp_dr=m("pp"),
         pp_abs=m("ppa"),
         snr_median=m("snr"),
         n_cells=n_cells,
+        n_cells_ridge=n_cells_ridge,
         per_rotor=per_rotor,
     )
 
@@ -737,6 +1036,7 @@ def _default_stat(s: FitnessScore) -> dict[str, float]:
         "broadband": s.broadband,
         "phase_noise": s.phase_noise,
         "roughness": s.roughness,
+        "ridge": s.ridge,
         "pp_dr": s.pp_dr,
     }
 
@@ -965,6 +1265,9 @@ def score_window(
             "n_harmonics": int(cells[0].shape[1]),
             "n_blocks": int(cells[0].shape[2]),
             "admit_frac": round(float(np.mean([c.admit.mean() for c in cells])), 4),
+            "admit_frac_ridge": round(float(np.mean([c.admit_ridge.mean() for c in cells])), 4),
+            "line_share_gated": _mean_or_none([c.diag.get("line_share_gated") for c in cells]),
+            "line_share_ridge": _mean_or_none([c.diag.get("line_share_ridge") for c in cells]),
             "rate_ref": [round(c.rate_ref, 3) for c in cells],
             "diag": [c.diag for c in cells],
         },

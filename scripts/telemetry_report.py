@@ -44,7 +44,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 DREGON = "dregon"
 FLY = "fly124"
-COMPONENTS = ("broadband", "phase_noise", "roughness")
+#: ``ridge`` (phase 6d) is the one component where MORE is better; the profile
+#: and every table below flip for it via ``HIGHER_IS_BETTER``.
+COMPONENTS = ("broadband", "phase_noise", "roughness", "ridge")
+HIGHER_IS_BETTER = frozenset({"ridge"})
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +261,13 @@ def _argmin_parabola(s: np.ndarray, y: np.ndarray, depth: float = 0.35) -> tuple
 
 
 def profile_section(rows: list[dict[str, Any]], component: str = "phase_noise") -> dict[str, Any]:
-    """Pooled component vs the scale parameter, per group x control x hold-out."""
+    """Pooled component vs the scale parameter, per group x control x hold-out.
+
+    A component where more is better is profiled through its NEGATION, so the
+    one extremum finder (and its basin logic, and its bootstrap) serves both
+    directions. ``curves`` always reports the component's own sign.
+    """
+    sgn = -1.0 if component in HIGHER_IS_BETTER else 1.0
     out: dict[str, Any] = {"component": component, "curves": {}, "minima": {}}
     holdouts = sorted({h for r in rows for h in r.get("scores", {})})
     for (grp, ctl), got in group(rows, "group", "control").items():
@@ -274,7 +283,9 @@ def profile_section(rows: list[dict[str, Any]], component: str = "phase_noise") 
                     for r in rs
                 )
                 s = np.asarray([p[0] for p in pts], dtype=np.float64)
-                y = np.asarray([np.nan if p[1] is None else p[1] for p in pts], dtype=np.float64)
+                y = sgn * np.asarray(
+                    [np.nan if p[1] is None else p[1] for p in pts], dtype=np.float64
+                )
                 curves[key] = (s, y)
             if not curves:
                 continue
@@ -294,12 +305,16 @@ def profile_section(rows: list[dict[str, Any]], component: str = "phase_noise") 
             tag = f"{grp}|{ctl}|{ho}"
             out["curves"][tag] = {
                 "s": [round(float(v), 5) for v in s0],
-                "mean": [None if not np.isfinite(v) else round(float(v), 6) for v in mean],
+                "mean": [None if not np.isfinite(v) else round(float(sgn * v), 6) for v in mean],
                 "n_windows": int(mat.shape[0]),
             }
             out["minima"][tag] = {
                 "scale_pct": round(100.0 * (smin - 1.0), 4) if smin is not None else None,
                 "note": note,
+                # Depth of the basin, absolute and relative. A component that
+                # crosses zero (the ridge, in dB) has no meaningful relative
+                # drop, so the absolute one is what the null is compared on.
+                "depth": round(float(np.nanmax(mean) - np.nanmin(mean)), 5),
                 "curvature_drop": round(
                     float(np.nanmax(mean) - np.nanmin(mean)) / max(float(np.nanmin(mean)), 1e-12),
                     4,

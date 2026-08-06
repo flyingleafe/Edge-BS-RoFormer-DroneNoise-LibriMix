@@ -92,10 +92,12 @@ SMOKE_CANDIDATES = ("telemetry", "scale:0.99458", "lp:5")
 
 PROTOCOL = {
     "dataset": "beatvk-valid-raw@54849c13ed3a",
-    "statistic": "three components at FIXED degrees of freedom: broadband "
+    "statistic": "four components at FIXED degrees of freedom: broadband "
     "(out-of-DC share of demodulated envelope power), phase noise (k^2-weighted "
     "mean square of the per-harmonic rate opinion about zero, per mic), "
-    "magnitude roughness (high-pass share of |z_k| power)",
+    "magnitude roughness (high-pass share of |z_k| power), and RIDGE "
+    "concentration (phase 6d: dB of DC line density over the local floor, "
+    "read on its own gate — the only component where more is better)",
     "band_hz_k": "min(b0 k, 0.45 rate_ref) Hz, rate_ref pinned to the window's "
     "telemetry so the band never follows the candidate",
     "admission": "conditioning gate — no other rotor's real line within "
@@ -321,7 +323,9 @@ def worker(unit: Unit) -> dict[str, Any]:
 # report
 
 
-COMPONENTS = ("broadband", "phase_noise", "roughness", "pp_dr")
+#: ``ridge`` is the phase-6d component and the only one where MORE is better
+#: (``tracking.fitness.HIGHER_IS_BETTER``).
+COMPONENTS = ("broadband", "phase_noise", "roughness", "ridge", "pp_dr")
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -345,6 +349,9 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 block[f"{cand}|{ctl}"] = {
                     "n_windows": len(got),
                     "admit_frac": _mean([r["cells"]["admit_frac"] for r in got]),
+                    "admit_frac_ridge": _mean([r["cells"].get("admit_frac_ridge") for r in got]),
+                    "line_share_gated": _mean([r["cells"].get("line_share_gated") for r in got]),
+                    "line_share_ridge": _mean([r["cells"].get("line_share_ridge") for r in got]),
                     "n_cells": _mean(
                         [r["scores"]["none"]["n_cells"] for r in got if "none" in r["scores"]]
                     ),
