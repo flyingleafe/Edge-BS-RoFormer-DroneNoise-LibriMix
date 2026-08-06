@@ -1,7 +1,7 @@
 # Phase 7 — Does telemetry label noise explain the generator's high-harmonic underfit?
 
-**Status:** done — **label noise confirmed, but the constant bias is the term, not the staircase** · **Date:** 2026-08-06 ·
-**Experiments:** `p7_labelsens_{exact,scale,tach,tach_presmooth}`
+**Status:** done — **label noise confirmed; the constant bias carries it, the staircase alone costs ~0.5 dB** · **Date:** 2026-08-06 ·
+**Experiments:** `p7_labelsens_{exact,scale,tach,tach_presmooth,tach_pure}`
 
 ## The question, and why it needs an A/B
 
@@ -64,7 +64,8 @@ the tachometer's *inability to follow the shaft* rather than by its staircase �
 a different claim, and one E6 already answered with the emitter's OU jitter. With
 it, quantization dominates and the presmooth has real headroom.
 
-**Arms.** Four, byte-identical except `data.{train,valid}.params.label_mode`:
+**Arms.** Five, byte-identical except `data.{train,valid}.params.label_mode`
+and — for the fifth — `label_scale`:
 
 | arm | conditioning | role |
 |---|---|---|
@@ -72,6 +73,15 @@ it, quantization dominates and the presmooth has real headroom.
 | **S** `scale` | `0.99458 x` truth | is the constant bias benign on its own? |
 | **B** `tach` | `0.99458 x` truth -> interval mean -> 0.269 rev/s lattice -> 49.7 Hz hold | the hypothesis |
 | **C** `tach_presmooth` | arm B through the campaign's 5 Hz detrended low pass | the mitigation |
+| **B0** `tach_pure` | arm B at `label_scale: 1.0` — the staircase, no bias | the staircase alone, against A |
+
+**Arm B0 is the second round** (added after A/S/B/C were read). The first round
+could only see the staircase as `B - S`, which is a difference between two arms
+that the constant bias had already damaged, and which assumes the two corruptions
+compose additively in the arm's *response*. Neither is safe once arm S turns out
+to be 8.8 dB from arm A. Arm B0 removes the bias from the label instead of
+subtracting it afterwards, so the staircase is read against the undamaged control
+and against the model-free pressure that predicts it (1.18 dB at k50-80).
 
 The corruption is `data_processing.rps_corruption.tachometer_corrupt`; the
 presmooth is `presmooth_track`, a uniform-grid adapter over
@@ -98,7 +108,7 @@ the per-`k` gap is its effect size.
 registry that renders an oscillator bank at `k * f0(conditioning)`. Loss
 `multiscale_stft` (n_ffts 2048/1024/512/256/128, `log_weight: 1.0`, L1), metric
 `noise_gen_spectral`. `amp: false` (complex `cumprod` has no ComplexHalf kernel).
-Identical budget for all four arms: seed 1234, 40 epochs, patience 8, batch 32,
+Identical budget for all five arms: seed 1234, 40 epochs, patience 8, batch 32,
 Adam 1e-3, 8000 train / 512 valid samples.
 
 ## Readout
@@ -140,6 +150,18 @@ jitters" rather than "attenuate"; readout 2 would not.
 - **Track frames are centred.** Frame `f` spans `[f*hop, f*hop + n_fft)`, so its
   rate is the one at its centre. The first version point-sampled at `f*hop`; that
   64 ms lead displaces the read bin at `k = 80` by more than the staircase does.
+- **Both readouts condition at unit label scale.** The readout builds its
+  datasets from `StaticCombGenDataset`'s default `label_scale` of 1.0, not the
+  data config's 0.99458, so the biased arms (S, B, C) are scored on labels
+  without the 0.542 % bias they trained with. That is deliberate and it is what
+  makes the arms comparable: every arm is asked the same question ("here is the
+  true rate, render it"), and each arm's own global frequency mapping is the one
+  fitted nuisance parameter. It also means B and B0 receive **identical** eval
+  conditioning, so the difference between them is purely a training-label effect.
+  Scoring readout 2 on each arm's own *training* scale instead makes S/B/C worse
+  by a further 4-9 dB in k10-49 (they never learned to compensate the bias, so a
+  biased label displaces every line) and leaves A and B0 unchanged (their
+  training scale is 1.0); it does not change any ordering.
 - **The `f0` grid stays inside the training marginal.** The first grid started at
   64 rev/s, but the trajectories span 69.6-97.1 rev/s (p5-p95 = 75.6-89.9), so
   two of four grid points were measuring *extrapolation* rather than the learned
@@ -171,8 +193,8 @@ reading it as "the staircase plus an unabsorbed bias".
 
 ## Results
 
-All four arms trained to convergence on `uni-gpushort` (55 min wall, none hit
-it), same seed, same 40-epoch cap, patience 8.
+All five arms trained to convergence on `uni-gpushort`, same seed, same 40-epoch
+cap, patience 8; none hit the time limit (A/S/B/C 55 min, B0 26 min).
 
 | arm | job | epochs | best `mrstft` (higher better) |
 |---|---|---|---|
@@ -180,45 +202,59 @@ it), same seed, same 40-epoch cap, patience 8.
 | **S** `scale` | `p7-scale-577ebe` | 15 | 13.71 |
 | **B** `tach` | `p7-tach-2fd10c` | 13 | 13.57 |
 | **C** `tach_presmooth` | `p7-tach-presmooth-e8ae6b` | 17 | 13.31 |
+| **B0** `tach_pure` | `p7-tach-pure-94e95b` | 25 (best at 16) | **28.08** |
 
 **Readout 1 — learned line profile** (dB, learned minus true; 0 is perfect):
 
 | arm | k1-9 | k10-24 | k25-49 | k50-80 |
 |---|---|---|---|---|
 | **A** `exact` | **-0.15** | **-0.02** | **+0.02** | **+0.16** |
-| **S** `scale` | -1.58 | -2.08 | -3.84 | -8.61 |
-| **B** `tach` | -0.14 | -0.09 | -2.32 | -6.85 |
-| **C** `tach_presmooth` | -1.14 | -0.96 | -3.57 | -7.73 |
+| **S** `scale` | -1.58 | -2.08 | -3.97 | -8.64 |
+| **B** `tach` | -0.14 | -0.09 | -2.36 | -6.99 |
+| **C** `tach_presmooth` | -1.14 | -0.97 | -3.59 | -7.77 |
+| **B0** `tach_pure` | **-0.23** | **-0.20** | **-0.26** | **-0.29** |
 
 **Readout 2 — delivered fidelity on each arm's own labels** (mean
 `|Delta log-mag|` dB on the true harmonic tracks; 0 is perfect):
 
 | arm | k1-9 | k10-24 | k25-49 | k50-80 |
 |---|---|---|---|---|
-| **A** `exact` | **0.32** | **0.40** | **0.62** | **0.81** |
-| **S** `scale` | 0.77 | 1.36 | 2.74 | 6.32 |
-| **B** `tach` | 1.25 | 1.79 | 3.99 | 7.20 |
-| **C** `tach_presmooth` | 1.09 | 1.32 | 3.61 | 6.83 |
+| **A** `exact` | **0.33** | **0.40** | **0.62** | **0.79** |
+| **S** `scale` | 0.76 | 1.34 | 2.70 | 6.40 |
+| **B** `tach` | 1.27 | 1.81 | 4.04 | 7.27 |
+| **C** `tach_presmooth` | 1.15 | 1.44 | 3.73 | 7.12 |
+| **B0** `tach_pure` | **0.40** | **0.46** | **0.80** | **1.36** |
 
-**Contrasts** (the three the design was built to read; sign convention: negative
-means the first arm is worse):
+All five rows come from one run of the readout. Re-running it moves A/S/B/C by
+at most 0.3 dB against the first round's published numbers (the render RNG is
+redrawn), which is the measurement's own scatter and is well inside every
+contrast below.
+
+**Contrasts** (sign convention: negative means the first arm is worse):
 
 | contrast | readout | k1-9 | k10-24 | k25-49 | k50-80 |
 |---|---|---|---|---|---|
-| **S - A** (the constant bias) | line | -1.42 | -2.06 | -3.86 | **-8.77** |
-| | track | -0.45 | -0.96 | -2.12 | **-5.52** |
-| **B - S** (the staircase) | line | +1.44 | +1.99 | +1.52 | +1.77 |
-| | track | -0.48 | -0.43 | -1.26 | -0.88 |
-| **C - B** (the presmooth) | line | -1.01 | -0.87 | -1.25 | -0.89 |
-| | track | +0.16 | +0.47 | +0.39 | +0.37 |
+| **S - A** (the constant bias) | line | -1.42 | -2.06 | -3.99 | **-8.79** |
+| | track | -0.44 | -0.93 | -2.08 | **-5.61** |
+| **B0 - A** (the staircase alone) | line | -0.08 | -0.18 | -0.28 | **-0.45** |
+| | track | -0.07 | -0.06 | -0.17 | **-0.57** |
+| **B - B0** (the bias, on top of the staircase) | line | +0.09 | +0.11 | -2.10 | **-6.70** |
+| | track | -0.87 | -1.36 | -3.25 | **-5.91** |
+| **B - S** (the staircase, by subtraction) | line | +1.44 | +1.99 | +1.61 | +1.65 |
+| | track | -0.50 | -0.48 | -1.34 | -0.87 |
+| **C - B** (the presmooth) | line | -1.01 | -0.88 | -1.22 | -0.78 |
+| | track | +0.12 | +0.38 | +0.31 | +0.15 |
 
-**How to read the contrasts.** `S - A` has the same sign in both readouts and
-grows monotonically with `k` in both — it is a real, large, `k`-progressive
-effect. `B - S` and `C - B` have **opposite signs in the two readouts** and never
-exceed 2 dB, which is the honest description of run-to-run variability at one
-seed per arm, not of an effect. The `mrstft` column says the same thing without
-any per-`k` machinery: S, B and C land within 3 % of each other (13.31-13.71)
-while A is 2.3x higher.
+**How to read the contrasts.** `S - A` and `B - B0` are two independent
+measurements of the same thing — what the constant bias costs, with and without
+a staircase under it — and they agree: 5.6 to 8.8 dB in k50-80, same sign in both
+readouts, monotone in `k`. `B0 - A` is the staircase alone: same sign in both
+readouts, monotone in `k`, and **an order of magnitude smaller** (0.45/0.57 dB in
+k50-80). `B - S`, the first round's subtraction, has opposite signs in the two
+readouts and is the least trustworthy of the five — it is a difference between
+two arms the bias had already flattened. The `mrstft` column says the same thing
+without any per-`k` machinery: S, B and C land within 3 % of each other
+(13.31-13.71), while B0 reaches 28.08, or 91 % of arm A.
 
 ### What arm A settles
 
@@ -243,6 +279,17 @@ is 1.000000 for every arm and the measured line centroids sit within 0.01 % of
 grows with `k`. So "a constant gain is an invertible reparameterization the model
 absorbs" is true of the *centre frequency* and false of the *line shape*.
 
+### What arm B0 does
+
+Arm B0 keeps arm A's shape and loses a little amplitude everywhere: its per-`k`
+curve stays inside -1.3 to +0.7 dB across `k = 1..80`, with the worst points at
+`k = 79` (-1.26), `k = 74` (-1.15) and `k = 48` (-1.02) — no collapse, no
+erratic region, and none of arm S's missing lines. Its lines are also as sharp as
+arm A's: the mean rms line spread over `k = 50..80` is 0.06 Hz against A's
+0.05 Hz, against a staircase displacement of 8.5 Hz at `k = 80`. The staircase
+therefore does not smear the learned comb; it costs a small, `k`-progressive
+amount of line power.
+
 ## Conclusion
 
 **Label noise is confirmed as a mechanism, with a large effect size — but the
@@ -256,12 +303,19 @@ component responsible is the constant scale bias, not the tachometer staircase.*
 2. **Label noise is confirmed, at -8.8 dB (line) / -5.5 dB (track) in k50-80 and
    -3.9 / -2.1 dB in k25-49**, plus a 30.96 -> 13.3-13.7 collapse in `mrstft`.
    The effect is `k`-progressive in both readouts, as predicted.
-3. **The staircase is exonerated.** `B - S` is within run-to-run variability and
-   sign-inconsistent across the two readouts. This agrees with the model-free
-   pressure computed before training: the staircase displaces harmonic 80 by
-   8.5 Hz (1.1 bins) and costs 1.18 dB, while the constant bias displaces it by
-   35 Hz (4.5 bins) and costs 18.7 dB. The staircase is the smaller term by
-   about 4x in displacement and an order of magnitude in pressure.
+3. **The staircase alone is small but not zero, and it is not what breaks the
+   generator.** Trained with the staircase and no bias, arm B0 costs **0.45 dB
+   (line) / 0.57 dB (track) in k50-80** against arm A, and 0.28 / 0.17 dB in
+   k25-49 — the same sign in both readouts and monotone in `k`, so it is a real
+   effect rather than scatter, but one about 15x smaller than the bias's
+   8.8 / 5.6 dB. Its size is what the model-free pressure predicts and slightly
+   under it: the staircase's own pressure at unit scale is 1.08 dB at k50-80
+   (1.18 dB scale-compensated) against arm A's 0.17 dB floor, and the trained arm
+   pays about half of that. In `mrstft` the staircase costs 30.96 -> 28.08, or
+   9 %, against the bias's 30.96 -> 13.7, or 56 %. The first round's `B - S`
+   subtraction reached the right verdict for the wrong reason: it is
+   sign-inconsistent across the readouts because it differences two arms the bias
+   had already flattened, not because the staircase is inert.
 4. **The presmooth mitigation fails, and the reason is not that smoothing is
    wrong.** The 5 Hz filter does what it claims — it cuts the label error from
    0.106 to 0.037 rev/s while moving the true track by only 0.017. But it
@@ -276,9 +330,11 @@ component responsible is the constant scale bias, not the tachometer staircase.*
 ### Caveats, in order of how much they could change the verdict
 
 - **One seed per arm.** The `S - A` gap is far outside the observed run-to-run
-  scatter (5.5-8.8 dB against ~1-2 dB, consistent in sign across two independent
-  readouts), so conclusion 1-2 are safe. Conclusion 3 is a *null* at one seed:
-  it says the staircase effect is smaller than ~2 dB, not that it is zero.
+  scatter (5.6-8.8 dB against ~1-2 dB, consistent in sign across two independent
+  readouts), so conclusions 1-2 are safe. Conclusion 3's *size* (0.45-0.57 dB) is
+  of the order of the readout's own re-run scatter (up to 0.3 dB) and rests on
+  one seed; what is safe about it is the **ordering** — the staircase is more
+  than an order of magnitude below the bias in both readouts and in `mrstft`.
 - **The task is synthetic and easy**: one rotor, one microphone, a frozen
   spectral profile, amplitudes independent of RPS. This bounds the *mechanism*
   and its ordering, not the real-data effect size. Arm A's flatness in
@@ -288,13 +344,14 @@ component responsible is the constant scale bias, not the tachometer staircase.*
   harmonic frequencies from the conditioning, so a global rate error can only be
   answered by moving energy between integer harmonic indices. An architecture
   with an explicit learnable rate correction might absorb the bias cleanly.
-- Arm A ran 21 epochs against S/B/C's 13-17. All four shared one cap and one
-  patience; A ran longer because it was still improving, while S/B/C plateaued
-  early at a much worse `mrstft`. The gap is not a budget artifact.
+- Arm A ran 21 epochs against S/B/C's 13-17 and B0's 25 (best at 16). All five
+  shared one cap and one patience; A and B0 ran longer because they were still
+  improving, while S/B/C plateaued early at a much worse `mrstft`. The gap is not
+  a budget artifact.
 
-### Two traps this round walked into
+### Three traps these rounds walked into
 
-Both would have produced a confidently wrong number, and both are cheap to
+Each would have produced a confidently wrong number, and each is cheap to
 repeat, so they are recorded rather than quietly fixed:
 
 - **A stale local checkpoint outranked the cluster's.** `zoo.load` prefers
@@ -303,6 +360,14 @@ repeat, so they are recorded rather than quietly fixed:
   had seen 64 samples — reading `+31 dB` at k50-80 and a 37 dB track error. The
   giveaway was that its numbers tracked the smoke run's, not the other arms'.
   Delete the local run directory before reading a cluster job's checkpoint.
+- **A stale R2 download outranked the finished job.** `zoo.load` caches every
+  checkpoint it fetches at `.cache/r2_checkpoints/<bucket>__...__best.ckpt` and
+  reuses the file without revalidating it against R2. Arm B0 had been read once
+  while its job was still training, so the finished run's readout silently
+  re-used that epoch-3 copy and reported -1.16 dB at k50-80 instead of -0.29. The
+  giveaway was that the numbers were identical to the mid-training ones, to four
+  decimals. Delete the cached object (or the whole cache directory) after a job
+  whose checkpoint you have already fetched.
 - **An `f0` grid outside the training marginal.** See "What the readout was
   checked against" above.
 
@@ -311,8 +376,13 @@ repeat, so they are recorded rather than quietly fixed:
 ```bash
 python scripts/gen_label_sensitivity_eval.py --self-test    # readout bias, expect <0.01 dB
 python scripts/gen_label_sensitivity_eval.py --pressure     # model-free per-k pressure
-python scripts/gen_label_sensitivity_eval.py                # the four arms
+python scripts/gen_label_sensitivity_eval.py \
+    --arms exact,scale,tach,tach_presmooth,tach_pure        # the five arms
 ```
+
+`tach_pure` is the one arm whose name is not its dataset `label_mode`
+(`ARM_LABEL_MODE` in the script maps it to `tach`, which the readout builds at
+unit scale anyway).
 
 Outputs land in `results/gen_label_sensitivity/` (`summary.json`, `per_k.csv`,
 `per_k.png`).

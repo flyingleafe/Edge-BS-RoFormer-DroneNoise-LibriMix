@@ -38,4 +38,11 @@ together with `python scripts/gen_label_sensitivity_eval.py --arms exact,scale,t
 
 ## Conclusion
 
-Pending — the job is in flight. The batch doc carries the five-arm table.
+**The staircase alone costs 0.45 dB (line) / 0.57 dB (track) at k50-80, about
+what the model-free pressure predicts and about 15x less than the constant
+bias.** Best `mrstft` 28.08 against arm A's 30.96 and arms S/B/C's 13.3-13.7, so
+the staircase gives up 9 % of the control's score where the bias gives up 56 %.
+The per-k curve keeps arm A's shape (worst point -1.26 dB at k = 79, no
+collapse) and the lines stay sharp (rms spread 0.06 Hz over k = 50..80 against
+A's 0.05 Hz). Job `p7-tach-pure-94e95b`, 25 epochs (best at 16), 26 min wall.
+Five-arm table: [Generator label sensitivity](../../docs/experiments/generator-label-sensitivity.md).
