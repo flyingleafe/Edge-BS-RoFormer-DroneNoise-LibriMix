@@ -1,9 +1,16 @@
-# Trajectory goodness of fit — the harness (6a), the fitter (6b), the campaign (6c), the sensitivity fix (6d)
+# Trajectory goodness of fit — the harness (6a), the fitter (6b), the campaign (6c), the sensitivity fix (6d), the time shift (6e)
 
 > **Read 6d first if you are citing a number.** Phase 6d added the component the
 > first three lacked (line power against a local floor) and re-scored everything:
 > the verdicts hold, the DREGON scale is -0.68 % [-0.88,-0.53], and the refined
 > trajectory is measured to lock 2.47 dB better than the labels.
+>
+> **Phase 6e adds a second correction and reverses a theory.** DREGON's
+> telemetry also carries a time offset of **-42 ms [-85,-31]** — it runs EARLY,
+> not late, so a tachometer reporting lag is excluded by sign. The
+> per-microphone differential the theory predicts is 0.156 ms, which is ~500x
+> below what the ridge resolves; the delay itself is real and is confirmed on
+> the michaels rig at slope 1.013 by a phase estimator, not by a rate shift.
 
 **Status:** harness built and verified (2026-08-06) · GitHub issue #17 §A-D ·
 library `src/tracking/fitness.py` · driver `scripts/telemetry_fitness.py` ·
@@ -1083,3 +1090,278 @@ stage** and the fitness stages then ran with no trajectories to read, turning
 pool — but a stage that depends on a previous stage's artifacts needs that
 checked, not assumed. Submit the refit with `--mem` and fewer workers
 (`telemetry-6d2-e6c967`, 12 workers, 96 GB).
+
+---
+
+# Phase 6e — the time-shift theory (issue 17)
+
+**Status:** run and analyzed (2026-08-06) · driver `scripts/telemetry_timeshift.py`
+· **no `src/` change** (`shift:` joins the phase-6a candidate language in
+`scripts/telemetry_fitness.py`) · job `telemetry-6e-ed2338` on `uni-cpu`,
+16 workers, **4320/4320 units, zero failures**, 2 h 19 min · local `tdoa` and
+`refit-lag` passes · JSON `results/telemetry_timeshift/report_{ridge,tdoa,refit_lag}.json`,
+unit trees pulled to `omnirun-outputs/telemetry-6e-ed2338/`.
+
+**Verdict in one line: partially supported, with the sign reversed.** A common
+time offset between `motors_measured` and the audio is real and measurable, but
+it is **negative** — the telemetry runs EARLY, not late — and the
+per-microphone differential the theory predicts is **500 times below** what this
+statistic can resolve, which the campaign states as a number rather than as an
+absence.
+
+## The theory, split into the two claims it contains
+
+1. **`motors_measured` is LATE.** A period counter reports the revolution that
+   has just finished and the logging hold adds more, so the reading at log time
+   `t` describes the shaft some `tau` earlier. The correction reads the
+   telemetry at `t + tau`.
+2. **It is late by a DIFFERENT amount at each microphone.** Sound from rotor `j`
+   reaches microphone `c` after `d_cj / 343`, so the best `tau` should fall as
+   distance rises, at slope `-1 / 343` s/m.
+
+Sign convention, once and everywhere: **positive `tau` means the telemetry LAGS
+the shaft**, and the candidate `r(t + tau)` removes that lag.
+
+The two claims are three orders of magnitude apart, and that — not their truth —
+decided the design.
+
+## What each claim has to move, before any measurement
+
+A time shift is visible only through the trajectory's own slope: `r(t + tau)`
+differs from `r(t)` by `tau dr/dt`. The 5 Hz pre-smoothed `|dr/dt|` of the
+fifteen protocol windows is **8.5 to 33.5 rev/s^2**. It must be read on the
+smoothed trajectory: a raw gradient of the 0.269 rev/s staircase on the 32 ms
+grid reads ~8 rev/s^2 of pure quantisation.
+
+DREGON's rig (`data_processing.sources.geometry("DREGON")`, the
+180-degree-corrected mic frame) puts the eight microphones 0.22-0.40 m from the
+four rotors:
+
+| quantity | value |
+|---|---|
+| rotor-to-mic delay `d_cj / 343` | 0.64-1.16 ms, mean **0.92** |
+| spread across the 8 mics of ONE rotor | **0.482 ms** |
+| spread across mics after averaging the 4 rotors | **0.156 ms** |
+
+So the two claims arrive at the ridge as:
+
+| claim | carrier displacement `tau dr/dt` |
+|---|---|
+| a 20 ms common lag | 0.17-0.67 rev/s |
+| the per-(rotor, mic) differential, 0.482 ms | 0.004-0.016 rev/s |
+| the per-mic differential, 0.156 ms | **0.0013-0.0052 rev/s** |
+
+The ridge's line region is `dc_revs = 0.10` rev/s wide. The common lag is one to
+seven window-widths — inside the instrument. The per-mic differential is a
+fiftieth of a window width, on an eighth of the cells. **The per-microphone half
+of the theory is below the ridge's resolution by a factor of about 20 before any
+noise is considered.** It was measured anyway, so that the statement is a
+number.
+
+## The grid, and why it needed two axes
+
+`shift:` is an interpolation on the frame grid, never a roll of samples, so
+`tau` is free of the 32 ms grid. 36 values of `tau` from -120 to +405 ms
+against **4 rate scales** (0, -0.341, -0.683, -1.024 %, bracketing phase 6d's
+-0.683 %), 15 windows, on-comb and off-comb, at 6d's frozen reading settings
+(`b0 = 1`, `gate_band_frac = 0.25`, `k = 2..40`, `fs_env = 250 Hz`, 8 blocks).
+
+The second axis is not a precaution, it is the measurement. A scale error is
+proportional to `r`; a lag is proportional to `dr/dt`. On a cruise window those
+shapes are nearly orthogonal, but a window with a sustained trend makes a lag
+LOOK like a scale, and the campaign has a fitted scale already:
+
+| DREGON on-comb, scale arm | best `tau` |
+|---|---|
+| 0.000 % | **+157.6 ms** |
+| -0.341 % | -41.5 |
+| **-0.683 %** (6d) | **-41.5** |
+| -1.024 % | -62.8 |
+
+**Without the scale correction the shift axis reads +158 ms; with it, -42 ms,
+and the sign flips.** The two corrections mask each other exactly as feared, and
+a one-axis sweep of either would have produced a confident wrong answer. The
+joint maximum of the surface is at `scale = -0.683 %`, `tau = -15 ms` (grid),
+`-41.5 ms` by the basin parabola.
+
+## The common shift: measured, and the wrong way round
+
+Pooled over the nine DREGON windows and the four FLY124 cruise windows, ridge in
+dB (more is better), 95 % CI over windows:
+
+| group | scale | control | `tau*` ms | CI | depth dB | ridge @ `tau*` | ridge @ 0 |
+|---|---|---|---|---|---|---|---|
+| **DREGON** | **-0.683 %** | **on** | **-41.5** | **[-85.4, -30.6]** | **1.358** | **+0.529** | +0.320 |
+| DREGON | -0.683 % | offcomb | +405 (edge) | — | 0.374 | -0.437 | -0.580 |
+| DREGON | 0 % | on | +157.6 | [+114.7, +249.5] | 0.504 | -0.253 | -0.476 |
+| **FLY124 cruise** | **0 %** | **on** | **+4.09** | **[+2.3, +6.0]** | **3.232** | **+2.561** | +2.561 |
+| FLY124 cruise | 0 % | offcomb | +405 (edge) | — | 0.484 | -0.505 | -0.783 |
+| FLY124 warmup | 0 % | on | -120 (edge) | — | 0.205 | -0.107 | -0.220 |
+
+Six readings:
+
+1. **The negative control is exact.** FLY124's recalibrated labels put their
+   maximum at **+4.1 ms [+2.3, +6.0]** with a **3.23 dB** basin, and the four
+   windows individually read +3, +7, +3, +2 ms. The instrument is unbiased, its
+   scatter is milliseconds, and the sharp peak is what a correct carrier looks
+   like.
+2. **DREGON's maximum is interior and negative.** Its curve rises from +0.14 dB
+   at -120 ms to +0.53 at -15 ms and falls to -0.83 by +285. All nine windows
+   put `tau*` on the negative side (-8 to -120 ms).
+3. **The off-comb null is featureless.** DREGON's null wanders between -0.44 and
+   -0.81 dB across the whole grid with its extremum at the edge, depth 0.374
+   against the on-comb 1.358 — a **3.6x** ratio. (For comparison, 6d's SCALE
+   profile had 8x. The `tau` basin is real but shallower than the scale's.)
+4. **Negative `tau` means the telemetry is EARLY**, so the correction reads it
+   EARLIER still. This is the opposite of the proposed mechanism: a period
+   counter's reporting lag is necessarily POSITIVE (one revolution at 80 rev/s
+   is +12 ms, and the hold only adds). The mechanism is excluded by sign. What
+   remains is a stream time-alignment offset — precisely the correction the
+   other rig already carries (`tracking.protocols.FROZEN_FLY124_ALIGNMENT` is
+   `(-20.84 s, 1.001)`) and that DREGON has never been given.
+5. **The basin is broad.** Half-depth half-width is **98 ms** on DREGON against
+   **38 ms** on FLY124, so "-42 ms" should be read as "somewhere between about
+   -85 and -15 ms", not as two significant figures.
+6. **It buys very little.** +0.529 dB at the joint optimum against +0.320 at
+   `tau = 0` — the shift is worth **+0.21 dB** on top of the best constant
+   scale, where 6d measured the free fitted trajectory at **+1.88 dB**. A lag
+   plus a scale is still an incomplete model of the label error, and by the same
+   margin 6d already reported.
+
+`r(tau*, |dr/dt|)` is **-0.04** across the nine windows at the 6d scale, so the
+pooled number is not an artefact of the three high-slope windows carrying it.
+
+## The independent witness: a lag read off the fitter, with no ridge in it
+
+`--mode refit-lag`. Phase 6c fitted a free trajectory that beats the labels by
+2.47 dB, and nothing about it was chosen by a `tau` profile. Regressing its own
+correction `r_fit - r_init` per window on `[dr/dt, r, 1]` returns the lag and
+the scale as COEFFICIENTS:
+
+| group | `tau` (ms) | scale (%) | mean `r2` |
+|---|---|---|---|
+| **DREGON** (9) | **-2.9 [-4.7, -1.1]** | **-0.811 [-1.188, -0.453]** | 0.034 |
+| **FLY124** (6) | **+1.2 [-0.1, +2.5]** | +0.095 [-0.179, +0.419] | 0.013 |
+
+The scale column reproduces the campaign's own -0.68 to -0.77 %, which is what
+makes the `tau` column worth reading. And the `tau` column says the same two
+things the ridge does — **DREGON negative, FLY124 zero** — while disagreeing on
+magnitude by 14x. Read `r2` before either: the systematic model explains 1-7 %
+of the correction (the rest is de-staircasing and the fitter's own per-frame
+noise), so this BOUNDS the lag rather than measuring it. What it bounds tightly
+is the theory as stated: a lag of +12 ms or more would be unmissable in this
+coefficient, and it is not there.
+
+Two estimators, both negative, differing 14x. This is the same pattern 6c and 6d
+recorded for the scale (2x), and it is reported the same way: the sign is the
+finding, the magnitude is not settled.
+
+## The per-microphone differential: refuted as measurable, on the ridge
+
+Per-microphone `tau*` against the geometry prediction (rotor-averaged), DREGON
+on-comb:
+
+| scale arm | predicted spread | measured spread | `r` | slope (predicted 1.0) |
+|---|---|---|---|---|
+| 0 % | 0.156 ms | 352.2 ms | -0.618 | -846 |
+| -0.341 % | 0.156 ms | 162.0 ms | **+0.362** | +250 |
+| -0.683 % | 0.156 ms | 78.0 ms | -0.656 | -190 |
+| -1.024 % | 0.156 ms | 104.7 ms | -0.138 | -55 |
+
+The measured spread is **500 to 2200 times** the predicted one, the regression
+slope is off by two to three orders of magnitude, and the correlation **changes
+sign between arms of the same measurement**. This is noise with the shape of a
+result, and the sensitivity table above said so in advance: 0.156 ms of delay
+moves the carrier by 0.0013-0.0052 rev/s against a 0.10 rev/s line region, on
+one eighth of the cells. The per-microphone claim is not refuted by this
+campaign — it is *unmeasurable by this instrument*, and no amount of averaging
+fixes a twentieth of a resolution element.
+
+## The instrument that CAN resolve it, and where it works
+
+A propagation delay is a phase ramp across the comb, not a rate error. Harmonic
+`k` of rotor `j` arrives at microphone `c` with phase `-2 pi k rate_j d_cj / 343`
+relative to the reference microphone, so the mean harmonic-to-harmonic phase
+INCREMENT of the cross-spectrum gives the inter-mic delay directly:
+
+    delay_cj = -mean_k wrap(psi_{k+1} - psi_k) / (2 pi rate_j)
+
+with no unwrapping ambiguity while `|delay| < 1 / (2 rate)` = 6.25 ms, against
+delays of at most 0.5 ms. The phases come from the same demodulated envelopes
+the ridge reads, at the envelope-spectrum bin the comb's own line sits in —
+found once per (rotor, block) by a joint scan over a single rate offset, never
+by a peak search per harmonic. `--self-test` injects 0.35 / -0.20 / 0.80 ms into
+a synthetic comb and gets back 0.3499 / -0.1951 / 0.8031, **max error 4.9 us**,
+which is also what pins the sign.
+
+Rotor slot `j` of the telemetry is not guaranteed to be rotor `j` of the
+geometry file, so the fit searches all 24 labellings — and a best-of-24 is a
+selected maximum, so it carries its own null (permute the MICROPHONE labels,
+which keeps every value and destroys the spatial pattern, then take the same
+best-of-24).
+
+Ungated (`--tdoa-gate none`, 38 harmonic pairs), median over windows:
+
+| block | rig | windows | `r` best-of-24 | slope | null p95 | p | window sd |
+|---|---|---|---|---|---|---|---|
+| **FLY124 cruise, on** | michaels | 4 | **+0.829** | **+1.013** | 0.564 | **0.000** | **0.098 ms** |
+| FLY124 all, on | michaels | 6 | +0.804 | +0.953 | 0.551 | 0.000 | 0.152 ms |
+| FLY124 cruise, offcomb | michaels | 4 | +0.657 | +0.779 | 0.478 | 0.000 | 0.114 ms |
+| **DREGON, on** | DREGON | 9 | +0.300 | +0.816 | 0.512 | **0.532** | **0.861 ms** |
+| DREGON, offcomb | DREGON | 9 | +0.121 | +0.222 | 0.423 | 0.800 | 0.759 ms |
+
+Three readings:
+
+1. **The sub-millisecond effect is real and it is measurable — on the rig whose
+   comb is resolvable.** On michaels the inter-mic delays track the rig geometry
+   at slope **1.013** against a predicted 1.0, with **0.098 ms** window-to-window
+   repeatability and `p = 0.000` against the relabelling null. This is the
+   physics of the theory's second half, confirmed directly.
+2. **On DREGON the same estimator says nothing** (`p = 0.53`), and the reason is
+   the campaign's standing constraint: its twin pair is 0.42 rev/s apart, the
+   ridge gate leaves **4-8** harmonic pairs against FLY124's 9, and the delay's
+   error falls as `1/sqrt(pairs)`. Even ungated the window-to-window scatter
+   (0.861 ms) exceeds the whole predicted spread (0.78 ms). Coverage binds here
+   too.
+3. **The off-comb control is NOT a null for this measurement**, and that is not
+   a defect. Off-comb frequencies carry the same rotors' broadband noise from the
+   same directions, so a direction estimator finds them (FLY124 offcomb
+   `r = +0.657`). The on-comb reading is still the stronger one and the only one
+   with unit slope; the half-integer comb remains a null for the RIDGE, which is
+   where 6a and 6d use it.
+
+Finally, the propagation term's own contribution to the global `tau`: the mean
+rotor-to-mic delay is 0.92 ms, and it enters the best `tau` as **-0.92 ms**
+(the audio is delayed, so the fitting carrier is the shaft history delayed). It
+is **2 %** of the measured -41.5 ms. The common offset is not propagation.
+
+## What 6e changes
+
+| before 6e | after 6e |
+|---|---|
+| the label error is a scale of -0.683 %, and two thirds of it is something else | a **time offset of -42 ms [-85, -31]** is part of that something else, worth +0.21 dB of the missing 1.35 dB |
+| (untested) the telemetry lags the shaft | **refuted in sign** by two independent estimators; the telemetry runs EARLY, so a counter reporting lag is not the mechanism. A stream alignment offset is, and DREGON has never been given the one FLY124 carries |
+| (untested) the best `tau` varies per microphone with `d/c` | **unmeasurable on the ridge** by a factor of ~500, measured scatter 78-352 ms against 0.156 ms predicted, correlation sign-unstable across arms |
+| (untested) the per-(rotor, mic) delay itself | **confirmed on michaels** at slope 1.013, `p < 0.001`, 0.098 ms repeatability; **not resolvable on DREGON** (`p = 0.53`), coverage again |
+
+The open question 6e leaves is the same shape as 6c's: two estimators of one
+quantity, agreeing on sign and disagreeing 14x on magnitude (-41.5 ms from the
+ridge, -2.9 ms from the fitter's own correction). A DREGON alignment refit — the
+`(offset, dilation)` pair that FLY124 got, fitted rather than assumed — is the
+experiment that would settle it, and it is now worth doing because the sign is
+established.
+
+## Reproduce
+
+```bash
+python scripts/telemetry_timeshift.py --self-test            # the tdoa sign, 4.9 us
+python scripts/telemetry_timeshift.py --mode refit-lag       # the independent witness
+python scripts/telemetry_timeshift.py --mode tdoa --dataset all \
+  --tdoa-gate none --jobs 5 --out results/telemetry_timeshift/tdoa_allk
+omnirun submit --backend uni-cpu --name telemetry-6e --gpus 0 --cpus 16 --mem 64 \
+  --time 4h --env PYTHONPATH=src --outputs 'results/telemetry_timeshift/**' -- \
+  python scripts/telemetry_timeshift.py --mode ridge --dataset all \
+  --tau-ms=-120:405:15 --scales=1.0,0.99659,0.99317,0.98976 --controls on,offcomb \
+  --jobs 16 --build-preps --out results/telemetry_timeshift/campaign6e
+python scripts/telemetry_timeshift.py --mode report --report-dirs <pulled campaign6e dir>
+```
