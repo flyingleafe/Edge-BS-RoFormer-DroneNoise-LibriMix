@@ -1,8 +1,10 @@
 # Coupled VK envelopes as the tracker's front end — measured, and rejected
 
 **Status:** done (2026-08-06, one session) · GitHub issue #15 · driver
-`scripts/vk_frontend_probe.py` · raw JSON `results/vk_frontend_probe/{b0_1.0,b0_0.35}/`
-· job `bash-abb74e` (uni-cpu, succeeded) plus two local runs.
+`scripts/vk_frontend_probe.py` (**deleted** in the 2026-08 R2 consolidation —
+the campaign is closed and this document is the record) · raw JSON
+`results/vk_frontend_probe/{b0_1.0,b0_0.35}/` · job `bash-abb74e` (uni-cpu,
+succeeded) plus two local runs.
 
 ## Question
 
@@ -221,19 +223,15 @@ bands, only in the campaign's short-time envelope ridge.
 
 ## Reproduce
 
-```bash
-python scripts/vk_frontend_probe.py --b0 1.0  --out results/vk_frontend_probe/b0_1.0
-python scripts/vk_frontend_probe.py --b0 0.35 --out results/vk_frontend_probe/b0_0.35
-python scripts/vk_frontend_probe.py --rescore --out results/vk_frontend_probe/b0_0.35
-```
+The driver `scripts/vk_frontend_probe.py` was **deleted in the 2026-08 R2
+consolidation**, together with the `--rescore` pass and the `omnirun` recipe
+that ran it. The probe answered its question and the answer is no, so the
+measurements above are the record; there is nothing left to re-run.
 
-`--rescore` re-derives the references, the buckets, the per-window tables and
-the pooled table from the stored per-track numbers, so a change of reference
-costs seconds instead of another sweep. Remote (the wide solves are 3-18 min
-each and take 13-16 GB):
-
-```bash
-omnirun submit --backend uni-cpu --gpus 0 --cpus 4 --mem 32 --time 4h \
-  --env PYTHONPATH=src --env TRACKING_FFT_WORKERS=4 \
-  --outputs 'results/vk_frontend_probe/**' -- bash -c '...'
-```
+The driver held no library-grade code of its own. Both front ends it compared
+are library calls (`tracking.vk_tracking.vk_envelopes` and
+`tracking.phase_increment_tracker.demod_bank`), and the coherent pulse-pair
+centre it read them with is `tracking.comb_displacement.pulse_pair_bank` —
+promoted there in issue 17 phase 6a exactly so that the probe and
+`tracking.fitness` could not drift apart. The raw per-track JSON stays at
+`results/vk_frontend_probe/`.

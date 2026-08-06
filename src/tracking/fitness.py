@@ -141,7 +141,7 @@ Purity: numpy plus tracking siblings only.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -166,9 +166,10 @@ __all__ = [
     "apply_control",
     "bootstrap_scores",
     "default_holdouts",
-    "fitness_stage",
+    "line_bins",
     "line_masks",
     "line_power",
+    "measure_tdoa",
     "residual_decompose",
     "score_cells",
     "score_window",
@@ -590,6 +591,142 @@ def admission(
     admit &= in_band[:, None]
     admit_ridge &= in_band[:, None]
     return admit, admit_ridge, nearest
+
+
+# ---------------------------------------------------------------------------
+# the inter-microphone delay (issue 17 phase 6e) — the instrument that can
+# actually resolve a fraction of a millisecond
+#
+# A propagation delay is a phase ramp across the comb, not a rate error. Sound
+# from rotor ``j`` reaches microphone ``c`` after ``d_cj / 343``, so harmonic
+# ``k`` arrives with phase ``-2 pi k rate_j d_cj / 343`` relative to the
+# reference microphone, and the mean harmonic-to-harmonic phase INCREMENT of
+# the cross-spectrum gives the inter-mic delay directly,
+#
+#     delay_cj = -mean_k wrap(psi_{k+1} - psi_k) / (2 pi rate_j)
+#
+# with no unwrapping ambiguity while the delay stays under ``1 / (2 rate)`` =
+# 6.25 ms, against delays of at most 0.5 ms. The ridge of phase 6d cannot see
+# this at all: through its ``tau dr/dt`` channel the whole DREGON inter-mic
+# spread (0.156 ms) is a twentieth of the ridge window. This estimator can, and
+# it reads slope 1.013 against the michaels rig geometry
+# (``docs/experiments/telemetry-fitness.md`` § "Phase 6e").
+
+
+def line_bins(
+    pw: np.ndarray, freqs: np.ndarray, ks: np.ndarray, dr_step: float, n_step: int = 60
+) -> tuple[float, np.ndarray]:
+    """``(the residual rate offset in rev/s, (K,) bin index of each line)``.
+
+    The comb's residual rate error is ONE number per (rotor, block): harmonic
+    ``k`` sits at ``k dr`` Hz. So the offset is found by a joint scan that sums
+    the harmonics' power along each candidate comb — never by a peak search per
+    harmonic, which returns about half a window width on pure noise and which
+    has already cost this campaign two published claims.
+    """
+    grid = np.arange(-n_step, n_step + 1) * dr_step  # rev/s
+    kk = np.arange(ks.size)
+    idx = np.stack(
+        [np.abs(freqs[None, :] - (ks * dr)[:, None]).argmin(axis=1) for dr in grid]
+    )  # (G, K)
+    score = np.asarray([float(np.sum(pw[:, kk, idx[g]])) for g in range(grid.size)])
+    best = int(np.argmax(score))
+    return float(grid[best]), idx[best]
+
+
+def measure_tdoa(
+    audio: np.ndarray,
+    ft: np.ndarray,
+    carrier: np.ndarray,
+    reference: np.ndarray,
+    *,
+    cfg: FitnessConfig,
+    half: bool = False,
+    dr_step: float = 0.02,
+    ref_ch: int = 0,
+    gate: bool = True,
+) -> dict[str, Any]:
+    """``delay_ms (R, C)`` relative to ``ref_ch``, plus the weights behind it.
+
+    One rotor at a time. Per block the envelope spectrum is taken with the same
+    Hann taper the ridge uses, the comb's own line bin is found jointly over
+    harmonics, and the cross-spectrum against ``ref_ch`` is accumulated across
+    blocks COHERENTLY — the geometry-induced phase is the one thing that does
+    not change from block to block, so summing complex values averages
+    everything else down.
+
+    ``half=True`` demodulates at the half-integer comb, where no rotor line can
+    exist: the null control of the same estimator.
+    """
+    x = np.atleast_2d(np.asarray(audio, dtype=np.float64))[: cfg.max_channels]
+    ref = np.atleast_2d(np.asarray(reference, dtype=np.float64))
+    cand = np.atleast_2d(np.asarray(carrier, dtype=np.float64))
+    ks = np.asarray(cfg.ks, dtype=np.float64)
+    n_env = x.shape[-1] // cfg.stride
+    blocks = _blocks(n_env, cfg)
+    length = blocks[0].stop - blocks[0].start
+    freqs = np.fft.fftfreq(length, d=1.0 / cfg.fs_env)
+    taper = np.hanning(length)
+    taper /= np.sqrt(np.mean(taper**2))
+
+    delay_ms: list[list[float | None]] = []
+    weight: list[list[float]] = []
+    n_pairs: list[list[int]] = []
+    for rot in range(cand.shape[0]):
+        rate_ref = float(np.mean(ref[rot]))
+        if rate_ref < cfg.min_rate:
+            continue
+        band = cfg.band_hz(rate_ref)
+        z, _ = demod_comb_bank(
+            x, cand[rot], ft, cfg.ks, cfg=cfg.displacement(), half=half, band_hz_k=band
+        )
+        res_hz = cfg.fs_env / length
+        dc_hz = np.minimum(np.maximum(cfg.dc_revs * ks, cfg.dc_bins * res_hz), 0.9 * band)
+        _, admit_ridge, _ = admission(
+            ref, ft, rot, blocks, band, cfg=cfg, rate_ref=rate_ref, dc_hz=dc_hz
+        )
+        if not gate:
+            # The ungated arm. DREGON's ridge gate leaves 4-8 harmonic pairs,
+            # and the delay's own error falls as 1/sqrt(pairs), so the gate is
+            # worth turning off ONCE to see whether coverage or the estimator
+            # is the limit. It admits contested harmonics, whose phase is a
+            # mixture of two rotors at two directions — a bias, reported as a
+            # separate arm rather than folded into the measurement.
+            admit_ridge = np.ones_like(admit_ridge)
+        n_ch = z.shape[0]
+        # (C, K) complex cross-spectrum against the reference microphone,
+        # accumulated over blocks at each block's own line bin.
+        cross = np.zeros((n_ch, ks.size), dtype=np.complex128)
+        power = np.zeros(ks.size)
+        for b, sl in enumerate(blocks):
+            zb = np.asarray(z[:, :, sl], dtype=np.complex128) * taper
+            Z = np.fft.fft(zb, axis=-1)  # (C, K, L)
+            pw = np.abs(Z) ** 2
+            _, bins = line_bins(pw, freqs, ks, dr_step)
+            val = Z[:, np.arange(ks.size), bins]  # (C, K)
+            ok = admit_ridge[:, b]
+            cross += np.where(ok[None, :], val * np.conj(val[ref_ch])[None, :], 0.0)
+            power += np.where(ok, np.abs(val[ref_ch]) ** 2, 0.0)
+        psi = np.angle(cross)  # (C, K)
+        w = np.minimum(np.abs(cross)[:, :-1], np.abs(cross)[:, 1:])  # (C, K-1)
+        # Harmonic-to-harmonic increment: 2 pi rate * delay per unit k, wrapped
+        # into (-pi, pi]. Unambiguous while |delay| < 1 / (2 rate) = 6.25 ms.
+        dpsi = np.angle(np.exp(1j * (psi[:, 1:] - psi[:, :-1])))
+        good = np.asarray(power > 0)[:-1] & np.asarray(power > 0)[1:]
+        w = w * good[None, :]
+        tot = w.sum(axis=1)
+        mean_dpsi = np.where(tot > 0, (w * dpsi).sum(axis=1) / np.maximum(tot, 1e-300), np.nan)
+        delay = -mean_dpsi / (2.0 * np.pi * rate_ref)
+        delay_ms.append([None if not np.isfinite(v) else round(float(v) * 1e3, 5) for v in delay])
+        weight.append([round(float(v), 6) for v in tot])
+        n_pairs.append([int(v) for v in (w > 0).sum(axis=1)])
+    return {
+        "delay_ms": delay_ms,
+        "weight": weight,
+        "n_pairs": n_pairs,
+        "ref_ch": ref_ch,
+        "half": bool(half),
+    }
 
 
 def demod_cells(
@@ -1272,45 +1409,3 @@ def score_window(
             "diag": [c.diag for c in cells],
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Stage adapter
-
-
-def fitness_stage(
-    reference_entry: str = "rps_meas",
-    *,
-    cfg: FitnessConfig = FitnessConfig(),
-    holdouts: Sequence[Holdout] | None = None,
-    control: str = "none",
-) -> Any:
-    """A :data:`tracking.stages.Stage` that scores the frame's current ``rps``.
-
-    The trajectory is not changed; the stage appends a ``{"stage": "fitness",
-    ...}`` diagnostics entry, so it can be dropped anywhere into a refinement
-    ladder to record how the fit moved. The reference (which pins the bands and
-    the gate) is read from ``reference_entry``, defaulting to the frame's
-    untouched ``rps_meas``.
-    """
-    from tracking.stages import get_audio, get_rps, with_rps
-
-    def run(frame: Any) -> Any:
-        audio, sr = get_audio(frame)
-        r, ft = get_rps(frame)
-        ref, _ = get_rps(frame, reference_entry)
-        t0 = float(ft[0]) if ft.size else 0.0
-        use = replace(cfg, sr=int(round(sr)))
-        info = score_window(
-            audio,
-            ft - t0,
-            r,
-            ref,
-            cfg=use,
-            holdouts=holdouts,
-            control=control,
-            n_boot=0,
-        )
-        return with_rps(frame, r, ft, stage="fitness", info=info)
-
-    return run

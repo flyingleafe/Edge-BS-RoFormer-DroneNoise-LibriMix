@@ -348,12 +348,75 @@ def test_score_window_payload_is_json_shaped(window, candidates):
     assert out["cells"]["n_rotors"] == len(RATES)
 
 
+# ---------------------------------------------------------------------------
+# the inter-microphone delay (phase 6e)
+
+
+def _tdoa_window(delays_ms, seed: int = 0, noise: float = 0.30):
+    """``(audio (C, T), ft, r (1, N), cfg)`` — one rotor, one delay per channel.
+
+    The construction of the deleted ``scripts/telemetry_timeshift.py``
+    ``--self-test``. A pure propagation delay is the SAME waveform evaluated
+    ``d`` earlier, so the delay enters the phase as ``-2 pi rate(t) d`` and
+    nothing else about the channel changes. That is what pins the sign: the
+    whole per-microphone claim is a sign statement (farther microphone, later
+    arrival), and a sign taken on faith from a demodulation kernel is a coin
+    flip.
+    """
+    rng = np.random.default_rng(seed)
+    cfg = F.FitnessConfig(k_min=2, k_max=25, b0_revs=1.0, fs_env=250.0, n_blocks=4)
+    sr, dur, rate = cfg.sr, 8.0, 80.0
+    t = np.arange(int(sr * dur)) / sr
+    ft = np.arange(0, dur, 0.032)
+    r = rate + 2.0 * np.sin(2 * np.pi * 0.3 * ft)
+    rate_t = rate + 2.0 * np.sin(2 * np.pi * 0.3 * t)
+    phase = 2 * np.pi * np.cumsum(rate_t) / sr
+    chans = []
+    for d_ms in np.asarray(delays_ms, dtype=float):
+        ph = phase - 2 * np.pi * rate_t * (d_ms * 1e-3)
+        sig = sum(np.cos(k * ph) / k for k in range(2, 26))
+        chans.append(sig + noise * rng.standard_normal(t.size))
+    return np.asarray(chans), ft, r[None, :], cfg
+
+
+def test_measure_tdoa_recovers_an_injected_delay_with_the_right_sign():
+    true_ms = np.array([0.0, 0.35, -0.20, 0.80])
+    audio, ft, ref, cfg = _tdoa_window(true_ms)
+    got = F.measure_tdoa(audio, ft, ref, ref, cfg=cfg, dr_step=0.02)
+    meas = np.asarray([np.nan if v is None else v for v in got["delay_ms"][0]])
+    # The bar the campaign's own self-test used: 30 us. It is set by the
+    # estimator's noise floor, not by its bias — 23 admitted harmonic pairs of
+    # a comb at 0 dB against white noise, averaged coherently over 4 blocks —
+    # and the measured error is 4.9 us, so the bar leaves 6x of headroom
+    # against the seed. Tightening it below ~10 us would make the test a
+    # fixture of one random draw.
+    assert np.nanmax(np.abs(meas - true_ms)) < 0.03
+    # SIGN: a channel whose waveform arrives LATER reads a positive delay, and
+    # the negative injection must come back negative, not merely small.
+    assert meas[3] > meas[1] > meas[0] > meas[2]
+    assert meas[2] < -0.1
+    assert min(got["n_pairs"][0]) > 0
+
+
+def test_measure_tdoa_half_integer_comb_is_a_null():
+    """The half-integer carrier carries no rotor line, so no delay can be read."""
+    true_ms = np.array([0.0, 0.35, -0.20, 0.80])
+    audio, ft, ref, cfg = _tdoa_window(true_ms)
+    null = F.measure_tdoa(audio, ft, ref, ref, cfg=cfg, dr_step=0.02, half=True)
+    nm = np.asarray([np.nan if v is None else v for v in null["delay_ms"][0]])
+    # Nothing systematic survives: the null is far from the injection, and it
+    # does not reproduce the injected ORDER either (one ordering in 24).
+    assert np.nanmax(np.abs(nm - true_ms)) > 0.1
+    assert not (nm[3] > nm[1] > nm[0] > nm[2])
+
+
 def test_fitness_stage_appends_diagnostics(window, candidates):
-    from tracking.stages import tracking_frame
+    from tracking import top
+    from tracking.top import tracking_frame
 
     audio, ft, r_true = window
     frame = tracking_frame(audio, SR, rps=r_true, frame_times=ft, rps_meas=r_true)
-    out = F.fitness_stage(cfg=_cfg())(frame)
+    out = top.fitness_stage(cfg=_cfg())(frame)
     log = out["meta"]["tracking"]
     assert log[-1]["stage"] == "fitness"
     assert "scores" in log[-1]

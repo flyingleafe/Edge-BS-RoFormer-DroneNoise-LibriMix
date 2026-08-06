@@ -56,7 +56,8 @@ Three points of design, each of which fixes a way of getting this wrong:
   aggregation keeps microphones separate.
 - **The centre is the coherent pulse-pair estimate**
   (`comb_displacement.pulse_pair` / `pulse_pair_bank`, promoted here to one
-  vectorized implementation, which `scripts/vk_frontend_probe.py` also used).
+  vectorized implementation, which the since-deleted `vk_frontend_probe`
+  driver also used).
   Phase 5 established that the median of wrapped increments biases toward zero
   once the phasor is noise dominated.
 
@@ -1096,8 +1097,10 @@ checked, not assumed. Submit the refit with `--mem` and fewer workers
 # Phase 6e — the time-shift theory (issue 17)
 
 **Status:** run and analyzed (2026-08-06) · driver `scripts/telemetry_timeshift.py`
-· **no `src/` change** (`shift:` joins the phase-6a candidate language in
-`scripts/telemetry_fitness.py`) · job `telemetry-6e-ed2338` on `uni-cpu`,
+(**deleted** in the 2026-08 R2 consolidation; its one library-grade estimator is
+now `tracking.fitness.measure_tdoa`, see § "Reproduce") · `shift:` joins the
+phase-6a candidate language in
+`scripts/telemetry_fitness.py` · job `telemetry-6e-ed2338` on `uni-cpu`,
 16 workers, **4320/4320 units, zero failures**, 2 h 19 min · local `tdoa` and
 `refit-lag` passes · JSON `results/telemetry_timeshift/report_{ridge,tdoa,refit_lag}.json`,
 unit trees pulled to `omnirun-outputs/telemetry-6e-ed2338/`.
@@ -1353,15 +1356,29 @@ established.
 
 ## Reproduce
 
-```bash
-python scripts/telemetry_timeshift.py --self-test            # the tdoa sign, 4.9 us
-python scripts/telemetry_timeshift.py --mode refit-lag       # the independent witness
-python scripts/telemetry_timeshift.py --mode tdoa --dataset all \
-  --tdoa-gate none --jobs 5 --out results/telemetry_timeshift/tdoa_allk
-omnirun submit --backend uni-cpu --name telemetry-6e --gpus 0 --cpus 16 --mem 64 \
-  --time 4h --env PYTHONPATH=src --outputs 'results/telemetry_timeshift/**' -- \
-  python scripts/telemetry_timeshift.py --mode ridge --dataset all \
-  --tau-ms=-120:405:15 --scales=1.0,0.99659,0.99317,0.98976 --controls on,offcomb \
-  --jobs 16 --build-preps --out results/telemetry_timeshift/campaign6e
-python scripts/telemetry_timeshift.py --mode report --report-dirs <pulled campaign6e dir>
+The driver `scripts/telemetry_timeshift.py` — its four modes (`ridge`, `tdoa`,
+`refit-lag`, `report`), its `--self-test` and the `omnirun` recipe that ran the
+4320-unit sweep — was **deleted in the 2026-08 R2 consolidation**. Phase 6e is
+closed, so the measured findings in this section are the record.
+
+Everything the driver called is still library code. The ridge is
+`tracking.fitness.score_cells`, the fitter's own correction is
+`tracking.telemetry_refit`, and the one estimator that lived only in the driver
+— the cross-channel comb-phase delay — was promoted to
+**`tracking.fitness.measure_tdoa`** (with its joint line scan
+`tracking.fitness.line_bins`). Its sign and its ~5 us accuracy, which the
+`--self-test` used to assert, are now asserted by
+`tests/tracking/test_fitness.py::test_measure_tdoa_recovers_an_injected_delay_with_the_right_sign`.
+
+To read the inter-mic delay of one frozen prep window:
+
+```python
+from tracking.fitness import FitnessConfig, measure_tdoa
+from tracking.protocols import load_prep_window
+
+w = load_prep_window("free-flight_nosource_room1__w03")
+out = measure_tdoa(w["audio"], w["ft"], w["r"], w["r"], cfg=FitnessConfig(k_min=2, k_max=40))
 ```
+
+`out["delay_ms"]` is `(rotor, mic)` relative to `ref_ch`; pass `half=True` for
+the off-comb null and `gate=False` for the ungated arm.
