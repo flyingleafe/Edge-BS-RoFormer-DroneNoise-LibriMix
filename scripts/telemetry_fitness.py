@@ -15,7 +15,10 @@ question:
                    step 1 — the 0.269 rev/s / 49.7 Hz staircase is measurement
                    noise, not signal)
   file:PATH:KEY    an ``.npz`` of fitted trajectories on the window's frame grid
-                   (the phase 6b hook)
+                   (the phase 6b hook). ``{key}`` inside PATH is replaced by the
+                   window key, so ONE spec scores a whole directory of per-window
+                   fits — which is exactly what ``scripts/telemetry_refit.py``
+                   writes (``<out>/traj/<arm>/<window>.npz``, entry ``r_fit``).
 
 The four controls of §B all run from the same flag: ``on`` is the measurement,
 ``offcomb`` the half-integer null, ``mismatch`` a partner window's telemetry on
@@ -117,25 +120,39 @@ def _load(key: str) -> dict[str, Any]:
         }
 
 
-def build_candidate(spec: str, r: Any, ft: Any) -> Any:
-    """Materialize one candidate trajectory from its spec string."""
+def build_candidate(spec: str, r: Any, ft: Any, key: str = "") -> Any:
+    """Materialize one candidate trajectory from its spec string.
+
+    ``{key}`` is substituted with the window key first, so a per-window family
+    of fitted trajectories is ONE spec (see the ``file:`` line of the module
+    docstring). The substitution happens before parsing, so it never changes
+    what a spec without the placeholder means.
+    """
     import numpy as np
 
-    from tracking.phase_noise import brickwall
+    from tracking.telemetry_refit import presmooth
 
+    spec = spec.replace("{key}", key)
     if spec == "telemetry":
         return r
     kind, _, rest = spec.partition(":")
     if kind == "scale":
         return r * float(rest)
     if kind == "lp":
-        fs = 1.0 / float(np.median(np.diff(ft)))
-        return brickwall(r, float(rest), fs)
+        return presmooth(r, ft, float(rest))
     if kind == "file":
         path, _, entry = rest.rpartition(":")
         with np.load(path) as z:
             return np.asarray(z[entry], dtype=np.float64)
     raise ValueError(f"unknown candidate spec {spec!r}")
+
+
+def _uid(spec: str) -> str:
+    """A candidate spec as a filename-safe unit id fragment."""
+    out = spec
+    for ch in ":/{}":
+        out = out.replace(ch, "-")
+    return out
 
 
 def worker(unit: Unit) -> dict[str, Any]:
@@ -155,7 +172,7 @@ def worker(unit: Unit) -> dict[str, Any]:
         n_blocks=int(p["n_blocks"]),
         gate_band_frac=float(p.get("gate_band_frac", 1.0)),
     )
-    cand = build_candidate(spec, win["r"], win["ft"])
+    cand = build_candidate(spec, win["r"], win["ft"], key)
     partner = None
     if control == "mismatch":
         other = _load(PARTNER[key])
@@ -320,7 +337,7 @@ def main() -> None:
     }
     units = [
         Unit(
-            f"{k}__{c.replace(':', '-')}__{ctl}",
+            f"{k}__{_uid(c)}__{ctl}",
             {"key": k, "candidate": c, "control": ctl, **common},
         )
         for k in sorted(keys)

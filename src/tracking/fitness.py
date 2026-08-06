@@ -765,6 +765,12 @@ def residual_decompose(
     up to the refresh Nyquist, structure at the refresh rate. All three are
     reported as numbers: a binary verdict would hide that the frame grid can be
     too coarse to resolve the refresh line at all (``f_tach_resolved``).
+
+    Read ``design_cond`` before reading ``scale_pct``. On a cruise window the
+    rate column and the intercept are nearly collinear (a rotor holds 85 rev/s
+    to about 1 %), so the systematic part is split between them arbitrarily and
+    ``scale_pct`` alone means nothing — ``d_mean`` and ``d_rms`` still do, and
+    :func:`tracking.telemetry_refit.scale_summary` gives the well-posed scale.
     """
     cand = np.atleast_2d(np.asarray(candidate, dtype=np.float64))
     ref = np.atleast_2d(np.asarray(reference, dtype=np.float64))
@@ -785,6 +791,14 @@ def residual_decompose(
         coef, *_ = np.linalg.lstsq(des, y, rcond=None)
         model = des @ coef
         resid = y - model
+        # The split between the scale column and the intercept is only
+        # identified when the rate actually varies. On a cruise window it does
+        # not (85 rev/s +- 1 %), the two columns are collinear, and least
+        # squares divides the systematic part between them arbitrarily —
+        # DREGON w01 reads scale -31.9 % with offset +27.1 rev/s, which is one
+        # number, not two. ``design_cond`` says when that has happened;
+        # ``tracking.telemetry_refit.scale_summary`` is the well-posed reading.
+        cond = float(np.linalg.cond(des / np.maximum(np.abs(des).max(axis=0), 1e-30)))
         smooth = brickwall(resid, cfg.smooth_cut_hz, fs)
         per_rotor.append(
             {
@@ -795,6 +809,7 @@ def residual_decompose(
                 "scale_pct": round(float(100.0 * coef[0]), 5),
                 "lag_s": round(float(-coef[1]), 5),
                 "offset_rev_s": round(float(coef[2]), 5),
+                "design_cond": round(cond, 1),
                 "resid_rms": round(float(np.sqrt(np.mean(resid**2))), 5),
                 "resid_max_abs": round(float(np.max(np.abs(resid))), 5),
                 "resid_slow_share": round(
@@ -817,6 +832,7 @@ def residual_decompose(
             "d_rms",
             "scale_pct",
             "lag_s",
+            "design_cond",
             "resid_rms",
             "tach_bound_frac",
             "tach_flatness",

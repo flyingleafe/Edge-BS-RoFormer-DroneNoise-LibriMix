@@ -91,6 +91,16 @@ from tracking.stages import (
     warp_stage,
     with_rps,
 )
+from tracking.telemetry_refit import (
+    RefitConfig,
+    RefitResult,
+    k_cap_for_error,
+    order_and_gaps,
+    presmooth,
+    refit_stage,
+    refit_window,
+    scale_summary,
+)
 from tracking.vk_blind_seeding import SeedConfig, blind_seed, stage_guard, whitened_logmag
 from tracking.vk_tracking import (
     VKConfig,
@@ -105,6 +115,14 @@ from tracking.vk_tracking import (
 from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
+    "RefitConfig",
+    "RefitResult",
+    "k_cap_for_error",
+    "order_and_gaps",
+    "presmooth",
+    "refit_stage",
+    "refit_window",
+    "scale_summary",
     "pulse_pair_bank",
     "pulse_pair",
     "window_cells",

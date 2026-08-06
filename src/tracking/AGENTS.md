@@ -12,6 +12,7 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 | `phase_increment_tracker.py` | Phase-increment ML instantaneous-frequency tracker: `pi_kalman_refine`, `zoom_lp_decimate`, `demod_bank` (the harmonic bank; public since phase 4b, `_demod_bank` stays as an alias for the tests and `scripts/tracking_ref.py`). `pi_kalman_refine(peel_audio=, pair_audio=)` is the PEEL SEAM — per-rotor / per-pair replacement audio for that pass only (what the flagship used to inject by monkeypatching two private functions). |
 | `comb_displacement.py` | Where the acoustic comb sits relative to a rotor-speed CARRIER, with the nulls that make the answer meaningful: `DisplacementConfig` (band / search window / gate geometry), `demod_comb_bank` (integer or half-integer carrier), `ridge_from_envelope`, `profile_prominence`, `pulse_pair`, `carrier_collision_mask` (the twin rule re-derived against the TRUE rotor lines, so an arbitrary carrier can be gated), `nearest_interloper_hz` (the same geometry as a DISTANCE, so a caller with its own band gets its own collision rule and can grade a contested harmonic by how close the interferer is), `weighted_stats`, `combine_k`, `measure_variant`. The carrier is one trajectory row, never "rotor i of the array" — that is what makes an off-comb, mismatched or fitted carrier expressible. Driver: `scripts/displacement/nullcontrol.py`. |
 | `fitness.py` | Goodness of fit of a CANDIDATE trajectory against the audio (issue 17 phase 6a): `FitnessConfig`, `window_cells` (the one demodulation), `score_cells` -> `FitnessScore` (three components — broadband residual, `k^2`-weighted phase-increment mean square, magnitude roughness), `Holdout` (held-out harmonics / channels / time blocks as a mask over `(channel, harmonic, block)` cells), `apply_control` (the four §B controls), `bootstrap_scores`, `residual_decompose` (scale/lag + the DREGON tachometer signature) and the `fitness_stage` adapter. FIXED degrees of freedom: the band, the block grid and the admission gate are pinned to the window's REFERENCE trajectory, so the carrier is the only input that changes. The acoustic components are permutation-invariant by construction — rotor identity is certified by the residual pairing, never by the fit. Driver: `scripts/telemetry_fitness.py`; design + acceptance: `docs/experiments/telemetry-fitness.md`. |
+| `telemetry_refit.py` | The FITTER phase 6a's harness was built to judge (issue 17 phase 6b): `RefitConfig`, `refit_window` -> `RefitResult`, `presmooth` (THE 5 Hz detrended low pass of the campaign — the 6a driver's `lp:` candidate calls it), `k_cap_for_error` / `advance_k` (the coarse-to-fine ladder, from the phase-wrap capture rule `k <= wrap_guard_rad fs_env / (2 pi e)` — never a flat `k_caps`), `scale_summary` (the well-posed scale, per-rotor mean shift plus one joint global LS scale), `order_and_gaps` (THE identity test) and the `refit_stage` adapter. One outer iteration IS one `pipelines.pi_kalman_arm_stage` application, so the LS peel, the peel seam and the twin rule are the flagship's, wired not rebuilt. Driver: `scripts/telemetry_refit.py`; design + acceptance: `docs/experiments/telemetry-fitness.md` § "The fitter". |
 | `order_domain.py` | The order domain: resample the audio uniformly in rotor PHASE, then FFT. `order_spectrum`, `comb_scan` (a whole comb scored at once over a scale grid, `half=True` for the half-integer null), `segment_comb_scan` (the same on short segments, which is the only reading that survives the sub-second high-k coherence time), `scan_summary`, `peak_orders`. No peak-search window anywhere — this is the estimator built to be immune to the other one's failure mode. Driver: `scripts/displacement/combscan.py`. Also the machinery issue #16 Tier 2 wants for removing the `K` factor from the demod cost. |
 | `demod_backend.py` | The one zoom-IFFT band-select kernel behind every demodulation, per backend: `zoom_bands` (generic), `demod_comb` (fused carrier + transform on device), `demod_backend` / `resolve` (selection). Leaf module — imports only numpy/scipy/torch. |
 | `phase_noise.py` | WP18 rank-one-plus-diagonal covariance of the per-harmonic rate opinions: `Arm`, `demod_rotor`, `arm_covariance`, `fit_rank_one`, `channel_coherence`. Measures the harmonic-common jitter term `sigma_J^2` against the per-harmonic terms `v_k` — the evidence behind the `VKConfig.freq_weight` shape. Its data side (recordings + window selection) is injected by `scripts/phase_noise_cov/windows.py`. |
@@ -158,6 +159,21 @@ Each application is `pi_kalman_arm_stage` — `make_peels` at the current track,
 
 Phase 6a of the same campaign added the JUDGE: `fitness.py` scores a candidate trajectory at fixed
 degrees of freedom, with held-out harmonics/channels/time and all four section-B controls
-(`docs/experiments/telemetry-fitness.md`). The fitter it is built for arrives in phase 6b.
+(`docs/experiments/telemetry-fitness.md`). Phase 6b added the FITTER it judges:
+`telemetry_refit.py`. The two never call each other's verdict — the fitter's only use of `fitness`
+is `residual_decompose`, which is a reading of `fit - telemetry`, not a score.
+
+Three things about the fitter that will bite a caller who does not read them:
+
+- **`residual_decompose`'s `scale_pct` is not identified on a cruise window.** The rate column and
+  the intercept of its `[r, dr/dt, 1]` design are collinear when a rotor holds 85 rev/s to 1 %, so
+  the systematic part is split arbitrarily (DREGON w01: `scale_pct -31.9 %` with `offset +27.1
+  rev/s`). `design_cond` says when. Read `telemetry_refit.scale_summary` instead.
+- **`presmooth` detrends before it filters.** `brickwall` is a whole-window FFT filter and a drifting
+  trajectory carries a step at the wrap; the bare filter made the synthetic carrier WORSE
+  (0.087 -> 0.112 rev/s). Both `presmooth` callers get the fix.
+- **The trajectory residual is not what the procedure buys.** The fitter's own per-frame noise is
+  comparable to the tachometer staircase it replaces. The systematic scale and the de-staircasing
+  are two corrections and are reported separately, exactly as issue 17 requires.
 
 

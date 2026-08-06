@@ -860,6 +860,8 @@ def pi_kalman_arm_stage(
     *,
     peel: bool = True,
     peel_mode: str = DEFAULT_PEEL_MODE,
+    peel_bw_hz: float = PEEL_BW_HZ,
+    peel_k_max: int = PEEL_K_MAX,
     n_rotors: int = LADDER_N_ROTORS,
     name: str | None = None,
     **pi_kwargs: Any,
@@ -873,6 +875,12 @@ def pi_kalman_arm_stage(
     same entry shape: peel/pi wall times, the per-rotor step statistics, the
     peel diagnostics (peeled arm only) and ``band_b0_final`` when the variant
     anneals its trust region. ``pi_kwargs`` go to the core.
+
+    ``peel_bw_hz`` / ``peel_k_max`` are the peel's own geometry, defaulting to
+    the frozen flagship values :data:`PEEL_BW_HZ` / :data:`PEEL_K_MAX`. They are
+    exposed because the peel's cost is independent of the tracker's harmonic
+    cap, so a caller running a short or cheap window (``tracking.telemetry_refit``,
+    its tests) must be able to shrink it without touching the frozen constants.
     """
 
     def run(frame: td.Frame) -> td.Frame:
@@ -886,7 +894,14 @@ def pi_kalman_arm_stage(
         tic = time.perf_counter()
         if peel:
             peel_audio, pair_audio, peel_diag = make_peels(
-                clip, r_cur, ft, sr, peel_mode, n_rotors=n_rotors
+                clip,
+                r_cur,
+                ft,
+                sr,
+                peel_mode,
+                n_rotors=n_rotors,
+                bw_hz=peel_bw_hz,
+                k_max=peel_k_max,
             )
             seam = {"peel_audio": peel_audio, "pair_audio": pair_audio}
         wall_peel = time.perf_counter() - tic

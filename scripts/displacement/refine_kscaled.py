@@ -40,6 +40,10 @@ import numpy as np  # noqa: E402
 
 from tracking.phase_increment_tracker import pi_kalman_refine  # noqa: E402
 
+# THE identity test of the campaign (order + inter-rotor gaps) lives in the
+# library now, beside the fitter that has to pass it.
+from tracking.telemetry_refit import order_and_gaps  # noqa: E402
+
 DEFAULT_ARMS = (
     "kscaled_b3:k_scaled:3:gate",
     "kscaled_b3_joint:k_scaled:3:joint",
@@ -49,13 +53,6 @@ DEFAULT_ARMS = (
 
 def _floats(text: str) -> tuple[float, ...]:
     return tuple(float(x) for x in text.split(",") if x.strip())
-
-
-def _order_gaps(r: np.ndarray) -> tuple[list[int], list[float]]:
-    """Rotor order by mean rate (fastest first) and the consecutive gaps in rev/s."""
-    m = r.mean(1)
-    order = [int(i) for i in np.argsort(-m)]
-    return order, [round(float(x), 4) for x in -np.diff(m[order])]
 
 
 def main() -> None:
@@ -86,7 +83,7 @@ def main() -> None:
     ft = np.arange(0, args.dur, 1.0 / args.fs_ft)
     t_aud = np.arange(audio.shape[1]) / sr
     r_init = np.stack([np.interp(ft, t_aud, g[r]) for r in range(g.shape[0])])
-    order0, gaps0 = _order_gaps(r_init)
+    order0, gaps0 = order_and_gaps(r_init)
     print(f"init rates {np.round(r_init.mean(1), 3)}  order {order0}  gaps {gaps0}", flush=True)
 
     caps = tuple(int(c) for c in _floats(args.k_caps))
@@ -119,7 +116,7 @@ def main() -> None:
         d = r_ref - r_init
         mean, rms = d.mean(1), d.std(1)
         pct = 100.0 * mean / r_init.mean(1)
-        order1, gaps1 = _order_gaps(r_ref)
+        order1, gaps1 = order_and_gaps(r_ref)
         out[tag] = {
             "band_mode": band_mode,
             "band_b0": b0,

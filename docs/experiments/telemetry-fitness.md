@@ -1,9 +1,12 @@
-# Trajectory goodness of fit — the harness (issue 17, phase 6a)
+# Trajectory goodness of fit — the harness (6a) and the fitter (6b), issue 17
 
 **Status:** harness built and verified (2026-08-06) · GitHub issue #17 §A-D ·
 library `src/tracking/fitness.py` · driver `scripts/telemetry_fitness.py` ·
 tests `tests/tracking/test_fitness.py` · smoke JSON
 `results/telemetry_fitness/{smoke,smoke_b0_0.25}/`.
+The **fitter** (phase 6b, issue #17 "Proposed procedure" steps 1-6) is built and
+verified on top of it — see "The fitter" below. No campaign has been run: that
+is phase 6c.
 
 This note records the DESIGN and the ACCEPTANCE of the harness, plus a smoke
 run. It does not interpret the DREGON numbers — that is phase 6c.
@@ -121,6 +124,13 @@ previous revolution, so a lag appears as a derivative term) and an offset. The
 residual after that model is tested against the DREGON tachometer's signature —
 bounded by half a 0.269 rev/s step, flat-ish to the 24.85 Hz refresh Nyquist,
 structure at 49.7 Hz — and every reading is a number, never a verdict.
+
+Read `design_cond` before `scale_pct`. Phase 6b found that on a cruise window the
+rate column and the intercept of that design are collinear, so the scale/offset
+split is not identified (DREGON w01: -29.5 % against +27 rev/s, `design_cond`
+122). `d_mean`, `d_rms` and `lag_s` are unaffected;
+`tracking.telemetry_refit.scale_summary` is the well-posed scale. See "Two
+defects the verification found" below.
 
 One honest limitation the harness reports rather than hides: the frozen
 protocol's frame grid is 0.032 s = **31.25 Hz**, so the 49.7 Hz refresh line is
@@ -269,4 +279,187 @@ python scripts/telemetry_fitness.py --smoke --jobs 6 --out results/telemetry_fit
 python scripts/telemetry_fitness.py --smoke --jobs 6 --b0 0.25 \
   --out results/telemetry_fitness/smoke_b0_0.25
 python scripts/telemetry_fitness.py --dataset all --jobs 8   # 15 windows x 3 x 4
+```
+
+---
+
+# The fitter (issue 17, phase 6b)
+
+**Status:** built and verified (2026-08-06) · library `src/tracking/telemetry_refit.py` ·
+driver `scripts/telemetry_refit.py` · tests `tests/tracking/test_telemetry_refit.py`
+(27 tests) · smoke JSON + candidate `.npz` in `results/telemetry_refit/smoke/`.
+
+Phase 6a built the judge. This is the thing it judges: the procedure of issue 17
+§ "Proposed procedure", all six steps. It is written as WIRING — the peel, the
+peel seam and the twin rule are the flagship's own, unchanged — plus the three
+things the issue says the displacement campaign was missing.
+
+## The six steps and where each one lives
+
+| step | issue 17 says | here |
+|---|---|---|
+| 1 | pre-smooth the carrier ~5 Hz | `presmooth(r, ft, cut_hz)` — the SAME function the 6a driver's `lp:` candidate now calls |
+| 2 | coarse-to-fine in k, never `k_caps=(80,80,80)` | `k_cap_for_error` / `advance_k`; one rung per outer iteration |
+| 3 | alternate with the envelope solve and the peel | one outer iteration IS one `pipelines.pi_kalman_arm_stage` application |
+| 4 | least-squares-projected subtraction | `peel_mode="ls"`, the existing default; asserted per iteration via `energy_ok` |
+| 5 | stop on convergence, not `n_iter=3` | `tol_rev_s` on `max \|dr\|` + an iteration cap, plus a plateau stop |
+| 6 | keep `pair_mode`, twins out of each other's peel | `pair_mode="joint"`; the peel rule verified by test, not rebuilt |
+
+## The advance rule (step 2), and why it is not the band
+
+The k-scaled band is the shape the campaign's only identity-preserving arm used,
+and its capture is `b0` rev/s at **every** harmonic by construction. So the band
+cannot be what makes one rung safer than the next — it is k-free. The quantity
+that is k-dependent is the phase wrap: a residual rate error `e` turns into an
+envelope phase increment `2 pi k e / fs_env` per sample, and `pi_kalman_refine`
+discards increments past `wrap_guard_rad`. The rung is therefore admissible while
+
+    k <= wrap_guard_rad * fs_env / (2 pi e)
+
+which at the defaults (2.8 rad, 62.5 Hz) is `k <= 27.9 / e`. The error estimate
+`e` starts at the prior `e0 = 1.5` rev/s (the issue's own 0.2-0.7 rev/s bias plus
+the staircase and the flight wander), and afterwards is the 95th percentile of
+the last application's `|dr|`. The **maximum** is not usable as an error estimate:
+on real audio it stays near 1 rev/s throughout, dominated by isolated tracker
+spikes. Growth is capped at `k_growth = 2` per rung and the rung never steps back
+down. Measured ladders: DREGON `18 -> 36 -> 69 -> 79 -> 87 -> 96`, FLY124
+`18 -> 36 -> 72 -> 96 -> 96`.
+
+## The stop (step 5)
+
+`tol_rev_s = 0.02` on `max |dr|` is the issue's criterion and it is implemented as
+written — and on real audio it never fires, because that maximum sits at
+0.45-1.3 rev/s while the trajectory has stopped moving in bulk. So there is a
+second stop: when the 95th-percentile update improves by less than `plateau_rel`
+(5 %) of the previous iteration's, the alternation has plateaued. Only the
+tolerance stop is reported as `converged`; `stop_reason` names which one fired,
+and every iteration's `delta_max` / `delta_q` / per-rotor `delta_rms` is recorded.
+Both smoke windows stop on `plateau`, at 6 and 5 iterations of a cap of 8.
+
+## What the procedure buys, and what it does not
+
+The trajectory residual is **not** the product. On the synthetic window the
+fitter's own per-frame noise is 0.05-0.15 rev/s — comparable to the 0.087 rev/s
+tachometer staircase it replaces — while the systematic scale is recovered to
+0.005 %. This is issue 17's own warning ("the refined tracks carry two distinct
+corrections and they must be reported separately") measured rather than repeated,
+and `test_residual_rms_is_reported_and_does_not_beat_the_staircase` pins it.
+
+## Two defects the verification found (both fixed)
+
+**`residual_decompose`'s `scale_pct` is not identified on a cruise window.** Its
+per-rotor design is `[r, dr/dt, 1]`, and a rotor holding 86 rev/s to about 1 %
+makes the rate column and the intercept collinear, so least squares splits the
+systematic part between them arbitrarily. DREGON w01 reads `scale_pct -29.5 %`
+with `offset +27 rev/s` — one number, not two. `residual_decompose` now reports
+`design_cond` (122 on DREGON, 43 on FLY124) so the reading labels itself, and
+`telemetry_refit.scale_summary` gives the two well-posed alternatives:
+
+- `per_rotor_pct` = `100 d_mean / mean_rate`, no regression at all;
+- `global_pct` = ONE shared scale over all four rotors, `100 sum(d r)/sum(r r)`,
+  well conditioned because the rotors sit at genuinely different rates.
+
+**A whole-window FFT brickwall rings on a drifting trajectory.** `brickwall`
+treats the series as periodic, and a window whose rate drifts end to end carries
+a step at the wrap. On the synthetic staircase the bare filter made the carrier
+WORSE — 0.087 -> 0.112 rev/s. `presmooth` now removes the least-squares line
+first (0.087 -> 0.075), and since 6a's `lp:` candidate calls `presmooth`, both
+halves of the campaign get the fix. **The `lp:5` rows of the 6a smoke tables
+above predate it.**
+
+## Acceptance: synthetic recovery (the verification of 6b)
+
+`data_processing.rps_synthesis.synth_comb_window`, 4 s, 2 mics, `k <= 30`,
+6 dB comb-to-noise, rotor means 84.8 / 66.1 / 97.3 / 90.7 rev/s (no twin pair, so
+this tests the ladder rather than the twin logic). Truth known exactly; the
+carrier handed to the fitter is the truth corrupted the two ways DREGON's
+telemetry is corrupted. Fitter at `k_top = 24`, 4 iterations, 3 s per case.
+
+| corruption | recovered-vs-TRUE global scale | per-rotor | reported scale vs the carrier | trajectory rms vs truth |
+|---|---|---|---|---|
+| `x 1.005` | **+0.0012 %** | -0.0002 .. +0.0050 % | **-0.4963 %** (injected -0.4975) | 0.050-0.151 |
+| staircase 0.269 rev/s @ 49.7 Hz | **+0.0012 %** | -0.0009 .. +0.0050 % | **+0.0014 %** (correctly ~0) | 0.054-0.154 (carrier: 0.082-0.091) |
+| both | **+0.0019 %** | -0.0015 .. +0.0055 % | **-0.5036 %** | 0.053-0.152 |
+
+Read: the scale is recovered two orders of magnitude inside the 0.1 % bar, the
+zero-mean staircase is correctly read as no systematic shift, and the per-frame
+trajectory is not improved. Rotor order and every inter-rotor gap survive
+(gaps within 10 %).
+
+## Acceptance: the two real-data smokes
+
+`python scripts/telemetry_refit.py --smoke --jobs 2`, 6 FFT workers, this laptop:
+**~150 s per window**, both in ~4.5 min wall. No remote job was needed.
+`arm = main` (the procedure exactly as the issue states it), cap 8 iterations.
+
+| | DREGON `free-flight_nosource_room1__w01` | FLY124 `w02` |
+|---|---|---|
+| rotor means, rev/s | 86.10 / 75.54 / 85.68 / 74.72 | 90.39 / 74.07 / 79.14 / 75.72 |
+| k ladder | 18, 36, 69, 79, 87, 96 | 18, 36, 72, 96, 96 |
+| stop | plateau, 6 iterations | plateau, 5 iterations |
+| **global scale** | **-0.395 %** | **-0.066 %** |
+| per-rotor scale | -0.449 / -0.473 / -0.271 / -0.369 % | -0.143 / -0.072 / +0.044 / -0.062 % |
+| `d_rms` (the de-staircasing part) | 0.883 | 0.671 |
+| `resid_rms` after the systematic model | 0.720 | 0.663 |
+| rotor order kept | yes | yes |
+| gap ratios (fit / raw) | **0.70** / 1.01 / 0.87 | 0.99 / 1.02 / 1.00 |
+| `design_cond` of the 6a regression | 122 | 43 |
+
+Three readings, none of them a verdict — the verdict needs 6a's controls over
+the whole window set, which is 6c:
+
+1. **The FLY124 negative control passes.** The identical procedure returns
+   **-0.066 %** where the labels were recalibrated, against the issue's published
+   -0.063 % from a completely different estimator. It is 6x smaller than the
+   DREGON reading, and the per-rotor values straddle zero. This is the check the
+   issue calls "the single most valuable", and the fitter is not simply flexible:
+   the flexibility would have shown up here.
+2. **DREGON reads -0.395 %**, inside the -0.19..-0.55 % band the other estimators
+   span and larger than the campaign's own `B0=1` arm (-0.313 %), which had none
+   of steps 1, 2, 3 or 5.
+3. **The twin gap is the caveat.** DREGON's r0-r2 gap goes 0.422 -> 0.296 rev/s
+   (ratio **0.70**) while every FLY124 gap moves less than 2.4 %. Rotor order
+   survives, so this is not the wide-fixed-band collapse (which sign-flipped the
+   gap), but it is the same direction and it is **not controlled**: FLY124 has no
+   pair closer than 1.65 rev/s, so it has no twin gap to collapse. The comparison
+   proves nothing about twins. 6c must separate "the twins genuinely converge" from
+   "the fitter pulls them together" — and per 6a that can only be settled on the
+   residual pairing, never on the acoustic fit.
+
+## The candidate file format (the 6a <-> 6b seam)
+
+One `.npz` per window, written by the refit driver, read by the fitness driver:
+
+    results/telemetry_refit/<out>/traj/<arm>/<window_key>.npz
+      ft      (N,)    frame times, audio-relative seconds
+      r_raw   (R, N)  the untouched telemetry
+      r_init  (R, N)  the pre-smoothed carrier the fit started from
+      r_fit   (R, N)  the refined trajectory, on this window's own ft grid
+
+6a's candidate language already had the hook (`file:PATH:KEY` loads
+`np.load(PATH)[KEY]`). The only extension is that **`{key}` in a candidate spec is
+replaced by the window key**, so one spec scores a whole directory:
+
+```bash
+python scripts/telemetry_refit.py --dataset all --arms main --jobs 4
+python scripts/telemetry_fitness.py --dataset all \
+  --candidates 'telemetry,file:results/telemetry_refit/traj/main/{key}.npz:r_fit'
+```
+
+Verified end to end on the smoke pair.
+
+## Arms (for 6c, not run here)
+
+Each named arm of `scripts/telemetry_refit.py` turns exactly ONE step off, so the
+campaign can say what each step bought instead of shipping a bundle: `main`,
+`nosmooth` (step 1), `flatk` (step 2 — the old `k_caps=(80,80,80)`), `nopeel`
+(step 3), `gate` (step 6), and `b0_3` (the campaign's other identity-preserving
+band).
+
+## Reproduce
+
+```bash
+python -m pytest tests/tracking/test_telemetry_refit.py -q
+TRACKING_FFT_WORKERS=6 python scripts/telemetry_refit.py --smoke --jobs 2 \
+  --out results/telemetry_refit/smoke
 ```
