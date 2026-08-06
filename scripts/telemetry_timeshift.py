@@ -496,6 +496,98 @@ def _best_tau(taus: np.ndarray, y: np.ndarray) -> tuple[float | None, str]:
     return _argmin_parabola(taus * 1e3, -np.asarray(y, dtype=np.float64))
 
 
+def joint_section(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The (tau, scale) surface: where its maximum is, and whether the two mix.
+
+    Reported as three things, because one of them alone would mislead. The
+    joint maximum is the answer. The best tau AT EACH scale, and the best scale
+    AT EACH tau, are the marginals: if the ridge of the surface is flat in one
+    of them, the two corrections are trading against each other and neither
+    marginal is a measurement of anything.
+    """
+    out: dict[str, Any] = {}
+    for grp in sorted({_group(r) for r in rows}):
+        for ctl in CONTROLS:
+            sel = [r for r in rows if _group(r) == grp and r["control"] == ctl]
+            if not sel:
+                continue
+            taus = np.array(sorted({r["tau_s"] for r in sel}))
+            scales = np.array(sorted({r["scale"] for r in sel}))
+            surf = np.full((scales.size, taus.size), np.nan)
+            for si, s in enumerate(scales):
+                sub = [r for r in sel if r["scale"] == s]
+                if not sub:
+                    continue
+                _, mat = _profile(sub, lambda r: r["pooled"]["ridge"])
+                surf[si] = np.nanmean(mat, axis=0)
+            if not np.isfinite(surf).any():
+                continue
+            si, ti = np.unravel_index(int(np.nanargmax(surf)), surf.shape)
+            out[f"{grp}|{ctl}"] = {
+                "scales_pct": np.round((scales - 1.0) * 100, 4).tolist(),
+                "grid_ms": np.round(taus * 1e3, 3).tolist(),
+                "surface": np.round(surf, 4).tolist(),
+                "argmax_scale_pct": round(float((scales[si] - 1.0) * 100), 4),
+                "argmax_tau_ms": round(float(taus[ti] * 1e3), 3),
+                "ridge_max": round(float(surf[si, ti]), 4),
+                "ridge_at_origin": round(
+                    float(surf[int(np.argmin(np.abs(scales - 1.0))), int(np.argmin(np.abs(taus)))]),
+                    4,
+                ),
+                # The marginals, sub-grid.
+                "best_tau_per_scale_ms": [_best_tau(taus, surf[i])[0] for i in range(scales.size)],
+                "best_scale_per_tau_pct": [
+                    _argmin_parabola((scales - 1.0) * 100, -surf[:, i])[0] for i in range(taus.size)
+                ],
+            }
+    return out
+
+
+def gain_section(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Does a window's own tau* track its |dr/dt|, which is the instrument gain?
+
+    A window whose trajectory barely moves cannot see a lag at all, so its tau*
+    is noise. This is the check that the pooled number is carried by the windows
+    that can see it, and it is also the honest reason a per-window CI is wide.
+    """
+    out: dict[str, Any] = {}
+    for grp in sorted({_group(r) for r in rows}):
+        for sc in sorted({r["scale"] for r in rows}):
+            sel = [
+                r for r in rows if _group(r) == grp and r["control"] == "on" and r["scale"] == sc
+            ]
+            if len(sel) < 3:
+                continue
+            taus = np.array(sorted({r["tau_s"] for r in sel}))
+            keys = sorted({r["key"] for r in sel})
+            _, mat = _profile(sel, lambda r: r["pooled"]["ridge"])
+            drdt = {r["key"]: r["drdt_rms"] for r in sel}
+            per = [
+                (keys[i], drdt[keys[i]], _best_tau(taus, mat[i])[0], float(np.nanmax(mat[i])))
+                for i in range(mat.shape[0])
+            ]
+            ok = [(g, t) for _, g, t, _ in per if t is not None]
+            r_gain = (
+                round(float(np.corrcoef([g for g, _ in ok], [t for _, t in ok])[0, 1]), 4)
+                if len(ok) >= 3
+                else None
+            )
+            out[f"{grp}|scale{(sc - 1) * 100:+.3f}"] = {
+                "per_window": [
+                    {"key": k, "drdt_rms": g, "tau_ms": t, "ridge_max": rm} for k, g, t, rm in per
+                ],
+                "r_tau_vs_drdt": r_gain,
+                # Weighted by the gain, because a window's ability to see tau IS
+                # its |dr/dt|; reported beside the unweighted mean, never alone.
+                "tau_ms_gain_weighted": round(
+                    float(np.sum([g * t for g, t in ok]) / np.sum([g for g, _ in ok])), 3
+                )
+                if ok
+                else None,
+            }
+    return out
+
+
 def ridge_section(rows: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {"global": {}, "per_mic": {}, "per_rotor": {}}
     groups = sorted({_group(r) for r in rows})
@@ -702,6 +794,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for r in rows
         },
         "ridge": ridge,
+        "joint": joint_section(rows),
+        "gain": gain_section(rows),
         "per_mic_vs_geometry": per_mic_section(ridge, geo),
     }
 
@@ -721,6 +815,35 @@ def print_ridge(summary: dict[str, Any]) -> None:
             f"{tag:44s} {val:>9s} {span:>22s} {m['depth_db']:9.3f} "
             f"{m['ridge_at_best']:11.3f} {m['ridge_at_zero']:9.3f}"
         )
+    j = summary.get("joint", {})
+    if j:
+        print(
+            f"\n{'group|control':26s} {'tau* ms':>8s} {'scale* %':>9s} {'ridge':>7s} "
+            f"{'ridge@(0,0)':>12s}  best-tau per scale (ms)"
+        )
+        for tag in sorted(j):
+            m = j[tag]
+            per = " ".join(
+                f"{v:+.0f}" if v is not None else "—" for v in m["best_tau_per_scale_ms"]
+            )
+            print(
+                f"{tag:26s} {m['argmax_tau_ms']:+8.0f} {m['argmax_scale_pct']:+9.3f} "
+                f"{m['ridge_max']:7.3f} {m['ridge_at_origin']:12.3f}  {per}"
+            )
+    g = summary.get("gain", {})
+    for tag in sorted(g):
+        if g[tag]["r_tau_vs_drdt"] is None:
+            continue
+        print(
+            f"\ngain [{tag}] r(tau*, |dr/dt|) = {g[tag]['r_tau_vs_drdt']:+.3f}, "
+            f"gain-weighted tau* = {g[tag]['tau_ms_gain_weighted']} ms"
+        )
+        for w in g[tag]["per_window"]:
+            print(
+                f"   {w['key']:40s} |dr/dt| {w['drdt_rms']:6.1f}  tau* "
+                f"{(f'{w["tau_ms"]:+.0f}') if w['tau_ms'] is not None else '—':>6s} ms  "
+                f"ridge_max {w['ridge_max']:+.2f}"
+            )
     pm = summary.get("per_mic_vs_geometry", {})
     for tag, m in pm.items():
         if tag == "geometry" or not isinstance(m, dict) or "pearson_r" not in m:
