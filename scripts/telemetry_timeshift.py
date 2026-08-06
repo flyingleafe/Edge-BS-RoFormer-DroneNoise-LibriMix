@@ -316,6 +316,7 @@ def tdoa_worker(unit: Unit) -> dict[str, Any]:
         cfg=cfg,
         half=(control == "offcomb"),
         dr_step=float(p["dr_step"]),
+        gate=bool(p.get("gate", True)),
         demod=demod_comb_bank,
         blocks_fn=_blocks,
         admission_fn=admission,
@@ -327,6 +328,7 @@ def tdoa_worker(unit: Unit) -> dict[str, Any]:
         "dataset": "fly124" if key.startswith("FLY124") else "dregon",
         "control": control,
         "candidate": str(p["candidate"]),
+        "gate": bool(p.get("gate", True)),
         "rotor_mean_rev_s": [round(float(v), 3) for v in win["r"].mean(axis=1)],
         "prep_sha1": prep_sha1(key),
         **out,
@@ -343,6 +345,7 @@ def measure_tdoa(
     half: bool = False,
     dr_step: float = 0.02,
     ref_ch: int = 0,
+    gate: bool = True,
     demod: Any = None,
     blocks_fn: Any = None,
     admission_fn: Any = None,
@@ -388,6 +391,14 @@ def measure_tdoa(
         _, admit_ridge, _ = admission_fn(
             ref, ft, rot, blocks, band, cfg=cfg, rate_ref=rate_ref, dc_hz=dc_hz
         )
+        if not gate:
+            # The ungated arm. DREGON's ridge gate leaves 4-8 harmonic pairs,
+            # and the delay's own error falls as 1/sqrt(pairs), so the gate is
+            # worth turning off ONCE to see whether coverage or the estimator
+            # is the limit. It admits contested harmonics, whose phase is a
+            # mixture of two rotors at two directions — a bias, reported as a
+            # separate arm rather than folded into the measurement.
+            admit_ridge = np.ones_like(admit_ridge)
         n_ch = z.shape[0]
         # (C, K) complex cross-spectrum against the reference microphone,
         # accumulated over blocks at each block's own line bin.
@@ -578,55 +589,102 @@ def per_mic_section(ridge: dict[str, Any], geo: dict[str, Any]) -> dict[str, Any
     return out
 
 
+#: Which rig each dataset's microphones belong to. FLY124 is not a DREGON
+#: control here: it is a SECOND rig with its own geometry, and it is the
+#: positive control for the estimator itself — its rotors are 1.65 rev/s apart,
+#: so its comb is resolvable where DREGON's twin pair is not.
+RIG_OF = {"dregon": "DREGON", "fly124": "michaels"}
+
+
+def _rig_pred(rig: str, ref: int = 0) -> np.ndarray | None:
+    """``(R, C)`` predicted inter-mic delay in ms, relative to ``ref``."""
+    from data_processing.sources import geometry
+
+    try:
+        mic, rot = geometry(rig)
+    except Exception:
+        return None
+    d = np.linalg.norm(np.asarray(mic)[:, None, :] - np.asarray(rot)[None, :, :], axis=-1)
+    return ((d - d[ref]) / C_SOUND * 1e3).T
+
+
+def _fit(pred: np.ndarray, meas: np.ndarray) -> tuple[float, float]:
+    m = np.isfinite(pred) & np.isfinite(meas)
+    if m.sum() < 4 or np.std(pred[m]) == 0:
+        return float("nan"), float("nan")
+    return (
+        float(np.corrcoef(pred[m], meas[m])[0, 1]),
+        float(np.polyfit(pred[m], meas[m], 1)[0]),
+    )
+
+
 def tdoa_section(rows: list[dict[str, Any]], geo: dict[str, Any]) -> dict[str, Any]:
-    """Measured inter-mic delays against the geometry prediction, per control."""
-    out: dict[str, Any] = {}
-    if not geo.get("available"):
-        return {"geometry": geo}
-    d = np.asarray(geo["d_m"], dtype=np.float64)  # (8, 4)
-    for ctl in CONTROLS:
-        sel = [r for r in rows if r["control"] == ctl and r["dataset"] == "dregon"]
-        if not sel:
+    """Measured inter-mic delays against each rig's own geometry prediction.
+
+    Two things are asked of every block, and the second exists because the
+    first has a trap. (1) Does the identity rotor labelling correlate? (2) Does
+    ANY of the 24 rotor labellings, and is that best-of-24 beyond what
+    relabelling noise produces? Rotor slot ``j`` of the telemetry is not
+    guaranteed to be rotor ``j`` of the geometry file, so the search is
+    necessary — and a best-of-24 without its own null is exactly the kind of
+    selected maximum this campaign has already had to withdraw once. The null
+    permutes the MICROPHONE labels, which destroys the spatial pattern and
+    keeps every value, then takes the same best-of-24.
+    """
+    import itertools
+
+    out: dict[str, Any] = {"geometry": geo}
+    for ds, rig in RIG_OF.items():
+        pred = _rig_pred(rig)
+        if pred is None:
             continue
-        pred_all, meas_all, wt_all = [], [], []
-        for r in sel:
-            dm = np.asarray(
-                [[np.nan if v is None else v for v in row] for row in r["delay_ms"]],
-                dtype=np.float64,
-            )  # (R, C)
-            w = np.asarray(r["weight"], dtype=np.float64)
-            n_r, n_c = dm.shape
-            ref = int(r["ref_ch"])
-            for j in range(n_r):
-                for c in range(n_c):
-                    if c == ref or not np.isfinite(dm[j, c]):
-                        continue
-                    pred_all.append((d[c, j] - d[ref, j]) / C_SOUND * 1e3)
-                    meas_all.append(dm[j, c])
-                    wt_all.append(w[j, c])
-        if len(pred_all) < 4:
-            continue
-        pa, ma = np.asarray(pred_all), np.asarray(meas_all)
-        rr = float(np.corrcoef(pa, ma)[0, 1])
-        slope, icept = np.polyfit(pa, ma, 1)
-        out[ctl] = {
-            "n_points": len(pa),
-            "pearson_r": round(rr, 4),
-            "slope": round(float(slope), 4),
-            "slope_predicted": 1.0,
-            "intercept_ms": round(float(icept), 4),
-            "rms_resid_ms": round(float(np.sqrt(np.mean((ma - (slope * pa + icept)) ** 2))), 4),
-            "pred_range_ms": [round(float(pa.min()), 4), round(float(pa.max()), 4)],
-            "meas_range_ms": [round(float(ma.min()), 4), round(float(ma.max()), 4)],
-            "ci_slope": boot_ci(
-                [
-                    float(np.polyfit(pa[i], ma[i], 1)[0])
-                    for i in [
-                        np.random.default_rng(s).integers(0, pa.size, pa.size) for s in range(200)
-                    ]
+        for ctl in CONTROLS:
+            for regime in (None, "cruise"):
+                sel = [
+                    r
+                    for r in rows
+                    if r["dataset"] == ds
+                    and r["control"] == ctl
+                    and (regime is None or r.get("regime") == regime)
                 ]
-            ),
-        }
+                if len(sel) < 2:
+                    continue
+                arr = np.asarray(
+                    [
+                        [[np.nan if v is None else v for v in row] for row in r["delay_ms"]]
+                        for r in sel
+                    ],
+                    dtype=np.float64,
+                )  # (W, R, C)
+                med = np.nanmedian(arr, axis=0)
+                perms = list(itertools.permutations(range(pred.shape[0])))
+                stats = [_fit(pred[list(p)], med) for p in perms]
+                best = int(np.nanargmax([s[0] for s in stats]))
+                rng = np.random.default_rng(0)
+                null = []
+                for _ in range(400):
+                    sh = med[:, rng.permutation(med.shape[1])]
+                    null.append(np.nanmax([_fit(pred[list(p)], sh)[0] for p in perms]))
+                nullmax = np.asarray(null)
+                r_id, s_id = _fit(pred, med)
+                r_b, s_b = stats[best]
+                out[f"{ds}|{ctl}|{regime or 'all'}"] = {
+                    "rig": rig,
+                    "n_windows": len(sel),
+                    "median_n_pairs": int(np.median([np.median(r["n_pairs"]) for r in sel])),
+                    "identity": {"pearson_r": round(r_id, 4), "slope": round(s_id, 4)},
+                    "best_perm": list(perms[best]),
+                    "best": {"pearson_r": round(r_b, 4), "slope": round(s_b, 4)},
+                    "slope_predicted": 1.0,
+                    "null_best_of_24": {
+                        "mean": round(float(np.nanmean(nullmax)), 4),
+                        "p95": round(float(np.nanpercentile(nullmax, 95)), 4),
+                        "p_value": round(float(np.mean(nullmax >= r_b)), 4),
+                    },
+                    "window_sd_ms": round(float(np.nanmean(np.nanstd(arr, axis=0))), 4),
+                    "pred_spread_ms": round(float(np.nanmax(pred) - np.nanmin(pred)), 4),
+                    "meas_spread_ms": round(float(np.nanmax(med) - np.nanmin(med)), 4),
+                }
     return out
 
 
@@ -676,16 +734,19 @@ def print_ridge(summary: dict[str, Any]) -> None:
 
 
 def print_tdoa(summary: dict[str, Any]) -> None:
-    for ctl, m in summary.get("tdoa", {}).items():
-        if not isinstance(m, dict) or "pearson_r" not in m:
+    print(
+        f"\n{'block':30s} {'rig':9s} {'W':>2s} {'k-pairs':>7s} {'r(id)':>7s} "
+        f"{'r(best)':>8s} {'slope':>7s} {'perm':14s} {'null p95':>8s} {'p':>6s} {'sd ms':>7s}"
+    )
+    for tag, m in summary.get("tdoa", {}).items():
+        if not isinstance(m, dict) or "best" not in m:
             continue
-        ci = m["ci_slope"]
-        span = f"[{ci['lo']:+.3f},{ci['hi']:+.3f}]" if ci.get("lo") is not None else "—"
+        n = m["null_best_of_24"]
         print(
-            f"tdoa[{ctl:8s}] n={m['n_points']:4d}  r={m['pearson_r']:+.3f}  "
-            f"slope={m['slope']:+.3f} {span} (predicted 1.0)  "
-            f"resid {m['rms_resid_ms']:.4f} ms  "
-            f"pred {m['pred_range_ms']}  meas {m['meas_range_ms']}"
+            f"{tag:30s} {m['rig']:9s} {m['n_windows']:2d} {m['median_n_pairs']:7d} "
+            f"{m['identity']['pearson_r']:+7.3f} {m['best']['pearson_r']:+8.3f} "
+            f"{m['best']['slope']:+7.3f} {str(m['best_perm']):14s} "
+            f"{n['p95']:8.3f} {n['p_value']:6.3f} {m['window_sd_ms']:7.3f}"
         )
 
 
@@ -709,6 +770,13 @@ def main() -> None:
     ap.add_argument("--controls", default=",".join(CONTROLS))
     ap.add_argument("--candidate", default=f"lp:5+scale:{SCALE_6D}", help="tdoa mode carrier")
     ap.add_argument("--dr-step", type=float, default=0.02, help="tdoa line-scan step, rev/s")
+    ap.add_argument(
+        "--tdoa-gate",
+        default="ridge",
+        choices=("ridge", "none"),
+        help="tdoa: 'ridge' keeps the phase-6d gate (4-8 harmonic pairs on DREGON); "
+        "'none' takes every harmonic, trading twin contamination for pair count",
+    )
     ap.add_argument("--pilot", action="store_true", help="3 windows, 1 scale, on-comb only")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--build-preps", action="store_true")
@@ -773,6 +841,7 @@ def main() -> None:
                     "control": ctl,
                     "candidate": args.candidate,
                     "dr_step": args.dr_step,
+                    "gate": args.tdoa_gate == "ridge",
                     **PROTO,
                 },
             )
