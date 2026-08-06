@@ -126,6 +126,49 @@ claims in this project (`docs/experiments/dregon-comb-displacement.md`).
 E6 measure. Readout 1 would exonerate an arm that learned "smear when the input
 jitters" rather than "attenuate"; readout 2 would not.
 
+### What the readout was checked against
+
+- **It reads the truth back flat.** `--self-test` pushes the TRUE comb through
+  readout 1 and requires 0 dB at every `k`: worst per-`k` bias **0.008 dB** over
+  `k = 1..80`. The measurement chain — band width, floor subtraction, scale
+  estimate — contributes nothing to any arm's number.
+- **The normalization is gain-free.** `_spectrum` carries a `2/N^2` factor so a
+  sinusoid of amplitude `A` integrates to `A^2/2`, matching the profile's
+  analytic `a_k * gain` with no fitted gain in between (verified to 0.0002 dB on
+  a synthetic line). The first version omitted it and every arm read about
+  +95 dB.
+- **Track frames are centred.** Frame `f` spans `[f*hop, f*hop + n_fft)`, so its
+  rate is the one at its centre. The first version point-sampled at `f*hop`; that
+  64 ms lead displaces the read bin at `k = 80` by more than the staircase does.
+- **The `f0` grid stays inside the training marginal.** The first grid started at
+  64 rev/s, but the trajectories span 69.6-97.1 rev/s (p5-p95 = 75.6-89.9), so
+  two of four grid points were measuring *extrapolation* rather than the learned
+  line amplitude — worth 0.3 dB on arm S's top band on their own. The grid is now
+  76/80/84/88, inside the bulk and still making every `k*f0*dur` integral so each
+  harmonic is periodic in the analysis window.
+
+### The pressure the arms are responding to
+
+Model-free (`--pressure`): render the frozen comb at the truth and at each arm's
+label, and score the comb-masked `|Delta log-mag|` between them. That is what the
+objective charges an arm for *keeping* full-amplitude lines.
+
+| arm | k1-9 | k10-24 | k25-49 | k50-80 |
+|---|---|---|---|---|
+| `exact` (measure's own floor) | 0.01 | 0.03 | 0.04 | 0.20 |
+| `scale`, raw | 0.91 | 4.82 | 12.93 | 18.74 |
+| `tach`, raw | 0.94 | 5.07 | 12.71 | 16.22 |
+| `scale` / `exact`, scale-compensated | 0.01 | 0.03 | 0.04 | 0.20 |
+| **`tach`, scale-compensated (the staircase alone)** | 0.06 | 0.23 | 0.57 | **1.18** |
+| **`tach_presmooth`, scale-compensated** | 0.05 | 0.17 | 0.33 | **0.66** |
+
+Two readings because the constant bias and the staircase are displacements of
+very different size: 0.542 % of 6.4 kHz is 35 Hz (4.5 bins at `n_fft` 2048) while
+the staircase's 0.106 rev/s is 8.5 Hz (1.1 bins). The bias is the larger term by
+about 4x — *if* the model cannot absorb it. Whether it can is arm S's question,
+and it is why arm S is the difference between reading B as "the staircase" and
+reading it as "the staircase plus an unabsorbed bias".
+
 ## Results
 
 _Pending — jobs in flight._
