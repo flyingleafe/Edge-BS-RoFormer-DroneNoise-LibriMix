@@ -40,14 +40,17 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]  # this checkout (code)
 sys.path.insert(0, str(ROOT / "src"))
 
-from telemetry_fitness import ALL_WINDOWS, DREGON_WINDOWS, FLY124_WINDOWS  # noqa: E402
+from telemetry_fitness import (  # noqa: E402
+    ALL_WINDOWS,
+    DREGON_WINDOWS,
+    FLY124_WINDOWS,
+    build_preps,
+    prep_sha1,
+    resolve_prep_dir,
+)
 
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
-from utils.paths import get_data_root  # noqa: E402
 
-PREP = get_data_root() / (
-    "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
-)
 OUT_DEFAULT = "results/telemetry_refit"
 
 #: Named arms — each is a ``RefitConfig`` field override. ``main`` is the
@@ -85,7 +88,7 @@ def _load(key: str) -> dict[str, Any]:
     """The frozen prep-cache window: audio, frame grid, telemetry, regime."""
     import numpy as np
 
-    with np.load(PREP / f"{key}.npz") as z:
+    with np.load(resolve_prep_dir() / f"{key}.npz") as z:
         return {
             "audio": np.asarray(z["audio"], np.float64),
             "ft": np.asarray(z["ft"], np.float64),
@@ -123,6 +126,9 @@ def worker(unit: Unit) -> dict[str, Any]:
         "regime": win["regime"],
         "arm": arm,
         "candidate_spec": f"file:{path}:r_fit",
+        # The windows may have been rebuilt from the dataset pin on a cluster
+        # worktree; this says whether they are the same windows byte for byte.
+        "prep_sha1": prep_sha1(key),
     }
 
 
@@ -211,6 +217,12 @@ def main() -> None:
     ap.add_argument("--k-top", type=int, default=None, help="ceiling of the k ladder")
     ap.add_argument("--b0", type=float, default=None, help="k-scaled band, rev/s of capture")
     ap.add_argument("--smoke", action="store_true", help="the two smoke windows only")
+    ap.add_argument(
+        "--build-preps",
+        action="store_true",
+        help="materialize the protocol windows first (REQUIRED on a cluster: the "
+        "prep cache is a gitignored artifact, so a fresh worktree has no windows)",
+    )
     ap.add_argument("--out", default=OUT_DEFAULT)
     add_gridrun_args(ap, jobs=2)
     args = ap.parse_args()
@@ -236,6 +248,8 @@ def main() -> None:
         "k_top": args.k_top,
         "band_b0": args.b0,
     }
+    if args.build_preps:
+        build_preps(sorted(keys), resolve_prep_dir())
     units = [Unit(f"{k}__{a}", {"key": k, "arm": a, **common}) for k in sorted(keys) for a in arms]
     print(f"[telemetry_refit] {len(units)} units", flush=True)
     res = gridrun_from_args(args, units, worker, args.out, summarize=summarize)

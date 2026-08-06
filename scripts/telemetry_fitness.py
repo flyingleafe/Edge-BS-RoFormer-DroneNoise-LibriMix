@@ -14,6 +14,9 @@ question:
   lp:5             telemetry low-passed at 5 Hz (the pre-smoothing of issue 17
                    step 1 — the 0.269 rev/s / 49.7 Hz staircase is measurement
                    noise, not signal)
+  lp:5+scale:0.996 specs compose with ``+``, left to right — the pre-smoothed
+                   carrier under a pure global scale. A profile over that one
+                   parameter is the campaign's fixed-DOF scale estimator
   file:PATH:KEY    an ``.npz`` of fitted trajectories on the window's frame grid
                    (the phase 6b hook). ``{key}`` inside PATH is replaced by the
                    window key, so ONE spec scores a whole directory of per-window
@@ -35,19 +38,28 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]  # this checkout (code)
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "scripts"))  # beatvk_eval, for --build-preps
 
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
 from utils.paths import get_data_root  # noqa: E402
 
-PREP = get_data_root() / (
+#: The pulled local prep cache of the beat-VK band-admission job.
+PULLED_PREP = get_data_root() / (
     "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
 )
+#: Where ``--build-preps`` writes when there is no pulled cache — a fresh
+#: cluster checkout has neither, and the cache is gitignored.
+BUILT_PREP = Path("results/telemetry_prep")
+#: The frozen protocol's dataset pin (the manifest of the pulled cache), so a
+#: rebuilt window is the same window and not merely a window of the same name.
+PREP_PIN = "54849c13ed3a29fa3516503ac291539b3fb2004b22b8b0a549827d0a60c06b86"
 OUT_DEFAULT = "results/telemetry_fitness"
 CONTROLS = ("on", "offcomb", "mismatch", "permute")
 #: The control name the library knows ``on`` by.
@@ -107,11 +119,97 @@ PROTOCOL = {
 # data + candidates
 
 
+def resolve_prep_dir() -> Path:
+    """Where the frozen protocol windows live, in order of preference.
+
+    ``TELEMETRY_PREP_DIR`` wins, then the pulled band-admission cache (this
+    laptop), then the ``--build-preps`` output. A cluster worktree has only the
+    last one, because the cache is a gitignored artifact.
+    """
+    env = os.environ.get("TELEMETRY_PREP_DIR")
+    if env:
+        return Path(env)
+    return PULLED_PREP if PULLED_PREP.exists() else BUILT_PREP
+
+
+def build_preps(keys: list[str], dst: Path, version: str | None = PREP_PIN) -> None:
+    """Materialize missing protocol windows from the pinned dataset.
+
+    The same slice as ``scripts/beatvk_vk_arms.build_preps`` — protocol resample
+    to 16 kHz, ``tracking.protocols.slice_window`` — minus the rotor/mic weight
+    file, which needs the raw DREGON coordinates and which nothing in this
+    campaign reads. REQUIRED on a cluster: without it every unit dies on
+    ``FileNotFoundError``, and gridrun turns a unit exception into a ``.err``
+    file rather than a visible failure.
+    """
+    import numpy as np
+
+    want: dict[str, set[int]] = {}
+    for key in keys:
+        rid, _, idx = key.partition("__w")
+        want.setdefault(rid, set()).add(int(idx))
+    missing = {
+        rid: sorted(i for i in idxs if not (dst / f"{rid}__w{i:02d}.npz").exists())
+        for rid, idxs in want.items()
+    }
+    missing = {rid: idxs for rid, idxs in missing.items() if idxs}
+    if not missing:
+        print(f"[prep] {dst}: complete", flush=True)
+        return
+
+    from beatvk_eval import SR, load_recordings
+
+    from data_processing.frames import resample_audio_series
+    from tracking.protocols import BEATVK, iter_windows, slice_window
+
+    dst.mkdir(parents=True, exist_ok=True)
+    for rec in load_recordings(version, set(missing), keep_audio=True):
+        rid = rec["recording_id"]
+        specs = {s.index: s for s in iter_windows(BEATVK, {rid: {"windows": rec["windows"]}})}
+        audio16 = np.atleast_2d(
+            np.asarray(resample_audio_series(rec["audio"], SR).data, dtype=np.float32)
+        )
+        for widx in missing[rid]:
+            spec = specs[widx]
+            seg, ft, r_meas, edge = slice_window(audio16, SR, spec, rec["ts"], rec["vals"])
+            assert r_meas is not None
+            np.savez(
+                dst / f"{rid}__w{widx:02d}.npz",
+                allow_pickle=False,
+                start_s=np.float64(spec.start_s),
+                end_s=np.float64(spec.end_s),
+                regime=np.str_(spec.regime),
+                audio=seg,
+                ft=ft,
+                r_meas=r_meas,
+                edge=edge,
+            )
+        rec["audio"] = None
+        print(f"[prep] {rid}: {len(missing[rid])} windows -> {dst}", flush=True)
+
+
+def prep_sha1(key: str) -> str:
+    """Fingerprint of a window's audio + telemetry.
+
+    A rebuilt cache must be the SAME window as the pulled one; this travels in
+    every unit's JSON so the comparison is a diff of two numbers, not a claim.
+    """
+    import hashlib
+
+    import numpy as np
+
+    with np.load(resolve_prep_dir() / f"{key}.npz") as z:
+        h = hashlib.sha1()
+        for name in ("audio", "ft", "r_meas"):
+            h.update(np.ascontiguousarray(z[name]).tobytes())
+    return h.hexdigest()[:12]
+
+
 def _load(key: str) -> dict[str, Any]:
     """The frozen prep-cache window: audio, frame grid, telemetry, regime."""
     import numpy as np
 
-    with np.load(PREP / f"{key}.npz") as z:
+    with np.load(resolve_prep_dir() / f"{key}.npz") as z:
         return {
             "audio": np.asarray(z["audio"], np.float64),
             "ft": np.asarray(z["ft"], np.float64),
@@ -127,12 +225,23 @@ def build_candidate(spec: str, r: Any, ft: Any, key: str = "") -> Any:
     of fitted trajectories is ONE spec (see the ``file:`` line of the module
     docstring). The substitution happens before parsing, so it never changes
     what a spec without the placeholder means.
+
+    Specs compose with ``+``, applied left to right: ``lp:5+scale:0.996`` is the
+    pre-smoothed carrier under a pure global rate scale. That family is the
+    campaign's ONE-parameter scale estimator — a profile over ``s`` has a single
+    degree of freedom, so unlike a fitted trajectory it cannot buy a better
+    score with flexibility.
     """
     import numpy as np
 
     from tracking.telemetry_refit import presmooth
 
     spec = spec.replace("{key}", key)
+    if "+" in spec:
+        out = r
+        for part in spec.split("+"):
+            out = build_candidate(part, out, ft, key)
+        return out
     if spec == "telemetry":
         return r
     kind, _, rest = spec.partition(":")
@@ -306,6 +415,12 @@ def main() -> None:
     ap.add_argument("--boot", type=int, default=200, help="bootstrap resamples (0 disables)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true", help="the two smoke windows only")
+    ap.add_argument(
+        "--build-preps",
+        action="store_true",
+        help="materialize the protocol windows first (REQUIRED on a cluster: the "
+        "prep cache is a gitignored artifact, so a fresh worktree has no windows)",
+    )
     ap.add_argument("--out", default=OUT_DEFAULT)
     add_gridrun_args(ap, jobs=6)
     args = ap.parse_args()
@@ -324,6 +439,9 @@ def main() -> None:
         ap.error(f"unknown window {bad!r}; known: {', '.join(ALL_WINDOWS)}")
     for bad in [c for c in ctls if c not in CONTROLS]:
         ap.error(f"unknown control {bad!r}; known: {', '.join(CONTROLS)}")
+    if args.build_preps:
+        wanted = sorted({k for key in keys for k in (key, PARTNER[key])})  # mismatch partners too
+        build_preps(wanted, resolve_prep_dir())
 
     common = {
         "k_min": args.k_min,
