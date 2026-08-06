@@ -92,8 +92,9 @@ python scripts/displacement/comb_explorer.py \
 
 Nothing assumes 4 rotors or 8 microphones: both counts come from the data.
 DREGON uses `motors_measured` where the recording has it, else `motors_command`.
-The page header names the channel it used, and marks `motors_command` as a
-commanded value, not a measurement.
+The page names the channel it used in its provenance panel (the collapsed block
+below the strips), and marks `motors_command` as a commanded value, not a
+measurement. There is no header text: the top of the page is the selectors.
 
 ### Microphone channels — the payload trade
 
@@ -149,13 +150,22 @@ without a rebuild. The selected carrier is drawn solid (plus its dashed scaled
 copy) and every other carrier dotted, and it is the carrier the strips are
 demodulated by; the strips also draw every other carrier as an offset curve.
 
-**Every requested microphone channel is in the SAME page**, switched in-page.
+**EVERY microphone of the array is in the SAME page**, switched in-page: a
+spectrogram costs about a hundred kilobytes, so `channels=` defaults to `"all"`
+and all 8 mics of a DREGON array are selectable without a rebuild. The
+demodulated STRIPS are the megabyte-scale product, so they are built for
+`strip_channels=` only — default `"auto"`, the average plus the loudest single
+mic. A channel with no strips draws its spectrogram and its combs, and the strip
+area names the channels that do carry strips. Pass `strip_channels="all"` to pay
+for all of them. Both keywords also take `"avg"`, `"0,3,avg"` or `[0, 3]`.
+
 The CLI splits channels across sibling files because a written page has a 9 MB
 budget; a notebook has none, so `max_mb` defaults to `None` and the only cost is
 the size of the cell output — which is printed, and warned about above
-`warn_mb` (30 MB), because notebook outputs are saved into the `.ipynb`.
-`channels=` takes `"auto"` (the default: `avg` plus the loudest single mic),
-`"all"`, `"avg"`, `"0,3,avg"` or `[0, 3]`.
+`warn_mb` (30 MB), because notebook outputs are saved into the `.ipynb`. The
+iframe starts at `height=900` and sizes itself to its content up to
+`max_height=2200`, so the cell is stable and bounded whatever the content
+does.
 
 Event-sampled telemetry is linearly interpolated onto the audio grid, but NOT
 across a hole: a gap longer than `gap_tol` (0.5 s) inside the window, or a
@@ -227,10 +237,18 @@ self-checks are meaningful), and then drives every render path:
 - both spectrogram transforms, at several frequency ranges and time markers
 - both bandwidth extremes, the sliders, the presets, the selects, the per-rotor
   k field and the "in view" button
-- an out-of-range k, which must leave a VISIBLE placeholder
+- an out-of-range k, which must leave a VISIBLE placeholder; so must a channel
+  that carries a spectrogram and no strips
 - the k set must be contiguous; every carrier must carry a trajectory of the
   right shape for every rotor; every channel option must either be in the
   payload or point at a sibling file that exists
+- the drawn spectrogram must be the SELECTED channel's own image (its decoded
+  mean against the mean the payload declares)
+- "reset overlays" must leave zero dashed and zero dotted strokes on both the
+  spectrogram and the spectrum cut, and the solid comb still there
+- 25 redraws must leave the iframe height unchanged, the height must follow the
+  content, and it must be clamped at `data-max-height` — the page grew the
+  notebook cell without a stop until 2026-08-06
 
 It takes a widget's output as well as a CLI page: an `srcdoc="..."` iframe is
 unwrapped and the page inside it is driven the same way. Write the widget's HTML

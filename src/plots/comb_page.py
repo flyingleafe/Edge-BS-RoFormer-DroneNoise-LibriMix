@@ -65,7 +65,7 @@ from scipy.signal import resample_poly
 
 ROOT = Path(__file__).resolve().parents[2]
 
-CODE_VERSION = "comb_page.py v2 (2026-08-05)"
+CODE_VERSION = "comb_page.py v3 (2026-08-06)"
 
 #: Strip envelope decimation.  44100 / 32 = 1378 Hz keeps +-689 Hz, i.e.
 #: +-689/k rev/s of shaft-rate offset — +-7.25 rev/s even at k = 95, so the
@@ -138,9 +138,17 @@ class PageOptions:
     strips' TIME axis until it fits — set it to ``None`` (the widget default)
     when there is no budget, because a notebook holds the payload in the
     ``.ipynb`` rather than in a file that has to be moved around.
+
+    ``channels`` are the microphone channels the page can DISPLAY: each one
+    costs two small spectrogram images, so every microphone of an array fits.
+    ``strip_channels`` (``None`` = all of them) are the ones that additionally
+    carry demodulated strips, which cost megabytes each — that is the knob
+    that keeps "every mic is selectable" from meaning "every mic is paid for
+    in full".
     """
 
     channels: str | int | list | tuple = "avg"
+    strip_channels: str | int | list | tuple | None = None
     ks: str = "1-100"
     k_max: int = 100
     segs: tuple[float, ...] = (0.1, 0.5, 2.0)
@@ -520,6 +528,11 @@ def build_payload(
 
     rates = carriers[0].rates
     chans = parse_channels(opts.channels, sl.n_mics)
+    if opts.strip_channels is None:
+        strip_chans = list(chans)
+    else:
+        strip_chans = parse_channels(opts.strip_channels, sl.n_mics)
+        chans = chans + [c for c in strip_chans if c not in chans]
     k_ceil = min(opts.k_max, int(np.floor((sl.sr / 2) / max(float(rates.max()), 1e-6))))
     ks = parse_ks(opts.ks, k_ceil)
     if not len(ks):
@@ -539,7 +552,7 @@ def build_payload(
     nf, nt = specs[chans[0]]["stft"].shape
 
     cache_dir = Path(opts.cache_dir) if opts.cache_dir else DEFAULT_CACHE
-    stacks: dict[str, dict[str, np.ndarray]] = {ch: {} for ch in chans}
+    stacks: dict[str, dict[str, np.ndarray]] = {ch: {} for ch in strip_chans}
     spans: dict[str, tuple[float, float]] = {}
     cache_src = ""
     for car in carriers:
@@ -549,7 +562,7 @@ def build_payload(
         cache_src = cache_src_c if not cache_src else f"{cache_src}; {car.label}: {cache_src_c}"
         for r in range(n_rotors):
             for si, seg in enumerate(opts.segs):
-                for ch in chans:
+                for ch in strip_chans:
                     t_s = time.time()
                     st, ta, tb = strip_stack(
                         z_by[r],
@@ -583,7 +596,7 @@ def build_payload(
         a, b, c = key.split("|")
         return f"{a}|{b}|{remap[int(c)]}"
 
-    for ch in chans:
+    for ch in strip_chans:
         stacks[ch] = {rekey(k): v for k, v in stacks[ch].items()}
     spans = {rekey(k): v for k, v in spans.items()}
     segs = [opts.segs[i] for i in live_segs]
@@ -596,7 +609,7 @@ def build_payload(
     for _ in range(8):
         blobs = {}
         worst = 0
-        for ch in chans:
+        for ch in strip_chans:
             blobs[ch] = {}
             for key, v in stacks[ch].items():
                 th = (
@@ -627,8 +640,9 @@ def build_payload(
     def on_cols(g: np.ndarray) -> list[list[float]]:
         return [[round(float(x), 4) for x in np.interp(t, t_full, g[r])] for r in range(n_rotors)]
 
+    strip_ref = blobs[strip_chans[0]]
     cols_note = ", ".join(
-        f"{int(s * 1000)} ms {blobs[chans[0]][f'{0}|{carriers[0].id}|{i}']['nc']} col"
+        f"{int(s * 1000)} ms {strip_ref[f'{0}|{carriers[0].id}|{i}']['nc']} col"
         for i, s in enumerate(segs)
     )
     nav = [{"id": c, "label": channel_label(c, sl.n_mics), "file": None} for c in chans]
@@ -658,13 +672,20 @@ def build_payload(
         ),
         "budget": (
             f"{n_rotors} rotors x {len(ks)} harmonics x {len(segs)} segment lengths "
-            f"({cols_note}) x {len(carriers)} carrier(s), "
+            f"({cols_note}) x {len(carriers)} carrier(s) x {len(strip_chans)} strip channel(s) "
+            f"({', '.join(strip_chans)}), "
             f"{opts.strip_rows} offset rows, black/white points "
             f"p{opts.strip_floor:g}/p{opts.strip_top:g}, "
             + ("no size cap" if opts.max_mb is None else f"cap {opts.max_mb:.0f} MB")
         ),
         "channel_trade": (
             f"{len(chans)} microphone channel(s) in ONE page, switched above without a rebuild"
+            + (
+                f"; demodulated strips for {', '.join(strip_chans)} only "
+                "(a strip stack costs megabytes, a spectrogram does not)"
+                if len(strip_chans) < len(chans)
+                else ""
+            )
             if len(chans) > 1
             else "one microphone channel in this page"
         ),
@@ -731,7 +752,9 @@ def split_payload(payload: dict, page_file: Callable[[str], str]) -> dict[str, d
             meta=meta,
             chans=nav,
             spec={cid: payload["spec"][cid]},
-            strips={cid: payload["strips"][cid]},
+            strips=(
+                {cid: payload["strips"][cid]} if cid in payload["strips"] else {}
+            ),  # a channel can carry a spectrogram and no strips
         )
     return out
 
@@ -764,6 +787,8 @@ button{background:var(--code);color:var(--fg);border:1px solid var(--line);borde
 button:hover{border-color:var(--acc)}
 canvas{display:block;width:100%;border-radius:4px}
 .mono{font-family:ui-monospace,monospace;font-size:.8rem}
+details.panel>summary{cursor:pointer;color:var(--mut);font-size:.8rem;font-family:ui-monospace,monospace}
+details.panel[open]>summary{margin-bottom:.4rem}
 .sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px}
 #strips{display:grid;gap:5px}
 .stripwrap{position:relative}
@@ -772,15 +797,12 @@ canvas{display:block;width:100%;border-radius:4px}
 .warn{color:var(--acc);font-weight:600}
 """
 
-BODY = r"""<h1>Comb explorer — <span class="mono">__TITLE__</span></h1>
-<p class="sub">Spectrogram with per-rotor harmonic overlays. Solid = the SELECTED carrier <span class="mono">k&middot;g(t)</span>; dashed = the selected carrier &times; the scale factor below; dotted = every other carrier the page carries. Drag on the spectrogram to move the time marker. Strips at the bottom are the demodulated envelope of each selected harmonic, frequency axis rescaled to shaft-rate offset <span class="mono">(f&minus;kg)/k</span> in rev/s, so the carrier is the centre line. A pure SCALE error is one slider setting that lands every dashed line on every tooth at every time; a SHAPE error is not.</p>
-
-<div class="panel"><div class="prov" id="prov"></div></div>
-
-<div class="panel"><div class="row">
+BODY = r"""<div class="panel"><div class="row">
 <span><label>microphone channel</label> <select id="chan"></select></span>
+<span><label>rotor-speed series (carrier)</label> <select id="car"></select></span>
 <span><label>transform (spectrogram + cut)</label> <select id="tf"><option value="stft">STFT</option><option value="sst">synchrosqueezed</option></select></span>
-<span><label>scale factor <b id="sfv" class="mono">1.00000</b></label><br><input type="range" id="sf" min="0.985" max="1.015" step="0.00002" value="1"><button id="sfr">reset</button><button id="sfc">0.99458</button></span>
+<span><label><input type="checkbox" id="alt" checked> other carriers (dotted)</label></span>
+<span><label>scale factor <b id="sfv" class="mono">1.00000</b></label><br><input type="range" id="sf" min="0.985" max="1.015" step="0.00002" value="1"><button id="sfr" title="scale factor back to 1 and every other-carrier overlay off">reset overlays</button><button id="sfc">0.99458</button></span>
 </div></div>
 
 <div class="panel"><div class="row">
@@ -800,12 +822,15 @@ BODY = r"""<h1>Comb explorer — <span class="mono">__TITLE__</span></h1>
 
 <div class="panel"><div class="row">
 <span><label>strips for rotor</label> <select id="srot"></select></span>
-<span><label>carrier</label> <select id="car"></select></span>
 <span><label>strip segment</label> <select id="seg"></select></span>
 <span><label>strip bandwidth &plusmn;<b id="bwv" class="mono">1.50</b> rev/s</label><br><input type="range" id="bw" min="0.15" max="6" step="0.05" value="1.5"></span>
 <span class="mono" id="stripnote" style="color:var(--mut)"></span>
 </div></div>
 <div id="strips"><p class="sub">decoding strips&hellip;</p></div>
+
+<details class="panel" id="provbox"><summary>what this shows, and where every number came from</summary>
+<p class="sub">Spectrogram with per-rotor harmonic overlays. Solid = the SELECTED carrier <span class="mono">k&middot;g(t)</span>; dashed = the selected carrier &times; the scale factor; dotted = every other carrier the page carries. Drag on the spectrogram to move the time marker. Strips are the demodulated envelope of each selected harmonic, frequency axis rescaled to shaft-rate offset <span class="mono">(f&minus;kg)/k</span> in rev/s, so the carrier is the centre line. A pure SCALE error is one slider setting that lands every dashed line on every tooth at every time; a SHAPE error is not.</p>
+<div class="prov" id="prov"></div></details>
 """
 
 SCRIPT = r"""<script>
@@ -823,7 +848,8 @@ const COL = ["#4da3ff","#ff6b6b","#57d68b","#c48cff","#ffb347","#4dd0e1","#f0629
 const CARCOL = ["#ffd166","#8bd3dd","#f78fb3","#b5e48c","#e0aaff"];
 const DEC = {};            /* channel id -> {stft, sst, strips:{key:Uint8Array}} */
 let chan=CH0, ready=false, rotOn=[], ksPer=[], stripRot=0, tf="stft",
-    carrier=D.carriers[0].id, sf=1, fl=0, fh=D.fmax, tIdx=Math.floor(NT/2), segIdx=0, bw=1.5;
+    carrier=D.carriers[0].id, sf=1, fl=0, fh=D.fmax, tIdx=Math.floor(NT/2), segIdx=0, bw=1.5,
+    alt=true;   /* draw every OTHER carrier as a dotted overlay */
 const KI={}; KS.forEach((k,i)=>{KI[k]=i;});
 const defK=[...new Set([2,4,Math.round(KMAX*0.70),Math.round(KMAX*0.75)])].filter(k=>KI[k]!==undefined);
 for(let r=0;r<NROT;r++){ rotOn.push(r==0); ksPer.push(defK.length?defK.slice():[KS[0]]); }
@@ -859,7 +885,8 @@ renderProv();
 
 /* ---- controls ---- */
 const chanSel=$("chan");
-D.chans.forEach(c=>{const o=document.createElement("option");o.value=c.id;o.textContent=c.label;
+D.chans.forEach(c=>{const o=document.createElement("option");o.value=c.id;
+  o.textContent=c.label+(D.spec[c.id]&&!(D.strips[c.id]&&Object.keys(D.strips[c.id]).length)?"  (no strips)":"");
   if(c.id==chan)o.selected=true;chanSel.appendChild(o);});
 chanSel.value=chan;
 chanSel.onchange=e=>{ const id=e.target.value, nav=D.chans.find(c=>c.id==id)||{};
@@ -895,6 +922,10 @@ const carSel=$("car");
 D.carriers.forEach(c=>{const o=document.createElement("option");o.value=c.id;o.textContent=c.label;carSel.appendChild(o);});
 carSel.onchange=e=>{carrier=e.target.value;draw();drawStrips();};
 if(D.carriers.length<2) carSel.disabled=true;
+const altEl=$("alt");
+if(altEl){ alt=altEl.checked!==false;
+  altEl.onchange=e=>{alt=!!e.target.checked;draw();drawStrips();}; }
+if(D.carriers.length<2){ alt=false; if(altEl){altEl.checked=false;altEl.disabled=true;} }
 const tfSel=$("tf");
 tfSel.onchange=e=>{tf=e.target.value;draw();};
 $("stripnote").textContent=
@@ -968,13 +999,16 @@ function blit(ctx,src,w,h,W,H,gamma){
   ctx.drawImage(oc,0,0,w,h,0,0,W,H);
 }
 
-/* Every carrier is drawn: the SELECTED one solid (plus its dashed scaled copy),
-   every other one dotted.  With a single carrier this is exactly the original
-   telemetry-only page. */
+/* The SELECTED carrier is drawn solid, plus its dashed scaled copy while the
+   scale factor is off 1, plus — while the "other carriers" box is ticked —
+   every other carrier dotted.  Both extra families are OVERLAYS: "reset
+   overlays" clears the two of them together, so the page goes back to one
+   solid comb per rotor and nothing else.  With a single carrier this is
+   exactly the original telemetry-only page. */
 function combLines(r){
-  const out=[[D.traj.G[carrier][r],1,"solid",COL[r%COL.length]],
-             [D.traj.G[carrier][r],sf,"dash",COL[r%COL.length]]];
-  D.carriers.forEach(c=>{ if(c.id!=carrier) out.push([D.traj.G[c.id][r],1,"dot",COL[r%COL.length]]); });
+  const out=[[D.traj.G[carrier][r],1,"solid",COL[r%COL.length]]];
+  if(Math.abs(sf-1)>1e-9) out.push([D.traj.G[carrier][r],sf,"dash",COL[r%COL.length]]);
+  if(alt) D.carriers.forEach(c=>{ if(c.id!=carrier) out.push([D.traj.G[c.id][r],1,"dot",COL[r%COL.length]]); });
   return out;
 }
 
@@ -992,7 +1026,6 @@ function draw(){
   const T=D.traj.t;
   for(let r=0;r<NROT;r++){ if(!rotOn[r])continue;
     for(const [g,mult,style,colr] of combLines(r)){
-      if(style=="dash"&&Math.abs(sf-1)<1e-9)continue;
       for(const k of ksPer[r]){
         cx.beginPath(); cx.strokeStyle=colr;
         cx.lineWidth=style=="solid"?1.1:1.6;
@@ -1022,7 +1055,6 @@ function drawSlice(){
   sx.stroke();
   for(let r=0;r<NROT;r++){ if(!rotOn[r])continue;
     for(const [gt,mult,style,colr] of combLines(r)){
-      if(style=="dash"&&Math.abs(sf-1)<1e-9)continue;
       const g=gt[tIdx];
       const kk=Math.min(Math.ceil(fh/Math.max(g*mult,1e-6)), 4000);
       for(let k=1;k<=kk;k++){
@@ -1040,8 +1072,12 @@ function drawStrips(){
   const dec=DEC[chan];
   if(!ready||!dec){host.innerHTML='<p class="sub">decoding strips&hellip;</p>';return;}
   const key=stripRot+"|"+carrier+"|"+segIdx, meta=(D.strips[chan]||{})[key], arr=dec.strips[key];
-  if(!meta||!arr){ missing(host,`no strips for rotor ${stripRot}, carrier ${carrier}, `+
-    `${D.segs[segIdx]*1000} ms — this channel carries ${Object.keys(D.strips[chan]||{}).length} strip stacks`); return; }
+  if(!meta||!arr){
+    const withStrips=Object.keys(D.strips).filter(c=>Object.keys(D.strips[c]||{}).length);
+    missing(host,`no strips for ${chanLabel(chan)}, rotor ${stripRot}, carrier ${carrier}, `+
+    `${D.segs[segIdx]*1000} ms — demodulated strips are carried for `+
+    `${withStrips.map(chanLabel).join(", ")||"no channel"} `+
+    `(every channel has its own spectrogram; rebuild with strip_channels= for more)`); fitHeight(); return; }
   const cname=(D.carriers.find(c=>c.id==carrier)||{}).label||carrier;
   for(const k of ksPer[stripRot]){ const kidx=KI[k];
     if(kidx===undefined){ missing(host,`k=${k} not available — this page carries k=${KMIN}..${KMAX}`+
@@ -1072,10 +1108,11 @@ function drawStrips(){
     /* every OTHER carrier, as an offset curve against the selected one: with
        the telemetry carrier a refined track should follow the ridge; with the
        refined carrier the ridge should be flat at 0 and telemetry should be
-       the one that wanders */
+       the one that wanders.  Same overlay switch as the dotted combs, so
+       "reset overlays" clears these too. */
     const span=Math.max(D.spec[chan].t1-D.spec[chan].t0,1e-6);
     let ci=0;
-    for(const c2 of D.carriers){ if(c2.id==carrier) continue;
+    for(const c2 of (alt?D.carriers:[])){ if(c2.id==carrier) continue;
       const a=D.traj.G[c2.id][stripRot], b=D.traj.G[carrier][stripRot];
       g.strokeStyle=CARCOL[ci%CARCOL.length]; ci++;
       g.globalAlpha=0.7; g.setLineDash([]); g.lineWidth=1; g.beginPath();
@@ -1087,14 +1124,38 @@ function drawStrips(){
   }
   fitHeight();
 }
-/* In a notebook this page lives in a srcdoc iframe; grow the frame to the
-   content instead of leaving the reader a 400 px porthole. */
-function fitHeight(){ try{ const fe=window.frameElement;
-  if(fe) fe.style.height=(document.documentElement.scrollHeight+24)+"px"; }catch(e){} }
+/* In a notebook this page lives in a srcdoc iframe; size the frame to the
+   content instead of leaving the reader a 400 px porthole.
+   The height is taken from the BODY box and never from the scroll height of
+   the document element: that value is at least the viewport, which inside an
+   iframe IS the frame's own height, so writing it back into the frame added
+   its padding again on every redraw and the notebook cell grew without a stop.  The result is idempotent (a no-op when nothing moved) and
+   clamped, so a tall strip stack scrolls inside the frame instead of pushing
+   the cell off the screen. */
+const MINH=240;
+function frameEl(){ try{ return window.frameElement||null; }catch(e){ return null; } }
+function maxH(){ const fe=frameEl();
+  const v=fe&&fe.dataset?+fe.dataset.maxHeight:0; return v>0?v:2200; }
+function contentHeight(){
+  const b=document.body;
+  if(!b) return MINH;
+  const r=b.getBoundingClientRect?b.getBoundingClientRect():null;
+  const h=(r&&r.height)||b.scrollHeight||b.offsetHeight||0;
+  return Math.ceil(h)+2;
+}
+function fitHeight(){ const fe=frameEl(); if(!fe||!fe.style) return;
+  const want=Math.max(MINH,Math.min(maxH(),contentHeight()));
+  if(Math.abs(parseFloat(fe.style.height||"0")-want)>2) fe.style.height=want+"px"; }
+const provBox=$("provbox"); if(provBox&&provBox.addEventListener) provBox.addEventListener("toggle",fitHeight);
 
 const sfEl=$("sf");
 sfEl.oninput=e=>{sf=+e.target.value;$("sfv").textContent=sf.toFixed(5);draw();drawStrips();};
-$("sfr").onclick=()=>{sfEl.value=1;sfEl.oninput({target:sfEl});};
+/* Reset clears EVERY overlay this page draws on top of the solid comb: the
+   dashed scaled copy AND the dotted other-carrier traces (and their offset
+   curves in the strips).  Clearing only the slider left the dotted lines on
+   the figure with no control that removed them. */
+$("sfr").onclick=()=>{ sfEl.value=1; sf=1; $("sfv").textContent=(1).toFixed(5);
+  alt=false; const a=$("alt"); if(a) a.checked=false; draw(); drawStrips(); };
 $("sfc").onclick=()=>{sfEl.value=0.99458;sfEl.oninput({target:sfEl});};
 flEl.max=fhEl.max=Math.round(D.fmax); fhEl.value=Math.round(D.fmax);
 function fr(){ fl=Math.min(+flEl.value,+fhEl.value-100); fh=Math.max(+fhEl.value,fl+100);
@@ -1115,14 +1176,17 @@ addEventListener("resize",()=>{draw();drawStrips();});
 
 /* Test seam: the verification harness drives these instead of guessing at
    scope, so a render path that only a human could reach is still exercised. */
-const api={draw,drawStrips,drawSlice,ensure,setChannel,uid:UID,root:ROOT,
+const api={draw,drawStrips,drawSlice,ensure,setChannel,fitHeight,uid:UID,root:ROOT,
   set:o=>{if("tf"in o)tf=o.tf; if("carrier"in o)carrier=o.carrier; if("stripRot"in o)stripRot=o.stripRot;
     if("segIdx"in o)segIdx=o.segIdx; if("bw"in o)bw=o.bw; if("sf"in o)sf=o.sf; if("tIdx"in o)tIdx=o.tIdx;
     if("ks"in o)ksPer[stripRot]=o.ks; if("fl"in o)fl=o.fl; if("fh"in o)fh=o.fh;
-    if("rotOn"in o)rotOn=o.rotOn;},
-  state:()=>({tf,chan,carrier,stripRot,segIdx,bw,sf,tIdx,fl,fh,ready,
+    if("rotOn"in o)rotOn=o.rotOn; if("alt"in o)alt=!!o.alt;},
+  state:()=>({tf,chan,carrier,stripRot,segIdx,bw,sf,tIdx,fl,fh,ready,alt,
     strips:DEC[chan]?Object.keys(DEC[chan].strips).length:0,
-    channels:Object.keys(DEC).length}),
+    channels:Object.keys(DEC).length,
+    /* the identity of the pixel block on screen: it MUST change with the
+       microphone channel, or the selector is decoration */
+    specMean:DEC[chan]&&DEC[chan][tf]?meanOf(DEC[chan][tf]):null}),
   D};
 if(typeof window!=="undefined"){ window.__comb=api;
   window.__combs=window.__combs||{}; window.__combs[UID]=api; }

@@ -24,11 +24,15 @@ Two things are discovered from the Frame instead of being configured:
 one drives the combs and the strip demodulation is a dropdown in the page, so
 telemetry vs command vs a refined track is a by-eye comparison, not a rebuild.
 
-**Every requested microphone channel ships into the SAME page** and the channel
-selector is in-page state.  The CLI splits channels across sibling files
-because a page it writes has a 9 MB budget; a notebook has none, so the only
-cost is the size of the cell output — which is reported, and warned about above
-``warn_mb`` because the payload is saved into the ``.ipynb``.
+**EVERY microphone of the array ships into the SAME page** and the channel
+selector is in-page state: a spectrogram costs about a hundred kilobytes, so
+all eight mics of a DREGON array are selectable without a rebuild.  The
+demodulated STRIPS are the megabyte-scale product, so they are built for
+``strip_channels`` only (default: the average plus the loudest mic); ask for
+more with ``strip_channels="all"``.  The CLI splits channels across sibling
+files because a page it writes has a 9 MB budget; a notebook has none, so the
+only cost is the size of the cell output — which is reported, and warned about
+above ``warn_mb`` because the payload is saved into the ``.ipynb``.
 
 The page itself (payload builder + the one HTML/JS template) is
 :mod:`plots.comb_page`, shared with ``scripts/displacement/comb_explorer.py``.
@@ -337,7 +341,8 @@ def carrier_from_series(
 
 
 def _auto_channels(audio: np.ndarray) -> list[str]:
-    """``avg`` plus the loudest single microphone — one page, two viewpoints."""
+    """``avg`` plus the loudest single microphone — the two viewpoints that are
+    worth the megabytes of a demodulated strip stack."""
     n = int(audio.shape[0])
     if n == 1:
         return ["mic00"]
@@ -354,7 +359,8 @@ def build_widget_payload(
     t0: float = 0.0,
     dur: float | None = None,
     absolute: bool = False,
-    channels: str | int | list | tuple = "auto",
+    channels: str | int | list | tuple = "all",
+    strip_channels: str | int | list | tuple = "auto",
     rps_keys: list[str] | None = None,
     rps_range: tuple[float, float] = (0.0, 150.0),
     gap_tol: float = 0.5,
@@ -420,9 +426,16 @@ def build_widget_payload(
         for i, key in enumerate(found.rps_keys)
     ]
     chans = _auto_channels(audio) if channels == "auto" else parse_channels(channels, sl.n_mics)
+    strips_on = (
+        _auto_channels(audio)
+        if strip_channels == "auto"
+        else parse_channels(strip_channels, sl.n_mics)
+    )
+    strips_on = [c for c in strips_on if c in chans] or [chans[0]]
 
     opts = PageOptions(
         channels=chans,
+        strip_channels=strips_on,
         ks=ks,
         k_max=k_max,
         segs=tuple(segs),
@@ -449,9 +462,11 @@ def build_widget_payload(
             "rps_note": carriers[0].note,
             "channel_label": channel_label(chans[0], sl.n_mics),
             "channel_trade": (
-                f"{len(chans)} microphone channel(s) in ONE page (a notebook has no "
-                "page-size budget), switched above without a rebuild; every discovered "
-                f"rotor-speed track ({', '.join(found.rps_keys)}) is a selectable carrier"
+                f"every one of the {len(chans)} microphone channel(s) is selectable in ONE "
+                f"page; demodulated strips for {', '.join(strips_on)} (a strip stack costs "
+                "megabytes, a spectrogram does not — pass strip_channels= for more); every "
+                f"discovered rotor-speed track ({', '.join(found.rps_keys)}) is a selectable "
+                "carrier"
             ),
         },
         verbose=verbose,
@@ -462,7 +477,8 @@ def build_widget_payload(
 def widget_html(
     payload: dict,
     *,
-    height: int = 1500,
+    height: int = 900,
+    max_height: int = 2200,
     uid: str | None = None,
 ) -> str:
     """The payload as ONE iframe element, self-contained and offline.
@@ -474,14 +490,21 @@ def widget_html(
     collide.  The base64 payload contains no character that HTML-attribute
     escaping expands, so the escaping costs only the few hundred structural
     quotes of the JSON and the script.
+
+    ``height`` is the height before the page has measured itself; the page then
+    sizes the frame to its own content, never past ``max_height`` (which it
+    reads from ``data-max-height``).  The cap is what keeps the cell BOUNDED:
+    a tall strip stack scrolls inside the frame instead of pushing the rest of
+    the notebook off the screen.
     """
     uid = uid or ("c" + uuid.uuid4().hex[:10])
     page = render_html(payload, uid=uid)
     doc = "<!doctype html><meta charset='utf-8'>" + page
     src = _html.escape(doc, quote=True)
     return (
-        f'<iframe srcdoc="{src}" '
-        f'style="display:block;width:100%;height:{int(height)}px;border:1px solid #ccc;'
+        f'<iframe srcdoc="{src}" data-max-height="{int(max_height)}" '
+        f'style="display:block;width:100%;height:{int(height)}px;'
+        f"max-height:{int(max_height)}px;border:1px solid #ccc;"
         'border-radius:8px;resize:vertical;overflow:auto"></iframe>'
     )
 
@@ -491,7 +514,8 @@ def comb_explorer(
     *,
     t0: float = 0.0,
     dur: float | None = None,
-    height: int = 1500,
+    height: int = 900,
+    max_height: int = 2200,
     warn_mb: float = 30.0,
     verbose: bool = True,
     **kwargs,
@@ -501,9 +525,13 @@ def comb_explorer(
     ``t0`` / ``dur`` are seconds measured from the start of the frame's audio
     (pass ``absolute=True`` to give absolute times instead); ``dur=None`` uses
     the whole audio.  Every other keyword is forwarded to
-    :func:`build_widget_payload` — ``channels``, ``rps_keys``, ``ks``,
-    ``segs``, ``decim``, ``ylim``, ``strip_rows`` / ``strip_cols``, ``nfft``,
-    ``fmax``, ``jobs``, ``gap_tol`` and so on.
+    :func:`build_widget_payload` — ``channels``, ``strip_channels``,
+    ``rps_keys``, ``ks``, ``segs``, ``decim``, ``ylim``, ``strip_rows`` /
+    ``strip_cols``, ``nfft``, ``fmax``, ``jobs``, ``gap_tol`` and so on.
+
+    ``height`` is the starting height of the cell and ``max_height`` the most
+    it can ever take: the page measures its own content and sizes the frame to
+    it, between those two numbers, so the cell is stable and bounded.
 
     Returns ``None``: the page is displayed.  Use
     :func:`build_widget_payload` + :func:`widget_html` when the HTML itself is
@@ -512,12 +540,13 @@ def comb_explorer(
     from IPython.display import HTML, display
 
     payload, _found = build_widget_payload(frame, t0=t0, dur=dur, verbose=verbose, **kwargs)
-    html = widget_html(payload, height=height)
+    html = widget_html(payload, height=height, max_height=max_height)
     n = payload_bytes(payload)
     if verbose:
         print(
             f"[widget] payload {n / 1e6:.1f} MB, page {len(html) / 1e6:.1f} MB "
-            f"({len(payload['spec'])} mic channel(s) x {len(payload['carriers'])} carrier(s) x "
+            f"({len(payload['spec'])} mic channel(s), strips for "
+            f"{', '.join(payload['strips'])} x {len(payload['carriers'])} carrier(s) x "
             f"{payload['meta']['n_rotors']} rotor(s) x {len(payload['ks'])} harmonics)",
             flush=True,
         )
@@ -525,7 +554,7 @@ def comb_explorer(
         print(
             f"[warn] this cell's output is {n / 1e6:.0f} MB and notebook outputs are saved "
             f"into the .ipynb. Clear it before committing, or cut the payload with "
-            f"channels=, rps_keys=, ks= or segs=.",
+            f"strip_channels=, channels=, rps_keys=, ks= or segs=",
             file=sys.stderr,
         )
     display(HTML(html))

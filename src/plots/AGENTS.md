@@ -110,9 +110,21 @@ layout is new rendering code; everything else delegates.
   carriers and channels), re-exported lazily as `plots.comb_explorer` /
   `plots.discover` next to `plots.dwym`. The file-writing CLI over the same core is
   `scripts/displacement/comb_explorer.py`; the JS is verified by
-  `scripts/displacement/verify_page.js`. Docs:
+  `scripts/displacement/verify_page.js`, which `tests/plots/test_comb_widget.py`
+  runs over a synthetic 8-mic page. Docs:
   `scripts/displacement/README.md`. It lives here, not in `data_processing`,
   because it is a figure: `plots` depends on nothing in `data_processing`.
+  Four contracts of that page, each of which was broken once (2026-08-06):
+  the top of the page is the SELECTOR ROW (mic channel, rotor-speed series,
+  transform, overlay toggle, scale factor) and nothing else — the description
+  and the provenance panel are a collapsed `<details>` under the strips;
+  `channels=` defaults to EVERY microphone (a spectrogram is cheap) while the
+  megabyte-scale strips follow `strip_channels=` (default `avg` + the loudest
+  mic); "reset overlays" clears BOTH the dashed scaled copy and every dotted
+  other-carrier trace; the iframe sizes itself from the BODY box, clamped to
+  `max_height`, never from the document element's scroll height (which is at
+  least the frame's own height, so writing it back grew the cell on every
+  redraw).
 
 ## Gotchas
 

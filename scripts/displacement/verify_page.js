@@ -70,11 +70,17 @@ function decodePngGray(buf) {
 
 /* ── DOM stub ─────────────────────────────────────────────────────────────── */
 function makeDom(warns) {
+  /* Strokes are counted BY LINE STYLE.  An overlay this page draws on top of
+   * the solid comb is either dashed (the scaled copy) or dotted (another
+   * carrier), so counting them is how "reset cleared every overlay" becomes an
+   * assertion instead of something only an eye could check. */
   const ctx2d = () => ({
-    _img: null,
+    _img: null, _dash: [], _strokes: { solid: 0, dash: 0, dot: 0 },
     setTransform() {}, createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
     putImageData() {}, drawImage(im) { this._img = im; }, clearRect() {}, beginPath() {},
-    moveTo() {}, lineTo() {}, stroke() {}, fill() {}, fillText() {}, setLineDash() {}, fillRect() {},
+    moveTo() {}, lineTo() {},
+    stroke() { const d = this._dash || []; this._strokes[!d.length ? "solid" : d[0] <= 2 ? "dot" : "dash"]++; },
+    fill() {}, fillText() {}, setLineDash(d) { this._dash = d || []; }, fillRect() {},
     getImageData(x, y, w, h) {
       const px = this._img && this._img._px;
       const d = new Uint8ClampedArray(w * h * 4);
@@ -105,11 +111,27 @@ function makeDom(warns) {
     return el;
   };
   const REG = {};
+  /* The iframe the notebook widget lives in, and the two height sources a
+   * page can read.  `documentElement.scrollHeight` is modelled the way a
+   * browser computes it — AT LEAST the viewport, which inside an iframe is the
+   * frame's own height — because that is exactly what made a page that fed it
+   * back into the frame grow the notebook cell on every redraw. */
+  const frame = { tagName: "IFRAME", style: { height: "900px" }, dataset: { maxHeight: "2200" } };
+  const body = mk("body");
+  body.getBoundingClientRect = () => ({
+    left: 0, top: 0, width: 900,
+    height: 620 + 118 * ((REG["strips"] && REG["strips"].children || []).length),
+  });
+  const docEl = mk("html");
+  Object.defineProperty(docEl, "scrollHeight", {
+    get: () => Math.max(body.getBoundingClientRect().height, parseFloat(frame.style.height) || 0),
+  });
   const doc = {
     createElement: mk,
     getElementById: (id) => REG[id] || (REG[id] = mk("div")),
     querySelectorAll: () => [],
-    documentElement: mk("html"),
+    documentElement: docEl,
+    body,
   };
   class ImageStub {
     constructor() { this.width = 0; this.height = 0; this._px = null; }
@@ -125,7 +147,7 @@ function makeDom(warns) {
     }
   }
   const g = {
-    document: doc, Image: ImageStub, devicePixelRatio: 1,
+    document: doc, Image: ImageStub, devicePixelRatio: 1, frameElement: frame,
     getComputedStyle: () => ({ getPropertyValue: () => "#888" }),
     addEventListener() {}, removeEventListener() {},
     atob: (s) => Buffer.from(s, "base64").toString("binary"),
@@ -195,6 +217,11 @@ async function verify(file) {
       if (api.state().chan !== cinfo.id) { fails.push(`setChannel(${cinfo.id}) did not take`); continue; }
       if (!api.state().ready) { fails.push(`channel ${cinfo.id} never became ready`); continue; }
     }
+    // the selector must change the PIXELS, not only the label: the decoded
+    // image now in use has to be this channel's own declared image
+    const declared = D.spec[cinfo.id].mean, shown = api.state().specMean;
+    if (shown === null || Math.abs(shown - declared) > 0.5)
+      fails.push(`channel ${cinfo.id}: drawing an image with mean ${shown}, this channel declares ${declared}`);
     // every rotor x carrier x segment x k = 1..KMAX
     for (let r = 0; r < NROT; r++) {
       for (const car of D.carriers.map((c) => c.id)) {
@@ -211,24 +238,30 @@ async function verify(file) {
       api.set({ bw, ks: KS.slice(0, Math.min(6, KS.length)) });
       try_(`strips ${cinfo.id} bw=${bw}`, api.drawStrips);
     }
-    // an out-of-range k must leave a VISIBLE placeholder
+    // an out-of-range k must leave a VISIBLE placeholder — and so must a
+    // channel that carries a spectrogram but no (megabyte-scale) strips, which
+    // is how every microphone of an array can be selectable at all
+    const stacks = D.strips[cinfo.id] || {};
+    const hasStrips = !!Object.keys(stacks).length;
     api.set({ ks: [KMAX + 999] });
     try_(`strips ${cinfo.id} out-of-range k`, api.drawStrips);
     const host = sandbox.REG["strips"];
     const ph = (host.children || []).filter((c) => c.className === "miss" && c.textContent);
+    const want = hasStrips ? /not available/ : /no strips for[\s\S]*carried for/;
     if (ph.length !== 1) fails.push(`${cinfo.id}: out-of-range k rendered ${ph.length} placeholders, want 1`);
-    else if (!/not available/.test(ph[0].textContent)) fails.push("placeholder text is not explanatory: " + ph[0].textContent);
+    else if (!want.test(ph[0].textContent)) fails.push("placeholder text is not explanatory: " + ph[0].textContent);
     // every declared strip stack must have decoded, with the declared shape
-    const stacks = D.strips[cinfo.id] || {};
     for (const key in stacks) {
       const b = stacks[key];
       if (b.nk !== KS.length) fails.push(`strip ${cinfo.id}/${key} carries ${b.nk} harmonics, page declares ${KS.length}`);
     }
     if (api.state().strips !== Object.keys(stacks).length)
       fails.push(`${cinfo.id}: decoded ${api.state().strips} of ${Object.keys(stacks).length} strip stacks`);
-    if (!Object.keys(stacks).length) fails.push(`${cinfo.id}: no strip stacks at all`);
     api.set({ bw: 1.5, carrier: D.carriers[0].id, stripRot: 0, segIdx: 0 });
   }
+  // strips are optional PER CHANNEL, but a page with none anywhere is empty
+  if (!inPage.some((c) => Object.keys(D.strips[c.id] || {}).length))
+    fails.push("no channel in this page carries a strip stack");
   // k contiguity (a hole here is the silent failure this page must never have)
   const contiguous = KS.length === KMAX - KS[0] + 1;
   if (!contiguous) fails.push(`k set is NOT contiguous: ${KS.length} values over ${KS[0]}..${KMAX}`);
@@ -258,7 +291,61 @@ async function verify(file) {
   const R = sandbox.REG;
   try_("sf slider oninput", () => R.sf.oninput({ target: { value: "0.997" } }));
   try_("sf preset button", () => R.sfc.onclick());
+
+  /* ── reset must clear EVERY overlay it is offered for ─────────────────────
+   * The solid comb is the figure; the dashed scaled copy and the dotted other
+   * carriers are overlays drawn on top of it.  Counting strokes by line style
+   * is what makes "the dotted line is still there after reset" a failure
+   * rather than a complaint. */
+  const zero = (c) => { c._strokes = { solid: 0, dash: 0, dot: 0 }; };
+  const specCtx = R.spec.getContext(), cutCtx = R.slice.getContext();
+  api.set({ sf: 0.997, alt: true, rotOn: Array.from({ length: NROT }, () => true), ks: KS.slice(0, 3) });
+  zero(specCtx); zero(cutCtx);
+  try_("overlay draw", api.draw);
+  const pre = Object.assign({}, specCtx._strokes);
+  if (!pre.solid) fails.push("no solid comb was drawn at all");
+  if (!pre.dash) fails.push("scale factor 0.997 drew no dashed copy");
+  if (D.carriers.length > 1 && !pre.dot) fails.push("a second carrier drew no dotted trace");
+  zero(specCtx); zero(cutCtx);
   try_("sf reset button", () => R.sfr.onclick());
+  const post = Object.assign({}, specCtx._strokes), postCut = Object.assign({}, cutCtx._strokes);
+  if (post.dash || post.dot)
+    fails.push(`reset left ${post.dash} dashed + ${post.dot} dotted overlay strokes on the spectrogram`);
+  if (postCut.dash || postCut.dot)
+    fails.push(`reset left ${postCut.dash} dashed + ${postCut.dot} dotted overlay strokes on the spectrum cut`);
+  if (!post.solid) fails.push("reset removed the solid comb as well as the overlays");
+  if (api.state().sf !== 1 || api.state().alt) fails.push("reset did not clear the overlay STATE");
+  if (R.alt && R.alt.checked) fails.push("reset left the other-carriers checkbox ticked");
+
+  /* ── the cell must not grow ───────────────────────────────────────────────
+   * A page that sizes its own iframe has to be idempotent: N redraws with the
+   * same content must leave the same height, and a tall strip stack must be
+   * clamped instead of pushing the notebook off the screen. */
+  const fe = sandbox.frameElement;
+  api.set({ ks: KS.slice(0, Math.min(4, KS.length)) });
+  try_("fitHeight", () => { api.drawStrips(); api.fitHeight(); });
+  const h0 = parseFloat(fe.style.height);
+  if (!(h0 > 0)) fails.push("the page never sized its frame");
+  for (let i = 0; i < 25; i++) { api.draw(); api.drawStrips(); api.fitHeight(); }
+  const h1 = parseFloat(fe.style.height);
+  if (Math.abs(h1 - h0) > 2) fails.push(`frame height grew ${h0} -> ${h1} px over 25 redraws`);
+  api.set({ ks: KS.slice(0, Math.min(40, KS.length)) });
+  api.drawStrips();
+  const hBig = parseFloat(fe.style.height);
+  if (hBig > +fe.dataset.maxHeight)
+    fails.push(`frame height ${hBig} px is past the ${fe.dataset.maxHeight} px cap`);
+  if (KS.length > 4 && hBig <= h1)
+    fails.push(`frame height did not follow the content (${h1} -> ${hBig} px for more strips)`);
+  // and a body far taller than the cap must be CLAMPED, not obeyed
+  const realRect = sandbox.document.body.getBoundingClientRect;
+  sandbox.document.body.getBoundingClientRect = () => ({ height: 99999 });
+  api.fitHeight();
+  const hCap = parseFloat(fe.style.height);
+  if (hCap !== +fe.dataset.maxHeight)
+    fails.push(`a 99999 px body set the frame to ${hCap} px, cap is ${fe.dataset.maxHeight}`);
+  sandbox.document.body.getBoundingClientRect = realRect;
+  api.set({ ks: KS.slice(0, 3) });
+  api.drawStrips();
   try_("freq slider oninput", () => { R.fl.value = 500; R.fh.value = 4000; R.fl.oninput(); });
   (R.fpre.children || []).forEach((b, i) => try_("freq preset " + i, () => b.onclick()));
   try_("transform select", () => R.tf.onchange({ target: { value: "sst" } }));
