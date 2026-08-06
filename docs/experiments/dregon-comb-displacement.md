@@ -730,6 +730,19 @@ The decision stands, and its support is now stronger and differently shaped:
 **0.28-0.68 rev/s at DREGON cruise**, as a floor beside every DREGON RPS number.
 The new estimate sits inside that range.
 
+### The wide-band arm is now disqualified on DREGON itself
+
+6c rejected the `b0_3` arm through its negative control (it returned -0.32 % on
+FLY124's recalibrated labels). The ridge rejects it directly: `b0_3`'s DREGON
+trajectory reads **-0.20 dB** against its own off-comb null of -0.56, i.e. it has
+no line on it, and it degrades FLY124's existing lock from +2.72 to +1.47 dB. A
+wide capture does not merely inflate the estimate; it walks the carrier off the
+comb. Its historical readings (-0.24 %, -0.19 %) remain uncitable.
+
+The other five arms all lock (+1.43 to +1.88 dB) and rank the steps by what they
+buy: pre-smoothing +0.45 dB, the peel +0.24, `pair_mode` +0.18, the k ladder
++0.13 — an ordering the 6c broadband column (a 0.010 spread) could not resolve.
+
 ### Twin capture, refuted a second time on the component most exposed to it
 
 The ridge asks "is there a line at this carrier", and a twin's line is a line,

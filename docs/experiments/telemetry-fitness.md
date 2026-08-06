@@ -1000,6 +1000,39 @@ flexible fitter would have bought a comparable amount on both.
 could see.** The best constant (`scale:0.99458`) buys +0.74 dB; the free
 trajectory buys +2.47 dB. Two thirds of the label error is not a scale.
 
+## The re-score: all six ablation arms (`telemetry-6d2-e6c967`, 540/540 units)
+
+The cluster re-ran the refit from the pinned dataset and scored every arm. Its
+`main` trajectories reproduce the 6c ones exactly — the ridge reads **+1.87667**
+against the local pass's **+1.8767** on the same 15 windows — so the arms below
+and the 6c tables describe the same objects.
+
+| arm | step turned off | DREGON ridge | FLY124-cruise ridge | 6c broadband (DREGON) |
+|---|---|---|---|---|
+| `main` | — | **+1.88** | +2.98 | 0.652 |
+| `flatk` | 2, the k ladder | +1.75 | +3.04 | 0.658 |
+| `gate` | 6, `pair_mode` | +1.69 | +2.96 | 0.651 |
+| `nopeel` | 3, the peel | +1.64 | +3.07 | 0.653 |
+| `nosmooth` | 1, the pre-smoothing | +1.43 | +3.20 | 0.661 |
+| **`b0_3`** | (the wide band) | **-0.20** | +1.47 | 0.732 |
+| — | raw telemetry | -0.60 | +2.72 | 0.752 |
+
+Two things this adds to 6c:
+
+- **The wide-band arm is disqualified on DREGON directly.** 6c could only reject
+  `b0_3` through its negative control (it "found" -0.32 % on recalibrated FLY124
+  labels). The ridge says the thing itself: `b0_3`'s DREGON trajectory has **no
+  line on it** (-0.20 dB, its own off-comb null is -0.56), and it degrades
+  FLY124's existing lock from +2.72 to +1.47. A wide capture does not merely
+  inflate the estimate, it walks the carrier off the comb.
+- **The six steps are ranked by what they buy in lock, not only in shift.**
+  Pre-smoothing is worth **+0.45 dB** of ridge, the peel **+0.24**, `pair_mode`
+  **+0.18**, the k ladder **+0.13** — every one positive, and in an order the
+  6c broadband column (0.651-0.661, a 0.010 spread) could not resolve.
+  On FLY124 the same four differences are within +-0.22 dB of each other and of
+  the wrong sign as often as not, which is what "the labels are already right"
+  should look like.
+
 ## What phase 6d changes, and what it does not
 
 | 6c said | 6d says |
