@@ -31,4 +31,4 @@ together with `python scripts/gen_label_sensitivity_eval.py`.
 
 ## Conclusion
 
-_Pending run._
+**The staircase adds nothing on top of the bias.** B - S is +1.44/+1.99/+1.52/+1.77 dB on the line readout and -0.48/-0.43/-1.26/-0.88 dB on the track readout — opposite signs, never past 2 dB, i.e. run-to-run variability at one seed rather than an effect. `mrstft` 13.57 against S's 13.71. This agrees with the model-free pressure measured before training: the staircase displaces harmonic 80 by 8.5 Hz and costs 1.18 dB, against the bias's 35 Hz and 18.7 dB.

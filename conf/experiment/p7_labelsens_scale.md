@@ -31,4 +31,4 @@ together with `python scripts/gen_label_sensitivity_eval.py`.
 
 ## Conclusion
 
-_Pending run._
+**The constant bias is NOT benign.** Arm S loses -1.58/-2.08/-3.84/-8.61 dB across the k bands against arm A's flat line, and `mrstft` drops 30.96 -> 13.71. The model compensates the bias in *placement* (fitted frequency scale 1.000000, centroids within 0.01 % of k*f0) but cannot keep the lines sharp while doing so: at k=47 there is no line at 3760 Hz at all, only scattered maxima ~18 dB down, and a +-2 % band recovers just 0.3 dB. This arm carries the whole label-noise effect the batch set out to find.

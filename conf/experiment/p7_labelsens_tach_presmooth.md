@@ -31,4 +31,4 @@ together with `python scripts/gen_label_sensitivity_eval.py`.
 
 ## Conclusion
 
-_Pending run._
+**The mitigation fails, and not because smoothing is wrong.** The filter does what it claims — label error 0.106 -> 0.037 rev/s, true track moved only 0.017 — but it removes the staircase, which was never the binding term, and leaves the constant bias untouched. C ~ B ~ S: `mrstft` 13.31 against 13.57 and 13.71, and C - B is sign-inconsistent across the two readouts. The fix that would work is a scale correction (x0.99458) applied before conditioning, not a low pass.

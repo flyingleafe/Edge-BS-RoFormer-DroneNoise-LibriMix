@@ -30,4 +30,4 @@ together with `python scripts/gen_label_sensitivity_eval.py`.
 
 ## Conclusion
 
-_Pending run._
+Arm A is **flat to +-0.16 dB** across k1-9/k10-24/k25-49/k50-80 (-0.15/-0.02/+0.02/+0.16), and within +-0.5 dB at every individual k from 1 to 80; best `mrstft` 30.96 at epoch 21. Given a correct label this objective and this emitter reproduce a sharp comb across the whole range, so **loss design is exonerated as a sufficient cause** of the generator's high-harmonic underfit.
