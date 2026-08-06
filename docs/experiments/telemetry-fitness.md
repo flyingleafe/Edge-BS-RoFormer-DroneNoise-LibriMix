@@ -1,4 +1,9 @@
-# Trajectory goodness of fit — the harness (6a), the fitter (6b), the campaign (6c), issue 17
+# Trajectory goodness of fit — the harness (6a), the fitter (6b), the campaign (6c), the sensitivity fix (6d)
+
+> **Read 6d first if you are citing a number.** Phase 6d added the component the
+> first three lacked (line power against a local floor) and re-scored everything:
+> the verdicts hold, the DREGON scale is -0.68 % [-0.88,-0.53], and the refined
+> trajectory is measured to lock 2.47 dB better than the labels.
 
 **Status:** harness built and verified (2026-08-06) · GitHub issue #17 §A-D ·
 library `src/tracking/fitness.py` · driver `scripts/telemetry_fitness.py` ·
@@ -701,3 +706,324 @@ python scripts/telemetry_report.py \
   --profile results/telemetry_fitness/scale_profile_g025 \
   --out results/telemetry_report_g025.json     # the coverage-adequate reading
 ```
+
+---
+
+# Phase 6d — the sensitivity fix (issue 17, the challenge to 6c)
+
+**Status:** run and analyzed (2026-08-06) · job `telemetry-6d-0a0540` on `uni-cpu`,
+16 cores · library `tracking.fitness` (component 4, `line_power`, `admit_ridge`) ·
+driver `bash scripts/telemetry_campaign.sh 16 4` · unit JSON under
+`results/telemetry_fitness/{campaign_6d,scale_profile_6d}/`.
+
+## The challenge
+
+6c reported DREGON raw telemetry at **0.6644** against its own off-comb null of
+**0.6671** — no lock, to the third decimal — and concluded from it. The
+objection: the telemetry-versus-harmonics mismatch is plainly visible on a
+spectrogram, and a few `pi_kalman` iterations visibly improve the fit. A
+statistic that cannot separate a visibly-nearly-correct carrier from a
+half-integer comb is not measuring what the eye measures, and a decision resting
+on it is unsafe.
+
+The objection is right about the statistic and wrong about the conclusion, and
+both halves needed measuring rather than arguing.
+
+## The diagnosis, on 6c's own cells
+
+`window_cells` re-run over all 15 protocol windows at the campaign's settings,
+per cell rather than pooled: 89,856 DREGON cells (4 rotors x 8 mics x 39
+harmonics x 8 blocks) and 39,936 FLY124-cruise cells.
+
+### (a) "The gate excludes the visible low-k cells" — REFUTED as stated
+
+The admitted cells are the LOW harmonics, not the high ones, and their SNR
+distribution is the population's:
+
+| at `b0 = 1.0`, `gate_band_frac = 0.25` | DREGON | FLY124 cruise |
+|---|---|---|
+| conditioning gate admits | 2.35 % | 9.19 % |
+| mean `k` of admitted cells (all cells: 21.0) | **6.6** | 5.6 |
+| per-cell SNR median, admitted / all | 1.15 / 1.04 | 0.87 / 1.02 |
+| share of cells with SNR > 1, admitted / all | 0.56 / 0.52 | 0.48 / 0.52 |
+
+So the gate is not an SNR filter and not a high-`k` filter. At the 6c reading's
+own setting (`b0 = 0.5`, `gate 0.25`) it admits 6.55 % of DREGON cells with mean
+`k` 9.4 and median SNR 1.09 against the population's 1.04.
+
+### (a') What IS true, and it was not reported: the two sides saw different combs
+
+The quantity the gate destroys is not SNR, it is **line energy**. Per cell, the
+floor-subtracted line power (the new component's own numerator) says how much of
+the comb a cell set contains:
+
+| share of the comb's total line energy inside the gate | DREGON | FLY124 cruise |
+|---|---|---|
+| conditioning gate | **5.7 %** | **18.6 %** |
+| ridge gate (phase 6d) | 6.9 % | 20.5 % |
+
+The 6c campaign compared a DREGON number computed on 5.7 % of DREGON's comb with
+a FLY124 number computed on 18.6 % of FLY124's — a **3.3x asymmetry between the
+measurement and its own negative control**, which no reported quantity carried.
+`line_share_gated` now travels in every unit so this cannot recur.
+
+### (b) "The shares saturate" — CONFIRMED, and it is not the whole story
+
+All three 6c components are SHARES of the same in-band power, so they are bounded
+and they compress toward their noise value as the envelope becomes noise
+dominated. On DREGON they are AT that value everywhere — the on-comb and
+off-comb readings agree to 0.01 in every SNR band, including the top 5 %:
+
+| DREGON, broadband, conditioning-gate cells | on | off-comb |
+|---|---|---|
+| SNR 0.04-0.52 | 0.7565 | 0.7566 |
+| SNR 0.52-0.91 | 0.7941 | 0.7919 |
+| SNR 0.91-1.42 | 0.7814 | 0.7807 |
+| SNR 1.42-2.45 | 0.7800 | 0.7706 |
+| SNR 2.45-9.69 | 0.6889 | 0.6810 |
+| SNR 9.69-258 | 0.4220 | 0.4310 |
+
+But the same table on FLY124 separates at EVERY SNR band, by 0.14 to 0.34
+(0.5559/0.7014, 0.5797/0.7368, 0.6506/0.7842, 0.5390/0.7709, 0.2095/0.5751,
+0.0557/0.3946). Two recordings, one statistic, one setting: saturation with SNR
+is real but it is not what distinguishes them. What distinguishes them is
+whether the label carrier has a line on it at all.
+
+### (c) "There is no magnitude-concentration component" — CONFIRMED, and fixed
+
+Nothing in the harness asked the question the eye asks: *is there a line here,
+and how far does it stand above the noise around it?* That question is not a
+share of anything, so no amount of re-weighting the first three components
+produces it.
+
+## The new component: ridge concentration
+
+`FitnessScore.ridge`, dB, and the only component where **more is better**:
+
+    ridge = 10 log10( mean power in |f| <= dc_hz(k) / floor density )
+
+on the demodulated envelope spectrum of one cell, where the floor density is the
+MEDIAN of an annulus of the same block's spectrum, divided by `ln 2` (the
+median-to-mean factor of an exponential periodogram bin, so a pure-noise cell
+reads 0 dB rather than +1.6). It is the phase-7 generator readout — a fixed band
+against a local floor, never a peak search, `--self-test` flat to 0.008 dB —
+moved into the demodulation domain, and it is literally the same function:
+`tracking.fitness.line_power`, which `scripts/gen_label_sensitivity_eval.py` now
+calls (a test pins the two readings equal).
+
+Four design points, each fixing a way of getting this wrong:
+
+- **Hann on the ridge spectrum only.** A rectangular block leaks a strong line
+  at -13 dB into its own first sidelobe and decays 6 dB/octave, which puts the
+  LINE into the floor region and compresses the ratio being reported. Hann is
+  -31 dB and 18 dB/octave. Components 1-3 keep the untapered spectrum: they are
+  shares of the same total and a taper only reweights it.
+- **The annulus never overlaps the line region.** Its inner edge is pushed out
+  to `dc_hz + res_hz`. At low `k` the resolution floor makes `dc_hz` comparable
+  to the whole band, and the first cut of this component read +2995 dB there —
+  a floor estimate made of the line, divided by a clamp. A harmonic with fewer
+  than `min_floor_bins` annulus bins has no ridge reading and says so (NaN).
+- **Twins are scored, not gated — by a floor definition.**
+  `comb_displacement.interloper_offsets_hz` returns every foreign line that
+  lands in band, and each is excised from the floor region (option (ii) of the
+  two the issue allows; the joint two-carrier fit is the other, and it would add
+  the free parameter this harness exists to avoid). The excision positions are
+  `(reference fact) - (this carrier)`, so a candidate whose band sits elsewhere
+  excises the interferer where it actually is; if nothing survives the excision
+  the floor falls back to the full annulus, which can only LOWER the ridge.
+- **Its own gate.** `admit_ridge` requires the nearest foreign line to be
+  outside `ridge_clear * dc_hz(k)` — resolved away from DC — not absent from the
+  band. Both gates still read the REFERENCE only, and
+  `test_degrees_of_freedom_are_identical_across_candidates_and_controls` now
+  asserts BOTH cell counts are one value across every candidate and control.
+
+Coverage, honestly: at `b0 = 1` the ridge gate admits 5.48 % of DREGON cells
+against the conditioning gate's 2.35 %, and 6.9 % of the line energy against
+5.7 %. It is **not** the 96 % a two-rotor geometry would give, because at high
+`k` DREGON's four-rotor comb is genuinely unresolvable — the interloper spacing
+falls below the line region's own width (`dc_revs = 0.1` rev/s, i.e. `0.1 k` Hz)
+somewhere near `k = 20`. That is the structural degeneracy the issue names, not
+a gate that can be loosened: `ridge_clear` trades it, and the trade is reported
+with the number.
+
+## Acceptance (the same battery as 6a, extended)
+
+`tests/tracking/test_fitness.py`, 27 tests. On the synthetic 2-rotor comb
+(70 / 95 rev/s, truth known), `b0 = 1`:
+
+| candidate | broadband | ridge, on | ridge, off-comb null |
+|---|---|---|---|
+| **truth** | 0.0028 | **+34.3 dB** | +0.67 |
+| staircase (0.269 rev/s @ 49.7 Hz) | 0.0650 | +23.1 dB | +0.52 |
+| truth x 1.005 | 0.8250 | -1.5 dB | +0.26 |
+
+Truth outranks both corruptions; every off-comb row sits at 0 dB within 0.7,
+which is the `ln 2` correction working; and a 0.35 rev/s rate error collapses the
+ridge to the null because it puts the line outside a 0.10 rev/s window. A second
+synthetic window with a DREGON twin pair (86.10 / 85.68 rev/s) pins the coverage
+claim: the conditioning gate admits **0 %** of its cells — the components 1-3
+score does not exist there at all — while the ridge gate admits **73.7 %** and
+reads **+33.6 dB** on the truth.
+
+## The re-score: controls (15 windows, `b0 = 1.0`, `gate_band_frac = 0.25`)
+
+Hold-out `none`, pooled over windows. `ridge` is dB and **higher is better**;
+the other three are residual shares and lower is better.
+
+| candidate | control | broadband | phase noise | **ridge** |
+|---|---|---|---|---|
+| DREGON telemetry | on | 0.7518 | 1.233 | **-0.60** |
+| DREGON telemetry | offcomb | 0.7430 | 1.238 | -0.66 |
+| DREGON telemetry | mismatch | 0.7507 | 1.290 | -0.84 |
+| DREGON `lp:5` | on | 0.7515 | 1.232 | -0.48 |
+| **DREGON `scale:0.99458`** | on | 0.7213 | 1.141 | **+0.14** |
+| DREGON `scale:0.99458` | offcomb | 0.7510 | 1.251 | -0.64 |
+| **FLY124-cruise telemetry** | on | 0.5239 | 0.987 | **+2.72** |
+| FLY124-cruise telemetry | offcomb | 0.7137 | 1.273 | -0.77 |
+| FLY124-cruise telemetry | mismatch | 0.7124 | 1.295 | -0.76 |
+| FLY124-cruise `scale:0.99458` | on | 0.6820 | 1.072 | **-0.18** |
+
+Read, in the order the challenge demands:
+
+1. **The component is not blind to a correct carrier.** FLY124's recalibrated
+   telemetry stands **3.5 dB** clear of both its nulls. The withdrawn DREGON
+   factor 0.99458 destroys that lock completely (+2.72 -> -0.18, i.e. down to
+   the null), which is a 0.542 % displacement resolved on a component that reads
+   zero on noise. The negative control passes in both directions.
+2. **DREGON's raw telemetry still does not separate from its own off-comb null**
+   (-0.60 against -0.66). This is the crux and the answer is: it does not
+   improve, and the reason is now measurable rather than mysterious.
+3. **A scale-corrected DREGON carrier DOES separate** (+0.14 against its null
+   -0.64, a 0.78 dB clearance) — the same audio, the same cells, the same fixed
+   geometry, one constant applied to the carrier. The comb is there. The
+   telemetry is not on it.
+
+**Why raw telemetry reads null-like, in one line.** The ridge window is
+`dc_revs = 0.10` rev/s wide. The label error is 0.3-0.8 rev/s. So the line sits
+three to eight window-widths off the telemetry carrier, and a statistic that
+asks "is there a line ON this carrier" correctly answers no. The eye reads a
+SPECTROGRAM, which is not conditioned on the carrier at all; what it sees is
+"the comb is there and the telemetry does not sit on it" — the same statement.
+The 6c reading was right; the inference "the statistic is blind" was the part
+that had to be tested, and it is half true: the shares are blind, the ridge is
+not, and both give the same verdict here for different reasons.
+
+## The re-score: the one-parameter scale profile `lp:5+scale:s`
+
+15 values of `s` from -1.20 % to +0.20 %, 15 windows, per hold-out family. The
+profile has ONE free parameter, so its extremum cannot be bought with
+flexibility; and every family is scored on cells the fit never chose.
+
+| group / control | ridge extremum | 95 % CI (windows) | basin depth |
+|---|---|---|---|
+| **DREGON, on** | **-0.683 %** | **[-0.877, -0.533]** | **1.064 dB** |
+| DREGON, on, fit even k | -0.664 % | [-0.957, -0.458] | 1.121 |
+| DREGON, on, fit odd k | -0.692 % | [-0.966, -0.435] | 1.078 |
+| DREGON, on, fit mic 0 | -0.684 % | [-0.874, -0.538] | 1.136 |
+| DREGON, on, fit half the blocks | -0.637 % | [-0.785, -0.278] | 0.953 |
+| DREGON, **off-comb null** | +0.069 % | [-1.135, +0.163] | **0.133** |
+| **FLY124 cruise, on** | **-0.059 %** | **[-0.098, -0.021]** | 4.642 dB |
+| FLY124 cruise, off-comb null | +0.200 % (grid edge) | — | 0.492 |
+| FLY124 warmup, on | +0.105 % | [-0.573, +0.105] | 0.538 |
+
+- **The four hold-out families agree to 0.06 pp** (-0.637 to -0.692) and every
+  interval contains every other point estimate.
+- **The null has 8x less depth** (0.133 against 1.064 dB) and no interior
+  extremum. On the 6c broadband profile at this setting the same ratio is 2.4x
+  (0.048 against 0.020), so the ridge's discrimination is 3x sharper than the
+  statistic the 6c decision rested on.
+- **FLY124 returns zero** with a basin 4x deeper than DREGON's, so the null
+  result there is a measurement, not an absence of signal.
+- FLY124 warmup remains out of validity (its on-comb depth 0.54 is its null's
+  0.63), as 6c already recorded.
+
+The same profile read on the 6c components at this setting: broadband
+-0.617 % [-0.883, -0.404], phase noise -1.146 % [-0.938, -0.301] (its curve is
+noisier — the vertex leaves the bootstrap band), roughness -1.097 % with a
+0.010 depth against the null's 0.010, i.e. nothing. So the four components put
+the scale between -0.6 and -1.1 %, and the two that carry a real basin (ridge,
+broadband) agree at **-0.62 to -0.68 %**.
+
+## The re-score: the fitted trajectories
+
+The candidate the challenge is really about — the `pi_kalman` peeled alternation
+of issue 17 steps 1-6 (`arm = main`, the 6c trajectories, unchanged), scored on
+the identical cells at the identical fixed geometry:
+
+| group | candidate | on | offcomb | mismatch | gain over telemetry |
+|---|---|---|---|---|---|
+| **DREGON** | telemetry | -0.60 | -0.66 | -0.84 | — |
+| **DREGON** | `scale:0.99458` | +0.14 | -0.64 | -0.84 | +0.74 dB |
+| **DREGON** | **`fit:main`** | **+1.88** | -0.56 | -0.84 | **+2.47 dB** |
+| FLY124 cruise | telemetry | +2.72 | -0.77 | -0.76 | — |
+| FLY124 cruise | **`fit:main`** | **+2.98** | -0.52 | -0.76 | **+0.26 dB** |
+| FLY124 warmup | `fit:main` | +0.04 | -0.15 | -0.52 | (out of validity) |
+
+(ridge, dB, hold-out `none`. DREGON hold-out families for `fit:main`: 1.38 even
+`k` / 2.35 odd `k` / 1.97 mic 0 / 1.78 half the blocks — all positive, all
+clearing both nulls.)
+
+**This is the challenge's own claim, measured.** The refined trajectory locks
+onto the comb **2.47 dB** better than the labels do, on a statistic that reads
+0 dB on noise, clears both nulls, and holds on every hold-out family. The eye
+was right that `pi_kalman` improves the fit; 6c's statistic could only see that
+improvement as 0.6644 -> 0.5927 of a saturated share.
+
+And the negative control makes the number mean something: **the same procedure
+on FLY124's recalibrated labels buys 0.26 dB**, 9.5x less. A generically
+flexible fitter would have bought a comparable amount on both.
+
+**A constant is confirmed to be the wrong model, by a bigger margin than 6c
+could see.** The best constant (`scale:0.99458`) buys +0.74 dB; the free
+trajectory buys +2.47 dB. Two thirds of the label error is not a scale.
+
+## What phase 6d changes, and what it does not
+
+| 6c said | 6d says |
+|---|---|
+| DREGON telemetry has no acoustic lock (0.6644 vs null 0.6671) | **Same verdict, now on a statistic that can detect a lock** (-0.60 vs -0.66, where FLY124's telemetry reads +2.72 vs -0.77). The 6c evidence was weaker than it looked; the conclusion survives. |
+| the fitted trajectories clear both nulls | **By 2.4 dB rather than by 0.07 of a share**, with the FLY124 control at one tenth of that |
+| the best constant scale is -0.77 % [-0.95,-0.59] | the ridge profile says **-0.68 % [-0.88,-0.53]**, hold-outs agreeing to 0.06 pp, null 8x shallower |
+| the two estimators disagree 2x (-0.77 vs -0.347) | **unchanged** — the ridge is a constant-family estimator and lands in the constant cluster |
+| coverage is the binding constraint | **quantified in the right units**: the gate saw 5.7 % of DREGON's comb line energy against 18.6 % of FLY124's, an asymmetry nothing in the 6c report carried |
+
+### The twin trap, checked per rotor on the new component
+
+The ridge is the component most exposed to twin capture — it asks "is there a
+line at this carrier", and a twin's line IS a line. So the per-rotor profile is
+run against each rotor's own trap (the scale at which its carrier lands on a
+sibling):
+
+| DREGON rotor | mean rate | ridge maximum | nearest twin trap | depth |
+|---|---|---|---|---|
+| 0 | 79.71 | **-0.863 %** | **+0.61 %** (opposite side) | 1.28 dB |
+| 1 | 70.40 | **-0.718 %** | -1.23 % (0.5 pp away) | 1.34 dB |
+| 2 | 79.75 | -0.555 % | **-0.60 % (confounded)** | 0.82 dB |
+| 3 | 69.83 | **-0.658 %** | **+1.24 %** (opposite side) | 1.40 dB |
+
+Three of four rotors find a negative maximum with their trap on the other side
+or half a percent away; the fourth is confounded and is also the shallowest. The
+three unconfounded rotors average **-0.75 %**. Twin capture is refuted for this
+measurement a second time, on the component that is most vulnerable to it.
+FLY124's four rotors read -0.11 / -0.01 / +0.01 / -0.17 % with no trap nearer
+than 2.2 %.
+
+## Reproduce
+
+```bash
+python -m pytest tests/tracking/test_fitness.py -q      # 27 tests
+bash scripts/telemetry_campaign.sh 12 14                # refit + the 6d re-score
+python scripts/telemetry_report.py \
+  --fit results/telemetry_fitness/campaign_6d \
+  --profile results/telemetry_fitness/scale_profile_6d \
+  --profile-component ridge --out results/telemetry_report_6d.json
+```
+
+One operational note for the next campaign: the first 6d job
+(`telemetry-6d-0a0540`, 16 workers, no `--mem`) was **OOM-killed in the refit
+stage** and the fitness stages then ran with no trajectories to read, turning
+352 units into `.err` files while the profile's 870 units completed normally.
+`gridrun` did exactly what it promises — a unit exception is a file, not a dead
+pool — but a stage that depends on a previous stage's artifacts needs that
+checked, not assumed. Submit the refit with `--mem` and fewer workers
+(`telemetry-6d2-e6c967`, 12 workers, 96 GB).

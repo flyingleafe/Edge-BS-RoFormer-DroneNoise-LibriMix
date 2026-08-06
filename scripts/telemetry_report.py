@@ -351,7 +351,13 @@ def controls_section(fit: list[dict[str, Any]], holdout: str = "none") -> dict[s
             "pp_dr": _mean([x.get("pp_dr") for x in sc]),
             "pp_abs": _mean([x.get("pp_abs") for x in sc]),
             "n_cells": _mean([x.get("n_cells") for x in sc]),
+            "n_cells_ridge": _mean([x.get("n_cells_ridge") for x in sc]),
             "admit_frac": _mean([r["cells"]["admit_frac"] for r in rows]),
+            "admit_frac_ridge": _mean([r["cells"].get("admit_frac_ridge") for r in rows]),
+            # The share of the comb's line energy the CONDITIONING gate can
+            # see. Phase 6c reported components read on 6.6 % of the cells; this
+            # says what fraction of the thing being measured that was.
+            "line_share_gated": _mean([r["cells"].get("line_share_gated") for r in rows]),
             "resid_d_rms": _mean([x.get("d_rms") for x in res]),
         }
     return out
@@ -499,24 +505,30 @@ def show(report: dict[str, Any]) -> None:
         ci = m["ci"]
         span = f"[{ci['lo']:+.3f},{ci['hi']:+.3f}]" if ci.get("lo") is not None else "—"
         val = f"{m['scale_pct']:+.3f}" if m["scale_pct"] is not None else "—"
-        p(f"  {tag:46s} {val:>8s} {span:>18s}  drop {m['curvature_drop']:.3f}  {m['note']}")
+        p(
+            f"  {tag:46s} {val:>8s} {span:>18s}  depth {m.get('depth', float('nan')):.4f}"
+            f"  drop {m['curvature_drop']:.3f}  {m['note']}"
+        )
     for comp, blk in sorted(report.get("profile_all", {}).items()):
         p(f"\n  -- same profile read on {comp} --")
         for tag, m in sorted(blk.get("minima", {}).items()):
             if "|none" not in tag and "|on|none" not in tag:
                 continue
             val = f"{m['scale_pct']:+.3f}" if m["scale_pct"] is not None else "—"
-            p(f"  {tag:46s} {val:>8s}  drop {m['curvature_drop']:.3f}  {m['note']}")
+            p(
+                f"  {tag:46s} {val:>8s}  depth {m.get('depth', float('nan')):.4f}"
+                f"  drop {m['curvature_drop']:.3f}  {m['note']}"
+            )
 
     p("\n" + "=" * 78)
     p("D. CONTROLS (hold-out=none)")
     p("=" * 78)
     head = f"{'group|candidate|control':58s}"
-    head += "".join(f"{c:>12s}" for c in (*COMPONENTS, "pp_dr", "admit"))
+    head += "".join(f"{c:>12s}" for c in (*COMPONENTS, "pp_dr", "admit", "adm_ridge", "line_seen"))
     p(head)
     for tag, blk in sorted(report["controls"].items()):
         row = f"{tag:58s}"
-        for c in (*COMPONENTS, "pp_dr", "admit_frac"):
+        for c in (*COMPONENTS, "pp_dr", "admit_frac", "admit_frac_ridge", "line_share_gated"):
             v = blk.get(c)
             row += f"{v:12.5f}" if isinstance(v, float) else f"{'—':>12s}"
         p(row)

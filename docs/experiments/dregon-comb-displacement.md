@@ -1,7 +1,8 @@
 # DREGON comb displacement — the telemetry over-reports by 0.35 to 0.85 %
 
-**Status:** decided (2026-08-06) · the decision is the LAST section, "THE
-DECISION (issue 17 phase 6c)" — read it first · earlier narrative in
+**Status:** decided (2026-08-06), challenged and REAFFIRMED the same day · read
+the LAST section first ("PHASE 6D — the 6c decision, challenged and
+re-examined"), then "THE DECISION (issue 17 phase 6c)" · earlier narrative in
 `docs/experiments/beat-vk.md` (sections dated 2026-08-05) · the campaign that
 decided it is `docs/experiments/telemetry-fitness.md` § "The campaign".
 
@@ -10,6 +11,12 @@ decided it is `docs/experiments/telemetry-fitness.md` § "The campaign".
 > well-controlled estimators (-0.347 % and -0.77 %). Quote the systematic
 > floor of 0.28-0.68 rev/s at cruise beside any DREGON RPS number. The factor
 > `x0.99458` stays WITHDRAWN.
+>
+> Phase 6d re-examined the evidence with a component the 6c harness lacked
+> (line power against a local floor). The decision is unchanged; the best
+> constant is now -0.68 % [-0.88,-0.53]; the refined trajectory is measured to
+> lock 2.47 dB better than the labels while the same procedure buys 0.26 dB on
+> the recalibrated control.
 >
 > Three claims were made here and two were withdrawn within the same day.
 > Read the "what died" section before citing anything, and note that the
@@ -639,3 +646,102 @@ number is quoted.
 - `writing/reports/` and `writing/slides/` items that quote a DREGON RPS error.
 - The `x0.99458` factor stays **withdrawn**. It is not the profile's -0.77 %
   and not the fitter's -0.347 %.
+
+## PHASE 6D — the 6c decision, challenged and re-examined (2026-08-06)
+
+The 6c decision was challenged on its central evidence: it scored DREGON's raw
+telemetry AT its own off-comb null while the telemetry-versus-harmonics mismatch
+is plainly visible on a spectrogram, and while a few `pi_kalman` iterations
+visibly improve the fit. A statistic that cannot separate a visibly-nearly-right
+carrier from a half-integer comb cannot carry a decision.
+
+The challenge was right about the statistic and wrong about the conclusion. Full
+method and tables: `docs/experiments/telemetry-fitness.md` § "Phase 6d". Job
+`telemetry-6d-0a0540` / `telemetry-6d2-e6c967` on `uni-cpu`.
+
+### What the 6c evidence got wrong
+
+1. **All three 6c components are SHARES of the same in-band envelope power**, so
+   they are bounded and compress toward their noise value. On DREGON they were
+   at that value: the on-comb and off-comb readings agree to 0.01 in every
+   per-cell SNR band, including the top 5 %. On FLY124 the same statistic at the
+   same setting separates by 0.14-0.34 in every band. The 6c sentence "its
+   on-comb score equals its off-comb null" was therefore true of a statistic
+   that, on that recording, could not have said anything else.
+2. **The measurement and its control did not see comparable amounts of comb.**
+   The conditioning gate admitted cells carrying **5.7 %** of DREGON's total
+   comb line energy and **18.6 %** of FLY124's — a 3.3x asymmetry between the
+   measurement and its own negative control, which no reported quantity carried.
+   (The gate is not an SNR filter and not a high-`k` filter: admitted cells have
+   the population's SNR distribution and mean `k` 6.6 against 21.)
+3. **Nothing in the harness asked the question the eye asks** — is there a line
+   here, and how far does it stand above the noise around it. That is not a
+   share of anything.
+
+### What the new component finds
+
+`tracking.fitness` gained a fourth component, **ridge concentration**: line
+power on the candidate carrier over a LOCAL floor, in dB, with the interferers
+excised from the floor region instead of the cell being gated out. It is the
+phase-7 generator readout moved into the demodulation domain (same function).
+
+| DREGON, ridge (dB, higher is better) | on | off-comb | mismatch |
+|---|---|---|---|
+| raw telemetry | **-0.60** | -0.66 | -0.84 |
+| `scale:0.99458` | +0.14 | -0.64 | -0.84 |
+| **`fit:main`** (issue 17 steps 1-6) | **+1.88** | -0.56 | -0.84 |
+| FLY124-cruise raw telemetry | **+2.72** | -0.77 | -0.76 |
+| FLY124-cruise `fit:main` | +2.98 | -0.52 | -0.76 |
+
+1. **The component is not blind.** FLY124's recalibrated telemetry stands
+   3.5 dB clear of both its nulls, and multiplying it by 0.99458 destroys that
+   lock entirely (+2.72 -> -0.18).
+2. **DREGON's raw telemetry still reads at its null**, and the reason is now
+   arithmetic rather than mysterious: the ridge window is 0.10 rev/s wide and
+   the label error is 0.3-0.8 rev/s, so the line sits three to eight window
+   widths off the telemetry carrier. "No lock" means *no line on THIS carrier*,
+   never *no comb*.
+3. **The refined trajectory locks 2.47 dB better than the labels**, clearing
+   both nulls on every hold-out family — while the identical procedure on
+   FLY124's recalibrated labels buys **0.26 dB**, 9.5x less. This is the
+   challenge's own observation, measured, with the control that makes it mean
+   something.
+4. **The best constant buys only 0.74 dB of that 2.47.** Two thirds of the
+   DREGON label error is not a scale.
+
+### Decision: UNCHANGED — do NOT correct the shipped DREGON labels
+
+The decision stands, and its support is now stronger and differently shaped:
+
+- The constant-family scale profile on the new component reads **-0.68 %
+  [-0.88, -0.53]**, with four hold-out families agreeing to 0.06 pp and a null
+  8x shallower than the on-comb basin. It replaces the 6c profile's -0.77 %
+  [-0.95, -0.59] as the best constant estimate and does not move it materially.
+- The free fit still reads **-0.347 % [-0.394, -0.288]**. The factor-of-two
+  disagreement between "the best single constant" and "where a free trajectory
+  settles" is **unchanged**, and phase 6d explains why it must persist: a
+  constant only recovers 30 % of the fit's ridge gain, so the two estimators are
+  not estimating the same thing and no amount of precision will reconcile them.
+- Therefore: applying either number as a label correction still puts an error of
+  a few tenths of a percent into every DREGON RPS number and still breaks
+  comparability with everything published. `x0.99458` stays **WITHDRAWN**.
+
+**Quote unchanged:** a systematic over-report of **0.35-0.85 %**, i.e.
+**0.28-0.68 rev/s at DREGON cruise**, as a floor beside every DREGON RPS number.
+The new estimate sits inside that range.
+
+### Twin capture, refuted a second time on the component most exposed to it
+
+The ridge asks "is there a line at this carrier", and a twin's line is a line,
+so the per-rotor profile was run against each rotor's own twin trap. Rotors 0
+and 3 have their traps at **+0.61 %** and **+1.24 %** — the opposite side from
+their maxima (-0.86 %, -0.66 %); rotor 1's trap is 0.5 pp away from its -0.72 %.
+Only rotor 2 is confounded (trap -0.60 %, maximum -0.555 %), and it has the
+shallowest basin. The three unconfounded rotors average **-0.75 %**.
+
+### What would still settle the magnitude
+
+Unchanged from 6c, plus one that phase 6d makes concrete: the fit's extra
+1.7 dB of ridge over the best constant is a SHAPE, and the two candidate shapes
+(a tick miscount `d = -c r^2`, versus per-window drift) are separable on
+recordings that span a wider rate range than DREGON's two cruise clusters.
