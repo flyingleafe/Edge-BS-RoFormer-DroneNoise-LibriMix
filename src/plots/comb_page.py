@@ -61,7 +61,6 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.signal import resample_poly
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -241,16 +240,30 @@ def phase(g_r: np.ndarray, sr: int) -> np.ndarray:
 
 def _build_envelope(args):
     """``(rotor, z (K, C, n_env) complex64, fs_env)`` — audio demodulated by
-    ``exp(-i k phi)`` and decimated, for every k and every microphone."""
+    ``exp(-i k phi)`` and decimated, for every k and every microphone.
+
+    One call of ``tracking.dsp.demod``, THE demodulation of the stack: the
+    same brickwall zoom-IFFT the tracker's envelopes come from, so what the
+    page draws is what the tracker sees. The band is the full decimated
+    Nyquist (``band_env = 0.5``) because the page's whole point is to show
+    the neighbourhood of a tooth, not a tracker's capture band.
+    """
+    from tracking.dsp import demod
+
     rotor, audio, sr, g_rot, k_max, decim = args
     phi = phase(g_rot, sr)
-    n_env = len(resample_poly(audio[0], 1, decim))
-    z = np.zeros((k_max, audio.shape[0], n_env), np.complex64)
-    for a in range(k_max):
-        carrier = np.exp(-1j * float(a + 1) * phi)
-        for c in range(audio.shape[0]):
-            z[a, c] = resample_poly(audio[c] * carrier, 1, decim).astype(np.complex64)
-    return rotor, z, sr / decim
+    n_env = len(range(0, audio.shape[-1], decim))
+    c1 = np.exp(-1j * phi).astype(np.complex64)[None, :]
+    z_on, _ = demod(
+        audio,
+        c1=c1,
+        rotor=np.zeros(k_max, dtype=np.int64),
+        k=np.arange(1, k_max + 1, dtype=np.int64),
+        stride=decim,
+        n_env=n_env,
+        band_env=0.5,
+    )
+    return rotor, np.ascontiguousarray(z_on.transpose(1, 0, 2)), sr / decim
 
 
 def envelope_batch(

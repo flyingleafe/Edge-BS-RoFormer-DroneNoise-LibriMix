@@ -76,6 +76,7 @@ from typing import Any
 import numpy as np
 
 from tracking import phase_increment_tracker as pit
+from tracking.dsp import demod
 
 SR = 16000
 #: Envelope/measurement grid.  Deliberately the stage's own ``fs_env`` so the
@@ -151,54 +152,6 @@ ARMS: tuple[Arm, ...] = (
 
 # ---------------------------------------------------------------------------
 # demodulation
-
-
-def _demod(
-    y32: np.ndarray,
-    c1: np.ndarray,
-    ks: list[int],
-    stride: int,
-    n_env: int,
-    band_cyc: float,
-    ramp: np.ndarray | None = None,
-) -> np.ndarray:
-    """``(C, K, n_env)`` complex envelopes of ``y32`` demodulated by ``k*phi``.
-
-    ``c1 = exp(-1j phi)`` (complex64); ``ramp`` an optional extra phasor applied
-    to every harmonic (the off-comb noise probe).  Harmonic carriers come from
-    the power recursion of ``pit._demod_bank``.
-    """
-    n_ch, n_t = y32.shape
-    z = np.empty((n_ch, len(ks), n_env), dtype=np.complex128)
-    chunk = max(1, int(24e6 / (max(1, n_ch) * max(1, n_t) * 8)))
-    buf = np.empty((n_ch, min(chunk, len(ks)), n_t), dtype=np.complex64)
-    idxs: list[int] = []
-
-    def flush() -> None:
-        m = len(idxs)
-        b = buf[:, :m]
-        if ramp is not None:
-            b = b * ramp
-        z[:, idxs] = pit.zoom_lp_decimate(b, stride, n_env, band_cyc)
-        idxs.clear()
-
-    cur = np.ones_like(c1)
-    cur_k = 0
-    for a, k in enumerate(ks):
-        step = k - cur_k
-        if step > 2:
-            cur = cur * c1**step
-        else:
-            for _ in range(step):
-                cur = cur * c1
-        cur_k = k
-        np.multiply(y32, cur, out=buf[:, len(idxs)])
-        idxs.append(a)
-        if len(idxs) == buf.shape[1]:
-            flush()
-    if idxs:
-        flush()
-    return z
 
 
 def brickwall(z: np.ndarray, band_hz: float, fs_env: float, high: bool = False) -> np.ndarray:
@@ -307,11 +260,30 @@ def demod_rotor(
     ks = list(range(1, k_top + 1))
     y32 = x.astype(np.float32)
     phi = 2.0 * np.pi * np.cumsum(r_aud) / sr
-    c1 = np.exp(-1j * phi).astype(np.complex64)
-    ramp = np.exp(-2j * np.pi * off_hz * t_aud).astype(np.complex64)
+    c1 = np.exp(-1j * phi).astype(np.complex64)[None, :]
 
-    z = _demod(y32, c1, ks, stride, n_env, b_wide / sr)
-    z_off = _demod(y32, c1, ks, stride, n_env, b_probe / sr, ramp=ramp)
+    # THE demodulation (``tracking.dsp.demod``), twice: the on-comb bank at
+    # the wide band, and the off-comb probe at its own narrower band. The
+    # probe is a CONSTANT frequency offset, so it is a pure bin shift of the
+    # same forward transform — but it needs a different band, and a band is
+    # what a transform is sliced by, so it costs its own call.
+    rot0 = np.zeros(len(ks), dtype=np.int64)
+    ka = np.asarray(ks, dtype=np.int64)
+    z = demod(y32, c1=c1, rotor=rot0, k=ka, stride=stride, n_env=n_env, band_cyc=b_wide / sr)[
+        0
+    ].astype(np.complex128)
+    probe = demod(
+        y32,
+        c1=c1,
+        rotor=rot0,
+        k=ka,
+        stride=stride,
+        n_env=n_env,
+        band_cyc=b_probe / sr,
+        shift_cyc=off_hz / sr,
+    )[1]
+    assert probe is not None
+    z_off = probe.astype(np.complex128)
     n_trim = max(1, int(round(EDGE_TRIM_S * fs_e)))
     interior = slice(n_trim, max(n_trim + 1, n_env - n_trim))
     psd = np.maximum(np.mean(np.abs(z_off[..., interior]) ** 2, axis=-1), 1e-30) / (2.0 * b_probe)
