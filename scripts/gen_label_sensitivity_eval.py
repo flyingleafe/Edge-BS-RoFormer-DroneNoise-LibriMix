@@ -259,6 +259,56 @@ def track_readout(
 # ---------------------------------------------------------------------------
 
 
+def loss_pressure(
+    *, n_windows: int, label_scale: float, split: str, compensate_scale: bool
+) -> dict[str, dict[str, float]]:
+    """What each arm's label costs a generator that keeps FULL-amplitude lines.
+
+    No model: render the frozen comb twice from the same profile, once at the
+    true trajectory and once at the arm's label, and score the comb-masked
+    ``|Delta log-mag|`` between them. That is the mismatch the objective charges
+    an arm for *not* attenuating, per ``k`` band — the pressure the trained
+    arms are responding to, available before any training and independent of it.
+
+    ``compensate_scale`` divides the label back by ``label_scale``. Both readings
+    are needed: a constant gain is a much larger *raw* displacement than the
+    staircase (0.542 % of 6.4 kHz is 35 Hz, 4.5 bins, against the staircase's
+    8 Hz), but it is also the one the model can absorb. Uncompensated says what
+    an arm faces if it never learns the bias; compensated isolates the staircase,
+    which is what ``B - S`` and ``C - S`` measure.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for mode in ARMS:
+        ds = _dataset(mode, n_samples=n_windows, split=split, label_scale=label_scale)
+        k_max = ds.profile.a_k.shape[0]
+        band: dict[str, list[float]] = {name: [] for name in K_BANDS}
+        for i in range(n_windows):
+            ext, sl = ds._traj(i)
+            rps_true = ext[sl]
+            label = ds.label_for(ext)[sl]
+            if compensate_scale and mode != "exact":
+                label = label / label_scale
+            true = ds.render(rps_true, np.random.default_rng(100 + i))
+            fake = ds.render(label, np.random.default_rng(200 + i))
+            s_t, s_p = _logspec(true, 2048, 512), _logspec(fake, 2048, 512)
+            centres = np.arange(s_t.shape[1]) * 512 + 1024
+            rf = rps_true[np.clip(centres, 0, rps_true.shape[-1] - 1)]
+            for name, ks in K_BANDS.items():
+                diffs = []
+                for k in ks:
+                    if k > k_max:
+                        continue
+                    bins = np.rint(k * rf * 2048 / ds.sample_rate).astype(int)
+                    ok = (bins > 0) & (bins < s_t.shape[0])
+                    if ok.any():
+                        t_idx = np.arange(len(rf))[ok]
+                        diffs.append(np.abs(s_t[bins[ok], t_idx] - s_p[bins[ok], t_idx]))
+                if diffs:
+                    band[name].append(float(np.mean(np.concatenate(diffs))))
+        out[mode] = {n: float(np.mean(v)) if v else float("nan") for n, v in band.items()}
+    return out
+
+
 def self_test(ds: Any, *, f0_grid: tuple[float, ...], dur_s: float, tol_db: float = 0.05) -> int:
     """Push the TRUE comb through readout 1 and require it to read back flat.
 
@@ -318,9 +368,27 @@ def main() -> int:
         action="store_true",
         help="verify the readout reads the TRUE comb back flat, then exit",
     )
+    ap.add_argument(
+        "--pressure",
+        action="store_true",
+        help="print the model-free per-k loss pressure of each arm's label, then exit",
+    )
+    ap.add_argument("--label-scale", type=float, default=0.99458)
     args = ap.parse_args()
 
     f0_self = tuple(float(x) for x in args.f0_grid.split(","))
+    if args.pressure:
+        for tag, comp in (("raw", False), ("scale-compensated", True)):
+            print(f"\nloss pressure, {tag} (mean |delta log-mag| dB on the harmonic tracks):")
+            table = loss_pressure(
+                n_windows=args.track_windows,
+                label_scale=args.label_scale,
+                split=args.split,
+                compensate_scale=comp,
+            )
+            for mode, bands in table.items():
+                print(f"  {mode:16s} " + "  ".join(f"{k}={v:6.2f}" for k, v in bands.items()))
+        return 0
     if args.self_test:
         return self_test(
             _dataset("exact", n_samples=1, split=args.split), f0_grid=f0_self, dur_s=args.dur
