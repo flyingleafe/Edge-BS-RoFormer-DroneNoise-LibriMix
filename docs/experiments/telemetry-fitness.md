@@ -711,10 +711,25 @@ python scripts/telemetry_report.py \
 
 # Phase 6d — the sensitivity fix (issue 17, the challenge to 6c)
 
-**Status:** run and analyzed (2026-08-06) · job `telemetry-6d-0a0540` on `uni-cpu`,
-16 cores · library `tracking.fitness` (component 4, `line_power`, `admit_ridge`) ·
-driver `bash scripts/telemetry_campaign.sh 16 4` · unit JSON under
-`results/telemetry_fitness/{campaign_6d,scale_profile_6d}/`.
+**Status:** run and analyzed (2026-08-06) · library `tracking.fitness`
+(component 4, `line_power` / `line_masks`, `admit_ridge`) · driver
+`bash scripts/telemetry_campaign.sh <jobs> 14` · tests
+`tests/tracking/test_fitness.py` (27).
+
+Provenance, because it is not one job:
+
+- `telemetry-6d-0a0540` (`uni-cpu`, 16 workers) produced the **scale profile**
+  (870/870 units) and the non-fitted candidates of the control table. Its refit
+  stage was OOM-killed, so its 352 fitted-candidate units are `.err`.
+- the **fitted-trajectory re-score** (`arm = main`, all 15 windows, 3 controls)
+  was run locally against the 6c trajectories in
+  `results/telemetry_refit/campaign/traj/main/`, which are the same artifacts
+  6c scored — `results/telemetry_fitness/campaign_6d_local/`.
+- `telemetry-6d2-e6c967` (12 workers, 96 GB) re-runs the refit and the remaining
+  five ablation arms.
+
+Unit JSON: `results/telemetry_fitness/{campaign_6d,campaign_6d_local,scale_profile_6d}/`
+(the first two pulled to `omnirun-outputs/telemetry-6d-0a0540/`).
 
 ## The challenge
 
