@@ -54,15 +54,23 @@ offset, never per harmonic — a per-harmonic peak search is the bias that has
 already cost this campaign two claims). ``--self-test`` injects a known delay
 into a synthetic comb and requires it back, which is also what pins the sign.
 
+**The witness that never sees the ridge** is ``--mode refit-lag``. Phase 6c
+fitted a free trajectory that beats the labels by 2.47 dB, and nothing about it
+was chosen by a tau profile. Regressing its own correction on ``[dr/dt, r, 1]``
+reads a lag and a scale off as COEFFICIENTS rather than as the argmax of a
+curve, so it is an independent bound on the same claim.
+
 Modes:
   ridge      the tau x scale profile, gridrun, pooled + per-mic + per-rotor
   tdoa       the cross-channel comb phase, per (rotor, mic), against geometry
-  report     read both unit trees, produce the tables and the verdict inputs
+  refit-lag  the lag implied by the phase-6c fitter's own correction
+  report     read a unit tree, produce the tables and the verdict inputs
 
 Examples:
   python scripts/telemetry_timeshift.py --mode ridge --pilot --jobs 6
-  python scripts/telemetry_timeshift.py --mode tdoa --jobs 4
-  python scripts/telemetry_timeshift.py --mode report
+  python scripts/telemetry_timeshift.py --mode tdoa --jobs 4 --tdoa-gate none
+  python scripts/telemetry_timeshift.py --mode refit-lag
+  python scripts/telemetry_timeshift.py --mode report --report-dirs <dir>
 """
 
 from __future__ import annotations
@@ -91,7 +99,7 @@ from telemetry_fitness import (  # noqa: E402
     prep_sha1,
     resolve_prep_dir,
 )
-from telemetry_report import _argmin_parabola, boot_ci  # noqa: E402
+from telemetry_report import _argmin_parabola, boot_ci, fmt_ci  # noqa: E402
 
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
 
@@ -433,6 +441,48 @@ def measure_tdoa(
         "ref_ch": ref_ch,
         "half": bool(half),
     }
+
+
+def refit_lag(traj_dir: Path) -> dict[str, Any]:
+    """Read a lag off the 6c FITTER's own correction, without the ridge at all.
+
+    The fitted trajectories of phase 6c are a free curve that beats the labels
+    by 2.47 dB, and nothing about them was chosen by a tau profile. So the
+    correction they applied, ``r_fit - r_init``, is an independent witness:
+    regress it per window on the two shapes the campaign is arguing about,
+
+        d = a dr/dt + b r + c,   a = the lag in seconds, 100 b = the scale in %
+
+    and the lag falls out as a coefficient rather than as the argmax of a
+    curve. Read ``r2`` before either: the systematic model explains only a few
+    percent of the correction (the rest is de-staircasing and the fitter's own
+    per-frame noise), so this bounds the lag, it does not measure it precisely.
+    """
+    from tracking.telemetry_refit import presmooth
+
+    out: dict[str, Any] = {"per_window": {}, "pooled": {}}
+    for p in sorted(Path(traj_dir).glob("*.npz")):
+        with np.load(p) as z:
+            ft, r0, rf = z["ft"], z["r_init"], z["r_fit"]
+        d = (rf - r0).ravel()
+        drdt = np.gradient(presmooth(r0, ft, 5.0), ft, axis=1).ravel()
+        design = np.stack([drdt, r0.ravel(), np.ones_like(d)], axis=1)
+        beta, *_ = np.linalg.lstsq(design, d, rcond=None)
+        out["per_window"][p.stem] = {
+            "tau_ms": round(float(beta[0]) * 1e3, 3),
+            "scale_pct": round(float(beta[1]) * 100, 4),
+            "r2": round(float(1.0 - (d - design @ beta).var() / d.var()), 4),
+            "d_rms": round(float(np.sqrt(np.mean(d**2))), 4),
+        }
+    for name, is_fly in (("dregon", False), ("fly124", True)):
+        sel = [v for k, v in out["per_window"].items() if k.startswith("FLY124") == is_fly]
+        if sel:
+            out["pooled"][name] = {
+                "tau_ms": boot_ci([v["tau_ms"] for v in sel]),
+                "scale_pct": boot_ci([v["scale_pct"] for v in sel]),
+                "r2_mean": round(float(np.mean([v["r2"] for v in sel])), 4),
+            }
+    return out
 
 
 def self_test(seed: int = 0) -> int:
@@ -881,7 +931,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--mode", default="ridge", choices=("ridge", "tdoa", "report"))
+    ap.add_argument("--mode", default="ridge", choices=("ridge", "tdoa", "refit-lag", "report"))
+    ap.add_argument(
+        "--traj-dir",
+        default="results/telemetry_refit/campaign/traj/main",
+        help="refit-lag mode: the phase-6c fitted trajectories to read a lag off",
+    )
     ap.add_argument("--dataset", default="all", choices=("dregon", "fly124", "all"))
     ap.add_argument("--windows", default="")
     ap.add_argument("--tau-ms", default="-40:120:4", help="lo:hi:step in milliseconds")
@@ -912,6 +967,24 @@ def main() -> None:
 
     if args.self_test:
         raise SystemExit(self_test())
+
+    if args.mode == "refit-lag":
+        got = refit_lag(Path(args.traj_dir))
+        print(f"\n{'window':40s} {'tau ms':>8s} {'scale %':>9s} {'r2':>7s} {'d_rms':>7s}")
+        for k, v in got["per_window"].items():
+            print(
+                f"{k:40s} {v['tau_ms']:8.1f} {v['scale_pct']:9.3f} {v['r2']:7.3f} {v['d_rms']:7.3f}"
+            )
+        for name, v in got["pooled"].items():
+            print(
+                f"{name:10s} tau {fmt_ci(v['tau_ms'], 1)} ms | "
+                f"scale {fmt_ci(v['scale_pct'], 3)} % | mean r2 {v['r2_mean']:.3f}"
+            )
+        dst = Path(OUT_DEFAULT, "report_refit_lag.json")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(json.dumps(got, indent=2))
+        print(f"[refit-lag] -> {dst}")
+        raise SystemExit(0)
 
     out = Path(args.out or f"{OUT_DEFAULT}/{args.mode}")
     if args.mode == "report":
