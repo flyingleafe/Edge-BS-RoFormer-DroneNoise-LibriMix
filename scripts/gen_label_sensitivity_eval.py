@@ -74,10 +74,18 @@ def _dataset(label_mode: str, **kw: Any):
 
 
 def _spectrum(x: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
-    """Rectangular-window power spectrum. No taper: the eval windows are chosen
-    so every harmonic is periodic in them, which is worth more than a taper."""
-    spec = np.fft.rfft(np.asarray(x, dtype=np.float64))
-    return np.abs(spec) ** 2, np.fft.rfftfreq(x.shape[-1], 1.0 / sr)
+    """Rectangular-window power spectrum, normalized so a sinusoid of amplitude
+    ``A`` integrates to ``A**2 / 2`` over its band.
+
+    No taper: the eval windows are chosen so every harmonic is periodic in them,
+    which is worth more than a taper. The ``2 / N**2`` factor is what makes the
+    measurement directly comparable to the profile's analytic ``a_k * gain``
+    without a fitted gain in between.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = x.shape[-1]
+    spec = np.fft.rfft(x)
+    return (np.abs(spec) ** 2) * (2.0 / n**2), np.fft.rfftfreq(n, 1.0 / sr)
 
 
 def _band_power(
@@ -227,7 +235,11 @@ def track_readout(
         rms_p = float(np.sqrt(np.mean(pred**2))) or 1.0
         pred = pred * (rms_t / rms_p)
         s_t, s_p = _logspec(target, n_fft, hop), _logspec(pred, n_fft, hop)
-        rf = rps_true[::hop][: s_t.shape[1]]
+        # Frame f spans [f*hop, f*hop + n_fft), so its rate is the one at its
+        # CENTRE. Point-sampling at f*hop instead is a 64 ms lead, which at
+        # k = 80 displaces the read bin by more than the effect being measured.
+        centres = np.arange(s_t.shape[1]) * hop + n_fft // 2
+        rf = rps_true[np.clip(centres, 0, rps_true.shape[-1] - 1)]
         for name, ks in K_BANDS.items():
             diffs = []
             for k in ks:
@@ -245,6 +257,35 @@ def track_readout(
 
 
 # ---------------------------------------------------------------------------
+
+
+def self_test(ds: Any, *, f0_grid: tuple[float, ...], dur_s: float, tol_db: float = 0.05) -> int:
+    """Push the TRUE comb through readout 1 and require it to read back flat.
+
+    The readout has to survive its own floor subtraction, its band width and its
+    scale estimate before any arm's number means anything. Rendering the target
+    itself and asking for 0 dB at every ``k`` is the cheapest way to know it
+    does; it lands within 0.01 dB.
+    """
+    sr = ds.sample_rate
+    a_k = np.asarray(ds.profile.a_k, dtype=np.float64) * ds.gain
+    ref = (a_k**2) / 2.0
+    rng = np.random.default_rng(0)
+    per_k: dict[int, list[float]] = {}
+    n_t = int(round(dur_s * sr))
+    for f0 in f0_grid:
+        power, freqs = _spectrum(ds.render(np.full(n_t, f0), rng), sr)
+        df = float(freqs[1] - freqs[0])
+        s = _frequency_scale(power, freqs, f0, 12, 0.015)
+        for k in range(1, a_k.shape[0] + 1):
+            center = s * k * f0
+            if center >= sr / 2.0 * 0.98 or ref[k - 1] <= 0.0:
+                continue
+            p, _ = _band_power(power, freqs, center, max(5.0 * df, 0.0015 * center))
+            per_k.setdefault(k, []).append(10.0 * np.log10(max(p, 1e-30) / ref[k - 1]))
+    worst = max(abs(float(np.mean(v))) for v in per_k.values())
+    print(f"self-test: worst per-k bias {worst:.4f} dB over k=1..{max(per_k)} (tol {tol_db})")
+    return 0 if worst <= tol_db else 1
 
 
 def _band_mean(delta_db: dict[int, float]) -> dict[str, float]:
@@ -272,7 +313,18 @@ def main() -> int:
     ap.add_argument("--scale-tol", type=float, default=0.015)
     ap.add_argument("--track-windows", type=int, default=24)
     ap.add_argument("--split", default="eval", help="held-out trajectory stream")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="verify the readout reads the TRUE comb back flat, then exit",
+    )
     args = ap.parse_args()
+
+    f0_self = tuple(float(x) for x in args.f0_grid.split(","))
+    if args.self_test:
+        return self_test(
+            _dataset("exact", n_samples=1, split=args.split), f0_grid=f0_self, dur_s=args.dur
+        )
 
     import zoo
 
