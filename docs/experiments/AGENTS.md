@@ -51,6 +51,7 @@ lands as a top-level file here.
 | `salience-map-rps-tracking.md` | `c7_*`, `c8_*` | Multi-F0 salience-map tracking as an alternative to direct RPS regression |
 | `noise-generation-augmentation.md` | `e2_*`, `e3_*`, `e4_*` | Learned harmonic noise generator as an online-mixing augmentation source |
 | `vk-frontend-probe.md` | — (standalone driver `scripts/vk_frontend_probe.py`, no conf/experiment entry) | Coupled VK envelopes vs independent demodulation as the tracker's front end (issue #15): rejected |
+| `telemetry-fitness.md` | — (standalone driver `scripts/telemetry_fitness.py`, no conf/experiment entry) | The goodness-of-fit HARNESS for a candidate rotor-speed trajectory (issue #17 phase 6a): three components at fixed degrees of freedom, held-out harmonics/channels/time, all four §B controls, residual decomposition + bootstrap. Design, synthetic acceptance tests, smoke numbers |
 | `kalman-harmonic-tracker-phase0.md` | — (standalone runner `src/experiments/kalman_harmonic/`, no conf/experiment entry) | RPS-driven Kalman harmonic tracker vs framed lstsq_VP; bet killed at K2 (drift robustness refuted); mitigation list for any learned revival |
 
 Related: `docs/fwh_rotor_acoustic_simulator_plan.md` (a tool build with its
