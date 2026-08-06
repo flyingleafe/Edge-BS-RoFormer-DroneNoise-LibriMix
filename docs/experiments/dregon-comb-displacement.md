@@ -1,11 +1,19 @@
-# DREGON comb displacement — the telemetry over-reports by 0.54 %
+# DREGON comb displacement — the telemetry over-reports by 0.35 to 0.85 %
 
-**Status:** in progress (2026-08-05, one day) · narrative record in
-`docs/experiments/beat-vk.md` (sections dated 2026-08-05) · code, raw
-reports and JSON in `scripts/displacement/`.
+**Status:** decided (2026-08-06) · the decision is the LAST section, "THE
+DECISION (issue 17 phase 6c)" — read it first · earlier narrative in
+`docs/experiments/beat-vk.md` (sections dated 2026-08-05) · the campaign that
+decided it is `docs/experiments/telemetry-fitness.md` § "The campaign".
 
+> **No correction is applied to DREGON labels.** The bias is real and its sign
+> is settled; its size is uncertain by a factor of two between two
+> well-controlled estimators (-0.347 % and -0.77 %). Quote the systematic
+> floor of 0.28-0.68 rev/s at cruise beside any DREGON RPS number. The factor
+> `x0.99458` stays WITHDRAWN.
+>
 > Three claims were made here and two were withdrawn within the same day.
-> Read the "what died" section before citing anything.
+> Read the "what died" section before citing anything, and note that the
+> section headings below still carry the numbers of the day they were written.
 
 ## Motivation
 
@@ -31,7 +39,11 @@ off-comb-carrier null, a window-free order-space comb scan
 (`combscan.py`, resamples audio uniformly in telemetry rotor phase and
 scores a whole comb at once), and a coherent pulse-pair estimator.
 
-## THE RESULT
+## THE RESULT (as written 2026-08-05 — SUPERSEDED by the last section)
+
+> The 0.542 % of this section was withdrawn later the same day, and the phase
+> 6c campaign replaced it with a range. Kept for the evidence chain below,
+> which is unaffected.
 
 **DREGON's rotor telemetry over-reports rotor speed by 0.542 %
 (95 % CI 0.450-0.618 %).** At cruise (56-87 rev/s) that is a systematic
@@ -201,8 +213,10 @@ comb is on-grid and usable".
    (`free-flight_nosource_room2`: zero bar-clearing units in four
    windows, and no comb excess over the null either). **The hover-vs-
    cruise contrast that would test H3 does not exist in this dataset.**
-3. Whether to apply the x0.99458 correction to DREGON labels, and how to
-   report every historical DREGON number if we do.
+3. ~~Whether to apply the x0.99458 correction to DREGON labels, and how to
+   report every historical DREGON number if we do.~~ **CLOSED 2026-08-06** by
+   the phase 6c campaign: no correction is applied, and historical numbers
+   carry a quoted bias floor instead. See the last section.
 
 ## The 6 kHz question, settled (2026-08-05, second round)
 
@@ -486,3 +500,142 @@ Two things to carry into the next campaign:
   attached to a rotor independently of the carrier, that is, a fitted trajectory
   scored against telemetry. It belongs to the refinement driver, not to
   `nullcontrol.py`.
+
+## THE DECISION (issue 17 phase 6c, 2026-08-06)
+
+The full campaign is run: 15 protocol windows, six ablation arms, nine
+candidates, four controls, three hold-out families, a 29-point scale profile,
+2640 units, zero failures. Method and every table:
+`docs/experiments/telemetry-fitness.md` § "The campaign". Jobs
+`telemetry-6c-701374` and `telemetry-6c-g025-ca3395`, pin
+`beatvk-valid-raw@54849c13ed3a` (window fingerprints verified identical to the
+local cache).
+
+### Decision: do NOT correct the shipped DREGON labels
+
+The bias is real, its sign is settled, its mechanism was already settled, and
+its SIZE is still uncertain by a factor of two. Two well-controlled estimators
+of the same 15 windows disagree, and they disagree by more than either one's
+interval:
+
+| estimator | DREGON | FLY124 cruise (negative control) |
+|---|---|---|
+| best single constant scale, fixed DOF, hold-outs agreeing | **-0.77 % [-0.95,-0.59]** | -0.01 % [-0.05,+0.01] |
+| mean shift of the free fit (issue 17 steps 1-6) | **-0.347 % [-0.394,-0.288]** | -0.038 % [-0.062,-0.014] |
+
+Applying either number as a label correction would put an error of up to 0.4 %
+(0.3 rev/s at cruise) into every DREGON RPS number, and would make the
+corrected numbers incomparable with everything published before. The campaign
+does not license a constant.
+
+### What IS settled, and must be quoted
+
+1. **DREGON's `motors_measured` does not sit on its own comb.** At fixed
+   degrees of freedom its on-comb score equals its off-comb null and equals a
+   mismatched window's telemetry (broadband 0.6644 / 0.6671 / 0.6644).
+   FLY124's telemetry clears both of its nulls (0.4589 against 0.5712 and
+   0.5739). This is the first control-backed statement of the defect, and it
+   does not depend on any fitted trajectory.
+2. **Every fitted DREGON trajectory does lock** (0.593 against nulls at 0.661
+   and 0.664), so the comb is there and the labels are what miss it.
+3. **The bias is a systematic over-report of 0.35-0.85 %**, that is
+   **0.28-0.68 rev/s at DREGON cruise**. Quote this as a systematic floor
+   beside every DREGON RPS error number. It is 27-66 % of the blind-VK DREGON
+   steady bar (1.030) and 15-38 % of the cruise bar (1.807).
+4. **FLY124 / Michael's labels are correct**, twice over: the fitter moves them
+   by -0.038 % and the best constant scale for them is -0.01 %. Precision
+   claims should be made on Michael's recordings, not on DREGON.
+5. **The direction of the earlier disagreement is explained, not repeated.**
+   The pulse-pair estimator is INERT on DREGON — its response to a known
+   -0.542 % injection is 2 % of the injection, against 32 % on FLY124 — so
+   every near-zero pulse-pair reading on DREGON measures the estimator, not the
+   labels.
+6. **A constant is the wrong model.** The fitted trajectories beat every
+   constant scale (0.593 against the best constant's 0.639), and the residual
+   after the systematic model is 0.688 rev/s against a systematic shift of
+   0.261 rev/s. Two corrections, of different kinds, as this note has said
+   since the fourth round.
+
+### Where this estimate sits in the historical table
+
+| estimator | scale | now |
+|---|---|---|
+| low-k per-unit regression | -0.542 % | inside the campaign's range, no interval of its own |
+| window-free order-space scan | -0.555 % | ditto |
+| joint 4-rotor global scale, unsmoothed | -0.430 % | near the fitter's -0.347 % |
+| joint 4-rotor global scale, DP-smoothed | -0.813 % | near the profile's -0.77 % |
+| k-scaled tracker `B0=1`, telemetry init | -0.313 % | superseded by `main`, -0.347 % |
+| k-scaled tracker `B0=3` | -0.241 % | **arm disqualified**, see below |
+| single strong high harmonics | -1.1 % | still REFUTED |
+| **profile, fixed DOF, hold-outs + 4 controls** | **-0.77 %** | new |
+| **free fit, issue 17 steps 1-6** | **-0.347 %** | new |
+
+The historical spread was never noise around one value. It splits into two
+clusters, and the campaign reproduces both with controls attached: estimators
+that free a shape land near -0.35 %, estimators that fit one constant land near
+-0.8 %. The 0.99458 factor sits between them and belongs to neither.
+
+### The wide band is disqualified, by its own control
+
+The `b0_3` arm returns **-0.316 %** on FLY124, whose labels were recalibrated
+and whose true correction is zero, and it damages rotor identity on both
+datasets (smallest gap ratio 0.101, order lost in 3 of 9 DREGON windows). It is
+estimator flexibility, exactly as issue 17 predicts of a wide capture. Its
+historical readings (-0.24 %, -0.19 %) should not be cited.
+
+The other five arms all pass the FLY124 control (-0.02 to -0.07 %) and span
+-0.26 to -0.44 % on DREGON. That spread is the fitter's systematic and is
+larger than any arm's statistical interval.
+
+### Twin capture is refuted for this measurement
+
+The four DREGON rotors move DOWN together (-0.43 / -0.32 / -0.31 / -0.30 %).
+Twin capture predicts ALTERNATING signs, because each rotor's twin lies below
+it for two rotors and above it for the other two. The per-rotor profile agrees:
+rotors 2 and 3, whose twin traps are at +0.49 % and +1.10 %, put their minima
+at -0.71 % and -0.49 %, away from their traps. Over nine windows the r0-r2 gap
+ratio scatters 0.38-1.25 with mean 0.94 — noise around one, not a collapse. The
+0.70 that phase 6b flagged from a single window was one draw.
+
+### Scale versus tick miscount: first evidence, still weak
+
+The nine DREGON windows sit at two rate clusters (60-68 and 80 rev/s) and the
+scale grows with rate: `scale % = -0.0089 * rate + 0.32`, slope 95 % CI
+[-0.076, -0.0034]. A pure scale predicts 0; the fixed tick miscount
+(`d = -c r^2`, `c = 6.7e-5`) predicts -0.0067. The interval excludes the pure
+scale and contains the miscount. Nine windows and two clusters, so this is a
+hint, not a resolution — but it is the first measurement that separates them at
+all, and it is a second reason not to ship a constant.
+
+### What would settle the magnitude
+
+1. **A finer frame grid.** The 49.7 Hz refresh line is not resolvable on the
+   protocol's 31.25 Hz grid, so the sharpest residual test — does the
+   correction carry the tachometer's own signature — cannot be run as written.
+   Only 19 % of the residual falls inside the half-step bound.
+2. **A convergence stop that fires.** No window of the campaign converged on
+   the tolerance; all 90 units stopped on the plateau rule. A fitter that
+   stops early understates the shift, which is a candidate explanation for
+   -0.35 % against -0.77 %.
+3. **Rates that are not twinned.** Everything hard here comes from two rotor
+   pairs 0.42 and 0.82 rev/s apart. The conditioning gate admits 0.09 % of
+   DREGON cells at the protocol's own capture, and 6.6 % at the loosest gate
+   that keeps the band wider than the effect.
+
+### Historical DREGON numbers: affected, and NOT edited
+
+No number below is restated, because no correction is applied. Each carries the
+0.28-0.68 rev/s label-bias floor of item 3, which should be quoted whenever the
+number is quoted.
+
+- `docs/experiments/beat-vk.md` — the blind-VK DREGON bars (0.688 steady,
+  1.030, 1.807 cruise) and every arm scored against them.
+- `docs/experiments/rps-refine-precision.md` — the "0.2 rev/s honest floor" for
+  DREGON is too small by a factor of 1.4-3.4.
+- `docs/experiments/g1-vk-parity-phaseb.md` and the VK-parity bars.
+- Memory notes `dregon-comb-weak-and-labels-suspect`,
+  `blind-reannotation-dregon-vs-fly124`, `flagship-peeled-iteration`,
+  `beat-vk-campaign`, `rps-refine-findings`.
+- `writing/reports/` and `writing/slides/` items that quote a DREGON RPS error.
+- The `x0.99458` factor stays **withdrawn**. It is not the profile's -0.77 %
+  and not the fitter's -0.347 %.

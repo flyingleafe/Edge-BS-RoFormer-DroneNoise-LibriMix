@@ -1,15 +1,16 @@
-# Trajectory goodness of fit — the harness (6a) and the fitter (6b), issue 17
+# Trajectory goodness of fit — the harness (6a), the fitter (6b), the campaign (6c), issue 17
 
 **Status:** harness built and verified (2026-08-06) · GitHub issue #17 §A-D ·
 library `src/tracking/fitness.py` · driver `scripts/telemetry_fitness.py` ·
 tests `tests/tracking/test_fitness.py` · smoke JSON
 `results/telemetry_fitness/{smoke,smoke_b0_0.25}/`.
 The **fitter** (phase 6b, issue #17 "Proposed procedure" steps 1-6) is built and
-verified on top of it — see "The fitter" below. No campaign has been run: that
-is phase 6c.
+verified on top of it — see "The fitter" below. The **campaign** (phase 6c) is
+run — see "The campaign" at the end, and the decision it produced in
+`docs/experiments/dregon-comb-displacement.md`.
 
 This note records the DESIGN and the ACCEPTANCE of the harness, plus a smoke
-run. It does not interpret the DREGON numbers — that is phase 6c.
+run. The campaign section holds the measurement.
 
 ## Why
 
@@ -462,4 +463,241 @@ band).
 python -m pytest tests/tracking/test_telemetry_refit.py -q
 TRACKING_FFT_WORKERS=6 python scripts/telemetry_refit.py --smoke --jobs 2 \
   --out results/telemetry_refit/smoke
+```
+
+---
+
+# The campaign (issue 17, phase 6c)
+
+**Status:** run and analyzed (2026-08-06) · jobs `telemetry-6c-701374` and
+`telemetry-6c-g025-ca3395` on `uni-cpu`, 16 cores, 36 min + 20 min wall,
+2640 units, **zero failures** · driver `scripts/telemetry_campaign.sh` ·
+reader `scripts/telemetry_report.py` · JSON `results/telemetry_report.json`
+and `results/telemetry_report_g025.json` · unit JSON under
+`results/telemetry_{refit,fitness}/` (uncommitted, 55 MB).
+
+The campaign fits all 15 protocol windows under six arms, then judges every
+candidate at fixed degrees of freedom against all four controls, then profiles
+a one-parameter scale family. DREGON is the measurement. FLY124 is the negative
+control, and it runs through the identical procedure.
+
+## Provenance
+
+The prep cache is a gitignored artifact, so the cluster rebuilt the 15 windows
+from the pinned dataset `beatvk-valid-raw@54849c13ed3a`. Every unit carries the
+window's `prep_sha1`, and all 15 fingerprints are identical to the local pulled
+cache. The rebuilt windows are the same windows, byte for byte.
+
+## Coverage decided the settings, and geometry decided coverage
+
+At the smoke's capture (`b0 = 1` rev/s, strict gate) the conditioning gate
+admits **0.09 %** of DREGON cells, and **7 of the 9 DREGON windows have no
+admitted cell at all**. Every DREGON number of the first job is therefore
+noise from two windows. FLY124 has 264-608 cells per window at the same
+setting.
+
+The gate reads the REFERENCE only, so coverage is a function of the telemetry
+geometry and of `b0 * gate_band_frac` — no audio, no candidate, no score. That
+makes the setting selectable without touching a result:
+
+| `b0` x `gate_band_frac` | DREGON admit | windows with cells | FLY124 admit |
+|---|---|---|---|
+| 1.00 | 0.0009 | 2/9 | 0.048 |
+| 0.50 | 0.0077 | 6/9 | 0.075 |
+| 0.25 | 0.0235 | 8/9 | 0.107 |
+| **0.125** | **0.0655** | **9/9** | 0.158 |
+| 0.05 | 0.152 | 9/9 | 0.287 |
+
+The campaign therefore reports two settings: the strict one (`b0 = 1`,
+`gate = 1.0`), which has no DREGON coverage, and `b0 = 0.5`,
+`gate_band_frac = 0.25`, the loosest product that admits cells in every window
+while the band stays wider (0.5 rev/s) than the displacement being measured
+(~0.3-0.7 rev/s). The rule is coverage, fixed before any score was read.
+
+## The four controls
+
+`b0 = 0.5`, `gate_band_frac = 0.25`, hold-out `none`, broadband component
+(lower is better), pooled over windows:
+
+| candidate | on | offcomb | mismatch |
+|---|---|---|---|
+| DREGON telemetry | **0.6644** | 0.6671 | 0.6644 |
+| DREGON `lp:5` | 0.6627 | 0.6634 | 0.6644 |
+| DREGON `scale:0.99458` | 0.6464 | 0.6565 | 0.6644 |
+| DREGON `fit:main` | **0.5927** | 0.6607 | 0.6644 |
+| FLY124-cruise telemetry | **0.4589** | 0.5712 | 0.5739 |
+| FLY124-cruise `scale:0.99458` | 0.6508 | 0.5656 | 0.5739 |
+| FLY124-cruise `fit:main` | 0.4397 | 0.5610 | 0.5739 |
+
+Four readings, and the first is the campaign's central result:
+
+1. **DREGON's raw telemetry has no acoustic lock.** Its on-comb score equals
+   its own off-comb null and equals a mismatched window's telemetry, to the
+   third decimal. FLY124's telemetry clears both of its nulls by 0.11. The
+   labels of one drone sit on its comb and the labels of the other do not.
+2. **Every fitted DREGON trajectory clears both nulls** (0.593 against 0.661
+   and 0.664). This is the discrimination issue 17 asks for, and it passes.
+3. **The withdrawn factor 0.99458 destroys the FLY124 lock** — 0.459 becomes
+   0.651, which is worse than the null. So the statistic resolves a 0.542 %
+   scale error easily where it has coverage, and FLY124 needs no such
+   correction.
+4. **The permutation null collapses the residual pairing**: `d_rms` goes from
+   0.80 to 10.35 rev/s on DREGON and from 0.44 to 11.68 on FLY124. The
+   acoustic components are permutation-invariant by construction, as phase 6a
+   established, so the permutation is read on the pairing.
+
+## The scale, two estimators that do not agree
+
+**The one-parameter profile (fixed DOF).** The family `lp:5+scale:s` has a
+single free parameter, so its minimum cannot be bought with flexibility. 29
+values of `s` from -1.20 % to +0.20 %, per window, pooled:
+
+| group | broadband | phase noise | hold-outs (broadband) |
+|---|---|---|---|
+| **DREGON** | **-0.77 % [-0.95,-0.59]** | -0.73 % [-0.82,-0.56] | -0.66 / -0.72 / -0.80 / -0.81 |
+| **FLY124 cruise** | **-0.01 % [-0.05,+0.01]** | -0.06 % [-0.25,+0.02] | -0.00 / -0.02 / -0.04 / -0.01 |
+| DREGON off-comb null | -1.08, depth 0.018 | edge, depth 0.03 | — |
+
+The hold-out families (even k, odd k, mic 0, half the blocks) agree inside each
+other's intervals on DREGON, the off-comb null has no interior minimum and
+one third of the depth, and the FLY124 control returns zero. The campaign's
+definition of done is met by this row.
+
+**The fitter's own mean shift.** The refit moves the trajectory and reports
+`scale_summary.global_pct`, one shared scale per window:
+
+| group | global scale | per recording |
+|---|---|---|
+| **DREGON** (9 windows) | **-0.347 % [-0.394,-0.288]** | -0.380 / -0.309 / -0.353 |
+| **FLY124 cruise** (4) | **-0.038 % [-0.062,-0.014]** | — |
+| FLY124 warmup (2) | +0.142 % [-0.046,+0.331] | out of validity, see below |
+
+Per rotor on DREGON: -0.43 / -0.32 / -0.31 / -0.30 — all four negative and of
+one size. **Twin capture predicts alternating signs** (each rotor is pulled
+toward its twin, which is below for two rotors and above for the other two),
+so the common sign refutes twin capture as the explanation of the shift. The
+per-rotor profile minima say the same: rotors 2 and 3, whose twin traps lie at
++0.49 % and +1.10 %, put their minima at -0.71 % and -0.49 %, away from their
+traps.
+
+**The two estimates differ by a factor of two, and the difference is not
+statistical** — the intervals do not touch. They are also not the same
+quantity. The profile asks "what single constant best explains the comb"; the
+fitter asks "where does a free trajectory settle". The fitted trajectories beat
+every constant (0.593 against the best constant's 0.639), so a constant is
+known to be an incomplete model of the label error, and the mean shift of a
+shape-changing fit has no reason to equal the best constant. What the campaign
+can say is that both are negative, both pass FLY124, and the systematic between
+the two methods (0.4 pp) is 4-8x either one's statistical interval.
+
+## The pulse-pair centre is inert on DREGON
+
+`pp_dr` is a rate error in rev/s, so it looks like a third scale estimator, and
+on DREGON it reads about zero. It is not evidence. The response gain is
+measurable, because `scale:0.99458` is a known injection of -0.542 %:
+
+| dataset | telemetry | `scale:0.99458` | difference | gain |
+|---|---|---|---|---|
+| FLY124 cruise | -0.010 % | +0.161 % | 0.171 | **0.32** |
+| DREGON | -0.025 % | -0.015 % | 0.010 | **0.02** |
+
+DREGON's pulse-pair estimator returns 2 % of a known displacement. Its ~0
+reading measures its own inertia. This is the low-SNR shrinkage the
+displacement campaign already recorded (pulse-pair -0.231 against the ridge's
+-0.424), now with a number on the gain.
+
+## Ablation: what each of the six steps bought
+
+DREGON global scale beside the FLY124-cruise control of the same arm:
+
+| arm | step turned off | DREGON | FLY124 cruise | `d_rms` | order kept | min gap ratio |
+|---|---|---|---|---|---|---|
+| `main` | — | -0.347 [-0.394,-0.288] | -0.038 | 0.798 | 8/9 | 0.380 |
+| `nosmooth` | 1, pre-smoothing | -0.363 [-0.408,-0.311] | -0.023 | **0.531** | 8/9 | 0.530 |
+| `flatk` | 2, the k ladder | **-0.261** [-0.318,-0.202] | -0.038 | 0.756 | 8/9 | 0.348 |
+| `nopeel` | 3, the peel | **-0.442** [-0.501,-0.358] | -0.065 | 0.853 | 8/9 | **0.138** |
+| `gate` | 6, `pair_mode` | -0.299 [-0.356,-0.236] | -0.037 | 0.752 | 8/9 | 0.406 |
+| `b0_3` | (wider band) | -0.357 [-0.530,-0.187] | **-0.316** | 1.102 | 6/9 | **0.101** |
+
+Read:
+
+- **`b0_3` fails its control.** It finds -0.32 % on recalibrated FLY124 labels
+  and it damages rotor identity on both datasets. The wide band is estimator
+  flexibility, exactly as issue 17 predicts, and the arm is disqualified. Note
+  that no other arm was chosen by this test: the five remaining arms all pass,
+  and they span -0.26 to -0.44 %.
+- **The peel is what holds the twins apart.** Without it the shift grows 27 %
+  and the smallest gap ratio falls to 0.138. A larger number with collapsed
+  gaps is the failure mode of the whole campaign, not a better measurement.
+- **The k ladder costs 25 % of the shift** (`flatk` -0.261 against -0.347).
+  The old `k_caps=(80,80,80)` puts the decision on out-of-capture harmonics.
+- **The pre-smoothing does not move the scale** (-0.363 against -0.347) but it
+  halves the per-frame movement (`d_rms` 0.531 against 0.798). It buys the
+  separation of the two corrections, not the correction itself.
+- The arm spread, -0.26 to -0.44 %, is the fitter's own systematic. It is
+  larger than any arm's window-to-window interval.
+
+## The residual, reported separately
+
+`residual_decompose` of `fit - raw telemetry`, DREGON `main`, pooled:
+
+| quantity | DREGON | FLY124 cruise |
+|---|---|---|
+| systematic mean shift `d_mean` | **-0.261 rev/s** | -0.029 |
+| total `d_rms` | 0.798 | 0.441 |
+| `resid_rms` after the systematic model | **0.688** | 0.429 |
+| `lag_s` | +0.0011 | -0.0013 |
+| `tach_bound_frac` (share inside half a step) | 0.19 | 0.36 |
+| `tach_flatness` below 14.8 Hz | 0.46 | 0.41 |
+| `design_cond` of the 6a regression | 79.8 | 96.9 |
+
+The two corrections are of different sizes and different kinds: the systematic
+part is 0.26 rev/s and the part that remains after it is 0.69 rev/s. They are
+reported separately here and must stay separate.
+
+**The tachometer-signature test does not pass, and cannot on this grid.** Only
+19 % of the DREGON residual falls inside the tachometer's half-step bound
+(+-0.135 rev/s), so the residual is about five times larger than pure
+de-staircasing. The 49.7 Hz refresh line is **not resolvable** on the frozen
+protocol's 31.25 Hz frame grid (`f_tach_resolved: false`,
+`tach_line_ratio: null`), so the sharpest form of the test is unavailable
+without a finer grid. What the residual carries beyond the staircase is the
+fitter's own per-frame noise, which phase 6b measured at 0.05-0.15 rev/s on
+synthetic audio and which is clearly larger on real audio.
+
+## Rotor identity
+
+Rotor order survives in 14 of the 15 windows under `main`. The one exception,
+`free-flight_whitenoise-low_room1__w02`, has a raw twin gap of 0.120 rev/s —
+the two rotors are the same rate inside the label's own quantisation step, so
+the order there has no meaning to preserve.
+
+The twin gaps scatter both ways and do not collapse: the r0-r2 gap ratio over
+the nine DREGON windows is 1.25, 0.70, 0.86, 1.18, 0.55, 0.94, 1.14, 0.38,
+0.97 — mean 0.94, spread +-50 %. Phase 6b's single smoke window read 0.70 and
+called it a caveat; over nine windows it is noise around 1, not a trend. The
+`nopeel` and `b0_3` arms are the ones that damage gaps (0.138 and 0.101).
+
+## Rate dependence: weak evidence for a tick miscount
+
+The nine DREGON windows sit at two rate clusters (60-68 and 80 rev/s), and the
+scale grows with rate:
+
+    scale % = -0.0089 * rate + 0.32,  slope 95 % CI [-0.076, -0.0034]
+
+A pure scale predicts slope 0; the fixed tick miscount of the displacement
+campaign (`d = -c r^2`, `c = 6.7e-5`) predicts -0.0067. The interval excludes
+zero and contains the tick-miscount prediction. This is suggestive, not
+settled: nine windows, two rate clusters, and the low-rate windows are also the
+harder ones.
+
+## Reproduce
+
+```bash
+bash scripts/telemetry_campaign.sh 16          # the three stages, 15 windows
+python scripts/telemetry_report.py             # the strict-gate reading
+python scripts/telemetry_report.py \
+  --fit results/telemetry_fitness/campaign_g025 \
+  --profile results/telemetry_fitness/scale_profile_g025 \
+  --out results/telemetry_report_g025.json     # the coverage-adequate reading
 ```
