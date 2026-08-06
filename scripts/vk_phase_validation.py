@@ -48,7 +48,7 @@ recovery (not just frequency) from fully-synthetic to real data:
       translation. The S3b->S3c->S4 deltas decompose the S3->S4 collapse
       into masking vs aero-load phase noise vs translation/Doppler.
   S4  one 16 s cruise window of ``free-flight_nosource_room1`` (the
-      ``vk_blind_annotation`` prep segment), init = tau-aligned command
+      ``vk_validation`` prep segment), init = tau-aligned command
       telemetry: same S3-style no-GT metrics — the S3->S4 delta isolates
       reverb + multi-rotor masking. (IF MAE vs ``motors_measured`` is also
       reported since it exists here.)
@@ -130,14 +130,13 @@ from scipy.signal import lfilter  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Pin this repo's src/ ahead of the .venv's absolute-path editable install
-# (same rationale as vk_blind_annotation.py / the vk_blind_sweep post-mortem).
+# (the editable install points at whatever checkout was installed last).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from vk_blind_annotation import (  # noqa: E402
-    CAPTURE_CFG,
-    REFINE_CFG,
-)
-from vk_blind_annotation import (
+# The loader is the plain one. Its predecessor added an NPZ disk cache of the
+# prepared segment; without that cache a repeated run loads and resamples the
+# recording again, which costs runtime only.
+from vk_validation import (  # noqa: E402
     prepare_recording as prepare_flight_recording,
 )
 
@@ -146,6 +145,7 @@ from tracking.phase_increment_tracker import (  # noqa: E402
     DEFAULTS as PI_KALMAN_DEFAULTS,
 )
 from tracking.phase_increment_tracker import pi_kalman_refine  # noqa: E402
+from tracking.pipelines import CAPTURE_CFG, REFINE_CFG  # noqa: E402
 from tracking.rps_refinement import (  # noqa: E402
     RefineConfig,
     compute_logmag,
@@ -602,16 +602,13 @@ def build_s3c_cell(dregon_dir: str) -> Cell:
 
 
 def build_s4_cell(dregon_dir: str = "data/DREGON") -> Cell:
-    """One 16 s cruise window of the vk_blind_annotation prep segment,
-    init = tau-aligned cleaned command telemetry (the campaign's init)."""
-    try:
-        prep = prepare_flight_recording(S4_RID)
-    except KeyError:
-        # No local data/DREGON checkout (cluster): bypass the annotation
-        # prep cache and load via the dload-capable validation loader.
-        from vk_validation import prepare_recording as _prep_dir
+    """One 16 s cruise window of the blind-annotation prep segment,
+    init = tau-aligned cleaned command telemetry (the campaign's init).
 
-        prep = _prep_dir(S4_RID, dregon_dir=dregon_dir)
+    ``dregon_dir`` accepts a ``dload:`` URI, thus a cluster without a local
+    ``data/DREGON`` checkout streams the recording.
+    """
+    prep = prepare_flight_recording(S4_RID, dregon_dir=dregon_dir)
     start = max(0.0, (float(prep.ft[-1]) - S4_WIN_S) / 2.0)
     a0 = int(round(start * SR))
     audio = prep.audio[:, a0 : a0 + int(S4_WIN_S * SR)].astype(np.float64)

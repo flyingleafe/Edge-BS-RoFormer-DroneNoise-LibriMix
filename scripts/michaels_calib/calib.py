@@ -38,13 +38,13 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-for _p in (str(HERE), str(REPO / "scripts"), str(REPO / "src")):
+for _p in (str(HERE), str(REPO / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from vk_blind_annotation import MIDBAND_CFGS  # noqa: E402
 from windows import SR, Window  # noqa: E402
 
+from tracking.pipelines import MIDBAND_CFGS  # noqa: E402
 from tracking.vk_tracking import vk_envelopes, vk_reconstruct  # noqa: E402
 
 #: Identical to ``rps_refine_lab.RECON_CFG`` (same one-line definition) — the
