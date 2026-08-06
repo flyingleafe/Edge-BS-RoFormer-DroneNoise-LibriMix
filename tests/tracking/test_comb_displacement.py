@@ -59,3 +59,38 @@ def test_half_integer_carrier_shifts_the_geometry() -> None:
     # sits at 840 Hz, which rotor 2's 14th line hits exactly.
     assert float(integer[0, 0]) == 20.0
     assert float(half[0, 0]) == 0.0
+
+
+def test_offsets_are_the_same_geometry_signed(  # phase 6d
+) -> None:
+    """``interloper_offsets_hz`` must agree with the DISTANCE, and carry a sign.
+
+    The ridge component excises these positions from its floor region instead of
+    gating the cell out, so a sign error would excise the wrong side of the band
+    and leave the interferer in the floor.
+    """
+    from tracking.comb_displacement import interloper_offsets_hz
+
+    ks = [1, 7, 70]
+    band = np.array([40.0, 40.0, 40.0])
+    offs = interloper_offsets_hz(RATES[:, 0], 80.0, 0, ks, band_hz=band, f_max=6000.0)
+    nearest = nearest_interloper_hz(RATES, RATES[0], 0, ks, f_max=6000.0)[:, 0]
+    for i, o in enumerate(offs):
+        assert o.size, f"k={ks[i]}: no interferer inside the band"
+        assert np.isclose(np.min(np.abs(o)), nearest[i]), (
+            f"k={ks[i]}: offsets {o} disagree with the distance {nearest[i]}"
+        )
+    # k=1: rotor 1's fundamental is BELOW the carrier's 80 Hz, so the offset is
+    # negative; k=7: rotor 2's 9th at 540 is below 560; both signs must appear
+    # somewhere in the set, or the excision is one-sided.
+    assert float(offs[0].min()) < 0.0
+    assert any(float(o.max()) > 0.0 for o in offs)
+
+
+def test_offsets_respect_the_band_margin() -> None:
+    from tracking.comb_displacement import interloper_offsets_hz
+
+    wide = interloper_offsets_hz(RATES[:, 0], 80.0, 0, [7], band_hz=np.array([40.0]))
+    narrow = interloper_offsets_hz(RATES[:, 0], 80.0, 0, [7], band_hz=np.array([2.0]))
+    assert wide[0].size > narrow[0].size
+    assert all(abs(v) <= 1.5 * 40.0 for v in wide[0])
