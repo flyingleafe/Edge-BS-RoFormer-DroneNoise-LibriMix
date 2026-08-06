@@ -47,6 +47,8 @@ from typing import Any
 import numpy as np
 from scipy.signal import resample_poly
 
+from tracking.dsp import boxcar
+
 __all__ = ["DEFAULT_RUNGS", "WarpRung", "iter_warp_refine"]
 
 _TINY = 1e-30
@@ -72,16 +74,6 @@ DEFAULT_RUNGS: tuple[WarpRung, ...] = (
     WarpRung(k_lo=8, k_hi=24, window_s=0.75, delta_max=1.2),
     WarpRung(k_lo=12, k_hi=40, window_s=0.375, delta_max=0.6),
 )
-
-
-def _smooth(v: np.ndarray, n: int) -> np.ndarray:
-    """Moving average of width ``n`` with reflect padding (length-preserving)."""
-    if n <= 1 or len(v) < 2:
-        return v
-    n = min(n, len(v))
-    pad_l, pad_r = n // 2, n - 1 - n // 2
-    vp = np.pad(v, (pad_l, pad_r), mode="reflect")
-    return np.convolve(vp, np.ones(n) / n, mode="valid")
 
 
 def _order_collides(
@@ -336,7 +328,7 @@ def iter_warp_refine(
             )
             rd["round"] = j + 1
             if delta_ft is not None:
-                step = np.clip(_smooth(delta_ft, smooth_n), -max_step, max_step)
+                step = np.clip(boxcar(delta_ft, smooth_n), -max_step, max_step)
                 r[i] += step
                 rd["step_rms"] = round(float(np.sqrt(np.mean(step**2))), 4)
                 rd["step_max"] = round(float(np.max(np.abs(step))), 4)
