@@ -837,6 +837,14 @@ Four design points, each fixing a way of getting this wrong:
   `test_degrees_of_freedom_are_identical_across_candidates_and_controls` now
   asserts BOTH cell counts are one value across every candidate and control.
 
+One asymmetry of the excision rule, stated because it is not obviously
+harmless: a candidate whose error happens to equal a sibling's offset (DREGON's
+label error, 0.3-0.8 rev/s, against a twin separation of 0.42) puts its OWN
+displaced line inside the excised zone, which removes that line from the floor
+and can only RAISE its ridge. The direction is conservative for every claim
+below — it inflates raw telemetry's reading, and raw telemetry is the candidate
+this note concludes has no lock.
+
 Coverage, honestly: at `b0 = 1` the ridge gate admits 5.48 % of DREGON cells
 against the conditioning gate's 2.35 %, and 6.9 % of the line energy against
 5.7 %. It is **not** the 96 % a two-rotor geometry would give, because at high
