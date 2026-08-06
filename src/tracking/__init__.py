@@ -10,8 +10,24 @@ from tracking.comb_displacement import (
     demod_comb_bank,
     measure_variant,
     nearest_interloper_hz,
+    pulse_pair,
+    pulse_pair_bank,
 )
 from tracking.demod_backend import demod_backend
+from tracking.fitness import (
+    CONTROLS,
+    Cells,
+    FitnessConfig,
+    FitnessScore,
+    Holdout,
+    apply_control,
+    bootstrap_scores,
+    fitness_stage,
+    residual_decompose,
+    score_cells,
+    score_window,
+    window_cells,
+)
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
 from tracking.order_domain import (
     OrderSpectrum,
@@ -89,6 +105,20 @@ from tracking.vk_tracking import (
 from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
+    "pulse_pair_bank",
+    "pulse_pair",
+    "window_cells",
+    "score_window",
+    "score_cells",
+    "residual_decompose",
+    "fitness_stage",
+    "bootstrap_scores",
+    "apply_control",
+    "Holdout",
+    "FitnessScore",
+    "FitnessConfig",
+    "Cells",
+    "CONTROLS",
     "ARMS",
     "Arm",
     "BEATVK",

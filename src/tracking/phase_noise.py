@@ -201,11 +201,15 @@ def _demod(
     return z
 
 
-def _brickwall(z: np.ndarray, band_hz: float, fs_env: float, high: bool = False) -> np.ndarray:
+def brickwall(z: np.ndarray, band_hz: float, fs_env: float, high: bool = False) -> np.ndarray:
     """FFT brickwall of a time series along the last axis.
 
     ``high=False``: keep ``|f| <= band_hz`` (lowpass, complex input allowed).
     ``high=True``: keep ``|f| > band_hz`` (highpass; DC always removed).
+
+    Public because it is the one brickwall of the tracking package:
+    ``tracking.fitness`` splits a trajectory residual into its smooth and its
+    fast part with the same filter this module bands the envelopes with.
     """
     n = z.shape[-1]
     b = int(np.floor(band_hz * n / fs_env))
@@ -224,6 +228,10 @@ def _brickwall(z: np.ndarray, band_hz: float, fs_env: float, high: bool = False)
         spec = keep
     out = np.fft.ifft(spec, axis=-1)
     return out if np.iscomplexobj(z) else np.real(out)
+
+
+#: Back-compat alias (``tests/tracking/test_phase_noise.py`` and older callers).
+_brickwall = brickwall
 
 
 @dataclass
@@ -489,7 +497,7 @@ def arm_covariance(
     n_pow = np.zeros(k_n)
     keep = np.ones(k_n, dtype=bool)
     for a, k in enumerate(ks):
-        zb = _brickwall(dm.z[:n_ch, a], bands[a], fs_e)
+        zb = brickwall(dm.z[:n_ch, a], bands[a], fs_e)
         pw = np.abs(zb) ** 2
         npw = 2.0 * bands[a] * dm.noise_psd[:n_ch, a]
         prod = zb[..., 1:] * np.conj(zb[..., :-1])
@@ -575,7 +583,7 @@ def arm_covariance(
                 for a in range(len(idx)):
                     v = valid[idx[a]]
                     xf[a] = np.interp(tt, tt[v], x[a][v]) if v.any() else 0.0
-                x = _brickwall(xf, fc, fs_e, high=True)
+                x = brickwall(xf, fc, fs_e, high=True)
             xs.append(x)
         # Block bootstrap in TIME: the per-entry standard error is what makes
         # "are the off-diagonals constant?" answerable.  Channels are averaged
@@ -729,10 +737,10 @@ def channel_coherence(dm: RotorDemod, arm: Arm, fc: float | None = None) -> dict
     for c in range(n_ch):
         rows = []
         for a, k in enumerate(ks):
-            zb = _brickwall(dm.z[c, a], bands[a], fs_e)
+            zb = brickwall(dm.z[c, a], bands[a], fs_e)
             prod = zb[1:] * np.conj(zb[:-1])
             rows.append(np.angle(prod) * fs_e / (2.0 * np.pi * k))
-        x = _brickwall(np.stack(rows), fc_use, fs_e, high=True)
+        x = brickwall(np.stack(rows), fc_use, fs_e, high=True)
         series.append(np.median(x, axis=0))
     s = np.stack(series)[:, n_trim : n_m - n_trim]
     cm = np.corrcoef(s)

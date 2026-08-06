@@ -68,6 +68,7 @@ __all__ = [
     "nearest_interloper_hz",
     "profile_prominence",
     "pulse_pair",
+    "pulse_pair_bank",
     "ridge_from_envelope",
     "weighted_stats",
 ]
@@ -150,7 +151,11 @@ def demod_comb_bank(
     *,
     cfg: DisplacementConfig = DisplacementConfig(),
     half: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+    rate_ref: float | None = None,
+    band_hz_k: np.ndarray | None = None,
+    probe_off_hz: float = 0.0,
+    return_probe: bool = False,
+) -> tuple[np.ndarray, ...]:
     """Demodulation bank around ``k * g(t)``, or ``(k + 0.5) * g(t)`` for the null.
 
     Args:
@@ -162,9 +167,21 @@ def demod_comb_bank(
         ks: harmonic indices.
         cfg: the measurement geometry.
         half: use the half-integer null carrier.
+        rate_ref: mean rate the BAND is derived from. ``None`` uses the
+            carrier's own mean, which makes the band a function of the
+            candidate; a fixed-degrees-of-freedom comparison across candidate
+            trajectories (``tracking.fitness``) pins it to the window's
+            reference rate instead.
+        band_hz_k: ``(K,)`` half-band in Hz, overriding ``cfg.band_hz``
+            entirely. The most explicit form of the same pin.
+        probe_off_hz: off-comb noise probe offset in Hz. The probe rides at a
+            constant offset from every harmonic and comes out of the SAME
+            forward transform, so it costs nothing.
+        return_probe: also return the probe bank.
 
     Returns:
-        ``(z (C, K, n_env) complex64, band_hz_k (K,))``.
+        ``(z (C, K, n_env) complex64, band_hz_k (K,))``, or
+        ``(z, z_probe, band_hz_k)`` when ``return_probe``.
 
     The half-integer carrier reuses the tracker's own integer recursion: it
     halves the phase and asks for harmonic ``2k + 1``, because
@@ -177,22 +194,28 @@ def demod_comb_bank(
     t_aud = np.arange(n_t) / cfg.sr
     r_aud = np.interp(t_aud, ft, r_row)
     phi = 2.0 * np.pi * np.cumsum(r_aud) / cfg.sr
-    band_hz_k = cfg.band_hz(ks, float(np.mean(r_row)))
+    if band_hz_k is None:
+        rate = float(np.mean(r_row)) if rate_ref is None else float(rate_ref)
+        band_hz_k = cfg.band_hz(ks, rate)
+    band_hz_k = np.asarray(band_hz_k, dtype=np.float64)
     n_env = n_t // cfg.stride
     y32 = np.asarray(audio, dtype=np.float32)
     phi_use = phi / 2.0 if half else phi
     ks_use = [2 * k + 1 for k in ks] if half else list(ks)
-    z_on, _ = demod_bank(
+    z_on, z_off = demod_bank(
         y32,
         phi_use,
         t_aud,
         ks_use,
-        0.0,
+        float(probe_off_hz),
         cfg.stride,
         n_env,
         float(np.max(band_hz_k)) / cfg.sr,
         band_cyc_k=band_hz_k / cfg.sr,
+        sr=float(cfg.sr),
     )
+    if return_probe:
+        return z_on, z_off, band_hz_k
     return z_on, band_hz_k
 
 
@@ -298,9 +321,11 @@ def profile_prominence(
 def pulse_pair(
     z_k: np.ndarray,
     k: int,
-    keep_env: np.ndarray,
+    keep_env: np.ndarray | None = None,
     *,
     cfg: DisplacementConfig = DisplacementConfig(),
+    fs_env: float | None = None,
+    min_samples: int = 8,
 ) -> tuple[float, float]:
     """Coherent phase-increment (pulse-pair) offset in rev/s, and its coherence.
 
@@ -314,16 +339,57 @@ def pulse_pair(
     peak-pick cannot touch it. But it returns approximately 0 on symmetric
     in-band noise, so it agrees with a peak-pick that found nothing. Read the
     two estimators as independent failures, not as a corroboration.
+
+    This is THE centre estimator of the tracking package. It is the ML centre
+    of the increment distribution; the MEDIAN of wrapped increments is biased
+    toward zero once the phasor is noise dominated (a noise phasor has winding
+    number 0), which is what ``docs/experiments/vk-frontend-probe.md`` §Method
+    records. ``keep_env=None`` uses every envelope sample, and ``fs_env``
+    overrides ``cfg.fs_env`` for a caller on a different envelope grid.
     """
-    lag = z_k[:, 1:] * np.conj(z_k[:, :-1])
-    m = keep_env[1:] & keep_env[:-1]
-    if m.sum() < 8:
+    z_k = np.atleast_2d(z_k)
+    n = z_k.shape[-1]
+    m = np.ones(n, dtype=bool) if keep_env is None else np.asarray(keep_env, dtype=bool)
+    if int((m[1:] & m[:-1]).sum()) < min_samples:
         return float("nan"), 0.0
-    v = lag[:, m]
-    s = complex(v.sum())
-    denom = float(np.abs(v).sum())
-    dt = 1.0 / cfg.fs_env
-    return float(np.angle(s) / (2.0 * np.pi * k * dt)), (abs(s) / denom if denom > 0 else 0.0)
+    off, coh = pulse_pair_bank(
+        z_k[:, None, :],
+        [k],
+        fs_env=cfg.fs_env if fs_env is None else float(fs_env),
+        keep=m,
+    )
+    return float(off[0]), float(coh[0])
+
+
+def pulse_pair_bank(
+    z: np.ndarray,
+    ks: Sequence[int],
+    *,
+    fs_env: float,
+    keep: np.ndarray | None = None,
+    sum_channels: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized pulse-pair centres: ``(offsets rev/s, coherences)``.
+
+    THE core of :func:`pulse_pair` — the scalar form is a one-harmonic call of
+    this one. ``z`` is ``(C, K, N)`` or ``(K, N)``; ``keep`` is an optional
+    ``(N,)`` envelope-sample mask (a lag product needs both of its samples).
+    ``sum_channels`` performs the coherent channel sum the scalar form does;
+    ``False`` keeps the channel axis, which is what a per-(channel, harmonic)
+    cell statistic needs.
+    """
+    z = np.asarray(z)
+    lag = z[..., 1:] * np.conj(z[..., :-1])
+    if keep is not None:
+        m = np.asarray(keep, dtype=bool)
+        lag = lag[..., m[1:] & m[:-1]]
+    s = lag.sum(axis=-1)
+    d = np.abs(lag).sum(axis=-1)
+    if sum_channels and lag.ndim == 3:
+        s, d = s.sum(axis=0), d.sum(axis=0)
+    kf = np.asarray(list(ks), dtype=np.float64)
+    off = np.angle(s) * fs_env / (2.0 * np.pi * kf)
+    return off, np.where(d > 0, np.abs(s) / np.maximum(d, 1e-300), 0.0)
 
 
 def carrier_collision_mask(

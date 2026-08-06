@@ -76,6 +76,7 @@ from tracking.comb_displacement import (  # noqa: E402
     DisplacementConfig,
     carrier_collision_mask,
     nearest_interloper_hz,
+    pulse_pair_bank,
 )
 from tracking.phase_increment_tracker import demod_bank  # noqa: E402
 from tracking.vk_tracking import VKConfig, env_stride, vk_envelopes  # noqa: E402
@@ -170,9 +171,14 @@ def _pulse_pair(bank: np.ndarray, k: int, fs_env: float) -> float:
     MEDIAN of wrapped increments is biased toward zero once the phasor is
     noise-dominated (a noise phasor has winding number 0), so a per-track
     accuracy claim must not rest on it alone.
+
+    The estimator itself is library code (``comb_displacement.pulse_pair_bank``,
+    promoted there in issue 17 phase 6a so that this probe and
+    ``tracking.fitness`` cannot drift apart); this wrapper only picks the
+    scalar out.
     """
-    lag = bank[..., 1:] * np.conj(bank[..., :-1])
-    return float(np.angle(complex(lag.sum())) * fs_env / (2.0 * np.pi * k))
+    off, _coh = pulse_pair_bank(bank[:, None, :], [k], fs_env=fs_env)
+    return float(off[0])
 
 
 #: Telemetry rate-scale error measured by the closed comb-displacement
