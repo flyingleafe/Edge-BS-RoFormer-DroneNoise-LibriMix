@@ -238,7 +238,7 @@ diag = [f["meta"]["tracking"][-1] for f in frames[1:]]         # peel + step + w
 
 Each application is `flagship(1)` = `peel_stage` then `pi_kalman_stage` — `make_peels` at the current track, then one `pi_kalman_refine` pass on the peeled residuals through the tracker's `peel_audio`/`pair_audio` seam. `peel_alternation` is a driver only because it returns every intermediate frame; the alternation itself is a composition. `tracking_frame(..., dtype=np.float64)` keeps a float64 signal exact (the frame stores float32 by default and `get_audio` returns whichever it holds).
 
-`scripts/vk_blind_annotation.py` keeps thin back-compat aliases (`_SEED_CFG`, `_tooth_cube`, ...) plus everything data- or GT-bound (recording prep, mic-geometry weights, PIT scoring, superseded arms). Remaining ladders (blind-seed arms, cd_iter) stay in `scripts/rps_refine_lab.py` for now.
+`scripts/vk_blind_annotation.py` keeps thin back-compat aliases (`_SEED_CFG`, `_tooth_cube`, ...) plus everything data- or GT-bound (recording prep, mic-geometry weights, PIT scoring, superseded arms). The remaining ladders (the blind-seed arms) stay in `scripts/rps_refine_lab.py` for now.
 
 ## The comb-displacement campaign
 

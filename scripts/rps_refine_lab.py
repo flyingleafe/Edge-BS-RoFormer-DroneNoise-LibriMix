@@ -72,13 +72,6 @@ Chains:
              Needs NO seed for its own stage — the candidates come from the
              score surface — which also removes the seeding lottery WP15 found
              on FLY124 w03.
-  cd_iter    the baseline ladder up to the vit2dsp output (no VK capture, no
-             VK refine), then EXACTLY ONE raw vk_track call (no stage guard,
-             no pi_kalman, no M1/M2).  The call's config is the refine-stage
-             config overridden by --cd-kwargs '<json>' (VKConfig fields);
-             --entry-offset adds a constant rev/s to all four tracks first.
-             The result JSON records the call's max_deltas, residual_ratios
-             and extras (schedules / bw_adapt state) for capture diagnostics.
 
 For synthetic windows an ORACLE floor is also reported: M2 run from the
 chain's own M1 output (or, for chains without M1, from the track entering the
@@ -105,7 +98,6 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import asdict
-from dataclasses import fields as dc_fields
 from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any
@@ -167,7 +159,6 @@ from tracking.vk_blind_seeding import (  # noqa: E402
     whitened_logmag,
 )
 from tracking.vk_tracking import (  # noqa: E402
-    VKConfig,
     vk_envelopes,
     vk_reconstruct,
     vk_track,
@@ -198,13 +189,8 @@ CHAINS = (
     "refine_v2",
     "refine_v3",
     "joint_beam",
-    "cd_iter",
 )
 DEFAULT_PK: dict[str, Any] = {"n_iter": 3, "band_hz": 6.0}  # trace/baseline call
-# cd_iter: VKConfig overrides for the single vk_track call (--cd-kwargs) and
-# the constant rev/s added to every track before it (--entry-offset).
-CD_KWARGS: dict[str, Any] = {}
-ENTRY_OFFSET = 0.0
 AGGR_CYCLE = (0.7, 1.0, 1.4)
 # OU mode means (common, roll, pitch, yaw) of the WP1-WP3 trace synthetic
 # window -> per-rotor means [78, 83, 89, 94] rev/s.
@@ -1798,25 +1784,6 @@ def run_chain(
             alt_diag["m3"] = m3_diag
         if jb_diag is not None:
             alt_diag["joint_beam"] = jb_diag
-    elif chain == "cd_iter":
-        # One RAW vk_track from the ladder output: no stage guard, no
-        # pi_kalman, no M1/M2 — the call's own diagnostics are the point.
-        if ENTRY_OFFSET != 0.0:
-            r = r + ENTRY_OFFSET
-        r_entry = r.copy()
-        cd_cfg = dc_replace(ref_cfg, **CD_KWARGS)
-        cd = vk_track(prep.audio, r, prep.ft, cd_cfg)
-        r = cd.r_refined
-        rec.add("cd_iter", r)
-        alt_diag = {
-            "cd_iter": {
-                "entry_offset": ENTRY_OFFSET,
-                "cd_kwargs": CD_KWARGS,
-                "max_deltas": cd.max_deltas,
-                "residual_ratios": cd.residual_ratios,
-                "extras": cd.extras,
-            }
-        }
     else:
         # Chains without an M1 stage: the oracle entry is the track that goes
         # into the final estimator call.
@@ -2056,17 +2023,6 @@ def main() -> None:
     ap.add_argument("--pk-kwargs", default=None, help="JSON kwargs for pi_kalman_refine")
     ap.add_argument("--pk-repeat", type=int, default=1, help="sequential pi_kalman calls")
     ap.add_argument(
-        "--cd-kwargs",
-        default=None,
-        help="cd_iter: JSON VKConfig field overrides applied to the refine-stage config",
-    )
-    ap.add_argument(
-        "--entry-offset",
-        type=float,
-        default=0.0,
-        help="cd_iter: constant rev/s added to all four tracks before the vk_track call",
-    )
-    ap.add_argument(
         "--skip-capture",
         action="store_true",
         help="pk_custom: drop the VK capture+refine stages (ladder -> pi_kalman)",
@@ -2165,19 +2121,6 @@ def main() -> None:
             globals()[target] = json.loads(raw)
             print(f"joint_beam {target}: {globals()[target]}")
     globals()["JB_DEVICE"] = args.jb_device
-
-    if (args.cd_kwargs or args.entry_offset != 0.0) and args.chain != "cd_iter":
-        ap.error("--cd-kwargs / --entry-offset require --chain cd_iter")
-    if args.cd_kwargs:
-        cd_kwargs = json.loads(args.cd_kwargs)
-        unknown = sorted(set(cd_kwargs) - {f.name for f in dc_fields(VKConfig)})
-        if unknown:
-            ap.error(f"--cd-kwargs unknown VKConfig fields: {unknown}")
-        globals()["CD_KWARGS"] = cd_kwargs
-        print(f"cd_iter VKConfig overrides: {cd_kwargs}")
-    if args.entry_offset != 0.0:
-        globals()["ENTRY_OFFSET"] = float(args.entry_offset)
-        print(f"cd_iter entry offset: {args.entry_offset} rev/s")
 
     pk_kwargs = dict(DEFAULT_PK)
     if args.pk_kwargs:
