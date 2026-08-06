@@ -82,11 +82,10 @@ from tracking.pipelines import (  # noqa: E402
     PI_N_ITER,
     PI_PAIR_MODE,
     PI_VARIANTS,
-    peel_alternation,
 )
 from tracking.protocols import BEATVK, BEATVK_REPORT_POOLS, iter_windows, pit_align  # noqa: E402
 from tracking.protocols import pool_means as protocol_pool_means  # noqa: E402
-from tracking.stages import get_rps, tracking_frame  # noqa: E402
+from tracking.top import get_rps, peel_alternation, tracking_frame  # noqa: E402
 
 SR: int = beatvk_eval.SR
 FRAME_S: float = beatvk_eval.FRAME_S
@@ -103,7 +102,7 @@ SYNTH_MODES = (86.0, 0.0, -5.5, -2.5)
 
 
 # ---------------------------------------------------------------------------
-# the alternation (tracking.pipelines.peel_alternation) on window arrays
+# the alternation (tracking.top.peel_alternation) on window arrays
 
 
 def run_arm(
@@ -220,8 +219,9 @@ def run_flagship_window(rid: str, widx: int, cfg: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# synthetic case — the explainer artifact's seed-99 configuration
-# (generation: rps_synthesis.synth_comb_window, shared with rps_refine_lab)
+# synthetic case — the explainer artifact's seed-99 configuration.
+# The GENERATION is one library function, `rps_synthesis.synth_comb_window`;
+# everything below is the thin wrapping of one draw into a `Prepared`.
 
 
 def synth_prep(seed: int = SYNTH_SEED) -> tuple[Prepared, np.ndarray, dict[str, Any]]:

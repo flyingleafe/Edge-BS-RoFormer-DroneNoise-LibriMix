@@ -1,39 +1,39 @@
-"""The canonical tracking ladders: frozen configs, vit2dsp, peeled alternation.
+"""The ladder ARRAY CORES and the frozen config registry.
 
-Two ladders live here, both calibrated and both frozen:
+Everything here computes; nothing here is a Stage. The stages that wire these
+cores into a ``td.Frame -> td.Frame`` ladder, and the named recipes that
+compose them, live in :mod:`tracking.top` — read that module first.
+
+Three cores live here, all calibrated and all frozen:
 
 1. The blind RPS-annotation ladder that ``scripts/vk_blind_annotation.py``
-   validated (DREGON pooled err_sm 0.688, condition ``blindvit2dsp``)::
+   validated (DREGON pooled err_sm 0.688, condition ``blindvit2dsp``) —
+   :func:`vit2dsp_pipeline` and its helpers :func:`vit_stage1`,
+   :func:`tooth_cube`, :func:`pair_score_2d_spatial`, :func:`joint_viterbi`,
+   :func:`apply_guard`::
 
        blind init -> Viterbi pair-mean c(t) -> SPATIAL joint 2-rotor Viterbi
        (per-rotor mic mixes) -> mid-band VK (bw 6) -> VK refine
 
-2. The FLAGSHIP peeled alternation (``docs/experiments/beat-vk.md``), which
-   starts from that ladder's output and iterates::
+2. The ``blind_fullrange`` coarse pass (:func:`coarse_init` and its
+   :class:`CoarseConfig`) — the BPF octave check plus the full-range
+   frame-rate Viterbi with the energy-timed takeoff bridge, which puts a
+   takeoff or warmup ramp inside the ladder's reachable state space.
 
-       peel (VK envelopes at the current track -> per-harmonic least-squares
-       re-fit -> subtract the OTHER rotors' combs) -> one pi_kalman pass
+3. The FLAGSHIP peel (``docs/experiments/beat-vk.md``) — :func:`make_peels`:
+   VK envelopes at the current track, a per-harmonic least-squares re-fit,
+   then subtract the OTHER rotors' combs.
 
-   :func:`make_peels` is the peel, :func:`pi_kalman_arm_stage` is one
-   application as a Stage, and :func:`peel_alternation` iterates it.
-
-Two layers live here:
-
-- The array core (:func:`vit2dsp_pipeline` and its helpers
-  :func:`vit_stage1`, :func:`tooth_cube`, :func:`pair_score_2d_spatial`,
-  :func:`joint_viterbi`, :func:`apply_guard`) — moved verbatim from the
-  script; the science is unchanged.
-- The frame adapter (:func:`vit2dsp_stage`) — a ``tracking.stages`` Stage
-  that runs the ladder on a tracking frame and seeds itself via
-  :func:`tracking.stages.blind_seed_stage` when the frame has no ``"rps"``
-  entry.
+Every comb reading in this module goes through ONE tooth sampler,
+:func:`comb_teeth`.
 
 FROZEN CONFIG REGISTRY: ``CAPTURE_CFG`` / ``REFINE_CFG`` / ``TRACK_CFG`` /
-``MIDBAND_CFG`` / ``MIDBAND_CFGS`` / ``SEED_CFG`` and the ladder constants
-below are the calibrated blind-annotation ladder configs. Changing any value
-invalidates the published annotations (and every number derived from them) —
-treat them as data, not knobs. ``tests/tracking/test_pipelines.py``
-spot-checks the values against the published calibration.
+``MIDBAND_CFG`` / ``MIDBAND_CFGS`` / ``SEED_CFG``, the ladder constants and
+:class:`CoarseConfig`'s defaults are the calibrated blind-annotation ladder
+configs. Changing any value invalidates the published annotations (and every
+number derived from them) — treat them as data, not knobs.
+``tests/tracking/test_pipelines.py`` spot-checks the values against the
+published calibration.
 
 What stays in ``scripts/vk_blind_annotation.py``: recording preparation and
 GT scoring (``Prepared``, PIT metrics — they load DREGON data), the mic-
@@ -51,17 +51,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
-import tdseries as td
 
-from tracking.phase_increment_tracker import pi_kalman_refine
-from tracking.stages import (
-    DEFAULT_HOP_S,
-    Stage,
-    blind_seed_stage,
-    get_audio,
-    get_rps,
-    with_rps,
-)
 from tracking.vk_blind_seeding import SeedConfig, logmag_spectrogram, whitened_logmag
 from tracking.vk_blind_seeding import stage_guard as _stage_guard_fn
 from tracking.vk_tracking import (
@@ -100,18 +90,23 @@ __all__ = [
     "VIT_DELTA",
     "VIT_DSTEP",
     "VIT_GAMMA_MULT",
+    "CoarseConfig",
+    "Segment",
     "apply_guard",
+    "bpf_octave_ratio",
+    "coarse_frame_scores",
+    "coarse_init",
+    "coarse_spectrogram",
+    "comb_teeth",
+    "energy_bridge",
     "joint_viterbi",
     "local_comb_frame_scores",
     "make_peels",
     "pair_score_2d_spatial",
     "pair_surface",
-    "peel_alternation",
-    "pi_kalman_arm_stage",
     "surface_contrast",
     "tooth_cube",
     "vit2dsp_pipeline",
-    "vit2dsp_stage",
     "vit_stage1",
     "viterbi_lattice",
     "viterbi_ridge",
@@ -270,8 +265,11 @@ class LadderInput(Protocol):
 
 
 @dataclass(frozen=True)
-class _Segment:
-    """Minimal :class:`LadderInput` (the frame adapter's stand-in)."""
+class Segment:
+    """Minimal :class:`LadderInput` — one window's audio and frame grid.
+
+    What the frame stages of :mod:`tracking.top` hand to these cores.
+    """
 
     audio: np.ndarray
     ft: np.ndarray
@@ -279,6 +277,55 @@ class _Segment:
 
 # ---------------------------------------------------------------------------
 # ladder core (moved verbatim from scripts/vk_blind_annotation.py)
+
+
+#: Top of every comb reading: above this the whitened lines carry no usable
+#: rotor evidence at the resolutions the ladders run at.
+COMB_F_MAX = 6000.0
+#: Bottom of the ladder's comb reading — the seed scan's floor.
+COMB_F_MIN = 60.0
+
+
+def comb_teeth(
+    lm: np.ndarray,
+    bin_hz: float,
+    f: np.ndarray,
+    *,
+    f_min: float = COMB_F_MIN,
+    f_max: float = COMB_F_MAX,
+    pos_only: bool = False,
+) -> np.ndarray:
+    """``(M, N)`` interpolated spectrogram value at each tooth frequency.
+
+    THE tooth sampler of the ladders — every comb reading in this module goes
+    through it, so "the value on a tooth" means one thing.
+
+    ``lm`` is ``(F, N)``, ``f`` is either ``(M,)`` (teeth that do not move over
+    the window — the coarse pass's constant-c templates) or ``(M, N)`` (one
+    frequency per tooth per frame). The value is linearly interpolated between
+    the two neighbouring bins. A tooth outside ``[f_min, f_max]`` reads
+    ``NaN``, so a caller reduces with ``np.nanmean`` and never has to build a
+    per-delta mask of its own. ``pos_only`` clips each value at zero BEFORE
+    the caller's reduction (the half-tooth null of the coarse contrast: a
+    whitening dip must not be counted as evidence AGAINST a comb).
+    """
+    n_f, n = lm.shape
+    fmax = min(f_max, (n_f - 1) * bin_hz)
+    fa = np.asarray(f, dtype=np.float64)
+    valid = (fa >= f_min) & (fa <= fmax)
+    idx = np.clip(fa, 0.0, fmax) / bin_hz
+    j = np.floor(idx).astype(int)
+    frac = idx - j
+    hi = np.minimum(j + 1, n_f - 1)
+    if fa.ndim == 1:
+        v = (1 - frac)[:, None] * lm[j] + frac[:, None] * lm[hi]
+        valid = valid[:, None]
+    else:
+        cols = np.arange(n)[None, :]
+        v = (1 - frac) * lm[j, cols] + frac * lm[hi, cols]
+    if pos_only:
+        v = np.maximum(v, 0.0)
+    return np.where(valid, v, np.nan)
 
 
 def local_comb_frame_scores(
@@ -291,19 +338,11 @@ def local_comb_frame_scores(
     comb is then the union of all P rotors' teeth.
     """
     r2 = np.atleast_2d(r_spec)  # (P, N)
-    n_f, n = lm.shape
-    fmax = min(6000.0, (n_f - 1) * bin_hz)
-    cols = np.arange(n)[None, :]
+    n = lm.shape[1]
     out = np.empty((len(deltas), n))
     for di, d in enumerate(deltas):
         f = (ks[:, None, None] * (r2 + d)[None, :, :]).reshape(-1, n)  # (K*P, N)
-        valid = (f >= 60.0) & (f <= fmax)
-        idx = np.clip(f, 0.0, fmax) / bin_hz
-        j = np.floor(idx).astype(int)
-        frac = idx - j
-        v = (1 - frac) * lm[j, cols] + frac * lm[np.minimum(j + 1, n_f - 1), cols]
-        v = np.where(valid, v, np.nan)
-        out[di] = np.nanmean(v, axis=0)
+        out[di] = np.nanmean(comb_teeth(lm, bin_hz, f), axis=0)
     return out
 
 
@@ -422,19 +461,12 @@ def tooth_cube(
     ks: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(window centers (W,), tooth values (W, K, D))`` along ``c(t)+delta``."""
-    n_f, n = lm.shape
-    fmax = min(6000.0, (n_f - 1) * bin_hz)
-    cols = np.arange(n)[None, :]
+    n = lm.shape[1]
     c_spec = np.interp(st, ft, c_traj)
     vals = np.empty((len(ks), len(deltas), n))
     for di, d in enumerate(deltas):
         f = ks[:, None] * (c_spec + d)[None, :]  # (K, N)
-        valid = (f >= 60.0) & (f <= fmax)
-        idx = np.clip(f, 0.0, fmax) / bin_hz
-        j = np.floor(idx).astype(int)
-        frac = idx - j
-        v = (1 - frac) * lm[j, cols] + frac * lm[np.minimum(j + 1, n_f - 1), cols]
-        vals[:, di, :] = np.where(valid, v, np.nan)
+        vals[:, di, :] = comb_teeth(lm, bin_hz, f)
     centers: list[float] = []
     cube: list[np.ndarray] = []
     t0 = 0.0
@@ -671,97 +703,395 @@ def vit2dsp_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# stage adapter
+# blind_fullrange: the coarse full-range pass (ramp-following, octave-corrected)
+#
+# Two diagnosed failure modes of the blind arms on the frozen protocol:
+#
+# 1. RAMP WINDOWS (DREGON w0s: takeoff ~15 -> 80 rev/s inside the 16 s
+#    window). The seeder's hypothesis class is constant bases from the
+#    TIME-AVERAGED spectrum (cruise-dominated) and the ladder's Viterbi
+#    stages only track +-6 rev/s around them (VIT2D_DELTA) — the ramp is
+#    outside the tracked state space entirely (blind_KR MAE 15.4-23.1).
+# 2. FLY124 WARMUP windows (true shaft ~31-41 rev/s). The warmup spectrum
+#    contains ONLY even shaft harmonics (blade-pass lines of the 2-blade
+#    props: 62.5/72.3/82 Hz + their multiples; measured, zero odd-line
+#    energy), so the scan's octave-up promotion commits to the 2x bases and
+#    MAE rails at 33-36. Pure comb evidence CANNOT resolve this octave; the
+#    discriminator is physical: for a candidate base b, if the line AT b is
+#    STRONGER than the line at 2b, then b is itself the blade-pass comb and
+#    the shaft is b/2 (at cruise the BPF line 2b dominates the shaft line b:
+#    measured ratios v(b)/v(2b) <= 0.93 on every cruise window vs >= 1.87 on
+#    every warmup window; threshold 1.4).
+#
+# blind_fullrange therefore prepends to blind_KR:
+#   (a) the BPF octave check above (:func:`bpf_octave_ratio`) — median ratio
+#       over unique seed bases >= ``halve_ratio`` halves ALL bases (and drops
+#       the K-gate, which was calibrated on the rejected bases);
+#   (b) a coarse slope-tolerant Viterbi c(t) over an fft2048 whitened
+#       spectrogram at the native 32 ms frame rate (window-averaged surfaces
+#       smear a 30 rev/s-per-second ramp into invisibility; at 2048/32 ms the
+#       k<=8 comb sweep is ~1 bin per frame), scoring the RIGID additive
+#       union template r0(c) = c + (bases - median(bases)) with a
+#       positive-half-tooth contrast (:func:`coarse_frame_scores`: on-teeth
+#       mean minus max(0, .) mean at (k-0.5) teeth — penalizes sub-multiple
+#       aliases without the whitening-dip artifact that a signed contrast
+#       has), per-frame soft-normalized so weak-evidence ramp frames still
+#       express their preference. Grid: full 12-120 rev/s (floor 12 excludes
+#       the low-c GCD-alias zone where k<=8 teeth all fall into LF rumble) —
+#       or, for HALVED windows, restricted to median +- 16 rev/s: in the
+#       BPF-only regime full-range magnitude evidence is structurally
+#       octave-attracted, and +-16 still covers the warmup ramps;
+#   (c) TWO TRUST GATES on the DP path (the first full 15-window run showed
+#       the coarse DP must not override a good constant seed): a STEADY gate
+#       — path span (p98 - p2) < ``span_min`` means there is no ramp to
+#       track, use the exact blind_KR constant init (removes coarse wobble
+#       on every steady window); and a DISTRUST gate — |median(path) -
+#       median(bases)| > ``med_shift_max`` means the DP abandoned the
+#       seed structure (FLY124 w3/w4: asymmetric seeds — a dup pair at 74 +
+#       singles 82.7/92.35 — let the DP park the tight pair on the dominant
+#       91.5 comb, shifting c by +17 and turning MAE 1.18 into 15.6; on
+#       every well-behaved window the shift is <= 1.1, on the broken ones
+#       16-17), fall back to the constant init;
+#   (d) an ENERGY-TIMED TAKEOFF BRIDGE (:func:`energy_bridge`): through the
+#       middle of a takeoff ramp the narrowband evidence vanishes under the
+#       broadband spool-up whoosh (the DP times the low->high transition
+#       ~1.5 s late, or idles on an alias when a masker buries the idle
+#       comb), but acoustic power tracks rps steeply. When the DP path
+#       contains a > 20 rev/s two-plateau jump AND the window has a >=
+#       ``bridge_idle_min_s`` low-energy idle phase (the takeoff-from-idle
+#       signature; without it the bridge must stay off — it mangled FLY124
+#       w2's maneuver window when keyed on energy alone), the pre-cruise path
+#       is rebuilt from the ``energy_band`` (50-200 Hz rotor rumble —
+#       monotone in rps even under the speech / white-noise masker
+#       recordings, where the first-run 2-6 kHz band was flooded) profile:
+#       idle frames -> c_lo from a constant-c re-scan of the idle frames
+#       restricted to <= ``bridge_idle_c_frac`` * c_hi (the DP's own low
+#       plateau is junk exactly when a masker hides the idle comb),
+#       transition frames -> power-law c_lo * (c_hi/c_lo)^alpha, then a
+#       catch-up hold at c_hi (median DP path over sustained-high-energy
+#       frames) until the DP path rejoins it.
+#
+# Ladder init: r0[i](t) = base_i + (coarse_c(t) - median(coarse_c)), clamped
+# at 0 — anchored on the SEED bases (not on the path), so any residual
+# constant DP offset cancels; gated windows reduce to blind_KR's constant
+# init exactly. The standard vit2dsp ladder runs on top, unchanged.
+# Measured init PIT-MAE vs raw telemetry (recorded blind_KR FINAL MAE in
+# parens): nosource w0 3.45 (15.4), speech w0 2.82 (16.8), whitenoise w0
+# 4.32 (23.1), FLY124 w0 3.96 (35.8), w1 1.73 (33.2), w2 5.4-class (5.36);
+# every steady window gated to the exact blind_KR init.
 
 
-def vit2dsp_stage(
-    *,
-    weights: np.ndarray | None = None,
-    phys_map: np.ndarray | None = None,
-    midband_cfg: VKConfig | None = None,
-    refine_cfg: VKConfig | None = None,
-    stage_guard: bool = False,
-    seed_cfg: SeedConfig | None = None,
-    hop_s: float = DEFAULT_HOP_S,
-    name: str = "vit2dsp",
-) -> Stage:
-    """The vit2dsp ladder as a ``tracking.stages`` Stage.
+@dataclass(frozen=True)
+class CoarseConfig:
+    """The coarse full-range pass, calibrated (see the block comment above).
 
-    Runs :func:`vit2dsp_pipeline` on the frame's audio. The pipeline seeds
-    itself: when the frame has no ``"rps"`` entry, the ladder init comes from
-    :func:`tracking.stages.blind_seed_stage` (4 rotors, ``seed_cfg`` —
-    default :data:`SEED_CFG` — grid hop ``hop_s``), which appends its own
-    ``<name>_seed`` log entry; an existing ``"rps"`` entry (4 tracks) is used
-    as the init instead.
-
-    ``weights`` is the (n_mics, 4) per-rotor mic-weight matrix and
-    ``phys_map`` the (4,) track -> physical-rotor map of the pipeline. Blind
-    defaults: uniform weights (every rotor hears the plain channel mean — the
-    spatial contrast degenerates to the non-spatial union score) and the
-    identity map. ``midband_cfg`` / ``refine_cfg`` default to the frozen
-    ``MIDBAND_CFGS[0]`` / ``REFINE_CFG`` (the validated ladder); pass reduced
-    overrides explicitly instead of editing the frozen values.
-
-    The ladder runs as one bespoke unit rather than as composed
-    ``vk_stage`` / ``guarded`` sub-stages: the validated pipeline fixes the
-    twin pairs at init and shares one whitened spectrogram across all stages
-    (per-stage recomputation would change both the cost and — via mid-ladder
-    pair re-assignment — the science).
+    The one variant the campaign runs is ``blind_fullrange_2xwin``:
+    ``CoarseConfig(nfft=4096, hop=1024, gamma=0.2)`` — 2x finer in frequency
+    (3.9 Hz bins, so the k<=8 twin-separation threshold halves), 2x coarser in
+    time. The transition penalty is HALVED rather than the per-hop allowance
+    doubled: ``gamma`` is a cost per rev/s of ``|dc|`` per hop, so at a 2x hop
+    the same physical ramp pays 2x ``|dc|`` per hop while contributing half as
+    many evidence frames. Ramp-machinery caveat (not adapted, by design): the
+    bridge's second-based thresholds adapt through the frame period
+    automatically, but ``smooth_frames`` and ``energy_smooth_frames`` are
+    frame counts, so their spans double.
     """
 
-    def run(frame):
-        f = frame
-        if "rps" not in f:
-            f = blind_seed_stage(
-                LADDER_N_ROTORS, seed_cfg or SEED_CFG, hop_s=hop_s, name=f"{name}_seed"
-            )(f)
-        audio, sr_f = get_audio(f)
-        r0, times = get_rps(f)
-        if r0.shape[0] != LADDER_N_ROTORS:
-            raise ValueError(
-                f"vit2dsp is a {LADDER_N_ROTORS}-track (two twin pairs) ladder, "
-                f"got {r0.shape[0]} rps tracks"
-            )
-        mcfg = midband_cfg or MIDBAND_CFGS[0]
-        rcfg = refine_cfg or REFINE_CFG
-        for label, cfg in (("midband_cfg", mcfg), ("refine_cfg", rcfg)):
-            if abs(cfg.fs - sr_f) > 1e-6:
-                raise ValueError(f"{label}.fs={cfg.fs} does not match the frame audio rate {sr_f}")
-        t0 = float(f["audio"].t_start)
-        seg = _Segment(audio=audio, ft=times - t0)
-        n_mics = audio.shape[0]
-        w = (
-            np.asarray(weights, dtype=np.float64)
-            if weights is not None
-            else np.full((n_mics, LADDER_N_ROTORS), 1.0 / n_mics)
-        )
-        pm = np.asarray(phys_map, dtype=int) if phys_map is not None else np.arange(LADDER_N_ROTORS)
-        stage_snaps, ref, extras, wall_scan, wall_vk = vit2dsp_pipeline(
-            seg,
-            r0,
-            w,
-            pm,
-            midband_cfg=mcfg,
-            refine_cfg=rcfg,
-            stage_guard=stage_guard,
-            sr=sr_f,
-        )
-        conf = ref.confidence
-        info: dict[str, Any] = {
-            "stages": [lb for lb, _ in stage_snaps],
-            "confidence_mean": float(conf.mean()) if conf.size else float("nan"),
-            "residual_ratios": [float(v) for v in ref.residual_ratios],
-            "guard_reverted": {
-                k[len("guard_reverted_") :]: [int(v) for v in np.asarray(arr).ravel()]
-                for k, arr in extras.items()
-                if k.startswith("guard_reverted_")
-            },
-            "wall_scan_s": float(wall_scan),
-            "wall_vk_s": float(wall_vk),
-        }
-        return with_rps(f, stage_snaps[-1][1], times, stage=name, info=info)
+    #: 7.8 Hz bins, 0.128 s window: a 30 rev/s-per-second ramp sweeps ~1 bin
+    #: per k<=8 tooth per frame (8192 smears it over ~26 bins).
+    nfft: int = 2048
+    hop: int = 512
+    #: Transition cost per rev/s of |dc| per 32 ms frame.
+    gamma: float = 0.4
+    #: The full grid, rev/s. The floor excludes the low-c GCD-alias zone.
+    lo: float = 12.0
+    hi: float = 120.0
+    step: float = 0.5
+    #: Low harmonics: wide basins, coarse evidence.
+    k_max: int = 8
+    #: Below the seed's 60 Hz floor — keeps the k1/k2 teeth of warmup/ramp
+    #: bases in band (the whitened floor is ~0 there).
+    f_min: float = 20.0
+    #: Light time smoothing of the per-frame node scores.
+    smooth_frames: int = 3
+    #: Soft floor (x global median contrast) on the per-frame
+    #: (score - median) / (peak - median) normalization.
+    norm_soft: float = 0.3
+    #: BPF octave check threshold on median v(b) / v(2b).
+    halve_ratio: float = 1.4
+    #: Line-strength readout half-width around b / 2b.
+    line_half_hz: float = 1.5
+    #: +- grid half-range around median(bases) when halved.
+    restrict: float = 16.0
+    #: Halved grid only: use k up to f_top / c (band-matched tooth count).
+    adaptive_f_top: float = 360.0
+    adaptive_k_cap: int = 24
+    #: Steady gate: a path span (p98 - p2) below this is no ramp (steady
+    #: windows measure <= 6.5; the smallest true ramp, FLY124 w0's warmup
+    #: spool-up, measures 10.0).
+    span_min: float = 8.0
+    #: Distrust gate: |median(path) - median(bases)| above this means the DP
+    #: abandoned the seeds (<= 1.1 good, 16-17 broken).
+    med_shift_max: float = 5.0
+    #: Bridge energy band: rotor rumble — monotone in rps and the
+    #: strongest-contrast band on every recording, including the speech and
+    #: white-noise masker ones (2-6 kHz is flooded by the white-noise source).
+    energy_band: tuple[float, float] = (50.0, 200.0)
+    energy_smooth_frames: int = 11
+    #: rev/s: minimum two-plateau jump to re-time.
+    bridge_jump_min: float = 20.0
+    #: alpha >= 0.9 must hold this long to anchor c_hi.
+    bridge_sustain_s: float = 0.5
+    #: Minimum low-energy (alpha <= 0.1) idle phase before the spool-up for
+    #: the bridge to engage at all (the takeoff-from-idle signature).
+    bridge_idle_min_s: float = 1.0
+    #: Idle re-scan restricted to c <= this * c_hi (excludes the c_hi/2
+    #: sub-multiple attractor).
+    bridge_idle_c_frac: float = 0.45
+    #: rev/s: catch-up hold until the DP path is this close.
+    bridge_rejoin_tol: float = 5.0
+    #: Minimum log-energy gap between plateaus to trust.
+    bridge_min_contrast: float = 0.5
+    #: Frame period fallback when the spectrogram has a single frame.
+    frame_s: float = 0.032
 
-    return run
+
+def coarse_spectrogram(
+    audio: np.ndarray, cfg: CoarseConfig | None = None, sr: float = float(SR)
+) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
+    """Short-FFT spectrogram for the coarse pass.
+
+    Returns ``(whitened (F, N), bin_hz, frame_times (N,), energy (N,))`` —
+    channel-mean whitened log-mag (running-median-over-frequency subtracted,
+    the same whitening as the seed scan but at ``cfg.nfft``) plus the
+    channel-mean RAW log-mag averaged over ``cfg.energy_band``, which is the
+    bridge's timing signal.
+    """
+    use = cfg or CoarseConfig()
+    white, raw, bin_hz, st = logmag_spectrogram(
+        audio, float(sr), SEED_CFG, n_fft=use.nfft, hop_length=use.hop
+    )
+    freqs = np.arange(white.shape[1]) * bin_hz
+    band = (freqs >= use.energy_band[0]) & (freqs <= use.energy_band[1])
+    energy = raw.mean(axis=0)[band].mean(axis=0)
+    return white.mean(axis=0), bin_hz, st, energy
+
+
+def bpf_octave_ratio(
+    audio: np.ndarray, bases: np.ndarray, cfg: CoarseConfig | None = None, sr: float = float(SR)
+) -> float:
+    """Median over unique seed bases of the line strength ``v(b) / v(2b)``.
+
+    Lines are read off the 8192-FFT whitened time mean (the seed scan's
+    resolution — warmup lines are narrow and 2048 washes them out), taking the
+    maximum within ``+-cfg.line_half_hz``. A ratio at or above
+    ``cfg.halve_ratio`` says the seed committed to the blade-pass comb and the
+    shaft is half of it — see the block comment above for the physics.
+    """
+    use = cfg or CoarseConfig()
+    lm8, bin8, _ = whitened_logmag(audio, float(sr), SEED_CFG)
+    vec = lm8.mean(axis=1)
+
+    def line(f: float) -> float:
+        lo = max(0, int(np.floor((f - use.line_half_hz) / bin8)))
+        hi = min(len(vec) - 1, int(np.ceil((f + use.line_half_hz) / bin8)))
+        return float(vec[lo : hi + 1].max())
+
+    uniq: list[float] = []
+    for b in np.sort(np.asarray(bases, dtype=np.float64)):
+        if all(abs(float(b) - u) > 1.0 for u in uniq):
+            uniq.append(float(b))
+    return float(np.median([line(b) / max(line(2.0 * b), 1e-6) for b in uniq]))
+
+
+def coarse_frame_scores(
+    lm: np.ndarray,
+    bin_hz: float,
+    offsets: np.ndarray,
+    c_grid: np.ndarray,
+    adaptive_k: bool,
+    cfg: CoarseConfig | None = None,
+) -> np.ndarray:
+    """``(D, N)`` per-frame union-comb CONTRAST of the template ``c + offsets``.
+
+    The sibling of :func:`local_comb_frame_scores`, and different from it in
+    three ways that the coarse pass needs: the template is constant over the
+    window (``c`` is the scanned state, not a trajectory), the floor is
+    ``cfg.f_min`` rather than the seed's 60 Hz, and the score is a CONTRAST —
+    the mean whitened value on the teeth ``k (c + offset)`` minus the mean
+    POSITIVE value on the half-teeth ``(k - 0.5) (c + offset)``, which
+    penalizes a sub-multiple alias. ``adaptive_k`` (the halved/restricted grid
+    only) uses ``k`` up to ``cfg.adaptive_f_top / c``, so every ``c`` is scored
+    on a comparable band.
+    """
+    use = cfg or CoarseConfig()
+    n = lm.shape[1]
+
+    def comb_mean(freqs: np.ndarray, pos_only: bool) -> np.ndarray:
+        v = comb_teeth(lm, bin_hz, freqs, f_min=use.f_min, pos_only=pos_only)
+        if not np.any(np.isfinite(v)):
+            return np.zeros(n)
+        return np.nanmean(v, axis=0)
+
+    out = np.empty((len(c_grid), n))
+    off_arr = np.asarray(offsets, dtype=np.float64)
+    for ci, c in enumerate(c_grid):
+        r = float(c) + off_arr
+        k_max = use.k_max
+        if adaptive_k:
+            k_max = int(
+                np.clip(
+                    np.floor(use.adaptive_f_top / max(float(c), 1.0)),
+                    use.k_max,
+                    use.adaptive_k_cap,
+                )
+            )
+        ks = np.arange(1, k_max + 1, dtype=np.float64)
+        out[ci] = comb_mean((ks[:, None] * r[None, :]).ravel(), False) - comb_mean(
+            ((ks - 0.5)[:, None] * r[None, :]).ravel(), True
+        )
+    return out
+
+
+def energy_bridge(
+    path: np.ndarray,
+    fsc: np.ndarray,
+    c_grid: np.ndarray,
+    energy: np.ndarray,
+    frame_s: float,
+    cfg: CoarseConfig | None = None,
+) -> tuple[np.ndarray, str]:
+    """Rebuild the pre-cruise part of a takeoff window from the energy profile.
+
+    See item (d) of the block comment: this requires a two-plateau DP path
+    jumping more than ``cfg.bridge_jump_min``, usable energy contrast, a
+    sustained high-energy (cruise) run AND an idle phase of at least
+    ``cfg.bridge_idle_min_s``. Then idle frames get ``c_lo`` from a restricted
+    constant-c re-scan of the idle frames (the DP's own low plateau is junk
+    when a masker hides the idle comb), transition frames get the power-law
+    energy mapping, and ``c_hi`` is held until the DP path rejoins it. Any
+    unmet requirement returns the path unchanged, with the reason.
+    """
+    from scipy.ndimage import median_filter
+
+    use = cfg or CoarseConfig()
+    if float(path.max() - path.min()) < use.bridge_jump_min:
+        return path, "no-op"
+    cmid = float(path.max() + path.min()) / 2.0
+    c_lo_p = float(np.median(path[path < cmid]))
+    c_hi_p = float(np.median(path[path >= cmid]))
+    if c_hi_p - c_lo_p < use.bridge_jump_min:
+        return path, "no-op"
+    e_sm = median_filter(energy, size=use.energy_smooth_frames)
+    e_lo = float(np.percentile(e_sm, 2))
+    e_hi = float(np.percentile(e_sm, 90))
+    if e_hi - e_lo < use.bridge_min_contrast:
+        return path, "no-contrast"
+    alpha = np.clip((e_sm - e_lo) / (e_hi - e_lo), 0.0, 1.0)
+    n_sus = max(1, int(round(use.bridge_sustain_s / frame_s)))
+    t_hi0 = None
+    run = 0
+    for i, m in enumerate(alpha >= 0.9):
+        run = run + 1 if m else 0
+        if run >= n_sus:
+            t_hi0 = i - n_sus + 1
+            break
+    if t_hi0 is None:
+        return path, "no-hi-run"
+    c_hi = float(np.median(path[alpha >= 0.9]))
+    idle = np.zeros(len(path), dtype=bool)
+    idle[:t_hi0] = alpha[:t_hi0] <= 0.1
+    if float(idle.sum()) * frame_s < use.bridge_idle_min_s:
+        return path, "no-idle"
+    sel = c_grid <= use.bridge_idle_c_frac * c_hi
+    s_idle = fsc[:, idle].mean(axis=1)
+    c_lo = float(c_grid[sel][int(np.argmax(s_idle[sel]))])
+    out = path.copy()
+    out[idle] = c_lo
+    trans = np.zeros(len(path), dtype=bool)
+    trans[:t_hi0] = (alpha[:t_hi0] > 0.1) & (alpha[:t_hi0] < 0.9)
+    a_resc = np.clip((alpha - 0.1) / 0.8, 0.0, 1.0)
+    out[trans] = c_lo * (c_hi / c_lo) ** a_resc[trans]
+    t = t_hi0
+    while t < len(path) and abs(float(path[t]) - c_hi) > use.bridge_rejoin_tol:
+        out[t] = c_hi
+        t += 1
+    return out, (
+        f"bridge hi0={t_hi0 * frame_s:.2f}s catchup->{t * frame_s:.2f}s "
+        f"c_lo={c_lo:.1f} c_hi={c_hi:.1f} idle={float(idle.sum()) * frame_s:.1f}s"
+    )
+
+
+def coarse_init(
+    prep: LadderInput,
+    bases: np.ndarray,
+    *,
+    cfg: CoarseConfig | None = None,
+    sr: float = float(SR),
+) -> tuple[np.ndarray, np.ndarray, bool, dict[str, Any]]:
+    """The ``blind_fullrange`` ladder init (mechanism: the block comment above).
+
+    ``bases`` are the seed's constant bases. Returns
+    ``(r0 (R, N), the effective bases, halved, coarse diagnostics)``. The
+    effective bases differ from the input only when the BPF octave check
+    halves them — in which case the caller must also drop the seed's auto
+    update gate, since the K calibration ran on the rejected 2x bases.
+    """
+    use = cfg or CoarseConfig()
+    bases = np.sort(np.asarray(bases, dtype=np.float64))
+    ratio = bpf_octave_ratio(prep.audio, bases, use, sr)
+    halved = ratio >= use.halve_ratio
+    if halved:
+        bases = bases / 2.0
+    med = float(np.median(bases))
+    offsets = bases - med
+    if halved:
+        lo = max(use.lo, med - use.restrict)
+        hi = min(use.hi, med + use.restrict)
+    else:
+        lo, hi = use.lo, use.hi
+    c_grid = np.arange(lo, hi + use.step / 2, use.step)
+
+    lm2, bin2, st2, energy = coarse_spectrogram(prep.audio, use, sr)
+    fsc = coarse_frame_scores(lm2, bin2, offsets, c_grid, halved, use)
+    kern = np.ones(use.smooth_frames) / use.smooth_frames
+    fsc = np.apply_along_axis(lambda r: np.convolve(r, kern, mode="same"), 1, fsc)
+    med_f = np.median(fsc, axis=0, keepdims=True)
+    peak_f = fsc.max(axis=0, keepdims=True)
+    glob = float(np.median(peak_f - med_f))
+    s = (fsc - med_f) / np.maximum(peak_f - med_f, use.norm_soft * glob)
+    path = viterbi_lattice(s.T, c_grid, use.gamma)  # (D, N) scores -> (N, D) lattice
+    frame_s = float(st2[1] - st2[0]) if len(st2) > 1 else use.frame_s
+
+    # Trust gates (item (c)): a coarse path only overrides the constant
+    # blind_KR init when it tracks a real ramp AND kept the seed structure.
+    span = float(np.percentile(path, 98) - np.percentile(path, 2))
+    shift = abs(float(np.median(path)) - med)
+    if span < use.span_min or shift > use.med_shift_max:
+        mode = "const-steady" if span < use.span_min else "const-distrust"
+        coarse = np.full(len(prep.ft), med)
+        r0 = np.repeat(bases[:, None], len(prep.ft), axis=1)
+        bridge_info = "gated"
+    else:
+        mode = "coarse"
+        path, bridge_info = energy_bridge(path, fsc, c_grid, energy, frame_s, use)
+        coarse = np.interp(prep.ft, st2, path)
+        # Anchor on the SEED bases: residual constant DP offsets cancel.
+        r0 = np.maximum(bases[:, None] + (coarse - float(np.median(path)))[None, :], 0.0)
+    diag = {
+        "coarse_c": coarse,
+        "coarse_nfft": use.nfft,
+        "coarse_hop": use.hop,
+        "coarse_gamma": use.gamma,
+        "coarse_bpf_ratio": ratio,
+        "coarse_halved": halved,
+        "coarse_grid": (float(lo), float(hi)),
+        "coarse_bridge": bridge_info,
+        "coarse_mode": mode,
+        "coarse_span": span,
+        "coarse_shift": shift,
+    }
+    return r0, bases, halved, diag
 
 
 # ---------------------------------------------------------------------------
@@ -854,133 +1184,3 @@ def make_peels(
             )
             pair_audio[(lo, hi)] = (clip - nonpair).astype(np.float32)
     return peel_audio, pair_audio, diag
-
-
-def pi_kalman_arm_stage(
-    *,
-    peel: bool = True,
-    peel_mode: str = DEFAULT_PEEL_MODE,
-    peel_bw_hz: float = PEEL_BW_HZ,
-    peel_k_max: int = PEEL_K_MAX,
-    n_rotors: int = LADDER_N_ROTORS,
-    name: str | None = None,
-    **pi_kwargs: Any,
-) -> Stage:
-    """ONE application of the alternation as a Stage.
-
-    ``peel=True`` (the flagship ``peeled`` arm) runs :func:`make_peels` at the
-    frame's current trajectories and hands the per-rotor / per-pair residuals
-    to :func:`tracking.pi_kalman_refine` through its peel seam; ``peel=False``
-    is the ``naive`` arm — the same pass on the unmodified clip. Both log the
-    same entry shape: peel/pi wall times, the per-rotor step statistics, the
-    peel diagnostics (peeled arm only) and ``band_b0_final`` when the variant
-    anneals its trust region. ``pi_kwargs`` go to the core.
-
-    ``peel_bw_hz`` / ``peel_k_max`` are the peel's own geometry, defaulting to
-    the frozen flagship values :data:`PEEL_BW_HZ` / :data:`PEEL_K_MAX`. They are
-    exposed because the peel's cost is independent of the tracker's harmonic
-    cap, so a caller running a short or cheap window (``tracking.telemetry_refit``,
-    its tests) must be able to shrink it without touching the frozen constants.
-    """
-
-    def run(frame: td.Frame) -> td.Frame:
-        audio, sr = get_audio(frame)
-        r_cur, times = get_rps(frame)
-        t0 = float(frame["audio"].t_start)
-        clip = np.asarray(audio, dtype=np.float64)
-        ft = times - t0
-        peel_diag: dict[str, Any] | None = None
-        seam: dict[str, Any] = {}
-        tic = time.perf_counter()
-        if peel:
-            peel_audio, pair_audio, peel_diag = make_peels(
-                clip,
-                r_cur,
-                ft,
-                sr,
-                peel_mode,
-                n_rotors=n_rotors,
-                bw_hz=peel_bw_hz,
-                k_max=peel_k_max,
-            )
-            seam = {"peel_audio": peel_audio, "pair_audio": pair_audio}
-        wall_peel = time.perf_counter() - tic
-        tic = time.perf_counter()
-        r_next, pi_diag = pi_kalman_refine(clip, r_cur, ft, sr=int(round(sr)), **seam, **pi_kwargs)
-        wall_pi = time.perf_counter() - tic
-        step = r_next - r_cur
-        b0_final = pi_diag.get("band_b0_final")
-        info: dict[str, Any] = {
-            "wall_peel_s": round(wall_peel, 1),
-            "wall_pi_s": round(wall_pi, 1),
-            "step_rms": [round(float(np.sqrt(np.mean(step[r] ** 2))), 4) for r in range(len(step))],
-            "step_mean": [round(float(np.mean(step[r])), 4) for r in range(len(step))],
-            **({"band_b0_final": b0_final} if b0_final is not None else {}),
-            **({"peel": peel_diag} if peel_diag is not None else {}),
-        }
-        return with_rps(
-            frame, r_next, times, stage=name or ("peeled" if peel else "naive"), info=info
-        )
-
-    return run
-
-
-def peel_alternation(
-    frame: td.Frame,
-    n_apps: int,
-    *,
-    arm: str = "peeled",
-    peel_mode: str = DEFAULT_PEEL_MODE,
-    pi_variant: str = "protocol",
-    band_b0: float | None = None,
-    n_rotors: int = LADDER_N_ROTORS,
-    tag: str = "",
-    verbose: bool = True,
-) -> list[td.Frame]:
-    """Iterate :func:`pi_kalman_arm_stage` ``n_apps`` times from ``frame``.
-
-    Returns the ``n_apps + 1`` frames of the alternation, ``[0]`` being the
-    input (the init) — so a caller reads trajectory ``i`` with
-    :func:`tracking.get_rps` and application ``i``'s diagnostics off the last
-    ``meta["tracking"]`` entry. ``pi_variant`` selects a :data:`PI_VARIANTS`
-    row; annealed variants carry the per-rotor ``band_b0`` posterior across
-    applications (that carry is the reason this is a driver and not a plain
-    :func:`tracking.pipeline` composition). ``band_b0`` overrides the initial
-    k-scaled band scale (rev/s) of that row.
-    """
-    if arm not in ARMS:
-        raise ValueError(f"unknown arm {arm!r}; valid: {list(ARMS)}")
-    if pi_variant not in PI_VARIANTS:
-        raise KeyError(f"unknown pi_variant {pi_variant!r}; known: {sorted(PI_VARIANTS)}")
-    pi_kwargs = dict(PI_VARIANTS[pi_variant])
-    if band_b0 is not None:
-        pi_kwargs["band_b0"] = float(band_b0)
-    frames = [frame]
-    for app in range(1, n_apps + 1):
-        stage = pi_kalman_arm_stage(
-            peel=arm == "peeled",
-            peel_mode=peel_mode,
-            n_rotors=n_rotors,
-            n_iter=PI_N_ITER,
-            pair_mode=PI_PAIR_MODE,
-            band_hz=PI_BAND_HZ,
-            **pi_kwargs,
-        )
-        frames.append(stage(frames[-1]))
-        info = frames[-1]["meta"]["tracking"][-1]
-        b0_final = info.get("band_b0_final")
-        if pi_kwargs.get("band_anneal") == "posterior" and b0_final is not None:
-            pi_kwargs["band_b0"] = tuple(b0_final)  # trust region carries over
-        if verbose:
-            peel_diag = info.get("peel")
-            print(
-                f"  [{tag}/{arm}] app {app}: peel {info['wall_peel_s']:.0f}s "
-                f"pi {info['wall_pi_s']:.0f}s"
-                + (
-                    f" resid_all {peel_diag['e_resid_all_ratio']:.3f} ok={peel_diag['energy_ok']}"
-                    if peel_diag
-                    else ""
-                ),
-                flush=True,
-            )
-    return frames

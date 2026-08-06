@@ -26,7 +26,7 @@ The six steps, and where each one lives here
    out-of-capture harmonics weighted ``k^2`` and let them outvote the in-capture
    low ones.
 3. **Alternate with the envelope solve and the peel.** One outer iteration is
-   exactly one :func:`tracking.pipelines.pi_kalman_arm_stage` application — VK
+   exactly one :func:`tracking.pi_kalman_arm_stage` application — VK
    envelopes at the current track, the peel, then one ``pi_kalman_refine`` pass
    through the tracker's peel seam. The flagship's alternation, at the
    displacement campaign's settings, is precisely what issue 17 says was never
@@ -75,8 +75,7 @@ import numpy as np
 
 from tracking.fitness import FitnessConfig, residual_decompose
 from tracking.phase_noise import brickwall
-from tracking.pipelines import DEFAULT_PEEL_MODE, PEEL_BW_HZ, PEEL_K_MAX, pi_kalman_arm_stage
-from tracking.stages import get_rps, tracking_frame
+from tracking.pipelines import DEFAULT_PEEL_MODE, PEEL_BW_HZ, PEEL_K_MAX
 
 __all__ = [
     "RefitConfig",
@@ -85,7 +84,6 @@ __all__ = [
     "k_cap_for_error",
     "order_and_gaps",
     "presmooth",
-    "refit_stage",
     "refit_window",
     "scale_summary",
 ]
@@ -382,6 +380,11 @@ def refit_window(
         telemetry (not the pre-smoothed init), because the raw channel is what
         every historical DREGON number was measured against.
     """
+    # The stage vocabulary lives one layer ABOVE this module, so the import is
+    # made at call time — ``tracking.top`` imports this module for its config
+    # and its pre-smoothing.
+    from tracking.top import get_rps, pi_kalman_arm_stage, tracking_frame
+
     cfg = cfg or RefitConfig()
     r_raw = np.atleast_2d(np.asarray(r_meas, dtype=np.float64))
     ft = np.asarray(ft, dtype=np.float64)
@@ -517,35 +520,3 @@ def refit_window(
             if not k.startswith("_")
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# Stage adapter
-
-
-def refit_stage(
-    *,
-    cfg: RefitConfig | None = None,
-    reference_entry: str = "rps_meas",
-    name: str = "telemetry_refit",
-) -> Any:
-    """The whole refit as one :data:`tracking.stages.Stage`.
-
-    The carrier is the frame's ``reference_entry`` (``"rps_meas"`` by default,
-    the untouched telemetry) — NOT the frame's current ``"rps"``, because the
-    procedure is defined as a refinement OF the measurement. The stage replaces
-    ``"rps"`` with the fit and appends the report (minus the trajectories) as
-    its diagnostics entry.
-    """
-    from tracking.stages import get_audio, with_rps
-
-    use = cfg or RefitConfig()
-
-    def run(frame: Any) -> Any:
-        audio, sr = get_audio(frame)
-        ref, ft = get_rps(frame, reference_entry)
-        t0 = float(frame["audio"].t_start)
-        res = refit_window(audio, ref, ft - t0, sr, cfg=use)
-        return with_rps(frame, res.r_fit, ft, stage=name, info=res.as_dict())
-
-    return run

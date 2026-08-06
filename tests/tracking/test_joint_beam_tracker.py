@@ -213,6 +213,8 @@ def test_b0_zero_matches_the_lab_single_comb_score():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
     import rps_refine_lab as lab  # noqa: PLC0415
 
+    from tracking.pipelines import CoarseConfig  # noqa: PLC0415
+
     lm, bin_hz = _toy_spec([80.0, 84.0], n_frames=4)
     grid = np.arange(60.0, 100.0, 0.5)
     ref = lab._single_comb_scores(lm.numpy(), bin_hz, np.zeros(lm.shape[1]), grid)
@@ -220,7 +222,7 @@ def test_b0_zero_matches_the_lab_single_comb_score():
         b0_rps=0.0,
         k_max=lab.M1_K_SCORE,
         k_weight="uniform",
-        f_min=lab.COARSE_F_MIN,
+        f_min=CoarseConfig().f_min,
         f_max=6000.0,
     )
     got = comb_scores(lm, bin_hz, cfg, torch.as_tensor(grid, dtype=torch.float32))

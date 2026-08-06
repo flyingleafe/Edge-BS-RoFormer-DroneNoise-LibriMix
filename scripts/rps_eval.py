@@ -18,7 +18,7 @@ source, and optionally a refinement stage; get the protocol's pooled tables.
   (``beatvk_eval`` NPZ layouts), or ``telem`` (the recorded telemetry init —
   raw measured for beatvk, the cleaned COMMAND labels for vk37 — the natural
   init for testing refinement stages).
-* ``--refine`` — a :mod:`tracking.stages` adapter applied per window on top
+* ``--refine`` — a :mod:`tracking.top` adapter applied per window on top
   of the prediction: ``none`` | ``pi_kalman`` | ``vk`` (the validated
   ``vk_validation.MAIN_CFG`` refine-mode tracker) | ``warp``.
 * ``--pools`` — restrict to the protocol's named pools
@@ -246,7 +246,7 @@ def base_predictions(
 
 
 def _refine_stage(refine: str, sr: int):
-    """The tracking.stages adapter for one ``--refine`` arm."""
+    """The tracking.top adapter for one ``--refine`` arm."""
     import tracking as trk
 
     if refine == "pi_kalman":

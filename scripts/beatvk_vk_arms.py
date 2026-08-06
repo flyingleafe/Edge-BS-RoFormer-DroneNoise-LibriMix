@@ -20,8 +20,9 @@ Arms (``--arms``), differing ONLY in the seed/ladder-init:
   seed bases (FLY124-warmup fix) and a COARSE FULL-RANGE Viterbi pass
   (12-120 rev/s, frame-rate, slope-tolerant, energy-timed takeoff bridge)
   that re-centres the seed bases onto a time-varying coarse c(t), so
-  takeoff/warmup ramps inside a window are reachable by the ladder (see the
-  ``COARSE_*`` constants block for mechanism + measured numbers).
+  takeoff/warmup ramps inside a window are reachable by the ladder. The pass
+  is ``tracking.coarse_init`` — read the block comment above it in
+  ``src/tracking/pipelines.py`` for the mechanism and the measured numbers.
 * ``neural_traj`` / ``neural_bases`` — the ``--neural-model`` checkpoint's
   stitched chmean prediction on the window (``rps_predictor_vk_eval``
   conventions: sliding 251-frame windows, 32-frame hop, all mics
@@ -105,22 +106,20 @@ from beatvk_eval import (  # noqa: E402
     STITCH_WIN_FRAMES,
     load_recordings,
 )
-from vk_blind_annotation import pit_perm  # noqa: E402  (GT-bound, MAE-optimal PIT)
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 from tracking.pipelines import (  # noqa: E402
     MIDBAND_CFGS,
     REFINE_CFG,
     SEED_CFG,
+    CoarseConfig,
+    coarse_init,
     vit2dsp_pipeline,
-    viterbi_lattice,
 )
-from tracking.protocols import BEATVK, iter_windows, slice_window  # noqa: E402
+from tracking.protocols import BEATVK, iter_windows, pit_align, slice_window  # noqa: E402
 from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,
-    logmag_spectrogram,
-    whitened_logmag,
 )
 
 DEFAULT_OUT = Path("results/beatvk_vk_arms")
@@ -134,365 +133,12 @@ BLIND_ARM_SETS: dict[str, frozenset[str]] = {
 }
 NEURAL_ARMS = ("neural_traj", "neural_bases")
 FULLRANGE_ARM = "blind_fullrange"
-#: blind_fullrange with a 2x longer coarse-DP STFT window (4096/1024 vs
-#: 2048/512): 2x finer in frequency (3.9 Hz bins — the k<=8 twin-separation
-#: threshold halves), 2x coarser in time. The DP transition penalty gamma is
-#: HALVED, not the per-hop allowance doubled: gamma is a cost per rev/s of
-#: |dc| per hop, so at a 2x hop the same physical ramp pays 2x |dc| per hop
-#: while contributing half as many evidence frames — halving gamma keeps the
-#: penalty per rev/s of path total-variation constant relative to the
-#: per-second comb evidence. Ramp machinery caveat (not adapted, by design):
-#: the energy bridge's second-based thresholds (BRIDGE_*_S) adapt through
-#: frame_s automatically, but COARSE_SMOOTH_FRAMES (3) and
-#: ENERGY_SMOOTH_FRAMES (11) are frame-count-based, so their effective
-#: smoothing spans double (0.13 -> 0.26 s, 0.35 -> 0.7 s) — expected
-#: neutral-to-worse on ramp windows, improvement on steady/twin windows.
+#: blind_fullrange with a 2x longer coarse-DP STFT window — the mechanism and
+#: the halved transition penalty are documented on :class:`tracking.CoarseConfig`.
 FULLRANGE_2X_ARM = "blind_fullrange_2xwin"
+COARSE_2X_CFG = CoarseConfig(nfft=4096, hop=1024, gamma=CoarseConfig().gamma / 2.0)
 FULLRANGE_ARMS = (FULLRANGE_ARM, FULLRANGE_2X_ARM)
 ALL_ARMS = (*BLIND_ARM_SETS, *FULLRANGE_ARMS, *NEURAL_ARMS, "telem_init")
-
-# ---------------------------------------------------------------------------
-# blind_fullrange: coarse full-range pass (ramp-following, octave-corrected)
-#
-# Two diagnosed failure modes of the blind arms on the frozen protocol:
-#
-# 1. RAMP WINDOWS (DREGON w0s: takeoff ~15 -> 80 rev/s inside the 16 s
-#    window). The seeder's hypothesis class is constant bases from the
-#    TIME-AVERAGED spectrum (cruise-dominated) and the ladder's Viterbi
-#    stages only track +-6 rev/s around them (VIT2D_DELTA) — the ramp is
-#    outside the tracked state space entirely (blind_KR MAE 15.4-23.1).
-# 2. FLY124 WARMUP windows (true shaft ~31-41 rev/s). The warmup spectrum
-#    contains ONLY even shaft harmonics (blade-pass lines of the 2-blade
-#    props: 62.5/72.3/82 Hz + their multiples; measured, zero odd-line
-#    energy), so the scan's octave-up promotion commits to the 2x bases and
-#    MAE rails at 33-36. Pure comb evidence CANNOT resolve this octave; the
-#    discriminator is physical: for a candidate base b, if the line AT b is
-#    STRONGER than the line at 2b, then b is itself the blade-pass comb and
-#    the shaft is b/2 (at cruise the BPF line 2b dominates the shaft line b:
-#    measured ratios v(b)/v(2b) <= 0.93 on every cruise window vs >= 1.87 on
-#    every warmup window; threshold 1.4).
-#
-# blind_fullrange therefore prepends to blind_KR:
-#   (a) the BPF octave check above — median ratio over unique seed bases
-#       >= COARSE_HALVE_RATIO halves ALL bases (and drops the K-gate, which
-#       was calibrated on the rejected bases);
-#   (b) a coarse slope-tolerant Viterbi c(t) over an fft2048 whitened
-#       spectrogram at the native 32 ms frame rate (window-averaged surfaces
-#       smear a 30 rev/s-per-second ramp into invisibility; at 2048/32 ms the
-#       k<=8 comb sweep is ~1 bin per frame), scoring the RIGID additive
-#       union template r0(c) = c + (bases - median(bases)) with a
-#       positive-half-tooth contrast (on-teeth mean minus max(0, .) mean at
-#       (k-0.5) teeth — penalizes sub-multiple aliases without the
-#       whitening-dip artifact that a signed contrast has), per-frame
-#       soft-normalized so weak-evidence ramp frames still express their
-#       preference. Grid: full 12-120 rev/s (floor 12 excludes the low-c
-#       GCD-alias zone where k<=8 teeth all fall into LF rumble) — or, for
-#       HALVED windows, restricted to median +- 16 rev/s: in the BPF-only
-#       regime full-range magnitude evidence is structurally
-#       octave-attracted, and +-16 still covers the warmup ramps;
-#   (c) TWO TRUST GATES on the DP path (the first full 15-window run showed
-#       the coarse DP must not override a good constant seed): a STEADY gate
-#       — path span (p98 - p2) < COARSE_SPAN_MIN means there is no ramp to
-#       track, use the exact blind_KR constant init (removes coarse wobble
-#       on every steady window); and a DISTRUST gate — |median(path) -
-#       median(bases)| > COARSE_MED_SHIFT_MAX means the DP abandoned the
-#       seed structure (FLY124 w3/w4: asymmetric seeds — a dup pair at 74 +
-#       singles 82.7/92.35 — let the DP park the tight pair on the dominant
-#       91.5 comb, shifting c by +17 and turning MAE 1.18 into 15.6; on
-#       every well-behaved window the shift is <= 1.1, on the broken ones
-#       16-17), fall back to the constant init;
-#   (d) an ENERGY-TIMED TAKEOFF BRIDGE: through the middle of a takeoff ramp
-#       the narrowband evidence vanishes under the broadband spool-up whoosh
-#       (the DP times the low->high transition ~1.5 s late, or idles on an
-#       alias when a masker buries the idle comb), but acoustic power tracks
-#       rps steeply. When the DP path contains a > 20 rev/s two-plateau jump
-#       AND the window has a >= BRIDGE_IDLE_MIN_S low-energy idle phase (the
-#       takeoff-from-idle signature; without it the bridge must stay off —
-#       it mangled FLY124 w2's maneuver window when keyed on energy alone),
-#       the pre-cruise path is rebuilt from the ENERGY_BAND (50-200 Hz rotor
-#       rumble — monotone in rps even under the speech / white-noise masker
-#       recordings, where the first-run 2-6 kHz band was flooded) profile:
-#       idle frames -> c_lo from a constant-c re-scan of the idle frames
-#       restricted to <= BRIDGE_IDLE_C_FRAC * c_hi (the DP's own low plateau
-#       is junk exactly when a masker hides the idle comb), transition
-#       frames -> power-law c_lo * (c_hi/c_lo)^alpha, then a catch-up hold
-#       at c_hi (median DP path over sustained-high-energy frames) until the
-#       DP path rejoins it.
-#
-# Ladder init: r0[i](t) = base_i + (coarse_c(t) - median(coarse_c)), clamped
-# at 0 — anchored on the SEED bases (not on the path), so any residual
-# constant DP offset cancels; gated windows reduce to blind_KR's constant
-# init exactly. The standard vit2dsp ladder runs on top, unchanged.
-# Measured init PIT-MAE vs raw telemetry (recorded blind_KR FINAL MAE in
-# parens): nosource w0 3.45 (15.4), speech w0 2.82 (16.8), whitenoise w0
-# 4.32 (23.1), FLY124 w0 3.96 (35.8), w1 1.73 (33.2), w2 5.4-class (5.36);
-# every steady window gated to the exact blind_KR init.
-COARSE_LO, COARSE_HI, COARSE_STEP = 12.0, 120.0, 0.5
-COARSE_K_MAX = 8  # low harmonics: wide basins, coarse evidence
-COARSE_F_MIN = 20.0  # below the seed's 60 Hz floor — keeps the k1/k2 teeth
-# of warmup/ramp bases in band (the whitened floor is ~0 there)
-COARSE_NFFT = 2048  # 7.8 Hz bins, 0.128 s window: a 30 rev/s-per-second ramp
-# sweeps ~1 bin per k<=8 tooth per frame (8192 smears it over ~26 bins)
-COARSE_SMOOTH_FRAMES = 3  # light time smoothing of per-frame node scores
-COARSE_NORM_SOFT = 0.3  # soft floor (x global median contrast) on the
-# per-frame (score - median) / (peak - median) normalization
-COARSE_GAMMA = 0.4  # transition cost per rev/s of |dc| per 32 ms frame
-COARSE_HALVE_RATIO = 1.4  # BPF octave check threshold on median v(b)/v(2b)
-COARSE_LINE_HALF_HZ = 1.5  # line-strength readout half-width around b / 2b
-COARSE_RESTRICT = 16.0  # +- grid half-range around median(bases) when halved
-COARSE_ADAPTIVE_F_TOP = 360.0  # halved grid only: use k up to f_top/c
-COARSE_ADAPTIVE_K_CAP = 24  # (band-matched tooth count, clip 8..24)
-COARSE_SPAN_MIN = 8.0  # steady gate: path span (p98 - p2) below this = no
-# ramp (steady windows measure <= 6.5; the smallest true ramp, FLY124 w0's
-# warmup spool-up, measures 10.0)
-COARSE_MED_SHIFT_MAX = 5.0  # distrust gate: |median(path) - median(bases)|
-# above this = the DP abandoned the seeds (<= 1.1 good, 16-17 broken)
-ENERGY_BAND = (50.0, 200.0)  # bridge energy band: rotor rumble — monotone in
-# rps and the strongest-contrast band on every recording incl. the speech /
-# white-noise masker ones (2-6 kHz is flooded by the white-noise source)
-ENERGY_SMOOTH_FRAMES = 11
-BRIDGE_JUMP_MIN = 20.0  # rev/s: min two-plateau jump to re-time
-BRIDGE_SUSTAIN_S = 0.5  # alpha >= 0.9 must hold this long to anchor c_hi
-BRIDGE_IDLE_MIN_S = 1.0  # min low-energy (alpha <= 0.1) idle phase before the
-# spool-up for the bridge to engage at all (takeoff-from-idle signature)
-BRIDGE_IDLE_C_FRAC = 0.45  # idle re-scan restricted to c <= this * c_hi
-# (excludes the c_hi/2 sub-multiple attractor)
-BRIDGE_REJOIN_TOL = 5.0  # rev/s: catch-up hold until the DP path is this close
-BRIDGE_MIN_CONTRAST = 0.5  # min log-energy gap between plateaus to trust
-
-
-def _coarse_spec(
-    audio: np.ndarray, nfft: int = COARSE_NFFT, hop: int = 512
-) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
-    """Short-FFT spectrogram for the coarse pass.
-
-    Returns ``(whitened (F, N), bin_hz, frame_times (N,), energy (N,))`` —
-    channel-mean whitened log-mag (running-median-over-frequency subtracted,
-    same whitening as the seed scan but at COARSE_NFFT) plus the channel-mean
-    RAW log-mag averaged over ENERGY_BAND (the bridge timing signal).
-    """
-    white, raw, bin_hz, st = logmag_spectrogram(
-        audio, float(SR), SEED_CFG, n_fft=nfft, hop_length=hop
-    )
-    freqs = np.arange(white.shape[1]) * bin_hz
-    band = (freqs >= ENERGY_BAND[0]) & (freqs <= ENERGY_BAND[1])
-    energy = raw.mean(axis=0)[band].mean(axis=0)
-    return white.mean(axis=0), bin_hz, st, energy
-
-
-def _bpf_octave_ratio(prep: Prepared, bases: np.ndarray) -> float:
-    """Median over unique seed bases of line strength v(b) / v(2b).
-
-    Lines are read off the 8192-FFT whitened time-mean (the seed scan's
-    resolution — warmup lines are narrow; 2048 washes them out), max within
-    +-COARSE_LINE_HALF_HZ. See the constants block for the physics.
-    """
-    lm8, bin8, _ = whitened_logmag(prep.audio, float(SR), SEED_CFG)
-    vec = lm8.mean(axis=1)
-
-    def line(f: float) -> float:
-        lo = max(0, int(np.floor((f - COARSE_LINE_HALF_HZ) / bin8)))
-        hi = min(len(vec) - 1, int(np.ceil((f + COARSE_LINE_HALF_HZ) / bin8)))
-        return float(vec[lo : hi + 1].max())
-
-    uniq: list[float] = []
-    for b in np.sort(np.asarray(bases, dtype=np.float64)):
-        if all(abs(float(b) - u) > 1.0 for u in uniq):
-            uniq.append(float(b))
-    return float(np.median([line(b) / max(line(2.0 * b), 1e-6) for b in uniq]))
-
-
-def _coarse_frame_scores(
-    lm: np.ndarray, bin_hz: float, offsets: np.ndarray, c_grid: np.ndarray, adaptive_k: bool
-) -> np.ndarray:
-    """``(D, N)`` per-frame union-comb contrast of the template ``c + offsets``.
-
-    Score = mean whitened value over on-teeth (k * (c + offset)) minus the
-    mean POSITIVE whitened value over half-teeth ((k - 0.5) * (c + offset)).
-    ``adaptive_k`` (halved/restricted grid only) uses k up to
-    COARSE_ADAPTIVE_F_TOP / c so every c is scored on a comparable band.
-    """
-    n_f, n = lm.shape
-    fmax = min(6000.0, (n_f - 1) * bin_hz)
-
-    def comb_mean(freqs: np.ndarray, pos_only: bool) -> np.ndarray:
-        f = freqs[(freqs >= COARSE_F_MIN) & (freqs <= fmax)]
-        if len(f) == 0:
-            return np.zeros(n)
-        idx = f / bin_hz
-        j = np.floor(idx).astype(int)
-        frac = (idx - j)[:, None]
-        vals = (1 - frac) * lm[j] + frac * lm[np.minimum(j + 1, n_f - 1)]
-        if pos_only:
-            vals = np.maximum(vals, 0.0)
-        return vals.mean(axis=0)
-
-    out = np.empty((len(c_grid), n))
-    off_arr = np.asarray(offsets, dtype=np.float64)
-    for ci, c in enumerate(c_grid):
-        r = float(c) + off_arr
-        k_max = COARSE_K_MAX
-        if adaptive_k:
-            k_max = int(
-                np.clip(
-                    np.floor(COARSE_ADAPTIVE_F_TOP / max(float(c), 1.0)),
-                    COARSE_K_MAX,
-                    COARSE_ADAPTIVE_K_CAP,
-                )
-            )
-        ks = np.arange(1, k_max + 1, dtype=np.float64)
-        out[ci] = comb_mean((ks[:, None] * r[None, :]).ravel(), False) - comb_mean(
-            ((ks - 0.5)[:, None] * r[None, :]).ravel(), True
-        )
-    return out
-
-
-def _energy_bridge(
-    path: np.ndarray,
-    fsc: np.ndarray,
-    c_grid: np.ndarray,
-    energy: np.ndarray,
-    frame_s: float,
-) -> tuple[np.ndarray, str]:
-    """Rebuild the pre-cruise part of a takeoff window from the energy profile.
-
-    See the constants block item (d): requires a > BRIDGE_JUMP_MIN
-    two-plateau DP path, usable energy contrast, a sustained high-energy
-    (cruise) run AND a >= BRIDGE_IDLE_MIN_S idle phase; then idle frames get
-    c_lo from a restricted constant-c re-scan of the idle frames (the DP's
-    own low plateau is junk when a masker hides the idle comb), transition
-    frames get the power-law energy mapping, and c_hi is held until the DP
-    path rejoins it. Any unmet requirement returns the path unchanged.
-    """
-    from scipy.ndimage import median_filter
-
-    if float(path.max() - path.min()) < BRIDGE_JUMP_MIN:
-        return path, "no-op"
-    cmid = float(path.max() + path.min()) / 2.0
-    c_lo_p = float(np.median(path[path < cmid]))
-    c_hi_p = float(np.median(path[path >= cmid]))
-    if c_hi_p - c_lo_p < BRIDGE_JUMP_MIN:
-        return path, "no-op"
-    e_sm = median_filter(energy, size=ENERGY_SMOOTH_FRAMES)
-    e_lo = float(np.percentile(e_sm, 2))
-    e_hi = float(np.percentile(e_sm, 90))
-    if e_hi - e_lo < BRIDGE_MIN_CONTRAST:
-        return path, "no-contrast"
-    alpha = np.clip((e_sm - e_lo) / (e_hi - e_lo), 0.0, 1.0)
-    n_sus = max(1, int(round(BRIDGE_SUSTAIN_S / frame_s)))
-    t_hi0 = None
-    run = 0
-    for i, m in enumerate(alpha >= 0.9):
-        run = run + 1 if m else 0
-        if run >= n_sus:
-            t_hi0 = i - n_sus + 1
-            break
-    if t_hi0 is None:
-        return path, "no-hi-run"
-    c_hi = float(np.median(path[alpha >= 0.9]))
-    idle = np.zeros(len(path), dtype=bool)
-    idle[:t_hi0] = alpha[:t_hi0] <= 0.1
-    if float(idle.sum()) * frame_s < BRIDGE_IDLE_MIN_S:
-        return path, "no-idle"
-    sel = c_grid <= BRIDGE_IDLE_C_FRAC * c_hi
-    s_idle = fsc[:, idle].mean(axis=1)
-    c_lo = float(c_grid[sel][int(np.argmax(s_idle[sel]))])
-    out = path.copy()
-    out[idle] = c_lo
-    trans = np.zeros(len(path), dtype=bool)
-    trans[:t_hi0] = (alpha[:t_hi0] > 0.1) & (alpha[:t_hi0] < 0.9)
-    a_resc = np.clip((alpha - 0.1) / 0.8, 0.0, 1.0)
-    out[trans] = c_lo * (c_hi / c_lo) ** a_resc[trans]
-    t = t_hi0
-    while t < len(path) and abs(float(path[t]) - c_hi) > BRIDGE_REJOIN_TOL:
-        out[t] = c_hi
-        t += 1
-    return out, (
-        f"bridge hi0={t_hi0 * frame_s:.2f}s catchup->{t * frame_s:.2f}s "
-        f"c_lo={c_lo:.1f} c_hi={c_hi:.1f} idle={float(idle.sum()) * frame_s:.1f}s"
-    )
-
-
-def fullrange_init(
-    prep: Prepared,
-    seed: SeedResult,
-    *,
-    nfft: int = COARSE_NFFT,
-    hop: int = 512,
-    gamma: float = COARSE_GAMMA,
-) -> tuple[np.ndarray, SeedResult, dict[str, Any]]:
-    """blind_fullrange ladder init (mechanism: the COARSE_* constants block).
-
-    Returns ``(r0 (4, N), effective seed, coarse diagnostics)``. The
-    effective seed differs from the input only when the BPF octave check
-    halves the bases (update_gate dropped — the K calibration ran on the
-    rejected 2x bases). ``nfft``/``hop``/``gamma`` override the coarse-DP
-    STFT resolution and transition penalty (the ``FULLRANGE_2X_ARM``
-    variant — see its constants-block comment for the gamma rescale).
-    """
-    bases = np.sort(np.asarray(seed.bases, dtype=np.float64))
-    ratio = _bpf_octave_ratio(prep, bases)
-    halved = ratio >= COARSE_HALVE_RATIO
-    if halved:
-        bases = bases / 2.0
-        seed = SeedResult(
-            bases=bases.copy(),
-            candidates=seed.candidates,
-            template=seed.template,
-            update_gate=None,
-            bw_hz=seed.bw_hz,
-        )
-    med = float(np.median(bases))
-    offsets = bases - med
-    if halved:
-        lo = max(COARSE_LO, med - COARSE_RESTRICT)
-        hi = min(COARSE_HI, med + COARSE_RESTRICT)
-    else:
-        lo, hi = COARSE_LO, COARSE_HI
-    c_grid = np.arange(lo, hi + COARSE_STEP / 2, COARSE_STEP)
-
-    lm2, bin2, st2, energy = _coarse_spec(prep.audio, nfft=nfft, hop=hop)
-    fsc = _coarse_frame_scores(lm2, bin2, offsets, c_grid, adaptive_k=halved)
-    kern = np.ones(COARSE_SMOOTH_FRAMES) / COARSE_SMOOTH_FRAMES
-    fsc = np.apply_along_axis(lambda r: np.convolve(r, kern, mode="same"), 1, fsc)
-    med_f = np.median(fsc, axis=0, keepdims=True)
-    peak_f = fsc.max(axis=0, keepdims=True)
-    glob = float(np.median(peak_f - med_f))
-    s = (fsc - med_f) / np.maximum(peak_f - med_f, COARSE_NORM_SOFT * glob)
-    path = viterbi_lattice(s.T, c_grid, gamma)  # (D, N) scores -> (N, D) lattice
-    frame_s = float(st2[1] - st2[0]) if len(st2) > 1 else FRAME_S
-
-    # Trust gates (constants block item (c)): a coarse path only overrides
-    # the constant blind_KR init when it tracks a real ramp AND kept the
-    # seed structure.
-    span = float(np.percentile(path, 98) - np.percentile(path, 2))
-    shift = abs(float(np.median(path)) - med)
-    if span < COARSE_SPAN_MIN or shift > COARSE_MED_SHIFT_MAX:
-        mode = "const-steady" if span < COARSE_SPAN_MIN else "const-distrust"
-        coarse = np.full(len(prep.ft), med)
-        r0 = np.repeat(bases[:, None], len(prep.ft), axis=1)
-        bridge_info = "gated"
-    else:
-        mode = "coarse"
-        path, bridge_info = _energy_bridge(path, fsc, c_grid, energy, frame_s)
-        coarse = np.interp(prep.ft, st2, path)
-        # Anchor on the SEED bases: residual constant DP offsets cancel.
-        r0 = np.maximum(bases[:, None] + (coarse - float(np.median(path)))[None, :], 0.0)
-    diag = {
-        "coarse_c": coarse,
-        "coarse_nfft": nfft,
-        "coarse_hop": hop,
-        "coarse_gamma": gamma,
-        "coarse_bpf_ratio": ratio,
-        "coarse_halved": halved,
-        "coarse_grid": (float(lo), float(hi)),
-        "coarse_bridge": bridge_info,
-        "coarse_mode": mode,
-        "coarse_span": span,
-        "coarse_shift": shift,
-    }
-    return r0, seed, diag
-
 
 # ---------------------------------------------------------------------------
 # paths
@@ -731,18 +377,25 @@ def fullrange_seed(
 
     Returns ``(r0, effective seed, coarse diagnostics, wall seconds)``. Both
     fullrange arms come through here — ``FULLRANGE_2X_ARM`` only changes the
-    coarse-DP STFT resolution and its transition penalty.
+    coarse-DP STFT resolution and its transition penalty
+    (:class:`tracking.CoarseConfig`). The pass itself is
+    :func:`tracking.coarse_init`; a halved seed drops the auto ``update_gate``,
+    because the K calibration ran on the rejected 2x bases.
     """
     if arm not in FULLRANGE_ARMS:
         raise ValueError(f"{arm!r} is not a fullrange arm; valid: {list(FULLRANGE_ARMS)}")
     tic = time.perf_counter()
     seed = blind_seed(prep.audio, float(SR), N_ROTORS, SEED_CFG, arms=frozenset({"K", "R"}))
-    if arm == FULLRANGE_2X_ARM:
-        r0, seed, diag = fullrange_init(
-            prep, seed, nfft=2 * COARSE_NFFT, hop=1024, gamma=COARSE_GAMMA / 2.0
+    cfg = COARSE_2X_CFG if arm == FULLRANGE_2X_ARM else CoarseConfig()
+    r0, bases, halved, diag = coarse_init(prep, seed.bases, cfg=cfg, sr=float(SR))
+    if halved:
+        seed = SeedResult(
+            bases=bases.copy(),
+            candidates=seed.candidates,
+            template=seed.template,
+            update_gate=None,
+            bw_hz=seed.bw_hz,
         )
-    else:
-        r0, seed, diag = fullrange_init(prep, seed)
     return r0, seed, diag, time.perf_counter() - tic
 
 
@@ -762,7 +415,7 @@ def run_ladder(
     ``gate`` (the seed's auto ``update_gate``, arm K) is spliced into the
     midband + refine configs.
     """
-    p = pit_perm(r0, prep.r_meas, prep.edge)
+    _, p = pit_align(r0, prep.r_meas, cost="mae", edge_mask=prep.edge)
     phys_map = np.empty(N_ROTORS, dtype=int)
     for truth_row, track_row in enumerate(list(p)):
         phys_map[track_row] = truth_row
@@ -888,7 +541,7 @@ def window_pit_mae(traj: np.ndarray, r_meas: np.ndarray) -> float:
     """Informational window PIT-MAE vs raw telemetry (full window, no edge
     trim — closest to what the scorer computes, modulo its 0.032 s regrid)."""
     full = np.ones(traj.shape[-1], dtype=bool)
-    a = traj[list(pit_perm(traj, r_meas, full))]
+    a, _ = pit_align(traj, r_meas, cost="mae", edge_mask=full)
     return float(np.mean(np.abs(a - r_meas)))
 
 

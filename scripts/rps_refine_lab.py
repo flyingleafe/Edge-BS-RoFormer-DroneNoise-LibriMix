@@ -4,7 +4,7 @@ docs/experiments/rps-refine-precision.md).
 
 Repo-ified from the scratchpad trace_pipeline.py: runs the fullrange-v2 blind
 chain (blind_seed -> BPF octave / coarse full-range Viterbi / trust gates +
-energy bridge [= beatvk_vk_arms.fullrange_init] -> vit2dsp ladder [viterbi_c
+energy bridge [= tracking.coarse_init] -> vit2dsp ladder [viterbi_c
 -> spatial joint DP -> optional midband VK capture -> optional refine VK] ->
 pi_kalman) on named 16 s windows, with configurable stage chains and a
 synthetic free-flight battery, reporting per-stage PIT-MAE plus per-rotor
@@ -61,7 +61,7 @@ Chains:
              rotor — the one whose leave-one-out removal least increases the
              residual, i.e. a duplicate seed whose comb its twin also owns —
              then corridor-tracks it; up to 3 iterations.
-  joint_beam WP17: replace `fullrange_init` + the viterbi_c / vit2dsp ladder
+  joint_beam WP17: replace `coarse_init` + the viterbi_c / vit2dsp ladder
              stages with a JOINT 4-rotor beam search over the full speed vector
              (tracking.joint_beam_tracker), then feed the existing
              capture -> M1 -> M2 stages unchanged.  The coarse DP's state is one
@@ -119,17 +119,21 @@ sys.path.insert(0, str(REPO / "src"))
 os.chdir(REPO)  # results/* caches are repo-relative
 
 from beatvk_vk_arms import (  # noqa: E402
-    COARSE_F_MIN,
-    COARSE_GAMMA,
-    COARSE_NORM_SOFT,
-    COARSE_SMOOTH_FRAMES,
     FRAME_S,
     SR,
-    _coarse_spec,
-    fullrange_init,
     load_prep,
     weights_path,
 )
+
+from tracking.pipelines import CoarseConfig, coarse_init  # noqa: E402
+from tracking.pipelines import coarse_spectrogram as _coarse_spec  # noqa: E402
+
+# The coarse pass's calibrated knobs now live on ``tracking.CoarseConfig``.
+_COARSE = CoarseConfig()
+COARSE_F_MIN = _COARSE.f_min
+COARSE_GAMMA = _COARSE.gamma
+COARSE_NORM_SOFT = _COARSE.norm_soft
+COARSE_SMOOTH_FRAMES = _COARSE.smooth_frames
 from vk_blind_annotation import pit_perm  # noqa: E402
 from vk_validation import Prepared, smooth_frames  # noqa: E402
 
@@ -1735,7 +1739,16 @@ def run_chain(
         seed_eff, coarse_diag = seed, {"coarse_mode": "joint_beam"}
         rec.add("joint_beam", r0)
     else:
-        r0, seed_eff, coarse_diag = fullrange_init(prep, seed)
+        r0, bases_eff, halved, coarse_diag = coarse_init(prep, seed.bases)
+        seed_eff = SeedResult(
+            bases=bases_eff.copy(),
+            candidates=seed.candidates,
+            template=seed.template,
+            # A halved seed drops the auto gate: the K calibration ran on the
+            # rejected 2x bases (tracking.coarse_init's block comment).
+            update_gate=None if halved else seed.update_gate,
+            bw_hz=seed.bw_hz,
+        )
         rec.add("coarse_init", r0)
 
     gate = seed_eff.update_gate

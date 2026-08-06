@@ -1,9 +1,11 @@
-"""Tests for the TimeFrame stage API (``tracking.stages``).
+"""Tests for the front door (``tracking.top``): plumbing, stages, recipes.
 
 Covers: (1) the frame construction / accessor round-trip and the append-only
 ``meta["tracking"]`` log; (2) a blind-seed -> VK pipeline on a synthetic
 two-rotor signal; (3) the stage guard leaving a good trajectory unvetoed;
-(4) every adapter appending its diagnostics entry. Synthetic-signal helpers
+(4) every adapter appending its diagnostics entry; (5) the peel/pi_kalman
+SPLIT — the composed recipe must reproduce the fused application exactly, and
+the candidate stages must reproduce their array-level formulas. Synthetic-signal helpers
 mirror ``tests/tracking/test_vk_tracking.py`` (short signals, small ``k_max``
 — the whole module stays CPU-fast).
 
@@ -15,15 +17,25 @@ profile, a base at 45 gets out-promoted by its 2x subharmonic-up alias.
 import numpy as np
 import pytest
 
+from tracking.phase_increment_tracker import pi_kalman_refine
+from tracking.pipelines import make_peels
 from tracking.rps_refinement import RefineConfig
-from tracking.stages import (
+from tracking.telemetry_refit import presmooth
+from tracking.top import (
+    PeelConfig,
+    PiConfig,
     blind_seed_stage,
+    flagship,
     get_audio,
     get_rps,
     guarded,
+    pi_kalman_arm_stage,
     pi_kalman_stage,
     pipeline,
+    presmooth_stage,
     refine_coherent_stage,
+    scale_stage,
+    shift_stage,
     tracking_frame,
     vk_stage,
     warp_stage,
@@ -241,3 +253,68 @@ def test_refiner_adapters_append_diagnostics(
 def test_refine_coherent_stage_rejects_rate_mismatch(one_rotor_frame):
     with pytest.raises(ValueError, match="does not match"):
         refine_coherent_stage(RefineConfig(sample_rate=8000))(one_rotor_frame)
+
+
+# ---------------------------------------------------------------------------
+# 5. the recipes: the peel/pi_kalman split reproduces the fused application
+
+
+PEEL_KW = {"n_rotors": 2, "peel_k_max": 8}
+PI_KW = {"n_iter": 1, "k_max": 8, "band_hz": 6.0}
+
+
+@pytest.fixture(scope="module")
+def alt_frame(two_rotor_frame):
+    """The two-rotor frame with a slightly detuned constant init."""
+    ft = np.arange(0.0, 2.0 - 0.016, 0.032)
+    r0 = np.stack([np.full(len(ft), 69.6), np.full(len(ft), 82.4)])
+    return with_rps(two_rotor_frame, r0, ft, stage="init", info={})
+
+
+def test_flagship_recipe_equals_the_fused_application(alt_frame):
+    """``peel_stage -> pi_kalman_stage`` IS one ``pi_kalman_arm_stage``.
+
+    The split must be a re-composition and not a re-implementation, so the
+    trajectory it produces is compared against the two array cores called by
+    hand, bit for bit.
+    """
+    audio, sr = get_audio(alt_frame)
+    r0, ft = get_rps(alt_frame)
+    clip = np.asarray(audio, dtype=np.float64)
+    peel_audio, pair_audio, _ = make_peels(clip, r0, ft, sr, "ls", n_rotors=2, k_max=8)
+    r_ref, _ = pi_kalman_refine(
+        clip, r0, ft, sr=int(sr), peel_audio=peel_audio, pair_audio=pair_audio, **PI_KW
+    )
+
+    composed = flagship(1, peel=PeelConfig(n_rotors=2, k_max=8), pi=PiConfig(extra=PI_KW))
+    fused = pi_kalman_arm_stage(**PEEL_KW, **PI_KW)
+
+    r_composed, _ = get_rps(composed(alt_frame))
+    r_fused, _ = get_rps(fused(alt_frame))
+    assert np.array_equal(r_composed, r_ref)
+    assert np.array_equal(r_fused, r_ref)
+
+
+def test_one_application_is_one_log_entry(alt_frame):
+    """The peel leaves a seam, not a log entry — so an application logs once."""
+    out = flagship(2, peel=PeelConfig(n_rotors=2, k_max=8), pi=PiConfig(extra=PI_KW))(alt_frame)
+    log = [e for e in out["meta"]["tracking"] if e["stage"] == "peeled"]
+    assert len(log) == 2
+    assert all(e["peel"]["mode"] == "ls" and e["wall_peel_s"] >= 0.0 for e in log)
+    # the seam is consumed: it must not survive into the output frame
+    assert "peel_seam" not in out["meta"]
+
+
+def test_naive_arm_is_the_same_recipe_without_the_peel(alt_frame):
+    out = flagship(1, peel=None, pi=PiConfig(extra=PI_KW))(alt_frame)
+    entry = out["meta"]["tracking"][-1]
+    assert entry["stage"] == "naive"
+    assert "peel" not in entry and entry["wall_peel_s"] == 0.0
+
+
+def test_candidate_stages_are_their_formulas(alt_frame):
+    r0, ft = get_rps(alt_frame)
+    assert np.array_equal(get_rps(scale_stage(0.99458)(alt_frame))[0], r0 * 0.99458)
+    assert np.array_equal(get_rps(presmooth_stage(5.0)(alt_frame))[0], presmooth(r0, ft, 5.0))
+    shifted = get_rps(shift_stage(0.02)(alt_frame))[0]
+    assert np.array_equal(shifted, np.stack([np.interp(ft + 0.02, ft, row) for row in r0]))

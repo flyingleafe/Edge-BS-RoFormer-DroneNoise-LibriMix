@@ -174,7 +174,7 @@ def load_window(
 
 def run_reference(frame: Any, *, peel_mode: str, channels: int) -> tuple[dict[str, Any], dict]:
     """One flagship application on ``frame``: arrays + the config that made them."""
-    from tracking.stages import get_audio, get_rps
+    from tracking.top import get_audio, get_rps
     from tracking.vk_tracking import VKConfig, ls_project_envelopes, vk_envelopes
 
     audio, sr = get_audio(frame)
@@ -284,7 +284,7 @@ def _bench_rows(frame: Any, *, channels: int, iters: int, with_vk: bool) -> list
     import beatvk_flagship as flag2
 
     from tracking.phase_increment_tracker import _demod_bank, pi_kalman_refine, zoom_lp_decimate
-    from tracking.stages import get_audio, get_rps
+    from tracking.top import get_audio, get_rps
     from tracking.vk_tracking import VKConfig, ls_project_envelopes, vk_envelopes
 
     audio, sr = get_audio(frame)

@@ -32,10 +32,14 @@ from tracking.pipelines import (
     VIT_DSTEP,
     VIT_GAMMA_MULT,
     make_peels,
+)
+from tracking.top import (
+    get_audio,
+    get_rps,
     peel_alternation,
+    tracking_frame,
     vit2dsp_stage,
 )
-from tracking.stages import get_audio, get_rps, tracking_frame
 from tracking.vk_blind_seeding import SeedConfig
 
 FS = 16000.0

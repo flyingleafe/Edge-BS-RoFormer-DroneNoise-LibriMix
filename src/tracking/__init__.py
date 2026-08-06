@@ -1,5 +1,9 @@
 """Rotor-speed tracking stack: VK order tracking, refinement, blind seeding.
 
+The front door is :mod:`tracking.top` — every stage, every config and every
+named recipe of the algorithm. Read that module first; everything re-exported
+here comes from it or from the array cores it wires.
+
 Pure array code (numpy/scipy/torch). This package must not import
 ``data_processing``, ``models``, or ``training`` — see ``AGENTS.md``.
 """
@@ -22,7 +26,6 @@ from tracking.fitness import (
     Holdout,
     apply_control,
     bootstrap_scores,
-    fitness_stage,
     residual_decompose,
     score_cells,
     score_window,
@@ -50,11 +53,10 @@ from tracking.pipelines import (
     REFINE_CFG,
     SEED_CFG,
     TRACK_CFG,
+    CoarseConfig,
+    coarse_init,
     make_peels,
-    peel_alternation,
-    pi_kalman_arm_stage,
     vit2dsp_pipeline,
-    vit2dsp_stage,
 )
 from tracking.protocols import (
     BEATVK,
@@ -65,6 +67,8 @@ from tracking.protocols import (
     WindowSpec,
     get_protocol,
     iter_windows,
+    load_prep_window,
+    resolve_prep_dir,
     to_frame,
 )
 from tracking.rotor_dp import greedy_peel, viterbi_path
@@ -76,30 +80,48 @@ from tracking.rps_refinement import (
     refine_coherent,
     refine_trajectories,
 )
-from tracking.stages import (
-    DEFAULT_HOP_S,
-    Stage,
-    blind_seed_stage,
-    get_audio,
-    get_rps,
-    guarded,
-    pi_kalman_stage,
-    pipeline,
-    refine_coherent_stage,
-    tracking_frame,
-    vk_stage,
-    warp_stage,
-    with_rps,
-)
 from tracking.telemetry_refit import (
     RefitConfig,
     RefitResult,
     k_cap_for_error,
     order_and_gaps,
     presmooth,
-    refit_stage,
     refit_window,
     scale_summary,
+)
+from tracking.top import (
+    DEFAULT_HOP_S,
+    PI_PROTOCOL,
+    PeelConfig,
+    PiConfig,
+    Stage,
+    Vit2dspConfig,
+    blind_fullrange,
+    blind_seed_stage,
+    coarse_init_stage,
+    fitness_stage,
+    flagship,
+    get_audio,
+    get_rps,
+    guarded,
+    judge,
+    peel_alternation,
+    peel_stage,
+    pi_kalman_arm_stage,
+    pi_kalman_stage,
+    pipeline,
+    presmooth_stage,
+    refine_coherent_stage,
+    refit_stage,
+    scale_stage,
+    shift_stage,
+    tracking_frame,
+    vit2dsp,
+    vit2dsp_stage,
+    vk_stage,
+    warp_stage,
+    with_meta,
+    with_rps,
 )
 from tracking.vk_blind_seeding import SeedConfig, blind_seed, stage_guard, whitened_logmag
 from tracking.vk_tracking import (
@@ -215,4 +237,22 @@ __all__ = [
     "thread_pool",
     "with_rps",
     "zoom_bands",
+    "CoarseConfig",
+    "PI_PROTOCOL",
+    "PeelConfig",
+    "PiConfig",
+    "Vit2dspConfig",
+    "blind_fullrange",
+    "coarse_init",
+    "coarse_init_stage",
+    "flagship",
+    "judge",
+    "peel_stage",
+    "presmooth_stage",
+    "scale_stage",
+    "shift_stage",
+    "vit2dsp",
+    "with_meta",
+    "load_prep_window",
+    "resolve_prep_dir",
 ]

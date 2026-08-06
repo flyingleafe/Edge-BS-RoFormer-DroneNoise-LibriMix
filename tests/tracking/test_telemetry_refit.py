@@ -24,9 +24,10 @@ import pytest
 
 from data_processing.rps_synthesis import synth_comb_window
 from tracking import telemetry_refit as R
+from tracking import top
 from tracking.fitness import TACH_REFRESH_HZ, TACH_STEP_REV_S
 from tracking.pipelines import make_peels
-from tracking.stages import get_rps, tracking_frame
+from tracking.top import get_rps, tracking_frame
 
 SR = 16000
 DUR_S = 4.0
@@ -324,7 +325,7 @@ def test_refit_stage_reads_rps_meas_and_logs(window):
     frame = tracking_frame(
         audio, SR, rps=r_true, frame_times=ft, rps_meas=r_true * 1.005, dtype=np.float64
     )
-    out = R.refit_stage(cfg=_cfg(max_iters=1))(frame)
+    out = top.refit_stage(cfg=_cfg(max_iters=1))(frame)
     r_new, _ = get_rps(out)
     entry = out["meta"]["tracking"][-1]
     assert entry["stage"] == "telemetry_refit"
