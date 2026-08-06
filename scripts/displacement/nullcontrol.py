@@ -23,9 +23,9 @@ permutation null needs a quantity that is attached to a rotor INDEPENDENTLY of
 the carrier — a fitted trajectory scored against telemetry, for example. It
 belongs to the refinement driver (``refine_kscaled.py``), not here.
 
-The window loader reads the frozen prep cache of the ``beatvk-valid-raw``
-protocol. Code comes from this checkout, data from the data root — the two are
-different roots.
+The windows come from ``tracking.protocols.load_prep_window``, the ONE reader of
+the frozen ``beatvk-valid-raw`` prep cache. Code comes from this checkout, data
+from the data root — the two are different roots.
 
 Examples:
   python scripts/displacement/nullcontrol.py --jobs 8
@@ -42,12 +42,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]  # this checkout (code)
 sys.path.insert(0, str(ROOT / "src"))
 
+from tracking.protocols import load_prep_window  # noqa: E402
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
-from utils.paths import get_data_root  # noqa: E402
 
-PREP = get_data_root() / (
-    "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
-)
 OUT_DEFAULT = "results/displacement/nullcontrol"
 N_ROTORS = 4
 VARIANTS = ("on", "off", "mis")
@@ -89,19 +86,6 @@ PROTOCOL = {
 }
 
 
-def _load(key: str) -> dict[str, Any]:
-    """The frozen prep-cache window: audio, frame grid, telemetry, regime."""
-    import numpy as np
-
-    with np.load(PREP / f"{key}.npz") as z:
-        return {
-            "audio": np.asarray(z["audio"], np.float64),
-            "ft": np.asarray(z["ft"], np.float64),
-            "r": np.asarray(z["r_meas"], np.float64),
-            "regime": str(z["regime"]),
-        }
-
-
 def worker(unit: Unit) -> dict[str, Any]:
     """One (window, rotor) unit: every requested variant of that measurement."""
     import numpy as np
@@ -112,9 +96,9 @@ def worker(unit: Unit) -> dict[str, Any]:
     key, rot = str(p["key"]), int(p["rotor"])
     ks = list(range(1, int(p["k_max"]) + 1))
     cfg = DisplacementConfig()
-    win = _load(key)
+    win = load_prep_window(key)
     r_true = win["r"]
-    mis = _load(PARTNER[key])["r"][rot] if "mis" in p["variants"] else r_true[rot]
+    mis = load_prep_window(PARTNER[key])["r"][rot] if "mis" in p["variants"] else r_true[rot]
     # The gate's rotor argument names the rotor whose line IS the carrier, and
     # that line must not count as an interferer.
     carriers = {"on": r_true[rot], "off": r_true[rot], "mis": mis}

@@ -44,7 +44,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -53,16 +52,9 @@ ROOT = Path(__file__).resolve().parents[1]  # this checkout (code)
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))  # beatvk_eval, for --build-preps
 
+from tracking.protocols import load_prep_window, resolve_prep_dir  # noqa: E402
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
-from utils.paths import get_data_root  # noqa: E402
 
-#: The pulled local prep cache of the beat-VK band-admission job.
-PULLED_PREP = get_data_root() / (
-    "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
-)
-#: Where ``--build-preps`` writes when there is no pulled cache — a fresh
-#: cluster checkout has neither, and the cache is gitignored.
-BUILT_PREP = Path("results/telemetry_prep")
 #: The frozen protocol's dataset pin (the manifest of the pulled cache), so a
 #: rebuilt window is the same window and not merely a window of the same name.
 PREP_PIN = "54849c13ed3a29fa3516503ac291539b3fb2004b22b8b0a549827d0a60c06b86"
@@ -125,19 +117,6 @@ PROTOCOL = {
 
 # ---------------------------------------------------------------------------
 # data + candidates
-
-
-def resolve_prep_dir() -> Path:
-    """Where the frozen protocol windows live, in order of preference.
-
-    ``TELEMETRY_PREP_DIR`` wins, then the pulled band-admission cache (this
-    laptop), then the ``--build-preps`` output. A cluster worktree has only the
-    last one, because the cache is a gitignored artifact.
-    """
-    env = os.environ.get("TELEMETRY_PREP_DIR")
-    if env:
-        return Path(env)
-    return PULLED_PREP if PULLED_PREP.exists() else BUILT_PREP
 
 
 def build_preps(keys: list[str], dst: Path, version: str | None = PREP_PIN) -> None:
@@ -213,19 +192,6 @@ def prep_sha1(key: str) -> str:
     return h.hexdigest()[:12]
 
 
-def _load(key: str) -> dict[str, Any]:
-    """The frozen prep-cache window: audio, frame grid, telemetry, regime."""
-    import numpy as np
-
-    with np.load(resolve_prep_dir() / f"{key}.npz") as z:
-        return {
-            "audio": np.asarray(z["audio"], np.float64),
-            "ft": np.asarray(z["ft"], np.float64),
-            "r": np.asarray(z["r_meas"], np.float64),
-            "regime": str(z["regime"]),
-        }
-
-
 def build_candidate(spec: str, r: Any, ft: Any, key: str = "") -> Any:
     """Materialize one candidate trajectory from its spec string.
 
@@ -290,7 +256,7 @@ def worker(unit: Unit) -> dict[str, Any]:
 
     p = unit.params
     key, spec, control = str(p["key"]), str(p["candidate"]), str(p["control"])
-    win = _load(key)
+    win = load_prep_window(key)
     cfg = FitnessConfig(
         k_min=int(p["k_min"]),
         k_max=int(p["k_max"]),
@@ -302,7 +268,7 @@ def worker(unit: Unit) -> dict[str, Any]:
     cand = build_candidate(spec, win["r"], win["ft"], key)
     partner = None
     if control == "mismatch":
-        other = _load(PARTNER[key])
+        other = load_prep_window(PARTNER[key])
         n = win["ft"].size
         partner = np.stack(
             [

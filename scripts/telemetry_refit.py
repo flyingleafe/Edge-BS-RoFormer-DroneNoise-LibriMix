@@ -46,9 +46,9 @@ from telemetry_fitness import (  # noqa: E402
     FLY124_WINDOWS,
     build_preps,
     prep_sha1,
-    resolve_prep_dir,
 )
 
+from tracking.protocols import load_prep_window, resolve_prep_dir  # noqa: E402
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
 
 OUT_DEFAULT = "results/telemetry_refit"
@@ -84,19 +84,6 @@ PROTOCOL = {
 }
 
 
-def _load(key: str) -> dict[str, Any]:
-    """The frozen prep-cache window: audio, frame grid, telemetry, regime."""
-    import numpy as np
-
-    with np.load(resolve_prep_dir() / f"{key}.npz") as z:
-        return {
-            "audio": np.asarray(z["audio"], np.float64),
-            "ft": np.asarray(z["ft"], np.float64),
-            "r": np.asarray(z["r_meas"], np.float64),
-            "regime": str(z["regime"]),
-        }
-
-
 def worker(unit: Unit) -> dict[str, Any]:
     """One (window, arm) unit: the refit, the report, and the candidate ``.npz``."""
     import numpy as np
@@ -110,7 +97,7 @@ def worker(unit: Unit) -> dict[str, Any]:
         if p.get(name) is not None:
             over[name] = p[name]
     cfg = RefitConfig(**over)
-    win = _load(key)
+    win = load_prep_window(key)
     res = refit_window(win["audio"], win["r"], win["ft"], 16000, cfg=cfg, verbose=True)
 
     traj_dir = Path(str(p["out"])) / "traj" / arm

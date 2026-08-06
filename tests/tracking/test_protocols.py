@@ -3,11 +3,15 @@
 Covers: (1) the window tables are non-empty and their fields sane; (2) the
 frozen constants match the values the scripts shipped with (spot-checked as
 literals, NOT re-imported from the scripts — the scripts now read them from
-here); (3) pool membership; (4) the ``to_frame`` round-trip. CPU-fast, no
-data: the beatvk manifest is a synthetic stub.
+here); (3) pool membership; (4) the ``to_frame`` round-trip; (5) the prep-cache
+reader (``resolve_prep_dir`` / ``load_prep_window``). CPU-fast, no data: the
+beatvk manifest is a synthetic stub and the prep window is written into a
+temporary directory.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -98,7 +102,7 @@ def test_beatvk_requires_manifest_and_validates_recordings() -> None:
 
 
 def test_to_frame_round_trip() -> None:
-    from tracking.stages import get_audio, get_rps
+    from tracking.top import get_audio, get_rps
 
     rng = np.random.default_rng(0)
     sr = 16000
@@ -196,3 +200,45 @@ def test_pool_means_filters_by_recording_regime_and_window() -> None:
     assert pooled["fly124_warmup"] == 9.0
     assert pooled["fly124_cruise"] is None  # no member window
     assert pooled["all"] == 5.0
+
+
+def _write_prep(dst: Path, key: str) -> dict[str, np.ndarray]:
+    """One synthetic prep-cache window, in the frozen ``.npz`` layout."""
+    arrays = {
+        "audio": np.zeros((2, 320), dtype=np.float32),
+        "ft": np.arange(10, dtype=np.float32) * 0.032,
+        "r_meas": np.full((4, 10), 80.0, dtype=np.float32),
+    }
+    np.savez(dst / f"{key}.npz", regime=np.str_("cruise"), **arrays)
+    return arrays
+
+
+def test_resolve_prep_dir_honours_the_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(P.PREP_DIR_ENV, str(tmp_path))
+    assert P.resolve_prep_dir() == tmp_path
+    # No env var, no pulled cache -> the ``--build-preps`` output.
+    monkeypatch.delenv(P.PREP_DIR_ENV)
+    monkeypatch.setattr(P, "PULLED_PREP_SUBPATH", "no/such/prep_cache")
+    assert P.resolve_prep_dir() == P.BUILT_PREP
+
+
+def test_load_prep_window_reads_the_frozen_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arrays = _write_prep(tmp_path, "FLY124__w02")
+    monkeypatch.setenv(P.PREP_DIR_ENV, str(tmp_path))
+
+    win = P.load_prep_window("FLY124__w02")
+
+    assert set(win) == {"audio", "ft", "r", "regime"}
+    assert win["regime"] == "cruise"
+    for name, entry in (("audio", "audio"), ("ft", "ft"), ("r", "r_meas")):
+        assert win[name].dtype == np.float64  # the reader widens every array
+        np.testing.assert_allclose(win[name], arrays[entry])
+    # An explicit directory overrides the resolution order.
+    other = tmp_path / "other"
+    other.mkdir()
+    _write_prep(other, "FLY124__w03")
+    assert P.load_prep_window("FLY124__w03", other)["r"].shape == (4, 10)

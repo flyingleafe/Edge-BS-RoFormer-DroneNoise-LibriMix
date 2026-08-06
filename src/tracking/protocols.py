@@ -30,12 +30,32 @@ Protocols:
     0.032 s grid with 0.5 s edge trim, GT smoothing = 8-frame (0.25 s) boxcar.
     Segment bounds are derived by the loader (mid-flight placement), so the
     window specs carry ``start_s = end_s = None``.
+
+The protocol operations that must exist exactly once are also here:
+
+``slice_window``
+    One recording plus one :class:`WindowSpec` gives that window's audio,
+    frame grid, interpolated telemetry and edge mask.
+
+``pit_align``
+    THE permutation-invariant rotor assignment — one Hungarian match on the
+    per-pair MSE or MAE, over the edge-trimmed frames when the caller asks.
+    ``losses.pit.align_rps_to_gt`` delegates to it.
+
+``pool_means``
+    The unweighted pool mean over scored windows.
+
+``resolve_prep_dir`` / ``load_prep_window``
+    THE reader of the frozen ``beatvk`` prep cache — the materialized
+    ``.npz`` windows every campaign script scores.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -43,17 +63,22 @@ import numpy as np
 __all__ = [
     "BEATVK",
     "BEATVK_REPORT_POOLS",
+    "BUILT_PREP",
     "FROZEN_FLY124_ALIGNMENT",
+    "PREP_DIR_ENV",
     "PROTOCOLS",
+    "PULLED_PREP_SUBPATH",
     "VK37",
     "PoolSpec",
     "ProtocolSpec",
     "WindowSpec",
     "get_protocol",
     "iter_windows",
+    "load_prep_window",
     "pit_align",
     "pool_means",
     "regime_of",
+    "resolve_prep_dir",
     "slice_window",
     "to_frame",
     "window_name",
@@ -308,14 +333,14 @@ def to_frame(
 ) -> Any:
     """Build the canonical tracking frame for one protocol window.
 
-    A thin wrapper over :func:`tracking.stages.tracking_frame` that stamps the
+    A thin wrapper over :func:`tracking.top.tracking_frame` that stamps the
     window's identity into the frame meta (``protocol`` / ``recording_id`` /
     ``window_index`` / ``regime`` / ``start_s`` / ``end_s``). ``audio`` is
     ``(T,)`` or ``(C, T)`` at ``sr``; ``rps`` / ``rps_meas`` are ``(R, N)``
     on the ``frame_times`` grid. Imported lazily so the spec tables stay
     importable without torch.
     """
-    from tracking.stages import tracking_frame
+    from tracking.top import tracking_frame
 
     stamp: dict[str, Any] = {
         "protocol": spec.protocol,
@@ -380,25 +405,112 @@ def slice_window(
     return seg, ft, r_meas, edge
 
 
-def pit_align(pred: np.ndarray, gt: np.ndarray) -> tuple[np.ndarray, list[int]]:
+def pit_align(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    *,
+    cost: str = "mse",
+    edge_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[int]]:
     """``(pred with its rotor rows permuted onto gt, the permutation)``.
 
-    THE permutation-invariant rotor assignment of the tracking stack: one
-    Hungarian match on the per-rotor-pair MSE, which is identical to the
-    brute-force PIT search over all ``R!`` permutations.  ``pred`` and ``gt``
-    are ``(R, F)`` with the rotor axis FIRST and the same frame count.
-    ``losses.pit.align_rps_to_gt`` (the frame-level entry point, which also
-    resamples and shape-guards) delegates here.
+    THE permutation-invariant rotor assignment of the tracking stack. ``pred``
+    and ``gt`` are ``(R, F)`` with the rotor axis FIRST and the same frame
+    count. ``losses.pit.align_rps_to_gt`` (the frame-level entry point, which
+    also resamples and shape-guards) delegates here.
+
+    One Hungarian match on the per-rotor-pair cost. That is identical to the
+    brute-force PIT search over all ``R!`` permutations, because the total cost
+    is a SUM over the matched pairs and nothing couples one pair to another —
+    so the two forms have the same optimum, and this one does not grow with
+    ``R!``.
+
+    ``cost`` selects the per-pair statistic: ``"mse"`` (the losses' convention)
+    or ``"mae"`` (the blind-annotation campaign's scoring convention, whose
+    reported MAE must be minimized by the very permutation it is reported
+    under). ``edge_mask`` is a ``(F,)`` boolean of the frames that count — the
+    protocol edge trim, so the assignment is not decided by frames no metric
+    reads.
     """
     from scipy.optimize import linear_sum_assignment
 
     pred = np.asarray(pred, dtype=np.float64)
     gt = np.asarray(gt, dtype=np.float64)
-    cost = np.mean((pred[:, None, :] - gt[None, :, :]) ** 2, axis=-1)  # (R, R)
-    row, col = linear_sum_assignment(cost)
+    scored_pred, scored_gt = pred, gt
+    if edge_mask is not None:
+        mask = np.asarray(edge_mask, dtype=bool)
+        scored_pred, scored_gt = pred[:, mask], gt[:, mask]
+    diff = scored_pred[:, None, :] - scored_gt[None, :, :]
+    if cost == "mse":
+        pair = np.mean(diff**2, axis=-1)  # (R, R)
+    elif cost == "mae":
+        pair = np.mean(np.abs(diff), axis=-1)
+    else:
+        raise ValueError(f"unknown cost {cost!r}; valid: 'mse', 'mae'")
+    row, col = linear_sum_assignment(pair)
     perm = np.empty(gt.shape[0], dtype=int)
     perm[col] = row
     return pred[perm], [int(v) for v in perm]
+
+
+#: The frozen protocol windows as a PULLED artifact: the prep cache of the
+#: beat-VK band-admission job, relative to the data root. This is the copy on a
+#: machine that has done ``omnirun pull``.
+PULLED_PREP_SUBPATH = (
+    "omnirun-outputs/bandadm-ladder-7fb2e4/results/beatvk_bandadm/vk_arms/prep_cache"
+)
+#: Where a script's ``--build-preps`` writes when there is no pulled cache.
+BUILT_PREP = Path("results/telemetry_prep")
+#: The environment variable that overrides both.
+PREP_DIR_ENV = "TELEMETRY_PREP_DIR"
+
+
+def resolve_prep_dir() -> Path:
+    """Where the frozen protocol windows live, in order of preference.
+
+    ``TELEMETRY_PREP_DIR`` wins, then the pulled band-admission cache under the
+    data root, then the ``--build-preps`` output :data:`BUILT_PREP`. A cluster
+    worktree has only the last one, because the cache is a gitignored artifact
+    and a fresh checkout has no windows.
+
+    ``utils.paths`` is imported lazily, so the spec tables of this module stay
+    importable on a machine with no ``.env``.
+    """
+    env = os.environ.get(PREP_DIR_ENV)
+    if env:
+        return Path(env)
+    from utils.paths import get_data_root
+
+    pulled = get_data_root() / PULLED_PREP_SUBPATH
+    return pulled if pulled.exists() else BUILT_PREP
+
+
+def load_prep_window(key: str, prep_dir: Path | None = None) -> dict[str, Any]:
+    """THE reader of one frozen ``beatvk`` protocol window.
+
+    ``key`` is the window name (``<recording_id>__w<NN>``, see
+    :func:`window_name`). The window is an ``.npz`` that a builder wrote with
+    :func:`slice_window` from the pinned ``beatvk-valid-raw`` dataset
+    (``scripts/beatvk_vk_arms.py`` and the ``--build-preps`` flag of the
+    campaign drivers). ``prep_dir`` defaults to :func:`resolve_prep_dir`.
+
+    The returned dictionary is the campaign's window contract:
+
+    - ``audio``: ``(mic, sample)`` float64 at 16 kHz
+    - ``ft``: ``(frame,)`` float64 window-relative frame times, s
+    - ``r``: ``(rotor, frame)`` float64 telemetry, rev/s (the file's ``r_meas``)
+    - ``regime``: the manifest tag, ``ground`` / ``warmup`` / ``cruise``
+
+    Every reader of the frozen windows goes through here, so the dtypes and the
+    entry names cannot drift between one campaign script and the next.
+    """
+    with np.load((resolve_prep_dir() if prep_dir is None else prep_dir) / f"{key}.npz") as z:
+        return {
+            "audio": np.asarray(z["audio"], np.float64),
+            "ft": np.asarray(z["ft"], np.float64),
+            "r": np.asarray(z["r_meas"], np.float64),
+            "regime": str(z["regime"]),
+        }
 
 
 def pool_means(
