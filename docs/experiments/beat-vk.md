@@ -378,6 +378,44 @@ Reading:
   `results/pi_kalman_protocol/neural_smoke_rescore/report.json` in the two
   jobs' `omnirun pull` outputs.
 
+### R1 side-arm: re-anchored neural rows — NEGATIVE, and the driver is retired (2026-08-04)
+
+The hypothesis: the CKLA phase-only predictors read per-rotor FLUCTUATIONS
+well (bias-removed MAE 1.0–1.2 rev/s) but put one or two rotors at the wrong
+absolute LEVEL, while the blind comb-scan seed bases are accurate constants to
+0.2–0.4 rev/s. So give each neural row the seed's level and keep only its
+shape, rank-to-rank by window mean:
+
+    r_i(t) = base_i + (neural_j(i)(t) - mean_t neural_j(i))
+
+Windows where the coarse pass engaged (the ramps and the FLY124 w2 maneuver)
+keep the `blind_fullrange` trajectory, because a constant-base re-anchor is
+undefined on a ramp — adding the coarse shape to a detrended row cancels back
+to the constant-base formula, so there is no distinct coarse-anchored variant.
+
+Measured on the frozen protocol against `blind_fullrange` (pooled window MAE,
+rev/s — lower is better):
+
+| Pool | reanchor_1s | reanchor_4s | reanchor_4s_pik | blind_fullrange |
+|------|-------------|-------------|-----------------|-----------------|
+| `dregon_cruise` | 2.028 | 1.892 | 1.891 | **1.807** |
+| `fly124_cruise` | 2.806 | 2.768 | **2.661** | 2.699 |
+| `all_cruise` | 2.267 | 2.162 | 2.128 | **2.082** |
+| `all_windows` | 2.369 | 2.277 | 2.248 | **2.208** |
+
+**The composition loses.** It is worse than the arm it composes in every pool
+but one, and the single win (`fly124_cruise`, 2.661 against 2.699, and only
+after a `pi_kalman_refine` pass on top) is inside the noise of one pool. The
+4 s model beats the 1 s model consistently, so the arm is not broken — the
+premise is. Level and shape are not separable this way: the neural rows'
+fluctuation error is large enough that borrowing a good level does not buy
+back what the shape costs.
+
+Raw: `results/neural_reanchor/report.json` and the per-arm `npz:` dirs, which
+`scripts/beatvk_eval.py --pred npz:<dir> --arms none` still scores. The driver
+(`scripts/neural_reanchor.py`) is deleted in the R3 consolidation — the result
+is negative and recorded here, and the re-anchor arithmetic is four lines.
+
 ### Flagship: blind init + peeled alternation (2026-08-04) — THE DECLARED FLAGSHIP METHOD
 
 > Runner: `scripts/beatvk_flagship.py` (commit `9c2a17f`). Jobs:
@@ -894,6 +932,17 @@ mildly with k (B ~ k^0.25). Fixed-Hz (k^0) is exactly right for DREGON
 and slightly conservative for Michael's; full k-scaling assumes k^1 and
 is far off for both. A principled anneal, if revisited, must shrink B in
 Hz and keep the near-flat band exponent, not flatten the rate shape.
+
+**The stage-C/D sweep this section makes unnecessary.** Commit `4c07be1`
+(2026-08-03) built a 6-arm x 3-offset iteration sweep — the `cd_iter` chain of
+`scripts/rps_refine_lab.py` plus `scripts/cd_iter_sweep.sh` — to ask whether
+k-scaled bands, `VKConfig.bw_adapt` IAVKF adaptation and the WP18 weights help
+stage C/D. **It was never run**: no `results/cd_iter_sweep/` exists and it
+produced no recorded number. The question it asked is answered above, and
+negatively for its main arm — the k-scaled band family is rejected on
+principle. Both the chain and the shell driver are deleted in the R3
+consolidation. `bw_adapt` and the `k_beta` weight remain on `VKConfig`, so a
+future arm can ask the remaining half of the question without rebuilding it.
 
 ## DREGON telemetry over-reports by 0.54% (2026-08-05) — affects every DREGON number
 
