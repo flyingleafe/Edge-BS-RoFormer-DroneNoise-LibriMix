@@ -50,6 +50,7 @@ lands as a top-level file here.
 | `cross-drone-generalization-fly125.md` | `c11_*` | Adding Michael's FLY125 closes the cross-drone RPS gap on FLY124 |
 | `salience-map-rps-tracking.md` | `c7_*`, `c8_*` | Multi-F0 salience-map tracking as an alternative to direct RPS regression |
 | `noise-generation-augmentation.md` | `e2_*`, `e3_*`, `e4_*` | Learned harmonic noise generator as an online-mixing augmentation source |
+| `vk-frontend-probe.md` | — (standalone driver `scripts/vk_frontend_probe.py`, no conf/experiment entry) | Coupled VK envelopes vs independent demodulation as the tracker's front end (issue #15): rejected |
 | `kalman-harmonic-tracker-phase0.md` | — (standalone runner `src/experiments/kalman_harmonic/`, no conf/experiment entry) | RPS-driven Kalman harmonic tracker vs framed lstsq_VP; bet killed at K2 (drift robustness refuted); mitigation list for any learned revival |
 
 Related: `docs/fwh_rotor_acoustic_simulator_plan.md` (a tool build with its
