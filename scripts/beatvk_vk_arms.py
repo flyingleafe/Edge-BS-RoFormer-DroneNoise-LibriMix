@@ -106,7 +106,6 @@ from beatvk_eval import (  # noqa: E402
     STITCH_WIN_FRAMES,
     load_recordings,
 )
-from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 from tracking.pipelines import (  # noqa: E402
     MIDBAND_CFGS,
@@ -116,7 +115,14 @@ from tracking.pipelines import (  # noqa: E402
     coarse_init,
     vit2dsp_pipeline,
 )
-from tracking.protocols import BEATVK, iter_windows, pit_align, slice_window  # noqa: E402
+from tracking.protocols import (  # noqa: E402
+    BEATVK,
+    Prepared,
+    iter_windows,
+    pit_align,
+    slice_window,
+    smooth_frames,
+)
 from tracking.vk_blind_seeding import (  # noqa: E402
     SeedResult,
     blind_seed,

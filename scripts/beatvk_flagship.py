@@ -70,7 +70,6 @@ sys.path.insert(0, str(_HERE))
 
 import beatvk_eval  # noqa: E402
 import beatvk_vk_arms as vka  # noqa: E402
-from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 from tracking.pipelines import (  # noqa: E402
     ARMS,
@@ -83,7 +82,14 @@ from tracking.pipelines import (  # noqa: E402
     PI_PAIR_MODE,
     PI_VARIANTS,
 )
-from tracking.protocols import BEATVK, BEATVK_REPORT_POOLS, iter_windows, pit_align  # noqa: E402
+from tracking.protocols import (  # noqa: E402
+    BEATVK,
+    BEATVK_REPORT_POOLS,
+    Prepared,
+    iter_windows,
+    pit_align,
+    smooth_frames,
+)
 from tracking.protocols import pool_means as protocol_pool_means  # noqa: E402
 from tracking.top import get_rps, peel_alternation, tracking_frame  # noqa: E402
 

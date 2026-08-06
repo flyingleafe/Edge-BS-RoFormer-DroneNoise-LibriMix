@@ -63,7 +63,7 @@ import json  # noqa: E402
 import multiprocessing  # noqa: E402
 import time  # noqa: E402
 from concurrent.futures import ProcessPoolExecutor  # noqa: E402
-from dataclasses import asdict, dataclass, replace  # noqa: E402
+from dataclasses import asdict, replace  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -80,7 +80,11 @@ from data_processing.sources.dregon import (  # noqa: E402
     get_geometry,
     load_timeframe,
 )
-from tracking.protocols import VK37  # noqa: E402  (the frozen protocol spec)
+from tracking.protocols import (  # noqa: E402  (the frozen protocol spec + its vocabulary)
+    VK37,
+    Prepared,
+    smooth_frames,
+)
 from tracking.rps_refinement import (  # noqa: E402
     RefineConfig,
     compute_logmag,
@@ -142,28 +146,6 @@ PREDECESSOR = {
     "stage_bc": {"err": 0.848, "bias": -0.440},
     "stage_d": {"err": 0.638, "bias": -0.078},
 }
-
-
-@dataclass
-class Prepared:
-    """One recording's 25 s mid-flight evaluation segment on the frame grid."""
-
-    rid: str
-    tau: float
-    seg_lo: float
-    seg_hi: float
-    audio: np.ndarray  # (8, T) segment audio at SR
-    ft: np.ndarray  # (N,) seconds, segment-relative
-    r_init: np.ndarray  # (4, N) cleaned command at ft + tau
-    r_meas: np.ndarray  # (4, N) measured at ft + tau
-    r_meas_sm: np.ndarray  # (4, N) 0.25 s-smoothed measured
-    edge: np.ndarray  # (N,) bool metric mask (edges trimmed)
-
-
-def smooth_frames(x: np.ndarray, win: int = SMOOTH_FRAMES) -> np.ndarray:
-    """Per-rotor moving average along the frame axis (predecessor convention)."""
-    ker = np.ones(win) / win
-    return np.stack([np.convolve(row, ker, mode="same") for row in x])
 
 
 def prepare_recording(

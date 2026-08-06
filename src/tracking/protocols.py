@@ -33,6 +33,12 @@ Protocols:
 
 The protocol operations that must exist exactly once are also here:
 
+``Prepared`` / ``smooth_frames``
+    THE prepared-segment record every campaign script passes around (one
+    recording's evaluation segment on the frame grid) and the GT boxcar that
+    defines the protocols' smoothed truth. The record is the shape a loader
+    fills; the loading itself stays outside this package.
+
 ``slice_window``
     One recording plus one :class:`WindowSpec` gives that window's audio,
     frame grid, interpolated telemetry and edge mask.
@@ -354,6 +360,47 @@ def to_frame(
     return tracking_frame(
         audio, sr, rps=rps, frame_times=frame_times, rps_meas=rps_meas, meta=stamp
     )
+
+
+@dataclass
+class Prepared:
+    """One recording's evaluation segment on the protocol frame grid.
+
+    THE record the campaign scripts pass between a loader and a tracker. It is
+    declared here, with the protocol specs, because it is the protocol's own
+    vocabulary — every field is either a protocol grid or a trajectory on that
+    grid — and because a live script must not have to import a campaign driver
+    to name the thing it is holding.
+
+    Filling it is a ``data_processing`` job and stays outside this package (the
+    ``tracking stays pure`` contract): ``scripts/vk_validation.prepare_recording``
+    is the vk37 loader, and :func:`load_prep_window` reads the frozen beatvk
+    cache. Consumers duck-type it — anything with ``.audio`` and ``.ft`` runs
+    through ``pipelines.vit2dsp_pipeline``.
+    """
+
+    rid: str
+    tau: float
+    seg_lo: float
+    seg_hi: float
+    audio: np.ndarray  # (C, T) segment audio at the protocol rate
+    ft: np.ndarray  # (N,) seconds, segment-relative frame grid
+    r_init: np.ndarray  # (R, N) init trajectory at ft + tau
+    r_meas: np.ndarray  # (R, N) measured telemetry at ft + tau
+    r_meas_sm: np.ndarray  # (R, N) smoothed measured — the protocol's truth
+    edge: np.ndarray  # (N,) bool metric mask (protocol edge trim applied)
+
+
+def smooth_frames(x: np.ndarray, win: int = 8) -> np.ndarray:
+    """Per-rotor moving average along the frame axis — THE protocol GT smoother.
+
+    The default is the protocols' 8-frame (0.25 s at the 0.032 s hop) boxcar,
+    which is what ``VK37.smooth_frames`` and ``BEATVK.smooth_frames`` both
+    carry. ``mode="same"`` is load-bearing: it keeps the frame count, so the
+    smoothed truth stays alignable with the raw one and with the edge mask.
+    """
+    ker = np.ones(win) / win
+    return np.stack([np.convolve(row, ker, mode="same") for row in x])
 
 
 def slice_window(

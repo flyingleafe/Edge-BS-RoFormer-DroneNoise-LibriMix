@@ -135,7 +135,6 @@ COARSE_GAMMA = _COARSE.gamma
 COARSE_NORM_SOFT = _COARSE.norm_soft
 COARSE_SMOOTH_FRAMES = _COARSE.smooth_frames
 from vk_blind_annotation import pit_perm  # noqa: E402
-from vk_validation import Prepared, smooth_frames  # noqa: E402
 
 import tracking.phase_increment_tracker as pit  # noqa: E402
 from data_processing.rps_synthesis import synth_comb_window  # noqa: E402
@@ -159,6 +158,7 @@ from tracking.pipelines import (  # noqa: E402
     viterbi_lattice,
     whitened_logmag_multi,
 )
+from tracking.protocols import Prepared, smooth_frames  # noqa: E402
 from tracking.vk_blind_seeding import (  # noqa: E402
     SeedConfig,
     SeedResult,
