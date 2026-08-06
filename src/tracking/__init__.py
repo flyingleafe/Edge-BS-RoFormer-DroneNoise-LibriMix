@@ -13,7 +13,7 @@ from tracking.comb_displacement import (
     pulse_pair,
     pulse_pair_bank,
 )
-from tracking.demod_backend import demod_backend
+from tracking.dsp import boxcar, demod, dsp_config, thread_pool, zoom_bands
 from tracking.fitness import (
     CONTROLS,
     Cells,
@@ -105,8 +105,6 @@ from tracking.vk_blind_seeding import SeedConfig, blind_seed, stage_guard, white
 from tracking.vk_tracking import (
     VKConfig,
     demodulate,
-    fft_worker_pool,
-    fft_workers,
     ls_project_envelopes,
     vk_envelopes,
     vk_reconstruct,
@@ -169,14 +167,14 @@ __all__ = [
     "comb_confidence",
     "comb_scan",
     "compute_logmag",
-    "demod_backend",
+    "boxcar",
+    "demod",
     "demod_bank",
     "demod_comb_bank",
     "demod_rotor",
     "demodulate",
     "estimate_clock_offset",
-    "fft_worker_pool",
-    "fft_workers",
+    "dsp_config",
     "fit_rank_one",
     "get_audio",
     "get_protocol",
@@ -214,5 +212,7 @@ __all__ = [
     "vk_track",
     "warp_stage",
     "whitened_logmag",
+    "thread_pool",
     "with_rps",
+    "zoom_bands",
 ]

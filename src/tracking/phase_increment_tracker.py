@@ -83,17 +83,13 @@ ladder's coherence-time curves cross-check.
 
 from __future__ import annotations
 
-import contextlib
 import inspect
-import os
 from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 
-from tracking.demod_backend import demod_comb, resolve, zoom_bands
-from tracking.vk_tracking import fft_worker_pool
-from tracking.vk_tracking import fft_workers as _fft_workers
+from tracking.dsp import demod, thread_pool, zoom_bands
 
 __all__ = ["DEFAULTS", "pi_kalman_refine"]
 
@@ -105,86 +101,6 @@ _MAX_CHANNELS = 8  # multichannel fusion cap (vk_tracking convention)
 # demodulation
 
 
-#: Working-set budget of one demodulation flush (bytes) — a CACHE knob, not
-#: a memory-headroom knob. See :func:`demod_chunk` for the measurement that
-#: sets it. Override with ``TRACKING_DEMOD_BUDGET_MB``.
-DEMOD_BUDGET_BYTES = 64e6
-#: Large arrays alive during a flush: the carrier buffer, the transform's
-#: internal padded copy, and its output — all ``(C, chunk, n_pad)`` complex64.
-_DEMOD_WORKSPACE = 3
-
-
-def demod_chunk(n_ch: int, n_pad: int) -> int:
-    """Harmonics per demodulation flush under the working-set budget.
-
-    The flush transforms ``(n_ch, chunk, n_pad)`` complex64 at once, so the
-    budget divides by ``_DEMOD_WORKSPACE * n_ch * n_pad * 8`` bytes.
-    ``TRACKING_DEMOD_BUDGET_MB`` overrides :data:`DEMOD_BUDGET_BYTES`.
-
-    Batching does NOT amortize anything here: **channels are already batched
-    jointly**, so even one harmonic per flush transforms ``n_ch`` signals,
-    and each transform is a separate memory sweep either way. What the
-    budget really controls is how much of the working set fits in cache, and
-    a long-clip transform is bandwidth-bound. Measured on the frozen 16 s
-    clip (8 mics, ``n_pad`` = 256000, ``_demod_bank`` for K = 40, median of
-    5, 1 thread / 4 threads):
-
-    ======  =========  ==============  ==============
-    chunk   work set   1 thread        4 threads
-    ======  =========  ==============  ==============
-    1        49 MB      540 ms          404 ms
-    2        98 MB      550 ms          462 ms
-    5       393 MB      739 ms          528 ms
-    20      1.6 GB      813 ms          563 ms
-    40      2.0 GB      909 ms          661 ms
-    ======  =========  ==============  ==============
-
-    So the budget is set NEAR the cache, not near the RAM: bigger is
-    slower. The same shape holds at 1, 2 and 8 channels — the optimum sits
-    at a ~50 MB working set on every count, which is what the default
-    gives. (The previous 96 MB carrier-buffer rule implied a ~290 MB
-    working set, i.e. chunk 5 above.)
-    """
-    budget = DEMOD_BUDGET_BYTES
-    env = os.environ.get("TRACKING_DEMOD_BUDGET_MB")
-    if env:
-        with contextlib.suppress(ValueError):
-            budget = max(1.0, float(env)) * 1e6
-    return max(1, int(budget / (_DEMOD_WORKSPACE * max(1, n_ch) * max(1, n_pad) * 8)))
-
-
-def _zoom_lp_decimate_bank(
-    x: np.ndarray,
-    stride: int,
-    n_env: int,
-    band_cyc: float,
-    band_cyc_rows: np.ndarray | None = None,
-    shift_cyc: np.ndarray | float | None = None,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """:func:`zoom_lp_decimate`, plus an optional shifted probe band from the
-    SAME forward transform.
-
-    ``shift_cyc`` (scalar or ``(x.shape[-2],)``, cycles/sample at the audio
-    rate) selects a second band centered that far from DC — the off-comb
-    noise probe. Because a constant frequency offset is a pure bin shift,
-    the probe needs no transform of its own: one forward FFT feeds both
-    bands, and only the two ``n_env``-point inverses are duplicated (the
-    forward transform at ``stride * n_env`` is ~99.6% of the cost).
-
-    The transform itself is :func:`tracking.demod_backend.zoom_bands`, so
-    this is the scipy *and* the torch path — the backend only changes where
-    the arithmetic runs, never which bins are kept.
-    """
-    return zoom_bands(
-        x,
-        stride,
-        n_env,
-        band_cyc if band_cyc_rows is None else band_cyc_rows,
-        shift_cyc,
-        workers=_fft_workers(),
-    )
-
-
 def zoom_lp_decimate(
     x: np.ndarray,
     stride: int,
@@ -194,8 +110,8 @@ def zoom_lp_decimate(
 ) -> np.ndarray:
     """FFT brickwall lowpass (``|f| <= band_cyc`` cycles/sample) + decimate.
 
-    The zoom-IFFT of :func:`tracking.vk_tracking._fft_lp_decimate`
-    with a *parametric* cutoff below the decimated Nyquist: zero-pad the
+    A named call of :func:`tracking.dsp.zoom_bands`, THE band-select kernel,
+    with the ``phase_increment_tracker`` parameterization: zero-pad the
     complex input to ``stride * n_env``, keep the ``+-band_cyc`` band
     (positive and negative bins — the input is complex), inverse-FFT at
     length ``n_env`` directly. Circular edge handling; callers trim edges.
@@ -208,10 +124,9 @@ def zoom_lp_decimate(
 
     ``band_cyc_rows`` (optional, ``(x.shape[-2],)``): a per-row cutoff for
     ``(..., rows, T)`` input — the ``band_mode="k_scaled"`` path, where each
-    harmonic keeps its own band. ``None`` keeps the shared-cutoff behavior
-    bit-identical.
+    harmonic keeps its own band.
     """
-    return _zoom_lp_decimate_bank(x, stride, n_env, band_cyc, band_cyc_rows)[0]
+    return zoom_bands(x, stride, n_env, band_cyc if band_cyc_rows is None else band_cyc_rows)[0]
 
 
 def _abs2(z: np.ndarray) -> np.ndarray:
@@ -250,22 +165,21 @@ def demod_bank(
     off_hz_k: np.ndarray | None = None,
     sr: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """On-comb and off-comb envelope banks for one rotor.
+    """On-comb and off-comb envelope banks for ONE rotor.
 
     Returns ``(z_on, z_off)``, each ``(C, K, n_env)`` complex64: the audio
     demodulated by ``k * phi`` (resp. ``k * phi + 2 pi off_hz t``),
-    brickwall-lowpassed to ``+-band_cyc`` and decimated. Carriers come from
-    the harmonic power recursion (one exp for the fundamental, complex64
-    multiplies per harmonic step — ``vk_tracking._track_carriers``' trick).
+    brickwall-lowpassed to ``+-band_cyc`` and decimated.
 
-    The off-comb probe rides at a CONSTANT frequency offset from its
-    harmonic, so it is a pure shift of the spectrum the on-comb envelope
-    already needed: both bands are sliced out of one forward transform
-    (:func:`_zoom_lp_decimate_bank`) instead of demodulating the clip twice.
-    The offset is snapped to the bin grid (``fs / (stride n_env)``, 0.06 Hz
-    on a 16 s clip) so the slice is exact; the probe only estimates the
-    in-band noise floor, whose gates carry a ``guard_hz`` margin orders of
-    magnitude larger than the snap.
+    The one-rotor naming of :func:`tracking.dsp.demod`: ``phi`` is the rotor
+    fundamental phase, so the harmonic table is ``rotor = 0``, ``k = ks``, and
+    every carrier comes from the power recursion. Both bands are sliced out of
+    ONE forward transform — the off-comb probe rides at a CONSTANT frequency
+    offset, which is a pure bin shift of the spectrum the on-comb envelope
+    already needed. The offset is snapped to the bin grid (``fs / (stride
+    n_env)``, 0.06 Hz on a 16 s clip) so the slice is exact; the probe only
+    estimates the in-band noise floor, whose gates carry a ``guard_hz`` margin
+    orders of magnitude larger than the snap.
 
     ``band_cyc_k`` / ``off_hz_k`` (optional, ``(len(ks),)``): per-harmonic
     demod band (cycles/sample) and per-harmonic *signed* probe offset (Hz)
@@ -273,60 +187,24 @@ def demod_bank(
     off-comb probe uses the SAME per-k band as the on-comb envelope.
     ``sr`` (samples/s) is needed to place the probe; it defaults to the
     rate implied by ``t_aud``.
-
-    Under the torch backend the whole bank is built on the selected device
-    (:func:`tracking.demod_backend.demod_comb`): only the ``(C, T)`` clip and
-    the fundamental phasor cross the seam, instead of a ``(C, K, T)``
-    complex64 buffer per flush.
     """
-    n_ch, n_t = y32.shape
     n_k = len(ks)
-    c1 = np.exp(-1j * phi).astype(np.complex64)
     fs = float(sr) if sr is not None else 1.0 / float(t_aud[1] - t_aud[0])
     offs = np.full(n_k, float(off_hz)) if off_hz_k is None else np.asarray(off_hz_k, dtype=float)
     bands = band_cyc if band_cyc_k is None else np.asarray(band_cyc_k, dtype=np.float64)
-
-    if resolve()[0] == "torch":
-        ka = np.asarray(ks, dtype=np.int64)
-        on, off = demod_comb(
-            y32, c1[None, :], np.zeros(n_k, dtype=np.int64), ka, stride, n_env, bands, offs / fs
-        )
-        assert off is not None
-        return on, off
-
-    z_on = np.empty((n_ch, n_k, n_env), dtype=np.complex64)
-    z_off = np.empty_like(z_on)
-    chunk = demod_chunk(n_ch, stride * n_env)
-    buf = np.empty((n_ch, min(chunk, n_k), n_t), dtype=np.complex64)
-    idxs: list[int] = []
-
-    def flush() -> None:
-        m = len(idxs)
-        rows = None if band_cyc_k is None else band_cyc_k[idxs]
-        sh = offs[idxs[0]] / fs if len(set(offs[idxs].tolist())) == 1 else offs[idxs] / fs
-        on, off = _zoom_lp_decimate_bank(buf[:, :m], stride, n_env, band_cyc, rows, sh)
-        assert off is not None
-        z_on[:, idxs] = on
-        z_off[:, idxs] = off
-        idxs.clear()
-
-    cur = np.ones_like(c1)
-    cur_k = 0
-    for a, k in enumerate(ks):
-        step = k - cur_k
-        if step > 2:  # rare gaps (twin-excluded runs): one pow, not many muls
-            cur = cur * c1**step
-        else:
-            for _ in range(step):
-                cur = cur * c1
-        cur_k = k
-        np.multiply(y32, cur, out=buf[:, len(idxs)])
-        idxs.append(a)
-        if len(idxs) == buf.shape[1]:
-            flush()
-    if idxs:
-        flush()
-    return z_on, z_off
+    c1 = np.exp(-1j * phi).astype(np.complex64)[None, :]
+    on, off = demod(
+        y32,
+        c1=c1,
+        rotor=np.zeros(n_k, dtype=np.int64),
+        k=np.asarray(ks, dtype=np.int64),
+        stride=stride,
+        n_env=n_env,
+        band_cyc=bands,
+        shift_cyc=offs / fs,
+    )
+    assert off is not None
+    return on, off
 
 
 #: Back-compat alias. The bank became public for ``tracking.comb_displacement``;
@@ -1219,7 +1097,7 @@ def pi_kalman_refine(
     probe_mode: str = "fixed",
     peel_audio: Mapping[int, np.ndarray] | None = None,
     pair_audio: Mapping[tuple[int, int], np.ndarray] | None = None,
-    fft_workers: int | None = None,
+    threads: int | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """ML instantaneous-frequency refinement by phase-increment Kalman smoothing.
 
@@ -1325,12 +1203,12 @@ def pi_kalman_refine(
             clip. Everything else (pairing, gates, the Kalman) is unchanged.
         pair_audio: the same seam for the ``pair_mode="joint"`` two-tone
             observations, keyed by the ordered pair ``(lo, hi)``.
-        fft_workers: explicit FFT worker threads for the whole call (the
+        threads: explicit torch CPU thread count for the whole call (the
             demodulation transforms dominate the cost). ``None`` follows the
             environment (``TRACKING_FFT_WORKERS``, else ``OMP_NUM_THREADS``,
             else 1 — the Slurm-safe default); ``0`` or less takes the whole
-            CPU budget. Bit-identical either way: worker count only splits
-            the batched transform, it does not change its arithmetic.
+            CPU budget. Bit-identical either way: the thread count only
+            splits the batched transform, it does not change its arithmetic.
 
     Returns:
         ``(r_refined, diagnostics)`` — refined ``(R, N)`` tracks and a
@@ -1388,7 +1266,7 @@ def pi_kalman_refine(
 
     rotor_diags: list[dict[str, Any]] = [{"rotor": i, "iters": []} for i in range(n_rot)]
     pair_diags: list[list[dict[str, Any]]] = []
-    with fft_worker_pool(fft_workers):
+    with thread_pool(threads):
         for it, k_cap in enumerate(schedule):
             band_it = band_schedule[it]
             joint_obs: dict[int, list[tuple[int, float, float, int]]] = {}

@@ -284,22 +284,22 @@ normal equations, 29 % in full-length demod FFTs); blind-config rtf 0.35
    the *pair* share of full-length demods, which dominates the demod cost in
    richly-coupled (refine) configs. Synthetic A/B: no measurable trajectory
    change (< 1e-8 rev/s RMS).
-3. **FIR polyphase decimation** (`VKConfig.lp_mode = "fir"`): two-stage
-   linear-phase Kaiser decimators (passband edge 0.45·fs_env = the brickwall
-   cutoff, stopband edge 0.55·fs_env, 70 dB; odd-length type-I taps ⇒ integer
-   group delay, exactly compensated by `resample_poly` — phase error < 1e-6
-   rad on in-band tones, so phase-slope updates stay unbiased). **Not the
-   default**: measured *slower* than the batched pocketfft brickwall
-   (≈ 4.3–5.6 vs 3.3 ms per 20 s signal — scipy's `upfirdn` kernel cannot
-   beat pocketfft's SIMD even at ¼ the nominal MACs), and its transition
-   band perturbs blind-capture trajectories by ~2.5e-3 rev/s RMS vs the
-   brickwall (refine: 2.8e-4). Kept behind the flag for A/B.
+3. **FIR polyphase decimation** (the former `VKConfig.lp_mode = "fir"`):
+   two-stage linear-phase Kaiser decimators (passband edge 0.45·fs_env = the
+   brickwall cutoff, stopband edge 0.55·fs_env, 70 dB). Measured *slower*
+   than the batched brickwall (≈ 4.3–5.6 vs 3.3 ms per 20 s signal — an
+   `upfirdn` kernel cannot beat a vectorised FFT even at ¼ the nominal MACs),
+   and its transition band perturbed blind-capture trajectories by ~2.5e-3
+   rev/s RMS vs the brickwall (refine: 2.8e-4). **Deleted** in the 2026-08
+   consolidation, together with the `iir` reference path and the `lp_mode`
+   flag: the brickwall zoom-IFFT (`tracking.dsp.zoom_bands`) is the only
+   anti-alias lowpass of the stack.
 4. `_freq_update`'s small real SPD pentadiagonal solve moved from splu to
-   `solveh_banded` (numerically identical), and FFT worker counts are clamped
+   `solveh_banded` (numerically identical), and the thread count is clamped
    to the process CPU affinity (cgroup-restricted Slurm allocations were
-   oversubscribed by `OMP_NUM_THREADS`-many pocketfft workers).
+   oversubscribed by `OMP_NUM_THREADS`-many workers).
 
-Regression protocol: `scripts/vk_bench.py` gained `--solver`, `--lp-mode`,
+Regression protocol: `scripts/vk_bench.py` gained `--solver`,
 `--no-prune`, `--out-suffix` (A/B without clobbering the recorded reference
 npz). Gate: pooled MAE-vs-stored-ref within 1e-3 rev/s of the recorded
 `profile_report.json` values on all 4 cases × 2 configs.

@@ -47,7 +47,7 @@ Modes:
                          ``profile_report_synthetic.json``/``.txt``.
 
 Optimization A/B knobs (fast-inference work): ``--solver banded|splu``,
-``--lp-mode fft|fir|iir`` and ``--no-prune`` override the corresponding
+``--no-prune`` overrides the corresponding
 ``VKConfig`` fields on both config families; ``--out-suffix _foo`` suffixes
 every output file (report + per-run npz) so a re-bench does not clobber the
 recorded regression references.
@@ -132,13 +132,13 @@ CONFIGS: dict[str, VKConfig] = {"refine": REFINE_CFG, "blind": BLIND_CFG}
 # NB: phases nest (``vk_envelopes`` includes its internal demod; ``vk_track``
 # includes everything) — the breakdown is a map of where time accumulates,
 # not a disjoint partition. ``demodulate``/``_demod_tracks_fft`` are the demod
-# entry points for both lp_modes; ``_demod_residual`` is the residual demod
-# the gate/confidence machinery pays for on top.
+# entry points; ``_demod_residual`` is the residual demod the gate/confidence
+# machinery pays for on top.
 PHASE_FUNCS: dict[str, tuple[str, ...]] = {
     "total_vk_track": ("vk_track",),
     "envelope_solve": ("vk_envelopes",),
     "demodulate": ("demodulate", "_demod_tracks_fft"),
-    "fft_lp_decimate": ("_fft_lp_decimate",),
+    "lp_decimate": ("_lp_decimate",),
     "freq_update": ("_freq_update",),
     "reconstruct": ("vk_reconstruct",),
     "residual_demod": ("_demod_residual",),
@@ -452,12 +452,6 @@ def main() -> None:
         help="override VKConfig.solver on both config families (A/B)",
     )
     ap.add_argument(
-        "--lp-mode",
-        choices=["fft", "fir", "iir"],
-        default=None,
-        help="override VKConfig.lp_mode on both config families (A/B)",
-    )
-    ap.add_argument(
         "--no-prune",
         action="store_true",
         help="disable VKConfig.prune_far_pairs on both config families (A/B)",
@@ -473,8 +467,6 @@ def main() -> None:
     overrides: dict[str, Any] = {}
     if args.solver is not None:
         overrides["solver"] = args.solver
-    if args.lp_mode is not None:
-        overrides["lp_mode"] = args.lp_mode
     if args.no_prune:
         overrides["prune_far_pairs"] = False
     if overrides:

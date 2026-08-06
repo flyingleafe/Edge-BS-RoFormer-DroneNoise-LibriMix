@@ -417,9 +417,14 @@ def test_off_comb_probe_per_harmonic_offsets():
         assert np.abs(z_off[:, a] - ref[:, 0]).max() < 1e-5 * np.abs(ref).max()  # complex64
 
 
-def test_zoom_lp_decimate_bank_on_band_is_unchanged():
-    """The refactor must not touch the on-comb envelope: bit-identical."""
-    from tracking.phase_increment_tracker import _zoom_lp_decimate_bank, zoom_lp_decimate
+def test_probe_does_not_disturb_the_on_band():
+    """Asking for the off-comb probe must not move the on-comb envelope.
+
+    Both bands come out of ONE forward transform, so the on-band result has
+    to be bit-identical to the probe-free call.
+    """
+    from tracking.dsp import zoom_bands
+    from tracking.phase_increment_tracker import zoom_lp_decimate
 
     rng = np.random.default_rng(3)
     x = (rng.standard_normal((2, 5, 4096)) + 1j * rng.standard_normal((2, 5, 4096))).astype(
@@ -428,14 +433,15 @@ def test_zoom_lp_decimate_bank_on_band_is_unchanged():
     rows = np.array([2.0, 4.0, 6.0, 8.0, 10.0]) / 16000
     for band_rows in (None, rows):
         plain = zoom_lp_decimate(x, 64, 64, 6.0 / 16000, band_rows)
-        on, off = _zoom_lp_decimate_bank(x, 64, 64, 6.0 / 16000, band_rows, 40)
+        on, off = zoom_bands(x, 64, 64, 6.0 / 16000 if band_rows is None else band_rows, 40 / 4096)
         assert np.array_equal(plain, on)
         assert off is not None and off.shape == on.shape
 
 
 def test_demod_chunking_is_bit_identical(monkeypatch):
     """The flush size is a cache knob only: every budget gives the same bank."""
-    from tracking.phase_increment_tracker import _demod_bank, demod_chunk
+    from tracking.dsp import demod_chunk
+    from tracking.phase_increment_tracker import _demod_bank
 
     y, phi, t, ks, stride, n_env, sr = _demod_fixture(dur=1.0)
     band_cyc = 6.0 / sr

@@ -31,12 +31,12 @@ Run::
     python scripts/tracking_ref.py --bench --bench-workers 1,4 --bench-vk
 
 ``--self-check`` needs no stored reference: it runs the SAME application
-twice in one process — once on the scipy/exact backend, once on whatever
-``--backend`` / ``--device`` / ``--pad-mode`` select — and diffs the two.
+twice in one process — once on cpu/exact, once on whatever
+``--device`` / ``--pad-mode`` select — and diffs the two.
 That is the form the GPU verification takes, because the frozen ``.npz`` is
 ~100 MB and does not travel to a compute node::
 
-    python scripts/tracking_ref.py --self-check --backend torch --device cuda
+    python scripts/tracking_ref.py --self-check --device cuda
 
 Remote (the capture is minutes of CPU, so this is the normal path)::
 
@@ -72,7 +72,7 @@ sys.path.insert(0, str(_HERE))
 import beatvk_eval  # noqa: E402
 import beatvk_flagship as flag  # noqa: E402
 
-from tracking.demod_backend import BACKENDS, PAD_MODES, demod_backend  # noqa: E402
+from tracking.dsp import PAD_MODES, dsp_config, thread_pool  # noqa: E402
 from tracking.protocols import (  # noqa: E402
     BEATVK,
     BEATVK_DREGON_RECS,
@@ -96,7 +96,7 @@ DUMPED = ("env_z", "env_x", "env_x_ls", "env_valid", "env_bw_track", "env_t_env"
 #: ``rho^2 ~ 4e5``, so the assembled system's condition number is ~1e7 and
 #: the solve AMPLIFIES the demodulation's complex64 rounding (~1e-7 of
 #: scale, which is what ``env_z`` shows) by one to three orders, and by how
-#: much depends on the clip. Measured for a scipy->torch backend swap:
+#: much depends on the clip. Measured for the scipy->torch consolidation:
 #: ``env_z`` moves 1.5e-7 of scale on the full 16 s clip (1.2e-7 on the 4 s
 #: smoke), ``env_x`` 7.3e-7 (3.7e-5 on the smoke), ``r_next`` 4.5e-6 rev/s,
 #: and no gate flips anywhere. The tracker consumes ``r_next`` and the
@@ -225,7 +225,6 @@ def run_reference(frame: Any, *, peel_mode: str, channels: int) -> tuple[dict[st
             "f_max": cfg.f_max,
             "n_outer": cfg.n_outer,
             "fs_env": cfg.fs_env,
-            "lp_mode": cfg.lp_mode,
             "solver": cfg.solver,
             "couple_hz": cfg.couple_hz,
             "prune_far_pairs": cfg.prune_far_pairs,
@@ -278,20 +277,6 @@ def _median_ms(fn: Any, iters: int) -> float:
         samples.append(time.perf_counter() - tic)
     samples.sort()
     return samples[len(samples) // 2] * 1e3
-
-
-def _torch_threads(n: int) -> None:
-    """Match torch's CPU thread pool to the FFT worker count (best effort).
-
-    Without this the two backends are benched at different thread budgets
-    and the comparison says nothing about the kernels.
-    """
-    try:
-        import torch
-
-        torch.set_num_threads(max(1, n))
-    except Exception:  # torch absent or already parallel-initialized
-        pass
 
 
 def _bench_rows(frame: Any, *, channels: int, iters: int, with_vk: bool) -> list[tuple[str, float]]:
@@ -367,45 +352,39 @@ def bench(
     worker_counts: list[int],
     iters: int,
     with_vk: bool,
-    backends: list[str],
-    device: str,
+    devices: list[str],
     pad: str,
     out_json: Path | None = None,
 ) -> None:
     """Per-stage timings of the tracking hot path on the frozen clip.
 
-    Stages, innermost first: one ``zoom_lp_decimate`` call (the FFT kernel),
-    one ``_demod_bank`` flush for rotor 0 at the full harmonic cap (the
-    ``pi_kalman`` inner loop), optionally the peel's ``vk_envelopes`` +
+    Stages, innermost first: one ``zoom_lp_decimate`` call (the band-select
+    kernel), one ``demod_bank`` flush for rotor 0 at the full harmonic cap
+    (the ``pi_kalman`` inner loop), optionally the peel's ``vk_envelopes`` +
     ``ls_project_envelopes`` (``--bench-vk``), and the whole
     ``pi_kalman_refine`` call. Repeated for every ``--bench-workers`` entry
-    and every ``--bench-backends`` entry, so both the threading opt-in and
-    the backend choice are measured rather than assumed.
+    and every ``--bench-devices`` entry, so both the threading opt-in and the
+    device choice are measured rather than assumed.
 
     ``out_json`` writes the whole grid as a record — the form the remote
     bench comes back in (``omnirun pull``).
     """
-    from tracking.vk_tracking import fft_worker_pool
-
-    print(f"[bench] channels {channels}, iters {iters}, workers {worker_counts}, {backends}")
+    print(f"[bench] channels {channels}, iters {iters}, workers {worker_counts}, {devices}")
     record: dict[str, Any] = {
         "channels": channels,
         "iters": iters,
-        "device": device,
         "pad": pad,
         "rows": [],
     }
-    for bk in backends:
+    for dev in devices:
         for w in worker_counts:
-            _torch_threads(w)
-            dev = device if bk == "torch" else "cpu"
-            with demod_backend(backend=bk, device=dev, pad=pad), fft_worker_pool(w):
+            with dsp_config(device=dev, pad=pad), thread_pool(w):
                 rows = _bench_rows(frame, channels=channels, iters=iters, with_vk=with_vk)
-            print(f"  backend={bk} device={dev} workers={w}")
+            print(f"  device={dev} threads={w}")
             for label, ms in rows:
                 print(f"    {label:<26}{ms:12.1f} ms", flush=True)
                 record["rows"].append(
-                    {"backend": bk, "device": dev, "workers": w, "stage": label, "ms": round(ms, 1)}
+                    {"device": dev, "workers": w, "stage": label, "ms": round(ms, 1)}
                 )
     if out_json is not None:
         out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -414,29 +393,26 @@ def bench(
 
 
 def self_check(
-    frame: Any, *, peel_mode: str, channels: int, backend: str, device: str, pad: str, exact: bool
+    frame: Any, *, peel_mode: str, channels: int, device: str, pad: str, exact: bool
 ) -> int:
-    """Run the application twice in one process and diff the two backends.
+    """Run the application twice in one process and diff CPU against ``device``.
 
-    The reference leg is always ``scipy`` / ``exact`` — the bit-identical
-    path — so this needs no stored ``.npz`` and can therefore run on a
-    compute node that has only the checkout and the streamed clip.
+    The reference leg is always ``cpu`` / ``exact``, so this needs no stored
+    ``.npz`` and can therefore run on a compute node that has only the
+    checkout and the streamed clip — which is how the GPU is verified.
     """
 
     tic = time.perf_counter()
-    with demod_backend(backend="scipy", device="cpu", pad="exact"):
+    with dsp_config(device="cpu", pad="exact"):
         ref, ref_cfg = run_reference(frame, peel_mode=peel_mode, channels=channels)
-    print(
-        f"[self-check] scipy/cpu/exact leg: {ref_cfg['wall_s']} ({time.perf_counter() - tic:.0f}s)"
-    )
+    print(f"[self-check] cpu/exact leg: {ref_cfg['wall_s']} ({time.perf_counter() - tic:.0f}s)")
     tic = time.perf_counter()
-    with demod_backend(backend=backend, device=device, pad=pad):
+    with dsp_config(device=device, pad=pad):
         new, new_cfg = run_reference(frame, peel_mode=peel_mode, channels=channels)
     print(
-        f"[self-check] {backend}/{device}/{pad} leg: {new_cfg['wall_s']} "
-        f"({time.perf_counter() - tic:.0f}s)"
+        f"[self-check] {device}/{pad} leg: {new_cfg['wall_s']} ({time.perf_counter() - tic:.0f}s)"
     )
-    return diff_table(ref, new, exact, f"the scipy leg vs {backend}/{device}/{pad}")
+    return diff_table(ref, new, exact, f"the cpu leg vs {device}/{pad}")
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +440,7 @@ def diff_table(ref_of: dict[str, Any], new_of: dict[str, Any], exact: bool, what
 
     Boolean arrays (the gate masks) report a *flip count* in the abs column
     and a flipped fraction in the rel column — a gate flip is the thing a
-    backend change must not cause, so it is never hidden behind a tolerance.
+    device change must not cause, so it is never hidden behind a tolerance.
     """
     failures: list[str] = []
     head = f"{'array':<16}{'shape':>18}{'max|abs|':>13}{'abs/scale':>12}{'max|rel|':>12}"
@@ -564,15 +540,9 @@ def main() -> None:
     mode.add_argument(
         "--self-check",
         action="store_true",
-        help="run scipy/exact and the selected backend in one process and diff them",
+        help="run cpu/exact and the selected device in one process and diff them",
     )
     ap.add_argument("--exact", action="store_true", help="--compare: demand bit-identical arrays")
-    ap.add_argument(
-        "--backend",
-        default="scipy",
-        choices=list(BACKENDS),
-        help="demodulation backend of the fresh run (default: scipy)",
-    )
     ap.add_argument(
         "--device", default="cpu", help="torch device of the fresh run (cpu, cuda, ...)"
     )
@@ -605,16 +575,16 @@ def main() -> None:
     ap.add_argument(
         "--bench-workers",
         default="1,4",
-        help="--bench: comma-separated FFT worker counts (0 = the whole CPU budget)",
+        help="--bench: comma-separated torch thread counts (0 = the whole CPU budget)",
     )
     ap.add_argument("--bench-iters", type=int, default=5, help="--bench: repeats of the FFT kernel")
     ap.add_argument(
         "--bench-vk", action="store_true", help="--bench: also time vk_envelopes + ls_project"
     )
     ap.add_argument(
-        "--bench-backends",
+        "--bench-devices",
         default=None,
-        help="--bench: comma-separated backends (default: --backend only)",
+        help="--bench: comma-separated torch devices (default: --device only)",
     )
     ap.add_argument("--bench-json", default=None, help="--bench: write the grid to this JSON path")
     opts = ap.parse_args()
@@ -640,10 +610,9 @@ def main() -> None:
             worker_counts=[int(v) for v in str(opts.bench_workers).split(",") if v.strip()],
             iters=opts.bench_iters,
             with_vk=opts.bench_vk,
-            backends=[
-                v.strip() for v in str(opts.bench_backends or opts.backend).split(",") if v.strip()
+            devices=[
+                v.strip() for v in str(opts.bench_devices or opts.device).split(",") if v.strip()
             ],
-            device=opts.device,
             pad=opts.pad_mode,
             out_json=Path(opts.bench_json) if opts.bench_json else None,
         )
@@ -655,17 +624,15 @@ def main() -> None:
                 frame,
                 peel_mode=opts.peel_mode,
                 channels=opts.channels,
-                backend=opts.backend,
                 device=opts.device,
                 pad=opts.pad_mode,
                 exact=opts.exact,
             )
         )
 
-    _torch_threads(int(os.environ.get("OMP_NUM_THREADS", "1")))
-    with demod_backend(backend=opts.backend, device=opts.device, pad=opts.pad_mode):
+    with dsp_config(device=opts.device, pad=opts.pad_mode), thread_pool(None):
         arrays, config = run_reference(frame, peel_mode=opts.peel_mode, channels=opts.channels)
-    config["demod_backend"] = [opts.backend, opts.device, opts.pad_mode]
+    config["dsp"] = [opts.device, opts.pad_mode]
     print(f"[tracking_ref] walls: {config['wall_s']}", flush=True)
 
     if opts.capture:

@@ -24,33 +24,26 @@ turn it into a *tracker* rather than a filter with known frequencies:
 CPU-inference fast paths (2026-07-20, see the vk_bench profiling study): the
 coupled-group normal equations are solved as a time-major-interleaved
 Hermitian **banded** Cholesky system (``VKConfig.solver``, splu kept as the
-reference/fallback), cross-coupling terms are only demodulated for pairs that
-can actually beat inside the lowpass band (``VKConfig.prune_far_pairs``), and
-the demod lowpass is selectable between the batched FFT brickwall and a
-two-stage linear-phase FIR polyphase decimator (``VKConfig.lp_mode``).
+reference/fallback), and cross-coupling terms are only demodulated for pairs
+that can actually beat inside the lowpass band (``VKConfig.prune_far_pairs``).
 
 Conventions match ``rps_refinement.py``: trajectories in rev/s with harmonics
 at ``k * r`` Hz, arrays time-last, mono-or-multichannel audio plus a
-trajectory sampled on an arbitrary time grid. The core is numpy + scipy only
-(float64 solver, no torch) — it is an offline annotation tool.
+trajectory sampled on an arbitrary time grid. Every demodulation goes through
+:mod:`tracking.dsp`; the linear algebra stays numpy/scipy float64.
 """
 
 from __future__ import annotations
 
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from functools import lru_cache
 from typing import Any, cast
 
 import numpy as np
 from scipy import sparse
 from scipy.linalg import cho_solve_banded, cholesky_banded, solveh_banded
-from scipy.signal import butter, firwin, kaiserord, resample_poly, sosfiltfilt
 from scipy.sparse.linalg import splu
 
-from tracking.demod_backend import demod_comb, resolve, torch_device, zoom_bands
+from tracking.dsp import demod, torch_device, zoom_bands
 
 __all__ = [
     "VKConfig",
@@ -100,15 +93,6 @@ class VKConfig:
     # (a passband much wider than the separation cannot attribute the lines —
     # the near-degenerate solve blows up in a cancelling mode whose phase
     # slope points at the pair mean, i.e. twin collapse)
-    lp_mode: str = "fft"  # anti-alias lowpass for demod/decimate: "fft" =
-    # batched FFT brickwall + zoom-IFFT (fastest measured — pocketfft's SIMD
-    # beats scipy's polyphase kernel; complex64 FFT stage); "fir" = two-stage
-    # linear-phase FIR polyphase decimation (see _fir_stages; exactly
-    # delay-compensated, kept behind this flag for A/B); "iir" = the original
-    # per-track zero-phase butter-4 sosfiltfilt (reference implementation).
-    # fft/fir agree to ~5e-4 relative L2 on in-band content; both agree with
-    # iir to ~1% relative L2 away from the segment edges (edge handling and
-    # filter shape differ only near the boundaries / transition band).
     solver: str = "banded"  # coupled-group linear solver: "banded" =
     # time-major-interleaved Hermitian banded Cholesky (_solve_group_banded;
     # ~5-10x faster than splu with zero fill-in, falls back to splu per
@@ -146,8 +130,6 @@ class VKConfig:
     freq_weight_beta: float = 2.0  # the beta of the "k_beta" weight
 
     def __post_init__(self) -> None:
-        if self.lp_mode not in ("fft", "fir", "iir"):
-            raise ValueError(f"unknown lp_mode {self.lp_mode!r} (expected 'fft', 'fir' or 'iir')")
         if self.solver not in ("banded", "splu"):
             raise ValueError(f"unknown solver {self.solver!r} (expected 'banded' or 'splu')")
         if self.bw_adapt_clamp < 1.0:
@@ -283,93 +265,7 @@ def env_stride(cfg: VKConfig) -> tuple[int, float]:
     return stride, cfg.fs / stride
 
 
-def _lowpass_sos(cfg: VKConfig, fs_env: float) -> np.ndarray:
-    """Zero-phase anti-alias lowpass for the demodulated envelopes.
-
-    Butterworth order 4, cutoff ``0.45 * fs_env`` (design §2.1), realised as
-    second-order sections: at cutoffs this far below the audio Nyquist the
-    ``(b, a)`` form of a 4th-order butter is numerically fragile; sos is not.
-    """
-    return cast(np.ndarray, butter(4, 0.45 * fs_env, fs=cfg.fs, output="sos"))
-
-
-def _lp_decimate(x: np.ndarray, sos: np.ndarray, stride: int) -> np.ndarray:
-    """Zero-phase lowpass then decimate by ``stride`` along the last axis.
-
-    ``padlen`` is stretched to ~3 cutoff periods (the filter's settling time):
-    sosfiltfilt's default of a few samples is hopelessly short for a cutoff
-    this far below the audio rate and leaves a large startup transient.
-    """
-    padlen = min(x.shape[-1] - 1, 8 * stride)  # cutoff 0.45/stride of fs
-    return sosfiltfilt(sos, x, axis=-1, padlen=padlen)[..., ::stride]
-
-
-#: Process-wide FFT worker override installed by :func:`fft_worker_pool`
-#: (``None`` = follow the environment). Read by :func:`fft_workers`.
-_FFT_WORKERS_OVERRIDE: int | None = None
-
-
-def _cpu_budget() -> int:
-    """CPUs actually available to this process (cgroup/affinity aware)."""
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except (AttributeError, OSError):
-        return max(1, os.cpu_count() or 1)
-
-
-def fft_workers() -> int:
-    """FFT worker threads, clamped to the CPUs available to this process.
-
-    Precedence, first hit wins:
-
-    1. the :func:`fft_worker_pool` override (the explicit in-process opt-in,
-       also what ``pi_kalman_refine(fft_workers=...)`` installs);
-    2. ``TRACKING_FFT_WORKERS`` — the explicit environment opt-in for
-       interactive/offline callers; ``"auto"`` takes the whole CPU budget;
-    3. ``OMP_NUM_THREADS`` — the knob callers already use to cap BLAS;
-    4. ``1``.
-
-    The default stays 1 on purpose: oversubscribing pocketfft workers on a
-    restricted Slurm allocation thrashes, so threads must be asked for.
-    """
-    avail = _cpu_budget()
-    if _FFT_WORKERS_OVERRIDE is not None:
-        return max(1, min(_FFT_WORKERS_OVERRIDE, avail))
-    env = os.environ.get("TRACKING_FFT_WORKERS")
-    if env is not None:
-        if env.strip().lower() == "auto":
-            return avail
-        try:
-            return max(1, min(int(env), avail))
-        except ValueError:
-            pass
-    try:
-        return max(1, min(int(os.environ.get("OMP_NUM_THREADS", "1")), avail))
-    except ValueError:
-        return 1
-
-
-@contextmanager
-def fft_worker_pool(workers: int | None) -> Iterator[int]:
-    """Run the block with an explicit FFT worker count (``None`` = no change).
-
-    ``workers <= 0`` means "the whole CPU budget". The override is
-    process-wide (the tracking stack is single-threaded numpy/scipy), and is
-    restored on exit.
-    """
-    global _FFT_WORKERS_OVERRIDE
-    if workers is None:
-        yield fft_workers()
-        return
-    prev = _FFT_WORKERS_OVERRIDE
-    _FFT_WORKERS_OVERRIDE = _cpu_budget() if workers <= 0 else int(workers)
-    try:
-        yield fft_workers()
-    finally:
-        _FFT_WORKERS_OVERRIDE = prev
-
-
-def _fft_lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:
+def _lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:
     """FFT brickwall lowpass + decimate: keep ``|f| <= 0.45 * fs_env``.
 
     Zoom-IFFT: zero-pad ``x`` to ``stride * n_env``, complex-FFT along the
@@ -378,108 +274,22 @@ def _fft_lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:
     FFT at length ``n_env`` directly. Because the retained band fits inside
     the decimated Nyquist range, ``ifft(retained) / stride`` *is* the
     brickwall-filtered signal sampled at every ``stride``-th point — no
-    audio-rate inverse transform needed. Equivalent to ``_lp_decimate`` up
-    to the filter shape (brickwall vs butter-4) and edge handling (circular
-    zero-pad vs reflect), i.e. everywhere except near the segment edges.
+    audio-rate inverse transform needed.
 
-    The FFT runs in complex64 (envelope-precision is ~1e-7 relative, far
-    below the VK solve's noise floor; ``scipy.fft`` — unlike ``np.fft`` —
-    computes single-precision natively); phase/cumsum precision is the
-    *caller's* concern and must stay float64 upstream. Batched transforms
-    use ``OMP_NUM_THREADS`` workers (the process's declared CPU budget).
+    The transform is :func:`tracking.dsp.zoom_bands`, THE band-select kernel;
+    ``band_env = 0.45`` gives the half-band as a fraction of the envelope
+    grid, which is what makes the kept band independent of how the padded
+    length is expressed. The FFT runs in complex64 (envelope precision is
+    ~1e-7 relative, far below the VK solve's noise floor); phase/cumsum
+    precision is the *caller's* concern and must stay float64 upstream.
 
-    The transform is dispatched through
-    :func:`tracking.demod_backend.zoom_bands`, so this is the scipy *and*
-    the torch path; ``band_env = 0.45`` is the half-band as a fraction of
-    the envelope grid, which is what makes the kept band independent of how
-    the padded length is expressed.
+    The retained band always fits inside the decimated Nyquist range (for
+    ``band_env = 0.45``, ``floor(0.45 n_env) <= (n_env - 1) // 2`` for every
+    ``n_env``), so the zoom identity holds on degenerate grids too and no
+    short-clip special case is needed.
     """
-    if n_env < 8:  # degenerate grids: exact-but-tiny full inverse transform
-        from scipy import fft as sfft
-
-        w = fft_workers()
-        n_pad = stride * n_env
-        spec = cast(np.ndarray, sfft.fft(np.asarray(x, dtype=np.complex64), n=n_pad, axis=-1))
-        f = cast(np.ndarray, sfft.fftfreq(n_pad, d=1.0))  # cycles/sample at audio rate
-        spec[..., np.abs(f) > 0.45 / stride] = 0.0
-        full = cast(np.ndarray, sfft.ifft(spec, axis=-1, workers=w))
-        return full[..., ::stride].astype(np.complex128)
-    low, _ = zoom_bands(x, stride, n_env, band_env=0.45, workers=fft_workers())
+    low, _ = zoom_bands(x, stride, n_env, band_env=0.45)
     return low.astype(np.complex128)
-
-
-@lru_cache(maxsize=8)
-def _fir_stages(stride: int) -> tuple[tuple[int, np.ndarray], ...]:
-    """Polyphase FIR decimator cascade for ``lp_mode="fir"`` (cached per stride).
-
-    Band spec, expressed at the final envelope rate: passband edge
-    ``0.45 * fs_env`` (the brickwall cutoff of :func:`_fft_lp_decimate`),
-    stopband edge ``0.55 * fs_env`` — everything that could fold onto the
-    retained ``|f| <= 0.45 * fs_env`` band is attenuated. Kaiser design at
-    70 dB: aliases/leakage <= 3e-4 and passband ripple <= ~1e-3 — an order
-    of magnitude below the tracker's 1e-3 rev/s regression tolerance. A
-    single sharp filter at audio rate would need ~0.1*fs_env-wide transition
-    (thousands of taps), so for composite strides the decimation is
-    two-stage: a cheap wide-transition stage down to ``s2 * fs_env``
-    (``s2`` = smallest divisor of ``stride`` >= 4, so the intermediate rate
-    keeps the transition >= ~3 * fs_env wide), then the sharp stage at the
-    low rate — ~2M tap-multiplies per 20 s signal instead of ~14M.
-
-    All taps are odd-length symmetric (type-I linear phase): the group delay
-    is an integer number of input samples and ``resample_poly`` compensates
-    it exactly, so decimated sample ``n`` corresponds to audio sample
-    ``n * stride`` with zero phase shift — the phase-slope frequency update
-    stays unbiased (validated: < 1e-6 rad phase error on in-band tones).
-    """
-
-    def kaiser_lp(pass_c: float, stop_c: float) -> np.ndarray:
-        # cutoffs in cycles/sample of the stage input; kaiserord takes the
-        # transition width relative to Nyquist (0.5 cycles/sample)
-        numtaps, beta = kaiserord(70.0, 2.0 * (stop_c - pass_c))
-        window: Any = ("kaiser", beta)  # firwin stub over-narrows window to str
-        h = firwin(int(numtaps) | 1, pass_c + stop_c, window=window, fs=2.0)
-        return np.asarray(h, dtype=np.float32)
-
-    if stride <= 1:
-        return ()
-    s2 = next((d for d in range(4, stride) if stride % d == 0), None)
-    if s2 is None:  # small or prime stride: one sharp stage
-        return ((stride, kaiser_lp(0.45 / stride, 0.55 / stride)),)
-    s1 = stride // s2
-    return (
-        # stage 1 stopband: protect |f| <= 0.55*fs_env from folds around fs/s1
-        (s1, kaiser_lp(0.45 / stride, 1.0 / s1 - 0.55 / stride)),
-        (s2, kaiser_lp(0.45 / s2, 0.55 / s2)),
-    )
-
-
-def _fir_lp_decimate(x: np.ndarray, stride: int, n_env: int) -> np.ndarray:
-    """FIR-polyphase counterpart of :func:`_fft_lp_decimate` (``lp_mode="fir"``).
-
-    Same passband (``0.45 * fs_env``) and alignment (output sample ``n`` <->
-    input sample ``n * stride``, exactly delay-compensated); differs in the
-    Kaiser transition band 0.45–0.55 ``fs_env`` (vs brickwall) and in edge
-    handling (zero pad vs circular). Real and imaginary parts are filtered
-    as two stacked float32 rows: ``upfirdn`` promotes the taps to the signal
-    dtype, so feeding complex input directly would double the multiplies.
-    """
-    stages = _fir_stages(stride)
-    if not stages:  # stride 1: nothing to decimate, apply the brickwall only
-        return _fft_lp_decimate(x, stride, n_env)
-    y = np.empty((2, *x.shape), dtype=np.float32)
-    y[0] = x.real
-    y[1] = x.imag
-    for q, h in stages:
-        y = np.asarray(resample_poly(y, 1, q, axis=-1, window=h, padtype="constant"))
-    y = y[..., :n_env]
-    return (y[0] + 1j * y[1]).astype(np.complex128)
-
-
-def _lp_decimate_fast(x: np.ndarray, stride: int, n_env: int, lp_mode: str) -> np.ndarray:
-    """Dispatch the batched lowpass+decimate: FFT brickwall or FIR polyphase."""
-    if lp_mode == "fir":
-        return _fir_lp_decimate(x, stride, n_env)
-    return _fft_lp_decimate(x, stride, n_env)
 
 
 def _track_carriers(phase: np.ndarray, rotor: np.ndarray, k: np.ndarray, tracks, sign: float):
@@ -642,79 +452,41 @@ def demodulate(audio: np.ndarray, phase: np.ndarray, cfg: VKConfig) -> np.ndarra
 
     ``phase``: (M, T) instantaneous track phase in radians at audio rate
     (i.e. ``k_m * phi_rotor``). Returns ``z`` of shape ``(C, M, T_env)``:
-    ``LP[y * exp(-j phase_m)]`` low-passed (per ``cfg.lp_mode``) and
+    ``LP[y * exp(-j phase_m)]`` brickwall-lowpassed to ``0.45 * fs_env`` and
     decimated by the stride to the envelope grid.
+
+    The general form — an arbitrary phase per track. When the tracks ARE a
+    rotor-harmonic comb, :func:`_demod_tracks_fft` says so and the driver
+    takes one exp per rotor instead of one per track.
     """
     y = np.atleast_2d(np.asarray(audio, dtype=np.float64))
     phase = np.atleast_2d(np.asarray(phase, dtype=np.float64))
     if phase.shape[-1] != y.shape[-1]:
         raise ValueError(f"phase length {phase.shape[-1]} != audio length {y.shape[-1]}")
-    stride, fs_env = env_stride(cfg)
-    n_ch, n_t = y.shape
-    n_env = len(range(0, n_t, stride))
-    n_tracks = phase.shape[0]
-    z = np.empty((n_ch, n_tracks, n_env), dtype=np.complex128)
-    if cfg.lp_mode in ("fft", "fir"):
-        # Batched fast path: chunk tracks to bound the (C, m, T) complex64
-        # working set at ~128 MB. Phases are float64 (they reach ~1e7 rad —
-        # float32 drifts by radians); only the *demodulated* product drops to
-        # complex64 for the filtering stage.
-        y32 = y.astype(np.float32)
-        chunk = max(1, int(128e6 / (max(1, n_ch) * max(1, n_t) * 8)))
-        for lo in range(0, n_tracks, chunk):
-            hi = min(lo + chunk, n_tracks)
-            phasor = np.exp(-1j * phase[lo:hi]).astype(np.complex64)  # (m, T)
-            z[:, lo:hi] = _lp_decimate_fast(
-                y32[:, None, :] * phasor[None], stride, n_env, cfg.lp_mode
-            )
-        return z
-    sos = _lowpass_sos(cfg, fs_env)
-    for m in range(n_tracks):
-        z[:, m] = _lp_decimate(y * np.exp(-1j * phase[m])[None, :], sos, stride)
-    return z
+    stride, _ = env_stride(cfg)
+    n_env = len(range(0, y.shape[-1], stride))
+    on, _ = demod(y, phase=phase, stride=stride, n_env=n_env, band_env=0.45)
+    return on.astype(np.complex128)
 
 
 def _demod_tracks_fft(
     audio: np.ndarray, phase: np.ndarray, rotor: np.ndarray, k: np.ndarray, cfg: VKConfig
 ) -> np.ndarray:
-    """Structured fast path of :func:`demodulate` for rotor-harmonic tracks.
+    """Structured form of :func:`demodulate` for rotor-harmonic tracks.
 
-    Same result as ``demodulate(audio, k[:, None] * phase[rotor], cfg)`` with
-    ``lp_mode="fft"`` / ``"fir"``, but without materialising the ``(M, T)``
-    phase matrix or taking an exp per track: per-track conj-phasors come from
-    the :func:`_track_carriers` recursion and the demodulated products are
-    lowpass-decimated in memory-bounded batches.
-
-    Under the torch backend (and only for ``lp_mode="fft"``) the recursion,
-    the products and the transforms all run on the selected device
-    (:func:`tracking.demod_backend.demod_comb`), so the ``(C, T)`` clip plus
-    ``R`` fundamental phasors are the only traffic across the seam — instead
-    of one ``(C, chunk, T)`` complex64 buffer per flush.
+    Same result as ``demodulate(audio, k[:, None] * phase[rotor], cfg)``, but
+    without materialising the ``(M, T)`` phase matrix or taking an exp per
+    track: the driver gets the ``R`` conjugate fundamentals and builds every
+    harmonic carrier by the power recursion ``c_k = c_{k-1} c_1``.
     """
     y32 = np.asarray(np.atleast_2d(audio), dtype=np.float32)
     stride, _ = env_stride(cfg)
-    n_ch, n_t = y32.shape
-    n_env = len(range(0, n_t, stride))
-    n_tracks = len(rotor)
-    z = np.empty((n_ch, n_tracks, n_env), dtype=np.complex128)
-    if n_tracks == 0:
-        return z
-    if resolve()[0] == "torch" and cfg.lp_mode == "fft" and n_env >= 8:
-        c1 = np.exp(-1j * np.atleast_2d(phase)).astype(np.complex64)
-        on, _ = demod_comb(y32, c1, rotor, k, stride, n_env, band_env=0.45)
-        return on.astype(np.complex128)
-    chunk = max(1, int(128e6 / (max(1, n_ch) * max(1, n_t) * 8)))
-    buf = np.empty((n_ch, min(chunk, n_tracks), n_t), dtype=np.complex64)
-    idxs: list[int] = []
-    for m, carr in _track_carriers(phase, rotor, k, range(n_tracks), sign=-1.0):
-        np.multiply(y32, carr, out=buf[:, len(idxs)])
-        idxs.append(m)
-        if len(idxs) == buf.shape[1]:
-            z[:, idxs] = _lp_decimate_fast(buf, stride, n_env, cfg.lp_mode)
-            idxs = []
-    if idxs:
-        z[:, idxs] = _lp_decimate_fast(buf[:, : len(idxs)], stride, n_env, cfg.lp_mode)
-    return z
+    n_env = len(range(0, y32.shape[-1], stride))
+    if len(rotor) == 0:
+        return np.empty((y32.shape[0], 0, n_env), dtype=np.complex128)
+    c1 = np.exp(-1j * np.atleast_2d(phase)).astype(np.complex64)
+    on, _ = demod(y32, c1=c1, rotor=rotor, k=k, stride=stride, n_env=n_env, band_env=0.45)
+    return on.astype(np.complex128)
 
 
 def vk_envelopes(
@@ -770,10 +542,7 @@ def vk_envelopes(
     f_hi = min(cfg.f_max, 0.45 * cfg.fs)
     valid = (f >= cfg.f_min) & (f <= f_hi) & (r_dec[rotor] >= cfg.min_rps)
 
-    if cfg.lp_mode in ("fft", "fir"):
-        z = _demod_tracks_fft(y, phase, rotor, k, cfg)
-    else:
-        z = demodulate(y, k[:, None] * phase[rotor], cfg)
+    z = _demod_tracks_fft(y, phase, rotor, k, cfg)
     groups = _coupling_groups(f, valid, couple_hz)
 
     d2 = second_diff(n_env)
@@ -784,7 +553,6 @@ def vk_envelopes(
         np.asarray(d2td2.diagonal(2)),
     )
     eye = sparse.eye_array(n_env)
-    sos = _lowpass_sos(cfg, fs_env) if cfg.lp_mode == "iir" else None
 
     x = np.zeros_like(z)
     bw_track = np.full(len(rotor), bw)
@@ -799,8 +567,8 @@ def vk_envelopes(
     taper[:n_edge] = ramp
     taper[-n_edge:] = ramp[::-1]
     # Coupling pairs separated by at least this never beat inside the demod
-    # lowpass (cutoff 0.45 * fs_env, FIR stopband edge 0.55 * fs_env): their
-    # LP'd cross term is pure spectral leakage, ~1e-3 relative.
+    # lowpass (cutoff 0.45 * fs_env): their LP'd cross term is pure spectral
+    # leakage, ~1e-3 relative.
     prune_hz = 1.25 * 0.45 * fs_env
     for group in groups:
         g = len(group)
@@ -843,13 +611,12 @@ def vk_envelopes(
         pair_list = [
             pair for pair, sep in pair_sep.items() if not (cfg.prune_far_pairs and sep >= prune_hz)
         ]
-        # LP-decimated cross terms conj(c_m) c_n on the envelope grid. Fast
-        # modes: per-track carriers via the shared recursion (one exp per
-        # rotor), cross phasors as complex64 products, decimated in
-        # memory-bounded batches — the per-pair exp + audio-rate filter of
-        # the reference path dominated the whole solve for coupled groups.
+        # LP-decimated cross terms conj(c_m) c_n on the envelope grid:
+        # per-track carriers via the shared recursion (one exp per rotor),
+        # cross phasors as complex64 products, decimated in memory-bounded
+        # batches by THE band-select kernel.
         cross: dict[tuple[int, int], np.ndarray] = {}
-        if pair_list and sos is None:  # lp_mode "fft" / "fir"
+        if pair_list:
             carr = dict(_track_carriers(phase, rotor, k, group, sign=1.0))
             chunk_p = max(1, int(128e6 / (max(1, n_t) * 8)))
             cs = np.empty((min(chunk_p, len(pair_list)), n_t), dtype=np.complex64)
@@ -857,14 +624,9 @@ def vk_envelopes(
                 sub = pair_list[lo : lo + chunk_p]
                 for i, (a, b) in enumerate(sub):
                     np.multiply(carr[group[b]], np.conj(carr[group[a]]), out=cs[i])
-                gd = _lp_decimate_fast(cs[: len(sub)], stride, n_env, cfg.lp_mode)
+                gd = _lp_decimate(cs[: len(sub)], stride, n_env)
                 for i, pair in enumerate(sub):
                     cross[pair] = gd[i]
-        else:
-            for a, b in pair_list:
-                m, n = group[a], group[b]
-                dphi = k[n] * phase[rotor[n]] - k[m] * phase[rotor[m]]
-                cross[(a, b)] = _lp_decimate(np.exp(1j * dphi), cast(np.ndarray, sos), stride)
         z_g = z[:, group]  # (C, g, T_env)
         sol: np.ndarray | None = None
         if cfg.solver == "banded":
@@ -960,53 +722,47 @@ LS_BLOCK_S = 0.25
 LS_GAIN_MAX = 4.0
 
 
-#: Target working set of one gain-fit tile, in bytes. The fit streams five
-#: ``(C, tile)`` float64 products per tile and the tile is re-read six times,
-#: so the whole tile must stay in cache — with the clip-long arrays of the
-#: naive form every one of those passes is a trip to DRAM, which is what made
-#: this stage cost 7-11 s. A quarter of a megabyte keeps eight channels of a
-#: 0.25 s block resident; below that the per-call numpy dispatch starts to
-#: show, which is why the tile is at least one block.
+#: Target working set of one gain-fit tile, in bytes, on a CPU device. The fit
+#: streams five ``(C, tile)`` float64 products per tile and the tile is re-read
+#: six times, so the whole tile must stay in cache — with clip-long arrays
+#: every one of those passes is a trip to DRAM, which is what made this stage
+#: cost 7-11 s. A quarter of a megabyte keeps eight channels of a 0.25 s block
+#: resident; below that the per-call dispatch starts to show, which is why the
+#: tile is at least one block. A non-CPU device has no cache to block for and
+#: pays for kernel launches instead, so there the tile is the whole clip.
 LS_TILE_BYTES = 256 * 1024
 
 
-def _ls_upsample_into(
-    u: np.ndarray,
-    knot: np.ndarray,
-    dknot: np.ndarray,
-    ramp: np.ndarray,
-    stride: int,
-    s0: int,
-) -> None:
-    """Fill ``u`` ``(C, nc)`` with the linear envelope upsample of samples
-    ``s0 ... s0 + nc``.
+def _ls_upsample(
+    knot: Any, dknot: Any, ramp: Any, stride: int, s0: int, nc: int, n_env: int
+) -> Any:
+    """``(C, nc)`` linear envelope upsample of samples ``s0 ... s0 + nc``.
 
     ``knot`` is the complex64 envelope on its own grid and ``dknot`` its
     forward difference with a **zero last column**, so the "hold constant
     beyond the last knot" rule of :func:`vk_reconstruct` needs no special
     case: the tail knot contributes ``knot[-1] + 0 * ramp``. ``ramp`` is the
-    ``stride``-long float32 ramp ``[0, 1/stride, ...]``.
+    ``stride``-long ramp ``[0, 1/stride, ...]``.
 
     The aligned case (the tile starts on a knot and spans whole knots) is a
     pure broadcast over a ``(C, n_knots, stride)`` view — no gather, which is
     what makes the basis cheap; anything else falls back to an index take.
     """
-    n_ch, nc = u.shape
-    n_env = knot.shape[1]
+    import torch
+
+    n_ch = knot.shape[0]
     if stride > 0 and s0 % stride == 0 and nc % stride == 0 and (s0 + nc) // stride <= n_env:
         nk, j0 = nc // stride, s0 // stride
-        u3 = u.reshape(n_ch, nk, stride)
-        np.multiply(dknot[:, j0 : j0 + nk, None], ramp, out=u3)
-        u3 += knot[:, j0 : j0 + nk, None]
-        return
-    idx = np.arange(s0, s0 + nc)
-    ki = np.minimum(idx // stride, n_env - 1)
-    fr = (idx % stride).astype(np.float32) / np.float32(stride)
-    np.multiply(np.take(dknot, ki, axis=1), fr, out=u)
-    u += np.take(knot, ki, axis=1)
+        sl_k = knot[:, j0 : j0 + nk, None]
+        sl_d = dknot[:, j0 : j0 + nk, None]
+        return (sl_k + sl_d * ramp).reshape(n_ch, nc)
+    idx = torch.arange(s0, s0 + nc, device=knot.device)
+    ki = torch.clamp(idx // stride, max=n_env - 1)
+    fr = (idx % stride).to(torch.float32) / float(stride)
+    return knot[:, ki] + dknot[:, ki] * fr
 
 
-def _ls_project_np(
+def _ls_project(
     y: np.ndarray,
     env: Envelopes,
     *,
@@ -1016,129 +772,19 @@ def _ls_project_np(
     blk_env: np.ndarray,
     gain_max: float,
 ) -> tuple[np.ndarray, np.ndarray, int, list[np.ndarray]]:
-    """The cache-blocked numpy core of :func:`ls_project_envelopes`.
+    """THE gain-fit core of :func:`ls_project_envelopes`.
 
     Blocks are independent and channels are independent, so the per-track work
-    is a sweep over tiles of ``LS_TILE_BYTES``: the basis is built into
-    preallocated buffers, and all five block sums plus the residual update
-    happen tile-local. The loop over tracks stays — it is the sequential
-    matching pursuit itself.
+    is a sweep over tiles of :data:`LS_TILE_BYTES` (one whole-clip tile off
+    CPU): the basis is built into the tile, and all five block sums plus the
+    residual update happen tile-local. The loop over tracks stays — it is the
+    sequential matching pursuit itself. The carrier recursion runs on the
+    device too, so the only traffic across the seam is the clip, the envelopes
+    and the ``R`` fundamental phases, and everything that would force a host
+    sync inside the track loop (the "track is all zero" test, the clip
+    counter) is either precomputed or accumulated on the device.
 
     Returns ``(x_new, resid, n_clipped, per-track |g|)``.
-    """
-    n_ch, n_t = y.shape
-    n_blocks = len(starts)
-    resid = y.copy()
-    x_new = env.x.copy()
-
-    # Tiles: whole blocks, sized to keep one float64 working set in cache.
-    per_block = max(1, n_ch * block * 8)
-    tile_blocks = max(1, min(n_blocks, LS_TILE_BYTES // per_block))
-    tiles = [
-        (b0, min(b0 + tile_blocks, n_blocks), b0 * block, min((b0 + tile_blocks) * block, n_t))
-        for b0 in range(0, n_blocks, tile_blocks)
-    ]
-    n_tile = min(n_t, tile_blocks * block)
-    ubuf = np.empty((n_ch, n_tile), dtype=np.complex64)  # the complex basis u
-    ufloat = ubuf.view(np.float32)  # its (Re, Im) pairs
-    pbuf = np.empty((n_ch, n_tile), dtype=np.float64)  # in-phase basis
-    qbuf = np.empty((n_ch, n_tile), dtype=np.float64)  # quadrature basis
-    prod = np.empty((n_ch, n_tile), dtype=np.float64)  # product scratch
-    prod2 = np.empty((n_ch, n_tile), dtype=np.float64)
-    ramp = np.arange(stride, dtype=np.float32) / np.float32(stride)
-
-    gains: list[np.ndarray] = []
-    n_clipped = 0
-    for m, carr in _track_carriers(
-        env.phase[:, :n_t], env.rotor, env.k, range(env.x.shape[1]), 1.0
-    ):
-        xm = env.x[:, m]
-        if not xm.any():  # masked / never-solved tracks stay zero
-            continue
-        knot = xm.astype(np.complex64)
-        dknot = np.zeros_like(knot)
-        dknot[:, :-1] = np.diff(knot, axis=-1)
-        g_all = np.empty((n_ch, n_blocks), dtype=np.complex128)
-        mag_all = np.empty((n_ch, n_blocks))
-
-        for b0, b1, s0, s1 in tiles:
-            nb, nc = b1 - b0, s1 - s0
-            u = ubuf[:, :nc]
-            _ls_upsample_into(u, knot, dknot, ramp, stride, s0)
-            u *= carr[s0:s1]
-            uv = ufloat[:, : 2 * nc].reshape(n_ch, nc, 2)
-            p, q = pbuf[:, :nc], qbuf[:, :nc]
-            np.copyto(p, uv[..., 0])  # in-phase basis
-            np.negative(uv[..., 1], out=q)  # quadrature basis
-
-            seg = starts[b0:b1] - s0
-            t, rs = prod[:, :nc], resid[:, s0:s1]
-            np.multiply(p, p, out=t)
-            app = np.add.reduceat(t, seg, axis=-1)
-            np.multiply(q, q, out=t)
-            aqq = np.add.reduceat(t, seg, axis=-1)
-            np.multiply(p, q, out=t)
-            apq = np.add.reduceat(t, seg, axis=-1)
-            np.multiply(rs, p, out=t)
-            bp = np.add.reduceat(t, seg, axis=-1)
-            np.multiply(rs, q, out=t)
-            bq = np.add.reduceat(t, seg, axis=-1)
-
-            det = app * aqq - apq * apq
-            # Degenerate blocks (the track is invalid / silent there) keep
-            # g = 1: the component is zero anyway, so the gain cannot matter.
-            ok = det > _TINY * np.maximum(app * aqq, _TINY)
-            a = np.where(ok, (aqq * bp - apq * bq) / np.where(ok, det, 1.0), 1.0)
-            b = np.where(ok, (app * bq - apq * bp) / np.where(ok, det, 1.0), 0.0)
-            g = a + 1j * b
-            mag = np.abs(g)
-            clip = mag > gain_max
-            n_clipped += int(clip.sum())
-            g = np.where(clip, g * (gain_max / np.maximum(mag, _TINY)), g)
-            g_all[:, b0:b1] = g
-            mag_all[:, b0:b1] = np.minimum(mag, gain_max)  # the gain applied
-
-            if nc == nb * block:  # whole blocks: broadcast, no per-sample gather
-                shp = (n_ch, nb, block)
-                ga, gb = np.real(g)[:, :, None], np.imag(g)[:, :, None]
-                pv, qv, rv = p.reshape(shp), q.reshape(shp), rs.reshape(shp)
-                tv, sv = t.reshape(shp), prod2[:, :nc].reshape(shp)
-            else:  # short trailing tile
-                idx = np.minimum(np.arange(nc) // block, nb - 1)
-                ga, gb = np.real(g)[:, idx], np.imag(g)[:, idx]
-                pv, qv, rv, tv, sv = p, q, rs, t, prod2[:, :nc]
-            np.multiply(pv, ga, out=tv)
-            np.multiply(qv, gb, out=sv)
-            tv += sv
-            rv -= tv
-
-        x_new[:, m] = env.x[:, m] * g_all[:, blk_env]
-        gains.append(mag_all)
-    return x_new, resid, n_clipped, gains
-
-
-def _ls_project_torch(
-    y: np.ndarray,
-    env: Envelopes,
-    *,
-    stride: int,
-    block: int,
-    starts: np.ndarray,
-    blk_env: np.ndarray,
-    gain_max: float,
-) -> tuple[np.ndarray, np.ndarray, int, list[np.ndarray]]:
-    """The device-agnostic torch core — same algorithm, one tile per clip.
-
-    A GPU has no cache to block for and pays for kernel launches instead, so
-    this path drops the tiling and runs every stage clip-long. The carrier
-    recursion of :func:`_track_carriers` runs on the device too, so the only
-    traffic across the seam is the clip, the envelopes and the ``R``
-    fundamental phases. Everything that would force a host sync inside the
-    track loop (the "track is all zero" test, the clip counter) is either
-    precomputed or accumulated on the device.
-
-    Not bit-identical to :func:`_ls_project_np` — the block reductions sum in
-    a different order — but the same arithmetic in the same dtypes.
     """
     import torch
 
@@ -1147,16 +793,25 @@ def _ls_project_torch(
     n_blocks = len(starts)
     n_pad = n_blocks * block
     n_tracks = int(env.x.shape[1])
+    n_env = int(env.x.shape[-1])
 
+    # Tiles: whole blocks, sized to keep one float64 working set in cache.
+    per_block = max(1, n_ch * block * 8)
+    tile_blocks = n_blocks
+    if torch.device(dev).type == "cpu":
+        tile_blocks = max(1, min(n_blocks, LS_TILE_BYTES // per_block))
+    tiles = [
+        (b0, min(b0 + tile_blocks, n_blocks), b0 * block, min((b0 + tile_blocks) * block, n_t))
+        for b0 in range(0, n_blocks, tile_blocks)
+    ]
+    n_tile = tile_blocks * block
+
+    # The pad tail of p/q stays zero for good: only the real samples are ever
+    # written, so a short trailing block sums exactly the samples that exist.
+    pbuf = torch.zeros((n_ch, n_tile), dtype=torch.float64, device=dev)
+    qbuf = torch.zeros((n_ch, n_tile), dtype=torch.float64, device=dev)
     resid = torch.zeros((n_ch, n_pad), dtype=torch.float64, device=dev)
     resid[:, :n_t] = torch.from_numpy(np.ascontiguousarray(y)).to(dev)
-    rv = resid.view(n_ch, n_blocks, block)
-    # The pad tail of p/q stays zero for good: only [:, :n_t] is ever written,
-    # so a short trailing block sums exactly the samples that exist.
-    pbuf = torch.zeros((n_ch, n_pad), dtype=torch.float64, device=dev)
-    qbuf = torch.zeros((n_ch, n_pad), dtype=torch.float64, device=dev)
-    pv = pbuf.view(n_ch, n_blocks, block)
-    qv = qbuf.view(n_ch, n_blocks, block)
 
     ramp = torch.arange(stride, device=dev, dtype=torch.float32) / float(stride)
     phase = torch.from_numpy(np.ascontiguousarray(env.phase[:, :n_t])).to(dev)
@@ -1164,8 +819,6 @@ def _ls_project_torch(
     xs = torch.from_numpy(np.ascontiguousarray(env.x)).to(dev)
     x_new = xs.clone()
     blk = torch.from_numpy(np.ascontiguousarray(blk_env)).to(dev)
-    ones = torch.ones((n_ch, n_blocks), dtype=torch.float64, device=dev)
-    zeros = torch.zeros_like(ones)
     n_clip = torch.zeros((), dtype=torch.int64, device=dev)
 
     active = [m for m in range(n_tracks) if env.x[:, m].any()]
@@ -1184,30 +837,47 @@ def _ls_project_torch(
         knot = xs[:, m].to(torch.complex64)
         dknot = torch.zeros_like(knot)
         dknot[:, :-1] = knot[:, 1:] - knot[:, :-1]
-        u = (knot[:, :, None] + dknot[:, :, None] * ramp).reshape(n_ch, -1)[:, :n_t]
-        u = u * carr[:n_t]
-        pbuf[:, :n_t] = u.real.to(torch.float64)
-        qbuf[:, :n_t] = -u.imag.to(torch.float64)
+        g_re = torch.empty((n_ch, n_blocks), dtype=torch.float64, device=dev)
+        g_im = torch.empty_like(g_re)
+        mag_all = torch.empty_like(g_re)
 
-        app = (pv * pv).sum(-1)
-        aqq = (qv * qv).sum(-1)
-        apq = (pv * qv).sum(-1)
-        bp = (rv * pv).sum(-1)
-        bq = (rv * qv).sum(-1)
-        det = app * aqq - apq * apq
-        ok = det > _TINY * torch.clamp(app * aqq, min=_TINY)
-        safe = torch.where(ok, det, ones)
-        a = torch.where(ok, (aqq * bp - apq * bq) / safe, ones)
-        b = torch.where(ok, (app * bq - apq * bp) / safe, zeros)
-        mag = torch.hypot(a, b)
-        clip = mag > gain_max
-        n_clip += clip.sum()
-        shrink = torch.where(clip, gain_max / torch.clamp(mag, min=_TINY), ones)
-        a, b = a * shrink, b * shrink
+        for b0, b1, s0, s1 in tiles:
+            nb, nc = b1 - b0, s1 - s0
+            u = _ls_upsample(knot, dknot, ramp, stride, s0, nc, n_env) * carr[s0:s1]
+            pbuf[:, :nc] = u.real.to(torch.float64)
+            qbuf[:, :nc] = -u.imag.to(torch.float64)
+            if nc < nb * block:  # short trailing tile: the pad tail must be 0
+                pbuf[:, nc : nb * block] = 0.0
+                qbuf[:, nc : nb * block] = 0.0
+            pv = pbuf[:, : nb * block].view(n_ch, nb, block)
+            qv = qbuf[:, : nb * block].view(n_ch, nb, block)
+            rv = resid[:, b0 * block : b1 * block].view(n_ch, nb, block)
 
-        rv -= a.unsqueeze(-1) * pv + b.unsqueeze(-1) * qv
-        x_new[:, m] = xs[:, m] * torch.complex(a, b)[:, blk]
-        mags.append(torch.clamp(mag, max=gain_max))
+            app = (pv * pv).sum(-1)
+            aqq = (qv * qv).sum(-1)
+            apq = (pv * qv).sum(-1)
+            bp = (rv * pv).sum(-1)
+            bq = (rv * qv).sum(-1)
+            det = app * aqq - apq * apq
+            # Degenerate blocks (the track is invalid / silent there) keep
+            # g = 1: the component is zero anyway, so the gain cannot matter.
+            ok = det > _TINY * torch.clamp(app * aqq, min=_TINY)
+            ones = torch.ones_like(det)
+            safe = torch.where(ok, det, ones)
+            a = torch.where(ok, (aqq * bp - apq * bq) / safe, ones)
+            b = torch.where(ok, (app * bq - apq * bp) / safe, torch.zeros_like(det))
+            mag = torch.hypot(a, b)
+            clip = mag > gain_max
+            n_clip += clip.sum()
+            shrink = torch.where(clip, gain_max / torch.clamp(mag, min=_TINY), ones)
+            a, b = a * shrink, b * shrink
+
+            rv -= a.unsqueeze(-1) * pv + b.unsqueeze(-1) * qv
+            g_re[:, b0:b1], g_im[:, b0:b1] = a, b
+            mag_all[:, b0:b1] = torch.clamp(mag, max=gain_max)  # the gain applied
+
+        x_new[:, m] = xs[:, m] * torch.complex(g_re, g_im)[:, blk]
+        mags.append(mag_all)
 
     gains = [g.cpu().numpy() for g in mags]
     return (
@@ -1248,10 +918,8 @@ def ls_project_envelopes(
     — / **0.892** on the takeoff window w00, where the open-loop peel injects
     two orders of magnitude more energy than the clip holds.
 
-    Two cores, selected by :func:`tracking.demod_backend.resolve` like every
-    other stage: :func:`_ls_project_np` (default, cache-blocked, bit-identical
-    to the array-at-a-time form it replaced) and :func:`_ls_project_torch`
-    (device-agnostic, clip-long, for the GPU).
+    The core is :func:`_ls_project` — one implementation, cache-blocked on a
+    CPU device and clip-long on any other.
 
     Returns ``(envelopes, diag)``; the input is not mutated.
     """
@@ -1269,8 +937,7 @@ def ls_project_envelopes(
     # subtracted inside a block is exactly what was fitted there.
     blk_env = np.minimum(np.arange(n_env) * stride // block, n_blocks - 1)
 
-    core = _ls_project_torch if resolve()[0] == "torch" else _ls_project_np
-    x_new, resid, n_clipped, gains = core(
+    x_new, resid, n_clipped, gains = _ls_project(
         y[:, :n_t],
         env,
         stride=stride,
@@ -1301,10 +968,8 @@ def ls_project_envelopes(
 
 
 def _demod_residual(resid: np.ndarray, env: Envelopes, cfg: VKConfig) -> np.ndarray:
-    """Demodulate a residual into every track's band (mode-dispatched)."""
-    if cfg.lp_mode in ("fft", "fir"):
-        return _demod_tracks_fft(resid, env.phase, env.rotor, env.k, cfg)
-    return demodulate(resid, env.k[:, None] * env.phase[env.rotor], cfg)
+    """Demodulate a residual into every track's band."""
+    return _demod_tracks_fft(resid, env.phase, env.rotor, env.k, cfg)
 
 
 def k_schedule(cfg: VKConfig) -> list[int]:
