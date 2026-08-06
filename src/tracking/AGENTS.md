@@ -160,13 +160,17 @@ Each application is `pi_kalman_arm_stage` — `make_peels` at the current track,
 Phase 6a of the same campaign added the JUDGE: `fitness.py` scores a candidate trajectory at fixed
 degrees of freedom, with held-out harmonics/channels/time and all four section-B controls
 (`docs/experiments/telemetry-fitness.md`). Phase 6b added the FITTER it judges:
-`telemetry_refit.py`. Phase 6e added a second correction on top of the scale — a TIME offset,
-measured by `scripts/telemetry_timeshift.py` with no library change: DREGON's telemetry runs
-EARLY by -42 ms [-85,-31], which excludes a tachometer reporting lag by sign, and the
-per-microphone differential the propagation predicts (0.156 ms) is ~500x below what the ridge
-resolves. The inter-mic delay IS measurable — by the cross-channel phase of the comb rather
-than by a rate shift — and reads slope 1.013 against the michaels rig geometry. The two never call each other's verdict — the fitter's only use of `fitness`
+`telemetry_refit.py`. The two never call each other's verdict — the fitter's only use of `fitness`
 is `residual_decompose`, which is a reading of `fit - telemetry`, not a score.
+
+Phase 6e added a second correction on top of the scale — a TIME offset, measured by
+`scripts/telemetry_timeshift.py` with no library change. DREGON's telemetry runs EARLY by
+-42 ms [-85,-31], which excludes a tachometer reporting lag by sign; the shift and the scale
+mask each other, so a one-axis sweep reads +158 ms instead. The per-microphone differential the
+propagation predicts (0.156 ms) is ~500x below what the ridge resolves, and the measured per-mic
+scatter says so. The inter-mic delay IS measurable — by the cross-channel phase of the comb
+rather than by a rate shift — and reads slope 1.013 against the michaels rig geometry, while
+DREGON's twin pair leaves too few harmonics for the same estimator to say anything.
 
 Three things about the fitter that will bite a caller who does not read them:
 
