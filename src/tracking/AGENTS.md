@@ -112,18 +112,53 @@ The one-thread column is where torch was expected to lose — its per-call tenso
 TRACKING_DEVICE=cuda python <whatever>
 ```
 
-Verified **before** the consolidation on `uni-gpushort` (job `bash-01dc95`, one FFT worker for the scipy leg), same frozen clip:
+Re-measured **after** the consolidation on `uni-gpushort` (job `r3-gpu-fdbf49`, 2026-08-06), same
+frozen clip, `--bench --bench-devices cpu,cuda --bench-workers 1,4 --bench-vk`. All four columns
+come from ONE job on ONE node, so read across a row and never against the laptop table above — the
+node's CPU is the slower machine.
 
-| Stage | scipy / CPU | torch / cuda | speedup |
-|-------|-------------|--------------|---------|
-| `zoom_lp_decimate` (8, T) | 16.8 ms | 3.8 ms | 4.4x |
-| `_demod_bank` K=40 | 849 ms | 24.4 ms | **35x** |
-| `pi_kalman_refine` (full) | 5.85 s | 0.47 s | **12.3x** |
-| `vk_envelopes` | 26.0 s | 11.1 s | 2.3x |
-| `ls_project_envelopes` | 4.76 s | 0.44 s | **10.9x** |
-| one peeled application, end to end | 32.5 s | 13.9 s | 2.3x |
+| Stage | cpu, 1 thr | cpu, 4 thr | cuda, 1 thr | cuda, 4 thr | cuda vs best cpu |
+|-------|-----------|-----------|-------------|-------------|------------------|
+| `zoom_lp_decimate` (8, T) | 17.3 ms | 5.7 ms | 3.4 ms | 3.3 ms | 1.7x |
+| `_demod_bank` K=40 | 830.6 ms | 299.0 ms | 54.6 ms | 16.4 ms | **18x** |
+| `vk_envelopes` | 23.5 s | 13.1 s | 10.7 s | 10.8 s | 1.2x |
+| `ls_project_envelopes` | 5.85 s | 5.83 s | 264 ms | 183 ms | **32x** |
+| `pi_kalman_refine` (full) | 6.14 s | 2.26 s | 415 ms | 396 ms | **5.7x** |
 
-The demod itself is done: 35x on the bank, and `pi_kalman_refine` — the 16-min-per-arm call issue #16 opened on — is under half a second. What is left below 3x is a stage the transform never dominated. This table **has not been re-measured since the consolidation**; re-running `--self-check --device cuda` and this bench on a GPU is the R3 pass's job.
+The consolidation did not cost the GPU anything. Against the pre-consolidation cuda leg (job
+`bash-01dc95`, same node class) every stage held or improved: `_demod_bank` 24.4 -> 16.4 ms,
+`pi_kalman_refine` 0.47 -> 0.40 s, `ls_project_envelopes` 0.44 -> 0.18 s, `vk_envelopes`
+11.1 -> 10.7 s. That job's scipy/CPU column also lands on top of this job's torch/CPU column
+(16.8 / 849 ms / 5.85 / 26.0 / 4.76 s against 17.3 / 831 ms / 6.14 / 23.5 / 5.85 s), which is the
+laptop table's conclusion measured a second time: torch on CPU is the scipy path's equal, so
+deleting the second implementation cost nothing.
+
+Two things this run measured that the old one could not, both from the thread columns:
+
+- **The peel is memory bound, and now it is proven.** `ls_project_envelopes` is the one stage whose
+  CPU time does not move with thread count at all (5.85 s -> 5.83 s). Its 32x on a GPU is bandwidth,
+  not arithmetic — exactly what the peel section below claims, and the reason no demod knob touches it.
+- **`vk_envelopes` is now the whole cost, and the transform is not why.** On cuda it too ignores the
+  thread count (10.7 s -> 10.8 s) and it is **82 %** of one end-to-end application (11.3 s of 13.8 s
+  in the self-check leg). What is left in it is the scipy banded Cholesky plus the numpy cross-phasor
+  host work — the two terms named under "What is left after the demod", neither of which is a
+  transform. Any further GPU work on this stack starts there.
+
+The same job ran `--self-check --device cuda`, which is how the CUDA path's CORRECTNESS is verified
+(the cpu/exact and cuda legs in one process). It **passed**, so the R1/R2 consolidation introduced no
+device bug at the numpy in/out seams or in the device-keyed caches:
+
+| array | max abs | of scale | verdict |
+|-------|---------|----------|---------|
+| `env_z` | 3.44e-8 | 2.21e-7 | close |
+| `env_x` | 1.40e-6 | 3.37e-6 | close |
+| `env_x_ls` | 1.07e-6 | 9.05e-6 | close |
+| `r_next` | 5.10e-6 rev/s | 5.52e-8 | close |
+| `env_valid` | 0 flips | — | identical |
+| `env_bw_track`, `env_t_env`, `r0` | 0 | — | identical |
+
+End to end in that leg: 28.05 s on cpu/exact against 13.79 s on cuda (`vk_envelopes` 16.5 -> 11.3 s,
+`ls_project_envelopes` 5.88 -> 0.37 s).
 
 ### The peel (`ls_project_envelopes`)
 
