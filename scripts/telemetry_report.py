@@ -72,9 +72,16 @@ def group(rows: list[dict[str, Any]], *keys: str) -> dict[tuple, list[dict[str, 
     return out
 
 
+def short_candidate(spec: str) -> str:
+    """``file:<out>/traj/<arm>/{key}.npz:r_fit`` -> ``fit:<arm>``; others unchanged."""
+    return f"fit:{spec.split('/traj/')[1].split('/')[0]}" if "/traj/" in spec else spec
+
+
 def _field(row: dict[str, Any], name: str) -> Any:
     if name == "dataset":
         return dataset_of(row)
+    if name == "candidate":
+        return short_candidate(str(row.get("candidate", "")))
     if name == "group":  # dregon | fly124-cruise | fly124-warmup
         ds = dataset_of(row)
         return ds if ds == DREGON else f"{ds}-{row.get('regime', '?')}"
@@ -591,7 +598,7 @@ def main() -> None:
     prof = load_units(Path(args.profile)) if Path(args.profile).exists() else []
 
     arms = sorted({str(r.get("arm")) for r in refit})
-    cands = sorted({str(r.get("candidate")) for r in fit})
+    cands = sorted({short_candidate(str(r.get("candidate"))) for r in fit})
     report = {
         "provenance": {
             "n_windows": len({r["key"] for r in refit}),
