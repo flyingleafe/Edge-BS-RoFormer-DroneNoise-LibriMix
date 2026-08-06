@@ -44,8 +44,8 @@ Primary invocations of the scripts this replaces:
         --in 'results/se_eval/noisy__SE-valid-harmonic__clip.csv' \\
         --rows category --cols input_snr --agg count
 
-* ``phase_noise_cov/report.py`` (WP18 weight-curve table from
-  ``summary.json``)::
+* the WP18 weight-curve table (from the campaign's ``summary.json``; the
+  campaign's own reporter is deleted, this call replaces it)::
 
     python scripts/table.py \\
         --in results/phase_noise_covariance/summary.json \\

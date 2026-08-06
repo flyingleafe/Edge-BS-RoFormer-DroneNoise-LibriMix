@@ -62,9 +62,11 @@ log a_i + log a_j`` — ``beta = 0`` is the delay-like model this module tests,
 ``beta = -1`` would instead mean a common *phase* (not delay) disturbance.
 
 Pure numpy/scipy, CPU.  The measurement's data side — which recordings and
-which time windows to run it over — is injected by
-``scripts/phase_noise_cov/windows.py`` (the tracking-purity split of
-``tracking.protocols``).
+which time windows to run it over — is injected by the caller.  The WP18
+campaign's own window builder was retired with the campaign (its drivers went
+first, which left it with no caller), so a new caller must supply its own
+windows, for example against ``tracking.protocols``.  The measured numbers are
+recorded in ``docs/experiments/rps-refine-precision.md``.
 """
 
 from __future__ import annotations

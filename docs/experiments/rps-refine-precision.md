@@ -1666,10 +1666,17 @@ rank-one plus diagonal, `Σ = σ_J²·11ᵀ + diag(v_k)`, with a fused variance
 `1/W + σ_J²` — an irreducible floor, and a saturation harmonic `k*`.
 
 Measured, not assumed. Estimator `tracking/phase_noise.py` (+
-`tests/tracking/test_phase_noise.py`), window/data side
-`scripts/phase_noise_cov/windows.py`, results `results/phase_noise_covariance/`
+`tests/tracking/test_phase_noise.py`), results `results/phase_noise_covariance/`
 (job `python-47e101`, 12 min, uni-cpu) and
 `results/phase_noise_covariance_framegrid/` (`python-f86558`).
+
+> The campaign's data side (`scripts/phase_noise_cov/`) is deleted. Its three
+> drivers went in an earlier consolidation pass, which left `windows.py` — the
+> window builder — with no caller and no way to reproduce anything on its own,
+> so R3 removed the directory. The measurement stands: the estimator is a
+> library module with tests, the numbers below are the record, and the results
+> directories are intact on disk. Rebuilding the DREGON / Michael's / synthetic
+> window sets would mean writing a new loader against `tracking.protocols`.
 
 **Method.** Per (window, rotor, channel): demodulate `k = 1..30` along the
 window's best trajectory, brickwall to the arm's band `B_k`, form
