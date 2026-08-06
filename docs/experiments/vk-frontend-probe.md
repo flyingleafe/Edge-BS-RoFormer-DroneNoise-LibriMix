@@ -2,7 +2,7 @@
 
 **Status:** done (2026-08-06, one session) · GitHub issue #15 · driver
 `scripts/vk_frontend_probe.py` · raw JSON `results/vk_frontend_probe/{b0_1.0,b0_0.35}/`
-· job `bash-abb74e` (uni-cpu) plus two local runs.
+· job `bash-abb74e` (uni-cpu, succeeded) plus two local runs.
 
 ## Question
 
@@ -68,8 +68,8 @@ K = 80:
 
 | | wide (guard off) | peel (1 Hz) | the demodulation it would replace |
 |---|---|---|---|
-| DREGON w00 | **1106 s** (node) | 56 s | `demod_bank` K=80, 4 rotors: **9.8 s** |
-| DREGON w01 | 151-195 s | 29-34 s | (2.45 s per rotor, 1 FFT worker) |
+| DREGON w00 | **1106 / 1255 s** (node) | 56 s | `demod_bank` K=80, 4 rotors: **9.8 s** |
+| DREGON w01 | 151-198 s | 29-34 s | (2.45 s per rotor, 1 FFT worker) |
 | FLY124 w02 | 406-606 s | 41 s | |
 
 Peak RSS 13-16 GB for the wide solve. So the coupled front end costs **15x to
@@ -78,60 +78,60 @@ phase-resampling route remains the cost lever; this is not one.
 
 **3. At the campaign's capture there is almost no interferer-free harmonic.**
 Over the three windows, `b0 = 1 rev/s` leaves **8 clean tracks out of 960**
-(all FLY124, k <= 5); `b0 = 0.35` leaves 95. **No** clean track has k >= 20 in
-any window at either setting. The "they should agree where nothing is in band"
+(all FLY124, k <= 5); `b0 = 0.35` leaves 95, of which 93 pass admission.
+**No** clean track has k >= 20 in any window at either setting. The "they should agree where nothing is in band"
 test only has a sample at all at the narrower capture, and only at low k.
 
 ## The comparison
 
-Pooled over the two cruise windows (DREGON w01 + FLY124 w02), medians over
-tracks, rev/s. `med|A-z|` and `corr` compare the arm against the demodulated
-observation; `|A|/|z|` is the amplitude ratio (nominal **2**, since `x ~ 2z`).
+Pooled over the three windows, medians over tracks, rev/s. `med|A-z|` and
+`corr` compare the arm against the demodulated observation; `|A|/|z|` is the amplitude ratio (nominal **2**, since `x ~ 2z`).
 
-`b0 = 0.35 rev/s`, 613 admitted tracks:
+`b0 = 0.35 rev/s`, 898 admitted tracks:
 
 | set | n | est | cons_err | mad_dr | hp_frac | med\|A-z\| | corr | \|A\|/\|z\| |
 |---|---|---|---|---|---|---|---|---|
-| clean | 86 | demod | 0.0204 | 0.173 | 0.488 | — | — | 1 |
-| | | **wide** | 0.0226 | 0.188 | 0.520 | 0.131 | 0.126 | **2.02** |
-| | | peel | 0.0078 | 0.053 | 0.237 | 0.119 | 0.039 | 1.06 |
-| contested | 430 | demod | 0.0057 | 0.197 | 0.778 | — | — | 1 |
-| | | **wide** | 0.0066 | 0.176 | 0.818 | 0.215 | 0.004 | **165** |
-| | | peel | 0.0017 | 0.006 | 0.270 | 0.134 | 0.001 | 0.37 |
-| contested, k >= 45 | 261 | demod | 0.0048 | 0.204 | 0.801 | — | — | 1 |
-| | | **wide** | 0.0058 | 0.201 | 0.837 | 0.229 | 0.000 | **178** |
+| clean | 93 | demod | 0.0202 | 0.174 | 0.504 | — | — | 1 |
+| | | **wide** | 0.0211 | 0.186 | 0.513 | 0.132 | 0.124 | **2.03** |
+| | | peel | 0.0077 | 0.047 | 0.238 | 0.120 | 0.037 | 1.07 |
+| contested | 677 | demod | 0.0068 | 0.198 | 0.768 | — | — | 1 |
+| | | **wide** | 0.0079 | 0.167 | 0.810 | 0.212 | 0.004 | **179** |
+| | | peel | 0.0016 | 0.006 | 0.264 | 0.135 | 0.002 | 0.38 |
+| contested, k >= 45 | 382 | demod | 0.0057 | 0.208 | 0.795 | — | — | 1 |
+| | | **wide** | 0.0063 | 0.200 | 0.835 | 0.231 | 0.000 | **210** |
 
-`b0 = 1 rev/s`, 265 tracks: clean (8, FLY124) wide `|A|/|z|` **1.93**,
-corr **0.179**, cons_err 0.092 -> 0.022; contested (209) `|A|/|z|` **182**,
-corr 0.006; contested k >= 45 (15) `|A|/|z|` 180, corr 0.002, cons_err
-0.231 -> 0.060. On w00 separately (100 contested tracks) the coupled arm is
-**worse** on the accuracy criterion: cons_err 0.0735 -> 0.0998, with
-`|A|/|z|` = **850**.
+`b0 = 1 rev/s`, 365 tracks: clean (8, FLY124) wide `|A|/|z|` **1.93**,
+corr **0.179**, cons_err 0.092 -> 0.022; contested (309) `|A|/|z|` **223**,
+corr 0.007; contested k >= 45 (26) `|A|/|z|` 282, corr 0.003, cons_err
+0.229 -> 0.077. Per window the coupled arm is **worse** on the accuracy
+criterion wherever the reference is not itself near-degenerate: w00 at
+`b0 = 1` cons_err 0.0735 -> 0.0998 with `|A|/|z|` = **850**, w00 at
+`b0 = 0.35` 0.0091 -> 0.0103 with `|A|/|z|` = **1156**.
 
 Read it in this order:
 
 - **The issue's qualitative prediction holds.** On clean harmonics the two
-  front ends agree within their own noise (`med|A-z|` 0.131 vs each
-  estimator's own MAD 0.173 / 0.188). On contested ones they diverge beyond it
-  (0.215 vs 0.176-0.197). Divergence is exactly where an interferer is.
+  front ends agree within their own noise (`med|A-z|` 0.132 vs each
+  estimator's own MAD 0.174 / 0.186). On contested ones they diverge beyond it
+  (0.212 vs 0.167-0.198). Divergence is exactly where an interferer is.
 - **The divergence is a cancelling mode, not explaining-away.** Where they
-  diverge, the coupled envelope's amplitude is **165x** the demodulated one
-  (850x on w00) and its rate observation is **uncorrelated** with the data
-  (corr 0.004, and 0.000 at k >= 45). This is the twin-collapse failure
+  diverge, the coupled envelope's amplitude is **179x** the demodulated one
+  (up to 1156x on w00) and its rate observation is **uncorrelated** with the
+  data (corr 0.004, and 0.000 at k >= 45). This is the twin-collapse failure
   `VKConfig.sep_bw_factor`'s own docstring predicts, reproduced by switching
   that clamp off. Issue risk 5, confirmed.
-- **It buys no accuracy.** Contested cons_err 0.0057 -> 0.0066 at `b0 = 0.35`,
+- **It buys no accuracy.** Contested cons_err 0.0068 -> 0.0079 at `b0 = 0.35`,
   and 0.0735 -> 0.0998 on w00 at `b0 = 1`. The apparent win at
-  `b0 = 1, k >= 45` (0.231 -> 0.060) is shrinkage: the degenerate solve reports
+  `b0 = 1, k >= 45` (0.229 -> 0.077) is shrinkage: the degenerate solve reports
   `pp_dr ~ 0` for every track, which scores well against a fused reference that
   is itself near 0.
-- **The cost on clean harmonics is small but real**: cons_err +11 %
-  (0.0204 -> 0.0226), observation noise +9 % (0.173 -> 0.188).
+- **The cost on clean harmonics is small but real**: cons_err +4 %
+  (0.0202 -> 0.0211), observation noise +7 % (0.174 -> 0.186).
 - **Smoothness bias (risk 6) is a property of the narrow band, not the wide
-  one.** The wide arm's high-frequency share is unchanged (0.520 vs 0.488)
+  one.** The wide arm's high-frequency share is unchanged (0.513 vs 0.504)
   because `rho^2` collapses from 4.25e5 at 1 Hz to **0.027** at 90 Hz — the
-  prior is inert. The peel band shows the bias plainly: hp_frac 0.237 and MAD
-  0.053. Same knob, opposite ends: **the prior that regularises the
+  prior is inert. The peel band shows the bias plainly: hp_frac 0.238 and MAD
+  0.047. Same knob, opposite ends: **the prior that regularises the
   near-singular coupling is the prior that biases the observation.**
 - **Risk 1, confirmed numerically.** The peel arm's fused answer is
   0.0001-0.0011 rev/s for every rotor of every window: a 1 Hz band has capture
@@ -173,7 +173,7 @@ merging the pair does not recover a usable rate. Same on every pair measured.
 
 A conditioning gate, on the other hand, is trivially available and clean:
 `|A_k| / |z_k| > 5` fires on **0 %** of clean tracks (their whole range is
-1.64-2.21) and on **84-89 %** of contested ones. It is a perfect specificity
+1.39-3.33) and on **84-90 %** of contested ones. It is a perfect specificity
 test — there is simply nothing left to keep after it fires.
 
 ## Verdict
@@ -182,10 +182,10 @@ test — there is simply nothing left to keep after it fires.
 
 1. Where the coupled solve is well conditioned (`|A|/|z| ~ 2`, clean
    harmonics) it reproduces the demodulated observation within noise and is
-   slightly worse on both accuracy (+11 %) and noise (+9 %), at 15-110x the
+   slightly worse on both accuracy (+4 %) and noise (+7 %), at 15-110x the
    cost.
 2. Where it was proposed to help (contested, high k) it is degenerate:
-   amplitude 165-850x, correlation with the data 0.000-0.006, and no accuracy
+   amplitude 179-1156x, correlation with the data 0.000-0.007, and no accuracy
    gain. The mechanism is the documented twin collapse, and the guard that
    prevents it (`sep_bw_factor`) also makes "wide" unreachable, because the
    whole comb is one coupling group.
