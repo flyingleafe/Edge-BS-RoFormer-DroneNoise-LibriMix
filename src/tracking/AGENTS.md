@@ -2,6 +2,40 @@
 
 The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinement, blind seeding, and beam/DP search. Pure array code, extracted from `data_processing` in the 2026-08 refactor (`docs/refactor-2026-08-plan.md` §4, Phase 2).
 
+## Start here: `top.py`
+
+**`top.py` is the front door.** It holds three things and nothing else: the frame plumbing, EVERY stage (each with its config dataclass beside it), and EVERY shipped variant of the algorithm as a named few-line composition. Read it, look at the configs, and you can rebuild any variant by composing stages in a `for` loop. Everything else in this package is an array core that `top.py` wires; no other module defines a stage.
+
+The stage vocabulary:
+
+| Stage | Config | What it does |
+|-------|--------|--------------|
+| `blind_seed_stage` | `SeedConfig` | blind comb scan → constant `rps` init |
+| `coarse_init_stage` | `CoarseConfig` | full-range Viterbi c(t) → time-varying init |
+| `vit2dsp_stage` | `Vit2dspConfig` | the calibrated blind-annotation ladder |
+| `vk_stage` | `VKConfig` | coupled Vold–Kalman order tracking |
+| `peel_stage` | `PeelConfig` | subtract the other rotors' combs → a seam in `meta` |
+| `pi_kalman_stage` | `PiConfig` | phase-increment Kalman refinement (eats the seam) |
+| `warp_stage` | kwargs | iterated time-warp IF refinement |
+| `refine_coherent_stage` | `RefineConfig` | coherent phase-slope refinement |
+| `presmooth_stage` / `scale_stage` / `shift_stage` | scalars | trajectory candidates for the judge |
+| `fitness_stage` | `FitnessConfig` | score the trajectory (does not change it) |
+| `refit_stage` | `RefitConfig` | the whole telemetry refit as one stage |
+| `guarded` | `SeedConfig` | wrap a stage with the blind per-track guard |
+
+The recipes:
+
+| Recipe | Composition |
+|--------|-------------|
+| `vit2dsp` | blind seed → the calibrated ladder |
+| `blind_fullrange` | blind seed (K, R) → coarse full-range init → the ladder |
+| `flagship(n_apps)` | `n_apps` × (peel → pi_kalman) |
+| `peel_alternation` | `flagship` one application at a time, every frame kept |
+| `refit_stage` | presmooth → coarse-to-fine (peel → pi_kalman) to convergence |
+| `judge(candidate)` | a candidate stage → `fitness_stage` under one control |
+
+Every campaign driver calls a recipe. A script must not assemble a ladder of its own — if a variant is worth running, it is worth a named recipe here.
+
 ## Modules
 
 | Module | Purpose |
@@ -11,8 +45,8 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 | `vk_blind_seeding.py` | Blind seeding of initial trajectories: `SeedConfig`, `blind_seed`, `stage_guard`, `residual_rescan`, plus `logmag_spectrogram` — THE whitened-spectrogram core (per-channel white + raw, optional `n_fft`/`hop_length`) that `whitened_logmag`, `pipelines.whitened_logmag_multi` and the scripts' coarse pass all read through. |
 | `phase_increment_tracker.py` | Phase-increment ML instantaneous-frequency tracker: `pi_kalman_refine`, plus the two named calls of the `dsp` primitives — `zoom_lp_decimate` (`zoom_bands` in this module's parameterization) and `demod_bank` (the one-rotor naming of `demod`; `_demod_bank` stays as an alias for the tests and `scripts/tracking_ref.py`). `pi_kalman_refine(peel_audio=, pair_audio=)` is the PEEL SEAM — per-rotor / per-pair replacement audio for that pass only (what the flagship used to inject by monkeypatching two private functions). |
 | `comb_displacement.py` | Where the acoustic comb sits relative to a rotor-speed CARRIER, with the nulls that make the answer meaningful: `DisplacementConfig` (band / search window / gate geometry), `demod_comb_bank` (integer or half-integer carrier), `ridge_from_envelope`, `profile_prominence`, `pulse_pair`, `carrier_collision_mask` (the twin rule re-derived against the TRUE rotor lines, so an arbitrary carrier can be gated), `nearest_interloper_hz` (the same geometry as a DISTANCE, so a caller with its own band gets its own collision rule and can grade a contested harmonic by how close the interferer is), `weighted_stats`, `combine_k`, `measure_variant`. The carrier is one trajectory row, never "rotor i of the array" — that is what makes an off-comb, mismatched or fitted carrier expressible. Driver: `scripts/displacement/nullcontrol.py`. |
-| `fitness.py` | Goodness of fit of a CANDIDATE trajectory against the audio (issue 17 phase 6a): `FitnessConfig`, `window_cells` (the one demodulation), `score_cells` -> `FitnessScore` (FOUR components — broadband residual, `k^2`-weighted phase-increment mean square, magnitude roughness, and the phase-6d **ridge concentration**: `line_power` / `line_masks`, dB of line density on the carrier over a LOCAL floor, the one component where more is better, the one that does not saturate once the envelope is noise dominated, and the one with its own `admit_ridge` gate — it needs the interferer resolved away from DC and excised from the floor, not a clean band, which is 96 % of DREGON's cells against 6.6 %. It is the phase-7 generator readout promoted, so `scripts/gen_label_sensitivity_eval.py` calls the same function), `Holdout` (held-out harmonics / channels / time blocks as a mask over `(channel, harmonic, block)` cells), `apply_control` (the four §B controls), `bootstrap_scores`, `residual_decompose` (scale/lag + the DREGON tachometer signature) and the `fitness_stage` adapter. FIXED degrees of freedom: the band, the block grid and the admission gate are pinned to the window's REFERENCE trajectory, so the carrier is the only input that changes. The acoustic components are permutation-invariant by construction — rotor identity is certified by the residual pairing, never by the fit. Driver: `scripts/telemetry_fitness.py`; design + acceptance: `docs/experiments/telemetry-fitness.md`. |
-| `telemetry_refit.py` | The FITTER phase 6a's harness was built to judge (issue 17 phase 6b): `RefitConfig`, `refit_window` -> `RefitResult`, `presmooth` (THE 5 Hz detrended low pass of the campaign — the 6a driver's `lp:` candidate calls it), `k_cap_for_error` / `advance_k` (the coarse-to-fine ladder, from the phase-wrap capture rule `k <= wrap_guard_rad fs_env / (2 pi e)` — never a flat `k_caps`), `scale_summary` (the well-posed scale, per-rotor mean shift plus one joint global LS scale), `order_and_gaps` (THE identity test) and the `refit_stage` adapter. One outer iteration IS one `pipelines.pi_kalman_arm_stage` application, so the LS peel, the peel seam and the twin rule are the flagship's, wired not rebuilt. Driver: `scripts/telemetry_refit.py`; design + acceptance: `docs/experiments/telemetry-fitness.md` § "The fitter". |
+| `fitness.py` | Goodness of fit of a CANDIDATE trajectory against the audio (issue 17 phase 6a): `FitnessConfig`, `window_cells` (the one demodulation), `score_cells` -> `FitnessScore` (FOUR components — broadband residual, `k^2`-weighted phase-increment mean square, magnitude roughness, and the phase-6d **ridge concentration**: `line_power` / `line_masks`, dB of line density on the carrier over a LOCAL floor, the one component where more is better, the one that does not saturate once the envelope is noise dominated, and the one with its own `admit_ridge` gate — it needs the interferer resolved away from DC and excised from the floor, not a clean band, which is 96 % of DREGON's cells against 6.6 %. It is the phase-7 generator readout promoted, so `scripts/gen_label_sensitivity_eval.py` calls the same function), `Holdout` (held-out harmonics / channels / time blocks as a mask over `(channel, harmonic, block)` cells), `apply_control` (the four §B controls), `bootstrap_scores`, `residual_decompose` (scale/lag + the DREGON tachometer signature) FIXED degrees of freedom: the band, the block grid and the admission gate are pinned to the window's REFERENCE trajectory, so the carrier is the only input that changes. The acoustic components are permutation-invariant by construction — rotor identity is certified by the residual pairing, never by the fit. Driver: `scripts/telemetry_fitness.py`; design + acceptance: `docs/experiments/telemetry-fitness.md`. |
+| `telemetry_refit.py` | The FITTER phase 6a's harness was built to judge (issue 17 phase 6b): `RefitConfig`, `refit_window` -> `RefitResult`, `presmooth` (THE 5 Hz detrended low pass of the campaign — the 6a driver's `lp:` candidate calls it), `k_cap_for_error` / `advance_k` (the coarse-to-fine ladder, from the phase-wrap capture rule `k <= wrap_guard_rad fs_env / (2 pi e)` — never a flat `k_caps`), `scale_summary` (the well-posed scale, per-rotor mean shift plus one joint global LS scale), and `order_and_gaps` (THE identity test). One outer iteration IS one `top.pi_kalman_arm_stage` application, so the LS peel, the peel seam and the twin rule are the flagship's, wired not rebuilt. Driver: `scripts/telemetry_refit.py`; design + acceptance: `docs/experiments/telemetry-fitness.md` § "The fitter". |
 | `order_domain.py` | The order domain: resample the audio uniformly in rotor PHASE, then FFT. `order_spectrum`, `comb_scan` (a whole comb scored at once over a scale grid, `half=True` for the half-integer null), `segment_comb_scan` (the same on short segments, which is the only reading that survives the sub-second high-k coherence time), `scan_summary`, `peak_orders`. No peak-search window anywhere — this is the estimator built to be immune to the other one's failure mode. Driver: `scripts/displacement/combscan.py`. Also the machinery issue #16 Tier 2 wants for removing the `K` factor from the demod cost. |
 | `dsp.py` | THE signal-processing primitives, one each: `zoom_bands` (the zoom-IFFT band-select kernel behind every demodulation), `demod` (the one demodulation driver — carrier synthesis, chunked flush, band select), `boxcar` (the one moving average), plus the selection seam `dsp_config` / `resolve` (device, pad) and the thread knob `thread_pool` / `threads`. Torch only; numpy at every seam. Leaf module — imports numpy and torch, nothing else. |
 | `phase_noise.py` | WP18 rank-one-plus-diagonal covariance of the per-harmonic rate opinions: `Arm`, `demod_rotor`, `arm_covariance`, `fit_rank_one`, `channel_coherence`, plus `brickwall` — THE whole-window FFT filter of the package, which `fitness` and `telemetry_refit.presmooth` both read through. Measures the harmonic-common jitter term `sigma_J^2` against the per-harmonic terms `v_k` — the evidence behind the `VKConfig.freq_weight` shape. Its data side (recordings + window selection) is injected by `scripts/phase_noise_cov/windows.py`. |
@@ -20,9 +54,9 @@ The rotor-speed tracking stack: Vold–Kalman order tracking, trajectory refinem
 | `rotor_dp.py` | Exact single-rotor Viterbi lattice: `viterbi_path`, `greedy_peel`, `track_masked`. |
 | `warp_refinement.py` | Iterated time-warp (generalized-demodulation) IF refiner: `iter_warp_refine`. Smooths with `dsp.boxcar`. |
 | `rotors.py` | Quadrotor control-allocation constants: `MIXER`, `NUM_ROTORS`, `MODE_NAMES`, `modes_from_rps`, `rps_from_modes`. `data_processing.rps_synthesis` re-exports them. |
-| `stages.py` | The TimeFrame stage API (plan §3.2): `Stage`, `tracking_frame` (`dtype=` keeps a float64 signal exact), `get_audio`/`get_rps`/`with_rps`, `pipeline`, and the adapters `blind_seed_stage`, `vk_stage`, `pi_kalman_stage`, `warp_stage`, `refine_coherent_stage`, `guarded`. |
-| `protocols.py` | Evaluation-protocol window specs as DATA (loaders injected by scripts): `ProtocolSpec`/`WindowSpec`/`PoolSpec`, the `beatvk` + `vk37` registries (`BEATVK`, `VK37`, `PROTOCOLS`, `BEATVK_REPORT_POOLS`), `iter_windows`, `regime_of`, `to_frame` (frame builder via `stages.tracking_frame`), `FROZEN_FLY124_ALIGNMENT`. Also the three protocol operations that must exist exactly once: `slice_window` (recording -> one window's audio/grid/telemetry/edge mask), `pit_align` (THE Hungarian-on-MSE rotor assignment; `losses.pit.align_rps_to_gt` delegates to it) and `pool_means`. Consumed by `scripts/beatvk_*.py`, `scripts/tracking_ref.py`, `scripts/vk_validation.py`, `scripts/rps_eval.py`. |
-| `pipelines.py` | The canonical LADDERS. (1) The blind-annotation ladder: the FROZEN config registry (`CAPTURE_CFG`, `REFINE_CFG`, `TRACK_CFG`, `MIDBAND_CFG(S)`, `SEED_CFG` — calibrated values; changing them invalidates published annotations), the vit2dsp core (`vit2dsp_pipeline`, `vit_stage1`, `tooth_cube`, `pair_score_2d_spatial`, `joint_viterbi`, `apply_guard`, `whitened_logmag_multi`, `viterbi_lattice`/`viterbi_ridge`), and the Stage adapter `vit2dsp_stage` (self-seeding via `blind_seed_stage`). (2) The FLAGSHIP peeled alternation: its frozen settings (`PEEL_*`, `PI_*`, `PI_VARIANTS`, `ARMS`), the peel `make_peels`, one application as the Stage `pi_kalman_arm_stage`, and the driver `peel_alternation`. |
+| `top.py` | **THE front door** (see above): the frame plumbing (`Stage`, `tracking_frame` — `dtype=` keeps a float64 signal exact —, `get_audio`/`get_rps`/`with_rps`/`with_meta`, `pipeline`), every stage with its config, and every recipe. It wires; it never implements. |
+| `protocols.py` | Evaluation-protocol window specs as DATA (audio loaders injected by scripts; the frozen prep-cache reader lives here): `ProtocolSpec`/`WindowSpec`/`PoolSpec`, the `beatvk` + `vk37` registries (`BEATVK`, `VK37`, `PROTOCOLS`, `BEATVK_REPORT_POOLS`), `iter_windows`, `regime_of`, `to_frame` (frame builder via `stages.tracking_frame`), `FROZEN_FLY124_ALIGNMENT`. Also the three protocol operations that must exist exactly once: `slice_window` (recording -> one window's audio/grid/telemetry/edge mask), `pit_align` (THE Hungarian rotor assignment — `cost="mse"|"mae"` and an optional `edge_mask`, one implementation covering both the losses' and the campaign's conventions; `losses.pit.align_rps_to_gt` delegates to it), `pool_means`, and the frozen-window reader `resolve_prep_dir` / `load_prep_window`. Consumed by `scripts/beatvk_*.py`, `scripts/tracking_ref.py`, `scripts/vk_validation.py`, `scripts/rps_eval.py`. |
+| `pipelines.py` | The ladder ARRAY CORES and the FROZEN config registry — everything here computes, nothing here is a Stage. (1) The blind-annotation ladder: `CAPTURE_CFG`, `REFINE_CFG`, `TRACK_CFG`, `MIDBAND_CFG(S)`, `SEED_CFG` (calibrated values; changing them invalidates published annotations) plus `vit2dsp_pipeline`, `vit_stage1`, `tooth_cube`, `pair_score_2d_spatial`, `joint_viterbi`, `apply_guard`, `whitened_logmag_multi`, `viterbi_lattice`/`viterbi_ridge`, and `Segment` (the minimal `LadderInput`). (2) The `blind_fullrange` coarse pass: `CoarseConfig` + `coarse_init` (`bpf_octave_ratio`, `coarse_spectrogram`, `coarse_frame_scores`, `energy_bridge`) — moved out of `scripts/beatvk_vk_arms.py`, block comment and measured numbers carried across. (3) The FLAGSHIP peel: `PEEL_*` / `PI_*` / `PI_VARIANTS` / `ARMS` and `make_peels`. ONE tooth sampler, `comb_teeth`, is behind every comb reading in the module. |
 
 Tests live in `tests/tracking/`.
 
@@ -137,7 +171,7 @@ which is the same order the old scipy->torch backend swap showed — the arithme
 
 This package imports only `numpy`, `scipy`, `torch`, `tdseries`, and `utils`. It must NOT import `data_processing`, `models`, or `training`. The permitted direction is `data_processing` → `tracking` (for example, `rps_synthesis` imports `tracking.rotors`).
 
-## The Stage API (`stages.py`)
+## The Stage API (`top.py`)
 
 Every tracking stage is a callable `Stage = Callable[[td.Frame], td.Frame]`. The frame contract:
 
@@ -146,6 +180,8 @@ Every tracking stage is a callable `Stage = Callable[[td.Frame], td.Frame]`. The
 - `"rps_meas"`: optional reference trajectories, never touched.
 
 The adapters are thin: the array cores (`vk_track`, `blind_seed`, `pi_kalman_refine`, `iter_warp_refine`, `refine_coherent`, `stage_guard`) are unchanged; all cores accept `(T,)` or `(C, T)` audio, and frame times are re-based to the audio entry's `t_start`, so time-sliced frames work. `guarded(inner)` mirrors `scripts/vk_blind_annotation.py`'s `_apply_guard`: run `inner`, then `stage_guard` on the before/after trajectories against the whitened spectrogram, reverting vetoed rotors.
+
+**Seams.** A stage that does NOT change the trajectory leaves its product in `meta` and logs nothing; the stage that consumes it records what it consumed. `peel_stage` is the one such stage — it leaves `meta["peel_seam"]`, `pi_kalman_stage` eats it, clears it and reports the peel diagnostics in its own entry. That is what keeps one application of the flagship one log entry however it is composed, and it is why `pipeline(peel_stage(...), pi_kalman_stage(...))` reproduces the fused `pi_kalman_arm_stage` bit for bit (`tests/tracking/test_top.py`). The annealed `pi` variants carry their trust region the same way — the last `band_b0_final` in the log — so the flagship is a plain composition and not a driver.
 
 ```python
 import tracking as trk
@@ -157,7 +193,7 @@ r, ft = trk.get_rps(out)               # (4, N) rev/s + frame times
 print([e["stage"] for e in out["meta"]["tracking"]])  # ['blind_seed', 'vk', 'guard']
 ```
 
-Two ladders live in `pipelines.py`. The vit2dsp one (`vit2dsp_stage` for frames, `vit2dsp_pipeline` for arrays), and the flagship alternation:
+The recipes are in `top.py`; their array cores are in `pipelines.py`. The flagship alternation, one frame per application:
 
 ```python
 frames = trk.peel_alternation(frame, n_apps=4, arm="peeled")   # [init, app1, ..., appN]
@@ -165,7 +201,7 @@ r, ft = trk.get_rps(frames[-1])
 diag = [f["meta"]["tracking"][-1] for f in frames[1:]]         # peel + step + wall per app
 ```
 
-Each application is `pi_kalman_arm_stage` — `make_peels` at the current track, then one `pi_kalman_refine` pass on the peeled residuals through the tracker's `peel_audio`/`pair_audio` seam. It is a driver rather than a plain `pipeline(...)` composition because the annealed variants carry each application's `band_b0` posterior into the next. `tracking_frame(..., dtype=np.float64)` keeps a float64 signal exact (the frame stores float32 by default and `get_audio` returns whichever it holds).
+Each application is `flagship(1)` = `peel_stage` then `pi_kalman_stage` — `make_peels` at the current track, then one `pi_kalman_refine` pass on the peeled residuals through the tracker's `peel_audio`/`pair_audio` seam. `peel_alternation` is a driver only because it returns every intermediate frame; the alternation itself is a composition. `tracking_frame(..., dtype=np.float64)` keeps a float64 signal exact (the frame stores float32 by default and `get_audio` returns whichever it holds).
 
 `scripts/vk_blind_annotation.py` keeps thin back-compat aliases (`_SEED_CFG`, `_tooth_cube`, ...) plus everything data- or GT-bound (recording prep, mic-geometry weights, PIT scoring, superseded arms). Remaining ladders (blind-seed arms, cd_iter) stay in `scripts/rps_refine_lab.py` for now.
 
@@ -179,8 +215,9 @@ degrees of freedom, with held-out harmonics/channels/time and all four section-B
 `telemetry_refit.py`. The two never call each other's verdict — the fitter's only use of `fitness`
 is `residual_decompose`, which is a reading of `fit - telemetry`, not a score.
 
-Phase 6e added a second correction on top of the scale — a TIME offset, measured by
-`scripts/telemetry_timeshift.py` with no library change. DREGON's telemetry runs EARLY by
+Phase 6e added a second correction on top of the scale — a TIME offset. Its driver was
+deleted in the R2 consolidation and its estimator promoted to `fitness.measure_tdoa`;
+`docs/experiments/telemetry-fitness.md` § 6e is the record. DREGON's telemetry runs EARLY by
 -42 ms [-85,-31], which excludes a tachometer reporting lag by sign; the shift and the scale
 mask each other, so a one-axis sweep reads +158 ms instead. The per-microphone differential the
 propagation predicts (0.156 ms) is ~500x below what the ridge resolves, and the measured per-mic
