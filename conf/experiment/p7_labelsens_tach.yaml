@@ -1,0 +1,42 @@
+# @package _global_
+# ARM B — the tachometer staircase. 0.99458 x truth, then the refresh
+# interval mean, then the 0.269 rev/s quantization lattice, then the 49.7 Hz
+# zero-order hold. Label error 0.106 rev/s rms, which displaces harmonic k by
+# 0.106*k Hz: sub-bin below k ~ 30 at the loss's finest scale (n_fft 2048,
+# 7.8 Hz bins) and about one bin at k = 80. The prediction under test is a
+# per-k underfit that switches on around there.
+#
+# Every arm is byte-identical except data.{train,valid}.params.label_mode.
+# Same seed, same epoch/patience budget, same optimizer — the comparison is
+# only meaningful at a shared budget. Batch doc:
+# docs/experiments/generator-label-sensitivity.md.
+defaults:
+  - override /data: static_comb_gen
+  - override /model: positional_harmonic_gen
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: p7_labelsens_tach
+seed: 1234
+epochs: 40
+patience: 8
+batch_size: 32
+num_workers: 6
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter: freqs_to_phasors uses a complex cumprod and
+# "cumprod_cuda" is not implemented for ComplexHalf (E6 finding).
+amp: false
+
+data:
+  train:
+    params:
+      label_mode: tach
+  valid:
+    params:
+      label_mode: tach

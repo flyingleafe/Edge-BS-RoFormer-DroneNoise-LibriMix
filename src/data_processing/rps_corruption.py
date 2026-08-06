@@ -48,11 +48,139 @@ import numpy as np
 
 from data_processing.online_mixing import make_rng
 
-__all__ = ["RPSCorruption", "corrupt_rps"]
+__all__ = [
+    "DREGON_TACH_REFRESH_HZ",
+    "DREGON_TACH_STEP",
+    "RPSCorruption",
+    "corrupt_rps",
+    "presmooth_track",
+    "tachometer_corrupt",
+]
+
+#: DREGON's telemetry quantization step (rev/s) — the tachometer reports an
+#: integer pulse count, so the label lives on a 0.269 rev/s lattice.
+DREGON_TACH_STEP = 0.269
+#: DREGON's telemetry refresh rate (Hz) — one new reading every ~20.1 ms,
+#: held constant in between (zero-order hold).
+DREGON_TACH_REFRESH_HZ = 49.7
 
 #: |GT| at or below this is a zero-RPS span (motors off) — exact zeros in the
 #: interpolated targets, but keep a small epsilon for float noise.
 ZERO_EPS = 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Tachometer label noise (the telemetry staircase)
+# ---------------------------------------------------------------------------
+
+
+def tachometer_corrupt(
+    rps: np.ndarray,
+    sample_rate: float,
+    *,
+    step: float = DREGON_TACH_STEP,
+    refresh_hz: float = DREGON_TACH_REFRESH_HZ,
+    scale: float = 1.0,
+    t_start: float = 0.0,
+) -> np.ndarray:
+    """Apply the telemetry tachometer's measurement model to a true rotor track.
+
+    The device of DREGON's flight controller, in the order it acts:
+
+    1. **Constant scale.** ``scale`` multiplies the truth (DREGON's telemetry
+       over-reports by 0.542 %, so ``scale = 0.99458`` reproduces the measured
+       bias). A constant gain is an invertible reparameterization of the label
+       and is expected to be *benign* for a conditioned model — it is separable
+       from the staircase precisely because it is applied first and alone.
+    2. **Refresh interval average.** The tachometer counts shaft pulses over
+       one refresh interval, so its reading is the interval *mean*, not a point
+       sample. Intervals are ``1 / refresh_hz`` seconds wide and are laid out on
+       absolute time (``t_start`` places the window on that grid), so a
+       non-integer number of audio samples per interval is handled exactly.
+    3. **Quantization.** The pulse count is an integer, so the reading lands on
+       the ``step`` rev/s lattice. Rounding is half-to-even via ``np.rint``.
+    4. **Zero-order hold.** One reading is held for the whole interval.
+
+    Steps 2-4 together are the *staircase*: a piecewise-constant label whose
+    error is dominated by quantization (rms ``step / sqrt(12)`` = 0.078 rev/s
+    at DREGON's step) rather than by the hold lag (the shaft's OU dynamics move
+    ~0.04 rev/s in one 20 ms interval). The staircase is what scales with the
+    harmonic index: a rate error ``e`` displaces harmonic ``k`` by ``k * e`` Hz,
+    so 0.078 rev/s is 6.2 Hz at ``k = 80``.
+
+    **No latency.** The reading is held over the *same* interval it averages,
+    not the next one. A real device is causal and lags by one interval, but a
+    constant 20 ms group delay is a second benign, learnable reparameterization
+    and would confound the measurement of the staircase itself; the caller who
+    wants it can shift the output.
+
+    Args:
+        rps: ``(..., T)`` true rotor speeds (rev/s) on a uniform audio-rate grid.
+        sample_rate: grid rate of ``rps`` (Hz).
+        step: quantization step (rev/s). ``<= 0`` disables quantization.
+        refresh_hz: reading rate (Hz). ``<= 0`` disables the interval average
+            and hold (the label then carries only the scale + quantization).
+        scale: constant multiplicative bias applied before the device.
+        t_start: absolute start time (s) of the window, so consecutive windows
+            of one recording see a consistent refresh phase.
+
+    Returns:
+        The corrupted label, same shape and dtype-family as ``rps`` (float64).
+    """
+    arr = np.asarray(rps, dtype=np.float64) * float(scale)
+    if arr.ndim == 0:
+        raise ValueError("tachometer_corrupt expects an array with a time axis")
+    n_t = arr.shape[-1]
+    if n_t == 0:
+        return arr
+
+    if refresh_hz > 0.0:
+        t = (np.arange(n_t, dtype=np.float64) / float(sample_rate)) + float(t_start)
+        idx = np.floor(t * float(refresh_hz)).astype(np.int64)
+        idx -= idx[0]  # local interval numbering, phase preserved by t_start
+        n_int = int(idx[-1]) + 1
+        flat = arr.reshape(-1, n_t)
+        counts = np.bincount(idx, minlength=n_int).astype(np.float64)
+        sums = np.stack([np.bincount(idx, weights=row, minlength=n_int) for row in flat])
+        reading = sums / counts  # (N, n_int) interval means
+        if step > 0.0:
+            reading = np.rint(reading / float(step)) * float(step)
+        out = reading[:, idx].reshape(arr.shape)  # zero-order hold
+    else:
+        out = np.rint(arr / float(step)) * float(step) if step > 0.0 else arr
+    return np.ascontiguousarray(out)
+
+
+def presmooth_track(
+    rps: np.ndarray,
+    sample_rate: float,
+    *,
+    cut_hz: float = 5.0,
+) -> np.ndarray:
+    """Low-pass a rotor track at ``cut_hz`` — the campaign's de-staircasing filter.
+
+    Thin uniform-grid adapter over :func:`tracking.telemetry_refit.presmooth`,
+    so "the smoothed telemetry" means the same array here as it does in the
+    tracking campaign (detrend, whole-window brickwall, add the trend back).
+    5 Hz keeps the shaft dynamics (DREGON free-flight OU modes have
+    ``tau`` 0.6-1.0 s, i.e. bandwidth well under 1 Hz) and rejects the 49.7 Hz
+    refresh staircase. ``cut_hz <= 0`` is the identity.
+
+    Args:
+        rps: ``(..., T)`` track on a uniform grid.
+        sample_rate: grid rate (Hz).
+        cut_hz: cutoff (Hz).
+
+    Returns:
+        The smoothed track, same shape, float64.
+    """
+    from tracking.telemetry_refit import presmooth
+
+    arr = np.asarray(rps, dtype=np.float64)
+    n_t = arr.shape[-1]
+    ft = np.arange(n_t, dtype=np.float64) / float(sample_rate)
+    flat = arr.reshape(-1, n_t)
+    return np.ascontiguousarray(presmooth(flat, ft, float(cut_hz)).reshape(arr.shape))
 
 
 def corrupt_rps(

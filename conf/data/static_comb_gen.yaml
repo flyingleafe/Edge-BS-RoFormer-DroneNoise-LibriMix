@@ -1,0 +1,49 @@
+# Phase 7 — the generator label-sensitivity probe's data.
+#
+# A frozen-profile analytic comb (one rotor, one microphone) whose target audio
+# is always rendered from the TRUE trajectory, and whose RPS *conditioning* is
+# switched by `label_mode`. Experiments override that key (and only that key)
+# per arm — see conf/experiment/p7_labelsens_*.yaml and
+# docs/experiments/generator-label-sensitivity.md.
+#
+# `label_scale: 0.99458` is DREGON's measured telemetry bias inverted
+# (telemetry over-reports by 0.542 %); it is applied by every arm except
+# `exact`, so `scale` is the control that says whether a constant gain is
+# benign on its own.
+#
+# Train and valid differ only in `split` (which seeds the trajectory stream),
+# so the two never share a trajectory and validation is fixed across epochs.
+train:
+  _target_: data_processing.frame_datasets.StaticCombGenDataset
+  params:
+    n_samples: 8000
+    split: train
+    duration_s: 1.0
+    sample_rate: 16000
+    label_mode: exact
+    label_scale: 0.99458
+    tach_step: 0.269
+    tach_refresh_hz: 49.7
+    presmooth_cut_hz: 5.0
+    shaft_cut_hz: 2.0
+    margin_s: 2.0
+    seed: 7
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.StaticCombGenDataset
+  params:
+    n_samples: 512
+    split: valid
+    duration_s: 1.0
+    sample_rate: 16000
+    label_mode: exact
+    label_scale: 0.99458
+    tach_step: 0.269
+    tach_refresh_hz: 49.7
+    presmooth_cut_hz: 5.0
+    shaft_cut_hz: 2.0
+    margin_s: 2.0
+    seed: 7
+  iterable: false
+batch_size: null
+num_workers: null

@@ -49,6 +49,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import zlib
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -429,7 +430,10 @@ class OnlineMixFrameDataset(IterableDataset):
         from data_processing.online_mixing import build_online_mix_pipeline
         from data_processing.rps_corruption import RPSCorruption
 
-        plain = OmegaConf.to_container(cfg, resolve=True) if isinstance(cfg, DictConfig) else cfg
+        plain = cast(
+            dict[str, Any],
+            OmegaConf.to_container(cfg, resolve=True) if isinstance(cfg, DictConfig) else cfg,
+        )
         self.sample_rate = int(plain.get("sample_rate", 16000))
         self.hop_length = int(plain.get("hop_length", 512))
         self.task = str(plain.get("task", "rps_prediction"))
@@ -719,3 +723,215 @@ class NoiseGenFrameDataset(Dataset):
             **dataset_kwargs,
         )
         return cls(val_ds, dregon_dir=dregon_dir)
+
+
+class StaticCombGenDataset(Dataset):
+    """Synthetic frozen-profile comb for the ``noise_generation`` task, with a
+    switchable **label** transform — the Phase-7 generator label-sensitivity probe.
+
+    Every sample is one rotor observed by one microphone. The *target* audio is
+    :func:`data_processing.rotor_spectral_model.render_fixed_comb` driven by the
+    **true** OU trajectory; the *conditioning* the model receives is that same
+    trajectory passed through ``label_mode``. So the arms differ in exactly one
+    thing — what the generator is told the rotor speed is — while the signal it
+    must reproduce is identical:
+
+    ==================  ==========================================================
+    ``label_mode``      conditioning
+    ==================  ==========================================================
+    ``exact``           the truth (the loss-design / capacity control)
+    ``scale``           ``label_scale`` x truth (the benign-bias control)
+    ``tach``            ``label_scale`` x truth through the tachometer staircase
+                        (:func:`data_processing.rps_corruption.tachometer_corrupt`)
+    ``tach_presmooth``  ``tach`` low-passed at ``presmooth_cut_hz``
+                        (:func:`data_processing.rps_corruption.presmooth_track`)
+    ==================  ==========================================================
+
+    Why one rotor and one microphone. Four overlapping combs make the per-``k``
+    line readout ambiguous (whose harmonic is this?), and eight microphones only
+    replicate a signal whose spatial structure is not under test. Both would add
+    variance without adding a degree of freedom the hypothesis speaks about.
+
+    Determinism: sample ``i`` of a split is a pure function of ``(seed, split,
+    i)``, so validation is fixed and arms are comparable frame by frame.
+    """
+
+    #: Geometry — a plausible rotor/mic offset. The comb itself is rendered
+    #: without propagation; the positions only have to be finite and non-zero
+    #: so the generator's ``1/r`` + fractional-delay path is well posed.
+    MIC_POS = np.array([[0.0, 0.0, 0.05]], dtype=np.float32)
+    ROTOR_POS = np.array([[0.15, 0.15, 0.0]], dtype=np.float32)
+
+    LABEL_MODES = ("exact", "scale", "tach", "tach_presmooth")
+
+    def __init__(
+        self,
+        *,
+        n_samples: int,
+        split: str = "train",
+        duration_s: float = 1.0,
+        sample_rate: int = 16000,
+        label_mode: str = "exact",
+        label_scale: float = 1.0,
+        tach_step: float = 0.269,
+        tach_refresh_hz: float = 49.7,
+        presmooth_cut_hz: float = 5.0,
+        traj_fs: float = 250.0,
+        shaft_cut_hz: float = 2.0,
+        margin_s: float = 2.0,
+        aggressiveness: float = 1.0,
+        comb: dict[str, Any] | None = None,
+        seed: int = 0,
+    ) -> None:
+        from data_processing.rotor_spectral_model import FixedCombSpec
+
+        if label_mode not in self.LABEL_MODES:
+            raise ValueError(f"label_mode must be one of {self.LABEL_MODES}, got {label_mode!r}")
+        self.n_samples = int(n_samples)
+        self.split = str(split)
+        self.duration_s = float(duration_s)
+        self.sample_rate = int(sample_rate)
+        self.label_mode = label_mode
+        self.label_scale = float(label_scale)
+        self.tach_step = float(tach_step)
+        self.tach_refresh_hz = float(tach_refresh_hz)
+        self.presmooth_cut_hz = float(presmooth_cut_hz)
+        self.traj_fs = float(traj_fs)
+        self.shaft_cut_hz = float(shaft_cut_hz)
+        self.margin_s = float(margin_s)
+        self.aggressiveness = float(aggressiveness)
+        self.seed = int(seed)
+
+        if isinstance(comb, DictConfig):
+            comb = cast(dict, OmegaConf.to_container(comb, resolve=True))
+        self.spec = FixedCombSpec(**dict(comb or {}))
+        self.profile = self.spec.profile(ref_rps=80.0, sample_rate=self.sample_rate)
+        self.gain = self.spec.gain(self.profile)
+
+    def __len__(self) -> int:
+        return self.n_samples
+
+    def _rng(self, idx: int) -> np.random.Generator:
+        # crc32, not hash(): str hashing is salted per process (PYTHONHASHSEED),
+        # so a builtin hash would make DataLoader workers disagree.
+        split_key = zlib.crc32(self.split.encode()) & 0x7FFFFFFF
+        return np.random.default_rng([self.seed, split_key, int(idx)])
+
+    def true_rps(self, idx: int) -> np.ndarray:
+        """The exact ``(T,)`` rotor speed of sample ``idx`` at audio rate.
+
+        Equivalent to ``self._traj(idx)`` cropped to the clip.
+
+        The OU draw is white to the trajectory rate, so it is band-limited by a
+        **shaft-inertia** low pass at ``shaft_cut_hz`` before it becomes the
+        truth. Two things depend on this, both measured at the 2 Hz default:
+
+        * Without it the truth moves ~0.4 rev/s inside one 20 ms refresh
+          interval, so the tachometer's *hold* error swamps its *quantization*
+          error and the arm would measure "telemetry is too slow for the
+          shaft" — a different claim, and one E6 already answered with the
+          emitter's OU jitter. Band-limited, the staircase's total error is
+          0.108 rev/s against 0.078 rev/s of pure quantization.
+        * ``tach_presmooth`` only means something if the 5 Hz filter passes the
+          truth. It does: it moves the *true* track by 0.017 rev/s, a sixth of
+          the staircase it removes (0.108 -> 0.041 rev/s). Arm C therefore
+          measures the mitigation's ceiling, not the filter's distortion.
+
+        The truth still moves ~2.0 rev/s rms inside a window, so the model is
+        not being handed a constant.
+        """
+        ext, sl = self._traj(idx)
+        return ext[sl]
+
+    def _traj(self, idx: int) -> tuple[np.ndarray, slice]:
+        """The trajectory with margins, plus the slice that is the clip.
+
+        The label transforms run on the **margined** track and are cropped
+        afterwards, because a real deployment smooths a whole telemetry stream
+        and then windows it — not the other way round. It also matters
+        numerically: :func:`~data_processing.rps_corruption.presmooth_track`
+        is a whole-window FFT brickwall, so on a bare 1 s clip a 5 Hz cutoff
+        keeps only five harmonics and the filter rings worse than the
+        staircase it removes (measured: 0.155 rev/s residual vs the
+        staircase's 0.093). With ``margin_s`` of context it has enough
+        harmonics to be the low pass it is meant to be.
+        """
+        from scipy.signal import butter, sosfiltfilt
+
+        from data_processing import rps_synthesis
+
+        rng = self._rng(idx)
+        edge_s = 1.0  # discarded after filtering: filtfilt's own edge transient
+        low = rps_synthesis.generate(
+            self.duration_s + 2.0 * (self.margin_s + edge_s),
+            self.traj_fs,
+            aggressiveness=self.aggressiveness,
+            rng=rng,
+        )[0]
+        sos = butter(4, self.shaft_cut_hz / (self.traj_fs / 2.0), output="sos")
+        low = np.asarray(sosfiltfilt(sos, low), dtype=np.float64)
+        n_edge = int(round(edge_s * self.traj_fs))
+        low = low[n_edge : low.shape[-1] - n_edge]
+        n_ext = int(round((self.duration_s + 2.0 * self.margin_s) * self.sample_rate))
+        t_lo = np.arange(low.shape[-1], dtype=np.float64) / self.traj_fs
+        t = np.arange(n_ext, dtype=np.float64) / self.sample_rate
+        ext = np.interp(t, t_lo, low)
+        off = int(round(self.margin_s * self.sample_rate))
+        n_t = int(round(self.duration_s * self.sample_rate))
+        return ext, slice(off, off + n_t)
+
+    def label_for(self, rps: np.ndarray) -> np.ndarray:
+        """Apply this arm's label transform to a true ``(..., T)`` track."""
+        from data_processing.rps_corruption import presmooth_track, tachometer_corrupt
+
+        if self.label_mode == "exact":
+            return np.asarray(rps, dtype=np.float64)
+        if self.label_mode == "scale":
+            return np.asarray(rps, dtype=np.float64) * self.label_scale
+        label = tachometer_corrupt(
+            rps,
+            self.sample_rate,
+            step=self.tach_step,
+            refresh_hz=self.tach_refresh_hz,
+            scale=self.label_scale,
+        )
+        if self.label_mode == "tach_presmooth":
+            label = presmooth_track(label, self.sample_rate, cut_hz=self.presmooth_cut_hz)
+        return label
+
+    def render(self, rps: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Render the ``(T,)`` target audio for a true track (shared with eval)."""
+        from data_processing.rotor_spectral_model import render_fixed_comb
+
+        return render_fixed_comb(
+            rps, self.profile, sample_rate=self.sample_rate, gain=self.gain, rng=rng
+        )
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        if idx < 0:
+            idx += self.n_samples
+        if not 0 <= idx < self.n_samples:
+            raise IndexError(idx)
+        ext, sl = self._traj(idx)
+        rps_true = ext[sl]
+        audio = self.render(rps_true, self._rng(idx + self.n_samples))
+        label = self.label_for(ext)[sl]
+        return td.Frame(
+            {
+                "audio": td.uniform(
+                    audio[None, :].astype(np.float32),
+                    self.sample_rate,
+                    dims=("mic", "time"),
+                    t_start=0.0,
+                ),
+                "rps": td.uniform(
+                    label[None, :].astype(np.float32),
+                    self.sample_rate,
+                    dims=("rotor", "time"),
+                    t_start=0.0,
+                ),
+                "mic_pos": td.wrap(self.MIC_POS, dims=("mic", None)),
+                "rotor_pos": td.wrap(self.ROTOR_POS, dims=("rotor", None)),
+                "meta": td.Frame({"drone": "synth", "sample_id": int(idx), "split": self.split}),
+            }
+        )

@@ -401,3 +401,88 @@ class StaticCombNoisePool:
             mic_pos=self.mic_pos,
             rotor_pos=self.rotor_pos,
         )
+
+
+# ── Fixed-profile comb (the generator label-sensitivity probe) ──────────────
+
+
+@dataclass(frozen=True)
+class FixedCombSpec:
+    """One comb profile, **frozen** across the whole dataset.
+
+    :class:`StaticCombNoisePool` draws a fresh profile per clip, which is right
+    for an RPS predictor (it must not memorize an envelope) and wrong for a
+    *generator* probe: a per-clip random profile is unpredictable from the RPS
+    conditioning, so it adds irreducible loss that would mask the per-harmonic
+    effect being measured. Freezing the profile makes the target a
+    deterministic function of the trajectory alone — every remaining
+    per-harmonic amplitude deficit is then attributable to the objective or to
+    the conditioning, which is exactly the question.
+
+    The amplitude is also **RPS-independent** (no ``(rps/ref)^p`` scaling, no
+    per-clip RMS normalization), so the only thing time-variation in the RPS
+    does to the target is move the comb's lines in frequency.
+    """
+
+    n_harmonics: int = 80  # k*rps stays below Nyquist for rps <= 100 rev/s
+    rolloff_p: float = 1.0  # a_k ~ k**(-p)
+    blade_count: int = 2  # blade-pass emphasis on every b-th harmonic
+    blade_emphasis_db: float = 6.0
+    harm_jitter_db: float = 4.0  # frozen per-harmonic texture
+    floor_tilt: float = 1.0
+    floor_rel_db: float = -18.0  # broadband floor, well below every line
+    profile_seed: int = 20260806
+    target_rms: float = 0.1
+
+    def profile(self, *, ref_rps: float, sample_rate: int) -> RotorProfile:
+        """The frozen :class:`RotorProfile` this spec names."""
+        ranges = ProfileRanges(
+            rolloff_p=(self.rolloff_p, self.rolloff_p),
+            harm_jitter_db=(self.harm_jitter_db, self.harm_jitter_db),
+            blade_counts=(self.blade_count,),
+            blade_emphasis_db=(self.blade_emphasis_db, self.blade_emphasis_db),
+            floor_tilt=(self.floor_tilt, self.floor_tilt),
+            floor_rel_db=(self.floor_rel_db, self.floor_rel_db),
+        )
+        return sample_profile(
+            np.random.default_rng(self.profile_seed),
+            ranges,
+            n_harmonics=self.n_harmonics,
+            ref_rps=ref_rps,
+            sample_rate=sample_rate,
+            min_harm_above_floor=0.0,  # the floor level is pinned, not searched
+        )
+
+    def gain(self, profile: RotorProfile) -> float:
+        """Clip-independent gain putting the comb at ``target_rms``.
+
+        Derived from the profile (``rms = sqrt(sum a_k^2 / 2)``) rather than
+        measured per clip, so the level never leaks information about the
+        window's trajectory.
+        """
+        comb_rms = float(np.sqrt(np.sum(np.asarray(profile.a_k, dtype=np.float64) ** 2) / 2.0))
+        return float(self.target_rms / (comb_rms or 1.0))
+
+
+def render_fixed_comb(
+    rps: np.ndarray,
+    profile: RotorProfile,
+    *,
+    sample_rate: int,
+    gain: float,
+    rng: np.random.Generator,
+    with_floor: bool = True,
+) -> np.ndarray:
+    """Render one rotor's frozen-profile comb (+ floor) from a ``(T,)`` track.
+
+    Harmonic phases are drawn per call (they are unobservable to a magnitude
+    objective) but the amplitudes are the spec's, so two calls on the same
+    trajectory differ only in phase.
+    """
+    rps = np.asarray(rps, dtype=np.float64)
+    out = _comb_waveform(rps, np.asarray(profile.a_k, dtype=np.float64), sample_rate, rng)
+    if with_floor:
+        out = out + _floor_waveform(
+            rps.shape[-1], profile.floor_tilt, profile.floor_level, sample_rate, rng
+        )
+    return (out * float(gain)).astype(np.float64)

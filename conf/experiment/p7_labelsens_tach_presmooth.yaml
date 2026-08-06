@@ -1,0 +1,41 @@
+# @package _global_
+# ARM C — the mitigation. Arm B's label passed through the
+# campaign's 5 Hz detrended low pass (tracking.telemetry_refit.presmooth, via
+# data_processing.rps_corruption.presmooth_track). It cuts the label error
+# 0.106 -> 0.037 rev/s while moving the TRUE track by only 0.017, so how much
+# of arm A this recovers is the mitigation's ceiling.
+#
+# Every arm is byte-identical except data.{train,valid}.params.label_mode.
+# Same seed, same epoch/patience budget, same optimizer — the comparison is
+# only meaningful at a shared budget. Batch doc:
+# docs/experiments/generator-label-sensitivity.md.
+defaults:
+  - override /data: static_comb_gen
+  - override /model: positional_harmonic_gen
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: p7_labelsens_tach_presmooth
+seed: 1234
+epochs: 40
+patience: 8
+batch_size: 32
+num_workers: 6
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter: freqs_to_phasors uses a complex cumprod and
+# "cumprod_cuda" is not implemented for ComplexHalf (E6 finding).
+amp: false
+
+data:
+  train:
+    params:
+      label_mode: tach_presmooth
+  valid:
+    params:
+      label_mode: tach_presmooth

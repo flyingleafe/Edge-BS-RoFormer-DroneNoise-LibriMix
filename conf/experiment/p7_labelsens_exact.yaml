@@ -1,0 +1,40 @@
+# @package _global_
+# ARM A — exact labels. The control for everything that is NOT label
+# noise: same loss, same model, same budget, same trajectories. If A itself
+# underfits the high harmonics, the objective (or the capacity) is the cause and
+# label noise is exonerated before arm B is even read.
+#
+# Every arm is byte-identical except data.{train,valid}.params.label_mode.
+# Same seed, same epoch/patience budget, same optimizer — the comparison is
+# only meaningful at a shared budget. Batch doc:
+# docs/experiments/generator-label-sensitivity.md.
+defaults:
+  - override /data: static_comb_gen
+  - override /model: positional_harmonic_gen
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: p7_labelsens_exact
+seed: 1234
+epochs: 40
+patience: 8
+batch_size: 32
+num_workers: 6
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter: freqs_to_phasors uses a complex cumprod and
+# "cumprod_cuda" is not implemented for ComplexHalf (E6 finding).
+amp: false
+
+data:
+  train:
+    params:
+      label_mode: exact
+  valid:
+    params:
+      label_mode: exact
