@@ -355,8 +355,12 @@ def main() -> int:
     ap.add_argument("--out", default="results/gen_label_sensitivity")
     ap.add_argument(
         "--f0-grid",
-        default="64,72,80,88",
-        help="constant rev/s for the line readout; each must make k*f0*dur integral",
+        default="76,80,84,88",
+        help=(
+            "constant rev/s for the line readout. Each must make k*f0*dur integral AND "
+            "lie inside the training marginal (measured p5-p95 = 75.6-89.9 rev/s): a grid "
+            "point outside it measures extrapolation, not the learned line amplitude."
+        ),
     )
     ap.add_argument("--dur", type=float, default=4.0)
     ap.add_argument("--scale-k-max", type=int, default=12)
