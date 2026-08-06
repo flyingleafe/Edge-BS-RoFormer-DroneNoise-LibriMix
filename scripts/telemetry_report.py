@@ -315,9 +315,13 @@ def profile_section(rows: list[dict[str, Any]], component: str = "phase_noise") 
                 # crosses zero (the ridge, in dB) has no meaningful relative
                 # drop, so the absolute one is what the null is compared on.
                 "depth": round(float(np.nanmax(mean) - np.nanmin(mean)), 5),
-                "curvature_drop": round(
-                    float(np.nanmax(mean) - np.nanmin(mean)) / max(float(np.nanmin(mean)), 1e-12),
-                    4,
+                "curvature_drop": (
+                    round(
+                        float(np.nanmax(mean) - np.nanmin(mean)) / float(np.nanmin(mean)),
+                        4,
+                    )
+                    if np.isfinite(np.nanmin(mean)) and float(np.nanmin(mean)) > 1e-6
+                    else None
                 ),
                 "ci": {
                     "lo": round(float(np.percentile(draws, 2.5)), 4) if len(draws) > 50 else None,
@@ -505,9 +509,13 @@ def show(report: dict[str, Any]) -> None:
         ci = m["ci"]
         span = f"[{ci['lo']:+.3f},{ci['hi']:+.3f}]" if ci.get("lo") is not None else "—"
         val = f"{m['scale_pct']:+.3f}" if m["scale_pct"] is not None else "—"
+        drop = m.get("curvature_drop")
         p(
             f"  {tag:46s} {val:>8s} {span:>18s}  depth {m.get('depth', float('nan')):.4f}"
-            f"  drop {m['curvature_drop']:.3f}  {m['note']}"
+            f"  drop {drop:.3f}  {m['note']}"
+            if drop is not None
+            else f"  {tag:46s} {val:>8s} {span:>18s}  "
+            f"depth {m.get('depth', float('nan')):.4f}  {m['note']}"
         )
     for comp, blk in sorted(report.get("profile_all", {}).items()):
         p(f"\n  -- same profile read on {comp} --")
@@ -515,9 +523,11 @@ def show(report: dict[str, Any]) -> None:
             if "|none" not in tag and "|on|none" not in tag:
                 continue
             val = f"{m['scale_pct']:+.3f}" if m["scale_pct"] is not None else "—"
+            drop = m.get("curvature_drop")
             p(
                 f"  {tag:46s} {val:>8s}  depth {m.get('depth', float('nan')):.4f}"
-                f"  drop {m['curvature_drop']:.3f}  {m['note']}"
+                + (f"  drop {drop:.3f}" if drop is not None else "")
+                + f"  {m['note']}"
             )
 
     p("\n" + "=" * 78)
