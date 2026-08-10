@@ -5,6 +5,7 @@ Self-contained paper drafts. Each subdirectory is one paper.
 | Directory | Status | What it is |
 |-----------|--------|------------|
 | `rps-from-drone-sound/` | draft (May 2026) | Short paper on audio-only rotor speed estimation. Uses only locally-stored results; builds with `latexmk` via the project flake. |
+| `2026-07_coupled-vk-blind-rps/` | draft (Aug 2026) | Blind multi-rotor VK tracking paper. Builds with **Tectonic v2** (see its `README.md`): sources in `src/` with `src/index.tex` as the root, output `build/main/main.pdf`. |
 
 ## Conventions
 
