@@ -26,11 +26,62 @@ from tracking.fitness_vk import FVKConfig, FVKStage, fvk_score, optimize_traject
 from tracking.protocols import load_prep_window, pit_align
 ```
 
-### Load a frozen protocol window
+### Load data through dload (the common path)
 
-`load_prep_window` reads one frozen `beatvk` window. The prep directory
-resolves automatically (`TELEMETRY_PREP_DIR`, then the pulled cache, then the
-built cache). The 15 window keys: `FLY124__w00` … `FLY124__w05` and
+Every recording lives in a pinned dload dataset — `plots.explore` is the
+front door. `beatvk-valid-raw` holds the four protocol recordings (44.1 kHz
+audio + `rps_raw` telemetry + the per-recording window manifest in meta), and
+the rich frame datasets (`DREGON-frames`, `michaels-frames`, `AVQ`, …) hold
+full recordings with all telemetry entries. `explore.datasets()` lists the
+catalog.
+
+```python
+from plots import explore
+from data_processing.frames import meta_dict, resample_audio_series
+from tracking.protocols import WindowSpec, slice_window
+
+rec = explore.pick("beatvk-valid-raw", "free-flight_speech-low")
+meta = meta_dict(rec)
+meta["windows"]                      # the protocol window manifest
+
+audio16 = np.asarray(resample_audio_series(rec["audio"], 16000).data, np.float64)
+rps = rec["rps_raw"]                 # (rotor, time) Series on telemetry stamps
+
+w = meta["windows"][1]
+spec = WindowSpec(protocol="beatvk", recording_id=meta["recording_id"],
+                  index=1, start_s=w["start_s"], end_s=w["end_s"],
+                  regime=w["regime"])
+audio, ft, r_telem, edge = slice_window(
+    audio16, 16000, spec,
+    ts=np.asarray(rps.timestamps, np.float64), vals=np.asarray(rps.data),
+)
+sr = 16000
+```
+
+This reproduces the frozen prep window EXACTLY (audio and telemetry, max
+diff 0.0 against the cache — measured 2026-08-11). For an arbitrary
+(non-protocol) clip from any frames dataset, slice the frame in time and go
+through the same resample:
+
+```python
+rec = explore.pick("DREGON-frames", "free-flight_speech-low",
+                   rps="motors_measured")          # audio + rps, coerced
+t_rec = float(rec.t_start)            # DREGON stamps are epoch-absolute
+clip = rec.time[t_rec + 10.0 : t_rec + 26.0]      # tick-exact time slice
+audio = np.asarray(resample_audio_series(clip["audio"], 16000).data, np.float64)
+r_ts = np.asarray(clip["rps"].timestamps, np.float64)
+r_vals = np.asarray(clip["rps"].data, np.float64)
+t0 = float(clip.t_start)
+ft = np.arange(0.0, clip.duration, 0.032)
+r_telem = np.stack([np.interp(ft + t0, r_ts, row) for row in r_vals])
+```
+
+### Shortcut: the frozen prep cache
+
+`load_prep_window` reads the same window from the campaign's local `.npz`
+cache with no network and no resample. Use it when the cache is present
+(`TELEMETRY_PREP_DIR`, then the pulled cache, then the built cache). The 15
+window keys: `FLY124__w00` … `FLY124__w05` and
 `free-flight_{nosource,speech-low,whitenoise-low}_room1__w00` … `__w02`.
 
 ```python
@@ -42,8 +93,11 @@ r_telem = w["r"]        # (4, 500) raw telemetry, rev/s
 w["regime"]             # 'cruise'
 ```
 
-For audio outside the protocol, load it with `soundfile` or
-`plots.explore.pick`, and build the arrays in the same shapes.
+Note on the purity rule: `load_prep_window` does not touch
+`data_processing` — it reads pre-built `.npz` files with numpy (the builder
+that WROTE them, `scripts/beatvk_vk_arms.py --build-preps`, lives outside
+the package). The dload cells above run in the notebook, on the
+`data_processing` side of the seam, so the import-linter contract holds.
 
 ### Compute cost, and how to control it
 
