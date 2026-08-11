@@ -82,17 +82,19 @@ What is in here
 
 Which knob is the basin
 -----------------------
-Fact 5 names ``K`` as the resolution axis because a coherent harmonic sum has
-basin ``1/(K T)``. That is NOT this landscape: here every harmonic carries its
-own VK envelope inside a ``k``-scaled band, so the capture radius is
-``bw_rps / 2`` rev/s at every harmonic and raising ``k_max`` does not shrink it —
-measured, the gradient at a 0.5 rev/s constant error still points at truth at
-``k_max`` = 80. What ``k_max`` moves is the DEPTH and the curvature of the well
-(objective at truth 0.587 -> 0.073 from ``k_max`` 5 to 80 on a 1 s window, its
-±0.1 rev/s neighbours barely moving), which is the precision half of the same
-law and why the schedule still starts coarse. **``bw_rps`` is the basin knob,
-and it has units.** Opened to a non-capture 2.0 rev/s, ``k_max`` = 80 does break
-into 7 local minima inside ±1 rev/s against 2 at ``k_max`` = 5.
+Two measurements, one verdict: **``k_max`` is the knob that controls the
+landscape an optimizer sees; ``bw_rps`` annealing is inert.** The per-harmonic
+``k``-scaled band gives a capture radius ``bw_rps / 2`` rev/s at every harmonic
+(the gradient at a 0.5 rev/s constant error still points at truth at
+``k_max`` = 80), but the fvk_bench continuation cases (results/fvk_bench,
+2026-08-11) show what matters for optimization: sweeping ``bw`` 4 -> 0.5 at
+``k_max`` = 80 never moved the offset-profile argmin (max jump 0.000) and did
+not reduce the local-minimum count, while raising ``k_max`` 5 -> 80 moved the
+count from 1 to 6-16 (7 inside ±1 rev/s at a 2.0 rev/s band). ``k_max`` also
+sets depth and curvature (objective at truth 0.587 -> 0.073 from ``k_max`` 5
+to 80 on a 1 s window). So the continuation schedule anneals ``k_max`` — the
+Fact-5 ``1/(K T)`` intuition survives as a multimodality law, not a smooth
+basin-width law — and ``rho_scale`` stages are kept only as an optional widener.
 
 The two Stages (:func:`tracking.fvk_stage`, :func:`tracking.fvk_refine_stage`)
 live in :mod:`tracking.top` with every other stage.
