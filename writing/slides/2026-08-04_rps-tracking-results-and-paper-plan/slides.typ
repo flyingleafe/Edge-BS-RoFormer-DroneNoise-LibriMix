@@ -13,7 +13,11 @@
 )
 
 #let cbox(body, fill: luma(235), stroke-color: luma(160)) = box(
-  fill: fill, stroke: 0.7pt + stroke-color, inset: 8pt, radius: 3pt, body,
+  fill: fill,
+  stroke: 0.7pt + stroke-color,
+  inset: 8pt,
+  radius: 3pt,
+  body,
 )
 
 = Why blind annotation
@@ -83,7 +87,7 @@
 #align(center, image("assets/spec_h70_telemetry.png", height: 72%))
 
 #text(size: 0.85em)[
-  DREGON, harmonic 70 of rotor 0, band 5.4--6.6 kHz. The dashed line is
+  DREGON, harmonic 70 of rotor 0, band 5.7--6.4 kHz. The dashed line is
   70 #sym.times the telemetry rate. The line in the audio runs *next to* it.
   So: how precise do labels have to be, and how do we even measure that?
 ]
@@ -107,7 +111,9 @@
       stands at DC of the demodulated spectrum $E_k$:
     ]
     #v(0.3em)
-    $ "ridge" = 10 log_10 frac(angle.l abs(E_k (f))^2 angle.r_(abs(f) <= w), "med"_(w < abs(f) <= W) abs(E_k)^2 \/ ln 2) $
+    $
+      "ridge" = 10 log_10 frac(angle.l abs(E_k (f))^2 angle.r_(abs(f) <= w), "med"_(w < abs(f) <= W) abs(E_k)^2 \/ ln 2)
+    $
     #v(0.3em)
     #text(size: 0.78em)[
       Numerator: mean power in the line window ($w$ = 0.1 rev/s around the
@@ -182,7 +188,9 @@
   Assume the candidate trajectories are true, solve the coupled Vold--Kalman
   envelopes under them, and score the *profiled residual*:
 ]
-$ F(r) = min_a norm(y - sum_m "Re"[a_m c_m (r)])^2 + sum_m rho_m^2 norm(Delta^2 a_m)^2, quad c_m (t) = e^(j 2 pi k_m integral r) $
+$
+  F(r) = min_a norm(y - sum_m "Re"[a_m c_m (r)])^2 + sum_m rho_m^2 norm(Delta^2 a_m)^2, quad c_m (t) = e^(j 2 pi k_m integral r)
+$
 #text(size: 0.9em)[
   All rotors and harmonics compete for the same energy (twin-aware), and $F$
   is *differentiable in the trajectory* — the trajectory can literally be
@@ -464,14 +472,13 @@ $ F(r) = min_a norm(y - sum_m "Re"[a_m c_m (r)])^2 + sum_m rho_m^2 norm(Delta^2 
     stroke: 0.5pt + luma(200),
     inset: 6pt,
     [*contribution*], [*status*], [*evidence*],
-    [1. A measure of trajectory--audio fit: calibrated, fixed-DOF,
-      differentiable], [instrument done; alias (order) penalty still open],
-      [lock meter + $F_"VK"$; landscape benchmark],
-    [2. A precise blind-annotation algorithm], [ours is fastest and closest,
+    [1. A measure of trajectory--audio fit], [done], [lock meter + $F_"VK"$; landscape benchmark],
+    [2. A precise blind-annotation algorithm],
+    [ours is fastest and closest,
       *not yet precise enough* (#sym.approx 1.3 rev/s blind vs 0.2 target)],
-      [Pareto: ours 8--165 s/window; L-BFGS 12--25#sym.times cost],
-    [3. Pseudo-labels for all unannotated drone audio], [unlocked by 1+2],
-      [93 GiB unlabeled tail],
+    [Pareto: ours 8--165 s/window; L-BFGS 12--25#sym.times cost],
+
+    [3. Pseudo-labels for all unannotated drone audio], [unlocked by 1+2], [93 GiB unlabeled],
   )
 ]
 
@@ -909,4 +916,3 @@ $ F(r) = min_a norm(y - sum_m "Re"[a_m c_m (r)])^2 + sum_m rho_m^2 norm(Delta^2 
   far less than the free trajectory, which is the same conclusion the scale
   profile reached.
 ]
-
