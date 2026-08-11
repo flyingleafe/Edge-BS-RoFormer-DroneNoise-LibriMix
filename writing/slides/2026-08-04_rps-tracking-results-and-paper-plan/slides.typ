@@ -16,30 +16,46 @@
   fill: fill, stroke: 0.7pt + stroke-color, inset: 8pt, radius: 3pt, body,
 )
 
-= What this deck asks
+= Why blind annotation
 
-#v(0.8fr)
-#block(width: 100%, text(size: 1.15em)[
-- Why label quality, not model size, is the current ceiling
-- How annotation quality is measured, with nulls and hold-outs
-- Why a detector is not an objective, and what a usable measure needs
-- How the measure gets optimized, and what that unlocks
-])
-#v(0.8fr)
+#grid(
+  columns: (1.05fr, 1fr),
+  gutter: 1.2em,
+  align(horizon)[
+    Neural RPS predictors and noise generators are limited by *labeled real
+    audio*: rotor-speed trajectories aligned to the recording.
+    #v(0.4em)
+    A precise *blind* annotator — even a slow one — turns every unlabeled
+    drone recording into training data.
+  ],
+  align(horizon)[
+    #text(size: 0.8em)[
+      #table(
+        columns: 3,
+        align: (left, right, left),
+        stroke: 0.5pt + luma(200),
+        inset: 5pt,
+        [*dataset*], [*size*], [*RPS labels*],
+        [DREGON], [2.8 GiB], [telemetry (biased)],
+        [Michael's FLY124/125], [6.6 GiB], [telemetry (recalibrated)],
+        [AVQ ego-noise], [0.5 GiB], [VK pseudo-labels only],
+        [DroneAudioSet], [88.4 GiB], [*none*],
+        [AeroSonicDB], [4.1 GiB], [*none*],
+        [HornBase + HUSTmotor], [0.4 GiB], [*none*],
+      )
+    ]
+    #v(0.3em)
+    #text(size: 0.78em, style: "italic")[
+      #sym.approx 93 GiB of drone audio has no rotor-speed labels at all.
+    ]
+  ],
+)
 
 #speaker-note[
-  The story in one line: every neural model in this project is limited by the
-  rotor-speed labels it is trained on, so the next contribution is a way to
-  produce better labels from audio alone. Four parts. First the evidence that
-  labels are the bottleneck. Second, an instrument that says how good an
-  annotation is, with calibrated nulls. Third, why that instrument cannot be
-  used as a training objective, and what the literature says a usable measure
-  must look like. Fourth, the optimization ladder and the experiments that are
-  running now. The deck closes on the payoff, which is pseudo-labels for every
-  drone recording we have.
+  The bottleneck is not model capacity, it is labeled real audio. Everything
+  below 3 rows of this table is unusable for conditioning or supervision
+  today. A blind annotator that is precise enough converts the entire tail.
 ]
-
-// ═══ PART 1: labels are the bottleneck ════════════════════════════════════
 
 = A constant label bias collapses the generator's high harmonics
 
@@ -62,47 +78,51 @@
   never the problem. The label was.
 ]
 
-= Generator-trained predictors do not survive real audio
+= The prominent harmonic does not sit on the label
 
-#align(center, image("assets/sim2real.png", height: 76%))
+#align(center, image("assets/spec_h70_telemetry.png", height: 72%))
 
-#align(center, text(size: 0.85em)[
-  Same architecture, same real validation set. Generated-noise training scores
-  worse than predicting the mean.
-])
+#text(size: 0.85em)[
+  DREGON, harmonic 70 of rotor 0, band 5.4--6.6 kHz. The dashed line is
+  70 #sym.times the telemetry rate. The line in the audio runs *next to* it.
+  So: how precise do labels have to be, and how do we even measure that?
+]
 
 #speaker-note[
-  The second symptom of the same disease. Train an RPS predictor on generated
-  drone noise, where the labels are exact by construction, and it converges
-  nicely on the generated stream, then reads 222 PIT-MSE on the real
-  validation set with a negative R squared, against 7.3 for the same
-  architecture trained on real recordings. The predictor learns the
-  generator's amplitude-to-rate shortcut, which does not exist in real audio.
-  So we cannot escape the label problem by synthesizing our way around it: the
-  generator inherits its own conditioning error, and its output does not
-  transfer.
+  This is the raw observation that started the whole question. At the 70th
+  harmonic a fraction of a percent of rate error is tens of hertz, and the
+  telemetry visibly misses the acoustic line. Whether this matters for
+  training, and by how much, needs a measurement, not an eyeball.
 ]
 
 = One rig's telemetry sits on the comb, the other's does not
 
 #grid(
-  columns: (1.15fr, 1fr),
+  columns: (1fr, 1.15fr),
   gutter: 1.2em,
-  align(center + horizon, image("assets/ridge_telemetry.png", width: 100%)),
   align(horizon)[
     #text(size: 0.85em)[
-      Same statistic, same settings, 15 frozen windows. Each bar's own
-      off-comb null is the hatched bar.
+      *The lock meter.* Demodulate the audio at the carrier the labels imply
+      (harmonic $k$ #sym.times rotor rate). If the labels are correct, a line
+      stands at DC of the demodulated spectrum $E_k$:
     ]
-    #v(0.5em)
+    #v(0.3em)
+    $ "ridge" = 10 log_10 frac(angle.l abs(E_k (f))^2 angle.r_(abs(f) <= w), "med"_(w < abs(f) <= W) abs(E_k)^2 \/ ln 2) $
+    #v(0.3em)
+    #text(size: 0.78em)[
+      Numerator: mean power in the line window ($w$ = 0.1 rev/s around the
+      carrier). Denominator: the local noise floor — median power at nearby
+      frequencies just outside the window; the $ln 2$ calibrates pure noise to
+      exactly 0 dB. Mean over rotors #sym.times mics #sym.times harmonics
+      #sym.times blocks. Hatched bars: the same reading on an off-comb carrier
+      (the null).
+    ]
+    #v(0.4em)
     #text(size: 0.85em)[
       FLY124 clears its null by 3.5 dB. DREGON reads its null.
     ]
-    #v(0.5em)
-    #text(size: 0.78em, style: "italic")[
-      The instrument itself is the next section.
-    ]
   ],
+  align(center + horizon, image("assets/ridge_telemetry.png", width: 100%)),
 )
 
 #speaker-note[
@@ -117,381 +137,66 @@
   trained on a carrier that misses the lines.
 ]
 
-= The three symptoms have one cure
+= Roughly right is not enough
 
-#v(0.5fr)
+#v(1fr)
+#align(center, cbox(text(size: 1.1em)[
+  A constant 0.54 % label bias alone costs *−8.6 dB* on high harmonics
+  (exact labels train flat). The telemetry itself is off by 0.35--0.85 %.
+  #v(0.5em)
+  *So we need labels refined beyond telemetry precision — and a measure that
+  says when they are right.*
+]))
+#v(1fr)
+
+#speaker-note[
+  The generator experiment and the lock meter close the loop: label error at
+  the level real telemetry actually has is enough to destroy the training
+  signal on the harmonics that matter. Roughly right does not exist here.
+]
+
+= Refinement puts the label back on the line
+
 #grid(
-  columns: (1fr, auto, 1fr),
+  columns: (1.15fr, 1fr),
   gutter: 1.0em,
-  align(horizon)[
-    #cbox(text(size: 1.0em)[
-      *Symptoms*
-      - Generator: high harmonics collapse
-      - Predictors: no sim-to-real transfer
-      - DREGON: labels are off the comb
-    ])
-  ],
-  align(center + horizon, text(size: 2.0em)[#sym.arrow.r]),
-  align(horizon)[
-    #cbox(fill: rgb("#dceaf7"), stroke-color: rgb("#1f77b4"))[
-      #text(size: 1.0em)[
-        *What is needed*
-        - Precise blind annotation of real recordings
-        - Slow is acceptable: it runs once per recording
-        - Then every recording carries a pseudo-label
-      ]
-    ]
-  ],
-)
-#v(0.5fr)
-
-#speaker-note[
-  Put the three together. Better telemetry is not available: DREGON's rig is
-  fixed, and half the useful drone-noise data in the world has no telemetry at
-  all. Synthetic data does not transfer. So the missing capability is
-  annotation from the audio itself, at a precision better than the telemetry we
-  do have. It is allowed to be slow, because it runs once per recording rather
-  than once per training step. That single capability unlocks the generator,
-  the predictors, and every unlabelled recording we can get.
-]
-
-// ═══ PART 2: measuring annotation quality ═════════════════════════════════
-
-= The instrument: a fixed band against a local floor
-
-#grid(
-  columns: (1.25fr, 1fr),
-  gutter: 1.0em,
-  align(center + horizon, image("assets/ridge_instrument.png", width: 100%)),
-  align(horizon)[
-    #text(size: 0.78em)[
-      $ "ridge" = 10 log_10 ("power in" abs(f) <= f_"dc" (k)) / ("floor density") $
-    ]
-    #v(0.4em)
-    #text(size: 0.85em)[
-      #table(
-        columns: 2,
-        align: (left, left),
-        stroke: 0.5pt + luma(200),
-        inset: 5pt,
-        [fixed], [band, harmonic set, blocks, mask, all from the reference],
-        [nulls], [off-comb (half-integer), mismatched window, permuted rotors],
-        [hold-outs], [even/odd $k$, mic 0, half the blocks],
-        [calibrated], [pure noise reads 0 dB],
-      )
+  align(center + horizon, image("assets/spec_h70_refined.png", width: 100%)),
+  align(center + horizon)[
+    #image("assets/ridge_candidates.png", width: 100%)
+    #text(size: 0.8em)[
+      The fitted trajectory locks *+2.47 dB* over DREGON telemetry; on FLY124
+      (recalibrated) it has almost nothing left to fix (+0.26 dB).
     ]
   ],
 )
 
 #speaker-note[
-  How the reading works, and why it cannot be gamed. Demodulate one microphone,
-  one harmonic, one time block at the carrier the candidate implies. If the
-  candidate is right, the energy piles up in a narrow band around zero; if the
-  carrier is off by more than the band width, which is 0.1 rev per second, the
-  line leaves the band and the reading falls to the noise value. The floor
-  comes from an annulus of the same spectrum, with the median-to-mean
-  correction, so pure noise reads zero rather than plus 1.6 dB. Everything
-  except the carrier is pinned to the window's reference trajectory, so a
-  flexible candidate cannot buy itself an easier cell set. A test asserts the
-  cell count is identical across every candidate and every control. And every
-  reading carries three nulls plus four hold-out families, which is what makes
-  it a verdict instrument rather than a score.
+  Left: the same window and harmonic as before, telemetry dashed, the refined
+  trajectory solid — the refined line sits on the acoustic line. Right: the
+  lock meter agrees across all 15 frozen windows and both rigs.
 ]
 
-= The fitted trajectory locks 2.47 dB better than the labels
+= The measure, and what we do with it
 
-#align(center, image("assets/ridge_candidates.png", width: 82%))
-
-#align(center, text(size: 0.85em)[
-  DREGON hold-out families for the fitted trajectory: 1.38, 2.35, 1.97, 1.78 dB,
-  all clearing both nulls.
-])
+#text(size: 0.9em)[
+  Assume the candidate trajectories are true, solve the coupled Vold--Kalman
+  envelopes under them, and score the *profiled residual*:
+]
+$ F(r) = min_a norm(y - sum_m "Re"[a_m c_m (r)])^2 + sum_m rho_m^2 norm(Delta^2 a_m)^2, quad c_m (t) = e^(j 2 pi k_m integral r) $
+#text(size: 0.9em)[
+  All rotors and harmonics compete for the same energy (twin-aware), and $F$
+  is *differentiable in the trajectory* — the trajectory can literally be
+  moved around by gradient descent. Three things to do with it:
+  + *L-BFGS on $F$* from any starting point — slow, precise, the oracle.
+  + *Ours: blind Viterbi seed #sym.arrow peel #sym.arrow.l.r pi-Kalman* — fast, how close to the oracle?
+  + *Baselines*: IAVKF-style adaptive VK, ridge/DP tracking.
+]
 
 #speaker-note[
-  Now score candidate annotations on the same cells. DREGON's raw telemetry
-  sits at its null. One constant scale factor lifts it to plus 0.14, which just
-  clears the null. A freely fitted trajectory, from the refinement chain
-  described later, reaches plus 1.88, which is 2.47 dB above the labels. The
-  negative control is the point of the slide: the identical procedure on
-  Michael's already-correct labels buys 0.26 dB, nine times less. A fitter that
-  was simply flexible would have bought a similar amount on both. It did not,
-  so the DREGON gain is a real correction rather than overfitting. Coverage,
-  honestly stated: the gate sees 5.7 percent of DREGON's comb line energy
-  against 18.6 percent of Michael's, because four rotors at high harmonic
-  numbers are genuinely unresolvable.
-]
-
-= A single constant explains only a third of the error
-
-#align(center, image("assets/scale_profile.png", width: 82%))
-
-#align(center, text(size: 0.85em)[
-  Hold-out families agree to 0.06 pp. The best constant buys 0.74 dB; the free
-  trajectory buys 2.47 dB.
-])
-
-#speaker-note[
-  This is the one-parameter version of the same question: slide a constant rate
-  scale across the labels and read the lock. The profile has a single free
-  parameter, so its extremum cannot be bought with flexibility, and every
-  hold-out family is scored on cells the fit never chose. The extremum is minus
-  0.683 percent with a confidence interval from minus 0.88 to minus 0.53, and
-  the four hold-out families land within 0.06 of a percentage point of each
-  other. The off-comb null has eight times less depth and no interior extremum.
-  Michael's recalibrated labels return zero with a basin four times deeper,
-  which is what a correct label set should look like. And the last number is
-  the interesting one: the best constant recovers only about a third of what
-  the free trajectory recovers, so the label error is not a scale error.
-]
-
-// ═══ PART 3: from detector to objective ═══════════════════════════════════
-
-= The basin law: precision and basin width are one phenomenon
-
-#align(center, image("assets/basin_law.png", width: 78%))
-
-#align(center, text(size: 0.85em)[
-  Three literatures derive the same law: harmonic least squares, Vold--Kalman
-  passband, phase-locked-loop lock-in range.
-])
-
-#speaker-note[
-  Why the detector cannot be used as an objective. Any measure that sums
-  coherent evidence over K harmonics on a window of T seconds has a main lobe
-  in rate of width one over K times T. Harmonic nonlinear least squares derives
-  it as a grid requirement, the Vold-Kalman literature as the speed error its
-  passband tolerates, and the phase-locked-loop literature as the lock-in
-  range. At 80 harmonics and a one-second window that is 0.0125 Hz, so the 40
-  to 100 Hz search interval holds about 4800 local maxima per comb. DREGON's
-  measured label error is 16 to 40 basin widths away from truth. The same
-  arithmetic explains why the phase refiner is inert outside its capture range,
-  and it also says the price is unavoidable: the high harmonics carry the
-  precision, and the narrow basin is that precision seen from the other side.
-]
-
-= Sub-multiples are nested, so no smoothing removes them
-
-#align(center, image("assets/alias_lattice.png", width: 94%))
-
-#align(center, text(size: 0.85em)[
-  The fit term is *identical* at $f_0 \/ 2$. Escapes: an order penalty, or
-  discrete multiplier moves $u in {1\/3, 1\/2, 2\/3, 3\/2, 2, 3}$ with the
-  harmonic count corrected jointly.
-])
-
-#speaker-note[
-  The second landscape fact, and it is worse than a local minimum. The comb at
-  half the rate with twice the harmonics contains the true comb as a subset, so
-  under any energy-sum measure its residual is the true residual plus whatever
-  the empty slots collect. The degeneracy is exact, not approximate, and it is
-  independent of how many harmonics are summed, so no annealing schedule and no
-  temporal smoothing ever removes it. This derives the octave errors that the
-  pitch literature reports empirically. Two escapes exist and both are needed:
-  a model-order penalty that charges for predicted lines landing on no energy,
-  fixed rather than evidence-adapted because the adaptive version weakens
-  exactly at low signal-to-noise; and discrete multiplier moves that rescale
-  the trajectory and correct the harmonic count at the same time, since a bare
-  halving proposal is always rejected.
-]
-
-= What an optimizable measure has to do
-
-#v(0.7fr)
-#text(size: 0.95em)[
-  #table(
-    columns: (1.15fr, 1fr, 1.15fr, 1.15fr),
-    align: (left, left, left, left),
-    stroke: 0.5pt + luma(180),
-    inset: 8pt,
-    table.header(
-      [*requirement*], [*ridge (detector)*], [*spectral loss*], [*profiled VK residual*]
-    ),
-    [optimum at truth], [yes, sharp], [octave-broken], [yes, with an order penalty],
-    [usable gradient],
-    [none beyond 0.1 rev/s],
-    [mel ranking 0.511, a coin flip],
-    [closed form, envelope theorem],
-    [twin rotors], [scored per carrier], [no mechanism], [coupling blocks compete],
-    [capture range],
-    [fixed 0.10 rev/s window],
-    [window length, no units],
-    [bandwidth $rho$, in Hz],
-    [continuation], [none], [window ladder], [$K$ ladder, basin known at every level],
-  )
-]
-
-#v(0.9em)
-#align(center, text(size: 0.92em)[
-  Gradient descent on a default multi-scale spectral loss lands 2.3 octaves
-  off (20% correct); the optimal-transport variant fixes it to 75%.
-])
-#v(0.7fr)
-
-#speaker-note[
-  Put the requirements next to the candidates. The ridge is a sharp detector
-  and a dead objective: beyond a tenth of a rev per second it carries no slope
-  at all. Spectral losses are refuted as the outer objective by direct
-  measurement in the differentiable-DSP literature: gradient-sign ranking
-  accuracy for a mel distance on a single clean sinusoid is 0.511, which is a
-  coin flip, and descending a default multi-scale spectral loss lands 2.3
-  octaves away on average. Configuration fixes part of it, and the
-  optimal-transport variant fixes most of it, but neither gives twin-rotor
-  competition or a capture range with units. The right-hand column is the
-  measure the requirements point at, and it already exists in our own solver.
-]
-
-= The landscape, measured
-
-#align(center, image("assets/bench_gra.png", height: 68%))
-
-#align(center, text(size: 0.82em)[
-  $F_"VK"$ at the coarse rung is the only measure with a positive optimum margin
-  over the structured alias set. It stays monotone out to 2.83 rev/s, and reads
-  0.87 to 0.93 at $-20$ dB, where ridge, broadband and harmonic sum are at chance.
-])
-#v(0.3em)
-#align(center, text(size: 0.82em, style: "italic")[
-  And the nested sub-multiple ($f_0 \/ 2$, $2K$ harmonics) beats every measure in
-  100% of units: the degeneracy of the previous slide, now measured. A fixed
-  harmonic cap only hid it.
-])
-
-#speaker-note[
-  Step one of the matrix, run before the optimizer was trusted with anything.
-  Six candidate measures, scored on synthetic combs with known truth and on real
-  cruise audio, at three signal-to-noise levels. Three readings matter. First,
-  the optimum margin: only the coupled residual at the coarse harmonic rung puts
-  the true trajectory below every member of the structured alias set, and every
-  other measure is negative, which means some alias beats truth. Second, the
-  basin: the coarse rung stays monotone out to 2.8 rev per second, roughly twenty
-  times the fine rung, which is what makes the harmonic anneal a real ladder
-  rather than a story. Third, the gradient-sign accuracy on this figure: at minus
-  twenty decibels the coarse rung still ranks a five percent worse step correctly
-  most of the time, while the ridge, the broadband share and the harmonic sum sit
-  on the coin-flip line. The last line is the honest one. The nested sub-multiple
-  beats the truth for every measure in every single unit, exactly as the algebra
-  said it must. Earlier campaigns did not see it only because they capped the
-  harmonic count. So the order penalty is not a refinement, it is load-bearing.
-]
-
-= The measure: the profiled coupled Vold--Kalman residual
-
-#v(0.7fr)
-#align(center, text(size: 1.25em)[
-  $ F(phi) = y^H y - y^H C(phi) [C(phi)^H C(phi) + S^T R^T R S]^(-1) C(phi)^H y $
-])
-
-#v(1.0em)
-#grid(
-  columns: (1fr, 1fr),
-  gutter: 1.2em,
-  text(size: 1.1em)[
-    - Envelopes solved in closed form, then substituted back
-    - Gradient in closed form or by autograd through the solve
-    - Off-diagonal blocks make near-equal rotors compete for energy
-  ],
-  text(size: 1.1em)[
-    - $rho$ maps to a bandwidth in Hz, so capture range is a knob with units
-    - Annealing $K$ is graduated non-convexity with a known basin at each level
-    - Without the smoothness term it is the maximum-likelihood projector
-  ],
-)
-#v(0.7fr)
-
-#speaker-note[
-  The Vold-Kalman cost is quadratic in the envelopes once the trajectory is
-  fixed, so the envelopes can be solved and substituted back, leaving a
-  function of the trajectory alone. Four properties earn it the job. It is
-  smooth in the trajectory with a closed-form gradient by the envelope theorem,
-  and our solver is already torch-only, so autograd is nearly free. The
-  off-diagonal coupling blocks are the only published mechanism that makes two
-  nearly equal rotors compete for the same energy, which is exactly the twin
-  problem. The regularization weight maps analytically to a bandwidth in hertz,
-  so the capture range is set in physical units rather than tuned. And
-  annealing the harmonic count is graduated non-convexity where, uniquely, the
-  basin width is known in closed form at every level: start around five
-  harmonics, where the basin is about 0.2 rev per second and swallows DREGON's
-  label error, and ladder up to eighty.
-]
-
-= The gap: nobody optimizes it over the trajectory
-
-#v(0.6fr)
-#align(center, text(size: 1.15em)[
-  #table(
-    columns: (1fr, 1.1fr, 1.2fr),
-    align: (left, left, left),
-    stroke: 0.5pt + luma(180),
-    inset: 10pt,
-    table.header([*line of work*], [*what it optimizes*], [*what it never does*]),
-    [Vold--Kalman order tracking], [envelopes, speed given by a tachometer], [treat the speed as free],
-    [Adaptive VK, 2024], [bandwidth adaptation], [calls optimizing over the speed "not feasible"],
-    [Sinusoidal modeling, 40 years], [discrete peak assignment], [a continuous step over a trajectory],
-  )
-])
-
-#v(0.8em)
-#align(center, text(size: 1.0em, style: "italic")[
-  The continuous step over a whole trajectory is the contribution.
-])
-#v(0.6fr)
-
-#speaker-note[
-  The contribution claim, and it is a specific one. The order-tracking
-  literature takes the shaft speed as given by a tachometer, because in
-  mechanical engineering there always is one. The 2024 adaptive Vold-Kalman
-  paper considers optimizing the cost over the instantaneous frequency and
-  states outright that it is not feasible. Sinusoidal modeling, from the
-  eighties onward, stops at assigning discrete spectral peaks to tracks and
-  smoothing them. So the continuous optimization of a whole speed trajectory
-  against the coupled residual is a named, verifiable gap, not a
-  differently-flavoured variant of something published.
-]
-
-// ═══ PART 4: optimizing the measure ═══════════════════════════════════════
-
-= Three rungs: the slow oracle, the baselines, and ours
-
-#v(0.6fr)
-#align(center, text(size: 1.1em)[
-  #table(
-    columns: (auto, 1.25fr, 1fr),
-    align: (left, left, left),
-    stroke: 0.5pt + luma(180),
-    inset: 10pt,
-    table.header([*rung*], [*method*], [*role*]),
-    [oracle],
-    [L-BFGS on the profiled residual under the $K$ anneal, started from telemetry],
-    [how good can an annotation get],
-    [baselines],
-    [adaptive-VK refinement; tacholess and ridge order tracking],
-    [what the literature already reaches],
-    [ours],
-    [blind comb Viterbi seed, then peel and phase-increment alternation],
-    [no telemetry at any stage],
-  )
-])
-
-#v(0.5em)
-#align(center, text(size: 0.85em, style: "italic")[
-  Sanity condition for the oracle: it must barely move Michael's labels, and
-  move DREGON's by 0.35 to 0.85 percent.
-])
-#v(0.6fr)
-
-#speaker-note[
-  Three rungs, and they answer different questions. The top rung starts from
-  telemetry and runs quasi-Newton optimization of the profiled residual under
-  the harmonic anneal. It is slow and it needs a seed, so it is not a
-  deployable tracker; it is the ceiling, the best annotation the audio can
-  support. The middle rung is what the literature reaches today, and it is what
-  a reviewer will ask about: adaptive Vold-Kalman refinement given a seed, and
-  the tacholess order-tracking family that estimates speed from the signal.
-  The bottom rung is ours and it is fully blind. The sanity condition matters
-  more than any number on this slide: the oracle must leave Michael's
-  recalibrated labels almost untouched while moving DREGON's by the amount the
-  fitness campaign already measured independently. If it moves both, it is a
-  flexible fitter and nothing it says can be trusted.
+  One scalar answers "how well do these trajectories fit this audio". It is
+  the VK solve we already trust, profiled over the envelopes, so its gradient
+  with respect to the trajectory is exact and cheap. The rest of the deck is
+  those three contestants.
 ]
 
 = Our seed: comb-matched Viterbi over the whole rate range
@@ -527,6 +232,87 @@
   Passive sonar tracks four simultaneous lines at minus twenty decibels on
   exactly this arithmetic. The output is one coarse global track, before
   anything is assigned to a rotor.
+]
+
+= Our algorithm, step 2: ramp handling
+
+#grid(
+  columns: (0.95fr, 1.05fr),
+  gutter: 1.2em,
+  align(horizon)[
+    Warm-up spectra carry only blade-pass lines, so the seeder used to promote
+    onto the wrong octave. Fix: a line-ratio check, plus an energy-timed bridge
+    across spool-up.
+    #v(0.5em)
+    #align(left, text(size: 0.85em, style: "italic")[
+      Ramp and warm-up windows went *15--36 #sym.arrow 2.9--4.0* MAE.
+    ])
+  ],
+  align(center, image("assets/stepper_viterbi_c.png", width: 100%)),
+)
+
+#speaker-note[
+  Take-off and landing are where the blind chain used to fail outright. During
+  spool-up the spectrum shows only blade-pass lines, and the old seeder read
+  that as a lower rate one octave down. The fix checks the line ratio to pick
+  the octave and bridges the ramp using the timing of the energy rise. It took
+  the worst windows from 15 to 36 rev per second of error down to 2.9 to 4.0.
+]
+
+= Our algorithm, step 3: per-rotor decoupling
+
+#grid(
+  columns: (0.95fr, 1.05fr),
+  gutter: 1.2em,
+  align(horizon)[
+    - Split a corridor around the global track per candidate rotor rate.
+    - A gated residual re-scan recovers rotors invisible in the global comb.
+    - Twin pairs 0.5 to 0.65 rev/s apart: two candidates can tie to within
+      0.06% of score.
+    #v(0.4em)
+    #text(size: 0.82em, style: "italic")[
+      A seeding coin-flip on one tied pair cost 1.57 rev/s: fixed by two guards
+      on the re-scan, not by a better search.
+    ]
+  ],
+  align(center, image("assets/stepper_vit2dsp.png", width: 100%)),
+)
+
+#speaker-note[
+  Once the global track and the ramp are handled, each rotor needs its own
+  seed. The corridor split proposes candidates around the global track, and a
+  residual re-scan looks for a rotor the global comb missed entirely. The hard
+  failure mode is twin rotors half a rev per second apart, whose two candidates
+  score within 0.06 percent of each other, so the ranking is a coin flip. Two
+  guards fixed it: a maximum span on the accepted set, and mutual
+  de-duplication of the accepted candidates.
+]
+
+= Our algorithm, step 4: envelope solve, then peel
+
+#grid(
+  columns: (0.95fr, 1.05fr),
+  gutter: 1.2em,
+  align(horizon)[
+    All rotors solved jointly (envelopes at the current tracks, bandwidth about
+    1 Hz), then each rotor's comb is reconstructed and the OTHER rotors' combs
+    are subtracted.
+    #v(0.4em)
+    #text(size: 0.78em)[
+      $ J[a] = sum_t |y(t) - sum_m "Re"[a_m (t) c_m (t)]|^2 + sum_m rho_m^2 norm(Delta^p a_m)^2 $
+    ]
+  ],
+  align(center, image("assets/stepper_refine.png", width: 100%)),
+)
+
+#speaker-note[
+  The joint solve and the peel. The solve is joint across all four rotors
+  because overlapping combs share spectral bins. The peel then removes the
+  other rotors from each rotor's audio. The guard checks that the subtraction
+  actually reduced residual energy; on ramp windows the tracks are not locked
+  yet, the peel is mis-phased, and the guard keeps the seed instead. This same
+  cost, with the envelopes profiled out, is the objective the new plan
+  optimizes over the trajectory.
 ]
 
 = Peel, then re-read the phase, and iterate to plateau
@@ -566,76 +352,6 @@
   cruise windows. This is the ancestor of the optimizer on the previous
   slides: alternation with a hand-built update, where the new plan does
   gradient descent on the same residual.
-]
-
-= The experiment matrix
-
-#v(0.5fr)
-#text(size: 1.0em)[
-  #table(
-    columns: (auto, 1.4fr, 1fr, auto),
-    align: (left, left, left, center),
-    stroke: 0.5pt + luma(180),
-    inset: 8pt,
-    table.header([*step*], [*question*], [*evidence*], [*status*]),
-    [1], [Is the measure the right one], [landscape benchmark: optimum margin, basin profiles, gradient ranking], [done],
-    [2], [How good are the labels we have], [ridge verdicts, nulls, hold-outs, scale profile], [done],
-    [3], [Does the oracle behave], [L-BFGS from telemetry: DREGON moves, Michael's does not], [done],
-    [4], [Can we improve telemetry], [synthetic recovery first, then both rigs], [done],
-    [5], [How good is blind annotation], [precision against compute, multi-start L-BFGS as the anchor], [done],
-  )
-]
-
-#v(0.5em)
-#align(center, text(size: 0.82em)[
-  Every row is scored by the same instrument, on the same 15 frozen windows,
-  at fixed degrees of freedom.
-])
-#v(0.5fr)
-
-#speaker-note[
-  The plan as a matrix, and every row now has a result behind it. Step one is
-  the landscape benchmark two slides back: optimum margin over the structured
-  alias set, directional basin profiles, gradient-sign accuracy. Step two is the
-  ridge campaign in part two. Step three is the oracle sanity check, which is
-  the next slide, and it is the one that licenses everything after it. Step four
-  asks whether the oracle actually improves a label set, on synthetic data where
-  improvement is verifiable and then on both real rigs. Step five is the
-  deployable question, and it is a trade-off rather than a single number: how
-  much precision per unit of compute, with multi-start optimization as the
-  expensive anchor at one end. The next three slides take them in order.
-]
-
-= Step 3: the oracle moves DREGON, and leaves FLY124 alone
-
-#align(center, image("assets/oracle_sanity.png", height: 66%))
-
-#align(center, text(size: 0.82em)[
-  Six DREGON steady windows move by a scale of #sym.minus\0.596%
-  (per-window range #sym.minus\0.665 to #sym.minus\0.540), all inside the ridge
-  interval [#sym.minus\0.877, #sym.minus\0.533]. FLY124 cruise moves
-  #sym.minus\0.0007%, which is 0.16 rev/s rms.
-])
-#v(0.25em)
-#align(center, text(size: 0.78em, style: "italic")[
-  Outside cruise the descent breaks: on a ramping trajectory the fixed
-  smoothness prior swamps the data term. Cruise only, for now.
-])
-
-#speaker-note[
-  The sanity condition, and it passes. The optimizer starts from each rig's own
-  telemetry, runs L-BFGS on the profiled residual under the harmonic anneal, and
-  the plot reads the constant-scale component of the movement. DREGON's six
-  steady windows all land near minus 0.6 percent, and every one of them sits
-  inside the interval the ridge scale profile published before this optimizer
-  existed. Michael's cruise windows move by seven ten-thousandths of a percent,
-  which is 0.16 rev per second of jitter and no scale at all. Two instruments
-  that share no code and no statistic now agree on the same label error, and the
-  negative control stays flat. That is the difference between a correction and a
-  flexible fitter. The caveat is on the slide and it is a real limit: the hollow
-  markers are ramp and warm-up windows, where a fixed smoothness prior fights a
-  trajectory that is genuinely moving, and the descent walks off. Cruise only
-  until the prior is scheduled.
 ]
 
 = Step 4: only gradient descent on $F_"VK"$ improves a telemetry init
@@ -707,81 +423,63 @@
 
 // ═══ PART 5: the payoff ═══════════════════════════════════════════════════
 
-= The bootstrap this unlocks
+= Blind fit against ground truth: DREGON cruise
 
-#v(0.3fr)
-#align(center)[
-  #cbox(fill: rgb("#dceaf7"), stroke-color: rgb("#1f77b4"))[
-    #text(size: 1.0em)[blind annotation of real recordings]
-  ]
-  #v(0.4em)
-  #text(size: 1.4em)[#sym.arrow.b]
-  #v(0.4em)
-  #cbox[#text(size: 1.0em)[pseudo-labels: DREGON, Michael's, the audio-visual quadrotor set, future data]]
-  #v(0.4em)
-  #text(size: 1.4em)[#sym.arrow.b]
-  #v(0.4em)
-  #cbox[#text(size: 1.0em)[RPS predictors trained on real audio]]
-  #h(0.6em)
-  #cbox[#text(size: 1.0em)[generators with scale-correct conditioning]]
-  #v(0.4em)
-  #text(size: 1.4em)[#sym.arrow.b]
-  #v(0.4em)
-  #cbox(fill: rgb("#e8f5e9"), stroke-color: rgb("#2ca02c"))[
-    #text(size: 1.0em)[rotor-speed-conditioned speech enhancement]
-  ]
-]
-#v(0.3fr)
+#align(center, image("assets/compare_dregon.png", height: 76%))
+
+#align(center, text(size: 0.85em)[
+  Dotted is raw telemetry, solid is the tracker, permutation-aligned.
+])
 
 #speaker-note[
-  Why this is worth a paper and not just a tooling fix. An annotator that works
-  from audio alone turns every drone recording into a labelled recording,
-  including the ones with no telemetry at all, which is most of the public
-  data. Those pseudo-labels feed the two models that this deck opened with. The
-  generator gets conditioning that is on the comb, so its high harmonics stop
-  collapsing. The predictors get real audio with trustworthy labels instead of
-  synthetic audio with exact labels that do not transfer. And both of those
-  feed the actual goal, which is conditioning speech enhancement on rotor
-  speed. The loop closes: better labels give better models, and better models
-  give better seeds for the next annotation pass.
+  One live window, two trackers, scored against raw telemetry. The classical
+  chain tracks the fast fluctuations tightly. The neural tracker's residual
+  here is the anchor-collapse pattern, one rotor sitting off by roughly the
+  pair spacing. Read this plot remembering the caveat on the scoreboard slide:
+  the dotted reference on DREGON is the label set that has no acoustic lock.
 ]
 
-= Where this stands
+= Blind fit against ground truth: FLY124 cruise
 
-#v(0.4fr)
-#align(center, block(width: 82%, align(left, text(size: 1.35em)[
-  - Annotation quality is now measurable, with nulls and hold-outs
-  - The best label set we have is 2.47 dB off the comb
-  - The measure to optimize is chosen, and the gap in the literature is named
-  - Two independent instruments now agree on DREGON's label error
-  - Optimizing the measure is the only arm that improves a label set
-])))
-#v(0.4fr)
+#align(center, image("assets/compare_fly124.png", height: 70%))
+
+#align(center, text(size: 0.85em)[
+  Dotted is recalibrated telemetry, which the fitness instrument confirms sits
+  on the comb.
+])
 
 #speaker-note[
-  Four sentences. Annotation quality stopped being a matter of opinion in the
-  comb explorer and became a measurement with a calibrated zero, three nulls
-  and four hold-out families. Applied to the labels we actually train on, it
-  says DREGON's are 2.47 dB off what the audio supports. The measure to
-  optimize is the profiled coupled residual, chosen against a requirements
-  table rather than by taste, and the fact that nobody optimizes it over the
-  trajectory is the contribution claim. And the five experiments are in: an
-  optimizer that never saw the ridge lands on the ridge's own answer for DREGON
-  and leaves Michael's alone, and it is the only arm that improves a label set
-  at all. The open item is the order penalty, which the blind Pareto slide shows
-  is now the binding one.
+  The same comparison on Michael's drone, where the reference is trustworthy:
+  its telemetry reads plus 2.72 dB of lock. On this window the two families are
+  close, and the neural tracker needs no telemetry seed to get there. Pooled
+  over all four cruise windows the neural tracker is ahead, because the blind
+  chain has two much worse windows that this one does not show.
 ]
+= The paper
 
-=
-
-#align(center + horizon)[
-  #text(size: 1.3em, weight: "bold")[Backup]
+#text(size: 0.9em)[
+  #table(
+    columns: 3,
+    align: (left, left, left),
+    stroke: 0.5pt + luma(200),
+    inset: 6pt,
+    [*contribution*], [*status*], [*evidence*],
+    [1. A measure of trajectory--audio fit: calibrated, fixed-DOF,
+      differentiable], [instrument done; alias (order) penalty still open],
+      [lock meter + $F_"VK"$; landscape benchmark],
+    [2. A precise blind-annotation algorithm], [ours is fastest and closest,
+      *not yet precise enough* (#sym.approx 1.3 rev/s blind vs 0.2 target)],
+      [Pareto: ours 8--165 s/window; L-BFGS 12--25#sym.times cost],
+    [3. Pseudo-labels for all unannotated drone audio], [unlocked by 1+2],
+      [93 GiB unlabeled tail],
+  )
 ]
 
 #speaker-note[
-  Divider. Backup material: the tracking scoreboard, the middle steps of the
-  blind chain, the phase-coherence measurements, the displaced comb, and the
-  two campaign tables behind the fitness verdicts.
+  The contribution order is the narrative order: the measure first, with the
+  characteristics it must have; the algorithm second, judged by that measure —
+  ours is not precise enough yet and the gap is quantified; the pseudo-label
+  program third, which is why the whole thing matters.
 ]
 
 = Backup --- the fixed 15-window tracking scoreboard
@@ -824,85 +522,206 @@
   instrument was built to escape.
 ]
 
-= Backup --- blind chain step 2: ramp handling
+= Backup --- the measurement procedure, in full
 
 #grid(
-  columns: (0.95fr, 1.05fr),
-  gutter: 1.2em,
+  columns: (1.25fr, 1fr),
+  gutter: 1.0em,
+  align(center + horizon, image("assets/ridge_instrument.png", width: 100%)),
   align(horizon)[
-    Warm-up spectra carry only blade-pass lines, so the seeder used to promote
-    onto the wrong octave. Fix: a line-ratio check, plus an energy-timed bridge
-    across spool-up.
-    #v(0.5em)
-    #align(left, text(size: 0.85em, style: "italic")[
-      Ramp and warm-up windows went *15--36 #sym.arrow 2.9--4.0* MAE.
-    ])
-  ],
-  align(center, image("assets/stepper_viterbi_c.png", width: 100%)),
-)
-
-#speaker-note[
-  Take-off and landing are where the blind chain used to fail outright. During
-  spool-up the spectrum shows only blade-pass lines, and the old seeder read
-  that as a lower rate one octave down. The fix checks the line ratio to pick
-  the octave and bridges the ramp using the timing of the energy rise. It took
-  the worst windows from 15 to 36 rev per second of error down to 2.9 to 4.0.
-]
-
-= Backup --- blind chain step 3: per-rotor decoupling
-
-#grid(
-  columns: (0.95fr, 1.05fr),
-  gutter: 1.2em,
-  align(horizon)[
-    - Split a corridor around the global track per candidate rotor rate.
-    - A gated residual re-scan recovers rotors invisible in the global comb.
-    - Twin pairs 0.5 to 0.65 rev/s apart: two candidates can tie to within
-      0.06% of score.
+    #text(size: 0.85em)[
+      Every ridge number on the next slides is this procedure:
+      + Take one candidate set of rotor-rate trajectories.
+      + For every cell (rotor #sym.times mic #sym.times harmonic $k$
+        #sym.times time block): demodulate the audio at $k$
+        #sym.times the candidate rate.
+      + Read the lock meter of slide 4 on that cell: line power against the
+        local floor, dB, 0 = no line there.
+      + Average the cells. One number per candidate.
+    ]
     #v(0.4em)
-    #text(size: 0.82em, style: "italic")[
-      A seeding coin-flip on one tied pair cost 1.57 rev/s: fixed by two guards
-      on the re-scan, not by a better search.
+    #text(size: 0.82em)[
+      #table(
+        columns: 2,
+        align: (left, left),
+        stroke: 0.5pt + luma(200),
+        inset: 5pt,
+        [fixed], [band, harmonic set, blocks, mask — all pinned to the reference, identical for every candidate],
+        [nulls], [off-comb (half-integer), mismatched window, permuted rotors],
+        [hold-outs], [even/odd $k$, mic 0, half the blocks],
+        [calibrated], [pure noise reads 0 dB],
+      )
     ]
   ],
-  align(center, image("assets/stepper_vit2dsp.png", width: 100%)),
 )
 
 #speaker-note[
-  Once the global track and the ramp are handled, each rotor needs its own
-  seed. The corridor split proposes candidates around the global track, and a
-  residual re-scan looks for a rotor the global comb missed entirely. The hard
-  failure mode is twin rotors half a rev per second apart, whose two candidates
-  score within 0.06 percent of each other, so the ranking is a coin flip. Two
-  guards fixed it: a maximum span on the accepted set, and mutual
-  de-duplication of the accepted candidates.
+  How the reading works, and why it cannot be gamed. Demodulate one microphone,
+  one harmonic, one time block at the carrier the candidate implies. If the
+  candidate is right, the energy piles up in a narrow band around zero; if the
+  carrier is off by more than the band width, which is 0.1 rev per second, the
+  line leaves the band and the reading falls to the noise value. The floor
+  comes from an annulus of the same spectrum, with the median-to-mean
+  correction, so pure noise reads zero rather than plus 1.6 dB. Everything
+  except the carrier is pinned to the window's reference trajectory, so a
+  flexible candidate cannot buy itself an easier cell set. A test asserts the
+  cell count is identical across every candidate and every control. And every
+  reading carries three nulls plus four hold-out families, which is what makes
+  it a verdict instrument rather than a score.
 ]
 
-= Backup --- blind chain step 4: envelope solve, then peel
+= Backup --- the fitted trajectory locks 2.47 dB better
 
-#grid(
-  columns: (0.95fr, 1.05fr),
-  gutter: 1.2em,
-  align(horizon)[
-    All rotors solved jointly (envelopes at the current tracks, bandwidth about
-    1 Hz), then each rotor's comb is reconstructed and the OTHER rotors' combs
-    are subtracted.
-    #v(0.4em)
-    #text(size: 0.78em)[
-      $ J[a] = sum_t |y(t) - sum_m "Re"[a_m (t) c_m (t)]|^2 + sum_m rho_m^2 norm(Delta^p a_m)^2 $
-    ]
-  ],
-  align(center, image("assets/stepper_refine.png", width: 100%)),
-)
+#align(center, image("assets/ridge_candidates.png", width: 82%))
+
+#align(center, text(size: 0.85em)[
+  DREGON hold-out families for the fitted trajectory: 1.38, 2.35, 1.97, 1.78 dB,
+  all clearing both nulls.
+])
 
 #speaker-note[
-  The joint solve and the peel. The solve is joint across all four rotors
-  because overlapping combs share spectral bins. The peel then removes the
-  other rotors from each rotor's audio. The guard checks that the subtraction
-  actually reduced residual energy; on ramp windows the tracks are not locked
-  yet, the peel is mis-phased, and the guard keeps the seed instead. This same
-  cost, with the envelopes profiled out, is the objective the new plan
-  optimizes over the trajectory.
+  Now score candidate annotations on the same cells. DREGON's raw telemetry
+  sits at its null. One constant scale factor lifts it to plus 0.14, which just
+  clears the null. A freely fitted trajectory, from the refinement chain
+  described later, reaches plus 1.88, which is 2.47 dB above the labels. The
+  negative control is the point of the slide: the identical procedure on
+  Michael's already-correct labels buys 0.26 dB, nine times less. A fitter that
+  was simply flexible would have bought a similar amount on both. It did not,
+  so the DREGON gain is a real correction rather than overfitting. Coverage,
+  honestly stated: the gate sees 5.7 percent of DREGON's comb line energy
+  against 18.6 percent of Michael's, because four rotors at high harmonic
+  numbers are genuinely unresolvable.
+]
+
+= Backup --- a single constant explains only a third of the error
+
+#align(center, image("assets/scale_profile.png", width: 82%))
+
+#align(center, text(size: 0.85em)[
+  Hold-out families agree to 0.06 pp. The best constant buys 0.74 dB; the free
+  trajectory buys 2.47 dB.
+])
+
+#speaker-note[
+  This is the one-parameter version of the same question: slide a constant rate
+  scale across the labels and read the lock. The profile has a single free
+  parameter, so its extremum cannot be bought with flexibility, and every
+  hold-out family is scored on cells the fit never chose. The extremum is minus
+  0.683 percent with a confidence interval from minus 0.88 to minus 0.53, and
+  the four hold-out families land within 0.06 of a percentage point of each
+  other. The off-comb null has eight times less depth and no interior extremum.
+  Michael's recalibrated labels return zero with a basin four times deeper,
+  which is what a correct label set should look like. And the last number is
+  the interesting one: the best constant recovers only about a third of what
+  the free trajectory recovers, so the label error is not a scale error.
+]
+
+// ═══ PART 3: from detector to objective ═══════════════════════════════════
+
+= Backup --- the landscape, measured
+
+#align(center, image("assets/bench_gra.png", height: 68%))
+
+#align(center, text(size: 0.82em)[
+  $F_"VK"$ at the coarse rung is the only measure with a positive optimum margin
+  over the structured alias set. It stays monotone out to 2.83 rev/s, and reads
+  0.87 to 0.93 at $-20$ dB, where ridge, broadband and harmonic sum are at chance.
+])
+#v(0.3em)
+#align(center, text(size: 0.82em, style: "italic")[
+  And the nested sub-multiple ($f_0 \/ 2$, $2K$ harmonics) beats every measure in
+  100% of units: the degeneracy of the previous slide, now measured. A fixed
+  harmonic cap only hid it.
+])
+
+#speaker-note[
+  Step one of the matrix, run before the optimizer was trusted with anything.
+  Six candidate measures, scored on synthetic combs with known truth and on real
+  cruise audio, at three signal-to-noise levels. Three readings matter. First,
+  the optimum margin: only the coupled residual at the coarse harmonic rung puts
+  the true trajectory below every member of the structured alias set, and every
+  other measure is negative, which means some alias beats truth. Second, the
+  basin: the coarse rung stays monotone out to 2.8 rev per second, roughly twenty
+  times the fine rung, which is what makes the harmonic anneal a real ladder
+  rather than a story. Third, the gradient-sign accuracy on this figure: at minus
+  twenty decibels the coarse rung still ranks a five percent worse step correctly
+  most of the time, while the ridge, the broadband share and the harmonic sum sit
+  on the coin-flip line. The last line is the honest one. The nested sub-multiple
+  beats the truth for every measure in every single unit, exactly as the algebra
+  said it must. Earlier campaigns did not see it only because they capped the
+  harmonic count. So the order penalty is not a refinement, it is load-bearing.
+]
+
+= Backup --- $F_"VK"$, the full definition
+
+#v(0.7fr)
+#align(center, text(size: 1.25em)[
+  $ F(phi) = y^H y - y^H C(phi) [C(phi)^H C(phi) + S^T R^T R S]^(-1) C(phi)^H y $
+])
+
+#v(1.0em)
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 1.2em,
+  text(size: 1.1em)[
+    - Envelopes solved in closed form, then substituted back
+    - Gradient in closed form or by autograd through the solve
+    - Off-diagonal blocks make near-equal rotors compete for energy
+  ],
+  text(size: 1.1em)[
+    - $rho$ maps to a bandwidth in Hz, so capture range is a knob with units
+    - Annealing $K$ is graduated non-convexity with a known basin at each level
+    - Without the smoothness term it is the maximum-likelihood projector
+  ],
+)
+#v(0.7fr)
+
+#speaker-note[
+  The Vold-Kalman cost is quadratic in the envelopes once the trajectory is
+  fixed, so the envelopes can be solved and substituted back, leaving a
+  function of the trajectory alone. Four properties earn it the job. It is
+  smooth in the trajectory with a closed-form gradient by the envelope theorem,
+  and our solver is already torch-only, so autograd is nearly free. The
+  off-diagonal coupling blocks are the only published mechanism that makes two
+  nearly equal rotors compete for the same energy, which is exactly the twin
+  problem. The regularization weight maps analytically to a bandwidth in hertz,
+  so the capture range is set in physical units rather than tuned. And
+  annealing the harmonic count is graduated non-convexity where, uniquely, the
+  basin width is known in closed form at every level: start around five
+  harmonics, where the basin is about 0.2 rev per second and swallows DREGON's
+  label error, and ladder up to eighty.
+]
+
+= Backup --- the oracle moves DREGON, and leaves FLY124 alone
+
+#align(center, image("assets/oracle_sanity.png", height: 66%))
+
+#align(center, text(size: 0.82em)[
+  Six DREGON steady windows move by a scale of #sym.minus\0.596%
+  (per-window range #sym.minus\0.665 to #sym.minus\0.540), all inside the ridge
+  interval [#sym.minus\0.877, #sym.minus\0.533]. FLY124 cruise moves
+  #sym.minus\0.0007%, which is 0.16 rev/s rms.
+])
+#v(0.25em)
+#align(center, text(size: 0.78em, style: "italic")[
+  Outside cruise the descent breaks: on a ramping trajectory the fixed
+  smoothness prior swamps the data term. Cruise only, for now.
+])
+
+#speaker-note[
+  The sanity condition, and it passes. The optimizer starts from each rig's own
+  telemetry, runs L-BFGS on the profiled residual under the harmonic anneal, and
+  the plot reads the constant-scale component of the movement. DREGON's six
+  steady windows all land near minus 0.6 percent, and every one of them sits
+  inside the interval the ridge scale profile published before this optimizer
+  existed. Michael's cruise windows move by seven ten-thousandths of a percent,
+  which is 0.16 rev per second of jitter and no scale at all. Two instruments
+  that share no code and no statistic now agree on the same label error, and the
+  negative control stays flat. That is the difference between a correction and a
+  flexible fitter. The caveat is on the slide and it is a real limit: the hollow
+  markers are ramp and warm-up windows, where a fixed smoothness prior fights a
+  trajectory that is genuinely moving, and the descent walks off. Cruise only
+  until the prior is scheduled.
 ]
 
 = Backup --- phase coherence collapses with more than one motor
@@ -1091,35 +910,3 @@
   profile reached.
 ]
 
-= Backup --- output comparison, DREGON cruise window
-
-#align(center, image("assets/compare_dregon.png", height: 76%))
-
-#align(center, text(size: 0.85em)[
-  Dotted is raw telemetry, solid is the tracker, permutation-aligned.
-])
-
-#speaker-note[
-  One live window, two trackers, scored against raw telemetry. The classical
-  chain tracks the fast fluctuations tightly. The neural tracker's residual
-  here is the anchor-collapse pattern, one rotor sitting off by roughly the
-  pair spacing. Read this plot remembering the caveat on the scoreboard slide:
-  the dotted reference on DREGON is the label set that has no acoustic lock.
-]
-
-= Backup --- output comparison, FLY124 cruise window
-
-#align(center, image("assets/compare_fly124.png", height: 70%))
-
-#align(center, text(size: 0.85em)[
-  Dotted is recalibrated telemetry, which the fitness instrument confirms sits
-  on the comb.
-])
-
-#speaker-note[
-  The same comparison on Michael's drone, where the reference is trustworthy:
-  its telemetry reads plus 2.72 dB of lock. On this window the two families are
-  close, and the neural tracker needs no telemetry seed to get there. Pooled
-  over all four cruise windows the neural tracker is ahead, because the blind
-  chain has two much worse windows that this one does not show.
-]

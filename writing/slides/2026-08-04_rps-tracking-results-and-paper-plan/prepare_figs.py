@@ -740,7 +740,7 @@ def fig_ridge_instrument() -> None:
         ax.set_xlim(-1.2, 1.2)
     axes[0].set_ylabel("power (dB)")
     axes[0].text(0.0, -26.0, "line band", ha="center", color="#1f77b4", fontsize=11)
-    axes[0].text(0.75, -26.0, "floor annulus", ha="center", color="#c26a00", fontsize=11)
+    axes[0].text(0.75, -26.0, "local floor", ha="center", color="#c26a00", fontsize=11)
     axes[0].text(0.02, 0.93, "ridge high", transform=axes[0].transAxes, fontsize=12)
     axes[1].text(0.02, 0.93, "ridge ≈ 0 dB", transform=axes[1].transAxes, fontsize=12)
     fig.suptitle("ridge = 10 log10 (power in the fixed band / local floor density)", fontsize=12)
