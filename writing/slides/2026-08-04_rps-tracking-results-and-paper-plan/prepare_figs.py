@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Figures for the 2026-08-04 RPS-tracking / paper-plan deck.
+"""Figures for the annotation-bottleneck deck (2026-08-11 restructure).
+
+Two families:
+  * NEW_FIGURES (default) -- the paper-narrative figures, built from
+    ``results/gen_label_sensitivity/per_k.csv``, ``results/telemetry_report_6d.json``
+    and closed-form landscape facts.
+  * LEGACY_FIGURES (``python3 prepare_figs.py --all``) -- the tracking figures of
+    the previous deck; they need cached run artifacts, a dload stream and a model
+    forward pass, so they are rebuilt only on request.
+
+Legacy sources:
 
 Real data, three sources:
   1. ``results/vk_phase_validation_decomp/rows.csv`` -- the lock ladder
@@ -458,12 +468,385 @@ def fig_alternation_loop() -> None:
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Paper-narrative figures (2026-08-11 restructure)
+# ══════════════════════════════════════════════════════════════════════════
+
+FITNESS_REPORT = RESULTS / "telemetry_report_6d.json"
+GEN_LABEL_CSV = RESULTS / "gen_label_sensitivity" / "per_k.csv"
+
+
+def _rolling_median(y: np.ndarray, w: int = 5) -> np.ndarray:
+    pad = w // 2
+    ext = np.pad(y, pad, mode="edge")
+    return np.array([np.median(ext[i : i + w]) for i in range(len(y))])
+
+
+def fig_gen_label_bias() -> None:
+    """Section 1a: the generator's high harmonics collapse under a CONSTANT
+    label bias, and train flat under exact labels. Data:
+    ``results/gen_label_sensitivity/per_k.csv`` (phase-7 label A/B)."""
+    with open(GEN_LABEL_CSV) as fh:
+        rows = list(csv.DictReader(fh))
+    k = np.array([int(r["k"]) for r in rows])
+    arms = {
+        "exact labels": ("exact_delta_db", "#1f77b4"),
+        "staircase only": ("tach_pure_delta_db", "#7f7f7f"),
+        "constant 0.54 % bias": ("scale_delta_db", "#d62728"),
+    }
+    fig, ax = plt.subplots(figsize=(9.0, 4.6))
+    band = (k >= 50) & (k <= 80)
+    notes = []
+    for label, (col, color) in arms.items():
+        y = np.array([float(r[col]) for r in rows])
+        ax.plot(k, y, color=color, lw=0.9, alpha=0.30)
+        ax.plot(k, _rolling_median(y), color=color, lw=2.4, label=label)
+        notes.append((label, float(np.mean(y[band])), color))
+    ax.axhline(0.0, color="#333333", ls="--", lw=1.0)
+    ax.axvspan(50, 80, color="#d62728", alpha=0.06)
+    ax.set_xlabel("harmonic index k")
+    ax.set_ylabel("learned line power $-$ true (dB)")
+    ax.set_xlim(1, 80)
+    ax.set_ylim(-16, 3)
+    ax.legend(frameon=False, loc="lower left", fontsize=11)
+    txt = "\n".join(f"{lab}: {val:+.1f} dB" for lab, val, _ in notes)
+    ax.text(
+        0.985,
+        0.05,
+        f"mean over k = 50–80\n{txt}",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=10.5,
+        bbox=dict(facecolor="white", edgecolor="#bbbbbb", alpha=0.92, pad=4),
+    )
+    ax.set_title("A constant label bias, alone, collapses the high harmonics", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(ASSETS / "gen_label_bias.png", dpi=150)
+    plt.close(fig)
+    print("gen_label_bias:", [(lab, round(v, 2)) for lab, v, _ in notes])
+
+
+def fig_sim2real() -> None:
+    """Section 1b: RPS predictors trained on generated noise do not transfer.
+    Numbers: docs/experiments/e8-static-comb.md (E7 neural-gen arm vs the
+    real-data reference, same architecture, same real validation set)."""
+    labels = ["trained on\ngenerated noise", "trained on\nreal noise"]
+    vals = [222.3, 7.33]
+    colors = ["#d62728", "#1f77b4"]
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.bar(np.arange(2), vals, 0.5, color=colors)
+    ax.set_yscale("log")
+    ax.set_xticks(np.arange(2))
+    ax.set_xticklabels(labels, fontsize=11.5)
+    ax.set_ylabel("PIT-MSE on the real validation set (log)")
+    ax.set_ylim(1, 900)
+    for x, v, note in zip(np.arange(2), vals, ["R² = −10.5", "R² > 0"], strict=False):
+        ax.text(x, v * 1.25, f"{v:g}\n{note}", ha="center", fontsize=11.5)
+    ax.set_title("Generator-trained predictors are worse than predicting the mean", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(ASSETS / "sim2real.png", dpi=150)
+    plt.close(fig)
+    print("sim2real:", vals)
+
+
+def _fitness_report() -> dict:
+    import json
+
+    with open(FITNESS_REPORT) as fh:
+        return json.load(fh)
+
+
+def _ridge(rep: dict, key: str) -> float:
+    return float(rep["controls"][key]["ridge"])
+
+
+def _ridge_bars(rows, out_name: str, title: str, figsize=(9.0, 4.6)) -> None:
+    """Shared renderer: on-comb ridge bar + its paired off-comb null bar."""
+    fig, ax = plt.subplots(figsize=figsize)
+    x = np.arange(len(rows))
+    w = 0.36
+    on = [r[1] for r in rows]
+    null = [r[2] for r in rows]
+    colors = [r[3] for r in rows]
+    ax.bar(x - w / 2, on, w, color=colors, label="candidate (on the comb)")
+    ax.bar(
+        x + w / 2,
+        null,
+        w,
+        color="white",
+        edgecolor="#777777",
+        hatch="///",
+        label="its off-comb null",
+    )
+    ax.axhline(0.0, color="#2ca02c", ls="--", lw=1.4, label="0 dB = pure noise (calibrated)")
+    for xi, v in zip(x, on, strict=False):
+        ax.text(xi - w / 2, max(v, 0.0) + 0.14, f"{v:+.2f}", ha="center", fontsize=11)
+    ax.set_xticks(x)
+    ax.set_xticklabels([r[0] for r in rows], fontsize=11)
+    ax.set_ylabel("ridge (dB, higher = better lock)")
+    ax.set_ylim(min(-1.2, min(null) - 0.4), max(on) + 0.9)
+    ax.legend(frameon=False, loc="upper left", fontsize=10.5)
+    ax.set_title(title, fontsize=12)
+    fig.tight_layout()
+    fig.savefig(ASSETS / out_name, dpi=150)
+    plt.close(fig)
+    print(f"{out_name}:", [(r[0].replace("\n", " "), round(r[1], 2)) for r in rows])
+
+
+def fig_ridge_telemetry() -> None:
+    """Section 1c: the two rigs' raw telemetry, same instrument, same settings."""
+    rep = _fitness_report()
+    rows = [
+        (
+            "DREGON\ntelemetry",
+            _ridge(rep, "dregon|telemetry|on"),
+            _ridge(rep, "dregon|telemetry|offcomb"),
+            "#d62728",
+        ),
+        (
+            "FLY124\ntelemetry (recalibrated)",
+            _ridge(rep, "fly124-cruise|telemetry|on"),
+            _ridge(rep, "fly124-cruise|telemetry|offcomb"),
+            "#1f77b4",
+        ),
+    ]
+    _ridge_bars(
+        rows,
+        "ridge_telemetry.png",
+        "One rig's labels sit on the comb; the other's do not",
+        figsize=(6.8, 4.4),
+    )
+
+
+def fig_ridge_candidates() -> None:
+    """Section 2: the verdict table as a figure — telemetry, the best constant,
+    and the fitted trajectory, each against its own off-comb null."""
+    rep = _fitness_report()
+    rows = [
+        (
+            "DREGON\ntelemetry",
+            _ridge(rep, "dregon|telemetry|on"),
+            _ridge(rep, "dregon|telemetry|offcomb"),
+            "#d62728",
+        ),
+        (
+            "DREGON\nbest constant scale",
+            _ridge(rep, "dregon|scale:0.99458|on"),
+            _ridge(rep, "dregon|scale:0.99458|offcomb"),
+            "#ff7f0e",
+        ),
+        (
+            "DREGON\nfitted trajectory",
+            _ridge(rep, "dregon|fit:main|on"),
+            _ridge(rep, "dregon|fit:main|offcomb"),
+            "#2ca02c",
+        ),
+        (
+            "FLY124\ntelemetry",
+            _ridge(rep, "fly124-cruise|telemetry|on"),
+            _ridge(rep, "fly124-cruise|telemetry|offcomb"),
+            "#1f77b4",
+        ),
+        (
+            "FLY124\nfitted trajectory",
+            _ridge(rep, "fly124-cruise|fit:main|on"),
+            _ridge(rep, "fly124-cruise|fit:main|offcomb"),
+            "#9467bd",
+        ),
+    ]
+    _ridge_bars(
+        rows,
+        "ridge_candidates.png",
+        "Fitting the trajectory buys 2.47 dB on DREGON and 0.26 dB on FLY124",
+    )
+
+
+def fig_scale_profile() -> None:
+    """Section 2: the one-parameter scale profile and its off-comb null."""
+    rep = _fitness_report()
+    cur_on = rep["profile"]["curves"]["dregon|on|none"]
+    cur_off = rep["profile"]["curves"]["dregon|offcomb|none"]
+    m = rep["profile"]["minima"]["dregon|on|none"]
+    s_on = (np.array(cur_on["s"], dtype=float) - 1.0) * 100.0
+    s_off = (np.array(cur_off["s"], dtype=float) - 1.0) * 100.0
+    y_on = np.array(cur_on["mean"], dtype=float)
+    y_off = np.array(cur_off["mean"], dtype=float)
+
+    fig, ax = plt.subplots(figsize=(8.6, 4.6))
+    ax.plot(s_on, y_on, "o-", color="#1f77b4", lw=2.2, ms=4, label="DREGON, on the comb")
+    ax.plot(s_off, y_off, "o--", color="#888888", lw=1.8, ms=3, label="off-comb null")
+    vertex = float(m["scale_pct"])
+    lo, hi = float(m["ci"]["lo"]), float(m["ci"]["hi"])
+    ax.axvspan(lo, hi, color="#1f77b4", alpha=0.12)
+    ax.axvline(vertex, color="#1f77b4", ls=":", lw=1.8)
+    ax.axvline(0.0, color="#333333", lw=1.0)
+    ax.annotate(
+        f"{vertex:.3f} %  [{lo:.3f}, {hi:.3f}]",
+        xy=(vertex, float(np.max(y_on))),
+        xytext=(vertex + 0.30, float(np.max(y_on)) - 0.06),
+        fontsize=12,
+        color="#1f77b4",
+        ha="left",
+        arrowprops=dict(arrowstyle="->", color="#1f77b4"),
+    )
+    ax.text(
+        0.015,
+        0.06,
+        f"basin depth {float(m['depth']):.2f} dB\nnull depth "
+        f"{float(rep['profile']['minima']['dregon|offcomb|none']['depth']):.2f} dB",
+        transform=ax.transAxes,
+        ha="left",
+        fontsize=11,
+        bbox=dict(facecolor="white", edgecolor="#bbbbbb", alpha=0.92, pad=4),
+    )
+    ax.set_xlabel("constant rate scale applied to the labels (%)")
+    ax.set_ylabel("ridge (dB)")
+    ax.legend(frameon=False, loc="upper left", fontsize=11)
+    ax.set_title(
+        "One free parameter, four hold-out families, an 8x deeper basin than the null", fontsize=12
+    )
+    fig.tight_layout()
+    fig.savefig(ASSETS / "scale_profile.png", dpi=150)
+    plt.close(fig)
+    print(f"scale_profile: vertex {vertex} ci [{lo}, {hi}] depth {m['depth']}")
+
+
+def fig_ridge_instrument() -> None:
+    """Section 2: schematic of what the instrument reads on one cell — a fixed
+    line band against a local floor annulus, on the demodulated envelope
+    spectrum. Illustrative synthetic data, drawn to scale in rev/s."""
+    rng = np.random.default_rng(7)
+    f = np.linspace(-1.2, 1.2, 601)
+    dc = 0.10
+
+    def envelope(offset: float) -> np.ndarray:
+        line = 12.0 * np.exp(-0.5 * ((f - offset) / 0.035) ** 2)
+        floor = rng.exponential(0.25, size=f.size)
+        return 10 * np.log10(line + floor + 1e-3)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.4, 4.0), sharey=True)
+    for ax, off, name in (
+        (axes[0], 0.0, "carrier on the comb"),
+        (axes[1], 0.35, "carrier 0.35 rev/s off"),
+    ):
+        ax.plot(f, envelope(off), color="#333333", lw=1.0)
+        ax.axvspan(-dc, dc, color="#1f77b4", alpha=0.18)
+        ax.axvspan(-1.2, -dc - 0.12, color="#ff7f0e", alpha=0.10)
+        ax.axvspan(dc + 0.12, 1.2, color="#ff7f0e", alpha=0.10)
+        ax.set_xlabel("demodulated frequency (rev/s)")
+        ax.set_title(name, fontsize=11.5)
+        ax.set_xlim(-1.2, 1.2)
+    axes[0].set_ylabel("power (dB)")
+    axes[0].text(0.0, -26.0, "line band", ha="center", color="#1f77b4", fontsize=11)
+    axes[0].text(0.75, -26.0, "floor annulus", ha="center", color="#c26a00", fontsize=11)
+    axes[0].text(0.02, 0.93, "ridge high", transform=axes[0].transAxes, fontsize=12)
+    axes[1].text(0.02, 0.93, "ridge ≈ 0 dB", transform=axes[1].transAxes, fontsize=12)
+    fig.suptitle("ridge = 10 log10 (power in the fixed band / local floor density)", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(ASSETS / "ridge_instrument.png", dpi=150)
+    plt.close(fig)
+    print("ridge_instrument: schematic written")
+
+
+def fig_basin_law() -> None:
+    """Section 3: the basin law 1/(K*T) against DREGON's measured label error."""
+    K = np.arange(2, 121)
+    fig, ax = plt.subplots(figsize=(8.4, 4.6))
+    for T, color, style in ((0.25, "#9467bd", ":"), (1.0, "#1f77b4", "-"), (4.0, "#2ca02c", "--")):
+        ax.loglog(K, 1.0 / (K * T), style, color=color, lw=2.2, label=f"T = {T:g} s")
+    err_lo, err_hi = 0.0035 * 60.0, 0.0085 * 60.0
+    ax.axhspan(err_lo, err_hi, color="#d62728", alpha=0.14)
+    ax.text(
+        26.0,
+        (err_lo * err_hi) ** 0.5,
+        "DREGON label error, 0.35–0.85 % of ~60 Hz",
+        color="#d62728",
+        fontsize=11,
+        va="center",
+    )
+    ax.plot([80], [1.0 / 80.0], "o", color="#1f77b4", ms=9)
+    ax.annotate(
+        "K = 80, T = 1 s → 0.0125 Hz\n(the label error is 16–40 basins out)",
+        xy=(80, 1.0 / 80.0),
+        xytext=(9, 0.0035),
+        fontsize=11,
+        arrowprops=dict(arrowstyle="->", color="#1f77b4"),
+    )
+    ax.set_xlabel("harmonics summed, K")
+    ax.set_ylabel("basin width Δf0 (Hz)")
+    ax.legend(frameon=False, loc="upper right", fontsize=11)
+    ax.grid(True, which="both", color="#dddddd", lw=0.6)
+    ax.set_title("Precision and basin width are the same phenomenon: Δf0 ≈ 1/(K·T)", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(ASSETS / "basin_law.png", dpi=150)
+    plt.close(fig)
+    print("basin_law: written")
+
+
+def fig_alias_lattice() -> None:
+    """Section 3: the sub-multiple comb contains the true comb (nesting)."""
+    f0 = 80.0
+    fig, ax = plt.subplots(figsize=(9.0, 3.8))
+    for m in range(1, 17):
+        ax.vlines(m * f0 / 2, 0, 1.0, color="#bbbbbb", lw=6.0)
+    for k in range(1, 9):
+        ax.vlines(k * f0, 0, 1.0, color="#1f77b4", lw=2.4)
+    ax.set_ylim(0, 1.6)
+    ax.set_xlim(0, 9 * f0)
+    ax.set_yticks([])
+    ax.set_xlabel("frequency (Hz)")
+    ax.plot([], [], color="#1f77b4", lw=3.0, label="true comb, rate f0")
+    ax.plot([], [], color="#999999", lw=2.0, label="candidate comb, rate f0/2")
+    ax.legend(frameon=False, loc="upper right", fontsize=11.5, ncols=2)
+    ax.text(
+        0.3 * f0,
+        1.22,
+        "every true line is also a line of the f0/2 comb: the fit is exactly degenerate",
+        fontsize=11.5,
+        color="#333333",
+    )
+    ax.annotate(
+        "the extra lines sit on empty spectrum:\nonly an order penalty charges for them",
+        xy=(2.5 * f0, 1.0),
+        xytext=(2.1 * f0, 0.30),
+        fontsize=11,
+        color="#666666",
+        arrowprops=dict(arrowstyle="->", color="#888888"),
+    )
+    ax.set_title("Sub-multiples are nested, not nearby: no smoothing removes them", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(ASSETS / "alias_lattice.png", dpi=150)
+    plt.close(fig)
+    print("alias_lattice: written")
+
+
+NEW_FIGURES = (
+    fig_gen_label_bias,
+    fig_sim2real,
+    fig_ridge_telemetry,
+    fig_ridge_candidates,
+    fig_scale_profile,
+    fig_ridge_instrument,
+    fig_basin_law,
+    fig_alias_lattice,
+)
+
+LEGACY_FIGURES = (
+    fig_lock_ladder,
+    fig_beamform,
+    fig_output_comparisons,
+    fig_stepper,
+    fig_peel_guard,
+    fig_alternation_loop,
+)
+
+
 if __name__ == "__main__":
     ensure_dirs()
-    fig_lock_ladder()
-    fig_beamform()
-    fig_output_comparisons()
-    fig_stepper()
-    fig_peel_guard()
-    fig_alternation_loop()
+    # The legacy figures need cached run artifacts and a model forward pass;
+    # their PNGs are already in assets/, so they are rebuilt only on request.
+    figures = NEW_FIGURES + (LEGACY_FIGURES if "--all" in sys.argv else ())
+    for fn in figures:
+        fn()
     print("done.")
