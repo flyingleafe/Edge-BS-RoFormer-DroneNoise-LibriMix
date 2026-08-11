@@ -715,34 +715,51 @@ def build_preps(args: argparse.Namespace) -> Path:
     return bva.prep_dir(root)
 
 
+def group_of(row: dict[str, Any]) -> str:
+    """THE reporting group of one unit — the cell a mean may be taken over.
+
+    A synthetic SNR is its own group, and a real window's MICROPHONE COUNT is
+    part of its group: 2 mics and 8 mics are different measurements (the blind
+    ladder's spatial pair scan has nothing to work with at 2), and a panel that
+    averaged over both would be reporting neither. Derived from the row rather
+    than read off it, so re-merging pulled directories cannot mix them.
+    """
+    if row["class"] == "synth":
+        return f"synth{float(row['meta']['snr_db']):+.0f}dB"
+    return f"{row['class']}@{int(row['n_channels'])}mic"
+
+
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     import numpy as np
 
     out: dict[str, Any] = {"n_units": len(rows), "table": {}}
     keyed: dict[tuple, list[dict]] = {}
     for r in rows:
-        keyed.setdefault((r["step"], r["group"], r["arm"]), []).append(r)
+        keyed.setdefault((r["step"], group_of(r), r["arm"]), []).append(r)
     for (step, cls, arm), rs in sorted(keyed.items()):
-        entry: dict[str, Any] = {
-            "n": len(rs),
-            "wall_s": round(float(np.mean([r["wall_s"] for r in rs])), 1),
-        }
-        entry["obj_before"] = round(float(np.mean([r["fvk_before"]["objective"] for r in rs])), 5)
-        entry["obj_after"] = round(float(np.mean([r["fvk_after"]["objective"] for r in rs])), 5)
-        entry["r2_after"] = round(float(np.mean([r["fvk_after"]["r2"] for r in rs])), 4)
-        have_before = [r for r in rs if "err_before" in r]
-        have_after = [r for r in rs if "err_after" in r]
-        if have_before:
-            entry["rms_before"] = round(
-                float(np.mean([r["err_before"]["rms"] for r in have_before])), 4
-            )
-        if have_after:
-            entry["rms_after"] = round(
-                float(np.mean([r["err_after"]["rms"] for r in have_after])), 4
-            )
-        vs_ref = [r for r in rs if "err_vs_ref" in r]
-        if vs_ref:
-            entry["rms_vs_ref"] = round(float(np.mean([r["err_vs_ref"]["rms"] for r in vs_ref])), 4)
+        # MEDIANS, not means. A blind seed can put two candidate tracks on top
+        # of each other, and the coupled VK solve is then near-singular: one
+        # DREGON window scores objective 1768 (r2 -4) on a trajectory whose
+        # trajectory error is unremarkable. That is a property of the SCORE at
+        # a degenerate candidate, and a mean over four windows is a report of
+        # that one solve. Means are kept beside the medians so the spread is
+        # visible rather than hidden.
+        entry: dict[str, Any] = {"n": len(rs)}
+        for name, key, sub in (
+            ("wall_s", "wall_s", None),
+            ("obj_before", "fvk_before", "objective"),
+            ("obj_after", "fvk_after", "objective"),
+            ("r2_after", "fvk_after", "r2"),
+            ("rms_before", "err_before", "rms"),
+            ("rms_after", "err_after", "rms"),
+            ("rms_vs_ref", "err_vs_ref", "rms"),
+        ):
+            vals = [r[key][sub] if sub else r[key] for r in rs if key in r]
+            if not vals:
+                continue
+            arr = np.asarray(vals, dtype=float)
+            entry[name] = round(float(np.median(arr)), 5)
+            entry[f"{name}_mean"] = round(float(arr.mean()), 5)
         out["table"][f"s{step}/{cls}/{arm}"] = entry
     return out
 
@@ -753,19 +770,25 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 #: Panel titles for the reporting groups.
 PANEL_TITLE = {
-    "dregon": "DREGON (no truth)",
-    "fly124": "FLY124 (stored labels)",
+    "dregon@2mic": "DREGON, 2 mics (no truth)",
+    "dregon@8mic": "DREGON, 8 mics (no truth)",
+    "fly124@2mic": "FLY124, 2 mics (stored labels)",
+    "fly124@8mic": "FLY124, 8 mics (stored labels)",
     "synth+0dB": "Synthetic, 0 dB (truth)",
     "synth-10dB": "Synthetic, −10 dB (truth)",
 }
 
 
-def _mean(values: Any) -> float:
-    """Mean of a possibly empty array, as a plain float (empty -> NaN)."""
+def _med(values: Any) -> float:
+    """Median of a possibly empty array, as a plain float (empty -> NaN).
+
+    The figures report the same statistic the summary does — see
+    :func:`summarize` for why it is the median and not the mean.
+    """
     import numpy as np
 
     arr = np.asarray(values, dtype=float)
-    return float(arr.mean()) if arr.size else float("nan")
+    return float(np.median(arr)) if arr.size else float("nan")
 
 
 def make_figures(out_dir: Path) -> None:
@@ -812,13 +835,13 @@ def make_figures(out_dir: Path) -> None:
 
     def groups(step: int) -> list[str]:
         """Reporting groups present at ``step``, synthetic SNRs first."""
-        gs = {r["group"] for r in rows if r["step"] == step}
+        gs = {group_of(r) for r in rows if r["step"] == step}
         return sorted(gs, key=lambda g: (not g.startswith("synth"), g))
 
     def pick(step, grp, arm, key, sub=None):
         vals = []
         for r in rows:
-            if r["step"] == step and r["group"] == grp and r["arm"] == arm and key in r:
+            if r["step"] == step and group_of(r) == grp and r["arm"] == arm and key in r:
                 vals.append(r[key][sub] if sub else r[key])
         return np.array(vals, dtype=float)
 
@@ -833,16 +856,16 @@ def make_figures(out_dir: Path) -> None:
         x = np.arange(len(s4))
         w = 0.36
         for ax, grp in zip(axes[0], g4, strict=True):
-            truth = has_truth(grp) or grp == "fly124"
+            truth = has_truth(grp) or grp.startswith("fly124")
             key_b, key_a, sub = (
                 ("err_before", "err_after", "rms")
                 if truth
                 else ("fvk_before", "fvk_after", "objective")
             )
-            if grp == "fly124":  # no err_before on real telemetry init: it IS the init
+            if grp.startswith("fly124"):  # the telemetry init IS the label: no err_before
                 key_b, key_a, sub = "fvk_before", "fvk_after", "objective"
-            b = np.array([_mean(pick(4, grp, a, key_b, sub)) for a in s4])
-            aa = np.array([_mean(pick(4, grp, a, key_a, sub)) for a in s4])
+            b = np.array([_med(pick(4, grp, a, key_b, sub)) for a in s4])
+            aa = np.array([_med(pick(4, grp, a, key_a, sub)) for a in s4])
             ax.bar(x - w / 2, b, w, color="#cccccc", label="init (telemetry)")
             ax.bar(x + w / 2, aa, w, color=[arm_color[a] for a in s4], label="after arm")
             for i, v in enumerate(aa):
@@ -857,7 +880,7 @@ def make_figures(out_dir: Path) -> None:
             ax.set_xticks(x)
             ax.set_xticklabels([label[a] for a in s4], fontsize=9)
             ax.spines[["top", "right"]].set_visible(False)
-            wall = [_mean(pick(4, grp, a, "wall_s")) for a in s4]
+            wall = [_med(pick(4, grp, a, "wall_s")) for a in s4]
             ax.set_xlabel(
                 "wall/window: " + ", ".join(f"{v:.0f}s" for v in wall), fontsize=9, color="#666666"
             )
@@ -876,10 +899,11 @@ def make_figures(out_dir: Path) -> None:
         for ax, grp in zip(axes[0], g5, strict=True):
             if has_truth(grp):
                 ykey, ysub, ylab = "err_after", "rms", "rms rate error vs truth (rev/s)"
-            elif grp == "fly124":
+            elif grp.startswith("fly124"):
                 ykey, ysub, ylab = "err_vs_ref", "rms", "rms vs stored labels (rev/s)"
             else:
                 ykey, ysub, ylab = "fvk_after", "objective", "$F_{VK}$ objective"
+            shown: list[float] = []
             for a in s5:
                 t = pick(5, grp, a, "wall_s")
                 y = pick(5, grp, a, ykey, ysub)
@@ -887,9 +911,10 @@ def make_figures(out_dir: Path) -> None:
                 if not n:
                     continue
                 ax.scatter(t[:n], y[:n], s=24, alpha=0.28, color=arm_color[a], marker="o")
+                shown.extend(float(v) for v in y[:n])
                 ax.scatter(
-                    [t[:n].mean()],
-                    [y[:n].mean()],
+                    [float(np.median(t[:n]))],
+                    [float(np.median(y[:n]))],
                     s=200,
                     color=arm_color[a],
                     marker="o",
@@ -899,7 +924,7 @@ def make_figures(out_dir: Path) -> None:
                     label=label[a],
                 )
             ref = pick(5, grp, s5[0], "fvk_before", "objective")
-            if not has_truth(grp) and grp != "fly124" and ref.size:
+            if not has_truth(grp) and not grp.startswith("fly124") and ref.size:
                 ax.axhline(
                     float(ref.mean()), color="#444444", linestyle="--", linewidth=1.0, zorder=1
                 )
@@ -912,6 +937,16 @@ def make_figures(out_dir: Path) -> None:
                     fontsize=9,
                     color="#444444",
                 )
+            # A blind candidate can put two tracks on top of each other and the
+            # near-singular coupled solve then scores in the hundreds; one such
+            # point would own the whole axis. The outliers stay drawn, the view
+            # is set from the bulk.
+            if shown:
+                arr = np.asarray(shown, dtype=float)
+                hi = float(np.percentile(arr, 80))
+                lo = float(arr.min())
+                if np.isfinite(hi) and hi > lo:
+                    ax.set_ylim(max(0.0, lo - 0.1 * (hi - lo)), hi * 1.35)
             ax.set_xscale("log")
             ax.set_xlabel("wall time per window (s, log)")
             ax.set_ylabel(ylab)
