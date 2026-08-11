@@ -47,11 +47,11 @@ Windows
 ``synth``
     In-script comb windows (``--synth-seconds``, 16 kHz, 4 rotors including one
     DREGON-like twin pair 0.3-1.0 rev/s apart). The trajectory comes from
-    :func:`data_processing.rps_synthesis.generate`; the comb is ``1/k``
-    amplitudes with WP18-shaped phase noise (harmonic ``k``'s phase carries an
-    OU jitter of std ``k * phase_sigma`` rad, i.e. variance ~ ``k^2``, so the
-    high harmonics decohere first — the measured behaviour), plus white noise
-    at ``--snr-db``. Truth is exact.
+    :func:`data_processing.rps_synthesis.generate`; the comb carries ``1/k``
+    amplitudes with the 2-blade blade-pass emphasis and an independent Wiener
+    phase noise per harmonic of variance ``prop k^2`` (the WP18 law, same
+    constant as ``scripts/fvk_bench.py``), plus white noise at ``--snr-db``.
+    Truth is exact — see :func:`synth_window` for the three reasons.
 ``dregon`` / ``fly124``
     The frozen ``beatvk`` prep windows (:func:`tracking.load_prep_window`).
     DREGON carries no truth, so it is scored by F_VK alone; FLY124 is scored
@@ -316,7 +316,7 @@ def load_window(params: dict[str, Any]) -> dict[str, Any]:
         w["r_ref"] = w["r_true"]
         return w
 
-    from tracking.protocols import load_prep_window
+    from tracking.protocols import load_prep_window, resolve_prep_dir
 
     pdir = params.get("prep_dir")
     z = load_prep_window(str(params["window"]), Path(pdir) if pdir else None)
@@ -328,8 +328,19 @@ def load_window(params: dict[str, Any]) -> dict[str, Any]:
         audio, ft, r = audio[:, :n_a], ft[keep], r[:, keep]
     n_ch = int(params["max_channels"])
     audio = np.ascontiguousarray(audio[:n_ch], dtype=np.float64)
+    # The blind ladder's spatial pair scan is a WEIGHTED one: the protocol's
+    # own 1/d^2 per-rotor mic weights (built beside the prep windows). Without
+    # them the ladder runs on uniform weights, which is not the configuration
+    # the published blind numbers were measured in.
+    rid = str(params["window"]).rpartition("__w")[0]
+    wpath = (Path(pdir) if pdir else resolve_prep_dir()) / f"{rid}__weights.npz"
+    weights = None
+    if wpath.exists():
+        with np.load(wpath) as zw:
+            weights = np.asarray(zw["weights"], dtype=np.float64)[:n_ch]
     return {
         "audio": audio,
+        "weights": weights,
         "ft": np.asarray(ft, dtype=np.float64),
         "r_true": r if params["class"] == "fly124" else None,
         "r_ref": np.asarray(r, dtype=np.float64),
@@ -416,8 +427,15 @@ def step4_stage(arm: str, sr: int, n_rotors: int, params: dict[str, Any]) -> Any
     raise ValueError(f"unknown step-4 arm {arm!r}")
 
 
-def step5_stage(arm: str, sr: int, params: dict[str, Any]) -> Any:
-    """The step-5 contestant as one ``Frame -> Frame`` stage (blind)."""
+def step5_stage(arm: str, sr: int, params: dict[str, Any], weights: Any = None) -> Any:
+    """The step-5 contestant as one ``Frame -> Frame`` stage (blind).
+
+    ``weights`` is the ``(n_mic, 4)`` per-rotor mic-weight matrix of the
+    protocol (``None`` = uniform, which is all a synthetic single-point window
+    can have). The track -> physical-rotor map stays the IDENTITY: the campaign
+    derives it by PIT against the telemetry, and that would put an oracle
+    inside a blind arm.
+    """
     from dataclasses import replace
 
     import tracking as trk
@@ -428,7 +446,9 @@ def step5_stage(arm: str, sr: int, params: dict[str, Any]) -> Any:
         trk.coarse_init_stage(CoarseConfig()),
     )
     if arm == "ours_full":
-        return trk.blind_fullrange()
+        return trk.blind_fullrange(
+            trk.Vit2dspConfig(weights=weights, stage_guard=True, seed_cfg=SEED_CFG)
+        )
     if arm == "seed_only":
         return seed_pipe
     if arm == "seed_vk":
@@ -556,7 +576,7 @@ def worker(unit: Unit) -> dict[str, Any]:
         frame = trk.tracking_frame(
             audio, sr, rps=r_init, frame_times=ft, rps_meas=r_init, dtype=np.float64
         )
-        stage = step5_stage(str(p["arm"]), sr, p)
+        stage = step5_stage(str(p["arm"]), sr, p, win.get("weights"))
 
     row: dict[str, Any] = {
         "uid": unit.uid,
@@ -610,7 +630,6 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
     arms = [a for a in args.arms.split(",") if a] if args.arms else None
     common = {
         "k_max": args.k_max,
-        "max_channels": args.max_channels,
         "snr_db": 0.0,
         "blade_pass": not args.flat_amps,
         "refit_max_iters": args.refit_max_iters,
@@ -630,6 +649,7 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
                 windows = [
                     {
                         "class": "synth",
+                        "max_channels": args.max_channels,
                         "seed": s,
                         "seconds": args.synth_seconds,
                         "snr_db": snr,
@@ -640,12 +660,22 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
                 ]
             elif cls == "dregon":
                 windows = [
-                    {"class": "dregon", "window": w, "seconds": args.real_seconds}
+                    {
+                        "class": "dregon",
+                        "window": w,
+                        "seconds": args.real_seconds,
+                        "max_channels": args.real_channels,
+                    }
                     for w in (DREGON_WINDOWS[: args.n_real] if args.n_real else DREGON_WINDOWS)
                 ]
             elif cls == "fly124":
                 windows = [
-                    {"class": "fly124", "window": w, "seconds": args.real_seconds}
+                    {
+                        "class": "fly124",
+                        "window": w,
+                        "seconds": args.real_seconds,
+                        "max_channels": args.real_channels,
+                    }
                     for w in FLY124_WINDOWS
                 ]
             else:
@@ -922,7 +952,13 @@ def main() -> int:
         "--flat-amps", action="store_true", help="pure 1/k comb (no 2-blade blade-pass emphasis)"
     )
     ap.add_argument("--k-max", type=int, default=40)
-    ap.add_argument("--max-channels", type=int, default=2)
+    ap.add_argument("--max-channels", type=int, default=2, help="synthetic windows")
+    ap.add_argument(
+        "--real-channels",
+        type=int,
+        default=8,
+        help="mics of the real 8-mic windows (the protocol's own count)",
+    )
     ap.add_argument("--refit-max-iters", type=int, default=6)
     ap.add_argument("--ms-starts", type=int, default=8)
     ap.add_argument("--ms-screen", default="5:15,10:15")
@@ -946,6 +982,13 @@ def main() -> int:
 
     out_dir = Path(args.out)
     if args.figs:
+        # Rebuild BOTH artifacts from whatever unit JSONs are on disk — the
+        # step that merges several jobs' pulled raw/ directories into one
+        # campaign result without re-running a single unit.
+        rows = [json.loads(p.read_text()) for p in sorted((out_dir / "raw").glob("*.json"))]
+        summary = summarize(rows)
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=1))
+        print(json.dumps(summary, indent=1))
         make_figures(out_dir)
         return 0
     if args.build_preps:
