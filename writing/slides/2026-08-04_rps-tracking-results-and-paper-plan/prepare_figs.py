@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import pathlib
+import shutil
 import sys
 
 import matplotlib
@@ -541,7 +542,7 @@ def fig_sim2real() -> None:
     ax.set_xticklabels(labels, fontsize=11.5)
     ax.set_ylabel("PIT-MSE on the real validation set (log)")
     ax.set_ylim(1, 900)
-    for x, v, note in zip(np.arange(2), vals, ["R² = −10.5", "R² > 0"], strict=False):
+    for x, v, note in zip(np.arange(2.0), vals, ["R² = −10.5", "R² > 0"], strict=False):
         ax.text(x, v * 1.25, f"{v:g}\n{note}", ha="center", fontsize=11.5)
     ax.set_title("Generator-trained predictors are worse than predicting the mean", fontsize=12)
     fig.tight_layout()
@@ -821,7 +822,28 @@ def fig_alias_lattice() -> None:
     print("alias_lattice: written")
 
 
+def copy_campaign_figures() -> None:
+    """Steps 1, 3, 4 and 5 are figures produced by the campaign drivers
+    themselves (``scripts``-side, under ``results/``). Nothing is redrawn here:
+    the PNGs are copied into ``assets/`` so the deck stays self-contained and
+    ``make`` still refreshes them from the newest run."""
+    copies = {
+        "results/fvk_telemetry/fig_oracle_sanity.png": "oracle_sanity.png",
+        "results/fvk_arms/fig_step4_arms.png": "step4_arms.png",
+        "results/fvk_arms/fig_step5_pareto.png": "step5_pareto.png",
+        "results/fvk_bench/fig_gra.png": "bench_gra.png",
+    }
+    for src_rel, dst_name in copies.items():
+        src = ROOT / src_rel
+        if not src.exists():
+            print(f"copy: MISSING {src_rel} (kept the asset already in place)")
+            continue
+        shutil.copyfile(src, ASSETS / dst_name)
+        print(f"copy: {src_rel} -> assets/{dst_name}")
+
+
 NEW_FIGURES = (
+    copy_campaign_figures,
     fig_gen_label_bias,
     fig_sim2real,
     fig_ridge_telemetry,

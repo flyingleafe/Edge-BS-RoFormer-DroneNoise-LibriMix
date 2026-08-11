@@ -16,21 +16,6 @@
   fill: fill, stroke: 0.7pt + stroke-color, inset: 8pt, radius: 3pt, body,
 )
 
-#let pending(caption) = {
-  align(center, block(
-    width: 90%,
-    height: 64%,
-    fill: luma(247),
-    stroke: (paint: luma(150), thickness: 1pt, dash: "dashed"),
-    radius: 4pt,
-    align(center + horizon, text(size: 1.1em, fill: luma(90))[
-      result pending: running tonight
-    ]),
-  ))
-  v(0.5em)
-  align(center, text(size: 0.85em, style: "italic")[#caption])
-}
-
 = What this deck asks
 
 #v(0.8fr)
@@ -355,6 +340,40 @@
   measure the requirements point at, and it already exists in our own solver.
 ]
 
+= The landscape, measured
+
+#align(center, image("assets/bench_gra.png", height: 68%))
+
+#align(center, text(size: 0.82em)[
+  $F_"VK"$ at the coarse rung is the only measure with a positive optimum margin
+  over the structured alias set. It stays monotone out to 2.83 rev/s, and reads
+  0.87 to 0.93 at $-20$ dB, where ridge, broadband and harmonic sum are at chance.
+])
+#v(0.3em)
+#align(center, text(size: 0.82em, style: "italic")[
+  And the nested sub-multiple ($f_0 \/ 2$, $2K$ harmonics) beats every measure in
+  100% of units: the degeneracy of the previous slide, now measured. A fixed
+  harmonic cap only hid it.
+])
+
+#speaker-note[
+  Step one of the matrix, run before the optimizer was trusted with anything.
+  Six candidate measures, scored on synthetic combs with known truth and on real
+  cruise audio, at three signal-to-noise levels. Three readings matter. First,
+  the optimum margin: only the coupled residual at the coarse harmonic rung puts
+  the true trajectory below every member of the structured alias set, and every
+  other measure is negative, which means some alias beats truth. Second, the
+  basin: the coarse rung stays monotone out to 2.8 rev per second, roughly twenty
+  times the fine rung, which is what makes the harmonic anneal a real ladder
+  rather than a story. Third, the gradient-sign accuracy on this figure: at minus
+  twenty decibels the coarse rung still ranks a five percent worse step correctly
+  most of the time, while the ridge, the broadband share and the harmonic sum sit
+  on the coin-flip line. The last line is the honest one. The nested sub-multiple
+  beats the truth for every measure in every single unit, exactly as the algebra
+  said it must. Earlier campaigns did not see it only because they capped the
+  harmonic count. So the order penalty is not a refinement, it is load-bearing.
+]
+
 = The measure: the profiled coupled Vold--Kalman residual
 
 #v(0.7fr)
@@ -559,11 +578,11 @@
     stroke: 0.5pt + luma(180),
     inset: 8pt,
     table.header([*step*], [*question*], [*evidence*], [*status*]),
-    [1], [Is the measure the right one], [landscape benchmark: optimum margin, basin profiles, gradient ranking], [running],
+    [1], [Is the measure the right one], [landscape benchmark: optimum margin, basin profiles, gradient ranking], [done],
     [2], [How good are the labels we have], [ridge verdicts, nulls, hold-outs, scale profile], [done],
-    [3], [Does the oracle behave], [L-BFGS from telemetry: DREGON moves, Michael's does not], [tonight],
-    [4], [Can we improve telemetry], [synthetic recovery first, then both rigs], [tonight],
-    [5], [How good is blind annotation], [precision against compute, multi-start L-BFGS as the anchor], [next],
+    [3], [Does the oracle behave], [L-BFGS from telemetry: DREGON moves, Michael's does not], [done],
+    [4], [Can we improve telemetry], [synthetic recovery first, then both rigs], [done],
+    [5], [How good is blind annotation], [precision against compute, multi-start L-BFGS as the anchor], [done],
   )
 ]
 
@@ -575,68 +594,115 @@
 #v(0.5fr)
 
 #speaker-note[
-  The plan as a matrix, so the pending rows are visible rather than implied.
-  Step one is the landscape benchmark: measure each candidate measure's
-  optimum margin over the structured alias set, its directional basin profiles
-  and its gradient-sign accuracy, on synthetic combs where truth is known.
-  Step two is the campaign already reported. Step three is the oracle sanity
-  check that runs tonight. Step four asks whether the oracle actually improves
-  a label set, starting on synthetic data where improvement is verifiable, then
-  on both real rigs. Step five is the deployable question, and it is a
-  trade-off rather than a single number: how much precision per unit of
-  compute, with multi-start optimization as the expensive anchor at one end.
+  The plan as a matrix, and every row now has a result behind it. Step one is
+  the landscape benchmark two slides back: optimum margin over the structured
+  alias set, directional basin profiles, gradient-sign accuracy. Step two is the
+  ridge campaign in part two. Step three is the oracle sanity check, which is
+  the next slide, and it is the one that licenses everything after it. Step four
+  asks whether the oracle actually improves a label set, on synthetic data where
+  improvement is verifiable and then on both real rigs. Step five is the
+  deployable question, and it is a trade-off rather than a single number: how
+  much precision per unit of compute, with multi-start optimization as the
+  expensive anchor at one end. The next three slides take them in order.
 ]
 
-= Step 3: does the oracle move the right rig?
+= Step 3: the oracle moves DREGON, and leaves FLY124 alone
 
-#pending[
-  L-BFGS from telemetry under the $K$ anneal: rate change per rig, DREGON
-  against Michael's, with the fitness reading before and after.
-]
+#align(center, image("assets/oracle_sanity.png", height: 66%))
+
+#align(center, text(size: 0.82em)[
+  Six DREGON steady windows move by a scale of #sym.minus\0.596%
+  (per-window range #sym.minus\0.665 to #sym.minus\0.540), all inside the ridge
+  interval [#sym.minus\0.877, #sym.minus\0.533]. FLY124 cruise moves
+  #sym.minus\0.0007%, which is 0.16 rev/s rms.
+])
+#v(0.25em)
+#align(center, text(size: 0.78em, style: "italic")[
+  Outside cruise the descent breaks: on a ramping trajectory the fixed
+  smoothness prior swamps the data term. Cruise only, for now.
+])
 
 #speaker-note[
-  Placeholder for tonight's run. The figure will be a two-panel comparison:
-  how far the optimizer moves each rig's labels, and what the lock reading does
-  in response. The prediction is on the record, from an instrument that never
-  saw this optimizer: DREGON moves by something between a third and nine
-  tenths of a percent, Michael's barely moves, and the lock reading rises on
-  DREGON and stays flat on Michael's. If both rigs move, the optimizer is
-  fitting noise and step four does not run.
+  The sanity condition, and it passes. The optimizer starts from each rig's own
+  telemetry, runs L-BFGS on the profiled residual under the harmonic anneal, and
+  the plot reads the constant-scale component of the movement. DREGON's six
+  steady windows all land near minus 0.6 percent, and every one of them sits
+  inside the interval the ridge scale profile published before this optimizer
+  existed. Michael's cruise windows move by seven ten-thousandths of a percent,
+  which is 0.16 rev per second of jitter and no scale at all. Two instruments
+  that share no code and no statistic now agree on the same label error, and the
+  negative control stays flat. That is the difference between a correction and a
+  flexible fitter. The caveat is on the slide and it is a real limit: the hollow
+  markers are ramp and warm-up windows, where a fixed smoothness prior fights a
+  trajectory that is genuinely moving, and the descent walks off. Cruise only
+  until the prior is scheduled.
 ]
 
-= Step 4: does the optimizer improve a label set?
+= Step 4: only gradient descent on $F_"VK"$ improves a telemetry init
 
-#pending[
-  Synthetic first, where improvement is verifiable against known truth, then
-  DREGON and Michael's, scored by the fitness instrument.
-]
+#v(0.4fr)
+#align(center, image("assets/step4_arms.png", width: 100%))
+
+#v(0.5em)
+#align(center, text(size: 0.82em)[
+  Synthetic, DREGON-style corrupted init, rms rate error against truth: init
+  0.598 #sym.arrow.r peel#sym.harpoons.rtlb pi-Kalman 0.474, IAVKF-style 0.546,
+  *L-BFGS on $F_"VK"$ 0.182* at 0 dB. At $-10$ dB only L-BFGS moves at all
+  (0.188), at 8 to 10 times the cost of the pi-Kalman arm. On real DREGON audio
+  the objective goes 0.609 #sym.arrow.r 0.581 / 0.605 / *0.467*.
+])
+#v(0.6fr)
 
 #speaker-note[
-  Placeholder for the second run. Synthetic first: corrupt a known trajectory
-  the way telemetry corrupts it, optimize, and measure the recovered error
-  directly, because that is the only setting where the answer is not an
-  inference. Then the two real rigs, scored by the same instrument as step
-  two, so the numbers drop into the same table. The comparison of interest is
-  against the alternation chain: the current 2.47 dB is what a hand-built
-  alternation reaches, and the question is how much of the remaining gap
-  gradient optimization closes.
+  Step four asks the question that matters for pseudo-labels: given a corrupted
+  label set, does anything actually recover the truth. Synthetic first, because
+  it is the only setting where the answer is a measurement rather than an
+  inference: take a known trajectory, corrupt it the way DREGON's telemetry
+  corrupts one, and let each refiner work. Our own alternation chain takes 0.598
+  down to 0.474, an adaptive-Vold-Kalman-style arm reaches 0.546, and gradient
+  descent on the profiled residual reaches 0.182, which is a factor of three.
+  At minus ten decibels the two hand-built arms stop moving altogether while
+  L-BFGS holds its number, and that is the interesting result: the alternation
+  is capture-range limited exactly as the basin law predicts. The price is eight
+  to ten times the compute. On real DREGON audio there is no truth, so the two
+  right-hand panels read the objective instead, and the ordering is the same.
 ]
 
 = Step 5: blind annotation, precision against compute
 
-#pending[
-  Pareto front: annotation error against compute per window, from the fast
-  blind chain to multi-start optimization.
-]
+#v(0.3fr)
+#align(center, image("assets/step5_pareto.png", width: 100%))
+
+#v(0.4em)
+#align(center, text(size: 0.8em)[
+  The full blind ladder is the most precise contestant everywhere a reference
+  exists: DREGON 1.311 against 1.366 rms for the seed alone, FLY124 3.01
+  against 3.32, at 8 to 165 s per window. Multi-start L-BFGS costs 12 to 25
+  times more and is 2 to 6 times worse.
+])
+#v(0.3em)
+#align(center, cbox(fill: rgb("#fdece8"), stroke-color: rgb("#d62728"))[
+  #text(size: 0.8em)[
+    On DREGON multi-start *wins the objective* (0.633 against 0.765) while
+    sitting 8 rev/s away from telemetry: the alias degeneracy, on real data. The
+    order penalty is the missing term.
+  ]
+])
+#v(0.5fr)
 
 #speaker-note[
-  Placeholder for the deployable result. This is a front, not a point:
-  the fast blind chain is seconds per window, multi-start optimization under
-  the full anneal is minutes to hours, and the useful statement is how much
-  precision each buys. The anchor at the expensive end is multi-start
-  L-BFGS, which is also the ceiling estimate. The practical target is the
-  point where blind annotation is better than the telemetry we already have,
-  because past that point the labels stop being the bottleneck.
+  The deployable question, and it is a front rather than a point. The blind
+  ladder, with no telemetry at any stage, is the most precise contestant on
+  every material where a reference exists, and it runs in seconds to a couple of
+  minutes per window. Each rung of the ladder buys a little: the seed alone,
+  the seed with one Vold-Kalman refinement, then the full alternation. Multi-start
+  L-BFGS is the expensive anchor, and it is the slide's warning. On DREGON it
+  reaches the best objective of any arm and sits eight rev per second away from
+  the telemetry, which is more than the twin-rotor spacing. That is the nested
+  sub-multiple from part three, demonstrated on real audio rather than derived:
+  a better objective value at a wrong trajectory. Until the order penalty is in
+  the cost, an unconstrained search on this objective is free to find the alias,
+  and only the seeded ladder is safe.
 ]
 
 // ═══ PART 5: the payoff ═══════════════════════════════════════════════════
@@ -687,7 +753,8 @@
   - Annotation quality is now measurable, with nulls and hold-outs
   - The best label set we have is 2.47 dB off the comb
   - The measure to optimize is chosen, and the gap in the literature is named
-  - Tonight: the oracle sanity run, then telemetry improvement
+  - Two independent instruments now agree on DREGON's label error
+  - Optimizing the measure is the only arm that improves a label set
 ])))
 #v(0.4fr)
 
@@ -698,9 +765,11 @@
   says DREGON's are 2.47 dB off what the audio supports. The measure to
   optimize is the profiled coupled residual, chosen against a requirements
   table rather than by taste, and the fact that nobody optimizes it over the
-  trajectory is the contribution claim. The two runs that go out tonight are
-  the sanity check and the first improvement result, and both drop into the
-  matrix without changing the story.
+  trajectory is the contribution claim. And the five experiments are in: an
+  optimizer that never saw the ridge lands on the ridge's own answer for DREGON
+  and leaves Michael's alone, and it is the only arm that improves a label set
+  at all. The open item is the order penalty, which the blind Pareto slide shows
+  is now the binding one.
 ]
 
 =
@@ -933,6 +1002,57 @@
   right" should look like. The wide-capture arm is the one that matters for the
   optimizer design: widening the band does not merely inflate the estimate, it
   walks the carrier off the comb entirely.
+]
+
+= Backup --- step 2: the same verdict, read by $F_"VK"$
+
+#v(0.3fr)
+#align(center, text(size: 0.95em)[
+  #table(
+    columns: (1.3fr, auto, auto, auto),
+    align: (left, center, center, center),
+    stroke: 0.5pt + luma(180),
+    inset: 7pt,
+    table.header([*pool*], [*fitted*], [*scaled*], [*raw telemetry*]),
+    [DREGON, 9 windows], [*0.6729*], [0.6724], [0.7474],
+    [FLY124 cruise, 4 windows], [*0.3984*], [---], [0.4419],
+    [FLY124 warm-up, 2 windows], [0.7478], [---], [0.7485],
+  )
+])
+
+#v(0.5em)
+#align(center, text(size: 0.8em)[
+  Objective, lower is better, 40 harmonics, 1280 cells. $F_"VK"$ separates the
+  two rigs 9.5#sym.times less sharply than the ridge, because the energy share
+  saturates: the two instruments have different jobs. Warm-up is inert.
+])
+#v(0.4em)
+#align(center, text(size: 0.78em, style: "italic")[
+  Reconciliation: an earlier arms run measured a FLY124 drift of
+  #sym.minus\0.35%. That run scored against the pre-recalibration alignment it
+  rebuilt itself; on the frozen recalibrated cache the drift is about zero.
+  Label versions matter.
+])
+#v(0.3fr)
+
+#speaker-note[
+  Step two of the matrix, scored by the new objective rather than by the ridge,
+  so the two instruments can be compared on the same windows. The ordering is
+  the same one the ridge campaign published: on DREGON the fitted trajectory and
+  the constant-scale correction both beat raw telemetry by a wide margin, and
+  the two of them are within five ten-thousandths of each other, which says
+  again that most of the DREGON error at this harmonic count is a scale. On
+  Michael's cruise the fitted trajectory improves the raw labels only slightly,
+  and on warm-up nothing separates at all. The number worth carrying is the
+  contrast in sharpness. This objective separates the two rigs about nine and a
+  half times less strongly than the ridge does, because the energy share
+  saturates once the lines are captured. That is not a fault: a verdict
+  instrument should be sharp, an optimization objective should be smooth, and
+  these are the two different jobs. The last line is a bookkeeping warning that
+  cost real time. An earlier run of the same arms reported a FLY124 drift of
+  minus a third of a percent, and it was scoring against an alignment that the
+  run itself rebuilt, from before the telemetry recalibration. On the frozen
+  recalibrated cache the drift is zero. Always name the label version.
 ]
 
 = Backup --- the time-shift reading
