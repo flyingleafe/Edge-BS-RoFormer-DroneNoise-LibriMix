@@ -323,20 +323,36 @@ def _mean(vals: list[Any]) -> float | None:
     return round(float(v.mean()), 6) if v.size else None
 
 
-def _pool_key(row: dict[str, Any]) -> str:
-    """The pooling unit: rig, with FLY124 split by regime (its warmup windows
-    are out of validity in the 6d re-score and must not silently join cruise)."""
-    return row["rig"] if row["rig"] == "dregon" else f"fly124_{row['regime']}"
+#: The pools of the report, in reading order. Two splits, both the protocol's
+#: own (``tracking.protocols.BEATVK_REPORT_POOLS``): DREGON window 0 is the
+#: TAKEOFF RAMP and windows 1-2 are steady flight, and FLY124's warmup windows
+#: are out of validity in the 6d re-score. Pooling either split away hides the
+#: only two populations on which the oracle behaves differently.
+POOL_ORDER = ("dregon", "dregon_ramp", "dregon_steady", "fly124_cruise", "fly124_warmup")
+
+
+def pools_of(row: dict[str, Any]) -> list[str]:
+    """Every pool one scored window belongs to."""
+    if row["rig"] == "fly124":
+        return [f"fly124_{row['regime']}"]
+    ramp = int(str(row["key"]).rpartition("__w")[2]) == 0
+    return ["dregon", "dregon_ramp" if ramp else "dregon_steady"]
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Pooled step-2 table (by rig x candidate) and step-3 table (by rig)."""
+    """Pooled step-2 table (by pool x candidate) and step-3 table (by pool)."""
     score_rows = [r for r in rows if r.get("mode") == "score"]
     opt_rows = [r for r in rows if r.get("mode") == "opt"]
 
+    def in_pool(rs: list[dict[str, Any]], pool: str) -> list[dict[str, Any]]:
+        return [r for r in rs if pool in pools_of(r)]
+
+    def used(rs: list[dict[str, Any]]) -> list[str]:
+        return [p for p in POOL_ORDER if in_pool(rs, p)]
+
     score_pooled: dict[str, Any] = {}
-    for pool in sorted({_pool_key(r) for r in score_rows}):
-        sel = [r for r in score_rows if _pool_key(r) == pool]
+    for pool in used(score_rows):
+        sel = in_pool(score_rows, pool)
         for cand in sorted({r["candidate"] for r in sel}):
             got = [r for r in sel if r["candidate"] == cand]
             score_pooled[f"{pool}|{cand}"] = {
@@ -349,8 +365,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
 
     opt_pooled: dict[str, Any] = {}
-    for pool in sorted({_pool_key(r) for r in opt_rows}):
-        got = [r for r in opt_rows if _pool_key(r) == pool]
+    for pool in used(opt_rows):
+        got = in_pool(opt_rows, pool)
         opt_pooled[pool] = {
             "n_windows": len(got),
             "move_rms": _mean([r["edge"]["move_rms"] for r in got]),
@@ -509,15 +525,22 @@ def make_figure(out: Path, rows: list[dict[str, Any]]) -> None:
     """Slide 18: does the oracle move the right rig?
 
     Per-window constant-scale component of the L-BFGS movement, by rig, with
-    the 6d ridge-profile band overlaid. A DREGON window whose label error is a
-    scale must land in the band; a FLY124 window whose labels are already
-    calibrated must land on zero.
+    the 6d ridge-profile band overlaid. A DREGON steady window whose label error
+    is a scale must land in the band; a FLY124 cruise window whose labels are
+    already calibrated must land on zero.
+
+    The y axis is symmetric-log with a 1 % linear zone: the ramp and warmup
+    windows leave the descent (tens of percent), and a linear axis that fits
+    them cannot resolve the 0.2 pp band the finding lives in. Those windows are
+    drawn hollow — they are shown, not pooled away, and not allowed to set the
+    scale of the panel.
     """
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
+    from matplotlib.lines import Line2D
 
     opt = sorted((r for r in rows if r.get("mode") == "opt"), key=lambda r: (r["rig"], r["key"]))
     if not opt:
@@ -544,40 +567,62 @@ def make_figure(out: Path, rows: list[dict[str, Any]]) -> None:
     ax.axhline(RIDGE_SCALE_PCT, color="#2ca02c", ls="--", lw=1.6, zorder=1)
     ax.axhline(0.0, color="#888888", lw=1.0, zorder=1)
 
+    ax.set_yscale("symlog", linthresh=1.0, linscale=1.6)
+
     x = np.arange(len(opt))
     seen: set[str] = set()
     for xi, r in zip(x, opt, strict=True):
         rig = r["rig"]
-        warm = r["regime"] != "cruise"
+        # "steady" = the windows the descent is calibrated for: FLY124 cruise
+        # and DREGON windows 1-2. Window 0 of a DREGON recording is the takeoff
+        # ramp (protocols.BEATVK_REPORT_POOLS), which the manifest still tags
+        # cruise, so the regime alone does not identify it.
+        steady = r["regime"] == "cruise" and "dregon_ramp" not in pools_of(r)
         ax.plot(
             [xi],
             [r["edge"]["scale_pct"]],
-            marker="s" if warm else "o",
+            marker="o" if steady else "s",
             ms=9,
-            mfc="none" if warm else color[rig],
+            mfc=color[rig] if steady else "none",
             mec=color[rig],
             mew=2.0,
             ls="none",
             zorder=3,
-            label=None if rig in seen else label[rig],
         )
         seen.add(rig)
-    ax.plot(
-        [],
-        [],
-        marker="s",
-        ms=9,
-        mfc="none",
-        mec="#888888",
-        mew=2.0,
-        ls="none",
-        label="warmup window",
+    # Explicit legend proxies: the first point of a rig may be a hollow ramp
+    # marker, and the key must show the rig's own filled one.
+    handles = [
+        Line2D([], [], marker="o", ms=9, mfc=color[k], mec=color[k], ls="none", label=label[k])
+        for k in ("dregon", "fly124")
+        if k in seen
+    ]
+    handles.append(
+        Line2D(
+            [],
+            [],
+            marker="s",
+            ms=9,
+            mfc="none",
+            mec="#888888",
+            mew=2.0,
+            ls="none",
+            label="ramp / warmup window (out of validity)",
+        )
     )
 
+    # The rig boundary, so the two populations read as two populations.
+    n_dregon = sum(1 for r in opt if r["rig"] == "dregon")
+    if 0 < n_dregon < len(opt):
+        ax.axvline(n_dregon - 0.5, color="#cccccc", lw=1.2, zorder=0)
+
+    vals = [r["edge"]["scale_pct"] for r in opt]
+    # Headroom above the highest point for the legend — one symlog decade.
+    ax.set_ylim(min(min(vals), lo) * 1.6 - 0.4, max(max(vals), 0.0) * 20.0 + 3.0)
     ax.text(
         0.995,
         RIDGE_SCALE_PCT,
-        f"6d ridge profile {RIDGE_SCALE_PCT:+.3f} % [{lo:+.3f}, {hi:+.3f}]",
+        f"6d ridge scale profile {RIDGE_SCALE_PCT:+.3f} % [{lo:+.3f}, {hi:+.3f}]",
         color="#2ca02c",
         fontsize=10,
         ha="right",
@@ -594,7 +639,7 @@ def make_figure(out: Path, rows: list[dict[str, Any]]) -> None:
     )
     ax.set_ylabel("constant-scale component of the\nL-BFGS movement (%)")
     ax.set_title("The oracle moves DREGON's labels by a scale and leaves FLY124's alone")
-    ax.legend(frameon=False, loc="lower right", fontsize=10)
+    ax.legend(handles=handles, frameon=False, loc="upper left", fontsize=10, ncol=3)
     fig.tight_layout()
     for ext in ("png", "svg"):
         p = out / f"fig_oracle_sanity.{ext}"
