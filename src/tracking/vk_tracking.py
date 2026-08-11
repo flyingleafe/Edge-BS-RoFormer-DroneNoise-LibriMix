@@ -50,6 +50,7 @@ __all__ = [
     "Envelopes",
     "VKResult",
     "demodulate",
+    "edge_taper",
     "ls_project_envelopes",
     "vk_envelopes",
     "vk_track",
@@ -257,6 +258,24 @@ def second_diff(n: int) -> sparse.csr_array:
         + sparse.eye_array(n - 2, n, k=2)
     )
     return d2.tocsr()
+
+
+def edge_taper(n_env: int) -> np.ndarray:
+    """``(n_env,)`` fade of the VK data weight at both ends of the window.
+
+    The zero-phase LP's first/last few envelope samples are padding-guess
+    transients; fitting them flares the envelopes at the boundaries. The weight
+    ramps over the filter settling span (~3 cutoff periods = ``3 / 0.45``
+    envelope samples) and the smoothness prior extrapolates instead. Part of the
+    OBJECTIVE, not of the solve, which is why anything that profiles the VK cost
+    (:mod:`tracking.fitness_vk`) reads the same taper from here.
+    """
+    n_edge = min(8, max(1, n_env // 4))
+    taper = np.ones(n_env)
+    ramp = (np.arange(n_edge) + 1.0) / (n_edge + 1.0)
+    taper[:n_edge] = ramp
+    taper[-n_edge:] = ramp[::-1]
+    return taper
 
 
 def env_stride(cfg: VKConfig) -> tuple[int, float]:
@@ -556,16 +575,7 @@ def vk_envelopes(
 
     x = np.zeros_like(z)
     bw_track = np.full(len(rotor), bw)
-    # Edge taper on the data term: the zero-phase LP's first/last few envelope
-    # samples are padding-guess transients; fitting them flares the envelopes
-    # at the boundaries. Fade the data weight over the filter settling span
-    # (~3 cutoff periods = 3 / 0.45 envelope samples) and let the smoothness
-    # prior extrapolate instead.
-    n_edge = min(8, max(1, n_env // 4))
-    taper = np.ones(n_env)
-    ramp = (np.arange(n_edge) + 1.0) / (n_edge + 1.0)
-    taper[:n_edge] = ramp
-    taper[-n_edge:] = ramp[::-1]
+    taper = edge_taper(n_env)  # data-term edge fade; see the function's docstring
     # Coupling pairs separated by at least this never beat inside the demod
     # lowpass (cutoff 0.45 * fs_env): their LP'd cross term is pure spectral
     # leakage, ~1e-3 relative.

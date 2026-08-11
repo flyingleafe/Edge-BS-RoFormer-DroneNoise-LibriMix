@@ -31,6 +31,17 @@ from tracking.fitness import (
     score_window,
     window_cells,
 )
+from tracking.fitness_vk import (
+    DEFAULT_SCHEDULE,
+    FVKConfig,
+    FVKStage,
+    alias_charge,
+    fvk_loss,
+    fvk_score,
+    k_cap,
+    optimize_trajectory,
+    solve_envelopes,
+)
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
 from tracking.order_domain import (
     OrderSpectrum,
@@ -101,6 +112,8 @@ from tracking.top import (
     coarse_init_stage,
     fitness_stage,
     flagship,
+    fvk_refine_stage,
+    fvk_stage,
     get_audio,
     get_rps,
     guarded,
@@ -135,6 +148,17 @@ from tracking.vk_tracking import (
 from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
+    "DEFAULT_SCHEDULE",
+    "FVKConfig",
+    "FVKStage",
+    "alias_charge",
+    "fvk_loss",
+    "fvk_refine_stage",
+    "fvk_score",
+    "fvk_stage",
+    "k_cap",
+    "optimize_trajectory",
+    "solve_envelopes",
     "RefitConfig",
     "RefitResult",
     "k_cap_for_error",

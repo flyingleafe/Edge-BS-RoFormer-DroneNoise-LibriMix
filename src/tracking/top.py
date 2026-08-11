@@ -34,6 +34,8 @@ Stage                        Config                      What it does
 :func:`scale_stage`          ``factor``                  multiply the trajectory by a constant
 :func:`shift_stage`          ``tau``                     read the trajectory ``tau`` seconds later
 :func:`fitness_stage`        :class:`FitnessConfig`      score the trajectory (does not change it)
+:func:`fvk_stage`            :class:`FVKConfig`          score it by F_VK (profiled coupled-VK residual)
+:func:`fvk_refine_stage`     :class:`FVKConfig`          L-BFGS on F_VK under a k-annealing schedule
 :func:`refit_stage`          :class:`RefitConfig`        the whole telemetry refit as one stage
 :func:`guarded`              :class:`SeedConfig`         wrap a stage with the blind per-track guard
 ===========================  ==========================  ==========================
@@ -79,13 +81,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
 import tdseries as td
 
 from tracking.fitness import FitnessConfig, Holdout, score_window
+from tracking.fitness_vk import (
+    FVKConfig,
+    FVKStage,
+    fvk_score,
+    optimize_trajectory,
+)
 from tracking.phase_increment_tracker import pi_kalman_refine
 from tracking.pipelines import (
     ARMS,
@@ -122,6 +130,8 @@ __all__ = [
     "DEFAULT_HOP_S",
     "PI_PROTOCOL",
     "CoarseConfig",
+    "FVKConfig",
+    "FVKStage",
     "PeelConfig",
     "PiConfig",
     "Stage",
@@ -131,6 +141,8 @@ __all__ = [
     "coarse_init_stage",
     "fitness_stage",
     "flagship",
+    "fvk_refine_stage",
+    "fvk_stage",
     "get_audio",
     "get_rps",
     "guarded",
@@ -850,6 +862,83 @@ def fitness_stage(
             n_boot=0,
         )
         return with_rps(frame, r, ft, stage=name, info=info)
+
+    return run
+
+
+def fvk_stage(
+    cfg: FVKConfig | None = None,
+    *,
+    reference_entry: str = "rps_meas",
+    k_hi: int | None = None,
+    rho_scale: float = 1.0,
+    name: str = "fvk",
+) -> Stage:
+    """Score the frame's current ``rps`` by F_VK (:func:`tracking.fvk_score`).
+
+    The profiled coupled-VK residual — the differentiable sibling of
+    :func:`fitness_stage`, and like it the trajectory is NOT changed: the stage
+    only appends a ``{"stage": "fvk", ...}`` entry, so it can be dropped
+    anywhere into a ladder. ``reference_entry`` pins the harmonic cap (the fixed
+    degrees of freedom); it falls back to the frame's own ``"rps"`` when the
+    frame carries no reference.
+    """
+    use = cfg or FVKConfig()
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, sr = get_audio(frame)
+        r, ft = get_rps(frame)
+        ref = get_rps(frame, reference_entry)[0] if reference_entry in frame else r
+        t0 = float(frame["audio"].t_start)
+        info = fvk_score(
+            audio,
+            sr,
+            r,
+            ft - t0,
+            replace(use, sr=int(round(sr))),
+            reference=ref,
+            k_hi=k_hi,
+            rho_scale=rho_scale,
+        )
+        return with_rps(frame, r, ft, stage=name, info=info)
+
+    return run
+
+
+def fvk_refine_stage(
+    cfg: FVKConfig | None = None,
+    *,
+    schedule: Sequence[FVKStage] | None = None,
+    knot_s: float = 0.25,
+    smooth_lambda: float = 1.0,
+    reference_entry: str = "rps_meas",
+    name: str = "fvk_refine",
+) -> Stage:
+    """Refine ``rps`` by L-BFGS on F_VK (:func:`tracking.optimize_trajectory`).
+
+    The continuous step the VK literature never took: the frame's current
+    trajectory is the init, a coarse cubic-spline basis is the parameterization,
+    and the ``k_max`` annealing schedule is the continuation. The per-rung loss
+    trace and argmin movement land in the log entry — that is the
+    continuation-validity reading, so a driver never has to instrument the loop.
+    """
+    use = cfg or FVKConfig()
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, sr, r, times, t0 = _core_inputs(frame)
+        ref = get_rps(frame, reference_entry)[0] if reference_entry in frame else r
+        r_out, diag = optimize_trajectory(
+            audio,
+            sr,
+            r,
+            times - t0,
+            replace(use, sr=int(round(sr))),
+            schedule=None if schedule is None else tuple(schedule),
+            knot_s=knot_s,
+            smooth_lambda=smooth_lambda,
+            reference=ref,
+        )
+        return with_rps(frame, r_out, times, stage=name, info=diag)
 
     return run
 
