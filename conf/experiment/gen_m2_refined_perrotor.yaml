@@ -1,0 +1,26 @@
+# @package _global_
+# gen_m1_refined + per-rotor sub-embeddings (z_r = z_drone + dz_r, shared
+# across drones). The perrotor-dynamics campaign showed the deltas neither
+# impede comb formation nor damage rendering; with comb-aware checkpoint
+# selection the superset wins. Per-epoch checkpoints ON for that selection.
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic_refined
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone_perrotor
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_m2_refined_perrotor
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+checkpoint_every: 1
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false

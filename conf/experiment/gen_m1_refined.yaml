@@ -1,0 +1,28 @@
+# @package _global_
+# Full DREGON+Michael's, 8 microphones, REFINED DREGON labels, per-drone
+# codebook only. The two-drone counterpart of gen_r1_refined: does the label
+# fix carry over when Michael's shares the training stream? Per-epoch
+# checkpoints are ON so a comb-aware selection is possible afterward — the
+# perrotor-dynamics campaign showed best-by-mrstft is a lottery
+# (docs/experiments/generator-perrotor-dynamics.md).
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic_refined
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_m1_refined
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+checkpoint_every: 1
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false
