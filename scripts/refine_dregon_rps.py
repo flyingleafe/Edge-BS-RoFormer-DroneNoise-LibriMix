@@ -262,13 +262,24 @@ def init_prior(r_init: Any, ft: Any, n_t: int, cfg: Any) -> float:
 
 
 def scale_shift_pct(refined: Any, init: Any) -> list[float]:
-    """Per-rotor mean rate shift, in percent of the telemetry."""
+    """Per-rotor mean rate shift, in percent of the telemetry.
+
+    Only flight frames (init > 20 rev/s) enter the ratio: idle frames have
+    near-zero denominators and turn the statistic into noise (landing windows
+    reported shifts of 1e9 % before this mask).
+    """
     import numpy as np
 
     a = np.asarray(init, dtype=np.float64)
     b = np.asarray(refined, dtype=np.float64)
-    ratio = b / np.maximum(np.abs(a), 1e-9)
-    return [round(float(100.0 * (row.mean() - 1.0)), 5) for row in ratio]
+    shifts: list[float] = []
+    for row_a, row_b in zip(a, b):
+        m = row_a > IDLE_REV_S
+        if not m.any():
+            shifts.append(float("nan"))
+            continue
+        shifts.append(round(float(100.0 * (row_b[m].sum() / row_a[m].sum() - 1.0)), 5))
+    return shifts
 
 
 def refine_worker(unit: Unit) -> dict[str, Any]:
@@ -331,16 +342,26 @@ def refine_worker(unit: Unit) -> dict[str, Any]:
     after = fvk_score(audio, float(SR), r_ref, ft_w, cfg, reference=r_init)
 
     move_max = float(np.abs(r_ref - r_init).max())
-    used, reason = True, "ok"
-    if after["objective"] >= before["objective"]:
-        used, reason = False, "no_improvement"
-    elif move_max > MAX_MOVE_REV_S:
-        used, reason = False, "move_too_large"
-    r_window = r_ref if used else r_init
+    # Acceptance is PER ROTOR: one alias-captured rotor must not discard the
+    # healthy refinement of the other three (seen on the 41.5 s window, where
+    # rotor 0 jumped -5.95 % while rotors 1-3 moved -0.4..-0.7 %). A window
+    # that does not improve the objective rejects all rotors.
+    improved = bool(after["objective"] < before["objective"])
+    move_per_rotor = np.abs(r_ref - r_init).max(axis=-1)
+    used_per_rotor = [bool(improved and mv <= MAX_MOVE_REV_S) for mv in move_per_rotor]
+    used = any(used_per_rotor)
+    if not improved:
+        reason = "no_improvement"
+    elif not all(used_per_rotor):
+        reason = "rotor_move_too_large" if used else "move_too_large"
+    else:
+        reason = "ok"
+    r_window = np.where(np.asarray(used_per_rotor)[:, None], r_ref, r_init)
 
     return {
         **out,
         "used": used,
+        "used_per_rotor": used_per_rotor,
         "reason": reason,
         "smooth_lambda": round(lam, 9),
         "prior_init": round(p0, 6),
@@ -407,7 +428,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "n_units": len(rows),
         "n_used": len(used),
         "per_recording": per_rec,
-        "cruise_scale_pct": mean([float(np.mean(r["scale_pct_per_rotor"])) for r in cruise]),
+        "cruise_scale_pct": mean(
+            [
+                float(np.nanmean(np.asarray(r["scale_pct_per_rotor"], dtype=np.float64)))
+                for r in cruise
+            ]
+        ),
         "d_objective": mean(
             [
                 float(r["objective_after"] - r["objective_before"])
@@ -492,7 +518,17 @@ def stitch(out: Path, label_dir: Path, spec: str, params: dict[str, Any]) -> lis
             "n_windows": len(got),
             "n_used": sum(1 for r in got if r["used"]),
             "cruise_scale_pct": (
-                round(float(np.mean([np.mean(r["scale_pct_per_rotor"]) for r in cruise])), 5)
+                round(
+                    float(
+                        np.nanmean(
+                            [
+                                np.nanmean(np.asarray(r["scale_pct_per_rotor"], dtype=np.float64))
+                                for r in cruise
+                            ]
+                        )
+                    ),
+                    5,
+                )
                 if cruise
                 else None
             ),
