@@ -63,6 +63,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXP
 
 import argparse  # noqa: E402
 import json  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
@@ -334,8 +335,21 @@ def _ridge_readings(audio: np.ndarray, r: np.ndarray, ft: np.ndarray) -> dict[st
 
 
 # ── worker ────────────────────────────────────────────────────────────────────
-def make_worker(cache_dir: Path, n_rotors: int, k_max: int, npz_dir: Path, alias_penalty: float):
-    def worker(unit: Unit) -> dict[str, Any]:
+@dataclass(frozen=True)
+class Worker:
+    """One unit of the grid. A module-level callable, NOT a closure: the pool
+    pickles the worker to send it to a child process, and a closure has no
+    importable qualified name."""
+
+    cache_dir: Path
+    n_rotors: int
+    k_max: int
+    npz_dir: Path
+    alias_penalty: float
+
+    def __call__(self, unit: Unit) -> dict[str, Any]:
+        cache_dir, n_rotors = self.cache_dir, self.n_rotors
+        k_max, npz_dir, alias_penalty = self.k_max, self.npz_dir, self.alias_penalty
         p = unit.params
         blob = np.load(cache_dir / f"{p['uid']}.npz")
         audio = np.ascontiguousarray(blob["audio"], dtype=np.float64)
@@ -439,8 +453,6 @@ def make_worker(cache_dir: Path, n_rotors: int, k_max: int, npz_dir: Path, alias
         )
         return row
 
-    return worker
-
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def _f(key: str) -> list[float]:
@@ -532,7 +544,7 @@ def main() -> None:
     res = gridrun_from_args(
         args,
         units,
-        make_worker(cache_dir, args.n_rotors, args.k_max, out_dir / "traj", args.alias_penalty),
+        Worker(cache_dir, args.n_rotors, args.k_max, out_dir / "traj", args.alias_penalty),
         out_dir,
         blas_threads=int(args.omp),
         summarize=summarize,
