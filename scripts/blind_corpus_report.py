@@ -129,8 +129,15 @@ def by_recording(rows: list[dict[str, Any]], out: Path) -> list[dict[str, Any]]:
     return agg
 
 
-def overlay(run: Path, uid: str, out: Path, k_draw: int = 24) -> Path | None:
-    """Whitened spectrogram of the window + the annotated comb drawn over it."""
+def overlay(run: Path, uid: str, out: Path, k_draw: int = 8) -> Path | None:
+    """Whitened spectrogram of the window + the annotated comb drawn over it.
+
+    The frequency axis is cropped to the first ``k_draw`` teeth of the FASTEST
+    rotor. A quadrotor comb has a tooth every ~40-120 Hz per rotor, so a full
+    0-8 kHz view of four combs is 400 lines on top of each other and shows
+    nothing; the first few teeth are where a reader can actually see whether a
+    drawn line sits on a ridge or between two.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -148,19 +155,22 @@ def overlay(run: Path, uid: str, out: Path, k_draw: int = 24) -> Path | None:
     r, ft = np.asarray(tj["rps"], dtype=np.float64), np.asarray(tj["ft"], dtype=np.float64)
 
     white, bin_hz, st = whitened_logmag(audio.astype(np.float32), float(SR))
-    f_hi_bin = min(white.shape[0], int(round(2500.0 / bin_hz)))
+    f_top = float(k_draw * r.mean(axis=1).max() * 1.15)
+    f_hi_bin = int(np.clip(round(f_top / bin_hz), 16, white.shape[0]))
+    band = white[:f_hi_bin]
 
-    fig, ax = plt.subplots(figsize=(11, 5.0), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(12, 6.0), constrained_layout=True)
     ax.imshow(
-        white[:f_hi_bin],
+        band,
         origin="lower",
         aspect="auto",
         extent=(float(st[0]), float(st[-1]), 0.0, f_hi_bin * bin_hz),
-        cmap="magma",
-        vmin=float(np.percentile(white[:f_hi_bin], 40)),
-        vmax=float(np.percentile(white[:f_hi_bin], 99.5)),
+        cmap="gray_r",
+        interpolation="nearest",
+        vmin=float(np.percentile(band, 55)),
+        vmax=float(np.percentile(band, 99.0)),
     )
-    colors = ("#4FC3F7", "#81C784", "#FFD54F", "#FF8A65")
+    colors = ("#0072B2", "#D55E00", "#009E73", "#CC79A7")
     for i, row in enumerate(r):
         for k in range(1, k_draw + 1):
             line = k * np.interp(st, ft, row)
@@ -170,16 +180,19 @@ def overlay(run: Path, uid: str, out: Path, k_draw: int = 24) -> Path | None:
                 st,
                 line,
                 color=colors[i % len(colors)],
-                lw=0.7,
-                alpha=0.55,
-                label=f"rotor {i} ({row.mean():.1f} rev/s)" if k == 1 else None,
+                lw=1.1,
+                alpha=0.85,
+                ls=(0, (5, 4)),
+                label=f"rotor {i}: {row.mean():.1f} rev/s" if k == 1 else None,
             )
     ax.set_xlabel("time (s)")
     ax.set_ylabel("frequency (Hz)")
-    ax.set_title(f"{uid} — blind annotation over the whitened spectrogram")
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.75)
+    ax.set_title(
+        f"{uid} — blind annotation (dashed) over the whitened spectrogram, first {k_draw} teeth"
+    )
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9, ncol=2)
     p = out / f"overlay_{uid}.png"
-    fig.savefig(p, dpi=130)
+    fig.savefig(p, dpi=140)
     plt.close(fig)
     return p
 
