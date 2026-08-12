@@ -83,3 +83,13 @@ Jobs: `gen-r1-refined-ep-2b3fba`, `gen-r2-refined-perrotor--11ed72`,
 `gen-r1-refined-s43-90467a`, `gen-r2-refined-perrotor--f307b4`. Explainer
 artifact source: session scratchpad `perrotor_explainer.html` (published
 separately).
+
+## Addendum: the second seed pair (gen_*_s43)
+
+Best-by-mrstft, paired reading, k10-24 / k25-49 dB: r1 seed42 4.22/0.96,
+r1 seed43 2.38/2.70, r2 seed42 0.83/0.13, r2 seed43 2.11/0.68. At seed 43 the
+two architectures tie within noise, and the within-architecture seed spread
+equals the published cross-architecture gap. The published r1-vs-r2 comb gap
+is fully inside the checkpoint-selection lottery. (Also see the instrument
+audit in `generator-refined-labels.md` § CORRECTION — the same-label epoch
+comparisons here are unaffected by it.)
