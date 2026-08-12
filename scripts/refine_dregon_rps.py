@@ -23,13 +23,13 @@ frames sit at ~1e18 ticks, which float64 cannot subtract without loss.
 Three things this driver adds on top of the refiner:
 
 ``smooth_lambda`` is rescaled per window
-    The refiner's log-domain prior is ``sum (Delta log r)^2`` on the decimated
-    envelope grid, and its default weight 1.0 is calibrated for a cruise window
-    (prior ~0.8). On a takeoff ramp the same prior reads 244, so a fixed weight
-    swamps the data term and the window cannot move at all. Each unit measures
-    the prior of its own telemetry init (``p0``) and uses
-    ``lambda = 1.0 if p0 <= 0.5 else 0.5 / p0``, so the prior never exceeds half
-    the (normalized, order-1) data term.
+    Every unit runs the refiner with ``smooth_lambda="auto"``
+    (:func:`tracking.auto_smooth_lambda`), which holds the log-domain prior of
+    the window's own telemetry init to half the (normalized, order-1) data term.
+    The refiner's fixed default 1.0 is calibrated for a cruise window
+    (prior ~0.8); on a takeoff ramp the same prior reads 244, so the fixed
+    weight swamps the data term and the window cannot move at all. The weight
+    used and the init prior it came from are reported per unit.
 
 Two acceptance guards
     A window falls back to its telemetry when the F_VK objective did not improve
@@ -74,6 +74,12 @@ from typing import Any  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# The windowing and the cross-fade are ``tracking.decompose``'s — the same
+# tiling and the same ramp the VK decomposition (``scripts/vk_decompose.py``)
+# stitches its envelope bank with. What is left here is the DATA and the
+# acceptance policy.
+import tracking.decompose as D  # noqa: E402
+from tracking.decompose import fade_weights, interp_rps  # noqa: E402
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args  # noqa: E402
 
 OUT_DEFAULT = "results/refine_dregon_rps"
@@ -102,32 +108,8 @@ K_LADDER = (5, 10, 20, 40, 80)
 
 
 def frame_grid(n_t: int, sr: int) -> Any:
-    """The uniform ``HOP_S`` frame grid of a recording, in relative seconds.
-
-    Same construction as ``tracking.protocols.slice_window`` so a sidecar and a
-    protocol window agree frame for frame.
-    """
-    import numpy as np
-
-    return np.arange(0.0, n_t / float(sr) - HOP_S / 2, HOP_S)
-
-
-def interp_rps(vals: Any, stamps: Any, ft: Any) -> Any:
-    """``(R, M)`` telemetry at ``stamps`` -> ``(R, N)`` on ``ft``.
-
-    ``noise_rps_dataset.upsample_rps_to_audio_rate`` in float64: the same
-    duplicate-stamp drop and the same clip against extrapolation, but the
-    refiner's init must not carry a float32 rounding staircase.
-    """
-    import numpy as np
-
-    ts = np.asarray(stamps, dtype=np.float64)
-    _, uniq = np.unique(ts, return_index=True)
-    uniq = np.sort(uniq)
-    ts = ts[uniq]
-    v = np.asarray(vals, dtype=np.float64)[:, uniq]
-    q = np.clip(np.asarray(ft, dtype=np.float64), ts[0], ts[-1])
-    return np.stack([np.interp(q, ts, row) for row in v])
+    """The uniform ``HOP_S`` frame grid of a recording, in relative seconds."""
+    return D.frame_grid(n_t, sr, HOP_S)
 
 
 def published_audio_starts(spec: str) -> dict[str, int]:
@@ -222,14 +204,7 @@ def get_recording(rid: str, spec: str) -> dict[str, Any]:
 
 def window_bounds(n_frames: int, window_s: float, hop_s: float) -> list[tuple[int, int]]:
     """Window frame ranges over a whole recording, the last one right-aligned."""
-    w = max(1, int(round(window_s / HOP_S)))
-    step = max(1, int(round(hop_s / HOP_S)))
-    if n_frames <= w:
-        return [(0, n_frames)]
-    starts = list(range(0, n_frames - w + 1, step))
-    if starts[-1] + w < n_frames:
-        starts.append(n_frames - w)
-    return [(s, s + w) for s in starts]
+    return D.window_bounds(n_frames, window_s, hop_s, HOP_S)
 
 
 # ---------------------------------------------------------------------------
@@ -244,21 +219,6 @@ def make_schedule(k_max: int, spec: list[list[int]] | None) -> Any:
         return tuple(FVKStage(int(k), 1.0, int(n)) for k, n in spec)
     rungs = [k for k in K_LADDER if k < k_max] + [int(k_max)]
     return tuple(FVKStage(k) for k in rungs)
-
-
-def init_prior(r_init: Any, ft: Any, n_t: int, cfg: Any) -> float:
-    """The refiner's own smoothness prior at the telemetry init.
-
-    Reads through the refiner's private helpers on purpose: the rescale is only
-    correct if it measures the SAME quantity the optimizer adds to its loss —
-    the log-domain second difference on the decimated envelope grid.
-    """
-    import torch
-
-    from tracking.fitness_vk import _smoothness, _to_audio_grid
-
-    r_audio = _to_audio_grid(r_init, ft, n_t, cfg.sr)
-    return float(_smoothness(torch.from_numpy(r_audio), cfg.stride))
 
 
 def scale_shift_pct(refined: Any, init: Any) -> list[float]:
@@ -320,8 +280,6 @@ def refine_worker(unit: Unit) -> dict[str, Any]:
         return {**out, "used": False, "reason": "idle", "r_window": r_init.tolist()}
 
     cfg = FVKConfig(sr=SR, k_max=int(p["k_max"]), max_channels=channels)
-    p0 = init_prior(r_init, ft_w, int(audio.shape[-1]), cfg)
-    lam = 1.0 if p0 <= 0.5 else 0.5 / p0
 
     # The reference is the telemetry for the score and for the refiner, so the
     # harmonic cap and the cell set are the window's and not the candidate's.
@@ -335,7 +293,11 @@ def refine_worker(unit: Unit) -> dict[str, Any]:
         cfg,
         schedule=make_schedule(int(p["k_max"]), p.get("schedule")),
         knot_s=float(p["knot_s"]),
-        smooth_lambda=lam,
+        # "auto" measures the prior of THIS window's telemetry init and holds it
+        # to half the (normalized, order-1) data term. The fixed default 1.0 is
+        # calibrated for cruise (prior ~0.8); a takeoff ramp reads 244 and the
+        # window then cannot move at all.
+        smooth_lambda="auto",
         lr=float(p["lr"]),
     )
     wall = time.perf_counter() - tic
@@ -363,8 +325,8 @@ def refine_worker(unit: Unit) -> dict[str, Any]:
         "used": used,
         "used_per_rotor": used_per_rotor,
         "reason": reason,
-        "smooth_lambda": round(lam, 9),
-        "prior_init": round(p0, 6),
+        "smooth_lambda": round(float(diag["smooth_lambda"]), 9),
+        "prior_init": round(float(diag["prior_init"]), 6),
         "scale_pct_per_rotor": scale_shift_pct(r_ref, r_init),
         "move_max": round(move_max, 5),
         "objective_before": round(float(before["objective"]), 8),
@@ -388,21 +350,6 @@ def refine_worker(unit: Unit) -> dict[str, Any]:
 def read_rows(out: Path) -> list[dict[str, Any]]:
     raw = out / "raw"
     return [json.loads(p.read_text()) for p in sorted(raw.glob("*.json"))] if raw.is_dir() else []
-
-
-def fade_weights(n_win: int, ramp: int) -> Any:
-    """Linear cross-fade weights over a window's frames.
-
-    The floor keeps the weight positive everywhere, so a frame that only one
-    window covers (the two ends of a recording) still resolves to that window.
-    """
-    import numpy as np
-
-    idx = np.arange(n_win, dtype=np.float64)
-    if ramp <= 0:
-        return np.ones(n_win)
-    rise = np.minimum(idx, idx[::-1]) + 1.0
-    return np.clip(rise / (ramp + 1.0), 1e-3, 1.0)
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:

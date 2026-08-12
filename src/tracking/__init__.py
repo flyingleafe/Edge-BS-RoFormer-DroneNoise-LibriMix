@@ -17,6 +17,20 @@ from tracking.comb_displacement import (
     pulse_pair,
     pulse_pair_bank,
 )
+from tracking.decompose import (
+    DEFAULT_BANDS,
+    energy_ledger,
+    fade_weights,
+    group_plan,
+    phase_model_report,
+    reconstruct,
+    shaft_phase,
+    solve_config,
+    solve_window,
+    stitch_bank,
+    window_bounds,
+    window_span,
+)
 from tracking.dsp import boxcar, demod, dsp_config, thread_pool, zoom_bands
 from tracking.fitness import (
     CONTROLS,
@@ -36,11 +50,13 @@ from tracking.fitness_vk import (
     FVKConfig,
     FVKStage,
     alias_charge,
+    auto_smooth_lambda,
     fvk_loss,
     fvk_score,
     k_cap,
     optimize_trajectory,
     solve_envelopes,
+    to_audio_grid,
 )
 from tracking.joint_beam_tracker import build_objective, joint_beam_track
 from tracking.order_domain import (
@@ -110,6 +126,7 @@ from tracking.top import (
     blind_fullrange,
     blind_seed_stage,
     coarse_init_stage,
+    decompose_stage,
     fitness_stage,
     flagship,
     fvk_refine_stage,
@@ -148,7 +165,22 @@ from tracking.vk_tracking import (
 from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
+    "DEFAULT_BANDS",
     "DEFAULT_SCHEDULE",
+    "auto_smooth_lambda",
+    "decompose_stage",
+    "energy_ledger",
+    "fade_weights",
+    "group_plan",
+    "phase_model_report",
+    "reconstruct",
+    "shaft_phase",
+    "solve_config",
+    "solve_window",
+    "stitch_bank",
+    "to_audio_grid",
+    "window_bounds",
+    "window_span",
     "FVKConfig",
     "FVKStage",
     "alias_charge",

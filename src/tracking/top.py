@@ -36,6 +36,7 @@ Stage                        Config                      What it does
 :func:`fitness_stage`        :class:`FitnessConfig`      score the trajectory (does not change it)
 :func:`fvk_stage`            :class:`FVKConfig`          score it by F_VK (profiled coupled-VK residual)
 :func:`fvk_refine_stage`     :class:`FVKConfig`          L-BFGS on F_VK under a k-annealing schedule
+:func:`decompose_stage`      :class:`FVKConfig`          split the audio into per-harmonic tracks + a residual
 :func:`refit_stage`          :class:`RefitConfig`        the whole telemetry refit as one stage
 :func:`guarded`              :class:`SeedConfig`         wrap a stage with the blind per-track guard
 ===========================  ==========================  ==========================
@@ -139,6 +140,7 @@ __all__ = [
     "blind_fullrange",
     "blind_seed_stage",
     "coarse_init_stage",
+    "decompose_stage",
     "fitness_stage",
     "flagship",
     "fvk_refine_stage",
@@ -910,7 +912,8 @@ def fvk_refine_stage(
     *,
     schedule: Sequence[FVKStage] | None = None,
     knot_s: float = 0.25,
-    smooth_lambda: float = 1.0,
+    smooth_lambda: float | str = 1.0,
+    lr: float = 1.0,
     reference_entry: str = "rps_meas",
     name: str = "fvk_refine",
 ) -> Stage:
@@ -921,6 +924,10 @@ def fvk_refine_stage(
     and the ``k_max`` annealing schedule is the continuation. The per-rung loss
     trace and argmin movement land in the log entry — that is the
     continuation-validity reading, so a driver never has to instrument the loop.
+
+    ``smooth_lambda`` takes ``"auto"`` (:func:`tracking.auto_smooth_lambda`),
+    which is what a frame outside the cruise regime needs — the default 1.0 is
+    cruise-calibrated and pins a takeoff ramp in place.
     """
     use = cfg or FVKConfig()
 
@@ -936,9 +943,86 @@ def fvk_refine_stage(
             schedule=None if schedule is None else tuple(schedule),
             knot_s=knot_s,
             smooth_lambda=smooth_lambda,
+            lr=lr,
             reference=ref,
         )
         return with_rps(frame, r_out, times, stage=name, info=diag)
+
+    return run
+
+
+def decompose_stage(
+    cfg: FVKConfig | None = None,
+    *,
+    k_hi: int | None = None,
+    rho_scale: float = 1.0,
+    reference_entry: str = "rps_meas",
+    name: str = "decompose",
+) -> Stage:
+    """Split the frame's audio into per-harmonic tracks plus a residual.
+
+    One coupled Vold-Kalman solve at the frame's CURRENT trajectory
+    (:mod:`tracking.decompose`), so the split follows whatever produced that
+    trajectory — a blind ladder, a refit, or the L-BFGS refiner. Like
+    :func:`fitness_stage` the trajectory is NOT changed; the products travel as
+    a seam, ``meta["decompose"]``::
+
+        {"envelopes": Envelopes, "phase": (R, T), "recon": (C, T),
+         "track_energy": (M,)}
+
+    and the ENERGY LEDGER (track / residual / cross-term fractions, per-band
+    shares) is the diagnostics entry, so a caller that only wants the reading
+    never touches the seam. The residual is ``audio - recon`` by definition, so
+    the decomposition is exact and only the SPLIT is estimated.
+
+    ``k_hi`` pins the harmonic set; it defaults to the cap of
+    ``reference_entry`` (falling back to the frame's own ``"rps"``), which is
+    what makes two windows of one recording stitchable track by track. Read
+    :func:`tracking.decompose.group_plan` before running this on a long window:
+    the coupled group is the whole comb and costs about
+    ``1e-4 k_hi^2 window_s`` GB.
+    """
+    from tracking.decompose import (
+        energy_ledger,
+        reconstruct,
+        shaft_phase,
+        solve_window,
+    )
+    from tracking.fitness_vk import k_cap, to_audio_grid
+
+    use = cfg or FVKConfig()
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, sr, r, times, t0 = _core_inputs(frame)
+        conf = replace(use, sr=int(round(sr)))
+        n_t = int(audio.shape[-1])
+        r_audio = to_audio_grid(r, times - t0, n_t, conf.sr)
+        ref = get_rps(frame, reference_entry)[0] if reference_entry in frame else r
+        cap = int(k_hi) if k_hi is not None else k_cap(conf, ref)
+        tic = time.perf_counter()
+        env = solve_window(audio, r_audio, conf, k_hi=cap, rho_scale=rho_scale)
+        phase = shaft_phase(r_audio, conf.sr)
+        recon, track_energy = reconstruct(env.x, env.k, env.rotor, phase, conf.stride)
+        y = np.asarray(audio, dtype=np.float64)[: env.x.shape[0]]
+        info: dict[str, Any] = {
+            "k_hi": cap,
+            "n_tracks": int(len(env.k)),
+            "n_env": int(env.x.shape[-1]),
+            "fs_env": float(env.fs_env),
+            "rho_scale": float(rho_scale),
+            "wall_s": round(time.perf_counter() - tic, 3),
+            **energy_ledger(y, recon, track_energy, env.k),
+        }
+        out = with_meta(
+            frame,
+            decompose={
+                "envelopes": env,
+                "phase": phase,
+                "recon": recon,
+                "track_energy": track_energy,
+            },
+        )
+        return with_rps(out, r, times, stage=name, info=info)
 
     return run
 

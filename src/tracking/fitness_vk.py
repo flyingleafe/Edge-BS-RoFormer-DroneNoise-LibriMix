@@ -132,6 +132,7 @@ __all__ = [
     "k_cap",
     "optimize_trajectory",
     "solve_envelopes",
+    "to_audio_grid",
 ]
 
 _TINY = 1e-30
@@ -268,8 +269,14 @@ def k_cap(cfg: FVKConfig, reference: np.ndarray) -> int:
     return int(max(cfg.k_min, min(cfg.k_max, int(np.floor(top / (rate * cfg.cap_margin))))))
 
 
-def _to_audio_grid(r: np.ndarray, frame_times: np.ndarray, n_t: int, sr: float) -> np.ndarray:
-    """``(R, N)`` trajectories on ``frame_times`` -> ``(R, T)`` at audio rate."""
+def to_audio_grid(r: np.ndarray, frame_times: np.ndarray, n_t: int, sr: float) -> np.ndarray:
+    """``(R, N)`` trajectories on ``frame_times`` -> ``(R, T)`` at audio rate.
+
+    THE frame-grid-to-audio-grid interpolation of this module: the carrier every
+    solve is built from, and the grid the smoothness prior is measured on. Public
+    because a windowed driver (:mod:`tracking.decompose`) needs the identical
+    carrier the solver will see.
+    """
     r2 = np.atleast_2d(np.asarray(r, dtype=np.float64))
     ft = np.asarray(frame_times, dtype=np.float64)
     if r2.shape[-1] != len(ft):
@@ -525,8 +532,8 @@ def fvk_score(
     device = torch_device(use.device)
     y, y_t = _prepare(audio, use, device)
     n_t = int(y.shape[-1])
-    r_audio = _to_audio_grid(r, frame_times, n_t, use.sr)
-    ref = r_audio if reference is None else _to_audio_grid(reference, frame_times, n_t, use.sr)
+    r_audio = to_audio_grid(r, frame_times, n_t, use.sr)
+    ref = r_audio if reference is None else to_audio_grid(reference, frame_times, n_t, use.sr)
     cap = int(k_hi) if k_hi is not None else k_cap(use, ref)
 
     env = solve_envelopes(y, r_audio, use, k_hi=cap, rho_scale=rho_scale)
@@ -631,6 +638,32 @@ def _smoothness(r_t: Any, stride: int, floor: float = 1e-3) -> Any:
     return ((lr[:, 1:] - lr[:, :-1]) ** 2).sum()
 
 
+#: Ceiling the ``"auto"`` smoothness weight holds the prior term to, as a
+#: fraction of the (normalized, order-1) data term. See :func:`auto_smooth_lambda`.
+AUTO_SMOOTH_CAP = 0.5
+
+
+def auto_smooth_lambda(
+    r_audio: np.ndarray, stride: int, cap: float = AUTO_SMOOTH_CAP
+) -> tuple[float, float]:
+    """``(weight, prior at the init)`` — the portable smoothness weight.
+
+    The default ``smooth_lambda = 1.0`` of :func:`optimize_trajectory` is
+    calibrated for a CRUISE window, where the log-domain prior of the init reads
+    about 0.8 against a data term normalized to order 1. On a takeoff ramp the
+    same prior reads 244, so the fixed weight swamps the data term and the
+    window cannot move at all.
+
+    This measures the prior of the INIT itself (``p0``) and returns
+    ``1.0 if p0 <= cap else cap / p0``, which holds the prior at the init to at
+    most ``cap`` of the data term whatever the trajectory's dynamic range. It is
+    the same quantity :func:`_run_rung` adds to the loss, by construction — a
+    rescale computed against anything else would not be a rescale.
+    """
+    p0 = float(_smoothness(torch.from_numpy(np.ascontiguousarray(r_audio)), int(stride)))
+    return (1.0 if p0 <= cap else cap / p0), p0
+
+
 def _run_rung(
     st: FVKStage,
     *,
@@ -704,7 +737,7 @@ def optimize_trajectory(
     *,
     schedule: tuple[FVKStage, ...] | None = None,
     knot_s: float = 0.25,
-    smooth_lambda: float = 1.0,
+    smooth_lambda: float | str = 1.0,
     reference: np.ndarray | None = None,
     lr: float = 1.0,
 ) -> tuple[np.ndarray, dict[str, Any]]:
@@ -726,6 +759,12 @@ def optimize_trajectory(
     caps the trajectory's degrees of freedom, and Fact 6 warns that a whole
     trajectory otherwise wanders along a near-flat plateau.
 
+    ``smooth_lambda`` is a number, or ``"auto"`` for the portable weight of
+    :func:`auto_smooth_lambda`. The default 1.0 is calibrated for a CRUISE
+    window and pins a ramp window in place; a driver that sees whole recordings
+    wants ``"auto"``. The weight used, and the init prior it was derived from,
+    come back in the diagnostics as ``smooth_lambda`` / ``prior_init``.
+
     Returns ``(r_refined on frame_times, diagnostics)``. The diagnostics carry
     one record per schedule rung — loss trace and argmin movement — which is the
     continuation-validity check of design §3: the argmin path must be
@@ -735,8 +774,8 @@ def optimize_trajectory(
     device = torch_device(use.device)
     y, y_t = _prepare(audio, use, device)
     n_t = int(y.shape[-1])
-    r0 = _to_audio_grid(r_init, frame_times, n_t, use.sr)
-    ref = r0 if reference is None else _to_audio_grid(reference, frame_times, n_t, use.sr)
+    r0 = to_audio_grid(r_init, frame_times, n_t, use.sr)
+    ref = r0 if reference is None else to_audio_grid(reference, frame_times, n_t, use.sr)
     cap = k_cap(use, ref)
     stride = use.stride
 
@@ -753,6 +792,13 @@ def optimize_trajectory(
             plan.append(st)
     if not plan:
         plan = [FVKStage(cap)]
+
+    if isinstance(smooth_lambda, str):
+        if smooth_lambda != "auto":
+            raise ValueError(f"smooth_lambda must be a number or 'auto', got {smooth_lambda!r}")
+        lam, prior_init = auto_smooth_lambda(r0, stride)
+    else:
+        lam, prior_init = float(smooth_lambda), None
 
     r0_t = torch.from_numpy(np.ascontiguousarray(r0)).to(device, torch.float64)
     basis = torch.from_numpy(_spline_basis(n_t, use.sr, knot_s)).to(device, torch.float64)
@@ -774,7 +820,7 @@ def optimize_trajectory(
             cfg=use,
             e_y=e_y,
             stride=stride,
-            smooth_lambda=smooth_lambda,
+            smooth_lambda=lam,
             lr=lr,
         )
         for st in plan
@@ -789,7 +835,10 @@ def optimize_trajectory(
         "k_cap": cap,
         "n_basis": n_basis,
         "knot_s": float(knot_s),
-        "smooth_lambda": float(smooth_lambda),
+        "smooth_lambda": float(lam),
+        # The prior of the INIT, reported only when the weight was derived from
+        # it ("auto"): it is the reading that says whether the rescale fired.
+        "prior_init": prior_init,
         "stages": diag_stages,
         "move_total_max": float(np.abs(r_final - r0).max()),
         "config": use.echo(),

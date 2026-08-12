@@ -110,7 +110,57 @@ import numpy as np  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# The array core is tracking.decompose — the solve, the phase re-reference, the
+# cross-fade stitch and every statistic below come from there. What is left in
+# this file is the DATA (the generator's own loader), the unit harness and the
+# file formats.
+import tracking.decompose as D  # noqa: E402
+from tracking.decompose import (  # noqa: E402
+    DEFAULT_BANDS as BANDS,
+)
+from tracking.decompose import (  # noqa: E402
+    band_name,
+    band_summary,
+    drift_increments,
+    energy_ledger,
+    fade_weights,
+    interp_rps,
+    per_track_stats,
+    phase_model_report,
+    rank_one_share,
+    reconstruct,
+    reference_mic,
+    shaft_phase,
+    to_audio_grid,
+    track_bands,
+    welch_psd,
+)
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args, unit_path  # noqa: E402
+
+__all__ = [  # the importable core the tests read; the CLI is main()
+    "BANDS",
+    "band_name",
+    "band_summary",
+    "drift_increments",
+    "energy_ledger",
+    "fade_weights",
+    "frame_grid",
+    "fvk_config",
+    "group_plan",
+    "interp_rps",
+    "per_track_stats",
+    "phase_model_report",
+    "rank_one_share",
+    "reconstruct",
+    "reference_mic",
+    "shaft_phase",
+    "solve_window",
+    "to_audio_grid",
+    "track_bands",
+    "welch_psd",
+    "window_bounds",
+    "window_span",
+]
 
 OUT_DEFAULT = "results/vk_decompose"
 #: The refined labels this decomposition is conditioned on.
@@ -129,14 +179,6 @@ IDLE_REV_S = 20.0
 #: exactly the DREGON array size, so all 8 microphones go into ONE solve and no
 #: channel batching is necessary.
 MAX_MICS = 8
-#: Harmonic bands the energy ledger and the bandwidth sweep report against.
-BANDS: tuple[tuple[int, int], ...] = ((1, 9), (10, 24), (25, 49), (50, 80))
-#: Welch segment of the residual and original spectra.
-NPERSEG = 4096
-
-
-def band_name(lo: int, hi: int) -> str:
-    return f"k{lo}-{hi}"
 
 
 # ---------------------------------------------------------------------------
@@ -144,28 +186,8 @@ def band_name(lo: int, hi: int) -> str:
 
 
 def frame_grid(n_t: int, sr: int) -> np.ndarray:
-    """The uniform ``HOP_S`` frame grid of a recording, in relative seconds.
-
-    Same construction as ``tracking.protocols.slice_window``, so a window here
-    and a protocol window agree frame for frame.
-    """
-    return np.arange(0.0, n_t / float(sr) - HOP_S / 2, HOP_S)
-
-
-def interp_rps(vals: Any, stamps: Any, ft: Any) -> np.ndarray:
-    """``(R, M)`` telemetry at ``stamps`` -> ``(R, N)`` on ``ft``.
-
-    ``noise_rps_dataset.upsample_rps_to_audio_rate`` in float64: the same
-    duplicate-stamp drop and the same clip against extrapolation, but the
-    carrier must not carry a float32 rounding staircase.
-    """
-    ts = np.asarray(stamps, dtype=np.float64)
-    _, uniq = np.unique(ts, return_index=True)
-    uniq = np.sort(uniq)
-    ts = ts[uniq]
-    v = np.asarray(vals, dtype=np.float64)[:, uniq]
-    q = np.clip(np.asarray(ft, dtype=np.float64), ts[0], ts[-1])
-    return np.stack([np.interp(q, ts, row) for row in v])
+    """The uniform ``HOP_S`` frame grid of a recording, in relative seconds."""
+    return D.frame_grid(n_t, sr, HOP_S)
 
 
 def published_audio_starts(spec: str) -> dict[str, int]:
@@ -272,212 +294,14 @@ def get_recording(rid: str, spec: str, label_dir: str | Path) -> dict[str, Any]:
     return _RECORDINGS[rid]
 
 
-def to_audio_grid(r: Any, ft: Any, n_t: int, sr: int) -> np.ndarray:
-    """``(R, N)`` rates on ``ft`` -> ``(R, T)`` at audio rate."""
-    r2 = np.atleast_2d(np.asarray(r, dtype=np.float64))
-    t_audio = np.arange(n_t, dtype=np.float64) / float(sr)
-    return np.stack([np.interp(t_audio, np.asarray(ft, dtype=np.float64), row) for row in r2])
-
-
-def shaft_phase(r_audio: Any, sr: int) -> np.ndarray:
-    """``(R, T)`` fundamental shaft phase in radians.
-
-    ``tracking.vk_tracking.vk_envelopes`` computes exactly this
-    (``2 pi cumsum(r) / fs``) on the window it is given, so a window that starts
-    at sample ``a0`` differs from this global phase by the constant
-    ``Phi(a0 - 1)``. That constant is what :func:`stitch_envelopes` removes.
-    """
-    return (
-        2.0
-        * np.pi
-        * np.cumsum(np.atleast_2d(np.asarray(r_audio, dtype=np.float64)), axis=-1)
-        / float(sr)
-    )
-
-
 def window_bounds(n_frames: int, window_s: float, hop_s: float) -> list[tuple[int, int]]:
     """Window frame ranges over a whole recording, the last one right-aligned."""
-    w = max(1, int(round(window_s / HOP_S)))
-    step = max(1, int(round(hop_s / HOP_S)))
-    if n_frames <= w:
-        return [(0, n_frames)]
-    starts = list(range(0, n_frames - w + 1, step))
-    if starts[-1] + w < n_frames:
-        starts.append(n_frames - w)
-    return [(s, s + w) for s in starts]
+    return D.window_bounds(n_frames, window_s, hop_s, HOP_S)
 
 
 def window_span(ft: Any, i0: int, i1: int, n_t: int, stride: int) -> tuple[int, int]:
-    """Audio sample range of one window, snapped to the envelope stride.
-
-    Both ends land on a multiple of ``stride``, so the window's envelope grid is
-    a slice of the recording's global envelope grid. Without the snap the two
-    grids are offset by a fraction of a knot (a 0.032 s frame is 3.2 knots at
-    16 kHz and 100 Hz) and the stitch would have to resample.
-    """
-    ftv = np.asarray(ft, dtype=np.float64)
-    a0 = (int(round(float(ftv[i0]) * SR)) // stride) * stride
-    a1_raw = min(n_t, int(round((float(ftv[i1 - 1]) + HOP_S) * SR)))
-    a1 = a0 + ((a1_raw - a0) // stride) * stride
-    return a0, a1
-
-
-# ---------------------------------------------------------------------------
-# reconstruction and per-track statistics
-
-
-def reconstruct(
-    x: Any,
-    k: Any,
-    rotor: Any,
-    phase: Any,
-    stride: int,
-    *,
-    knots_per_chunk: int = 1024,
-) -> tuple[np.ndarray, np.ndarray]:
-    """``(C, M, N_env)`` envelopes -> the ``(C, T)`` track sum and per-track energy.
-
-    Track ``m`` is ``Re[a_m(t) e^{j k_m phi(t)}]`` with ``a_m`` linearly
-    interpolated from the envelope grid onto the audio grid, real and imaginary
-    parts separately, and held constant beyond the last knot — the rule
-    :func:`tracking.vk_reconstruct` uses. ``phase`` must already be the phase
-    the envelopes are referenced to.
-
-    The work is chunked in time and the tracks are accumulated one at a time:
-    the whole ``(C, M, T)`` bank is hundreds of gigabytes at a realistic
-    ``k_hi``, and only the sum and the per-track energies are wanted.
-    """
-    xa = np.asarray(x)
-    ph = np.atleast_2d(np.asarray(phase, dtype=np.float64))
-    n_ch, n_tracks, n_env = xa.shape
-    n_t = int(ph.shape[-1])
-    recon = np.zeros((n_ch, n_t), dtype=np.float32)
-    energy = np.zeros(n_tracks, dtype=np.float64)
-    if n_tracks == 0 or n_env == 0 or n_t == 0:
-        return recon, energy
-
-    ramp = np.arange(stride, dtype=np.float32) / np.float32(stride)
-    ks = np.asarray(k).astype(np.float64)
-    rot = np.asarray(rotor).astype(int)
-    for j0 in range(0, n_env, knots_per_chunk):
-        j1 = min(n_env, j0 + knots_per_chunk)
-        s0, s1 = j0 * stride, min(n_t, j1 * stride)
-        if s1 <= s0:
-            break
-        # One extra knot when there is one: the last knot of the chunk needs the
-        # difference to its successor, not a hold.
-        jend = min(j1 + 1, n_env)
-        n_out = s1 - s0
-        for m in range(n_tracks):
-            vals = xa[:, m, j0:jend]
-            up_r = _upsample_knots(np.real(vals).astype(np.float32), ramp, n_out)
-            up_i = _upsample_knots(np.imag(vals).astype(np.float32), ramp, n_out)
-            arg = ks[m] * ph[rot[m], s0:s1]
-            comp = up_r * np.cos(arg).astype(np.float32) - up_i * np.sin(arg).astype(np.float32)
-            recon[:, s0:s1] += comp
-            energy[m] += float(np.square(comp, dtype=np.float64).sum())
-    return recon, energy
-
-
-def _upsample_knots(vals: Any, ramp: Any, n_out: int) -> np.ndarray:
-    """``(C, J)`` knots -> ``(C, n_out)`` linear upsample on the uniform grid."""
-    v = np.asarray(vals)
-    if v.shape[-1] > 1:
-        diffs = np.diff(v, axis=-1)
-        up = (v[:, :-1, None] + diffs[:, :, None] * ramp).reshape(v.shape[0], -1)
-    else:
-        up = np.zeros((v.shape[0], 0), dtype=v.dtype)
-    if up.shape[-1] < n_out:  # hold the last knot beyond the grid
-        tail = np.repeat(v[:, -1:], n_out - up.shape[-1], axis=-1)
-        up = np.concatenate([up, tail], axis=-1)
-    return up[:, :n_out]
-
-
-def reference_mic(audio: Any, ref_mic: int) -> int:
-    """Which microphone the per-track statistics are read on.
-
-    ``ref_mic < 0`` selects the channel with the most energy on the span. The
-    DREGON array is not uniform — on one cruise window channels 1 and 4 hold
-    378 and 347 units of energy against 26 to 84 for the other six — so a fixed
-    channel 0 would report the phase and amplitude tables at 6 times less
-    signal-to-noise ratio than the array can give.
-    """
-    y = np.asarray(audio, dtype=np.float64)
-    if ref_mic >= 0:
-        return min(int(ref_mic), int(y.shape[0]) - 1)
-    return int(np.argmax((y**2).sum(axis=-1)))
-
-
-def track_bands(k: Any) -> dict[str, np.ndarray]:
-    """``{band name: boolean track mask}`` over the ``(M,)`` harmonic indices."""
-    ks = np.asarray(k).astype(int)
-    return {band_name(lo, hi): (ks >= lo) & (ks <= hi) for lo, hi in BANDS}
-
-
-def drift_increments(phase_err: Any, fs_env: float) -> np.ndarray:
-    """``(M, N-1)`` time derivative of the per-track phase error, in rad/s.
-
-    The statistic every phase-model test is built from. An increment larger than
-    ``pi`` means the unwrap itself is ambiguous, so the report carries the
-    maximum increment beside the standard deviations.
-    """
-    p = np.asarray(phase_err, dtype=np.float64)
-    return np.diff(p, axis=-1) * float(fs_env)
-
-
-def rank_one_share(increments: Any) -> dict[str, Any]:
-    """Top-eigenvalue share and mean pairwise correlation of drift increments.
-
-    ``increments`` is ``(K, N)`` — one row per harmonic of ONE rotor. A shaft
-    jitter model says every harmonic sees ``k`` times the same phase, so the
-    correlation matrix is rank one and the share is 1. Independent per-harmonic
-    drift (the pi-kalman model) gives a share near ``1 / K``.
-    """
-    d = np.asarray(increments, dtype=np.float64)
-    n_k, n_t = d.shape
-    if n_k < 2 or n_t < n_k + 2:
-        return {"lambda1_share": None, "mean_corr": None, "n_k": int(n_k), "n_frames": int(n_t)}
-    sd = d.std(axis=-1)
-    keep = sd > 0
-    if int(keep.sum()) < 2:
-        return {"lambda1_share": None, "mean_corr": None, "n_k": int(n_k), "n_frames": int(n_t)}
-    corr = np.corrcoef(d[keep])
-    lam = np.sort(np.linalg.eigvalsh(corr))[::-1]
-    off = corr[~np.eye(corr.shape[0], dtype=bool)]
-    return {
-        "lambda1_share": round(float(lam[0] / max(lam.sum(), 1e-30)), 6),
-        "mean_corr": round(float(off.mean()), 6),
-        "n_k": int(keep.sum()),
-        "n_frames": int(n_t),
-    }
-
-
-def per_track_stats(
-    amp: Any, phase_err: Any, mask: Any, fs_env: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(mean amplitude, amplitude CV, drift std)`` per track, on masked frames.
-
-    ``amp`` / ``phase_err`` are ``(M, N)`` — ONE microphone. The mask selects the
-    frames that are covered and not idle; drift uses the frame PAIRS inside it.
-    """
-    a = np.asarray(amp, dtype=np.float64)
-    m = np.asarray(mask, dtype=bool)
-    mean = a[:, m].mean(axis=-1) if m.any() else np.zeros(a.shape[0])
-    std = a[:, m].std(axis=-1) if m.any() else np.zeros(a.shape[0])
-    cv = std / np.maximum(mean, 1e-30)
-    inc = drift_increments(phase_err, fs_env)
-    pair = m[:-1] & m[1:]
-    drift = inc[:, pair].std(axis=-1) if pair.any() else np.zeros(a.shape[0])
-    return mean, cv, drift
-
-
-def band_summary(values: Any, k: Any) -> dict[str, float | None]:
-    """Band means of a per-track quantity — ``None`` for a band with no track."""
-    v = np.asarray(values, dtype=np.float64)
-    return {
-        name: (round(float(v[sel].mean()), 8) if sel.any() else None)
-        for name, sel in track_bands(k).items()
-    }
+    """Audio sample range of one window, snapped to the envelope stride."""
+    return D.window_span(ft, i0, i1, n_t, stride, SR, HOP_S)
 
 
 # ---------------------------------------------------------------------------
@@ -485,21 +309,8 @@ def band_summary(values: Any, k: Any) -> dict[str, float | None]:
 
 
 def fvk_config(k_max: int, *, mics: int = MAX_MICS, bw_rps: float = 1.0, sr: int = SR) -> Any:
-    """THE measurement geometry — one construction, so every solve agrees.
-
-    ``f_max`` is the campaign's 6 kHz ceiling, held below three quarters of the
-    Nyquist frequency so a lower sample rate (the tests) keeps a modelled
-    harmonic inside the band instead of on top of it.
-    """
-    from tracking.fitness_vk import FVKConfig
-
-    return FVKConfig(
-        sr=int(sr),
-        k_max=int(k_max),
-        f_max=min(6000.0, 0.375 * float(sr)),
-        max_channels=int(mics),
-        bw_rps=float(bw_rps),
-    )
+    """THE measurement geometry — one construction, so every solve agrees."""
+    return D.solve_config(k_max, sr=sr, mics=mics, bw_rps=bw_rps)
 
 
 def solve_window(
@@ -513,65 +324,27 @@ def solve_window(
     sr: int = SR,
     rho_scale: float = 1.0,
 ) -> Any:
-    """One coupled VK solve of one window — the whole numerical content.
+    """``(config, envelopes)`` of one coupled VK solve of one window.
 
-    The validity mask is disabled and the harmonic set is capped from the
-    RECORDING's reference trajectory (see :func:`recording_k_hi`), so every
-    window of a recording holds the identical ``(rotor, harmonic)`` track set
-    and the windows can be stitched track by track.
+    The harmonic set is capped from the RECORDING's reference trajectory (see
+    :func:`recording_k_hi`), so every window of a recording holds the identical
+    ``(rotor, harmonic)`` track set and the windows can be stitched track by
+    track.
     """
-    from tracking.fitness_vk import solve_envelopes
-
     cfg = fvk_config(k_max, mics=mics, bw_rps=bw_rps, sr=sr)
-    y = np.ascontiguousarray(np.asarray(audio, dtype=np.float64)[:mics])
-    return cfg, solve_envelopes(
-        y,
-        np.asarray(r_audio, dtype=np.float64),
-        cfg,
-        k_hi=int(k_hi),
-        rho_scale=float(rho_scale),
-    )
+    return cfg, D.solve_window(audio, r_audio, cfg, k_hi=k_hi, mics=mics, rho_scale=rho_scale)
 
 
 def group_plan(r_audio: Any, k_hi: int, cfg: Any) -> dict[str, Any]:
     """Coupling-group partition of one window, and the memory it will cost.
 
-    THE memory model of this script, and it must be read before a job is sized.
-    :func:`tracking.vk_tracking._coupling_groups` is a union-find over the pairs
-    whose lines come within ``couple_hz`` (50 Hz here), so coupling is
-    TRANSITIVE: at ``k_hi`` 62 the four rotors put 248 lines into 0 to 5.7 kHz,
-    a mean spacing of 23 Hz, and the chain merges 244 of them into ONE group.
-
-    One group of ``g`` tracks is solved as a Hermitian banded system of ``g``
-    times ``n_env`` unknowns with ``2 g`` superdiagonals, and the factorization
-    holds a second copy, so
-
-        bytes = 2 (2 g + 1) g n_env 16 ,   approximately 1e-4 k_hi^2 window_s GB
-
-    with ``g`` about ``4 k_hi`` and ``n_env`` about ``100 window_s``. Channels
-    are right-hand sides and cost nothing here. The default full-recording
-    configuration (``k_hi`` 62, 16 s windows) therefore needs 6.3 GB per WORKER,
-    which is what a local three-worker run could not hold.
+    THE memory model of this script — read :func:`tracking.decompose.group_plan`
+    before a job is sized. The short version: coupling is TRANSITIVE, the whole
+    comb is ONE banded system, and the cost is about ``1e-4 k_hi^2 window_s`` GB
+    per worker (6.3 GB at the default ``k_hi`` 62 and 16 s windows, which is
+    what a local three-worker run could not hold).
     """
-    from tracking.vk_tracking import _coupling_groups, _track_table, env_stride
-
-    vk = cfg.vk_config(int(k_hi))
-    stride, fs_env = env_stride(vk)
-    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
-    rot, ks = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
-    f = ks[:, None].astype(np.float64) * r[:, ::stride][rot]
-    valid = f <= min(vk.f_max, 0.45 * vk.fs)
-    couple = fs_env / 2.0 if vk.couple_hz is None else float(vk.couple_hz)
-    groups = _coupling_groups(f, valid, couple)
-    g = max((len(x) for x in groups), default=0)
-    n_env = int(f.shape[-1])
-    return {
-        "n_tracks": int(len(ks)),
-        "n_groups": len(groups),
-        "max_group": int(g),
-        "n_env": n_env,
-        "banded_gb": round(2.0 * (2 * g + 1) * g * n_env * 16 / 1e9, 3),
-    }
+    return D.group_plan(r_audio, k_hi, cfg)
 
 
 def recording_k_hi(r_ref: Any, k_max: int) -> int:
@@ -742,181 +515,41 @@ def read_rows(out: Path) -> list[dict[str, Any]]:
     return [json.loads(p.read_text()) for p in sorted(raw.glob("*.json"))] if raw.is_dir() else []
 
 
-def fade_weights(n_win: int, ramp: int) -> np.ndarray:
-    """Linear cross-fade weights over one window's envelope frames.
-
-    The floor keeps the weight positive everywhere, so a frame only one window
-    covers (the two ends of a recording) still resolves to that window.
-    """
-    idx = np.arange(n_win, dtype=np.float64)
-    if ramp <= 0:
-        return np.ones(n_win)
-    rise = np.minimum(idx, idx[::-1]) + 1.0
-    return np.clip(rise / (ramp + 1.0), 1e-3, 1.0)
-
-
 def stitch_envelopes(
     rows: list[dict[str, Any]], out: Path, phi: Any, stride: int, ramp: int
 ) -> dict[str, Any]:
-    """Cross-fade the window envelopes of one recording onto one global grid.
+    """Load the window ``.npz`` banks of one recording and stitch them.
 
-    Every window is first re-referenced to the global shaft phase: the solver's
-    ``phase`` starts at the window, so track ``m`` of the window that starts at
-    sample ``a0`` must be multiplied by ``exp(-j k_m Phi_rotor(a0 - 1))``. Then
-    real and imaginary parts are cross-faded with linear ramps over the overlap.
-
-    Returns the stitched bank plus the span it covers.
+    The file I/O of :func:`tracking.decompose.stitch_bank` — the phase
+    re-reference and the cross-fade are that function's. The harmonic-set check
+    is here because it is a check on what the UNITS wrote, not on the arrays.
     """
     used = sorted((r for r in rows if r.get("used") and "npz" in r), key=lambda r: int(r["a0"]))
     if not used:
         raise SystemExit("no usable window unit — run --mode solve first")
-    a_min = min(int(r["a0"]) for r in used)
-    a_max = max(int(r["a1"]) for r in used)
-    e0, e1 = a_min // stride, a_max // stride
-    n_env = e1 - e0
 
-    first = np.load(out / used[0]["npz"])
-    rotor = np.asarray(first["rotor"], dtype=np.int64)
-    k = np.asarray(first["k"], dtype=np.int64)
-    bw_track = np.asarray(first["bw_track"], dtype=np.float64)
-    n_ch, n_tracks = int(first["x"].shape[0]), int(first["x"].shape[1])
-    first.close()
+    with np.load(out / used[0]["npz"]) as first:
+        k = np.asarray(first["k"], dtype=np.int64)
+        bw_track = np.asarray(first["bw_track"], dtype=np.float64)
 
-    num = np.zeros((n_ch, n_tracks, n_env), dtype=np.complex64)
-    den = np.zeros(n_env, dtype=np.float64)
-    valid = np.zeros((n_tracks, n_env), dtype=bool)
+    windows: list[dict[str, Any]] = []
     for r in used:
         with np.load(out / r["npz"]) as data:
-            x = np.asarray(data["x"], dtype=np.complex64)
-            v = np.asarray(data["valid"], dtype=bool)
             if not np.array_equal(np.asarray(data["k"], dtype=np.int64), k):
                 raise SystemExit(
                     f"{r['npz']}: harmonic set differs from the first window — the windows "
                     "were solved at different k_hi and cannot be stitched"
                 )
-        a0 = int(r["a0"])
-        j0 = a0 // stride - e0
-        n_w = int(x.shape[-1])
-        # The window's own phase origin, removed. Phi(-1) is 0 by definition.
-        shift = np.zeros(int(np.max(rotor)) + 1) if a0 == 0 else np.asarray(phi)[:, a0 - 1]
-        x *= np.exp(-1j * k[None, :, None] * shift[rotor][None, :, None]).astype(np.complex64)
-        w = fade_weights(n_w, min(ramp, n_w // 2))
-        num[:, :, j0 : j0 + n_w] += x * w[None, None, :].astype(np.complex64)
-        den[j0 : j0 + n_w] += w
-        valid[:, j0 : j0 + n_w] |= v
-
-    covered = den > 0.0
-    num /= np.maximum(den, 1e-12).astype(np.float32)[None, None, :]
-    valid &= covered[None, :]
-    return {
-        "x": num,
-        "valid": valid,
-        "rotor": rotor,
-        "k": k,
-        "bw_track": bw_track,
-        "covered": covered,
-        "a_min": a_min,
-        "a_max": a_max,
-        "env_i0": e0,
-        "n_env": n_env,
-        "windows": used,
-    }
-
-
-def check_phase_reference(rec: dict[str, Any], phi: Any, a0: int) -> float:
-    """Maximum radians by which the window phase and the global phase disagree.
-
-    The re-reference of :func:`stitch_envelopes` assumes
-    ``phase_window(t) = Phi(t) - Phi(a0 - 1)``. That is an identity only while
-    the window's carrier is the same array the global phase was built from, so
-    it is measured on one window instead of assumed.
-    """
-    a1 = min(int(np.asarray(phi).shape[-1]), a0 + 4 * SR)
-    local = shaft_phase(np.asarray(rec["r_audio"])[:, a0:a1], SR)
-    shift = 0.0 if a0 == 0 else np.asarray(phi)[:, a0 - 1 : a0]
-    return float(np.abs(local - (np.asarray(phi)[:, a0:a1] - shift)).max())
-
-
-def energy_ledger(audio: Any, recon: Any, track_energy: Any, k: Any) -> dict[str, Any]:
-    """Total / track / residual / cross-term energy, and the per-band shares.
-
-    The tracks are not orthogonal — neighbouring harmonics of two rotors overlap
-    inside their bands — so the three parts do not add up to the total by
-    themselves. The cross term is what is left, and its size is the honest
-    statement of how much of the decomposition is interference between tracks.
-    """
-    y = np.asarray(audio, dtype=np.float64)
-    rec = np.asarray(recon, dtype=np.float64)
-    total = float((y**2).sum())
-    resid = float(((y - rec) ** 2).sum())
-    tracks = float(np.asarray(track_energy, dtype=np.float64).sum())
-    e_k = np.asarray(track_energy, dtype=np.float64)
-    shares = {
-        name: round(float(e_k[sel].sum() / max(tracks, 1e-30)), 6)
-        for name, sel in track_bands(k).items()
-    }
-    return {
-        "total": total,
-        "per_channel_total": [round(float(v), 6) for v in (y**2).sum(axis=-1)],
-        "per_channel_residual": [round(float(v), 6) for v in ((y - rec) ** 2).sum(axis=-1)],
-        "tracks": tracks,
-        "residual": resid,
-        "cross_term": total - tracks - resid,
-        "track_fraction": round(tracks / max(total, 1e-30), 6),
-        "residual_fraction": round(resid / max(total, 1e-30), 6),
-        "band_share_of_tracks": shares,
-    }
-
-
-def phase_model_report(
-    amp0: Any, pherr0: Any, valid: Any, rotor: Any, k: Any, mask: Any, fs_env: float
-) -> dict[str, Any]:
-    """The per-rotor phase and amplitude tables, on the reference microphone.
-
-    Two readings of the same increments: the drift standard deviation against
-    ``k`` (does the drift grow with the harmonic, as a shaft model says) and the
-    rank-one share (do the harmonics drift together, as a shaft model says).
-
-    ``max_abs_step_rad`` is the guard on both: the phase error is unwrapped, so
-    a step at or above ``pi`` radians makes the unwrap ambiguous and the drift
-    of that harmonic is then a lower bound, not a measurement.
-    """
-    mask = np.asarray(mask, dtype=bool) & np.asarray(valid, dtype=bool).all(axis=0)
-    mean, cv, drift = per_track_stats(amp0, pherr0, mask, fs_env)
-    inc = drift_increments(pherr0, fs_env)
-    pair = mask[:-1] & mask[1:]
-    rot = np.asarray(rotor, dtype=int)
-    ks = np.asarray(k, dtype=int)
-    per_rotor: dict[str, Any] = {}
-    for rr in sorted(set(rot.tolist())):
-        sel = rot == rr
-        order = np.argsort(ks[sel])
-        idx = np.flatnonzero(sel)[order]
-        per_rotor[str(rr)] = {
-            "k": [int(v) for v in ks[idx]],
-            "drift_std_rad_s": [round(float(v), 5) for v in drift[idx]],
-            "amp_mean": [round(float(v), 8) for v in mean[idx]],
-            "amp_cv": [round(float(v), 5) for v in cv[idx]],
-            "rank_one": rank_one_share(inc[np.ix_(idx, np.flatnonzero(pair))]),
-        }
-    return {
-        "n_frames": int(mask.sum()),
-        "max_abs_step_rad": round(
-            float(np.abs(inc[:, pair]).max() / fs_env) if pair.any() else 0.0, 5
-        ),
-        "max_abs_drift_rad_s": round(float(np.abs(inc[:, pair]).max()) if pair.any() else 0.0, 4),
-        "drift_std_rad_s_by_band": band_summary(drift, k),
-        "amp_mean_by_band": band_summary(mean, k),
-        "amp_cv_by_band": band_summary(cv, k),
-        "per_rotor": per_rotor,
-    }
-
-
-def welch_psd(audio: Any, sr: int) -> tuple[np.ndarray, np.ndarray]:
-    from scipy.signal import welch
-
-    f, p = welch(np.asarray(audio, dtype=np.float64), fs=float(sr), nperseg=NPERSEG, axis=-1)
-    return np.asarray(f, dtype=np.float64), np.asarray(p, dtype=np.float64)
+            windows.append(
+                {
+                    "a0": int(r["a0"]),
+                    "x": np.asarray(data["x"], dtype=np.complex64),
+                    "valid": np.asarray(data["valid"], dtype=bool),
+                    "rotor": np.asarray(data["rotor"], dtype=np.int64),
+                    "k": k,
+                }
+            )
+    return {**D.stitch_bank(windows, phi, stride, ramp), "bw_track": bw_track, "windows": used}
 
 
 def stitch(
@@ -1031,8 +664,8 @@ def stitch(
             "energy": energy_ledger(audio, recon, track_energy, k),
             "resynthesis_max_abs": resynth,
             "bw_track_hz_by_band": band_summary(st["bw_track"], k),
-            "phase_reference_max_dev_rad": float(
-                check_phase_reference(rec, phi, int(st["windows"][0]["a0"]))
+            "phase_reference_max_dev_rad": D.phase_reference_deviation(
+                rec["r_audio"], phi, int(st["windows"][0]["a0"]), SR
             ),
             "ref_mic": ref,
             "phase_model": phase_model_report(
