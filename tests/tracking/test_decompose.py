@@ -115,6 +115,218 @@ def test_solve_config_keeps_a_modelled_harmonic_under_nyquist() -> None:
     assert D.solve_config(80, sr=16000, mics=1).f_max == pytest.approx(6000.0)
 
 
+# ---------------------------------------------------------------------------
+# the v2 bandwidth schedule
+
+
+def test_bandwidth_schedule_parses_and_round_trips() -> None:
+    sched = D.BandwidthSchedule.parse("3,0.05,1.5,10")
+    assert sched is not None
+    assert sched == D.BandwidthSchedule(3.0, 0.05, 1.5, 10.0)
+    assert D.BandwidthSchedule.parse(sched.text()) == sched
+    assert D.BandwidthSchedule.parse("") is None
+    assert D.BandwidthSchedule.parse("  ") is None
+    with pytest.raises(ValueError, match="4 comma-separated"):
+        D.BandwidthSchedule.parse("3,0.05")
+    with pytest.raises(ValueError, match="must be positive"):
+        D.BandwidthSchedule(0.0, 0.1, 1.0, 6.0)
+
+
+def test_line_separations_read_the_nearest_neighbouring_line() -> None:
+    # Two rotors at 50 and 61 rev/s: the k-th line of one sits k Hz from the
+    # k-th of the other only when the combs interleave, so the answer is the
+    # minimum over EVERY other line, not over the same harmonic.
+    rotor = np.array([0, 0, 0, 1, 1, 1])
+    k = np.array([1, 2, 3, 1, 2, 3])
+    r = np.stack([np.full(8, 50.0), np.full(8, 61.0)])
+    sep = D.line_separations(r, rotor, k)
+    # lines 50, 100, 150 | 61, 122, 183. The third line of rotor 0 (150 Hz) is
+    # closest to the SECOND of rotor 1 (122 Hz), not to its third — which is the
+    # whole reason the reading is a minimum over every line and not over k.
+    assert sep.tolist() == pytest.approx([11.0, 22.0, 28.0, 11.0, 22.0, 33.0])
+    assert D.line_separations(r[:1], np.array([0]), np.array([1]))[0] == np.inf
+
+
+def test_schedule_bandwidths_obey_the_floor_and_both_caps() -> None:
+    sched = D.BandwidthSchedule(2.0, 0.5, 1.0, 6.0)
+    k = np.array([1, 4, 20, 20])
+    sep = np.array([100.0, 100.0, 100.0, 1.5])  # the last track is crowded
+    got = D.schedule_bandwidths(k, sep, sched, 3.0)
+    # k=1: the law asks 2.5 but the base 3.0 is a FLOOR, never a target
+    # k=4: 4.0, free; k=20: 12.0 clipped by bw_abs_max; last: by 1.0 * sep
+    assert got.tolist() == pytest.approx([3.0, 4.0, 6.0, 3.0])
+
+
+def test_base_bandwidths_reproduce_the_solvers_own_clamp() -> None:
+    # A second implementation of tracking.vk_envelopes' per-group bandwidth
+    # clamp, so it is diffed against the solver instead of trusted. Two combs:
+    # a SPARSE one (the clamp does not bite, the k-scaled request survives) and
+    # a DENSE one (the clamp floors every track at VKConfig.bw_hz).
+    for rates, k_hi in (((50.0, 61.0), 6), ((60.0, 60.4, 60.8, 61.2), 12)):
+        r = np.stack([np.full(SR, v) for v in rates])
+        audio = np.zeros((1, SR))
+        cfg = D.solve_config(k_hi, sr=SR, mics=1)
+        env = D.solve_window(audio, r, cfg, k_hi=k_hi)
+        want = D.base_bandwidths(r, k_hi, cfg)
+        assert want.tolist() == pytest.approx(env.bw_track.tolist(), rel=1e-9)
+
+
+def test_schedule_reaches_the_bandwidth_it_asks_for() -> None:
+    # The Tuma round trip: the schedule is applied through rho^2, so the band
+    # the solver ACTUALLY used (Envelopes.bw_track) must come back as the
+    # scheduled one, on a dense comb and on a sparse one alike.
+    for rates, k_hi in (((50.0, 61.0), 6), ((60.0, 60.4, 60.8, 61.2), 12)):
+        r = np.stack([np.full(SR, v) for v in rates])
+        audio = np.zeros((1, SR))
+        cfg = D.solve_config(k_hi, sr=SR, mics=1)
+        sched = D.BandwidthSchedule(3.0, 0.2, 1.5, 8.0)
+        env = D.solve_window(audio, r, cfg, k_hi=k_hi, bw_schedule=sched)
+        want = D.schedule_bandwidths(
+            env.k,
+            D.line_separations(r, env.rotor, env.k),
+            sched,
+            D.base_bandwidths(r, k_hi, cfg),
+        )
+        assert env.bw_track.tolist() == pytest.approx(want.tolist(), rel=1e-6)
+        assert (env.bw_track >= D.base_bandwidths(r, k_hi, cfg) - 1e-9).all()
+
+
+#: Four rotor rates whose 80 lines fall in ONE coupling group AND contain a
+#: near-coincidence, so the solver's separation clamp floors the whole group at
+#: ``VKConfig.bw_hz`` = 1 Hz. That is the DREGON regime the v2 schedule exists
+#: for; a sparser comb keeps the k-scaled band and needs no schedule. The
+#: fundamentals stay 4.4 Hz apart, so the low band is not degenerate as well.
+DENSE_RATES = (35.28, 40.75, 45.41, 49.81)
+
+
+def _jittered_comb(
+    k_max: int = 20, dur_s: float = 4.0, sigma: float = 0.005, floor: float = 0.02
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(audio (2, T), rates (4, T))`` — a comb whose LINEWIDTH scales with k.
+
+    Each shaft phase carries its own Ornstein-Uhlenbeck jitter, so harmonic
+    ``k`` sees ``k`` times that phase and its line is ``k`` times as wide. That
+    is the physics the v2 schedule is matched to. The rates handed back are the
+    CLEAN ones, so the jitter is exactly what the envelopes have to absorb.
+    """
+    rng = np.random.default_rng(7)
+    n_t = int(dur_s * SR)
+    rates = np.stack([np.full(n_t, v) for v in DENSE_RATES])
+    phase = 2.0 * np.pi * np.cumsum(rates, axis=-1) / float(SR)
+    audio = rng.normal(scale=floor, size=(2, n_t))
+    theta = 8.0 / SR  # OU reversion: a finite linewidth, not a random walk's
+    for r in range(len(DENSE_RATES)):
+        noise = rng.normal(scale=sigma, size=n_t)
+        jit = np.zeros(n_t)
+        for i in range(1, n_t):  # the recursion is the definition; n_t is small
+            jit[i] = jit[i - 1] * (1.0 - theta) + noise[i]
+        for k in range(1, k_max + 1):
+            for c, gain in enumerate((1.0, 0.7)):
+                audio[c] += gain * (0.5 / k) * np.cos(k * (phase[r] + jit) + 0.3 * c)
+    return audio, rates
+
+
+def _order_contrast(
+    resid: np.ndarray, rates: np.ndarray, bands: tuple[tuple[int, int], ...]
+) -> dict[str, float]:
+    """On-order over half-order power, in decibels, per harmonic band.
+
+    The tuning campaign's probe (``docs/experiments/vk-decomposition.md`` v2):
+    a 2048 / 512 Hann spectrogram interpolated onto the ORDER grid, on-order
+    within +-0.06 of a whole order against half-order within +-0.06 of a half.
+    Zero means the residual carries no comb structure in that band — neither
+    leaked (positive) nor over-subtracted (negative).
+    """
+    n_fft, hop = 2048, 512
+    w = np.hanning(n_fft + 1)[:n_fft]
+    y = np.atleast_2d(resid)
+    starts = np.arange(0, y.shape[-1] - n_fft + 1, hop)
+    spec = np.fft.rfft(np.stack([y[:, s : s + n_fft] * w for s in starts], axis=1), axis=-1)
+    power = (np.abs(spec) ** 2).mean(axis=0).T
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / SR)
+    grid = np.arange(0.5, bands[-1][1] + 0.5 + 1e-9, 0.01)
+    prof = np.zeros_like(grid)
+    for row in np.atleast_2d(rates):
+        f0 = row[np.clip(starts + n_fft // 2, 0, y.shape[-1] - 1)]
+        for j, rate in enumerate(f0):
+            prof += np.interp(grid * float(rate), freqs, power[:, j], left=0.0, right=0.0)
+    near_int = np.abs(grid - np.round(grid))
+    near_half = np.abs((grid - 0.5) - np.round(grid - 0.5))
+    out = {}
+    for lo, hi in bands:
+        on = (near_int <= 0.06) & (np.round(grid) >= lo) & (np.round(grid) <= hi)
+        half = (near_half <= 0.06) & (np.round(grid - 0.5) >= lo) & (np.round(grid - 0.5) < hi)
+        out[f"k{lo}-{hi}"] = 10.0 * np.log10(prof[on].mean() / prof[half].mean())
+    return out
+
+
+def test_tuned_schedule_neither_leaks_nor_over_subtracts() -> None:
+    # THE guard on both failure modes at once. A flat 1 Hz band cannot follow a
+    # k-scaled linewidth, so comb structure LEAKS into the residual (positive
+    # contrast); a band far wider than the line swallows the floor around it and
+    # NOTCHES the residual (negative contrast). The tuned schedule must land on
+    # zero in EVERY band, between those two.
+    bands = ((1, 9), (10, 20))
+    audio, rates = _jittered_comb()
+    cfg = D.solve_config(20, sr=SR, mics=2)
+    stride = int(round(SR / 100.0))
+    # The premise: this comb reproduces the v1 regime, one flat 1 Hz band for
+    # every track. Without it the arms below would measure nothing.
+    assert D.base_bandwidths(rates, 20, cfg).tolist() == pytest.approx([1.0] * 80)
+
+    def residual_of(sched: D.BandwidthSchedule | None) -> dict[str, float]:
+        env = D.solve_window(audio, rates, cfg, k_hi=20, mics=2, bw_schedule=sched)
+        recon, _ = D.reconstruct(env.x, env.k, env.rotor, D.shaft_phase(rates, SR), stride)
+        return _order_contrast(audio - np.asarray(recon, dtype=np.float64), rates, bands)
+
+    flat = residual_of(None)
+    tuned = residual_of(D.BandwidthSchedule(3.0, 0.0, 1.5, 3.0))  # the tuned v2 schedule
+    over = residual_of(D.BandwidthSchedule(8.0, 0.0, 3.0, 16.0))  # deliberately too wide
+
+    assert flat["k10-20"] > 1.0, f"the flat band must LEAK a k-scaled linewidth: {flat}"
+    for name, got in tuned.items():
+        assert abs(got) < 0.5, f"{name}: tuned residual contrast {got:.2f} dB, want 0 +- 0.5"
+    assert abs(tuned["k10-20"]) < abs(flat["k10-20"])
+    assert over["k10-20"] < -1.0, f"a band far wider than the line must NOTCH: {over}"
+
+
+# ---------------------------------------------------------------------------
+# the readings, continued
+
+
+def test_residual_tones_finds_an_injected_foreign_tone() -> None:
+    # A tone that is NOT a rotor order must come back with a large prominence
+    # and a non-integer order — the discrimination the report is built on.
+    rng = np.random.default_rng(3)
+    n_t = 8 * SR
+    t = np.arange(n_t) / float(SR)
+    rates = np.full((1, n_t), 60.0)
+    foreign = 60.0 * 7.37  # order 7.37 of the rotor: not a harmonic
+    audio = rng.normal(scale=0.01, size=(1, n_t)) + 0.3 * np.cos(2.0 * np.pi * foreign * t)
+    got = D.residual_tones(audio, SR, rates, segment_s=8.0, nperseg=8192)
+
+    assert len(got["segments"]) == 1
+    peaks = got["segments"][0]["peaks"]
+    top = peaks[0]
+    assert top["freq_hz"] == pytest.approx(foreign, abs=3.0)
+    assert top["prominence_db"] > 6.0
+    assert top["order"] == pytest.approx(7.37, abs=0.05)
+    assert top["order_dist"] > 0.3  # squarely between two harmonics
+    assert "non-comb" in got["note"].lower() or "NOT rotor" in got["note"]
+
+
+def test_residual_tones_reports_a_rotor_harmonic_as_on_order() -> None:
+    rng = np.random.default_rng(4)
+    n_t = 8 * SR
+    t = np.arange(n_t) / float(SR)
+    rates = np.full((1, n_t), 60.0)
+    audio = rng.normal(scale=0.01, size=(1, n_t)) + 0.3 * np.cos(2.0 * np.pi * 5.0 * 60.0 * t)
+    got = D.residual_tones(audio, SR, rates, segment_s=8.0, nperseg=8192)
+    top = got["segments"][0]["peaks"][0]
+    assert top["order"] == pytest.approx(5.0, abs=0.05)
+    assert top["order_dist"] < 0.05
+
+
 def test_reconstruct_follows_the_vk_reconstruct_rule() -> None:
     # ONE interpolation contract, two implementations: the stitched one takes
     # the global phase and returns per-track energies, but must otherwise agree

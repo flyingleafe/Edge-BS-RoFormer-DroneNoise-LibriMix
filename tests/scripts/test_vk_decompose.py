@@ -14,6 +14,8 @@ published dataset). Four properties are pinned:
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import vk_decompose as V
@@ -95,6 +97,58 @@ def test_rank_one_share_separates_common_from_independent_drift() -> None:
 
 def test_rank_one_share_refuses_a_short_window() -> None:
     assert V.rank_one_share(np.zeros((10, 4)))["lambda1_share"] is None
+
+
+def test_bandwidth_schedule_is_the_cli_spelling() -> None:
+    # The schedule travels as ONE string through the unit parameters and the
+    # report's provenance, so the CLI spelling must round trip through JSON.
+    sched = V.BandwidthSchedule.parse("3,0,1.5,3")
+    assert sched is not None
+    assert sched.as_dict() == {
+        "bw0_hz": 3.0,
+        "slope_hz_per_k": 0.0,
+        "cap_frac_of_sep": 1.5,
+        "bw_abs_max": 3.0,
+    }
+    assert V.BandwidthSchedule.parse(json.loads(json.dumps(sched.text()))) == sched
+    assert V.BandwidthSchedule.parse("") is None
+
+
+def test_solve_window_forwards_the_schedule_to_the_solver() -> None:
+    # The driver's own seam: the same window solved flat and scheduled must come
+    # back with DIFFERENT achieved bandwidths, and the scheduled one wider.
+    audio, rates = _synth("common")
+    _, flat = V.solve_window(audio, rates, K_MAX, K_MAX, 1.0, 2, sr=SR)
+    _, wide = V.solve_window(
+        audio,
+        rates,
+        K_MAX,
+        K_MAX,
+        1.0,
+        2,
+        sr=SR,
+        bw_schedule=V.BandwidthSchedule(3.0, 0.0, 1.5, 3.0),
+    )
+    # The schedule is a FLOOR of 3 Hz here, so the low harmonics widen and the
+    # high ones (whose sparse-comb base is already wider) stay where they were.
+    assert (wide.bw_track >= flat.bw_track - 1e-9).all()
+    assert float(wide.bw_track.mean()) > float(flat.bw_track.mean())
+    low = np.asarray(flat.k) <= 2
+    assert (wide.bw_track[low] > flat.bw_track[low] + 1e-9).all()
+
+
+def test_sample_rate_and_f_max_both_cap_the_harmonic_set() -> None:
+    # Two ceilings, and the SMALLER one wins: a 8 kHz f_max is inert at 16 kHz
+    # because the geometry holds every line under 0.375 * sr = 6 kHz.
+    r_ref = np.full((4, 100), 91.0)
+    assert V.recording_k_hi(r_ref, 80, sr=16000, f_max=8000.0) == V.recording_k_hi(
+        r_ref, 80, sr=16000, f_max=6000.0
+    )
+    assert V.recording_k_hi(r_ref, 80, sr=32000, f_max=8000.0) > V.recording_k_hi(
+        r_ref, 80, sr=16000, f_max=8000.0
+    )
+    # The v2 configuration reaches the k_max it asks for on a DREGON rate peak.
+    assert V.recording_k_hi(r_ref, 80, sr=32000, f_max=8000.0) == 80
 
 
 def test_group_plan_reports_transitive_coupling_and_its_memory() -> None:

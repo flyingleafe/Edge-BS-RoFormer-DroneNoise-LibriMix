@@ -33,6 +33,15 @@ Is the phase model per-harmonic or per-shaft
     gives, per rotor, the drift standard deviation against ``k`` and the top
     eigenvalue share of the correlation matrix of the increments across ``k``.
 
+What is left in the residual that is not broadband
+    ``report.json`` -> ``residual_tones``: per ~8 s segment, the strongest ten
+    tonal peaks of the residual below 2 kHz, each with its distance to the
+    nearest rotor order. On ``free-flight_nosource_room1`` these sit at
+    NON-INTEGER orders that drift independently of the rotor speed — foreign
+    quasi-stationary tones (structural / aerodynamic resonances), not comb
+    leakage — and a smooth-PSD noise model cannot represent them. Measurement
+    only: nothing here removes a tone.
+
 How prior-dependent the weak tracks are
     ``--bw-sweep`` re-solves one mid-recording window on two prior axes and
     reports how the per-band mean amplitude and drift move: the requested
@@ -41,6 +50,14 @@ How prior-dependent the weak tracks are
     track to ``max(VKConfig.bw_hz, 6 * line separation)``, and a dense comb
     floors that at 1 Hz, so the ``bw_rps`` arms mostly measure the clamp. Each
     arm reports the bandwidth it actually got.
+
+    That clamp is what ``--bw-schedule bw0,slope,capfrac,absmax`` (v2) defeats:
+    it sets each track's band THROUGH the selectivity, after the clamp, to
+    ``clip(bw0 + slope * k, base, min(capfrac * separation, absmax))`` Hz. A
+    real line is not 1 Hz wide at every harmonic — the shaft jitter widens
+    harmonic ``k`` by ``k`` times the rate error — and the flat band left about
+    72 % of the comb's order contrast in the residual at k10-24. Empty (the
+    default) is the flat v1 band, call for call.
 
 Conventions a consumer must know
 --------------------------------
@@ -82,6 +99,13 @@ Run::
     omnirun pull vk-decompose
     PYTHONPATH=src python scripts/vk_decompose.py --mode stitch
 
+    # the v2 configuration: linewidth-matched bands, and 32 kHz so that k 80 is
+    # reachable at all (see docs/experiments/vk-decomposition.md § v2). One
+    # coupling group of 320 tracks needs 7.9 GB per worker at 12 s.
+    python scripts/vk_decompose.py --mode all --jobs 2 --out results/vk_decompose_v2 \\
+      --sr 32000 --f-max 8000 --k-max 80 --window-s 12 --hop-s 9 \\
+      --mem-budget-gb 9 --bw-schedule 3,0,1.5,3
+
 Outputs: the gridrun units under ``<out>/raw/`` (one JSON plus one ``.npz`` of
 complex envelopes each, 26 MB per window at 8 mics and ``k_hi`` 62) and, per
 recording, ``<out>/<recording_id>/{envelopes.npz, residual.npz, report.json,
@@ -119,6 +143,7 @@ from tracking.decompose import (  # noqa: E402
     DEFAULT_BANDS as BANDS,
 )
 from tracking.decompose import (  # noqa: E402
+    BandwidthSchedule,
     band_name,
     band_summary,
     drift_increments,
@@ -130,6 +155,7 @@ from tracking.decompose import (  # noqa: E402
     rank_one_share,
     reconstruct,
     reference_mic,
+    residual_tones,
     shaft_phase,
     to_audio_grid,
     track_bands,
@@ -139,6 +165,7 @@ from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args, unit_path  
 
 __all__ = [  # the importable core the tests read; the CLI is main()
     "BANDS",
+    "BandwidthSchedule",
     "band_name",
     "band_summary",
     "drift_increments",
@@ -169,7 +196,13 @@ LABEL_DIR_DEFAULT = "src/data_processing/refined_labels"
 FRAMES_SPEC = "frames:DREGON-frames"
 RPS_KEY = "motors_measured"
 SPLITS = ["in_flight_noise"]
+#: Default sample rate — the v1 rate, kept as the default so an unqualified run
+#: reproduces v1. ``--sr 32000`` is the v2 configuration (see ``--f-max``).
 SR = 16000
+#: Default modelling ceiling in Hz. It is only ever half of the cap: the
+#: geometry also holds every line under ``0.375 * sr``, so 8 kHz needs 32 kHz
+#: audio to mean anything.
+F_MAX = 6000.0
 #: The frozen evaluation frame grid (``tracking.protocols.BEATVK.hop_s``) — the
 #: grid the refined labels sit on, and the grid windows are cut on.
 HOP_S = 0.032
@@ -213,7 +246,7 @@ def published_audio_starts(spec: str) -> dict[str, int]:
     return starts
 
 
-def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
+def load_recordings(spec: str, label_dir: str | Path, sr: int = SR) -> list[dict[str, Any]]:
     """Every surviving noise recording, with the REFINED labels applied.
 
     The loader is the generator's (``load_published_noise_sources`` with the
@@ -221,6 +254,12 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
     sees. ``rps_override_dir`` replaces the telemetry values with the refined
     trajectory before the overlap trim, which is where the sidecar's times are
     defined.
+
+    ``sr`` is the rate the loader resamples to, and it is a REAL knob of the
+    measurement: a harmonic is modelled only while its line stays under
+    ``min(f_max, 0.45 sr)``, so 16 kHz alone caps DREGON near ``k`` 75 at its
+    rate peaks whatever ``f_max`` says. The v2 configuration runs at 32 kHz so
+    the 8 kHz ceiling is the only cap left.
 
     ``ft`` is LOCAL: seconds from the trimmed frame's audio ``t_start``.
     ``t0_offset_s`` carries the trim, so every output can be written against the
@@ -241,7 +280,7 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
     starts = published_audio_starts(spec)
     recs: list[dict[str, Any]] = []
     for src in load_published_noise_sources(
-        spec, SR, origin=origin, rps_key=rps_key, splits=splits, rps_override_dir=override
+        spec, int(sr), origin=origin, rps_key=rps_key, splits=splits, rps_override_dir=override
     ):
         frame = src.frame
         meta = meta_dict(frame)
@@ -259,7 +298,7 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
         ticks = np.asarray(rps_s.tindex.abs_stamps_ticks, dtype=np.int64)
         stamps = (ticks - t0) / float(td.TICKS_PER_SECOND)
         n_t = int(audio.shape[-1])
-        ft = frame_grid(n_t, SR)
+        ft = frame_grid(n_t, int(sr))
         r_ref = interp_rps(np.asarray(rps_s.data), stamps, ft)
         recs.append(
             {
@@ -270,9 +309,10 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
                 # The audio-rate carrier rate. Every window slices THIS array,
                 # so a window's carrier is a slice of the global one and the
                 # phase re-reference below is exact.
-                "r_audio": to_audio_grid(r_ref, ft, n_t, SR),
+                "r_audio": to_audio_grid(r_ref, ft, n_t, int(sr)),
                 "t0_offset_s": (t0 - starts[rid]) / float(td.TICKS_PER_SECOND),
                 "rps_key": rps_key,
+                "sr": int(sr),
             }
         )
     if not recs:
@@ -280,18 +320,26 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
     return recs
 
 
-#: Per-process recording cache. Pool workers are reused across units, so each
-#: process decodes the dataset once; under a fork start method it inherits the
-#: parent's copy and decodes nothing.
-_RECORDINGS: dict[str, dict[str, Any]] = {}
+#: Per-process recording cache, keyed by ``(recording id, sample rate)``. Pool
+#: workers are reused across units, so each process decodes the dataset once;
+#: under a fork start method it inherits the parent's copy and decodes nothing.
+#: The rate is part of the key because it is part of the AUDIO — two rates are
+#: two different decodes of one recording.
+_RECORDINGS: dict[tuple[str, int], dict[str, Any]] = {}
 
 
-def get_recording(rid: str, spec: str, label_dir: str | Path) -> dict[str, Any]:
-    if rid not in _RECORDINGS:
-        _RECORDINGS.update({r["recording_id"]: r for r in load_recordings(spec, label_dir)})
-    if rid not in _RECORDINGS:
+def cache_recordings(recs: list[dict[str, Any]], sr: int = SR) -> None:
+    """Fill the per-process cache — called before the pool forks."""
+    _RECORDINGS.update({(str(r["recording_id"]), int(sr)): r for r in recs})
+
+
+def get_recording(rid: str, spec: str, label_dir: str | Path, sr: int = SR) -> dict[str, Any]:
+    key = (str(rid), int(sr))
+    if key not in _RECORDINGS:
+        cache_recordings(load_recordings(spec, label_dir, int(sr)), int(sr))
+    if key not in _RECORDINGS:
         raise KeyError(f"recording {rid!r} not in {spec}")
-    return _RECORDINGS[rid]
+    return _RECORDINGS[key]
 
 
 def window_bounds(n_frames: int, window_s: float, hop_s: float) -> list[tuple[int, int]]:
@@ -299,18 +347,30 @@ def window_bounds(n_frames: int, window_s: float, hop_s: float) -> list[tuple[in
     return D.window_bounds(n_frames, window_s, hop_s, HOP_S)
 
 
-def window_span(ft: Any, i0: int, i1: int, n_t: int, stride: int) -> tuple[int, int]:
+def window_span(ft: Any, i0: int, i1: int, n_t: int, stride: int, sr: int = SR) -> tuple[int, int]:
     """Audio sample range of one window, snapped to the envelope stride."""
-    return D.window_span(ft, i0, i1, n_t, stride, SR, HOP_S)
+    return D.window_span(ft, i0, i1, n_t, stride, int(sr), HOP_S)
 
 
 # ---------------------------------------------------------------------------
 # the solve unit
 
 
-def fvk_config(k_max: int, *, mics: int = MAX_MICS, bw_rps: float = 1.0, sr: int = SR) -> Any:
-    """THE measurement geometry — one construction, so every solve agrees."""
-    return D.solve_config(k_max, sr=sr, mics=mics, bw_rps=bw_rps)
+def fvk_config(
+    k_max: int,
+    *,
+    mics: int = MAX_MICS,
+    bw_rps: float = 1.0,
+    sr: int = SR,
+    f_max: float = F_MAX,
+) -> Any:
+    """THE measurement geometry — one construction, so every solve agrees.
+
+    ``f_max`` is the modelling ceiling, but never the only one:
+    :func:`tracking.decompose.solve_config` holds it under ``0.375 sr``, so the
+    SAMPLE RATE caps the harmonic set whenever it is the smaller of the two.
+    """
+    return D.solve_config(k_max, sr=sr, mics=mics, bw_rps=bw_rps, f_max=f_max)
 
 
 def solve_window(
@@ -322,17 +382,28 @@ def solve_window(
     mics: int,
     *,
     sr: int = SR,
+    f_max: float = F_MAX,
     rho_scale: float = 1.0,
+    bw_schedule: BandwidthSchedule | None = None,
 ) -> Any:
     """``(config, envelopes)`` of one coupled VK solve of one window.
 
     The harmonic set is capped from the RECORDING's reference trajectory (see
     :func:`recording_k_hi`), so every window of a recording holds the identical
     ``(rotor, harmonic)`` track set and the windows can be stitched track by
-    track.
+    track. ``bw_schedule`` is the v2 linewidth-matched per-track bandwidth
+    (``--bw-schedule``); ``None`` is the flat v1 band.
     """
-    cfg = fvk_config(k_max, mics=mics, bw_rps=bw_rps, sr=sr)
-    return cfg, D.solve_window(audio, r_audio, cfg, k_hi=k_hi, mics=mics, rho_scale=rho_scale)
+    cfg = fvk_config(k_max, mics=mics, bw_rps=bw_rps, sr=sr, f_max=f_max)
+    return cfg, D.solve_window(
+        audio,
+        r_audio,
+        cfg,
+        k_hi=k_hi,
+        mics=mics,
+        rho_scale=rho_scale,
+        bw_schedule=bw_schedule,
+    )
 
 
 def group_plan(r_audio: Any, k_hi: int, cfg: Any) -> dict[str, Any]:
@@ -347,7 +418,7 @@ def group_plan(r_audio: Any, k_hi: int, cfg: Any) -> dict[str, Any]:
     return D.group_plan(r_audio, k_hi, cfg)
 
 
-def recording_k_hi(r_ref: Any, k_max: int) -> int:
+def recording_k_hi(r_ref: Any, k_max: int, *, sr: int = SR, f_max: float = F_MAX) -> int:
     """The harmonic cap of a WHOLE recording, from its refined labels.
 
     ``tracking.fitness_vk.k_cap`` reads the maximum rate of the reference it is
@@ -357,7 +428,7 @@ def recording_k_hi(r_ref: Any, k_max: int) -> int:
     """
     from tracking.fitness_vk import k_cap
 
-    return int(k_cap(fvk_config(k_max), np.asarray(r_ref)))
+    return int(k_cap(fvk_config(k_max, sr=sr, f_max=f_max), np.asarray(r_ref)))
 
 
 def solve_worker(unit: Unit) -> dict[str, Any]:
@@ -368,12 +439,13 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
     bandwidth unit reports band statistics only and writes no array.
     """
     p = dict(unit.params)
-    rec = get_recording(str(p["recording"]), str(p["spec"]), str(p["label_dir"]))
+    sr, f_max = int(p.get("sr", SR)), float(p.get("f_max", F_MAX))
+    rec = get_recording(str(p["recording"]), str(p["spec"]), str(p["label_dir"]), sr)
     i0, i1 = int(p["i0"]), int(p["i1"])
     mics = min(int(p["mics"]), int(rec["audio"].shape[0]))
     stride = int(p["stride"])
     n_t = int(rec["audio"].shape[-1])
-    a0, a1 = window_span(rec["ft"], i0, i1, n_t, stride)
+    a0, a1 = window_span(rec["ft"], i0, i1, n_t, stride, sr)
     offset = float(rec["t0_offset_s"])
     r_win = np.asarray(rec["r_audio"])[:, a0:a1]
     mean_rev_s = float(r_win.mean())
@@ -385,19 +457,22 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
         "i1": i1,
         "a0": a0,
         "a1": a1,
-        "start_s": round(a0 / float(SR) + offset, 6),
-        "end_s": round(a1 / float(SR) + offset, 6),
+        "start_s": round(a0 / float(sr) + offset, 6),
+        "end_s": round(a1 / float(sr) + offset, 6),
         "mean_rev_s": round(mean_rev_s, 4),
         "mics": mics,
+        "sr": sr,
+        "f_max": f_max,
         "k_max": int(p["k_max"]),
         "bw_rps": float(p["bw_rps"]),
         "rho_scale": float(p.get("rho_scale", 1.0)),
+        "bw_schedule": str(p.get("bw_schedule", "")),
     }
     if mean_rev_s < IDLE_REV_S:
         return {**out, "used": False, "reason": "idle"}
 
-    k_hi = recording_k_hi(rec["r_ref"], int(p["k_max"]))
-    cfg = fvk_config(int(p["k_max"]), mics=mics, bw_rps=float(p["bw_rps"]))
+    k_hi = recording_k_hi(rec["r_ref"], int(p["k_max"]), sr=sr, f_max=f_max)
+    cfg = fvk_config(int(p["k_max"]), mics=mics, bw_rps=float(p["bw_rps"]), sr=sr, f_max=f_max)
     plan = group_plan(r_win, k_hi, cfg)
     budget = float(p["mem_budget_gb"])
     if budget > 0 and float(plan["banded_gb"]) > budget:
@@ -417,7 +492,10 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
         int(p["k_max"]),
         float(p["bw_rps"]),
         mics,
+        sr=sr,
+        f_max=f_max,
         rho_scale=float(p.get("rho_scale", 1.0)),
+        bw_schedule=BandwidthSchedule.parse(str(p.get("bw_schedule", ""))),
     )
     wall = time.perf_counter() - tic
     out.update(
@@ -430,6 +508,9 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
             "n_env": int(env.x.shape[-1]),
             "fs_env": float(env.fs_env),
             "wall_s": round(wall, 2),
+            # The bandwidth the solver ACTUALLY used per band — the schedule as
+            # achieved, not as requested (see the "bw" arm's comment below).
+            "bw_track_hz_by_band": band_summary(env.bw_track, env.k),
         }
     )
 
@@ -472,7 +553,7 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
     # A cheap per-window capture check on ONE channel: the fraction of that
     # channel's energy the track sum explains. The full ledger is the stitch's,
     # which is why this reconstructs one channel and not the array.
-    phase_w = shaft_phase(r_win, SR)
+    phase_w = shaft_phase(r_win, sr)
     recon0, _ = reconstruct(env.x[ref : ref + 1], env.k, env.rotor, phase_w, stride)
     y0 = np.asarray(rec["audio"][ref, a0:a1], dtype=np.float64)
     e_y = float((y0**2).sum())
@@ -564,22 +645,24 @@ def stitch(
     if not rows:
         raise SystemExit(f"{out}/raw is empty — run --mode solve first")
     stride = int(params["stride"])
+    sr = int(params.get("sr", SR))
+    sched = BandwidthSchedule.parse(str(params.get("bw_schedule", "")))
     written: list[Path] = []
 
     ids = {str(r["recording"]) for r in rows}
     for rid in sorted(ids if only is None else ids & only):
         got = [r for r in rows if r["recording"] == rid]
         wins = [r for r in got if r.get("kind", "window") == "window"]
-        rec = get_recording(rid, spec, label_dir)
+        rec = get_recording(rid, spec, label_dir, sr)
         offset = float(rec["t0_offset_s"])
-        phi = shaft_phase(rec["r_audio"], SR)
+        phi = shaft_phase(rec["r_audio"], sr)
         ramp = max(0, int(round((params["window_s"] - params["hop_s"]) * params["fs_env"])))
         st = stitch_envelopes(wins, out, phi, stride, ramp)
 
         a_min, a_max, n_env = int(st["a_min"]), int(st["a_max"]), int(st["n_env"])
         x = st["x"]
         k, rotor = st["k"], st["rotor"]
-        t_env = (a_min + np.arange(n_env) * stride) / float(SR) + offset
+        t_env = (a_min + np.arange(n_env) * stride) / float(sr) + offset
         audio = np.asarray(rec["audio"][: x.shape[0], a_min:a_max], dtype=np.float64)
         recon, track_energy = reconstruct(x, k, rotor, phi[:, a_min:a_max], stride)
 
@@ -602,7 +685,7 @@ def stitch(
             bw_track=st["bw_track"],
             fs_env=np.float64(params["fs_env"]),
             stride=np.int64(stride),
-            sample_rate=np.int64(SR),
+            sample_rate=np.int64(sr),
             t0_offset_s=np.float64(offset),
             span_samples=np.asarray([a_min, a_max], dtype=np.int64),
             recording_id=np.array(rid),
@@ -616,8 +699,8 @@ def stitch(
         )
 
         residual = (audio - recon).astype(np.float32)
-        f_psd, psd_res = welch_psd(residual, SR)
-        _, psd_org = welch_psd(audio, SR)
+        f_psd, psd_res = welch_psd(residual, sr)
+        _, psd_org = welch_psd(audio, sr)
         np.savez(
             rec_dir / "residual.npz",
             allow_pickle=False,
@@ -625,8 +708,8 @@ def stitch(
             freq_hz=f_psd,
             psd_residual=psd_res,
             psd_original=psd_org,
-            sample_rate=np.int64(SR),
-            t_start_s=np.float64(a_min / float(SR) + offset),
+            sample_rate=np.int64(sr),
+            t_start_s=np.float64(a_min / float(sr) + offset),
             span_samples=np.asarray([a_min, a_max], dtype=np.int64),
             recording_id=np.array(rid),
         )
@@ -641,7 +724,7 @@ def stitch(
                 "spec": spec,
                 "rps_key": str(rec.get("rps_key", RPS_KEY)),
                 "label_dir": str(label_dir),
-                "sample_rate": SR,
+                "sample_rate": sr,
                 "splits": SPLITS,
             },
             "time_reference": (
@@ -651,8 +734,8 @@ def stitch(
             "t0_offset_s": round(offset, 6),
             "params": {**params, "idle_rev_s": IDLE_REV_S},
             "span_s": [
-                round(a_min / float(SR) + offset, 6),
-                round(a_max / float(SR) + offset, 6),
+                round(a_min / float(sr) + offset, 6),
+                round(a_max / float(sr) + offset, 6),
             ],
             "n_windows": len(wins),
             "n_used": len(st["windows"]),
@@ -663,9 +746,18 @@ def stitch(
             "mics": int(x.shape[0]),
             "energy": energy_ledger(audio, recon, track_energy, k),
             "resynthesis_max_abs": resynth,
+            "bw_schedule": (sched.as_dict() if sched is not None else None),
             "bw_track_hz_by_band": band_summary(st["bw_track"], k),
+            # What is left in the residual that a smooth-PSD noise model cannot
+            # represent. Measurement only: nothing here removes a tone.
+            "residual_tones": residual_tones(
+                residual,
+                sr,
+                np.asarray(rec["r_audio"])[:, a_min:a_max],
+                t_start_s=a_min / float(sr) + offset,
+            ),
             "phase_reference_max_dev_rad": D.phase_reference_deviation(
-                rec["r_audio"], phi, int(st["windows"][0]["a0"]), SR
+                rec["r_audio"], phi, int(st["windows"][0]["a0"]), sr
             ),
             "ref_mic": ref,
             "phase_model": phase_model_report(
@@ -766,7 +858,33 @@ def main() -> None:
     ap.add_argument("--hop-s", type=float, default=12.0)
     ap.add_argument("--k-max", type=int, default=80)
     ap.add_argument("--mics", type=int, default=MAX_MICS, help=f"microphones, {MAX_MICS} maximum")
+    ap.add_argument(
+        "--sr",
+        type=int,
+        default=SR,
+        help=(
+            f"sample rate the loader resamples to (default {SR}, the v1 rate). It caps the "
+            "harmonic set too: no line above 0.375 * sr is modelled, so k 80 on DREGON needs "
+            "--sr 32000"
+        ),
+    )
+    ap.add_argument(
+        "--f-max",
+        type=float,
+        default=F_MAX,
+        help=f"modelling ceiling in Hz (default {F_MAX:g}); the v2 configuration is 8000",
+    )
     ap.add_argument("--bw-rps", type=float, default=1.0, help="k-scaled VK bandwidth, rev/s")
+    ap.add_argument(
+        "--bw-schedule",
+        default="",
+        metavar="bw0,slope,capfrac,absmax",
+        help=(
+            "v2 linewidth-matched per-track bandwidth: bw_k = clip(bw0 + slope * k, base, "
+            "min(capfrac * line separation, absmax)) Hz. Empty (the default) keeps the flat "
+            "v1 band, under which the comb leaks into the residual above about k 10"
+        ),
+    )
     ap.add_argument(
         "--mem-budget-gb",
         type=float,
@@ -802,6 +920,8 @@ def main() -> None:
     if args.smoke:
         args.window_s, args.hop_s = 4.0, 4.0
         args.k_max, args.mics = 20, 2
+    if args.sr <= 0:
+        raise SystemExit(f"--sr {args.sr}: the sample rate must be positive")
     if args.mics > MAX_MICS:
         raise SystemExit(
             f"--mics {args.mics}: the VK solver clamps at {MAX_MICS} channels "
@@ -809,15 +929,22 @@ def main() -> None:
         )
     args.bw_grid = parse_floats(args.bw_grid)
     args.rho_grid = parse_floats(args.rho_grid)
+    # Parse once, here, so a malformed schedule fails the CLI and not a worker.
+    sched = BandwidthSchedule.parse(args.bw_schedule)
     out = Path(args.out)
     fs_env = 100.0  # tracking.fitness_vk.FVKConfig.fs_env
-    stride = max(1, int(round(SR / fs_env)))
+    stride = max(1, int(round(args.sr / fs_env)))
     params = {
         "window_s": float(args.window_s),
         "hop_s": float(args.hop_s),
         "k_max": int(args.k_max),
         "mics": int(args.mics),
+        "sr": int(args.sr),
+        "f_max": float(args.f_max),
         "bw_rps": float(args.bw_rps),
+        # Carried as the CLI string: it must survive a JSON round trip through
+        # the unit parameters and the report's provenance.
+        "bw_schedule": sched.text() if sched is not None else "",
         "ref_mic": int(args.ref_mic),
         "mem_budget_gb": float(args.mem_budget_gb),
         "fs_env": fs_env,
@@ -826,7 +953,7 @@ def main() -> None:
     wanted = {v.strip() for v in args.recording.split(",") if v.strip()}
 
     if args.mode in ("solve", "all"):
-        recs = load_recordings(args.spec, args.label_dir)
+        recs = load_recordings(args.spec, args.label_dir, int(args.sr))
         if wanted:
             recs = [r for r in recs if r["recording_id"] in wanted]
             if not recs:
@@ -834,7 +961,7 @@ def main() -> None:
         # Warm the cache BEFORE the pool forks: workers inherit the decoded
         # recordings and open no R2 connection (concurrent per-worker streams
         # caused SSL failures and killed the pool on the cluster).
-        _RECORDINGS.update({r["recording_id"]: r for r in recs})
+        cache_recordings(recs, int(args.sr))
         common = {
             "spec": args.spec,
             "label_dir": args.label_dir,
@@ -846,14 +973,20 @@ def main() -> None:
         # Size the job BEFORE it runs: one solve holds one banded group, and
         # that group is the whole comb (see group_plan).
         probe = recs[0]
-        pk = recording_k_hi(probe["r_ref"], int(args.k_max))
+        pk = recording_k_hi(probe["r_ref"], int(args.k_max), sr=int(args.sr), f_max=args.f_max)
         plan = group_plan(
-            np.asarray(probe["r_audio"])[:, : int(round(args.window_s * SR))],
+            np.asarray(probe["r_audio"])[:, : int(round(args.window_s * args.sr))],
             pk,
-            fvk_config(int(args.k_max), mics=args.mics, bw_rps=args.bw_rps),
+            fvk_config(
+                int(args.k_max),
+                mics=args.mics,
+                bw_rps=args.bw_rps,
+                sr=int(args.sr),
+                f_max=args.f_max,
+            ),
         )
         print(
-            f"[vk_decompose] {len(units)} units -> {out}\n"
+            f"[vk_decompose] {len(units)} units -> {out} at {args.sr} Hz, f_max {args.f_max:g}\n"
             f"[vk_decompose] k_hi {pk}, {plan['n_tracks']} tracks in {plan['n_groups']} coupling "
             f"group(s), largest {plan['max_group']}: {plan['banded_gb']} GB per worker, "
             f"{round(plan['banded_gb'] * args.jobs, 2)} GB for --jobs {args.jobs}",

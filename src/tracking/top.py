@@ -83,10 +83,13 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import tdseries as td
+
+if TYPE_CHECKING:  # the decomposition core is imported lazily inside its stage
+    from tracking.decompose import BandwidthSchedule
 
 from tracking.fitness import FitnessConfig, Holdout, score_window
 from tracking.fitness_vk import (
@@ -956,6 +959,7 @@ def decompose_stage(
     *,
     k_hi: int | None = None,
     rho_scale: float = 1.0,
+    bw_schedule: BandwidthSchedule | None = None,
     reference_entry: str = "rps_meas",
     name: str = "decompose",
 ) -> Stage:
@@ -977,7 +981,10 @@ def decompose_stage(
 
     ``k_hi`` pins the harmonic set; it defaults to the cap of
     ``reference_entry`` (falling back to the frame's own ``"rps"``), which is
-    what makes two windows of one recording stitchable track by track. Read
+    what makes two windows of one recording stitchable track by track.
+    ``bw_schedule`` is the v2 linewidth-matched per-track bandwidth
+    (:class:`tracking.decompose.BandwidthSchedule`); ``None`` keeps the flat v1
+    band, under which the comb LEAKS into the residual above about ``k`` 10. Read
     :func:`tracking.decompose.group_plan` before running this on a long window:
     the coupled group is the whole comb and costs about
     ``1e-4 k_hi^2 window_s`` GB.
@@ -1000,7 +1007,9 @@ def decompose_stage(
         ref = get_rps(frame, reference_entry)[0] if reference_entry in frame else r
         cap = int(k_hi) if k_hi is not None else k_cap(conf, ref)
         tic = time.perf_counter()
-        env = solve_window(audio, r_audio, conf, k_hi=cap, rho_scale=rho_scale)
+        env = solve_window(
+            audio, r_audio, conf, k_hi=cap, rho_scale=rho_scale, bw_schedule=bw_schedule
+        )
         phase = shaft_phase(r_audio, conf.sr)
         recon, track_energy = reconstruct(env.x, env.k, env.rotor, phase, conf.stride)
         y = np.asarray(audio, dtype=np.float64)[: env.x.shape[0]]
@@ -1010,6 +1019,7 @@ def decompose_stage(
             "n_env": int(env.x.shape[-1]),
             "fs_env": float(env.fs_env),
             "rho_scale": float(rho_scale),
+            "bw_schedule": bw_schedule.as_dict() if bw_schedule is not None else None,
             "wall_s": round(time.perf_counter() - tic, 3),
             **energy_ledger(y, recon, track_energy, env.k),
         }

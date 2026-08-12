@@ -51,6 +51,7 @@ Purity: numpy and scipy only, plus the sibling tracking modules.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -60,25 +61,33 @@ from tracking.vk_tracking import (
     Envelopes,
     _coupling_groups,
     _track_table,
+    _tuma_rho,
     env_stride,
+    vk_envelopes,
 )
 
 __all__ = [
     "DEFAULT_BANDS",
+    "BandwidthSchedule",
     "band_name",
     "band_summary",
+    "base_bandwidths",
     "drift_increments",
     "energy_ledger",
     "fade_weights",
     "frame_grid",
     "group_plan",
     "interp_rps",
+    "line_separations",
     "per_track_stats",
     "phase_model_report",
     "phase_reference_deviation",
     "rank_one_share",
     "reconstruct",
     "reference_mic",
+    "residual_tones",
+    "schedule_bandwidths",
+    "schedule_rho2_gain",
     "shaft_phase",
     "solve_config",
     "solve_window",
@@ -222,6 +231,143 @@ def solve_config(
     )
 
 
+@dataclass(frozen=True)
+class BandwidthSchedule:
+    """Per-track envelope bandwidth: ``k``-scaled, and capped by the separation.
+
+    THE v2 knob. The v1 decomposition solved every track with ONE bandwidth,
+    because the solver's per-group clamp floors a dense comb at
+    ``VKConfig.bw_hz`` (1 Hz) whatever ``bw_rps`` asks for. A real rotor line is
+    not 1 Hz wide at every harmonic: the shaft jitter displaces harmonic ``k``
+    by ``k`` times the rate error, so the linewidth grows with ``k`` and a flat
+    1 Hz band LEAKS the comb into the residual above about ``k`` 10 (measured on
+    ``free-flight_nosource_room1``: 0.92 dB of order contrast left in the
+    residual at k10-24 against 1.29 dB in the original).
+
+    The schedule is the linewidth law with the two guards the leak measurement
+    demanded:
+
+        bw_m = clip(bw0_hz + slope_hz_per_k * k_m, base, upper_m)
+        upper_m = max(base, min(cap_frac_of_sep * sep_m, bw_abs_max))
+
+    ``sep_m`` is the track's own line separation (:func:`line_separations`).
+    Both guards are against OVER-subtraction, which the same measurement showed
+    is the failure mode on the other side: a band wider than the distance to the
+    neighbouring line swallows the broadband floor around the line and notches
+    the residual (−0.91 dB of contrast at k25-40 at ``cap_frac_of_sep`` 1.5).
+    ``base`` is the flat bandwidth the solver would have used, so a schedule
+    never NARROWS a track below v1.
+    """
+
+    #: Bandwidth (Hz) of the fundamental — the intercept of the linewidth law.
+    bw0_hz: float = 1.0
+    #: Hz of bandwidth added per harmonic index — the slope of the same law.
+    slope_hz_per_k: float = 0.0
+    #: Fraction of a track's line separation the band may not exceed.
+    cap_frac_of_sep: float = 1.0
+    #: Absolute ceiling (Hz), against a track that is far from every other line.
+    bw_abs_max: float = 10.0
+
+    def __post_init__(self) -> None:
+        if self.bw0_hz <= 0 or self.bw_abs_max <= 0:
+            raise ValueError(f"bw0_hz and bw_abs_max must be positive, got {self}")
+        if self.slope_hz_per_k < 0 or self.cap_frac_of_sep <= 0:
+            raise ValueError(f"slope must be >= 0 and cap_frac_of_sep > 0, got {self}")
+
+    @classmethod
+    def parse(cls, text: str) -> BandwidthSchedule | None:
+        """``"bw0,slope,capfrac,absmax"`` -> a schedule; empty text -> ``None``.
+
+        The CLI spelling, so a driver carries the schedule as one JSON-safe
+        string through its unit parameters and its provenance.
+        """
+        parts = [p for p in str(text).replace(" ", "").split(",") if p]
+        if not parts:
+            return None
+        if len(parts) != 4:
+            raise ValueError(
+                f"bandwidth schedule needs 4 comma-separated numbers "
+                f"(bw0,slope,capfrac,absmax), got {text!r}"
+            )
+        return cls(*(float(v) for v in parts))
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "bw0_hz": float(self.bw0_hz),
+            "slope_hz_per_k": float(self.slope_hz_per_k),
+            "cap_frac_of_sep": float(self.cap_frac_of_sep),
+            "bw_abs_max": float(self.bw_abs_max),
+        }
+
+    def text(self) -> str:
+        return (
+            f"{self.bw0_hz:g},{self.slope_hz_per_k:g},{self.cap_frac_of_sep:g},{self.bw_abs_max:g}"
+        )
+
+
+def line_separations(r_audio: Any, rotor: Any, k: Any) -> np.ndarray:
+    """``(M,)`` distance in Hz from each track's line to the NEAREST other line.
+
+    Read at the window's MEAN rates, which is the same reading the schedule's
+    cap is meant to express: how much room a track has before its passband
+    starts to explain a neighbour's line. A single track has no neighbour and
+    gets ``inf``.
+    """
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    rot = np.asarray(rotor, dtype=int)
+    ks = np.asarray(k, dtype=np.float64)
+    f = ks * r.mean(axis=-1)[rot]
+    if f.size < 2:
+        return np.full(f.shape, np.inf)
+    d = np.abs(f[:, None] - f[None, :])
+    np.fill_diagonal(d, np.inf)
+    return d.min(axis=-1)
+
+
+def schedule_bandwidths(
+    k: Any, sep_hz: Any, sched: BandwidthSchedule, base_bw_hz: Any
+) -> np.ndarray:
+    """``(M,)`` target −3 dB bandwidth per track — the law in the class docstring.
+
+    ``base_bw_hz`` is a scalar or one value per track (:func:`base_bandwidths`);
+    it is the FLOOR, so a schedule can only widen a band, never narrow it.
+    """
+    ks = np.asarray(k, dtype=np.float64)
+    sep = np.asarray(sep_hz, dtype=np.float64)
+    base = np.broadcast_to(np.asarray(base_bw_hz, dtype=np.float64), ks.shape)
+    upper = np.maximum(base, np.minimum(sched.cap_frac_of_sep * sep, sched.bw_abs_max))
+    want = sched.bw0_hz + sched.slope_hz_per_k * ks
+    return np.clip(want, base, upper)
+
+
+def schedule_rho2_gain(
+    k: Any,
+    sep_hz: Any,
+    sched: BandwidthSchedule,
+    base_bw_hz: Any,
+    fs_env: float,
+    p: int = 2,
+) -> np.ndarray:
+    """``(M,)`` gain on ``rho^2`` that turns the base band into the scheduled one.
+
+    The solver takes a per-track multiplicative gain on the squared selectivity,
+    not a bandwidth, so the schedule is expressed through the Tuma relation:
+    ``gain_m = (rho(bw_m) / rho(base_m)) ^ 2``. The gain is applied AFTER the
+    solver's own per-group clamp and ``base_m`` is that clamp's own answer
+    (:func:`base_bandwidths`), so the ACHIEVED band is the scheduled one on any
+    comb, dense or sparse. It is still not guessed:
+    :attr:`tracking.Envelopes.bw_track` records what the solve really used.
+    """
+    bw = schedule_bandwidths(k, sep_hz, sched, base_bw_hz)
+    base = np.broadcast_to(np.asarray(base_bw_hz, dtype=np.float64), bw.shape)
+    return np.array(
+        [
+            (_tuma_rho(float(b), float(fs_env), p) / _tuma_rho(float(b0), float(fs_env), p)) ** 2
+            for b, b0 in zip(bw, base, strict=True)
+        ]
+    )
+
+
 def solve_window(
     audio: Any,
     r_audio: Any,
@@ -230,6 +376,7 @@ def solve_window(
     k_hi: int,
     mics: int | None = None,
     rho_scale: float = 1.0,
+    bw_schedule: BandwidthSchedule | None = None,
 ) -> Envelopes:
     """One coupled VK solve of one window — the whole numerical content.
 
@@ -238,16 +385,97 @@ def solve_window(
     not from the window), so every window of a recording holds the identical
     ``(rotor, harmonic)`` track set and the windows can be stitched track by
     track. ``mics`` defaults to ``cfg.max_channels``.
+
+    ``bw_schedule`` is the v2 linewidth-matched bandwidth
+    (:class:`BandwidthSchedule`). ``None`` — the default — takes the v1 path
+    call for call, so a v1 unit is reproduced bit for bit.
     """
     n_mic = int(cfg.max_channels if mics is None else mics)
     y = np.ascontiguousarray(np.asarray(audio, dtype=np.float64)[:n_mic])
-    return solve_envelopes(
-        y,
-        np.asarray(r_audio, dtype=np.float64),
-        cfg,
-        k_hi=int(k_hi),
-        rho_scale=float(rho_scale),
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    if bw_schedule is None:
+        return solve_envelopes(y, r, cfg, k_hi=int(k_hi), rho_scale=float(rho_scale))
+    vk = cfg.vk_config(int(k_hi))
+    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
+    _, fs_env = env_stride(vk)
+    gain = (
+        schedule_rho2_gain(
+            k,
+            line_separations(r, rotor, k),
+            bw_schedule,
+            base_bandwidths(r, int(k_hi), cfg),
+            fs_env,
+            vk.p,
+        )
+        * float(rho_scale) ** 2
     )
+    return vk_envelopes(y, r, vk, rho2_gain=gain)
+
+
+def _geometry(r_audio: Any, k_hi: int, vk: Any) -> dict[str, Any]:
+    """The solver's own line geometry of one window, without solving it.
+
+    ``(rotor, k)`` track table, the ``(M, N_env)`` line frequencies, the
+    validity mask and the coupling partition — :func:`tracking.vk_envelopes`
+    computes exactly these before it builds a system, and both
+    :func:`group_plan` (memory) and :func:`base_bandwidths` (the v1 band) are
+    readings of them. ONE copy of the rule, so the two readings cannot drift
+    apart from each other.
+    """
+    stride, fs_env = env_stride(vk)
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
+    r_dec = r[:, ::stride]
+    f = k[:, None].astype(np.float64) * r_dec[rotor]
+    valid = (f >= vk.f_min) & (f <= min(vk.f_max, 0.45 * vk.fs)) & (r_dec[rotor] >= vk.min_rps)
+    couple = fs_env / 2.0 if vk.couple_hz is None else float(vk.couple_hz)
+    return {
+        "rotor": rotor,
+        "k": k,
+        "f": f,
+        "valid": valid,
+        "groups": _coupling_groups(f, valid, couple),
+        "stride": stride,
+        "fs_env": fs_env,
+    }
+
+
+def base_bandwidths(r_audio: Any, k_hi: int, cfg: FVKConfig) -> np.ndarray:
+    """``(M,)`` bandwidth the solver uses per track with NO schedule — the v1 band.
+
+    The reference the schedule's gain is taken against, and the one piece of
+    :func:`tracking.vk_envelopes` this module has to know: a group's band is
+    clamped to ``max(VKConfig.bw_hz, sep_bw_factor * minimum pair separation)``,
+    so a DENSE comb floors every track at ``bw_hz`` (1 Hz) however large the
+    ``bw_rps`` request was, while a sparse one keeps the ``k``-scaled request.
+    Both cases matter, which is why this is computed and not assumed.
+
+    It is a second implementation of the solver's rule, so it is pinned against
+    the solver itself (``tests/tracking/test_decompose.py``) rather than trusted.
+    """
+    from tracking.vk_tracking import _tuma_bw_min
+
+    vk = cfg.vk_config(int(k_hi))
+    geo = _geometry(r_audio, int(k_hi), vk)
+    f, valid, k = geo["f"], geo["valid"], geo["k"]
+    fs_env = float(geo["fs_env"])
+    bw = np.full(len(k), float(vk.bw_hz))
+    b_lo, b_hi = _tuma_bw_min(fs_env, vk.p), 0.9 * fs_env
+    for group in geo["groups"]:
+        sep_cap = np.inf
+        for a in range(len(group)):
+            for b in range(a + 1, len(group)):
+                m, n = group[a], group[b]
+                both = valid[m] & valid[n]
+                if both.any():
+                    sep = float(np.min(np.abs(f[m, both] - f[n, both])))
+                    sep_cap = min(sep_cap, max(vk.bw_hz, vk.sep_bw_factor * sep))
+        if vk.bw_rps is not None:
+            b_m = np.clip(k[group].astype(np.float64) * vk.bw_rps, b_lo, b_hi)
+            bw[group] = np.minimum(b_m, max(sep_cap, b_lo))
+        else:
+            bw[group] = min(float(vk.bw_hz), sep_cap)
+    return bw
 
 
 def group_plan(r_audio: Any, k_hi: int, cfg: FVKConfig) -> dict[str, Any]:
@@ -270,18 +498,12 @@ def group_plan(r_audio: Any, k_hi: int, cfg: FVKConfig) -> dict[str, Any]:
     are right-hand sides and cost nothing here. The full-recording DREGON
     configuration (``k_hi`` 62, 16 s windows) therefore needs 6.3 GB per WORKER.
     """
-    vk = cfg.vk_config(int(k_hi))
-    stride, fs_env = env_stride(vk)
-    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
-    rot, ks = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
-    f = ks[:, None].astype(np.float64) * r[:, ::stride][rot]
-    valid = f <= min(vk.f_max, 0.45 * vk.fs)
-    couple = fs_env / 2.0 if vk.couple_hz is None else float(vk.couple_hz)
-    groups = _coupling_groups(f, valid, couple)
+    geo = _geometry(r_audio, int(k_hi), cfg.vk_config(int(k_hi)))
+    groups = geo["groups"]
     g = max((len(x) for x in groups), default=0)
-    n_env = int(f.shape[-1])
+    n_env = int(geo["f"].shape[-1])
     return {
-        "n_tracks": int(len(ks)),
+        "n_tracks": int(len(geo["k"])),
         "n_groups": len(groups),
         "max_group": int(g),
         "n_env": n_env,
@@ -628,6 +850,96 @@ def phase_model_report(
         "amp_mean_by_band": band_summary(mean, k, bands),
         "amp_cv_by_band": band_summary(cv, k, bands),
         "per_rotor": per_rotor,
+    }
+
+
+#: What :func:`residual_tones` measures, carried into the report beside it.
+RESIDUAL_TONES_NOTE = (
+    "Non-comb TONAL components of the residual: quasi-stationary lines that are "
+    "NOT rotor harmonics (their order against every rotor is non-integer and it "
+    "drifts independently of the rotor speed between segments), so a smooth-PSD "
+    "noise model cannot represent them. Measurement only — nothing removes them."
+)
+
+
+def residual_tones(
+    residual: Any,
+    sr: float,
+    r_audio: Any,
+    *,
+    segment_s: float = 8.0,
+    n_peaks: int = 10,
+    f_max: float = 2000.0,
+    nperseg: int = 8192,
+    prominence_db: float = 6.0,
+    t_start_s: float = 0.0,
+) -> dict[str, Any]:
+    """Top ``n_peaks`` tonal peaks of the residual, per ``segment_s`` segment.
+
+    One power spectral density per segment (Welch at ``nperseg``, averaged over
+    the microphones), peaks in decibels with a prominence of at least
+    ``prominence_db``, the strongest ``n_peaks`` below ``f_max`` kept. Each peak
+    carries its distance to the nearest ROTOR ORDER — ``order`` is the peak
+    frequency over the segment's mean rate of the rotor that fits it best, and
+    ``order_dist`` is how far that is from a whole number. A rotor harmonic the
+    decomposition failed to take out reads ``order_dist`` near 0 at a whole
+    ``order``; a foreign tone does not, and its ``order`` moves between segments
+    while the rotor speed does not.
+
+    ``r_audio`` is the ``(R, T)`` audio-rate rate array over the same span.
+    """
+    from scipy.signal import find_peaks, welch
+
+    y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    n_t = int(y.shape[-1])
+    step = max(1, int(round(float(segment_s) * float(sr))))
+    segments: list[dict[str, Any]] = []
+    for s0 in range(0, n_t, step):
+        s1 = min(n_t, s0 + step)
+        if s1 - s0 < nperseg:  # a tail too short to resolve is not reported
+            continue
+        f, p = welch(y[:, s0:s1], fs=float(sr), nperseg=int(nperseg), axis=-1)
+        psd = np.asarray(p, dtype=np.float64).mean(axis=0)
+        db = 10.0 * np.log10(np.maximum(psd, 1e-300))
+        keep = np.asarray(f, dtype=np.float64) <= float(f_max)
+        idx, props = find_peaks(db[keep], prominence=float(prominence_db))
+        prom = np.asarray(props["prominences"], dtype=np.float64)
+        order = np.argsort(prom)[::-1][: int(n_peaks)]
+        rates = r[:, s0 : min(s1, r.shape[-1])].mean(axis=-1)
+        peaks: list[dict[str, Any]] = []
+        for j in order:
+            f_pk = float(np.asarray(f)[keep][idx[j]])
+            ords = f_pk / np.maximum(rates, 1e-12)
+            dist = np.abs(ords - np.round(ords))
+            best = int(np.argmin(dist))
+            peaks.append(
+                {
+                    "freq_hz": round(f_pk, 3),
+                    "prominence_db": round(float(prom[j]), 2),
+                    "rotor": best,
+                    "order": round(float(ords[best]), 3),
+                    "order_dist": round(float(dist[best]), 3),
+                }
+            )
+        segments.append(
+            {
+                "t_start_s": round(s0 / float(sr) + float(t_start_s), 3),
+                "t_end_s": round(s1 / float(sr) + float(t_start_s), 3),
+                "mean_rev_s": [round(float(v), 3) for v in rates],
+                "peaks": peaks,
+            }
+        )
+    return {
+        "note": RESIDUAL_TONES_NOTE,
+        "params": {
+            "segment_s": float(segment_s),
+            "n_peaks": int(n_peaks),
+            "f_max_hz": float(f_max),
+            "nperseg": int(nperseg),
+            "prominence_db": float(prominence_db),
+        },
+        "segments": segments,
     }
 
 

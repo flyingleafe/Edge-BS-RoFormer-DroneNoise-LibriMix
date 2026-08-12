@@ -65,3 +65,154 @@ Gotchas: omnirun output collection silently drops ~25 MB files — upload big
 artifacts to R2 from inside the job; the coupled group chains ~all tracks
 into one banded system (memory ≈ 1e-4·k²·window_s GB/worker — `group_plan`
 forecasts it, `--mem-budget-gb` guards it; this is what OOM-killed a laptop).
+
+## v2: linewidth-matched bandwidth
+
+**Date**: 2026-08-12 · **Status**: built + tuned + verified on one window;
+the full re-decomposition is the ready command at the end. Instrument:
+`--bw-schedule`, `--sr`, `--f-max` on `scripts/vk_decompose.py`;
+`tracking.decompose.BandwidthSchedule`.
+
+### The diagnosis: v1 solved every track with 1 Hz
+
+`VKConfig.bw_rps` asks for a k-scaled band, but a coupled group clamps every
+track to `max(bw_hz, 6 · minimum pair separation)`, and the DREGON comb is
+dense enough to floor that at `bw_hz` = 1 Hz. So v1 filtered harmonic 40 with
+the same 1 Hz passband as harmonic 1, while the shaft jitter widens harmonic
+`k` by `k` times the rate error. The comb therefore LEAKED into the residual.
+
+Measured with the order-contrast probe (2048/512 Hann spectrogram, power
+averaged over mics, each frame interpolated onto the order grid `f / f0_r(t)`
+per rotor, contrast = 10·log10(mean on-order ±0.06 / mean half-order ±0.06)),
+on three 4 s windows of `free-flight_nosource_room1` (t0 = 12/30/50 s, 2 mics,
+k_hi 40, 16 kHz). Residual contrast in decibels — **zero is the target in
+every band**; positive is comb leak, negative is over-subtraction:
+
+| arm | t12 k1-9/k10-24/k25-40 | t30 | t50 | Σ\|·\| |
+|---|---|---|---|---|
+| original audio | 11.07 / 1.08 / 0.24 | 7.97 / 2.34 / 0.24 | 7.34 / 1.36 / 0.18 | 31.81 |
+| v1 flat 1 Hz | 2.44 / 0.68 / 0.00 | 2.19 / 1.68 / −0.06 | 0.96 / 0.90 / −0.10 | 9.00 |
+| **v2 `3,0,1.5,3`** | 1.30 / −0.02 / −0.51 | 2.11 / 0.72 / −0.60 | −0.02 / 0.06 / −0.60 | **5.93** |
+
+### The tuned schedule
+
+    --bw-schedule 3,0,1.5,3
+    bw_k = clip(3.0 + 0.0·k, base, min(1.5 · line separation, 3.0)) Hz
+
+Achieved bands (`Envelopes.bw_track`, recorded in `report.json` and
+`envelopes.npz`): 1.9 Hz at k1-9, 2.9 Hz at k10-24 and k25-40.
+
+Three findings the grid produced, none of them the expected one:
+
+1. **The slope tunes to ZERO.** The declared grid (72 arms of `bw0 ∈ {1,2,3}
+   × slope ∈ {0.05…0.2} × capfrac ∈ {0.6,0.9,1.2} × absmax ∈ {6,10}`) was
+   screened first, then three refinement stages — 103 distinct arms, 149
+   solves in all. The k-shaping the linewidth law wants is already supplied
+   by the SEPARATION CAP: at high k the four rotors' lines interleave, so
+   `1.5 · sep` is itself a function of k (1.9 → 2.9 Hz here). An explicit
+   slope on top of that over-widens. `slope_hz_per_k` is kept in the API
+   because a SPARSE comb (one rotor, or Michael's two) never triggers the cap
+   and would need the law itself.
+2. **Window 30 alone is a trap.** Screening on one window picked
+   `3,0.2,1.5,6` (k10-24 leak 1.68 → −0.01). On all three windows that arm
+   scores 9.00 — a tie with flat — because windows 12 and 50 leak far less
+   under flat (0.68, 0.90) and the wide band over-subtracts them (−0.82,
+   −0.92). Three windows, then rank.
+3. **Over-subtraction is the binding constraint, and it is symmetric.**
+   Both bands respond to the achieved bandwidth with the same slope
+   (≈ −0.28 dB/Hz), and they are offset by ≈ 1.7 dB, so widening trades leak
+   at k10-24 for notching at k25-40 almost one for one. Arms that score
+   marginally better on Σ\|·\| (`3,0,4,3` → 5.34) do it by driving k1-9 to
+   −1.33: they eat the low band instead of the comb. `3,0,1.5,3` is the best
+   arm that leaves no band's sign flipped.
+
+### The low-k stripes are NOT comb leak
+
+k1-9 residual contrast barely moves with bandwidth (2.19 → 2.11 across 72
+arms on window 30) and stays large under every schedule, so it is not a band
+the schedule can close. `residual_tones` says why. Run on the tuned residual
+of the three windows (one 4 s segment each), the top ten peaks split into two
+populations by `order_dist`, and only the second one is foreign:
+
+| f (Hz) | prom | order at t12 | at t30 | at t50 | reading |
+|---|---|---|---|---|---|
+| 1554-1565 | 15-16 dB | 21.083 | 20.995 | — | near-integer: comb leak |
+| 1178-1213 | 10-13 dB | 14.032 | 14.050 | 13.967 | near-integer: comb leak |
+| **488.3 / 488.3 / 490.2** | 9-10 dB | **5.751** | **5.703** | **5.814** | **foreign** |
+| 43.0 | 16 dB | 0.579 | — | — | foreign |
+| 634.8 | 9 dB | — | — | 8.350 | foreign |
+
+The 489 Hz line is the clean case: it holds its FREQUENCY to 0.4 % over 38 s
+while its ORDER moves 1.9 % with the rotor speed, and it sits a quarter of an
+order away from any harmonic. That is a structural or aerodynamic resonance,
+not a comb line, and a smooth-PSD noise model cannot represent it. Hence the
+measurement: `report.json → residual_tones` (per ~8 s segment, top ten peaks
+below 2 kHz, Welch 8192, prominence ≥ 6 dB, each with its frequency,
+prominence and distance to the nearest rotor order). **Measurement only —
+nothing removes them**, and `order_dist` is the field that separates leftover
+comb from foreign tone.
+
+### 32 kHz / k 80: the sample rate was the real harmonic cap
+
+`f_max` was never the binding ceiling. The geometry also holds every line
+under `0.375 · sr`, so at 16 kHz the cap is 6 kHz whatever `--f-max` says:
+`free-flight_nosource_room1` peaks at 91.56 rev/s and caps at **k_hi 62** at
+16 kHz for both `--f-max 6000` and `--f-max 8000`. At `--sr 32000 --f-max
+8000` it reaches the requested **k_hi 80** (320 tracks).
+
+One verification solve, 2 s window at t0 = 30 s, 2 mics, k_hi 80, 32 kHz
+(a 4 s window at k 80 does not fit the 6 GB local cap):
+
+| arm | k1-9 | k10-24 | k25-49 | k50-80 | Σ\|·\| | residual frac |
+|---|---|---|---|---|---|---|
+| original | 7.55 | 1.94 | 0.12 | −0.25 | — | 1.000 |
+| flat 1 Hz | 1.16 | 1.40 | −0.07 | −0.37 | 3.01 | 0.448 |
+| v2 `3,0,1.5,3` | 0.73 | 0.63 | −0.44 | −0.53 | **2.33** | 0.410 |
+
+Achieved bands 2.32 / 2.97 / 2.94 / 2.75 Hz. The schedule tuned at k ≤ 40 and
+16 kHz transfers to k 80 at 32 kHz without retuning.
+
+**Memory**: at k_hi 80 the four rotors put all 320 tracks in ONE coupling
+group, so a 16 s window needs 10.50 GB per worker and a 12 s window 7.88 GB.
+v2 therefore runs **12 s windows at a 9 s hop** (the v1 0.75 overlap), not
+16/12.
+
+### The ready re-decomposition
+
+Note that only ONE recording currently survives the loader:
+`src/data_processing/refined_labels/` holds a refined-label sidecar for
+`free-flight_nosource_room1` alone, and the decomposition is conditioned on
+those labels. The command below takes every surviving recording, so it widens
+by itself as sidecars are added.
+
+The upload arguments travel through `sys.argv`, so the snippet carries no
+quote or `$` that the two shell levels would have to escape (a heredoc does
+not survive `bash -c '...'` — its terminator never matches):
+
+    omnirun submit --backend uni-cpu --gpus 0 --cpus 4 --mem 32 --time 6h \
+      --name vk-decompose-v2 --outputs "results/vk_decompose_v2/**" \
+      --env PYTHONPATH=src -- \
+      bash -c "set -e
+    python scripts/vk_decompose.py --mode all --jobs 2 \
+      --out results/vk_decompose_v2 \
+      --sr 32000 --f-max 8000 --k-max 80 \
+      --window-s 12 --hop-s 9 --mem-budget-gb 9 \
+      --bw-schedule 3,0,1.5,3
+    python -c 'import sys, pathlib
+    from training.artifacts import ArtifactStore
+    store = ArtifactStore(experiment_name=sys.argv[1])
+    root = pathlib.Path(sys.argv[2])
+    for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name != sys.argv[3]):
+        for f in sorted(d.iterdir()):
+            print(store.upload_file(f, d.name + sys.argv[4] + f.name), flush=True)' \
+      vk-decompose-v2 results/vk_decompose_v2 raw /
+    "
+
+`ArtifactStore(experiment_name="vk-decompose-v2").upload_file(f, "<rid>/<name>")`
+writes `r2://ml-data/artifacts/vk-decompose-v2/<recording_id>/<name>` — its key
+root is `<prefix>/<experiment_name>`. The in-job upload is not optional:
+omnirun output collection silently drops files above ~25 MB, and
+`envelopes.npz` at 8 mics / 320 tracks / 64 s is about 260 MB.
+
+The daemon was down when this was written, so the command is prepared and NOT
+submitted.
