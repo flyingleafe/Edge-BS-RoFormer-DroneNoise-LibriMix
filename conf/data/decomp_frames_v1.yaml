@@ -1,0 +1,36 @@
+# The published Vold-Kalman decompositions (decomp-frames-v1: DREGON
+# free-flight_nosource_room1 on the REFINED labels + Michael's FLY124/FLY125),
+# cut into 1 s chunks. Every chunk carries the amplitude envelope bank at
+# 100 Hz, its validity mask, the broadband residual and the exact audio-rate
+# carrier the solve used — see data_processing.frame_datasets.DecompFrameDataset.
+#
+# The split is a TIME split inside each recording (first 10 % = validation,
+# val_at_start like the noise-gen stream), so a validation chunk is never a
+# training chunk of the same recording. min_motor_rps 30 rejects the take-off
+# ramp, where there is no comb to demodulate.
+train:
+  _target_: data_processing.frame_datasets.DecompFrameDataset.build_train
+  params:
+    dataset: decomp-frames-v1
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    min_motor_rps: 30.0
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DecompFrameDataset.build_valid
+  params:
+    dataset: decomp-frames-v1
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    min_motor_rps: 30.0
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

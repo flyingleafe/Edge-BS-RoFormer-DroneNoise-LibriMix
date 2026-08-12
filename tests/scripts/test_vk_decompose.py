@@ -18,6 +18,12 @@ import numpy as np
 import pytest
 import vk_decompose as V
 
+from data_processing.derivations import (
+    _decomp_frame_grid,
+    _decomp_interp_rps,
+    _decomp_to_audio_grid,
+)
+
 SR = 8000
 DUR_S = 4.0
 #: Two rates far enough apart that no low harmonic of one lands on the other.
@@ -245,3 +251,32 @@ def test_residual_spectrum_is_the_injected_floor(common_drift: dict[str, object]
     # small line at each of the 16 modelled harmonics.
     want = 2.0 * FLOOR**2 / SR
     assert float(np.median(psd[0])) == pytest.approx(want, rel=0.3)
+
+
+# ---------------------------------------------------------------------------
+# parity with the decomp-frames-v1 derivation
+
+
+def test_carrier_helpers_match_vk_decompose():
+    """Byte-for-byte agreement with the script that solved the envelopes.
+
+    The amplitudes are only meaningful against the carrier they were demodulated
+    with, and ``scripts/`` cannot be imported from ``src/`` — so the derivation
+    carries its own copy of these three functions and this test is the pin.
+    """
+    rng = np.random.default_rng(0)
+    n_t = 5 * SR
+    stamps = np.sort(rng.uniform(0.0, 5.0, size=200))
+    stamps[3] = stamps[2]  # a duplicate stamp: both copies must drop it the same way
+    vals = rng.uniform(40.0, 90.0, size=(4, stamps.size))
+
+    ft_a, ft_b = _decomp_frame_grid(n_t, SR), V.frame_grid(n_t, SR)
+    np.testing.assert_array_equal(ft_a, ft_b)
+
+    r_a = _decomp_interp_rps(vals, stamps, ft_a)
+    r_b = V.interp_rps(vals, stamps, ft_b)
+    np.testing.assert_array_equal(r_a, r_b)
+
+    np.testing.assert_array_equal(
+        _decomp_to_audio_grid(r_a, ft_a, n_t, SR), V.to_audio_grid(r_b, ft_b, n_t, SR)
+    )

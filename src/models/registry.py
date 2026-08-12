@@ -339,6 +339,7 @@ class _CodebookConditionedNoiseGen(nn.Module):
         n_rotors: int = 4,
         amp_calibration: bool = False,
         n_mics: int = 8,
+        noise_floor_bands: int = 0,
     ) -> None:
         super().__init__()
         self.generator = generator
@@ -386,9 +387,12 @@ class _CodebookConditionedNoiseGen(nn.Module):
         # a post-hoc scale. Off by default => existing configs are unchanged.
         self.amp_calibration = bool(amp_calibration)
         self.n_mics = int(n_mics)
+        self.noise_floor_bands = int(noise_floor_bands)
         self.log_gain: nn.ParameterDict | None = None
         self.log_mic_gain: nn.ParameterDict | None = None
         self.log_gain_noise: nn.ParameterDict | None = None
+        self.log_mic_gain_noise: nn.ParameterDict | None = None
+        self.log_floor_psd: nn.ParameterDict | None = None
         if self.amp_calibration:
             cb = cast("DroneCodebook", codebook)
             keys = [cb._key(name) for name in cb.names()]
@@ -397,17 +401,46 @@ class _CodebookConditionedNoiseGen(nn.Module):
             self.log_mic_gain = nn.ParameterDict(
                 {k: nn.Parameter(torch.zeros(self.n_mics)) for k in keys}
             )
+            # The broadband branch gets its OWN per-microphone gain. Measured
+            # reason (docs/experiments/residual-attribution.md): the residual is
+            # 70-90 % per-microphone INCOHERENT and its per-mic energy spread on
+            # DREGON is 8.54 dB, while four equal 1/r rotor sources can produce
+            # at most 1.59 dB — per-rotor attribution of the residual is refuted.
+            # Sharing one per-mic gain with the coherent branch would force the
+            # rotor-propagated broadband term to absorb a pattern it structurally
+            # cannot make, and would corrupt the coherent gains (the readout that
+            # is supposed to be an array calibration) doing it.
+            self.log_mic_gain_noise = nn.ParameterDict(
+                {k: nn.Parameter(torch.zeros(self.n_mics)) for k in keys}
+            )
+            if self.noise_floor_bands > 0:
+                # An explicit per-microphone, per-band STATIC floor, added in the
+                # power domain. This is the part of the residual that is not a
+                # propagated rotor source at all (self-noise / flow noise), so it
+                # is modelled as what it is instead of being pushed through the
+                # 1/r law. Init -12 nats (6e-6) sits about a quarter of a typical
+                # residual band power on these recordings, so it is neither inert
+                # nor dominant at step 0; fitted per-mic floors D_m(f) exist in
+                # results/residual_attribution/real_*.json if a better warm start
+                # is ever wanted.
+                self.log_floor_psd = nn.ParameterDict(
+                    {
+                        k: nn.Parameter(torch.full((self.n_mics, self.noise_floor_bands), -12.0))
+                        for k in keys
+                    }
+                )
 
     def _resolve_calibration(
         self, drone_names: list[str], n_mics: int
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
         """``(amplitude gain [B, M], noise POWER gain [B, M])``, or ``None``.
 
-        The microphone gain is shared by the two branches (it is a property of
-        the microphone); each branch adds its own scalar unit constant.
+        Each branch carries its own per-microphone gain and its own scalar unit
+        constant — see the constructor for why the two must not share one.
         """
         if self.log_gain is None or self.log_mic_gain is None or self.log_gain_noise is None:
             return None
+        assert self.log_mic_gain_noise is not None
         cb = cast("DroneCodebook", self.codebook)
         keys = [cb._key(n) for n in drone_names]
         if n_mics > self.n_mics:
@@ -415,9 +448,26 @@ class _CodebookConditionedNoiseGen(nn.Module):
                 f"amp calibration was built for {self.n_mics} microphones, batch has {n_mics}"
             )
         mic = torch.stack([self.log_mic_gain[k][:n_mics] for k in keys], dim=0)  # [B, M]
+        mic_n = torch.stack([self.log_mic_gain_noise[k][:n_mics] for k in keys], dim=0)  # [B, M]
         glob = torch.stack([self.log_gain[k] for k in keys], dim=0).unsqueeze(-1)  # [B, 1]
         noise = torch.stack([self.log_gain_noise[k] for k in keys], dim=0).unsqueeze(-1)  # [B, 1]
-        return torch.exp(mic + glob), torch.exp(2.0 * mic + noise)
+        return torch.exp(mic + glob), torch.exp(2.0 * mic_n + noise)
+
+    def _add_noise_floor(self, psd: torch.Tensor, drone_names: list[str]) -> torch.Tensor:
+        """Add the static per-microphone incoherent floor to ``[B, M, t, F]``."""
+        if self.log_floor_psd is None:
+            return psd
+        cb = cast("DroneCodebook", self.codebook)
+        n_mics, n_bands = int(psd.shape[1]), int(psd.shape[-1])
+        if n_bands != self.noise_floor_bands:
+            raise ValueError(
+                f"noise_floor_bands={self.noise_floor_bands} does not match the branch's "
+                f"{n_bands} bands; set it to the emitter's `noise_amps` band count"
+            )
+        floor = torch.stack(
+            [self.log_floor_psd[cb._key(n)][:n_mics] for n in drone_names], dim=0
+        )  # [B, M, F]
+        return psd + torch.exp(floor).unsqueeze(-2)
 
     def _resolve_jitter_sigma(self, drone_names: list[str]) -> torch.Tensor | None:
         """Per-sample learnable linewidth ``[B]`` (softplus of the per-drone raw)."""
@@ -509,6 +559,7 @@ class _CodebookConditionedNoiseGen(nn.Module):
             gain, power = cal
             out["coherent"] = out["coherent"] * gain.unsqueeze(-1)
             out["noise_psd"] = out["noise_psd"] * power[:, :, None, None]
+        out["noise_psd"] = self._add_noise_floor(out["noise_psd"], list(drone_names))
         return out
 
     def amp_stats(
@@ -527,12 +578,18 @@ class _CodebookConditionedNoiseGen(nn.Module):
         if fn is None:
             raise TypeError(f"wrapped generator {type(self.generator).__name__} has no `amp_stats`")
         z = self._resolve_conditioning(list(drone_names), kwargs)
+        # The OU linewidth never reaches this path: `amp_stats` reads the
+        # amplitude network's output, which is computed BEFORE the jitter is
+        # applied to the carrier. Dropping the resolved sigma here keeps that
+        # explicit instead of letting it surface as an unexpected-keyword error.
+        kwargs.pop("rps_jitter_sigma", None)
         out = dict(fn(rps, rel_pos, z=z, **kwargs))
         cal = self._resolve_calibration(list(drone_names), self._n_mics(rel_pos))
         if cal is not None:
             gain, power = cal
             out["amp"] = out["amp"] * gain[:, :, None, None, None]
             out["noise_psd"] = out["noise_psd"] * power[:, :, None, None]
+        out["noise_psd"] = self._add_noise_floor(out["noise_psd"], list(drone_names))
         return out
 
 
@@ -556,6 +613,7 @@ def build_noise_gen_model(
     wind_uniform_exposure: bool = False,
     amp_calibration: bool = False,
     n_mics: int = 8,
+    noise_floor_bands: int = 0,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -601,8 +659,12 @@ def build_noise_gen_model(
     objective needs (per-drone global, per-drone per-microphone, and a separate
     power-domain constant for the broadband branch) — see
     :class:`_CodebookConditionedNoiseGen`. ``n_mics`` sizes the per-microphone
-    vector (8 = the DREGON array, the widest in use). Requires ``cond_dim > 0``
-    and adds state-dict keys, so it is new-training-only.
+    vectors (8 = the DREGON array, the widest in use). ``noise_floor_bands`` (0 =
+    off) additionally gives the broadband branch a static per-microphone,
+    per-band floor with that many bands — set it to the emitter's ``noise_amps``
+    band count (60 by default); see the class docstring for the measurement that
+    motivates it. All of these require ``cond_dim > 0`` and add state-dict keys,
+    so they are new-training-only.
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
@@ -645,6 +707,7 @@ def build_noise_gen_model(
         n_rotors=n_rotors,
         amp_calibration=amp_calibration,
         n_mics=n_mics,
+        noise_floor_bands=noise_floor_bands,
     )
 
 

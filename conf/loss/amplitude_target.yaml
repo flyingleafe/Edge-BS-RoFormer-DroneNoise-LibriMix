@@ -1,0 +1,27 @@
+# The amplitude-target objective (losses.AmplitudeTargetLoss): log-L1 on the
+# per-(mic, rotor, harmonic) amplitude envelopes of the Vold-Kalman
+# decomposition, plus log-L1 on the per-mic broadband band power of the
+# decomposition residual. See src/losses/amplitude_target.py for why an
+# amplitude objective exists at all (the audio-domain MSSTFT loss cannot defend
+# lines that decohere inside its own windows).
+#
+# eps 1.6e-5 = the 1st percentile of the VALID DREGON amplitudes at the
+# campaign's bw_rps=1 — the decomposition's own floor, below which a cell
+# carries prior, not signal.
+#
+# psd_weight 0.5 is measured, not assumed. On a first batch the raw terms are
+# 7.14 (amp) and 7.93 (psd) log-units, both dominated by the absolute unit
+# constant the learnable gains absorb in the first steps; at that operating point
+# they are 1.08 and 2.54, so 0.5 brings the broadband term to 1.27 — the two
+# enter within 18 % of each other and the amplitude term is not outvoted.
+terms:
+  - name: amplitude
+    _target_: losses.AmplitudeTargetLoss
+    weight: 1.0
+    params:
+      sr: [16000, 1]
+      eps: 1.6e-5
+      psd_eps: 1.0e-12
+      psd_weight: 0.5
+      n_fft: 2048
+      hop_length: 512

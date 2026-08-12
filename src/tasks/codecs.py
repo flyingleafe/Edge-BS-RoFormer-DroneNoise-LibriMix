@@ -299,6 +299,7 @@ class NoiseGenerationCodec:
         return_dict: bool = False,
         distributional: bool = False,
         spatial: bool = False,
+        amplitude: bool = False,
         default_drone: str = "dregon",
     ) -> None:
         self.sr = sr
@@ -306,6 +307,7 @@ class NoiseGenerationCodec:
         self.return_dict = return_dict
         self.distributional = distributional
         self.spatial = spatial
+        self.amplitude = amplitude
         self.default_drone = default_drone
 
     def to_inputs(self, batch: td.Frame) -> dict[str, Any]:
@@ -323,6 +325,18 @@ class NoiseGenerationCodec:
         return inputs
 
     def to_frame(self, outputs: Any, batch: td.Frame) -> td.Frame:
+        if isinstance(outputs, dict) and "amp" in outputs:
+            # Amplitude-target mode: the envelope bank + the summed broadband
+            # power, no waveform. ``amp`` is renamed to ``amp_pred`` because the
+            # dataset's TARGET entry is called ``amp`` and the pre-run validator
+            # merges the two Frames' specs (training.validate) — one name, one
+            # shape.
+            return td.Frame(
+                {
+                    "amp_pred": td.wrap(outputs["amp"], dims=("batch", "mic", "rotor", None, None)),
+                    "noise_psd": td.wrap(outputs["noise_psd"], dims=("batch", "mic", None, None)),
+                }
+            )
         if isinstance(outputs, dict):
             entries: dict[str, Any] = {
                 "audio": _batched_series(outputs["audio"], ("batch", "mic", "time"), self.sr)
@@ -361,6 +375,22 @@ class NoiseGenerationCodec:
 
     def call_model(self, model: Any, inputs: dict[str, torch.Tensor]) -> Any:
         kwargs: dict[str, Any] = {}
+        if self.amplitude:
+            # Ask for the AMPLITUDE ENVELOPES instead of a rendering. The
+            # emitter's control curves are read before the oscillator bank, so
+            # this path is both much cheaper than a forward pass and jitter-free
+            # by construction (the OU perturbation is applied to the carrier,
+            # after the amplitude network) — see
+            # models.generative.PositionalHarmonicNoiseGen.amp_stats.
+            fn = getattr(model, "amp_stats", None)
+            if fn is None:
+                raise TypeError(
+                    f"{type(model).__name__} has no `amp_stats`; the amplitude-target codec "
+                    "needs a generator that can predict per-harmonic amplitude envelopes "
+                    "(see models.generative.PositionalHarmonicNoiseGen.amp_stats)"
+                )
+            args = (inputs["rps"], inputs["rel_pos"])
+            return dict(fn(*args, inputs["drone_names"]) if self.conditioned else fn(*args))
         if self.spatial:
             fn = getattr(model, "spatial_stats", None)
             if fn is None:

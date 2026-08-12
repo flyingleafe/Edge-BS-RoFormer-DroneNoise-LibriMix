@@ -935,3 +935,228 @@ class StaticCombGenDataset(Dataset):
                 "meta": td.Frame({"drone": "synth", "sample_id": int(idx), "split": self.split}),
             }
         )
+
+
+class DecompFrameDataset(Dataset):
+    """Random chunks of the published Vold-Kalman decompositions.
+
+    The training source of the amplitude-target objective. One published
+    recording of ``decomp-frames-v1`` carries, on one common time origin:
+
+    ``rps``
+        ``(rotor, time)`` at the audio rate — the EXACT carrier the solve used,
+        so the amplitudes are targets for the trajectory the model is
+        conditioned on.
+    ``amp`` / ``amp_valid``
+        ``(mic, rotor, k, time)`` amplitude envelopes at 100 Hz and their
+        validity mask (``False`` above a recording's own ``k_hi``).
+    ``residual``
+        ``(mic, time)`` the broadband part the tracks do not explain.
+
+    Chunks are cut by INDEX, not by ``frame.time[a:b]``: a time cut of a 16 kHz
+    entry and a 100 Hz entry can round to different lengths on different draws,
+    and a batch of Frames must stack. Starts are therefore snapped to the
+    envelope stride (160 samples), which makes the two grids commensurate and
+    every sample the same shape.
+
+    ``min_motor_rps`` rejects chunks that are not flying: the decomposition
+    spans include the take-off ramp, where there is no comb to demodulate and
+    the "envelopes" are floor noise. The draw is retried (bounded) rather than
+    the span pre-trimmed, so a recording with a slow ramp still contributes its
+    flight portion.
+    """
+
+    #: ``decomp-frames-v1``'s envelope stride in audio samples (meta.env_stride).
+    ENV_STRIDE = 160
+    MAX_DRAWS = 32
+
+    def __init__(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        chunk_size: int = 16000,
+        n_samples: int = 4096,
+        seed: int = 42,
+        min_motor_rps: float = 30.0,
+        split: str = "train",
+    ) -> None:
+        if not records:
+            raise ValueError("DecompFrameDataset needs at least one record")
+        self.records = records
+        self.chunk_size = int(chunk_size)
+        self.n_samples = int(n_samples)
+        self.seed = int(seed)
+        self.min_motor_rps = float(min_motor_rps)
+        self.split = str(split)
+        if self.chunk_size % self.ENV_STRIDE:
+            raise ValueError(
+                f"chunk_size {self.chunk_size} must be a multiple of the envelope stride "
+                f"{self.ENV_STRIDE} so the audio-rate and 100 Hz grids stay commensurate"
+            )
+        mics = {int(r["residual"].shape[0]) for r in records}
+        if len(mics) > 1:
+            raise ValueError(f"records disagree on microphone count {sorted(mics)}; cannot batch")
+        self.weights = np.asarray([float(r["span"][1] - r["span"][0]) for r in records])
+        self.weights = self.weights / self.weights.sum()
+
+    def __len__(self) -> int:
+        return self.n_samples
+
+    def _draw(self, idx: int) -> tuple[dict[str, Any], int]:
+        """Pick a record and a stride-aligned start sample above the idle gate."""
+        rng = np.random.default_rng([self.seed, idx])
+        for _ in range(self.MAX_DRAWS):
+            rec = self.records[int(rng.choice(len(self.records), p=self.weights))]
+            lo, hi = rec["span"]
+            last = hi - self.chunk_size
+            if last < lo:
+                continue
+            n_starts = (last - lo) // self.ENV_STRIDE + 1
+            s0 = lo + int(rng.integers(n_starts)) * self.ENV_STRIDE
+            rps = rec["rps"][:, s0 : s0 + self.chunk_size]
+            if float(rps.mean()) >= self.min_motor_rps:
+                return rec, s0
+        return rec, max(lo, min(s0, hi - self.chunk_size))
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        if idx < 0:
+            idx += self.n_samples
+        if not 0 <= idx < self.n_samples:
+            raise IndexError(idx)
+        rec, s0 = self._draw(idx)
+        e0 = s0 // self.ENV_STRIDE
+        n_env = self.chunk_size // self.ENV_STRIDE
+        sr = int(rec["sample_rate"])
+        sl = slice(s0, s0 + self.chunk_size)
+        esl = slice(e0, e0 + n_env)
+        return td.Frame(
+            {
+                "rps": td.uniform(
+                    np.ascontiguousarray(rec["rps"][:, sl]), sr, dims=("rotor", "time"), t_start=0.0
+                ),
+                "residual": td.uniform(
+                    np.ascontiguousarray(rec["residual"][:, sl]),
+                    sr,
+                    dims=("mic", "time"),
+                    t_start=0.0,
+                ),
+                "amp": td.Series(
+                    np.ascontiguousarray(rec["amp"][:, :, :, esl]),
+                    ("mic", "rotor", "k", "time"),
+                    {"time": td.GridIndex.create((sr, self.ENV_STRIDE), n_env, t_start=0.0)},
+                ),
+                "amp_valid": td.Series(
+                    np.ascontiguousarray(rec["amp_valid"][:, :, esl]),
+                    ("rotor", "k", "time"),
+                    {"time": td.GridIndex.create((sr, self.ENV_STRIDE), n_env, t_start=0.0)},
+                ),
+                "mic_pos": td.wrap(rec["mic_pos"], dims=("mic", None)),
+                "rotor_pos": td.wrap(rec["rotor_pos"], dims=("rotor", None)),
+                "meta": td.Frame(
+                    {
+                        "drone": rec["drone"],
+                        "recording_id": rec["recording_id"],
+                        "start_sample": int(s0),
+                        "split": self.split,
+                    }
+                ),
+            }
+        )
+
+    # ── construction ────────────────────────────────────────────────────────
+
+    @classmethod
+    def _load_records(
+        cls, dataset: str, version: str | None, *, split: str, val_pct: float, val_at_start: bool
+    ) -> list[dict[str, Any]]:
+        """Decode the published recordings once and take each one's split span.
+
+        The split is a TIME split inside every recording (there are only three),
+        with the same ``val_at_start`` convention
+        :class:`NoiseGenFrameDataset`'s inner dataset uses, so a validation chunk
+        is never a training chunk of the same recording.
+        """
+        from data_processing.frames import meta_dict
+        from data_processing.streams import iter_published_frames
+
+        records: list[dict[str, Any]] = []
+        for tf in iter_published_frames(dataset, version):
+            meta = meta_dict(tf)
+            rps = np.asarray(tf["rps"].data, dtype=np.float32)
+            n_t = int(rps.shape[-1])
+            n_val = int(round(val_pct * n_t)) // cls.ENV_STRIDE * cls.ENV_STRIDE
+            if val_at_start:
+                span = (0, n_val) if split == "valid" else (n_val, n_t)
+            else:
+                span = (n_t - n_val, n_t) if split == "valid" else (0, n_t - n_val)
+            records.append(
+                {
+                    "recording_id": str(meta.get("recording_id")),
+                    "drone": str(meta.get("drone")),
+                    "sample_rate": int(meta.get("sample_rate", 16000)),
+                    "rps": rps,
+                    "residual": np.asarray(tf["residual"].data, dtype=np.float32),
+                    "amp": np.asarray(tf["amp"].data, dtype=np.float32),
+                    "amp_valid": np.asarray(tf["amp_valid"].data, dtype=bool),
+                    "mic_pos": np.asarray(tf["mic_pos"].data, dtype=np.float32),
+                    "rotor_pos": np.asarray(tf["rotor_pos"].data, dtype=np.float32),
+                    "span": span,
+                }
+            )
+        if not records:
+            raise ValueError(f"{dataset}: no published recording decoded")
+        return records
+
+    @classmethod
+    def build_train(
+        cls,
+        *,
+        dataset: str = "decomp-frames-v1",
+        version: str | None = None,
+        chunk_size: int = 16000,
+        train_samples: int = 4096,
+        val_samples: int = 256,
+        val_pct: float = 0.1,
+        val_at_start: bool = True,
+        seed: int = 42,
+        min_motor_rps: float = 30.0,
+    ) -> DecompFrameDataset:
+        del val_samples
+        return cls(
+            cls._load_records(
+                dataset, version, split="train", val_pct=val_pct, val_at_start=val_at_start
+            ),
+            chunk_size=chunk_size,
+            n_samples=train_samples,
+            seed=seed,
+            min_motor_rps=min_motor_rps,
+            split="train",
+        )
+
+    @classmethod
+    def build_valid(
+        cls,
+        *,
+        dataset: str = "decomp-frames-v1",
+        version: str | None = None,
+        chunk_size: int = 16000,
+        train_samples: int = 4096,
+        val_samples: int = 256,
+        val_pct: float = 0.1,
+        val_at_start: bool = True,
+        seed: int = 42,
+        min_motor_rps: float = 30.0,
+    ) -> DecompFrameDataset:
+        del train_samples
+        return cls(
+            cls._load_records(
+                dataset, version, split="valid", val_pct=val_pct, val_at_start=val_at_start
+            ),
+            chunk_size=chunk_size,
+            n_samples=val_samples,
+            # A different seed stream from train's, so the two never draw the
+            # same (record, start) pair by index coincidence.
+            seed=seed + 1,
+            min_motor_rps=min_motor_rps,
+            split="valid",
+        )
