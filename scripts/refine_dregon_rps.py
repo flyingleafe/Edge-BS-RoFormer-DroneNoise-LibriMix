@@ -597,6 +597,10 @@ def main() -> None:
 
     if args.mode in ("refine", "all"):
         recs = load_recordings(args.spec)
+        # Warm the cache BEFORE the pool forks: workers inherit the decoded
+        # recordings and open no R2 connection (concurrent per-worker streams
+        # caused SSL failures and killed the pool on the cluster).
+        _RECORDINGS.update({r["recording_id"]: r for r in recs})
         units = build_units(recs, args, {"spec": args.spec, **params})
         print(f"[refine_dregon_rps] {len(units)} units -> {out}", flush=True)
         res = gridrun_from_args(args, units, refine_worker, out, summarize=summarize)
