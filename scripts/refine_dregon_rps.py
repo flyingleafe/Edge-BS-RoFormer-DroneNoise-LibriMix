@@ -497,6 +497,21 @@ def stitch(out: Path, label_dir: Path, spec: str, params: dict[str, Any]) -> lis
             hop_frame_s=np.float64(HOP_S),
             sample_rate=np.int64(SR),
         )
+        # The headline shift reads the STITCHED labels (accepted rotors only)
+        # on refined cruise frames — the unit-level scale_pct_per_rotor keeps
+        # the raw optimizer movement for audit, rejected rotors included.
+        stitched_mask = (np.abs(r_ref - r_tel).max(axis=0) > 1e-9) & (
+            r_tel.mean(axis=0) > CRUISE_REV_S
+        )
+        if stitched_mask.any():
+            stitched_scale = round(
+                float(
+                    100.0 * (r_ref[:, stitched_mask].sum() / r_tel[:, stitched_mask].sum() - 1.0)
+                ),
+                5,
+            )
+        else:
+            stitched_scale = None
         cruise = [
             r for r in got if r.get("used") and float(r.get("mean_rev_s", 0.0)) > CRUISE_REV_S
         ]
@@ -517,7 +532,8 @@ def stitch(out: Path, label_dir: Path, spec: str, params: dict[str, Any]) -> lis
             "n_frames": int(ft.size),
             "n_windows": len(got),
             "n_used": sum(1 for r in got if r["used"]),
-            "cruise_scale_pct": (
+            "cruise_scale_pct": stitched_scale,
+            "cruise_scale_pct_raw_optimizer": (
                 round(
                     float(
                         np.nanmean(

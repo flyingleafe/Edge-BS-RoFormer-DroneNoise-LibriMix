@@ -1,0 +1,353 @@
+{
+ "recording_id": "free-flight_nosource_room1",
+ "source": {
+  "spec": "frames:DREGON-frames",
+  "rps_key": "motors_measured",
+  "splits": [
+   "in_flight_noise"
+  ],
+  "sample_rate": 16000
+ },
+ "time_reference": "seconds from the published recording's audio t_start (the full frame, before the loader's telemetry-overlap trim of t0_offset_s)",
+ "t0_offset_s": 5.480264,
+ "params": {
+  "window_s": 16.0,
+  "hop_s": 12.0,
+  "k_max": 40,
+  "channels": 4,
+  "knot_s": 0.25,
+  "lr": 1.0,
+  "schedule": null,
+  "hop_frame_s": 0.032,
+  "idle_rev_s": 20.0,
+  "max_move_rev_s": 3.0
+ },
+ "n_frames": 1996,
+ "n_windows": 5,
+ "n_used": 5,
+ "cruise_scale_pct": -0.55356,
+ "cruise_scale_pct_raw_optimizer": -1.04239,
+ "max_abs_delta": 1.947425,
+ "windows": [
+  {
+   "recording": "free-flight_nosource_room1",
+   "i0": 0,
+   "i1": 500,
+   "start_s": 5.480264,
+   "end_s": 21.480264,
+   "n_frames": 500,
+   "mean_rev_s": 62.0448,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    false,
+    true,
+    true
+   ],
+   "reason": "rotor_move_too_large",
+   "smooth_lambda": 0.00191614,
+   "prior_init": 260.941277,
+   "scale_pct_per_rotor": [
+    -0.75301,
+    -3.57705,
+    -1.1078,
+    -1.12572
+   ],
+   "move_max": 3.17249,
+   "objective_before": 0.70022737,
+   "objective_after": 0.63035878,
+   "r2_before": 0.348528,
+   "r2_after": 0.394631,
+   "wall_s": 1653.98,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 27,
+     "loss_start": 1.2070686251939065,
+     "loss_end": 1.041639205501193,
+     "wall_s": 54.651
+    },
+    {
+     "k_max": 10,
+     "n_evals": 25,
+     "loss_start": 1.0384124939398545,
+     "loss_end": 1.0297297114789306,
+     "wall_s": 125.224
+    },
+    {
+     "k_max": 20,
+     "n_evals": 25,
+     "loss_start": 1.026716874854664,
+     "loss_end": 1.0250669256166622,
+     "wall_s": 354.153
+    },
+    {
+     "k_max": 40,
+     "n_evals": 25,
+     "loss_start": 1.022380050368774,
+     "loss_end": 1.0151889284246949,
+     "wall_s": 1117.719
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "free-flight_nosource_room1",
+   "i0": 375,
+   "i1": 875,
+   "start_s": 17.480264,
+   "end_s": 33.480264,
+   "n_frames": 500,
+   "mean_rev_s": 80.6856,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.094261,
+   "scale_pct_per_rotor": [
+    -0.60138,
+    -0.51371,
+    -0.61336,
+    -0.44113
+   ],
+   "move_max": 1.45957,
+   "objective_before": 0.57310629,
+   "objective_after": 0.38952467,
+   "r2_before": 0.517679,
+   "r2_after": 0.617582,
+   "wall_s": 418.25,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 22,
+     "loss_start": 0.6696115617666653,
+     "loss_end": 0.49311635689542965,
+     "wall_s": 35.387
+    },
+    {
+     "k_max": 10,
+     "n_evals": 24,
+     "loss_start": 0.4910685174296985,
+     "loss_end": 0.48643079544768186,
+     "wall_s": 78.781
+    },
+    {
+     "k_max": 20,
+     "n_evals": 13,
+     "loss_start": 0.48427321357537645,
+     "loss_end": 0.48427321359337,
+     "wall_s": 94.156
+    },
+    {
+     "k_max": 40,
+     "n_evals": 11,
+     "loss_start": 0.48266884450259945,
+     "loss_end": 0.48266884463906023,
+     "wall_s": 204.445
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "free-flight_nosource_room1",
+   "i0": 750,
+   "i1": 1250,
+   "start_s": 29.480264,
+   "end_s": 45.480264,
+   "n_frames": 500,
+   "mean_rev_s": 80.5541,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.092347,
+   "scale_pct_per_rotor": [
+    -0.48827,
+    -0.49803,
+    -0.64653,
+    -0.559
+   ],
+   "move_max": 1.55806,
+   "objective_before": 0.58053344,
+   "objective_after": 0.4256918,
+   "r2_before": 0.500879,
+   "r2_after": 0.582711,
+   "wall_s": 378.43,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 22,
+     "loss_start": 0.6740104409259245,
+     "loss_end": 0.5265208544753938,
+     "wall_s": 34.875
+    },
+    {
+     "k_max": 10,
+     "n_evals": 33,
+     "loss_start": 0.5242705248614172,
+     "loss_end": 0.5198470117141561,
+     "wall_s": 106.646
+    },
+    {
+     "k_max": 20,
+     "n_evals": 9,
+     "loss_start": 0.5176364069804185,
+     "loss_end": 0.517636407078404,
+     "wall_s": 65.204
+    },
+    {
+     "k_max": 40,
+     "n_evals": 9,
+     "loss_start": 0.5160309296780824,
+     "loss_end": 0.5160309298032904,
+     "wall_s": 171.514
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "free-flight_nosource_room1",
+   "i0": 1125,
+   "i1": 1625,
+   "start_s": 41.480264,
+   "end_s": 57.480264,
+   "n_frames": 500,
+   "mean_rev_s": 80.4507,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    false,
+    true,
+    true,
+    true
+   ],
+   "reason": "rotor_move_too_large",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.082138,
+   "scale_pct_per_rotor": [
+    -5.95113,
+    -0.67849,
+    -0.56659,
+    -0.43712
+   ],
+   "move_max": 5.26392,
+   "objective_before": 0.55869949,
+   "objective_after": 0.42046906,
+   "r2_before": 0.520758,
+   "r2_after": 0.58957,
+   "wall_s": 508.79,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 25,
+     "loss_start": 0.6454157427488876,
+     "loss_end": 0.5157070825060501,
+     "wall_s": 39.694
+    },
+    {
+     "k_max": 10,
+     "n_evals": 35,
+     "loss_start": 0.5127646989407235,
+     "loss_end": 0.508596296649449,
+     "wall_s": 112.937
+    },
+    {
+     "k_max": 20,
+     "n_evals": 20,
+     "loss_start": 0.5057091646901997,
+     "loss_end": 0.5056306573013477,
+     "wall_s": 147.7
+    },
+    {
+     "k_max": 40,
+     "n_evals": 11,
+     "loss_start": 0.5032314984832477,
+     "loss_end": 0.5032314985520097,
+     "wall_s": 208.273
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "free-flight_nosource_room1",
+   "i0": 1496,
+   "i1": 1996,
+   "start_s": 53.352264,
+   "end_s": 69.352264,
+   "n_frames": 500,
+   "mean_rev_s": 78.905,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 0.001270039,
+   "prior_init": 393.688608,
+   "scale_pct_per_rotor": [
+    0.39702,
+    -1.14171,
+    -0.6653,
+    -0.87944
+   ],
+   "move_max": 0.8579,
+   "objective_before": 0.81986464,
+   "objective_after": 0.77580319,
+   "r2_before": 0.220861,
+   "r2_after": 0.246257,
+   "wall_s": 1049.25,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 24,
+     "loss_start": 1.330388734927649,
+     "loss_end": 1.171956338643592,
+     "wall_s": 45.119
+    },
+    {
+     "k_max": 10,
+     "n_evals": 16,
+     "loss_start": 1.166614489534974,
+     "loss_end": 1.166614489377606,
+     "wall_s": 65.947
+    },
+    {
+     "k_max": 20,
+     "n_evals": 15,
+     "loss_start": 1.1638687652744846,
+     "loss_end": 1.1638687657920284,
+     "wall_s": 142.882
+    },
+    {
+     "k_max": 40,
+     "n_evals": 33,
+     "loss_start": 1.1645770060597216,
+     "loss_end": 1.1645588262430304,
+     "wall_s": 795.109
+    }
+   ],
+   "k_cap": 40
+  }
+ ]
+}

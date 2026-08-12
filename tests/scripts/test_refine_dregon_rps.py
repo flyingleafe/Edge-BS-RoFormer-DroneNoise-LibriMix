@@ -111,5 +111,8 @@ def test_stitch_crossfades_and_writes_sidecar(tmp_path: Path, monkeypatch) -> No
     report = json.loads((tmp_path / "labels" / f"{rid}.report.json").read_text())
     assert report["n_windows"] == 2
     assert report["n_used"] == 1
-    assert report["cruise_scale_pct"] == pytest.approx(-1.25)
+    # The headline stat reads the STITCHED labels, so the crossfade toward the
+    # rejected window dilutes the raw -1.25 % optimizer movement.
+    assert report["cruise_scale_pct"] == pytest.approx(-0.9375)
+    assert report["cruise_scale_pct_raw_optimizer"] == pytest.approx(-1.25)
     assert "r_window" not in report["windows"][0]
