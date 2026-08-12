@@ -63,8 +63,8 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXP
 
 import argparse  # noqa: E402
 import json  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
 import time  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -85,6 +85,7 @@ MAX_CHANNELS = 8
 
 #: Perturbed siblings scored at the blind trajectory's fixed degrees of freedom.
 #: ``(name, multiply, add_rev_s)`` -> candidate = blind * multiply + add.
+SCORE_WINDOW_S = 6.0
 SIBLINGS: tuple[tuple[str, float, float], ...] = (
     ("half", 0.5, 0.0),
     ("double", 2.0, 0.0),
@@ -234,6 +235,33 @@ def _seed_readings(log: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ── the label-free instruments ────────────────────────────────────────────────
+def score_slice(
+    audio: np.ndarray, r: np.ndarray, ft: np.ndarray, score_s: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Centre crop of ``(audio, r, ft)`` for the SCORING geometry.
+
+    The ladder wants a long window (it has to find the rotors); the two
+    instruments do not, and one of them cannot afford it: the coupled-VK
+    normal equations are banded over the whole window, so a 20 s window at
+    ``k_max`` 40 asks for a 1.5 GiB complex matrix per coupling group — and
+    the group grows when the candidate is ``r/2``, whose teeth sit twice as
+    close together. Scoring on a fixed centre crop keeps the measurement
+    geometry identical across recordings AND bounded, which is the same
+    "pinned per window, not per candidate" rule the configs already follow.
+    """
+    dur = audio.shape[-1] / SR
+    if score_s <= 0 or dur <= score_s:
+        return audio, r, ft
+    t0 = 0.5 * (dur - score_s)
+    a0, a1 = int(round(t0 * SR)), int(round((t0 + score_s) * SR))
+    sel = (ft >= t0) & (ft < t0 + score_s)
+    return (
+        np.ascontiguousarray(audio[..., a0:a1]),
+        np.ascontiguousarray(r[:, sel]),
+        np.ascontiguousarray(ft[sel] - t0),
+    )
+
+
 def _fvk_objectives(
     audio: np.ndarray, r: np.ndarray, ft: np.ndarray, k_max: int, alias_penalty: float
 ) -> dict[str, Any]:
@@ -346,6 +374,7 @@ class Worker:
     k_max: int
     npz_dir: Path
     alias_penalty: float
+    score_s: float = SCORE_WINDOW_S
 
     def __call__(self, unit: Unit) -> dict[str, Any]:
         cache_dir, n_rotors = self.cache_dir, self.n_rotors
@@ -390,12 +419,17 @@ class Worker:
             **_seed_readings(_stage_log(out_frame)),
         }
 
+        # Both instruments read the same centre crop, so their cells and the
+        # trajectory they judge are the same object.
+        a_s, r_s, ft_s = score_slice(audio, r, ft, self.score_s)
+        row["score_window_s"] = round(a_s.shape[-1] / SR, 2)
+
         tic = time.perf_counter()
-        row["fvk"] = _fvk_objectives(audio, r, ft, k_max, alias_penalty)
+        row["fvk"] = _fvk_objectives(a_s, r_s, ft_s, k_max, alias_penalty)
         row["wall_fvk_s"] = round(time.perf_counter() - tic, 1)
 
         tic = time.perf_counter()
-        row["ridge"] = _ridge_readings(audio, r, ft)
+        row["ridge"] = _ridge_readings(a_s, r_s, ft_s)
         row["wall_ridge_s"] = round(time.perf_counter() - tic, 1)
 
         # Derived headline numbers (the report reads these directly).
@@ -507,6 +541,12 @@ def main() -> None:
     ap.add_argument("--max-s", type=float, default=None, help="cap seconds per recording (smoke)")
     ap.add_argument("--k-max", type=int, default=40, help="F_VK harmonic cap")
     ap.add_argument(
+        "--score-window-s",
+        type=float,
+        default=SCORE_WINDOW_S,
+        help="centre crop the two instruments score on (0 = the whole window)",
+    )
+    ap.add_argument(
         "--alias-penalty",
         type=float,
         default=1.0,
@@ -544,7 +584,14 @@ def main() -> None:
     res = gridrun_from_args(
         args,
         units,
-        Worker(cache_dir, args.n_rotors, args.k_max, out_dir / "traj", args.alias_penalty),
+        Worker(
+            cache_dir,
+            args.n_rotors,
+            args.k_max,
+            out_dir / "traj",
+            args.alias_penalty,
+            args.score_window_s,
+        ),
         out_dir,
         blas_threads=int(args.omp),
         summarize=summarize,
