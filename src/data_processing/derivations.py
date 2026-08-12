@@ -593,6 +593,236 @@ def generate_beatvk_valid(gen: dict[str, Any]) -> Iterator[Sample]:
             raise KeyError(f"recording {key!r} not found in {name}")
 
 
+# ─── decomp-frames (adopt-only: a cluster VK solve sits in the loop) ─────────
+
+#: The decomposition's envelope grid stride, in audio samples
+#: (``tracking.fitness_vk.FVKConfig.fs_env`` = 100 Hz at 16 kHz). Every
+#: window of ``scripts/vk_decompose.py`` is snapped to it, so the whole
+#: recording's envelope grid is one uniform ``(sample_rate, stride)`` grid.
+_DECOMP_ENV_STRIDE = 160
+#: The protocol frame grid the refined labels sit on (``vk_decompose.HOP_S``).
+_DECOMP_HOP_S = 0.032
+
+
+def _decomp_frame_grid(n_t: int, sr: int) -> np.ndarray:
+    """Verbatim ``scripts/vk_decompose.py::frame_grid`` — the label frame grid.
+
+    Duplicated rather than imported: ``scripts/`` is never importable from
+    ``src/`` (see the scripts table in AGENTS.md), and the two implementations
+    are pinned together by ``tests/data_processing/test_decomp_frames.py``,
+    which asserts they agree on the same input.
+    """
+    return np.arange(0.0, n_t / float(sr) - _DECOMP_HOP_S / 2, _DECOMP_HOP_S)
+
+
+def _decomp_interp_rps(vals: Any, stamps: Any, ft: Any) -> np.ndarray:
+    """Verbatim ``scripts/vk_decompose.py::interp_rps`` (see above on duplication)."""
+    ts = np.asarray(stamps, dtype=np.float64)
+    _, uniq = np.unique(ts, return_index=True)
+    uniq = np.sort(uniq)
+    ts = ts[uniq]
+    v = np.asarray(vals, dtype=np.float64)[:, uniq]
+    q = np.clip(np.asarray(ft, dtype=np.float64), ts[0], ts[-1])
+    return np.stack([np.interp(q, ts, row) for row in v])
+
+
+def _decomp_to_audio_grid(r: Any, ft: Any, n_t: int, sr: int) -> np.ndarray:
+    """Verbatim ``scripts/vk_decompose.py::to_audio_grid`` (see above)."""
+    r2 = np.atleast_2d(np.asarray(r, dtype=np.float64))
+    t_audio = np.arange(n_t, dtype=np.float64) / float(sr)
+    return np.stack([np.interp(t_audio, np.asarray(ft, dtype=np.float64), row) for row in r2])
+
+
+def decomp_carrier(frame: td.Frame, rps_key: str, sr: int) -> np.ndarray:
+    """The audio-rate rotor-speed CARRIER the decomposition was solved against.
+
+    ``(R, T)``, reproducing ``scripts/vk_decompose.py::load_recordings`` exactly:
+    telemetry (already label-overridden and trimmed by
+    ``noise_rps_dataset.load_published_noise_sources``) is interpolated onto the
+    0.032 s protocol frame grid first and only then onto the audio grid. Doing it
+    in one step instead would give a *different* piecewise-linear function, and
+    the amplitude targets are only meaningful against the carrier that produced
+    them.
+    """
+    audio_s = frame["audio"]
+    rps_s = frame[rps_key]
+    t0 = int(audio_s.tindex.t_start_ticks)
+    ticks = np.asarray(rps_s.tindex.abs_stamps_ticks, dtype=np.int64)
+    stamps = (ticks - t0) / float(td.TICKS_PER_SECOND)
+    n_t = int(np.asarray(audio_s.data).shape[-1])
+    ft = _decomp_frame_grid(n_t, sr)
+    r_ref = _decomp_interp_rps(np.asarray(rps_s.data), stamps, ft)
+    return _decomp_to_audio_grid(r_ref, ft, n_t, sr)
+
+
+def dense_envelopes(
+    amp: np.ndarray, valid: np.ndarray, rotor: np.ndarray, k: np.ndarray, k_max: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sparse ``(mic, track, time)`` envelopes -> dense ``(mic, rotor, k, time)``.
+
+    The track set of a recording is ``rotor x k`` up to that recording's own
+    ``k_hi`` (``vk_decompose.recording_k_hi``), so two recordings have different
+    track counts and could not be collated into one training batch. The dense
+    layout fixes the shape at ``k_max`` for every recording, indexes directly as
+    ``[mic, rotor, k - 1, t]`` — the same order the emitter's ``harm_amps``
+    carries — and carries its own validity mask, which is ``False`` both above a
+    recording's ``k_hi`` and on frames no solve window covered.
+    """
+    rot = np.asarray(rotor, dtype=np.int64)
+    ks = np.asarray(k, dtype=np.int64)
+    keep = ks <= int(k_max)
+    n_mic, _, n_env = amp.shape
+    n_rotor = int(rot.max()) + 1
+    dense = np.zeros((n_mic, n_rotor, int(k_max), n_env), dtype=np.float32)
+    mask = np.zeros((n_rotor, int(k_max), n_env), dtype=bool)
+    dense[:, rot[keep], ks[keep] - 1, :] = np.asarray(amp, dtype=np.float32)[:, keep]
+    mask[rot[keep], ks[keep] - 1, :] = np.asarray(valid, dtype=bool)[keep]
+    return dense, mask
+
+
+def _decomp_artifact(gen: dict[str, Any], rid: str, name: str) -> str:
+    """Local path of one ``artifacts/vk-decompose/<rid>/<name>`` R2 object."""
+    from utils.checkpoints import resolve_checkpoint_uri
+
+    uri = f"r2://{gen['artifact_bucket']}/{gen['artifact_prefix']}/{rid}/{name}"
+    return resolve_checkpoint_uri(uri, cache_dir=".cache/vk_decompose_artifacts")
+
+
+def _decomp_frame(gen: dict[str, Any], source: dict[str, Any], src: Any) -> tuple[str, td.Frame]:
+    """One decomposed recording -> the published ``decomp-frames-v1`` Frame.
+
+    Everything is re-anchored to the decomposition span: ``t = 0`` is
+    ``span_samples[0]`` of the solve, so the audio-rate carrier, the 100 Hz
+    envelope bank and the residual all start together and one
+    ``frame.time[a:b]`` cut stays aligned across the three rates.
+    """
+    import json
+
+    from data_processing.frames import make_recording_frame, meta_dict
+
+    sr = int(gen["sample_rate"])
+    rid = str(meta_dict(src.frame).get("recording_id"))
+    env = np.load(_decomp_artifact(gen, rid, "envelopes.npz"))
+    res = np.load(_decomp_artifact(gen, rid, "residual.npz"))
+    report = json.loads(Path(_decomp_artifact(gen, rid, "report.json")).read_text())
+
+    a0, a1 = (int(v) for v in np.asarray(env["span_samples"]))
+    if a0 % _DECOMP_ENV_STRIDE:
+        raise ValueError(f"{rid}: decomposition span start {a0} is not on the envelope grid")
+    if int(env["stride"]) != _DECOMP_ENV_STRIDE or int(env["sample_rate"]) != sr:
+        raise ValueError(
+            f"{rid}: decomposition grid ({env['sample_rate']} Hz / stride {env['stride']}) "
+            f"does not match this spec ({sr} Hz / stride {_DECOMP_ENV_STRIDE})"
+        )
+    amp, mask = dense_envelopes(
+        np.asarray(env["amp"]), np.asarray(env["valid"]), env["rotor"], env["k"], gen["k_max"]
+    )
+    carrier = decomp_carrier(src.frame, src.rps_key, sr)[:, a0:a1]
+    residual = np.asarray(res["residual"], dtype=np.float32)
+    n_env = amp.shape[-1]
+    if residual.shape[-1] != a1 - a0 or carrier.shape[-1] != a1 - a0:
+        raise ValueError(f"{rid}: residual/carrier length disagrees with the span {(a0, a1)}")
+
+    grid = td.GridIndex.create((sr, _DECOMP_ENV_STRIDE), n_env, t_start=0.0)
+    tracks = {
+        "rps": td.uniform(carrier.astype(np.float32), sr, dims=("rotor", "time"), t_start=0.0),
+        "residual": td.uniform(residual, sr, dims=("mic", "time"), t_start=0.0),
+        "amp": td.Series(amp, ("mic", "rotor", "k", "time"), {"time": grid}),
+        "amp_valid": td.Series(mask, ("rotor", "k", "time"), {"time": grid}),
+    }
+    mic_pos, rotor_pos = _decomp_geometry(source["parent_uri"])
+    meta = {
+        "recording_id": rid,
+        "drone": source["drone"],
+        "split": source["drone"],
+        "sample_rate": sr,
+        "n_channels": int(residual.shape[0]),
+        "env_rate_hz": sr / float(_DECOMP_ENV_STRIDE),
+        "env_stride": _DECOMP_ENV_STRIDE,
+        "k_max": int(gen["k_max"]),
+        "k_hi": int(report["k_hi"]),
+        "n_tracks": int(report["n_tracks"]),
+        "source_spec": source["spec"],
+        "source_rps_key": source["rps_key"],
+        "label_variant": "refined" if source.get("rps_override_dir") else "published",
+        # The span this frame covers, in the SOURCE frame's own time base, so a
+        # consumer can line it up with the parent recording's audio (which this
+        # dataset deliberately does not duplicate).
+        "source_span_s": [round(a0 / float(sr), 6), round(a1 / float(sr), 6)],
+        "source_t0_offset_s": float(env["t0_offset_s"]),
+        "energy": {
+            "track_fraction": report["energy"]["track_fraction"],
+            "residual_fraction": report["energy"]["residual_fraction"],
+            "band_share_of_tracks": report["energy"]["band_share_of_tracks"],
+        },
+        "bw_rps": report["params"]["bw_rps"],
+        "decomposer": gen["decomposer"],
+    }
+    env.close()
+    res.close()
+    return rid, make_recording_frame(tracks, meta=meta, mic_pos=mic_pos, rotor_pos=rotor_pos)
+
+
+def _decomp_geometry(parent_uri: str) -> tuple[np.ndarray, np.ndarray]:
+    """The array geometry of a pinned parent frames dataset.
+
+    Read off the published recordings (``mic_pos``/``rotor_pos`` baked in by
+    ``frames.make_recording_frame``) — the same source
+    ``frame_datasets._frames_spec_geometry`` reads for a ``frames:`` spec, so an
+    amplitude-target model and an audio-target model see identical positions,
+    and no raw tree is needed.
+    """
+    from data_processing.streams import iter_published_frames
+
+    name, version = _split_dload_uri(parent_uri)
+    for tf in iter_published_frames(name, version):
+        if "mic_pos" in tf and "rotor_pos" in tf:
+            return (
+                np.asarray(tf["mic_pos"].data, dtype=np.float64),
+                np.asarray(tf["rotor_pos"].data, dtype=np.float64),
+            )
+    raise ValueError(f"no recording in {parent_uri!r} carries mic_pos/rotor_pos geometry")
+
+
+def generate_decomp_frames(gen: dict[str, Any]) -> Iterator[Sample]:
+    """Vold-Kalman decompositions of the real drone recordings, as frames.
+
+    Per recording: the per-``(mic, rotor, harmonic)`` amplitude envelope bank at
+    100 Hz, its validity mask, the broadband residual waveform, and the exact
+    audio-rate rotor-speed carrier the solve used. NOT re-derivable here — the
+    envelopes come from a multi-hour cluster solve
+    (``scripts/vk_decompose.py``, pinned in the spec's ``decomposer`` field),
+    whose outputs live as R2 artifacts; this generator joins those artifacts to
+    the pinned parent frames datasets and is run ONCE to publish the result.
+    """
+    from data_processing.frames import meta_dict
+    from data_processing.noise_rps_dataset import load_published_noise_sources
+    from data_processing.streams import frame_to_sample
+
+    for source in gen["sources"]:
+        parent_uri = gen["parents"][source["parent"]]
+        name, version = _split_dload_uri(parent_uri)
+        spec = f"frames:{name}@{version}" if version else f"frames:{name}"
+        wanted = list(source["recording_ids"])
+        found: list[str] = []
+        for src in load_published_noise_sources(
+            spec,
+            int(gen["sample_rate"]),
+            origin=source["drone"],
+            rps_key=source["rps_key"],
+            splits=source.get("splits"),
+            rps_override_dir=source.get("rps_override_dir"),
+        ):
+            if str(meta_dict(src.frame).get("recording_id")) not in wanted:
+                continue
+            rid, frame = _decomp_frame(gen, {**source, "spec": spec, "parent_uri": parent_uri}, src)
+            found.append(rid)
+            yield rid, frame_to_sample(frame)
+        missing = sorted(set(wanted) - set(found))
+        if missing:
+            raise KeyError(f"{spec}: no decomposed recording for {missing}")
+
+
 # ─── AVQ-egonoise-vkrps (adopt-only: GPU annotator in the loop) ───────────────
 
 
@@ -1192,6 +1422,53 @@ SPECS: dict[str, dict[str, Any]] = {
             "min_seg_s": 10.0,
         },
     },
+    # ── VK decompositions of the real recordings ─────────────────────────────
+    "decomp-frames-v1": {
+        "generator": "decomp_frames",
+        "adopt_only": True,
+        "note": "Adopt-in-place. The coupled Vold-Kalman decomposition of the "
+        "three decomposable real recordings (DREGON free-flight_nosource_room1 "
+        "on the REFINED labels, Michael's FLY124/FLY125 on the recalibrated "
+        "telemetry), as amplitude-envelope frames: per-(mic, rotor, harmonic) "
+        "amplitude at 100 Hz + validity mask + the broadband residual waveform "
+        "+ the exact audio-rate carrier the solve used. Not re-derivable here — "
+        "the envelopes come from a multi-hour cluster solve "
+        "(scripts/vk_decompose.py @ 508ffcb, jobs vk-decompose-6bdede + "
+        "vk-decompose-michaels-be071d) whose outputs are R2 artifacts; this "
+        "generator joins them to the pinned parents and is run ONCE. Consumers: "
+        "the amplitude-target generator arms "
+        "(docs/experiments/amplitude-target-training.md).",
+        "gen": {
+            "recipe_version": 1,
+            "parents": {
+                "dregon": PARENTS["DREGON-frames"],
+                "michaels": PARENTS["michaels-frames"],
+            },
+            "decomposer": "scripts/vk_decompose.py@508ffcb",
+            "artifact_bucket": "ml-data",
+            "artifact_prefix": "artifacts/vk-decompose",
+            "sample_rate": 16000,
+            "k_max": 80,
+            "sources": [
+                {
+                    "parent": "dregon",
+                    "drone": "dregon",
+                    "rps_key": "motors_measured",
+                    "splits": ["in_flight_noise"],
+                    "rps_override_dir": "src/data_processing/refined_labels",
+                    "recording_ids": ["free-flight_nosource_room1"],
+                },
+                {
+                    "parent": "michaels",
+                    "drone": "michaels",
+                    "rps_key": "rps",
+                    "splits": None,
+                    "rps_override_dir": None,
+                    "recording_ids": ["FLY124", "FLY125"],
+                },
+            ],
+        },
+    },
     # ── Fixed SE validation sets ─────────────────────────────────────────────
     "SE-valid-drone": {
         "generator": "se_valid",
@@ -1333,6 +1610,7 @@ HISTORICAL_PINS = {
 
 
 _GENERATORS = {
+    "decomp_frames": generate_decomp_frames,
     "dregon_lm": generate_dregon_lm_split,
     "dn_lm": generate_dn_lm_split,
     "source_frames": generate_source_frames,
@@ -1346,6 +1624,7 @@ _GENERATORS = {
 
 #: Manifest layout per generator family (adopt sanity check + derive meta).
 _LAYOUTS = {
+    "decomp_frames": "tdframe-v1",
     "dregon_lm": "sample-dir-v1",
     "dn_lm": "sample-dir-v1",
     "source_frames": "tdframe-v1",

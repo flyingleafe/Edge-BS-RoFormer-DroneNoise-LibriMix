@@ -337,6 +337,8 @@ class _CodebookConditionedNoiseGen(nn.Module):
         per_rotor_deltas: bool = False,
         cond_dim: int = 0,
         n_rotors: int = 4,
+        amp_calibration: bool = False,
+        n_mics: int = 8,
     ) -> None:
         super().__init__()
         self.generator = generator
@@ -364,6 +366,58 @@ class _CodebookConditionedNoiseGen(nn.Module):
             self.log_jitter_sigma = nn.ParameterDict(
                 {cb._key(name): nn.Parameter(torch.tensor(raw0)) for name in cb.names()}
             )
+        # ── absolute-level calibration (the amplitude-target path) ───────────
+        # The decomposition targets live in the RECORDING's absolute units; the
+        # emitter's output does not, and nothing else in the objective anchors
+        # it. Three name-keyed, zero-initialised (unity) log-gains close that
+        # gap, all constant in time so none of them can leak level DYNAMICS:
+        #   log_gain        one per drone — the coherent branch's unit constant;
+        #   log_mic_gain    M per drone — real arrays deviate from a pure 1/r law
+        #                   (per-microphone sensitivity, directivity, room), and
+        #                   the learned values double as an array-calibration
+        #                   readout;
+        #   log_gain_noise  one per drone, applied in the POWER domain — the
+        #                   broadband branch's magnitude response feeds a
+        #                   unit-variance excitation, so its target-side
+        #                   normalization constant is its own and must not be
+        #                   forced through the coherent branch's gain.
+        # They are applied to EVERY prediction path (rendered audio included), so
+        # a calibrated model renders at the recording's level rather than needing
+        # a post-hoc scale. Off by default => existing configs are unchanged.
+        self.amp_calibration = bool(amp_calibration)
+        self.n_mics = int(n_mics)
+        self.log_gain: nn.ParameterDict | None = None
+        self.log_mic_gain: nn.ParameterDict | None = None
+        self.log_gain_noise: nn.ParameterDict | None = None
+        if self.amp_calibration:
+            cb = cast("DroneCodebook", codebook)
+            keys = [cb._key(name) for name in cb.names()]
+            self.log_gain = nn.ParameterDict({k: nn.Parameter(torch.zeros(())) for k in keys})
+            self.log_gain_noise = nn.ParameterDict({k: nn.Parameter(torch.zeros(())) for k in keys})
+            self.log_mic_gain = nn.ParameterDict(
+                {k: nn.Parameter(torch.zeros(self.n_mics)) for k in keys}
+            )
+
+    def _resolve_calibration(
+        self, drone_names: list[str], n_mics: int
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """``(amplitude gain [B, M], noise POWER gain [B, M])``, or ``None``.
+
+        The microphone gain is shared by the two branches (it is a property of
+        the microphone); each branch adds its own scalar unit constant.
+        """
+        if self.log_gain is None or self.log_mic_gain is None or self.log_gain_noise is None:
+            return None
+        cb = cast("DroneCodebook", self.codebook)
+        keys = [cb._key(n) for n in drone_names]
+        if n_mics > self.n_mics:
+            raise ValueError(
+                f"amp calibration was built for {self.n_mics} microphones, batch has {n_mics}"
+            )
+        mic = torch.stack([self.log_mic_gain[k][:n_mics] for k in keys], dim=0)  # [B, M]
+        glob = torch.stack([self.log_gain[k] for k in keys], dim=0).unsqueeze(-1)  # [B, 1]
+        noise = torch.stack([self.log_gain_noise[k] for k in keys], dim=0).unsqueeze(-1)  # [B, 1]
+        return torch.exp(mic + glob), torch.exp(2.0 * mic + noise)
 
     def _resolve_jitter_sigma(self, drone_names: list[str]) -> torch.Tensor | None:
         """Per-sample learnable linewidth ``[B]`` (softplus of the per-drone raw)."""
@@ -389,6 +443,11 @@ class _CodebookConditionedNoiseGen(nn.Module):
             kwargs.setdefault("rps_jitter_sigma", sigma)
         return z
 
+    @staticmethod
+    def _n_mics(rel_pos: Any) -> int:
+        """Observer count of a ``[B, R, 3]`` (=1) or ``[B, M, R, 3]`` geometry."""
+        return 1 if rel_pos.dim() == 3 else int(rel_pos.shape[1])
+
     def forward(
         self,
         rps: Any,
@@ -397,7 +456,18 @@ class _CodebookConditionedNoiseGen(nn.Module):
         **kwargs: Any,
     ) -> Any:
         z = self._resolve_conditioning(list(drone_names), kwargs)
-        return self.generator(rps, rel_pos, z=z, **kwargs)
+        out = self.generator(rps, rel_pos, z=z, **kwargs)
+        cal = self._resolve_calibration(list(drone_names), self._n_mics(rel_pos))
+        if cal is None:
+            return out
+        # Rendered audio is [B, M, T], or [B, T] for a single-observer geometry.
+        gain, _ = cal
+        scale = gain.unsqueeze(-1) if rel_pos.dim() == 4 else gain[:, 0].reshape(-1, 1)
+        if isinstance(out, dict):
+            out = dict(out)
+            out["audio"] = out["audio"] * scale
+            return out
+        return out * scale
 
     def spatial_stats(
         self,
@@ -433,7 +503,37 @@ class _CodebookConditionedNoiseGen(nn.Module):
                 f"wrapped generator {type(self.generator).__name__} has no `spectral_stats`"
             )
         z = self._resolve_conditioning(list(drone_names), kwargs)
-        return fn(rps, rel_pos, z=z, **kwargs)
+        out = dict(fn(rps, rel_pos, z=z, **kwargs))
+        cal = self._resolve_calibration(list(drone_names), self._n_mics(rel_pos))
+        if cal is not None:
+            gain, power = cal
+            out["coherent"] = out["coherent"] * gain.unsqueeze(-1)
+            out["noise_psd"] = out["noise_psd"] * power[:, :, None, None]
+        return out
+
+    def amp_stats(
+        self,
+        rps: Any,
+        rel_pos: Any,
+        drone_names: list[str],
+        **kwargs: Any,
+    ) -> Any:
+        """Conditioned passthrough to the generator's AMPLITUDE-envelope
+        prediction (see
+        :meth:`models.generative.PositionalHarmonicNoiseGen.amp_stats`), with the
+        absolute-level calibration applied — the training path of the
+        amplitude-target objective (``losses.AmplitudeTargetLoss``)."""
+        fn = getattr(self.generator, "amp_stats", None)
+        if fn is None:
+            raise TypeError(f"wrapped generator {type(self.generator).__name__} has no `amp_stats`")
+        z = self._resolve_conditioning(list(drone_names), kwargs)
+        out = dict(fn(rps, rel_pos, z=z, **kwargs))
+        cal = self._resolve_calibration(list(drone_names), self._n_mics(rel_pos))
+        if cal is not None:
+            gain, power = cal
+            out["amp"] = out["amp"] * gain[:, :, None, None, None]
+            out["noise_psd"] = out["noise_psd"] * power[:, :, None, None]
+        return out
 
 
 def build_noise_gen_model(
@@ -454,6 +554,8 @@ def build_noise_gen_model(
     per_rotor_deltas: bool = False,
     n_rotors: int = 4,
     wind_uniform_exposure: bool = False,
+    amp_calibration: bool = False,
+    n_mics: int = 8,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -494,6 +596,13 @@ def build_noise_gen_model(
     its docstring); ``rps_jitter_tau`` stays shared. Requires ``cond_dim > 0``.
     Adds new state-dict keys (``log_jitter_sigma.*``) — not loadable into/from a
     fixed-sigma checkpoint, so train from scratch (or ``strict=False``).
+
+    ``amp_calibration`` adds the absolute-level gains the amplitude-target
+    objective needs (per-drone global, per-drone per-microphone, and a separate
+    power-domain constant for the broadband branch) — see
+    :class:`_CodebookConditionedNoiseGen`. ``n_mics`` sizes the per-microphone
+    vector (8 = the DREGON array, the widest in use). Requires ``cond_dim > 0``
+    and adds state-dict keys, so it is new-training-only.
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
@@ -534,6 +643,8 @@ def build_noise_gen_model(
         per_rotor_deltas=per_rotor_deltas,
         cond_dim=cond_dim,
         n_rotors=n_rotors,
+        amp_calibration=amp_calibration,
+        n_mics=n_mics,
     )
 
 
