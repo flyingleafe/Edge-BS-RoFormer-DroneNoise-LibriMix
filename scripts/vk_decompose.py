@@ -183,7 +183,8 @@ def published_audio_starts(spec: str) -> dict[str, int]:
 
     name, version = _parse_frames_spec(spec)
     starts: dict[str, int] = {}
-    for tf in iter_published_frames(name, version, splits=SPLITS):
+    splits = None if "michaels" in spec else SPLITS
+    for tf in iter_published_frames(name, version, splits=splits):
         rid = meta_dict(tf).get("recording_id")
         if rid and "audio" in tf:
             starts[str(rid)] = int(tf["audio"].t_start_ticks)
@@ -208,10 +209,17 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
     from data_processing.frames import meta_dict
     from data_processing.noise_rps_dataset import load_published_noise_sources
 
+    # The dataset profile follows the spec: Michael's frames carry the already
+    # recalibrated generic ``rps`` track (no refined sidecar exists, none is
+    # needed), DREGON carries ``motors_measured`` plus the sidecar override.
+    if "michaels" in spec:
+        origin, rps_key, splits, override = "michaels", "rps", None, None
+    else:
+        origin, rps_key, splits, override = "dregon", RPS_KEY, SPLITS, label_dir
     starts = published_audio_starts(spec)
     recs: list[dict[str, Any]] = []
     for src in load_published_noise_sources(
-        spec, SR, origin="dregon", rps_key=RPS_KEY, splits=SPLITS, rps_override_dir=label_dir
+        spec, SR, origin=origin, rps_key=rps_key, splits=splits, rps_override_dir=override
     ):
         frame = src.frame
         meta = meta_dict(frame)
@@ -242,6 +250,7 @@ def load_recordings(spec: str, label_dir: str | Path) -> list[dict[str, Any]]:
                 # phase re-reference below is exact.
                 "r_audio": to_audio_grid(r_ref, ft, n_t, SR),
                 "t0_offset_s": (t0 - starts[rid]) / float(td.TICKS_PER_SECOND),
+                "rps_key": rps_key,
             }
         )
     if not recs:
@@ -965,7 +974,7 @@ def stitch(
             span_samples=np.asarray([a_min, a_max], dtype=np.int64),
             recording_id=np.array(rid),
             spec=np.array(spec),
-            rps_key=np.array(RPS_KEY),
+            rps_key=np.array(str(rec.get("rps_key", RPS_KEY))),
             label_dir=np.array(str(label_dir)),
             time_reference=np.array(
                 "seconds from the published recording's audio t_start (the full frame, "
@@ -997,7 +1006,7 @@ def stitch(
             "recording_id": rid,
             "source": {
                 "spec": spec,
-                "rps_key": RPS_KEY,
+                "rps_key": str(rec.get("rps_key", RPS_KEY)),
                 "label_dir": str(label_dir),
                 "sample_rate": SR,
                 "splits": SPLITS,
