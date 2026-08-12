@@ -144,7 +144,72 @@ with the take-off ramp, so that block averages 41 rev/s against 79 in the
 remainder, and the monitored loss reported regime transfer rather than fit
 (both arms were re-run after the fix).
 
-RESULTS_PLACEHOLDER
+### Training (local CPU, both arms)
+
+The amplitude path renders nothing, so a training step is ~25 ms on CPU and a
+6000-sample epoch ~45 s — both arms trained on the laptop while the omnirun
+daemon was down (its host's `/home` was full; see "Blocked"). Adam 1e-3,
+batch 4 × 8 accumulation, patience 8: both stopped at epoch 11,
+`best val_loss` **0.889** (a1) and **0.878** (a2).
+
+### Comb readout (`scripts/eval_gen_comb_real.py`, 14 × 4 s DREGON chunks, 8 mics)
+
+Per band k1-9 / k10-24 / k25-49 / k50-80. `dLogMag` = along-track fidelity
+(LOWER better, 6.02 dB = a perfect but stochastic model); `PTFgen` = the
+rendered tooth's peak-to-floor (HIGHER better, −0.78 dB = the estimator's null =
+no measurable tooth). The m-arm rows reproduce the published numbers exactly,
+which is the instrument check for everything else here.
+
+| arm (comb-best epoch) | dLogMag | PTFgen |
+|---|---|---|
+| `gen_m1_refined` ep0 | 10.85 / 9.30 / 9.23 / 8.86 | **4.68** / 0.99 / 0.67 / −0.19 |
+| `gen_m2_refined_perrotor` ep14 | 8.14 / 8.42 / 9.05 / 9.01 | 3.78 / **2.59** / −0.06 / **1.05** |
+| `gen_a1_amp` ep10 | **7.91** / **8.04** / 8.11 / **7.55** | −0.10 / −0.95 / −1.06 / −1.12 |
+| `gen_a2_amp_perrotor` ep10 | 7.93 / 8.00 / **8.06** / **7.45** | 0.16 / −0.92 / −1.03 / −1.12 |
+
+(real audio along the refined tracks: PTF 1.61 / 0.90 / −0.79 / −1.05.)
+
+### Verdict on v1 targets
+
+1. **The objective transports amplitude information, and best at high k.** Both
+   amplitude arms beat both audio-trained arms on along-track fidelity in every
+   band, and they are the only arms whose fidelity IMPROVES with `k`
+   (7.5 dB at k50-80 against 8.9-9.0) — the band where the MSSTFT objective
+   provably receives no training signal at all.
+2. **The rendered comb has no peak-to-floor contrast.** Every amplitude-arm band
+   above k1-9 sits at the estimator null: the model's lines are at the right
+   amplitude but its rendering has no teeth, while `gen_m2` keeps real ones.
+3. **The mechanism is the v1 leakage, measured.** On the same held-out chunk the
+   amplitude arm puts **64 %** of its source power in the coherent branch
+   against `gen_m2`'s **87 %**. v1 called the leaked comb energy "residual", the
+   objective faithfully asked for it in the broadband branch, and a smooth
+   broadband branch renders it as floor between the teeth. This is exactly the
+   failure the v2 (linewidth-matched) decomposition exists to remove, and it is
+   why these numbers are a plumbing validation and not the verdict on the
+   method.
+4. **Unsupervised dimensions run away** (the reason the `tail` barrier exists):
+   with 100 modelled harmonics against a k_hi of 62, the unsupervised remainder
+   trained to 0.405 — three orders above the supervised lines — and the render
+   came out 46 dB too loud with its comb 35 dB under its own floor, while the
+   amplitudes themselves were right. Any objective that supervises a subset of a
+   model's outputs needs this check.
+5. **The per-mic calibration is a readout.** Learned per-mic log-gains span
+   ±0.6 (≈5 dB) on Michael's and ±0.3 on DREGON, and the broadband branch's own
+   per-mic gains differ from the coherent ones — as the residual-attribution
+   verdict predicts.
+
+Artifacts: `results/gen_comb_amp/{a1,a2}_ep*/`, `arms_table.json` (all epochs of
+both arms plus the two reference m-arms), checkpoints under
+`r2://ml-data/artifacts/gen_a{1,2}_*/`.
+
+### Blocked / not done
+
+- The arms are trained on **v1** targets. The scientific comparison is the same
+  two arms on `decomp-frames-v2`; everything is one `dataset:` line away.
+- The omnirun daemon was unavailable for this whole session (its host's `/home`
+  partition is 100 % full, so the scheduler's postgres cannot write). Training
+  ran locally instead — feasible only because this objective renders nothing.
+
 
 ## Reading the comb table
 
