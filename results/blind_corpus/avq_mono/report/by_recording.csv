@@ -1,0 +1,2 @@
+recording_id,arm,n_windows,ridge_clearance_db,ridge_margin_half_db,fvk_well_p03,fvk_ratio_double,fvk_ratio_half,within_window_std_rev_s,rate_spread_across_windows,mean_rate_rev_s,ref_mae_rev_s,wall_ladder_s
+S1_seq1,fullrange,5,0.767,-0.221,1.975,3.303,1.035,2.587,26.056,65.34,,75.68

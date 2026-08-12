@@ -1,0 +1,174 @@
+[
+ {
+  "recording_id": "S1_seq1",
+  "n_windows_total": 7,
+  "n_sampled": 3,
+  "comb_prominence_db": 0.383,
+  "f0_peak_rev_s": 67.75,
+  "f0_within_window_spread": 33.5,
+  "f0_across_window_spread": 72.88,
+  "octave_ratio_vb_v2b": 1.41,
+  "per_window": [
+   {
+    "window": "S1_seq1__w000",
+    "comb_prominence_db": 0.421,
+    "f0_peak_rev_s": 67.75,
+    "f0_slice_spread_rev_s": 21.0,
+    "f0_slice_std_rev_s": 10.377,
+    "octave_ratio_vb_v2b": 1.073
+   },
+   {
+    "window": "S1_seq1__w003",
+    "comb_prominence_db": 0.382,
+    "f0_peak_rev_s": 49.5,
+    "f0_slice_spread_rev_s": 79.0,
+    "f0_slice_std_rev_s": 32.368,
+    "octave_ratio_vb_v2b": 1.41
+   },
+   {
+    "window": "S1_seq1__w006",
+    "comb_prominence_db": 0.345,
+    "f0_peak_rev_s": 122.38,
+    "f0_slice_spread_rev_s": 0.5,
+    "f0_slice_std_rev_s": 0.207,
+    "octave_ratio_vb_v2b": 1.764
+   }
+  ]
+ },
+ {
+  "recording_id": "S1_seq2",
+  "n_windows_total": 7,
+  "n_sampled": 3,
+  "comb_prominence_db": 0.519,
+  "f0_peak_rev_s": 86.12,
+  "f0_within_window_spread": 2.58,
+  "f0_across_window_spread": 4.12,
+  "octave_ratio_vb_v2b": 1.042,
+  "per_window": [
+   {
+    "window": "S1_seq2__w000",
+    "comb_prominence_db": 0.491,
+    "f0_peak_rev_s": 87.5,
+    "f0_slice_spread_rev_s": 1.75,
+    "f0_slice_std_rev_s": 0.715,
+    "octave_ratio_vb_v2b": 1.04
+   },
+   {
+    "window": "S1_seq2__w003",
+    "comb_prominence_db": 0.488,
+    "f0_peak_rev_s": 86.12,
+    "f0_slice_spread_rev_s": 5.25,
+    "f0_slice_std_rev_s": 2.054,
+    "octave_ratio_vb_v2b": 1.094
+   },
+   {
+    "window": "S1_seq2__w006",
+    "comb_prominence_db": 0.577,
+    "f0_peak_rev_s": 83.38,
+    "f0_slice_spread_rev_s": 0.75,
+    "f0_slice_std_rev_s": 0.306,
+    "octave_ratio_vb_v2b": 1.042
+   }
+  ]
+ },
+ {
+  "recording_id": "S1_seq3",
+  "n_windows_total": 2,
+  "n_sampled": 2,
+  "comb_prominence_db": 0.367,
+  "f0_peak_rev_s": 95.75,
+  "f0_within_window_spread": 8.25,
+  "f0_across_window_spread": 5.26,
+  "octave_ratio_vb_v2b": 1.015,
+  "per_window": [
+   {
+    "window": "S1_seq3__w000",
+    "comb_prominence_db": 0.328,
+    "f0_peak_rev_s": 98.38,
+    "f0_slice_spread_rev_s": 15.75,
+    "f0_slice_std_rev_s": 6.054,
+    "octave_ratio_vb_v2b": 0.944
+   },
+   {
+    "window": "S1_seq3__w001",
+    "comb_prominence_db": 0.407,
+    "f0_peak_rev_s": 93.12,
+    "f0_slice_spread_rev_s": 0.75,
+    "f0_slice_std_rev_s": 0.306,
+    "octave_ratio_vb_v2b": 1.086
+   }
+  ]
+ },
+ {
+  "recording_id": "S2_seq1",
+  "n_windows_total": 13,
+  "n_sampled": 3,
+  "comb_prominence_db": 0.499,
+  "f0_peak_rev_s": 90.25,
+  "f0_within_window_spread": 0.58,
+  "f0_across_window_spread": 1.37,
+  "octave_ratio_vb_v2b": 1.043,
+  "per_window": [
+   {
+    "window": "S2_seq1__w000",
+    "comb_prominence_db": 0.557,
+    "f0_peak_rev_s": 88.88,
+    "f0_slice_spread_rev_s": 1.0,
+    "f0_slice_std_rev_s": 0.41,
+    "octave_ratio_vb_v2b": 1.049
+   },
+   {
+    "window": "S2_seq1__w006",
+    "comb_prominence_db": 0.43,
+    "f0_peak_rev_s": 90.25,
+    "f0_slice_spread_rev_s": 0.75,
+    "f0_slice_std_rev_s": 0.272,
+    "octave_ratio_vb_v2b": 1.043
+   },
+   {
+    "window": "S2_seq1__w012",
+    "comb_prominence_db": 0.509,
+    "f0_peak_rev_s": 90.25,
+    "f0_slice_spread_rev_s": 0.0,
+    "f0_slice_std_rev_s": 0.0,
+    "octave_ratio_vb_v2b": 1.032
+   }
+  ]
+ },
+ {
+  "recording_id": "S2_seq2",
+  "n_windows_total": 13,
+  "n_sampled": 3,
+  "comb_prominence_db": 0.106,
+  "f0_peak_rev_s": 32.5,
+  "f0_within_window_spread": 58.25,
+  "f0_across_window_spread": 30.13,
+  "octave_ratio_vb_v2b": 1.365,
+  "per_window": [
+   {
+    "window": "S2_seq2__w000",
+    "comb_prominence_db": 0.121,
+    "f0_peak_rev_s": 26.62,
+    "f0_slice_spread_rev_s": 8.5,
+    "f0_slice_std_rev_s": 3.585,
+    "octave_ratio_vb_v2b": 2.846
+   },
+   {
+    "window": "S2_seq2__w006",
+    "comb_prominence_db": 0.113,
+    "f0_peak_rev_s": 32.5,
+    "f0_slice_spread_rev_s": 87.0,
+    "f0_slice_std_rev_s": 34.907,
+    "octave_ratio_vb_v2b": 1.185
+   },
+   {
+    "window": "S2_seq2__w012",
+    "comb_prominence_db": 0.083,
+    "f0_peak_rev_s": 56.75,
+    "f0_slice_spread_rev_s": 79.25,
+    "f0_slice_std_rev_s": 38.822,
+    "octave_ratio_vb_v2b": 1.365
+   }
+  ]
+ }
+]
