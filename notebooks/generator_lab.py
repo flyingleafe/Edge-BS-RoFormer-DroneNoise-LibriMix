@@ -90,6 +90,12 @@ def _r2(exp: str) -> str:
     return f"r2://ml-data/artifacts/{exp}/checkpoints/best.ckpt"
 
 
+def _r2_file(exp: str, filename: str) -> str:
+    """A SPECIFIC checkpoint file — for comb-aware epoch picks, where
+    ``best.ckpt`` (best-by-mrstft) is the wrong draw."""
+    return f"r2://ml-data/artifacts/{exp}/checkpoints/{filename}"
+
+
 #: Every generator worth comparing. Keys are what the notebook's picker shows.
 VARIANTS: dict[str, Variant] = {
     "real": Variant("real", "real", "the recording itself"),
@@ -207,6 +213,27 @@ VARIANTS: dict[str, Variant] = {
         "gen_r2_refined_perrotor",
         _r2("gen_r2_refined_perrotor"),
         _DEEP_DREGON_PERROTOR,
+    ),
+    # ── full-dataset refined-label arms (comb-aware checkpoint selection) ───
+    "deep/m1 full data, refined labels": Variant(
+        "deep/m1 full data, refined labels",
+        "deep",
+        "DREGON+Michael's, refined DREGON labels, per-drone codebook. "
+        "Comb-best epoch (ep0); mixed-drone training still costs DREGON "
+        "mid-k sharpness. Drive with labels='refined' on DREGON.",
+        "gen_m1_refined",
+        _r2_file("gen_m1_refined", "ep0_mrstft_3.0321.ckpt"),
+        _DEEP_PERDRONE,
+    ),
+    "deep/m2 full data + per-rotor dz, refined": Variant(
+        "deep/m2 full data + per-rotor dz, refined",
+        "deep",
+        "m1 + per-rotor deltas, comb-best epoch (ep14): the best high-k combs "
+        "of any arm (k50-80 +1.05 dB) — with two drones the deltas earn their "
+        "keep. Drive with labels='refined' on DREGON.",
+        "gen_m2_refined_perrotor",
+        _r2_file("gen_m2_refined_perrotor", "ep14_mrstft_2.1149.ckpt"),
+        {**_DEEP_PERDRONE, "per_rotor_deltas": True, "n_rotors": 4},
     ),
     # ── non-learned references ──────────────────────────────────────────────
     "gp/JASA rotor field": Variant(

@@ -141,3 +141,24 @@ every MultiScaleSTFT scale is ≤ 2048 samples, **no arm receives a training
 signal for sharp teeth above k≈25 on this data**: all arms sitting at the
 null at k50-80 is the correct fit to what the loss can see, not a residual
 label failure.
+
+## Full-dataset arms (gen_m1_refined / gen_m2_refined_perrotor, 2026-08-12)
+
+DREGON+Michael's 8-mic stream with the refined DREGON sidecar,
+`checkpoint_every=1`, comb-aware selection over all epochs (DREGON chunks,
+paired reading; curves `results/perrotor_probe/m_arms_epoch_curves.json`):
+
+- `gen_m1_refined` (per-drone only), comb-best ep0: 4.68/0.99/0.67/−0.20 dB —
+  mixed-drone training still costs DREGON mid-k sharpness (DREGON-only r1
+  held 4.22 at k10-24).
+- `gen_m2_refined_perrotor`, comb-best ep14: 3.78/2.59/−0.06/**+1.05** dB —
+  the best high-k combs of any arm in the campaign; with two drones the
+  per-rotor deltas earn their keep.
+- The monitor pathology reproduced a third time: corr(val mrstft, high-k
+  comb) = −0.37 (m2); best-by-mrstft picks worse epochs in both runs.
+
+Production pick: `r2://ml-data/artifacts/gen_m2_refined_perrotor/checkpoints/`
+`ep14_mrstft_2.1149.ckpt` (registered in the generator lab as
+"deep/m2 full data + per-rotor dz, refined"). Caveat: the comb readout covers
+DREGON only; Michael's-side quality needs its own instrument before this
+checkpoint is used for FLY-drone work.
