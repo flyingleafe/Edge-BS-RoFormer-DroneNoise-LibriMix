@@ -1,7 +1,8 @@
 # Amplitude-target training: fit the decomposition, not the waveform
 
-**Date**: 2026-08-12 · **Branch**: `amp-target` · **Status**: built + trained;
-numbers below. Continuation of `vk-decomposition.md` ("consequence: the
+**Date**: 2026-08-12 · **Branch**: `amp-target` · **Status**: path built and
+trained end to end on **v1 targets**, which makes the numbers below a
+PLUMBING VALIDATION, not the scientific comparison — see "Target version". Continuation of `vk-decomposition.md` ("consequence: the
 amplitude-target training path") and the erosion verdict of
 `generator-perrotor-dynamics.md`.
 
@@ -23,6 +24,23 @@ fighting it. It is comb-COHERENT demodulation, so it yields one amplitude
 ENVELOPE per (rotor, harmonic, microphone) at 100 Hz plus a broadband residual,
 and the split is exact by construction. Fitting those envelopes never compares
 two realizations of a decohering line.
+
+## Target version (read before the numbers)
+
+The v1 decomposition solved every track at a FLAT 1 Hz envelope bandwidth. Real
+linewidth grows with `k`, so v1 under-resolves the mid/high-k lines: a measured
+majority of the k10-24 stripe contrast leaks into what v1 calls the residual.
+Two consequences for this objective: the amplitude targets **underestimate**
+mid/high-k line amplitudes, and the residual PSD targets contain leaked comb
+energy plus foreign quasi-stationary tones a smooth-PSD noise model cannot
+represent. A v2 solve with a linewidth-matched bandwidth schedule is the one the
+scientific arms will train on.
+
+The dataset layer is therefore version-parameterized: `decomp-frames-v1` and
+`decomp-frames-v2` are the same join over different artifact prefixes
+(`derivations._decomp_spec`), and an arm switches with one `dataset:` line
+(`conf/data/decomp_frames_v{1,2}.yaml`). Everything below — code, tests,
+configs, and the training/eval loop — is v2-ready; only the numbers are v1.
 
 ## Step 1 — the decomposition as a dataset
 
@@ -119,6 +137,12 @@ Both amplitude arms monitor `val_loss` (there is no rendered realization to
 score, and a comb-blind scalar is a proven lottery as a selector);
 `checkpoint_every=1`, and the final pick is comb-aware and offline, exactly as
 the perrotor-dynamics campaign requires.
+
+The held-out block is the MIDDLE 10 % of each recording. The first attempt held
+out the leading block and measured the wrong thing: a flight recording opens
+with the take-off ramp, so that block averages 41 rev/s against 79 in the
+remainder, and the monitored loss reported regime transfer rather than fit
+(both arms were re-run after the fix).
 
 RESULTS_PLACEHOLDER
 
