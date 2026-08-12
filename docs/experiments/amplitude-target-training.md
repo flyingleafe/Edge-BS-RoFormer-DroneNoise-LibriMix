@@ -200,7 +200,23 @@ which is the instrument check for everything else here.
 
 Artifacts: `results/gen_comb_amp/{a1,a2}_ep*/`, `arms_table.json` (all epochs of
 both arms plus the two reference m-arms), checkpoints under
-`r2://ml-data/artifacts/gen_a{1,2}_*/`.
+`r2://ml-data/artifacts/gen_a1_amp/` and `.../gen_a2_amp_perrotor/`.
+
+**Which R2 checkpoints are the reported ones.** Each experiment name was trained
+three times in one session (the leading-block split, then the pre-barrier loss,
+then the reported run), so those two `checkpoints/` prefixes also hold the two
+discarded runs' epoch files. `best.ckpt` is the reported run's. The reported
+epoch files are exactly:
+
+- `gen_a1_amp`: ep0 1.7490, ep1 1.1055, ep2 0.9455, **ep3 0.8889 (best)**,
+  ep4 0.9666, ep5 0.9460, ep6 0.9233, ep7 0.9021, ep8 0.9181, ep9 0.9491,
+  **ep10 0.9181 (comb-best)**, ep11 0.9120.
+- `gen_a2_amp_perrotor`: ep0 1.3401, ep1 0.9969, ep2 0.9432,
+  **ep3 0.8784 (best)**, ep4 0.9320, ep5 0.9046, ep6 0.8959, ep7 0.9360,
+  ep8 0.9074, ep9 0.8911, **ep10 0.8926 (comb-best)**, ep11 0.8936.
+
+The v2 arms should take fresh experiment names (`gen_a1_amp_v2` /
+`gen_a2_amp_perrotor_v2`) rather than reusing these.
 
 ### Blocked / not done
 
