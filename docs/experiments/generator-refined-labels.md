@@ -108,3 +108,36 @@ exist at cruise).
 Artifacts: `results/gen_comb_real/` (per_k.csv, summary.csv, per-k plots,
 spectrogram illustrations), sidecar + report in
 `src/data_processing/refined_labels/`.
+
+## CORRECTION (2026-08-12, instrument audit)
+
+A user challenge ("real PTF below the null sounds like an error") exposed two
+readout defects; probes in `results/perrotor_probe/{self_ref_ptf,
+real_comb_vs_window,real_order_avg_contrast}.json`:
+
+1. **Below-null real PTF = floor contamination.** The ±0.5 f0 floor slots
+   catch the smeared tails of the rotor's own line (nothing excises the own
+   line from its floor) and, for k ≈ 33-84, the twin rotor's line
+   (k·Δf ≈ 0.4-0.5 f0), which the ±15.6 Hz excision misses once displaced or
+   smeared. A line-free band reads AT the null; these floors were inflated.
+2. **The high-k cross-arm ladder was partly the same artifact.** The paired
+   reading pins floor slots and excision to the REFINED carriers, so the
+   scaled arm's displaced twin lines (k·f0·0.55 % > 15.6 Hz above k ≈ 40)
+   landed raw in its floor slots. Self-referenced re-scores (floors and
+   excision on each arm's own carriers): refined 1.41/4.22/0.96/0.13,
+   scaled 0.68/5.40/1.40/−0.02, orig 0.44/2.64/0.23/−0.60 per band.
+   **Withdrawn**: "refined is the only arm with teeth through k=80".
+   **Standing**: raw telemetry washes out the comb from k≈10 up (2.6 dB at
+   k10-24 vs 4.2-5.4 for corrected labels; 0.2 vs 1.0-1.4 at k25-49), and the
+   refined arm alone places its lines on the acoustic comb (fidelity readout,
+   which is band-only and floor-free).
+
+**Where real teeth actually end (this recording, 16 kHz).** Order-averaged
+tooth contrast along refined tracks (maximal time integration): 6.76 dB
+(k1-9), 1.36 (k10-24), 0.13 (k25-49), 0.01 (k50-80). Teeth above k≈25 are not
+STFT-separable at 128 ms windows — smear fills the inter-tooth valleys —
+although comb-locked energy exists there (ridge/F_VK instruments). Since
+every MultiScaleSTFT scale is ≤ 2048 samples, **no arm receives a training
+signal for sharp teeth above k≈25 on this data**: all arms sitting at the
+null at k50-80 is the correct fit to what the loss can see, not a residual
+label failure.
