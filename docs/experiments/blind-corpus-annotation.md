@@ -45,7 +45,13 @@ clearly > 1); failures emit NaN. Main missing instrument: a PER-ROTOR octave
 test (the global bpf_octave_ratio sits on its threshold for AVQ). Cost: ~45
 CPU-h for classes B/C/D/F (one uni-cpu job, <4 h wall).
 
-Defects found: `tracking.pipelines.energy_bridge` raises on near-idle windows
-(empty c_grid → argmax; upstream fix owed); VK banded system needs 1.53 GiB
+Actionable extras: enabling the F_VK `alias_penalty=1.0` widened the
+half-margin 3.3 % → 14 % on the validated window — the counter-term is the
+right octave lever and should be promoted from opt-in to default WITH
+per-rotor granularity (the global bpf_octave_ratio is what flips with window
+length).
+
+Defects found: `tracking.pipelines.energy_bridge` raises on near-idle
+windows (`pipelines.py:1008`, empty c_grid → argmax; upstream fix owed); VK banded system needs 1.53 GiB
 per group at 20 s/k=40 and GROWS on the r/2 sibling (bounded centre-crop
 scoring added); gridrun workers must be module-level callables.
