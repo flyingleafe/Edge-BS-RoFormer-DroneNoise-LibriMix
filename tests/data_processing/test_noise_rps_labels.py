@@ -87,9 +87,15 @@ def test_override_keeps_the_timebase_dims_and_dtype(tmp_path: Path) -> None:
     assert after.t_start_ticks == before.t_start_ticks
 
 
-def test_override_clips_at_the_edges_of_the_sidecar(tmp_path: Path) -> None:
-    """Stamps outside ``ft`` take the first/last refined value, not NaN."""
+def test_override_keeps_telemetry_outside_the_sidecar_span(tmp_path: Path) -> None:
+    """Stamps outside ``ft`` keep the original telemetry.
+
+    Clipping them to the edge is wrong on the real recording: the motor
+    shutdown after the audio ends read 75 rev/s (the edge cruise value)
+    against a true telemetry of 0.
+    """
     frame = _synthetic_frame()
+    original = np.array(frame["motors_measured"].data, copy=True)
     directory = tmp_path / "short"
     directory.mkdir()
     ft = np.linspace(2.0, 5.0, 31)
@@ -99,8 +105,11 @@ def test_override_clips_at_the_edges_of_the_sidecar(tmp_path: Path) -> None:
     out = apply_rps_override(frame, "motors_measured", directory)
 
     values = np.asarray(out["motors_measured"].data)
+    stamps = np.arange(values.shape[1]) / MOTOR_RATE
+    inside = (stamps >= 2.0) & (stamps <= 5.0)
     assert np.isfinite(values).all()
-    assert np.allclose(values, np.array([40.0, 41.0, 42.0, 43.0])[:, None], atol=1e-4)
+    assert np.allclose(values[:, inside], np.array([40.0, 41.0, 42.0, 43.0])[:, None], atol=1e-4)
+    assert np.allclose(values[:, ~inside], original[:, ~inside])
 
 
 def test_missing_sidecar_raises_with_the_available_ids(tmp_path: Path) -> None:

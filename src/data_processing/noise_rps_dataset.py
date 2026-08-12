@@ -420,7 +420,7 @@ def apply_rps_override(frame: td.Frame, rps_key: str, override_dir: str | Path) 
     computed in exact int64 ticks, because the published frames sit at
     absolute epoch ticks (~1e18) that float64 cannot hold.
 
-    Times outside ``ft`` clip to the first/last refined value. The function
+    Times outside ``ft`` keep their original telemetry values. The function
     raises if the sidecar is absent — a silent fall-back to the original
     telemetry would make the two arms of the label A/B the same experiment.
     """
@@ -462,11 +462,33 @@ def apply_rps_override(frame: td.Frame, rps_key: str, override_dir: str | Path) 
     audio_start_ticks = cast(td.Series, frame["audio"]).t_start_ticks
     stamp_ticks = np.asarray(tindex.abs_stamps_ticks, dtype=np.int64)
     offsets = (stamp_ticks - int(audio_start_ticks)) / float(td.TICKS_PER_SECOND)
-    offsets = np.clip(offsets, ft[0], ft[-1])
 
-    new_values = np.empty_like(values)
+    # Stamps OUTSIDE the sidecar's span keep the original telemetry. Clipping
+    # them to the edge assigned cruise-level refined values to the motor
+    # shutdown after the audio ends (telemetry 0 vs refined 75 rev/s).
+    inside = (offsets >= ft[0]) & (offsets <= ft[-1])
+    new_values = np.array(values, copy=True)
+    # One sidecar grid step, in stamps — the smear radius of a sub-frame
+    # on/off transition when the coarse grid interpolates onto the stamps.
+    if offsets.size > 1:
+        stamp_dt = float(np.median(np.diff(offsets)))
+        grid_dt = float(np.median(np.diff(ft)))
+        radius = max(1, int(np.ceil(grid_dt / max(stamp_dt, 1e-9))))
+    else:
+        radius = 1
     for rotor in range(refined.shape[0]):
-        new_values[rotor] = np.interp(offsets, ft, refined[rotor]).astype(values.dtype)
+        # A stopped motor stays stopped, and stamps within one grid step of a
+        # stop keep their telemetry: the 0.032 s sidecar grid smears the
+        # sub-frame shutdown step into a ramp (75 rev/s appeared on stamps
+        # whose telemetry is 0, and 5 rev/s on running stamps adjacent to the
+        # stop). Refined values also clamp to >= 0.
+        stopped = values[rotor] <= 0.0
+        near_stop = (
+            np.convolve(stopped.astype(np.float64), np.ones(2 * radius + 1), mode="same") > 0.0
+        )
+        running = inside & ~near_stop
+        interp = np.interp(offsets[running], ft, refined[rotor])
+        new_values[rotor, running] = np.maximum(interp, 0.0).astype(values.dtype)
     return frame.with_entry(rps_key, series.with_data(new_values))
 
 
