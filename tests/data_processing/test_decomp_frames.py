@@ -99,14 +99,21 @@ def test_idle_chunks_are_rejected():
 
 
 def test_train_and_valid_spans_do_not_overlap():
-    rec_train = _record("a", "dregon")
-    rec_valid = _record("a", "dregon")
-    n_t = rec_train["rps"].shape[-1]
+    """The held-out block is in the MIDDLE, train is the two pieces around it."""
+    rec = _record("a", "dregon")
+    n_t = rec["rps"].shape[-1]
     n_val = int(round(0.1 * n_t)) // STRIDE * STRIDE
-    rec_valid["span"], rec_train["span"] = (0, n_val), (n_val, n_t)
-    tr = DecompFrameDataset([rec_train], chunk_size=1600, n_samples=32)
-    va = DecompFrameDataset([rec_valid], chunk_size=1600, n_samples=32, split="valid")
-    tr_starts = {int(tr[i]["meta"]["start_sample"]) for i in range(len(tr))}
+    v0 = (n_t - n_val) // 2 // STRIDE * STRIDE
+    tr = DecompFrameDataset(
+        [{**rec, "span": (0, v0)}, {**rec, "span": (v0 + n_val, n_t)}],
+        chunk_size=1600,
+        n_samples=32,
+    )
+    va = DecompFrameDataset(
+        [{**rec, "span": (v0, v0 + n_val)}], chunk_size=1600, n_samples=32, split="valid"
+    )
     va_starts = {int(va[i]["meta"]["start_sample"]) for i in range(len(va))}
-    assert min(tr_starts) >= n_val
-    assert max(va_starts) + 1600 <= n_val
+    assert min(va_starts) >= v0 and max(va_starts) + 1600 <= v0 + n_val
+    for i in range(len(tr)):
+        start = int(tr[i]["meta"]["start_sample"])
+        assert start + 1600 <= v0 or start >= v0 + n_val

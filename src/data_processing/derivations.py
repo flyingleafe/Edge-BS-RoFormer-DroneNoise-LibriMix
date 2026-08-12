@@ -823,6 +823,51 @@ def generate_decomp_frames(gen: dict[str, Any]) -> Iterator[Sample]:
             raise KeyError(f"{spec}: no decomposed recording for {missing}")
 
 
+def _decomp_spec(artifact_prefix: str, *, recipe_version: int, note: str) -> dict[str, Any]:
+    """One ``decomp-frames-v*`` spec — everything but the decomposition run.
+
+    The join (which recordings, which labels, which parents, the dense ``k``
+    grid) is identical across decomposition versions; what changes is the solve
+    that produced the artifacts, which is exactly ``artifact_prefix`` plus the
+    ``recipe_version`` that mints a fresh derivation identity.
+    """
+    return {
+        "generator": "decomp_frames",
+        "adopt_only": True,
+        "note": note,
+        "gen": {
+            "recipe_version": int(recipe_version),
+            "parents": {
+                "dregon": PARENTS["DREGON-frames"],
+                "michaels": PARENTS["michaels-frames"],
+            },
+            "decomposer": "scripts/vk_decompose.py@508ffcb",
+            "artifact_bucket": "ml-data",
+            "artifact_prefix": artifact_prefix,
+            "sample_rate": 16000,
+            "k_max": 80,
+            "sources": [
+                {
+                    "parent": "dregon",
+                    "drone": "dregon",
+                    "rps_key": "motors_measured",
+                    "splits": ["in_flight_noise"],
+                    "rps_override_dir": "src/data_processing/refined_labels",
+                    "recording_ids": ["free-flight_nosource_room1"],
+                },
+                {
+                    "parent": "michaels",
+                    "drone": "michaels",
+                    "rps_key": "rps",
+                    "splits": None,
+                    "rps_override_dir": None,
+                    "recording_ids": ["FLY124", "FLY125"],
+                },
+            ],
+        },
+    }
+
+
 # ─── AVQ-egonoise-vkrps (adopt-only: GPU annotator in the loop) ───────────────
 
 
@@ -1423,52 +1468,38 @@ SPECS: dict[str, dict[str, Any]] = {
         },
     },
     # ── VK decompositions of the real recordings ─────────────────────────────
-    "decomp-frames-v1": {
-        "generator": "decomp_frames",
-        "adopt_only": True,
-        "note": "Adopt-in-place. The coupled Vold-Kalman decomposition of the "
-        "three decomposable real recordings (DREGON free-flight_nosource_room1 "
-        "on the REFINED labels, Michael's FLY124/FLY125 on the recalibrated "
-        "telemetry), as amplitude-envelope frames: per-(mic, rotor, harmonic) "
-        "amplitude at 100 Hz + validity mask + the broadband residual waveform "
-        "+ the exact audio-rate carrier the solve used. Not re-derivable here — "
-        "the envelopes come from a multi-hour cluster solve "
-        "(scripts/vk_decompose.py @ 508ffcb, jobs vk-decompose-6bdede + "
-        "vk-decompose-michaels-be071d) whose outputs are R2 artifacts; this "
-        "generator joins them to the pinned parents and is run ONCE. Consumers: "
-        "the amplitude-target generator arms "
+    # Version-parameterized: one spec per DECOMPOSITION run. The v1 solve used a
+    # flat 1 Hz envelope bandwidth for every track, which under-resolves the real
+    # linewidth (it grows with k) — a measured share of the mid-k line energy
+    # therefore leaks into what v1 calls the residual. v2 re-solves with a
+    # linewidth-matched bandwidth schedule and lands under its own artifact
+    # prefix; switching a training arm over is one `dataset:` line in
+    # conf/data/decomp_frames*.yaml.
+    "decomp-frames-v1": _decomp_spec(
+        "artifacts/vk-decompose",
+        recipe_version=1,
+        note="Adopt-in-place. The coupled Vold-Kalman decomposition of the three "
+        "decomposable real recordings (DREGON free-flight_nosource_room1 on the "
+        "REFINED labels, Michael's FLY124/FLY125 on the recalibrated telemetry), as "
+        "amplitude-envelope frames: per-(mic, rotor, harmonic) amplitude at 100 Hz + "
+        "validity mask + the broadband residual waveform + the exact audio-rate carrier "
+        "the solve used. Not re-derivable here — the envelopes come from a multi-hour "
+        "cluster solve (scripts/vk_decompose.py @ 508ffcb, jobs vk-decompose-6bdede + "
+        "vk-decompose-michaels-be071d) whose outputs are R2 artifacts; this generator "
+        "joins them to the pinned parents and is run ONCE. FLAT 1 Hz per-track "
+        "bandwidth, so mid/high-k line amplitudes are underestimated and the residual "
+        "carries the leaked comb energy — see decomp-frames-v2. Consumers: the "
+        "amplitude-target generator arms "
         "(docs/experiments/amplitude-target-training.md).",
-        "gen": {
-            "recipe_version": 1,
-            "parents": {
-                "dregon": PARENTS["DREGON-frames"],
-                "michaels": PARENTS["michaels-frames"],
-            },
-            "decomposer": "scripts/vk_decompose.py@508ffcb",
-            "artifact_bucket": "ml-data",
-            "artifact_prefix": "artifacts/vk-decompose",
-            "sample_rate": 16000,
-            "k_max": 80,
-            "sources": [
-                {
-                    "parent": "dregon",
-                    "drone": "dregon",
-                    "rps_key": "motors_measured",
-                    "splits": ["in_flight_noise"],
-                    "rps_override_dir": "src/data_processing/refined_labels",
-                    "recording_ids": ["free-flight_nosource_room1"],
-                },
-                {
-                    "parent": "michaels",
-                    "drone": "michaels",
-                    "rps_key": "rps",
-                    "splits": None,
-                    "rps_override_dir": None,
-                    "recording_ids": ["FLY124", "FLY125"],
-                },
-            ],
-        },
-    },
+    ),
+    "decomp-frames-v2": _decomp_spec(
+        "artifacts/vk-decompose-v2",
+        recipe_version=2,
+        note="Adopt-in-place, SAME join as decomp-frames-v1 over a re-run solve with a "
+        "LINEWIDTH-MATCHED per-track bandwidth schedule (v1's flat 1 Hz clamp left a "
+        "measured majority of the k10-24 stripe contrast in the residual). Materialize "
+        "once the v2 artifacts are on R2 under artifacts/vk-decompose-v2/<recording>/.",
+    ),
     # ── Fixed SE validation sets ─────────────────────────────────────────────
     "SE-valid-drone": {
         "generator": "se_valid",

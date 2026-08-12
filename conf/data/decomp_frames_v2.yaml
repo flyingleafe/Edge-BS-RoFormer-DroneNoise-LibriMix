@@ -1,4 +1,4 @@
-# The published Vold-Kalman decompositions (decomp-frames-v1: DREGON
+# The published Vold-Kalman decompositions (decomp-frames-v2: DREGON
 # free-flight_nosource_room1 on the REFINED labels + Michael's FLY124/FLY125),
 # cut into 1 s chunks. Every chunk carries the amplitude envelope bank at
 # 100 Hz, its validity mask, the broadband residual and the exact audio-rate
@@ -19,7 +19,7 @@
 train:
   _target_: data_processing.frame_datasets.DecompFrameDataset.build_train
   params:
-    dataset: decomp-frames-v1
+    dataset: decomp-frames-v2
     chunk_size: 16000
     train_samples: 6000
     val_samples: 256
@@ -31,7 +31,7 @@ train:
 valid:
   _target_: data_processing.frame_datasets.DecompFrameDataset.build_valid
   params:
-    dataset: decomp-frames-v1
+    dataset: decomp-frames-v2
     chunk_size: 16000
     train_samples: 6000
     val_samples: 256

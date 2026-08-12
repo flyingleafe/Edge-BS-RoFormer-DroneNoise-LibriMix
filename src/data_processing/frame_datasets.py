@@ -1067,42 +1067,52 @@ class DecompFrameDataset(Dataset):
 
     @classmethod
     def _load_records(
-        cls, dataset: str, version: str | None, *, split: str, val_pct: float, val_at_start: bool
+        cls, dataset: str, version: str | None, *, split: str, val_pct: float, val_position: str
     ) -> list[dict[str, Any]]:
         """Decode the published recordings once and take each one's split span.
 
         The split is a TIME split inside every recording (there are only three),
-        with the same ``val_at_start`` convention
-        :class:`NoiseGenFrameDataset`'s inner dataset uses, so a validation chunk
-        is never a training chunk of the same recording.
+        so a validation chunk is never a training chunk of the same recording.
+        ``val_position`` defaults to ``"middle"`` and that default is
+        load-bearing: a flight recording BEGINS with the take-off ramp and ENDS
+        with the landing one, so a held-out block at either end is a different
+        flight regime, not a held-out sample of the same one — measured on
+        ``decomp-frames-v1``, a leading 10 % block averages 41 rev/s against 79
+        in the remainder. A middle block holds out cruise against cruise. The
+        train side is then the two pieces around it.
         """
         from data_processing.frames import meta_dict
         from data_processing.streams import iter_published_frames
 
+        if val_position not in ("middle", "start", "end"):
+            raise ValueError(f"val_position must be middle/start/end, got {val_position!r}")
         records: list[dict[str, Any]] = []
         for tf in iter_published_frames(dataset, version):
             meta = meta_dict(tf)
             rps = np.asarray(tf["rps"].data, dtype=np.float32)
             n_t = int(rps.shape[-1])
             n_val = int(round(val_pct * n_t)) // cls.ENV_STRIDE * cls.ENV_STRIDE
-            if val_at_start:
-                span = (0, n_val) if split == "valid" else (n_val, n_t)
-            else:
-                span = (n_t - n_val, n_t) if split == "valid" else (0, n_t - n_val)
-            records.append(
-                {
-                    "recording_id": str(meta.get("recording_id")),
-                    "drone": str(meta.get("drone")),
-                    "sample_rate": int(meta.get("sample_rate", 16000)),
-                    "rps": rps,
-                    "residual": np.asarray(tf["residual"].data, dtype=np.float32),
-                    "amp": np.asarray(tf["amp"].data, dtype=np.float32),
-                    "amp_valid": np.asarray(tf["amp_valid"].data, dtype=bool),
-                    "mic_pos": np.asarray(tf["mic_pos"].data, dtype=np.float32),
-                    "rotor_pos": np.asarray(tf["rotor_pos"].data, dtype=np.float32),
-                    "span": span,
-                }
+            starts = {"start": 0, "middle": (n_t - n_val) // 2, "end": n_t - n_val}
+            v0 = starts[val_position] // cls.ENV_STRIDE * cls.ENV_STRIDE
+            spans = (
+                [(v0, v0 + n_val)]
+                if split == "valid"
+                else [s for s in [(0, v0), (v0 + n_val, n_t)] if s[1] - s[0] > 0]
             )
+            base = {
+                "recording_id": str(meta.get("recording_id")),
+                "drone": str(meta.get("drone")),
+                "sample_rate": int(meta.get("sample_rate", 16000)),
+                "rps": rps,
+                "residual": np.asarray(tf["residual"].data, dtype=np.float32),
+                "amp": np.asarray(tf["amp"].data, dtype=np.float32),
+                "amp_valid": np.asarray(tf["amp_valid"].data, dtype=bool),
+                "mic_pos": np.asarray(tf["mic_pos"].data, dtype=np.float32),
+                "rotor_pos": np.asarray(tf["rotor_pos"].data, dtype=np.float32),
+            }
+            # One record per contiguous span: the arrays are SHARED (a view of
+            # the same decoded recording), only the draw range differs.
+            records += [{**base, "span": span} for span in spans]
         if not records:
             raise ValueError(f"{dataset}: no published recording decoded")
         return records
@@ -1117,14 +1127,14 @@ class DecompFrameDataset(Dataset):
         train_samples: int = 4096,
         val_samples: int = 256,
         val_pct: float = 0.1,
-        val_at_start: bool = True,
+        val_position: str = "middle",
         seed: int = 42,
         min_motor_rps: float = 30.0,
     ) -> DecompFrameDataset:
         del val_samples
         return cls(
             cls._load_records(
-                dataset, version, split="train", val_pct=val_pct, val_at_start=val_at_start
+                dataset, version, split="train", val_pct=val_pct, val_position=val_position
             ),
             chunk_size=chunk_size,
             n_samples=train_samples,
@@ -1143,14 +1153,14 @@ class DecompFrameDataset(Dataset):
         train_samples: int = 4096,
         val_samples: int = 256,
         val_pct: float = 0.1,
-        val_at_start: bool = True,
+        val_position: str = "middle",
         seed: int = 42,
         min_motor_rps: float = 30.0,
     ) -> DecompFrameDataset:
         del train_samples
         return cls(
             cls._load_records(
-                dataset, version, split="valid", val_pct=val_pct, val_at_start=val_at_start
+                dataset, version, split="valid", val_pct=val_pct, val_position=val_position
             ),
             chunk_size=chunk_size,
             n_samples=val_samples,
