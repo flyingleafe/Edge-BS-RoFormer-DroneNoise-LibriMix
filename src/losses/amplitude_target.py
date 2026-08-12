@@ -26,6 +26,17 @@ The two terms
     needs no ``k`` weighting to be seen. The model's prediction comes from
     :meth:`models.generative.PositionalHarmonicNoiseGen.amp_stats` (1/r gains,
     no delays, no rotor sum, no synthesis, no RPS jitter).
+``tail``
+    A one-sided barrier on the harmonics the decomposition never solved. The
+    emitter models ``n_harmonics`` lines but a recording's decomposition stops at
+    its own ``k_hi`` (62 on DREGON, 57 on Michael's at the campaign's 6 kHz
+    ceiling), so every higher line is an UNSUPERVISED direction — and measured on
+    the first arm it ran away to 0.405, three orders above the supervised lines,
+    dominating the rendering (the model's amplitudes were right; its audio was
+    46 dB too loud). Real comb amplitude decays with ``k``, so the barrier is
+    exactly that: no line above the ceiling may exceed the last supervised line.
+    It is a hinge, so it is identically zero once satisfied and never competes
+    with the fit.
 ``psd``
     ``L1`` on the log per-microphone broadband POWER of the residual waveform,
     on the noise branch's own uniform ``0..Nyquist`` band grid. The prediction
@@ -115,6 +126,8 @@ class AmplitudeTarget(nn.Module):
             recording's own units — the model's calibration gains put its
             predictions in those units.
         psd_eps: power floor for the broadband term, in the same units squared.
+        tail_weight: weight of the unsupervised-harmonic barrier (a hinge — zero
+            at the optimum, so this is a barrier height, not a trade-off).
         psd_weight: weight of the broadband term, measured rather than guessed.
             On a first batch of ``decomp-frames-v1`` the two terms are 7.14 and
             7.93 log-units at initialization — both dominated by the absolute
@@ -133,6 +146,7 @@ class AmplitudeTarget(nn.Module):
         eps: float = 1.6e-5,
         psd_eps: float = 1e-12,
         psd_weight: float = 0.5,
+        tail_weight: float = 1.0,
         n_fft: int = 2048,
         hop_length: int = 512,
     ) -> None:
@@ -140,6 +154,7 @@ class AmplitudeTarget(nn.Module):
         self.eps = float(eps)
         self.psd_eps = float(psd_eps)
         self.psd_weight = float(psd_weight)
+        self.tail_weight = float(tail_weight)
         self.n_fft = int(n_fft)
         self.hop_length = int(hop_length)
 
@@ -167,6 +182,30 @@ class AmplitudeTarget(nn.Module):
         diff = (torch.log(pred + self.eps) - torch.log(tgt + self.eps)).abs()
         return (diff * vmask).sum() / vmask.sum().clamp_min(1)
 
+    def tail_term(self, pred: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        """Barrier on harmonics above the recording's own decomposition ceiling.
+
+        ``pred`` ``[B, M, R, H, t_a]``, ``valid`` ``[B, R, K, t_e]``. The ceiling
+        is read per (sample, rotor) from the mask — the highest ``k`` that was
+        ever solved — and every predicted line above it is penalized for
+        exceeding the predicted line AT the ceiling. Amplitude below it is free:
+        the objective has nothing to say about how much energy is really up
+        there, only that it cannot exceed the comb it continues.
+        """
+        n_h = int(pred.shape[-2])
+        solved = valid.any(dim=-1)  # [B, R, K]
+        k_idx = torch.arange(solved.shape[-1], device=pred.device)
+        k_last = (solved * k_idx).amax(dim=-1)  # [B, R], the ceiling index
+        above = torch.arange(n_h, device=pred.device)[None, None, :] > k_last[..., None]
+        if not bool(above.any()):
+            return pred.new_zeros(())
+        ref = torch.gather(
+            pred, -2, k_last[:, None, :, None, None].expand(-1, pred.shape[1], -1, 1, pred.shape[-1])
+        )  # [B, M, R, 1, t_a]
+        excess = torch.log(pred + self.eps) - torch.log(ref + self.eps)
+        mask = above[:, None, :, :, None].expand_as(excess)
+        return (excess.clamp_min(0.0) * mask).sum() / mask.sum().clamp_min(1)
+
     def psd_term(self, pred: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
         """``[B, M, t_n, F]`` predicted power vs the residual's band power."""
         target = band_powers(
@@ -190,7 +229,8 @@ class AmplitudeTarget(nn.Module):
     ) -> torch.Tensor:
         amp = self.amplitude_term(amp_pred, amp_target, amp_valid)
         psd = self.psd_term(psd_pred, residual)
-        return amp + self.psd_weight * psd
+        tail = self.tail_term(amp_pred, amp_valid)
+        return amp + self.psd_weight * psd + self.tail_weight * tail
 
 
 class AmplitudeTargetLoss(nn.Module):

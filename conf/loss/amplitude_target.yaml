@@ -23,5 +23,10 @@ terms:
       eps: 1.6e-5
       psd_eps: 1.0e-12
       psd_weight: 0.5
+      # A hinge on the harmonics above each recording's decomposition ceiling
+      # (k_hi 62 DREGON / 57 Michael's): they are unsupervised directions, and
+      # the first arm ran them to 0.405 against 2e-4 for the supervised lines —
+      # right amplitudes, a rendering 46 dB too loud. Zero once satisfied.
+      tail_weight: 1.0
       n_fft: 2048
       hop_length: 512

@@ -275,3 +275,31 @@ def test_calibration_is_off_by_default_and_leaves_rendering_alone():
     with torch.no_grad():
         audio = plain(torch.full((1, 4, 2048), 60.0), rel, ["dregon"])
     assert audio.shape == (1, 2, 2048)
+
+
+def test_tail_barrier_only_bites_above_the_ceiling():
+    """Harmonics the decomposition never solved may not exceed the last one.
+
+    The failure it exists for was measured: with the tail unconstrained, the
+    first arm drove k63-100 to 0.405 against 2e-4 for the supervised lines, and
+    its rendering came out 46 dB too loud while its amplitudes were right.
+    """
+    core = AmplitudeTarget(eps=1e-12, psd_weight=0.0)
+    valid = torch.zeros(1, 1, 8, 4, dtype=torch.bool)
+    valid[:, :, :5] = True  # ceiling at k index 4
+    pred = torch.full((1, 1, 1, 8, 4), 1e-3)
+
+    assert float(core.tail_term(pred, valid)) == pytest.approx(0.0, abs=1e-6)
+
+    quiet = pred.clone()
+    quiet[..., 5:, :] = 1e-6  # far below the ceiling line: free, not penalized
+    assert float(core.tail_term(quiet, valid)) == pytest.approx(0.0, abs=1e-6)
+
+    runaway = pred.clone()
+    runaway[..., 5:, :] = 0.4  # the measured failure mode
+    assert float(core.tail_term(runaway, valid)) > 5.0
+
+    # A supervised cell is never touched by the barrier.
+    louder_low = pred.clone()
+    louder_low[..., :5, :] = 1.0
+    assert float(core.tail_term(louder_low, valid)) == pytest.approx(0.0, abs=1e-6)
