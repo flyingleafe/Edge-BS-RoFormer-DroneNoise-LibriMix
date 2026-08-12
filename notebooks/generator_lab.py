@@ -80,6 +80,10 @@ _DEEP_PERDRONE = dict(
     film_spectral_norm=True,
 )
 _DEEP_WIND = {**_DEEP_PERDRONE, "model_name": "positional_harmonic_wind_gen"}
+#: The DREGON-only label-A/B arms (docs/experiments/generator-refined-labels.md)
+#: train with a one-name codebook; r2 adds the per-rotor deltas.
+_DEEP_DREGON = {**_DEEP_PERDRONE, "drone_names": ["dregon"]}
+_DEEP_DREGON_PERROTOR = {**_DEEP_DREGON, "per_rotor_deltas": True, "n_rotors": 4}
 
 
 def _r2(exp: str) -> str:
@@ -158,6 +162,52 @@ VARIANTS: dict[str, Variant] = {
         _r2("gen_s3_spatial_uniform"),
         {**_DEEP_WIND, "wind_uniform_exposure": True},
     ),
+    # ── the DREGON-only label A/B (refined-telemetry campaign, 2026-08-12) ──
+    "deep/r1 DREGON-only, orig labels": Variant(
+        "deep/r1 DREGON-only, orig labels",
+        "deep",
+        "Label-A/B control: v1-recal-mm setup, DREGON only, raw telemetry. "
+        "No measurable tooth above k~22.",
+        "gen_r1_orig",
+        _r2("gen_r1_orig"),
+        _DEEP_DREGON,
+    ),
+    "deep/r1 DREGON-only, scaled labels": Variant(
+        "deep/r1 DREGON-only, scaled labels",
+        "deep",
+        "Telemetry x 0.99458 (the phase-7 constant fix). Sharp mid-k lines, "
+        "but off the true comb; dies above k~50. Drive with labels='scaled'.",
+        "gen_r1_scaled",
+        _r2("gen_r1_scaled"),
+        _DEEP_DREGON,
+    ),
+    "deep/r1 DREGON-only, refined labels": Variant(
+        "deep/r1 DREGON-only, refined labels",
+        "deep",
+        "L-BFGS-refined trajectories (sidecar labels). The only arm with teeth "
+        "above the estimator null through k=80. Drive with labels='refined'.",
+        "gen_r1_refined",
+        _r2("gen_r1_refined"),
+        _DEEP_DREGON,
+    ),
+    "deep/r2 + per-rotor dz, orig labels": Variant(
+        "deep/r2 + per-rotor dz, orig labels",
+        "deep",
+        "r1-orig + per-rotor sub-embeddings z_r = z_drone + dz_r. The deltas "
+        "HURT line sharpness in both label conditions.",
+        "gen_r2_orig_perrotor",
+        _r2("gen_r2_orig_perrotor"),
+        _DEEP_DREGON_PERROTOR,
+    ),
+    "deep/r2 + per-rotor dz, refined labels": Variant(
+        "deep/r2 + per-rotor dz, refined labels",
+        "deep",
+        "r1-refined + per-rotor sub-embeddings. Weaker combs than r1-refined. "
+        "Drive with labels='refined'.",
+        "gen_r2_refined_perrotor",
+        _r2("gen_r2_refined_perrotor"),
+        _DEEP_DREGON_PERROTOR,
+    ),
     # ── non-learned references ──────────────────────────────────────────────
     "gp/JASA rotor field": Variant(
         "gp/JASA rotor field", "gp", "Fitted Gaussian-process rotor-noise field."
@@ -222,7 +272,13 @@ def recordings(dataset: str, usable_only: bool = True) -> list[str]:
 DATASETS = {"DREGON-frames": "dregon", "michaels-frames": "michaels"}
 
 
-def real_slice(dataset: str, recording_id: str, start_s: float, dur_s: float = 4.0) -> Excitation:
+def real_slice(
+    dataset: str,
+    recording_id: str,
+    start_s: float,
+    dur_s: float = 4.0,
+    labels: str = "telemetry",
+) -> Excitation:
     """A window of a real recording: audio, RPS and geometry, all aligned.
 
     The rotor track is resolved through :func:`data_processing.frames.
@@ -231,6 +287,13 @@ def real_slice(dataset: str, recording_id: str, start_s: float, dur_s: float = 4
     that helper picks the right one *in preference order* and resamples the audio
     in the same step. Reaching for a fixed entry name here — as an earlier
     version of this function did — silently breaks on one of the two rigs.
+
+    ``labels`` selects the conditioning source, matching the training arms of
+    the label A/B (docs/experiments/generator-refined-labels.md):
+    ``"telemetry"`` (raw), ``"scaled"`` (x 0.99458), or ``"refined"`` (the
+    L-BFGS sidecar in ``src/data_processing/refined_labels/`` — DREGON only;
+    samples outside the sidecar span keep telemetry). Drive each generator
+    with the labels it trained on.
     """
     from data_processing.frames import adapt_recording_frame, get_meta
 
@@ -265,13 +328,41 @@ def real_slice(dataset: str, recording_id: str, start_s: float, dur_s: float = 4
         dst = np.linspace(0.0, 1.0, n)
         rps_audio = np.stack([np.interp(dst, src, row) for row in rps]).astype(np.float32)
 
+        if labels == "scaled":
+            rps_audio = rps_audio * np.float32(0.99458)
+        elif labels == "refined":
+            import tdseries as td
+
+            sidecar = _ROOT / "src" / "data_processing" / "refined_labels" / f"{recording_id}.npz"
+            if not sidecar.is_file():
+                raise FileNotFoundError(
+                    f"no refined sidecar for {recording_id!r} at {sidecar} — "
+                    "refined labels exist only for the DREGON generator recordings"
+                )
+            with np.load(sidecar) as z:
+                ft, r_refined = np.asarray(z["ft"]), np.asarray(z["r_refined"])
+            # Offsets from the FULL published frame's audio t_start — the
+            # sidecar's time reference — computed tick-exactly.
+            base = (window["audio"].t_start_ticks - frame["audio"].t_start_ticks) / float(
+                td.TICKS_PER_SECOND
+            )
+            offs = base + np.arange(n, dtype=np.float64) / SR
+            inside = (offs >= ft[0]) & (offs <= ft[-1])
+            for r in range(min(rps_audio.shape[0], r_refined.shape[0])):
+                rps_audio[r, inside] = np.maximum(
+                    np.interp(offs[inside], ft, r_refined[r]), 0.0
+                ).astype(np.float32)
+        elif labels != "telemetry":
+            raise ValueError(f"labels must be telemetry|scaled|refined, got {labels!r}")
+
+        tag = "" if labels == "telemetry" else f", {labels} labels"
         return Excitation(
             rps=rps_audio,
             mic_pos=mic_pos,
             rotor_pos=rotor_pos,
             drone=DATASETS[dataset],
             audio=audio,
-            label=f"{recording_id} @ {start:.1f}s +{dur:.1f}s",
+            label=f"{recording_id} @ {start:.1f}s +{dur:.1f}s{tag}",
         )
     raise KeyError(f"recording {recording_id!r} not in {dataset}")
 
