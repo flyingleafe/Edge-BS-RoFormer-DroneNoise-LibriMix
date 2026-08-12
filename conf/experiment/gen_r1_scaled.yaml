@@ -1,0 +1,49 @@
+# @package _global_
+# ARM R1-SCALED — the constant-fix control of the label A/B. Identical to
+# gen_r1_orig except that every DREGON label is multiplied by 0.99458, the
+# phase-7 constant correction of the measured telemetry bias.
+#
+# Why this arm exists: it separates "the labels were off by one number" from
+# "the labels were off in shape". If gen_r1_refined beats gen_r1_orig but this
+# arm gets there too, the refinement recovers no more than a scale, and the
+# cheap fix is sufficient. If this arm stays at gen_r1_orig, the gain is in the
+# trajectory shape.
+#
+# The scale is applied by the loader (data_processing.noise_rps_dataset,
+# `dregon_rps_scale`), so the audio and the split are byte-identical to
+# gen_r1_orig.
+defaults:
+  - override /data: noise_rps_dregon_stream_multimic
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_r1_scaled
+
+# single-drone codebook: one embedding + one learnable jitter sigma
+model:
+  params:
+    drone_names: [dregon]
+
+# the one knob vs gen_r1_orig
+data:
+  train:
+    params:
+      dregon_rps_scale: 0.99458
+  valid:
+    params:
+      dregon_rps_scale: 0.99458
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

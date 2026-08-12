@@ -1,0 +1,38 @@
+# @package _global_
+# ARM R1-REFINED — the label A/B's treatment. Identical to gen_r1_orig in every
+# knob; the data config is the only difference, and it changes only the DREGON
+# label VALUES (refined trajectories from the sidecar folder, same timebase).
+#
+# The question this arm answers: does a better rotor-speed trajectory make a
+# better generator? Phase 7 showed that a constant label bias alone costs
+# -8.6 dB at k = 50-80, so the labels are known to be load-bearing; this arm
+# measures what the refinement buys on real DREGON audio.
+#
+# Read against gen_r1_orig (original telemetry) and gen_r1_scaled (a constant
+# gain, which is the cheapest correction the refinement could reduce to).
+defaults:
+  - override /data: noise_rps_dregon_stream_multimic_refined
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_r1_refined
+
+# single-drone codebook: one embedding + one learnable jitter sigma
+model:
+  params:
+    drone_names: [dregon]
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

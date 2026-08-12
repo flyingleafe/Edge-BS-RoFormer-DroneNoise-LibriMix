@@ -1,0 +1,42 @@
+# @package _global_
+# ARM R1-ORIG — the label A/B's baseline. Per-drone codebook generator, DREGON
+# only, ORIGINAL telemetry labels (`frames:DREGON-frames` as published, no
+# correction).
+#
+# The A/B has two axes:
+#   labels: orig (this arm) | refined (gen_r1_refined) | scaled (gen_r1_scaled)
+#   model:  per-drone codebook (R1) | + per-rotor sub-embeddings (R2)
+# Every arm holds everything else fixed — same data split, same seed, same
+# schedule, same optimizer — so a difference in mrstft is a difference in the
+# labels or in the sub-embeddings, and nothing else.
+#
+# Hyperparameters are copied from gen_v1_recal_mm (the multi-observer magnitude
+# baseline), so this arm is also comparable to the two-drone runs.
+#
+# One drone means a ONE-ENTRY codebook: drone_names is overridden to [dregon].
+defaults:
+  - override /data: noise_rps_dregon_stream_multimic
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_r1_orig
+
+# single-drone codebook: one embedding + one learnable jitter sigma
+model:
+  params:
+    drone_names: [dregon]
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

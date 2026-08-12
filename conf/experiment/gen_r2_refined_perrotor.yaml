@@ -1,0 +1,36 @@
+# @package _global_
+# ARM R2-REFINED — the full cell of the label A/B: per-rotor sub-embeddings AND
+# refined DREGON labels. Identical to gen_r2_orig_perrotor except for the data
+# config, which changes only the DREGON label values.
+#
+# This is the arm the campaign expects to win. Per-rotor identity is a
+# per-rotor claim, and the original telemetry cannot resolve the near-equal
+# rotors; refined trajectories are what can make the four codes mean four
+# different rotors instead of four copies of one.
+defaults:
+  - override /data: noise_rps_dregon_stream_multimic_refined
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone_perrotor
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_r2_refined_perrotor
+
+# single-drone codebook: one embedding + one learnable jitter sigma; the four
+# per-rotor deltas stay per-rotor
+model:
+  params:
+    drone_names: [dregon]
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

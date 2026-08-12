@@ -26,8 +26,13 @@ import torch
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
-from .frames import resample_audio_series
+from .frames import get_meta, resample_audio_series
 from .streams import iter_published_frames
+
+#: Repository root — relative ``dregon_rps_override_dir`` values resolve here,
+#: so a config can name a repo-relative folder and stay machine-independent
+#: (same convention as ``zoo.cache.REPO_ROOT``).
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -335,7 +340,13 @@ def load_dregon_noise_sources(
     path or a ``dload:...`` URI.
     """
     if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
-        return load_published_noise_sources(dregon_dir, origin="dregon")
+        return load_published_noise_sources(
+            dregon_dir,
+            sample_rate,
+            origin="dregon",
+            rps_key="motors_measured",
+            splits=["in_flight_noise"],
+        )
     from data_processing.sources.dregon import load_dregon_timeframes
     from data_processing.streams import resolve_source
 
@@ -364,12 +375,121 @@ def load_michaels_noise_sources(
     path or a ``dload:...`` URI.
     """
     if isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX):
-        return load_published_noise_sources(michaels_dir, origin="michaels")
+        return load_published_noise_sources(
+            michaels_dir, sample_rate, origin="michaels", rps_key="rps"
+        )
     from data_processing.sources import michaels as M
     from data_processing.streams import resolve_source
 
     frames = M.load_michaels_timeframes(data_root=resolve_source(michaels_dir), sr=sample_rate)
     return [_wrap_frame(tf, origin="michaels", rps_key="rps") for tf in frames]
+
+
+# ---------------------------------------------------------------------------
+# Rotor-speed label knobs (DREGON only)
+# ---------------------------------------------------------------------------
+
+
+def resolve_override_dir(override_dir: str | Path) -> Path:
+    """Make an override directory absolute against the repository root."""
+    path = Path(override_dir)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path
+
+
+def _available_ids(directory: Path) -> list[str]:
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.npz"))
+
+
+def apply_rps_override(frame: td.Frame, rps_key: str, override_dir: str | Path) -> td.Frame:
+    """Replace a recording's rotor-speed VALUES with refined labels.
+
+    The refined labels come from a sidecar file ``<override_dir>/<recording
+    id>.npz`` with two arrays:
+
+    - ``ft`` (N,): the label times in seconds, RELATIVE to the audio
+      ``t_start`` of this (full, untrimmed) frame
+    - ``r_refined`` (R, N): the refined rotor speeds at those times
+
+    The frame keeps its timebase, its dims and its dtype. Only the values
+    change: each original telemetry stamp gets the linear interpolation of
+    ``r_refined`` at its own offset from the audio ``t_start``. The offset is
+    computed in exact int64 ticks, because the published frames sit at
+    absolute epoch ticks (~1e18) that float64 cannot hold.
+
+    Times outside ``ft`` clip to the first/last refined value. The function
+    raises if the sidecar is absent — a silent fall-back to the original
+    telemetry would make the two arms of the label A/B the same experiment.
+    """
+    directory = resolve_override_dir(override_dir)
+    recording_id = str(get_meta(frame, "recording_id", "") or "")
+    sidecar = directory / f"{recording_id}.npz"
+    if not recording_id or not sidecar.is_file():
+        raise FileNotFoundError(
+            f"no refined RPS sidecar for recording {recording_id!r}: expected {sidecar}. "
+            f"Available ids in {directory}: {_available_ids(directory)}. "
+            "The sidecars come from the trajectory-refinement job; run it first, or "
+            "unset dregon_rps_override_dir to train on the original telemetry."
+        )
+    with np.load(sidecar) as data:
+        if "ft" not in data or "r_refined" not in data:
+            raise ValueError(f"{sidecar} has no 'ft'/'r_refined' arrays: {sorted(data.files)}")
+        ft = np.asarray(data["ft"], dtype=np.float64).reshape(-1)
+        refined = np.asarray(data["r_refined"], dtype=np.float64)
+    if refined.ndim != 2 or refined.shape[-1] != ft.size or ft.size < 2:
+        raise ValueError(
+            f"{sidecar}: expected r_refined (R, N) against ft (N,) with N >= 2, "
+            f"got {refined.shape} against {ft.shape}"
+        )
+    if np.any(np.diff(ft) <= 0.0):
+        raise ValueError(f"{sidecar}: 'ft' must increase strictly")
+
+    series = cast(td.Series, frame[rps_key])
+    values = np.asarray(series.data)
+    if values.ndim != 2 or values.shape[0] != refined.shape[0]:
+        raise ValueError(
+            f"{sidecar}: refined labels have {refined.shape[0]} rotors, but "
+            f"{rps_key} has values of shape {values.shape}"
+        )
+    tindex = series.tindex
+    if not isinstance(tindex, td.StampIndex):
+        raise TypeError(f"{rps_key} must be an event (StampIndex) track, got {type(tindex)}")
+
+    # Tick-exact offsets: int64 minus int64, THEN one division into seconds.
+    audio_start_ticks = cast(td.Series, frame["audio"]).t_start_ticks
+    stamp_ticks = np.asarray(tindex.abs_stamps_ticks, dtype=np.int64)
+    offsets = (stamp_ticks - int(audio_start_ticks)) / float(td.TICKS_PER_SECOND)
+    offsets = np.clip(offsets, ft[0], ft[-1])
+
+    new_values = np.empty_like(values)
+    for rotor in range(refined.shape[0]):
+        new_values[rotor] = np.interp(offsets, ft, refined[rotor]).astype(values.dtype)
+    return frame.with_entry(rps_key, series.with_data(new_values))
+
+
+def apply_rps_scale(frame: td.Frame, rps_key: str, scale: float) -> td.Frame:
+    """Multiply a recording's rotor-speed values by ``scale``.
+
+    The cheap counterpart of :func:`apply_rps_override`: one constant gain on
+    the labels, which is the phase-7 correction of the measured DREGON
+    telemetry bias. Timebase, dims and dtype stay the same.
+    """
+    series = cast(td.Series, frame[rps_key])
+    values = np.asarray(series.data)
+    return frame.with_entry(rps_key, series.with_data((values * float(scale)).astype(values.dtype)))
+
+
+def _check_label_knobs(override_dir: str | Path | None, scale: float) -> None:
+    """Make sure that only one label knob is active."""
+    if override_dir is not None and float(scale) != 1.0:
+        raise ValueError(
+            "dregon_rps_override_dir and dregon_rps_scale are mutually exclusive: "
+            f"got {override_dir!r} and {scale!r}. The refined labels already carry "
+            "their own scale."
+        )
 
 
 #: ``dregon_dir`` / ``michaels_dir`` values starting with this prefix select a
@@ -395,6 +515,8 @@ def load_published_noise_sources(
     origin: str,
     rps_key: str,
     splits: list[str] | None = None,
+    rps_override_dir: str | Path | None = None,
+    rps_scale: float = 1.0,
 ) -> list[_ChunkSource]:
     """Load a published rich-frame dataset (``frames:NAME[@VERSION]``).
 
@@ -405,7 +527,15 @@ def load_published_noise_sources(
     fixes baked in, so nothing is re-cleaned here — and soxr-resamples audio
     to ``sample_rate``. Recordings missing either track are skipped, matching
     the folder loaders (e.g. DREGON recordings without ``motors_measured``).
+
+    ``rps_override_dir`` / ``rps_scale`` are the two label knobs (see
+    :func:`apply_rps_override` / :func:`apply_rps_scale`). They apply to the
+    FULL frame, before the overlap trim below, because the sidecar times are
+    relative to the full frame's audio ``t_start``. Only the DREGON call of
+    :func:`build_noise_rps_datasets` passes them; Michael's labels never
+    change.
     """
+    _check_label_knobs(rps_override_dir, rps_scale)
     name, version = _parse_frames_spec(spec)
     sources: list[_ChunkSource] = []
     for tf in iter_published_frames(name, version, splits=splits):
@@ -418,6 +548,10 @@ def load_published_noise_sources(
         if "meta" in tf:
             entries["meta"] = tf["meta"]
         frame = td.Frame(entries)
+        if rps_override_dir is not None:
+            frame = apply_rps_override(frame, rps_key, rps_override_dir)
+        elif float(rps_scale) != 1.0:
+            frame = apply_rps_scale(frame, rps_key, rps_scale)
         # The published audio can span more than the telemetry (e.g. michaels
         # rps starts after the audio) — chunks sampled outside the overlap
         # would carry an empty motor slice (upsample_rps_to_audio_rate
@@ -453,6 +587,8 @@ def build_noise_rps_datasets(
     val_at_start: bool = False,
     seed: int = 42,
     cache_dir: str | Path | None = None,
+    dregon_rps_override_dir: str | Path | None = None,
+    dregon_rps_scale: float = 1.0,
     **dataset_kwargs,
 ) -> tuple[NoiseRPSDataset, NoiseRPSDataset]:
     """Build train/val NoiseRPSDataset by holding out a fraction of every record.
@@ -483,8 +619,25 @@ def build_noise_rps_datasets(
             time axis is held out.
         seed: RNG seed.
         cache_dir: where to cache resampled DREGON audio (kept for API compat).
+        dregon_rps_override_dir: folder of refined-label sidecars, one
+            ``<recording id>.npz`` per DREGON recording. When set, every
+            DREGON recording gets its ``motors_measured`` values replaced by
+            the refined trajectory (:func:`apply_rps_override`); a recording
+            with no sidecar raises. A relative path resolves against the
+            repository root. Michael's labels never change.
+        dregon_rps_scale: constant gain on the DREGON labels
+            (:func:`apply_rps_scale`), for example ``0.99458`` for the
+            measured telemetry bias. Mutually exclusive with
+            ``dregon_rps_override_dir``. Michael's labels never change.
         **dataset_kwargs: forwarded to `NoiseRPSDataset` (e.g. rps_normalize).
     """
+    _check_label_knobs(dregon_rps_override_dir, dregon_rps_scale)
+    label_knobs_set = dregon_rps_override_dir is not None or float(dregon_rps_scale) != 1.0
+    if label_knobs_set and dregon_dir is None:
+        raise ValueError(
+            "dregon_rps_override_dir / dregon_rps_scale apply to DREGON only, "
+            "but dregon_dir is None"
+        )
     sources: list[_ChunkSource] = []
     if dregon_dir is not None:
         if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
@@ -496,8 +649,17 @@ def build_noise_rps_datasets(
                 origin="dregon",
                 rps_key="motors_measured",
                 splits=["in_flight_noise"],
+                rps_override_dir=dregon_rps_override_dir,
+                rps_scale=dregon_rps_scale,
             )
         else:
+            if label_knobs_set:
+                # The sidecar times are relative to the PUBLISHED frame's audio
+                # t_start, so they are only correct on the `frames:` path.
+                raise ValueError(
+                    "dregon_rps_override_dir / dregon_rps_scale need a published-frames "
+                    f"spec (dregon_dir='frames:DREGON-frames'), got {dregon_dir!r}"
+                )
             sources += load_dregon_noise_sources(dregon_dir, sample_rate, cache_dir=cache_dir)
     if michaels_dir is not None:
         if isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX):

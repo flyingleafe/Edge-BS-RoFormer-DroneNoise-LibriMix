@@ -1,0 +1,37 @@
+# @package _global_
+# ARM R2-ORIG — the per-rotor cell of the label A/B, on ORIGINAL telemetry.
+# Identical to gen_r1_orig except for the model: per-rotor sub-embeddings are
+# on (z_r = z_drone + delta_z_r, delta zero-initialised, shared across drones),
+# so the four rotors can differ in timbre instead of sharing one code.
+#
+# Read as a 2x2 with gen_r1_orig / gen_r1_refined / gen_r2_refined_perrotor:
+# the R1 -> R2 step is the value of per-rotor identity, the orig -> refined
+# step is the value of the labels, and the two together say whether per-rotor
+# capacity only pays off once the labels can support it.
+defaults:
+  - override /data: noise_rps_dregon_stream_multimic
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone_perrotor
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_r2_orig_perrotor
+
+# single-drone codebook: one embedding + one learnable jitter sigma; the four
+# per-rotor deltas stay per-rotor
+model:
+  params:
+    drone_names: [dregon]
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+# fp16 autocast breaks the emitter (ComplexHalf cumprod unimplemented on CUDA).
+amp: false

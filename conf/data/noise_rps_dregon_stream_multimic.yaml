@@ -1,0 +1,47 @@
+# DREGON-ONLY noise-generation data, MULTI-OBSERVER, streamed from R2.
+#
+# Copy of noise_rps_dregon_michaels_swapped_stream_multimic.yaml with
+# michaels_dir dropped: only the DREGON in_flight_noise recordings feed train
+# and valid. This is the ORIGINAL-LABEL arm of the label A/B — the telemetry
+# comes from the published `frames:DREGON-frames` dataset with no correction.
+# Its refined counterpart is noise_rps_dregon_stream_multimic_refined.yaml.
+#
+# Why DREGON only: the A/B compares two versions of the DREGON labels, so a
+# second drone with unchanged labels would only add variance. One drone also
+# means a one-entry codebook — the experiments override model.params.drone_names
+# to [dregon].
+#
+# Same swapped time-split as the two-drone config (val_at_start: true — val is
+# the first val_pct of each recording's time axis, train is the rest), and
+# `channel_policy: all` keeps every microphone (the native multi-observer
+# training the generator was designed for).
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: null
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    channel_policy: all
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: null
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    channel_policy: all
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null
