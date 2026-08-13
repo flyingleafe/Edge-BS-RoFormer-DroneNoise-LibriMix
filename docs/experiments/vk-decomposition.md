@@ -255,3 +255,24 @@ back to needs fill-in memory no node has. Fix in
 `tracking.vk_tracking`: two PD-repair retries with a relative diagonal
 inflation (1e-6, then 1e-4) before the splu fallback; the default path
 multiplies the diagonal by exactly 1.0 and stays bit-identical.
+
+### Full-recording v2 verification (Michael's, 2026-08-13)
+
+With the PD-repair fix the two failing units solved on the first retry
+(`diag_scale` 1+1e-6) and the full runs completed: FLY124 12/14 windows
+(k_hi 76, tracks 56.9 % / residual 38.6 %), FLY125 20/20 (k_hi 75, 60.3 %
+/ 35.2 %), resynthesis max error 3e-8. Residual order contrast (probe on
+all mics, full recordings):
+
+| signal | k1-9 | k10-24 | k25-49 | k50-80 |
+|---|---|---|---|---|
+| FLY124 original | 0.72 | 1.49 | 0.23 | 0.03 |
+| FLY124 v2 residual | 0.58 | −0.17 | −0.67 | −0.57 |
+| FLY125 original | 1.64 | 1.83 | 0.21 | 0.02 |
+| FLY125 v2 residual | 0.94 | 0.19 | −0.83 | −0.66 |
+
+The comb is gone above k10; the somewhat stronger over-subtraction at
+k25-80 (vs DREGON's −0.2 to −0.4) is the sparse-comb regime — two twin
+pairs rarely trigger the separation cap, so the achieved bands sit at the
+3 Hz absmax. Both recordings' `{envelopes,residual}.npz + report.json`
+are on R2 under `artifacts/vk-decompose-v2/`.
