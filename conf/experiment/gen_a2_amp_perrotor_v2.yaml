@@ -1,0 +1,33 @@
+# @package _global_
+# AMPLITUDE-TARGET arm 2 on the v2 (linewidth-matched) targets: + PER-ROTOR SUB-EMBEDDINGS (z_r = z + dz_r).
+# The A/B partner of gen_m2_refined_perrotor — same data, same architecture, DIFFERENT
+# objective: instead of a multi-scale STFT distance on rendered audio, this fits
+# the Vold-Kalman amplitude envelopes of the same recordings
+# (docs/experiments/amplitude-target-training.md).
+#
+# monitor: val_loss — the objective on held-out chunks. There is no rendered
+# realization to score here, and the perrotor-dynamics campaign showed that a
+# comb-blind scalar is a lottery as a selector; final selection across epochs is
+# comb-aware and offline (scripts/eval_gen_comb_real.py through the *_render
+# twin config), which is why checkpoint_every is 1.
+defaults:
+  - override /data: decomp_frames_v2
+  - override /model: positional_harmonic_gen_amp_perrotor
+  - override /loss: amplitude_target
+  - override /metrics: none
+
+experiment_name: gen_a2_amp_perrotor_v2
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+checkpoint_every: 1
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: val_loss
+  monitor_mode: min
+
+amp: false
