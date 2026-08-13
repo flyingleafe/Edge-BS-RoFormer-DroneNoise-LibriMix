@@ -109,3 +109,45 @@ the instrument that catches it. Threshold reading: half-margin < 0 ⇒ halve
 `fvk_ratio_double` stays > 1 on the doubled windows (the double of a
 doubled annotation is 4× truth — trivially worse), so the F_VK double
 ratio alone cannot catch a doubling; the pair of instruments is needed.
+
+## Room2 calibration with the command reference (blind-dregon-calib3, 17/17)
+
+Two prep defects hid the reference on the first two runs: room2 stores the
+command track as `motors_command` (not `rps` — fixed with the
+`PUBLISHED_RPS_KEYS` chain), and DREGON stamps are Unix-epoch absolute
+while prep windows are audio-relative seconds (fixed by re-referencing to
+the audio start). With the join in place, the 17 windows split three ways
+against telemetry:
+
+- 7 windows CORRECT (all at ~80 rev/s cruise): PIT-MAE 2.1–7.2 rev/s,
+  blind/ref rate ratio 0.993–1.026.
+- 5 windows HALVED (blind ≈ 39 rev/s on an ≈ 80 rev/s truth): ratio
+  0.48–0.51, MAE ≈ 40 — sub-harmonic capture at cruise.
+- 5 windows on the takeoff ramp (w000 of each recording): the annotation
+  tracks neither the rate nor its half (ratio 0.67–0.93, MAE 33–40).
+
+The calibration finding: **`fvk_ratio_double` separates the populations
+PERFECTLY on this set** — correct windows read 1.079–1.214, halved and
+ramp windows 1.024–1.054. Threshold **1.065** classifies 17/17. The
+existing suspect gate (< 1.2) is directionally right but flags 4 correct
+windows; 1.065 is the calibrated cut.
+
+Combined acceptance rule (bench + room2):
+
+- `fvk_ratio_double` < 1.065 — do not trust; if the ridge at 2r clears,
+  the annotation is likely HALVED (double it and re-score); on a ramp
+  window it simply fails.
+- half-margin ≤ −1.5 dB — annotation likely DOUBLED (bench Motor1_50 reads
+  −3.0 to −3.5); halve it and re-score. Mild negatives (to ≈ −0.8) occur
+  on CORRECT cruise windows and must not trigger halving.
+- otherwise accept.
+
+Applied retroactively to AVQ 8-ch: median `fvk_ratio_double` 1.044 < 1.065
+— most AVQ windows fail the calibrated gate too (consistent with the 94 %
+suspect rate), and the clean tail (ratio ≥ 1.2) is exactly the windows the
+per-unit triage already surfaced.
+
+Caveat: the blind ladder ties the four tracks to a near-common rate while
+the command reference spreads 75–86 rev/s across rotors, so the 2–4 rev/s
+PIT-MAE on correct windows is dominated by per-rotor mismatch, not by
+common-mode error.
