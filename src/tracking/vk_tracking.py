@@ -423,6 +423,8 @@ def _solve_group_banded(
     w: list[np.ndarray],
     cross: dict[tuple[int, int], np.ndarray],
     z_g: np.ndarray,
+    *,
+    diag_scale: float = 1.0,
 ) -> np.ndarray:
     """Coupled-group solve as one Hermitian positive-definite *banded* system.
 
@@ -449,7 +451,10 @@ def _solve_group_banded(
     # below are bitwise identical to the former scalar formulation).
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     diag = d0[:, None] * r2[None, :] + 1e-8 + np.stack(w, axis=-1)  # (T_env, g)
-    ab[u] = diag.reshape(-1)
+    # diag_scale > 1 is the PD-repair retry: inflating the diagonal by a
+    # relative epsilon restores positive definiteness lost to decimation
+    # rounding, at a bias far below the bandwidth prior's own resolution.
+    ab[u] = (diag * diag_scale).reshape(-1)
     ab[u - g, g:] = np.repeat(d1, g) * np.tile(r2, n_env - 1)
     ab[0, 2 * g :] = np.repeat(d2, g) * np.tile(r2, n_env - 2)
     for (a, b), g_mn in cross.items():  # a < b: upper triangle, offset b - a
@@ -640,10 +645,18 @@ def vk_envelopes(
         z_g = z[:, group]  # (C, g, T_env)
         sol: np.ndarray | None = None
         if cfg.solver == "banded":
-            try:
-                sol = _solve_group_banded(d2td2_diags, rho2, w, cross, z_g)
-            except np.linalg.LinAlgError:
-                sol = None  # numerically non-PD: use the reference path below
+            # Numerically non-PD systems (decimation rounding on large
+            # coupled groups) get two PD-repair retries with a relative
+            # diagonal inflation before the splu reference path — SuperLU's
+            # fill-in on a full-recording group does not fit in memory.
+            for diag_scale in (1.0, 1.0 + 1e-6, 1.0 + 1e-4):
+                try:
+                    sol = _solve_group_banded(
+                        d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale
+                    )
+                    break
+                except np.linalg.LinAlgError:
+                    sol = None
         if sol is None:
             sol = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g)
         for a in range(g):
