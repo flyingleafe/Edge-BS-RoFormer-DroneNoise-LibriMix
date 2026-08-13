@@ -79,3 +79,11 @@ lever named above) plus acceptance restricted to the clean-gate windows;
 mass annotation with the current gates would inherit a ~94 % octave-suspect
 rate. The mono run's per-unit artifacts were lost to the daemon disk crisis
 (summary survives above); this 8-ch run supersedes it in any case.
+
+Defect (2026-08-13): the corpus plan's "n_rotors=1 for bench" was not
+runnable — the vit2dsp ladder is a 4-track unit (two twin pairs + the
+spatial joint 2-rotor Viterbi) and `blind_fullrange` embeds it, so both
+arms raise on a single track. New `seedvk` arm (blind seed + one coupled-VK
+pass, both stages track-count agnostic) is the bench recipe; smoke window
+`motor_Motor1_70__w000` annotates 68.5 rev/s with 8.42 dB ridge clearance
+and +1.83 dB half-margin at 29 s/window. Branch `blind-corpus` @ 3ffbc26.
