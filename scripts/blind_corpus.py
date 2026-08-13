@@ -163,7 +163,9 @@ def prepare_windows(
             ent = frame[ref_key]
             ref_r = np.atleast_2d(np.asarray(ent.data, dtype=np.float64))
             try:
-                ref_t = np.asarray(ent.tindex.abs_stamps, dtype=np.float64)
+                # DREGON stamps are absolute (Unix clock); windows are
+                # audio-relative seconds, so re-reference to the audio start.
+                ref_t = np.asarray(ent.tindex.abs_stamps, dtype=np.float64) - float(aud.t_start)
             except AttributeError:
                 ref_t = np.arange(ref_r.shape[-1]) / float(ent.tindex.sr)
 
