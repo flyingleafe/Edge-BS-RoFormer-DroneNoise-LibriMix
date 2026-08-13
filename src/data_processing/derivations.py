@@ -707,18 +707,33 @@ def _decomp_frame(gen: dict[str, Any], source: dict[str, Any], src: Any) -> tupl
     report = json.loads(Path(_decomp_artifact(gen, rid, "report.json")).read_text())
 
     a0, a1 = (int(v) for v in np.asarray(env["span_samples"]))
-    if a0 % _DECOMP_ENV_STRIDE:
-        raise ValueError(f"{rid}: decomposition span start {a0} is not on the envelope grid")
-    if int(env["stride"]) != _DECOMP_ENV_STRIDE or int(env["sample_rate"]) != sr:
+    env_sr, env_stride = int(env["sample_rate"]), int(env["stride"])
+    # A decomposition solved at an integer multiple of the spec rate (the v2
+    # solve runs at 32 kHz so the line cap reaches 8 kHz = the 16 kHz Nyquist)
+    # joins by decimation: the 100 Hz envelope grid is rate-agnostic, the
+    # residual is resampled, and the span converts exactly because the span
+    # start sits on the envelope grid.
+    decim, rem = divmod(env_sr, sr)
+    if rem or decim < 1 or env_stride != _DECOMP_ENV_STRIDE * decim:
         raise ValueError(
-            f"{rid}: decomposition grid ({env['sample_rate']} Hz / stride {env['stride']}) "
+            f"{rid}: decomposition grid ({env_sr} Hz / stride {env_stride}) "
             f"does not match this spec ({sr} Hz / stride {_DECOMP_ENV_STRIDE})"
         )
+    if a0 % env_stride:
+        raise ValueError(f"{rid}: decomposition span start {a0} is not on the envelope grid")
     amp, mask = dense_envelopes(
         np.asarray(env["amp"]), np.asarray(env["valid"]), env["rotor"], env["k"], gen["k_max"]
     )
+    residual = np.asarray(res["residual"], dtype=np.float64)
+    if residual.shape[-1] != a1 - a0:
+        raise ValueError(f"{rid}: residual length disagrees with the span {(a0, a1)}")
+    if decim > 1:
+        from scipy.signal import resample_poly
+
+        residual = resample_poly(residual, 1, decim, axis=-1)
+        a0, a1 = a0 // decim, a1 // decim
+    residual = np.asarray(residual, dtype=np.float32)
     carrier = decomp_carrier(src.frame, src.rps_key, sr)[:, a0:a1]
-    residual = np.asarray(res["residual"], dtype=np.float32)
     n_env = amp.shape[-1]
     if residual.shape[-1] != a1 - a0 or carrier.shape[-1] != a1 - a0:
         raise ValueError(f"{rid}: residual/carrier length disagrees with the span {(a0, a1)}")
