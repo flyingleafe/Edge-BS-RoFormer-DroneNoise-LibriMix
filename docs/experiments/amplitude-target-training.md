@@ -264,3 +264,14 @@ Arms `gen_a1_amp_v2` / `gen_a2_amp_perrotor_v2` (fresh experiment names —
 the v1-named R2 prefixes hold the discarded first training) submitted to
 uni-gpushort as `gen-a1-amp-v2-b66236` / `gen-a2-amp-v2-07cb6a`. Selection
 stays comb-aware and offline through the `*_render` twins.
+
+Training outcome (jobs `gen-a1-amp-v2b-d8b160` / `gen-a2-amp-v2b-4a2064`):
+both arms early-stopped — `gen_a1_amp_v2` best val_loss 0.856 at epoch-13
+stop, `gen_a2_amp_perrotor_v2` 0.818 at epoch-17 stop. On the SAME v2
+targets the per-rotor superset fits the held-out chunks better; whether
+that transports to rendered comb fidelity is for the offline comb-aware
+selection (`*_render` twins + `scripts/eval_gen_comb_real.py`).
+Per-epoch checkpoints are on R2 under both experiment prefixes.
+One resubmission was needed: without `--env PYTHONPATH=src` the job
+imported the MAIN checkout's `data_processing` (no `frame_datasets`) —
+the stale-code trap; the validation gate refused before any GPU time.
