@@ -156,8 +156,11 @@ def prepare_windows(
         # (DREGON's command-only room2 set) calibrate what the label-free
         # instruments read on an annotation of known accuracy.
         ref_r = ref_t = None
-        if "rps" in frame:
-            ent = frame["rps"]
+        from data_processing.frames import PUBLISHED_RPS_KEYS
+
+        ref_key = next((k for k in PUBLISHED_RPS_KEYS if k in frame), None)
+        if ref_key is not None:
+            ent = frame[ref_key]
             ref_r = np.atleast_2d(np.asarray(ent.data, dtype=np.float64))
             try:
                 ref_t = np.asarray(ent.tindex.abs_stamps, dtype=np.float64)
