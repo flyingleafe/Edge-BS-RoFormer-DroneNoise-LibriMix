@@ -247,3 +247,20 @@ self-referenced/paired caveated as in `generator-refined-labels.md`.
   metric.
 - The per-mic floor is free enough to absorb rps-dependent broadband; the
   broadband branch is not the payload here and is only kept constrained.
+
+## v2 targets materialized; scientific arms launched (2026-08-13)
+
+The v2 decomposition (linewidth-matched bandwidth, 32 kHz, k to 80) is
+verified on all three recordings — residual comb contrast ≈ 0 in every band
+above k10 on both rigs (`docs/experiments/vk-decomposition.md`).
+`decomp-frames-v2` is materialized (remote job `derive-decomp-v2b`, pinned
+@ d42834f57d07): the join decimates the 32 kHz solve into this 16 kHz
+dataset (`resample_poly` on the residual, exact span conversion, the 100 Hz
+envelope grid unchanged) — the v2 line cap is 8 kHz, exactly the 16 kHz
+Nyquist, so no line leaves the band. The v1 grid-mismatch guard now accepts
+integer-multiple rates.
+
+Arms `gen_a1_amp_v2` / `gen_a2_amp_perrotor_v2` (fresh experiment names —
+the v1-named R2 prefixes hold the discarded first training) submitted to
+uni-gpushort as `gen-a1-amp-v2-b66236` / `gen-a2-amp-v2-07cb6a`. Selection
+stays comb-aware and offline through the `*_render` twins.
