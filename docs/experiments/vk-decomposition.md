@@ -244,3 +244,14 @@ Michael's run (`vk-decompose-v2-m`) finished 30/32 windows; two FLY125 units
 died in banded factorization ("Not enough memory") under `--jobs 2` and are
 re-running as a gridrun resume with `--jobs 1` (job `vk-decompose-v2-m-fix`),
 followed by the same stitch + R2 upload.
+
+### The two "OOM" units were a PD failure, not a memory shortage
+
+`FLY124__f003091` and `FLY125__f005178` failed identically at 24 GB and at
+48 GB. The message "Not enough memory to perform factorization" is
+SuperLU's: on these two windows the banded Cholesky loses positive
+definiteness to decimation rounding, and the splu REFERENCE path it falls
+back to needs fill-in memory no node has. Fix in
+`tracking.vk_tracking`: two PD-repair retries with a relative diagonal
+inflation (1e-6, then 1e-4) before the splu fallback; the default path
+multiplies the diagonal by exactly 1.0 and stays bit-identical.
