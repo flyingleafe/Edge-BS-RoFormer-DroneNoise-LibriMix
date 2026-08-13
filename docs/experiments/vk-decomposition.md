@@ -216,3 +216,31 @@ omnirun output collection silently drops files above ~25 MB, and
 
 The daemon was down when this was written, so the command is prepared and NOT
 submitted.
+
+### Full-recording v2 verification (DREGON, 2026-08-13)
+
+The full-dataset v2 run (job `vk-decompose-v2-ddaf81`) completed all 7
+windows of `free-flight_nosource_room1`: 320 tracks, k_hi 80, resynthesis
+max error 6.0e-8, energy split 35.0 % tracks / 60.0 % residual / 5.0 %
+cross-term, band shares of track energy 93.3 / 3.4 / 1.7 / 1.6 %.
+
+The order-contrast probe on the FULL recording (all 8 mics, 64 s) confirms
+the de-striping — v2 residual holds no positive comb contrast in any band:
+
+| signal | k1-9 | k10-24 | k25-49 | k50-80 |
+|---|---|---|---|---|
+| original audio | 4.60 | 1.10 | 0.10 | 0.10 |
+| v1 residual (16 kHz, k≤62) | 0.67 | 0.69 | — | — |
+| **v2 residual** | **−0.29** | **+0.01** | **−0.42** | **−0.19** |
+
+The small negative values are the known mild over-subtraction of the tuned
+schedule (−0.28 dB/Hz slope, section above); the k1-9 magnitude also carries
+the foreign tones. Gotcha for consumers: `vk_decompose.get_recording` takes
+`sr=` as a DEFAULT-VALUE parameter bound at import — setting the module
+global `SR` after import does nothing and silently yields 16 kHz audio
+against 32 kHz sample spans.
+
+Michael's run (`vk-decompose-v2-m`) finished 30/32 windows; two FLY125 units
+died in banded factorization ("Not enough memory") under `--jobs 2` and are
+re-running as a gridrun resume with `--jobs 1` (job `vk-decompose-v2-m-fix`),
+followed by the same stitch + R2 upload.
