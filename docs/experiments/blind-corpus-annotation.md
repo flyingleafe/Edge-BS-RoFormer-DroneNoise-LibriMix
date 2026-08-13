@@ -87,3 +87,25 @@ arms raise on a single track. New `seedvk` arm (blind seed + one coupled-VK
 pass, both stages track-count agnostic) is the bench recipe; smoke window
 `motor_Motor1_70__w000` annotates 68.5 rev/s with 8.42 dB ridge clearance
 and +1.83 dB half-margin at 29 s/window. Branch `blind-corpus` @ 3ffbc26.
+
+## Single-rotor bench (blind-dregon-motor3, seedvk arm, 13/13 units)
+
+The bench validates the octave instruments against physics. All windows
+annotate with high confidence (clearance 1.6–10.4 dB, none low-clearance),
+and the rates are self-consistent per throttle: 68.4–68.7 rev/s at 70 %
+(Motor1 and Motor3 agree), 87.8–88.1 at 90 %, 68.7 with all four motors at
+70 %.
+
+The calibration datum: **Motor1_50 annotates 98.0–98.1 rev/s — the DOUBLE
+of the plausible ~49 rev/s at 50 % throttle — and the half-margin flags
+exactly these three windows at −3.0 to −3.5 dB** (the half-rate comb reads
+better than the annotation) while every correctly-annotated window reads
++0.2 to +2.1. At low throttle the shaft fundamental is too weak and the
+seed locks onto the second harmonic; the ridge(r) vs ridge(r/2) margin is
+the instrument that catches it. Threshold reading: half-margin < 0 ⇒ halve
+— which retroactively implies the many negative-half-margin AVQ windows
+(median −0.20) are likely doubled annotations, not noise.
+
+`fvk_ratio_double` stays > 1 on the doubled windows (the double of a
+doubled annotation is 4× truth — trivially worse), so the F_VK double
+ratio alone cannot catch a doubling; the pair of instruments is needed.
