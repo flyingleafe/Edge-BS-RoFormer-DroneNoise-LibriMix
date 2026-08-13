@@ -203,7 +203,15 @@ def build_arm(arm: str, n_rotors: int):
         return trk.blind_fullrange(n_rotors=n_rotors)
     if arm == "vit2dsp":
         return trk.vit2dsp(n_rotors=n_rotors)
-    raise ValueError(f"unknown arm {arm!r}; valid: fullrange, vit2dsp")
+    if arm == "seedvk":
+        # The bench arm: the vit2dsp ladder is a 4-track (two twin pairs)
+        # unit, so single-rotor recordings get the two track-count-agnostic
+        # stages — a constant seed refined by one coupled-VK pass.
+        return trk.pipeline(
+            trk.blind_seed_stage(n_rotors),
+            trk.vk_stage(trk.VKConfig(fs=float(SR))),
+        )
+    raise ValueError(f"unknown arm {arm!r}; valid: fullrange, vit2dsp, seedvk")
 
 
 def _stage_log(frame) -> list[dict[str, Any]]:
