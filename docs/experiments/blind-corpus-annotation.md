@@ -55,3 +55,27 @@ Defects found: `tracking.pipelines.energy_bridge` raises on near-idle
 windows (`pipelines.py:1008`, empty c_grid → argmax; upstream fix owed); VK banded system needs 1.53 GiB
 per group at 20 s/k=40 and GROWS on the r/2 sibling (bounded centre-crop
 scoring added); gridrun workers must be module-level callables.
+
+## 8-channel AVQ run (blind-avq-8ch, 187/187 units, 2026-08-13)
+
+The full 8-channel ego-noise pass does NOT rescue AVQ: 175/187 windows are
+octave-suspect (`fvk_ratio_double` < 1.2 or negative half-margin), 103/187
+have ridge clearance < 1 dB, and only 2 windows pass the clean gate
+(non-suspect AND clearance >= 1 dB):
+
+- BEST `S1_seq2__w000` — clearance 2.74 dB, half-margin +0.43,
+  F_VK(2r)/F_VK(r) = 1.23, rates 83/87/88/98 rev/s.
+- Runner-up `S2_seq1__w011` — clearance 1.12 dB, half-margin +0.20,
+  ratio 1.83, rates 74/75/90/93 rev/s.
+- WORST `S2_seq4__w001` — clearance −1.31 dB (below the off-comb null),
+  half-margin −0.69, ratio 1.01: the half-rate comb reads BETTER than the
+  annotation. The whole S2_seq4 and S2_seq7 recordings sit in this regime.
+
+Median clearance per recording spans 0.05–2.23 dB; no recording has more
+than one clean window. Conclusion: the ambiguity is in the signal (weak odd
+harmonics at 74–115 rev/s carriers), not in the channel count. AVQ
+pseudo-labels therefore need the per-rotor octave instrument (the missing
+lever named above) plus acceptance restricted to the clean-gate windows;
+mass annotation with the current gates would inherit a ~94 % octave-suspect
+rate. The mono run's per-unit artifacts were lost to the daemon disk crisis
+(summary survives above); this 8-ch run supersedes it in any case.
