@@ -620,9 +620,13 @@ def whiten_weights(
             per_block[hi, :, np.arange(len(tt))].T * frac
         )
     log_u = -0.5 * log_s
-    log_u = log_u - float(np.mean(log_u[np.isfinite(log_u)]))
     lim = float(clamp_db) * np.log(10.0) / 20.0
-    return np.exp(np.clip(log_u, -lim, lim))
+    ok = np.isfinite(log_u)
+    log_u = np.clip(log_u - float(np.mean(log_u[ok])), -lim, lim)
+    # Centered again AFTER the clamp, so the geometric mean is exactly 1 and the
+    # whitening cannot move the balance between the data term and the prior. The
+    # clamp then bounds the SPREAD at 2 * clamp_db, not each value.
+    return np.exp(log_u - float(np.mean(log_u[ok])))
 
 
 def whitened_flatness(
