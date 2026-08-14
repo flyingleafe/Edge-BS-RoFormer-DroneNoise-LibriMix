@@ -595,9 +595,13 @@ class PositionalHarmonicNoiseGen(nn.Module):
 
         Returns:
             ``{"amp": [B, M, R, H, t_a], "noise_psd": [B, M, t_n, F], "gain":
-            [B, M, R]}`` — ``amp`` in the same amplitude units the oscillator
-            bank uses, ``noise_psd`` the per-mic POWER envelope of the summed
-            broadband branches, on the branch's own ``(frame, band)`` grid.
+            [B, M, R], "freq": [B, R, H, t_a]}`` — ``amp`` in the same amplitude
+            units the oscillator bank uses, ``noise_psd`` the per-mic POWER
+            envelope of the summed broadband branches, on the branch's own
+            ``(frame, band)`` grid, and ``freq`` the frequency each amplitude
+            cell sits at (``f = (h+1) * rps_r``, on the amplitude control grid).
+            ``freq`` is what a frequency-dependent propagation term is evaluated
+            at — see :class:`models.generative.propagation.MicEQ`.
         """
         if self.cond_dim > 0:
             if z is None:
@@ -608,7 +612,7 @@ class PositionalHarmonicNoiseGen(nn.Module):
         folded, z_folded = self._fold(rps, z)
         b, r = int(rps.shape[0]), int(rps.shape[1])
         net = self.emitter.net
-        harm_amps, noise_amps, _f0s = net(folded, z_folded) if self.emitter.use_z else net(folded)
+        harm_amps, noise_amps, f0s = net(folded, z_folded) if self.emitter.use_z else net(folded)
         harm = harm_amps.reshape(b, r, *harm_amps.shape[1:])  # [B, R, O, H, t_a]
         if harm.shape[2] != 1:
             raise ValueError(
@@ -629,10 +633,21 @@ class PositionalHarmonicNoiseGen(nn.Module):
             gate_n = torch.nn.functional.adaptive_avg_pool1d(gate, noise.shape[-1])
             noise = noise * gate_n.unsqueeze(-2)
 
+        # The frequency each amplitude cell sits at, on the amplitude control
+        # grid: harmonic h (0-based) of rotor r is at (h+1) * f0_r, the same
+        # series the oscillator bank builds (`utils.dsp.harmonic_freq_series`).
+        # `f0s` is the emitter's own fundamental (== the input rate unless the
+        # predictor estimates one), so this cannot drift from what is rendered.
+        f0_a = torch.nn.functional.adaptive_avg_pool1d(
+            f0s.reshape(b, r, -1), int(harm.shape[-1])
+        )  # [B, R, t_a]
+        k_idx = torch.arange(1, harm.shape[-2] + 1, device=harm.device, dtype=harm.dtype)
+        freq = k_idx[None, None, :, None] * f0_a.unsqueeze(-2)  # [B, R, H, t_a]
+
         gain = amplitude_gains(rel_pos, ref_distance=self.ref_distance, eps=self.eps)  # [B, M, R]
         amp = gain[:, :, :, None, None] * harm.unsqueeze(1)  # [B, M, R, H, t_a]
         power = torch.einsum("bmr,brft->bmft", gain.pow(2), noise.pow(2))  # [B, M, F, t_n]
-        return {"amp": amp, "noise_psd": power.transpose(-1, -2), "gain": gain}
+        return {"amp": amp, "noise_psd": power.transpose(-1, -2), "gain": gain, "freq": freq}
 
     def spatial_stats(
         self,

@@ -331,12 +331,18 @@ class NoiseGenerationCodec:
             # dataset's TARGET entry is called ``amp`` and the pre-run validator
             # merges the two Frames' specs (training.validate) — one name, one
             # shape.
-            return td.Frame(
-                {
-                    "amp_pred": td.wrap(outputs["amp"], dims=("batch", "mic", "rotor", None, None)),
-                    "noise_psd": td.wrap(outputs["noise_psd"], dims=("batch", "mic", None, None)),
-                }
-            )
+            entries = {
+                "amp_pred": td.wrap(outputs["amp"], dims=("batch", "mic", "rotor", None, None)),
+                "noise_psd": td.wrap(outputs["noise_psd"], dims=("batch", "mic", None, None)),
+            }
+            if "mic_eq" in outputs:
+                # The propagation head's learnable per-microphone EQ, as its
+                # KNOT curve [B, M, n_knots]. It is a prediction only so a
+                # curvature penalty can be an ordinary composite-loss term
+                # (losses.SmoothnessPenalty over the knot axis) — see
+                # models.generative.propagation.MicEQ.
+                entries["mic_eq"] = td.wrap(outputs["mic_eq"], dims=("batch", "mic", None))
+            return td.Frame(entries)
         if isinstance(outputs, dict):
             entries: dict[str, Any] = {
                 "audio": _batched_series(outputs["audio"], ("batch", "mic", "time"), self.sr)

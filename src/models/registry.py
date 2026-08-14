@@ -47,6 +47,7 @@ from models.generative import (
 
 if TYPE_CHECKING:
     from models.generative.codebook import DroneCodebook
+    from models.generative.propagation import MicEQ
 from models.ckla import SimpleConvV2CKLA, SimpleConvV2CKLACond
 from models.fkla import FKLARPSModel
 from models.multif0.rps_predictor import MultiF0RPSPredictor
@@ -340,6 +341,9 @@ class _CodebookConditionedNoiseGen(nn.Module):
         amp_calibration: bool = False,
         n_mics: int = 8,
         noise_floor_bands: int = 0,
+        mic_eq_knots: int = 0,
+        eq_f_min: float = 20.0,
+        eq_f_max: float = 8000.0,
     ) -> None:
         super().__init__()
         self.generator = generator
@@ -388,19 +392,47 @@ class _CodebookConditionedNoiseGen(nn.Module):
         self.amp_calibration = bool(amp_calibration)
         self.n_mics = int(n_mics)
         self.noise_floor_bands = int(noise_floor_bands)
+        # ── the propagation head's frequency-dependent half ──────────────────
+        # `mic_eq_knots > 0` REPLACES the coherent branch's frequency-flat
+        # per-microphone scalar with a smooth learnable magnitude response
+        # EQ_c(f), per rig, per microphone, SHARED across rotors — the full
+        # amplitude-only propagation law is
+        #   A_obs[r,k,c](t) = A_src[r,k](t) * (1/dist_{r,c}) * EQ_c(f_k(t)).
+        # A room's reverberant transfer is frequency-structured and a rate-swept
+        # harmonic samples it, so the measured envelopes carry an rps-correlated
+        # ripple a flat scalar cannot express (see
+        # models.generative.propagation and
+        # docs/experiments/amplitude-target-training.md). The two are mutually
+        # exclusive because a flat EQ IS the scalar: keeping both would leave
+        # the level split between two redundant parameters.
+        self.mic_eq_knots = int(mic_eq_knots)
+        self.mic_eq: nn.Module | None = None
         self.log_gain: nn.ParameterDict | None = None
         self.log_mic_gain: nn.ParameterDict | None = None
         self.log_gain_noise: nn.ParameterDict | None = None
         self.log_mic_gain_noise: nn.ParameterDict | None = None
         self.log_floor_psd: nn.ParameterDict | None = None
+        if self.mic_eq_knots > 0 and not self.amp_calibration:
+            raise ValueError("mic_eq_knots > 0 requires amp_calibration=True")
         if self.amp_calibration:
             cb = cast("DroneCodebook", codebook)
             keys = [cb._key(name) for name in cb.names()]
             self.log_gain = nn.ParameterDict({k: nn.Parameter(torch.zeros(())) for k in keys})
             self.log_gain_noise = nn.ParameterDict({k: nn.Parameter(torch.zeros(())) for k in keys})
-            self.log_mic_gain = nn.ParameterDict(
-                {k: nn.Parameter(torch.zeros(self.n_mics)) for k in keys}
-            )
+            if self.mic_eq_knots > 0:
+                from models.generative.propagation import MicEQ
+
+                self.mic_eq = MicEQ(
+                    keys,
+                    self.n_mics,
+                    n_knots=self.mic_eq_knots,
+                    f_min=eq_f_min,
+                    f_max=eq_f_max,
+                )
+            else:
+                self.log_mic_gain = nn.ParameterDict(
+                    {k: nn.Parameter(torch.zeros(self.n_mics)) for k in keys}
+                )
             # The broadband branch gets its OWN per-microphone gain. Measured
             # reason (docs/experiments/residual-attribution.md): the residual is
             # 70-90 % per-microphone INCOHERENT and its per-mic energy spread on
@@ -436,9 +468,13 @@ class _CodebookConditionedNoiseGen(nn.Module):
         """``(amplitude gain [B, M], noise POWER gain [B, M])``, or ``None``.
 
         Each branch carries its own per-microphone gain and its own scalar unit
-        constant — see the constructor for why the two must not share one.
+        constant — see the constructor for why the two must not share one. With
+        a :class:`~models.generative.propagation.MicEQ` fitted, the COHERENT
+        branch's per-microphone term is the EQ curve instead of a scalar, so the
+        gain returned here is that branch's unit constant alone; the caller
+        multiplies the EQ in on the axis it is evaluated on.
         """
-        if self.log_gain is None or self.log_mic_gain is None or self.log_gain_noise is None:
+        if self.log_gain is None or self.log_gain_noise is None:
             return None
         assert self.log_mic_gain_noise is not None
         cb = cast("DroneCodebook", self.codebook)
@@ -447,10 +483,13 @@ class _CodebookConditionedNoiseGen(nn.Module):
             raise ValueError(
                 f"amp calibration was built for {self.n_mics} microphones, batch has {n_mics}"
             )
-        mic = torch.stack([self.log_mic_gain[k][:n_mics] for k in keys], dim=0)  # [B, M]
         mic_n = torch.stack([self.log_mic_gain_noise[k][:n_mics] for k in keys], dim=0)  # [B, M]
         glob = torch.stack([self.log_gain[k] for k in keys], dim=0).unsqueeze(-1)  # [B, 1]
         noise = torch.stack([self.log_gain_noise[k] for k in keys], dim=0).unsqueeze(-1)  # [B, 1]
+        if self.log_mic_gain is None:
+            mic = glob.new_zeros((len(keys), n_mics))  # the EQ carries the mic axis
+        else:
+            mic = torch.stack([self.log_mic_gain[k][:n_mics] for k in keys], dim=0)  # [B, M]
         return torch.exp(mic + glob), torch.exp(2.0 * mic_n + noise)
 
     def _add_noise_floor(self, psd: torch.Tensor, drone_names: list[str]) -> torch.Tensor:
@@ -498,6 +537,19 @@ class _CodebookConditionedNoiseGen(nn.Module):
         """Observer count of a ``[B, R, 3]`` (=1) or ``[B, M, R, 3]`` geometry."""
         return 1 if rel_pos.dim() == 3 else int(rel_pos.shape[1])
 
+    def _eq_filter(self, audio: torch.Tensor, drone_names: list[str]) -> torch.Tensor:
+        """Apply the per-microphone EQ to a rendered ``[B, M, T]`` waveform.
+
+        The amplitude path multiplies each line by ``EQ_c(f_k(t))``, so a
+        rendering must carry the same response or a checkpoint would sound
+        different from what it was fit to.
+        """
+        if self.mic_eq is None:
+            return audio
+        eq = cast("MicEQ", self.mic_eq)
+        sr = float(cast(int, getattr(self.generator, "sample_rate", 16000)))
+        return eq.filter_audio(audio, list(drone_names), sr)
+
     def forward(
         self,
         rps: Any,
@@ -513,11 +565,18 @@ class _CodebookConditionedNoiseGen(nn.Module):
         # Rendered audio is [B, M, T], or [B, T] for a single-observer geometry.
         gain, _ = cal
         scale = gain.unsqueeze(-1) if rel_pos.dim() == 4 else gain[:, 0].reshape(-1, 1)
+
+        def _apply(audio: torch.Tensor) -> torch.Tensor:
+            single = audio.dim() == 2  # [B, T] — one observer, microphone 0
+            a = audio.unsqueeze(1) if single else audio
+            a = self._eq_filter(a, list(drone_names))
+            return a.squeeze(1) if single else a
+
         if isinstance(out, dict):
             out = dict(out)
-            out["audio"] = out["audio"] * scale
+            out["audio"] = _apply(out["audio"] * scale)
             return out
-        return out * scale
+        return _apply(out * scale)
 
     def spatial_stats(
         self,
@@ -557,7 +616,9 @@ class _CodebookConditionedNoiseGen(nn.Module):
         cal = self._resolve_calibration(list(drone_names), self._n_mics(rel_pos))
         if cal is not None:
             gain, power = cal
-            out["coherent"] = out["coherent"] * gain.unsqueeze(-1)
+            out["coherent"] = self._eq_filter(
+                out["coherent"] * gain.unsqueeze(-1), list(drone_names)
+            )
             out["noise_psd"] = out["noise_psd"] * power[:, :, None, None]
         out["noise_psd"] = self._add_noise_floor(out["noise_psd"], list(drone_names))
         return out
@@ -589,6 +650,18 @@ class _CodebookConditionedNoiseGen(nn.Module):
             gain, power = cal
             out["amp"] = out["amp"] * gain[:, :, None, None, None]
             out["noise_psd"] = out["noise_psd"] * power[:, :, None, None]
+        if self.mic_eq is not None:
+            # The frequency-dependent half of the propagation law, evaluated at
+            # each cell's own frequency f = k * rps_r(t) — the term a per-mic
+            # SCALAR cannot express. Shared across rotors: room response and
+            # capsule sensitivity belong to the receiver, not to the source.
+            eq = cast("MicEQ", self.mic_eq)
+            names = list(drone_names)
+            n_mics = int(out["amp"].shape[1])
+            out["amp"] = out["amp"] * eq.gain(out["freq"], names, n_mics=n_mics)
+            # The knot curve rides out as a prediction so its curvature penalty
+            # is an ordinary composite-loss term (losses.SmoothnessPenalty).
+            out["mic_eq"] = eq.curve(names, n_mics=n_mics)
         out["noise_psd"] = self._add_noise_floor(out["noise_psd"], list(drone_names))
         return out
 
@@ -614,6 +687,9 @@ def build_noise_gen_model(
     amp_calibration: bool = False,
     n_mics: int = 8,
     noise_floor_bands: int = 0,
+    mic_eq_knots: int = 0,
+    eq_f_min: float = 20.0,
+    eq_f_max: float = 8000.0,
 ) -> nn.Module:
     """Construct a noise-generation model by name (``NOISE_GEN_MODEL_REGISTRY``).
 
@@ -665,6 +741,14 @@ def build_noise_gen_model(
     band count (60 by default); see the class docstring for the measurement that
     motivates it. All of these require ``cond_dim > 0`` and add state-dict keys,
     so they are new-training-only.
+
+    ``mic_eq_knots`` (0 = off, requires ``amp_calibration``) upgrades the
+    coherent branch's per-microphone term from a frequency-FLAT scalar to a
+    smooth learnable magnitude response ``EQ_c(f)`` — ``mic_eq_knots`` control
+    points, log-spaced between ``eq_f_min`` and ``eq_f_max``, one curve per
+    (rig, microphone), shared across rotors. It REPLACES ``log_mic_gain``
+    (a flat EQ is that scalar), which is why the two are never both built. See
+    :class:`models.generative.propagation.MicEQ`.
     """
     if model_name not in NOISE_GEN_MODEL_REGISTRY:
         raise ValueError(
@@ -708,6 +792,9 @@ def build_noise_gen_model(
         amp_calibration=amp_calibration,
         n_mics=n_mics,
         noise_floor_bands=noise_floor_bands,
+        mic_eq_knots=mic_eq_knots,
+        eq_f_min=eq_f_min,
+        eq_f_max=eq_f_max,
     )
 
 

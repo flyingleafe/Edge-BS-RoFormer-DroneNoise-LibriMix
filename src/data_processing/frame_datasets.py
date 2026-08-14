@@ -964,6 +964,12 @@ class DecompFrameDataset(Dataset):
     the "envelopes" are floor noise. The draw is retried (bounded) rather than
     the span pre-trimmed, so a recording with a slow ramp still contributes its
     flight portion.
+
+    ``dataset`` accepts a LIST of published datasets, which are concatenated
+    into one record pool (draws stay duration-weighted across the union). The v3
+    decompositions are published per rig, so a combined DREGON + Michael's arm
+    names both; every record carries its own ``drone`` id, which is the rig id
+    the model's propagation head is keyed by.
     """
 
     #: ``decomp-frames-v1``'s envelope stride in audio samples (meta.env_stride).
@@ -1065,9 +1071,42 @@ class DecompFrameDataset(Dataset):
 
     # ── construction ────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _dataset_versions(
+        dataset: str | list[str], version: str | list[str | None] | None
+    ) -> list[tuple[str, str | None]]:
+        """``(name, version)`` pairs — one dataset, or a concatenation of several.
+
+        The v3 decompositions are published **per rig**
+        (``decomp-frames-v3-dregon`` / ``decomp-frames-v3-michaels``), so a
+        combined arm names both. Concatenating at this level (rather than
+        publishing a joint dataset) keeps each rig's solve independently
+        re-derivable, and costs nothing downstream: a record already carries its
+        own ``drone`` id, which is the rig id the propagation head is keyed by.
+        """
+        names = [dataset] if isinstance(dataset, str) else list(dataset)
+        if not names:
+            raise ValueError("DecompFrameDataset needs at least one dataset name")
+        if version is None or isinstance(version, str):
+            versions: list[str | None] = [version] * len(names)
+        else:
+            versions = list(version)
+            if len(versions) != len(names):
+                raise ValueError(
+                    f"{len(versions)} versions for {len(names)} datasets; give one per dataset "
+                    "or a single version for all"
+                )
+        return list(zip(names, versions, strict=True))
+
     @classmethod
     def _load_records(
-        cls, dataset: str, version: str | None, *, split: str, val_pct: float, val_position: str
+        cls,
+        dataset: str | list[str],
+        version: str | list[str | None] | None,
+        *,
+        split: str,
+        val_pct: float,
+        val_position: str,
     ) -> list[dict[str, Any]]:
         """Decode the published recordings once and take each one's split span.
 
@@ -1081,48 +1120,58 @@ class DecompFrameDataset(Dataset):
         in the remainder. A middle block holds out cruise against cruise. The
         train side is then the two pieces around it.
         """
-        from data_processing.frames import meta_dict
         from data_processing.streams import iter_published_frames
 
         if val_position not in ("middle", "start", "end"):
             raise ValueError(f"val_position must be middle/start/end, got {val_position!r}")
         records: list[dict[str, Any]] = []
-        for tf in iter_published_frames(dataset, version):
-            meta = meta_dict(tf)
-            rps = np.asarray(tf["rps"].data, dtype=np.float32)
-            n_t = int(rps.shape[-1])
-            n_val = int(round(val_pct * n_t)) // cls.ENV_STRIDE * cls.ENV_STRIDE
-            starts = {"start": 0, "middle": (n_t - n_val) // 2, "end": n_t - n_val}
-            v0 = starts[val_position] // cls.ENV_STRIDE * cls.ENV_STRIDE
-            spans = (
-                [(v0, v0 + n_val)]
-                if split == "valid"
-                else [s for s in [(0, v0), (v0 + n_val, n_t)] if s[1] - s[0] > 0]
-            )
-            base = {
-                "recording_id": str(meta.get("recording_id")),
-                "drone": str(meta.get("drone")),
-                "sample_rate": int(meta.get("sample_rate", 16000)),
-                "rps": rps,
-                "residual": np.asarray(tf["residual"].data, dtype=np.float32),
-                "amp": np.asarray(tf["amp"].data, dtype=np.float32),
-                "amp_valid": np.asarray(tf["amp_valid"].data, dtype=bool),
-                "mic_pos": np.asarray(tf["mic_pos"].data, dtype=np.float32),
-                "rotor_pos": np.asarray(tf["rotor_pos"].data, dtype=np.float32),
-            }
-            # One record per contiguous span: the arrays are SHARED (a view of
-            # the same decoded recording), only the draw range differs.
-            records += [{**base, "span": span} for span in spans]
+        pairs = cls._dataset_versions(dataset, version)
+        for name, ver in pairs:
+            for tf in iter_published_frames(name, ver):
+                records += cls._records_of(tf, split=split, val_pct=val_pct, v_pos=val_position)
         if not records:
-            raise ValueError(f"{dataset}: no published recording decoded")
+            raise ValueError(f"{[n for n, _ in pairs]}: no published recording decoded")
         return records
+
+    @classmethod
+    def _records_of(
+        cls, tf: td.Frame, *, split: str, val_pct: float, v_pos: str
+    ) -> list[dict[str, Any]]:
+        """One decoded recording -> its per-span records (see :meth:`_load_records`)."""
+        from data_processing.frames import meta_dict
+
+        meta = meta_dict(tf)
+        rps = np.asarray(tf["rps"].data, dtype=np.float32)
+        n_t = int(rps.shape[-1])
+        n_val = int(round(val_pct * n_t)) // cls.ENV_STRIDE * cls.ENV_STRIDE
+        starts = {"start": 0, "middle": (n_t - n_val) // 2, "end": n_t - n_val}
+        v0 = starts[v_pos] // cls.ENV_STRIDE * cls.ENV_STRIDE
+        spans = (
+            [(v0, v0 + n_val)]
+            if split == "valid"
+            else [s for s in [(0, v0), (v0 + n_val, n_t)] if s[1] - s[0] > 0]
+        )
+        base = {
+            "recording_id": str(meta.get("recording_id")),
+            "drone": str(meta.get("drone")),
+            "sample_rate": int(meta.get("sample_rate", 16000)),
+            "rps": rps,
+            "residual": np.asarray(tf["residual"].data, dtype=np.float32),
+            "amp": np.asarray(tf["amp"].data, dtype=np.float32),
+            "amp_valid": np.asarray(tf["amp_valid"].data, dtype=bool),
+            "mic_pos": np.asarray(tf["mic_pos"].data, dtype=np.float32),
+            "rotor_pos": np.asarray(tf["rotor_pos"].data, dtype=np.float32),
+        }
+        # One record per contiguous span: the arrays are SHARED (a view of the
+        # same decoded recording), only the draw range differs.
+        return [{**base, "span": span} for span in spans]
 
     @classmethod
     def build_train(
         cls,
         *,
-        dataset: str = "decomp-frames-v1",
-        version: str | None = None,
+        dataset: str | list[str] = "decomp-frames-v1",
+        version: str | list[str | None] | None = None,
         chunk_size: int = 16000,
         train_samples: int = 4096,
         val_samples: int = 256,
@@ -1147,8 +1196,8 @@ class DecompFrameDataset(Dataset):
     def build_valid(
         cls,
         *,
-        dataset: str = "decomp-frames-v1",
-        version: str | None = None,
+        dataset: str | list[str] = "decomp-frames-v1",
+        version: str | list[str | None] | None = None,
         chunk_size: int = 16000,
         train_samples: int = 4096,
         val_samples: int = 256,

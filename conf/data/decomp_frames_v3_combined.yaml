@@ -1,0 +1,50 @@
+# The v3 Vold-Kalman decompositions of BOTH rigs, concatenated: DREGON
+# (free-flight_nosource_room1, refined labels) and Michael's (FLY124/FLY125).
+# Every chunk carries the amplitude envelope bank at 100 Hz, its validity mask,
+# the broadband residual and the exact audio-rate carrier the solve used — see
+# data_processing.frame_datasets.DecompFrameDataset.
+#
+# PENDING PINS. The v3 solve is published PER RIG, so this config names two
+# datasets and `DecompFrameDataset` concatenates their records (draws stay
+# duration-weighted across the union; each record keeps its own `drone` id,
+# which is the rig id the model's propagation head is keyed by). The two names
+# below are PLACEHOLDERS until the v3 derivation lands: when it does, confirm
+# the published names and add the `dload.lock` pins. Nothing else in the arm
+# changes — the configs, the model and the loss are complete.
+#
+# The split is a TIME split inside each recording, holding out a MIDDLE 10 %
+# block: a flight recording begins with the take-off ramp and ends with the
+# landing one, so a held-out block at either end is a different flight regime
+# (measured: a leading 10 % block averages 41 rev/s against 79 in the
+# remainder), which would make the monitored validation loss report regime
+# transfer instead of fit. min_motor_rps 30 rejects what ramp remains.
+train:
+  _target_: data_processing.frame_datasets.DecompFrameDataset.build_train
+  params:
+    dataset:
+      - decomp-frames-v3-dregon
+      - decomp-frames-v3-michaels
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_position: middle
+    min_motor_rps: 30.0
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DecompFrameDataset.build_valid
+  params:
+    dataset:
+      - decomp-frames-v3-dregon
+      - decomp-frames-v3-michaels
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_position: middle
+    min_motor_rps: 30.0
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

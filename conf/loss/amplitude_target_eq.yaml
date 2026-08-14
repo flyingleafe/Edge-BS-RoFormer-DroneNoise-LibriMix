@@ -1,0 +1,46 @@
+# The amplitude-target objective (conf/loss/amplitude_target.yaml) plus a
+# curvature term on the propagation head's learnable per-microphone EQ.
+#
+# The EQ is already low-order by construction (16 knots over 20 Hz..8 kHz, about
+# 2.6 knots per octave), which is the real smoothness prior. This term guards
+# the one shape that low order still permits and physics does not: knot-to-knot
+# ALTERNATION, which a fit can use to chase individual harmonics of one flight
+# instead of describing a receiver.
+#
+# Weight 0.05, on the mean squared 2nd difference of the LOG-gain knots. A
+# legitimate room ripple of about 3 dB (0.35 nats) over two knots costs
+# ~0.03 against an amplitude term near 1 log-unit — under 3 %, so real
+# frequency structure is not suppressed, while a +-0.35 nat zig-zag on every
+# knot costs ~10x that.
+terms:
+  - name: amplitude
+    _target_: losses.AmplitudeTargetLoss
+    weight: 1.0
+    params:
+      sr: [16000, 1]
+      # eps 1.6e-5 = the 1st percentile of the VALID DREGON amplitudes at the
+      # campaign's bw_rps=1 — the decomposition's own floor, below which a cell
+      # carries prior, not signal.
+      eps: 1.6e-5
+      psd_eps: 1.0e-12
+      # psd_weight 0.5 is measured: at the operating point one global scalar
+      # reaches, the raw terms are 1.08 (amp) and 2.54 (psd), so 0.5 brings the
+      # broadband term to 1.27 — the two enter within 18 % of each other and
+      # the amplitude term is not outvoted.
+      psd_weight: 0.5
+      # A hinge on the harmonics above each recording's decomposition ceiling:
+      # they are unsupervised directions, and the first arm ran them to 0.405
+      # against 2e-4 for the supervised lines — right amplitudes, a rendering
+      # 46 dB too loud. Zero once satisfied.
+      tail_weight: 1.0
+      n_fft: 2048
+      hop_length: 512
+  - name: eq_smoothness
+    _target_: losses.SmoothnessPenalty
+    weight: 0.05
+    params:
+      # The knot curve the model emits as a prediction entry [batch, mic, knot].
+      entry: mic_eq
+      dims: [-1]
+      series_dims: [batch, mic, null]
+      series_time: null
