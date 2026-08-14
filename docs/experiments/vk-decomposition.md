@@ -276,3 +276,77 @@ k25-80 (vs DREGON's −0.2 to −0.4) is the sparse-comb regime — two twin
 pairs rarely trigger the separation cap, so the achieved bands sit at the
 3 Hz absmax. Both recordings' `{envelopes,residual}.npz + report.json`
 are on R2 under `artifacts/vk-decompose-v2/`.
+
+## v3: the JOINT decomposition
+
+**Date**: 2026-08-14 · **Branch**: `vk-v3` · **Status**: built + tested +
+smoked; the three full-recording jobs are in flight. Design and every measured
+number: [`docs/vk-decompose-v3-design.md`](../vk-decompose-v3-design.md).
+Module: `src/tracking/joint_decompose.py`; driver `scripts/vk_decompose.py
+--joint`.
+
+### What v2 could not do
+
+v2 pushes EVERY timing deviation through one envelope band and takes the
+leftover to be white. A shaft that wanders about 0.6 rev/s makes harmonic `k`
+about `0.6·k` Hz wide, so from about `k` 5 up the flanks of every line become
+"residual" by construction, and an unweighted misfit is tolerant of comb
+structure exactly where the floor is loud. v3 alternates three
+linear-Gaussian blocks: a whitened VK solve with the shaft correction folded
+into the CARRIER, a `k`-weighted phase split (rig-common shaft, per-rotor
+shaft, per-track remainder), and a smooth floor fitted BETWEEN the masked comb
+lines.
+
+### The instrument, corrected
+
+`depth_db` (folded cell peak over cell median) is a RATIO, and it fails in two
+ways this campaign now has measured: it can rise while the comb falls, because
+the floor it is measured against falls faster; and on a four-rotor rig the
+other rotors' lines put a floor under it. On the synthetic fixture the ORIGINAL
+audio reads 2.54 dB at k10-24 and an almost perfect decomposition reads
+1.62 dB — no discrimination at all. `order_cell_profile` therefore also
+returns **`excess_db`**, the summed absolute `peak − median` over the band's
+cells in the input's own power units. That number is comparable between two
+signals, so "original minus residual" is decibels of comb removed. Read it
+first. The narrow slot contrast stays retired.
+
+### Measured on the synthetic fixture (20 s, 16 kHz, 4 rotors, 3 mics, k ≤ 20)
+
+| arm | residual fraction | k1-9 depth / excess dB | k10-24 depth / excess dB |
+|---|---|---|---|
+| original audio | 1.0000 | 28.17 / 62.03 | 2.54 / 35.93 |
+| v2 (flat carrier) | 0.0551 | 6.09 / 43.65 | 2.02 / 34.18 |
+| **v3, 3 rounds** | **0.0025** | **1.21 / 24.86** | **1.38 / 20.24** |
+| oracle (true shaft folded in) | 0.0024 | 0.89 / 22.90 | 1.62 / 19.85 |
+
+v2 removes 18.4 dB of comb excess at k1-9 and **1.75 dB** at k10-24. v3 removes
+37.2 dB and 15.7 dB, and lands inside 2 dB of the oracle in both bands. The
+recovered shaft phase correlates 1.000 with the truth, and the fitted log floor
+is within 0.5 to 1.0 dB rms of truth away from the lines.
+
+### Three findings that changed the design
+
+1. **The annealing ladder is limited by the envelope BAND, not by the unwrap.**
+   Harmonic `k` of a shaft wandering `sigma_r` rev/s is a frequency modulation
+   of about `k·sigma_r` Hz, and a band of `B` Hz distorts its phase once
+   `k·sigma_r` is more than `B/2` — at 0.6 rev/s and 3 Hz that is `k` 2.5. A
+   ladder that starts at `k` 6 recovers 43 % of the true shaft phase in three
+   rounds; a ladder that starts at 3 recovers all of it. Default `3,12,80`.
+2. **Whitening must be bandwidth-neutral.** A track whose floor is 15 dB loud
+   has its data term scaled down but keeps its curvature prior, so its
+   effective band narrows by the same factor. That alone left 12.6 dB of
+   residual comb at k1-9 against 4.3 dB unwhitened. The per-track mean weight
+   now goes into `rho^2` as well.
+3. **The floor mask must be about three linewidths wide, and capped.** The
+   log-floor error against truth reads 3.5 dB rms at `(1.5, 3 Hz)`, **0.6 dB**
+   at `(3, 10 Hz)` and 6.5 dB again at `(4, 30 Hz)` — too wide is as bad as too
+   narrow, because the fit then bridges gaps instead of seeing the floor.
+
+### The jobs
+
+`vk-decompose-v3-dregon-1b0249`, `vk-decompose-v3-fly124-66a2e0`,
+`vk-decompose-v3-fly125-71193b` on `uni-cpu`, 12 s windows at a 9 s hop,
+32 kHz, `--k-max 80`, `--bw-schedule 3,0,1.5,3`, `--iters 3 --k-trust
+3,12,80`, one recording each, all 8 microphones. Artifacts go to R2 under
+`artifacts/vk-decompose-v3/<recording_id>/` from INSIDE the job, because
+omnirun output collection silently drops files above about 25 MB.
