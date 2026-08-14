@@ -161,11 +161,22 @@ from tracking.decompose import (  # noqa: E402
     track_bands,
     welch_psd,
 )
+from tracking.joint_decompose import (  # noqa: E402
+    JointConfig,
+    corrected_phase,
+    global_rate_correction,
+    joint_solve_window,
+    order_cell_profile,
+    theta_rate,
+    whitened_flatness,
+    window_extra_phase,
+)
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args, unit_path  # noqa: E402
 
 __all__ = [  # the importable core the tests read; the CLI is main()
     "BANDS",
     "BandwidthSchedule",
+    "joint_config",
     "band_name",
     "band_summary",
     "drift_increments",
@@ -431,6 +442,26 @@ def recording_k_hi(r_ref: Any, k_max: int, *, sr: int = SR, f_max: float = F_MAX
     return int(k_cap(fvk_config(k_max, sr=sr, f_max=f_max), np.asarray(r_ref)))
 
 
+def joint_config(params: dict[str, Any]) -> JointConfig:
+    """The v3 :class:`JointConfig` from the JSON-safe unit parameters.
+
+    One construction, so a worker and the stitch cannot disagree about the arm
+    that produced a window. Every field is carried as a scalar or a
+    comma-separated string, because it has to survive a JSON round trip through
+    the unit table and the report's provenance.
+    """
+    slope, cap = (float(v) for v in str(params.get("bw_psi", "0.6,8")).split(","))
+    ladder = tuple(int(v) for v in str(params.get("k_trust", "3,12,80")).split(",") if v.strip())
+    return JointConfig(
+        iters=int(params.get("iters", 3)),
+        k_trust=ladder,
+        bw_theta_hz=float(params.get("bw_theta", 1.5)),
+        bw_psi_slope=slope,
+        bw_psi_max=cap,
+        whiten=bool(params.get("whiten", True)),
+    )
+
+
 def solve_worker(unit: Unit) -> dict[str, Any]:
     """One unit: one window (``kind`` = ``window``) or one bandwidth (``bw``).
 
@@ -485,18 +516,37 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
             "budget on a node that can hold it."
         )
     tic = time.perf_counter()
-    _, env = solve_window(
-        rec["audio"][:, a0:a1],
-        r_win,
-        k_hi,
-        int(p["k_max"]),
-        float(p["bw_rps"]),
-        mics,
-        sr=sr,
-        f_max=f_max,
-        rho_scale=float(p.get("rho_scale", 1.0)),
-        bw_schedule=BandwidthSchedule.parse(str(p.get("bw_schedule", ""))),
-    )
+    joint = bool(p.get("joint", False)) and out["kind"] != "bw"
+    jres = None
+    if joint:
+        # v3: the alternation. It replaces the single solve and returns the
+        # EFFECTIVE envelope (g e^{j psi}) against the CORRECTED carrier, so
+        # everything below reads it exactly as it reads a v2 bank.
+        jres = joint_solve_window(
+            rec["audio"][:, a0:a1],
+            r_win,
+            cfg,
+            k_hi=k_hi,
+            mics=mics,
+            jcfg=joint_config(p),
+            bw_schedule=BandwidthSchedule.parse(str(p.get("bw_schedule", ""))),
+            rho_scale=float(p.get("rho_scale", 1.0)),
+            t_start_s=a0 / float(sr) + offset,
+        )
+        env = jres.env
+    else:
+        _, env = solve_window(
+            rec["audio"][:, a0:a1],
+            r_win,
+            k_hi,
+            int(p["k_max"]),
+            float(p["bw_rps"]),
+            mics,
+            sr=sr,
+            f_max=f_max,
+            rho_scale=float(p.get("rho_scale", 1.0)),
+            bw_schedule=BandwidthSchedule.parse(str(p.get("bw_schedule", ""))),
+        )
     wall = time.perf_counter() - tic
     out.update(
         {
@@ -541,15 +591,30 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
 
     npz = unit_path(p["out"], unit.uid).with_suffix(".npz")
     npz.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        npz,
-        allow_pickle=False,
-        x=np.asarray(env.x, dtype=np.complex64),
-        valid=np.asarray(env.valid, dtype=bool),
-        rotor=np.asarray(env.rotor, dtype=np.int64),
-        k=np.asarray(env.k, dtype=np.int64),
-        bw_track=np.asarray(env.bw_track, dtype=np.float64),
-    )
+    arrays: dict[str, Any] = {
+        "x": np.asarray(env.x, dtype=np.complex64),
+        "valid": np.asarray(env.valid, dtype=bool),
+        "rotor": np.asarray(env.rotor, dtype=np.int64),
+        "k": np.asarray(env.k, dtype=np.int64),
+        "bw_track": np.asarray(env.bw_track, dtype=np.float64),
+    }
+    if jres is not None:
+        # The v3 extras. ``dr`` is the gauge-free form of ``theta`` (its time
+        # derivative, in rev/s) and it is what the stitch carries across windows
+        # — a phase has an arbitrary constant per window, a rate does not.
+        arrays.update(
+            theta=np.asarray(jres.theta_env, dtype=np.float64),
+            dr=np.asarray(theta_rate(jres.theta_env, float(env.fs_env)), dtype=np.float64),
+            psi=np.asarray(jres.psi, dtype=np.float32),
+            psd_freq=np.asarray(jres.psd.freq, dtype=np.float64),
+            psd_t=np.asarray(jres.psd.t_block, dtype=np.float64),
+            psd_log_s=np.asarray(jres.psd.log_s, dtype=np.float32),
+        )
+        out["joint"] = {
+            "config": joint_config(p).__dict__ | {"k_trust": list(joint_config(p).k_trust)},
+            "iterations": jres.iterations,
+        }
+    np.savez(npz, allow_pickle=False, **arrays)
     # A cheap per-window capture check on ONE channel: the fraction of that
     # channel's energy the track sum explains. The full ledger is the stitch's,
     # which is why this reconstructs one channel and not the array.
@@ -597,13 +662,30 @@ def read_rows(out: Path) -> list[dict[str, Any]]:
 
 
 def stitch_envelopes(
-    rows: list[dict[str, Any]], out: Path, phi: Any, stride: int, ramp: int
+    rows: list[dict[str, Any]],
+    out: Path,
+    phi: Any,
+    stride: int,
+    ramp: int,
+    *,
+    r_audio: Any = None,
+    sr: int = SR,
 ) -> dict[str, Any]:
     """Load the window ``.npz`` banks of one recording and stitch them.
 
     The file I/O of :func:`tracking.decompose.stitch_bank` — the phase
     re-reference and the cross-fade are that function's. The harmonic-set check
     is here because it is a check on what the UNITS wrote, not on the arrays.
+
+    A JOINT (v3) window carries its own shaft correction, so before the stitch
+    the windows have to be brought onto ONE carrier. That is done in the only
+    gauge-free currency there is — the rate. Each window's ``dr`` (rev/s) is
+    cross-faded into one global rate correction, the corrected phase is its
+    integral, and each window's bank is rotated by the difference between its
+    own carrier and that global one (:func:`window_extra_phase`). The rotation
+    is slow by construction, and ``theta_stitch_max_rate_hz`` reports how fast
+    the fastest track's rotation actually is, so a caller can see whether it
+    stayed inside the 100 Hz envelope grid.
     """
     used = sorted((r for r in rows if r.get("used") and "npz" in r), key=lambda r: int(r["a0"]))
     if not used:
@@ -612,6 +694,7 @@ def stitch_envelopes(
     with np.load(out / used[0]["npz"]) as first:
         k = np.asarray(first["k"], dtype=np.int64)
         bw_track = np.asarray(first["bw_track"], dtype=np.float64)
+        joint = "dr" in first
 
     windows: list[dict[str, Any]] = []
     for r in used:
@@ -621,16 +704,89 @@ def stitch_envelopes(
                     f"{r['npz']}: harmonic set differs from the first window — the windows "
                     "were solved at different k_hi and cannot be stitched"
                 )
-            windows.append(
-                {
-                    "a0": int(r["a0"]),
-                    "x": np.asarray(data["x"], dtype=np.complex64),
-                    "valid": np.asarray(data["valid"], dtype=bool),
-                    "rotor": np.asarray(data["rotor"], dtype=np.int64),
-                    "k": k,
-                }
-            )
-    return {**D.stitch_bank(windows, phi, stride, ramp), "bw_track": bw_track, "windows": used}
+            w = {
+                "a0": int(r["a0"]),
+                "x": np.asarray(data["x"], dtype=np.complex64),
+                "valid": np.asarray(data["valid"], dtype=bool),
+                "rotor": np.asarray(data["rotor"], dtype=np.int64),
+                "k": k,
+            }
+            if joint:
+                w["dr"] = np.asarray(data["dr"], dtype=np.float64)
+                w["theta"] = np.asarray(data["theta"], dtype=np.float64)
+            windows.append(w)
+
+    extra: dict[str, Any] = {}
+    if not joint:
+        return {
+            **D.stitch_bank(windows, phi, stride, ramp),
+            "bw_track": bw_track,
+            "windows": used,
+            "phi": np.asarray(phi),
+            "joint": False,
+        }
+
+    a_min = min(int(w["a0"]) for w in windows)
+    a_max = max(int(w["a0"]) + int(w["x"].shape[-1]) * stride for w in windows)
+    dr_g = global_rate_correction(windows, stride, a_min, a_max, ramp)
+    r_corr, phi_t = corrected_phase(r_audio, dr_g, sr, stride, a_min, a_max)
+    rot = np.asarray(windows[0]["rotor"], dtype=np.int64)
+    max_rate = 0.0
+    for w in windows:
+        e_w = window_extra_phase(
+            w["theta"], phi, phi_t, int(w["a0"]), stride, int(w["x"].shape[-1])
+        )
+        w["x"] = w["x"] * np.exp(1j * k[None, :, None] * e_w[rot][None, :, :]).astype(np.complex64)
+        if e_w.shape[-1] > 1:
+            rate = np.abs(np.diff(e_w, axis=-1)).max() * float(sr) / stride / (2.0 * np.pi)
+            max_rate = max(max_rate, float(rate) * float(k.max()))
+    extra = {
+        "dr_global": dr_g,
+        "r_corrected": r_corr,
+        "phi": phi_t,
+        "theta_stitch_max_rate_hz": round(max_rate, 3),
+        "joint": True,
+    }
+    return {
+        **D.stitch_bank(windows, phi_t, stride, ramp),
+        "bw_track": bw_track,
+        "windows": used,
+        **extra,
+    }
+
+
+def _flatness_report(
+    residual: Any, sr: int, st: dict[str, Any], out: Path, wins: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Whitened-residual flatness against the joint floor model, if there is one.
+
+    The floor is per WINDOW, so the reading uses the middle used window's
+    surface — the point of the check is the SHAPE of the whitened residual, and
+    the shape is what a smooth floor holds still across a recording.
+    """
+    from tracking.joint_decompose import SmoothPSD
+
+    used = sorted((r for r in wins if r.get("used") and "npz" in r), key=lambda r: int(r["a0"]))
+    if not used:
+        return None
+    with np.load(out / used[len(used) // 2]["npz"]) as data:
+        if "psd_log_s" not in data:
+            return None
+        psd = SmoothPSD(
+            freq=np.asarray(data["psd_freq"], dtype=np.float64),
+            t_block=np.asarray(data["psd_t"], dtype=np.float64),
+            log_s=np.asarray(data["psd_log_s"], dtype=np.float64),
+        )
+    return whitened_flatness(residual, sr, psd)
+
+
+def _order_cell_bands(audio: Any, sr: int, r_audio: Any, k_hi: int) -> dict[str, Any]:
+    """Band table of :func:`order_cell_profile`, without the plotting arrays."""
+    prof = order_cell_profile(audio, sr, r_audio, k_max=int(k_hi))
+    return {
+        nm: {kk: vv for kk, vv in d.items() if kk not in ("offsets", "cell")}
+        for nm, d in prof["bands"].items()
+    }
 
 
 def stitch(
@@ -657,14 +813,19 @@ def stitch(
         offset = float(rec["t0_offset_s"])
         phi = shaft_phase(rec["r_audio"], sr)
         ramp = max(0, int(round((params["window_s"] - params["hop_s"]) * params["fs_env"])))
-        st = stitch_envelopes(wins, out, phi, stride, ramp)
+        st = stitch_envelopes(
+            wins, out, phi, stride, ramp, r_audio=rec["r_audio"], sr=sr
+        )
+        # The joint stitch replaces the carrier with the CORRECTED one; the v2
+        # stitch hands back the same phi it was given, so one line covers both.
+        phi_use = np.asarray(st["phi"])
 
         a_min, a_max, n_env = int(st["a_min"]), int(st["a_max"]), int(st["n_env"])
         x = st["x"]
         k, rotor = st["k"], st["rotor"]
         t_env = (a_min + np.arange(n_env) * stride) / float(sr) + offset
         audio = np.asarray(rec["audio"][: x.shape[0], a_min:a_max], dtype=np.float64)
-        recon, track_energy = reconstruct(x, k, rotor, phi[:, a_min:a_max], stride)
+        recon, track_energy = reconstruct(x, k, rotor, phi_use[:, a_min:a_max], stride)
 
         rec_dir = out / rid
         rec_dir.mkdir(parents=True, exist_ok=True)
@@ -746,6 +907,7 @@ def stitch(
             "mics": int(x.shape[0]),
             "energy": energy_ledger(audio, recon, track_energy, k),
             "resynthesis_max_abs": resynth,
+            "flatness": _flatness_report(residual, sr, st, out, wins),
             "bw_schedule": (sched.as_dict() if sched is not None else None),
             "bw_track_hz_by_band": band_summary(st["bw_track"], k),
             # What is left in the residual that a smooth-PSD noise model cannot
@@ -759,6 +921,18 @@ def stitch(
             "phase_reference_max_dev_rad": D.phase_reference_deviation(
                 rec["r_audio"], phi, int(st["windows"][0]["a0"]), sr
             ),
+            # THE acceptance instrument, on the stitched residual and on the
+            # ORIGINAL for reference. Read ``excess_db`` (absolute comb power
+            # left, comparable between the two) before ``depth_db`` (a ratio,
+            # which rises as the residual approaches the floor).
+            "order_cell": {
+                "residual": _order_cell_bands(
+                    residual, sr, np.asarray(rec["r_audio"])[:, a_min:a_max], int(k.max())
+                ),
+                "original": _order_cell_bands(
+                    audio, sr, np.asarray(rec["r_audio"])[:, a_min:a_max], int(k.max())
+                ),
+            },
             "ref_mic": ref,
             "phase_model": phase_model_report(
                 amp[ref], pherr[ref], st["valid"], rotor, k, mask, float(params["fs_env"])
@@ -768,6 +942,35 @@ def stitch(
                 for r in sorted(wins, key=lambda r: int(r["a0"]))
             ],
         }
+        if st.get("joint"):
+            dr_g = np.asarray(st["dr_global"])
+            report["joint"] = {
+                "theta_stitch_max_rate_hz": st["theta_stitch_max_rate_hz"],
+                "rate_correction_rms_rev_s": [
+                    round(float(np.sqrt(np.mean(row**2))), 5) for row in dr_g
+                ],
+                "rate_correction_mean_rev_s": [round(float(row.mean()), 5) for row in dr_g],
+                "rate_correction_pct_of_rate": [
+                    round(float(100.0 * row.mean() / max(float(rr.mean()), 1e-9)), 4)
+                    for row, rr in zip(dr_g, np.asarray(rec["r_audio"])[:, a_min:a_max], strict=False)
+                ],
+            }
+            np.savez(
+                rec_dir / "joint.npz",
+                allow_pickle=False,
+                t_env=t_env,
+                dr_global=dr_g,
+                r_corrected=np.asarray(st["r_corrected"])[:, a_min:a_max:stride][:, :n_env],
+                r_labels=np.asarray(rec["r_audio"])[:, a_min:a_max:stride][:, :n_env],
+                sample_rate=np.int64(sr),
+                recording_id=np.array(rid),
+                note=np.array(
+                    "dr_global is the stitched shaft-rate correction in rev/s on the "
+                    "envelope grid; r_corrected = r_labels + dr_global is the carrier the "
+                    "envelopes are referenced to. Per-window psi and the per-microphone "
+                    "smooth floor stay in the unit .npz files under raw/."
+                ),
+            )
         (rec_dir / "report.json").write_text(json.dumps(report, indent=1))
         written.append(rec_dir / "report.json")
 
@@ -886,6 +1089,39 @@ def main() -> None:
         ),
     )
     ap.add_argument(
+        "--joint",
+        action="store_true",
+        help=(
+            "v3: the JOINT decomposition — alternate the whitened VK solve, the shaft/track "
+            "phase split and the masked smooth-floor fit (tracking.joint_decompose). Off by "
+            "default, and off IS the v2 path, call for call"
+        ),
+    )
+    ap.add_argument("--iters", type=int, default=3, help="--joint: alternation rounds")
+    ap.add_argument(
+        "--k-trust",
+        default="3,12,80",
+        help=(
+            "--joint: the annealing ladder, one trustable harmonic cap per iteration. It "
+            "starts low because the ENVELOPE BAND, not the phase unwrap, is what limits "
+            "which harmonics can measure the shaft (see JointConfig.k_trust)"
+        ),
+    )
+    ap.add_argument(
+        "--bw-psi",
+        default="0.6,8",
+        metavar="slope,max",
+        help="--joint: per-track phase-correction bandwidth, min(slope * k, max) Hz",
+    )
+    ap.add_argument(
+        "--bw-theta", type=float, default=1.5, help="--joint: shaft-correction bandwidth, Hz"
+    )
+    ap.add_argument(
+        "--no-whiten",
+        action="store_true",
+        help="--joint: skip the noise whitening (block A runs on the unweighted misfit)",
+    )
+    ap.add_argument(
         "--mem-budget-gb",
         type=float,
         default=8.0,
@@ -920,6 +1156,18 @@ def main() -> None:
     if args.smoke:
         args.window_s, args.hop_s = 4.0, 4.0
         args.k_max, args.mics = 20, 2
+    if args.joint:
+        # Fail on a malformed ladder here, in the CLI, and not in a worker.
+        joint_config(
+            {
+                "iters": args.iters,
+                "k_trust": args.k_trust,
+                "bw_psi": args.bw_psi,
+                "bw_theta": args.bw_theta,
+            }
+        )
+        if args.iters < 1:
+            raise SystemExit(f"--iters {args.iters}: the alternation needs at least one round")
     if args.sr <= 0:
         raise SystemExit(f"--sr {args.sr}: the sample rate must be positive")
     if args.mics > MAX_MICS:
@@ -949,6 +1197,12 @@ def main() -> None:
         "mem_budget_gb": float(args.mem_budget_gb),
         "fs_env": fs_env,
         "stride": stride,
+        "joint": bool(args.joint),
+        "iters": int(args.iters),
+        "k_trust": str(args.k_trust),
+        "bw_psi": str(args.bw_psi),
+        "bw_theta": float(args.bw_theta),
+        "whiten": not bool(args.no_whiten),
     }
     wanted = {v.strip() for v in args.recording.split(",") if v.strip()}
 
