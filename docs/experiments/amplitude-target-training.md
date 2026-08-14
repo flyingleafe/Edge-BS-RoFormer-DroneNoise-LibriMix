@@ -364,7 +364,10 @@ This is the science of the combined run:
 
 Both arms monitor `val_loss`, keep `checkpoint_every=1`, and hold out the
 MIDDLE 10 % block of each recording, exactly as the v2 arms did. Selection
-stays comb-aware and offline through the `*_render` twin configs.
+stays comb-aware and offline: `gen_c1_amp_combined_render` and
+`gen_c2_amp_combined_perrotor_render` are the twin experiments
+`scripts/eval_gen_comb_real.py` composes. The C-series needs its OWN render
+twins, because the model configs differ — the v2 arms could reuse the v1 ones.
 
 `per_rotor_deltas` starts at zero, thus `gen_c2` is a strict superset of
 `gen_c1` and the pair is a clean A/B.
