@@ -79,7 +79,7 @@ grid is a slice of one global envelope grid and no resampling is needed.
 
 How much memory one window costs
 --------------------------------
-Read :func:`group_plan` before sizing a job. Coupling is transitive, so at
+Read :func:`tracking.group_plan` before sizing a job. Coupling is transitive, so at
 ``k_hi`` 62 the whole comb is ONE banded system and a 16 s window needs 6.3 GB
 per worker — the solve is memory-bound, not compute-bound, and the cost grows
 as ``k_hi^2`` times the window length. ``--mem-budget-gb`` (8 GB by default)
@@ -183,7 +183,6 @@ __all__ = [  # the importable core the tests read; the CLI is main()
     "fade_weights",
     "frame_grid",
     "fvk_config",
-    "group_plan",
     "interp_rps",
     "per_track_stats",
     "phase_model_report",
@@ -191,7 +190,6 @@ __all__ = [  # the importable core the tests read; the CLI is main()
     "reconstruct",
     "reference_mic",
     "shaft_phase",
-    "solve_window",
     "to_audio_grid",
     "track_bands",
     "welch_psd",
@@ -383,51 +381,6 @@ def fvk_config(
     return D.solve_config(k_max, sr=sr, mics=mics, bw_rps=bw_rps, f_max=f_max)
 
 
-def solve_window(
-    audio: Any,
-    r_audio: Any,
-    k_hi: int,
-    k_max: int,
-    bw_rps: float,
-    mics: int,
-    *,
-    sr: int = SR,
-    f_max: float = F_MAX,
-    rho_scale: float = 1.0,
-    bw_schedule: BandwidthSchedule | None = None,
-) -> Any:
-    """``(config, envelopes)`` of one coupled VK solve of one window.
-
-    The harmonic set is capped from the RECORDING's reference trajectory (see
-    :func:`recording_k_hi`), so every window of a recording holds the identical
-    ``(rotor, harmonic)`` track set and the windows can be stitched track by
-    track. ``bw_schedule`` is the v2 linewidth-matched per-track bandwidth
-    (``--bw-schedule``); ``None`` is the flat v1 band.
-    """
-    cfg = fvk_config(k_max, mics=mics, bw_rps=bw_rps, sr=sr, f_max=f_max)
-    return cfg, D.solve_window(
-        audio,
-        r_audio,
-        cfg,
-        k_hi=k_hi,
-        mics=mics,
-        rho_scale=rho_scale,
-        bw_schedule=bw_schedule,
-    )
-
-
-def group_plan(r_audio: Any, k_hi: int, cfg: Any) -> dict[str, Any]:
-    """Coupling-group partition of one window, and the memory it will cost.
-
-    THE memory model of this script — read :func:`tracking.decompose.group_plan`
-    before a job is sized. The short version: coupling is TRANSITIVE, the whole
-    comb is ONE banded system, and the cost is about ``1e-4 k_hi^2 window_s`` GB
-    per worker (6.3 GB at the default ``k_hi`` 62 and 16 s windows, which is
-    what a local three-worker run could not hold).
-    """
-    return D.group_plan(r_audio, k_hi, cfg)
-
-
 def recording_k_hi(r_ref: Any, k_max: int, *, sr: int = SR, f_max: float = F_MAX) -> int:
     """The harmonic cap of a WHOLE recording, from its refined labels.
 
@@ -506,7 +459,7 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
 
     k_hi = recording_k_hi(rec["r_ref"], int(p["k_max"]), sr=sr, f_max=f_max)
     cfg = fvk_config(int(p["k_max"]), mics=mics, bw_rps=float(p["bw_rps"]), sr=sr, f_max=f_max)
-    plan = group_plan(r_win, k_hi, cfg)
+    plan = D.group_plan(r_win, k_hi, cfg)
     budget = float(p["mem_budget_gb"])
     if budget > 0 and float(plan["banded_gb"]) > budget:
         # Fail this unit with the arithmetic, instead of letting the operating
@@ -537,15 +490,12 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
         )
         env = jres.env
     else:
-        _, env = solve_window(
+        env = D.solve_window(
             rec["audio"][:, a0:a1],
             r_win,
-            k_hi,
-            int(p["k_max"]),
-            float(p["bw_rps"]),
-            mics,
-            sr=sr,
-            f_max=f_max,
+            cfg,
+            k_hi=k_hi,
+            mics=mics,
             rho_scale=float(p.get("rho_scale", 1.0)),
             bw_schedule=BandwidthSchedule.parse(str(p.get("bw_schedule", ""))),
         )
@@ -1188,10 +1138,10 @@ def main() -> None:
         }
         units = build_units(recs, args, common)
         # Size the job BEFORE it runs: one solve holds one banded group, and
-        # that group is the whole comb (see group_plan).
+        # that group is the whole comb (see tracking.group_plan).
         probe = recs[0]
         pk = recording_k_hi(probe["r_ref"], int(args.k_max), sr=int(args.sr), f_max=args.f_max)
-        plan = group_plan(
+        plan = D.group_plan(
             np.asarray(probe["r_audio"])[:, : int(round(args.window_s * args.sr))],
             pk,
             fvk_config(

@@ -117,16 +117,17 @@ def test_bandwidth_schedule_is_the_cli_spelling() -> None:
 def test_solve_window_forwards_the_schedule_to_the_solver() -> None:
     # The driver's own seam: the same window solved flat and scheduled must come
     # back with DIFFERENT achieved bandwidths, and the scheduled one wider.
+    from tracking.decompose import solve_window
+
     audio, rates = _synth("common")
-    _, flat = V.solve_window(audio, rates, K_MAX, K_MAX, 1.0, 2, sr=SR)
-    _, wide = V.solve_window(
+    cfg = V.fvk_config(K_MAX, mics=2, sr=SR)
+    flat = solve_window(audio, rates, cfg, k_hi=K_MAX, mics=2)
+    wide = solve_window(
         audio,
         rates,
-        K_MAX,
-        K_MAX,
-        1.0,
-        2,
-        sr=SR,
+        cfg,
+        k_hi=K_MAX,
+        mics=2,
         bw_schedule=V.BandwidthSchedule(3.0, 0.0, 1.5, 3.0),
     )
     # The schedule is a FLOOR of 3 Hz here, so the low harmonics widen and the
@@ -158,7 +159,9 @@ def test_group_plan_reports_transitive_coupling_and_its_memory() -> None:
     # 250 -> 300 and at 427 -> 488, which leaves three groups and a longest
     # chain of nine. That chain length is what the memory law is written in.
     rates = np.stack([np.full(2 * SR, r) for r in RATES])
-    plan = V.group_plan(rates, K_MAX, V.fvk_config(K_MAX, mics=2, sr=SR))
+    from tracking.decompose import group_plan
+
+    plan = group_plan(rates, K_MAX, V.fvk_config(K_MAX, mics=2, sr=SR))
     assert plan["n_tracks"] == 2 * K_MAX
     assert plan["n_groups"] == 3
     assert plan["max_group"] == 9
@@ -216,8 +219,10 @@ def _synth(drift: str, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
 
 def _decompose(drift: str) -> dict[str, object]:
     """Solve the synthetic clip and read the script's own statistics off it."""
+    from tracking.decompose import solve_window
+
     audio, rates = _synth(drift)
-    _, env = V.solve_window(audio, rates, K_MAX, K_MAX, 1.0, 2, sr=SR)
+    env = solve_window(audio, rates, V.fvk_config(K_MAX, mics=2, sr=SR), k_hi=K_MAX, mics=2)
     stride = int(round(SR / env.fs_env))
     phase = V.shaft_phase(rates, SR)
     recon, energy = V.reconstruct(env.x, env.k, env.rotor, phase, stride)
@@ -388,8 +393,10 @@ def test_joint_solve_writes_the_extra_arrays_and_stitches(tmp_path) -> None:
 def test_v2_stitch_still_hands_back_its_own_carrier(tmp_path) -> None:
     # A v2 unit has no ``dr`` array, so the joint branch must not fire and the
     # carrier must come back untouched — the regression that keeps v2 working.
+    from tracking.decompose import solve_window
+
     audio, rates = _synth("common")
-    _, env = V.solve_window(audio, rates, K_MAX, K_MAX, 1.0, 2, sr=SR)
+    env = solve_window(audio, rates, V.fvk_config(K_MAX, mics=2, sr=SR), k_hi=K_MAX, mics=2)
     stride = int(round(SR / env.fs_env))
     raw = tmp_path / "raw"
     raw.mkdir()
