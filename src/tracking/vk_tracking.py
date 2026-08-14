@@ -384,6 +384,30 @@ def _coupling_groups(f: np.ndarray, valid: np.ndarray, couple_hz: float) -> list
 # coupled-group solvers
 
 
+def _whiten_weights(
+    w: list[np.ndarray], u: list[np.ndarray] | None
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Split the data weight into its diagonal/right-hand and its cross form.
+
+    The VK normal equations carry the data weight as ``u^2`` on the diagonal
+    and in the right-hand side, but as ``u_a u_b`` in a cross block, because a
+    cross block is a product of two DIFFERENT tracks' weighted bases. With no
+    amplitude weight (``u is None``) both forms are the validity mask ``w``
+    itself and every product below is bitwise the v2 formulation.
+
+    ``u`` is the per-track amplitude weight ``1 / sqrt(S)`` of the whitened
+    solve (``tracking.joint_decompose``); it is a per-track, per-envelope-frame
+    array because a smooth noise spectrum is constant across ONE line's width,
+    which is what collapses the exact frequency weighting to one scalar per
+    (track, time) and leaves the banded structure untouched.
+    """
+    if u is None:
+        return w, w
+    return [wa * ua * ua for wa, ua in zip(w, u, strict=True)], [
+        wa * ua for wa, ua in zip(w, u, strict=True)
+    ]
+
+
 def _solve_group_splu(
     d2td2: sparse.csr_array,
     eye: Any,
@@ -391,6 +415,8 @@ def _solve_group_splu(
     w: list[np.ndarray],
     cross: dict[tuple[int, int], np.ndarray],
     z_g: np.ndarray,
+    *,
+    u: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     """Reference coupled-group solve: track-major sparse LU (SuperLU).
 
@@ -402,17 +428,18 @@ def _solve_group_splu(
     """
     g = len(w)
     n_ch, _, n_env = z_g.shape
+    wd, wc = _whiten_weights(w, u)
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     blocks: list[list[Any]] = [[None] * g for _ in range(g)]
     for a in range(g):
         reg = float(r2[a]) * d2td2 + 1e-8 * eye  # eps keeps masked spans well-posed
-        blocks[a][a] = (reg + sparse.diags_array(w[a])).astype(np.complex128)
+        blocks[a][a] = (reg + sparse.diags_array(wd[a])).astype(np.complex128)
     for (a, b), g_mn in cross.items():
-        blocks[a][b] = sparse.diags_array(w[a] * w[b] * g_mn)
-        blocks[b][a] = sparse.diags_array(w[a] * w[b] * np.conj(g_mn))
+        blocks[a][b] = sparse.diags_array(wc[a] * wc[b] * g_mn)
+        blocks[b][a] = sparse.diags_array(wc[a] * wc[b] * np.conj(g_mn))
     mat = sparse.bmat(blocks, format="csc", dtype=np.complex128)
     rhs = np.concatenate(
-        [2.0 * w[a][None, :] * z_g[:, a] for a in range(g)], axis=-1
+        [2.0 * wd[a][None, :] * z_g[:, a] for a in range(g)], axis=-1
     ).T  # (g * T_env, C)
     return splu(mat).solve(np.ascontiguousarray(rhs)).reshape(g, n_env, n_ch)
 
@@ -425,6 +452,7 @@ def _solve_group_banded(
     z_g: np.ndarray,
     *,
     diag_scale: float = 1.0,
+    u: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     """Coupled-group solve as one Hermitian positive-definite *banded* system.
 
@@ -444,25 +472,26 @@ def _solve_group_banded(
     g = len(w)
     n_ch, _, n_env = z_g.shape
     d0, d1, d2 = d2td2_diags
-    u = 2 * g  # p = 2 time-blocks of superdiagonals
+    wd, wc = _whiten_weights(w, u)
+    nsup = 2 * g  # p = 2 time-blocks of superdiagonals
     n = g * n_env
-    ab = np.zeros((u + 1, n), dtype=np.complex128)  # ab[u + i - j, j] = A[i, j]
+    ab = np.zeros((nsup + 1, n), dtype=np.complex128)  # ab[nsup + i - j, j] = A[i, j]
     # Per-track squared selectivity (scalar rho2 broadcasts; the products
     # below are bitwise identical to the former scalar formulation).
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
-    diag = d0[:, None] * r2[None, :] + 1e-8 + np.stack(w, axis=-1)  # (T_env, g)
+    diag = d0[:, None] * r2[None, :] + 1e-8 + np.stack(wd, axis=-1)  # (T_env, g)
     # diag_scale > 1 is the PD-repair retry: inflating the diagonal by a
     # relative epsilon restores positive definiteness lost to decimation
     # rounding, at a bias far below the bandwidth prior's own resolution.
-    ab[u] = (diag * diag_scale).reshape(-1)
-    ab[u - g, g:] = np.repeat(d1, g) * np.tile(r2, n_env - 1)
+    ab[nsup] = (diag * diag_scale).reshape(-1)
+    ab[nsup - g, g:] = np.repeat(d1, g) * np.tile(r2, n_env - 1)
     ab[0, 2 * g :] = np.repeat(d2, g) * np.tile(r2, n_env - 2)
     for (a, b), g_mn in cross.items():  # a < b: upper triangle, offset b - a
-        ab[u - (b - a), b::g] = w[a] * w[b] * g_mn
+        ab[nsup - (b - a), b::g] = wc[a] * wc[b] * g_mn
     cb = cholesky_banded(ab, lower=False)  # raises LinAlgError if not PD
     rhs = np.empty((n_env, g, n_ch), dtype=np.complex128)
     for a in range(g):
-        rhs[:, a] = (2.0 * w[a][:, None]) * z_g[:, a].T
+        rhs[:, a] = (2.0 * wd[a][:, None]) * z_g[:, a].T
     sol = cast(np.ndarray, cho_solve_banded((cb, False), rhs.reshape(n, n_ch)))
     return sol.reshape(n_env, g, n_ch).transpose(1, 0, 2)
 
@@ -521,6 +550,9 @@ def vk_envelopes(
     k_hi: int | None = None,
     bw_hz: float | None = None,
     rho2_gain: np.ndarray | None = None,
+    phase_offset: np.ndarray | None = None,
+    env_rotation: np.ndarray | None = None,
+    data_weight: np.ndarray | None = None,
 ) -> Envelopes:
     """One coupled VK-2 envelope solve (all coupling groups) given trajectories.
 
@@ -542,6 +574,31 @@ def vk_envelopes(
     (time-major Hermitian banded Cholesky by default, track-major splu as
     reference/fallback); coupling pairs that cannot beat inside the lowpass
     band are skipped per ``cfg.prune_far_pairs``.
+
+    Three optional inputs are the JOINT decomposition's seam
+    (:mod:`tracking.joint_decompose`); every one of them is ``None`` on the v2
+    path, and the arithmetic is then bitwise the v2 arithmetic:
+
+    ``phase_offset``
+        ``(R, T)`` radians added to the rotor FUNDAMENTAL phase at audio rate,
+        before every carrier is built. This is the shaft correction ``theta``,
+        and folding it here is EXACT: ``k (phi + theta)`` keeps the rotor-major
+        power recursion, so a corrected carrier costs one array add. It is
+        carried into ``Envelopes.phase``, so every reconstruction is against
+        the corrected carrier.
+    ``env_rotation``
+        ``(M, T_env)`` radians of SLOW per-track phase (the ``psi`` of the joint
+        model) on the ENVELOPE grid. Folding it exactly would need one carrier
+        per track; instead the demodulated observation and the cross terms are
+        rotated after the lowpass — ``LP[u e^{-j psi}] ~= LP[u] e^{-j psi}``,
+        which holds to the extent that ``psi``'s bandwidth is small against the
+        ``0.45 fs_env`` cutoff. The returned envelope is then the RESIDUAL
+        envelope ``g``, not ``g e^{j psi}``.
+    ``data_weight``
+        ``(M, T_env)`` non-negative amplitude weight ``1 / sqrt(S)`` per track
+        and envelope frame — the whitening of a colored noise floor. It enters
+        squared on the diagonal and in the right-hand side, and once in a cross
+        block (:func:`_whiten_weights`).
     """
     y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[:_MAX_CHANNELS]
     r = np.atleast_2d(np.asarray(r, dtype=np.float64))
@@ -559,6 +616,11 @@ def vk_envelopes(
     if rho2_gain is not None and len(rho2_gain) != len(rotor):
         raise ValueError(f"rho2_gain has {len(rho2_gain)} entries, expected {len(rotor)} tracks")
     phase = 2.0 * np.pi * np.cumsum(r, axis=-1) / cfg.fs  # (R, T) fundamental phase
+    if phase_offset is not None:
+        off = np.atleast_2d(np.asarray(phase_offset, dtype=np.float64))
+        if off.shape != phase.shape:
+            raise ValueError(f"phase_offset {off.shape} != rotor phase {phase.shape}")
+        phase = phase + off
 
     # Track validity mask on the envelope grid (design §3).
     r_dec = r[:, ::stride]
@@ -567,6 +629,21 @@ def vk_envelopes(
     valid = (f >= cfg.f_min) & (f <= f_hi) & (r_dec[rotor] >= cfg.min_rps)
 
     z = _demod_tracks_fft(y, phase, rotor, k, cfg)
+    rot_env: np.ndarray | None = None
+    if env_rotation is not None:
+        rot_env = np.asarray(env_rotation, dtype=np.float64)
+        if rot_env.shape != (len(rotor), n_env):
+            raise ValueError(
+                f"env_rotation {rot_env.shape} != tracks x frames {(len(rotor), n_env)}"
+            )
+        z = z * np.exp(-1j * rot_env)[None, :, :]
+    uw: np.ndarray | None = None
+    if data_weight is not None:
+        uw = np.asarray(data_weight, dtype=np.float64)
+        if uw.shape != (len(rotor), n_env):
+            raise ValueError(f"data_weight {uw.shape} != tracks x frames {(len(rotor), n_env)}")
+        if np.any(uw < 0.0):
+            raise ValueError("data_weight must be non-negative (it is 1 / sqrt(S))")
     groups = _coupling_groups(f, valid, couple_hz)
 
     d2 = second_diff(n_env)
@@ -642,7 +719,16 @@ def vk_envelopes(
                 gd = _lp_decimate(cs[: len(sub)], stride, n_env)
                 for i, pair in enumerate(sub):
                     cross[pair] = gd[i]
+            if rot_env is not None:
+                # conj(c_m) c_n picks up exp(j (psi_n - psi_m)) when both
+                # carriers carry their own slow rotation. Same commutation
+                # approximation as the observation above.
+                for a, b in pair_list:
+                    cross[(a, b)] = cross[(a, b)] * np.exp(
+                        1j * (rot_env[group[b]] - rot_env[group[a]])
+                    )
         z_g = z[:, group]  # (C, g, T_env)
+        u_g = None if uw is None else [uw[m] for m in group]
         sol: np.ndarray | None = None
         if cfg.solver == "banded":
             # Numerically non-PD systems (decimation rounding on large
@@ -652,13 +738,13 @@ def vk_envelopes(
             for diag_scale in (1.0, 1.0 + 1e-6, 1.0 + 1e-4):
                 try:
                     sol = _solve_group_banded(
-                        d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale
+                        d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale, u=u_g
                     )
                     break
                 except np.linalg.LinAlgError:
                     sol = None
         if sol is None:
-            sol = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g)
+            sol = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g, u=u_g)
         for a in range(g):
             x[:, group[a]] = sol[a].T
 

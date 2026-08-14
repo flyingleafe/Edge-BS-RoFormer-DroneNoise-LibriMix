@@ -348,3 +348,226 @@ FLY124 residual 1.028/0.187/0.099/0.075, tracks 61.9%; the one genuine
 leftover is rotor 0 at k1-9 AT THE INTEGER (2.2 dB detrended; bw_psi
 floor lever measured inert — open item, different lever needed).
 FLY125 v3b in flight at the time of writing.
+## v3: the JOINT decomposition
+
+**Date**: 2026-08-14 · **Branch**: `vk-v3` · **Status**: built + tested +
+smoked; the three full-recording jobs are in flight. Design and every measured
+number: [`docs/vk-decompose-v3-design.md`](../vk-decompose-v3-design.md).
+Module: `src/tracking/joint_decompose.py`; driver `scripts/vk_decompose.py
+--joint`.
+
+### What v2 could not do
+
+v2 pushes EVERY timing deviation through one envelope band and takes the
+leftover to be white. A shaft that wanders about 0.6 rev/s makes harmonic `k`
+about `0.6·k` Hz wide, so from about `k` 5 up the flanks of every line become
+"residual" by construction, and an unweighted misfit is tolerant of comb
+structure exactly where the floor is loud. v3 alternates three
+linear-Gaussian blocks: a whitened VK solve with the shaft correction folded
+into the CARRIER, a `k`-weighted phase split (rig-common shaft, per-rotor
+shaft, per-track remainder), and a smooth floor fitted BETWEEN the masked comb
+lines.
+
+### The instrument, corrected
+
+`depth_db` (folded cell peak over cell median) is a RATIO, and it fails in two
+ways this campaign now has measured: it can rise while the comb falls, because
+the floor it is measured against falls faster; and on a four-rotor rig the
+other rotors' lines put a floor under it. On the synthetic fixture the ORIGINAL
+audio reads 2.54 dB at k10-24 and an almost perfect decomposition reads
+1.62 dB — no discrimination at all. `order_cell_profile` therefore also
+returns **`excess_db`**, the summed absolute `peak − median` over the band's
+cells in the input's own power units. That number is comparable between two
+signals, so "original minus residual" is decibels of comb removed. Read it
+first. The narrow slot contrast stays retired.
+
+### Measured on the synthetic fixture (20 s, 16 kHz, 4 rotors, 3 mics, k ≤ 20)
+
+| arm | residual fraction | k1-9 depth / excess dB | k10-24 depth / excess dB |
+|---|---|---|---|
+| original audio | 1.0000 | 28.17 / 62.03 | 2.54 / 35.93 |
+| v2 (flat carrier) | 0.0551 | 6.09 / 43.65 | 2.02 / 34.18 |
+| **v3, 3 rounds** | **0.0025** | **1.21 / 24.86** | **1.38 / 20.24** |
+| oracle (true shaft folded in) | 0.0024 | 0.89 / 22.90 | 1.62 / 19.85 |
+
+v2 removes 18.4 dB of comb excess at k1-9 and **1.75 dB** at k10-24. v3 removes
+37.2 dB and 15.7 dB, and lands inside 2 dB of the oracle in both bands. The
+recovered shaft phase correlates 1.000 with the truth, and the fitted log floor
+is within 0.5 to 1.0 dB rms of truth away from the lines.
+
+### Three findings that changed the design
+
+1. **The annealing ladder is limited by the envelope BAND, not by the unwrap.**
+   Harmonic `k` of a shaft wandering `sigma_r` rev/s is a frequency modulation
+   of about `k·sigma_r` Hz, and a band of `B` Hz distorts its phase once
+   `k·sigma_r` is more than `B/2` — at 0.6 rev/s and 3 Hz that is `k` 2.5. A
+   ladder that starts at `k` 6 recovers 43 % of the true shaft phase in three
+   rounds; a ladder that starts at 3 recovers all of it. Default `3,12,80`.
+2. **Whitening must be bandwidth-neutral.** A track whose floor is 15 dB loud
+   has its data term scaled down but keeps its curvature prior, so its
+   effective band narrows by the same factor. That alone left 12.6 dB of
+   residual comb at k1-9 against 4.3 dB unwhitened. The per-track mean weight
+   now goes into `rho^2` as well.
+3. **The floor mask must be about three linewidths wide, and capped.** The
+   log-floor error against truth reads 3.5 dB rms at `(1.5, 3 Hz)`, **0.6 dB**
+   at `(3, 10 Hz)` and 6.5 dB again at `(4, 30 Hz)` — too wide is as bad as too
+   narrow, because the fit then bridges gaps instead of seeing the floor.
+
+### The jobs
+
+`vk-decompose-v3-dregon-1b0249`, `vk-decompose-v3-fly124-66a2e0`,
+`vk-decompose-v3-fly125-71193b` on `uni-cpu`, 12 s windows at a 9 s hop,
+32 kHz, `--k-max 80`, `--bw-schedule 3,0,1.5,3`, `--iters 3 --k-trust
+3,12,80`, one recording each, all 8 microphones. Artifacts go to R2 under
+`artifacts/vk-decompose-v3/<recording_id>/` from INSIDE the job, because
+omnirun output collection silently drops files above about 25 MB.
+
+### The "half-order comb" was the instrument, and the audit that found it
+
+**Date**: 2026-08-14. The first v3 production run put the residual's k1-9
+order-cell peak at **−0.4962 orders on all four DREGON rotors** and on three of
+four FLY124 rotors, which reads as a sub-harmonic comb. It is not one. Two
+tests, both cheap, both decisive:
+
+1. **The two ends of a folded cell are the SAME physical half-integer
+   position** (order `m−0.5` and order `(m+1)−0.5`). A line must appear at
+   both. On the DREGON residual the low end read **+1.6 dB** and the high end
+   **−0.4 dB**, in nearly every cell.
+2. The cell profile is **monotone** from its low edge through the integer to
+   its high edge. That is a ramp, not a peak.
+
+The cause: one unit cell spans a whole order, which is 70 to 85 Hz of
+frequency, and the broadband floor falls steeply across that span at low
+harmonics. `cell_profile` normalized each cell by its own SCALAR median, which
+removes the level but not the slope, so a cell of pure smooth floor folds into
+a ramp and `argmax` lands on the low edge — the half-integer position — by
+construction. This is the **third** instrument of this campaign to fail in the
+same direction, after the narrow slot contrast and the rendered-comb metric.
+
+**The fix** is `_order_trend`: divide the order profile by its running median
+over one order before the fold (`order_cell_profile(detrend_orders=1.0)`, on by
+default). A smooth tilt goes to unity, a line of much less than one order in
+width passes through. Re-read of the SAME production residuals:
+
+| residual, k1-9 | before (cell median) | after (running median) |
+|---|---|---|
+| DREGON | 1.427 dB at −0.4962 | **0.305 dB at −0.030** |
+| DREGON k10-24 / k25-49 / k50-80 | 0.333 / 0.196 / 0.159 | **0.423 / 0.104 / 0.073** |
+| FLY124 | — | **1.029 dB at +0.062** |
+
+The DREGON per-rotor peak offsets scatter after the detrend (−0.50, +0.28,
+−0.215, +0.315) — noise, not a comb.
+
+### H_sub against H_cross, decided
+
+Two hypotheses survived the instrument audit for whatever structure is LEFT.
+`H_sub`: a genuine per-rotor `r/2` comb. `H_cross`: the leftover skirts of
+ANOTHER rotor's already-modelled integer line, which fold near half-order in
+the reference rotor's grid.
+
+**`H_sub` is refuted on both rigs, and `H_cross` is confirmed on FLY124.**
+
+- Per cell on DREGON, the detrended `−0.5` and `+0.5` ends collapse to about
+  ±0.5 dB with no systematic sign in any cell. `H_sub` predicts every cell
+  keeps the peak. Nothing is left to explain.
+- On FLY124 two cells DO survive the detrend, and only on the twin pair
+  (rotors 1 and 3, cells k2 and k3). There cell k2's high end and cell k3's low
+  end — the same physical order 2.5 — agree (+5.90 and +5.50 dB on rotor 1),
+  so that IS a line.
+- The absolute-frequency check names it. Rotor 1's order-2.5 energy sits at
+  **168.89 Hz**, and rotor 0's rate is 84.483 rev/s, so the line is
+  **2.0000 × r_0** — off by 0.0009 orders. It is rotor 0's own `k` 2 harmonic,
+  not a sub-harmonic of rotor 1.
+
+This also explains why FLY124's rotor 0 read +0.06 while rotors 1 to 3 read
+−0.50 under the old instrument: rotor 0 has a strong GENUINE integer-order
+leftover (2.24 dB detrended) that outweighs the tilt ramp in the `argmax`,
+while on the other three the real leftover is weak (0.49 to 0.71 dB) and the
+ramp wins.
+
+Consequence: **no half-order track grid**. The rotor-speed labels are the
+SHAFT rate, so an `r/2` line needs a period-two-revolution mechanism, and the
+measurement says there is none. The indicated correction for `H_cross` is a
+FLOOR on the per-track phase-correction bandwidth at low `k`
+(`--bw-psi slope,max,min`, default `0.6,8,1.5`): the law alone allows a `k` 2
+line only 1.2 Hz, which is narrower than its true incoherent linewidth, so the
+line keeps a skirt the model cannot follow.
+
+### The theta stitch spike: an edge frame, and a metric that overstated it
+
+`joint.theta_stitch_max_rate_hz` read 46.08 on the production run against
+0.003 on the single-window smoke. Reproduced locally with two overlapping
+estimated windows: the maximum sits at **frame 0 or the last frame of a
+window**, where the cross-fade weight is 0.0025 to 0.005 — that is, where the
+window contributes almost nothing to the stitch. Weighted by that fade, the
+same reproduction reads **0.077 Hz** against a raw 1.86 Hz. The metric was
+measuring a rotation that never reaches the bank.
+
+Three changes, all small:
+
+1. `split_phases` now weights the shaft smoother by the solver's own
+   `edge_taper`, so the estimate EXTRAPOLATES over the span where the data term
+   was faded instead of fitting the transient there.
+2. `theta_rate` holds its first and last value instead of taking
+   `np.gradient`'s one-sided difference, so no frame carries a different
+   estimator from the interior.
+3. The report now carries `theta_stitch_max_rate_hz` (fade weighted, the number
+   to read) beside `theta_stitch_max_rate_hz_raw`.
+
+### A real bug the same pass found
+
+`r2_ref_mic` was NEGATIVE on nearly every production window (DREGON −0.16,
+FLY124 −0.90 to −0.00) while the stitched ledger was healthy. The per-window
+check rebuilt the plain label carrier instead of reading the solver's own
+`env.phase`, which on the joint path carries the shaft correction — so it
+scored the bank against a carrier it was never fitted to. Fixed; the stitch
+itself always used the right phase.
+
+### v3b: the re-run with the fixed instrument (2026-08-14)
+
+Jobs `vk-decompose-v3b-{dregon,fly124,fly125}`, same settings as v3 plus
+`--bw-psi 0.6,8,1.5`. Artifacts on R2 under `artifacts/vk-decompose-v3b/`.
+Every number below comes from the DETRENDED instrument, so it is not
+comparable to the v3 table above — read this one against itself.
+
+**DREGON** (`free-flight_nosource_room1`, 7 windows, k_hi 80, tracks 37.6 % /
+residual 59.3 %, resynthesis 6.0e-08):
+
+| band | original | residual | excess original -> residual |
+|---|---|---|---|
+| k1-9 | 3.423 dB at +0.071 | **0.308 dB at −0.020** | 35.62 -> 21.96 (−13.66 dB) |
+| k10-24 | 1.131 dB at −0.010 | **0.386 dB at +0.031** | 15.17 -> 10.83 (−4.34 dB) |
+| k25-49 | 0.191 dB at −0.013 | **0.078 dB at −0.035** | 7.56 -> 5.05 (−2.52 dB) |
+| k50-80 | 0.076 dB at −0.014 | **0.069 dB at +0.022** | 7.87 -> 6.25 (−1.63 dB) |
+
+**FLY124** (12 of 14 windows, k_hi 76, tracks 61.9 % / residual 37.3 %,
+resynthesis 3.0e-08):
+
+| band | original | residual | excess original -> residual |
+|---|---|---|---|
+| k1-9 | 4.161 dB at +0.061 | 1.028 dB at +0.065 | 37.97 -> 20.57 (−17.41 dB) |
+| k10-24 | 0.808 dB at +0.033 | **0.187 dB at +0.100** | 18.60 -> 13.66 (−4.94 dB) |
+| k25-49 | 0.083 dB at −0.170 | 0.099 dB at −0.386 | 10.95 -> 9.86 (−1.09 dB) |
+| k50-80 | 0.033 dB at −0.098 | 0.075 dB at −0.421 | 6.96 -> 6.17 (−0.79 dB) |
+
+Readings:
+
+- **No band peaks at a half-integer order any more**, on either rig. The
+  per-rotor offsets scatter, which is what noise does.
+- DREGON is at or near the acceptance bar in every band (0.069 to 0.386 dB).
+- FLY124 keeps ONE real leftover: rotor 0 at k1-9, 2.22 dB at **+0.055** — an
+  integer-order comb, not a half-order one. The `bw_psi_min` floor of 1.5 Hz
+  did not close it (2.24 dB before, 2.22 dB after), so the next lever for that
+  rotor is not the phase band.
+- FLY124's k25-80 residual depths (0.075 to 0.099 dB) sit at the instrument's
+  own noise floor and slightly exceed the original's, while the absolute
+  `excess_db` still falls. Read the excess there, not the depth.
+- `r2_ref_mic` is POSITIVE on every window now (DREGON 0.21 to 0.79, FLY124
+  0.35 to 0.65) against −0.90 to +0.46 before the carrier fix.
+- `theta_stitch_max_rate_hz` (fade weighted) 15.5 on DREGON and 6.8 on FLY124,
+  against 46.6 and 48.6 raw — both inside the 50 Hz envelope Nyquist.
+- The phase unwrap saturates at pi in the WORST track of every band
+  (`max_step_rad_by_band_worst` 3.11 to 3.141). It does not reach the trusted
+  set: `split_phases` drops any track whose step reaches pi, and `n_trust` was
+  the full 12 tracks at `k` <= 3 and the full 48 at `k` <= 12, so no trusted
+  track was ever gated out.

@@ -56,7 +56,7 @@ from typing import Any
 
 import numpy as np
 
-from tracking.fitness_vk import FVKConfig, solve_envelopes, to_audio_grid
+from tracking.fitness_vk import FVKConfig, to_audio_grid
 from tracking.vk_tracking import (
     Envelopes,
     _coupling_groups,
@@ -96,6 +96,7 @@ __all__ = [
     "track_bands",
     "welch_psd",
     "window_bounds",
+    "window_geometry",
     "window_span",
 ]
 
@@ -189,6 +190,22 @@ def window_span(
     a1_raw = min(n_t, int(round((float(ftv[i1 - 1]) + hop_frame_s) * sr)))
     a1 = a0 + ((a1_raw - a0) // stride) * stride
     return a0, a1
+
+
+def window_geometry(
+    sr: float, window_s: float, hop_s: float, fs_env: float = 100.0
+) -> tuple[int, int]:
+    """``(envelope stride, cross-fade ramp)`` of a windowed application.
+
+    Both numbers follow from the window grid and the envelope rate, and both are
+    needed by every driver of one: the stride is what
+    :func:`window_span` snaps to, and the ramp is how many envelope frames of
+    OVERLAP two neighbouring windows share, which is the length of the
+    cross-fade. ``fs_env`` defaults to :attr:`tracking.FVKConfig.fs_env`.
+    """
+    stride = max(1, int(round(float(sr) / float(fs_env))))
+    ramp = max(0, int(round((float(window_s) - float(hop_s)) * float(sr) / stride)))
+    return stride, ramp
 
 
 def fade_weights(n_win: int, ramp: int) -> np.ndarray:
@@ -368,6 +385,42 @@ def schedule_rho2_gain(
     )
 
 
+def track_rho2_gain(
+    r_audio: Any,
+    k_hi: int,
+    cfg: FVKConfig,
+    sched: BandwidthSchedule | None,
+    rho_scale: float = 1.0,
+) -> np.ndarray | None:
+    """``(M,)`` per-track gain on ``rho^2`` a solve is asked for, or ``None``.
+
+    THE bandwidth law of the decomposition, in the currency the solver takes.
+    Both solve paths read it — the v2 :func:`solve_window` and the v3 joint
+    alternation — so a joint solve changes the CARRIER and the WEIGHT and never
+    the bandwidth law it inherited. ``None`` means "ask for nothing", which is
+    what makes an unscheduled unit reproduce v1 call for call.
+    """
+    if sched is None and rho_scale == 1.0:
+        return None
+    vk = cfg.vk_config(int(k_hi))
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
+    if sched is None:
+        return np.full(len(k), float(rho_scale) ** 2)
+    _, fs_env = env_stride(vk)
+    return (
+        schedule_rho2_gain(
+            k,
+            line_separations(r, rotor, k),
+            sched,
+            base_bandwidths(r, int(k_hi), cfg),
+            fs_env,
+            vk.p,
+        )
+        * float(rho_scale) ** 2
+    )
+
+
 def solve_window(
     audio: Any,
     r_audio: Any,
@@ -390,26 +443,21 @@ def solve_window(
     (:class:`BandwidthSchedule`). ``None`` — the default — takes the v1 path
     call for call, so a v1 unit is reproduced bit for bit.
     """
-    n_mic = int(cfg.max_channels if mics is None else mics)
-    y = np.ascontiguousarray(np.asarray(audio, dtype=np.float64)[:n_mic])
+    y = solve_audio(audio, cfg, mics)
     r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
-    if bw_schedule is None:
-        return solve_envelopes(y, r, cfg, k_hi=int(k_hi), rho_scale=float(rho_scale))
-    vk = cfg.vk_config(int(k_hi))
-    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
-    _, fs_env = env_stride(vk)
-    gain = (
-        schedule_rho2_gain(
-            k,
-            line_separations(r, rotor, k),
-            bw_schedule,
-            base_bandwidths(r, int(k_hi), cfg),
-            fs_env,
-            vk.p,
-        )
-        * float(rho_scale) ** 2
-    )
-    return vk_envelopes(y, r, vk, rho2_gain=gain)
+    gain = track_rho2_gain(r, int(k_hi), cfg, bw_schedule, float(rho_scale))
+    return vk_envelopes(y, r, cfg.vk_config(int(k_hi)), rho2_gain=gain)
+
+
+def solve_audio(audio: Any, cfg: FVKConfig, mics: int | None = None) -> np.ndarray:
+    """``(C, T)`` float64 contiguous audio, clamped to the config's channels.
+
+    The one channel-selection rule of the decomposition. It is a function
+    because both solve paths must hand the solver the identical array — a
+    different channel count is a different measurement, not a different view.
+    """
+    n_mic = int(cfg.max_channels if mics is None else mics)
+    return np.ascontiguousarray(np.asarray(audio, dtype=np.float64)[:n_mic])
 
 
 def _geometry(r_audio: Any, k_hi: int, vk: Any) -> dict[str, Any]:
@@ -846,6 +894,30 @@ def phase_model_report(
             float(np.abs(inc[:, pair]).max() / fs_env) if pair.any() else 0.0, 5
         ),
         "max_abs_drift_rad_s": round(float(np.abs(inc[:, pair]).max()) if pair.any() else 0.0, 4),
+        # WHERE the unwrap saturates. The global maximum reaching pi says only
+        # that SOME track is ambiguous; a per-band maximum says whether it is the
+        # weak high harmonics (expected, and harmless — those tracks carry
+        # almost no energy) or the low ones the shaft estimate is built on
+        # (not harmless).
+        "max_abs_step_rad_by_band": band_summary(
+            (np.abs(inc[:, pair]).max(axis=-1) / fs_env) if pair.any() else np.zeros(len(k)),
+            k,
+            bands,
+        ),
+        "max_step_rad_by_band_worst": {
+            nm: (
+                round(
+                    float(
+                        np.abs(inc[np.ix_(np.flatnonzero(sel), np.flatnonzero(pair))]).max()
+                        / fs_env
+                    ),
+                    5,
+                )
+                if (sel.any() and pair.any())
+                else None
+            )
+            for nm, sel in track_bands(k, bands).items()
+        },
         "drift_std_rad_s_by_band": band_summary(drift, k, bands),
         "amp_mean_by_band": band_summary(mean, k, bands),
         "amp_cv_by_band": band_summary(cv, k, bands),
@@ -888,7 +960,7 @@ def residual_tones(
 
     ``r_audio`` is the ``(R, T)`` audio-rate rate array over the same span.
     """
-    from scipy.signal import find_peaks, welch
+    from scipy.signal import find_peaks
 
     y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
     r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
@@ -899,8 +971,8 @@ def residual_tones(
         s1 = min(n_t, s0 + step)
         if s1 - s0 < nperseg:  # a tail too short to resolve is not reported
             continue
-        f, p = welch(y[:, s0:s1], fs=float(sr), nperseg=int(nperseg), axis=-1)
-        psd = np.asarray(p, dtype=np.float64).mean(axis=0)
+        f, p = welch_psd(y[:, s0:s1], sr, int(nperseg))
+        psd = p.mean(axis=0)
         db = 10.0 * np.log10(np.maximum(psd, 1e-300))
         keep = np.asarray(f, dtype=np.float64) <= float(f_max)
         idx, props = find_peaks(db[keep], prominence=float(prominence_db))

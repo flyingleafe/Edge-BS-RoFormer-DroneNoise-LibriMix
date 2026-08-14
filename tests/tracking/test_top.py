@@ -318,3 +318,202 @@ def test_candidate_stages_are_their_formulas(alt_frame):
     assert np.array_equal(get_rps(presmooth_stage(5.0)(alt_frame))[0], presmooth(r0, ft, 5.0))
     shifted = get_rps(shift_stage(0.02)(alt_frame))[0]
     assert np.array_equal(shifted, np.stack([np.interp(ft + 0.02, ft, row) for row in r0]))
+
+
+# ---------------------------------------------------------------------------
+# the joint blocks as stages, and the two combinators
+#
+# The v3b arithmetic is pinned by tests/tracking/test_joint_regression.py. What
+# is pinned HERE is the composition: that a hand-built pipeline of the three
+# blocks is the shipped recipe, that the repetition and the windowing
+# combinators do what they say, and that a joint stage refuses to run without
+# its seam.
+
+JOINT_SR = 8000
+JOINT_K = 6
+
+
+@pytest.fixture(scope="module")
+def joint_clip():
+    """``(audio, rates)`` — a two-rotor comb with a slow shaft wander."""
+    rng = np.random.default_rng(4)
+    n_t = 3 * JOINT_SR
+    rates = np.stack([np.full(n_t, 55.0), np.full(n_t, 67.0)])
+    drift = np.cumsum(rng.normal(scale=1.0, size=n_t)) / np.sqrt(n_t)
+    phase = 2 * np.pi * np.cumsum(rates, axis=-1) / JOINT_SR + 0.5 * drift[None, :]
+    audio = rng.normal(scale=0.02, size=(2, n_t))
+    for r in range(2):
+        for k in range(1, JOINT_K + 1):
+            audio += (0.4 / k) * np.cos(k * phase[r])[None, :] * np.array([[1.0], [0.7]])
+    return audio, rates
+
+
+def _joint_frame(audio, rates, hop: float = 0.032):
+    """The frame a windowed run starts from: audio plus the trajectory grid."""
+    step = int(hop * JOINT_SR)
+    r = rates[:, ::step]
+    return tracking_frame(
+        np.asarray(audio, dtype=np.float64),
+        JOINT_SR,
+        rps=r,
+        frame_times=np.arange(r.shape[-1]) * hop,
+        dtype=np.float64,
+    )
+
+
+def _joint_cfg():
+    from tracking.decompose import solve_config
+
+    return solve_config(JOINT_K, sr=JOINT_SR, mics=2, f_max=3000.0)
+
+
+def test_hand_composed_blocks_are_the_shipped_recipe(joint_clip):
+    """The recipe is a composition, so composing it by hand must give it back."""
+    from tracking.joint_decompose import JointConfig, joint_result, joint_state
+    from tracking.top import (
+        floor_stage,
+        iterate,
+        joint_iterations,
+        joint_solve_window,
+        joint_state_of,
+        phase_split_stage,
+        vk_solve_stage,
+        with_meta,
+    )
+
+    audio, rates = joint_clip
+    cfg, jc = (
+        _joint_cfg(),
+        JointConfig(iters=2, k_trust=(2, JOINT_K), psd_n_fft=2048, profile_n_fft=2048),
+    )
+    want = joint_solve_window(audio, rates, cfg, k_hi=JOINT_K, mics=2, jcfg=jc)
+
+    state = joint_state(rates, cfg, k_hi=JOINT_K, n_t=audio.shape[-1], jcfg=jc)
+    stride, _ = state.grid
+    frame = tracking_frame(
+        np.asarray(audio, dtype=np.float64),
+        JOINT_SR,
+        rps=state.carrier[:, ::stride][:, : state.n_env],
+        frame_times=np.arange(state.n_env) * stride / JOINT_SR,
+        dtype=np.float64,
+    )
+    run = pipeline(
+        floor_stage(),
+        iterate(pipeline(vk_solve_stage(), phase_split_stage(), floor_stage()), jc.iters - 1),
+        vk_solve_stage(profile=True),
+    )
+    out = run(with_meta(frame, joint=state))
+    got = joint_result(joint_state_of(out), joint_iterations(out))
+
+    assert np.array_equal(got.env.x, want.env.x)
+    assert np.array_equal(got.theta_env, want.theta_env)
+    assert np.array_equal(got.residual, want.residual)
+    assert got.iterations == want.iterations
+    # And the log is the method, block by block, in order.
+    assert [e["stage"] for e in out["meta"]["tracking"]] == [
+        "joint_floor",
+        "joint_solve",
+        "joint_phase_split",
+        "joint_floor",
+        "joint_solve",
+    ]
+
+
+def test_joint_init_stage_derives_the_carrier_from_the_frame(joint_clip):
+    from tracking.joint_decompose import JointConfig
+    from tracking.top import floor_stage, joint_init_stage, joint_state_of, vk_solve_stage
+
+    audio, rates = joint_clip
+    n_t = audio.shape[-1]
+    frame = tracking_frame(
+        np.asarray(audio, dtype=np.float64),
+        JOINT_SR,
+        rps=rates[:, ::80],
+        frame_times=np.arange(n_t // 80) * 80 / JOINT_SR,
+        dtype=np.float64,
+    )
+    run = pipeline(
+        joint_init_stage(
+            _joint_cfg(),
+            k_hi=JOINT_K,
+            jcfg=JointConfig(iters=1, psd_n_fft=2048, profile_n_fft=2048),
+        ),
+        floor_stage(),
+        vk_solve_stage(),
+    )
+    state = joint_state_of(run(frame))
+    assert state.carrier.shape == (2, n_t)
+    assert state.n_solves == 1
+    assert state.residual is not None
+    # The tracks explain most of a clip that IS a comb.
+    left = float((state.residual**2).sum() / (np.asarray(audio, dtype=np.float64) ** 2).sum())
+    assert left < 0.2, left
+
+
+def test_a_joint_stage_refuses_to_run_without_its_seam(joint_clip):
+    from tracking.top import vk_solve_stage
+
+    audio, rates = joint_clip
+    frame = tracking_frame(
+        audio,
+        JOINT_SR,
+        rps=rates[:, ::80],
+        frame_times=np.arange(audio.shape[-1] // 80) * 80 / JOINT_SR,
+    )
+    with pytest.raises(ValueError, match="joint_init_stage"):
+        vk_solve_stage()(frame)
+
+
+def test_iterate_repeats_and_zero_is_the_identity():
+    from tracking.top import iterate
+
+    def bump(frame):
+        r, ft = get_rps(frame)
+        return with_rps(frame, r + 1.0, ft, stage="bump", info={})
+
+    frame = tracking_frame(
+        np.zeros(800), 8000, rps=np.full((1, 8), 10.0), frame_times=np.arange(8) * 0.0125
+    )
+    assert float(get_rps(iterate(bump, 3)(frame))[0].mean()) == pytest.approx(13.0)
+    assert float(get_rps(iterate(bump, 0)(frame))[0].mean()) == pytest.approx(10.0)
+    assert len(iterate(bump, 0)(frame)["meta"].keys() & {"tracking"}) == 0
+
+
+def test_windowed_stitches_a_two_window_recording(joint_clip):
+    """Two overlapping windows, stitched, still explain the clip."""
+    from tracking.decompose import reconstruct
+    from tracking.top import decompose_stage, windowed
+
+    audio, rates = joint_clip
+    frame = _joint_frame(audio, rates)
+    run = windowed(decompose_stage(_joint_cfg(), k_hi=JOINT_K), window_s=2.0, hop_s=1.0)
+    out = run(frame)
+    entry = out["meta"]["tracking"][-1]
+    assert entry["stage"] == "windowed"
+    assert entry["n_windows"] >= 2
+    assert entry["joint"] is False
+    st = out["meta"]["decompose"]
+    a_min, a_max = int(st["a_min"]), int(st["a_max"])
+    recon, _ = reconstruct(
+        st["x"], st["k"], st["rotor"], np.asarray(st["phi"])[:, a_min:a_max], entry["stride"]
+    )
+    clip = np.asarray(audio, dtype=np.float64)[:, a_min:a_max]
+    assert float(((clip - recon) ** 2).sum() / (clip**2).sum()) < 0.2
+
+
+def test_windowed_carries_a_joint_windows_shaft_correction(joint_clip):
+    """A joint inner stage makes the stitch the RATE stitch, and it reports it."""
+    from tracking.joint_decompose import JointConfig
+    from tracking.top import floor_stage, joint_init_stage, vk_solve_stage, windowed
+
+    audio, rates = joint_clip
+    frame = _joint_frame(audio, rates)
+    jc = JointConfig(iters=1, psd_n_fft=1024, profile_n_fft=1024, profile_every_iter=False)
+    inner = pipeline(
+        joint_init_stage(_joint_cfg(), k_hi=JOINT_K, jcfg=jc), floor_stage(), vk_solve_stage()
+    )
+    out = windowed(inner, window_s=2.0, hop_s=1.0)(frame)
+    entry = out["meta"]["tracking"][-1]
+    assert entry["joint"] is True
+    assert entry["theta_stitch_max_rate_hz"] < 50.0
+    assert out["meta"]["decompose"]["r_corrected"].shape == rates.shape
