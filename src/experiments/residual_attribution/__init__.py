@@ -19,6 +19,6 @@ algebra.
 
 from __future__ import annotations
 
-from . import csd, data, design, fit, steering, synth
+from . import csd, data, design, fit, power, steering, synth
 
-__all__ = ["csd", "data", "design", "fit", "steering", "synth"]
+__all__ = ["csd", "data", "design", "fit", "power", "steering", "synth"]
