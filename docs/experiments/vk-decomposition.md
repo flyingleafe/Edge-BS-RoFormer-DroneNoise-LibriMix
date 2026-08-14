@@ -317,3 +317,34 @@ from the amplitude prior. Caveat: this sees only the in-band part
 supra-band shaft strength is measurable only by the v3 solver itself.
 Probe outputs: `results/vk_decompose_v2/<rid>/coherence_probe*.npz`.
 Full derivations + tutorial: the "Joint Noise Model" artifact.
+
+## v3 + v3b (2026-08-14): joint solver shipped; half-order comb RETRACTED
+
+Branch vk-v3 (joint solver: whitened VK / phase split / masked PSD,
+annealed in k; 330 tests; see docs/vk-decompose-v3-design.md). First runs
+(vk-decompose-v3-*) showed apparent residual peaks at −0.5 orders on both
+rigs. RETRACTED — instrument audit #4: the order-cell profile normalized
+each cell by a scalar median (removes level, not slope); the floor falls
+steeply across an order-wide cell, so argmax lands on the low edge = the
+half-integer position. Audits: the two ends of a folded cell are the same
+physical half-order and must agree (they read +1.6 / −0.4 dB); the
+profiles are monotone ramps, not peaks. The one genuine near-half-order
+line (FLY124, order 2.5 of the twin pair) is a neighbor rotor's k=2 at
+2.0000×r0 — already modeled. NO r/2 sub-harmonics on either rig (the
+user's physical argument stands: RPS = shaft rate; period-2 mechanisms
+are rare). Fix shipped: `_order_trend` running-median detrend
+(detrend_orders=1.0, default ON).
+
+Also fixed in v3b: stitch-spike metric (edge frames with ~0 crossfade
+weight; now edge-tapered + fade-weighted — 15.5/6.8 Hz vs 46-49 raw);
+`r2_ref_mic` diagnostic used the plain label carrier instead of the
+shaft-corrected phase (now positive everywhere). π-saturation only ever
+touches untrusted tracks (the trust gate holds).
+
+v3b results (detrended instrument; jobs vk-decompose-v3b-*, R2
+artifacts/vk-decompose-v3b/): DREGON residual depth 0.308/0.386/0.078/
+0.069 dB per band (excess −13.7/−4.3/−2.5/−1.6 dB), tracks 37.6%.
+FLY124 residual 1.028/0.187/0.099/0.075, tracks 61.9%; the one genuine
+leftover is rotor 0 at k1-9 AT THE INTEGER (2.2 dB detrended; bw_psi
+floor lever measured inert — open item, different lever needed).
+FLY125 v3b in flight at the time of writing.
