@@ -276,3 +276,44 @@ k25-80 (vs DREGON's −0.2 to −0.4) is the sparse-comb regime — two twin
 pairs rarely trigger the separation cap, so the achieved bands sit at the
 3 Hz absmax. Both recordings' `{envelopes,residual}.npz + report.json`
 are on R2 under `artifacts/vk-decompose-v2/`.
+
+## Correction (2026-08-14): the v2 "verified" claim is WITHDRAWN
+
+The user found the residual spectrograms still comb-structured. The
+full order-cell profile instrument (probe over ALL offsets, not the
+±0.06-order slots) confirms: comb modulation depth original → residual,
+in dB — DREGON k1-9: 9.68 → 1.49, k10-24: 0.84 → 0.82 (no removal),
+FLY124 k1-9: 12.82 → 1.36, k10-24: 3.04 → 0.87. The narrow-slot order
+contrast is BLIND to broadened or offset combs: both slots sample the
+same smeared ridge. Policy: verify comb removal with the full profile
+at all offsets, never with slot contrasts. DREGON's k10-24 profile
+peaks at −0.11 orders (a ~0.6% rate-scale error in that band); the
+DREGON residual at k1-9 peaks at −0.5 orders (possible shaft vs
+blade-pass index issue — open). Cause of the leak: the solve is white
+LS with 2-3 Hz envelope bands, but the true linewidth grows ≈ 0.6·k Hz.
+
+## Coherence probe (2026-08-14): in-band phase structure of v2 envelopes
+
+Instrument: `scripts/coherence_probe.py <recording_id>` — k-normalized
+phase INCREMENTS of strong k≤9 tracks, boxcar low-pass (0.5 s / 2 s),
+SNR-weighted pair-class mean correlations. Raw-phase regression is
+INVALID here (circular-shift null R² up to 0.29 — random walks correlate
+spuriously); raw increments are measurement-noise dominated. Results
+(pair-class corr at 0.5 s / 2 s):
+
+- DREGON: shaft (cross-mic same-rotor) +0.10/+0.20, cross-rotor null
+  −0.03/−0.07 ≈ 0, arrival (within-mic minus cross-mic) ≈ 0.
+- FLY124: cross-rotor +0.09/+0.18 ≈ same-rotor +0.06/+0.13.
+- FLY125: cross-rotor +0.29/+0.46 ≈ same-rotor +0.34/+0.47.
+
+Verdicts: (1) a slow coherent shaft term is real (corr grows with the
+smoothing window). (2) On Michael's rig the coherent term is RIG-COMMON
+(shared battery/ESC modulation) — model it as theta_rig + small
+per-rotor theta. (3) The arrival (per-mic, k-scaled) term measures ≈ 0
+— v3 gets no arrival states. (4) The in-band remainder is per-track
+incoherent noise — v3 gives phase its own per-track states, separate
+from the amplitude prior. Caveat: this sees only the in-band part
+(v2 envelopes are saturated at ~0.7× band in every band); the
+supra-band shaft strength is measurable only by the v3 solver itself.
+Probe outputs: `results/vk_decompose_v2/<rid>/coherence_probe*.npz`.
+Full derivations + tutorial: the "Joint Noise Model" artifact.
