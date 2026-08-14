@@ -82,6 +82,11 @@ The smoother is `wh_smooth`, a Whittaker-Henderson smoother. Its transfer is
 bandwidth relation is the solver's own (`_tuma_rho`). There is one calibration in the package,
 not two.
 
+The data weight of that smoother is the solver's own `edge_taper`. Block A fades its data term
+at both window ends, so the envelopes there are the prior's extrapolation and not a
+measurement. With the same taper as the weight, the shaft estimate extrapolates over that span
+instead of fitting the transient there. § 6.1 gives the measurement that made this necessary.
+
 The fit has two levels. The rig-common `theta_rig` comes first, from every rotor's trustable
 tracks. Then each rotor's own tracks give a small per-rotor increment on top of it. What is left
 per track becomes `psi`, smoothed with a wider band at higher `k`.
@@ -132,18 +137,19 @@ microphones, and re-expresses each frame's frequency axis in ORDERS of one refer
 (frequency over that rotor's instantaneous rate). The comb then stops drifting and its teeth sit
 on the integers. The result is averaged onto a fixed order grid, and every unit cell
 `[m - 0.5, m + 0.5)` of a harmonic band is folded into ONE profile (`cell_profile`). Each cell
-is first normalized by its own median, so the fold measures modulation and not the spectral tilt
-across the band. Every rotor is the reference in turn, and the band reading is the mean over
-them. `exclude_others` removes every bin near ANY other rotor's line before the order mapping,
-which is what makes the reading meaningful on a multi-rotor rig.
+is first divided by the LOCAL trend of the order profile (`_order_trend`, § 4.1), so the fold
+measures modulation and not the spectral tilt across the cell. Every rotor is the reference in
+turn, and the band reading is the mean over them. `exclude_others` removes every bin near ANY
+other rotor's line before the order mapping, which is what makes the reading meaningful on a
+multi-rotor rig.
 
 Two readings come back:
 
 - `depth_db` — the folded peak over the folded median. It is a RATIO, so it can increase while
   the residual decreases toward the broadband floor. On a four-rotor rig the other rotors' lines
   also put a floor under it.
-- `excess_db` — ten times the log of the summed ABSOLUTE excess `peak - median` over the band's
-  cells, before the per-cell normalization. It is in power units of the input, so it is
+- `excess_db` — ten times the log of the summed ABSOLUTE excess `peak - trend` over the band's
+  cells, before the division by the trend. It is in power units of the input, so it is
   comparable ACROSS signals. The original audio's `excess_db` minus the residual's `excess_db`
   is how many decibels of comb the decomposition removed, and it does not move when the floor
   moves.
@@ -155,9 +161,53 @@ the report, but at mid `k` it gives almost no difference between two signals (se
 microphone, beside the flatness of `|N|^2` itself. A correct floor model leaves a flat whitened
 residual, so the pair (raw, whitened) is the reading.
 
-**Standing policy.** Never use a narrow on-order against half-order slot contrast as a verdict.
-That instrument reads about zero for a comb whose linewidth is more than the slot, or whose peak
-sits outside it. It has already given one reported verdict, and that verdict was then removed.
+**Standing policy.** Do a check of an instrument before you accept its verdict. The order cell
+is the THIRD instrument of this campaign to fail in the same direction, after the narrow slot
+contrast and the rendered-comb metric. Never use a narrow on-order against half-order slot
+contrast as a verdict. That instrument reads about zero for a comb whose linewidth is more than
+the slot, or whose peak sits outside it. It has already given one reported verdict, and that
+verdict was then removed. The two-ends test of § 4.1 is the cheap check for the order cell.
+
+### 4.1 The in-cell trend removal
+
+One unit cell spans a whole order, which is 70 to 85 Hz of frequency. At low harmonics the
+broadband floor decreases much across that span. `cell_profile` divided each cell by its own
+SCALAR median, which removes the level but not the slope. Thus a cell of pure smooth floor folds
+into a monotone ramp, and `argmax` then gives the low edge — which is the half-integer position.
+The first production runs reported a "half-order comb" at −0.4962 orders on every rotor of both
+rigs. That comb does not exist.
+
+Two tests found the fault, and both are cheap:
+
+- The two ends of a folded cell are the SAME physical half-integer position (order `m−0.5` and
+  order `(m+1)−0.5`), so a line must show at both ends. The DREGON residual read **+1.6 dB** at
+  the low end and **−0.4 dB** at the high end, in almost every cell.
+- The cell profile is monotone from its low edge, through the integer, to its high edge. That is
+  a ramp and not a peak.
+
+The fix is `_order_trend`. It divides the order profile by its running median over
+`detrend_orders` of order (1.0 by default) before the fold. A smooth tilt goes to unity. A line
+much narrower than one order passes through with no change. `cell_profile` takes the trend as a
+`trend=` argument and computes `excess_db` against it, so `excess_db` stays absolute power.
+
+A second reading of the SAME production residuals, before and after:
+
+| residual, band | before (cell median) | after (running median) |
+|---|---|---|
+| DREGON k1-9 | 1.427 dB at −0.4962 | **0.305 dB at −0.030** |
+| DREGON k10-24 | 0.333 dB | 0.423 dB |
+| DREGON k25-49 | 0.196 dB | 0.104 dB |
+| DREGON k50-80 | 0.159 dB | 0.073 dB |
+| FLY124 k1-9 | — | **1.029 dB at +0.062** |
+
+**What stays after the trend removal.** On FLY124 two cells stay, and only on the twin pair
+(rotors 1 and 3, cells k2 and k3). There cell k2's high end and cell k3's low end are the same
+physical order 2.5, and they agree at +5.90 and +5.50 dB on rotor 1. Thus that one IS a line.
+The absolute-frequency reading names it: rotor 1's order-2.5 energy sits at 168.89 Hz and rotor
+0's rate is 84.483 rev/s, so the line is 2.0000 × r_0, off by 0.0009 orders. It is another
+rotor's own `k` 2 harmonic. Neither rig shows a genuine per-rotor `r/2` comb, which agrees with
+the physics: the labels are the SHAFT rate, so an `r/2` line needs a mechanism with a period of
+two revolutions.
 
 ## 5. The knobs
 
@@ -169,6 +219,7 @@ sits outside it. It has already given one reported verdict, and that verdict was
 | `JointConfig.bw_theta_hz` | 1.5 | Bandwidth of the shaft correction `theta`, in Hz. |
 | `JointConfig.bw_psi_slope` | 0.6 | Slope of `bw_psi_hz(k) = min(slope * k, max)` — the measured linewidth law. |
 | `JointConfig.bw_psi_max` | 8.0 | Cap of the same law. It prevents a high-`k` correction that takes in the floor. |
+| `JointConfig.bw_psi_min` | 1.5 | Floor of the same law, in Hz. The law `0.6 k` allows a `k` 2 line only 1.2 Hz, which is narrower than its true incoherent linewidth, so a strong low harmonic keeps a skirt that the model cannot follow. This is the indicated correction for the cross-rotor leftover of § 4.1. |
 | `JointConfig.conc_min` | 0.5 | Concentration gate on a track's phase increments. |
 | `JointConfig.per_rotor_theta` | `True` | Fit the small per-rotor part of `theta` on top of the rig-common part. |
 | `JointConfig.whiten` | `True` | Weight block A by `1 / sqrt(S)`. |
@@ -180,10 +231,12 @@ sits outside it. It has already given one reported verdict, and that verdict was
 | `JointConfig.profile_n_fft` | 8192 | Transform length of the order-cell probe. |
 | `JointConfig.profile_order_step` | 0.005 | Order grid step of the probe. |
 | `JointConfig.profile_every_iter` | `True` | Profile every iteration's residual, not the last one only. |
+| `order_cell_profile.detrend_orders` | 1.0 | Width in orders of the running median that removes the in-cell spectral tilt (§ 4.1). |
+| `order_cell_profile.fold` / `cell_profile.fold` | `"mean"` | How the cells of a band combine. `"median"` is a robust variant. |
 | `--joint` | off | Turn on the v3 alternation. Off IS the v2 path, call for call. |
 | `--iters` | 3 | Sets `JointConfig.iters`. |
 | `--k-trust` | `3,12,80` | Sets the ladder. |
-| `--bw-psi` | `0.6,8` | Sets `bw_psi_slope,bw_psi_max`. |
+| `--bw-psi` | `0.6,8,1.5` | Takes `slope,max[,min]` and sets `bw_psi_slope`, `bw_psi_max` and `bw_psi_min`. |
 | `--bw-theta` | 1.5 | Sets `bw_theta_hz`. |
 | `--no-whiten` | off | Runs block A on the unweighted misfit. |
 
@@ -211,6 +264,24 @@ blend between adjacent windows. That is REPORTED and not taken for granted:
 so a reader can see whether it stayed inside the 100 Hz envelope grid. At high `k` a large
 disagreement would cause aliasing on that grid.
 
+### 6.1 The window edges, and a metric that read too high
+
+`joint.theta_stitch_max_rate_hz` read 46.08 on the first DREGON production run, against 0.003
+on a single-window smoke test. The cause is the window EDGE. Two overlapping estimated windows
+reproduce it locally: the maximum sits at frame 0 or at the last frame of a window, where the
+cross-fade weight is 0.0025 to 0.005. That is, it sits where the window gives almost nothing to
+the stitch. With the fade as the weight the same reproduction reads 0.077 Hz, against a raw
+1.86 Hz.
+
+Three changes came from that measurement:
+
+1. `split_phases` weights the shaft smoother by the solver's own `edge_taper`, so the estimate
+   extrapolates over the span where the solver faded its data term (§ 2, block B).
+2. `theta_rate` holds its first and last value instead of taking `np.gradient`'s one-sided
+   difference, so no frame carries a different estimator from the interior.
+3. The report carries `theta_stitch_max_rate_hz` (fade weighted, the number to read) beside
+   `theta_stitch_max_rate_hz_raw`.
+
 ## 7. Outputs
 
 `--joint` adds these to the v2 output set:
@@ -224,6 +295,20 @@ disagreement would cause aliasing on that grid.
 - Per unit JSON, under `joint.iterations`: every iteration's diagnostics — `residual_fraction`,
   `track_fraction`, `psd_masked_frac`, `flatness`, the phase-split diagnostics and the
   order-cell band table of that iteration's residual.
+
+Two additions came from the first production runs. In `report.json` the `joint` section carries
+`theta_stitch_max_rate_hz_raw` beside the fade-weighted `theta_stitch_max_rate_hz` (§ 6.1). The
+`phase_model` section carries `max_abs_step_rad_by_band` and `max_step_rad_by_band_worst`, which
+say WHERE the phase unwrap saturates. A global maximum that reaches pi says only that SOME track
+is ambiguous. A per-band maximum says whether the ambiguous tracks are the weak high harmonics,
+which carry almost no energy and are harmless, or the low ones the shaft estimate is built on,
+which are not.
+
+**A bug the same pass found.** `r2_ref_mic` read negative on almost every production window while
+the stitched ledger was healthy. That per-window check rebuilt the plain label carrier instead of
+reading the solver's own `env.phase`, which on the joint path carries the shaft correction, so it
+scored the bank against a carrier it was never fitted to. The stitch itself always used the right
+phase.
 
 ## 8. Measured results on the synthetic fixture
 
