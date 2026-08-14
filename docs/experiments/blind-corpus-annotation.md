@@ -1,10 +1,17 @@
 # Blind annotation beyond DREGON/Michael's: AVQ pilot + corpus plan
 
-**Date**: 2026-08-12 · **Status**: pilot DONE (branch `blind-corpus`, head
-11365db — scripts/blind_corpus{,_report,_triage}.py + committed artifacts in
-results/blind_corpus/). Cluster follow-ups queued behind the omnirun daemon
-disk outage: `blind-avq-8ch` (the run that matters), `blind-avq-dregon-calib`,
-`blind-avq-dregon-motor`.
+**Date**: 2026-08-12, extended 2026-08-14 · **Status**: the calibration is
+CLOSED on four corpora (branch `blind-corpus`; driver
+`scripts/blind_corpus{,_report,_triage}.py`; unit artifacts committed under
+`results/blind_corpus/`). Read § "DREGON room1 against MEASURED telemetry"
+first — it is the only place in the campaign where the blind annotation is
+scored against a tachometer, and it reads 1.0 rev/s. Read § "Ranked examples"
+for the best and the worst units, and § "The corpus plan" for what is left.
+
+Two jobs were still running when this revision was written: `blind-avq-pr`
+(`blind-avq-pr-b0c1ca`, AVQ 8-channel with the per-rotor readings, 187 units)
+and `blind-daset2` (`blind-daset2-2d5d8c`, DroneAudioSet drone-only, about 240
+units). Collect them with `omnirun pull <job> .` from the worktree.
 
 ## Label-free quality instruments (no telemetry exists on these corpora)
 
