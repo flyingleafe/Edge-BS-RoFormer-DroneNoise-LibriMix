@@ -418,3 +418,54 @@ inside 0.6 rev/s of each other (102.4 to 103.0), and `fvk_ratio_double` 18.05,
 which is the strongest odd-harmonic evidence anywhere in the campaign. Its
 clearance is still -0.20 dB, which is what makes the geometry control worth
 running.
+
+## DREGON room1 against MEASURED telemetry (blind-room1-meas-cfc95c, 19/19)
+
+Room2 carries only the flight-controller COMMAND. The 5 room1 free-flight
+recordings carry `motors_measured`, so this is the first blind pass in the
+campaign that is scored against a real tachometer. Three of the five also carry
+an interfering source (speech or white noise) at two levels.
+
+**The result is the campaign's headline.** On the 10 cruise windows the blind
+annotation reads 74-76 / 85-86 rev/s against a measured 75-76 / 85-86, with a
+**PIT-MAE of 0.97 to 1.22 rev/s**, and it recovers the TWIN-PAIR structure: two
+rotors near 75 and two near 85. The interferer costs nothing — the speech and
+white-noise recordings score the same as `nosource`.
+
+That corrects the room2 caveat. The 2.1-7.2 rev/s that room2 reported was the
+COMMAND track disagreeing with the acoustics, not the annotation being wrong.
+
+The other 9 windows split two ways:
+
+- 5 takeoff windows (`w000`). The measured rate is 32-49 rev/s and rising; the
+  annotation reads 44-86 and is useless (MAE 15-54). Four of the five are
+  rejected by `fvk_ratio_double` (1.024-1.085 against a 1.065 cut); the fifth
+  reads 1.085 and is a false accept.
+- 4 descent windows (`w003`, and `w002` of `speech-high`). The measured rate is
+  falling through 61-83 rev/s and the annotation lags it by 8 to 17 % (MAE 5.7
+  to 12.3). ALL FOUR pass `fvk_ratio_double` (1.144-1.228), so G1 does not see
+  them.
+
+**G4 is the gate that catches the descent windows, and this run is why it is in
+the plan.** Inside one recording `w001` and `w002` both read 75 / 85 and `w003`
+reads 61 / 73. Consecutive windows overlap by 4 s, so a 12 rev/s step between
+them is visible with no label and no extra demodulation.
+
+### The per-rotor octave lever does NOT transfer to four rotors
+
+This is a negative result and it is the honest reading of the new instrument.
+On room1 the per-rotor half-margin crosses -1.5 dB on exactly 2 of the 19
+windows. One of them (`speech-low w001`, margin -2.03) has a PIT-MAE of 1.08
+rev/s and is one of the BEST windows in the whole campaign. The other
+(`speech-low w003`, -2.23) is a genuine descent failure. One right, one wrong.
+
+Room2 read a minimum of -0.90 dB on its correct windows and room1 reads -2.03
+on one, so the -1.5 dB cut is not safe at four rotors. The cause is the same
+geometry that flattens the ridge clearance: with four combs inside 10 rev/s the
+halved carrier of one rotor still collects its neighbours' teeth, so the margin
+is both compressed and contaminated. **The per-rotor test is validated as a
+ONE-SOURCE instrument (bench, 46 of 46) and is NOT validated at four rotors.**
+The AVQ octave ambiguity therefore still has no instrument, and the next
+candidate is structural rather than spectral: a correct quadrotor annotation
+comes out as two pairs about 10 rev/s apart, which is what every correct room1
+window does and what no AVQ mono window does.
