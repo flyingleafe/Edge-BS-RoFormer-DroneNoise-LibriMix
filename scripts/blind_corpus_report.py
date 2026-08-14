@@ -56,9 +56,36 @@ COLUMNS = (
     "coarse_halved",
     "coarse_mode",
     "spread_rev_s",
+    "pr_margin_half_min_db",
+    "pr_margin_half_max_db",
+    "pr_n_doubled",
+    "verdict",
     "ref_mae_rev_s",
     "wall_ladder_s",
 )
+
+#: The calibrated gate — docs/experiments/blind-corpus-annotation.md. The two
+#: thresholds come from two different calibration sets and neither replaces the
+#: other: 1.065 on ``fvk_ratio_double`` separates correct from halved/ramp
+#: windows 17/17 on DREGON room2, and -1.5 dB on a half-margin marks a DOUBLED
+#: annotation on the single-motor bench, which the ratio cannot see at all.
+RATIO_MIN = 1.065
+HALF_MARGIN_DOUBLED = -1.5
+
+
+def verdict(row: dict[str, Any]) -> str:
+    """One of ``accept`` / ``doubled`` / ``halved_or_ramp`` / ``unscored``."""
+    ratio = row.get("fvk_ratio_double")
+    half = row.get("ridge_margin_half_db")
+    pr = row.get("pr_margin_half_min_db")
+    doubled = (isinstance(half, (int, float)) and half <= HALF_MARGIN_DOUBLED) or (
+        isinstance(pr, (int, float)) and pr <= HALF_MARGIN_DOUBLED
+    )
+    if doubled:
+        return "doubled"
+    if not isinstance(ratio, (int, float)):
+        return "unscored"
+    return "accept" if ratio >= RATIO_MIN else "halved_or_ramp"
 
 
 def load_rows(run: Path) -> list[dict[str, Any]]:
@@ -71,6 +98,7 @@ def load_rows(run: Path) -> list[dict[str, Any]]:
         d["unit_uid"] = p.stem
         d["rps_mean_str"] = ", ".join(f"{x:.1f}" for x in d.get("rps_mean", []))
         d["rps_std_max"] = max(d.get("rps_std", [0.0]) or [0.0])
+        d["verdict"] = verdict(d)
         rows.append(d)
     return rows
 
@@ -113,6 +141,9 @@ def by_recording(rows: list[dict[str, Any]], out: Path) -> list[dict[str, Any]]:
                 "fvk_well_p03": _m(g, "fvk_well_p03"),
                 "fvk_ratio_double": _m(g, "fvk_ratio_double"),
                 "fvk_ratio_half": _m(g, "fvk_ratio_half"),
+                "n_accept": sum(1 for x in g if x.get("verdict") == "accept"),
+                "n_doubled": sum(1 for x in g if x.get("verdict") == "doubled"),
+                "pr_margin_half_min_db": _m(g, "pr_margin_half_min_db"),
                 "within_window_std_rev_s": _m(g, "rps_std_max"),
                 "rate_spread_across_windows": (
                     round(float(np.std(win_means)), 3) if len(win_means) > 1 else None
@@ -215,8 +246,23 @@ def main() -> None:
     write_units(rows, out)
     agg = by_recording(rows, out)
 
-    ranked = [r for r in rows if isinstance(r.get("ridge_clearance_db"), (int, float))]
+    # Rank inside the gate, not across it: an annotation that fails the octave
+    # test is not "worse", it is a different object, and a high clearance on a
+    # doubled carrier is exactly the trap the two instruments exist to catch.
+    ranked = [
+        r
+        for r in rows
+        if isinstance(r.get("ridge_clearance_db"), (int, float)) and r["verdict"] == "accept"
+    ]
     ranked.sort(key=lambda r: r["ridge_clearance_db"])
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[str(r.get("verdict"))] = counts.get(str(r.get("verdict")), 0) + 1
+    print("verdicts:", json.dumps(counts))
+    if not ranked:  # nothing passed the gate: rank the whole run, and say so
+        print("NO unit passed the calibrated gate — ranking every unit instead")
+        ranked = [r for r in rows if isinstance(r.get("ridge_clearance_db"), (int, float))]
+        ranked.sort(key=lambda r: r["ridge_clearance_db"])
     if args.overlays:
         uids = [u.strip() for u in args.overlays.split(",") if u.strip()]
     else:
