@@ -192,6 +192,16 @@ Motor4 runs fast at every setpoint. So the corrected annotation of this corpus
 is right on all 43 windows, and one non-acoustic instrument says so. The
 cross-window repeatability is 0.004-0.135 rev/s.
 
+**Why the failure is always a doubling, never a halving, on the bench.** The
+DREGON propellers have two blades, so the blade-pass line sits at twice the
+shaft rate and carries most of the energy. The odd harmonics are the ones that
+exist only because the two blades are not identical, and they are the first to
+disappear as the throttle falls. The seed then locks the blade-pass line and
+returns exactly twice the truth. The overlay below shows the mechanism on a
+CORRECT window: at 70 % throttle the even teeth (137, 275, 413, 551 Hz) are
+much darker than the odd ones (206, 344, 482 Hz), and at 50 % the odd ones are
+gone.
+
 The doubling is also visible directly. In
 `results/blind_corpus/dregon_motor3/report/overlay_motor_Motor1_50__w000__seedvk.png`
 the annotation draws teeth at 98, 196, 294 Hz and so on, while the spectrogram
@@ -264,15 +274,15 @@ Every window annotates with a positive half-margin (+0.52 to +1.81) and 2.8 to
 5.9 dB of ridge clearance, at 66.3 / 77.7 / 79.7 / 96.6 / 96.8 / 97.4 / 97.8 /
 113.8 rev/s. There is no telemetry, so the readings are the only judge.
 
-Two of the eight fail the `fvk_ratio_double` gate (1.020 and 1.021), and they
-are the two SLOWEST takes. A ratio near 1 says the odd harmonics carry little
-energy, which on a correct annotation should not happen. The two candidate
-explanations are a weak odd-harmonic set on a small rotor, and an annotation an
-octave low. The second one is worth a test, because this rig is small: the top
-take already reads 113.8 rev/s against a seed scan that stops at 120 rev/s
-(`SeedConfig.scan_hi`), so the scan ceiling may be binding for this drone.
-Widening the scan is not free — the calibrated configs are frozen — so it needs
-its own calibration pass and is listed as an open item, not a fix.
+Under the one-source rule all 8 are accepted: every half-margin is positive
+and every clearance is above 3 dB except one at 2.8 dB. `fvk_ratio_double` is
+not applied here, and this set shows why the arm split is needed — two takes
+read 1.020 and 1.021, which the four-rotor gate would reject.
+
+One open item. The fastest take reads 113.8 rev/s against a seed scan that
+stops at 120 rev/s (`SeedConfig.scan_hi`), so the ceiling may be binding for a
+small rig. Widening the scan is not free, because the calibrated configs are
+frozen, so it needs its own calibration pass.
 
 ## The corpus plan (2026-08-14 revision)
 
