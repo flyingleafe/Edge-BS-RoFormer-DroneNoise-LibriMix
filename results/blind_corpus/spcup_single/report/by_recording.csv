@@ -1,0 +1,9 @@
+recording_id,arm,n_windows,ridge_clearance_db,ridge_margin_half_db,fvk_well_p03,fvk_ratio_double,fvk_ratio_half,n_accept,n_doubled,pr_margin_half_min_db,within_window_std_rev_s,rate_spread_across_windows,mean_rate_rev_s,ref_mae_rev_s,wall_ladder_s
+AGH__ego-noise__single_rotors__0,seedvk,1,2.842,1.614,1.112,1.02,0.911,0,0,,0.112,,79.71,,9.4
+AGH__ego-noise__single_rotors__1,seedvk,1,3.37,1.814,1.15,1.021,0.908,0,0,,0.045,,66.33,,6.0
+AGH__ego-noise__single_rotors__2,seedvk,1,5.195,1.246,1.147,4.397,0.977,1,0,,0.071,,113.78,,9.2
+AGH__ego-noise__single_rotors__3,seedvk,1,4.143,1.272,1.178,4.933,0.949,1,0,,0.088,,97.43,,9.2
+AGH__ego-noise__single_rotors__4,seedvk,1,2.911,1.312,1.204,5.567,0.968,1,0,,0.091,,77.74,,9.4
+AGH__ego-noise__single_rotors__5,seedvk,1,5.874,0.549,1.242,6.252,0.962,1,0,,0.082,,97.81,,6.0
+AGH__ego-noise__single_rotors__6,seedvk,1,4.757,0.646,1.065,2.535,0.966,1,0,,0.067,,96.59,,9.3
+AGH__ego-noise__single_rotors__7,seedvk,1,3.552,0.517,1.137,4.318,0.973,1,0,,0.085,,96.81,,9.3
