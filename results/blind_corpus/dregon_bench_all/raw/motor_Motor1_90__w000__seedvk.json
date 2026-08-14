@@ -1,0 +1,202 @@
+{
+ "uid": "motor_Motor1_90__w000",
+ "recording_id": "motor_Motor1_90",
+ "window": 0,
+ "t0_s": 0.0,
+ "dur_s": 20.0,
+ "n_channels": 8,
+ "native_sr": 44100,
+ "has_reference": false,
+ "arm": "seedvk",
+ "dataset": "DREGON-frames",
+ "wall_ladder_s": 41.7,
+ "arm_fallback": null,
+ "rps_mean": [
+  87.781
+ ],
+ "rps_std": [
+  0.3042
+ ],
+ "rps_min": [
+  87.066
+ ],
+ "rps_max": [
+  88.299
+ ],
+ "spread_rev_s": 0.0,
+ "seed_bases": [
+  87.90000000000083
+ ],
+ "seed_octave": false,
+ "seed_primary": 87.90000000000083,
+ "seed_accepted": [
+  87.90000000000083,
+  105.45000000000107,
+  75.45000000000064,
+  109.90000000000114,
+  60.15000000000043,
+  62.90000000000047,
+  45.800000000000225,
+  107.6000000000011
+ ],
+ "seed_update_gate": null,
+ "seed_bw_hz": null,
+ "seed_n_candidates": 28,
+ "score_window_s": 6.0,
+ "fvk": {
+  "blind": {
+   "objective": 0.2862833586953726,
+   "r2": 0.7219493423027812,
+   "n_cells": 320,
+   "residual": 37.763928316145744,
+   "k_hi": 40,
+   "objective_alias": 0.3383829814024465
+  },
+  "half": {
+   "objective": 0.3620987553349009,
+   "r2": 0.6483268984196191,
+   "n_cells": 320,
+   "objective_alias": 0.8389291726236413
+  },
+  "double": {
+   "objective": 0.3578393992680115,
+   "r2": 0.6586711813203244,
+   "n_cells": 320,
+   "objective_alias": 0.40404928459858946
+  },
+  "detune_p03": {
+   "objective": 0.32275430971354235,
+   "r2": 0.716350379510543,
+   "n_cells": 320
+  },
+  "detune_m03": {
+   "objective": 0.3246690542416947,
+   "r2": 0.7152481693395375,
+   "n_cells": 320
+  },
+  "detune_p10": {
+   "objective": 0.8710093655115966,
+   "r2": 0.22021499079394968,
+   "n_cells": 320
+  },
+  "detune_m10": {
+   "objective": 0.8741748374929224,
+   "r2": 0.2164896878805409,
+   "n_cells": 320
+  }
+ },
+ "wall_fvk_s": 20.2,
+ "ridge": {
+  "none": {
+   "per_rotor": {
+    "0": {
+     "broadband": 0.410935,
+     "phase_noise": 0.441957,
+     "roughness": 0.549029,
+     "ridge": 7.51458,
+     "pp_dr": -0.01252,
+     "n_cells": 2496,
+     "n_cells_ridge": 2048
+    }
+   },
+   "ridge": 7.51458,
+   "n_cells_ridge": 2048,
+   "broadband": 0.410935,
+   "phase_noise": 0.441957,
+   "snr_median": 641.1258,
+   "admit_frac_ridge": 0.8205,
+   "line_share_ridge": 1.0
+  },
+  "offcomb": {
+   "per_rotor": {
+    "0": {
+     "broadband": 0.748718,
+     "phase_noise": 0.905996,
+     "roughness": 0.654977,
+     "ridge": -1.4969,
+     "pp_dr": 0.0052,
+     "n_cells": 2496,
+     "n_cells_ridge": 2048
+    }
+   },
+   "ridge": -1.4969,
+   "n_cells_ridge": 2048,
+   "broadband": 0.748718,
+   "phase_noise": 0.905996,
+   "snr_median": 0.7569,
+   "admit_frac_ridge": 0.8205,
+   "line_share_ridge": 1.0
+  },
+  "mismatch": {
+   "per_rotor": {
+    "0": {
+     "broadband": 0.451569,
+     "phase_noise": 0.445349,
+     "roughness": 0.54856,
+     "ridge": 6.89609,
+     "pp_dr": -0.01491,
+     "n_cells": 2496,
+     "n_cells_ridge": 2048
+    }
+   },
+   "ridge": 6.89609,
+   "n_cells_ridge": 2048,
+   "broadband": 0.451569,
+   "phase_noise": 0.445349,
+   "snr_median": 642.68,
+   "admit_frac_ridge": 0.8205,
+   "line_share_ridge": 1.0
+  },
+  "half": {
+   "per_rotor": {
+    "0": {
+     "broadband": 0.500267,
+     "phase_noise": 0.58531,
+     "roughness": 0.588847,
+     "ridge": 5.59615,
+     "pp_dr": 0.02272,
+     "n_cells": 2496,
+     "n_cells_ridge": 2048
+    }
+   },
+   "ridge": 5.59615,
+   "n_cells_ridge": 2048,
+   "broadband": 0.500267,
+   "phase_noise": 0.58531,
+   "snr_median": 291.6867,
+   "admit_frac_ridge": 0.8205,
+   "line_share_ridge": 1.0
+  },
+  "double": {
+   "per_rotor": {
+    "0": {
+     "broadband": 0.502676,
+     "phase_noise": 0.501378,
+     "roughness": 0.550881,
+     "ridge": 4.99111,
+     "pp_dr": 0.00997,
+     "n_cells": 2496,
+     "n_cells_ridge": 2048
+    }
+   },
+   "ridge": 4.99111,
+   "n_cells_ridge": 2048,
+   "broadband": 0.502676,
+   "phase_noise": 0.501378,
+   "snr_median": 45.3241,
+   "admit_frac_ridge": 0.8205,
+   "line_share_ridge": 1.0
+  }
+ },
+ "wall_ridge_s": 2.4,
+ "fvk_blind": 0.2862833586953726,
+ "fvk_well_p03": 1.127,
+ "fvk_ratio_double": 1.25,
+ "fvk_alias_ratio_double": 1.194,
+ "fvk_ratio_half": 1.265,
+ "fvk_alias_ratio_half": 2.479,
+ "ridge_clearance_db": 9.011,
+ "ridge_clearance_mismatch_db": 0.618,
+ "ridge_margin_half_db": 1.918,
+ "ridge_margin_double_db": 2.523
+}
