@@ -104,6 +104,8 @@ def prepare_windows(
     overlap_s: float,
     max_s: float | None,
     cache_dir: Path,
+    pattern: str | None = None,
+    max_recordings: int | None = None,
 ) -> list[dict[str, Any]]:
     """Stream ``dataset``, resample to 16 kHz, cut windows, cache them as NPZ.
 
@@ -123,11 +125,25 @@ def prepare_windows(
     if hop_s <= 0:
         raise SystemExit("--overlap-s must be smaller than --window-s")
 
+    # A catalog dataset can hold thousands of recordings (DroneAudioSet 2313,
+    # MIMII 54k), so a corpus pass names the slice it wants by REGEX and stops
+    # the stream as soon as it has enough. ``--recordings`` stays the exact-set
+    # form for the small, named sets.
+    import re as _re
+
+    rx = _re.compile(pattern) if pattern else None
+
     index: list[dict[str, Any]] = []
+    n_kept = 0
     for frame in iter_published_frames(dataset):
         rid = str(get_meta(frame, "recording_id", ""))
         if wanted is not None and rid not in wanted:
             continue
+        if rx is not None and not rx.search(rid):
+            continue
+        if max_recordings is not None and n_kept >= max_recordings:
+            break
+        n_kept += 1
         aud = frame["audio"]
         data = np.asarray(aud.data, dtype=np.float32)
         if data.ndim == 1:
@@ -355,6 +371,7 @@ def _ridge_readings(audio: np.ndarray, r: np.ndarray, ft: np.ndarray) -> dict[st
             return
         sc = res["scores"].get("none") or next(iter(res["scores"].values()))
         out[key] = {
+            "per_rotor": sc.get("per_rotor"),
             "ridge": sc.get("ridge"),
             "n_cells_ridge": sc.get("n_cells_ridge"),
             "broadband": sc.get("broadband"),
@@ -375,6 +392,59 @@ def _ridge_readings(audio: np.ndarray, r: np.ndarray, ft: np.ndarray) -> dict[st
     return out
 
 
+def _per_rotor_octave(audio: np.ndarray, r: np.ndarray, ft: np.ndarray) -> dict[str, Any]:
+    """The PER-ROTOR octave test: move ONE rotor by an octave, hold the rest.
+
+    The global ``ridge_margin_half_db`` halves every track at once, which is
+    the right instrument only when every track is wrong in the same way — the
+    single-rotor bench. On a quadrotor the seed can lock rotor 2 an octave low
+    while rotors 0, 1 and 3 are right, and the global margin then reads the
+    MEAN of one large negative and three small positives, which is why it sits
+    on its threshold for AVQ (campaign log, "the missing lever").
+
+    So the candidate here changes one row and keeps the others, and the reading
+    is that rotor's OWN ridge (``FitnessScore.per_rotor``, already computed and
+    until now discarded). Two properties make it a fair test and neither is
+    free if the rotor is scored alone: the reference stays the FULL blind
+    trajectory, so the harmonic cap, the block grid and — the load-bearing one
+    — the twin/interloper collision mask are the same cells in every candidate,
+    with the other three rotors' lines still excised from the local floor.
+
+    Cost: one demodulation per (rotor, factor), so ``2 * n_rotors`` extra
+    reads. On the 8-channel 6 s crop that is ~2 s each against the ladder's
+    40 s, which is why it is on by default for a multi-track arm.
+    """
+    from tracking.fitness import FitnessConfig, score_window
+
+    cfg = FitnessConfig(sr=SR)
+
+    def _read(cand: np.ndarray) -> dict[str, dict[str, Any]]:
+        res = score_window(audio, ft, cand, r, cfg=cfg, control="none", n_boot=0)
+        if "failed" in res:
+            return {}
+        sc = res["scores"].get("none") or next(iter(res["scores"].values()))
+        return dict(sc.get("per_rotor") or {})
+
+    base = _read(r)
+    rows: list[dict[str, Any]] = []
+    for i in range(r.shape[0]):
+        rec: dict[str, Any] = {"rotor": i, "rate": round(float(r[i].mean()), 3)}
+        b = base.get(str(i), {}).get("ridge")
+        rec["ridge"] = b
+        for tag, mul in (("half", 0.5), ("double", 2.0)):
+            cand = r.copy()
+            cand[i] = cand[i] * mul
+            if np.any(cand[i] <= 1.0):
+                rec[f"margin_{tag}_db"] = None
+                continue
+            other = _read(cand).get(str(i), {}).get("ridge")
+            rec[f"margin_{tag}_db"] = (
+                round(float(b - other), 3) if (b is not None and other is not None) else None
+            )
+        rows.append(rec)
+    return {"rotors": rows}
+
+
 # ── worker ────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class Worker:
@@ -388,6 +458,7 @@ class Worker:
     npz_dir: Path
     alias_penalty: float
     score_s: float = SCORE_WINDOW_S
+    per_rotor_octave: bool = True
 
     def __call__(self, unit: Unit) -> dict[str, Any]:
         cache_dir, n_rotors = self.cache_dir, self.n_rotors
@@ -445,6 +516,13 @@ class Worker:
         row["ridge"] = _ridge_readings(a_s, r_s, ft_s)
         row["wall_ridge_s"] = round(time.perf_counter() - tic, 1)
 
+        # A single-track arm already has its per-rotor reading: the global
+        # margin IS the rotor's margin, so the extra demodulations buy nothing.
+        if self.per_rotor_octave and r_s.shape[0] > 1:
+            tic = time.perf_counter()
+            row["octave_per_rotor"] = _per_rotor_octave(a_s, r_s, ft_s)
+            row["wall_octave_s"] = round(time.perf_counter() - tic, 1)
+
         # Derived headline numbers (the report reads these directly).
         fv = row["fvk"]
         f0 = fv["blind"]["objective"]
@@ -478,6 +556,19 @@ class Worker:
             other = rd.get(key, {}).get("ridge")
             if rn.get("ridge") is not None and other is not None:
                 row[tag] = round(rn["ridge"] - other, 3)
+
+        # Per-rotor octave headlines: the WORST rotor decides the window, and
+        # the count says whether the failure is one track or the whole comb.
+        pro = row.get("octave_per_rotor", {}).get("rotors") or []
+        mh = [x["margin_half_db"] for x in pro if x.get("margin_half_db") is not None]
+        if mh:
+            row["pr_margin_half_min_db"] = round(float(min(mh)), 3)
+            row["pr_margin_half_max_db"] = round(float(max(mh)), 3)
+            # The bench calibration reads -3.0 to -3.5 dB on a DOUBLED
+            # annotation and +0.2 to +2.1 on a correct one; -1.5 is the cut
+            # the campaign log fixed on the global margin, reused per rotor.
+            row["pr_n_doubled"] = int(sum(1 for v in mh if v <= -1.5))
+            row["pr_n_negative"] = int(sum(1 for v in mh if v < 0))
 
         # The reference, where one exists, is a CALIBRATION reading, never an
         # input: PIT-aligned error of the blind annotation against telemetry.
@@ -514,8 +605,27 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "n": len(v),
         }
 
+    # The CALIBRATED gate (docs/experiments/blind-corpus-annotation.md): DREGON
+    # room2 separates correct from halved/ramp windows 17/17 at
+    # ``fvk_ratio_double`` 1.065, and the bench separates doubled annotations
+    # at a global half-margin of -1.5 dB. Both instruments are needed — the
+    # ratio alone cannot see a doubling, because the double of a doubled
+    # annotation is 4x truth and therefore trivially worse.
+    def _accept(r: dict[str, Any]) -> bool:
+        ratio = r.get("fvk_ratio_double")
+        half = r.get("ridge_margin_half_db")
+        pr = r.get("pr_margin_half_min_db")
+        if not isinstance(ratio, (int, float)) or ratio < 1.065:
+            return False
+        if isinstance(half, (int, float)) and half <= -1.5:
+            return False
+        return not (isinstance(pr, (int, float)) and pr <= -1.5)
+
     return {
         "n_units": len(rows),
+        "n_accept": sum(1 for r in rows if _accept(r)),
+        "n_pr_doubled": sum(1 for r in rows if (r.get("pr_n_doubled") or 0) > 0),
+        "pr_margin_half_min_db": _stats("pr_margin_half_min_db"),
         # A window fails the octave test when the doubled carrier is NOT
         # clearly worse (the odd harmonics carry no energy) or when the
         # half carrier reads a HIGHER line density than the annotation.
@@ -547,6 +657,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     ap.add_argument("--dataset", default="AVQ-egonoise", help="published tdframe-v1 dataset")
     ap.add_argument("--recordings", default=None, help="comma-separated recording_id filter")
+    ap.add_argument("--recordings-regex", default=None, help="regex over recording_id")
+    ap.add_argument(
+        "--max-recordings",
+        type=int,
+        default=None,
+        help="stop the stream after this many matching recordings (large catalogs)",
+    )
     ap.add_argument("--arms", default="fullrange", help="comma-separated: fullrange,vit2dsp")
     ap.add_argument("--n-rotors", type=int, default=4)
     ap.add_argument("--window-s", type=float, default=20.0)
@@ -565,6 +682,11 @@ def main() -> None:
         default=1.0,
         help="weight of the F_VK order/alias counter-term in the octave readings (0 = off)",
     )
+    ap.add_argument(
+        "--no-per-rotor-octave",
+        action="store_true",
+        help="skip the per-rotor octave test (2 x n_rotors extra ridge reads)",
+    )
     ap.add_argument("--windows", default=None, help="comma-separated window indices to keep")
     ap.add_argument("--out", default="results/blind_corpus/run")
     ap.add_argument("--omp", default="1", help="BLAS thread cap (read pre-import)")
@@ -578,7 +700,14 @@ def main() -> None:
     )
     print(f"Preparing windows from {args.dataset} ...", flush=True)
     index = prepare_windows(
-        args.dataset, wanted, args.window_s, args.overlap_s, args.max_s, cache_dir
+        args.dataset,
+        wanted,
+        args.window_s,
+        args.overlap_s,
+        args.max_s,
+        cache_dir,
+        args.recordings_regex,
+        args.max_recordings,
     )
     if not index:
         raise SystemExit(f"no windows produced from {args.dataset}")
@@ -604,6 +733,7 @@ def main() -> None:
             out_dir / "traj",
             args.alias_penalty,
             args.score_window_s,
+            not args.no_per_rotor_octave,
         ),
         out_dir,
         blas_threads=int(args.omp),
