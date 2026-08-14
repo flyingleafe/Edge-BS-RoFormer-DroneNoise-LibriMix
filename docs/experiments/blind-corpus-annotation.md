@@ -469,3 +469,25 @@ The AVQ octave ambiguity therefore still has no instrument, and the next
 candidate is structural rather than spectral: a correct quadrotor annotation
 comes out as two pairs about 10 rev/s apart, which is what every correct room1
 window does and what no AVQ mono window does.
+
+## Ranked examples (2026-08-14)
+
+### The five that annotate best
+
+| Unit | Rate (rev/s) | Evidence | Why it is easy |
+|------|--------------|----------|----------------|
+| `0Nm_BPFI_10 w000-w003` (KAIST) | 50.298 +- 0.005 | 0.26 % from the stated 3010 RPM; clearance 11.0-11.6 dB; half-margin +4.3 to +5.0 | one source, constant speed, no interferer, and the shaft line is the strongest line |
+| `free-flight_whitenoise-high_room1 w001` (DREGON) | 75.4/75.4/85.6/85.7 | PIT-MAE 1.02 rev/s against MEASURED telemetry; ratio 1.196 | cruise, 8 microphones, a resolved twin pair, and the white-noise interferer does not touch the comb |
+| `free-flight_nosource_room1 w002` | 74.3/74.7/85.1/86.0 | PIT-MAE 0.98 rev/s | the same, with no interferer at all |
+| `motor_Motor4_90 w000` (DREGON bench) | 89.30 | clearance 12.57 dB, half-margin +4.04, cross-window spread 0.036 | one source at high throttle, where the shaft line is well above the floor |
+| `motor_Motor3_70 w000` | 68.67 | clearance 9.65 dB, half-margin +2.05, cross-window spread 0.004 | the same; the overlay shows every drawn tooth on a ridge |
+
+### The five that annotate worst
+
+| Unit | What it does | Diagnosis | Idea |
+|------|--------------|-----------|------|
+| `motor_Motor{1-4}_50` and `_60` (18 windows) | annotates 2x truth | two-bladed propeller: the blade-pass line is the strongest line and the shaft line is buried at low throttle | caught by the half-margin sign; HALVE and re-score. Solved |
+| `0Nm_BPFO_03` / `_10` (KAIST, 8 windows) | annotates 91.3-91.7 rev/s, 1.82x the nominal | a real non-shaft periodicity of the bearing wins the comb scan; it is not an octave, so no octave instrument sees it | needs a rate prior per rig class, or a second corpus-level constraint (the same machine must give the same rate) |
+| DREGON room2 halved cruise (5 windows) | annotates 39-42 on an 80 rev/s truth | sub-harmonic capture; `r/2` is a superset of `r`'s harmonics so least squares never prefers `r` | caught by `fvk_ratio_double` < 1.065. Refuse (doubling it back is not validated) |
+| DREGON room1 descent (4 windows) | lags the falling rate by 8-17 % | no single rate fits a 20 s window on a ramp | caught by G4 continuity, not by any spectral gate. Cut the recording so a ramp is its own, shorter window |
+| AVQ (175 of 187 windows octave-suspect) | rates 74-115 rev/s, mono annotations spread 20-41 rev/s | the odd harmonics are weak at the AVQ carriers, and the four annotated tracks are not four rotors | the per-rotor octave test does NOT settle it (see room1). The next candidate is structural: require two pairs about 10 rev/s apart, which every correct room1 window gives |
