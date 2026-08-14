@@ -1,0 +1,404 @@
+{
+ "uid": "free-flight_speech-low_room1__w001",
+ "recording_id": "free-flight_speech-low_room1",
+ "window": 1,
+ "t0_s": 16.0,
+ "dur_s": 20.0,
+ "n_channels": 8,
+ "native_sr": 44100,
+ "has_reference": true,
+ "arm": "fullrange",
+ "dataset": "DREGON-frames",
+ "wall_ladder_s": 228.7,
+ "arm_fallback": null,
+ "rps_mean": [
+  75.249,
+  75.164,
+  85.458,
+  85.78
+ ],
+ "rps_std": [
+  0.6237,
+  0.5609,
+  0.7751,
+  0.6651
+ ],
+ "rps_min": [
+  74.3,
+  74.1,
+  83.85,
+  84.505
+ ],
+ "rps_max": [
+  76.8,
+  76.6,
+  86.7,
+  86.95
+ ],
+ "spread_rev_s": 10.616,
+ "seed_bases": [
+  74.95000000000064,
+  75.05000000000064,
+  85.65000000000079,
+  85.75000000000078
+ ],
+ "seed_octave": false,
+ "seed_primary": 85.65000000000079,
+ "seed_accepted": [
+  85.65000000000079,
+  74.95000000000064,
+  119.95000000000128,
+  34.10000000000006,
+  107.2000000000011,
+  66.65000000000052,
+  41.20000000000016
+ ],
+ "seed_update_gate": 60.0,
+ "seed_bw_hz": 8.0,
+ "seed_n_candidates": 25,
+ "coarse_halved": false,
+ "coarse_bases": [
+  74.95,
+  75.05,
+  85.65,
+  85.75
+ ],
+ "coarse_mode": "const-steady",
+ "score_window_s": 6.0,
+ "fvk": {
+  "blind": {
+   "objective": 0.6913441878304953,
+   "r2": 0.32619691976443743,
+   "n_cells": 1280,
+   "residual": 1099.7978492947932,
+   "k_hi": 40,
+   "objective_alias": 1.2708141147883636
+  },
+  "half": {
+   "objective": 0.6678381064038066,
+   "r2": 0.35367749424469497,
+   "n_cells": 1280,
+   "objective_alias": 1.2713919113700989
+  },
+  "double": {
+   "objective": 0.9167404443809793,
+   "r2": 0.09090932300515553,
+   "n_cells": 1280,
+   "objective_alias": 1.6768450042693435
+  },
+  "detune_p03": {
+   "objective": 0.7076453052971408,
+   "r2": 0.3152463787016795,
+   "n_cells": 1280
+  },
+  "detune_m03": {
+   "objective": 0.7207031036984208,
+   "r2": 0.31301579448851735,
+   "n_cells": 1280
+  },
+  "detune_p10": {
+   "objective": 0.8182223626268283,
+   "r2": 0.22141032148625683,
+   "n_cells": 1280
+  },
+  "detune_m10": {
+   "objective": 0.8799034915442926,
+   "r2": 0.16028158551672445,
+   "n_cells": 1280
+  }
+ },
+ "wall_fvk_s": 92.6,
+ "ridge": {
+  "none": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.11862,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.00651,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.20734,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 296
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.59917,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 304
+    }
+   },
+   "ridge": -0.4236,
+   "n_cells_ridge": 664,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0665,
+   "line_share_ridge": 0.0472
+  },
+  "offcomb": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.89952,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.22319,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.01678,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 296
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.84179,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 304
+    }
+   },
+   "ridge": -1.24532,
+   "n_cells_ridge": 664,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0665,
+   "line_share_ridge": 0.0346
+  },
+  "mismatch": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.79823,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.36184,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.70878,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 296
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.44926,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 304
+    }
+   },
+   "ridge": -0.47514,
+   "n_cells_ridge": 664,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0665,
+   "line_share_ridge": 0.0678
+  },
+  "half": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.33057,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.11701,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.34431,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 296
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.42615,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 304
+    }
+   },
+   "ridge": 0.30451,
+   "n_cells_ridge": 664,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0665,
+   "line_share_ridge": 0.0616
+  },
+  "double": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.43925,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.27409,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 32
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.69948,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 296
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.43327,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 304
+    }
+   },
+   "ridge": -0.46152,
+   "n_cells_ridge": 664,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0665,
+   "line_share_ridge": 0.0655
+  }
+ },
+ "wall_ridge_s": 8.6,
+ "octave_per_rotor": {
+  "rotors": [
+   {
+    "rotor": 0,
+    "rate": 75.9,
+    "ridge": 0.11862,
+    "margin_half_db": -0.212,
+    "margin_double_db": 0.558
+   },
+   {
+    "rotor": 1,
+    "rate": 75.704,
+    "ridge": -0.00651,
+    "margin_half_db": -0.124,
+    "margin_double_db": 0.268
+   },
+   {
+    "rotor": 2,
+    "rate": 85.483,
+    "ridge": -0.20734,
+    "margin_half_db": -0.552,
+    "margin_double_db": 0.492
+   },
+   {
+    "rotor": 3,
+    "rate": 85.78,
+    "ridge": -1.59917,
+    "margin_half_db": -2.025,
+    "margin_double_db": -1.166
+   }
+  ]
+ },
+ "wall_octave_s": 15.5,
+ "fvk_blind": 0.6913441878304953,
+ "fvk_well_p03": 1.024,
+ "fvk_ratio_double": 1.326,
+ "fvk_alias_ratio_double": 1.32,
+ "fvk_ratio_half": 0.966,
+ "fvk_alias_ratio_half": 1.0,
+ "ridge_clearance_db": 0.822,
+ "ridge_clearance_mismatch_db": 0.052,
+ "ridge_margin_half_db": -0.728,
+ "ridge_margin_double_db": 0.038,
+ "pr_margin_half_min_db": -2.025,
+ "pr_margin_half_max_db": -0.124,
+ "pr_n_doubled": 1,
+ "pr_n_negative": 4,
+ "ref_mae_rev_s": 1.0795,
+ "ref_rmse_rev_s": 1.3639,
+ "ref_mean_rev_s": [
+  85.618,
+  75.784,
+  85.748,
+  74.755
+ ]
+}

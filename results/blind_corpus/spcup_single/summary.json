@@ -1,0 +1,50 @@
+{
+ "n_units": 8,
+ "n_accept": 6,
+ "n_pr_doubled": 0,
+ "pr_margin_half_min_db": {
+  "median": null,
+  "min": null,
+  "max": null,
+  "n": 0
+ },
+ "n_octave_suspect": 2,
+ "n_low_clearance": 0,
+ "ridge_clearance_db": {
+  "median": 3.848,
+  "min": 2.842,
+  "max": 5.874,
+  "n": 8
+ },
+ "ridge_clearance_mismatch_db": {
+  "median": 0.153,
+  "min": -0.018,
+  "max": 0.679,
+  "n": 8
+ },
+ "ridge_margin_half_db": {
+  "median": 1.259,
+  "min": 0.517,
+  "max": 1.814,
+  "n": 8
+ },
+ "fvk_well_p03": {
+  "median": 1.148,
+  "min": 1.065,
+  "max": 1.242,
+  "n": 8
+ },
+ "fvk_ratio_double": {
+  "median": 4.357,
+  "min": 1.02,
+  "max": 6.252,
+  "n": 8
+ },
+ "fvk_ratio_half": {
+  "median": 0.964,
+  "min": 0.908,
+  "max": 0.977,
+  "n": 8
+ },
+ "wall_s_total": 93.2
+}

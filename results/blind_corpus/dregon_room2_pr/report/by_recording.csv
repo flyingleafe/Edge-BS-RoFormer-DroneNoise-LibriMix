@@ -1,0 +1,6 @@
+recording_id,arm,n_windows,ridge_clearance_db,ridge_margin_half_db,fvk_well_p03,fvk_ratio_double,fvk_ratio_half,n_accept,n_doubled,pr_margin_half_min_db,within_window_std_rev_s,rate_spread_across_windows,mean_rate_rev_s,ref_mae_rev_s,wall_ladder_s
+free-flight_nosource_room2,fullrange,5,-0.138,-0.428,0.998,1.068,0.947,1,0,-0.646,2.797,17.438,48.12,31.283,278.6
+hovering_nosource_room2,fullrange,3,-0.034,-0.015,0.98,1.087,0.956,2,0,-0.782,6.148,20.056,64.99,14.743,288.567
+rectangle_nosource_room2,fullrange,3,0.448,0.93,0.999,1.157,0.935,2,0,0.618,3.465,20.38,67.54,15.026,293.733
+spinning_nosource_room2,fullrange,3,-0.721,-0.644,0.999,1.058,0.949,1,1,-1.907,2.816,19.149,54.11,27.511,274.167
+updown_nosource_room2,fullrange,3,0.208,-0.459,1.001,1.089,0.954,1,0,-0.593,4.244,20.829,53.56,27.22,236.9

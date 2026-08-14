@@ -1,0 +1,404 @@
+{
+ "uid": "spinning_nosource_room2__w000",
+ "recording_id": "spinning_nosource_room2",
+ "window": 0,
+ "t0_s": 0.0,
+ "dur_s": 20.0,
+ "n_channels": 8,
+ "native_sr": 44100,
+ "has_reference": true,
+ "arm": "fullrange",
+ "dataset": "DREGON-frames",
+ "wall_ladder_s": 275.1,
+ "arm_fallback": null,
+ "rps_mean": [
+  42.008,
+  42.277,
+  41.826,
+  42.344
+ ],
+ "rps_std": [
+  3.1978,
+  2.6497,
+  3.2526,
+  2.8622
+ ],
+ "rps_min": [
+  35.245,
+  35.245,
+  35.221,
+  35.215
+ ],
+ "rps_max": [
+  52.019,
+  52.024,
+  51.94,
+  51.918
+ ],
+ "spread_rev_s": 0.518,
+ "seed_bases": [
+  78.45000000000068,
+  81.35000000000073,
+  81.45000000000073,
+  88.80000000000084
+ ],
+ "seed_octave": false,
+ "seed_primary": 88.80000000000084,
+ "seed_accepted": [
+  88.80000000000084,
+  81.35000000000073,
+  78.40000000000069,
+  75.25000000000064,
+  86.3500000000008,
+  97.85000000000096,
+  104.15000000000106
+ ],
+ "seed_update_gate": 60.0,
+ "seed_bw_hz": 8.0,
+ "seed_n_candidates": 38,
+ "coarse_halved": true,
+ "coarse_bases": [
+  39.225,
+  40.675,
+  40.725,
+  44.4
+ ],
+ "coarse_mode": "coarse",
+ "score_window_s": 6.0,
+ "fvk": {
+  "blind": {
+   "objective": 0.8808896523090685,
+   "r2": 0.14220926216630791,
+   "n_cells": 1280,
+   "residual": 1943.573862976112,
+   "k_hi": 40,
+   "objective_alias": 1.6454700796436055
+  },
+  "half": {
+   "objective": 0.8287093459585246,
+   "r2": 0.20547263748504663,
+   "n_cells": 1280,
+   "objective_alias": 1.642367161705188
+  },
+  "double": {
+   "objective": 0.9174217268042603,
+   "r2": 0.09743476538707152,
+   "n_cells": 1280,
+   "objective_alias": 1.7155588735764449
+  },
+  "detune_p03": {
+   "objective": 0.8744075380692259,
+   "r2": 0.1457655381311771,
+   "n_cells": 1280
+  },
+  "detune_m03": {
+   "objective": 0.8885474590731369,
+   "r2": 0.1336560498486824,
+   "n_cells": 1280
+  },
+  "detune_p10": {
+   "objective": 0.8733375468102291,
+   "r2": 0.1455087078570353,
+   "n_cells": 1280
+  },
+  "detune_m10": {
+   "objective": 0.9011091916576274,
+   "r2": 0.11770661030687857,
+   "n_cells": 1280
+  }
+ },
+ "wall_fvk_s": 126.5,
+ "ridge": {
+  "none": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.75941,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 120
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -4.59472,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 24
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": -1.91766,
+   "n_cells_ridge": 144,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0144,
+   "line_share_ridge": 0.0058
+  },
+  "offcomb": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.05677,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 120
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.52335,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 24
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": -0.23329,
+   "n_cells_ridge": 144,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0144,
+   "line_share_ridge": 0.0078
+  },
+  "mismatch": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.38712,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 120
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 0.75659,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 24
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": -0.31526,
+   "n_cells_ridge": 144,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0144,
+   "line_share_ridge": 0.0038
+  },
+  "half": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.54017,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 120
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -1.04119,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 24
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": -0.79068,
+   "n_cells_ridge": 144,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0144,
+   "line_share_ridge": 0.0034
+  },
+  "double": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": -0.61162,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 120
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": 2.32497,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 24
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": 0.85668,
+   "n_cells_ridge": 144,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0144,
+   "line_share_ridge": 0.0107
+  }
+ },
+ "wall_ridge_s": 9.3,
+ "octave_per_rotor": {
+  "rotors": [
+   {
+    "rotor": 0,
+    "rate": 42.042,
+    "ridge": 0.75941,
+    "margin_half_db": 1.3,
+    "margin_double_db": 1.371
+   },
+   {
+    "rotor": 1,
+    "rate": 42.251,
+    "ridge": -4.59472,
+    "margin_half_db": -3.554,
+    "margin_double_db": -6.92
+   },
+   {
+    "rotor": 2,
+    "rate": 42.287,
+    "ridge": null,
+    "margin_half_db": null,
+    "margin_double_db": null
+   },
+   {
+    "rotor": 3,
+    "rate": 42.289,
+    "ridge": null,
+    "margin_half_db": null,
+    "margin_double_db": null
+   }
+  ]
+ },
+ "wall_octave_s": 14.5,
+ "fvk_blind": 0.8808896523090685,
+ "fvk_well_p03": 0.993,
+ "fvk_ratio_double": 1.041,
+ "fvk_alias_ratio_double": 1.043,
+ "fvk_ratio_half": 0.941,
+ "fvk_alias_ratio_half": 0.998,
+ "ridge_clearance_db": -1.684,
+ "ridge_clearance_mismatch_db": -1.602,
+ "ridge_margin_half_db": -1.127,
+ "ridge_margin_double_db": -2.774,
+ "pr_margin_half_min_db": -3.554,
+ "pr_margin_half_max_db": 1.3,
+ "pr_n_doubled": 1,
+ "pr_n_negative": 1,
+ "ref_mae_rev_s": 39.6728,
+ "ref_rmse_rev_s": 40.2406,
+ "ref_mean_rev_s": [
+  47.143,
+  43.649,
+  46.029,
+  45.346
+ ]
+}

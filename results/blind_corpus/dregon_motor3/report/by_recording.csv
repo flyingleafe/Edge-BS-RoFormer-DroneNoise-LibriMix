@@ -1,0 +1,6 @@
+recording_id,arm,n_windows,ridge_clearance_db,ridge_margin_half_db,fvk_well_p03,fvk_ratio_double,fvk_ratio_half,n_accept,n_doubled,pr_margin_half_min_db,within_window_std_rev_s,rate_spread_across_windows,mean_rate_rev_s,ref_mae_rev_s,wall_ladder_s
+motor_Motor1_50,seedvk,3,2.112,-3.32,1.054,1.696,0.901,0,3,,0.126,0.046,98.08,,39.933
+motor_Motor1_70,seedvk,3,7.751,1.535,1.087,1.096,1.173,3,0,,0.176,0.071,68.46,,39.2
+motor_Motor1_90,seedvk,2,8.561,1.943,1.133,1.269,1.233,2,0,,0.327,0.135,87.92,,39.3
+motor_Motor3_70,seedvk,2,9.646,2.046,1.083,1.954,0.984,2,0,,0.138,0.004,68.67,,39.5
+motor_allMotors_70,seedvk,3,2.856,0.461,1.0,1.192,0.818,3,0,,0.127,0.025,68.71,,39.733

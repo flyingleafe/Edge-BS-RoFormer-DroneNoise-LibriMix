@@ -1,0 +1,401 @@
+{
+ "uid": "free-flight_nosource_room2__w004",
+ "recording_id": "free-flight_nosource_room2",
+ "window": 4,
+ "t0_s": 61.632,
+ "dur_s": 20.0,
+ "n_channels": 8,
+ "native_sr": 44100,
+ "has_reference": true,
+ "arm": "fullrange",
+ "dataset": "DREGON-frames",
+ "wall_ladder_s": 285.4,
+ "arm_fallback": null,
+ "rps_mean": [
+  38.744,
+  38.743,
+  38.932,
+  38.93
+ ],
+ "rps_std": [
+  3.656,
+  3.6538,
+  3.6957,
+  3.6933
+ ],
+ "rps_min": [
+  28.988,
+  28.991,
+  29.024,
+  29.029
+ ],
+ "rps_max": [
+  45.027,
+  45.028,
+  45.226,
+  45.227
+ ],
+ "spread_rev_s": 0.189,
+ "seed_bases": [
+  80.00000000000071,
+  80.1000000000007,
+  81.60000000000073,
+  81.70000000000073
+ ],
+ "seed_octave": false,
+ "seed_primary": 80.00000000000071,
+ "seed_accepted": [
+  80.00000000000071,
+  81.60000000000073,
+  73.90000000000063,
+  77.50000000000068,
+  68.10000000000053,
+  63.950000000000486,
+  76.00000000000065,
+  106.55000000000109,
+  87.20000000000081,
+  65.90000000000052,
+  88.90000000000083,
+  109.10000000000113
+ ],
+ "seed_update_gate": 22.781160940815603,
+ "seed_bw_hz": 8.0,
+ "seed_n_candidates": 36,
+ "coarse_halved": true,
+ "coarse_bases": [
+  40.0,
+  40.05,
+  40.8,
+  40.85
+ ],
+ "coarse_mode": "coarse",
+ "score_window_s": 6.0,
+ "fvk": {
+  "blind": {
+   "objective": 0.8968719924188959,
+   "r2": 0.11901399437399895,
+   "n_cells": 1280,
+   "residual": 4135.624838245288,
+   "k_hi": 40,
+   "objective_alias": 1.733489599416477
+  },
+  "half": {
+   "objective": 0.8484973382203478,
+   "r2": 0.17550173009389813,
+   "n_cells": 1280,
+   "objective_alias": 1.6759878207565477
+  },
+  "double": {
+   "objective": 0.925225014076284,
+   "r2": 0.08516001687940189,
+   "n_cells": 1280,
+   "objective_alias": 1.7826740589762662
+  },
+  "detune_p03": {
+   "objective": 0.9079370084558526,
+   "r2": 0.11006103368714537,
+   "n_cells": 1280
+  },
+  "detune_m03": {
+   "objective": 0.8964291740310248,
+   "r2": 0.11864748556403382,
+   "n_cells": 1280
+  },
+  "detune_p10": {
+   "objective": 0.9238080087349658,
+   "r2": 0.08987656602408789,
+   "n_cells": 1280
+  },
+  "detune_m10": {
+   "objective": 0.9217997169059875,
+   "r2": 0.09514695294947739,
+   "n_cells": 1280
+  }
+ },
+ "wall_fvk_s": 121.7,
+ "ridge": {
+  "none": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": null,
+   "n_cells_ridge": 0,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0,
+   "line_share_ridge": 0.0
+  },
+  "offcomb": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": null,
+   "n_cells_ridge": 0,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0,
+   "line_share_ridge": 0.0
+  },
+  "mismatch": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": null,
+   "n_cells_ridge": 0,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0,
+   "line_share_ridge": 0.0
+  },
+  "half": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": null,
+   "n_cells_ridge": 0,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0,
+   "line_share_ridge": 0.0
+  },
+  "double": {
+   "per_rotor": {
+    "0": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "1": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "2": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    },
+    "3": {
+     "broadband": null,
+     "phase_noise": null,
+     "roughness": null,
+     "ridge": null,
+     "pp_dr": null,
+     "n_cells": 0,
+     "n_cells_ridge": 0
+    }
+   },
+   "ridge": null,
+   "n_cells_ridge": 0,
+   "broadband": null,
+   "phase_noise": null,
+   "snr_median": null,
+   "admit_frac_ridge": 0.0,
+   "line_share_ridge": 0.0
+  }
+ },
+ "wall_ridge_s": 8.7,
+ "octave_per_rotor": {
+  "rotors": [
+   {
+    "rotor": 0,
+    "rate": 39.64,
+    "ridge": null,
+    "margin_half_db": null,
+    "margin_double_db": null
+   },
+   {
+    "rotor": 1,
+    "rate": 39.64,
+    "ridge": null,
+    "margin_half_db": null,
+    "margin_double_db": null
+   },
+   {
+    "rotor": 2,
+    "rate": 39.84,
+    "ridge": null,
+    "margin_half_db": null,
+    "margin_double_db": null
+   },
+   {
+    "rotor": 3,
+    "rate": 39.84,
+    "ridge": null,
+    "margin_half_db": null,
+    "margin_double_db": null
+   }
+  ]
+ },
+ "wall_octave_s": 14.2,
+ "fvk_blind": 0.8968719924188959,
+ "fvk_well_p03": 1.0,
+ "fvk_ratio_double": 1.032,
+ "fvk_alias_ratio_double": 1.028,
+ "fvk_ratio_half": 0.946,
+ "fvk_alias_ratio_half": 0.967,
+ "ref_mae_rev_s": 40.0576,
+ "ref_rmse_rev_s": 40.236,
+ "ref_mean_rev_s": [
+  82.383,
+  75.037,
+  80.685,
+  77.474
+ ]
+}
