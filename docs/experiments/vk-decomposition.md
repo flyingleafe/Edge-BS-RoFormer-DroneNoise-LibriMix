@@ -451,3 +451,52 @@ check rebuilt the plain label carrier instead of reading the solver's own
 `env.phase`, which on the joint path carries the shaft correction — so it
 scored the bank against a carrier it was never fitted to. Fixed; the stitch
 itself always used the right phase.
+
+### v3b: the re-run with the fixed instrument (2026-08-14)
+
+Jobs `vk-decompose-v3b-{dregon,fly124,fly125}`, same settings as v3 plus
+`--bw-psi 0.6,8,1.5`. Artifacts on R2 under `artifacts/vk-decompose-v3b/`.
+Every number below comes from the DETRENDED instrument, so it is not
+comparable to the v3 table above — read this one against itself.
+
+**DREGON** (`free-flight_nosource_room1`, 7 windows, k_hi 80, tracks 37.6 % /
+residual 59.3 %, resynthesis 6.0e-08):
+
+| band | original | residual | excess original -> residual |
+|---|---|---|---|
+| k1-9 | 3.423 dB at +0.071 | **0.308 dB at −0.020** | 35.62 -> 21.96 (−13.66 dB) |
+| k10-24 | 1.131 dB at −0.010 | **0.386 dB at +0.031** | 15.17 -> 10.83 (−4.34 dB) |
+| k25-49 | 0.191 dB at −0.013 | **0.078 dB at −0.035** | 7.56 -> 5.05 (−2.52 dB) |
+| k50-80 | 0.076 dB at −0.014 | **0.069 dB at +0.022** | 7.87 -> 6.25 (−1.63 dB) |
+
+**FLY124** (12 of 14 windows, k_hi 76, tracks 61.9 % / residual 37.3 %,
+resynthesis 3.0e-08):
+
+| band | original | residual | excess original -> residual |
+|---|---|---|---|
+| k1-9 | 4.161 dB at +0.061 | 1.028 dB at +0.065 | 37.97 -> 20.57 (−17.41 dB) |
+| k10-24 | 0.808 dB at +0.033 | **0.187 dB at +0.100** | 18.60 -> 13.66 (−4.94 dB) |
+| k25-49 | 0.083 dB at −0.170 | 0.099 dB at −0.386 | 10.95 -> 9.86 (−1.09 dB) |
+| k50-80 | 0.033 dB at −0.098 | 0.075 dB at −0.421 | 6.96 -> 6.17 (−0.79 dB) |
+
+Readings:
+
+- **No band peaks at a half-integer order any more**, on either rig. The
+  per-rotor offsets scatter, which is what noise does.
+- DREGON is at or near the acceptance bar in every band (0.069 to 0.386 dB).
+- FLY124 keeps ONE real leftover: rotor 0 at k1-9, 2.22 dB at **+0.055** — an
+  integer-order comb, not a half-order one. The `bw_psi_min` floor of 1.5 Hz
+  did not close it (2.24 dB before, 2.22 dB after), so the next lever for that
+  rotor is not the phase band.
+- FLY124's k25-80 residual depths (0.075 to 0.099 dB) sit at the instrument's
+  own noise floor and slightly exceed the original's, while the absolute
+  `excess_db` still falls. Read the excess there, not the depth.
+- `r2_ref_mic` is POSITIVE on every window now (DREGON 0.21 to 0.79, FLY124
+  0.35 to 0.65) against −0.90 to +0.46 before the carrier fix.
+- `theta_stitch_max_rate_hz` (fade weighted) 15.5 on DREGON and 6.8 on FLY124,
+  against 46.6 and 48.6 raw — both inside the 50 Hz envelope Nyquist.
+- The phase unwrap saturates at pi in the WORST track of every band
+  (`max_step_rad_by_band_worst` 3.11 to 3.141). It does not reach the trusted
+  set: `split_phases` drops any track whose step reaches pi, and `n_trust` was
+  the full 12 tracks at `k` <= 3 and the full 48 at `k` <= 12, so no trusted
+  track was ever gated out.
