@@ -9,7 +9,9 @@ where the script is importable.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import tdseries as td
+
 from data_processing.derivations import dense_envelopes
 from data_processing.frame_datasets import DecompFrameDataset
 
@@ -117,3 +119,67 @@ def test_train_and_valid_spans_do_not_overlap():
     for i in range(len(tr)):
         start = int(tr[i]["meta"]["start_sample"])
         assert start + 1600 <= v0 or start >= v0 + n_val
+
+
+# ---------------------------------------------------------------------------
+# the combined (multi-rig) pool — the v3 decompositions are published per rig
+
+
+def test_dataset_names_normalize_to_name_version_pairs():
+    f = DecompFrameDataset._dataset_versions
+    assert f("one", None) == [("one", None)]
+    assert f(["a", "b"], "v9") == [("a", "v9"), ("b", "v9")]
+    assert f(["a", "b"], ["v1", None]) == [("a", "v1"), ("b", None)]
+
+
+def test_a_version_list_must_match_the_dataset_list():
+    with pytest.raises(ValueError, match="one per dataset"):
+        DecompFrameDataset._dataset_versions(["a", "b"], ["v1"])
+    with pytest.raises(ValueError, match="at least one dataset"):
+        DecompFrameDataset._dataset_versions([], None)
+
+
+def _published(rid: str, drone: str, n_s: float = 8.0, rps: float = 70.0) -> td.Frame:
+    """One published recording, in the shape ``_load_records`` decodes."""
+    rec = _record(rid, drone, n_s=n_s, rps=rps)
+    n_t = rec["rps"].shape[-1]
+    n_env = n_t // STRIDE
+    grid = td.GridIndex.create((SR, STRIDE), n_env, t_start=0.0)
+    return td.Frame(
+        {
+            "rps": td.uniform(rec["rps"], SR, dims=("rotor", "time"), t_start=0.0),
+            "residual": td.uniform(rec["residual"], SR, dims=("mic", "time"), t_start=0.0),
+            "amp": td.Series(rec["amp"], ("mic", "rotor", "k", "time"), {"time": grid}),
+            "amp_valid": td.Series(rec["amp_valid"], ("rotor", "k", "time"), {"time": grid}),
+            "mic_pos": td.wrap(rec["mic_pos"], dims=("mic", None)),
+            "rotor_pos": td.wrap(rec["rotor_pos"], dims=("rotor", None)),
+            "meta": td.Frame(
+                {"recording_id": rid, "drone": drone, "sample_rate": SR},
+            ),
+        }
+    )
+
+
+def test_two_per_rig_datasets_concatenate_into_one_pool(monkeypatch):
+    """A combined arm names both v3 datasets; each record keeps its own rig id."""
+    from data_processing import streams
+
+    published = {
+        "decomp-frames-v3-dregon": [_published("free-flight_nosource_room1", "dregon")],
+        "decomp-frames-v3-michaels": [
+            _published("FLY124", "michaels"),
+            _published("FLY125", "michaels"),
+        ],
+    }
+    monkeypatch.setattr(streams, "iter_published_frames", lambda name, ver=None: published[name])
+
+    ds = DecompFrameDataset.build_train(
+        dataset=list(published),
+        chunk_size=16000,
+        train_samples=24,
+        min_motor_rps=30.0,
+    )
+    assert len(ds.records) == 6  # 3 recordings x 2 train spans around the middle block
+    assert {r["drone"] for r in ds.records} == {"dregon", "michaels"}
+    drawn = {(str(ds[i]["meta"]["drone"]), str(ds[i]["meta"]["recording_id"])) for i in range(24)}
+    assert {d for d, _ in drawn} == {"dregon", "michaels"}
