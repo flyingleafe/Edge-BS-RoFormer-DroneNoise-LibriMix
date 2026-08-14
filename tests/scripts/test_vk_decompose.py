@@ -329,7 +329,8 @@ def test_joint_solve_writes_the_extra_arrays_and_stitches(tmp_path) -> None:
     the reconstruction against that carrier still explains the clip.
     """
     from tracking.decompose import solve_config
-    from tracking.joint_decompose import JointConfig, joint_solve_window, theta_rate
+    from tracking import joint_solve_window
+    from tracking.joint_decompose import JointConfig, theta_rate
 
     audio, rates = _synth("common")
     cfg = solve_config(K_MAX, sr=SR, mics=2)

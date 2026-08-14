@@ -98,6 +98,7 @@ from tracking.fitness_vk import (
     fvk_score,
     optimize_trajectory,
 )
+from tracking.joint_decompose import JointConfig, JointResult, JointState
 from tracking.phase_increment_tracker import pi_kalman_refine
 from tracking.pipelines import (
     ARMS,
@@ -132,10 +133,14 @@ from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
     "DEFAULT_HOP_S",
+    "JOINT_SEAM",
     "PI_PROTOCOL",
     "CoarseConfig",
     "FVKConfig",
     "FVKStage",
+    "JointConfig",
+    "JointResult",
+    "JointState",
     "PeelConfig",
     "PiConfig",
     "Stage",
@@ -146,14 +151,21 @@ __all__ = [
     "decompose_stage",
     "fitness_stage",
     "flagship",
+    "floor_stage",
     "fvk_refine_stage",
     "fvk_stage",
     "get_audio",
     "get_rps",
     "guarded",
+    "iterate",
+    "joint_init_stage",
+    "joint_iterations",
+    "joint_solve_window",
+    "joint_state_of",
     "judge",
     "peel_alternation",
     "peel_stage",
+    "phase_split_stage",
     "pi_kalman_arm_stage",
     "pi_kalman_stage",
     "pipeline",
@@ -165,8 +177,10 @@ __all__ = [
     "tracking_frame",
     "vit2dsp",
     "vit2dsp_stage",
+    "vk_solve_stage",
     "vk_stage",
     "warp_stage",
+    "windowed",
     "with_meta",
     "with_rps",
 ]
@@ -182,6 +196,10 @@ DEFAULT_HOP_S = 0.032
 
 #: The meta key the peel seam travels in (see :func:`peel_stage`).
 PEEL_SEAM = "peel_seam"
+
+#: The meta key the JOINT decomposition's accumulated state travels in — one
+#: :class:`tracking.JointState` rewritten by each of the three blocks.
+JOINT_SEAM = "joint"
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1055,152 @@ def decompose_stage(
     return run
 
 
+# ---------------------------------------------------------------------------
+# 2b. the JOINT decomposition (v3): three blocks, three stages
+#
+# The state every joint stage reads and rewrites is ONE seam, meta["joint"] — a
+# tracking.JointState holding the carrier, the two coherent corrections, the
+# floor model and the last solve's products. The stages below are adapters:
+# every line of arithmetic is a block of tracking.joint_decompose.
+
+
+def joint_state_of(frame: td.Frame) -> JointState:
+    """The alternation state a joint stage reads (``meta["joint"]``)."""
+    state = _meta_entries(frame).get(JOINT_SEAM)
+    if not isinstance(state, JointState):
+        raise ValueError(
+            "no joint state in meta['joint'] — start the composition with joint_init_stage"
+        )
+    return state
+
+
+def joint_init_stage(
+    cfg: FVKConfig | None = None,
+    *,
+    jcfg: JointConfig | None = None,
+    k_hi: int | None = None,
+    bw_schedule: BandwidthSchedule | None = None,
+    rho_scale: float = 1.0,
+    reference_entry: str = "rps_meas",
+    name: str = "joint_init",
+) -> Stage:
+    """Seed ``meta["joint"]``: the carrier, the tuned gain, zero corrections.
+
+    The carrier is the frame's current trajectory on the AUDIO grid, derived
+    once here and then held — the alternation is conditioned on one carrier for
+    the whole window (see :class:`tracking.JointState`). ``k_hi`` pins the
+    harmonic set and defaults to the cap of ``reference_entry``, which is what
+    makes two windows of one recording stitchable track by track.
+    """
+    from tracking.fitness_vk import k_cap, to_audio_grid
+    from tracking.joint_decompose import joint_state
+
+    use = cfg or FVKConfig()
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, sr, r, times, t0 = _core_inputs(frame)
+        conf = replace(use, sr=int(round(sr)))
+        n_t = int(audio.shape[-1])
+        ref = get_rps(frame, reference_entry)[0] if reference_entry in frame else r
+        state = joint_state(
+            to_audio_grid(r, times - t0, n_t, conf.sr),
+            conf,
+            k_hi=int(k_hi) if k_hi is not None else k_cap(conf, ref),
+            n_t=n_t,
+            jcfg=jcfg,
+            bw_schedule=bw_schedule,
+            rho_scale=rho_scale,
+            t_start_s=t0,
+        )
+        return with_meta(frame, joint=state)
+
+    return run
+
+
+def vk_solve_stage(
+    cfg: JointConfig | None = None, *, profile: bool | None = None, name: str = "joint_solve"
+) -> Stage:
+    """BLOCK A: one whitened Vold-Kalman solve at the current carrier and floor.
+
+    Reads the seam, replaces its envelope bank / residual / track energies, and
+    logs the reading (:func:`tracking.solve_report`) — the energy shares, the
+    whitened flatness, and the order-cell band table of the residual.
+    ``profile`` forces that last, expensive table on or off; ``None`` leaves it
+    to ``JointConfig.profile_every_iter``, and a recipe turns it on for the
+    solve it knows is the last one.
+    """
+    from tracking.joint_decompose import solve_block, solve_report
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, _, r, times, _ = _core_inputs(frame)
+        state = joint_state_of(frame)
+        use = state if cfg is None else replace(state, jcfg=cfg)
+        done = solve_block(use, audio)
+        want = bool(done.jcfg.profile_every_iter if profile is None else profile)
+        info = solve_report(done, audio, profile=want)
+        return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=info)
+
+    return run
+
+
+def phase_split_stage(cfg: JointConfig | None = None, *, name: str = "joint_phase_split") -> Stage:
+    """BLOCK B: split the solved envelope phases into shaft, rotor and track parts.
+
+    Folds this round's increments into the seam's accumulated ``theta`` and
+    ``psi``, and logs what the split trusted. The trustable harmonic cap is the
+    annealing ladder read at the seam's own solve count, so the stage needs no
+    loop index.
+    """
+    from tracking.joint_decompose import split_block
+
+    def run(frame: td.Frame) -> td.Frame:
+        _, _, r, times, _ = _core_inputs(frame)
+        state = joint_state_of(frame)
+        done, split = split_block(state if cfg is None else replace(state, jcfg=cfg))
+        return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=dict(split.diag))
+
+    return run
+
+
+def floor_stage(cfg: JointConfig | None = None, *, name: str = "joint_floor") -> Stage:
+    """BLOCK C: the masked smooth log floor of what the model has not explained.
+
+    Before the first solve that is the audio itself; after one, the residual.
+    """
+    from tracking.joint_decompose import floor_block
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, _, r, times, _ = _core_inputs(frame)
+        state = joint_state_of(frame)
+        done = floor_block(state if cfg is None else replace(state, jcfg=cfg), audio)
+        psd = done.psd
+        info = {
+            "psd_masked_frac": None if psd is None else psd.n_masked_frac,
+            "n_cep": None if psd is None else int(psd.n_cep),
+            "source": "audio" if state.residual is None else "residual",
+        }
+        return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=info)
+
+    return run
+
+
+def joint_iterations(frame: td.Frame) -> list[dict[str, Any]]:
+    """The per-round record of a joint run, READ OFF the stage log.
+
+    One entry per block-A solve, with the phase split that followed it folded in
+    under ``"phase_split"`` — the shape the report has always had, derived from
+    the log instead of accumulated beside it.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in _log(frame):
+        stage = entry.get("stage")
+        if stage == "joint_solve":
+            out.append({kk: vv for kk, vv in entry.items() if kk != "stage"})
+        elif stage == "joint_phase_split" and out:
+            out[-1]["phase_split"] = {kk: vv for kk, vv in entry.items() if kk != "stage"}
+    return out
+
+
 def refit_stage(
     *,
     cfg: RefitConfig | None = None,
@@ -1270,3 +1434,186 @@ def judge(
         candidate,
         fitness_stage(reference_entry, cfg=cfg, holdouts=holdouts, control=control),
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. the combinators: repetition and windowed application
+
+
+def iterate(stage: Stage, n: int) -> Stage:
+    """Run ``stage`` ``n`` times in a row. ``n <= 0`` is the identity.
+
+    The alternation combinator. A block-coordinate method is a repetition of one
+    composition, so it needs no driver of its own — and because every stage
+    carries its own state in the frame, the repeated stage reads how many rounds
+    have run and anneals on it (:meth:`tracking.JointState.k_trust`).
+    """
+    return pipeline(*([stage] * max(int(n), 0)))
+
+
+def windowed(
+    inner: Stage,
+    *,
+    window_s: float,
+    hop_s: float,
+    fs_env: float | None = None,
+    hop_frame_s: float = DEFAULT_HOP_S,
+    name: str = "windowed",
+) -> Stage:
+    """Run ``inner`` on every overlapping window of a recording, and stitch.
+
+    Tiling a recording and cross-fading the per-window banks back together is
+    one operation whatever the window produces, so it is one combinator: the
+    window grid is :func:`tracking.window_bounds` / :func:`tracking.window_span`
+    and the stitch is :func:`tracking.stitch_windows` — the same two functions
+    the ``scripts/vk_decompose.py`` driver reads through. ``inner`` must leave a
+    bank in ``meta["decompose"]`` (:func:`decompose_stage`) or a joint state in
+    ``meta["joint"]`` (the v3 blocks); a joint window also hands over its shaft
+    correction, so the stitch puts every window on ONE carrier.
+
+    The stitched bank, the carrier it belongs to and the covered span go to
+    ``meta["decompose"]`` of the returned frame. This is the IN-PROCESS form —
+    a driver that needs the windows solved in parallel, restartably, on a
+    cluster keeps its own unit loop and calls the same two functions.
+    """
+    from tracking.decompose import shaft_phase, window_bounds, window_span
+    from tracking.fitness_vk import to_audio_grid
+    from tracking.joint_decompose import stitch_windows, theta_rate
+
+    def _record(done: td.Frame, a0: int, stride: int) -> dict[str, Any]:
+        meta = _meta_entries(done)
+        if JOINT_SEAM in meta:
+            state = joint_state_of(done)
+            env = state.env
+            if env is None or state.x_eff is None:
+                raise ValueError("windowed: the inner joint composition ran no solve")
+            return {
+                "a0": int(a0),
+                "x": np.asarray(state.x_eff, dtype=np.complex64),
+                "valid": np.asarray(env.valid, dtype=bool),
+                "rotor": np.asarray(env.rotor, dtype=np.int64),
+                "k": np.asarray(env.k, dtype=np.int64),
+                "theta": np.asarray(state.theta, dtype=np.float64),
+                "dr": theta_rate(state.theta, float(env.fs_env)),
+            }
+        if "decompose" not in meta:
+            raise ValueError("windowed: inner left neither meta['decompose'] nor meta['joint']")
+        env = meta["decompose"]["envelopes"]
+        return {
+            "a0": int(a0),
+            "x": np.asarray(env.x, dtype=np.complex64),
+            "valid": np.asarray(env.valid, dtype=bool),
+            "rotor": np.asarray(env.rotor, dtype=np.int64),
+            "k": np.asarray(env.k, dtype=np.int64),
+        }
+
+    def run(frame: td.Frame) -> td.Frame:
+        audio, sr, r, times, t0 = _core_inputs(frame)
+        n_t = int(audio.shape[-1])
+        stride = max(1, int(round(sr / float(fs_env if fs_env else FVKConfig().fs_env))))
+        ramp = max(0, int(round((window_s - hop_s) * sr / stride)))
+        ft = np.asarray(times, dtype=np.float64) - t0
+        r_audio = to_audio_grid(r, ft, n_t, sr)
+        phi = shaft_phase(r_audio, sr)
+        wins: list[dict[str, Any]] = []
+        tic = time.perf_counter()
+        for i0, i1 in window_bounds(len(ft), window_s, hop_s, hop_frame_s):
+            a0, a1 = window_span(ft, i0, i1, n_t, stride, sr, hop_frame_s)
+            if a1 - a0 < stride:
+                continue
+            n_env_w = (a1 - a0) // stride
+            sub = tracking_frame(
+                audio[:, a0:a1],
+                sr,
+                # The window's carrier ON the envelope grid: it covers the whole
+                # window by construction, which a slice of an arbitrary frame
+                # grid does not, and it is the grid the corrections live on.
+                rps=r_audio[:, a0:a1:stride][:, :n_env_w],
+                frame_times=np.arange(n_env_w, dtype=np.float64) * stride / sr,
+                dtype=audio.dtype,
+            )
+            wins.append(_record(inner(sub), a0, stride))
+        if not wins:
+            raise ValueError(f"windowed: no window of {window_s} s fits in {n_t / sr:.2f} s")
+        st = stitch_windows(wins, phi, stride, ramp, r_audio=r_audio, sr=sr)
+        info = {
+            "n_windows": len(wins),
+            "window_s": float(window_s),
+            "hop_s": float(hop_s),
+            "stride": int(stride),
+            "ramp": int(ramp),
+            "joint": bool(st.get("joint")),
+            "a_min": int(st["a_min"]),
+            "a_max": int(st["a_max"]),
+            "n_env": int(st["n_env"]),
+            "wall_s": round(time.perf_counter() - tic, 3),
+        }
+        if st.get("joint"):
+            info["theta_stitch_max_rate_hz"] = st["theta_stitch_max_rate_hz"]
+        out = with_meta(frame, decompose=st)
+        return with_rps(out, r, times, stage=name, info=info)
+
+    return run
+
+
+# ---------------------------------------------------------------------------
+# 5. the joint recipe
+
+
+def joint_solve_window(
+    audio: np.ndarray,
+    r_audio: np.ndarray,
+    cfg: FVKConfig,
+    *,
+    k_hi: int,
+    mics: int | None = None,
+    jcfg: JointConfig | None = None,
+    bw_schedule: BandwidthSchedule | None = None,
+    rho_scale: float = 1.0,
+    t_start_s: float = 0.0,
+) -> JointResult:
+    """RECIPE: the v3 alternation on one window::
+
+        floor -> (iters - 1) x (solve -> phase split -> floor) -> solve
+
+    That is block-coordinate descent on one MAP objective, and it is written
+    here as the composition it is — the last solve is separate because there is
+    nothing left to re-estimate after it. One round is one v2-sized banded solve
+    plus two negligible blocks.
+
+    The returned envelope is the EFFECTIVE one, ``g e^{j psi}``, against the
+    corrected carrier in ``env.phase`` — so every v2 consumer (``reconstruct``,
+    ``stitch_windows``, the ledger) reads it unchanged, and only the carrier
+    moved. This is the ARRAY entry point, which is given the audio-rate carrier;
+    :func:`joint_init_stage` is the FRAME one, which derives it.
+    """
+    from tracking.decompose import solve_audio
+    from tracking.joint_decompose import joint_result, joint_state
+
+    jc = JointConfig() if jcfg is None else jcfg
+    y = solve_audio(audio, cfg, mics)
+    state = joint_state(
+        r_audio,
+        cfg,
+        k_hi=int(k_hi),
+        n_t=int(y.shape[-1]),
+        jcfg=jc,
+        bw_schedule=bw_schedule,
+        rho_scale=rho_scale,
+        t_start_s=t_start_s,
+    )
+    stride, _ = state.grid
+    frame = tracking_frame(
+        y,
+        cfg.sr,
+        rps=state.carrier[:, ::stride][:, : state.n_env],
+        frame_times=np.arange(state.n_env, dtype=np.float64) * stride / float(cfg.sr),
+        dtype=np.float64,
+    )
+    run = pipeline(
+        floor_stage(),
+        iterate(pipeline(vk_solve_stage(), phase_split_stage(), floor_stage()), int(jc.iters) - 1),
+        vk_solve_stage(profile=True),
+    )
+    out = run(with_meta(frame, joint=state))
+    return joint_result(joint_state_of(out), joint_iterations(out))

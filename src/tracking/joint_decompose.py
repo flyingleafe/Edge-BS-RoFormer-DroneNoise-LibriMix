@@ -80,11 +80,12 @@ from tracking.decompose import (
     DEFAULT_BANDS,
     BandwidthSchedule,
     band_name,
-    base_bandwidths,
-    line_separations,
+    fade_weights,
     reconstruct,
-    schedule_rho2_gain,
+    stitch_bank,
     track_bands,
+    track_rho2_gain,
+    welch_psd,
 )
 from tracking.fitness_vk import FVKConfig
 from tracking.vk_tracking import (
@@ -102,18 +103,27 @@ __all__ = [
     "DEFAULT_BANDS",
     "JointConfig",
     "JointResult",
+    "JointState",
     "PhaseSplit",
     "SmoothPSD",
     "bw_psi_hz",
     "cell_profile",
     "corrected_phase",
+    "floor_block",
+    "frame_starts",
     "global_rate_correction",
-    "joint_solve_window",
+    "joint_result",
+    "joint_state",
     "masked_smooth_psd",
+    "order_cell_bands",
     "order_cell_profile",
+    "solve_block",
+    "solve_report",
+    "split_block",
     "split_phases",
+    "stft_power",
+    "stitch_windows",
     "theta_rate",
-    "track_rho2_gain",
     "upsample_env",
     "wh_lambda",
     "wh_smooth",
@@ -186,7 +196,53 @@ def upsample_env(vals: Any, n_out: int, stride: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# the framed power spectrogram both readings of the residual are built on
+
+
+def frame_starts(n_t: int, n_fft: int, hop: int) -> np.ndarray:
+    """Start sample of every whole ``n_fft`` frame that fits in ``n_t``.
+
+    A clip shorter than one frame still gives ONE start, which each caller
+    then admits or refuses on its own terms.
+    """
+    return np.arange(0, max(1, int(n_t) - int(n_fft) + 1), max(1, int(hop)), dtype=np.int64)
+
+
+def stft_power(audio: Any, starts: Any, n_fft: int, frames_per_chunk: int = 64) -> Any:
+    """Yield ``(chunk starts, (C, frames, F) power)`` — Hann, one sided.
+
+    THE spectrogram of this module, shared by the floor fit
+    (:func:`masked_smooth_psd`) and the order-cell probe
+    (:func:`order_cell_profile`). It is a generator because a whole recording's
+    frames do not fit in memory at ``n_fft`` 8192: one chunk holds
+    ``frames_per_chunk`` frames of every channel and the caller reduces it.
+    """
+    y = np.atleast_2d(np.asarray(audio, dtype=np.float64))
+    st = np.asarray(starts, dtype=np.int64)
+    win = np.hanning(int(n_fft))
+    off = np.arange(int(n_fft))[None, :]
+    for c0 in range(0, st.size, int(frames_per_chunk)):
+        sub = st[c0 : c0 + int(frames_per_chunk)]
+        seg = y[:, sub[:, None] + off] * win[None, None, :]
+        yield sub, np.abs(np.fft.rfft(seg, axis=-1)) ** 2
+
+
+# ---------------------------------------------------------------------------
 # instrument 1: the order-cell profile (probe B)
+
+
+def order_cell_bands(audio: Any, sr: float, r_audio: Any, **kwargs: Any) -> dict[str, Any]:
+    """The band table of :func:`order_cell_profile`, without the plot arrays.
+
+    What every REPORT carries: the per-band readings with the ``offsets`` and
+    ``cell`` rows dropped, because a folded cell is 200 numbers a reader of a
+    JSON report never looks at. One construction, so an iteration's table and a
+    recording's table have the same keys.
+    """
+    return {
+        nm: {kk: vv for kk, vv in d.items() if kk not in ("offsets", "cell")}
+        for nm, d in order_cell_profile(audio, sr, r_audio, **kwargs)["bands"].items()
+    }
 
 
 def order_cell_profile(
@@ -246,7 +302,7 @@ def order_cell_profile(
     refs = list(range(n_rot)) if rotors is None else [int(v) for v in np.atleast_1d(rotors)]
     n_t = int(y.shape[-1])
     step = int(n_fft // 4 if hop is None else hop)
-    starts = np.arange(0, max(1, n_t - n_fft + 1), max(1, step), dtype=np.int64)
+    starts = frame_starts(n_t, n_fft, step)
     grid = np.arange(0.0, float(k_max) + 0.5 + 0.5 * order_step, float(order_step))
     acc = np.zeros((len(refs), grid.size), dtype=np.float64)
     cnt = np.zeros((len(refs), grid.size), dtype=np.float64)
@@ -259,18 +315,14 @@ def order_cell_profile(
             "bands": {band_name(lo, hi): _empty_cell() for lo, hi in bands},
         }
 
-    win = np.hanning(n_fft)
     freq = np.fft.rfftfreq(n_fft, d=1.0 / float(sr))
     keep = (freq >= float(f_min_hz)) & (freq <= 0.45 * float(sr))
     fk = freq[keep]
     ks = np.arange(1, int(k_max) + 1, dtype=np.float64)
     half = np.maximum(mask_factor * LINEWIDTH_HZ_PER_K * ks, float(mask_min_hz))
-    for c0 in range(0, starts.size, int(frames_per_chunk)):
-        sub = starts[c0 : c0 + int(frames_per_chunk)]
-        idx = sub[:, None] + np.arange(n_fft)[None, :]
-        # (mic, frame, n_fft) -> power averaged over microphones
-        seg = y[:, idx] * win[None, None, :]
-        power = np.mean(np.abs(np.fft.rfft(seg, axis=-1)) ** 2, axis=0)[:, keep]
+    for sub, chunk in stft_power(y, starts, n_fft, frames_per_chunk):
+        # (mic, frame, F) -> power averaged over the microphones
+        power = np.mean(chunk, axis=0)[:, keep]
         for i, s in enumerate(sub):
             rate = r[:, s : s + n_fft].mean(axis=-1)
             for a, ref in enumerate(refs):
@@ -291,7 +343,9 @@ def order_cell_profile(
                 acc[a, ok] += prof[ok]
                 cnt[a, ok] += 1.0
     profile = np.where(cnt > 0, acc / np.maximum(cnt, 1e-30), np.nan)
-    trend = np.stack([_order_trend(profile[a], order_step, detrend_orders) for a in range(len(refs))])
+    trend = np.stack(
+        [_order_trend(profile[a], order_step, detrend_orders) for a in range(len(refs))]
+    )
     out_bands: dict[str, Any] = {}
     for lo, hi in bands:
         per = [
@@ -558,7 +612,7 @@ def masked_smooth_psd(
     step = int(n_fft // 2 if hop is None else hop)
     freq = np.fft.rfftfreq(n_fft, d=1.0 / float(sr))
     n_f = int(freq.size)
-    starts = np.arange(0, max(1, n_t - n_fft + 1), max(1, step), dtype=np.int64)
+    starts = frame_starts(n_t, n_fft, step)
     n_bl = max(1, int(n_blocks))
     acc = np.zeros((n_ch, n_bl, n_f), dtype=np.float64)
     cnt = np.zeros((n_bl, n_f), dtype=np.float64)
@@ -572,26 +626,24 @@ def masked_smooth_psd(
             n_cep=int(n_cep),
         )
 
-    win = np.hanning(n_fft)
-    scale = 1.0 / (float(sr) * float((win**2).sum()))
+    scale = 1.0 / (float(sr) * float((np.hanning(n_fft) ** 2).sum()))
     ks = np.arange(1, int(k_hi) + 1, dtype=np.float64)
     want = np.maximum(mask_factor * LINEWIDTH_HZ_PER_K * ks, float(mask_min_hz))
     block_of = np.minimum((starts * n_bl) // max(1, n_t), n_bl - 1)
-    for c0 in range(0, starts.size, int(frames_per_chunk)):
-        sub = starts[c0 : c0 + int(frames_per_chunk)]
-        idx = sub[:, None] + np.arange(n_fft)[None, :]
-        seg = y[:, idx] * win[None, None, :]
-        power = (np.abs(np.fft.rfft(seg, axis=-1)) ** 2) * scale  # (C, frames, F)
+    done = 0
+    for sub, chunk in stft_power(y, starts, n_fft, frames_per_chunk):
+        power = chunk * scale  # (C, frames, F) power spectral density
         for i, s in enumerate(sub):
             rate = r[:, s : s + n_fft].mean(axis=-1)
             lines = (ks[None, :] * rate[:, None]).ravel()
             half = np.minimum(want[None, :], float(mask_frac_of_rate) * rate[:, None]).ravel()
             mask = _line_mask(freq, lines, half)
-            b = int(block_of[c0 + i])
+            b = int(block_of[done + i])
             free = (~mask).astype(np.float64)
             acc[:, b] += power[:, i] * free[None, :]
             cnt[b] += free
             seen[b] += 1.0
+        done += sub.size
 
     log_s = np.empty((n_ch, n_bl, n_f), dtype=np.float64)
     for c in range(n_ch):
@@ -692,10 +744,8 @@ def whitened_flatness(
     the reading — the whitened value should be near 1 and clearly above the raw
     one.
     """
-    from scipy.signal import welch
-
     y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
-    f, p = welch(y, fs=float(sr), nperseg=int(nperseg), axis=-1)
+    f, p = welch_psd(y, sr, int(nperseg))
     band = (np.asarray(f) >= float(f_lo)) & (np.asarray(f) <= 0.45 * float(sr))
     s_mean = np.exp(np.asarray(psd.log_s, dtype=np.float64).mean(axis=1))  # (C, F)
     raw, whit = [], []
@@ -991,175 +1041,250 @@ class JointResult:
     iterations: list[dict[str, Any]] = field(default_factory=list)
 
 
-def track_rho2_gain(
-    r_audio: Any, k_hi: int, cfg: FVKConfig, sched: BandwidthSchedule | None, rho_scale: float
-) -> np.ndarray | None:
-    """The v2 per-track selectivity gain, so v3 keeps the tuned bandwidth law.
+@dataclass(frozen=True)
+class JointState:
+    """Everything one window's alternation accumulates — the ``meta["joint"]`` seam.
 
-    One construction shared with :func:`tracking.decompose.solve_window`; the
-    joint solve changes the CARRIER and the WEIGHT, never the bandwidth law it
-    inherited.
+    Three blocks read it and each returns a NEW state (frames are immutable, and
+    so is this). What it holds is the model's own vocabulary: the carrier the
+    corrections are measured against, the two coherent corrections ``theta`` and
+    ``psi``, the floor model, and the last solve's products.
+
+    ``carrier`` is the audio-rate rate array, and it is held rather than
+    re-derived. The alternation is CONDITIONED on one carrier for the whole
+    window — ``theta`` is a correction on top of it — so a block that
+    re-interpolated the frame's trajectory would be solving against a slightly
+    different measurement every round.
     """
-    if sched is None and rho_scale == 1.0:
-        return None
-    vk = cfg.vk_config(int(k_hi))
-    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
-    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
-    if sched is None:
-        return np.full(len(k), float(rho_scale) ** 2)
-    _, fs_env = env_stride(vk)
-    return (
-        schedule_rho2_gain(
-            k,
-            line_separations(r, rotor, k),
-            sched,
-            base_bandwidths(r, int(k_hi), cfg),
-            fs_env,
-            vk.p,
-        )
-        * float(rho_scale) ** 2
-    )
+
+    cfg: FVKConfig
+    jcfg: JointConfig
+    k_hi: int
+    carrier: np.ndarray  # (R, T) rev/s at audio rate
+    n_t: int
+    rho2_gain: np.ndarray | None = None
+    t_start_s: float = 0.0
+    theta: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    psi: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    psd: SmoothPSD | None = None
+    env: Envelopes | None = None
+    x_eff: np.ndarray | None = None
+    residual: np.ndarray | None = None
+    track_energy: np.ndarray | None = None
+    #: How many block-A solves have run. It is the annealing ladder's index and
+    #: the ``psi_from_iter`` gate, so the blocks need no loop counter of their own.
+    n_solves: int = 0
+
+    @property
+    def vk(self) -> Any:
+        return self.cfg.vk_config(int(self.k_hi))
+
+    @property
+    def grid(self) -> tuple[int, float]:
+        """``(stride, fs_env)`` of the envelope grid."""
+        return env_stride(self.vk)
+
+    @property
+    def tracks(self) -> tuple[np.ndarray, np.ndarray]:
+        """``(rotor, k)`` of every track — the identical set in every window."""
+        return _track_table(int(self.carrier.shape[0]), self.vk.k_min, int(self.k_hi))
+
+    @property
+    def n_env(self) -> int:
+        return len(range(0, int(self.n_t), self.grid[0]))
+
+    def k_trust(self) -> int:
+        """The trustable harmonic cap of the NEXT phase split (the ladder)."""
+        return min(self.jcfg.k_cap(self.n_solves), int(self.k_hi))
 
 
-def joint_solve_window(
-    audio: Any,
+def joint_state(
     r_audio: Any,
     cfg: FVKConfig,
     *,
     k_hi: int,
-    mics: int | None = None,
+    n_t: int,
     jcfg: JointConfig | None = None,
     bw_schedule: BandwidthSchedule | None = None,
     rho_scale: float = 1.0,
     t_start_s: float = 0.0,
-) -> JointResult:
-    """The v3 alternation on one window: A (whitened solve), B (phases), C (floor).
+) -> JointState:
+    """THE seed of an alternation: zero corrections, no floor, the tuned gain.
 
-    One iteration is one v2-sized banded solve plus two negligible blocks, so
-    ``jcfg.iters`` iterations cost about that many v2 solves. The returned
-    envelope is the EFFECTIVE one, ``g e^{j psi}``, against the corrected
-    carrier in ``env.phase`` — so every v2 consumer (``reconstruct``,
-    ``stitch_bank``, the ledger) reads it unchanged, and only the carrier moved.
+    ``k_hi`` is the harmonic cap of the whole RECORDING (never of the window),
+    so every window holds the identical track set and the banks can be stitched
+    track by track.
     """
     jc = JointConfig() if jcfg is None else jcfg
-    n_mic = int(cfg.max_channels if mics is None else mics)
-    y = np.ascontiguousarray(np.asarray(audio, dtype=np.float64)[:n_mic])
+    if int(jc.iters) < 1:
+        raise ValueError(f"JointConfig.iters must be at least 1, got {jc.iters}")
     r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
-    sr = float(cfg.sr)
-    vk = cfg.vk_config(int(k_hi))
-    stride, fs_env = env_stride(vk)
-    n_t = int(y.shape[-1])
-    n_env = len(range(0, n_t, stride))
-    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
-    r_env = r[:, ::stride][:, :n_env]
-    t_env = np.arange(n_env, dtype=np.float64) * stride / sr
-    gain = track_rho2_gain(r, int(k_hi), cfg, bw_schedule, float(rho_scale))
-
-    theta_env = np.zeros((int(r.shape[0]), n_env))
-    psi = np.zeros((len(k), n_env))
-    psd = masked_smooth_psd(
-        y,
-        sr,
-        r,
-        int(k_hi),
-        n_fft=jc.psd_n_fft,
-        n_blocks=jc.psd_blocks,
-        n_cep=jc.psd_n_cep,
+    state = JointState(
+        cfg=cfg,
+        jcfg=jc,
+        k_hi=int(k_hi),
+        carrier=r,
+        n_t=int(n_t),
+        rho2_gain=track_rho2_gain(r, int(k_hi), cfg, bw_schedule, float(rho_scale)),
         t_start_s=float(t_start_s),
     )
+    _, k = state.tracks
+    return replace(
+        state,
+        theta=np.zeros((int(r.shape[0]), state.n_env)),
+        psi=np.zeros((len(k), state.n_env)),
+    )
 
-    env: Envelopes | None = None
-    x_eff = np.zeros((0, 0, 0), dtype=np.complex128)
-    resid = np.zeros_like(y)
-    track_e = np.zeros(len(k))
-    iters: list[dict[str, Any]] = []
-    for it in range(1, int(jc.iters) + 1):
-        weight = (
-            whiten_weights(psd, k, rotor, r_env, t_env, clamp_db=jc.whiten_clamp_db)
-            if jc.whiten
-            else None
+
+def solve_block(state: JointState, audio: Any) -> JointState:
+    """Block A — one whitened VK solve at the current carrier, floor and ``psi``.
+
+    The coherent phases fold into the CARRIER (exact) and the smooth floor
+    collapses to one scalar per track and frame, so the banded structure of the
+    solver survives untouched: the three optional arguments of
+    :func:`tracking.vk_envelopes` are the whole seam. What comes back is the
+    EFFECTIVE envelope ``g e^{j psi}`` against ``env.phase``, which is what every
+    v2 consumer already knows how to read.
+    """
+    jc = state.jcfg
+    y = np.asarray(audio, dtype=np.float64)
+    stride, _ = state.grid
+    rotor, k = state.tracks
+    weight = (
+        whiten_weights(
+            state.psd,
+            k,
+            rotor,
+            state.carrier[:, ::stride][:, : state.n_env],
+            np.arange(state.n_env, dtype=np.float64) * stride / float(state.cfg.sr),
+            clamp_db=jc.whiten_clamp_db,
         )
-        gain_it = gain
-        if weight is not None and jc.bandwidth_neutral:
-            mean_u2 = np.mean(weight**2, axis=-1)
-            gain_it = mean_u2 if gain is None else gain * mean_u2
-        # The three joint hooks, passed as a mapping: they are what turns the v2
-        # solver into block A (see vk_envelopes' docstring).
-        hooks: dict[str, Any] = {
-            "phase_offset": upsample_env(theta_env, n_t, stride),
-            "env_rotation": psi,
-            "data_weight": weight,
-        }
-        e: Envelopes = vk_envelopes(y, r, vk, k_hi=int(k_hi), rho2_gain=gain_it, **hooks)
-        env = e
-        x_eff = e.x * np.exp(1j * psi)[None, :, :]
-        recon, track_e = reconstruct(x_eff, k, rotor, e.phase, stride)
-        resid = y - recon
-        last = it == int(jc.iters)
-        step: dict[str, Any] = {
-            "iter": it,
-            "k_trust": min(jc.k_cap(it), int(k_hi)),
-            "residual_fraction": round(
-                float((resid**2).sum() / max(float((y**2).sum()), 1e-30)), 6
-            ),
-            "track_fraction": round(float(track_e.sum() / max(float((y**2).sum()), 1e-30)), 6),
-            "psd_masked_frac": psd.n_masked_frac,
-            "whitened": bool(jc.whiten),
-            "flatness": whitened_flatness(resid, sr, psd),
-        }
-        if jc.profile_every_iter or last:
-            step["order_cell"] = {
-                nm: {kk: vv for kk, vv in d.items() if kk not in ("offsets", "cell")}
-                for nm, d in order_cell_profile(
-                    resid,
-                    sr,
-                    r,
-                    n_fft=jc.profile_n_fft,
-                    order_step=jc.profile_order_step,
-                    k_max=int(k_hi),
-                )["bands"].items()
-            }
-        if not last:
-            split = split_phases(
-                e.x,
-                k,
-                rotor,
-                e.valid,
-                fs_env,
-                k_trust=min(jc.k_cap(it), int(k_hi)),
-                conc_min=jc.conc_min,
-                bw_theta_hz=jc.bw_theta_hz,
-                bw_psi_slope=jc.bw_psi_slope,
-                bw_psi_max=jc.bw_psi_max,
-                bw_psi_min=jc.bw_psi_min,
-                per_rotor=jc.per_rotor_theta,
-                with_psi=it >= int(jc.psi_from_iter),
-            )
-            theta_env = theta_env + split.theta
-            psi = psi + split.psi
-            step["phase_split"] = split.diag
-            psd = masked_smooth_psd(
-                resid,
-                sr,
-                r,
-                int(k_hi),
-                n_fft=jc.psd_n_fft,
-                n_blocks=jc.psd_blocks,
-                n_cep=jc.psd_n_cep,
-                t_start_s=float(t_start_s),
-            )
-        iters.append(step)
-
-    if env is None:
-        raise ValueError(f"JointConfig.iters must be at least 1, got {jc.iters}")
-    return JointResult(
-        env=replace(env, x=x_eff),
-        theta_env=theta_env,
-        psi=psi,
-        psd=psd,
-        residual=resid,
+        if (jc.whiten and state.psd is not None)
+        else None
+    )
+    gain = state.rho2_gain
+    if weight is not None and jc.bandwidth_neutral:
+        mean_u2 = np.mean(weight**2, axis=-1)
+        gain = mean_u2 if gain is None else gain * mean_u2
+    # The three joint hooks, passed as a mapping: they are what turns the v2
+    # solver into block A (see vk_envelopes' docstring).
+    hooks: dict[str, Any] = {
+        "phase_offset": upsample_env(state.theta, int(y.shape[-1]), stride),
+        "env_rotation": state.psi,
+        "data_weight": weight,
+    }
+    env: Envelopes = vk_envelopes(
+        y, state.carrier, state.vk, k_hi=int(state.k_hi), rho2_gain=gain, **hooks
+    )
+    x_eff = env.x * np.exp(1j * state.psi)[None, :, :]
+    recon, track_e = reconstruct(x_eff, k, rotor, env.phase, stride)
+    return replace(
+        state,
+        env=env,
+        x_eff=x_eff,
+        residual=y - recon,
         track_energy=track_e,
-        iterations=iters,
+        n_solves=state.n_solves + 1,
+    )
+
+
+def split_block(state: JointState) -> tuple[JointState, PhaseSplit]:
+    """Block B — the phase split, folded into the accumulated corrections.
+
+    The increments and not the totals come back in the :class:`PhaseSplit`, so a
+    caller reads what THIS round learned; the state carries the sum.
+    """
+    jc = state.jcfg
+    if state.env is None:
+        raise ValueError("split_block: no envelope bank yet — run solve_block first")
+    rotor, k = state.tracks
+    split = split_phases(
+        state.env.x,
+        k,
+        rotor,
+        state.env.valid,
+        state.grid[1],
+        k_trust=state.k_trust(),
+        conc_min=jc.conc_min,
+        bw_theta_hz=jc.bw_theta_hz,
+        bw_psi_slope=jc.bw_psi_slope,
+        bw_psi_max=jc.bw_psi_max,
+        bw_psi_min=jc.bw_psi_min,
+        per_rotor=jc.per_rotor_theta,
+        with_psi=state.n_solves >= int(jc.psi_from_iter),
+    )
+    return replace(state, theta=state.theta + split.theta, psi=state.psi + split.psi), split
+
+
+def floor_block(state: JointState, audio: Any) -> JointState:
+    """Block C — the masked smooth floor of what the model has not explained.
+
+    Before the first solve there is no residual, so the floor is fitted on the
+    AUDIO; after one, on the residual. Both are the same statement — the floor
+    is read between the lines of whatever is left.
+    """
+    jc = state.jcfg
+    src = np.asarray(audio if state.residual is None else state.residual, dtype=np.float64)
+    return replace(
+        state,
+        psd=masked_smooth_psd(
+            src,
+            float(state.cfg.sr),
+            state.carrier,
+            int(state.k_hi),
+            n_fft=jc.psd_n_fft,
+            n_blocks=jc.psd_blocks,
+            n_cep=jc.psd_n_cep,
+            t_start_s=float(state.t_start_s),
+        ),
+    )
+
+
+def solve_report(state: JointState, audio: Any, *, profile: bool) -> dict[str, Any]:
+    """The READING of one block-A solve — the numbers a report carries.
+
+    Separate from :func:`solve_block` because it is measurement and not
+    estimation: the energy shares, the whitened flatness against the floor the
+    solve used, and (when asked) the order-cell band table of the residual.
+    """
+    jc = state.jcfg
+    if state.residual is None or state.track_energy is None or state.psd is None:
+        raise ValueError("solve_report: nothing solved yet")
+    y = np.asarray(audio, dtype=np.float64)
+    total = max(float((y**2).sum()), 1e-30)
+    out: dict[str, Any] = {
+        "iter": int(state.n_solves),
+        "k_trust": state.k_trust(),
+        "residual_fraction": round(float((state.residual**2).sum() / total), 6),
+        "track_fraction": round(float(state.track_energy.sum() / total), 6),
+        "psd_masked_frac": state.psd.n_masked_frac,
+        "whitened": bool(jc.whiten),
+        "flatness": whitened_flatness(state.residual, float(state.cfg.sr), state.psd),
+    }
+    if profile:
+        out["order_cell"] = order_cell_bands(
+            state.residual,
+            float(state.cfg.sr),
+            state.carrier,
+            n_fft=jc.profile_n_fft,
+            order_step=jc.profile_order_step,
+            k_max=int(state.k_hi),
+        )
+    return out
+
+
+def joint_result(state: JointState, iterations: list[dict[str, Any]]) -> JointResult:
+    """The alternation's state, read out as the record a driver writes to disk."""
+    if state.env is None or state.x_eff is None or state.psd is None:
+        raise ValueError("joint_result: the alternation ran no solve")
+    return JointResult(
+        env=replace(state.env, x=state.x_eff),
+        theta_env=state.theta,
+        psi=state.psi,
+        psd=state.psd,
+        residual=np.asarray(state.residual),
+        track_energy=np.asarray(state.track_energy),
+        iterations=iterations,
     )
 
 
@@ -1178,8 +1303,6 @@ def global_rate_correction(
     windows would then hold one physical correction at two origins — exactly the
     failure the envelope stitch already guards against.
     """
-    from tracking.decompose import fade_weights
-
     e0 = int(a_min) // int(stride)
     n_env = int(a_max) // int(stride) - e0
     n_rot = int(np.asarray(windows[0]["dr"]).shape[0])
@@ -1239,3 +1362,72 @@ def window_extra_phase(
     ph0 = base if base is not None else ph[:, int(a0) - 1 : int(a0)]
     pt0 = base if base is not None else pt[:, int(a0) - 1 : int(a0)]
     return (ph[:, idx] - ph0 + th[:, : len(idx)]) - (pt[:, idx] - pt0)
+
+
+def stitch_windows(
+    windows: list[dict[str, Any]],
+    phi: Any,
+    stride: int,
+    ramp: int,
+    *,
+    r_audio: Any = None,
+    sr: float = 0.0,
+) -> dict[str, Any]:
+    """Cross-fade per-window envelope banks onto ONE carrier — v2 or v3.
+
+    ``windows`` is a list of ``{"a0", "x", "valid", "rotor", "k"}`` dicts, and a
+    JOINT window carries ``"dr"`` and ``"theta"`` beside them. Arrays only: a
+    driver that read them from files and a caller that just solved them in
+    memory hand over the same list, which is why this is the one stitch.
+
+    A v2 window set is :func:`tracking.decompose.stitch_bank` and nothing else.
+    A JOINT window set carries its own shaft correction, so the windows are
+    first brought onto ONE carrier, in the only gauge-free currency there is —
+    the RATE. Each window's ``dr`` is cross-faded into one global rate
+    correction, the corrected phase is its integral, and each bank is rotated by
+    the difference between its own carrier and that global one
+    (:func:`window_extra_phase`). The rotation is slow by construction, and
+    ``theta_stitch_max_rate_hz`` REPORTS how fast the fastest track's rotation
+    really is, so a caller can see whether it stayed inside the envelope grid.
+    Read the fade-weighted number: a rotation at a window EDGE is applied where
+    that window contributes almost nothing, so the raw maximum overstates what
+    reaches the bank.
+    """
+
+    if not windows:
+        raise ValueError("stitch_windows: no window to stitch")
+    if "dr" not in windows[0]:
+        return {**stitch_bank(windows, phi, stride, ramp), "phi": np.asarray(phi), "joint": False}
+
+    k = np.asarray(windows[0]["k"], dtype=np.int64)
+    rot = np.asarray(windows[0]["rotor"], dtype=np.int64)
+    a_min = min(int(w["a0"]) for w in windows)
+    a_max = max(int(w["a0"]) + int(np.asarray(w["x"]).shape[-1]) * int(stride) for w in windows)
+    dr_g = global_rate_correction(windows, int(stride), a_min, a_max, int(ramp))
+    r_corr, phi_t = corrected_phase(r_audio, dr_g, float(sr), int(stride), a_min, a_max)
+
+    turned: list[dict[str, Any]] = []
+    max_rate = 0.0
+    max_rate_raw = 0.0
+    for w in windows:
+        n_w = int(np.asarray(w["x"]).shape[-1])
+        e_w = window_extra_phase(w["theta"], phi, phi_t, int(w["a0"]), int(stride), n_w)
+        x = np.asarray(w["x"], dtype=np.complex64) * np.exp(
+            1j * k[None, :, None] * e_w[rot][None, :, :]
+        ).astype(np.complex64)
+        turned.append({**w, "x": x})
+        if e_w.shape[-1] > 1:
+            step = np.abs(np.diff(e_w, axis=-1)) * float(sr) / int(stride) / (2.0 * np.pi)
+            fade = fade_weights(n_w, min(int(ramp), n_w // 2))
+            pair = np.minimum(fade[:-1], fade[1:])[None, :]
+            max_rate = max(max_rate, float((step * pair).max()) * float(k.max()))
+            max_rate_raw = max(max_rate_raw, float(step.max()) * float(k.max()))
+    return {
+        **stitch_bank(turned, phi_t, int(stride), int(ramp)),
+        "dr_global": dr_g,
+        "r_corrected": r_corr,
+        "phi": phi_t,
+        "theta_stitch_max_rate_hz": round(max_rate, 3),
+        "theta_stitch_max_rate_hz_raw": round(max_rate_raw, 3),
+        "joint": True,
+    }

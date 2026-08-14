@@ -139,6 +139,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # this file is the DATA (the generator's own loader), the unit harness and the
 # file formats.
 import tracking.decompose as D  # noqa: E402
+from tracking import joint_solve_window  # noqa: E402
 from tracking.decompose import (  # noqa: E402
     DEFAULT_BANDS as BANDS,
 )
@@ -163,13 +164,11 @@ from tracking.decompose import (  # noqa: E402
 )
 from tracking.joint_decompose import (  # noqa: E402
     JointConfig,
-    corrected_phase,
-    global_rate_correction,
-    joint_solve_window,
-    order_cell_profile,
+    SmoothPSD,
+    order_cell_bands,
+    stitch_windows,
     theta_rate,
     whitened_flatness,
-    window_extra_phase,
 )
 from utils.gridrun import Unit, add_gridrun_args, gridrun_from_args, unit_path  # noqa: E402
 
@@ -682,19 +681,11 @@ def stitch_envelopes(
 ) -> dict[str, Any]:
     """Load the window ``.npz`` banks of one recording and stitch them.
 
-    The file I/O of :func:`tracking.decompose.stitch_bank` — the phase
-    re-reference and the cross-fade are that function's. The harmonic-set check
-    is here because it is a check on what the UNITS wrote, not on the arrays.
-
-    A JOINT (v3) window carries its own shaft correction, so before the stitch
-    the windows have to be brought onto ONE carrier. That is done in the only
-    gauge-free currency there is — the rate. Each window's ``dr`` (rev/s) is
-    cross-faded into one global rate correction, the corrected phase is its
-    integral, and each window's bank is rotated by the difference between its
-    own carrier and that global one (:func:`window_extra_phase`). The rotation
-    is slow by construction, and ``theta_stitch_max_rate_hz`` reports how fast
-    the fastest track's rotation actually is, so a caller can see whether it
-    stayed inside the 100 Hz envelope grid.
+    The FILE I/O of :func:`tracking.stitch_windows` and nothing else: the phase
+    re-reference, the cross-fade and — for a JOINT window set — the rate stitch
+    that puts every window on one carrier are that function's. The harmonic-set
+    check is here because it is a check on what the UNITS wrote, not on the
+    arrays.
     """
     used = sorted((r for r in rows if r.get("used") and "npz" in r), key=lambda r: int(r["a0"]))
     if not used:
@@ -725,51 +716,10 @@ def stitch_envelopes(
                 w["theta"] = np.asarray(data["theta"], dtype=np.float64)
             windows.append(w)
 
-    extra: dict[str, Any] = {}
-    if not joint:
-        return {
-            **D.stitch_bank(windows, phi, stride, ramp),
-            "bw_track": bw_track,
-            "windows": used,
-            "phi": np.asarray(phi),
-            "joint": False,
-        }
-
-    a_min = min(int(w["a0"]) for w in windows)
-    a_max = max(int(w["a0"]) + int(w["x"].shape[-1]) * stride for w in windows)
-    dr_g = global_rate_correction(windows, stride, a_min, a_max, ramp)
-    r_corr, phi_t = corrected_phase(r_audio, dr_g, sr, stride, a_min, a_max)
-    rot = np.asarray(windows[0]["rotor"], dtype=np.int64)
-    max_rate = 0.0
-    max_rate_raw = 0.0
-    for w in windows:
-        e_w = window_extra_phase(
-            w["theta"], phi, phi_t, int(w["a0"]), stride, int(w["x"].shape[-1])
-        )
-        w["x"] = w["x"] * np.exp(1j * k[None, :, None] * e_w[rot][None, :, :]).astype(np.complex64)
-        if e_w.shape[-1] > 1:
-            # Weighted by the cross-fade: a rotation at a window EDGE is applied
-            # where that window contributes almost nothing to the stitch, so the
-            # unweighted maximum overstates what reaches the bank. Both are
-            # reported, and the weighted one is the number to read.
-            step = np.abs(np.diff(e_w, axis=-1)) * float(sr) / stride / (2.0 * np.pi)
-            fade = fade_weights(int(e_w.shape[-1]), min(int(ramp), int(e_w.shape[-1]) // 2))
-            pair = np.minimum(fade[:-1], fade[1:])[None, :]
-            max_rate = max(max_rate, float((step * pair).max()) * float(k.max()))
-            max_rate_raw = max(max_rate_raw, float(step.max()) * float(k.max()))
-    extra = {
-        "dr_global": dr_g,
-        "r_corrected": r_corr,
-        "phi": phi_t,
-        "theta_stitch_max_rate_hz": round(max_rate, 3),
-        "theta_stitch_max_rate_hz_raw": round(max_rate_raw, 3),
-        "joint": True,
-    }
     return {
-        **D.stitch_bank(windows, phi_t, stride, ramp),
+        **stitch_windows(windows, phi, stride, ramp, r_audio=r_audio, sr=sr),
         "bw_track": bw_track,
         "windows": used,
-        **extra,
     }
 
 
@@ -782,7 +732,6 @@ def _flatness_report(
     surface — the point of the check is the SHAPE of the whitened residual, and
     the shape is what a smooth floor holds still across a recording.
     """
-    from tracking.joint_decompose import SmoothPSD
 
     used = sorted((r for r in wins if r.get("used") and "npz" in r), key=lambda r: int(r["a0"]))
     if not used:
@@ -796,15 +745,6 @@ def _flatness_report(
             log_s=np.asarray(data["psd_log_s"], dtype=np.float64),
         )
     return whitened_flatness(residual, sr, psd)
-
-
-def _order_cell_bands(audio: Any, sr: int, r_audio: Any, k_hi: int) -> dict[str, Any]:
-    """Band table of :func:`order_cell_profile`, without the plotting arrays."""
-    prof = order_cell_profile(audio, sr, r_audio, k_max=int(k_hi))
-    return {
-        nm: {kk: vv for kk, vv in d.items() if kk not in ("offsets", "cell")}
-        for nm, d in prof["bands"].items()
-    }
 
 
 def stitch(
@@ -831,9 +771,7 @@ def stitch(
         offset = float(rec["t0_offset_s"])
         phi = shaft_phase(rec["r_audio"], sr)
         ramp = max(0, int(round((params["window_s"] - params["hop_s"]) * params["fs_env"])))
-        st = stitch_envelopes(
-            wins, out, phi, stride, ramp, r_audio=rec["r_audio"], sr=sr
-        )
+        st = stitch_envelopes(wins, out, phi, stride, ramp, r_audio=rec["r_audio"], sr=sr)
         # The joint stitch replaces the carrier with the CORRECTED one; the v2
         # stitch hands back the same phi it was given, so one line covers both.
         phi_use = np.asarray(st["phi"])
@@ -944,11 +882,11 @@ def stitch(
             # left, comparable between the two) before ``depth_db`` (a ratio,
             # which rises as the residual approaches the floor).
             "order_cell": {
-                "residual": _order_cell_bands(
-                    residual, sr, np.asarray(rec["r_audio"])[:, a_min:a_max], int(k.max())
+                "residual": order_cell_bands(
+                    residual, sr, np.asarray(rec["r_audio"])[:, a_min:a_max], k_max=int(k.max())
                 ),
-                "original": _order_cell_bands(
-                    audio, sr, np.asarray(rec["r_audio"])[:, a_min:a_max], int(k.max())
+                "original": order_cell_bands(
+                    audio, sr, np.asarray(rec["r_audio"])[:, a_min:a_max], k_max=int(k.max())
                 ),
             },
             "ref_mic": ref,
@@ -971,7 +909,9 @@ def stitch(
                 "rate_correction_mean_rev_s": [round(float(row.mean()), 5) for row in dr_g],
                 "rate_correction_pct_of_rate": [
                     round(float(100.0 * row.mean() / max(float(rr.mean()), 1e-9)), 4)
-                    for row, rr in zip(dr_g, np.asarray(rec["r_audio"])[:, a_min:a_max], strict=False)
+                    for row, rr in zip(
+                        dr_g, np.asarray(rec["r_audio"])[:, a_min:a_max], strict=False
+                    )
                 ],
             }
             np.savez(

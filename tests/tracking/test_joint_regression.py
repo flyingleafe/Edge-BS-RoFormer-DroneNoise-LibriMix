@@ -27,7 +27,8 @@ import pytest
 from _joint_fixture import make_fixture
 
 from tracking.decompose import BandwidthSchedule, solve_config
-from tracking.joint_decompose import JointConfig, JointResult, joint_solve_window
+from tracking import joint_solve_window
+from tracking.joint_decompose import JointConfig, JointResult
 
 REF = Path(__file__).parent / "fixtures" / "joint_v3b_reference.npz"
 

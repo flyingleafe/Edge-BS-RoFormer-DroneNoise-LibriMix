@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from _joint_fixture import K_MAX, N_MIC, SR, make_fixture
 
+from tracking import joint_solve_window
 from tracking.decompose import BandwidthSchedule, reconstruct, solve_config, solve_window
 from tracking.joint_decompose import (
     JointConfig,
@@ -26,7 +27,6 @@ from tracking.joint_decompose import (
     cell_profile,
     corrected_phase,
     global_rate_correction,
-    joint_solve_window,
     masked_smooth_psd,
     order_cell_profile,
     split_phases,
