@@ -846,6 +846,25 @@ def phase_model_report(
             float(np.abs(inc[:, pair]).max() / fs_env) if pair.any() else 0.0, 5
         ),
         "max_abs_drift_rad_s": round(float(np.abs(inc[:, pair]).max()) if pair.any() else 0.0, 4),
+        # WHERE the unwrap saturates. The global maximum reaching pi says only
+        # that SOME track is ambiguous; a per-band maximum says whether it is the
+        # weak high harmonics (expected, and harmless — those tracks carry
+        # almost no energy) or the low ones the shaft estimate is built on
+        # (not harmless).
+        "max_abs_step_rad_by_band": band_summary(
+            (np.abs(inc[:, pair]).max(axis=-1) / fs_env) if pair.any() else np.zeros(len(k)),
+            k,
+            bands,
+        ),
+        "max_step_rad_by_band_worst": {
+            nm: (
+                round(float(np.abs(inc[np.ix_(np.flatnonzero(sel), np.flatnonzero(pair))]).max()
+                            / fs_env), 5)
+                if (sel.any() and pair.any())
+                else None
+            )
+            for nm, sel in track_bands(k, bands).items()
+        },
         "drift_std_rad_s_by_band": band_summary(drift, k, bands),
         "amp_mean_by_band": band_summary(mean, k, bands),
         "amp_cv_by_band": band_summary(cv, k, bands),

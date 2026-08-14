@@ -450,7 +450,9 @@ def joint_config(params: dict[str, Any]) -> JointConfig:
     comma-separated string, because it has to survive a JSON round trip through
     the unit table and the report's provenance.
     """
-    slope, cap = (float(v) for v in str(params.get("bw_psi", "0.6,8")).split(","))
+    parts = [float(v) for v in str(params.get("bw_psi", "0.6,8,1.5")).split(",")]
+    slope, cap = parts[0], parts[1]
+    floor = parts[2] if len(parts) > 2 else 1.5
     ladder = tuple(int(v) for v in str(params.get("k_trust", "3,12,80")).split(",") if v.strip())
     return JointConfig(
         iters=int(params.get("iters", 3)),
@@ -458,6 +460,7 @@ def joint_config(params: dict[str, Any]) -> JointConfig:
         bw_theta_hz=float(params.get("bw_theta", 1.5)),
         bw_psi_slope=slope,
         bw_psi_max=cap,
+        bw_psi_min=floor,
         whiten=bool(params.get("whiten", True)),
     )
 
@@ -618,7 +621,13 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
     # A cheap per-window capture check on ONE channel: the fraction of that
     # channel's energy the track sum explains. The full ledger is the stitch's,
     # which is why this reconstructs one channel and not the array.
-    phase_w = shaft_phase(r_win, sr)
+    #
+    # The carrier must be the solver's OWN phase. On the joint path that phase
+    # carries the shaft correction, and rebuilding the plain label phase here
+    # instead scores the bank against a carrier it was never fitted to — which
+    # read as a NEGATIVE r2 on nearly every production window while the stitched
+    # ledger was healthy.
+    phase_w = np.asarray(env.phase) if joint else shaft_phase(r_win, sr)
     recon0, _ = reconstruct(env.x[ref : ref + 1], env.k, env.rotor, phase_w, stride)
     y0 = np.asarray(rec["audio"][ref, a0:a1], dtype=np.float64)
     e_y = float((y0**2).sum())
@@ -732,19 +741,28 @@ def stitch_envelopes(
     r_corr, phi_t = corrected_phase(r_audio, dr_g, sr, stride, a_min, a_max)
     rot = np.asarray(windows[0]["rotor"], dtype=np.int64)
     max_rate = 0.0
+    max_rate_raw = 0.0
     for w in windows:
         e_w = window_extra_phase(
             w["theta"], phi, phi_t, int(w["a0"]), stride, int(w["x"].shape[-1])
         )
         w["x"] = w["x"] * np.exp(1j * k[None, :, None] * e_w[rot][None, :, :]).astype(np.complex64)
         if e_w.shape[-1] > 1:
-            rate = np.abs(np.diff(e_w, axis=-1)).max() * float(sr) / stride / (2.0 * np.pi)
-            max_rate = max(max_rate, float(rate) * float(k.max()))
+            # Weighted by the cross-fade: a rotation at a window EDGE is applied
+            # where that window contributes almost nothing to the stitch, so the
+            # unweighted maximum overstates what reaches the bank. Both are
+            # reported, and the weighted one is the number to read.
+            step = np.abs(np.diff(e_w, axis=-1)) * float(sr) / stride / (2.0 * np.pi)
+            fade = fade_weights(int(e_w.shape[-1]), min(int(ramp), int(e_w.shape[-1]) // 2))
+            pair = np.minimum(fade[:-1], fade[1:])[None, :]
+            max_rate = max(max_rate, float((step * pair).max()) * float(k.max()))
+            max_rate_raw = max(max_rate_raw, float(step.max()) * float(k.max()))
     extra = {
         "dr_global": dr_g,
         "r_corrected": r_corr,
         "phi": phi_t,
         "theta_stitch_max_rate_hz": round(max_rate, 3),
+        "theta_stitch_max_rate_hz_raw": round(max_rate_raw, 3),
         "joint": True,
     }
     return {
@@ -946,6 +964,7 @@ def stitch(
             dr_g = np.asarray(st["dr_global"])
             report["joint"] = {
                 "theta_stitch_max_rate_hz": st["theta_stitch_max_rate_hz"],
+                "theta_stitch_max_rate_hz_raw": st["theta_stitch_max_rate_hz_raw"],
                 "rate_correction_rms_rev_s": [
                     round(float(np.sqrt(np.mean(row**2))), 5) for row in dr_g
                 ],
@@ -1109,9 +1128,13 @@ def main() -> None:
     )
     ap.add_argument(
         "--bw-psi",
-        default="0.6,8",
-        metavar="slope,max",
-        help="--joint: per-track phase-correction bandwidth, min(slope * k, max) Hz",
+        default="0.6,8,1.5",
+        metavar="slope,max[,min]",
+        help=(
+            "--joint: per-track phase-correction bandwidth, clip(slope * k, min, max) Hz. The "
+            "min is what serves a strong LOW harmonic, whose true linewidth is wider than "
+            "0.6 * k"
+        ),
     )
     ap.add_argument(
         "--bw-theta", type=float, default=1.5, help="--joint: shaft-correction bandwidth, Hz"

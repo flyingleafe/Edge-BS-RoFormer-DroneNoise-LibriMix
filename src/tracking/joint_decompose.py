@@ -92,6 +92,7 @@ from tracking.vk_tracking import (
     _track_table,
     _tuma_bw_min,
     _tuma_rho,
+    edge_taper,
     env_stride,
     second_diff,
     vk_envelopes,
@@ -204,6 +205,7 @@ def order_cell_profile(
     mask_factor: float = 1.5,
     mask_min_hz: float = 3.0,
     fold: str = "mean",
+    detrend_orders: float = 1.0,
     frames_per_chunk: int = 64,
 ) -> dict[str, Any]:
     """THE comb-removal verdict: modulation depth of the folded order cell.
@@ -289,9 +291,13 @@ def order_cell_profile(
                 acc[a, ok] += prof[ok]
                 cnt[a, ok] += 1.0
     profile = np.where(cnt > 0, acc / np.maximum(cnt, 1e-30), np.nan)
+    trend = np.stack([_order_trend(profile[a], order_step, detrend_orders) for a in range(len(refs))])
     out_bands: dict[str, Any] = {}
     for lo, hi in bands:
-        per = [cell_profile(profile[a], grid, lo, hi, order_step, fold) for a in range(len(refs))]
+        per = [
+            cell_profile(profile[a], grid, lo, hi, order_step, fold, trend=trend[a])
+            for a in range(len(refs))
+        ]
         got = [d for d in per if d["depth_db"] is not None]
         out_bands[band_name(lo, hi)] = (
             _empty_cell()
@@ -329,9 +335,40 @@ def order_cell_profile(
         "order_step": float(order_step),
         "grid": grid,
         "profile": profile,
+        "trend": trend,
         "n_frames": int(starts.size),
         "bands": out_bands,
     }
+
+
+def _order_trend(profile: Any, order_step: float, detrend_orders: float) -> np.ndarray:
+    """Running median of the order profile over ``detrend_orders`` of order.
+
+    THE fix to the instrument's one measured bias. Each unit cell spans a whole
+    order, which at a rotor rate of 80 rev/s is 80 Hz of frequency, and the
+    broadband floor falls steeply across that span at low harmonics. Dividing a
+    cell by its own SCALAR median leaves that slope in, so a folded cell of pure
+    smooth floor is a monotone ramp — high at the low edge (offset -0.5), low at
+    the high edge — and ``argmax`` then reports a peak at -0.5 that is not a line
+    at all. A running median over one order tracks the slope and removes it,
+    while a comb line, which occupies a small fraction of an order, passes
+    through untouched.
+
+    Measured on the v3 DREGON residual: the un-detrended fold read 1.43 dB at
+    k1-9 peaking at -0.4962 orders, and the two ENDS of the cell — which are the
+    SAME physical half-integer position — read +1.6 dB and -0.4 dB, which no
+    line can do. The detrended fold reads the truth instead.
+    """
+    p = np.asarray(profile, dtype=np.float64)
+    n = max(3, int(round(float(detrend_orders) / float(order_step))) | 1)
+    ok = np.isfinite(p)
+    if not ok.any():
+        return np.ones_like(p)
+    filled = np.interp(np.arange(p.size), np.flatnonzero(ok), p[ok])
+    from scipy.ndimage import median_filter
+
+    tr = median_filter(filled, size=n, mode="nearest")
+    return np.where(tr > 0, tr, np.nan)
 
 
 def _empty_cell() -> dict[str, Any]:
@@ -348,7 +385,14 @@ def _empty_cell() -> dict[str, Any]:
 
 
 def cell_profile(
-    profile: Any, grid: Any, lo: int, hi: int, order_step: float, fold: str = "mean"
+    profile: Any,
+    grid: Any,
+    lo: int,
+    hi: int,
+    order_step: float,
+    fold: str = "mean",
+    *,
+    trend: Any | None = None,
 ) -> dict[str, Any]:
     """Fold the unit cells ``[m - 0.5, m + 0.5)``, ``m`` in ``[lo, hi]``, into one.
 
@@ -383,6 +427,7 @@ def cell_profile(
     """
     p = np.asarray(profile, dtype=np.float64)
     g = np.asarray(grid, dtype=np.float64)
+    tr = None if trend is None else np.asarray(trend, dtype=np.float64)
     n_cell = int(round(1.0 / float(order_step)))
     offsets = -0.5 + np.arange(n_cell, dtype=np.float64) * float(order_step)
     cells: list[np.ndarray] = []
@@ -394,11 +439,13 @@ def cell_profile(
         seg = p[j0 : j0 + n_cell]
         if not np.all(np.isfinite(seg)):
             continue
-        med = float(np.median(seg))
-        if not np.isfinite(med) or med <= 0.0:
+        # The local trend, or the cell's own scalar median when no trend is
+        # given (the un-detrended reading, kept for a direct caller).
+        base = np.full(n_cell, float(np.median(seg))) if tr is None else tr[j0 : j0 + n_cell]
+        if not np.all(np.isfinite(base)) or float(np.min(base)) <= 0.0:
             continue
-        cells.append(seg / med)
-        excess += max(float(seg.max()) - med, 0.0)
+        cells.append(seg / base)
+        excess += max(float(np.max(seg - base)), 0.0)
     if not cells:
         return _empty_cell()
     stack = np.stack(cells)
@@ -677,14 +724,25 @@ def _flatness(power: np.ndarray) -> float:
 # block B: the phase split
 
 
-def bw_psi_hz(k: Any, slope: float = LINEWIDTH_HZ_PER_K, cap: float = 8.0) -> np.ndarray:
-    """Allowed bandwidth of the per-track phase correction, ``min(slope k, cap)``.
+def bw_psi_hz(
+    k: Any, slope: float = LINEWIDTH_HZ_PER_K, cap: float = 8.0, floor: float = 1.5
+) -> np.ndarray:
+    """Per-track phase-correction bandwidth, ``clip(slope k, floor, cap)`` in Hz.
 
     The linewidth law says harmonic ``k`` wanders ``slope * k`` Hz, so its own
-    phase correction needs that much room; the cap is what keeps a high-``k``
-    correction from turning into a second envelope and absorbing the floor.
+    phase correction needs that much room, and the cap keeps a high-``k``
+    correction from turning into a second envelope that absorbs the floor.
+
+    The FLOOR is the third guard, and it is there because the law under-serves
+    the LOW harmonics: at ``k`` 1 to 3 it allows only 0.6 to 1.8 Hz, which is
+    narrower than the incoherent linewidth a strong low-``k`` line really has,
+    so the line keeps a skirt that the model cannot follow. The strongest
+    measured leftover of the v3 production run is exactly there — 2.24 dB of
+    integer-order residual at k1-9 on one FLY124 rotor.
     """
-    return np.minimum(float(slope) * np.asarray(k, dtype=np.float64), float(cap))
+    return np.clip(
+        float(slope) * np.asarray(k, dtype=np.float64), float(floor), max(float(cap), float(floor))
+    )
 
 
 @dataclass
@@ -734,6 +792,7 @@ def split_phases(
     bw_theta_hz: float = 1.5,
     bw_psi_slope: float = LINEWIDTH_HZ_PER_K,
     bw_psi_max: float = 8.0,
+    bw_psi_min: float = 1.5,
     per_rotor: bool = True,
     with_psi: bool = True,
 ) -> PhaseSplit:
@@ -783,11 +842,20 @@ def split_phases(
 
     lam_th = wh_lambda(bw_theta_hz, fs_env)
     weight = (ks**2) * (conc**2)
+    # The solver FADES its data term at both window ends, so the envelopes there
+    # are the prior's extrapolation and not a measurement. Carrying the same
+    # taper into the smoother's data weight makes the shaft estimate extrapolate
+    # over that span too, instead of fitting the transient. Without it the RATE
+    # at the very first and last frames is a fabrication, and the stitch, which
+    # is built on the rate, then sees two neighbouring windows disagree by half
+    # a rev/s at their seam (measured 46 Hz of track rotation at k 80 on the
+    # DREGON production run, against 0.003 Hz on a single-window smoke).
+    tap = edge_taper(n_env)
     theta_rig = np.zeros(n_env)
     if trust.any():
         w = weight[trust][:, None]
         theta_rig = wh_smooth(
-            np.sum(w * (ang[trust] / ks[trust][:, None]), axis=0) / w.sum(), lam_th
+            np.sum(w * (ang[trust] / ks[trust][:, None]), axis=0) / w.sum(), lam_th, tap
         )
     for r in range(n_rot):
         theta[r] = theta_rig
@@ -796,14 +864,14 @@ def split_phases(
             w = weight[sel][:, None]
             rest = ang[sel] - ks[sel][:, None] * theta_rig[None, :]
             theta[r] = theta_rig + wh_smooth(
-                np.sum(w * (rest / ks[sel][:, None]), axis=0) / w.sum(), lam_th
+                np.sum(w * (rest / ks[sel][:, None]), axis=0) / w.sum(), lam_th, tap
             )
 
     if with_psi:
-        bw = bw_psi_hz(ks, bw_psi_slope, bw_psi_max)
+        bw = bw_psi_hz(ks, bw_psi_slope, bw_psi_max, bw_psi_min)
         for m in np.flatnonzero(strong):
             rest = ang[m] - ks[m] * theta[rot[m]]
-            psi[m] = wh_smooth(rest, wh_lambda(float(bw[m]), fs_env))
+            psi[m] = wh_smooth(rest, wh_lambda(float(bw[m]), fs_env), tap)
 
     bands = track_bands(np.asarray(k))
     return PhaseSplit(
@@ -841,8 +909,16 @@ def theta_rate(theta: Any, fs_env: float) -> np.ndarray:
     constant of a phase differentiates away), which is what makes it the thing
     to carry across windows and to add to the labels.
     """
-    t = np.asarray(theta, dtype=np.float64)
-    return np.gradient(t, axis=-1) * float(fs_env) / (2.0 * np.pi)
+    t = np.atleast_2d(np.asarray(theta, dtype=np.float64))
+    dr = np.gradient(t, axis=-1) * float(fs_env) / (2.0 * np.pi)
+    # ``np.gradient`` is ONE-SIDED at the two ends, so the first and last frame
+    # carry a different estimator from every other frame. Hold the nearest
+    # interior value instead: the stitch is built on this array, and a single
+    # wrong frame at a window edge becomes a seam.
+    if dr.shape[-1] > 2:
+        dr[:, 0] = dr[:, 1]
+        dr[:, -1] = dr[:, -2]
+    return dr.reshape(np.shape(theta))
 
 
 # ---------------------------------------------------------------------------
@@ -870,6 +946,8 @@ class JointConfig:
     bw_theta_hz: float = 1.5
     bw_psi_slope: float = LINEWIDTH_HZ_PER_K
     bw_psi_max: float = 8.0
+    #: Floor of the per-track phase-correction band — see :func:`bw_psi_hz`.
+    bw_psi_min: float = 1.5
     conc_min: float = 0.5
     per_rotor_theta: bool = True
     whiten: bool = True
@@ -1053,6 +1131,7 @@ def joint_solve_window(
                 bw_theta_hz=jc.bw_theta_hz,
                 bw_psi_slope=jc.bw_psi_slope,
                 bw_psi_max=jc.bw_psi_max,
+                bw_psi_min=jc.bw_psi_min,
                 per_rotor=jc.per_rotor_theta,
                 with_psi=it >= int(jc.psi_from_iter),
             )

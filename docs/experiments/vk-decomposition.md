@@ -350,3 +350,104 @@ is within 0.5 to 1.0 dB rms of truth away from the lines.
 3,12,80`, one recording each, all 8 microphones. Artifacts go to R2 under
 `artifacts/vk-decompose-v3/<recording_id>/` from INSIDE the job, because
 omnirun output collection silently drops files above about 25 MB.
+
+### The "half-order comb" was the instrument, and the audit that found it
+
+**Date**: 2026-08-14. The first v3 production run put the residual's k1-9
+order-cell peak at **−0.4962 orders on all four DREGON rotors** and on three of
+four FLY124 rotors, which reads as a sub-harmonic comb. It is not one. Two
+tests, both cheap, both decisive:
+
+1. **The two ends of a folded cell are the SAME physical half-integer
+   position** (order `m−0.5` and order `(m+1)−0.5`). A line must appear at
+   both. On the DREGON residual the low end read **+1.6 dB** and the high end
+   **−0.4 dB**, in nearly every cell.
+2. The cell profile is **monotone** from its low edge through the integer to
+   its high edge. That is a ramp, not a peak.
+
+The cause: one unit cell spans a whole order, which is 70 to 85 Hz of
+frequency, and the broadband floor falls steeply across that span at low
+harmonics. `cell_profile` normalized each cell by its own SCALAR median, which
+removes the level but not the slope, so a cell of pure smooth floor folds into
+a ramp and `argmax` lands on the low edge — the half-integer position — by
+construction. This is the **third** instrument of this campaign to fail in the
+same direction, after the narrow slot contrast and the rendered-comb metric.
+
+**The fix** is `_order_trend`: divide the order profile by its running median
+over one order before the fold (`order_cell_profile(detrend_orders=1.0)`, on by
+default). A smooth tilt goes to unity, a line of much less than one order in
+width passes through. Re-read of the SAME production residuals:
+
+| residual, k1-9 | before (cell median) | after (running median) |
+|---|---|---|
+| DREGON | 1.427 dB at −0.4962 | **0.305 dB at −0.030** |
+| DREGON k10-24 / k25-49 / k50-80 | 0.333 / 0.196 / 0.159 | **0.423 / 0.104 / 0.073** |
+| FLY124 | — | **1.029 dB at +0.062** |
+
+The DREGON per-rotor peak offsets scatter after the detrend (−0.50, +0.28,
+−0.215, +0.315) — noise, not a comb.
+
+### H_sub against H_cross, decided
+
+Two hypotheses survived the instrument audit for whatever structure is LEFT.
+`H_sub`: a genuine per-rotor `r/2` comb. `H_cross`: the leftover skirts of
+ANOTHER rotor's already-modelled integer line, which fold near half-order in
+the reference rotor's grid.
+
+**`H_sub` is refuted on both rigs, and `H_cross` is confirmed on FLY124.**
+
+- Per cell on DREGON, the detrended `−0.5` and `+0.5` ends collapse to about
+  ±0.5 dB with no systematic sign in any cell. `H_sub` predicts every cell
+  keeps the peak. Nothing is left to explain.
+- On FLY124 two cells DO survive the detrend, and only on the twin pair
+  (rotors 1 and 3, cells k2 and k3). There cell k2's high end and cell k3's low
+  end — the same physical order 2.5 — agree (+5.90 and +5.50 dB on rotor 1),
+  so that IS a line.
+- The absolute-frequency check names it. Rotor 1's order-2.5 energy sits at
+  **168.89 Hz**, and rotor 0's rate is 84.483 rev/s, so the line is
+  **2.0000 × r_0** — off by 0.0009 orders. It is rotor 0's own `k` 2 harmonic,
+  not a sub-harmonic of rotor 1.
+
+This also explains why FLY124's rotor 0 read +0.06 while rotors 1 to 3 read
+−0.50 under the old instrument: rotor 0 has a strong GENUINE integer-order
+leftover (2.24 dB detrended) that outweighs the tilt ramp in the `argmax`,
+while on the other three the real leftover is weak (0.49 to 0.71 dB) and the
+ramp wins.
+
+Consequence: **no half-order track grid**. The rotor-speed labels are the
+SHAFT rate, so an `r/2` line needs a period-two-revolution mechanism, and the
+measurement says there is none. The indicated correction for `H_cross` is a
+FLOOR on the per-track phase-correction bandwidth at low `k`
+(`--bw-psi slope,max,min`, default `0.6,8,1.5`): the law alone allows a `k` 2
+line only 1.2 Hz, which is narrower than its true incoherent linewidth, so the
+line keeps a skirt the model cannot follow.
+
+### The theta stitch spike: an edge frame, and a metric that overstated it
+
+`joint.theta_stitch_max_rate_hz` read 46.08 on the production run against
+0.003 on the single-window smoke. Reproduced locally with two overlapping
+estimated windows: the maximum sits at **frame 0 or the last frame of a
+window**, where the cross-fade weight is 0.0025 to 0.005 — that is, where the
+window contributes almost nothing to the stitch. Weighted by that fade, the
+same reproduction reads **0.077 Hz** against a raw 1.86 Hz. The metric was
+measuring a rotation that never reaches the bank.
+
+Three changes, all small:
+
+1. `split_phases` now weights the shaft smoother by the solver's own
+   `edge_taper`, so the estimate EXTRAPOLATES over the span where the data term
+   was faded instead of fitting the transient there.
+2. `theta_rate` holds its first and last value instead of taking
+   `np.gradient`'s one-sided difference, so no frame carries a different
+   estimator from the interior.
+3. The report now carries `theta_stitch_max_rate_hz` (fade weighted, the number
+   to read) beside `theta_stitch_max_rate_hz_raw`.
+
+### A real bug the same pass found
+
+`r2_ref_mic` was NEGATIVE on nearly every production window (DREGON −0.16,
+FLY124 −0.90 to −0.00) while the stitched ledger was healthy. The per-window
+check rebuilt the plain label carrier instead of reading the solver's own
+`env.phase`, which on the joint path carries the shaft correction — so it
+scored the bank against a carrier it was never fitted to. Fixed; the stitch
+itself always used the right phase.

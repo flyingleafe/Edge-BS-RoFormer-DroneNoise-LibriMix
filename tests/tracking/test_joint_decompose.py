@@ -21,6 +21,7 @@ import pytest
 from tracking.decompose import BandwidthSchedule, reconstruct, solve_config, solve_window
 from tracking.joint_decompose import (
     JointConfig,
+    _order_trend,
     cell_profile,
     corrected_phase,
     global_rate_correction,
@@ -442,3 +443,94 @@ def test_every_iteration_lowers_the_residual(joint_arms: dict[str, object]) -> N
     fracs = [s["residual_fraction"] for s in res.iterations]  # type: ignore[union-attr]
     assert fracs == sorted(fracs, reverse=True), fracs
     assert res.iterations[0]["k_trust"] == LADDER[0]  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# the instrument's own audit: the detrend
+
+
+def test_cell_profile_reads_zero_on_a_pure_spectral_tilt() -> None:
+    """A smooth falling spectrum must NOT read as a comb at offset -0.5.
+
+    This is the bias that produced (and then withdrew) a "half-order comb"
+    verdict on both rigs. One cell spans a whole order, the floor falls across
+    it, and normalizing by the cell's own scalar median leaves that ramp in — so
+    the fold peaks at the cell's low edge, which is the half-integer position.
+    """
+    step = 0.005
+    grid = np.arange(0.0, 10.5 + 0.5 * step, step)
+    tilt = np.exp(-0.6 * grid)  # a smooth 2.6 dB-per-order fall, no line at all
+    naive = cell_profile(tilt, grid, 1, 9, step)
+    assert naive["peak_offset"] == pytest.approx(-0.5, abs=0.02)
+    assert naive["depth_db"] > 1.0  # the artefact the campaign chased
+    trend = _order_trend(tilt, step, 1.0)
+    fixed = cell_profile(tilt, grid, 1, 9, step, trend=trend)
+    assert fixed["depth_db"] < 0.05, fixed["depth_db"]
+
+
+def test_detrend_keeps_a_real_line() -> None:
+    # The same tilt with a planted line at +0.1 orders: the detrend must remove
+    # the ramp and leave the line standing.
+    step = 0.005
+    grid = np.arange(0.0, 10.5 + 0.5 * step, step)
+    prof = np.exp(-0.6 * grid)
+    for m in range(1, 10):
+        prof[int(round((m + 0.1) / step))] *= 6.0
+    got = cell_profile(prof, grid, 1, 9, step, trend=_order_trend(prof, step, 1.0))
+    assert got["peak_offset"] == pytest.approx(0.1, abs=2 * step)
+    assert got["depth_db"] > 5.0
+
+
+def test_order_cell_profile_detrends_by_default() -> None:
+    # End to end on white noise shaped by a steep smooth tilt: no comb anywhere,
+    # so every band must read about zero depth.
+    rng = np.random.default_rng(5)
+    n_t = 6 * SR
+    f = np.fft.rfftfreq(n_t, d=1.0 / SR)
+    shape = (1.0 + (f / 80.0) ** 2) ** -0.9
+    y = np.stack(
+        [np.fft.irfft(np.fft.rfft(rng.standard_normal(n_t)) * shape, n=n_t) for _ in range(2)]
+    )
+    rates = np.full((2, n_t), 80.0)
+    prof = order_cell_profile(y, SR, rates, n_fft=4096, k_max=20, bands=((1, 9), (10, 20)))
+    for band, d in prof["bands"].items():
+        assert d["depth_db"] < 0.35, f"{band}: {d['depth_db']} at {d['peak_offset']}"
+
+
+# ---------------------------------------------------------------------------
+# the stitch seam
+
+
+def test_theta_rate_holds_its_edges() -> None:
+    # np.gradient is one-sided at the two ends, so the edge frames carry a
+    # different estimator from the interior. They are held instead, because the
+    # stitch is built on this array and one wrong frame becomes a seam.
+    fs_env = 100.0
+    t = np.arange(300) / fs_env
+    theta = np.sin(2 * np.pi * 0.3 * t)[None, :]
+    dr = theta_rate(theta, fs_env)
+    assert dr[0, 0] == pytest.approx(dr[0, 1])
+    assert dr[0, -1] == pytest.approx(dr[0, -2])
+    assert dr.shape == theta.shape
+
+
+def test_split_phases_extrapolates_over_the_tapered_edges() -> None:
+    """The shaft estimate must not fit the solver's tapered window ends.
+
+    A planted shaft phase with a fabricated spike in the first frames of the
+    envelope (what a tapered edge produces) must come back without the spike,
+    because the smoother's data weight fades there and the prior extrapolates.
+    """
+    fs_env = 100.0
+    n = 400
+    t = np.arange(n) / fs_env
+    theta = 0.2 * np.sin(2 * np.pi * 0.15 * t)
+    rotor, k = _track_table(1, 1, 6)
+    x = np.exp(1j * k[None, :, None] * theta[None, None, :]) * np.ones((2, len(k), n))
+    x[:, :, :4] *= np.exp(1j * 1.5)  # a fabricated jump inside the taper
+    got = split_phases(
+        x, k, rotor, np.ones((len(k), n), dtype=bool), fs_env, k_trust=6, with_psi=False
+    )
+    dr = theta_rate(got.theta[0], fs_env)
+    interior = float(np.abs(dr[10:-10]).max())
+    assert float(np.abs(dr).max()) < 4.0 * max(interior, 1e-6)
