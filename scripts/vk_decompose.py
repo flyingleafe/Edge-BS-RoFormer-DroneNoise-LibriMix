@@ -770,7 +770,7 @@ def stitch(
         rec = get_recording(rid, spec, label_dir, sr)
         offset = float(rec["t0_offset_s"])
         phi = shaft_phase(rec["r_audio"], sr)
-        ramp = max(0, int(round((params["window_s"] - params["hop_s"]) * params["fs_env"])))
+        _, ramp = D.window_geometry(sr, params["window_s"], params["hop_s"], params["fs_env"])
         st = stitch_envelopes(wins, out, phi, stride, ramp, r_audio=rec["r_audio"], sr=sr)
         # The joint stitch replaces the carrier with the CORRECTED one; the v2
         # stitch hands back the same phi it was given, so one line covers both.
@@ -1144,7 +1144,7 @@ def main() -> None:
     sched = BandwidthSchedule.parse(args.bw_schedule)
     out = Path(args.out)
     fs_env = 100.0  # tracking.fitness_vk.FVKConfig.fs_env
-    stride = max(1, int(round(args.sr / fs_env)))
+    stride, _ = D.window_geometry(args.sr, args.window_s, args.hop_s, fs_env)
     params = {
         "window_s": float(args.window_s),
         "hop_s": float(args.hop_s),

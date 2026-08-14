@@ -96,6 +96,7 @@ __all__ = [
     "track_bands",
     "welch_psd",
     "window_bounds",
+    "window_geometry",
     "window_span",
 ]
 
@@ -189,6 +190,22 @@ def window_span(
     a1_raw = min(n_t, int(round((float(ftv[i1 - 1]) + hop_frame_s) * sr)))
     a1 = a0 + ((a1_raw - a0) // stride) * stride
     return a0, a1
+
+
+def window_geometry(
+    sr: float, window_s: float, hop_s: float, fs_env: float = 100.0
+) -> tuple[int, int]:
+    """``(envelope stride, cross-fade ramp)`` of a windowed application.
+
+    Both numbers follow from the window grid and the envelope rate, and both are
+    needed by every driver of one: the stride is what
+    :func:`window_span` snaps to, and the ramp is how many envelope frames of
+    OVERLAP two neighbouring windows share, which is the length of the
+    cross-fade. ``fs_env`` defaults to :attr:`tracking.FVKConfig.fs_env`.
+    """
+    stride = max(1, int(round(float(sr) / float(fs_env))))
+    ramp = max(0, int(round((float(window_s) - float(hop_s)) * float(sr) / stride)))
+    return stride, ramp
 
 
 def fade_weights(n_win: int, ramp: int) -> np.ndarray:
@@ -943,7 +960,7 @@ def residual_tones(
 
     ``r_audio`` is the ``(R, T)`` audio-rate rate array over the same span.
     """
-    from scipy.signal import find_peaks, welch
+    from scipy.signal import find_peaks
 
     y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
     r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
@@ -954,8 +971,8 @@ def residual_tones(
         s1 = min(n_t, s0 + step)
         if s1 - s0 < nperseg:  # a tail too short to resolve is not reported
             continue
-        f, p = welch(y[:, s0:s1], fs=float(sr), nperseg=int(nperseg), axis=-1)
-        psd = np.asarray(p, dtype=np.float64).mean(axis=0)
+        f, p = welch_psd(y[:, s0:s1], sr, int(nperseg))
+        psd = p.mean(axis=0)
         db = 10.0 * np.log10(np.maximum(psd, 1e-300))
         keep = np.asarray(f, dtype=np.float64) <= float(f_max)
         idx, props = find_peaks(db[keep], prominence=float(prominence_db))

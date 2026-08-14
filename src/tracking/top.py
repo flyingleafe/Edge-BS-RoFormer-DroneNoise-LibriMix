@@ -1476,7 +1476,7 @@ def windowed(
     a driver that needs the windows solved in parallel, restartably, on a
     cluster keeps its own unit loop and calls the same two functions.
     """
-    from tracking.decompose import shaft_phase, window_bounds, window_span
+    from tracking.decompose import shaft_phase, window_bounds, window_geometry, window_span
     from tracking.fitness_vk import to_audio_grid
     from tracking.joint_decompose import stitch_windows, theta_rate
 
@@ -1510,8 +1510,9 @@ def windowed(
     def run(frame: td.Frame) -> td.Frame:
         audio, sr, r, times, t0 = _core_inputs(frame)
         n_t = int(audio.shape[-1])
-        stride = max(1, int(round(sr / float(fs_env if fs_env else FVKConfig().fs_env))))
-        ramp = max(0, int(round((window_s - hop_s) * sr / stride)))
+        stride, ramp = window_geometry(
+            sr, window_s, hop_s, fs_env if fs_env else FVKConfig().fs_env
+        )
         ft = np.asarray(times, dtype=np.float64) - t0
         r_audio = to_audio_grid(r, ft, n_t, sr)
         phi = shaft_phase(r_audio, sr)
