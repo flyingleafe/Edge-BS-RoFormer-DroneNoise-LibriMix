@@ -189,7 +189,9 @@ def prepare_windows(
             seg = data[:, s0 : s0 + w]
             if seg.shape[-1] < int(round(2.0 * SR)):
                 continue
-            uid = f"{rid}__w{wi:03d}"
+            # A recording_id can be a file PATH (DroneAudioSet keys carry the
+            # whole HF path), and a uid becomes a file name in three places.
+            uid = f"{_re.sub(r'[^A-Za-z0-9._-]+', '_', rid)}__w{wi:03d}"
             payload: dict[str, np.ndarray] = {"audio": seg}
             if ref_r is not None and ref_t is not None:
                 t0, t1 = s0 / SR, (s0 + seg.shape[-1]) / SR
