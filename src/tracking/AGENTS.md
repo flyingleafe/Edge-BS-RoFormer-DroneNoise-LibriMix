@@ -54,8 +54,21 @@ The stage vocabulary:
 | `fvk_stage` | `FVKConfig` | score it by F_VK, the profiled coupled-VK residual |
 | `fvk_refine_stage` | `FVKConfig` | L-BFGS on F_VK under a `k_max` annealing schedule |
 | `decompose_stage` | `FVKConfig` | split the audio into per-harmonic tracks + a residual (seam in `meta`) |
+| `joint_init_stage` | `FVKConfig` + `JointConfig` | seed the v3 alternation's state (seam in `meta`) |
+| `vk_solve_stage` | `JointConfig` | v3 **block A** — one whitened VK solve |
+| `phase_split_stage` | `JointConfig` | v3 **block B** — the shaft / per-rotor / per-track phase split |
+| `floor_stage` | `JointConfig` | v3 **block C** — the masked smooth log floor |
 | `refit_stage` | `RefitConfig` | the whole telemetry refit as one stage |
 | `guarded` | `SeedConfig` | wrap a stage with the blind per-track guard |
+
+The combinators — a stage in, a stage out:
+
+| Combinator | What it does |
+|------------|--------------|
+| `pipeline(a, b, ...)` | left-to-right composition |
+| `iterate(stage, n)` | run `stage` `n` times; `n <= 0` is the identity |
+| `windowed(inner, window_s=, hop_s=)` | run `inner` per overlapping window and stitch the banks |
+| `guarded(inner)` | run `inner`, then revert the rotors the blind guard vetoes |
 
 The recipes:
 
@@ -67,6 +80,7 @@ The recipes:
 | `peel_alternation` | `flagship` one application at a time, every frame kept |
 | `refit_stage` | presmooth → coarse-to-fine (peel → pi_kalman) to convergence |
 | `judge(candidate)` | a candidate stage → `fitness_stage` under one control |
+| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve |
 
 Every campaign driver calls a recipe. A script must not assemble a ladder of its own — if a
 variant is worth running, it is worth a named recipe here.
@@ -111,9 +125,9 @@ Three things a caller must know:
 - **The smoothness weight is not portable, so ask for `"auto"`.** `optimize_trajectory(smooth_lambda=1.0)` is calibrated for a CRUISE window (log-domain prior ~0.8 against a data term normalized to order 1). A takeoff ramp reads 244 and the window then cannot move at all. `smooth_lambda="auto"` calls `auto_smooth_lambda`, which measures the prior of the init itself and holds it to half the data term; the weight and the init prior come back in the diagnostics (`smooth_lambda` / `prior_init`). Any driver that sees whole recordings wants it.
 - **The basin knob is `bw_rps`, not `k_max`.** The `1/(K T)` law is for a coherent harmonic sum; here every harmonic has its own VK envelope with a `k`-scaled band, so the capture radius is `bw_rps / 2` rev/s at EVERY harmonic and the gradient at a 0.5 rev/s error still points at truth at `k_max` = 80. What `k_max` moves is the depth and the curvature of the well (objective at truth 0.587 -> 0.073 from `k_max` 5 to 80, neighbours barely moving), which is the precision half of the same law and why the schedule still starts coarse. Open the band to a non-capture 2.0 rev/s and `k_max` = 80 does break into 7 local minima inside ±1 rev/s.
 
-**`decompose.py`** — The WINDOWED decomposition: `x(t) = sum_{rotor,k} Re[a e^{jk phi}] + residual`, one coupled-VK solve per window, stitched. Three sections. (1) The **windowed-application primitives** — `frame_grid`, `interp_rps`, `window_bounds`, `window_span`, `fade_weights`, `to_audio_grid` (re-exported from `fitness_vk`, so a window is decomposed at the carrier it was scored at) and `shaft_phase`. Tiling a recording and cross-fading the per-window results back is the same operation whatever the windows produce, so `scripts/refine_dregon_rps.py` reads through the same functions instead of holding a second copy. (2) The **solve** — `solve_config` (the one measurement geometry), `solve_window`, `group_plan` (THE memory model: coupling is transitive, the whole comb is ONE banded system, `~1e-4 k_hi^2 window_s` GB per worker — read it before sizing a job), `reconstruct` (`vk_reconstruct`'s interpolation rule against a GLOBAL phase, plus per-track energies; the two are diffed against each other in the tests), `stitch_bank` (the phase re-reference `exp(-j k Phi(a0-1))` — without it two overlapping windows hold one physical track at two phase origins and the cross-fade cancels them — and the cross-fade), `phase_reference_deviation` (that assumption MEASURED, not assumed). (3) The **readings** — `energy_ledger` (total / tracks / residual / cross term; the tracks are not orthogonal, so the cross term is the honest statement of inter-track interference) and `phase_model_report` (per-rotor drift against `k` plus the `rank_one_share` — the shaft-jitter vs per-harmonic-drift discrimination). The sum is EXACT by construction because the residual is DEFINED as the unexplained part; only the SPLIT is estimated, and it is the MAP estimate under the VK prior. Driver: `scripts/vk_decompose.py` (data, units and file formats only).
-
-**`joint_decompose.py`** — The JOINT decomposition (v3): the same split, but with the two silent v2 conditions removed. v2 pushes every timing deviation through ONE envelope band and treats the leftover as white; a shaft that wanders 0.6 rev/s makes harmonic `k` about `0.6 k` Hz wide, so the flanks of every line become "residual" by construction above about `k` 5, and an unweighted misfit is tolerant of comb structure where the floor is loud. v3 alternates three linear-Gaussian blocks (`joint_solve_window`, `JointConfig`, `JointResult`): **A** the whitened VK solve (the coherent phase folds into the CARRIER — exact — and the smooth-floor whitening collapses to one scalar per track and frame, `whiten_weights`, so the banded structure survives untouched); **B** the phase split (`split_phases` — the `k`-weighted shaft estimate, hierarchical rig-common then per-rotor, plus a per-track `psi`, every one of them smoothed by `wh_smooth`, a Whittaker-Henderson smoother whose weight `wh_lambda` IS the solver's own Tuma relation); **C** the masked smooth floor (`masked_smooth_psd` / `SmoothPSD` — Welch the residual with every predicted line masked per frame, then a moving median and a cepstral lift). The whole seam into the solver is three optional keyword arguments of `vk_envelopes` (`phase_offset`, `env_rotation`, `data_weight`), and all three are `None` on the v2 path, which stays bit-identical (`tests/tracking/test_joint_decompose.py`). Also here: the two ACCEPTANCE INSTRUMENTS — `order_cell_profile` / `cell_profile` (read `excess_db`, the absolute comb power left, before `depth_db`, a ratio that can rise as the residual falls toward the floor) and `whitened_flatness` — and the stitch arithmetic that puts windows carrying their own shaft correction onto ONE carrier (`theta_rate` -> `global_rate_correction` -> `corrected_phase` -> `window_extra_phase`, in the RATE and never in the phase, because a phase carries an arbitrary constant per window). Three things a caller must know: the annealing ladder starts at `k` 3 because the ENVELOPE BAND and not the phase unwrap is what limits which harmonics can measure the shaft; whitening is bandwidth-neutral by default, or a down-weighted track keeps its curvature prior and its band silently narrows; the floor mask must be about three linewidths wide and also capped. Design + measured results: `docs/vk-decompose-v3-design.md`. Driver: `scripts/vk_decompose.py --joint`.
+**`decompose.py`** and **`joint_decompose.py`** — the WINDOWED decomposition, v2 and v3. They
+have their own catalog below (§3.1), because they are the one part of this package a reader is
+expected to REBUILD rather than call.
 
 **`telemetry_refit.py`** — The FITTER phase 6a's harness was built to judge (issue 17 phase 6b): `RefitConfig`, `refit_window` -> `RefitResult`, `presmooth` (THE 5 Hz detrended low pass of the campaign — the 6a driver's `lp:` candidate calls it), `k_cap_for_error` / `advance_k` (the coarse-to-fine ladder, from the phase-wrap capture rule `k <= wrap_guard_rad fs_env / (2 pi e)` — never a flat `k_caps`), `scale_summary` (the well-posed scale, per-rotor mean shift plus one joint global LS scale), and `order_and_gaps` (THE identity test). One outer iteration IS one `top.pi_kalman_arm_stage` application, so the LS peel, the peel seam and the twin rule are the flagship's, wired not rebuilt. Driver: `scripts/telemetry_refit.py`; design + acceptance: `docs/experiments/telemetry-fitness.md` § "The fitter".
 
@@ -126,6 +140,133 @@ Three things a caller must know:
 ### Constants
 
 **`rotors.py`** — Quadrotor control-allocation constants: `MIXER`, `NUM_ROTORS`, `MODE_NAMES`, `modes_from_rps`, `rps_from_modes`. `data_processing.rps_synthesis` re-exports them.
+
+## 3.1 The decomposition: the primitive inventory
+
+This is the catalog of `decompose.py` + `joint_decompose.py` + their stages. Every entry is
+importable as `tracking.<name>`. Read it beside the model it implements:
+
+```
+y_c(t) = sum_{r,k} Re[ g_{r,k,c}(t) e^{j(k phi_r(t) + k theta_r(t) + psi_{r,k}(t))} ] + n_c(t)
+```
+
+`phi` is the annotated shaft phase, `theta` a slow coherent shaft correction (rig-common plus a
+small per-rotor part), `psi` a slow per-track phase correction, `g` the residual envelope — which
+then needs AMPLITUDE bandwidth only — and `n` colored noise with a smooth log spectrum `S`. The
+sum is EXACT by construction, because the residual is DEFINED as the unexplained part. Only the
+SPLIT is estimated, and it is the MAP estimate under the VK prior. Design and measured results:
+`docs/vk-decompose-v3-design.md`; v1/v2 record: `docs/experiments/vk-decomposition.md`.
+
+**The state.** `JointState` is what the alternation accumulates and the one seam the stages pass
+along, `meta["joint"]`: the carrier, `theta`, `psi`, the floor model `psd`, and the last solve's
+`env` / `x_eff` / `residual` / `track_energy` / `n_solves`. It is frozen — every block returns a
+NEW state. The carrier is HELD and never re-derived, because the alternation is conditioned on
+one carrier for the whole window and `theta` is a correction on top of it.
+
+### Setting up a solve
+
+| Primitive | Purpose |
+|---|---|
+| `solve_config(k_max, *, sr, mics, bw_rps=1.0, f_max=6000.0) -> FVKConfig` | THE measurement geometry — one construction, so every solve agrees |
+| `k_cap(cfg, reference) -> int` | the harmonic set, from the RECORDING's reference trajectory (never the window's) |
+| `solve_audio(audio, cfg, mics=None) -> (C, T)` | the one channel-selection rule, float64 and contiguous |
+| `to_audio_grid(r, frame_times, n_t, sr) -> (R, T)` | the trajectory on the audio grid — THE carrier every solve is built from |
+| `shaft_phase(r_audio, sr) -> (R, T)` | `2 pi cumsum(r) / sr`, the fundamental phase `phi` |
+| `BandwidthSchedule(bw0_hz, slope_hz_per_k, cap_frac_of_sep, bw_abs_max)` | the v2 linewidth-matched band law, with its CLI spelling (`.parse` / `.text`) |
+| `base_bandwidths(r_audio, k_hi, cfg) -> (M,)` | the band the solver would use with no schedule — the reference the gain is taken against |
+| `line_separations(r_audio, rotor, k) -> (M,)` | Hz from each track's line to the nearest other line |
+| `track_rho2_gain(r_audio, k_hi, cfg, sched, rho_scale=1.0) -> (M,) \| None` | THE bandwidth law in the solver's own currency; both solve paths read it |
+| `group_plan(r_audio, k_hi, cfg) -> dict` | THE memory model — coupling is transitive, `~1e-4 k_hi^2 window_s` GB per worker. Read it before sizing a job |
+
+### Block A — the whitened solve
+
+| Primitive | Purpose |
+|---|---|
+| `vk_envelopes(audio, r, vk, *, k_hi=, rho2_gain=, phase_offset=, env_rotation=, data_weight=)` | THE solver. The last three arguments are the whole joint seam, and all three `None` is the v2 arithmetic bit for bit |
+| `whiten_weights(psd, k, rotor, r_env, t_env, *, clamp_db=15.0) -> (M, J)` | `1 / sqrt(S(k r(t), t))` — the Whittle weighting, collapsed to one scalar per track and frame |
+| `solve_block(state, audio) -> JointState` | block A: weights → hooks → solve → `x_eff = x e^{j psi}` → reconstruct → residual |
+| `vk_solve_stage(cfg=None, *, profile=None)` | its Frame adapter |
+| `solve_window(audio, r_audio, cfg, *, k_hi, mics=, rho_scale=, bw_schedule=) -> Envelopes` | the v2 solve — block A with no corrections and no whitening |
+| `reconstruct(x, k, rotor, phase, stride) -> (recon, track_energy)` | the bank back to audio against a GLOBAL phase, chunked in time |
+
+### Block B — the phase split
+
+| Primitive | Purpose |
+|---|---|
+| `split_phases(x, k, rotor, valid, fs_env, *, k_trust, ...) -> PhaseSplit` | the `k`-weighted shaft estimate (rig-common, then per rotor), then a per-track `psi` |
+| `split_block(state) -> (JointState, PhaseSplit)` | block B: the split folded into the accumulated corrections |
+| `phase_split_stage(cfg=None)` | its Frame adapter |
+| `wh_smooth(y, lam, weight=None) -> ndarray` | THE Whittaker-Henderson smoother — a one-dimensional VK, one banded solve |
+| `wh_lambda(bw_hz, fs) -> float` | its weight from a bandwidth, through the solver's OWN Tuma relation |
+| `bw_psi_hz(k, slope=0.6, cap=8.0, floor=1.5)` | the per-track correction band, `clip(slope k, floor, cap)` |
+| `theta_rate(theta, fs_env) -> ndarray` | `d theta / dt / 2 pi` in rev/s — the GAUGE-FREE form, the only one that crosses a window |
+| `upsample_env(vals, n_out, stride)` | the envelope grid back to audio rate, tail held |
+
+### Block C — the floor
+
+| Primitive | Purpose |
+|---|---|
+| `masked_smooth_psd(audio, sr, r_audio, k_hi, ...) -> SmoothPSD` | Welch with every predicted line masked per frame, then a moving median and a cepstral lift |
+| `floor_block(state, audio) -> JointState` | block C: the floor of what is left — the audio before the first solve, the residual after |
+| `floor_stage(cfg=None)` | its Frame adapter |
+| `SmoothPSD.pooled() -> (B, F)` | the geometric mean over microphones — what the whitening weight reads |
+| `stft_power(audio, starts, n_fft, frames_per_chunk=64)` | THE framed Hann power spectrogram of this module, shared with the order-cell probe |
+| `frame_starts(n_t, n_fft, hop)` | its frame grid |
+
+### The window layer
+
+| Primitive | Purpose |
+|---|---|
+| `frame_grid(n_t, sr, hop_s)` | the recording's own frame grid |
+| `interp_rps(vals, stamps, ft)` | telemetry onto that grid, in float64 |
+| `window_bounds(n_frames, window_s, hop_s, hop_frame_s)` | the window tiling, last window right-aligned, every frame covered |
+| `window_span(ft, i0, i1, n_t, stride, sr, hop_frame_s)` | one window's sample range, SNAPPED to the envelope stride |
+| `window_geometry(sr, window_s, hop_s, fs_env=100.0) -> (stride, ramp)` | the envelope stride and the cross-fade length |
+| `fade_weights(n_win, ramp)` | the linear cross-fade, floored so a singly-covered frame still resolves |
+| `stitch_bank(windows, phi, stride, ramp) -> dict` | the phase re-reference `exp(-j k Phi(a0-1))` plus the cross-fade |
+| `stitch_windows(windows, phi, stride, ramp, *, r_audio=, sr=) -> dict` | THE stitch: `stitch_bank` for v2, and for v3 the rate stitch that puts windows carrying their own `theta` on ONE carrier |
+| `global_rate_correction(windows, stride, a_min, a_max, ramp)` | the per-window `dr` cross-faded onto one global envelope grid |
+| `corrected_phase(r_audio, dr_env, sr, stride, a_min, a_max)` | `r + dr` and its integral — the carrier the stitched bank belongs to |
+| `window_extra_phase(theta_w, phi_hat, phi_tilde, a0, stride, n_env_w)` | the rotation that moves one window onto that carrier |
+| `phase_reference_deviation(r_audio, phi, a0, sr)` | the stitch's assumption MEASURED, not assumed |
+| `windowed(inner, *, window_s, hop_s)` | the combinator: tile, run `inner`, stitch |
+
+### The readings, and the instruments that judge a decomposition
+
+| Primitive | Purpose |
+|---|---|
+| `energy_ledger(audio, recon, track_energy, k)` | total / tracks / residual / CROSS TERM — the tracks are not orthogonal, and the cross term is the honest statement of that |
+| `phase_model_report(...)` | per-rotor drift against `k` plus `rank_one_share` — shaft jitter against per-harmonic drift |
+| `solve_report(state, audio, *, profile)` | the reading of one block-A solve: the shares, the flatness, the order cell |
+| `order_cell_profile(audio, sr, r_audio, ...) -> dict` | THE probe: the spectrum re-expressed in ORDERS, folded cell by cell. Read `excess_db` (absolute comb power left, comparable across signals) BEFORE `depth_db` (a ratio, which can rise as the residual falls toward the floor) |
+| `order_cell_bands(audio, sr, r_audio, **kw)` | the same table without the plot arrays — what a report carries |
+| `cell_profile(profile, grid, lo, hi, order_step, ...)` | one band's fold, with the in-cell trend removal that killed a published half-order verdict |
+| `whitened_flatness(residual, sr, psd)` | flatness of `|N|^2 / S` beside flatness of `|N|^2` — a correct floor leaves a flat residual |
+| `residual_tones(residual, sr, r_audio, ...)` | the NON-comb tonal peaks left, with their distance to the nearest rotor order. Measurement only |
+| `welch_psd(audio, sr, nperseg=4096)` | THE Welch of this module |
+
+### Three things that will bite a caller
+
+- **The annealing ladder starts at `k` 3**, and the reason is the ENVELOPE BAND, not the phase
+  unwrap: harmonic `k` of a shaft wandering `sigma_r` rev/s is a modulation of bandwidth about
+  `k sigma_r` Hz, and a `B` Hz band distorts its phase once `k sigma_r > B / 2`.
+- **Whitening is bandwidth-neutral by default** (`JointConfig.bandwidth_neutral`). Without it a
+  down-weighted track keeps its curvature prior, so its achieved band narrows by the same factor
+  and its envelope is over-smoothed.
+- **The floor mask must be about three linewidths wide, and capped.** Too wide is as bad as too
+  narrow, because the fit then bridges gaps instead of reading the floor.
+
+### Names this pass changed
+
+| Old | New | Why |
+|---|---|---|
+| `joint_decompose.track_rho2_gain` | `decompose.track_rho2_gain` | it was the v2 construction copied; now both solve paths read the one |
+| the loop body of `joint_solve_window` | `solve_block` / `split_block` / `floor_block` | the three blocks are separately callable and separately composable |
+| `joint_decompose.joint_solve_window` | `top.joint_solve_window` (re-exported as `tracking.joint_solve_window`) | it is a composition of stages now, and stages live only in `top.py` |
+| `scripts/vk_decompose.stitch_envelopes` (the joint half) | `joint_decompose.stitch_windows` | numerics out of the driver; the driver keeps the file I/O |
+| `scripts/vk_decompose._order_cell_bands` | `joint_decompose.order_cell_bands` | it was written twice |
+| — (new) | `JointState`, `joint_state`, `joint_result`, `solve_report`, `joint_iterations` | the state, its seed, its read-out and the report view of the log |
+| — (new) | `iterate`, `windowed`, `window_geometry`, `stft_power`, `frame_starts`, `solve_audio` | the combinators and the shared kernels they and the driver both need |
 
 ## 4. The ladder cores and the frozen registry: `pipelines.py`
 
@@ -320,7 +461,7 @@ Every tracking stage is a callable `Stage = Callable[[td.Frame], td.Frame]`. The
 
 The adapters are thin: the array cores (`vk_track`, `blind_seed`, `pi_kalman_refine`, `iter_warp_refine`, `refine_coherent`, `stage_guard`) are unchanged; all cores accept `(T,)` or `(C, T)` audio, and frame times are re-based to the audio entry's `t_start`, so time-sliced frames work. `guarded(inner)` is the blind-annotation campaign's `_apply_guard`, promoted: run `inner`, then `stage_guard` on the before/after trajectories against the whitened spectrogram, reverting vetoed rotors.
 
-**Seams.** A stage that does NOT change the trajectory leaves its product in `meta` and logs nothing; the stage that consumes it records what it consumed. `peel_stage` and `decompose_stage` are the two such stages — `peel_stage` leaves `meta["peel_seam"]`, `pi_kalman_stage` eats it, clears it and reports the peel diagnostics in its own entry; `decompose_stage` leaves `meta["decompose"]` (the envelope bank, the global phase, the track sum and the per-track energies) for a caller rather than for a later stage, and reports the energy ledger. That is what keeps one application of the flagship one log entry however it is composed, and it is why `pipeline(peel_stage(...), pi_kalman_stage(...))` reproduces the fused `pi_kalman_arm_stage` bit for bit (`tests/tracking/test_top.py`). The annealed `pi` variants carry their trust region the same way — the last `band_b0_final` in the log — so the flagship is a plain composition and not a driver.
+**Seams.** A stage that does NOT change the trajectory leaves its product in `meta` and logs nothing; the stage that consumes it records what it consumed. `peel_stage` and `decompose_stage` are two such stages — `peel_stage` leaves `meta["peel_seam"]`, `pi_kalman_stage` eats it, clears it and reports the peel diagnostics in its own entry; `decompose_stage` leaves `meta["decompose"]` (the envelope bank, the global phase, the track sum and the per-track energies) for a caller rather than for a later stage, and reports the energy ledger. That is what keeps one application of the flagship one log entry however it is composed, and it is why `pipeline(peel_stage(...), pi_kalman_stage(...))` reproduces the fused `pi_kalman_arm_stage` bit for bit (`tests/tracking/test_top.py`). The annealed `pi` variants carry their trust region the same way — the last `band_b0_final` in the log — so the flagship is a plain composition and not a driver.
 
 ```python
 import tracking as trk
@@ -340,7 +481,27 @@ r, ft = trk.get_rps(frames[-1])
 diag = [f["meta"]["tracking"][-1] for f in frames[1:]]         # peel + step + wall per app
 ```
 
-Each application is `flagship(1)` = `peel_stage` then `pi_kalman_stage` — `make_peels` at the current track, then one `pi_kalman_refine` pass on the peeled residuals through the tracker's `peel_audio`/`pair_audio` seam. `peel_alternation` is a driver only because it returns every intermediate frame; the alternation itself is a composition. `tracking_frame(..., dtype=np.float64)` keeps a float64 signal exact (the frame stores float32 by default and `get_audio` returns whichever it holds).
+The third seam is `meta["joint"]`, and it is the one a stage both READS and REWRITES: the
+`JointState` of the v3 alternation (§3.1). The three blocks are separate stages, so the whole
+method is hand-composable and every round leaves its own log entry:
+
+```python
+import tracking as trk
+
+state = trk.joint_state(r_audio, cfg, k_hi=80, n_t=n_t)     # or joint_init_stage, from a frame
+run = trk.pipeline(
+    trk.floor_stage(),
+    trk.iterate(trk.pipeline(trk.vk_solve_stage(), trk.phase_split_stage(), trk.floor_stage()), 2),
+    trk.vk_solve_stage(profile=True),
+)
+out = run(trk.with_meta(frame, joint=state))
+res = trk.joint_result(trk.joint_state_of(out), trk.joint_iterations(out))
+```
+
+That composition IS `joint_solve_window`, which is why there is no second path. A whole
+recording is `trk.windowed(run, window_s=12, hop_s=9)`.
+
+Each application of the flagship is `flagship(1)` = `peel_stage` then `pi_kalman_stage` — `make_peels` at the current track, then one `pi_kalman_refine` pass on the peeled residuals through the tracker's `peel_audio`/`pair_audio` seam. `peel_alternation` is a driver only because it returns every intermediate frame; the alternation itself is a composition. `tracking_frame(..., dtype=np.float64)` keeps a float64 signal exact (the frame stores float32 by default and `get_audio` returns whichever it holds).
 
 `scripts/vk_blind_annotation.py` and `scripts/vk_blind_sweep.py` are GONE — every calibrated
 config and every ladder core they held is in `pipelines.py`, their PIT scorer is

@@ -328,8 +328,8 @@ def test_joint_solve_writes_the_extra_arrays_and_stitches(tmp_path) -> None:
     on disk, the stitch recognises them, it hands back a CORRECTED carrier, and
     the reconstruction against that carrier still explains the clip.
     """
-    from tracking.decompose import solve_config
     from tracking import joint_solve_window
+    from tracking.decompose import solve_config
     from tracking.joint_decompose import JointConfig, theta_rate
 
     audio, rates = _synth("common")

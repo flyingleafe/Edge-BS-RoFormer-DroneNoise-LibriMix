@@ -46,6 +46,19 @@ Every microphone sees the same phase deviation up to one constant of its own, an
 so the alternation is block-coordinate descent on one MAP objective. One iteration is about one
 v2 solve, because the other two blocks are very cheap.
 
+Each block is a function `JointState -> JointState` (`solve_block`, `split_block`,
+`floor_block`) with a Frame stage beside it (`vk_solve_stage`, `phase_split_stage`,
+`floor_stage`), and the alternation is their composition:
+
+```
+floor -> (iters - 1) x (solve -> phase split -> floor) -> solve
+```
+
+`joint_solve_window` IS that composition, so there is no second path to keep in agreement. The
+state the blocks pass along is `JointState` — the carrier, `theta`, `psi`, the floor model and
+the last solve's products — and it travels in the frame as the seam `meta["joint"]`. The
+catalog of every primitive is `src/tracking/AGENTS.md` § 3.1.
+
 ### Block A — the whitened VK solve
 
 The coherent phases fold into the CARRIER, which is an exact reparametrization: `k (phi +
