@@ -207,6 +207,11 @@ pythonVersion = "3.12"
 # Unknown), diverging from editor/hook runs.
 venvPath = "."
 venv = ".venv"
+# Resolve the project's own packages from THIS checkout's src/ first. The venv's
+# editable-install .pth points at the main checkout, so inside a git worktree
+# pyright would otherwise type-check every `from models import ...` against the
+# other tree's code (and flag anything added on the branch as missing).
+extraPaths = ["src"]
 # writing/** holds frozen report/slide scripts pinned to their publication
 # date; they reference since-refactored APIs by design (same rationale as
 # the ruff E402 exemption above).

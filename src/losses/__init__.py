@@ -10,6 +10,11 @@ dependency) are also exported for direct use/testing.
 from __future__ import annotations
 
 from losses._common import Loss
+from losses.amplitude_target import (
+    AmplitudeTarget,
+    AmplitudeTargetLoss,
+    band_powers,
+)
 from losses.composite import CompositeLoss, LossTerm
 from losses.masked import MaskedLoss, masked_loss
 from losses.pit import (
@@ -50,6 +55,9 @@ from losses.spectral_likelihood import (
 
 __all__ = [
     "Loss",
+    "AmplitudeTarget",
+    "AmplitudeTargetLoss",
+    "band_powers",
     "CompositeLoss",
     "LossTerm",
     "MaskedLoss",

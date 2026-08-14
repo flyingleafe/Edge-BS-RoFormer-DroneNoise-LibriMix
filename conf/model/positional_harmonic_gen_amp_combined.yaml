@@ -1,0 +1,77 @@
+# positional_harmonic_gen — COMBINED-RIG AMPLITUDE-TARGET arm, single embedding.
+#
+# The C-series successor of positional_harmonic_gen_amp_perdrone. Same emitter
+# (the E6 winner: OU RPS-jitter + z-noise + spectral-norm FiLM), same amplitude
+# objective, one thing changed: the PROPAGATION HEAD.
+#
+# Amplitude-only propagation is an exact multiplication — no delays, no
+# summation:
+#
+#   A_obs[r,k,c](t) = A_src[r,k](t) * (1 / dist_{r,c}) * EQ_c(f_k(t))
+#
+# `1/dist` is fixed by the rig geometry (the corrected loaders: DREGON
+# `_correct_mic_frame`, Michael's horizontal ring), so for these static rigs it
+# is one constant per (rotor, microphone). `EQ_c` is LEARNABLE and new here:
+# mic_eq_knots control points, log-spaced over eq_f_min..eq_f_max, holding the
+# log gain, one curve per (rig, microphone) and SHARED across rotors. It
+# REPLACES the frequency-flat per-microphone scalar the v1/v2 arms fitted
+# (`log_mic_gain` is not built when mic_eq_knots > 0 — a flat EQ IS that
+# scalar).
+#
+# Why: a room's reverberant transfer is frequency-structured, and a rate-swept
+# harmonic SAMPLES that structure, which is what puts the rps-correlated ripple
+# in the measured envelopes. A plain 1/r law cannot express it. Delays are
+# absent because they only rotate phase, which an amplitude target never sees,
+# and the rotor sum is absent because the decomposition already separated the
+# rotors. 16 knots over 20 Hz..8 kHz is ~2.6 knots per octave — low enough that
+# the curve cannot chase a single harmonic. Zero init = unity gain, so the arm
+# starts exactly where the v2 arms did.
+#
+# WHAT IS SHARED ACROSS RIGS (the science of the combined run): the per-rotor
+# SOURCE model — the emitter that maps RPS + embedding to harmonic amplitudes —
+# is one network for both rigs. The geometry gains and the EQ are PER RIG. The
+# rig id is the drone name already carried by `meta.drone`, so the codec's
+# existing `drone_names` path selects both the codebook code and the
+# propagation head.
+#
+# BROADBAND: unchanged from the v2 arms — per-microphone gains plus a static
+# per-microphone per-band floor, no EQ. Per-rotor attribution of the residual is
+# REFUTED on both arrays (docs/experiments/residual-attribution.md), so the
+# broadband branch stays constrained rather than expressive. Per-rotor broadband
+# SOURCES are a separate pending campaign; the seam for them is the emitter's
+# own `noise_amps` (already per rotor) — see the doc.
+#
+# JITTER IS OFF IN THIS PATH BY CONSTRUCTION. The OU perturbation is applied to
+# the carrier AFTER the amplitude network runs, so the control curves the loss
+# sees are the clean ones. The jitter knobs are kept only so this checkpoint
+# RENDERS like the m-arms it is compared against.
+#
+# CHECKPOINT COMPAT: `mic_eq.log_eq.*` replaces `log_mic_gain.*` —
+# new-training-only, and not loadable into a v2 checkpoint or from one.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+  amplitude: true
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+  rps_jitter_sigma: 0.6          # inert here (rendering-only), see above
+  rps_jitter_tau: 0.016
+  learn_rps_jitter_sigma: true
+  z_noise_std: 0.1
+  film_spectral_norm: true
+  amp_calibration: true
+  noise_floor_bands: 60          # per-mic static incoherent floor
+  n_mics: 8
+  mic_eq_knots: 16               # <-- the learnable per-mic EQ (per rig)
+  eq_f_min: 20.0
+  eq_f_max: 8000.0               # the 16 kHz Nyquist
+model_type: null
+legacy_config_path: null

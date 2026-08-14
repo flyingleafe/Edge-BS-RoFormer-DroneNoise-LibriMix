@@ -90,10 +90,17 @@ def test_metric_suite_grouped_raises_without_group_by():
         raise AssertionError("expected ValueError when group_by was not set")
 
 
-def test_metric_suite_rejects_empty():
-    try:
-        MetricSuite({})
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("expected ValueError for empty metrics dict")
+def test_metric_suite_allows_empty():
+    """An empty suite is legal — `conf/metrics/none.yaml`.
+
+    An objective whose validation number IS the objective (the amplitude-target
+    arms, which monitor `val_loss`) wants no second, misaligned scalar: scoring
+    a rendered realization is exactly the comb-blind selector the
+    perrotor-dynamics campaign disqualified. Evaluating nothing must therefore
+    produce empty rows, not an error.
+    """
+    suite = MetricSuite({})
+    assert suite.metrics == {}
+    result = suite.evaluate([])
+    assert result.metric_names == []
+    assert result.aggregate("mean") == {}

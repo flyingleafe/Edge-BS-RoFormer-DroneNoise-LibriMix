@@ -1,0 +1,27 @@
+# @package _global_
+# RENDERING twin of gen_a2_amp_perrotor — identical model parameters, ordinary audio
+# codec, so scripts/eval_gen_comb_real.py can render an amplitude-trained
+# checkpoint. Never trained; `--checkpoint` always points at a gen_a2_amp_perrotor file.
+# The data entry is the m-arm's stream, because the comb readout reads the
+# label variant off cfg.data.train.params (refined labels for DREGON).
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic_refined
+  - override /model: positional_harmonic_gen_amp_perrotor_render
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_a2_amp_perrotor_render
+
+epochs: 1
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+checkpoint_every: 1
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false

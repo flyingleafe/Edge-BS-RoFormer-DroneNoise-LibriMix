@@ -75,8 +75,10 @@ class MetricSuite:
     """
 
     def __init__(self, metrics: Mapping[str, Metric]) -> None:
-        if not metrics:
-            raise ValueError("MetricSuite requires at least one metric")
+        # An EMPTY suite is legal: an objective whose validation number is the
+        # objective itself monitors ``val_loss`` and wants no second, misaligned
+        # scalar (``conf/metrics/none.yaml`` — see the amplitude-target arms).
+        # ``evaluate`` then returns empty rows and ``aggregate`` an empty dict.
         self.metrics = dict(metrics)
 
     def evaluate_one(self, pred: td.Frame, target: td.Frame) -> dict[str, float]:

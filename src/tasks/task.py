@@ -114,6 +114,7 @@ def noise_generation(
     return_dict: bool = False,
     distributional: bool = False,
     spatial: bool = False,
+    amplitude: bool = False,
 ) -> Task:
     """RPS trajectories + array geometry in, synthesized drone noise at
     each microphone out.
@@ -142,6 +143,30 @@ def noise_generation(
     needs this.
     """
     del conditioned, return_dict
+    if amplitude:
+        # The AMPLITUDE-TARGET contract: no waveform at all. The model predicts
+        # the per-(mic, rotor, harmonic) amplitude envelopes and the per-mic
+        # broadband power envelope, which is what the Vold-Kalman decomposition
+        # supplies targets for (`losses.AmplitudeTargetLoss`); synthesising audio
+        # would only add cost and a phase the objective never looks at. Both
+        # entries live on the emitter's own control grid, hence untyped trailing
+        # dims and no rate.
+        return Task(
+            name="noise_generation",
+            input_spec=FrameSpec(
+                {
+                    "rps": _rps_spec(None),
+                    "mic_pos": SeriesSpec(dims=("batch", "mic", None), time=None),
+                    "rotor_pos": SeriesSpec(dims=("batch", "rotor", None), time=None),
+                }
+            ),
+            output_spec=FrameSpec(
+                {
+                    "amp_pred": SeriesSpec(dims=("batch", "mic", "rotor", None, None), time=None),
+                    "noise_psd": SeriesSpec(dims=("batch", "mic", None, None), time=None),
+                }
+            ),
+        )
     outputs = {"audio": SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)}
     if distributional:
         outputs["coherent"] = SeriesSpec(dims=("batch", "mic", "time"), time="grid", rate=sr)

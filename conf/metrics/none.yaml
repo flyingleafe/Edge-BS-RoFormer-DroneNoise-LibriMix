@@ -1,0 +1,7 @@
+# No metric suite. For objectives whose validation number IS the objective —
+# the amplitude-target arms monitor `val_loss` (optim.monitor: val_loss), and a
+# metric computed on a *rendered* realization would be exactly the comb-blind
+# scalar the perrotor-dynamics campaign showed to be an unreliable selector
+# (docs/experiments/generator-perrotor-dynamics.md, finding 4). Final
+# checkpoint selection is comb-aware and offline (scripts/eval_gen_comb_real.py).
+terms: []

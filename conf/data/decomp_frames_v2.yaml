@@ -1,0 +1,44 @@
+# The published Vold-Kalman decompositions (decomp-frames-v2: DREGON
+# free-flight_nosource_room1 on the REFINED labels + Michael's FLY124/FLY125),
+# cut into 1 s chunks. Every chunk carries the amplitude envelope bank at
+# 100 Hz, its validity mask, the broadband residual and the exact audio-rate
+# carrier the solve used — see data_processing.frame_datasets.DecompFrameDataset.
+#
+# The split is a TIME split inside each recording, holding out a MIDDLE 10 %
+# block: a flight recording begins with the take-off ramp and ends with the
+# landing one, so a held-out block at either end is a different flight regime
+# (measured: a leading 10 % block averages 41 rev/s against 79 in the
+# remainder), which would make the monitored validation loss report regime
+# transfer instead of fit. min_motor_rps 30 rejects what ramp remains.
+#
+# TARGET-VERSION NOTE: `dataset` selects the DECOMPOSITION run. v1 solved every
+# track at a flat 1 Hz bandwidth, which under-resolves the real (k-growing)
+# linewidth and leaves part of the mid-k line energy in the residual, so v1
+# amplitudes UNDERESTIMATE mid/high-k lines. Switch to decomp-frames-v2
+# (conf/data/decomp_frames_v2.yaml) once it is materialized.
+train:
+  _target_: data_processing.frame_datasets.DecompFrameDataset.build_train
+  params:
+    dataset: decomp-frames-v2
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_position: middle
+    min_motor_rps: 30.0
+    seed: 42
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.DecompFrameDataset.build_valid
+  params:
+    dataset: decomp-frames-v2
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_position: middle
+    min_motor_rps: 30.0
+    seed: 42
+  iterable: false
+batch_size: null
+num_workers: null

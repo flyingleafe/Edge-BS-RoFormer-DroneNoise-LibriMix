@@ -57,6 +57,7 @@ from .positional_harmonic_gen import (
     fractional_delay,
     propagate,
 )
+from .propagation import MicEQ
 from .wind_wake_gen import (
     PositionalHarmonicPlusWindGen,
     QuadDynamics,
@@ -89,6 +90,7 @@ __all__ = [
     "MultiScaleSTFT",
     "smoothness_penalty",
     "PositionalHarmonicNoiseGen",
+    "MicEQ",
     "fractional_delay",
     "propagate",
     "PositionalHarmonicPlusWindGen",

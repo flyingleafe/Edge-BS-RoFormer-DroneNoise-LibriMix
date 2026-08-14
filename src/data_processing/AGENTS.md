@@ -45,7 +45,7 @@ The data layer has three layers, each declared exactly once — see
 |------|---------|
 | `streams.py` | dload ↔ tdseries bridge: `DloadFrameDataset`, the generic `tdframe-v1` Frame codec (`frame_to_sample`/`sample_to_frame`), pipeline combinators (`to_frames`/`frame_windows`/`mix_frames`/`resample_frames`), `ensure_local`/`resolve_source` (`dload:` URIs), `iter_published_frames`, `open_repository`/`local_repository`. |
 | `online_mixing.py` | The online-mix **compiler**: a policy YAML → one infinite `dload.Pipeline` of per-sample `td.Frame`s (`build_online_mix_pipeline`), built from `build_noise_stream` (real `kind: frames` records, synthetic engines, `kind: audio_pool`) and `build_speech_stream` (`include`/`exclude` speaker filters). Curriculum staging + per-sample-id augmentation RNG (`make_rng`) are unchanged. |
-| `frame_datasets.py` | torch `Dataset` adapters: `DregonLMFrameDataset`, `DNLMFrameDataset`, `SEValidFrameDataset`, `OnlineMixFrameDataset` (thin wrapper over the compiled pipeline; `flatten_channels` = a `flat_map` stage, `rps_corruption` = a `map` stage), `NoiseGenFrameDataset`, `StaticCombGenDataset` (the Phase-7 label-sensitivity probe: a frozen-profile comb whose target is always the TRUE trajectory and whose *conditioning* is switched by `label_mode`). |
+| `frame_datasets.py` | torch `Dataset` adapters: `DregonLMFrameDataset`, `DNLMFrameDataset`, `SEValidFrameDataset`, `OnlineMixFrameDataset` (thin wrapper over the compiled pipeline; `flatten_channels` = a `flat_map` stage, `rps_corruption` = a `map` stage), `NoiseGenFrameDataset`, `DecompFrameDataset` (stride-aligned chunks of the published VK decompositions — amplitude envelopes + residual + carrier; the amplitude-target arms. `dataset` takes a **list** of published datasets and concatenates their records — the v3 solve is published per rig, and each record keeps its own `drone` id, which is the rig id the model's propagation head is keyed by), `StaticCombGenDataset` (the Phase-7 label-sensitivity probe: a frozen-profile comb whose target is always the TRUE trajectory and whose *conditioning* is switched by `label_mode`). |
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's (accepts `frames:NAME[@VER]` specs, `dload:` URIs, or local paths). |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` as a noise **source** (`kind: generated`). One background **spawn** producer process renders chunks into a shared-memory ring buffer; fork DataLoader workers read finished chunks (lock-free seqlock). See § "Generated noise source". |
 | `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP as a noise **source** (`kind: gp`, G3). See § "GP rotor-noise source". |
@@ -738,6 +738,22 @@ at the existing `dload.lock` pin (dry-run by default; `--commit` to write).
   Spec `AVQ-egonoise-vkrps` (adopt-only — a GPU annotator sits in the loop); consumed as `kind: frames` in
   `conf/online_mix/beatvk_avq_dload.yaml` (beat-VK R2 arm). Labels are
   cruise-only (66–117 rev/s), not telemetry — treat as pseudo-ground-truth.
+- **VK decompositions** (1 materialized, `tdframe-v1`): `decomp-frames-v1` —
+  the coupled Vold-Kalman decomposition of the three decomposable real
+  recordings (DREGON `free-flight_nosource_room1` on the refined labels,
+  Michael's FLY124/FLY125), as per-`(mic, rotor, k)` amplitude envelopes at
+  100 Hz + validity mask + broadband residual + the exact audio-rate carrier the
+  solve used, all on one re-anchored time origin. Adopt-only (a multi-hour
+  cluster solve sits in the loop; `scripts/vk_decompose.py`, artifacts under
+  `r2://ml-data/artifacts/vk-decompose/`). `decomp-frames-v2` is the same join
+  over the linewidth-matched re-solve and is declared but not yet materialized —
+  v1 used a FLAT 1 Hz per-track bandwidth, so its mid/high-k amplitudes are
+  underestimates and its residual carries the leaked comb energy.
+  `decomp-frames-v3-{dregon,michaels}` (the combined-rig arms' source) is
+  published PER RIG and is **not pinned yet** — the names in
+  `conf/data/decomp_frames_v3_combined.yaml` are placeholders until the
+  derivation lands. Consumers: `DecompFrameDataset` +
+  `docs/experiments/amplitude-target-training.md`.
 - **Fixed SE validation sets** (3, `tdframe-v1`, `{mixture,target,meta}` per
   clip; builder `derivations.generate_se_valid`): `SE-valid-drone`,
   `SE-valid-harmonic` (F1), `SE-valid-avq-survey` (F2, 250 clips).

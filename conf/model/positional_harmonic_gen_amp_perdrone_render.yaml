@@ -1,0 +1,68 @@
+# RENDERING twin of positional_harmonic_gen_amp_perdrone.yaml — the SAME parameters, so the
+# same checkpoint loads strictly, with the amplitude codec swapped back for the
+# ordinary audio one. It exists because the comb readout
+# (scripts/eval_gen_comb_real.py) renders through each arm's own codec, and the
+# amplitude codec deliberately produces no waveform. Train the arm with the
+# amplitude config; evaluate the checkpoint with this one.
+#
+# positional_harmonic_gen — AMPLITUDE-TARGET arm, per-drone codebook only.
+#
+# Architecturally identical to positional_harmonic_gen_cond_jitter_latreg_perdrone
+# (the E6 winner: OU RPS-jitter + z-noise + spectral-norm FiLM), plus the
+# absolute-level calibration the amplitude objective needs. What changes is the
+# OBJECTIVE, not the network: `task_params.amplitude` makes the codec ask the
+# model for `amp_stats` — the per-(mic, rotor, harmonic) amplitude envelopes and
+# the summed per-mic broadband power — instead of a rendering, and
+# `losses.AmplitudeTargetLoss` scores those against the Vold-Kalman
+# decomposition of the real recordings (`decomp-frames-v1`).
+#
+# JITTER IS OFF IN THIS PATH BY CONSTRUCTION. The OU perturbation is applied to
+# the carrier AFTER the amplitude network runs, so the control curves the loss
+# sees are the clean ones — which is what the objective wants: the target
+# envelopes already carry the recording's real linewidth, so the model should
+# learn the CLEAN amplitude and keep jitter as a rendering-time device. The
+# jitter knobs below are therefore inert during training and are kept only so
+# this checkpoint RENDERS exactly like the m-arms it is compared against.
+#
+# amp_calibration adds three name-keyed log-gains per drone (global, per-mic,
+# and a power-domain one for the broadband branch) — the targets are in the
+# recording's absolute units and the emitter's output is not. They are applied
+# to every prediction path, so a calibrated model also renders at the
+# recording's level. n_mics 8 = the DREGON array (Michael's is 8 too).
+#
+# CHECKPOINT COMPAT: new state-dict keys (log_gain / log_gain_noise /
+# log_mic_gain) on top of the per-drone sigma + spectral-norm ones —
+# new-training-only.
+#
+# The broadband branch also carries a per-microphone gain of its own plus a
+# static per-mic per-band floor (noise_floor_bands). Measured reason
+# (docs/experiments/residual-attribution.md): per-rotor attribution of the
+# residual is REFUTED on both arrays — the residual is 70-90 % per-mic
+# incoherent and DREGON's per-mic residual energy spread is 8.54 dB, while four
+# equal 1/r rotor sources can produce at most 1.59 dB. Without those two knobs
+# the rotor-propagated term would be asked to make a pattern it structurally
+# cannot, and would drag the coherent per-mic gains (the array-calibration
+# readout) with it.
+task: noise_generation
+task_params:
+  sr: [16000, 1]
+  conditioned: true
+  return_dict: false
+_target_: models.registry.build_noise_gen_model
+params:
+  model_name: positional_harmonic_gen
+  sample_rate: 16000
+  n_harmonics: 100
+  use_diff_noise: true
+  cond_dim: 16
+  drone_names: [dregon, michaels]
+  rps_jitter_sigma: 0.6          # inert here (rendering-only), see above
+  rps_jitter_tau: 0.016
+  learn_rps_jitter_sigma: true
+  z_noise_std: 0.1
+  film_spectral_norm: true
+  amp_calibration: true          # <-- the absolute-level gains
+  noise_floor_bands: 60          # per-mic static incoherent floor (see below)
+  n_mics: 8
+model_type: null
+legacy_config_path: null

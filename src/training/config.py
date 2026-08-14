@@ -350,7 +350,14 @@ def build_losses(loss_cfg: Any) -> CompositeLoss:
 def build_metrics(metrics_cfg: Any) -> MetricSuite:
     d = _to_dict(metrics_cfg)
     terms = d.get("terms") or []
-    if not terms:
+    if terms is None:
+        raise ValueError("metrics config has no terms")
+    # An EMPTY suite is legal (conf/metrics/none.yaml): an objective whose
+    # validation number is the objective itself monitors `val_loss`, and adding
+    # a metric only to have one would mean scoring something the training does
+    # not optimize — exactly the comb-blind selector the perrotor-dynamics
+    # campaign disqualified. A MISSING `terms` key is still an error.
+    if "terms" not in d:
         raise ValueError("metrics config has no terms")
     metrics = {
         term["name"]: instantiate_target(term["_target_"], term.get("params", {})) for term in terms

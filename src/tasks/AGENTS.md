@@ -25,7 +25,7 @@ names.
 | `speech_enhancement` | `speech-enhancement/` | `forward(x, rps=None) → (B, 1, T)` or `(enhanced, rps_pred)` | `mixture` (+ optional `rps`) in, `enhanced` (+ optional `rps_pred`) out. Paper 1 + Paper 2 families |
 | `rps_prediction` | `rps-prediction/` | `forward(audio) → (B, 4, T_stft)` | Models in `src/models/registry.py::RPS_MODEL_REGISTRY`. `use_cond=True` is the conditional-refiner variant: `forward(audio, rps_cond)`, plain (non-PIT) loss |
 | `salience_rps` | — (see below) | `forward(audio) → (B, F, T)` logits | Mixture in, frequency-salience logits out; RPS is derived at eval time by Hungarian tracking. BCE-on-salience training. Configs `conf/model/{multif0,basic_pitch}_salience*.yaml` |
-| `noise_generation` | `noise-generation/` | `forward(rps, rel_pos) → (B, M, T)` | RPS + array geometry in, per-mic drone noise out. `distributional`/`spatial` widen the output contract (mean + PSD envelopes) for the likelihood objectives |
+| `noise_generation` | `noise-generation/` | `forward(rps, rel_pos) → (B, M, T)` | RPS + array geometry in, per-mic drone noise out. `distributional`/`spatial` widen the output contract (mean + PSD envelopes) for the likelihood objectives; `amplitude` REPLACES it — the codec calls the model's `amp_stats` and the task emits `amp_pred`/`noise_psd` with no waveform at all, for the Vold-Kalman amplitude objective (`losses.AmplitudeTargetLoss`, docs/experiments/amplitude-target-training.md) |
 
 `salience_rps` has no subdirectory of its own: it is a *readout* variant of
 RPS prediction (same input, same data, different output head and loss), so

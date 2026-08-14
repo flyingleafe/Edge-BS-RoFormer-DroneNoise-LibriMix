@@ -1,0 +1,44 @@
+# @package _global_
+# COMBINED-RIG AMPLITUDE-TARGET arm 2: + PER-ROTOR SUB-EMBEDDINGS
+# (z_r = z_rig + dz_r), DREGON + Michael's together, on the v3
+# (linewidth-matched) decompositions.
+#
+# The A/B partner of gen_c1_amp_combined — same data, same objective, same
+# propagation head; the ONLY difference is the per-rotor sub-embedding, which
+# zero-inits to the single-embedding arm and is therefore a strict superset.
+# Both run through the new amplitude-only propagation head:
+#   A_obs[r,k,c](t) = A_src[r,k](t) * (1/dist_{r,c}) * EQ_c(f_k(t))
+# with a learnable smooth per-(rig, microphone) EQ (16 log-f knots) replacing
+# the frequency-flat per-microphone scalar of the v1/v2 arms. The SOURCE model
+# is shared across rigs; geometry gains and EQ are per rig
+# (docs/experiments/amplitude-target-training.md).
+#
+# monitor: val_loss — the objective on held-out chunks. There is no rendered
+# realization to score here, and the perrotor-dynamics campaign showed that a
+# comb-blind scalar is a lottery as a selector; final selection across epochs is
+# comb-aware and offline (scripts/eval_gen_comb_real.py through the
+# *_render twin config), which is why checkpoint_every is 1.
+#
+# DATA PINS PENDING: conf/data/decomp_frames_v3_combined.yaml names the two v3
+# datasets as placeholders. Confirm the names and pin them before launching.
+defaults:
+  - override /data: decomp_frames_v3_combined
+  - override /model: positional_harmonic_gen_amp_combined_perrotor
+  - override /loss: amplitude_target_eq
+  - override /metrics: none
+
+experiment_name: gen_c2_amp_combined_perrotor
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+checkpoint_every: 1
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: val_loss
+  monitor_mode: min
+
+amp: false

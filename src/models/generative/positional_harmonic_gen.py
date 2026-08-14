@@ -95,6 +95,44 @@ def fractional_delay(
     return torch.fft.irfft(spec, n=n, dim=-1)
 
 
+def amplitude_gains(
+    rel_pos: torch.Tensor,
+    *,
+    ref_distance: float = 1.0,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """The per-(mic, rotor) ``1/r`` amplitude weight of :func:`propagate`, alone.
+
+    ``propagate`` folds three things into one operation: this attenuation, a
+    per-(mic, rotor) delay, and the sum over rotors. The amplitude-target path
+    (see :meth:`PositionalHarmonicNoiseGen.amp_stats`) wants only the first:
+
+    - the **delay** rotates phase, and a per-harmonic amplitude ENVELOPE at
+      ~100 Hz is insensitive to a sub-millisecond shift (rotor ranges are
+      0.2-0.4 m, so ``tau < 1.2 ms`` — well inside one envelope frame);
+    - the **sum over rotors** must not happen, because the Vold-Kalman
+      decomposition that produces the targets has already separated the rotors.
+      That separation is exactly why the amplitude objective has no interference
+      problem: each ``(rotor, harmonic, mic)`` envelope is supervised on its own.
+
+    Args:
+        rel_pos: ``[B, R, 3]`` (single observer) or ``[B, M, R, 3]``.
+        ref_distance: reference distance of the ``1/r`` law (metres).
+        eps: distance floor, so a coincident point does not divide by zero.
+
+    Returns:
+        ``[B, M, R]`` gains (``M = 1`` for the single-observer input shape).
+    """
+    if rel_pos.shape[-1] != 3:
+        raise ValueError(f"rel_pos last dim must be 3 (xyz), got {tuple(rel_pos.shape)}")
+    if rel_pos.dim() == 3:
+        rel_pos = rel_pos.unsqueeze(1)  # [B, 1, R, 3]
+    elif rel_pos.dim() != 4:
+        raise ValueError(f"rel_pos must be [B, R, 3] or [B, M, R, 3], got {tuple(rel_pos.shape)}")
+    dist = torch.linalg.vector_norm(rel_pos, dim=-1).clamp_min(eps)  # [B, M, R]
+    return ref_distance / dist
+
+
 def propagate(
     sources: torch.Tensor,
     rel_pos: torch.Tensor,
@@ -235,6 +273,31 @@ class PositionalHarmonicNoiseGen(nn.Module):
         self.ref_distance = ref_distance
         self.eps = eps
 
+    def _fold(
+        self, rps: torch.Tensor, z: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """``[B, R, T]`` rates (+ code) -> the single-rotor emitter's folded inputs.
+
+        The rotor axis goes into the batch, because the emitter is a
+        ``n_oscillators=1`` network. ``z`` may be per-clip ``[B, d]`` (the same
+        code for every rotor — the default) or per-rotor ``[B, R, d]``
+        (``z_r = z_drone + δz_r``): the former is broadcast across the folded
+        rotor axis, the latter folds its own axis in directly, so each rotor's
+        emitter sees its own code. Shared by :meth:`emit` and
+        :meth:`amp_stats` so the two cannot drift apart.
+        """
+        if rps.dim() != 3:
+            raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
+        b, r, t = int(rps.shape[0]), int(rps.shape[1]), int(rps.shape[2])
+        folded = rps.reshape(b * r, 1, t)
+        if z is None:
+            return folded, None
+        if z.dim() == 3:
+            if tuple(z.shape[:2]) != (b, r):
+                raise ValueError(f"per-rotor z must be [B={b}, R={r}, d], got {tuple(z.shape)}")
+            return folded, z.reshape(b * r, z.shape[-1])
+        return folded, z.repeat_interleave(r, dim=0)
+
     @overload
     def emit(
         self,
@@ -288,22 +351,8 @@ class PositionalHarmonicNoiseGen(nn.Module):
             ``harm_amps`` is ``[B, R, O, H, t_a]`` and ``noise_amps`` is
             ``[B, R, F, t_n]``.
         """
-        if rps.dim() != 3:
-            raise ValueError(f"rps must be [B, R, T], got {tuple(rps.shape)}")
-        b, r, t = rps.shape
-        folded = rps.reshape(b * r, 1, t)  # rotor axis -> batch, single-rotor net
-        # z may be per-clip ``[B, d]`` (same code for every rotor — the default) or
-        # per-rotor ``[B, R, d]`` (per-rotor sub-embeddings ``z_r = z_drone + δz_r``):
-        # the former is broadcast across the folded rotor axis, the latter folds
-        # its own axis in directly so each rotor's emitter sees its own code.
-        if z is None:
-            z_folded = None
-        elif z.dim() == 3:
-            if z.shape[:2] != (b, r):
-                raise ValueError(f"per-rotor z must be [B={b}, R={r}, d], got {tuple(z.shape)}")
-            z_folded = z.reshape(b * r, z.shape[-1])  # [B*R, d]
-        else:
-            z_folded = z.repeat_interleave(r, dim=0)  # [B, d] -> [B*R, d]
+        folded, z_folded = self._fold(rps, z)
+        b, r, t = int(rps.shape[0]), int(rps.shape[1]), int(rps.shape[2])
         # A per-clip (per-drone) sigma broadcasts to every rotor of the clip, so
         # it folds into the batch exactly like z: [B] -> [B*R].
         sigma_folded = (
@@ -507,6 +556,98 @@ class PositionalHarmonicNoiseGen(nn.Module):
         if single:
             coherent = coherent if coherent.dim() == 3 else coherent.unsqueeze(1)
         return {"coherent": coherent, "noise_psd": noise_psd}
+
+    def amp_stats(
+        self,
+        rps: torch.Tensor,
+        rel_pos: torch.Tensor,
+        z: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Predict per-(mic, rotor, harmonic) amplitude ENVELOPES — no synthesis.
+
+        The supervision path of the amplitude-target objective
+        (docs/experiments/amplitude-target-training.md). The Vold-Kalman
+        decomposition of a real recording (``scripts/vk_decompose.py``) gives one
+        amplitude envelope per ``(rotor, harmonic, mic)`` plus a per-mic
+        broadband residual, so the generator can be fit to those directly:
+
+        - **no audio is rendered**, so a loss on the output never has to compare
+          two realizations of a decohering line, which is the exact mechanism by
+          which the audio-domain multi-scale STFT loss erodes mid/high-k combs
+          (docs/experiments/generator-perrotor-dynamics.md, finding 6);
+        - **no rotor sum and no delay** — see :func:`amplitude_gains`;
+        - **no RPS jitter**, structurally: the OU perturbation is applied to the
+          carrier ``f0s`` AFTER the amplitude network runs
+          (:meth:`~models.generative.harmonic_gen_new.HarmonicNoiseGenNew.forward`),
+          so the control curves this method reads are the clean ones. That is
+          intended: the target envelopes already carry the recording's real
+          linewidth, and the model should learn the CLEAN amplitude, keeping the
+          jitter as a rendering-time device.
+
+        The broadband branch is summed in POWER over rotors, which is exact in
+        expectation for independent per-rotor residual draws (the same argument
+        :meth:`spectral_stats` uses).
+
+        Args:
+            rps: ``[B, R, T]`` per-rotor speed at audio rate (Hz).
+            rel_pos: ``[B, R, 3]`` or ``[B, M, R, 3]`` rotor -> mic vectors.
+            z: ``[B, d]`` (or ``[B, R, d]``) conditioning code, as elsewhere.
+
+        Returns:
+            ``{"amp": [B, M, R, H, t_a], "noise_psd": [B, M, t_n, F], "gain":
+            [B, M, R], "freq": [B, R, H, t_a]}`` — ``amp`` in the same amplitude
+            units the oscillator bank uses, ``noise_psd`` the per-mic POWER
+            envelope of the summed broadband branches, on the branch's own
+            ``(frame, band)`` grid, and ``freq`` the frequency each amplitude
+            cell sits at (``f = (h+1) * rps_r``, on the amplitude control grid).
+            ``freq`` is what a frequency-dependent propagation term is evaluated
+            at — see :class:`models.generative.propagation.MicEQ`.
+        """
+        if self.cond_dim > 0:
+            if z is None:
+                raise ValueError("model built with cond_dim>0 requires a conditioning code z")
+        else:
+            z = None
+
+        folded, z_folded = self._fold(rps, z)
+        b, r = int(rps.shape[0]), int(rps.shape[1])
+        net = self.emitter.net
+        harm_amps, noise_amps, f0s = net(folded, z_folded) if self.emitter.use_z else net(folded)
+        harm = harm_amps.reshape(b, r, *harm_amps.shape[1:])  # [B, R, O, H, t_a]
+        if harm.shape[2] != 1:
+            raise ValueError(
+                "amp_stats needs a single-oscillator emitter (the rotor axis is folded into "
+                f"the batch), got n_oscillators={harm.shape[2]}"
+            )
+        harm = harm[:, :, 0]  # [B, R, H, t_a]
+        noise = noise_amps.reshape(b, r, *noise_amps.shape[1:])  # [B, R, F, t_n]
+
+        if self.silence_fade_rps > 0.0:
+            # The same smoothstep the rendering path applies to the emitted
+            # source, pooled onto each control grid: a stopped rotor emits
+            # nothing, so its predicted envelope must go to zero too.
+            g = (rps / self.silence_fade_rps).clamp(0.0, 1.0)
+            gate = g * g * (3.0 - 2.0 * g)  # [B, R, T]
+            gate_a = torch.nn.functional.adaptive_avg_pool1d(gate, harm.shape[-1])
+            harm = harm * gate_a.unsqueeze(-2)
+            gate_n = torch.nn.functional.adaptive_avg_pool1d(gate, noise.shape[-1])
+            noise = noise * gate_n.unsqueeze(-2)
+
+        # The frequency each amplitude cell sits at, on the amplitude control
+        # grid: harmonic h (0-based) of rotor r is at (h+1) * f0_r, the same
+        # series the oscillator bank builds (`utils.dsp.harmonic_freq_series`).
+        # `f0s` is the emitter's own fundamental (== the input rate unless the
+        # predictor estimates one), so this cannot drift from what is rendered.
+        f0_a = torch.nn.functional.adaptive_avg_pool1d(
+            f0s.reshape(b, r, -1), int(harm.shape[-1])
+        )  # [B, R, t_a]
+        k_idx = torch.arange(1, harm.shape[-2] + 1, device=harm.device, dtype=harm.dtype)
+        freq = k_idx[None, None, :, None] * f0_a.unsqueeze(-2)  # [B, R, H, t_a]
+
+        gain = amplitude_gains(rel_pos, ref_distance=self.ref_distance, eps=self.eps)  # [B, M, R]
+        amp = gain[:, :, :, None, None] * harm.unsqueeze(1)  # [B, M, R, H, t_a]
+        power = torch.einsum("bmr,brft->bmft", gain.pow(2), noise.pow(2))  # [B, M, F, t_n]
+        return {"amp": amp, "noise_psd": power.transpose(-1, -2), "gain": gain, "freq": freq}
 
     def spatial_stats(
         self,
