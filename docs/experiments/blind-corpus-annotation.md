@@ -164,7 +164,7 @@ with throttle.
 Three readings, all on the 46 windows:
 
 - The annotation reads 68.5 / 78.4 / 88.2 rev/s at 70 / 80 / 90 % throttle,
-  and 98.1 / 117.6 rev/s at 50 / 60 %. The last two are the DOUBLE of the
+  and 98.2 / 118.0 rev/s at 50 / 60 %. The last two are the DOUBLE of the
   linear extrapolation of the first three.
 - **The half-margin separates the two populations by SIGN, 46 of 46.** Doubled
   windows read -5.20 to -0.97 dB. Correct windows read +0.23 to +4.16 dB.
@@ -191,6 +191,12 @@ throttle (0.45-0.82 rev/s) is motor-to-motor spread: Motor2 runs slow and
 Motor4 runs fast at every setpoint. So the corrected annotation of this corpus
 is right on all 43 windows, and one non-acoustic instrument says so. The
 cross-window repeatability is 0.004-0.135 rev/s.
+
+The doubling is also visible directly. In
+`results/blind_corpus/dregon_motor3/report/overlay_motor_Motor1_50__w000__seedvk.png`
+the annotation draws teeth at 98, 196, 294 Hz and so on, while the spectrogram
+carries a line at 49 Hz and at every odd multiple of it. The annotation kept
+every second tooth of the true comb.
 
 Job `blind-bench-all-0cb28a`, 46 units, 3.5 min wall on 14 workers.
 
@@ -314,7 +320,15 @@ the seed's 30 rev/s floor, so the scan must be widened and re-calibrated first.
 
 ### Acceptance gates
 
-Four gates, all label-free. A window is accepted only if it passes all four.
+**The gate depends on the arm, and this is the correction the 2026-08-14 runs
+force.** `fvk_ratio_double` was calibrated on a FOUR-ROTOR annotation, and on a
+ONE-SOURCE annotation it is not merely weak — it is anti-correlated with
+correctness. On the bench it rejects 4 of the 28 correct windows (ratios 0.63
+to 0.92). On KAIST it rejects the only correct annotation (`0Nm_BPFI_10`,
+ratios 0.907-0.910, clearance 11 dB, half-margin +4.5) and accepts the four
+doubled `0Nm_BPFI_03` windows. Do not use G1 on a one-source arm.
+
+Gates, all label-free:
 
 - **G1, octave low or ramp**: `fvk_ratio_double` >= 1.065. Calibrated on DREGON
   room2 twice, 17 of 17 both times.
@@ -327,6 +341,18 @@ Four gates, all label-free. A window is accepted only if it passes all four.
 - **G4, continuity**: consecutive windows of one recording must agree inside
   their overlap to better than 1 rev/s, and must not jump by a factor near 2 or
   0.5. No label is needed and no extra demodulation is needed.
+- **G5, rotor spread**: on a quadrotor the four annotated rates must stay
+  inside about 12 rev/s of each other. DREGON room2 telemetry spreads 3.5 to
+  9.1 rev/s over its 17 windows and the blind ladder spreads 0.1 to 6.1, so
+  anything far above that is not four rotors. The mono AVQ annotations spread
+  20 to 41 rev/s, which is how this gate was found. It costs nothing.
+
+The two rules, written out:
+
+| Arm | Rule | Measured |
+|-----|------|----------|
+| `seedvk`, one source | half-margin > 0 AND clearance > 3 dB. No G1 | bench 46/46 |
+| `fullrange`, four rotors | G1 >= 1.065 AND per-rotor half-margin > -1.5 dB AND G5 | room2 17/17, and the 7 accepted windows are exactly the 7 correct ones |
 
 ### Compute
 
@@ -356,3 +382,29 @@ whole plan is about 52 CPU-hours, which is one `uni-cpu` job of 16 cores and
    calibration pass.
 6. **Mono far field.** The comb decoheres and the source count is unknown.
    Refused by default (class G).
+
+## SPCUP19 static and hover (blind-spcup-static-4357d1, 34/34)
+
+34 windows from five rigs — Idea_ssu (mono), Diagonal_Unloading, AGH,
+Shout_COOEE — under the four-track `fullrange` arm. The result is one number:
+**no window clears the off-comb null.** Ridge clearance reads a median of
+-0.21 dB with a maximum of +0.74 dB, and 14 of the 34 windows give no ridge
+reading at all. Every recording fails G3.
+
+**That is not a SPCUP defect, and the control is already on disk.** The DREGON
+room2 windows read a clearance of -1.68 to +1.38 dB with a median of +0.13 dB,
+and 7 of those windows are CORRECT against telemetry. So a four-rotor
+annotation has almost no clearance anywhere, while the one-source bench reads
+2.4 to 13.3 dB.
+
+The reason is geometric. The off-comb null is the half-integer carrier, and
+with four combs inside 10 rev/s of each other the half-integer teeth of one
+rotor land on the real teeth of its neighbours. The null is not a null. G3 is
+therefore a ONE-SOURCE gate only, which is how the arm-dependent rule above is
+written, and the SPCUP reading says nothing about SPCUP.
+
+The one promising unit is `Shout_COOEE ... StaticSubmission2 w001`: four rates
+inside 0.6 rev/s of each other (102.4 to 103.0), and `fvk_ratio_double` 18.05,
+which is the strongest odd-harmonic evidence anywhere in the campaign. Its
+clearance is still -0.20 dB, which is what makes the geometry control worth
+running.
