@@ -275,3 +275,146 @@ Per-epoch checkpoints are on R2 under both experiment prefixes.
 One resubmission was needed: without `--env PYTHONPATH=src` the job
 imported the MAIN checkout's `data_processing` (no `frame_datasets`) —
 the stale-code trap; the validation gate refused before any GPU time.
+
+## The C-series: combined rigs and an amplitude-only propagation head (2026-08-14)
+
+Status: built and tested. No training run — the arms wait for the v3
+decompositions. Everything below is on branch `amp-target`.
+
+### What changed
+
+The v1 and v2 arms gave the coherent branch one gain for each (rig,
+microphone) pair, and that gain did not change with frequency. The C-series
+arms replace it with a curve. The full law is an exact multiplication, with no
+delays and no summation:
+
+    A_obs[r,k,c](t) = A_src[r,k](t) * g_{r,c}(f_k(t))
+    g_{r,c}(f)      = (1 / r_{r,c}) * EQ_c(f)
+
+`1 / r_{r,c}` comes from the rig geometry (the corrected loaders — DREGON
+`_correct_mic_frame`, Michael's horizontal ring). The two rigs are static, thus
+this factor is one constant for each (rotor, microphone) pair. The model learns
+`EQ_c(f)`: one smooth curve for each (rig, microphone), shared across the
+rotors.
+
+### Why a curve
+
+A room has a transfer function that changes with frequency. A rotor changes its
+speed, thus each harmonic line moves across a wide frequency span and samples
+that transfer function. The result is an amplitude change in the measured
+envelopes that correlates with the rotor speed. A plain `1/r` law cannot make
+that change, and a frequency-flat per-microphone gain cannot make it either —
+that gain is only the zeroth order of the curve.
+
+The curve is shared across the rotors on purpose. Room response and capsule
+sensitivity are properties of the receiver, and a receiver does not know which
+rotor made the sound.
+
+Delays stay absent, because a delay only rotates phase and an amplitude target
+never sees phase. Summation over the rotors stays absent, because the
+decomposition already separated the rotors — each (rotor, harmonic) line is one
+narrow-band source on its own, so there is no coherent summation to model.
+
+### The parameterization
+
+`models.generative.propagation.MicEQ`: 16 control points hold the log gain,
+equally spaced in log frequency between 20 Hz and 8 kHz (2.6 points for each
+octave). Between two points the response is linear in log frequency. Outside
+the span the response is held, not extrapolated, so a stopped rotor at `f = 0`
+is safe. Low order **is** the smoothness prior — a curve this coarse cannot
+follow one harmonic.
+
+The initial value of every point is zero, which is unity gain. An untrained
+C-arm is therefore exactly the plain `1/r` law the v2 arms fitted, and the two
+sets of numbers stay comparable.
+
+One extra loss term prices curvature: `conf/loss/amplitude_target_eq.yaml` puts
+`losses.SmoothnessPenalty` on the knot axis at weight 0.05. The model emits the
+knot curve as the `mic_eq` prediction, thus the penalty is an ordinary
+composite-loss term and not a second mechanism inside the model. A room
+amplitude change of 3 dB across two knots costs approximately 0.03 against an
+amplitude term near 1 log-unit. Alternation from knot to knot — the one shape
+low order still permits and physics does not — costs about ten times more.
+
+The head applies to EVERY prediction path. The rendering path gets the same
+response as a zero-phase magnitude multiplication in the rfft domain, so a
+checkpoint renders with the response it was fitted with and the comb readout
+through the `*_render` twins stays honest.
+
+### What is shared across the rigs
+
+This is the science of the combined run:
+
+- The per-rotor SOURCE model is SHARED. One emitter maps rotor speed and
+  embedding to harmonic amplitudes for both rigs.
+- The geometry gains and the EQ are PER RIG. DREGON and Michael's are different
+  arrays in different rooms.
+- The rig id is the drone name the batch already carries (`meta.drone`), so the
+  codec's `drone_names` path selects the codebook code and the propagation head
+  together. An unknown rig raises instead of taking a default.
+- The broadband branch is unchanged: per-microphone gains plus the static
+  per-microphone per-band floor, and no EQ (see the seam, below).
+
+### The arms
+
+| arm | conditioning | propagation | data |
+|---|---|---|---|
+| `gen_c1_amp_combined` | per-rig code | 1/r x learned per-mic EQ | v3 DREGON + Michael's |
+| `gen_c2_amp_combined_perrotor` | + per-rotor `dz_r` | same | v3 DREGON + Michael's |
+
+Both arms monitor `val_loss`, keep `checkpoint_every=1`, and hold out the
+MIDDLE 10 % block of each recording, exactly as the v2 arms did. Selection
+stays comb-aware and offline through the `*_render` twin configs.
+
+`per_rotor_deltas` starts at zero, thus `gen_c2` is a strict superset of
+`gen_c1` and the pair is a clean A/B.
+
+### Data wiring
+
+The v3 solve is published per rig, so `DecompFrameDataset` now accepts a LIST
+of datasets and concatenates their records. Draws stay duration-weighted across
+the union, and every record keeps its own `drone` id. Publication stays per rig
+because each rig's solve must stay independently re-derivable.
+
+`conf/data/decomp_frames_v3_combined.yaml` names
+`decomp-frames-v3-dregon` and `decomp-frames-v3-michaels`. **Those two names
+are PLACEHOLDERS.** When the v3 derivation lands, confirm the published names,
+put them in that one file, and pin them in `dload.lock`. That is the only
+substitution the arms need — the model, the loss and the experiment configs are
+complete.
+
+### The seam for per-rotor broadband sources
+
+Per-rotor attribution of the residual is refuted on both arrays
+(`residual-attribution.md`), so this campaign does not build it. The seam is
+left open and is two places wide:
+
+- The emitter already computes `noise_amps` PER ROTOR. `amp_stats` sums the
+  rotors in power with the squared `1/r` gains, which is the only line to
+  change if a rotor-specific broadband source is ever fitted.
+- The target side needs a per-rotor residual, which the decomposition does not
+  supply today. Until it does, the branch keeps the per-microphone gain and the
+  static per-microphone per-band floor, which is what the measurement supports.
+
+The EQ is deliberately absent from the broadband branch. That branch is not the
+payload here, and its per-microphone gains already absorb what a flat term can.
+
+### Checkpoint compatibility
+
+`mic_eq.log_eq.*` replaces `log_mic_gain.*` on the coherent branch. The two are
+never both built, because a flat EQ IS that scalar and two redundant parameters
+would split the level between them. A C-arm checkpoint therefore does not load
+into a v2 arm, and a v2 checkpoint does not load into a C-arm. The broadband
+branch's `log_mic_gain_noise.*` and `log_floor_psd.*` are unchanged.
+
+### Tests
+
+- `tests/models/test_propagation.py` — the curve (exact at the knots, linear in
+  log frequency between them, held outside the span), the rig routing, the
+  curvature prior, the rendered twin, and the composition with the geometry
+  gains for both embedding arms.
+- `tests/data_processing/test_decomp_frames.py` — the two per-rig datasets
+  concatenate into one pool.
+- `tests/tasks/test_amplitude_target_real_decomp.py` — the whole seam on the
+  REAL local v2 solve of `free-flight_nosource_room1`, including a mixed-rig
+  batch. It is skipped where the artifacts are not on the machine.
