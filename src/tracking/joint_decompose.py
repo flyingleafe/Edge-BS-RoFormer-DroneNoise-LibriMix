@@ -72,6 +72,7 @@ Purity: numpy, scipy, and the sibling tracking modules only.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -110,6 +111,7 @@ __all__ = [
     "bw_psi_hz",
     "cell_profile",
     "comb_lines",
+    "d2_pseudo_logdet",
     "corrected_phase",
     "floor_block",
     "frame_starts",
@@ -122,6 +124,7 @@ __all__ = [
     "masked_smooth_psd",
     "order_cell_bands",
     "order_cell_profile",
+    "prior_logdet",
     "solve_block",
     "solve_report",
     "split_block",
@@ -1030,6 +1033,13 @@ class JointConfig:
     #: STFT length of the stochastic channel (:func:`stochastic_split`). It is
     #: the floor block's own length by default, so the two read one grid.
     stochastic_n_fft: int = 4096
+    #: Add the exact Gaussian envelope MARGINALIZATION to the objective readout
+    #: (:func:`map_objective`, ``total_marginal``). Profiling the envelopes pays
+    #: no rent for their freedom, so absorption is free; the marginal term is
+    #: what charges for it. It is a pure reading — it moves no product — and it
+    #: is off by default because the pseudo-determinant costs one banded
+    #: factorization per envelope length.
+    marginal: bool = False
 
     def k_cap(self, it: int) -> int:
         """Trustable harmonic cap of iteration ``it`` (1 based)."""
@@ -1576,6 +1586,7 @@ def map_objective(
     bw_psi_max: float = 8.0,
     bw_psi_min: float = 1.5,
     frames_per_chunk: int = 64,
+    logdet_posterior: float | None = None,
 ) -> dict[str, Any]:
     """THE converged MAP objective of the joint model, term by term::
 
@@ -1612,6 +1623,46 @@ def map_objective(
         solver's own Tuma relation, so every clamp, schedule and whitening gain
         that moved a track's band is already in it. The envelope is the SOLVED
         variable ``g`` (``Envelopes.x``), not the effective ``g e^{j psi}``.
+
+    ``logdet_posterior`` turns the PROFILED objective above into the MARGINAL
+    one. Profiling substitutes the envelopes' best value back, which is free —
+    it pays no rent for the envelopes' own freedom — and that is exactly why a
+    hypothesis with more usable envelopes can win by absorption. Integrating the
+    envelopes out instead of profiling them adds the Gaussian correction
+
+        J_marg = J + 0.5 (log det M - log det' R)
+
+    with ``M`` the whitened banded posterior precision block A factorizes
+    (``Envelopes.logdet``, one channel's worth, taken here ``n_channels`` times
+    because every channel is a right-hand side against that same system) and
+    ``R`` the improper envelope prior ``blkdiag(rho_m^2 D2^T D2)``, read through
+    the pseudo-determinant :func:`prior_logdet`. It comes back as
+    ``marginal_correction`` and ``total_marginal``; ``total`` is untouched.
+
+    ONE scaling is not in that formula and has to be: ``data`` and ``rent`` are
+    summed over frames that overlap, so each sample is under ``n_fft / hop`` of
+    them and the pair is that many times ONE likelihood, while the correction is
+    one likelihood's worth. ``marginal_correction`` therefore carries
+    ``marginal_redundancy = n_fft / hop`` and reports it, so a caller who wants
+    the bare formula divides it back out. It is not a tuning knob: without it
+    the correction is out-scaled two to one on the shipped grid and a spurious
+    track pays less than it gains (measured — see
+    ``tests/tracking/test_marginal_objective.py``).
+
+    Four hypothesis-INDEPENDENT constants are dropped, and the readout is
+    therefore valid ONLY for comparing hypotheses on the same window, the same
+    audio and the same cells — which is what ``scripts/joint_rescore.py`` pins:
+
+    1. The Gaussian volume factors of the marginalization (``pi^N`` or
+       ``(2 pi)^(N/2)``, by convention), with ``N`` the envelope count.
+    2. The null-space volume of the improper prior — two directions per track,
+       so it is fixed by the track count, which the pinned ``k_hi`` fixes.
+    3. The real-parameterization factor. A circular COMPLEX Gaussian would carry
+       ``1`` rather than ``0.5`` in front of the pair; that scales the whole
+       correction and cannot change its sign, so the Occam ordering is the same.
+    4. The solver's own scaling convention (the data term enters the normal
+       equations as ``w`` with a right-hand side of ``2 w z``), and the ``1e-8``
+       ridge plus any ``diag_scale`` PD repair that are inside ``M``.
 
     Returns the total, the four components, the two sub-terms of the phase
     prior, and ``n_cells`` — the caller normalizes, because a window's cell
@@ -1663,6 +1714,32 @@ def map_objective(
 
     phase_priors = theta_prior + psi_prior
     total = data + rent + phase_priors + env_prior
+    xa = np.asarray(x)
+    n_env = int(xa.shape[-1])
+    # Channels are right-hand sides against ONE system, so the full posterior
+    # and the full prior are both that block repeated once per microphone.
+    n_ch_env = int(xa.shape[0]) if xa.ndim == 3 else 1
+    marginal: dict[str, Any] = {}
+    if logdet_posterior is not None:
+        ld_prior = prior_logdet(bw_track, n_env, float(fs_env), int(p))
+        # The data term is a sum over frames that OVERLAP, so every sample is
+        # under n_fft / hop of them and `data` + `rent` are that many times ONE
+        # likelihood. The correction is one likelihood's worth, so it carries
+        # the same factor or the two halves of the readout are not commensurate
+        # — measured on a spurious-track fixture, without it the correction is
+        # out-scaled two to one and the Occam property fails.
+        redundancy = float(n_fft) / float(step)
+        # Extensive sums of order 1e5 to 1e6 — never rounded, because two
+        # hypotheses are compared by a DIFFERENCE a rounding would quantize.
+        correction = 0.5 * n_ch_env * redundancy * (float(logdet_posterior) - ld_prior)
+        marginal = {
+            "marginal_correction": correction,
+            "total_marginal": total + correction,
+            "logdet_posterior": float(logdet_posterior) * n_ch_env,
+            "logdet_prior": ld_prior * n_ch_env,
+            "marginal_redundancy": redundancy,
+            "n_env": n_env,
+        }
     # NOT rounded, unlike every other reading in this module. The four terms
     # span nine orders of magnitude on a real window (the rent alone is tens of
     # thousands of cells times a log spectral density), and two hypotheses are
@@ -1675,12 +1752,66 @@ def map_objective(
         "envelope_prior": env_prior,
         "theta_prior": theta_prior,
         "psi_prior": psi_prior,
+        **marginal,
         "n_cells": int(n_ch * n_frames * n_f),
         "n_frames": n_frames,
         "n_freq": n_f,
         "n_channels": n_ch,
         "n_fft": int(n_fft),
     }
+
+
+def d2_pseudo_logdet(n_env: int) -> float:
+    """``log det'`` of ``D2^T D2`` at length ``n_env`` — the non-zero part only.
+
+    ``D2`` is the ``(n-2, n)`` second difference, so ``D2^T D2`` is singular in
+    exactly two directions (a constant and a ramp) and its pseudo-determinant is
+    the product of the ``n - 2`` remaining eigenvalues. Those are the eigenvalues
+    of ``D2 D2^T``, which is the ``(n-2, n-2)`` pentadiagonal ``[1, -4, 6, -4, 1]``
+    and is positive definite — so this is one banded Cholesky and not an
+    eigendecomposition, and it costs ``O(n)`` instead of ``O(n^3)``.
+
+    Cached, because it depends on the envelope LENGTH and nothing else: every
+    hypothesis on one window asks for the identical number.
+    """
+    return _d2_pseudo_logdet_cached(int(n_env))
+
+
+@lru_cache(maxsize=64)
+def _d2_pseudo_logdet_cached(n_env: int) -> float:
+    from scipy.linalg import cholesky_banded
+
+    m = int(n_env) - 2
+    if m < 1:
+        return 0.0
+    ab = np.zeros((3, m), dtype=np.float64)
+    ab[2] = 6.0
+    ab[1, 1:] = -4.0
+    ab[0, 2:] = 1.0
+    return 2.0 * float(np.sum(np.log(np.asarray(cholesky_banded(ab, lower=False)[2]))))
+
+
+def prior_logdet(bw_track: Any, n_env: int, fs_env: float, p: int = 2) -> float:
+    """``log det'`` of the envelope prior ``blkdiag(rho_m^2 D2^T D2)``.
+
+    The prior is IMPROPER — ``D2`` kills a constant and a ramp, so each track's
+    block has two null directions and no determinant at all. What a marginal
+    likelihood needs and what this returns is the PSEUDO-determinant,
+
+        sum_m [ (T - 2) log(rho_m^2) ] + M log det'(D2^T D2) ,
+
+    which drops the null space's (infinite) volume. That volume is the same for
+    every hypothesis scored on one window — same track count, same envelope
+    length — so it cancels in a comparison, which is the only use the marginal
+    readout has. ``rho_m^2`` comes back out of the ACHIEVED bandwidth through
+    the solver's own Tuma relation, exactly as the envelope prior's does.
+    """
+    bw = np.asarray(bw_track, dtype=np.float64)
+    n = int(n_env)
+    if bw.size == 0 or n < 3:
+        return 0.0
+    rho2 = np.array([_tuma_rho(float(b), float(fs_env), int(p)) for b in bw]) ** 2
+    return float((n - 2) * np.sum(np.log(rho2)) + bw.size * d2_pseudo_logdet(n))
 
 
 def _floor_on_grid(psd: SmoothPSD, sr: float, n_fft: int) -> np.ndarray:
@@ -1751,6 +1882,10 @@ def joint_objective(state: JointState) -> dict[str, Any]:
         bw_psi_slope=jc.bw_psi_slope,
         bw_psi_max=jc.bw_psi_max,
         bw_psi_min=jc.bw_psi_min,
+        # The determinant of the system block A actually factorized, so the
+        # marginal correction pays for the freedom the profiled objective
+        # silently took. Off unless JointConfig.marginal asks for it.
+        logdet_posterior=float(state.env.logdet) if jc.marginal else None,
     )
 
 

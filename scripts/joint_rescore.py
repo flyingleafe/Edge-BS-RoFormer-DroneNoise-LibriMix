@@ -33,6 +33,14 @@ hypotheses of one window: the audio, the microphone count, and the harmonic cap
 candidate. The objective is extensive, so read the per-cell column when
 comparing windows and the raw column when comparing hypotheses of one window.
 
+``--marginal`` ranks by the MARGINAL objective instead. The profiled ``J``
+substitutes the envelopes' best value back and charges nothing for their
+freedom, so a hypothesis whose bands cover more of the spectrum can win by
+ABSORPTION alone — which is what a coverage fan does. The marginal objective
+integrates the envelopes out exactly, ``J + 0.5 (log det M - log det' R)``, and
+charges for it. Both columns are printed, and the two orders DISAGREEING is the
+reading: it names the windows a fan wins by absorption.
+
 Run::
 
     python scripts/joint_rescore.py --smoke --out results/joint_rescore_smoke
@@ -88,6 +96,11 @@ DEFAULT_ITERS = 3
 DEFAULT_LADDER = (3, 12, 80)
 #: The terms pooled and tabulated, in the order a reader wants them.
 TERMS = ("total", "data", "rent", "phase_priors", "envelope_prior")
+#: The MARGINAL readout's own terms, present only under ``--marginal``.
+MARGINAL_TERMS = ("total_marginal", "marginal_correction")
+#: Which per-cell column ``--marginal`` ranks by. The profiled total is still
+#: reported beside it, because the two disagreeing IS the reading.
+MARGINAL_KEY = "total_marginal"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +216,10 @@ def worker(unit: Unit) -> dict[str, Any]:
     jcfg = JointConfig(
         iters=int(p["iters"]),
         k_trust=tuple(int(v) for v in str(p["k_trust"]).split(",") if v.strip()),
+        # The exact Gaussian envelope marginalization. Profiling the envelopes
+        # pays no rent for their freedom, which is why absorption is free and
+        # why a coverage fan can out-score the telemetry on the profiled total.
+        marginal=bool(p.get("marginal", False)),
     )
     tic = time.perf_counter()
     res = trk.joint_solve_window(audio, r_audio, cfg, k_hi=k_hi, mics=mics, jcfg=jcfg)
@@ -211,6 +228,7 @@ def worker(unit: Unit) -> dict[str, Any]:
     last = dict(res.iterations[-1])
     obj = dict(last["objective"])
     n_cells = max(int(obj["n_cells"]), 1)
+    terms = TERMS + (MARGINAL_TERMS if bool(p.get("marginal", False)) else ())
     return {
         "uid": unit.uid,
         "window": window,
@@ -226,11 +244,12 @@ def worker(unit: Unit) -> dict[str, Any]:
         "n_env": int(res.env.x.shape[-1]),
         "iters": int(p["iters"]),
         "k_trust": str(p["k_trust"]),
+        "marginal": bool(p.get("marginal", False)),
         "mean_rev_s": round(float(r.mean()), 4),
         "rms_vs_telemetry": round(float(np.sqrt(np.mean((r - r_meas) ** 2))), 5),
         "wall_s": round(wall, 2),
         "objective": obj,
-        "per_cell": {t: float(obj[t]) / n_cells for t in TERMS},
+        "per_cell": {t: float(obj[t]) / n_cells for t in terms},
         # The energy shares of the same last solve — the reading the objective
         # is meant to REPLACE, kept beside it so the two can be compared.
         "residual_fraction": last.get("residual_fraction"),
@@ -258,6 +277,7 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
         "arms_dir": str(args.arms_dir),
         "prep_dir": args.prep_dir or None,
         "mem_budget_gb": float(args.mem_budget_gb),
+        "marginal": bool(getattr(args, "marginal", False)),
     }
     return [
         Unit(uid=f"{w}__{h}", params={**common, "window": w, "hypothesis": h})
@@ -269,18 +289,24 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """The window x hypothesis table: every term, raw and per cell.
 
-    Each window also carries its RANKING by the per-cell total and the margin of
-    the best hypothesis over the telemetry — a negative ``delta_vs_telemetry``
-    means the audio prefers that hypothesis to the tachometer.
+    Each window also carries its RANKING and the margin of the best hypothesis
+    over the telemetry — a negative ``delta_vs_telemetry`` means the audio
+    prefers that hypothesis to the tachometer. The ranking is by the per-cell
+    PROFILED total, or by the per-cell MARGINAL total when every row carries one
+    (``--marginal``): profiling pays no rent for the envelopes' freedom, so a
+    hypothesis can win the profiled column by absorption alone, and the two
+    columns DISAGREEING is the reading.
     """
     table: dict[str, Any] = {}
+    marginal = bool(rows) and all(MARGINAL_KEY in (r.get("per_cell") or {}) for r in rows)
+    terms = TERMS + (MARGINAL_TERMS if marginal else ())
     for r in sorted(rows, key=lambda r: (str(r.get("window")), str(r.get("hypothesis")))):
         if "objective" not in r:
             continue
         cell = table.setdefault(str(r["window"]), {})
         cell[str(r["hypothesis"])] = {
-            **{t: float(r["objective"][t]) for t in TERMS},
-            **{f"{t}_per_cell": float(r["per_cell"][t]) for t in TERMS},
+            **{t: float(r["objective"][t]) for t in terms},
+            **{f"{t}_per_cell": float(r["per_cell"][t]) for t in terms},
             "n_cells": int(r["objective"]["n_cells"]),
             "k_hi": r.get("k_hi"),
             "mean_rev_s": r.get("mean_rev_s"),
@@ -288,36 +314,45 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "residual_fraction": r.get("residual_fraction"),
             "wall_s": r.get("wall_s"),
         }
+    key = f"{MARGINAL_KEY}_per_cell" if marginal else "total_per_cell"
     for win, cell in table.items():
-        order = sorted(cell, key=lambda h: cell[h]["total_per_cell"])
-        base = cell.get(TELEMETRY, {}).get("total_per_cell")
-        table[win] = {
+        order = sorted(cell, key=lambda h: cell[h][key])
+        base = cell.get(TELEMETRY, {}).get(key)
+        entry = {
             **cell,
+            "_ranked_by": key,
             "_ranking": order,
             "_best": order[0] if order else None,
             "_delta_vs_telemetry": (
-                None
-                if base is None
-                else {h: cell[h]["total_per_cell"] - base for h in cell if h != TELEMETRY}
+                None if base is None else {h: cell[h][key] - base for h in cell if h != TELEMETRY}
             ),
             # The cell counts MUST agree inside a window, or the totals are not
             # comparable and the ranking above is meaningless.
             "_cells_agree": len({cell[h]["n_cells"] for h in cell}) == 1,
         }
-    return {"n_units": len(rows), "terms": list(TERMS), "table": table}
+        if marginal:
+            # The PROFILED ranking beside the marginal one. Where they differ,
+            # the difference is absorption the profiled column did not charge.
+            entry["_ranking_profiled"] = sorted(cell, key=lambda h: cell[h]["total_per_cell"])
+        table[win] = entry
+    return {"n_units": len(rows), "terms": list(terms), "marginal": marginal, "table": table}
 
 
 def print_table(summary: dict[str, Any]) -> None:
     """The summary as a fixed-width table on stdout — the thing a human reads."""
-    print(f"\n{'window':<38} {'hypothesis':<11} {'J/cell':>14} {'data/cell':>10} {'rms':>7}")
+    marginal = bool(summary.get("marginal"))
+    head = f"\n{'window':<38} {'hypothesis':<11} {'J/cell':>14}"
+    print(head + (f" {'Jmarg/cell':>14}" if marginal else "") + f" {'data/cell':>10} {'rms':>7}")
     for win, cell in sorted(summary["table"].items()):
         for hyp in cell.get("_ranking", []):
             e = cell[hyp]
             flag = " *" if hyp == cell.get("_best") else "  "
-            print(
-                f"{win:<38} {hyp:<11} {e['total_per_cell']:>14.6f} "
-                f"{e['data_per_cell']:>10.4f} {e['rms_vs_telemetry']:>7.3f}{flag}"
-            )
+            row = f"{win:<38} {hyp:<11} {e['total_per_cell']:>14.6f}"
+            if marginal:
+                row += f" {e[f'{MARGINAL_KEY}_per_cell']:>14.6f}"
+            print(f"{row} {e['data_per_cell']:>10.4f} {e['rms_vs_telemetry']:>7.3f}{flag}")
+        if marginal and cell.get("_ranking") != cell.get("_ranking_profiled"):
+            print(f"{win:<38} .. profiled order {cell['_ranking_profiled']} — absorption")
         if not cell.get("_cells_agree", True):
             print(f"{win:<38} !! cell counts disagree — the totals are NOT comparable")
 
@@ -353,6 +388,17 @@ def main() -> int:
     ap.add_argument("--build-preps", action="store_true", help="materialize the prep windows first")
     ap.add_argument("--dataset-version", default=None, help="beatvk-valid-raw version override")
     ap.add_argument("--mem-budget-gb", type=float, default=0.0, help="0 = no guard")
+    ap.add_argument(
+        "--marginal",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "rank by the MARGINAL objective — the profiled one plus the exact Gaussian "
+            "envelope marginalization 0.5 (log det M - log det' R). Profiling pays no rent "
+            "for the envelopes' freedom, so absorption is free and a coverage fan can win "
+            "the profiled column; this charges for it. Both columns are reported"
+        ),
+    )
     ap.add_argument(
         "--smoke",
         action="store_true",

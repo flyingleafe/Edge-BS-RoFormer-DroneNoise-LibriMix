@@ -161,6 +161,12 @@ class Envelopes:
     # the VK bandwidth each track was actually solved with (after the
     # per-group separation clamp); feeds the noise-equivalent-bandwidth
     # normalisation of the envelope SNR
+    logdet: float = 0.0  # log det of the assembled posterior precision, summed
+    # over the coupling groups, for ONE channel (every channel is a right-hand
+    # side against the same system, so the full posterior is that determinant
+    # C times over). Read off the Cholesky factor the solve already made — it is
+    # what the MARGINAL readout of tracking.map_objective needs, and taking it
+    # here is what keeps that readout free of a second factorization
 
 
 @dataclass
@@ -417,14 +423,20 @@ def _solve_group_splu(
     z_g: np.ndarray,
     *,
     u: list[np.ndarray] | None = None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     """Reference coupled-group solve: track-major sparse LU (SuperLU).
 
     ``z_g``: (C, g, T_env) demodulated observations of the group's tracks;
     ``rho2``: squared selectivity, scalar or per-track ``(g,)`` (bandwidth
-    adaptation); returns ``(g, T_env, C)`` envelopes. Verbatim the original
-    formulation — kept as the A/B reference (``cfg.solver == "splu"``) and as
-    the fallback when the banded Cholesky reports a numerically non-PD system.
+    adaptation); returns ``((g, T_env, C)`` envelopes, ``log det`` of the
+    assembled system). Verbatim the original formulation — kept as the A/B
+    reference (``cfg.solver == "splu"``) and as the fallback when the banded
+    Cholesky reports a numerically non-PD system.
+
+    The log-determinant comes off the factorization this call already made
+    (SuperLU's ``L`` is unit lower triangular, so ``U``'s diagonal carries it),
+    which is what keeps the marginal readout of
+    :func:`tracking.map_objective` free of a second factorization.
     """
     g = len(w)
     n_ch, _, n_env = z_g.shape
@@ -441,7 +453,12 @@ def _solve_group_splu(
     rhs = np.concatenate(
         [2.0 * wd[a][None, :] * z_g[:, a] for a in range(g)], axis=-1
     ).T  # (g * T_env, C)
-    return splu(mat).solve(np.ascontiguousarray(rhs)).reshape(g, n_env, n_ch)
+    lu = splu(mat)
+    logdet = float(
+        np.sum(np.log(np.abs(np.asarray(lu.U.diagonal()))))
+        + np.sum(np.log(np.abs(np.asarray(lu.L.diagonal()))))
+    )
+    return lu.solve(np.ascontiguousarray(rhs)).reshape(g, n_env, n_ch), logdet
 
 
 def _solve_group_banded(
@@ -453,7 +470,7 @@ def _solve_group_banded(
     *,
     diag_scale: float = 1.0,
     u: list[np.ndarray] | None = None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     """Coupled-group solve as one Hermitian positive-definite *banded* system.
 
     With time-major interleaved unknowns (all tracks of one time sample
@@ -468,6 +485,14 @@ def _solve_group_banded(
     construction; should decimation artefacts ever make the assembled system
     numerically non-PD, ``cholesky_banded`` raises ``LinAlgError`` and the
     caller falls back to :func:`_solve_group_splu`.
+
+    The second return is ``log det`` of the assembled system, read straight off
+    the Cholesky factor's diagonal (``A = U^H U``, so it is twice the sum of the
+    logs). It is what the MARGINAL objective of
+    :func:`tracking.map_objective` marginalizes the envelopes with, and taking
+    it here is what keeps that readout free of a second factorization. NOTE that
+    it is the determinant of the system as ASSEMBLED — the ``1e-8`` ridge and
+    any ``diag_scale`` repair are in it, because they are in the solve too.
     """
     g = len(w)
     n_ch, _, n_env = z_g.shape
@@ -489,11 +514,12 @@ def _solve_group_banded(
     for (a, b), g_mn in cross.items():  # a < b: upper triangle, offset b - a
         ab[nsup - (b - a), b::g] = wc[a] * wc[b] * g_mn
     cb = cholesky_banded(ab, lower=False)  # raises LinAlgError if not PD
+    logdet = 2.0 * float(np.sum(np.log(np.abs(np.asarray(cb[nsup])))))
     rhs = np.empty((n_env, g, n_ch), dtype=np.complex128)
     for a in range(g):
         rhs[:, a] = (2.0 * wd[a][:, None]) * z_g[:, a].T
     sol = cast(np.ndarray, cho_solve_banded((cb, False), rhs.reshape(n, n_ch)))
-    return sol.reshape(n_env, g, n_ch).transpose(1, 0, 2)
+    return sol.reshape(n_env, g, n_ch).transpose(1, 0, 2), logdet
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +682,10 @@ def vk_envelopes(
     eye = sparse.eye_array(n_env)
 
     x = np.zeros_like(z)
+    # Log-determinant of the assembled posterior precision, summed over the
+    # coupling groups — ONE channel's worth, because every channel is a
+    # right-hand side against the same system. See Envelopes.logdet.
+    logdet = 0.0
     bw_track = np.full(len(rotor), bw)
     taper = edge_taper(n_env)  # data-term edge fade; see the function's docstring
     # Coupling pairs separated by at least this never beat inside the demod
@@ -729,7 +759,7 @@ def vk_envelopes(
                     )
         z_g = z[:, group]  # (C, g, T_env)
         u_g = None if uw is None else [uw[m] for m in group]
-        sol: np.ndarray | None = None
+        done: tuple[np.ndarray, float] | None = None
         if cfg.solver == "banded":
             # Numerically non-PD systems (decimation rounding on large
             # coupled groups) get two PD-repair retries with a relative
@@ -737,14 +767,16 @@ def vk_envelopes(
             # fill-in on a full-recording group does not fit in memory.
             for diag_scale in (1.0, 1.0 + 1e-6, 1.0 + 1e-4):
                 try:
-                    sol = _solve_group_banded(
+                    done = _solve_group_banded(
                         d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale, u=u_g
                     )
                     break
                 except np.linalg.LinAlgError:
-                    sol = None
-        if sol is None:
-            sol = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g, u=u_g)
+                    done = None
+        if done is None:
+            done = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g, u=u_g)
+        sol, group_logdet = done
+        logdet += group_logdet
         for a in range(g):
             x[:, group[a]] = sol[a].T
 
@@ -760,6 +792,7 @@ def vk_envelopes(
         phase=phase,
         groups=groups,
         bw_track=bw_track,
+        logdet=logdet,
     )
 
 

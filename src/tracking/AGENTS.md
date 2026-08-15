@@ -272,7 +272,9 @@ Four things a caller must know:
 
 | Primitive | Purpose |
 |---|---|
-| `map_objective(residual, sr, psd, *, x, k, bw_track, theta, psi, fs_env, ...)` | THE converged MAP objective, term by term: `data` + `rent` (the Whittle pair on the floor block's own STFT grid) + `phase_priors` + `envelope_prior`, plus `n_cells`. A pure OBSERVER — switching it on cannot move a product. The weights are the ones the run used: `wh_lambda` for the two phase priors, and `rho^2` read back out of `Envelopes.bw_track` through the solver's own Tuma relation |
+| `map_objective(residual, sr, psd, *, x, k, bw_track, theta, psi, fs_env, ..., logdet_posterior=None)` | THE converged MAP objective, term by term: `data` + `rent` (the Whittle pair on the floor block's own STFT grid) + `phase_priors` + `envelope_prior`, plus `n_cells`. A pure OBSERVER — switching it on cannot move a product. The weights are the ones the run used: `wh_lambda` for the two phase priors, and `rho^2` read back out of `Envelopes.bw_track` through the solver's own Tuma relation. `logdet_posterior` adds the MARGINAL readout (below) |
+| `prior_logdet(bw_track, n_env, fs_env, p=2)` | `log det'` of the improper envelope prior `blkdiag(rho_m^2 D2^T D2)` — the pseudo-determinant, because `D2` kills a constant and a ramp per track |
+| `d2_pseudo_logdet(n_env)` | its length-only part, one banded Cholesky of the pentadiagonal `D2 D2^T` and cached — `O(n)`, not an eigendecomposition |
 | `joint_objective(state)` | the same, with every argument taken off a `JointState` (the last solve's residual against the last floor) |
 | `energy_ledger(audio, recon, track_energy, k)` | total / tracks / residual / CROSS TERM — the tracks are not orthogonal, and the cross term is the honest statement of that |
 | `phase_model_report(...)` | per-rotor drift against `k` plus `rank_one_share` — shaft jitter against per-harmonic drift |
@@ -283,6 +285,42 @@ Four things a caller must know:
 | `whitened_flatness(residual, sr, psd)` | flatness of `|N|^2 / S` beside flatness of `|N|^2` — a correct floor leaves a flat residual |
 | `residual_tones(residual, sr, r_audio, ...)` | the NON-comb tonal peaks left, with their distance to the nearest rotor order. Measurement only |
 | `welch_psd(audio, sr, nperseg=4096)` | THE Welch of this module |
+
+### The MARGINAL objective — what profiling does not charge for
+
+`J` as shipped is PROFILED: the envelopes' best value is substituted back, which pays no rent
+for their freedom. So a hypothesis whose bands cover more of the spectrum can win by ABSORPTION
+alone — measured on 5 frozen windows (`results/joint_rescore/`), the profiled `J` ranks
+adversarial coverage fans above the telemetry on 3 of them. `JointConfig.marginal` switches on
+the exact Gaussian correction that charges for it:
+
+```
+J_marg = J + 0.5 * n_channels * (n_fft / hop) * (log det M - log det' R)
+```
+
+- `M` is the whitened banded posterior precision block A already factorized. `Envelopes.logdet`
+  carries it — read off the Cholesky diagonal inside `_solve_group_banded` (and off SuperLU's
+  `U` on the fallback path), so the readout costs no second factorization. It is ONE channel's
+  worth, because every channel is a right-hand side against that same system.
+- `R` is IMPROPER — `D2` kills a constant and a ramp, two null directions per track — so it is
+  the PSEUDO-determinant `prior_logdet`: `(T - 2) sum_m log rho_m^2 + M log det'(D2^T D2)`.
+- The `n_fft / hop` factor is not a knob. `data` + `rent` are summed over frames that overlap,
+  so they are that many times ONE likelihood while the correction is one likelihood's worth.
+  Without it the correction is out-scaled two to one on the shipped grid and the Occam property
+  fails; it is reported as `marginal_redundancy` so a caller can divide it back out.
+
+Four hypothesis-INDEPENDENT constants are dropped, so the readout is valid only for comparing
+hypotheses on ONE window with the SAME cells and the SAME track count — which is exactly what
+`scripts/joint_rescore.py` pins (`k_hi` comes from the telemetry, never from the candidate):
+the Gaussian volume factors; the improper prior's null-space volume (two directions per track);
+the real-versus-complex parameterization factor (a complex Gaussian carries 1 rather than 0.5,
+which scales the correction and cannot flip its sign); and the solver's own scaling convention
+(the data term enters as `w` with a right-hand side of `2 w z`) plus the `1e-8` ridge and any
+`diag_scale` PD repair that live inside `M`.
+
+The acceptance property is Occam's, and it is a test (`tests/tracking/test_marginal_objective.py`):
+add a whole spurious rotor whose every line sits on pure floor, and the PROFILED objective
+improves while the MARGINAL one gets worse.
 
 ### Three things that will bite a caller
 
@@ -333,7 +371,7 @@ set is small enough to list:
 | `scripts/displacement/{nullcontrol,combscan,refine_kscaled,comb_explorer}.py` | the comb-displacement campaign |
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
 | `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`) |
-| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells |
+| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |
 

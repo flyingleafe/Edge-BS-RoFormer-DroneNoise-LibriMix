@@ -91,6 +91,51 @@ def test_summarize_ranks_by_the_per_cell_total() -> None:
     assert got["ours_full"]["total_per_cell"] == pytest.approx(-1.2)
 
 
+def _marginal_row(
+    window: str, hyp: str, total: float, marg: float, cells: int = 100
+) -> dict[str, Any]:
+    row = _row(window, hyp, total, cells)
+    row["objective"]["total_marginal"] = marg
+    row["objective"]["marginal_correction"] = marg - total
+    row["per_cell"]["total_marginal"] = marg / cells
+    row["per_cell"]["marginal_correction"] = (marg - total) / cells
+    return row
+
+
+def test_marginal_ranks_by_the_marginal_total_and_keeps_the_profiled_one() -> None:
+    # The case the term exists for: the arm wins the PROFILED column by
+    # absorbing more, and loses the MARGINAL one once that freedom is charged.
+    rows = [
+        _marginal_row("w1", "telemetry", -100.0, -100.0),
+        _marginal_row("w1", "ours_full", -120.0, -90.0),
+    ]
+    got = J.summarize(rows)
+    assert got["marginal"] is True
+    win = got["table"]["w1"]
+    assert win["_ranked_by"] == "total_marginal_per_cell"
+    assert win["_ranking"] == ["telemetry", "ours_full"]
+    assert win["_ranking_profiled"] == ["ours_full", "telemetry"]
+    assert win["_best"] == "telemetry"
+    # Positive = the marginal objective prefers the tachometer.
+    assert win["_delta_vs_telemetry"]["ours_full"] == pytest.approx(0.1)
+    J.print_table(got)
+
+
+def test_a_missing_marginal_column_falls_back_to_the_profiled_ranking() -> None:
+    # A run without --marginal, or a half-migrated results directory, must rank
+    # by what every row actually carries rather than by a key some rows lack.
+    rows = [_marginal_row("w1", "telemetry", -100.0, -100.0), _row("w1", "ours_full", -120.0)]
+    got = J.summarize(rows)
+    assert got["marginal"] is False
+    assert got["table"]["w1"]["_ranked_by"] == "total_per_cell"
+    assert got["table"]["w1"]["_ranking"] == ["ours_full", "telemetry"]
+
+
+def test_the_marginal_flag_reaches_the_units() -> None:
+    assert all(u.params["marginal"] is False for u in J.build_units(_args()))
+    assert all(u.params["marginal"] is True for u in J.build_units(_args(marginal=True)))
+
+
 def test_summarize_flags_disagreeing_cell_counts() -> None:
     # Two hypotheses scored on different cell sets cannot be compared at all —
     # the table must say so rather than rank them.
