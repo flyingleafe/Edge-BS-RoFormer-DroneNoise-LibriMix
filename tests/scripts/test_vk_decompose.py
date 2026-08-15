@@ -423,6 +423,100 @@ def test_joint_solve_writes_the_extra_arrays_and_stitches(tmp_path) -> None:
     assert float(((clip - recon) ** 2).sum() / (clip**2).sum()) < 0.35
 
 
+def _stitch_one(tmp_path, **over) -> dict:
+    """Run the driver's whole stitch on a synthetic recording, and read it back.
+
+    ``get_recording`` is fed through the per-process cache the pool warms, so
+    the published dataset is never touched and the path under test is the real
+    one — solve unit, ``.npz``, stitch, report.
+    """
+    from tracking.decompose import solve_window
+
+    audio, rates = _synth("common")
+    n_t = int(audio.shape[-1])
+    env = solve_window(audio, rates, V.fvk_config(K_MAX, mics=2, sr=SR), k_hi=K_MAX, mics=2)
+    stride = int(round(SR / env.fs_env))
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    np.savez(
+        raw / "w0.npz",
+        allow_pickle=False,
+        x=np.asarray(env.x, dtype=np.complex64),
+        valid=np.asarray(env.valid, dtype=bool),
+        rotor=np.asarray(env.rotor, dtype=np.int64),
+        k=np.asarray(env.k, dtype=np.int64),
+        bw_track=np.asarray(env.bw_track, dtype=np.float64),
+    )
+    (raw / "w0.json").write_text(
+        json.dumps(
+            {
+                "used": True,
+                "kind": "window",
+                "npz": "raw/w0.npz",
+                "a0": 0,
+                "recording": "REC",
+                "reason": "ok",
+            }
+        )
+    )
+    ft = V.frame_grid(n_t, SR)
+    V.cache_recordings(
+        [
+            {
+                "recording_id": "REC",
+                "audio": audio.astype(np.float32),
+                "ft": ft,
+                "r_ref": V.interp_rps(rates[:, :: max(1, n_t // ft.size)][:, : ft.size], ft, ft),
+                "r_audio": rates,
+                "t0_offset_s": 0.0,
+                "rps_key": "motors_measured",
+                "sr": SR,
+            }
+        ],
+        SR,
+    )
+    params = {
+        "window_s": DUR_S,
+        "hop_s": DUR_S,
+        "fs_env": 100.0,
+        "stride": stride,
+        "ref_mic": -1,
+        "sr": SR,
+        **over,
+    }
+    V.stitch(tmp_path, "spec", "labels", params, only={"REC"})
+    return json.loads((tmp_path / "REC" / "report.json").read_text())
+
+
+def test_stochastic_is_off_by_default_in_the_stitch(tmp_path) -> None:
+    report = _stitch_one(tmp_path)
+    assert "stochastic" not in report
+    assert sorted(report["order_cell"]) == ["original", "residual"]
+    with np.load(tmp_path / "REC" / "residual.npz", allow_pickle=False) as data:
+        assert "stochastic" not in data
+
+
+def test_stochastic_writes_the_channel_and_the_gate_reading(tmp_path) -> None:
+    # The flag ON adds ONE array and TWO report blocks, and the identity the
+    # whole split rests on is written into the report so a consumer can read it
+    # without recomputing anything.
+    report = _stitch_one(tmp_path, stochastic=True)
+    assert report["params"]["stochastic"] is True
+    assert "residual_final" in report["order_cell"]
+    st = report["stochastic"]
+    assert st["carrier"] == "labels"  # a v2 stitch has no corrected carrier
+    assert 0.0 <= st["stochastic_fraction"] <= 1.0
+    assert st["identity_max_abs"] < 1e-6 * st["residual_energy"] ** 0.5
+    assert st["wola_min_weight"] > 0.0
+    with np.load(tmp_path / "REC" / "residual.npz", allow_pickle=False) as data:
+        resid = np.asarray(data["residual"], dtype=np.float64)
+        stoch = np.asarray(data["stochastic"], dtype=np.float64)
+        assert stoch.shape == resid.shape
+        # residual = stochastic + broadband, so the consumer's own subtraction
+        # is the broadband channel and nothing has to be shipped twice.
+        assert float(np.abs(resid - stoch).max()) <= 2.0 * float(np.abs(resid).max())
+
+
 def test_v2_stitch_still_hands_back_its_own_carrier(tmp_path) -> None:
     # A v2 unit has no ``dr`` array, so the joint branch must not fire and the
     # carrier must come back untouched — the regression that keeps v2 working.

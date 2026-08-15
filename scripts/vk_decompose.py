@@ -42,6 +42,18 @@ What is left in the residual that is not broadband
     leakage — and a smooth-PSD noise model cannot represent them. Measurement
     only: nothing here removes a tone.
 
+How much of the residual is still comb locked
+    ``--stochastic`` (off by default) adds REGIME 3: after the stitch the
+    residual is split once more, into a comb-locked STOCHASTIC channel and a
+    broadband one. Two coherent envelopes whose passbands overlap are not
+    identifiable, so above about ``k`` 10 the measured linewidth ``0.6 k`` Hz is
+    wider than any band a coherent envelope may have, and the flanks of every
+    line are comb-locked energy no envelope can carry. A Wiener gain
+    ``1 - S / P`` on the union of the comb bands carries it instead
+    (``tracking.stochastic_split``). ``residual = stochastic + broadband``
+    exactly; ``report.json -> order_cell.residual_final`` is the order cell of
+    the BROADBAND channel, which is the acceptance gate.
+
 How prior-dependent the weak tracks are
     ``--bw-sweep`` re-solves one mid-recording window on two prior axes and
     reports how the per-band mean amplitude and drift move: the requested
@@ -167,6 +179,7 @@ from tracking.joint_decompose import (  # noqa: E402
     SmoothPSD,
     order_cell_bands,
     stitch_windows,
+    stochastic_split,
     theta_rate,
     whitened_flatness,
 )
@@ -221,6 +234,10 @@ IDLE_REV_S = 20.0
 #: exactly the DREGON array size, so all 8 microphones go into ONE solve and no
 #: channel batching is necessary.
 MAX_MICS = 8
+#: Seconds of recording per floor block of the STOCHASTIC split (``--stochastic``).
+#: The alternation's own floor is per WINDOW, and one window's floor does not
+#: describe a minute, so the split fits its own on the stitched residual.
+STOCHASTIC_BLOCK_S = 4.0
 
 
 # ---------------------------------------------------------------------------
@@ -807,20 +824,51 @@ def stitch(
         )
 
         residual = (audio - recon).astype(np.float32)
+        # The CARRIER every reading of the residual is taken against: on the
+        # joint path the stitch's corrected rate, on the v2 path the labels.
+        r_span = np.asarray(
+            st["r_corrected"] if st.get("joint") else rec["r_audio"], dtype=np.float64
+        )[:, a_min:a_max]
+        split = (
+            stochastic_split(
+                residual,
+                sr,
+                r_span,
+                int(k.max()),
+                n_fft=int(joint_config(params).stochastic_n_fft),
+                psd_blocks=max(1, int(round((a_max - a_min) / float(sr) / STOCHASTIC_BLOCK_S))),
+                t_start_s=a_min / float(sr) + offset,
+            )
+            if params.get("stochastic")
+            else None
+        )
         f_psd, psd_res = welch_psd(residual, sr)
         _, psd_org = welch_psd(audio, sr)
-        np.savez(
-            rec_dir / "residual.npz",
-            allow_pickle=False,
-            residual=residual,
-            freq_hz=f_psd,
-            psd_residual=psd_res,
-            psd_original=psd_org,
-            sample_rate=np.int64(sr),
-            t_start_s=np.float64(a_min / float(sr) + offset),
-            span_samples=np.asarray([a_min, a_max], dtype=np.int64),
-            recording_id=np.array(rid),
-        )
+        arrays: dict[str, Any] = {
+            "residual": residual,
+            "freq_hz": f_psd,
+            "psd_residual": psd_res,
+            "psd_original": psd_org,
+            "sample_rate": np.int64(sr),
+            "t_start_s": np.float64(a_min / float(sr) + offset),
+            "span_samples": np.asarray([a_min, a_max], dtype=np.int64),
+            "recording_id": np.array(rid),
+        }
+        if split is not None:
+            # Regime 3. ``residual`` stays the FULL residual, so the three-way
+            # identity a consumer checks is a subtraction it can do itself.
+            _, psd_bb = welch_psd(split.broadband, sr)
+            arrays.update(
+                stochastic=np.asarray(split.stochastic, dtype=np.float32),
+                psd_broadband=psd_bb,
+                stochastic_note=np.array(
+                    "residual = stochastic + broadband, exactly. stochastic is the "
+                    "comb-locked part the coherent envelopes cannot carry (a Wiener gain "
+                    "on the comb bands); broadband = residual - stochastic is the gate "
+                    "reading (report.json -> order_cell.residual_final)"
+                ),
+            )
+        np.savez(rec_dir / "residual.npz", allow_pickle=False, **arrays)
 
         rate = np.asarray(rec["r_audio"])[:, a_min:a_max:stride].mean(axis=0)[:n_env]
         mask = st["covered"] & (rate > IDLE_REV_S)
@@ -889,6 +937,26 @@ def stitch(
                 for r in sorted(wins, key=lambda r: int(r["a0"]))
             ],
         }
+        if split is not None:
+            # THE GATE READING once regime 3 is on: the order-cell profile of
+            # what is left AFTER the stochastic channel is taken out. It sits
+            # beside the other two so a reader compares the three in one table.
+            report["order_cell"]["residual_final"] = order_cell_bands(
+                split.broadband, sr, r_span, k_max=int(k.max())
+            )
+            report["stochastic"] = {
+                "note": (
+                    "regime 3: the comb-locked part of the residual, split off by a Wiener "
+                    "gain on the comb bands (tracking.stochastic_split). residual = "
+                    "stochastic + broadband exactly; read order_cell.residual_final"
+                ),
+                "carrier": "r_corrected" if st.get("joint") else "labels",
+                **split.diag,
+                "flatness_broadband": whitened_flatness(split.broadband, sr, split.psd),
+                "identity_max_abs": float(
+                    np.abs(residual - (split.stochastic + split.broadband)).max()
+                ),
+            }
         pooled_obj = objective_pool(wins)
         if pooled_obj is not None:
             # THE measure the decomposition carries: the MAP objective each
@@ -1081,6 +1149,18 @@ def main() -> None:
         help="--joint: skip the noise whitening (block A runs on the unweighted misfit)",
     )
     ap.add_argument(
+        "--stochastic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "regime 3: after the stitch, split the residual's comb-locked energy into a "
+            "STOCHASTIC channel by a Wiener gain on the comb bands, and report the order "
+            "cell of what is left as order_cell.residual_final — the gate reading. It is a "
+            "reading of the finished residual, so it moves no solve; OFF is the default and "
+            "OFF leaves every product where it was"
+        ),
+    )
+    ap.add_argument(
         "--mem-budget-gb",
         type=float,
         default=8.0,
@@ -1162,6 +1242,7 @@ def main() -> None:
         "bw_psi": str(args.bw_psi),
         "bw_theta": float(args.bw_theta),
         "whiten": not bool(args.no_whiten),
+        "stochastic": bool(args.stochastic),
     }
     wanted = {v.strip() for v in args.recording.split(",") if v.strip()}
 

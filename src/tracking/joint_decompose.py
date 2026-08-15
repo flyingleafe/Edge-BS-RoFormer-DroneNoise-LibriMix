@@ -106,12 +106,15 @@ __all__ = [
     "JointState",
     "PhaseSplit",
     "SmoothPSD",
+    "StochasticSplit",
     "bw_psi_hz",
     "cell_profile",
+    "comb_lines",
     "corrected_phase",
     "floor_block",
     "frame_starts",
     "global_rate_correction",
+    "line_half_widths",
     "joint_objective",
     "joint_result",
     "joint_state",
@@ -125,6 +128,8 @@ __all__ = [
     "split_phases",
     "stft_power",
     "stitch_windows",
+    "stochastic_block",
+    "stochastic_split",
     "theta_rate",
     "upsample_env",
     "wh_lambda",
@@ -1022,6 +1027,9 @@ class JointConfig:
     #: Compute the order-cell profile of every iteration's residual, not the
     #: last one only. It is the acceptance instrument, so it is on by default.
     profile_every_iter: bool = True
+    #: STFT length of the stochastic channel (:func:`stochastic_split`). It is
+    #: the floor block's own length by default, so the two read one grid.
+    stochastic_n_fft: int = 4096
 
     def k_cap(self, it: int) -> int:
         """Trustable harmonic cap of iteration ``it`` (1 based)."""
@@ -1041,6 +1049,10 @@ class JointResult:
     residual: np.ndarray  # (C, T)
     track_energy: np.ndarray  # (M,)
     iterations: list[dict[str, Any]] = field(default_factory=list)
+    #: Regime 3, when :func:`stochastic_block` ran: the comb-locked part of
+    #: ``residual`` that no coherent envelope can carry. ``None`` is the shipped
+    #: default, and then the residual IS the broadband channel.
+    stochastic: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -1073,6 +1085,11 @@ class JointState:
     x_eff: np.ndarray | None = None
     residual: np.ndarray | None = None
     track_energy: np.ndarray | None = None
+    #: Regime 3 (:func:`stochastic_block`): the comb-locked part of the residual.
+    #: ``residual`` is NEVER rewritten by that block, so the broadband channel is
+    #: ``residual - stochastic`` and the three-way identity is exact by
+    #: subtraction, exactly as the residual itself is exact by subtraction.
+    stochastic: np.ndarray | None = None
     #: How many block-A solves have run. It is the annealing ladder's index and
     #: the ``psi_from_iter`` gate, so the blocks need no loop counter of their own.
     n_solves: int = 0
@@ -1240,6 +1257,271 @@ def floor_block(state: JointState, audio: Any) -> JointState:
             t_start_s=float(state.t_start_s),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# regime 3: the STOCHASTIC comb channel
+
+
+@dataclass
+class StochasticSplit:
+    """The residual, split once more into a comb-locked part and a floor."""
+
+    stochastic: np.ndarray  # (C, T) the comb-locked part
+    broadband: np.ndarray  # (C, T) what is left — residual - stochastic
+    psd: SmoothPSD  # the floor model the gain was taken against
+    diag: dict[str, Any] = field(default_factory=dict)
+
+
+def comb_lines(rate: Any, k_hi: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(line frequencies Hz, harmonic index)`` of one frame's whole comb.
+
+    Row major over rotors, so the harmonic index simply tiles — the same
+    ``(k r_r)`` construction :func:`masked_smooth_psd` masks with, handed back
+    with its ``k`` beside it because the band law is written in ``k``.
+    """
+    r = np.asarray(rate, dtype=np.float64).ravel()
+    ks = np.arange(1, int(k_hi) + 1, dtype=np.float64)
+    return (ks[None, :] * r[:, None]).ravel(), np.tile(ks, r.size)
+
+
+def line_half_widths(
+    lines: Any, k: Any, *, slope_hz_per_k: float = LINEWIDTH_HZ_PER_K, min_half_hz: float = 0.0
+) -> np.ndarray:
+    """``min(slope k, local line spacing)`` Hz per line, floored at ``min_half_hz``.
+
+    The band a REGIME-3 line needs is its own incoherent linewidth, ``0.6 k`` Hz
+    by the measured shaft-wander law. The spacing cap is what keeps one line's
+    band from reaching over its neighbour: a coherent envelope is identifiable
+    only out to about 0.4 of the local spacing, and a STOCHASTIC band that
+    crosses a neighbour would take that neighbour's energy twice. The floor is
+    the readout's own resolution — a band narrower than one bin selects nothing.
+
+    ``lines`` and ``k`` are one flat array each (:func:`comb_lines`); the
+    spacing is read on the sorted line set, so it is the distance to the nearest
+    OTHER line whichever rotor that line belongs to.
+    """
+    f = np.asarray(lines, dtype=np.float64)
+    ks = np.asarray(k, dtype=np.float64)
+    n = int(f.size)
+    if n < 2:
+        sep = np.full(n, np.inf)
+    else:
+        order = np.argsort(f)
+        d = np.diff(f[order])
+        near = np.empty(n, dtype=np.float64)
+        near[0], near[-1] = d[0], d[-1]
+        if n > 2:
+            near[1:-1] = np.minimum(d[:-1], d[1:])
+        sep = np.empty(n, dtype=np.float64)
+        sep[order] = near
+    return np.maximum(np.minimum(float(slope_hz_per_k) * ks, sep), float(min_half_hz))
+
+
+def _wola_plan(n_t: int, n_fft: int, hop: int) -> tuple[int, int, np.ndarray]:
+    """``(pad, padded length, frame starts)`` of an EXACTLY invertible WOLA.
+
+    The signal is padded by a whole frame on each side and the frame grid is
+    extended to cover the padding, so every original sample lies under the FULL
+    window-square sum and the weighted overlap-add divides that sum out exactly.
+    That is what makes the round trip an identity at any window and any hop,
+    without asking a COLA constant to be true.
+    """
+    pad = int(n_fft)
+    want = pad + int(n_t) + pad
+    n_frames = 1 + max(0, -(-(want - int(n_fft)) // int(hop)))
+    starts = np.arange(n_frames, dtype=np.int64) * int(hop)
+    return pad, int(starts[-1]) + int(n_fft), starts
+
+
+def stochastic_split(
+    residual: Any,
+    sr: float,
+    r_audio: Any,
+    k_hi: int,
+    *,
+    psd: SmoothPSD | None = None,
+    n_fft: int = 4096,
+    hop: int | None = None,
+    slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    psd_blocks: int = 4,
+    psd_n_cep: int = 40,
+    t_start_s: float = 0.0,
+    frames_per_chunk: int = 64,
+) -> StochasticSplit:
+    """Split the residual into a comb-locked STOCHASTIC channel and a floor.
+
+    Regime 3 of the decomposition. Regimes 1 and 2 — the coherent envelope at
+    the annotated carrier and the coherent envelope at the CORRECTED carrier —
+    both need a band narrow against the local line spacing, because two coherent
+    envelopes whose passbands overlap are not identifiable (a cluster run at a
+    cap of 1.5 times the line separation went singular). Above about ``k`` 10 the
+    measured linewidth ``0.6 k`` Hz is wider than that cap, so the flanks of
+    every line are energy that IS comb locked and that no coherent envelope can
+    carry. This is the channel that carries it, and it is a POWER split rather
+    than a waveform fit: nothing here has a phase model.
+
+    The split is one Wiener gain on the floor block's own short-time grid. Per
+    frame every predicted line ``k r_r(t)`` gets the band
+    ``+/- max(min(0.6 k, spacing), one bin)`` Hz (:func:`line_half_widths`); the
+    bands are UNIONED, so where two lines' bands touch — the DREGON twins do,
+    at high ``k`` — the overlap is one band with one gain and its energy is
+    never taken twice. Each union band gets
+
+        g = max(0, 1 - S / P)
+
+    with ``S`` the fitted floor and ``P`` the measured residual, both averaged
+    over the band's bins, both power spectral DENSITIES on the
+    :func:`masked_smooth_psd` normalization, so the ratio is scale free. That
+    ``1 - noise / total`` is the MMSE estimate of a Gaussian line in a Gaussian
+    floor. The gain is applied to the residual's own short-time transform and
+    overlap-added back (:func:`_wola_plan` — the round trip is an identity), and
+    the broadband channel is the SUBTRACTION ``residual - stochastic``, so
+
+        coherent + stochastic + broadband = original
+
+    holds to float roundoff by construction, exactly as the residual itself
+    does.
+
+    ``psd`` is the floor to score against; ``None`` fits one on the residual
+    with the same block C the alternation uses, which is what a caller with a
+    WHOLE recording wants — a window's floor does not describe a minute.
+    """
+    y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    n_ch, n_t = int(y.shape[0]), int(y.shape[-1])
+    n_fft = int(n_fft)
+    step = int(n_fft // 4 if hop is None else hop)
+    if step < 1 or step > n_fft:
+        raise ValueError(f"hop {step} must be in 1..{n_fft}")
+    use = (
+        masked_smooth_psd(
+            y,
+            float(sr),
+            r,
+            int(k_hi),
+            n_fft=n_fft,
+            n_blocks=int(psd_blocks),
+            n_cep=int(psd_n_cep),
+            t_start_s=float(t_start_s),
+        )
+        if psd is None
+        else psd
+    )
+    log_s = _floor_on_grid(use, float(sr), n_fft)
+    if log_s.shape[0] != n_ch:
+        raise ValueError(f"the floor has {log_s.shape[0]} microphones, the residual has {n_ch}")
+    n_bl = int(log_s.shape[1])
+    s_lin = np.exp(log_s)  # (C, B, F)
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / float(sr))
+    df = float(sr) / n_fft
+
+    pad, n_pad, starts = _wola_plan(n_t, n_fft, step)
+    win = np.hanning(n_fft)
+    w2 = win**2
+    scale = 1.0 / (float(sr) * float(w2.sum()))
+    yp = np.zeros((n_ch, n_pad), dtype=np.float64)
+    yp[:, pad : pad + n_t] = y
+    num = np.zeros((n_ch, n_pad), dtype=np.float64)
+    den = np.zeros(n_pad, dtype=np.float64)
+    off = np.arange(n_fft)
+
+    n_bins = 0
+    n_bands = 0
+    band_power = 0.0
+    band_floor = 0.0
+    gain_sum = 0.0
+    for c0 in range(0, starts.size, int(frames_per_chunk)):
+        sub = starts[c0 : c0 + int(frames_per_chunk)]
+        seg = yp[:, sub[:, None] + off] * win[None, None, :]
+        spec = np.fft.rfft(seg, axis=-1)  # (C, frames, F)
+        gain = np.zeros(spec.shape, dtype=np.float64)
+        for i, s in enumerate(sub):
+            s0 = int(s) - pad
+            a = int(np.clip(s0, 0, max(n_t - 1, 0)))
+            b = int(np.clip(s0 + n_fft, 1, max(n_t, 1)))
+            rate = r[:, a:b].mean(axis=-1)
+            lines, ks = comb_lines(rate, int(k_hi))
+            half = line_half_widths(lines, ks, slope_hz_per_k=slope_hz_per_k, min_half_hz=df)
+            idx = np.flatnonzero(_line_mask(freq, lines, half))
+            if idx.size == 0:
+                continue
+            brk = np.flatnonzero(np.diff(idx) > 1)
+            lo = np.concatenate(([0], brk + 1))
+            hi = np.concatenate((brk, [idx.size - 1]))
+            width = (hi - lo + 1).astype(np.float64)
+            bl = min((max(s0, 0) * n_bl) // max(n_t, 1), n_bl - 1)
+            power = (np.abs(spec[:, i, :]) ** 2) * scale
+            zero = np.zeros((n_ch, 1), dtype=np.float64)
+            cp = np.concatenate([zero, np.cumsum(power[:, idx], axis=-1)], axis=-1)
+            cs = np.concatenate([zero, np.cumsum(s_lin[:, bl, :][:, idx], axis=-1)], axis=-1)
+            p_band = (cp[:, hi + 1] - cp[:, lo]) / width[None, :]
+            s_band = (cs[:, hi + 1] - cs[:, lo]) / width[None, :]
+            g_band = np.clip(1.0 - s_band / np.maximum(p_band, 1e-300), 0.0, 1.0)
+            gain[:, i, idx] = np.repeat(g_band, (hi - lo + 1), axis=-1)
+            n_bins += int(idx.size)
+            n_bands += int(lo.size)
+            band_power += float(np.sum(p_band * width[None, :]))
+            band_floor += float(np.sum(s_band * width[None, :]))
+            gain_sum += float(np.sum(g_band * width[None, :]))
+        out = np.fft.irfft(spec * gain, n=n_fft, axis=-1) * win[None, None, :]
+        for i, s in enumerate(sub):
+            num[:, int(s) : int(s) + n_fft] += out[:, i]
+            den[int(s) : int(s) + n_fft] += w2
+
+    stoch = (num / np.maximum(den, 1e-300)[None, :])[:, pad : pad + n_t]
+    broadband = y - stoch
+    e_res = float((y**2).sum())
+    e_st = float((stoch**2).sum())
+    cells = max(n_bins * n_ch, 1)
+    return StochasticSplit(
+        stochastic=stoch,
+        broadband=broadband,
+        psd=use,
+        diag={
+            "n_fft": n_fft,
+            "hop": step,
+            "n_frames": int(starts.size),
+            "k_hi": int(k_hi),
+            "slope_hz_per_k": float(slope_hz_per_k),
+            "min_half_hz": round(df, 4),
+            "n_bands_per_frame": round(n_bands / max(starts.size, 1), 2),
+            "band_bin_fraction": round(n_bins / max(starts.size * freq.size, 1), 5),
+            "mean_gain": round(gain_sum / cells, 5),
+            "band_floor_share": round(band_floor / max(band_power, 1e-300), 5),
+            "residual_energy": e_res,
+            "stochastic_energy": e_st,
+            "broadband_energy": float((broadband**2).sum()),
+            "stochastic_fraction": round(e_st / max(e_res, 1e-30), 6),
+            # The overlap-add weight the division undoes. It is positive
+            # everywhere by construction (:func:`_wola_plan`), and a caller that
+            # sees a zero here is looking at a broken round trip, not at a gain.
+            "wola_min_weight": round(float(den[pad : pad + n_t].min()), 8),
+        },
+    )
+
+
+def stochastic_block(state: JointState) -> tuple[JointState, StochasticSplit]:
+    """Regime 3 as a BLOCK: the last solve's residual, split once more.
+
+    It runs AFTER the alternation, on the state the last block-A solve left, and
+    it reads the floor that same alternation fitted. Nothing it does feeds back:
+    the residual on the state is not rewritten, only ``stochastic`` is added
+    beside it, so every earlier reading of the window is untouched.
+    """
+    if state.residual is None or state.psd is None:
+        raise ValueError("stochastic_block: nothing solved yet — run solve_block first")
+    split = stochastic_split(
+        state.residual,
+        float(state.cfg.sr),
+        state.carrier,
+        int(state.k_hi),
+        psd=state.psd,
+        n_fft=int(state.jcfg.stochastic_n_fft),
+        slope_hz_per_k=float(state.jcfg.bw_psi_slope),
+        t_start_s=float(state.t_start_s),
+    )
+    return replace(state, stochastic=split.stochastic), split
 
 
 def solve_report(state: JointState, audio: Any, *, profile: bool) -> dict[str, Any]:
@@ -1484,6 +1766,7 @@ def joint_result(state: JointState, iterations: list[dict[str, Any]]) -> JointRe
         residual=np.asarray(state.residual),
         track_energy=np.asarray(state.track_energy),
         iterations=iterations,
+        stochastic=None if state.stochastic is None else np.asarray(state.stochastic),
     )
 
 

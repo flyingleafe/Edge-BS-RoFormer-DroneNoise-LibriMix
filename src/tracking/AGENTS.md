@@ -58,6 +58,7 @@ The stage vocabulary:
 | `vk_solve_stage` | `JointConfig` | v3 **block A** — one whitened VK solve (`objective=True` adds the MAP readout to its log entry) |
 | `phase_split_stage` | `JointConfig` | v3 **block B** — the shaft / per-rotor / per-track phase split |
 | `floor_stage` | `JointConfig` | v3 **block C** — the masked smooth log floor |
+| `stochastic_stage` | `JointConfig` | v3 **regime 3** — the residual's comb-locked energy into its own channel |
 | `refit_stage` | `RefitConfig` | the whole telemetry refit as one stage |
 | `guarded` | `SeedConfig` | wrap a stage with the blind per-track guard |
 
@@ -80,7 +81,7 @@ The recipes:
 | `peel_alternation` | `flagship` one application at a time, every frame kept |
 | `refit_stage` | presmooth → coarse-to-fine (peel → pi_kalman) to convergence |
 | `judge(candidate)` | a candidate stage → `fitness_stage` under one control |
-| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve, the last one reading the MAP objective |
+| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve, the last one reading the MAP objective (`stochastic=True` appends regime 3) |
 
 Every campaign driver calls a recipe. A script must not assemble a ladder of its own — if a
 variant is worth running, it is worth a named recipe here.
@@ -158,8 +159,9 @@ SPLIT is estimated, and it is the MAP estimate under the VK prior. Design and me
 `docs/vk-decompose-v3-design.md`; v1/v2 record: `docs/experiments/vk-decomposition.md`.
 
 **The state.** `JointState` is what the alternation accumulates and the one seam the stages pass
-along, `meta["joint"]`: the carrier, `theta`, `psi`, the floor model `psd`, and the last solve's
-`env` / `x_eff` / `residual` / `track_energy` / `n_solves`. It is frozen — every block returns a
+along, `meta["joint"]`: the carrier, `theta`, `psi`, the floor model `psd`, the last solve's
+`env` / `x_eff` / `residual` / `track_energy` / `n_solves`, and — once regime 3 has run — the
+`stochastic` channel beside the residual. It is frozen — every block returns a
 NEW state. The carrier is HELD and never re-derived, because the alternation is conditioned on
 one carrier for the whole window and `theta` is a correction on top of it.
 
@@ -212,6 +214,41 @@ one carrier for the whole window and `theta` is a correction on top of it.
 | `SmoothPSD.pooled() -> (B, F)` | the geometric mean over microphones — what the whitening weight reads |
 | `stft_power(audio, starts, n_fft, frames_per_chunk=64)` | THE framed Hann power spectrogram of this module, shared with the order-cell probe |
 | `frame_starts(n_t, n_fft, hop)` | its frame grid |
+
+### Regime 3 — the stochastic comb channel
+
+Regimes 1 and 2 are the coherent envelope at the annotated carrier and at the CORRECTED one.
+Both need a band narrow against the local line spacing, because two coherent envelopes whose
+passbands overlap are not identifiable — a cluster run at a cap of 1.5x the line separation went
+singular (SuperLU "Not enough memory to perform factorization", `r2 = -1`). Identifiability caps
+a coherent band at about 0.4x the local spacing, and above about `k` 10 the measured linewidth
+`0.6 k` Hz is wider than that, so the flanks of every line are comb-locked energy that no
+coherent envelope can carry. Regime 3 carries it, as a POWER split with no phase model.
+
+| Primitive | Purpose |
+|---|---|
+| `stochastic_split(residual, sr, r_audio, k_hi, *, psd=None, n_fft=4096, ...) -> StochasticSplit` | THE split: per frame, a Wiener gain `g = max(0, 1 - S/P)` on the UNION of the comb bands |
+| `comb_lines(rate, k_hi) -> (lines Hz, k)` | one frame's whole comb, `k` beside it because the band law is written in `k` |
+| `line_half_widths(lines, k, *, slope_hz_per_k=0.6, min_half_hz=0)` | `min(0.6 k, local spacing)`, floored at one bin — the spacing cap is what stops one band reaching over its neighbour |
+| `stochastic_block(state) -> (JointState, StochasticSplit)` | the block, on the state the last block-A solve left |
+| `stochastic_stage(cfg=None)` | its Frame adapter (`top.py`) |
+| `_wola_plan(n_t, n_fft, hop)` | the padding and frame grid that make the overlap-add an EXACT identity at any window and any hop |
+
+Four things a caller must know:
+
+- **The bands are UNIONED, and that is not cosmetic.** Two lines whose bands touch — the DREGON
+  twins do, at high `k` — become ONE band with ONE gain, so their shared energy is never taken
+  twice. `n_bands_per_frame` in the diagnostics is the count after the union.
+- **The broadband channel is a SUBTRACTION.** `residual - stochastic`, exactly as the residual
+  itself is `audio - recon`, so `coherent + stochastic + broadband = original` holds to float
+  roundoff and no consumer has to trust an overlap-add. The state's `residual` is never
+  rewritten; `JointState.stochastic` lands beside it.
+- **`P` and `S` are both power spectral DENSITIES on `masked_smooth_psd`'s own normalization**
+  (`1 / (sr * sum(w^2))`), so the ratio is scale free whatever `n_fft` the split runs at.
+- **The floor is per WINDOW on the state and per RECORDING in the driver.** `stochastic_block`
+  scores against the alternation's own floor; `stochastic_split(psd=None)` fits a fresh one with
+  the same block C, which is what `scripts/vk_decompose.py --stochastic` does on the STITCHED
+  residual, because one window's floor does not describe a minute.
 
 ### The window layer
 
@@ -295,7 +332,7 @@ set is small enough to list:
 | `scripts/telemetry_fitness.py`, `telemetry_refit.py`, `telemetry_report.py` | issue 17: the judge, the fitter, the reader |
 | `scripts/displacement/{nullcontrol,combscan,refine_kscaled,comb_explorer}.py` | the comb-displacement campaign |
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
-| `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`) |
+| `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`) |
 | `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |

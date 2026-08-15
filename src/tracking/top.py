@@ -174,6 +174,7 @@ __all__ = [
     "refit_stage",
     "scale_stage",
     "shift_stage",
+    "stochastic_stage",
     "tracking_frame",
     "vit2dsp",
     "vit2dsp_stage",
@@ -1195,6 +1196,26 @@ def floor_stage(cfg: JointConfig | None = None, *, name: str = "joint_floor") ->
     return run
 
 
+def stochastic_stage(cfg: JointConfig | None = None, *, name: str = "joint_stochastic") -> Stage:
+    """REGIME 3: split the residual's comb-locked energy into its own channel.
+
+    The block after the alternation (:func:`tracking.stochastic_split`). Like
+    :func:`decompose_stage` it changes no trajectory and rewrites no residual:
+    the comb-locked part lands beside the residual on the seam
+    (``JointState.stochastic``) and the broadband channel is the subtraction, so
+    a composition that does not include this stage is unchanged call for call.
+    """
+    from tracking.joint_decompose import stochastic_block
+
+    def run(frame: td.Frame) -> td.Frame:
+        _, _, r, times, _ = _core_inputs(frame)
+        state = joint_state_of(frame)
+        done, split = stochastic_block(state if cfg is None else replace(state, jcfg=cfg))
+        return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=dict(split.diag))
+
+    return run
+
+
 def joint_iterations(frame: td.Frame) -> list[dict[str, Any]]:
     """The per-round record of a joint run, READ OFF the stage log.
 
@@ -1584,6 +1605,7 @@ def joint_solve_window(
     rho_scale: float = 1.0,
     t_start_s: float = 0.0,
     objective: bool = True,
+    stochastic: bool = False,
 ) -> JointResult:
     """RECIPE: the v3 alternation on one window::
 
@@ -1598,6 +1620,11 @@ def joint_solve_window(
     (:func:`tracking.map_objective`, under ``"objective"`` in the last entry of
     ``meta["tracking"]`` and so of ``JointResult.iterations``). ``objective=False``
     switches the reading off; it cannot change any product either way.
+
+    ``stochastic=True`` appends REGIME 3 (:func:`stochastic_stage`), which
+    splits the finished residual's comb-locked energy into
+    ``JointResult.stochastic``. It is off by default and off leaves every
+    product bit for bit where it was.
 
     The returned envelope is the EFFECTIVE one, ``g e^{j psi}``, against the
     corrected carrier in ``env.phase`` — so every v2 consumer (``reconstruct``,
@@ -1632,6 +1659,7 @@ def joint_solve_window(
         floor_stage(),
         iterate(pipeline(vk_solve_stage(), phase_split_stage(), floor_stage()), int(jc.iters) - 1),
         vk_solve_stage(profile=True, objective=bool(objective)),
+        *([stochastic_stage()] if stochastic else []),
     )
     out = run(with_meta(frame, joint=state))
     return joint_result(joint_state_of(out), joint_iterations(out))
