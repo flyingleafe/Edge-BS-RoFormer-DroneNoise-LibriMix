@@ -227,18 +227,37 @@ coherent envelope can carry. Regime 3 carries it, as a POWER split with no phase
 
 | Primitive | Purpose |
 |---|---|
-| `stochastic_split(residual, sr, r_audio, k_hi, *, psd=None, n_fft=4096, ...) -> StochasticSplit` | THE split: per frame, a Wiener gain `g = max(0, 1 - S/P)` on the UNION of the comb bands |
+| `stochastic_split(residual, sr, r_audio, k_hi, *, psd=None, n_fft=4096, ...) -> StochasticSplit` | THE split: a PER-BIN amplitude gain `a = clip(sqrt(S / P~), 0, 1)` inside the UNION of the comb search regions, `a = 1` outside. Broadband `= a Y`, stochastic `= (1 - a) Y` |
 | `comb_lines(rate, k_hi) -> (lines Hz, k)` | one frame's whole comb, `k` beside it because the band law is written in `k` |
-| `line_half_widths(lines, k, *, slope_hz_per_k=0.6, min_half_hz=0)` | `min(0.6 k, local spacing)`, floored at one bin — the spacing cap is what stops one band reaching over its neighbour |
+| `line_half_widths(lines, k, *, slope_hz_per_k=0.6, min_half_hz=0)` | the COHERENT law: `min(0.6 k, local spacing)`, floored at one bin — the spacing cap is what stops one band reaching over its neighbour |
+| `stochastic_half_widths(k, *, width_factor=2.0, min_half_hz=0)` | regime 3's OWN law: `2 x 0.6 k` Hz, NO spacing cap |
 | `stochastic_block(state) -> (JointState, StochasticSplit)` | the block, on the state the last block-A solve left |
 | `stochastic_stage(cfg=None)` | its Frame adapter (`top.py`) |
 | `_wola_plan(n_t, n_fft, hop)` | the padding and frame grid that make the overlap-add an EXACT identity at any window and any hop |
 
-Four things a caller must know:
+Six things a caller must know:
 
-- **The bands are UNIONED, and that is not cosmetic.** Two lines whose bands touch — the DREGON
-  twins do, at high `k` — become ONE band with ONE gain, so their shared energy is never taken
-  twice. `n_bands_per_frame` in the diagnostics is the count after the union.
+- **The gain is per BIN and it is an AMPLITUDE.** Both halves are the fix for a measured failure
+  of the flat per-band Wiener gain this replaced (full-scale DREGON, `results/vk_decompose_v3c`).
+  A power gain `S / P` is the conditional mean, which is not a typical floor realization: its
+  power `S^2 / P` is DENTED below the floor at every strong line, and the acceptance gate — the
+  order-cell excess of the BROADBAND channel — cannot tell a dent from a line (k1-9 went UP,
+  4.3 % -> 7.8 % retained, the profile peak moving to +/- 0.5 orders). `sqrt(S / P~)` leaves the
+  broadband channel at power `S` in expectation instead. And ONE gain over a union that spans many
+  lines scales the region uniformly, so the comb PATTERN survives at reduced amplitude (depth
+  0.386 -> 0.380 dB at k10-24); the smoothed periodogram carries the line SHAPE, so a per-bin gain
+  concentrates the removal at the line cores with no line model at all.
+- **The two smoothing widths are fixed, and the number that fixes them is chi-square variance.**
+  `P_SMOOTH_FRAMES = 5`, `P_SMOOTH_BINS = 3`: one periodogram bin has 100 % relative standard
+  deviation, 15 averaged bins bring the power estimate to ~26 % and the amplitude gain, its square
+  root, to ~13 %. They are NOT knobs. Measured alternative: dropping the frequency boxcar
+  (`bins = 1`) moves DREGON's retained numbers to 6.75 / 8.88 / 15.65 / 7.35 % — better in three
+  bands, worse in the one (k1-9) the estimator is weakest in — so the shipped pair stands.
+- **The bands are UNIONED, and that is not cosmetic.** Two lines whose bands touch — at
+  `2 x 0.6 k` Hz nearly all of them do above `k` 35 — become ONE region, so their shared energy is
+  never taken twice. `n_bands_per_frame` in the diagnostics is the count after the union. The
+  union now only delimits WHERE the gain may differ from one; inside it the gain is per bin, so a
+  bin that sits at floor level passes through whether or not a region claims it.
 - **The broadband channel is a SUBTRACTION.** `residual - stochastic`, exactly as the residual
   itself is `audio - recon`, so `coherent + stochastic + broadband = original` holds to float
   roundoff and no consumer has to trust an overlap-add. The state's `residual` is never
@@ -249,6 +268,22 @@ Four things a caller must know:
   scores against the alternation's own floor; `stochastic_split(psd=None)` fits a fresh one with
   the same block C, which is what `scripts/vk_decompose.py --stochastic` does on the STITCHED
   residual, because one window's floor does not describe a minute.
+- **Do NOT widen block C's comb mask to feed this.** The search regions blanket 91-94 % of
+  1-4 kHz on DREGON, so it is tempting to give the floor fit a wider mask and let the cepstral lift
+  bridge. Measured: the shipped mask (3.0, 0.45) leaves the between-region residual within
+  +0.84 / +0.11 / +0.03 dB of `S` at 1-2 / 2-4 / 4-8 kHz and -0.04 dB above the comb, so the
+  extrapolation is already sane; widening it to (5.0, 0.48) biases `S` HIGH by 1.9 dB at 1-2 kHz
+  (`band_floor_share` 1.16, the region seeing no excess to remove at all) and costs the gate
+  10.25 / 20.03 / 10.85 % against 9.61 / 16.98 / 8.04 %.
+
+**What limits it now.** On the synthetic fixture the per-bin gain is exact where it is applied —
+`a^2 |Y|^2` measured on the transform lands -0.14 dB from `S` — while the RESYNTHESIZED broadband
+reads +3.3 dB against the same floor. The gap is the analysis-modify-synthesis error of the
+weighted overlap-add, not the gain: a 20 dB deep, one-bin-wide notch has an impulse response as
+long as the frame, and it wraps. More overlap does not help (hop `n_fft / 8` reads +3.25 dB), a
+zero-padded analysis window is worse (+9.3 dB), and smoothing the GAIN in frequency fills the
+notch it is supposed to cut (+10 dB at three bins). It matters least where the method is used:
+DREGON's residual sits 0.5 to 1.7 dB over its floor inside the regions, not 20 dB.
 
 ### The window layer
 

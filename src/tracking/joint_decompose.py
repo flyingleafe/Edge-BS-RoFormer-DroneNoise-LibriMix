@@ -132,6 +132,7 @@ __all__ = [
     "stft_power",
     "stitch_windows",
     "stochastic_block",
+    "stochastic_half_widths",
     "stochastic_split",
     "theta_rate",
     "upsample_env",
@@ -145,6 +146,25 @@ __all__ = [
 #: Measured shaft-wander law: harmonic ``k`` is about this many Hz wide per
 #: harmonic index (``docs/experiments/vk-decomposition.md``, sigma_r ~ 0.6 rev/s).
 LINEWIDTH_HZ_PER_K = 0.6
+
+#: How many linewidths of SEARCH REGION regime 3 gives one line
+#: (:func:`stochastic_half_widths`). Two of them is about +/- 2 FWHM, which is
+#: 84 % of a Lorentzian's power. It is a search region and not a subtraction
+#: width, because the gain inside it is per bin: a bin that sits at floor level
+#: gets a gain of one whether or not a band claims it.
+STOCHASTIC_WIDTH_FACTOR = 2.0
+
+#: Boxcar widths (in frames and in frequency bins) of the measured periodogram
+#: the regime-3 gain is taken against. Both are FIXED, and the number that fixes
+#: them is the chi-square variance of a periodogram bin: one bin is an
+#: exponential deviate with 100 % relative standard deviation, so a gain built
+#: on it is noise. A 5 x 3 boxcar averages 15 bins — fewer in effect, because a
+#: Hann analysis at hop ``n_fft / 4`` correlates its neighbours — which brings
+#: the power estimate to about 26 % and the amplitude gain, which is its square
+#: root, to about 13 %. Wider would blur the line SHAPE the split exists to
+#: read; narrower would put chi-square noise straight into the gain.
+P_SMOOTH_FRAMES = 5
+P_SMOOTH_BINS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -1328,6 +1348,52 @@ def line_half_widths(
     return np.maximum(np.minimum(float(slope_hz_per_k) * ks, sep), float(min_half_hz))
 
 
+def stochastic_half_widths(
+    k: Any,
+    *,
+    slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    width_factor: float = STOCHASTIC_WIDTH_FACTOR,
+    min_half_hz: float = 0.0,
+) -> np.ndarray:
+    """``max(width_factor * slope * k, min_half_hz)`` Hz — regime 3's OWN law.
+
+    Deliberately NOT :func:`line_half_widths`. That law caps a line's band at
+    the local line spacing, and the cap is there to protect COHERENT
+    identifiability: two envelopes whose passbands overlap cannot be told apart,
+    and a band that reaches over its neighbour would take the neighbour's energy
+    twice. Neither reason applies to a per-bin POWER split. Its bands are
+    unioned before any gain is taken, so nothing is counted twice, and its gain
+    is per bin, so a bin the region covers but no line occupies reads
+    ``P ~ S`` and passes through at a gain of one.
+
+    The cap COSTS, though, and the FLY124 v3c report is the measurement: at
+    high ``k`` the ``0.6 k`` Hz flanks of four interleaved combs merge into one
+    continuous rotor-locked field BETWEEN the nominal lines, the spacing-capped
+    bands never reach it, and the capped bands then read a ``band_floor_share``
+    of 1.02 — they saw floor-level edges and nothing else. Two linewidths
+    (``+/- 2`` FWHM, 84 % of a Lorentzian's power) reaches the field.
+    """
+    ks = np.asarray(k, dtype=np.float64)
+    return np.maximum(float(width_factor) * float(slope_hz_per_k) * ks, float(min_half_hz))
+
+
+def _smooth_power(power: np.ndarray, n_frames: int, n_bins: int) -> np.ndarray:
+    """Boxcar the ``(C, frames, F)`` periodogram in frequency, then in time.
+
+    ``mode="nearest"`` at both edges, which holds the end frame and the end bin
+    rather than pulling the estimate toward zero — a gain built on a
+    zero-padded average would be a spurious subtraction at the two ends.
+    """
+    from scipy.ndimage import uniform_filter1d
+
+    out = power
+    if int(n_bins) > 1:
+        out = uniform_filter1d(out, int(n_bins), axis=-1, mode="nearest")
+    if int(n_frames) > 1:
+        out = uniform_filter1d(out, int(n_frames), axis=-2, mode="nearest")
+    return out
+
+
 def _wola_plan(n_t: int, n_fft: int, hop: int) -> tuple[int, int, np.ndarray]:
     """``(pad, padded length, frame starts)`` of an EXACTLY invertible WOLA.
 
@@ -1354,6 +1420,7 @@ def stochastic_split(
     n_fft: int = 4096,
     hop: int | None = None,
     slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    width_factor: float = STOCHASTIC_WIDTH_FACTOR,
     psd_blocks: int = 4,
     psd_n_cep: int = 40,
     t_start_s: float = 0.0,
@@ -1371,27 +1438,51 @@ def stochastic_split(
     carry. This is the channel that carries it, and it is a POWER split rather
     than a waveform fit: nothing here has a phase model.
 
-    The split is one Wiener gain on the floor block's own short-time grid. Per
-    frame every predicted line ``k r_r(t)`` gets the band
-    ``+/- max(min(0.6 k, spacing), one bin)`` Hz (:func:`line_half_widths`); the
-    bands are UNIONED, so where two lines' bands touch — the DREGON twins do,
-    at high ``k`` — the overlap is one band with one gain and its energy is
-    never taken twice. Each union band gets
+    The split is a PER-BIN AMPLITUDE gain — spectral subtraction to the floor —
+    on the floor block's own short-time grid. Per frame every predicted line
+    ``k r_r(t)`` gets the search region
+    ``+/- max(2 * 0.6 k, one bin)`` Hz (:func:`stochastic_half_widths`), the
+    regions are UNIONED, and inside the union every bin gets
 
-        g = max(0, 1 - S / P)
+        a(f, frame) = clip(sqrt(S(f) / P~(f, frame)), 0, 1)
 
-    with ``S`` the fitted floor and ``P`` the measured residual, both averaged
-    over the band's bins, both power spectral DENSITIES on the
-    :func:`masked_smooth_psd` normalization, so the ratio is scale free. That
-    ``1 - noise / total`` is the MMSE estimate of a Gaussian line in a Gaussian
-    floor. The gain is applied to the residual's own short-time transform and
+    with ``a = 1`` outside. The broadband channel is ``a Y`` and the stochastic
+    channel is ``(1 - a) Y``. ``S`` is the fitted floor and ``P~`` the MEASURED
+    per-bin periodogram, boxcar smoothed over ``P_SMOOTH_FRAMES`` frames and
+    ``P_SMOOTH_BINS`` bins; both are power spectral DENSITIES on the
+    :func:`masked_smooth_psd` normalization, so the ratio is scale free.
+
+    Two things about that gain, and both are the fix for a MEASURED failure of
+    the flat per-band Wiener gain it replaces (full-scale DREGON,
+    ``results/vk_decompose_v3c``):
+
+    - **Amplitude, not power.** The conditional mean ``E[floor | Y] =
+      (S / P) Y`` is the right answer to a different question: it is the
+      MINIMUM-ERROR estimate, not a typical realization of the floor, and its
+      power ``S^2 / P`` sits BELOW the floor at every strong line. That is a
+      notch, and the acceptance gate — the order-cell excess of the BROADBAND
+      channel — reads a notch and a line alike (k1-9 excess went UP, 4.3 % ->
+      7.8 % retained, with the profile peak moving to +/- 0.5 orders, which is
+      the signature of a dent between the lines and not of comb energy). The
+      amplitude gain ``sqrt(S / P~)`` leaves the broadband channel with power
+      ``S`` in expectation, which is what the gate and the downstream
+      floor-training targets both want.
+    - **Per bin, not per band.** One gain over a union band that spans many
+      lines scales the whole region uniformly, so the comb PATTERN survives at
+      reduced amplitude (order-cell depth 0.386 -> 0.380 dB at k10-24). The
+      smoothed periodogram ``P~`` carries the line SHAPE, so a per-bin gain
+      concentrates the removal at the line cores by itself — no line model, no
+      Lorentzian fit, and no knob beyond the two fixed smoothing widths.
+
+    The gain is applied to the residual's own short-time transform and
     overlap-added back (:func:`_wola_plan` — the round trip is an identity), and
     the broadband channel is the SUBTRACTION ``residual - stochastic``, so
 
         coherent + stochastic + broadband = original
 
     holds to float roundoff by construction, exactly as the residual itself
-    does.
+    does. Per-bin gains are linear through the same transform, so the identity
+    is untouched by any of this.
 
     ``psd`` is the floor to score against; ``None`` fits one on the residual
     with the same block C the alternation uses, which is what a caller with a
@@ -1435,45 +1526,60 @@ def stochastic_split(
     num = np.zeros((n_ch, n_pad), dtype=np.float64)
     den = np.zeros(n_pad, dtype=np.float64)
     off = np.arange(n_fft)
+    chunk = max(1, int(frames_per_chunk))
+
+    # Pass 1: the MEASURED periodogram of every frame, then the boxcar. The
+    # whole ``(C, frames, F)`` surface is built because the smoother reaches
+    # across chunk boundaries and a halo is a second way to get the same array
+    # wrong; float32 keeps it to ~130 MB on a minute of eight-channel audio,
+    # which is far more precision than a 26 %-noisy power estimate carries.
+    p_meas = np.empty((n_ch, int(starts.size), int(freq.size)), dtype=np.float32)
+    for c0 in range(0, starts.size, chunk):
+        sub = starts[c0 : c0 + chunk]
+        seg = yp[:, sub[:, None] + off] * win[None, None, :]
+        p_meas[:, c0 : c0 + sub.size] = (np.abs(np.fft.rfft(seg, axis=-1)) ** 2 * scale).astype(
+            np.float32
+        )
+    p_smooth = _smooth_power(p_meas, P_SMOOTH_FRAMES, P_SMOOTH_BINS)
+    del p_meas
 
     n_bins = 0
     n_bands = 0
     band_power = 0.0
     band_floor = 0.0
     gain_sum = 0.0
-    for c0 in range(0, starts.size, int(frames_per_chunk)):
-        sub = starts[c0 : c0 + int(frames_per_chunk)]
+    for c0 in range(0, starts.size, chunk):
+        sub = starts[c0 : c0 + chunk]
         seg = yp[:, sub[:, None] + off] * win[None, None, :]
         spec = np.fft.rfft(seg, axis=-1)  # (C, frames, F)
+        # The STOCHASTIC gain, ``1 - a``: zero everywhere the union bands do not
+        # reach, so the broadband channel is the input untouched there.
         gain = np.zeros(spec.shape, dtype=np.float64)
         for i, s in enumerate(sub):
             s0 = int(s) - pad
-            a = int(np.clip(s0, 0, max(n_t - 1, 0)))
-            b = int(np.clip(s0 + n_fft, 1, max(n_t, 1)))
-            rate = r[:, a:b].mean(axis=-1)
+            a0 = int(np.clip(s0, 0, max(n_t - 1, 0)))
+            b0 = int(np.clip(s0 + n_fft, 1, max(n_t, 1)))
+            rate = r[:, a0:b0].mean(axis=-1)
             lines, ks = comb_lines(rate, int(k_hi))
-            half = line_half_widths(lines, ks, slope_hz_per_k=slope_hz_per_k, min_half_hz=df)
+            half = stochastic_half_widths(
+                ks, slope_hz_per_k=slope_hz_per_k, width_factor=width_factor, min_half_hz=df
+            )
             idx = np.flatnonzero(_line_mask(freq, lines, half))
             if idx.size == 0:
                 continue
-            brk = np.flatnonzero(np.diff(idx) > 1)
-            lo = np.concatenate(([0], brk + 1))
-            hi = np.concatenate((brk, [idx.size - 1]))
-            width = (hi - lo + 1).astype(np.float64)
             bl = min((max(s0, 0) * n_bl) // max(n_t, 1), n_bl - 1)
-            power = (np.abs(spec[:, i, :]) ** 2) * scale
-            zero = np.zeros((n_ch, 1), dtype=np.float64)
-            cp = np.concatenate([zero, np.cumsum(power[:, idx], axis=-1)], axis=-1)
-            cs = np.concatenate([zero, np.cumsum(s_lin[:, bl, :][:, idx], axis=-1)], axis=-1)
-            p_band = (cp[:, hi + 1] - cp[:, lo]) / width[None, :]
-            s_band = (cs[:, hi + 1] - cs[:, lo]) / width[None, :]
-            g_band = np.clip(1.0 - s_band / np.maximum(p_band, 1e-300), 0.0, 1.0)
-            gain[:, i, idx] = np.repeat(g_band, (hi - lo + 1), axis=-1)
+            p_bin = np.maximum(p_smooth[:, c0 + i, :][:, idx].astype(np.float64), 1e-300)
+            s_bin = s_lin[:, bl, :][:, idx]
+            amp = np.clip(np.sqrt(s_bin / p_bin), 0.0, 1.0)
+            gain[:, i, idx] = 1.0 - amp
+            # Band accounting. The union bands no longer carry a gain, only the
+            # SEARCH REGION they delimit, so they are counted and not applied.
+            brk = np.flatnonzero(np.diff(idx) > 1)
             n_bins += int(idx.size)
-            n_bands += int(lo.size)
-            band_power += float(np.sum(p_band * width[None, :]))
-            band_floor += float(np.sum(s_band * width[None, :]))
-            gain_sum += float(np.sum(g_band * width[None, :]))
+            n_bands += int(brk.size) + 1
+            band_power += float(p_bin.sum())
+            band_floor += float(s_bin.sum())
+            gain_sum += float((1.0 - amp).sum())
         out = np.fft.irfft(spec * gain, n=n_fft, axis=-1) * win[None, None, :]
         for i, s in enumerate(sub):
             num[:, int(s) : int(s) + n_fft] += out[:, i]
@@ -1494,10 +1600,18 @@ def stochastic_split(
             "n_frames": int(starts.size),
             "k_hi": int(k_hi),
             "slope_hz_per_k": float(slope_hz_per_k),
+            "width_factor": float(width_factor),
             "min_half_hz": round(df, 4),
+            "p_smooth_frames": int(P_SMOOTH_FRAMES),
+            "p_smooth_bins": int(P_SMOOTH_BINS),
             "n_bands_per_frame": round(n_bands / max(starts.size, 1), 2),
             "band_bin_fraction": round(n_bins / max(starts.size * freq.size, 1), 5),
+            # Mean STOCHASTIC amplitude gain ``1 - a`` over the band bins: 0 is
+            # "the region was all floor and nothing was taken", 1 is "the region
+            # was all line". It is an AMPLITUDE now, not a power gain.
             "mean_gain": round(gain_sum / cells, 5),
+            # Floor over measured power, summed over the band bins. Above 1 it
+            # says the search region saw no excess at all to remove.
             "band_floor_share": round(band_floor / max(band_power, 1e-300), 5),
             "residual_energy": e_res,
             "stochastic_energy": e_st,

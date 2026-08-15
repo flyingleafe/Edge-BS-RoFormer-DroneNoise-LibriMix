@@ -1,12 +1,18 @@
 """Regime 3: the STOCHASTIC comb channel (:func:`tracking.stochastic_split`).
 
-Three claims, one file:
+Four claims, one file:
 
-- **It captures what it is for.** A synthetic regime-3 comb — every line an
-  INCOHERENT narrowband process of linewidth about ``0.6 k`` Hz, which is the
-  measured shaft-wander law and is wider than any band a coherent envelope may
-  have — plus a smooth colored floor. The channel must recover most of the comb
-  and sweep in little of the floor.
+- **It leaves the floor where the floor is.** The gate the campaign reads is the
+  order-cell excess of the BROADBAND channel, and that instrument cannot tell a
+  surviving line from a dent — both are structure at the line position. So the
+  claim is two sided: inside the comb bands the broadband channel's mean power
+  must land ON the true floor, neither above it (a line survived) nor below it
+  (the subtraction over-shot). This is the assertion the flat per-band Wiener
+  gain this file used to test fails in BOTH directions.
+- **It shapes per bin.** Several lines of very different strengths inside ONE
+  union band must be attenuated by very different amounts. One flat gain per
+  band cannot do that, and the measured consequence was a comb PATTERN that
+  survived at reduced amplitude.
 - **The split is exact.** ``residual = stochastic + broadband`` to float
   roundoff, and the weighted overlap-add it is built on is an identity when the
   gain is one.
@@ -21,9 +27,14 @@ import pytest
 
 from tracking.joint_decompose import (
     LINEWIDTH_HZ_PER_K,
+    STOCHASTIC_WIDTH_FACTOR,
+    _line_mask,
     _wola_plan,
     comb_lines,
+    frame_starts,
     line_half_widths,
+    stft_power,
+    stochastic_half_widths,
     stochastic_split,
 )
 
@@ -37,17 +48,23 @@ N_FFT = 1024
 FLOOR_REL = 0.15
 
 
+def narrowband(rng: np.random.Generator, n_t: int, center: float, fwhm: float) -> np.ndarray:
+    """One INCOHERENT line: white noise shaped by a Gaussian band, unit variance.
+
+    The linewidth is the fixture's INPUT and not an emergent property of a phase
+    model, which is what makes it a regime-3 line: no envelope with a bandwidth
+    small against the line spacing can carry it.
+    """
+    freq = np.fft.rfftfreq(n_t, d=1.0 / SR)
+    shape = np.exp(-0.5 * ((freq - center) / (fwhm / 2.3548)) ** 2)
+    v = np.fft.irfft(np.fft.rfft(rng.standard_normal(n_t)) * shape, n=n_t)
+    return v / v.std()
+
+
 def regime3_fixture(
     seed: int = 0, *, floor_rel: float = FLOOR_REL
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(comb, floor, rates)`` — an INCOHERENT comb of linewidth ``0.6 k``.
-
-    Each line is built in the frequency domain as a Gaussian band centered on
-    ``k r`` whose full width at half maximum is exactly ``0.6 k`` Hz, so the
-    linewidth is the fixture's input and not an emergent property of a phase
-    model. That is what regime 3 means: there is no envelope with a bandwidth
-    small against the line spacing that can carry this line.
-    """
+    """``(comb, floor, rates)`` — an INCOHERENT comb of linewidth ``0.6 k``."""
     rng = np.random.default_rng(seed)
     n_t = int(round(SECONDS * SR))
     rates = np.stack([np.full(n_t, v) for v in RATES])
@@ -56,16 +73,37 @@ def regime3_fixture(
     comb = np.zeros((2, n_t))
     for rate in RATES:
         for k in range(1, K_HI + 1):
-            sigma = LINEWIDTH_HZ_PER_K * k / 2.3548  # FWHM -> standard deviation
-            shape = np.exp(-0.5 * ((freq - k * rate) / sigma) ** 2)
-            v = np.fft.irfft(np.fft.rfft(rng.standard_normal(n_t)) * shape, n=n_t)
-            comb += (mic_gain[:, None] * (1.0 / k**0.8)) * (v / v.std())[None, :]
+            v = narrowband(rng, n_t, k * rate, LINEWIDTH_HZ_PER_K * k)
+            comb += (mic_gain[:, None] * (1.0 / k**0.8)) * v[None, :]
     tilt = (1.0 + (freq / 150.0) ** 2) ** -0.7
     floor = np.stack(
         [np.fft.irfft(np.fft.rfft(rng.standard_normal(n_t)) * tilt, n=n_t) for _ in range(2)]
     )
     floor *= float(floor_rel) * float(np.sqrt(np.mean(comb**2))) / float(floor.std())
     return comb, floor, rates
+
+
+def band_mean_power(sig: np.ndarray, rates: np.ndarray, *, n_fft: int = N_FFT) -> float:
+    """Mean short-time power over the bins the split's search regions cover.
+
+    The one reading behind the two-sided floor claim: the SAME frame grid, the
+    same band law and the same normalization the split itself uses, applied to
+    whichever channel the caller hands over. Comparing two signals through it is
+    comparing them bin for bin.
+    """
+    y = np.atleast_2d(np.asarray(sig, dtype=np.float64))
+    starts = frame_starts(int(y.shape[-1]), n_fft, n_fft // 4)
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / SR)
+    df = SR / n_fft
+    total, count = 0.0, 0
+    for sub, chunk in stft_power(y, starts, n_fft):
+        for i, s in enumerate(sub):
+            rate = rates[:, int(s) : int(s) + n_fft].mean(axis=-1)
+            lines, ks = comb_lines(rate, K_HI)
+            idx = _line_mask(freq, lines, stochastic_half_widths(ks, min_half_hz=df))
+            total += float(chunk[:, i, idx].sum())
+            count += int(idx.sum()) * int(y.shape[0])
+    return total / max(count, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -79,16 +117,32 @@ def test_comb_lines_tile_the_harmonics_per_rotor() -> None:
 
 
 def test_line_half_widths_are_capped_by_the_local_spacing() -> None:
-    # Two lines 1 Hz apart at k 40: the linewidth law asks for 24 Hz and the
-    # spacing allows 1 Hz. The cap is what keeps one band off its neighbour, so
-    # the union below cannot take the neighbour's energy twice.
+    # The COHERENT law, unchanged: two lines 1 Hz apart at k 40 ask for 24 Hz
+    # and the spacing allows 1 Hz. Regime 3 does not use this, but the coherent
+    # path does, so the cap must stay exactly where it was.
     half = line_half_widths(np.array([1000.0, 1001.0]), np.array([40.0, 40.0]))
     assert half == pytest.approx([1.0, 1.0])
-    # Alone, a line gets the whole linewidth; the floor is the readout's bin.
     assert float(line_half_widths(np.array([1000.0]), np.array([40.0]))[0]) == pytest.approx(24.0)
     assert float(
         line_half_widths(np.array([1000.0]), np.array([1.0]), min_half_hz=5.0)[0]
     ) == pytest.approx(5.0)
+
+
+def test_the_stochastic_half_widths_are_two_linewidths_and_are_not_capped() -> None:
+    """Regime 3's own law: ``2 * 0.6 k``, with NO spacing cap.
+
+    The cap protects coherent identifiability. A per-bin power split with
+    unioned bands can neither double count nor lose identifiability, and the cap
+    only creates gaps: at high ``k`` the flanks of interleaved combs merge into
+    one continuous rotor-locked field between the nominal lines, and a
+    spacing-capped band never reaches it.
+    """
+    assert float(stochastic_half_widths([40.0])[0]) == pytest.approx(48.0)
+    # Two lines 1 Hz apart still get the FULL two linewidths each, where the
+    # coherent law would have cut both down to 1 Hz.
+    assert stochastic_half_widths([40.0, 40.0]) == pytest.approx([48.0, 48.0])
+    assert float(stochastic_half_widths([1.0], min_half_hz=5.0)[0]) == pytest.approx(5.0)
+    assert pytest.approx(2.0) == STOCHASTIC_WIDTH_FACTOR
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +181,8 @@ def test_the_overlap_add_round_trip_is_an_identity() -> None:
 
 
 def test_a_negligible_floor_passes_the_bands_through() -> None:
-    # With the floor far below the signal the Wiener gain is one, so the channel
-    # IS the band-selected residual — the limit the algebra must reach.
+    # With the floor far below the signal the amplitude gain is zero, so the
+    # channel IS the band-selected residual — the limit the algebra must reach.
     from tracking.joint_decompose import SmoothPSD
 
     comb, _, rates = regime3_fixture()
@@ -157,37 +211,49 @@ def test_the_three_channels_add_up_to_the_original() -> None:
     scale = float(np.abs(original).max())
     assert float(np.abs(original - total).max()) <= 1e-6 * scale
     assert split.diag["wola_min_weight"] > 0.0
+    assert split.diag["p_smooth_frames"] == 5
+    assert split.diag["p_smooth_bins"] == 3
 
 
 # ---------------------------------------------------------------------------
-# what it captures
+# what the broadband channel is left holding
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_the_channel_captures_the_incoherent_comb(seed: int) -> None:
-    """At least 80 % of the injected comb, at most 20 % extra from the floor.
+def test_the_broadband_channel_lands_on_the_floor_inside_the_bands(seed: int) -> None:
+    """TWO SIDED: no surviving hump, and no dent either.
 
-    ``capture`` is the projection of the channel onto the injected comb over the
-    comb's own energy — the share of the excess it recovered. ``floor_taken`` is
-    the projection onto the injected FLOOR over the same energy, which is what
-    the channel swept in from between the lines; the two are read against one
-    denominator so they are one statement about one split.
+    The band-mean power of the broadband channel is compared with the band-mean
+    power of the INJECTED floor, on the split's own frame grid and its own band
+    law. Both failure modes of the flat per-band gain this replaces show up
+    here, and both are DENTS on this reading: the shipped v3c gain leaves
+    ``(S / P)^2 P`` in the band and the conditional mean leaves ``S^2 / P``,
+    which measure -2.30 dB and -2.04 dB against the floor where the per-bin
+    amplitude gain measures +0.87 dB.
+
+    The fixture is run at ``floor_rel = 1.0``, which puts the comb about 5 dB
+    over the floor INSIDE the bands. That is the regime the method is for — the
+    measured DREGON residual sits 0.5 to 1.7 dB over its floor there — and not
+    the 20 dB of the capture fixture, where the analysis-modify-synthesis error
+    of the overlap-add, not the gain, is what limits the reading.
     """
-    comb, floor, rates = regime3_fixture(seed)
+    comb, floor, rates = regime3_fixture(seed, floor_rel=1.0)
     split = stochastic_split(comb + floor, SR, rates, K_HI, n_fft=N_FFT)
-    e_comb = float((comb**2).sum())
-    capture = float((split.stochastic * comb).sum()) / e_comb
-    floor_taken = float((split.stochastic * floor).sum()) / e_comb
-    assert capture >= 0.80, f"captured {capture:.3f} of the injected comb"
-    assert floor_taken <= 0.20, f"swept in {floor_taken:.3f} of a comb's worth of floor"
+    got = band_mean_power(split.broadband, rates)
+    want = band_mean_power(floor, rates)
+    assert got == pytest.approx(want, rel=0.25), (
+        f"broadband band power {10 * np.log10(got / want):+.2f} dB against the true floor"
+    )
 
 
 def test_the_gate_reading_falls_when_the_channel_is_taken_out() -> None:
     """The order cell of the BROADBAND channel is what the campaign gates on.
 
     It is the reading the whole split exists to move, so it is read here on the
-    same instrument the report carries: the absolute ``excess_db`` first, and
-    the ``depth_db`` ratio beside it.
+    same instrument the report carries: the absolute ``excess_db`` is the claim,
+    and the ``depth_db`` ratio is only asked not to RISE — it is a ratio, and
+    the module docstring's own warning is that a ratio can hold or rise as the
+    absolute comb power falls toward the floor.
     """
     from tracking.joint_decompose import order_cell_bands
 
@@ -198,17 +264,71 @@ def test_the_gate_reading_falls_when_the_channel_is_taken_out() -> None:
     after = order_cell_bands(split.broadband, SR, rates, k_max=K_HI, n_fft=4096)
     for name in ("k1-9", "k10-24"):
         assert before[name]["excess_db"] - after[name]["excess_db"] > 10.0, name
-        assert after[name]["depth_db"] < 0.6 * before[name]["depth_db"], name
+        assert after[name]["depth_db"] < before[name]["depth_db"], name
 
 
-def test_a_pure_floor_leaves_almost_nothing_in_the_channel() -> None:
-    # The null: with no comb at all the Wiener gain has nothing to hold on to,
-    # so the channel must be a small fraction of the residual and not the band's
-    # whole content. This is what stops the split from being a band-pass filter.
+def test_a_pure_floor_is_returned_almost_untouched() -> None:
+    """The null: with no comb at all the broadband channel IS the input.
+
+    This is what stops the split from being a band-pass filter, and it is also
+    where the one systematic cost of the estimator is visible. The gain is
+    clipped at one — it may attenuate, never boost — so on pure floor it takes
+    the positive chi-square fluctuations and never gives the negative ones back.
+    That soft-threshold bias is what the smoothing widths are sized against, and
+    at ``5 x 3`` it is a few percent of the energy, not tens.
+    """
     _, floor, rates = regime3_fixture()
     split = stochastic_split(floor, SR, rates, K_HI, n_fft=N_FFT)
     assert split.diag["stochastic_fraction"] < 0.05
     assert split.diag["mean_gain"] < 0.35
+    kept = band_mean_power(split.broadband, rates) / band_mean_power(floor, rates)
+    assert kept > 0.75, f"pure floor lost {-10 * np.log10(kept):.2f} dB inside the bands"
+
+
+def test_one_union_band_attenuates_its_lines_by_different_amounts() -> None:
+    """The regression test for the FLAT-GAIN failure mode, and it is per bin.
+
+    Three lines of very different strengths are put inside ONE union band. A
+    single gain per band scales all three by the same factor and leaves the comb
+    PATTERN standing (measured on DREGON: order-cell depth 0.386 -> 0.380 dB at
+    k10-24). The per-bin gain reads the smoothed periodogram, which carries the
+    line SHAPE, so the strong line's core must lose far more power than the weak
+    lines and far more again than the floor bins between them.
+    """
+    rng = np.random.default_rng(7)
+    n_t = int(round(SECONDS * SR))
+    rate = 50.0
+    ks = (21, 22, 23)
+    # 2 * 0.6 * k is 25.2 / 26.4 / 27.6 Hz against a 50 Hz spacing, so the three
+    # search regions touch and become one band. That is the fixture's point.
+    half = stochastic_half_widths(np.asarray(ks, dtype=float))
+    assert float(half.min()) > 0.5 * rate, "the three regions must union into one"
+
+    strengths = (1.0, 0.08, 0.08)
+    floor = rng.standard_normal((1, n_t)) * 0.05
+    y = floor.copy()
+    for k, amp in zip(ks, strengths, strict=True):
+        y += amp * narrowband(rng, n_t, k * rate, LINEWIDTH_HZ_PER_K * k)[None, :]
+    rates = np.full((1, n_t), rate)
+    split = stochastic_split(y, SR, rates, max(ks), n_fft=N_FFT)
+
+    freq = np.fft.rfftfreq(N_FFT, d=1.0 / SR)
+    starts = frame_starts(n_t, N_FFT, N_FFT // 4)
+
+    def spectrum(sig: np.ndarray) -> np.ndarray:
+        acc = np.zeros(freq.size)
+        n = 0
+        for _, chunk in stft_power(sig, starts, N_FFT):
+            acc += chunk[0].sum(axis=0)
+            n += chunk.shape[1]
+        return acc / n
+
+    keep = spectrum(split.broadband) / spectrum(y)
+    core = [int(np.argmin(np.abs(freq - k * rate))) for k in ks]
+    between = int(np.argmin(np.abs(freq - (ks[0] + 0.5) * rate)))
+    assert keep[core[0]] < 0.5 * keep[core[1]], "the strong line was not shaped out"
+    assert keep[core[0]] < 0.5 * keep[core[2]], "the strong line was not shaped out"
+    assert keep[between] > 2.0 * keep[core[0]], "the floor between the lines was dug out"
 
 
 def test_overlapping_bands_are_one_band_and_one_gain() -> None:
