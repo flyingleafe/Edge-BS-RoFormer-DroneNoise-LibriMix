@@ -147,6 +147,110 @@ def test_whiten_weights_are_normalized_and_clamped() -> None:
     assert float(u[:5].mean()) < float(u[-5:].mean())
 
 
+def test_map_objective_matches_a_direct_computation() -> None:
+    # Every term of J, recomputed here in the most literal form there is — a
+    # frame loop for the likelihood and an explicit [1, -2, 1] stencil for the
+    # three priors. If the readout and this disagree, the readout is not the
+    # objective it says it is.
+    from tracking.joint_decompose import SmoothPSD, map_objective
+    from tracking.vk_tracking import _tuma_rho
+
+    rng = np.random.default_rng(11)
+    sr, n_fft, n_bl, fs_env = 8000, 512, 2, 100.0
+    n_t, n_ch, n_track, n_env = 4096, 2, 3, 40
+    resid = rng.standard_normal((n_ch, n_t)) * 1e-3
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+    log_s = -14.0 - 0.5 * np.tile(np.log1p(freq / 100.0), (n_ch, n_bl, 1))
+    psd = SmoothPSD(freq=freq, t_block=np.array([0.13, 0.38]), log_s=log_s)
+    k = np.array([1, 5, 9])
+    bw_track = np.array([1.5, 3.0, 6.0])
+    x = (
+        rng.standard_normal((n_ch, n_track, n_env))
+        + 1j * rng.standard_normal((n_ch, n_track, n_env))
+    ).astype(np.complex64)
+    theta = rng.standard_normal((2, n_env)) * 0.01
+    psi = rng.standard_normal((n_track, n_env)) * 0.01
+
+    got = map_objective(
+        resid,
+        sr,
+        psd,
+        x=x,
+        k=k,
+        bw_track=bw_track,
+        theta=theta,
+        psi=psi,
+        fs_env=fs_env,
+        n_fft=n_fft,
+    )
+
+    win = np.hanning(n_fft)
+    scale = 1.0 / (sr * float((win**2).sum()))
+    data = rent = 0.0
+    starts = list(range(0, n_t - n_fft + 1, n_fft // 2))
+    for s in starts:
+        b = min((s * n_bl) // n_t, n_bl - 1)
+        for c in range(n_ch):
+            power = np.abs(np.fft.rfft(resid[c, s : s + n_fft] * win)) ** 2 * scale
+            data += float(np.sum(power / np.exp(log_s[c, b])))
+            rent += float(np.sum(log_s[c, b]))
+
+    def d2(v: Any) -> np.ndarray:
+        a = np.atleast_2d(v)
+        return a[..., :-2] - 2.0 * a[..., 1:-1] + a[..., 2:]
+
+    lam_theta = wh_lambda(1.5, fs_env)
+    lam_psi = np.array([wh_lambda(float(b), fs_env) for b in np.clip(0.6 * k, 1.5, 8.0)])
+    rho2 = np.array([_tuma_rho(float(b), fs_env, 2) for b in bw_track]) ** 2
+    theta_prior = lam_theta * float(np.sum(d2(theta) ** 2))
+    psi_prior = float(np.sum(lam_psi * np.sum(d2(psi) ** 2, axis=-1)))
+    env_prior = float(np.sum(rho2 * np.sum(np.abs(d2(x.astype(np.complex128))) ** 2, axis=-1)))
+
+    assert got["n_cells"] == n_ch * len(starts) * freq.size
+    assert got["data"] == pytest.approx(data, rel=1e-9)
+    assert got["rent"] == pytest.approx(rent, rel=1e-9)
+    assert got["theta_prior"] == pytest.approx(theta_prior, rel=1e-9)
+    assert got["psi_prior"] == pytest.approx(psi_prior, rel=1e-9)
+    assert got["envelope_prior"] == pytest.approx(env_prior, rel=1e-9)
+    assert got["total"] == pytest.approx(
+        data + rent + theta_prior + psi_prior + env_prior, rel=1e-9
+    )
+
+
+def test_map_objective_falls_when_the_floor_fits_better() -> None:
+    # The likelihood pair is a proper objective and not a scale: a floor that is
+    # 6 dB off in either direction must read WORSE than the floor that is right.
+    from tracking.joint_decompose import SmoothPSD, map_objective
+
+    rng = np.random.default_rng(5)
+    sr, n_fft = 8000, 512
+    n_t = 8192
+    y = rng.standard_normal((1, n_t))
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+    truth = np.log(np.full((1, 1, freq.size), 1.0 / sr))
+
+    def total(offset: float) -> float:
+        psd = SmoothPSD(freq=freq, t_block=np.array([0.5]), log_s=truth + offset)
+        return float(
+            map_objective(
+                y,
+                sr,
+                psd,
+                x=np.zeros((1, 1, 4), dtype=np.complex128),
+                k=np.array([1]),
+                bw_track=np.array([3.0]),
+                theta=np.zeros((1, 4)),
+                psi=np.zeros((1, 4)),
+                fs_env=100.0,
+                n_fft=n_fft,
+            )["total"]
+        )
+
+    best = total(0.0)
+    assert best < total(+6.0 * np.log(10.0) / 10.0)
+    assert best < total(-6.0 * np.log(10.0) / 10.0)
+
+
 def test_split_phases_recovers_a_planted_shaft_phase() -> None:
     # Envelopes built by hand: unit amplitude, phase exactly k * theta. The
     # k-weighted regression must give theta back.

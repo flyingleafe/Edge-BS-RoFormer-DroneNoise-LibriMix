@@ -331,6 +331,33 @@ def test_joint_config_round_trips_the_cli_spelling() -> None:
     assert V.joint_config({"whiten": False}).whiten is False
 
 
+def test_objective_pool_sums_the_windows_and_normalizes() -> None:
+    # The MAP objective is EXTENSIVE, so windows pool by addition; the per-cell
+    # view is what makes two recordings of different length comparable.
+    def row(a0: int, total: float, cells: int) -> dict:
+        return {
+            "a0": a0,
+            "start_s": a0 / 16000.0,
+            "objective": {
+                "total": total,
+                "data": total / 2,
+                "rent": total / 2,
+                "phase_priors": 0.0,
+                "envelope_prior": 0.0,
+                "n_cells": cells,
+            },
+        }
+
+    assert V.objective_pool([{"a0": 0, "used": True}]) is None
+    got = V.objective_pool([row(320, -2.0, 30), row(0, -1.0, 10)])
+    assert got is not None
+    assert got["n_windows"] == 2
+    assert got["pooled"]["total"] == pytest.approx(-3.0)
+    assert got["pooled"]["n_cells"] == 40
+    assert got["per_cell"]["total"] == pytest.approx(-3.0 / 40)
+    assert [w["a0"] for w in got["windows"]] == [0, 320]  # ordered in time
+
+
 def test_joint_solve_writes_the_extra_arrays_and_stitches(tmp_path) -> None:
     """The v3 unit -> npz -> stitch path, without the published dataset.
 

@@ -112,8 +112,10 @@ __all__ = [
     "floor_block",
     "frame_starts",
     "global_rate_correction",
+    "joint_objective",
     "joint_result",
     "joint_state",
+    "map_objective",
     "masked_smooth_psd",
     "order_cell_bands",
     "order_cell_profile",
@@ -1271,6 +1273,203 @@ def solve_report(state: JointState, audio: Any, *, profile: bool) -> dict[str, A
             k_max=int(state.k_hi),
         )
     return out
+
+
+def map_objective(
+    residual: Any,
+    sr: float,
+    psd: SmoothPSD,
+    *,
+    x: Any,
+    k: Any,
+    bw_track: Any,
+    theta: Any,
+    psi: Any,
+    fs_env: float,
+    n_fft: int = 4096,
+    hop: int | None = None,
+    p: int = 2,
+    bw_theta_hz: float = 1.5,
+    bw_psi_slope: float = LINEWIDTH_HZ_PER_K,
+    bw_psi_max: float = 8.0,
+    bw_psi_min: float = 1.5,
+    frames_per_chunk: int = 64,
+) -> dict[str, Any]:
+    """THE converged MAP objective of the joint model, term by term::
+
+        J = sum_{c,f,t} [ P_c(f,t) / S_c(f,t) + log S_c(f,t) ]
+          + lam_theta   sum_i     ||D2 theta_i||^2
+          + sum_{i,k} lam_psi(k)  ||D2 psi_{i,k}||^2
+          + sum_{c,i,k}  rho_k^2  ||D2 A_{c,i,k}||^2
+
+    It is the number the three blocks of the alternation each decrease in their
+    own coordinate, so it is the one reading that compares two runs on ONE
+    window whatever they did differently — a different trajectory hypothesis
+    above all, which is what makes the decomposition a MEASURE of a trajectory
+    and not only a product of one.
+
+    The four terms, and where each weight comes from:
+
+    ``data`` and ``rent``
+        The Gaussian negative log likelihood of colored noise, on the SAME
+        short-time grid the floor block reads (:func:`masked_smooth_psd`):
+        ``P`` is the framed Hann power spectral density of the residual, ``S``
+        is ``exp(log_s)`` of the fitted floor, and a frame takes the floor of
+        the time block it falls in. ``rent`` is what the floor pays for being
+        loud, and it is what stops the pair from being minimized by a floor
+        that swallows everything. NOTE that the two are summed over EVERY cell,
+        including the cells the floor fit masked out: the mask decides what the
+        floor is FITTED on, never what it is scored on.
+    ``phase_priors``
+        The Whittaker-Henderson curvature priors of block B, at the weights
+        block B smoothed with — :func:`wh_lambda` of ``bw_theta_hz`` for the
+        shaft and of :func:`bw_psi_hz` per track for ``psi``.
+    ``envelope_prior``
+        The VK curvature prior of block A, at the selectivity the solver
+        ACTUALLY used: ``rho_m^2`` is read back from ``bw_track`` through the
+        solver's own Tuma relation, so every clamp, schedule and whitening gain
+        that moved a track's band is already in it. The envelope is the SOLVED
+        variable ``g`` (``Envelopes.x``), not the effective ``g e^{j psi}``.
+
+    Returns the total, the four components, the two sub-terms of the phase
+    prior, and ``n_cells`` — the caller normalizes, because a window's cell
+    count depends on its length and its microphone count.
+
+    It is a pure OBSERVER: it reads finished arrays and touches nothing the
+    solver will read again, so switching it on cannot move a single product.
+    """
+    y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
+    n_ch, n_t = int(y.shape[0]), int(y.shape[-1])
+    step = int(n_fft // 2 if hop is None else hop)
+    starts = frame_starts(n_t, int(n_fft), step)
+    log_s = _floor_on_grid(psd, float(sr), int(n_fft))
+    if log_s.shape[0] != n_ch:
+        raise ValueError(f"the floor has {log_s.shape[0]} microphones, the residual has {n_ch}")
+    n_bl = int(log_s.shape[1])
+    n_f = int(log_s.shape[-1])
+
+    data = 0.0
+    rent = 0.0
+    n_frames = 0
+    if starts.size and n_t >= int(n_fft):
+        block_of = np.minimum((starts * n_bl) // max(1, n_t), n_bl - 1)
+        s_lin = np.exp(log_s)
+        scale = 1.0 / (float(sr) * float((np.hanning(int(n_fft)) ** 2).sum()))
+        done = 0
+        for sub, chunk in stft_power(y, starts, int(n_fft), frames_per_chunk):
+            sel = block_of[done : done + sub.size]
+            data += float(np.sum((chunk * scale) / s_lin[:, sel, :]))
+            done += sub.size
+        # The rent is the same value for every frame of a block, so it is
+        # counted per block instead of per frame — exactly the same sum.
+        counts = np.bincount(block_of, minlength=n_bl).astype(np.float64)
+        rent = float(np.sum(counts[None, :, None] * log_s))
+        n_frames = int(starts.size)
+
+    ks = np.asarray(k, dtype=np.float64)
+    lam_theta = wh_lambda(float(bw_theta_hz), float(fs_env))
+    theta_prior = lam_theta * _curvature(theta)
+    lam_psi = np.array(
+        [
+            wh_lambda(float(b), float(fs_env))
+            for b in bw_psi_hz(ks, bw_psi_slope, bw_psi_max, bw_psi_min)
+        ]
+    )
+    psi_prior = _curvature(psi, weight=lam_psi)
+    rho2 = np.array([_tuma_rho(float(b), float(fs_env), int(p)) for b in np.asarray(bw_track)]) ** 2
+    env_prior = _curvature(np.asarray(x, dtype=np.complex128), weight=rho2)
+
+    phase_priors = theta_prior + psi_prior
+    total = data + rent + phase_priors + env_prior
+    # NOT rounded, unlike every other reading in this module. The four terms
+    # span nine orders of magnitude on a real window (the rent alone is tens of
+    # thousands of cells times a log spectral density), and two hypotheses are
+    # compared by their DIFFERENCE, which a rounded total would quantize away.
+    return {
+        "total": total,
+        "data": data,
+        "rent": rent,
+        "phase_priors": phase_priors,
+        "envelope_prior": env_prior,
+        "theta_prior": theta_prior,
+        "psi_prior": psi_prior,
+        "n_cells": int(n_ch * n_frames * n_f),
+        "n_frames": n_frames,
+        "n_freq": n_f,
+        "n_channels": n_ch,
+        "n_fft": int(n_fft),
+    }
+
+
+def _floor_on_grid(psd: SmoothPSD, sr: float, n_fft: int) -> np.ndarray:
+    """``(C, B, F)`` log floor on the readout's own ``rfftfreq`` grid.
+
+    The floor is normally fitted at the same ``n_fft`` the readout uses, and
+    then this is the identity. A caller that asks for a different resolution
+    gets the floor interpolated instead of an error, because ``S`` is smooth by
+    construction — that is the whole premise of block C.
+    """
+    log_s = np.asarray(psd.log_s, dtype=np.float64)
+    freq = np.asarray(psd.freq, dtype=np.float64)
+    want = np.fft.rfftfreq(int(n_fft), d=1.0 / float(sr))
+    if log_s.shape[-1] == want.size and np.allclose(freq, want):
+        return log_s
+    return np.stack([np.stack([np.interp(want, freq, row) for row in chan]) for chan in log_s])
+
+
+def _curvature(v: Any, weight: Any | None = None) -> float:
+    """``sum |D2 v|^2`` over the rows of ``(..., N)``, optionally row weighted.
+
+    ``D2`` is the same second difference the priors are written with
+    (:func:`tracking.vk_tracking.second_diff`), applied here as the three-term
+    stencil because only its squared norm is wanted. A row shorter than three
+    samples has no second difference and contributes nothing.
+    """
+    a = np.atleast_2d(np.asarray(v))
+    if a.shape[-1] < 3:
+        return 0.0
+    d2 = a[..., :-2] - 2.0 * a[..., 1:-1] + a[..., 2:]
+    sq = np.abs(d2) ** 2
+    if weight is None:
+        return float(np.sum(sq))
+    w = np.asarray(weight, dtype=np.float64)
+    return float(np.sum(w * np.sum(sq, axis=-1)))
+
+
+def joint_objective(state: JointState) -> dict[str, Any]:
+    """:func:`map_objective` of a :class:`JointState` — the state's own weights.
+
+    Every argument is read off the state, so the objective is evaluated at the
+    configuration the alternation actually ran with: the floor block's grid
+    (``JointConfig.psd_n_fft``), the phase bands of block B, and the per-track
+    selectivity the solver reported in ``Envelopes.bw_track``.
+
+    It reads the LAST solve's residual against the LAST floor, which on the
+    shipped recipe (``floor -> (solve, split, floor) x (iters-1) -> solve``) is
+    the floor fitted on the previous round's residual. That is the block
+    coordinate the alternation stopped at, and it is the value every window
+    reports, so the windows are comparable.
+    """
+    if state.env is None or state.residual is None or state.psd is None:
+        raise ValueError("joint_objective: nothing solved yet")
+    jc = state.jcfg
+    return map_objective(
+        state.residual,
+        float(state.cfg.sr),
+        state.psd,
+        x=state.env.x,
+        k=state.env.k,
+        bw_track=state.env.bw_track,
+        theta=state.theta,
+        psi=state.psi,
+        fs_env=float(state.env.fs_env),
+        n_fft=int(jc.psd_n_fft),
+        p=int(state.vk.p),
+        bw_theta_hz=jc.bw_theta_hz,
+        bw_psi_slope=jc.bw_psi_slope,
+        bw_psi_max=jc.bw_psi_max,
+        bw_psi_min=jc.bw_psi_min,
+    )
 
 
 def joint_result(state: JointState, iterations: list[dict[str, Any]]) -> JointResult:

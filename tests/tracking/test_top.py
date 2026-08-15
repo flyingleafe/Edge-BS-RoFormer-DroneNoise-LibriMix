@@ -400,7 +400,9 @@ def test_hand_composed_blocks_are_the_shipped_recipe(joint_clip):
     run = pipeline(
         floor_stage(),
         iterate(pipeline(vk_solve_stage(), phase_split_stage(), floor_stage()), jc.iters - 1),
-        vk_solve_stage(profile=True),
+        # The last solve reads the converged MAP objective, so the hand
+        # composition asks for it too — the recipe's own last line.
+        vk_solve_stage(profile=True, objective=True),
     )
     out = run(with_meta(frame, joint=state))
     got = joint_result(joint_state_of(out), joint_iterations(out))
@@ -409,6 +411,7 @@ def test_hand_composed_blocks_are_the_shipped_recipe(joint_clip):
     assert np.array_equal(got.theta_env, want.theta_env)
     assert np.array_equal(got.residual, want.residual)
     assert got.iterations == want.iterations
+    assert "objective" in got.iterations[-1]
     # And the log is the method, block by block, in order.
     assert [e["stage"] for e in out["meta"]["tracking"]] == [
         "joint_floor",

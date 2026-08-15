@@ -1118,7 +1118,11 @@ def joint_init_stage(
 
 
 def vk_solve_stage(
-    cfg: JointConfig | None = None, *, profile: bool | None = None, name: str = "joint_solve"
+    cfg: JointConfig | None = None,
+    *,
+    profile: bool | None = None,
+    objective: bool = False,
+    name: str = "joint_solve",
 ) -> Stage:
     """BLOCK A: one whitened Vold-Kalman solve at the current carrier and floor.
 
@@ -1128,8 +1132,13 @@ def vk_solve_stage(
     ``profile`` forces that last, expensive table on or off; ``None`` leaves it
     to ``JointConfig.profile_every_iter``, and a recipe turns it on for the
     solve it knows is the last one.
+
+    ``objective`` adds the converged MAP objective (:func:`tracking.map_objective`)
+    to the same log entry, under ``"objective"``. It is a pure OBSERVER of
+    finished arrays — no block reads it — so it is the last solve's reading in
+    the shipped recipe and off everywhere else.
     """
-    from tracking.joint_decompose import solve_block, solve_report
+    from tracking.joint_decompose import joint_objective, solve_block, solve_report
 
     def run(frame: td.Frame) -> td.Frame:
         audio, _, r, times, _ = _core_inputs(frame)
@@ -1138,6 +1147,8 @@ def vk_solve_stage(
         done = solve_block(use, audio)
         want = bool(done.jcfg.profile_every_iter if profile is None else profile)
         info = solve_report(done, audio, profile=want)
+        if objective:
+            info["objective"] = joint_objective(done)
         return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=info)
 
     return run
@@ -1572,6 +1583,7 @@ def joint_solve_window(
     bw_schedule: BandwidthSchedule | None = None,
     rho_scale: float = 1.0,
     t_start_s: float = 0.0,
+    objective: bool = True,
 ) -> JointResult:
     """RECIPE: the v3 alternation on one window::
 
@@ -1581,6 +1593,11 @@ def joint_solve_window(
     here as the composition it is — the last solve is separate because there is
     nothing left to re-estimate after it. One round is one v2-sized banded solve
     plus two negligible blocks.
+
+    That MAP objective is also READ OUT at the end of the last solve
+    (:func:`tracking.map_objective`, under ``"objective"`` in the last entry of
+    ``meta["tracking"]`` and so of ``JointResult.iterations``). ``objective=False``
+    switches the reading off; it cannot change any product either way.
 
     The returned envelope is the EFFECTIVE one, ``g e^{j psi}``, against the
     corrected carrier in ``env.phase`` — so every v2 consumer (``reconstruct``,
@@ -1614,7 +1631,7 @@ def joint_solve_window(
     run = pipeline(
         floor_stage(),
         iterate(pipeline(vk_solve_stage(), phase_split_stage(), floor_stage()), int(jc.iters) - 1),
-        vk_solve_stage(profile=True),
+        vk_solve_stage(profile=True, objective=bool(objective)),
     )
     out = run(with_meta(frame, joint=state))
     return joint_result(joint_state_of(out), joint_iterations(out))

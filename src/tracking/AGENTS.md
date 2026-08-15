@@ -55,7 +55,7 @@ The stage vocabulary:
 | `fvk_refine_stage` | `FVKConfig` | L-BFGS on F_VK under a `k_max` annealing schedule |
 | `decompose_stage` | `FVKConfig` | split the audio into per-harmonic tracks + a residual (seam in `meta`) |
 | `joint_init_stage` | `FVKConfig` + `JointConfig` | seed the v3 alternation's state (seam in `meta`) |
-| `vk_solve_stage` | `JointConfig` | v3 **block A** — one whitened VK solve |
+| `vk_solve_stage` | `JointConfig` | v3 **block A** — one whitened VK solve (`objective=True` adds the MAP readout to its log entry) |
 | `phase_split_stage` | `JointConfig` | v3 **block B** — the shaft / per-rotor / per-track phase split |
 | `floor_stage` | `JointConfig` | v3 **block C** — the masked smooth log floor |
 | `refit_stage` | `RefitConfig` | the whole telemetry refit as one stage |
@@ -80,7 +80,7 @@ The recipes:
 | `peel_alternation` | `flagship` one application at a time, every frame kept |
 | `refit_stage` | presmooth → coarse-to-fine (peel → pi_kalman) to convergence |
 | `judge(candidate)` | a candidate stage → `fitness_stage` under one control |
-| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve |
+| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve, the last one reading the MAP objective |
 
 Every campaign driver calls a recipe. A script must not assemble a ladder of its own — if a
 variant is worth running, it is worth a named recipe here.
@@ -235,6 +235,8 @@ one carrier for the whole window and `theta` is a correction on top of it.
 
 | Primitive | Purpose |
 |---|---|
+| `map_objective(residual, sr, psd, *, x, k, bw_track, theta, psi, fs_env, ...)` | THE converged MAP objective, term by term: `data` + `rent` (the Whittle pair on the floor block's own STFT grid) + `phase_priors` + `envelope_prior`, plus `n_cells`. A pure OBSERVER — switching it on cannot move a product. The weights are the ones the run used: `wh_lambda` for the two phase priors, and `rho^2` read back out of `Envelopes.bw_track` through the solver's own Tuma relation |
+| `joint_objective(state)` | the same, with every argument taken off a `JointState` (the last solve's residual against the last floor) |
 | `energy_ledger(audio, recon, track_energy, k)` | total / tracks / residual / CROSS TERM — the tracks are not orthogonal, and the cross term is the honest statement of that |
 | `phase_model_report(...)` | per-rotor drift against `k` plus `rank_one_share` — shaft jitter against per-harmonic drift |
 | `solve_report(state, audio, *, profile)` | the reading of one block-A solve: the shares, the flatness, the order cell |
@@ -293,7 +295,8 @@ set is small enough to list:
 | `scripts/telemetry_fitness.py`, `telemetry_refit.py`, `telemetry_report.py` | issue 17: the judge, the fitter, the reader |
 | `scripts/displacement/{nullcontrol,combscan,refine_kscaled,comb_explorer}.py` | the comb-displacement campaign |
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
-| `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` |
+| `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`) |
+| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |
 

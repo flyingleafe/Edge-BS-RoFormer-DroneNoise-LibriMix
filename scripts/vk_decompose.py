@@ -184,6 +184,7 @@ __all__ = [  # the importable core the tests read; the CLI is main()
     "frame_grid",
     "fvk_config",
     "interp_rps",
+    "objective_pool",
     "per_track_stats",
     "phase_model_report",
     "rank_one_share",
@@ -566,6 +567,12 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
             "config": joint_config(p).__dict__ | {"k_trust": list(joint_config(p).k_trust)},
             "iterations": jres.iterations,
         }
+        # The converged MAP objective of THIS window, lifted to the top level of
+        # the row: it is the one number that compares two runs of the same
+        # window, so the report pools it without walking the iteration log.
+        obj = jres.iterations[-1].get("objective") if jres.iterations else None
+        if obj is not None:
+            out["objective"] = obj
     np.savez(npz, allow_pickle=False, **arrays)
     # A cheap per-window capture check on ONE channel: the fraction of that
     # channel's energy the track sum explains. The full ledger is the stitch's,
@@ -585,6 +592,40 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
         **out,
         "npz": str(npz.relative_to(Path(p["out"]))),
         "r2_ref_mic": round(1.0 - resid / max(e_y, 1e-30), 6),
+    }
+
+
+#: The four terms of the MAP objective plus its total — the keys pooled by
+#: :func:`objective_pool`, in the order a reader wants them.
+OBJECTIVE_TERMS = ("total", "data", "rent", "phase_priors", "envelope_prior")
+
+
+def objective_pool(wins: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pool the per-window MAP objectives of one recording (``None`` if v2).
+
+    The objective is EXTENSIVE — a sum over cells, envelope frames and phase
+    frames — so windows pool by ADDITION and not by an average, and the pooled
+    cell count comes along so a reader can normalize. The windows overlap by
+    construction (the hop is shorter than the window), so the pooled value is a
+    sum over window units and not over the recording's samples: read it against
+    another run of the SAME window grid, never against a different one.
+
+    ``per_cell`` divides each term by the pooled cell count, which is the form
+    two recordings of different length can be put beside each other in.
+    """
+    rows = [r for r in wins if isinstance(r.get("objective"), dict)]
+    if not rows:
+        return None
+    pooled = {t: float(sum(float(r["objective"][t]) for r in rows)) for t in OBJECTIVE_TERMS}
+    n_cells = int(sum(int(r["objective"]["n_cells"]) for r in rows))
+    return {
+        "n_windows": len(rows),
+        "pooled": {**pooled, "n_cells": n_cells},
+        "per_cell": {t: pooled[t] / max(n_cells, 1) for t in OBJECTIVE_TERMS},
+        "windows": [
+            {"a0": int(r["a0"]), "start_s": r["start_s"], **r["objective"]}
+            for r in sorted(rows, key=lambda r: int(r["a0"]))
+        ],
     }
 
 
@@ -848,6 +889,11 @@ def stitch(
                 for r in sorted(wins, key=lambda r: int(r["a0"]))
             ],
         }
+        pooled_obj = objective_pool(wins)
+        if pooled_obj is not None:
+            # THE measure the decomposition carries: the MAP objective each
+            # window converged to, summed over the recording's windows.
+            report["objective"] = pooled_obj
         if st.get("joint"):
             dr_g = np.asarray(st["dr_global"])
             report["joint"] = {
