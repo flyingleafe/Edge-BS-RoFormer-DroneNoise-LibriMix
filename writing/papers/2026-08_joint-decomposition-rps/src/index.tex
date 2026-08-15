@@ -1,0 +1,1056 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{authblk}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage[ruled,linesnumbered]{algorithm2e}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+\newcommand{\revps}{\ensuremath{\,\mathrm{rev/s}}}
+\newcommand{\fsenv}{\ensuremath{f_{\mathrm{e}}}}
+\newcommand{\snr}{\ensuremath{\mathrm{SNR}}}
+\newcommand{\Jobj}{\ensuremath{J}}
+
+% ---------------------------------------------------------------------------
+% DRAFT MARKERS.
+% \pending{...} flags a number or claim whose measurement has not yet landed.
+% Every such site states what will be measured.
+% \wip{...} flags a passage of text which is structurally in place but whose
+% content depends on pending experiments and will be rewritten around the
+% measured numbers.
+% Remove both macros (and every use) before submission.
+% ---------------------------------------------------------------------------
+\newcommand{\pending}[1]{{\color{gray}\textsf{[pending:~#1]}}}
+\newcommand{\wip}[1]{{\color{gray!70!black}\textit{[WIP:~#1]}}}
+
+% Placeholder for a figure whose graphic is not yet generated.
+\newcommand{\figplaceholder}[2]{%
+  \framebox[\columnwidth]{\rule{0pt}{#1}\parbox{0.9\columnwidth}{\centering
+      \pending{#2}}}}
+
+\begin{document}
+
+\title{Joint Decomposition of Quadcopter Ego-Noise into Harmonic and
+  Broadband Components, with a Built-In Measure of Fit}
+
+\author[1]{Dmitrii~Mukhutdinov \thanks{d.mukhutdinov@qmul.ac.uk}}
+\author[1]{Lin~Wang \thanks{lin.wang@qmul.ac.uk}}
+
+\affil[1]{School of Electronic Engineering and Computer Science, Queen
+    Mary University of London}
+
+\maketitle
+
+\begin{abstract}
+Noise emitted by multirotor unmanned aerial vehicles (drones) has a
+distinct structure: for each rotor, both the aerodynamic noise of the
+propeller and the mechanical noise of the motor are predominantly tonal,
+with fundamental frequencies proportional to the rotor's time-varying
+rotational speed, on top of a colored broadband component produced by
+turbulence. Separating a recording into these two parts --- given the
+rotor speed trajectories --- and, conversely, recovering the trajectories
+from audio alone, are two faces of one problem, and both are useful: the
+decomposition provides clean per-harmonic amplitude targets for
+data-driven noise models, while audio-only speed recovery enables
+post-annotation of the large body of drone audio for which no telemetry
+exists. Given how clearly structured the noise is, the problem seems
+easy; in practice, on real free-flight recordings, it is not. Four rotors
+with close and intersecting speed trajectories, per-harmonic phase noise
+that destroys coherence within fractions of a second at high harmonic
+orders, and a strong broadband component defeat both classical
+least-squares harmonic decomposition and existing tacholess order
+tracking methods --- and, as we demonstrate experimentally, they defeat
+them in a treacherous way: a plain least-squares residual actively
+prefers physically wrong trajectory sets to the true ones. We propose a
+joint probabilistic model of the harmonic and broadband components in
+which phase noise enters through the increments of instantaneous
+frequency and the broadband floor is an explicit smooth spectral surface
+that charges a likelihood rent for the energy it absorbs. Maximum a
+posteriori estimation in this model is performed by a block-coordinate
+solver, and the one machine yields three readouts: the decomposition
+itself, a refinement of the input speed trajectories, and a principled
+scalar measure of how well a trajectory set fits the audio. We use the
+measure to drive trajectory search, refining imprecise telemetry and
+recovering speeds blind, and evaluate the whole system on indoor and
+outdoor free-flight data against telemetry, an independent tachometer
+track, and a downstream neural noise-generation task.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Ego-noise, drone audition, harmonic decomposition, order tracking,
+Vold--Kalman filter, phase noise, rotor speed estimation, maximum a
+posteriori estimation.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+\IEEEPARstart{A}{coustic} sensing on board of a flying multirotor drone
+is dominated by the drone's own \emph{ego-noise}. Any downstream task ---
+speech enhancement, sound source localization, acoustic monitoring ---
+benefits from a model of this noise, and the most informative side
+channel for such a model is the set of rotor speed trajectories: the
+rotational speeds determine the fundamental frequencies of every tonal
+component in the noise and reflect the flight dynamics that shape the
+broadband component. Recent data-driven noise models and noise-aware
+enhancement systems consume rotor speeds directly as conditioning
+input~\cite{yen2023ncm,gulli2025rotorcond}.
+
+This creates a data problem. Neural models want large training corpora,
+but free-flight drone audio annotated with per-rotor speed telemetry is
+scarce: to our knowledge, the only public dataset is
+DREGON~\cite{strauss2018dregon}, and our own outdoor recordings add a few
+more flights. Meanwhile, unannotated drone audio is plentiful. If rotor
+speeds could be recovered from audio alone --- precisely enough to serve
+as training targets and conditioning inputs --- every unannotated
+recording would become training data. The prospect looks reasonable to
+the naked eye: on a spectrogram of a drone recording, the harmonic combs
+of the rotors are often clearly visible, and one can trace their motion
+by hand. It is tempting to conclude that the extraction task is easy.
+
+It is not, and the reasons are instructive. First, a quadcopter carries
+four rotors whose speeds in cruise are distinct but close --- on DREGON,
+twin pairs sit $0.4$--$0.8\revps$ apart --- and their harmonic combs
+interleave and cross. Second, the tonal components are not clean
+sinusoids: each harmonic carries phase noise, and the coherence time
+shrinks rapidly with harmonic order, so that above roughly the tenth
+harmonic the ``line'' on the spectrogram is really a band-limited random
+process that merely stays centered on the comb. Third, the broadband
+component is strong, colored, and time-varying, and at low frequencies it
+does not even add up power-wise across rotors in a way that would let one
+attribute it to individual sources. Existing tacholess order-tracking and
+multi-pitch methods, built for single shafts or for well-separated
+harmonic sources, do not survive this combination
+(Sec.~\ref{sec:related}).
+
+There is also a fourth reason, which we only understood after building
+and instrumenting a full least-squares decomposition pipeline, and which
+we believe is the central methodological lesson of this paper. The
+natural formalization of ``how well does a trajectory set fit the
+audio?'' --- project the signal onto the harmonic subspace spanned by the
+hypothesized combs and measure the residual --- is not merely imprecise;
+it is \emph{actively misleading}. A projection residual rewards spectral
+coverage, and coverage is free: every band the hypothesis opens can only
+absorb more energy. On real recordings whose combs are weak and
+decohered at high orders, we measured trajectory sets that are wrong by
+$6$--$7\revps$ --- physically meaningless ``fans'' of closely spaced
+tracks that tile the spectrum --- \emph{winning} the least-squares
+objective against the true trajectories by a wide margin
+(Sec.~\ref{sec:whynotls}). A search driven by such an objective converges
+confidently to nonsense. Before one can search for rotor speeds, one must
+first possess a measure of fit that ranks the truth first; and, as we
+show, obtaining such a measure requires modeling the noise honestly ---
+the harmonic part with its phase-noise structure, and the broadband part
+as an explicit component that pays for the energy it explains.
+
+We therefore pose the problem jointly. Our research questions are:
+\begin{enumerate}
+\item Given rotor speed trajectories, can we decompose a real recording
+  into its harmonic and broadband components, such that the broadband
+  residual is genuinely free of harmonic structure?
+\item Can we construct a scalar measure of fit between a trajectory set
+  and the audio which is reliable --- in particular, which ranks true
+  trajectories above physically wrong ones where the least-squares
+  residual provably fails?
+\item Using such a measure, can we iteratively approach the true
+  trajectories --- both from imprecise telemetry and from no
+  initialization at all?
+\end{enumerate}
+The thesis of this paper is that a single model answers all three at
+once. Maximum a posteriori (MAP) estimation under a joint harmonic-plus-broadband
+noise model is performed by one block-coordinate solver, and the three
+answers are three readouts of the same machine: the decomposition is its
+converged latent state, the trajectory refinement is one of its
+coordinate blocks, and the measure of fit is its converged objective
+value.
+
+Our contributions are as follows:
+\begin{enumerate}
+\item We formulate a probabilistic model of multirotor ego-noise in
+  which per-harmonic phase noise enters through the \emph{increments} of
+  instantaneous frequency --- so that harmonic lines decohere in phase
+  yet remain anchored to the comb in frequency, as observed --- and the
+  broadband component is a smooth time-varying spectral floor. We
+  justify the model's structure (which noise terms are shared across
+  harmonics and rotors, and which are individual) by direct phase
+  coherence measurements on real recordings
+  (Sec.~\ref{sec:model}).
+\item We derive the MAP estimation problem for this model and show that
+  its objective, unlike a projection residual, charges a ``rent'' for
+  spectral coverage; we demonstrate on real data that this difference is
+  not academic, by exhibiting the failure mode in which least squares
+  prefers wrong trajectories and \pending{J-rescoring experiment}
+  verifying that the proposed objective ranks them correctly
+  (Secs.~\ref{sec:map}, \ref{sec:res-measure}).
+\item We describe the block-coordinate solver and its three readouts.
+  Its trajectory block is an information-form Kalman smoother over
+  phase increments --- a principled descendant of Vold--Kalman order
+  tracking that we relate, via an explicit capture-range analysis, to
+  the classical VK frequency loop and its published adaptive variants
+  (Secs.~\ref{sec:solver}, \ref{sec:capture}).
+\item We evaluate on indoor (DREGON) and outdoor (Matrice~100) free
+  flight along a single axis of initialization quality --- from oracle
+  telemetry through corrupted telemetry to fully blind --- with an
+  auditing methodology that treats the reference labels themselves as
+  measurements: a telemetry clock-and-scale audit, an independent
+  tachometer track, and a downstream neural noise-generation task that
+  measures whether refined trajectories are \emph{better training
+  labels} than the telemetry they started from
+  (Secs.~\ref{sec:setup}, \ref{sec:results}).
+\end{enumerate}
+
+The organization of the paper is as follows. Section~\ref{sec:related}
+reviews related work. Section~\ref{sec:model} builds the signal and noise
+model and presents the coherence measurements that fix its structure.
+Section~\ref{sec:map} derives the MAP problem, discusses why the
+least-squares alternative fails, and describes the block-coordinate
+solver. Section~\ref{sec:search} describes the global search stage used
+for blind operation and the capture-range analysis that dictates the
+architecture. Sections~\ref{sec:setup} and~\ref{sec:results} present the
+experimental setup and results, Section~\ref{sec:discussion} discusses
+limitations, and Section~\ref{sec:conclusion} concludes.
+
+\section{Related Work}
+\label{sec:related}
+
+\emph{VK order tracking and adaptive variants.} The Vold--Kalman (VK)
+filter was introduced for high-slew order
+extraction~\cite{vold1993high}, extended to multiple independent
+shafts~\cite{vold1997multi}, and characterized
+in~\cite{herlufsen1999characteristics,tuma2000characteristics}; adaptive
+reformulations followed~\cite{pan2007adaptive,pan2010extended}. Two
+recent members split on the question that our capture-range analysis
+turns on: where the instantaneous frequency (IF) is estimated. Li
+\emph{et al.}~\cite{li2020vkswt} estimate IF \emph{outside} the filter,
+by synchrosqueezed-wavelet ridge detection, and hand it to VK as a fixed
+parameter; a ridge detector has essentially unbounded capture range, so
+this architecture never meets the failure we analyze.
+IAVKF~\cite{jiang2024iavkf} estimates IF \emph{inside} the loop: the
+envelope-phase derivative is smoothed by a second, IF-domain VK problem
+and added to the carrier, while a per-component bandwidth adapts to an
+orthogonality fixed point. IAVKF peels components greedily and states
+that it cannot handle overlapping IFs --- precisely the quadrotor twin
+pair --- and its wide-to-narrow bandwidth adaptation carries no
+dependence on harmonic order. Section~\ref{sec:capture} reads that
+adaptation as an implicit capture schedule and makes it explicit.
+
+\emph{Ridge extraction and tacholess order tracking.} Adaptive ridge
+extraction~\cite{iatsenko2016ridges,aare2023ridge} and ridge-path
+regrouping at crossings~\cite{chen2017rprg} are the blind front-end
+competitors; tacholess angular-resampling methods recover the shaft rate
+from the signal itself~\cite{peeters2019tacholess,wang2019tlot}, with
+generalized demodulation~\cite{olhede2005generalized} and the fan-chirp
+transform~\cite{weruaga2007fanchirp} as transform-domain relatives.
+These methods target a single shaft; a single-component ridge detector
+cannot prefer a shaft comb over its blade-passage octave, and it cannot
+keep four near-coincident combs apart. This is why our global stage
+scores whole comb hypotheses rather than individual lines.
+
+\emph{Harmonic-plus-noise signal models.} The decomposition of a signal
+into a deterministic harmonic part and a stochastic residual has a long
+history in audio analysis and synthesis: spectral modeling synthesis and
+the harmonic-plus-noise model
+\pending{cite: Serra \& Smith SMS; Stylianou HNM}, and, recently,
+differentiable digital signal processing, where a neural network
+predicts per-harmonic amplitudes and a filtered-noise floor end to end
+\pending{cite: Engel et al.\ DDSP}. On the estimation side, Bayesian and
+maximum-likelihood models of harmonic signals in colored noise are well
+developed for pitch estimation
+\pending{cite: Christensen \& Jakobsson; Nielsen et al.\ fast NLS pitch},
+and smooth spectral floors are classically estimated by
+Whittle-likelihood and cepstral methods
+\pending{cite: Whittle; cepstral PSD smoothing}. Our model belongs to
+this family, with three features the application forces on it:
+per-harmonic phase noise expressed in IF increments (rather than
+stationary sinusoids or slowly-varying deterministic phase), joint
+treatment of multiple closely-spaced combs with shared shaft-level
+errors, and the explicit use of the MAP objective as a \emph{measure}
+that drives trajectory search. We are not aware of prior work that uses
+the failure of the projection residual as a motivation for the joint
+model; the closest in spirit are penalized and marginal-likelihood
+arguments for model-order selection \pending{cite: model selection /
+Occam factor reference}.
+
+\emph{Drone audition.} Ego-noise suppression spans
+BSS~\cite{wang2020bss}, learned masking~\cite{wang2020dnntf}, and deep
+enhancement; several systems consume rotor
+speeds~\cite{yen2023ncm,gulli2025rotorcond}. Our own earlier work
+approached the decomposition by frame-wise least-squares projection onto
+demodulated harmonic subspaces; the failure analysis of that approach
+(Sec.~\ref{sec:whynotls}) is what motivated the present model. To our
+knowledge no prior work recovers all four rotor rates blind at twin
+separations below $1\revps$, and no prior work on drone ego-noise
+provides a validated decomposition of real free-flight recordings into
+harmonic and broadband parts.
+
+\section{Signal and Noise Model}
+\label{sec:model}
+
+In this section we build the generative model of the recorded signal.
+We proceed in three steps: the deterministic skeleton
+(Sec.~\ref{sec:model-skeleton}), the phase noise structure
+(Sec.~\ref{sec:model-phasenoise}), and the broadband floor
+(Sec.~\ref{sec:model-floor}). Each modeling decision that is not forced
+by first principles is fixed by a measurement on real data; the
+measurements are summarized in Sec.~\ref{sec:model-measurements}.
+
+\subsection{The deterministic skeleton}
+\label{sec:model-skeleton}
+
+Audio $x_c[n]$ ($C \le 8$ microphones, sample rate $f_s = 16$\,kHz,
+sample spacing $\Delta = 1/f_s$) is recorded on a quadcopter whose rotor
+$i \in \{1,\dots,4\}$ spins at $r_i(t)$ revolutions per second
+($74$--$91\revps$ in cruise on our data). Both the mechanical noise of
+motor $i$ and the tonal aerodynamic noise of its propeller are harmonic
+with fundamental frequency $r_i(t)$; a propeller with $B$ blades
+concentrates aerodynamic energy on the multiples of the blade-passage
+frequency $B\,r_i(t)$, which are a subset of the shaft harmonics, so a
+single comb per rotor with per-harmonic amplitudes covers both. Given a
+rate estimate $\hat r_i$ (from telemetry or from a search stage), define
+the \emph{carrier phase} as the cumulative sum
+\begin{equation}
+  \hat\varphi_i[n] = 2\pi \Delta \sum_{m \le n} \hat r_i[m].
+  \label{eq:carrier}
+\end{equation}
+Every phase in this paper is an integral of a rate; this is not a
+notational preference but the load-bearing structural fact of the model,
+as the next subsection explains. The observation model is
+\begin{equation}
+  x_c[n] = \sum_{i,k}
+  \operatorname{Re}\Big[ A_{c,i,k}[n]\,
+    e^{\,\mathrm{j} ( k \hat\varphi_i[n] + k\theta_i[n] +
+      \psi_{i,k}[n] )} \Big] + n_c[n],
+  \label{eq:model}
+\end{equation}
+where $A_{c,i,k}[n]$ are slowly varying complex envelopes (their
+argument absorbs the unknown initial phase of each harmonic at each
+microphone), $\theta_i$ and $\psi_{i,k}$ are the phase-noise terms
+defined next, and $n_c$ is the broadband component. We use $K = 80$
+harmonics, the largest number that keeps every line below the Nyquist
+frequency at our rotor speeds.
+
+In words: the model says that once the carrier is right, what remains of
+each harmonic is a narrowband complex envelope; everything that is not
+narrowband around some comb line belongs to the floor.
+
+\subsection{Phase noise lives in rate increments}
+\label{sec:model-phasenoise}
+
+Two facts about real recordings must be reconciled. First, the harmonic
+lines \emph{decohere}: the phase of harmonic $k$, tracked against a
+perfect carrier, drifts without bound, and the drift is faster for
+larger $k$ --- above $k \approx 10$ on our data the coherence time drops
+below one second, so no method that integrates absolute phase coherently
+over long spans can work there. Second, the lines \emph{do not wander
+off the comb}: the instantaneous frequency of harmonic $k$ stays
+anchored at $k\,r_i(t)$, visibly, for the whole recording. A model of
+phase noise as a random walk in \emph{phase} captures the first fact but
+violates the second (a phase random walk is a white-noise IF, which a
+physical rotor with inertia cannot produce and our telemetry does not
+show); a model of phase noise as small pointwise phase deviations
+captures neither. The reconciliation is to put the noise in the
+\emph{rate} domain and integrate:
+\begin{equation}
+  \theta_i[n] = 2\pi\Delta \sum_{m\le n} \delta_i[m],
+  \qquad
+  \psi_{i,k}[n] = 2\pi\Delta \sum_{m\le n} \nu_{i,k}[m],
+  \label{eq:phase-integrals}
+\end{equation}
+where $\delta_i$ is the \emph{shaft rate error} of rotor $i$ (the true
+rate minus the carrier's rate; it multiplies $k$ in \eqref{eq:model}
+because a shaft speed deviation shifts harmonic $k$ by $k$ times as
+much) and $\nu_{i,k}$ is a small per-harmonic rate wobble that models
+everything the rigid comb misses (blade-to-blade asymmetries,
+aeroacoustic modulation). Both are modeled as stationary, bounded,
+temporally correlated processes --- concretely, Ornstein--Uhlenbeck
+processes with variance $\sigma^2$ and correlation time $\tau_c$. The
+integral of a bounded stationary rate is a diffusing phase: over spans
+short against $\tau_c$ the phase performs a random walk with diffusion
+rate proportional to $\sigma^2 \tau_c$, which produces exactly the
+observed pair of facts --- unbounded phase drift (decoherence, with
+Lorentzian-type line broadening growing with $k$) together with bounded
+frequency excursion (lines anchored to the comb).
+
+Two structural questions remain: which of these terms are shared, and
+how strong is each. Both are answered by measurement
+(Sec.~\ref{sec:model-measurements}); here we state the outcome. The
+shaft term $\delta_i$ is \emph{rig-common} to a large degree --- the
+low-frequency drift of all four rotors against telemetry moves together
+--- which motivates splitting it into a common component and small
+per-rotor components in the solver. The per-harmonic wobble $\nu_{i,k}$
+grows with $k$: the effective linewidth of harmonic $k$ scales
+approximately linearly in $k$, at roughly $0.6k$\,Hz on our recordings,
+which partitions the comb into three regimes: low harmonics that stay
+phase-coherent over seconds, a middle band that is coherent only over
+fractions of a second, and high harmonics that are best described as
+narrowband noise processes centered on the comb. A propagation-delay
+term (per rotor-microphone pair, scaling the phase by $k$ like the shaft
+term) belongs in \eqref{eq:model} on physical grounds; we carried it
+through the derivation, measured it to be negligible against the other
+terms on our arrays, and pin it to zero in all experiments.
+
+\subsection{The broadband floor}
+\label{sec:model-floor}
+
+The broadband component $n_c$ is colored, with a smooth and smoothly
+time-varying spectral shape. We model it as a Gaussian process, independent
+across microphones, with log power spectral density $\log S_c(f, t)$
+constrained to be smooth in both arguments. Two remarks fix the scope of
+this choice. First, smoothness is the load-bearing property: the floor
+must be flexible enough to follow the true broadband timbre but rigid
+enough that it \emph{cannot} imitate a comb --- the whole discipline of
+the decomposition rests on the floor being unable to absorb harmonic
+structure and the comb being unable to absorb the floor
+(Sec.~\ref{sec:map}). Second, we deliberately do not attribute broadband
+energy to individual rotors. We attempted this attribution using
+multichannel data and known geometry and found it unidentifiable in
+steady flight: on DREGON the microphones sit in the rotor wash and
+inter-microphone coherence of the broadband component is near zero
+(median $0.014$ against $0.98$ for an ideal diffuse field at low
+frequency), the four rotor speeds are nearly collinear in cruise
+(variance inflation factors $21$--$118$), and measured per-rotor powers
+do not add up below $1$\,kHz (joint operation exceeds the sum of
+solo-rotor operation by up to $10.9$\,dB). The model therefore carries
+one floor per microphone, with a single common flight-state driver, and
+makes no per-rotor broadband claim.
+
+\subsection{What the measurements say}
+\label{sec:model-measurements}
+
+\wip{This subsection summarizes the coherence-probe protocol and its
+outcomes; the figures will be regenerated for the paper from the
+existing probe results.} Three measurements on real recordings fix the
+model structure stated above.
+
+\emph{Decoherence versus $k$.} \pending{figure: per-$k$ coherence time /
+linewidth measurement on DREGON and Matrice~100, showing the
+approximately linear-in-$k$ linewidth $\approx 0.6k$\,Hz and the three
+coherence regimes.}
+
+\emph{Rig-commonness of the shaft drift.} Low-pass filtered,
+$k$-normalized phase increments of strong harmonics are correlated
+across rotors nearly as strongly as across harmonics of the same rotor
+(cross-rotor correlation $0.46$ against same-rotor $0.47$ at $2$\,s
+smoothing on Matrice~100), identifying the dominant slow drift as
+rig-common rather than per-rotor. \pending{figure: pair-class
+correlation versus smoothing time constant.}
+
+\emph{Arrival term.} The per-(rotor, microphone) propagation delay
+predicted by array geometry is measurable on the outdoor rig
+(cross-channel comb-phase delay slope $1.013$ against a predicted $1.0$,
+window-to-window repeatability $0.098$\,ms) and contributes $-0.92$\,ms
+to the effective carrier alignment --- two orders of magnitude below the
+phase-noise terms at the harmonics that matter, which justifies pinning
+it to zero.
+
+\section{Decomposition as MAP Estimation}
+\label{sec:map}
+
+We now turn the model into an estimator. Section~\ref{sec:map-objective}
+states the MAP problem and reads its terms;
+Sec.~\ref{sec:whynotls} explains, and demonstrates on real data, why the
+seemingly simpler least-squares alternative must be rejected;
+Sec.~\ref{sec:solver} describes the block-coordinate solver;
+Sec.~\ref{sec:readouts} states the three readouts and their relation to
+classical order tracking.
+
+\subsection{The objective}
+\label{sec:map-objective}
+
+Collect the unknowns: the complex envelopes $A = \{A_{c,i,k}\}$, the
+phase-noise trajectories $\theta = \{\theta_i\}$ and
+$\psi = \{\psi_{i,k}\}$, and the floor $S = \{S_c(f,t)\}$. Within an
+analysis window (12\,s in our implementation) the correlation time of
+the rate noise exceeds the window, so the OU priors reduce to their
+local limit: white noise on the \emph{rate increments}, i.e.\ a
+second-difference (curvature) penalty on the integrated phases. Writing
+$D_2$ for the second-difference operator on the envelope-rate time grid
+and $P_{c}(f,t)$ for the short-time residual power of microphone $c$
+after subtracting the harmonic reconstruction of \eqref{eq:model}, the
+negative log posterior is, up to constants,
+\begin{multline}
+  \Jobj(A, \theta, \psi, S) =
+  \sum_{c,f,t} \left[ \frac{P_c(f,t)}{S_c(f,t)} + \log S_c(f,t) \right]
+  \\
+  + \lambda_\theta \sum_i \| D_2 \theta_i \|^2
+  + \sum_{i,k} \lambda_\psi(k)\, \| D_2 \psi_{i,k} \|^2
+  \\
+  + \sum_{c,i,k} \rho_k^2\, \| D_2 A_{c,i,k} \|^2
+  + R(\log S),
+  \label{eq:J}
+\end{multline}
+where $R(\log S)$ is the smoothness penalty on the log-floor and the
+penalty weights map one-for-one to bandwidths by the standard VK
+relation: a target $-3$\,dB bandwidth $b$ at envelope rate $\fsenv$
+corresponds to $\lambda(b) = \big(2 \sin(\pi b / \fsenv)\big)^{-4}$.
+This single calibration relation is shared by every smoothness term in
+the system --- envelopes, shaft phases, per-track phases --- so the
+hyperparameters of \eqref{eq:J} are bandwidths, all in hertz, all
+interpretable, and all frozen across recordings
+(Table~\ref{tab:constants}).
+
+Read the first sum carefully, because it is where this objective parts
+ways with least squares. For fixed floor $S$, the data term is a
+\emph{whitened} residual: energy is counted in units of the local floor.
+Residual energy at floor level contributes $P/S \approx 1$ per cell
+regardless of what the comb does, so a harmonic track gains nothing by
+absorbing floor-level energy --- the floor already explains it, at the
+price of the $\log S$ term, which is the ``rent'': a floor that inflates
+to absorb everything pays $\log S$ for every cell, and the optimal
+stationary point balances the two ($S^\ast = P$ cell-wise in the
+unpenalized limit, which is the maximum-likelihood variance estimate).
+A harmonic track earns likelihood only where it explains energy
+\emph{above} the local floor --- that is, on actual lines --- and it
+pays its own curvature rent through $\rho_k^2$. The smoothness penalty
+$R$ prevents the converse theft: a spiky floor could otherwise drop onto
+each comb line and claim it; a smooth floor cannot.
+
+\subsection{Why not least squares}
+\label{sec:whynotls}
+
+The alternative that every practitioner tries first --- we did, at
+length --- is to skip the floor and the phase-noise structure: fix the
+trajectories, project the signal onto the harmonic subspace (a bank of
+demodulated narrowband envelopes, solved jointly as penalized least
+squares), and use the residual energy as the measure of fit. This is the
+profiled least-squares residual; the second-generation VK filter is
+exactly its per-window solver. It is attractive because it is convex in
+the envelopes, exactly solvable, and fast. It fails, and the failure is
+structural: the projection residual rewards \emph{coverage}. Every
+narrowband subspace the hypothesis opens can only absorb energy; nothing
+charges for opening bands in the wrong places. When the comb is strong,
+the true hypothesis wins anyway, because bands on real lines absorb far
+more than bands on the floor. When the comb is weak and decohered at
+high orders --- the regime of every real drone recording past
+$k \approx 10$ --- coverage beats correctness.
+
+We measured this failure directly. On three DREGON cruise windows we
+compared the profiled least-squares fitness of the telemetry trajectories
+against trajectory sets produced by unconstrained multi-start
+optimization of that same fitness. On all three windows the optimizer
+found solutions that \emph{win the objective} by a wide margin
+($0.609$--$0.672$ against telemetry's $0.695$--$0.727$; lower is better)
+while sitting $6.5$--$7.2\revps$ from the telemetry in
+permutation-matched MAE. The winning configurations are physically
+meaningless: single tracks that swallow a whole twin pair, plus ``fans''
+of smooth, closely spaced extra tracks whose interleaved harmonics tile
+the upper spectrum. On the outdoor recordings, whose combs are strong
+and well resolved, the same objective ranks telemetry first and the
+optimizer merely fails to find it --- confirming that the defect is not
+in the optimizer but in what the objective rewards on weak-comb data.
+\pending{figure: one DREGON window --- spectrogram, telemetry comb
+versus fan-solution comb overlay, and both trajectory sets; table:
+fitness and PIT-MAE of telemetry / fan / blind chain on the three
+windows (numbers measured, to be typeset).}
+
+The objective \eqref{eq:J} removes the reward for coverage by
+construction: floor-level energy is pre-paid by the floor, so a fan
+track that tiles the floor earns nothing and still pays curvature rent.
+Whether this repair suffices in practice --- i.e.\ whether
+$\Jobj(\text{fan}) > \Jobj(\text{telemetry}) > \Jobj(\text{refined})$
+on the same stored trajectory sets --- is an experimental question,
+answered in Sec.~\ref{sec:res-measure}
+\pending{J-rescoring of the stored multi-start trajectory sets}. One
+honest caveat accompanies it: we compare hypotheses by the
+\emph{profiled} $\Jobj$ (nuisances minimized out, not marginalized), so
+the Occam volume factor of the comb parameters is still dropped; the
+floor's rent is the only coverage charge. If profiling proves
+insufficient, marginalization is the principled escalation.
+
+\subsection{The block-coordinate solver}
+\label{sec:solver}
+
+The objective \eqref{eq:J} is minimized by block-coordinate descent over
+three blocks, each of which is an exactly solvable subproblem. The
+alternation is a hard-EM scheme: the comb state is the latent variable,
+the floor is the parameter, and the floor block is literally the M-step.
+
+\emph{Block A (envelopes).} For fixed phases and floor, \eqref{eq:J} is
+quadratic in the envelopes. The signal is demodulated per (rotor,
+harmonic) by the current carrier and decimated to the envelope rate
+$\fsenv$; tracks whose instantaneous frequencies approach within a
+coupling radius are solved jointly (their cross terms are diagonal in
+envelope time), and the resulting Hermitian positive-definite banded
+system --- time-major interleaving places all couplings within a small
+band --- is factorized by banded Cholesky. Whitening by the current
+floor enters here: each cell's data weight is $1/S$, clamped to
+$\pm15$\,dB around unity and normalized to unit geometric mean so that
+the effective envelope bandwidths are floor-independent. Retaining the
+cross-track coupling is what lets two tracks separated by less than a
+filter bandwidth divide energy correctly instead of both claiming it ---
+mandatory for interlaced quadrotor combs.
+
+\emph{Block B (phases).} For fixed envelopes, the phase corrections are
+read from the demodulated envelopes' rotation. The block measures
+per-frame phase \emph{increments} of the channel-combined envelope of
+each track --- increments, not absolute phases, because under the model
+of Sec.~\ref{sec:model-phasenoise} increments remain informative about
+the rate error long after absolute phase has decohered. Each track's
+increment stream is gated by a concentration statistic (circular mean
+resultant $\ge 0.5$, no near-$\pi$ steps) and weighted as $k^2 \kappa^2$
+--- the Fisher weight for a rate error read at harmonic $k$, damped by
+the measured concentration. The gated, weighted increments are fused and
+smoothed by a Whittaker--Henderson smoother (the exact solver of the
+chain-quadratic MAP subproblem; equivalently an information-form Kalman
+smoother), first for the rig-common shaft correction, then per rotor,
+then --- from the second outer iteration --- per strong track for
+$\psi_{i,k}$.
+
+\emph{Block C (floor).} For fixed comb state, the floor is re-estimated
+from the residual: short-time spectra of $x_c$ minus the harmonic
+reconstruction, with comb neighborhoods masked, smoothed by a moving
+median across frequency and a cepstral lift, in a small number of time
+blocks. This is the M-step; its bias (a hard-EM floor sits low by the
+comb-fit posterior variance) is discussed in
+Sec.~\ref{sec:discussion}.
+
+\emph{Annealing.} The blocks alternate under a trust ladder in harmonic
+order: the first iteration trusts only the coherent low harmonics
+($k \le 3$) for phase reading, subsequent iterations extend to
+$k \le 12$ and then to the full comb, as the improving carrier brings
+higher harmonics inside the capture range of Block B
+(Sec.~\ref{sec:capture} gives the arithmetic). Long recordings are
+processed in overlapping windows (12\,s, 9\,s hop) and stitched with a
+raised-cosine crossfade in the envelope domain.
+\pending{final iteration/ladder constants after the hyperparameter
+minimization pass; the current implementation uses 3 iterations with
+$k$-trust $(3, 12, 80)$.}
+
+\subsection{One machine, three readouts}
+\label{sec:readouts}
+
+The converged solver state answers all three research questions:
+\begin{enumerate}
+\item \emph{Decomposition}: the harmonic reconstruction (envelopes
+  applied to corrected carriers) and the residual with its fitted floor
+  are the two components. The validation criterion is stringent and
+  visual as well as numeric: the residual must contain no evident
+  harmonic structure, quantified by the \emph{excess retained} metric of
+  Sec.~\ref{sec:metrics}.
+\item \emph{Refinement}: the corrected rates
+  $\hat r_i + \delta_i$ (with $\delta_i$ read from $D_1\theta_i$) are an
+  improved trajectory estimate. Block B run under the annealing ladder
+  \emph{is} the refinement stage; it is an information-form descendant
+  of the phase-based VK frequency update, repaired by the increments
+  formulation, the concentration gating, and the capture-matched
+  ladder.
+\item \emph{Measure}: the converged objective $\Jobj^\ast(\hat r)$ is a
+  scalar fitness of the input trajectory set, comparable across
+  hypotheses on the same window. It is the objective that the search of
+  Sec.~\ref{sec:search} optimizes.
+\end{enumerate}
+
+\subsection{Hyperparameters}
+\label{sec:constants}
+
+\wip{The hyperparameter set is being actively reduced; the table below
+freezes the current set and the reduction target. The design rule: every
+remaining hyperparameter must be a bandwidth in hertz calibrated by the
+single relation of Sec.~\ref{sec:map-objective}, a physically
+interpretable threshold, or a window/rate constant.}
+
+\begin{table}[t]
+  \centering
+  \caption{Frozen design constants. \pending{final minimal set after the
+      principled-reduction pass}}
+  \label{tab:constants}
+  \scriptsize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    Constant & Value \\
+    \midrule
+    Sample / envelope rate & 16\,kHz / 62.5\,Hz \\
+    Harmonics $K$; analysis window / hop & 80; 12\,s / 9\,s \\
+    Shaft phase bandwidth $b_\theta$ & 1.5\,Hz \\
+    Per-track bandwidth $b_\psi(k)$ & \pending{single-rule form} \\
+    Envelope bandwidths $b_A(k)$ & \pending{single-rule form} \\
+    Concentration gate & $\kappa \ge 0.5$ \\
+    Whitening clamp & $\pm 15$\,dB \\
+    Trust ladder & $k \le (3, 12, 80)$ \\
+    Floor: STFT / median span / cepstral order &
+      4096 / 9 bins / 40 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Blind Search}
+\label{sec:search}
+
+The solver of Sec.~\ref{sec:solver} is local: Block B reads phases of
+envelopes demodulated by the \emph{current} carrier, so its capture
+range is bounded (Sec.~\ref{sec:capture}), and the measure
+$\Jobj^\ast$ is multimodal in the trajectories at every scale (octave
+doubles, twin swaps, rational-ratio aliases). Blind operation therefore
+requires a global stage whose job is mode selection: hand the local
+machine an initialization inside the correct basin. This section
+describes that stage; it is a magnitude-domain discrete search and is
+deliberately unglamorous --- every precise instrument in this paper
+lives in the local machine, and the global stage only needs to be
+\emph{unable to be trapped}.
+
+\subsection{Comb-matched dynamic programming}
+\label{sec:global}
+
+On a whitened log-magnitude spectrogram $M(f,t)$ (running-median
+whitening over frequency, so combs stand out), a candidate shaft rate
+$c$ is scored by the half-tooth contrast
+\begin{equation}
+  S(c,t) = \frac{1}{|\mathcal{K}|}\sum_{k \in \mathcal{K}}
+  \Big( M(kc,\, t) - \big[M\big((k{-}\tfrac12)c,\, t\big)\big]_+ \Big),
+  \label{eq:combscore}
+\end{equation}
+which penalizes sub-multiple aliases without the whitening-dip artifact
+of a signed contrast, and frames are chained by dynamic programming over
+a discretized rate grid,
+\begin{equation}
+  V(c,t) = S(c,t) + \max_{c'} \big[ V(c', t{-}1) - \gamma\, |c - c'|
+  \big].
+  \label{eq:viterbi}
+\end{equation}
+The recursion returns the exact global maximizer over grid paths --- no
+initialization, no basins --- so its capture range is the whole grid;
+its resolution is capped by grid width and continuity prior at about
+$1\revps$ per steady window, which is what the local machine's capture
+range must (and does) accommodate.
+
+Blind seeding, octave disambiguation, ramp handling, and per-rotor
+decoupling follow the staged design of our earlier tracking work:
+constant per-rotor bases from a comb-matched scan of the time-averaged
+whitened spectrum with residual re-scanning and plausibility priors; a
+physical octave test (if the line at base $b$ outweighs the line at
+$2b$, then $b$ is itself the blade-passage comb and is halved); a
+slope-tolerant full-range coarse pass with trust gates for ramps and
+takeoff; and a residual-corridor coordinate descent that decouples
+individual rotors from the union template, guarded by truth-free
+acceptance gates. \wip{This subsection currently summarizes; the full
+description with constants is retained from the previous draft and will
+be compressed into an appendix or kept inline depending on length
+budget.}
+
+\subsection{Capture range: why the machine is built this way}
+\label{sec:capture}
+
+The architecture --- global mode selection, then local phase-domain
+refinement under a $k$-trust ladder, with no classical VK frequency loop
+anywhere --- is dictated by one piece of arithmetic. An envelope solved
+at bandwidth $b$ around an assumed tooth position only reconstructs
+content within $b$ of that position; a rate error $\delta$ displaces
+harmonic $k$ by $k\delta$\,Hz; hence a phase reading at harmonic $k$ is
+informative only while
+\begin{equation}
+  k\,|\delta| \lesssim b/2,
+  \label{eq:basin}
+\end{equation}
+and the capture radius of any fixed-band phase-domain refiner shrinks as
+$1/k$ on exactly the harmonics whose Fisher weight $k^2$ favors them.
+At the errors a blind global stage delivers ($0.5$--$1.5\revps$), a
+fixed narrow band leaves \emph{zero} informative harmonics; the
+classical VK frequency loop is inert there --- and, being an in-band
+estimator, it does not fail loudly; it reports convergence. We verified
+this on instrumented runs: the fused rate-error slope entering the loop's
+smoother is two to three orders of magnitude below the true error, an
+ablation with the loop disabled reproduces the full pipeline to
+$\pm0.003\revps$, and the label-free residual is unchanged by five loop
+iterations while a single increments pass improves it. The published
+adaptive variant IAVKF~\cite{jiang2024iavkf} manages the same radius
+implicitly by its wide-to-narrow bandwidth adaptation, with no
+dependence on harmonic order; the ladder of Sec.~\ref{sec:solver} is
+that schedule made explicit and $k$-aware: trust low harmonics first
+(wide capture, low precision), extend $k$ as the error shrinks
+(precision without loss of lock). The same arithmetic sets the division
+of labor with the global stage: the ladder's entry capture radius at
+$k \le 3$ accommodates the $\approx 1\revps$ resolution the DP hands
+over.
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Data}
+\label{sec:data}
+
+\textbf{DREGON}~\cite{strauss2018dregon}: indoor free flight, 8-mic
+array, resampled $44.1 \to 16$\,kHz, 1\,kHz motor telemetry; cruise twin
+pairs at $0.43$ and $0.81\revps$. The dataset provides both commanded
+and measured motor-speed tracks; we use the measured track
+(\texttt{motors\_measured}), which is an independent sensor and thus a
+legitimate external reference for blind operation, while carrying its own
+audio-referenced systematic bias, which we quantify (a scale offset of
+$0.35$--$0.85\%$, i.e.\ $0.3$--$0.6\revps$ at cruise, with no acoustic
+lock) and quote as a floor beside every telemetry-referenced number on
+this data. \textbf{Matrice~100} (recordings FLY124/FLY125): outdoor
+free flight, 8-mic ring, flight-controller telemetry at
+${\approx}29$\,Hz. The outdoor telemetry required auditing: a label-free
+scan finds a linearly drifting clock ($R^2 = 0.94/0.92$; residual RMS
+$2.9/4.5$\,ms against $12/16$\,ms for the best constant lag) and a
+$0.70\%/0.71\%$ rate scale, two independent fits agreeing to $0.008$
+percentage points. Corrected labels are used throughout; the correction
+alone improves pooled cruise tracking error by $8.5\%$ --- label
+quality, not estimator credit. The lesson we draw from both audits, and
+build into the evaluation design: \emph{telemetry is a measurement, not
+ground truth}, and every comparison in this paper is constructed to
+survive that fact.
+
+\subsection{Synthetic tiers}
+Three synthesis tiers isolate error sources; each comprises 6 windows of
+16\,s with frozen seeds. \textbf{S1}: one rotor, $K = 30$ harmonics with
+the DREGON-measured amplitude rolloff, locked phases, broadband noise at
+$+10$\,dB --- isolates the estimator floor. \textbf{S2}: four rotors
+including one twin pair at $0.5\revps$ separation, locked phases, 0\,dB
+--- isolates inter-rotor interference. \textbf{S3}: four rotors with
+per-harmonic phase diffusion at the measured law and broadband noise at
+$-5$\,dB --- decoherence robustness. Synthetic data is also where the
+decomposition has exact ground truth: on S3 the true harmonic/broadband
+split is known by construction, so the decomposition error itself
+(component-wise SNR) is measurable there, not only the residual-purity
+proxy.
+
+\subsection{Protocols}
+\label{sec:protocols}
+
+\emph{Controlled imprecision.} Refiner capture ranges are compared from
+identical initializations of controlled quality:
+$r^{\mathrm{init}}_i(t) = r^{\mathrm{true}}_i(t) + \varepsilon (a_i +
+w_i(t))$ with $a_i \sim \mathcal{N}(0,1)$ a per-rotor constant, $w_i$ a
+unit-variance Ornstein--Uhlenbeck process with 1\,s correlation time,
+both frozen per seed, and the single knob $\varepsilon \in \{0.1, 0.3,
+0.5, 1.0, 2.0\}\revps$ sweeping from near-oracle to beyond every
+refiner's capture range. All refiners, ours and baselines, receive
+identical draws. Blind operation is reported both from a shared blind
+initialization (isolating refinement quality) and end-to-end with each
+method's native front end (the headline).
+
+\emph{Measure validation.} The trajectory sets from the least-squares
+failure experiment of Sec.~\ref{sec:whynotls} --- telemetry, refined,
+blind-chain, and the coverage-fan solutions --- are frozen. Each
+candidate measure (profiled least squares; $\Jobj^\ast$) scores all sets
+on all windows; a measure passes if it ranks refined $\le$ telemetry $<$
+fan on every window. This is a falsifiable, pre-registered test with the
+failure cases chosen adversarially by an optimizer.
+
+\subsection{Baselines}
+\textbf{IAVKF}~\cite{jiang2024iavkf}: faithful reimplementation, made
+multi-rotor-fair in exactly one respect (components are peeled per
+(rotor, harmonic) using our track table rather than free spectral
+peaks). \textbf{VKF+SWT}~\cite{li2020vkswt}: VK envelope extraction with
+external synchrosqueezed-wavelet ridge IF. \textbf{Tacholess order
+tracking}~\cite{peeters2019tacholess}: generalized-demodulation iterated
+order spectra~\cite{olhede2005generalized}. \textbf{VK frequency loop}:
+the inert classical loop, kept as an ablation row. \textbf{Profiled
+least squares}: the projection fitness of Sec.~\ref{sec:whynotls}, kept
+as the measure-ablation row. For the decomposition itself, the
+harmonic-plus-noise baseline is frame-wise least-squares projection at
+matched bandwidths \pending{decide: also HPSS-style median-filtering
+separation as a model-free baseline}. Rotor-conditioned
+enhancement~\cite{gulli2025rotorcond} is the \emph{consumer} of our
+output, not a competitor.
+
+\subsection{Metrics}
+\label{sec:metrics}
+
+\emph{Trajectories}: permutation-invariant mean absolute error (PIT-MAE,
+\revps) against the reference labels, pooled and per rotor; capture
+curves (final MAE versus $\varepsilon$); fraction of windows converged;
+runtime per 16\,s window (single CPU core).
+
+\emph{Decomposition}: the headline metric is \emph{excess retained} ---
+the fraction of comb-locked energy remaining in the residual, measured
+per harmonic band by an order-domain instrument: resample the residual
+spectrogram to order coordinates along the estimated trajectories,
+detrend the order profile by a running median (so that broadband slope
+cannot masquerade as comb energy), and integrate the on-order excess
+over off-order level, in bands of harmonic order ($k \le 9$, $10$--$24$,
+$25$--$49$, $50$--$80$). The target is residual excess below
+\pending{finalize: $\le 10\%$ per band} of the original comb energy in
+every band, on every recording with telemetry. We deliberately also keep
+a non-numeric criterion: the residual spectrogram must pass visual
+inspection with no evident harmonic striping --- the numeric instrument
+was blind to at least one failure mode (broadened combs) during
+development, and we do not fully trust any single scalar here.
+
+\emph{Downstream}: a neural noise generator conditioned on rotor speeds
+is trained on labels of varying quality (telemetry; refined;
+\pending{blind pseudo-labels}); the measure is whether the generator
+places its learned harmonic lines on the true comb, and its validation
+loss against real recordings. This is the consumer-side definition of
+``sufficiently precise labels''.
+
+\section{Results}
+\label{sec:results}
+
+\wip{This section is the working skeleton: every subsection states its
+experiment, its table or figure, and --- where the measurement has
+already been made in the development campaigns --- the measured anchor
+numbers. Cells marked $\ast$ await the consolidated runs.}
+
+\subsection{Decomposition on recordings with telemetry}
+\label{sec:res-decomp}
+
+\pending{The headline table: excess retained per harmonic band
+($k \le 9$ / $10$--$24$ / $25$--$49$ / $50$--$80$), per recording
+(DREGON, FLY124, FLY125), at telemetry and at refined labels; plus the
+component-wise SNR on synthetic S3 where exact ground truth exists.
+Current development state, for calibration of expectations: the low
+band is essentially clean (comb depth on DREGON reduced from 3.42 to
+0.31\,dB), the high bands are not yet at target. The paper claims land
+only when every band passes on every recording.}
+
+\begin{figure}[t]
+  \centering
+  \figplaceholder{7em}{F-D1: residual spectrograms before/after, one
+    window per recording, with the excess-retained numbers inset}
+  \caption{Decomposition at close-to-truth labels: original, harmonic
+    reconstruction, and broadband residual. \pending{regenerate at the
+    final solver configuration}}
+  \label{fig:decomp}
+\end{figure}
+
+\subsection{Validation of the measure}
+\label{sec:res-measure}
+
+Two results validate $\Jobj^\ast$ as a trajectory fitness; the first is
+measured, the second pending.
+
+\emph{The least-squares failure is real.} On the three DREGON cruise
+windows of the frozen protocol, unconstrained multi-start optimization
+of the profiled least-squares fitness finds trajectory sets that win
+that objective by $0.05$--$0.09$ while sitting $6.5$--$7.2\revps$
+PIT-MAE from telemetry (fan configurations, Sec.~\ref{sec:whynotls});
+on the two outdoor windows the same objective ranks telemetry first
+(margins $0.19$/$0.18$) and the failure does not occur. The failure is
+therefore specific to weak decohered combs --- exactly the regime the
+floor model addresses.
+
+\emph{Does $\Jobj$ fix the ranking?} \pending{J-rescoring table:
+$\Jobj^\ast$ of telemetry / refined / blind chain / fan solutions on the
+five frozen windows; pass criterion refined $\le$ telemetry $<$ fan
+everywhere. This experiment gates every search claim downstream.}
+
+\emph{Consistency with independent instruments.} Where the measure is
+already trustworthy, it agrees with independent estimates: on six
+DREGON steady windows the optimum of the fitness sits at a scale offset
+of $-0.596\%$ from telemetry (range $-0.665$ to $-0.540$), inside the
+confidence interval $[-0.877, -0.533]$ of a completely independent
+magnitude-domain instrument --- two instruments, one displacement, which
+is also consistent with the label-bias floor of Sec.~\ref{sec:data}.
+
+\subsection{Refinement of imprecise telemetry}
+\label{sec:res-refine}
+
+\pending{Capture-curve table/figure on S1--S3 (final PIT-MAE versus
+$\varepsilon$, all methods) and real-data refinement table. Measured
+anchors from development: on S1 the increments pass holds an exact
+initialization to $0.055\revps$ and removes a $+1.0\revps$ offset to
+$0.107\revps$; on S2 the four-rotor 0\,dB floor is $\approx 0.2\revps$,
+proved by a sibling-oracle arm (oracle $0.201$ vs blind $0.203$); the
+iteration-harm measurement (error grows $0.167 \to 0.268$ over five
+naive repeats) motivated the annealed one-machine design and will be
+re-measured under the joint solver.}
+
+\emph{The downstream test.} The consumer-side result is measured: a
+noise generator trained with refined labels places its learned harmonic
+lines on the true comb in the mid-order bands where the same
+architecture trained with raw telemetry labels washes them out; a
+constant label scale error of $0.54\%$ alone costs $8.6$\,dB of
+high-order comb fidelity. Refinement is not cosmetic: it changes what a
+downstream model can learn. \pending{consolidated figure: generator
+spectra under raw / refined / exact labels.}
+
+\subsection{Blind recovery}
+\label{sec:res-blind}
+
+\pending{End-to-end blind table against baselines on the frozen
+protocol. Measured anchors from development: pooled blind PIT-MAE
+$0.688\revps$ on DREGON steady and $1.027\revps$ on FLY124 cruise;
+against the independent tachometer track on DREGON room~1 the blind
+chain scores $0.97$--$1.22\revps$ on the scoreable cruise windows ---
+with the reference's own $0.3$--$0.6\revps$ bias floor quoted beside
+it. Baseline columns (IAVKF, VKF+SWT, tacholess OT) pending.}
+
+\begin{figure}[t]
+  \centering
+  \figplaceholder{6em}{F-B1: DREGON ramp spectrogram with tracked combs
+    overlaid}
+  \caption{Blind tracking through a takeoff ramp.
+    \pending{regenerate from final chain}}
+  \label{fig:ramp}
+\end{figure}
+
+\subsection{Runtime}
+\pending{Per-stage timings of the final configuration, per 16\,s window,
+single CPU core; the development configuration runs the full joint
+solve in low tens of seconds per window.}
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\emph{What the model does not claim.} The floor is per-microphone with a
+common driver; per-rotor broadband attribution was measured to be
+unidentifiable in steady flight on our arrays (wash-borne microphones,
+collinear rotor speeds, non-additive powers) and is not attempted. The
+per-track phase noise is treated in the window-local limit (curvature
+penalties); the full stationary-OU treatment, and the spectral shape of
+the per-track wobble at high $k$ (white versus correlated), are not
+resolved by our measurements and are honest open questions.
+
+\emph{Hard-EM floor bias.} The floor block is an M-step against the
+current comb fit, so the converged floor sits low by the comb-fit
+posterior variance; a proper-EM correction (adding the posterior
+variance of the comb reconstruction to the residual power before floor
+smoothing) is the principled fix. \pending{measure whether the bias is
+material at the final configuration.}
+
+\emph{Profiling versus marginalization.} $\Jobj^\ast$ compares
+hypotheses after minimizing nuisances out, so the comb's Occam volume is
+not charged; the floor rent is the only anti-coverage term. The
+J-rescoring test is constructed to detect whether this suffices; if it
+does not, the escalation path (Laplace-approximate marginalization over
+envelopes, which is tractable because Block A is Gaussian) is clear,
+principled, and adds no new hyperparameters.
+
+\emph{Label bias floors.} Both reference telemetries carry measured
+systematic offsets against the acoustic optimum ($0.35$--$0.85\%$ scale
+on DREGON; clock drift and scale on Matrice~100, corrected before use).
+All sub-$0.5\revps$ telemetry-referenced claims in this paper are quoted
+beside these floors, and the downstream generator test exists precisely
+because ``distance to telemetry'' stops being the right target at this
+precision --- for the consumer, the acoustically-locked trajectory is
+the better label.
+
+\emph{Open.} The measured coherence budgets bound coherent integration
+for any estimator; assembling them into a Cram\'er--Rao bound for blind
+multi-rotor rate tracking remains open. So does the residual harmonic
+excess at high orders: the target of Sec.~\ref{sec:metrics} is a
+falsifiable engineering gate, not a proof that the model family
+suffices, and we will report honestly if a principled configuration
+cannot reach it.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Decomposing multirotor ego-noise into harmonic and broadband components
+and recovering rotor speed trajectories from audio are one problem, and
+the honest way to solve either is to solve both: a joint model in which
+phase noise lives in rate increments and the broadband floor pays
+likelihood rent for the energy it absorbs yields, from one
+block-coordinate solver, the decomposition, a capture-matched trajectory
+refinement, and --- critically --- a measure of fit that remains
+trustworthy where the classical projection residual provably inverts
+its ranking. On top of this machine, a deliberately simple global search
+stage extends operation to fully blind recovery, evaluated against
+telemetry that is itself audited rather than trusted. The decomposition
+gate --- a broadband residual visibly and measurably free of harmonic
+structure on every recording with telemetry --- is the standard the
+system is held to, and the standard we recommend for any future claim of
+drone ego-noise separation.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
