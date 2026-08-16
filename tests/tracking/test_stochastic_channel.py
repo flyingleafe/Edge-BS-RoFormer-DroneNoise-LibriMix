@@ -128,8 +128,8 @@ def test_line_half_widths_are_capped_by_the_local_spacing() -> None:
     ) == pytest.approx(5.0)
 
 
-def test_the_stochastic_half_widths_are_two_linewidths_and_are_not_capped() -> None:
-    """Regime 3's own law: ``2 * 0.6 k``, with NO spacing cap.
+def test_the_stochastic_half_widths_are_three_linewidths_and_are_not_capped() -> None:
+    """Regime 3's own law: ``3 * 0.6 k``, with NO spacing cap.
 
     The cap protects coherent identifiability. A per-bin power split with
     unioned bands can neither double count nor lose identifiability, and the cap
@@ -137,12 +137,12 @@ def test_the_stochastic_half_widths_are_two_linewidths_and_are_not_capped() -> N
     one continuous rotor-locked field between the nominal lines, and a
     spacing-capped band never reaches it.
     """
-    assert float(stochastic_half_widths([40.0])[0]) == pytest.approx(48.0)
-    # Two lines 1 Hz apart still get the FULL two linewidths each, where the
+    assert float(stochastic_half_widths([40.0])[0]) == pytest.approx(72.0)
+    # Two lines 1 Hz apart still get the FULL three linewidths each, where the
     # coherent law would have cut both down to 1 Hz.
-    assert stochastic_half_widths([40.0, 40.0]) == pytest.approx([48.0, 48.0])
+    assert stochastic_half_widths([40.0, 40.0]) == pytest.approx([72.0, 72.0])
     assert float(stochastic_half_widths([1.0], min_half_hz=5.0)[0]) == pytest.approx(5.0)
-    assert pytest.approx(2.0) == STOCHASTIC_WIDTH_FACTOR
+    assert pytest.approx(3.0) == STOCHASTIC_WIDTH_FACTOR
 
 
 # ---------------------------------------------------------------------------

@@ -148,11 +148,14 @@ __all__ = [
 LINEWIDTH_HZ_PER_K = 0.6
 
 #: How many linewidths of SEARCH REGION regime 3 gives one line
-#: (:func:`stochastic_half_widths`). Two of them is about +/- 2 FWHM, which is
-#: 84 % of a Lorentzian's power. It is a search region and not a subtraction
+#: (:func:`stochastic_half_widths`). Three of them is about +/- 3 FWHM, which
+#: is 90 % of a Lorentzian's power. It is a search region and not a subtraction
 #: width, because the gain inside it is per bin: a bin that sits at floor level
-#: gets a gain of one whether or not a band claims it.
-STOCHASTIC_WIDTH_FACTOR = 2.0
+#: gets a gain of one whether or not a band claims it — so a wider region has
+#: no over-subtraction cost, and the sweep on both rigs measured it: 3.0 takes
+#: FLY124 k10-24 from 10.3 % to 6.9 % retained (tails outside +/- 2 FWHM) and
+#: moves nothing anywhere else (4.0 adds nothing more).
+STOCHASTIC_WIDTH_FACTOR = 3.0
 
 #: Boxcar widths (in frames and in frequency bins) of the measured periodogram
 #: the regime-3 gain is taken against. Both are FIXED, and the number that fixes
@@ -1371,7 +1374,7 @@ def stochastic_half_widths(
     continuous rotor-locked field BETWEEN the nominal lines, the spacing-capped
     bands never reach it, and the capped bands then read a ``band_floor_share``
     of 1.02 — they saw floor-level edges and nothing else. Two linewidths
-    (``+/- 2`` FWHM, 84 % of a Lorentzian's power) reaches the field.
+    (``+/- 3`` FWHM, 90 % of a Lorentzian's power) reaches the field.
     """
     ks = np.asarray(k, dtype=np.float64)
     return np.maximum(float(width_factor) * float(slope_hz_per_k) * ks, float(min_half_hz))
