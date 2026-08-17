@@ -53,26 +53,22 @@ distinct structure: for each rotor, both the aerodynamic noise of the
 propeller and the mechanical noise of the motor are predominantly tonal,
 with fundamental frequencies proportional to the rotor's time-varying
 rotational speed, on top of a colored broadband component produced by
-turbulence. Separating a recording into these two parts --- given the
-rotor speed trajectories --- and, conversely, recovering the trajectories
+turbulence. Separating a recording into these two parts -- given the
+rotor speed trajectories -- and, conversely, recovering the trajectories
 from audio alone, are two faces of one problem, and both are useful: the
 decomposition provides clean per-harmonic amplitude targets for
 data-driven noise models, while audio-only speed recovery enables
 post-annotation of the large body of drone audio for which no telemetry
 exists. Given how clearly structured the noise is, the problem seems
 easy; in practice, on real free-flight recordings, it is not. Four rotors
-with close and intersecting speed trajectories, per-harmonic phase noise
-that destroys coherence within fractions of a second at high harmonic
-orders, and a strong broadband component defeat both classical
+with close and intersecting speed trajectories, independent per-harmonic phase noise,
+and a strong broadband component defeat both classical
 least-squares harmonic decomposition and existing tacholess order
-tracking methods --- and, as we demonstrate experimentally, they defeat
-them in a treacherous way: a plain least-squares residual actively
-prefers physically wrong trajectory sets to the true ones. We propose a
-joint probabilistic model of the harmonic and broadband components in
-which phase noise enters through the increments of instantaneous
-frequency and the broadband floor is an explicit smooth spectral surface
-that charges a likelihood rent for the energy it absorbs. Maximum a
-posteriori estimation in this model is performed by a block-coordinate
+tracking methods. We propose a joint probabilistic model of the harmonic
+and broadband components where phase noise enters through the increments
+of instantaneous frequency and the broadband floor is an explicit smooth
+spectral surface that charges a likelihood rent for the energy it absorbs.
+Maximum a posteriori estimation in this model is performed by a block-coordinate
 solver, and the one machine yields three readouts: the decomposition
 itself, a refinement of the input speed trajectories, and a principled
 scalar measure of how well a trajectory set fits the audio. We use the
@@ -114,7 +110,7 @@ the naked eye: on a spectrogram of a drone recording, the harmonic combs
 of the rotors are often clearly visible, and one can trace their motion
 by hand. It is tempting to conclude that the extraction task is easy.
 
-It is not, and the reasons are instructive. First, a quadcopter carries
+However, this is not the case. First, a quadcopter carries
 four rotors whose speeds in cruise are distinct but close --- on DREGON,
 twin pairs sit $0.4$--$0.8\revps$ apart --- and their harmonic combs
 interleave and cross. Second, the tonal components are not clean
@@ -122,32 +118,20 @@ sinusoids: each harmonic carries phase noise, and the coherence time
 shrinks rapidly with harmonic order, so that above roughly the tenth
 harmonic the ``line'' on the spectrogram is really a band-limited random
 process that merely stays centered on the comb. Third, the broadband
-component is strong, colored, and time-varying, and at low frequencies it
-does not even add up power-wise across rotors in a way that would let one
-attribute it to individual sources. Existing tacholess order-tracking and
+component (turbulence, wind noise, etc.) is strong and non-stationary.
+Existing tacholess order-tracking and
 multi-pitch methods, built for single shafts or for well-separated
 harmonic sources, do not survive this combination
 (Sec.~\ref{sec:related}).
 
-There is also a fourth reason, which we only understood after building
-and instrumenting a full least-squares decomposition pipeline, and which
-we believe is the central methodological lesson of this paper. The
-natural formalization of ``how well does a trajectory set fit the
-audio?'' --- project the signal onto the harmonic subspace spanned by the
-hypothesized combs and measure the residual --- is not merely imprecise;
-it is \emph{actively misleading}. A projection residual rewards spectral
-coverage, and coverage is free: every band the hypothesis opens can only
-absorb more energy. On real recordings whose combs are weak and
-decohered at high orders, we measured trajectory sets that are wrong by
-$6$--$7\revps$ --- physically meaningless ``fans'' of closely spaced
-tracks that tile the spectrum --- \emph{winning} the least-squares
-objective against the true trajectories by a wide margin
-(Sec.~\ref{sec:whynotls}). A search driven by such an objective converges
-confidently to nonsense. Before one can search for rotor speeds, one must
-first possess a measure of fit that ranks the truth first; and, as we
-show, obtaining such a measure requires modeling the noise honestly ---
-the harmonic part with its phase-noise structure, and the broadband part
-as an explicit component that pays for the energy it explains.
+One may approach the problem from an optimization perspective: if we had
+a measure of \emph{fitness} of the given set of rotor speed trajectories
+to the given audio, we could use a generic non-convex optimization algorithm
+to find the optimal solution in many cases. However, as we
+show, straightforward ways to define such a measure -- such as measuring the
+amplitudes of the harmonic components extracted via Vold-Kalman filtering from
+the audio using the provided speeds -- do not reliably form a global maximum
+at or near true rotational speeds provided by telemetry.
 
 We therefore pose the problem jointly. Our research questions are:
 \begin{enumerate}
@@ -206,7 +190,10 @@ Our contributions are as follows:
 \end{enumerate}
 
 The organization of the paper is as follows. Section~\ref{sec:related}
-reviews related work. Section~\ref{sec:model} builds the signal and noise
+reviews related work. Section~\ref{sec:prelim} fixes notation and
+states the two standard constructions the paper builds on --- the
+harmonic-plus-noise model with its Whittle likelihood, and Vold--Kalman
+order tracking. Section~\ref{sec:model} builds the signal and noise
 model and presents the coherence measurements that fix its structure.
 Section~\ref{sec:map} derives the MAP problem, discusses why the
 least-squares alternative fails, and describes the block-coordinate
@@ -255,27 +242,56 @@ scores whole comb hypotheses rather than individual lines.
 \emph{Harmonic-plus-noise signal models.} The decomposition of a signal
 into a deterministic harmonic part and a stochastic residual has a long
 history in audio analysis and synthesis: spectral modeling synthesis and
-the harmonic-plus-noise model
-\pending{cite: Serra \& Smith SMS; Stylianou HNM}, and, recently,
-differentiable digital signal processing, where a neural network
-predicts per-harmonic amplitudes and a filtered-noise floor end to end
-\pending{cite: Engel et al.\ DDSP}. On the estimation side, Bayesian and
+the harmonic-plus-noise model~\cite{serra1990sms,stylianou2001hnm}, and,
+recently, differentiable digital signal processing, where a neural
+network predicts per-harmonic amplitudes and a filtered-noise floor end
+to end~\cite{engel2020ddsp}. On the estimation side, Bayesian and
 maximum-likelihood models of harmonic signals in colored noise are well
-developed for pitch estimation
-\pending{cite: Christensen \& Jakobsson; Nielsen et al.\ fast NLS pitch},
-and smooth spectral floors are classically estimated by
-Whittle-likelihood and cepstral methods
-\pending{cite: Whittle; cepstral PSD smoothing}. Our model belongs to
-this family, with three features the application forces on it:
-per-harmonic phase noise expressed in IF increments (rather than
+developed for pitch
+estimation~\cite{christensen2009multipitch,nielsen2017fastf0}, and
+smooth spectral floors are classically estimated by Whittle-likelihood
+and cepstral methods~\cite{whittle1953,stoica2006cepstrum}. Our model
+belongs to this family, with three features the application forces on
+it: per-harmonic phase noise expressed in IF increments (rather than
 stationary sinusoids or slowly-varying deterministic phase), joint
 treatment of multiple closely-spaced combs with shared shaft-level
 errors, and the explicit use of the MAP objective as a \emph{measure}
 that drives trajectory search. We are not aware of prior work that uses
 the failure of the projection residual as a motivation for the joint
 model; the closest in spirit are penalized and marginal-likelihood
-arguments for model-order selection \pending{cite: model selection /
-Occam factor reference}.
+arguments for model-order selection --- the Occam-factor
+view of Bayesian model comparison~\cite{mackay1992bayesian}.
+
+\emph{MAP source separation.} Viewed as source separation, our
+decomposition is a maximum a posteriori split of one recording into
+structured components, and it belongs to the classical family of
+Gaussian variance models: each component is zero-mean Gaussian with a
+structured spectral variance, inference reduces to Whittle likelihoods,
+and the separation itself is a posterior (Wiener-type)
+estimate~\cite{fevotte2009isnmf,duong2010fullrank,turner2014probtf}.
+Two lessons from that literature recur in our design: model the
+\emph{power} of whatever is phase-incoherent and marginalize its phase
+--- the estimator that falls out is the conditional mean, whose known
+artifacts (over-suppression between lines) have known remedies --- and
+absorb non-stationarity that a Gaussian floor cannot carry with
+heavier-tailed noise models~\cite{mogami2018ilrma}. The modern
+general-sound branch of the same family replaces analytic priors with
+learned generative models and posterior
+sampling~\cite{jayaram2020basis,chung2023dps,scheibler2023diffsep,mariani2024msdm,lutati2024separatediffuse},
+or trains discriminative separators under a mixture-consistency
+constraint~\cite{wisdom2020mixit}. Those methods target sources with no
+shared parametric structure, and none offers per-component
+identifiability: the separations are perceptually plausible without
+amplitude guarantees, which is exactly what a downstream noise model
+cannot tolerate in a training target. Our setting makes the opposite
+trade: the components are tied to a physical parameter --- the rotor
+speed trajectories --- through a measured coherence law, and that tie is
+what lets the decomposition double as a measure of the parameter. The
+Bayesian harmonic-model
+line~\cite{davy2006bayesharmonic,cemgil2006generative} is the closest
+ancestor; we differ in the per-harmonic phase-noise law, the coupling of
+four interleaved combs, and the use of the converged objective as a
+trajectory fitness.
 
 \emph{Drone audition.} Ego-noise suppression spans
 BSS~\cite{wang2020bss}, learned masking~\cite{wang2020dnntf}, and deep
@@ -288,6 +304,108 @@ knowledge no prior work recovers all four rotor rates blind at twin
 separations below $1\revps$, and no prior work on drone ego-noise
 provides a validated decomposition of real free-flight recordings into
 harmonic and broadband parts.
+
+\section{Preliminaries}
+\label{sec:prelim}
+
+Two standard constructions carry the rest of the paper: the
+harmonic-plus-broadband signal model with its Whittle likelihood, and
+Vold--Kalman order tracking. We state both with the notation used
+throughout. Discrete time is $n$ at sample rate $f_s$
+($\Delta = 1/f_s$); short-time spectra are indexed by frequency bin $f$
+and frame $t$; $D_p$ denotes the $p$-th order difference operator on a
+uniformly sampled sequence, and $[\,\cdot\,]_+ = \max(\cdot, 0)$.
+
+\subsection{Harmonic plus broadband noise, and the Whittle likelihood}
+\label{sec:prelim-hpn}
+
+The classical harmonic-plus-noise model~\cite{serra1990sms,
+stylianou2001hnm} writes a signal as a sum of slowly modulated
+harmonics over a stochastic residual,
+\begin{equation}
+  x[n] = \sum_{k=1}^{K} \operatorname{Re}\!\big[ a_k[n]\,
+    e^{\,\mathrm{j} k \varphi[n]} \big] + n[n],
+  \qquad
+  \varphi[n] = 2\pi\Delta\!\!\sum_{m\le n}\!\! r[m],
+  \label{eq:hpn}
+\end{equation}
+with complex envelopes $a_k$ that vary slowly against the carrier and a
+fundamental phase $\varphi$ that is the running integral of a
+fundamental frequency $r(t)$. The residual $n[n]$ is modeled as
+zero-mean colored Gaussian noise with a power spectral density
+$S(f,t)$ that is smooth in both arguments. For such noise the
+negative log-likelihood of the observed short-time power
+$P(f,t) = |X(f,t)|^2$ is, up to constants, the Whittle
+form~\cite{whittle1953}
+\begin{equation}
+  -\log p\big(X \,\big|\, S\big) \;\simeq\;
+  \sum_{f,t} \left[ \frac{P(f,t)}{S(f,t)} + \log S(f,t) \right].
+  \label{eq:whittle}
+\end{equation}
+Both terms matter later. The first counts residual energy \emph{in
+units of the local floor}, so energy at floor level costs the same
+wherever it sits; the second charges for the floor's own level --- the
+cell-wise unpenalized optimum is the maximum-likelihood variance
+estimate $S^\ast = P$ --- so a floor cannot inflate for free.
+Smoothness of $\log S$ is what makes the floor an estimator rather than
+a tautology, and it is classically imposed by cepstral truncation or
+thresholding~\cite{stoica2006cepstrum} or by running-median smoothing
+across frequency; we use both, in that order.
+
+\subsection{Vold--Kalman order tracking}
+\label{sec:prelim-vk}
+
+Order tracking extracts the harmonic (``order'') content of a rotating
+machine given its shaft rate. The second-generation Vold--Kalman (VK)
+filter~\cite{vold1993high,vold1997multi} takes the rate $r(t)$ as
+\emph{known} --- from a tachometer --- forms the carrier
+$\varphi$ as in \eqref{eq:hpn}, and estimates the envelopes of a set of
+orders $\mathcal{M}$ (harmonic multiples $k_m$, possibly of several
+shafts) as the penalized least-squares problem
+\begin{equation}
+  \min_{\{a_m\}} \;
+  \sum_n \Big| x[n] - \!\!\sum_{m \in \mathcal{M}}\!\!
+  \operatorname{Re}\big[ a_m[n]\, e^{\,\mathrm{j} k_m \varphi_{i(m)}[n]}
+    \big] \Big|^2
+  + \sum_m \rho_m^2\, \big\| D_p\, a_m \big\|^2 ,
+  \label{eq:vk}
+\end{equation}
+whose two sums the VK literature calls the \emph{data equation} and the
+\emph{structural equation}: the envelope must explain the signal at its
+order's instantaneous frequency, and it must be smooth ($p = 2$
+throughout this paper). The problem is convex and exactly solvable: after
+demodulating by each carrier and decimating to an envelope rate
+\fsenv{}, the normal equations are Hermitian positive-definite and
+banded, with cross terms between orders that are negligible unless two
+orders' instantaneous frequencies approach within the filter bandwidth
+--- in which case the orders must be solved \emph{jointly}, the regime
+multi-shaft VK was built for~\cite{vold1997multi} and the permanent
+regime of a quadrotor's interleaved combs. The penalty weight $\rho_m$
+is not a free knob: it maps one-for-one to a $-3$\,dB envelope bandwidth
+$b$ through the filter's selectivity
+characteristic~\cite{herlufsen1999characteristics,tuma2000characteristics},
+\begin{equation}
+  \rho(b) = \big( 2 \sin ( \pi b / \fsenv ) \big)^{-p},
+  \label{eq:tuma}
+\end{equation}
+so a VK configuration is stated entirely in hertz. We reuse
+\eqref{eq:tuma} as the single calibration relation for \emph{every}
+smoothness penalty in this paper.
+
+Two properties of \eqref{eq:vk} shape everything downstream. First, VK
+is an \emph{envelope} estimator: the rate is an input, not an output.
+Adaptive variants close the loop by feeding the demodulated envelope's
+phase derivative back into the carrier~\cite{pan2007adaptive,
+pan2010extended,jiang2024iavkf}; the capture range of any such loop is
+bounded by the envelope bandwidth (Sec.~\ref{sec:capture}), which is
+the arithmetic this paper's architecture is built around. Second, the
+minimum of \eqref{eq:vk} over the envelopes --- the profiled projection
+residual --- is the natural candidate for a measure of how well an
+assumed rate fits the audio, and Sec.~\ref{sec:whynotls} is the
+demonstration that this natural candidate fails on real drone
+recordings; repairing it by embedding \eqref{eq:vk} in the Whittle
+likelihood \eqref{eq:whittle} is the subject of
+Sec.~\ref{sec:map}.
 
 \section{Signal and Noise Model}
 \label{sec:model}
@@ -485,14 +603,15 @@ negative log posterior is, up to constants,
   + R(\log S),
   \label{eq:J}
 \end{multline}
-where $R(\log S)$ is the smoothness penalty on the log-floor and the
-penalty weights map one-for-one to bandwidths by the standard VK
-relation: a target $-3$\,dB bandwidth $b$ at envelope rate $\fsenv$
-corresponds to $\lambda(b) = \big(2 \sin(\pi b / \fsenv)\big)^{-4}$.
-This single calibration relation is shared by every smoothness term in
-the system --- envelopes, shaft phases, per-track phases --- so the
-hyperparameters of \eqref{eq:J} are bandwidths, all in hertz, all
-interpretable, and all frozen across recordings
+where $R(\log S)$ is the smoothness penalty on the log-floor and every
+penalty weight maps one-for-one to a bandwidth by the VK selectivity
+relation \eqref{eq:tuma}. The first sum is the Whittle likelihood
+\eqref{eq:whittle} of the residual against the floor; the last
+curvature sum is the structural equation of the VK problem
+\eqref{eq:vk}. One calibration relation is thus shared by every
+smoothness term in the system --- envelopes, shaft phases, per-track
+phases --- so the hyperparameters of \eqref{eq:J} are bandwidths, all
+in hertz, all interpretable, and all frozen across recordings
 (Table~\ref{tab:constants}).
 
 Read the first sum carefully, because it is where this objective parts
