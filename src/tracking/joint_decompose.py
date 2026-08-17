@@ -1057,6 +1057,17 @@ class JointConfig:
     #: STFT length of the stochastic channel (:func:`stochastic_split`). It is
     #: the floor block's own length by default, so the two read one grid.
     stochastic_n_fft: int = 4096
+    #: Read the stochastic split's floor per FRAME, by interpolating ``log S``
+    #: in time between the block centers, instead of per block
+    #: (:func:`stochastic_split`). The block floor is one spectrum per ~4 s,
+    #: which is a modelling statement that the wash is stationary over that
+    #: span; the per-frame ``P / S`` quantiles say it is not. Its visible cost is
+    #: a SEAM — much of the comb band sits within ~1 dB of the floor, so the clip
+    #: at ``a = 1`` toggles whole bands on and off across a block boundary and
+    #: the demonstration spectrograms carry rectangular patches with vertical
+    #: edges exactly on the block grid. Off by default, because the shipped
+    #: numbers were all produced on the block floor.
+    stochastic_floor_interp: bool = False
     #: Add the exact Gaussian envelope MARGINALIZATION to the objective readout
     #: (:func:`map_objective`, ``total_marginal``). Profiling the envelopes pays
     #: no rent for their freedom, so absorption is free; the marginal term is
@@ -1453,6 +1464,7 @@ def stochastic_split(
     psd_n_cep: int = 40,
     t_start_s: float = 0.0,
     frames_per_chunk: int = 64,
+    floor_time_interp: bool = False,
 ) -> StochasticSplit:
     """Split the residual into a comb-locked STOCHASTIC channel and a floor.
 
@@ -1515,6 +1527,20 @@ def stochastic_split(
     ``psd`` is the floor to score against; ``None`` fits one on the residual
     with the same block C the alternation uses, which is what a caller with a
     WHOLE recording wants — a window's floor does not describe a minute.
+
+    ``floor_time_interp`` reads ``S`` at each FRAME instead of at its block, by
+    linear interpolation of ``log S`` in time between the block centers. The
+    floor is fitted per block — about four seconds of recording each — and
+    taking it as a step function is a modelling statement that the rotor wash is
+    stationary over one, which the per-frame ``P / S`` quantiles say is false.
+    The visible cost is a SEAM: because much of the comb band sits within about
+    1 dB of the floor, the clip at ``a = 1`` makes whole bands toggle between
+    "nothing taken" and "something taken" across one block boundary, and the
+    demonstration spectrograms then carry rectangular patches whose vertical
+    edges land exactly on the boundaries of the block grid. Interpolating moves
+    the floor continuously instead, so a band fades in rather than switching on.
+    It is OFF by default: the block-constant floor is what every published
+    number was produced with, and the two paths must not be confused.
     """
     y = np.atleast_2d(np.asarray(residual, dtype=np.float64))
     r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
@@ -1546,6 +1572,24 @@ def stochastic_split(
     df = float(sr) / n_fft
 
     pad, n_pad, starts = _wola_plan(n_t, n_fft, step)
+    # The per-frame floor lookup, when it is asked for: the two bracketing blocks
+    # and one weight per frame, so the inner loop stays two array reads. The
+    # block CENTERS come from the floor's own ``t_block`` (which is
+    # ``t_start_s`` plus the center of each block, so the window-relative form is
+    # the difference); a floor that does not carry one center per block — an
+    # older or hand-built ``SmoothPSD`` — falls back to the centers of the even
+    # block grid ``masked_smooth_psd`` builds.
+    interp: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    if floor_time_interp and n_bl > 1:
+        tb = np.asarray(use.t_block, dtype=np.float64) - float(t_start_s)
+        if tb.size != n_bl or not np.all(np.isfinite(tb)) or np.any(np.diff(tb) <= 0):
+            tb = (np.arange(n_bl, dtype=np.float64) + 0.5) * (n_t / float(n_bl)) / float(sr)
+        # The frame's own time is its CENTER, not its start: the periodogram it
+        # is compared against is the whole windowed frame.
+        t_frame = (starts.astype(np.float64) - pad + 0.5 * n_fft) / float(sr)
+        pos = np.interp(np.clip(t_frame, tb[0], tb[-1]), tb, np.arange(n_bl, dtype=np.float64))
+        lo_b = np.floor(pos).astype(int)
+        interp = (lo_b, np.minimum(lo_b + 1, n_bl - 1), pos - lo_b)
     win = np.hanning(n_fft)
     w2 = win**2
     scale = 1.0 / (float(sr) * float(w2.sum()))
@@ -1595,9 +1639,19 @@ def stochastic_split(
             idx = np.flatnonzero(_line_mask(freq, lines, half))
             if idx.size == 0:
                 continue
-            bl = min((max(s0, 0) * n_bl) // max(n_t, 1), n_bl - 1)
             p_bin = np.maximum(p_smooth[:, c0 + i, :][:, idx].astype(np.float64), 1e-300)
-            s_bin = s_lin[:, bl, :][:, idx]
+            if interp is None:
+                # The block-constant floor: one spectrum for the whole block the
+                # frame starts in. Bit for bit what every shipped run used.
+                bl = min((max(s0, 0) * n_bl) // max(n_t, 1), n_bl - 1)
+                s_bin = s_lin[:, bl, :][:, idx]
+            else:
+                lo_b, hi_b, frac = interp
+                j = c0 + i
+                s_bin = np.exp(
+                    log_s[:, lo_b[j], :][:, idx] * (1.0 - frac[j])
+                    + log_s[:, hi_b[j], :][:, idx] * frac[j]
+                )
             amp = np.clip(np.sqrt(s_bin / p_bin), 0.0, 1.0)
             gain[:, i, idx] = 1.0 - amp
             # Band accounting. The union bands no longer carry a gain, only the
@@ -1632,6 +1686,11 @@ def stochastic_split(
             "min_half_hz": round(df, 4),
             "p_smooth_frames": int(P_SMOOTH_FRAMES),
             "p_smooth_bins": int(P_SMOOTH_BINS),
+            # Which floor the gain was taken against in TIME: one spectrum per
+            # block, or the block centers interpolated per frame. It is a
+            # property of the run and a report that does not name it cannot be
+            # reproduced.
+            "floor_time_interp": bool(interp is not None),
             "n_bands_per_frame": round(n_bands / max(starts.size, 1), 2),
             "band_bin_fraction": round(n_bins / max(starts.size * freq.size, 1), 5),
             # Mean STOCHASTIC amplitude gain ``1 - a`` over the band bins: 0 is
@@ -1672,6 +1731,7 @@ def stochastic_block(state: JointState) -> tuple[JointState, StochasticSplit]:
         n_fft=int(state.jcfg.stochastic_n_fft),
         slope_hz_per_k=float(state.jcfg.bw_psi_slope),
         t_start_s=float(state.t_start_s),
+        floor_time_interp=bool(state.jcfg.stochastic_floor_interp),
     )
     return replace(state, stochastic=split.stochastic), split
 

@@ -53,6 +53,11 @@ How much of the residual is still comb locked
     (``tracking.stochastic_split``). ``residual = stochastic + broadband``
     exactly; ``report.json -> order_cell.residual_final`` is the order cell of
     the BROADBAND channel, which is the acceptance gate.
+    ``--stochastic-floor-interp`` (off by default) reads the floor per frame
+    instead of per block. The block floor holds one spectrum for about four
+    seconds, and because much of the comb band sits within about 1 dB of it the
+    clip at ``a = 1`` toggles whole bands across a block boundary — rectangular
+    patches in the spectrograms, with vertical edges exactly on the block grid.
 
 How prior-dependent the weak tracks are
     ``--bw-sweep`` re-solves one mid-recording window on two prior axes and
@@ -432,6 +437,7 @@ def joint_config(params: dict[str, Any]) -> JointConfig:
         bw_psi_max=cap,
         bw_psi_min=floor,
         whiten=bool(params.get("whiten", True)),
+        stochastic_floor_interp=bool(params.get("stochastic_floor_interp", False)),
     )
 
 
@@ -838,6 +844,7 @@ def stitch(
                 n_fft=int(joint_config(params).stochastic_n_fft),
                 psd_blocks=max(1, int(round((a_max - a_min) / float(sr) / STOCHASTIC_BLOCK_S))),
                 t_start_s=a_min / float(sr) + offset,
+                floor_time_interp=bool(joint_config(params).stochastic_floor_interp),
             )
             if params.get("stochastic")
             else None
@@ -1161,6 +1168,20 @@ def main() -> None:
         ),
     )
     ap.add_argument(
+        "--stochastic-floor-interp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "--stochastic: read the floor per FRAME, interpolating log S in time between the "
+            "block centers, instead of holding one spectrum per ~4 s block. The block floor is "
+            "a modelling statement that the wash is stationary over that span, which the "
+            "per-frame P/S quantiles refute, and its visible cost is a SEAM: much of the comb "
+            "band sits within ~1 dB of the floor, so the clip at a = 1 toggles whole bands "
+            "across a block boundary and the spectrograms carry rectangular patches with "
+            "vertical edges exactly on the block grid. OFF is the default"
+        ),
+    )
+    ap.add_argument(
         "--mem-budget-gb",
         type=float,
         default=8.0,
@@ -1243,6 +1264,7 @@ def main() -> None:
         "bw_theta": float(args.bw_theta),
         "whiten": not bool(args.no_whiten),
         "stochastic": bool(args.stochastic),
+        "stochastic_floor_interp": bool(args.stochastic_floor_interp),
     }
     wanted = {v.strip() for v in args.recording.split(",") if v.strip()}
 

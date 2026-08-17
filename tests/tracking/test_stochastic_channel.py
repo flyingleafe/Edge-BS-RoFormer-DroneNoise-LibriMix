@@ -62,11 +62,11 @@ def narrowband(rng: np.random.Generator, n_t: int, center: float, fwhm: float) -
 
 
 def regime3_fixture(
-    seed: int = 0, *, floor_rel: float = FLOOR_REL
+    seed: int = 0, *, floor_rel: float = FLOOR_REL, seconds: float = SECONDS
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(comb, floor, rates)`` — an INCOHERENT comb of linewidth ``0.6 k``."""
     rng = np.random.default_rng(seed)
-    n_t = int(round(SECONDS * SR))
+    n_t = int(round(seconds * SR))
     rates = np.stack([np.full(n_t, v) for v in RATES])
     freq = np.fft.rfftfreq(n_t, d=1.0 / SR)
     mic_gain = np.array([1.0, 0.7])
@@ -342,6 +342,165 @@ def test_overlapping_bands_are_one_band_and_one_gain() -> None:
     apart = np.stack([np.full(SR, 50.0), np.full(SR, 133.0)])
     wide = stochastic_split(rng.standard_normal((1, SR)), SR, apart, 10, n_fft=N_FFT)
     assert wide.diag["n_bands_per_frame"] > split.diag["n_bands_per_frame"] + 5.0
+
+
+# ---------------------------------------------------------------------------
+# the floor in TIME: the block staircase and its seams
+
+#: The seam fixture: 8 s so the four floor blocks are 2 s each, and a floor whose
+#: level ramps by five times across the window, so the block staircase has
+#: something to step over. The ramp is LINEAR, so the share the split takes
+#: declines gradually and any sharp move in it is the estimator's, not the
+#: fixture's.
+SEAM_SECONDS = 8.0
+SEAM_BLOCKS = 4
+SEAM_RAMP = (0.6, 2.4)
+#: The readout grid: four groups per floor block, so a block boundary falls on a
+#: group boundary and the smearing of one 1024-sample frame is small against a
+#: group. Groups rather than frames because the share of a NOISE residual is
+#: chi-square noisy frame by frame, and the seam is a step, not a spike.
+SEAM_GROUPS = 16
+
+
+def seam_fixture(seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """``(residual, rates)`` whose true floor level ramps across the window."""
+    comb, floor, rates = regime3_fixture(seed, floor_rel=1.0, seconds=SEAM_SECONDS)
+    u = np.arange(comb.shape[-1], dtype=np.float64) / (comb.shape[-1] - 1)
+    lo, span = SEAM_RAMP
+    return comb + floor * (lo + span * u)[None, :], rates
+
+
+def taken_share(residual: np.ndarray, rates: np.ndarray, **kw: object) -> np.ndarray:
+    """Per-group energy the split TOOK, against a constant-floor control run.
+
+    The numerator alone is too noisy to read a step out of: it is the energy of
+    a noise signal, so it fluctuates group to group whatever the gain does. The
+    control run is the SAME split on the SAME residual with a single floor
+    block, so it carries the same fluctuation and none of the floor's time
+    dependence — dividing by it leaves the time dependence of the floor and
+    almost nothing else. That is the series a seam is visible in.
+    """
+    y = np.asarray(residual, dtype=np.float64)
+    n_t = int(y.shape[-1])
+    w = n_t // SEAM_GROUPS
+
+    def groups(x: np.ndarray) -> np.ndarray:
+        a = np.asarray(x, dtype=np.float64)[:, : SEAM_GROUPS * w]
+        return (a**2).reshape(a.shape[0], SEAM_GROUPS, w).sum(axis=(0, 2))
+
+    ref = stochastic_split(y, SR, rates, K_HI, n_fft=N_FFT, psd_blocks=1)
+    got = stochastic_split(y, SR, rates, K_HI, n_fft=N_FFT, psd_blocks=SEAM_BLOCKS, **kw)  # type: ignore[arg-type]
+    # The first and last group hold the weighted overlap-add's own edge, where
+    # the padded frames carry almost no signal; they are not a reading of a gain.
+    return (groups(got.stochastic) / groups(ref.stochastic))[1:-1]
+
+
+def seam_ratio(share: np.ndarray) -> float:
+    """Biggest jump AT a block boundary, over the median jump everywhere else."""
+    d = np.abs(np.diff(share))
+    at = np.zeros(d.size, dtype=bool)
+    per = SEAM_GROUPS // SEAM_BLOCKS
+    at[[b * per - 2 for b in range(1, SEAM_BLOCKS)]] = True
+    return float(d[at].max() / np.median(d[~at]))
+
+
+def test_the_block_floor_makes_seams_and_the_interpolated_one_does_not() -> None:
+    """The block floor is a STEP in time, and the step is visible in the output.
+
+    ``S`` is one spectrum per block — about four seconds — which is a modelling
+    statement that the wash is stationary over that span. It is not: much of the
+    comb band sits within about 1 dB of the floor, so the clip at ``a = 1``
+    toggles whole bands between "nothing taken" and "something taken" across one
+    boundary, and the demonstration spectrograms then carry rectangular patches
+    whose vertical edges land exactly on the block grid (measured on FLY124 at
+    59.5 s and 63.4 s, boundaries 15 and 16 of that run's 3.96 s grid).
+
+    So the assertion is about WHERE the changes are, not about how large they
+    are: with the block floor the share is flat inside a block and cliffs at the
+    boundaries, and with the floor interpolated in time it declines with the
+    ramp and the boundaries are not special at all.
+    """
+    residual, rates = seam_fixture()
+    stepped = taken_share(residual, rates)
+    smooth = taken_share(residual, rates, floor_time_interp=True)
+
+    assert seam_ratio(stepped) > 8.0, "the block floor left no seam to fix"
+    assert seam_ratio(smooth) <= 2.0, (
+        f"the interpolated floor still steps at the block boundaries: {seam_ratio(smooth):.2f}x "
+        "the median jump elsewhere"
+    )
+    # Both take the same energy overall — the flag moves WHEN it is taken, not
+    # how much: this is a continuity fix and not a stronger or weaker gain.
+    assert float(smooth.sum()) == pytest.approx(float(stepped.sum()), rel=0.2)
+
+
+def test_the_interpolated_floor_keeps_the_split_exact() -> None:
+    # The identity is the split's own contract and it must not depend on which
+    # floor the gain was read off: the broadband channel is a SUBTRACTION.
+    residual, rates = seam_fixture()
+    split = stochastic_split(
+        residual, SR, rates, K_HI, n_fft=N_FFT, psd_blocks=SEAM_BLOCKS, floor_time_interp=True
+    )
+    got = np.asarray(split.stochastic) + np.asarray(split.broadband)
+    assert float(np.abs(residual - got).max()) <= 1e-12 * float(np.abs(residual).max())
+    assert split.diag["floor_time_interp"] is True
+
+
+def test_the_time_interpolation_is_off_by_default_and_bitwise() -> None:
+    # Every published number was produced on the block floor, so the default
+    # path must be the same arithmetic and not merely the same answer.
+    residual, rates = seam_fixture()
+    kw = dict(n_fft=N_FFT, psd_blocks=SEAM_BLOCKS)
+    base = stochastic_split(residual, SR, rates, K_HI, **kw)  # type: ignore[arg-type]
+    off = stochastic_split(residual, SR, rates, K_HI, floor_time_interp=False, **kw)  # type: ignore[arg-type]
+    assert np.array_equal(base.stochastic, off.stochastic)
+    assert base.diag["floor_time_interp"] is False
+    on = stochastic_split(residual, SR, rates, K_HI, floor_time_interp=True, **kw)  # type: ignore[arg-type]
+    assert not np.array_equal(base.stochastic, on.stochastic)
+
+
+def test_one_block_is_the_same_floor_whichever_way_it_is_read() -> None:
+    # With a single block there is nothing to interpolate between, so the flag
+    # must be a no-op rather than a second code path with its own answer.
+    residual, rates = seam_fixture()
+    kw = dict(n_fft=N_FFT, psd_blocks=1)
+    off = stochastic_split(residual, SR, rates, K_HI, **kw)  # type: ignore[arg-type]
+    on = stochastic_split(residual, SR, rates, K_HI, floor_time_interp=True, **kw)  # type: ignore[arg-type]
+    assert np.array_equal(off.stochastic, on.stochastic)
+
+
+def test_an_unusable_t_block_falls_back_to_the_even_block_centers() -> None:
+    """``SmoothPSD.t_block`` holds block CENTERS, and the fallback rebuilds them.
+
+    ``masked_smooth_psd`` writes ``t_start_s`` plus the center of each block of
+    an even grid, so subtracting ``t_start_s`` gives the window-relative
+    centers. A floor that does not carry one usable center per block — an older
+    or a hand-built ``SmoothPSD`` — must not silently place the interpolation
+    somewhere else: the even grid is derived instead, and on a floor that came
+    from block C the two are the same thing.
+    """
+    from dataclasses import replace
+
+    from tracking.joint_decompose import masked_smooth_psd
+
+    residual, rates = seam_fixture()
+    psd = masked_smooth_psd(residual, SR, rates, K_HI, n_fft=N_FFT, n_blocks=SEAM_BLOCKS)
+    assert psd.t_block.size == SEAM_BLOCKS
+    n_t = residual.shape[-1]
+    want = (np.arange(SEAM_BLOCKS) + 0.5) * (n_t / SEAM_BLOCKS) / SR
+    np.testing.assert_allclose(psd.t_block, want)
+
+    kw = dict(n_fft=N_FFT, floor_time_interp=True)
+    good = stochastic_split(residual, SR, rates, K_HI, psd=psd, **kw)  # type: ignore[arg-type]
+    blind = stochastic_split(
+        residual,
+        SR,
+        rates,
+        K_HI,
+        psd=replace(psd, t_block=np.zeros(SEAM_BLOCKS)),
+        **kw,  # type: ignore[arg-type]
+    )
+    assert np.array_equal(good.stochastic, blind.stochastic)
 
 
 # ---------------------------------------------------------------------------

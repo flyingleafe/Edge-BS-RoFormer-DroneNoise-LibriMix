@@ -247,6 +247,16 @@ Six things a caller must know:
   lines scales the region uniformly, so the comb PATTERN survives at reduced amplitude (depth
   0.386 -> 0.380 dB at k10-24); the smoothed periodogram carries the line SHAPE, so a per-bin gain
   concentrates the removal at the line cores with no line model at all.
+- **The floor is a STEP in time, and that is what the seams are.** `S` is one spectrum per block
+  (`~4 s`), so the gain steps at every block boundary — and because much of the comb band sits
+  within ~1 dB of the floor, the clip at `a = 1` toggles whole bands between "nothing taken" and
+  "something taken" across one boundary. Measured: the rectangular on/off patches of the FLY124
+  demo spectrograms have vertical edges at 59.5 s and 63.4 s, which are boundaries 15 and 16 of
+  that run's 3.96 s block grid, exactly. `floor_time_interp=True`
+  (`JointConfig.stochastic_floor_interp`, `scripts/vk_decompose.py --stochastic-floor-interp`)
+  reads `log S` per FRAME instead, linearly interpolated between the block centers
+  `SmoothPSD.t_block`. It is OFF by default and the default path is bitwise unchanged — the block
+  floor is what every published number was produced with.
 - **The two smoothing widths are fixed, and the number that fixes them is chi-square variance.**
   `P_SMOOTH_FRAMES = 5`, `P_SMOOTH_BINS = 3`: one periodogram bin has 100 % relative standard
   deviation, 15 averaged bins bring the power estimate to ~26 % and the amplitude gain, its square
@@ -444,7 +454,7 @@ set is small enough to list:
 | `scripts/displacement/{nullcontrol,combscan,refine_kscaled,comb_explorer}.py` | the comb-displacement campaign |
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
 | `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`) |
-| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders; `--h-aware` ranks by `total_h` (the stochastic comb in the data term) and prints every column |
+| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, the committed `refined` sidecar of `scripts/refine_dregon_rps.py`, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders; `--h-aware` ranks by `total_h` (the stochastic comb in the data term) and prints every column |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |
 
