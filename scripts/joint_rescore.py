@@ -52,6 +52,18 @@ and a fan that opens regions on empty floor gains nothing. The profiled column
 stays beside it, and where the two orders differ the difference is coverage the
 profiled column did not charge.
 
+Two levers sharpen that data term where it measured a null, and both are opt in.
+``--adaptive-floor`` gives ``S`` one profiled scale per (channel, frame): the
+floor is fitted per four-second block while DREGON's rotor wash is not
+stationary over one, so a gust span pays a Whittle misfit no comb hypothesis
+caused and the block floor plus its rent then move with however each
+hypothesis's own solve spread that energy. ``--h-lorentzian`` constrains ``H``
+to a non-negative Lorentzian mixture pinned at the hypothesis's OWN line
+positions at the measured ``0.6 k`` Hz half width: the shape-free ``H`` explains
+ANY excess inside a region, which discriminates nothing on the one window where
+four dense combs make every hypothesis's regions blanket the band, and a wrong
+comb's bumps land between its lines and fit near-zero amplitudes.
+
 Run::
 
     python scripts/joint_rescore.py --smoke --out results/joint_rescore_smoke
@@ -242,6 +254,16 @@ def worker(unit: Unit) -> dict[str, Any]:
         # comb regions cover, and a fan that opens regions on empty floor gains
         # nothing by it.
         h_aware=bool(p.get("h_aware", False)),
+        # One profiled floor scale per (channel, frame). The block floor is
+        # constant over four seconds and DREGON's rotor wash is not, so without
+        # it a gust span pays a Whittle misfit no hypothesis caused and the
+        # block floor plus its rent move with how each solve spread that energy.
+        adaptive_floor=bool(p.get("adaptive_floor", False)),
+        # The H nuisance constrained to LORENTZIANS at the hypothesis's own
+        # lines. The shape-free hump explains any excess a region covers, which
+        # discriminates nothing where four dense combs make every hypothesis's
+        # regions blanket the band.
+        h_lorentzian=bool(p.get("h_lorentzian", False)),
     )
     tic = time.perf_counter()
     res = trk.joint_solve_window(audio, r_audio, cfg, k_hi=k_hi, mics=mics, jcfg=jcfg)
@@ -272,6 +294,8 @@ def worker(unit: Unit) -> dict[str, Any]:
         "k_trust": str(p["k_trust"]),
         "marginal": bool(p.get("marginal", False)),
         "h_aware": bool(p.get("h_aware", False)),
+        "adaptive_floor": bool(p.get("adaptive_floor", False)),
+        "h_lorentzian": bool(p.get("h_lorentzian", False)),
         "mean_rev_s": round(float(r.mean()), 4),
         "rms_vs_telemetry": round(float(np.sqrt(np.mean((r - r_meas) ** 2))), 5),
         "wall_s": round(wall, 2),
@@ -306,6 +330,8 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
         "mem_budget_gb": float(args.mem_budget_gb),
         "marginal": bool(getattr(args, "marginal", False)),
         "h_aware": bool(getattr(args, "h_aware", False)),
+        "adaptive_floor": bool(getattr(args, "adaptive_floor", False)),
+        "h_lorentzian": bool(getattr(args, "h_lorentzian", False)),
     }
     return [
         Unit(uid=f"{w}__{h}", params={**common, "window": w, "hypothesis": h})
@@ -382,6 +408,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "terms": list(terms),
         "marginal": marginal,
         "h_aware": h_aware,
+        # The two levers, as metadata: both are properties of the RUN and not of
+        # a row, so a summary that does not name them is not reproducible.
+        "adaptive_floor": bool(rows) and all(bool(r.get("adaptive_floor")) for r in rows),
+        "h_lorentzian": bool(rows) and all(bool(r.get("h_lorentzian")) for r in rows),
         "table": table,
     }
 
@@ -464,6 +494,30 @@ def main() -> int:
             "envelopes cannot carry the line FLANKS, so the profiled data term charges every "
             "hypothesis for them alike and a coverage fan loses nothing by missing the humps; "
             "this lets a trajectory EXPLAIN the humps its regions cover. All columns reported"
+        ),
+    )
+    ap.add_argument(
+        "--adaptive-floor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "give the floor ONE profiled scale per (channel, frame). S is fitted per 4-second "
+            "block and DREGON's rotor wash is not stationary over one, so a gust span pays a "
+            "Whittle misfit no comb hypothesis caused — and the block floor plus its rent then "
+            "move with however each hypothesis's solve spread that energy. The rent pays "
+            "n_freq log gamma per frame, which is the Occam charge for invoking a loud one"
+        ),
+    )
+    ap.add_argument(
+        "--h-lorentzian",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "constrain the H nuisance to a NON-NEGATIVE Lorentzian mixture at the hypothesis's "
+            "OWN line positions, at the measured 0.6 k Hz half width. The shape-free hump "
+            "explains any excess inside a region, which discriminates nothing where four dense "
+            "combs make every hypothesis's regions blanket the band; a wrong comb's bumps land "
+            "between its lines and fit near-zero amplitudes. Needs --h-aware"
         ),
     )
     ap.add_argument(

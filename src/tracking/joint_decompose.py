@@ -73,6 +73,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -1074,6 +1075,19 @@ class JointConfig:
     #: — it moves no product — and off by default because it holds the whole
     #: measured spectrogram and smooths it once.
     h_aware: bool = False
+    #: Give the floor a per-FRAME scale before the readout
+    #: (:func:`map_objective`, ``floor_gamma``). ``S`` is fitted per 4-second
+    #: block, so a recording with non-stationary rotor wash — DREGON's gusts —
+    #: makes a whole span of frames pay a Whittle misfit that no comb hypothesis
+    #: caused, and the block floor plus its rent then move with however each
+    #: hypothesis's solve happened to distribute that energy. A pure reading,
+    #: like the two above, and off by default.
+    adaptive_floor: bool = False
+    #: Constrain the H-aware nuisance to LORENTZIANS pinned at the hypothesis's
+    #: own line positions (:func:`_h_aware_data`). Only meaningful together with
+    #: ``h_aware``, and off by default because it costs one non-negative least
+    #: squares per (channel, frame).
+    h_lorentzian: bool = False
 
     def k_cap(self, it: int) -> int:
         """Trustable harmonic cap of iteration ``it`` (1 based)."""
@@ -1695,6 +1709,87 @@ def solve_report(state: JointState, audio: Any, *, profile: bool) -> dict[str, A
     return out
 
 
+#: How many half widths of a Lorentzian each of its design columns is carried
+#: out to (:func:`_lorentzian_design`). A Lorentzian at 8 HWHM is down by a
+#: factor of 65, and the column is a SHAPE fitted on top of a floor of 1 in the
+#: same units, so the truncated tail is far below what the data resolves — the
+#: measured move in ``data_h`` on a 16 s, 8-microphone, ``k_hi`` 40 window is
+#: 0.04 %. It is NOT a speed measure: the untruncated design is if anything
+#: faster (5.9 s against 8.9 s on that window, because a dense column set costs
+#: the active-set solve fewer iterations). What it buys is a LOCAL basis, and
+#: with it the rule that a line whose support reaches no region bin has no
+#: column at all — otherwise a far-off line contributes an almost flat column
+#: and the fit gains a pedestal it can raise anywhere.
+LORENTZ_SUPPORT_HWHM = 8.0
+
+#: Clip floor of the per-frame floor gain (:func:`_adaptive_floor_gain`). A gain
+#: this small means the frame carries a thousandth of the block's power, which
+#: is a silent frame and not a measurement; without the clip its rent is
+#: unbounded below.
+FLOOR_GAIN_MIN = 1e-3
+
+
+def _adaptive_floor_gain(
+    p_meas: np.ndarray, log_s: np.ndarray, block_of: np.ndarray, frames_per_chunk: int = 64
+) -> np.ndarray:
+    """``(C, frames)`` robust per-frame gain of the block floor — a profiled scale.
+
+    The floor block fits ONE spectrum per time block (four blocks over a
+    16-second window), so a non-stationary broadband source — rotor wash under a
+    gust, which is what DREGON's low band carries — leaves a whole span of frames
+    an order of magnitude above the block's fitted level. Those frames then pay a
+    Whittle misfit of ``P / S`` per cell that no comb hypothesis caused and that
+    no comb hypothesis can remove, and, worse, the block floor and its rent both
+    move with however a given hypothesis's solve happened to distribute that
+    energy — the term becomes a lottery on a quantity the measure is not about.
+
+    The fix is one profiled parameter per (channel, frame): the noise model
+    becomes ``gamma(c, t) S_c(f, block(t))``. Under the Whittle model each
+    ``P / S`` cell is an Exp(1) deviate, whose MEDIAN is ``ln 2`` and not 1, so
+    the median of the ratio over frequency divided by ``ln 2`` is an unbiased
+    scale on a floor that is already correct — and, being a median, it reads the
+    BULK of the band rather than the comb lines sitting in the top few percent of
+    it. The frame axis is then smoothed with the readout's own boxcar
+    (``P_SMOOTH_FRAMES``), because a per-frame median is still a noisy statistic
+    and the gusts it is built for are many frames long.
+
+    The rent pays for it: ``rent`` becomes ``sum log(gamma S)``, so invoking a
+    loud frame costs ``n_freq log gamma`` — the natural Occam charge, and the
+    reason the scale cannot simply be minimized away.
+    """
+    from scipy.ndimage import uniform_filter1d
+
+    n_ch, n_fr, _ = (int(v) for v in p_meas.shape)
+    s_lin = np.exp(np.asarray(log_s, dtype=np.float64))
+    gain = np.empty((n_ch, n_fr), dtype=np.float64)
+    chunk = max(1, int(frames_per_chunk))
+    for c0 in range(0, n_fr, chunk):
+        sl = slice(c0, min(c0 + chunk, n_fr))
+        gain[:, sl] = np.median(p_meas[:, sl] / s_lin[:, block_of[sl], :], axis=-1)
+    gain /= np.log(2.0)
+    gain = uniform_filter1d(gain, int(P_SMOOTH_FRAMES), axis=-1, mode="nearest")
+    return np.maximum(gain, FLOOR_GAIN_MIN)
+
+
+def _lorentzian_design(
+    freq: np.ndarray, bins: np.ndarray, lines: np.ndarray, half: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(A, kept)`` — the truncated Lorentzian design on one frame's region bins.
+
+    Column ``l`` is ``1 / (1 + ((f - f_l) / gamma_l)^2)`` sampled on ``bins``,
+    zero beyond ``LORENTZ_SUPPORT_HWHM`` half widths, and a line whose support
+    reaches no region bin at all is dropped — it has no column to fit and
+    carrying it would only give the solver a free zero.
+    """
+    f = np.asarray(freq, dtype=np.float64)[np.asarray(bins, dtype=np.int64)]
+    lo = np.asarray(lines, dtype=np.float64)[None, :]
+    hw = np.asarray(half, dtype=np.float64)[None, :]
+    d = (f[:, None] - lo) / hw
+    a = np.where(np.abs(d) <= LORENTZ_SUPPORT_HWHM, 1.0 / (1.0 + d * d), 0.0)
+    kept = np.flatnonzero(a.any(axis=0))
+    return np.ascontiguousarray(a[:, kept]), kept
+
+
 def _h_aware_data(
     p_meas: np.ndarray,
     log_s: np.ndarray,
@@ -1708,6 +1803,8 @@ def _h_aware_data(
     slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
     width_factor: float = STOCHASTIC_WIDTH_FACTOR,
     frames_per_chunk: int = 64,
+    floor_gain: np.ndarray | None = None,
+    lorentzian: bool = False,
 ) -> dict[str, Any]:
     """The H-AWARE data term of :func:`map_objective` — the stochastic comb in it.
 
@@ -1729,6 +1826,30 @@ def _h_aware_data(
     Whittle pair's own change: the ``log S`` half is subtracted back out because
     ``map_objective`` already carries it as ``rent``. At ``H = 0`` every cell
     reduces to ``P / S`` and ``data_h`` IS ``data``.
+
+    ``floor_gain`` is the per-frame floor scale of :func:`_adaptive_floor_gain`.
+    When it is given, ``S`` above means ``gamma(c, t) S_c(f, block(t))``
+    everywhere in this function — in the hump's own baseline and in the ``log S``
+    that is taken back out — because that is the floor ``rent`` then carries.
+
+    ``lorentzian`` constrains the SHAPE of ``H``. The shape-free hump above is
+    ``max(0, P~ - S)``, which explains ANY excess a region happens to cover; on a
+    rig whose four dense combs make every hypothesis's regions blanket the band
+    above ``k`` 10 — DREGON free flight — the term is then hypothesis
+    independent and discriminates nothing. Under this flag ``H`` is instead a
+    NON-NEGATIVE mixture of Lorentzians pinned at the hypothesis's OWN line
+    positions, with the measured half width ``0.6 k`` Hz (the linewidth law
+    itself, never the region's 3.0 multiplier — that multiplier delimits where
+    the fit may look, not how wide a line is):
+
+        H(f, frame) = sum_l a_l(c, frame) / (1 + ((f - k_l r(t)) / (0.6 k_l))^2)
+
+    with ``a >= 0`` fitted per (channel, frame) by non-negative least squares
+    against the same clipped excess the shape-free hump used. A hypothesis can
+    then only claim energy that sits ON its comb with the physical line shape: a
+    wrong comb's bumps fall BETWEEN its lines, no non-negative amplitude puts a
+    Lorentzian peak there, and the amplitudes come back near zero. The design is
+    shared by the channels of one frame, so it is built once per frame.
     """
     r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
     n_ch, n_fr, n_f = (int(v) for v in p_meas.shape)
@@ -1738,20 +1859,28 @@ def _h_aware_data(
     # The harmonic set is the PINNED one the tracks already name, so two
     # hypotheses on one window open regions over the identical ``k`` range.
     k_hi = int(np.max(k)) if k.size else 0
+    log_gain = None if floor_gain is None else np.log(np.asarray(floor_gain, dtype=np.float64))
 
     # The smoother reaches across chunk boundaries, so the whole surface is
     # smoothed at once and only the ARITHMETIC is chunked — a halo is a second
     # way to get the same array wrong (the same call regime 3 makes).
     p_smooth = _smooth_power(p_meas, P_SMOOTH_FRAMES, P_SMOOTH_BINS)
     region = np.zeros((n_fr, n_f), dtype=bool)
+    rates = np.empty((n_fr, int(r.shape[0])), dtype=np.float64)
     for i in range(n_fr):
         s0 = int(starts[i])
-        rate = r[:, s0 : s0 + n_fft].mean(axis=-1)
-        lines, kk = comb_lines(rate, k_hi)
+        rates[i] = r[:, s0 : s0 + n_fft].mean(axis=-1)
+        lines, kk = comb_lines(rates[i], k_hi)
         half = stochastic_half_widths(
             kk, slope_hz_per_k=slope_hz_per_k, width_factor=width_factor, min_half_hz=df
         )
         region[i] = _line_mask(freq, lines, half)
+
+    fit: dict[str, Any] = {}
+    if lorentzian:
+        hump_all, fit = _lorentzian_hump(
+            p_smooth, log_s, log_gain, block_of, region, freq, rates, k_hi, slope_hz_per_k, df
+        )
 
     data_h = 0.0
     h_energy = 0.0
@@ -1759,8 +1888,14 @@ def _h_aware_data(
     for c0 in range(0, n_fr, chunk):
         sl = slice(c0, min(c0 + chunk, n_fr))
         ls = log_s[:, block_of[sl], :]  # (C, frames, F)
+        if log_gain is not None:
+            ls = ls + log_gain[:, sl, None]
         s_lin = np.exp(ls)
-        hump = np.where(region[sl][None, :, :], np.maximum(p_smooth[:, sl] - s_lin, 0.0), 0.0)
+        hump = (
+            hump_all[:, sl]
+            if lorentzian
+            else np.where(region[sl][None, :, :], np.maximum(p_smooth[:, sl] - s_lin, 0.0), 0.0)
+        )
         sh = np.maximum(s_lin + hump, 1e-300)
         data_h += float(np.sum(p_meas[:, sl] / sh)) + float(np.sum(np.log(sh) - ls))
         h_energy += float(np.sum(hump))
@@ -1770,6 +1905,70 @@ def _h_aware_data(
         # ``n_cells`` — the region itself is the same for every microphone.
         "h_cells": int(region.sum()) * n_ch,
         "h_energy": h_energy,
+        **({"h_fit": fit} if fit else {}),
+    }
+
+
+def _lorentzian_hump(
+    p_smooth: np.ndarray,
+    log_s: np.ndarray,
+    log_gain: np.ndarray | None,
+    block_of: np.ndarray,
+    region: np.ndarray,
+    freq: np.ndarray,
+    rates: np.ndarray,
+    k_hi: int,
+    slope_hz_per_k: float,
+    df: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """``(H, diagnostics)`` — the SHAPE-CONSTRAINED nuisance of :func:`_h_aware_data`.
+
+    One non-negative least squares per (channel, frame) against the clipped
+    excess ``max(0, P~ - S)`` on that frame's region bins, with the design
+    :func:`_lorentzian_design` builds from the frame's OWN line positions. The
+    design is built once per frame and reused by every channel, which is where
+    most of the saving is on an eight-microphone window.
+
+    The diagnostics are the three numbers that say whether the constraint did
+    anything: how many of the offered lines took a positive amplitude, how much
+    of the excess the mixture failed to explain, and what it cost.
+    """
+    from scipy.optimize import nnls
+
+    tic = perf_counter()
+    n_ch, n_fr, _ = (int(v) for v in p_smooth.shape)
+    hump = np.zeros_like(p_smooth)
+    s_all = np.exp(log_s)
+    n_pos = 0.0
+    n_amp = 0.0
+    res_sq = 0.0
+    tgt_sq = 0.0
+    for i in range(n_fr):
+        bins = np.flatnonzero(region[i])
+        if bins.size == 0:
+            continue
+        lines, kk = comb_lines(rates[i], k_hi)
+        # The LINEWIDTH law itself: the region's 3.0 multiplier says where the
+        # fit may look, this says how wide one line is.
+        half = np.maximum(float(slope_hz_per_k) * kk, df)
+        design, kept = _lorentzian_design(freq, bins, lines, half)
+        if kept.size == 0:
+            continue
+        base = s_all[:, int(block_of[i]), :][:, bins]
+        if log_gain is not None:
+            base = base * np.exp(log_gain[:, i])[:, None]
+        for c in range(n_ch):
+            y = np.maximum(p_smooth[c, i, bins] - base[c], 0.0)
+            amp, _ = nnls(design, y)
+            hump[c, i, bins] = design @ amp
+            n_pos += float(np.count_nonzero(amp > 0.0))
+            n_amp += float(amp.size)
+            res_sq += float(np.sum((y - hump[c, i, bins]) ** 2))
+            tgt_sq += float(np.sum(y**2))
+    return hump, {
+        "active_line_frac": round(n_pos / max(n_amp, 1.0), 4),
+        "fit_residual_share": round(res_sq / max(tgt_sq, 1e-300), 4),
+        "wall_s": round(perf_counter() - tic, 2),
     }
 
 
@@ -1796,6 +1995,8 @@ def map_objective(
     h_carrier: Any | None = None,
     h_slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
     h_width_factor: float = STOCHASTIC_WIDTH_FACTOR,
+    adaptive_floor: bool = False,
+    h_lorentzian: bool = False,
 ) -> dict[str, Any]:
     """THE converged MAP objective of the joint model, term by term::
 
@@ -1911,6 +2112,30 @@ def map_objective(
     empty floor buys nothing, and a trajectory whose regions sit on the humps
     stops paying for them.
 
+    ``adaptive_floor`` gives ``S`` one profiled scale per (channel, frame),
+    ``S_eff = gamma(c, t) S_c(f, block(t))``, and every term of the readout then
+    reads ``S_eff``: the data term, the rent, and the ``H`` above. It is the
+    collapsed form of a heavier noise model — a Student-t floor, or one variance
+    per cell — profiled down to the single degree of freedom the data actually
+    supports, and :func:`_adaptive_floor_gain` estimates it as a median ratio
+    over frequency. The reason it exists is that a block floor is CONSTANT over
+    four seconds while the rotor wash under a gust is not, so on DREGON a whole
+    span of frames pays a Whittle misfit no comb hypothesis caused, and the block
+    floor plus its rent then move with however a hypothesis's own solve happened
+    to distribute that energy. Under the scale the gusts stop dominating the data
+    term, and ``rent`` grows by ``n_freq log gamma`` per frame — the natural
+    Occam charge for invoking a loud frame, which is what keeps the scale from
+    simply being minimized away. The marginal correction is untouched by it. The
+    gain's distribution comes back as ``floor_gamma``.
+
+    ``h_lorentzian`` constrains the SHAPE of ``H`` (see :func:`_h_aware_data`).
+    The shape-free hump explains any excess a region covers, which is exactly
+    hypothesis independent on a rig whose combs make every hypothesis's regions
+    blanket the band; a non-negative Lorentzian mixture pinned at the
+    hypothesis's OWN lines, at the measured ``0.6 k`` Hz half width, can only
+    claim energy that sits on that comb with the physical line shape. It needs
+    ``h_carrier`` and does nothing without it.
+
     Returns the total, the four components, the two sub-terms of the phase
     prior, and ``n_cells`` — the caller normalizes, because a window's cell
     count depends on its length and its microphone count. Under ``h_carrier`` it
@@ -1934,22 +2159,25 @@ def map_objective(
     rent = 0.0
     n_frames = 0
     h_aware: dict[str, Any] = {}
+    gamma_read: dict[str, Any] = {}
     if starts.size and n_t >= int(n_fft):
         block_of = np.minimum((starts * n_bl) // max(1, n_t), n_bl - 1)
         s_lin = np.exp(log_s)
         scale = 1.0 / (float(sr) * float((np.hanning(int(n_fft)) ** 2).sum()))
-        # The measured surface is KEPT only for the H-aware readout, which needs
-        # every frame at once (its smoother reaches across chunk boundaries).
+        # The measured surface is KEPT only for the readouts that need every
+        # frame at once — the H-aware one (its smoother reaches across chunk
+        # boundaries) and the adaptive floor (its gain is smoothed over frames).
         p_all = (
             np.empty((n_ch, int(starts.size), n_f), dtype=np.float64)
-            if h_carrier is not None
+            if (h_carrier is not None or adaptive_floor)
             else None
         )
         done = 0
         for sub, chunk in stft_power(y, starts, int(n_fft), frames_per_chunk):
             sel = block_of[done : done + sub.size]
             power = chunk * scale
-            data += float(np.sum(power / s_lin[:, sel, :]))
+            if not adaptive_floor:
+                data += float(np.sum(power / s_lin[:, sel, :]))
             if p_all is not None:
                 p_all[:, done : done + sub.size] = power
             done += sub.size
@@ -1958,7 +2186,28 @@ def map_objective(
         counts = np.bincount(block_of, minlength=n_bl).astype(np.float64)
         rent = float(np.sum(counts[None, :, None] * log_s))
         n_frames = int(starts.size)
-        if p_all is not None:
+        gain = None
+        if adaptive_floor and p_all is not None:
+            gain = _adaptive_floor_gain(p_all, log_s, block_of, frames_per_chunk)
+            chunk_n = max(1, int(frames_per_chunk))
+            for c0 in range(0, n_frames, chunk_n):
+                sl = slice(c0, min(c0 + chunk_n, n_frames))
+                data += float(
+                    np.sum(p_all[:, sl] / (s_lin[:, block_of[sl], :] * gain[:, sl, None]))
+                )
+            # ``sum log S_eff`` in its cheap form: the block-counted rent above
+            # plus one log per (channel, frame) taken across the whole band.
+            rent += float(n_f) * float(np.sum(np.log(gain)))
+            gamma_read = {
+                "floor_gamma": {
+                    "mean": round(float(np.mean(gain)), 4),
+                    "p05": round(float(np.percentile(gain, 5.0)), 4),
+                    "p50": round(float(np.percentile(gain, 50.0)), 4),
+                    "p95": round(float(np.percentile(gain, 95.0)), 4),
+                    "max": round(float(np.max(gain)), 4),
+                }
+            }
+        if h_carrier is not None and p_all is not None:
             h_aware = _h_aware_data(
                 p_all,
                 log_s,
@@ -1970,6 +2219,9 @@ def map_objective(
                 n_fft=int(n_fft),
                 slope_hz_per_k=float(h_slope_hz_per_k),
                 width_factor=float(h_width_factor),
+                frames_per_chunk=frames_per_chunk,
+                floor_gain=gain,
+                lorentzian=bool(h_lorentzian),
             )
 
     ks = np.asarray(k, dtype=np.float64)
@@ -2031,6 +2283,7 @@ def map_objective(
         "psi_prior": psi_prior,
         **marginal,
         **h_aware,
+        **gamma_read,
         "n_cells": int(n_ch * n_frames * n_f),
         "n_frames": n_frames,
         "n_freq": n_f,
@@ -2169,6 +2422,14 @@ def joint_objective(state: JointState) -> dict[str, Any]:
         # JointConfig.h_aware asks for it.
         h_carrier=state.carrier if jc.h_aware else None,
         h_slope_hz_per_k=jc.bw_psi_slope,
+        # One profiled floor scale per (channel, frame), so a gust stops paying
+        # a misfit no comb hypothesis caused. Off unless
+        # JointConfig.adaptive_floor asks for it.
+        adaptive_floor=bool(jc.adaptive_floor),
+        # The nuisance constrained to the hypothesis's OWN line shape. Off
+        # unless JointConfig.h_lorentzian asks for it, and inert without
+        # h_aware.
+        h_lorentzian=bool(jc.h_lorentzian),
     )
 
 
