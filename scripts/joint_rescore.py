@@ -20,6 +20,15 @@ Hypotheses
 ----------
 ``telemetry``
     The prep window's own stored tachometer trajectory (``r_meas``).
+``refined``
+    The telemetry-INITIALIZED refined trajectory of
+    ``scripts/refine_dregon_rps.py`` — window-wise L-BFGS on ``F_VK`` from the
+    tachometer init, stitched over the whole recording — read back from the
+    committed sidecar ``src/data_processing/refined_labels/<recording_id>.npz``
+    and interpolated onto this window's frames. These are the labels the
+    generator retraining used, so the rescore says whether the audio prefers
+    them to the raw tachometer. It is NOT blind: it saw the telemetry, which is
+    the point. It exists only where a sidecar is committed.
 ``multistart`` / ``ours_full``
     The step-5 blind arms of ``scripts/fvk_arms.py``, read back from that
     campaign's unit JSONs (``<arms>/raw/s5__<window>__<arm>.json`` -> ``r_out``).
@@ -109,9 +118,18 @@ F_MAX = 6000.0
 #: The five step-5 windows: one cruise window from each DREGON recording plus
 #: two FLY124 cruise windows. Declared once, in ``scripts/fvk_arms.py``.
 DEFAULT_WINDOWS = fvk_arms.BLIND_REAL
-#: ``telemetry`` is the prep window's own trajectory; every other name is a
-#: step-5 arm read back from that campaign's unit JSONs.
+#: ``telemetry`` is the prep window's own trajectory, ``refined`` its committed
+#: L-BFGS refinement; every other name is a step-5 arm read back from that
+#: campaign's unit JSONs.
 TELEMETRY = "telemetry"
+REFINED = "refined"
+#: Where ``scripts/refine_dregon_rps.py`` leaves its committed sidecars. One
+#: ``.npz`` per recording, holding ``ft`` (seconds in the PUBLISHED recording's
+#: own time reference), ``r_refined`` and ``r_telemetry``.
+REFINED_LABEL_DIR = ROOT / "src" / "data_processing" / "refined_labels"
+#: How far the sidecar's own telemetry may sit from the prep window's ``r_meas``,
+#: per rotor, before the sidecar is refused. See :func:`read_refined`.
+REFINED_ORDER_TOL_REV_S = 1.0
 DEFAULT_HYPOTHESES = (TELEMETRY, "multistart", "ours_full")
 #: The shipped v3b arm — the configuration ``scripts/vk_decompose.py`` runs and
 #: the one the regression fixture pins. Nothing here retunes it.
@@ -164,30 +182,145 @@ def read_arm(arms: str | Path, window: str, arm: str) -> list[list[float]]:
     return json.loads(path.read_text())["r_out"]
 
 
+def refined_path(window: str, label_dir: str | Path | None = None) -> Path:
+    """The committed refined-label sidecar of the recording a window belongs to.
+
+    The window key is ``<recording_id>__w<NN>`` (``protocols.window_name``) and
+    the sidecar is per RECORDING, so the recording id is the key up to the
+    window suffix.
+    """
+    rid = str(window).split("__w")[0]
+    return Path(REFINED_LABEL_DIR if label_dir is None else label_dir) / f"{rid}.npz"
+
+
+def read_refined(
+    window: str,
+    r_meas: Any,
+    *,
+    start_s: float,
+    ft: Any,
+    label_dir: str | Path | None = None,
+) -> Any:
+    """``(R, N)`` refined trajectory on the prep window's OWN frame grid.
+
+    The sidecar is a whole recording, on its own frame grid, in the PUBLISHED
+    recording's time reference (``scripts/refine_dregon_rps.py``); the prep
+    window is a 16 s slice whose ``ft`` is window relative. The two are joined by
+    the window's ``start_s``, which is recording absolute in that same
+    reference — so ``start_s + ft`` is where this window's frames sit in the
+    sidecar, and each rotor is read there by linear interpolation.
+
+    Two things are asserted rather than assumed, because both would invert the
+    verdict silently rather than fail:
+
+    - ``start_s`` must be a number. An old prep cache has no ``start_s`` key and
+      :func:`tracking.protocols.load_prep_window` reports that as ``nan``; a
+      ``nan`` offset would read the sidecar nowhere at all.
+    - The ROTOR ORDER of the sidecar must be the prep window's. The sidecar
+      carries the telemetry it was initialized from beside the refinement, so
+      the check costs one more interpolation: sliced the same way, it must land
+      on the window's own ``r_meas``. A permuted sidecar would hand every rotor
+      another rotor's trajectory, which reads as a large but perfectly plausible
+      rate error and would be scored as one.
+
+    The residual of that check is not zero and is not meant to be: the sidecar
+    holds the telemetry re-interpolated onto its own grid while the prep window
+    holds the tachometer staircase, which measures 0.30-0.81 rev/s per rotor on
+    the three ``free-flight_nosource_room1`` windows (the ramp window is the
+    worst). :data:`REFINED_ORDER_TOL_REV_S` sits at 1.0 above that. It is not a
+    wide margin — the four rotors of a DREGON cruise window are themselves only
+    1.0-1.5 rev/s apart, so a permutation clears the bar by about as much as the
+    staircase misses it — but it does separate the two on the material there is,
+    and the alternative is no check at all.
+    """
+    import numpy as np
+
+    path = refined_path(window, label_dir)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no refined-label sidecar for {window!r} at {path} — run "
+            "scripts/refine_dregon_rps.py for that recording and commit its .npz, or drop "
+            f"{REFINED!r} from --hypotheses"
+        )
+    want = float(start_s)
+    if not np.isfinite(want):
+        raise ValueError(
+            f"{REFINED} on {window}: the prep window carries no start_s, so its frames cannot "
+            "be placed in the sidecar's recording-relative time reference — rebuild the prep "
+            "cache with --build-preps"
+        )
+    with np.load(path) as z:
+        ft_rec = np.asarray(z["ft"], dtype=np.float64)
+        r_ref = np.atleast_2d(np.asarray(z["r_refined"], dtype=np.float64))
+        r_tel = np.atleast_2d(np.asarray(z["r_telemetry"], dtype=np.float64))
+    meas = np.atleast_2d(np.asarray(r_meas, dtype=np.float64))
+    at = want + np.asarray(ft, dtype=np.float64)
+    if r_ref.shape[0] != meas.shape[0] or meas.shape[-1] != at.size:
+        raise ValueError(
+            f"{REFINED} on {window}: the window's telemetry is {meas.shape} against "
+            f"{r_ref.shape[0]} sidecar rotors on {at.size} frame times"
+        )
+    take = np.stack([np.interp(at, ft_rec, row) for row in r_ref])
+    tel = np.stack([np.interp(at, ft_rec, row) for row in r_tel])
+    rms = np.sqrt(np.mean((tel - meas) ** 2, axis=-1))
+    if float(rms.max()) > REFINED_ORDER_TOL_REV_S:
+        raise ValueError(
+            f"{REFINED} on {window}: the sidecar's own telemetry sits "
+            f"{[round(float(v), 3) for v in rms]} rev/s rms from the window's r_meas, over the "
+            f"{REFINED_ORDER_TOL_REV_S} rev/s bar — the rotor order or the time reference of "
+            f"{path} does not match this window, and scoring it would compare the wrong rotors"
+        )
+    return take
+
+
 def pack_hypotheses(
     arms: str | Path, windows: list[str], hyps: list[str], path: str | Path
 ) -> dict[str, Any]:
-    """Fold the arms' trajectories for one rescore into ONE shippable JSON."""
+    """Fold the arms' trajectories for one rescore into ONE shippable JSON.
+
+    ``telemetry`` and ``refined`` are never packed: the first comes from the prep
+    window itself and the second from a committed sidecar, so both travel with
+    the checkout already.
+    """
     out = {
         "source": str(arms),
-        "windows": {w: {h: read_arm(arms, w, h) for h in hyps if h != TELEMETRY} for w in windows},
+        "windows": {
+            w: {h: read_arm(arms, w, h) for h in hyps if h not in (TELEMETRY, REFINED)}
+            for w in windows
+        },
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(out))
     return out
 
 
-def load_hypothesis(hyp: str, window: str, r_meas: Any, arms: str | Path) -> Any:
+def load_hypothesis(
+    hyp: str,
+    window: str,
+    r_meas: Any,
+    arms: str | Path,
+    *,
+    start_s: float = float("nan"),
+    ft: Any = None,
+    label_dir: str | Path | None = None,
+) -> Any:
     """``(R, N)`` trajectory of one hypothesis on the window's OWN frame grid.
 
     The arms wrote their trajectory rounded to four decimals, which is the
     hypothesis as the campaign recorded it — this reads it back rather than
     re-running the arm, so the rescore judges exactly the published trajectory.
+
+    ``start_s`` and ``ft`` are the window's recording-absolute start and its own
+    frame grid, and only :data:`REFINED` reads them: that hypothesis lives in a
+    per-RECORDING sidecar and has to be placed on the window's frames
+    (:func:`read_refined`).
     """
     import numpy as np
 
     if hyp == TELEMETRY:
         return np.asarray(r_meas, dtype=np.float64)
+    if hyp == REFINED:
+        return read_refined(window, r_meas, start_s=start_s, ft=ft, label_dir=label_dir)
     r = np.asarray(read_arm(arms, window, hyp), dtype=np.float64)
     want = np.asarray(r_meas).shape
     if r.shape != want:
@@ -228,7 +361,10 @@ def worker(unit: Unit) -> dict[str, Any]:
     # The harmonic cap comes from the TELEMETRY, so every hypothesis of this
     # window is scored on the identical track set and the identical cells.
     k_hi = int(k_cap(cfg, r_meas))
-    r = load_hypothesis(hyp, window, r_meas, p["arms_dir"])
+    # ``start_s`` places the window's own frames in the published recording's
+    # time reference, which is the only thing a per-recording sidecar can be
+    # read at; every other hypothesis ignores it.
+    r = load_hypothesis(hyp, window, r_meas, p["arms_dir"], start_s=float(z["start_s"]), ft=ft)
     r_audio = to_audio_grid(r, ft, n_t, SR)
 
     plan = group_plan(r_audio, k_hi, cfg)
@@ -451,7 +587,14 @@ def main() -> int:
     )
     ap.add_argument("--out", default="results/joint_rescore")
     ap.add_argument("--windows", default=",".join(DEFAULT_WINDOWS))
-    ap.add_argument("--hypotheses", default=",".join(DEFAULT_HYPOTHESES))
+    ap.add_argument(
+        "--hypotheses",
+        default=",".join(DEFAULT_HYPOTHESES),
+        help=(
+            "comma separated: 'telemetry', 'refined' (the committed L-BFGS refit of the "
+            "telemetry, where a sidecar exists), and any step-5 arm name"
+        ),
+    )
     ap.add_argument(
         "--arms-dir",
         default="results/fvk_arms",

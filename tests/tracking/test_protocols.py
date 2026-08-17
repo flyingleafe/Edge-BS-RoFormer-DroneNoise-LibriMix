@@ -232,7 +232,7 @@ def test_load_prep_window_reads_the_frozen_layout(
 
     win = P.load_prep_window("FLY124__w02")
 
-    assert set(win) == {"audio", "ft", "r", "regime"}
+    assert set(win) == {"audio", "ft", "r", "regime", "start_s"}
     assert win["regime"] == "cruise"
     for name, entry in (("audio", "audio"), ("ft", "ft"), ("r", "r_meas")):
         assert win[name].dtype == np.float64  # the reader widens every array
@@ -242,3 +242,30 @@ def test_load_prep_window_reads_the_frozen_layout(
     other.mkdir()
     _write_prep(other, "FLY124__w03")
     assert P.load_prep_window("FLY124__w03", other)["r"].shape == (4, 10)
+
+
+def test_load_prep_window_reports_the_recording_absolute_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start_s`` is what places the window in the RECORDING's own time.
+
+    It is the only key a reader of a per-recording sidecar needs on top of the
+    window-relative ``ft``, and a cache written before the key existed must
+    report that it does not have one rather than pretend to a zero start — a
+    zero would read a sidecar at the wrong place and score the wrong rotors.
+    """
+    monkeypatch.setenv(P.PREP_DIR_ENV, str(tmp_path))
+    _write_prep(tmp_path, "FLY124__w02")  # the old layout: no start_s at all
+    assert np.isnan(P.load_prep_window("FLY124__w02")["start_s"])
+
+    arrays = _write_prep(tmp_path, "FLY124__w05")
+    np.savez(
+        tmp_path / "FLY124__w05.npz",
+        regime=np.str_("cruise"),
+        start_s=np.float64(80.0),
+        end_s=np.float64(96.0),
+        audio=arrays["audio"],
+        ft=arrays["ft"],
+        r_meas=arrays["r_meas"],
+    )
+    assert P.load_prep_window("FLY124__w05")["start_s"] == pytest.approx(80.0)

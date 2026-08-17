@@ -547,6 +547,12 @@ def load_prep_window(key: str, prep_dir: Path | None = None) -> dict[str, Any]:
     - ``ft``: ``(frame,)`` float64 window-relative frame times, s
     - ``r``: ``(rotor, frame)`` float64 telemetry, rev/s (the file's ``r_meas``)
     - ``regime``: the manifest tag, ``ground`` / ``warmup`` / ``cruise``
+    - ``start_s``: the window's RECORDING-absolute start, s — ``nan`` when the
+      cache predates the key. It is what turns the window-relative ``ft`` back
+      into the published recording's own time reference, which is the reference
+      every recording-level sidecar is written in (the refined labels of
+      ``scripts/refine_dregon_rps.py``, for one), so a caller that wants to read
+      such a sidecar at this window's frames needs it and nothing else.
 
     Every reader of the frozen windows goes through here, so the dtypes and the
     entry names cannot drift between one campaign script and the next.
@@ -557,6 +563,7 @@ def load_prep_window(key: str, prep_dir: Path | None = None) -> dict[str, Any]:
             "ft": np.asarray(z["ft"], np.float64),
             "r": np.asarray(z["r_meas"], np.float64),
             "regime": str(z["regime"]),
+            "start_s": float(z["start_s"]) if "start_s" in z.files else float("nan"),
         }
 
 

@@ -58,6 +58,128 @@ def test_load_hypothesis_reads_the_arm_and_the_telemetry(tmp_path) -> None:
         J.load_hypothesis("ours_full", "REC__w02", r_meas, tmp_path)
 
 
+#: The sidecar's own frame grid: 0.1 s frames over 40 s of a recording, in the
+#: PUBLISHED recording's time reference (which is why it does not start at 0).
+REFINED_FT = np.arange(0.0, 40.0, 0.1) + 5.48
+
+
+def _write_sidecar(
+    dst, rid: str = "REC", *, perm: tuple[int, ...] = (0, 1, 2, 3), bias: float = 0.6
+) -> np.ndarray:
+    """A synthetic refined-label sidecar whose trajectories are LINEAR in time.
+
+    Linear on purpose: a linear interpolation onto any sub-grid is then exact,
+    so the read-back can be asserted against the closed form instead of against
+    a tolerance. ``r_refined`` is the telemetry plus ``bias``, which stands in
+    for the measured scale correction, and ``perm`` permutes the rotor rows so
+    the order guard can be exercised.
+    """
+    base = np.stack([80.0 + 5.0 * i + 0.2 * REFINED_FT for i in range(4)])
+    np.savez(
+        dst / f"{rid}.npz",
+        ft=REFINED_FT,
+        r_telemetry=base[list(perm)],
+        r_refined=(base + bias)[list(perm)],
+    )
+    return base
+
+
+def test_the_refined_hypothesis_is_read_at_the_window_s_own_frames(tmp_path) -> None:
+    """The sidecar is a whole RECORDING; the window is a slice of one.
+
+    They are joined by the window's recording-absolute ``start_s``, so the
+    trajectory the rescore scores must be the sidecar sampled at
+    ``start_s + ft`` — exactly, because the fixture's trajectories are linear.
+    """
+    start_s, ft = 20.0, np.arange(6) * 0.032
+    base = _write_sidecar(tmp_path)
+    want_tel = np.stack([80.0 + 5.0 * i + 0.2 * (start_s + ft) for i in range(4)])
+    np.testing.assert_allclose(
+        np.stack([np.interp(start_s + ft, REFINED_FT, row) for row in base]), want_tel
+    )
+
+    got = J.load_hypothesis(
+        J.REFINED, "REC__w01", want_tel, tmp_path, start_s=start_s, ft=ft, label_dir=tmp_path
+    )
+    assert got.shape == (4, 6)
+    np.testing.assert_allclose(got, want_tel + 0.6, atol=1e-9)
+
+
+def test_the_refined_hypothesis_names_the_missing_sidecar(tmp_path) -> None:
+    # It exists only where a recording has been refined and its .npz committed,
+    # so the failure has to say which file is not there.
+    with pytest.raises(FileNotFoundError, match="no refined-label sidecar"):
+        J.load_hypothesis(
+            J.REFINED,
+            "OTHER__w00",
+            np.full((4, 6), 80.0),
+            tmp_path,
+            start_s=20.0,
+            ft=np.arange(6) * 0.032,
+            label_dir=tmp_path,
+        )
+
+
+def test_the_refined_hypothesis_refuses_a_window_with_no_start(tmp_path) -> None:
+    # An old prep cache reports start_s as nan, and a nan offset would read the
+    # sidecar nowhere at all rather than fail.
+    _write_sidecar(tmp_path)
+    with pytest.raises(ValueError, match="no start_s"):
+        J.load_hypothesis(
+            J.REFINED,
+            "REC__w01",
+            np.full((4, 6), 80.0),
+            tmp_path,
+            start_s=float("nan"),
+            ft=np.arange(6) * 0.032,
+            label_dir=tmp_path,
+        )
+
+
+def test_a_permuted_sidecar_is_refused_instead_of_scored(tmp_path) -> None:
+    """The guard that stops the verdict from being inverted silently.
+
+    A sidecar whose rotor rows are in another order hands every rotor another
+    rotor's trajectory. Nothing downstream can tell that from a large rate
+    error, so it would be SCORED as one. The sidecar carries the telemetry it
+    was initialized from, so the check is one more interpolation: sliced the
+    same way, it must land on the window's own r_meas.
+    """
+    start_s, ft = 20.0, np.arange(6) * 0.032
+    want_tel = np.stack([80.0 + 5.0 * i + 0.2 * (start_s + ft) for i in range(4)])
+    _write_sidecar(tmp_path, "GOOD")
+    _write_sidecar(tmp_path, "BAD", perm=(1, 0, 3, 2))
+
+    J.load_hypothesis(
+        J.REFINED, "GOOD__w01", want_tel, tmp_path, start_s=start_s, ft=ft, label_dir=tmp_path
+    )
+    with pytest.raises(ValueError, match="rotor order or the time reference"):
+        J.load_hypothesis(
+            J.REFINED, "BAD__w01", want_tel, tmp_path, start_s=start_s, ft=ft, label_dir=tmp_path
+        )
+    # And a window read at the WRONG place in the recording fails the same way,
+    # because the same interpolation is what places it.
+    with pytest.raises(ValueError, match="rotor order or the time reference"):
+        J.load_hypothesis(
+            J.REFINED, "GOOD__w01", want_tel, tmp_path, start_s=39.0, ft=ft, label_dir=tmp_path
+        )
+
+
+def test_refined_is_opt_in_and_never_packed(tmp_path) -> None:
+    # The default hypotheses are unchanged: 'refined' exists only where a
+    # sidecar is committed, so it cannot be a default. And it travels with the
+    # checkout already, so a pack must not try to read it out of the arms.
+    assert J.REFINED not in J.DEFAULT_HYPOTHESES
+    assert J.refined_path("REC__w01").name == "REC.npz"
+    assert J.refined_path("REC__w01").parent == J.REFINED_LABEL_DIR
+    (tmp_path / "raw").mkdir()
+    arm = np.arange(24, dtype=float).reshape(4, 6)
+    J.arm_path(tmp_path, "REC__w01", "ours_full").write_text(json.dumps({"r_out": arm.tolist()}))
+    pack = tmp_path / "pack.json"
+    J.pack_hypotheses(tmp_path, ["REC__w01"], [J.TELEMETRY, J.REFINED, "ours_full"], pack)
+    assert list(json.loads(pack.read_text())["windows"]["REC__w01"]) == ["ours_full"]
+
+
 def test_pack_round_trips_the_arms(tmp_path) -> None:
     # results/ does not travel to a cluster, so the trajectories are packed into
     # one file — and a pack must read back exactly like the directory did.
