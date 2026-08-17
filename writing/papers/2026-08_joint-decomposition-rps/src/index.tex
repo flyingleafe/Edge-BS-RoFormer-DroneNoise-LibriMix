@@ -538,6 +538,69 @@ solo-rotor operation by up to $10.9$\,dB). The model therefore carries
 one floor per microphone, with a single common flight-state driver, and
 makes no per-rotor broadband claim.
 
+\subsection{The model as a joint distribution}
+\label{sec:model-distributions}
+
+We now state every stochastic ingredient formally; the MAP objective of
+Sec.~\ref{sec:map} is nothing but the negative logarithm of the
+posterior assembled here.
+
+\emph{Observation.} Given the comb state, the residual
+$x_c - \sum_{i,k}\operatorname{Re}[A_{c,i,k} e^{\mathrm{j}(\cdot)}]$ is
+zero-mean colored Gaussian noise, independent across microphones, with
+power spectral density $S_c(f,t)$; its likelihood is the Whittle form
+\eqref{eq:whittle} applied per microphone.
+
+\emph{Shaft rate error.} The rate error of rotor $i$ splits into a
+rig-common part and a per-rotor part,
+$\delta_i(t) = \bar\delta(t) + \tilde\delta_i(t)$, each a stationary
+Ornstein--Uhlenbeck (OU) process,
+\begin{equation}
+  d\delta = -\frac{\delta}{\tau}\,dt
+  + \sqrt{\frac{2\sigma^2}{\tau}}\, dW,
+  \label{eq:ou}
+\end{equation}
+with variance $\sigma^2$ and correlation time $\tau$ (parameters
+$(\bar\sigma,\bar\tau)$ and $(\tilde\sigma,\tilde\tau)$ respectively).
+On the envelope time grid (step $\Delta_{\mathrm{e}} = 1/\fsenv$) this
+is the AR(1) process
+$\delta[j{+}1] = e^{-\Delta_{\mathrm{e}}/\tau}\,\delta[j] + w[j]$,
+$w \sim \mathcal{N}\!\big(0,\, \sigma^2 (1 -
+e^{-2\Delta_{\mathrm{e}}/\tau})\big)$.
+
+\emph{Per-harmonic wobble.} Each $\nu_{i,k}$ is an independent OU
+process with parameters $(\sigma_k, \tau_\nu)$. Integrated into a phase
+as in \eqref{eq:phase-integrals}, an OU rate produces, over spans long
+against $\tau_\nu$, phase diffusion with a Lorentzian line of
+half-width (in Hz)
+\begin{equation}
+  \gamma_k = 2\pi\, \sigma_k^2\, \tau_\nu ,
+  \label{eq:linewidth}
+\end{equation}
+and the measured law $\gamma_k \approx 0.6k$\,Hz
+(Sec.~\ref{sec:model-measurements}) pins the product
+$\sigma_k^2 \tau_\nu$ --- the single quantity the estimator needs.
+
+\emph{Envelopes.} The prior on each complex envelope is the improper
+Gaussian
+$p(A_{c,i,k}) \propto \exp\!\big( -\rho_k^2 \lVert D_2 A_{c,i,k}
+\rVert^2 \big)$: curvature is charged, amplitude is not (the prior is
+invariant to adding any complex linear-in-time trend). This is a
+deliberate choice --- the envelope carries the unknown per-harmonic
+amplitude, which we refuse to bias --- and it has a consequence
+developed in Sec.~\ref{sec:discussion}: an amplitude-free prior
+provides no shrinkage, so the discipline that keeps an envelope from
+absorbing floor energy must come entirely from the floor's own terms.
+
+\emph{Floor.} The prior on the floor is a hard constraint:
+$\log S_c(\cdot, t)$ must lie in the cepstrally band-limited family
+(first $n_{\mathrm{cep}}$ quefrency coefficients), piecewise constant
+over time blocks. Formally $R(\log S)$ in \eqref{eq:J} is the indicator
+of this set; the implementation realizes it by projection (median
+smoothing and cepstral truncation) rather than by a penalty, a
+distinction that matters and is taken up in
+Sec.~\ref{sec:discussion}.
+
 \subsection{What the measurements say}
 \label{sec:model-measurements}
 
@@ -583,15 +646,41 @@ classical order tracking.
 
 Collect the unknowns: the complex envelopes $A = \{A_{c,i,k}\}$, the
 phase-noise trajectories $\theta = \{\theta_i\}$ and
-$\psi = \{\psi_{i,k}\}$, and the floor $S = \{S_c(f,t)\}$. Within an
-analysis window (12\,s in our implementation) the correlation time of
-the rate noise exceeds the window, so the OU priors reduce to their
-local limit: white noise on the \emph{rate increments}, i.e.\ a
-second-difference (curvature) penalty on the integrated phases. Writing
-$D_2$ for the second-difference operator on the envelope-rate time grid
-and $P_{c}(f,t)$ for the short-time residual power of microphone $c$
-after subtracting the harmonic reconstruction of \eqref{eq:model}, the
-negative log posterior is, up to constants,
+$\psi = \{\psi_{i,k}\}$, and the floor $S = \{S_c(f,t)\}$. The
+objective is the negative log posterior of
+Sec.~\ref{sec:model-distributions}; one limit turns its OU priors into
+quadratic penalties. Within an analysis window of length
+$T_w$ (12\,s in our implementation) with
+$T_w \ll \tau$, the AR(1) decay of \eqref{eq:ou} is negligible and the
+rate-error \emph{increments} are white:
+$\delta[j{+}1] - \delta[j] \sim \mathcal{N}(0, q)$ i.i.d.\ with
+$q = 2\sigma^2 \Delta_{\mathrm{e}}/\tau$. Because every phase is the
+integral of a rate \eqref{eq:phase-integrals}, the second difference of
+the phase \emph{is} the rate increment,
+\begin{equation}
+  (D_2\, \theta_i)[j]
+  = 2\pi\Delta_{\mathrm{e}} \big( \delta_i[j] - \delta_i[j{-}1] \big),
+  \label{eq:d2-increment}
+\end{equation}
+so the window-local negative log prior of each integrated phase is a
+\emph{second-difference (curvature) penalty},
+\begin{equation}
+  -\log p(\theta_i) \;\simeq\;
+  \lambda_\theta \lVert D_2 \theta_i \rVert^2 ,
+  \qquad
+  \lambda_\theta = \frac{1}{2\, (2\pi \Delta_{\mathrm{e}})^2\,
+    q_\theta},
+  \label{eq:prior-limit}
+\end{equation}
+and identically for each $\psi_{i,k}$ with weight $\lambda_\psi(k)$
+from $q_{\nu}(k)$, i.e.\ from the measured linewidth law through
+\eqref{eq:linewidth}. We never quote the diffusion constants
+themselves: each $\lambda$ is specified as the $-3$\,dB bandwidth of
+the smoother it induces, through the calibration relation
+\eqref{eq:tuma}, which is what makes every hyperparameter a bandwidth
+in hertz. Writing $P_{c}(f,t)$ for the short-time residual power of
+microphone $c$ after subtracting the harmonic reconstruction of
+\eqref{eq:model}, the negative log posterior is, up to constants,
 \begin{multline}
   \Jobj(A, \theta, \psi, S) =
   \sum_{c,f,t} \left[ \frac{P_c(f,t)}{S_c(f,t)} + \log S_c(f,t) \right]
@@ -1124,6 +1213,32 @@ posterior variance; a proper-EM correction (adding the posterior
 variance of the comb reconstruction to the residual power before floor
 smoothing) is the principled fix. \pending{measure whether the bias is
 material at the final configuration.}
+
+\emph{The floor as constraint versus penalty, and the amplitude-free
+envelope prior.} Two deliberate simplifications of
+Sec.~\ref{sec:model-distributions} interact, and their joint failure
+mode is measurable. The floor's smoothness is implemented as a
+projection outside the likelihood, so where the comb's mask blankets a
+band the fitted $S$ is an extrapolation and can land below the true
+local floor; and the envelope prior is amplitude-free, so nothing
+shrinks an envelope that absorbs energy the under-fitted floor has
+made expensive. On the outdoor recordings the result is visible: in
+the band where only the fastest rotor's harmonics exist, the coherent
+channel absorbs \pending{consolidate: $\approx 20\%$} of the original
+power as a quasi-continuum, stripping the broadband channel
+$\approx 2$\,dB below its level in the adjacent track-free band. The
+principled repair is sequential: first fit $\log S$ \emph{inside} the
+likelihood (penalized Whittle, with the comb explained by the model
+rather than masked away), which prices dense-band energy correctly;
+then replace the improper envelope prior at high orders with a proper
+one --- a band-limited Gaussian line process with per-harmonic power
+$H_k$ and the measured coherence bandwidth --- whose MAP estimate is a
+Wiener smoother that takes a line's excess and leaves the floor. The
+second step also removes the singularity of overlapping wide bands
+(proper priors act as a ridge), at the honest price that the split of
+genuinely shared twin energy then follows the priors rather than the
+data. \pending{both repairs are design work in progress; the numbers
+above are from the current implementation.}
 
 \emph{Profiling versus marginalization.} $\Jobj^\ast$ compares
 hypotheses after minimizing nuisances out, so the comb's Occam volume is

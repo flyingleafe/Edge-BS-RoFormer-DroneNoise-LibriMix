@@ -65,3 +65,41 @@ minutes) · **[W]** mainly a writing/decision task · **(dep: …)** blocked by.
 4. **D1's missing arms** (raw-telemetry DREGON; refined FLY) — two vk_decompose
    runs once the FLY sidecars land.
 5. Everything marked [W] is writing and can proceed without compute.
+
+## Addendum (2026-08-17 late): k-scaling of the coverage vulnerability
+
+Rescoring the failing window at k = 65 instead of the campaign's k = 40
+(same audio, same hypotheses) keeps the ranking and GROWS both margins:
+the fan's from 0.135 to 0.178 per cell (its k 41–65 bands absorb
+3.6–5.9 kHz), the refined-over-telemetry margin from 0.009 to 0.017.
+The measure's fan-vulnerability scales with the modelled harmonic count
+— a capped comb acts as a regularizer of the measure. This belongs in
+the M1/M4 discussion and possibly as its own small results exhibit
+(results/joint_rescore_ref65; band attribution in the w01 probe).
+
+## Addendum 2 (2026-08-17 late): the carve, and the v4 unification path
+
+Measured on both FLY recordings: in the band owned solely by rotor 0
+(6.3–7.4 kHz), the coherent channel absorbs ~20 % of original power as a
+quasi-continuum and the broadband channel sits ~2 dB below its level in
+the adjacent track-free band. Root cause chain: floor smoothness is a
+projection OUTSIDE the likelihood (masked/median/cepstral) → S
+extrapolates low in blanket bands → whitened data term overprices that
+band → the amplitude-free envelope prior lets the envelope bank absorb
+the excess. Two-step repair, now in the Discussion as design-in-progress
+and to be planned as experiments:
+- **F1**: penalized-Whittle floor INSIDE J (explicit R(log S); no mask —
+  comb explained by the model). Kills the carve + the measure's floor
+  artifacts at the source; supersedes the hypothesis-independent-floor
+  patch.
+- **F2**: proper (finite-variance) envelope priors at high k — Gaussian
+  line processes with per-harmonic power H_k and the measured 0.6k
+  coherence bandwidth. MAP = Wiener smoother; unifies the stochastic
+  channel into block A, estimates H_k jointly (the generator's amplitude
+  targets), de-singularizes overlapping bands (ridge), with the honest
+  caveat that twin-shared energy splits by prior, not data.
+Also added to the draft: Sec. "The model as a joint distribution"
+(explicit OU forms, the linewidth relation γ_k = 2π σ_k² τ_ν, the
+improper-prior statement, the floor-constraint statement) and the
+derivation of the D₂ penalties from the window-local OU limit
+(D₂θ = 2πΔe · rate increments) in the MAP section.
