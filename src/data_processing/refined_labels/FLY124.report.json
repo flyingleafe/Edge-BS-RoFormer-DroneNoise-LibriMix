@@ -1,0 +1,621 @@
+{
+ "recording_id": "FLY124",
+ "source": {
+  "spec": "frames:michaels-frames",
+  "origin": "michaels",
+  "rps_key": "rps",
+  "splits": null,
+  "sample_rate": 16000
+ },
+ "time_reference": "seconds from the published recording's audio t_start (the full frame, before the loader's telemetry-overlap trim of t0_offset_s)",
+ "t0_offset_s": 0.01,
+ "params": {
+  "window_s": 16.0,
+  "hop_s": 12.0,
+  "k_max": 40,
+  "channels": 4,
+  "knot_s": 0.25,
+  "lr": 1.0,
+  "schedule": null,
+  "hop_frame_s": 0.032,
+  "idle_rev_s": 20.0,
+  "max_move_rev_s": 3.0
+ },
+ "n_frames": 3801,
+ "n_windows": 10,
+ "n_used": 7,
+ "cruise_scale_pct": -0.00255,
+ "cruise_scale_pct_raw_optimizer": -0.00629,
+ "max_abs_delta": 1.58332,
+ "windows": [
+  {
+   "recording": "FLY124",
+   "i0": 0,
+   "i1": 500,
+   "start_s": 0.01,
+   "end_s": 16.01,
+   "n_frames": 500,
+   "mean_rev_s": 34.155,
+   "k_max": 40,
+   "channels": 4,
+   "used": false,
+   "used_per_rotor": [
+    false,
+    false,
+    false,
+    false
+   ],
+   "reason": "move_too_large",
+   "smooth_lambda": 0.110833829,
+   "prior_init": 4.511258,
+   "scale_pct_per_rotor": [
+    -0.41098,
+    0.08008,
+    15.23734,
+    3.39015
+   ],
+   "move_max": 13.18026,
+   "objective_before": 0.80011904,
+   "objective_after": 0.7495537,
+   "r2_before": 0.219128,
+   "r2_after": 0.268784,
+   "wall_s": 1116.27,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 25,
+     "loss_start": 1.3127625441600783,
+     "loss_end": 0.8918385729806626,
+     "wall_s": 52.534
+    },
+    {
+     "k_max": 10,
+     "n_evals": 24,
+     "loss_start": 0.8822610519976796,
+     "loss_end": 0.8643383921789921,
+     "wall_s": 122.109
+    },
+    {
+     "k_max": 20,
+     "n_evals": 22,
+     "loss_start": 0.8604198419558295,
+     "loss_end": 0.8516090164502773,
+     "wall_s": 270.963
+    },
+    {
+     "k_max": 40,
+     "n_evals": 21,
+     "loss_start": 0.8486009735667618,
+     "loss_end": 0.8449577695835048,
+     "wall_s": 669.156
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 375,
+   "i1": 875,
+   "start_s": 12.01,
+   "end_s": 28.01,
+   "n_frames": 500,
+   "mean_rev_s": 36.4042,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.000193,
+   "scale_pct_per_rotor": [
+    -0.21314,
+    -0.19987,
+    0.32422,
+    0.3307
+   ],
+   "move_max": 0.49696,
+   "objective_before": 0.73036669,
+   "objective_after": 0.72135267,
+   "r2_before": 0.281799,
+   "r2_after": 0.291458,
+   "wall_s": 730.77,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 26,
+     "loss_start": 0.752358510443835,
+     "loss_end": 0.7490813774816781,
+     "wall_s": 46.942
+    },
+    {
+     "k_max": 10,
+     "n_evals": 30,
+     "loss_start": 0.7349815675379365,
+     "loss_end": 0.7341937415353567,
+     "wall_s": 110.08
+    },
+    {
+     "k_max": 20,
+     "n_evals": 25,
+     "loss_start": 0.726921711955897,
+     "loss_end": 0.7226281436689742,
+     "wall_s": 196.988
+    },
+    {
+     "k_max": 40,
+     "n_evals": 19,
+     "loss_start": 0.7167293357679835,
+     "loss_end": 0.7160600352569697,
+     "wall_s": 371.371
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 750,
+   "i1": 1250,
+   "start_s": 24.01,
+   "end_s": 40.01,
+   "n_frames": 500,
+   "mean_rev_s": 58.6212,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.11854,
+   "scale_pct_per_rotor": [
+    -0.41613,
+    0.17227,
+    0.18149,
+    -0.16278
+   ],
+   "move_max": 1.19375,
+   "objective_before": 0.6895733,
+   "objective_after": 0.58162817,
+   "r2_before": 0.354108,
+   "r2_after": 0.429337,
+   "wall_s": 1350.33,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 24,
+     "loss_start": 0.8309349036067442,
+     "loss_end": 0.7271069300273888,
+     "wall_s": 43.832
+    },
+    {
+     "k_max": 10,
+     "n_evals": 18,
+     "loss_start": 0.7162505993790166,
+     "loss_end": 0.7150336372012108,
+     "wall_s": 69.294
+    },
+    {
+     "k_max": 20,
+     "n_evals": 31,
+     "loss_start": 0.707271658621958,
+     "loss_end": 0.7072663387766297,
+     "wall_s": 273.258
+    },
+    {
+     "k_max": 40,
+     "n_evals": 41,
+     "loss_start": 0.6977119987293773,
+     "loss_end": 0.6976790727552555,
+     "wall_s": 962.153
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 1125,
+   "i1": 1625,
+   "start_s": 36.01,
+   "end_s": 52.01,
+   "n_frames": 500,
+   "mean_rev_s": 80.9874,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.098789,
+   "scale_pct_per_rotor": [
+    -0.15884,
+    0.01032,
+    0.04767,
+    -0.12808
+   ],
+   "move_max": 1.12466,
+   "objective_before": 0.5398923,
+   "objective_after": 0.43806242,
+   "r2_before": 0.503535,
+   "r2_after": 0.570534,
+   "wall_s": 756.91,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 24,
+     "loss_start": 0.662367910597681,
+     "loss_end": 0.5770417797135028,
+     "wall_s": 39.651
+    },
+    {
+     "k_max": 10,
+     "n_evals": 21,
+     "loss_start": 0.5636709208857646,
+     "loss_end": 0.5549693983245144,
+     "wall_s": 71.431
+    },
+    {
+     "k_max": 20,
+     "n_evals": 23,
+     "loss_start": 0.5492625927229383,
+     "loss_end": 0.5469884622116457,
+     "wall_s": 178.11
+    },
+    {
+     "k_max": 40,
+     "n_evals": 23,
+     "loss_start": 0.5358962906129655,
+     "loss_end": 0.5348253061397723,
+     "wall_s": 467.522
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 1500,
+   "i1": 2000,
+   "start_s": 48.01,
+   "end_s": 64.01,
+   "n_frames": 500,
+   "mean_rev_s": 80.7589,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.029499,
+   "scale_pct_per_rotor": [
+    -0.10717,
+    0.1079,
+    0.04948,
+    -2.07562
+   ],
+   "move_max": 1.59632,
+   "objective_before": 0.38577513,
+   "objective_after": 0.35914859,
+   "r2_before": 0.63807,
+   "r2_after": 0.648719,
+   "wall_s": 1006.91,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 33,
+     "loss_start": 0.4422947815623392,
+     "loss_end": 0.4245556229892271,
+     "wall_s": 53.735
+    },
+    {
+     "k_max": 10,
+     "n_evals": 36,
+     "loss_start": 0.4108247126781613,
+     "loss_end": 0.40775152619786675,
+     "wall_s": 119.732
+    },
+    {
+     "k_max": 20,
+     "n_evals": 30,
+     "loss_start": 0.39990604206046887,
+     "loss_end": 0.39946018151119944,
+     "wall_s": 221.385
+    },
+    {
+     "k_max": 40,
+     "n_evals": 33,
+     "loss_start": 0.3878249026002541,
+     "loss_end": 0.3871526254233616,
+     "wall_s": 611.861
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 1875,
+   "i1": 2375,
+   "start_s": 60.01,
+   "end_s": 76.01,
+   "n_frames": 500,
+   "mean_rev_s": 80.6921,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.012777,
+   "scale_pct_per_rotor": [
+    -0.07223,
+    0.13303,
+    0.10317,
+    -0.01313
+   ],
+   "move_max": 0.40898,
+   "objective_before": 0.37140886,
+   "objective_after": 0.34166029,
+   "r2_before": 0.646654,
+   "r2_after": 0.6663,
+   "wall_s": 606.51,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 22,
+     "loss_start": 0.4219400241922897,
+     "loss_end": 0.40377910219527585,
+     "wall_s": 35.792
+    },
+    {
+     "k_max": 10,
+     "n_evals": 22,
+     "loss_start": 0.3772532709865462,
+     "loss_end": 0.37565363395119417,
+     "wall_s": 72.32
+    },
+    {
+     "k_max": 20,
+     "n_evals": 38,
+     "loss_start": 0.36391586381436036,
+     "loss_end": 0.3639021387577116,
+     "wall_s": 276.094
+    },
+    {
+     "k_max": 40,
+     "n_evals": 12,
+     "loss_start": 0.35268990696762703,
+     "loss_end": 0.352689906981044,
+     "wall_s": 222.109
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 2250,
+   "i1": 2750,
+   "start_s": 72.01,
+   "end_s": 88.01,
+   "n_frames": 500,
+   "mean_rev_s": 80.7488,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.010656,
+   "scale_pct_per_rotor": [
+    -0.05235,
+    0.10756,
+    0.11182,
+    0.01869
+   ],
+   "move_max": 0.63078,
+   "objective_before": 0.37790788,
+   "objective_after": 0.33246729,
+   "r2_before": 0.641978,
+   "r2_after": 0.675811,
+   "wall_s": 700.05,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 23,
+     "loss_start": 0.4521381438689117,
+     "loss_end": 0.4383749561923455,
+     "wall_s": 37.07
+    },
+    {
+     "k_max": 10,
+     "n_evals": 23,
+     "loss_start": 0.3835609819353283,
+     "loss_end": 0.3783934662250485,
+     "wall_s": 75.156
+    },
+    {
+     "k_max": 20,
+     "n_evals": 24,
+     "loss_start": 0.35788301501094716,
+     "loss_end": 0.35507709494947076,
+     "wall_s": 172.907
+    },
+    {
+     "k_max": 40,
+     "n_evals": 23,
+     "loss_start": 0.34312236202712465,
+     "loss_end": 0.3414982851426697,
+     "wall_s": 414.699
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 2625,
+   "i1": 3125,
+   "start_s": 84.01,
+   "end_s": 100.01,
+   "n_frames": 500,
+   "mean_rev_s": 80.5576,
+   "k_max": 40,
+   "channels": 4,
+   "used": true,
+   "used_per_rotor": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "reason": "ok",
+   "smooth_lambda": 1.0,
+   "prior_init": 0.03258,
+   "scale_pct_per_rotor": [
+    -0.00957,
+    0.16114,
+    0.10978,
+    1.73072
+   ],
+   "move_max": 1.41139,
+   "objective_before": 0.46689902,
+   "objective_after": 0.41141565,
+   "r2_before": 0.562832,
+   "r2_after": 0.597762,
+   "wall_s": 764.31,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 23,
+     "loss_start": 0.547051191265049,
+     "loss_end": 0.5103736839985538,
+     "wall_s": 37.641
+    },
+    {
+     "k_max": 10,
+     "n_evals": 21,
+     "loss_start": 0.4767254958490923,
+     "loss_end": 0.4721698419049443,
+     "wall_s": 70.398
+    },
+    {
+     "k_max": 20,
+     "n_evals": 23,
+     "loss_start": 0.45772090004165705,
+     "loss_end": 0.4561252556530557,
+     "wall_s": 172.247
+    },
+    {
+     "k_max": 40,
+     "n_evals": 25,
+     "loss_start": 0.4426414403214564,
+     "loss_end": 0.4417786401341448,
+     "wall_s": 483.836
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 3000,
+   "i1": 3500,
+   "start_s": 96.01,
+   "end_s": 112.01,
+   "n_frames": 500,
+   "mean_rev_s": 54.9088,
+   "k_max": 40,
+   "channels": 4,
+   "used": false,
+   "used_per_rotor": [
+    false,
+    false,
+    false,
+    false
+   ],
+   "reason": "no_improvement",
+   "smooth_lambda": 0.007445552,
+   "prior_init": 67.154187,
+   "scale_pct_per_rotor": [
+    -0.12262,
+    -0.11091,
+    0.30237,
+    -0.22979
+   ],
+   "move_max": 0.22913,
+   "objective_before": 0.65457584,
+   "objective_after": 0.72086192,
+   "r2_before": 0.375065,
+   "r2_after": 0.31004,
+   "wall_s": 1499.88,
+   "stages": [
+    {
+     "k_max": 5,
+     "n_evals": 29,
+     "loss_start": 1.162947093045243,
+     "loss_end": 0.9695205026231876,
+     "wall_s": 60.083
+    },
+    {
+     "k_max": 10,
+     "n_evals": 23,
+     "loss_start": 1.0100471147485015,
+     "loss_end": 0.9922958061554858,
+     "wall_s": 122.936
+    },
+    {
+     "k_max": 20,
+     "n_evals": 28,
+     "loss_start": 1.0251972483349387,
+     "loss_end": 1.0052890926801497,
+     "wall_s": 425.091
+    },
+    {
+     "k_max": 40,
+     "n_evals": 18,
+     "loss_start": 1.017572823541928,
+     "loss_end": 1.0175727478779917,
+     "wall_s": 891.563
+    }
+   ],
+   "k_cap": 40
+  },
+  {
+   "recording": "FLY124",
+   "i0": 3301,
+   "i1": 3801,
+   "start_s": 105.642,
+   "end_s": 121.642,
+   "n_frames": 500,
+   "mean_rev_s": 6.866,
+   "k_max": 40,
+   "channels": 4,
+   "used": false,
+   "reason": "idle"
+  }
+ ]
+}
