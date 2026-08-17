@@ -50,6 +50,37 @@ def test_scale_shift_pct() -> None:
     assert R.scale_shift_pct(refined, init) == pytest.approx([-1.0, 1.0])
 
 
+# ---------------------------------------------------------------------------
+# the dataset profile — the seam that lets one driver refine two rigs
+
+
+def test_parse_splits_takes_a_string_or_a_list() -> None:
+    assert R.parse_splits("a,b") == ("a", "b")
+    assert R.parse_splits([" a ", "b"]) == ("a", "b")
+    assert R.parse_splits("") is None
+    assert R.parse_splits(",") is None
+    assert R.parse_splits(None) is None
+
+
+def test_source_profile_dregon_is_the_default_and_takes_the_splits() -> None:
+    prof = R.source_profile(R.FRAMES_SPEC)
+    assert (prof.origin, prof.rps_key) == ("dregon", "motors_measured")
+    assert prof.splits_list == ["in_flight_noise"]  # unchanged: the generator's pool
+    # The speech recordings of the same rig: one flag, same key, same origin.
+    assert R.source_profile(R.FRAMES_SPEC, "in_flight_source").splits_list == ["in_flight_source"]
+    assert R.source_profile(R.FRAMES_SPEC, ["a", "b"]).splits_list == ["a", "b"]
+    # An empty --splits falls back to the module default rather than to "all".
+    assert R.source_profile(R.FRAMES_SPEC, "").splits_list == R.SPLITS
+
+
+def test_source_profile_michaels_reads_the_generic_track_and_every_split() -> None:
+    # Michael's frames carry no noise/source split and no motors_measured, so
+    # the splits argument does not apply to them at all.
+    prof = R.source_profile("frames:michaels-frames", "in_flight_noise")
+    assert (prof.origin, prof.rps_key, prof.splits) == ("michaels", "rps", None)
+    assert prof.splits_list is None
+
+
 OFFSET_S = 5.48
 
 
@@ -109,6 +140,13 @@ def test_stitch_crossfades_and_writes_sidecar(tmp_path: Path, monkeypatch) -> No
     assert np.all(np.diff(mid) >= -1e-12)  # the fade is monotone across the overlap
 
     report = json.loads((tmp_path / "labels" / f"{rid}.report.json").read_text())
+    assert report["source"] == {
+        "spec": "frames:TEST",
+        "origin": "dregon",
+        "rps_key": "motors_measured",
+        "splits": ["in_flight_noise"],
+        "sample_rate": R.SR,
+    }
     assert report["n_windows"] == 2
     assert report["n_used"] == 1
     # The headline stat reads the STITCHED labels, so the crossfade toward the
@@ -116,3 +154,50 @@ def test_stitch_crossfades_and_writes_sidecar(tmp_path: Path, monkeypatch) -> No
     assert report["cruise_scale_pct"] == pytest.approx(-0.9375)
     assert report["cruise_scale_pct_raw_optimizer"] == pytest.approx(-1.25)
     assert "r_window" not in report["windows"][0]
+
+
+def test_stitch_names_the_michaels_profile_and_filters_by_recording(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """One driver, two rigs: the sidecars share a directory, the reports do not.
+
+    A refined sidecar of Michael's FLY124 and one of DREGON's
+    ``free-flight_nosource_room1`` land side by side under
+    ``src/data_processing/refined_labels/``, so the report's ``source`` block is
+    the only place a consumer can read WHICH telemetry track was refined.
+    """
+    raw = tmp_path / "raw"
+    raw.mkdir(parents=True)
+    for rid in ("FLY124", "FLY125"):
+        monkeypatch.setitem(R._RECORDINGS, rid, {**_fake_recording(rid, 200), "rps_key": "rps"})
+        (raw / f"{rid}__f000000.json").write_text(
+            json.dumps(
+                {
+                    "recording": rid,
+                    "i0": 0,
+                    "i1": 200,
+                    "used": True,
+                    "reason": "ok",
+                    "mean_rev_s": 80.0,
+                    "scale_pct_per_rotor": [-0.5] * 4,
+                    "r_window": np.full((4, 200), 79.6).tolist(),
+                }
+            )
+        )
+    params = {"window_s": 6.4, "hop_s": 3.2, "k_max": 40, "channels": 4, "knot_s": 0.25, "lr": 1.0}
+    written = R.stitch(
+        tmp_path, tmp_path / "labels", "frames:michaels-frames", params, only={"FLY124"}
+    )
+
+    # The filter is honored, and the surviving sidecar keeps the one path every
+    # profile writes to.
+    assert written == [tmp_path / "labels" / "FLY124.npz"]
+    assert not (tmp_path / "labels" / "FLY125.npz").exists()
+    report = json.loads((tmp_path / "labels" / "FLY124.report.json").read_text())
+    assert report["source"] == {
+        "spec": "frames:michaels-frames",
+        "origin": "michaels",
+        "rps_key": "rps",
+        "splits": None,
+        "sample_rate": R.SR,
+    }

@@ -517,6 +517,74 @@ def test_stochastic_writes_the_channel_and_the_gate_reading(tmp_path) -> None:
         assert float(np.abs(resid - stoch).max()) <= 2.0 * float(np.abs(resid).max())
 
 
+def test_stochastic_k_split_reads_a_low_in_flight_rate() -> None:
+    """The regions reach the ceiling at the SLOWEST in-flight moment.
+
+    A robust low rate, and not the mean: at the mean the top lines would fall
+    short of the ceiling for half of the flight. Idle frames are not rates the
+    comb exists at, so they must not set the scale.
+    """
+    r = np.stack([np.full(100, 50.0), np.full(100, 61.0)])
+    assert V.stochastic_k_split(6000.0, r, 8) == 120  # ceil(6000 / 50)
+    # A ceiling under the coherent top line takes no region away: the flag only
+    # ever EXTENDS, so the split stays exactly where it was.
+    assert V.stochastic_k_split(300.0, r, 8) == 8
+    assert V.stochastic_k_split(0.0, r, 8) == 8
+    # Idle frames are excluded, so the slow half of a takeoff does not blow the
+    # harmonic count up.
+    ramp = np.concatenate([np.full((1, 50), 2.0), np.full((1, 50), 60.0)], axis=-1)
+    assert V.stochastic_k_split(600.0, ramp, 1) == 10
+    # Nothing above idle at all: the span's mean is the only rate there is.
+    assert V.stochastic_k_split(100.0, np.full((1, 10), 10.0), 1) == 10
+
+
+def test_stochastic_f_ceil_at_the_coherent_cap_reproduces_the_default_path(tmp_path) -> None:
+    """The explicit floor IS the floor the split fits for itself.
+
+    With the ceiling at the coherent top line the two paths must agree bit for
+    bit: same harmonic set for the regions, same block grid, same mask. That is
+    what makes the flag readable as an EXTENSION of the shipped split and not as
+    a second split with its own floor.
+    """
+    a, b = tmp_path / "default", tmp_path / "ceiling"
+    a.mkdir()
+    b.mkdir()
+    base = _stitch_one(a, stochastic=True)
+    k_coh = int(base["k_hi"])
+    r_lo = float(min(RATES))  # the 5th percentile of two constant rates
+    got = _stitch_one(b, stochastic=True, stochastic_f_ceil=k_coh * r_lo)
+
+    assert base["stochastic"]["f_ceil"] == 0.0
+    assert base["stochastic"]["k_split"] == k_coh
+    assert got["stochastic"]["k_split"] == k_coh
+    assert got["stochastic"]["f_ceil"] == pytest.approx(k_coh * r_lo)
+    assert got["stochastic"]["k_hi"] == k_coh  # the split's own reading agrees
+    with (
+        np.load(a / "REC" / "residual.npz", allow_pickle=False) as za,
+        np.load(b / "REC" / "residual.npz", allow_pickle=False) as zb,
+    ):
+        assert np.array_equal(za["stochastic"], zb["stochastic"])
+
+
+def test_stochastic_f_ceil_opens_regions_above_the_coherent_cap(tmp_path) -> None:
+    # The point of the flag: bins the coherent cap never reached now sit inside
+    # a search region. The band bin fraction is the geometry, and it is what
+    # must move.
+    a, b = tmp_path / "default", tmp_path / "ceiling"
+    a.mkdir()
+    b.mkdir()
+    base = _stitch_one(a, stochastic=True)
+    k_coh = int(base["k_hi"])
+    got = _stitch_one(b, stochastic=True, stochastic_f_ceil=2 * k_coh * float(min(RATES)))
+    assert got["stochastic"]["k_split"] == 2 * k_coh
+    assert got["stochastic"]["band_bin_fraction"] > base["stochastic"]["band_bin_fraction"]
+    assert got["stochastic"]["stochastic_fraction"] >= base["stochastic"]["stochastic_fraction"]
+    # The identity is a property of the transform, not of the region set.
+    assert (
+        got["stochastic"]["identity_max_abs"] < 1e-6 * got["stochastic"]["residual_energy"] ** 0.5
+    )
+
+
 def test_v2_stitch_still_hands_back_its_own_carrier(tmp_path) -> None:
     # A v2 unit has no ``dr`` array, so the joint branch must not fire and the
     # carrier must come back untouched — the regression that keeps v2 working.

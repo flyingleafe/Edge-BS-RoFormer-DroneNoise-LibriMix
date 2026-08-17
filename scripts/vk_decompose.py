@@ -59,6 +59,17 @@ How much of the residual is still comb locked
     clip at ``a = 1`` toggles whole bands across a block boundary — rectangular
     patches in the spectrograms, with vertical edges exactly on the block grid.
 
+    ``--stochastic-f-ceil`` (0 = off) opens the search regions ABOVE the
+    coherent harmonic cap. The solve caps its harmonic set at ``k_hi`` because
+    the banded system grows as ``k_hi^2``, so at 16 kHz and ``k`` 80 the highest
+    coherent line sits near 7.3 kHz and every comb-locked band over it stays in
+    the broadband channel by construction. The split has no such cost — it is a
+    per-bin gain, and one more harmonic is one more region — and above ``k`` 90
+    the ``0.6 k`` Hz linewidths blanket the band anyway, which is the regime the
+    stochastic channel exists for. The FLOOR is still fitted against the
+    COHERENT cap, because a mask that blankets biases the fit high (see
+    ``src/tracking/AGENTS.md`` § regime 3, "Do NOT widen block C's comb mask").
+
 How prior-dependent the weak tracks are
     ``--bw-sweep`` re-solves one mid-recording window on two prior axes and
     reports how the per-band mean amplitude and drift move: the requested
@@ -182,6 +193,8 @@ from tracking.decompose import (  # noqa: E402
 from tracking.joint_decompose import (  # noqa: E402
     JointConfig,
     SmoothPSD,
+    StochasticSplit,
+    masked_smooth_psd,
     order_cell_bands,
     stitch_windows,
     stochastic_split,
@@ -209,6 +222,8 @@ __all__ = [  # the importable core the tests read; the CLI is main()
     "reconstruct",
     "reference_mic",
     "shaft_phase",
+    "stochastic_channel",
+    "stochastic_k_split",
     "to_audio_grid",
     "track_bands",
     "welch_psd",
@@ -761,6 +776,85 @@ def _flatness_report(
     return whitened_flatness(residual, sr, psd)
 
 
+def stochastic_k_split(f_ceil: float, r_span: Any, k_coh: int) -> int:
+    """The harmonic the split's search regions reach, for a ceiling in Hz.
+
+    The regions have to reach ``f_ceil`` at the SLOWEST moment of the span, so
+    the harmonic is read off a robust low in-flight rate — the 5th percentile of
+    the rates above ``IDLE_REV_S`` (the mean of the span when nothing is above
+    idle, which is a span with no comb to begin with). At a faster moment the
+    top lines then sit somewhat over ``f_ceil``; that overshoot is deliberate,
+    because the alternative is a ceiling the regions miss for most of the flight.
+
+    Never below ``k_coh``: the flag EXTENDS the regions the coherent cap already
+    opened and may not take one away, so a ceiling under the coherent top line
+    leaves the split exactly where it was.
+    """
+    r = np.asarray(r_span, dtype=np.float64)
+    flying = r[r > IDLE_REV_S]
+    r_lo = float(np.percentile(flying, 5.0)) if flying.size else float(r.mean())
+    if not np.isfinite(r_lo) or r_lo <= 0.0:
+        return int(k_coh)
+    return max(int(k_coh), int(np.ceil(float(f_ceil) / r_lo)))
+
+
+def stochastic_channel(
+    residual: Any,
+    sr: int,
+    r_span: Any,
+    k_coh: int,
+    params: dict[str, Any],
+    *,
+    t_start_s: float,
+    seconds: float,
+) -> tuple[StochasticSplit, dict[str, Any]]:
+    """Regime 3 on the stitched residual — the split, and what it was asked for.
+
+    ``k_coh`` is the COHERENT harmonic cap, that is the harmonic set the solve
+    actually carried. Without ``--stochastic-f-ceil`` it is also the split's cap
+    and the floor is fitted inside :func:`tracking.stochastic_split` (``psd`` is
+    ``None``), which is the path every published number was produced with.
+
+    With a ceiling the two caps part company, and the floor is fitted HERE so
+    that they can: the search regions run up to :func:`stochastic_k_split`,
+    while :func:`tracking.masked_smooth_psd` still masks the coherent comb only.
+    The floor fit is the same call the split makes internally — same transform,
+    same block grid, same time reference, the module default ``n_cep`` both
+    sides pass — with the harmonic cap as the ONE difference, because a comb
+    mask that blankets its band biases the floor high and a high floor is a gain
+    that removes nothing.
+    """
+    jcfg = joint_config(params)
+    n_fft = int(jcfg.stochastic_n_fft)
+    psd_blocks = max(1, int(round(float(seconds) / STOCHASTIC_BLOCK_S)))
+    f_ceil = float(params.get("stochastic_f_ceil", 0.0) or 0.0)
+    psd = None
+    k_split = int(k_coh)
+    if f_ceil > 0.0:
+        k_split = stochastic_k_split(f_ceil, r_span, int(k_coh))
+        psd = masked_smooth_psd(
+            residual,
+            float(sr),
+            r_span,
+            int(k_coh),
+            n_fft=n_fft,
+            n_blocks=psd_blocks,
+            t_start_s=float(t_start_s),
+        )
+    split = stochastic_split(
+        residual,
+        sr,
+        r_span,
+        k_split,
+        psd=psd,
+        n_fft=n_fft,
+        psd_blocks=psd_blocks,
+        t_start_s=float(t_start_s),
+        floor_time_interp=bool(jcfg.stochastic_floor_interp),
+    )
+    return split, {"k_split": int(k_split), "f_ceil": f_ceil}
+
+
 def stitch(
     out: Path,
     spec: str,
@@ -835,19 +929,18 @@ def stitch(
         r_span = np.asarray(
             st["r_corrected"] if st.get("joint") else rec["r_audio"], dtype=np.float64
         )[:, a_min:a_max]
-        split = (
-            stochastic_split(
+        split, split_asked = (
+            stochastic_channel(
                 residual,
                 sr,
                 r_span,
                 int(k.max()),
-                n_fft=int(joint_config(params).stochastic_n_fft),
-                psd_blocks=max(1, int(round((a_max - a_min) / float(sr) / STOCHASTIC_BLOCK_S))),
+                params,
                 t_start_s=a_min / float(sr) + offset,
-                floor_time_interp=bool(joint_config(params).stochastic_floor_interp),
+                seconds=(a_max - a_min) / float(sr),
             )
             if params.get("stochastic")
-            else None
+            else (None, {})
         )
         f_psd, psd_res = welch_psd(residual, sr)
         _, psd_org = welch_psd(audio, sr)
@@ -958,6 +1051,12 @@ def stitch(
                     "stochastic + broadband exactly; read order_cell.residual_final"
                 ),
                 "carrier": "r_corrected" if st.get("joint") else "labels",
+                # What the regions were ASKED for. ``k_split`` is the harmonic
+                # they reach (``diag.k_hi`` is the same number, read off the
+                # split itself) and ``f_ceil`` is the ceiling in Hz it came
+                # from, 0 when the regions stop at the coherent cap. The FLOOR
+                # is fitted against that coherent cap either way.
+                **split_asked,
                 **split.diag,
                 "flatness_broadband": whitened_flatness(split.broadband, sr, split.psd),
                 "identity_max_abs": float(
@@ -1182,6 +1281,21 @@ def main() -> None:
         ),
     )
     ap.add_argument(
+        "--stochastic-f-ceil",
+        type=float,
+        default=0.0,
+        metavar="HZ",
+        help=(
+            "--stochastic: open the search regions up to this frequency instead of stopping at "
+            "the highest COHERENT line (~7.3 kHz on DREGON at k 80, where the solve's memory "
+            "grows as k_hi^2). The harmonic the regions reach is ceil(HZ / r_lo) with r_lo the "
+            "5th percentile of the span's in-flight rates, so they cover HZ even at the slowest "
+            "moment and the top lines overshoot it at the faster ones — which is the intended "
+            "direction. The floor stays fitted against the COHERENT cap, whose comb mask must "
+            "not blanket its band. 0 (the default) leaves the split exactly where it was"
+        ),
+    )
+    ap.add_argument(
         "--mem-budget-gb",
         type=float,
         default=8.0,
@@ -1230,6 +1344,11 @@ def main() -> None:
             raise SystemExit(f"--iters {args.iters}: the alternation needs at least one round")
     if args.sr <= 0:
         raise SystemExit(f"--sr {args.sr}: the sample rate must be positive")
+    if args.stochastic_f_ceil < 0.0:
+        raise SystemExit(
+            f"--stochastic-f-ceil {args.stochastic_f_ceil:g}: a ceiling is a frequency in Hz "
+            "(0 = off)"
+        )
     if args.mics > MAX_MICS:
         raise SystemExit(
             f"--mics {args.mics}: the VK solver clamps at {MAX_MICS} channels "
@@ -1265,6 +1384,10 @@ def main() -> None:
         "whiten": not bool(args.no_whiten),
         "stochastic": bool(args.stochastic),
         "stochastic_floor_interp": bool(args.stochastic_floor_interp),
+        # Stitch-only, and it does not belong in JointConfig: the alternation's
+        # own stochastic block scores against the window's coherent cap, and
+        # this ceiling is a statement about the FINISHED residual.
+        "stochastic_f_ceil": float(args.stochastic_f_ceil),
     }
     wanted = {v.strip() for v in args.recording.split(",") if v.strip()}
 

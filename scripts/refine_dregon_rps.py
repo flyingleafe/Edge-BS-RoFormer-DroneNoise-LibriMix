@@ -13,7 +13,25 @@ stitched — and writes a committed sidecar per recording.
 The data path is the GENERATOR's, not a protocol's: recordings come from
 ``data_processing.noise_rps_dataset.load_published_noise_sources`` with exactly
 the arguments generator training uses, and the audio and telemetry refined here
-are the ones training sees. The sidecar's times are seconds from the audio
+are the ones training sees. Which recordings those are is one seam,
+:func:`source_profile`, and it is the same seam ``scripts/vk_decompose.py``
+carries — the spec picks the profile:
+
+``frames:DREGON-frames`` (the default)
+    Origin ``dregon``, rotor speeds from ``motors_measured``, and the splits
+    ``--splits`` names (``in_flight_noise`` by default, the generator's own
+    training pool; ``in_flight_source`` is the same rig and the same telemetry
+    key with speech in the recording).
+
+any spec naming ``michaels``
+    Origin ``michaels``, rotor speeds from the generic ``rps`` track, every
+    split. Michael's FLY124/FLY125 telemetry is the RECALIBRATED one (lag and
+    a 0.7 % scale already taken out), so what this driver measures on it is
+    what is left after that calibration, not the raw tachometer error.
+
+The acceptance policy is not per profile — ``IDLE_REV_S``, ``CRUISE_REV_S`` and
+``MAX_MOVE_REV_S`` are absolute rates in rev/s, and both rigs cruise well above
+them. The sidecar's times are seconds from the audio
 ``t_start`` of the PUBLISHED recording — the loader trims each frame to the
 audio-telemetry overlap (5.48 s on ``free-flight_nosource_room1``) and the trim
 is added back at stitch time, so a consumer can apply the labels to the
@@ -44,6 +62,10 @@ Run::
     # smoke: one 4 s cruise window, k_max 10, one channel — about a minute
     PYTHONPATH=src python scripts/refine_dregon_rps.py --smoke
 
+    # the DREGON speech recordings, and Michael's two drones
+    python scripts/refine_dregon_rps.py --splits in_flight_source
+    python scripts/refine_dregon_rps.py --spec frames:michaels-frames
+
     # full run on a cluster (refine only), then stitch locally after a pull
     omnirun submit --backend uni-cpu --gpus 0 --cpus 16 --mem 64 --time 24h \
       --env PYTHONPATH=src -- \
@@ -68,6 +90,8 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import sys  # noqa: E402
 import time  # noqa: E402
+from collections.abc import Sequence  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -112,7 +136,48 @@ def frame_grid(n_t: int, sr: int) -> Any:
     return D.frame_grid(n_t, sr, HOP_S)
 
 
-def published_audio_starts(spec: str) -> dict[str, int]:
+@dataclass(frozen=True)
+class SourceProfile:
+    """The three loader arguments a dataset needs, and nothing else.
+
+    ``splits`` is ``None`` for a dataset the loader takes whole. It is the only
+    field a caller can set, because the other two are properties OF the dataset:
+    a rotor-speed track is either ``motors_measured`` or it is not.
+    """
+
+    origin: str
+    rps_key: str
+    splits: tuple[str, ...] | None
+
+    @property
+    def splits_list(self) -> list[str] | None:
+        """The JSON form, for the report's ``source`` block."""
+        return None if self.splits is None else list(self.splits)
+
+
+def parse_splits(splits: str | Sequence[str] | None) -> tuple[str, ...] | None:
+    """``"a,b"`` or ``["a", "b"]`` -> ``("a", "b")``; empty or ``None`` -> ``None``."""
+    if splits is None:
+        return None
+    parts = splits.split(",") if isinstance(splits, str) else list(splits)
+    got = tuple(str(v).strip() for v in parts if str(v).strip())
+    return got or None
+
+
+def source_profile(spec: str, splits: str | Sequence[str] | None = None) -> SourceProfile:
+    """The loader profile of one frames spec — the ONE place the datasets differ.
+
+    Mirrors ``scripts/vk_decompose.py``'s own seam. Michael's frames carry the
+    generic ``rps`` track and are taken whole (``--splits`` does not apply to
+    them, because they have no noise/source split); everything else is DREGON,
+    which carries ``motors_measured`` and is cut by split.
+    """
+    if "michaels" in spec:
+        return SourceProfile("michaels", "rps", None)
+    return SourceProfile("dregon", RPS_KEY, parse_splits(splits) or tuple(SPLITS))
+
+
+def published_audio_starts(spec: str, splits: str | Sequence[str] | None = None) -> dict[str, int]:
     """``{recording id: audio t_start in ticks}`` of the UNTRIMMED frames.
 
     The sidecar's time reference. ``load_published_noise_sources`` trims each
@@ -128,20 +193,22 @@ def published_audio_starts(spec: str) -> dict[str, int]:
 
     name, version = _parse_frames_spec(spec)
     starts: dict[str, int] = {}
-    for tf in iter_published_frames(name, version, splits=SPLITS):
+    for tf in iter_published_frames(name, version, splits=source_profile(spec, splits).splits_list):
         rid = meta_dict(tf).get("recording_id")
         if rid and "audio" in tf:
             starts[str(rid)] = int(tf["audio"].t_start_ticks)
     return starts
 
 
-def load_recordings(spec: str) -> list[dict[str, Any]]:
-    """Every surviving generator noise recording, as plain arrays.
+def load_recordings(spec: str, splits: str | Sequence[str] | None = None) -> list[dict[str, Any]]:
+    """Every surviving noise recording of the spec's profile, as plain arrays.
 
     The loader is the generator's (``load_published_noise_sources`` with the
     generator's arguments), and the frames it RETURNS are used — it time-slices
     the frame onto the audio-telemetry overlap, so taking the frame back from it
-    is what makes these arrays byte-identical to the training ones.
+    is what makes these arrays byte-identical to the training ones. Which
+    arguments those are is :func:`source_profile`; no refined sidecar is read
+    back in (this driver WRITES them), so there is no ``rps_override_dir``.
 
     ``ft`` is LOCAL: seconds from the trimmed frame's audio ``t_start``, which
     is what the refiner needs. ``t0_offset_s`` carries the trim, so the sidecar
@@ -153,10 +220,11 @@ def load_recordings(spec: str) -> list[dict[str, Any]]:
     from data_processing.frames import meta_dict
     from data_processing.noise_rps_dataset import load_published_noise_sources
 
-    starts = published_audio_starts(spec)
+    prof = source_profile(spec, splits)
+    starts = published_audio_starts(spec, splits)
     recs: list[dict[str, Any]] = []
     for src in load_published_noise_sources(
-        spec, SR, origin="dregon", rps_key=RPS_KEY, splits=SPLITS
+        spec, SR, origin=prof.origin, rps_key=prof.rps_key, splits=prof.splits_list
     ):
         frame = src.frame
         meta = meta_dict(frame)
@@ -181,10 +249,15 @@ def load_recordings(spec: str) -> list[dict[str, Any]]:
                 "ft": ft,
                 "r_tel": interp_rps(np.asarray(rps_s.data), stamps, ft),
                 "t0_offset_s": (t0 - starts[rid]) / float(td.TICKS_PER_SECOND),
+                # The track the labels came from, carried per recording so the
+                # sidecar's report names what was READ and not what a constant
+                # says (the two are the same profile, but the report is
+                # provenance and provenance is worth the four bytes).
+                "rps_key": prof.rps_key,
             }
         )
     if not recs:
-        raise RuntimeError(f"{spec}: no recording with an {RPS_KEY} track survived loading")
+        raise RuntimeError(f"{spec}: no recording with an {prof.rps_key} track survived loading")
     return recs
 
 
@@ -194,9 +267,9 @@ def load_recordings(spec: str) -> list[dict[str, Any]]:
 _RECORDINGS: dict[str, dict[str, Any]] = {}
 
 
-def get_recording(rid: str, spec: str) -> dict[str, Any]:
+def get_recording(rid: str, spec: str, splits: str | Sequence[str] | None = None) -> dict[str, Any]:
     if rid not in _RECORDINGS:
-        _RECORDINGS.update({r["recording_id"]: r for r in load_recordings(spec)})
+        _RECORDINGS.update({r["recording_id"]: r for r in load_recordings(spec, splits)})
     if rid not in _RECORDINGS:
         raise KeyError(f"recording {rid!r} not in {spec}")
     return _RECORDINGS[rid]
@@ -249,7 +322,7 @@ def refine_worker(unit: Unit) -> dict[str, Any]:
     from tracking.fitness_vk import FVKConfig, fvk_score, optimize_trajectory
 
     p = dict(unit.params)
-    rec = get_recording(str(p["recording"]), str(p["spec"]))
+    rec = get_recording(str(p["recording"]), str(p["spec"]), p.get("splits"))
     i0, i1 = int(p["i0"]), int(p["i1"])
     ft, r_tel = rec["ft"], rec["r_tel"]
     n_t = int(rec["audio"].shape[-1])
@@ -392,25 +465,39 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def stitch(out: Path, label_dir: Path, spec: str, params: dict[str, Any]) -> list[Path]:
+def stitch(
+    out: Path,
+    label_dir: Path,
+    spec: str,
+    params: dict[str, Any],
+    *,
+    splits: str | Sequence[str] | None = None,
+    only: set[str] | None = None,
+) -> list[Path]:
     """Combine the window units of each recording into one full-length label set.
 
     The sidecar's ``ft`` is seconds from the PUBLISHED recording's audio
     ``t_start`` — the loader's overlap trim (``t0_offset_s``) is added back
     here, because a consumer applies the labels to the untrimmed frame. It
     therefore starts at ``t0_offset_s`` and covers the telemetry span only.
+
+    The sidecar lands at ``<label_dir>/<recording id>.npz`` whatever the
+    profile: one directory, one file per recording, and the recording id is
+    already unique across the datasets.
     """
     import numpy as np
 
+    prof = source_profile(spec, splits)
     rows = read_rows(out)
     if not rows:
         raise SystemExit(f"{out}/raw is empty — run --mode refine first")
     label_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
-    for rid in sorted({str(r["recording"]) for r in rows}):
+    ids = {str(r["recording"]) for r in rows}
+    for rid in sorted(ids if only is None else ids & only):
         got = sorted((r for r in rows if r["recording"] == rid), key=lambda r: int(r["i0"]))
-        rec = get_recording(rid, spec)
+        rec = get_recording(rid, spec, splits)
         ft = np.asarray(rec["ft"], dtype=np.float64)
         r_tel = np.asarray(rec["r_tel"], dtype=np.float64)
         num = np.zeros_like(r_tel)
@@ -464,7 +551,16 @@ def stitch(out: Path, label_dir: Path, spec: str, params: dict[str, Any]) -> lis
         ]
         report = {
             "recording_id": rid,
-            "source": {"spec": spec, "rps_key": RPS_KEY, "splits": SPLITS, "sample_rate": SR},
+            "source": {
+                "spec": spec,
+                "origin": prof.origin,
+                # What the loader was ACTUALLY given. A sidecar of Michael's
+                # frames and one of DREGON's live in the same directory, so the
+                # report is the only place the two are told apart.
+                "rps_key": str(rec.get("rps_key", prof.rps_key)),
+                "splits": prof.splits_list,
+                "sample_rate": SR,
+            },
             "time_reference": (
                 "seconds from the published recording's audio t_start (the full frame, "
                 "before the loader's telemetry-overlap trim of t0_offset_s)"
@@ -566,6 +662,16 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1.0)
     ap.add_argument("--schedule", default="", help="'k:iters,...' (default: the k_max ladder)")
     ap.add_argument("--spec", default=FRAMES_SPEC)
+    ap.add_argument(
+        "--splits",
+        default=",".join(SPLITS),
+        help=(
+            "comma-separated dataset splits, for the DREGON profile only (the generator's pool "
+            f"is {SPLITS[0]}; in_flight_source is the same rig with speech). A spec naming "
+            "michaels is taken whole and ignores this"
+        ),
+    )
+    ap.add_argument("--recording", default="", help="comma-separated ids (default: all surviving)")
     ap.add_argument("--out", default=OUT_DEFAULT)
     ap.add_argument("--label-dir", default=LABEL_DIR_DEFAULT)
     ap.add_argument(
@@ -594,20 +700,29 @@ def main() -> None:
         "schedule": parse_schedule(args.schedule),
     }
 
+    wanted = {v.strip() for v in args.recording.split(",") if v.strip()}
+
     if args.mode in ("refine", "all"):
-        recs = load_recordings(args.spec)
+        recs = load_recordings(args.spec, args.splits)
+        if wanted:
+            recs = [r for r in recs if r["recording_id"] in wanted]
+            if not recs:
+                raise SystemExit(f"no recording of {sorted(wanted)} in {args.spec}")
         # Warm the cache BEFORE the pool forks: workers inherit the decoded
         # recordings and open no R2 connection (concurrent per-worker streams
         # caused SSL failures and killed the pool on the cluster).
         _RECORDINGS.update({r["recording_id"]: r for r in recs})
-        units = build_units(recs, args, {"spec": args.spec, **params})
+        # ``splits`` rides beside the spec and not inside ``params``: it is a
+        # loader argument, and ``params`` is the sidecar's record of the
+        # REFINEMENT.
+        units = build_units(recs, args, {"spec": args.spec, "splits": args.splits, **params})
         print(f"[refine_dregon_rps] {len(units)} units -> {out}", flush=True)
         res = gridrun_from_args(args, units, refine_worker, out, summarize=summarize)
         if res.n_failed:
             raise SystemExit(res.exit_code)
 
     if args.mode in ("stitch", "all"):
-        stitch(out, label_dir, args.spec, params)
+        stitch(out, label_dir, args.spec, params, splits=args.splits, only=wanted or None)
 
 
 if __name__ == "__main__":
