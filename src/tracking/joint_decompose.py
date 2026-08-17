@@ -1063,6 +1063,17 @@ class JointConfig:
     #: is off by default because the pseudo-determinant costs one banded
     #: factorization per envelope length.
     marginal: bool = False
+    #: Add the H-AWARE data term to the objective readout
+    #: (:func:`map_objective`, ``data_h`` / ``total_h``). The coherent envelopes
+    #: cannot carry the line FLANKS, so the profiled data term charges every
+    #: hypothesis for the same flank energy and the true trajectory gains
+    #: nothing by sitting on it. The H-aware term gives the noise model a
+    #: comb-shaped nuisance inside the hypothesis's OWN search regions, so a
+    #: trajectory that explains the humps stops paying for them and a coverage
+    #: fan that opens regions on empty floor gains nothing. Also a pure reading
+    #: — it moves no product — and off by default because it holds the whole
+    #: measured spectrogram and smooths it once.
+    h_aware: bool = False
 
     def k_cap(self, it: int) -> int:
         """Trustable harmonic cap of iteration ``it`` (1 based)."""
@@ -1684,6 +1695,84 @@ def solve_report(state: JointState, audio: Any, *, profile: bool) -> dict[str, A
     return out
 
 
+def _h_aware_data(
+    p_meas: np.ndarray,
+    log_s: np.ndarray,
+    block_of: np.ndarray,
+    starts: np.ndarray,
+    r_audio: Any,
+    k: np.ndarray,
+    *,
+    sr: float,
+    n_fft: int,
+    slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    width_factor: float = STOCHASTIC_WIDTH_FACTOR,
+    frames_per_chunk: int = 64,
+) -> dict[str, Any]:
+    """The H-AWARE data term of :func:`map_objective` — the stochastic comb in it.
+
+    ``p_meas`` is the ``(C, frames, F)`` MEASURED power spectral density the data
+    term itself summed, ``log_s`` the ``(C, B, F)`` fitted floor and ``block_of``
+    the frame-to-block map, so the two halves of the readout see one grid by
+    construction. What this adds is the comb-shaped nuisance ``H``:
+
+    - the SEARCH REGIONS are the hypothesis's own — per frame, ``k r_r(t)`` for
+      every ``k`` the track set names, half widths from
+      :func:`stochastic_half_widths` (floored at one bin), unioned by
+      :func:`_line_mask`, exactly as regime 3 delimits them
+    - ``H = max(0, P~ - S)`` inside them and ``0`` outside, with ``P~`` the
+      regime-3 boxcar of ``p_meas`` (:func:`_smooth_power`) — the same bounded
+      estimator the split's gain is built on, so the nuisance can never claim
+      more than the measured excess
+
+    and returns ``data_h = sum [ P/(S+H) + log(S+H) - log S ]``, which is the
+    Whittle pair's own change: the ``log S`` half is subtracted back out because
+    ``map_objective`` already carries it as ``rent``. At ``H = 0`` every cell
+    reduces to ``P / S`` and ``data_h`` IS ``data``.
+    """
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    n_ch, n_fr, n_f = (int(v) for v in p_meas.shape)
+    n_fft = int(n_fft)
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / float(sr))
+    df = float(sr) / n_fft
+    # The harmonic set is the PINNED one the tracks already name, so two
+    # hypotheses on one window open regions over the identical ``k`` range.
+    k_hi = int(np.max(k)) if k.size else 0
+
+    # The smoother reaches across chunk boundaries, so the whole surface is
+    # smoothed at once and only the ARITHMETIC is chunked — a halo is a second
+    # way to get the same array wrong (the same call regime 3 makes).
+    p_smooth = _smooth_power(p_meas, P_SMOOTH_FRAMES, P_SMOOTH_BINS)
+    region = np.zeros((n_fr, n_f), dtype=bool)
+    for i in range(n_fr):
+        s0 = int(starts[i])
+        rate = r[:, s0 : s0 + n_fft].mean(axis=-1)
+        lines, kk = comb_lines(rate, k_hi)
+        half = stochastic_half_widths(
+            kk, slope_hz_per_k=slope_hz_per_k, width_factor=width_factor, min_half_hz=df
+        )
+        region[i] = _line_mask(freq, lines, half)
+
+    data_h = 0.0
+    h_energy = 0.0
+    chunk = max(1, int(frames_per_chunk))
+    for c0 in range(0, n_fr, chunk):
+        sl = slice(c0, min(c0 + chunk, n_fr))
+        ls = log_s[:, block_of[sl], :]  # (C, frames, F)
+        s_lin = np.exp(ls)
+        hump = np.where(region[sl][None, :, :], np.maximum(p_smooth[:, sl] - s_lin, 0.0), 0.0)
+        sh = np.maximum(s_lin + hump, 1e-300)
+        data_h += float(np.sum(p_meas[:, sl] / sh)) + float(np.sum(np.log(sh) - ls))
+        h_energy += float(np.sum(hump))
+    return {
+        "data_h": data_h,
+        # Cells the regions cover, on the same (channel, frame, bin) counting as
+        # ``n_cells`` — the region itself is the same for every microphone.
+        "h_cells": int(region.sum()) * n_ch,
+        "h_energy": h_energy,
+    }
+
+
 def map_objective(
     residual: Any,
     sr: float,
@@ -1704,6 +1793,9 @@ def map_objective(
     bw_psi_min: float = 1.5,
     frames_per_chunk: int = 64,
     logdet_posterior: float | None = None,
+    h_carrier: Any | None = None,
+    h_slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    h_width_factor: float = STOCHASTIC_WIDTH_FACTOR,
 ) -> dict[str, Any]:
     """THE converged MAP objective of the joint model, term by term::
 
@@ -1781,9 +1873,49 @@ def map_objective(
        equations as ``w`` with a right-hand side of ``2 w z``), and the ``1e-8``
        ridge plus any ``diag_scale`` PD repair that are inside ``M``.
 
+    ``h_carrier`` switches on the H-AWARE data term, which is the STOCHASTIC
+    COMB written into the likelihood. The coherent envelopes cannot carry the
+    ``0.6 k`` Hz flanks of a line (regime 3, :func:`stochastic_split`), so the
+    profiled ``J`` charges EVERY hypothesis for that flank energy and the true
+    trajectory gains nothing by sitting on it — measured on five frozen windows,
+    which is why adversarial coverage fans win the data term on three of them.
+    The H-aware term gives the noise model a comb-shaped nuisance ``H`` on top
+    of the smooth floor:
+
+        H(f, frame) = max(0, P~(f, frame) - S(f))   inside the hypothesis's own
+        H(f, frame) = 0                             comb SEARCH REGIONS
+
+    with ``P~`` the measured power on this readout's own grid, smoothed by the
+    regime-3 boxcar (``P_SMOOTH_FRAMES`` x ``P_SMOOTH_BINS``, edge mode
+    nearest), and the regions the union of ``k r_r(t) +/- 3 x 0.6 k`` Hz per
+    frame (:func:`stochastic_half_widths`) over the SAME harmonic set the tracks
+    name. The hypothesis controls only WHERE the regions are; ``H`` inside them
+    is the profiled nuisance, bounded by the estimator the split already uses.
+    The data term is then the Whittle pair with ``S + H`` in place of ``S``, and
+    ``data_h`` is reported so that
+
+        total_h = total - data + data_h ,
+
+    i.e. ``data_h = sum [ P / (S + H) + log(S + H) - log S ]`` — the pair's own
+    change, with the ``log S`` half that ``rent`` already carries taken back out,
+    so no logarithm is counted twice and ``rent`` stays what it was. At ``H = 0``
+    it is exactly ``data``, cell by cell.
+
+    The asymmetry is honest and it is the whole mechanism. ``H`` is fitted from
+    the same data it explains, so INSIDE a hypothesis's regions the term is
+    nearly hypothesis independent: on floor-level bins ``H`` is zero up to the
+    small positive bias of clipping a noisy ``P~ - S`` at zero, and on a real
+    hump it absorbs the hump whoever asked for it. The discrimination is where a
+    real hump exists and a hypothesis's regions MISS it — those cells pay
+    ``P / S + log S`` in full, exactly as before. A fan that opens regions on
+    empty floor buys nothing, and a trajectory whose regions sit on the humps
+    stops paying for them.
+
     Returns the total, the four components, the two sub-terms of the phase
     prior, and ``n_cells`` — the caller normalizes, because a window's cell
-    count depends on its length and its microphone count.
+    count depends on its length and its microphone count. Under ``h_carrier`` it
+    also returns ``data_h`` / ``total_h`` beside them (never instead of them),
+    plus ``h_cells`` (region cells) and ``h_energy`` (the summed ``H``).
 
     It is a pure OBSERVER: it reads finished arrays and touches nothing the
     solver will read again, so switching it on cannot move a single product.
@@ -1801,20 +1933,44 @@ def map_objective(
     data = 0.0
     rent = 0.0
     n_frames = 0
+    h_aware: dict[str, Any] = {}
     if starts.size and n_t >= int(n_fft):
         block_of = np.minimum((starts * n_bl) // max(1, n_t), n_bl - 1)
         s_lin = np.exp(log_s)
         scale = 1.0 / (float(sr) * float((np.hanning(int(n_fft)) ** 2).sum()))
+        # The measured surface is KEPT only for the H-aware readout, which needs
+        # every frame at once (its smoother reaches across chunk boundaries).
+        p_all = (
+            np.empty((n_ch, int(starts.size), n_f), dtype=np.float64)
+            if h_carrier is not None
+            else None
+        )
         done = 0
         for sub, chunk in stft_power(y, starts, int(n_fft), frames_per_chunk):
             sel = block_of[done : done + sub.size]
-            data += float(np.sum((chunk * scale) / s_lin[:, sel, :]))
+            power = chunk * scale
+            data += float(np.sum(power / s_lin[:, sel, :]))
+            if p_all is not None:
+                p_all[:, done : done + sub.size] = power
             done += sub.size
         # The rent is the same value for every frame of a block, so it is
         # counted per block instead of per frame — exactly the same sum.
         counts = np.bincount(block_of, minlength=n_bl).astype(np.float64)
         rent = float(np.sum(counts[None, :, None] * log_s))
         n_frames = int(starts.size)
+        if p_all is not None:
+            h_aware = _h_aware_data(
+                p_all,
+                log_s,
+                block_of,
+                starts,
+                h_carrier,
+                np.asarray(k, dtype=np.float64),
+                sr=float(sr),
+                n_fft=int(n_fft),
+                slope_hz_per_k=float(h_slope_hz_per_k),
+                width_factor=float(h_width_factor),
+            )
 
     ks = np.asarray(k, dtype=np.float64)
     lam_theta = wh_lambda(float(bw_theta_hz), float(fs_env))
@@ -1861,6 +2017,10 @@ def map_objective(
     # span nine orders of magnitude on a real window (the rent alone is tens of
     # thousands of cells times a log spectral density), and two hypotheses are
     # compared by their DIFFERENCE, which a rounded total would quantize away.
+    if h_aware:
+        # ``data_h`` already carries the pair's whole change, so the H-aware
+        # total swaps it for ``data`` and leaves every other term alone.
+        h_aware["total_h"] = total - data + float(h_aware["data_h"])
     return {
         "total": total,
         "data": data,
@@ -1870,6 +2030,7 @@ def map_objective(
         "theta_prior": theta_prior,
         "psi_prior": psi_prior,
         **marginal,
+        **h_aware,
         "n_cells": int(n_ch * n_frames * n_f),
         "n_frames": n_frames,
         "n_freq": n_f,
@@ -2003,6 +2164,11 @@ def joint_objective(state: JointState) -> dict[str, Any]:
         # marginal correction pays for the freedom the profiled objective
         # silently took. Off unless JointConfig.marginal asks for it.
         logdet_posterior=float(state.env.logdet) if jc.marginal else None,
+        # The carrier the whole alternation is conditioned on — the hypothesis's
+        # own trajectory, so its comb regions are its own. Off unless
+        # JointConfig.h_aware asks for it.
+        h_carrier=state.carrier if jc.h_aware else None,
+        h_slope_hz_per_k=jc.bw_psi_slope,
     )
 
 

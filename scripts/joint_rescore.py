@@ -41,6 +41,17 @@ integrates the envelopes out exactly, ``J + 0.5 (log det M - log det' R)``, and
 charges for it. Both columns are printed, and the two orders DISAGREEING is the
 reading: it names the windows a fan wins by absorption.
 
+``--h-aware`` ranks by the H-AWARE objective instead. The other half of the fan's
+advantage is not absorption but the LINE FLANKS: no coherent envelope can carry
+the ``0.6 k`` Hz flanks of a line (regime 3), so the profiled data term charges
+every hypothesis for that flank energy alike and the true trajectory gains
+nothing by sitting on it. The H-aware data term gives the noise model a
+comb-shaped nuisance ``H = max(0, P~ - S)`` inside the hypothesis's OWN search
+regions, so a trajectory whose regions sit on the humps stops paying for them
+and a fan that opens regions on empty floor gains nothing. The profiled column
+stays beside it, and where the two orders differ the difference is coverage the
+profiled column did not charge.
+
 Run::
 
     python scripts/joint_rescore.py --smoke --out results/joint_rescore_smoke
@@ -101,6 +112,11 @@ MARGINAL_TERMS = ("total_marginal", "marginal_correction")
 #: Which per-cell column ``--marginal`` ranks by. The profiled total is still
 #: reported beside it, because the two disagreeing IS the reading.
 MARGINAL_KEY = "total_marginal"
+#: The H-AWARE readout's own terms, present only under ``--h-aware``.
+H_TERMS = ("total_h", "data_h")
+#: Which per-cell column ``--h-aware`` ranks by. It takes precedence over the
+#: marginal key when both are asked for, and both other columns stay beside it.
+H_KEY = "total_h"
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +236,12 @@ def worker(unit: Unit) -> dict[str, Any]:
         # pays no rent for their freedom, which is why absorption is free and
         # why a coverage fan can out-score the telemetry on the profiled total.
         marginal=bool(p.get("marginal", False)),
+        # The H-AWARE data term. The coherent envelopes cannot carry the line
+        # FLANKS, so the profiled data term charges every hypothesis for the
+        # same flank energy; this lets a hypothesis EXPLAIN the humps its own
+        # comb regions cover, and a fan that opens regions on empty floor gains
+        # nothing by it.
+        h_aware=bool(p.get("h_aware", False)),
     )
     tic = time.perf_counter()
     res = trk.joint_solve_window(audio, r_audio, cfg, k_hi=k_hi, mics=mics, jcfg=jcfg)
@@ -228,7 +250,11 @@ def worker(unit: Unit) -> dict[str, Any]:
     last = dict(res.iterations[-1])
     obj = dict(last["objective"])
     n_cells = max(int(obj["n_cells"]), 1)
-    terms = TERMS + (MARGINAL_TERMS if bool(p.get("marginal", False)) else ())
+    terms = (
+        TERMS
+        + (MARGINAL_TERMS if bool(p.get("marginal", False)) else ())
+        + (H_TERMS if bool(p.get("h_aware", False)) else ())
+    )
     return {
         "uid": unit.uid,
         "window": window,
@@ -245,6 +271,7 @@ def worker(unit: Unit) -> dict[str, Any]:
         "iters": int(p["iters"]),
         "k_trust": str(p["k_trust"]),
         "marginal": bool(p.get("marginal", False)),
+        "h_aware": bool(p.get("h_aware", False)),
         "mean_rev_s": round(float(r.mean()), 4),
         "rms_vs_telemetry": round(float(np.sqrt(np.mean((r - r_meas) ** 2))), 5),
         "wall_s": round(wall, 2),
@@ -278,6 +305,7 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
         "prep_dir": args.prep_dir or None,
         "mem_budget_gb": float(args.mem_budget_gb),
         "marginal": bool(getattr(args, "marginal", False)),
+        "h_aware": bool(getattr(args, "h_aware", False)),
     }
     return [
         Unit(uid=f"{w}__{h}", params={**common, "window": w, "hypothesis": h})
@@ -293,13 +321,16 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     over the telemetry — a negative ``delta_vs_telemetry`` means the audio
     prefers that hypothesis to the tachometer. The ranking is by the per-cell
     PROFILED total, or by the per-cell MARGINAL total when every row carries one
-    (``--marginal``): profiling pays no rent for the envelopes' freedom, so a
-    hypothesis can win the profiled column by absorption alone, and the two
-    columns DISAGREEING is the reading.
+    (``--marginal``), or by the per-cell H-AWARE total when every row carries
+    that (``--h-aware``, which wins when both are asked for): profiling pays no
+    rent for the envelopes' freedom and charges every hypothesis alike for the
+    line flanks, so a hypothesis can win the profiled column by absorption or by
+    coverage, and the columns DISAGREEING is the reading.
     """
     table: dict[str, Any] = {}
     marginal = bool(rows) and all(MARGINAL_KEY in (r.get("per_cell") or {}) for r in rows)
-    terms = TERMS + (MARGINAL_TERMS if marginal else ())
+    h_aware = bool(rows) and all(H_KEY in (r.get("per_cell") or {}) for r in rows)
+    terms = TERMS + (MARGINAL_TERMS if marginal else ()) + (H_TERMS if h_aware else ())
     for r in sorted(rows, key=lambda r: (str(r.get("window")), str(r.get("hypothesis")))):
         if "objective" not in r:
             continue
@@ -308,13 +339,18 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             **{t: float(r["objective"][t]) for t in terms},
             **{f"{t}_per_cell": float(r["per_cell"][t]) for t in terms},
             "n_cells": int(r["objective"]["n_cells"]),
+            **({"h_cells": int(r["objective"]["h_cells"])} if h_aware else {}),
             "k_hi": r.get("k_hi"),
             "mean_rev_s": r.get("mean_rev_s"),
             "rms_vs_telemetry": r.get("rms_vs_telemetry"),
             "residual_fraction": r.get("residual_fraction"),
             "wall_s": r.get("wall_s"),
         }
-    key = f"{MARGINAL_KEY}_per_cell" if marginal else "total_per_cell"
+    key = "total_per_cell"
+    if marginal:
+        key = f"{MARGINAL_KEY}_per_cell"
+    if h_aware:
+        key = f"{H_KEY}_per_cell"
     for win, cell in table.items():
         order = sorted(cell, key=lambda h: cell[h][key])
         base = cell.get(TELEMETRY, {}).get(key)
@@ -330,19 +366,36 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             # comparable and the ranking above is meaningless.
             "_cells_agree": len({cell[h]["n_cells"] for h in cell}) == 1,
         }
-        if marginal:
-            # The PROFILED ranking beside the marginal one. Where they differ,
-            # the difference is absorption the profiled column did not charge.
+        if marginal or h_aware:
+            # The PROFILED ranking beside the other one. Where they differ, the
+            # difference is what the profiled column did not charge for —
+            # absorption under ``--marginal``, coverage of the line flanks under
+            # ``--h-aware``.
             entry["_ranking_profiled"] = sorted(cell, key=lambda h: cell[h]["total_per_cell"])
+        if marginal and h_aware:
+            entry["_ranking_marginal"] = sorted(
+                cell, key=lambda h: cell[h][f"{MARGINAL_KEY}_per_cell"]
+            )
         table[win] = entry
-    return {"n_units": len(rows), "terms": list(terms), "marginal": marginal, "table": table}
+    return {
+        "n_units": len(rows),
+        "terms": list(terms),
+        "marginal": marginal,
+        "h_aware": h_aware,
+        "table": table,
+    }
 
 
 def print_table(summary: dict[str, Any]) -> None:
     """The summary as a fixed-width table on stdout — the thing a human reads."""
     marginal = bool(summary.get("marginal"))
+    h_aware = bool(summary.get("h_aware"))
     head = f"\n{'window':<38} {'hypothesis':<11} {'J/cell':>14}"
-    print(head + (f" {'Jmarg/cell':>14}" if marginal else "") + f" {'data/cell':>10} {'rms':>7}")
+    if marginal:
+        head += f" {'Jmarg/cell':>14}"
+    if h_aware:
+        head += f" {'Jh/cell':>14}"
+    print(head + f" {'data/cell':>10} {'rms':>7}")
     for win, cell in sorted(summary["table"].items()):
         for hyp in cell.get("_ranking", []):
             e = cell[hyp]
@@ -350,8 +403,10 @@ def print_table(summary: dict[str, Any]) -> None:
             row = f"{win:<38} {hyp:<11} {e['total_per_cell']:>14.6f}"
             if marginal:
                 row += f" {e[f'{MARGINAL_KEY}_per_cell']:>14.6f}"
+            if h_aware:
+                row += f" {e[f'{H_KEY}_per_cell']:>14.6f}"
             print(f"{row} {e['data_per_cell']:>10.4f} {e['rms_vs_telemetry']:>7.3f}{flag}")
-        if marginal and cell.get("_ranking") != cell.get("_ranking_profiled"):
+        if (marginal or h_aware) and cell.get("_ranking") != cell.get("_ranking_profiled"):
             print(f"{win:<38} .. profiled order {cell['_ranking_profiled']} — absorption")
         if not cell.get("_cells_agree", True):
             print(f"{win:<38} !! cell counts disagree — the totals are NOT comparable")
@@ -397,6 +452,18 @@ def main() -> int:
             "envelope marginalization 0.5 (log det M - log det' R). Profiling pays no rent "
             "for the envelopes' freedom, so absorption is free and a coverage fan can win "
             "the profiled column; this charges for it. Both columns are reported"
+        ),
+    )
+    ap.add_argument(
+        "--h-aware",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "rank by the H-AWARE objective — the data term with a comb-shaped nuisance "
+            "H = max(0, P~ - S) inside the hypothesis's OWN search regions. The coherent "
+            "envelopes cannot carry the line FLANKS, so the profiled data term charges every "
+            "hypothesis for them alike and a coverage fan loses nothing by missing the humps; "
+            "this lets a trajectory EXPLAIN the humps its regions cover. All columns reported"
         ),
     )
     ap.add_argument(

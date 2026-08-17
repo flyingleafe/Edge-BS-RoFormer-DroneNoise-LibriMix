@@ -136,6 +136,47 @@ def test_the_marginal_flag_reaches_the_units() -> None:
     assert all(u.params["marginal"] is True for u in J.build_units(_args(marginal=True)))
 
 
+def _h_row(window: str, hyp: str, total: float, total_h: float, cells: int = 100) -> dict[str, Any]:
+    row = _row(window, hyp, total, cells)
+    row["objective"]["total_h"] = total_h
+    row["objective"]["data_h"] = total_h / 2.0
+    row["objective"]["h_cells"] = cells // 4
+    row["per_cell"]["total_h"] = total_h / cells
+    row["per_cell"]["data_h"] = total_h / 2.0 / cells
+    return row
+
+
+def test_h_aware_ranks_by_the_h_total_and_keeps_the_profiled_one() -> None:
+    # The case the term exists for: the fan wins the PROFILED column because
+    # every hypothesis is charged alike for the line flanks, and loses the
+    # H-aware one once the telemetry is allowed to EXPLAIN the humps.
+    rows = [
+        _h_row("w1", "telemetry", -100.0, -140.0),
+        _h_row("w1", "ours_full", -120.0, -130.0),
+    ]
+    got = J.summarize(rows)
+    assert got["h_aware"] is True and got["marginal"] is False
+    win = got["table"]["w1"]
+    assert win["_ranked_by"] == "total_h_per_cell"
+    assert win["_ranking"] == ["telemetry", "ours_full"]
+    assert win["_ranking_profiled"] == ["ours_full", "telemetry"]
+    assert win["_best"] == "telemetry"
+    assert win["telemetry"]["h_cells"] == 25
+    J.print_table(got)
+
+
+def test_a_missing_h_column_falls_back_to_the_profiled_ranking() -> None:
+    rows = [_h_row("w1", "telemetry", -100.0, -140.0), _row("w1", "ours_full", -120.0)]
+    got = J.summarize(rows)
+    assert got["h_aware"] is False
+    assert got["table"]["w1"]["_ranked_by"] == "total_per_cell"
+
+
+def test_the_h_aware_flag_reaches_the_units() -> None:
+    assert all(u.params["h_aware"] is False for u in J.build_units(_args()))
+    assert all(u.params["h_aware"] is True for u in J.build_units(_args(h_aware=True)))
+
+
 def test_summarize_flags_disagreeing_cell_counts() -> None:
     # Two hypotheses scored on different cell sets cannot be compared at all —
     # the table must say so rather than rank them.

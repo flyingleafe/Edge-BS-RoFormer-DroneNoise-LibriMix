@@ -307,7 +307,7 @@ DREGON's residual sits 0.5 to 1.7 dB over its floor inside the regions, not 20 d
 
 | Primitive | Purpose |
 |---|---|
-| `map_objective(residual, sr, psd, *, x, k, bw_track, theta, psi, fs_env, ..., logdet_posterior=None)` | THE converged MAP objective, term by term: `data` + `rent` (the Whittle pair on the floor block's own STFT grid) + `phase_priors` + `envelope_prior`, plus `n_cells`. A pure OBSERVER — switching it on cannot move a product. The weights are the ones the run used: `wh_lambda` for the two phase priors, and `rho^2` read back out of `Envelopes.bw_track` through the solver's own Tuma relation. `logdet_posterior` adds the MARGINAL readout (below) |
+| `map_objective(residual, sr, psd, *, x, k, bw_track, theta, psi, fs_env, ..., logdet_posterior=None, h_carrier=None)` | THE converged MAP objective, term by term: `data` + `rent` (the Whittle pair on the floor block's own STFT grid) + `phase_priors` + `envelope_prior`, plus `n_cells`. A pure OBSERVER — switching it on cannot move a product. The weights are the ones the run used: `wh_lambda` for the two phase priors, and `rho^2` read back out of `Envelopes.bw_track` through the solver's own Tuma relation. `logdet_posterior` adds the MARGINAL readout, `h_carrier` the H-AWARE one (both below) |
 | `prior_logdet(bw_track, n_env, fs_env, p=2)` | `log det'` of the improper envelope prior `blkdiag(rho_m^2 D2^T D2)` — the pseudo-determinant, because `D2` kills a constant and a ramp per track |
 | `d2_pseudo_logdet(n_env)` | its length-only part, one banded Cholesky of the pentadiagonal `D2 D2^T` and cached — `O(n)`, not an eigendecomposition |
 | `joint_objective(state)` | the same, with every argument taken off a `JointState` (the last solve's residual against the last floor) |
@@ -356,6 +356,44 @@ which scales the correction and cannot flip its sign); and the solver's own scal
 The acceptance property is Occam's, and it is a test (`tests/tracking/test_marginal_objective.py`):
 add a whole spurious rotor whose every line sits on pure floor, and the PROFILED objective
 improves while the MARGINAL one gets worse.
+
+### The H-AWARE data term — the stochastic comb, in the likelihood
+
+Absorption is only half of what lets a coverage fan win. The other half is in the DATA term:
+regime 3 exists because no coherent envelope can carry the `0.6 k` Hz flanks of a line, so `J`
+charges EVERY hypothesis for that flank energy alike and the true trajectory has no advantage
+over a fan that misses the humps entirely. Measured on the same five frozen windows, the exact
+envelope marginalization (`--marginal`) moved no ranking at all. `JointConfig.h_aware` puts the
+stochastic comb where it belongs, in the noise model:
+
+```
+data_h = sum_{c,f,t} [ P / (S + H) + log(S + H) - log S ] ,   total_h = total - data + data_h
+H(f, frame) = max(0, P~(f, frame) - S(f))   inside the hypothesis's own comb SEARCH REGIONS
+H(f, frame) = 0                             everywhere else
+```
+
+- The REGIONS are the hypothesis's only degree of freedom: per frame of the objective's own STFT
+  grid, `k r_r(t)` for every `k` the pinned track set names, half widths from
+  `stochastic_half_widths` (the 3.0-linewidth law, floored at one bin), unioned by `_line_mask`.
+  Regime 3's law, not the coherent one — same code, so the two readouts cannot drift apart.
+- `H` inside them is the PROFILED nuisance, bounded by the estimator the split already uses:
+  `P~` is the measured power on the same grid, smoothed with the split's own fixed boxcar
+  (`P_SMOOTH_FRAMES` x `P_SMOOTH_BINS`, edge mode nearest). The numerator `P` stays the
+  UNSMOOTHED measured power — the smoothing belongs to the nuisance, not to the likelihood.
+- `data_h` folds the `log(S + H) - log S` half in, so `rent` keeps its meaning, no logarithm is
+  counted twice, and `total_h = total - data + data_h` is exact. At `H = 0` it IS `data`.
+
+The asymmetry is honest and it is the mechanism: `H` is fitted from the same data it explains,
+so inside a hypothesis's regions the term is nearly hypothesis independent (at floor level `H`
+is zero up to the small positive bias of clipping a noisy `P~ - S`). The discrimination is where
+a real hump exists and a hypothesis's regions MISS it — those cells pay `P / S + log S` in full.
+A fan that opens regions on empty floor buys nothing; a trajectory whose regions sit on the humps
+stops paying for them.
+
+Acceptance is `tests/tracking/test_h_aware_objective.py`, on the regime-3 fixture at a PINNED
+floor: the true rates take `data_h` to 0.19-0.23 of `data`, rates shifted by 5 rev/s (regions
+disjoint from the lines, measured) leave it at 0.78-0.97, and the profiled total cannot separate
+the two AT ALL. On pure floor the term charges under 2 % whatever the carrier is.
 
 ### Three things that will bite a caller
 
@@ -406,7 +444,7 @@ set is small enough to list:
 | `scripts/displacement/{nullcontrol,combscan,refine_kscaled,comb_explorer}.py` | the comb-displacement campaign |
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
 | `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`) |
-| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders |
+| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders; `--h-aware` ranks by `total_h` (the stochastic comb in the data term) and prints every column |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |
 
