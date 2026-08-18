@@ -1140,8 +1140,10 @@ def stitch(
                     "fitted JOINTLY with no mask, block A carries a proper amplitude prior "
                     "c0 S / H so its bands can open to the 0.6 k Hz linewidth law with no "
                     "spacing cap, and the measure is the MARGINAL likelihood J_v4 (objective "
-                    "-> total_v4) of the ORIGINAL signal. Regime 3 does not run: the comb "
-                    "channel already carries the flanks, so residual IS the broadband channel"
+                    "-> total_v4) of the ORIGINAL signal. Under the UNCAPPED band law the "
+                    "comb channel carries the line flanks; a band-FALLBACK window's does "
+                    "not, so on rigs where fallbacks fire, run --stochastic too and read "
+                    "order_cell.residual_final as the gate"
                 ),
                 "n_windows": len(v4_rows),
                 # How many windows could not carry the UNCAPPED band law and
@@ -1445,13 +1447,15 @@ def main() -> None:
         args.window_s, args.hop_s = 4.0, 4.0
         args.k_max, args.mics = 20, 2
     if args.v4:
-        if args.stochastic:
-            raise SystemExit(
-                "--v4 --stochastic: the v4 comb channel already carries the line flanks, so a "
-                "second split would count them twice. Drop one of the two"
-            )
         # The v4 arm IS a joint arm — there is no v2 version of it — so asking
-        # for it is asking for --joint too.
+        # for it is asking for --joint too. ``--stochastic`` composes with it,
+        # and on a twin rig it is NEEDED: the uncapped comb channel carries the
+        # line flanks, but a window that took the band FALLBACK (capped bands)
+        # cannot — measured on DREGON, where 6 of 7 windows fall back and the
+        # no-split residual keeps 50-77 % of the k>=10 comb excess. The split
+        # is the posterior extraction of exactly that flank energy; on a
+        # window that stayed uncapped it finds little, which is the correct
+        # null result.
         args.joint = True
     if args.joint:
         # Fail on a malformed ladder here, in the CLI, and not in a worker.
