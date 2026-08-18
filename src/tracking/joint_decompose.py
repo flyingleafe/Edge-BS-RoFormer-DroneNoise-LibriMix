@@ -1489,6 +1489,71 @@ def v4_rho2_gain(
     )
 
 
+def v4_fallback_rho2_gain(
+    r_audio: Any,
+    k_hi: int,
+    cfg: Any,
+    sched: Any | None = None,
+    *,
+    rho_scale: float = 1.0,
+) -> np.ndarray:
+    """``(M,)`` gain for the SPACING-CAPPED law the v4 band fallback uses.
+
+    When the uncapped law leaves a window's system singular, the retry has to
+    put the envelopes back inside a band the geometry supports. It cannot simply
+    take :func:`tracking.decompose.track_rho2_gain`, and the reason is a rule
+    that is right for v2 and wrong here: :func:`schedule_bandwidths` FLOORS every
+    band at the solver's own clamped band, because a v2 schedule was only ever
+    allowed to widen ("a schedule never NARROWS a track below v1"). The solver's
+    own band is ``min(k * bw_rps, 0.9 fs_env)`` capped by the group's minimum
+    line separation — and on a rig whose rotors are tens of hertz apart, a
+    high-``k`` track that no other line comes near is not capped at all, so that
+    floor is 60 to 90 Hz on a 100 Hz envelope grid. A schedule asking for 3 Hz
+    then achieves 60, the ``bandwidth_neutral`` gain of a LOUD track widens it
+    past the grid, and the achieved band comes back saturated at ``fs_env``
+    exactly — which is not a band, and which the objective's own Tuma guard
+    refuses to convert (measured: FLY124, ``k_hi`` 83, 13 of 21 units).
+
+    So this asks for the same law with the floor at the smallest NUMERICALLY
+    usable band instead of at the solver's::
+
+        bw_m = clip(bw0 + slope k, b_lo, max(b_lo, min(cap_frac sep_m, bw_abs_max)))
+
+    ``sched`` of ``None`` takes :class:`tracking.decompose.BandwidthSchedule`'s
+    own defaults, which are the v2 shipped law — a fallback must never depend on
+    a driver having remembered to pass a schedule.
+    """
+    from tracking.decompose import BandwidthSchedule, line_separations
+
+    use = BandwidthSchedule() if sched is None else sched
+    vk = cfg.vk_config(int(k_hi))
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    rotor, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
+    _, fs_env = env_stride(vk)
+    b_lo, b_hi = _tuma_bw_min(fs_env, vk.p), 0.9 * fs_env
+    sep = np.asarray(line_separations(r, rotor, k), dtype=np.float64)
+    upper = np.maximum(b_lo, np.minimum(use.cap_frac_of_sep * sep, use.bw_abs_max))
+    want = np.clip(
+        use.bw0_hz + use.slope_hz_per_k * k.astype(np.float64), b_lo, np.minimum(upper, b_hi)
+    )
+    base = np.asarray(_base_bandwidths(r, int(k_hi), cfg), dtype=np.float64)
+    return (
+        np.array(
+            [
+                (_tuma_rho(float(b), fs_env, vk.p) / _tuma_rho(float(b0), fs_env, vk.p)) ** 2
+                for b, b0 in zip(want, base, strict=True)
+            ]
+        )
+        * float(rho_scale) ** 2
+    )
+
+
+def _base_bandwidths(r_audio: Any, k_hi: int, cfg: Any) -> np.ndarray:
+    from tracking.decompose import base_bandwidths
+
+    return base_bandwidths(r_audio, int(k_hi), cfg)
+
+
 def v4_ridge(
     psd: SmoothPSD,
     hp: HPowers,
@@ -1977,6 +2042,12 @@ class JointState:
     carrier: np.ndarray  # (R, T) rev/s at audio rate
     n_t: int
     rho2_gain: np.ndarray | None = None
+    #: The band schedule and prior scale the state was SEEDED with. ``rho2_gain``
+    #: is what they compile to, but the v4 band fallback has to re-derive a
+    #: different law from the same inputs (:func:`v4_fallback_rho2_gain`), so the
+    #: inputs are kept and not only their product.
+    bw_schedule: Any | None = None
+    rho_scale: float = 1.0
     t_start_s: float = 0.0
     theta: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     psi: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
@@ -2048,6 +2119,8 @@ def joint_state(
         carrier=r,
         n_t=int(n_t),
         rho2_gain=track_rho2_gain(r, int(k_hi), cfg, bw_schedule, float(rho_scale)),
+        bw_schedule=bw_schedule,
+        rho_scale=float(rho_scale),
         t_start_s=float(t_start_s),
     )
     _, k = state.tracks
@@ -2082,20 +2155,47 @@ def solve_block(state: JointState, audio: Any) -> JointState:
     # The v4 band law REPLACES the v2 schedule the state was seeded with: the
     # spacing cap it carries exists to keep an improper prior identifiable, and
     # the amplitude prior below is proper.
-    gain = (
-        v4_rho2_gain(
+    if jc.v4 and jc.v4_band_law:
+        gain = v4_rho2_gain(
             state.carrier,
             int(state.k_hi),
             state.cfg,
             b0_hz=jc.v4_b0_hz,
             slope_hz_per_k=jc.bw_psi_slope,
         )
-        if (jc.v4 and jc.v4_band_law)
-        else state.rho2_gain
-    )
+    elif jc.v4:
+        # The band FALLBACK re-derives the capped law from the schedule the state
+        # was seeded with. It cannot reuse ``state.rho2_gain``: that one is
+        # floored at the solver's own clamped band, which on a wide-separation
+        # rig is 60 to 90 Hz for an isolated high-k track.
+        gain = v4_fallback_rho2_gain(
+            state.carrier,
+            int(state.k_hi),
+            state.cfg,
+            state.bw_schedule,
+            rho_scale=float(state.rho_scale),
+        )
+    else:
+        gain = state.rho2_gain
     if weight is not None and jc.bandwidth_neutral:
         mean_u2 = np.mean(weight**2, axis=-1)
         gain = mean_u2 if gain is None else gain * mean_u2
+        if jc.v4:
+            # ``mean_u2`` is below one for a LOUD track (the weight is normalized
+            # over all cells, not per track), so the neutral gain WIDENS those
+            # bands — and a band at or past the envelope grid is not a band: the
+            # inverse Tuma relation saturates at ``fs_env`` exactly and the
+            # objective's own guard then refuses to convert it back. Hold the
+            # achieved band inside the grid.
+            _, fs_env = state.grid
+            floor = np.asarray([_tuma_rho(0.9 * fs_env, fs_env, int(state.vk.p)) ** 2] * len(gain))
+            base_rho2 = np.asarray(
+                [
+                    _tuma_rho(float(b), fs_env, int(state.vk.p)) ** 2
+                    for b in _base_bandwidths(state.carrier, int(state.k_hi), state.cfg)
+                ]
+            )
+            gain = np.maximum(gain, floor / np.maximum(base_rho2, 1e-300))
     ridge = (
         v4_ridge(state.psd, state.h_powers, k, rotor, r_env, t_env, weight, c0=jc.v4_ridge_c0)
         if (jc.v4 and state.psd is not None and state.h_powers is not None)
@@ -3269,7 +3369,15 @@ def map_objective(
         ]
     )
     psi_prior = _curvature(psi, weight=lam_psi)
-    rho2 = np.array([_tuma_rho(float(b), float(fs_env), int(p)) for b in np.asarray(bw_track)]) ** 2
+    # A band AT the envelope rate is not a band: the inverse Tuma relation
+    # saturates there (``arcsin`` of a clipped argument), so a track whose gain
+    # widened it past the grid comes back as exactly ``fs_env`` and the forward
+    # relation then refuses it. The readout is an OBSERVER and must not be the
+    # thing that raises, so it reads such a track at the widest band that IS
+    # convertible. Anything a solve could legitimately achieve is below this and
+    # passes through untouched.
+    bw_read = np.minimum(np.asarray(bw_track, dtype=np.float64), 0.999 * float(fs_env))
+    rho2 = np.array([_tuma_rho(float(b), float(fs_env), int(p)) for b in bw_read]) ** 2
     env_prior = _curvature(np.asarray(x, dtype=np.complex128), weight=rho2)
 
     phase_priors = theta_prior + psi_prior
@@ -3281,7 +3389,7 @@ def map_objective(
     n_ch_env = int(xa.shape[0]) if xa.ndim == 3 else 1
     marginal: dict[str, Any] = {}
     if logdet_posterior is not None:
-        ld_prior = prior_logdet(bw_track, n_env, float(fs_env), int(p))
+        ld_prior = prior_logdet(bw_read, n_env, float(fs_env), int(p))
         # The data term is a sum over frames that OVERLAP, so every sample is
         # under n_fft / hop of them and `data` + `rent` are that many times ONE
         # likelihood. The correction is one likelihood's worth, so it carries

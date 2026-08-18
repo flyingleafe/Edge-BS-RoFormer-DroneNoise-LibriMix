@@ -760,7 +760,15 @@ def test_v4_stitches_and_keeps_the_two_channel_identity(tmp_path) -> None:
 TWIN_S = 2.0
 
 
-def _twin_recording(tmp_path, k_max: int, spread: float = 0.3, **over):
+#: A FLY-like rig: rotors TENS of hertz apart, plus one near-degenerate pair.
+#: The wide separations are the whole point — they are what leaves a high-``k``
+#: track uncoupled, so the solver's own per-group clamp never bites on it and
+#: its band is whatever ``bw_rps`` asks for, which at ``k`` 60 is 60 Hz on a
+#: 100 Hz envelope grid.
+FLY_RATES = (60.0, 60.3, 75.0, 90.0)
+
+
+def _twin_recording(tmp_path, k_max: int, spread: float = 0.3, rates_hz=None, **over):
     """A TWIN rig at SPIN-UP: four rotors within a rev/s of each other, crossing.
 
     DREGON's own geometry, where the pairs sit 0.43 and 0.81 rev/s apart. Every
@@ -773,11 +781,15 @@ def _twin_recording(tmp_path, k_max: int, spread: float = 0.3, **over):
     rng = np.random.default_rng(0)
     n_t = int(TWIN_S * SR)
     t = np.arange(n_t) / SR
-    off = np.array([-1.5, -0.5, 0.5, 1.5]) * spread
-    rates = np.stack([42.0 + 6.0 * t / TWIN_S + o * (1.0 - 2.0 * t / TWIN_S) for o in off])
+    if rates_hz is None:
+        off = np.array([-1.5, -0.5, 0.5, 1.5]) * spread
+        rates = np.stack([42.0 + 6.0 * t / TWIN_S + o * (1.0 - 2.0 * t / TWIN_S) for o in off])
+    else:
+        rates = np.stack([np.full(n_t, v) + 2.0 * t / TWIN_S for v in rates_hz])
+        rates[1] = rates[1][::-1]  # the degenerate pair crosses
     phase = 2.0 * np.pi * np.cumsum(rates, axis=-1) / SR
     audio = rng.normal(scale=0.001, size=(2, n_t))
-    for r in range(len(off)):
+    for r in range(int(rates.shape[0])):
         for k in range(1, k_max + 1):
             for c, gain in enumerate((1.0, 0.8)):
                 audio[c] += gain * (1.0 / k**0.5) * np.cos(k * phase[r] + 2 * np.pi * rng.random())
@@ -862,6 +874,16 @@ def test_v4_falls_back_to_the_capped_bands_on_a_twin_rig(tmp_path, capsys) -> No
     assert "total_v4" in row["objective"]
     with np.load(tmp_path / "raw" / "w0.npz", allow_pickle=False) as data:
         assert "h_power" in data
+
+
+def test_the_dregon_like_fallback_still_works(tmp_path) -> None:
+    """The geometry the fallback was built for must not regress behind the fix."""
+    row, _ = _twin_recording(tmp_path, k_max=30)
+    assert row["v4_band_fallback"] is True
+    bands = row["bw_track_hz_by_band"]
+    got = max(v for v in bands.values() if v is not None)
+    assert got < 10.0
+    assert np.isfinite(float(row["objective"]["total_v4"]))
 
 
 def test_a_window_that_needs_no_fallback_does_not_take_one(tmp_path) -> None:

@@ -494,6 +494,30 @@ under different band laws stitch exactly as windows that were not. `bw_track` is
 first window and never enters the arithmetic — which is why `band_law_mixed` has to be reported,
 because `bw_track_hz_by_band` is then one window's law and not the recording's.
 
+**The fallback derives its own bands — `v4_fallback_rho2_gain`, not `track_rho2_gain`.** This is
+the one place where reusing the v2 seam is wrong, and it cost a second field failure (FLY124,
+`k_hi` 83: 13 of 21 units died in the objective READOUT with `bw_hz=100.0 exceeds fs_env=100.0`).
+The chain, all four links measured:
+
+1. `bw_rps` is 1.0, so the solver's own band for track `k` is `min(k, 0.9 fs_env)` capped by the
+   group's minimum line separation. On DREGON everything is in one dense group and the cap holds
+   every track near 1 Hz; on a rig whose rotors are tens of hertz apart an isolated high-`k` track
+   is never capped, and its band is 60 to 90 Hz on a **100 Hz** envelope grid.
+2. `schedule_bandwidths` FLOORS at that band — "a schedule never NARROWS a track below v1" is
+   right for v2 and wrong here — so a schedule asking for 3 Hz achieves 30 to 90.
+3. `bandwidth_neutral` multiplies `rho^2` by the track's own `mean(u^2)`, which is BELOW one for a
+   loud track (the weight is normalized over all cells, not per track, and the clamp bottoms at
+   `10^-1.5`), so it WIDENS those bands further.
+4. `_tuma_bw` then saturates at `fs_env` exactly, and `_tuma_rho` refuses that value.
+
+So the fallback asks for the same schedule with the floor at the smallest numerically usable band
+instead of the solver's, and `JointState` keeps `bw_schedule` / `rho_scale` so the retry can
+re-derive rather than reuse a compiled gain. `solve_block` additionally holds the v4 arm's
+achieved band inside `0.9 fs_env` after the neutral gain, and `map_objective` reads a saturated
+band at the widest CONVERTIBLE one — an observer must not be the thing that raises. Measured on
+the FLY fixture at a schedule absmax of 3 Hz: the solver's clamp and the v2 gain both give 30.0 Hz,
+the fallback law gives 3.0, and with no schedule at all it gives 1.0.
+
 The two calibrated constants, both frozen with their measurement in the test that made it:
 
 - `FLOOR_LENGTH_HZ = 600` — the floor's smoothness length in hertz. On the dense fixture (one
