@@ -755,6 +755,155 @@ def test_v4_stitches_and_keeps_the_two_channel_identity(tmp_path) -> None:
     assert "total" in report["objective"]["pooled"]
 
 
+#: Length of the twin-rig window. Short, because the fallback test needs a
+#: 120-track coupled group and that group's banded system is the memory.
+TWIN_S = 2.0
+
+
+def _twin_recording(tmp_path, k_max: int, spread: float = 0.3, **over):
+    """A TWIN rig at SPIN-UP: four rotors within a rev/s of each other, crossing.
+
+    DREGON's own geometry, where the pairs sit 0.43 and 0.81 rev/s apart. Every
+    harmonic pair is then inside one linewidth at the v4 bands, so the uncapped
+    system is singular and the worker has to fall back. The rates are the only
+    thing that matters here — the audio just has to have a comb in it.
+    """
+    from utils.gridrun import Unit
+
+    rng = np.random.default_rng(0)
+    n_t = int(TWIN_S * SR)
+    t = np.arange(n_t) / SR
+    off = np.array([-1.5, -0.5, 0.5, 1.5]) * spread
+    rates = np.stack([42.0 + 6.0 * t / TWIN_S + o * (1.0 - 2.0 * t / TWIN_S) for o in off])
+    phase = 2.0 * np.pi * np.cumsum(rates, axis=-1) / SR
+    audio = rng.normal(scale=0.001, size=(2, n_t))
+    for r in range(len(off)):
+        for k in range(1, k_max + 1):
+            for c, gain in enumerate((1.0, 0.8)):
+                audio[c] += gain * (1.0 / k**0.5) * np.cos(k * phase[r] + 2 * np.pi * rng.random())
+
+    ft = V.frame_grid(n_t, SR)
+    V.cache_recordings(
+        [
+            {
+                "recording_id": "TWIN",
+                "audio": audio.astype(np.float32),
+                "ft": ft,
+                "r_ref": V.interp_rps(rates[:, :: max(1, n_t // ft.size)][:, : ft.size], ft, ft),
+                "r_audio": rates,
+                "t0_offset_s": 0.0,
+                "rps_key": "motors_measured",
+                "sr": SR,
+            }
+        ],
+        SR,
+    )
+    stride = int(round(SR / 100.0))
+    params = {
+        "recording": "TWIN",
+        "i0": 0,
+        "i1": int(ft.size),
+        "spec": "spec",
+        "label_dir": "labels",
+        "out": str(tmp_path),
+        "kind": "window",
+        "window_s": TWIN_S,
+        "hop_s": TWIN_S,
+        "k_max": k_max,
+        "mics": 2,
+        "sr": SR,
+        "f_max": 3000.0,
+        "bw_rps": 1.0,
+        "bw_schedule": "3,0,1.5,3",
+        "ref_mic": -1,
+        "mem_budget_gb": 0.0,
+        "fs_env": 100.0,
+        "stride": stride,
+        "joint": True,
+        "v4": True,
+        "iters": 1,
+        "k_trust": "3",
+        "bw_psi": "0.6,8,1.5",
+        "bw_theta": 1.5,
+        "whiten": True,
+        "stochastic": False,
+        **over,
+    }
+    row = V.solve_worker(Unit("w0", params))
+    (tmp_path / "raw" / "w0.json").write_text(json.dumps(row))
+    return row, params
+
+
+def test_v4_falls_back_to_the_capped_bands_on_a_twin_rig(tmp_path, capsys) -> None:
+    """A window the UNCAPPED law cannot carry still produces a decomposition.
+
+    Two rotors half a rev/s apart put every harmonic pair inside one linewidth,
+    so the v4 bands make a singular system — DREGON's own geometry, where six of
+    seven windows failed. What the model estimates is `(S, H)`, and that comes
+    from the F1 fit, which never looks at a band; so the right answer is to keep
+    the fit, the prior and `J_v4`, and take the bands from the schedule.
+    """
+    row, _ = _twin_recording(tmp_path, k_max=30)
+    with capsys.disabled():
+        print(
+            f"\n  twin rig (4 rotors, 0.3 rev/s spread, 120 tracks): v4_band_fallback={row.get('v4_band_fallback')}"
+            f"  band_law={row.get('v4_band_law')}"
+            f"  bw_track={row['bw_track_hz_by_band']}"
+        )
+        print(f"    reason: {str(row.get('v4_band_fallback_reason'))[:88]}...")
+    assert row["used"] is True
+    assert row["v4_band_fallback"] is True
+    assert row["v4_band_law"] is False
+    assert "non positive definite" in row["v4_band_fallback_reason"]
+    # Everything else about the window is still v4: the joint fit ran and the
+    # marginal objective was read.
+    assert row["joint"]["config"]["v4"] is True
+    assert row["joint"]["h_fit"]["n_lines"] == 4 * 30
+    assert "total_v4" in row["objective"]
+    with np.load(tmp_path / "raw" / "w0.npz", allow_pickle=False) as data:
+        assert "h_power" in data
+
+
+def test_a_window_that_needs_no_fallback_does_not_take_one(tmp_path) -> None:
+    """The flag is a record of what happened, not a mode the run is put in."""
+    row, _ = _v4_unit(tmp_path)
+    assert row.get("v4_band_fallback") is None
+    assert row["v4_band_law"] is True
+
+
+def test_mixed_band_laws_stitch_and_the_report_says_so(tmp_path, capsys) -> None:
+    """Mixed windows stitch: the bands may differ, the TRACK SET may not.
+
+    The stitch's one compatibility check is the harmonic set, and `k_hi` comes
+    from the recording's reference trajectory rather than from any window's
+    bands — so a recording whose windows used different band laws stitches
+    exactly as one whose windows did not. The report has to SAY the set is
+    mixed, because `bw_track_hz_by_band` is read off the first window alone.
+    """
+    fell, params = _twin_recording(tmp_path, k_max=30)
+    assert fell["v4_band_fallback"] is True
+    # A second window of the same recording, solved with the band law forced
+    # off-limits-free: same track set, different bands.
+    row2 = dict(fell)
+    row2["v4_band_fallback"] = False
+    row2["v4_band_law"] = True
+    row2["a0"] = 0
+    (tmp_path / "raw" / "w0.json").write_text(json.dumps(fell))
+    (tmp_path / "raw" / "w1.json").write_text(json.dumps({**row2, "npz": fell["npz"]}))
+
+    V.stitch(tmp_path, "spec", "labels", params, only={"TWIN"})
+    report = json.loads((tmp_path / "TWIN" / "report.json").read_text())
+    with capsys.disabled():
+        print(
+            f"\n  mixed stitch: n_band_fallback={report['v4']['n_band_fallback']}"
+            f"  band_law_mixed={report['v4']['band_law_mixed']}"
+            f"  resynthesis={report['resynthesis_max_abs']:.2e}"
+        )
+    assert report["v4"]["n_band_fallback"] == 1
+    assert report["v4"]["band_law_mixed"] is True
+    assert report["resynthesis_max_abs"] < 1e-6
+
+
 def test_v4_is_off_by_default_and_writes_no_line_table(tmp_path) -> None:
     """The switch is a switch: without it the unit is the v3 unit, key for key."""
     row, _ = _v4_unit(tmp_path, v4=False)

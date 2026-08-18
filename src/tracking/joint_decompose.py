@@ -1911,6 +1911,21 @@ class JointConfig:
     v4_ridge_floor_frac: float = RIDGE_FLOOR_FRAC
     #: Floor of the v4 envelope bandwidth law, in hertz (:data:`V4_BW0_HZ`).
     v4_b0_hz: float = V4_BW0_HZ
+    #: Use the v4 BAND LAW (:func:`v4_rho2_gain`, the physical linewidth with no
+    #: spacing cap). Turning it off keeps every other part of v4 — the joint
+    #: ``(S, H)`` fit, the amplitude prior, ``J_v4`` — and takes the envelope
+    #: bands from whatever schedule the state was seeded with instead.
+    #:
+    #: It is a real modelling position and not only an escape hatch. The
+    #: amplitude targets are ``(S, H)``, and those come from the F1 fit, which
+    #: never looks at a band; the uncapped bands are a refinement of the
+    #: WAVEFORM channel, and a waveform channel is only identifiable where the
+    #: rotor spreads allow it. On a twin rig whose pairs sit 0.43 and 0.81 rev/s
+    #: apart the uncapped system is genuinely singular at ``k_hi`` 83 — four
+    #: combs that close cannot be told apart by a 12-second window — so those
+    #: windows legitimately use the capped law and lose nothing the model is
+    #: actually estimating.
+    v4_band_law: bool = True
 
     def k_cap(self, it: int) -> int:
         """Trustable harmonic cap of iteration ``it`` (1 based)."""
@@ -2075,7 +2090,7 @@ def solve_block(state: JointState, audio: Any) -> JointState:
             b0_hz=jc.v4_b0_hz,
             slope_hz_per_k=jc.bw_psi_slope,
         )
-        if jc.v4
+        if (jc.v4 and jc.v4_band_law)
         else state.rho2_gain
     )
     if weight is not None and jc.bandwidth_neutral:

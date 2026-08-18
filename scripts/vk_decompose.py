@@ -154,6 +154,8 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import sys  # noqa: E402
 import time  # noqa: E402
+from dataclasses import replace  # noqa: E402
+from functools import partial  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -520,17 +522,39 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
         # v3: the alternation. It replaces the single solve and returns the
         # EFFECTIVE envelope (g e^{j psi}) against the CORRECTED carrier, so
         # everything below reads it exactly as it reads a v2 bank.
-        jres = joint_solve_window(
+        solve_joint = partial(
+            joint_solve_window,
             rec["audio"][:, a0:a1],
             r_win,
             cfg,
             k_hi=k_hi,
             mics=mics,
-            jcfg=joint_config(p),
             bw_schedule=BandwidthSchedule.parse(str(p.get("bw_schedule", ""))),
             rho_scale=float(p.get("rho_scale", 1.0)),
             t_start_s=a0 / float(sr) + offset,
         )
+        jcfg = joint_config(p)
+        try:
+            jres = solve_joint(jcfg=jcfg)
+        except MemoryError as exc:
+            # The v4 UNCAPPED band law is the only thing here that can hand back
+            # a singular system, and on a twin rig it does so for most windows:
+            # two rotors 0.43 rev/s apart put every harmonic pair inside one
+            # linewidth at k_hi 83, and four combs that close are not four combs
+            # to a 12-second window. Retry ONCE with the capped schedule.
+            #
+            # This is a fallback in the bands only. What the model is actually
+            # estimating — the floor S and the per-line powers H, which are the
+            # generator's amplitude targets — comes from the F1 fit, and that fit
+            # never looks at a band; the ridge, the prior and J_v4 all stay. The
+            # uncapped bands are a refinement of the WAVEFORM channel, and a
+            # waveform channel is only identifiable where the rotor spreads
+            # allow it, so a twin rig's windows legitimately use the capped law.
+            if not (jcfg.v4 and jcfg.v4_band_law and "non positive definite" in str(exc)):
+                raise
+            out["v4_band_fallback_reason"] = str(exc)[:200]
+            jres = solve_joint(jcfg=replace(jcfg, v4_band_law=False))
+            out["v4_band_fallback"] = True
         env = jres.env
     else:
         env = D.solve_window(
@@ -605,6 +629,10 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
             psd_t=np.asarray(jres.psd.t_block, dtype=np.float64),
             psd_log_s=np.asarray(jres.psd.log_s, dtype=np.float32),
         )
+        # What the solve ACTUALLY used, which after a fallback is not what the
+        # config asked for. The bands are per window from here on, so a reader
+        # of the stitched report must be told the set is mixed.
+        out["v4_band_law"] = bool(jcfg.v4_band_law and not out.get("v4_band_fallback", False))
         if jres.h_powers is not None:
             # The v4 model's own amplitude parameters — a first-class product,
             # not a diagnostic: this table IS what a generator is trained to
@@ -1116,6 +1144,15 @@ def stitch(
                     "channel already carries the flanks, so residual IS the broadband channel"
                 ),
                 "n_windows": len(v4_rows),
+                # How many windows could not carry the UNCAPPED band law and
+                # fell back to the spacing-capped schedule. On a twin rig this
+                # is most of them, and it is not a degradation of what the model
+                # estimates: (S, H) come from the F1 fit, which never sees a
+                # band. It DOES mean the envelope bands differ per window, so
+                # ``bw_track_hz_by_band`` above (read off the first window) is
+                # not the whole recording's law when this is non-zero.
+                "n_band_fallback": sum(1 for r in v4_rows if r.get("v4_band_fallback")),
+                "band_law_mixed": len({bool(r.get("v4_band_law")) for r in v4_rows}) > 1,
                 # The (S, H) fit, pooled over the recording's windows. Read
                 # ``low_start_frac`` first: near one says the comb blanketed the
                 # band and the v3 masked floor was sitting on top of it, which

@@ -474,9 +474,25 @@ The deficiency is NOT float rounding — it is the decimated cross term's own ap
 which is percent-relative — so the floor has a reach and past it there is nothing to do. Four
 rotors within ~1 rev/s would need 0.1, costing a strong line 17 %; those windows are genuinely
 unidentifiable at these bands (four combs 0.3 Hz apart at `k` 1 are not four combs to a 3-second
-window) and the right remedy is a smaller `k_hi` or the v3 spacing cap for them, not a bigger
-ridge. `tests/tracking/test_v4_conditioning.py` pins both halves: the floor factorizes a group
+window). `tests/tracking/test_v4_conditioning.py` pins both halves: the floor factorizes a group
 that fails without it, and past its reach the failure is clean and names its own mechanism.
+
+**Past that reach, the band law steps aside — `JointConfig.v4_band_law`.** DREGON is a twin rig
+(its pairs sit 0.43 and 0.81 rev/s apart), so at `k_hi` 83 six of its seven windows are in the
+unidentifiable regime and fail cleanly. `scripts/vk_decompose.py` catches that one exception per
+window and retries ONCE with `v4_band_law=False`: the envelope bands come from the `--bw-schedule`
+(the v3 spacing-capped law) and **everything else stays v4** — the joint `(S, H)` fit, the
+amplitude prior with its floor, `J_v4`. That is not a degradation of what the model estimates.
+The amplitude targets ARE `(S, H)`, they come from the F1 fit, and that fit never looks at a band;
+the uncapped bands refine the WAVEFORM channel, which is only identifiable where the rotor spreads
+allow it. The row carries `v4_band_fallback: true` and the report's `v4` block carries
+`n_band_fallback` / `band_law_mixed`.
+
+Mixed sets stitch: the stitch's only compatibility check is the HARMONIC SET, and `k_hi` comes
+from the recording's reference trajectory rather than from any window's bands, so windows solved
+under different band laws stitch exactly as windows that were not. `bw_track` is carried from the
+first window and never enters the arithmetic — which is why `band_law_mixed` has to be reported,
+because `bw_track_hz_by_band` is then one window's law and not the recording's.
 
 The two calibrated constants, both frozen with their measurement in the test that made it:
 
