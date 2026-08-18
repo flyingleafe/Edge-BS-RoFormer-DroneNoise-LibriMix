@@ -1149,7 +1149,9 @@ def vk_solve_stage(
         want = bool(done.jcfg.profile_every_iter if profile is None else profile)
         info = solve_report(done, audio, profile=want)
         if objective:
-            info["objective"] = joint_objective(done)
+            # The v4 objective scores the ORIGINAL signal (the lines are
+            # integrated out, not subtracted), so the audio goes with it.
+            info["objective"] = joint_objective(done, audio)
         return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=info)
 
     return run
@@ -1186,11 +1188,15 @@ def floor_stage(cfg: JointConfig | None = None, *, name: str = "joint_floor") ->
         state = joint_state_of(frame)
         done = floor_block(state if cfg is None else replace(state, jcfg=cfg), audio)
         psd = done.psd
-        info = {
+        info: dict[str, Any] = {
             "psd_masked_frac": None if psd is None else psd.n_masked_frac,
             "n_cep": None if psd is None else int(psd.n_cep),
-            "source": "audio" if state.residual is None else "residual",
+            # The v4 fit is JOINT and unmasked, and it always reads the original
+            # audio; the v3 fit reads the residual once there is one.
+            "source": "audio" if (done.jcfg.v4 or state.residual is None) else "residual",
         }
+        if done.h_powers is not None:
+            info["h_fit"] = dict(done.h_powers.diag)
         return with_rps(with_meta(frame, joint=done), r, times, stage=name, info=info)
 
     return run
@@ -1626,6 +1632,18 @@ def joint_solve_window(
     ``JointResult.stochastic``. It is off by default and off leaves every
     product bit for bit where it was.
 
+    ``JointConfig.v4`` selects the OTHER arm through this same composition, and
+    it needs no branch here: the shape above IS the v4 alternation once block C
+    is the joint ``(S, H)`` fit. Every solve is preceded by a floor block, which
+    is what the amplitude prior is read from, and every floor block after the
+    first sees the shaft correction the split before it learned — so
+    ``floor -> (solve -> split -> floor) x (iters - 1) -> solve`` reads, in v4,
+    as ``[(S, H) -> A -> B] x (iters - 1) -> (S, H) -> A``. What v4 changes is
+    the blocks, not the alternation.
+
+    Regime 3 is REFUSED in that arm: the comb channel already carries the line
+    flanks, so splitting them off a second time would count them twice.
+
     The returned envelope is the EFFECTIVE one, ``g e^{j psi}``, against the
     corrected carrier in ``env.phase`` — so every v2 consumer (``reconstruct``,
     ``stitch_windows``, the ledger) reads it unchanged, and only the carrier
@@ -1636,6 +1654,11 @@ def joint_solve_window(
     from tracking.joint_decompose import joint_result, joint_state
 
     jc = JointConfig() if jcfg is None else jcfg
+    if jc.v4 and stochastic:
+        raise ValueError(
+            "joint_solve_window: the v4 arm does not run regime 3 — its comb channel "
+            "already carries the line flanks, so a second split would count them twice"
+        )
     y = solve_audio(audio, cfg, mics)
     state = joint_state(
         r_audio,

@@ -423,6 +423,7 @@ def _solve_group_splu(
     z_g: np.ndarray,
     *,
     u: list[np.ndarray] | None = None,
+    beta: list[np.ndarray] | None = None,
 ) -> tuple[np.ndarray, float]:
     """Reference coupled-group solve: track-major sparse LU (SuperLU).
 
@@ -433,6 +434,10 @@ def _solve_group_splu(
     reference (``cfg.solver == "splu"``) and as the fallback when the banded
     Cholesky reports a numerically non-PD system.
 
+    ``beta`` is the per-track AMPLITUDE prior of the v4 model — a non-negative
+    diagonal added beside the data weight, the same array
+    :func:`_solve_group_banded` adds. ``None`` is the v3 arithmetic bit for bit.
+
     The log-determinant comes off the factorization this call already made
     (SuperLU's ``L`` is unit lower triangular, so ``U``'s diagonal carries it),
     which is what keeps the marginal readout of
@@ -441,11 +446,14 @@ def _solve_group_splu(
     g = len(w)
     n_ch, _, n_env = z_g.shape
     wd, wc = _whiten_weights(w, u)
+    # The amplitude prior sits on the DIAGONAL only. It must not reach the
+    # right-hand side, which carries the data weight alone.
+    diag_w = wd if beta is None else [wa + ba for wa, ba in zip(wd, beta, strict=True)]
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     blocks: list[list[Any]] = [[None] * g for _ in range(g)]
     for a in range(g):
         reg = float(r2[a]) * d2td2 + 1e-8 * eye  # eps keeps masked spans well-posed
-        blocks[a][a] = (reg + sparse.diags_array(wd[a])).astype(np.complex128)
+        blocks[a][a] = (reg + sparse.diags_array(diag_w[a])).astype(np.complex128)
     for (a, b), g_mn in cross.items():
         blocks[a][b] = sparse.diags_array(wc[a] * wc[b] * g_mn)
         blocks[b][a] = sparse.diags_array(wc[a] * wc[b] * np.conj(g_mn))
@@ -470,6 +478,7 @@ def _solve_group_banded(
     *,
     diag_scale: float = 1.0,
     u: list[np.ndarray] | None = None,
+    beta: list[np.ndarray] | None = None,
 ) -> tuple[np.ndarray, float]:
     """Coupled-group solve as one Hermitian positive-definite *banded* system.
 
@@ -491,8 +500,18 @@ def _solve_group_banded(
     logs). It is what the MARGINAL objective of
     :func:`tracking.map_objective` marginalizes the envelopes with, and taking
     it here is what keeps that readout free of a second factorization. NOTE that
-    it is the determinant of the system as ASSEMBLED — the ``1e-8`` ridge and
-    any ``diag_scale`` repair are in it, because they are in the solve too.
+    it is the determinant of the system as ASSEMBLED — the ``1e-8`` ridge, the
+    ``beta`` amplitude prior and any ``diag_scale`` repair are in it, because
+    they are in the solve too.
+
+    ``beta`` is the v4 model's per-track AMPLITUDE prior: one non-negative
+    number per (track, envelope frame), added to the diagonal beside the data
+    weight and NOT to the right-hand side. The improper VK prior charges only
+    for CURVATURE, so an envelope is free to take any constant it likes and a
+    band wide enough to overlap its neighbour's line has nothing to stop it;
+    ``beta = c0 / H`` is the finite amplitude variance that does, and it is
+    what lets the v4 arm open the bands to the physical linewidth law with no
+    spacing cap. ``None`` is the v3 arithmetic bit for bit.
     """
     g = len(w)
     n_ch, _, n_env = z_g.shape
@@ -505,6 +524,8 @@ def _solve_group_banded(
     # below are bitwise identical to the former scalar formulation).
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     diag = d0[:, None] * r2[None, :] + 1e-8 + np.stack(wd, axis=-1)  # (T_env, g)
+    if beta is not None:
+        diag = diag + np.stack(beta, axis=-1)
     # diag_scale > 1 is the PD-repair retry: inflating the diagonal by a
     # relative epsilon restores positive definiteness lost to decimation
     # rounding, at a bias far below the bandwidth prior's own resolution.
@@ -579,6 +600,7 @@ def vk_envelopes(
     phase_offset: np.ndarray | None = None,
     env_rotation: np.ndarray | None = None,
     data_weight: np.ndarray | None = None,
+    ridge: np.ndarray | None = None,
 ) -> Envelopes:
     """One coupled VK-2 envelope solve (all coupling groups) given trajectories.
 
@@ -625,6 +647,21 @@ def vk_envelopes(
         and envelope frame — the whitening of a colored noise floor. It enters
         squared on the diagonal and in the right-hand side, and once in a cross
         block (:func:`_whiten_weights`).
+
+    A fourth seam is the v4 model's AMPLITUDE prior:
+
+    ``ridge``
+        ``(M,)`` or ``(M, T_env)`` non-negative diagonal added to the normal
+        equations beside the data weight — the precision ``beta = c0 / H`` of a
+        Gaussian prior on the envelope itself. The VK prior charges for
+        curvature only and is improper, so nothing bounds an envelope's LEVEL;
+        with the bands opened to the physical linewidth law two neighbouring
+        passbands overlap and the system loses its identifiability. This is what
+        restores it, and it shrinks correctly by itself: a strong line has
+        ``H`` far above the floor and pays almost nothing, a floor-level track
+        is pulled toward zero. It reaches the diagonal only — never the
+        right-hand side — so the shrinkage is toward zero and not toward some
+        other estimate.
     """
     y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[:_MAX_CHANNELS]
     r = np.atleast_2d(np.asarray(r, dtype=np.float64))
@@ -670,6 +707,15 @@ def vk_envelopes(
             raise ValueError(f"data_weight {uw.shape} != tracks x frames {(len(rotor), n_env)}")
         if np.any(uw < 0.0):
             raise ValueError("data_weight must be non-negative (it is 1 / sqrt(S))")
+    bt: np.ndarray | None = None
+    if ridge is not None:
+        bt = np.asarray(ridge, dtype=np.float64)
+        if bt.ndim == 1:
+            bt = np.repeat(bt[:, None], n_env, axis=-1)
+        if bt.shape != (len(rotor), n_env):
+            raise ValueError(f"ridge {bt.shape} != tracks x frames {(len(rotor), n_env)}")
+        if np.any(bt < 0.0) or not np.all(np.isfinite(bt)):
+            raise ValueError("ridge must be finite and non-negative (it is a prior precision)")
     groups = _coupling_groups(f, valid, couple_hz)
 
     d2 = second_diff(n_env)
@@ -759,6 +805,7 @@ def vk_envelopes(
                     )
         z_g = z[:, group]  # (C, g, T_env)
         u_g = None if uw is None else [uw[m] for m in group]
+        b_g = None if bt is None else [bt[m] for m in group]
         done: tuple[np.ndarray, float] | None = None
         if cfg.solver == "banded":
             # Numerically non-PD systems (decimation rounding on large
@@ -768,13 +815,13 @@ def vk_envelopes(
             for diag_scale in (1.0, 1.0 + 1e-6, 1.0 + 1e-4):
                 try:
                     done = _solve_group_banded(
-                        d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale, u=u_g
+                        d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale, u=u_g, beta=b_g
                     )
                     break
                 except np.linalg.LinAlgError:
                     done = None
         if done is None:
-            done = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g, u=u_g)
+            done = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g, u=u_g, beta=b_g)
         sol, group_logdet = done
         logdet += group_logdet
         for a in range(g):

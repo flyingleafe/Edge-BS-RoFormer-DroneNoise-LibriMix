@@ -637,3 +637,129 @@ def test_carrier_helpers_match_vk_decompose():
     np.testing.assert_array_equal(
         _decomp_to_audio_grid(r_a, ft_a, n_t, SR), V.to_audio_grid(r_b, ft_b, n_t, SR)
     )
+
+
+# ---------------------------------------------------------------------------
+# v4: the unified model, through the driver
+
+
+def _v4_unit(tmp_path, **over):
+    """One ``--v4`` solve unit through the REAL worker, on a cached synthetic."""
+    from utils.gridrun import Unit
+
+    audio, rates = _synth("common")
+    n_t = int(audio.shape[-1])
+    ft = V.frame_grid(n_t, SR)
+    V.cache_recordings(
+        [
+            {
+                "recording_id": "REC",
+                "audio": audio.astype(np.float32),
+                "ft": ft,
+                "r_ref": V.interp_rps(rates[:, :: max(1, n_t // ft.size)][:, : ft.size], ft, ft),
+                "r_audio": rates,
+                "t0_offset_s": 0.0,
+                "rps_key": "motors_measured",
+                "sr": SR,
+            }
+        ],
+        SR,
+    )
+    stride = int(round(SR / 100.0))
+    params = {
+        "recording": "REC",
+        "i0": 0,
+        "i1": int(ft.size),
+        "spec": "spec",
+        "label_dir": "labels",
+        "out": str(tmp_path),
+        "kind": "window",
+        "window_s": DUR_S,
+        "hop_s": DUR_S,
+        "k_max": K_MAX,
+        "mics": 2,
+        "sr": SR,
+        "f_max": 3000.0,
+        "bw_rps": 1.0,
+        "bw_schedule": "",
+        "ref_mic": -1,
+        "mem_budget_gb": 0.0,
+        "fs_env": 100.0,
+        "stride": stride,
+        "joint": True,
+        "v4": True,
+        "iters": 2,
+        "k_trust": "2,6",
+        "bw_psi": "0.6,8,1.5",
+        "bw_theta": 1.5,
+        "whiten": True,
+        "stochastic": False,
+        **over,
+    }
+    row = V.solve_worker(Unit("w0", params))
+    (tmp_path / "raw" / "w0.json").write_text(json.dumps(row))
+    return row, params
+
+
+def test_v4_writes_the_line_powers_and_reads_its_own_objective(tmp_path) -> None:
+    """The v4 unit: the ``H`` table on disk, and ``J_v4`` in the row.
+
+    The line powers are a PRODUCT of the v4 model — the generator's amplitude
+    targets by construction — so the seam that carries them is pinned the same
+    way the envelope bank's is.
+    """
+    row, _ = _v4_unit(tmp_path)
+    assert row["used"] is True
+    assert row["joint"]["config"]["v4"] is True
+    # The (S, H) fit reports itself, and the two-start guard is in the record.
+    fit = row["joint"]["h_fit"]
+    assert fit["n_lines"] == 2 * K_MAX
+    assert 0.0 <= fit["low_start_frac"] <= 1.0
+    assert fit["b_f_hz"] > 0.0
+    # J_v4 is the row's own measure, and it is built from its own terms.
+    obj = row["objective"]
+    assert obj["total_v4"] == pytest.approx(
+        obj["data_v4"] + obj["phase_priors"] + obj["floor_penalty"]
+    )
+
+    with np.load(tmp_path / "raw" / "w0.npz", allow_pickle=False) as data:
+        assert {"h_rotor", "h_k", "h_t", "h_lines", "h_half", "h_power"} <= set(data)
+        h = np.asarray(data["h_power"], dtype=np.float64)
+        assert h.shape == (2, len(data["h_t"]), 2 * K_MAX)
+        assert np.all(h >= 0.0)
+        # The line table is the SOLVER's track table, rotor major.
+        assert np.array_equal(np.asarray(data["k"]), np.asarray(data["h_k"]))
+        assert np.array_equal(np.asarray(data["rotor"]), np.asarray(data["h_rotor"]))
+
+
+def test_v4_stitches_and_keeps_the_two_channel_identity(tmp_path) -> None:
+    """``comb + broadband == audio`` at the DRIVER level, with no third channel."""
+    _, params = _v4_unit(tmp_path)
+    V.stitch(tmp_path, "spec", "labels", params, only={"REC"})
+    report = json.loads((tmp_path / "REC" / "report.json").read_text())
+
+    assert report["resynthesis_max_abs"] < 1e-6
+    # Regime 3 never ran, so the residual IS the broadband channel.
+    assert "stochastic" not in report
+    with np.load(tmp_path / "REC" / "residual.npz", allow_pickle=False) as data:
+        assert "stochastic" not in data
+
+    v4 = report["v4"]
+    assert v4["n_windows"] == 1
+    assert v4["b_f_hz"] > 0.0
+    assert v4["n_lines"] == 2 * K_MAX
+    assert 0.0 <= v4["h_fit"]["low_start_frac"] <= 1.0
+    # The pooled objective carries the v4 terms beside the v3 ones.
+    assert "total_v4" in report["objective"]["pooled"]
+    assert "total_v4" in report["objective"]["per_cell"]
+    assert "total" in report["objective"]["pooled"]
+
+
+def test_v4_is_off_by_default_and_writes_no_line_table(tmp_path) -> None:
+    """The switch is a switch: without it the unit is the v3 unit, key for key."""
+    row, _ = _v4_unit(tmp_path, v4=False)
+    assert row["joint"]["config"]["v4"] is False
+    assert "h_fit" not in row["joint"]
+    assert not [key for key in row["objective"] if key.endswith("_v4")]
+    with np.load(tmp_path / "raw" / "w0.npz", allow_pickle=False) as data:
+        assert "h_power" not in data

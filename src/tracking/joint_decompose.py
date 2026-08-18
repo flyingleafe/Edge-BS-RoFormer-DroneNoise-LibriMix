@@ -103,6 +103,7 @@ from tracking.vk_tracking import (
 
 __all__ = [
     "DEFAULT_BANDS",
+    "HPowers",
     "JointConfig",
     "JointResult",
     "JointState",
@@ -114,7 +115,11 @@ __all__ = [
     "comb_lines",
     "d2_pseudo_logdet",
     "corrected_phase",
+    "fit_floor_powers",
+    "floor_at_tracks",
     "floor_block",
+    "floor_lambda",
+    "floor_penalty",
     "frame_starts",
     "global_rate_correction",
     "line_half_widths",
@@ -137,9 +142,12 @@ __all__ = [
     "stochastic_split",
     "theta_rate",
     "upsample_env",
+    "v4_ridge",
+    "v4_rho2_gain",
     "wh_lambda",
     "wh_smooth",
     "whiten_weights",
+    "whittle_floor_objective",
     "whitened_flatness",
     "window_extra_phase",
 ]
@@ -651,7 +659,11 @@ def masked_smooth_psd(
     acc = np.zeros((n_ch, n_bl, n_f), dtype=np.float64)
     cnt = np.zeros((n_bl, n_f), dtype=np.float64)
     seen = np.zeros((n_bl, n_f), dtype=np.float64)
-    if starts.size == 0:
+    # ``frame_starts`` hands back ONE start even for a clip shorter than a
+    # frame, and admitting or refusing it is each caller's own business
+    # (see its docstring). This caller refuses: a frame that runs off the end of
+    # the clip is not a measurement, and indexing it is an error.
+    if starts.size == 0 or n_t < n_fft:
         base = np.log(np.maximum(np.mean(y**2, axis=-1), 1e-30))
         return SmoothPSD(
             freq=freq,
@@ -708,6 +720,641 @@ def masked_smooth_psd(
     )
 
 
+#: The floor's smoothness LENGTH SCALE in hertz — the ``B_f`` of the v4 floor
+#: fit (:func:`fit_floor_powers`). It says "the broadband floor may not vary
+#: faster than this", which is the one statement about ``S`` the model makes,
+#: and it is a length in HERTZ so that it means the same thing at any ``n_fft``
+#: and any sample rate.
+#:
+#: The v3 cepstral lift is the scale to beat: 40 kept cosines over 2049 bins
+#: pass nothing shorter than ``2 x 2049 / 40`` bins, which at 32 kHz and
+#: ``n_fft`` 4096 is about 800 Hz of period, so the smallest feature it carries
+#: is about 400 Hz wide. CALIBRATED on the dense synthetic (a single comb whose
+#: density ``gamma / Delta`` runs from 0.06 to 0.48, so the top of it is
+#: blanketed by the v3 mask), the fitted floor lands at
+#: 0.37 / 0.53 / 0.70 / 0.46 dB rms in the four bands at 600 Hz, against
+#: 0.37 / 0.63 / 1.03 / 0.73 at 400 Hz and 0.33 / 0.61 / 0.49 / 0.31 at 800 Hz.
+#: 600 Hz is where the gate is met with the smallest departure from the
+#: smoothness v3 shipped with; below about 400 Hz the two starts also stop being
+#: separable on the screening budget and the fit can be left in the wrong basin.
+FLOOR_LENGTH_HZ = 600.0
+
+#: Budget of ``(S, H)`` rounds per (microphone, block). Each round is one
+#: non-negative least squares plus one damped Newton, and the loop stops as soon
+#: as a round buys less than ``round_tol`` of the objective — so this is a CAP
+#: and not a count. Measured on the dense fixture: three rounds leave the floor
+#: 2.6 dB low inside a blanketed band and ten leave it inside 0.5 dB, because
+#: the trade of power between the line field and the floor is what converges
+#: slowly.
+FLOOR_POWER_ROUNDS = 12
+
+#: How many of those rounds each START gets before one of them is chosen. The
+#: two basins part company immediately — a blanketed cell is 10 dB apart after
+#: one round — so screening is what keeps the guard from doubling the cost.
+FLOOR_SCREEN_ROUNDS = 2
+
+
+def _lambda_from_df(df: float, b_f_hz: float, p: int = 2) -> float:
+    """The floor penalty's weight from the BIN WIDTH and the length scale."""
+    if b_f_hz <= 0.0:
+        raise ValueError(f"the floor length scale must be positive, got {b_f_hz}")
+    return float(_tuma_rho(min(2.0 * float(df) / float(b_f_hz), 0.999), 1.0, int(p)) ** 2)
+
+
+def floor_penalty(psd: SmoothPSD, b_f_hz: float = FLOOR_LENGTH_HZ) -> float:
+    """``lam_f sum_{c,b} ||D2_f log S||^2`` — the floor's own term of ``J_v4``.
+
+    The v4 objective carries the floor's smoothness penalty EXPLICITLY, because
+    ``S`` is a fitted parameter of the model and not a projection any more: a
+    hypothesis whose floor has to bend to fit its own residual pays for the
+    bending. It is read off the fitted surface, so a caller needs no knowledge
+    of the grid the fit ran on beyond the surface itself.
+    """
+    freq = np.asarray(psd.freq, dtype=np.float64)
+    if freq.size < 3:
+        return 0.0
+    lam = _lambda_from_df(float(freq[1] - freq[0]), float(b_f_hz))
+    return lam * _curvature(np.asarray(psd.log_s, dtype=np.float64).reshape(-1, freq.size))
+
+
+def floor_lambda(b_f_hz: float, sr: float, n_fft: int, p: int = 2) -> float:
+    """Penalty weight of ``||D2_f log S||^2`` for a length scale of ``b_f_hz`` Hz.
+
+    The floor penalty is a Whittaker-Henderson smoother along FREQUENCY, so its
+    weight comes from the solver's own Tuma relation (:func:`wh_lambda`) with
+    the frequency axis read as the time axis: one "sample" is one bin, so the
+    "sampling rate" is 1 and a period of ``b_f_hz`` Hz is
+    ``b_f_hz / df`` bins, that is ``w_c = 2 pi df / b_f_hz`` radians per bin.
+    Since :func:`tracking.vk_tracking._tuma_rho` places its half-power point at
+    ``w = pi bw / fs``, the band to ask for is ``2 df / b_f_hz`` at ``fs = 1``.
+
+    There is therefore ONE bandwidth calibration in the package and not two, and
+    ``b_f_hz`` is a physical length that means the same thing on every grid.
+    """
+    return _lambda_from_df(float(sr) / int(n_fft), float(b_f_hz), int(p))
+
+
+@dataclass
+class HPowers:
+    """Per-line powers of the comb — the v4 model's own amplitude parameters.
+
+    ``h[c, b, l]`` is the PEAK power spectral density of line ``l`` on
+    microphone ``c`` during time block ``b``, in the units
+    :func:`masked_smooth_psd` normalizes to, so it is directly comparable with
+    ``exp(SmoothPSD.log_s)``. The line sits at ``lines[b, l]`` Hz with a
+    Lorentzian half width at half maximum of ``half[b, l]`` Hz, and its total
+    power is ``pi * half * h`` (a Lorentzian's integral).
+
+    The line table is the SOLVER's track table — rotor major, ``k`` from 1 to
+    ``k_hi`` (:func:`tracking.vk_tracking._track_table`) — so ``h`` indexes by
+    track and the block-A ridge is a lookup and not a search. Every field is a
+    plain array, so the whole record survives an ``npz`` or a JSON round trip.
+    """
+
+    rotor: np.ndarray  # (L,) int — rotor index of each line
+    k: np.ndarray  # (L,) int — harmonic index
+    t_block: np.ndarray  # (B,) seconds — the block centers, SmoothPSD's own
+    lines: np.ndarray  # (B, L) Hz — where the line sat in each block
+    half: np.ndarray  # (B, L) Hz — the Lorentzian half width at half maximum
+    h: np.ndarray  # (C, B, L) >= 0 — the peak power spectral density
+    diag: dict[str, Any] = field(default_factory=dict)
+
+    def pooled(self) -> np.ndarray:
+        """``(B, L)`` line power pooled over microphones — the ARITHMETIC mean.
+
+        What the block-A ridge reads, because every microphone is a right-hand
+        side against ONE system and the system therefore needs one amplitude
+        prior per track. The mean is arithmetic and not geometric (the floor's
+        pooling) for one reason: a line is silent on some microphones and a
+        geometric mean of a set containing zero is zero, which would put an
+        infinite ridge on a track the array as a whole hears perfectly well.
+        """
+        return np.asarray(self.h, dtype=np.float64).mean(axis=0)
+
+    def block_of(self, t: Any) -> np.ndarray:
+        """Which block each time in ``t`` (seconds, same reference) falls in.
+
+        Nearest block center, which is the piecewise-constant reading the
+        amplitude prior wants: ``H`` is a level and not a spectrum, so it is
+        held over its block rather than blended across a boundary.
+        """
+        tb = np.asarray(self.t_block, dtype=np.float64)
+        q = np.asarray(t, dtype=np.float64)
+        if tb.size < 2:
+            return np.zeros(q.shape, dtype=np.int64)
+        return np.clip(np.searchsorted(0.5 * (tb[:-1] + tb[1:]), q), 0, tb.size - 1)
+
+
+def _pool_periodogram(
+    audio: np.ndarray,
+    starts: np.ndarray,
+    n_fft: int,
+    scale: float,
+    block_of: np.ndarray,
+    n_blocks: int,
+    frames_per_chunk: int,
+) -> np.ndarray:
+    """``(C, B, F)`` block-pooled power spectral density — the MEDIAN, debiased.
+
+    One periodogram bin is an exponential deviate with 100 % relative standard
+    deviation and a heavy right tail, so a block's MEAN is dragged around by its
+    loudest frames; the median is not. What the median is not either is the
+    level: for ``Exp(1)`` it reads ``ln 2`` of the mean, so it is divided back
+    out and the result is an unbiased LEVEL that the Whittle likelihood below
+    may treat as one.
+    """
+    n_ch = int(audio.shape[0])
+    n_f = int(n_fft // 2 + 1)
+    acc = np.empty((n_ch, int(starts.size), n_f), dtype=np.float32)
+    done = 0
+    for sub, chunk in stft_power(audio, starts, n_fft, frames_per_chunk):
+        acc[:, done : done + sub.size] = (chunk * scale).astype(np.float32)
+        done += sub.size
+    out = np.empty((n_ch, int(n_blocks), n_f), dtype=np.float64)
+    for b in range(int(n_blocks)):
+        sel = block_of == b
+        out[:, b] = (
+            np.median(acc[:, sel], axis=1).astype(np.float64) / np.log(2.0) if sel.any() else np.nan
+        )
+    # A block with no frame of its own (a window shorter than the block grid)
+    # holds the nearest block that has one, so the surface is defined everywhere.
+    bad = ~np.isfinite(out[:, :, 0]).all(axis=0)
+    if bad.any() and not bad.all():
+        good = np.flatnonzero(~bad)
+        for b in np.flatnonzero(bad):
+            out[:, b] = out[:, good[int(np.argmin(np.abs(good - b)))]]
+    return np.maximum(out, 1e-300)
+
+
+#: Trust radius of one S-step, in nats of ``log S`` (about 8.7 dB). Where the
+#: line powers dominate a bin the Fisher weight ``(S / M)^2`` goes to zero, and
+#: the penalty alone is SEMI-definite (it cannot see a constant or a ramp), so
+#: the Newton direction there is unbounded. A trust radius is the honest bound
+#: on it: the direction is still the Newton one, its LENGTH is capped, and the
+#: line search below decides how much of it to take.
+FLOOR_TRUST_NATS = 2.0
+
+
+def whittle_floor_objective(p: np.ndarray, hump: np.ndarray, g: np.ndarray, lam: float) -> float:
+    """``sum_f [P~/M + log M] + lam ||D2 g||^2`` with ``M = e^g + H`` — the F1 cost.
+
+    One (microphone, time block) of the penalized Whittle likelihood
+    :func:`fit_floor_powers` minimizes. It is separate from the steps because it
+    is what GUARDS them: a step is taken only if this decreases, and the start
+    that ends lowest is the fit that is kept.
+    """
+    m = np.maximum(np.exp(g) + hump, 1e-300)
+    pen = 0.0 if g.size < 3 else float(np.sum((g[:-2] - 2.0 * g[1:-1] + g[2:]) ** 2))
+    return float(np.sum(p / m) + np.sum(np.log(m))) + float(lam) * pen
+
+
+def _whittle_floor_step(
+    p: np.ndarray,
+    hump: np.ndarray,
+    g0: np.ndarray,
+    lam: float,
+    d2: tuple[np.ndarray, np.ndarray, np.ndarray],
+    *,
+    iters: int,
+    tol: float,
+) -> tuple[np.ndarray, float, int]:
+    """Damped Newton on ``g = log S`` of one (channel, block) — the S-step.
+
+    Minimizes :func:`whittle_floor_objective` over the whole frequency axis at
+    once, at a fixed ``H``.
+
+    The curvature used is the FISHER information ``(S / M)^2``, not the exact
+    second derivative. The exact one goes negative wherever a bin's periodogram
+    happens to sit far below the model, which on a 26 %-noisy estimate is a
+    third of the band, and a Newton system that is not positive definite has no
+    banded Cholesky. Fisher scoring is positive by construction, so the system
+    is ``diag((S/M)^2) + 2 lam D2^T D2`` — pentadiagonal, one ``solveh_banded``
+    per step — and it converges to the same stationary point.
+
+    The direction is held inside :data:`FLOOR_TRUST_NATS` and then halved until
+    the objective decreases, and the iterate that comes back is the best one
+    SEEN: the start is a valid answer, so a Newton pass that cannot improve on
+    it returns it unchanged.
+    """
+    from scipy.linalg import solveh_banded
+
+    d0, d1, dd2 = d2
+    n = int(g0.size)
+    g = np.asarray(g0, dtype=np.float64).copy()
+    best, best_obj = g.copy(), whittle_floor_objective(p, hump, g, lam)
+    used = 0
+    for _ in range(int(iters)):
+        s = np.exp(g)
+        m = np.maximum(s + hump, 1e-300)
+        grad = s * (m - p) / m**2
+        if n >= 3:
+            grad = grad + 2.0 * float(lam) * (d0 * g + _band_mul(g, d1, dd2))
+        w = (s / m) ** 2
+        ab = np.zeros((3, n), dtype=np.float64)
+        ab[2] = w + 2.0 * float(lam) * d0
+        ab[1, 1:] = 2.0 * float(lam) * d1
+        ab[0, 2:] = 2.0 * float(lam) * dd2
+        try:
+            step = np.asarray(solveh_banded(ab, -grad, lower=False), dtype=np.float64)
+        except np.linalg.LinAlgError:  # pragma: no cover — Fisher curvature is PD
+            break
+        big = float(np.max(np.abs(step)))
+        if not np.isfinite(big) or big <= 0.0:
+            break
+        if big > FLOOR_TRUST_NATS:
+            step = step * (FLOOR_TRUST_NATS / big)
+        moved = False
+        damp = 1.0
+        for _ in range(8):
+            cand = g + damp * step
+            val = whittle_floor_objective(p, hump, cand, lam)
+            if val < best_obj:
+                g, best, best_obj, moved = cand, cand.copy(), val, True
+                break
+            damp *= 0.5
+        used += 1
+        if not moved or min(big, FLOOR_TRUST_NATS) < float(tol):
+            break
+    return best, best_obj, used
+
+
+def _lorentzian_powers(
+    a_mat: np.ndarray, p: np.ndarray, s_lin: np.ndarray, hump: np.ndarray, *, iters: int = 2
+) -> np.ndarray:
+    """The H-step: non-negative line powers of one (channel, block), by IRLS.
+
+    The conditional problem in ``H`` is the same penalized Whittle likelihood,
+    whose Fisher weight per bin is ``1 / M^2``. So the Gauss-Newton step is one
+    WEIGHTED non-negative least squares — rows divided by ``M`` — against the
+    SIGNED excess ``P~ - S``, and it is iterated two or three times because
+    ``M`` moves with the answer.
+
+    The weight is the whole difference from a plain fit of the clipped excess.
+    A periodogram bin's variance is its own level squared, so an unweighted fit
+    is dominated by the loudest line in a block and reads the quiet ones off its
+    residual; and clipping at zero hides the direction that says a line is
+    OVER-explained, which is exactly the direction a floor that swallowed the
+    comb has to be pushed back along.
+
+    The design ``a_mat`` is the truncated Lorentzian basis on the block's own
+    region bins (:func:`_lorentzian_design`), and ``p``, ``s_lin`` and ``hump``
+    are that same slice of the pooled periodogram, the floor and the current
+    line field.
+    """
+    from scipy.optimize import nnls
+
+    if a_mat.size == 0:
+        return np.zeros(a_mat.shape[-1], dtype=np.float64)
+    m = np.maximum(s_lin + hump, 1e-300)
+    amp = np.zeros(a_mat.shape[-1], dtype=np.float64)
+    for _ in range(max(1, int(iters))):
+        w = 1.0 / m
+        amp, _ = nnls(a_mat * w[:, None], (p - s_lin) * w)
+        m = np.maximum(s_lin + a_mat @ amp, 1e-300)
+    return amp
+
+
+def _band_mul(g: np.ndarray, d1: np.ndarray, d2: np.ndarray) -> np.ndarray:
+    """Off-diagonal part of ``D2^T D2 @ g`` from its two super-diagonals.
+
+    The matrix is symmetric pentadiagonal, so its product is the diagonal term
+    (the caller's) plus this — one shifted multiply per band. Assembling the
+    sparse operator to take one product per Newton step is the alternative, and
+    it is the slower one.
+    """
+    out = np.zeros_like(g)
+    out[:-1] += d1 * g[1:]
+    out[1:] += d1 * g[:-1]
+    out[:-2] += d2 * g[2:]
+    out[2:] += d2 * g[:-2]
+    return out
+
+
+#: The starts of the ``(S, H)`` alternation, in decibels ON the warm floor. The
+#: alternation is BISTABLE where the lines blanket a band, and both basins are
+#: honest stationary points: from the masked fit the floor already sits on the
+#: blanket, so the first H-step finds no excess and nothing ever moves; from a
+#: floor 12 dB lower the lines claim the blanket and the floor comes back up
+#: only as far as the pure-floor bins demand. Measured on the dense fixture the
+#: two differ by 13 dB of fitted floor and the OBJECTIVE tells them apart, so
+#: the fit runs both and keeps the lower one. It is not a tuning knob; it is
+#: the admission that one start is not enough.
+FLOOR_START_DB = (0.0, -12.0)
+
+
+def _fit_cell(
+    p: np.ndarray,
+    g0: np.ndarray,
+    a_mat: np.ndarray,
+    kept: np.ndarray,
+    bins: np.ndarray,
+    lam: float,
+    diags: tuple[np.ndarray, np.ndarray, np.ndarray],
+    *,
+    rounds: int,
+    newton_iters: int,
+    tol: float,
+    round_tol: float,
+    n_f: int,
+) -> tuple[np.ndarray, np.ndarray, float, int]:
+    """One (microphone, block) fit from one start: ``(log S, H, objective, steps)``.
+
+    The alternation itself — H-step, S-step, repeat — on the one cell every
+    other loop of :func:`fit_floor_powers` is a loop over. The objective comes
+    back with it because the caller CHOOSES by it, and the loop stops as soon as
+    a round buys less than ``tol`` of it: on a real window most cells are done
+    in two or three rounds and only the blanketed ones need the full budget.
+    """
+    g = np.asarray(g0, dtype=np.float64).copy()
+    amp = np.zeros(int(kept.size), dtype=np.float64)
+    hump = np.zeros(int(n_f), dtype=np.float64)
+    obj = whittle_floor_objective(p, hump, g, lam)
+    used = 0
+    for i in range(int(rounds)):
+        prev = obj
+        if kept.size:
+            # The first round has no line field yet, so its weights are the
+            # floor's alone and one more IRLS pass is worth taking; afterwards
+            # the weights move by percents and one is enough.
+            amp = _lorentzian_powers(
+                a_mat, p[bins], np.exp(g[bins]), hump[bins], iters=2 if i == 0 else 1
+            )
+            hump = np.zeros(int(n_f), dtype=np.float64)
+            hump[bins] = a_mat @ amp
+        g, obj, it = _whittle_floor_step(
+            p, hump, g, lam, diags, iters=int(newton_iters), tol=float(tol)
+        )
+        used += it
+        if i and prev - obj < float(round_tol) * max(abs(obj), 1.0):
+            break
+    return g, amp, obj, used
+
+
+def fit_floor_powers(
+    audio: Any,
+    sr: float,
+    r_audio: Any,
+    k_hi: int,
+    *,
+    n_fft: int = 4096,
+    hop: int | None = None,
+    n_blocks: int = 4,
+    b_f_hz: float = FLOOR_LENGTH_HZ,
+    slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    rounds: int = FLOOR_POWER_ROUNDS,
+    screen_rounds: int = FLOOR_SCREEN_ROUNDS,
+    warm: SmoothPSD | None = None,
+    start_db: tuple[float, ...] = FLOOR_START_DB,
+    newton_iters: int = 30,
+    tol: float = 1e-8,
+    round_tol: float = 1e-7,
+    frames_per_chunk: int = 64,
+    t_start_s: float = 0.0,
+) -> tuple[SmoothPSD, HPowers]:
+    """F1: the floor and the line powers, fitted JOINTLY and with NO mask.
+
+    The v3 floor (:func:`masked_smooth_psd`) is a projection: mask every
+    predicted line, pool what is left, and smooth it. That works while the lines
+    are sparse and fails exactly where they are not — above about ``k`` 10 four
+    interleaved combs whose lines are ``0.6 k`` Hz wide leave no unmasked bin at
+    all, so the fit has to BRIDGE a dense band instead of reading it, and the
+    bridge is wherever the smoother's tension puts it. The v4 fit removes the
+    mask and puts the lines in the MODEL instead::
+
+        minimize over (g = log S, H >= 0):
+          sum_f [ P~_f / M_f + log M_f ] + lam_f ||D2_f g||^2 ,
+          M_f = e^{g_f} + sum_l H_l / (1 + ((f - f_l) / gamma_l)^2)
+
+    per (microphone, time block), alternating two steps that are each solvable:
+
+    - the **H-step** is a non-negative least squares of the truncated
+      Lorentzian design (:func:`_lorentzian_design`, the same construction the
+      H-aware measure uses) against the clipped excess ``max(0, P~ - S)``, with
+      the lines at the block's own ``k r_r`` and the half width the measured
+      law ``max(0.6 k, one bin)``;
+    - the **S-step** is damped Fisher scoring on ``g`` under the pentadiagonal
+      penalty (:func:`_whittle_floor_step`), warm started from ``warm`` — the
+      current masked fit — and objective guarded, so it can only improve on it.
+
+    ``P~`` is the block's periodogram pooled by the MEDIAN over its frames and
+    debiased by ``ln 2`` (:func:`_pool_periodogram`): a chi-square-noisy mean is
+    dragged by the loudest frame of a block, and the fit is a level.
+
+    The fit runs on the ORIGINAL signal and never on a residual. The model
+    explains the lines through ``H``, so there is nothing to subtract first, and
+    subtracting first is what makes a hard-EM alternation biased: the coherent
+    reconstruction is itself an estimate, and its error would be read as floor.
+
+    ``b_f_hz`` is the floor's smoothness LENGTH SCALE in hertz
+    (:func:`floor_lambda`), which is the one hyperparameter the fit adds.
+
+    Returns the same :class:`SmoothPSD` every v3 consumer already reads — same
+    grid, same block centers, same units, ``n_cep`` 0 because there is no
+    cepstral lift any more — beside the :class:`HPowers` that are the v4 model's
+    amplitude parameters and the generator's targets.
+    """
+
+    tic = perf_counter()
+    y = np.atleast_2d(np.asarray(audio, dtype=np.float64))
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    n_ch, n_t = int(y.shape[0]), int(y.shape[-1])
+    n_fft = int(n_fft)
+    step = int(n_fft // 2 if hop is None else hop)
+    n_bl = max(1, int(n_blocks))
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / float(sr))
+    df = float(sr) / n_fft
+    starts = frame_starts(n_t, n_fft, step)
+
+    base = (
+        masked_smooth_psd(
+            y,
+            float(sr),
+            r,
+            int(k_hi),
+            n_fft=n_fft,
+            hop=step,
+            n_blocks=n_bl,
+            t_start_s=float(t_start_s),
+        )
+        if warm is None
+        else warm
+    )
+    rotor_l, k_l = _track_table(int(r.shape[0]), 1, int(k_hi))
+    if starts.size == 0 or n_t < n_fft:
+        # Nothing to fit on. The masked fit's own degenerate answer stands, and
+        # every line power is zero — which makes the v4 arm the v3 arm here.
+        return base, HPowers(
+            rotor=rotor_l,
+            k=k_l,
+            t_block=np.asarray(base.t_block, dtype=np.float64),
+            lines=np.zeros((len(base.t_block), len(k_l))),
+            half=np.zeros((len(base.t_block), len(k_l))),
+            h=np.zeros((n_ch, len(base.t_block), len(k_l))),
+            diag={"n_frames": 0, "rounds": 0},
+        )
+
+    scale = 1.0 / (float(sr) * float((np.hanning(n_fft) ** 2).sum()))
+    block_of = np.minimum((starts * n_bl) // max(1, n_t), n_bl - 1)
+    p_block = _pool_periodogram(y, starts, n_fft, scale, block_of, n_bl, frames_per_chunk)
+
+    # The line table, per block: the block's own mean rate, so a line sits where
+    # it sat on average while that block's periodogram was measured.
+    lines = np.empty((n_bl, len(k_l)), dtype=np.float64)
+    half = np.empty((n_bl, len(k_l)), dtype=np.float64)
+    for b in range(n_bl):
+        sel = starts[block_of == b]
+        span = (
+            r[:, int(sel[0]) : int(sel[-1]) + n_fft].mean(axis=-1) if sel.size else r.mean(axis=-1)
+        )
+        lines[b], kk = comb_lines(span, int(k_hi))
+        half[b] = np.maximum(float(slope_hz_per_k) * kk, df)
+
+    lam = floor_lambda(float(b_f_hz), float(sr), n_fft)
+    log_s = np.asarray(_floor_on_grid(base, float(sr), n_fft), dtype=np.float64).copy()
+    if log_s.shape[0] != n_ch:
+        raise ValueError(f"the warm floor has {log_s.shape[0]} microphones, the audio has {n_ch}")
+    h = np.zeros((n_ch, n_bl, len(k_l)), dtype=np.float64)
+    d2 = second_diff(int(freq.size))
+    d2td2 = (d2.T @ d2).tocsr()
+    diags = (
+        np.asarray(d2td2.diagonal(0), dtype=np.float64),
+        np.asarray(d2td2.diagonal(1), dtype=np.float64),
+        np.asarray(d2td2.diagonal(2), dtype=np.float64),
+    )
+    # The bins each block's fit may look at: the union of the line supports,
+    # which is where the design has a non-zero column at all.
+    region = [
+        np.flatnonzero(_line_mask(freq, lines[b], LORENTZ_SUPPORT_HWHM * half[b]))
+        for b in range(n_bl)
+    ]
+    design = [
+        _lorentzian_design(freq, region[b], lines[b], half[b])
+        if region[b].size
+        else (np.zeros((0, 0)), np.zeros(0, dtype=np.int64))
+        for b in range(n_bl)
+    ]
+
+    n_pos = 0.0
+    n_amp = 0.0
+    newton = 0
+    n_low = 0
+    for b in range(n_bl):
+        kept = design[b][1]
+        for c in range(n_ch):
+
+            def cell(g0: np.ndarray, n: int, _b: int = b, _c: int = c) -> Any:
+                return _fit_cell(
+                    p_block[_c, _b],
+                    g0,
+                    design[_b][0],
+                    design[_b][1],
+                    region[_b],
+                    lam,
+                    diags,
+                    rounds=max(1, int(n)),
+                    newton_iters=int(newton_iters),
+                    tol=float(tol),
+                    round_tol=float(round_tol),
+                    n_f=int(freq.size),
+                )
+
+            # SCREEN the starts on a short budget, then REFINE only the one that
+            # is ahead. The two basins part company in the first round or two —
+            # the blanketed cells go 10 dB apart immediately — so the screen
+            # buys the guard at a fraction of the price of running both to
+            # convergence, which on a full window is most of the cost.
+            screen = [
+                cell(log_s[c, b] + float(off) * np.log(10.0) / 10.0, screen_rounds)
+                for off in start_db
+            ]
+            pick = int(np.argmin([v[2] for v in screen]))
+            newton += int(sum(v[3] for v in screen))
+            n_low += int(pick > 0)
+            g_out, amp, _, it = (
+                cell(screen[pick][0], int(rounds) - int(screen_rounds))
+                if int(rounds) > int(screen_rounds)
+                else screen[pick]
+            )
+            log_s[c, b] = g_out
+            h[c, b, kept] = amp
+            newton += it
+            n_pos += float(np.count_nonzero(amp > 0.0))
+            n_amp += float(amp.size)
+
+    psd = SmoothPSD(
+        freq=freq,
+        t_block=np.asarray(base.t_block, dtype=np.float64),
+        log_s=log_s,
+        n_masked_frac=0.0,
+        n_cep=0,
+    )
+    return psd, HPowers(
+        rotor=rotor_l,
+        k=k_l,
+        t_block=np.asarray(base.t_block, dtype=np.float64),
+        lines=lines,
+        half=half,
+        h=h,
+        diag={
+            "n_frames": int(starts.size),
+            "n_blocks": n_bl,
+            "n_lines": int(len(k_l)),
+            "rounds": max(1, int(rounds)),
+            "b_f_hz": float(b_f_hz),
+            "lambda_f": lam,
+            "newton_steps": int(newton),
+            # How many of the offered lines took a positive amplitude, and how
+            # much of the band the line supports cover. The second is the number
+            # that says whether a masked fit had anything left to read.
+            "active_line_frac": round(n_pos / max(n_amp, 1.0), 4),
+            "region_bin_frac": round(
+                float(np.mean([r_b.size for r_b in region]) / max(freq.size, 1)), 4
+            ),
+            # How often the LOWERED start beat the warm one. Near zero says the
+            # masked fit was already in the right basin; near one says the comb
+            # blankets the band and the v3 floor was sitting on top of it.
+            "low_start_frac": round(n_low / max(n_ch * n_bl, 1), 4),
+            "start_db": [float(v) for v in start_db],
+            "h_total_power": float(np.pi * np.sum(half[None, :, :] * h)),
+            "wall_s": round(perf_counter() - tic, 2),
+        },
+    )
+
+
+def floor_at_tracks(psd: SmoothPSD, k: Any, rotor: Any, r_env: Any, t_env: Any) -> np.ndarray:
+    """``(M, J)`` log floor at every track's own line, ``log S(k r(t), t)``.
+
+    THE lookup both users of the floor make: the whitening weight
+    (:func:`whiten_weights`) reads it as ``-0.5 log S`` and the v4 amplitude
+    prior reads it as the level the line power is compared against. It is the
+    microphone-POOLED surface (:meth:`SmoothPSD.pooled`) because a track is one
+    column of a system every microphone is a right-hand side against, and it is
+    interpolated linearly in time between the block centers.
+    """
+    ks = np.asarray(k, dtype=np.float64)
+    rot = np.asarray(rotor, dtype=int)
+    rr = np.atleast_2d(np.asarray(r_env, dtype=np.float64))
+    tt = np.asarray(t_env, dtype=np.float64)
+    f_mj = ks[:, None] * rr[rot]  # (M, J)
+    pooled = psd.pooled()  # (B, F)
+    per_block = np.stack(
+        [
+            np.interp(f_mj.ravel(), psd.freq, pooled[b]).reshape(f_mj.shape)
+            for b in range(len(pooled))
+        ]
+    )  # (B, M, J)
+    if per_block.shape[0] == 1:
+        return per_block[0]
+    tb = np.asarray(psd.t_block, dtype=np.float64)
+    pos = np.clip(np.interp(tt, tb, np.arange(len(tb), dtype=np.float64)), 0, len(tb) - 1)
+    lo = np.floor(pos).astype(int)
+    hi = np.minimum(lo + 1, len(tb) - 1)
+    frac = (pos - lo)[None, :]
+    return per_block[lo, :, np.arange(len(tt))].T * (1.0 - frac) + (
+        per_block[hi, :, np.arange(len(tt))].T * frac
+    )
+
+
 def whiten_weights(
     psd: SmoothPSD,
     k: Any,
@@ -729,30 +1376,7 @@ def whiten_weights(
     the smoothness prior, and it is clamped to ``+/- clamp_db`` so a single
     quiet band cannot dominate a solve.
     """
-    ks = np.asarray(k, dtype=np.float64)
-    rot = np.asarray(rotor, dtype=int)
-    rr = np.atleast_2d(np.asarray(r_env, dtype=np.float64))
-    tt = np.asarray(t_env, dtype=np.float64)
-    f_mj = ks[:, None] * rr[rot]  # (M, J)
-    pooled = psd.pooled()  # (B, F)
-    per_block = np.stack(
-        [
-            np.interp(f_mj.ravel(), psd.freq, pooled[b]).reshape(f_mj.shape)
-            for b in range(len(pooled))
-        ]
-    )  # (B, M, J)
-    if per_block.shape[0] == 1:
-        log_s = per_block[0]
-    else:
-        tb = np.asarray(psd.t_block, dtype=np.float64)
-        pos = np.clip(np.interp(tt, tb, np.arange(len(tb), dtype=np.float64)), 0, len(tb) - 1)
-        lo = np.floor(pos).astype(int)
-        hi = np.minimum(lo + 1, len(tb) - 1)
-        frac = (pos - lo)[None, :]
-        log_s = per_block[lo, :, np.arange(len(tt))].T * (1.0 - frac) + (
-            per_block[hi, :, np.arange(len(tt))].T * frac
-        )
-    log_u = -0.5 * log_s
+    log_u = -0.5 * floor_at_tracks(psd, k, rotor, r_env, t_env)
     lim = float(clamp_db) * np.log(10.0) / 20.0
     ok = np.isfinite(log_u)
     log_u = np.clip(log_u - float(np.mean(log_u[ok])), -lim, lim)
@@ -760,6 +1384,126 @@ def whiten_weights(
     # whitening cannot move the balance between the data term and the prior. The
     # clamp then bounds the SPREAD at 2 * clamp_db, not each value.
     return np.exp(log_u - float(np.mean(log_u[ok])))
+
+
+#: Base of the v4 envelope bandwidth law, in hertz. It is a FLOOR under
+#: ``0.6 k``, so the fundamental keeps a usable band and every harmonic above
+#: about ``k`` 2 gets the measured linewidth instead.
+V4_BW0_HZ = 1.0
+
+#: The one calibrated constant of the v4 amplitude prior: the precision a track
+#: is given is ``beta = c0 * S / H`` in the solver's own data-weight units.
+#:
+#: It is 1 for a reason and not by fitting. The envelope band is
+#: ``b_A(k) = 0.6 k`` Hz and the line's own half width is the same ``0.6 k``, so
+#: the line's spectrum is nearly flat across the band the envelope admits; the
+#: noise is flat there too, so the ratio of the two POWERS the band admits is
+#: exactly the ratio of the two DENSITIES, ``S / H``. The optimal scalar
+#: shrinkage of that observation is ``H / (H + S)``, which is what a diagonal of
+#: ``S / H`` beside a data weight of 1 produces.
+#:
+#: Measured (``tests/tracking/test_v4_ridge.py``, three seeds): the ridged
+#: solve's reconstructed power over the Wiener target is 0.97 / 1.02 / 1.01 at
+#: ``k`` 5 / 20 / 60 for a line 10 dB over the floor, and 1.00 / 1.09 / 1.07 for
+#: one 4.8 dB over it — inside the +/-20 % the design asks for, where 0.8 and
+#: 1.5 are both outside it at the second signal-to-noise ratio.
+V4_RIDGE_C0 = 1.0
+
+
+def v4_rho2_gain(
+    r_audio: Any,
+    k_hi: int,
+    cfg: Any,
+    *,
+    b0_hz: float = V4_BW0_HZ,
+    slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+    rho_scale: float = 1.0,
+) -> np.ndarray:
+    """``(M,)`` gain on ``rho^2`` for the v4 band law ``max(b0, 0.6 k)`` Hz.
+
+    The v3 arm caps every band at a fraction of the local LINE SPACING
+    (:class:`tracking.decompose.BandwidthSchedule`), and that cap is not a
+    modelling statement — it is what an IMPROPER prior needs to stay
+    identifiable, because two overlapping passbands with nothing bounding their
+    levels have a cancelling mode. Under the v4 amplitude prior
+    (:func:`v4_ridge`) nothing is improper any more, so the band is the measured
+    linewidth law and nothing else.
+
+    The gain is taken against :func:`tracking.decompose.base_bandwidths`, which
+    is the band the solver would have used by itself, exactly as the v2 schedule
+    does — so one construction converts a wanted bandwidth into the currency the
+    solver takes, and :attr:`tracking.Envelopes.bw_track` still records what the
+    solve really used.
+    """
+    from tracking.decompose import base_bandwidths
+
+    vk = cfg.vk_config(int(k_hi))
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    _, k = _track_table(int(r.shape[0]), vk.k_min, int(k_hi))
+    _, fs_env = env_stride(vk)
+    base = np.asarray(base_bandwidths(r, int(k_hi), cfg), dtype=np.float64)
+    want = np.maximum(float(b0_hz), float(slope_hz_per_k) * k.astype(np.float64))
+    want = np.clip(want, _tuma_bw_min(fs_env, vk.p), 0.9 * fs_env)
+    return (
+        np.array(
+            [
+                (_tuma_rho(float(b), fs_env, vk.p) / _tuma_rho(float(b0), fs_env, vk.p)) ** 2
+                for b, b0 in zip(want, base, strict=True)
+            ]
+        )
+        * float(rho_scale) ** 2
+    )
+
+
+def v4_ridge(
+    psd: SmoothPSD,
+    hp: HPowers,
+    k: Any,
+    rotor: Any,
+    r_env: Any,
+    t_env: Any,
+    weight: Any | None = None,
+    *,
+    c0: float = V4_RIDGE_C0,
+) -> np.ndarray:
+    """``(M, J)`` amplitude-prior precision ``beta = c0 S / H`` for block A.
+
+    The envelope of track ``m`` is given a Gaussian prior whose variance is that
+    track's own fitted line power, so its posterior is the Wiener one: a line
+    far above the floor keeps its amplitude, a track sitting ON the floor is
+    shrunk toward zero, and the shrinkage is a RATIO and not a threshold. That
+    ratio is what lets the bands open to ``0.6 k`` Hz with no spacing cap — the
+    v3 cap protected an improper prior, and this prior is proper.
+
+    Three things decide the arithmetic:
+
+    - ``H`` is POOLED over microphones (:meth:`HPowers.pooled`). Every channel
+      is a right-hand side against ONE banded system, so the system carries one
+      prior per track and not one per (track, microphone), and the pooled line
+      power is what that one prior can be.
+    - ``H`` is read at the track's own block (:meth:`HPowers.block_of`) —
+      piecewise constant in time, because it is a level and not a spectrum.
+    - the precision is expressed in the DATA TERM's own units. The whitened
+      solve carries ``u^2 = S_geo / S`` on its diagonal, so a ridge that is to
+      mean "noise over signal" is ``c0 u^2 S / H``, which is ``c0 S_geo / H`` up
+      to the whitening clamp. With no whitening the data term is the bare
+      validity mask and the same expression at ``u = 1`` is the ratio itself.
+
+    A track whose line power came back at zero — the fit found no line there —
+    gets a very large ridge rather than an infinite one, so the solve stays
+    finite and that envelope is simply pulled to zero.
+    """
+    log_s = floor_at_tracks(psd, k, rotor, r_env, t_env)  # (M, J)
+    u2 = np.ones_like(log_s) if weight is None else np.asarray(weight, dtype=np.float64) ** 2
+    idx = np.asarray(hp.block_of(np.asarray(t_env, dtype=np.float64)), dtype=np.int64)
+    pooled = hp.pooled()  # (B, L)
+    ks = np.asarray(k, dtype=np.int64)
+    rot = np.asarray(rotor, dtype=np.int64)
+    lookup = {(int(rr), int(kk)): i for i, (rr, kk) in enumerate(zip(hp.rotor, hp.k, strict=True))}
+    take = np.array([lookup.get((int(rot[m]), int(ks[m])), -1) for m in range(len(ks))])
+    h_mj = np.where(take[:, None] >= 0, pooled[idx[None, :], np.maximum(take, 0)[:, None]], 0.0)
+    s_lin = np.exp(log_s)
+    return float(c0) * u2 * s_lin / np.maximum(h_mj, 1e-12 * np.maximum(s_lin, 1e-300))
 
 
 def whitened_flatness(
@@ -1099,6 +1843,35 @@ class JointConfig:
     #: ``h_aware``, and off by default because it costs one non-negative least
     #: squares per (channel, frame).
     h_lorentzian: bool = False
+    #: THE v4 master switch — one model instead of a stack of bolt-ons. It
+    #: changes four things at once, and they only make sense together:
+    #:
+    #: - the floor block fits ``S`` and the line powers ``H`` JOINTLY with no
+    #:   mask, on the ORIGINAL audio (:func:`fit_floor_powers`);
+    #: - block A opens its bands to the physical law ``max(b0, 0.6 k)`` Hz with
+    #:   NO spacing cap (:func:`v4_rho2_gain`) and carries a proper amplitude
+    #:   prior ``c0 S / H`` that makes the overlapping system definite again
+    #:   (:func:`v4_ridge`);
+    #: - the objective becomes the MARGINAL Whittle likelihood ``J_v4``
+    #:   (:func:`map_objective`), which has no envelope term and no separate
+    #:   rent;
+    #: - the stochastic WOLA split is not run — the comb channel already carries
+    #:   the line flanks, so the decomposition is two channels and a
+    #:   subtraction.
+    #:
+    #: Off by default, and off is the v3 arm call for call. The four measure
+    #: bolt-ons above (``marginal``, ``h_aware``, ``adaptive_floor``,
+    #: ``h_lorentzian``) are what v4 replaces; they stay for the comparison runs
+    #: and are not developed further.
+    v4: bool = False
+    #: Smoothness length scale of the v4 floor, in hertz (:func:`floor_lambda`).
+    v4_b_f_hz: float = FLOOR_LENGTH_HZ
+    #: Round budget of the v4 ``(S, H)`` fit, per (microphone, block).
+    v4_rounds: int = FLOOR_POWER_ROUNDS
+    #: Strength of the v4 amplitude prior (:data:`V4_RIDGE_C0`).
+    v4_ridge_c0: float = V4_RIDGE_C0
+    #: Floor of the v4 envelope bandwidth law, in hertz (:data:`V4_BW0_HZ`).
+    v4_b0_hz: float = V4_BW0_HZ
 
     def k_cap(self, it: int) -> int:
         """Trustable harmonic cap of iteration ``it`` (1 based)."""
@@ -1117,6 +1890,10 @@ class JointResult:
     psd: SmoothPSD  # the final floor model
     residual: np.ndarray  # (C, T)
     track_energy: np.ndarray  # (M,)
+    #: v4 only: the per-line powers fitted beside the floor. They are the
+    #: model's own amplitude parameters, so they are a first-class PRODUCT and
+    #: not a diagnostic — the generator's targets come from here.
+    h_powers: HPowers | None = None
     iterations: list[dict[str, Any]] = field(default_factory=list)
     #: Regime 3, when :func:`stochastic_block` ran: the comb-locked part of
     #: ``residual`` that no coherent envelope can carry. ``None`` is the shipped
@@ -1150,6 +1927,9 @@ class JointState:
     theta: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     psi: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     psd: SmoothPSD | None = None
+    #: v4 only: the line powers the floor block fitted beside ``psd``. Block A
+    #: reads them as its amplitude prior, so the two always travel together.
+    h_powers: HPowers | None = None
     env: Envelopes | None = None
     x_eff: np.ndarray | None = None
     residual: np.ndarray | None = None
@@ -1238,28 +2018,43 @@ def solve_block(state: JointState, audio: Any) -> JointState:
     y = np.asarray(audio, dtype=np.float64)
     stride, _ = state.grid
     rotor, k = state.tracks
+    r_env = state.carrier[:, ::stride][:, : state.n_env]
+    t_env = np.arange(state.n_env, dtype=np.float64) * stride / float(state.cfg.sr)
     weight = (
-        whiten_weights(
-            state.psd,
-            k,
-            rotor,
-            state.carrier[:, ::stride][:, : state.n_env],
-            np.arange(state.n_env, dtype=np.float64) * stride / float(state.cfg.sr),
-            clamp_db=jc.whiten_clamp_db,
-        )
+        whiten_weights(state.psd, k, rotor, r_env, t_env, clamp_db=jc.whiten_clamp_db)
         if (jc.whiten and state.psd is not None)
         else None
     )
-    gain = state.rho2_gain
+    # The v4 band law REPLACES the v2 schedule the state was seeded with: the
+    # spacing cap it carries exists to keep an improper prior identifiable, and
+    # the amplitude prior below is proper.
+    gain = (
+        v4_rho2_gain(
+            state.carrier,
+            int(state.k_hi),
+            state.cfg,
+            b0_hz=jc.v4_b0_hz,
+            slope_hz_per_k=jc.bw_psi_slope,
+        )
+        if jc.v4
+        else state.rho2_gain
+    )
     if weight is not None and jc.bandwidth_neutral:
         mean_u2 = np.mean(weight**2, axis=-1)
         gain = mean_u2 if gain is None else gain * mean_u2
+    ridge = (
+        v4_ridge(state.psd, state.h_powers, k, rotor, r_env, t_env, weight, c0=jc.v4_ridge_c0)
+        if (jc.v4 and state.psd is not None and state.h_powers is not None)
+        else None
+    )
     # The three joint hooks, passed as a mapping: they are what turns the v2
-    # solver into block A (see vk_envelopes' docstring).
+    # solver into block A (see vk_envelopes' docstring). The v4 arm adds a
+    # fourth, the amplitude prior.
     hooks: dict[str, Any] = {
         "phase_offset": upsample_env(state.theta, int(y.shape[-1]), stride),
         "env_rotation": state.psi,
         "data_weight": weight,
+        "ridge": ridge,
     }
     env: Envelopes = vk_envelopes(
         y, state.carrier, state.vk, k_hi=int(state.k_hi), rho2_gain=gain, **hooks
@@ -1310,8 +2105,37 @@ def floor_block(state: JointState, audio: Any) -> JointState:
     Before the first solve there is no residual, so the floor is fitted on the
     AUDIO; after one, on the residual. Both are the same statement — the floor
     is read between the lines of whatever is left.
+
+    Under ``JointConfig.v4`` neither sentence holds any more. The fit is the
+    JOINT one (:func:`fit_floor_powers`), so there is no mask and no "between
+    the lines"; and it runs on the ORIGINAL audio every round, because the model
+    explains the lines through ``H`` and subtracting an estimate first is what
+    makes a hard-EM alternation biased. What DOES change between rounds is the
+    carrier: the lines are placed at the shaft correction block B has learned so
+    far, which is the only reason a refit is worth making at all. The previous
+    round's floor is the warm start, so the later refits are cheap.
     """
     jc = state.jcfg
+    if jc.v4:
+        stride, fs_env = state.grid
+        dr = theta_rate(state.theta, fs_env) if state.theta.size else state.theta
+        carrier = state.carrier
+        if dr.size:
+            carrier = carrier + upsample_env(dr, int(state.n_t), stride)
+        psd, hp = fit_floor_powers(
+            np.asarray(audio, dtype=np.float64),
+            float(state.cfg.sr),
+            carrier,
+            int(state.k_hi),
+            n_fft=jc.psd_n_fft,
+            n_blocks=jc.psd_blocks,
+            b_f_hz=float(jc.v4_b_f_hz),
+            slope_hz_per_k=float(jc.bw_psi_slope),
+            rounds=int(jc.v4_rounds),
+            warm=state.psd,
+            t_start_s=float(state.t_start_s),
+        )
+        return replace(state, psd=psd, h_powers=hp)
     src = np.asarray(audio if state.residual is None else state.residual, dtype=np.float64)
     return replace(
         state,
@@ -2032,6 +2856,66 @@ def _lorentzian_hump(
     }
 
 
+def _v4_data(
+    p_meas: np.ndarray,
+    log_s: np.ndarray,
+    block_of: np.ndarray,
+    starts: np.ndarray,
+    r_audio: Any,
+    hp: HPowers,
+    *,
+    sr: float,
+    n_fft: int,
+    slope_hz_per_k: float = LINEWIDTH_HZ_PER_K,
+) -> dict[str, Any]:
+    """The MARGINAL Whittle pair of the v4 model — the whole data term of ``J_v4``.
+
+    ``M = S + sum_l H_l L_l`` with the lines at the carrier's own positions in
+    each FRAME and the fitted powers of that frame's block, and the readout is
+    ``sum [P / M + log M]`` over every cell. It is one term and not two: the
+    v3 split into ``data`` and ``rent`` existed because ``S`` was the whole noise
+    model and its logarithm was the only Occam charge there was. Here the comb is
+    IN the noise model, so a hypothesis that puts a line where there is none pays
+    for it through the same ``log M`` that a floor pays through, and separating
+    the two halves would only invite reading one without the other.
+
+    The line positions move from frame to frame while the powers are held over
+    their block. That asymmetry is the model's: ``H`` is a level, which four
+    seconds of recording can measure, and a position is a trajectory, which they
+    cannot.
+    """
+    r = np.atleast_2d(np.asarray(r_audio, dtype=np.float64))
+    n_ch, n_fr, n_f = (int(v) for v in p_meas.shape)
+    n_fft = int(n_fft)
+    freq = np.fft.rfftfreq(n_fft, d=1.0 / float(sr))
+    df = float(sr) / n_fft
+    k_hi = int(np.max(hp.k)) if hp.k.size else 0
+    total = 0.0
+    h_energy = 0.0
+    for i in range(n_fr):
+        s0 = int(starts[i])
+        b = int(block_of[i])
+        rate = r[:, s0 : s0 + n_fft].mean(axis=-1)
+        lines, kk = comb_lines(rate, k_hi)
+        half = np.maximum(float(slope_hz_per_k) * kk, df)
+        s_lin = np.exp(log_s[:, b, :])  # (C, F)
+        m = s_lin.copy()
+        bins = np.flatnonzero(_line_mask(freq, lines, LORENTZ_SUPPORT_HWHM * half))
+        if bins.size and lines.size == hp.h.shape[-1]:
+            design, kept = _lorentzian_design(freq, bins, lines, half)
+            if kept.size:
+                # (bins, kept) @ (kept, C) — one matmul for every microphone.
+                m[:, bins] += (design @ hp.h[:, b, :][:, kept].T).T
+                h_energy += float(np.sum(m[:, bins] - s_lin[:, bins]))
+        m = np.maximum(m, 1e-300)
+        total += float(np.sum(p_meas[:, i] / m)) + float(np.sum(np.log(m)))
+    return {
+        "data_v4": total,
+        "h_energy_v4": h_energy,
+        "n_lines_v4": int(hp.k.size),
+    }
+
+
 def map_objective(
     residual: Any,
     sr: float,
@@ -2057,6 +2941,9 @@ def map_objective(
     h_width_factor: float = STOCHASTIC_WIDTH_FACTOR,
     adaptive_floor: bool = False,
     h_lorentzian: bool = False,
+    v4_powers: HPowers | None = None,
+    v4_carrier: Any | None = None,
+    v4_b_f_hz: float = FLOOR_LENGTH_HZ,
 ) -> dict[str, Any]:
     """THE converged MAP objective of the joint model, term by term::
 
@@ -2202,6 +3089,29 @@ def map_objective(
     also returns ``data_h`` / ``total_h`` beside them (never instead of them),
     plus ``h_cells`` (region cells) and ``h_energy`` (the summed ``H``).
 
+    ``v4_powers`` with ``v4_carrier`` switches on ``J_v4``, THE objective of the
+    v4 model — and unlike everything above it, it is not a correction on top of
+    the profiled readout but a different objective::
+
+        J_v4 = sum_{c,f,t} [ P / M + log M ]        M = S + sum_l H_l L_l
+             + lam_theta ||D2 theta||^2 + sum lam_psi(k) ||D2 psi||^2
+             + lam_f sum ||D2 log S||^2
+
+    Three differences from ``total``, and each is a deletion:
+
+    - there is no ENVELOPE term. The line processes are integrated out, not
+      profiled, so there is nothing to charge curvature on and nothing to
+      correct for with a pseudo-determinant. What the ``marginal`` bolt-on
+      approximated, this does not need.
+    - there is no separate ``rent``. The comb is in the noise model, so
+      ``log M`` is the one Occam charge and it covers both the floor and the
+      lines. A hypothesis that opens a line on empty floor pays through it.
+    - the floor's smoothness penalty is EXPLICIT (:func:`floor_penalty`),
+      because ``S`` is a fitted parameter here and not a projection.
+
+    It comes back as ``data_v4`` / ``floor_penalty`` / ``total_v4`` beside every
+    v3 column, never instead of them, so one run compares the two.
+
     It is a pure OBSERVER: it reads finished arrays and touches nothing the
     solver will read again, so switching it on cannot move a single product.
     """
@@ -2220,6 +3130,7 @@ def map_objective(
     n_frames = 0
     h_aware: dict[str, Any] = {}
     gamma_read: dict[str, Any] = {}
+    v4_read: dict[str, Any] = {}
     if starts.size and n_t >= int(n_fft):
         block_of = np.minimum((starts * n_bl) // max(1, n_t), n_bl - 1)
         s_lin = np.exp(log_s)
@@ -2227,11 +3138,8 @@ def map_objective(
         # The measured surface is KEPT only for the readouts that need every
         # frame at once — the H-aware one (its smoother reaches across chunk
         # boundaries) and the adaptive floor (its gain is smoothed over frames).
-        p_all = (
-            np.empty((n_ch, int(starts.size), n_f), dtype=np.float64)
-            if (h_carrier is not None or adaptive_floor)
-            else None
-        )
+        want_all = h_carrier is not None or adaptive_floor or v4_powers is not None
+        p_all = np.empty((n_ch, int(starts.size), n_f), dtype=np.float64) if want_all else None
         done = 0
         for sub, chunk in stft_power(y, starts, int(n_fft), frames_per_chunk):
             sel = block_of[done : done + sub.size]
@@ -2267,6 +3175,18 @@ def map_objective(
                     "max": round(float(np.max(gain)), 4),
                 }
             }
+        if v4_powers is not None and v4_carrier is not None and p_all is not None:
+            v4_read = _v4_data(
+                p_all,
+                log_s,
+                block_of,
+                starts,
+                v4_carrier,
+                v4_powers,
+                sr=float(sr),
+                n_fft=int(n_fft),
+                slope_hz_per_k=float(h_slope_hz_per_k),
+            )
         if h_carrier is not None and p_all is not None:
             h_aware = _h_aware_data(
                 p_all,
@@ -2333,6 +3253,13 @@ def map_objective(
         # ``data_h`` already carries the pair's whole change, so the H-aware
         # total swaps it for ``data`` and leaves every other term alone.
         h_aware["total_h"] = total - data + float(h_aware["data_h"])
+    if v4_read:
+        # J_v4 is built from its OWN terms and not from ``total``: it has no
+        # envelope term and no separate rent, so there is nothing of the
+        # profiled total to reuse beyond the two phase priors.
+        pen = floor_penalty(psd, float(v4_b_f_hz))
+        v4_read["floor_penalty"] = pen
+        v4_read["total_v4"] = float(v4_read["data_v4"]) + phase_priors + pen
     return {
         "total": total,
         "data": data,
@@ -2344,6 +3271,7 @@ def map_objective(
         **marginal,
         **h_aware,
         **gamma_read,
+        **v4_read,
         "n_cells": int(n_ch * n_frames * n_f),
         "n_frames": n_frames,
         "n_freq": n_f,
@@ -2440,7 +3368,7 @@ def _curvature(v: Any, weight: Any | None = None) -> float:
     return float(np.sum(w * np.sum(sq, axis=-1)))
 
 
-def joint_objective(state: JointState) -> dict[str, Any]:
+def joint_objective(state: JointState, audio: Any | None = None) -> dict[str, Any]:
     """:func:`map_objective` of a :class:`JointState` — the state's own weights.
 
     Every argument is read off the state, so the objective is evaluated at the
@@ -2453,12 +3381,27 @@ def joint_objective(state: JointState) -> dict[str, Any]:
     the floor fitted on the previous round's residual. That is the block
     coordinate the alternation stopped at, and it is the value every window
     reports, so the windows are comparable.
+
+    Under ``JointConfig.v4`` the SIGNAL changes and ``audio`` becomes required.
+    The v4 objective is the MARGINAL likelihood — the line processes are
+    integrated out rather than conditioned on — so the thing it scores is the
+    ORIGINAL signal against ``S + sum H L``, not the residual against ``S``.
+    Scoring the residual there would be counting the comb twice: once by
+    subtracting it and once by modelling it. Every term of the readout is then
+    about the original signal, including the v3 columns (``data`` and ``rent``
+    become what the floor ALONE would cost on it), which is what makes them
+    still comparable with ``total_v4`` beside them.
     """
     if state.env is None or state.residual is None or state.psd is None:
         raise ValueError("joint_objective: nothing solved yet")
     jc = state.jcfg
+    if jc.v4 and audio is None:
+        raise ValueError(
+            "joint_objective: the v4 objective is the MARGINAL likelihood of the ORIGINAL "
+            "signal, so it needs the audio — the residual has the comb subtracted out of it"
+        )
     return map_objective(
-        state.residual,
+        state.residual if not jc.v4 else np.asarray(audio, dtype=np.float64),
         float(state.cfg.sr),
         state.psd,
         x=state.env.x,
@@ -2490,6 +3433,11 @@ def joint_objective(state: JointState) -> dict[str, Any]:
         # unless JointConfig.h_lorentzian asks for it, and inert without
         # h_aware.
         h_lorentzian=bool(jc.h_lorentzian),
+        # J_v4: the fitted line powers ARE the noise model's comb, so the
+        # objective needs no nuisance to profile and no correction to add.
+        v4_powers=state.h_powers if jc.v4 else None,
+        v4_carrier=state.carrier if jc.v4 else None,
+        v4_b_f_hz=float(jc.v4_b_f_hz),
     )
 
 
@@ -2504,6 +3452,7 @@ def joint_result(state: JointState, iterations: list[dict[str, Any]]) -> JointRe
         psd=state.psd,
         residual=np.asarray(state.residual),
         track_energy=np.asarray(state.track_energy),
+        h_powers=state.h_powers,
         iterations=iterations,
         stochastic=None if state.stochastic is None else np.asarray(state.stochastic),
     )

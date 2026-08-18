@@ -81,7 +81,7 @@ The recipes:
 | `peel_alternation` | `flagship` one application at a time, every frame kept |
 | `refit_stage` | presmooth → coarse-to-fine (peel → pi_kalman) to convergence |
 | `judge(candidate)` | a candidate stage → `fitness_stage` under one control |
-| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve, the last one reading the MAP objective (`stochastic=True` appends regime 3) |
+| `joint_solve_window` | floor → (iters − 1) × (solve → split → floor) → solve, the last one reading the MAP objective (`stochastic=True` appends regime 3). `JointConfig.v4` selects the unified model through this same shape — v4 changes the BLOCKS, not the alternation |
 
 Every campaign driver calls a recipe. A script must not assemble a ladder of its own — if a
 variant is worth running, it is worth a named recipe here.
@@ -405,6 +405,79 @@ floor: the true rates take `data_h` to 0.19-0.23 of `data`, rates shifted by 5 r
 disjoint from the lines, measured) leave it at 0.78-0.97, and the profiled total cannot separate
 the two AT ALL. On pure floor the term charges under 2 % whatever the carrier is.
 
+### v4 — the unified model (`JointConfig.v4`, default off)
+
+Everything above this line is a correction bolted onto a measure whose noise model does not
+contain the comb. v4 puts the comb IN the model — one Gaussian process whose power spectral
+density is a smooth floor plus a comb of Lorentzians riding the trajectories:
+
+```
+M_c(f, t) = S_c(f, t) + sum_{i,k} H_{c,i,k}(t) L_{gamma_k}(f - k r_i(t)),  gamma_k = max(0.6 k, one bin)
+```
+
+Design and gates: `docs/v4-unified-model-design.md`. One switch selects it, because its four
+parts only work together, and off is the v3 arm call for call.
+
+| Primitive | Purpose |
+|---|---|
+| `fit_floor_powers(audio, sr, r_audio, k_hi, ...) -> (SmoothPSD, HPowers)` | **F1**: `S` and the line powers `H`, fitted JOINTLY with NO mask on the ORIGINAL signal, per (microphone, time block) |
+| `HPowers` | the fitted powers: `(C, B, L)` peak power spectral density on `masked_smooth_psd`'s own units, plus the line table. `.pooled()` (arithmetic mean over microphones), `.block_of(t)` |
+| `floor_lambda(b_f_hz, sr, n_fft)` / `floor_penalty(psd, b_f_hz)` | the floor's smoothness weight from a LENGTH SCALE in hertz, and the penalty term itself |
+| `whittle_floor_objective(p, hump, g, lam)` | the F1 cost of one cell — what GUARDS every step and chooses between the starts |
+| `v4_rho2_gain(r_audio, k_hi, cfg, ...)` | **F2a**: the band law `max(b0, 0.6 k)` Hz with NO spacing cap, in the solver's own currency |
+| `v4_ridge(psd, hp, k, rotor, r_env, t_env, weight, c0=)` | **F2b**: the amplitude prior `beta = c0 S / H`, fed to `vk_envelopes(ridge=)` |
+| `map_objective(..., v4_powers=, v4_carrier=)` | **J_v4**: `sum [P/M + log M]` + the two phase priors + the floor penalty. No envelope term, no separate rent |
+| `joint_objective(state, audio)` | the same off a state — and under v4 the `audio` is REQUIRED |
+
+Five things a caller must know, and the first two are the ones that will bite:
+
+- **`J_v4` scores the ORIGINAL signal, not the residual.** The line processes are integrated out
+  rather than conditioned on, so the thing the model describes is the audio; scoring the residual
+  would count the comb twice, once by subtracting it and once by modelling it. `joint_objective`
+  raises rather than guess. Its column is therefore NOT comparable with `total` — different model,
+  different signal — which is why `scripts/joint_rescore.py --v4` ranks on it alone.
+- **The `(S, H)` alternation is BISTABLE, and the two starts are a guard and not a knob.** Where
+  the comb blankets a band, "floor on the blanket with `H = 0`" and "lines claim the blanket" are
+  both honest stationary points; from the masked warm start the first H-step finds no excess and
+  nothing ever moves, so the v3 failure survives INSIDE the v4 fit. The objective ranks them
+  correctly, so the fit screens `FLOOR_START_DB = (0, -12)` dB on `FLOOR_SCREEN_ROUNDS` and
+  refines the winner. Measured on the dense fixture the two differ by 13 dB of fitted floor.
+- **The band law changes `rho^2` and NOTHING else**, so the coupling partition, `group_plan` and
+  the banded memory are identical to v3's — measured on the smoke window, 0.149 GB either way.
+  What moves is wall time: 1.42 s to 2.53 s there, the difference being the three `(S, H)` fits.
+- **Regime 3 does not run.** The comb channel already carries the line flanks, so the
+  decomposition is two channels and a subtraction, and `joint_solve_window(stochastic=True)` is
+  REFUSED under v4 rather than silently ignored.
+- **`H` is a first-class product**, not a diagnostic: it is the generator's amplitude targets by
+  construction, and `scripts/vk_decompose.py --v4` writes it into the unit `.npz`
+  (`h_rotor` / `h_k` / `h_t` / `h_lines` / `h_half` / `h_power`).
+
+The two calibrated constants, both frozen with their measurement in the test that made it:
+
+- `FLOOR_LENGTH_HZ = 600` — the floor's smoothness length in hertz. On the dense fixture (one
+  comb whose density `gamma / Delta` runs 0.06 to 0.48) the fitted floor lands at
+  0.36 / 0.53 / 0.70 / 0.46 dB rms in the four bands, against 0.37 / 0.63 / 1.03 / 0.73 at 400 Hz
+  (the v3 cepstral lift's own scale) and 0.33 / 0.61 / 0.49 / 0.31 at 800 Hz.
+- `V4_RIDGE_C0 = 1` — and it is 1 for a derivable reason, not a fitted one: the band is `0.6 k` Hz
+  and the line's own half width is the same `0.6 k`, so line and noise contribute in proportion to
+  the SAME noise-equivalent bandwidth and the ratio of the two powers the band admits is exactly
+  the ratio of the two densities, `S / H`. Measured against the Wiener target over three seeds:
+  0.97 / 1.02 / 1.01 at `k` 5 / 20 / 60 for a line 10 dB over the floor.
+
+Acceptance (gate 1 of the design, plus the carve):
+`tests/tracking/test_v4_floor.py` reads the fitted floor at 0.33 / 0.45 / 0.58 / 0.40 dB rms
+against the masked fit's 2.00 / 4.83 / 8.12 / 10.46 on the same fixture — and against 0.33 / 2.05
+/ 6.69 / 5.75 for the v4 fit given only the warm start, which is the bistability measured.
+`tests/tracking/test_v4_carve.py` gives one rotor a band it owns with lines on the low harmonics
+only: the line-free tracks take 3.9 % of what the same wide bands take with the prior switched
+off, while the owned harmonics keep 84 %. `tests/tracking/test_v4_ridge.py` holds the `c0`
+calibration; `tests/tracking/test_v4_objective.py` holds `J_v4`'s discrimination.
+
+The bar on the floor gate is 0.9 dB rms and not the design's 0.5, for a measured reason that is
+in the fit's favour: the Hann main lobe smears each line's skirts into the bins the floor is read
+from, so a CORRECT fit reads a few tenths of a decibel high on this grid whatever it does. The
+residual error is that bias and almost nothing else.
+
 ### Three things that will bite a caller
 
 - **The annealing ladder starts at `k` 3**, and the reason is the ENVELOPE BAND, not the phase
@@ -453,8 +526,8 @@ set is small enough to list:
 | `scripts/telemetry_fitness.py`, `telemetry_refit.py`, `telemetry_report.py` | issue 17: the judge, the fitter, the reader |
 | `scripts/displacement/{nullcontrol,combscan,refine_kscaled,comb_explorer}.py` | the comb-displacement campaign |
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
-| `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`) |
-| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, the committed `refined` sidecar of `scripts/refine_dregon_rps.py`, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders; `--h-aware` ranks by `total_h` (the stochastic comb in the data term) and prints every column |
+| `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`; `--v4` selects the unified model, implies `--joint`, refuses `--stochastic`, and adds the `h_power` line table to the unit `.npz` plus a `v4` block to the report) |
+| `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, the committed `refined` sidecar of `scripts/refine_dregon_rps.py`, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders; `--h-aware` ranks by `total_h` (the stochastic comb in the data term) and prints every column; `--v4` ranks by `total_v4` and REPLACES both, being a different model rather than a correction |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |
 

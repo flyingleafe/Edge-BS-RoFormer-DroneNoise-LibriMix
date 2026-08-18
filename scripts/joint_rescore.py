@@ -73,6 +73,18 @@ ANY excess inside a region, which discriminates nothing on the one window where
 four dense combs make every hypothesis's regions blanket the band, and a wrong
 comb's bumps land between its lines and fit near-zero amplitudes.
 
+``--v4`` ranks by ``J_v4`` and REPLACES all four of the above rather than adding
+to them. Everything before it is a correction bolted onto a measure whose noise
+model does not contain the comb; v4 puts the comb in the model. The floor and
+the per-line powers are fitted jointly with no mask, so the third channel a fan
+could win through — pushing the floor around under a band where the mask leaves
+no bin to read — closes by construction; block A gets the physical bands with an
+amplitude prior instead of a spacing cap; and the objective is the MARGINAL
+likelihood of the ORIGINAL signal against ``S + sum H L``, with no envelope term
+to correct and no separate rent to read on its own. Its column is not comparable
+with the others (a different model, scoring a different signal), so it is ranked
+on its own and the profiled order is printed beside it for reference only.
+
 Run::
 
     python scripts/joint_rescore.py --smoke --out results/joint_rescore_smoke
@@ -147,6 +159,13 @@ H_TERMS = ("total_h", "data_h")
 #: Which per-cell column ``--h-aware`` ranks by. It takes precedence over the
 #: marginal key when both are asked for, and both other columns stay beside it.
 H_KEY = "total_h"
+#: The v4 objective's own terms, present only under ``--v4``.
+V4_TERMS = ("total_v4", "data_v4", "floor_penalty")
+#: Which per-cell column ``--v4`` ranks by. It takes precedence over BOTH keys
+#: above, because it is not a correction on top of the profiled total — it is a
+#: different objective on a different signal, and mixing the orders would be
+#: reading two models as one.
+V4_KEY = "total_v4"
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +419,12 @@ def worker(unit: Unit) -> dict[str, Any]:
         # discriminates nothing where four dense combs make every hypothesis's
         # regions blanket the band.
         h_lorentzian=bool(p.get("h_lorentzian", False)),
+        # v4: the unified model. The floor and the line powers are fitted
+        # jointly with no mask, block A gets the physical band law and its
+        # amplitude prior, and the measure is the marginal likelihood of the
+        # ORIGINAL signal — so a coverage fan's floor artifact is closed by
+        # construction rather than charged for after the fact.
+        v4=bool(p.get("v4", False)),
     )
     tic = time.perf_counter()
     res = trk.joint_solve_window(audio, r_audio, cfg, k_hi=k_hi, mics=mics, jcfg=jcfg)
@@ -412,6 +437,7 @@ def worker(unit: Unit) -> dict[str, Any]:
         TERMS
         + (MARGINAL_TERMS if bool(p.get("marginal", False)) else ())
         + (H_TERMS if bool(p.get("h_aware", False)) else ())
+        + (V4_TERMS if bool(p.get("v4", False)) else ())
     )
     return {
         "uid": unit.uid,
@@ -432,6 +458,7 @@ def worker(unit: Unit) -> dict[str, Any]:
         "h_aware": bool(p.get("h_aware", False)),
         "adaptive_floor": bool(p.get("adaptive_floor", False)),
         "h_lorentzian": bool(p.get("h_lorentzian", False)),
+        "v4": bool(p.get("v4", False)),
         "mean_rev_s": round(float(r.mean()), 4),
         "rms_vs_telemetry": round(float(np.sqrt(np.mean((r - r_meas) ** 2))), 5),
         "wall_s": round(wall, 2),
@@ -468,6 +495,7 @@ def build_units(args: argparse.Namespace) -> list[Unit]:
         "h_aware": bool(getattr(args, "h_aware", False)),
         "adaptive_floor": bool(getattr(args, "adaptive_floor", False)),
         "h_lorentzian": bool(getattr(args, "h_lorentzian", False)),
+        "v4": bool(getattr(args, "v4", False)),
     }
     return [
         Unit(uid=f"{w}__{h}", params={**common, "window": w, "hypothesis": h})
@@ -492,7 +520,13 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     table: dict[str, Any] = {}
     marginal = bool(rows) and all(MARGINAL_KEY in (r.get("per_cell") or {}) for r in rows)
     h_aware = bool(rows) and all(H_KEY in (r.get("per_cell") or {}) for r in rows)
-    terms = TERMS + (MARGINAL_TERMS if marginal else ()) + (H_TERMS if h_aware else ())
+    v4 = bool(rows) and all(V4_KEY in (r.get("per_cell") or {}) for r in rows)
+    terms = (
+        TERMS
+        + (MARGINAL_TERMS if marginal else ())
+        + (H_TERMS if h_aware else ())
+        + (V4_TERMS if v4 else ())
+    )
     for r in sorted(rows, key=lambda r: (str(r.get("window")), str(r.get("hypothesis")))):
         if "objective" not in r:
             continue
@@ -513,6 +547,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         key = f"{MARGINAL_KEY}_per_cell"
     if h_aware:
         key = f"{H_KEY}_per_cell"
+    if v4:
+        key = f"{V4_KEY}_per_cell"
     for win, cell in table.items():
         order = sorted(cell, key=lambda h: cell[h][key])
         base = cell.get(TELEMETRY, {}).get(key)
@@ -528,7 +564,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             # comparable and the ranking above is meaningless.
             "_cells_agree": len({cell[h]["n_cells"] for h in cell}) == 1,
         }
-        if marginal or h_aware:
+        if marginal or h_aware or v4:
             # The PROFILED ranking beside the other one. Where they differ, the
             # difference is what the profiled column did not charge for —
             # absorption under ``--marginal``, coverage of the line flanks under
@@ -544,6 +580,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "terms": list(terms),
         "marginal": marginal,
         "h_aware": h_aware,
+        "v4": v4,
         # The two levers, as metadata: both are properties of the RUN and not of
         # a row, so a summary that does not name them is not reproducible.
         "adaptive_floor": bool(rows) and all(bool(r.get("adaptive_floor")) for r in rows),
@@ -556,11 +593,14 @@ def print_table(summary: dict[str, Any]) -> None:
     """The summary as a fixed-width table on stdout — the thing a human reads."""
     marginal = bool(summary.get("marginal"))
     h_aware = bool(summary.get("h_aware"))
+    v4 = bool(summary.get("v4"))
     head = f"\n{'window':<38} {'hypothesis':<11} {'J/cell':>14}"
     if marginal:
         head += f" {'Jmarg/cell':>14}"
     if h_aware:
         head += f" {'Jh/cell':>14}"
+    if v4:
+        head += f" {'Jv4/cell':>14}"
     print(head + f" {'data/cell':>10} {'rms':>7}")
     for win, cell in sorted(summary["table"].items()):
         for hyp in cell.get("_ranking", []):
@@ -571,8 +611,10 @@ def print_table(summary: dict[str, Any]) -> None:
                 row += f" {e[f'{MARGINAL_KEY}_per_cell']:>14.6f}"
             if h_aware:
                 row += f" {e[f'{H_KEY}_per_cell']:>14.6f}"
+            if v4:
+                row += f" {e[f'{V4_KEY}_per_cell']:>14.6f}"
             print(f"{row} {e['data_per_cell']:>10.4f} {e['rms_vs_telemetry']:>7.3f}{flag}")
-        if (marginal or h_aware) and cell.get("_ranking") != cell.get("_ranking_profiled"):
+        if (marginal or h_aware or v4) and cell.get("_ranking") != cell.get("_ranking_profiled"):
             print(f"{win:<38} .. profiled order {cell['_ranking_profiled']} — absorption")
         if not cell.get("_cells_agree", True):
             print(f"{win:<38} !! cell counts disagree — the totals are NOT comparable")
@@ -661,6 +703,20 @@ def main() -> int:
             "explains any excess inside a region, which discriminates nothing where four dense "
             "combs make every hypothesis's regions blanket the band; a wrong comb's bumps land "
             "between its lines and fit near-zero amplitudes. Needs --h-aware"
+        ),
+    )
+    ap.add_argument(
+        "--v4",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "rank by J_v4 — the UNIFIED model's marginal likelihood. The floor and the per-line "
+            "powers are fitted jointly with no mask, so a hypothesis can no longer win by pushing "
+            "the floor around under a blanketed band; block A gets the physical bands with an "
+            "amplitude prior instead of a spacing cap; and the objective scores the ORIGINAL "
+            "signal against S + sum H L, with no envelope term and no separate rent. It takes "
+            "precedence over --marginal and --h-aware in the ranking, which it replaces rather "
+            "than corrects. All columns reported"
         ),
     )
     ap.add_argument(

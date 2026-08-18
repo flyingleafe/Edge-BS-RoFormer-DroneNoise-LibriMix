@@ -453,6 +453,10 @@ def joint_config(params: dict[str, Any]) -> JointConfig:
         bw_psi_min=floor,
         whiten=bool(params.get("whiten", True)),
         stochastic_floor_interp=bool(params.get("stochastic_floor_interp", False)),
+        # v4: the unified model. It selects the joint (S, H) floor fit, the
+        # physical band law with its amplitude prior, and J_v4 as the readout —
+        # one switch, because the four only make sense together.
+        v4=bool(params.get("v4", False)),
     )
 
 
@@ -601,9 +605,25 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
             psd_t=np.asarray(jres.psd.t_block, dtype=np.float64),
             psd_log_s=np.asarray(jres.psd.log_s, dtype=np.float32),
         )
+        if jres.h_powers is not None:
+            # The v4 model's own amplitude parameters — a first-class product,
+            # not a diagnostic: this table IS what a generator is trained to
+            # reproduce. Line ``l`` of block ``b`` sits at ``h_lines[b, l]`` Hz
+            # with half width ``h_half[b, l]``, so its total power is
+            # ``pi * h_half * h_power``.
+            hp = jres.h_powers
+            arrays.update(
+                h_rotor=np.asarray(hp.rotor, dtype=np.int64),
+                h_k=np.asarray(hp.k, dtype=np.int64),
+                h_t=np.asarray(hp.t_block, dtype=np.float64),
+                h_lines=np.asarray(hp.lines, dtype=np.float64),
+                h_half=np.asarray(hp.half, dtype=np.float64),
+                h_power=np.asarray(hp.h, dtype=np.float32),
+            )
         out["joint"] = {
             "config": joint_config(p).__dict__ | {"k_trust": list(joint_config(p).k_trust)},
             "iterations": jres.iterations,
+            **({"h_fit": dict(jres.h_powers.diag)} if jres.h_powers is not None else {}),
         }
         # The converged MAP objective of THIS window, lifted to the top level of
         # the row: it is the one number that compares two runs of the same
@@ -637,6 +657,12 @@ def solve_worker(unit: Unit) -> dict[str, Any]:
 #: :func:`objective_pool`, in the order a reader wants them.
 OBJECTIVE_TERMS = ("total", "data", "rent", "phase_priors", "envelope_prior")
 
+#: The v4 objective's own terms, pooled beside the v3 ones when every window
+#: carries them. ``total_v4`` is the number the arm is judged by; it is NOT
+#: comparable with ``total``, because the two score different signals (the
+#: original against ``S + sum H L``, and the residual against ``S``).
+V4_TERMS = ("total_v4", "data_v4", "floor_penalty")
+
 
 def objective_pool(wins: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pool the per-window MAP objectives of one recording (``None`` if v2).
@@ -654,12 +680,16 @@ def objective_pool(wins: list[dict[str, Any]]) -> dict[str, Any] | None:
     rows = [r for r in wins if isinstance(r.get("objective"), dict)]
     if not rows:
         return None
-    pooled = {t: float(sum(float(r["objective"][t]) for r in rows)) for t in OBJECTIVE_TERMS}
+    terms = OBJECTIVE_TERMS + (
+        V4_TERMS if all(all(t in r["objective"] for t in V4_TERMS) for r in rows) else ()
+    )
+    pooled = {t: float(sum(float(r["objective"][t]) for r in rows)) for t in terms}
     n_cells = int(sum(int(r["objective"]["n_cells"]) for r in rows))
     return {
         "n_windows": len(rows),
+        "terms": list(terms),
         "pooled": {**pooled, "n_cells": n_cells},
-        "per_cell": {t: pooled[t] / max(n_cells, 1) for t in OBJECTIVE_TERMS},
+        "per_cell": {t: pooled[t] / max(n_cells, 1) for t in terms},
         "windows": [
             {"a0": int(r["a0"]), "start_s": r["start_s"], **r["objective"]}
             for r in sorted(rows, key=lambda r: int(r["a0"]))
@@ -1068,6 +1098,40 @@ def stitch(
             # THE measure the decomposition carries: the MAP objective each
             # window converged to, summed over the recording's windows.
             report["objective"] = pooled_obj
+        v4_rows = [
+            r
+            for r in wins
+            if isinstance((r.get("joint") or {}).get("h_fit"), dict) and r.get("used")
+        ]
+        if v4_rows:
+            fits = [r["joint"]["h_fit"] for r in v4_rows]
+            report["v4"] = {
+                "note": (
+                    "the unified model: one Gaussian likelihood whose spectrum is a smooth "
+                    "floor plus a comb of Lorentzians. The floor and the line powers are "
+                    "fitted JOINTLY with no mask, block A carries a proper amplitude prior "
+                    "c0 S / H so its bands can open to the 0.6 k Hz linewidth law with no "
+                    "spacing cap, and the measure is the MARGINAL likelihood J_v4 (objective "
+                    "-> total_v4) of the ORIGINAL signal. Regime 3 does not run: the comb "
+                    "channel already carries the flanks, so residual IS the broadband channel"
+                ),
+                "n_windows": len(v4_rows),
+                # The (S, H) fit, pooled over the recording's windows. Read
+                # ``low_start_frac`` first: near one says the comb blanketed the
+                # band and the v3 masked floor was sitting on top of it, which
+                # is the failure v4 exists to fix.
+                "h_fit": {
+                    key: round(float(np.mean([float(f[key]) for f in fits])), 5)
+                    for key in ("active_line_frac", "region_bin_frac", "low_start_frac", "wall_s")
+                    if all(key in f for f in fits)
+                },
+                "b_f_hz": fits[0].get("b_f_hz"),
+                "lambda_f": fits[0].get("lambda_f"),
+                "n_lines": fits[0].get("n_lines"),
+                "h_total_power_mean": round(
+                    float(np.mean([float(f["h_total_power"]) for f in fits])), 8
+                ),
+            }
         if st.get("joint"):
             dr_g = np.asarray(st["dr_global"])
             report["joint"] = {
@@ -1226,6 +1290,19 @@ def main() -> None:
             "default, and off IS the v2 path, call for call"
         ),
     )
+    ap.add_argument(
+        "--v4",
+        action="store_true",
+        help=(
+            "v4: the UNIFIED model. The floor and the per-line powers H are fitted jointly with "
+            "NO mask on the original signal; block A opens its bands to the physical law "
+            "max(1, 0.6 k) Hz with no spacing cap and carries the amplitude prior c0 S / H that "
+            "makes the overlapping system definite again; and the measure is the marginal "
+            "likelihood J_v4, which has no envelope term and no separate rent. Implies --joint "
+            "and REFUSES --stochastic: the comb channel already carries the line flanks, so the "
+            "decomposition is two channels and a subtraction. The npz gains the h_power table"
+        ),
+    )
     ap.add_argument("--iters", type=int, default=3, help="--joint: alternation rounds")
     ap.add_argument(
         "--k-trust",
@@ -1330,6 +1407,15 @@ def main() -> None:
     if args.smoke:
         args.window_s, args.hop_s = 4.0, 4.0
         args.k_max, args.mics = 20, 2
+    if args.v4:
+        if args.stochastic:
+            raise SystemExit(
+                "--v4 --stochastic: the v4 comb channel already carries the line flanks, so a "
+                "second split would count them twice. Drop one of the two"
+            )
+        # The v4 arm IS a joint arm — there is no v2 version of it — so asking
+        # for it is asking for --joint too.
+        args.joint = True
     if args.joint:
         # Fail on a malformed ladder here, in the CLI, and not in a worker.
         joint_config(
@@ -1377,6 +1463,7 @@ def main() -> None:
         "fs_env": fs_env,
         "stride": stride,
         "joint": bool(args.joint),
+        "v4": bool(args.v4),
         "iters": int(args.iters),
         "k_trust": str(args.k_trust),
         "bw_psi": str(args.bw_psi),

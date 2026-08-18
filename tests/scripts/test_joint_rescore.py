@@ -316,6 +316,67 @@ def test_smoke_defaults_are_one_window_and_a_small_solve() -> None:
     assert all(u.params["k_trust"] == "3,12,80" and u.params["iters"] == 3 for u in ap_rows)
 
 
+def _v4_row(
+    window: str, hyp: str, total: float, total_v4: float, cells: int = 100
+) -> dict[str, Any]:
+    row = _row(window, hyp, total, cells)
+    row["objective"]["total_v4"] = total_v4
+    row["objective"]["data_v4"] = total_v4 - 1.0
+    row["objective"]["floor_penalty"] = 1.0
+    row["per_cell"]["total_v4"] = total_v4 / cells
+    row["per_cell"]["data_v4"] = (total_v4 - 1.0) / cells
+    row["per_cell"]["floor_penalty"] = 1.0 / cells
+    return row
+
+
+def test_v4_ranks_by_its_own_total_and_keeps_the_profiled_one() -> None:
+    """The case the model exists for: the arm wins the PROFILED column by
+    pushing the floor around under a band the mask cannot read, and loses once
+    the floor and the comb are fitted jointly inside one likelihood."""
+    rows = [
+        _v4_row("w1", "telemetry", -100.0, -100.0),
+        _v4_row("w1", "ours_full", -120.0, -90.0),
+    ]
+    got = J.summarize(rows)
+    assert got["v4"] is True
+    win = got["table"]["w1"]
+    assert win["_ranked_by"] == "total_v4_per_cell"
+    assert win["_ranking"] == ["telemetry", "ours_full"]
+    assert win["_ranking_profiled"] == ["ours_full", "telemetry"]
+    assert win["_best"] == "telemetry"
+    # Positive = J_v4 prefers the tachometer.
+    assert win["_delta_vs_telemetry"]["ours_full"] == pytest.approx(0.1)
+    J.print_table(got)
+
+
+def test_v4_outranks_the_marginal_and_h_aware_columns() -> None:
+    """It is a different model, not a correction, so it takes precedence."""
+    rows = []
+    for hyp, total, v4 in (("telemetry", -100.0, -100.0), ("ours_full", -120.0, -90.0)):
+        row = _v4_row("w1", hyp, total, v4)
+        row["objective"]["total_h"] = total
+        row["per_cell"]["total_h"] = total / 100
+        row["objective"]["data_h"] = total / 2
+        row["per_cell"]["data_h"] = total / 200
+        row["objective"]["h_cells"] = 25
+        rows.append(row)
+    got = J.summarize(rows)
+    assert got["v4"] is True and got["h_aware"] is True
+    assert got["table"]["w1"]["_ranked_by"] == "total_v4_per_cell"
+
+
+def test_a_missing_v4_column_falls_back_to_the_profiled_ranking() -> None:
+    rows = [_v4_row("w1", "telemetry", -100.0, -100.0), _row("w1", "ours_full", -120.0)]
+    got = J.summarize(rows)
+    assert got["v4"] is False
+    assert got["table"]["w1"]["_ranked_by"] == "total_per_cell"
+
+
+def test_the_v4_flag_reaches_the_units() -> None:
+    assert all(u.params["v4"] is False for u in J.build_units(_args()))
+    assert all(u.params["v4"] is True for u in J.build_units(_args(v4=True)))
+
+
 def _args(**over: Any) -> Any:
     import argparse
 
