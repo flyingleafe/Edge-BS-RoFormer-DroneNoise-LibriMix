@@ -31,6 +31,7 @@ import pytest
 from tracking.decompose import base_bandwidths, reconstruct, solve_config
 from tracking.joint_decompose import (
     LINEWIDTH_HZ_PER_K,
+    RIDGE_FLOOR_FRAC,
     V4_RIDGE_C0,
     v4_rho2_gain,
 )
@@ -70,9 +71,13 @@ def calibration_fixture(h_over_s: float, seed: int = 0):
     )
 
 
-def _recon_power(y, r_audio, cfg, gain, ridge, n_t, k_hi: int = K_HI) -> np.ndarray:
+def _recon_power(
+    y, r_audio, cfg, gain, ridge, n_t, k_hi: int = K_HI, frac: float = RIDGE_FLOOR_FRAC
+) -> np.ndarray:
     vk = cfg.vk_config(k_hi)
-    env = vk_envelopes(y, r_audio, vk, k_hi=k_hi, rho2_gain=gain, ridge=ridge)
+    env = vk_envelopes(
+        y, r_audio, vk, k_hi=k_hi, rho2_gain=gain, ridge=ridge, ridge_floor_frac=frac
+    )
     stride, _ = env_stride(vk)
     _, energy = reconstruct(env.x, env.k, env.rotor, env.phase, stride)
     return energy / n_t
@@ -118,6 +123,10 @@ def test_the_ridge_constant_hits_the_wiener_target(capsys):
     bandwidth and the ratio of the two POWERS the band admits is exactly the
     ratio of the two DENSITIES, ``S / H``. This measures that it is also true of
     the real solver, whose ridge competes with the curvature prior as well.
+
+    It runs WITH :data:`RIDGE_FLOOR_FRAC` applied, which is what makes this the
+    UPPER bound on that constant: a floor big enough to disturb these numbers is
+    a floor that has stopped being a regularizer and started being the estimator.
     """
     cfg = solve_config(K_HI, sr=SR, mics=1, bw_rps=1.0)
     rows: dict[tuple[float, int], list[float]] = {}
@@ -128,8 +137,10 @@ def test_the_ridge_constant_hits_the_wiener_target(capsys):
             gain = v4_rho2_gain(r_audio, K_HI, cfg)
             zero = np.zeros(len(gain))
             # The target, measured: what the band admits of each part alone.
-            p_line = _recon_power(lines, r_audio, cfg, gain, zero, n_t)
-            p_noise = _recon_power(noise, r_audio, cfg, gain, zero, n_t)
+            # The TARGET is what the band admits with no prior at all, so the
+            # two reference solves carry neither the ridge nor its floor.
+            p_line = _recon_power(lines, r_audio, cfg, gain, zero, n_t, frac=0.0)
+            p_noise = _recon_power(noise, r_audio, cfg, gain, zero, n_t, frac=0.0)
             beta = np.full(len(gain), V4_RIDGE_C0 / h_over_s)  # c0 * S / H, u = 1
             p_got = _recon_power(lines + noise, r_audio, cfg, gain, beta, n_t)
             for k in K_TEST:
@@ -161,7 +172,7 @@ def test_the_prior_shrinks_a_floor_level_track_and_spares_a_line(capsys):
     r = np.full((1, n_t), 50.0)
     cfg = solve_config(4, sr=8000, mics=1, bw_rps=1.0)
     gain = v4_rho2_gain(r, 4, cfg)
-    free = _recon_power(y, r, cfg, gain, np.zeros(4), n_t, k_hi=4)
+    free = _recon_power(y, r, cfg, gain, np.zeros(4), n_t, k_hi=4, frac=0.0)
     # beta = c0 * S / H: a line 20 dB over the floor, and one AT the floor.
     strong = _recon_power(y, r, cfg, gain, np.full(4, V4_RIDGE_C0 / 100.0), n_t, k_hi=4)
     weak = _recon_power(y, r, cfg, gain, np.full(4, V4_RIDGE_C0 * 100.0), n_t, k_hi=4)

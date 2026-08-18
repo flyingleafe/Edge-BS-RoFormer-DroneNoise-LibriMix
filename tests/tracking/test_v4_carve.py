@@ -63,9 +63,11 @@ def carve_fixture(seed: int = 0):
 def arms():
     """The same v4 solve with the amplitude prior on, and with it switched off.
 
-    ``v4_ridge_c0 = 0`` is exactly "the v4 bands with no prior": the physical
-    linewidth law, no spacing cap, and nothing bounding an envelope's level —
-    which is the configuration the v3 spacing cap existed to prevent.
+    ``v4_ridge_c0 = 0`` with the floor also at zero is exactly "the v4 bands
+    with no prior": the physical linewidth law, no spacing cap, and nothing
+    bounding an envelope's level — the configuration the v3 spacing cap existed
+    to prevent. The floor has to go too, or the contrast arm quietly keeps a
+    prior of its own and the comparison understates what the prior buys.
     """
     audio, rates = carve_fixture()
     cfg = solve_config(K_HI, sr=SR, mics=N_MIC, bw_rps=1.0)
@@ -85,7 +87,7 @@ def arms():
         k_hi=K_HI,
         mics=N_MIC,
         objective=False,
-        jcfg=JointConfig(iters=2, v4=True, v4_ridge_c0=0.0),
+        jcfg=JointConfig(iters=2, v4=True, v4_ridge_c0=0.0, v4_ridge_floor_frac=0.0),
     )
     return audio, with_ridge, no_ridge
 

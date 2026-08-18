@@ -1409,6 +1409,40 @@ V4_BW0_HZ = 1.0
 #: 1.5 are both outside it at the second signal-to-noise ratio.
 V4_RIDGE_C0 = 1.0
 
+#: Floor under the v4 amplitude prior, as a fraction of the coupling group's own
+#: mean data curvature (:func:`tracking.vk_tracking._floor_beta`). A proper prior
+#: never has infinite variance, and ``beta = c0 S / H`` goes to zero for a strong
+#: line — which is exactly the track whose near-degenerate pairs then have
+#: NOTHING holding their difference direction positive, because a wide band also
+#: means a small ``rho^2``. Measured on a full-scale DREGON spin-up window
+#: (32 kHz, ``k_hi`` 83, 332 tracks): with no floor the banded Cholesky reported
+#: the system non definite, and the run then DIED because the splu fallback tried
+#: to factorize it. That second half is fixed by refusing the fallback; this
+#: constant is the first half.
+#:
+#: 0.03 is measured from both ends, and both ends are tight:
+#:
+#: - **From below.** The deficiency is not rounding, so the floor has to be
+#:   large. On a four-rotor spin-up fixture (120 tracks in one group, rotors
+#:   fanning by 2 rev/s and crossing) nothing under 0.03 factorizes at all,
+#:   because the near-degenerate directions are killed by the DECIMATED cross
+#:   term's own approximation error and not by float rounding — the error is
+#:   percent-relative, not epsilon-relative.
+#: - **From above.** At 0.03 the Wiener-target calibration is unmoved to three
+#:   decimals (0.973 / 1.022 / 1.011 at ``k`` 5 / 20 / 60), because the floor
+#:   sits below the ``c0 S / H`` every line in it asks for anyway; the only thing
+#:   that moves is a very strong line, which keeps 0.945 of its unridged power
+#:   instead of 0.980. At 0.3 the calibration breaks (0.72 to 0.76, outside the
+#:   +/-20 % bar) and a strong line keeps 0.61.
+#:
+#: What it does NOT do is rescue the tightest groups: four rotors within about
+#: 1 rev/s of each other need 0.1, which costs a strong line 17 %. Those windows
+#: are unidentifiable at these bands — four combs 0.3 Hz apart at ``k`` 1 are not
+#: four combs to a 3-second window — and they now FAIL, loudly, instead of
+#: taking the pool down. The remedy for them is a narrower ``k_hi`` or the v3
+#: spacing cap, not a bigger ridge.
+RIDGE_FLOOR_FRAC = 0.03
+
 
 def v4_rho2_gain(
     r_audio: Any,
@@ -1870,6 +1904,11 @@ class JointConfig:
     v4_rounds: int = FLOOR_POWER_ROUNDS
     #: Strength of the v4 amplitude prior (:data:`V4_RIDGE_C0`).
     v4_ridge_c0: float = V4_RIDGE_C0
+    #: Floor under that prior, relative to the group's own data curvature
+    #: (:data:`RIDGE_FLOOR_FRAC`). It is what keeps a group of overlapping wide
+    #: bands positive definite, so it is not optional in practice — 0 is
+    #: available only so a test can measure what happens without it.
+    v4_ridge_floor_frac: float = RIDGE_FLOOR_FRAC
     #: Floor of the v4 envelope bandwidth law, in hertz (:data:`V4_BW0_HZ`).
     v4_b0_hz: float = V4_BW0_HZ
 
@@ -2055,6 +2094,7 @@ def solve_block(state: JointState, audio: Any) -> JointState:
         "env_rotation": state.psi,
         "data_weight": weight,
         "ridge": ridge,
+        "ridge_floor_frac": float(jc.v4_ridge_floor_frac) if ridge is not None else 0.0,
     }
     env: Envelopes = vk_envelopes(
         y, state.carrier, state.vk, k_hi=int(state.k_hi), rho2_gain=gain, **hooks

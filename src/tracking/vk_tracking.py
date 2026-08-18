@@ -414,6 +414,39 @@ def _whiten_weights(
     ]
 
 
+def _floor_beta(wd: list[np.ndarray], beta: list[np.ndarray], frac: float) -> list[np.ndarray]:
+    """Hold each track's amplitude prior above a fraction of the DATA scale.
+
+    A proper prior never has infinite variance, and ``beta = c0 S / H`` goes
+    arbitrarily small for a strong line — which is exactly the track that then
+    has nothing holding its gauge directions positive. Two overlapping
+    passbands (the v4 bands are the physical linewidth law, with no spacing cap)
+    share a near-degenerate difference direction: the data curvature along it is
+    the residual of two nearly identical bases, which is zero up to the
+    decimated cross term's own rounding, and the curvature prior contributes
+    almost nothing there because a wide band means a small ``rho^2``. All that
+    is left is the assembler's ``1e-8``, and on a 300-track group that is not
+    enough to survive the accumulated rounding: the Cholesky reports the system
+    non positive definite.
+
+    The floor is RELATIVE to the group's own data Gram — the mean of the live
+    diagonal ``w u^2`` — because that is the scale the factorization's rounding
+    is measured against; an absolute number would be right at one whitening and
+    wrong at the next. Only cells that carry data are averaged, so a group whose
+    tracks are masked for most of the window does not floor itself to nothing.
+    """
+    if frac <= 0.0:
+        return beta
+    live = (
+        np.concatenate([np.asarray(a, dtype=np.float64).ravel() for a in wd]) if wd else np.zeros(0)
+    )
+    live = live[live > 0.0]
+    if live.size == 0:
+        return beta
+    lo = float(frac) * float(np.mean(live))
+    return [np.maximum(np.asarray(b, dtype=np.float64), lo) for b in beta]
+
+
 def _solve_group_splu(
     d2td2: sparse.csr_array,
     eye: Any,
@@ -424,6 +457,7 @@ def _solve_group_splu(
     *,
     u: list[np.ndarray] | None = None,
     beta: list[np.ndarray] | None = None,
+    beta_floor_frac: float = 0.0,
 ) -> tuple[np.ndarray, float]:
     """Reference coupled-group solve: track-major sparse LU (SuperLU).
 
@@ -448,7 +482,11 @@ def _solve_group_splu(
     wd, wc = _whiten_weights(w, u)
     # The amplitude prior sits on the DIAGONAL only. It must not reach the
     # right-hand side, which carries the data weight alone.
-    diag_w = wd if beta is None else [wa + ba for wa, ba in zip(wd, beta, strict=True)]
+    diag_w = (
+        wd
+        if beta is None
+        else [wa + ba for wa, ba in zip(wd, _floor_beta(wd, beta, beta_floor_frac), strict=True)]
+    )
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     blocks: list[list[Any]] = [[None] * g for _ in range(g)]
     for a in range(g):
@@ -479,6 +517,7 @@ def _solve_group_banded(
     diag_scale: float = 1.0,
     u: list[np.ndarray] | None = None,
     beta: list[np.ndarray] | None = None,
+    beta_floor_frac: float = 0.0,
 ) -> tuple[np.ndarray, float]:
     """Coupled-group solve as one Hermitian positive-definite *banded* system.
 
@@ -525,7 +564,7 @@ def _solve_group_banded(
     r2 = np.broadcast_to(np.asarray(rho2, dtype=np.float64), (g,))
     diag = d0[:, None] * r2[None, :] + 1e-8 + np.stack(wd, axis=-1)  # (T_env, g)
     if beta is not None:
-        diag = diag + np.stack(beta, axis=-1)
+        diag = diag + np.stack(_floor_beta(wd, beta, beta_floor_frac), axis=-1)
     # diag_scale > 1 is the PD-repair retry: inflating the diagonal by a
     # relative epsilon restores positive definiteness lost to decimation
     # rounding, at a bias far below the bandwidth prior's own resolution.
@@ -601,6 +640,7 @@ def vk_envelopes(
     env_rotation: np.ndarray | None = None,
     data_weight: np.ndarray | None = None,
     ridge: np.ndarray | None = None,
+    ridge_floor_frac: float = 0.0,
 ) -> Envelopes:
     """One coupled VK-2 envelope solve (all coupling groups) given trajectories.
 
@@ -662,6 +702,20 @@ def vk_envelopes(
         is pulled toward zero. It reaches the diagonal only — never the
         right-hand side — so the shrinkage is toward zero and not toward some
         other estimate.
+    ``ridge_floor_frac``
+        Holds that prior above ``frac`` times the group's own mean data
+        curvature (:func:`_floor_beta`). "Pays almost nothing" is exactly the
+        case with nothing left holding a near-degenerate pair's DIFFERENCE
+        direction positive, so with no floor the strongest lines are the ones
+        that break the factorization.
+
+    Passing ``ridge`` also turns the ``splu`` fallback OFF. That fallback is for
+    a group the banded path finds numerically non positive definite, and on a
+    v2-sized group it is the right answer; on a 300-track v4 group SuperLU's
+    fill-in does not fit in memory, and the measured failure is that it tries
+    anyway, the operating system kills the worker, and the pool goes with it. A
+    group that will not factorize under a PROPER prior is a modelling failure,
+    so it is raised as one.
     """
     y = np.atleast_2d(np.asarray(audio, dtype=np.float64))[:_MAX_CHANNELS]
     r = np.atleast_2d(np.asarray(r, dtype=np.float64))
@@ -815,13 +869,46 @@ def vk_envelopes(
             for diag_scale in (1.0, 1.0 + 1e-6, 1.0 + 1e-4):
                 try:
                     done = _solve_group_banded(
-                        d2td2_diags, rho2, w, cross, z_g, diag_scale=diag_scale, u=u_g, beta=b_g
+                        d2td2_diags,
+                        rho2,
+                        w,
+                        cross,
+                        z_g,
+                        diag_scale=diag_scale,
+                        u=u_g,
+                        beta=b_g,
+                        beta_floor_frac=float(ridge_floor_frac),
                     )
                     break
                 except np.linalg.LinAlgError:
                     done = None
+        if cfg.solver == "banded" and done is None and b_g is not None:
+            # The v4 arm: no AUTOMATIC splu fallback. SuperLU on a group this
+            # size is the OOM bomb the fallback was meant to be insurance
+            # against, and a system that is still not definite under a proper
+            # amplitude prior is telling us the prior is wrong, not the solver.
+            # An explicit ``solver="splu"`` is a different statement and is
+            # still honoured — that is the A/B reference path.
+            raise MemoryError(
+                f"the banded solve of a {g}-track coupling group stayed non positive definite "
+                f"under the v4 amplitude prior (harmonics {int(k[group].min())}-"
+                f"{int(k[group].max())}, {n_env} envelope frames, ridge_floor_frac="
+                f"{float(ridge_floor_frac):g}). Refusing the splu fallback: its fill-in on a "
+                "group this size does not fit in memory and would take the worker, and the "
+                "pool, with it. Raise ridge_floor_frac, or narrow the bands for this window"
+            )
         if done is None:
-            done = _solve_group_splu(d2td2, eye, rho2, w, cross, z_g, u=u_g, beta=b_g)
+            done = _solve_group_splu(
+                d2td2,
+                eye,
+                rho2,
+                w,
+                cross,
+                z_g,
+                u=u_g,
+                beta=b_g,
+                beta_floor_frac=float(ridge_floor_frac),
+            )
         sol, group_logdet = done
         logdet += group_logdet
         for a in range(g):

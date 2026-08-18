@@ -451,6 +451,32 @@ Five things a caller must know, and the first two are the ones that will bite:
 - **`H` is a first-class product**, not a diagnostic: it is the generator's amplitude targets by
   construction, and `scripts/vk_decompose.py --v4` writes it into the unit `.npz`
   (`h_rotor` / `h_k` / `h_t` / `h_lines` / `h_half` / `h_power`).
+- **A v4 group that will not factorize FAILS — it never falls into `splu`.** The automatic
+  fallback is right for a v2-sized group and is the OOM bomb for a v4 one (SuperLU's fill-in on
+  300+ tracks does not fit in memory; the measured field failure was a spin-up window that took
+  its worker and then the pool with it). Under `ridge` the banded path keeps its two `diag_scale`
+  repair retries and then raises a `MemoryError` naming the group, the harmonics and the knob, so
+  `gridrun` writes one `.err` and the other units keep running. An EXPLICIT `solver="splu"` is a
+  different statement and is still honoured.
+
+**Conditioning, and the limit of the fix.** With the bands uncapped, two rotors whose lines nearly
+coincide have passbands that nearly coincide, so the difference direction of that pair has almost
+no data curvature; `rho^2` is small because the band is wide, and `beta = c0 S / H` is small for
+exactly the STRONG lines — so the loudest comb in a window is the one that breaks the
+factorization. `RIDGE_FLOOR_FRAC = 0.03` holds the prior above 3 % of the group's own mean data
+curvature, and the constant is squeezed from both sides: below it nothing factorizes on the
+four-rotor spin-up fixture (120 tracks, rotors fanning 2 rev/s and crossing), and above it the
+estimator starts to move — at 0.3 the Wiener calibration breaks (0.72-0.76, outside ±20 %) and a
+strong line keeps 0.61 of its power. At the chosen value the calibration is unmoved to three
+decimals and a strong line keeps 0.945 instead of 0.980.
+
+The deficiency is NOT float rounding — it is the decimated cross term's own approximation error,
+which is percent-relative — so the floor has a reach and past it there is nothing to do. Four
+rotors within ~1 rev/s would need 0.1, costing a strong line 17 %; those windows are genuinely
+unidentifiable at these bands (four combs 0.3 Hz apart at `k` 1 are not four combs to a 3-second
+window) and the right remedy is a smaller `k_hi` or the v3 spacing cap for them, not a bigger
+ridge. `tests/tracking/test_v4_conditioning.py` pins both halves: the floor factorizes a group
+that fails without it, and past its reach the failure is clean and names its own mechanism.
 
 The two calibrated constants, both frozen with their measurement in the test that made it:
 
