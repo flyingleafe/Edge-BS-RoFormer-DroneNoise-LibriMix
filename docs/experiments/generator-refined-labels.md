@@ -162,3 +162,34 @@ Production pick: `r2://ml-data/artifacts/gen_m2_refined_perrotor/checkpoints/`
 "deep/m2 full data + per-rotor dz, refined"). Caveat: the comb readout covers
 DREGON only; Michael's-side quality needs its own instrument before this
 checkpoint is used for FLY-drone work.
+
+## gen_m3_refined_all_perrotor: refined labels on BOTH rigs (2026-08-20)
+
+The FLY124/FLY125 refined sidecars are wired into the training stream via
+`michaels_rps_override_dir` (commit 52e9a26), so no arm of the data carries
+unrefined labels. Same recipe as gen_m2 otherwise; 39 epochs on gpushort
+(job `gen-m3-refined-all-ce7ea5`); every epoch checkpoint on R2.
+
+**Checkpoint-selection sweep** (all 39 epochs x both rigs, per-harmonic comb
+readout via the extended `scripts/eval_gen_comb_real.py --rigs
+dregon,michaels`; curves + notes: `results/gen_m3_sweep/`):
+
+- The monitor (val mrstft, mode max) picks **ep30** (6.739). On the comb
+  readout ep30 ranks 17th-35th of 39 in every cut.
+- Comb-best on the HELD-OUT chunks (`--split-filter valid,boundary`): **ep19**
+  (epochs 16-19 cluster). Comb-best on in-flight audio: **ep7-9**.
+- The monitor pathology reproduces a fourth time and is now measured on
+  in-flight audio: Spearman(monitor, |dLogMag| k10-80) = **+0.35** (p 0.03;
+  michaels alone +0.47) — a better monitor score means a worse comb.
+- **The held-out split is warm-up audio.** `val_at_start` (first 10 %) of all
+  three recordings is pre-takeoff/ground idle, so the training monitor was
+  scored mostly on ground-idle audio (teeth 1.6-3.6 FFT bins apart there vs
+  9-10 in flight). Any future generator run needs either a flight-time valid
+  split or an in-flight instrument for selection.
+- `ptf_delta_db` rises monotonically with the monitor (dregon +0.24 dB at ep7
+  -> +1.12 at ep36; michaels +2.14 -> +3.54): late epochs build an over-sharp
+  comb on a too-low floor. The michaels comb is 2-3.5 dB too peaky at EVERY
+  epoch — the first Michael's-side comb reading (previously uninstrumented).
+
+Production pick: pending the visual/audial A/B (real vs ep19 vs ep9 vs ep30)
+the user requested before any downstream use.
