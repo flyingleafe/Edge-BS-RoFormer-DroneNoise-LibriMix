@@ -1,0 +1,21 @@
+# M3CUR stage 2 — REAL full-flight training stream (the fs_v2 recipe with the
+# warm-up stage removed), warm-started from the matching stage-1 checkpoint.
+# Same fixed FULL-envelope real validation split as stage 1, so the two stages
+# are read on one curve.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/m3cur_s2_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

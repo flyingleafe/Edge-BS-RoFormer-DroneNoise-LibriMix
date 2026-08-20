@@ -42,7 +42,7 @@ import contextlib
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import tdseries as td
@@ -148,17 +148,20 @@ def load_geometry(
 
 class _GenBundle:
     """Everything the producer needs from a generator checkpoint: the emitter,
-    each drone's conditioning code ``z`` and learned jitter ``sigma``, plus the
-    codebook dimensionality/names."""
+    each drone's conditioning code ``z`` and learned jitter ``sigma``, the
+    codebook dimensionality/names, plus the optional per-rotor code deltas."""
 
-    __slots__ = ("model", "z_map", "sigma_map", "cond_dim", "names")
+    __slots__ = ("model", "z_map", "sigma_map", "cond_dim", "names", "rotor_deltas")
 
-    def __init__(self, model, z_map, sigma_map, cond_dim, names):
+    def __init__(self, model, z_map, sigma_map, cond_dim, names, rotor_deltas=None):
         self.model = model
         self.z_map: dict[str, torch.Tensor] = z_map
         self.sigma_map: dict[str, float | None] = sigma_map
         self.cond_dim = int(cond_dim)
         self.names = list(names)
+        # `[R, d]` per-rotor sub-embedding deltas (`z_r = z_drone + δz_r`), or
+        # None for a checkpoint trained without `per_rotor_deltas`.
+        self.rotor_deltas: torch.Tensor | None = rotor_deltas
 
 
 def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
@@ -172,6 +175,11 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
       writes, and the only one carrying the learned per-drone σ; and
     * the legacy ``save_bundle`` dict ``{model, codebook, cond_dim,
       drone_names}`` (no σ → resolves to ``None``).
+
+    A flat state_dict carrying ``rotor_deltas`` ``[R, d]`` (a
+    ``per_rotor_deltas=true`` model, ``z_r = z_drone + δz_r``) rebuilds the
+    composite with that knob on and returns the deltas on the bundle; the
+    producer then conditions each rotor's emitter on its own code.
 
     ``params['checkpoint']`` may be a local path or an ``r2://`` URI.
     """
@@ -190,6 +198,7 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
             cond_dim=cond_dim,
         )
 
+    rotor_deltas: torch.Tensor | None = None
     is_bundle = (
         isinstance(obj, dict) and "model" in obj and "codebook" in obj and "drone_names" in obj
     )
@@ -225,6 +234,11 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
         cond_dim = int(sd[code_keys[0]].shape[-1])
         film_sn = any(".parametrizations." in k for k in sd)
         learn_sig = any(k.startswith("log_jitter_sigma.") for k in sd)
+        # Per-rotor sub-embeddings (`rotor_deltas [R, d]`, the E-series
+        # `per_rotor_deltas=true` models) are a `generator`-sibling parameter of
+        # the wrapper, so the composite must be rebuilt WITH the knob or the
+        # strict load rejects the key outright.
+        deltas_sd = sd.get("rotor_deltas")
         composite: Any = build_noise_gen_model(
             str(params.get("model_name", "positional_harmonic_gen")),
             sample_rate=params["sample_rate"],
@@ -237,6 +251,8 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
             learn_rps_jitter_sigma=learn_sig,
             z_noise_std=0.0,  # inference: we inject our own vicinal z-noise
             film_spectral_norm=film_sn,
+            per_rotor_deltas=deltas_sd is not None,
+            n_rotors=int(deltas_sd.shape[0]) if deltas_sd is not None else 4,
         )
         composite.load_state_dict(sd)
         composite.to(device).eval()
@@ -244,13 +260,207 @@ def _load_generator(params: dict[str, Any], device: str) -> _GenBundle:
         with torch.no_grad():
             z_map = {n: composite.codebook([n])[0].detach().clone() for n in names}
             sig_t = composite._resolve_jitter_sigma(names) if learn_sig else None
+            if composite.rotor_deltas is not None:
+                rotor_deltas = composite.rotor_deltas.detach().clone()
         sigma_map = {
             n: (float(sig_t[i]) if sig_t is not None else None) for i, n in enumerate(names)
         }
 
     model.to(device).eval()  # eval => deterministic modules; phase/jitter variety is explicit below
     z_map = {n: v.to(device).float() for n, v in z_map.items()}
-    return _GenBundle(model, z_map, sigma_map, cond_dim, names)
+    if rotor_deltas is not None:
+        rotor_deltas = rotor_deltas.to(device).float()
+    return _GenBundle(model, z_map, sigma_map, cond_dim, names, rotor_deltas)
+
+
+class _GenBatch(NamedTuple):
+    """One producer batch: what the emitter is called with, plus what varied.
+
+    ``rotor_pos``/``deltas`` are diagnostics — they carry the geometry and the
+    per-rotor codes this batch actually used, so a caller (or a test) can see
+    the stochastic knobs move without re-deriving them.
+    """
+
+    rps: np.ndarray  # (bs, R, T) rev/s at audio rate
+    rel: torch.Tensor  # (bs, M, R, 3) mic->rotor geometry
+    z: torch.Tensor  # (bs, d), or (bs, R, d) with per-rotor deltas
+    sigma: torch.Tensor | None  # (bs,) OU linewidth, or None
+    rotor_pos: np.ndarray  # (R, 3) rotor geometry used
+    deltas: torch.Tensor | None  # (R, d) per-rotor code deltas used
+
+
+def _batch_code(z_base: torch.Tensor, deltas: torch.Tensor | None, gen_bs: int) -> torch.Tensor:
+    """``z_base [d]`` (+ optional ``deltas [R, d]``) → the emitter's batch code.
+
+    Without deltas the whole batch shares one ``[bs, d]`` per-clip code (every
+    rotor of a clip conditioned identically). With them the code becomes the
+    per-rotor ``[bs, R, d]`` ``z_r = z_drone + δz_r`` that
+    ``PositionalHarmonicNoiseGen._fold`` folds onto the rotor axis — the same
+    composition ``_CodebookConditionedNoiseGen._resolve_conditioning`` applies
+    during training.
+    """
+    z = z_base if deltas is None else z_base.unsqueeze(0) + deltas
+    return z.unsqueeze(0).expand(gen_bs, *z.shape)
+
+
+def _perturb_deltas(
+    deltas: torch.Tensor | None, noise: float, rng: np.random.Generator
+) -> torch.Tensor | None:
+    """``δz_r + N(0, noise · RMS_r‖δz_r‖)``, redrawn per batch (``noise`` = off at 0).
+
+    The scale unit is the RMS of the four delta NORMS, so the knob reads as a
+    fraction of how far the rotor codes sit from the drone code — the per-rotor
+    analogue of ``embedding_noise``'s ``‖z1 - z0‖`` unit. Vicinal sampling in
+    rotor-identity space: the four rotors of a generated drone stop being the
+    four rotors the generator was fitted to.
+    """
+    if deltas is None or noise <= 0.0:
+        return deltas
+    unit = float(deltas.norm(dim=-1).pow(2).mean().sqrt().item())
+    eps = rng.normal(0.0, noise * unit, size=tuple(deltas.shape))
+    return deltas + torch.from_numpy(eps).float().to(deltas.device)
+
+
+def _make_interp_sampler(
+    gb: _GenBundle, params: dict[str, Any], rng: np.random.Generator, device: str
+) -> Any:
+    """Vicinal embedding + geometry sampling along the DREGON↔Michael's segment.
+
+    Per batch: draw one α; build z as a Gaussian ball around the segment point
+    z(α); interpolate rotor positions and jitter σ at the same α (then jitter
+    the positions by ``rotor_jitter_std`` and the per-rotor code deltas by
+    ``perrotor_noise``); per chunk pick a mic-array rig and jitter each mic.
+    """
+    from models.generative.codebook import geometry_to_rel_pos
+
+    interp = params["interp"]
+    gen_bs = int(params["gen_batch"])
+    e0, e1 = interp["endpoints"]
+    z0, z1 = gb.z_map[e0], gb.z_map[e1]
+    seg_len = float((z1 - z0).norm().item()) or 1.0
+    s0, s1 = gb.sigma_map.get(e0), gb.sigma_map.get(e1)
+    rot0 = np.asarray(load_geometry(e0, params["dregon_dir"])[1], dtype=np.float64)  # (R,3)
+    rot1 = np.asarray(load_geometry(e1, params["dregon_dir"])[1], dtype=np.float64)
+    n_rotors = int(rot0.shape[0])
+    if gb.rotor_deltas is not None and int(gb.rotor_deltas.shape[0]) != n_rotors:
+        raise ValueError(
+            f"checkpoint has {int(gb.rotor_deltas.shape[0])} per-rotor deltas but the "
+            f"geometry has {n_rotors} rotors"
+        )
+    mic_cfg = interp["mic_sampling"]
+    rigs = list(mic_cfg["rigs"])
+    rig_probs = np.asarray(mic_cfg.get("prob", [1.0 / len(rigs)] * len(rigs)), dtype=np.float64)
+    rig_probs = rig_probs / rig_probs.sum()
+    mic_arrays = {rig: load_geometry(rig, params["dregon_dir"])[0] for rig in rigs}  # (M,3)
+    n_mics = int(mic_arrays[rigs[0]].shape[0])
+    mic_jit = float(mic_cfg.get("jitter_std", 0.0))
+    a_lo, a_hi = float(interp["alpha"]["low"]), float(interp["alpha"]["high"])
+    emb_noise = float(interp.get("embedding_noise", 0.0))
+    rotor_interp = bool(interp.get("rotor_interp", True))
+    js = interp.get("jitter_sigma", "interp")
+    # Two extra vicinal knobs on the SAME segment (both off at 0): perturb the
+    # per-rotor identity codes, and perturb where the rotors physically are.
+    perrotor_noise = float(interp.get("perrotor_noise", 0.0))
+    rotor_jitter = float(interp.get("rotor_jitter_std", 0.0))
+
+    def _sample() -> _GenBatch:
+        alpha = float(rng.uniform(a_lo, a_hi))
+        z_base = (1.0 - alpha) * z0 + alpha * z1
+        if emb_noise > 0.0:
+            z_base = z_base + torch.from_numpy(
+                rng.normal(0.0, emb_noise * seg_len, size=int(z_base.shape[-1]))
+            ).float().to(device)
+        deltas = _perturb_deltas(gb.rotor_deltas, perrotor_noise, rng)
+        z = _batch_code(z_base, deltas, gen_bs)
+        rotor_pos = (
+            (1.0 - alpha) * rot0 + alpha * rot1
+            if rotor_interp
+            else (rot1 if alpha >= 0.5 else rot0)
+        )
+        if rotor_jitter > 0.0:
+            rotor_pos = rotor_pos + rng.normal(0.0, rotor_jitter, size=rotor_pos.shape)
+        sig_val: float | None
+        if js == "interp" and s0 is not None and s1 is not None:
+            sig_val = (1.0 - alpha) * s0 + alpha * s1
+        elif isinstance(js, (int, float)):
+            sig_val = float(js)
+        else:
+            sig_val = None
+        # α doubles as the rps_synthesis drone_profile blend (0=DREGON, 1=Michael's).
+        rps_np = _rps_excitation_batch(
+            params["rps_kind"],
+            gen_bs,
+            params["chunk_s"],
+            params["sample_rate"],
+            drone_profile=alpha,
+            aggressiveness=params["aggressiveness"],
+            rng=rng,
+            flight_fs=params["flight_fs"],
+        )
+        rels = np.empty((gen_bs, n_mics, n_rotors, 3), dtype=np.float32)
+        for b in range(gen_bs):
+            rig = rigs[int(rng.choice(len(rigs), p=rig_probs))]
+            mic_b = mic_arrays[rig] + rng.normal(0.0, mic_jit, mic_arrays[rig].shape)
+            rels[b] = geometry_to_rel_pos(mic_b, rotor_pos)
+        rel_b = torch.from_numpy(rels).to(device)
+        sigma_t = (
+            torch.full((gen_bs,), float(sig_val), device=device) if sig_val is not None else None
+        )
+        return _GenBatch(rps_np, rel_b, z, sigma_t, rotor_pos, deltas)
+
+    return _sample
+
+
+def _make_single_sampler(
+    gb: _GenBundle, params: dict[str, Any], rng: np.random.Generator, device: str
+) -> Any:
+    """One fixed drone: its code, its geometry, only the excitation varies."""
+    from models.generative.codebook import geometry_to_rel_pos
+
+    gen_bs = int(params["gen_batch"])
+    drone = params["drone"]
+    z_single = gb.z_map[drone]
+    sigma_single = gb.sigma_map.get(drone)
+    mic_pos, rotor_pos_s = load_geometry(drone, params["dregon_dir"])
+    rel = torch.from_numpy(geometry_to_rel_pos(mic_pos, rotor_pos_s)).float().to(device)
+    n_rotors = int(rotor_pos_s.shape[0])
+    if gb.rotor_deltas is not None and int(gb.rotor_deltas.shape[0]) != n_rotors:
+        raise ValueError(
+            f"checkpoint has {int(gb.rotor_deltas.shape[0])} per-rotor deltas but the "
+            f"geometry has {n_rotors} rotors"
+        )
+    z = _batch_code(z_single, gb.rotor_deltas, gen_bs)
+    blend = _DRONE_PROFILE_BLEND.get(drone, 0.0)
+
+    def _sample() -> _GenBatch:
+        rps_np = _rps_excitation_batch(
+            params["rps_kind"],
+            gen_bs,
+            params["chunk_s"],
+            params["sample_rate"],
+            drone_profile=blend,
+            aggressiveness=params["aggressiveness"],
+            rng=rng,
+            flight_fs=params["flight_fs"],
+        )  # (bs, R, T)
+        rel_b = rel.unsqueeze(0).expand(gen_bs, -1, -1, -1)
+        sigma_t = (
+            torch.full((gen_bs,), float(sigma_single), device=device)
+            if sigma_single is not None
+            else None
+        )
+        return _GenBatch(rps_np, rel_b, z, sigma_t, np.asarray(rotor_pos_s), gb.rotor_deltas)
+
+    return _sample
+
+
+def make_sampler(
+    gb: _GenBundle, params: dict[str, Any], rng: np.random.Generator, device: str
+) -> Any:
+    """``() -> _GenBatch`` for this producer's mode (vicinal ``interp`` or single)."""
+    if params.get("interp"):
+        return _make_interp_sampler(gb, params, rng, device)
+    return _make_single_sampler(gb, params, rng, device)
 
 
 def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> None:
@@ -261,7 +471,6 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
     """
     _ensure_src_on_path()
     torch.set_num_threads(1)
-    from models.generative.codebook import geometry_to_rel_pos
 
     device = params["device"]
     try:
@@ -282,113 +491,12 @@ def _producer_loop(shared: dict[str, torch.Tensor], params: dict[str, Any]) -> N
 
     n_slots = audio_buf.shape[0]
     gen_bs = int(params["gen_batch"])
-    duration_s = params["chunk_s"]
-    sr = params["sample_rate"]
     rng = np.random.default_rng(params["seed"])
-
-    def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        """One producer batch → ``(rps_np (bs,R,T), rel_b, z, sigma_t|None)``."""
-        raise NotImplementedError  # replaced below by the mode-specific sampler
-
-    interp = params.get("interp")
-    if interp:
-        # -- Vicinal embedding + geometry sampling along the DREGON↔Michael's
-        #    segment. Per batch: draw one α; build z as a Gaussian ball around
-        #    the segment point z(α); interpolate rotor positions and jitter σ at
-        #    the same α; per chunk pick a mic-array rig and jitter each mic.
-        e0, e1 = interp["endpoints"]
-        z0, z1 = gb.z_map[e0], gb.z_map[e1]
-        seg_len = float((z1 - z0).norm().item()) or 1.0
-        s0, s1 = gb.sigma_map.get(e0), gb.sigma_map.get(e1)
-        rot0 = np.asarray(load_geometry(e0, params["dregon_dir"])[1], dtype=np.float64)  # (R,3)
-        rot1 = np.asarray(load_geometry(e1, params["dregon_dir"])[1], dtype=np.float64)
-        n_rotors = int(rot0.shape[0])
-        mic_cfg = interp["mic_sampling"]
-        rigs = list(mic_cfg["rigs"])
-        rig_probs = np.asarray(mic_cfg.get("prob", [1.0 / len(rigs)] * len(rigs)), dtype=np.float64)
-        rig_probs = rig_probs / rig_probs.sum()
-        mic_arrays = {rig: load_geometry(rig, params["dregon_dir"])[0] for rig in rigs}  # (M,3)
-        n_mics = int(mic_arrays[rigs[0]].shape[0])
-        mic_jit = float(mic_cfg.get("jitter_std", 0.0))
-        a_lo, a_hi = float(interp["alpha"]["low"]), float(interp["alpha"]["high"])
-        emb_noise = float(interp.get("embedding_noise", 0.0))
-        rotor_interp = bool(interp.get("rotor_interp", True))
-        js = interp.get("jitter_sigma", "interp")
-
-        def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-            alpha = float(rng.uniform(a_lo, a_hi))
-            z_base = (1.0 - alpha) * z0 + alpha * z1
-            if emb_noise > 0.0:
-                z_base = z_base + torch.from_numpy(
-                    rng.normal(0.0, emb_noise * seg_len, size=int(z_base.shape[-1]))
-                ).float().to(device)
-            z = z_base.unsqueeze(0).expand(gen_bs, -1)
-            rotor_pos = (
-                (1.0 - alpha) * rot0 + alpha * rot1
-                if rotor_interp
-                else (rot1 if alpha >= 0.5 else rot0)
-            )
-            sig_val: float | None
-            if js == "interp" and s0 is not None and s1 is not None:
-                sig_val = (1.0 - alpha) * s0 + alpha * s1
-            elif isinstance(js, (int, float)):
-                sig_val = float(js)
-            else:
-                sig_val = None
-            # α doubles as the rps_synthesis drone_profile blend (0=DREGON, 1=Michael's).
-            rps_np = _rps_excitation_batch(
-                params["rps_kind"],
-                gen_bs,
-                duration_s,
-                sr,
-                drone_profile=alpha,
-                aggressiveness=params["aggressiveness"],
-                rng=rng,
-                flight_fs=params["flight_fs"],
-            )
-            rels = np.empty((gen_bs, n_mics, n_rotors, 3), dtype=np.float32)
-            for b in range(gen_bs):
-                rig = rigs[int(rng.choice(len(rigs), p=rig_probs))]
-                mic_b = mic_arrays[rig] + rng.normal(0.0, mic_jit, mic_arrays[rig].shape)
-                rels[b] = geometry_to_rel_pos(mic_b, rotor_pos)
-            rel_b = torch.from_numpy(rels).to(device)
-            sigma_t = (
-                torch.full((gen_bs,), float(sig_val), device=device)
-                if sig_val is not None
-                else None
-            )
-            return rps_np, rel_b, z, sigma_t
-    else:
-        drone = params["drone"]
-        z_single = gb.z_map[drone]
-        sigma_single = gb.sigma_map.get(drone)
-        mic_pos, rotor_pos_s = load_geometry(drone, params["dregon_dir"])
-        rel = torch.from_numpy(geometry_to_rel_pos(mic_pos, rotor_pos_s)).float().to(device)
-        n_rotors = int(rotor_pos_s.shape[0])
-        blend = _DRONE_PROFILE_BLEND.get(drone, 0.0)
-
-        def _gen_batch() -> tuple[np.ndarray, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-            rps_np = _rps_excitation_batch(
-                params["rps_kind"],
-                gen_bs,
-                duration_s,
-                sr,
-                drone_profile=blend,
-                aggressiveness=params["aggressiveness"],
-                rng=rng,
-                flight_fs=params["flight_fs"],
-            )  # (bs, R, T)
-            rel_b = rel.unsqueeze(0).expand(gen_bs, -1, -1, -1)
-            z = z_single.unsqueeze(0).expand(gen_bs, -1)
-            sigma_t = (
-                torch.full((gen_bs,), float(sigma_single), device=device)
-                if sigma_single is not None
-                else None
-            )
-            return rps_np, rel_b, z, sigma_t
+    _gen_batch = make_sampler(gb, params, rng, device)
 
     while bool(run[0].item()):
-        rps_np, rel_b, z, sigma_t = _gen_batch()
+        rps_np, rel_b, z, sigma_t = _gen_batch()[:4]
+        n_rotors = int(rps_np.shape[1])
         rps_t = torch.from_numpy(rps_np).float().to(device)
         init_phase = None
         if params["random_phase"]:

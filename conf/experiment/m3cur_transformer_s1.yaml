@@ -1,0 +1,24 @@
+# @package _global_
+# M3CUR stage 1 (the IF front-end transformer (`simple_conv_v2_transformer_if`)) — pre-training on SYNTHETIC
+# noise only: the M3 per-rotor generator (`gen_m3_refined_all_perrotor` ep30,
+# with per-rotor code deltas + the new `perrotor_noise` / `rotor_jitter_std`
+# vicinal knobs) at 50%, the analytic static comb at 50%, both on full-flight
+# excitation. ONE policy stage, every augmentation from sample 1
+# (conf/online_mix/m3cur_s1_dload.yaml). Stage 2 = m3cur_transformer_s2.
+defaults:
+  - override /data: m3cur_s1
+  - override /model: simple_conv_v2_transformer_if
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: m3cur_transformer_s1
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -257,7 +257,11 @@ Config fields (defaults in parens): `checkpoint` (bundle path, required); `drone
 checkpoint**); `device` (cuda:0 — the one extra context); `gen_batch` (32);
 `random_phase` (true — per-chunk harmonic phases for extra texture, model stays in
 eval); `refresh` (true; **false** = fill the buffer once for a reproducible fixed
-bank); `rps.kind` (`synthetic_intermittent` only) + `rps.aggressiveness` (1.0);
+bank); `rps.kind` (`synthetic_intermittent` = cruise-only, or `full_flight` =
+ground→warm-up→takeoff→cruise→landing→ground windows, which drive the generator
+into silence at zero RPS — the static-comb source takes the same two kinds; see
+`conf/online_mix/e10_full_flight_dload.yaml`) + `rps.flight_fs` (200.0, the
+`full_flight` trajectory rate) + `rps.aggressiveness` (1.0);
 `buffer.slots` (512 ≈ 384 MB) + `buffer.warmup` (16); `weight` (mix weight, 1.0
 per source item — a bare `[dregon, michaels, generated]` list is duration-weighted
 within reals, then real-pool vs generated at these pool-level weights).
@@ -275,12 +279,22 @@ positions at α; `jitter_sigma: interp` blends the learned per-drone OU σ at α
 (or a float, or `off`) and is forced ON at eval; `mic_sampling` picks a rig
 (`rigs`, `prob`) **independently** of α and jitters each mic by
 `N(0, jitter_std m)` — the vicinity of the real arrays. `endpoints` are codebook
-names. α also feeds the `rps_synthesis` `drone_profile` blend. Requires a
+names. α also feeds the `rps_synthesis` `drone_profile` blend. Two further
+per-batch knobs widen the *rotor* axis (both default 0 = off, both redrawn every
+producer batch; `conf/online_mix/m3cur_s1_dload.yaml`): `perrotor_noise`
+replaces the checkpoint's per-rotor code deltas with
+`δz_r + N(0, perrotor_noise·RMS_r‖δz_r‖)` (so the four rotors of a generated
+drone are not the four the generator was fitted to), and `rotor_jitter_std`
+adds `N(0, σ m)` independently per rotor per coordinate to the α-interpolated
+rotor POSITIONS (airframe scale/layout vary, not just the embedding). Requires a
 **flat conditioned checkpoint** (`_CodebookConditionedNoiseGen` state_dict with
-`codebook.codes.*` + optional `log_jitter_sigma.*`; the modern `training.loop`
-format) — `_load_generator` rebuilds the exact composite via
-`models.registry.build_noise_gen_model` (spectral-norm / per-drone-σ aware),
-so the reduced `save_bundle` (no σ) is single-drone only. `checkpoint` accepts
+`codebook.codes.*` + optional `log_jitter_sigma.*` + optional `rotor_deltas`;
+the modern `training.loop` format) — `_load_generator` rebuilds the exact
+composite via `models.registry.build_noise_gen_model` (spectral-norm /
+per-drone-σ / **per-rotor-delta** aware; a `rotor_deltas [R, d]` key switches
+`per_rotor_deltas` on, and the producer then conditions each rotor's emitter on
+its own `z_r = z_drone + δz_r`), so the reduced `save_bundle` (no σ) is
+single-drone only. `checkpoint` accepts
 an `r2://` URI (auto-downloaded via `training.artifacts.resolve_checkpoint_uri`);
 set `dregon_dir: dload:DREGON` on cloud so the producer can load DREGON geometry.
 

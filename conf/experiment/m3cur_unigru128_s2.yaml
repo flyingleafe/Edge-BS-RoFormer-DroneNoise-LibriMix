@@ -1,0 +1,24 @@
+# @package _global_
+# M3CUR stage 2 (the causal unidirectional-GRU head (`simple_conv_v2_uni_gru128`)) — REAL fine-tune, warm-started
+# from m3cur_unigru128_s1's best.ckpt. Trains on the e12 full-flight real online
+# mix (DREGON in_flight_noise minus room1 + Michael's FLY125, whole envelope)
+# under the fs_v2 augmentations, with the 50k unaugmented warm-up stage REMOVED
+# (conf/online_mix/m3cur_s2_dload.yaml). Renewed patience 20.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: m3cur_unigru128_s2
+checkpoint: r2://ml-data/artifacts/m3cur_unigru128_s1/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

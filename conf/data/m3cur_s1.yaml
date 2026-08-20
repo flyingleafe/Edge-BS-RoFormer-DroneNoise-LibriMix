@@ -1,0 +1,21 @@
+# M3CUR stage 1 — synthetic-only training stream (M3 per-rotor generator +
+# static comb, full-flight excitation, all augmentations from sample 1).
+# Validation is the fixed FULL-envelope real split, so the sim->real gap is
+# read directly off the validation curve.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/m3cur_s1_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
