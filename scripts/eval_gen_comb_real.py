@@ -47,6 +47,14 @@ Usage::
     python scripts/eval_gen_comb_real.py --experiments gen_v1_recal_mm \\
         --out results/gen_comb_real --illustrate 1
     python scripts/eval_gen_comb_real.py --out results/gen_comb_real
+    python scripts/eval_gen_comb_real.py --rigs dregon,michaels \\
+        --split-filter valid,boundary --experiments gen_m3_refined_all_perrotor
+
+The default is DREGON alone. ``--rigs dregon,michaels`` adds the Michael's rig
+(FLY124/FLY125): its chunks carry ``meta.drone = "michaels"``, the michaels array
+geometry and the arm's own michaels conditioning labels, so a per-drone codebook
+generator is scored symmetrically on both rigs and every row says which rig it
+came from.
 """
 
 from __future__ import annotations
@@ -84,6 +92,19 @@ DEFAULT_ARMS = (
 DREGON_FRAMES = "frames:DREGON-frames"
 DREGON_RPS_KEY = "motors_measured"
 DREGON_SPLITS = ["in_flight_noise"]
+
+#: The second rig, exactly as the swapped DREGON+Michael's stream sees it
+#: (``conf/data/noise_rps_dregon_michaels_swapped_stream_multimic*.yaml``): the
+#: published rich-frame Michael's dataset, every recording, the recalibrated
+#: ``rps`` telemetry. Its refined sidecars (``FLY124.npz`` / ``FLY125.npz``)
+#: share the DREGON sidecars' format and time reference, so one
+#: ``rps_override_dir`` serves both rigs.
+MICHAELS_FRAMES = "frames:michaels-frames"
+MICHAELS_RPS_KEY = "rps"
+
+#: The rigs this script can tile. ``meta.drone`` uses exactly these names, which
+#: are also the per-drone codebook keys of a ``_CodebookConditionedNoiseGen``.
+RIGS = ("dregon", "michaels")
 
 #: The phase-7 constant correction of the measured DREGON telemetry bias. Only a
 #: default for the self-test's sensitivity row — each arm's own scale comes from
@@ -501,6 +522,9 @@ class Chunk:
     mic_pos: np.ndarray
     rotor_pos: np.ndarray
     sample_rate: int
+    #: Which rig the tile came from — the ``meta.drone`` key the generator is
+    #: conditioned on, and the geometry ``mic_pos``/``rotor_pos`` belong to.
+    rig: str = "dregon"
 
     def label(self, variant: str, scale: float) -> np.ndarray:
         """The conditioning track of one arm.
@@ -540,6 +564,15 @@ def _slice_chunk(
     return audio, upsample_rps_to_audio_rate(values, motor_ts, audio_ts)
 
 
+def _rig_spec(rig: str) -> tuple[str, str, list[str] | None]:
+    """``(frames spec, rps key, splits)`` — the training stream's own selection."""
+    if rig == "dregon":
+        return DREGON_FRAMES, DREGON_RPS_KEY, DREGON_SPLITS
+    if rig == "michaels":
+        return MICHAELS_FRAMES, MICHAELS_RPS_KEY, None
+    raise ValueError(f"unknown rig {rig!r}; expected one of {RIGS}")
+
+
 def build_chunks(
     *,
     sample_rate: int = SAMPLE_RATE,
@@ -549,88 +582,111 @@ def build_chunks(
     val_pct: float = 0.1,
     override_dir: str | Path | None,
     max_chunks: int | None = None,
+    rigs: tuple[str, ...] | list[str] = ("dregon",),
+    keep_splits: set[str] | None = None,
 ) -> list[Chunk]:
-    """Tile the DREGON in-flight recording(s) deterministically.
+    """Tile the in-flight recording(s) of each rig deterministically.
 
-    Same source, same trim and same split convention as the training stream
+    Same sources, same trim and same split convention as the training stream
     (``val_at_start: true``, ``val_pct: 0.1``), but a fixed tiling instead of the
     loader's random draws — a comb readout has to score the same audio for every
     arm. Chunks straddling the split boundary are tagged ``boundary`` and kept:
     dropping them would silently change the eval set with the tile phase.
+
+    ``rigs`` defaults to DREGON alone, which is the historical behaviour. With
+    ``michaels`` in the list the Michael's rig is tiled the same way and its
+    chunks carry ``rig = "michaels"``, so the generator is conditioned on the
+    michaels codebook entry and the michaels geometry. ``max_chunks`` caps each
+    RECORDING separately — a rig-wide cap would spend the whole budget on the
+    first Michael's flight and never reach the second — and it counts only the
+    chunks ``keep_splits`` admits, because capping before the split filter would
+    fill the budget with chunks that are then thrown away. On a one-recording
+    selection (the DREGON default) the cap is the historical one.
     """
     from data_processing.frame_datasets import _noise_gen_geometry  # geometry of the stream
     from data_processing.frames import get_meta
     from data_processing.noise_rps_dataset import load_published_noise_sources
 
-    base = load_published_noise_sources(
-        DREGON_FRAMES,
-        sample_rate,
-        origin="dregon",
-        rps_key=DREGON_RPS_KEY,
-        splits=DREGON_SPLITS,
-    )
-    refined_srcs: list[Any] | None = None
-    if override_dir is not None:
-        refined_srcs = load_published_noise_sources(
-            DREGON_FRAMES,
-            sample_rate,
-            origin="dregon",
-            rps_key=DREGON_RPS_KEY,
-            splits=DREGON_SPLITS,
-            rps_override_dir=override_dir,
-        )
-        if len(refined_srcs) != len(base):
-            raise RuntimeError(
-                f"refined load returned {len(refined_srcs)} recordings, original {len(base)}"
-            )
-
-    mic_pos_full, rotor_pos = _noise_gen_geometry("dregon", DREGON_FRAMES)
     chunks: list[Chunk] = []
-    for s_idx, src in enumerate(base):
-        rec_id = str(get_meta(src.frame, "recording_id", f"rec{s_idx}") or f"rec{s_idx}")
-        t0 = float(src.frame["audio"].t_start)
-        cut = src.duration * val_pct  # val_at_start: the FIRST val_pct is validation
-        start = 0.0
-        while start + seconds <= src.duration + 1e-9:
-            got = _slice_chunk(src, t0 + start, seconds, sample_rate, DREGON_RPS_KEY)
-            if got is None:
-                start += hop_seconds
-                continue
-            audio, rps_orig = got
-            mean_rps = float(rps_orig.mean())
-            if mean_rps < min_flight_rps:
-                start += hop_seconds
-                continue
-            labels = {"orig": rps_orig}
-            if refined_srcs is not None:
-                ref = _slice_chunk(
-                    refined_srcs[s_idx], t0 + start, seconds, sample_rate, DREGON_RPS_KEY
-                )
-                if ref is not None:
-                    labels["refined"] = ref[1]
-            if start + seconds <= cut:
-                split = "valid"
-            elif start >= cut:
-                split = "train"
-            else:
-                split = "boundary"
-            chunks.append(
-                Chunk(
-                    index=len(chunks),
-                    recording_id=rec_id,
-                    t_rel=start,
-                    split=split,
-                    mean_rps=mean_rps,
-                    audio=audio,
-                    labels=labels,
-                    mic_pos=np.asarray(mic_pos_full[: audio.shape[0]], dtype=np.float32),
-                    rotor_pos=np.asarray(rotor_pos, dtype=np.float32),
-                    sample_rate=sample_rate,
-                )
+    for rig in rigs:
+        spec, rps_key, splits = _rig_spec(rig)
+        base = load_published_noise_sources(
+            spec,
+            sample_rate,
+            origin=rig,
+            rps_key=rps_key,
+            splits=splits,
+        )
+        refined_srcs: list[Any] | None = None
+        if override_dir is not None:
+            refined_srcs = load_published_noise_sources(
+                spec,
+                sample_rate,
+                origin=rig,
+                rps_key=rps_key,
+                splits=splits,
+                rps_override_dir=override_dir,
             )
-            if max_chunks is not None and len(chunks) >= max_chunks:
-                return chunks
-            start += hop_seconds
+            if len(refined_srcs) != len(base):
+                raise RuntimeError(
+                    f"{rig}: refined load returned {len(refined_srcs)} recordings, "
+                    f"original {len(base)}"
+                )
+
+        # `_noise_gen_geometry` reads its second argument for DREGON only; the
+        # michaels array comes from the source registry.
+        mic_pos_full, rotor_pos = _noise_gen_geometry(rig, spec if rig == "dregon" else None)
+        for s_idx, src in enumerate(base):
+            rec_id = str(get_meta(src.frame, "recording_id", f"rec{s_idx}") or f"rec{s_idx}")
+            t0 = float(src.frame["audio"].t_start)
+            cut = src.duration * val_pct  # val_at_start: the FIRST val_pct is validation
+            n_rec = 0
+            start = 0.0
+            while start + seconds <= src.duration + 1e-9:
+                got = _slice_chunk(src, t0 + start, seconds, sample_rate, rps_key)
+                if got is None:
+                    start += hop_seconds
+                    continue
+                audio, rps_orig = got
+                mean_rps = float(rps_orig.mean())
+                if mean_rps < min_flight_rps:
+                    start += hop_seconds
+                    continue
+                labels = {"orig": rps_orig}
+                if refined_srcs is not None:
+                    ref = _slice_chunk(
+                        refined_srcs[s_idx], t0 + start, seconds, sample_rate, rps_key
+                    )
+                    if ref is not None:
+                        labels["refined"] = ref[1]
+                if start + seconds <= cut:
+                    split = "valid"
+                elif start >= cut:
+                    split = "train"
+                else:
+                    split = "boundary"
+                if keep_splits is not None and split not in keep_splits:
+                    start += hop_seconds
+                    continue
+                chunks.append(
+                    Chunk(
+                        index=len(chunks),
+                        recording_id=rec_id,
+                        t_rel=start,
+                        split=split,
+                        mean_rps=mean_rps,
+                        audio=audio,
+                        labels=labels,
+                        mic_pos=np.asarray(mic_pos_full[: audio.shape[0]], dtype=np.float32),
+                        rotor_pos=np.asarray(rotor_pos, dtype=np.float32),
+                        sample_rate=sample_rate,
+                        rig=rig,
+                    )
+                )
+                n_rec += 1
+                if max_chunks is not None and n_rec >= max_chunks:
+                    break
+                start += hop_seconds
     return chunks
 
 
@@ -644,11 +700,18 @@ class Arm:
 
     name: str
     checkpoint: str
-    label_variant: str  # "orig" | "scaled" | "refined"
+    label_variant: str  # "orig" | "scaled" | "refined" — the DREGON side
     label_scale: float
     codec: Any
     model: Any
     metric_suite: Any
+    #: The same pair per rig. An arm can train on refined DREGON labels and
+    #: published michaels telemetry, so conditioning is decided per chunk.
+    label_by_rig: dict[str, tuple[str, float]] = field(default_factory=dict)
+
+    def labels_for(self, rig: str) -> tuple[str, float]:
+        """``(variant, scale)`` this arm was conditioned on for ``rig``."""
+        return self.label_by_rig.get(rig, (self.label_variant, self.label_scale))
 
 
 def resolve_checkpoint(exp: str, ckpt: str | None = None) -> str:
@@ -679,18 +742,24 @@ def _compose(exp: str, checkpoint: str):
         )
 
 
-def label_variant_of(cfg: Any) -> tuple[str, float]:
-    """Which DREGON labels this experiment trained on — read from its own config.
+def label_variant_of(cfg: Any, rig: str = "dregon") -> tuple[str, float]:
+    """Which labels of ``rig`` this experiment trained on — read from its own config.
 
     Conditioning at eval must use the arm's training labels: a generator that
     learned to place its comb on biased telemetry is not being tested if it is
     then driven by a corrected trajectory.
+
+    The michaels side has one knob only (``michaels_rps_override_dir``): there is
+    no michaels counterpart of ``dregon_rps_scale``, so an arm without the
+    override conditioned on the published, recalibrated telemetry.
     """
     params: Any = {}
     try:
         params = cfg.data.train.params
     except Exception:  # noqa: BLE001 - a non-noise-gen config simply has no knobs
         return "orig", 1.0
+    if rig == "michaels":
+        return ("refined", 1.0) if params.get("michaels_rps_override_dir", None) else ("orig", 1.0)
     override = params.get("dregon_rps_override_dir", None)
     scale = float(params.get("dregon_rps_scale", 1.0) or 1.0)
     if override is not None:
@@ -730,6 +799,7 @@ def load_arm(exp: str, *, device: Any, checkpoint: str | None = None, cfg: Any =
         codec=codec,
         model=model,
         metric_suite=build_metrics(cfg.metrics),
+        label_by_rig={r: label_variant_of(cfg, r) for r in RIGS},
     )
 
 
@@ -751,7 +821,7 @@ def chunk_frame(chunk: Chunk, rps: np.ndarray) -> Any:
             ),
             "mic_pos": td.wrap(chunk.mic_pos, dims=("mic", None)),
             "rotor_pos": td.wrap(chunk.rotor_pos, dims=("rotor", None)),
-            "meta": td.Frame({"drone": "dregon"}),
+            "meta": td.Frame({"drone": chunk.rig}),
         }
     )
 
@@ -763,7 +833,7 @@ def render(arm: Arm, chunk: Chunk, *, device: Any, seed: int) -> np.ndarray:
     from data_processing.collate import frame_collate
     from training.loop import _forward, _to_device
 
-    rps = chunk.label(arm.label_variant, arm.label_scale)
+    rps = chunk.label(*arm.labels_for(chunk.rig))
     batch = _to_device(frame_collate([chunk_frame(chunk, rps)]), device)
     # The filtered-noise branch draws an excitation even in eval mode; a fixed
     # seed per chunk makes every arm see the same draw.
@@ -865,6 +935,7 @@ def band_of(k: int) -> str | None:
 _ROW_FIELDS = [
     "arm",
     "label_variant",
+    "rig",
     "chunk",
     "recording_id",
     "t_rel",
@@ -897,7 +968,13 @@ def write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per-(arm, band) means over every chunk, mic-folded reading already inside."""
+    """Per-(arm, rig, band) means over every chunk, mic-folded reading already inside.
+
+    The rig is part of the key because the two rigs are different drones with
+    different rotor speeds and different arrays — averaging them together would
+    hide exactly the per-rig difference this readout exists to show. A one-rig
+    run therefore keeps its historical rows and only gains a ``rig`` column.
+    """
     metric_cols = [
         "delta_logmag_db",
         "line_gen_db",
@@ -909,14 +986,15 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "gain_db",
         "mrstft",
     ]
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, Any, str], list[dict[str, Any]]] = {}
     for row in rows:
-        groups.setdefault((row["arm"], row["band"]), []).append(row)
+        groups.setdefault((row["arm"], row.get("rig", ""), row["band"]), []).append(row)
     out: list[dict[str, Any]] = []
-    for (arm, band), items in groups.items():
+    for (arm, rig, band), items in groups.items():
         rec: dict[str, Any] = {
             "arm": arm,
             "label_variant": items[0]["label_variant"],
+            "rig": rig,
             "band": band,
             "n_rows": len(items),
         }
@@ -929,7 +1007,13 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rec["mean_cells_real"] = float(np.mean(total)) if total else 0.0
         out.append(rec)
     order = list(K_BANDS)
-    out.sort(key=lambda r: (r["arm"], order.index(r["band"]) if r["band"] in order else 99))
+    out.sort(
+        key=lambda r: (
+            r["arm"],
+            str(r["rig"]),
+            order.index(r["band"]) if r["band"] in order else 99,
+        )
+    )
     return out
 
 
@@ -947,11 +1031,15 @@ def _per_k_curves(
     rows: list[dict[str, Any]], column: str
 ) -> dict[str, tuple[list[int], list[float]]]:
     per_arm: dict[str, dict[int, list[float]]] = {}
+    rigs = {str(row.get("rig", "")) for row in rows}
     for row in rows:
         val = row[column]
         if val is None or not np.isfinite(val):
             continue
-        per_arm.setdefault(row["arm"], {}).setdefault(int(row["k"]), []).append(float(val))
+        # One curve per (arm, rig) when both rigs are in the run: the two drones
+        # have different comb geometries, so a merged curve is not a curve.
+        name = row["arm"] if len(rigs) < 2 else f"{row['arm']} [{row['rig']}]"
+        per_arm.setdefault(name, {}).setdefault(int(row["k"]), []).append(float(val))
     out: dict[str, tuple[list[int], list[float]]] = {}
     for arm, per_k in per_arm.items():
         ks = sorted(per_k)
@@ -981,6 +1069,8 @@ def plot_per_k(
         ("ptf_gen_db", "peak-to-floor (dB)", "Peak-to-floor, generated", None, ""),
         ("ptf_real_db", "peak-to-floor (dB)", "Peak-to-floor, recording", None, ""),
     ]
+    rigs = sorted({str(row.get("rig", "")) or "dregon" for row in rows})
+    source = "DREGON" if rigs == ["dregon"] else "/".join(rigs)
     written: list[Path] = []
     for column, ylabel, title, hline, hlabel in panels:
         curves = _per_k_curves(rows, column)
@@ -998,7 +1088,7 @@ def plot_per_k(
             ax.axvline(edge, color="0.7", lw=0.6, ls=":")
         ax.set_xlabel("harmonic index k")
         ax.set_ylabel(ylabel)
-        ax.set_title(f"{title} — real DREGON audio")
+        ax.set_title(f"{title} — real {source} audio")
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8)
         fig.tight_layout()
@@ -1230,7 +1320,21 @@ def main() -> int:
     ap.add_argument("--chunk-seconds", type=float, default=4.0)
     ap.add_argument("--hop-seconds", type=float, default=4.0)
     ap.add_argument("--min-flight-rps", type=float, default=45.0)
-    ap.add_argument("--max-chunks", type=int, default=None)
+    ap.add_argument(
+        "--max-chunks", type=int, default=None, help="cap the kept chunks of EACH recording"
+    )
+    ap.add_argument(
+        "--rigs",
+        default="dregon",
+        help="comma list of rigs to tile: dregon, michaels, or dregon,michaels. "
+        "Michael's chunks are conditioned with meta.drone='michaels' and the "
+        "michaels array geometry",
+    )
+    ap.add_argument(
+        "--split-filter",
+        default=None,
+        help="comma list of split tags to keep (train, valid, boundary). Default: keep every chunk",
+    )
     ap.add_argument("--k-max", type=int, default=80)
     ap.add_argument(
         "--line-stride",
@@ -1285,6 +1389,17 @@ def main() -> int:
                 file=sys.stderr,
             )
 
+    rigs = tuple(r.strip() for r in str(args.rigs).split(",") if r.strip())
+    for rig in rigs:
+        _rig_spec(rig)  # fail on a typo before any dataset is streamed
+    keep_splits: set[str] | None = None
+    if args.split_filter:
+        keep_splits = {s.strip() for s in str(args.split_filter).split(",") if s.strip()}
+        unknown = keep_splits - {"train", "valid", "boundary"}
+        if unknown:
+            print(f"unknown split tag(s) {sorted(unknown)}", file=sys.stderr)
+            return 1
+
     ks = np.arange(1, int(args.k_max) + 1)
     t_chunks = time.time()
     chunks = build_chunks(
@@ -1293,16 +1408,25 @@ def main() -> int:
         min_flight_rps=args.min_flight_rps,
         override_dir=override_dir,
         max_chunks=args.max_chunks,
+        rigs=rigs,
+        keep_splits=keep_splits,
     )
     if not chunks:
-        print("no eval chunks (check --min-flight-rps)", file=sys.stderr)
+        print("no eval chunks (check --min-flight-rps / --split-filter)", file=sys.stderr)
         return 1
     splits = {s: sum(1 for c in chunks if c.split == s) for s in ("train", "valid", "boundary")}
+    per_rig = {
+        rig: {s: sum(1 for c in chunks if c.rig == rig and c.split == s) for s in splits}
+        for rig in rigs
+    }
     print(
         f"{len(chunks)} chunks of {args.chunk_seconds:g}s from "
         f"{len({c.recording_id for c in chunks})} recording(s) in "
         f"{time.time() - t_chunks:.1f}s — {splits}"
     )
+    if len(rigs) > 1:
+        for rig in rigs:
+            print(f"  {rig}: {sum(per_rig[rig].values())} chunks — {per_rig[rig]}")
 
     if args.self_test:
         return self_test(chunks, ks=ks, stride=args.line_stride, gate_frac=args.gate)
@@ -1351,11 +1475,16 @@ def main() -> int:
             # unscoreable, and that is worth knowing before an R2 download.
             ckpt = resolve_checkpoint(exp, args.checkpoint)
             cfg = _compose(exp, ckpt)
-            variant, _scale = label_variant_of(cfg)
-            if variant == "refined" and ref_variant != "refined":
+            unscoreable = [
+                rig
+                for rig in rigs
+                if label_variant_of(cfg, rig)[0] == "refined"
+                and any("refined" not in c.labels for c in chunks if c.rig == rig)
+            ]
+            if unscoreable:
                 print(
-                    f"  SKIPPED: {exp} trained on refined labels, and no sidecars are "
-                    "present to reproduce them",
+                    f"  SKIPPED: {exp} trained on refined {'/'.join(unscoreable)} labels, "
+                    "and no sidecars are present to reproduce them",
                     file=sys.stderr,
                 )
                 continue
@@ -1363,7 +1492,8 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - one broken arm must not kill the sweep
             print(f"  FAILED to load: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
-        print(f"  labels={arm.label_variant} (scale {arm.label_scale:g})  ckpt={arm.checkpoint}")
+        shown = ", ".join(f"{r}={arm.labels_for(r)[0]}(x{arm.labels_for(r)[1]:g})" for r in rigs)
+        print(f"  labels: {shown}  ckpt={arm.checkpoint}")
         for chunk in chunks:
             real_power, freqs, ref_rates, real_tab = real_cache[chunk.index]
             gen = render(arm, chunk, device=device, seed=args.seed + chunk.index)
@@ -1373,7 +1503,7 @@ def main() -> int:
                 real_power=real_power,
                 freqs=freqs,
                 ref_rates=ref_rates,
-                arm_rps=chunk.label(arm.label_variant, arm.label_scale),
+                arm_rps=chunk.label(*arm.labels_for(chunk.rig)),
                 ks=ks,
                 stride=args.line_stride,
                 gate_frac=args.gate,
@@ -1391,7 +1521,8 @@ def main() -> int:
                 real_line = real_tab.line.get(k)
                 row: dict[str, Any] = {
                     "arm": exp,
-                    "label_variant": arm.label_variant,
+                    "label_variant": arm.labels_for(chunk.rig)[0],
+                    "rig": chunk.rig,
                     "chunk": chunk.index,
                     "recording_id": chunk.recording_id,
                     "t_rel": round(chunk.t_rel, 3),
@@ -1451,8 +1582,11 @@ def main() -> int:
         json.dumps(
             {
                 "reference_labels": ref_variant,
+                "rigs": list(rigs),
+                "split_filter": sorted(keep_splits) if keep_splits else None,
                 "n_chunks": len(chunks),
                 "splits": splits,
+                "splits_per_rig": per_rig,
                 "n_fft": N_FFT,
                 "hop": HOP,
                 "k_max": int(args.k_max),
@@ -1471,14 +1605,14 @@ def main() -> int:
         plot_illustration(chunk.audio, per_arm, chunk, out_dir / f"illustration_chunk{idx:03d}.png")
 
     header = (
-        f"\n{'arm':<26}{'band':<9}{'dLogMag':>9}{'dLine':>9}"
+        f"\n{'arm':<26}{'rig':<10}{'band':<9}{'dLogMag':>9}{'dLine':>9}"
         f"{'PTFgen':>9}{'PTFreal':>9}{'dPTF':>9}{'mrstft':>9}"
     )
     print(header)
-    print("-" * 89)
+    print("-" * 99)
     for rec in summary:
         print(
-            f"{rec['arm']:<26}{rec['band']:<9}{rec['delta_logmag_db']:>9.3f}"
+            f"{rec['arm']:<26}{rec['rig']:<10}{rec['band']:<9}{rec['delta_logmag_db']:>9.3f}"
             f"{rec['line_delta_db']:>9.3f}{rec['ptf_gen_db']:>9.3f}"
             f"{rec['ptf_real_db']:>9.3f}{rec['ptf_delta_db']:>9.3f}{rec['mrstft']:>9.3f}"
         )
