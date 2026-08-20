@@ -1,0 +1,40 @@
+# The 8-mic swapped DREGON+Michael's stream with REFINED labels on BOTH rigs:
+# same split, sources and pins as ..._multimic_refined, plus
+# michaels_rps_override_dir — FLY124/FLY125 telemetry values are replaced by
+# their L-BFGS-refined sidecars (src/data_processing/refined_labels/), exactly
+# as the DREGON side already is. Sidecar time reference: seconds from the
+# published frame's audio t_start (verified identical to the DREGON sidecars).
+train:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_train
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: frames:michaels-frames
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    channel_policy: all
+    seed: 42
+    dregon_rps_override_dir: src/data_processing/refined_labels
+    michaels_rps_override_dir: src/data_processing/refined_labels
+  iterable: false
+valid:
+  _target_: data_processing.frame_datasets.NoiseGenFrameDataset.build_valid
+  params:
+    dregon_dir: frames:DREGON-frames
+    michaels_dir: frames:michaels-frames
+    sample_rate: 16000
+    chunk_size: 16000
+    train_samples: 6000
+    val_samples: 256
+    val_pct: 0.1
+    val_at_start: true
+    channel_policy: all
+    seed: 42
+    dregon_rps_override_dir: src/data_processing/refined_labels
+    michaels_rps_override_dir: src/data_processing/refined_labels
+  iterable: false
+batch_size: null
+num_workers: null

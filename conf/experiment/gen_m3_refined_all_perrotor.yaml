@@ -1,0 +1,27 @@
+# @package _global_
+# gen_m2_refined_perrotor with refined labels on BOTH rigs: the FLY124/FLY125
+# refined sidecars replace the recalibrated telemetry on the Michael's side,
+# so no arm of the training data carries unrefined labels. Per-epoch
+# checkpoints ON for comb-aware selection (the mrstft monitor is known to
+# anti-correlate with comb quality — do not trust best.ckpt).
+defaults:
+  - override /data: noise_rps_dregon_michaels_swapped_stream_multimic_refined_all
+  - override /model: positional_harmonic_gen_cond_jitter_latreg_perdrone_perrotor
+  - override /loss: multiscale_stft
+  - override /metrics: noise_gen_spectral
+
+experiment_name: gen_m3_refined_all_perrotor
+
+epochs: 60
+patience: 8
+batch_size: 4
+grad_accum_steps: 8
+grad_clip: 1.0
+checkpoint_every: 1
+optim:
+  optimizer: adam
+  lr: 0.001
+  monitor: mrstft
+  monitor_mode: max
+
+amp: false

@@ -553,9 +553,9 @@ def load_published_noise_sources(
     ``rps_override_dir`` / ``rps_scale`` are the two label knobs (see
     :func:`apply_rps_override` / :func:`apply_rps_scale`). They apply to the
     FULL frame, before the overlap trim below, because the sidecar times are
-    relative to the full frame's audio ``t_start``. Only the DREGON call of
-    :func:`build_noise_rps_datasets` passes them; Michael's labels never
-    change.
+    relative to the full frame's audio ``t_start``. :func:`build_noise_rps_datasets`
+    passes them per origin: ``dregon_rps_override_dir`` / ``dregon_rps_scale``
+    on the DREGON call, ``michaels_rps_override_dir`` on the Michael's call.
     """
     _check_label_knobs(rps_override_dir, rps_scale)
     name, version = _parse_frames_spec(spec)
@@ -611,6 +611,7 @@ def build_noise_rps_datasets(
     cache_dir: str | Path | None = None,
     dregon_rps_override_dir: str | Path | None = None,
     dregon_rps_scale: float = 1.0,
+    michaels_rps_override_dir: str | Path | None = None,
     **dataset_kwargs,
 ) -> tuple[NoiseRPSDataset, NoiseRPSDataset]:
     """Build train/val NoiseRPSDataset by holding out a fraction of every record.
@@ -646,11 +647,18 @@ def build_noise_rps_datasets(
             DREGON recording gets its ``motors_measured`` values replaced by
             the refined trajectory (:func:`apply_rps_override`); a recording
             with no sidecar raises. A relative path resolves against the
-            repository root. Michael's labels never change.
+            repository root. Applies to DREGON only — see
+            ``michaels_rps_override_dir`` for the Michael's side.
         dregon_rps_scale: constant gain on the DREGON labels
             (:func:`apply_rps_scale`), for example ``0.99458`` for the
             measured telemetry bias. Mutually exclusive with
-            ``dregon_rps_override_dir``. Michael's labels never change.
+            ``dregon_rps_override_dir``.
+        michaels_rps_override_dir: folder of refined-label sidecars for the
+            Michael's recordings (``FLY124.npz`` / ``FLY125.npz``), same
+            format and time reference as the DREGON sidecars. When set, every
+            Michael's recording gets its ``rps`` values replaced by the
+            refined trajectory; a recording with no sidecar raises. Without
+            it, Michael's labels stay the recalibrated published telemetry.
         **dataset_kwargs: forwarded to `NoiseRPSDataset` (e.g. rps_normalize).
     """
     _check_label_knobs(dregon_rps_override_dir, dregon_rps_scale)
@@ -660,6 +668,16 @@ def build_noise_rps_datasets(
             "dregon_rps_override_dir / dregon_rps_scale apply to DREGON only, "
             "but dregon_dir is None"
         )
+    if michaels_rps_override_dir is not None:
+        if michaels_dir is None:
+            raise ValueError("michaels_rps_override_dir is set, but michaels_dir is None")
+        if not (isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX)):
+            # The sidecar times are relative to the PUBLISHED frame's audio
+            # t_start, so they are only correct on the `frames:` path.
+            raise ValueError(
+                "michaels_rps_override_dir needs a published-frames spec "
+                f"(michaels_dir='frames:michaels-frames'), got {michaels_dir!r}"
+            )
     sources: list[_ChunkSource] = []
     if dregon_dir is not None:
         if isinstance(dregon_dir, str) and dregon_dir.startswith(FRAMES_SPEC_PREFIX):
@@ -686,7 +704,11 @@ def build_noise_rps_datasets(
     if michaels_dir is not None:
         if isinstance(michaels_dir, str) and michaels_dir.startswith(FRAMES_SPEC_PREFIX):
             sources += load_published_noise_sources(
-                michaels_dir, sample_rate, origin="michaels", rps_key="rps"
+                michaels_dir,
+                sample_rate,
+                origin="michaels",
+                rps_key="rps",
+                rps_override_dir=michaels_rps_override_dir,
             )
         else:
             sources += load_michaels_noise_sources(michaels_dir, sample_rate)
