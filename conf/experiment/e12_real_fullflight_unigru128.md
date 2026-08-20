@@ -30,4 +30,6 @@ Train: `python train.py experiment=e12_real_fullflight_unigru128`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Full-envelope PIT-MSE 190.0 — the one arch where the sim curriculum (179.6) stays ahead; small-n regime noise suspected. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

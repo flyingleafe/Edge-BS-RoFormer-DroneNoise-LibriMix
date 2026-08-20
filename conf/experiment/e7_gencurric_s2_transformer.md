@@ -24,4 +24,6 @@ Train: `python train.py experiment=e7_gencurric_s2_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Never ran. The curriculum continued as E9 stage 2 (`e9_hard_transformer_ft_real`, clean-valid PIT-MSE 14.1). See [e7-gen-curriculum.md](../../docs/experiments/e7-gen-curriculum.md).
+
+*(Backfilled 2026-08-20.)*

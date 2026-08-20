@@ -27,4 +27,6 @@ Train: `python train.py experiment=e8_staticcomb_s1_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-11. Best val PIT-MSE 188.7 (R² −7.3) vs E7's 225.3 — the static comb helped this head. On the **contaminated** valid; never rescored. See the conclusion of [e8-static-comb.md](../../docs/experiments/e8-static-comb.md).
+
+*(Backfilled 2026-08-20.)*

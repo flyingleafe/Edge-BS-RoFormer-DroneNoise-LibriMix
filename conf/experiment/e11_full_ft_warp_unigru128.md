@@ -24,4 +24,6 @@ Train: `python train.py experiment=e11_full_ft_warp_unigru128`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Sim curriculum: full-envelope PIT-MSE 179.6 vs baseline 253.0 vs E12 190.0. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

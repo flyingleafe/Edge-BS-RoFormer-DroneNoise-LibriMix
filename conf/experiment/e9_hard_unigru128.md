@@ -30,4 +30,6 @@ Train: `python train.py experiment=e9_hard_unigru128`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12 on the clean valid: best PIT-MSE **17.8** (R² 0.62) — the best gen-only arm. See the conclusion of [e9-hard-combined.md](../../docs/experiments/e9-hard-combined.md).
+
+*(Backfilled 2026-08-20.)*

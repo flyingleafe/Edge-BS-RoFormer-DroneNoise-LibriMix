@@ -27,4 +27,6 @@ Train: `python train.py experiment=e8_staticcomb_s1_unigru128`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-11. Best val PIT-MSE 222.6 (R² −10.5) — no gain over E7's 222.3. On the **contaminated** valid; never rescored. See the conclusion of [e8-static-comb.md](../../docs/experiments/e8-static-comb.md).
+
+*(Backfilled 2026-08-20.)*

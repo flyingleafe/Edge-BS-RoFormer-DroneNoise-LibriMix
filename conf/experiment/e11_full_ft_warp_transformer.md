@@ -24,4 +24,6 @@ Train: `python train.py experiment=e11_full_ft_warp_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Sim full-flight curriculum result: full-envelope PIT-MSE 131.9 (cruise 48.3 / warm-up 463.7 / ground 198.0) — beats the cruise-only baseline (338.4), loses to E12 real full-flight (79.6). See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

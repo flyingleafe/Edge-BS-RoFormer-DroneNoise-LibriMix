@@ -24,4 +24,6 @@ Train: `python train.py experiment=e11_real_warp_unigru128`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Real-only cruise-trained baseline: full-envelope PIT-MSE 253.0. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

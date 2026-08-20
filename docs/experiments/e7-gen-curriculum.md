@@ -1,6 +1,7 @@
 # E7 — Generated-Noise Curriculum for RPS Prediction (sim-to-real)
 
-**Status:** built, not yet run — **Date:** 2026-07-11
+**Status:** completed (stage 1 only; verdict revised after the valid-set fix) —
+**Date:** 2026-07-11, conclusion backfilled 2026-08-20
 
 ## Motivation
 
@@ -100,4 +101,31 @@ omnirun submit --backend colab --gpu-type L4 --gpus 1 --time 3h --yes -- \
 
 ## Conclusion
 
-_Pending run._
+*(Backfilled 2026-08-20 from the W&B run summaries and the
+[2026-07-12 report](../../writing/reports/2026-07-12_full-flight-sim2real-rps/).)*
+
+Stage 1 ran on 2026-07-11 for all three heads. Best validation PIT-MSE:
+
+| Arch | Stage 1 (gen-only) | R² | Valid set |
+|---|---|---|---|
+| `uni_gru128` | 222.3 | −10.5 | contaminated (`min_motor_rps=30`) |
+| `transformer` | 225.3 | −10.1 | contaminated |
+| `scv2` | 222.8 | −10.6 | contaminated |
+
+Train PIT-MSE converged to ~10 on the generated stream, so the ~22× blow-up
+read as a pure domain gap. That reading drove E8 (amplitude-shortcut
+hypothesis) and E9.
+
+**The verdict did not survive the valid-set fix.** The validation set contained
+FLY124 ground warm-up clips (~36 rev/s labelled as flight). The clean
+free-flight-only split (`min_motor_rps=50`) landed with E9; on it, the E9
+gen-only recipe scores 17.8–25.4 — sim transfer is real. The E7 stage-1
+checkpoints were **never rescored** on the clean split, so the table above
+overstates the failure by an unknown factor. Read E7 as: (a) evidence that the
+vicinal-interp generated stream is trainable (train ≈ 10), and (b) the start of
+the chain that E9 resolved — not as a sim2real verdict.
+
+**Stage 2 never ran** under the E7 name. The curriculum idea continued as E9's
+stage 2 (`e9_hard_*_ft_real`: real fine-tune 11.1–14.1 on the clean valid) and
+then the E10–E12 coverage experiments (see
+[e10-full-flight.md](e10-full-flight.md)).

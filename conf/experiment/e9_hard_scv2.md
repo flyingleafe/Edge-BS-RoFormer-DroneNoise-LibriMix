@@ -30,4 +30,6 @@ Train: `python train.py experiment=e9_hard_scv2`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12 on the clean valid: best PIT-MSE **25.4** (R² 0.40). See the conclusion of [e9-hard-combined.md](../../docs/experiments/e9-hard-combined.md).
+
+*(Backfilled 2026-08-20.)*

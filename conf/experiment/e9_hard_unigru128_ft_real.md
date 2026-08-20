@@ -29,4 +29,6 @@ uploads best.ckpt).
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Best clean-valid PIT-MSE **11.1** (R² 0.74) — the best E9 number. See the conclusion of [e9-hard-combined.md](../../docs/experiments/e9-hard-combined.md).
+
+*(Backfilled 2026-08-20.)*

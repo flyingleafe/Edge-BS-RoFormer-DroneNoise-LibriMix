@@ -30,4 +30,6 @@ Train: `python train.py experiment=e10_full_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Negative: overfit the synthetic domain (train ≈ 5.6 rev/s; real cruise under-read ≈ 51 vs ≈ 80 rev/s true). No augmentation was the cause. See the conclusion of [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

@@ -28,4 +28,6 @@ Train: `python train.py experiment=e11_full_aug_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12 as the sim-curriculum pretrain stage. Curriculum end-to-end (with the ft_warp fine-tune): full-envelope PIT-MSE 131.9. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

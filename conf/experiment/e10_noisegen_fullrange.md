@@ -29,4 +29,6 @@ Train: `python train.py experiment=e10_noisegen_fullrange`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. The full-range generator retrain fed E10/E11; superseded by the silence-gated `e11_noisegen_silence`. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

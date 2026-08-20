@@ -24,4 +24,6 @@ Train: `python train.py experiment=e11_real_warp_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Real-only cruise-trained baseline on the full-envelope valid: PIT-MSE 338.4 (cruise 15.3 / warm-up 384.9 / ground 2450.0). See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

@@ -29,4 +29,6 @@ uploads best.ckpt).
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Best clean-valid PIT-MSE **13.6** (R² 0.73), from stage-1's 25.4. See the conclusion of [e9-hard-combined.md](../../docs/experiments/e9-hard-combined.md).
+
+*(Backfilled 2026-08-20.)*

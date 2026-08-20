@@ -27,4 +27,6 @@ Train: `python train.py experiment=e8_staticcomb_s1_scv2`.
 
 ## Conclusion
 
-_Pending run._
+Never ran (no W&B run, no checkpoint). See [e8-static-comb.md](../../docs/experiments/e8-static-comb.md).
+
+*(Backfilled 2026-08-20.)*

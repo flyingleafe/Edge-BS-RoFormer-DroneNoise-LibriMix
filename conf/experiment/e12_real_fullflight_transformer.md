@@ -30,4 +30,6 @@ Train: `python train.py experiment=e12_real_fullflight_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. **The winner**: full-envelope PIT-MSE 79.6 (cruise 20.4 / warm-up 149.4 / ground 374.8) — roughly quarters the cruise-only baseline (338.4), no synthetic data. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

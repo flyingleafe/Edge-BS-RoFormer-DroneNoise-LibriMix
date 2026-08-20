@@ -31,4 +31,6 @@ Train: `python train.py experiment=e9_hard_transformer`.
 
 ## Conclusion
 
-_Pending run._
+Two runs. 2026-07-11 on the **contaminated** valid: best PIT-MSE 176.5 (R² −7.9). 2026-07-12 rerun on the clean valid (`min_motor_rps=50`): best PIT-MSE **19.2** (R² 0.59) — sim transfer is real. See the conclusion of [e9-hard-combined.md](../../docs/experiments/e9-hard-combined.md).
+
+*(Backfilled 2026-08-20.)*

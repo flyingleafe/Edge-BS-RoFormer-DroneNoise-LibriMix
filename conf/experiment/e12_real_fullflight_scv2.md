@@ -30,4 +30,6 @@ Train: `python train.py experiment=e12_real_fullflight_scv2`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Full-envelope PIT-MSE 145.1 vs curriculum 132.5 vs baseline 183.4. See [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*

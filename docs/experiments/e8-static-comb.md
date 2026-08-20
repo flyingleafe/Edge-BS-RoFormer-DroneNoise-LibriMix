@@ -1,6 +1,7 @@
 # E8 — Static-Comb Noise Model (force harmonic tracking)
 
-**Status:** built, running — **Date:** 2026-07-11
+**Status:** completed (2 of 3 arms; verdict revised after the valid-set fix) —
+**Date:** 2026-07-11, conclusion backfilled 2026-08-20
 
 ## Motivation
 
@@ -71,4 +72,28 @@ omnirun submit --backend colab --gpu-type L4 --gpus 1 --time 3h --yes -- \
 
 ## Conclusion
 
-_Pending run._
+*(Backfilled 2026-08-20 from the W&B run summaries and the
+[2026-07-12 report](../../writing/reports/2026-07-12_full-flight-sim2real-rps/).)*
+
+Two arms ran on 2026-07-11; the `scv2` arm never ran (no run, no checkpoint).
+Best validation PIT-MSE, both on the **contaminated** valid
+(`min_motor_rps=30`, FLY124 ground warm-up included):
+
+| Arch | E8 static-comb | E7 neural-gen (same arch) | R² (E8) |
+|---|---|---|---|
+| `transformer` | 188.7 | 225.3 | −7.3 |
+| `uni_gru128` | 222.6 | 222.3 | −10.5 |
+
+**Partial support for the amplitude-shortcut hypothesis:** removing the
+amplitude cue helped the transformer (−36 PIT-MSE) and left the smaller head
+unchanged. But both arms still looked like failures, which motivated E9's
+"remove every single-source shortcut" design.
+
+**The failure magnitude was an artifact of the yardstick.** The clean
+free-flight-only valid (`min_motor_rps=50`) landed with E9; on it the E9
+gen-only recipe (which uses this static comb as half its noise mix) scores
+17.8–25.4 with positive R². The E8 checkpoints were **never rescored** on the
+clean split. The durable E8 contributions are: the analytic
+`StaticCombNoisePool` itself (later half of E9/E10/E11 training noise), and the
+relative transformer-vs-small-head reading above, which survives a
+yardstick change because both arms shared it.

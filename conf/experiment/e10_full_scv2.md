@@ -30,4 +30,6 @@ Train: `python train.py experiment=e10_full_scv2`.
 
 ## Conclusion
 
-_Pending run._
+Ran 2026-07-12. Negative: overfit the synthetic domain (no augmentation). See the conclusion of [e10-full-flight.md](../../docs/experiments/e10-full-flight.md).
+
+*(Backfilled 2026-08-20.)*
