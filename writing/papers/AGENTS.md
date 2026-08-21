@@ -7,6 +7,7 @@ Self-contained paper drafts. Each subdirectory is one paper.
 | `rps-from-drone-sound/` | draft (May 2026) | Short paper on audio-only rotor speed estimation. Uses only locally-stored results; builds with `latexmk` via the project flake. |
 | `2026-07_coupled-vk-blind-rps/` | superseded (Aug 2026) | Blind multi-rotor VK tracking paper. Demoted: its method sections survive as the search section + capture-range ablation of the 2026-08 paper. Builds with **Tectonic v2** (see its `README.md`). |
 | `2026-08_joint-decomposition-rps/` | draft, structure-first (Aug 2026) | The v4 restructure: joint harmonic+broadband decomposition with a built-in measure of fit — one solver, three readouts (decomposition / refinement / measure). Full prose, WIP results behind `\pending{}`/`\wip{}`. Tectonic v2, `src/index.tex`, output `build/main/main.pdf`. |
+| `2026-08_wrapup/` | draft, prose final v0.2 (Aug 2026) | The wrap-up paper: audio-only motor-speed estimation with scarce annotations — the frequency-scaling probe, label-transforming augmentations, the structured noise generator as training data, and adjacent-task baselines (multi-pitch + tacholess order tracking incl. our two-stage blind method). Narrative fixed by the author 2026-08-20; pending results behind `\wip{}`. Tectonic v2; `draft.md` is the frozen markdown source of record, `inventory.md` the claim→experiment map. |
 
 ## Conventions
 
