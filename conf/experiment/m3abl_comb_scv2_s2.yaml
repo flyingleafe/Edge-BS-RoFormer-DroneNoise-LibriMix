@@ -1,0 +1,24 @@
+# @package _global_
+# M3ABL ablation 1, stage 2 (the plain BiGRU baseline (`simple_conv_v2`)) — REAL fine-tune,
+# warm-started from m3abl_comb_scv2_s1's best.ckpt. The stream is the SAME
+# real fine-tune as m3cur (conf/online_mix/m3cur_s2_dload.yaml, data m3cur_s2)
+# — the ablation lives entirely in stage 1, so the comparison against
+# m3cur_scv2_s2 isolates the neural generator. Renewed patience 20.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: m3abl_comb_scv2_s2
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

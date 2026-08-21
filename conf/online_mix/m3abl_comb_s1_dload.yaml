@@ -1,0 +1,73 @@
+# M3ABL 1 — "COMB ONLY" stage 1: m3cur_s1_dload.yaml with the `kind: generated`
+# source REMOVED, so the analytic static comb is the WHOLE synthetic noise pool.
+#
+# ABLATION QUESTION: does the neural generator matter for the pre-training
+# stage, or does the analytic comb alone suffice? M3CUR stage 1 pre-trains on
+# 50% neural generator + 50% static comb; if a predictor pre-trained on the comb
+# alone reaches the same place after the real fine-tune (stage 2), then the
+# generator — the expensive half of the curriculum, and the half that needs a
+# CUDA producer context — buys nothing that comb SPACING does not already teach.
+#
+# Everything else is m3cur stage 1 verbatim: same sample rate / duration /
+# base_seed, same full-flight excitation (ground -> warm-up -> takeoff -> cruise
+# -> landing -> ground, so the stream spans the zero-RPS regime), same speech
+# source, and the identical single-stage policy with all three augmentation
+# blocks firing from sample 1.
+#
+# Stage 2 is the SAME real fine-tune as m3cur (conf/online_mix/m3cur_s2_dload.yaml)
+# — the ablation is on stage 1 only. Validation stays fixed/real
+# (conf/data/m3abl_comb_s1.yaml -> dload:DREGON-LM-V4-michaels-valid-full).
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+
+sources:
+  noise:
+    # --- 100%: analytic static-comb, full-flight excitation (zero -> silence) ---
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+policy:
+  stages:
+    # ONE stage, no warm-up: mixtures + all three augmentation blocks from
+    # sample 1 (identical to m3cur stage 1).
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
+          # channel_drop REMOVED: with flatten_channels each zeroed channel
+          # becomes a mono frame of pure silence carrying nonzero RPS labels,
+          # contradicting the silence==zero-RPS convention.
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

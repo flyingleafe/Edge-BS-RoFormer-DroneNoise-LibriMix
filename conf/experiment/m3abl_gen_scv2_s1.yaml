@@ -1,0 +1,25 @@
+# @package _global_
+# M3ABL ablation 2, stage 1 (the plain BiGRU baseline (`simple_conv_v2`)) — the M3CUR stage-1
+# pre-training with the analytic static comb REMOVED: the M3 per-rotor neural
+# generator (gen_m3_refined_all_perrotor ep30, full-flight excitation, the
+# perrotor_noise / rotor_jitter_std vicinal knobs) is the whole synthetic noise
+# pool (conf/online_mix/m3abl_gen_s1_dload.yaml). Answers: does the comb add
+# anything on top of the generator? Stage 2 = m3abl_gen_scv2_s2, which is the
+# SAME real fine-tune stream as m3cur (data m3cur_s2).
+defaults:
+  - override /data: m3abl_gen_s1
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: m3abl_gen_scv2_s1
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -1,0 +1,24 @@
+# @package _global_
+# M3ABL ablation 3 (the plain BiGRU baseline (`simple_conv_v2`)) — the NO-CURRICULUM control:
+# ONE single-stage run on a pool of real recordings (50%), the M3 per-rotor
+# generator (25%) and the analytic static comb (25%), under the same
+# augmentations as m3cur (conf/online_mix/m3abl_mixed_dload.yaml). Answers: is
+# the two-stage curriculum necessary, or does mixed training suffice? There is
+# no stage 2 and no warm start — read this against m3cur_scv2_s2.
+defaults:
+  - override /data: m3abl_mixed
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: m3abl_mixed_scv2
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
