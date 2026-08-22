@@ -600,11 +600,21 @@ changes by at most $\pm 10\%$. The curriculum buys coverage of the regimes
 the real corpus lacks, silence above all, at approximately zero cost at
 cruise. One honest caveat: for the Transformer, an earlier real-only arm with
 a narrower frequency-scaling range reaches 37.6, tying its curriculum row;
-the comparison in the table holds the schedule fixed. \wip{PENDING: three
-ablations --- comb-only pre-training, generator-only pre-training, and mixed
-single-stage training --- isolate which ingredients are necessary; an early
-signal is that comb-only pre-training transfers for the two convolutional
-architectures and fails completely for the Transformer.}
+the comparison in the table holds the schedule fixed.
+
+\textbf{Ablation: the analytic comb suffices.} Replacing the pre-training
+pool by the analytic comb alone (the neural generator removed, everything
+else identical) matches or improves every row of the table: 21.1 for the
+convolutional model, 34.7 for the Transformer, 51.7 for the GRU. The neural
+generator is therefore unnecessary for this downstream gain; the active
+ingredients are the guaranteed harmonic structure, the full-envelope speed
+trajectories with exact silence, and the label-transforming augmentations.
+The pre-training stage's own validation error is uninformative about the
+outcome: the Transformer's comb-only pre-training does not transfer at all
+before fine-tuning (validation MSE $\sim$2500) and still yields the best
+Transformer result after it. \wip{PENDING: the mixed single-stage ablation
+(real + synthetic in one pool, same schedule) decides whether the two-stage
+curriculum itself is necessary.}
 
 \section{Discussion: what the neural models add}
 \label{sec:discussion}
