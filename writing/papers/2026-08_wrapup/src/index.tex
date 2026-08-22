@@ -86,7 +86,10 @@ driven by a given speed trajectory. Adding its output to the training data as
 extra recordings makes the models worse, because the synthetic amplitude
 patterns offer an easier cue than the real recordings do. We therefore train
 on generated data under the same label-transforming augmentation schedule as
-on real data \wip{PENDING: outcome}. The task has no published direct
+on real data, in a generated-first curriculum, which improves on real-only
+training for all three architectures we evaluate (by 46\%, 13\%, and 9\% in
+validation MSE), with the improvement concentrated in the regime the real
+recordings lack most: stopped rotors. The task has no published direct
 baselines, so we compare against methods from two adjacent tasks: multi-pitch
 tracking (salience-map models, including a variant modified for the required
 frequency resolution) and tacholess order tracking (ridge detection,
@@ -145,8 +148,10 @@ data is two drones and about an hour of audio. Our contributions:
   measurement (Section 7).
 \item An evaluation of generated data as training material: added naively, it
   makes models worse; combined with shortcut-removing measures it
-  transfers; combined with the label-transforming augmentation schedule
-  \wip{PENDING} (Section 8).
+  transfers; combined with the label-transforming augmentation schedule in a
+  generated-first curriculum, it improves on real-only training for every
+  architecture evaluated, with the gain concentrated at stopped rotors
+  (Section 8).
 \item Baselines from two adjacent tasks, including our own two-stage blind
   tracking method --- a comb-matched search over the full rate range followed
   by refinement against the acoustic comb --- which reaches 0.7--1.0 rev/s on
@@ -557,30 +562,49 @@ contaminated validation set --- ground-idle segments of one recording labeled
 as flight. The trap is generic: at low speeds the evaluation data is as
 fragile as the models.
 
-\textbf{The open experiment.} The transfer result above used only the
-label-fixed augmentations. The label-transforming schedule of Section 6 ---
-the one that forces frequency reading on real data --- has not yet been
-combined with the strongest generator (refined annotations on both drones,
-per-rotor embeddings, line-measurement checkpoint selection). \wip{PENDING}
-Two outcomes are possible, and the paper reports whichever the experiment
-returns:
+\textbf{The curriculum result.} The transfer result above used only the
+label-fixed augmentations. We then combined the strongest generator (refined
+annotations on both drones, per-rotor embeddings, per-harmonic checkpoint
+selection, maximally randomized conditioning) with the full label-transforming
+schedule of Section 6, in a two-stage curriculum: first train on synthetic
+noise only (an even mixture of the generator and the analytic comb, full
+flight-envelope speed trajectories), then fine-tune on the real data with the
+identical schedule. The curriculum improves on its real-only control for
+every architecture, under the same frozen validation split and the same
+schedule:
 
-\begin{itemize}
-\item \emph{If it helps:} the generator supplies the timbre and trajectory
-  diversity the real corpus lacks, the augmentations prevent the shortcut
-  fitting that sank the naive attempt, and the combination improves
-  cross-regime or cross-drone error over real-data training. The paper's
-  answer: scarce annotations can be leveraged into robust models by
-  structured synthesis plus label-transforming augmentation.
-\item \emph{If it does not help:} we report the result with an analysis of
-  where the synthetic distribution still fails the models, using the
-  instruments of Section 7 (line sharpness statistics, amplitude-trajectory
-  coupling, broadband texture). The paper's answer: with the harmonic
-  structure guaranteed and the shortcuts removed, the remaining gap between
-  synthetic and real drone noise sits in the component the measurements
-  indicate, and closing it is the prerequisite for synthetic training data on
-  this task.
-\end{itemize}
+\begin{table}[t]
+  \centering
+  \caption{Generated-first curriculum against real-only training. Frozen
+    full-envelope validation split; best-over-epochs, PIT-matched;
+    MSE in rev$^2$/s$^2$, MAE in rev/s.}
+  \label{tab:curriculum}
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    Architecture & Curriculum & Real-only & $\Delta$MSE \\
+    \midrule
+    Convolutional & \textbf{28.4} / 3.16 & 52.5 / 3.98 & $-46\%$ \\
+    GRU head & 51.4 / 4.14 & 59.2 / 4.24 & $-13\%$ \\
+    Transformer head & 38.6 / 3.41 & 42.3 / 3.76 & $-9\%$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+A per-frame breakdown by flight regime locates the gain: stopped rotors
+improve for every architecture (for the convolutional model, silence error
+falls from 11.8 to 4.8 rev/s MAE --- nearly its whole aggregate gain), the
+warm-up and ramp regimes are mixed across architectures, and mid-flight
+changes by at most $\pm 10\%$. The curriculum buys coverage of the regimes
+the real corpus lacks, silence above all, at approximately zero cost at
+cruise. One honest caveat: for the Transformer, an earlier real-only arm with
+a narrower frequency-scaling range reaches 37.6, tying its curriculum row;
+the comparison in the table holds the schedule fixed. \wip{PENDING: three
+ablations --- comb-only pre-training, generator-only pre-training, and mixed
+single-stage training --- isolate which ingredients are necessary; an early
+signal is that comb-only pre-training transfers for the two convolutional
+architectures and fails completely for the Transformer.}
 
 \section{Discussion: what the neural models add}
 \label{sec:discussion}
@@ -634,8 +658,10 @@ tracking method remains 2--4$\times$ more precise at cruise --- a reference we
 think learning approaches on this task should report against. Third,
 structured synthesis can manufacture the missing diversity only when the
 annotations are refined to comb precision and checkpoints are selected by a
-per-harmonic measurement; whether it then closes the robustness gap is the
-experiment this paper resolves. \wip{PENDING}
+per-harmonic measurement; under those conditions, a generated-first
+curriculum with the same augmentation schedule improves on real-only
+training for every architecture we evaluated, and the improvement sits in
+the regimes the real corpus cannot teach --- silence above all.
 
 \appendices
 
