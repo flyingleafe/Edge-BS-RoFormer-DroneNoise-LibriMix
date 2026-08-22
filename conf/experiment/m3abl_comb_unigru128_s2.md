@@ -24,4 +24,6 @@ experiment=m3abl_comb_unigru128_s2` (after stage 1 uploads best.ckpt).
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-22. Best val/mse 51.7 vs full-mix 51.4 (tie) vs real-only 59.2.
+
+*(Backfilled 2026-08-22.)*

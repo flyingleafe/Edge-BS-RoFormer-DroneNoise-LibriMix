@@ -26,4 +26,6 @@ Train: `python train.py experiment=m3abl_comb_scv2_s1`.
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-21. Best val/mse 204.0 — better than the full-mix m3cur s1 (325.5).
+
+*(Backfilled 2026-08-22.)*

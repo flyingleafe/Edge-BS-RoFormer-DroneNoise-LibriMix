@@ -24,4 +24,6 @@ best.ckpt).
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-22. Best val/mse **21.1** vs full-mix 28.4 vs real-only 52.5 — the best paper-architecture number recorded on this valid, matching the internal CKLA family's 21.5.
+
+*(Backfilled 2026-08-22.)*

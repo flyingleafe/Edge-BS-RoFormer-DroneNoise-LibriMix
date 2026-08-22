@@ -221,3 +221,22 @@ the m3abl doc stubs) test whether the neural generator, the comb, and the
 staging are each necessary; first signal: comb-only s1 flatlines the
 transformer (train 9.7, real-valid ~2500 — no transfer) while unigru/scv2
 comb-only s1 beat the mixed-pool s1 readout (183.7/204.0 vs 275/326).
+
+### Ablation 1 verdict (m3abl_comb, 2026-08-22): the comb alone suffices
+
+Comb-only pre-training + the identical real fine-tune, vs the full-mix
+curriculum and real-only control (frozen valid, best val/mse):
+
+| arch | comb-only | full mix (m3cur) | real-only |
+|---|---|---|---|
+| scv2 | **21.1** | 28.4 | 52.5 |
+| transformer-IF | **34.7** | 38.6 | 42.3 |
+| uni_gru128 | 51.7 | 51.4 | 59.2 |
+
+The neural generator is NOT necessary for the curriculum gain on this task:
+the analytic static comb with full-flight excitation and the same
+augmentation schedule matches or beats the 50/50 mix everywhere. Notable:
+the transformer's comb-only stage 1 transferred nothing (val ~2500) and its
+fine-tune still won — the pre-training's value is not the stage-1 readout.
+Per the campaign plan, ablation 2 (generator-only) is skipped; ablation 3
+(m3abl_mixed, non-curriculum 50/25/25) submitted 2026-08-22.

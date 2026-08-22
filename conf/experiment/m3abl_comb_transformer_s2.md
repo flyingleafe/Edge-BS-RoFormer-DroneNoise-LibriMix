@@ -25,4 +25,6 @@ experiment=m3abl_comb_transformer_s2` (after stage 1 uploads best.ckpt).
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-22. Best val/mse **34.7** vs full-mix curriculum 38.6 vs real-only 42.3. Comb-only pre-training WINS despite a stage 1 that did not transfer at all.
+
+*(Backfilled 2026-08-22.)*

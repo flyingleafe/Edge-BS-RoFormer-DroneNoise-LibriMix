@@ -27,4 +27,6 @@ experiment=m3abl_comb_transformer_s1`.
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-21. NO transfer: train loss converged (549->9.7) while real-valid val/mse stayed ~1800-3400 across 21 evals — the transformer-IF fits the analytic comb and transfers nothing. The s2 fine-tune nevertheless recovered fully (34.7).
+
+*(Backfilled 2026-08-22.)*

@@ -27,4 +27,6 @@ experiment=m3abl_comb_unigru128_s1`.
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-21. Best val/mse 183.7 — BETTER than the full-mix m3cur s1 (275.4) on the real-valid readout.
+
+*(Backfilled 2026-08-22.)*
