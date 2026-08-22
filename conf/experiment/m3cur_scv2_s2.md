@@ -35,4 +35,6 @@ best.ckpt).
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-21. Best val/mse **28.4** / mae_frame 3.16 vs control scv2_fs_v2 52.5/3.98 (−46% MSE — best paper-architecture number on this valid to date). Regime probe: the gain is almost entirely the stopped-rotor regime (silence MAE 11.8 → 4.8 rev/s); flight +10% MSE on a small base.
+
+*(Backfilled 2026-08-22; regime probe results/m3cur_regime_probe/.)*

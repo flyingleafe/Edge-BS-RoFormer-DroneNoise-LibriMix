@@ -40,4 +40,6 @@ Train: `python train.py experiment=m3cur_transformer_s1`.
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-20/21 (two gpushort slices, resume). Best val/mse 316.9 (full-envelope frozen valid) at ~20 epochs, generated-data-only training. Stage for m3cur_transformer_s2.
+
+*(Backfilled 2026-08-22; regime probe results/m3cur_regime_probe/.)*

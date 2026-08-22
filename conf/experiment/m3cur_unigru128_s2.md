@@ -35,4 +35,6 @@ best.ckpt).
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-20. Best val/mse **51.4** / mae_frame 4.14 vs control unigru128_fs_v2 59.2/4.24 (−13% MSE). Regime probe: zeros −31% MSE, ramps −30%, flight +7%.
+
+*(Backfilled 2026-08-22; regime probe results/m3cur_regime_probe/.)*

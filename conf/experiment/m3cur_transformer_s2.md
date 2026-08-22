@@ -35,4 +35,6 @@ best.ckpt).
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-21. Best val/mse **38.6** / mae_frame 3.41 vs real-only control g2_if_freqscale_v2 42.3/3.76 (−9% MSE, schedule-matched; the v1-range arm g2_if_freqscale sits at 37.6 — a tie against that non-matched schedule). Regime probe: gain concentrated at stopped rotors (111 vs 148 MSE), ramps worse (+21%), flight slightly better.
+
+*(Backfilled 2026-08-22; regime probe results/m3cur_regime_probe/.)*

@@ -193,3 +193,31 @@ dregon,michaels`; curves + notes: `results/gen_m3_sweep/`):
 
 Production pick: pending the visual/audial A/B (real vs ep19 vs ep9 vs ep30)
 the user requested before any downstream use.
+
+## m3cur curriculum verdict (2026-08-21/22)
+
+All six runs finished on the frozen full-envelope valid
+(`DREGON-LM-V4-michaels-valid-full`, monitor val/mse, best-over-epochs):
+
+| arch | s1 (gen-only) | s2 (curriculum) | real-only control | dMSE |
+|---|---|---|---|---|
+| scv2 | 325.5 | **28.4** / MAE 3.16 | 52.5 / 3.98 | **−46 %** |
+| transformer-IF | 316.9 | 38.6 / 3.41 | 42.3 / 3.76 | −9 % |
+| uni_gru128 | 275.4 | 51.4 / 4.14 | 59.2 / 4.24 | −13 % |
+
+The generated-first curriculum (gen_m3 ep30 + static comb 50/50, full-flight
+excitation, freq_scale p=1.0 + time-warp + gain/polarity from sample 1, then
+the identical real stage) beats its schedule-matched real-only control on
+every architecture. Caveat: the transformer's non-schedule-matched v1-range
+arm (g2_if_freqscale, 37.6) ties its curriculum row.
+
+**Where the gain lives** (per-frame PIT regime probe, both metrics in
+`results/m3cur_regime_probe/`): stopped rotors improve on every arch (scv2
+silence MAE 11.8 → 4.8 rev/s, −70 % MSE — nearly the whole aggregate gain);
+ramps/warm-up mixed (unigru −30 %, transformer +21 %); mid-flight ±10 %.
+The curriculum buys coverage of the regimes real data lacks (silence above
+all), at ~zero cruise cost. Ablations m3abl_{comb,gen,mixed} (see below in
+the m3abl doc stubs) test whether the neural generator, the comb, and the
+staging are each necessary; first signal: comb-only s1 flatlines the
+transformer (train 9.7, real-valid ~2500 — no transfer) while unigru/scv2
+comb-only s1 beat the mixed-pool s1 readout (183.7/204.0 vs 275/326).

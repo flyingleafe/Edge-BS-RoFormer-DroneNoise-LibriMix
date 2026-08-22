@@ -40,4 +40,6 @@ Train: `python train.py experiment=m3cur_unigru128_s1`.
 
 ## Conclusion
 
-Pending.
+Ran 2026-08-20. Best val/mse 275.4 at 22 epochs, generated-only. Stage for m3cur_unigru128_s2.
+
+*(Backfilled 2026-08-22; regime probe results/m3cur_regime_probe/.)*
