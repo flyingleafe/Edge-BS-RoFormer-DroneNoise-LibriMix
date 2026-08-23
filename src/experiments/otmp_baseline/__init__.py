@@ -29,16 +29,19 @@ from experiments.otmp_baseline.cost import ground_cost, linear_grid
 from experiments.otmp_baseline.estimate import (
     FrameEstimate,
     OTMPConfig,
+    adapted_drone_config,
     drone_config,
     estimate_clip,
     estimate_frame,
     real_config,
     simulated_config,
+    whiten_signal,
 )
 
 __all__ = [
     "FrameEstimate",
     "OTMPConfig",
+    "adapted_drone_config",
     "drone_config",
     "estimate_clip",
     "estimate_frame",
@@ -46,4 +49,5 @@ __all__ = [
     "linear_grid",
     "real_config",
     "simulated_config",
+    "whiten_signal",
 ]

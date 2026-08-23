@@ -47,6 +47,13 @@ collected in the module-level list below.
    matters a lot: a coarse grid has no good representative for an off-grid
    fundamental, and the octave-up candidate — which fits the *even* partials
    better in relative terms — then steals them. See :func:`simulated_config`.
+[choice] 8. Spectral whitening (``whiten_hz``) is not in the paper at all. It
+   is an *adaptation* knob for signals whose broadband floor dominates the
+   lines: the frame's STFT magnitude is divided by a running median over
+   frequency before the analytic-signal path, so ``nu`` prices line evidence
+   above the local background instead of the background itself. Off by default
+   — every paper-faithful preset leaves it ``None``. See
+   :func:`whiten_signal`.
 """
 
 from __future__ import annotations
@@ -69,6 +76,7 @@ from experiments.otmp_baseline.solver import (
 __all__ = [
     "FrameEstimate",
     "OTMPConfig",
+    "adapted_drone_config",
     "analytic_band_signal",
     "autocovariance",
     "drone_config",
@@ -76,6 +84,7 @@ __all__ = [
     "estimate_frame",
     "real_config",
     "simulated_config",
+    "whiten_signal",
 ]
 
 
@@ -96,6 +105,8 @@ class OTMPConfig:
     n_lags: int | None = None  # None -> round(2/3 * frame_len), the paper's T
     unbiased_acf: bool = True
     r0_target: float = 1.0  # r_hat(0) after normalization; see [choice] 1
+    whiten_hz: float | None = None  # running-median window; None -> no whitening
+    whiten_n_fft: int = 2048  # STFT length of the whitening filter bank
 
     # ---- grids ----
     freq_lo_hz: float = 0.0
@@ -209,6 +220,9 @@ def drone_config(**overrides) -> OTMPConfig:
     the four rotors run at only two distinct speeds, so ``K = 4`` forces the
     estimator to invent two more; and the mixture also contains speech, whose
     partials are a competing harmonic source inside the same band.
+
+    This preset is kept as the *reference* — paper parameters, grids adapted
+    and nothing else. :func:`adapted_drone_config` is the tuned one.
     """
     return replace(
         OTMPConfig(
@@ -229,9 +243,77 @@ def drone_config(**overrides) -> OTMPConfig:
     )
 
 
+def adapted_drone_config(**overrides) -> OTMPConfig:
+    """The best drone configuration the adaptation study found.
+
+    Two changes to :func:`drone_config`, and no change to any of the paper's
+    regularization parameters:
+
+    * The analysis band starts at 150 Hz, not 40 Hz. Below that the drone
+      spectrum is broadband rumble 20 dB above the comb, and the eq-(27)
+      data-fit term is a plain least-squares fit of ``r_hat``, so the rumble is
+      simply worth more to fit than the lines. Dropping the band that holds the
+      fundamental costs nothing, because the eq-(18) cost lets the harmonics
+      ``k >= 2`` vote for it — that is the paper's own octave argument.
+    * The frame is 1.0 s, not 0.5 s. Comb drift inside the window argues for a
+      shorter frame, but the measured trade goes the other way: 0.25 s is much
+      worse than 0.5 s, and 1.0 s is better than both.
+
+    Measured on four frozen DREGON-LM validation clips (see
+    ``docs/experiments/otmp-baseline.md``, "Adaptation probes"): per-frame
+    PIT-MAE 14.5 rev/s at cruise and 12.3 rev/s at warm-up, against 21.6 and
+    28.0 for :func:`drone_config`. That is a real 1.5x, and it is still far
+    from usable — the errors remain a sixth to a fifth of the quantity. The
+    residual failure is structural and is described in the same document:
+    the estimator finds one or two of the distinct rotor speeds and fills its
+    remaining slots with sub-octaves of them.
+    """
+    return replace(drone_config(), freq_lo_hz=150.0, frame_len=16000, **overrides)
+
+
 # --------------------------------------------------------------------------
 # signal -> covariance
 # --------------------------------------------------------------------------
+
+
+def whiten_signal(x: NDArray, sample_rate: float, whiten_hz: float, n_fft: int = 2048) -> NDArray:
+    """Flatten the broadband floor of a real frame, keeping the lines.
+
+    [choice] 8, and an adaptation of this project's blind-scan convention
+    (``tracking.vk_blind_seeding.logmag_spectrogram``): a running median over
+    frequency of the log magnitude, window ``whiten_hz`` wide, is the local
+    background, and subtracting it in the log domain divides the magnitude by
+    that background. The phase is kept and the frame is resynthesized, so the
+    rest of the estimator is unchanged.
+
+    The point on drone audio is that the eq-(27) data-fit term is a plain
+    least-squares fit of ``r_hat``: a rumble 20 dB above the comb is 100 times
+    more worth fitting than the comb, and ``nu`` lands on the rumble. Whitening
+    removes that prize without removing the harmonic structure.
+
+    ``whiten_hz`` must span more than one comb tooth for the median to sit on
+    the floor rather than on the lines. Returns a real array of ``x``'s length.
+    """
+    from scipy.ndimage import median_filter
+    from scipy.signal import istft, stft
+
+    x = np.asarray(x, dtype=np.float64).ravel()
+    hop = max(1, n_fft // 4)
+    freqs, _, spec = stft(
+        x, fs=sample_rate, nperseg=n_fft, noverlap=n_fft - hop, boundary="zeros", padded=True
+    )
+    mag = np.abs(spec)
+    floor = float(mag.max()) * 1e-12 + 1e-300
+    log_mag = np.log(mag + floor)
+    bin_hz = float(freqs[1] - freqs[0])
+    win = int(round(whiten_hz / bin_hz)) | 1  # odd, as the blind-scan convention
+    white = log_mag - median_filter(log_mag, size=(win, 1), mode="nearest")
+    spec = spec * (np.exp(white) / (mag + floor))
+    _, y = istft(spec, fs=sample_rate, nperseg=n_fft, noverlap=n_fft - hop, boundary=True)
+    out = np.zeros(x.size, dtype=np.float64)
+    n = min(x.size, y.size)
+    out[:n] = np.real(y[:n])
+    return out
 
 
 def analytic_band_signal(x: NDArray, sample_rate: float, lo_hz: float, hi_hz: float) -> NDArray:
@@ -364,6 +446,8 @@ def estimate_frame(x: NDArray, sample_rate: float, cfg: OTMPConfig | None = None
         raise ValueError(f"frame of {x.size} samples is shorter than T={cfg.lags}")
 
     lo, hi = cfg.band
+    if cfg.whiten_hz:
+        x = whiten_signal(x, cfg.sample_rate, cfg.whiten_hz, cfg.whiten_n_fft)
     z = analytic_band_signal(x, cfg.sample_rate, lo, hi)
     r_hat = autocovariance(z, cfg.lags, unbiased=cfg.unbiased_acf)
     scale = float(np.real(r_hat[0]))
@@ -371,7 +455,7 @@ def estimate_frame(x: NDArray, sample_rate: float, cfg: OTMPConfig | None = None
         raise ValueError("frame has no in-band energy")
     r_hat = r_hat * (cfg.r0_target / scale)  # [choice] fix r_hat(0)
 
-    freqs_hz, pitches_hz, cost = _grids(cfg)
+    _, pitches_hz, cost = _grids(cfg)
     quad = _gram_cache(cfg).with_corr(_corr_chunked(r_hat, _freqs_rad(cfg)), cfg.r0_target)
 
     res = solve_stochastic(

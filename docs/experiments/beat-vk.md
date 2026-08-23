@@ -982,3 +982,24 @@ recordings carry no telemetry and the room2 hover/maneuver recordings
 have no `motors_measured` and do not lock to their command channel at
 all; and whether to apply the correction to DREGON labels (and restate
 historical numbers) is a decision, not a measurement.
+
+### Paper baseline rows: hybrid full-protocol + recalibrated fullrange (2026-08-21)
+
+Jobs `hybrid-{scv2,unigru}-fsv2r`, `blind-fullrange-r-f61dea` (uni-cpu; NB:
+all three reported `failed` in omnirun while their logs end `exit code 0` —
+the 2026-08-20 ~22:00 connection loss corrupted the status bookkeeping;
+outputs recovered by direct rsync from the shared worktree).
+
+- **Hybrid (rps_eval --protocol beatvk --refine pi_kalman, 15 windows)**:
+  scv2_fs_v2 2.856→2.682 dregon / 2.385→2.137 fly124; unigru128_fs_v2
+  4.247→4.151 / 2.255→2.071. A 5–9 % trim only — the fs_v2 inits (2.3–4.2
+  rev/s) sit OUTSIDE pi_kalman's capture range. The 0.869→0.641 smoke result
+  (CKLA phase-only init, 2 windows) does not generalize to the paper archs:
+  the hybrid needs a sub-rev/s initializer. Results:
+  `results/rps_eval/beatvk__*_fs_v2_best__pi_kalman/`.
+- **blind_fullrange on recalibrated labels, all 15 windows**: dregon_cruise
+  1.809 (July value 1.807 reproduced), fly124_cruise 2.515 (was 2.699
+  pre-recalibration), all_warmup **3.607** — the first warm-up coverage
+  number for the tracking side. Neural-initialized rows on the same warm-up
+  pool: 2.24–2.35. Results: `results/beatvk_vk_arms/blind_fullrange/`,
+  scored in `results/beatvk_eval/vk_blind_fullrange_recal/`.
