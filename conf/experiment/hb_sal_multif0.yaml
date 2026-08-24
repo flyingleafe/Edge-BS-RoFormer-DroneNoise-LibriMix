@@ -1,0 +1,39 @@
+# @package _global_
+# HB-regime retrain of the C7 salience baseline (multif0_salience — LateDeep
+# CNN over HCQT). Model, loss, metrics and monitor are C7's
+# (conf/experiment/c7_multif0_salience.yaml); only the TRAINING DATA changes,
+# from the fixed DREGON-LM-V4 mixtures to the honest-base online stream
+# (conf/online_mix/hb_silence_dload.yaml — real full-envelope pool + 16.7%
+# zero-labeled silence arm + SNR reference floor + freq-scale/time-warp/gain
+# augmentations), the same stream every HB grid cell trains on. Validation
+# moves with it, from datasets/DREGON-LM-V4/valid to the frozen real split
+# `dload:DREGON-LM-V4-michaels-valid-full` (the protocol of
+# docs/experiments/unified-baseline-eval.md), so this row is directly
+# comparable with the HB grid and with every other baseline family.
+#
+# The salience target is NOT a dataset entry: losses.SalienceRPSBCELoss and
+# metrics.SalienceBCEMetric both derive it from `rps` on every call, thus the
+# online stream needs no salience-specific seam (see REPLICATION.md § C7/C8).
+#
+# batch_size stays at C7's default of 16 frames (2 chunks x 8 mics) — the HCQT
+# trunk is heavy, and the stream's stage boundary counts generated chunks, thus
+# it is set by samples_per_validation alone and does not move with batch size.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: multif0_salience
+  - override /loss: salience_bce_multif0
+  - override /metrics: salience_bce_multif0
+
+experiment_name: hb_sal_multif0
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — C7's default, kept
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  monitor: bce
+  monitor_mode: min

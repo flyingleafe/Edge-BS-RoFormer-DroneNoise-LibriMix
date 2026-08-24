@@ -175,6 +175,8 @@ forbidden_modules = ["experiments"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# Archival restores stay verbatim - never lint or reformat them.
+extend-exclude = ["writing/reports/2026-05-29_classical-baselines"]
 
 [tool.ruff.lint]
 select = [
