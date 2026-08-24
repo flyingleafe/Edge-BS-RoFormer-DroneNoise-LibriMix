@@ -102,24 +102,31 @@ MICHAELS_FILES = [
 # 3.4 ms (FLY108), whole-recording score +5.6 % / +6.1 % over the best single
 # offset at dilation 1. Both recordings agree on a 1.19 % clock dilation to 5
 # decimal places, which is 7x FLY125's and 20x FLY124's.
-# PENDING CALIBRATION: `scripts/michaels_calib/fit_new.py` (the VK
-# reconstruction residual) has not refined these, and MICHAELS_RPS_SCALE has
-# no entry for either recording yet, so the rev/s labels are UNCALIBRATED.
-# The coarse rev/s scale hints are 1.0037 (FLY103) and 1.0053 (FLY108).
+# FINE CALIBRATION (2026-08-24, `scripts/michaels_calib/fit_new.py`, job
+# michaels-fit-new-6743bd): per-window audio-optimal lag via the VK
+# reconstruction residual, linear lag model folded into the anchored
+# constants. Residual lag RMS 2.53 ms over 5 windows (FLY103) and 1.11 ms
+# over 4 windows (FLY108) — the same level as the FLY124/125 fits (2.9 /
+# 4.5 ms). The fine constants agree with the coarse pass to 7 ms offset and
+# 1e-4 dilation. The rev/s scales are in MICHAELS_RPS_SCALE below.
 MICHAELS_TEST_FILES = [
-    ("103_2.wav", "FLY103.csv", -0.8915, 1.0119078),
-    ("108_2.wav", "FLY108.csv", -0.3956, 1.0119673),
+    ("103_2.wav", "FLY103.csv", -0.898263, 1.011846126),
+    ("108_2.wav", "FLY108.csv", -0.394115, 1.011957365),
 ]
 
 #: Per-recording MULTIPLICATIVE rev/s correction, keyed by CSV stem (the
 #: recording id). Applied in :func:`load_raw_aligned`, so every consumer of
-#: ``rps`` gets calibrated labels. Recordings without a measured constant (the
-#: 103 unaligned `new-drone-noises` logs) fall back to 1.0. Both values are the
-#: WP14 13-window global refit; they supersede 1.00839 / 1.00690 (WP13, 2-4
-#: windows, twin-contaminated).
+#: ``rps`` gets calibrated labels. Recordings without a measured constant
+#: fall back to 1.0. FLY124/125 values are the WP14 13-window global refit;
+#: they supersede 1.00839 / 1.00690 (WP13, 2-4 windows, twin-contaminated).
+#: FLY103/108 values are the 2026-08-24 fine fit (global multiplicative arm
+#: of `calib.stage_val` on mono audio; per-rotor stage deliberately off —
+#: near-twin rotor pairs make it degenerate on one channel).
 MICHAELS_RPS_SCALE: dict[str, float] = {
     "FLY124": 1.00698,  # g = 0.698 % ± 0.069 -> +0.558 rev/s at 80 rev/s
     "FLY125": 1.00706,  # g = 0.706 % ± 0.034 -> +0.565 rev/s at 80 rev/s
+    "FLY103": 1.005251,  # g = 0.525 % ± 0.028 (5 windows, mono)
+    "FLY108": 1.005696,  # g = 0.570 % ± 0.012 (4 windows, mono)
 }
 
 
