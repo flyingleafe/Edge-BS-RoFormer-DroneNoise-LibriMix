@@ -69,7 +69,28 @@ cruise and 10x+ below everything classical on zeros.
 Flight 16.3 / 544, low 28.3 / 1526, zero 68.8 / 5438, all 24.5 / 1292
 (MAE / MSE). Same split, same PIT protocol (8-channel units).
 
+### HB grid — first rows (scv2 trunk, gated, 2026-08-24 probe)
+
+Per-frame Hungarian PIT MAE / MSE, `results/hb_regime_probe/probe.json`;
+best val/mse from W&B history in parentheses:
+
+| run | zero | low | flight | clean-off rate |
+|---|---|---|---|---|
+| hb_scv2_mag (39.7) | 3.68 / 62.2 | 10.68 / 167.4 | 2.57 / 13.4 | 0.76 |
+| hb_scv2_if (34.9) | 4.50 / 121.2 | 4.99 / 83.1 | 2.49 / 12.8 | 0.84 |
+| hb_scv2_ssq (47.1) | 6.04 / 183.6 | 6.05 / 104.0 | 2.52 / 14.2 | 0.79 |
+
+Reading (preliminary, scv2 cells only): the honest regime alone closes most
+of the zero gap (real-only 11.83 -> 3.68-6.04 MAE) at almost no cruise cost
+(flight MSE 12.8-14.2 vs real-only 11.6). The mag front-end regresses on
+ramps (10.68 vs real-only 4.83); the IF front-end holds them (4.99) and has
+the best aggregate (34.9) — between real-only (52.5) and the comb curriculum
+(21.1). The comb curriculum still leads on aggregate, consistent with the
+coverage story: the synthetic stage supplies unlimited ramp/transition
+trajectories that 34 s of real ramps cannot match.
+
 ### Remaining rows
 
-Salience retraining (`hb_sal_multif0`, `hb_sal_bp`) and the HB grid are
-queued on the cluster; their regime probes land here when training ends.
+The other 7 HB runs, the nogate control, salience retraining
+(`hb_sal_multif0`, `hb_sal_bp`), and the blind-tracker row are queued;
+their probes land here as they finish.
