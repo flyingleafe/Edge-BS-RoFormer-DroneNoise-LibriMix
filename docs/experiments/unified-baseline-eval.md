@@ -128,6 +128,7 @@ best val/mse from W&B history in parentheses:
 | hb_scv2_if (34.9) | 4.50 / 121.2 | 4.99 / 83.1 | 2.49 / 12.8 | 0.84 |
 | hb_scv2_ssq (47.1) | 6.04 / 183.6 | 6.05 / 104.0 | 2.52 / 14.2 | 0.79 |
 | hb_gru_mag | 10.62 / 306.6 | 3.99 / 58.1 | 2.66 / 20.0 | 0.65 |
+| hb_gru_if | 7.20 / 197.0 | 6.11 / 123.6 | 2.52 / 13.3 | 0.75 |
 | hb_tr_mag (31.7) | 3.70 / 80.2 | 4.24 / 60.8 | 2.79 / 19.8 | 0.84 |
 | hb_tr_if (33.6) | 3.55 / 86.3 | 4.51 / 71.8 | 3.08 / 18.4 | 0.84 |
 
@@ -145,6 +146,25 @@ its real-only control (42.3) in every regime with no ramp regression.
 hb_gru_mag shows the opposite trade: ramps improve (6.51 -> 3.99) and
 zeros get worse (7.01 -> 10.62, drift mass 0.35) — the causal head has no
 future context to confirm silence, so the gate hesitates.
+
+### Blind two-stage tracker (vit2dsp, 2026-08-25, `results/blind_valid_row/`)
+
+Annotated on the four parent recordings (20 s windows, 8-channel seed +
+spatial joint Viterbi), stitched, scored on the 37 clips. Two refusal
+conventions, both recorded:
+
+| convention | zero | low | flight | all | note |
+|---|---|---|---|---|---|
+| ungated | 79.36 | 39.10 | **2.27** (RMSE 4.99) | 17.01 | finds combs in silence |
+| gated g1+g5, refusal -> 0 | **0.01** | 29.82 | 48.35 | 39.72 | 8/20 windows accepted |
+
+Compute: 9.87 CPU-s per second of audio (about 10x realtime on CPU).
+Reading: ungated, the tracker beats every neural cell on flight MAE
+(2.27 vs 2.49-3.08) while losing on RMSE (4.99 vs ~3.6 — occasional bad
+windows) and failing silence completely. The gates give a perfect silence
+decision and reject over half the cruise windows — they were calibrated
+for pseudo-label precision, and recall was never their target. The paper
+row needs both conventions or a recalibrated gate; flagged for the author.
 
 ### Remaining rows
 
