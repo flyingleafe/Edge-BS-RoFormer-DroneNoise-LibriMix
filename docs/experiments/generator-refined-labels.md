@@ -251,7 +251,7 @@ best val/mse / mae_frame at best):
 |---|---|---|---|
 | transformer-IF | 103.8 / 6.37 | 42.3 | 38.6 |
 | uni_gru128 | 179.7 / 8.67 | 59.2 | 51.4 |
-| scv2 | >=70.6 / 4.93 (run crashed at eval 19; rerun in flight) | 52.5 | 28.4 |
+| scv2 | 93.6 / 5.42 (completed rerun sm15090l; crashed first run reached >=70.6 at eval 19) | 52.5 | 28.4 |
 
 Mixed training is WORSE than real-only on every architecture — 2-3x worse MSE
 for the transformer and GRU, and scv2 already 34 % above its control before

@@ -642,8 +642,8 @@ Transformer result after it.
 sources into one pool (half real, one quarter generated, one quarter comb;
 the same augmentation schedule, one stage instead of two) makes every
 architecture worse than its real-only control: 103.8 against 42.3 for the
-Transformer, 179.7 against 59.2 for the GRU, and \wip{$\geq$70.6 (final
-number pending)} against 52.5 for the convolutional model. Synthetic data
+Transformer, 179.7 against 59.2 for the GRU, and 93.6 against 52.5 for
+the convolutional model. Synthetic data
 therefore helps only as an initialization that the real stage then refines;
 mixed into the real pool it acts as label noise.
 
