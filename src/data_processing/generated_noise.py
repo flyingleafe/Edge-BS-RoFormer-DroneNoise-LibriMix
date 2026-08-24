@@ -686,7 +686,9 @@ class GeneratedNoisePool:
     def _wait_warmup(self) -> np.ndarray:
         deadline = time.time() + self.warmup_timeout_s
         while True:
-            ready_idx = np.flatnonzero(self.shared["ready"].numpy())
+            # Snapshot before nonzero: the producer flips flags concurrently, and
+            # numpy raises if the nonzero count changes mid-call on the live view.
+            ready_idx = np.flatnonzero(self.shared["ready"].numpy().copy())
             if ready_idx.size >= min(self.warmup, self.shared["ready"].shape[0]):
                 return ready_idx
             if time.time() > deadline:
