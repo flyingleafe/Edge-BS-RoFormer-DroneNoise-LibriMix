@@ -784,7 +784,7 @@ streaming numbers).
 
 - **Datasets are gitignored** — create locally, `dload pull <name>`, or stream/reference via `data_processing.streams` (`conf/data/*_stream.yaml`, `dload:` URIs) before training.
 - **`michaels_dir` in `conf/data/noise_rps_dregon_michaels*.yaml` is stale**: those configs set `michaels_dir: data/new-drone-noises`, but `load_michaels_timeframes` hardcodes `recording_with_motor_speed/`-relative paths — the value is effectively ignored; don't copy it into new configs (behavior intentionally left unchanged, flagged here).
-- **`new-drone-noises` coverage**: 103 of its 108 recordings have **no alignment constants** — only the aligned ones (FLY124/FLY125 via `MICHAELS_FILES`) are in `michaels-frames`; the rest exist raw-only in the `new-drone-noises` dload dataset.
+- **`new-drone-noises` coverage** (corrected 2026-08-24): the dataset holds exactly TWO more recordings — **FLY103** (`103_2.wav`, mono, 106.5 s, 48 kHz) and **FLY108** (`108_2.wav`, mono, 99.4 s, 48 kHz), each with a full DatCon telemetry CSV (four motor speeds). Neither has alignment constants, so neither is in `michaels-frames` and neither is used anywhere. To use them, run the WP13/WP14 calibration (lag + dilation fit against the VK residual, then the global rev/s scale). Note they are MONO, unlike FLY124/125's 8-channel array.
 - **`motors_command` trailing freeze**: the last 45–1577 samples are identical
   (logger stopped).  `_find_inflight_window` strips this when using `motors_measured`;
   when only command is available, the end trim is effectively 0 s.  **Never use
