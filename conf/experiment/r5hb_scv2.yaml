@@ -1,0 +1,36 @@
+# @package _global_
+# R5 — the MIXED ONE-STAGE regime, RE-BASED ON THE R2 HONEST REGIME
+# (the plain BiGRU baseline (`simple_conv_v2`)). ONE single-stage run on a pool of real
+# recordings (45.5%), the honest silence arm (9.1%), the M3 per-rotor generator
+# (22.7%) and the analytic static comb (22.7%) —
+# `conf/online_mix/hb_m3mixed_dload.yaml`. There is no stage 2 and no warm
+# start.
+#
+# The ONE difference from `m3abl_mixed_scv2` is the real component: the R2
+# silence arm and `snr_ref_floor_rms: 0.02` are now in the pool, thus R5 shares
+# its real component with R2/R3/R4. The real : generated : comb ratio (2 : 1 :
+# 1) and the silence : real ratio (0.4 : 2.0) both stay intact.
+# NOTE: the generated source starts a CUDA producer, thus this stream does not
+# run on a CPU-only box.
+# Batch doc: docs/experiments/unified-baseline-eval.md.
+defaults:
+  - override /data: m3abl_mixed
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r5hb_scv2
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3mixed_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -24,13 +24,13 @@ protocol.
 
 | Family | Method(s) | Source of numbers | Status |
 |---|---|---|---|
-| Classical (May 2026) | PYIN, cepstral, HPS, matched filter, NMF | `src/experiments/classical_rps/valid_eval.py` (restored from `00753c4`; report `writing/reports/2026-05-29_classical-baselines/`) — uni-cpu gridrun | pending run |
+| Classical (May 2026) | PYIN, cepstral, HPS, matched filter, NMF | `src/experiments/classical_rps/valid_eval.py` (restored from `00753c4`; report `writing/reports/2026-05-29_classical-baselines/`) — local run 2026-08-24 | done |
 | OT multi-pitch | Björkman & Elvander 2026 (adapted config) | `results/otmp_protocol/` (run 2026-08-23) — re-aggregated under this table | done, merge |
 | Salience (June ckpts) | multif0_salience, basic_pitch_salience | old V4-trained checkpoints, if loadable from the zoo | optional |
 | Salience (retrained) | `hb_sal_multif0`, `hb_sal_bp` | retrained on the hb online regime (same data + augmentations as the HB grid) | pending training |
 | Neural direct (current) | scv2 / transformer-IF / uni_gru128 (real-only fs_v2, m3cur s2, m3abl comb s2) | `results/m3cur_regime_probe/regime_probe.json` | done, merge |
 | Neural direct (HB grid) | 10 hb_* runs | regime probe after the campaign lands | pending training |
-| Blind two-stage tracker | Viterbi seed + peel/pi_kalman | blind annotation of the 37 clips (CPU cluster, `scripts/vk_pseudolabel.py` machinery) | planned, not scheduled |
+| Blind two-stage tracker | vit2dsp ladder (guarded), refusal -> 0 | `scripts/blind_valid_row.py` — annotation running on uni-cpu (blind-valid-row-cc0ecd) | running |
 
 ## Notes
 
@@ -40,6 +40,54 @@ protocol.
   rows must both appear.
 - Blade count for the classical methods is 2, harmonics 15, grid constants
   identical to the project defaults — no adaptation was needed.
+
+## Regime-matched reruns (R2-R5 at fixed architecture)
+
+The regime taxonomy (R1 architecture search, R2 real-only honest, R3 gen+comb
+curriculum, R4 comb-only curriculum, R5 mixed one-stage) is only readable when
+one thing changes per row. The as-run R3/R4/R5 rows do not satisfy that: their
+real component is the plain fs_v2 pool, while R2 adds a zero-labeled silence
+arm and an SNR reference floor. A gap between R2 and R3 today mixes two
+causes — the synthetic ingredient and the real recipe.
+
+The reruns make the regimes nested. Every cell keeps ONE real component, the
+R2 honest pool, and differs only in the synthetic ingredient and its schedule.
+Three design decisions:
+
+- Fixed architecture. The comparison runs at the ORIGINAL trio model configs
+  (`simple_conv_v2`, `simple_conv_v2_transformer_if`,
+  `simple_conv_v2_uni_gru128`) — plain registry models with no voicing gate
+  and no front-end override. The HB grid changes the model and the regime at
+  the same time, so it cannot serve as the R2 row; two ungated controls fill
+  the gap next to the existing `hb_scv2_mag_nogate`.
+- Reused warm starts. Stage 1 of R3 and R4 is unchanged (the synthetic task
+  did not move), so the stage-2 reruns warm-start from the EXISTING
+  `m3cur_<arch>_s1` and `m3abl_comb_<arch>_s1` checkpoints. Only the fine-tune
+  stream changes. This halves the compute: 11 runs, not 17.
+- Preserved ratios. The mixed pool keeps real : generated : comb = 2 : 1 : 1
+  and silence : real = 0.4 : 2.0, thus the shares become real 45.5%, silence
+  9.1%, generated 22.7%, comb 22.7%.
+
+Two new policies:
+
+- `conf/online_mix/hb_m3s2_dload.yaml` — the R2 pool with the 50k warm-up
+  stage removed (the m3cur stage-2 argument: a converged model must not get
+  50k samples on which the RPS prior wins again). Used by R3 and R4.
+- `conf/online_mix/hb_m3mixed_dload.yaml` — the m3abl_mixed pool re-based on
+  R2. Used by R5. Its generated source starts a CUDA producer, thus this
+  stream does not run on a CPU-only box.
+
+The eleven experiments:
+
+| Regime | scv2 | transformer-IF | uni_gru128 |
+|---|---|---|---|
+| R2 real-only honest, ungated | `hb_scv2_mag_nogate` (exists) | `r2hb_tr_nogate` | `r2hb_gru_nogate` |
+| R3 gen+comb curriculum, stage 2 | `r3hb_scv2` | `r3hb_tr` | `r3hb_gru` |
+| R4 comb-only curriculum, stage 2 | `r4hb_scv2` | `r4hb_tr` | `r4hb_gru` |
+| R5 mixed one-stage | `r5hb_scv2` | `r5hb_tr` | `r5hb_gru` |
+
+All eleven validate on the frozen split under the protocol above, so their
+rows drop straight into the leaderboard.
 
 ## Results
 

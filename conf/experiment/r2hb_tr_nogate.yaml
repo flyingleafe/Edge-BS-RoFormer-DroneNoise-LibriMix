@@ -1,0 +1,30 @@
+# @package _global_
+# R2 UNGATED CONTROL — the honest-base regime (silence arm + SNR reference
+# floor, conf/online_mix/hb_silence_dload.yaml) on the ORIGINAL trio model:
+# the IF front-end transformer (`simple_conv_v2_transformer_if`), with NO
+# voicing gate and NO front-end override. The HB grid changes the model and the
+# regime at the same time; this arm changes only the regime, so R2 can be read
+# against R1/R3/R4/R5 at a fixed architecture. Recipe otherwise identical to
+# m3cur stage 2 (same loss/metrics/optimizer/validation split).
+# Batch doc: docs/experiments/unified-baseline-eval.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer_if
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r2hb_tr_nogate
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

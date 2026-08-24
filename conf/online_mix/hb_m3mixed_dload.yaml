@@ -1,0 +1,144 @@
+# HONEST BASE, MIXED VARIANT: the m3abl_mixed no-curriculum pool re-based on
+# the R2 honest-base regime. ONE single-stage stream that pools the REAL
+# recordings, the honest silence arm, and BOTH synthetic sources at once.
+# This is the R5 cell of the regime taxonomy.
+#
+# WHY. The original m3abl_mixed pool used the real-only fs_v2 sources. R2 (the
+# honest-base regime) adds a zero-labeled silence arm and an SNR reference
+# floor, and it changes the real-only numbers a lot. A regime comparison is
+# only honest when every cell shares the same real component, thus this file
+# re-bases the mixed pool on R2.
+#
+# POOL SHARES. The two real sources carry NO explicit weight, so they merge
+# into one duration-weighted real pool whose pool-level weight is the number of
+# merged items (2.0). The silence arm carries 0.4, the generator 1.0, the comb
+# 1.0. The total is 4.4, thus:
+#   real      2.0 / 4.4 = 45.5%
+#   silence   0.4 / 4.4 =  9.1%
+#   generated 1.0 / 4.4 = 22.7%
+#   comb      1.0 / 4.4 = 22.7%
+# Both original ratios stay intact: real : generated : comb = 2 : 1 : 1 (the
+# m3abl_mixed pool), and silence : real = 0.4 : 2.0 (the hb_silence pool). The
+# real share drops from 50% to 45.5% only because the silence arm is new mass.
+#
+# The SNR reference floor (`snr_ref_floor_rms: 0.02`) comes from R2: the mixer
+# scales the speech onto the noise power, thus a near-silent noise chunk drags
+# the whole sample down. The floor keeps the sample level usable while the
+# noise stays quiet.
+#
+# The synthetic sources are the m3abl_mixed sources verbatim, including the
+# generator's ep30 checkpoint, full-flight excitation and the `perrotor_noise`
+# / `rotor_jitter_std` vicinal knobs. The policy block is m3abl_mixed's,
+# unchanged: ONE stage, all three augmentation blocks from sample 1.
+#
+# There is no stage 2 and no warm start — this is a single run per
+# architecture. Validation stays the fixed FULL-envelope real split
+# `dload:DREGON-LM-V4-michaels-valid-full`.
+#
+# NOTE: the `kind: generated` source starts a CUDA producer, thus this stream
+# does not run on a CPU-only box.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    # --- 45.5% (2.0 of 4.4): the REAL recordings, whole envelope ---
+    # No explicit weight: these two merge into ONE duration-weighted real pool
+    # at pool weight 2.0.
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+
+    # --- 9.1% (0.4 of 4.4): the honest zero-labeled SILENCE arm (R2) ---
+    # Each chunk is one of three floors: quiet room tone, a colored floor up to
+    # flight level, or a low-frequency rumble. The label is exactly zero.
+    - kind: silence
+      weight: 0.4
+      n_channels: 8
+
+    # --- 22.7% (1.0 of 4.4): the M3 per-rotor neural generator, full-flight ---
+    - kind: generated
+      weight: 1.0
+      checkpoint: r2://ml-data/artifacts/gen_m3_refined_all_perrotor/checkpoints/ep30_mrstft_6.7391.ckpt
+      n_harmonics: 100                # MUST match the checkpoint's training value
+      device: cuda:0                  # the ONE extra CUDA context (producer)
+      dregon_dir: "dload:DREGON"      # geometry on a machine with no data/ tree
+      gen_batch: 32
+      random_phase: true
+      refresh: true                   # live stream (never validate on it)
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_fs: 200.0
+      interp:
+        endpoints: [dregon, michaels] # codebook names defining the segment
+        alpha: {low: 0.0, high: 1.0}  # uniform alpha along the segment (per batch)
+        embedding_noise: 0.15         # Gaussian std around z(alpha), in units of ||z1-z0||
+        rotor_interp: true            # interpolate rotor positions at alpha
+        jitter_sigma: interp          # blend the learned per-drone OU sigma at alpha
+        perrotor_noise: 0.5           # redraw the per-rotor code deltas each batch
+        rotor_jitter_std: 0.2         # meters, per rotor per coordinate, each batch
+        mic_sampling:
+          rigs: [dregon, michaels]
+          prob: [0.5, 0.5]
+          jitter_std: 0.02            # per-mic 3D Gaussian std (meters)
+      buffer: {slots: 512, warmup: 32}
+
+    # --- 22.7% (1.0 of 4.4): analytic static-comb, full-flight (zero -> silence) ---
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+policy:
+  stages:
+    # ONE stage, no warm-up: mixtures + all three augmentation blocks from
+    # sample 1 (identical to m3abl_mixed and to m3cur stage 1).
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
+          # channel_drop REMOVED: with flatten_channels each zeroed channel
+          # becomes a mono frame of pure silence carrying nonzero RPS labels,
+          # contradicting the silence==zero-RPS convention.
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

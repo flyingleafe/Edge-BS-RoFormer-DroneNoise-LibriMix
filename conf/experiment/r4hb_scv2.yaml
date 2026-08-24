@@ -1,0 +1,35 @@
+# @package _global_
+# R4 — the comb-only curriculum, stage 2, RE-BASED ON THE R2 HONEST
+# REGIME (the plain BiGRU baseline (`simple_conv_v2`)). Warm-started from
+# `m3abl_comb_scv2_s1`'s best.ckpt — the SAME stage-1 checkpoint the original
+# run used, because the synthetic stage 1 is unchanged.
+#
+# The ONE difference from `m3abl_comb_scv2_s2` is the real fine-tune stream:
+# `conf/online_mix/hb_m3s2_dload.yaml` (the R2 honest-base pool — silence arm
+# at weight 0.4 plus `snr_ref_floor_rms: 0.02` — with the 50k warm-up stage
+# removed) in place of `conf/online_mix/m3cur_s2_dload.yaml`. Every regime cell
+# thus shares one real component, and the rows differ only in the synthetic
+# ingredient. Renewed patience 20.
+# Batch doc: docs/experiments/unified-baseline-eval.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r4hb_scv2
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
