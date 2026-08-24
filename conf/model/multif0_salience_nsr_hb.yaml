@@ -1,0 +1,76 @@
+# multif0_salience, narrow-band input + fine super-resolution OUTPUT grid,
+# WIDENED for the HB online regime. Same recipe as
+# conf/model/multif0_salience_narrow_sr.yaml (the June best: valid RMSE
+# 6.30 -> 4.03, docs/experiments/salience-map-rps-tracking.md); only the two
+# grid spans move, because the June spans were fitted to a cruise-only
+# validation set and to a stream WITHOUT freq-scale augmentation.
+#
+# Why the June 55-110 Hz span does not apply here (the coverage math):
+#
+#   1. The salience grid holds the ROTOR SPEED ITSELF in Hz (rev/s). There is
+#      no blade-count factor anywhere in the rps <-> salience path
+#      (models/multif0/utils.py::salience_target_from_resampled_rps compares
+#      the rps value against the bin frequencies directly).
+#   2. A rotor speed BELOW the grid's lowest bin is not dropped — it is
+#      quantized ONTO the lowest bin (nearest-bin argmin). Only a stopped
+#      rotor (<= 0.1 rev/s) goes dark. Thus a too-high fmin does not lose
+#      those frames, it teaches a false speed on them.
+#   3. The frozen validation split dload:DREGON-LM-V4-michaels-valid-full is
+#      full-envelope: 6.2% of rotor-frames are zero, and 4.9% are nonzero
+#      but below 55 rev/s (the warm-up / take-off / landing ramps). With
+#      fmin=55 the clamp alone puts a 7.88 rev/s floor under the PIT RMSE —
+#      worse than the June headline number. The floor against fmin is
+#      7.88 (55) / 5.10 (40) / 3.48 (30) / 2.03 (20) / 0.81 (10) rev/s.
+#   4. The HB stream (conf/online_mix/hb_silence_dload.yaml) freq-scales every
+#      post-warm-up noise chunk by alpha ~ U(0.7, 1.3), comb AND labels
+#      together. Cruise labels span ~45-100 rev/s, thus the augmented cruise
+#      band is 45*0.7 = 31.5 up to 100*1.3 = 130 rev/s.
+#
+# The widened spans:
+#
+#   OUTPUT  20 -> 130 Hz, 720 bins = 0.1530 Hz/bin — EXACTLY the June
+#   resolution (0.1532 Hz/bin), only the span is wider. 130 covers the
+#   augmented cruise top; 20 holds the clamp floor at 2.03 rev/s, better than
+#   the standard-grid row (fmin 32.7 -> ~3.7) and far better than June's 55.
+#   Ramp frames below 20 rev/s still clamp onto bin 0 — a documented limit of
+#   the salience family, not of this config (the target side is not changed).
+#
+#   INPUT  fmin=20, n_octaves=3, over_sample=10 -> 120 bins/octave, 360 bins,
+#   20 -> 158.8 Hz. The super-resolution head interpolates the input logits
+#   onto the output grid and CLAMPS outside the input span, thus the input
+#   span must contain the output span: 158.8 > 130. 360 input bins is the
+#   same trunk width as the standard-grid conf/model/multif0_salience.yaml,
+#   thus the LateDeep cost does not move.
+#
+#   harmonics stay EXPLICIT [1,2,3,4] — auto-derivation overshoots badly at a
+#   low fmin with a one-to-three-octave span. Top input bin x4 = 635 Hz, well
+#   below the 8 kHz Nyquist.
+#
+# Measured ground-truth round trip (real labels of six frozen-valid clips ->
+# binary target on the grid -> Hungarian decode -> global PIT RMSE), the floor
+# a perfect model hits: June 55-110 Hz = 7.24 rev/s, standard log grid
+# (32.7 Hz, 6 octaves) = 3.96, this grid = 2.25.
+#
+# frame_rate stays [16000,256]: only the frequency axis changes, the HCQT time
+# grid (sr=16000, hop_length=256) is untouched by fmin/n_octaves/over_sample.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: multif0_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  fmin: 20.0
+  n_octaves: 3
+  over_sample: 10
+  harmonics: [1, 2, 3, 4]
+  superres_out: true
+  out_fmin: 20.0
+  out_fmax: 130.0
+  out_bins: 720
+model_type: null
+legacy_config_path: null

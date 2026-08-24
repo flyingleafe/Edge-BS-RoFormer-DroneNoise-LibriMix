@@ -84,18 +84,16 @@ Goal: a paper section that motivates the winner models (scv2 / transformer-IF
 The two queued runs (`hb_sal_multif0`, `hb_sal_bp`) cover the STANDARD-grid
 row. This item is the careful arm:
 
-- [ ] Audit the zero-RPS path end to end: (a) target side — a stopped rotor
-      has f0 below the salience grid's fmin, so silence is encoded only as
-      an all-dark frame; (b) decode side — what
-      `salience_to_rps_segmented` emits for a frame with no peak above
-      `track_threshold` (must be 0, not a hold-over or NaN). Fix the decode
-      convention if needed; add a unit test for the empty-frame case.
-- [ ] Rebuild the narrow+super-resolution variant (the June best: RMSE
-      6.30 → 4.03; configs `*_narrow_sr`) on top of the R2 stream:
-      `hb_sal_multif0_nsr` (+ Basic Pitch only if the narrow grid applies
-      to it). Make sure the narrow grid still covers the full rps range
-      AFTER freq-scale augmentation (x0.7-1.3 shifts the comb!) — the June
-      narrow grid predates freq-scale; widen if needed.
+- [x] Zero-path audit DONE (2026-08-24): decode HELD OVER the previous
+      speed on dark frames (phantom hover) — fixed to emit exact zeros,
+      3 tests added (2 fail pre-fix). Target side: stopped rotors go dark
+      correctly, but sub-grid speeds CLAMP onto bin 0 (a 7.88 rev/s floor
+      for the June fmin-55 grid on the frozen split).
+- [x] Narrow-SR rebuilt as `hb_sal_multif0_nsr` (2026-08-24): widened
+      linear 20-130 rev/s output grid, 720 bins at June's 0.153 Hz/bin,
+      HCQT input fmin 20 / 3 octaves; GT round-trip floor 7.24 -> 2.25
+      rev/s vs the June grid. (The salience grid is in rotor rev/s
+      directly — no blade factor.)
 - [ ] Submit, harvest, add to the leaderboard next to the standard-grid
       rows and the June numbers.
 

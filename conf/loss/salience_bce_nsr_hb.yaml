@@ -1,0 +1,25 @@
+# BCE-on-RPS-derived-salience on the WIDENED narrow+super-resolution output
+# grid (linear 20-130 Hz, 720 bins = 0.153 Hz/bin). Mirrors
+# conf/model/multif0_salience_nsr_hb.yaml's out_fmin/out_fmax/out_bins exactly
+# — that config carries the coverage math behind the three numbers (the HB
+# stream freq-scales labels by alpha ~ U(0.7, 1.3), and the frozen validation
+# split is full-envelope, thus the June 55-110 Hz span both clips the
+# augmented cruise top and clamps 4.9% of validation frames).
+#
+# The output grid is fully decoupled from the model's own (log-spaced) input
+# CQT grid by FreqSuperResHead, thus this loss needs only the linear-grid
+# triple. blur_bins=2 / pos_weight=auto are the June narrow-SR settings.
+# rate=[16000,256]: the narrow input HCQT does not change the time grid, only
+# the frequency axis.
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      out_fmin: 20.0
+      out_fmax: 130.0
+      out_bins: 720
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

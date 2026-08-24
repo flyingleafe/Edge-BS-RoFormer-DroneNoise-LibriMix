@@ -1,0 +1,36 @@
+# @package _global_
+# HB-regime narrow-band + super-resolution salience baseline. Same stream,
+# validation split, epoch budget and monitor as hb_sal_multif0 (the
+# standard-grid row); only the model/loss/metrics trio changes, from the
+# 32.7 Hz / 6-octave log grid to the narrow HCQT input (20 Hz, 3 octaves,
+# over-sample 10, harmonics [1,2,3,4]) plus a FreqSuperResHead onto a fine
+# LINEAR 20-130 Hz / 720-bin output grid (0.153 Hz/bin).
+#
+# The June narrow-SR recipe (conf/experiment/c7_multif0_salience_narrow_sr.yaml)
+# is the ancestor — it took multif0_salience from 6.30 to 4.03 RMSE by fixing
+# the near-unison rotor collapse. Its 55-110 Hz spans do NOT carry over: the HB
+# stream freq-scales labels by alpha ~ U(0.7, 1.3) and the frozen validation
+# split is full-envelope. The widened spans and the coverage math live in
+# conf/model/multif0_salience_nsr_hb.yaml.
+#
+# Only multif0. Basic Pitch has no narrow variant in this campaign — its June
+# narrow-SR arm stayed unusable (RMSE 11.66, R2 -3.24).
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: multif0_salience_nsr_hb
+  - override /loss: salience_bce_nsr_hb
+  - override /metrics: salience_bce_nsr_hb
+
+experiment_name: hb_sal_multif0_nsr
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — hb_sal_multif0's value, kept
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  monitor: bce
+  monitor_mode: min

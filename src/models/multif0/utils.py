@@ -359,10 +359,9 @@ def _track_rotors(
         active_vals = col[active_bins]
 
         if len(active_bins) == 0:
-            # No active peaks: carry forward previous frequencies
-            for r in range(num_rotors):
-                if not np.isnan(current_freqs[r]):
-                    rps[r, t] = current_freqs[r]
+            # Dark frame: every rotor is stopped. Same convention as
+            # ``_hungarian_tracking`` — 0.0 rev/s, no hold-over. ``rps`` is
+            # already zero-initialized, thus nothing to write.
             continue
 
         if t == 0 or np.all(np.isnan(current_freqs)):
@@ -619,6 +618,8 @@ def _hungarian_tracking(
     Returns
     -------
     rps : (num_rotors, T)
+        A frame with no peak above the threshold decodes to 0.0 rev/s for
+        every rotor (silence == zero rotor speed), not to a hold-over.
     merge_mask : (T,) bool  — True at frames where two or more active
                  trajectories share the same bin.
     """
@@ -634,11 +635,14 @@ def _hungarian_tracking(
         p_freqs = np.asarray(peaks_per_frame[t], dtype=np.float64)
         n_peaks = len(p_freqs)
 
-        # ── No peaks ──
+        # ── No peaks: the frame is dark, thus every rotor is STOPPED ──
+        # Project convention (docs/experiments/honest-base-frontends.md):
+        # silence == zero rotor speed. A dark frame decodes to 0.0 rev/s for
+        # every rotor — never a hold-over of the last speed and never NaN.
+        # ``current`` is NOT cleared, thus a momentary dropout does not reset
+        # track identity; only the emitted value is zero.
         if n_peaks == 0:
-            for r in range(K):
-                if not np.isnan(current[r]):
-                    rps[r, t] = current[r]
+            rps[:, t] = 0.0
             continue
 
         # ── First frame or all tracks dead ──
@@ -771,6 +775,8 @@ def salience_to_rps_segmented(
 
     Returns:
         rps: (B, num_rotors, T) or (num_rotors, T) reconstructed RPS (Hz).
+            Frames with no peak above ``threshold`` decode to 0.0 for every
+            rotor — the project-wide silence == zero-rotor-speed convention.
         merge_mask: (B, T) or (T,) bool — merge-point frames.
     """
     was_batched = salience.dim() == 3

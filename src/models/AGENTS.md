@@ -191,6 +191,16 @@ tracking, `--track_threshold`) → STFT grid, so the existing global-PIT metrics
 (PIT MSE/RMSE/MAE/R²) apply unchanged and stay comparable to the SimpleConv family.
 Both run natively at 16 kHz. The RPS↔salience helpers live in `multif0/utils.py`.
 
+**The zero convention (both directions).** A stopped rotor (`rps <= 0.1`) is the
+only case the *target* leaves dark — a rotor that is slow but running is
+quantized ONTO the lowest bin, not dropped, so a grid whose `fmin` sits above
+the ramp speeds teaches a false speed there rather than losing the frame. On the
+*decode* side a frame with no peak above `track_threshold` emits **0 rev/s for
+every rotor**: silence == zero rotor speed, never a hold-over of the last speed
+and never NaN (`_hungarian_tracking` / `_track_rotors`; tests in
+`tests/models/test_salience_rps.py`). Track identity survives a dark frame — only
+the emitted value is zeroed — so a momentary dropout does not restart the tracks.
+
 `multif0_salience`'s HCQT `fmin` defaults to **27.5 Hz (A0)** — matching
 basic-pitch, low enough to cover rotor fundamentals below C1 — and is settable
 via `--hcqt_fmin`. The grid descriptor is read back from the front-end, so

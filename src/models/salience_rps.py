@@ -302,7 +302,8 @@ class SalienceRPSPredictor(nn.Module):
                 max_jump_bins=max_jump_bins,
             )  # (B, num_rotors, T_grid)
 
-        # Tracking leaves NaN where a rotor is never assigned a peak.
+        # Dark frames already decode to 0.0 inside the tracker (silence == zero
+        # rotor speed). This guard only covers a rotor that never gets a peak.
         rps_grid = torch.nan_to_num(rps_grid, nan=0.0)
 
         # Resample grid frames -> STFT frames. Endpoint-to-endpoint shape-stretch,
