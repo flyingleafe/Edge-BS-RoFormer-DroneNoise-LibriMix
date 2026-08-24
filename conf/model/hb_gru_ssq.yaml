@@ -1,0 +1,21 @@
+# hb_gru_ssq — rps_prediction, one arm of the honest-base grid. The grid
+# crosses three architectures with three front-ends: stft_mag, stft_mag_if
+# and stft_ssq. This arm is the simple_conv_v2_uni_gru128 trunk (causal GRU
+# head, hidden size 128) on the synchrosqueezed-magnitude front-end.
+# `voicing_gate` is true, thus the head can give a speed of zero for a
+# stopped rotor.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_uni_gru128
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  frontend: stft_ssq
+  voicing_gate: true
+model_type: null
+legacy_config_path: null

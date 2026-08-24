@@ -189,12 +189,21 @@ def scale_source_to_snr(
     snr_db: float,
     *,
     per_channel: bool = False,
+    ref_power_floor: float | None = None,
 ) -> np.ndarray:
     """Return ``source * scale`` — the clean source as it appears in the mixture.
 
     ``scale`` puts ``source * scale`` at ``snr_db`` relative to ``noise``
     (globally, or per channel when ``per_channel``). The mixture is then
     ``noise + scaled_source``.
+
+    ``ref_power_floor`` (mean power, that is RMS squared) raises the reference
+    noise power to ``max(noise_power, ref_power_floor)``. It exists because a
+    near-silent noise chunk scales the source down with it: every zero-RPS
+    training sample then becomes globally quiet, and the model learns that
+    level shortcut instead of an off state. The floor keeps the sample at a
+    usable level while the noise itself stays quiet. ``None`` (the default) is
+    the unfloored behavior.
     """
     eps = 1e-12
     if per_channel:
@@ -203,6 +212,8 @@ def scale_source_to_snr(
     else:
         noise_power = np.array([[np.mean(noise.astype(np.float64) ** 2)]])
         source_power = np.array([[np.mean(source.astype(np.float64) ** 2)]])
+    if ref_power_floor is not None:
+        noise_power = np.maximum(noise_power, float(ref_power_floor))
     scale = np.sqrt((noise_power * (10.0 ** (float(snr_db) / 10.0))) / (source_power + eps))
     return (source * scale.astype(np.float32)).astype(np.float32)
 
@@ -229,11 +240,17 @@ def mix_at_source_to_noise_snr(
     snr_db: float,
     *,
     per_channel: bool = False,
+    ref_power_floor: float | None = None,
 ) -> np.ndarray:
-    """``noise + scale_source_to_snr(source, noise, snr_db)`` — the mixture."""
-    return (noise + scale_source_to_snr(source, noise, snr_db, per_channel=per_channel)).astype(
-        np.float32
+    """``noise + scale_source_to_snr(source, noise, snr_db)`` — the mixture.
+
+    ``ref_power_floor`` is the source-scaling reference floor — see
+    :func:`scale_source_to_snr`.
+    """
+    scaled = scale_source_to_snr(
+        source, noise, snr_db, per_channel=per_channel, ref_power_floor=ref_power_floor
     )
+    return (noise + scaled).astype(np.float32)
 
 
 # =============================================================================

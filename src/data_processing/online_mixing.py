@@ -8,7 +8,8 @@ sampling loops. The mapping (see ``docs/refactor-data-pipelines.md``):
   :func:`mixing.load_noise_source_frames` (published frames; fixes baked in),
   then ``dload.choice`` over per-record window streams weighted by valid
   duration; each window's start is a uniform draw from a ``random_stream``;
-- **synthetic engines** (``kind: generated`` / ``gp`` / ``static_comb``) — the
+- **synthetic engines** (``kind: generated`` / ``gp`` / ``static_comb`` /
+  ``silence``) — the
   engine object (a genuinely stateful resource: CUDA producer, GP coefficient
   table) is built once, then ``random_stream(seed).map(render)`` renders a
   chunk per draw;
@@ -333,6 +334,10 @@ def _build_engine(spec: Mapping[str, Any], *, window_s: float, sample_rate: int)
         from data_processing.rotor_spectral_model import StaticCombNoisePool
 
         return StaticCombNoisePool.from_config(spec, duration_s=window_s, sample_rate=sample_rate)
+    if kind == "silence":
+        from data_processing.silence_noise import SilenceNoisePool
+
+        return SilenceNoisePool.from_config(spec, duration_s=window_s, sample_rate=sample_rate)
     raise ValueError(f"unsupported engine kind: {kind!r}")
 
 
@@ -581,7 +586,7 @@ def build_noise_stream(
     """
     specs = _to_plain(specs)
     items = list(specs) if isinstance(specs, list) else [specs]
-    engine_kinds = {"generated", "static_comb", "gp", "audio_pool"}
+    engine_kinds = {"generated", "static_comb", "gp", "silence", "audio_pool"}
     standalone = [c for c in items if _cfg_get(c, "kind") in engine_kinds]
     real_items = [c for c in items if _cfg_get(c, "kind") not in engine_kinds]
     weighted_real = [c for c in real_items if _cfg_get(c, "weight", None) is not None]
@@ -916,6 +921,7 @@ def _render_rps_sample(
                 noise_audio,
                 snr_db,
                 per_channel=bool(policy.get("snr_per_channel", False)),
+                ref_power_floor=static.get("snr_ref_floor_power"),
             )
 
     (mixture,) = _apply_one_augmentation(
@@ -1008,6 +1014,12 @@ def build_online_mix_pipeline(cfg: Any) -> dload.Pipeline:
     hop_length = int(_cfg_get(cfg, "hop_length", DEFAULT_HOP_LENGTH))
     base_seed = int(_cfg_get(cfg, "base_seed", 1234))
     start_sample_id = int(_cfg_get(cfg, "start_sample_id", 0))
+    # Optional reference-power floor for the speech scaling (RPS task only).
+    # A near-silent noise chunk scales the speech down with it and makes every
+    # zero-RPS sample globally quiet — a level shortcut. See
+    # ``mixing.scale_source_to_snr``.
+    snr_ref_floor_rms = _cfg_get(cfg, "snr_ref_floor_rms", None)
+    snr_ref_floor_power = float(snr_ref_floor_rms) ** 2 if snr_ref_floor_rms is not None else None
     task = str(_cfg_get(cfg, "task", "rps_prediction"))
     policy = cast(Mapping[str, Any], _cfg_get(cfg, "policy", {}))
     if task not in {"rps_prediction", "speech_enhancement"}:
@@ -1072,6 +1084,7 @@ def build_online_mix_pipeline(cfg: Any) -> dload.Pipeline:
         "duration_s": duration_s,
         "speech_present": speech_present,
         "task": task,
+        "snr_ref_floor_power": snr_ref_floor_power,
     }
     render = _render_se_sample if task == "speech_enhancement" else _render_rps_sample
     if speech_stream is not None:

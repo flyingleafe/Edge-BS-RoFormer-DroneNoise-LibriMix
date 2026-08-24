@@ -1,0 +1,26 @@
+# @package _global_
+# HB grid: honest-base regime (silence arm + SNR reference floor), Transformer head (simple_conv_v2_transformer),
+# front-end stft_mag, voicing gate yes. Batch doc:
+# docs/experiments/honest-base-frontends.md. Recipe otherwise identical to
+# scv2_fs_v2 (same loss/metrics/optimizer/validation split).
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: hb_tr_mag
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: hb_tr_mag
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

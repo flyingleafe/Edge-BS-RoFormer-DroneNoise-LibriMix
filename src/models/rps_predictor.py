@@ -395,6 +395,38 @@ class SMoLnetRPSCausalTCN(SMoLnetRPSTCN):
         self.head = CausalTCNHead(16, hidden_ch=64, num_rotors=num_rotors, num_layers=4)
 
 
+class GatedProjection(nn.Module):
+    """Voicing-gated output projection: speed * sigmoid(gate).
+
+    Rotor-off is a decision, not a regression to the edge of the output
+    range: under MSE an uncertain plain-linear head outputs the conditional
+    mean (a 10-30 rev/s hover on silent frames). The gate lets the model
+    output an exact zero by classification while the speed branch stays a
+    free regression.
+    """
+
+    def __init__(self, in_features: int, num_rotors: int):
+        super().__init__()
+        self.in_features = in_features
+        self.num_rotors = num_rotors
+        # One Linear to 2*num_rotors; the halves are (speed, gate_logit).
+        # Default init leaves the gate at sigmoid(0) ~= 0.5, which scales the
+        # speeds by half. This is harmless and learnable.
+        self.linear = nn.Linear(in_features, 2 * num_rotors)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (..., in_features) → (..., num_rotors)."""
+        speed, gate_logit = self.linear(x).chunk(2, dim=-1)
+        return speed * torch.sigmoid(gate_logit)
+
+
+def _output_projection(in_features: int, num_rotors: int, gated: bool) -> nn.Module:
+    """The final head projection — plain Linear, or the voicing-gated one."""
+    if gated:
+        return GatedProjection(in_features, num_rotors)
+    return nn.Linear(in_features, num_rotors)
+
+
 class BiGRUHead(nn.Module):
     """Bidirectional GRU head for temporal modeling."""
 
@@ -405,6 +437,7 @@ class BiGRUHead(nn.Module):
         num_rotors: int = 4,
         num_layers: int = 2,
         dropout: float = 0.1,
+        gated: bool = False,
     ):
         super().__init__()
         self.prenet = nn.Sequential(
@@ -420,7 +453,7 @@ class BiGRUHead(nn.Module):
             bidirectional=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
-        self.proj = nn.Linear(hidden_ch * 2, num_rotors)
+        self.proj = _output_projection(hidden_ch * 2, num_rotors, gated)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -445,6 +478,7 @@ class CausalGRUHead(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
         kernel_size: int = 5,
+        gated: bool = False,
     ):
         super().__init__()
         self.kernel_size = kernel_size
@@ -461,7 +495,7 @@ class CausalGRUHead(nn.Module):
             bidirectional=False,
             dropout=dropout if num_layers > 1 else 0.0,
         )
-        self.proj = nn.Linear(hidden_ch, num_rotors)
+        self.proj = _output_projection(hidden_ch, num_rotors, gated)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -604,6 +638,7 @@ class TemporalTransformerHead(nn.Module):
         num_layers: int = 2,
         num_heads: int = 4,
         dropout: float = 0.1,
+        gated: bool = False,
     ):
         super().__init__()
         self.hidden_ch = hidden_ch
@@ -622,7 +657,7 @@ class TemporalTransformerHead(nn.Module):
             norm_first=True,
         )
         self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
-        self.proj = nn.Linear(hidden_ch, num_rotors)
+        self.proj = _output_projection(hidden_ch, num_rotors, gated)
 
     @staticmethod
     def _sinusoidal_positional_encoding(
@@ -835,21 +870,32 @@ class SimpleConvV2(nn.Module):
       - Squeeze-and-Excitation blocks
       - Learned frequency attention pooling
       - BiGRU temporal head
+
+    ``frontend`` also accepts a front-end registry key (a string), which is
+    built with this model's ``n_fft``/``hop_length``. ``voicing_gate=True``
+    replaces the head's output projection with a ``GatedProjection``.
     """
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, voicing_gate=False):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.num_rotors = num_rotors
+        if isinstance(frontend, str):
+            from models.frontends import build_frontend
+
+            frontend = build_frontend(frontend, n_fft=n_fft, hop_length=hop_length)
         if frontend is None:
             from models.frontends import build_frontend
 
             frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
         self.frontend = frontend
 
+        # First block adapts to the front-end's channel count (1 for the
+        # default stft_mag — weight-identical to earlier checkpoints).
+        in_ch = getattr(frontend, "out_channels", 1)
         enc_spec = [
-            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (in_ch, 64, (7, 5), (2, 1), (3, 2)),
             (64, 128, (7, 5), (2, 1), (3, 2)),
             (128, 128, (5, 3), (2, 1), (2, 1)),
             (128, 128, (5, 3), (2, 1), (2, 1)),
@@ -861,7 +907,9 @@ class SimpleConvV2(nn.Module):
             self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
         self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
-        self.head = BiGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+        self.head = BiGRUHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, gated=voicing_gate
+        )
 
     def forward(self, audio):
         x = self.frontend(audio)  # (B, C, F, T)
@@ -996,21 +1044,33 @@ class SimpleConvV2SMoLBiGRU(SimpleConvV2):
 
 
 class SimpleConvV2UniGRU(nn.Module):
-    """SimpleConvV2 encoder/pool with a unidirectional causal GRU head."""
+    """SimpleConvV2 encoder/pool with a unidirectional causal GRU head.
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+    ``frontend`` also accepts a front-end registry key (a string), which is
+    built with this model's ``n_fft``/``hop_length``. ``voicing_gate=True``
+    replaces the head's output projection with a ``GatedProjection``.
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, voicing_gate=False):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.num_rotors = num_rotors
+        if isinstance(frontend, str):
+            from models.frontends import build_frontend
+
+            frontend = build_frontend(frontend, n_fft=n_fft, hop_length=hop_length)
         if frontend is None:
             from models.frontends import build_frontend
 
             frontend = build_frontend("stft_mag", n_fft=n_fft, hop_length=hop_length)
         self.frontend = frontend
 
+        # First block adapts to the front-end's channel count (1 for the
+        # default stft_mag — weight-identical to earlier checkpoints).
+        in_ch = getattr(frontend, "out_channels", 1)
         enc_spec = [
-            (1, 64, (7, 5), (2, 1), (3, 2)),
+            (in_ch, 64, (7, 5), (2, 1), (3, 2)),
             (64, 128, (7, 5), (2, 1), (3, 2)),
             (128, 128, (5, 3), (2, 1), (2, 1)),
             (128, 128, (5, 3), (2, 1), (2, 1)),
@@ -1022,7 +1082,9 @@ class SimpleConvV2UniGRU(nn.Module):
             self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
         self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
-        self.head = CausalGRUHead(128, hidden_ch=64, num_rotors=num_rotors, num_layers=2)
+        self.head = CausalGRUHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, gated=voicing_gate
+        )
 
     def forward(self, audio):
         x = self.frontend(audio)  # (B, C, F, T)
@@ -1041,11 +1103,17 @@ class SimpleConvV2UniGRU(nn.Module):
 class SimpleConvV2UniGRU128(SimpleConvV2UniGRU):
     """SimpleConvV2 encoder/pool with capacity-matched unidirectional GRU head."""
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, voicing_gate=False):
         super().__init__(
-            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors, frontend=frontend
+            n_fft=n_fft,
+            hop_length=hop_length,
+            num_rotors=num_rotors,
+            frontend=frontend,
+            voicing_gate=voicing_gate,
         )
-        self.head = CausalGRUHead(128, hidden_ch=128, num_rotors=num_rotors, num_layers=2)
+        self.head = CausalGRUHead(
+            128, hidden_ch=128, num_rotors=num_rotors, num_layers=2, gated=voicing_gate
+        )
 
 
 class SimpleConvV2UniGRU128Norm(SimpleConvV2UniGRU):
@@ -1166,13 +1234,22 @@ class SimpleConvV2CausalGRU96(SimpleConvV2CausalGRU):
 
 
 class SimpleConvV2Transformer(nn.Module):
-    """SimpleConvV2 encoder/pool with a Transformer temporal head replacing BiGRU."""
+    """SimpleConvV2 encoder/pool with a Transformer temporal head replacing BiGRU.
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None):
+    ``frontend`` also accepts a front-end registry key (a string), which is
+    built with this model's ``n_fft``/``hop_length``. ``voicing_gate=True``
+    replaces the head's output projection with a ``GatedProjection``.
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, voicing_gate=False):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.num_rotors = num_rotors
+        if isinstance(frontend, str):
+            from models.frontends import build_frontend
+
+            frontend = build_frontend(frontend, n_fft=n_fft, hop_length=hop_length)
         if frontend is None:
             from models.frontends import build_frontend
 
@@ -1196,7 +1273,12 @@ class SimpleConvV2Transformer(nn.Module):
 
         self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
         self.head = TemporalTransformerHead(
-            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, num_heads=4
+            128,
+            hidden_ch=64,
+            num_rotors=num_rotors,
+            num_layers=2,
+            num_heads=4,
+            gated=voicing_gate,
         )
 
     def forward(self, audio):

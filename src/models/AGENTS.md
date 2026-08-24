@@ -42,6 +42,7 @@ Build via: `from models.frontends import build_frontend; fe = build_frontend(nam
 | `stft_mag` | STFTMag | 1 | n_fft//2+1 | log₁₊ magnitude |
 | `stft_magphase` | STFTMagPhase | 3 | n_fft//2+1 | log mag + cos(θ) + sin(θ) |
 | `stft_mag_if` | STFTMagIF | 2 | n_fft//2+1 | log₁₊ mag + instantaneous-frequency deviation (fractional bins; all-torch wrap, no numpy unwrap) |
+| `stft_ssq` | STFTSSQMag | 1 | n_fft//2+1 | log₁₊ of the synchrosqueezed magnitude — STFT power scattered along frequency onto the rounded instantaneous-frequency bin (`stft.if_deviation_bins`), then `sqrt`. Same grid as `stft_mag`, energy-conserving, no parameters; sharper comb ridges at low frequency, and a 1-channel alternative to `stft_mag_if` |
 | `hcqt` | HCQTFrontEnd | H or 2H | 360·bpo/60 | Harmonic CQT (librosa). `phase=True`→2H |
 | `pyramid_if` | PyramidIFFrontEnd | 2 (8 if `collapse_bands=False`) | 340 (log-f rows) | Multi-resolution STFT pyramid: 4 bands (n_fft 8192/4096/2048/1024, 30-250/250-1000/1-2k/2-4k Hz), per-band log1p-mag + IF, fixed-interp onto a geometric log-f axis + hop-512 grid; dense band-sum default (G8a2), per-band concat = dead G8a |
 | `comb_if` | CombIFFrontEnd | 4 (3 if `coord_channel=False`) | 361 (f0 rows) | Whitened comb matched-filter + Fisher-weighted IF consensus + occupancy + CoordConv row-f0 channel (G4b) over a 30..120 rev/s ×0.25 candidate-f0 grid (VK-scan analogue, linear grid, teeth ≤1200 Hz) |
@@ -138,6 +139,28 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
+
+### Voicing gate and string front-ends (the honest-base grid)
+
+The three grid architectures — `simple_conv_v2` (`BiGRUHead`),
+`simple_conv_v2_uni_gru128` (`CausalGRUHead`) and
+`simple_conv_v2_transformer` (`TemporalTransformerHead`) — take two more
+constructor keywords, both reachable from a `conf/model` `params:` block.
+`frontend=` also accepts a front-end registry **key as a string**
+(`frontend: stft_mag_if`), which the model builds with its own
+`n_fft`/`hop_length`; the first encoder block then adapts its input width to
+the front-end's `out_channels`, so the default 1-channel `stft_mag` case stays
+weight-identical to older checkpoints. `voicing_gate=True` replaces the head's
+final `nn.Linear` with `GatedProjection` (`rps_predictor.py`), which emits
+`speed * sigmoid(gate_logit)` from one `Linear` to `2*num_rotors`: a stopped
+rotor becomes a classification decision instead of an MSE-mean regression to a
+false hover. `voicing_gate=False` (the default) keeps the attribute name
+`head.proj` and its `weight`/`bias` keys, so existing checkpoints load
+unchanged; the gated variant nests them under `head.proj.linear.*` and is not
+weight-compatible. Ten grid configs use them:
+`conf/model/hb_{scv2,tr,gru}_{mag,if,ssq}.yaml` (architecture × front-end, gate
+on) plus `conf/model/hb_scv2_mag_nogate.yaml` (the gate control). Tests:
+`tests/models/test_voicing_gate.py`.
 
 Causal RPS gotcha from autoresearch session `20260617-012233`: simply swapping
 `BiGRUHead` for a unidirectional GRU was unstable/poor. The best causal-head

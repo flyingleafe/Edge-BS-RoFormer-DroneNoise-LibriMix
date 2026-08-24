@@ -20,6 +20,47 @@ from torch import Tensor
 from . import SpectralFrontEnd, register_frontend
 
 
+def if_deviation_bins(
+    X: Tensor,
+    n_fft: int,
+    hop_length: int,
+    bin_advance: Tensor,
+) -> Tensor:
+    """Instantaneous-frequency deviation of each STFT bin, in fractional bins.
+
+    The deviation is the phase difference between two consecutive hops, minus
+    the phase advance of the bin-center frequency, wrapped to the principal
+    value, and scaled to bins::
+
+        dphi[k, t] = angle(X[k, t]) - angle(X[k, t-1])
+        dev[k, t]  = wrap(dphi[k, t] - bin_advance[k])
+        IF[k, t]   = dev[k, t] * n_fft / (2*pi*hop_length)
+
+    Parameters
+    ----------
+    X : Tensor
+        Complex STFT, shape ``(B, F, T)``.
+    n_fft, hop_length : int
+        The STFT parameters that made *X*.
+    bin_advance : Tensor
+        Per-hop phase advance of each bin center, shape ``(F,)``:
+        ``2*pi * hop_length * k / n_fft``.
+
+    Returns
+    -------
+    Tensor
+        Shape ``(B, F, T)``. The first frame has no predecessor, thus it is
+        zero. All operations stay on-device: the wrap is ``torch.remainder``,
+        never a cumulative ``np.unwrap``.
+    """
+    phase = torch.angle(X)
+    dphi = phase[..., 1:] - phase[..., :-1]  # (B, F, T-1)
+    dev = dphi - bin_advance[None, :, None]
+    dev = torch.remainder(dev + math.pi, 2.0 * math.pi) - math.pi
+    if_dev = dev * (n_fft / (2.0 * math.pi * hop_length))
+    return F.pad(if_dev, (1, 0))  # first frame has no predecessor
+
+
 @register_frontend
 class STFTMag(SpectralFrontEnd):
     """Log-magnitude STFT — the current SimpleConv default.
@@ -159,10 +200,5 @@ class STFTMagIF(SpectralFrontEnd):
             normalized=True,
         )
         mag = torch.log1p(X.abs())  # (B, F, T)
-        phase = torch.angle(X)
-        dphi = phase[..., 1:] - phase[..., :-1]  # (B, F, T-1)
-        dev = dphi - self.bin_advance[None, :, None]
-        dev = torch.remainder(dev + math.pi, 2.0 * math.pi) - math.pi
-        if_dev = dev * (self.n_fft / (2.0 * math.pi * self.hop_length))
-        if_dev = F.pad(if_dev, (1, 0))  # first frame has no predecessor
+        if_dev = if_deviation_bins(X, self.n_fft, self.hop_length, self.bin_advance)
         return torch.stack([mag, if_dev], dim=1)  # (B, 2, F, T)

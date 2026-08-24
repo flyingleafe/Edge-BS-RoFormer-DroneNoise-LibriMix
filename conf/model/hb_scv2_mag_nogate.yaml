@@ -1,0 +1,20 @@
+# hb_scv2_mag_nogate — rps_prediction, the gate control of the honest-base
+# grid. The model is the same as hb_scv2_mag (the simple_conv_v2 trunk on the
+# log-magnitude front-end), but `voicing_gate` is false. The head is thus a
+# plain linear projection. Use this arm to measure the effect of the voicing
+# gate alone.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  frontend: stft_mag
+  voicing_gate: false
+model_type: null
+legacy_config_path: null
