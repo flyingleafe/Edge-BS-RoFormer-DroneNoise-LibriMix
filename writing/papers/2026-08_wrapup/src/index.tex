@@ -688,7 +688,8 @@ contaminated validation set --- ground-idle segments of one recording labeled
 as flight. The trap is generic: at low speeds the evaluation data is as
 fragile as the models.
 
-\textbf{The curriculum result.} The transfer result above used only the
+\textbf{The curriculum result (regimes R3 and R4 of
+Section~\ref{sec:splits}).} The transfer result above used only the
 label-fixed augmentations. We then combined the strongest generator (refined
 annotations on both drones, per-rotor embeddings, per-harmonic checkpoint
 selection, maximally randomized conditioning) with the full label-transforming
@@ -740,8 +741,8 @@ outcome: the Transformer's comb-only pre-training does not transfer at all
 before fine-tuning (validation MSE $\sim$2500) and still yields the best
 Transformer result after it.
 
-\textbf{Ablation: the staging is necessary.} Merging the real and synthetic
-sources into one pool (half real, one quarter generated, one quarter comb;
+\textbf{Ablation: the staging is necessary (regime R5).} Merging the real
+and synthetic sources into one pool (half real, one quarter generated, one quarter comb;
 the same augmentation schedule, one stage instead of two) makes every
 architecture worse than its real-only control: 103.8 against 42.3 for the
 Transformer, 179.7 against 59.2 for the GRU, and 93.6 against 52.5 for
