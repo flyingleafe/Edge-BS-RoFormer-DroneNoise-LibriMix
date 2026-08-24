@@ -232,10 +232,78 @@ Two data sources provide drone audio with motor speed logs.
 
 For training we mix these recordings with LibriSpeech utterances at SNRs
 from $-30$ to 0 dB, resampled to 16 kHz, generating mixtures on the fly so
-every epoch sees fresh combinations. Validation uses fixed held-out time
-spans of each recording. Between them, the two sources contain a few dozen
-distinct speed trajectories. This is the scarcity that drives the rest of
-the paper.
+every epoch sees fresh combinations. Between them, the two sources contain a
+few dozen distinct speed trajectories. This is the scarcity that drives the
+rest of the paper.
+
+\subsection{Splits and training regimes}
+\label{sec:splits}
+
+Every result in this paper uses one fixed three-way split of the real
+recordings (Table~\ref{tab:splits}). The validation split is frozen: 37
+non-overlapping 8-second clips spanning the full flight envelope of both
+drones, and every number we report — for our models and for every baseline —
+comes from the same clips under the same per-frame permutation-invariant
+matching. The test split is reserved: two further DREGON recordings from the
+same room as the validation clips, and two further MD2 flights whose
+telemetry we aligned and calibrated with the procedure of
+Section~\ref{sec:annotation}. No experiment in this paper reads the test
+split; it exists so that the final model selection can be scored once,
+after all development decisions are frozen. \pending{final test numbers}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+Split & DREGON & MD2 \\
+\midrule
+Train & 5 flight recordings (room 2) & 1 flight (FLY125) \\
+Validation (frozen) & 3 recordings (room 1) & 1 flight (FLY124) \\
+Test (reserved) & 2 recordings (room 1) & 2 flights (FLY103/108) \\
+\bottomrule
+\end{tabular}
+\caption{The three-way split of the real recordings. The two test-side
+DREGON recordings share the room and rig with the validation clips, so
+test performance measures generalization to unseen recordings, and
+cross-room generalization is measured between train and validation.}
+\label{tab:splits}
+\end{table}
+
+Training data passes through one of five named regimes, and every model in
+this paper is tagged with the regime it was trained under:
+
+\begin{itemize}
+\item \textbf{R1 — architecture search.} Online mixtures of the training
+  recordings with LibriSpeech speech; light augmentation (random gain,
+  polarity, channel drop at $p{=}0.5$ after a warm-up). The regime of the
+  architecture search in Section~\ref{sec:overfit}; its validation split
+  predates the frozen one above, so its numbers rank architectures and are
+  not comparable with later tables.
+\item \textbf{R2 — final real-only.} The full flight envelope of the
+  training recordings, frequency-scaling augmentation on every chunk
+  (the comb and its labels scaled together by $\alpha \in [0.7, 1.3]$),
+  time warping, gain and polarity; plus a zero-labeled silence arm
+  ($\sim$17\% of chunks: room tone, colored noise floors up to flight
+  level, low-frequency rumble) and a reference floor on the speech
+  scaling so that silent chunks still carry speech at a normal level.
+  The last two additions exist because the real recordings hold only
+  26 seconds of rotor silence, all of it quiet — models trained without
+  the additions learn ``quiet input means zero'' and fail on zero-speed
+  frames that carry sound.
+\item \textbf{R3 — generator+comb curriculum.} Pre-train on synthetic
+  noise (the neural generator of Section~\ref{sec:generator} plus an
+  analytic harmonic comb, half each), then fine-tune on the real regime.
+\item \textbf{R4 — comb-only curriculum.} As R3 with the analytic comb as
+  the only synthetic source.
+\item \textbf{R5 — mixed single-stage.} One training pool: half real,
+  one quarter generated, one quarter comb, with the R3 augmentation
+  schedule and no curriculum.
+\end{itemize}
+
+\wip{The reported R3--R5 runs used the R2 recipe without the silence arm as
+their real component; the final tables re-train them on the full R2 recipe
+so that the regimes differ only in their synthetic ingredient.}
 
 \subsection{Annotation quality}
 \label{sec:annotation}
@@ -419,15 +487,46 @@ degrades --- and Section 9 collects those columns.
 \section{Neural models overfit the scarce data}
 \label{sec:overfit}
 
-We train three regression architectures spanning a capacity range: a compact
-convolutional network, the same network with a recurrent (GRU) head, and the
-same network with a Transformer head \wip{TODO: parameter counts, STFT
-configuration, and output frame rate in a small table}. All take STFT
-features of 1-second audio chunks and emit four speeds per frame, trained
-with PIT-MSE on online-generated mixtures. On held-out time spans of the
-training recordings, the three architectures reach PIT-MSE between $\sim$7 and
-$\sim$12 rev$^2$/s$^2$ (best 7.3, i.e. $\sim$2.7 rev/s RMSE), with the exact
-value depending on the architecture and the mixing setup.
+\subsection{How the three architectures were selected}
+\label{sec:archsearch}
+
+We searched over 26 variants of one model family under regime R1: a shared
+residual convolutional encoder with squeeze-and-excitation blocks and a
+learned frequency-attention pool, combined with different input features and
+temporal heads. The variants cover six groups: the bidirectional-GRU
+baseline head; temporal-head swaps (Transformer, windowed attention, wider
+GRU, dilated temporal convolutions); input-feature changes (multi-resolution
+spectrograms, wavelet branches, magnitude+phase channels); pooling changes;
+ten causal/streaming head variants (unidirectional GRUs at several widths,
+normalizations and dropouts, fully causal front-ends); and seven
+frequency-dilated backbone variants. Every variant trained under two arms —
+fixed pre-mixed data, and online mixing — with the same optimizer, loss
+(PIT-MSE) and budget, 52 runs in total.
+
+Three findings shaped the selection. First, online mixing is itself an
+architectural leveler: 21 of 26 variants improved when mixtures were
+generated on the fly, and the attention heads improved dramatically (the
+Transformer head moved from diverging on fixed data to ranking among the
+best online). Second, causal heads are usable online and unstable offline;
+the unidirectional GRU with hidden width 128 became the best single run of
+the sweep (PIT-MSE 7.33 on the sweep's validation split). Third, fully
+causal front-ends underfit badly and were dropped; head-only causality is
+the workable streaming compromise. We kept three architectures — the
+convolutional network with the bidirectional GRU head, the Transformer
+head, and the causal GRU-128 head — one non-causal compact model, one
+attention model, and one streaming-capable model.
+
+A caution attaches to the ranking itself: under later, stricter matched
+protocols (a shared stream, front-end and schedule, validated on the frozen
+full-envelope split), the ordering among the three winners reshuffles, with
+the Transformer variants ahead of the causal GRU. Rankings from a single
+regime and split do not transfer; this is why the rest of the paper carries
+all three architectures through every experiment instead of a single
+champion. \wip{TODO: parameter counts, STFT configuration, and output frame
+rate in a small table}
+
+All three take STFT features of 1-second audio chunks and emit four speeds
+per frame, trained with PIT-MSE on online-generated mixtures.
 
 Generalization is much worse, in three nested ways:
 

@@ -41,15 +41,15 @@ Goal: a paper section that motivates the winner models (scv2 / transformer-IF
 - [ ] Also collect the later head-to-head evidence that kept the trio:
       CKLA campaign matched-protocol table, G1-G3 front-end arms,
       causal-head sweep notes.
-- [ ] Draft the section for `writing/papers/2026-08_wrapup/` (structure:
-      search space → protocol/regime → outcome → why these three carry the
-      rest of the paper). Mark numbers that need re-verification against
-      the docs with \pending{}.
+- [x] Section DRAFTED (2026-08-24): \S{}sec:archsearch — search space,
+      two arms, three findings, the ranking-reshuffle caution as the
+      reason all three architectures carry the paper.
 
 ## 3. Data-sources table + training-regimes taxonomy (paper)
 
-- [ ] Define, in one table, the data sources for RPS-tracker training /
-      validation / FINAL TEST:
+- [x] DRAFTED (2026-08-24) as \S{}sec:splits: splits table
+      (tab:splits) + the five named regimes R1-R5 in the paper. Remaining:
+      re-point \S8/\S5 prose at the taxonomy. Sources for the record:
       - Train: DREGON room2 in_flight_noise (5 recs) + FLY125 (+ synthetic
         arms per regime; LibriSpeech train-clean-100 speech).
       - Valid (frozen): DREGON-LM-V4-michaels-valid-full — room1
