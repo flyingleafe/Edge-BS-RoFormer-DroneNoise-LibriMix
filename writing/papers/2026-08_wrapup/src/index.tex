@@ -67,38 +67,36 @@ A drone's rotors imprint a harmonic structure on every audio recording made
 on board: a rotor spinning at rate $f$ radiates energy at $f, 2f, 3f, \dots$,
 and the positions of these harmonics follow the rotor speed exactly.
 Knowledge of the instantaneous motor speeds enables informed ego-noise
-suppression and acoustic drone monitoring. We study the task of estimating
-the four motor speeds of a quadrotor, per time frame, from on-board audio
-alone. Annotated data for this task is scarce: the recordings with motor
-speed logs available to us amount to about an hour of audio across two drone
-models. Neural regression models trained on this data reach low error on
-held-out segments of the training recordings and degrade sharply across
-microphones, flight regimes, and drone models. A direct probe explains the
-degradation: when we scale the frequency axis of the input by 2\%, the
-predictions change by 0.03\% on average, so the models estimate speeds from
-loudness, spectral shape, and the training prior over speed values.
-Augmentations that transform the audio and the speed labels together ---
-time-warping and frequency scaling --- raise the models' use of the frequency
-cue and improve generalization, at a measurable cost in cruise precision. To
-diversify the data further, we build a neural noise generator that is
-constrained by construction to produce a harmonic-plus-broadband signal
-driven by a given speed trajectory. Adding its output to the training data as
-extra recordings makes the models worse, because the synthetic amplitude
-patterns offer an easier cue than the real recordings do. We therefore train
-on generated data under the same label-transforming augmentation schedule as
-on real data, in a generated-first curriculum, which improves on real-only
-training for all three architectures we evaluate (by 46\%, 13\%, and 9\% in
-validation MSE), with the improvement concentrated in the regime the real
-recordings lack most: stopped rotors. The task has no published direct
-baselines, so we compare against methods from two adjacent tasks: multi-pitch
-tracking (salience-map models, including a variant modified for the required
-frequency resolution) and tacholess order tracking (ridge detection,
-iterative adaptive Vold--Kalman filtering, and our own two-stage blind
-tracking method, which reaches 0.7--1.0 rev/s on cruise segments against
-corrected telemetry and 1.0--1.2 rev/s against measured motor speeds on
-recordings held out from all tuning). The comparison makes explicit what
-neural models trained on scarce data add over signal processing, and what
-they lose.
+suppression and acoustic drone monitoring. We ask whether the four motor
+speeds of a quadrotor can be predicted reliably, per time frame, from
+on-board audio alone, across the full flight envelope. The task has no
+published direct method, so we assemble a baseline suite from two adjacent
+tasks --- multi-pitch tracking (classical estimators and salience-map neural
+models) and tacholess order tracking --- adapt each to the four-rotor case,
+and score every method on one frozen validation protocol spanning both
+available drone models. On the modeling side, we search over 26 small
+regression architectures, causal and non-causal, and carry three winners
+through every experiment; under the right training regime they outperform
+every off-the-shelf baseline by an order of magnitude at cruise. The
+training regime carries most of the result. Annotated audio amounts to
+about an hour across two drones, and a probe shows that models trained on
+it ignore the frequency axis: scaling the input spectrum by 2\% moves the
+predictions by 0.03\%, so the models read loudness, spectral shape, and the
+prior over speed values. Augmentations that transform audio and labels
+together --- frequency scaling and time warping --- force the frequency cue
+into use, and an honest treatment of rotor silence in the mixing recipe
+closes most of the failure on stopped rotors that plagued models trained on
+cruise-heavy data. \wip{Final regime numbers land after the running
+retraining round.} We also design an iterative classical algorithm for
+blind rotor-speed estimation --- a comb-matched search over the full rate
+range followed by phase-based refinement --- which beats the neural models
+on cruise precision (0.7--1.0 rev/s against corrected telemetry) at orders
+of magnitude higher inference cost. Finally, we evaluate synthetic training
+data, from an analytic harmonic comb to a structure-constrained neural
+noise generator: its realism does not transfer, and its measurable value
+reduces to covering flight regimes the real corpus lacks --- coverage that
+an honest real-data regime supplies directly. \wip{Sharpen or soften the
+last claim after the regime-matched reruns.}
 \end{abstract}
 
 \section{Introduction}
@@ -130,15 +128,26 @@ Answering it leads to a study of what neural models learn when the annotated
 data is two drones and about an hour of audio. Our contributions:
 
 \begin{enumerate}
-\item An evaluation of neural motor-speed regression on two data sources with
-  motor speed logs, with a protocol that separates held-out-segment error
-  from cross-microphone, cross-regime, and cross-drone generalization
-  (Section 5).
-\item A probe showing that models trained on this data barely respond to
-  frequency scaling of the input, together with an augmentation family
-  (time-warping and frequency scaling, both transforming the speed labels
-  consistently with the audio) that raises the models' use of the frequency
-  cue and improves generalization (Section 6).
+\item A baseline suite for a task with no published direct method: classical
+  and neural multi-pitch estimators and tacholess order-tracking methods,
+  each adapted to the four-rotor case, scored under one frozen
+  full-envelope validation protocol with per-regime readouts (Section 4;
+  central comparison in Section 9).
+\item An architecture search over 26 small regression variants, causal and
+  non-causal, from which three winners carry every later experiment; with
+  the right training regime they outperform every off-the-shelf baseline
+  by an order of magnitude at cruise (Section 5).
+\item A probe showing that models trained on the scarce real data barely
+  respond to frequency scaling of the input, together with an augmentation
+  family (time-warping and frequency scaling, both transforming the speed
+  labels consistently with the audio) that raises the models' use of the
+  frequency cue, and a mixing recipe that treats rotor silence honestly and
+  closes most of the stopped-rotor failure (Section 6).
+\item An iterative classical algorithm for blind rotor-speed estimation ---
+  a comb-matched search over the full rate range followed by phase-based
+  refinement --- which beats the neural models on cruise precision
+  (0.7--1.0 rev/s without any learning) at a much higher inference cost
+  (Section 4.2).
 \item A structured neural noise generator, constrained by construction to
   harmonic-plus-broadband output driven by a given speed trajectory, with
   two findings we found necessary for its use: the fidelity of its
@@ -146,17 +155,11 @@ data is two drones and about an hour of audio. Our contributions:
   its training data, and aggregate spectral losses select checkpoints with
   degraded harmonic structure, so checkpoint selection needs a per-harmonic
   measurement (Section 7).
-\item An evaluation of generated data as training material: added naively, it
-  makes models worse; combined with shortcut-removing measures it
-  transfers; combined with the label-transforming augmentation schedule in a
-  generated-first curriculum, it improves on real-only training for every
-  architecture evaluated, with the gain concentrated at stopped rotors
-  (Section 8).
-\item Baselines from two adjacent tasks, including our own two-stage blind
-  tracking method --- a comb-matched search over the full rate range followed
-  by refinement against the acoustic comb --- which reaches 0.7--1.0 rev/s on
-  cruise segments without any learning and serves as the reference point
-  for the neural results (Section 4).
+\item An evaluation of synthetic data as training material, from the
+  analytic comb to the neural generator: its realism does not transfer
+  (naive addition makes models worse), and its measurable value reduces to
+  covering flight regimes the real corpus lacks (Section 8). \wip{Final
+  form of this claim depends on the regime-matched reruns.}
 \end{enumerate}
 
 \section{Related work}
@@ -745,6 +748,40 @@ Transformer, 179.7 against 59.2 for the GRU, and 93.6 against 52.5 for
 the convolutional model. Synthetic data
 therefore helps only as an initialization that the real stage then refines;
 mixed into the real pool it acts as label noise.
+
+\section{Results on the frozen validation protocol}
+\label{sec:leaderboard}
+
+Every method in this paper meets the same 37 validation clips under the same
+per-frame permutation-invariant matching, with errors pooled per flight
+regime (stopped rotors, ramps, cruise) and overall. Table~\ref{tab:leaderboard}
+collects the comparison; it is the central result of the paper.
+
+\begin{table*}[t]
+\centering
+\small
+\wip{CENTRAL TABLE (tab:leaderboard): rows = classical five (PYIN,
+cepstral, HPS, matched filter, NMF), inverse harmonic clustering,
+salience models (as published / retrained on our regime / narrow
+super-resolution variant), the three neural architectures under the final
+real-only regime and the synthetic-data regimes, and the blind two-stage
+tracker. Columns = PIT MAE per regime (zero / ramps / cruise) + overall +
+inference cost per second of audio. Rows land as the retraining round
+finishes; the training-free rows are already measured: NMF is the best
+training-free cruise number (8.1 rev/s MAE), inverse harmonic clustering
+reaches 16.3, both far above every learned model and the blind tracker.
+No classical method can represent a stopped rotor (search floors at
+50 rev/s), which the per-regime columns make visible.}
+\caption{\wip{Motor-speed estimation on the frozen validation protocol:
+per-regime PIT MAE (rev/s), overall error, and inference cost.}}
+\label{tab:leaderboard}
+\end{table*}
+
+\wip{One paragraph reading the table: the neural models win everywhere
+except cruise precision against the blind tracker; the blind tracker pays
+orders of magnitude more compute; the zero regime separates methods that
+can represent silence from those that cannot. Qualitative per-clip figures
+(rumble-heavy silence, a stop--start transition, cruise) follow the table.}
 
 \section{Discussion: what the neural models add}
 \label{sec:discussion}

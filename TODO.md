@@ -133,13 +133,14 @@ update `draft.md` too, it is the frozen source of record):
 
 Sub-tasks:
 
-- [ ] Map each bullet onto the current section structure of
-      `writing/papers/2026-08_wrapup/src/index.tex`; list the deltas
-      (sections to move/merge/reframe), then execute.
-- [ ] "No prior art": phrase precisely (no established method for
-      PER-ROTOR speed tracking of a multirotor from onboard audio; adjacent
-      art exists — single-source acoustic tachometry, drone detection,
-      multi-pitch, order tracking) and verify against the bibliography.
+- [x] Mapped + executed (2026-08-24): abstract and contributions
+      rewritten to the six-bullet arc; section order already matched; new
+      sec:leaderboard stub before the Discussion holds the central table.
+      NOTE: draft.md needs no update — its header says edits happen in
+      index.tex from v0.2 on.
+- [x] "No prior art" phrased as "no published direct method / no
+      published direct baselines" with the adjacent-task suite as the
+      response (abstract + contribution 1).
 - [ ] "Synthetic does not transfer": DECIDED (2026-08-24) — claim is
       conditional on the HB outcome. If R2 closes the gap: "synthetic
       pre-training helps only by covering regimes the real corpus lacks;
