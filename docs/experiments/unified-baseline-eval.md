@@ -127,8 +127,9 @@ best val/mse from W&B history in parentheses:
 | hb_scv2_mag (39.7) | 3.68 / 62.2 | 10.68 / 167.4 | 2.57 / 13.4 | 0.76 |
 | hb_scv2_if (34.9) | 4.50 / 121.2 | 4.99 / 83.1 | 2.49 / 12.8 | 0.84 |
 | hb_scv2_ssq (47.1) | 6.04 / 183.6 | 6.05 / 104.0 | 2.52 / 14.2 | 0.79 |
-| hb_gru_mag | 10.62 / 306.6 | 3.99 / 58.1 | 2.66 / 20.0 | 0.65 |
+| hb_gru_mag (60.7) | 10.62 / 306.6 | 3.99 / 58.1 | 2.66 / 20.0 | 0.65 |
 | hb_gru_if | 7.20 / 197.0 | 6.11 / 123.6 | 2.52 / 13.3 | 0.75 |
+| hb_gru_ssq (39.8) | 4.57 / 102.8 | 6.14 / 121.1 | 2.67 / 15.5 | 0.83 |
 | hb_tr_mag (31.7) | 3.70 / 80.2 | 4.24 / 60.8 | 2.79 / 19.8 | 0.84 |
 | hb_tr_if (33.6) | 3.55 / 86.3 | 4.51 / 71.8 | 3.08 / 18.4 | 0.84 |
 | hb_tr_ssq (36.7) | 4.42 / 118.1 | 5.44 / 89.7 | 2.55 / 14.5 | 0.81 |
@@ -141,6 +142,14 @@ the best aggregate (34.9) — between real-only (52.5) and the comb curriculum
 (21.1). The comb curriculum still leads on aggregate, consistent with the
 coverage story: the synthetic stage supplies unlimited ramp/transition
 trajectories that 34 s of real ramps cannot match.
+
+The gated 3x3 grid is complete (aggregates): scv2 39.7/34.9/47.1,
+transformer 31.7/33.6/36.7, gru 60.7/50.5/39.8 (mag/if/ssq). The
+front-end winner is architecture-dependent: IF for scv2, plain magnitude
+for the transformer, synchrosqueezed for the causal GRU — where ssq fixes
+most of the zero deficit (10.62 -> 4.57 MAE, drift mass 0.10, the lowest
+of the trunk): sharp reassigned evidence substitutes for the missing
+future context. Overall HB winner: hb_tr_mag (31.7).
 
 Architecture notes: hb_tr_mag (31.7 aggregate, best HB cell so far) beats
 its real-only control (42.3) in every regime with no ramp regression.
