@@ -187,3 +187,26 @@ off-the-shelf multi-pitch estimator gives on this signal. If a full-protocol
 number is wanted anyway for completeness, the cost is about 12 s per frame per
 core, i.e. roughly 3 CPU-hours for the whole valid-full split at 1.0 s frames,
 and it needs no GPU.
+
+## Full-protocol run (2026-08-23, `otmp-protocol-af4da1`)
+
+The adapted finalist over the whole frozen valid
+(`dload:DREGON-LM-V4-michaels-valid-full`, 37 clips x 8 channels = 296 units,
+`experiments.otmp_baseline.protocol_eval`, per-frame Hungarian PIT vs the
+mean telemetry target per 1 s frame, regimes as in the m3cur regime probe).
+All 296 units OK; ~10 h wall at 8 CPU workers. Summary
+(`results/otmp_protocol/summary.json`):
+
+| pool | MAE (rev/s) | MSE | n frames |
+|---|---|---|---|
+| flight | 16.29 | 544.3 | 1744 |
+| low | 28.27 | 1525.9 | 328 |
+| zero | 68.77 | 5437.7 | 296 |
+| all | 24.51 | 1291.9 | 2368 |
+
+The full protocol confirms the 4-clip study: cruise ~16 rev/s (study said
+14.4 on its subset), and the estimator has no silence model at all (zero-rps
+frames score 69 — it always reports four pitches). Quoted in the paper
+Table "multipitch" as cruise RMSE sqrt(544.3) = 23.3 rev/s, the
+training-free floor row. Ranking unchanged: every learned model and every
+tracking method is ~10x better.

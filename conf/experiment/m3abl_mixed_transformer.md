@@ -29,4 +29,7 @@ experiment=m3abl_mixed_transformer`.
 
 ## Conclusion
 
-Pending.
+Best val/mse **103.8** (mae_frame 6.37, W&B 6jbs95vr, 25 evals) vs the
+real-only control 42.3 and the curriculum 38.6. Mixed one-stage training is
+2.5x WORSE than real-only: the curriculum staging is necessary. Verdict
+details in the batch doc.

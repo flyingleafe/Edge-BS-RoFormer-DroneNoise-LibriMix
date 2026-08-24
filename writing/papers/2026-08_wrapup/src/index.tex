@@ -312,7 +312,9 @@ head (0.15 Hz/bin, trained end-to-end) resolves the near-unison rotors
   \centering
   \caption{Mixture protocol, DREGON validation (30 clips $\times$ 8
     channels), PIT-matched. $R^2$ is averaged per clip, so rows imply
-    slightly different target variances; RMSE is the comparable column.}
+    slightly different target variances; RMSE is the comparable column.
+    $^{\dagger}$Needs no training; scored on the full-envelope validation
+    split of Section 5 (both drones), cruise frames.}
   \label{tab:multipitch}
   \footnotesize
   \setlength{\tabcolsep}{4pt}
@@ -326,7 +328,8 @@ head (0.15 Hz/bin, trained end-to-end) resolves the near-unison rotors
     Salience CNN (narrow band + super-resolution) & 4.03 & 0.57 \\
     Basic Pitch (standard grid) & 23.2 & $-16.2$ \\
     Basic Pitch (narrow band + super-resolution) & 11.7 & $-3.2$ \\
-    Classical multi-pitch trackers \wip{TO RUN} & --- & --- \\
+    Inverse harmonic clustering (training-free)$^{\dagger}$
+      & 23.3 & --- \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -335,6 +338,27 @@ After the resolution fix, the best salience model still trails direct
 regression by a factor of $\sim$2.5. Salience models designed for discrete
 musical notes are a poor fit for four continuous, crossing, near-unison
 fundamentals.
+
+The last row of Table~\ref{tab:multipitch} is a recent classical estimator
+that needs no training: inverse harmonic clustering by optimal transport
+\pending{cite: Bj\"orkman \& Elvander 2026, arXiv:2508.02471}. The method
+fits a nonnegative line spectrum to the sample autocovariance and moves its
+mass onto candidate fundamentals with a transport cost that makes a
+sub-octave placement expensive. With its published configuration it locks
+onto the broadband noise floor and scores 38--45 rev/s. Two changes adapt
+it to this signal: an analysis floor of 150 Hz, so that the fundamentals are
+inferred from their harmonics instead of from the noisy fundamental band,
+and 1-second analysis frames. The adapted estimator scores a cruise
+PIT-matched MAE of 16.3 rev/s. The adaptation removes most octave errors:
+60\% of reported pitches land within 3\% of a true rotor speed (43\% before)
+and 9\% on a sub-octave of one (22\% before). The remaining error is a
+coverage error: the estimator finds on average 1.4 of the four distinct
+speeds per frame, because its sparsity term makes it cheaper to absorb the
+harmonics of a second rotor into an existing pitch column than to open a new
+one, and four near-unison rotors are exactly that case. Every learned model
+in this paper and every tracking method of Section 4.2 reaches an error
+smaller by roughly an order of magnitude, so this row serves as the
+training-free floor of the task.
 
 \subsection{Tacholess order tracking}
 \label{sec:order-tracking}
@@ -612,9 +636,16 @@ trajectories with exact silence, and the label-transforming augmentations.
 The pre-training stage's own validation error is uninformative about the
 outcome: the Transformer's comb-only pre-training does not transfer at all
 before fine-tuning (validation MSE $\sim$2500) and still yields the best
-Transformer result after it. \wip{PENDING: the mixed single-stage ablation
-(real + synthetic in one pool, same schedule) decides whether the two-stage
-curriculum itself is necessary.}
+Transformer result after it.
+
+\textbf{Ablation: the staging is necessary.} Merging the real and synthetic
+sources into one pool (half real, one quarter generated, one quarter comb;
+the same augmentation schedule, one stage instead of two) makes every
+architecture worse than its real-only control: 103.8 against 42.3 for the
+Transformer, 179.7 against 59.2 for the GRU, and \wip{$\geq$70.6 (final
+number pending)} against 52.5 for the convolutional model. Synthetic data
+therefore helps only as an initialization that the real stage then refines;
+mixed into the real pool it acts as label noise.
 
 \section{Discussion: what the neural models add}
 \label{sec:discussion}

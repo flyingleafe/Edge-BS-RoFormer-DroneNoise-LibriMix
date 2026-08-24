@@ -28,4 +28,9 @@ Train: `python train.py experiment=m3abl_mixed_scv2`.
 
 ## Conclusion
 
-Pending.
+Best val/mse **>=70.6** (mae_frame 4.93, W&B 0n465pdv) vs the real-only
+control 52.5 and the curriculum 28.4 — already 34% above the control when
+the run crashed at eval 19 (shm race in the generated-noise pool, fixed in
+a98416f). Resubmitted with resume as `m3abl-mixed-scv2-r-ccfc72`; the
+direction (mixed WORSE than real-only, staging necessary) matches the other
+two architectures.

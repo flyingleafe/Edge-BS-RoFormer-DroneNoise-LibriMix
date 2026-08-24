@@ -240,3 +240,23 @@ the transformer's comb-only stage 1 transferred nothing (val ~2500) and its
 fine-tune still won — the pre-training's value is not the stage-1 readout.
 Per the campaign plan, ablation 2 (generator-only) is skipped; ablation 3
 (m3abl_mixed, non-curriculum 50/25/25) submitted 2026-08-22.
+
+### Ablation 3 verdict (m3abl_mixed, 2026-08-24): the staging is necessary
+
+One-stage mixed training (real 50% / generated 25% / comb 25%, the identical
+augmentation schedule, no warm start) vs the real-only control (frozen valid,
+best val/mse / mae_frame at best):
+
+| arch | mixed one-stage | real-only | curriculum |
+|---|---|---|---|
+| transformer-IF | 103.8 / 6.37 | 42.3 | 38.6 |
+| uni_gru128 | 179.7 / 8.67 | 59.2 | 51.4 |
+| scv2 | >=70.6 / 4.93 (run crashed at eval 19; rerun in flight) | 52.5 | 28.4 |
+
+Mixed training is WORSE than real-only on every architecture — 2-3x worse MSE
+for the transformer and GRU, and scv2 already 34 % above its control before
+its crash. Synthetic data helps only as an initialization that the real stage
+then refines; mixed into the real pool it acts as label noise. The scv2 crash
+was a shm race in the generated-noise pool (`np.flatnonzero` on the live
+`ready` view; fixed in a98416f); resubmitted as `m3abl-mixed-scv2-r-ccfc72`
+with `resume=true` for the final number.

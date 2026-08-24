@@ -28,4 +28,7 @@ on a CPU-only box. Train: `python train.py experiment=m3abl_mixed_unigru128`.
 
 ## Conclusion
 
-Pending.
+Best val/mse **179.7** (mae_frame 8.67, W&B dw9kt1fs, 25 evals) vs the
+real-only control 59.2 and the curriculum 51.4. Mixed one-stage training is
+3x WORSE than real-only: the curriculum staging is necessary. Verdict
+details in the batch doc.
