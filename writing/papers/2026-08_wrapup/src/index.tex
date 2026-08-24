@@ -162,17 +162,17 @@ data is two drones and about an hour of audio. Our contributions:
 \section{Related work}
 \label{sec:related}
 
-\textbf{Drone ego-noise.} \pending{cite: DREGON and its localization line;
-ego-noise reduction with microphone arrays; single-channel enhancement
-studies; our earlier technical report on drone noise modeling --- replace
-with the citable version.} Prior work treats motor speed logs as given side
+\textbf{Drone ego-noise.} \cite{strauss2018dregon,wang2020bss,yen2023ncm,%
+wang2020dnntf,mukhlish2023survey,liu2025edgebsrof,gulli2025rotorcond}
+\pending{cite: our earlier technical report on drone noise modeling ---
+replace with the citable version.} Prior work treats motor speed logs as given side
 information for suppression. Estimating the speeds from audio has received
 little direct attention.
 
 \textbf{Multi-pitch tracking.} Estimating several concurrent fundamental
 frequencies is a mature task in music information retrieval, with
-salience-map models as the standard family \pending{cite: deep salience /
-multi-f0 CNN models; Basic Pitch}. A quadrotor at cruise is a hard instance
+salience-map models as the standard family
+\cite{bittner2017deepsalience,cuesta2020multif0,bittner2022basicpitch}. A quadrotor at cruise is a hard instance
 of this task: four fundamentals inside one octave (roughly 55--110 Hz),
 frequently within 1 Hz of each other, under broadband noise.
 
@@ -181,7 +181,7 @@ profiles from vibration or sound. Tacholess order tracking extracts the
 speed from the signal itself, classically by ridge detection on a
 time-frequency representation, and more recently by adaptive filtering
 methods such as iterative adaptive Vold--Kalman filtering (IAVKF)
-\pending{cite}. The drone case adds two complications: four simultaneous,
+\cite{peeters2019tacholess,iatsenko2016ridges,jiang2024iavkf}. The drone case adds two complications: four simultaneous,
 near-equal shafts, and flight-regime changes (idle, ramps, cruise, landing).
 
 \section{Task and data}
@@ -216,7 +216,7 @@ spin-up to the last spin-down.
 Two data sources provide drone audio with motor speed logs.
 
 \begin{itemize}
-\item \textbf{DREGON} \pending{cite} (public): an 8-microphone array under a
+\item \textbf{DREGON} \cite{strauss2018dregon} (public): an 8-microphone array under a
   MikroKopter quadrotor, indoor free flight, six flight recordings, roughly
   half an hour of audio counted per channel. All flight recordings log
   commanded motor speeds; a subset of recordings additionally logs measured
@@ -365,7 +365,7 @@ Sections 4.2 and 6). Each table names its protocol.
 We adapt two salience-map models to the rotor band and train them with
 binary cross-entropy against binary salience targets placed at the
 ground-truth fundamental bins: a CNN over a harmonic CQT front-end
-\pending{cite: multi-f0 salience CNN} and Basic Pitch \pending{cite}.
+\cite{cuesta2020multif0} and Basic Pitch \cite{bittner2022basicpitch}.
 Per-frame salience peaks are linked into four trajectories by optimal
 bipartite (Hungarian) assignment. Off the shelf, both models fail on this
 data, and the failure is informative: on DREGON validation, 55\% of frames
@@ -409,7 +409,7 @@ fundamentals.
 
 The last row of Table~\ref{tab:multipitch} is a recent classical estimator
 that needs no training: inverse harmonic clustering by optimal transport
-\pending{cite: Bj\"orkman \& Elvander 2026, arXiv:2508.02471}. The method
+\cite{bjorkman2026ihc}. The method
 fits a nonnegative line spectrum to the sample autocovariance and moves its
 mass onto candidate fundamentals with a transport cost that makes a
 sub-octave placement expensive. With its published configuration it locks
@@ -438,7 +438,7 @@ below use the window protocol.
 \begin{itemize}
 \item \textbf{Ridge detection} on a time-frequency representation, the
   classical tacholess method \wip{TO RUN as a standalone row}.
-\item \textbf{IAVKF} \pending{cite}: our reimplementation (the method
+\item \textbf{IAVKF} \cite{jiang2024iavkf}: our reimplementation (the method
   extracts one harmonic component at a time --- ``peeling'' --- with adaptive
   bandwidth) \wip{TO RUN: comparison table}.
 \item \textbf{Our two-stage method.} Stage 1 finds four speed trajectories
@@ -827,12 +827,9 @@ Internal bookkeeping for the authors; strip before submission. Each claim
 above maps to an experiment log in \texttt{docs/experiments/}; the mapping
 table lives in \texttt{writing/papers/2026-08\_wrapup/inventory.md}.
 
-% Every citation in this draft is still a \pending{cite: ...} marker, so the
-% document has no \cite command yet and BibTeX would emit an empty
-% bibliography (a LaTeX error). src/references.bib is in place, copied from
-% ../../2026-08_joint-decomposition-rps/. Uncomment the two lines below as
-% soon as the first real \cite lands.
-% \bibliographystyle{IEEEtran}
-% \bibliography{references}
+% src/references.bib is in place, copied from
+% ../../2026-08_joint-decomposition-rps/ and extended.
+\bibliographystyle{IEEEtran}
+\bibliography{references}
 
 \end{document}
