@@ -44,9 +44,42 @@ copied from the sibling paper:
 Grep for `\wip` and `\pending` before any submission step. Appendix B is
 internal bookkeeping and carries its own note to strip it before submission.
 
+## Figures
+
+`make_figures.py` renders the qualitative per-regime comparison figures — for
+one validation clip, a 0-4 kHz spectrogram on top, then one panel for each
+method with the four predicted rotor tracks (solid) over the truth (dotted).
+Regenerate all three with:
+
+    python writing/papers/2026-08_wrapup/make_figures.py --out-dir src/figures
+
+The default `--out-dir` is `figures/` (which `.gitignore` covers for PDFs);
+pass `src/figures` to write where the document reads. Each clip gives
+`qual_<regime>.pdf`, a `.png` for quick viewing, and a `.json` with the clip
+PIT MAE (per-frame Hungarian) of each method, overall and for each target
+regime — the numbers for the captions.
+
+Clips come from `dload:DREGON-LM-V4-michaels-valid-full`, channel 0. The three
+defaults were selected by their target-regime frame counts, of 251 frames each:
+
+| Regime | Clip | zero / low / flight |
+|--------|------|---------------------|
+| `zero` | 36 | 251 / 0 / 0 |
+| `transition` | 8 | 87 / 59 / 105 |
+| `cruise` | 20 | 0 / 0 / 251 |
+
+The script prints these counts and an OK/MISMATCH verdict on every run.
+`--clip <regime>:<index>` overrides them. `--method "<label>=<source>"`
+overrides the method list; a source is `zoo:<experiment>` (a checkpoint
+through `zoo.load`), `classical:<name>` (a key of
+`experiments.classical_rps.predictors.CLASSICAL_TRACKERS`), or
+`npz:<path>[#<key>]` (a precomputed `(4, T)` trajectory on the 2048/512 grid —
+the route for the blind tracker and the order-tracking rows).
+
 ## Files
 
 - `src/index.tex` — the paper. **All future edits happen here.**
+- `make_figures.py` — the qualitative-figure driver (see above).
 - `draft.md` — the markdown source of record, frozen at v0.2. It is the
   origin of the prose in `index.tex`, and it is not maintained after this
   point.

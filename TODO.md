@@ -158,15 +158,13 @@ Sub-tasks:
 
 ## 8. Qualitative output figures per regime
 
-- [ ] Pick 3 representative valid clips: a content-rich zero clip (the
-      41-50 Hz rumble clip), a transition clip (stop/start boundary), a
-      cruise clip.
-- [ ] One figure per clip: GT tracks + predictions overlaid for the
-      leaderboard's top methods (best HB neural, blind tracker, NMF, OT,
-      best salience) — the May-report per-rotor-panel layout is the
-      template, via `plots` renderers (spectrogram top, per-method panels).
-- [ ] Wire into the paper build (`make_figures.py` pattern), commit the
-      generating script, not hand-tuned images.
+- [x] Clips verified (2026-08-24): 36 (pure zero, 251/0/0), 8
+      (transition, 87/59/105), 20 (cruise, 0/0/251).
+- [x] Generator built + committed (make_figures.py, configurable
+      method list via zoo:/classical:/npz: sources; renders today with
+      hb_scv2_if / real-only / NMF / HPS). Re-render with the final
+      winner set + blind npz + OT npz once those rows land — the one
+      remaining step of this item.
 
 ## 9. Make slides for supervisor, which should simply present the paper structure
 
