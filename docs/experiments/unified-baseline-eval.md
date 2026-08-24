@@ -131,6 +131,7 @@ best val/mse from W&B history in parentheses:
 | hb_gru_if | 7.20 / 197.0 | 6.11 / 123.6 | 2.52 / 13.3 | 0.75 |
 | hb_tr_mag (31.7) | 3.70 / 80.2 | 4.24 / 60.8 | 2.79 / 19.8 | 0.84 |
 | hb_tr_if (33.6) | 3.55 / 86.3 | 4.51 / 71.8 | 3.08 / 18.4 | 0.84 |
+| hb_tr_ssq (36.7) | 4.42 / 118.1 | 5.44 / 89.7 | 2.55 / 14.5 | 0.81 |
 
 Reading (updated as cells land): the honest regime alone closes most
 of the zero gap (real-only 11.83 -> 3.68-6.04 MAE) at almost no cruise cost
