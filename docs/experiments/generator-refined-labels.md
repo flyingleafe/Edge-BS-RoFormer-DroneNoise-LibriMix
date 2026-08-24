@@ -260,3 +260,32 @@ then refines; mixed into the real pool it acts as label noise. The scv2 crash
 was a shm race in the generated-noise pool (`np.flatnonzero` on the live
 `ready` view; fixed in a98416f); resubmitted as `m3abl-mixed-scv2-r-ccfc72`
 with `resume=true` for the final number.
+
+### Regime probe: comb-only vs generator+comb curriculum (2026-08-24)
+
+Same per-frame PIT regime probe as above, comb-only s2 rows added to
+`results/m3cur_regime_probe/regime_probe.json` (MAE / MSE, rev/s):
+
+| arch | run | zero | low (ramps) | flight |
+|---|---|---|---|---|
+| scv2 | comb-only | **2.76 / 22.8** | **3.61 / 36.9** | 2.83 / 17.8 |
+| scv2 | gen+comb | 4.78 / 82.9 | 4.81 / 61.9 | 2.46 / 12.8 |
+| scv2 | real-only | 11.83 / 278.4 | 4.83 / 65.1 | **2.35 / 11.6** |
+| transformer-IF | comb-only | **4.61 / 85.4** | 4.83 / 81.3 | 2.91 / 19.1 |
+| transformer-IF | gen+comb | 4.67 / 111.1 | 5.24 / 86.3 | **2.79 / 18.7** |
+| transformer-IF | real-only | 6.32 / 148.3 | **4.78 / 71.6** | 3.22 / 20.3 |
+| uni_gru128 | comb-only | 8.43 / 159.5 | 7.29 / 102.8 | 3.55 / 28.1 |
+| uni_gru128 | gen+comb | **7.04 / 144.1** | **5.30 / 100.2** | **3.15 / 23.0** |
+| uni_gru128 | real-only | 7.01 / 209.8 | 6.51 / 143.4 | 3.39 / 21.4 |
+
+Reading: the comb-only advantage over the neural generator is concentrated
+exactly where the curriculum gain itself lives — silence and ramps. For scv2
+the comb halves the curriculum's zero-MAE (2.76 vs 4.78) and cuts ramp MSE
+40 %, and pays a small cruise tax (17.8 vs 12.8 MSE; real-only 11.6 is the
+cruise best). The transformer shows the same ordering, milder. The GRU is the
+exception: there the generator+comb mix is at least as good in every regime,
+matching the aggregate tie (51.7 vs 51.4). So the exact analytic harmonic
+structure teaches the silence/ramp regimes BETTER than the learned generator,
+and the learned generator's extra realism buys nothing the real fine-tune
+stage does not already provide — consistent with the ablation-1 aggregate
+verdict.
