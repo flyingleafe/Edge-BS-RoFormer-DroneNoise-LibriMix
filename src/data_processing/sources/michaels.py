@@ -37,7 +37,7 @@ import pandas as pd
 import soundfile as sf
 import tdseries as td
 
-from data_processing.frames import make_recording_frame
+from data_processing.frames import audio_series, make_recording_frame
 
 # ── Measured alignment / label calibration (2026-07-31) ─────────────────────
 #
@@ -77,6 +77,38 @@ from data_processing.frames import make_recording_frame
 MICHAELS_FILES = [
     ("recording_1/124.wav", "recording_1/FLY124.csv", -20.753813, 1.001654644),
     ("recording_2/125.wav", "recording_2/FLY125.csv", -26.337849, 1.005178509),
+]
+
+# ── Held-out TEST recordings (raw dataset ``new-drone-noises``) ─────────────
+#
+# FLY103 / FLY108 are the only two further recordings of the same rig and the
+# same airframe (DatCon attribute ``ACType|M100``). They are **MONO** — one
+# microphone, not the 8-channel ring — and their flight logs are ~2x longer
+# than the audio, so the audio is a sub-window of the log.
+#
+# They use the ANCHORED alignment path (``anchor=True`` of
+# :func:`load_raw_aligned`): ``time_offset`` is the flight-log clock time of
+# the audio's first sample and the telemetry stamps become
+# ``(t_log - time_offset) * time_dilation`` — the audio clock, exactly. The
+# legacy path of FLY124/FLY125 instead crops the audio head and then uses the
+# log stamps as-is, which only agrees with the audio clock because those two
+# logs happen to start ~0.15 s before their audio. Here the logs start 50-78 s
+# early, so that identity does not hold and the anchored path is mandatory.
+#
+# (wav_path, csv_path, time_offset_sec, time_dilation) — paths are relative to
+# the raw root (the `new-drone-noises` tree).
+# COARSE constants (`scripts/michaels_calib/coarse_align.py`, 2026-08-24):
+# the comb-score line fit over 5 segments, residual RMS 1.9 ms (FLY103) and
+# 3.4 ms (FLY108), whole-recording score +5.6 % / +6.1 % over the best single
+# offset at dilation 1. Both recordings agree on a 1.19 % clock dilation to 5
+# decimal places, which is 7x FLY125's and 20x FLY124's.
+# PENDING CALIBRATION: `scripts/michaels_calib/fit_new.py` (the VK
+# reconstruction residual) has not refined these, and MICHAELS_RPS_SCALE has
+# no entry for either recording yet, so the rev/s labels are UNCALIBRATED.
+# The coarse rev/s scale hints are 1.0037 (FLY103) and 1.0053 (FLY108).
+MICHAELS_TEST_FILES = [
+    ("103_2.wav", "FLY103.csv", -0.8915, 1.0119078),
+    ("108_2.wav", "FLY108.csv", -0.3956, 1.0119673),
 ]
 
 #: Per-recording MULTIPLICATIVE rev/s correction, keyed by CSV stem (the
@@ -148,6 +180,44 @@ def get_geometry() -> tuple[np.ndarray, np.ndarray]:
 
 # ─── Alignment + loading ──────────────────────────────────────────────────────
 
+_T_COL = "Clock:offsetTime"
+_ATTR_COL = "Attribute|Value"
+
+
+def read_motor_speeds(
+    csv_path: str | Path, rps_scale: float | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """The raw DatCon motor-speed table: ``(t (M,), rps (4, M))``.
+
+    ``t`` is the flight-log clock (``Clock:offsetTime``, seconds, NOT aligned
+    to the audio); ``rps`` is the first four ``Motor:*`` columns converted from
+    RPM to rev/s and multiplied by ``rps_scale`` (``None`` -> the recording's
+    :data:`MICHAELS_RPS_SCALE` entry, 1.0 when it has none). This is the one
+    copy of the column selection + unit conversion; every caller that needs
+    rotor speeds off a Michael's CSV uses it.
+    """
+    scale = rps_scale_for(csv_path) if rps_scale is None else float(rps_scale)
+    csv = pd.read_csv(csv_path, low_memory=False)
+    ms_cols = [c for c in csv.columns if "Motor" in c][:4]
+    t = np.asarray(csv[_T_COL], dtype=np.float64)
+    return t, np.asarray(csv[ms_cols], dtype=np.float64).T / 60 * scale
+
+
+def _anchored_stamps(
+    t_log: np.ndarray, time_offset: float, time_dilation: float, wav_duration: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(row mask, stamps on the audio clock)`` for the anchored path.
+
+    The audio is never cropped: ``time_offset`` is the log-clock time of its
+    first sample, so ``(t_log - time_offset) * time_dilation`` is audio time.
+    The row cut is ``wav_duration / time_dilation`` of LOG time, which is
+    exactly ``wav_duration`` of audio time — so the stamps span the audio and
+    nothing beyond it (an overhang would let an in-flight-window search select
+    telemetry the audio does not cover).
+    """
+    mask = (t_log >= time_offset) & (t_log <= time_offset + wav_duration / time_dilation)
+    return mask, (np.asarray(t_log[mask], dtype=np.float64) - time_offset) * time_dilation
+
 
 def load_raw_aligned(
     wav_path: str | Path,
@@ -156,6 +226,7 @@ def load_raw_aligned(
     time_dilation: float = 1.0,
     sr: int | None = None,
     rps_scale: float | None = None,
+    anchor: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """Load + align one recording — port of the notebook function.
 
@@ -167,24 +238,33 @@ def load_raw_aligned(
     pass an explicit float (e.g. ``1.0``) to score a hypothesis against the
     uncalibrated telemetry.
 
+    ``anchor`` selects the ANCHORED alignment (the held-out
+    :data:`MICHAELS_TEST_FILES` recordings): the audio is kept whole and the
+    stamps become ``(t_log - time_offset) * time_dilation``, so stamp 0 is the
+    audio's first sample. The default (``False``) is the legacy FLY124/FLY125
+    path: crop the audio head by ``ts[0] - time_offset``, interpolate the
+    leading log gap, and return the log stamps scaled by ``time_dilation``.
+
     Returns ``(wav (C, N) at sr, ts (M,) aligned motor timestamps, ms (4, M)
     motor speeds in rev/s (calibrated), sr)``.
     """
-    scale = rps_scale_for(csv_path) if rps_scale is None else float(rps_scale)
     wav, sample_rate = lr.load(str(wav_path), sr=sr, mono=False)
     if len(wav.shape) == 1:
         wav = wav[None, :]
 
-    csv = pd.read_csv(csv_path)
-    ms_cols = [c for c in csv.columns if "Motor" in c][:4]
-    t_col = "Clock:offsetTime"
-    small_csv = csv[[t_col] + ms_cols]
-
+    t_log, ms_all = read_motor_speeds(csv_path, rps_scale)
     wav_duration = wav.shape[-1] / sample_rate
-    cut_csv = small_csv[
-        (small_csv[t_col] >= time_offset) & (small_csv[t_col] <= wav_duration + time_offset)
-    ]
-    ts = np.asarray(cut_csv[t_col], dtype=np.float64)
+
+    if anchor:
+        mask, ts = _anchored_stamps(t_log, time_offset, time_dilation, wav_duration)
+        ms = ms_all[:, mask]
+        if not np.isfinite(ms).all():
+            raise ValueError(f"{Path(csv_path).name}: NaN motor speeds inside the audio window")
+        return wav, ts, ms, int(sample_rate)
+
+    mask = (t_log >= time_offset) & (t_log <= wav_duration + time_offset)
+    ts = np.asarray(t_log[mask], dtype=np.float64)
+    ms = ms_all[:, mask]
 
     if ts[0] > time_offset:
         wav = wav[:, int((ts[0] - time_offset) * sample_rate) :]
@@ -197,15 +277,11 @@ def load_raw_aligned(
     jump_idx = np.argmax(np.diff(ts))
     ts[0 : jump_idx + 2] = np.linspace(ts[0], ts[jump_idx + 2], jump_idx + 2)
     ts *= time_dilation
-
-    ms = np.asarray(cut_csv[ms_cols], dtype=np.float64).T / 60 * scale
     return wav, ts, ms, int(sample_rate)
 
 
 # ─── Builder ──────────────────────────────────────────────────────────────────
 
-_T_COL = "Clock:offsetTime"
-_ATTR_COL = "Attribute|Value"
 # Two-level grouping for the per-rotor motor blocks ("Motor:Speed:RFront" ->
 # group "Motor:Speed"); everything else groups on the first ":" segment.
 _TWO_LEVEL_PREFIXES = ("Motor:", "MotorCtrl:")
@@ -227,12 +303,20 @@ def _group_key(col: str) -> str:
 
 
 def _aligned_csv(
-    csv_path: Path, time_offset: float, time_dilation: float, wav_duration: float
+    csv_path: Path,
+    time_offset: float,
+    time_dilation: float,
+    wav_duration: float,
+    anchor: bool = False,
 ) -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame]:
     """The exact row cut + timestamp fix of :func:`load_raw_aligned`, applied to
     the *whole* CSV. Returns (cut rows, aligned stamps, full csv)."""
     csv = pd.read_csv(csv_path, low_memory=False)
-    t = csv[_T_COL]
+    t = np.asarray(csv[_T_COL], dtype=np.float64)
+    if anchor:
+        mask_a, ts = _anchored_stamps(t, time_offset, time_dilation, wav_duration)
+        cut = cast(pd.DataFrame, csv[mask_a]).reset_index(drop=True)
+        return cut, ts, csv
     mask = (t >= time_offset) & (t <= wav_duration + time_offset)
     cut = cast(pd.DataFrame, csv[mask]).reset_index(drop=True)
     ts = np.asarray(cut[_T_COL], dtype=np.float64)
@@ -286,6 +370,23 @@ def _telemetry_entries(cut: pd.DataFrame, ts: np.ndarray) -> dict[str, td.Series
     return entries
 
 
+#: Provenance note of the held-out TEST recordings. Kept next to
+#: :data:`MICHAELS_TEST_FILES`, whose constants it describes.
+_TEST_CALIBRATION_NOTE = (
+    "Held-out TEST recordings (FLY103/FLY108, raw tree new-drone-noises), "
+    "calibrated 2026-08 with the same two-stage procedure as FLY124/FLY125: "
+    "scripts/michaels_calib/coarse_align.py seeds the log-clock offset from "
+    "the telemetry-predicted comb in one STFT (the flight log is ~2x longer "
+    "than the audio, so a seed is mandatory), then "
+    "scripts/michaels_calib/fit_new.py scans the audio-optimal telemetry lag "
+    "per 16 s cruise window with the label-free VK reconstruction residual, "
+    "regresses it on window time (dilation) and fits one global multiplicative "
+    "rev/s scale on the non-twin rotors (WP14 convention). These recordings "
+    "are MONO, so the frame carries no mic_pos. See "
+    "docs/experiments/rps-refine-precision.md WP13/WP14 for the procedure."
+)
+
+
 def _wav_duration_s(wav_path: Path) -> float:
     """Original (pre-crop) wav duration — what the loader's CSV window uses."""
     info = sf.info(str(wav_path))
@@ -293,9 +394,21 @@ def _wav_duration_s(wav_path: Path) -> float:
 
 
 def build_frame(
-    raw_root: Path, wav_rel: str, csv_rel: str, time_offset: float, time_dilation: float
+    raw_root: Path,
+    wav_rel: str,
+    csv_rel: str,
+    time_offset: float,
+    time_dilation: float,
+    anchor: bool = False,
 ) -> td.Frame:
-    """One Michael's recording -> rich Frame (realigned audio + rps + full CSV)."""
+    """One Michael's recording -> rich Frame (realigned audio + rps + full CSV).
+
+    ``anchor`` selects the anchored alignment of the held-out
+    :data:`MICHAELS_TEST_FILES` recordings (see :func:`load_raw_aligned`).
+    Those are mono, so their ``audio`` entry is a ``(time,)`` Series and the
+    frame carries no ``mic_pos`` — one microphone is not the 8-mic ring, and
+    its position on the airframe was never recorded.
+    """
     wav_path, csv_path = Path(raw_root) / wav_rel, Path(raw_root) / csv_rel
     # Audio + canonical rps exactly as load_raw_aligned builds them, at the
     # native sample rate (sr=None -> no resampling). The rev/s calibration
@@ -305,16 +418,28 @@ def build_frame(
     # pairing DREGON gets with motors_command/motors_command_raw.
     rps_scale = rps_scale_for(csv_path)
     wav, ts_rps, ms, sample_rate = load_raw_aligned(
-        wav_path, csv_path, time_offset=time_offset, time_dilation=time_dilation, sr=None
+        wav_path,
+        csv_path,
+        time_offset=time_offset,
+        time_dilation=time_dilation,
+        sr=None,
+        anchor=anchor,
     )
     tracks: dict[str, td.Series] = {
-        "audio": td.uniform(wav, sample_rate, dims=("mic", "time")),
+        "audio": audio_series(wav, sample_rate)
+        if wav.shape[0] == 1
+        else td.uniform(wav, sample_rate, dims=("mic", "time")),
         "rps": td.events(ts_rps, ms, dims=("rotor", "time")),
     }
+    n_mics = int(wav.shape[0])
     del wav
 
     cut, ts, full_csv = _aligned_csv(
-        csv_path, time_offset, time_dilation, wav_duration=_wav_duration_s(wav_path)
+        csv_path,
+        time_offset,
+        time_dilation,
+        wav_duration=_wav_duration_s(wav_path),
+        anchor=anchor,
     )
     # The telemetry row cut must land on the very same rows (hence stamps) the
     # loader's rps came from — otherwise the entries are not aligned.
@@ -324,20 +449,25 @@ def build_frame(
 
     attributes = [str(v) for v in full_csv[_ATTR_COL].dropna()] if _ATTR_COL in full_csv else []
     meta = {
-        "recording_id": Path(csv_rel).stem,  # FLY124 / FLY125
+        "recording_id": Path(csv_rel).stem,  # FLY124 / FLY125 / FLY103 / FLY108
         "wav": wav_rel,
         "csv": csv_rel,
         "time_offset": float(time_offset),
         "time_dilation": float(time_dilation),
         "rps_scale": float(rps_scale),
         "sample_rate": int(sample_rate),
+        "n_channels": n_mics,
         "n_csv_rows": int(len(full_csv)),
         "n_csv_rows_aligned": int(len(cut)),
         "dat_attributes": attributes,
         "provenance": {
             "builder": "data_processing.sources.michaels.build_frame",
             "alignment": (
-                "CSV rows cut to the audio window, leading timestamp gap "
+                "CSV rows cut to the audio window, stamps re-anchored to the "
+                "audio clock as (t_log - time_offset) * time_dilation; the "
+                "audio is kept whole (native sr)"
+                if anchor
+                else "CSV rows cut to the audio window, leading timestamp gap "
                 "linearly interpolated, stamps scaled by time_dilation, audio "
                 "cropped to the covered span (native sr)"
             ),
@@ -348,7 +478,9 @@ def build_frame(
                 "block (DatCon logs sensors at different rates)"
             ),
             "calibration": (
-                "time_offset/time_dilation/rps_scale are MEASURED constants "
+                _TEST_CALIBRATION_NOTE
+                if anchor
+                else "time_offset/time_dilation/rps_scale are MEASURED constants "
                 "(sources.michaels.MICHAELS_FILES + MICHAELS_RPS_SCALE, "
                 "2026-07-31): the audio-optimal telemetry lag was scanned per "
                 "16 s cruise window with the label-free VK reconstruction "
@@ -365,7 +497,12 @@ def build_frame(
         },
     }
     mic_pos, rotor_pos = get_geometry()
-    return make_recording_frame(tracks, meta=meta, mic_pos=mic_pos, rotor_pos=rotor_pos)
+    return make_recording_frame(
+        tracks,
+        meta=meta,
+        mic_pos=None if n_mics == 1 else mic_pos,
+        rotor_pos=rotor_pos,
+    )
 
 
 def resolve_raw_root(data_root: str | Path | None = None) -> Path:
@@ -388,12 +525,44 @@ def resolve_raw_root(data_root: str | Path | None = None) -> Path:
     return nested if nested.is_dir() else root
 
 
+def resolve_test_raw_root(data_root: str | Path | None = None) -> Path:
+    """The tree ``MICHAELS_TEST_FILES``' relative paths resolve against.
+
+    The held-out recordings live in a **different** raw dataset than
+    FLY124/FLY125: ``new-drone-noises``. ``None`` -> the dload raw pin. A given
+    root may be that tree itself, a ``dload:`` URI, or an enclosing checkout
+    ``data/`` dir. Mirrors :func:`resolve_raw_root`.
+    """
+    if data_root is None:
+        from data_processing import sources
+
+        return Path(sources.raw_root("new-drone-noises"))
+    from data_processing.streams import resolve_source
+
+    root = Path(resolve_source(data_root))
+    nested = root / "new-drone-noises"
+    return nested if nested.is_dir() else root
+
+
 def build(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
     """Yield ``(recording_id, frame)`` for each aligned recording."""
     raw_dir = resolve_raw_root(raw_dir)
     for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_FILES:
         rid = Path(csv_rel).stem
         yield rid, build_frame(raw_dir, wav_rel, csv_rel, time_offset, time_dilation)
+
+
+def build_test(raw_dir: Path) -> Iterator[tuple[str, td.Frame]]:
+    """Yield ``(recording_id, frame)`` for each held-out TEST recording.
+
+    Same rich layout as :func:`build` (rps + every CSV column as an aligned
+    series block + provenance meta), on the ``new-drone-noises`` raw tree and
+    through the anchored alignment path. The audio is MONO and native 48 kHz.
+    """
+    raw_dir = resolve_test_raw_root(raw_dir)
+    for wav_rel, csv_rel, time_offset, time_dilation in MICHAELS_TEST_FILES:
+        rid = Path(csv_rel).stem
+        yield rid, build_frame(raw_dir, wav_rel, csv_rel, time_offset, time_dilation, anchor=True)
 
 
 def load_michaels_timeframe(
@@ -464,9 +633,27 @@ PROVENANCE: dict[str, Any] = {
     "description": (
         "FLY124/FLY125 as rich td.Frames: realigned native-sr 8ch audio, "
         "calibrated rps (rev/s), and every DJI flight-log CSV column as aligned series grouped "
-        "per sensor block. 103 further recordings in `new-drone-noises` have no "
-        "alignment constants and exist raw-only."
+        "per sensor block. The two further recordings in `new-drone-noises` "
+        "(FLY103/FLY108, mono) are the held-out TEST set — see the "
+        "`michaels-test` entry."
     ),
     "sample_rate": 44100,
     "channels": 8,
+}
+
+TEST_PROVENANCE: dict[str, Any] = {
+    "citation": "Michael's DJI Matrice 100 rig recordings (project-local, unpublished).",
+    "description": (
+        "HELD-OUT TEST recordings FLY103/FLY108 (raw tree `new-drone-noises`), "
+        "same airframe and rig as FLY124/FLY125 but MONO: one microphone, "
+        "native 48 kHz, 106.5 s and 99.4 s. Rich td.Frames with the same layout "
+        "as `michaels` — audio + calibrated rps (rev/s) + every DJI flight-log "
+        "CSV column as aligned series grouped per sensor block — minus mic_pos, "
+        "which a single microphone does not have. Calibrated 2026-08 "
+        "(coarse comb alignment + the WP13/WP14 VK procedure); their flight "
+        "logs are ~2x longer than the audio, so they use the anchored "
+        "alignment path. Reserved as a TEST set: do not train on them."
+    ),
+    "sample_rate": 48000,
+    "channels": 1,
 }

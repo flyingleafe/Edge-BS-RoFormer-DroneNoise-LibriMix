@@ -55,6 +55,7 @@ if str(REPO / "src") not in sys.path:
 
 from data_processing.sources.michaels import (  # noqa: E402
     MICHAELS_FILES,
+    MICHAELS_TEST_FILES,
     rps_scale_for,
 )
 
@@ -64,6 +65,8 @@ WINDOW_S = 16.0
 WINDOW_FRAMES = 500
 N_ROTORS = 4
 DATASET = "recording_with_motor_speed"
+#: the held-out TEST recordings live in a DIFFERENT raw dataset.
+TEST_DATASET = "new-drone-noises"
 
 #: recording id -> ``(wav_rel, csv_rel, time_offset, time_dilation)``, the
 #: SHIPPED alignment constants (imported, never re-typed). Paths are relative
@@ -73,6 +76,17 @@ SHIPPED: dict[str, tuple[str, str, float, float]] = {
     "FLY124": MICHAELS_FILES[0],
     "FLY125": MICHAELS_FILES[1],
 }
+
+#: The held-out TEST recordings (FLY103/FLY108): MONO, ``new-drone-noises``
+#: relative paths, and the ANCHORED alignment path of ``load_raw_aligned``.
+#: Their constants are the coarse seed until ``fit_new.py`` refines them.
+TEST: dict[str, tuple[str, str, float, float]] = {
+    Path(csv_rel).stem: (wav_rel, csv_rel, off, dil)
+    for wav_rel, csv_rel, off, dil in MICHAELS_TEST_FILES
+}
+
+#: every recording this library can build windows for.
+ALL: dict[str, tuple[str, str, float, float]] = {**SHIPPED, **TEST}
 
 
 # ────────────────────────────────────────────────────────── data root
@@ -101,6 +115,35 @@ def data_root() -> tuple[Path, str]:
     return tree, f"dload:{DATASET} -> {tree}"
 
 
+@functools.lru_cache(maxsize=1)
+def test_data_root() -> tuple[Path, str]:
+    """``(root, how)`` for the held-out TEST recordings (``new-drone-noises``)."""
+    inner_rel = Path(TEST["FLY103"][0])  # 103_2.wav
+    probe_rel = Path(TEST_DATASET) / inner_rel
+
+    def ok(root: Path) -> bool:
+        return (root / probe_rel).exists() or (root / inner_rel).exists()
+
+    env = os.environ.get("DATA_ROOT")
+    if env and ok(Path(env)):
+        return Path(env), f"$DATA_ROOT={env}"
+    if ok(REPO / "data"):
+        return REPO / "data", "<repo>/data"
+    from data_processing.streams import ensure_local
+
+    tree = ensure_local(TEST_DATASET)
+    if not ok(tree):
+        raise SystemExit(
+            f"dload dataset {TEST_DATASET!r} materialized to {tree} without {inner_rel}"
+        )
+    return tree, f"dload:{TEST_DATASET} -> {tree}"
+
+
+def is_test(rid: str) -> bool:
+    """Is ``rid`` a held-out TEST recording (mono, anchored alignment)?"""
+    return rid in TEST
+
+
 def shipped_rps_scale(rid: str) -> float:
     """The rev/s calibration ``sources/michaels.py`` currently ships for ``rid``.
 
@@ -108,14 +151,15 @@ def shipped_rps_scale(rid: str) -> float:
     with the default (``rps_scale=1.0`` in :func:`cut_window`) already carry it;
     this accessor only exists so the sweep can RECORD what it validated.
     """
-    return rps_scale_for(SHIPPED[rid][1])
+    return rps_scale_for(ALL[rid][1])
 
 
 def michaels_paths(rid: str) -> tuple[Path, Path]:
     """``(wav, csv)`` for one recording, under whichever root resolved."""
-    root, _how = data_root()
-    wav_rel, csv_rel = Path(SHIPPED[rid][0]), Path(SHIPPED[rid][1])
-    wav, csv = root / DATASET / wav_rel, root / DATASET / csv_rel
+    root, _how = test_data_root() if is_test(rid) else data_root()
+    dataset = TEST_DATASET if is_test(rid) else DATASET
+    wav_rel, csv_rel = Path(ALL[rid][0]), Path(ALL[rid][1])
+    wav, csv = root / dataset / wav_rel, root / dataset / csv_rel
     if wav.exists() and csv.exists():
         return wav, csv
     wav, csv = root / wav_rel, root / csv_rel
@@ -184,11 +228,17 @@ def load_recording(
 
     from data_processing.sources.michaels import load_raw_aligned
 
-    off = SHIPPED[rid][2] if time_offset is None else float(time_offset)
-    dil = SHIPPED[rid][3] if time_dilation is None else float(time_dilation)
+    off = ALL[rid][2] if time_offset is None else float(time_offset)
+    dil = ALL[rid][3] if time_dilation is None else float(time_dilation)
     wav_path, csv_path = michaels_paths(rid)
     wav, ts, ms, sr = load_raw_aligned(
-        wav_path, csv_path, time_offset=off, time_dilation=dil, sr=None, rps_scale=rps_scale
+        wav_path,
+        csv_path,
+        time_offset=off,
+        time_dilation=dil,
+        sr=None,
+        rps_scale=rps_scale,
+        anchor=is_test(rid),
     )
     audio16 = np.atleast_2d(
         lr.resample(

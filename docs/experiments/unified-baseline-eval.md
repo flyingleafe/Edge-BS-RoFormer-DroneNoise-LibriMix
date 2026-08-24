@@ -43,4 +43,33 @@ protocol.
 
 ## Results
 
-Pending.
+### Classical five (2026-08-24, full 1480-unit run, `results/classical_valid_eval/`)
+
+Per-frame Hungarian PIT MAE / MSE in rev/s on valid-full:
+
+| method | zero | low | flight | all |
+|---|---|---|---|---|
+| PYIN | 90.8 / 9341 | 46.7 / 3159 | 34.1 / 2031 | 43.0 / 3110 |
+| cepstral | 95.5 / 9859 | 67.5 / 5539 | 19.6 / 839 | 35.7 / 2617 |
+| HPS | 64.1 / 4660 | 27.6 / 1196 | 20.9 / 623 | 27.3 / 1212 |
+| matched filter | 87.2 / 8686 | 66.8 / 5988 | 30.4 / 1531 | 42.5 / 3039 |
+| NMF | 83.8 / 7631 | 59.5 / 4411 | **8.1 / 188** | 24.7 / 1701 |
+
+Reading: (1) the zero regime is a structural failure for all five — the
+search grids clamp to [50, 150] rev/s, so a stopped rotor scores near the
+clamp floor; a silence decision is outside these methods' vocabulary.
+(2) NMF at cruise (8.1 MAE) is the best training-free number we have —
+better than the OT multi-pitch baseline's 16.3 on the same frames. The
+May-2026 ranking (NMF best classical) holds under the unified protocol.
+(3) Every learned model (2.4-3.6 flight MAE) stays 2-4x below NMF at
+cruise and 10x+ below everything classical on zeros.
+
+### OT multi-pitch (merged from `results/otmp_protocol/`, 2026-08-23)
+
+Flight 16.3 / 544, low 28.3 / 1526, zero 68.8 / 5438, all 24.5 / 1292
+(MAE / MSE). Same split, same PIT protocol (8-channel units).
+
+### Remaining rows
+
+Salience retraining (`hb_sal_multif0`, `hb_sal_bp`) and the HB grid are
+queued on the cluster; their regime probes land here when training ends.

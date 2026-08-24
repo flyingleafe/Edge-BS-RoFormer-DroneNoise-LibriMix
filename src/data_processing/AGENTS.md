@@ -359,8 +359,8 @@ U(0.1,0.8) s, DRR U(3,15) dB, exp-decay colored tails; RMS renormalized),
 `tooth_dropout` (zero ±2 STFT bins around k·rps_r(t), 1–4 random teeth k≤25 —
 label-aware), `spec_mask` (SpecAugment bands/time masks), `floor_inject`
 (1/f^tilt floor at U(−20,0) dB rel RMS). STFT ops run on the model's own
-2048/512 grid. Keep the 50k unaugmented warmup stage — G5 measured it as
-load-bearing. Policy: `conf/online_mix/g6_strongaug_dload.yaml`; batch doc
+2048/512 grid. Keep the 50k unaugmented warmup stage — G5 measured that removing
+it causes a real regression. Policy: `conf/online_mix/g6_strongaug_dload.yaml`; batch doc
 `docs/experiments/g1-vk-parity.md` § "Phase G6"; tests
 `tests/test_noise_augmentations.py`.
 
@@ -656,6 +656,72 @@ cruise windows, non-twin rotors only**: g = 0.698 % ± 0.069 (FLY124) and
   `beatvk-valid-raw`, `results/beatvk_vk_arms`, `DREGON-LM-V4-michaels*`, and
   any published FLY124 label-accuracy number.
 
+### The held-out TEST recordings (FLY103 / FLY108) — 2026-08-24
+
+The other two recordings of the same rig, in the **other** raw dataset
+(`new-drone-noises`). Registry entry `michaels-test` (builder
+`michaels.build_test`), derivation `michaels-test-frames` (derivable, NOT
+adopt-only — these bytes have never been published). **They are a TEST set: no
+training derivation may root on them.**
+
+| | FLY124 / FLY125 | FLY103 / FLY108 |
+|---|---|---|
+| raw dataset | `recording_with_motor_speed` | `new-drone-noises` |
+| channels | 8 (mic ring) | **1 (mono)**, no `mic_pos` |
+| native rate | 44.1 kHz | 48 kHz |
+| duration | 122 / 178 s | 106.5 / 99.4 s |
+| log vs audio | log starts ~0.15 s early | log is ~2x longer than the audio |
+| alignment path | legacy (crop the audio head) | **anchored** |
+| constants | measured (WP13/WP14) | coarse seed, VK fit PENDING |
+
+**Anchored alignment** (`load_raw_aligned(..., anchor=True)`). The legacy path
+uses `time_offset` only to decide how much audio to crop and then treats the
+log stamps as audio time — which is right only because FLY124/FLY125's logs
+happen to start ~0.15 s before their audio. FLY103/FLY108's logs start 50-78 s
+early, so they use the explicit model instead:
+
+    t_log = time_offset + t_audio / time_dilation
+
+The audio is never cropped, the stamps become
+`(t_log - time_offset) * time_dilation`, and the row cut is
+`wav_duration / time_dilation` of log time — exactly the audio span, no
+overhang. Folding a measured `lag(t) = a + b*t` gives
+`time_dilation / (1 - b)` and `time_offset - a / time_dilation` (note: NOT the
+legacy `- a / (1 - b)`).
+
+**Calibration status.** Two stages, both under `scripts/michaels_calib/`:
+
+1. `coarse_align.py` (**done**, `results/michaels_coarse/`): one STFT per
+   recording, scored at the telemetry-predicted comb bins
+   (`k * 2 * rps`, k = 1..10, cruise frames only), scanned over every feasible
+   log offset. The global peak anchors five per-segment peaks, and the line
+   through those is the (offset, dilation) pair. FLY103 `-0.8915 s`,
+   dilation `1.0119078`; FLY108 `-0.3956 s`, dilation `1.0119673`; per-segment
+   residual RMS 1.9 / 3.4 ms, whole-recording score +5.6 % / +6.1 % over the
+   best single offset at dilation 1. **Both agree on a 1.19 % clock dilation to
+   five decimals** — 7x FLY125's and 20x FLY124's, so it is a property of that
+   recording session, not of one file.
+2. `fit_new.py` (**pending**, ~35 CPU-min — submit it with
+   `omnirun submit --backend uni-cpu --gpus 0 --cpus 16 --mem 24 --time 1h
+   --yes -- python scripts/michaels_calib/fit_new.py --jobs 16`): the WP13/WP14 VK
+   procedure on the coarse seed. `lag` per cruise window -> the refined
+   (offset, dilation); `val` at each window's best lag -> the global
+   multiplicative rev/s scale. The per-rotor `prot` stage is opt-in and
+   fragile here: the referee has one channel instead of eight and FLY103's
+   rotor pairs sit 2.0 / 2.5 rev/s apart, so an offset of the expected size
+   walks one rotor into its neighbour and the near-degenerate VK solve stalls.
+   WP14 already settled what that stage decides.
+
+Until `fit_new.py` runs, `MICHAELS_RPS_SCALE` has no entry for either
+recording, so **their rev/s labels are UNCALIBRATED** (scale 1.0). The coarse
+scale hints are 1.0037 (FLY103) and 1.0053 (FLY108), against 1.00698 / 1.00706
+for FLY124 / FLY125.
+
+**Content.** Over the audio span the telemetry calls FLY103 1.4 % ground /
+12.7 % warm-up / 86.0 % cruise (89.8 s of cruise, mean 69.6 rev/s) and FLY108
+6.8 % / 9.6 % / 83.6 % (81.6 s, mean 80.6 rev/s). FLY108's first 16 s window is
+the takeoff ramp (per-rotor std 26.6 rev/s) and `fit_new.py` drops it.
+
 ---
 
 
@@ -703,7 +769,10 @@ at the existing `dload.lock` pin (dry-run by default; `--commit` to write).
   `DREGON-LM-rps_{eval_long,eval_specific,train_specific}_samples`.
 - **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):
   `DN-LM-{train,valid}` (6480/720, drone-only noise; no `rps` field).
-- **Rich frames** (2, `tdframe-v1`): `DREGON-frames`, `michaels-frames`.
+- **Rich frames** (2, `tdframe-v1`): `DREGON-frames`, `michaels-frames`. A
+  third, `michaels-test-frames` (FLY103/FLY108, the held-out TEST set), is
+  declared and derivable but **not materialized or pinned** — its calibration
+  is not final. See § "The held-out TEST recordings".
 - **External harmonic-noise datasets** (10, `tdframe-v1`; registry
   `sources/`, driver `scripts/derive.py`, see
   `docs/external-datasets-plan.md` + [[external-harmonic-datasets]] memory):
@@ -784,7 +853,7 @@ streaming numbers).
 
 - **Datasets are gitignored** — create locally, `dload pull <name>`, or stream/reference via `data_processing.streams` (`conf/data/*_stream.yaml`, `dload:` URIs) before training.
 - **`michaels_dir` in `conf/data/noise_rps_dregon_michaels*.yaml` is stale**: those configs set `michaels_dir: data/new-drone-noises`, but `load_michaels_timeframes` hardcodes `recording_with_motor_speed/`-relative paths — the value is effectively ignored; don't copy it into new configs (behavior intentionally left unchanged, flagged here).
-- **`new-drone-noises` coverage** (corrected 2026-08-24): the dataset holds exactly TWO more recordings — **FLY103** (`103_2.wav`, mono, 106.5 s, 48 kHz) and **FLY108** (`108_2.wav`, mono, 99.4 s, 48 kHz), each with a full DatCon telemetry CSV (four motor speeds). Neither has alignment constants, so neither is in `michaels-frames` and neither is used anywhere. To use them, run the WP13/WP14 calibration (lag + dilation fit against the VK residual, then the global rev/s scale). Note they are MONO, unlike FLY124/125's 8-channel array.
+- **`new-drone-noises` coverage** (corrected 2026-08-24): the dataset holds exactly TWO more recordings — **FLY103** (`103_2.wav`, mono, 106.5 s, 48 kHz) and **FLY108** (`108_2.wav`, mono, 99.4 s, 48 kHz), each with a full DatCon telemetry CSV (four motor speeds). They are the **held-out TEST set** — registry entry `michaels-test`, derivation `michaels-test-frames`, constants in `MICHAELS_TEST_FILES`. See § "The held-out TEST recordings" below. Note they are MONO, unlike FLY124/125's 8-channel array, and that their audio is a sub-window of a ~2x longer flight log.
 - **`motors_command` trailing freeze**: the last 45–1577 samples are identical
   (logger stopped).  `_find_inflight_window` strips this when using `motors_measured`;
   when only command is available, the end trim is effectively 0 s.  **Never use

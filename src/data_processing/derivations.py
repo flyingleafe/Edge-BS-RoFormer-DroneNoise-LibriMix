@@ -1347,6 +1347,25 @@ SPECS: dict[str, dict[str, Any]] = {
             "raw": {"kind": "dload", "uri": PARENTS["DREGON"]},
         },
     },
+    "michaels-test-frames": {
+        "generator": "source_frames",
+        "adopt_only": False,
+        "note": "The HELD-OUT TEST recordings of Michael's rig: FLY103/FLY108 "
+        "(raw tree `new-drone-noises`), MONO at native 48 kHz, same rich layout "
+        "as `michaels-frames` minus mic_pos. Derivable — unlike michaels-frames "
+        "these bytes have never been published, so the builder IS the recipe. "
+        "recipe_version 1 = the 2026-08 calibration (coarse comb alignment then "
+        "the WP13/WP14 VK fit; MICHAELS_TEST_FILES + MICHAELS_RPS_SCALE). "
+        "Reserved as a TEST set: no training derivation may root on it.",
+        "gen": {
+            "recipe_version": 1,
+            "source": "michaels-test",
+            "raw": {
+                "kind": "dload",
+                "uri": "dload:new-drone-noises@158b780aaaf27af03ed995707d8a93e62e3fce7246132b815d52cfc225dcc774",
+            },
+        },
+    },
     "michaels-frames": {
         "generator": "source_frames",
         "adopt_only": True,

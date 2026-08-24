@@ -117,6 +117,13 @@ REGISTRY: dict[str, SourceDataset] = {
             raw_dataset="recording_with_motor_speed",
             frames_dataset="michaels-frames",
         ),
+        SourceDataset(
+            name="michaels-test",
+            provenance=michaels.TEST_PROVENANCE,
+            builder=michaels.build_test,
+            raw_dataset="new-drone-noises",
+            frames_dataset="michaels-test-frames",
+        ),
         # ── External harmonic-noise datasets ──────────────────────────────
         SourceDataset(
             name="MIMII",
@@ -220,8 +227,10 @@ REGISTRY: dict[str, SourceDataset] = {
             provenance={
                 "citation": "Michael's DJI flight logs + WAVs (project-local).",
                 "description": (
-                    "108 DJI recordings; only FLY124/FLY125 have manual alignment "
-                    "constants (see the 'michaels' entry) — the rest are raw-only."
+                    "Two further DJI recordings (FLY103/FLY108, mono, 48 kHz) with "
+                    "full DatCon telemetry. Raw tree behind the 'michaels-test' "
+                    "frames builder (the held-out TEST set); FLY124/FLY125 are the "
+                    "separate 'recording_with_motor_speed' tree."
                 ),
             },
             raw_dataset="new-drone-noises",

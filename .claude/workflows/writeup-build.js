@@ -115,7 +115,7 @@ for (let round = 1; round <= maxRounds; round++) {
 Previous artifacts the reader has seen: ${prev}
 Rendered pages: ${dir}/check/page-*.png
 Follow your procedure exactly: look at every rendered page first, then sources, then check against ${dir}/workflow/narrative.md.`,
-    { label: `critic r${round}`, phase: 'critique', agentType: 'writeup-critic', schema: criticSpec },
+    { label: `critic r${round}`, phase: 'critique', agentType: 'writeup-critic', model: 'opus', schema: criticSpec },
   )
   if (!critique) {
     rounds.push({ round, verdict: 'CRITIC-DIED', issues: [], verify: await verifyTree(round) })
