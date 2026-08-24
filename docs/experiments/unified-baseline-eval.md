@@ -127,8 +127,10 @@ best val/mse from W&B history in parentheses:
 | hb_scv2_mag (39.7) | 3.68 / 62.2 | 10.68 / 167.4 | 2.57 / 13.4 | 0.76 |
 | hb_scv2_if (34.9) | 4.50 / 121.2 | 4.99 / 83.1 | 2.49 / 12.8 | 0.84 |
 | hb_scv2_ssq (47.1) | 6.04 / 183.6 | 6.05 / 104.0 | 2.52 / 14.2 | 0.79 |
+| hb_gru_mag | 10.62 / 306.6 | 3.99 / 58.1 | 2.66 / 20.0 | 0.65 |
+| hb_tr_mag (31.7) | 3.70 / 80.2 | 4.24 / 60.8 | 2.79 / 19.8 | 0.84 |
 
-Reading (preliminary, scv2 cells only): the honest regime alone closes most
+Reading (updated as cells land): the honest regime alone closes most
 of the zero gap (real-only 11.83 -> 3.68-6.04 MAE) at almost no cruise cost
 (flight MSE 12.8-14.2 vs real-only 11.6). The mag front-end regresses on
 ramps (10.68 vs real-only 4.83); the IF front-end holds them (4.99) and has
@@ -136,6 +138,12 @@ the best aggregate (34.9) — between real-only (52.5) and the comb curriculum
 (21.1). The comb curriculum still leads on aggregate, consistent with the
 coverage story: the synthetic stage supplies unlimited ramp/transition
 trajectories that 34 s of real ramps cannot match.
+
+Architecture notes: hb_tr_mag (31.7 aggregate, best HB cell so far) beats
+its real-only control (42.3) in every regime with no ramp regression.
+hb_gru_mag shows the opposite trade: ramps improve (6.51 -> 3.99) and
+zeros get worse (7.01 -> 10.62, drift mass 0.35) — the causal head has no
+future context to confirm silence, so the gate hesitates.
 
 ### Remaining rows
 
