@@ -436,10 +436,47 @@ even a neutral proxy for it. What the narrowing removed — the wide coherence,
 the wide wander, the room, the coloration — was acting as regularization, and
 buying transfer with the fit it cost.
 
-**The measurement that still stands is the per-regime one.** Arm F holds the
-best ramp and cruise cells any synthetic-only model here has produced, and loses
-only on stopped rotors, for a reason that is understood and already fixed in arm
-G. That, not the training loss, is what the next arm is judged on.
+**The measurement that still stands is the per-regime one**, and it is where the
+result is.
+
+## A synthetic-only model reaches real-trained cruise accuracy
+
+| checkpoint | trained on | aggregate | zero | low | flight |
+|---|---|---|---|---|---|
+| `r4hb_scv2` | real | 17.59 | 2.87 | 3.48 | **2.49** |
+| `stoch_s1h_scv2` | synthetic only | 300.36 | 27.98 | 26.77 | **2.60** |
+| `stoch_s1f_scv2` | synthetic only | 343.69 | 34.69 | **16.95** | 6.32 |
+| `stoch_s1e_scv2` | synthetic only | 280.66 | 8.92 | 27.55 | 7.98 |
+| `m3abl_comb_scv2_s1` | synthetic only | 218.30 | 5.64 | 26.32 | 7.09 |
+
+**Arm H reads a real recording at cruise as well as a model trained on real data
+does: 2.60 rev/s against 2.49.** The best any earlier synthetic-only family
+managed was 6.00. Nothing about that cell is borrowed — no real noise appears
+anywhere in arm H's stream.
+
+The aggregate hides it because the aggregate is dominated by the two cells arm H
+gets wrong, and those have a cause that is now identified.
+
+### The silence confusion, and it is not the level
+
+Arm H carries the level fix already, so `level_mode` is not what breaks its
+stopped-rotor cell. The warm-up idle band is. Arms F and H widened it to
+[0.05, 0.65] of hover to reach the 10 to 30 rev/s a real ramp passes through,
+and the way that reaches it is by making the drone **idle** down there. A rotor
+at 5 rev/s is 45 dB below cruise — silence, with a nonzero label on it. 2.9% of
+arm H's frames sit under 8 rev/s.
+
+A real drone does not idle there. It idles at 0.38 to 0.52 of hover and passes
+*through* the low band on its ramps. Arm J puts the idle band back to
+[0.28, 0.55] and gets the low-speed coverage from a longer spin-up instead:
+
+| low-regime frames | speed p10 | mean | p90 | rate mean | rate p90 | frames under 8 rev/s |
+|---|---|---|---|---|---|---|
+| real split | 10.1 | 31.5 | 36.2 | 7.16 | 24.88 | — |
+| arm H | 3.3 | 23.0 | 44.3 | 15.80 | 48.29 | 2.9% |
+| arm J | 12.8 | 21.9 | 34.8 | 7.79 | 21.38 | **0.4%** |
+
+Arm J is arm H with that one change.
 
 ## Log
 
