@@ -1,0 +1,25 @@
+# @package _global_
+# STOCHASTIC-ONLY stage 1 — the diverse stochastic family as the whole noise
+# pool, validated on the real frozen split. The comparison row is
+# `m3abl_comb_scv2_s1` (the analytic static comb as the whole pool): same
+# trunk, same optimizer, same validation, same augmentation blocks, and the
+# noise family is the only difference.
+# Policy: conf/online_mix/stoch_s1f_dload.yaml. Batch doc:
+# docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: stoch_s1f
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: stoch_s1f_scv2
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

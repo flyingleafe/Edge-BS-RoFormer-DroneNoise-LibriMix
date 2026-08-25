@@ -730,6 +730,7 @@ class StochasticNoisePool:
         aggressiveness: float | tuple[float, float] = 1.0,
         flight_fs: float = 200.0,
         flight_reuse: int = 32,
+        flight_phases: dict[str, Any] | None = None,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
         mic_gain_db: tuple[float, float] = (-12.0, 0.0),
         amp_rps_exponent: float = 2.5,
@@ -759,6 +760,11 @@ class StochasticNoisePool:
         )
         self.flight_fs = float(flight_fs)
         self.flight_reuse = int(flight_reuse)
+        # Overrides for the flight-phase durations and the warm-up idle level
+        # (``rps_synthesis.FlightPhaseRanges``). The default idle band is 0.38
+        # to 0.52 of hover, so a default stream never shows a rotor between 10
+        # and 30 rev/s — and that is most of what a real ramp passes through.
+        self.flight_phases = dict(flight_phases) if flight_phases else None
         self.drone_profile_range = (float(drone_profile_range[0]), float(drone_profile_range[1]))
         self.mic_gain_db = (float(mic_gain_db[0]), float(mic_gain_db[1]))
         self.amp_rps_exponent = float(amp_rps_exponent)
@@ -825,6 +831,11 @@ class StochasticNoisePool:
             ),
             flight_fs=float(rps.get("flight_fs", 200.0)),
             flight_reuse=int(rps.get("flight_reuse", 32)),
+            flight_phases=(
+                {k: tuple(v) for k, v in dict(rps["phases"]).items()}
+                if rps.get("phases") is not None
+                else None
+            ),
             drone_profile_range=pair("drone_profile_range", (0.0, 1.0)),
             mic_gain_db=pair("mic_gain_db", (-12.0, 0.0)),
             amp_rps_exponent=float(g("amp_rps_exponent", 2.5)),
@@ -876,11 +887,17 @@ class StochasticNoisePool:
 
         if self._flight is None or self._flight.uses >= self.flight_reuse:
             blend = float(rng.uniform(*self.drone_profile_range))
+            phases = (
+                rps_synthesis.FlightPhaseRanges(**self.flight_phases)
+                if self.flight_phases
+                else None
+            )
             flight = rps_synthesis.generate_full_flight(
                 None,
                 self.flight_fs,
                 drone_profile=blend,
                 aggressiveness=aggressiveness,
+                phases=phases,
                 rng=rng,
             )
             self._flight = _FlightCache(
