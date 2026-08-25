@@ -1,0 +1,6 @@
+ M .claude/workflows/writeup-build.js
+ M notebooks/decomposition_tutorial.ipynb
+ M notebooks/generalization_explorer.ipynb
+ M src/tracking/joint_decompose.py
+ M src/tracking/vk_tracking.py
+?? writing/slides/2026-08-18_decomposition-for-amplitude-targets/
