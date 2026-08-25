@@ -168,8 +168,15 @@ Sub-tasks:
       — resolve every marker: real citations via the bibliography MCP
       (OT paper 2508.02471, Cuesta ISMIR 2020, Bittner ICASSP 2022, VK/order
       tracking, DREGON, LibriSpeech, ...), numbers from the docs.
-- [ ] Figure placeholders: regenerate from `eval.py` + `src/plots` (never
-      hand-made); check every figure builds from committed results.
+- [x] DONE (2026-08-25): all four in-section figures real and built from
+      committed results — comb overlays (tracking campaign renders),
+      freq-scaling probe (regenerated: no-aug ~0.2-0.9% response vs R2
+      0.8-1.3% at +-4%), per-regime bars (probe JSONs), generator
+      line-vs-loss curves (perrotor bundle; prose re-anchored to the
+      recomputed 0.7-1.7 dB selection gaps). Winners size table added.
+      Remaining markers: 2 unpublished-tech-report citations, the dormant
+      final-test numbers, and the 2 TO-RUN tacholess rows (offered to the
+      user, awaiting go/no-go).
 
 ## 8. Qualitative output figures per regime
 
