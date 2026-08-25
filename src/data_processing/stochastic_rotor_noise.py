@@ -734,6 +734,7 @@ class StochasticNoisePool:
         mic_gain_db: tuple[float, float] = (-12.0, 0.0),
         amp_rps_exponent: float = 2.5,
         amp_rps_ref: float = 80.0,
+        rps_scale_range: tuple[float, float] = (1.0, 1.0),
         n_fft: int = DEFAULT_N_FFT,
         ranges: StochasticRanges | dict[str, Any] | None = None,
         seed: int = 0,
@@ -751,6 +752,15 @@ class StochasticNoisePool:
         self.mic_gain_db = (float(mic_gain_db[0]), float(mic_gain_db[1]))
         self.amp_rps_exponent = float(amp_rps_exponent)
         self.amp_rps_ref = float(amp_rps_ref)
+        # Per-window multiplier on the whole trajectory. A synthetic family
+        # renders its audio FROM the labels, so scaling the trajectory moves
+        # every comb line and leaves the floor's shape where it is — which is
+        # what a real speed change does, and what the frequency-scaling
+        # augmentation cannot do (resampling moves the floor too). Its purpose
+        # is to destroy the speed prior: over a wide enough range no cruise
+        # level is more likely than another, and comb spacing becomes the only
+        # thing a model can read the speed from.
+        self.rps_scale_range = (float(rps_scale_range[0]), float(rps_scale_range[1]))
         self.n_fft = int(n_fft)
         self.ranges = (
             ranges if isinstance(ranges, StochasticRanges) else StochasticRanges.from_dict(ranges)
@@ -794,6 +804,7 @@ class StochasticNoisePool:
             mic_gain_db=pair("mic_gain_db", (-12.0, 0.0)),
             amp_rps_exponent=float(g("amp_rps_exponent", 2.5)),
             amp_rps_ref=float(g("amp_rps_ref", 80.0)),
+            rps_scale_range=pair("rps_scale_range", (1.0, 1.0)),
             n_fft=int(g("n_fft", DEFAULT_N_FFT)),
             ranges=ranges,
             seed=int(g("seed", 0)),
@@ -808,19 +819,25 @@ class StochasticNoisePool:
         ``synthetic_intermittent`` draws a cruise window directly;
         ``full_flight`` windows a cached low-rate flight, so successive windows
         visit the ground, warm-up, takeoff, cruise and landing phases in
-        proportion to their durations.
+        proportion to their durations. Either way the window is multiplied by
+        one draw from ``rps_scale_range``, which is exact: a stopped rotor stays
+        stopped, and every other speed moves with its own comb.
         """
         n_samples = int(round(duration_s * self.sample_rate))
+        scale = float(rng.uniform(*self.rps_scale_range))
         if self.rps_kind != "full_flight":
             blend = float(rng.uniform(*self.drone_profile_range))
-            return rps_synthesis.generate_intermittent_batch(
-                1,
-                duration_s,
-                self.sample_rate,
-                drone_profile=blend,
-                aggressiveness=self.aggressiveness,
-                rng=rng,
-            )[0]
+            return (
+                scale
+                * rps_synthesis.generate_intermittent_batch(
+                    1,
+                    duration_s,
+                    self.sample_rate,
+                    drone_profile=blend,
+                    aggressiveness=self.aggressiveness,
+                    rng=rng,
+                )[0]
+            )
 
         if self._flight is None or self._flight.uses >= self.flight_reuse:
             blend = float(rng.uniform(*self.drone_profile_range))
@@ -839,7 +856,8 @@ class StochasticNoisePool:
         max_start = max(0.0, float(t_low[-1]) - duration_s)
         start_s = float(rng.uniform(0.0, max_start)) if max_start > 0 else 0.0
         t_win = start_s + np.arange(n_samples) / self.sample_rate
-        return np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
+        window = np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
+        return scale * window
 
     def render(
         self, rng: np.random.Generator, duration_s: float

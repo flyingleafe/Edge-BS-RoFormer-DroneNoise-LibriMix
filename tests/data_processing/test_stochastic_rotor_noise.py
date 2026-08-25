@@ -175,3 +175,24 @@ def test_registered_as_an_online_mix_engine():
     )
     assert isinstance(engine, srn.StochasticNoisePool)
     assert engine.n_harmonics == 20
+
+
+def test_rps_scale_range_moves_the_whole_trajectory():
+    slow = srn.StochasticNoisePool(
+        sample_rate=SR, duration_s=0.5, n_harmonics=20, n_mics=1, rps_scale_range=(0.5, 0.5)
+    )
+    plain = srn.StochasticNoisePool(sample_rate=SR, duration_s=0.5, n_harmonics=20, n_mics=1)
+    a = slow.sample_rps(np.random.default_rng(20), 0.5)
+    b = plain.sample_rps(np.random.default_rng(20), 0.5)
+    # The same draw, halved: a stopped rotor stays stopped and every other
+    # speed halves, so the comb moves with the label.
+    assert np.allclose(a, 0.5 * b)
+
+
+def test_rps_scale_range_spreads_the_speed_prior():
+    pool = srn.StochasticNoisePool(
+        sample_rate=SR, duration_s=0.5, n_harmonics=20, n_mics=1, rps_scale_range=(0.6, 1.5)
+    )
+    rng = np.random.default_rng(21)
+    means = np.array([float(pool.sample_rps(rng, 0.5).mean()) for _ in range(24)])
+    assert means.max() / max(means.min(), 1e-6) > 1.8
