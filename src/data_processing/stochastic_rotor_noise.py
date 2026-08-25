@@ -727,7 +727,7 @@ class StochasticNoisePool:
         n_mics: int = 8,
         n_rotors: int = 4,
         rps_kind: str = "synthetic_intermittent",
-        aggressiveness: float = 1.0,
+        aggressiveness: float | tuple[float, float] = 1.0,
         flight_fs: float = 200.0,
         flight_reuse: int = 32,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
@@ -746,7 +746,17 @@ class StochasticNoisePool:
         self.n_mics = int(n_mics)
         self.n_rotors = int(n_rotors)
         self.rps_kind = str(rps_kind)
-        self.aggressiveness = float(aggressiveness)
+        # How hard the aircraft is flown. A pair is a range drawn per window.
+        # The knob scales the maneuver modes, so it sets how far the four rotors
+        # separate — and that is what decides how the four combs interleave. On
+        # the real validation split the per-rotor spread of a flight frame
+        # averages 13.7 rev/s; at aggressiveness 1.0 this model gives 9.4, and
+        # 2.0 to 3.0 brackets the real figure.
+        self.aggressiveness: float | tuple[float, float] = (
+            (float(aggressiveness[0]), float(aggressiveness[1]))
+            if isinstance(aggressiveness, (list, tuple))
+            else float(aggressiveness)
+        )
         self.flight_fs = float(flight_fs)
         self.flight_reuse = int(flight_reuse)
         self.drone_profile_range = (float(drone_profile_range[0]), float(drone_profile_range[1]))
@@ -808,7 +818,11 @@ class StochasticNoisePool:
             n_mics=int(g("n_mics", 8)),
             n_rotors=int(g("n_rotors", 4)),
             rps_kind=str(rps.get("kind", "synthetic_intermittent")),
-            aggressiveness=float(rps.get("aggressiveness", 1.0)),
+            aggressiveness=(
+                (float(rps["aggressiveness_range"][0]), float(rps["aggressiveness_range"][1]))
+                if rps.get("aggressiveness_range") is not None
+                else float(rps.get("aggressiveness", 1.0))
+            ),
             flight_fs=float(rps.get("flight_fs", 200.0)),
             flight_reuse=int(rps.get("flight_reuse", 32)),
             drone_profile_range=pair("drone_profile_range", (0.0, 1.0)),
@@ -841,6 +855,11 @@ class StochasticNoisePool:
         """
         n_samples = int(round(duration_s * self.sample_rate))
         scale = float(rng.uniform(*self.rps_scale_range))
+        aggressiveness = (
+            float(rng.uniform(*self.aggressiveness))
+            if isinstance(self.aggressiveness, tuple)
+            else self.aggressiveness
+        )
         if self.rps_kind != "full_flight":
             blend = float(rng.uniform(*self.drone_profile_range))
             return (
@@ -861,7 +880,7 @@ class StochasticNoisePool:
                 None,
                 self.flight_fs,
                 drone_profile=blend,
-                aggressiveness=self.aggressiveness,
+                aggressiveness=aggressiveness,
                 rng=rng,
             )
             self._flight = _FlightCache(

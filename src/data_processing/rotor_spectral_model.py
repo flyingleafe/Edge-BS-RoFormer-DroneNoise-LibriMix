@@ -220,6 +220,8 @@ class StaticCombNoisePool:
         flight_reuse: int = 32,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
         mic_gain_db: tuple[float, float] = (-12.0, 0.0),
+        rps_scale_range: tuple[float, float] = (1.0, 1.0),
+        normalize_rms: float | tuple[float, float] = 0.1,
         ranges: ProfileRanges | dict[str, Any] | None = None,
         seed: int = 0,
     ):
@@ -249,6 +251,23 @@ class StaticCombNoisePool:
             float(drone_profile_range[1]),
         )
         self.mic_gain_db: tuple[float, float] = (float(mic_gain_db[0]), float(mic_gain_db[1]))
+        # Per-window multiplier on the whole trajectory. The audio is rendered
+        # FROM the labels, so this moves every comb line with its own label and
+        # leaves the floor where it is. Its purpose is to spread the speed prior
+        # (docs/experiments/stochastic-transfer.md).
+        self.rps_scale_range: tuple[float, float] = (
+            float(rps_scale_range[0]),
+            float(rps_scale_range[1]),
+        )
+        # Output level. A pair is a log-uniform range drawn per window. A fixed
+        # level is what leaves a synthetic-only model level-fragile: it peaks at
+        # the one level it trained at and collapses far below it, while a
+        # real-trained model is flat across a hundredfold range.
+        self.normalize_rms: float | tuple[float, float] = (
+            (float(normalize_rms[0]), float(normalize_rms[1]))
+            if isinstance(normalize_rms, (list, tuple))
+            else float(normalize_rms)
+        )
         self.ranges = (
             ranges if isinstance(ranges, ProfileRanges) else ProfileRanges.from_dict(ranges)
         )
@@ -291,6 +310,12 @@ class StaticCombNoisePool:
             flight_reuse=int(rps.get("flight_reuse", 32)),
             drone_profile_range=_pair("drone_profile_range", (0.0, 1.0)),
             mic_gain_db=_pair("mic_gain_db", (-12.0, 0.0)),
+            rps_scale_range=_pair("rps_scale_range", (1.0, 1.0)),
+            normalize_rms=(
+                _pair("normalize_rms_range", (0.0, 0.0))
+                if g("normalize_rms_range") is not None
+                else float(g("normalize_rms", 0.1))
+            ),
             ranges=ranges,
             seed=int(g("seed", 0)),
         )
@@ -306,16 +331,20 @@ class StaticCombNoisePool:
         ``flight_reuse`` calls), so successive windows visit warm-up / takeoff /
         cruise / landing / ground (zero RPS) in proportion to their durations.
         """
+        scale = float(rng.uniform(*self.rps_scale_range))
         if self.rps_kind != "full_flight":
             blend = float(rng.uniform(*self.drone_profile_range))
-            return rps_synthesis.generate_intermittent_batch(
-                1,
-                duration_s,
-                self.sample_rate,
-                drone_profile=blend,
-                aggressiveness=self.aggressiveness,
-                rng=rng,
-            )[0]
+            return (
+                scale
+                * rps_synthesis.generate_intermittent_batch(
+                    1,
+                    duration_s,
+                    self.sample_rate,
+                    drone_profile=blend,
+                    aggressiveness=self.aggressiveness,
+                    rng=rng,
+                )[0]
+            )
 
         if self._flight is None or self._flight_uses >= self.flight_reuse:
             blend = float(rng.uniform(*self.drone_profile_range))
@@ -337,7 +366,8 @@ class StaticCombNoisePool:
         max_start = max(0.0, total_s - duration_s)
         start_s = float(rng.uniform(0.0, max_start)) if max_start > 0 else 0.0
         t_win = start_s + np.arange(T) / self.sample_rate
-        return np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
+        window = np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
+        return scale * window
 
     def render(
         self, rng: np.random.Generator, duration_s: float
@@ -383,9 +413,14 @@ class StaticCombNoisePool:
         per_rotor = (combs + floors) * amp  # (R, T)
         for m in range(self.n_mics):
             audio[m] = (gains[m][:, None] * per_rotor).sum(axis=0).astype(np.float32)
-        # Normalise to a sane level (unit-ish RMS per clip).
+        # Normalise to the clip's level target.
+        if isinstance(self.normalize_rms, tuple):
+            lo, hi = self.normalize_rms
+            level = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+        else:
+            level = float(self.normalize_rms)
         rms = float(np.sqrt(np.mean(audio**2))) or 1.0
-        audio = (audio / rms * 0.1).astype(np.float32)
+        audio = (audio / rms * level).astype(np.float32)
         return audio, rps.astype(np.float32), profiles
 
     def sample_timeframe(self, rng: np.random.Generator, duration_s: float) -> td.Frame:
