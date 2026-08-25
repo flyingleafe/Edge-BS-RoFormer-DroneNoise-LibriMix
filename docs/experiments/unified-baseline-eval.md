@@ -176,6 +176,17 @@ decision and reject over half the cruise windows — they were calibrated
 for pseudo-label precision, and recall was never their target. The paper
 row needs both conventions or a recalibrated gate; flagged for the author.
 
+### Regime-rerun cells (landing)
+
+| run | zero | low | flight | best val/mse |
+|---|---|---|---|---|
+| r2hb_gru_nogate | 6.02 / 173.7 | 8.17 / 164.4 | 3.06 / 26.8 | 61.9 |
+
+First cell: the R2 ungated GRU control lands at 61.9 aggregate — level
+with its fs_v2 real-only control (59.2) and behind every GATED hb_gru
+cell (39.8-60.7). For the causal trunk the gate is doing real work on
+this regime; the honest data alone does not move the aggregate.
+
 ### Remaining rows
 
 The other 7 HB runs, the nogate control, salience retraining
