@@ -181,6 +181,7 @@ row needs both conventions or a recalibrated gate; flagged for the author.
 | run | zero | low | flight |
 |---|---|---|---|
 | hb_sal_bp (Basic Pitch) | 34.04 / 2071 | 13.32 / 874 | 31.69 / 19172 |
+| hb_sal_multif0 (standard grid) | 52.77 / 4037 | 21.02 / 912 | 4.01 / 77.3 |
 
 Basic Pitch stays broken on the honest regime — the June verdict is
 architectural, and retraining does not rescue it. (Probed through the
@@ -193,6 +194,7 @@ fixed zero-decode path.) multif0 standard + narrow-SR still training.
 | r2hb_gru_nogate | 6.02 / 173.7 | 8.17 / 164.4 | 3.06 / 26.8 | 61.9 |
 | r3hb_gru | 4.89 / 118.9 | 5.47 / 118.2 | 2.79 / 17.8 | 41.8 |
 | hb_scv2_mag_nogate | 3.36 / 59.3 | 4.18 / 52.2 | 2.35 / 11.1 | **22.1** |
+| r2hb_tr_nogate | 5.52 / 143.2 | 5.14 / 94.0 | 2.65 / 16.0 | 41.8 |
 
 HEADLINE (2026-08-25): hb_scv2_mag_nogate reaches 22.1 — the best neural
 aggregate of the campaign, real data only, essentially level with the old
@@ -204,6 +206,14 @@ voicing gate is architecture-dependent — useful for causal heads that
 cannot see future context, harmful for the bidirectional trunk. The paper
 claim "honest silence closes most of the stopped-rotor failure" is now
 supported at full strength for the best model.
+
+The full three-trunk attribution matrix (aggregates, old real-only ->
+R2 ungated -> R2 gated best): scv2 52.5 -> 22.1 -> 39.7 (gate -17);
+transformer-IF 42.3 -> 41.8 -> 33.6 (gate +8); causal GRU 59.2 -> 61.9 ->
+39.8 (gate +22). The honest-data windfall is trunk-specific; the gate
+converts it for the attention and causal heads and destroys it for the
+BiGRU trunk. multif0 on the standard grid: cruise-decent (4.01) and
+silence-blind (52.8) — the widened narrow-SR arm is the fix under test.
 
 r3hb_gru (gen+comb curriculum on the R2 base, ungated) lands at 41.8 —
 well below its nogate R2 control (61.9) and below the old-regime m3cur
