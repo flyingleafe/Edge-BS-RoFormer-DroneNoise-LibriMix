@@ -346,6 +346,50 @@ The general lesson is worth keeping separate from this campaign: **a synthetic
 family has to be wide where reality is wide and narrow where reality is narrow.
 Width in a direction reality does not go buys nothing and costs the fit.**
 
+### A hypothesis that measurement killed
+
+The obvious next suspect was the synthesis itself. Filtering white noise through
+a Lorentzian gives the right power spectrum and Rayleigh magnitudes: with the
+amplitude wander switched off and no floor at all, every line still moves 5.2 dB
+from frame to frame and dips 20 dB below its own mean several times a second. A
+rotor harmonic, the argument went, is a tone whose amplitude is steady and whose
+phase wanders — same spectrum, different statistics, and only one of them is
+what a rotor makes. `line_mode: coherent` was built to render the lines that
+way, and it does: flicker falls to 0.79 dB at k = 3.
+
+Then the real recording was measured, and it says the opposite.
+
+| frame-to-frame line level, dB | k=3 | k=8 | k=20 | k=40 |
+|---|---|---|---|---|
+| real, `free-flight_nosource_room1` | 5.14 | 4.02 | 4.26 | 4.11 |
+| synthetic, `line_mode: stochastic` | 3.60 | 3.44 | 3.42 | 3.21 |
+| synthetic, `line_mode: coherent` | 0.79 | 1.66 | 3.11 | 3.66 |
+
+A real harmonic flickers 4 to 5 dB. The stochastic synthesis is the one that
+matches it; the coherent one is far too steady at low harmonics, and the two
+converge at high ones because a line tens of hertz wide decoheres inside a
+128 ms frame anyway. So the flicker is not the flaw, filtered noise is the
+right model, and `line_mode` stays at `stochastic`. The coherent path is kept,
+documented and tested, because the measurement that rejected it is worth being
+able to repeat.
+
+### What the training loss actually means
+
+With the coherent hypothesis gone, the arithmetic is the explanation. Training
+MSE is measured against whatever speed distribution the stream has, and
+`rps_scale_range` deliberately widened that distribution so no prior could
+predict it: the flight-frame standard deviation goes from 5.5 rev/s to 21.5.
+Predicting the training mean and nothing else scores about 30 on a real stream
+and about 1200 on this one. So 445 is not "fifty times harder" — it is a model
+that has learned to explain about two thirds of a target its prior cannot help
+with, against a comb family where the prior does most of the work and the
+remaining tracking is easy.
+
+That is still the thing to fix, and it is a fair statement of it: on this family
+the model must actually track, and so far it tracks moderately. The arms need
+the epochs to do it — E and F were still improving their training loss when
+their slots were handed to G and H.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,

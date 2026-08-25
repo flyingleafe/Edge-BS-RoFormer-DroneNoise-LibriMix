@@ -622,6 +622,81 @@ def _ola_filter(x: np.ndarray, gain: np.ndarray, n_fft: int, hop: int) -> np.nda
     return out / np.maximum(norm, 1e-8)
 
 
+#: Sample rate of the phase-noise random walk before it is interpolated to the
+#: audio grid. A line's phase noise has the bandwidth of its own linewidth, tens
+#: of hertz at the top of a comb, so a kilohertz path is far finer than needed
+#: and costs a thirty-second of the random numbers.
+PHASE_NOISE_FS = 1000.0
+
+
+def coherent_lines(
+    params: StochasticParams,
+    rps: np.ndarray,
+    psd: dict[str, np.ndarray],
+    gains: np.ndarray,
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """``(M, T)`` harmonic lines rendered as TONES, not as narrowband noise.
+
+    Why this exists. Filtering white noise through a Lorentzian gives a signal
+    with exactly the right power spectrum and the wrong statistics: every frame
+    draws its magnitude from a Rayleigh distribution, so each line flickers by
+    about 5.2 dB frame to frame and dips 20 dB below its own mean several times
+    a second. A rotor harmonic does not do that. It is a tone whose amplitude is
+    steady and whose PHASE wanders, and the wandering phase is what gives it a
+    Lorentzian line. The two descriptions share a spectrum and differ in
+    everything a comb detector reads.
+
+    So each harmonic is built as ``A_k(t) cos(k phi_r(t) + b_rk(t))`` with
+    ``phi_r`` the shaft phase from the trajectory, ``A_k`` the same amplitude the
+    spectrum model asks for, and ``b_rk`` a Wiener process. A Wiener phase of
+    diffusion ``D`` rad^2/s gives a Lorentzian of half width ``D / (4 pi)`` Hz,
+    so ``D = 4 pi gamma`` reproduces the linewidth the model asked for.
+
+    The returned signal is unscaled; :func:`synthesize` sets its level from the
+    ratio of the mean line spectrum to the mean floor spectrum.
+    """
+    rps = np.atleast_2d(np.asarray(rps, dtype=np.float64))
+    n_rotors, n_samples = rps.shape
+    sr = float(params.sample_rate)
+    nyquist = sr / 2.0
+    n_mics = gains.shape[0]
+    n_harm = params.n_harmonics
+
+    t_audio = np.arange(n_samples) / sr
+    t_frames = np.linspace(0.0, n_samples / sr, psd["harm_gp"].shape[2])
+    # Shaft phase: the running integral of the instantaneous rate.
+    phase = 2.0 * np.pi * np.cumsum(rps, axis=1) / sr
+
+    n_slow = max(int(np.ceil(n_samples / sr * PHASE_NOISE_FS)) + 2, 2)
+    t_slow = np.arange(n_slow) / PHASE_NOISE_FS
+    dt_slow = 1.0 / PHASE_NOISE_FS
+
+    per_rotor = np.zeros((n_rotors, n_samples), dtype=np.float64)
+    for r in range(n_rotors):
+        power_frames = 10.0 ** (
+            (params.harm_mean_db + params.profile_db[r][:, None] + psd["harm_gp"][r]) / 10.0
+        ) * psd["amp"][r][None, :]
+        for i in range(n_harm):
+            k = i + 1
+            centers = k * rps[r]
+            live = centers < nyquist
+            if not live.any():
+                continue
+            gamma = max(params.gamma0[r] + params.gamma_slope[r] * k, 1e-3)
+            steps = rng.normal(0.0, np.sqrt(4.0 * np.pi * gamma * dt_slow), size=n_slow)
+            walk = np.cumsum(steps)
+            b = np.interp(t_audio, t_slow, walk) + rng.uniform(0.0, 2.0 * np.pi)
+            amplitude = np.sqrt(2.0 * np.maximum(np.interp(t_audio, t_frames, power_frames[i]), 0.0))
+            per_rotor[r] += np.where(live, amplitude, 0.0) * np.cos(k * phase[r] + b)
+
+    out = np.empty((n_mics, n_samples), dtype=np.float64)
+    for m in range(n_mics):
+        out[m] = np.tensordot(np.sqrt(gains[m]), per_rotor, axes=(0, 0))
+    return out
+
+
 def synthesize(
     params: StochasticParams,
     rps: np.ndarray,
@@ -633,6 +708,7 @@ def synthesize(
     hop: int | None = None,
     normalize_rms: float | None = 0.1,
     level_mode: str = "window",
+    line_mode: str = "stochastic",
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Render one clip.
 
@@ -655,6 +731,13 @@ def synthesize(
             stopped-rotor window comes out quiet and a cruise window loud —
             which is what a real recording does, because one recorder gain
             covers a whole flight.
+        line_mode: how the harmonic lines are realized. ``"stochastic"``
+            filters white noise through the whole spectrum, which gives the
+            right power spectrum and Rayleigh magnitudes — every line flickers
+            by about 5.2 dB per frame. ``"coherent"`` renders the lines as tones
+            with a wandering phase (:func:`coherent_lines`) over a filtered-noise
+            floor, which is the same spectrum with the statistics a rotor
+            actually produces.
 
     Returns:
         ``(audio (n_mics, T) float32, diagnostics)``. The diagnostics carry the
@@ -687,10 +770,30 @@ def synthesize(
     gains = 10.0 ** (rng.uniform(lo, hi, size=(n_mics, n_rotors)) / 10.0)
     # (M, N, F): the floor is common, and each microphone weighs the rotors'
     # lines by its own gains.
-    spectrum = psd["floor"][None] + np.tensordot(gains, psd["lines"], axes=(1, 0))
-    white = rng.standard_normal((n_mics, n_padded))
-    y = _ola_filter(white, np.sqrt(np.maximum(spectrum, 0.0)), n_fft, hop)
-    audio = y[:, pad : pad + n_samples].astype(np.float32)
+    if line_mode == "coherent":
+        floor_spec = np.repeat(psd["floor"][None], n_mics, axis=0)
+        white = rng.standard_normal((n_mics, n_padded))
+        floor_audio = _ola_filter(white, np.sqrt(np.maximum(floor_spec, 0.0)), n_fft, hop)[
+            :, pad : pad + n_samples
+        ]
+        line_audio = coherent_lines(params, rps, psd, gains, rng=rng)
+        # Put the lines at the level the spectrum asks for. A filtered-noise
+        # signal's variance is the mean of its spectrum over bins, so the ratio
+        # of the two mean spectra is the ratio the two parts must end up with —
+        # and taking it from the floor's realized variance keeps every constant
+        # of the transform out of the arithmetic.
+        floor_mean = float(np.mean(psd["floor"])) or 1.0
+        audio = np.empty((n_mics, n_samples), dtype=np.float32)
+        for m in range(n_mics):
+            want = float(np.mean(np.tensordot(gains[m], psd["lines"], axes=(0, 0)))) / floor_mean
+            have = float(np.var(line_audio[m])) / max(float(np.var(floor_audio[m])), 1e-30)
+            scale = np.sqrt(want / have) if have > 0 else 0.0
+            audio[m] = (floor_audio[m] + scale * line_audio[m]).astype(np.float32)
+    else:
+        spectrum = psd["floor"][None] + np.tensordot(gains, psd["lines"], axes=(1, 0))
+        white = rng.standard_normal((n_mics, n_padded))
+        y = _ola_filter(white, np.sqrt(np.maximum(spectrum, 0.0)), n_fft, hop)
+        audio = y[:, pad : pad + n_samples].astype(np.float32)
 
     if normalize_rms is not None:
         rms = float(np.sqrt(np.mean(np.square(audio)))) or 1.0
@@ -760,6 +863,7 @@ class StochasticNoisePool:
         rps_scale_range: tuple[float, float] = (1.0, 1.0),
         normalize_rms: float | tuple[float, float] = 0.1,
         level_mode: str = "window",
+        line_mode: str = "stochastic",
         n_fft: int = DEFAULT_N_FFT,
         ranges: StochasticRanges | dict[str, Any] | None = None,
         seed: int = 0,
@@ -817,6 +921,12 @@ class StochasticNoisePool:
         # what lets a model tell a stopped rotor from a running one by level as
         # well as by structure.
         self.level_mode = str(level_mode)
+        # "stochastic" filters white noise through the whole spectrum, so every
+        # line's magnitude is Rayleigh and flickers about 5.2 dB per frame.
+        # "coherent" renders the lines as tones with a wandering phase over a
+        # filtered-noise floor — the same spectrum, and the statistics a rotor
+        # actually produces.
+        self.line_mode = str(line_mode)
         self.n_fft = int(n_fft)
         self.ranges = (
             ranges if isinstance(ranges, StochasticRanges) else StochasticRanges.from_dict(ranges)
@@ -876,6 +986,7 @@ class StochasticNoisePool:
                 else float(g("normalize_rms", 0.1))
             ),
             level_mode=str(g("level_mode", "window")),
+            line_mode=str(g("line_mode", "stochastic")),
             n_fft=int(g("n_fft", DEFAULT_N_FFT)),
             ranges=ranges,
             seed=int(g("seed", 0)),
@@ -968,6 +1079,7 @@ class StochasticNoisePool:
             n_fft=self.n_fft,
             normalize_rms=level,
             level_mode=self.level_mode,
+            line_mode=self.line_mode,
         )
         return audio, rps.astype(np.float32), params, diag
 

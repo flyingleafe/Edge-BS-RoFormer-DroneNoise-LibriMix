@@ -277,3 +277,76 @@ def test_flight_level_mode_keeps_the_silence_cue():
     assert np.isfinite([slow_w, fast_w, slow_f, fast_f]).all()
     assert slow_w == pytest.approx(fast_w, rel=0.05)  # window mode: level says nothing
     assert fast_f / slow_f > 3.0  # flight mode: level says a great deal
+
+
+def _line_flicker_db(audio: np.ndarray, speed: float, harmonics=(3, 8, 20)) -> float:
+    """Mean frame-to-frame level standard deviation of the named harmonics, in dB."""
+    power, freqs = _power_spectrum_frames(audio)
+    df = float(freqs[1] - freqs[0])
+    out = []
+    for k in harmonics:
+        track = power[:, int(round(k * speed / df))]
+        out.append(float(np.std(10.0 * np.log10(track / track.mean()))))
+    return float(np.mean(out))
+
+
+def _power_spectrum_frames(x: np.ndarray, n_fft: int = 2048):
+    hop = n_fft // 4
+    window = np.hanning(n_fft + 1)[:n_fft]
+    n_frames = (x.size - n_fft) // hop
+    frames = np.stack([x[i * hop : i * hop + n_fft] * window for i in range(n_frames)])
+    return np.abs(np.fft.rfft(frames, axis=-1)) ** 2, np.fft.rfftfreq(n_fft, 1.0 / SR)
+
+
+def test_coherent_lines_are_steadier_only_while_they_stay_coherent():
+    # Filtered noise and a phase-wandering tone share a power spectrum and
+    # differ in their magnitude statistics — but only while the tone stays
+    # coherent across an analysis frame. A line whose half width is tens of
+    # hertz decoheres inside 128 ms and flickers either way, which is why the
+    # difference is at low harmonics and vanishes at high ones.
+    #
+    # Measured on `free-flight_nosource_room1`, a REAL harmonic flickers 5.14,
+    # 4.02, 4.26 and 4.11 dB at k = 3, 8, 20, 40. The stochastic mode gives 3.60
+    # to 3.21 and the coherent mode 0.79 to 3.66, so the stochastic mode is the
+    # one that matches a real recording and stays the default.
+    params = _params(2, harm_gp_std_db=0.0, floor_mean_db=-60.0)
+    params = params.with_(
+        n_rotors=1,
+        profile_db=params.profile_db[:1],
+        gamma0=np.array([1.0]),
+        gamma_slope=np.array([0.6]),
+    )
+    rps = np.full((1, 6 * SR), 80.0)
+    flicker = {}
+    for mode in ("stochastic", "coherent"):
+        audio, _ = srn.synthesize(
+            params, rps, rng=np.random.default_rng(3), n_mics=1, line_mode=mode
+        )
+        flicker[mode] = _line_flicker_db(audio[0].astype(np.float64), 80.0, harmonics=(3, 5))
+    assert flicker["stochastic"] > 2.5
+    assert flicker["coherent"] < 0.6 * flicker["stochastic"]
+
+
+def test_the_two_line_modes_share_a_spectrum():
+    params = _params(5)
+    rps = np.tile(np.array([[80.0], [82.0], [78.0], [81.0]]), (1, 4 * SR))
+    spectra = {}
+    for mode in ("stochastic", "coherent"):
+        audio, _ = srn.synthesize(
+            params, rps, rng=np.random.default_rng(6), n_mics=1, line_mode=mode
+        )
+        power, freqs = _power_spectrum_frames(audio[0].astype(np.float64))
+        spectra[mode] = 10.0 * np.log10(power.mean(axis=0) + 1e-30)
+    band = (freqs > 60.0) & (freqs < 7000.0)
+    assert np.corrcoef(spectra["stochastic"][band], spectra["coherent"][band])[0, 1] > 0.98
+
+
+def test_coherent_mode_runs_through_the_pool():
+    pool = srn.StochasticNoisePool(
+        sample_rate=SR, duration_s=1.0, n_harmonics=40, n_mics=2, line_mode="coherent"
+    )
+    frame = pool.sample_timeframe(np.random.default_rng(50), 1.0)
+    audio = np.asarray(frame["audio"].data)
+    assert audio.shape == (2, SR)
+    assert np.isfinite(audio).all()
+    assert float(np.abs(audio).max()) > 0.0
