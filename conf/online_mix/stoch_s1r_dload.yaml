@@ -1,0 +1,229 @@
+# STOCHASTIC-ONLY stage 1, arm R — arm P at the length it is scored on.
+#
+# WHY, measured, and without retraining anything. Every arm of this campaign
+# trains on ONE-SECOND chunks — about 31 short-time-Fourier frames — and is
+# scored on EIGHT-SECOND clips, about 250 frames. The temporal head is
+# recurrent, so the length is not a detail. Scoring arm G's own checkpoint at
+# three slice lengths, on channel 0 of the frozen split:
+#
+#   scored in    all-MAE    zero     low   flight
+#   8 s             9.22   26.55   18.56     4.53      <- how it is evaluated
+#   2 s             9.04   21.46   10.99     6.56
+#   1 s             9.98   19.18    8.30     8.70      <- how it was trained
+#
+# The ramp cell more than halves, 18.56 to 8.30, and the stopped-rotor cell
+# improves as well — from a change in nothing but the length of the window the
+# model is asked to answer over. Cruise moves the other way, 4.53 to 8.70,
+# because a long window genuinely helps a steady speed.
+#
+# The two failing cells were therefore partly a train-and-evaluate mismatch and
+# not only a noise model. A recurrent state fitted on 31 frames does not carry
+# 250, and on a ramp the rest of the clip drags the answer; at cruise the same
+# averaging is what makes the answer good.
+#
+# So this arm trains at the length it is scored at. `samples_per_validation`
+# drops in step so an epoch still covers the same amount of audio.
+#
+# Arm P, for the same file at one-second chunks:
+#
+# WHAT THE ARMS MEASURED. Arm G is the best synthetic-only model of the campaign
+# by all-regime mean absolute error (8.08; zero 20.27, low 16.20, flight 4.50).
+# Arm L changed two things at once on top of it — a recording floor under the
+# silence, and a decade of rotor speed — and its per-regime score separates
+# them:
+#
+#                    zero     low   flight   all-MAE
+#   arm G           20.27   16.20     4.50      8.08
+#   arm L           12.85   17.55    13.14     13.70
+#
+# The recording floor did what it was built to do: the stopped-rotor cell fell
+# by 37%. The decade of speed did not — cruise went from 4.50 to 13.14 and the
+# ramps did not move. A model asked to find a comb anywhere between 20 and 200
+# rev/s spends its capacity on a range the evaluation never visits, and pays for
+# it where the evaluation actually lives.
+#
+# So this arm is arm G with `floor_static_rel` and nothing else: the speed range
+# stays where arm G had it.
+#
+# Arm G, for the same file without the recording floor:
+#
+# WHY, measured. Forcing every clip of the frozen split to one level and scoring
+# it wrecks the stopped-rotor regime for BOTH a synthetic-only and a real-trained
+# model: `r4hb_scv2` goes from 2.87 rev/s there to 23.22 at a forced RMS of 0.1,
+# while its cruise cell does not move at all (2.49 to 2.50). Level is therefore
+# not a nuisance to be normalized away. It is the cue that says whether the
+# rotors are turning, and a model that reads a real recording is entitled to use
+# it, because one recorder gain covers a whole flight — so a ground window IS
+# quieter than a cruise window.
+#
+# Every synthetic pool in this project destroys exactly that. Each window is
+# normalized to its own root-mean-square, so a stopped-rotor window and a cruise
+# window leave at the same level and the cue carries nothing. `level_mode:
+# flight` instead treats `normalize_rms_range` as the level the window would
+# have AT THE REFERENCE SPEED and scales by the window's own speed-dependent
+# amplitude: measured on this pool, stopped windows come out at 0.0004, ramp
+# windows at 0.019 and cruise windows at 0.12.
+#
+# The post-mix gain also comes back in from 36 dB to 12 dB. A wide gain is the
+# right answer when level is pure nuisance and the wrong one when it carries the
+# silence cue; 12 dB covers the difference between two recorders without hiding
+# which end of a flight a window came from.
+#
+# Arm F, for the same file with per-window normalization and the wide gain:
+#
+# WHY, measured. The frozen split's loss is concentrated in the ramp regime:
+# `m3abl_comb_scv2_s1` is within 7.1 rev/s at cruise and 5.6 on stopped rotors,
+# and loses 26.3 on the warm-up, take-off and landing spans. Two properties of
+# the trajectory model explain why it never learned them.
+#
+# The warm-up idles at 0.38 to 0.52 of hover, so a default stream shows a rotor
+# at 30 to 42 rev/s and never between 10 and 30 — and 10 to 30 is most of what a
+# real ramp passes through. Measured on the split's low-regime frames the real
+# speed reaches 10.1 rev/s at the tenth percentile; this model reached 31.1.
+# The ramps are also too slow: the real speed changes by 24.9 rev/s per second
+# at the ninetieth percentile, against 5.7 here.
+#
+# Widening the idle band and shortening the ramps gives 3.7 rev/s at the tenth
+# percentile and 35.7 rev/s per second at the ninetieth, which brackets the real
+# figures on both axes. `rps_scale_range` also reaches further down, to 0.4, so
+# some windows are steady at a low speed instead of only passing through one.
+#
+# Arm E, for the same file at the default phase ranges:
+#
+# WHY, measured. Four rotors at four speeds put four combs in one spectrum, and
+# how far apart the speeds are decides how those combs interleave. On the flight
+# frames of the real validation split the per-rotor spread averages 13.7 rev/s
+# and reaches 18.5 at the ninetieth percentile. The trajectory model at
+# aggressiveness 1.0 gives 9.4 and 11.5 — the synthetic aircraft is flown more
+# gently than the real one was, and its four combs sit closer together than the
+# ones the model has to read. Drawing the aggressiveness per window from
+# [0.8, 2.5] gives 12.7 and 26.2, which brackets the real figures.
+#
+# Arm D, for the same file at a fixed aggressiveness of 1.0:
+#
+# WHY, measured. The comb-only synthetic predictor is strongly level dependent,
+# and it was trained at the wrong level. Every synthetic pool in this project
+# normalizes its chunks to a root-mean-square of 0.1; a real validation clip
+# sits at 0.041. Feeding the same real clips at several gains moves the
+# prediction a long way:
+#
+#   RMS 0.012 -> 9.75 rev/s      RMS 0.124 -> 72.18      RMS 1.236 -> 62.92
+#   RMS 0.041 -> 67.29           RMS 0.319 -> 70.78      (truth 80.28)
+#
+# Two things follow. Matching the level is worth about a third of the scale
+# error on its own (0.838 -> 0.899 of the truth), and far below the training
+# level the model collapses outright, which is what a quiet clip of the split
+# does to it. So the level is fixed two ways here: the pool draws its output
+# level log-uniformly over a range that brackets the real one, and the post-mix
+# gain augmentation fires on every sample over 36 dB instead of a quarter of
+# them over 12. The point is not to match one level but to remove level as
+# something the model can read at all.
+#
+# Arm C, for the same file with a fixed level and the narrow gain block:
+#
+# WHY, measured. The comb-only synthetic predictor (`m3abl_comb_scv2_s1`) does
+# not fail on real cruise audio by losing the comb, and it does not confuse a
+# harmonic for the fundamental. It reads 0.841 of the truth, with the tenth and
+# ninetieth percentiles at 0.812 and 0.865 across six cruise clips — a tight,
+# systematic scale error. That is the signature of a model that reads frequency
+# with a slope below one and shrinks the rest of its answer toward the speed
+# prior it was trained on. Real cruise sits at 80 rev/s, the synthetic stream's
+# marginal speed sits well below that because a full flight spends time on the
+# ground and in the ramps, and the prediction lands between the two.
+#
+# `rps_scale_range` destroys that prior. The trajectory is multiplied by one
+# draw per window before the audio is rendered FROM it, so every comb line moves
+# with its own label and the floor's shape stays where it is — which is what a
+# real speed change does. Frequency scaling cannot do this: resampling moves the
+# floor along with the comb. Over [0.6, 1.5] a cruise window can sit anywhere
+# from 48 to 120 rev/s, no level is more likely than another, and comb spacing
+# becomes the only thing a model can read the speed from.
+#
+# WHY. Arm A's clips are anechoic and their floors are smooth by construction: a
+# squared-exponential draw in log frequency has a lengthscale of one to three
+# octaves, so it cannot make a narrow spectral feature. Real recordings are
+# neither. Every DREGON and Michael's recording was made inside a room, so the
+# comb arrives with its reflections, and every real floor carries narrow bumps
+# the smooth draw never produces. Both gaps have a tested transform already:
+# `random_reverb` (a 200-RIR synthetic bank, RT60 0.1 to 0.8 s) and
+# `spectral_recolor` (a smooth random equalizer of plus or minus 8 dB through 10
+# log-spaced anchors, per channel).
+#
+# The augmentation block fires on every chunk and picks one transform, so the
+# three appear at about a third each. Frequency scaling is worth less here than
+# it is on real recordings: the family already manufactures unlimited genuine
+# (audio, speed) pairs, and frequency scaling only manufactures more of them.
+#
+# Everything else is stoch_s1b_dload.yaml verbatim.
+
+sample_rate: 16000
+duration_s: 8.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.4, 1.5]
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        phases:
+          idle_frac: [0.05, 0.65]
+          warmup_s: [0.5, 6.0]
+          takeoff_s: [0.4, 2.0]
+          landing_s: [0.4, 2.0]
+          spinup_s: [0.2, 1.2]
+          spindown_s: [0.2, 1.2]
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
