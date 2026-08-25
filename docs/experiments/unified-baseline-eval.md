@@ -176,6 +176,16 @@ decision and reject over half the cruise windows — they were calibrated
 for pseudo-label precision, and recall was never their target. The paper
 row needs both conventions or a recalibrated gate; flagged for the author.
 
+### Salience retrained on R2 (landing)
+
+| run | zero | low | flight |
+|---|---|---|---|
+| hb_sal_bp (Basic Pitch) | 34.04 / 2071 | 13.32 / 874 | 31.69 / 19172 |
+
+Basic Pitch stays broken on the honest regime — the June verdict is
+architectural, and retraining does not rescue it. (Probed through the
+fixed zero-decode path.) multif0 standard + narrow-SR still training.
+
 ### Regime-rerun cells (landing)
 
 | run | zero | low | flight | best val/mse |
