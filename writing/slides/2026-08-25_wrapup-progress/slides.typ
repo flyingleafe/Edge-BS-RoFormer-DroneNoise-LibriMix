@@ -5,7 +5,7 @@
 
 #show: hns-slides.with(
   title: [Rotor speeds from ego-noise: the wrap-up],
-  subtitle: [One frozen protocol, every method, one fix],
+  subtitle: [Figures and tables on one frozen protocol],
   author: [Dmitrii Mukhutdinov],
   date: [2026-08-25],
   show-notes: if notes-mode != none { bottom } else { none },
@@ -19,7 +19,8 @@
   body,
 )
 
-#let small(body) = text(size: 0.82em, body)
+#let small(body) = text(size: 0.78em, body)
+#let fig(path, h) = align(center, image(path, height: h, fit: "contain"))
 
 // ---------------------------------------------------------------------
 = The question and the paper
@@ -30,454 +31,412 @@
 ]
 #v(1em)
 
-#text(size: 1.05em)[
-  - A rotor spinning at rate $f$ leaves harmonics at $f, 2f, 3f, ...$ in the recording.
-  - Knowledge of rotor speed enables informed ego-noise removal and drone monitoring.
-  - The task has no published direct method — we build the baseline suite ourselves.
+#text(size: 1.02em)[
+  - Per-rotor speeds from onboard audio: each rotor at rate $f$ leaves harmonics at $f, 2f, 3f, ...$
+  - No published direct method exists — we build the baseline suite ourselves.
+  - A 26-variant architecture search gives three winner architectures.
+  - Augmentations and a full-envelope real training regime repair what models actually read.
+  - A blind two-stage classical tracker sets the cruise precision ceiling, at high CPU cost.
+  - Synthetic data supplies coverage, not realism — and loses its value once real data supplies the same coverage.
 ]
-#v(1em)
-#cbox(text(size: 1.05em)[
-  The paper's arc: baselines from two adjacent tasks (multi-pitch, tacholess
-  order tracking) $arrow.r$ a 26-architecture search $arrow.r$ a training-regime
-  diagnosis $arrow.r$ a fix $arrow.r$ a blind classical tracker as the
-  precision ceiling $arrow.r$ synthetic data re-measured.
-])
 #v(1fr)
 
-#speaker-note[
-  Framing slide. The audience has seen VK tracking, generators, curricula
-  before, but not the unified leaderboard this deck is built around.
-]
-
 // ---------------------------------------------------------------------
-= Data reality: about an hour of labeled audio, two drones
+= Data split
 
 #v(1fr)
 #table(
-  columns: (auto, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 7pt,
-  align: (left, left, left),
-  table.header([*Split*], [*DREGON*], [*MD2*]),
-  [Train], [5 flight recordings (room 2)], [1 flight (FLY125)],
-  [Validation (frozen)], [3 recordings (room 1)], [1 flight (FLY124)],
-  [Test (reserved)], [2 recordings (room 1)], [2 flights (FLY103/108)],
-)
-#v(1em)
-#text(size: 0.95em)[
-  - The three-way split is now formal: every number in the paper comes from
-    the same 37-clip frozen validation set.
-  - Two MD2 test flights (FLY103/108) are newly calibrated: the catch was a
-    shared *1.19% session clock dilation* in the telemetry.
-  - The test split is reserved — no experiment in this paper reads it yet.
-]
-#v(1fr)
-
-#speaker-note[
-  Splits table from paper sec:splits. Cut the lag-fit mechanics — one line
-  is enough, the full story is report material.
-]
-
-// ---------------------------------------------------------------------
-= One protocol, five regimes
-
-#v(1fr)
-#cbox(text(size: 1.05em)[
-  Every number in the paper comes from *37 clips x 8 channels*, per-frame
-  *Hungarian PIT* matching, pooled into regimes: zero, low, flight; the
-  tables here report zero, flight and the all-frame aggregate.
-])
-#v(1.2em)
-#table(
-  columns: (auto, 1.3fr, 1.3fr),
+  columns: (auto, 1fr, 1fr, auto),
   stroke: 0.5pt + luma(200),
   inset: 6pt,
-  align: (left, left, left),
-  table.header([*regime*], [*training data*], [*what it isolates*]),
-  [R1], [light augmentation, old validation split], [architecture search],
-  [R2], [full flight envelope + freq. scaling + time warp + honest silence fix], [the real-only, honest base (HB)],
-  [R3], [generator + comb curriculum, fine-tuned on R2], [generator-first coverage],
-  [R4], [comb-only curriculum, fine-tuned on R2], [comb coverage alone],
-  [R5], [one mixed pool: real / generated / comb, single stage], [single-stage mixing],
+  align: (left, left, left, left),
+  table.header([*Split*], [*DREGON (small quad)*], [*MD2 (DJI M100)*], [*Speech*]),
+  [Training],
+  [free-flight and hover recordings, refined per-rotor labels],
+  [FLY124, FLY125 (recalibrated telemetry)],
+  [LibriSpeech],
+  [Validation (frozen)],
+  [8 held-out slices, full envelope (ground, ramps, cruise)],
+  [29 held-out slices from FLY124/FLY125],
+  [—],
+  [Test (reserved, untouched)],
+  [free-flight speech-high room1, whitenoise-high room1],
+  [FLY103, FLY108 (calibrated, frames published)],
+  [—],
 )
-#v(1fr)
-
-#speaker-note[
-  This is the frame the rest of the deck hangs numbers on. R1 through R5 get
-  referenced by name from here on.
-]
-
-// ---------------------------------------------------------------------
-= The training-free floor: classical methods miss by 2-3 orders of magnitude
-
-#v(1fr)
-#table(
-  columns: (auto, 1fr, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 6pt,
-  align: (left, right, right, right),
-  table.header([*method*], [*zero MAE*], [*flight MAE*], [*all MAE*]),
-  [PYIN], [90.8], [34.1], [43.0],
-  [cepstral], [95.5], [19.6], [35.7],
-  [HPS], [64.1], [20.9], [27.3],
-  [matched filter], [87.2], [30.4], [42.5],
-  [NMF], [83.8], [*8.1*], [24.7],
-  [OT multi-pitch (2026)], [68.8], [16.3], [24.5],
-)
-#v(1em)
-#text(size: 0.9em)[
-  MAE in rev/s. NMF is the best training-free cruise number we have (8.1) and
-  beats the 2026 optimal-transport multi-pitch method (16.3) on the same
-  frames. No classical method can say *"stopped"* — every method here clamps its
-  search grid above 50 rev/s, so a stopped rotor scores near the clamp floor.
-]
-#v(1fr)
-
-#speaker-note[
-  Classical five + OT table, from unified-baseline-eval.md. NMF ranking
-  matches the archived May report; that report is a footnote at most.
-]
-
-// ---------------------------------------------------------------------
-= What the models actually read
-
-#v(1fr)
-#cbox(text(size: 1.15em)[
-  A 2% frequency scaling of the input spectrum moves predictions by *0.03%*.
-])
-#v(1.2em)
-#text(size: 0.95em)[
-  - Real-only models mostly ignore the frequency axis: they read loudness,
-    spectral shape, and the prior over speed values.
-  - Traced to a level shortcut in the training data: every zero-labeled
-    training chunk is globally quiet, from one room only.
-  - Result: on a real zero-speed clip that still carries sound (a rumble
-    clip), the real-only model does not know to say "stopped."
-]
-#v(0.8em)
-#table(
-  columns: (auto, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 6pt,
-  align: (left, left, left),
-  table.header([*split*], [*zero-time share*], [*unique silence*]),
-  [Train], [6.25% of chunks], [26.4 s, one room],
-  [Validation], [12.7% of frames], [—],
-)
-#v(1fr)
-
-#speaker-note[
-  This is the diagnosis slide. It sets up the fix (next slide) and the
-  punchline (slide after).
-]
-
-// ---------------------------------------------------------------------
-= The fix: an honest regime (R2) with voicing gates
-
-#v(1fr)
-#text(size: 1.0em)[
-  Three changes to the training recipe, all landing in R2 — models trained
-  this way are the honest base (HB).
-]
 #v(0.6em)
-#grid(
-  columns: (1fr, 1fr, 1fr),
-  gutter: 1em,
-  cbox(text(size: 0.9em)[
-    *1. Zero-labeled silence with content* \
-    Room tone, colored noise floors up to flight level, low-frequency
-    rumble — at 17% of chunks, not just quiet air.
-  ]),
-  cbox(text(size: 0.9em)[
-    *2. Reference-power floor* \
-    Speech is mixed against a floor, not the noise chunk's own power, so
-    silent chunks still carry speech at a normal level.
-  ]),
-  cbox(text(size: 0.9em)[
-    *3. Sigmoid voicing gate* \
-    The output head gets an explicit off state instead of relying on the
-    linear head's conditional mean.
-  ]),
-)
-#v(1fr)
-
-#speaker-note[
-  Design sketch from honest-base-frontends.md. Sets up the punchline grid.
+#cbox[
+  The validation set: 37 clips $times$ 8 channels $times$ 8 s. Per-frame
+  Hungarian matching of 4 predicted to 4 true speeds; errors pooled per
+  regime — *zero* (all rotors stopped), *ramps*, *flight* (all rotors
+  $gt.eq$ 45 rev/s) — and overall (frame-weighted).
 ]
+#v(1fr)
 
 // ---------------------------------------------------------------------
-= PUNCHLINE: the honest regime closes most of the zero gap
+= Training regimes
 
-#v(0.3em)
-#align(center)[
-  #text(size: 1.05em)[*Real-only 11.8 $arrow.r$ HB best 3.7 MAE on zero, at almost no cruise cost*]
-]
-#v(0.4em)
-#grid(
-  columns: (1.4fr, 0.8fr),
-  gutter: 1em,
-  align(horizon)[
-    #table(
-      columns: (auto, 1fr, 1fr, 1fr, 1fr),
-      stroke: 0.5pt + luma(200),
-      inset: 5pt,
-      align: (left, right, right, right, right),
-      table.header([*trunk*], [*mag*], [*IF*], [*ssq*], [*agg*]),
-      [scv2], [3.68/2.57], [4.50/2.49], [6.04/2.52], [39.7 / *34.9* / 47.1],
-      [transf.], [3.70/2.79], [3.55/3.08], [4.42/2.55], [*31.7* / 33.6 / 36.7],
-      [GRU], [10.62/2.66], [7.20/2.52], [4.57/2.67], [60.7 / 50.5 / *39.8*],
-    )
-    #v(0.4em)
-    #text(size: 0.75em)[
-      Cells: zero/flight MAE (rev/s). agg = aggregate validation score for
-      mag / IF / ssq; bold marks the best aggregate cell per architecture.
-      Front-end winner is architecture-dependent — IF for scv2, magnitude
-      for the transformer, synchrosqueezed for the causal GRU (repairs the
-      zero deficit 10.62 $arrow.r$ 4.57). Best cell:
-      *transformer + magnitude, 31.7 aggregate* vs real-only control *42.3*
-      — better in every regime, no ramp regression.
-    ]
-  ],
-  align(center)[
-    #image("assets/qual_zero.png", height: 3.4in)
-    #v(0.2em)
-    #small[Rumble clip: HB 0.51 vs real-only 19.6 MAE]
-  ],
-)
-
-#speaker-note[
-  The 3x3 grid from unified-baseline-eval.md HB rows, plus the qual_zero
-  figure from the paper. This is the deck's center of gravity.
-]
-
-// ---------------------------------------------------------------------
-= The control that settled it
-
-#v(1fr)
-#align(center)[
-  #text(size: 1.15em)[
-    *Overnight: `hb_scv2_mag_nogate` reaches 22.1 aggregate MSE — the best
-    neural cell of the whole campaign, real data only, no voicing gate.*
-  ]
-]
-#v(0.6em)
-#text(size: 0.95em)[
-  Best-in-class in every regime: zero *3.36*, ramps *4.18*, cruise MSE
-  *11.1*. The gate from the fix slide was not the source of the punchline's
-  gain — the honest-regime data was.
-]
-#v(0.8em)
-#table(
-  columns: (auto, 1fr, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 6pt,
-  align: (left, right, right, right),
-  table.header([*trunk*], [*old real-only*], [*R2 ungated*], [*R2 gated (best)*]),
-  [conv (scv2)], [52.5], [*22.1*], [39.7],
-  [Transformer], [42.3], [41.8], [*33.6*],
-  [causal GRU], [59.2], [61.9], [*39.8*],
-)
-#v(0.8em)
-#text(size: 0.9em)[
-  Aggregate validation MSE. Gate effect per trunk: conv $-17$ (hurts),
-  transformer $+8$ (helps), causal GRU $+22$ (helps most).
-]
-#v(0.6em)
-#cbox(text(size: 0.95em)[
-  The honest-data windfall is trunk-dependent. The voicing gate helps heads
-  that cannot infer silence from context on their own (attention, causal
-  recurrence) — and hurts the convolutional trunk, which already reads
-  silence from local context without one.
-])
-#v(1fr)
-
-#speaker-note[
-  Overnight ablation isolating gate vs data. Frames the punchline as a
-  data effect, not an architecture trick — sets up "gate is a tool, not a
-  default" for anyone re-running the sweep.
-]
-
-// ---------------------------------------------------------------------
-= The blind tracker meets the same protocol
-
-#v(1fr)
-#table(
-  columns: (auto, 1fr, 1fr, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 6pt,
-  align: (left, right, right, right, left),
-  table.header([*convention*], [*zero*], [*flight*], [*all*], [*note*]),
-  [ungated], [79.36], [*2.27*], [17.01], [finds combs in silence],
-  [gated, refusal $arrow.r$ 0], [*0.01*], [48.35], [39.72], [8/20 windows accepted],
-)
-#v(1em)
-#text(size: 0.95em)[
-  - The blind Vold-Kalman order tracker (the 08-18 deck's method), ungated,
-    beats *every* neural cell on cruise MAE (2.27 vs 2.49-3.08) — it fails
-    silence completely.
-  - Gated by its per-window acceptance gates, it decides silence perfectly
-    but loses over half its cruise windows: the gates were
-    precision-calibrated, not recall-calibrated.
-  - Cost: *9.87 CPU-s per audio-second* — about 10x realtime on CPU.
-]
-#v(1fr)
-
-#speaker-note[
-  Two-row table + compute number, unified-baseline-eval.md blind rows.
-]
-
-// ---------------------------------------------------------------------
-= Synthetic data: coverage, not realism — resolved
-
-#v(1fr)
-#table(
-  columns: (auto, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 6pt,
-  align: (left, right, right),
-  table.header([*trunk*], [*R2 control*], [*+ curriculum*]),
-  [conv (scv2, best trunk)], [22.1], [22.6 (gen+comb, R3/R4) — no gain],
-  [causal GRU (weakest trunk)], [61.9], [41.8 (gen+comb) / *37.6* (comb-only, R4)],
-)
-#v(0.8em)
-#text(size: 0.95em)[
-  - On top of the honest base, the generator+comb curriculum (R3/R4) adds
-    *nothing* for the best trunk — R2 already supplies the coverage it used
-    to buy.
-  - It still helps the weakest trunk, and there the free analytic comb
-    alone (R4) beats the trained generator (R3): 37.6 vs 41.8.
-  - Mixed one-stage training (R5: real / generated / comb, single pool)
-    *loses on all three trunks* against their R2 controls — 147.6 / 59.2 /
-    85.8 vs 22.1 / 41.8 / 61.9. Staging is not optional.
-]
-#v(1fr)
-
-#speaker-note[
-  Reruns landed overnight. Old open question (how much of R3/R4's edge was
-  silence coverage R2 now supplies for free) is answered: almost all of it,
-  for the trunk that matters. Staging-necessity claim now unconditional
-  across all three trunks, not just the best one.
-]
-
-// ---------------------------------------------------------------------
-= Salience baselines: retrained on R2
-
-#v(1fr)
-#table(
-  columns: (auto, 1fr, 1fr, 1fr),
-  stroke: 0.5pt + luma(200),
-  inset: 6pt,
-  align: (left, right, right, right),
-  table.header([*model*], [*zero*], [*ramps*], [*cruise*]),
-  [Basic Pitch], [34.0], [13.3], [31.7],
-  [multi-F0 CNN, standard grid], [52.8], [—], [*4.0*],
-  [multi-F0 CNN, widened fine grid], [48.2], [*16.1*], [—],
-)
-#v(0.8em)
-#text(size: 0.95em)[
-  RMSE, rev/s. Basic Pitch stays broken across every regime — an
-  architectural ceiling, not a data problem.
-  The multi-F0 CNN is cruise-decent (4.0) but silence-blind (52.8) on the
-  standard grid; widening the grid fixes ramps (21.0 $arrow.r$ 16.1) but
-  not silence (48.2). Ground-truth round-trip floor: *2.25*.
-]
-#v(0.6em)
-#cbox(text(size: 0.95em)[
-  The salience family lights up on content-rich silence — the same failure
-  mode the RPS trunks had before the honest fix. Here it is a model
-  limitation, not (yet) a data one: the grid fix that helped ramps did not
-  touch it.
-])
-#v(1fr)
-
-#speaker-note[
-  Salience retrain finished overnight. Standard-grid cruise number and
-  widened-grid ramps number come from the same sweep; kept as two rows
-  since the grids trade off differently per regime.
-]
-
-// ---------------------------------------------------------------------
-= Seeing the errors
-
-#text(size: 0.9em)[
-  The rumble-silence panel is on the punchline slide. Here: the two other
-  error modes, at full size.
-]
-#v(0.3em)
-#grid(
-  columns: (1fr, 1fr),
-  gutter: 0.8em,
-  align(center)[
-    #image("assets/qual_transition.png", height: 4.0in)
-    #small[Stop-start transition]
-  ],
-  align(center)[
-    #image("assets/qual_cruise.png", height: 4.0in)
-    #small[Steady cruise]
-  ],
-)
-
-#speaker-note[
-  Three generated panels from writing/papers/2026-08_wrapup/figures/.
-]
-
-// ---------------------------------------------------------------------
-= In flight tonight
-
-#v(1fr)
-#text(size: 0.95em)[
-  - R3/R4 transformer cells and the R4 convolutional cell are still on
-    cloud lanes, filling out the attribution matrix at the other trunks.
-  - hb\_ebsrof (band-split RoPE trunk) is *learning for the first time*:
-    best 438 vs the flat July control ~1150 — the honest regime unblocked
-    it, though it is still far behind the leaderboard.
-  - The phase-only Kalman-attention row and the HG-CKLA stage-A refiner are
-    both running (next slide covers HG-CKLA in full).
-]
-#v(1em)
+#small[
 #table(
   columns: (auto, 1fr),
   stroke: 0.5pt + luma(200),
   inset: 6pt,
   align: (left, left),
-  table.header([*row*], [*status*]),
-  [R3/R4 transformer + R4 conv cells], [running, cloud lanes],
-  [hb\_ebsrof (band-split RoPE trunk)], [running — best 438, up from ~1150],
-  [Phase-only Kalman-attention row], [running],
-  [HG-CKLA stage-A refiner (G1)], [running],
+  table.header([*Regime*], [*Full description*]),
+  [R1 — architecture search],
+  [Online mixing: random 1-s noise chunks from the real pool, random speech
+   overlay at random SNR, new mixtures every epoch. Augmentations after a
+   50k-sample warm-up: random gain, polarity flip, channel drop (each
+   $p = 0.5$). No silence, no label-transforming augmentations.],
+  [R2 — full-envelope real (final real-only)],
+  [R1 mixing plus: *silence arm* — 16.7% of chunks are synthetic room
+   tone / colored noise / low-frequency rumble with all-zero speed labels;
+   *SNR reference floor* — quiet chunks are not amplified to the target SNR
+   (reference RMS floor 0.02), so level stops predicting speed;
+   label-transforming *frequency-scale* and *time-warp* augmentations
+   (labels scaled/warped together with audio).],
+  [R3 — generated + comb curriculum],
+  [Stage 1: pre-train on synthetic noise from the neural generator plus the
+   analytic comb, full-envelope speed trajectories with exact silence.
+   Stage 2: fine-tune under R2. Same optimizer, loss, budget.],
+  [R4 — comb-only curriculum],
+  [R3 with the neural generator removed: stage 1 is the analytic comb
+   alone, stage 2 is R2.],
+  [R5 — mixed, one stage],
+  [One pool, one stage: real 1/2, generated 1/4, comb 1/4, plus the R2
+   silence arm; the same augmentation schedule. No curriculum.],
 )
-#v(1fr)
-
-#speaker-note[
-  Fleet table trimmed to what's actually still open — synthetic reruns and
-  salience retrains both resolved earlier in the deck now.
 ]
 
 // ---------------------------------------------------------------------
-= Next bet: HG-CKLA
+= Label-transforming augmentations
+
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 10pt,
+  [
+    #fig("assets/timewarp_before_after.png", 4.6cm)
+    #small[*Time-warp*: resample audio and speed labels on one warped clock
+    ($alpha lt.eq 1.12$) — new speed trajectories from the same recording.]
+  ],
+  [
+    #fig("assets/freqscale_illustration.png", 4.6cm)
+    #small[*Frequency-scale*: scale the spectrum and the labels by the same
+    $alpha$ — a genuine comb-spacing change the model must follow.]
+  ],
+)
+
+// ---------------------------------------------------------------------
+= The three regimes of the validation set
+
+#grid(
+  columns: (1fr, 1fr, 1fr),
+  gutter: 6pt,
+  [
+    #align(center)[*zero — stopped rotors*]
+    #fig("assets/qual_zero.png", 4.9cm)
+  ],
+  [
+    #align(center)[*ramps — start/stop transition*]
+    #fig("assets/qual_transition.png", 4.9cm)
+  ],
+  [
+    #align(center)[*flight — cruise*]
+    #fig("assets/qual_cruise.png", 4.9cm)
+  ],
+)
+#small[Validation slices: spectrogram on top, per-rotor speed tracks below.
+The same three clips return full-size later in the deck.]
+
+// ---------------------------------------------------------------------
+= Classical pitch-tracking baselines
+
+#small[
+#table(
+  columns: (auto, 1fr, auto, auto, auto, auto),
+  stroke: 0.5pt + luma(200),
+  inset: 5.5pt,
+  align: (left, left, right, right, right, right),
+  table.header([*Method*], [*What it is*], [*zero*], [*ramps*], [*cruise*], [*all*]),
+  [PYIN $times$4], [probabilistic YIN, greedy 4-peak pick], [90.8], [46.7], [34.1], [43.0],
+  [Cepstral], [cepstral peak picking, greedy], [95.5], [67.5], [19.6], [35.7],
+  [HPS], [harmonic product spectrum, greedy], [64.1], [27.6], [20.9], [27.3],
+  [Matched filter], [comb-template bank correlation], [87.2], [66.8], [30.4], [42.5],
+  [NMF], [non-negative factorization, harmonic dictionary], [83.8], [59.5], [*8.1*], [24.6],
+  [IHC], [inverse harmonic clustering (Björkman & Elvander)], [68.8], [28.3], [16.3], [24.6],
+)
+]
+#v(0.5em)
+#cbox[
+  PIT MAE, rev/s. NMF is the best training-free cruise tracker (8.1).
+  Every method floors at its grid boundary on stopped rotors — silence
+  is unrepresentable for a pitch grid that starts at 50 rev/s.
+]
+
+// ---------------------------------------------------------------------
+= Salience baselines: what they are
+
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 10pt,
+  [
+    #fig("assets/multif0-illustration-1.png", 4.3cm)
+    #small[*Multi-F0 CNN* (Cuesta et al.): HCQT input, per-bin salience
+    map, trained with BCE on the comb positions; Hungarian tracking
+    decodes 4 speed tracks from the map.]
+  ],
+  [
+    #fig("assets/basic-pitch-illustration.png", 4.3cm)
+    #small[*Basic Pitch* (Spotify): lightweight polyphonic pitch model,
+    ported to PyTorch; same salience-map decoding. Both retrained under
+    the same R2 stream and augmentations as our models.]
+  ],
+)
+
+// ---------------------------------------------------------------------
+= Salience baselines: outputs and results
+
+#grid(
+  columns: (1.15fr, 1fr),
+  gutter: 10pt,
+  [
+    #fig("assets/sample_00026_multif0_salience_salience.png", 3.3cm)
+    #fig("assets/sample_00026_multif0_salience_rps.png", 3.3cm)
+    #small[Multi-F0 salience map (top) and decoded tracks (bottom) on a
+    cruise clip.]
+  ],
+  [
+    #small[
+    #table(
+      columns: (auto, auto, auto, auto, auto),
+      stroke: 0.5pt + luma(200),
+      inset: 5.5pt,
+      align: (left, right, right, right, right),
+      table.header([*Retrained model*], [*zero*], [*ramps*], [*cruise*], [*all*]),
+      [Basic Pitch], [34.0], [13.3], [31.7], [29.5],
+      [multi-F0, standard grid], [52.8], [21.0], [4.0], [12.5],
+      [multi-F0, wide fine grid], [48.2], [16.1], [4.7], [11.7],
+    )
+    ]
+    #v(0.5em)
+    #cbox[
+      Cruise-capable (4.0 rev/s) and silence-blind: the salience map
+      lights up on room rumble, and no retraining regime fixes it — a
+      model-class limitation, not a data one.
+    ]
+  ],
+)
+
+// ---------------------------------------------------------------------
+= Our classical tracking: blind two-stage annotation
+
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 10pt,
+  [
+    #fig("assets/stepper_viterbi_c.png", 4.7cm)
+    #small[*Stage 1 — Viterbi ridge-seeking*: comb-score lattice over
+    candidate speeds; joint 8-channel dynamic programming picks the
+    smoothest high-score path per rotor.]
+  ],
+  [
+    #fig("assets/stepper_vit2dsp.png", 4.7cm)
+    #small[*Stage 2 — phase-increment Kalman refinement*: demodulate each
+    harmonic at the current estimate, read the phase increments, fuse
+    them with SNR-dependent weights, smooth, repeat coarse-to-fine.]
+  ],
+)
+#v(0.4em)
+#cbox[
+  *Zero gate*: a window is accepted only when the comb score clears its
+  off-comb floor (margin and clearance gates); a refused window emits
+  zero speeds. Gate-free: cruise MAE *2.27* rev/s (best of all methods).
+  Gated: zero MAE *0.01*, at the price of refusing hard flight windows.
+]
+
+// ---------------------------------------------------------------------
+= Architecture search: 26 variants, 52 runs
+
+#grid(
+  columns: (1.25fr, 1fr),
+  gutter: 10pt,
+  [
+    #fig("assets/s1_online_leaderboard.png", 5.6cm)
+    #small[The R1 sweep leaderboard (online-mixing arm): six variant groups
+    over one conv trunk — temporal heads, input features, pooling, causal
+    heads, dilated backbones.]
+  ],
+  [
+    #fig("assets/s2_model_diagram.png", 5.6cm)
+    #small[The shared trunk: residual SE conv encoder + frequency-attention
+    pool + temporal head. The three winners kept for the paper:
+    *SimpleConvV2* (BiGRU head), *Transformer head*, *causal GRU-128*
+    (streaming-capable).]
+  ],
+)
+
+// ---------------------------------------------------------------------
+= Spectral front-ends
+
+#fig("assets/frontends_render.png", 4.9cm)
+#v(0.4em)
+#small[
+One cruise validation clip through the three front-ends.
+*Log-magnitude*: the default; comb teeth blurred by window leakage.
+*IF deviation*: per-bin instantaneous-frequency offset in fractional bins —
+phase information the magnitude discards; zero-mean on noise, structured on
+tones. *Synchrosqueezed magnitude*: bin power reassigned to the frequency
+where its phase actually advances — leakage collapses back into sharp
+ridges, one channel. Best per architecture: IF for SimpleConvV2, magnitude
+for the Transformer, synchrosqueezed for the causal GRU.
+]
+
+// ---------------------------------------------------------------------
+= The leaderboard: every family on one protocol
+
+#small[
+#table(
+  columns: (auto, auto, auto, auto, auto, auto),
+  stroke: 0.5pt + luma(200),
+  inset: 5.5pt,
+  align: (left, right, right, right, right, left),
+  table.header([*Method*], [*zero*], [*ramps*], [*cruise*], [*all*], [*cost /audio-s*]),
+  [NMF (best training-free)], [83.8], [59.5], [8.1], [24.6], [0.1 CPU-s],
+  [multi-F0 wide grid (best salience)], [48.2], [16.1], [4.7], [11.7], [2 CPU-s],
+  [blind tracker, no gates], [79.4], [39.1], [*2.27*], [17.0], [9.9 CPU-s],
+  [blind tracker, gates, refusal $arrow.r$ 0], [*0.01*], [29.8], [48.4], [39.7], [9.9 CPU-s],
+  [SimpleConvV2 (BiGRU), R2], [*3.4*], [*4.2*], [2.35], [*2.72*], [0.25 CPU-s],
+  [Transformer head, R2], [5.5], [5.1], [2.65], [3.35], [0.25 CPU-s],
+  [causal GRU-128, R2], [6.0], [8.2], [3.06], [4.12], [0.25 CPU-s],
+)
+]
+#v(0.5em)
+#cbox[
+  PIT MAE, rev/s. The regression models win every column except cruise,
+  where the gate-free blind tracker stays ahead (2.27 vs 2.35) at
+  $tilde$40$times$ the cost. Only the gated tracker and the R2 models
+  decide silence correctly.
+]
+
+// ---------------------------------------------------------------------
+= Outputs: stopped rotors
+
+#grid(
+  columns: (2fr, 1fr),
+  gutter: 10pt,
+  fig("assets/qual_zero.png", 11.2cm),
+  small[Rumble-heavy silence clip. The R2 model holds zero; NMF and HPS floor at their grid boundary; the cruise-trained model hallucinates speeds from the rumble level.],
+)
+
+// ---------------------------------------------------------------------
+= Outputs: start/stop transition
+
+#grid(
+  columns: (2fr, 1fr),
+  gutter: 10pt,
+  fig("assets/qual_transition.png", 11.2cm),
+  small[Ramp clip. The full-envelope regime tracks the ramp through the comb collapse; the classical trackers lose lock below their grid floor and re-acquire late.],
+)
+
+// ---------------------------------------------------------------------
+= Outputs: cruise
+
+#grid(
+  columns: (2fr, 1fr),
+  gutter: 10pt,
+  fig("assets/qual_cruise.png", 11.2cm),
+  small[Cruise clip. All methods track; the differences are precision: blind tracker 2.27, best neural 2.35, NMF 8.1 rev/s cruise MAE on the full split.],
+)
+
+// ---------------------------------------------------------------------
+= Why the frequency-scale augmentation is mandatory
+
+#fig("assets/freqscale_illustration.png", 4.6cm)
+#v(0.4em)
+#cbox[
+  Models trained without it do not read frequency: a genuine 2%
+  comb-spacing shift moves their prediction by 0.03--0.06% — they answer
+  from loudness and the speed prior instead of the comb. The
+  label-transforming frequency-scale augmentation destroys that shortcut
+  and forces the model onto the harmonic structure.
+]
+
+// ---------------------------------------------------------------------
+= Synthetic data, measured: generator vs comb
+
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 10pt,
+  [
+    #fig("assets/real_vs_gen_dregon.png", 4.4cm)
+    #small[Neural generator output vs real DREGON noise: the timbre gap
+    is audible and visible.]
+  ],
+  [
+    #fig("assets/static_comb_vs_generator.png", 4.4cm)
+    #small[The analytic comb: guaranteed harmonic structure at exact
+    labels — no generator training, no timbre modeling.]
+  ],
+)
+#v(0.4em)
+#cbox[
+  Pre-training on synthetic noise (R3), then fine-tuning on real data,
+  was the best recipe of the July campaigns. The question the wrap-up
+  answers: does it survive an equally rich *real* regime?
+]
+
+// ---------------------------------------------------------------------
+= Synthetic data vs the full-envelope real regime
+
+#small[
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  stroke: 0.5pt + luma(200),
+  inset: 5.5pt,
+  align: (left, right, right, right, right),
+  table.header([*Run (SimpleConvV2 trunk)*], [*zero*], [*ramps*], [*cruise*], [*all*]),
+  [R2 real-only], [*3.4*], [*4.2*], [*2.35*], [*2.72*],
+  [R3 generated+comb curriculum], [3.9], [4.3], [2.49], [2.90],
+  [R5 mixed one-stage], [16.1], [9.1], [5.20], [7.11],
+)
+#v(0.5em)
+#table(
+  columns: (auto, auto, auto, auto),
+  stroke: 0.5pt + luma(200),
+  inset: 5.5pt,
+  align: (left, right, right, right),
+  table.header([*Aggregate (val MSE)*], [*SimpleConvV2*], [*Transformer*], [*causal GRU*]),
+  [R2 real-only control], [*22.1*], [*41.8*], [61.9],
+  [R3 curriculum on R2], [22.6], [—], [41.8],
+  [R4 comb-only on R2], [—], [—], [*37.6*],
+  [R5 mixed on R2], [147.6], [59.2], [85.8],
+)
+]
+#v(0.4em)
+#cbox[
+  For the best architecture the curriculum adds *nothing* (22.6 vs 22.1);
+  mixed one-stage training loses on *all three* trunks. Synthetic data
+  survives only for the weakest (causal) trunk, and there the free
+  analytic comb beats the trained neural generator.
+]
+
+// ---------------------------------------------------------------------
+= The verdict on generated data
 
 #v(1fr)
-#text(size: 1.0em)[
-  *The gap:* CKLA was meant to be a learned pi_kalman pass, but pooling the
-  spectral axis before the recurrence removes "at harmonic $k$ of rotor $r$"
-  from what the layer can read. A sequence mixer over pooled features can
-  filter; it cannot run an extended-Kalman measurement update.
-]
-#v(1em)
-#cbox(text(size: 0.95em)[
-  *HG-CKLA:* move the measurement inside the recurrence — state-conditioned
-  harmonic gathers, innovation phasors, WP18 phase-noise weights (~$k^2$).
-  The cell reads the spectrogram at positions its own state predicts, every
-  step.
-])
-#v(1em)
-#text(size: 0.9em)[
-  Gates, in order: *G1* synthetic combs with known corruption; *G2* the
-  frozen tracking protocol against the classical tracker; *G3* end-to-end
-  vs the HB winner on the frozen split.
+#cbox(fill: luma(240))[
+  #text(size: 1.05em)[
+  - The July gains of the generated-first curriculum came from *coverage*:
+    honest zeros and full-envelope trajectories the real corpus lacked —
+    not from acoustic realism.
+  - The full-envelope real regime supplies the same coverage from real
+    recordings alone (silence arm + SNR floor + label-transforming
+    augmentations) — and the curriculum's advantage disappears.
+  - Mixing synthetic data into the real pool acts as label noise and
+    degrades every architecture; staging is mandatory wherever synthetic
+    data is used at all.
+  - Where a curriculum still pays (causal GRU), the analytic comb —
+    zero training cost — beats the neural generator.
+  ]
 ]
 #v(1fr)
-
-#speaker-note[
-  One architecture sketch from docs/pikalman-ckla-design.md. Closing slide.
-]
