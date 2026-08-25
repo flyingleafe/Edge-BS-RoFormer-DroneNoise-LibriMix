@@ -526,6 +526,44 @@ One caveat keeps this honest: the control was configured with arm E's fixes,
 which include the per-window level normalization later shown to be harmful. It
 is a fair control for arms E and F and an unfair one for G.
 
+## The stopped-rotor cell, and the level relation reality has
+
+Arm G reaches 172.1 aggregate — past both synthetic-only targets — and its
+per-regime row shows where the rest of the distance is:
+
+| checkpoint | aggregate | zero | low | flight |
+|---|---|---|---|---|
+| `r4hb_scv2` (real, the target) | 17.59 | **2.87** | **3.48** | **2.49** |
+| `stoch_s1g_scv2` | 176.34 | 20.27 | **16.20** | 4.50 |
+| `stoch_s1h_scv2` | 300.36 | 27.98 | 26.77 | **2.60** |
+| `m3abl_comb_scv2_s1` (old best) | 218.30 | 5.64 | 26.32 | 7.09 |
+
+Arm G carries an 18% zero arm and still reads stopped rotors at 20.27 rev/s.
+The reason is a level relation this stream did not have. Clip level relative to
+a cruise clip, measured on both sides:
+
+| clip RMS relative to cruise | zero | ramp | cruise |
+|---|---|---|---|
+| **real split** | **0.175** | 0.370 | 1.000 |
+| synthetic, arms G to K | **0.000** | 0.125 | 1.000 |
+
+A real stopped-rotor clip is not silent. It carries room tone, the preamp, and
+whatever else is in the room, and it sits at about a sixth of a cruise clip. This
+stream drove it to digital zero, because the broadband floor was scaled by rotor
+speed in its entirety — so a model trained here learns that a sixth of cruise
+level means a turning rotor, and reads a real stopped-rotor clip as a ramp. That
+is the 20 rev/s.
+
+`floor_static_rel` splits the floor in two: the rotors' share, which follows
+their speed, and the recording chain's share, which does not.
+
+Fixing it exposed a second error in `level_mode: flight`. The spectrum already
+carries the speed factor, so normalizing by the clip's own root-mean-square
+removes it; the code put back `mean(amp)` — a power factor applied as an
+amplitude, and one that excluded the static share, which drove the floor back to
+zero however large it was drawn. It now puts back the square root of the same
+factor the spectrum used.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
