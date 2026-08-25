@@ -110,14 +110,34 @@ target speeds — zero (every rotor stopped), low (warm-up and the ramps), fligh
 Read this table before changing the family: it says which part of the problem
 synthetic-only training already solves.
 
-| checkpoint | aggregate | all MAE | zero | low | flight |
-|---|---|---|---|---|---|
-| `m3abl_comb_scv2_s1` | 218.3 | 9.50 | 5.64 | **26.32** | 7.09 |
+All eight channels, all 37 clips. The scorer reproduces the training-time
+`val/mse` of the real-trained row exactly (17.59 against the campaign's 17.6),
+which is what makes the rest of the table trustworthy.
 
-The loss is concentrated in the ramps. A synthetic-only predictor is within
-7.1 rev/s at cruise and within 5.6 on stopped rotors, and then loses 26.3 on the
-warm-up, take-off and landing spans — the regime where the speed sweeps through
-its whole range inside one clip.
+| checkpoint | trained on | aggregate | all MAE | zero | low | flight |
+|---|---|---|---|---|---|---|
+| `r4hb_scv2` | real (comb curriculum) | **17.59** | 2.67 | 2.87 | 3.48 | 2.49 |
+| `hb_scv2_mag_nogate` | real (R2) | 22.78 | 2.72 | 3.36 | 4.18 | 2.35 |
+| `m3abl_comb_unigru128_s1` | synthetic comb | 190.62 | 8.30 | 4.73 | 24.24 | 6.00 |
+| `m3abl_comb_scv2_s1` | synthetic comb | 218.30 | 9.50 | 5.64 | 26.32 | 7.09 |
+| `m3cur_scv2_s1` | synthetic gen + comb | 328.96 | 10.41 | 20.30 | 11.33 | 8.55 |
+
+The gap is not uniform, and its shape is the campaign's map:
+
+| regime | best synthetic-only | real-trained | ratio |
+|---|---|---|---|
+| ramps (low) | 24.24 | 3.48 | **7.0x** |
+| cruise (flight) | 6.00 | 2.49 | 2.4x |
+| stopped (zero) | 4.73 | 2.87 | 1.6x |
+
+Synthetic-only training already gets stopped rotors nearly right and cruise
+within a factor of two and a half. The ramps are where it falls apart, and the
+ramps are also where the trajectory model has a measurable coverage hole.
+
+One row breaks the pattern and is worth keeping in view: the neural generator's
+curriculum (`m3cur_scv2_s1`) is the best of the three on the ramps (11.33) and
+by far the worst on stopped rotors (20.30). The two synthetic families fail in
+different places.
 
 ## What the failure at speed actually is
 
