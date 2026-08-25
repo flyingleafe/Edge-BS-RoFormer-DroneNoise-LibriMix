@@ -8,47 +8,37 @@ batch: docs/experiments/stochastic-transfer.md
 
 ## Motivation
 
-Synthetic-only training whose target is per-regime parity with the best
-real-trained model on the frozen split, on the convolutional trunk, with no real
-noise anywhere in the stream. Noise pool
-`conf/online_mix/stoch_s1l_dload.yaml`.
+Synthetic-only training whose target is transfer to the real frozen validation
+split, on the convolutional trunk, with no real noise anywhere in the stream.
+Policy `conf/online_mix/stoch_s1l_dload.yaml`.
 
-Arm K widens the rotor speed to a decade. Every arm before it drew cruise from a
-range about two and a half times wide — arm J 46 to 111 rev/s, arm F 47 to 125,
-the old comb family 55 to 91 — which leaves a model room to carry a prior over
-where the comb sits, and the campaign's opening diagnostic caught one doing it:
-reading 0.836 of the truth on real cruise audio, splitting the difference
-between what it measures and what it expects. The only cue that transfers to a
-different aircraft is the spacing itself, so the training speed is drawn
-log-uniformly over [0.25, 2.5] of hover and a clip's cruise sits anywhere from
-about 20 to 200 rev/s.
+The base is `stoch_s1g_scv2`, the best synthetic-only model this project has:
+172.1 validation PIT-MSE against 204.0 for the analytic comb, and the best ramp
+cell of any of them (16.20 rev/s). The arms that narrowed the family to make it
+easier to fit, H and J, fit far better and transfer worse (299.3 and 285.3), so
+arm L keeps every bit of arm G's width and changes two other things.
 
-Two things a decade breaks, both repaired rather than papered over. The level
-cue scaled by a fixed 80 rev/s reference would make a 20 rev/s aircraft 34 dB
-quieter than an 80 rev/s one, encoding absolute speed — so the reference is now
-the clip's own hover, and cruise clips under 70 and over 150 rev/s leave at the
-same level to within 10%. And at 80 harmonics a 20 rev/s comb would stop at
-1.6 kHz, so the harmonic count is chosen per clip to reach Nyquist.
+The rotor speed spans a decade. Arm G draws cruise from 46 to 110 rev/s while
+every real cruise clip sits at 80.3, so a prior does much of the work — and the
+opening measurement of this campaign says it does, the comb-only predictor
+reading 0.836 of the truth at a response slope of 0.94. A model that transfers
+across drones cannot carry that prior, because different aircraft turn at
+different rates and the only thing that survives is finding a comb wherever it
+sits. `rps_scale_range: [0.25, 2.5]`, log-uniform, gives a per-clip hover of 22
+to 211 rev/s. The level reference, the linewidth and the harmonic count all
+follow the clip's own hover, so the width teaches comb-finding instead of
+handing over absolute speed through loudness or sharpness.
 
-Everything else is `stoch_s1k_scv2`: the decade of speed, the narrowed widths that produced the
-campaign's best cruise cell (2.60 rev/s against the real-trained 2.49), the
-level-as-cue treatment, and the warm-up and ramps measured against the split's
-own low-regime frames.
+The warm-up also idles where a drone idles. Arm G's idle band reaches 0.05 of
+hover, which makes the aircraft sit at 5 rev/s — 45 dB below cruise, silence
+with a nonzero label — and that is the most likely cause of its one weak cell,
+stopped rotors at 20.27. The band returns to [0.28, 0.55] and the low-speed
+coverage comes from a longer spin-up.
 
 Data `stoch_s1l`, model `simple_conv_v2`, loss `pit_mse`, metrics `rps`, batch
 128 frames, `samples_per_validation=40000`, validation on the fixed
 FULL-envelope real split `dload:DREGON-LM-V4-michaels-valid-full`.
 Train: `python train.py experiment=stoch_s1l_scv2`.
-
-Arm L adds the recording floor. Arm G reaches a stopped-rotor cell of 20.27
-rev/s while carrying an 18% zero arm, because the level relation in this stream
-is one reality does not have: measured against a cruise clip, the frozen split's
-stopped-rotor clips sit at 0.175 and its ramp clips at 0.370, while this stream
-gave 0.000 and 0.125. A real stopped-rotor clip is not silent — it carries room
-tone and the preamp — and driving it to digital zero teaches a model that a
-sixth of cruise level means a turning rotor. `floor_static_rel` splits the
-broadband floor into the rotors' share, which follows their speed, and the
-recording chain's share, which does not.
 
 ## Conclusion
 
