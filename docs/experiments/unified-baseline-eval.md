@@ -200,6 +200,7 @@ behind the neural cells (2.4).
 | r3hb_gru | 4.89 / 118.9 | 5.47 / 118.2 | 2.79 / 17.8 | 41.8 |
 | r3hb_scv2 | 3.86 / 53.8 | 4.27 / 47.6 | 2.49 / 13.1 | 22.6 |
 | r5hb_scv2 | 16.08 / 653.5 | 9.14 / 181.3 | 5.20 / 68.6 | 147.6 |
+| r4hb_gru | 6.19 / 123.5 | 4.86 / 74.7 | 2.85 / 17.6 | 37.6 |
 | hb_scv2_mag_nogate | 3.36 / 59.3 | 4.18 / 52.2 | 2.35 / 11.1 | **22.1** |
 | r2hb_tr_nogate | 5.52 / 143.2 | 5.14 / 94.0 | 2.65 / 16.0 | 41.8 |
 
@@ -212,6 +213,10 @@ nuance that the causal GRU still gains from the curriculum (41.8 vs its
 61.9 control). r5hb_scv2 (mixed one-stage on the R2 base) lands at 147.6
 — worse than the old-regime mixed (93.6): the staging-necessity claim
 strengthens; honest real data does not detoxify mixed-in synthetic.
+r4hb_gru (comb-only curriculum on R2) reaches 37.6 — the best causal-GRU
+cell of the campaign (vs r3hb_gru 41.8, gated hb_gru_ssq 39.8, nogate
+control 61.9): for the weakest trunk the cheap analytic comb beats the
+neural generator as pre-training, mirroring the old-regime finding.
 
 HEADLINE (2026-08-25): hb_scv2_mag_nogate reaches 22.1 — the best neural
 aggregate of the campaign, real data only, essentially level with the old
