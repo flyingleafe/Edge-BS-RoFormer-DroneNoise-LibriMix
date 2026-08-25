@@ -226,6 +226,11 @@ class StochasticRanges:
     #: floor is lowered until the draw satisfies it, so a clip always carries a
     #: trackable comb.
     min_lines_above_floor: float = 0.30
+    #: The recording chain's own floor, as a fraction of the floor's level at
+    #: the reference speed. Measured on the frozen split: a stopped-rotor clip
+    #: sits at 0.175 of a cruise clip and a ramp clip at 0.370. Default 0 keeps
+    #: the old behaviour, where a stopped rotor is digital silence.
+    floor_static_rel: tuple[float, float] = (0.0, 0.0)
 
     # Time variation of the harmonic amplitudes.
     harm_gp_std_db: tuple[float, float] = (0.5, 6.0)
@@ -285,6 +290,16 @@ class StochasticParams:
     floor_gp_tau_s: float = 3.0
     floor_tilt_gp_std: float = 0.5
     floor_tilt_gp_tau_s: float = 6.0
+
+    #: The part of the broadband floor that does NOT come from the rotors, as a
+    #: fraction of the floor's own level at the reference speed. A recording
+    #: chain has a floor of its own — room tone, preamp noise, whatever else is
+    #: in the room — and it is there when the rotors are stopped. Measured on the
+    #: frozen split, a stopped-rotor clip sits at 0.175 of a cruise clip's level
+    #: and a ramp clip at 0.370; with this at zero the synthetic equivalents are
+    #: 0.000 and 0.125, so a model learns that 0.175 of cruise means a ramp
+    #: speed and reads real silence as a moving rotor.
+    floor_static_rel: float = 0.0
 
     # Rotor speed to level. Rotor aeroacoustic sound power grows about as the
     # fifth power of tip speed, so pressure amplitude grows as rps^2.5 and a
@@ -417,6 +432,7 @@ def sample_params(
         floor_tilt_db_oct=tilt,
         harm_mean_db=0.0,
         floor_mean_db=0.0,
+        floor_static_rel=float(rng.uniform(*ranges.floor_static_rel)),
     )
     floor_mean_db = calibrate_floor(
         draft,
@@ -506,7 +522,10 @@ def build_psd(
         + level_gp[:, None]
         + tilt_gp[:, None] * octaves[None, :]
     )
-    floor = 10.0 ** (floor_db / 10.0) * amp.mean(axis=0)[:, None]
+    # The rotors' share of the floor follows their speed; the recording chain's
+    # share does not, and it is what a stopped-rotor clip is made of.
+    floor_gain = amp.mean(axis=0) + float(max(params.floor_static_rel, 0.0))
+    floor = 10.0 ** (floor_db / 10.0) * floor_gain[:, None]
 
     # Harmonic amplitudes: a per-rotor common process mixed with one process
     # per line. The coherence is a variance split, so the total variance of
@@ -581,6 +600,7 @@ def build_psd(
 
     return {
         "floor": floor,
+        "floor_gain": floor_gain,
         "lines": lines,
         "harm_gp": harm_gp,
         "floor_gp": level_gp,
@@ -799,12 +819,13 @@ def synthesize(
         rms = float(np.sqrt(np.mean(np.square(audio)))) or 1.0
         gain = float(normalize_rms) / rms
         if level_mode == "flight":
-            # Divide out only the part of the level that does NOT come from the
-            # rotor speed, then put the speed's own contribution back. The
-            # window's mean amplitude factor is (rps / ref) ** exponent, so a
-            # window at half the reference speed leaves about 5.7 times quieter
-            # instead of at the same level as cruise.
-            gain *= float(np.mean(psd["amp"]))
+            # The synthesized audio already carries the speed's contribution,
+            # because the spectrum was built with it. Normalizing by the clip's
+            # own root-mean-square removes it again, so put back the SAME factor
+            # the spectrum used — as a power, hence the square root, and
+            # including the recording chain's static share, which is what keeps
+            # a stopped-rotor window at a real floor instead of at zero.
+            gain *= float(np.sqrt(max(np.mean(psd["floor_gain"]), 0.0)))
         audio = (audio * gain).astype(np.float32)
 
     diag: dict[str, Any] = {
