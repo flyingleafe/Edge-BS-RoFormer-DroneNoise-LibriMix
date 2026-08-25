@@ -629,11 +629,35 @@ and a decade of rotor speed — and its per-regime score says which one worked:
 | `stoch_s1g_scv2` | **8.08** | 20.27 | **16.20** | **4.50** |
 | `stoch_s1l_probe` | 13.70 | **12.85** | 17.55 | 13.14 |
 
-**The recording floor works.** The stopped-rotor cell falls 37%, from 20.27 to
-12.85, which is what `floor_static_rel` was built for.
+**The recording floor works — WITHDRAWN, the comparison was not sound.** The
+stopped-rotor cell falls from 20.27 to 12.85, and that was read as the recording
+floor doing its job. It is not a clean attribution: `stoch_s1g_scv2` is a
+converged run scored at epoch 20 and `stoch_s1l_probe` is a 55-minute triage run
+scored at its epoch-5 best. Arm P, which carries the floor WITHOUT the decade of
+speed, scores 23.68 on the same cell from its epoch-3 best — worse than either.
 
-**The decade of rotor speed does not.** Cruise goes from 4.50 to 13.14 and the
-ramps do not move. Asking a model to find a comb anywhere between 20 and 200
+Read probe against probe instead of probe against converged run, the ordering
+reverses: the floor alone gives 23.68 and the floor with the decade gives 12.85,
+which credits the decade, not the floor. Read against the converged arm G, both
+probes are undertrained and neither comparison decides anything.
+
+| model | training length | all-MAE | zero | low | flight |
+|---|---|---|---|---|---|
+| `r4hb_scv2` | converged, real | 2.67 | 2.87 | 3.48 | 2.49 |
+| `stoch_s1g_scv2` | converged, 20 epochs | **8.08** | 20.27 | 16.20 | **4.50** |
+| `stoch_s1l_probe` | probe, best at epoch 5 | 13.70 | **12.85** | 17.55 | 13.14 |
+| `stoch_s1p_probe` | probe, best at epoch 3 | 17.39 | 23.68 | **15.02** | 16.74 |
+
+The rows differ in training length as well as in recipe, so none of the
+differences between them can be assigned to the recipe. **Nothing in this table
+supports or refutes the recording floor.** The long runs of arms P and Q are
+what will decide it, scored at convergence like arm G was.
+
+**The decade of rotor speed does not** — and this half survives the same
+scrutiny only partly. Cruise goes from 4.50 to 13.14, but 4.50 is a converged
+number and 13.14 is a probe's, and arm P's probe (no decade) reads 16.74 there.
+Probe against probe the decade looks harmless at cruise, which is the opposite
+of what was concluded. Asking a model to find a comb anywhere between 20 and 200
 rev/s spends its capacity on a range the evaluation never visits, and it pays
 for that where the evaluation actually lives. This is worth stating plainly
 because the campaign expected the opposite: a wider speed prior is what fixed
