@@ -6,6 +6,14 @@ contain the real thing?
 
 **Status: OPEN.** Started 2026-08-25.
 
+**Where it stands.** A synthetic-only model now beats every earlier
+synthetic-only model on the frozen split — `stoch_s1g_scv2` reaches **172.1**
+aggregate against 204.0 for the best convolutional comb arm and 183.7 for the
+best causal one — and a second arm reads real cruise audio as well as a model
+trained on real data (2.60 rev/s against 2.49). The remaining distance is the
+ramps and the stopped rotors. The goal is per-regime parity with `r4hb_scv2`:
+zero 2.87, low 3.48, flight 2.49.
+
 ## Why the question is open
 
 Every synthetic-only predictor this project has trained transfers badly. On the
