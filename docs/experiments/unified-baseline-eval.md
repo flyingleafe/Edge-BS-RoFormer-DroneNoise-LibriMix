@@ -193,8 +193,17 @@ fixed zero-decode path.) multif0 standard + narrow-SR still training.
 |---|---|---|---|---|
 | r2hb_gru_nogate | 6.02 / 173.7 | 8.17 / 164.4 | 3.06 / 26.8 | 61.9 |
 | r3hb_gru | 4.89 / 118.9 | 5.47 / 118.2 | 2.79 / 17.8 | 41.8 |
+| r3hb_scv2 | 3.86 / 53.8 | 4.27 / 47.6 | 2.49 / 13.1 | 22.6 |
 | hb_scv2_mag_nogate | 3.36 / 59.3 | 4.18 / 52.2 | 2.35 / 11.1 | **22.1** |
 | r2hb_tr_nogate | 5.52 / 143.2 | 5.14 / 94.0 | 2.65 / 16.0 | 41.8 |
+
+RESOLUTION (2026-08-25): r3hb_scv2 (gen+comb curriculum ON TOP of the
+honest base, ungated) lands at 22.6 against the plain honest base's 22.1
+— the curriculum adds nothing for the headline trunk, in every regime.
+The synthetic-data claim resolves to its strong form for scv2 (coverage,
+not realism; honest real data supplies the coverage), with the per-trunk
+nuance that the causal GRU still gains from the curriculum (41.8 vs its
+61.9 control).
 
 HEADLINE (2026-08-25): hb_scv2_mag_nogate reaches 22.1 — the best neural
 aggregate of the campaign, real data only, essentially level with the old
