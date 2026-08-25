@@ -1,0 +1,29 @@
+# @package _global_
+# HG-CKLA conditional refiner, stage A (docs/pikalman-ckla-design.md §5): the
+# harmonic-gather cell stack trained (audio, corrupt(GT)) -> GT with plain
+# non-PIT MSE. Data/loss wiring cloned from ckla_refiner (the corruption seam
+# conf/data/ckla_refiner.yaml), on the honest-base R2 policy
+# conf/online_mix/hb_silence_dload.yaml — the regime the HB grid runs, so the
+# comparison is against those rows.
+defaults:
+  - override /data: ckla_refiner
+  - override /model: hg_ckla_refiner
+  - override /loss: mse_cond
+  - override /metrics: rps
+
+experiment_name: hb_hgckla_ref
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+grad_clip: 1.0  # atan2 on a dying phasor: the guard makes it finite, not small
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

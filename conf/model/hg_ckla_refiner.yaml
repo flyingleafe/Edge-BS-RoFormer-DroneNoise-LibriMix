@@ -1,0 +1,30 @@
+# hg_ckla_refiner — rps_prediction (conditional refiner): the HG-CKLA cell
+# stack (models/hg_ckla.py, docs/pikalman-ckla-design.md). Same seam as
+# simple_conv_v2_ckla_phaseonly_cond — forward(audio, cond), bounded residual
+# on the conditioning, non-PIT loss (conf/loss/mse_cond.yaml), task_params
+# use_cond wires the rps_cond entry through the task spec and codec — but no
+# conv trunk: each of the three cells gathers the complex STFT AT the
+# harmonic positions the state predicts (anneal schedule k_caps 10/25/40),
+# measures the innovation phasors, and fuses them with one CKLA scan.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+  use_cond: true
+_target_: models.registry.build_model
+params:
+  name: hg_ckla_refiner
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  sample_rate: 16000
+  k_caps: [10, 25, 40]
+  d_model: 64
+  n_state: 16
+  sigma: 1.5
+  band_bins: 3.0
+  max_delta: 5.0
+  p_init: 1.0
+model_type: null
+legacy_config_path: null

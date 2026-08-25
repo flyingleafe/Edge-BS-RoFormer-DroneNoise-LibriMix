@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from models.generative.propagation import MicEQ
 from models.ckla import SimpleConvV2CKLA, SimpleConvV2CKLACond
 from models.fkla import FKLARPSModel
+from models.hg_ckla import HGCKLARefiner
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
     DCCRNEncRPS,
@@ -157,6 +158,13 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "simple_conv_v2_ckla_phaseonly_cond": lambda **kw: SimpleConvV2CKLACond(
         readout="phase_only", **kw
     ),
+    # HG-CKLA conditional refiner (hg_ckla.py::HGCKLARefiner,
+    # docs/pikalman-ckla-design.md): same forward(audio, cond) contract and
+    # the same bounded-residual/non-PIT training seam as the CKLA refiner
+    # above, but there is no conv trunk — each cell gathers the complex STFT
+    # AT the harmonic positions the state predicts, measures the innovation
+    # phasors, and smooths the rate error with one CKLA scan.
+    "hg_ckla_refiner": HGCKLARefiner,
     # Vendored flat-KLA (kla-loglinear@11e5a39, src/models/fkla/) plain-KLA
     # arm — cross-implementation companion to the norot controls.
     "simple_conv_v2_fkla": FKLARPSModel,
