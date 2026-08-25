@@ -6,6 +6,16 @@ contain the real thing?
 
 **Status: OPEN.** Started 2026-08-25.
 
+**Result so far.** `stoch_s1g_scv2` reaches **172.1** validation PIT-MSE on the
+frozen split against **204.0** for the best earlier synthetic-only model on the
+same trunk and **183.7** for the best on any trunk — the first synthetic-only
+model in this project to beat the analytic comb, with no real noise anywhere in
+its training stream. Per regime it is 20.27 / 16.20 / 4.50 rev/s on stopped
+rotors, ramps and cruise against the comb's 5.64 / 26.32 / 7.09. The
+real-trained reference is 17.59 aggregate and 2.87 / 3.48 / 2.49, so the gap is
+closed on ramps and cruise and open on stopped rotors, which is what arm J
+addresses.
+
 **Where it stands.** A synthetic-only model now beats every earlier
 synthetic-only model on the frozen split — `stoch_s1g_scv2` reaches **172.1**
 aggregate against 204.0 for the best convolutional comb arm and 183.7 for the
@@ -485,6 +495,36 @@ A real drone does not idle there. It idles at 0.38 to 0.52 of hover and passes
 | arm J | 12.8 | 21.9 | 34.8 | 7.79 | 21.38 | **0.4%** |
 
 Arm J is arm H with that one change.
+
+## Where the campaign stands
+
+| checkpoint | aggregate | zero | low | flight |
+|---|---|---|---|---|
+| `r4hb_scv2` (real-trained) | 17.59 | 2.87 | 3.48 | 2.49 |
+| **`stoch_s1g_scv2`** | **176.34** | 20.27 | **16.20** | 4.50 |
+| `m3abl_comb_scv2_s1` (previous best) | 218.30 | 5.64 | 26.32 | 7.09 |
+| `stoch_s1e_scv2` | 280.66 | 8.92 | 27.55 | 7.98 |
+| `stoch_s1h_scv2` | 300.36 | 27.98 | 26.77 | **2.60** |
+| `stoch_s1f_scv2` | 343.69 | 34.69 | 16.95 | 6.32 |
+| `comb_fixed_scv2` (control) | 1389.03 | 41.21 | 10.42 | 38.55 |
+
+Arm G holds the best aggregate and the best ramp cell of any synthetic-only
+model here; arm H holds the best cruise cell, at 2.60 against the real-trained
+2.49. No arm holds both yet, and every one of them is still short on stopped
+rotors.
+
+### The control says the family is doing the work
+
+`comb_fixed_scv2` carries the campaign's fixes on the OLD analytic comb family,
+and it is the worst row in the table by an order of magnitude: 1389 aggregate,
+38.55 rev/s at cruise, and a best validation score at epoch 0 — it never learned
+to read a real recording at all, while fitting its own family to a training loss
+of 31. So the fixes are not independently good. They work with the new family
+and destroy the old one.
+
+One caveat keeps this honest: the control was configured with arm E's fixes,
+which include the per-window level normalization later shown to be harmful. It
+is a fair control for arms E and F and an unfair one for G.
 
 ## Log
 
