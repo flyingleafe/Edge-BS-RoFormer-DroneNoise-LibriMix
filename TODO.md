@@ -178,9 +178,11 @@ Sub-tasks:
 
 ## 10. CKLA (+ KLA baseline) on R2 -> paper
 
-- [ ] `hb_ckla` (the campaign's best phase-only variant) and `hb_fkla`
-      (the vendored plain-KLA cross-implementation baseline) on the R2
-      policy, same budget as the HB grid. Probe per-regime, add to the
+- [ ] `hb_ckla` (the campaign's best phase-only variant) on the R2
+      policy, same budget as the HB grid. (`hb_fkla` CANCELLED by the user
+      2026-08-25 — the plain-KLA cross-implementation baseline is ~6x
+      slower per step and its scientific question, rotation-vs-no-rotation,
+      was already answered by the campaign's _norot controls.) Probe per-regime, add to the
       leaderboard and the paper's architecture-search section; update the
       narrative where CKLA is mentioned (matched-protocol numbers move
       from the old stream to R2).
