@@ -5,7 +5,7 @@ outcomes into `docs/experiments/` and the paper, then delete the item.
 
 ## 1. Harvest the running jobs + update the frozen-valid leaderboard
 
-- [ ] Wait for the cluster fleet: 10 HB grid runs (`hb_{scv2,tr,gru}_{mag,if,ssq}`,
+- [x] DONE (2026-08-25, W&B history minima). Originally: wait for the cluster fleet: 10 HB grid runs (`hb_{scv2,tr,gru}_{mag,if,ssq}`,
       `hb_scv2_mag_nogate`) + 2 salience retrainings (`hb_sal_multif0`,
       `hb_sal_bp`) on uni-gpushort. Best metrics from W&B HISTORY minima,
       never `run.summary`.
@@ -13,16 +13,18 @@ outcomes into `docs/experiments/` and the paper, then delete the item.
       in (resid lag RMS 2.5/1.1 ms; scales 1.00525/1.00570),
       `michaels-test-frames@353cc523d609` derived + pinned. The test set
       stays DORMANT: no training/valid/eval config references it.
-- [ ] Run the per-regime probe (zero/low/flight, per-frame Hungarian PIT)
+- [x] DONE (2026-08-25) for every finished checkpoint incl. the regime
+      reruns, ebsrof, ckla. Originally: run the per-regime probe (zero/low/flight, per-frame Hungarian PIT)
       on every finished checkpoint — same protocol as
       `results/m3cur_regime_probe/regime_probe.py`.
-- [ ] Update the leaderboard in `docs/experiments/unified-baseline-eval.md`:
+- [x] DONE (2026-08-25), all rows in. Originally: update the leaderboard in `docs/experiments/unified-baseline-eval.md`:
       one table, every row on `dload:DREGON-LM-V4-michaels-valid-full`.
       Rows already present: classical five, OT multi-pitch. Rows to add:
       HB grid (10), salience retrained (2), current neural trio
       (merge from `regime_probe.json`). Optional row: June salience
       checkpoints, if still loadable from the zoo.
-- [ ] HB-specific readouts while harvesting: clean-off-call rate on zero
+- [x] DONE (2026-08-25): off-call/drift columns captured per probe row
+      in the doc. Originally: HB-specific readouts: clean-off-call rate on zero
       frames, 10-45 rev/s drift mass, gate saturation statistics, front-end
       ranking consistency across the three architectures.
 
@@ -31,14 +33,15 @@ outcomes into `docs/experiments/` and the paper, then delete the item.
 Goal: a paper section that motivates the winner models (scv2 / transformer-IF
 / uni_gru128) by documenting the search they won.
 
-- [ ] Re-read `docs/experiments/simpleconv-rps-architecture-search.md` +
+- [x] Read during the section draft (2026-08-24). Originally: re-read `docs/experiments/simpleconv-rps-architecture-search.md` +
       report `writing/reports/2026-06-19_rps-arch-sweep-v4-michaels` +
       the C3/C6/C10 config files (`conf/experiment/`, REPLICATION.md).
-- [ ] Establish EXACTLY which training data and regime the 26-variant sweep
+- [x] R1 established + named in sec:splits (2026-08-24). Originally: establish EXACTLY which training data and regime the 26-variant sweep
       used (fixed DREGON-LM-V4-michaels mixtures vs online mixing; which
       augmentations; which validation split and monitor). This defines
       "Regime R1" below.
-- [ ] Also collect the later head-to-head evidence that kept the trio:
+- [x] Collected: the reshuffle caution + attribution matrix carry it
+      (2026-08-25). Originally: collect the later head-to-head evidence that kept the trio:
       CKLA campaign matched-protocol table, G1-G3 front-end arms,
       causal-head sweep notes.
 - [x] Section DRAFTED (2026-08-24): \S{}sec:archsearch — search space,
@@ -58,7 +61,8 @@ Goal: a paper section that motivates the winner models (scv2 / transformer-IF
         free-flight_whitenoise-high_room1 (already in DREGON-frames),
         FLY103 + FLY108 (michaels-test-frames once published). No leakage
         note: test shares room1/rig with valid, not with train.
-- [ ] Define the training-regime taxonomy used throughout the paper, one
+- [x] DONE — R1-R5 named with policy files, in the paper and the deck
+      (2026-08-25). Originally: define the training-regime taxonomy, one
       name each, with the exact policy file per regime:
       1. R1 — architecture-search regime (as established in item 2).
       2. R2 — final real-only regime: full envelope + freq-scale v2 +
@@ -71,10 +75,12 @@ Goal: a paper section that motivates the winner models (scv2 / transformer-IF
          stage 2).
       5. R5 — mixed one-stage (m3abl_mixed: real 50% / generated 25% /
          comb 25%).
-- [ ] Decide naming + notation in the paper, write the two tables into the
+- [x] DONE (2026-08-25): tab:splits + the regime list in sec:splits;
+      ablation and leaderboard sections use the R1-R5 names. Originally: write the two tables into the
       wrap-up draft, and re-point existing sections (§8 ablation, §5
       validation description) at the taxonomy instead of ad-hoc prose.
-- [ ] DECIDED (2026-08-24): once HB numbers confirm R2, re-train R3/R4/R5
+- [x] DONE (2026-08-25): all nine rerun cells trained + probed; grid
+      complete in the leaderboard doc. Originally: once HB numbers confirm R2, re-train R3/R4/R5
       with R2 as the real component (~6-9 gpushort runs: m3cur/m3abl
       stage-2 reruns + mixed) so every row differs from R2 only in the
       synthetic ingredient. Trigger: HB harvest looks sane.
@@ -94,12 +100,15 @@ row. This item is the careful arm:
       HCQT input fmin 20 / 3 octaves; GT round-trip floor 7.24 -> 2.25
       rev/s vs the June grid. (The salience grid is in rotor rev/s
       directly — no blade factor.)
-- [ ] Submit, harvest, add to the leaderboard next to the standard-grid
+- [x] DONE (2026-08-25): hb_sal_multif0_nsr row landed (48.2/16.1/4.7).
+      Originally: submit, harvest, add to the leaderboard next to the standard-grid
       rows and the June numbers.
 
 ## 5. Central leaderboard table in the paper (all methods, per-regime + total)
 
-- [ ] Missing row first: the blind two-stage tracker (ridge-Viterbi seed +
+- [x] DONE (2026-08-25): blind row on valid-full, both conventions in the
+      table (ungated flight 2.27; gated zero 0.01, refusal->0).
+      Originally: the blind two-stage tracker (ridge-Viterbi seed +
       peel/pi_kalman) has NEVER run on valid-full. Freeze the run-of-record
       arm from `docs/experiments/beat-vk.md` (the 0.688/1.027 cruise
       configuration), run it over the 37 clips x 8 ch on uni-cpu, score
@@ -107,14 +116,15 @@ row. This item is the careful arm:
       scoring, refusal/no-comb -> 0 rev/s — same rows as every other
       method; the zero regime doubles as a refusal-calibration test.
       Estimate CPU cost before submitting.
-- [ ] Also add a compute column (per-second-of-audio inference cost, CPU/GPU)
+- [x] Compute column IN (2026-08-25). Originally: add a compute column (per-second-of-audio inference cost, CPU/GPU)
       — the narrative's "beats neural but much more expensive" claim needs
       the number in the same table.
 - [x] Central table ASSEMBLED in the paper (2026-08-25): tab:leaderboard
       with 21 rows (training-free, blind both conventions, salience,
       neural per regime), weighted all-frame MAE, compute column, reading
-      paragraph. One pending marker for the still-training cells
-      (R3-R5 transformer, R4 scv2, ebsrof, CKLA rows).
+      paragraph. ALL CELLS FILLED (2026-08-25): R3/R4 transformer, R4
+      scv2 (17.6 — new campaign best), ebsrof, CKLA rows in; no pending
+      markers remain in the table.
 
 ## 6. Fix the paper's narrative
 
@@ -138,17 +148,23 @@ Sub-tasks:
 - [x] "No prior art" phrased as "no published direct method / no
       published direct baselines" with the adjacent-task suite as the
       response (abstract + contribution 1).
-- [ ] "Synthetic does not transfer": DECIDED (2026-08-24) — claim is
+- [x] WRITTEN (2026-08-25), final form: coverage-not-realism with the
+      comb-only twist — the comb curriculum on the R2 base BEATS real-only
+      for scv2 (17.6 vs 22.1) and the causal GRU; the generator version
+      never beats it; mixed degrades all. Abstract, reading paragraph,
+      ablation section and conclusion updated. Originally: claim is
       conditional on the HB outcome. If R2 closes the gap: "synthetic
       pre-training helps only by covering regimes the real corpus lacks;
       with an honest real regime the benefit disappears". If not, soften
       to the coverage-vs-realism split. Write after the HB harvest.
-- [ ] Amplitude-cues claim: cite our own evidence chain (x1.02 scale-response
-      probe, freq-scale regime results) in the section that makes it.
+- [x] Amplitude-cues claim wired to the probe + freq-scale evidence in
+      sec:overfit (2026-08-24 draft pass).
 
 ## 7. Citations + figures sweep
 
-- [ ] `grep -n "\\pending\|\\wip" writing/papers/2026-08_wrapup/src/index.tex`
+- [x] Citations RESOLVED (2026-08-25) except the unpublished MD2
+      technical report (2 markers, unresolvable until it exists); the
+      stale R3-R5 rerun note removed. Originally: grep pending/wip —
       — resolve every marker: real citations via the bibliography MCP
       (OT paper 2508.02471, Cuesta ISMIR 2020, Bittner ICASSP 2022, VK/order
       tracking, DREGON, LibriSpeech, ...), numbers from the docs.
@@ -159,17 +175,20 @@ Sub-tasks:
 
 - [x] Clips verified (2026-08-24): 36 (pure zero, 251/0/0), 8
       (transition, 87/59/105), 20 (cruise, 0/0/251).
-- [x] Generator built + committed (make_figures.py, configurable
-      method list via zoo:/classical:/npz: sources; renders today with
-      hb_scv2_if / real-only / NMF / HPS). Re-render with the final
-      winner set + blind npz + OT npz once those rows land — the one
-      remaining step of this item.
+- [x] Generator built + committed (make_figures.py, zoo:/classical:/npz:
+      sources). RE-RENDERED with the final set (2026-08-25): wide-grid
+      salience npz + blind-tracker npz + NMF + r4hb_scv2 (best neural),
+      big panels, cruise fixed to 60-100 rev/s; figures live in the deck
+      and the paper submodule.
 
 ## 9. Make slides for supervisor, which should simply present the paper structure
 
 ## 9. Edge-BS-RoFormer on R2 + failure diagnostics
 
-- [ ] `hb_ebsrof` experiment (edge_bs_rof_rps model, R2 policy). The July
+- [x] CLOSED (2026-08-25): hb_ebsrof LEARNS under R2 (best 396 vs July's
+      flat 1150) — cruise-competitive (flight MAE 3.21), fails zeros
+      (34.5); row + diagnosis in the leaderboard doc and paper; low-lr
+      reserve arm unnecessary. Originally: `hb_ebsrof` experiment (edge_bs_rof_rps model, R2 policy). The July
       attempt never learned (val ~1150 flat, cause undiagnosed, docs still
       say "Pending run"). Instrument the rerun: gradient norms, output-head
       stats, a 10x-lower-lr arm if flat again. Either it learns under R2
@@ -178,7 +197,10 @@ Sub-tasks:
 
 ## 10. CKLA (+ KLA baseline) on R2 -> paper
 
-- [ ] `hb_ckla` (the campaign's best phase-only variant) on the R2
+- [x] CLOSED (2026-08-25): hb_ckla aggregate 40.6 (zero 5.95 / flight
+      3.51), coherent across regimes, trails scv2 everywhere; row in
+      leaderboard + paper table; the design-gap lesson added to the
+      Discussion. Originally: `hb_ckla` (the campaign's best phase-only variant) on the R2
       policy, same budget as the HB grid. (`hb_fkla` CANCELLED by the user
       2026-08-25 — the plain-KLA cross-implementation baseline is ~6x
       slower per step and its scientific question, rotation-vs-no-rotation,
@@ -192,17 +214,20 @@ Sub-tasks:
 - [x] Implemented (2026-08-25): src/models/hg_ckla.py, 221k params, 12
       tests, innovation physics <0.01% error; two design findings recorded
       in the design doc §9 (phase-aligned gather, shared-gather pairs).
-- [ ] Stage-A refiner training SUBMITTED (hb_hgckla_ref, gpushort); on
-      completion run G1 synthetic comparison vs pi_kalman + G2 protocol
-      eval (`rps_eval --protocol beatvk --pred model:...`).
+- [x] CLOSED (2026-08-25): stage-A trained (flat at 2.78 from epoch 1;
+      identity 3.87). Head-to-head on identical corrupted inits, 37 valid
+      clips: HG-CKLA 3.03 beats one pi_kalman pass 3.44 (all action in
+      flight: -18% vs -5% MSE); G1 synthetic gate and cruise-precision G2
+      unrun — recorded as future work, not a leaderboard row. Full record
+      in unified-baseline-eval.md.
 
 ## 12. Slides — start NOW (before all results land)
 
 - [x] Deck BUILT (2026-08-25): writing/slides/2026-08-25_wrapup-progress/
       (14 pages, 2 critic rounds + 1 revise round, render verified).
-      UNCOMMITTED per the writeup convention — user reviews first.
-      Remaining: refresh the in-flight/WIP slides when the rerun numbers
-      land (same one-command rebuild as the figures).
+      Then REBUILT to the user's figures-and-tables structure
+      (2026-08-25, 20 pages), output panels re-rendered with the final
+      winner set (r4hb_scv2), committed and pushed.
 
 ## Compute budget note
 

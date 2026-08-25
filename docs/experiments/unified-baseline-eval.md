@@ -281,8 +281,62 @@ in every cell, consistent with the design gap recorded in
 `docs/pikalman-ckla-design.md`: the pooled-feature CKLA cannot do a
 state-conditioned measurement, which is what `hb_hgckla_ref` tests.
 
-### Remaining rows
+### The regime grid completes (2026-08-25, final cells)
 
-`hb_hgckla_ref` (stage-A refiner, training), the kaggle/colab regime
-reruns `r3hb_tr`, `r4hb_scv2`, `r4hb_tr`, and the widened narrow-SR
-salience arm; their probes land here as they finish.
+| run | zero | low | flight | agg MSE | all-MAE |
+|---|---|---|---|---|---|
+| r4hb_scv2 | 2.87 / 20.5 | 3.48 / 34.3 | 2.49 / 14.0 | **17.6** | **2.68** |
+| r3hb_tr | 5.14 / 127.9 | 5.26 / 96.6 | 2.71 / 15.2 | 40.5 | 3.36 |
+| r4hb_tr | 5.99 / 115.1 | 5.19 / 84.4 | 3.09 / 22.5 | 42.6 | 3.74 |
+
+REVISED HEADLINE (2026-08-25): r4hb_scv2 — the comb-only curriculum on
+top of the R2 base — is the new best neural cell of the campaign:
+aggregate 17.6 against the R2 control's 22.1, best zero cell of any
+regression model (2.87 MAE), best all-frame MAE (2.68 against 2.72).
+The full per-trunk regime matrix (aggregate MSE, controls first):
+
+| trunk | R2 control | R3 gen+comb | R4 comb-only | R5 mixed |
+|---|---|---|---|---|
+| scv2 (BiGRU) | 22.1 | 22.6 | **17.6** | 147.6 |
+| Transformer | 41.8 | 40.5 | 42.6 | 59.2 |
+| causal GRU | 61.9 | 41.8 | **37.6** | 85.8 |
+
+The synthetic-data verdict, final form: the neural GENERATOR is nowhere
+necessary — R3 never beats R4 where curricula help, and never beats the
+R2 control on the best trunk. The analytic COMB curriculum improves two
+of three trunks (scv2 −20%, causal GRU −39% against controls) and is
+neutral for the Transformer. Mixing loses everywhere. So: coverage, not
+realism — and the cheapest possible synthetic source (the closed-form
+comb with exact labels) delivers all of the coverage value that
+survives the honest real regime.
+
+### HG-CKLA stage-A refiner (2026-08-25, TODO 11)
+
+Training: flat — best val/mse 2.78 at epoch 1, no improvement over 21
+epochs (identity baseline of the corrupted conditioning on the same
+valid stream: 3.87). The physics path refines immediately; the learned
+components do not progress. Head-to-head on identical channel-0
+corrupted inits over all 37 valid clips (full envelope):
+
+| method | all MSE / MAE | zero MSE | low MSE | flight MSE |
+|---|---|---|---|---|
+| identity (corrupted cond) | 3.56 / 1.29 | 0.12 | 3.27 | 4.21 |
+| one pi_kalman pass | 3.44 / 1.23 | 0.17 | 3.52 | 3.98 |
+| HG-CKLA v1 | 3.03 / 1.13 | 0.11 | 3.52 | 3.45 |
+
+The regime split localizes the effect: all refinement happens in
+flight, where the neural cell removes 18% of the corruption MSE against
+the classical pass's 5% — one pi_kalman pass barely moves under this
+corruption level (outside its capture band), and slightly degrades the
+zero and ramp regions it should leave alone, which the neural cell does
+not.
+
+The v1 cell modestly beats one classical pass under heavy corruption
+(OU sigma up to 1.5 rev/s — partly outside pi_kalman's capture band)
+pooled over the full envelope. The design-doc G1 gate (synthetic
+capture range) and the cruise-precision regime of G2 (telemetry-grade
+inits, where pi_kalman reaches 0.03-0.2 rev/s) remain unrun; nothing
+here shows the cell can match the classical pass where the classical
+pass is strong. Verdict: the harmonic-gather measurement works (the
+epoch-1 result), the learning on top of it does not yet, and the
+refiner is not a leaderboard row.

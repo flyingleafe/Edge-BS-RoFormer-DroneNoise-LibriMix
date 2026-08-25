@@ -317,7 +317,8 @@ for the Transformer, synchrosqueezed for the causal GRU.
   [multi-F0 wide grid (best salience)], [48.2], [16.1], [4.7], [11.7], [2 CPU-s],
   [blind tracker, no gates], [79.4], [39.1], [*2.27*], [17.0], [9.9 CPU-s],
   [blind tracker, gates, refusal $arrow.r$ 0], [*0.01*], [29.8], [48.4], [39.7], [9.9 CPU-s],
-  [SimpleConvV2 (BiGRU), R2], [*3.4*], [*4.2*], [2.35], [*2.72*], [0.25 CPU-s],
+  [SimpleConvV2 (BiGRU), R2 real-only], [3.4], [4.2], [2.35], [2.72], [0.25 CPU-s],
+  [SimpleConvV2, R4 comb curriculum], [*2.9*], [*3.5*], [2.49], [*2.68*], [0.25 CPU-s],
   [Transformer head, R2], [5.5], [5.1], [2.65], [3.35], [0.25 CPU-s],
   [causal GRU-128, R2], [6.0], [8.2], [3.06], [4.12], [0.25 CPU-s],
 )
@@ -326,8 +327,9 @@ for the Transformer, synchrosqueezed for the causal GRU.
 #cbox[
   PIT MAE, rev/s. The regression models win every column except cruise,
   where the gate-free blind tracker stays ahead (2.27 vs 2.35) at
-  $tilde$40$times$ the cost. Only the gated tracker and the R2 models
-  decide silence correctly.
+  $tilde$40$times$ the cost. The best row is the comb-curriculum
+  convolutional model; only the gated tracker and the full-envelope
+  models decide silence correctly.
 ]
 
 // ---------------------------------------------------------------------
@@ -347,7 +349,7 @@ for the Transformer, synchrosqueezed for the causal GRU.
   columns: (2fr, 1fr),
   gutter: 10pt,
   fig("assets/qual_transition.png", 11.8cm),
-  small[Ramp clip. The R2 model follows the ramp through the comb collapse. The salience model stays near its floor, NMF answers noise below its grid, and the blind tracker holds a false cruise lock until the true comb appears.],
+  small[Ramp clip. The best model follows the ramp through the comb collapse. The salience model stays near its floor, NMF answers noise below its grid, and the blind tracker holds a false cruise lock until the true comb appears.],
 )
 
 // ---------------------------------------------------------------------
@@ -407,8 +409,9 @@ for the Transformer, synchrosqueezed for the causal GRU.
   inset: 5.5pt,
   align: (left, right, right, right, right),
   table.header([*Run (SimpleConvV2 trunk)*], [*zero*], [*ramps*], [*cruise*], [*all*]),
-  [R2 real-only], [*3.4*], [*4.2*], [*2.35*], [*2.72*],
+  [R2 real-only], [3.4], [4.2], [*2.35*], [2.72],
   [R3 generated+comb curriculum], [3.9], [4.3], [2.49], [2.90],
+  [R4 comb-only curriculum], [*2.9*], [*3.5*], [2.49], [*2.68*],
   [R5 mixed one-stage], [16.1], [9.1], [5.20], [7.11],
 )
 #v(0.5em)
@@ -418,18 +421,18 @@ for the Transformer, synchrosqueezed for the causal GRU.
   inset: 5.5pt,
   align: (left, right, right, right),
   table.header([*Aggregate (val MSE)*], [*SimpleConvV2*], [*Transformer*], [*causal GRU*]),
-  [R2 real-only control], [*22.1*], [*41.8*], [61.9],
-  [R3 curriculum on R2], [22.6], [—], [41.8],
-  [R4 comb-only on R2], [—], [—], [*37.6*],
+  [R2 real-only control], [22.1], [*41.8*], [61.9],
+  [R3 curriculum on R2], [22.6], [40.5], [41.8],
+  [R4 comb-only on R2], [*17.6*], [42.6], [*37.6*],
   [R5 mixed on R2], [147.6], [59.2], [85.8],
 )
 ]
 #v(0.4em)
 #cbox[
-  For the best architecture the curriculum adds *nothing* (22.6 vs 22.1);
-  mixed one-stage training loses on *all three* trunks. Synthetic data
-  survives only for the weakest (causal) trunk, and there the free
-  analytic comb beats the trained neural generator.
+  The comb-only curriculum is the campaign's best recipe: 17.6 for
+  SimpleConvV2 and 37.6 for the causal GRU, against real-only controls
+  of 22.1 and 61.9. The neural-generator curriculum never beats it, and
+  mixed one-stage training loses on all three trunks.
 ]
 
 // ---------------------------------------------------------------------
@@ -438,17 +441,18 @@ for the Transformer, synchrosqueezed for the causal GRU.
 #v(1fr)
 #cbox(fill: luma(240))[
   #text(size: 1.05em)[
-  - The July gains of the generated-first curriculum came from *coverage*:
-    honest zeros and full-envelope trajectories the real corpus lacked —
-    not from acoustic realism.
-  - The full-envelope real regime supplies the same coverage from real
-    recordings alone (silence arm + SNR floor + label-transforming
-    augmentations) — and the curriculum's advantage disappears.
+  - Synthetic pre-training pays exactly for its *coverage*: guaranteed
+    harmonic structure on exact labels across the full speed envelope.
+    Realism contributes nothing measurable.
+  - The coverage needs no learned model: the closed-form comb curriculum
+    gives the campaign's best cells (SimpleConvV2 17.6, causal GRU 37.6)
+    while the neural-generator curriculum never beats it anywhere.
   - Mixing synthetic data into the real pool acts as label noise and
     degrades every architecture; staging is mandatory wherever synthetic
     data is used at all.
-  - Where a curriculum still pays (causal GRU), the analytic comb —
-    zero training cost — beats the neural generator.
+  - The trained generator survives nowhere: its curriculum ties the
+    real-only control on the strong trunks and loses to the comb on the
+    weak one.
   ]
 ]
 #v(1fr)
