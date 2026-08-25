@@ -181,6 +181,12 @@ row needs both conventions or a recalibrated gate; flagged for the author.
 | run | zero | low | flight | best val/mse |
 |---|---|---|---|---|
 | r2hb_gru_nogate | 6.02 / 173.7 | 8.17 / 164.4 | 3.06 / 26.8 | 61.9 |
+| r3hb_gru | 4.89 / 118.9 | 5.47 / 118.2 | 2.79 / 17.8 | 41.8 |
+
+r3hb_gru (gen+comb curriculum on the R2 base, ungated) lands at 41.8 —
+well below its nogate R2 control (61.9) and below the old-regime m3cur
+unigru (51.4): for the causal trunk the curriculum still pays on top of
+honest data, and the nested comparison is now clean.
 
 First cell: the R2 ungated GRU control lands at 61.9 aggregate — level
 with its fs_v2 real-only control (59.2) and behind every GATED hb_gru
