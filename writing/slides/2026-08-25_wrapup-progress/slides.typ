@@ -115,12 +115,12 @@
   columns: (1fr, 1fr),
   gutter: 10pt,
   [
-    #fig("assets/timewarp_before_after.png", 4.6cm)
+    #fig("assets/timewarp_before_after.png", 5.6cm)
     #small[*Time-warp*: resample audio and speed labels on one warped clock
     ($alpha lt.eq 1.12$) — new speed trajectories from the same recording.]
   ],
   [
-    #fig("assets/freqscale_illustration.png", 4.6cm)
+    #fig("assets/freqscale_illustration.png", 5.6cm)
     #small[*Frequency-scale*: scale the spectrum and the labels by the same
     $alpha$ — a genuine comb-spacing change the model must follow.]
   ],
@@ -134,15 +134,15 @@
   gutter: 6pt,
   [
     #align(center)[*zero — stopped rotors*]
-    #fig("assets/qual_zero.png", 4.9cm)
+    #fig("assets/qual_zero.png", 5.8cm)
   ],
   [
     #align(center)[*ramps — start/stop transition*]
-    #fig("assets/qual_transition.png", 4.9cm)
+    #fig("assets/qual_transition.png", 5.8cm)
   ],
   [
     #align(center)[*flight — cruise*]
-    #fig("assets/qual_cruise.png", 4.9cm)
+    #fig("assets/qual_cruise.png", 5.8cm)
   ],
 )
 #small[Validation slices: spectrogram on top, per-rotor speed tracks below.
@@ -180,13 +180,13 @@ The same three clips return full-size later in the deck.]
   columns: (1fr, 1fr),
   gutter: 10pt,
   [
-    #fig("assets/multif0-illustration-1.png", 4.3cm)
+    #fig("assets/multif0-illustration-1.png", 5.4cm)
     #small[*Multi-F0 CNN* (Cuesta et al.): HCQT input, per-bin salience
     map, trained with BCE on the comb positions; Hungarian tracking
     decodes 4 speed tracks from the map.]
   ],
   [
-    #fig("assets/basic-pitch-illustration.png", 4.3cm)
+    #fig("assets/basic-pitch-illustration.png", 5.4cm)
     #small[*Basic Pitch* (Spotify): lightweight polyphonic pitch model,
     ported to PyTorch; same salience-map decoding. Both retrained under
     the same R2 stream and augmentations as our models.]
@@ -200,8 +200,8 @@ The same three clips return full-size later in the deck.]
   columns: (1.15fr, 1fr),
   gutter: 10pt,
   [
-    #fig("assets/sample_00026_multif0_salience_salience.png", 3.3cm)
-    #fig("assets/sample_00026_multif0_salience_rps.png", 3.3cm)
+    #fig("assets/sample_00026_multif0_salience_salience.png", 4.0cm)
+    #fig("assets/sample_00026_multif0_salience_rps.png", 4.0cm)
     #small[Multi-F0 salience map (top) and decoded tracks (bottom) on a
     cruise clip.]
   ],
@@ -234,13 +234,13 @@ The same three clips return full-size later in the deck.]
   columns: (1fr, 1fr),
   gutter: 10pt,
   [
-    #fig("assets/stepper_viterbi_c.png", 4.7cm)
+    #fig("assets/stepper_viterbi_c.png", 5.6cm)
     #small[*Stage 1 — Viterbi ridge-seeking*: comb-score lattice over
     candidate speeds; joint 8-channel dynamic programming picks the
     smoothest high-score path per rotor.]
   ],
   [
-    #fig("assets/stepper_vit2dsp.png", 4.7cm)
+    #fig("assets/stepper_vit2dsp.png", 5.6cm)
     #small[*Stage 2 — phase-increment Kalman refinement*: demodulate each
     harmonic at the current estimate, read the phase increments, fuse
     them with SNR-dependent weights, smooth, repeat coarse-to-fine.]
@@ -261,24 +261,36 @@ The same three clips return full-size later in the deck.]
   columns: (1.25fr, 1fr),
   gutter: 10pt,
   [
-    #fig("assets/s1_online_leaderboard.png", 5.6cm)
+    #fig("assets/s1_online_leaderboard.png", 7.2cm)
     #small[The R1 sweep leaderboard (online-mixing arm): six variant groups
     over one conv trunk — temporal heads, input features, pooling, causal
     heads, dilated backbones.]
   ],
   [
-    #fig("assets/s2_model_diagram.png", 5.6cm)
-    #small[The shared trunk: residual SE conv encoder + frequency-attention
-    pool + temporal head. The three winners kept for the paper:
-    *SimpleConvV2* (BiGRU head), *Transformer head*, *causal GRU-128*
-    (streaming-capable).]
+    #let node(body, fill: luma(240)) = box(fill: fill, stroke: 0.8pt + luma(120),
+      inset: 6pt, radius: 3pt, width: 100%, align(center, text(size: 0.75em, body)))
+    #let arrow = align(center, text(size: 0.8em, sym.arrow.b))
+    #node[STFT front-end (1 s chunk)\ magnitude / +IF / synchrosqueezed]
+    #arrow
+    #node[residual conv encoder\ squeeze-and-excitation blocks]
+    #arrow
+    #node[learned frequency-attention pool]
+    #arrow
+    #grid(columns: (1fr, 1fr, 1fr), gutter: 4pt,
+      node(fill: rgb("#dce8f5"))[*BiGRU*\ SimpleConvV2],
+      node(fill: rgb("#dce8f5"))[*Transformer*\ head],
+      node(fill: rgb("#dce8f5"))[*causal GRU-128*\ streaming])
+    #arrow
+    #node[4 speeds per frame, PIT-MSE]
+    #v(0.3em)
+    #small[The shared trunk and the three winner heads kept for the paper.]
   ],
 )
 
 // ---------------------------------------------------------------------
 = Spectral front-ends
 
-#fig("assets/frontends_render.png", 4.9cm)
+#fig("assets/frontends_render.png", 6.4cm)
 #v(0.4em)
 #small[
 One cruise validation clip through the three front-ends.
@@ -324,8 +336,8 @@ for the Transformer, synchrosqueezed for the causal GRU.
 #grid(
   columns: (2fr, 1fr),
   gutter: 10pt,
-  fig("assets/qual_zero.png", 11.2cm),
-  small[Rumble-heavy silence clip. The R2 model holds zero; NMF and HPS floor at their grid boundary; the cruise-trained model hallucinates speeds from the rumble level.],
+  fig("assets/qual_zero.png", 11.8cm),
+  small[Rumble-heavy silence clip. The R2 model holds zero. NMF floors at its grid boundary, the salience model lights up on the rumble, and the gate-free tracker locks onto false ridges (the gates decode this window to zero).],
 )
 
 // ---------------------------------------------------------------------
@@ -334,8 +346,8 @@ for the Transformer, synchrosqueezed for the causal GRU.
 #grid(
   columns: (2fr, 1fr),
   gutter: 10pt,
-  fig("assets/qual_transition.png", 11.2cm),
-  small[Ramp clip. The full-envelope regime tracks the ramp through the comb collapse; the classical trackers lose lock below their grid floor and re-acquire late.],
+  fig("assets/qual_transition.png", 11.8cm),
+  small[Ramp clip. The R2 model follows the ramp through the comb collapse. The salience model stays near its floor, NMF answers noise below its grid, and the blind tracker holds a false cruise lock until the true comb appears.],
 )
 
 // ---------------------------------------------------------------------
@@ -344,14 +356,14 @@ for the Transformer, synchrosqueezed for the causal GRU.
 #grid(
   columns: (2fr, 1fr),
   gutter: 10pt,
-  fig("assets/qual_cruise.png", 11.2cm),
-  small[Cruise clip. All methods track; the differences are precision: blind tracker 2.27, best neural 2.35, NMF 8.1 rev/s cruise MAE on the full split.],
+  fig("assets/qual_cruise.png", 11.8cm),
+  small[Cruise clip. All four track; the differences are precision: blind tracker 2.27, best neural 2.35, NMF 8.1 rev/s cruise MAE on the full split.],
 )
 
 // ---------------------------------------------------------------------
 = Why the frequency-scale augmentation is mandatory
 
-#fig("assets/freqscale_illustration.png", 4.6cm)
+#fig("assets/freqscale_illustration.png", 6.0cm)
 #v(0.4em)
 #cbox[
   Models trained without it do not read frequency: a genuine 2%
@@ -368,12 +380,12 @@ for the Transformer, synchrosqueezed for the causal GRU.
   columns: (1fr, 1fr),
   gutter: 10pt,
   [
-    #fig("assets/real_vs_gen_dregon.png", 4.4cm)
+    #fig("assets/real_vs_gen_dregon.png", 5.4cm)
     #small[Neural generator output vs real DREGON noise: the timbre gap
     is audible and visible.]
   ],
   [
-    #fig("assets/static_comb_vs_generator.png", 4.4cm)
+    #fig("assets/static_comb_vs_generator.png", 5.4cm)
     #small[The analytic comb: guaranteed harmonic structure at exact
     labels — no generator training, no timbre modeling.]
   ],

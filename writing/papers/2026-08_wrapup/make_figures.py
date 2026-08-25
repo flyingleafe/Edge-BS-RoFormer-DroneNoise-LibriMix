@@ -101,12 +101,12 @@ DEFAULT_METHODS: tuple[tuple[str, str], ...] = (
 )
 
 STYLE = {
-    "font.size": 7,
-    "axes.labelsize": 7,
-    "axes.titlesize": 7,
-    "legend.fontsize": 7,
-    "xtick.labelsize": 6,
-    "ytick.labelsize": 6,
+    "font.size": 10,
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "legend.fontsize": 10,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
     "figure.dpi": 300,
     "savefig.dpi": 300,
     "pdf.compression": 9,
@@ -258,9 +258,9 @@ def _panel(
     t_end: float,
 ) -> None:
     for r in range(gt.shape[0]):
-        ax.plot(t_gt, gt[r], ":", color=ROTOR_COLORS[r], lw=0.6, alpha=0.55)
+        ax.plot(t_gt, gt[r], ":", color=ROTOR_COLORS[r], lw=1.2, alpha=0.7)
     for r in range(min(pred.shape[0], len(ROTOR_COLORS))):
-        ax.plot(t_pred, pred[r], "-", color=ROTOR_COLORS[r], lw=0.8, alpha=0.85)
+        ax.plot(t_pred, pred[r], "-", color=ROTOR_COLORS[r], lw=1.6, alpha=0.9)
     ax.set_xlim(t_start, t_end)
     ax.set_ylim(*ylim)
     ax.set_ylabel("rev/s")
@@ -274,7 +274,7 @@ def _panel(
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=6.5,
+        fontsize=10,
         bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 1.2},
     )
 
@@ -322,13 +322,13 @@ def render_clip(
     ylim = (lo - 0.06 * span, hi + 0.10 * span)
 
     n_rows = len(methods) + 1
-    height = 0.95 + 0.72 * len(methods) + 0.45
+    height = 1.35 + 1.30 * len(methods) + 0.55
     fig, axes = plt.subplots(
         n_rows,
         1,
         figsize=(width, height),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.25] + [1.0] * len(methods)},
+        gridspec_kw={"height_ratios": [1.05] + [1.0] * len(methods)},
     )
     _draw_spectrogram(axes[0], audio, t_start, t_end)
     for ax, (label, _) in zip(axes[1:], methods, strict=True):
