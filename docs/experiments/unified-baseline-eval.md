@@ -182,6 +182,18 @@ row needs both conventions or a recalibrated gate; flagged for the author.
 |---|---|---|---|---|
 | r2hb_gru_nogate | 6.02 / 173.7 | 8.17 / 164.4 | 3.06 / 26.8 | 61.9 |
 | r3hb_gru | 4.89 / 118.9 | 5.47 / 118.2 | 2.79 / 17.8 | 41.8 |
+| hb_scv2_mag_nogate | 3.36 / 59.3 | 4.18 / 52.2 | 2.35 / 11.1 | **22.1** |
+
+HEADLINE (2026-08-25): hb_scv2_mag_nogate reaches 22.1 — the best neural
+aggregate of the campaign, real data only, essentially level with the old
+comb curriculum (21.1), and best-in-class in every regime (flight MSE 11.1
+beats even the old real-only cruise). Attribution for scv2: honest DATA
+does nearly everything (52.5 -> 22.1); the gate HURTS this trunk (gated
+39.7). Combined with the GRU result (gate helps: 61.9 -> 39.8), the
+voicing gate is architecture-dependent — useful for causal heads that
+cannot see future context, harmful for the bidirectional trunk. The paper
+claim "honest silence closes most of the stopped-rotor failure" is now
+supported at full strength for the best model.
 
 r3hb_gru (gen+comb curriculum on the R2 base, ungated) lands at 41.8 —
 well below its nogate R2 control (61.9) and below the old-regime m3cur
