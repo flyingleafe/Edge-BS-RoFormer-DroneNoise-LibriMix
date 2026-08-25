@@ -196,10 +196,11 @@ Sub-tasks:
 
 ## 12. Slides — start NOW (before all results land)
 
-- [ ] /writeup slides: progress/paper-companion deck from the current
-      state — narrative arc of the paper (six bullets), leaderboard as of
-      today with pending cells marked, HB grid findings, blind-tracker
-      trade-off, regime taxonomy. WIP slots for the rerun numbers.
+- [x] Deck BUILT (2026-08-25): writing/slides/2026-08-25_wrapup-progress/
+      (14 pages, 2 critic rounds + 1 revise round, render verified).
+      UNCOMMITTED per the writeup convention — user reviews first.
+      Remaining: refresh the in-flight/WIP slides when the rerun numbers
+      land (same one-command rebuild as the figures).
 
 ## Compute budget note
 
