@@ -390,6 +390,25 @@ the model must actually track, and so far it tracks moderately. The arms need
 the epochs to do it — E and F were still improving their training loss when
 their slots were handed to G and H.
 
+### Arm H fits three and a half times better
+
+Training loss at matched epochs, arm H against the arms it narrows and the comb
+family it is trying to reach:
+
+| epoch | H | E | F | comb |
+|---|---|---|---|---|
+| 0 | 2521 | 2948 | 2711 | 2654 |
+| 1 | 963 | 1394 | 1503 | 492 |
+| 2 | 652 | 1295 | 1269 | 80 |
+| 3 | 525 | 1242 | 1153 | 29 |
+| 4 | 397 | 1201 | 1116 | 18 |
+| 5 | 300 | 1159 | 1091 | 14 |
+| 6 | **277** | 1094 | 1036 | 14 |
+
+Arm H is where E and F were at epoch 18, by epoch 6. The narrowing did what it
+was meant to do. The comb family is still in another league — it is solved by
+epoch 3 — but the comb family is also the one whose model cannot read a ramp.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
