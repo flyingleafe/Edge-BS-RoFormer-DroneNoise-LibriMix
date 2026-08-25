@@ -12,14 +12,27 @@ Every synthetic-only predictor this project has trained transfers badly. On the
 frozen split `dload:DREGON-LM-V4-michaels-valid-full`, scored as frame-weighted
 PIT mean squared error:
 
-| stage-1 arm (synthetic only) | noise family | val PIT-MSE |
-|---|---|---|
-| `m3abl_comb_unigru128_s1` | analytic static comb | 212.5 |
-| `e8_staticcomb_s1_unigru128` | analytic static comb | 225.3 |
-| `e7_gencurric_s1_scv2` | neural generator | 226.3 |
-| `m3abl_comb_scv2_s1` | analytic static comb | 336.8 |
-| `m3cur_scv2_s1` | generator + comb | 349.2 |
-| `m3abl_comb_transformer_s1` | analytic static comb | 2563.5 |
+| stage-1 arm (synthetic only) | noise family | best val PIT-MSE | at epoch |
+|---|---|---|---|
+| `m3abl_comb_unigru128_s1` | analytic static comb | **183.7** | 38 |
+| `m3abl_comb_scv2_s1` | analytic static comb | 204.0 | 16 |
+| `e8_staticcomb_s1_unigru128` | analytic static comb | 222.6 | 7 |
+| `e7_gencurric_s1_scv2` | neural generator | 222.8 | 1 |
+| `m3cur_unigru128_s1` | generator + comb | 275.4 | 2 |
+| `m3cur_transformer_s1` | generator + comb | 316.9 | 0 |
+| `m3cur_scv2_s1` | generator + comb | 325.5 | 20 |
+| `m3abl_comb_transformer_s1` | analytic static comb | 1802.0 | 0 |
+
+These are the minimum over each run's history. An earlier version of this table
+quoted the runs' *last* epoch instead, which flattered nothing but was wrong in
+both directions — `m3abl_comb_scv2_s1` reads 204.0 at its best and 336.8 at its
+last. The best-epoch column is what the arms have to beat.
+
+Two of these curves say something on their own. The comb runs are violently
+unstable on the real split: `m3abl_comb_scv2_s1` swings between 430 and 1557
+over its first twelve epochs and only reaches 204 at epoch 16. Several arms peak
+at epoch 0 or 1 and then get worse, which is a model drifting away from the real
+data as it fits the synthetic one better.
 
 The best real-trained model reaches **17.6** on the same split (`r4hb_scv2`), and
 the same comb-pretrained weights reach 25.6 after a real fine-tune
