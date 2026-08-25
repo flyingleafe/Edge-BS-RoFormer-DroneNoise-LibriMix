@@ -1,0 +1,27 @@
+# @package _global_
+# R2 honest-base regime (silence arm + SNR reference floor) with the
+# vendored plain-KLA head (kla-loglinear@11e5a39) — the cross-implementation
+# control for hb_ckla. Batch doc: docs/experiments/unified-baseline-eval.md.
+# Recipe identical to hb_ckla except the model and the gradient clip; the
+# model keeps its native stft_mag_if front-end and its p_init 1.0 gain fix.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_fkla
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: hb_fkla
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — the fs_v2 batch of fkla_fs_v2)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -1,0 +1,33 @@
+# @package _global_
+# R2 honest-base regime (silence arm + SNR reference floor) with the CKLA
+# phase-only readout head — the best cell of the July CKLA campaign. Batch
+# doc: docs/experiments/unified-baseline-eval.md. Recipe identical to
+# hb_scv2_mag; the model keeps its native stft_mag_if front-end and its
+# p_init 1.0 gain fix. No voicing gate exists on this head, thus the
+# comparison cell is hb_scv2_mag_nogate.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_ckla_phaseonly
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: hb_ckla
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — the fs_v2 batch of ckla_phaseonly_fs_v2)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+# grad_clip stays at the 5.0 default, as in ckla_phaseonly_fs_v2 and in every
+# other HB cell. The phase_only readout can explode on atan2 near a zero
+# phasor (a NaN killed a seed of ckla_phaseonly_8s at 8 s chunks), and the
+# silence arm makes near-zero phasors more frequent. If this run NaNs, set
+# grad_clip: 1.0 — see the .md.
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
