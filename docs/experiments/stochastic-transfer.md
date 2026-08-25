@@ -618,6 +618,30 @@ Both keep the comb visible at every speed. Measured as the median decibels by
 which the harmonics stand over the local floor: real ramps 5.5 dB and real
 cruise 2.7; arm L 3.6 at 5 to 25 rev/s, 4.6 at 25 to 45, 4.2 at cruise.
 
+## Arm L separates its two changes
+
+Arm L changed two things on top of arm G — a recording floor under the silence,
+and a decade of rotor speed — and its per-regime score says which one worked:
+
+| model | all-MAE | zero | low | flight |
+|---|---|---|---|---|
+| `r4hb_scv2` (target) | 2.67 | 2.87 | 3.48 | 2.49 |
+| `stoch_s1g_scv2` | **8.08** | 20.27 | **16.20** | **4.50** |
+| `stoch_s1l_probe` | 13.70 | **12.85** | 17.55 | 13.14 |
+
+**The recording floor works.** The stopped-rotor cell falls 37%, from 20.27 to
+12.85, which is what `floor_static_rel` was built for.
+
+**The decade of rotor speed does not.** Cruise goes from 4.50 to 13.14 and the
+ramps do not move. Asking a model to find a comb anywhere between 20 and 200
+rev/s spends its capacity on a range the evaluation never visits, and it pays
+for that where the evaluation actually lives. This is worth stating plainly
+because the campaign expected the opposite: a wider speed prior is what fixed
+the cruise *bias* earlier (0.836 to 0.993 of the truth), and widening it further
+still made cruise worse.
+
+Arm P is therefore arm G with the recording floor and nothing else.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
