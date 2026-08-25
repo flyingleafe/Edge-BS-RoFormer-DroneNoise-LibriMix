@@ -292,6 +292,60 @@ and 1557 while the new family descends. A stream whose every clip has a
 different texture gives a validation curve on real data that moves in one
 direction, which is what a family wide enough to contain the target should do.
 
+## The arms, measured mid-run
+
+Per-regime scores of arms E and F at their best checkpoint so far, beside the
+converged baselines:
+
+| checkpoint | aggregate | all MAE | zero | low | flight |
+|---|---|---|---|---|---|
+| `r4hb_scv2` (real) | 17.59 | 2.67 | 2.87 | 3.48 | 2.49 |
+| `m3abl_comb_scv2_s1` | 218.30 | 9.50 | 5.64 | 26.32 | 7.09 |
+| `stoch_s1e_scv2` (mid-run) | 280.66 | 10.74 | 8.92 | 27.55 | 7.98 |
+| `stoch_s1f_scv2` (mid-run) | 343.69 | 11.35 | **34.69** | **16.95** | **6.32** |
+
+**The ramp fix works.** Arm F is the best synthetic-only model this project has
+on the ramps — 16.95 rev/s against 26.32 for the comb — and the best at cruise
+as well, 6.32 against 7.09. Both cells moved in exactly the direction the ramp
+measurement predicted.
+
+**And it gives all of it back on stopped rotors**, at 34.69 against the comb's
+5.64. That is the level damage: arm F normalizes every window to its own
+root-mean-square, so a stopped-rotor window leaves at the same level as a cruise
+window and the model has no level cue to detect silence with. Arm G already
+addresses it, and this table is the prediction it will be judged against — F's
+ramp and cruise cells with a stopped-rotor cell near 5.
+
+## The family was too hard to learn
+
+The training losses say something the validation curves hid.
+
+| run | trains on | train loss @3 | @18 | @36 |
+|---|---|---|---|---|
+| `m3abl_comb_scv2_s1` | analytic comb | 29 | 7 | 4 |
+| `r4hb_scv2` | real | — | 9 | 6 |
+| `stoch_s1e_scv2` | the family | 1242 | **445** | — |
+| `stoch_s1f_scv2` | the family | 1153 | **452** | — |
+
+The comb family is solved by epoch 3. The real regimes settle at 5 to 20. The
+stochastic family is still at 445 after eighteen epochs — a root-mean-square
+error of 21 rev/s on its *own training data*. A model that cannot fit what it is
+trained on will not transfer, and that, not the domain gap, is what arms E and F
+were measuring.
+
+The width that costs the most and is least real is the harmonic coherence.
+`harm_coherence` was drawn uniformly over [0, 1], so 35% of clips had every
+harmonic of a rotor fading independently by up to 6 dB. The harmonics of one
+rotor are driven by one shaft under one load and rise and fall together — an
+incoherent comb is not a wider sample of reality, it is a sample of something
+that does not happen, and it is the hardest thing to see a comb through. Arm H
+draws coherence from [0.6, 1.0], halves the wander, puts the floor 8 to 30 dB
+under the lines, and drops back to frequency scaling alone.
+
+The general lesson is worth keeping separate from this campaign: **a synthetic
+family has to be wide where reality is wide and narrow where reality is narrow.
+Width in a direction reality does not go buys nothing and costs the fit.**
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
@@ -302,6 +356,12 @@ direction, which is what a family wide enough to contain the target should do.
   comb: response slope 0.94 on real audio, and the same checkpoint reads an
   unseen synthetic family to within 5%. Arm C (`rps_scale_range`) attacks the
   prior.
+* **2026-08-25** — the family was unlearnable: training loss 445 after eighteen
+  epochs against 5 to 29 for every other stream here. Arm H narrows the widths
+  that are not real, harmonic coherence first.
+* **2026-08-25** — arm F is the best synthetic-only model yet on the ramps
+  (16.95 against 26.32) and at cruise (6.32 against 7.09), and the worst on
+  stopped rotors (34.69) because of the level normalization arm G removes.
 * **2026-08-25** — level is a CUE, not a nuisance. Forcing the split to one
   level wrecks the stopped-rotor cell of the real-trained model too (2.87 to
   23.22 rev/s at RMS 0.1) while leaving its cruise cell untouched. Every
