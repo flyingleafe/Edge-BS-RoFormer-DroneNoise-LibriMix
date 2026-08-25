@@ -16,13 +16,22 @@ real-trained reference is 17.59 aggregate and 2.87 / 3.48 / 2.49, so the gap is
 closed on ramps and cruise and open on stopped rotors, which is what arm J
 addresses.
 
-**Where it stands.** A synthetic-only model now beats every earlier
-synthetic-only model on the frozen split — `stoch_s1g_scv2` reaches **172.1**
-aggregate against 204.0 for the best convolutional comb arm and 183.7 for the
-best causal one — and a second arm reads real cruise audio as well as a model
-trained on real data (2.60 rev/s against 2.49). The remaining distance is the
-ramps and the stopped rotors. The goal is per-regime parity with `r4hb_scv2`:
-zero 2.87, low 3.48, flight 2.49.
+**Where it stands.** The goal is per-regime mean-absolute-error parity with the
+best real-trained model. `python scripts/transfer_board.py` prints the standing,
+one row per MODEL — never a per-regime best-of across different models, which no
+single model achieves:
+
+| model | trained on | all-MAE | zero | low | flight |
+|---|---|---|---|---|---|
+| `r4hb_scv2` | real | **2.67** | **2.87** | **3.48** | **2.49** |
+| `stoch_s1g_scv2` | synthetic | 8.08 | 20.27 | 16.20 | 4.50 |
+| `m3abl_comb_unigru128_s1` | synthetic | 8.30 | 4.73 | 24.24 | 6.00 |
+| `stoch_s1h_scv2` | synthetic | 9.07 | 27.98 | 26.77 | **2.60** |
+
+The best synthetic-only model is 3.03x the target on all-regime MAE: 7.06x on
+stopped rotors, 4.66x on ramps, 1.81x at cruise. One arm has reached cruise
+parity on its own (`stoch_s1h_scv2`, 2.60 against 2.49) and no arm has reached
+two cells at once.
 
 ## Why the question is open
 
