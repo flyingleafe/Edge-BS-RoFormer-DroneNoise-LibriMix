@@ -1,6 +1,6 @@
 # HG-CKLA: the harmonic-gather CKLA cell (CKLA as a true pi_kalman pass)
 
-Status: DESIGN, 2026-08-25. No implementation yet. Companion to
+Status: v1 IMPLEMENTED 2026-08-25 (src/models/hg_ckla.py, section 9); stage-A training in flight. Companion to
 `docs/ckla-design.md` (the original CKLA layer) and
 `src/tracking/phase_increment_tracker.py` (the classical algorithm this
 mirrors). Part of the neural-RPS program (seed -> annealed refinement ->
