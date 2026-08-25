@@ -1,0 +1,114 @@
+# STOCHASTIC-ONLY stage 1, arm D — arm C plus level invariance.
+#
+# WHY, measured. The comb-only synthetic predictor is strongly level dependent,
+# and it was trained at the wrong level. Every synthetic pool in this project
+# normalizes its chunks to a root-mean-square of 0.1; a real validation clip
+# sits at 0.041. Feeding the same real clips at several gains moves the
+# prediction a long way:
+#
+#   RMS 0.012 -> 9.75 rev/s      RMS 0.124 -> 72.18      RMS 1.236 -> 62.92
+#   RMS 0.041 -> 67.29           RMS 0.319 -> 70.78      (truth 80.28)
+#
+# Two things follow. Matching the level is worth about a third of the scale
+# error on its own (0.838 -> 0.899 of the truth), and far below the training
+# level the model collapses outright, which is what a quiet clip of the split
+# does to it. So the level is fixed two ways here: the pool draws its output
+# level log-uniformly over a range that brackets the real one, and the post-mix
+# gain augmentation fires on every sample over 36 dB instead of a quarter of
+# them over 12. The point is not to match one level but to remove level as
+# something the model can read at all.
+#
+# Arm C, for the same file with a fixed level and the narrow gain block:
+#
+# WHY, measured. The comb-only synthetic predictor (`m3abl_comb_scv2_s1`) does
+# not fail on real cruise audio by losing the comb, and it does not confuse a
+# harmonic for the fundamental. It reads 0.841 of the truth, with the tenth and
+# ninetieth percentiles at 0.812 and 0.865 across six cruise clips — a tight,
+# systematic scale error. That is the signature of a model that reads frequency
+# with a slope below one and shrinks the rest of its answer toward the speed
+# prior it was trained on. Real cruise sits at 80 rev/s, the synthetic stream's
+# marginal speed sits well below that because a full flight spends time on the
+# ground and in the ramps, and the prediction lands between the two.
+#
+# `rps_scale_range` destroys that prior. The trajectory is multiplied by one
+# draw per window before the audio is rendered FROM it, so every comb line moves
+# with its own label and the floor's shape stays where it is — which is what a
+# real speed change does. Frequency scaling cannot do this: resampling moves the
+# floor along with the comb. Over [0.6, 1.5] a cruise window can sit anywhere
+# from 48 to 120 rev/s, no level is more likely than another, and comb spacing
+# becomes the only thing a model can read the speed from.
+#
+# WHY. Arm A's clips are anechoic and their floors are smooth by construction: a
+# squared-exponential draw in log frequency has a lengthscale of one to three
+# octaves, so it cannot make a narrow spectral feature. Real recordings are
+# neither. Every DREGON and Michael's recording was made inside a room, so the
+# comb arrives with its reflections, and every real floor carries narrow bumps
+# the smooth draw never produces. Both gaps have a tested transform already:
+# `random_reverb` (a 200-RIR synthetic bank, RT60 0.1 to 0.8 s) and
+# `spectral_recolor` (a smooth random equalizer of plus or minus 8 dB through 10
+# log-spaced anchors, per channel).
+#
+# The augmentation block fires on every chunk and picks one transform, so the
+# three appear at about a third each. Frequency scaling is worth less here than
+# it is on real recordings: the family already manufactures unlimited genuine
+# (audio, speed) pairs, and frequency scaling only manufactures more of them.
+#
+# Everything else is stoch_s1b_dload.yaml verbatim.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.5]
+      normalize_rms_range: [0.005, 0.25]
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -24.0, max_db: 12.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

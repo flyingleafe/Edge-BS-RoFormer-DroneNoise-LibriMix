@@ -735,6 +735,7 @@ class StochasticNoisePool:
         amp_rps_exponent: float = 2.5,
         amp_rps_ref: float = 80.0,
         rps_scale_range: tuple[float, float] = (1.0, 1.0),
+        normalize_rms: float | tuple[float, float] = 0.1,
         n_fft: int = DEFAULT_N_FFT,
         ranges: StochasticRanges | dict[str, Any] | None = None,
         seed: int = 0,
@@ -761,6 +762,16 @@ class StochasticNoisePool:
         # level is more likely than another, and comb spacing becomes the only
         # thing a model can read the speed from.
         self.rps_scale_range = (float(rps_scale_range[0]), float(rps_scale_range[1]))
+        # Output level, as a root-mean-square target. A pair is a log-uniform
+        # range drawn per window. The other synthetic pools all normalize to a
+        # fixed 0.1 while a real recording sits near 0.04, so a synthetic-only
+        # model trains 8 dB away from the data it is asked to read; a range
+        # covers the real level and takes level away as a cue at the same time.
+        self.normalize_rms = (
+            (float(normalize_rms[0]), float(normalize_rms[1]))
+            if isinstance(normalize_rms, (list, tuple))
+            else float(normalize_rms)
+        )
         self.n_fft = int(n_fft)
         self.ranges = (
             ranges if isinstance(ranges, StochasticRanges) else StochasticRanges.from_dict(ranges)
@@ -805,6 +816,11 @@ class StochasticNoisePool:
             amp_rps_exponent=float(g("amp_rps_exponent", 2.5)),
             amp_rps_ref=float(g("amp_rps_ref", 80.0)),
             rps_scale_range=pair("rps_scale_range", (1.0, 1.0)),
+            normalize_rms=(
+                pair("normalize_rms_range", (0.0, 0.0))
+                if g("normalize_rms_range") is not None
+                else float(g("normalize_rms", 0.1))
+            ),
             n_fft=int(g("n_fft", DEFAULT_N_FFT)),
             ranges=ranges,
             seed=int(g("seed", 0)),
@@ -872,6 +888,11 @@ class StochasticNoisePool:
             sample_rate=self.sample_rate,
         )
         params = params.with_(amp_rps_exponent=self.amp_rps_exponent, amp_rps_ref=self.amp_rps_ref)
+        if isinstance(self.normalize_rms, tuple):
+            lo, hi = self.normalize_rms
+            level = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+        else:
+            level = self.normalize_rms
         audio, diag = synthesize(
             params,
             rps,
@@ -879,6 +900,7 @@ class StochasticNoisePool:
             n_mics=self.n_mics,
             mic_gain_db=self.mic_gain_db,
             n_fft=self.n_fft,
+            normalize_rms=level,
         )
         return audio, rps.astype(np.float32), params, diag
 

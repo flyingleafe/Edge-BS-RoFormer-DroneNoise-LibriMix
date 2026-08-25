@@ -196,3 +196,30 @@ def test_rps_scale_range_spreads_the_speed_prior():
     rng = np.random.default_rng(21)
     means = np.array([float(pool.sample_rps(rng, 0.5).mean()) for _ in range(24)])
     assert means.max() / max(means.min(), 1e-6) > 1.8
+
+
+def test_normalize_rms_range_spreads_the_output_level():
+    pool = srn.StochasticNoisePool(
+        sample_rate=SR,
+        duration_s=0.5,
+        n_harmonics=20,
+        n_mics=1,
+        normalize_rms=(0.005, 0.2),
+    )
+    rng = np.random.default_rng(22)
+    levels = []
+    for _ in range(16):
+        audio = pool.render(rng, 0.5)[0]
+        levels.append(float(np.sqrt(np.mean(np.square(audio)))))
+    levels = np.array(levels)
+    assert levels.min() >= 0.004
+    assert levels.max() <= 0.21
+    assert levels.max() / levels.min() > 5.0
+
+
+def test_scalar_normalize_rms_is_exact():
+    pool = srn.StochasticNoisePool(
+        sample_rate=SR, duration_s=0.5, n_harmonics=20, n_mics=1, normalize_rms=0.04
+    )
+    audio = pool.render(np.random.default_rng(23), 0.5)[0]
+    assert float(np.sqrt(np.mean(np.square(audio)))) == pytest.approx(0.04, rel=1e-4)

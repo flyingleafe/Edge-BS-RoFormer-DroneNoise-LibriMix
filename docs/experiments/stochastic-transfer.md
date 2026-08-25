@@ -94,9 +94,58 @@ synthetic-only training already solves.
 
 | checkpoint | aggregate | all MAE | zero | low | flight |
 |---|---|---|---|---|---|
-| PENDING | | | | | |
+| `m3abl_comb_scv2_s1` (3 clips, channel 0) | 214.1 | 10.21 | **0.26** | 15.59 | 15.77 |
+
+A synthetic-only predictor already solves the stopped-rotor regime outright:
+0.26 rev/s, better than any real-trained model reaches there. Everything it
+loses, it loses at nonzero speed.
+
+## What the failure at speed actually is
+
+Three measurements, in the order that rules things out.
+
+**It is not a harmonic confusion.** On six real cruise clips, the ratio of the
+predicted speed to the true speed is 0.841 with the tenth and ninetieth
+percentiles at 0.812 and 0.865. Nothing sits near 0.5 or 2.0. The model is not
+mistaking the blade-pass frequency for the shaft rate.
+
+**It is not a lost comb.** The frequency-scaling probe on the same real clips
+gives a response slope of **0.94**: resample the recording so its whole
+spectrum moves by a factor, and the prediction moves by nearly the same factor.
+
+| alpha | 0.80 | 0.90 | 0.96 | 1.00 | 1.04 | 1.10 | 1.20 |
+|---|---|---|---|---|---|---|---|
+| ideal response % | -20 | -10 | -4 | 0 | +4 | +10 | +20 |
+| measured % | -15.2 | -9.1 | -4.9 | 0 | +7.5 | +12.5 | +19.9 |
+
+The model reads the real comb. It reads it as 0.836 of what it is.
+
+**It is not a broken label pipeline.** The same checkpoint, on synthetic audio
+from the stochastic family it has never seen, is accurate:
+
+| true speed | 50 | 65 | 80 | 95 |
+|---|---|---|---|---|
+| predicted | 57.96 | 64.59 | 76.09 | 92.70 |
+| ratio | 1.159 | 0.994 | 0.951 | 0.976 |
+
+So frequency scaling is not mis-scaling its labels, the comb is where the label
+says it is on both sides, and a comb-trained model reads a *different* synthetic
+family to within 5%. The 0.836 is domain-induced, and it appears between
+synthetic audio and real audio only.
+
+**One candidate stands out on size.** A real validation clip has an RMS of
+0.0129. Every synthetic chunk is normalized to 0.1 before mixing — an 18 dB
+level difference — and the post-mix gain augmentation only spans plus or minus
+6 dB. A magnitude front end is not scale invariant, so the whole stream may be
+arriving at an operating point the model never trained at.
 
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
-  wired as `kind: stochastic`, three arms configured, stream check passed.
+  wired as `kind: stochastic`, arms A/B/C configured, stream check passed, all
+  four submitted (`stoch_s1_scv2`, `stoch_s1_unigru128`, `stoch_s1b_scv2`,
+  `stoch_s1c_scv2`).
+* **2026-08-25** — the failure at speed is a scale error of 0.836, not a lost
+  comb: response slope 0.94 on real audio, and the same checkpoint reads an
+  unseen synthetic family to within 5%. Arm C (`rps_scale_range`) attacks the
+  prior; the level gap is the next candidate.
