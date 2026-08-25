@@ -202,6 +202,7 @@ behind the neural cells (2.4).
 | r5hb_scv2 | 16.08 / 653.5 | 9.14 / 181.3 | 5.20 / 68.6 | 147.6 |
 | r4hb_gru | 6.19 / 123.5 | 4.86 / 74.7 | 2.85 / 17.6 | 37.6 |
 | r5hb_tr | 5.46 / 132.3 | 5.37 / 85.7 | 4.25 / 47.7 | 59.2 |
+| r5hb_gru | 10.50 / 333.6 | 8.18 / 166.4 | 3.81 / 32.5 | 85.8 |
 | hb_scv2_mag_nogate | 3.36 / 59.3 | 4.18 / 52.2 | 2.35 / 11.1 | **22.1** |
 | r2hb_tr_nogate | 5.52 / 143.2 | 5.14 / 94.0 | 2.65 / 16.0 | 41.8 |
 
@@ -216,6 +217,9 @@ nuance that the causal GRU still gains from the curriculum (41.8 vs its
 strengthens; honest real data does not detoxify mixed-in synthetic. r5hb_tr (59.2)
 softens the transformer's mixed penalty vs the old regime (103.8) but
 stays well behind its nogate control (41.8) — direction unchanged.
+r5hb_gru (85.8 vs 179.7 old, control 61.9) completes the R5 trio: mixed
+one-stage training loses to its real-only control on ALL THREE trunks
+under the honest base — the staging-necessity claim is unconditional.
 r4hb_gru (comb-only curriculum on R2) reaches 37.6 — the best causal-GRU
 cell of the campaign (vs r3hb_gru 41.8, gated hb_gru_ssq 39.8, nogate
 control 61.9): for the weakest trunk the cheap analytic comb beats the
