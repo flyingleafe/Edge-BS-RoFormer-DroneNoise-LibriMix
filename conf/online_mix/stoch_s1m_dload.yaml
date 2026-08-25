@@ -1,23 +1,5 @@
-# STOCHASTIC-ONLY stage 1, arm M — arm L with a recording floor under the
-# silence.
-#
-# WHY. `level_mode: flight` scales the WHOLE spectrum with rotor speed, floor
-# included, so a stopped-rotor window comes out at digital zero. A real one does
-# not: room tone, the preamp and whatever else is in the room keep running when
-# the rotors stop. Measured on the frozen split as clip level relative to a
-# cruise clip, a stopped-rotor clip sits at 0.175 and a ramp clip at 0.370;
-# arm L's stream gives 0.000 and 0.354. The zero cell is exactly where every arm
-# of this campaign still loses — arm G is at 20.27 rev/s there while carrying an
-# 18% zero arm — and a model trained on digital silence has no way to learn what
-# a quiet room with the rotors off sounds like.
-#
-# `floor_static_rel` splits the floor into the part the rotors drive and the part
-# the recording chain contributes. They are independent noise, so the floor's
-# level follows the sum of the two instead of the rotor term alone, and at zero
-# speed the recording floor is left standing. Drawn per clip from [0.02, 0.10],
-# it puts the stream at 0.181 and 0.427 against the real 0.175 and 0.370.
-#
-# Arm L, for the same file with the floor that stops when the rotors do:
+# STOCHASTIC-ONLY stage 1, arm L — arm G over a DECADE of rotor speed, and with
+# the warm-up a drone would actually fly.
 #
 # WHY THE BASE IS ARM G, not the narrowed arms. Arm G is the best synthetic-only
 # model this project has: 172.1 validation PIT-MSE against 204.0 for the
@@ -179,10 +161,8 @@ sources:
       amp_rps_ref: 80.0
       rps_scale_range: [0.25, 2.5]
       n_harm_max: 200
-      ranges:
-        floor_static_rel: [0.02, 0.10]
       normalize_rms_range: [0.02, 0.25]
-      level_mode: flight
+      level_mode: window
       rps:
         kind: full_flight
         aggressiveness_range: [0.8, 2.5]

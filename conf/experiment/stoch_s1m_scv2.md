@@ -40,16 +40,15 @@ Data `stoch_s1m`, model `simple_conv_v2`, loss `pit_mse`, metrics `rps`, batch
 FULL-envelope real split `dload:DREGON-LM-V4-michaels-valid-full`.
 Train: `python train.py experiment=stoch_s1m_scv2`.
 
-Arm M then puts a recording floor under the silence. `level_mode: flight`
-scales the whole spectrum with rotor speed, floor included, so a stopped-rotor
-window comes out at digital zero — and a real one does not, because room tone
-and the preamp keep running when the rotors stop. Measured as clip level
-relative to a cruise clip, the frozen split has a stopped-rotor clip at 0.175
-and a ramp clip at 0.370 while arm L's stream gives 0.000 and 0.354. The zero
-cell is where every arm of this campaign still loses. `floor_static_rel`,
-drawn per clip from [0.02, 0.10], splits the floor into the part the rotors
-drive and the part the recording chain contributes and puts the stream at 0.181
-and 0.427. The comparison row is `stoch_s1l_scv2`.
+Arm M is arm L with `level_mode: window` — the level-to-speed map removed. Level
+is a real cue, but it is also a regression a model can lean on, and arm G shows
+what happens when its low end is anchored wrong: on real frames it fits
+`pred = 0.42 * truth + 36.6` and reads a stopped rotor as 27 rev/s, while the
+old comb family, which normalizes every window and so has no such map, fits
+`1.42 * truth + 0.8` and reads a stopped rotor as 2.9. Arm L repairs the anchor;
+arm M removes the map, so silence must be recognized by the absence of a comb.
+That is the cue that survives a drone whose hover is somewhere else, which is
+what the decade of speed is for. The two are a matched pair.
 
 ## Conclusion
 
