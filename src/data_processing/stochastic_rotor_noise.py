@@ -831,6 +831,13 @@ class _FlightCache:
     rps: np.ndarray
     t_low: np.ndarray
     uses: int = 0
+    #: The flight's own hover speed (its 90th percentile). The amplitude law is
+    #: written against THIS, not against a fixed 80 rev/s, so the level says
+    #: "this aircraft is at such a fraction of its own hover" instead of "the
+    #: speed is such a number". Without it a wide speed range would make the
+    #: level a giveaway for the absolute speed — a shortcut, and a false one,
+    #: since a small fast drone is not quieter than a big slow one.
+    hover: float = 80.0
 
 
 class StochasticNoisePool:
@@ -849,6 +856,7 @@ class StochasticNoisePool:
         sample_rate: int = 16000,
         duration_s: float = 1.0,
         n_harmonics: int = 80,
+        n_harm_max: int = 200,
         n_mics: int = 8,
         n_rotors: int = 4,
         rps_kind: str = "synthetic_intermittent",
@@ -871,6 +879,7 @@ class StochasticNoisePool:
         self.sample_rate = int(sample_rate)
         self.chunk_s = float(duration_s)
         self.n_harmonics = int(n_harmonics)
+        self.n_harm_max = int(n_harm_max)
         self.n_mics = int(n_mics)
         self.n_rotors = int(n_rotors)
         self.rps_kind = str(rps_kind)
@@ -960,6 +969,7 @@ class StochasticNoisePool:
             sample_rate=sample_rate,
             duration_s=duration_s,
             n_harmonics=int(g("n_harmonics", 80)),
+            n_harm_max=int(g("n_harm_max", 200)),
             n_mics=int(g("n_mics", 8)),
             n_rotors=int(g("n_rotors", 4)),
             rps_kind=str(rps.get("kind", "synthetic_intermittent")),
@@ -1006,7 +1016,15 @@ class StochasticNoisePool:
         stopped, and every other speed moves with its own comb.
         """
         n_samples = int(round(duration_s * self.sample_rate))
-        scale = float(rng.uniform(*self.rps_scale_range))
+        # Log-uniform: the scale is a RATIO, and a decade of speed sampled
+        # linearly would put four fifths of its draws in the top half.
+        lo_s, hi_s = self.rps_scale_range
+        scale = (
+            float(np.exp(rng.uniform(np.log(lo_s), np.log(hi_s))))
+            if lo_s > 0.0 and hi_s > lo_s
+            else float(lo_s)
+        )
+        self._hover = self.amp_rps_ref * scale
         aggressiveness = (
             float(rng.uniform(*self.aggressiveness))
             if isinstance(self.aggressiveness, tuple)
@@ -1042,13 +1060,16 @@ class StochasticNoisePool:
                 rng=rng,
             )
             self._flight = _FlightCache(
-                rps=flight, t_low=np.arange(flight.shape[1]) / self.flight_fs
+                rps=flight,
+                t_low=np.arange(flight.shape[1]) / self.flight_fs,
+                hover=float(np.percentile(flight, 90.0)),
             )
         self._flight.uses += 1
         flight, t_low = self._flight.rps, self._flight.t_low
         max_start = max(0.0, float(t_low[-1]) - duration_s)
         start_s = float(rng.uniform(0.0, max_start)) if max_start > 0 else 0.0
         t_win = start_s + np.arange(n_samples) / self.sample_rate
+        self._hover = max(scale * float(self._flight.hover), 1.0)
         window = np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
         return scale * window
 
@@ -1057,14 +1078,33 @@ class StochasticNoisePool:
     ) -> tuple[np.ndarray, np.ndarray, StochasticParams, dict[str, Any]]:
         """``(audio (M, T), rps (R, T), params, diagnostics)`` for one window."""
         rps = self.sample_rps(rng, duration_s)
+        # Size the comb to the clip's own speed, so a slow aircraft still has a
+        # comb that reaches the top of the band and a fast one does not pay for
+        # harmonics that fall past Nyquist. Without this a 20 rev/s clip at 80
+        # harmonics would carry a comb that stops at 1.6 kHz.
+        hover = float(getattr(self, "_hover", self.amp_rps_ref))
+        n_harm = int(np.clip(np.ceil(self.sample_rate / 2.0 / max(hover, 1.0)), 40, self.n_harm_max))
         params = sample_params(
             rng,
             self.ranges,
             n_rotors=rps.shape[0],
-            n_harmonics=self.n_harmonics,
+            n_harmonics=n_harm,
             sample_rate=self.sample_rate,
         )
-        params = params.with_(amp_rps_exponent=self.amp_rps_exponent, amp_rps_ref=self.amp_rps_ref)
+        # Linewidth scales with the aircraft too. The half width of harmonic k
+        # is the shaft's own speed jitter times k, and a shaft that turns at
+        # 200 rev/s does not jitter by the same ABSOLUTE amount as one at 20 —
+        # it jitters by the same fraction. Scaling gamma with the hover keeps
+        # the RELATIVE linewidth constant across drone sizes, which is what
+        # makes a small fast aircraft a different aircraft and not just a
+        # sharper version of a big one.
+        size = float(hover) / max(self.amp_rps_ref, 1e-6)
+        params = params.with_(
+            amp_rps_exponent=self.amp_rps_exponent,
+            amp_rps_ref=float(hover),
+            gamma0=params.gamma0 * size,
+            gamma_slope=params.gamma_slope * size,
+        )
         if isinstance(self.normalize_rms, tuple):
             lo, hi = self.normalize_rms
             level = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
