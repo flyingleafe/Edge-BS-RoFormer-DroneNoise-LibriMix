@@ -254,8 +254,35 @@ with its fs_v2 real-only control (59.2) and behind every GATED hb_gru
 cell (39.8-60.7). For the causal trunk the gate is doing real work on
 this regime; the honest data alone does not move the aggregate.
 
+### Edge-BS-RoFormer and CKLA on the R2 regime (2026-08-25)
+
+| run | zero | low | flight | best val/mse |
+|---|---|---|---|---|
+| hb_ckla | 5.95 / 112.0 | 4.25 / 67.3 | 3.51 / 23.9 | 40.6 |
+| hb_ebsrof | 34.49 / 2299.4 | 12.26 / 583.0 | 3.21 / 37.8 | 396.2 |
+
+hb_ebsrof (TODO 9 diagnostics): the R2 regime unblocks learning — the
+July R1 run was flat near 1150 for its full budget, while this run
+descends steadily to 396 over 47 epochs. The trained model is
+regime-split: flight MAE 3.21 is competitive with the conv trunks
+(2.35-2.85), but the zero regime fails outright (MAE 34.5, near the
+salience models' silence blindness). The band-split attention trunk
+tracks combs in flight and does not learn the silence-to-zero mapping,
+so the aggregate (396) stays an order behind the winners. Conclusion:
+the earlier "ebsrof cannot learn RPS" verdict is refuted — the R1 data
+was the blocker — but the architecture brings no advantage over scv2 at
+~30x the parameter count. The low-lr reserve arm is unnecessary.
+
+hb_ckla (TODO 10): the phase-only CKLA head on the R2 regime becomes a
+coherent model across all three regimes (zero 5.95, flight 3.51,
+aggregate 40.6) — a large step from the July CKLA campaign, which never
+had honest zeros to learn from. It still trails the scv2 winner (22.1)
+in every cell, consistent with the design gap recorded in
+`docs/pikalman-ckla-design.md`: the pooled-feature CKLA cannot do a
+state-conditioned measurement, which is what `hb_hgckla_ref` tests.
+
 ### Remaining rows
 
-The other 7 HB runs, the nogate control, salience retraining
-(`hb_sal_multif0`, `hb_sal_bp`), and the blind-tracker row are queued;
-their probes land here as they finish.
+`hb_hgckla_ref` (stage-A refiner, training), the kaggle/colab regime
+reruns `r3hb_tr`, `r4hb_scv2`, `r4hb_tr`, and the widened narrow-SR
+salience arm; their probes land here as they finish.

@@ -801,6 +801,10 @@ Family & Method & \multicolumn{4}{c}{PIT MAE (rev/s)} & Inference cost \\
  & Transformer (magnitude) & 3.7 & 4.2 & 2.79 & 3.10 & \\
  & causal GRU (synchrosqueezed) & 4.6 & 6.1 & 2.67 & 3.38 & \\
 \midrule
+\multirow{2}{*}{Other trunks, R2 real-only}
+ & Edge-BS-RoFormer & 34.5 & 12.3 & 3.21 & 8.40 & $\sim$0.6 CPU-s \\
+ & Kalman linear attention & 6.0 & 4.3 & 3.51 & 3.92 & $\sim$0.3 CPU-s \\
+\midrule
 \multirow{4}{*}{Synthetic regimes (R3--R5)}
  & R3 curriculum, convolutional & 3.9 & 4.3 & 2.49 & 2.90 & \\
  & R3 curriculum, causal GRU & 4.9 & 5.5 & 2.79 & 3.42 & \\
@@ -813,9 +817,8 @@ permutation-invariant MAE pooled per flight regime (stopped rotors / ramps /
 cruise) and over all frames, with approximate single-core inference cost.
 Bold marks the best value per column. Neural rows are single runs; the
 remaining cells of the regime grid (R3--R5 on the Transformer, R4 on the
-convolutional model) and the Edge-BS-RoFormer and Kalman-attention rows are
-still training and join the table when they land. \pending{fill the
-remaining regime cells and the two extra architecture rows}}
+convolutional model) are still training and join the table when they land.
+\pending{fill the remaining regime cells}}
 \label{tab:leaderboard}
 \end{table*}
 
@@ -824,13 +827,25 @@ column except one: the blind tracker's gate-free cruise MAE (2.27 rev/s)
 stays ahead of the best neural cruise cell (2.35), at roughly forty times
 the inference cost. Second, the zero column separates methods that can
 represent silence from methods that cannot: every training-free method
-floors at its search-grid boundary, the salience models light up on
-content-rich silence, and only the gated blind tracker and the
-honest-regime neural models decide silence correctly. Third, the honest
-real-only regime R2 is the best training recipe in the table: the
-synthetic curriculum matches it without improving it (2.90 against 2.72
-all-frame MAE), and mixing synthetic data into the real pool degrades
-every architecture. Qualitative per-clip figures (rumble-heavy silence, a
+floors at its search-grid boundary, the salience models and the
+Edge-BS-RoFormer light up on content-rich silence, and only the gated
+blind tracker and the honest-regime compact models decide silence
+correctly. Third, the honest real-only regime R2 is the best training
+recipe in the table: the synthetic curriculum matches it without improving
+it (2.90 against 2.72 all-frame MAE), and mixing synthetic data into the
+real pool degrades every architecture.
+
+The two alternative trunks confirm the pattern from opposite sides. The
+Edge-BS-RoFormer, adapted from the speech-enhancement model of
+\cite{liu2025edgebsrof}, learns only under regime R2 (under R1 its
+validation error stays flat for the full budget); the trained model
+reaches a competitive cruise cell (3.21 rev/s) and fails on stopped
+rotors (34.5 rev/s), at roughly thirty times the parameter count of the
+convolutional winner. The Kalman-linear-attention head, which replaces
+the temporal head of the convolutional trunk, becomes a coherent model
+under R2 (6.0 / 4.3 / 3.51 rev/s) and trails the bidirectional-GRU head
+in every regime; Section~\ref{sec:discussion} returns to why a pooled
+sequence mixer cannot reproduce the classical measurement update. Qualitative per-clip figures (rumble-heavy silence, a
 stop--start transition, cruise) follow.
 
 \section{Discussion: what the neural models add}
@@ -863,6 +878,16 @@ Collecting the comparison started in Section 4.2:
   for the hybrid to add value.
 \end{itemize}
 
+The Kalman-linear-attention result carries a design lesson. The classical
+refinement pass reads the spectrogram at the harmonic positions its
+current speed estimate predicts. The attention head receives features
+pooled over frequency before its recurrence runs, so a state-conditioned
+measurement is impossible, and the head can only filter what the pool
+kept. The smallest architecture that matches the classical pass is a cell
+that gathers complex spectrogram values at the positions its own
+frequency state predicts and updates the state from the gathered phase
+increments; we specify and train this cell in ongoing work.
+
 Limitations: two drone models; tachometer-grade measured speeds exist only
 for a subset of DREGON recordings; most numbers come from single training
 seeds; all flights are indoor (DREGON) or calm outdoor (MD2); and the
@@ -885,10 +910,13 @@ tracking method remains 2--4$\times$ more precise at cruise --- a reference we
 think learning approaches on this task should report against. Third,
 structured synthesis can manufacture the missing diversity only when the
 annotations are refined to comb precision and checkpoints are selected by a
-per-harmonic measurement; under those conditions, a generated-first
-curriculum with the same augmentation schedule improves on real-only
-training for every architecture we evaluated, and the improvement sits in
-the regimes the real corpus cannot teach --- silence above all.
+per-harmonic measurement; under those conditions a generated-first
+curriculum improves the weaker architectures, while for the best
+architecture an honest real-data regime --- full-envelope recordings with
+explicit silence and a level floor --- reaches the same result from real
+data alone. Synthetic data supplies coverage; once the real regime
+supplies the same coverage, its value disappears, and merging it into the
+real pool degrades every architecture.
 
 \appendices
 
