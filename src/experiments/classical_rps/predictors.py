@@ -479,14 +479,39 @@ def nmf_tracker(
 # The public surface
 # ===========================================================================
 
-#: The five classical predictors, each a callable of one waveform that returns
-#: an ``(N_ROTORS, n_frames)`` array of rotor speeds in rev/s.
+# --- the two tacholess order-tracking baselines --------------------------
+# They live in :mod:`experiments.classical_rps.tacholess`, which imports the
+# constants and ``_frame_spectra`` from this module. The import is therefore
+# deferred into the body of each entry point: a top-level import in either
+# direction makes a cycle that breaks whichever module is imported first.
+
+
+def ridge_tracker(audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS) -> np.ndarray:
+    """Tacholess IF ridge extraction — see :func:`.tacholess.ridge_tracker`."""
+    from experiments.classical_rps.tacholess import ridge_tracker as impl
+
+    return impl(audio, sr, n_rotors)
+
+
+def iavkf_tracker(audio: np.ndarray, sr: int = SR, n_rotors: int = N_ROTORS) -> np.ndarray:
+    """Iterative adaptive Vold-Kalman — see :func:`.tacholess.iavkf_tracker`."""
+    from experiments.classical_rps.tacholess import iavkf_tracker as impl
+
+    return impl(audio, sr, n_rotors)
+
+
+#: The classical predictors, each a callable of one waveform that returns an
+#: ``(N_ROTORS, n_frames)`` array of rotor speeds in rev/s. The first five are
+#: the restored 2026-05-29 estimators; ``ridge`` and ``iavkf`` are the two
+#: tacholess order-tracking baselines.
 CLASSICAL_TRACKERS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "pyin": pyin_single_f0,
     "cepstral": cepstral_tracker,
     "hps": hps_tracker,
     "matched_filter": matched_filter_tracker,
     "nmf": nmf_tracker,
+    "ridge": ridge_tracker,
+    "iavkf": iavkf_tracker,
 }
 
 

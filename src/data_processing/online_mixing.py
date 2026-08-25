@@ -9,7 +9,7 @@ sampling loops. The mapping (see ``docs/refactor-data-pipelines.md``):
   then ``dload.choice`` over per-record window streams weighted by valid
   duration; each window's start is a uniform draw from a ``random_stream``;
 - **synthetic engines** (``kind: generated`` / ``gp`` / ``static_comb`` /
-  ``silence``) — the
+  ``stochastic`` / ``silence``) — the
   engine object (a genuinely stateful resource: CUDA producer, GP coefficient
   table) is built once, then ``random_stream(seed).map(render)`` renders a
   chunk per draw;
@@ -334,6 +334,10 @@ def _build_engine(spec: Mapping[str, Any], *, window_s: float, sample_rate: int)
         from data_processing.rotor_spectral_model import StaticCombNoisePool
 
         return StaticCombNoisePool.from_config(spec, duration_s=window_s, sample_rate=sample_rate)
+    if kind == "stochastic":
+        from data_processing.stochastic_rotor_noise import StochasticNoisePool
+
+        return StochasticNoisePool.from_config(spec, duration_s=window_s, sample_rate=sample_rate)
     if kind == "silence":
         from data_processing.silence_noise import SilenceNoisePool
 
@@ -586,7 +590,7 @@ def build_noise_stream(
     """
     specs = _to_plain(specs)
     items = list(specs) if isinstance(specs, list) else [specs]
-    engine_kinds = {"generated", "static_comb", "gp", "silence", "audio_pool"}
+    engine_kinds = {"generated", "static_comb", "stochastic", "gp", "silence", "audio_pool"}
     standalone = [c for c in items if _cfg_get(c, "kind") in engine_kinds]
     real_items = [c for c in items if _cfg_get(c, "kind") not in engine_kinds]
     weighted_real = [c for c in real_items if _cfg_get(c, "weight", None) is not None]
