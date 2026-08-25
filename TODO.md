@@ -188,11 +188,12 @@ Sub-tasks:
 
 ## 11. HG-CKLA: implement + train
 
-- [ ] Implement per `docs/pikalman-ckla-design.md`: soft harmonic gather,
-      innovation phasors, HG-CKLA cell (reusing the CKLA scan), front-end
-      complex-STFT exposure, refiner harness wiring, tests.
-- [ ] Gate G1 (synthetic capture/precision vs pi_kalman), then stage-A
-      refiner training on R2 (corrupted-GT pairs), then G2 protocol eval.
+- [x] Implemented (2026-08-25): src/models/hg_ckla.py, 221k params, 12
+      tests, innovation physics <0.01% error; two design findings recorded
+      in the design doc §9 (phase-aligned gather, shared-gather pairs).
+- [ ] Stage-A refiner training SUBMITTED (hb_hgckla_ref, gpushort); on
+      completion run G1 synthetic comparison vs pi_kalman + G2 protocol
+      eval (`rps_eval --protocol beatvk --pred model:...`).
 
 ## 12. Slides — start NOW (before all results land)
 

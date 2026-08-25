@@ -187,3 +187,23 @@ bolting it onto the head.
 
 New code: the soft gather operator, the innovation-phasor construction,
 the HG-CKLA cell wiring, one front-end flag to expose complex STFT.
+
+## 9. v1 implementation notes (2026-08-25, `src/models/hg_ckla.py`)
+
+Built as specified, 221k params, 12 tests. Three recorded deviations: the
+physics path uses a guarded atan2 on the unit phasor (the linearized
+imaginary part under-reads 55% at 2 rad, so the design's Im(u/|u|) form
+cannot pass the 10% gate); the voicing gate is deferred; the model computes
+its own STFT. Two engineering findings that belong to the design:
+
+- **The gather window must be phase-aligned.** `torch.stft` refers bin
+  phase to the frame start, so a real Gaussian window sums the main lobe
+  with alternating signs (24 dB of scalloping). The complex weight
+  `gauss(d) * exp(i pi d)` gathers every tooth at full amplitude.
+- **One gather serves both frames of an innovation pair** (at the position
+  the state predicts for frame t). The window's own phase divides out
+  exactly, so a moving state adds no bias — measured drifting-cond bias
+  1e-5 rev/s.
+
+Innovation-physics recovery error is below 0.01% for df in [0.2, 1.0]
+rev/s. Stage-A training: `hb_hgckla_ref` on the R2 stream.
