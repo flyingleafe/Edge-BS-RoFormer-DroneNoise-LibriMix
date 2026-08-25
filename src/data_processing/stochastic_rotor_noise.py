@@ -562,7 +562,12 @@ def build_psd(
                 continue
             offsets = np.arange(-int(width), int(width) + 1)
             centers = centers_all[sel]  # (S, N)
-            base = np.rint(centers / df).astype(np.int64) + n_pad
+            # A harmonic above Nyquist is silenced through its power, and its
+            # center is then meaningless — but it still carries an index, and
+            # k * rps reaches far past the grid at the top of the speed range.
+            # Clamping the center keeps every index inside the padded axis;
+            # the values written there are zero either way.
+            base = np.clip(np.rint(centers / df), 0.0, n_freqs - 1).astype(np.int64) + n_pad
             bins = base[:, :, None] + offsets
             delta = (bins - n_pad) * df - centers[:, :, None]
             gamma = gammas[sel][:, None, None]

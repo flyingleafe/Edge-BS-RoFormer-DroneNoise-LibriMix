@@ -223,3 +223,31 @@ def test_scalar_normalize_rms_is_exact():
     )
     audio = pool.render(np.random.default_rng(23), 0.5)[0]
     assert float(np.sqrt(np.mean(np.square(audio)))) == pytest.approx(0.04, rel=1e-4)
+
+
+@pytest.mark.parametrize("speed", [95.0, 130.0, 220.0])
+def test_harmonics_above_nyquist_do_not_escape_the_grid(speed):
+    # k * rps runs far past Nyquist at the top of the speed range. Those lines
+    # carry no power, and they must not carry an index either: an out-of-range
+    # scatter used to make bincount return a longer array than the accumulator.
+    params = _params(30, harm_mean_db=0.0)
+    rps = np.full((4, SR), speed)
+    audio, _ = srn.synthesize(params, rps, rng=np.random.default_rng(31), n_mics=1)
+    assert np.isfinite(audio).all()
+    assert float(np.abs(audio).max()) > 0.0
+
+
+def test_high_speed_pool_windows_render():
+    pool = srn.StochasticNoisePool(
+        sample_rate=SR,
+        duration_s=1.0,
+        n_harmonics=80,
+        n_mics=2,
+        rps_kind="full_flight",
+        rps_scale_range=(0.4, 1.5),
+        aggressiveness=(0.8, 2.5),
+    )
+    rng = np.random.default_rng(32)
+    for _ in range(8):
+        frame = pool.sample_timeframe(rng, 1.0)
+        assert np.isfinite(np.asarray(frame["audio"].data)).all()
