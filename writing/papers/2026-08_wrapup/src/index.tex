@@ -85,18 +85,22 @@ predictions by 0.03\%, so the models read loudness, spectral shape, and the
 prior over speed values. Augmentations that transform audio and labels
 together --- frequency scaling and time warping --- force the frequency cue
 into use, and an honest treatment of rotor silence in the mixing recipe
-closes most of the failure on stopped rotors that plagued models trained on
-cruise-heavy data. \wip{Final regime numbers land after the running
-retraining round.} We also design an iterative classical algorithm for
+closes the failure on stopped rotors that plagued models trained on
+cruise-heavy data: the best architecture improves from 52.5 to 22.1
+validation PIT-MSE on real data alone, with the stopped-rotor error
+falling from 11.8 to 3.4 rev/s. We also design an iterative classical
+algorithm for
 blind rotor-speed estimation --- a comb-matched search over the full rate
 range followed by phase-based refinement --- which beats the neural models
 on cruise precision (0.7--1.0 rev/s against corrected telemetry) at orders
 of magnitude higher inference cost. Finally, we evaluate synthetic training
 data, from an analytic harmonic comb to a structure-constrained neural
 noise generator: its realism does not transfer, and its measurable value
-reduces to covering flight regimes the real corpus lacks --- coverage that
-an honest real-data regime supplies directly. \wip{Sharpen or soften the
-last claim after the regime-matched reruns.}
+reduces to covering flight regimes the real corpus lacks. With the honest
+real-data regime supplying that coverage directly, a synthetic pre-training
+curriculum adds nothing for the best architecture (22.6 against 22.1),
+retains a benefit only for the weakest one, and synthetic data mixed into
+the real pool degrades every architecture regardless of the real recipe.
 \end{abstract}
 
 \section{Introduction}
@@ -158,8 +162,10 @@ data is two drones and about an hour of audio. Our contributions:
 \item An evaluation of synthetic data as training material, from the
   analytic comb to the neural generator: its realism does not transfer
   (naive addition makes models worse), and its measurable value reduces to
-  covering flight regimes the real corpus lacks (Section 8). \wip{Final
-  form of this claim depends on the regime-matched reruns.}
+  covering flight regimes the real corpus lacks --- once the real regime
+  supplies that coverage, the curriculum's benefit disappears for the best
+  architecture and survives only where the architecture itself is weaker
+  (Section 8).
 \end{enumerate}
 
 \section{Related work}
