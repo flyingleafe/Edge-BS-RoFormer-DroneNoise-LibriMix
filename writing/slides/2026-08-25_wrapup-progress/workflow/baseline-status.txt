@@ -1,0 +1,11 @@
+?? conf/experiment/hb_ckla.md
+?? conf/experiment/hb_ckla.yaml
+?? conf/experiment/hb_ebsrof.md
+?? conf/experiment/hb_ebsrof.yaml
+?? conf/experiment/hb_ebsrof_lowlr.md
+?? conf/experiment/hb_ebsrof_lowlr.yaml
+?? conf/experiment/hb_fkla.md
+?? conf/experiment/hb_fkla.yaml
+?? writing/papers/2026-08_wrapup/figures/
+?? writing/slides/2026-08-18_decomposition-for-amplitude-targets/
+?? writing/slides/2026-08-25_wrapup-progress/

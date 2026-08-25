@@ -1,0 +1,4 @@
+Critic round 1 said REVISE:
+
+1. [layout] (whole deck (writing/slides/2026-08-25_wrapup-progress)) No rendered pages exist — there is no check/ directory and no page-*.png. The critic cannot review unrendered work. — fix: Run `make check` in writing/slides/2026-08-25_wrapup-progress to build the PDF and render check/page-*.png (plus check/_sheet.png), then request review again.
+2. [narrative] (whole deck (target directory listing)) No Typst source is present at all: the directory contains only workflow/inventory.md, workflow/narrative.md and workflow/baseline-status.txt. The deck itself has not been created, so none of the 12 sections promised in narrative.md are delivered. — fix: Scaffold the deck (create-typst-slides recipe) inside writing/slides/2026-08-25_wrapup-progress and write the slides for sections 1-12 of workflow/narrative.md, in that order, with the punchline HB 3x3 grid as section 7.
