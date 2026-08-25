@@ -73,14 +73,23 @@ and the same three augmentation blocks the comb-only arm uses. Everything except
 the noise family is `m3abl_comb_s1_dload.yaml` verbatim, so the rows are
 controlled.
 
-| experiment | trunk | comparison row |
+Every arm is the convolutional trunk, and each adds one thing to the one above
+it. The four in the second block are what is running; B and C were configured,
+then cancelled to free their slots once the level measurement arrived and made
+them subsets of D.
+
+| experiment | what it adds | comparison row |
 |---|---|---|
-| `stoch_s1_scv2` | bidirectional GRU | `m3abl_comb_scv2_s1` (336.8) |
-| `stoch_s1_unigru128` | causal GRU | `m3abl_comb_unigru128_s1` (212.5) |
-| `stoch_s1_transformer` | transformer, IF front end | `m3abl_comb_transformer_s1` (2563.5) |
-| `stoch_s1b_scv2` | + room and coloration | `stoch_s1_scv2` (cancelled to free a slot) |
-| `stoch_s1c_scv2` | + a scattered speed prior (`rps_scale_range`) | `stoch_s1b_scv2` |
-| `stoch_s1d_scv2` | + level invariance | `stoch_s1c_scv2` |
+| `stoch_s1_scv2` | the family, nothing else | `m3abl_comb_scv2_s1` (336.8) |
+| `stoch_s1b_scv2` | + room and coloration | cancelled |
+| `stoch_s1c_scv2` | + a scattered speed prior | cancelled |
+| `stoch_s1d_scv2` | + level invariance | `stoch_s1_scv2` |
+| `stoch_s1e_scv2` | + a realistic per-rotor spread | `stoch_s1d_scv2` |
+| `comb_fixed_scv2` | **control**: every fix, on the OLD comb family | `m3abl_comb_scv2_s1` |
+
+The control is what separates the two things the campaign changes at once. If
+`comb_fixed_scv2` reaches where `stoch_s1e_scv2` reaches, the fixes did the work
+and the family was never the problem. If it does not, the family was.
 
 Stream check: PASS (`python scripts/check_stream.py --experiment stoch_s1_scv2`)
 — all three augmentation blocks fire at their configured rates, frequency
@@ -97,11 +106,12 @@ synthetic-only training already solves.
 
 | checkpoint | aggregate | all MAE | zero | low | flight |
 |---|---|---|---|---|---|
-| `m3abl_comb_scv2_s1` (3 clips, channel 0) | 214.1 | 10.21 | **0.26** | 15.59 | 15.77 |
+| `m3abl_comb_scv2_s1` | 218.3 | 9.50 | 5.64 | **26.32** | 7.09 |
 
-A synthetic-only predictor already solves the stopped-rotor regime outright:
-0.26 rev/s, better than any real-trained model reaches there. Everything it
-loses, it loses at nonzero speed.
+The loss is concentrated in the ramps. A synthetic-only predictor is within
+7.1 rev/s at cruise and within 5.6 on stopped rotors, and then loses 26.3 on the
+warm-up, take-off and landing spans — the regime where the speed sweeps through
+its whole range inside one clip.
 
 ## What the failure at speed actually is
 
@@ -167,6 +177,35 @@ to it.
 Matching the level is worth about a third of the scale error (0.838 to 0.899).
 The rest is still open.
 
+### It is not the mixture either
+
+The same test on the pure-noise recordings, which carry no speech and no source
+at all, gives the same answer — so nothing about the speech mixing is
+responsible:
+
+| recording | truth | at its own level | at the training level |
+|---|---|---|---|
+| `free-flight_nosource_room1` | 80.49 | 67.86 (0.843) | 71.05 (0.883) |
+| `spinning_nosource_room2` | 81.04 | 66.31 (0.818) | 66.98 (0.827) |
+
+The real-trained model reads the same two recordings at 1.01 to 1.04.
+
+### Two more gaps, both measured and both closed in the arms
+
+**The speed prior.** A full flight spends time on the ground and in the ramps,
+so the stream's cruise band is narrow — flight-frame speeds average 76.9 rev/s
+with a standard deviation of 5.5. A model can carry a useful prior through that.
+`rps_scale_range: [0.6, 1.5]` multiplies the whole trajectory per window before
+the audio is rendered from it, which widens the standard deviation to 21.5 and
+leaves comb spacing as the only thing worth reading.
+
+**The per-rotor spread.** Four rotors put four combs in one spectrum, and how
+far apart their speeds are decides how those combs interleave. On the real
+split's flight frames the spread averages 13.7 rev/s and reaches 18.5 at the
+ninetieth percentile; the trajectory model at aggressiveness 1.0 gives 9.4 and
+11.5. The synthetic aircraft is flown more gently than the real one was. Drawing
+the aggressiveness per window from [0.8, 2.5] gives 12.7 and 26.2.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
@@ -177,6 +216,11 @@ The rest is still open.
   comb: response slope 0.94 on real audio, and the same checkpoint reads an
   unseen synthetic family to within 5%. Arm C (`rps_scale_range`) attacks the
   prior.
+* **2026-08-25** — the bias survives on pure-noise recordings, so the speech
+  mixing is not responsible. Two further gaps measured and closed in the arms:
+  the cruise-band standard deviation (5.5 synthetic against a real spread the
+  prior can exploit) and the per-rotor spread (9.4 synthetic against 13.7 real).
+  Arms E and the control submitted; A and D running.
 * **2026-08-25** — the level gap is real and large. The synthetic-only model
   peaks at its training level and collapses to 0.121 of the truth three octaves
   below it, while the real-trained model is flat across a hundredfold range.
