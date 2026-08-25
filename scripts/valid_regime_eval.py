@@ -55,9 +55,27 @@ def pit_abs_error(pred: np.ndarray, target: np.ndarray) -> np.ndarray:
     return out
 
 
-def score(experiment: str, ckpt: str, channels: int, limit: int | None) -> dict:
+def score(
+    experiment: str,
+    ckpt: str,
+    channels: int,
+    limit: int | None,
+    rescale_rms: float | None = None,
+) -> dict:
+    """Score one checkpoint.
+
+    ``rescale_rms`` scales every clip to that root-mean-square level before the
+    model sees it. A synthetic pool hands its chunks over at a fixed level while
+    a real recording arrives at whatever level it was recorded at, so a
+    synthetic-only model can be reading its evaluation data far from where it
+    learned; this measures how much of its error that accounts for, without
+    retraining anything.
+    """
+    import tdseries as td
+
     import zoo
     from data_processing.frame_datasets import DregonLMFrameDataset
+    from data_processing.frames import audio_series
 
     model = zoo.load(experiment, ckpt=ckpt, device="cpu")
     errors: dict[str, list[np.ndarray]] = {r: [] for r in REGIMES}
@@ -70,6 +88,12 @@ def score(experiment: str, ckpt: str, channels: int, limit: int | None) -> dict:
         for i in range(n):
             frame = dataset[i]
             target = np.asarray(frame["rps"].data, dtype=np.float64)
+            if rescale_rms is not None:
+                mixture = np.asarray(frame["mixture"].data, dtype=np.float32).reshape(1, -1)
+                rms = float(np.sqrt(np.mean(np.square(mixture)))) or 1.0
+                frame = td.Frame(
+                    {"mixture": audio_series(mixture / rms * float(rescale_rms), 16000)}
+                )
             pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
             width = min(pred.shape[1], target.shape[1])
             err = pit_abs_error(pred[:, :width], target[:, :width])
@@ -83,6 +107,7 @@ def score(experiment: str, ckpt: str, channels: int, limit: int | None) -> dict:
     row = {
         "experiment": experiment,
         "ckpt": ckpt,
+        "rescale_rms": rescale_rms,
         "aggregate_mse": float(all_squared.mean()),
         "all_mae": float(np.concatenate([np.concatenate(v) for v in errors.values() if v]).mean()),
         "n_frames": int(all_squared.size),
@@ -100,24 +125,34 @@ def main() -> int:
     parser.add_argument("--ckpt", default="best")
     parser.add_argument("--channels", type=int, default=8)
     parser.add_argument("--limit", type=int, default=None, help="clips per channel (debug)")
+    parser.add_argument(
+        "--rescale-rms",
+        type=float,
+        default=None,
+        action="append",
+        help="scale every clip to this RMS before scoring; repeatable",
+    )
     parser.add_argument("--out", default=None, help="write the rows as JSON here")
     args = parser.parse_args()
 
     rows = []
+    levels = args.rescale_rms or [None]
     for experiment in args.exp:
-        try:
-            row = score(experiment, args.ckpt, args.channels, args.limit)
-        except Exception as exc:  # noqa: BLE001 — one bad checkpoint must not stop the sweep
-            print(f"{experiment}: FAILED ({exc!r})", flush=True)
-            continue
-        rows.append(row)
-        print(
-            f"{row['experiment']:28s} aggregate {row['aggregate_mse']:8.2f}  "
-            f"all-MAE {row['all_mae']:6.2f}  "
-            f"zero {row['zero_mae']:6.2f}  low {row['low_mae']:6.2f}  "
-            f"flight {row['flight_mae']:6.2f}",
-            flush=True,
-        )
+        for level in levels:
+            try:
+                row = score(experiment, args.ckpt, args.channels, args.limit, level)
+            except Exception as exc:  # noqa: BLE001 — one bad checkpoint must not stop the sweep
+                print(f"{experiment}: FAILED ({exc!r})", flush=True)
+                continue
+            rows.append(row)
+            tag = "native" if level is None else f"rms={level:g}"
+            print(
+                f"{row['experiment']:26s} {tag:10s} aggregate {row['aggregate_mse']:8.2f}  "
+                f"all-MAE {row['all_mae']:6.2f}  "
+                f"zero {row['zero_mae']:6.2f}  low {row['low_mae']:6.2f}  "
+                f"flight {row['flight_mae']:6.2f}",
+                flush=True,
+            )
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(rows, indent=1))
