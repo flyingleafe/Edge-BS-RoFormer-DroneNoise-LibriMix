@@ -83,9 +83,15 @@ them subsets of D.
 | `stoch_s1_scv2` | the family, nothing else | `m3abl_comb_scv2_s1` (336.8) |
 | `stoch_s1b_scv2` | + room and coloration | cancelled |
 | `stoch_s1c_scv2` | + a scattered speed prior | cancelled |
-| `stoch_s1d_scv2` | + level invariance | `stoch_s1_scv2` |
-| `stoch_s1e_scv2` | + a realistic per-rotor spread | `stoch_s1d_scv2` |
-| `comb_fixed_scv2` | **control**: every fix, on the OLD comb family | `m3abl_comb_scv2_s1` |
+| `stoch_s1d_scv2` | + level invariance | cancelled |
+| `stoch_s1e_scv2` | + a realistic per-rotor spread | `stoch_s1_scv2` |
+| `stoch_s1f_scv2` | + the ramps the real recordings have | `stoch_s1e_scv2` |
+| `comb_fixed_scv2` | **control**: every fix through E, on the OLD comb family | `m3abl_comb_scv2_s1` |
+
+The four that run make a clean square: old family with and without the fixes
+(`m3abl_comb_scv2_s1`, `comb_fixed_scv2`), new family with and without them
+(`stoch_s1_scv2`, `stoch_s1e_scv2`), plus `stoch_s1f_scv2` for the ramp
+coverage that only the measurement of the ramp regime asked for.
 
 The control is what separates the two things the campaign changes at once. If
 `comb_fixed_scv2` reaches where `stoch_s1e_scv2` reaches, the fixes did the work
@@ -206,6 +212,26 @@ ninetieth percentile; the trajectory model at aggressiveness 1.0 gives 9.4 and
 11.5. The synthetic aircraft is flown more gently than the real one was. Drawing
 the aggressiveness per window from [0.8, 2.5] gives 12.7 and 26.2.
 
+### The ramps, where the loss actually is
+
+The regime table puts the loss in the ramps, and the trajectory model gives two
+reasons a synthetic-only model never learned them.
+
+The warm-up idles at 0.38 to 0.52 of hover, so the stream shows a rotor at 30 to
+42 rev/s and **never between 10 and 30** — and 10 to 30 is most of what a real
+ramp passes through. The ramps themselves are four times too slow.
+
+| low-regime frames | speed p10 | speed mean | speed p90 | \|d rps/dt\| mean | p90 |
+|---|---|---|---|---|---|
+| real split | 10.1 | 31.5 | 36.2 | 7.16 | 24.88 |
+| trajectory model, defaults | 31.1 | 34.3 | 39.0 | 3.44 | 5.67 |
+| arm F's phase ranges | 3.7 | 30.4 | 43.9 | 8.82 | 35.70 |
+
+Arm F widens the idle band to [0.05, 0.65] of hover, shortens every ramp, and
+lets `rps_scale_range` reach down to 0.4 so some windows sit steady at a low
+speed instead of only passing through one. The result brackets the real
+distribution on both axes.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
@@ -216,6 +242,16 @@ the aggressiveness per window from [0.8, 2.5] gives 12.7 and 26.2.
   comb: response slope 0.94 on real audio, and the same checkpoint reads an
   unseen synthetic family to within 5%. Arm C (`rps_scale_range`) attacks the
   prior.
+* **2026-08-25** — first submission of all arms failed identically:
+  `KeyError('dataset')` from the online-mix compiler. The cluster `.venv`'s
+  editable install points at the main checkout, not at the job's worktree, so
+  every job ran a `data_processing` without the `kind: stochastic` registration.
+  `--env PYTHONPATH=src` is required on every submission (it is in the project
+  memory; it was missed here). Resubmitted A, E, F and the control.
+* **2026-08-25** — the ramp regime carries the loss (26.3 rev/s against 7.1 at
+  cruise), and the trajectory model has a coverage hole exactly there: its
+  warm-up idle never enters the 10 to 30 rev/s band the real ramps live in, and
+  its ramps are four times too slow. Arm F fixes both.
 * **2026-08-25** — the bias survives on pure-noise recordings, so the speech
   mixing is not responsible. Two further gaps measured and closed in the arms:
   the cruise-band standard deviation (5.5 synthetic against a real spread the
