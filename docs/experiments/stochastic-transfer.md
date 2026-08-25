@@ -564,6 +564,51 @@ amplitude, and one that excluded the static share, which drove the floor back to
 zero however large it was drawn. It now puts back the square root of the same
 factor the spectrum used.
 
+## What the errors are made of, per regime
+
+Fitting each model's prediction against the truth on real frames, by regime,
+says what kind of error each one has rather than how big it is:
+
+| model | predicted at zero | ramp fit | cruise ratio | ramp corr |
+|---|---|---|---|---|
+| `r4hb_scv2` (real, the target) | **1.5** | 0.78·t + 8.2 | 1.017 | **+0.918** |
+| `m3abl_comb_scv2_s1` | 2.9 | 1.42·t + 0.8 | 0.901 | +0.526 |
+| `stoch_s1g_scv2` | **26.6** | 0.42·t **+ 36.6** | **0.993** | +0.552 |
+
+Three things at once.
+
+**The cruise bias is gone.** Arm G reads real cruise audio at a ratio of 0.993,
+better than the real-trained model's own 1.017 and far past the 0.836 the
+campaign opened with. The widened speed prior did what it was meant to.
+
+**Arm G acquired a floor of 36 rev/s.** Its ramp fit has an intercept of 36.6,
+so it cannot answer below that and reads a stopped rotor as 27. The old comb
+family has no such intercept (0.8) and reads a stopped rotor as 2.9. The
+difference between them is `level_mode: flight`: it gives a model a
+level-to-speed regression to lean on, and this stream anchored that map's low
+end at digital silence while a real stopped-rotor clip is audible at 0.175 of
+cruise. The map is right in the middle and wrong at the bottom, and the model
+inherited the error.
+
+**Ramp tracking is the same for both synthetic arms** (correlation +0.53 and
++0.55, against the real-trained +0.92). So the ramp cell is not only an offset —
+there is genuine tracking to recover there too.
+
+Two arms follow, and they are a matched pair over one line of configuration:
+
+* **Arm L** repairs the map's anchor. `floor_static_rel` splits the broadband
+  floor into the rotors' share and the recording chain's, so a stopped-rotor
+  window is audible at a realistic fraction of cruise instead of being digital
+  silence.
+* **Arm M** removes the map. Every window is normalized to its own level, so
+  silence has to be recognized by the absence of a comb — the cue that survives
+  a drone whose hover is somewhere else, which is what the decade of speed in
+  arms K to M is for.
+
+Both keep the comb visible at every speed. Measured as the median decibels by
+which the harmonics stand over the local floor: real ramps 5.5 dB and real
+cruise 2.7; arm L 3.6 at 5 to 25 rev/s, 4.6 at 25 to 45, 4.2 at cruise.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
