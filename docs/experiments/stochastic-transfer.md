@@ -78,6 +78,9 @@ controlled.
 | `stoch_s1_scv2` | bidirectional GRU | `m3abl_comb_scv2_s1` (336.8) |
 | `stoch_s1_unigru128` | causal GRU | `m3abl_comb_unigru128_s1` (212.5) |
 | `stoch_s1_transformer` | transformer, IF front end | `m3abl_comb_transformer_s1` (2563.5) |
+| `stoch_s1b_scv2` | + room and coloration | `stoch_s1_scv2` (cancelled to free a slot) |
+| `stoch_s1c_scv2` | + a scattered speed prior (`rps_scale_range`) | `stoch_s1b_scv2` |
+| `stoch_s1d_scv2` | + level invariance | `stoch_s1c_scv2` |
 
 Stream check: PASS (`python scripts/check_stream.py --experiment stoch_s1_scv2`)
 — all three augmentation blocks fire at their configured rates, frequency
@@ -133,11 +136,36 @@ says it is on both sides, and a comb-trained model reads a *different* synthetic
 family to within 5%. The 0.836 is domain-induced, and it appears between
 synthetic audio and real audio only.
 
-**One candidate stands out on size.** A real validation clip has an RMS of
-0.0129. Every synthetic chunk is normalized to 0.1 before mixing — an 18 dB
-level difference — and the post-mix gain augmentation only spans plus or minus
-6 dB. A magnitude front end is not scale invariant, so the whole stream may be
-arriving at an operating point the model never trained at.
+### It is largely the level, and real training is what confers immunity
+
+Every synthetic pool in this project normalizes its chunks to a root-mean-square
+of 0.1 before mixing. A real validation clip sits at 0.041. So every
+synthetic-only model this project has trained was reading its evaluation data
+8 dB away from where it learned, and the post-mix gain augmentation spans only
+plus or minus 6 dB on a quarter of the samples.
+
+The same real clips, fed at a range of gains (truth 80.28 rev/s):
+
+| clip RMS | 0.012 | 0.041 | 0.124 | 0.319 | 1.236 |
+|---|---|---|---|---|---|
+| `m3abl_comb_scv2_s1` (synthetic only) | **9.75** | 67.29 | 72.18 | 70.78 | 62.92 |
+| ratio | 0.121 | 0.838 | 0.899 | 0.882 | 0.784 |
+| `r4hb_scv2` (real trained) | 82.64 | 82.01 | 82.48 | 82.47 | 78.77 |
+| ratio | 1.029 | 1.021 | 1.027 | 1.027 | 0.981 |
+
+The real-trained model is flat across a hundredfold change of level. The
+synthetic-only model is not: it peaks near the level it trained at, and three
+octaves below that its prediction collapses to a ninth of the truth.
+
+This is a property of the training streams, not of the architecture — they share
+one. Real recordings arrive at whatever level they were recorded at, and their
+windows span a wide range, so a model trained on them cannot use level and
+learns to ignore it. A synthetic pool hands every chunk over at exactly 0.1, so
+level carries no variation to learn from and the model never becomes invariant
+to it.
+
+Matching the level is worth about a third of the scale error (0.838 to 0.899).
+The rest is still open.
 
 ## Log
 
@@ -148,4 +176,9 @@ arriving at an operating point the model never trained at.
 * **2026-08-25** — the failure at speed is a scale error of 0.836, not a lost
   comb: response slope 0.94 on real audio, and the same checkpoint reads an
   unseen synthetic family to within 5%. Arm C (`rps_scale_range`) attacks the
-  prior; the level gap is the next candidate.
+  prior.
+* **2026-08-25** — the level gap is real and large. The synthetic-only model
+  peaks at its training level and collapses to 0.121 of the truth three octaves
+  below it, while the real-trained model is flat across a hundredfold range.
+  Arm D randomizes the pool's output level and widens the gain augmentation to
+  36 dB on every sample. Arm B cancelled to free its slot.
