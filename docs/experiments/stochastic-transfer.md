@@ -409,6 +409,38 @@ Arm H is where E and F were at epoch 18, by epoch 6. The narrowing did what it
 was meant to do. The comb family is still in another league — it is solved by
 epoch 3 — but the comb family is also the one whose model cannot read a ramp.
 
+### And fitting better bought nothing
+
+Arm H ran to early stopping at 25 epochs. It ends at a training loss of **76**,
+five times better than E and F, and its best transfer is **299.3 at epoch 4** —
+worse than E's 270.9. Across the four arms there is no relationship at all
+between how well a model fits its synthetic family and how well it reads a real
+recording:
+
+| arm | final train loss | best val | at epoch |
+|---|---|---|---|
+| comb | 4 | 204.0 | 16 |
+| H (narrowed) | 76 | 299.3 | 4 |
+| F (wide + ramps) | 362 | 337.9 | 8 |
+| E (wide) | 383 | 270.9 | 10 |
+
+Within arm H the two even come apart: its validation bottoms at epoch 4 and then
+climbs to 1431 by epoch 8 while the training loss falls monotonically, so the
+Spearman correlation between the two over its run is −0.05 against +0.35 to
++0.78 for every other run here. The last twenty epochs of arm H are the model
+learning the family's idiosyncrasies and forgetting the real recording.
+
+So the trainability diagnosis was correct and the conclusion drawn from it was
+not. Fitting the synthetic family is not the objective and, past a point, is not
+even a neutral proxy for it. What the narrowing removed — the wide coherence,
+the wide wander, the room, the coloration — was acting as regularization, and
+buying transfer with the fit it cost.
+
+**The measurement that still stands is the per-regime one.** Arm F holds the
+best ramp and cruise cells any synthetic-only model here has produced, and loses
+only on stopped rotors, for a reason that is understood and already fixed in arm
+G. That, not the training loss, is what the next arm is judged on.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
