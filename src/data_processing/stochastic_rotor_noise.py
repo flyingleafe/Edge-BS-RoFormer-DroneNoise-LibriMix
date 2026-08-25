@@ -307,6 +307,16 @@ class StochasticParams:
     # the trajectory, and it is monotone, shared with the static-comb family,
     # and true of real recordings.
     amp_rps_exponent: float = 2.5
+    #: The exponent for the BROADBAND floor's rotor share. Broadband
+    #: aerodynamic noise falls off with a higher power of tip speed than tonal
+    #: loading noise does, so a real comb stands further above its floor the
+    #: slower the drone turns. Measured over four DREGON room1 recordings, the
+    #: harmonics stand 2.90 dB over the local floor at cruise and 3.75, 4.28 and
+    #: 4.61 dB in the 45-70, 25-45 and 5-25 rev/s bands — a monotone gain of
+    #: 1.7 dB by the bottom of the ramp. With one shared exponent the synthetic
+    #: ratio is flat, which makes a synthetic ramp harder to track than a real
+    #: one. ``None`` keeps the old behaviour.
+    amp_rps_exponent_floor: float | None = None
     amp_rps_ref: float = 80.0
 
     def with_(self, **changes: Any) -> StochasticParams:
@@ -506,7 +516,14 @@ def build_psd(
 
     # Speed-dependent level, one factor per rotor and frame. Zero speed is
     # silence, which is what lets a full-flight trajectory carry real silence.
-    amp = (np.maximum(rps_frames, 0.0) / max(params.amp_rps_ref, 1e-6)) ** params.amp_rps_exponent
+    speed = np.maximum(rps_frames, 0.0) / max(params.amp_rps_ref, 1e-6)
+    amp = speed**params.amp_rps_exponent
+    floor_exp = (
+        params.amp_rps_exponent
+        if params.amp_rps_exponent_floor is None
+        else float(params.amp_rps_exponent_floor)
+    )
+    amp_floor = amp if floor_exp == params.amp_rps_exponent else speed**floor_exp
 
     # Floor: static shape, a slow level process, and a slow tilt process.
     level_gp = sample_gp(
@@ -524,7 +541,7 @@ def build_psd(
     )
     # The rotors' share of the floor follows their speed; the recording chain's
     # share does not, and it is what a stopped-rotor clip is made of.
-    floor_gain = amp.mean(axis=0) + float(max(params.floor_static_rel, 0.0))
+    floor_gain = amp_floor.mean(axis=0) + float(max(params.floor_static_rel, 0.0))
     floor = 10.0 ** (floor_db / 10.0) * floor_gain[:, None]
 
     # Harmonic amplitudes: a per-rotor common process mixed with one process
@@ -888,6 +905,7 @@ class StochasticNoisePool:
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
         mic_gain_db: tuple[float, float] = (-12.0, 0.0),
         amp_rps_exponent: float = 2.5,
+        amp_rps_exponent_floor: float | None = None,
         amp_rps_ref: float = 80.0,
         rps_scale_range: tuple[float, float] = (1.0, 1.0),
         normalize_rms: float | tuple[float, float] = 0.1,
@@ -925,6 +943,9 @@ class StochasticNoisePool:
         self.drone_profile_range = (float(drone_profile_range[0]), float(drone_profile_range[1]))
         self.mic_gain_db = (float(mic_gain_db[0]), float(mic_gain_db[1]))
         self.amp_rps_exponent = float(amp_rps_exponent)
+        self.amp_rps_exponent_floor = (
+            None if amp_rps_exponent_floor is None else float(amp_rps_exponent_floor)
+        )
         self.amp_rps_ref = float(amp_rps_ref)
         # Per-window multiplier on the whole trajectory. A synthetic family
         # renders its audio FROM the labels, so scaling the trajectory moves
@@ -1009,6 +1030,11 @@ class StochasticNoisePool:
             drone_profile_range=pair("drone_profile_range", (0.0, 1.0)),
             mic_gain_db=pair("mic_gain_db", (-12.0, 0.0)),
             amp_rps_exponent=float(g("amp_rps_exponent", 2.5)),
+            amp_rps_exponent_floor=(
+                None
+                if g("amp_rps_exponent_floor") is None
+                else float(g("amp_rps_exponent_floor"))
+            ),
             amp_rps_ref=float(g("amp_rps_ref", 80.0)),
             rps_scale_range=pair("rps_scale_range", (1.0, 1.0)),
             normalize_rms=(
@@ -1122,6 +1148,7 @@ class StochasticNoisePool:
         size = float(hover) / max(self.amp_rps_ref, 1e-6)
         params = params.with_(
             amp_rps_exponent=self.amp_rps_exponent,
+            amp_rps_exponent_floor=self.amp_rps_exponent_floor,
             amp_rps_ref=float(hover),
             gamma0=params.gamma0 * size,
             gamma_slope=params.gamma_slope * size,
