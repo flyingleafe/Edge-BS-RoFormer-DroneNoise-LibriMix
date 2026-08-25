@@ -182,10 +182,15 @@ row needs both conventions or a recalibrated gate; flagged for the author.
 |---|---|---|---|
 | hb_sal_bp (Basic Pitch) | 34.04 / 2071 | 13.32 / 874 | 31.69 / 19172 |
 | hb_sal_multif0 (standard grid) | 52.77 / 4037 | 21.02 / 912 | 4.01 / 77.3 |
+| hb_sal_multif0_nsr (widened 20-130) | 48.21 / 3668 | 16.13 / 602 | 4.68 / 128.4 |
 
 Basic Pitch stays broken on the honest regime — the June verdict is
 architectural, and retraining does not rescue it. (Probed through the
-fixed zero-decode path.) multif0 standard + narrow-SR still training.
+fixed zero-decode path.) The widened narrow-SR grid improves ramps
+(21.0 -> 16.1) and leaves silence broken (48.2 vs the 2.25 GT round-trip
+floor): the salience family lights bins on content-rich silence — a model
+limitation, not the grid clamping. Best salience cruise (4.0) stays ~1.7x
+behind the neural cells (2.4).
 
 ### Regime-rerun cells (landing)
 
@@ -194,6 +199,7 @@ fixed zero-decode path.) multif0 standard + narrow-SR still training.
 | r2hb_gru_nogate | 6.02 / 173.7 | 8.17 / 164.4 | 3.06 / 26.8 | 61.9 |
 | r3hb_gru | 4.89 / 118.9 | 5.47 / 118.2 | 2.79 / 17.8 | 41.8 |
 | r3hb_scv2 | 3.86 / 53.8 | 4.27 / 47.6 | 2.49 / 13.1 | 22.6 |
+| r5hb_scv2 | 16.08 / 653.5 | 9.14 / 181.3 | 5.20 / 68.6 | 147.6 |
 | hb_scv2_mag_nogate | 3.36 / 59.3 | 4.18 / 52.2 | 2.35 / 11.1 | **22.1** |
 | r2hb_tr_nogate | 5.52 / 143.2 | 5.14 / 94.0 | 2.65 / 16.0 | 41.8 |
 
@@ -203,7 +209,9 @@ honest base, ungated) lands at 22.6 against the plain honest base's 22.1
 The synthetic-data claim resolves to its strong form for scv2 (coverage,
 not realism; honest real data supplies the coverage), with the per-trunk
 nuance that the causal GRU still gains from the curriculum (41.8 vs its
-61.9 control).
+61.9 control). r5hb_scv2 (mixed one-stage on the R2 base) lands at 147.6
+— worse than the old-regime mixed (93.6): the staging-necessity claim
+strengthens; honest real data does not detoxify mixed-in synthetic.
 
 HEADLINE (2026-08-25): hb_scv2_mag_nogate reaches 22.1 — the best neural
 aggregate of the campaign, real data only, essentially level with the old
