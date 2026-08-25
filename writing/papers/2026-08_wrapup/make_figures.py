@@ -316,10 +316,16 @@ def render_clip(
             row[f"mae_{g}"] = float(err[:, sel].mean()) if sel.any() else None
         metrics[label] = row
 
-    lo = min(0.0, float(gt.min()), *(float(p.min()) for _, p in preds.values()))
-    hi = max(float(gt.max()), *(float(p.max()) for _, p in preds.values()))
-    span = max(hi - lo, 1.0)
-    ylim = (lo - 0.06 * span, hi + 0.10 * span)
+    import os
+
+    if os.environ.get("QUAL_YLIM"):
+        a, b = os.environ["QUAL_YLIM"].split(":")
+        ylim = (float(a), float(b))
+    else:
+        lo = min(0.0, float(gt.min()), *(float(p.min()) for _, p in preds.values()))
+        hi = max(float(gt.max()), *(float(p.max()) for _, p in preds.values()))
+        span = max(hi - lo, 1.0)
+        ylim = (lo - 0.06 * span, hi + 0.10 * span)
 
     n_rows = len(methods) + 1
     height = 1.35 + 1.30 * len(methods) + 0.55
