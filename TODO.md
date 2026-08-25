@@ -168,6 +168,45 @@ Sub-tasks:
 
 ## 9. Make slides for supervisor, which should simply present the paper structure
 
+## 9. Edge-BS-RoFormer on R2 + failure diagnostics
+
+- [ ] `hb_ebsrof` experiment (edge_bs_rof_rps model, R2 policy). The July
+      attempt never learned (val ~1150 flat, cause undiagnosed, docs still
+      say "Pending run"). Instrument the rerun: gradient norms, output-head
+      stats, a 10x-lower-lr arm if flat again. Either it learns under R2
+      (new leaderboard row + the RoPE hypothesis finally tested) or the
+      diagnosis names the blocker in the paper's architecture section.
+
+## 10. CKLA (+ KLA baseline) on R2 -> paper
+
+- [ ] `hb_ckla` (the campaign's best phase-only variant) and `hb_fkla`
+      (the vendored plain-KLA cross-implementation baseline) on the R2
+      policy, same budget as the HB grid. Probe per-regime, add to the
+      leaderboard and the paper's architecture-search section; update the
+      narrative where CKLA is mentioned (matched-protocol numbers move
+      from the old stream to R2).
+
+## 11. HG-CKLA: implement + train
+
+- [ ] Implement per `docs/pikalman-ckla-design.md`: soft harmonic gather,
+      innovation phasors, HG-CKLA cell (reusing the CKLA scan), front-end
+      complex-STFT exposure, refiner harness wiring, tests.
+- [ ] Gate G1 (synthetic capture/precision vs pi_kalman), then stage-A
+      refiner training on R2 (corrupted-GT pairs), then G2 protocol eval.
+
+## 12. Slides — start NOW (before all results land)
+
+- [ ] /writeup slides: progress/paper-companion deck from the current
+      state — narrative arc of the paper (six bullets), leaderboard as of
+      today with pending cells marked, HB grid findings, blind-tracker
+      trade-off, regime taxonomy. WIP slots for the rerun numbers.
+
+## Compute budget note
+
+- vast.ai: up to $7 approved for A100 rental to parallelize (R5 runs need
+  big memory; HG-CKLA/CKLA training benefit). SSH key must be registered
+  account-level before first instance.
+
 ## Standing constraints
 
 - Test set: formed but UNTOUCHED until explicitly opened.
