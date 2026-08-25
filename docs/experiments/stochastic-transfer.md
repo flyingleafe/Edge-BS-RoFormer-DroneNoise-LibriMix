@@ -265,6 +265,33 @@ lets `rps_scale_range` reach down to 0.4 so some windows sit steady at a low
 speed instead of only passing through one. The result brackets the real
 distribution on both axes.
 
+## First read: the arm-F probe
+
+A 55-minute triage run of arm F on the short partition, against the comb-only
+baseline at the same epochs. Neither has converged — the comb run reaches its
+own best of 204.0 only at epoch 16 — so this is a shape comparison, not a
+verdict.
+
+| epoch | `stoch_s1f_probe` | `m3abl_comb_scv2_s1` |
+|---|---|---|
+| 0 | 1358.6 | 1347.1 |
+| 1 | 822.9 | 1557.0 |
+| 2 | 863.8 | 1265.8 |
+| 3 | 661.1 | 838.9 |
+| 4 | 564.4 | 430.7 |
+| 5 | 566.5 | 1162.9 |
+| 6 | **289.7** | 626.9 |
+| 7 | 627.8 | 976.0 |
+| 8 | 595.4 | 1226.1 |
+| 9 | 465.5 | 1052.2 |
+| 10 | 337.4 | 1136.0 |
+
+Best so far through epoch 10: **289.7 against 430.7**. The difference in shape
+is larger than the difference in level — the comb baseline swings between 431
+and 1557 while the new family descends. A stream whose every clip has a
+different texture gives a validation curve on real data that moves in one
+direction, which is what a family wide enough to contain the target should do.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
@@ -275,6 +302,16 @@ distribution on both axes.
   comb: response slope 0.94 on real audio, and the same checkpoint reads an
   unseen synthetic family to within 5%. Arm C (`rps_scale_range`) attacks the
   prior.
+* **2026-08-25** — level is a CUE, not a nuisance. Forcing the split to one
+  level wrecks the stopped-rotor cell of the real-trained model too (2.87 to
+  23.22 rev/s at RMS 0.1) while leaving its cruise cell untouched. Every
+  synthetic pool destroys that cue by normalizing each window to its own
+  root-mean-square. Arm G adds `level_mode: flight` — the level target is the
+  level at the reference speed, and the window's own amplitude scales it — so
+  stopped windows leave at 0.0004 and cruise windows at 0.11. Its post-mix gain
+  narrows back from 36 dB to 12 dB.
+* **2026-08-25** — the arm-F probe is ahead of the comb baseline at matched
+  epochs (289.7 against 430.7 through epoch 10) and far steadier.
 * **2026-08-25** — first submission of all arms failed identically:
   `KeyError('dataset')` from the online-mix compiler. The cluster `.venv`'s
   editable install points at the main checkout, not at the job's worktree, so
