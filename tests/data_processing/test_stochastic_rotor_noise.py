@@ -251,3 +251,29 @@ def test_high_speed_pool_windows_render():
     for _ in range(8):
         frame = pool.sample_timeframe(rng, 1.0)
         assert np.isfinite(np.asarray(frame["audio"].data)).all()
+
+
+def test_flight_level_mode_keeps_the_silence_cue():
+    # A real recorder holds one gain for a whole flight, so a stopped-rotor
+    # window is quiet and a cruise window is loud. Normalizing every window
+    # instead throws that away, and the silence cue with it.
+    common = dict(sample_rate=SR, duration_s=1.0, n_harmonics=30, n_mics=1, rps_kind="full_flight")
+    levels: dict[str, list[tuple[float, float]]] = {}
+    for mode in ("window", "flight"):
+        pool = srn.StochasticNoisePool(**common, level_mode=mode)
+        rng = np.random.default_rng(40)
+        rows = []
+        for _ in range(40):
+            audio, rps, _, _ = pool.render(rng, 1.0)
+            rows.append((float(rps.mean()), float(np.sqrt(np.mean(np.square(audio))))))
+        levels[mode] = rows
+
+    def band(rows, lo, hi):
+        vals = [r for speed, r in rows if lo <= speed < hi]
+        return float(np.mean(vals)) if vals else float("nan")
+
+    slow_w, fast_w = band(levels["window"], 8, 60), band(levels["window"], 60, 1e9)
+    slow_f, fast_f = band(levels["flight"], 8, 60), band(levels["flight"], 60, 1e9)
+    assert np.isfinite([slow_w, fast_w, slow_f, fast_f]).all()
+    assert slow_w == pytest.approx(fast_w, rel=0.05)  # window mode: level says nothing
+    assert fast_f / slow_f > 3.0  # flight mode: level says a great deal

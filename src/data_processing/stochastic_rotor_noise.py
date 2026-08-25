@@ -632,6 +632,7 @@ def synthesize(
     n_fft: int = DEFAULT_N_FFT,
     hop: int | None = None,
     normalize_rms: float | None = 0.1,
+    level_mode: str = "window",
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Render one clip.
 
@@ -646,6 +647,14 @@ def synthesize(
             window, which the Hann window needs for exact overlap-add.
         normalize_rms: scale the finished clip to this root-mean-square level,
             or ``None`` to keep the model's own arbitrary scale.
+        level_mode: what ``normalize_rms`` refers to. ``"window"`` normalizes
+            the window itself, so every window leaves at the same level
+            whatever its rotors are doing. ``"flight"`` treats the number as
+            the level the window would have AT THE REFERENCE SPEED and scales
+            by the window's own speed-dependent amplitude instead, so a
+            stopped-rotor window comes out quiet and a cruise window loud —
+            which is what a real recording does, because one recorder gain
+            covers a whole flight.
 
     Returns:
         ``(audio (n_mics, T) float32, diagnostics)``. The diagnostics carry the
@@ -685,7 +694,15 @@ def synthesize(
 
     if normalize_rms is not None:
         rms = float(np.sqrt(np.mean(np.square(audio)))) or 1.0
-        audio = (audio / rms * float(normalize_rms)).astype(np.float32)
+        gain = float(normalize_rms) / rms
+        if level_mode == "flight":
+            # Divide out only the part of the level that does NOT come from the
+            # rotor speed, then put the speed's own contribution back. The
+            # window's mean amplitude factor is (rps / ref) ** exponent, so a
+            # window at half the reference speed leaves about 5.7 times quieter
+            # instead of at the same level as cruise.
+            gain *= float(np.mean(psd["amp"]))
+        audio = (audio * gain).astype(np.float32)
 
     diag: dict[str, Any] = {
         "freqs": freqs,
@@ -742,6 +759,7 @@ class StochasticNoisePool:
         amp_rps_ref: float = 80.0,
         rps_scale_range: tuple[float, float] = (1.0, 1.0),
         normalize_rms: float | tuple[float, float] = 0.1,
+        level_mode: str = "window",
         n_fft: int = DEFAULT_N_FFT,
         ranges: StochasticRanges | dict[str, Any] | None = None,
         seed: int = 0,
@@ -793,6 +811,12 @@ class StochasticNoisePool:
             if isinstance(normalize_rms, (list, tuple))
             else float(normalize_rms)
         )
+        # "window" normalizes every window to the same level, so level says
+        # nothing about whether the rotors are turning. "flight" keeps the
+        # speed's own contribution, which is how a real recording behaves and
+        # what lets a model tell a stopped rotor from a running one by level as
+        # well as by structure.
+        self.level_mode = str(level_mode)
         self.n_fft = int(n_fft)
         self.ranges = (
             ranges if isinstance(ranges, StochasticRanges) else StochasticRanges.from_dict(ranges)
@@ -851,6 +875,7 @@ class StochasticNoisePool:
                 if g("normalize_rms_range") is not None
                 else float(g("normalize_rms", 0.1))
             ),
+            level_mode=str(g("level_mode", "window")),
             n_fft=int(g("n_fft", DEFAULT_N_FFT)),
             ranges=ranges,
             seed=int(g("seed", 0)),
@@ -942,6 +967,7 @@ class StochasticNoisePool:
             mic_gain_db=self.mic_gain_db,
             n_fft=self.n_fft,
             normalize_rms=level,
+            level_mode=self.level_mode,
         )
         return audio, rps.astype(np.float32), params, diag
 
