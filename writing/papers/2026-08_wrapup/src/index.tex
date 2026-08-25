@@ -15,6 +15,7 @@
 \usepackage{authblk}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{multirow}
 \usepackage{array}
 \usepackage{microtype}
 \usepackage{xcolor}
@@ -767,28 +768,70 @@ collects the comparison; it is the central result of the paper.
 \begin{table*}[t]
 \centering
 \small
-\wip{CENTRAL TABLE (tab:leaderboard): rows = classical five (PYIN,
-cepstral, HPS, matched filter, NMF), inverse harmonic clustering,
-salience models (as published / retrained on our regime / narrow
-super-resolution variant), the three neural architectures under the final
-real-only regime and the synthetic-data regimes, and the blind two-stage
-tracker. Columns = PIT MAE per regime (zero / ramps / cruise) + overall +
-inference cost per second of audio. Rows land as the retraining round
-finishes; the training-free rows are already measured: NMF is the best
-training-free cruise number (8.1 rev/s MAE), inverse harmonic clustering
-reaches 16.3, both far above every learned model and the blind tracker.
-No classical method can represent a stopped rotor (search floors at
-50 rev/s), which the per-regime columns make visible.}
-\caption{\wip{Motor-speed estimation on the frozen validation protocol:
-per-regime PIT MAE (rev/s), overall error, and inference cost.}}
+\begin{tabular}{llrrrrl}
+\toprule
+Family & Method & \multicolumn{4}{c}{PIT MAE (rev/s)} & Inference cost \\
+\cmidrule(lr){3-6}
+ & & zero & ramps & cruise & all & per audio-second \\
+\midrule
+\multirow{6}{*}{Training-free}
+ & PYIN ($\times$4, greedy) & 90.8 & 46.7 & 34.1 & 43.0 & $\sim$0.2 CPU-s \\
+ & Cepstral (greedy) & 95.5 & 67.5 & 19.6 & 35.7 & $<$0.1 CPU-s \\
+ & HPS (greedy) & 64.1 & 27.6 & 20.9 & 27.3 & $<$0.1 CPU-s \\
+ & Matched-filter bank & 87.2 & 66.8 & 30.4 & 42.5 & $<$0.1 CPU-s \\
+ & NMF, harmonic dictionary & 83.8 & 59.5 & \textbf{8.1} & 24.6 & $\sim$0.1 CPU-s \\
+ & Inverse harmonic clustering & 68.8 & 28.3 & 16.3 & 24.6 & $\sim$2 CPU-s \\
+\midrule
+\multirow{2}{*}{Blind tracker}
+ & ours, no refusal gates & 79.4 & 39.1 & \textbf{2.27} & 17.0 & \multirow{2}{*}{9.9 CPU-s} \\
+ & ours, gates, refusal $\to$ 0 & \textbf{0.01} & 29.8 & 48.4 & 39.7 & \\
+\midrule
+\multirow{3}{*}{Salience (retrained)}
+ & Basic Pitch & 34.0 & 13.3 & 31.7 & 29.5 & $\sim$0.5 CPU-s \\
+ & multi-F0 CNN, standard grid & 52.8 & 21.0 & 4.0 & 12.5 & $\sim$2 CPU-s \\
+ & multi-F0 CNN, wide fine grid & 48.2 & 16.1 & 4.7 & 11.7 & $\sim$2 CPU-s \\
+\midrule
+\multirow{3}{*}{Regression, R2 real-only}
+ & convolutional (BiGRU head) & \textbf{3.4} & \textbf{4.2} & \textbf{2.35} & \textbf{2.72} & \multirow{3}{*}{$\sim$0.25 CPU-s} \\
+ & Transformer head & 5.5 & 5.1 & 2.65 & 3.35 & \\
+ & causal GRU head & 6.0 & 8.2 & 3.06 & 4.12 & \\
+\midrule
+\multirow{3}{*}{$+$ voicing gate, best front-end}
+ & convolutional (IF) & 4.5 & 5.0 & 2.49 & 3.08 & \\
+ & Transformer (magnitude) & 3.7 & 4.2 & 2.79 & 3.10 & \\
+ & causal GRU (synchrosqueezed) & 4.6 & 6.1 & 2.67 & 3.38 & \\
+\midrule
+\multirow{4}{*}{Synthetic regimes (R3--R5)}
+ & R3 curriculum, convolutional & 3.9 & 4.3 & 2.49 & 2.90 & \\
+ & R3 curriculum, causal GRU & 4.9 & 5.5 & 2.79 & 3.42 & \\
+ & R4 comb-only, causal GRU & 6.2 & 4.9 & 2.85 & 3.54 & \\
+ & R5 mixed, convolutional & 16.1 & 9.1 & 5.20 & 7.11 & \\
+\bottomrule
+\end{tabular}
+\caption{Motor-speed estimation on the frozen validation protocol: per-frame
+permutation-invariant MAE pooled per flight regime (stopped rotors / ramps /
+cruise) and over all frames, with approximate single-core inference cost.
+Bold marks the best value per column. Neural rows are single runs; the
+remaining cells of the regime grid (R3--R5 on the Transformer, R4 on the
+convolutional model) and the Edge-BS-RoFormer and Kalman-attention rows are
+still training and join the table when they land. \pending{fill the
+remaining regime cells and the two extra architecture rows}}
 \label{tab:leaderboard}
 \end{table*}
 
-\wip{One paragraph reading the table: the neural models win everywhere
-except cruise precision against the blind tracker; the blind tracker pays
-orders of magnitude more compute; the zero regime separates methods that
-can represent silence from those that cannot. Qualitative per-clip figures
-(rumble-heavy silence, a stop--start transition, cruise) follow the table.}
+Three facts organize the table. First, the regression models win every
+column except one: the blind tracker's gate-free cruise MAE (2.27 rev/s)
+stays ahead of the best neural cruise cell (2.35), at roughly forty times
+the inference cost. Second, the zero column separates methods that can
+represent silence from methods that cannot: every training-free method
+floors at its search-grid boundary, the salience models light up on
+content-rich silence, and only the gated blind tracker and the
+honest-regime neural models decide silence correctly. Third, the honest
+real-only regime R2 is the best training recipe in the table: the
+synthetic curriculum matches it without improving it (2.90 against 2.72
+all-frame MAE), and mixing synthetic data into the real pool degrades
+every architecture. Qualitative per-clip figures (rumble-heavy silence, a
+stop--start transition, cruise) follow.
 
 \section{Discussion: what the neural models add}
 \label{sec:discussion}

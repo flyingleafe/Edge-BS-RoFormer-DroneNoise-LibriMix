@@ -110,12 +110,11 @@ row. This item is the careful arm:
 - [ ] Also add a compute column (per-second-of-audio inference cost, CPU/GPU)
       — the narrative's "beats neural but much more expensive" claim needs
       the number in the same table.
-- [ ] Assemble the table: classical five, NMF highlighted, OT, salience
-      (June / standard-R2 / narrow-SR-R2), neural trio per regime
-      (R2 winner + R3/R4 rows as decided), blind tracker, with zero / low /
-      flight / all MAE (and MSE in the appendix version).
-- [ ] Port into the paper as the central results table; the doc table in
-      `unified-baseline-eval.md` stays the living copy.
+- [x] Central table ASSEMBLED in the paper (2026-08-25): tab:leaderboard
+      with 21 rows (training-free, blind both conventions, salience,
+      neural per regime), weighted all-frame MAE, compute column, reading
+      paragraph. One pending marker for the still-training cells
+      (R3-R5 transformer, R4 scv2, ebsrof, CKLA rows).
 
 ## 6. Fix the paper's narrative
 
