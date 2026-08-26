@@ -1223,3 +1223,51 @@ arms are complementary — the oracle proves the information is there at 3.72 �
 but they are not compatible, and combining them cannot recover more than the
 regime decision allows. Routing plateaus at 5.47 and ensembling at 9.40; the
 oracle's 3.72 needs a regime signal that these five models do not contain.
+
+## The ramp gap is a MISSING TRAINING STATE, not a hard cell
+
+Three measurements against the frozen split, none of which needed a new model.
+
+**1. The two rigs ramp in opposite ways.** |d rps/dt| on the low-speed frames:
+
+| rig | mean | median | p90 |
+|---|---|---|---|
+| DREGON | 22.65 | 24.72 | 34.50 |
+| Michael's | 4.25 | **0.23** | 8.40 |
+| every synthetic stream | 9.5-15.1 | ~3-7 | 24-39 |
+
+Michael's low-speed frames are mostly not a sweep at all — half of them are a
+STATIONARY HOLD at low RPM, the warm-up idle. Splitting them explicitly, 85% are
+held (|d rps/dt| < 1) and 15% swept; DREGON's are essentially all swept. Since
+Michael's carries 1071 of the split's 1253 ramp frames, **held frames are about
+72% of the whole ramp cell** — the cell that holds the entire remaining
+in-domain gap.
+
+**2. Our own configs removed that state.** `FlightPhaseRanges` defaults are
+`warmup_s (3.0, 25.0)` / `takeoff_s (1.5, 4.0)`, which the docstring calls
+calibrated to these very recordings (warm-up 5 to 30 s). Every arm in this
+campaign overrides them with `warmup_s: [0.5, 6.0]` / `takeoff_s: [0.4, 2.0]`,
+shortening the idle roughly fourfold. A sustained low-speed comb is nearly
+absent from every stream we have trained on.
+
+**3. The arms fail on exactly those frames.** Scoring the real low-speed frames
+split by held against swept (`scripts/steady_vs_sweep.py`):
+
+| model | Michael's held | Michael's swept | held / target | swept / target |
+|---|---|---|---|---|
+| target `r4hb_scv2` | **1.87** | 7.26 | 1.0x | 1.0x |
+| `stoch_s1s_both` | 6.88 | 13.69 | **3.7x** | 1.9x |
+| `stoch_s1x_scv2` | 12.31 | 10.51 | **6.6x** | 1.4x |
+| `stoch_s1h_scv2` | 25.89 | 32.21 | **13.8x** | 4.4x |
+
+A steady low-speed hold is the target's EASIEST cell anywhere — 1.87 rev/s,
+better than its own cruise — and the synthetic arms are 3.7 to 13.8 times worse
+on it, while on swept frames the best arm is only 1.4x behind. The arms fail on
+the easy frames. That is the signature of a state missing from training, not of
+a model that cannot represent it.
+
+Arm ID restores the idle (`warmup_s: [3.0, 30.0]`, ramp median 1.47 at p90
+16.55) and is the direct test. Two further mismatches found the same way are
+arms RP (near-degenerate rotor pairs: 71.6% of real DREGON cruise frames have
+two rotors within 1 rev/s, against 17 to 25% in every synthetic stream) and M
+(the Michael's airframe's slower motor response).
