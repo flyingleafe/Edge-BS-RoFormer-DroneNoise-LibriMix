@@ -207,6 +207,8 @@ sources:
         flight_reuse: 32
         phases:
           idle_frac: [0.05, 0.65]
+          pre_ground_s: [3.0, 20.0]
+          post_ground_s: [3.0, 20.0]
           warmup_s: [0.5, 6.0]
           takeoff_s: [0.4, 2.0]
           landing_s: [0.4, 2.0]
@@ -230,11 +232,6 @@ sources:
         aggressiveness: 1.0
         flight_reuse: 32
         phases:
-          pre_ground_s: [3.0, 20.0]
-          post_ground_s: [3.0, 20.0]
-        phases:
-          # Long spells on the ground at both ends of every flight, so the comb
-          # family's own zero windows are plentiful rather than incidental.
           pre_ground_s: [3.0, 20.0]
           post_ground_s: [3.0, 20.0]
 
