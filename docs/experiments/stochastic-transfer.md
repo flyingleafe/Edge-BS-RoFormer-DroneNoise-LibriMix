@@ -901,3 +901,56 @@ cruise, which the sweep proves ignores level, stays put.
 That run also measured no DREGON recording at all: the loader's limit was
 consumed by motor runs and clean-source clips, which carry no rotor track. Fixed
 in the script; the numbers above are Michael's only.
+
+## Arm W: a negative result that confirms the frontier
+
+Arm W is arm H plus `floor_static_rel`, the one ingredient the ramp winner had
+that the cruise winner lacked. It did not break the ramp-against-cruise
+trade-off — it moved along it, and badly:
+
+| | all | zero | low | flight |
+|---|---|---|---|---|
+| arm H | 9.07 | 27.98 | 26.77 | **2.60** |
+| arm W | 12.63 | 16.19 | 22.55 | 10.20 |
+
+A 4.2-point ramp gain cost 7.6 points of cruise. With arm W added the frontier
+across 15 arms is unchanged at Spearman -0.58.
+
+## The regime router: 2.05x the target, with real-audio-free parts
+
+Since no arm holds two cells, a router over the arms that already exist is the
+honest synthetic-only system — every specialist was trained on synthetic audio
+alone. `scripts/regime_router.py` sends each frame to the arm that owns its
+regime, and reports the ceiling (`oracle`, regime from the true track) beside
+the system (`routed`, regime inferred from the specialists' own predictions).
+
+| system | all | zero | low | flight | vs target |
+|---|---|---|---|---|---|
+| target `r4hb_scv2` | 2.67 | 2.87 | 3.48 | 2.49 | 1.00x |
+| oracle route | 3.72 | 4.73 | 8.94 | 2.60 | 1.39x |
+| **best routed** | **5.47** | 7.21 | 17.92 | 2.89 | **2.05x** |
+| best single arm | 8.08 | 20.27 | 16.20 | 4.50 | 3.02x |
+
+Three findings from building it:
+
+1. **The evaluation's regime thresholds cannot judge a prediction.** They read
+   the TRUE track, where a stopped rotor is exactly 0. No specialist predicts
+   below 1 rev/s on a real stopped-rotor frame, so `max < 1` never fired and
+   100% of zero frames were misfiled as ramp. Giving the zero decision to the
+   comb arm with its own threshold (it predicts about 4.7 where truth is 0 and
+   about 70 at cruise) fixed it: 85% of zero frames route correctly and the
+   zero cell fell 17.94 -> 7.21.
+2. **Cruise routing is free**: 99.6% of cruise frames route correctly and the
+   routed cruise cell (2.61) is already at the target's 2.49.
+3. **The whole remaining gap is ramp identification.** Only 34% of ramp frames
+   route correctly; 45% land in the cruise bin because the specialists overshoot
+   a ramp's speed. Raising the cruise boundary trades the two almost exactly
+   (5.63 -> 5.47 all in). A transience cue — a ramp sweeps, cruise is steady —
+   detects ramps far better (ramp cell 20.65 -> 10.33, against the oracle's
+   8.94) but fires on cruise too (2.61 -> 9.15), because a raw gradient cannot
+   separate a genuine sweep from frame-to-frame prediction jitter.
+
+Caveat, stated in the script's own output: the thresholds are swept ON the
+validation split, so the routed rows are an upper bound rather than a held-out
+result. Calibrating them on the synthetic stream, where regimes are known by
+construction, is the honest protocol and has not been done.
