@@ -1271,3 +1271,30 @@ Arm ID restores the idle (`warmup_s: [3.0, 30.0]`, ramp median 1.47 at p90
 arms RP (near-degenerate rotor pairs: 71.6% of real DREGON cruise frames have
 two rotors within 1 rev/s, against 17 to 25% in every synthetic stream) and M
 (the Michael's airframe's slower motor response).
+
+## Post-hoc output processing is exhausted: smoothing does nothing either
+
+The models predict per frame while a real rotor track is smooth, and 72% of the
+ramp cell is a HELD frame whose truth is constant — so a prediction that jitters
+around the right value should be paying for the jitter. Median-filtering each
+predicted rotor track at 9, 21 and 41 frames says it is not:
+
+| model | native | +m9 | +m21 | +m41 |
+|---|---|---|---|---|
+| `stoch_s1s_both` | 13.95 | 13.94 | 13.92 | 13.92 |
+| `stoch_s1h_scv2` | 9.07 | 9.06 | 9.06 | 9.05 |
+| `m3abl_comb_unigru128_s1` | 8.30 | 8.29 | 8.28 | 8.28 |
+| `r4hb_scv2` (target) | 2.67 | 2.67 | 2.68 | 2.70 |
+
+Nothing moves by more than 0.03 anywhere, including in the ramp cell the
+smoothing was aimed at (`stoch_s1s_both` 8.94 -> 8.92 at width 41). The
+predictions are already temporally coherent: **these models are not jittering
+around the right answer, they are steadily on the wrong one.**
+
+That closes post-hoc output processing as a route. Selection (four router
+judges: speed thresholds, transience, transience with median filtering, signal
+level), averaging (five-member mean and median), and now temporal smoothing all
+fail. The oracle route reaches 3.72 and nothing that reads only these models'
+outputs gets near it, so the missing information is not recoverable after the
+fact — it has to come from the training stream. That is what arms Z, M, RP and
+ID test.
