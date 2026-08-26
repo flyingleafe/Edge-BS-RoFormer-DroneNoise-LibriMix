@@ -69,6 +69,8 @@ KNOWN: list[dict] = [
      "all_mae": 15.07, "zero_mae": 6.57, "low_mae": 13.87, "flight_mae": 16.74},
     {"experiment": "stoch_s1w_scv2", "kind": "synthetic", "aggregate_mse": 296.49,
      "all_mae": 12.63, "zero_mae": 16.19, "low_mae": 22.55, "flight_mae": 10.20},
+    {"experiment": "stoch_s1x_scv2", "kind": "synthetic", "aggregate_mse": 262.42,
+     "all_mae": 11.59, "zero_mae": 8.68, "low_mae": 11.88, "flight_mae": 12.04},
 ]
 
 #: Per-rig cells, from job regime-rig-f123b7 (8 channels, all 37 clips).
@@ -101,6 +103,10 @@ RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "stoch_s1w_scv2": {
         "dregon": (12.71, 17.22, 27.12, 11.28),
         "michaels": (12.50, 13.55, 21.78, 8.15),
+    },
+    "stoch_s1x_scv2": {
+        "dregon": (14.10, 6.54, 10.75, 15.65),
+        "michaels": (7.93, 14.12, 12.07, 5.17),
     },
 }
 

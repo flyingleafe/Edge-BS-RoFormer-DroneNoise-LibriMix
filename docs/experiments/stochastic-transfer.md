@@ -977,3 +977,30 @@ regime is already known, and inferring it costs more than it returns.
 
 Router work is CLOSED at 5.47 (2.05x). The remaining lever is a better ramp
 model, which is what the queued arms test.
+
+## Arms W and X: combining the cell winners' ingredients does not work
+
+The two arms were built as each other's complement — arm W is the cruise winner
+plus the ramp winner's static floor, arm X is the ramp winner plus the cruise
+winner's line-visibility block and narrower speed range. Neither broke the
+frontier:
+
+| arm | all | zero | low | flight |
+|---|---|---|---|---|
+| arm H (cruise winner) | 9.07 | 27.98 | 26.77 | **2.60** |
+| arm S (ramp winner) | 13.95 | 17.94 | **8.94** | 14.19 |
+| arm W = H + floor | 12.63 | 16.19 | 22.55 | 10.20 |
+| arm X = S + lines | 11.59 | 8.68 | 11.88 | 12.04 |
+
+Arm X is the most BALANCED arm the campaign has produced — 8.68 / 11.88 / 12.04
+across the three regimes, where every other arm is lopsided — but balance came
+by losing cruise, not by keeping it: it holds no cell, and its all-regime 11.59
+is worse than arm G's 8.08. Sixteen arms in, the ramp-against-cruise correlation
+is unchanged at Spearman -0.57 and the per-cell bests are exactly as they were.
+
+**The frontier is not an ingredient problem.** Both attempts to hand one arm the
+other's missing component produced a point ON the frontier rather than above it.
+Whatever forces the trade-off is not a knob in the stream description, so the
+remaining candidates are the level-domain arms (Y and Z, which change what the
+model can READ rather than what the stream contains) and the possibility that a
+single 1 s-window model of this capacity cannot hold both ends at once.
