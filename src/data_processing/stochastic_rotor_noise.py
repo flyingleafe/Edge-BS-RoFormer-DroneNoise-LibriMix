@@ -911,6 +911,7 @@ class StochasticNoisePool:
         aggressiveness: float | tuple[float, float] = 1.0,
         flight_fs: float = 200.0,
         flight_reuse: int = 32,
+        mode_scales: dict[str, float] | None = None,
         level_per_flight: bool = False,
         flight_phases: dict[str, Any] | None = None,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
@@ -946,6 +947,11 @@ class StochasticNoisePool:
         )
         self.flight_fs = float(flight_fs)
         self.flight_reuse = int(flight_reuse)
+        # How the four rotors SEPARATE, as opposed to how far they wander. Yaw
+        # drives the two diagonal pairs apart and leaves each pair together;
+        # roll and pitch separate the rotors within a pair. See
+        # rps_synthesis.generate_full_flight.
+        self.mode_scales = dict(mode_scales) if mode_scales else None
         self.level_per_flight = bool(level_per_flight)
         # Overrides for the flight-phase durations and the warm-up idle level
         # (``rps_synthesis.FlightPhaseRanges``). The default idle band is 0.38
@@ -1034,6 +1040,7 @@ class StochasticNoisePool:
             ),
             flight_fs=float(rps.get("flight_fs", 200.0)),
             flight_reuse=int(rps.get("flight_reuse", 32)),
+            mode_scales=(dict(rps["mode_scales"]) if rps.get("mode_scales") else None),
             level_per_flight=bool(g("level_per_flight", False)),
             flight_phases=(
                 {k: tuple(v) for k, v in dict(rps["phases"]).items()}
@@ -1117,6 +1124,7 @@ class StochasticNoisePool:
                 drone_profile=blend,
                 aggressiveness=aggressiveness,
                 phases=phases,
+                mode_scales=self.mode_scales,
                 rng=rng,
             )
             self._flight = _FlightCache(

@@ -1,0 +1,124 @@
+# STOCHASTIC-ONLY stage 1, ARM RP = arm X flying like a real quadrotor.
+#
+# ONE CHANGE from conf/online_mix/stoch_s1x_dload.yaml: `rps.mode_scales`, which
+# sets how the four rotors separate from each other. See the comment on it.
+#
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.3]  # arm H's narrower range
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+        # ARM H's LINE-VISIBILITY BLOCK, the part arm S lacks. Arm S reads
+        # ramps better than anything else and cruise worse than anything
+        # else (DREGON cruise 15.26 against arm H's 2.16). These four knobs
+        # are what arm H has instead: the lines stay coherent, their level
+        # wanders less, the floor sits far enough under them, and at least
+        # half of them clear it. A comb a model cannot see is a comb it
+        # cannot learn to read.
+        harm_coherence: [0.6, 1.0]
+        harm_gp_std_db: [0.5, 3.0]
+        floor_rel_db: [-30.0, -8.0]
+        min_lines_above_floor: 0.5
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        # HOW THE FOUR ROTORS SEPARATE, measured against the frozen split. Real
+        # quadrotors cruise with two rotors at nearly the same speed: on the
+        # split's cruise frames a pair sits within 1 rev/s in 71.6% of DREGON
+        # frames and 42.9% of Michael's. Every synthetic stream measured does
+        # that in only 17 to 25% — the streams fly a four-way-separated
+        # aircraft that no real one flies.
+        #
+        # It matters because scoring is per-frame permutation-invariant
+        # matching. Where the truth has two near-equal rotors, a model trained
+        # to spread its four outputs pays for the spread on every frame.
+        #
+        # Yaw drives the two diagonal pairs apart and leaves each pair
+        # together; roll and pitch separate the rotors WITHIN a pair. Scaling
+        # roll and pitch down against yaw reproduces the real spread and the
+        # real degeneracy at once. Calibrated: this setting gives spread
+        # 10.65 / p90 14.14 / 71.8% degenerate at the DREGON end (real:
+        # 11.76 / 14.30 / 71.6%) and spread 17.25 at the Michael's end
+        # (real: 17.36).
+        mode_scales: {roll: 0.45, pitch: 0.45, yaw: 1.7}
+        phases:
+          idle_frac: [0.05, 0.65]
+          warmup_s: [0.5, 6.0]
+          takeoff_s: [0.4, 2.0]
+          landing_s: [0.4, 2.0]
+          spinup_s: [0.2, 1.2]
+          spindown_s: [0.2, 1.2]
+    # The analytic static comb, at equal weight with the stochastic family.
+    # Its clips hold one amplitude profile for their whole length, which is what
+    # makes it narrow — and what makes its models read a stopped rotor.
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

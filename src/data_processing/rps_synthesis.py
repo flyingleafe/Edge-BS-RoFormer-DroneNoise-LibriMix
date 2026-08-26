@@ -612,6 +612,7 @@ def generate_full_flight(
     drone_profile: float | None = None,
     aggressiveness: float = 1.0,
     phases: FlightPhaseRanges | None = None,
+    mode_scales: dict[str, float] | None = None,
     rng: np.random.Generator | int | None = None,
 ) -> np.ndarray:
     """Generate one *full-flight* ``(4, M)`` rotor-speed trajectory spanning the
@@ -709,18 +710,39 @@ def generate_full_flight(
 
     # Differential modes (roll/pitch/yaw): trim + maneuvers + jitter, confined to
     # cruise (near-zero attitude control on the ground / during warm-up).
-    for params in (profile.roll, profile.pitch, profile.yaw):
+    #
+    # `mode_scales` scales each differential mode independently, which is what
+    # sets HOW THE FOUR ROTORS SEPARATE rather than how far they wander. Yaw
+    # drives the two diagonal pairs apart while leaving each pair together; roll
+    # and pitch separate the rotors WITHIN a pair. Real cruise holds a yaw trim
+    # with near-zero roll and pitch, so it shows a wide spread AND a
+    # near-degenerate pair at the same time: on the frozen split's cruise frames
+    # two rotors sit within 1 rev/s in 71.6% of DREGON frames and 42.9% of
+    # Michael's, against 17 to 25% in every synthetic stream measured. Scaling
+    # roll and pitch down and yaw up reproduces both statistics together.
+    scale_map = {name: 1.0 for name in MODE_NAMES}
+    if mode_scales:
+        unknown = set(mode_scales) - set(MODE_NAMES)
+        if unknown:
+            raise ValueError(f"unknown mode_scales keys: {sorted(unknown)}")
+        scale_map.update(mode_scales)
+    for name, params in zip(MODE_NAMES[1:], (profile.roll, profile.pitch, profile.yaw), strict=True):
+        sc = float(scale_map[name])
+        # One consistent meaning for `sc`: this mode is `sc` times as strong.
+        # Applied to the finished setpoint (so the mode's TRIM scales too — the
+        # yaw trim is what holds the diagonal pairs apart) and to the jitter
+        # std. NOT also to amp_scale, which would square it.
         setpoint = _telegraph_setpoint(
             params, n, dt, generator, rate_scale=aggressiveness, amp_scale=aggressiveness
         )
         jitter = _ou_path(
-            OUModeParams(mean=0.0, std=params.cruise_std, tau=profile.cruise_tau),
+            OUModeParams(mean=0.0, std=params.cruise_std * sc, tau=profile.cruise_tau),
             n,
             dt,
             generator,
             std_scale=1.0,
         )
-        modes.append(cruise_gate * (setpoint + jitter))
+        modes.append(cruise_gate * (setpoint * sc + jitter))
 
     # Motor/airframe lag rounds the ramp corners and gate edges (realistic
     # spin-up/down and fade-in of control authority).
