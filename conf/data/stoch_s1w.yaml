@@ -1,0 +1,21 @@
+# Stochastic-only stage 1, arm H (arm G, narrowed to what a model can learn): the widest synthetic family as the WHOLE noise pool,
+# against the same fixed FULL-envelope real validation split every other stage-1
+# arm uses — so this curve is read directly beside m3abl_comb_*_s1 (the analytic
+# comb) and m3cur_*_s1 (the neural generator).
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/stoch_s1w_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

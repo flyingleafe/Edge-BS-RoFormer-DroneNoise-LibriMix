@@ -1,0 +1,90 @@
+# STOCHASTIC-ONLY stage 1, ARM W = arm H plus a static floor.
+#
+# Arm H is the cruise winner of the whole campaign: on DREGON cruise — 4496 of
+# the split's 9287 frames — it reads 2.16 rev/s against the fine-tuned target's
+# 2.98, so it is BETTER than the model that saw real drone noise. Its ramp cell
+# is the campaign's worst (24.26 / 27.19) and its zero cell is bad too.
+#
+# The rig split says the ramp cell is where the remaining gap lives: 1071 of the
+# 1253 ramp frames are Michael's, at 8.14 rev/s for the best arm against the
+# target's 2.85. Arm S is the only arm that reads ramps at all, and the one
+# ingredient it has that arm H lacks is `floor_static_rel`.
+#
+# ONE CHANGE from conf/online_mix/stoch_s1h_dload.yaml: the static floor.
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.3]
+      ranges:
+        # THE RAMP LEVER. Arm H has no static floor, so as the rotors slow the
+        # whole spectrum collapses with them and the 10 to 45 rev/s band is
+        # unrealistically clean — a weak comb over near-nothing. A real ramp is
+        # a weak comb over a broadband wash that does NOT go away, because the
+        # airframe, the wind and the room do not stop when the rotors slow.
+        # Arm S carried this and holds the best ramp cell of the campaign
+        # (Michael's ramp 8.14 against every other arm's 15 to 27); it is the
+        # one ingredient arm H lacks. Everything else here is arm H verbatim.
+        floor_static_rel: [0.015, 0.12]
+        harm_coherence: [0.6, 1.0]
+        harm_gp_std_db: [0.5, 3.0]
+        floor_rel_db: [-30.0, -8.0]
+        min_lines_above_floor: 0.5
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        phases:
+          idle_frac: [0.05, 0.65]
+          warmup_s: [0.5, 6.0]
+          takeoff_s: [0.4, 2.0]
+          landing_s: [0.4, 2.0]
+          spinup_s: [0.2, 1.2]
+          spindown_s: [0.2, 1.2]
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
