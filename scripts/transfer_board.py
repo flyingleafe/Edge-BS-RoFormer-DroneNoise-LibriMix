@@ -1,9 +1,24 @@
-"""The synthetic-only transfer leaderboard: real-trained target, then the best
+"""The synthetic-only transfer leaderboard: the fine-tuned target, then the best
 synthetic-only models, one row per MODEL.
 
 Every row is one checkpoint measured on every regime. Ranking is by all-regime
 PIT mean absolute error, which is what the campaign's goal is stated in — never
 a per-regime best-of across different models, which no single model achieves.
+
+The frozen split is TWO aircraft, so every number also splits by rig. The two
+halves are not the same measurement:
+
+    DREGON    22 clips  zero 844  low  182  flight 4496   (5522 frames)
+    Michael's 15 clips  zero 333  low 1071  flight 2361   (3765 frames)
+
+so the ramp cell is 85% Michael's and the zero cell 72% DREGON, and an
+all-regime average is 59% DREGON. It matters more than a split usually does,
+because the target does not face the same task on both halves: it trains on
+DREGON room2 and is scored on room1 (a room change), but it trains on Michael's
+FLY125 and is scored on FLY124 — the same aircraft, the same array, an adjacent
+flight. Its Michael's column is therefore close to an in-domain number and its
+DREGON column is a transfer number. Compare synthetic-only against each on its
+own terms.
 
     python scripts/transfer_board.py            # top 3 synthetic-only
     python scripts/transfer_board.py --top 6
@@ -52,6 +67,37 @@ KNOWN: list[dict] = [
      "all_mae": 17.96, "zero_mae": 13.75, "low_mae": 14.24, "flight_mae": 19.36},
 ]
 
+#: Per-rig cells, from job regime-rig-f123b7 (8 channels, all 37 clips).
+#: Each tuple is (all, zero, low, flight) mean absolute error, rev/s.
+RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
+    "r4hb_scv2": {
+        "dregon": (3.0, 2.24, 7.21, 2.98),
+        "michaels": (2.18, 4.48, 2.85, 1.55),
+    },
+    "stoch_s1g_scv2": {
+        "dregon": (6.49, 14.64, 22.42, 4.31),
+        "michaels": (10.4, 34.53, 15.14, 4.85),
+    },
+    "m3abl_comb_unigru128_s1": {
+        "dregon": (5.75, 5.63, 14.52, 5.42),
+        "michaels": (12.03, 2.44, 25.89, 7.1),
+    },
+    "stoch_s1h_scv2": {
+        "dregon": (5.96, 22.23, 24.26, 2.16),
+        "michaels": (13.64, 42.56, 27.19, 3.42),
+    },
+    "stoch_s1s_both": {
+        "dregon": (15.43, 16.72, 13.63, 15.26),
+        "michaels": (11.79, 21.05, 8.14, 12.14),
+    },
+}
+
+#: Frames behind each cell, so a small cell is never read as a firm result.
+FRAMES = {
+    "dregon": {"all": 5522, "zero": 844, "low": 182, "flight": 4496},
+    "michaels": {"all": 3765, "zero": 333, "low": 1071, "flight": 2361},
+}
+
 REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate"}
 
 
@@ -67,8 +113,52 @@ def load() -> list[dict]:
                 continue
             row = dict(row)
             row["kind"] = "real" if row["experiment"] in REAL_NAMES else "synthetic"
+            for rig in ("dregon", "michaels"):
+                if f"{rig}_all_mae" in row:
+                    RIG_CELLS.setdefault(row["experiment"], {})[rig] = (
+                        row[f"{rig}_all_mae"], row[f"{rig}_zero_mae"],
+                        row[f"{rig}_low_mae"], row[f"{rig}_flight_mae"],
+                    )
             rows[row["experiment"]] = row
     return list(rows.values())
+
+
+def rig_grid(target: dict, shown: list[dict]) -> None:
+    """The 2x3 rig-by-regime grid, and where each cell stands against the target."""
+    have = [r for r in shown if r["experiment"] in RIG_CELLS]
+    if target["experiment"] not in RIG_CELLS or not have:
+        return
+    cells = ("all", "zero", "low", "flight")
+    print()
+    print("BY RIG (the same checkpoints, split by which aircraft the noise came from)")
+    head = f"{'model':26s} {'rig':9s} {'frames':>7s} " + " ".join(f"{c:>8s}" for c in cells)
+    print(head)
+    print("-" * len(head))
+    for row in [target, *[r for r in have if r["experiment"] != target["experiment"]]]:
+        if row["experiment"] not in RIG_CELLS:
+            continue
+        for rig in ("dregon", "michaels"):
+            v = RIG_CELLS[row["experiment"]].get(rig)
+            if v is None:
+                continue
+            mark = "   <- target" if row is target and rig == "michaels" else ""
+            print(f"{row['experiment'] if rig == 'dregon' else '':26s} {rig:9s} "
+                  f"{FRAMES[rig]['all'] if rig else 0:7d} "
+                  + " ".join(f"{x:8.2f}" for x in v) + mark)
+
+    print()
+    print("best synthetic-only per RIG x REGIME cell, against the target in that cell:")
+    tgt = RIG_CELLS[target["experiment"]]
+    synth = [r for r in have if r["kind"] == "synthetic"]
+    for rig in ("dregon", "michaels"):
+        for j, cell in enumerate(cells):
+            if cell == "all":
+                continue
+            best = min(synth, key=lambda r, j=j, rig=rig: RIG_CELLS[r["experiment"]][rig][j])
+            got, want = RIG_CELLS[best["experiment"]][rig][j], tgt[rig][j]
+            flag = "  <- AT OR BETTER THAN TARGET" if got <= want else ""
+            print(f"   {rig:9s} {cell:7s} {got:6.2f} vs {want:5.2f}  ({got / want:.2f}x)  "
+                  f"{best['experiment']:26s} [{FRAMES[rig][cell]:4d} frames]{flag}")
 
 
 def main() -> int:
@@ -105,6 +195,9 @@ def main() -> int:
         for cell, key in (("zero", "zero_mae"), ("low", "low_mae"), ("flight", "flight_mae"),
                           ("all", "all_mae")):
             print(f"   {cell:7s} {b[key] / target[key]:5.2f}x   ({b[key]:.2f} against {target[key]:.2f})")
+    if target:
+        # every model with rig cells, not just the top-N of the regime view
+        rig_grid(target, [target, *[r for r in synth if r["experiment"] in RIG_CELLS]])
     return 0
 
 
