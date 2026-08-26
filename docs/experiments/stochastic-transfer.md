@@ -1298,3 +1298,34 @@ fail. The oracle route reaches 3.72 and nothing that reads only these models'
 outputs gets near it, so the missing information is not recoverable after the
 fact — it has to come from the training stream. That is what arms Z, M, RP and
 ID test.
+
+## Arm ID confirms the diagnosis: restoring the idle gives the best arm yet
+
+Arm ID is arm X with the flight phase ranges restored so the stream contains
+sustained low-speed holds. Scored at an EARLY checkpoint — 7 of 22 epochs, cut
+short by the gpushort wall clock — it is already the best synthetic-only model
+the campaign has produced:
+
+| | all | zero | low | flight |
+|---|---|---|---|---|
+| arm ID, both rigs | **7.40** | 7.20 | 18.98 | 5.32 |
+| arm ID, DREGON | 6.19 | 5.77 | **8.79** | 6.17 |
+| arm ID, Michael's | 9.17 | 10.81 | 20.71 | 3.71 |
+| previous best single (`stoch_s1g_scv2`) | 8.08 | 20.27 | 16.20 | 4.50 |
+
+Two records from a partial checkpoint: **best single synthetic-only model, 7.40
+against 8.08 (3.02x -> 2.77x the target)**, and **best DREGON ramp cell, 8.79
+against 9.34 (1.30x -> 1.22x)**. The prediction that the missing warm-up idle
+was costing the ramp cell is borne out.
+
+Arm RP (near-degenerate rotor pairs), also early at 9 of 22 epochs, posts the
+best MICHAEL'S aggregate of any synthetic arm — 7.47 against arm X's 7.93 —
+though it takes no individual cell yet (Michael's ramp 13.93, cruise 4.33).
+
+Neither arm has converged. Both were capped by the 55-minute gpushort limit, and
+the uncapped copies are still queued. The numbers here are lower bounds on what
+these two streams reach.
+
+Standing position after these two: best single model 2.77x, oracle route 1.34x,
+DREGON alone 0.98x, and three of six rig-by-regime cells at or better than the
+in-domain target.

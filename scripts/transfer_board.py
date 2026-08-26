@@ -74,6 +74,13 @@ KNOWN: list[dict] = [
     # Cross-rig CONTROL, not a target: the target's recipe with Michael's
     # removed, so its Michael's column is what a real-trained model is worth on
     # a rig it never met.
+    # Arms from the measured distribution mismatches. Both are EARLY
+    # checkpoints — RP stopped at 9 of 22 epochs on the gpushort wall clock and
+    # ID at 7 — so they understate what the arms reach at convergence.
+    {"experiment": "stoch_s1id_scv2", "kind": "synthetic", "aggregate_mse": 130.32,
+     "all_mae": 7.40, "zero_mae": 7.20, "low_mae": 18.98, "flight_mae": 5.32},
+    {"experiment": "stoch_s1rp_scv2", "kind": "synthetic", "aggregate_mse": 246.27,
+     "all_mae": 10.72, "zero_mae": 13.92, "low_mae": 13.72, "flight_mae": 9.63},
     {"experiment": "xrig_dregon_only", "kind": "control", "aggregate_mse": 220.77,
      "all_mae": 9.72, "zero_mae": 9.23, "low_mae": 28.31, "flight_mae": 6.41},
     {"experiment": "xrig_michaels_only", "kind": "control", "aggregate_mse": 1571.81,
@@ -154,6 +161,14 @@ RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "stoch_s1u_composite": {
         "dregon": (22.41, 12.24, 11.3, 24.76),
         "michaels": (11.43, 17.59, 14.73, 9.07),
+    },
+    "stoch_s1id_scv2": {
+        "dregon": (6.19, 5.77, 8.79, 6.17),
+        "michaels": (9.17, 10.81, 20.71, 3.71),
+    },
+    "stoch_s1rp_scv2": {
+        "dregon": (12.94, 15.89, 12.47, 12.41),
+        "michaels": (7.47, 8.91, 13.93, 4.33),
     },
     "xrig_michaels_only": {
         "dregon": (37.66, 1.49, 15.35, 45.35),
