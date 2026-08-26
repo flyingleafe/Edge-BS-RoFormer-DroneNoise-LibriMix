@@ -847,3 +847,57 @@ target on Michael's cruise" may be a gap against an in-domain advantage rather
 than against anything a synthetic stream could close. A real model trained on
 DREGON alone and scored on Michael's would settle it, and would tell us whether
 Michael's cruise is a target worth chasing at all.
+
+## Level: what the sweep settled, and one claim withdrawn
+
+`scripts/valid_regime_eval.py --rescale-rms` scores the split with every clip
+forced to one level (job `levelsweep-54992b`). DREGON cruise, rev/s:
+
+| model | native | 0.02 | 0.05 | 0.1 | 0.2 |
+|---|---|---|---|---|---|
+| `stoch_s1h_scv2` | 2.16 | 12.51 | 2.38 | 2.05 | 2.09 |
+| `r4hb_scv2` (target) | 2.98 | 5.03 | 3.07 | 2.96 | 2.82 |
+| `stoch_s1v_ground` | 21.97 | 33.35 | 17.95 | 13.96 | 12.15 |
+
+**Arm H's cruise advantage is level-invariant and therefore genuine.** Across a
+4x level change it reads 2.05 to 2.16 against the target's 2.82 to 3.07. It is
+reading comb spacing, not loudness, so the 0.72x on the split's largest cell is
+not an artifact of the evaluation level.
+
+The same sweep shows the low-speed cells are a different judgement: every
+model's zero and ramp cells explode when level is removed — the target's zero
+cell goes 2.87 to 61.25 at rms 0.2, its ramp cell 3.48 to 28.34. Reading a
+stopped or slow rotor needs level; reading a cruising one must ignore it. A
+single model has to be level-sensitive in one regime and level-blind in
+another, which is a plausible source of the ramp-against-cruise frontier that
+does not involve realism at all.
+
+### WITHDRAWN: "the synthetic streams delete the level cue"
+
+An earlier run of `scripts/level_speed_coupling.py` on **39 chunks** put arm H's
+level-to-speed correlation at +0.09 against real's +0.55, and the arm Y config
+was first written around that. At n=491 it does not hold:
+
+| source | n | spearman(level, rps) | speed-driven | scatter |
+|---|---:|---:|---:|---:|
+| real, Michael's rec. 0 | 111 | +0.553 | 8.3 dB | 4.6 dB |
+| real, Michael's rec. 1 | 163 | +0.180 | 11.5 dB | 4.5 dB |
+| `stoch_s1h` | 491 | +0.250 | 17.7 dB | 8.6 dB |
+| `stoch_s1y` | 495 | +0.309 | 21.2 dB | 7.4 dB |
+| `stoch_s1g` | 489 | +0.252 | 21.1 dB | 12.8 dB |
+| `stoch_s1v` | 497 | +0.311 | 10.9 dB | 5.8 dB |
+| `stoch_s1s` | 498 | +0.186 | 5.8 dB | 5.7 dB |
+
+Arm H's coupling sits INSIDE the range the two real recordings span, and the
+real coupling is itself variable (+0.18 against +0.55 on the same rig). The cue
+is not missing from the streams.
+
+What survives is narrower: synthetic **scatter** around the speed trend is about
+twice real's (7.4 to 12.8 dB against 4.5 to 4.6). Arm Y still tests a real
+difference — a noisier level cue — but a smaller one than it was written for,
+and its prediction is now only that the low-speed cells should improve while
+cruise, which the sweep proves ignores level, stays put.
+
+That run also measured no DREGON recording at all: the loader's limit was
+consumed by motor runs and clean-source clips, which carry no rotor track. Fixed
+in the script; the numbers above are Michael's only.

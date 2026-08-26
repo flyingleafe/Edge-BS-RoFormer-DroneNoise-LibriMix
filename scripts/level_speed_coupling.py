@@ -71,11 +71,13 @@ def real_rows(limit: int) -> list[tuple[str, np.ndarray, np.ndarray]]:
     rows = []
     for name in ("DREGON-frames", "michaels-frames"):
         ds = DloadFrameDataset(name)
+        kept = 0
         for i, fr in enumerate(ds):
-            if i >= limit:
+            if kept >= limit:
                 break
             if "rps" not in fr or "audio" not in fr:
-                continue
+                continue  # motor runs and clean sources carry no rotor track
+            kept += 1
             audio = np.asarray(fr["audio"].data, dtype=np.float64)
             if audio.ndim > 1:
                 audio = audio[0]

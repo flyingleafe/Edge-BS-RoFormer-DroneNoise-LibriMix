@@ -1,9 +1,10 @@
 # STOCHASTIC-ONLY stage 1, ARM Y = arm H with a level that means something.
 #
-# Arm H is the cruise winner and cannot read a slow rotor. This arm changes the
-# ONE thing that measurement says separates its stream from a real flight: the
-# per-window random gain is wider than the speed-driven level change, so level
-# carries no speed information. See the comment on `normalize_rms_range`.
+# Arm H is the cruise winner and cannot read a slow rotor. This arm narrows the
+# per-window random gain, which measurement says is the clearest level-domain
+# difference between its stream and a real flight: the same speed-level
+# coupling, but roughly twice the scatter around it. See the comment on
+# `normalize_rms_range`.
 #
 sample_rate: 16000
 duration_s: 1.0
@@ -27,26 +28,28 @@ sources:
         harm_gp_std_db: [0.5, 3.0]
         floor_rel_db: [-30.0, -8.0]
         min_lines_above_floor: 0.5
-      # THE LEVEL CUE, measured. In a real flight one recorder gain covers the
-      # whole trajectory, so loudness tracks rotor speed: over Michael's
-      # recordings the per-second level correlates with mean rev/s at Spearman
-      # +0.55, with 8.3 dB of level driven by speed against 4.6 dB of scatter.
-      # Arm H draws a fresh reference level per window over [0.02, 0.25] — a
-      # 21.9 dB range, 6.3 dB of scatter — which BURIES its own 4.0 dB of
-      # speed-driven level and leaves Spearman +0.09. Level carries no speed
-      # information in that stream, so the model must learn to ignore it.
+      # LEVEL SCATTER, measured. In a real flight one recorder gain covers the
+      # whole trajectory, so loudness carries some information about rotor
+      # speed. Over two of Michael's recordings the per-second level correlates
+      # with mean rev/s at Spearman +0.18 and +0.55 — the coupling itself is
+      # variable — with 4.5 to 4.6 dB of scatter around the speed trend.
       #
-      # That is survivable at cruise and fatal below it. The level sweep
-      # (job levelsweep-54992b) shows cruise is a spacing judgement that does
-      # not care about level — arm H reads DREGON cruise at 2.05 to 2.16 rev/s
-      # across a 4x level change — while EVERY model's zero and ramp cells
-      # explode when level is taken away (the target's zero cell goes 2.87 to
-      # 61.25). Reading a stopped or slow rotor NEEDS level. This is why all 14
-      # arms sit on a ramp-against-cruise frontier at Spearman -0.58 that the
-      # target dominates: the streams delete a cue the target has.
+      # Arm H's stream is NOT missing that coupling: at n=491 it measures +0.25,
+      # inside the real range. What it does have is far more scatter, 8.6 dB
+      # against real's 4.6, because it redraws a reference level per window over
+      # a 21.9 dB range. So level in that stream is a noisier speed cue than in
+      # a real flight, not an absent one.
       #
-      # ONE CHANGE from arm H: [0.05, 0.15] is a 9.5 dB range (2.7 dB scatter),
-      # so the speed-driven share leads instead of trailing.
+      # Why it plausibly matters below cruise: the level sweep (job
+      # levelsweep-54992b) shows cruise is a spacing judgement that ignores
+      # level — arm H reads DREGON cruise at 2.05 to 2.16 rev/s across a 4x
+      # level change — while EVERY model's zero and ramp cells explode when
+      # level is taken away (the target's zero cell goes 2.87 to 61.25). A
+      # noisier level cue should therefore cost the low-speed cells and leave
+      # cruise alone. That is the prediction this arm tests.
+      #
+      # ONE CHANGE from arm H: [0.05, 0.15] is a 9.5 dB range, which measured
+      # 7.4 dB of scatter against arm H's 8.6 and real's 4.6.
       normalize_rms_range: [0.05, 0.15]
       level_mode: flight
       rps:
