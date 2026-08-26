@@ -54,11 +54,33 @@ DEFAULT_ROUTE = {
 }
 
 
+def _rolling_slope(track: np.ndarray, half: int = 10) -> np.ndarray:
+    """|d track / dt| smoothed over +-`half` frames, in rev/s per frame.
+
+    A ramp is a TRANSIENT: the rotors sweep from idle to hover and back. Cruise
+    is steady. That difference does not need the speed to be read correctly, only
+    consistently, which is why it separates the two regimes where a threshold on
+    the predicted speed itself does not — at the evaluation's own 45 rev/s
+    boundary only 34% of ramp frames routed correctly, because the specialists
+    overshoot a ramp's speed straight into the cruise bin.
+    """
+    n = track.size
+    if n < 3:
+        return np.zeros(n)
+    d = np.abs(np.gradient(track))
+    win = min(2 * half + 1, n if n % 2 else n - 1)
+    if win < 3:
+        return d
+    kernel = np.ones(win) / win
+    return np.convolve(d, kernel, mode="same")
+
+
 def infer_regimes(
     preds: dict[str, np.ndarray],
     zero_judge: str,
     zero_thresh: float,
     flight_thresh: float,
+    slope_thresh: float = 0.0,
 ) -> np.ndarray:
     """Per-frame regime from the specialists' own predictions.
 
@@ -80,6 +102,11 @@ def infer_regimes(
     judge = preds.get(zero_judge, med)
     labels = np.full(med.shape[1], "low", dtype=object)
     labels[med.mean(axis=0) >= flight_thresh] = "flight"
+    if slope_thresh > 0:
+        # A frame the speed test called cruise, but whose predicted track is
+        # sweeping, is a ramp the specialists overshot.
+        moving = _rolling_slope(med.mean(axis=0)) >= slope_thresh
+        labels[(labels == "flight") & moving] = "low"
     labels[judge.mean(axis=0) < zero_thresh] = "zero"
     return labels
 
@@ -100,6 +127,9 @@ def main() -> int:
                          "the specialists overshoot lands in the cruise bin at that value: "
                          "45% of ramp frames did. Raising it trades cruise purity for ramp "
                          "recall, and real cruise sits near 70, so there is room.")
+    ap.add_argument("--slope-thresh", type=float, nargs="*", default=[0.0],
+                    help="rev/s per frame of smoothed |d speed/dt| above which a "
+                         "cruise-binned frame is re-called a ramp. 0 disables.")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -124,8 +154,13 @@ def main() -> int:
     n_clips = len(dataset) if args.limit is None else min(len(dataset), args.limit)
 
     # err[key][rig][regime] -> list of per-frame absolute errors
-    thresholds = [(z, f) for z in args.zero_thresh for f in args.flight_thresh]
-    keys = ["oracle", *[f"routed@z{z:g}f{f:g}" for z, f in thresholds],
+    thresholds = [
+        (z, f, sl)
+        for z in args.zero_thresh
+        for f in args.flight_thresh
+        for sl in args.slope_thresh
+    ]
+    keys = ["oracle", *[f"routed@z{z:g}f{f:g}s{sl:g}" for z, f, sl in thresholds],
             *[f"single:{n}" for n in names]]
     err = {k: {r: {g: [] for g in REGIMES} for r in RIGS} for k in keys}
     confusion = {t: np.zeros((len(REGIMES), len(REGIMES)), dtype=np.int64) for t in thresholds}
@@ -154,7 +189,7 @@ def main() -> int:
 
             true_lab = frame_regimes(tgt)
             got = {
-                (z, f): infer_regimes(preds, args.zero_judge, z, f) for z, f in thresholds
+                t: infer_regimes(preds, args.zero_judge, t[0], t[1], t[2]) for t in thresholds
             }
             for t, got_lab in got.items():
                 for a, ra in enumerate(REGIMES):
@@ -182,7 +217,7 @@ def main() -> int:
                         sel = sub == g
                         if sel.any():
                             picked[:, sel] = errs[route[g]][:, m][:, sel]
-                    err[f"routed@z{t[0]:g}f{t[1]:g}"][rig][regime].append(picked.ravel())
+                    err[f"routed@z{t[0]:g}f{t[1]:g}s{t[2]:g}"][rig][regime].append(picked.ravel())
 
     rows = []
     head = f"{'system':34s} {'rig':9s} {'all':>7s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
@@ -215,7 +250,7 @@ def main() -> int:
         print()
 
     for t in thresholds:
-        print(f"regime confusion at zero {t[0]:g} / cruise {t[1]:g} (rows true, cols inferred):")
+        print(f"confusion z{t[0]:g} f{t[1]:g} s{t[2]:g} (rows true, cols inferred):")
         print(f"{'':9s}" + "".join(f"{g:>9s}" for g in REGIMES))
         c = confusion[t]
         for a, ra in enumerate(REGIMES):
@@ -234,7 +269,9 @@ def main() -> int:
             json.dumps(
                 {
                     "rows": rows,
-                    "confusion": {f"z{t[0]:g}f{t[1]:g}": c.tolist() for t, c in confusion.items()},
+                    "confusion": {
+                        f"z{t[0]:g}f{t[1]:g}s{t[2]:g}": c.tolist() for t, c in confusion.items()
+                    },
                     "route": route,
                     "zero_judge": args.zero_judge,
                 },
