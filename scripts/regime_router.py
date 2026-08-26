@@ -54,6 +54,23 @@ DEFAULT_ROUTE = {
 }
 
 
+def _median_filter(track: np.ndarray, width: int) -> np.ndarray:
+    """Median filter, to separate a sweep from prediction jitter.
+
+    The raw gradient cannot tell them apart: at slope 0.05 the transience cue
+    took the ramp cell from 20.65 to 10.33, near the oracle's 8.94, and took
+    cruise from 2.61 to 9.15 at the same time, because a steady cruise frame
+    whose predicted speed wobbles frame to frame looks like a sweep. A ramp
+    lasts a second or more; the jitter does not survive a median over a window
+    of that length.
+    """
+    if width < 3 or track.size < width:
+        return track
+    pad = width // 2
+    padded = np.pad(track, pad, mode="edge")
+    return np.median(np.lib.stride_tricks.sliding_window_view(padded, width), axis=-1)
+
+
 def _rolling_slope(track: np.ndarray, half: int = 10) -> np.ndarray:
     """|d track / dt| smoothed over +-`half` frames, in rev/s per frame.
 
@@ -81,6 +98,7 @@ def infer_regimes(
     zero_thresh: float,
     flight_thresh: float,
     slope_thresh: float = 0.0,
+    smooth: int = 0,
 ) -> np.ndarray:
     """Per-frame regime from the specialists' own predictions.
 
@@ -105,7 +123,10 @@ def infer_regimes(
     if slope_thresh > 0:
         # A frame the speed test called cruise, but whose predicted track is
         # sweeping, is a ramp the specialists overshot.
-        moving = _rolling_slope(med.mean(axis=0)) >= slope_thresh
+        track = med.mean(axis=0)
+        if smooth >= 3:
+            track = _median_filter(track, smooth)
+        moving = _rolling_slope(track) >= slope_thresh
         labels[(labels == "flight") & moving] = "low"
     labels[judge.mean(axis=0) < zero_thresh] = "zero"
     return labels
@@ -130,6 +151,9 @@ def main() -> int:
     ap.add_argument("--slope-thresh", type=float, nargs="*", default=[0.0],
                     help="rev/s per frame of smoothed |d speed/dt| above which a "
                          "cruise-binned frame is re-called a ramp. 0 disables.")
+    ap.add_argument("--smooth", type=int, nargs="*", default=[0],
+                    help="median-filter width (frames) applied to the predicted track "
+                         "before the slope test, so cruise jitter is not read as a sweep")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -155,12 +179,13 @@ def main() -> int:
 
     # err[key][rig][regime] -> list of per-frame absolute errors
     thresholds = [
-        (z, f, sl)
+        (z, f, sl, sm)
         for z in args.zero_thresh
         for f in args.flight_thresh
         for sl in args.slope_thresh
+        for sm in args.smooth
     ]
-    keys = ["oracle", *[f"routed@z{z:g}f{f:g}s{sl:g}" for z, f, sl in thresholds],
+    keys = ["oracle", *[f"routed@z{z:g}f{f:g}s{sl:g}m{sm:g}" for z, f, sl, sm in thresholds],
             *[f"single:{n}" for n in names]]
     err = {k: {r: {g: [] for g in REGIMES} for r in RIGS} for k in keys}
     confusion = {t: np.zeros((len(REGIMES), len(REGIMES)), dtype=np.int64) for t in thresholds}
@@ -189,7 +214,8 @@ def main() -> int:
 
             true_lab = frame_regimes(tgt)
             got = {
-                t: infer_regimes(preds, args.zero_judge, t[0], t[1], t[2]) for t in thresholds
+                t: infer_regimes(preds, args.zero_judge, t[0], t[1], t[2], t[3])
+                for t in thresholds
             }
             for t, got_lab in got.items():
                 for a, ra in enumerate(REGIMES):
@@ -217,7 +243,9 @@ def main() -> int:
                         sel = sub == g
                         if sel.any():
                             picked[:, sel] = errs[route[g]][:, m][:, sel]
-                    err[f"routed@z{t[0]:g}f{t[1]:g}s{t[2]:g}"][rig][regime].append(picked.ravel())
+                    err[f"routed@z{t[0]:g}f{t[1]:g}s{t[2]:g}m{t[3]:g}"][rig][regime].append(
+                        picked.ravel()
+                    )
 
     rows = []
     head = f"{'system':34s} {'rig':9s} {'all':>7s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
@@ -250,7 +278,7 @@ def main() -> int:
         print()
 
     for t in thresholds:
-        print(f"confusion z{t[0]:g} f{t[1]:g} s{t[2]:g} (rows true, cols inferred):")
+        print(f"confusion z{t[0]:g} f{t[1]:g} s{t[2]:g} m{t[3]:g} (rows true, cols inferred):")
         print(f"{'':9s}" + "".join(f"{g:>9s}" for g in REGIMES))
         c = confusion[t]
         for a, ra in enumerate(REGIMES):
@@ -270,7 +298,8 @@ def main() -> int:
                 {
                     "rows": rows,
                     "confusion": {
-                        f"z{t[0]:g}f{t[1]:g}s{t[2]:g}": c.tolist() for t, c in confusion.items()
+                        f"z{t[0]:g}f{t[1]:g}s{t[2]:g}m{t[3]:g}": c.tolist()
+                        for t, c in confusion.items()
                     },
                     "route": route,
                     "zero_judge": args.zero_judge,
