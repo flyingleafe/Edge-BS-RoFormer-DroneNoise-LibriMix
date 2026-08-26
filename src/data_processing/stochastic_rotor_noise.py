@@ -876,6 +876,16 @@ class _FlightCache:
     #: level a giveaway for the absolute speed — a shortcut, and a false one,
     #: since a small fast drone is not quieter than a big slow one.
     hover: float = 80.0
+    #: The reference level this whole flight is recorded at, drawn once when the
+    #: flight is made and held for every window of it — only when
+    #: ``level_per_flight`` is on. A real recording has ONE gain: within it,
+    #: loudness tracks rotor speed closely (Michael's two recordings couple
+    #: level to speed at Spearman +0.73 / +0.48 with only 1.2 / 3.2 dB of
+    #: scatter), and different recordings sit at very different absolute levels.
+    #: Redrawing the level per WINDOW destroys that: it keeps the across-flight
+    #: spread but throws the same spread INSIDE each flight, which is what left
+    #: the synthetic streams at 7.4 to 12.8 dB of scatter.
+    level: float | None = None
 
 
 class StochasticNoisePool:
@@ -901,6 +911,7 @@ class StochasticNoisePool:
         aggressiveness: float | tuple[float, float] = 1.0,
         flight_fs: float = 200.0,
         flight_reuse: int = 32,
+        level_per_flight: bool = False,
         flight_phases: dict[str, Any] | None = None,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
         mic_gain_db: tuple[float, float] = (-12.0, 0.0),
@@ -935,6 +946,7 @@ class StochasticNoisePool:
         )
         self.flight_fs = float(flight_fs)
         self.flight_reuse = int(flight_reuse)
+        self.level_per_flight = bool(level_per_flight)
         # Overrides for the flight-phase durations and the warm-up idle level
         # (``rps_synthesis.FlightPhaseRanges``). The default idle band is 0.38
         # to 0.52 of hover, so a default stream never shows a rotor between 10
@@ -1022,6 +1034,7 @@ class StochasticNoisePool:
             ),
             flight_fs=float(rps.get("flight_fs", 200.0)),
             flight_reuse=int(rps.get("flight_reuse", 32)),
+            level_per_flight=bool(g("level_per_flight", False)),
             flight_phases=(
                 {k: tuple(v) for k, v in dict(rps["phases"]).items()}
                 if rps.get("phases") is not None
@@ -1110,6 +1123,7 @@ class StochasticNoisePool:
                 rps=flight,
                 t_low=np.arange(flight.shape[1]) / self.flight_fs,
                 hover=float(np.percentile(flight, 90.0)),
+                level=self._draw_level(rng) if self.level_per_flight else None,
             )
         self._flight.uses += 1
         flight, t_low = self._flight.rps, self._flight.t_low
@@ -1119,6 +1133,13 @@ class StochasticNoisePool:
         self._hover = max(scale * float(self._flight.hover), 1.0)
         window = np.stack([np.interp(t_win, t_low, flight[r]) for r in range(flight.shape[0])])
         return scale * window
+
+    def _draw_level(self, rng: np.random.Generator) -> float:
+        """One reference level, log-uniform over the configured range."""
+        if isinstance(self.normalize_rms, tuple):
+            lo, hi = self.normalize_rms
+            return float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+        return float(self.normalize_rms)
 
     def render(
         self, rng: np.random.Generator, duration_s: float
@@ -1153,11 +1174,10 @@ class StochasticNoisePool:
             gamma0=params.gamma0 * size,
             gamma_slope=params.gamma_slope * size,
         )
-        if isinstance(self.normalize_rms, tuple):
-            lo, hi = self.normalize_rms
-            level = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
-        else:
-            level = self.normalize_rms
+        # One gain for a whole flight when asked for, else the old per-window
+        # draw. See _FlightCache.level.
+        cached = getattr(self._flight, "level", None) if self.level_per_flight else None
+        level = cached if cached is not None else self._draw_level(rng)
         audio, diag = synthesize(
             params,
             rps,
