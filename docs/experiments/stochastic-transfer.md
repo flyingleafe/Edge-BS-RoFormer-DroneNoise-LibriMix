@@ -1351,3 +1351,28 @@ speed (RP) and which airframe the profile came from (M).
 
 That is a usable rule for what "realism" means for this task. It is the flight
 envelope and the recording law that matter, not the airframe parameters.
+
+## Combining the fixes does NOT compound — arm IDRP is worse than either part
+
+Arm IDRP carries arm ID's restored warm-up idle and arm RP's near-degenerate
+rotor pairs. At a comparable partial checkpoint (9 of 22 epochs) it is worse
+than either fix alone:
+
+| arm | all | zero | low | flight |
+|---|---|---|---|---|
+| ID alone (7 epochs) | **7.40** | 7.20 | 18.98 | 5.32 |
+| RP alone (9 epochs) | 10.72 | 13.92 | 13.72 | 9.63 |
+| **ID + RP (9 epochs)** | **13.37** | 17.17 | 19.69 | 11.56 |
+
+The two interfere rather than add. That is the third time this campaign has
+found that combining ingredients lands BELOW the parts — arms W and X did the
+same with the cell winners' knobs — so it is a property of these streams, not an
+accident of one pairing.
+
+It also sharpens the trajectory-against-geometry split. ID and Z are
+trajectory-level (which flight states the stream contains, how loudness relates
+to speed) and are the top two arms; RP and M are geometry-level (which rotors
+sit near each other, which airframe the profile came from) and are the bottom
+two. Adding a geometry-level fix to a trajectory-level one costs more than it
+buys. Arm IDZ — the two trajectory-level fixes together — is the test of whether
+same-kind fixes compound where mixed-kind ones do not.
