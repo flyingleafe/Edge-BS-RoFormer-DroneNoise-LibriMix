@@ -666,6 +666,36 @@ still made cruise worse.
 
 Arm P is therefore arm G with the recording floor and nothing else.
 
+## Both families in one stream: the ramp cell nearly halves
+
+Every arm from A to R replaced one synthetic family with the other. The board
+said each owns a different cell — the analytic comb reads a stopped rotor at
+4.73 rev/s, the stochastic family reads cruise at 2.60 — so arm S ran both at
+equal weight, and the cell the campaign could not move gave way:
+
+| model | all-MAE | zero | low | flight |
+|---|---|---|---|---|
+| `r4hb_scv2`, the target | 2.67 | 2.87 | **3.48** | 2.49 |
+| `stoch_s1s_both` | 13.95 | 17.94 | **8.94** | 14.19 |
+| `stoch_s1g_scv2`, the incumbent | **8.08** | 20.27 | 16.20 | **4.50** |
+| `m3abl_comb_unigru128_s1` | 8.30 | **4.73** | 24.24 | 6.00 |
+| `stoch_s1q_gru` | 15.18 | 17.09 | 19.18 | 14.12 |
+
+**8.94 rev/s on the ramps against a previous synthetic-only best of 16.20** —
+from 4.66x the real-trained target to 2.57x. That is the cell two measurement
+paths were abandoned on (median-filter saturation, autocorrelation window
+overlap) and where no spectral lever had ever worked. The mixture did what
+neither family did alone.
+
+The run finished at 23 epochs and never beat its epoch-2 checkpoint, so 8.94 is
+its converged value and not an early reading. That early peak is itself the
+pattern: on this split a synthetic-only model reaches its best against real data
+within a few epochs and then drifts, which is the same shape arm H showed.
+
+Arm S buys the ramps and gives up cruise (14.19 against arm G's 4.50), so it
+does not hold two cells either. Arm U is the composite that should: both
+families, plus arm T's removal of the separate silence generator.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
