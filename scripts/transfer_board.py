@@ -40,6 +40,12 @@ KNOWN: list[dict] = [
      "all_mae": 9.07, "zero_mae": 27.98, "low_mae": 26.77, "flight_mae": 2.60},
     {"experiment": "comb_fixed_scv2", "kind": "synthetic", "aggregate_mse": 1389.03,
      "all_mae": 35.09, "zero_mae": 41.21, "low_mae": 10.42, "flight_mae": 38.55},
+    {"experiment": "stoch_s1r_long", "kind": "synthetic", "aggregate_mse": 453.41,
+     "all_mae": 18.20, "zero_mae": 16.86, "low_mae": 17.51, "flight_mae": 18.55},
+    {"experiment": "stoch_s1q_gru", "kind": "synthetic", "aggregate_mse": 331.57,
+     "all_mae": 15.18, "zero_mae": 17.09, "low_mae": 19.18, "flight_mae": 14.12},
+    {"experiment": "stoch_s1s_both", "kind": "synthetic", "aggregate_mse": 296.42,
+     "all_mae": 13.95, "zero_mae": 17.94, "low_mae": 8.94, "flight_mae": 14.19},
 ]
 
 REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate"}
@@ -81,6 +87,14 @@ def main() -> int:
         print(f"{r['experiment']:26s} {'synthetic':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
               f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}")
     if target and synth:
+        # The best cell any single synthetic model holds, named — so the board
+        # never reads as though one model held all three.
+        print()
+        print("best synthetic-only IN EACH CELL, and which model holds it:")
+        for cell, key in (("zero", "zero_mae"), ("low", "low_mae"), ("flight", "flight_mae")):
+            best = min(synth, key=lambda r: r[key])
+            print(f"   {cell:7s} {best[key]:6.2f}  {best['experiment']:26s} "
+                  f"({best[key] / target[key]:.2f}x target)")
         b = synth[0]
         print()
         print("distance from parity, best synthetic-only model (times the target):")
