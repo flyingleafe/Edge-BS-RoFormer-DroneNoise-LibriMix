@@ -954,3 +954,26 @@ Caveat, stated in the script's own output: the thresholds are swept ON the
 validation split, so the routed rows are an upper bound rather than a held-out
 result. Calibrating them on the synthetic stream, where regimes are known by
 construction, is the honest protocol and has not been done.
+
+### The transience cue does not pay, and the router plateaus at 2.05x
+
+Median-filtering the predicted track before the slope test does separate a sweep
+from prediction jitter, and it improves the trade curve — at slope 0.05 the ramp
+cell goes 10.12 with cruise 9.15 unsmoothed, against 15.26 with cruise 3.88 at a
+61-frame median. But no setting beats the plain speed-threshold router:
+
+| slope / smooth | all | zero | low | flight |
+|---|---|---|---|---|
+| 0.05 / 0 | 9.03 | 7.21 | **10.12** | 9.15 |
+| 0.05 / 61 | 5.84 | 7.21 | 15.26 | 3.88 |
+| 0.2 / 31 | 5.53 | 7.21 | 17.74 | 3.02 |
+| no transience cue | **5.47** | 7.21 | 17.92 | 2.89 |
+
+The ramp-against-cruise frontier reappears INSIDE the router: every (slope,
+smoothing) pair trades the two at roughly constant total. Routing therefore
+plateaus at 2.05x the target, against its own 1.39x ceiling, and the shortfall
+is not a tuning problem — the ramp specialist's 8.94 is only reachable when the
+regime is already known, and inferring it costs more than it returns.
+
+Router work is CLOSED at 5.47 (2.05x). The remaining lever is a better ramp
+model, which is what the queued arms test.
