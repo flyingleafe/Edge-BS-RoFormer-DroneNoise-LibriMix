@@ -1,0 +1,40 @@
+# @package _global_
+# CROSS-RIG REAL CONTROL — DREGON noise only.
+#
+# `r4hb_scv2` is the campaign's target, but it fine-tunes on Michael's FLY125
+# and is scored on FLY124 (same aircraft, same array, adjacent flight) while on
+# DREGON it crosses a room. Its Michael's column is therefore near in-domain,
+# and that is precisely where the synthetic-only gap sits. So "2.21x the target
+# on Michael's cruise" may be a gap against an in-domain advantage rather than
+# against anything a synthetic stream could ever close.
+#
+# This run is `r4hb_scv2` with Michael's removed from the real pool and nothing
+# else changed — same warm start, same optimizer, same validation. Its Michael's
+# column is a TRUE cross-rig real number: what a model trained on real drone
+# noise is worth on an aircraft it has never met. That is the fair bar for a
+# model trained on no real audio at all.
+#
+# Policy: conf/online_mix/xrig_dregon_only_dload.yaml. Batch doc:
+# docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: xrig_dregon_only
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/xrig_dregon_only_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
