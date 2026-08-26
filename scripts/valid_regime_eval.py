@@ -190,6 +190,13 @@ def main() -> int:
         action="append",
         help="scale every clip to this RMS before scoring; repeatable",
     )
+    parser.add_argument(
+        "--smooth", type=int, nargs="*", default=[0],
+        help="median-filter width (frames) applied to each predicted rotor track before "
+             "scoring; 0 disables. The models predict per frame while a real rotor track "
+             "is smooth, and 72%% of the ramp cell is a HELD frame whose truth is "
+             "constant. Choose the width on synthetic data, not here.",
+    )
     parser.add_argument("--out", default=None, help="write the rows as JSON here")
     args = parser.parse_args()
 
