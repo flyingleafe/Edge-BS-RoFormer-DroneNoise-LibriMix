@@ -46,6 +46,10 @@ KNOWN: list[dict] = [
      "all_mae": 15.18, "zero_mae": 17.09, "low_mae": 19.18, "flight_mae": 14.12},
     {"experiment": "stoch_s1s_both", "kind": "synthetic", "aggregate_mse": 296.42,
      "all_mae": 13.95, "zero_mae": 17.94, "low_mae": 8.94, "flight_mae": 14.19},
+    {"experiment": "stoch_s1t_ownsilence", "kind": "synthetic", "aggregate_mse": 454.68,
+     "all_mae": 16.44, "zero_mae": 37.61, "low_mae": 20.24, "flight_mae": 12.11},
+    {"experiment": "stoch_s1u_composite", "kind": "synthetic", "aggregate_mse": 464.24,
+     "all_mae": 17.96, "zero_mae": 13.75, "low_mae": 14.24, "flight_mae": 19.36},
 ]
 
 REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate"}

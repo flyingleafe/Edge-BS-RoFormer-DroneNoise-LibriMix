@@ -696,6 +696,31 @@ Arm S buys the ramps and gives up cruise (14.19 against arm G's 4.50), so it
 does not hold two cells either. Arm U is the composite that should: both
 families, plus arm T's removal of the separate silence generator.
 
+## The zero cell was coverage, not texture
+
+The zero probe found a real mechanism — the stochastic models read their own
+combless floor as a 39 to 46 rev/s rotor while reading the silence pool
+correctly, so they had learned "stopped" as that pool's texture. Removing the
+pool to force the real cue was the wrong conclusion, and two arms say why:
+
+| arm | silence pool | families in the stream | zero cell |
+|---|---|---|---|
+| `stoch_s1g_scv2` | yes, weight 0.2 | stochastic only | 20.27 |
+| `stoch_s1t_ownsilence` | **no** | stochastic only | **37.61** |
+| `stoch_s1u_composite` | **no** | stochastic + comb | **13.75** |
+
+Alone, the stochastic pool's own ground phases give 3.3% of frames against the
+silence pool's 16%, so removing it cuts zero coverage sixfold and the cell
+nearly doubles. Add the comb family — whose flights carry their own ground
+spells — and the same removal *improves* the cell to 13.75, better than the
+incumbent's 20.27.
+
+So the binding constraint is how many zero-labelled windows the stream contains,
+and the texture shortcut only matters once there are enough of them. Arm V acts
+on that: keep the coverage at 13.2% (the split's own figure is 12.7%), source it
+from long ground spells inside both drone families, and leave the silence pool
+in at half weight for the room tone no rotor model generates.
+
 ## Log
 
 * **2026-08-25** — family built, measured against the real comb instrument,
