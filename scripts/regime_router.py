@@ -54,19 +54,33 @@ DEFAULT_ROUTE = {
 }
 
 
-def infer_regimes(preds: dict[str, np.ndarray]) -> np.ndarray:
+def infer_regimes(
+    preds: dict[str, np.ndarray],
+    zero_judge: str,
+    zero_thresh: float,
+    flight_thresh: float,
+) -> np.ndarray:
     """Per-frame regime from the specialists' own predictions.
 
-    The median across specialists, not any one of them: the zero specialist
-    reads its own comb-less floor as about 39 rev/s, so letting it vote alone
-    would put ramp frames in the cruise bin. The thresholds are the evaluation's
-    own (max rotor < 1 is zero, mean < 45 is low).
+    The evaluation's own thresholds cannot be reused here. They read the TRUE
+    track, where a stopped rotor is exactly 0, but no specialist predicts below
+    1 rev/s on a real stopped-rotor frame — the first version of this router
+    used `max < 1` and misfiled 100% of zero frames as ramp. A judge needs
+    thresholds on what it actually outputs.
+
+    The zero decision goes to one nominated specialist rather than the median,
+    because only the comb arm reads a stopped rotor at all: it predicts about
+    4.7 rev/s where the truth is 0 and about 70 at cruise, so a threshold
+    between those separates them. The cruise decision stays with the median
+    across specialists, since the zero arm reads its own comb-less floor as
+    about 39 rev/s and would put ramp frames in the cruise bin alone.
     """
     stack = np.stack(list(preds.values()))  # (model, rotor, frame)
     med = np.median(stack, axis=0)
+    judge = preds.get(zero_judge, med)
     labels = np.full(med.shape[1], "low", dtype=object)
-    labels[med.max(axis=0) < 1.0] = "zero"
-    labels[med.mean(axis=0) >= 45.0] = "flight"
+    labels[med.mean(axis=0) >= flight_thresh] = "flight"
+    labels[judge.mean(axis=0) < zero_thresh] = "zero"
     return labels
 
 
@@ -76,6 +90,11 @@ def main() -> int:
                     help="regime=experiment pairs; default is the campaign's per-cell bests")
     ap.add_argument("--channels", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--zero-judge", default="m3abl_comb_unigru128_s1",
+                    help="the specialist whose prediction decides the zero regime")
+    ap.add_argument("--zero-thresh", type=float, nargs="*", default=[10.0],
+                    help="predicted mean rev/s below which a frame is called zero")
+    ap.add_argument("--flight-thresh", type=float, default=45.0)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -100,9 +119,10 @@ def main() -> int:
     n_clips = len(dataset) if args.limit is None else min(len(dataset), args.limit)
 
     # err[key][rig][regime] -> list of per-frame absolute errors
-    keys = ["oracle", "routed", *[f"single:{n}" for n in names]]
+    thresholds = list(args.zero_thresh)
+    keys = ["oracle", *[f"routed@{t:g}" for t in thresholds], *[f"single:{n}" for n in names]]
     err = {k: {r: {g: [] for g in REGIMES} for r in RIGS} for k in keys}
-    confusion = np.zeros((len(REGIMES), len(REGIMES)), dtype=np.int64)
+    confusion = {t: np.zeros((len(REGIMES), len(REGIMES)), dtype=np.int64) for t in thresholds}
 
     for i in range(n_clips):
         frame = dataset[i]
@@ -126,10 +146,14 @@ def main() -> int:
             preds = {n: p[:, :width] for n, p in preds.items()}
 
             true_lab = frame_regimes(tgt)
-            got_lab = infer_regimes(preds)
-            for a, ra in enumerate(REGIMES):
-                for b, rb in enumerate(REGIMES):
-                    confusion[a, b] += int(((true_lab == ra) & (got_lab == rb)).sum())
+            got = {
+                t: infer_regimes(preds, args.zero_judge, t, args.flight_thresh)
+                for t in thresholds
+            }
+            for t, got_lab in got.items():
+                for a, ra in enumerate(REGIMES):
+                    for b, rb in enumerate(REGIMES):
+                        confusion[t][a, b] += int(((true_lab == ra) & (got_lab == rb)).sum())
 
             errs = {n: pit_abs_error(p, tgt) for n, p in preds.items()}
             for n in names:
@@ -145,13 +169,14 @@ def main() -> int:
                 if not m.any():
                     continue
                 err["oracle"][rig][regime].append(errs[route[regime]][:, m].ravel())
-                picked = np.empty((tgt.shape[0], int(m.sum())))
-                sub = got_lab[m]
-                for g in REGIMES:
-                    sel = sub == g
-                    if sel.any():
-                        picked[:, sel] = errs[route[g]][:, m][:, sel]
-                err["routed"][rig][regime].append(picked.ravel())
+                for t, got_lab in got.items():
+                    picked = np.empty((tgt.shape[0], int(m.sum())))
+                    sub = got_lab[m]
+                    for g in REGIMES:
+                        sel = sub == g
+                        if sel.any():
+                            picked[:, sel] = errs[route[g]][:, m][:, sel]
+                    err[f"routed@{t:g}"][rig][regime].append(picked.ravel())
 
     rows = []
     head = f"{'system':34s} {'rig':9s} {'all':>7s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
@@ -183,16 +208,32 @@ def main() -> int:
         rows.append(row)
         print()
 
-    print("regime confusion (rows = true, cols = inferred):")
-    print(f"{'':9s}" + "".join(f"{g:>9s}" for g in REGIMES))
-    for a, ra in enumerate(REGIMES):
-        tot = max(confusion[a].sum(), 1)
-        print(f"{ra:9s}" + "".join(f"{100 * confusion[a, b] / tot:8.1f}%" for b in range(len(REGIMES))))
+    for t in thresholds:
+        print(f"regime confusion at zero-threshold {t:g} (rows = true, cols = inferred):")
+        print(f"{'':9s}" + "".join(f"{g:>9s}" for g in REGIMES))
+        c = confusion[t]
+        for a, ra in enumerate(REGIMES):
+            tot = max(c[a].sum(), 1)
+            print(f"{ra:9s}" + "".join(f"{100 * c[a, b] / tot:8.1f}%" for b in range(len(REGIMES))))
+        print()
+    print(
+        "NOTE: the zero threshold is swept ON the validation split, so the best "
+        "row is an upper bound on a routed system, not a held-out result. "
+        "Calibrating it on the synthetic stream instead is the honest protocol."
+    )
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(
-            json.dumps({"rows": rows, "confusion": confusion.tolist(), "route": route}, indent=1)
+            json.dumps(
+                {
+                    "rows": rows,
+                    "confusion": {str(t): c.tolist() for t, c in confusion.items()},
+                    "route": route,
+                    "zero_judge": args.zero_judge,
+                },
+                indent=1,
+            )
         )
     return 0
 
