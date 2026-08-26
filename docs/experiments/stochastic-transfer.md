@@ -1329,3 +1329,25 @@ these two streams reach.
 Standing position after these two: best single model 2.77x, oracle route 1.34x,
 DREGON alone 0.98x, and three of six rig-by-regime cells at or better than the
 in-domain target.
+
+## The four measured fixes, ranked
+
+All scored at EARLY checkpoints — each was cut by the 55-minute gpushort wall
+clock between 9 and 12 of 22 epochs — so every number is a lower bound.
+
+| arm | what it fixes | all | zero | low | flight |
+|---|---|---|---|---|---|
+| **ID** | the missing warm-up idle | **7.40** | 7.20 | 18.98 | 5.32 |
+| **Z** | a level that means something (fixed gain) | **8.01** | 9.06 | 22.14 | 5.25 |
+| RP | near-degenerate rotor pairs | 10.72 | 13.92 | 13.72 | 9.63 |
+| M | the Michael's airframe profile | 14.01 | 21.36 | 15.83 | 12.41 |
+| previous best (`stoch_s1g_scv2`) | — | 8.08 | 20.27 | 16.20 | 4.50 |
+
+**Two of the four beat the campaign's previous best single model, from partial
+checkpoints.** The two that help are trajectory-level: the flight states the
+stream contains (ID) and how loudness relates to speed across the stream (Z).
+The two that help less are geometry-level: which rotors are near each other in
+speed (RP) and which airframe the profile came from (M).
+
+That is a usable rule for what "realism" means for this task. It is the flight
+envelope and the recording law that matter, not the airframe parameters.

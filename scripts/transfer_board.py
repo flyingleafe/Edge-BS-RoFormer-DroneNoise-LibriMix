@@ -81,6 +81,8 @@ KNOWN: list[dict] = [
      "all_mae": 7.40, "zero_mae": 7.20, "low_mae": 18.98, "flight_mae": 5.32},
     {"experiment": "stoch_s1rp_scv2", "kind": "synthetic", "aggregate_mse": 246.27,
      "all_mae": 10.72, "zero_mae": 13.92, "low_mae": 13.72, "flight_mae": 9.63},
+    {"experiment": "stoch_s1z_scv2", "kind": "synthetic", "aggregate_mse": 186.43,
+     "all_mae": 8.01, "zero_mae": 9.06, "low_mae": 22.14, "flight_mae": 5.25},
     {"experiment": "stoch_s1m_scv2", "kind": "synthetic", "aggregate_mse": 388.53,
      "all_mae": 14.01, "zero_mae": 21.36, "low_mae": 15.83, "flight_mae": 12.41},
     {"experiment": "xrig_dregon_only", "kind": "control", "aggregate_mse": 220.77,
@@ -171,6 +173,10 @@ RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "stoch_s1rp_scv2": {
         "dregon": (12.94, 15.89, 12.47, 12.41),
         "michaels": (7.47, 8.91, 13.93, 4.33),
+    },
+    "stoch_s1z_scv2": {
+        "dregon": (7.20, 10.90, 15.64, 6.16),
+        "michaels": (9.20, 4.40, 23.24, 3.50),
     },
     "stoch_s1m_scv2": {
         "dregon": (16.23, 23.23, 16.43, 14.91),
