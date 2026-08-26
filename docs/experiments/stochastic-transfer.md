@@ -767,3 +767,83 @@ in at half weight for the room tone no rotor model generates.
   below it, while the real-trained model is flat across a hundredfold range.
   Arm D randomizes the pool's output level and widens the gain augmentation to
   36 dB on every sample. Arm B cancelled to free its slot.
+
+## The rig split — the campaign's numbers were two measurements averaged
+
+Every number above this section pools two aircraft. The frozen split
+`DREGON-LM-V4-michaels-valid-full` is 37 clips over four recordings:
+
+| rig | recordings | clips | zero | low | flight | frames |
+|---|---|---|---:|---:|---:|---:|
+| DREGON | `free-flight_{nosource,speech-low,whitenoise-low}_room1` | 22 | 844 | 182 | 4496 | 5522 |
+| Michael's | `michaels_FLY124` | 15 | 333 | 1071 | 2361 | 3765 |
+
+So the ramp cell is 85% Michael's, the zero cell 72% DREGON, and an all-regime
+average is 59% DREGON. `scripts/valid_regime_eval.py` now reports the 2x3 grid;
+`scripts/transfer_board.py` prints it under the regime view.
+
+### The target is not one baseline
+
+`r4hb_scv2` fine-tunes on DREGON `in_flight_noise` minus
+`free-flight_nosource_room1`, plus Michael's **FLY125**
+(`conf/online_mix/hb_m3s2_dload.yaml`). It is then scored on DREGON **room1**
+and Michael's **FLY124**. Those are not the same task:
+
+- DREGON: trained on room2, scored on room1 — a room change.
+- Michael's: trained on FLY125, scored on FLY124 — the same aircraft, the same
+  8-mic ring, an adjacent flight of the same session.
+
+Its own numbers show it: cruise 2.98 on DREGON against 1.55 on Michael's. The
+Michael's column is close to an in-domain number and the DREGON column is a
+transfer number. It is also not "real-only" — it warm-starts from
+`m3abl_comb_scv2_s1`, a synthetic comb stage 1. The honest label is *the
+synthetic-then-real fine-tuned target*.
+
+### Where the campaign actually stands (job `regime-rig-f123b7`)
+
+Best synthetic-only per cell, against the target in that same cell:
+
+| rig | regime | frames | best synthetic-only | target | ratio |
+|---|---|---:|---|---|---|
+| DREGON | zero | 844 | 5.63 `m3abl_comb_unigru128_s1` | 2.24 | 2.51x |
+| DREGON | low | 182 | 13.63 `stoch_s1s_both` | 7.21 | 1.89x |
+| DREGON | **flight** | **4496** | **2.16 `stoch_s1h_scv2`** | 2.98 | **0.72x** |
+| Michael's | **zero** | 333 | **2.44 `m3abl_comb_unigru128_s1`** | 4.48 | **0.54x** |
+| Michael's | low | 1071 | 8.14 `stoch_s1s_both` | 2.85 | 2.86x |
+| Michael's | flight | 2361 | 3.42 `stoch_s1h_scv2` | 1.55 | 2.21x |
+
+**Two of the six cells are at or better than the target, and one of them is the
+largest cell in the split.** On DREGON cruise — 4496 frames, 48% of everything
+scored — a model that has never heard a real drone reads rotor speed at 2.16
+rev/s where the fine-tuned model reads 2.98. On Michael's stopped rotors the
+comb family reads 2.44 against 4.48.
+
+The gap that remains is concentrated in Michael's ramp (1071 frames, 2.86x) and
+Michael's cruise (2361 frames, 2.21x) — which is exactly the half where the
+target is nearly in-domain. Two cells are too small to carry weight on their own:
+DREGON ramp is 182 frames (about 6 s of audio) and Michael's zero is 333.
+
+### What it says about the remaining work
+
+No single model holds both ends. Arm H owns cruise and owns the board's worst
+ramp; arm S owns the ramp and loses cruise outright (DREGON 15.26). The two
+differ in exactly two things, so each becomes the other plus its missing
+ingredient:
+
+- **Arm W** (`stoch_s1w_scv2`) = arm H + `floor_static_rel`. Arm H has no static
+  floor, so its 10 to 45 rev/s band is a weak comb over near-nothing; a real
+  ramp is a weak comb over a wash that does not stop when the rotors slow.
+- **Arm X** (`stoch_s1x_scv2`) = arm S + arm H's line-visibility block
+  (`harm_coherence`, `harm_gp_std_db`, `floor_rel_db`, `min_lines_above_floor`)
+  and its narrower `rps_scale_range`.
+
+Both pass `check_stream`; submitted as `stoch-w-80cd90` / `stoch-x-b7041a`.
+
+### One control this campaign still lacks
+
+Nothing here measures what a *real*-trained model scores on a rig it never saw.
+The target has a sibling flight of FLY124 in its training pool, so "2.21x the
+target on Michael's cruise" may be a gap against an in-domain advantage rather
+than against anything a synthetic stream could close. A real model trained on
+DREGON alone and scored on Michael's would settle it, and would tell us whether
+Michael's cruise is a target worth chasing at all.
