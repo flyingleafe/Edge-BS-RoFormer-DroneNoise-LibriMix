@@ -1004,3 +1004,55 @@ Whatever forces the trade-off is not a knob in the stream description, so the
 remaining candidates are the level-domain arms (Y and Z, which change what the
 model can READ rather than what the stream contains) and the possibility that a
 single 1 s-window model of this capacity cannot hold both ends at once.
+
+## The cross-rig control changes what the goal means
+
+`xrig_dregon_only` is `r4hb_scv2` with Michael's FLY125 removed from the real
+pool and nothing else changed — same warm start, same optimizer, same
+validation. Its **Michael's column is a true cross-rig number**: what a
+real-trained model is worth on an aircraft it has never met. Both it and every
+synthetic-only arm are scored on the same FLY124 clips, and neither has seen
+that rig.
+
+| Michael's cell | real, cross-rig | best synthetic-only | ratio | target (saw FLY125) |
+|---|---|---|---|---|
+| all | 15.47 | **7.93** `stoch_s1x_scv2` | **0.51x** | 2.18 |
+| zero | **1.78** | 2.44 `m3abl_comb_unigru128_s1` | 1.37x | 4.48 |
+| ramp | 30.50 | **8.14** `stoch_s1s_both` | **0.27x** | 2.85 |
+| cruise | 10.59 | **3.42** `stoch_s1h_scv2` | **0.32x** | 1.55 |
+
+**On the rig neither model has seen, synthetic-only wins three cells of four** —
+3.7x better on the ramp and 3.1x better at cruise — and is twice as good
+overall. The one cell real keeps is stopped rotors, where it reads 1.78.
+
+Two consequences.
+
+1. **The target's Michael's column was never a synthetic-data gap.** It trains
+   on FLY125 and is scored on FLY124: same airframe, same 8-mic ring, adjacent
+   flight of the same session. Its 2.85 ramp and 1.55 cruise are in-domain
+   numbers. Against a real model that crossed the rig boundary the way the
+   synthetic arms do, synthetic-only is not behind — it is ahead.
+2. **Real data from one rig makes cross-rig performance WORSE than no real data
+   at all.** `xrig_dregon_only` warm-starts from `m3abl_comb_scv2_s1`, a
+   synthetic comb stage 1, so it began where a synthetic-only arm begins. Fine-
+   tuning it on DREGON took Michael's ramp to 30.50, worse than the stage-1
+   comb arm's own 25.89. The real fine-tune bought DREGON and sold the rig it
+   had not seen.
+
+### What this leaves of the goal
+
+"Approximate parity with the best real-only result over all regimes" resolves
+differently depending on which baseline the phrase means, and both readings
+should be quoted:
+
+- **Against the in-domain target** (`r4hb_scv2`, which saw a sibling flight of
+  the validation rig): not reached. Best single arm 3.02x, router 2.05x, with
+  the ramp regime holding the gap.
+- **Against a real model that crossed the same rig boundary**
+  (`xrig_dregon_only`): reached and passed on Michael's — 0.51x all-regime,
+  winning ramp and cruise outright.
+
+The DREGON half still favours the in-domain target, and the mirror control
+(`xrig_michaels_only`, whose DREGON column is the matching cross-rig number) is
+still queued. Until it lands the claim rests on one rig, so it is stated as
+such.

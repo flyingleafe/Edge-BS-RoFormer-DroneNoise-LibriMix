@@ -71,6 +71,11 @@ KNOWN: list[dict] = [
      "all_mae": 12.63, "zero_mae": 16.19, "low_mae": 22.55, "flight_mae": 10.20},
     {"experiment": "stoch_s1x_scv2", "kind": "synthetic", "aggregate_mse": 262.42,
      "all_mae": 11.59, "zero_mae": 8.68, "low_mae": 11.88, "flight_mae": 12.04},
+    # Cross-rig CONTROL, not a target: the target's recipe with Michael's
+    # removed, so its Michael's column is what a real-trained model is worth on
+    # a rig it never met.
+    {"experiment": "xrig_dregon_only", "kind": "control", "aggregate_mse": 220.77,
+     "all_mae": 9.72, "zero_mae": 9.23, "low_mae": 28.31, "flight_mae": 6.41},
 ]
 
 #: Per-rig cells, from job regime-rig-f123b7 (8 channels, all 37 clips).
@@ -108,6 +113,10 @@ RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
         "dregon": (14.10, 6.54, 10.75, 15.65),
         "michaels": (7.93, 14.12, 12.07, 5.17),
     },
+    "xrig_dregon_only": {
+        "dregon": (5.80, 12.17, 15.46, 4.21),
+        "michaels": (15.47, 1.78, 30.50, 10.59),
+    },
 }
 
 #: Frames behind each cell, so a small cell is never read as a firm result.
@@ -130,7 +139,11 @@ def load() -> list[dict]:
             if row.get("rescale_rms") is not None or "all_mae" not in row:
                 continue
             row = dict(row)
-            row["kind"] = "real" if row["experiment"] in REAL_NAMES else "synthetic"
+            row["kind"] = (
+                "control"
+                if row["experiment"].startswith("xrig_")
+                else ("real" if row["experiment"] in REAL_NAMES else "synthetic")
+            )
             for rig in ("dregon", "michaels"):
                 if f"{rig}_all_mae" in row:
                     RIG_CELLS.setdefault(row["experiment"], {})[rig] = (
