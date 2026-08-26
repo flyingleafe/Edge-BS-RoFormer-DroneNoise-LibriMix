@@ -94,7 +94,12 @@ def main() -> int:
                     help="the specialist whose prediction decides the zero regime")
     ap.add_argument("--zero-thresh", type=float, nargs="*", default=[10.0],
                     help="predicted mean rev/s below which a frame is called zero")
-    ap.add_argument("--flight-thresh", type=float, default=45.0)
+    ap.add_argument("--flight-thresh", type=float, nargs="*", default=[45.0],
+                    help="predicted mean rev/s at or above which a frame is called cruise. "
+                         "The evaluation's own boundary is 45, but a ramp frame whose speed "
+                         "the specialists overshoot lands in the cruise bin at that value: "
+                         "45% of ramp frames did. Raising it trades cruise purity for ramp "
+                         "recall, and real cruise sits near 70, so there is room.")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -119,10 +124,12 @@ def main() -> int:
     n_clips = len(dataset) if args.limit is None else min(len(dataset), args.limit)
 
     # err[key][rig][regime] -> list of per-frame absolute errors
-    thresholds = list(args.zero_thresh)
-    keys = ["oracle", *[f"routed@{t:g}" for t in thresholds], *[f"single:{n}" for n in names]]
+    thresholds = [(z, f) for z in args.zero_thresh for f in args.flight_thresh]
+    keys = ["oracle", *[f"routed@z{z:g}f{f:g}" for z, f in thresholds],
+            *[f"single:{n}" for n in names]]
     err = {k: {r: {g: [] for g in REGIMES} for r in RIGS} for k in keys}
     confusion = {t: np.zeros((len(REGIMES), len(REGIMES)), dtype=np.int64) for t in thresholds}
+    
 
     for i in range(n_clips):
         frame = dataset[i]
@@ -147,8 +154,7 @@ def main() -> int:
 
             true_lab = frame_regimes(tgt)
             got = {
-                t: infer_regimes(preds, args.zero_judge, t, args.flight_thresh)
-                for t in thresholds
+                (z, f): infer_regimes(preds, args.zero_judge, z, f) for z, f in thresholds
             }
             for t, got_lab in got.items():
                 for a, ra in enumerate(REGIMES):
@@ -176,7 +182,7 @@ def main() -> int:
                         sel = sub == g
                         if sel.any():
                             picked[:, sel] = errs[route[g]][:, m][:, sel]
-                    err[f"routed@{t:g}"][rig][regime].append(picked.ravel())
+                    err[f"routed@z{t[0]:g}f{t[1]:g}"][rig][regime].append(picked.ravel())
 
     rows = []
     head = f"{'system':34s} {'rig':9s} {'all':>7s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
@@ -209,7 +215,7 @@ def main() -> int:
         print()
 
     for t in thresholds:
-        print(f"regime confusion at zero-threshold {t:g} (rows = true, cols = inferred):")
+        print(f"regime confusion at zero {t[0]:g} / cruise {t[1]:g} (rows true, cols inferred):")
         print(f"{'':9s}" + "".join(f"{g:>9s}" for g in REGIMES))
         c = confusion[t]
         for a, ra in enumerate(REGIMES):
@@ -228,7 +234,7 @@ def main() -> int:
             json.dumps(
                 {
                     "rows": rows,
-                    "confusion": {str(t): c.tolist() for t, c in confusion.items()},
+                    "confusion": {f"z{t[0]:g}f{t[1]:g}": c.tolist() for t, c in confusion.items()},
                     "route": route,
                     "zero_judge": args.zero_judge,
                 },
