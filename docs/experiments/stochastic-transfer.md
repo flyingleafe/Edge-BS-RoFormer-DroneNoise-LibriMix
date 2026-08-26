@@ -1056,3 +1056,59 @@ The DREGON half still favours the in-domain target, and the mirror control
 (`xrig_michaels_only`, whose DREGON column is the matching cross-rig number) is
 still queued. Until it lands the claim rests on one rig, so it is stated as
 such.
+
+## PARITY REACHED ON DREGON, over all three regimes
+
+Routing each frame to the arm that owns its rig-and-regime cell, weighted by the
+frame counts of the split:
+
+| rig | oracle-route synthetic-only | in-domain target | ratio |
+|---|---|---|---|
+| **DREGON** | **2.93** | 3.00 | **0.98x** |
+| Michael's | 4.68 | 2.18 | 2.14x |
+| both | 3.64 | 2.67 | 1.36x |
+
+DREGON is the half where the target only crosses a ROOM — it trains on room2 and
+is scored on room1. Michael's is the half where it trains on FLY125 and is scored
+on FLY124, the same aircraft one flight later. **Synthetic-only reaches parity
+over all three regimes exactly where the comparison is fair**, and the residual
+1.36x over both rigs is carried entirely by the half where the target is nearly
+in-domain.
+
+Stated against the two baselines, over all regimes:
+
+| baseline | DREGON | Michael's | both |
+|---|---|---|---|
+| in-domain target `r4hb_scv2` | **0.98x** | 2.14x | 1.36x |
+| cross-rig real `xrig_dregon_only` | (its own rig) | **0.51x** | — |
+
+Caveats, in the open: this is oracle routing (the regime is taken from the true
+track), the specialists are three different checkpoints, and the router that
+must INFER the regime reaches 2.05x over both rigs rather than 1.36x. The
+single-model figure remains 3.02x. What the oracle number establishes is that
+the information is present in synthetic-only models and the loss is in regime
+identification, not in the rotor reading.
+
+## The frontier is not a sampling problem either
+
+`scripts/stream_regime_mix.py` measures what fraction of each arm's TRAINING
+stream is zero, ramp and cruise, against the split's own 12.7 / 13.5 / 73.8:
+
+| policy | zero | ramp | cruise |
+|---|---:|---:|---:|
+| `stoch_s1h` (cruise winner) | 19.9% | 9.3% | 70.8% |
+| `stoch_s1s` (ramp winner) | 14.3% | 25.7% | 60.0% |
+| `stoch_s1t` | 2.6% | 31.5% | 65.9% |
+| `stoch_s1f` | 19.3% | 28.3% | 52.4% |
+| frozen split | 12.7% | 13.5% | 73.8% |
+
+Across ten arms the shares barely predict the cells: ramp share against ramp MAE
+is Spearman -0.28 and against cruise MAE +0.39, both far weaker than the
+frontier's own -0.57, while zero share against zero MAE (+0.18) and cruise share
+against cruise MAE (+0.16) have the WRONG sign. The direction is right for ramp
+and the magnitude is not; a regime-balanced sampler would not buy the ramp cell.
+
+With ingredient-mixing (arms W, X) and sampling both eliminated, what remains is
+the model: one 1 s-window recurrent trunk of this capacity may not hold a
+level-sensitive low-speed reading and a level-invariant cruise reading at once.
+Arms Y and Z test the level half of that directly.
