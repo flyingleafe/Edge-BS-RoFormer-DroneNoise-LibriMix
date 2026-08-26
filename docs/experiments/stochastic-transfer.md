@@ -1112,3 +1112,37 @@ With ingredient-mixing (arms W, X) and sampling both eliminated, what remains is
 the model: one 1 s-window recurrent trunk of this capacity may not hold a
 level-sensitive low-speed reading and a level-invariant cruise reading at once.
 Arms Y and Z test the level half of that directly.
+
+### The level judge fails, and the reason is the reference
+
+Judging the regime from the input's own per-frame level, referenced to each
+clip's 95th percentile, is WORSE than judging it from the specialists'
+predictions — best 6.44 against 5.47 — and it fails precisely where level was
+supposed to be decisive:
+
+| judge | all | zero | low | flight |
+|---|---|---|---|---|
+| oracle | 3.72 | 4.73 | 8.94 | 2.60 |
+| predictions (best) | **5.47** | **7.21** | 17.92 | 2.89 |
+| level, -24/-10 dB | 6.44 | 13.57 | 19.40 | 2.84 |
+| level, -14/-3 dB | 8.04 | 13.57 | **13.47** | 6.10 |
+
+**The per-clip reference destroys the cue it was meant to use.** A stopped-rotor
+clip is quiet in ABSOLUTE terms, but its own 95th percentile is also a
+stopped-rotor frame, so relative to itself it looks like any other clip and the
+zero cell collapses to 13.57 against the prediction judge's 7.21. Referencing
+the clip removed the absolute gain — which was the point, since gain varies by
+recording — and the absolute gain was carrying the zero regime.
+
+What the sweep does show is that level reads a RAMP better than predictions do
+(13.47 against 17.92), because within one clip the ramp frames really are
+quieter than that clip's own cruise. But it buys that the same way everything
+else has: cruise goes 2.84 to 6.10 across the same thresholds. Combining the
+comb judge's zero cell with the level judge's best ramp lands at about 5.6 —
+the same plateau.
+
+**Router work is closed at 5.47 (2.05x).** Four judge designs — speed
+thresholds, transience, transience with median filtering, and signal level —
+all land between 5.47 and 5.6. The regime boundary is simply not identifiable
+from these specialists to the accuracy the oracle assumes, and the remaining
+1.39x-to-2.05x gap is not recoverable by a better rule over the same models.
