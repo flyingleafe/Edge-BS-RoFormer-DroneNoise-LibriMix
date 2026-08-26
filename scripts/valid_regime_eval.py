@@ -32,6 +32,30 @@ if str(Path(__file__).resolve().parents[1] / "src") not in sys.path:
 
 VALID = "dload:DREGON-LM-V4-michaels-valid-full"
 REGIMES = ("zero", "low", "flight")
+RIGS = ("dregon", "michaels")
+
+
+def clip_rigs() -> list[str]:
+    """The rig each clip of the split came from, in dataset order.
+
+    The frozen split is 22 clips from three DREGON room1 recordings and 15 from
+    Michael's FLY124 — two different airframes, arrays and rooms. Averaging over
+    both hides a model that reads one rig and not the other, which is the whole
+    question a synthetic-only model is asked.
+    """
+    import json
+
+    from data_processing.streams import ensure_local
+
+    root = Path(ensure_local(VALID.removeprefix("dload:")))
+    rows = json.loads((root / "metadata.json").read_text())
+    if isinstance(rows, dict):
+        rows = next(iter(rows.values()))
+    out = []
+    for row in rows:
+        rid = str(row.get("recording_id", ""))
+        out.append("michaels" if "michael" in rid.lower() or rid.upper().startswith("FLY") else "dregon")
+    return out
 
 
 def frame_regimes(target: np.ndarray) -> np.ndarray:
@@ -78,7 +102,11 @@ def score(
     from data_processing.frames import audio_series
 
     model = zoo.load(experiment, ckpt=ckpt, device="cpu")
+    rigs = clip_rigs()
     errors: dict[str, list[np.ndarray]] = {r: [] for r in REGIMES}
+    by_rig: dict[str, dict[str, list[np.ndarray]]] = {
+        rig: {r: [] for r in REGIMES} for rig in RIGS
+    }
     squared: list[np.ndarray] = []
     for channel in range(channels):
         dataset = DregonLMFrameDataset(
@@ -99,10 +127,12 @@ def score(
             err = pit_abs_error(pred[:, :width], target[:, :width])
             labels = frame_regimes(target[:, :width])
             squared.append((err**2).mean(axis=0))
+            rig = rigs[i] if i < len(rigs) else "dregon"
             for regime in REGIMES:
                 mask = labels == regime
                 if mask.any():
                     errors[regime].append(err[:, mask].ravel())
+                    by_rig[rig][regime].append(err[:, mask].ravel())
     all_squared = np.concatenate(squared)
     row = {
         "experiment": experiment,
@@ -116,6 +146,14 @@ def score(
         vals = np.concatenate(errors[regime]) if errors[regime] else np.array([np.nan])
         row[f"{regime}_mae"] = float(np.mean(vals))
         row[f"{regime}_frames"] = int(vals.size)
+    for rig in RIGS:
+        pooled = [v for vals in by_rig[rig].values() for v in vals]
+        row[f"{rig}_all_mae"] = float(np.concatenate(pooled).mean()) if pooled else float("nan")
+        for regime in REGIMES:
+            vals = by_rig[rig][regime]
+            row[f"{rig}_{regime}_mae"] = (
+                float(np.concatenate(vals).mean()) if vals else float("nan")
+            )
     return row
 
 
@@ -153,6 +191,14 @@ def main() -> int:
                 f"flight {row['flight_mae']:6.2f}",
                 flush=True,
             )
+            for rig in RIGS:
+                print(
+                    f"{'':26s} {rig:10s} all-MAE {row[f'{rig}_all_mae']:6.2f}  "
+                    f"zero {row[f'{rig}_zero_mae']:6.2f}  "
+                    f"low {row[f'{rig}_low_mae']:6.2f}  "
+                    f"flight {row[f'{rig}_flight_mae']:6.2f}",
+                    flush=True,
+                )
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(rows, indent=1))
