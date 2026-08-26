@@ -66,28 +66,37 @@ def windows(audio: np.ndarray, rps: np.ndarray, rps_t: np.ndarray) -> tuple[np.n
 
 
 def real_rows(limit: int) -> list[tuple[str, np.ndarray, np.ndarray]]:
-    from data_processing.streams import DloadFrameDataset
+    """Per-window (level, speed) for the real in-flight recordings of both rigs.
 
+    Selected through the project's declarative spec API rather than by scanning
+    the published datasets: DREGON's in-flight recordings sit past index 240 and
+    carry `motors_measured` / `motors_command`, never a bare `rps`, so looking
+    for `rps` while iterating from zero silently measured no DREGON recording at
+    all. `load_noise_source_frames` filters by split and reduces each selected
+    recording to the canonical audio+rps frame.
+    """
+    from data_processing.mixing import load_noise_source_frames
+
+    specs = [
+        {"dataset": "DREGON-frames", "splits": ["in_flight_noise"], "take": limit},
+        {"dataset": "michaels-frames", "take": limit},
+    ]
     rows = []
-    for name in ("DREGON-frames", "michaels-frames"):
-        ds = DloadFrameDataset(name)
-        kept = 0
-        for i, fr in enumerate(ds):
-            if kept >= limit:
-                break
-            if "rps" not in fr or "audio" not in fr:
-                continue  # motor runs and clean sources carry no rotor track
-            kept += 1
+    for spec in specs:
+        try:
+            pool = load_noise_source_frames([spec], sample_rate=SR)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{spec['dataset']}: FAILED ({exc!r})", flush=True)
+            continue
+        for k, fr in enumerate(pool):
             audio = np.asarray(fr["audio"].data, dtype=np.float64)
             if audio.ndim > 1:
                 audio = audio[0]
             rps = np.asarray(fr["rps"].data, dtype=np.float64)
             stamps = np.asarray(fr["rps"].tindex.abs_stamps, dtype=np.float64)
-            sr_in = float(fr["audio"].tindex.rate)
-            if abs(sr_in - SR) > 1:
-                step = max(int(round(sr_in / SR)), 1)
-                audio = audio[::step]
-            rows.append((f"real:{name}:{i}", *windows(audio, rps, stamps - stamps[0])))
+            rows.append(
+                (f"real:{spec['dataset']}:{k}", *windows(audio, rps, stamps - stamps[0]))
+            )
     return rows
 
 
