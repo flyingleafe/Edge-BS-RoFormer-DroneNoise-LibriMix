@@ -121,6 +121,17 @@ class Lab:
         "floor_gp_tau_s": (0.2, 20.0, 0.2, "floor wander time (s)"),
         "floor_tilt_gp_std": (0.0, 3.0, 0.05, "floor color wander (dB/oct)"),
         "floor_tilt_gp_tau_s": (1.0, 30.0, 0.5, "floor color time (s)"),
+        # Added by the transfer campaign: the share of the broadband floor that
+        # does NOT follow the rotors — room tone, the preamp, whatever else is
+        # in the room. At zero a stopped rotor is digital silence; a real one
+        # sits at about a sixth of a cruise clip.
+        "floor_static_rel": (0.0, 0.30, 0.005, "recording floor (rel)"),
+    }
+
+    #: Per-clip settings that are not amplitudes, exposed as dropdowns.
+    CHOICES: dict[str, tuple[tuple[str, ...], str]] = {
+        "level_mode": (("window", "flight"), "level mode"),
+        "line_mode": (("stochastic", "coherent"), "line mode"),
     }
 
     def __init__(
@@ -174,6 +185,9 @@ class Lab:
         recording: str | None = None,
         start_s: float = 10.0,
         render_seed: int | None = None,
+        level_mode: str = "window",
+        line_mode: str = "stochastic",
+        rps_scale: float = 1.0,
         **overrides: float,
     ) -> dict[str, Any]:
         """Synthesize one clip and keep everything the plots need."""
@@ -188,7 +202,16 @@ class Lab:
             start_s=start_s,
         )
         params = self.params.with_(**{k: float(v) for k, v in overrides.items()})
-        audio, diag = self.srn.synthesize(params, rps, rng=rng, n_mics=1, n_fft=self.n_fft)
+        if rps_scale != 1.0:
+            # Move the whole trajectory. The audio is rendered FROM the labels,
+            # so every comb line moves with its own label while the floor stays
+            # where it is — which is what a real speed change does.
+            rps = rps * float(rps_scale)
+            params = params.with_(amp_rps_ref=params.amp_rps_ref * float(rps_scale))
+        audio, diag = self.srn.synthesize(
+            params, rps, rng=rng, n_mics=1, n_fft=self.n_fft,
+            level_mode=level_mode, line_mode=line_mode,
+        )
         self.last = {
             "audio": audio,
             "rps": rps,
@@ -296,6 +319,20 @@ class Lab:
             )
             for key, (lo, hi, step, label) in self.SLIDERS.items()
         }
+        choices = {
+            key: widgets.Dropdown(
+                options=list(opts), value=opts[0], description=label,
+                style={"description_width": "170px"},
+                layout=widgets.Layout(width="430px"),
+            )
+            for key, (opts, label) in self.CHOICES.items()
+        }
+        rps_scale = widgets.FloatSlider(
+            value=1.0, min=0.25, max=2.5, step=0.05, description="speed scale",
+            continuous_update=False, readout_format=".2f",
+            style={"description_width": "170px"},
+            layout=widgets.Layout(width="430px"),
+        )
         duration = widgets.FloatSlider(
             value=8.0,
             min=1.0,
@@ -386,6 +423,9 @@ class Lab:
                     dataset=dataset.value,
                     recording=recording.value or None,
                     start_s=start.value,
+                    level_mode=choices["level_mode"].value,
+                    line_mode=choices["line_mode"].value,
+                    rps_scale=rps_scale.value,
                     **overrides,
                 )
             except Exception as exc:  # noqa: BLE001 — surfaced in the panel
@@ -431,7 +471,16 @@ class Lab:
                         duration,
                     ]
                 ),
-                widgets.VBox([source, aggressiveness, real_box]),
+                widgets.VBox(
+                    [
+                        source,
+                        aggressiveness,
+                        rps_scale,
+                        choices["level_mode"],
+                        choices["line_mode"],
+                        real_box,
+                    ]
+                ),
             ]
         )
         draw()
