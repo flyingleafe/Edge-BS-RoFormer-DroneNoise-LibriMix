@@ -85,8 +85,17 @@ def score(
     channels: int,
     limit: int | None,
     rescale_rms: float | None = None,
+    smooth: int = 0,
 ) -> dict:
     """Score one checkpoint.
+
+    ``smooth`` median-filters each predicted rotor track over that many frames
+    before scoring. The models predict per frame while a real rotor track is
+    smooth, and 72% of the ramp cell is a HELD frame where the truth is
+    constant — so a prediction that jitters around the right value is paying for
+    the jitter. This is a fixed, label-free post-process: it uses only the
+    model's own output, and the width must be chosen on synthetic data (where
+    the regimes are known by construction) for the result to be honest.
 
     ``rescale_rms`` scales every clip to that root-mean-square level before the
     model sees it. A synthetic pool hands its chunks over at a fixed level while
@@ -123,6 +132,17 @@ def score(
                     {"mixture": audio_series(mixture / rms * float(rescale_rms), 16000)}
                 )
             pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
+            if smooth >= 3:
+                pad = smooth // 2
+                pred = np.stack([
+                    np.median(
+                        np.lib.stride_tricks.sliding_window_view(
+                            np.pad(row, pad, mode="edge"), smooth
+                        ),
+                        axis=-1,
+                    )
+                    for row in pred
+                ])
             width = min(pred.shape[1], target.shape[1])
             err = pit_abs_error(pred[:, :width], target[:, :width])
             labels = frame_regimes(target[:, :width])
@@ -175,15 +195,22 @@ def main() -> int:
 
     rows = []
     levels = args.rescale_rms or [None]
+    widths = args.smooth or [0]
     for experiment in args.exp:
         for level in levels:
+          for width in widths:
             try:
-                row = score(experiment, args.ckpt, args.channels, args.limit, level)
+                row = score(
+                    experiment, args.ckpt, args.channels, args.limit, level, smooth=width
+                )
             except Exception as exc:  # noqa: BLE001 — one bad checkpoint must not stop the sweep
                 print(f"{experiment}: FAILED ({exc!r})", flush=True)
                 continue
+            row["smooth"] = width
             rows.append(row)
             tag = "native" if level is None else f"rms={level:g}"
+            if width:
+                tag = f"{tag}+m{width}"
             print(
                 f"{row['experiment']:26s} {tag:10s} aggregate {row['aggregate_mse']:8.2f}  "
                 f"all-MAE {row['all_mae']:6.2f}  "
