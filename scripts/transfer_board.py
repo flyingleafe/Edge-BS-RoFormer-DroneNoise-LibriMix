@@ -76,6 +76,8 @@ KNOWN: list[dict] = [
     # a rig it never met.
     {"experiment": "xrig_dregon_only", "kind": "control", "aggregate_mse": 220.77,
      "all_mae": 9.72, "zero_mae": 9.23, "low_mae": 28.31, "flight_mae": 6.41},
+    {"experiment": "xrig_michaels_only", "kind": "control", "aggregate_mse": 1571.81,
+     "all_mae": 24.60, "zero_mae": 3.43, "low_mae": 11.52, "flight_mae": 30.63},
 ]
 
 #: Per-rig cells, from job regime-rig-f123b7 (8 channels, all 37 clips).
@@ -116,6 +118,10 @@ RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "xrig_dregon_only": {
         "dregon": (5.80, 12.17, 15.46, 4.21),
         "michaels": (15.47, 1.78, 30.50, 10.59),
+    },
+    "xrig_michaels_only": {
+        "dregon": (37.66, 1.49, 15.35, 45.35),
+        "michaels": (5.46, 8.35, 10.87, 2.59),
     },
 }
 

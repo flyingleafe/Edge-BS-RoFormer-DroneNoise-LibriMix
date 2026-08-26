@@ -1146,3 +1146,49 @@ thresholds, transience, transience with median filtering, and signal level —
 all land between 5.47 and 5.6. The regime boundary is simply not identifiable
 from these specialists to the accuracy the oracle assumes, and the remaining
 1.39x-to-2.05x gap is not recoverable by a better rule over the same models.
+
+## The mirror control: the cross-rig result is symmetric
+
+`xrig_michaels_only` is the target trained on Michael's FLY125 alone. On the rig
+it never saw it does not merely lose, it fails:
+
+| | DREGON (unseen) | Michael's (saw FLY125) |
+|---|---|---|
+| all | **37.66** | 5.46 |
+| zero | 1.49 | 8.35 |
+| ramp | 15.35 | 10.87 |
+| cruise | **45.35** | 2.59 |
+
+45.35 rev/s of cruise error on an aircraft it never met, against 2.59 on the one
+it did. Its DREGON column is the mirror of `xrig_dregon_only`'s Michael's
+column, and the two agree: **a real-trained model does not cross the rig
+boundary.** Both controls warm-start from the same synthetic comb stage 1, so
+both began where a synthetic-only arm begins, and the real fine-tune bought the
+rig it saw and sold the rig it did not.
+
+Note also that the zero cell transfers where nothing else does — 1.49 on unseen
+DREGON, the best zero number any model in this campaign has produced. Silence is
+silence on any airframe. Ramp and cruise are what depend on the rig.
+
+### The goal against a fair baseline, over all regimes, both rigs
+
+Scoring each rig with the real model that did NOT see it:
+
+| system | all-regime MAE, both rigs | vs fair baseline |
+|---|---|---|
+| fair cross-rig real baseline | 28.66 | 1.00x |
+| synthetic-only, best SINGLE model | 8.08 | **0.28x** |
+| synthetic-only, oracle-routed | 3.64 | **0.13x** |
+| in-domain target (saw BOTH rigs) | 2.67 | — |
+
+**Against a real-only model held to the same generalization requirement,
+synthetic-only is 3.5x better as a single model and 8x better routed, over all
+regimes and both rigs.** That is the comparison in which synthetic-only training
+is not approaching parity but exceeding it.
+
+The other reading remains what it was and is not superseded: against
+`r4hb_scv2`, which saw a sibling flight of BOTH validation rigs, synthetic-only
+is 1.36x oracle-routed and 3.02x as a single model, with parity reached on
+DREGON alone (0.98x). Which number answers "parity with the best real-only
+result" depends on whether that baseline is allowed to have trained on the
+validation aircraft. Both are reported; neither is presented as the only one.
