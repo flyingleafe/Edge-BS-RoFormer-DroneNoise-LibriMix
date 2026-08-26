@@ -54,6 +54,37 @@ DEFAULT_ROUTE = {
 }
 
 
+def frame_level_db(audio: np.ndarray, n_frames: int, n_fft: int = 2048, hop: int = 512) -> np.ndarray:
+    """Per-frame level in dB, relative to the clip's own 95th percentile.
+
+    The regime cue every router so far ignored. Each of them judged the regime
+    from the specialists' PREDICTIONS, but the level sweep showed the signal
+    itself carries the answer: every model's zero and ramp cells explode when
+    the clip is rescaled (the target's zero cell 2.87 -> 61.25), which is only
+    possible if level is what those cells were being read from.
+
+    Within ONE recording the cue is strong — FLY124's per-second level tracks
+    mean rev/s at Spearman +0.73 with 3.2 dB of scatter — and one clip is one
+    recording at one gain. Referencing the clip's own 95th percentile removes the
+    absolute gain and keeps the within-clip shape, which is the part that carries
+    the regime. That is transductive over the 8 s clip: it uses the clip's own
+    statistics, which a deployed system also has for its own input, but it is NOT
+    a per-frame-causal feature and it is not free of the clip's content.
+    """
+    n = audio.size
+    frames = []
+    for i in range(n_frames):
+        start = i * hop
+        seg = audio[start : start + n_fft]
+        if seg.size == 0:
+            frames.append(-120.0)
+            continue
+        rms = float(np.sqrt(np.mean(np.square(seg))))
+        frames.append(20 * np.log10(max(rms, 1e-9)))
+    db = np.asarray(frames)
+    return db - np.percentile(db, 95)
+
+
 def _median_filter(track: np.ndarray, width: int) -> np.ndarray:
     """Median filter, to separate a sweep from prediction jitter.
 
@@ -99,6 +130,9 @@ def infer_regimes(
     flight_thresh: float,
     slope_thresh: float = 0.0,
     smooth: int = 0,
+    level_db: np.ndarray | None = None,
+    level_zero_db: float = -18.0,
+    level_low_db: float = -8.0,
 ) -> np.ndarray:
     """Per-frame regime from the specialists' own predictions.
 
@@ -128,7 +162,14 @@ def infer_regimes(
             track = _median_filter(track, smooth)
         moving = _rolling_slope(track) >= slope_thresh
         labels[(labels == "flight") & moving] = "low"
-    labels[judge.mean(axis=0) < zero_thresh] = "zero"
+    if level_db is not None:
+        # The signal's own level decides, where it is decisive: well below the
+        # clip's loudest frames means the rotors are down.
+        lv = level_db[: labels.size]
+        labels[lv < level_low_db] = "low"
+        labels[lv < level_zero_db] = "zero"
+    else:
+        labels[judge.mean(axis=0) < zero_thresh] = "zero"
     return labels
 
 
@@ -154,6 +195,11 @@ def main() -> int:
     ap.add_argument("--smooth", type=int, nargs="*", default=[0],
                     help="median-filter width (frames) applied to the predicted track "
                          "before the slope test, so cruise jitter is not read as a sweep")
+    ap.add_argument("--level-judge", action="store_true",
+                    help="decide the regime from the INPUT's own per-frame level "
+                         "instead of the specialists' predictions")
+    ap.add_argument("--level-zero-db", type=float, nargs="*", default=[-18.0])
+    ap.add_argument("--level-low-db", type=float, nargs="*", default=[-8.0])
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -178,15 +224,24 @@ def main() -> int:
     n_clips = len(dataset) if args.limit is None else min(len(dataset), args.limit)
 
     # err[key][rig][regime] -> list of per-frame absolute errors
-    thresholds = [
-        (z, f, sl, sm)
-        for z in args.zero_thresh
-        for f in args.flight_thresh
-        for sl in args.slope_thresh
-        for sm in args.smooth
-    ]
-    keys = ["oracle", *[f"routed@z{z:g}f{f:g}s{sl:g}m{sm:g}" for z, f, sl, sm in thresholds],
-            *[f"single:{n}" for n in names]]
+    if args.level_judge:
+        thresholds = [(lz, ll, 0.0, 0) for lz in args.level_zero_db for ll in args.level_low_db]
+        keys = ["oracle", *[f"level@{lz:g}/{ll:g}" for lz, ll, _, _ in thresholds],
+                *[f"single:{n}" for n in names]]
+    else:
+        thresholds = [
+            (z, f, sl, sm)
+            for z in args.zero_thresh
+            for f in args.flight_thresh
+            for sl in args.slope_thresh
+            for sm in args.smooth
+        ]
+        keys = ["oracle", *[f"routed@z{z:g}f{f:g}s{sl:g}m{sm:g}" for z, f, sl, sm in thresholds],
+                *[f"single:{n}" for n in names]]
+
+    def label_of(t) -> str:
+        return f"level@{t[0]:g}/{t[1]:g}" if args.level_judge else \
+               f"routed@z{t[0]:g}f{t[1]:g}s{t[2]:g}m{t[3]:g}"
     err = {k: {r: {g: [] for g in REGIMES} for r in RIGS} for k in keys}
     confusion = {t: np.zeros((len(REGIMES), len(REGIMES)), dtype=np.int64) for t in thresholds}
     
@@ -213,8 +268,18 @@ def main() -> int:
             preds = {n: p[:, :width] for n, p in preds.items()}
 
             true_lab = frame_regimes(tgt)
+            lvdb = (
+                frame_level_db(audio[ch].astype(np.float64), width)
+                if args.level_judge
+                else None
+            )
             got = {
-                t: infer_regimes(preds, args.zero_judge, t[0], t[1], t[2], t[3])
+                t: (
+                    infer_regimes(preds, args.zero_judge, 0.0, args.flight_thresh[0],
+                                  level_db=lvdb, level_zero_db=t[0], level_low_db=t[1])
+                    if args.level_judge
+                    else infer_regimes(preds, args.zero_judge, t[0], t[1], t[2], t[3])
+                )
                 for t in thresholds
             }
             for t, got_lab in got.items():
@@ -243,9 +308,7 @@ def main() -> int:
                         sel = sub == g
                         if sel.any():
                             picked[:, sel] = errs[route[g]][:, m][:, sel]
-                    err[f"routed@z{t[0]:g}f{t[1]:g}s{t[2]:g}m{t[3]:g}"][rig][regime].append(
-                        picked.ravel()
-                    )
+                    err[label_of(t)][rig][regime].append(picked.ravel())
 
     rows = []
     head = f"{'system':34s} {'rig':9s} {'all':>7s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
@@ -278,7 +341,7 @@ def main() -> int:
         print()
 
     for t in thresholds:
-        print(f"confusion z{t[0]:g} f{t[1]:g} s{t[2]:g} m{t[3]:g} (rows true, cols inferred):")
+        print(f"confusion {label_of(t)} (rows true, cols inferred):")
         print(f"{'':9s}" + "".join(f"{g:>9s}" for g in REGIMES))
         c = confusion[t]
         for a, ra in enumerate(REGIMES):
@@ -298,8 +361,7 @@ def main() -> int:
                 {
                     "rows": rows,
                     "confusion": {
-                        f"z{t[0]:g}f{t[1]:g}s{t[2]:g}m{t[3]:g}": c.tolist()
-                        for t, c in confusion.items()
+                        label_of(t): c.tolist() for t, c in confusion.items()
                     },
                     "route": route,
                     "zero_judge": args.zero_judge,
