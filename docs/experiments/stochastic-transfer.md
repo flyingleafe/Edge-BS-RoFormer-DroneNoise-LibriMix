@@ -1192,3 +1192,34 @@ is 1.36x oracle-routed and 3.02x as a single model, with parity reached on
 DREGON alone (0.98x). Which number answers "parity with the best real-only
 result" depends on whether that baseline is allowed to have trained on the
 validation aircraft. Both are reported; neither is presented as the only one.
+
+## Ensembling fails: the arms are complementary but not compatible
+
+Averaging the five arms (Hungarian-aligned on rotor order first, so the mean
+does not mix one model's rotor 1 with another's rotor 3) is WORSE than the best
+single member, on every cell but the ramp:
+
+| system | all | zero | low | flight |
+|---|---|---|---|---|
+| oracle route | **3.72** | 4.73 | 8.94 | 2.60 |
+| best single member | 8.08 (`stoch_s1g`) | 4.73 | 8.94 | 2.60 |
+| ensemble **median** | 9.40 | 12.11 | 10.80 | 8.68 |
+| ensemble **mean** | 9.98 | 13.01 | 12.69 | 8.96 |
+| target | 2.67 | 2.87 | 3.48 | 2.49 |
+
+The mechanism is the frontier again, seen from the other side. These arms are
+not noisy estimators of one function that averaging would sharpen — each is
+accurate in one regime and catastrophically wrong outside it. On a cruise frame
+`stoch_s1h` says about 70 and `stoch_s1v` says something 22 rev/s away; their
+mean is wrong for both, and no weighting fixes that because the correct weight
+is a regime decision, which is exactly what the routers could not make.
+
+The one cell where averaging holds up is the ramp (10.80 median against the best
+member's 8.94), because there no member is confidently right and the members'
+errors are closer to independent.
+
+**So selection and averaging both fail, for the same underlying reason.** The
+arms are complementary — the oracle proves the information is there at 3.72 —
+but they are not compatible, and combining them cannot recover more than the
+regime decision allows. Routing plateaus at 5.47 and ensembling at 9.40; the
+oracle's 3.72 needs a regime signal that these five models do not contain.
