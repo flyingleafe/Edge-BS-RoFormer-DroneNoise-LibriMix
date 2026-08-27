@@ -1942,3 +1942,32 @@ mixed run counts as synthetic-only and can win a "best synthetic-only" cell it
 is not eligible for — it has seen the real rigs — which would overstate what
 synthetic data alone achieves. Mixed rows now print in their own section
 against the same target.
+
+### R8 closes the mixing branch by measurement, not extrapolation (2026-08-27)
+
+R8 is `r4hb_scv2` with one line changed — the stage-2 stream gains arm ID's
+stochastic source at weight 1.0 (real 58.8%, silence 11.8%, stochastic 29.4%).
+It keeps the exact warm start that holds the record, so it is the GENTLEST
+version of mixing available: a minority synthetic share, added on top of the
+winner rather than replacing any part of it.
+
+| arrangement | all-MAE | val PIT-MSE |
+|---|---|---|
+| comb stage 1 -> real stage 2 (R4) | **2.67** | **17.59** |
+| stochastic stage 1 -> real stage 2 (R6) | 3.04 | 23.78 |
+| one stage, stochastic pooled (R7) | 5.99 | 94.97 |
+| real stage 2 + 29.4% stochastic, warm-started (R8) | 5.81 | 104.85 |
+| one stage, generator pooled (R5) | — | 147.6 |
+
+R8 is no better than the cold one-stage arm. The warm start does not protect
+the fine-tune from mixed-in synthetic at all, and a minority share costs as
+much as a majority one.
+
+THREE ARMS NOW AGREE, across two synthetic families (generator, stochastic),
+two mixing ratios (45.5%, 29.4%) and with and without a warm start. Purity of
+the real stage is worth about 5x on the monitored metric. The choice of
+synthetic family, which R6 isolated, is worth almost nothing by comparison. The
+mixing branch is closed and no further arm should be built on it.
+
+What survives is narrow: keep every stage pure, and the only untried
+arrangement is a third pure stage.
