@@ -1,0 +1,21 @@
+# Stochastic-only stage 1, arm IDV: arm ID with the line-visibility ranges
+# widened to the union of arm H's and the defaults arm S ran, so one stream
+# covers both visibility regimes instead of committing to one. Same fixed
+# FULL-envelope real validation split as every other stage-1 arm.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/stoch_s1idv_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
