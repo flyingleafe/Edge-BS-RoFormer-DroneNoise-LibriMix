@@ -1219,3 +1219,132 @@ class DecompFrameDataset(Dataset):
             min_motor_rps=min_motor_rps,
             split="valid",
         )
+
+
+class FixedSynthFrameDataset(Dataset):
+    """A FINITE, deterministic validation set drawn from an online-mix policy.
+
+    Every synthetic-only arm in this project validates on the REAL frozen split,
+    because that is the only finite RPS dataset the training loop can iterate
+    (``run_training``'s validation pass has no sample cap, so an infinite
+    ``OnlineMixFrameDataset`` would never terminate). One consequence went
+    unnoticed for the whole stochastic-comb campaign: ``monitor: mse`` then
+    selects each checkpoint by REAL performance, so a model that is steadily
+    learning the synthetic distribution has its best synthetic weights thrown
+    away. Measured on ``stoch_s1id_scv2``, the saved ``best`` checkpoint scores
+    8.63 all-MAE on held-out synthetic where ``last`` scores 3.70.
+
+    This class closes that hole. It pulls ``n`` frames from the stream ONCE at
+    construction and serves them map-style, so the loop sees an ordinary finite
+    dataset. The stream is deterministic given ``base_seed``, so the set is
+    reproducible across runs and machines; use a seed the training policy does
+    not use, or validation overlaps training.
+
+    ``duration_s`` and ``augment`` default to the REAL split's conditions (8 s
+    clips, no augmentation) rather than the policy's training settings, so a
+    synthetic validation number is directly comparable with a real one. Set
+    ``augment=True`` to select on the augmented task the model actually
+    optimizes.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        n: int = 64,
+        base_seed: int = 990001,
+        duration_s: float | None = 8.0,
+        augment: bool = False,
+        flatten_channels: bool = True,
+    ):
+        cfg = OmegaConf.load(path)
+        cfg.base_seed = int(base_seed)
+        if duration_s is not None:
+            cfg.duration_s = float(duration_s)
+        if not augment:
+            for stage in cfg.policy.stages:
+                for key in ("augmentations", "noise_augmentations", "noise_time_warp"):
+                    if key in stage:
+                        del stage[key]
+        stream = OnlineMixFrameDataset.from_config(cfg, flatten_channels=flatten_channels)
+        self._frames: list[td.Frame] = []
+        for frame in stream:
+            self._frames.append(frame)
+            if len(self._frames) >= int(n):
+                break
+
+    def __len__(self) -> int:
+        return len(self._frames)
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        return self._frames[int(idx)]
+
+
+class MixedRealSynthValidDataset(Dataset):
+    """Validation on HALF REAL clips and HALF SYNTHETIC clips, concatenated.
+
+    Selecting a synthetic-only model on either half alone fails in a different
+    direction, and both failures are measured rather than hypothetical.
+
+    Real-only selection — what every arm in the stochastic-comb campaign did,
+    because the real frozen split was the only finite RPS dataset available —
+    halts training while the synthetic fit is still improving. No arm ever
+    converged: ``stoch_s1id_trbig``'s best checkpoint is epoch 1 of 11,
+    ``trxl`` reached 20 epochs, ``trxxl`` 34, and the BiGRU's best was epoch 5.
+    Conclusions about capacity drawn from those runs measured the stopping rule.
+
+    Synthetic-only selection has the opposite hole: a model that fits the
+    generator ever more precisely keeps scoring better and is kept, even while
+    it diverges from the real rigs. ``stoch_s1id_scv2``'s final weights fit
+    synthetic 2.3x better than its saved best (8.63 -> 3.70 all-MAE) and score
+    1.9x worse on real (7.40 -> 14.19); synthetic-only selection would have
+    chosen exactly that checkpoint.
+
+    Half and half gives the monitored metric both jobs: it improves while the
+    model learns harmonic structure that generalizes, and turns over as soon as
+    the model starts fitting generator artifacts the real recordings lack.
+
+    The two halves are matched in size so neither dominates the average, and
+    the synthetic half is drawn at 8 s without augmentation — the real half's
+    conditions — so the two are on the same scale. Use a ``base_seed`` the
+    training policy does not use, or validation overlaps training.
+    """
+
+    def __init__(
+        self,
+        policy_path: str,
+        real_data_dir: str = "dload:DREGON-LM-V4-michaels-valid-full",
+        base_seed: int = 990001,
+        n_synth: int | None = None,
+        n_fft: int = 2048,
+        hop_length: int = 512,
+        sample_rate: int = 16000,
+        duration_s: float = 8.0,
+        augment: bool = False,
+        flatten_channels: bool = True,
+    ):
+        self.real = DregonLMFrameDataset(
+            data_dir=real_data_dir,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            sample_rate=sample_rate,
+            flatten_channels=flatten_channels,
+        )
+        # Default to exactly as many synthetic clips as the real split has, so
+        # the monitored metric weights the two domains equally.
+        self.synth = FixedSynthFrameDataset(
+            path=policy_path,
+            n=len(self.real) if n_synth is None else int(n_synth),
+            base_seed=base_seed,
+            duration_s=duration_s,
+            augment=augment,
+            flatten_channels=flatten_channels,
+        )
+
+    def __len__(self) -> int:
+        return len(self.real) + len(self.synth)
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        idx = int(idx)
+        if idx < len(self.real):
+            return self.real[idx]
+        return self.synth[idx - len(self.real)]

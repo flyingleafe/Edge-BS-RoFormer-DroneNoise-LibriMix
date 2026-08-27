@@ -1,0 +1,41 @@
+# @package _global_
+# LONG RUN on the stochastic stream, selected on SYNTHETIC and given room to
+# converge. Two changes from every previous stochastic arm, and they are the
+# same change twice:
+#
+#  1. Validation is HALF REAL, HALF SYNTHETIC
+#     (conf/data/stoch_s1id_mixedval.yaml) instead of the real split alone.
+#     Real-only selection discards the weights that learned the training
+#     distribution; synthetic-only selection would keep a model that fits the
+#     generator and fails the real rigs. Half and half catches both.
+#  2. patience 200 and epochs 2000 instead of 20 and 200.
+#
+# WHY. No arm in this campaign ever finished. `stoch_s1id_trbig`'s best
+# checkpoint is epoch 1 of 11; `trxl` got 20 epochs, `trxxl` 34, and the
+# BiGRU's best was epoch 5. Real-split early stopping halted every one of them
+# while the synthetic fit was still improving — its own `last` checkpoints
+# score 2.3x better on synthetic than its `best` ones. Any statement about
+# capacity from those runs measured the stopping rule.
+#
+# WHAT WOULD SETTLE THE CAPACITY QUESTION. Trained to convergence on the
+# synthetic objective, does the 38M transformer fit the stochastic family
+# better than the 1.5M BiGRU? The reference is the BiGRU's `last` checkpoint
+# at 3.70 all-MAE on held-out synthetic — a number reached by a run that was
+# cut off, so it is a floor rather than a converged result.
+defaults:
+  - override /data: stoch_s1id_mixedval
+  - override /model: simple_conv_v2_transformer_xxl
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: stoch_long_trxxl
+epochs: 2000
+patience: 200
+batch_size: 128
+num_workers: 6
+samples_per_validation: 40000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
