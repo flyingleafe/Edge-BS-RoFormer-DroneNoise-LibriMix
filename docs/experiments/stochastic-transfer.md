@@ -2029,3 +2029,62 @@ from more arms of this shape:
 If (2) is real, the answer is not a better stream or a bigger head but routing
 or a per-clip conditioning signal — a different kind of answer, and one worth
 agreeing on before spending on it.
+
+### The learning-rate ladder: the fine-tune is SUPPOSED to overwrite stage 1 (2026-08-27)
+
+R6's paradox — a better stage-1 checkpoint (7.40 synthetic-only against the
+comb's 8.30) producing a worse mixed result (3.04 against 2.67) — has one
+mechanism that predicts its shape: `lr: 1e-3` is large enough to destroy the
+initialization in the first epochs, and a BETTER initialization has more to
+lose. That predicts a lower rate should help the stochastic init. Three arms,
+one line different in each:
+
+| arm | init | lr | all-MAE | val PIT-MSE | epochs |
+|---|---|---|---|---|---|
+| `r6hb_scv2` | stochastic | 1e-3 | **3.04** | **23.78** | 85 |
+| `r6b_lr1e4` | stochastic | 1e-4 | 6.32 | 152.48 | 20 |
+| `r6a_lr3e4` | stochastic | 3e-4 | 6.48 | 180.39 | 30 |
+
+**The mechanism is refuted, and its sign is backwards.** Lowering the rate is
+strongly harmful in both directions and not even monotone between them. The
+prediction was that 3e-4 would land between the other two and possibly beat
+both; it is the worst of the three.
+
+**What the per-cell breakdown shows, which is the useful part.** The low-rate
+arms do not fail everywhere. They fail in a pattern:
+
+| cell | target | lr 1e-3 | lr 1e-4 | lr 3e-4 |
+|---|---|---|---|---|
+| DREGON zero | 2.24 | 2.45 | 21.67 | 23.26 |
+| DREGON ramp | 7.21 | 7.13 | 14.45 | 11.58 |
+| DREGON cruise | 2.98 | 3.38 | **2.44** | 4.82 |
+| Michael's zero | 4.48 | 6.32 | 9.23 | 8.08 |
+
+At a low rate the model KEEPS what stage 1 taught it — DREGON cruise at 1e-4
+actually beats the target, and cruise is exactly where the stochastic
+synthetic-only model was already strong — and fails to learn what the real data
+was there to supply, with both zero cells collapsing by up to an order of
+magnitude.
+
+So the learning rate does control how much of the initialization survives. What
+was wrong was the sign: **the fine-tune is supposed to overwrite stage 1.**
+Preserving more of it is harmful, because the synthetic stage's advantage does
+not extend to the cells where real recordings carry the information — silence
+and the warm-up hold above all, which no synthetic family in this campaign has
+ever gotten right.
+
+This finally EXPLAINS R6 rather than merely describing it. The comb
+initialization being worse was never a handicap, because almost none of the
+initialization is meant to survive; what stage 1 supplies is a starting point
+good enough not to diverge, and past that bar the family does not matter. That
+is consistent with every other result today: R6 (family swap, no gain), stage
+1.5 (composing families, actively worse), and the R2-era finding that the
+curriculum adds nothing for this trunk over an honest real baseline.
+
+CONFOUND, NAMED NOT BURIED. Both low-rate runs stopped early on the unchanged
+`patience: 20` (20 and 30 epochs against 85), and a slower rate improves more
+slowly per epoch, so it can exhaust patience while still descending. What is
+refuted is exactly "lower the learning rate and change nothing else", which is
+what was proposed and run. A rescaled schedule is a different experiment. It is
+not queued: the effect is 6 to 8x, far too large for a patience artifact alone,
+and the per-cell pattern above is a positive explanation rather than a null.
