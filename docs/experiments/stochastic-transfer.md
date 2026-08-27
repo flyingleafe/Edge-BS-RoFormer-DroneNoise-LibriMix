@@ -1668,3 +1668,32 @@ Arm BE2 narrows the taper to 0.10 (fade above 7200 Hz, cruise keeps k to about
 90) with everything else held at arm BES. Arm TR is arm BES plus the per-rotor
 trim. Both are one change from BES, which is the better base on the binding
 cell.
+
+### Frequency-aggregation arms scored (2026-08-27)
+
+All three share arm ID's stream, so architecture is the only variable.
+
+| cell | arm ID (pooled) | freqpos (+2 k, position) | freqcat (no averaging) |
+|---|---|---|---|
+| all-MAE | **7.40** | 11.54 | 10.00 |
+| DREGON zero | 5.77 | **3.70** | 14.43 |
+| DREGON ramp | 8.79 | **8.25** | 10.12 |
+| DREGON cruise | **6.17** | 11.82 | 10.33 |
+| Michael's zero | 10.81 | **5.48** | 12.82 |
+| Michael's ramp | 20.71 | 20.08 | **14.92** |
+| Michael's cruise | **3.71** | 11.05 | 5.14 |
+
+Neither variant beats arm ID overall, and one new campaign best came out of the
+pair: DREGON ramp 8.79 to **8.25**, from the arm that adds 2 k parameters and no
+arithmetic. That is the cheapest possible repair for the permutation
+invariance, so the invariance is real and it does cost accuracy.
+
+The two arms fail in different places, which is the useful part. `freqpos` wins
+both zero cells and DREGON's ramp — it keeps the pooling and only labels the
+bands. `freqcat` wins Michael's ramp (20.71 to 14.92) and is better overall — it
+removes the mean entirely. Both give up cruise. So the frequency axis carries
+information the pooled trunk cannot use, but simply keeping it is not free: it
+trades cruise for the low-speed regimes.
+
+`freqhires` separates position from resolution — same aggregation as `freqcat`,
+65 bins at the head instead of 17.
