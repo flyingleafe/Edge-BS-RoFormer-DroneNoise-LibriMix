@@ -139,3 +139,26 @@ fast a line broadens with its own order. Together they span 5.5 to 12.8 dB.
    information is largely absent from the target, not unread by the model.
 3. A curriculum is still constructible, on `rolloff_p` and `gamma_slope_hz`
    rather than on the variances, spanning the family's own 5.5 to 12.8 dB.
+
+## The comb-only runs never converged
+
+Training-loss histories for the three comb-only arms, read from W&B. The
+percent-of-descent measure is useless here because the first epochs fall from
+about 2650 to about 4, so every arm "reaches 99% of its descent" by epoch 3.
+The informative number is the slope over the last quarter of each run:
+
+| run | epochs | final train loss | last-quarter slope |
+|---|---|---|---|
+| `m3abl_comb_scv2_s1` | 37 | 4.37 | −0.079 per epoch |
+| `m3abl_comb_unigru128_s1` | 59 | 3.06 | −0.041 per epoch |
+| `m3abl_comb_transformer_s1` | 21 | 8.35 | −0.136 per epoch |
+
+All three were still descending when they stopped. The transformer — the arm on
+which the campaign recorded "comb-only stage 1 kills the transformer" — had the
+steepest remaining descent and the fewest epochs of the three. That verdict
+measured the stopping rule.
+
+This is a lower bound on the ladder's rung length, not a calibration: rung
+length must be longer than 59 epochs, and the comb-floor runs (`comb_floor_base`
+/ `_wide` / `_deep`, patience 200, epochs 2000, validated on the comb itself)
+are what will set it.
