@@ -1407,3 +1407,85 @@ Recomputing the routed figures with it:
 the both-rig oracle route is 1.19x. The gap is entirely Michael's ramp (2.86x)
 and cruise (2.21x) — the two cells where the target trained on a sibling flight
 of the validation aircraft.
+
+## The comb's top edge is an artifact (2026-08-27)
+
+Both synthetic engines ended their comb at `k_max * rps`. The stochastic engine
+sized `k_max` from the flight's hover speed; the static comb zeroed each order
+the instant it crossed Nyquist, per timestep. Either way a frame slower than
+hover carried a sharp spectral cutoff at a frequency exactly proportional to the
+rotor speed a model is asked to predict.
+
+Measuring it needed care, because the naive step across the cutoff is dominated
+by the spectrum's own tilt — synthetic +4.0 dB against real +3.9 dB, which says
+nothing. Differencing each step against a control step at 0.7 of the same
+frequency, and restricting to ramp frames (8 < f0 < 60), isolates it:
+
+| stream | excess step at the cutoff | n |
+|---|---|---|
+| synthetic (built stream) | **+1.84 dB** | 234 |
+| real DREGON, same frequency | +0.50 dB | 50 |
+
+100% of ramp frames carried one.
+
+The fix is a raised-cosine fade of the line power to zero at the band edge
+(`band_taper_frac`), the comb sized from the window's slowest turning frames
+rather than from hover, and a raised order cap so the comb reaches the band edge
+at low RPM. Ramp frames retaining an in-band cutoff fall from 100% to 7.3%.
+
+### Oversampling was not needed
+
+The proposal on the table was to render at 32 kHz with ~120 orders and decimate
+to 16 kHz, so that proper antialiasing replaces the brick wall. Measuring real
+audio says the taper already delivers what that would buy. Median spectra,
+each normalized to its own 2-3 kHz level:
+
+| band | arm ID | arm BE | REAL valid |
+|---|---|---|---|
+| 3-4 kHz | -4.9 | -2.4 | -0.0 |
+| 4-5 kHz | -7.2 | -3.6 | +0.1 |
+| 5-6 kHz | -8.8 | -5.5 | -0.6 |
+| 6-7 kHz | -10.5 | -9.3 | -2.5 |
+| 7-7.9 kHz | -13.6 | -17.3 | -14.8 |
+
+Real recordings are flat to 6 kHz and then fall 14.8 dB — a fixed-frequency
+anti-alias rolloff, the recorder's. That is exactly what the taper imposes, and
+what the old cutoff did not (its frequency moved with the rotor speed). Arm BE
+is closer to real than arm ID in every band from 3 to 7 kHz. Rendering at 32 kHz
+and decimating would produce the same fixed rolloff at two to three times the
+cost, so it is not worth doing.
+
+### Cost
+
+The taper needs a few hundred orders to cover the band at low RPM, which tripled
+the static comb's cost before two repairs paid it back: successive orders now
+come from a recurrence on `exp(i*phase)` instead of a fresh sine each (exact to
+2e-12 against the direct form), and an order that stays under the taper's onset
+for a whole window takes a flat amplitude rather than a cosine per sample. The
+tapered 300-order comb costs 49 ms/sample against the old 100-order comb's 53.
+
+## The frequency axis is thrown away twice (2026-08-27)
+
+`SimpleConvV2`'s `FrequencyAttentionPool` ends in `out.mean(dim=1)` over
+frequency, and its attention over that axis carries no positional encoding. The
+pool and everything after it are therefore EXACTLY permutation invariant over
+frequency — shuffle the 17 surviving bands and the predicted RPS does not move,
+verified to 1e-7. The encoder is convolutional and so weight-shared over
+frequency, which leaves absolute frequency position essentially no route into
+the head. The task's answer IS an absolute frequency.
+
+The resolution is spent before that. Six encoder blocks each stride frequency by
+two:
+
+| stage | Hz/bin | comb spacing at 20-90 rev/s |
+|---|---|---|
+| front end | 7.8 | 2.6-11.5 bins |
+| after block 2 | 31.1 | 0.6-2.9 bins |
+| after block 3 | 62.0 | 0.3-1.4 bins — below the axis' own Nyquist |
+| pool input | 470.6 | 0.04-0.19 bins |
+
+Every architecture arm run in this project so far changed the temporal head or
+the front end. None touched the frequency aggregation. Arms `stoch_s1id_freqpos`
+(position only), `stoch_s1id_freqcat` (no averaging) and `stoch_s1id_freqhires`
+(no averaging, four times the resolution) separate the two losses, each
+differing from `stoch_s1id_scv2` by architecture alone.
