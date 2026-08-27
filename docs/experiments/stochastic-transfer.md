@@ -2402,3 +2402,45 @@ NOT decide the result. Any future claim must be made on all-MAE or on both.
 | stochastic -> real, lr 3e-4 (R6A) | 6.48 | +3.83 |
 
 Sequence is the only arrangement that does not cost, and it does not gain.
+
+### The comb control: capacity is NOT the wall, but early stopping was (2026-08-27)
+
+The static comb holds one amplitude profile fixed per clip by design, so comb
+spacing is the only cue and the distribution is far simpler than the stochastic
+family. If a model cannot fit THAT, the limit is the model. Comb-only arms
+scored on the comb policy they trained on, 8 s, unaugmented, 30,120 frames:
+
+| model | `best` | `last` |
+|---|---|---|
+| `m3abl_comb_scv2_s1` (1.5M BiGRU) | **1.20** | 1.29 |
+| `m3abl_comb_unigru128_s1` | 1.42 | 1.30 |
+| `m3abl_comb_transformer_s1` | 7.45 | **1.66** |
+
+**CAPACITY IS NOT THE BINDING CONSTRAINT.** The same 1.5M trunk that reaches
+3.70 on the stochastic family reaches **1.29** on the static comb — a 2.9x gap
+between two synthetic families with the architecture held fixed. A model that
+fits the easy distribution to 1.3 rev/s is not short of capacity; the
+stochastic family is genuinely about three times harder.
+
+This also retires the "scale the transformer" direction on its own evidence:
+the capacity ladder (1.48M -> 38.2M) produced no improvement in synthetic fit,
+and now the small model is shown to be adequate on a task of the same kind.
+
+**EARLY STOPPING WAS DOING REAL DAMAGE, AND MOST OF IT TO THE TRANSFORMER.**
+`m3abl_comb_transformer_s1` is the arm this campaign recorded at 1802.0 best
+val PIT-MSE on the real split — by far the worst number in the whole table, and
+the basis for "a comb-only stage 1 kills the transformer". Its LAST checkpoint
+fits the comb at 1.66, within 30% of the BiGRU. The transformer was never
+broken. It was diverging on the real-split metric while learning the synthetic
+task perfectly well, and real-split selection saved the wreckage instead of the
+model. The 4.5x best-vs-last gap is the size of that error.
+
+Every architecture verdict in this campaign that rests on a real-selected
+checkpoint of a synthetic-only run is therefore suspect, including the
+"transformers fail at this task" conclusion recorded earlier today.
+
+WHAT REMAINS OPEN. 1.2-1.3 rev/s on the static comb is good but not the
+near-zero an exactly-resolvable comb should allow, so a floor may still exist
+even on the easy case. The long runs (`stoch_long_scv2`, `stoch_long_trxxl`,
+patience 200, half-real/half-synthetic validation) are what test whether that
+floor is convergence or capacity.
