@@ -46,6 +46,11 @@ def score(experiment, policy, n, base_seed, ckpt, duration_s, augment):
     model = zoo.load(experiment, ckpt=ckpt, device="cpu")
     stream = build_stream(policy, base_seed, duration_s, augment)
     buckets: list[list[np.ndarray]] = [[] for _ in range(len(EDGES) - 1)]
+    # The model's OWN spread in each bucket. A model that tracks four lines
+    # follows the true spread; one that has collapsed onto the mean of the comb
+    # keeps predicting a narrow fan however far the rotors actually separate.
+    pred_spread: list[list[np.ndarray]] = [[] for _ in range(len(EDGES) - 1)]
+    true_spread: list[list[np.ndarray]] = [[] for _ in range(len(EDGES) - 1)]
     seen = 0
     for frame in stream:
         target = np.asarray(frame["rps"].data, dtype=np.float64)
@@ -54,11 +59,14 @@ def score(experiment, policy, n, base_seed, ckpt, duration_s, augment):
         t, p = target[:, :w], pred[:, :w]
         err = pit_abs_error(p, t)                       # (R, W)
         spread = t.max(axis=0) - t.min(axis=0)          # (W,)
+        pspread = p.max(axis=0) - p.min(axis=0)         # what the model asserts
         cruise = t.mean(axis=0) >= CRUISE_MIN
         for b in range(len(EDGES) - 1):
             m = cruise & (spread >= EDGES[b]) & (spread < EDGES[b + 1])
             if m.any():
                 buckets[b].append(err[:, m].ravel())
+                pred_spread[b].append(pspread[m])
+                true_spread[b].append(spread[m])
         seen += 1
         if seen >= n:
             break
@@ -66,11 +74,15 @@ def score(experiment, policy, n, base_seed, ckpt, duration_s, augment):
     rows = []
     for b in range(len(EDGES) - 1):
         v = np.concatenate(buckets[b]) if buckets[b] else np.array([np.nan])
+        ps = np.concatenate(pred_spread[b]) if pred_spread[b] else np.array([np.nan])
+        ts = np.concatenate(true_spread[b]) if true_spread[b] else np.array([np.nan])
         rows.append({
             "spread_lo": EDGES[b],
             "spread_hi": None if np.isinf(EDGES[b + 1]) else EDGES[b + 1],
             "mae": float(np.mean(v)),
             "n": int(v.size) if buckets[b] else 0,
+            "true_spread": float(np.mean(ts)),
+            "pred_spread": float(np.mean(ps)),
         })
     return {"experiment": experiment, "ckpt": ckpt, "policy": policy,
             "n_samples": seen, "buckets": rows}
@@ -99,10 +111,12 @@ def main() -> int:
                   args.duration, not args.no_augment)
         out.append(r)
         print(f"\n{exp} @ {args.ckpt}   ({r['n_samples']} clips, cruise columns only)")
-        print(f"  {'rotor spread (rev/s)':<24s} {'PIT MAE':>9s} {'frames':>9s}")
+        print(f"  {'rotor spread (rev/s)':<22s} {'PIT MAE':>8s} {'true sp':>8s} "
+              f"{'pred sp':>8s} {'frames':>9s}")
         for b in r["buckets"]:
             hi = "inf" if b["spread_hi"] is None else f"{b['spread_hi']:g}"
-            print(f"  {b['spread_lo']:g} to {hi:<19s} {b['mae']:9.2f} {b['n']:9d}")
+            print(f"  {b['spread_lo']:g} to {hi:<17s} {b['mae']:8.2f} "
+                  f"{b['true_spread']:8.2f} {b['pred_spread']:8.2f} {b['n']:9d}")
     if args.out and out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(out, indent=1))
