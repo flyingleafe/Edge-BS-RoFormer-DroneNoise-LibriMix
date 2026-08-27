@@ -1489,3 +1489,52 @@ the front end. None touched the frequency aggregation. Arms `stoch_s1id_freqpos`
 (position only), `stoch_s1id_freqcat` (no averaging) and `stoch_s1id_freqhires`
 (no averaging, four times the resolution) separate the two losses, each
 differing from `stoch_s1id_scv2` by architecture alone.
+
+### The phase-override bug, and why not to fix it (2026-08-27)
+
+Arms ID, IDRP, IDZ and SI wrote their flight-phase overrides one level above
+where the loader reads them (`rps.phases`), so the overrides never applied and
+those runs used `FlightPhaseRanges`' defaults. Arm ID is the campaign's best
+single model, so the natural move is to apply what was written. Measurement says
+do not.
+
+Conditioned on the ramp range (1 to 45 rev/s), against the frozen split's own
+ramp frames:
+
+| rev/s | defaults (what ID ran) | as written | fit A | fit B | REAL |
+|---|---|---|---|---|---|
+| 1-5 | 0.7% | 1.1% | 3.7% | 0.8% | 4.2% |
+| 5-10 | 1.2% | 1.7% | 2.0% | 22.8% | 6.0% |
+| 10-20 | 3.7% | 12.6% | 16.0% | 35.1% | 6.4% |
+| 20-30 | 30.8% | 30.2% | 36.5% | 8.3% | 5.4% |
+| 30-40 | 48.4% | 38.2% | 22.4% | 22.4% | 58.5% |
+| 40-45 | 15.3% | 16.2% | 19.4% | 10.7% | 19.6% |
+| **total variation** | **0.254** | 0.310 | 0.407 | 0.484 | — |
+
+The accident was fortunate: the defaults match the real ramp distribution better
+than the written values and better than two deliberate attempts to fit it. The
+bug is left in place, documented in each arm's config, and the new arms omit the
+block so they reproduce what arm ID actually ran.
+
+Two mismatches survive and are not trajectory-tunable. The stream spends 30.8%
+of its ramp time at 20 to 30 rev/s where real flights spend 5.4%, and only 1.2%
+at 5 to 10 where real spends 6.0%. The 20-30 excess is not the idle band —
+defaults put idle at 0.38 to 0.52 of hover, which is 30 to 42 rev/s — it is
+`rps_scale_range: [0.6, 1.3]` scaling whole trajectories, which drags a
+0.6-scaled flight's idle down to 18 rev/s. That scaling is arm C's lever against
+the speed prior and is worth more than the distribution match, so it stays.
+
+### The ramp cell may be a front-end limit, not a data limit
+
+At `n_fft=2048` a Hann main lobe is 31.25 Hz wide, and the spacing between
+adjacent harmonics IS the rotor speed. Below 31 rev/s adjacent harmonics are
+therefore not separable at any frequency. The ramp regime is 1 to 45 rev/s, so
+across most of that cell no model in this project has ever seen a resolved comb
+— only a smeared envelope, plus whatever modulation the temporal head can pick
+up across frames.
+
+`comb_if` is the right shape of answer (one row per f0 candidate, a linear
+grid) but searches only 30 to 120 rev/s, so most ramp frames fall below its
+lowest candidate and cannot be represented at all. `comb_if_ramp` starts at 5.
+Arms `stoch_s1id_combif` and `stoch_s1id_combif_hires` test it with the pooled
+trunk and with the trunk that keeps the f0 axis.
