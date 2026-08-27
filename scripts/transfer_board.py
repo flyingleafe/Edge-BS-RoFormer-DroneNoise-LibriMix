@@ -35,6 +35,52 @@ RESULTS = Path("results/stoch_transfer")
 #: Rows measured before the results directory existed, kept so the board is
 #: complete. Each is one run of scripts/valid_regime_eval.py.
 KNOWN: list[dict] = [
+    # 2026-08-27 mixed regimes (R6), arm IDV, and the transformer ladder.
+    {
+        "experiment": "r6hb_scv2",
+        "kind": "mixed",
+        "aggregate_mse": 23.78,
+        "all_mae": 3.04,
+        "zero_mae": 3.54,
+        "low_mae": 3.61,
+        "flight_mae": 2.85,
+    },
+    {
+        "experiment": "stoch_s1idv_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 251.21,
+        "all_mae": 10.1,
+        "zero_mae": 19.76,
+        "low_mae": 22.29,
+        "flight_mae": 6.22,
+    },
+    {
+        "experiment": "stoch_s1id_tr",
+        "kind": "synthetic",
+        "aggregate_mse": 305.86,
+        "all_mae": 12.44,
+        "zero_mae": 4.97,
+        "low_mae": 15.4,
+        "flight_mae": 13.18,
+    },
+    {
+        "experiment": "stoch_s1id_trmed",
+        "kind": "synthetic",
+        "aggregate_mse": 386.28,
+        "all_mae": 14.78,
+        "zero_mae": 10.91,
+        "low_mae": 19.74,
+        "flight_mae": 14.54,
+    },
+    {
+        "experiment": "stoch_s1id_trbig",
+        "kind": "synthetic",
+        "aggregate_mse": 317.2,
+        "all_mae": 13.11,
+        "zero_mae": 10.19,
+        "low_mae": 16.28,
+        "flight_mae": 13.04,
+    },
     # 2026-08-27 band-edge and frequency-aggregation arms.
     {
         "experiment": "stoch_s1be_scv2",
@@ -326,6 +372,12 @@ KNOWN: list[dict] = [
 #: Per-rig cells, from job regime-rig-f123b7 (8 channels, all 37 clips).
 #: Each tuple is (all, zero, low, flight) mean absolute error, rev/s.
 RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
+    # 2026-08-27, from the scoring jobs' logs (see docs/experiments/stochastic-transfer.md).
+    "r6hb_scv2": {"dregon": (3.36, 2.45, 7.13, 3.38), "michaels": (2.56, 6.32, 3.01, 1.83)},
+    "stoch_s1idv_scv2": {"dregon": (9.68, 18.61, 16.85, 7.72), "michaels": (10.72, 22.69, 23.21, 3.36)},
+    "stoch_s1id_tr": {"dregon": (15.1, 4.53, 10.37, 17.27), "michaels": (8.54, 6.07, 16.25, 5.39)},
+    "stoch_s1id_trmed": {"dregon": (17.45, 8.46, 17.96, 19.12), "michaels": (10.86, 17.14, 20.05, 5.81)},
+    "stoch_s1id_trbig": {"dregon": (15.87, 10.62, 14.84, 16.9), "michaels": (9.07, 9.1, 16.52, 5.68)},
     # 2026-08-27 band-edge and frequency-aggregation arms. Tuple order is
     # (all, zero, low, flight).
     "stoch_s1be_scv2": {
@@ -470,6 +522,14 @@ FRAMES = {
 
 REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate"}
 
+#: MIXED runs — trained on real recordings AND synthetic noise, in either
+#: arrangement (a synthetic stage 1 then a real stage 2, or one pooled stage).
+#: They must NOT be counted among the synthetic-only rows: a mixed model has
+#: seen the real rigs, so letting it win a "best synthetic-only" cell would
+#: silently overstate what synthetic data alone achieves. They get their own
+#: section instead, scored against the same target.
+MIXED_NAMES = {"r6hb_scv2", "r7hb_scv2", "r8hb_scv2", "r9hb_scv2"}
+
 
 def load() -> list[dict]:
     rows = {r["experiment"]: dict(r) for r in KNOWN}
@@ -485,7 +545,11 @@ def load() -> list[dict]:
             row["kind"] = (
                 "control"
                 if row["experiment"].startswith("xrig_")
-                else ("real" if row["experiment"] in REAL_NAMES else "synthetic")
+                else (
+                    "real"
+                    if row["experiment"] in REAL_NAMES
+                    else ("mixed" if row["experiment"] in MIXED_NAMES else "synthetic")
+                )
             )
             for rig in ("dregon", "michaels"):
                 if f"{rig}_all_mae" in row:
@@ -548,6 +612,7 @@ def main() -> int:
     rows = load()
     real = sorted([r for r in rows if r["kind"] == "real"], key=lambda r: r["all_mae"])
     synth = sorted([r for r in rows if r["kind"] == "synthetic"], key=lambda r: r["all_mae"])
+    mixed = sorted([r for r in rows if r["kind"] == "mixed"], key=lambda r: r["all_mae"])
     target = real[0] if real else None
 
     head = (
@@ -565,6 +630,18 @@ def main() -> int:
             f"{r['experiment']:26s} {'synthetic':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
             f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}"
         )
+    for r in mixed[: args.top]:
+        print(
+            f"{r['experiment']:26s} {'MIXED':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
+            f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}"
+        )
+    if target and mixed:
+        print()
+        print("MIXED runs (real + synthetic), against the same target:")
+        for r in mixed:
+            ratio = r["all_mae"] / target["all_mae"]
+            mark = "   <- BEATS THE TARGET" if r["all_mae"] < target["all_mae"] else ""
+            print(f"   {r['experiment']:26s} {r['all_mae']:6.2f}  ({ratio:.2f}x){mark}")
     if target and synth:
         # The best cell any single synthetic model holds, named — so the board
         # never reads as though one model held all three.
@@ -590,7 +667,10 @@ def main() -> int:
             )
     if target:
         # every model with rig cells, not just the top-N of the regime view
-        rig_grid(target, [target, *[r for r in synth if r["experiment"] in RIG_CELLS]])
+        rig_grid(
+            target,
+            [target, *[r for r in mixed + synth if r["experiment"] in RIG_CELLS]],
+        )
     return 0
 
 

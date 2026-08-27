@@ -1881,3 +1881,64 @@ levers — the noise family's line visibility, the temporal architecture, and th
 front end — now produce one pattern: whatever reads ramps well reads cruise
 badly. This looks structural rather than incidental, and it is the strongest
 argument yet that a single model cannot hold both cells.
+
+## The mixed regimes: staging works, mixing does not (2026-08-27)
+
+The goal moved to beating the best result with MIXED training. The first thing
+that measurement showed is that the target was never a real-only run:
+`r4hb_scv2` (2.67 all-MAE, 17.59 val PIT-MSE) is a comb stage 1 plus a real
+stage 2. The project already had two mixed shapes on the shelf — a two-stage
+curriculum (R3, R4) and a one-stage pool (R5) — so the question is only where
+the stochastic family goes.
+
+| regime | arrangement | all-MAE | val PIT-MSE |
+|---|---|---|---|
+| `r4hb_scv2` | comb stage 1 -> real stage 2 | **2.67** | **17.59** |
+| `r6hb_scv2` | STOCHASTIC stage 1 -> real stage 2 | 3.04 | 23.78 |
+| `r7hb_scv2` | one stage, stochastic mixed into real | 5.99 | 94.97 |
+| `r5hb_scv2` | one stage, GENERATOR mixed into real | — | 147.6 |
+
+**R6: a better synthetic-only start does not survive the fine-tune.** R6 is R4
+with one line changed, the stage-1 checkpoint. The stochastic checkpoint is
+much the better of the two before any real data is seen — 7.40 all-MAE against
+the comb's 8.30, winning three of six rig x regime cells outright — and it
+produced a WORSE mixed result. Per cell, R6 improves on the target in one place
+only:
+
+| cell | target | R6 |
+|---|---|---|
+| DREGON zero | **2.24** | 2.45 |
+| DREGON ramp | 7.21 | **7.13** |
+| DREGON cruise | **2.98** | 3.38 |
+| Michael's zero | **4.48** | 6.32 |
+| Michael's ramp | **2.85** | 3.01 |
+| Michael's cruise | **1.55** | 1.83 |
+
+This is the campaign's most uncomfortable result. Every stage-1 arm since the
+campaign opened has been optimizing synthetic-only score on the frozen split,
+and that quantity does not predict the mixed result, which is where this
+project's best numbers actually live. A 12% better stage 1 gave a 14% worse
+stage 2.
+
+**R7: the family is a better mixing ingredient, and it does not matter.** R7 is
+R5 with the stochastic source in the neural generator's slot, ratio and every
+other source held fixed. It cuts R5's 147.6 to 94.97, a 36% reduction, which is
+the clearest single piece of evidence that the campaign produced a genuinely
+better synthetic family. It is still 2.25x the target, because the damage is
+done by mixing, not by which family does the mixing. This reproduces the
+staging-necessity finding of docs/experiments/unified-baseline-eval.md on a new
+family: honest real data does not detoxify mixed-in synthetic.
+
+**What the three results leave.** Staging works and mixing does not, and the
+choice of family at stage 1 barely matters. The one arrangement they do not
+rule out keeps every stage pure and adds one — comb, then stochastic, then real
+— so the model gets both families' coverage before the real data and never sees
+them mixed. `stoch_s1id_fromcomb` is that stage 1.5, with a decision gate: below
+7.40 all-MAE the coverage composes and the R9 fine-tune is worth running, above
+it comb pre-training interferes and R9 should not be built.
+
+NOTE ON THE BOARD. `scripts/transfer_board.py` grew a `mixed` kind. Without it a
+mixed run counts as synthetic-only and can win a "best synthetic-only" cell it
+is not eligible for — it has seen the real rigs — which would overstate what
+synthetic data alone achieves. Mixed rows now print in their own section
+against the same target.
