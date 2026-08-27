@@ -2088,3 +2088,59 @@ refuted is exactly "lower the learning rate and change nothing else", which is
 what was proposed and run. A rescaled schedule is a different experiment. It is
 not queued: the effect is 6 to 8x, far too large for a patience artifact alone,
 and the per-cell pattern above is a positive explanation rather than a null.
+
+### The control beat the record: lr 3e-4 on the comb start gives 2.61 (2026-08-27)
+
+`r4a_lr3e4` was built only as the control that would make R6A interpretable. It
+is `r4hb_scv2` with `lr: 1e-3` changed to `3e-4` and nothing else. It is now
+this project's best result on the frozen split.
+
+| cell | `r4hb_scv2` (old record) | `r4a_lr3e4` | |
+|---|---|---|---|
+| DREGON zero | 2.24 | **2.02** | 0.90x |
+| DREGON ramp | 7.21 | **6.53** | 0.91x |
+| DREGON cruise | 2.98 | **2.86** | 0.96x |
+| Michael's zero | 4.48 | **3.24** | 0.72x |
+| Michael's ramp | **2.85** | 2.99 | 1.05x |
+| Michael's cruise | **1.55** | 1.77 | 1.14x |
+| **all-MAE** | 2.67 | **2.61** | **0.98x** |
+| best val PIT-MSE | 17.59 | **15.37** | |
+
+Four of six cells improve, including both zero cells and DREGON's ramp, which
+has been the hardest in-domain cell all campaign.
+
+**THE INTERACTION IS THE FINDING, NOT THE NUMBER.**
+
+| init | lr 1e-3 | lr 3e-4 | lr 1e-4 |
+|---|---|---|---|
+| comb | 17.59 | **15.37** | — |
+| stochastic | **23.78** | 180.39 | 152.48 |
+
+The two initializations differ by 1.35x at lr 1e-3 and by **11.74x** at 3e-4.
+The same one-line change that improves the comb start by 13% degrades the
+stochastic start by 7.6x.
+
+A lower rate preserves more of the initialization. Preserving the comb start
+helps; preserving the stochastic start is catastrophic. So the stochastic
+checkpoint is the WORSE place to begin a real fine-tune from, despite being
+much the better model on the frozen split (7.40 against 8.30 synthetic-only,
+three of six cells won outright). It is strong exactly where real data is not
+needed — cruise, where `r6b_lr1e4` beats even the record on DREGON at 2.44 —
+and empty where real data carries the information: both zero cells collapse by
+an order of magnitude the moment the fine-tune cannot overwrite it.
+
+Synthetic-only score is therefore not merely uninformative about transfer. On
+this evidence it is mildly ANTI-correlated with it, and the whole campaign has
+been optimizing it.
+
+WHY THE CONTROL EARNED ITS GPU HOUR. Without `r4a_lr3e4` the honest conclusion
+from R6A and R6B would have been "lowering the fine-tune rate is strongly
+harmful" — a statement this log would now be carrying, and which is false. The
+control was submitted to make a hypothesis attributable and instead refuted the
+generalization and set the record.
+
+SCOPE NOTE ON THE GOAL. `r4a_lr3e4` uses the ANALYTIC static comb at stage 1,
+not the stochastic family. It beats the previous record with mixed training,
+but it does not do so with stochastic combs. `r6c_lr3e3` is the arm that tests
+the stochastic route, by the prediction this interaction makes: if preserving
+the stochastic init is what hurts, overwriting it harder should help.

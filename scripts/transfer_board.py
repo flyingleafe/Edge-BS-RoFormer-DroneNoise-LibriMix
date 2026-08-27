@@ -36,6 +36,35 @@ RESULTS = Path("results/stoch_transfer")
 #: complete. Each is one run of scripts/valid_regime_eval.py.
 KNOWN: list[dict] = [
     # 2026-08-27 mixed regimes (R6), arm IDV, and the transformer ladder.
+    # The learning-rate ladder. r4a_lr3e4 is r4hb_scv2 (the previous record)
+    # with lr 3e-4 instead of 1e-3 — one line — and it BEATS it at 2.61.
+    {
+        "experiment": "r4a_lr3e4",
+        "kind": "real",
+        "aggregate_mse": 15.64,
+        "all_mae": 2.61,
+        "zero_mae": 2.37,
+        "low_mae": 3.51,
+        "flight_mae": 2.48,
+    },
+    {
+        "experiment": "r6a_lr3e4",
+        "kind": "mixed",
+        "aggregate_mse": 180.39,
+        "all_mae": 6.48,
+        "zero_mae": 18.97,
+        "low_mae": 6.42,
+        "flight_mae": 4.35,
+    },
+    {
+        "experiment": "r6b_lr1e4",
+        "kind": "mixed",
+        "aggregate_mse": 153.55,
+        "all_mae": 6.32,
+        "zero_mae": 18.15,
+        "low_mae": 14.16,
+        "flight_mae": 2.86,
+    },
     {
         "experiment": "stoch_s1id_fromcomb",
         "kind": "synthetic",
@@ -391,6 +420,9 @@ KNOWN: list[dict] = [
 #: Each tuple is (all, zero, low, flight) mean absolute error, rev/s.
 RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     # 2026-08-27, from the scoring jobs' logs (see docs/experiments/stochastic-transfer.md).
+    "r4a_lr3e4": {"dregon": (2.85, 2.02, 6.53, 2.86), "michaels": (2.25, 3.24, 2.99, 1.77)},
+    "r6a_lr3e4": {"dregon": (7.86, 23.26, 11.58, 4.82), "michaels": (4.46, 8.08, 5.55, 3.46)},
+    "r6b_lr1e4": {"dregon": (5.78, 21.67, 14.45, 2.44), "michaels": (7.12, 9.23, 14.11, 3.65)},
     "stoch_s1id_fromcomb": {"dregon": (13.94, 9.80, 16.54, 14.61), "michaels": (9.67, 10.56, 19.57, 5.05)},
     "r8hb_scv2": {"dregon": (6.28, 15.53, 12.82, 4.28), "michaels": (5.11, 13.37, 7.06, 3.06)},
     "r6hb_scv2": {"dregon": (3.36, 2.45, 7.13, 3.38), "michaels": (2.56, 6.32, 3.01, 1.83)},
@@ -540,7 +572,11 @@ FRAMES = {
     "michaels": {"all": 3765, "zero": 333, "low": 1071, "flight": 2361},
 }
 
-REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate"}
+#: The reference rows the synthetic-only arms are measured against. These
+#: are themselves comb-stage-1 + real-stage-2 runs, not real-only; the name
+#: is historical. `r4a_lr3e4` is `r4hb_scv2` with lr 3e-4 and holds the
+#: record at 2.61.
+REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate", "r4a_lr3e4"}
 
 #: MIXED runs — trained on real recordings AND synthetic noise, in either
 #: arrangement (a synthetic stage 1 then a real stage 2, or one pooled stage).
@@ -548,7 +584,15 @@ REAL_NAMES = {"r4hb_scv2", "hb_scv2_mag_nogate"}
 #: seen the real rigs, so letting it win a "best synthetic-only" cell would
 #: silently overstate what synthetic data alone achieves. They get their own
 #: section instead, scored against the same target.
-MIXED_NAMES = {"r6hb_scv2", "r7hb_scv2", "r8hb_scv2", "r9hb_scv2"}
+MIXED_NAMES = {
+    "r6hb_scv2",
+    "r7hb_scv2",
+    "r8hb_scv2",
+    "r9hb_scv2",
+    "r6a_lr3e4",
+    "r6b_lr1e4",
+    "r6c_lr3e3",
+}
 
 
 def load() -> list[dict]:
