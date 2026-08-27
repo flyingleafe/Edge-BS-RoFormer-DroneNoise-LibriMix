@@ -1,32 +1,39 @@
 # @package _global_
-# CURRICULUM RUNG 4 of 4 — realized comb contrast 7.3 dB, warm-started from rung 3 (`ladder_r3_scv2`).
+# CURRICULUM RUNG 4 of 4 — gamma_slope_hz [0.05, 0.8], warm-started from rung 3 (`ladder_r3_scv2`).
 #
-# The ladder walks the stochastic family from its most resolvable corner to its
-# full range. Rung 4 is the full family, so a model that finishes the ladder has
-# arrived at the distribution every stochastic arm in the transfer campaign
-# trained on directly.
+# ONE AXIS: how fast a harmonic line broadens with its own order. Rung 0 is a
+# sharp comb, rung 4 is the full family; `rolloff_p` and `gamma0_hz` hold at the
+# family default throughout, so exactly one thing changes along the ladder. Rung 4 is the full family, so a model that finishes the ladder has arrived
+# at the distribution every stochastic arm in the transfer campaign trained on
+# directly.
 #
-# WHY THESE AXES AND NOT THE VARIANCES. The campaign opened on the premise that
-# the analytic static comb is the zero-variance corner of this family. It is not:
-# comb contrast is 15 to 25 dB for the static comb and 7 to 8 dB for every
-# stochastic variant, including one with every variance knob zeroed. Zeroing all
-# of them moves contrast by less than the measurement's own spread, and the floor
-# depth moves it by 0.0 dB. `rolloff_p` and `gamma_slope_hz` are what move it.
-# Full measurement: docs/experiments/synthetic-solvability-limits.md.
+# WHY LINE WIDTH AND NOT THE VARIANCES. The campaign opened on the premise that
+# the static comb is the zero-variance corner of this family. It is not: zeroing
+# every knob named variance moves comb contrast by less than the measurement's
+# own spread, and the floor depth moves it by 0.0 dB. Line width is the one knob
+# that moves contrast monotonically, and it is the single structural difference
+# from the static comb, whose lines have no width at all.
 #
-# WHY PATIENCE AND NOT A FIXED RUNG LENGTH. Each rung trains until its OWN
-# validation stops improving, rather than for a step count fixed in advance.
-# This is still calibrated on the comb-only experiments — they set what patience
-# has to be — but it lets a harder rung take the epochs it needs instead of being
-# cut at a length measured on an easier one. The comb-only arms make the case:
-# all three were still descending when they stopped, at 21 to 59 epochs
-# (slopes −0.136, −0.079, −0.041 per epoch), so any fixed length read off them
-# would have been an underestimate of the wrong quantity.
+# WHAT THIS LADDER DOES NOT ASSUME. An earlier version ordered the rungs by
+# peak-to-bulk contrast and was withdrawn: a model-free harmonic-sum estimator
+# showed the highest-contrast rung was the HARDEST, because that contrast came
+# from steepening the rolloff, which raises the ratio by killing the harmonics
+# there are to lock onto. Contrast is not a difficulty measure. The same probe
+# is too unstable to order these rungs either — its per-clip error is bimodal,
+# locking near 0.2 rev/s or failing near 20 — so the ladder does not claim a
+# difficulty ordering in advance. The runs measure it.
 #
 # Validation is half real and half synthetic, the synthetic half drawn from THIS
-# rung's policy. The real half is the frozen split and is identical at every
-# rung, so the ladder yields two curves: how the achievable synthetic fit decays
-# as the family widens, and whether real-rig transfer follows it or breaks away.
+# rung's policy, the real half the frozen split and identical at every rung. Two
+# curves come out: how the achievable synthetic fit decays as lines broaden, and
+# whether real-rig transfer follows it or breaks away.
+#
+# WHY PATIENCE AND NOT A FIXED RUNG LENGTH. Each rung trains until its own
+# validation stops improving. This is still calibrated on the comb-only runs —
+# they set what patience must be — but it lets a harder rung take the epochs it
+# needs. All three comb-only arms were still descending when they stopped, at 21
+# to 59 epochs, so any fixed length read off them would underestimate.
+# Batch doc: docs/experiments/synthetic-solvability-limits.md.
 defaults:
   - override /data: ladder_r4
   - override /model: simple_conv_v2

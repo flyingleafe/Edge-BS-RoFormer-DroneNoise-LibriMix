@@ -1,20 +1,25 @@
-# CURRICULUM RUNG 0 of 4 — comb contrast about 12.8 dB.
+# CURRICULUM RUNG 0 of 4 — gamma_slope_hz [0.0, 0.0].
 #
-# The ladder walks the stochastic family from its most resolvable corner to its
-# full range, on the two axes that MOVE comb contrast. See
-# docs/experiments/synthetic-solvability-limits.md: the variance knobs
-# (harm_gp_std_db and the rest) move contrast by less than the measurement's own
-# spread, and the floor depth moves it by 0.0 dB, because the comb's own lines
-# tile 56 to 88% of every band and the median bin is a line rather than floor.
+# ONE AXIS: how fast a harmonic line broadens with its own order. Rung 0 is a
+# sharp comb, rung 4 is the full family. `rolloff_p` and `gamma0_hz` stay at the
+# family default at every rung, so exactly one thing changes along the ladder.
 #
-# `rolloff_p` sets how fast the comb decays with harmonic index, and so how many
-# harmonics are strong enough to tile the band. `gamma_slope_hz` sets how fast a
-# line broadens with its own order. Rung 4 is the full family — identical ranges
-# to conf/online_mix/stoch_s1id_dload.yaml.
+# WHY LINE WIDTH AND NOT THE VARIANCES. The campaign opened on the premise that
+# the static comb is the zero-variance corner of this family. It is not. Zeroing
+# every knob named variance moves comb contrast by less than the measurement's
+# own spread, and the floor depth moves it by 0.0 dB. Line width is the one knob
+# that moves it monotonically (8.5 dB at slope 0 to 4.8 dB at slope 0.8), and it
+# is also the single structural difference from the static comb, whose lines
+# have no width at all.
 #
-# For scale: filtered white noise reads 6.4 dB on this measure and the analytic
-# static comb reads 15 to 25 dB. The static comb is NOT reachable from this
-# family, which is why the ladder starts at 12.8 dB and not at the comb.
+# WHY NOT `rolloff_p`, WHICH AN EARLIER VERSION OF THIS LADDER USED. Steepening
+# the rolloff RAISES peak-to-bulk contrast, but it raises it by killing the
+# harmonics — fewer lines survive to lock onto. A model-free harmonic-sum
+# estimator reads the nearest rotor speed to 0.16 rev/s at rolloff 0.4 and fails
+# outright at rolloff 8.0. Contrast is not a difficulty measure, and that rung
+# was withdrawn rather than run.
+#
+# See docs/experiments/synthetic-solvability-limits.md for both measurements.
 #
 # The flight-phase ranges are arm ID's, so the stream carries sustained
 # low-speed holds. The static-comb source is absent on purpose: this ladder
@@ -54,8 +59,8 @@ sources:
         # cannot learn to read.
         harm_coherence: [0.6, 1.0]
         # THE LADDER AXES — see the file header.
-        rolloff_p: [8.0, 8.0]
-        gamma0_hz: [0.5, 0.5]
+        rolloff_p: [0.4, 1.9]
+        gamma0_hz: [0.5, 4.0]
         gamma_slope_hz: [0.0, 0.0]
         harm_gp_std_db: [0.5, 3.0]
         floor_rel_db: [-30.0, -8.0]

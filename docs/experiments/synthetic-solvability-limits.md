@@ -132,13 +132,12 @@ fast a line broadens with its own order. Together they span 5.5 to 12.8 dB.
 
 1. The static comb cannot be reached from the stochastic family. Its minimum
    (about 15 dB) is above the family's maximum (about 12.8 dB).
-2. Every stochastic arm in the transfer campaign trained on spectra carrying
-   roughly 1 to 2 dB of comb structure over structureless noise. That is a
-   candidate explanation for stochastic-only training plateauing at 3.70 PIT-MAE
-   against comb-only's 1.29, and for capacity scaling not moving it — the
-   information is largely absent from the target, not unread by the model.
-3. A curriculum is still constructible, on `rolloff_p` and `gamma_slope_hz`
-   rather than on the variances, spanning the family's own 5.5 to 12.8 dB.
+2. **WITHDRAWN.** This section previously read that the stochastic family's 1
+   to 2 dB of comb over noise was a candidate explanation for stochastic-only
+   training plateauing at 3.70 PIT-MAE against comb-only's 1.29 — that the
+   information was largely absent from the target. The detectability probe below
+   refutes it: the comb is present and lockable.
+3. A curriculum is constructible on line width. See the ladder section below.
 
 ## The comb-only runs never converged
 
@@ -162,3 +161,68 @@ This is a lower bound on the ladder's rung length, not a calibration: rung
 length must be longer than 59 epochs, and the comb-floor runs (`comb_floor_base`
 / `_wide` / `_deep`, patience 200, epochs 2000, validated on the comb itself)
 are what will set it.
+
+
+## Contrast is not a difficulty measure
+
+A model-free check: a harmonic-sum estimator sums the log spectrum at k*f0 over
+a grid of candidate speeds and takes the peak. No training and no learned prior,
+so it measures what is in the signal. Scored as the distance from its single
+estimate to the NEAREST of the four true rotor speeds — detectability, not
+assignment — on cruise frames.
+
+The first ladder ordered its rungs by peak-to-bulk contrast, r0 highest. The
+probe puts them in a different order entirely:
+
+| rung | r0 | r1 | r2 | r3 | r4 | static comb |
+|---|---|---|---|---|---|---|
+| contrast (dB) | 12.2 | 11.5 | 10.3 | 9.6 | 7.3 | 15 to 25 |
+| detectability (rev/s) | 8.68 | 1.04 | 0.32 | 0.26 | 0.81 | 0.14 |
+
+**The highest-contrast rung is by far the hardest.** That rung reached its
+contrast through `rolloff_p` 8.0, and a steep rolloff raises peak-to-bulk by
+emptying bins — it kills the harmonics rather than sharpening them, leaving
+fewer lines to lock onto. Peak-to-bulk measures how far the loud bins stand over
+the quiet ones; it says nothing about how many usable lines there are. That
+ladder was withdrawn before it ran, and only rung 0 had been submitted.
+
+### The comb is lockable, so absent information is not the explanation
+
+The same probe reads the nearest rotor speed to 0.26 to 1.04 rev/s on rungs r1
+to r4, and to 0.16 rev/s with line width zeroed at 100% hit rate. A matched
+filter over 60 harmonics accumulates even 1 to 2 dB per bin into a firm peak.
+Whatever holds stochastic-only training at 3.70 PIT-MAE, it is not that the comb
+is missing from the spectrum. The gap is more likely in separating and assigning
+four interleaved combs, which is the actual task and which this probe does not
+attempt.
+
+### The probe cannot order the rungs either
+
+Varying one knob at a time, 12 cruise clips each:
+
+| gamma_slope | 0.0 | 0.1 | 0.2 | 0.4 | 0.8 | 1.6 |
+|---|---|---|---|---|---|---|
+| median (rev/s) | 0.16 | 21.56 | 0.27 | 21.44 | 0.94 | 3.64 |
+| hit under 1 rev/s | 100% | 17% | 83% | 33% | 58% | 17% |
+
+Per-clip error is bimodal — the estimator either locks near 0.2 rev/s or fails
+near 20 — so the median is unstable and the hit rates are within noise of each
+other at this sample size. The probe is good enough to show that a comb is
+there and to catch a rung that is badly misdesigned. It is not good enough to
+rank rungs, and this campaign does not use it that way.
+
+## The ladder as it now stands
+
+One axis, line width, with `rolloff_p` and `gamma0_hz` held at the family
+default so exactly one thing changes:
+
+| rung | r0 | r1 | r2 | r3 | r4 |
+|---|---|---|---|---|---|
+| `gamma_slope_hz` | 0.0 | 0.0–0.05 | 0.02–0.15 | 0.05–0.4 | 0.05–0.8 |
+
+Rung 4 reproduces the family defaults exactly, so a model finishing the ladder
+has arrived at the distribution the transfer campaign's stochastic arms trained
+on directly. Line width is also the single structural difference from the static
+comb, whose lines have no width at all. Each rung trains until its own
+half-real, half-synthetic validation stops improving. The ladder claims no
+difficulty ordering in advance — the runs measure it.
