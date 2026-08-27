@@ -951,6 +951,7 @@ class StochasticNoisePool:
         flight_fs: float = 200.0,
         flight_reuse: int = 32,
         mode_scales: dict[str, float] | None = None,
+        rotor_trim_rel: tuple[float, float] | None = None,
         band_taper_frac: float = 0.0,
         level_per_flight: bool = False,
         flight_phases: dict[str, Any] | None = None,
@@ -992,6 +993,9 @@ class StochasticNoisePool:
         # roll and pitch separate the rotors within a pair. See
         # rps_synthesis.generate_full_flight.
         self.mode_scales = dict(mode_scales) if mode_scales else None
+        self.rotor_trim_rel = (
+            (float(rotor_trim_rel[0]), float(rotor_trim_rel[1])) if rotor_trim_rel else None
+        )
         self.band_taper_frac = float(band_taper_frac)
         self.level_per_flight = bool(level_per_flight)
         # Overrides for the flight-phase durations and the warm-up idle level
@@ -1082,6 +1086,7 @@ class StochasticNoisePool:
             flight_fs=float(rps.get("flight_fs", 200.0)),
             flight_reuse=int(rps.get("flight_reuse", 32)),
             mode_scales=(dict(rps["mode_scales"]) if rps.get("mode_scales") else None),
+            rotor_trim_rel=(tuple(rps["rotor_trim_rel"]) if rps.get("rotor_trim_rel") else None),
             band_taper_frac=float(g("band_taper_frac", 0.0)),
             level_per_flight=bool(g("level_per_flight", False)),
             flight_phases=(
@@ -1165,6 +1170,7 @@ class StochasticNoisePool:
                 aggressiveness=aggressiveness,
                 phases=phases,
                 mode_scales=self.mode_scales,
+                rotor_trim_rel=self.rotor_trim_rel,
                 rng=rng,
             )
             self._flight = _FlightCache(

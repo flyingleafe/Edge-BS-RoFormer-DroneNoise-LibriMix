@@ -1608,3 +1608,33 @@ in ABSOLUTE terms, not proportional to speed. Under equal absolute error, MSE
 weights every frame equally and the shares simply track the frame counts. The
 evaluation metric is absolute MAE as well, so the loss is already aligned with
 the metric. No relative-loss arm was built.
+
+### The synthetic idle is a unison, and one rig's is not (2026-08-27)
+
+The trajectory model gates the differential modes (roll, pitch, yaw) to cruise,
+on the stated reasoning that an aircraft holds near-zero attitude control on the
+ground. The consequence was never checked. Rotor spread, max minus min across
+the four rotors:
+
+| source | ramp median | ramp inside 2 rev/s | cruise median |
+|---|---|---|---|
+| Michael's | **9.67** | 3.7% | 17.32 |
+| DREGON | 0.03 | 83.0% | 11.77 |
+| arm ID stream | **0.00** | **90.4%** | 9.32 |
+
+Every synthetic ramp frame any model here has trained on shows four IDENTICAL
+speeds. DREGON agrees with that; Michael's does not, and Michael's ramp is the
+cell that holds the whole remaining gap. On a real aircraft the idle spread
+comes from per-motor variation — ESC calibration, motor and propeller
+differences, an uneven load — which does not switch off on the ground.
+
+It also fits the measured error: arm ID over-predicts Michael's ramp by +10.02
+rev/s and is unbiased on DREGON's ramp at -0.11. The bias sits on exactly the
+rig whose idle configuration the stream cannot represent.
+
+Michael's relative spread is nearly the same in both regimes (9.67/36 at ramp,
+17.32/78 at cruise, about 27% and 22%), so ONE per-rotor speed ratio held over a
+clip reproduces both. `rotor_trim_rel`, drawn per clip from zero upward, lets a
+clip be Michael's-like or DREGON-like. At `[0.0, 0.15]` the stream lands between
+the two rigs on both regimes — ramp median 5.76, cruise median 14.96. Arm TR is
+arm BE with this as its only change.

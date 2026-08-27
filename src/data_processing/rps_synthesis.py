@@ -613,6 +613,7 @@ def generate_full_flight(
     aggressiveness: float = 1.0,
     phases: FlightPhaseRanges | None = None,
     mode_scales: dict[str, float] | None = None,
+    rotor_trim_rel: tuple[float, float] | None = None,
     rng: np.random.Generator | int | None = None,
 ) -> np.ndarray:
     """Generate one *full-flight* ``(4, M)`` rotor-speed trajectory spanning the
@@ -726,7 +727,9 @@ def generate_full_flight(
         if unknown:
             raise ValueError(f"unknown mode_scales keys: {sorted(unknown)}")
         scale_map.update(mode_scales)
-    for name, params in zip(MODE_NAMES[1:], (profile.roll, profile.pitch, profile.yaw), strict=True):
+    for name, params in zip(
+        MODE_NAMES[1:], (profile.roll, profile.pitch, profile.yaw), strict=True
+    ):
         sc = float(scale_map[name])
         # One consistent meaning for `sc`: this mode is `sc` times as strong.
         # Applied to the finished setpoint (so the mode's TRIM scales too — the
@@ -748,6 +751,32 @@ def generate_full_flight(
     # spin-up/down and fade-in of control authority).
     lagged = np.stack([_first_order_lowpass(m, profile.motor_tau, dt) for m in modes])
     w = rps_from_modes(lagged)
+
+    # PER-ROTOR TRIM. The differential modes above are gated to cruise, on the
+    # reasoning that an aircraft holds near-zero attitude control on the ground.
+    # That leaves the four rotors in EXACT unison for the whole warm-up: the
+    # built stream's ramp frames have a rotor spread of 0.00 rev/s, with 90.4%
+    # of them inside 2 rev/s.
+    #
+    # One of the two rigs disagrees. On the frozen split's ramp frames Michael's
+    # spread is 9.67 rev/s median, and only 3.7% of frames sit inside 2 rev/s —
+    # its four motors idle at visibly different speeds. DREGON agrees with the
+    # stream (0.03 median, 83.0% inside 2). The cause on a real aircraft is not
+    # attitude control but per-motor variation — ESC calibration, motor and
+    # propeller differences, an uneven load — which does not switch off on the
+    # ground.
+    #
+    # Michael's relative spread is nearly the same in both regimes: 9.67/36 at
+    # ramp and 17.32/78 at cruise, about 27% and 22%. So the trim is a per-rotor
+    # SPEED RATIO, constant over the clip and drawn per clip, which reproduces
+    # the ramp spread and the cruise spread with one number. Drawing its
+    # magnitude per clip from zero upward covers both rigs: a clip can be
+    # Michael's-like or DREGON-like.
+    if rotor_trim_rel:
+        lo, hi = (float(rotor_trim_rel[0]), float(rotor_trim_rel[1]))
+        scale = generator.uniform(lo, hi)
+        trim = 1.0 + scale * generator.standard_normal(w.shape[0])
+        w = w * np.clip(trim, 0.3, 2.0)[:, None]
     return np.clip(w, 0.0, profile.rps_max)
 
 
