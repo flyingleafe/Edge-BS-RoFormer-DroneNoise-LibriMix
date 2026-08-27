@@ -1,0 +1,17 @@
+# SimpleConvV2FreqPos — SimpleConvV2 with a learned positional embedding over the frequency axis.
+# rps_prediction, from the RPS-model registry
+# (src/models/registry.py, mirrors the old train_rps_predictor.py
+# MODEL_REGISTRY). Mono mixture in, (rotor, stft-frame) RPS out.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_freqpos
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null

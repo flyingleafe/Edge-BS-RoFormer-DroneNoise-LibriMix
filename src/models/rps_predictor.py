@@ -927,6 +927,142 @@ class SimpleConvV2(nn.Module):
         return super().load_state_dict(state_dict, strict=strict)
 
 
+# ─── Frequency-aggregation variants (the G4 question) ───────────────────────
+#
+# SimpleConvV2's FrequencyAttentionPool ends in `out.mean(dim=1)` over
+# frequency, and its attention over the frequency axis carries no positional
+# encoding. The pool and everything after it are therefore EXACTLY permutation
+# invariant over frequency: shuffle the 17 surviving bands and the predicted
+# RPS does not move (verified to 1e-7). The encoder is convolutional and so
+# weight-shared over frequency, which leaves absolute frequency position with
+# no route into the head at all beyond boundary effects.
+#
+# That is a strange property for a task whose answer IS an absolute frequency.
+# It is also not the only loss along the way. The six encoder blocks each
+# stride frequency by two, so the axis goes 1025 -> 17 bins, from 7.8 Hz/bin to
+# 470.6 Hz/bin. Rotor speeds of 20 to 90 rev/s put the comb's spacing at 2.6 to
+# 11.5 bins at the front end and 0.3 to 1.4 bins by the third block — below the
+# frequency axis' own Nyquist. The spacing that carries the answer is aliased
+# away early, and whatever survives does so encoded in channels.
+#
+# The three variants below separate the two losses, so a result says which one
+# mattered:
+#   freqpos   — position only. Same shapes, same pool, plus a learned embedding
+#               over the frequency axis. +2 k parameters, no extra arithmetic.
+#   freqcat   — position and per-band identity. The pool is replaced by a
+#               linear map over the flattened (channel, frequency) pairs.
+#   freqhires — the above plus resolution: the last two blocks stop striding
+#               frequency, so 65 bins survive instead of 17.
+
+
+def _encoder_freq_bins(encoder: nn.ModuleList, n_fft: int, in_ch: int) -> int:
+    """Frequency bins surviving `encoder`, measured rather than derived."""
+    was_training = any(m.training for m in encoder.modules())
+    encoder.eval()
+    with torch.no_grad():
+        h = torch.zeros(1, in_ch, n_fft // 2 + 1, 4)
+        for block in encoder:
+            h = block(h)
+    if was_training:
+        encoder.train()
+    return int(h.shape[2])
+
+
+class _FreqVariantBase(nn.Module):
+    """SimpleConvV2 with a configurable frequency-aggregation stage."""
+
+    FREQ_STRIDES = (2, 2, 2, 2, 2, 2)
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, voicing_gate=False):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.num_rotors = num_rotors
+        if frontend is None or isinstance(frontend, str):
+            from models.frontends import build_frontend
+
+            frontend = build_frontend(frontend or "stft_mag", n_fft=n_fft, hop_length=hop_length)
+        self.frontend = frontend
+
+        in_ch = getattr(frontend, "out_channels", 1)
+        shapes = [
+            (in_ch, 64, (7, 5), (3, 2)),
+            (64, 128, (7, 5), (3, 2)),
+            (128, 128, (5, 3), (2, 1)),
+            (128, 128, (5, 3), (2, 1)),
+            (128, 128, (5, 3), (2, 1)),
+            (128, 128, (5, 3), (2, 1)),
+        ]
+        self.encoder = nn.ModuleList(
+            ResidualConvBlock2d(ic, oc, k, (fs, 1), p, use_se=True)
+            for (ic, oc, k, p), fs in zip(shapes, self.FREQ_STRIDES, strict=True)
+        )
+        self.n_freq = _encoder_freq_bins(self.encoder, n_fft, in_ch)
+        self._build_aggregator()
+        self.head = BiGRUHead(
+            128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, gated=voicing_gate
+        )
+
+    def _build_aggregator(self) -> None:
+        raise NotImplementedError
+
+    def _aggregate(self, h: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+    def forward(self, audio):
+        h = self.frontend(audio)  # (B, C, F, T)
+        for block in self.encoder:
+            h = block(h)
+        return self.head(self._aggregate(h))  # (B, 4, T)
+
+
+class SimpleConvV2FreqPos(_FreqVariantBase):
+    """SimpleConvV2 plus a learned positional embedding over the frequency axis.
+
+    The minimal repair, and the control for the other two: identical shapes,
+    identical pooling, 2 k more parameters, and the only new capability is that
+    the pool can tell one frequency band from another.
+    """
+
+    def _build_aggregator(self) -> None:
+        self.freq_pos = nn.Parameter(torch.zeros(1, 128, self.n_freq, 1))
+        nn.init.normal_(self.freq_pos, std=0.02)
+        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+
+    def _aggregate(self, h: torch.Tensor) -> torch.Tensor:
+        return self.freq_pool(h + self.freq_pos)
+
+
+class SimpleConvV2FreqCat(_FreqVariantBase):
+    """SimpleConvV2 with the frequency axis kept rather than averaged away.
+
+    The pool is replaced by a linear map over the flattened (channel,
+    frequency) pairs, so the head sees WHICH band each feature came from and
+    can weight bands differently, instead of receiving their mean.
+    """
+
+    def _build_aggregator(self) -> None:
+        self.freq_proj = nn.Sequential(
+            nn.Linear(128 * self.n_freq, 256), nn.GELU(), nn.Linear(256, 128)
+        )
+
+    def _aggregate(self, h: torch.Tensor) -> torch.Tensor:
+        B, C, F, T = h.shape
+        flat = h.permute(0, 3, 1, 2).reshape(B * T, C * F)
+        return self.freq_proj(flat).view(B, T, 128).transpose(1, 2)
+
+
+class SimpleConvV2FreqHiRes(SimpleConvV2FreqCat):
+    """FreqCat, with the last two blocks no longer striding frequency.
+
+    65 bins survive instead of 17, so the head sees frequency at 123 Hz rather
+    than 471 Hz. Blocks five and six do their work on a longer axis, which is
+    where the extra cost goes.
+    """
+
+    FREQ_STRIDES = (2, 2, 2, 2, 1, 1)
+
+
 # ─── Variant 2: SimpleConvWide (scale up, keep it simple) ────────────────────
 
 
