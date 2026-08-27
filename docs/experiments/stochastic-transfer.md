@@ -2362,3 +2362,43 @@ resolved in favor of the effect being real.
 
 It remains a TUNING result. `r4hb_scv2`'s learning rate had never been swept,
 and nothing about it involves synthetic data.
+
+## GOAL VERDICT: the stochastic family does not beat the record (2026-08-27)
+
+The goal was to beat the best result using mixed training WITH STOCHASTIC COMBS.
+Every arrangement has now been measured. On the evaluation metric:
+
+| arm | uses stochastic? | all-MAE (seeds) | mean |
+|---|---|---|---|
+| `r4a_lr3e4` | **no** — comb + real | 2.61 / 2.47 / 2.51 | **2.530** |
+| `r9hb_scv2_lr1e3` | YES | 2.64 | 2.640 |
+| `r4hb_scv2` | no — comb + real | 2.67 / 2.64 | 2.655 |
+| `r9hb_scv2_lr3e4` | YES | 2.69 | 2.690 |
+
+The best stochastic arm (R9, the three-stage curriculum) is INDISTINGUISHABLE
+from the comb-only baseline it modifies — 2.64 against 2.67/2.64 — and clearly
+behind the record at 2.530. The goal is NOT met, and the honest summary is that
+the stochastic family is free to include and never worth including.
+
+THE TWO METRICS DISAGREE AGAIN, and it is worth recording because it has now
+happened three times. On val PIT-MSE, `r9hb_scv2_lr3e4` (16.65) beats BOTH
+`r4hb_scv2` seeds (17.59-18.30); on all-MAE it is the worst row in the table
+(2.69). The same inversion appeared for `r4b_lr1e4` (worse MSE, better MAE than
+`r4a_lr3e4`). A squared-error objective and an absolute-error metric rank these
+models differently, and the campaign's monitored quantity is the one that does
+NOT decide the result. Any future claim must be made on all-MAE or on both.
+
+### Every arrangement tried, and its cost against the comb-only baseline
+
+| arrangement | all-MAE | vs baseline |
+|---|---|---|
+| comb -> real (`r4hb_scv2`) | 2.655 | baseline |
+| comb -> stochastic -> real (R9) | 2.64 | free |
+| stochastic -> real (R6) | 3.04 | +0.39 |
+| stochastic -> real, lr 3e-3 (R6C) | 3.77 | +1.12 |
+| real + stochastic pooled, warm start (R8) | 5.81 | +3.16 |
+| real + stochastic + comb pooled (R7) | 5.99 | +3.34 |
+| stochastic -> real, lr 1e-4 (R6B) | 6.32 | +3.67 |
+| stochastic -> real, lr 3e-4 (R6A) | 6.48 | +3.83 |
+
+Sequence is the only arrangement that does not cost, and it does not gain.
