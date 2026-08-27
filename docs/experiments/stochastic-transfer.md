@@ -2197,3 +2197,10 @@ What the campaign produced that is real and worth keeping:
    the project's best numbers.
 
 `r4b_lr1e4` is the third point on the ladder that did take the record.
+
+R6C's MAE confirms the MSE verdict: 3.77 all-MAE against R6's 3.04 at lr 1e-3.
+Its cells are 3.00 / 12.64 / 3.83 on DREGON and 8.08 / 4.02 / 2.51 on
+Michael's, so raising the rate hurts DREGON's ramp badly (12.64 against R6's
+8.79) while leaving cruise roughly intact — the opposite half of the trade the
+low-rate arms showed, and further evidence that the rate controls WHICH cells
+survive rather than how good the model is overall.

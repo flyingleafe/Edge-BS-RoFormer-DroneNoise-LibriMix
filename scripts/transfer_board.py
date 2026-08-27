@@ -36,6 +36,15 @@ RESULTS = Path("results/stoch_transfer")
 #: complete. Each is one run of scripts/valid_regime_eval.py.
 KNOWN: list[dict] = [
     # 2026-08-27 mixed regimes (R6), arm IDV, and the transformer ladder.
+    {
+        "experiment": "r6c_lr3e3",
+        "kind": "mixed",
+        "aggregate_mse": 41.36,
+        "all_mae": 3.77,
+        "zero_mae": 4.43,
+        "low_mae": 5.27,
+        "flight_mae": 3.38,
+    },
     # The learning-rate ladder. r4a_lr3e4 is r4hb_scv2 (the previous record)
     # with lr 3e-4 instead of 1e-3 — one line — and it BEATS it at 2.61.
     {
@@ -421,6 +430,7 @@ KNOWN: list[dict] = [
 RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     # 2026-08-27, from the scoring jobs' logs (see docs/experiments/stochastic-transfer.md).
     "r4a_lr3e4": {"dregon": (2.85, 2.02, 6.53, 2.86), "michaels": (2.25, 3.24, 2.99, 1.77)},
+    "r6c_lr3e3": {"dregon": (3.99, 3.00, 12.64, 3.83), "michaels": (3.43, 8.08, 4.02, 2.51)},
     "r6a_lr3e4": {"dregon": (7.86, 23.26, 11.58, 4.82), "michaels": (4.46, 8.08, 5.55, 3.46)},
     "r6b_lr1e4": {"dregon": (5.78, 21.67, 14.45, 2.44), "michaels": (7.12, 9.23, 14.11, 3.65)},
     "stoch_s1id_fromcomb": {"dregon": (13.94, 9.80, 16.54, 14.61), "michaels": (9.67, 10.56, 19.57, 5.05)},
