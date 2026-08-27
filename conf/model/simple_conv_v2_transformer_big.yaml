@@ -1,0 +1,23 @@
+# simple_conv_v2_transformer_big — rps_prediction. The stock
+# simple_conv_v2_transformer with a HEAVIER temporal head and nothing else
+# changed: same front end, same 6-block encoder, same frequency pool.
+#
+# The stock head is 2 layers of width 64, which is small beside the encoder in
+# front of it — 1.48M parameters for the whole model. This variant is
+# 6 layers of width 256 with 8 heads.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  head_hidden_ch: 256
+  head_layers: 6
+  head_heads: 8
+model_type: null
+legacy_config_path: null

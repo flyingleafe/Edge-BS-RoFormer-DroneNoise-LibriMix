@@ -1384,7 +1384,18 @@ class SimpleConvV2Transformer(nn.Module):
     replaces the head's output projection with a ``GatedProjection``.
     """
 
-    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, voicing_gate=False):
+    def __init__(
+        self,
+        n_fft=2048,
+        hop_length=512,
+        num_rotors=4,
+        frontend=None,
+        voicing_gate=False,
+        head_hidden_ch=64,
+        head_layers=2,
+        head_heads=4,
+        head_dropout=0.1,
+    ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -1415,12 +1426,17 @@ class SimpleConvV2Transformer(nn.Module):
             self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
         self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        # The defaults reproduce every existing checkpoint exactly. The four
+        # knobs exist so the temporal head's capacity can be raised without a
+        # new class: at the defaults it is 2 layers of width 64, which is small
+        # beside the 6-block encoder in front of it.
         self.head = TemporalTransformerHead(
             128,
-            hidden_ch=64,
+            hidden_ch=head_hidden_ch,
             num_rotors=num_rotors,
-            num_layers=2,
-            num_heads=4,
+            num_layers=head_layers,
+            num_heads=head_heads,
+            dropout=head_dropout,
             gated=voicing_gate,
         )
 
