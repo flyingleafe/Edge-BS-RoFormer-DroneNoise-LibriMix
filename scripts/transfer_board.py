@@ -344,6 +344,14 @@ RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
         "dregon": (10.95, 14.43, 10.12, 10.33),
         "michaels": (8.60, 12.82, 14.92, 5.14),
     },
+    "stoch_s1be2_scv2": {
+        "dregon": (18.02, 4.76, 8.35, 20.90),
+        "michaels": (17.47, 20.69, 10.55, 20.15),
+    },
+    "stoch_s1tr_scv2": {
+        "dregon": (14.04, 34.42, 33.02, 9.45),
+        "michaels": (10.30, 20.24, 16.15, 6.24),
+    },
     "stoch_s1id_freqhires": {
         "dregon": (9.97, 5.74, 11.07, 10.72),
         "michaels": (8.64, 5.73, 20.46, 3.68),

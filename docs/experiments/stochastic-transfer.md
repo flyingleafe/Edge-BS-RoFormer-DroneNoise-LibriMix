@@ -1742,3 +1742,32 @@ NOTE on an invalid first attempt, recorded so it is not repeated:
 the fade at 22.4 kHz instead of 5.6 kHz. Comparing a tapered 16 kHz render
 against a tapered 64 kHz render measures the taper mismatch, not aliasing. The
 taper must be off in both, or expressed in absolute frequency.
+
+### The per-rotor trim is refuted as implemented (2026-08-27)
+
+Arm TR added a per-rotor speed ratio so the four rotors would stop idling in
+exact unison. Against its base, arm BES, with the trim the only change:
+
+| cell | BES | TR |
+|---|---|---|
+| all-MAE | **11.47** | 12.52 |
+| DREGON zero | **11.47** | 34.42 |
+| DREGON ramp | **13.16** | 33.02 |
+| Michael's ramp | **10.83** | 16.15 |
+| Michael's cruise | 7.70 | **6.24** |
+
+Michael's ramp got WORSE, which is the cell the arm was built for, and both zero
+cells collapsed.
+
+The measurement behind it stands — the stream's ramp frames have a rotor spread
+of 0.00 rev/s while Michael's have 9.67 — but the fix did not follow from it.
+The likely reason is that the implementation over-reached the hypothesis: the
+trim multiplies the WHOLE trajectory by a per-rotor ratio, so it does not merely
+add spread at idle, it rescales every rotor's absolute speed through cruise as
+well (cruise spread 9.32 to about 15). For a task that predicts absolute rev/s
+that plausibly damages calibration, which is what the zero cells suggest.
+
+A surgical version would add spread only in the non-cruise phases and leave
+absolute speeds untouched. It is not queued: the unison-idle mismatch is real
+but has not been shown to be the binding constraint, and this hypothesis has
+already cost one cycle.
