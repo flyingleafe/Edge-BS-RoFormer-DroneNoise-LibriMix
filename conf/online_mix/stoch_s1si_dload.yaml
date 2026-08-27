@@ -1,0 +1,105 @@
+# STOCHASTIC-ONLY stage 1, ARM SI = arm S with a real warm-up idle.
+#
+# ONE CHANGE from conf/online_mix/stoch_s1s_dload.yaml: the flight phase ranges.
+# Arm S owns the Michael's ramp cell, which is the larger half of the remaining
+# in-domain gap, and that cell is mostly a held low-speed comb its stream barely
+# contains. See the comment on the phases.
+#
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.4, 1.5]
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        # THE HELD IDLE, added to the arm that OWNS the Michael's ramp cell.
+        #
+        # Michael's ramp frames are 85% a stationary hold at low RPM, and they
+        # are 1071 of the split's 1253 ramp frames. Arm S owns that cell at 8.14
+        # rev/s, better than every other arm by a factor of two, and its stream
+        # has the same shortened warm-up every arm has: `warmup_s: [0.5, 6.0]`
+        # against the [3.0, 25.0] the docstring calls calibrated to these
+        # recordings.
+        #
+        # Arm ID restored the idle but on top of arm X's line-visibility block,
+        # and its Michael's ramp is 20.71 — those knobs cost that cell. This arm
+        # therefore adds the idle to arm S DIRECTLY, changing nothing else, so
+        # the cell's owner gets the one state the measurement says it lacks.
+        idle_frac: [0.10, 0.60]
+        warmup_s: [3.0, 30.0]
+        takeoff_s: [0.5, 4.0]
+        landing_s: [0.5, 4.5]
+        spinup_s: [0.3, 1.8]
+        spindown_s: [0.3, 2.0]
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
