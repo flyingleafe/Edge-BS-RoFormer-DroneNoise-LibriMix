@@ -1,0 +1,125 @@
+# CURRICULUM RUNG 3 of 4 — comb contrast about 7.0 dB.
+#
+# The ladder walks the stochastic family from its most resolvable corner to its
+# full range, on the two axes that MOVE comb contrast. See
+# docs/experiments/synthetic-solvability-limits.md: the variance knobs
+# (harm_gp_std_db and the rest) move contrast by less than the measurement's own
+# spread, and the floor depth moves it by 0.0 dB, because the comb's own lines
+# tile 56 to 88% of every band and the median bin is a line rather than floor.
+#
+# `rolloff_p` sets how fast the comb decays with harmonic index, and so how many
+# harmonics are strong enough to tile the band. `gamma_slope_hz` sets how fast a
+# line broadens with its own order. Rung 4 is the full family — identical ranges
+# to conf/online_mix/stoch_s1id_dload.yaml.
+#
+# For scale: filtered white noise reads 6.4 dB on this measure and the analytic
+# static comb reads 15 to 25 dB. The static comb is NOT reachable from this
+# family, which is why the ladder starts at 12.8 dB and not at the comb.
+#
+# The flight-phase ranges are arm ID's, so the stream carries sustained
+# low-speed holds. The static-comb source is absent on purpose: this ladder
+# measures the stochastic family on its own.
+#
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260831
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.3]  # arm H's narrower range
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+        # ARM H's LINE-VISIBILITY BLOCK, the part arm S lacks. Arm S reads
+        # ramps better than anything else and cruise worse than anything
+        # else (DREGON cruise 15.26 against arm H's 2.16). These four knobs
+        # are what arm H has instead: the lines stay coherent, their level
+        # wanders less, the floor sits far enough under them, and at least
+        # half of them clear it. A comb a model cannot see is a comb it
+        # cannot learn to read.
+        harm_coherence: [0.6, 1.0]
+        # THE LADDER AXES — see the file header.
+        rolloff_p: [1.5, 3.0]
+        gamma0_hz: [0.5, 3.0]
+        gamma_slope_hz: [0.1, 0.4]
+        harm_gp_std_db: [0.5, 3.0]
+        floor_rel_db: [-30.0, -8.0]
+        min_lines_above_floor: 0.5
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        # THE RAMP CELL'S ACTUAL DYNAMICS, measured. The two rigs ramp in
+        # opposite ways. DREGON's ramp frames are a fast sweep — |d rps/dt|
+        # mean 22.65, median 24.72 rev/s per second. Michael's are mostly NOT a
+        # sweep at all: mean 4.25 but median 0.23, meaning half of them are a
+        # stationary hold at low RPM, the warm-up idle. Michael's carries 1071
+        # of the split's 1253 ramp frames, so the cell that holds the entire
+        # remaining gap is mostly a STEADY low-speed comb.
+        #
+        # Every arm so far overrode the phase ranges to `warmup_s: [0.5, 6.0]`
+        # and `takeoff_s: [0.4, 2.0]`, shortening the idle roughly fourfold
+        # against the ranges the docstring calls calibrated to these very
+        # recordings (warm-up 5 to 30 s). The result is a stream whose ramp
+        # frames are neither rig: median 6.84 against Michael's 0.23 and
+        # DREGON's 24.72. A sustained low-speed hold is nearly absent from it.
+        #
+        # Restoring a long idle while keeping fast take-offs available gives
+        # median 1.47 with a p90 of 16.55 — about half the ramp frames now
+        # near-steady, and quick sweeps still present.
+        idle_frac: [0.10, 0.60]
+        warmup_s: [3.0, 30.0]
+        takeoff_s: [0.5, 4.0]
+        landing_s: [0.5, 4.5]
+        spinup_s: [0.3, 1.8]
+        spindown_s: [0.3, 2.0]
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

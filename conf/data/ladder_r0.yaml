@@ -1,0 +1,40 @@
+# CURRICULUM RUNG 0 of 4 — realized comb contrast 12.2 dB.
+#
+# The rung's own stream for training, validated on HALF REAL and HALF SYNTHETIC
+# where the synthetic half is drawn from THIS RUNG's policy. The real half is
+# the frozen split, identical at every rung, so the ladder shows two curves at
+# once: how the achievable synthetic fit degrades as the family widens, and
+# whether transfer to the real rigs follows it or breaks away.
+#
+# The ladder axes are `rolloff_p` and `gamma_slope_hz`, not the variance knobs.
+# See docs/experiments/synthetic-solvability-limits.md: zeroing every knob named
+# variance moves comb contrast by less than the measurement's own spread, and
+# the floor depth moves it by 0.0 dB. Rung 4 is the full family.
+#
+# Contrast is the 95th percentile of bin levels minus the median, in dB, band
+# averaged over 500 Hz to 7.5 kHz on cruise frames. Filtered white noise reads
+# 6.4 dB on this measure, so rung 4 carries about 1 dB of comb over noise.
+#
+# The synthetic validation half is drawn at base_seed 990001, away from the
+# training seeds, at 8 s and unaugmented so both halves are on one scale.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/ladder_r0_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.MixedRealSynthValidDataset
+  params:
+    policy_path: conf/online_mix/ladder_r0_dload.yaml
+    real_data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    base_seed: 990001
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

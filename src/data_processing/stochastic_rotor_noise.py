@@ -312,6 +312,28 @@ class StochasticParams:
     floor_tilt_gp_std: float = 0.5
     floor_tilt_gp_tau_s: float = 6.0
 
+    #: Integrate each Lorentzian ACROSS its bin instead of sampling it at the
+    #: bin centre.
+    #:
+    #: WHY THIS EXISTS. ``build_psd`` evaluates the line density at the bin
+    #: centres. A line is 0.5 to 4 Hz wide and a bin is 7.8 Hz, so most lines
+    #: are far narrower than the grid that samples them, and ``k * rps`` puts
+    #: them at an arbitrary sub-bin position. Measured on one isolated line at
+    #: n_fft 2048: a line sitting ON a grid point reads 33.4 dB above the bin
+    #: three away at gamma 0.5 Hz, and one sitting BETWEEN two grid points
+    #: reads 13.9 dB — and 0.05 Hz gives the same 14.0 dB, so below a bin the
+    #: width stops mattering at all. The fraction of a line's power landing in
+    #: its peak bin swings from 1.000 to 0.406 with the same sub-bin position,
+    #: which is 3.9 dB of amplitude wobble that follows the rotor speed and
+    #: belongs to no physical process.
+    #:
+    #: Integrating the density across the bin is exact and closed-form — the
+    #: Lorentzian's antiderivative is an arctangent — so it conserves each
+    #: line's power whatever the sub-bin position, and reduces to the sampled
+    #: value once a line is wider than a bin. Default False keeps every
+    #: existing stream and checkpoint bit-identical.
+    line_bin_integrate: bool = False
+
     #: The part of the broadband floor that does NOT come from the rotors, as a
     #: fraction of the floor's own level at the reference speed. A recording
     #: chain has a floor of its own — room tone, preamp noise, whatever else is
@@ -422,6 +444,7 @@ def sample_params(
     n_harmonics: int = 80,
     band_taper_frac: float = 0.0,
     sample_rate: int = 16000,
+    line_bin_integrate: bool = False,
 ) -> StochasticParams:
     """Draw one clip's worth of parameters from the family.
 
@@ -487,6 +510,7 @@ def sample_params(
         floor_gp_tau_s=float(rng.uniform(*ranges.floor_gp_tau_s)),
         floor_tilt_gp_std=float(rng.uniform(*ranges.floor_tilt_gp_std)),
         floor_tilt_gp_tau_s=float(rng.uniform(*ranges.floor_tilt_gp_tau_s)),
+        line_bin_integrate=bool(line_bin_integrate),
     )
 
 
@@ -642,7 +666,14 @@ def build_psd(
             bins = base[:, :, None] + offsets
             delta = (bins - n_pad) * df - centers[:, :, None]
             gamma = gammas[sel][:, None, None]
-            dens = gamma / (np.pi * LORENTZ_TRUNC_NORM * (delta * delta + gamma * gamma))
+            if params.line_bin_integrate:
+                # Mean density over the bin, from the Lorentzian's own
+                # antiderivative: (1/pi) * arctan((f - f0) / gamma).
+                hi = np.arctan((delta + 0.5 * df) / gamma)
+                lo = np.arctan((delta - 0.5 * df) / gamma)
+                dens = (hi - lo) / (np.pi * LORENTZ_TRUNC_NORM * df)
+            else:
+                dens = gamma / (np.pi * LORENTZ_TRUNC_NORM * (delta * delta + gamma * gamma))
             contrib = live_power[sel][:, :, None] * dens
             flat = frame_idx[None, :, None] * n_wide + bins
             acc += np.bincount(
@@ -964,6 +995,7 @@ class StochasticNoisePool:
         normalize_rms: float | tuple[float, float] = 0.1,
         level_mode: str = "window",
         line_mode: str = "stochastic",
+        line_bin_integrate: bool = False,
         n_fft: int = DEFAULT_N_FFT,
         ranges: StochasticRanges | dict[str, Any] | None = None,
         seed: int = 0,
@@ -1041,6 +1073,7 @@ class StochasticNoisePool:
         # filtered-noise floor — the same spectrum, and the statistics a rotor
         # actually produces.
         self.line_mode = str(line_mode)
+        self.line_bin_integrate = bool(line_bin_integrate)
         self.n_fft = int(n_fft)
         self.ranges = (
             ranges if isinstance(ranges, StochasticRanges) else StochasticRanges.from_dict(ranges)
@@ -1109,6 +1142,7 @@ class StochasticNoisePool:
             ),
             level_mode=str(g("level_mode", "window")),
             line_mode=str(g("line_mode", "stochastic")),
+            line_bin_integrate=bool(g("line_bin_integrate", False)),
             n_fft=int(g("n_fft", DEFAULT_N_FFT)),
             ranges=ranges,
             seed=int(g("seed", 0)),
@@ -1224,6 +1258,7 @@ class StochasticNoisePool:
             n_harmonics=n_harm,
             sample_rate=self.sample_rate,
             band_taper_frac=self.band_taper_frac,
+            line_bin_integrate=self.line_bin_integrate,
         )
         # Linewidth scales with the aircraft too. The half width of harmonic k
         # is the shaft's own speed jitter times k, and a shaft that turns at
