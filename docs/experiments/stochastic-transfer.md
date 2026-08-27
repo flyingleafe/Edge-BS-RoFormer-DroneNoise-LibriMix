@@ -1802,3 +1802,43 @@ The whole `comb_if` direction is closed. The permutation-invariance measurement
 that motivated it stands, but it does not follow that an explicit f0 axis is the
 answer: the tooth table is built from the synthetic comb's own geometry, so it
 hands the model a template that only the synthetic data matches exactly.
+
+### Arm IDV: the visibility trade is real, not a coverage artifact (2026-08-27)
+
+The two cells that hold the remaining gap are held by two different arms that
+differ mainly in the line-visibility block. Arm IDV widened those four knobs to
+the UNION of arm H's tight settings and the defaults arm S ran, so one stream
+covers both regimes instead of committing to one. Nothing else changed — the
+inert flight-phase block included, deliberately.
+
+| | arm S | arm ID | ARM IDV |
+|---|---|---|---|
+| visibility block | absent | tight | union |
+| all-MAE | 13.95 | **7.40** | 10.10 |
+| Michael's ramp | **8.14** | 20.71 | 23.21 |
+| Michael's cruise | 12.14 | 3.71 | **3.36** |
+| DREGON cruise | 15.26 | **6.17** | 7.72 |
+
+The pre-registered reading was: keeps ID's cruise and takes some of S's ramp,
+the trade is a coverage artifact; lands between the two on both cells, the
+trade is real. **It did neither favorable thing.** Michael's ramp got WORSE than
+either parent (23.21 against 20.71 and 8.14), which is the cell the arm was
+built for, and DREGON cruise regressed as well. Only Michael's cruise improved,
+by 0.35.
+
+TRAINING DEPTH FAVORS THE LOSER, so the result is not a depth artifact.
+`num_batches_tracked` on the two best checkpoints: arm ID 1565 (5 epochs at 313
+batches), arm IDV 2504 (8 epochs). Arm IDV had 60% more training and still lost
+by 2.70 all-MAE.
+
+WHAT THIS CLOSES. Widening a committed knob to cover both settings is not a
+free lever, and "coverage beats realism" does not generalize to every knob. The
+lesson held where coverage added a MISSING STATE the family could not produce
+at any setting — arm C's speed prior, arm ID's warm-up idle. Line visibility is
+not a missing state; it is a property every clip already has at some value, and
+widening its range only dilutes the setting that each cell needs. No further
+union-widening arm is queued on this reasoning.
+
+The consequence for the two open cells is that one stream apparently cannot
+serve both. Holding both would need routing or a per-clip conditioning signal,
+which is a different kind of answer.
