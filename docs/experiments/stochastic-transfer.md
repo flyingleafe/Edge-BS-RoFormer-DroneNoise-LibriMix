@@ -1376,3 +1376,34 @@ sit near each other, which airframe the profile came from) and are the bottom
 two. Adding a geometry-level fix to a trajectory-level one costs more than it
 buys. Arm IDZ — the two trajectory-level fixes together — is the test of whether
 same-kind fixes compound where mixed-kind ones do not.
+
+## Arm IDZ: same-kind fixes do not compound either, but the zero cell falls to 1.08
+
+Arm IDZ carries both trajectory-level fixes — arm ID's restored warm-up idle and
+arm Z's fixed reference gain, the campaign's two best single arms. As a single
+model at 13 of 22 epochs it is WORSE than either part (14.70 against 7.40 and
+8.01), so same-kind fixes do not compound any more than the mixed pairing did.
+That is now four combination attempts (W, X, IDRP, IDZ) all landing below their
+parts.
+
+But it takes the DREGON zero cell outright:
+
+| cell | before | arm IDZ | target |
+|---|---|---|---|
+| DREGON zero | 5.63 | **1.08** | 2.24 |
+
+That is 0.48x the target — less than half the error of the model that trained on
+real drone noise, on 844 frames.
+
+Recomputing the routed figures with it:
+
+| | before | now |
+|---|---|---|
+| DREGON, all three regimes | 0.98x | **0.74x** |
+| Michael's, all three regimes | 2.09x | 2.09x |
+| both rigs, oracle-routed | 1.34x | **1.19x** |
+
+**DREGON is now 0.74x the in-domain target across all three of its regimes**, and
+the both-rig oracle route is 1.19x. The gap is entirely Michael's ramp (2.86x)
+and cruise (2.21x) — the two cells where the target trained on a sibling flight
+of the validation aircraft.
