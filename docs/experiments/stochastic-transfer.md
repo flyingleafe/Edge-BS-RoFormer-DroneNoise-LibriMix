@@ -1842,3 +1842,42 @@ union-widening arm is queued on this reasoning.
 The consequence for the two open cells is that one stream apparently cannot
 serve both. Holding both would need routing or a per-clip conditioning signal,
 which is a different kind of answer.
+
+### Heavier transformer heads do not help, and capacity is not the axis (2026-08-27)
+
+Transformers had failed on every synthetic stage 1 this project ran, but always
+on a NARROW noise family (`m3abl_comb_transformer_s1` 1802.0 on the analytic
+comb, `m3cur_transformer_s1` 316.9 on generator + comb). Three arms on arm ID's
+much wider stochastic stream, with the temporal head's capacity as the only
+change and the encoder, front end and pool identical:
+
+| arm | temporal head | params | best epoch | all-MAE | Michael's ramp | DREGON cruise |
+|---|---|---|---|---|---|---|
+| `stoch_s1id_scv2` (BiGRU) | — | 1.50M | 5 | **7.40** | 20.71 | **6.17** |
+| `stoch_s1id_tr` | 2 x 64 | 1.48M | 10 | 12.44 | **16.25** | 17.27 |
+| `stoch_s1id_trmed` | 4 x 128 | 2.21M | 10 | 14.78 | 20.05 | 19.12 |
+| `stoch_s1id_trbig` | 6 x 256 | 6.24M | **1** | 13.11 | 16.52 | 16.90 |
+
+TWO THINGS THE LADDER SETTLES.
+
+Capacity is not the axis. The three all-MAE figures are 12.44, 14.78, 13.11 —
+not monotone in parameters, and all of them 1.7 to 2.0 times the BiGRU at
+essentially the same total model size for the stock arm (1.48M against 1.50M).
+The earlier failures were therefore not an underfitting head on a narrow
+family. The transformer head is worse at this task at every capacity tried.
+
+Depth favors the losers, so this is not the hour cap. The two smaller arms
+reached epoch 10 against the BiGRU's best at epoch 5. The largest is the
+diagnostic one: it ran to epoch 11 and its BEST checkpoint is from epoch 1
+(313 batches tracked), so it peaked immediately and got worse for ten epochs —
+the same diverging curve `m3abl_comb_transformer_s1` showed at 1802.0. More
+capacity buys faster divergence, not more fit.
+
+THE ONE RESULT THAT CUTS THE OTHER WAY. Every transformer arm beats the BiGRU
+on Michael's ramp (16.25, 20.05, 16.52 against 20.71) while being catastrophic
+at cruise (17.27, 19.12, 16.90 against 6.17). That is the SAME trade arm S and
+arm H show, and the same one arm IDV failed to dissolve. Three independent
+levers — the noise family's line visibility, the temporal architecture, and the
+front end — now produce one pattern: whatever reads ramps well reads cruise
+badly. This looks structural rather than incidental, and it is the strongest
+argument yet that a single model cannot hold both cells.
