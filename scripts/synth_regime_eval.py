@@ -49,6 +49,14 @@ DEFAULT_POLICY = {
     "stoch_s1id_fromcomb": "conf/online_mix/stoch_s1id_dload.yaml",
     "stoch_s1s_both": "conf/online_mix/stoch_s1s_dload.yaml",
     "stoch_s1h_scv2": "conf/online_mix/stoch_s1h_dload.yaml",
+    # The comb-only arms, scored on the ANALYTIC STATIC COMB they trained on.
+    # That distribution is far simpler than the stochastic family — one fixed
+    # amplitude profile per clip, comb spacing the only cue — so it is the
+    # clean test of whether these models can fit an easy harmonic task at all.
+    # If they cannot, the limit is the model, not the data.
+    "m3abl_comb_scv2_s1": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    "m3abl_comb_unigru128_s1": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    "m3abl_comb_transformer_s1": "conf/online_mix/m3abl_comb_s1_dload.yaml",
     # The real-trained rows have no stochastic policy of their own. They are
     # scored on ARM ID's stream via --policy, as the control that says whether a
     # bad synthetic score means the model is weak or the stream is hard.
