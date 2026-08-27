@@ -1971,3 +1971,61 @@ mixing branch is closed and no further arm should be built on it.
 
 What survives is narrow: keep every stage pure, and the only untried
 arrangement is a third pure stage.
+
+### Stage 1.5 fails its gate: comb pre-training INTERFERES (2026-08-27)
+
+`stoch_s1id_fromcomb` is arm ID's stochastic stream warm-started from the comb
+stage-1 checkpoint — one line different from `stoch_s1id_scv2`. It was built as
+stage 1.5 of a three-stage curriculum (comb -> stochastic -> real), the one
+arrangement the five mixed results do not rule out, and it carried a
+pre-registered gate: below 7.40 all-MAE the two families' coverage composes and
+R9 is worth running; above it, comb pre-training interferes and R9 is not built.
+
+| model | stage-1 init | all-MAE |
+|---|---|---|
+| `stoch_s1id_scv2` | from scratch | **7.40** |
+| `stoch_s1id_fromcomb` | comb checkpoint | 12.21 |
+
+It missed by 65%. Starting the stochastic stream from comb weights is much
+WORSE than starting it from nothing, in every cell except the two zero cells.
+The two synthetic families' coverage does not compose — comb pre-training puts
+the model somewhere the stochastic stream then has to undo.
+
+**R9 IS NOT BUILT.** The gate was written before the number and it is honored.
+
+NOTE ON READING DEPTH ACROSS A WARM START. `num_batches_tracked` cannot be
+compared between a warm-started run and a from-scratch one: BatchNorm counters
+carry over from the initializing checkpoint, so this run reads 5634 against arm
+ID's 1565 while having trained 11 epochs of its own. Use the training log's
+epoch count for warm-started arms, not the BN counter.
+
+## Where the campaign stands (2026-08-27, end of day)
+
+The goal was parity with the best result using mixed training. It is NOT met.
+The best mixed result is still `r4hb_scv2` at 2.67 all-MAE; the best thing built
+today is R6 at 3.04 (1.14x).
+
+Four branches were closed by measurement today, each with a controlled arm:
+
+| branch | arm | verdict |
+|---|---|---|
+| f0-axis front end | `combif`, `combif_hires` | closed — worse on BOTH trunks, and the longer run is the worse one |
+| widen a committed knob for coverage | arm IDV | closed — worse than either parent on the target cell, on 60% more training |
+| transformer capacity | `tr`, `trmed`, `trbig` | closed — not monotone in parameters, all ~2x the BiGRU, the largest peaks at epoch 1 |
+| mixing synthetic into a real stream | R7, R8 | closed — ~5x cost, across two families, two ratios, with and without a warm start |
+| composing two synthetic families | stage 1.5 | closed — 65% worse than either alone |
+
+WHAT IS LEFT, AND WHY NO ARM IS QUEUED. The two live findings both point away
+from more arms of this shape:
+
+1. Synthetic-only score does not predict the mixed result (R6). Every stage-1
+   arm in this campaign optimized a quantity that does not transfer. Improving
+   it further has no measured path to the goal.
+2. Whatever reads ramps well reads cruise badly. Three independent levers —
+   the noise family's line visibility, the temporal architecture, and the front
+   end — produce the identical trade. A single model holding both cells is not
+   supported by anything measured.
+
+If (2) is real, the answer is not a better stream or a bigger head but routing
+or a per-clip conditioning signal — a different kind of answer, and one worth
+agreeing on before spending on it.

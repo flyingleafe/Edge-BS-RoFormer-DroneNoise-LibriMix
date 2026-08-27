@@ -37,6 +37,15 @@ RESULTS = Path("results/stoch_transfer")
 KNOWN: list[dict] = [
     # 2026-08-27 mixed regimes (R6), arm IDV, and the transformer ladder.
     {
+        "experiment": "stoch_s1id_fromcomb",
+        "kind": "synthetic",
+        "aggregate_mse": 291.97,
+        "all_mae": 12.21,
+        "zero_mae": 10.01,
+        "low_mae": 19.13,
+        "flight_mae": 11.32,
+    },
+    {
         "experiment": "r8hb_scv2",
         "kind": "mixed",
         "aggregate_mse": 104.85,
@@ -382,6 +391,7 @@ KNOWN: list[dict] = [
 #: Each tuple is (all, zero, low, flight) mean absolute error, rev/s.
 RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
     # 2026-08-27, from the scoring jobs' logs (see docs/experiments/stochastic-transfer.md).
+    "stoch_s1id_fromcomb": {"dregon": (13.94, 9.80, 16.54, 14.61), "michaels": (9.67, 10.56, 19.57, 5.05)},
     "r8hb_scv2": {"dregon": (6.28, 15.53, 12.82, 4.28), "michaels": (5.11, 13.37, 7.06, 3.06)},
     "r6hb_scv2": {"dregon": (3.36, 2.45, 7.13, 3.38), "michaels": (2.56, 6.32, 3.01, 1.83)},
     "stoch_s1idv_scv2": {"dregon": (9.68, 18.61, 16.85, 7.72), "michaels": (10.72, 22.69, 23.21, 3.36)},
