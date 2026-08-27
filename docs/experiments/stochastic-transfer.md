@@ -2144,3 +2144,56 @@ not the stochastic family. It beats the previous record with mixed training,
 but it does not do so with stochastic combs. `r6c_lr3e3` is the arm that tests
 the stochastic route, by the prediction this interaction makes: if preserving
 the stochastic init is what hurts, overwriting it harder should help.
+
+### R6C fails its gate: the stage-1-family question is CLOSED (2026-08-27)
+
+R6C raised the fine-tune rate on the stochastic init to 3e-3, the mirror of the
+3e-4 step that took the record on the comb init. The prediction was that if
+PRESERVING the stochastic init is what hurts, OVERWRITING it harder should
+help. It does not.
+
+Stochastic init, the complete ladder (best val PIT-MSE):
+
+| lr | 1e-4 | 3e-4 | **1e-3** | 3e-3 |
+|---|---|---|---|---|
+| | 152.48 | 180.39 | **23.78** | 40.75 |
+
+Comb init:
+
+| lr | 1e-3 | **3e-4** |
+|---|---|---|
+| | 17.59 | **15.37** |
+
+lr 1e-3 is already the optimum for the stochastic checkpoint, and its optimum
+is worse than the comb checkpoint at EITHER rate tried. The gate written before
+the run said: if 3e-3 is also worse than 1e-3, the stochastic checkpoint is a
+poor initialization at every rate, no schedule rescues it, and the
+stage-1-family question closes. **It is closed.**
+
+The stochastic family is the better synthetic-only model — 7.40 all-MAE against
+the comb's 8.30, three of six cells won outright — and the worse stage-1
+initialization, at every learning rate tested. That is the campaign's central
+result and it is negative.
+
+## GOAL STATUS (2026-08-27)
+
+**The record is beaten: 2.61 against 2.67, by `r4a_lr3e4`.** It is a mixed run
+(comb stage 1 + real stage 2), so it beats the previous best with mixed
+training.
+
+**It does not use stochastic combs.** Its stage 1 is the ANALYTIC static comb.
+The stochastic route was tested at four learning rates and lost at all of them,
+so as stated — beat the record using stochastic combs plus real data — the goal
+is NOT met, and the measurements say it is not reachable by any arrangement
+tried: as an initialization (R6, R6A/B/C), as a pool ingredient (R7, R8), or
+composed with the comb (stage 1.5).
+
+What the campaign produced that is real and worth keeping:
+ - the best synthetic-only model this project has (7.40 all-MAE, three of six
+   rig x regime cells at or better than the record holder), and
+ - a better mixing ingredient than the neural generator (R7's 94.97 against
+   R5's 147.6 on an identical pool), and
+ - the finding that neither of those buys anything in the regime that produces
+   the project's best numbers.
+
+`r4b_lr1e4` is the third point on the ladder that did take the record.
