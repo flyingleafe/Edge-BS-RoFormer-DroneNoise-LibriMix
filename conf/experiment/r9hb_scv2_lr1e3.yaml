@@ -1,0 +1,56 @@
+# @package _global_
+# R9 — the THREE-STAGE curriculum: comb -> stochastic -> real, fine-tuned at
+# lr 0.001. This USES the stochastic family, unlike the arms that currently hold
+# the best numbers.
+#
+# Stage 1   `m3abl_comb_scv2_s1`      analytic static comb, from scratch
+# Stage 1.5 `stoch_s1id_fromcomb`     arm ID's stochastic stream, warm-started
+#                                     from stage 1
+# Stage 2   `hb_m3s2_dload.yaml`      the pure real honest-base pool (this run)
+#
+# WHY THIS RUNS AFTER BEING GATED OUT. Stage 1.5 was built with a
+# pre-registered gate: below 7.40 all-MAE synthetic-only, the two families'
+# coverage composes and R9 is worth running; above it, comb pre-training
+# interferes and R9 is not built. Stage 1.5 scored 12.21 and R9 was not built.
+#
+# That gate assumed synthetic-only score predicts how good a checkpoint is as
+# an INITIALIZATION. The learning-rate ladder subsequently refuted exactly that
+# assumption, and refuted it hard:
+#
+#   checkpoint     synthetic-only   as an init (best val PIT-MSE after stage 2)
+#   comb                     8.30   15.37
+#   stochastic               7.40   23.78
+#
+# The BETTER synthetic-only model is the WORSE initialization, at every rate
+# tried. Under that finding, stage 1.5's poor synthetic-only score is not
+# evidence against it as an initialization and may be evidence for it. The gate
+# was sound when written and is not sound now, so it is withdrawn on the
+# record rather than quietly ignored.
+#
+# WHY TWO RATES. The rate x initialization interaction is 11.74x, and stage
+# 1.5's checkpoint is comb-derived (whose optimum is 3e-4) but stochastic-
+# trained (whose optimum is 1e-3). Which optimum it inherits is exactly what is
+# unknown, so both are run.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r9hb_scv2_lr1e3
+checkpoint: r2://ml-data/artifacts/stoch_s1id_fromcomb/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

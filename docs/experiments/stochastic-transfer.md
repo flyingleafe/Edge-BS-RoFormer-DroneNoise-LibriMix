@@ -2204,3 +2204,37 @@ Michael's, so raising the rate hurts DREGON's ramp badly (12.64 against R6's
 8.79) while leaving cruise roughly intact — the opposite half of the trade the
 low-rate arms showed, and further evidence that the rate controls WHICH cells
 survive rather than how good the model is overall.
+
+### The stage-1.5 gate is WITHDRAWN, and R9 is built after all (2026-08-27)
+
+Stage 1.5 (`stoch_s1id_fromcomb`) was gated on its synthetic-only score: below
+7.40 all-MAE, build R9; above it, do not. It scored 12.21 and R9 was not built.
+That decision is now reversed, and the reason is a premise failure rather than
+a change of mind.
+
+The gate assumed synthetic-only score predicts how good a checkpoint is as an
+INITIALIZATION. The learning-rate ladder, run afterwards, measured the reverse:
+
+| checkpoint | synthetic-only all-MAE | as an init (best val PIT-MSE) |
+|---|---|---|
+| comb `m3abl_comb_scv2_s1` | 8.30 | **15.37** |
+| stochastic `stoch_s1id_scv2` | **7.40** | 23.78 |
+
+The better synthetic-only model is the worse initialization, at every rate
+tried, and the two differ by 11.74x at lr 3e-4. So stage 1.5's 12.21 says
+nothing against it as an initialization: the gate measured a quantity that does
+not track what the gate claimed it tracked.
+
+The gate was sound when written and is not sound now. It is withdrawn here
+explicitly rather than quietly ignored, because honoring it earlier was the
+right call on the information then available and reversing it silently would
+misrepresent how the decision was made.
+
+R9 runs at TWO rates. The rate x init interaction is 11.74x, and stage 1.5's
+checkpoint is comb-DERIVED (comb's optimum is 3e-4) but stochastic-TRAINED
+(stochastic's optimum is 1e-3). Which optimum it inherits is the unknown.
+
+This is also the last arm in the campaign that uses the stochastic family in a
+configuration the evidence supports. Every other arrangement — as an
+initialization (R6, R6A/B/C), as a pool ingredient (R7, R8), composed at stage
+1.5 and judged synthetically — has been measured and lost.
