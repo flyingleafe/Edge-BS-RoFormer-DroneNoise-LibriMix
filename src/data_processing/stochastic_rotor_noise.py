@@ -204,6 +204,11 @@ class StochasticRanges:
     # Static harmonic timbre.
     rolloff_p: tuple[float, float] = (0.4, 1.9)
     harm_jitter_db: tuple[float, float] = (2.0, 8.0)
+    #: Probability that any given order is missing from a rotor's comb. Real
+    #: combs are not a complete series — orders drop out and reappear with
+    #: loading and blade phasing — while a synthetic comb with every order
+    #: present is a regularity a model can lean on.
+    harm_dropout_p: tuple[float, float] = (0.0, 0.0)
     blade_counts: tuple[int, ...] = (1, 2, 3)
     blade_emphasis_db: tuple[float, float] = (0.0, 10.0)
     #: How much of one clip's timbre is shared by its four rotors.
@@ -280,6 +285,22 @@ class StochasticParams:
 
     # Levels — the two amplitude-mean sliders.
     harm_mean_db: float = 0.0
+    #: Fraction of the band, measured down from Nyquist, over which line power
+    #: is tapered into the floor. 0 disables (the old hard band edge).
+    #:
+    #: WHY THIS EXISTS. The comb used to stop dead at `n_harmonics * rps`, and
+    #: `n_harmonics` was chosen from the flight's HOVER speed — so on any frame
+    #: slower than hover the comb ended at a frequency exactly proportional to
+    #: the rotor speed. Measured on the built stream, that leaves a +1.84 dB
+    #: step at the cutoff once the spectrum's own tilt is removed, against
+    #: +0.50 dB at the same frequency in real DREGON audio. A model can read the
+    #: speed straight off the edge position, which no real recording offers.
+    #:
+    #: Real harmonics fade into the broadband floor instead of stopping, so the
+    #: taper multiplies each line's power by a raised cosine that reaches zero
+    #: at Nyquist, and `render` now sizes the comb from the window's SLOWEST
+    #: frames so the lines reach the band edge before they are cut.
+    band_taper_frac: float = 0.0
     floor_mean_db: float = -8.0
 
     # Covariance sliders.
@@ -338,6 +359,10 @@ def _profile_db(
     if blade > 1 and emphasis > 0.0:
         db[(np.arange(1, n_harmonics + 1) % blade) == 0] += emphasis
     db += rng.normal(0.0, float(rng.uniform(*ranges.harm_jitter_db)), size=n_harmonics)
+    p_drop = float(rng.uniform(*ranges.harm_dropout_p))
+    if p_drop > 0.0:
+        # -120 dB is silence against any floor this model produces.
+        db[rng.random(n_harmonics) < p_drop] = -120.0
     return db
 
 
@@ -395,6 +420,7 @@ def sample_params(
     *,
     n_rotors: int = 4,
     n_harmonics: int = 80,
+    band_taper_frac: float = 0.0,
     sample_rate: int = 16000,
 ) -> StochasticParams:
     """Draw one clip's worth of parameters from the family.
@@ -434,6 +460,7 @@ def sample_params(
         sample_rate=int(sample_rate),
         n_rotors=int(n_rotors),
         n_harmonics=int(n_harmonics),
+        band_taper_frac=float(band_taper_frac),
         profile_db=profile,
         gamma0=gamma0,
         gamma_slope=gamma_slope,
@@ -570,6 +597,14 @@ def build_psd(
         power = power * amp[r][None, :]  # (K, N)
         gammas = np.maximum(params.gamma0[r] + params.gamma_slope[r] * k_all, gamma_min)
         centers_all = k_all[:, None] * rps_frames[r][None, :]  # (K, N)
+        if params.band_taper_frac > 0.0:
+            # Fade the lines into the floor over the top of the band instead of
+            # ending the comb on a step. Raised cosine in frequency, so a line's
+            # taper follows ITS OWN centre and therefore moves with the rotor
+            # speed exactly as the line does.
+            f_lo = nyquist * (1.0 - float(np.clip(params.band_taper_frac, 0.0, 1.0)))
+            x = np.clip((centers_all - f_lo) / max(nyquist - f_lo, 1e-9), 0.0, 1.0)
+            power = power * (0.5 * (1.0 + np.cos(np.pi * x))) ** 2
         live_all = (centers_all > df) & (centers_all < nyquist - gammas[:, None])
 
         # Harmonics are rendered in buckets of equal support width. A line's
@@ -712,9 +747,11 @@ def coherent_lines(
 
     per_rotor = np.zeros((n_rotors, n_samples), dtype=np.float64)
     for r in range(n_rotors):
-        power_frames = 10.0 ** (
-            (params.harm_mean_db + params.profile_db[r][:, None] + psd["harm_gp"][r]) / 10.0
-        ) * psd["amp"][r][None, :]
+        power_frames = (
+            10.0
+            ** ((params.harm_mean_db + params.profile_db[r][:, None] + psd["harm_gp"][r]) / 10.0)
+            * psd["amp"][r][None, :]
+        )
         for i in range(n_harm):
             k = i + 1
             centers = k * rps[r]
@@ -725,7 +762,9 @@ def coherent_lines(
             steps = rng.normal(0.0, np.sqrt(4.0 * np.pi * gamma * dt_slow), size=n_slow)
             walk = np.cumsum(steps)
             b = np.interp(t_audio, t_slow, walk) + rng.uniform(0.0, 2.0 * np.pi)
-            amplitude = np.sqrt(2.0 * np.maximum(np.interp(t_audio, t_frames, power_frames[i]), 0.0))
+            amplitude = np.sqrt(
+                2.0 * np.maximum(np.interp(t_audio, t_frames, power_frames[i]), 0.0)
+            )
             per_rotor[r] += np.where(live, amplitude, 0.0) * np.cos(k * phase[r] + b)
 
     out = np.empty((n_mics, n_samples), dtype=np.float64)
@@ -912,6 +951,7 @@ class StochasticNoisePool:
         flight_fs: float = 200.0,
         flight_reuse: int = 32,
         mode_scales: dict[str, float] | None = None,
+        band_taper_frac: float = 0.0,
         level_per_flight: bool = False,
         flight_phases: dict[str, Any] | None = None,
         drone_profile_range: tuple[float, float] = (0.0, 1.0),
@@ -952,6 +992,7 @@ class StochasticNoisePool:
         # roll and pitch separate the rotors within a pair. See
         # rps_synthesis.generate_full_flight.
         self.mode_scales = dict(mode_scales) if mode_scales else None
+        self.band_taper_frac = float(band_taper_frac)
         self.level_per_flight = bool(level_per_flight)
         # Overrides for the flight-phase durations and the warm-up idle level
         # (``rps_synthesis.FlightPhaseRanges``). The default idle band is 0.38
@@ -1041,6 +1082,7 @@ class StochasticNoisePool:
             flight_fs=float(rps.get("flight_fs", 200.0)),
             flight_reuse=int(rps.get("flight_reuse", 32)),
             mode_scales=(dict(rps["mode_scales"]) if rps.get("mode_scales") else None),
+            band_taper_frac=float(g("band_taper_frac", 0.0)),
             level_per_flight=bool(g("level_per_flight", False)),
             flight_phases=(
                 {k: tuple(v) for k, v in dict(rps["phases"]).items()}
@@ -1051,9 +1093,7 @@ class StochasticNoisePool:
             mic_gain_db=pair("mic_gain_db", (-12.0, 0.0)),
             amp_rps_exponent=float(g("amp_rps_exponent", 2.5)),
             amp_rps_exponent_floor=(
-                None
-                if g("amp_rps_exponent_floor") is None
-                else float(g("amp_rps_exponent_floor"))
+                None if g("amp_rps_exponent_floor") is None else float(g("amp_rps_exponent_floor"))
             ),
             amp_rps_ref=float(g("amp_rps_ref", 80.0)),
             rps_scale_range=pair("rps_scale_range", (1.0, 1.0)),
@@ -1159,13 +1199,25 @@ class StochasticNoisePool:
         # harmonics that fall past Nyquist. Without this a 20 rev/s clip at 80
         # harmonics would carry a comb that stops at 1.6 kHz.
         hover = float(getattr(self, "_hover", self.amp_rps_ref))
-        n_harm = int(np.clip(np.ceil(self.sample_rate / 2.0 / max(hover, 1.0)), 40, self.n_harm_max))
+        if self.band_taper_frac > 0.0:
+            # Size the comb from the window's SLOWEST turning rotors, so the
+            # series still reaches Nyquist on a ramp frame and the band edge is
+            # the taper rather than a speed-dependent cutoff. Sizing it from
+            # hover (the old behaviour) put the last line at n_harm * rps, which
+            # on any sub-hover frame is a cutoff frequency proportional to the
+            # speed being predicted.
+            turning = rps[rps > 1.0]
+            ref = float(np.percentile(turning, 5.0)) if turning.size else hover
+        else:
+            ref = hover
+        n_harm = int(np.clip(np.ceil(self.sample_rate / 2.0 / max(ref, 1.0)), 40, self.n_harm_max))
         params = sample_params(
             rng,
             self.ranges,
             n_rotors=rps.shape[0],
             n_harmonics=n_harm,
             sample_rate=self.sample_rate,
+            band_taper_frac=self.band_taper_frac,
         )
         # Linewidth scales with the aircraft too. The half width of harmonic k
         # is the shaft's own speed jitter times k, and a shaft that turns at

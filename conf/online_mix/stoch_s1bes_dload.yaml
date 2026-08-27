@@ -1,0 +1,123 @@
+# STOCHASTIC-ONLY stage 1, ARM BES = arm BE plus a sparser comb.
+#
+# ONE CHANGE from arm BE: a random share of harmonic orders is dropped per
+# clip. Our combs put power in EVERY order 1..K, which real rotors do not —
+# blade-passing structure and interference leave orders missing, so a real
+# comb is sparser and more irregular than ours. `harm_dropout_p` sends a
+# random subset to the floor, drawn per clip, so no fixed order is special.
+#
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      # THE BAND EDGE. The comb used to stop dead at `n_harm * rps`, and n_harm
+      # was sized from the flight's HOVER speed — so every frame slower than
+      # hover ended its comb at a frequency exactly proportional to the rotor
+      # speed the model is asked to predict. A model can read the speed straight
+      # off that edge, and no real recording offers it: measured with the
+      # spectrum's own tilt differenced out, the step at the cutoff is +1.84 dB
+      # synthetic against +0.50 dB in real DREGON audio, and 100% of ramp frames
+      # carried one. With the taper on and the cap raised, the comb is sized
+      # from the window's slowest frames and faded into the floor at the top of
+      # the band instead: 7.3% of ramp frames keep an in-band cutoff. Costs
+      # about 27% more render time per window.
+      band_taper_frac: 0.30
+      n_harm_max: 400
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.3]  # arm H's narrower range
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+        harm_dropout_p: [0.0, 0.35]
+        # ARM H's LINE-VISIBILITY BLOCK, the part arm S lacks. Arm S reads
+        # ramps better than anything else and cruise worse than anything
+        # else (DREGON cruise 15.26 against arm H's 2.16). These four knobs
+        # are what arm H has instead: the lines stay coherent, their level
+        # wanders less, the floor sits far enough under them, and at least
+        # half of them clear it. A comb a model cannot see is a comb it
+        # cannot learn to read.
+        harm_coherence: [0.6, 1.0]
+        harm_gp_std_db: [0.5, 3.0]
+        floor_rel_db: [-30.0, -8.0]
+        min_lines_above_floor: 0.5
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        # PHASES: DELIBERATELY ABSENT — the defaults are what arm ID ran.
+        #
+        # Arm ID wrote its phase overrides at this level, but the loader reads
+        # them from `rps.phases` (arm X nests them correctly), so they never
+        # applied. Arm ID therefore trained on FlightPhaseRanges' defaults —
+        # warmup_s (3.0, 25.0), idle_frac (0.38, 0.52) — a long warm-up idle by
+        # accident rather than by its written values. Since arm ID is the best
+        # single model so far, this arm keeps exactly what it ran (the defaults)
+        # and changes only the band edge, so the two rows stay comparable.
+
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 300  # raised with the taper so k*rps clears Nyquist when slow
+      band_taper_frac: 0.30
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        # One choice per fire, so a block of two at probability 0.5 would give
+        # each of them a quarter of the samples. Gain matters here and polarity
+        # is an exact no-op for a magnitude front end, so gain takes the block.
+        probability: 1.0
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+          - spectral_recolor: {gain_db: 8.0, n_anchors: 10, f_low: 30.0, f_high: 8000.0}
+          - random_reverb: {n_rirs: 200, rt60_low: 0.1, rt60_high: 0.8, drr_low_db: 3.0, drr_high_db: 15.0}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0

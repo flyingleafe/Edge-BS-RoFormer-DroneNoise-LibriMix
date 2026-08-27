@@ -160,22 +160,70 @@ def sample_profile(
 
 
 def _comb_waveform(
-    rps: np.ndarray, a_k: np.ndarray, sample_rate: int, rng: np.random.Generator
+    rps: np.ndarray,
+    a_k: np.ndarray,
+    sample_rate: int,
+    rng: np.random.Generator,
+    *,
+    band_taper_frac: float = 0.0,
 ) -> np.ndarray:
     """Additive harmonic comb for one rotor: sum_k a_k sin(k*phase + phi_k),
-    with ``phase`` the integral of ``2*pi*rps`` and above-Nyquist harmonics
-    zeroed per time step. ``rps`` is (T,) rev/s. Returns (T,)."""
+    with ``phase`` the integral of ``2*pi*rps``.
+
+    ``band_taper_frac`` controls what happens at the top of the band. At 0.0 a
+    harmonic is zeroed the instant it crosses Nyquist — a brick wall, so the
+    comb ends at ``K * rps`` whenever that is in band, giving every frame slower
+    than ``nyquist / K`` a cutoff frequency exactly proportional to the rotor
+    speed a model is asked to predict. Measured on the built stochastic stream,
+    that left a +1.84 dB step at the cutoff with the spectrum's own tilt
+    differenced out, against +0.50 dB in real DREGON audio, and 100% of ramp
+    frames carried one.
+
+    Above 0.0 the amplitudes instead fade to zero across the top
+    ``band_taper_frac`` of the band on a raised cosine, so the comb dissolves
+    into the floor rather than stopping dead. Pair it with a ``K`` large enough
+    that ``K * rps`` clears Nyquist at the speeds of interest, or the brick wall
+    simply returns below the taper.
+    """
     T = rps.shape[-1]
     phase = 2.0 * np.pi * np.cumsum(rps) / sample_rate  # fundamental phase (T,)
     K = a_k.shape[0]
     out = np.zeros(T, dtype=np.float64)
     nyq = sample_rate / 2.0
+    taper = float(np.clip(band_taper_frac, 0.0, 1.0))
+    f_lo = nyq * (1.0 - taper)
+
+    # Harmonic k is exp(i*k*phase), so each order is the previous one times
+    # exp(i*phase) — one complex multiply instead of a fresh transcendental per
+    # order. Covering the band at low RPM needs a few hundred orders, and at 300
+    # orders the sine-per-order form costs about 3.5x what the recurrence does.
+    # Relative drift after K multiplies is about K*eps, so at K in the hundreds
+    # it stays far below the quantization floor.
+    step = np.exp(1j * phase)
+    cur = np.ones(T, dtype=np.complex128)
+    rps_min, rps_max = float(np.min(rps)), float(np.max(rps))
     for i in range(K):
-        kf = (i + 1) * rps  # instantaneous harmonic freq (T,)
-        amp = np.where(kf < nyq, a_k[i], 0.0)
-        if not np.any(amp):
-            continue
-        out += amp * np.sin((i + 1) * phase + rng.uniform(0.0, 2.0 * np.pi))
+        cur *= step  # now exp(i*(i+1)*phase)
+        k = i + 1
+        if taper > 0.0:
+            # Three cases, cheapest first. An order that stays under the taper's
+            # onset for the whole window has a flat amplitude and needs no
+            # per-sample work at all; one that stays over Nyquist is silent.
+            # Only an order that actually straddles the taper pays for a cosine
+            # across the window, and in a slow window that is a small minority.
+            if k * rps_max <= f_lo:
+                amp = a_k[i]
+            elif k * rps_min >= nyq:
+                continue
+            else:
+                x = np.clip((k * rps - f_lo) / max(nyq - f_lo, 1e-9), 0.0, 1.0)
+                amp = a_k[i] * 0.5 * (1.0 + np.cos(np.pi * x))
+        else:
+            amp = np.where(k * rps < nyq, a_k[i], 0.0)
+            if not np.any(amp):
+                continue
+        phi = rng.uniform(0.0, 2.0 * np.pi)
+        out += amp * (cur.real * np.sin(phi) + cur.imag * np.cos(phi))
     return out
 
 
@@ -212,6 +260,7 @@ class StaticCombNoisePool:
         n_mics: int = 8,
         n_rotors: int = 4,
         min_harm_above_floor: float = 0.30,
+        band_taper_frac: float = 0.0,
         aggressiveness: float = 1.0,
         amp_rps_exponent: float = 2.5,
         amp_rps_ref: float = 80.0,
@@ -231,6 +280,7 @@ class StaticCombNoisePool:
         self.n_mics = int(n_mics)
         self.n_rotors = int(n_rotors)
         self.min_harm_above_floor = float(min_harm_above_floor)
+        self.band_taper_frac = float(band_taper_frac)
         self.aggressiveness = float(aggressiveness)
         # Physically-plausible amplitude scaling: rotor aeroacoustic sound power
         # ~ tip-speed^~5 => pressure amplitude ~ rps^~2.5; zero rps => silence.
@@ -299,6 +349,7 @@ class StaticCombNoisePool:
             sample_rate=sample_rate,
             duration_s=duration_s,
             n_harmonics=int(g("n_harmonics", 100)),
+            band_taper_frac=float(g("band_taper_frac", 0.0)),
             n_mics=int(g("n_mics", 8)),
             n_rotors=int(g("n_rotors", 4)),
             min_harm_above_floor=float(g("min_harm_above_floor", 0.30)),
@@ -394,7 +445,9 @@ class StaticCombNoisePool:
                 min_harm_above_floor=self.min_harm_above_floor,
             )
             profiles.append(prof)
-            combs[r] = _comb_waveform(rps[r], prof.a_k, self.sample_rate, rng)
+            combs[r] = _comb_waveform(
+                rps[r], prof.a_k, self.sample_rate, rng, band_taper_frac=self.band_taper_frac
+            )
             floors[r] = _floor_waveform(T, prof.floor_tilt, prof.floor_level, self.sample_rate, rng)
 
         # Physically-plausible amplitude: scale each rotor's whole contribution
