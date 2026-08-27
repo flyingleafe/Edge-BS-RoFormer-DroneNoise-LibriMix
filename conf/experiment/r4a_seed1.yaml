@@ -1,0 +1,37 @@
+# @package _global_
+# SEED REPEAT 1 of `r4a_lr3e4`. Identical apart from `seed` and the run name.
+#
+# WHY THESE EXIST AS FILES. The runs were launched with `experiment_name=` and
+# `seed=` as command-line overrides, which trains fine but leaves nothing for
+# `zoo.load` to rebuild the model from — it composes the Hydra config BY
+# EXPERIMENT NAME, so scoring failed with MissingConfigException. Any run whose
+# checkpoint must be loaded later needs a real config file, not an override.
+#
+# WHAT THEY MEASURE. `r4a_lr3e4` beat `r4hb_scv2` by 2.67 -> 2.61 all-MAE, a 2%
+# gap, on one seed each. That is inside what seed variance can produce, and the
+# two arms rank differently under the two metrics (`r4b_lr1e4` has a worse MSE
+# than `r4a_lr3e4` and a slightly better MAE). These repeats decide whether the
+# claimed record is real or should be withdrawn.
+seed: 1
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r4a_seed1
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.0003
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
