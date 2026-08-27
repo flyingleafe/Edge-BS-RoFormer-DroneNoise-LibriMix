@@ -239,4 +239,16 @@ class CombIFRampFrontEnd(CombIFFrontEnd):
 
     def __init__(self, n_fft: int = 2048, hop_length: int = 512, **kw):
         kw.setdefault("f0_min", 5.0)
+        # The tooth table is (n_f0, K) with K = max_harmonic_hz // f0_min, so
+        # dropping f0_min from 30 to 5 multiplies K by six on top of the extra
+        # rows — 361 rows x 40 teeth becomes 461 x 240, about 7.7 times the
+        # memory. That overflowed a 40 GB card during validation, where a batch
+        # is 128 eight-second clips: 13.24 GiB in one allocation.
+        #
+        # Halving the f0 resolution and lowering the tooth ceiling brings it
+        # back to roughly a third. 0.5 rev/s still resolves a ramp cell whose
+        # real spread between rotors is about 10 rev/s, and 800 Hz still gives
+        # a 36 rev/s idle its first 22 harmonics.
+        kw.setdefault("f0_step", 0.5)
+        kw.setdefault("max_harmonic_hz", 800.0)
         super().__init__(n_fft=n_fft, hop_length=hop_length, **kw)
