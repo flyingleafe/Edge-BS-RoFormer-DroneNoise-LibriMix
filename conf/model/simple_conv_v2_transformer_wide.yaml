@@ -1,0 +1,26 @@
+# simple_conv_v2_transformer_wide — the stock transformer with the temporal
+# head's MODEL DIMENSION doubled: d_model 64 -> 128 and 8 heads instead of 4,
+# so every key, query and value is twice as wide. Depth is unchanged at 2
+# layers, and the encoder is untouched at 128 channels.
+#
+# Head 0.479M parameters against the stock 0.141M — doubling d_model is
+# roughly quadratic in parameters, so this is 3.4x the head, not 2x. The
+# comparison against `_deep` is along the AXIS the user named (dimensions vs
+# layers), not at matched parameter count; the asymmetry is inherent and is
+# reported with the result rather than tuned away.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  head_hidden_ch: 128
+  head_layers: 2
+  head_heads: 8
+model_type: null
+legacy_config_path: null

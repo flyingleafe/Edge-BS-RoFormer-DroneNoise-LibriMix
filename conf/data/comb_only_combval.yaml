@@ -1,0 +1,37 @@
+# The analytic STATIC COMB as the whole training pool, validated on the SAME
+# distribution — a finite, held-out comb set rather than the real split.
+#
+# WHY COMB-ON-COMB. This pairing exists to find the FLOOR of comb fitting, and
+# nothing else. The static comb holds one amplitude profile fixed per clip by
+# design, so comb spacing is the only cue; it is the simplest harmonic task
+# this project has. A model given unlimited epochs on it either drives the
+# error toward zero or stops somewhere, and where it stops is the measurement.
+#
+# Validating on the real split — what `m3abl_comb_s1` does — cannot answer
+# that: it halts training on a metric that is not the one being fitted. The
+# damage is measured. `m3abl_comb_transformer_s1` is recorded at 1802.0 best
+# val PIT-MSE on the real split, the worst number in the campaign, and its LAST
+# checkpoint fits the comb at 1.66 all-MAE, within 30% of the BiGRU. Real-split
+# selection saved the wreckage of a model that was learning the task fine.
+#
+# base_seed 880001 is not the training policy's, so validation clips are draws
+# the training stream never produces. 8 s and unaugmented so the number is on
+# the same scale as every other synthetic-domain figure in this campaign.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/m3abl_comb_s1_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.FixedSynthFrameDataset
+  params:
+    path: conf/online_mix/m3abl_comb_s1_dload.yaml
+    n: 96
+    base_seed: 880001
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

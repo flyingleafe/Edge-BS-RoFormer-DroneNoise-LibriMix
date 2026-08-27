@@ -1,0 +1,43 @@
+# @package _global_
+# COMB FLOOR, arm wide: 2x MODEL DIMENSION - 2 layers x d_model 128, 8 heads (head 0.479M).
+#
+# THE QUESTION. The static comb is the simplest harmonic task in this project —
+# one fixed amplitude profile per clip, comb spacing the only cue. An exactly
+# resolvable comb should be trackable to near zero. The best comb-trained model
+# on record reaches 1.29 all-MAE on it, which is good and is not near zero. Is
+# that a convergence artifact or a real floor?
+#
+# Three arms run to saturation answer it, and the ANSWER SHAPE DIFFERS BY ARM:
+#  - no floor, everything converges toward zero -> the campaign's synthetic
+#    numbers were all about training length, not the models.
+#  - a floor that SCALING MOVES -> capacity binds, and WHICH scaling moves it
+#    says what kind: width means representation per time step, depth means
+#    sequential processing of the same representation.
+#  - a floor that scaling does NOT move -> the limit is the signal
+#    representation reaching the head, i.e. the STFT front end and the
+#    encoder's frequency pooling, not the sequence model.
+#
+# Validation is the SAME distribution (conf/data/comb_only_combval.yaml), not
+# the real split. Every earlier comb arm validated on real, which halts
+# training on a metric it is not fitting — `m3abl_comb_transformer_s1` is
+# recorded at 1802.0 real val PIT-MSE while its last checkpoint fits the comb
+# at 1.66. Selection, not the model.
+#
+# patience 200 / epochs 2000 — the 10x that lets a floor be a floor.
+defaults:
+  - override /data: comb_only_combval
+  - override /model: simple_conv_v2_transformer_wide
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: comb_floor_wide
+epochs: 2000
+patience: 200
+batch_size: 128
+num_workers: 6
+samples_per_validation: 40000
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

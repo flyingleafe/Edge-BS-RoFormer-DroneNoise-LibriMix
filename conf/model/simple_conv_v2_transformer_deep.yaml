@@ -1,0 +1,24 @@
+# simple_conv_v2_transformer_deep — the stock transformer with TWICE THE
+# LAYERS, each the same size: 4 layers of d_model 64 with 4 heads. Width and
+# the encoder are untouched.
+#
+# Head 0.241M parameters against the stock 0.141M. Paired with `_wide` this
+# separates two things capacity usually conflates: more representation per
+# time step (wide) against more sequential processing of the same
+# representation (deep).
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  head_hidden_ch: 64
+  head_layers: 4
+  head_heads: 4
+model_type: null
+legacy_config_path: null
