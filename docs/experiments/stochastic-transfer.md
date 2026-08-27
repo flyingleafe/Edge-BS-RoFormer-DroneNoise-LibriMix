@@ -1697,3 +1697,48 @@ trades cruise for the low-speed regimes.
 
 `freqhires` separates position from resolution — same aggregation as `freqcat`,
 65 bins at the head instead of 17.
+
+### Taper width is not the lever, and aliasing is not the cause (2026-08-27)
+
+Arm BE2 narrowed the band taper from 0.30 to 0.10 on the prediction that the
+cruise damage came from fading away high-order harmonics. It did the opposite:
+
+| arm | taper | all-MAE | DREGON ramp | Michael's ramp | DREGON cruise | Michael's cruise |
+|---|---|---|---|---|---|---|
+| arm ID | none | **7.40** | 8.79 | 20.71 | **6.17** | **3.71** |
+| BE | 0.30 | 15.15 | 10.74 | 14.72 | 20.73 | 5.24 |
+| BES | 0.30 + sparse | 11.47 | 13.16 | 10.83 | 13.51 | 7.70 |
+| BE2 | 0.10 + sparse | 17.80 | **8.35** | **10.55** | 20.90 | 20.15 |
+
+Cruise got worse, not better, so the width is not the lever and the stated
+reason for the cruise cost was wrong.
+
+What the family does show consistently is a TRADE. At every width tested the
+band-edge fix improves both ramp cells and damages both cruise cells. BE2 has
+the family's best ramp cells (DREGON 8.35, Michael's 10.55 against arm ID's
+20.71) and its worst cruise. The artifact removal changes what the model learns
+to read rather than simply deleting signal.
+
+The follow-up guess was that a 0.10 taper leaves real amplitude right up to
+Nyquist, so a chirping comb spreads past it and folds back. Measured against an
+alias-free reference — the same comb rendered at 64 kHz and decimated with a
+proper filter, taper off in both so only the sample rate differs:
+
+| case | alias energy, in band |
+|---|---|
+| held comb, 30 rev/s | -25.7 dB (0.3%) |
+| ramp, 30 to 55 rev/s | -17.0 dB (2.0%) |
+| cruise, 75 to 85 rev/s | -17.4 dB (1.8%) |
+
+Aliasing is real but bounded at about 2% of in-band energy, which cannot
+account for a two-to-threefold MAE difference. The guess is refuted.
+
+This also settles the oversampling proposal quantitatively: rendering at a
+higher rate and decimating would correct a 2% effect at two to three times the
+render cost. It is not worth doing.
+
+NOTE on an invalid first attempt, recorded so it is not repeated:
+`band_taper_frac` is defined relative to Nyquist, so an oversampled render puts
+the fade at 22.4 kHz instead of 5.6 kHz. Comparing a tapered 16 kHz render
+against a tapered 64 kHz render measures the taper mismatch, not aliasing. The
+taper must be off in both, or expressed in absolute frequency.
