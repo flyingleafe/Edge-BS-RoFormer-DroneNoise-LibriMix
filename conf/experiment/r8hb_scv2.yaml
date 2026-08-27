@@ -1,0 +1,45 @@
+# @package _global_
+# R8 — the WINNER, plus the stochastic family in its fine-tune pool. Warm start
+# from `m3abl_comb_scv2_s1` (exactly r4hb_scv2's stage-1 checkpoint) and the
+# plain BiGRU trunk (`simple_conv_v2`).
+#
+# The ONE difference from `r4hb_scv2` is the stage-2 stream:
+# `conf/online_mix/hb_stochft_dload.yaml` — the same honest-base real pool with
+# arm ID's stochastic source added at weight 1.0 (real 58.8%, silence 11.8%,
+# stochastic 29.4%). The stage-1 checkpoint, trunk, loss, optimizer, patience
+# and validation split are r4hb_scv2's unchanged.
+#
+# WHY, AFTER R6. R6 swapped the stage-1 checkpoint to the stochastic family's
+# and scored 3.04 against the target's 2.67 — a much better synthetic-only
+# model (7.40 against 8.30) produced a WORSE mixed result. Whatever the
+# stochastic family is worth here, it is not worth it as an initialization that
+# the real fine-tune then overwrites.
+#
+# R8 keeps the initialization that wins and adds the family where it cannot be
+# overwritten: in the pool the fine-tune sees for the whole run. R7 tests the
+# same idea without any curriculum at all; R8 is the version that starts from
+# the actual record holder, so it is the arm with the shortest distance to
+# beat.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r8hb_scv2
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_stochft_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

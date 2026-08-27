@@ -1,0 +1,141 @@
+# R8 POOL — the R4 real fine-tune stream WITH the stochastic family added.
+# This is conf/online_mix/hb_m3s2_dload.yaml with one extra noise source and
+# nothing else touched.
+#
+# WHY THIS SHAPE. r4hb_scv2 (2.67 all-MAE) is the best result this project has,
+# and it is comb stage 1 + this real stage 2. R6 replaced its stage-1
+# checkpoint with the stochastic family's and got 3.04 — a better synthetic-only
+# start (7.40 against the comb's 8.30) did NOT survive the fine-tune. So the
+# stochastic family's value, if it has one here, is not as an initialization
+# that real data overwrites.
+#
+# R8 therefore keeps the winning initialization untouched and ADDS the family
+# to the pool the fine-tune actually sees, so it keeps supplying states the
+# real recordings do not contain for the whole run instead of being overwritten
+# in the first epochs. It is the smallest possible change to the winner.
+#
+# USED BY: r8hb_scv2.
+#
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+    - kind: silence
+      weight: 0.4
+      n_channels: 8
+    # --- THE ONE ADDITION: arm ID's stochastic source, weight 1.0 ---
+    # Against the merged real weight 2.0 and the silence arm's 0.4 this is
+    # 29.4% of the noise pool (real 58.8%, silence 11.8%).
+    #
+    # NOT COPIED from arm ID's policy, and why:
+    #  - its `kind: static_comb` source, because the comb is already what the
+    #    stage-1 checkpoint was trained on; adding it here would confound the
+    #    initialization with the pool.
+    #  - its `kind: silence` arm at weight 0.2, because this pool already
+    #    carries the honest silence arm at 0.4 and both would put 0.6 of
+    #    silence in the pool and change the R2 regime this family holds fixed.
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.3]  # arm H's narrower range
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+        # ARM H's LINE-VISIBILITY BLOCK, the part arm S lacks. Arm S reads
+        # ramps better than anything else and cruise worse than anything
+        # else (DREGON cruise 15.26 against arm H's 2.16). These four knobs
+        # are what arm H has instead: the lines stay coherent, their level
+        # wanders less, the floor sits far enough under them, and at least
+        # half of them clear it. A comb a model cannot see is a comb it
+        # cannot learn to read.
+        harm_coherence: [0.6, 1.0]
+        harm_gp_std_db: [0.5, 3.0]
+        floor_rel_db: [-30.0, -8.0]
+        min_lines_above_floor: 0.5
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        # THE RAMP CELL'S ACTUAL DYNAMICS, measured. The two rigs ramp in
+        # opposite ways. DREGON's ramp frames are a fast sweep — |d rps/dt|
+        # mean 22.65, median 24.72 rev/s per second. Michael's are mostly NOT a
+        # sweep at all: mean 4.25 but median 0.23, meaning half of them are a
+        # stationary hold at low RPM, the warm-up idle. Michael's carries 1071
+        # of the split's 1253 ramp frames, so the cell that holds the entire
+        # remaining gap is mostly a STEADY low-speed comb.
+        #
+        # Every arm so far overrode the phase ranges to `warmup_s: [0.5, 6.0]`
+        # and `takeoff_s: [0.4, 2.0]`, shortening the idle roughly fourfold
+        # against the ranges the docstring calls calibrated to these very
+        # recordings (warm-up 5 to 30 s). The result is a stream whose ramp
+        # frames are neither rig: median 6.84 against Michael's 0.23 and
+        # DREGON's 24.72. A sustained low-speed hold is nearly absent from it.
+        #
+        # Restoring a long idle while keeping fast take-offs available gives
+        # median 1.47 with a p90 of 16.55 — about half the ramp frames now
+        # near-steady, and quick sweeps still present.
+        idle_frac: [0.10, 0.60]
+        warmup_s: [3.0, 30.0]
+        takeoff_s: [0.5, 4.0]
+        landing_s: [0.5, 4.5]
+        spinup_s: [0.3, 1.8]
+        spindown_s: [0.3, 2.0]
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+policy:
+  stages:
+    # ONE stage, no warm-up (see the header): mixtures + all three augmentation
+    # blocks from sample 1, at the fs_v2 settings.
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
+          # channel_drop REMOVED (2026-07-27): with flatten_channels each
+          # zeroed channel becomes a mono training frame of pure silence
+          # carrying nonzero RPS labels — contradicts the silence==zero-RPS
+          # convention and trains prior-regression.
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
