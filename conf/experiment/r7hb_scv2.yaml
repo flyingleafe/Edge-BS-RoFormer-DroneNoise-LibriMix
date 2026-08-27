@@ -1,0 +1,43 @@
+# @package _global_
+# R7 — the MIXED ONE-STAGE regime with the STOCHASTIC family as the synthetic
+# half (the plain BiGRU baseline (`simple_conv_v2`)). ONE single-stage run on a
+# pool of real recordings (45.5%), the honest silence arm (9.1%), the
+# stochastic family (22.7%) and the analytic static comb (22.7%) —
+# `conf/online_mix/hb_stochmixed_dload.yaml`. There is no stage 2 and no warm
+# start.
+#
+# The ONE difference from `r5hb_scv2` is the third source: arm ID's stochastic
+# source in place of the M3 per-rotor neural generator. The real component, the
+# silence arm, the static comb, the ratio (2 : 0.4 : 1 : 1) and the policy are
+# all identical, so the two rows differ only in which synthetic family fills
+# that slot.
+#
+# R7 IS THE JOINT COUNTERPART OF R6. R6 puts the stochastic family in stage 1
+# of a two-stage curriculum; R7 puts it beside the real data in one stage.
+# Which of the two wins says whether the synthetic family is better used as an
+# initialization or as a permanent part of the pool.
+#
+# UNLIKE R5, this stream runs on a CPU-only box: the stochastic source renders
+# on the CPU, whereas `kind: generated` starts a CUDA producer.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3abl_mixed
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r7hb_scv2
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_stochmixed_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

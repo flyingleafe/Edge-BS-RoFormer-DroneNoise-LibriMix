@@ -1,0 +1,167 @@
+# R7 POOL — the JOINT one-stage mixed regime with the STOCHASTIC family as the
+# synthetic half. This is conf/online_mix/hb_m3mixed_dload.yaml with the
+# generator + static-comb pair replaced by arm ID's stochastic + static-comb
+# pair, and nothing else touched.
+#
+# WHAT IS VERBATIM FROM WHERE.
+# (1) The real block and the honest silence arm are hb_m3mixed_dload.yaml's,
+#     unchanged: the DREGON `in_flight_noise` pool minus
+#     `free-flight_nosource_room1` plus Michael's FLY125, both at
+#     `min_motor_rps: 0.0` so the whole envelope stays in, merged at pool
+#     weight 2.0, plus the zero-labeled silence arm at weight 0.4. The SNR
+#     reference floor (0.02) comes with them.
+# (2) The synthetic block is conf/online_mix/stoch_s1id_dload.yaml's, unchanged
+#     — the stochastic source at weight 1.0 and the static comb at weight 1.0.
+#     Arm ID is the campaign's best synthetic-only model at 7.40 all-MAE.
+# (3) The policy block is hb_m3mixed_dload.yaml's.
+#
+# THE RATIO IS PRESERVED. R5 is real 2.0 : silence 0.4 : generated 1.0 : comb
+# 1.0. R7 is real 2.0 : silence 0.4 : stochastic 1.0 : comb 1.0 — the same
+# 45.5 / 9.1 / 22.7 / 22.7 split, with the stochastic family standing exactly
+# where the neural generator stood.
+#
+# PRACTICAL BONUS: R5's `kind: generated` source starts a CUDA producer, so
+# that stream cannot run on a CPU-only box. The stochastic source renders on
+# the CPU, so R7 has no such constraint.
+#
+# USED BY: r7hb_scv2.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    # --- 45.5% (2.0 of 4.4): the REAL recordings, whole envelope ---
+    # No explicit weight: these two merge into ONE duration-weighted real pool
+    # at pool weight 2.0.
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+
+    # --- 9.1% (0.4 of 4.4): the honest zero-labeled SILENCE arm (R2) ---
+    # Each chunk is one of three floors: quiet room tone, a colored floor up to
+    # flight level, or a low-frequency rumble. The label is exactly zero.
+    - kind: silence
+      weight: 0.4
+      n_channels: 8
+
+    # --- 22.7% (1.0 of 4.4): the STOCHASTIC family (arm ID's source) ---
+    - kind: stochastic
+      weight: 1.0
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.6, 1.3]  # arm H's narrower range
+      normalize_rms_range: [0.02, 0.25]
+      level_mode: flight
+      ranges:
+        # The recording chain's share of the broadband floor, which does not
+        # follow the rotors. Without it a stopped-rotor window is digital
+        # silence while a real one sits at about a sixth of a cruise clip, and
+        # the model reads real silence as a ramp.
+        floor_static_rel: [0.015, 0.12]
+        # ARM H's LINE-VISIBILITY BLOCK, the part arm S lacks. Arm S reads
+        # ramps better than anything else and cruise worse than anything
+        # else (DREGON cruise 15.26 against arm H's 2.16). These four knobs
+        # are what arm H has instead: the lines stay coherent, their level
+        # wanders less, the floor sits far enough under them, and at least
+        # half of them clear it. A comb a model cannot see is a comb it
+        # cannot learn to read.
+        harm_coherence: [0.6, 1.0]
+        harm_gp_std_db: [0.5, 3.0]
+        floor_rel_db: [-30.0, -8.0]
+        min_lines_above_floor: 0.5
+      rps:
+        kind: full_flight
+        aggressiveness_range: [0.8, 2.5]
+        flight_reuse: 32
+        # THE RAMP CELL'S ACTUAL DYNAMICS, measured. The two rigs ramp in
+        # opposite ways. DREGON's ramp frames are a fast sweep — |d rps/dt|
+        # mean 22.65, median 24.72 rev/s per second. Michael's are mostly NOT a
+        # sweep at all: mean 4.25 but median 0.23, meaning half of them are a
+        # stationary hold at low RPM, the warm-up idle. Michael's carries 1071
+        # of the split's 1253 ramp frames, so the cell that holds the entire
+        # remaining gap is mostly a STEADY low-speed comb.
+        #
+        # Every arm so far overrode the phase ranges to `warmup_s: [0.5, 6.0]`
+        # and `takeoff_s: [0.4, 2.0]`, shortening the idle roughly fourfold
+        # against the ranges the docstring calls calibrated to these very
+        # recordings (warm-up 5 to 30 s). The result is a stream whose ramp
+        # frames are neither rig: median 6.84 against Michael's 0.23 and
+        # DREGON's 24.72. A sustained low-speed hold is nearly absent from it.
+        #
+        # Restoring a long idle while keeping fast take-offs available gives
+        # median 1.47 with a p90 of 16.55 — about half the ramp frames now
+        # near-steady, and quick sweeps still present.
+        idle_frac: [0.10, 0.60]
+        warmup_s: [3.0, 30.0]
+        takeoff_s: [0.5, 4.0]
+        landing_s: [0.5, 4.5]
+        spinup_s: [0.3, 1.8]
+        spindown_s: [0.3, 2.0]
+    - kind: static_comb
+      weight: 1.0
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+
+    # NOTE arm ID's own `kind: silence` arm (weight 0.2) is REMOVED here. The
+    # R5 real block above already carries the honest silence arm at weight 0.4,
+    # and keeping both would put 0.6 of silence in the pool against the
+    # intended 0.4, changing the ratio this arm is meant to hold fixed.
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    # ONE stage, no warm-up: mixtures + all three augmentation blocks from
+    # sample 1 (identical to m3abl_mixed and to m3cur stage 1).
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
+          # channel_drop REMOVED: with flatten_channels each zeroed channel
+          # becomes a mono frame of pure silence carrying nonzero RPS labels,
+          # contradicting the silence==zero-RPS convention.
+      noise_augmentations:
+        probability: 1.0
+        choices:
+          - freq_scale: {alpha_low: 0.7, alpha_high: 1.3}
+      noise_time_warp:
+        probability: 0.5
+        dev_const: 0.08
+        dev_sine: 0.04
+        f_low: 0.1
+        f_high: 1.0
