@@ -1573,3 +1573,38 @@ holds the gap.
 So the resolvability arithmetic stands as arithmetic — below 31 rev/s adjacent
 harmonics are not separable at `n_fft=2048` — but it is NOT established as the
 binding limit for either ramp cell. The `combif` arms are the test.
+
+### The ramp error is a systematic bias, and the two rigs bias opposite ways
+
+Arm ID's best checkpoint, signed PIT error (prediction minus truth), channels 0
+and 4 of the frozen split:
+
+| rig | regime | mean | median | MAE | over-predicts | n |
+|---|---|---|---|---|---|---|
+| DREGON | cruise | -10.64 | -8.60 | 10.64 | 0.4% | 35968 |
+| DREGON | ramp | -0.11 | +0.14 | 7.37 | 50.5% | 1456 |
+| Michael's | cruise | -1.95 | -1.14 | 3.72 | 31.3% | 18888 |
+| Michael's | ramp | **+10.02** | **+11.12** | 23.56 | 64.6% | 8568 |
+
+Two of the four cells are dominated by a systematic offset rather than scatter.
+Michael's held ramp has a truth median of 36 rev/s and is predicted near 47 —
+which is the cruise threshold. DREGON's cruise is under-predicted almost
+deterministically: only 0.4% of 36 k frames land high, a scale error of about
+0.87 rather than a tracking failure. The two biases point in opposite
+directions, so no global calibration helps, and a per-regime one needs a router
+this campaign has already failed to build four times.
+
+#### A lever that does NOT follow, recorded so it is not tried again
+
+The obvious next inference is that PIT-MSE mis-weights the regimes. Measured on
+arm ID's stream, and ASSUMING the same relative error on every frame, the
+absolute-error loss would put 95.3% of its gradient on cruise (69.7% of frames)
+and 4.7% on ramp (20.5% of frames) — which would make a relative or log-domain
+loss an obvious fix.
+
+That assumption is false here. The measured biases are about 10 rev/s in both
+the cruise cell and the ramp cell, so this model's errors are roughly constant
+in ABSOLUTE terms, not proportional to speed. Under equal absolute error, MSE
+weights every frame equally and the shares simply track the frame counts. The
+evaluation metric is absolute MAE as well, so the loss is already aligned with
+the metric. No relative-loss arm was built.
