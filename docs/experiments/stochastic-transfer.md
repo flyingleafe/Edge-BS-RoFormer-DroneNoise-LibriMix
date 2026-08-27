@@ -1771,3 +1771,34 @@ A surgical version would add spread only in the non-cruise phases and leave
 absolute speeds untouched. It is not queued: the unison-idle mismatch is real
 but has not been shown to be the binding constraint, and this hypothesis has
 already cost one cycle.
+
+### The comb front end is refuted on both trunks (2026-08-27)
+
+The `comb_if` family puts one row per f0 candidate on the frequency axis, so the
+comb spacing is a POSITION rather than a pattern the trunk must resolve. The
+prediction was that it fails on the pooled trunk (which averages that axis away)
+and can work on a trunk that keeps the axis. Both halves are now measured, on
+arm ID's stream, with the front end the only change:
+
+| arm | trunk | all-MAE | DREGON ramp | Michael's ramp |
+|---|---|---|---|---|
+| `stoch_s1id_scv2` | pooled, STFT | **7.40** | **8.79** | **20.71** |
+| `stoch_s1id_combif` | pooled, comb | 19.94 | — | — |
+| `stoch_s1id_combif_hires` | freq-preserving, comb | 21.20 | 35.29 | 28.56 |
+| `stoch_s1id_combif_hires2` | freq-preserving, comb | 24.42 | 30.85 | 24.98 |
+
+The frequency-preserving trunk does not rescue it. It is WORSE than the pooled
+trunk (21.20 and 24.42 against 19.94), and every cell is three to four times the
+STFT baseline. The zero cells are catastrophic (48 to 50 rev/s) — with no comb
+present the f0 axis carries no signal and the model has nothing to fall back on,
+whereas the STFT trunk still sees a broadband level.
+
+`hires` and `hires2` are the same configuration, cut short and run to the full
+hour. More training made it WORSE (21.20 to 24.42), so this is not an
+undertrained result — the arm is fitting the synthetic stream and moving away
+from the real split, the same curve shape the earliest comb arms showed.
+
+The whole `comb_if` direction is closed. The permutation-invariance measurement
+that motivated it stands, but it does not follow that an explicit f0 axis is the
+answer: the tooth table is built from the synthetic comb's own geometry, so it
+hands the model a template that only the synthetic data matches exactly.
