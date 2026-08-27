@@ -1538,3 +1538,38 @@ grid) but searches only 30 to 120 rev/s, so most ramp frames fall below its
 lowest candidate and cannot be represented at all. `comb_if_ramp` starts at 5.
 Arms `stoch_s1id_combif` and `stoch_s1id_combif_hires` test it with the pooled
 trunk and with the trunk that keeps the f0 axis.
+
+#### A probe that does not support the strong version of this claim
+
+A plain harmonic-sum matched filter (fixed 20 harmonics, whitened along
+frequency over 150 Hz, nearest-rotor error) was run over the split to ask
+whether the ramp information is present at all. Two estimator traps had to be
+cleared first: a harmonic MEAN over a shrinking harmonic count pins the estimate
+near the top of the search range, and whitening along TIME deletes a held comb,
+which is exactly the case of interest.
+
+| rig | regime | median error, n_fft 2048 | n_fft 8192 |
+|---|---|---|---|
+| DREGON | cruise | 0.81 | 0.50 |
+| DREGON | ramp | 74.24 | 69.33 |
+| Michael's | cruise | 63.39 | 54.45 |
+| Michael's | ramp | 26.39 | 24.14 |
+
+The probe passes its control on DREGON cruise — 0.81 rev/s median, against the
+blind classical tracker's 0.68 — so it is sound there. Two things follow, and
+neither is the strong claim.
+
+DREGON's ramp stays at 74 rev/s median and a four-times finer window barely
+moves it (69). DREGON's ramp is a fast sweep, 24.7 rev/s per second, so a longer
+window smears as much as it resolves. For that cell, resolution is not the
+binding limit.
+
+On Michael's the probe fails at CRUISE (63.39) where the blind classical tracker
+reaches 1.03, so it is simply too weak there — four rotors at close speeds
+interleave their combs and a one-line harmonic sum locks onto a common divisor.
+It therefore says nothing about Michael's ramp, which is the cell that actually
+holds the gap.
+
+So the resolvability arithmetic stands as arithmetic — below 31 rev/s adjacent
+harmonics are not separable at `n_fft=2048` — but it is NOT established as the
+binding limit for either ramp cell. The `combif` arms are the test.
