@@ -1,0 +1,25 @@
+# @package _global_
+# FRONT-END arm on arm ID's stream, aimed at the ramp cell.
+# The stream is arm ID's, unchanged. The comparison row is
+# `m3abl_comb_scv2_s1` (the analytic static comb as the whole pool): same
+# trunk, same optimizer, same validation, same augmentation blocks, and the
+# noise family is the only difference.
+# Policy: conf/online_mix/stoch_s1id_dload.yaml. Batch doc:
+# docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: stoch_s1id
+  - override /model: simple_conv_v2_freqhires_combif_hires
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: stoch_s1id_combif_hires2
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
