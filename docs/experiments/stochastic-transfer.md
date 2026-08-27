@@ -2302,3 +2302,63 @@ model at ~8 rev/s, and the two candidates the data points at are:
 
 Both are testable and neither has been tried. This is the first direction all
 session that follows from a positive measurement rather than a refutation.
+
+### CORRECTION: there IS a sim-to-real tension, and it is steep (2026-08-27)
+
+The earlier entry "THERE IS NO SIM-TO-REAL GAP" is WRONG and is superseded
+here. It compared each arm's synthetic score against its real score using the
+`best` checkpoint — and `best` is selected on the REAL split, because
+`conf/data/stoch_s1id.yaml` validates there and `monitor: mse` keeps the
+best-on-real epoch. Comparing a real-selected checkpoint's two scores cannot
+detect a train/test tension; it has already been chosen to sit at the real
+optimum.
+
+Scoring `last` as well breaks the confound. For `stoch_s1id_scv2`, matched
+conditions, 30,120 synthetic frames and the full frozen split:
+
+| checkpoint | SYNTH | REAL |
+|---|---|---|
+| `best` (real-selected) | 8.63 | **7.40** |
+| `last` (fits synthetic) | **3.70** | 14.19 |
+
+Fitting the synthetic distribution 2.3x better makes the real split 1.9x worse.
+The same shape holds for every arm: `tr` 4.88 synth / 16.16 real, `trmed` 7.91
+/ 15.44, against real scores of 12.44 and 14.78 for their `best` checkpoints.
+
+TWO THINGS THIS CORRECTS.
+
+1. **The "~8 rev/s ceiling" was an artifact.** The family does not cap a model
+   at 8. A model fits it to 3.70. Real-split early stopping was walking away
+   from that fit on purpose, and the 8.63 figure is where it chose to stop.
+
+2. **Synthetic fit and real transfer are ANTI-correlated, within a single
+   training run.** This is the sharpest statement the campaign has produced,
+   and it is measured on one model's own trajectory rather than across arms, so
+   it is not confounded by architecture or stream differences.
+
+CONSEQUENCE FOR THE CAPACITY DIRECTION. More capacity should improve the
+synthetic fit — that is what capacity does. On this evidence a better synthetic
+fit costs real performance, so scaling up is expected to move `last` down and
+`best`'s real score sideways or worse. The widened arms (`trxl` 10.4M, `trxxl`
+38.2M) are still worth running because they measure the fit half directly and
+the campaign has never had that number, but the result to expect is "fits
+better, transfers no better". The binding problem is that the synthetic
+distribution differs from the real one in ways that PRECISE fitting exposes.
+
+### The learning-rate record survives reseeding (2026-08-27)
+
+Three seeds each, all-MAE on the frozen split:
+
+| config | seed 0 | seed 1 | seed 2 | mean |
+|---|---|---|---|---|
+| `r4hb_scv2` (lr 1e-3) | 2.67 | 2.64 | — | 2.655 |
+| `r4a_lr3e4` (lr 3e-4) | **2.61** | **2.47** | **2.51** | **2.530** |
+
+Separation is clean on both metrics: every `r4a` seed beats every `r4hb` seed,
+by about 0.13 all-MAE against a within-config spread of ~0.07, and on val
+PIT-MSE by 15.64/15.81/14.67 against 17.59/18.30/17.80. The record claim
+stands, and the earlier caution that "2.61 vs 2.67 is inside seed noise" is
+resolved in favor of the effect being real.
+
+It remains a TUNING result. `r4hb_scv2`'s learning rate had never been swept,
+and nothing about it involves synthetic data.
