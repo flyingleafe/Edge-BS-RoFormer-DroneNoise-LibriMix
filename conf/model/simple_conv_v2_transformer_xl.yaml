@@ -1,0 +1,27 @@
+# simple_conv_v2_transformer_xl — rps_prediction. The transformer with the
+# WHOLE TRUNK widened, not just the temporal head: encoder width 256 (stock is
+# 128), frequency pool and head follow it, head 6x256 with 8 heads.
+# 10.40M parameters against the stock model's 1.48M.
+#
+# WHY WIDTH AND NOT JUST THE HEAD. The first capacity ladder moved only the
+# head (1.48M -> 2.21M -> 6.24M) and the encoder stayed at 128 channels
+# throughout, so most of the model never changed. If the stochastic stream is
+# hard to FIT, the trunk that reads the spectrogram is the more likely
+# bottleneck than the sequence model on top of it.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  width: 256
+  head_hidden_ch: 256
+  head_layers: 6
+  head_heads: 8
+model_type: null
+legacy_config_path: null

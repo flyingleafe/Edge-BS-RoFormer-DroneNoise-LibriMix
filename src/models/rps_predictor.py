@@ -1395,6 +1395,7 @@ class SimpleConvV2Transformer(nn.Module):
         head_layers=2,
         head_heads=4,
         head_dropout=0.1,
+        width=128,
     ):
         super().__init__()
         self.n_fft = n_fft
@@ -1413,25 +1414,29 @@ class SimpleConvV2Transformer(nn.Module):
         # First block adapts to the front-end's channel count (1 for the
         # default stft_mag — weight-identical to pre-G2 checkpoints).
         in_ch = getattr(frontend, "out_channels", 1)
+        # ``width`` scales the whole trunk. At the default 128 the spec is
+        # channel-identical to every existing checkpoint; the frequency pool and
+        # the head follow it, so one knob widens the encoder end to end.
+        w, half = int(width), max(int(width) // 2, 1)
         enc_spec = [
-            (in_ch, 64, (7, 5), (2, 1), (3, 2)),
-            (64, 128, (7, 5), (2, 1), (3, 2)),
-            (128, 128, (5, 3), (2, 1), (2, 1)),
-            (128, 128, (5, 3), (2, 1), (2, 1)),
-            (128, 128, (5, 3), (2, 1), (2, 1)),
-            (128, 128, (5, 3), (2, 1), (2, 1)),
+            (in_ch, half, (7, 5), (2, 1), (3, 2)),
+            (half, w, (7, 5), (2, 1), (3, 2)),
+            (w, w, (5, 3), (2, 1), (2, 1)),
+            (w, w, (5, 3), (2, 1), (2, 1)),
+            (w, w, (5, 3), (2, 1), (2, 1)),
+            (w, w, (5, 3), (2, 1), (2, 1)),
         ]
         self.encoder = nn.ModuleList()
         for ic, oc, k, s, p in enc_spec:
             self.encoder.append(ResidualConvBlock2d(ic, oc, k, s, p, use_se=True))
 
-        self.freq_pool = FrequencyAttentionPool(128, num_heads=4)
+        self.freq_pool = FrequencyAttentionPool(w, num_heads=4)
         # The defaults reproduce every existing checkpoint exactly. The four
         # knobs exist so the temporal head's capacity can be raised without a
         # new class: at the defaults it is 2 layers of width 64, which is small
         # beside the 6-block encoder in front of it.
         self.head = TemporalTransformerHead(
-            128,
+            w,
             hidden_ch=head_hidden_ch,
             num_rotors=num_rotors,
             num_layers=head_layers,
