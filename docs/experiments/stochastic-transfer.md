@@ -1638,3 +1638,33 @@ clip reproduces both. `rotor_trim_rel`, drawn per clip from zero upward, lets a
 clip be Michael's-like or DREGON-like. At `[0.0, 0.15]` the stream lands between
 the two rigs on both regimes — ramp median 5.76, cruise median 14.96. Arm TR is
 arm BE with this as its only change.
+
+### Band-edge arms: the fix works where aimed, the WIDTH was wrong (2026-08-27)
+
+Scored at equal depth (arm ID's 7-epoch partial, BE at 7, BES at 8):
+
+| arm | all-MAE | DREGON ramp | Michael's ramp | Michael's cruise | DREGON cruise |
+|---|---|---|---|---|---|
+| arm ID | **7.40** | **8.79** | 20.71 | **3.71** | **6.17** |
+| arm BE (taper 0.30) | 15.15 | 10.74 | 14.72 | 5.24 | 20.73 |
+| arm BES (+ sparse comb) | 11.47 | 13.16 | **10.83** | 7.70 | 13.51 |
+
+Read against the real-only target `r4hb_scv2` at 2.67, arm ID stays the best
+single model at 2.77x and neither band-edge arm sets a new best in any cell.
+
+What the arms do show is that the fix acts exactly where it was aimed. 100% of
+ramp frames carried the artifact, and arm ID's own Michael's ramp cell halves,
+20.71 to 10.83. The sparse comb helps on top of it: BES beats BE on the cell
+that holds the gap.
+
+Cruise pays, and the cause is the taper WIDTH rather than the idea. At 0.30 the
+fade begins at 5600 Hz, so a cruise clip at 78 rev/s loses every harmonic above
+k of about 72 out of 100 — the high-order lines that carry cruise precision.
+The artifact cannot have been HELPING on real validation, since real audio does
+not contain it, so the cruise loss is the taper removing real signal rather
+than the fix removing a shortcut.
+
+Arm BE2 narrows the taper to 0.10 (fade above 7200 Hz, cruise keeps k to about
+90) with everything else held at arm BES. Arm TR is arm BES plus the per-rotor
+trim. Both are one change from BES, which is the better base on the binding
+cell.

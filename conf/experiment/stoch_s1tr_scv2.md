@@ -9,7 +9,7 @@ batch: docs/experiments/stochastic-transfer.md
 ## Motivation
 
 Synthetic-only training whose target is transfer to the real frozen validation
-split. One change from arm BE: the four rotors no longer idle in unison.
+split. One change from arm BES: the four rotors no longer idle in unison.
 
 The trajectory model gates the differential modes (roll, pitch, yaw) to cruise,
 on the reasoning that an aircraft holds near-zero attitude control on the
@@ -44,6 +44,11 @@ reproduces both. Drawn per clip from zero upward, a clip can be Michael's-like
 or DREGON-like. At `[0.0, 0.15]` the stream lands between the two rigs on both
 regimes: ramp median 5.76 against 0.03 and 9.67, cruise median 14.96 against
 11.77 and 17.32.
+
+The base is arm BES rather than arm BE: at equal depth BES beats BE on every
+ramp cell (Michael's 10.83 against 14.72, DREGON 13.16 against 10.74 — BE
+wins DREGON's, BES wins the one that holds the gap), so the sparse comb
+stays and the trim is the only new variable.
 
 Data `stoch_s1tr`, model `simple_conv_v2`, loss `pit_mse`, metrics `rps`, batch
 128 frames, `samples_per_validation=40000`, validation on the fixed

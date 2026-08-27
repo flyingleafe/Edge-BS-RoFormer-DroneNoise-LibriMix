@@ -1,4 +1,4 @@
-# STOCHASTIC-ONLY stage 1, ARM TR = arm BES with the four rotors no longer idling in unison.
+# STOCHASTIC-ONLY stage 1, ARM BE2 = arm BES with a NARROWER band taper.
 #
 # ONE CHANGE from arm BE: a random share of harmonic orders is dropped per
 # clip. Our combs put power in EVERY order 1..K, which real rotors do not —
@@ -27,7 +27,19 @@ sources:
       # from the window's slowest frames and faded into the floor at the top of
       # the band instead: 7.3% of ramp frames keep an in-band cutoff. Costs
       # about 27% more render time per window.
-      band_taper_frac: 0.30
+      # WIDTH, corrected by measurement. At 0.30 the fade starts at 5600 Hz, so
+      # at cruise (78 rev/s) every harmonic above k of about 72 out of 100 is
+      # attenuated — and high-order lines are what carry cruise precision.
+      # Arms BE and BES paid for it: Michael's cruise went 3.71 (arm ID) to 5.24
+      # and 7.70. The artifact itself cannot have been HELPING on real
+      # validation, since real audio does not contain it, so the cruise loss is
+      # the taper removing real signal rather than the fix removing a shortcut.
+      #
+      # 0.10 fades only above 7200 Hz. A cruise clip then keeps its harmonics to
+      # k of about 90 of 100, while a slow frame still has its comb reach the
+      # band edge (the raised cap covers down to 20 rev/s) and fade smoothly
+      # instead of stopping dead.
+      band_taper_frac: 0.10
       n_harm_max: 400
       n_mics: 8
       n_rotors: 4
@@ -59,24 +71,6 @@ sources:
       rps:
         kind: full_flight
         aggressiveness_range: [0.8, 2.5]
-        # THE UNISON IDLE. The trajectory model gates the differential modes
-        # (roll/pitch/yaw) to cruise, reasoning that an aircraft holds near-zero
-        # attitude control on the ground. That leaves the four rotors in EXACT
-        # unison for the whole warm-up: the built stream's ramp frames have a
-        # rotor spread of 0.00 rev/s, 90.4% of them inside 2 rev/s.
-        #
-        # One of the two rigs disagrees, and it is the rig that holds the whole
-        # remaining gap. On the frozen split's ramp frames Michael's spread is
-        # 9.67 rev/s median with only 3.7% inside 2 rev/s. DREGON agrees with
-        # the stream (0.03 median, 83.0% inside 2). The cause on a real aircraft
-        # is per-motor variation, which does not switch off on the ground.
-        #
-        # Michael's relative spread is nearly the same in both regimes (9.67/36
-        # at ramp, 17.32/78 at cruise), so one per-rotor SPEED RATIO reproduces
-        # both. Drawn per clip from zero upward, a clip can be Michael's-like or
-        # DREGON-like. At [0.0, 0.15] the stream lands between the two rigs on
-        # both regimes: ramp median 5.76, cruise median 14.96.
-        rotor_trim_rel: [0.0, 0.15]
         flight_reuse: 32
         # PHASES: DELIBERATELY ABSENT — the defaults are what arm ID ran.
         #
@@ -91,7 +85,7 @@ sources:
     - kind: static_comb
       weight: 1.0
       n_harmonics: 300  # raised with the taper so k*rps clears Nyquist when slow
-      band_taper_frac: 0.30
+      band_taper_frac: 0.10
       n_mics: 8
       n_rotors: 4
       min_harm_above_floor: 0.30
