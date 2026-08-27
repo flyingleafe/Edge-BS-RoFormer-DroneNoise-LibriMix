@@ -2238,3 +2238,67 @@ This is also the last arm in the campaign that uses the stochastic family in a
 configuration the evidence supports. Every other arrangement — as an
 initialization (R6, R6A/B/C), as a pool ingredient (R7, R8), composed at stage
 1.5 and judged synthetically — has been measured and lost.
+
+## THERE IS NO SIM-TO-REAL GAP. The problem is the CEILING. (2026-08-27)
+
+The campaign never measured how its models do on the distribution they were
+trained on — every arm validated on the real frozen split only. Without that
+number a poor real score cannot distinguish "never learned the synthetic task"
+from "learned it and cannot transfer", and those call for opposite fixes.
+`scripts/synth_regime_eval.py` measures it: the same metric, regime boundaries
+and per-frame Hungarian matching as `valid_regime_eval.py`, on held-out draws
+from the arm's own policy (a fresh `base_seed`, so new noise realizations and
+trajectories from the same distribution).
+
+**Matched conditions — 8 s clips, no augmentation, which is what the real split
+is.** 30,120 frames.
+
+| model | trained on | SYNTH | REAL | synth/real |
+|---|---|---|---|---|
+| `stoch_s1id_scv2` | synthetic only | 8.63 | **7.40** | **1.17x** |
+| `stoch_s1s_both` | synthetic only | 13.42 | 13.95 | **0.96x** |
+| `r4hb_scv2` | comb + real | 30.49 | **2.67** | 11.42x |
+| `r4a_lr3e4` | comb + real | 32.71 | **2.61** | 12.53x |
+
+**The synthetic-trained models score the same on synthetic and on real.** Arm
+ID is 1.17x, arm S is 0.96x — better on the real data than on its own.
+
+THE CONTROL MAKES THIS MEAN SOMETHING. The domains are genuinely different: the
+real-trained models collapse on synthetic (30.49 and 32.71 against their 2.67
+and 2.61 on real, an 11-12x gap). So this is not "the two domains are alike, so
+anything transfers". Synthetic is a real distribution shift that a real-trained
+model cannot cross, and the synthetic-trained model crosses it for free.
+
+**Consequence: transfer was never the bottleneck, and this campaign has spent
+itself on one.** Every coverage arm, every realism fix — the band edge, the
+taper width, the unison idle, the visibility union, the aliasing check — was
+aimed at closing a gap that measures 1.17x. The real bottleneck is the CEILING:
+this synthetic family takes a model to about 8 rev/s on EITHER domain, while
+real data takes it to 2.6. The synthetic data does not carry, or does not
+teach, the precision that real recordings do.
+
+It also deflates the "synthetic-only score is anti-correlated with transfer"
+reading from the learning-rate ladder. The stochastic checkpoint transfers
+fine. It simply arrives somewhere worse, and the fine-tune does the real work
+regardless of where it starts.
+
+**The width of the stream costs a further 44%.** Scored train-like (1 s chunks,
+augmentation at probability 1.0) instead of matched, arm ID goes from 8.63 to
+12.40. That is the cost of the training-time task being much harder than the
+one it is evaluated on.
+
+### What this says to do next
+
+Stop closing a closed gap. The open question is what caps a synthetic-trained
+model at ~8 rev/s, and the two candidates the data points at are:
+
+1. **The stream's width.** `rps_scale_range: [0.6, 1.3]` on top of full-flight
+   trajectories, `drone_profile_range: [0.0, 1.0]`, SNR -30 to 0 dB, eight
+   mics, three augmentation blocks at probability 1.0. Every arm this session
+   made the stream WIDER. If the model cannot fit what is already there,
+   widening can only hurt — which is exactly the pattern every arm produced.
+   The untried direction is NARROWER.
+2. **Label precision in the generator**, which the campaign has assumed exact.
+
+Both are testable and neither has been tried. This is the first direction all
+session that follows from a positive measurement rather than a refutation.
