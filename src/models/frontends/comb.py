@@ -217,3 +217,26 @@ class CombIFFrontEnd(SpectralFrontEnd):
             # 4. row coordinate: f0/100 rev/s, constant over batch and time.
             channels.append(self.coord[None, :, None].expand_as(comb))
         return torch.stack(channels, dim=1)  # (B, 3 or 4, R, T)
+
+
+@register_frontend
+class CombIFRampFrontEnd(CombIFFrontEnd):
+    """``comb_if`` widened to cover the ramp regime (key ``comb_if_ramp``).
+
+    ``comb_if`` searches f0 over 30 to 120 rev/s. The frozen split's ramp cell
+    is defined as 1 to 45 rev/s and holds the whole remaining gap, so most of
+    the frames that matter fall below the front end's lowest candidate and
+    cannot be represented at all. This subclass starts the search at 5 rev/s.
+
+    It is also the front end that most needs a trunk which does not average the
+    frequency axis. In f0-space the answer IS the position along the row axis,
+    and `SimpleConvV2`'s pooling is exactly permutation invariant over that
+    axis (verified to 1e-7) — which is what `coord_channel` works around.
+    Pair this with `simple_conv_v2_freqhires`, which keeps the axis instead.
+    """
+
+    key = "comb_if_ramp"
+
+    def __init__(self, n_fft: int = 2048, hop_length: int = 512, **kw):
+        kw.setdefault("f0_min", 5.0)
+        super().__init__(n_fft=n_fft, hop_length=hop_length, **kw)

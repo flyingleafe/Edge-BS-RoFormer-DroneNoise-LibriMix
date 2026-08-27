@@ -955,16 +955,23 @@ class SimpleConvV2(nn.Module):
 #               frequency, so 65 bins survive instead of 17.
 
 
-def _encoder_freq_bins(encoder: nn.ModuleList, n_fft: int, in_ch: int) -> int:
-    """Frequency bins surviving `encoder`, measured rather than derived."""
-    was_training = any(m.training for m in encoder.modules())
-    encoder.eval()
+def _encoder_freq_bins(encoder: nn.ModuleList, frontend: nn.Module, hop_length: int) -> int:
+    """Frequency bins surviving `encoder`, measured rather than derived.
+
+    The front end decides how many rows it emits, and not every one emits
+    ``n_fft // 2 + 1`` of them — ``comb_if`` emits one row per f0 candidate.
+    So the count comes from running silence through the real front end.
+    """
+    modules = list(encoder.modules()) + list(frontend.modules())
+    was_training = [m for m in modules if m.training]
+    for m in modules:
+        m.eval()
     with torch.no_grad():
-        h = torch.zeros(1, in_ch, n_fft // 2 + 1, 4)
+        h = frontend(torch.zeros(1, 32 * hop_length))
         for block in encoder:
             h = block(h)
-    if was_training:
-        encoder.train()
+    for m in was_training:
+        m.train()
     return int(h.shape[2])
 
 
@@ -997,7 +1004,7 @@ class _FreqVariantBase(nn.Module):
             ResidualConvBlock2d(ic, oc, k, (fs, 1), p, use_se=True)
             for (ic, oc, k, p), fs in zip(shapes, self.FREQ_STRIDES, strict=True)
         )
-        self.n_freq = _encoder_freq_bins(self.encoder, n_fft, in_ch)
+        self.n_freq = _encoder_freq_bins(self.encoder, self.frontend, hop_length)
         self._build_aggregator()
         self.head = BiGRUHead(
             128, hidden_ch=64, num_rotors=num_rotors, num_layers=2, gated=voicing_gate
