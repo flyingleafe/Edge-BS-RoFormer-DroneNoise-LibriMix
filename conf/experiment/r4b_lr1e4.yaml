@@ -1,0 +1,41 @@
+# @package _global_
+# R4B — the record holder's recipe at lr 1e-4. ONE line differs from
+# `r4hb_scv2`, and one line from `r4a_lr3e4`.
+#
+# The comb init's ladder has only two points and both say the same thing:
+#
+#   lr 1e-3   17.59 val PIT-MSE   (r4hb_scv2, 2.67 all-MAE)
+#   lr 3e-4   15.37               (r4a_lr3e4, 2.61 all-MAE - the record)
+#
+# Lowering the rate helped. Whether it keeps helping is unmeasured, and the
+# third point decides it: 1e-4 either extends the record or locates the floor.
+#
+# There IS a reason to expect a floor. On the stochastic init the same step
+# from 3e-4 to 1e-4 stopped the run early on the unchanged `patience: 20`
+# (20 epochs against 85 at 1e-3), and a slower rate improves more slowly per
+# epoch, so it can exhaust patience while still descending. If R4B lands worse
+# than R4A AND stops early, the patience is the thing to change next, not the
+# rate.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r4b_lr1e4
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.0001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
