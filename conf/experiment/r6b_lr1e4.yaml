@@ -1,0 +1,31 @@
+# @package _global_
+# R6B — R6 with the fine-tune learning rate lowered to 1e-4, the far end of the
+# same ladder as `r6a_lr3e4`. ONE line differs from `r6hb_scv2`.
+#
+# Two points make a direction; three make a curve. If the mechanism in R6A is
+# real (lr 1e-3 destroys a good initialization) this should be better still, or
+# else show where preserving the initialization starts costing more than it
+# saves.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r6b_lr1e4
+checkpoint: r2://ml-data/artifacts/stoch_s1id_scv2/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.0001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

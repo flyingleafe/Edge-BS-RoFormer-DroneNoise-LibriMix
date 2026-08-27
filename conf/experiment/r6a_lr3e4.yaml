@@ -1,0 +1,44 @@
+# @package _global_
+# R6A — R6 with the fine-tune learning rate lowered to 3e-4. ONE line differs
+# from `r6hb_scv2`.
+#
+# THE HYPOTHESIS THIS TESTS. R6 handed the fine-tune a much better starting
+# point than the record holder — 7.40 all-MAE synthetic-only against the comb
+# checkpoint sitting at 8.30, and three of six cells won outright — and came
+# out WORSE (3.04 against 2.67). That is backwards unless the fine-tune is
+# DESTROYING the initialization rather than building on it.
+#
+# lr 1e-3 is the value every arm in this family uses, and it was chosen for a
+# stage 2 that starts from the comb checkpoint. A better-initialized model has
+# strictly more to lose in the first epochs at a rate that large: the comb init
+# is worse, so wiping it costs less. That mechanism predicts exactly the
+# inversion R6 shows, and it predicts that lowering the rate should help the
+# stochastic init MORE than it helps the comb init.
+#
+# `r4a_lr3e4` is the control that makes the claim attributable: the same rate
+# on the record holder. If R6A improves and R4A does not, the mechanism is
+# confirmed. If both improve equally, the rate was simply too high for this
+# stage 2 and the stage-1 family still does not matter.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r6a_lr3e4
+checkpoint: r2://ml-data/artifacts/stoch_s1id_scv2/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.0003
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

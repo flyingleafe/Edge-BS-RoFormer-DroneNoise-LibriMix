@@ -1,0 +1,31 @@
+# @package _global_
+# R4A — the record holder `r4hb_scv2` with the fine-tune learning rate lowered
+# to 3e-4. ONE line differs.
+#
+# This is the CONTROL for R6A, and it is what makes that arm interpretable
+# rather than a lucky draw. R6A tests whether lr 1e-3 destroys a good
+# initialization during the fine-tune; that claim only holds if the lower rate
+# helps the well-initialized arm MORE than it helps this one.
+# Batch doc: docs/experiments/stochastic-transfer.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r4a_lr3e4
+checkpoint: r2://ml-data/artifacts/m3abl_comb_scv2_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.0003
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
