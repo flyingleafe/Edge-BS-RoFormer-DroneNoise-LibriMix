@@ -35,69 +35,323 @@ RESULTS = Path("results/stoch_transfer")
 #: Rows measured before the results directory existed, kept so the board is
 #: complete. Each is one run of scripts/valid_regime_eval.py.
 KNOWN: list[dict] = [
-    {"experiment": "r4hb_scv2", "kind": "real", "aggregate_mse": 17.59, "all_mae": 2.67,
-     "zero_mae": 2.87, "low_mae": 3.48, "flight_mae": 2.49},
-    {"experiment": "hb_scv2_mag_nogate", "kind": "real", "aggregate_mse": 22.78, "all_mae": 2.72,
-     "zero_mae": 3.36, "low_mae": 4.18, "flight_mae": 2.35},
-    {"experiment": "m3abl_comb_unigru128_s1", "kind": "synthetic", "aggregate_mse": 190.62,
-     "all_mae": 8.30, "zero_mae": 4.73, "low_mae": 24.24, "flight_mae": 6.00},
-    {"experiment": "m3abl_comb_scv2_s1", "kind": "synthetic", "aggregate_mse": 218.30,
-     "all_mae": 9.50, "zero_mae": 5.64, "low_mae": 26.32, "flight_mae": 7.09},
-    {"experiment": "m3cur_scv2_s1", "kind": "synthetic", "aggregate_mse": 328.96,
-     "all_mae": 10.41, "zero_mae": 20.30, "low_mae": 11.33, "flight_mae": 8.55},
-    {"experiment": "stoch_s1e_scv2", "kind": "synthetic", "aggregate_mse": 280.66,
-     "all_mae": 10.74, "zero_mae": 8.92, "low_mae": 27.55, "flight_mae": 7.98},
-    {"experiment": "stoch_s1f_scv2", "kind": "synthetic", "aggregate_mse": 343.69,
-     "all_mae": 11.35, "zero_mae": 34.69, "low_mae": 16.95, "flight_mae": 6.32},
-    {"experiment": "stoch_s1g_scv2", "kind": "synthetic", "aggregate_mse": 176.34,
-     "all_mae": 8.08, "zero_mae": 20.27, "low_mae": 16.20, "flight_mae": 4.50},
-    {"experiment": "stoch_s1h_scv2", "kind": "synthetic", "aggregate_mse": 300.36,
-     "all_mae": 9.07, "zero_mae": 27.98, "low_mae": 26.77, "flight_mae": 2.60},
-    {"experiment": "comb_fixed_scv2", "kind": "synthetic", "aggregate_mse": 1389.03,
-     "all_mae": 35.09, "zero_mae": 41.21, "low_mae": 10.42, "flight_mae": 38.55},
-    {"experiment": "stoch_s1r_long", "kind": "synthetic", "aggregate_mse": 453.41,
-     "all_mae": 18.20, "zero_mae": 16.86, "low_mae": 17.51, "flight_mae": 18.55},
-    {"experiment": "stoch_s1q_gru", "kind": "synthetic", "aggregate_mse": 331.57,
-     "all_mae": 15.18, "zero_mae": 17.09, "low_mae": 19.18, "flight_mae": 14.12},
-    {"experiment": "stoch_s1s_both", "kind": "synthetic", "aggregate_mse": 296.42,
-     "all_mae": 13.95, "zero_mae": 17.94, "low_mae": 8.94, "flight_mae": 14.19},
-    {"experiment": "stoch_s1t_ownsilence", "kind": "synthetic", "aggregate_mse": 454.68,
-     "all_mae": 16.44, "zero_mae": 37.61, "low_mae": 20.24, "flight_mae": 12.11},
-    {"experiment": "stoch_s1u_composite", "kind": "synthetic", "aggregate_mse": 464.24,
-     "all_mae": 17.96, "zero_mae": 13.75, "low_mae": 14.24, "flight_mae": 19.36},
-    {"experiment": "stoch_s1v_ground", "kind": "synthetic", "aggregate_mse": 430.72,
-     "all_mae": 15.07, "zero_mae": 6.57, "low_mae": 13.87, "flight_mae": 16.74},
-    {"experiment": "stoch_s1w_scv2", "kind": "synthetic", "aggregate_mse": 296.49,
-     "all_mae": 12.63, "zero_mae": 16.19, "low_mae": 22.55, "flight_mae": 10.20},
-    {"experiment": "stoch_s1x_scv2", "kind": "synthetic", "aggregate_mse": 262.42,
-     "all_mae": 11.59, "zero_mae": 8.68, "low_mae": 11.88, "flight_mae": 12.04},
+    # 2026-08-27 band-edge and frequency-aggregation arms.
+    {
+        "experiment": "stoch_s1be_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 409.03,
+        "all_mae": 15.15,
+        "zero_mae": 14.82,
+        "low_mae": 14.14,
+        "flight_mae": 15.39,
+    },
+    {
+        "experiment": "stoch_s1bes_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 251.84,
+        "all_mae": 11.47,
+        "zero_mae": 11.55,
+        "low_mae": 11.17,
+        "flight_mae": 11.51,
+    },
+    {
+        "experiment": "stoch_s1id_freqpos",
+        "kind": "synthetic",
+        "aggregate_mse": 196.47,
+        "all_mae": 11.54,
+        "zero_mae": 4.21,
+        "low_mae": 18.36,
+        "flight_mae": 11.56,
+    },
+    {
+        "experiment": "stoch_s1id_freqcat",
+        "kind": "synthetic",
+        "aggregate_mse": 211.07,
+        "all_mae": 10.00,
+        "zero_mae": 13.97,
+        "low_mae": 14.22,
+        "flight_mae": 8.54,
+    },
+    {
+        "experiment": "stoch_s1si_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 576.74,
+        "all_mae": 17.54,
+        "zero_mae": 6.13,
+        "low_mae": 14.50,
+        "flight_mae": 20.05,
+    },
+    {
+        "experiment": "r4hb_scv2",
+        "kind": "real",
+        "aggregate_mse": 17.59,
+        "all_mae": 2.67,
+        "zero_mae": 2.87,
+        "low_mae": 3.48,
+        "flight_mae": 2.49,
+    },
+    {
+        "experiment": "hb_scv2_mag_nogate",
+        "kind": "real",
+        "aggregate_mse": 22.78,
+        "all_mae": 2.72,
+        "zero_mae": 3.36,
+        "low_mae": 4.18,
+        "flight_mae": 2.35,
+    },
+    {
+        "experiment": "m3abl_comb_unigru128_s1",
+        "kind": "synthetic",
+        "aggregate_mse": 190.62,
+        "all_mae": 8.30,
+        "zero_mae": 4.73,
+        "low_mae": 24.24,
+        "flight_mae": 6.00,
+    },
+    {
+        "experiment": "m3abl_comb_scv2_s1",
+        "kind": "synthetic",
+        "aggregate_mse": 218.30,
+        "all_mae": 9.50,
+        "zero_mae": 5.64,
+        "low_mae": 26.32,
+        "flight_mae": 7.09,
+    },
+    {
+        "experiment": "m3cur_scv2_s1",
+        "kind": "synthetic",
+        "aggregate_mse": 328.96,
+        "all_mae": 10.41,
+        "zero_mae": 20.30,
+        "low_mae": 11.33,
+        "flight_mae": 8.55,
+    },
+    {
+        "experiment": "stoch_s1e_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 280.66,
+        "all_mae": 10.74,
+        "zero_mae": 8.92,
+        "low_mae": 27.55,
+        "flight_mae": 7.98,
+    },
+    {
+        "experiment": "stoch_s1f_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 343.69,
+        "all_mae": 11.35,
+        "zero_mae": 34.69,
+        "low_mae": 16.95,
+        "flight_mae": 6.32,
+    },
+    {
+        "experiment": "stoch_s1g_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 176.34,
+        "all_mae": 8.08,
+        "zero_mae": 20.27,
+        "low_mae": 16.20,
+        "flight_mae": 4.50,
+    },
+    {
+        "experiment": "stoch_s1h_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 300.36,
+        "all_mae": 9.07,
+        "zero_mae": 27.98,
+        "low_mae": 26.77,
+        "flight_mae": 2.60,
+    },
+    {
+        "experiment": "comb_fixed_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 1389.03,
+        "all_mae": 35.09,
+        "zero_mae": 41.21,
+        "low_mae": 10.42,
+        "flight_mae": 38.55,
+    },
+    {
+        "experiment": "stoch_s1r_long",
+        "kind": "synthetic",
+        "aggregate_mse": 453.41,
+        "all_mae": 18.20,
+        "zero_mae": 16.86,
+        "low_mae": 17.51,
+        "flight_mae": 18.55,
+    },
+    {
+        "experiment": "stoch_s1q_gru",
+        "kind": "synthetic",
+        "aggregate_mse": 331.57,
+        "all_mae": 15.18,
+        "zero_mae": 17.09,
+        "low_mae": 19.18,
+        "flight_mae": 14.12,
+    },
+    {
+        "experiment": "stoch_s1s_both",
+        "kind": "synthetic",
+        "aggregate_mse": 296.42,
+        "all_mae": 13.95,
+        "zero_mae": 17.94,
+        "low_mae": 8.94,
+        "flight_mae": 14.19,
+    },
+    {
+        "experiment": "stoch_s1t_ownsilence",
+        "kind": "synthetic",
+        "aggregate_mse": 454.68,
+        "all_mae": 16.44,
+        "zero_mae": 37.61,
+        "low_mae": 20.24,
+        "flight_mae": 12.11,
+    },
+    {
+        "experiment": "stoch_s1u_composite",
+        "kind": "synthetic",
+        "aggregate_mse": 464.24,
+        "all_mae": 17.96,
+        "zero_mae": 13.75,
+        "low_mae": 14.24,
+        "flight_mae": 19.36,
+    },
+    {
+        "experiment": "stoch_s1v_ground",
+        "kind": "synthetic",
+        "aggregate_mse": 430.72,
+        "all_mae": 15.07,
+        "zero_mae": 6.57,
+        "low_mae": 13.87,
+        "flight_mae": 16.74,
+    },
+    {
+        "experiment": "stoch_s1w_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 296.49,
+        "all_mae": 12.63,
+        "zero_mae": 16.19,
+        "low_mae": 22.55,
+        "flight_mae": 10.20,
+    },
+    {
+        "experiment": "stoch_s1x_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 262.42,
+        "all_mae": 11.59,
+        "zero_mae": 8.68,
+        "low_mae": 11.88,
+        "flight_mae": 12.04,
+    },
     # Cross-rig CONTROL, not a target: the target's recipe with Michael's
     # removed, so its Michael's column is what a real-trained model is worth on
     # a rig it never met.
     # Arms from the measured distribution mismatches. Both are EARLY
     # checkpoints — RP stopped at 9 of 22 epochs on the gpushort wall clock and
     # ID at 7 — so they understate what the arms reach at convergence.
-    {"experiment": "stoch_s1id_scv2", "kind": "synthetic", "aggregate_mse": 130.32,
-     "all_mae": 7.40, "zero_mae": 7.20, "low_mae": 18.98, "flight_mae": 5.32},
-    {"experiment": "stoch_s1rp_scv2", "kind": "synthetic", "aggregate_mse": 246.27,
-     "all_mae": 10.72, "zero_mae": 13.92, "low_mae": 13.72, "flight_mae": 9.63},
-    {"experiment": "stoch_s1idz_scv2", "kind": "synthetic", "aggregate_mse": 371.48,
-     "all_mae": 14.70, "zero_mae": 2.44, "low_mae": 25.48, "flight_mae": 14.83},
-    {"experiment": "stoch_s1idrp_scv2", "kind": "synthetic", "aggregate_mse": 373.78,
-     "all_mae": 13.37, "zero_mae": 17.17, "low_mae": 19.69, "flight_mae": 11.56},
-    {"experiment": "stoch_s1z_scv2", "kind": "synthetic", "aggregate_mse": 186.43,
-     "all_mae": 8.01, "zero_mae": 9.06, "low_mae": 22.14, "flight_mae": 5.25},
-    {"experiment": "stoch_s1m_scv2", "kind": "synthetic", "aggregate_mse": 388.53,
-     "all_mae": 14.01, "zero_mae": 21.36, "low_mae": 15.83, "flight_mae": 12.41},
-    {"experiment": "xrig_dregon_only", "kind": "control", "aggregate_mse": 220.77,
-     "all_mae": 9.72, "zero_mae": 9.23, "low_mae": 28.31, "flight_mae": 6.41},
-    {"experiment": "xrig_michaels_only", "kind": "control", "aggregate_mse": 1571.81,
-     "all_mae": 24.60, "zero_mae": 3.43, "low_mae": 11.52, "flight_mae": 30.63},
+    {
+        "experiment": "stoch_s1id_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 130.32,
+        "all_mae": 7.40,
+        "zero_mae": 7.20,
+        "low_mae": 18.98,
+        "flight_mae": 5.32,
+    },
+    {
+        "experiment": "stoch_s1rp_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 246.27,
+        "all_mae": 10.72,
+        "zero_mae": 13.92,
+        "low_mae": 13.72,
+        "flight_mae": 9.63,
+    },
+    {
+        "experiment": "stoch_s1idz_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 371.48,
+        "all_mae": 14.70,
+        "zero_mae": 2.44,
+        "low_mae": 25.48,
+        "flight_mae": 14.83,
+    },
+    {
+        "experiment": "stoch_s1idrp_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 373.78,
+        "all_mae": 13.37,
+        "zero_mae": 17.17,
+        "low_mae": 19.69,
+        "flight_mae": 11.56,
+    },
+    {
+        "experiment": "stoch_s1z_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 186.43,
+        "all_mae": 8.01,
+        "zero_mae": 9.06,
+        "low_mae": 22.14,
+        "flight_mae": 5.25,
+    },
+    {
+        "experiment": "stoch_s1m_scv2",
+        "kind": "synthetic",
+        "aggregate_mse": 388.53,
+        "all_mae": 14.01,
+        "zero_mae": 21.36,
+        "low_mae": 15.83,
+        "flight_mae": 12.41,
+    },
+    {
+        "experiment": "xrig_dregon_only",
+        "kind": "control",
+        "aggregate_mse": 220.77,
+        "all_mae": 9.72,
+        "zero_mae": 9.23,
+        "low_mae": 28.31,
+        "flight_mae": 6.41,
+    },
+    {
+        "experiment": "xrig_michaels_only",
+        "kind": "control",
+        "aggregate_mse": 1571.81,
+        "all_mae": 24.60,
+        "zero_mae": 3.43,
+        "low_mae": 11.52,
+        "flight_mae": 30.63,
+    },
 ]
 
 #: Per-rig cells, from job regime-rig-f123b7 (8 channels, all 37 clips).
 #: Each tuple is (all, zero, low, flight) mean absolute error, rev/s.
 RIG_CELLS: dict[str, dict[str, tuple[float, float, float, float]]] = {
+    # 2026-08-27 band-edge and frequency-aggregation arms. Tuple order is
+    # (all, zero, low, flight).
+    "stoch_s1be_scv2": {
+        "dregon": (19.04, 11.88, 10.74, 20.73),
+        "michaels": (9.45, 22.29, 14.72, 5.24),
+    },
+    "stoch_s1bes_scv2": {
+        "dregon": (13.19, 11.47, 13.16, 13.51),
+        "michaels": (8.95, 11.76, 10.83, 7.70),
+    },
+    "stoch_s1id_freqpos": {
+        "dregon": (10.46, 3.70, 8.25, 11.82),
+        "michaels": (13.12, 5.48, 20.08, 11.05),
+    },
+    "stoch_s1id_freqcat": {
+        "dregon": (10.95, 14.43, 10.12, 10.33),
+        "michaels": (8.60, 12.82, 14.92, 5.14),
+    },
+    "stoch_s1id_freqhires": {
+        "dregon": (9.97, 5.74, 11.07, 10.72),
+        "michaels": (8.64, 5.73, 20.46, 3.68),
+    },
+    "stoch_s1si_scv2": {
+        "dregon": (21.48, 2.23, 13.24, 25.42),
+        "michaels": (11.76, 15.99, 14.72, 9.82),
+    },
     "r4hb_scv2": {
         "dregon": (3.0, 2.24, 7.21, 2.98),
         "michaels": (2.18, 4.48, 2.85, 1.55),
@@ -228,8 +482,10 @@ def load() -> list[dict]:
             for rig in ("dregon", "michaels"):
                 if f"{rig}_all_mae" in row:
                     RIG_CELLS.setdefault(row["experiment"], {})[rig] = (
-                        row[f"{rig}_all_mae"], row[f"{rig}_zero_mae"],
-                        row[f"{rig}_low_mae"], row[f"{rig}_flight_mae"],
+                        row[f"{rig}_all_mae"],
+                        row[f"{rig}_zero_mae"],
+                        row[f"{rig}_low_mae"],
+                        row[f"{rig}_flight_mae"],
                     )
             rows[row["experiment"]] = row
     return list(rows.values())
@@ -254,9 +510,10 @@ def rig_grid(target: dict, shown: list[dict]) -> None:
             if v is None:
                 continue
             mark = "   <- target" if row is target and rig == "michaels" else ""
-            print(f"{row['experiment'] if rig == 'dregon' else '':26s} {rig:9s} "
-                  f"{FRAMES[rig]['all'] if rig else 0:7d} "
-                  + " ".join(f"{x:8.2f}" for x in v) + mark)
+            print(
+                f"{row['experiment'] if rig == 'dregon' else '':26s} {rig:9s} "
+                f"{FRAMES[rig]['all'] if rig else 0:7d} " + " ".join(f"{x:8.2f}" for x in v) + mark
+            )
 
     print()
     print("best synthetic-only per RIG x REGIME cell, against the target in that cell:")
@@ -269,8 +526,10 @@ def rig_grid(target: dict, shown: list[dict]) -> None:
             best = min(synth, key=lambda r, j=j, rig=rig: RIG_CELLS[r["experiment"]][rig][j])
             got, want = RIG_CELLS[best["experiment"]][rig][j], tgt[rig][j]
             flag = "  <- AT OR BETTER THAN TARGET" if got <= want else ""
-            print(f"   {rig:9s} {cell:7s} {got:6.2f} vs {want:5.2f}  ({got / want:.2f}x)  "
-                  f"{best['experiment']:26s} [{FRAMES[rig][cell]:4d} frames]{flag}")
+            print(
+                f"   {rig:9s} {cell:7s} {got:6.2f} vs {want:5.2f}  ({got / want:.2f}x)  "
+                f"{best['experiment']:26s} [{FRAMES[rig][cell]:4d} frames]{flag}"
+            )
 
 
 def main() -> int:
@@ -283,15 +542,21 @@ def main() -> int:
     synth = sorted([r for r in rows if r["kind"] == "synthetic"], key=lambda r: r["all_mae"])
     target = real[0] if real else None
 
-    head = f"{'model':26s} {'trained on':11s} {'all-MAE':>8s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
+    head = (
+        f"{'model':26s} {'trained on':11s} {'all-MAE':>8s} {'zero':>7s} {'low':>7s} {'flight':>7s}"
+    )
     print(head)
     print("-" * len(head))
     for r in real[:1]:
-        print(f"{r['experiment']:26s} {'real':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
-              f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}   <- target")
+        print(
+            f"{r['experiment']:26s} {'real':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
+            f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}   <- target"
+        )
     for r in synth[: args.top]:
-        print(f"{r['experiment']:26s} {'synthetic':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
-              f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}")
+        print(
+            f"{r['experiment']:26s} {'synthetic':11s} {r['all_mae']:8.2f} {r['zero_mae']:7.2f} "
+            f"{r['low_mae']:7.2f} {r['flight_mae']:7.2f}"
+        )
     if target and synth:
         # The best cell any single synthetic model holds, named — so the board
         # never reads as though one model held all three.
@@ -299,14 +564,22 @@ def main() -> int:
         print("best synthetic-only IN EACH CELL, and which model holds it:")
         for cell, key in (("zero", "zero_mae"), ("low", "low_mae"), ("flight", "flight_mae")):
             best = min(synth, key=lambda r: r[key])
-            print(f"   {cell:7s} {best[key]:6.2f}  {best['experiment']:26s} "
-                  f"({best[key] / target[key]:.2f}x target)")
+            print(
+                f"   {cell:7s} {best[key]:6.2f}  {best['experiment']:26s} "
+                f"({best[key] / target[key]:.2f}x target)"
+            )
         b = synth[0]
         print()
         print("distance from parity, best synthetic-only model (times the target):")
-        for cell, key in (("zero", "zero_mae"), ("low", "low_mae"), ("flight", "flight_mae"),
-                          ("all", "all_mae")):
-            print(f"   {cell:7s} {b[key] / target[key]:5.2f}x   ({b[key]:.2f} against {target[key]:.2f})")
+        for cell, key in (
+            ("zero", "zero_mae"),
+            ("low", "low_mae"),
+            ("flight", "flight_mae"),
+            ("all", "all_mae"),
+        ):
+            print(
+                f"   {cell:7s} {b[key] / target[key]:5.2f}x   ({b[key]:.2f} against {target[key]:.2f})"
+            )
     if target:
         # every model with rig cells, not just the top-N of the regime view
         rig_grid(target, [target, *[r for r in synth if r["experiment"] in RIG_CELLS]])
