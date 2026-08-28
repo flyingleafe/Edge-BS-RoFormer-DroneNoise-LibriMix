@@ -455,3 +455,41 @@ ladder run on the weaker architecture measures the architecture's limit where it
 is lower than the data's. Rung 0 is already training on `simple_conv_v2`, so the
 chain is left as it is and the depth-scaled ladder is recorded as the natural
 second pass rather than a mid-flight change.
+
+## Depth improves the centre; it does not break the fan
+
+The three comb-floor checkpoints, scored by rotor-spread bucket on the comb they
+trained on (`best` checkpoint, 100 clips, cruise columns):
+
+| true spread (rev/s) | 0.20 | 4.34 | 8.97 | 11.57 | 21.04 |
+|---|---|---|---|---|---|
+| `base` predicted spread | 6.07 | 10.54 | 10.74 | 10.62 | 10.39 |
+| `deep` predicted spread | 5.23 | 10.19 | 10.61 | 10.37 | 10.44 |
+| `wide` predicted spread | 7.50 | 12.06 | 12.12 | 11.97 | 11.49 |
+| `base` PIT MAE | 3.45 | 2.50 | 1.60 | 1.58 | 3.33 |
+| `deep` PIT MAE | **2.92** | **2.14** | **1.16** | **1.31** | **3.26** |
+| `wide` PIT MAE | 3.50 | 2.81 | 2.03 | 1.82 | 3.77 |
+
+**The fixed fan survives depth scaling.** `deep` wins every bucket, and its
+predicted spread is as pinned as anyone's: 10.2 to 10.6 across true spreads from
+0.20 to 21.04. Depth buys a better CENTRE for the fan, not per-rotor resolution.
+The 15% floor improvement is entirely a centre-estimate gain inside the same
+degenerate solution.
+
+`wide` shows the same thing from the other side. Its fan is both wider (11.5 to
+12.1 against base's 10.4 to 10.7) and worse in every bucket — the extra
+per-time-step capacity bought a more confidently wrong fan.
+
+### This reconciles the two results
+
+Earlier in this campaign the fixed-fan measurement was used to predict that
+capacity would not move the comb floor. The floor moved, and that prediction was
+recorded as refuted. This measurement shows the prediction was right about the
+FAN and wrong about the FLOOR, and that the two are separable: architecture
+scaling reduces error inside the mean-tracking solution without escaping it.
+
+The consequence for the curriculum is direct. If no architecture axis breaks the
+fan — depth improves within it, width degrades within it — then the lever that
+might break it is the DATA, which is what the ladder varies. That is now the
+ladder's sharpest question, and `spread_eval.py` reads it per rung: does a rung's
+model start tracking true spread, or does it just re-centre the same fan?
