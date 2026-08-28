@@ -583,3 +583,35 @@ joint two-tone pair mode that resolves the two lines instead of averaging their
 rotation — not in the filter. The gap it would unlock is large: oracle-init
 refinement reaches 0.028 rev/s on a four-rotor comb and 0.0006 on a single-rotor
 one, against a fully blind 2.744.
+
+## The curriculum, running
+
+The ladder walks the stochastic family on line width, the axis measured to move
+comb contrast, with `rolloff_p` and `gamma0_hz` held at the family default so
+exactly one thing changes. Rung 4 reproduces the family defaults, so a model
+finishing the ladder has arrived at the distribution the transfer campaign's
+stochastic arms trained on directly.
+
+| rung | `gamma_slope_hz` | val min | at epoch | epochs past min |
+|---|---|---|---|---|
+| `ladder_r0_scv2` | 0.0 | 16.669 | 39 | 131 |
+| `ladder_r0_deep` | 0.0 | **16.142** | 4 | 109 |
+| `ladder_r1_scv2` | 0.0 to 0.05 | **15.970** | 18 | 101 |
+
+Each rung warm-starts from the previous one's best checkpoint and is validated
+on half the frozen real split and half synthetic drawn from its OWN rung, so the
+two curves come out together: the achievable synthetic fit as the family widens,
+and whether real-rig transfer follows it.
+
+**Patience 100 held.** The comb-floor runs put saturation at epoch 40 to 60, and
+rung 1 stopped at 119 epochs with its minimum at 18 — 101 past it, no truncation.
+The calibration the specification asked for is doing its job.
+
+**Two early readings, both provisional at one seed.** Depth helps here as it did
+on the comb: `ladder_r0_deep` beats `ladder_r0_scv2` by 3.2% (16.142 against
+16.669), consistent with the comb-floor result that depth is the scaling axis
+that moves the floor. And rung 1 is BETTER than rung 0 (15.970 against 16.669)
+even though its distribution is wider — the ladder is not monotone in difficulty
+so far. That is not a contradiction: validation is half real, and a slightly
+wider training distribution may transfer to the real half better than the sharp
+corner does. Whether that survives the wider rungs is what r2 to r4 measure.
