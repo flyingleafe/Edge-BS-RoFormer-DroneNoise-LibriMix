@@ -20,13 +20,13 @@
 train:
   _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
   params:
-    path: conf/online_mix/m3abl_comb_s1_dload.yaml
+    path: conf/online_mix/comb_floor_s1_dload.yaml
     flatten_channels: true
   iterable: true
 valid:
   _target_: data_processing.frame_datasets.FixedSynthFrameDataset
   params:
-    path: conf/online_mix/m3abl_comb_s1_dload.yaml
+    path: conf/online_mix/comb_floor_s1_dload.yaml
     n: 96
     base_seed: 880001
     duration_s: 8.0
