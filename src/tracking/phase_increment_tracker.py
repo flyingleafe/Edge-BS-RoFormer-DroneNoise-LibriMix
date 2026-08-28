@@ -629,7 +629,8 @@ def _pair_joint_obs(
 
 
 def _rw_kalman_rts(
-    info: np.ndarray, mean_info: np.ndarray, q_step: float, p0: float
+    info: np.ndarray, mean_info: np.ndarray, q_step: float, p0: float,
+    trust_info: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Scalar random-walk Kalman filter + RTS smoother, information-fed.
 
@@ -637,6 +638,14 @@ def _rw_kalman_rts(
     over the measurements landing on frame ``j`` (0 where none — the step
     becomes a pure prediction). Returns the smoothed state mean and
     variance, each ``(n,)``.
+
+    ``trust_info`` (``1 / sigma_trust^2``) adds a zero-mean pseudo-measurement
+    of the correction to EVERY frame. Without it the model has no term that
+    says the input trajectory is worth anything: ``p0`` constrains frame 0
+    alone, so the correction is free to wander and the refiner behaves as a
+    diffusion — handed the truth it walks away from it, further with every
+    outer iteration. The pseudo-measurement shrinks the correction toward
+    zero and gives the recursion a fixed point at the input.
     """
     n = len(info)
     m_f = np.empty(n)
@@ -649,7 +658,7 @@ def _rw_kalman_rts(
         mp = m_prev
         m_p[j] = mp
         p_p[j] = pp
-        pf = 1.0 / (1.0 / pp + info[j])
+        pf = 1.0 / (1.0 / pp + info[j] + trust_info)
         mf = pf * (mp / pp + mean_info[j])
         m_f[j] = mf
         p_f[j] = pf
@@ -673,6 +682,7 @@ def _smooth_delta(
     ess: float | np.ndarray = 1.0,
     extra: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     scale: np.ndarray | None = None,
+    trust_info: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """RTS-smoothed ``dr`` from gated increments (state scalar per frame).
 
@@ -702,7 +712,7 @@ def _smooth_delta(
         idx, y, var = extra
         np.add.at(info, idx, 1.0 / var)
         np.add.at(mean_info, idx, y / var)
-    return _rw_kalman_rts(info, mean_info, q_step, p0)
+    return _rw_kalman_rts(info, mean_info, q_step, p0, trust_info)
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +762,7 @@ def _rotor_pass(
     lowk_split_k: int = 16,
     lowk_thresh: float = 0.15,
     lowk_weight: float = 0.1,
+    trust_info: float = 0.0,
 ) -> tuple[np.ndarray | None, dict[str, Any]]:
     """One outer iteration for rotor ``i``: ``(delta on ft grid | None, diag)``.
 
@@ -802,7 +813,7 @@ def _rotor_pass(
         mean_info = np.zeros(n_m)
         np.add.at(info, extra[0], 1.0 / extra[2])
         np.add.at(mean_info, extra[0], extra[1] / extra[2])
-        m1, p1 = _rw_kalman_rts(info, mean_info, q_step, p0)
+        m1, p1 = _rw_kalman_rts(info, mean_info, q_step, p0, trust_info)
         d["delta_rms"] = round(float(np.sqrt(np.mean(m1**2))), 4)
         d["post_std_med"] = round(float(np.median(np.sqrt(p1))), 4)
         jmask = np.zeros(n_m, dtype=bool)
@@ -1000,7 +1011,10 @@ def _rotor_pass(
                     m = (extra_k < lowk_split_k) & (extra[0] >= lo_f) & (extra[0] < hi_f)
                     extra[2][m] /= lowk_weight  # down-weight joint low-k obs too
     # Pass A (q_k = 0) -> data-driven q_k from the robust residual excess.
-    m0, _ = _smooth_delta(dpsi, var_meas, valid, h, q_step, p0, ess=ess, extra=extra, scale=scale)
+    m0, _ = _smooth_delta(
+        dpsi, var_meas, valid, h, q_step, p0, ess=ess, extra=extra, scale=scale,
+        trust_info=trust_info,
+    )
     resid = dpsi - h[None, :, None] * m0[None, None, :]
     q_k = np.zeros(len(ks))
     q_ok = np.zeros(len(ks), dtype=bool)
@@ -1026,6 +1040,7 @@ def _rotor_pass(
         ess=ess,
         extra=extra,
         scale=scale,
+        trust_info=trust_info,
     )
 
     d["q_k"] = {str(k): round(float(q), 5) for k, q, ok in zip(ks, q_k, q_ok) if ok}
@@ -1074,6 +1089,7 @@ def pi_kalman_refine(
     k_caps: tuple[int, ...] = (8, 20, 40),
     sigma_process: float = 2.0,
     sigma_prior: float = 2.0,
+    sigma_trust: float | None = None,
     guard_hz: float = 1.0,
     snr_gate: float = 2.0,
     wrap_guard_rad: float = 2.8,
@@ -1253,6 +1269,7 @@ def pi_kalman_refine(
     n_trim = max(1, int(round(edge_trim_s * fs_e)))
     q_step = sigma_process**2 * dt
     p0 = sigma_prior**2
+    trust_info = 0.0 if sigma_trust is None else 1.0 / float(sigma_trust) ** 2
     schedule = [int(min(k_caps[min(j, len(k_caps) - 1)], k_max)) for j in range(n_iter)]
     band_schedule = [bands[min(j, len(bands) - 1)] for j in range(n_iter)]
     n_rot = r.shape[0]
@@ -1331,6 +1348,7 @@ def pi_kalman_refine(
                     lowk_split_k=lowk_split_k,
                     lowk_thresh=lowk_thresh,
                     lowk_weight=lowk_weight,
+                    trust_info=trust_info,
                 )
                 d["iter"] = it + 1
                 if k_scaled:
@@ -1360,6 +1378,7 @@ def pi_kalman_refine(
             "k_caps": list(k_caps),
             "sigma_process": sigma_process,
             "sigma_prior": sigma_prior,
+            "sigma_trust": sigma_trust,
             "guard_hz": guard_hz,
             "snr_gate": snr_gate,
             "wrap_guard_rad": wrap_guard_rad,

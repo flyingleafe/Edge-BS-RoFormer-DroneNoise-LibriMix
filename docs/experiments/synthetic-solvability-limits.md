@@ -615,3 +615,116 @@ even though its distribution is wider — the ladder is not monotone in difficul
 so far. That is not a contradiction: validation is half real, and a slightly
 wider training distribution may transfer to the real half better than the sharp
 corner does. Whether that survives the wider rungs is what r2 to r4 measure.
+
+## The joint four-rotor filter: built, tested, refuted
+
+The sequential refiner estimates one rotor at a time, so a demod band shared by
+two rotors holds a two-phasor sum whose argument advances at neither line's
+rate. The sequential design can only discard such a measurement. The joint
+model keeps it: the state becomes the whole correction vector, and a shared
+band contributes one DENSE observation row,
+
+    dpsi ~= sum_m w_m * 2 pi k_m dt * dr_rot(m),   w_m = P_m / sum P
+
+the power-weighted mean of the member lines' increments. A clean band gives
+back the sequential row exactly. Implementation: `src/tracking/joint_phase_kalman.py`
+(4x4 information matrix, matrix Kalman and RTS, per-band excess variance
+measured apart on collided and clean frames). Probe: `scripts/joint_kalman_probe.py`.
+
+### The 27x collision cost was a confound
+
+The number that motivated the joint model — 0.0160 rev/s injected into an exact
+initialization with four rotors against 0.0006 with one — came from two
+DIFFERENT synthesis paths. The one-rotor control was built directly (smooth
+trajectory, one channel, its own noise floor) because the pool's frame geometry
+fixes four rotor positions. On matched synthesis, where only the rotor count
+changes, the ladder is:
+
+| rotors | injected error (rev/s) |
+|---|---|
+| 1 | 0.0006 |
+| 2 | 0.0115 |
+| 3 | 0.0431 |
+| 4 | 0.0593 |
+
+### The joint model buys nothing
+
+At matched settings the joint filter and the sequential filter agree. Three
+weight modes, two band widths, four clips, exact initialization:
+
+| band_b0 | seq | joint/power | joint/hard | joint/drop |
+|---|---|---|---|---|
+| 0.35 | 0.0593 | 0.0510 | — | 0.0474 |
+| 0.15 | 0.0218 | 0.0211 | 0.0216 | 0.0214 |
+
+`drop` gates collided measurements out, which decouples the joint filter into
+the per-rotor scalar filters — it agrees with the other two modes, so keeping
+the collided measurements is worth nothing either. `guard_hz` is inert (0.0593
+at 1.0 Hz against 0.0570 at 0.15 Hz). The apparent 2.8x win in the first run
+was entirely a band-width difference: the joint module defaulted to
+`band_b0=0.15` and the sequential refiner defaults to 0.35.
+
+**Cross-rotor attribution is refuted as a lever.** The joint filter costs 2x the
+runtime and returns the sequential answer.
+
+### The band width is the lever, and it is the whole story
+
+Sweeping `band_b0` on an exact initialization:
+
+| band_b0 | R=1 | R=4 | ratio |
+|---|---|---|---|
+| 0.35 | 0.0006 | 0.0593 | 98x |
+| 0.25 | 0.0006 | 0.0444 | 74x |
+| 0.15 | 0.0006 | 0.0218 | 37x |
+| 0.08 | 0.0006 | 0.0082 | 14x |
+| 0.04 | 0.0006 | 0.0039 | 7x |
+| 0.02 | 0.0006 | 0.0022 | 4x |
+
+The one-rotor floor is FLAT — it is not band-limited at all. The four-rotor
+error is very nearly proportional to the band width, at about `0.15 * b0`. The
+multi-rotor cost is in-band leakage from the other combs, and it is bought back
+by narrowing the band, not by modelling the interferers.
+
+### The refiner has an attractor, and it is not the truth
+
+Iterating one call from an exact initialization at `b0=0.35` gives 0.0593,
+0.0987 and 0.1258 at 6, 12 and 20 iterations. Repeated one-pass refinement from
+a 0.30 rev/s displaced initialization converges to 0.11 and stays. The refiner
+therefore has a fixed point at about `0.15 * b0`, approached from below when the
+input is better than it and from above when it is worse. This is the mechanism
+behind the blind ladder's 2.744 -> 3.384 degradation.
+
+### A trust prior exists but does not escape the wall
+
+`pi_kalman_refine` gained `sigma_trust` (new): a zero-mean pseudo-measurement of
+the correction on every frame, `info[j] += 1 / sigma_trust^2`. It is the missing
+term — `p0` constrains frame 0 alone, so nothing said the input was worth
+anything. Default `None` leaves the filter bit-identical.
+
+It behaves exactly as a prior should, which is to say it helps only when the
+initialization really is better than the attractor:
+
+| displacement | no refine | None | 0.3 | 0.1 | 0.03 | 0.01 |
+|---|---|---|---|---|---|---|
+| 0.10 | 0.0810 | 0.0572 | 0.0543 | **0.0415** | 0.0558 | 0.0739 |
+| 0.30 | 0.2429 | **0.1071** | 0.1370 | 0.1617 | 0.2106 | 0.2396 |
+
+### The real wall: the error tail sets capture, the error bulk sets precision
+
+A geometric band anneal (0.35 down by 0.6 per pass) plateaus at 0.1201 rather
+than following the attractor down, and an ORACLE capture-respecting anneal
+(`b0 = margin * max|error|`, using the truth) runs BACKWARDS: from a 0.02 rev/s
+initialization it goes 0.0092 -> 0.0102 -> 0.0127 -> ... -> 0.0296 while the
+band it demands grows 0.070 -> 0.204.
+
+The cause is visible in those two columns. At MAE 0.0092 the worst frame is
+0.047 — five times the typical one. The band must cover the tail to keep
+capture, but running at the tail's width re-injects error across the bulk, which
+fattens the tail, which widens the band. **The band width needed for capture is
+set by the worst frame; the band width that gives precision is set by the
+typical frame; and a constant-in-time band cannot serve both.**
+
+That names the next lever precisely, and it is not a joint state: the band does
+not have to be constant in time. The smoother already produces a per-frame
+posterior. A per-frame adaptive band — wide where the posterior is loose, narrow
+where it is tight — is the one change that attacks the actual constraint.
