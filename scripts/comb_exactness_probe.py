@@ -65,7 +65,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--n", type=int, default=6)
-    ap.add_argument("--iters", type=int, default=3)
+    ap.add_argument("--iters", type=int, default=12)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -73,15 +73,23 @@ def main() -> int:
     print(f"{len(data)} cruise clips, 8 s, static comb (deterministic phase)\n")
     print(f"{'init sigma':>10s} {'sigma_process':>14s} {'init MAE':>9s} {'refined':>9s} {'ratio':>7s}")
     rows = []
-    for sp in (0.25, 2.0):
-        for sig in (0.0, 0.1, 0.5, 2.0):
+    # band_mode "fixed" gives harmonic k a capture range of band_hz / k, so the
+    # k=40 stage captures only 0.15 rev/s at the 6 Hz default — SMALLER than the
+    # error the 3-iteration default converges to, which makes that stage a trap:
+    # the top harmonics sit outside their bands and feed noise back in. Extra
+    # iterations repeat the last k_cap, and "k_scaled" replaces the fixed Hz band
+    # with a constant shaft-rate trust region (band_b0 rev/s at every order).
+    for mode, sp in (("fixed", 2.0), ("k_scaled", 2.0), ("k_scaled", 0.25)):
+        print(f"\n--- band_mode={mode}  sigma_process={sp}  n_iter={args.iters} ---")
+        for sig in (0.0, 0.02, 0.1, 0.5):
             ini, ref = [], []
             for i, (audio, truth, ft) in enumerate(data):
                 rng = np.random.default_rng(100 + i)
                 r0 = truth + (rng.normal(0.0, sig, truth.shape) if sig > 0 else 0.0)
                 try:
                     est, _ = pi_kalman_refine(audio, r0, ft, sr=SR,
-                                              n_iter=args.iters, sigma_process=sp)
+                                              n_iter=args.iters, sigma_process=sp,
+                                              band_mode=mode)
                 except Exception as exc:
                     print(f"   clip {i} failed: {type(exc).__name__}: {exc}")
                     continue
@@ -90,7 +98,7 @@ def main() -> int:
             if not ref:
                 continue
             i_m, r_m = float(np.mean(ini)), float(np.mean(ref))
-            rows.append({"sigma_process": sp, "init_sigma": sig,
+            rows.append({"band_mode": mode, "sigma_process": sp, "init_sigma": sig,
                          "init_mae": i_m, "refined_mae": r_m, "n": len(ref)})
             print(f"{sig:>10.2f} {sp:>14.2f} {i_m:>9.4f} {r_m:>9.4f} "
                   f"{(r_m / i_m if i_m > 0 else float('nan')):>7.2f}")
