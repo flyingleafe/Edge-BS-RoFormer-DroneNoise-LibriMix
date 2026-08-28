@@ -78,6 +78,6 @@ def _ensure_imported():
     global _IMPORTED
     if _IMPORTED:
         return
-    from . import comb, hcqt, pyramid, ssq, stft  # noqa: F401
+    from . import comb, hcqt, learned, pyramid, ssq, stft  # noqa: F401
 
     _IMPORTED = True

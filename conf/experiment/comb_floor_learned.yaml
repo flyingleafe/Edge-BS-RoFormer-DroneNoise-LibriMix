@@ -1,0 +1,34 @@
+# @package _global_
+# COMB FLOOR, learned time-domain front-end. The A/B against `comb_floor_base`,
+# which is the identical trunk and head on the log-magnitude STFT and floored at
+# val RMSE 2.535 after 202 epochs without improvement.
+#
+# ONE THING CHANGES: the front-end. `learned_conv` gives the trunk the raw
+# responses of 2F free time-domain filters (real, imaginary, log-magnitude)
+# instead of a magnitude spectrogram, so PHASE is available. init="stft" starts
+# the bank at the windowed DFT basis, reproducing stft_mag to 2e-06, so this arm
+# begins at exactly `comb_floor_base`'s representation plus two phase channels.
+# Any gain is therefore attributable to the freedom, not to a lucky init, and
+# any loss says the extra channels are a distraction rather than a signal.
+#
+# The reference numbers this is read against, all on the deterministic comb:
+# `comb_floor_base` 2.535, `comb_floor_deep` 2.155, and an oracle-initialised
+# classical phase refiner at 0.028 (four rotors) / 0.0006 (one rotor). The gap
+# between 2.155 and 0.0006 is what a phase-aware model would have to close.
+defaults:
+  - override /data: comb_only_combval
+  - override /model: simple_conv_v2_transformer_learned
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: comb_floor_learned
+epochs: 2000
+patience: 200
+batch_size: 128
+num_workers: 6
+samples_per_validation: 5000  # frames; an 8 s clip is 8x a 1 s one
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

@@ -1554,6 +1554,38 @@ class SimpleConvV2TransformerIF(SimpleConvV2Transformer):
         )
 
 
+class SimpleConvV2TransformerLearned(SimpleConvV2Transformer):
+    """SimpleConvV2Transformer trunk on a LEARNED time-domain filterbank.
+
+    Hypothesis under test: every front-end in this project hands the trunk a
+    function of the STFT magnitude, and magnitude discards the phase. The
+    campaign's models converge on a degenerate answer — a fixed rotor spread of
+    about 10 rev/s whatever the rotors do — which is what reading a comb's mean
+    spacing rather than its individual lines produces. Recovering a speed to the
+    precision the signal carries is a phase problem: the classical phase-
+    increment refiner reaches 0.0006 rev/s on a single-rotor comb, against this
+    trunk's 2.535 comb floor.
+
+    ``learned_conv`` convolves the raw waveform with ``2F`` free filters of
+    length ``n_fft`` at stride ``hop_length`` and hands over their raw responses
+    (real, imaginary, log-magnitude). The windowed DFT basis IS such a filter
+    set, so the STFT is a strict subset of what this can represent, and
+    ``init="stft"`` starts there — reproducing ``stft_mag`` to 2e-06 — so the
+    arm begins at the baseline representation with phase added and separates
+    "do learned filters help" from "can gradient descent find the STFT".
+    """
+
+    def __init__(self, n_fft=2048, hop_length=512, num_rotors=4, frontend=None, **kwargs):
+        if frontend is None:
+            from models.frontends import build_frontend
+
+            frontend = build_frontend("learned_conv", n_fft=n_fft, hop_length=hop_length)
+        super().__init__(
+            n_fft=n_fft, hop_length=hop_length, num_rotors=num_rotors,
+            frontend=frontend, **kwargs
+        )
+
+
 class SimpleConvV2TransformerComb(SimpleConvV2Transformer):
     """G4 front-end arm: SimpleConvV2Transformer trunk on the whitened comb
     matched-filter + IF-consensus front-end (VK-parity campaign, criterion 2.3).
@@ -2569,6 +2601,7 @@ RPS_MODEL_REGISTRY = {
     "simple_conv_v2_transformer": SimpleConvV2Transformer,
     "simple_conv_v2_transformer_hcqt": SimpleConvV2TransformerHCQT,
     "simple_conv_v2_transformer_if": SimpleConvV2TransformerIF,
+    "simple_conv_v2_transformer_learned": SimpleConvV2TransformerLearned,
     "simple_conv_v2_transformer_comb": SimpleConvV2TransformerComb,
     "simple_conv_v2_transformer_pyramid": SimpleConvV2TransformerPyramid,
     "simple_conv_v2_local_attn": SimpleConvV2LocalAttention,

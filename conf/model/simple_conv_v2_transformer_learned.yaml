@@ -1,0 +1,35 @@
+# simple_conv_v2_transformer_learned — the SimpleConvV2Transformer trunk on a
+# LEARNED time-domain filterbank instead of a magnitude spectrogram.
+#
+# WHY. Every front-end in this project hands the trunk a function of the STFT
+# MAGNITUDE, and magnitude discards the phase. The campaign's models converge on
+# a degenerate answer — a fixed rotor spread near 10 rev/s whatever the rotors
+# do (docs/experiments/synthetic-solvability-limits.md) — which is what reading a
+# comb's mean spacing rather than its individual lines produces. Recovering a
+# speed to the precision the signal carries is a phase problem: the classical
+# phase-increment refiner reaches 0.0006 rev/s on a single-rotor comb against
+# this trunk's 2.535 comb floor.
+#
+# `learned_conv` convolves the raw waveform with 2F free filters of length
+# n_fft at stride hop_length and passes their raw responses (real, imaginary,
+# log-magnitude). The windowed DFT basis IS such a filter set, so the STFT is a
+# strict SUBSET of what this represents, and init="stft" starts exactly there —
+# it reproduces stft_mag to 2e-06. The arm therefore begins at the baseline
+# representation with phase added, which separates "do learned filters help"
+# from "can gradient descent find the STFT".
+#
+# 4.20M front-end parameters against the 1.48M trunk. The (F, T) grid is
+# identical to stft_mag's, so nothing downstream changes.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: simple_conv_v2_transformer_learned
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+model_type: null
+legacy_config_path: null
