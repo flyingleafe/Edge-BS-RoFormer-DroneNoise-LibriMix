@@ -728,3 +728,82 @@ That names the next lever precisely, and it is not a joint state: the band does
 not have to be constant in time. The smoother already produces a per-frame
 posterior. A per-frame adaptive band — wide where the posterior is loose, narrow
 where it is tight — is the one change that attacks the actual constraint.
+
+## Solving the static comb: the search half
+
+With a good initialization the static comb is already solved — 0.0006 rev/s at
+one rotor, 0.0022 at four. The blind seed handed to that machinery carried 2.744
+rev/s, which is 100 times outside the refiner's own capture range, so every
+refinement stage was running blind of its assumptions. The problem is therefore
+SEARCH, not precision.
+
+### The Whittle comb score, and why the logarithm is the whole trick
+
+Over a window short enough that a rotor's rate is nearly constant, score a
+candidate rate by the log-likelihood of a line-plus-noise model summed over its
+harmonics, `S(r) = (1/K) sum_k log(1 + Y(k r) / sigma^2)`.
+
+A plain harmonic SUM does not work, and its failure is instructive: the
+half-rate `r / 2` covers every line `r` has AND pockets the noise in the bins
+between, so it outscores the truth. Measured on a four-rotor comb, the plain
+sum ranked `76.16 / 2 = 38.08` first and the true rates second and fourth. Under
+the logarithm an empty bin contributes zero instead of noise, and the same
+window ranks the three true rotors first, second and third (errors +0.003,
++0.002, +0.006 rev/s), with the aliases pushed to ranks four through six.
+
+### Peeling, and two corrections that were needed
+
+The strongest comb masks the weaker ones, so each pick's lines are notched out
+and the scan repeats. Three further findings, each measured:
+
+* **Rate-space exclusion HURTS.** Barring a neighbourhood of a picked rate to
+  stop duplicate picks also forbids the second rotor of a close pair, and rotors
+  cross often. Set error rose from 2.01 to 2.58 rev/s. Both exclusion knobs
+  default to zero.
+* **The octave test must be a RATIO.** Absolute harmonic presence sits on a
+  knife edge (0.70 against a 0.75 cut) and flips with the peel order, and it
+  cannot reject a MULTIPLE at all, because a multiple's harmonics are a subset
+  of the true comb's and are therefore always present. The ratio of odd-harmonic
+  to even-harmonic level has neither weakness: a half-rate scores low by
+  construction, a true rate scores near one. That fixed the rotor that was
+  otherwise never found directly — before it, the third peel was that rotor's
+  half-rate in EVERY window.
+* **The octave test must be clamped to the search range.** Unclamped doubling
+  overshot to 140 and 152 rev/s against a 30-100 band. Those few windows alone
+  moved the mean window error from 0.45 to 6.14 while the median stayed at 0.05.
+
+### Where this lands
+
+Per window, four peels, four rotors, no oracle:
+
+| metric | value |
+|---|---|
+| median set error | **0.046 rev/s** |
+| windows within 0.1 | 76% |
+| windows within 0.5 | 83% |
+| windows worse than 1.0 | 16% |
+| mean set error | 1.15 |
+
+The median is 60 times better than the 2.744 rev/s seed it replaces and sits
+well inside the refiner's capture range. The mean does not, because the 16% of
+failed windows all fail the same way: one rotor's comb is too weak to be found
+at all, and a junk candidate takes its place.
+
+**End to end the goal is NOT met.** Stitching windows into tracks and refining
+gives 0.88 rev/s in the well-separated regime and 2.6 in the moderate one,
+against the 2.744 baseline and the 0.0022 floor. The aggregate is dominated
+entirely by the failed windows, and neither a Viterbi chaining nor a
+Hungarian-matching tracker recovered them — both scored WORSE than simply
+sorting each window's four peels, because a tracker given a window with only
+three real rotors has nothing to match the fourth against.
+
+What is solved: the precision, and the per-window search in 83% of windows.
+What is not: the windows where a rotor is too quiet to detect, and the temporal
+association across them. That is where the next work belongs — most likely by
+scoring a rotor's presence over a longer span than one window, so a rotor that
+is momentarily weak is carried by its own history rather than re-detected from
+scratch each time.
+
+Code: `src/tracking/comb_seed.py` (Whittle score, peeling, octave correction),
+`src/tracking/comb_fit.py` (the global coherent objective and its basin, peak at
+the truth for K >= 30 and T >= 1 s, half-width 0.09-0.6 rev/s).
