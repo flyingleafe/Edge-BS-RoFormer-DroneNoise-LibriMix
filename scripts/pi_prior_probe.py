@@ -41,6 +41,33 @@ from tracking.phase_increment_tracker import pi_kalman_refine  # noqa: E402
 SR, DUR, HOP = 16000, 8.0, 512
 
 
+def single_rotor_clips(n: int, seed0: int = 1000):
+    """One-rotor combs built directly, bypassing the 4-rotor frame geometry.
+
+    The pool cannot make these: `rotor_pos` is fixed at four positions and
+    td.Frame rejects the dim mismatch. Going straight to the waveform gives the
+    collision-free control the hypothesis needs.
+    """
+    from data_processing.rotor_spectral_model import ProfileRanges, sample_profile, _comb_waveform
+    out = []
+    for i in range(n):
+        rng = np.random.default_rng(seed0 + i)
+        n_t = int(SR * DUR)
+        # A cruise trajectory with the same excursion scale as the pool's.
+        t = np.arange(n_t) / SR
+        rps = 75.0 + 6.0 * np.sin(2 * np.pi * 0.11 * t) + 2.0 * np.sin(2 * np.pi * 0.37 * t)
+        prof = sample_profile(rng, ProfileRanges(), n_harmonics=100,
+                              ref_rps=float(np.median(rps)), sample_rate=SR)
+        comb = _comb_waveform(rps, np.asarray(prof.a_k, dtype=np.float64), SR, rng)
+        amp = (rps / 80.0) ** 2.5
+        audio = (comb * amp)[None] + 0.01 * rng.standard_normal((1, n_t))
+        n_fr = n_t // HOP
+        ft = (np.arange(n_fr) * HOP + HOP / 2) / SR
+        truth = np.interp(ft, t, rps)[None]
+        out.append((audio, truth, ft))
+    return out
+
+
 def clips(n: int, n_rotors: int, seed0: int = 1000):
     pool = StaticCombNoisePool(sample_rate=SR, duration_s=DUR, n_harmonics=100,
                                n_mics=8, n_rotors=n_rotors, rps_kind="full_flight",
@@ -73,7 +100,7 @@ def main() -> int:
 
     rows = []
     for n_rot in (4, 1):
-        data = clips(args.n, n_rot)
+        data = clips(args.n, n_rot) if n_rot > 1 else single_rotor_clips(args.n)
         if not data:
             print(f"n_rotors={n_rot}: no cruise clips"); continue
         print(f"\n=== n_rotors = {n_rot} "
