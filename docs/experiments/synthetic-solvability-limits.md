@@ -368,7 +368,10 @@ at the 8 s length they are scored at:
 |---|---|---|---|---|---|---|
 | `comb_floor_base` | 2 x 64, 4 heads | 0.141M | 2.535 | 46 | 202 | 8.345 |
 | `comb_floor_deep` | **4** x 64, 4 heads | 0.241M | **2.155** | 60 | 201 | **6.205** |
-| `comb_floor_wide` | 2 x **128**, 8 heads | 0.479M | 2.968 | 39 | 80 (running) | — |
+| `comb_floor_wide` | 2 x **128**, 8 heads | 0.479M | 2.968 | 39 | 177 | 11.418 |
+
+All three arms are finished, each having run 177 to 202 epochs past its own
+minimum without improving on it. The floors are converged, not snapshots.
 
 **There is a floor.** `base` found 2.535 at epoch 46 and then ran 202 further
 epochs without improving on it. The static comb is not solvable to near-zero
@@ -388,6 +391,16 @@ parameters and loses, while `deep` carries 1.7x and wins. **The binding
 constraint is sequential processing depth, not per-time-step representation
 capacity, and it is not parameter count** — the arm with the most parameters is
 the worst of the three.
+
+Parameter count does not order the result at all. Ranked by head parameters the
+arms run 0.141M, 0.241M, 0.479M; ranked by floor they run 2.155 (`deep`), 2.535
+(`base`), 2.968 (`wide`). The middle-sized arm wins and the largest loses. In
+MSE the spread is wider still: 6.205, 8.345, 11.418 — depth takes 26% off base
+and width adds 37%.
+
+**Width does not merely fail to help; it hurts.** Whatever the temporal head
+needs in order to read a comb, a richer per-time-step representation is not it,
+and paying 3.4x the parameters for one makes the model measurably worse.
 
 ### This refutes a prediction made in this campaign
 
