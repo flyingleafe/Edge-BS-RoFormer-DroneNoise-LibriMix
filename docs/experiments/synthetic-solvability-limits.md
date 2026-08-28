@@ -529,3 +529,57 @@ is judged on have disagreed, and the first time the disagreement has silently
 truncated a run. Any conclusion from this arm about what convergence on the
 stochastic family costs is therefore a LOWER bound on the epochs required, not a
 measurement of it.
+
+## Why pi_kalman degrades a perfect initialization: twin collisions
+
+`pi_kalman` never refines a trajectory. It estimates a correction `dr(t)` and
+adds it (`r_hat += dr`, module docstring step 4), so handed the exact answer it
+still estimates a correction from noisy measurements and applies it. There is no
+do-nothing outcome in the architecture. Measured on the deterministic static
+comb with an EXACT initialization:
+
+| configuration | error injected into a perfect init |
+|---|---|
+| `k_scaled`, 12 iterations | 0.0279 |
+| `k_scaled`, 6 iterations | 0.0161 |
+| `fixed` band, 12 iterations | 0.1120 |
+| **four rotors** | **0.0160** |
+| **one rotor, collision-free by construction** | **0.0006** |
+
+**The bias is cross-rotor collisions.** A single-rotor comb — where a collision
+cannot occur — drops the injection by a factor of 27, so about 96% of what the
+estimator adds on a four-rotor comb is the two-phasor winding-number bias its own
+docstring warns about, leaking past the twin gate. Nyquist crossing is excluded
+by arithmetic: at `k_max` 40 and 75 rev/s the top order sits at 3 kHz, far inside
+the band.
+
+**Neither trust knob can fix it**, and the reason is structural rather than a
+matter of tuning:
+
+| knob | swept | injected error |
+|---|---|---|
+| `sigma_prior` | 2.0 → 0.02 | 0.0161 → 0.0160 |
+| `sigma_process` | 2.0 → 0.25 | 0.0279 → 0.0286 |
+
+`p0 = sigma_prior**2` is the variance of `dr` at the FIRST FRAME ONLY; the state
+is re-informed by measurements at every subsequent frame, so across ~500 frames
+its influence is negligible. `sigma_process` governs how fast `dr` may wander,
+not whether it is zero. **No parameter says "the trajectory I was given is
+correct"** — expressing that needs both to reach zero together, which makes the
+filter a no-op by construction.
+
+### Consequence for the blind chain
+
+Applying it after the blind Viterbi ladder makes things monotonically worse:
+
+| rung | PIT MAE |
+|---|---|
+| `vit2dsp` (blind) | 2.744 |
+| + `pi_kalman` x1 to x4 | 2.979, 3.186, 3.310, 3.384 |
+
+So on the deterministic comb `pi_kalman` should not be in the chain as
+configured. The indicated fix is in the GATING — a wider twin guard, or the
+joint two-tone pair mode that resolves the two lines instead of averaging their
+rotation — not in the filter. The gap it would unlock is large: oracle-init
+refinement reaches 0.028 rev/s on a four-rotor comb and 0.0006 on a single-rotor
+one, against a fully blind 2.744.
