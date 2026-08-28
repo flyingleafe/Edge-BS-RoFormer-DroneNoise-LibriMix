@@ -270,6 +270,20 @@ The comb model emits the same pinned fan. It is more accurate everywhere, and
 it does adapt in the unison bucket where the stochastic model does not (4.16
 against 8.96 at a true spread near 0.15), but it is tracking the same way.
 
+`m3abl_comb_transformer_s1` @ `last`, same policy, makes it three for three:
+
+| true spread (rev/s) | 0.14 | 4.33 | 8.92 | 11.69 | 21.46 |
+|---|---|---|---|---|---|
+| predicted spread | 2.76 | 9.87 | 10.01 | 9.89 | 10.09 |
+| PIT MAE | 7.45 | 3.25 | 1.81 | 2.38 | 3.95 |
+
+The fixed fan is not an artifact of one architecture — a BiGRU trunk and a
+transformer head, trained on two different families, all settle on about
+10 rev/s. Note also that the transformer's unison bucket carries the CLOSEST
+predicted spread of any model (2.76 against a true 0.14) and its WORST error
+(7.45): getting the width right does not help when the centre is wrong, so
+predicted spread and accuracy are separate failures.
+
 ### Spread coverage explains 38% of the comb-to-stochastic gap
 
 The two policies do not produce the same spread distribution. The comb policy
