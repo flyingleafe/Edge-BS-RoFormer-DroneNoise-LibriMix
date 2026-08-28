@@ -31,7 +31,8 @@ defaults:
 experiment_name: stoch_long_trxxl
 epochs: 2000
 patience: 200
-batch_size: 128
+batch_size: 16  # frames; 8 s clips are 251 STFT frames against 31, and
+                # attention is quadratic in that, so 128 runs out of CUDA memory
 num_workers: 6
 samples_per_validation: 5000  # frames; an 8 s clip is 8x a 1 s one
 optim:
