@@ -226,3 +226,81 @@ on directly. Line width is also the single structural difference from the static
 comb, whose lines have no width at all. Each rung trains until its own
 half-real, half-synthetic validation stops improving. The ladder claims no
 difficulty ordering in advance — the runs measure it.
+
+## The models predict a fixed fan: mean tracking, confirmed
+
+`scripts/spread_eval.py` buckets a checkpoint's per-frame error by that frame's
+own rotor spread, on cruise columns only, and reports the spread the model
+itself asserts. A model that tracks four harmonic lines follows the true spread.
+A model that has collapsed onto the comb's mean predicts a fixed fan whatever
+the rotors do.
+
+`stoch_s1id_scv2` @ `last`, its own policy, 120 clips:
+
+| true spread (rev/s) | 0.19 | 3.96 | 8.37 | 12.76 | 42.75 |
+|---|---|---|---|---|---|
+| **predicted spread** | 8.96 | 10.28 | 9.59 | 10.74 | **10.81** |
+| PIT MAE | 5.04 | 5.86 | 7.69 | 5.29 | 17.55 |
+| frames | 5792 | 1216 | 18112 | 49696 | 23680 |
+
+**The true spread varies over 42.6 rev/s and the predicted spread over 1.85.**
+The model splays four rotors by about 9 rev/s when they are turning in unison,
+and still by only 10.8 when they are genuinely 42.75 apart. The constant it
+settled on is about 9.4 rev/s, which is this generator's own mean spread at
+aggressiveness 1.0 — the model learned the marginal distribution of the
+quantity, not the signal that determines it.
+
+This is the mean-tracking failure stated as a hypothesis when this campaign
+opened, now measured: the model predicts the mean plus a memorized evenly-spaced
+fan rather than resolving individual lines. It also explains why capacity
+scaling did not move the plateau. The model is not capacity-limited; it has
+found a degenerate solution the loss rewards.
+
+### It is not specific to the stochastic family
+
+`m3abl_comb_scv2_s1` @ `last`, on the static comb:
+
+| true spread (rev/s) | 0.14 | 4.33 | 8.92 | 11.69 | 21.46 |
+|---|---|---|---|---|---|
+| predicted spread | 4.16 | 10.10 | 10.28 | 10.08 | 10.40 |
+| PIT MAE | 1.87 | 2.11 | 0.97 | 1.21 | 3.88 |
+| frames | 4544 | 9248 | 17344 | 82880 | 1408 |
+
+The comb model emits the same pinned fan. It is more accurate everywhere, and
+it does adapt in the unison bucket where the stochastic model does not (4.16
+against 8.96 at a true spread near 0.15), but it is tracking the same way.
+
+### Spread coverage explains 38% of the comb-to-stochastic gap
+
+The two policies do not produce the same spread distribution. The comb policy
+puts 1408 cruise frames above 20 rev/s of spread; the stochastic policy puts
+23680 there, 17 times as many. Wide spread is the worst bucket for both models,
+so part of the gap is which frames each family generates rather than how hard
+each family is:
+
+| | cruise PIT MAE |
+|---|---|
+| comb model on its own spread distribution | 1.30 |
+| stochastic model on its own distribution | 8.67 |
+| stochastic model reweighted to the comb's spread distribution | 5.84 |
+
+Reweighting closes 38% of the gap, so the remaining 62% is genuine difficulty.
+The comb model's reweighted figure of 1.30 reproduces its known campaign figure
+of 1.29, which is the consistency check on these buckets.
+
+**These are cruise columns only** and are not comparable to the campaign's
+all-regime numbers: the stochastic arm's all-regime figure is 3.70 against the
+8.67 here, because the easy zero- and low-speed regimes pull that average down.
+The comb policy is nearly all cruise, which is why its two figures agree.
+
+### What this changes
+
+1. The next lever is whatever breaks the fixed-fan solution, not capacity and
+   not more data from the same generator.
+2. Rotor spread is a coverage axis in its own right. The real split's flight
+   frames average 13.7 rev/s of spread; this generator gives 9.4 at
+   aggressiveness 1.0, and 9.4 is exactly what the model learned to emit.
+3. The line-width ladder is a test of this: if sharper lines let a model resolve
+   rotors individually, its predicted spread should start following the true
+   spread at rung 0 and stop following it as the rungs widen. That is a sharper
+   read on each rung than PIT-MAE alone, and `spread_eval.py` measures it.
