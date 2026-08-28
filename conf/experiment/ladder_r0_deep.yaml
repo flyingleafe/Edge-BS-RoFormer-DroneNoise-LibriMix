@@ -1,0 +1,63 @@
+# @package _global_
+# CURRICULUM RUNG 0 on the DEEP head — gamma_slope_hz [0.0, 0.0], from scratch.
+#
+# The ladder's scv2 arm measures what the campaign's reference trunk can do. This
+# arm measures what the DATA allows, which is the question the campaign is
+# actually asking. The comb-floor study found depth the only scaling axis that
+# helps: doubling the temporal transformer's layers took the comb floor from
+# 2.535 to 2.155 while doubling its width made it 2.968, worse than base with
+# 3.4x the head parameters. A ladder run on a weaker head measures the head's
+# limit wherever that sits below the data's.
+#
+# Read beside ladder_r0_scv2. If the two agree, the rung is data-limited and the
+# ladder's numbers are about the distribution. If this arm is better, the scv2
+# ladder was reporting its own trunk.
+#
+# ONE AXIS: how fast a harmonic line broadens with its own order. Rung 0 is a
+# sharp comb, rung 4 is the full family; `rolloff_p` and `gamma0_hz` hold at the
+# family default throughout, so exactly one thing changes along the ladder.
+#
+# WHY LINE WIDTH AND NOT THE VARIANCES. The campaign opened on the premise that
+# the static comb is the zero-variance corner of this family. It is not: zeroing
+# every knob named variance moves comb contrast by less than the measurement's
+# own spread, and the floor depth moves it by 0.0 dB. Line width is the one knob
+# that moves contrast monotonically, and it is the single structural difference
+# from the static comb, whose lines have no width at all.
+#
+# WHAT THIS LADDER DOES NOT ASSUME. An earlier version ordered the rungs by
+# peak-to-bulk contrast and was withdrawn: a model-free harmonic-sum estimator
+# showed the highest-contrast rung was the HARDEST, because that contrast came
+# from steepening the rolloff, which raises the ratio by killing the harmonics
+# there are to lock onto. Contrast is not a difficulty measure. The same probe
+# is too unstable to order these rungs either — its per-clip error is bimodal,
+# locking near 0.2 rev/s or failing near 20 — so the ladder does not claim a
+# difficulty ordering in advance. The runs measure it.
+#
+# Validation is half real and half synthetic, the synthetic half drawn from THIS
+# rung's policy, the real half the frozen split and identical at every rung. Two
+# curves come out: how the achievable synthetic fit decays as lines broaden, and
+# whether real-rig transfer follows it or breaks away.
+#
+# WHY PATIENCE AND NOT A FIXED RUNG LENGTH. Each rung trains until its own
+# validation stops improving. This is still calibrated on the comb-only runs —
+# they set what patience must be — but it lets a harder rung take the epochs it
+# needs. All three comb-only arms were still descending when they stopped, at 21
+# to 59 epochs, so any fixed length read off them would underestimate.
+# Batch doc: docs/experiments/synthetic-solvability-limits.md.
+defaults:
+  - override /data: ladder_r0
+  - override /model: simple_conv_v2_transformer_deep
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: ladder_r0_deep
+epochs: 2000
+patience: 100  # the comb-floor runs saturate by epoch 40 to 60
+batch_size: 128  # frames (= 16 chunks x 8 mics)
+num_workers: 6
+samples_per_validation: 5000  # frames; an 8 s clip is 8x a 1 s one
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
