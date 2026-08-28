@@ -408,3 +408,37 @@ length did not improve the best number; it made training stable — the 8 s run
 sits flat near 2.7 while the 1 s run ran away to 4.08 and climbing. For a floor
 measurement stability is what matters, but the fix should not be credited with
 an accuracy gain it did not deliver.
+
+## The rung-length calibration, from the comb-floor runs
+
+The curriculum was specified as running each rung for a number of steps
+calibrated on the comb-only experiments. Those experiments have now supplied the
+number. Trained to saturation on the static comb, every arm found its floor
+early and then never improved on it:
+
+| arm | floor at epoch | epochs past the minimum with no improvement |
+|---|---|---|
+| `comb_floor_base` | 46 | 202 |
+| `comb_floor_deep` | 60 | 201 |
+| `comb_floor_wide` | 39 | 80 (still running) |
+
+Saturation on a comb-only task takes **40 to 60 epochs**. Rungs 1 to 4 therefore
+carry patience 100 — more than twice the observed requirement, so no arm the
+comb runs resemble would be truncated, while patience 200 spent about 200 idle
+epochs per arm. Rung 0 was already running at 200 and was left alone rather than
+restarted for a saving.
+
+Patience rather than a fixed step count: a wider rung may genuinely need longer
+than a sharp one, and the ladder does not assume it knows which. The comb runs
+calibrate what patience has to be, which is what the specification asked for.
+
+### The open follow-up
+
+The ladder runs the 1.5M `simple_conv_v2` trunk, chosen as the campaign's
+reference. The comb-floor result argues for revisiting that: depth moved the
+comb floor 15% while width made it worse, so a depth-scaled temporal head is the
+better probe of what the DATA allows, as opposed to what this trunk allows. A
+ladder run on the weaker architecture measures the architecture's limit where it
+is lower than the data's. Rung 0 is already training on `simple_conv_v2`, so the
+chain is left as it is and the depth-scaled ladder is recorded as the natural
+second pass rather than a mid-flight change.

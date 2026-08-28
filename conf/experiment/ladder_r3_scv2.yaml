@@ -26,11 +26,16 @@
 # curves come out: how the achievable synthetic fit decays as lines broaden, and
 # whether real-rig transfer follows it or breaks away.
 #
-# WHY PATIENCE AND NOT A FIXED RUNG LENGTH. Each rung trains until its own
-# validation stops improving. This is still calibrated on the comb-only runs —
-# they set what patience must be — but it lets a harder rung take the epochs it
-# needs. All three comb-only arms were still descending when they stopped, at 21
-# to 59 epochs, so any fixed length read off them would underestimate.
+# WHY PATIENCE 100. The comb-floor runs supplied the calibration this ladder was
+# waiting for. Trained to saturation on the static comb, all three arms found
+# their floor early and then never improved on it: `base` at epoch 46 and 202
+# epochs past it, `deep` at 60 and 201 past, `wide` at 39. Saturation on a
+# comb-only task takes 40 to 60 epochs, so patience 100 is more than twice the
+# observed requirement and no arm would have been truncated by it — while
+# patience 200 spent about 200 idle epochs per arm.
+#
+# Patience rather than a fixed step count, because a wider rung may need longer
+# than a sharp one and the ladder does not assume it knows which.
 # Batch doc: docs/experiments/synthetic-solvability-limits.md.
 defaults:
   - override /data: ladder_r3
@@ -41,7 +46,7 @@ defaults:
 experiment_name: ladder_r3_scv2
 checkpoint: r2://ml-data/artifacts/ladder_r2_scv2/checkpoints/best.ckpt
 epochs: 2000
-patience: 200
+patience: 100
 batch_size: 128  # frames (= 16 chunks x 8 mics)
 num_workers: 6
 samples_per_validation: 5000  # frames; an 8 s clip is 8x a 1 s one
