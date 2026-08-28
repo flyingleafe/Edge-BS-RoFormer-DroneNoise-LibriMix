@@ -493,3 +493,39 @@ fan — depth improves within it, width degrades within it — then the lever th
 might break it is the DATA, which is what the ladder varies. That is now the
 ladder's sharpest question, and `spread_eval.py` reads it per rung: does a rung's
 model start tracking true spread, or does it just re-centre the same fan?
+
+## Training to convergence on the stochastic family
+
+`stoch_long_scv2`, the 1.5M trunk at patience 200 and epochs 2000, on half-real
+half-synthetic validation, trained at 8 s:
+
+| run | epochs | val RMSE min | at epoch | past min |
+|---|---|---|---|---|
+| `stoch_long_scv2` (1.5M) | 229 | 10.304 | 202 | 27 |
+| `stoch_long_trxxl` (38M) | 157 (running) | 13.207 | 31 | 126 |
+
+Its 1 s-trained predecessor reached 11.265 before being cancelled, so training
+at the scoring length is worth about 8.5% here — unlike the comb case, where the
+same change bought stability rather than accuracy.
+
+**Width scaling hurts on the stochastic family too.** The 38M `trxxl` sits 28%
+worse than the 1.5M trunk (13.207 against 10.304) and is climbing away from its
+epoch-31 minimum. `trxxl` scales `width` to 384 with an 8 x 512 head, which is
+predominantly the axis the comb-floor study found harmful, and it fails the same
+way on a different family.
+
+**These are half-real, half-synthetic numbers** and are not comparable to this
+campaign's synthetic-only or real-only figures.
+
+### The stopping rule terminated a run that was still improving
+
+`stoch_long_scv2` reached its RMSE minimum at epoch 202 and stopped at 228 with
+only 27 epochs past it, far short of patience 200. The arithmetic gives it away:
+the monitored metric is MSE, whose minimum was at about epoch 28, and 28 + 200
+is 228. MSE patience ended a run whose RMSE was still descending.
+
+This is the fourth time in this campaign that MSE and the error metric the work
+is judged on have disagreed, and the first time the disagreement has silently
+truncated a run. Any conclusion from this arm about what convergence on the
+stochastic family costs is therefore a LOWER bound on the epochs required, not a
+measurement of it.
