@@ -1,0 +1,48 @@
+# Arm ID's stochastic stream AT 8 S for training, validated on HALF REAL, HALF
+# SYNTHETIC — the real split's 37 clips x 8 channels (296 samples) against an
+# equal number of synthetic ones.
+#
+# WHY NOT SYNTHETIC-ONLY VALIDATION. Selecting purely on synthetic fixes one
+# blindness and creates the opposite one: a model that fits the generator ever
+# more precisely would keep scoring better and be kept, even as it diverges
+# from real recordings. That is not hypothetical here — `stoch_s1id_scv2`'s
+# `last` checkpoint fits synthetic 2.3x better than its `best` (8.63 -> 3.70)
+# while scoring 1.9x worse on real (7.40 -> 14.19). Synthetic-only selection
+# would have chosen exactly the checkpoint that fails on the real rigs.
+#
+# WHY NOT REAL-ONLY, WHICH IS WHAT EVERY EARLIER ARM DID. It halts training
+# while the synthetic fit is still improving, so no arm in this campaign ever
+# converged: `trbig`'s best checkpoint is epoch 1 of 11, `trxl` reached 20
+# epochs, `trxxl` 34, the BiGRU's best was epoch 5. Every capacity conclusion
+# from those runs measured the stopping rule rather than the model.
+#
+# HALF AND HALF gives the monitored metric both jobs at once: it keeps
+# improving while the model genuinely learns harmonic structure, and turns
+# over as soon as the model starts fitting generator artifacts that the real
+# rigs do not share. 37 synthetic against the real split's 37 clips, so
+# neither half can dominate the average.
+#
+# The synthetic half is drawn at base_seed 990001 — not the training policy's
+# 20260712 — at 8 s and unaugmented, matching the real half's conditions so
+# the two halves are on the same scale.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/stoch_s1id8_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.MixedRealSynthValidDataset
+  params:
+    policy_path: conf/online_mix/stoch_s1id8_dload.yaml
+    real_data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    base_seed: 990001
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
