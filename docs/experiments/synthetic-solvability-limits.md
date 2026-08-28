@@ -357,3 +357,54 @@ the networks trained on `stoch_s1id`, which adds line-visibility constraints. Th
 two numbers are not directly comparable and no ranking should be read from them.
 What they do support is the finding above: whatever the networks learned on the
 stochastic family, a one-frequency-plus-fixed-fan heuristic reaches it.
+
+## The comb floor exists, and DEPTH moves it while width does not
+
+Three transformer heads trained to saturation on the static comb, validated on
+the comb itself at a held-out seed, patience 200 and epochs 2000, all training
+at the 8 s length they are scored at:
+
+| arm | head | head params | floor (val RMSE) | at epoch | epochs past min | best MSE |
+|---|---|---|---|---|---|---|
+| `comb_floor_base` | 2 x 64, 4 heads | 0.141M | 2.535 | 46 | 202 | 8.345 |
+| `comb_floor_deep` | **4** x 64, 4 heads | 0.241M | **2.155** | 60 | 201 | **6.205** |
+| `comb_floor_wide` | 2 x **128**, 8 heads | 0.479M | 2.968 | 39 | 80 (running) | — |
+
+**There is a floor.** `base` found 2.535 at epoch 46 and then ran 202 further
+epochs without improving on it. The static comb is not solvable to near-zero
+precision by this architecture at this scale, which answers the question the
+campaign opened with: models cannot reach near-perfect precision on a static
+comb, and the training loss does hit a hard limit.
+
+**Depth moves the floor; width moves it the wrong way.** Doubling the temporal
+transformer's DEPTH takes the floor from 2.535 to 2.155, a 15% reduction, and
+the MSE from 8.345 to 6.205, a 26% reduction. Doubling its WIDTH instead — key,
+value and head dimensions — puts the floor at 2.968, 17% WORSE than base.
+
+The two axes were deliberately not parameter-matched, because doubling a
+transformer's model dimension is quadratic while doubling its layers is linear.
+That asymmetry now works in the result's favour: `wide` carries 3.4x base's head
+parameters and loses, while `deep` carries 1.7x and wins. **The binding
+constraint is sequential processing depth, not per-time-step representation
+capacity, and it is not parameter count** — the arm with the most parameters is
+the worst of the three.
+
+### This refutes a prediction made in this campaign
+
+From the fixed-fan measurement — all three architectures emitting a constant
+10 rev/s spread whatever the rotors do — this campaign predicted that capacity
+would not move the comb floor, and that the limit would prove to be the signal
+representation. Depth moved it by 15%. The prediction was wrong, and the runs
+settled it rather than the argument.
+
+The fixed-fan finding still stands on its own measurement. What it does not
+support is the inference that was drawn from it about capacity.
+
+### A note on the 8 s fix
+
+The cancelled 1 s-trained `base` run reached a BETTER best than its 8 s
+replacement (2.372 against 2.535) before diverging. Training at the scoring
+length did not improve the best number; it made training stable — the 8 s run
+sits flat near 2.7 while the 1 s run ran away to 4.08 and climbing. For a floor
+measurement stability is what matters, but the fix should not be credited with
+an accuracy gain it did not deliver.
