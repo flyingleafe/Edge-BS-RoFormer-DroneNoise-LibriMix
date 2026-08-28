@@ -73,7 +73,7 @@ def main() -> int:
     got, s = 0, 1000
     per_rung: dict[str, list[float]] = {}
     while got < args.n and s < 1000 + 300:
-        tf = pool.sample_timeframe(np.random.default_rng(s)); s += 1
+        tf = pool.sample_timeframe(np.random.default_rng(s), DUR); s += 1
         rps = np.asarray(tf["rps"].data, dtype=np.float64)
         if float(np.mean(rps)) < 45.0:
             continue
