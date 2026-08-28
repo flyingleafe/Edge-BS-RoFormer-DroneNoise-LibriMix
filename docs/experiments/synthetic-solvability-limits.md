@@ -318,3 +318,42 @@ The comb policy is nearly all cruise, which is why its two figures agree.
    rotors individually, its predicted spread should start following the true
    spread at rung 0 and stop following it as the rungs widen. That is a sharper
    read on each rung than PIT-MAE alone, and `spread_eval.py` measures it.
+
+## The peeling probe failed as an instrument
+
+To ask whether four-rotor recovery is achievable at all without a network,
+`scripts/comb_peel_probe.py` finds the best f0 by harmonic sum, suppresses that
+comb, and repeats four times, against a hand-built control: find ONE f0 and
+answer with four speeds evenly spaced by the same 10 rev/s width the networks
+converged on. Median PIT MAE over 84 cruise frames per policy, speech at −30 dB:
+
+| policy | peel | fan | true spread |
+|---|---|---|---|
+| `ladder_r4` (full family) | 18.87 | 6.70 | 10.03 |
+| `ladder_r0` (sharp lines) | 14.68 | 4.42 | 9.61 |
+| `comb_floor_s1` (static comb) | 4.06 | 3.36 | 10.37 |
+
+**Peeling loses to the fan on every family**, by 12 rev/s on the full one. That
+is not a result about the data; it means the peeler is a bad estimator. The
+likely mechanism is that the four combs interleave, so suppressing a band around
+each `k * f0` removes the neighbouring rotors' lines along with the target's,
+and later picks land on aliases. **The identifiability question remains open.**
+Peeling does close on the fan where lines are sharp (4.06 against 3.36 on the
+static comb, against 18.87 against 6.70 on the full family), which is consistent
+with sharpness helping, but a failing estimator cannot carry that claim.
+
+### What does survive: the fan is competitive with the trained networks
+
+The fan control scores 3.36 to 6.70 across the three families. The trained
+networks score 1.30 (comb) and 8.67 (stochastic, cruise-only). So a hand-built
+heuristic that estimates ONE frequency and pads it with a fixed spread is in the
+same range as networks trained for tens of epochs, and on the full stochastic
+family it is ahead of one.
+
+**This is suggestive, not a like-for-like comparison.** The fan probe fixes
+speech at −30 dB while the network evaluation draws SNR over the policy's full
+−30 to 0 dB range, and `ladder_r4` reproduces the family's default ranges while
+the networks trained on `stoch_s1id`, which adds line-visibility constraints. The
+two numbers are not directly comparable and no ranking should be read from them.
+What they do support is the finding above: whatever the networks learned on the
+stochastic family, a one-frequency-plus-fixed-fan heuristic reaches it.
