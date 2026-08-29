@@ -27,7 +27,7 @@ if str(Path(__file__).resolve().parents[1] / "src") not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from data_processing.comb_bench import REGIMES, comb_clip  # noqa: E402
-from models.comb_salience import CombSalienceNet, decode_topr  # noqa: E402
+from models.comb_salience import CombSalienceNet, decode_peel  # noqa: E402
 
 SR = 16000
 
@@ -58,7 +58,13 @@ def pit(p, t):
                for q in permutations(range(t.shape[0])))
 
 
-def evaluate(model, grid_t, n=6):
+def evaluate(model, grid_t, n=6, octave_mode="scored"):
+    """Score every benchmark cell with the peel decoder.
+
+    `decode_peel`, not a per-frame top-R pick: the peel is what supplies model
+    order, and every threshold-based decoder was measured to trade coincident
+    rotors against separated ones with no setting that serves both.
+    """
     model.eval()
     out = {}
     with torch.no_grad():
@@ -66,8 +72,8 @@ def evaluate(model, grid_t, n=6):
             e = []
             for s in range(n):
                 y, T, _ = comb_clip(7000 + 137 * s, centre=ctr, spread=spr, excursion=exc)
-                sal = model(torch.tensor(y, dtype=torch.float32)[None])
-                p = decode_topr(sal, grid_t, 4)[0].numpy()
+                p = decode_peel(model, torch.tensor(y, dtype=torch.float32)[None], 4,
+                                octave_mode=octave_mode)[0].numpy()
                 e.append(pit(p[:, : T.shape[1]], T))
             out[name] = float(np.mean(e))
     model.train()
