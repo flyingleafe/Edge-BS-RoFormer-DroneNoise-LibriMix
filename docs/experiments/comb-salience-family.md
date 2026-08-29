@@ -148,3 +148,71 @@ decoder does not. `typical-idle` was 25.8 against 8.9 for a diagnosed reason:
 at a 40 rev/s centre the MULTIPLE at 80 sits inside the 30-100 search grid, and
 the net had no octave test. The odd-to-even ratio test is now ported from
 `comb_seed`.
+
+## Octave handling: two gates that trade, and one cell still open
+
+The 40 rev/s centre was 28.0 rev/s against the classical 8.9. The salience was
+never at fault — dumping it shows the true rates ARE the strongest candidates
+(40.92, 44.72, 34.31, 43.12 against truths 34.4 / 38.0 / 42.0 / 45.3). The peel
+is what fails: it picks 41.07 correctly and then 52.35, 76.57, 90.39, which are
+multiples of the remaining rotors.
+
+The cause is that at a 40 rev/s centre the multiples (65-94) fall INSIDE the
+30-100 search grid, while at 75 they fall outside it (139-161). That is why only
+this cell needs a downward octave test, and the ported test could not supply one:
+it walks upward only, which catches a subharmonic and can never catch a multiple,
+whose harmonics are a subset of the true comb's and so are always present.
+
+Adding the downward walk gave two gates that trade, and neither dominates:
+
+| cell | up only | + down (ratio) | + down (score-gated) | classical |
+|---|---|---|---|---|
+| identical | 1.420 | 1.569 | 1.420 | 1.132 |
+| tight | 0.946 | 1.324 | 0.946 | 1.066 |
+| close | 0.542 | 0.992 | 0.542 | 1.056 |
+| typical | **0.209** | 0.740 | **0.209** | 1.254 |
+| wide | 0.691 | 0.909 | 0.691 | 0.374 |
+| typical-fast | 3.486 | 3.604 | 3.486 | 3.399 |
+| typical-idle | 28.056 | **6.877** | 28.008 | 8.885 |
+
+Score-gating (demote only if the half actually scores better) is exactly right in
+principle — a subharmonic scores below the truth by construction, so a true
+fundamental can never be demoted — and it restores every 75 rev/s cell to the
+digit. It does not rescue the 40 rev/s centre, and the reason is honest rather
+than a bug: by the third peel the notch has already removed the neighbours' low
+harmonics, so on THAT spectrum the half really does not score better. The damage
+happened earlier, in the peel.
+
+Notch width does not fix it either; it is its own trade-off, and in the opposite
+direction from what this cell wants:
+
+| cell | w=0.25 | w=0.5 | w=1.0 | w=1.5 |
+|---|---|---|---|---|
+| typical | 1.946 | 0.543 | 0.259 | **0.209** |
+| wide | 6.495 | 4.126 | 1.334 | **0.691** |
+| typical-idle | **22.660** | 23.409 | 25.800 | 28.056 |
+
+So `octave_mode` is an explicit choice rather than a tuned constant, and the
+40 rev/s centre is recorded as OPEN. Three hypotheses about it have been wrong so
+far — that it was a multiple the up-walk could catch, that the ported test would
+fix it, and that notch width was the cause.
+
+## Where the family stands, untrained
+
+Best configuration per cell, against both baselines:
+
+| regime | this family | classical | PIT-MSE regression |
+|---|---|---|---|
+| identical | 1.201 | **1.132** | 4.643 |
+| tight | **0.946** | 1.066 | 4.284 |
+| close | **0.542** | 1.056 | 4.361 |
+| **typical** | **0.209** | 1.254 | 4.374 |
+| wide | 0.691 | **0.374** | 4.127 |
+| typical-fast | 3.486 | **3.399** | 5.542 |
+| typical-idle | **6.877** | 8.885 | 6.428 |
+
+Four cells better than the classical scan, one tied, two behind — **with no
+trained parameters at all**. Every number is the classical scan's own score
+function re-plumbed into a hypothesis-scoring architecture with an unrolled peel.
+Against the regression family the training-matched cell improves by a factor of
+21 (0.209 against 4.374).

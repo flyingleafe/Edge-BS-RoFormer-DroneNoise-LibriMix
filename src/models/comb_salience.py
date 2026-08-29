@@ -275,7 +275,7 @@ def _gather_at(pw: torch.Tensor, rate: torch.Tensor, k_max: int, sr: int,
 def octave_fix(
     pw: torch.Tensor, floor: torch.Tensor, rate: torch.Tensor, k_max: int, sr: int,
     n_fft: int, f_max: float, ratio: float = 0.6, r_hi: float = 100.0,
-    max_mult: int = 2,
+    r_lo: float = 30.0, max_mult: int = 2, mode: str = 'scored',
 ) -> torch.Tensor:
     """Raise a pick off a subharmonic, by the odd-to-even evidence ratio.
 
@@ -291,14 +291,58 @@ def octave_fix(
     its own lines and the ratio is near one. A ratio needs no absolute
     threshold, which is what makes it usable.
     """
+    def _lev(r: torch.Tensor):
+        h, ok = _gather_at(pw, r, k_max, sr, n_fft, f_max)
+        fh, _ = _gather_at(floor, r, k_max, sr, n_fft, f_max)
+        return torch.log1p(h / fh.clamp_min(1e-12)) * ok, ok
+
+    def oe(r: torch.Tensor) -> torch.Tensor:
+        lev, _ = _lev(r)
+        return lev[:, 0::2].mean(dim=1) / lev[:, 1::2].mean(dim=1).clamp_min(1e-9)
+
+    def sc(r: torch.Tensor) -> torch.Tensor:
+        """The comb score itself, at one rate per frame."""
+        lev, ok = _lev(r)
+        return lev.sum(dim=1) / ok.to(lev.dtype).sum(dim=1).clamp_min(1.0)
+
     cur = rate
+    # DOWN first. A MULTIPLE of the true rate cannot be rejected by asking
+    # whether its own harmonics are present — they are a subset of the true
+    # comb's lines, so they always are. It is caught by asking about HALF of
+    # it: at the truth, `r/2` is a subharmonic and its odd harmonics fall in
+    # the gaps, so the ratio is low; if `r` is a multiple, `r/2` is a real comb
+    # and the ratio is near one. This direction matters only when the multiple
+    # lands inside the search grid, which is why a 40 rev/s centre needs it
+    # (multiples at 65-94 are in a 30-100 grid) and a 75 rev/s centre does not
+    # (multiples at 139-161 are outside it).
+    # `mode` picks how a demotion is gated, and the two settings TRADE — no
+    # single one wins, so the caller chooses:
+    #   "scored" also requires the half to score better. A true fundamental is
+    #     then never demoted, and the 75 rev/s cells keep their accuracy
+    #     (typical 0.209). It does NOT rescue a 40 rev/s centre (28.0),
+    #     because by the third peel the notch has already removed the
+    #     neighbours' low harmonics, so on that spectrum the half honestly no
+    #     longer scores better.
+    #   "ratio" demotes on the odd/even evidence alone. That rescues the
+    #     40 rev/s centre (28.0 -> 6.9, beating the classical 8.9) and fires
+    #     spuriously at 75, costing those cells (0.209 -> 0.740).
     for _ in range(max_mult):
-        h, ok = _gather_at(pw, cur, k_max, sr, n_fft, f_max)
-        fh, _ = _gather_at(floor, cur, k_max, sr, n_fft, f_max)
-        lev = torch.log1p(h / fh.clamp_min(1e-12)) * ok
-        odd = lev[:, 0::2].mean(dim=1)
-        even = lev[:, 1::2].mean(dim=1).clamp_min(1e-9)
-        need = (odd / even < ratio) & (2.0 * cur <= r_hi)
+        half = cur * 0.5
+        # Demote only if the HALF actually scores better. That is the same
+        # mean-of-logs score the salience uses, and it is exactly the quantity
+        # that ranks a subharmonic BELOW the truth — so a real fundamental is
+        # never demoted, while a multiple is. Using a second ratio threshold
+        # here instead was measured to fire spuriously at a 75 rev/s centre and
+        # cost the cells that already worked (0.209 -> 0.740).
+        take = (oe(half) >= ratio) & (half >= r_lo)
+        if mode == 'scored':
+            take = take & (sc(half) > sc(cur))
+        if not bool(take.any()):
+            break
+        cur = torch.where(take, half, cur)
+    # UP, for a pick that really is a subharmonic.
+    for _ in range(max_mult):
+        need = (oe(cur) < ratio) & (2.0 * cur <= r_hi)
         if not bool(need.any()):
             break
         cur = torch.where(need, 2.0 * cur, cur)
@@ -308,6 +352,7 @@ def octave_fix(
 def decode_peel(
     model: CombSalienceNet, audio: torch.Tensor, n_rot: int = 4,
     width_bins: float = 1.5, refine: bool = True, octave: bool = True,
+    octave_mode: str = "scored",
 ) -> torch.Tensor:
     """Peel ``n_rot`` combs out of one clip: rates ``(B, n_rot, T)``.
 
@@ -339,7 +384,8 @@ def decode_peel(
         if octave:
             r = octave_fix(pw, floor, r, model.gather.k_max, model.sr,
                            model.n_fft, model.gather.f_max,
-                           r_hi=float(model.grid[-1]))
+                           r_hi=float(model.grid[-1]), r_lo=float(model.grid[0]),
+                           mode=octave_mode)
         picks.append(r)
         pw = model.notch(pw, r, width_bins=width_bins)
     return torch.stack(picks, dim=1).sort(dim=1).values
