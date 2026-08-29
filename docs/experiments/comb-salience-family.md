@@ -93,3 +93,58 @@ This worktree has no `.venv`; it uses the main checkout's, whose editable `.pth`
 points at the MAIN repo's `src`. A bare `pytest` therefore tests the main repo,
 not the worktree. Every test run and script here needs `PYTHONPATH=src` — the
 same lesson already recorded for omnirun jobs, hitting locally.
+
+## The peel is the missing piece, and it was predicted
+
+The end-to-end corner case first scored 17.4 / 16.4 / 12.1 rev/s on the
+coincident regimes while doing fine on the separated ones. The cause was a
+0.6 rev/s rate-space exclusion hardcoded in the decoder — the SAME mistake this
+campaign already measured and documented for the classical peel, where an
+exclusion wide enough to suppress a duplicate also forbids the second rotor of a
+close pair. Sweeping it reproduced that trade-off exactly:
+
+| min_sep | identical | close | typical | wide |
+|---|---|---|---|---|
+| 0.02-0.10 | 1.15 | 1.23 | 3.14 | 7.49 |
+| 0.30 | 5.19 | 2.48 | **0.76** | 2.15 |
+| 0.60 | 17.42 | 11.78 | 2.26 | **1.80** |
+
+Replacing the rate exclusion with a RELATIVE salience test ("does a second peak
+stand at `rel` of the strongest?") did not help, and that is the informative
+part — it has no rate scale in it and still trades the same way:
+
+| rel | identical | close | typical | wide |
+|---|---|---|---|---|
+| 0.70 | 10.65 | 5.98 | **0.96** | 2.39 |
+| 0.85 | 1.19 | 0.84 | 2.30 | 7.81 |
+| 0.92 | 1.13 | 1.69 | 4.64 | 10.72 |
+
+Salience MAGNITUDE does not separate a real rotor from an alias peak, so no
+threshold on it can supply model order. The classical method never needed one
+because it PEELS: notch the found comb out and the salience at its rate
+collapses, so the next peak is genuinely another rotor. That is the
+explain-away loop listed as the fourth constructional gap, and adding it as an
+unrolled `score -> argmax -> notch -> rescore` fixes the coincident and the
+separated regimes AT THE SAME TIME, which no threshold could:
+
+| regime | spread | peel w=1.0 | peel w=1.5 | classical | regression net |
+|---|---|---|---|---|---|
+| identical | 0 | 1.226 | 1.420 | **1.132** | 4.643 |
+| tight | 2 | **0.935** | 0.946 | 1.066 | 4.284 |
+| close | 5 | **0.475** | 0.542 | 1.056 | 4.361 |
+| **typical** | **11** | 0.259 | **0.209** | 1.254 | 4.374 |
+| wide | 20 | 1.334 | 0.691 | **0.374** | 4.127 |
+| typical-fast | 11 | 3.865 | 3.581 | **3.399** | 5.542 |
+| typical-idle | 11 @ 40 | 25.795 | 28.054 | **8.885** | 6.428 |
+
+**With no trained parameters at all**, the family beats the classical scan on
+`tight`, `close` and `typical` — 0.209 against 1.254 on the training-matched
+cell, a factor of 6, and a factor of 21 against the regression family's 4.374.
+It is comparable on `identical` and `typical-fast`.
+
+Two cells remain behind. `wide` (0.691 against 0.374) is the cell where the
+classical pipeline's Viterbi supplies temporal continuity the frame-independent
+decoder does not. `typical-idle` was 25.8 against 8.9 for a diagnosed reason:
+at a 40 rev/s centre the MULTIPLE at 80 sits inside the 30-100 search grid, and
+the net had no octave test. The odd-to-even ratio test is now ported from
+`comb_seed`.
