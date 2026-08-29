@@ -117,6 +117,12 @@ def main() -> int:
     pool_y, pool_t = build_pool(rng, args.pool, grid, args.sigma, 0.0, 22.0, 38.0, 92.0)
     print(f"pool: {args.pool} clips in {time.time()-t_pool:.0f}s", flush=True)
 
+    # Select on the DECODE metric, not on the loss and not on the last step.
+    # BCE over the salience map is dominated by whichever cells have the largest
+    # map error, which is not the same as decoding rotors accurately: a run was
+    # measured taking the 40 rev/s cell from 28.0 to 9.5 while pushing the
+    # training-matched cell from 0.160 to 2.346. The loss went DOWN throughout.
+    best_score, best_state, best_step = float("inf"), None, 0
     hist = []
     t0 = time.time()
     for step in range(1, args.steps + 1):
@@ -130,14 +136,23 @@ def main() -> int:
         if step % args.eval_every == 0 or step == args.steps:
             ev = evaluate(model.cpu(), grid_t)
             model = model.to(args.device)
-            hist.append({"step": step, "loss": float(loss), **ev})
+            # Geometric mean across cells: no single cell can dominate, and a
+            # collapse anywhere is punished more than an arithmetic mean allows.
+            gscore = float(np.exp(np.mean(np.log(np.maximum(list(ev.values()), 1e-6)))))
+            if gscore < best_score:
+                best_score, best_step = gscore, step
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            hist.append({"step": step, "loss": float(loss), "gscore": gscore, **ev})
             print(f"step {step:5d}  loss {float(loss):.4f}  " +
                   "  ".join(f"{k} {v:.3f}" for k, v in ev.items())
                   + f"   [{time.time()-t0:.0f}s]", flush=True)
     p = Path(args.out)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"baseline": base, "history": hist,
-                             "args": vars(args)}, indent=1))
+    p.write_text(json.dumps({"baseline": base, "history": hist, "best_step": best_step,
+                             "best_score": best_score, "args": vars(args)}, indent=1))
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"restored best head from step {best_step} (gscore {best_score:.4f})", flush=True)
     # Save the head so a trained run can be re-scored with the Viterbi decoder,
     # which the in-loop evaluation does not use (it decodes per frame, so its
     # numbers are the weaker decoder's and understate the final result).
