@@ -125,6 +125,12 @@ def main() -> int:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"baseline": base, "history": hist,
                              "args": vars(args)}, indent=1))
+    # Save the head so a trained run can be re-scored with the Viterbi decoder,
+    # which the in-loop evaluation does not use (it decodes per frame, so its
+    # numbers are the weaker decoder's and understate the final result).
+    torch.save({k: v for k, v in model.state_dict().items() if v.requires_grad or "head" in k},
+               p.with_suffix(".pt"))
+    print(f"saved head to {p.with_suffix('.pt')}", flush=True)
     print("DONE", flush=True)
     return 0
 
