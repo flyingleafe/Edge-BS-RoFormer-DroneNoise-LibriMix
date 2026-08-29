@@ -936,7 +936,29 @@ regime, fully blind, four rotors:
 | rotors fully interleave | 0.21 | 2/12 |
 
 Against the 2.744 rev/s seed this replaces, that is a factor of 130 in the two
-regimes that a real airframe produces, with no failures in 24 clips. The third
-regime — rotors sweeping +-6 rev/s across a 10 rev/s spread, so the four
-trajectories interleave continuously — still loses one clip in six, for a reason
-that is algorithmic and not yet found.
+regimes that a real airframe produces, with no failures in 24 clips. The third regime — rotors sweeping +-6 rev/s across a 10 rev/s spread, so the
+four trajectories interleave continuously — still loses one clip in six.
+
+### The interleaving failure, characterized
+
+Both failing clips of twelve show the same thing, and it is NOT a failure to
+follow motion: every track's standard deviation matches its rotor's (3.8-4.2
+against 4.2-4.7), so the hinge is doing its job. What fails is IDENTITY at a
+crossing.
+
+| clip | symptom |
+|---|---|
+| 9202 | one rotor (72.53) missed entirely; a spurious track appears at 66.83, below the whole ensemble |
+| 9203 | two tracks split the difference between two crossing rotors — means 75.50 against a true 77.08 and 72.52 against a true 70.81, with one track's std too high (5.89) and the other's too low (3.65) |
+
+The cause is that tracks are found GREEDILY, one at a time. Where two rotors
+cross, the first path may follow either branch through the crossing, and
+whichever it takes, its comb is notched out along a trajectory that is partly
+rotor A and partly rotor B. The remaining rotors are then no longer clean single
+ridges, so the next path either splits the difference or gives up and takes a
+spurious ridge.
+
+The fix this names is joint multi-track assignment — find all R paths at once
+under a disjointness constraint, rather than peeling one at a time — which is
+the same lesson as the peaks-versus-surface one above, applied to tracks instead
+of to windows: do not commit to track 1 before track 2 has had a say.
