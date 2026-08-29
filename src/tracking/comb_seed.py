@@ -40,7 +40,15 @@ from scipy.optimize import linear_sum_assignment
 
 _BIG = 1e9
 
-__all__ = ["comb_score", "local_floor", "octave_correct", "peel_scan", "seed_tracks"]
+__all__ = [
+    "comb_gram",
+    "comb_score",
+    "local_floor",
+    "octave_correct",
+    "peel_scan",
+    "seed_from_gram",
+    "seed_tracks",
+]
 
 
 def _periodogram(y: np.ndarray, sr: float, over: int = 8):
@@ -282,3 +290,168 @@ def seed_tracks(
         vel = 0.5 * vel + 0.5 * (new_r - tracks[:, w - 1]) / dtw
         tracks[:, w] = new_r
     return np.stack([np.interp(ft, tc, t) for t in tracks])
+
+
+# ---------------------------------------------------------------------------
+# the comb-gram: track ridges in the score surface, do not threshold early
+
+
+def comb_gram(
+    y: np.ndarray, sr: float, grid: np.ndarray, win_s: float = 0.25,
+    hop_s: float = 0.125, k_max: int = 40, f_max: float = 7500.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Whittle comb score over (window, rate): ``(S, t_centres)``.
+
+    The per-window peel scan throws away everything but its handful of peaks,
+    and that is where it loses rotors: in 16% of windows one rotor's comb is too
+    weak to reach the top four, a junk candidate takes its place, and those
+    windows alone set the aggregate error. A rotor that is momentarily weak
+    still leaves a CONTINUOUS ridge in the score surface, so tracking the
+    surface recovers it from its own history instead of re-detecting it from
+    scratch in every window.
+    """
+    n = int(round(win_s * sr))
+    hop = max(1, int(round(hop_s * sr)))
+    starts = list(range(0, max(1, len(y) - n + 1), hop))
+    rows = []
+    for st in starts:
+        pw, f, noise, _ = _periodogram(y[st : st + n], sr)
+        rows.append(comb_score(pw, f, noise, grid, k_max, f_max))
+    tc = np.array([(st + n / 2) / sr for st in starts])
+    return np.stack(rows), tc
+
+
+def _viterbi_ridge(S: np.ndarray, grid: np.ndarray, slew: float, dt: float) -> np.ndarray:
+    """Best-scoring smooth path through a score surface: indices per window."""
+    lam = 1.0 / max(slew * dt / (grid[1] - grid[0]), 1e-9) ** 2
+    span = max(1, int(round(3.0 * slew * dt / (grid[1] - grid[0]))))
+    offs = np.arange(-span, span + 1)
+    pen = lam * offs.astype(float) ** 2
+    n_w, n_g = S.shape
+    best = S[0].copy()
+    back = np.zeros((n_w, n_g), dtype=np.int32)
+    for w in range(1, n_w):
+        # For each destination, the best source within +-span.
+        cand = np.full((len(offs), n_g), -np.inf)
+        for a, o in enumerate(offs):
+            src = np.roll(best, o)
+            if o > 0:
+                src[:o] = -np.inf
+            elif o < 0:
+                src[o:] = -np.inf
+            cand[a] = src - pen[a]
+        a_best = np.argmax(cand, axis=0)
+        back[w] = np.arange(n_g) - offs[a_best]
+        best = cand[a_best, np.arange(n_g)] + S[w]
+    path = np.empty(n_w, dtype=np.int64)
+    path[-1] = int(np.argmax(best))
+    for w in range(n_w - 1, 0, -1):
+        path[w - 1] = back[w][path[w]]
+    return path
+
+
+def seed_from_gram(
+    y: np.ndarray, sr: float, ft: np.ndarray, n_rot: int,
+    r_lo: float = 30.0, r_hi: float = 100.0, d_grid: float = 0.02,
+    win_s: float = 0.25, hop_s: float = 0.125, k_max: int = 40,
+    f_max: float = 7500.0, slew: float = 12.0, notch: float = 1.5,
+    sweep: float = 0.0, octave: bool = True,
+) -> np.ndarray:
+    """Blind rotor tracks by peeling ridges out of the comb-gram.
+
+    Each track is the best-scoring smooth path through the score surface. The
+    track's comb is then notched OUT OF THE SPECTRUM of every window and the
+    surface is rescored, so the next path cannot be the same rotor again.
+
+    Suppressing the surface in rate space instead does not work: a strong
+    rotor's comb score has sidelobes wider than any exclusion narrow enough to
+    keep a close pair apart, so the second path lands beside the first.
+    Measured that way, tracks one and three were the same rotor (64.80 and
+    64.81 against true rates 64.81, 71.85, 78.23, 84.88).
+    """
+    grid = np.arange(r_lo, r_hi, d_grid)
+    n = int(round(win_s * sr))
+    hop = max(1, int(round(hop_s * sr)))
+    starts = list(range(0, max(1, len(y) - n + 1), hop))
+    tc = np.array([(st + n / 2) / sr for st in starts])
+    dt = float(tc[1] - tc[0]) if len(tc) > 1 else 1.0
+
+    pws, fs, noises, dfs, floors = [], None, [], None, []
+    for st in starts:
+        pw, f, noise, df = _periodogram(y[st : st + n], sr)
+        pws.append(pw.copy())
+        floors.append(local_floor(pw, f))
+        noises.append(noise)
+        fs, dfs = f, df
+    f, df = fs, dfs
+
+    def surface() -> np.ndarray:
+        return np.stack([
+            comb_score(pws[w], f, noises[w], grid, k_max, f_max) for w in range(len(starts))
+        ])
+
+    tracks = []
+    for _ in range(n_rot):
+        path = _viterbi_ridge(surface(), grid, slew, dt)
+        r_path = grid[path]
+        if octave:
+            r_path = _octave_path(pws, f, floors, r_path, k_max, f_max, r_hi)
+        tracks.append(r_path)
+        # Notch the track's comb out of every window. The width must follow the
+        # line's SWEEP inside the window, not just the analysis resolution: a
+        # rotor slewing 2.8 rev/s^2 moves its 40th harmonic about 28 Hz in a
+        # 0.25 s window against a 4 Hz bin, so a fixed +-1.5 bin notch leaves
+        # most of the comb behind and the next ridge lands on the same rotor
+        # again. Measured with the fixed notch, three of four tracks sat on one
+        # rotor (85.2, 85.3, 85.4 against a true 85.3).
+        drdt = np.gradient(r_path, tc) if len(tc) > 1 else np.zeros_like(r_path)
+        for w in range(len(starts)):
+            for k in range(1, k_max + 1):
+                fc = k * r_path[w]
+                if fc >= f_max:
+                    break
+                half = notch * df + sweep * k * abs(float(drdt[w])) * win_s
+                pws[w][np.abs(f - fc) < half] = noises[w]
+    return np.stack([np.interp(ft, tc, t) for t in tracks])
+
+
+def _octave_path(
+    pws: list[np.ndarray], f: np.ndarray, floors: list[np.ndarray],
+    r_path: np.ndarray, k_max: int, f_max: float, r_hi: float,
+    ratio: float = 0.6, max_mult: int = 3,
+) -> np.ndarray:
+    """Octave-correct a whole track by AGGREGATING its odd-to-even evidence.
+
+    Two things were wrong with deciding per window and voting. A rotor does not
+    change its blade count mid-clip, so the decision belongs to the track, and a
+    single window's odd-to-even ratio is noisy enough that the vote fails on
+    about one rotor in twenty — measured, one track of one clip in five sat at
+    35.96 rev/s against a true 71.86, and that single track produced the whole
+    of a 1.82 rev/s average set error. Accumulating the harmonic levels over
+    every window of the track first, and taking one ratio at the end, uses all
+    the evidence the track has.
+
+    The levels must also be read from the PEELED spectra — the ones the ridge
+    was actually found in — not from the original signal.
+    """
+    cur = r_path.copy()
+    for _ in range(max_mult):
+        odd_t, even_t = [], []
+        for w in range(len(pws)):
+            ks = np.arange(1, k_max + 1, dtype=float)
+            fk = ks * cur[w]
+            m = fk < f_max
+            if m.sum() < 4:
+                continue
+            lev = np.log1p(np.interp(fk[m], f, pws[w]) / np.interp(fk[m], f, floors[w]))
+            odd_t.append(lev[::2].mean())
+            even_t.append(lev[1::2].mean() if lev[1::2].size else 0.0)
+        if not odd_t:
+            break
+        ev = float(np.mean(even_t))
+        if ev <= 1e-9 or float(np.mean(odd_t)) / ev >= ratio:
+            break
+        if float(cur.max()) * 2.0 > r_hi:
+            break
+        cur = cur * 2.0
+    return cur

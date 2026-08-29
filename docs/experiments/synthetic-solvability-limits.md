@@ -807,3 +807,67 @@ scratch each time.
 Code: `src/tracking/comb_seed.py` (Whittle score, peeling, octave correction),
 `src/tracking/comb_fit.py` (the global coherent objective and its basin, peak at
 the truth for K >= 30 and T >= 1 s, half-width 0.09-0.6 rev/s).
+
+## The comb-gram: do not threshold early
+
+The per-window peel scan reached a median set error of 0.046 rev/s but failed in
+16% of windows, and those windows set the aggregate. The failure was always the
+same: one rotor's comb was too weak to reach the top four peaks in that window.
+Extracting peaks and then tracking them cannot recover it, because a tracker
+handed a window with three real rotors has nothing to match the fourth against —
+both a Viterbi chaining and a Hungarian matching scored WORSE than simply
+sorting each window's peaks.
+
+The fix is to stop thresholding early. A rotor that is momentarily weak still
+leaves a CONTINUOUS ridge in the score surface, so `seed_from_gram` builds the
+whole (window x rate) Whittle surface and takes each track as the best-scoring
+smooth path through it, recovering the rotor from its own history rather than
+re-detecting it in every window.
+
+Four things had to be right, each found by measurement:
+
+1. **Peel in the spectrum, not in rate space.** Suppressing the surface near a
+   found track does not work: a strong rotor's score has sidelobes wider than
+   any exclusion narrow enough to keep a close pair apart, so the second path
+   lands beside the first. Tracks one and three came back as the same rotor
+   (64.80 and 64.81, true rates 64.81 / 71.85 / 78.23 / 84.88). Notching the
+   track's comb out of every window's spectrum and rescoring fixes it.
+2. **Suppression must be a hard exclusion.** Marking cells just below the
+   surface minimum is not enough — one window's score is order 1 while a path
+   accumulates tens, so the Viterbi re-uses a suppressed ridge rather than pay
+   a transition.
+3. **Octave decisions belong to the track, not the window.** A per-window
+   majority vote failed on about one rotor in twenty; one track sat at 35.96
+   against a true 71.86 and that single track produced a whole 1.82 rev/s
+   average. Accumulating the odd-to-even harmonic evidence over every window of
+   the track first, and reading the peeled spectra rather than the original
+   signal, fixed it.
+4. **The window length is 0.25 s and shortening it is catastrophic.** Halving
+   it to reduce within-window smear cost far more in resolution than it bought:
+   0.033 -> 7.77 rev/s on the separated regime.
+
+### Result
+
+Set error, four rotors, five clips per regime, fully blind:
+
+| regime | median rotor separation | seed | + refinement |
+|---|---|---|---|
+| separated (distinct set-points) | 4.83 | **0.0374** | 0.0347 |
+| moderate (fast slew, apart) | 2.12 | 1.20-2.54 | — |
+| crossing (trajectories overlap) | 1.54 | 0.554 | — |
+
+In the separated regime — the realistic one, where a real airframe holds its
+rotors at distinct set-points — this is **0.037 rev/s against the 2.744 rev/s
+seed it replaces**, a factor of 73, with a worst clip of 0.059. The harder
+regimes are not solved: they still lose a clip now and then to two tracks
+landing on one rotor.
+
+### Why refinement cannot finish the job yet
+
+Refining the 0.037 seed does not improve it (0.0347 at `b0=0.35`, 0.0377 at
+0.02). That is exactly the capture-versus-precision wall measured earlier in
+this document: the wide band's attractor is about `0.15 * b0 = 0.05`, which is
+WORSE than the seed, and the narrow band's capture is 0.02, which is TIGHTER
+than the seed. There is no band that both captures 0.037 and improves on it.
+Closing the last factor of twenty to the 0.0022 floor needs the per-frame
+adaptive band, which was measured to be worth about 1.5x on its own.
