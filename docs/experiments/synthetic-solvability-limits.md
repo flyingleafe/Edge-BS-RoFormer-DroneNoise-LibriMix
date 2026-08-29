@@ -962,3 +962,27 @@ The fix this names is joint multi-track assignment — find all R paths at once
 under a disjointness constraint, rather than peeling one at a time — which is
 the same lesson as the peaks-versus-surface one above, applied to tracks instead
 of to windows: do not commit to track 1 before track 2 has had a say.
+
+### Coordinate descent does not repair the greedy commitment
+
+The characterization above names a fix: re-solve each track against the others,
+so a path that took the wrong branch through a crossing can take it back. It was
+implemented (`n_refine` in `seed_from_gram`) and it does not work.
+
+| n_refine | separated | moderate | crossing | total failures |
+|---|---|---|---|---|
+| 0 (greedy) | 0.0208, 0/12 | 0.0916, 1/12 | 0.2146, 2/12 | 3/36 |
+| 1 | 0.0245, 0/12 | 0.0965, 2/12 | 0.1885, 1/12 | 3/36 |
+| 2 | 0.0254, 0/12 | 0.0972, 2/12 | 0.1898, 1/12 | 3/36 |
+| 4 | 0.0256, 0/12 | 0.0970, 2/12 | 0.1890, 1/12 | 3/36 |
+
+It converges after ONE pass — 1, 2 and 4 are the same to three decimals — and
+moves a failure from one regime to another rather than removing it, at three to
+five times the runtime. This is exactly what coordinate descent from a greedy
+initialization does: it finds the nearest fixed point, and the nearest fixed
+point is inside the basin the greedy sweep already committed to. `n_refine`
+defaults to 0.
+
+Escaping the basin needs a genuinely joint search — k-best paths per track and
+then an assignment over the combinations — not a better local step. That is the
+open item.

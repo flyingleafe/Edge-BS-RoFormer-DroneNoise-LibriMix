@@ -373,7 +373,7 @@ def seed_from_gram(
     r_lo: float = 30.0, r_hi: float = 100.0, d_grid: float = 0.02,
     win_s: float = 0.25, hop_s: float = 0.125, k_max: int = 40,
     f_max: float = 7500.0, slew: float = 12.0, notch: float = 1.5,
-    stiff: float = 40.0, octave: bool = True,
+    stiff: float = 40.0, n_refine: int = 0, octave: bool = True,
 ) -> np.ndarray:
     """Blind rotor tracks by peeling ridges out of the comb-gram.
 
@@ -403,31 +403,51 @@ def seed_from_gram(
         fs, dfs = f, df
     f, df = fs, dfs
 
-    def surface() -> np.ndarray:
-        return np.stack([
-            comb_score(pws[w], f, noises[w], grid, k_max, f_max) for w in range(len(starts))
-        ])
-
-    tracks = []
-    for _ in range(n_rot):
-        path = _viterbi_ridge(surface(), grid, slew, dt, stiff)
-        r_path = grid[path]
-        if octave:
-            r_path = _octave_path(pws, f, floors, r_path, k_max, f_max, r_hi)
-        tracks.append(r_path)
-        # Notch the track's comb out of every window. The width must follow the
-        # line's SWEEP inside the window, not just the analysis resolution: a
-        # rotor slewing 2.8 rev/s^2 moves its 40th harmonic about 28 Hz in a
-        # 0.25 s window against a 4 Hz bin, so a fixed +-1.5 bin notch leaves
-        # most of the comb behind and the next ridge lands on the same rotor
-        # again. Measured with the fixed notch, three of four tracks sat on one
-        # rotor (85.2, 85.3, 85.4 against a true 85.3).
+    def notch_into(dest, r_path):
         for w in range(len(starts)):
             for k in range(1, k_max + 1):
                 fc = k * r_path[w]
                 if fc >= f_max:
                     break
-                pws[w][np.abs(f - fc) < notch * df] = noises[w]
+                dest[w][np.abs(f - fc) < notch * df] = noises[w]
+
+    def find(exclude):
+        """Best path with every track in `exclude` notched out of the spectra."""
+        work = [pw.copy() for pw in pws]
+        for r_path in exclude:
+            notch_into(work, r_path)
+        S = np.stack([
+            comb_score(work[w], f, noises[w], grid, k_max, f_max) for w in range(len(starts))
+        ])
+        r_path = grid[_viterbi_ridge(S, grid, slew, dt, stiff)]
+        return _octave_path(work, f, floors, r_path, k_max, f_max, r_hi) if octave else r_path
+
+    tracks: list[np.ndarray] = []
+    for _ in range(n_rot):
+        tracks.append(find(tracks))
+
+    # Coordinate descent on the joint problem. The greedy sweep above commits to
+    # track 1 before track 2 has had a say, and where two rotors CROSS the first
+    # path may follow either branch; its notch then removes part of one rotor and
+    # part of the other, leaving the rest as ridges that belong to nobody. The
+    # measured symptoms were a rotor missed with a spurious track below the
+    # ensemble, and two tracks splitting the difference between two crossing
+    # rotors — in both cases with correct per-track standard deviation, so the
+    # tracks were following motion and only their identity was wrong.
+    #
+    # IT DOES NOT WORK, and `n_refine` therefore defaults to 0. Re-solving each
+    # track against the others converges after ONE pass (n_refine 1, 2 and 4 all
+    # give 0.025 / 0.097 / 0.189) and leaves the total failure count where the
+    # greedy sweep left it, 3 clips in 36 — it only moves a failure from one
+    # regime to another, at three to five times the runtime. That is what
+    # coordinate descent from a greedy initialization does: it finds the nearest
+    # fixed point, which is inside the basin the greedy sweep already chose.
+    # Escaping it needs a genuinely joint search (k-best paths per track, then
+    # an assignment over the combinations), not a better local step.
+    for _ in range(n_refine):
+        for i in range(n_rot):
+            tracks[i] = find([t for j, t in enumerate(tracks) if j != i])
+
     return np.stack([np.interp(ft, tc, t) for t in tracks])
 
 
