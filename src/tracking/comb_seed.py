@@ -387,6 +387,22 @@ def seed_from_gram(
     keep a close pair apart, so the second path lands beside the first.
     Measured that way, tracks one and three were the same rotor (64.80 and
     64.81 against true rates 64.81, 71.85, 78.23, 84.88).
+
+    `slew` is PHYSICAL: the airframe's maximum rotor acceleration in rev/s per
+    second. It is the free band of the hinge cost in `_viterbi_ridge`, so it
+    must cover the rotors' real motion — set below it, the tracker cannot follow
+    and returns over-spread tracks (measured: four clips in twelve failed that
+    way, with a true peak slew of 8.75 against a free band of 6). Matching it to
+    the airframe is worth real accuracy: a regime whose true peak is 5.83 scores
+    0.038 rev/s at `slew=6` and 0.092 at `slew=12`.
+
+    `n_restart` defaults to 1, the cheap greedy sweep. Set it to 8 when accuracy
+    matters more than the 8x runtime: ranked by the union-of-bins joint score it
+    takes the fast-slew regime from 0.092 rev/s and one failure in twelve to
+    0.065 and none. It does not help where rotor trajectories interleave and
+    swap order — that case is bounded by the ridge model itself, not by the
+    search. `n_refine` is a coordinate-descent pass that was measured and does
+    not help anywhere; it defaults to 0.
     """
     grid = np.arange(r_lo, r_hi, d_grid)
     n = int(round(win_s * sr))
