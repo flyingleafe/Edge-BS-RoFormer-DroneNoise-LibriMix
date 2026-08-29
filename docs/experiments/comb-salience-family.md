@@ -268,3 +268,45 @@ single configuration that wins everywhere.
 **Still zero trained parameters.** Everything above is the classical score
 function re-plumbed into hypothesis scoring with an unrolled peel and a Viterbi
 path. Training the head is running separately.
+
+## Training the head: a loss that falls while the answer gets worse
+
+The head has forty parameters (a weight per harmonic order, plus an
+eight-knot warp of the evidence curve), all initialized to zero effect, so
+training starts at the exact classical score. Trained with BCE on the salience
+map against Gaussian bumps at the true rates — permutation-free by construction,
+which is the point: there is no assignment to average over, so none of the
+mean-seeking pressure that produces the fan.
+
+| step | loss | identical | close | typical | wide | typical-idle |
+|---|---|---|---|---|---|---|
+| 0 | — | 1.420 | 0.542 | 0.209 | 0.691 | 28.008 |
+| 500 | 0.2001 | 1.233 | 0.474 | 0.201 | 0.618 | 26.210 |
+| 800 | 0.1954 | 1.268 | 0.527 | 0.160 | 0.452 | 16.344 |
+| 1100 | 0.1826 | 1.711 | 4.311 | 5.606 | 1.924 | 7.084 |
+| 1500 | **0.1738** | 3.977 | 11.173 | **11.199** | 7.317 | **5.038** |
+
+**The loss fell monotonically to its lowest value while decode error on the
+training-matched cell rose seventy-fold.** Around step 500-800 every cell was at
+or better than the untrained baseline; after that the run traded all of them for
+the one cell BCE cares most about.
+
+Two causes, and both are worth keeping:
+
+**The loss is not the metric.** BCE over the salience map is dominated by
+whichever cells have the largest map error. That is the 40 rev/s centre, where
+spurious peaks at in-grid multiples make the map badly wrong — and suppressing
+them is worth more BCE than keeping the other cells' peaks sharp. Selection now
+runs on the DECODE metric (geometric mean across cells, so a collapse anywhere
+is punished rather than averaged away), not on the loss and not on the last step.
+
+**The head was too global.** One weight per harmonic order had to serve every
+candidate rate, and the optimum differs by centre: improving 40 rev/s
+necessarily decalibrates 75. `learned_cond` produces a weight per
+(harmonic, candidate rate) from a small MLP on the harmonic index and the log
+rate — 137 parameters, still initialized to exactly the classical score.
+
+Until a trained head beats the untrained one on the decode metric, the honest
+summary of this family stands as: **the gain is architectural.** Every number in
+the tables above comes from the classical score function re-plumbed into
+hypothesis scoring with an unrolled peel and a Viterbi path, with nothing learned.
