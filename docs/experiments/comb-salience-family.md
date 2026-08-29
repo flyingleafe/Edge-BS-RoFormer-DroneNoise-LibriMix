@@ -216,3 +216,55 @@ trained parameters at all**. Every number is the classical scan's own score
 function re-plumbed into a hypothesis-scoring architecture with an unrolled peel.
 Against the regression family the training-matched cell improves by a factor of
 21 (0.209 against 4.374).
+
+## Temporal continuity: the last structural piece
+
+`decode_peel` chooses independently in every frame, discarding the one thing a
+rotor trajectory certainly has. `decode_peel_viterbi` takes each rotor as a
+smooth path through the salience instead, reusing `comb_seed._viterbi_ridge`
+so the temporal model is literally the classical one — the hinge cost that is
+free up to the airframe's physical slew and steep past it.
+
+| regime | argmax peel | Viterbi peel | classical |
+|---|---|---|---|
+| identical | 1.420 | 1.216 | **1.132** |
+| tight | 0.946 | **0.907** | 1.066 |
+| close | 0.542 | **0.420** | 1.056 |
+| typical | 0.209 | **0.043** | 1.254 |
+| wide | 0.691 | **0.038** | 0.374 |
+| typical-fast | 3.486 | **3.062** | 3.399 |
+| typical-idle | 28.008 | 25.778 | **8.885** |
+
+It helps everywhere and helps most exactly where it was predicted to: `wide`
+went 0.691 -> 0.038, an eighteen-fold improvement, because separated rotors are
+where a frame-independent decoder throws away the most. That cell was the one
+place the classical pipeline had a structural advantage, and it no longer does.
+
+With the octave gate chosen per cell, best figures:
+
+| regime | this family | classical | PIT-MSE regression |
+|---|---|---|---|
+| identical | 1.216 | **1.132** | 4.643 |
+| tight | **0.907** | 1.066 | 4.284 |
+| close | **0.420** | 1.056 | 4.361 |
+| **typical** | **0.043** | 1.254 | 4.374 |
+| **wide** | **0.038** | 0.374 | 4.127 |
+| typical-fast | **3.062** | 3.399 | 5.542 |
+| typical-idle | **5.200** | 8.885 | 6.428 |
+
+Six of seven cells beat the classical scan and the seventh is within 7%. On the
+training-matched cell the improvement is 29x over the classical scan and 102x
+over the regression family (0.043 against 1.254 and 4.374).
+
+**Caveat that is not a footnote.** The octave gate is chosen per cell —
+`scored` for the 75 rev/s centres, `ratio` for the 40 rev/s one — and no blind
+rule for choosing between them has been found. The obvious candidate (is a
+multiple inside the search grid?) does not discriminate, because halving is
+admissible at both centres. Running both and selecting by the union-of-bins
+joint score from the classical seeding work would decide it blind at twice the
+cost, and is untested. Until then the honest claim is per-cell-best, not a
+single configuration that wins everywhere.
+
+**Still zero trained parameters.** Everything above is the classical score
+function re-plumbed into hypothesis scoring with an unrolled peel and a Viterbi
+path. Training the head is running separately.

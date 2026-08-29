@@ -477,3 +477,43 @@ def decode_peaks(
         lo, hi = (idx - guard).unsqueeze(1), (idx + guard).unsqueeze(1)
         work = work.masked_fill((ar >= lo) & (ar <= hi), float("-inf"))
     return out.sort(dim=1).values
+
+
+def decode_peel_viterbi(
+    model: CombSalienceNet, audio: torch.Tensor, n_rot: int = 4,
+    width_bins: float = 1.5, octave: bool = True, octave_mode: str = "scored",
+    slew: float = 12.0, stiff: float = 40.0, hop_s: float | None = None,
+) -> torch.Tensor:
+    """Peel, but take each rotor as a SMOOTH PATH rather than a per-frame argmax.
+
+    `decode_peel` chooses independently in every frame, which throws away the
+    one thing a rotor trajectory certainly has: continuity. On widely separated
+    rotors that costs real accuracy against the classical pipeline (0.691
+    against 0.374), and the classical pipeline's only structural advantage there
+    is exactly this — it runs a Viterbi over the score surface.
+
+    Reuses `tracking.comb_seed._viterbi_ridge`, so the temporal model is
+    literally the classical one: a hinge cost that is free up to the airframe's
+    physical slew and steep past it.
+    """
+    from tracking.comb_seed import _viterbi_ridge  # local: keeps the purity rule
+
+    pw = model.spectrum(audio)
+    floor = local_floor_torch(pw, model.floor_bins).detach()
+    grid_np = model.grid.detach().cpu().numpy()
+    dt = hop_s if hop_s is not None else model.hop_length / model.sr
+    picks = []
+    for _ in range(n_rot):
+        sal = model.score(pw, floor)                                  # (B, G, T)
+        rows = []
+        for b in range(sal.shape[0]):
+            idx = _viterbi_ridge(sal[b].detach().cpu().numpy().T, grid_np, slew, dt, stiff)
+            rows.append(torch.as_tensor(grid_np[idx], dtype=pw.dtype, device=pw.device))
+        r = torch.stack(rows)                                         # (B, T)
+        if octave:
+            r = octave_fix(pw, floor, r, model.gather.k_max, model.sr, model.n_fft,
+                           model.gather.f_max, r_hi=float(model.grid[-1]),
+                           r_lo=float(model.grid[0]), mode=octave_mode)
+        picks.append(r)
+        pw = model.notch(pw, r, width_bins=width_bins)
+    return torch.stack(picks, dim=1).sort(dim=1).values
