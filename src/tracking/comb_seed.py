@@ -321,12 +321,30 @@ def comb_gram(
     return np.stack(rows), tc
 
 
-def _viterbi_ridge(S: np.ndarray, grid: np.ndarray, slew: float, dt: float) -> np.ndarray:
-    """Best-scoring smooth path through a score surface: indices per window."""
-    lam = 1.0 / max(slew * dt / (grid[1] - grid[0]), 1e-9) ** 2
-    span = max(1, int(round(3.0 * slew * dt / (grid[1] - grid[0]))))
+def _viterbi_ridge(
+    S: np.ndarray, grid: np.ndarray, slew: float, dt: float, stiff: float = 1.0
+) -> np.ndarray:
+    """Best-scoring smooth path through a score surface: indices per window.
+
+    The penalty must be large, and it must be a HINGE rather than a plain
+    quadratic. With a penalty of order the score contrast, the optimal path does
+    not follow a rotor at all: it HOPS between rotors and alias ridges
+    collecting each window's maximum. Measured on a four-rotor clip after two
+    peels, the wandering path scored 1.62 per window against 0.87 for the true
+    rotor, so the Viterbi returned it — correctly, for the wrong objective.
+
+    But a quadratic stiff enough to stop a hop also blocks the legitimate
+    motion of a fast rotor: it improved two regimes (0.0374 -> 0.0326 and
+    2.54 -> 1.75) and destroyed the third, where rotors genuinely slew hard
+    (0.554 -> 5.27). Physical slew and a rotor hop differ by nearly an order of
+    magnitude — about 4 rev/s^2 against 24 — so the cost is FREE up to `slew`
+    and steep past it.
+    """
+    step_free = max(slew * dt / (grid[1] - grid[0]), 1e-9)
+    span = max(1, int(round(4.0 * step_free)))
     offs = np.arange(-span, span + 1)
-    pen = lam * offs.astype(float) ** 2
+    excess = np.maximum(np.abs(offs.astype(float)) - step_free, 0.0)
+    pen = stiff * (excess / step_free) ** 2
     n_w, n_g = S.shape
     best = S[0].copy()
     back = np.zeros((n_w, n_g), dtype=np.int32)
@@ -355,7 +373,7 @@ def seed_from_gram(
     r_lo: float = 30.0, r_hi: float = 100.0, d_grid: float = 0.02,
     win_s: float = 0.25, hop_s: float = 0.125, k_max: int = 40,
     f_max: float = 7500.0, slew: float = 12.0, notch: float = 1.5,
-    sweep: float = 0.0, octave: bool = True,
+    stiff: float = 40.0, octave: bool = True,
 ) -> np.ndarray:
     """Blind rotor tracks by peeling ridges out of the comb-gram.
 
@@ -392,7 +410,7 @@ def seed_from_gram(
 
     tracks = []
     for _ in range(n_rot):
-        path = _viterbi_ridge(surface(), grid, slew, dt)
+        path = _viterbi_ridge(surface(), grid, slew, dt, stiff)
         r_path = grid[path]
         if octave:
             r_path = _octave_path(pws, f, floors, r_path, k_max, f_max, r_hi)
@@ -404,14 +422,12 @@ def seed_from_gram(
         # most of the comb behind and the next ridge lands on the same rotor
         # again. Measured with the fixed notch, three of four tracks sat on one
         # rotor (85.2, 85.3, 85.4 against a true 85.3).
-        drdt = np.gradient(r_path, tc) if len(tc) > 1 else np.zeros_like(r_path)
         for w in range(len(starts)):
             for k in range(1, k_max + 1):
                 fc = k * r_path[w]
                 if fc >= f_max:
                     break
-                half = notch * df + sweep * k * abs(float(drdt[w])) * win_s
-                pws[w][np.abs(f - fc) < half] = noises[w]
+                pws[w][np.abs(f - fc) < notch * df] = noises[w]
     return np.stack([np.interp(ft, tc, t) for t in tracks])
 
 

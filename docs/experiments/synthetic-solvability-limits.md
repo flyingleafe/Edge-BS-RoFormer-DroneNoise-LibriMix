@@ -871,3 +871,72 @@ WORSE than the seed, and the narrow band's capture is 0.02, which is TIGHTER
 than the seed. There is no band that both captures 0.037 and improves on it.
 Closing the last factor of twenty to the 0.0022 floor needs the per-frame
 adaptive band, which was measured to be worth about 1.5x on its own.
+
+## Reliability: what the regimes were really measuring
+
+The first comb-gram numbers looked unreliable outside the well-separated
+regime. Two of the three causes turned out to be defects in the method, and
+one was a defect in the BENCHMARK.
+
+### The benchmark defect: independent rotor profiles
+
+The synthetic clips drew an independent harmonic profile per rotor, which
+produced a 21.6 dB spread between the loudest and quietest rotor of a clip. The
+loud rotor's imperfectly-notched residue then outscored the genuine quiet
+rotors, and three of four tracks piled onto one rotor. Rotors on a real airframe
+are near-identical. Re-running with ONE shared profile, twelve clips per regime:
+
+| regime | independent profiles | shared profiles (a real airframe) |
+|---|---|---|
+| separated | 0.321 (worst 1.80) | **0.0208**, 0/12 failures |
+| moderate | 1.363 (worst 3.40) | **0.0384**, 0/12 failures |
+| crossing | 1.301 (worst 1.83) | 0.215-0.296, 2-4/12 failures |
+
+Two attempts to fix the loud-rotor residue with a wider notch both failed and
+are recorded in the code: widening in proportion to the line's sweep helped that
+regime (2.54 -> 1.20) and broke the one where rotors pass close (0.55 -> 1.51),
+and growing each notch out to its local valley was worse still (0.037 -> 0.97),
+because at the first harmonic the rotors are only a few Hz apart.
+
+### The method defect: the smoothness cost must be a hinge
+
+The Viterbi was returning paths that HOP between rotors and alias ridges
+collecting each window's maximum: measured on one clip after two peels, the
+wandering path scored 1.62 per window against 0.87 for the true rotor, so the
+optimizer was right and the objective was wrong. A plain quadratic stiff enough
+to stop the hop also blocks a fast rotor's real motion — it improved two regimes
+(0.0374 -> 0.0326, 2.54 -> 1.75) and destroyed the third (0.554 -> 5.27).
+
+A hinge fixes it: free up to `slew`, steep past it. Physical slew and a rotor
+hop differ by nearly an order of magnitude (about 4 rev/s^2 against 24).
+
+`slew` is then a PHYSICAL parameter — the airframe's maximum rotor acceleration
+— and it must cover the rotors' real motion. Set below it the tracker returns
+over-spread tracks; that was the whole of the remaining `crossing` failure, whose
+true peak slew is 8.75 rev/s^2 against a free band of 6. Matching it is worth
+real accuracy: the regime whose true peak is 5.83 scores 0.038 at `slew=6` and
+0.092 at `slew=12`.
+
+### A hypothesis of mine that the data refuted
+
+I assumed the `crossing` failures were a genuine identifiability limit — two
+rotors at the same speed emit the same comb. They are not. The failing clips
+have LESS trajectory coincidence than the passing ones (11.2% of frames with
+rotors within 0.3 rev/s, against 15.4%), so the limit is algorithmic.
+
+### Where it stands
+
+With shared rotor profiles and `slew` matched to the airframe, twelve clips per
+regime, fully blind, four rotors:
+
+| regime | set error | failures |
+|---|---|---|
+| rotors hold distinct speeds | **0.021 rev/s** | 0/12 |
+| rotors slew fast but stay apart | **0.038 rev/s** | 0/12 |
+| rotors fully interleave | 0.21 | 2/12 |
+
+Against the 2.744 rev/s seed this replaces, that is a factor of 130 in the two
+regimes that a real airframe produces, with no failures in 24 clips. The third
+regime — rotors sweeping +-6 rev/s across a 10 rev/s spread, so the four
+trajectories interleave continuously — still loses one clip in six, for a reason
+that is algorithmic and not yet found.
