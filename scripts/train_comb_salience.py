@@ -38,19 +38,26 @@ def salience_target(rps: np.ndarray, grid: np.ndarray, sigma: float) -> np.ndarr
     return np.exp(-0.5 * d * d).max(axis=0)
 
 
-def batch(rng, n, grid, sigma, spread_lo, spread_hi, centre_lo, centre_hi):
+def build_pool(rng, n_clips, grid, sigma, spread_lo, spread_hi, centre_lo, centre_hi):
+    """Generate the training clips ONCE, up front.
+
+    Clip synthesis dominates the step time — four rotors of a hundred harmonics
+    over 128k samples, on CPU — so generating fresh clips every step starves
+    the GPU and made a first run miss its wall before the first evaluation. The
+    head has forty parameters; a fixed pool of a few hundred clips is far more
+    data than it can overfit.
+    """
     ys, ts = [], []
-    for _ in range(n):
-        sd = int(rng.integers(1 << 30))
+    for _ in range(n_clips):
         y, r, _ = comb_clip(
-            sd, centre=float(rng.uniform(centre_lo, centre_hi)),
+            int(rng.integers(1 << 30)),
+            centre=float(rng.uniform(centre_lo, centre_hi)),
             spread=float(rng.uniform(spread_lo, spread_hi)),
             excursion=float(rng.uniform(0.5, 4.0)),
         )
-        ys.append(y)
-        ts.append(salience_target(r, grid, sigma))
-    return (torch.tensor(np.stack(ys), dtype=torch.float32),
-            torch.tensor(np.stack(ts), dtype=torch.float32))
+        ys.append(y.astype(np.float32))
+        ts.append(salience_target(r, grid, sigma).astype(np.float32))
+    return torch.tensor(np.stack(ys)), torch.tensor(np.stack(ts))
 
 
 def pit(p, t):
@@ -89,6 +96,7 @@ def main() -> int:
     ap.add_argument("--n-grid", type=int, default=700)
     ap.add_argument("--k-max", type=int, default=32)
     ap.add_argument("--eval-every", type=int, default=100)
+    ap.add_argument("--pool", type=int, default=256, help="clips generated up front")
     ap.add_argument("--out", default="results/comb_salience/run.json")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
@@ -105,10 +113,15 @@ def main() -> int:
     print("corner case (untrained, learned head == classical):")
     print("   " + "  ".join(f"{k} {v:.3f}" for k, v in base.items()), flush=True)
 
+    t_pool = time.time()
+    pool_y, pool_t = build_pool(rng, args.pool, grid, args.sigma, 0.0, 22.0, 38.0, 92.0)
+    print(f"pool: {args.pool} clips in {time.time()-t_pool:.0f}s", flush=True)
+
     hist = []
     t0 = time.time()
     for step in range(1, args.steps + 1):
-        y, tgt = batch(rng, args.batch, grid, args.sigma, 0.0, 22.0, 38.0, 92.0)
+        sel = torch.from_numpy(rng.choice(args.pool, args.batch, replace=False))
+        y, tgt = pool_y[sel], pool_t[sel]
         sal = model(y.to(args.device))
         loss = F.binary_cross_entropy_with_logits(sal - 3.0, tgt.to(args.device))
         opt.zero_grad()
