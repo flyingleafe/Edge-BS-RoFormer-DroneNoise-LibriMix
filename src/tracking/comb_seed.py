@@ -430,20 +430,38 @@ def seed_from_gram(
         r_path = grid[_viterbi_ridge(S, grid, slew, dt, stiff)]
         return _octave_path(work, f, floors, r_path, k_max, f_max, r_hi) if octave else r_path
 
-    def residual(tset) -> float:
-        """Energy left in the spectra after every track's comb is removed.
+    def joint_score(tset) -> float:
+        """Whittle evidence over the UNION of a solution's lines. Higher is better.
 
-        The JOINT objective. Each track's own path score is measured on a
-        spectrum peeled by the tracks found before it, so those scores are not
-        comparable between different solutions and cannot rank them. What a
-        whole solution can be judged by is how much of the signal the R combs
-        together fail to explain, which is one number per solution and needs no
-        reference.
+        The objective that ranks whole solutions, and the part two earlier
+        attempts got wrong in opposite directions. Residual energy after notching
+        rewards notching wherever energy happens to be rather than where combs
+        are, so it prefers a solution parked on loud junk. Per-line MEAN evidence
+        fixes that and breaks the other way: four tracks stacked on one loud
+        rotor score perfectly, because every line they claim is real. Counting
+        each spectral bin ONCE removes both incentives — a duplicate track adds
+        no bins and so gains nothing, while covering a rotor nobody else covers
+        adds all of its lines.
+
+        It is the right objective of the three and it is still not sufficient.
+        With 8 restarts it takes the fast-slew regime to 0/12 failures (0.065
+        rev/s, worst clip 0.119, against 0.092 and 1/12 for the plain greedy
+        sweep), but the regime where trajectories interleave does not improve
+        under ANY of the three objectives or ANY restart count. That regime's
+        failure is therefore not a search problem and not a scoring problem.
         """
-        work = [pw.copy() for pw in pws]
-        for r_path in tset:
-            notch_into(work, r_path)
-        return float(sum(w.sum() for w in work))
+        tot = 0.0
+        for w in range(len(starts)):
+            covered = np.zeros(len(f), dtype=bool)
+            for r_path in tset:
+                for k in range(1, k_max + 1):
+                    fc = k * r_path[w]
+                    if fc >= f_max:
+                        break
+                    covered |= np.abs(f - fc) < notch * df
+            if covered.any():
+                tot += float(np.log1p(pws[w][covered] / floors[w][covered]).sum())
+        return tot
 
     def greedy(first_band) -> list[np.ndarray]:
         tset: list[np.ndarray] = []
@@ -457,14 +475,13 @@ def seed_from_gram(
     # commitment is what strands the rest; coordinate descent cannot undo it
     # (it converges inside the same basin), so the escape has to be a different
     # STARTING basin. Forcing the first track into each band in turn guarantees
-    # a restart that begins on each rotor. It does not work either — see
-    # `residual`, whose objective is the part that fails.
+    # a restart that begins on each rotor, ranked by `joint_score`.
     bands = [None] if n_restart <= 1 else [
         (r_lo + j * (r_hi - r_lo) / n_restart, r_lo + (j + 1) * (r_hi - r_lo) / n_restart)
         for j in range(n_restart)
     ]
     sols = [greedy(b) for b in bands]
-    tracks = min(sols, key=residual)
+    tracks = max(sols, key=joint_score)
 
     # Coordinate descent on the joint problem. The greedy sweep above commits to
     # track 1 before track 2 has had a say, and where two rotors CROSS the first

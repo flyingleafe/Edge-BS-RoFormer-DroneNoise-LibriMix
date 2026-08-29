@@ -1013,3 +1013,39 @@ in one pass) and not the starting basin (restarts reach the right basins and
 then discard them). It is the SCORE that ranks whole solutions. A usable one has
 to be the Whittle likelihood of the full R-comb model, normalized so that
 notching more bins is not itself rewarded. Both knobs default to off.
+
+### The joint score, third attempt — and what the three attempts prove
+
+Three objectives for ranking whole solutions were implemented and measured. Each
+fails in its own direction, and the directions are what identify the right one:
+
+| objective | failure mode |
+|---|---|
+| residual energy after notching | rewards notching wherever energy is, not where combs are — prefers a solution parked on loud junk |
+| mean Whittle evidence per line | rewards DUPLICATES — four tracks stacked on one loud rotor score perfectly, since every line they claim is real (worst clip 10.3) |
+| **Whittle evidence over the UNION of covered bins** | neither incentive survives: a duplicate track adds no bins, and covering an uncovered rotor adds all of its lines |
+
+With the union objective and 8 restarts:
+
+| regime | greedy (1 restart) | union score, 8 restarts |
+|---|---|---|
+| separated | 0.0208, 0/12 | 0.0206, **0/12** |
+| moderate | 0.0916, 1/12 | **0.0645**, worst 0.119, **0/12** |
+| crossing | 0.2146, 2/12 | 0.2752, 3/12 |
+
+The fast-slew regime is now fully solved — its failure WAS a basin problem, and
+a correct joint score plus enough restarts finds the right basin. The
+interleaving regime is not. It does not improve under any of the three
+objectives at any restart count, and coordinate descent does not touch it
+either.
+
+**That is the conclusion worth keeping.** The interleaving failure is neither a
+local-step problem, nor a starting-basin problem, nor a scoring problem — all
+three have now been tested and eliminated. What is left is the ridge MODEL: one
+smooth path per rotor through a score surface, with a hinge cost on rate change.
+Where four trajectories interleave and swap order, the evidence for "which ridge
+belongs to which rotor" is not present in the surface at all, and no search over
+paths in that surface can recover it. Resolving it needs information the surface
+does not carry — the phase continuity of the individual lines, which is exactly
+what the phase-increment refiner reads and what the seeding stage currently
+discards.
