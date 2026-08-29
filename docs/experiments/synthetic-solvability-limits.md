@@ -986,3 +986,30 @@ defaults to 0.
 Escaping the basin needs a genuinely joint search — k-best paths per track and
 then an assignment over the combinations — not a better local step. That is the
 open item.
+
+### And multi-restart does not repair it either
+
+If coordinate descent cannot leave the greedy basin, the other escape is to
+start in a different one. `n_restart` runs the greedy sweep once per band of the
+rate range — guaranteeing a restart that begins on each rotor — and keeps the
+solution with the least residual energy after all R combs are notched out.
+
+| n_restart | separated | moderate | crossing | total |
+|---|---|---|---|---|
+| 1 (greedy) | 0.0208, 0/12 | 0.0916, 1/12 | 0.2146, 2/12 | 3/36 |
+| 4 | 0.0207, 0/12 | 0.1003, 3/12 | 0.2060, 1/12 | 4/36 |
+| 8 | 0.0222, 0/12 | 0.0829, 2/12 | **0.9753**, 2/12 | 4/36 |
+
+More restarts make it WORSE, and that is the informative part. The search is
+fine — the JOINT OBJECTIVE is not. Residual energy after notching rewards
+notching wherever energy happens to be rather than where combs actually are, so
+it can prefer a solution parked on loud junk; given more candidates, a flawed
+discriminator simply has more chances to choose one. At 8 restarts the
+interleaving regime degrades from 0.215 to 0.975 rev/s with a worst clip of 10.3.
+
+So two candidate fixes have now been implemented and refuted, and between them
+they locate the real gap. It is not the local step (coordinate descent converges
+in one pass) and not the starting basin (restarts reach the right basins and
+then discard them). It is the SCORE that ranks whole solutions. A usable one has
+to be the Whittle likelihood of the full R-comb model, normalized so that
+notching more bins is not itself rewarded. Both knobs default to off.

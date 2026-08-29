@@ -373,7 +373,8 @@ def seed_from_gram(
     r_lo: float = 30.0, r_hi: float = 100.0, d_grid: float = 0.02,
     win_s: float = 0.25, hop_s: float = 0.125, k_max: int = 40,
     f_max: float = 7500.0, slew: float = 12.0, notch: float = 1.5,
-    stiff: float = 40.0, n_refine: int = 0, octave: bool = True,
+    stiff: float = 40.0, n_refine: int = 0, n_restart: int = 1,
+    octave: bool = True,
 ) -> np.ndarray:
     """Blind rotor tracks by peeling ridges out of the comb-gram.
 
@@ -411,20 +412,59 @@ def seed_from_gram(
                     break
                 dest[w][np.abs(f - fc) < notch * df] = noises[w]
 
-    def find(exclude):
-        """Best path with every track in `exclude` notched out of the spectra."""
+    def find(exclude, band=None):
+        """Best path with every track in `exclude` notched out of the spectra.
+
+        `band` restricts the path to a rate range, which is how a restart is
+        forced to begin on a different rotor.
+        """
         work = [pw.copy() for pw in pws]
         for r_path in exclude:
             notch_into(work, r_path)
         S = np.stack([
             comb_score(work[w], f, noises[w], grid, k_max, f_max) for w in range(len(starts))
         ])
+        if band is not None:
+            S = S.copy()
+            S[:, (grid < band[0]) | (grid >= band[1])] = -1e9
         r_path = grid[_viterbi_ridge(S, grid, slew, dt, stiff)]
         return _octave_path(work, f, floors, r_path, k_max, f_max, r_hi) if octave else r_path
 
-    tracks: list[np.ndarray] = []
-    for _ in range(n_rot):
-        tracks.append(find(tracks))
+    def residual(tset) -> float:
+        """Energy left in the spectra after every track's comb is removed.
+
+        The JOINT objective. Each track's own path score is measured on a
+        spectrum peeled by the tracks found before it, so those scores are not
+        comparable between different solutions and cannot rank them. What a
+        whole solution can be judged by is how much of the signal the R combs
+        together fail to explain, which is one number per solution and needs no
+        reference.
+        """
+        work = [pw.copy() for pw in pws]
+        for r_path in tset:
+            notch_into(work, r_path)
+        return float(sum(w.sum() for w in work))
+
+    def greedy(first_band) -> list[np.ndarray]:
+        tset: list[np.ndarray] = []
+        for i in range(n_rot):
+            tset.append(find(tset, band=first_band if i == 0 else None))
+        return tset
+
+    # Restart the greedy sweep from each band of the rate range and keep the
+    # solution that explains the most signal. The greedy sweep commits to its
+    # first track before the others have a say, and where rotors cross that
+    # commitment is what strands the rest; coordinate descent cannot undo it
+    # (it converges inside the same basin), so the escape has to be a different
+    # STARTING basin. Forcing the first track into each band in turn guarantees
+    # a restart that begins on each rotor. It does not work either — see
+    # `residual`, whose objective is the part that fails.
+    bands = [None] if n_restart <= 1 else [
+        (r_lo + j * (r_hi - r_lo) / n_restart, r_lo + (j + 1) * (r_hi - r_lo) / n_restart)
+        for j in range(n_restart)
+    ]
+    sols = [greedy(b) for b in bands]
+    tracks = min(sols, key=residual)
 
     # Coordinate descent on the joint problem. The greedy sweep above commits to
     # track 1 before track 2 has had a say, and where two rotors CROSS the first
