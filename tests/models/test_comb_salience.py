@@ -39,7 +39,8 @@ def test_classical_corner_case_is_exact(seed):
     assert np.abs(got[0, :, 0].numpy() - ref).max() < 1e-13
 
 
-def test_learned_head_starts_at_the_classical_score():
+@pytest.mark.parametrize("mode", ["learned", "learned_cond"])
+def test_learned_head_starts_at_the_classical_score(mode):
     """A freshly built learned head must equal the classical one exactly.
 
     Training departs from the classical method only by learning; at
@@ -50,6 +51,7 @@ def test_learned_head_starts_at_the_classical_score():
     h = torch.rand(2, 40, 64, 5, dtype=torch.float64) * 1e4
     floor = torch.full_like(h, 3.0)
     count = torch.full((64,), 40.0, dtype=torch.float64)
-    classical = CombScoreHead(40, "classical")(h, floor, count)
-    learned = CombScoreHead(40, "learned").double()(h, floor, count)
+    grid = torch.linspace(30.0, 100.0, 64, dtype=torch.float64)
+    classical = CombScoreHead(40, "classical")(h, floor, count, grid)
+    learned = CombScoreHead(40, mode).double()(h, floor, count, grid)
     assert torch.allclose(classical, learned, atol=1e-12)

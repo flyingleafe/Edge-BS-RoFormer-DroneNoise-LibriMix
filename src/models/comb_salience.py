@@ -138,10 +138,23 @@ class CombScoreHead(nn.Module):
     def __init__(self, k_max: int = 40, mode: str = "classical", n_knots: int = 8,
                  z_max: float = 12.0):
         super().__init__()
-        if mode not in ("classical", "learned"):
+        if mode not in ("classical", "learned", "learned_cond"):
             raise ValueError(f"unknown mode {mode!r}")
         self.mode, self.k_max = mode, int(k_max)
-        if mode == "learned":
+        if mode == "learned_cond":
+            # A weight per (harmonic, candidate rate), produced by a small MLP
+            # from the harmonic index and the log rate. The `learned` head
+            # shares ONE weight vector across every candidate, and a run showed
+            # why that fails: the optimal weights differ by centre rate, so
+            # training drove the 40 rev/s cell from 28.0 to 5.5 while pushing
+            # the training-matched cell from 0.160 to 8.042. One global vector
+            # cannot serve both, and the loss fell throughout.
+            self.cond = nn.Sequential(nn.Linear(2, 32), nn.GELU(), nn.Linear(32, 1))
+            nn.init.zeros_(self.cond[2].weight)
+            nn.init.zeros_(self.cond[2].bias)
+            self.register_buffer("knots", torch.linspace(0.0, z_max, n_knots))
+            self.slope = nn.Parameter(torch.zeros(n_knots))
+        elif mode == "learned":
             # A learned PIECEWISE-LINEAR warp of the per-harmonic evidence, not
             # an MLP. The readings live on a (batch, harmonic, rate, frame)
             # grid, so a hidden channel dimension would cost hundreds of
@@ -157,16 +170,28 @@ class CombScoreHead(nn.Module):
             self.w = nn.Parameter(torch.zeros(self.k_max))
 
     def _warp(self, z: torch.Tensor) -> torch.Tensor:
+        if self.mode == "classical":
+            return z
         k = self.knots.to(z.dtype)
         a = self.slope.to(z.dtype)
         return z + torch.einsum("j,...j->...", a, F.relu(z.unsqueeze(-1) - k))
 
-    def forward(self, h: torch.Tensor, floor: torch.Tensor, count: torch.Tensor) -> torch.Tensor:
+    def forward(self, h: torch.Tensor, floor: torch.Tensor, count: torch.Tensor,
+                grid: torch.Tensor | None = None) -> torch.Tensor:
         # floor: (B, F, T) -> gathered alongside h by the caller, already (B,K,G,T)
         z = torch.log1p(h / floor)
         cnt = count.to(z.dtype)[None, :, None]
         if self.mode == "classical":
             return z.sum(dim=1) / cnt
+        if self.mode == "learned_cond":
+            if grid is None:
+                raise ValueError("learned_cond needs the rate grid")
+            k = torch.arange(1, self.k_max + 1, device=z.device, dtype=z.dtype) / self.k_max
+            lr = torch.log(grid.to(z.dtype).clamp_min(1e-6))
+            lr = (lr - lr.mean()) / lr.std().clamp_min(1e-6)
+            feat = torch.stack(torch.broadcast_tensors(k[:, None], lr[None, :]), dim=-1)
+            w = (1.0 + self.cond(feat).squeeze(-1))[None, :, :, None]      # (1, K, G, 1)
+            return (self._warp(z) * w).sum(dim=1) / cnt
         w = (1.0 + self.w).to(z.dtype)[None, :, None, None]
         return (self._warp(z) * w).sum(dim=1) / cnt
 
@@ -225,7 +250,7 @@ class CombSalienceNet(nn.Module):
         floor = floor.detach()
         h = self.gather(pw)
         fh = self.gather(floor).clamp_min(1e-12)
-        return self.head(h, fh, self.gather.count)
+        return self.head(h, fh, self.gather.count, self.gather.grid)
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
         return self.score(self.spectrum(audio))
