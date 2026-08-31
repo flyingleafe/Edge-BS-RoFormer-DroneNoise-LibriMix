@@ -16,10 +16,17 @@
 # 0.39 from 11 and 0.13 from 31 — the reason the note rejects a log axis, where
 # the harmonic index cancels out of the separability ratio.
 #
-# f_min 30 Hz drops harmonics inside the analysis window's DC mainlobe. The
-# grid reaches 0, and without the cut a 1.5 rev/s hypothesis puts all 32 of its
-# harmonics inside that mainlobe, every one reading far above a median floor
-# computed from the same mainlobe.
+# TWO CUTS THAT A RATE GRID REACHING 0 FORCES, both measured on single-comb
+# clips through this model's own `evidence()`:
+#   f_min 30 Hz drops harmonics inside the analysis window's DC mainlobe.
+#   r_min = sr/n_fft = 3.906 rev/s drops whole CANDIDATES whose consecutive
+#     harmonics are closer than one STFT bin, so their K reads are the same few
+#     bins rather than a comb. Without it the classical read of a 37 rev/s comb
+#     peaks at 1.51 rev/s and a 45 rev/s comb does the same; with it 37, 45, 60,
+#     84.5 and 120 all recover to within one grid bin. `r_min: null` in this
+#     config means "one STFT bin"; the 8 output bins below it carry no evidence
+#     and emit a constant, which is the honest reading of what this front end
+#     can resolve.
 #
 # WIDTHS are hFT's own: hid_dim 256, 3 cross-attention layers, 3 SAtime layers,
 # 4 heads, pf_dim 512, cnn_channel 4. n_frame 128 is the SAtime block length
@@ -47,6 +54,7 @@ params:
   k_max: 32
   f_max: 7500.0
   f_min: 30.0
+  r_min: null  # -> sr/n_fft = 3.906 rev/s
   hid_dim: 256
   n_layers: 3
   n_time_layers: 3

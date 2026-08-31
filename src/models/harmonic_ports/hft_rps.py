@@ -299,6 +299,12 @@ class HFTRPS(SalienceRPSPredictor):
             because the grid reaches 0: at 1.5 rev/s all 32 harmonics land in
             the window's DC mainlobe and read far above a floor computed from
             that same mainlobe.
+        r_min: candidate rates below this get NO valid harmonics and therefore
+            no evidence at all. Defaults to one STFT bin (``sr / n_fft`` =
+            3.906 rev/s), which is the rate at which consecutive harmonics stop
+            being separate bins. See the comment at the mask construction for
+            the measurement that forces it. Those output bins emit a constant,
+            which is the honest reading: this front end cannot resolve them.
         hid_dim, n_layers, n_heads, pf_dim, dropout: hFT's transformer widths.
             The defaults are hFT's own.
         cnn_channel, cnn_kernel: the temporal context convolution in front of
@@ -323,6 +329,7 @@ class HFTRPS(SalienceRPSPredictor):
         k_max: int = 32,
         f_max: float = 7500.0,
         f_min: float = 30.0,
+        r_min: float | None = None,
         hid_dim: int = 256,
         n_layers: int = 3,
         n_time_layers: int | None = None,
@@ -356,7 +363,19 @@ class HFTRPS(SalienceRPSPredictor):
             torch.arange(1, self.k_max + 1, dtype=torch.float64)[:, None]
             * torch.as_tensor(grid, dtype=torch.float64)[None, :]
         )
-        band = (fk >= float(f_min)) & (fk < float(f_max))  # (K, G)
+        # THE UNRESOLVABLE-RATE CUT. Consecutive harmonics of a rate `r` are
+        # `r` Hz apart, so below one STFT bin width they land in the SAME bin
+        # and the hypothesis is not a comb at all — every one of its K reads is
+        # the same handful of bins. Measured on single-comb clips: without the
+        # cut the classical read of a 37 rev/s comb peaks at 1.51 rev/s (whose
+        # harmonics 20-32 all sit inside the 37 Hz line's own skirt) and a 45
+        # rev/s comb peaks at 1.51 as well; with it, 37, 45, 60, 84.5 and 120
+        # all recover to within one grid bin. `f_min` alone does not catch this
+        # — those reads are at 30-48 Hz, outside the DC mainlobe.
+        r_cut = float(sr) / float(n_fft) if r_min is None else float(r_min)
+        self.r_min = r_cut
+        grid_t = torch.as_tensor(grid, dtype=torch.float64)[None, :]
+        band = (fk >= float(f_min)) & (fk < float(f_max)) & (grid_t >= r_cut)  # (K, G)
         self.register_buffer("band", band, persistent=False)
         self.register_buffer("any_band", band.any(dim=0), persistent=False)  # (G,)
         self.register_buffer("window", torch.hann_window(int(n_fft)), persistent=False)
