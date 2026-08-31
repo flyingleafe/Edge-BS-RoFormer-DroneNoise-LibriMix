@@ -1,0 +1,29 @@
+# BCE-on-RPS-derived-salience on the harmonic-port grid: linear 0-150 rev/s in
+# 300 bins (0.5017 rev/s per bin), on the STFT frame grid [16000, 512].
+#
+# MIRRORS conf/model/hppnet_rps.yaml's r_lo/r_hi/n_grid exactly — that file
+# carries the argument for the three numbers. Both sides build the axis with
+# models.multif0.utils.linear_freq_grid, so equal arguments give a bit-identical
+# grid and the target lands on the model's own bins.
+#
+# blur_bins 1, NOT the 2 every other salience row uses. docs/harmonic-ports-design.md
+# measures the recovery error as ~ h * sigma_bins * 10^(-SNR/20) — LINEAR in the
+# blur width — so a wider bump costs accuracy for nothing on a grid this fine.
+# At blur_bins 1 the target bump is the triangular kernel [0.5, 1, 0.5], which
+# is the existing helper's (salience_target_from_resampled_rps) approximation of
+# the note's sigma ~ 1 bin Gaussian.
+#
+# rate [16000, 512] is the STFT hop, not the [16000, 256] of the multif0 and
+# basic_pitch rows — see conf/model/hppnet_rps.yaml, number 2.
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      blur_bins: 1
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 512]

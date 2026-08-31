@@ -1,0 +1,64 @@
+# harmof0_rps — HarmoF0 (Wei et al., ISMIR 2022) with its log-frequency
+# harmonic SHIFT replaced by an explicit gather at k*r on the LINEAR STFT.
+# docs/harmonic-ports-design.md carries the argument; the model docstring
+# carries the deviations. Only what this config CHOOSES is repeated here.
+#
+# THE OUTPUT GRID: linear 0 -> 150 rev/s, 300 bins = 0.5017 rev/s/bin.
+#
+#   Span. Identical to conf/model/multif0_salience_w150.yaml, deliberately, so
+#   this row and that one are read on one axis. The synthetic curricula excite
+#   the full flight envelope and then freq-scale each chunk by
+#   alpha ~ U(0.7, 1.3), so the augmented cruise top is 100 * 1.3 = 130 and 150
+#   leaves margin; the bottom goes to 0 because the stream spends real time on
+#   the ground and on the ramps.
+#
+#   Resolution. 300 bins, not the w150 row's 1000. The design note's error
+#   table is the reason and it is not obvious: with a blurred target and
+#   three-point log-parabolic peak interpolation the RMS recovery error is
+#   ~ h * sigma_bins * 10^(-SNR/20), thus 0.5 rev/s per bin holds
+#   discretization at 0.013 rev/s at 40 dB and 0.13 at 20 dB — under the
+#   campaign's 0.2 rev/s honest floor and far under DREGON's own +-0.6 rev/s
+#   label jitter. The w150 row needs 1000 bins because its bins ALSO carry the
+#   super-resolution head's interpolation from a log input grid; this model has
+#   no input grid to interpolate from, and the candidate axis costs a gather
+#   per bin, so a finer grid would be paid for and not used.
+#
+# THE FRONT END. n_fft 4096 at 16 kHz = 3.906 Hz per bin over a 0.256 s window.
+# That is the window the design note's separability table is computed for:
+# 0.85 rev/s separates from harmonic 5, 0.39 from 11, 0.13 from 31.
+#
+# k_max 32 with f_max 7500: every harmonic of every candidate up to 150 rev/s
+# stays in band (32 * 150 = 4800 < 7500), so the harmonic count is constant
+# across the whole grid and no candidate is scored high merely for having few
+# harmonics to be judged on.
+#
+# f_min 30 removes the near-DC artifact a 0-rev/s grid bottom creates — see the
+# model docstring; the classical scan never needed it because it searches
+# 30-100 rev/s.
+#
+# frame_rate is [16000, 512]: torch.stft(center=True) at hop 512 emits
+# n // 512 + 1 frames and the model does not pool along time, so the salience
+# rate IS the STFT rate. (The salience rows built on HCQT trunks say
+# [16000, 256] because that is THEIR front end's hop; nothing is shared.)
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: harmof0_rps
+  n_fft: 4096
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  f_min: 30.0
+  channels: [32, 64, 128, 128]
+  dilations: [4, 8, 16]
+model_type: null
+legacy_config_path: null

@@ -1,0 +1,36 @@
+# @package _global_
+# ARM B — hFT-Transformer (ported) on the STOCHASTIC rotor-noise curriculum,
+# validated on a HELD-OUT DRAW OF THAT SAME FAMILY.
+#
+# THE QUESTION, and why it is not arm A's. The static comb of `hft_comb` has
+# lines with no width at all. The stochastic family is the widest synthetic
+# family the project has: per-harmonic amplitude wander, a broadband floor that
+# does not follow the rotors, and — the one knob measured to move comb contrast
+# monotonically — lines that broaden with their own order
+# (docs/experiments/synthetic-solvability-limits.md). Arm A says whether the
+# architecture can read a comb; arm B says whether it can still read one when
+# the lines are not delta functions, which is the property the real recordings
+# actually have.
+#
+# Stream conf/online_mix/stoch_s1_dload.yaml, validation a fresh base_seed on
+# the same policy at 8 s and unaugmented (conf/data/sal_stoch_synthval.yaml) —
+# `sal150_stoch`'s pairing, unchanged, so this row and the LateDeep salience
+# row differ in the MODEL and nothing else.
+#
+# batch_size 8, not 16: the cross-attention map is
+# (batch, frame, head, rate, harmonic) and is linear in the batch.
+defaults:
+  - override /data: sal_stoch_synthval
+  - override /model: hft_rps
+  - override /loss: salience_bce_r150
+  - override /metrics: salience_bce_r150
+
+experiment_name: hft_stoch
+epochs: 200
+patience: 20
+batch_size: 8  # frames (= 1 chunk x 8 mics)
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: bce
+  monitor_mode: min

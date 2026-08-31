@@ -1,0 +1,56 @@
+# hppnet_rps — HPPNet (Wei et al., ISMIR 2022) with its HarmonicDilatedConv
+# replaced by an explicit gather at k*r on the LINEAR STFT, and FreqGroupLSTM
+# kept. The substitution, the rejection of the log axis and the 0.5 rev/s grid
+# choice are all argued in docs/harmonic-ports-design.md; the port's block map
+# and its seven other deviations are in the module docstring of
+# src/models/harmonic_ports/hppnet_rps.py. Neither is repeated here.
+#
+# THE THREE NUMBERS THIS FILE FIXES, and what they must agree with:
+#
+#   1. THE OUTPUT GRID (r_lo/r_hi/n_grid = 0 / 150 / 300, i.e. 0.5017 rev/s per
+#      bin) is ALSO the candidate-rate grid the gather reads at. It must match
+#      conf/loss/salience_bce_hppnet.yaml and conf/metrics/salience_bce_hppnet.yaml
+#      exactly (out_fmin/out_fmax/out_bins) — the model and the loss each build
+#      it with models.multif0.utils.linear_freq_grid, so equal arguments give a
+#      bit-identical axis and the BCE target lands on the model's own bins.
+#
+#   2. THE TIME GRID. frame_rate [16000, 512] is the STFT hop, and nothing in
+#      the trunk pools along time, so the salience rate IS the STFT rate. This
+#      differs from every existing salience row (multif0/basic_pitch are on
+#      [16000, 256], their front ends' own hop) — it is this project's frame
+#      grid, and HPPNet's native 320 is dropped for it (deviation 1).
+#
+#   3. n_fft 4096 = 3.906 Hz per bin over a 0.256 s window, the resolution the
+#      design note's separability table is computed for: 0.85 rev/s separates
+#      from k >= 5, 0.39 from k >= 11, 0.13 from k >= 31. k_max 32 therefore
+#      reaches DREGON's tightest cruise pair; f_max 7500 is the Nyquist margin.
+#
+# c_har 16 / embedding 128 are HPPNet's own trunk widths. lstm_size 64 is the
+# memory knob: FreqGroupLSTM runs B*G sequences, and G is 300 candidate rates
+# here against HPPNet's 88 pitches. Measured at batch 16: ~2 GB of activations
+# on 1 s training clips, ~3.6 GB on 8 s validation clips.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: hppnet_rps
+  n_fft: 4096
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  c_har: 16
+  embedding: 128
+  dilations: [8, 2]
+  lstm_size: 64
+  floor_hz: 120.0
+  n_maps: 1
+model_type: null
+legacy_config_path: null

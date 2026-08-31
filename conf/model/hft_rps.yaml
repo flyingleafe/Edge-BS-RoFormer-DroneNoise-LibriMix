@@ -1,0 +1,62 @@
+# hFT-Transformer ported to rotor-rate salience — the DECODER kept, its note
+# tokens made CANDIDATE RATES, and its cross-attention hard-masked to each
+# rate's own harmonics by `models.comb_salience.CombGather`.
+# See docs/harmonic-ports-design.md and the module docstring of
+# `models.harmonic_ports.hft_rps` for the substitution and its arithmetic.
+#
+# THE GRID. Output = input = the candidate-rate axis: linear 0 -> 150 rev/s in
+# 300 bins, 0.5017 rev/s per bin. The design note's recovery-error table puts
+# the discretization cost at 0.013 rev/s at 40 dB and 0.13 at 20 dB with
+# three-point parabolic peak interpolation, under the campaign's 0.2 rev/s
+# honest floor and far under DREGON's own +-0.6 rev/s label jitter. 150 covers
+# the synthetic curricula's augmented top (cruise ~100 x freq_scale 1.3 = 130).
+#
+# THE FRONT END. Linear STFT, n_fft 4096 / hop 512 at 16 kHz = 3.906 Hz bins
+# over a 0.256 s window. That window separates 0.85 rev/s from harmonic 5,
+# 0.39 from 11 and 0.13 from 31 — the reason the note rejects a log axis, where
+# the harmonic index cancels out of the separability ratio.
+#
+# f_min 30 Hz drops harmonics inside the analysis window's DC mainlobe. The
+# grid reaches 0, and without the cut a 1.5 rev/s hypothesis puts all 32 of its
+# harmonics inside that mainlobe, every one reading far above a median floor
+# computed from the same mainlobe.
+#
+# WIDTHS are hFT's own: hid_dim 256, 3 cross-attention layers, 3 SAtime layers,
+# 4 heads, pf_dim 512, cnn_channel 4. n_frame 128 is the SAtime block length
+# (hFT's fixed segment length, applied here as a partition — an 8 s validation
+# clip is 251 frames). rate_block 64 bounds the rate-axis self-attention that
+# stands in for hFT's decoder self-attention.
+#
+# frame_rate is [16000, 512]: nothing pools along time, so the salience time
+# grid IS the STFT frame grid.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: hft_rps
+  n_fft: 4096
+  hop_length: 512
+  sr: 16000
+  num_rotors: 4
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  f_min: 30.0
+  hid_dim: 256
+  n_layers: 3
+  n_time_layers: 3
+  n_heads: 4
+  pf_dim: 512
+  dropout: 0.1
+  cnn_channel: 4
+  cnn_kernel: 5
+  n_frame: 128
+  rate_block: 64
+  floor_hz: 120.0
+model_type: null
+legacy_config_path: null

@@ -64,6 +64,17 @@ DEFAULT_POLICY = {
     "salstd_comb": "conf/online_mix/m3abl_comb_s1_dload.yaml",
     "sal150_stoch": "conf/online_mix/stoch_s1_dload.yaml",
     "salstd_stoch": "conf/online_mix/stoch_s1_dload.yaml",
+    # The HARMONIC-PORT salience rows (conf/experiment/hppnet_*.yaml), each
+    # scored on the family it trained on, exactly as the sal150_* rows are.
+    # hppnet_r4 is real-trained and has no synthetic family of its own; it is
+    # scored by scripts/valid_regime_eval.py on the frozen real split.
+    "hppnet_comb": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    "hppnet_stoch": "conf/online_mix/stoch_s1_dload.yaml",
+    # The HarmoF0 port (conf/experiment/hf0_*.yaml), same rule: each synthetic
+    # arm is scored on the family it trained on. hf0_real / hf0_r4 train on real
+    # recordings and belong to scripts/valid_regime_eval.py, not here.
+    "hf0_comb": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    "hf0_stoch": "conf/online_mix/stoch_s1_dload.yaml",
     # The real-trained rows have no stochastic policy of their own. They are
     # scored on ARM ID's stream via --policy, as the control that says whether a
     # bad synthetic score means the model is weak or the stream is hard.

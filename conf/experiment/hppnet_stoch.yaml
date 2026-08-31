@@ -1,0 +1,32 @@
+# @package _global_
+# ARM B — hppnet_rps on the STOCHASTIC rotor-noise curriculum, validated on a
+# held-out draw of that same family.
+#
+# The stochastic twin of conf/experiment/hppnet_comb.yaml, and the same argument
+# applies verbatim: the row measures whether the port can fit this family, so
+# the validation draw comes from the family and not from the real split
+# (conf/data/sal_stoch_synthval.yaml's header). The stream is
+# conf/online_mix/stoch_s1_dload.yaml — one `stochastic` source at full-flight
+# excitation plus a 0.2-weight silence arm, the widest synthetic family the
+# project has, and the family the static comb of arm A is the sharp-line corner
+# of.
+#
+# Read against conf/experiment/sal150_stoch.yaml, which is this row with
+# multif0_salience in place of the port (see hppnet_comb.yaml for the three
+# things that differ). The A-to-B drop measures what line width costs the port;
+# the port-to-multif0 difference measures what the gather buys.
+defaults:
+  - override /data: sal_stoch_synthval
+  - override /model: hppnet_rps
+  - override /loss: salience_bce_hppnet
+  - override /metrics: salience_bce_hppnet
+
+experiment_name: hppnet_stoch
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — sal150_stoch's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: bce
+  monitor_mode: min

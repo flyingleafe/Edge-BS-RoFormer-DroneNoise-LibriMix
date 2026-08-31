@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from models.generative.propagation import MicEQ
 from models.ckla import SimpleConvV2CKLA, SimpleConvV2CKLACond
 from models.fkla import FKLARPSModel
+from models.harmonic_ports import HFTRPS, HarmoF0RPS, HPPNetRPS
 from models.hg_ckla import HGCKLARefiner
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
@@ -201,6 +202,17 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     "multif0_rps": MultiF0RPSPredictor,
     "multif0_salience": LateDeepSalience,
     "basic_pitch_salience": BasicPitchSalience,
+    # hFT-Transformer with its per-note decoder tokens made CANDIDATE RATES
+    # and its cross-attention hard-masked to each rate's own harmonics, read
+    # at k*r from the linear STFT — docs/harmonic-ports-design.md.
+    "hft_rps": HFTRPS,
+    # HarmoF0 with its log-frequency harmonic SHIFT replaced by a gather at
+    # k*r on the linear STFT — docs/harmonic-ports-design.md.
+    "harmof0_rps": HarmoF0RPS,
+    # HPPNet with its HarmonicDilatedConv (eight log-axis dilated branches)
+    # replaced by a gather at k*r on the linear STFT; FreqGroupLSTM kept —
+    # docs/harmonic-ports-design.md.
+    "hppnet_rps": HPPNetRPS,
 }
 
 

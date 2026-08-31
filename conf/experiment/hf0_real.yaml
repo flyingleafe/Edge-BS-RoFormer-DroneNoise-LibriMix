@@ -1,0 +1,39 @@
+# @package _global_
+# ARM C — harmof0_rps on REAL recordings, from scratch.
+#
+# The stream is conf/online_mix/hb_m3s2_dload.yaml: the R2 honest-base real
+# pool (DREGON in-flight plus Michael's FLY125, whole envelope, plus a
+# zero-labeled silence arm at 16.7% of noise chunks and an SNR reference
+# floor), with the 50k warm-up stage removed. Validation is the frozen real
+# split dload:DREGON-LM-V4-michaels-valid-full through conf/data/m3cur_s2.yaml.
+#
+# WHY THIS STREAM. It is the real component of the R4 regime cell
+# (conf/experiment/r4hb_scv2.yaml), so this row and the R4 row are read on one
+# axis. R4 proper ALSO warm-starts from a static-comb stage-1 checkpoint; that
+# variant is conf/experiment/hf0_r4.yaml and it needs arm A to have finished
+# first. This row is the unconditioned version and is the one directly
+# comparable with hb_sal_multif0 (flight MAE 4.01), which is likewise a
+# from-scratch real-data salience run on the same pool minus the warm-up stage.
+#
+# batch_size is arm A's 16 frames, not R4's 128: this is the salience family's
+# figure, and the trunk's activation footprint is set by the 300-candidate x
+# 32-harmonic gather, not by the regression trunk R4 was sized for.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: harmof0_rps
+  - override /loss: salience_bce_r150
+  - override /metrics: salience_bce_r150
+
+experiment_name: hf0_real
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — arm A's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: bce
+  monitor_mode: min

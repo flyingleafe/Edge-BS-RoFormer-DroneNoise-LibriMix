@@ -12,6 +12,7 @@ src/models/
   frontends/            Pluggable spectral front-ends
   multif0/              Multi-F0 HCQT + CNN (Cuesta et al. ISMIR 2020)
   basic_pitch/          Basic Pitch note transcription, PyTorch port (Bittner et al. ICASSP 2022)
+  harmonic_ports/       Multi-pitch architectures ported to rotor-rate salience on a LINEAR STFT
   rps_predictor.py      SimpleConv* family + DCUNet/DCCRN encoders (RPS)
   ckla.py               Complex Kalman Linear Attention head + SimpleConvV2CKLA (docs/ckla-design.md)
   dcunet.py             DCUNet (speech enhancement)
@@ -136,6 +137,7 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `multif0_rps` | Multi-F0 LateDeep CNN + soft-centroid RPS |
 | `multif0_salience` | LateDeep CNN → salience-map logits; BCE-trained, Hungarian-tracked to RPS at eval (`salience_rps.py`) |
 | `basic_pitch_salience` | Basic Pitch contour branch → salience-map logits; same BCE+tracking path, native 16 kHz (`salience_rps.py`) |
+| `harmof0_rps` | HarmoF0 (Wei et al. ISMIR 2022) with its log-frequency harmonic SHIFT replaced by a gather at `k*r` on the linear STFT → salience logits on a linear CANDIDATE-RATE grid (`harmonic_ports/harmof0_rps.py`) |
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
@@ -175,6 +177,44 @@ square layers, so it is not strictly causal as written. When adapting a new
 backbone such as SMoLnet to RPS prediction, run the cleanest body-only ablation
 first (body + SimpleConv-style mean-pool Conv1d head) before adding stronger
 TCN/GRU/attention heads; otherwise body and head effects are confounded.
+
+### Harmonic ports (`harmonic_ports/`)
+
+Paper multi-pitch architectures, each with ONE organ replaced: the
+log-frequency harmonic **shift** becomes an explicit **gather** at `k*r` on the
+linear STFT (`models.comb_salience.CombGather`). The measurements that reject
+the log axis for this task live in `docs/harmonic-ports-design.md` — read it
+before touching this package; the short version is that a log grid's
+separation-to-bandwidth ratio for two rotors `D` apart is
+`D / (r * (2^(1/B) - 1))`, in which the harmonic index cancels, so a rotor pair
+is resolved at every harmonic or at none, while a uniform STFT improves
+linearly with `k`. The output axis is therefore the CANDIDATE RATE, not
+frequency, and it is **linear** (a log rate grid spends its resolution at the
+coarse end, where nothing needs it).
+
+They satisfy the ordinary `salience_rps` contract — `forward(audio) -> (B, G, T)`
+logits, `outputs_salience = True`, BCE through `losses.SalienceRPSBCELoss`,
+Hungarian tracking through the inherited `predict_rps` — by declaring the rate
+grid as `SalienceRPSPredictor.out_freqs`, the hook that already exists for a
+salience axis decoupled from a log-spaced input CQT. Nothing in the task, the
+codec, the loss or the tracker changes.
+
+| Model | Paper | What was replaced |
+|-------|-------|-------------------|
+| `harmof0_rps` | HarmoF0, Wei et al. ISMIR 2022 | `MRDConv` (a 1x1 conv, a `round(log2(k)*B)`-bin shift, and a sum, per harmonic) → `CombGather` at `k*r` times a learned per-harmonic weight. Its blocks 2-4 keep their shape but their octave-sized dilations become plain dilated context convolutions along RATE, where an octave is not a fixed offset — a deliberate deviation, documented in the module docstring |
+
+Two traps this package has already paid for, both specific to a rate grid that
+reaches 0 and both handled inside `harmof0_rps.py`:
+
+1. **The near-DC gather.** At 1.5 rev/s every harmonic lands inside the STFT
+   window's DC mainlobe, reads far above a median floor computed from that same
+   mainlobe, and wins. `f_min` (30 Hz by default) drops those reads. The
+   classical scan never needed this because it searches 30-100 rev/s.
+2. **Count normalization.** The classical head divides the summed evidence by
+   the number of in-band harmonics, which is right in a narrow search band and a
+   trap on a 0-150 grid: a candidate with three surviving harmonics wins on one
+   lucky hit. Dividing by the constant `k_max` instead took the untrained
+   score from 3/8 to 7/8 on a synthetic single-comb probe.
 
 ### Salience-map RPS baselines (`salience_rps.py`)
 

@@ -1,0 +1,14 @@
+# Validation-time BCE-on-salience metric on the harmonic-port grid — mirrors
+# conf/loss/salience_bce_hppnet.yaml exactly, so `optim.monitor: bce` tracks the
+# same objective on the validation split. That file carries the reasons.
+terms:
+  - name: bce
+    _target_: metrics.SalienceBCEMetric
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      blur_bins: 1
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 512]

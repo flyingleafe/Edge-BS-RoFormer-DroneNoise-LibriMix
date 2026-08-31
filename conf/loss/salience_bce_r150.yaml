@@ -1,0 +1,27 @@
+# BCE-on-RPS-derived-salience on the CANDIDATE-RATE grid of
+# conf/model/hft_rps.yaml: linear 0 -> 150 rev/s in 300 bins (0.5017 rev/s per
+# bin). The loss owns the grid parameters because no dataset emits a
+# `salience` entry — it derives the target from `rps` on every call.
+#
+# blur_bins 1, not the 2 of conf/loss/salience_bce_w150.yaml. The design note's
+# recovery error is LINEAR in the blur width, and this grid is 3.3x coarser
+# (0.5017 rev/s per bin against 0.1502), so +-1 bin here is already +-0.5 rev/s
+# — wider in rev/s than +-2 bins on that grid. The kernel the framework applies
+# is triangular, not Gaussian; the note's "sigma ~ 1 bin" is met by the width,
+# not by the shape.
+#
+# pos_weight auto = (300 - 4*3) / (4*3) = 24.
+#
+# rate [16000, 512] mirrors the model's frame_rate: nothing pools along time.
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      blur_bins: 1
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 512]
