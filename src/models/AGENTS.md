@@ -138,6 +138,7 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `multif0_salience` | LateDeep CNN → salience-map logits; BCE-trained, Hungarian-tracked to RPS at eval (`salience_rps.py`) |
 | `basic_pitch_salience` | Basic Pitch contour branch → salience-map logits; same BCE+tracking path, native 16 kHz (`salience_rps.py`) |
 | `harmof0_rps` | HarmoF0 (Wei et al. ISMIR 2022) with its log-frequency harmonic SHIFT replaced by a gather at `k*r` on the linear STFT → salience logits on a linear CANDIDATE-RATE grid (`harmonic_ports/harmof0_rps.py`) |
+| `hppnet_rps` | HPPNet (Wei et al. ISMIR 2022) with `HarmonicDilatedConv` (eight log-axis dilated branches) replaced by the same gather at `k*r`; `CNNTrunk` and `FreqGroupLSTM` kept, MPE head only (`harmonic_ports/hppnet_rps.py`) |
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
