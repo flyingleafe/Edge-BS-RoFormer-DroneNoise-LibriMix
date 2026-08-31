@@ -57,6 +57,13 @@ DEFAULT_POLICY = {
     "m3abl_comb_scv2_s1": "conf/online_mix/m3abl_comb_s1_dload.yaml",
     "m3abl_comb_unigru128_s1": "conf/online_mix/m3abl_comb_s1_dload.yaml",
     "m3abl_comb_transformer_s1": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    # The SALIENCE rows on synthetic curricula (conf/experiment/sal150_*.yaml,
+    # conf/experiment/salstd_*.yaml). Each is scored on the family it trained
+    # on, which is the whole point of those runs.
+    "sal150_comb": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    "salstd_comb": "conf/online_mix/m3abl_comb_s1_dload.yaml",
+    "sal150_stoch": "conf/online_mix/stoch_s1_dload.yaml",
+    "salstd_stoch": "conf/online_mix/stoch_s1_dload.yaml",
     # The real-trained rows have no stochastic policy of their own. They are
     # scored on ARM ID's stream via --policy, as the control that says whether a
     # bad synthetic score means the model is weak or the stream is hard.
@@ -102,6 +109,27 @@ def build_stream(policy: str, base_seed: int, duration_s: float | None, augment:
     return OnlineMixFrameDataset.from_config(cfg, flatten_channels=True)
 
 
+def _salience_rps(inner, frame, device: str, threshold: float) -> np.ndarray:
+    """``(R, T_stft)`` predicted speeds from a SALIENCE model.
+
+    A salience model's codec emits ``salience``, not ``rps_pred`` — the map is
+    turned into speeds by the model's own ``predict_rps`` (sigmoid, then
+    segmented Hungarian tracking, then the resample back onto the STFT grid the
+    frame's ``rps`` entry lives on). Going through the model rather than the
+    codec is what the salience rows of docs/experiments/unified-baseline-eval.md
+    do, and it keeps the decode identical to the one that produced them.
+
+    The frames are mono here (``flatten_channels: true``), thus one row.
+    """
+    import torch
+
+    wav = torch.as_tensor(np.asarray(frame["mixture"].data), dtype=torch.float32)
+    if wav.ndim == 1:
+        wav = wav.unsqueeze(0)
+    pred = inner.predict_rps(wav.to(device), threshold=threshold)
+    return np.asarray(pred[0].detach().cpu(), dtype=np.float64)
+
+
 def score(
     experiment: str,
     policy: str,
@@ -110,10 +138,14 @@ def score(
     ckpt: str,
     duration_s: float | None = None,
     augment: bool = True,
+    device: str = "cpu",
+    threshold: float = 0.3,
 ) -> dict:
     import zoo
 
-    model = zoo.load(experiment, ckpt=ckpt, device="cpu")
+    model = zoo.load(experiment, ckpt=ckpt, device=device)
+    inner = getattr(model, "model", None)
+    salience = bool(getattr(inner, "outputs_salience", False))
     stream = build_stream(policy, base_seed, duration_s, augment)
 
     errors: dict[str, list[np.ndarray]] = {r: [] for r in REGIMES}
@@ -121,7 +153,10 @@ def score(
     seen = 0
     for frame in stream:
         target = np.asarray(frame["rps"].data, dtype=np.float64)
-        pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
+        if salience:
+            pred = _salience_rps(inner, frame, device, threshold)
+        else:
+            pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
         width = min(pred.shape[1], target.shape[1])
         err = pit_abs_error(pred[:, :width], target[:, :width])
         labels = frame_regimes(target[:, :width])
@@ -143,6 +178,7 @@ def score(
         "base_seed": base_seed,
         "duration_s": duration_s,
         "augment": augment,
+        "salience": salience,
         "n_samples": seen,
         "aggregate_mse": float(all_squared.mean()),
         "all_mae": float(
@@ -180,6 +216,13 @@ def main() -> int:
         action="store_true",
         help="strip the training augmentation blocks, which the real split does not have",
     )
+    ap.add_argument("--device", default="cpu", help="torch device for the model")
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=0.3,
+        help="salience models only: peak threshold passed to predict_rps",
+    )
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -198,6 +241,8 @@ def main() -> int:
                 args.ckpt,
                 duration_s=args.duration,
                 augment=not args.no_augment,
+                device=args.device,
+                threshold=args.threshold,
             )
         except Exception as exc:  # a missing checkpoint must not kill the batch
             print(f"{exp}: FAILED ({exc!r})", flush=True)
