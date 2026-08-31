@@ -42,19 +42,38 @@ def test_identical_rotors_leave_the_ranking_intact():
         assert float((res[0][line] / pw[0][line]).mean()) > 0.2
 
 
-def test_octave_move_needs_the_union_to_improve():
-    """The gate is coverage, and coverage counts a bin once."""
+def test_union_prefers_a_new_rotor_over_a_duplicate():
+    """The property the octave gate needs, stated as the objective's job.
+
+    Exact idempotence is not achievable with soft claims — the comb templates are
+    Gaussians with tails, and the tails of a real drone spectrum sit on OTHER
+    rotors' lines rather than on silence, so a duplicate always picks up a little.
+    What must hold is the ranking: copying a slot must be worth far less than
+    putting it on a rotor nobody covers. `max` gives exact idempotence and was
+    measured WORSE end to end (typical-idle 11.39 against 6.84), because two
+    adjacent rotors genuinely do share bins and only the louder got credit.
+    """
     net = _net()
-    a, _, _ = comb_clip(seed=7, spread=11.0)
+    a, rps, _ = comb_clip(seed=7, spread=11.0)
     au = torch.tensor(a, dtype=torch.float32)[None]
     with torch.no_grad():
         pw = net.spectrum(au)
         floor = torch.ones_like(pw) * float(pw.median())
-        one = torch.zeros(1, net.gather.n_grid, pw.shape[-1]); one[:, 90] = 1.0
-        c1 = net.masks(one).unsqueeze(1)
-        single = net.union_evidence(pw, floor, c1)
-        double = net.union_evidence(pw, floor, torch.cat([c1, c1], dim=1))
-    assert float(abs(double - single)) < 1e-3 * max(float(single), 1.0)
+        n_t = pw.shape[-1]
+        grid = net.grid.numpy()
+
+        def claim(rate):
+            one = torch.zeros(1, net.gather.n_grid, n_t)
+            one[:, int(np.abs(grid - rate).argmin())] = 1.0
+            return net.masks(one).unsqueeze(1)
+
+        r0, r1 = float(rps[0].mean()), float(rps[-1].mean())
+        base = net.union_evidence(pw, floor, claim(r0))
+        dup = net.union_evidence(pw, floor, torch.cat([claim(r0), claim(r0)], 1))
+        new = net.union_evidence(pw, floor, torch.cat([claim(r0), claim(r1)], 1))
+    gain_dup = float(dup - base)
+    gain_new = float(new - base)
+    assert gain_new > 2.0 * gain_dup > 0.0   # measured 3.5x
 
 
 def test_decode_shapes_and_sorting():
