@@ -1,0 +1,31 @@
+# The STOCHASTIC rotor-noise family as the whole training pool, validated on a
+# held-out draw of the SAME family. The stochastic twin of
+# conf/data/sal_comb_synthval.yaml, and the same argument applies: the pairing
+# measures whether the salience architecture can fit this family, thus the
+# validation set must come from the family, not from the real split.
+#
+# The stream is conf/online_mix/stoch_s1_dload.yaml — one `stochastic` source
+# at full-flight excitation plus a 0.2-weight `silence` arm, at 1 s, the widest
+# synthetic family the project has.
+#
+# base_seed 990001 is not the training policy's (20260712), thus every
+# validation clip is a fresh draw. 8 s and unaugmented, matching
+# conf/data/sal_comb_synthval.yaml so the two arms are read side by side.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/stoch_s1_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.FixedSynthFrameDataset
+  params:
+    path: conf/online_mix/stoch_s1_dload.yaml
+    n: 96
+    base_seed: 990001
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null

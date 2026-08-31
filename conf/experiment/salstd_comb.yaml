@@ -1,0 +1,26 @@
+# @package _global_
+# CONTROL for conf/experiment/sal150_comb.yaml: the same analytic static-comb curriculum
+# and the same same-family validation, on the STANDARD salience grid (the log
+# grid of conf/model/multif0_salience.yaml — 32.7 Hz, 6 octaves, over_sample 5,
+# 360 bins), which is what every existing salience row uses.
+#
+# The pair isolates the grid. sal150_comb changes data AND grid against the
+# real-data row hb_sal_multif0; this row changes data only, thus the difference
+# between the two is the grid's contribution and nothing else.
+#
+# Everything except model/loss/metrics is sal150_comb verbatim.
+defaults:
+  - override /data: sal_comb_synthval
+  - override /model: multif0_salience
+  - override /loss: salience_bce_multif0
+  - override /metrics: salience_bce_multif0
+
+experiment_name: salstd_comb
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — hb_sal_multif0's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: bce
+  monitor_mode: min

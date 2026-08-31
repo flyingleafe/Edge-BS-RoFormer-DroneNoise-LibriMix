@@ -1,0 +1,19 @@
+# BCE-on-RPS-derived-salience on the WIDE output grid (linear 0-150 Hz, 1000
+# bins = 0.150 Hz/bin). Mirrors conf/model/multif0_salience_w150.yaml's
+# out_fmin/out_fmax/out_bins exactly — that config carries the coverage math.
+#
+# blur_bins=2 / pos_weight=auto are the settings of every other salience row in
+# the project (conf/loss/salience_bce_nsr_hb.yaml), kept so the only difference
+# between this row and the 20-130 row is the grid span.
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 1000
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

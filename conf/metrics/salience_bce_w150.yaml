@@ -1,0 +1,14 @@
+# Validation-time BCE-on-salience metric on the WIDE 0-150 Hz output grid —
+# mirrors conf/loss/salience_bce_w150.yaml exactly, so `optim.monitor: bce`
+# tracks the same objective on the validation split.
+terms:
+  - name: bce
+    _target_: metrics.SalienceBCEMetric
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 1000
+      blur_bins: 2
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 256]

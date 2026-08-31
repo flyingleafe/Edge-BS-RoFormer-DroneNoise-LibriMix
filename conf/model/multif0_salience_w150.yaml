@@ -1,0 +1,54 @@
+# multif0_salience with a WIDE output salience grid: linear 0-150 rev/s.
+#
+# The architecture is conf/model/multif0_salience_nsr_hb.yaml VERBATIM apart
+# from the three output-grid numbers. That config carries the full coverage
+# argument; only the part that changes is repeated here.
+#
+# WHY 0-150. The synthetic curricula this config is paired with
+# (conf/data/sal_comb_synthval.yaml, conf/data/sal_stoch_synthval.yaml) excite
+# the rotors over the FULL flight envelope, ground to cruise, and then
+# freq-scale each noise chunk by alpha ~ U(0.7, 1.3), labels and comb together.
+# Cruise sits near 45-100 rev/s, thus the augmented top is 100 * 1.3 = 130
+# rev/s; 150 gives that top a margin. The bottom goes to 0 because the
+# synthetic full-flight excitation spends real time on the ground and on the
+# ramps, where the standard log grid's 32.7 Hz floor quantizes every slow rotor
+# onto one bin.
+#
+#   OUTPUT  linear 0 -> 150 Hz, 1000 bins = 0.1502 Hz/bin — the same resolution
+#   as the 20-130 grid (0.1530 Hz/bin), only wider on both ends.
+#
+#   INPUT   unchanged from the 20-130 recipe: fmin=20, n_octaves=3,
+#   over_sample=10 -> 120 bins/octave, 360 bins, 20 -> 158.8 Hz. 158.8 > 150,
+#   thus the input span still contains the output span at the top, which
+#   FreqSuperResHead requires (it clamps outside the input span).
+#
+# THE KNOWN LIMIT AT THE BOTTOM. Output bins below 20 Hz all read the SAME
+# clamped input bin, thus the head has no evidence that separates, say, 6 rev/s
+# from 14 rev/s. Those bins are honest about the grid (a slow rotor is no
+# longer quantized onto a 32.7 Hz floor) but the model cannot resolve them.
+# Lowering the input fmin is not a free fix: the CQT filter at 120 bins/octave
+# has Q ~ 172, thus a 10 Hz bottom bin needs a 17-second window and the clips
+# are 1-8 s. The bottom of the grid is therefore reported, not claimed.
+#
+# frame_rate stays [16000,256]: only the frequency axis moves.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: multif0_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  fmin: 20.0
+  n_octaves: 3
+  over_sample: 10
+  harmonics: [1, 2, 3, 4]
+  superres_out: true
+  out_fmin: 0.0
+  out_fmax: 150.0
+  out_bins: 1000
+model_type: null
+legacy_config_path: null

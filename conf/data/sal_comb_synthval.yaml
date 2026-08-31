@@ -1,0 +1,39 @@
+# The analytic STATIC COMB as the whole training pool, validated on a held-out
+# draw of the SAME family. The salience twin of conf/data/comb_only_combval.yaml.
+#
+# WHY SAME-FAMILY VALIDATION. The question this pairing exists to answer is
+# "can the salience architecture learn this task at all", not "does it
+# transfer". Validating on the real frozen split — what every earlier salience
+# row does — halts training on a metric that is not the one being fitted, and
+# the damage is measured elsewhere in the campaign (comb_only_combval.yaml's
+# header). A real-split number would confound the two questions.
+#
+# WHY THE 1-SECOND POLICY, NOT comb_floor_s1_dload.yaml's 8 s. The salience
+# trunk is a CNN with no recurrence, thus clip length is not the seam it is for
+# the GRU rows, and `hb_sal_multif0` — the row this experiment is compared with
+# — trains on 1-second chunks and validates on 8-second clips. Keeping that
+# shape means the comparison moves on data and grid only. It also keeps the
+# LateDeep activation memory at the size the salience rows are known to fit.
+#
+# base_seed 880001 is not the training policy's (20260712), thus every
+# validation clip is a draw the training stream never produces. 8 s and
+# unaugmented, so the number sits on the same scale as every other synthetic
+# figure in the project.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/m3abl_comb_s1_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.FixedSynthFrameDataset
+  params:
+    path: conf/online_mix/m3abl_comb_s1_dload.yaml
+    n: 96
+    base_seed: 880001
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
