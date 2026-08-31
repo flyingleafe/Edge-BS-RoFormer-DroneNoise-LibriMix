@@ -19,6 +19,9 @@
 #
 # batch_size 8, not 16: the cross-attention map is
 # (batch, frame, head, rate, harmonic) and is linear in the batch.
+# `grad_accum_steps: 2` restores the effective batch to sal150_stoch's 16
+# frames — 8 frames is one chunk's eight microphone rows, i.e. eight views of
+# one acoustic scene, which is not a batch.
 defaults:
   - override /data: sal_stoch_synthval
   - override /model: hft_rps
@@ -29,6 +32,7 @@ experiment_name: hft_stoch
 epochs: 200
 patience: 20
 batch_size: 8  # frames (= 1 chunk x 8 mics)
+grad_accum_steps: 2  # effective batch 16 frames = 2 chunks — sal150_comb's
 num_workers: 6
 samples_per_validation: 16000
 optim:

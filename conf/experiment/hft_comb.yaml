@@ -35,6 +35,7 @@ experiment_name: hft_comb
 epochs: 200
 patience: 20
 batch_size: 8  # frames (= 1 chunk x 8 mics)
+grad_accum_steps: 2  # effective batch 16 frames = 2 chunks — sal150_comb's
 num_workers: 6
 samples_per_validation: 16000
 optim:

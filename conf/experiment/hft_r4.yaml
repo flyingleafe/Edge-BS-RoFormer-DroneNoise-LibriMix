@@ -21,6 +21,10 @@
 # salience family on real data) at flight MAE 4.01, and `r3hb_gru`, the best
 # regressor, at 2.79.
 #
+# batch_size 8 with grad_accum_steps 2: the cross-attention map is linear in
+# the batch, and 8 frames is one chunk's eight microphone rows, so the
+# accumulation is what makes the step a batch of two scenes rather than one.
+#
 # Data group is `m3cur_s2` for its real validation split; only the training
 # stream is overridden, exactly as `r4hb_gru` does it.
 defaults:
@@ -38,6 +42,7 @@ data:
 epochs: 200
 patience: 20
 batch_size: 8  # frames (= 1 chunk x 8 mics)
+grad_accum_steps: 2  # effective batch 16 frames = 2 chunks — sal150_comb's
 num_workers: 6
 samples_per_validation: 16000
 optim:
