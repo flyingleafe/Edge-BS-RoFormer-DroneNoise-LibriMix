@@ -469,8 +469,14 @@ class HFTRPS(SalienceRPSPredictor):
             The defaults are hFT's own.
         cnn_channel, cnn_kernel: the temporal context convolution in front of
             the evidence tokens (hFT's ``Encoder.conv``).
-        n_frame: SAtime block length, in frames. hFT's fixed segment length,
-            applied here as a partition of an arbitrary-length clip.
+        n_frame: SAtime block length, in frames — hFT's fixed segment length,
+            applied here as a partition of an arbitrary-length clip. IT MUST
+            NOT EXCEED THE TRAINING CLIP'S FRAME COUNT. The block is
+            ``min(n_frame, T)``, so a 128-frame setting trained on 1 s clips
+            (32 frames at hop 512) would only ever train time-position rows
+            0-31, and then use rows 0-127 on an 8 s validation clip — 96 of
+            them never updated. The default is 32, the project's training clip
+            length; raise it only with the clips.
         rate_block: block length of the rate-axis self-attention in the
             cross-attention layers after the first.
         n_time_layers: SAtime layers; hFT uses ``n_layers`` of them.
@@ -509,7 +515,7 @@ class HFTRPS(SalienceRPSPredictor):
         dropout: float = 0.1,
         cnn_channel: int = 4,
         cnn_kernel: int = 5,
-        n_frame: int = 128,
+        n_frame: int = 32,
         rate_block: int = 64,
         floor_hz: float = 120.0,
         attn_mode: str = "gather",

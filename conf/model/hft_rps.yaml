@@ -29,10 +29,15 @@
 #     can resolve.
 #
 # WIDTHS are hFT's own: hid_dim 256, 3 cross-attention layers, 3 SAtime layers,
-# 4 heads, pf_dim 512, cnn_channel 4. n_frame 128 is the SAtime block length
-# (hFT's fixed segment length, applied here as a partition — an 8 s validation
-# clip is 251 frames). rate_block 64 bounds the rate-axis self-attention that
-# stands in for hFT's decoder self-attention.
+# 4 heads, pf_dim 512, cnn_channel 4.
+#
+# n_frame IS 32, NOT hFT's 128. It is the SAtime block length — hFT's fixed
+# segment, applied here as a partition of an arbitrary clip — and the block is
+# `min(n_frame, T)`. Training clips are 1 s = 32 frames at hop 512, so at 128
+# only time-position rows 0-31 would ever be trained, and an 8 s validation
+# clip (251 frames) would then use rows 0-127, 96 of them never updated. 32
+# makes the block identical at training and validation. rate_block 64 bounds
+# the rate-axis self-attention that stands in for hFT's decoder self-attention.
 #
 # frame_rate is [16000, 512]: nothing pools along time, so the salience time
 # grid IS the STFT frame grid.
@@ -63,7 +68,7 @@ params:
   dropout: 0.1
   cnn_channel: 4
   cnn_kernel: 5
-  n_frame: 128
+  n_frame: 32
   rate_block: 64
   floor_hz: 120.0
 model_type: null
