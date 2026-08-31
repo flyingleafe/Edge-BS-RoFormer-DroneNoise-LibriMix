@@ -49,6 +49,30 @@ def worker(unit: Unit) -> dict:
     au = torch.tensor(a, dtype=torch.float32)[None]
 
     ckpt = p.get("ckpt")
+    if p["method"] == "zoo":
+        # A trained REGRESSION predictor, on the same clips and the same metric.
+        # The campaign's published figure for these models (8.67) is a PIT-MAE on
+        # cruise frames of a different stream, so it cannot be set beside a
+        # PIT-RMSE from this benchmark. This path measures them here instead.
+        import numpy as _np
+        import tdseries as td
+        import zoo
+        from data_processing.frames import make_recording_frame
+        sr = 16000
+        t_audio = _np.arange(len(a)) / sr
+        rps_full = _np.stack([_np.interp(t_audio, _np.arange(rps.shape[1]) * 512 / sr, r)
+                              for r in rps])
+        fr = make_recording_frame(
+            {"mixture": td.uniform(_np.ascontiguousarray(a[None].astype(_np.float32)), sr,
+                                   dims=("mic", "time"), t_start=0.0),
+             "rps": td.events(t_audio, _np.ascontiguousarray(rps_full.astype(_np.float32)),
+                              dims=("rotor", "time"), t_start=0.0)},
+            meta={"recording_id": "bench"})
+        fm = zoo.load(p["zoo_exp"], ckpt="best", device="cpu")
+        pred = _np.asarray(fm(fr)["rps_pred"].data)
+        gt = rps[:, : pred.shape[-1]]
+        return {"regime": p["regime"], "seed": p["seed"], "method": p["tag"],
+                "rmse": pit_rmse(pred, gt)}
     if p["method"] == "peel":
         net = CombSalienceNet(head_mode=p.get("head", "classical"))
         if ckpt:
@@ -57,7 +81,8 @@ def worker(unit: Unit) -> dict:
             out = decode_peel_viterbi(net, au, octave_mode=p.get("octave", "scored"))
     else:
         net = SlotCombNet(head_mode=p.get("head", "classical"), n_iter=p["iters"],
-                          union_mode=p.get("union", "noisyor"), use_checkpoint=False)
+                          union_mode=p.get("union", "noisyor"),
+                          read_width=int(p.get("read_width", 0)), use_checkpoint=False)
         if ckpt:
             net.head.load_state_dict(torch.load(ckpt, map_location="cpu"))
         net.eval()
@@ -84,6 +109,8 @@ def main() -> int:
                     help="stochastic family only: Rayleigh realization or coherent tones")
     ap.add_argument("--gamma", default="", help="stochastic only: 'g0lo,g0hi,slo,shi' in Hz")
     ap.add_argument("--union", default="noisyor", choices=("sum", "max", "noisyor"))
+    ap.add_argument("--read-width", type=int, default=0,
+                    help="bins each harmonic is summed over (0 = one interpolated bin)")
     ap.add_argument("--out", default="results/comb_slots")
     add_gridrun_args(ap, jobs=6)
     args = ap.parse_args()
@@ -104,11 +131,15 @@ def main() -> int:
                     uid=f"{args.family}__{name}__{m}__{seed}",
                     params={"family": args.family, "regime": name, "centre": centre,
                             "spread": spread, "excursion": exc, "seed": 1000 + seed,
-                            "tag": m, "method": "peel" if m == "peel" else "slots",
-                            "iters": 0 if m == "peel" else int(m[5:]),
+                            "tag": m,
+                            "method": ("peel" if m == "peel"
+                                       else "zoo" if m.startswith("zoo:") else "slots"),
+                            "zoo_exp": m[4:] if m.startswith("zoo:") else "",
+                            "iters": 0 if not m.startswith("slots") else int(m[5:]),
                             "head": args.head, "ckpt": args.ckpt,
                             "threads": args.threads, "stoch_kw": stoch_kw,
-                            "union": args.union}))
+                            "union": args.union,
+                            "read_width": args.read_width}))
     res = gridrun_from_args(args, units, worker, args.out, mp_context="spawn")
     rows = [json.loads(p.read_text()) for p in sorted((res.out_dir / "raw").glob("*.json"))]
     tags = [m for m in args.methods.split(",")]

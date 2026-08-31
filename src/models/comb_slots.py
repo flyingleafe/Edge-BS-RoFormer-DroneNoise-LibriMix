@@ -49,6 +49,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from models import comb_crf
@@ -107,12 +108,24 @@ class SlotCombNet(nn.Module):
         floor_hz: float = 120.0, n_rot: int = 4, n_iter: int = 2,
         notch_width: float = 1.5, slew: float = 12.0, stiff: float = 40.0,
         use_checkpoint: bool = True, mask_k_max: int | None = None,
-        union_mode: str = "noisyor",
+        union_mode: str = "noisyor", read_width: int = 0,
     ):
         super().__init__()
         self.sr, self.n_fft, self.hop_length = int(sr), int(n_fft), int(hop_length)
         self.n_rot, self.n_iter = int(n_rot), int(n_iter)
         self.union_mode = str(union_mode)
+        # HOW MANY BINS ONE HARMONIC IS READ OVER. The gather reads a single
+        # interpolated bin, which is right for a delta-thin line and wrong for a
+        # Lorentzian one: the stochastic family's linewidth is
+        # `gamma0 + slope * k` Hz, so harmonic 32 can be 26 Hz wide against 3.9 Hz
+        # bins and one bin holds a small part of the line and a lot of floor.
+        # Measured score margin of the truth over the best decoy, 3 clips:
+        #   static     +-0 bins 1.634   +-2 bins 0.531   (thin lines: 0 is right)
+        #   coherent   +-0 bins 0.089   +-2 bins 0.106
+        #   Rayleigh   +-0 bins 0.017   +-2 bins 0.066   (3.9x)
+        # The optimum is family-dependent, which is what makes this a front-end
+        # parameter worth LEARNING rather than a constant worth tuning.
+        self.read_width = int(read_width)
         self.use_checkpoint = bool(use_checkpoint)
         self.floor_bins = max(3, int(round(floor_hz / (sr / n_fft))) | 1)
         self.gather = CombGather(r_lo, r_hi, n_grid, k_max, sr, n_fft, f_max)
@@ -144,7 +157,12 @@ class SlotCombNet(nn.Module):
         spec = torch.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length,
                           window=self.window.to(audio.dtype), center=True,
                           return_complex=True)
-        return spec.real.pow(2) + spec.imag.pow(2)
+        pw = spec.real.pow(2) + spec.imag.pow(2)
+        if self.read_width > 0:
+            k = 2 * self.read_width + 1
+            pw = F.avg_pool1d(pw.transpose(1, 2), k, 1, self.read_width,
+                              count_include_pad=False).transpose(1, 2) * k
+        return pw
 
     def _score(self, pw: torch.Tensor, gfloor: torch.Tensor) -> torch.Tensor:
         """One slot's salience from an already-residualized spectrum."""
