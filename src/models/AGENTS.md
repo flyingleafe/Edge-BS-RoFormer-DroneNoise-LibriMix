@@ -139,6 +139,7 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `basic_pitch_salience` | Basic Pitch contour branch → salience-map logits; same BCE+tracking path, native 16 kHz (`salience_rps.py`) |
 | `harmof0_rps` | HarmoF0 (Wei et al. ISMIR 2022) with its log-frequency harmonic SHIFT replaced by a gather at `k*r` on the linear STFT → salience logits on a linear CANDIDATE-RATE grid (`harmonic_ports/harmof0_rps.py`) |
 | `hppnet_rps` | HPPNet (Wei et al. ISMIR 2022) with `HarmonicDilatedConv` (eight log-axis dilated branches) replaced by the same gather at `k*r`; `CNNTrunk` and `FreqGroupLSTM` kept, MPE head only (`harmonic_ports/hppnet_rps.py`) |
+| `hft_rps` | hFT-Transformer (Toyama et al. ISMIR 2023) with its per-note decoder tokens made CANDIDATE RATES and its cross-attention hard-masked to each rate's own harmonics, read at `k*r`; MPE head only (`harmonic_ports/hft_rps.py`) |
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
@@ -203,6 +204,7 @@ codec, the loss or the tracker changes.
 | Model | Paper | What was replaced |
 |-------|-------|-------------------|
 | `harmof0_rps` | HarmoF0, Wei et al. ISMIR 2022 | `MRDConv` (a 1x1 conv, a `round(log2(k)*B)`-bin shift, and a sum, per harmonic) → `CombGather` at `k*r` times a learned per-harmonic weight. Its blocks 2-4 keep their shape but their octave-sized dilations become plain dilated context convolutions along RATE, where an octave is not a fixed offset — a deliberate deviation, documented in the module docstring |
+| `hft_rps` | hFT-Transformer, Toyama et al. ISMIR 2023 | Nothing structural — hFT already holds ONE DECODER TOKEN PER NOTE that cross-attends to the frequency tokens (`attention = [batch, frame, heads, n_note, n_bin]`). The tokens become CANDIDATE RATES and the gather becomes a hard mask on that attention: a rate token sees only its own K harmonics. hFT's frequency self-attention ENCODER is deleted, because nothing else is visible; `attn_mode: bias` restores it over a pooled 256-token spectrum with the gather as a learned additive bias instead (variant (ii) of the design note). Only the frame/MPE head survives — onset, offset and velocity are piano-specific |
 
 Two traps this package has already paid for, both specific to a rate grid that
 reaches 0 and both handled inside `harmof0_rps.py`:
@@ -216,6 +218,14 @@ reaches 0 and both handled inside `harmof0_rps.py`:
    trap on a 0-150 grid: a candidate with three surviving harmonics wins on one
    lucky hit. Dividing by the constant `k_max` instead took the untrained
    score from 3/8 to 7/8 on a synthetic single-comb probe.
+3. **The unresolvable candidate.** Consecutive harmonics of a rate are that
+   rate apart in Hz, so below one STFT bin (3.906 Hz at n_fft 4096) they land
+   in the same bin and the hypothesis is not a comb — its K reads are a handful
+   of bins inside one strong low line's skirt. `f_min` does not catch it: those
+   reads sit at 30-48 Hz, outside the DC mainlobe. `hft_rps.py`'s `r_min`
+   (default `sr / n_fft`) drops every harmonic of such a candidate, and with it
+   the untrained read of a 37 rev/s comb moves from 1.51 rev/s to 37.12; 45, 60,
+   84.5 and 120 also land within one grid bin.
 
 ### Salience-map RPS baselines (`salience_rps.py`)
 
