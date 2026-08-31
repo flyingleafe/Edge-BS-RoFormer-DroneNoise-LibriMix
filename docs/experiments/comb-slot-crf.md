@@ -326,3 +326,92 @@ Single-slot moves are not enough, because with the truth winning only 81% of
 frames the re-solve often lands on a decoy rather than the uncovered rotor. That
 is the honest state of it: right objective, insufficient search, and the next
 move to try is a joint one over two slots rather than one.
+
+### Training on the stochastic family: it helps, then it diverges
+
+Same recipe as the static run, coherent lines, learning rate 3e-3:
+
+| step | identical | tight | close | typical | wide | typical-fast | typical-idle | geomean |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 3.349 | 1.042 | 1.171 | 1.327 | 3.521 | 4.337 | 35.739 | 3.132 |
+| **100** | **1.304** | 1.059 | 1.164 | 1.493 | 3.386 | 3.807 | 31.562 | **2.674** |
+| 200 | 3.997 | 1.061 | 1.141 | 1.239 | 3.322 | 4.740 | 21.277 | 2.964 |
+| 300 | 8.713 | 9.119 | 6.258 | 6.008 | 5.835 | 10.373 | 7.355 | 7.496 |
+| 500 | 10.492 | 10.461 | 6.516 | 4.905 | 10.449 | 14.128 | 14.299 | 9.580 |
+
+A 15% gain by step 100 and then a collapse — every cell degrades together after
+step 200 while the static run at the same learning rate improved monotonically to
+step 400. Selection on the decode metric holds the step-100 checkpoint, so the
+collapse costs accuracy rather than correctness, but the contrast between the two
+families is the finding: where the margin is 1.65 nats the CRF loss is a safe
+thing to descend, and where it is 0.105 nats the same descent finds ways to
+sharpen the surface that do not correspond to finding rotors. A lower learning
+rate is running.
+
+The static run, for comparison — noisy-or union, learning rate 3e-3:
+
+| step | close | typical | typical-idle | geomean |
+|---|---|---|---|---|
+| 0 | 0.580 | 0.051 | 13.034 | 0.593 |
+| 100 | 0.568 | 0.060 | 0.893 | 0.411 |
+| 300 | 0.552 | 0.023 | 1.830 | 0.396 |
+| **400** | **0.541** | **0.023** | 1.726 | **0.392** |
+| 600 | 0.541 | 0.024 | 2.602 | 0.503 |
+
+**34% better than the untrained corner**, and `identical`, `tight`,
+`typical-fast` and `wide` do not move at all — the first three because they are
+the crossing wall and the last because it is already at the grid quantization
+floor of 0.029 rev/s RMS. Everything training can reach, it reaches.
+
+## Summary against the goal
+
+**Static comb, static-only validation: solved.** One blind configuration, no
+per-cell choices, geomean of per-cell PIT-RMSE **0.507** rev/s untrained against
+0.772 for the deployed peel — and against 0.532 for the previous family with its
+octave gate hand-picked per cell, which this configuration does not need.
+Training through the CRF takes it to **0.392**, a 34% improvement, where the
+previous cross-entropy loss had degraded the equivalent head seventyfold.
+
+What remains on the static comb is crossings, and the correlation is tight enough
+to call it a diagnosis rather than an association: every crossing-free cell lands
+at 0.02 to 0.04 rev/s, and every cell with crossings is worse in proportion to how
+many it has. That is the phase wall the seeding campaign identified, reached
+rather than pushed.
+
+**Stochastic comb, stochastic-only validation: partly solved, with the gap
+measured.** Geomean 2.800 with coherent line realization and 4.696 with the
+Rayleigh one, against 9.571 and 10.737 for the deployed peel and 8.67 for this
+project's trained regression networks on the family's own distribution. So the
+family is roughly three times more solvable than anything previously applied to
+it, and 30x less solvable than the static comb.
+
+The whole degradation reduces to one measurement: the score margin between the
+truth and the best decoy falls from 1.652 nats to 0.105 (coherent) and 0.038
+(Rayleigh), and the truth stops being the per-frame maximum in 19% and 36% of
+frames. Line broadening and the floor cost the first factor of 16; realization
+noise costs the further 2.8, and being a variance cost rather than an information
+cost is why temporal integration recovers so much of it — the architecture is
+worth 3.3x here against 1.5x on the static comb.
+
+**The two families are not two difficulties of one task.** The cell ordering
+inverts: `identical` is the worst static cell and the best Rayleigh one, `wide`
+the best static and among the worst stochastic. Static difficulty is set by
+crossings; stochastic difficulty by per-comb line strength, and four rotors on one
+rate pool their power into the same lines.
+
+**Where each stops, and what kind of wall it is.** `typical-idle` was an objective
+wall and was fixed by replacing the objective. Every stochastic cell is a search
+wall — union evidence at the truth exceeds the returned answer on all six clips
+tested — so the remaining stochastic error is not a statement about the
+information in the signal. The failure shape is a duplicate slot; single-slot
+relocation recovers part of the gap (2.944 -> 2.800) and a joint two-slot move is
+the untried next step.
+
+**Open, and stated rather than smoothed.** The crossing wall needs phase. The
+stochastic search wall needs a better move set. And the CRF loss is not
+unconditionally safe to descend: on the stochastic family it improved the head 15%
+by step 100 and then collapsed it (2.674 -> 9.580 by step 500) at a learning rate
+that was stable on the static family for 400 steps. Where the margin is 1.65 nats
+descending this loss finds rotors; where it is 0.105 nats the same descent finds
+ways to sharpen the surface that do not correspond to rotors. Nothing here has run
+on a real recording.
