@@ -35,7 +35,12 @@ if str(Path(__file__).resolve().parents[1] / "src") not in sys.path:
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from valid_regime_eval import REGIMES, frame_regimes, pit_abs_error  # noqa: E402
+from valid_regime_eval import (  # noqa: E402
+    REGIMES,
+    frame_regimes,
+    pit_abs_error,
+    salience_rps_pred,
+)
 
 #: The policy each experiment trained on. The eval must use the arm's OWN
 #: stream — scoring one arm on another's synthetic data measures transfer
@@ -120,27 +125,6 @@ def build_stream(policy: str, base_seed: int, duration_s: float | None, augment:
     return OnlineMixFrameDataset.from_config(cfg, flatten_channels=True)
 
 
-def _salience_rps(inner, frame, device: str, threshold: float) -> np.ndarray:
-    """``(R, T_stft)`` predicted speeds from a SALIENCE model.
-
-    A salience model's codec emits ``salience``, not ``rps_pred`` — the map is
-    turned into speeds by the model's own ``predict_rps`` (sigmoid, then
-    segmented Hungarian tracking, then the resample back onto the STFT grid the
-    frame's ``rps`` entry lives on). Going through the model rather than the
-    codec is what the salience rows of docs/experiments/unified-baseline-eval.md
-    do, and it keeps the decode identical to the one that produced them.
-
-    The frames are mono here (``flatten_channels: true``), thus one row.
-    """
-    import torch
-
-    wav = torch.as_tensor(np.asarray(frame["mixture"].data), dtype=torch.float32)
-    if wav.ndim == 1:
-        wav = wav.unsqueeze(0)
-    pred = inner.predict_rps(wav.to(device), threshold=threshold)
-    return np.asarray(pred[0].detach().cpu(), dtype=np.float64)
-
-
 def score(
     experiment: str,
     policy: str,
@@ -165,7 +149,7 @@ def score(
     for frame in stream:
         target = np.asarray(frame["rps"].data, dtype=np.float64)
         if salience:
-            pred = _salience_rps(inner, frame, device, threshold)
+            pred = salience_rps_pred(inner, frame, threshold)
         else:
             pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
         width = min(pred.shape[1], target.shape[1])

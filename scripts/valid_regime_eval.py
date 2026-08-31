@@ -79,6 +79,31 @@ def pit_abs_error(pred: np.ndarray, target: np.ndarray) -> np.ndarray:
     return out
 
 
+def salience_rps_pred(inner, frame, threshold: float = 0.3) -> np.ndarray:
+    """``(R, T_stft)`` predicted speeds from a SALIENCE model.
+
+    A salience model's codec emits ``salience``, not ``rps_pred``, so the
+    ``model(frame)["rps_pred"]`` path every regression cell uses does not exist
+    for it. The map becomes speeds through the model's own ``predict_rps``:
+    sigmoid, segmented Hungarian tracking, then the resample back onto the STFT
+    grid the frame's ``rps`` entry already lives on. Going through the model
+    rather than the codec is what produced the salience rows of
+    docs/experiments/unified-baseline-eval.md, and it keeps the decode
+    identical to the one those numbers were measured with.
+
+    ``scripts/synth_regime_eval.py`` imports this, so the real-split and
+    held-out-synthetic scores of one salience checkpoint are the same decode.
+    """
+    import torch
+
+    wav = torch.as_tensor(np.asarray(frame["mixture"].data), dtype=torch.float32)
+    if wav.ndim == 1:
+        wav = wav.unsqueeze(0)
+    return np.asarray(
+        inner.predict_rps(wav, threshold=threshold)[0].detach().cpu(), dtype=np.float64
+    )
+
+
 def score(
     experiment: str,
     ckpt: str,
@@ -86,6 +111,7 @@ def score(
     limit: int | None,
     rescale_rms: float | None = None,
     smooth: int = 0,
+    threshold: float = 0.3,
 ) -> dict:
     """Score one checkpoint.
 
@@ -111,6 +137,10 @@ def score(
     from data_processing.frames import audio_series
 
     model = zoo.load(experiment, ckpt=ckpt, device="cpu")
+    # A salience model (multif0/basic_pitch, and the harmonic ports) needs its
+    # own decode — see `salience_rps_pred`.
+    inner = getattr(model, "model", None)
+    salience = bool(getattr(inner, "outputs_salience", False))
     rigs = clip_rigs()
     errors: dict[str, list[np.ndarray]] = {r: [] for r in REGIMES}
     by_rig: dict[str, dict[str, list[np.ndarray]]] = {
@@ -131,7 +161,10 @@ def score(
                 frame = td.Frame(
                     {"mixture": audio_series(mixture / rms * float(rescale_rms), 16000)}
                 )
-            pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
+            if salience:
+                pred = salience_rps_pred(inner, frame, threshold)
+            else:
+                pred = np.asarray(model(frame)["rps_pred"].data, dtype=np.float64)
             if smooth >= 3:
                 pad = smooth // 2
                 pred = np.stack([
@@ -158,6 +191,7 @@ def score(
         "experiment": experiment,
         "ckpt": ckpt,
         "rescale_rms": rescale_rms,
+        "salience": salience,
         "aggregate_mse": float(all_squared.mean()),
         "all_mae": float(np.concatenate([np.concatenate(v) for v in errors.values() if v]).mean()),
         "n_frames": int(all_squared.size),
@@ -197,6 +231,10 @@ def main() -> int:
              "is smooth, and 72%% of the ramp cell is a HELD frame whose truth is "
              "constant. Choose the width on synthetic data, not here.",
     )
+    parser.add_argument(
+        "--threshold", type=float, default=0.3,
+        help="salience-model decode threshold (ignored by regression models)",
+    )
     parser.add_argument("--out", default=None, help="write the rows as JSON here")
     args = parser.parse_args()
 
@@ -208,7 +246,8 @@ def main() -> int:
           for width in widths:
             try:
                 row = score(
-                    experiment, args.ckpt, args.channels, args.limit, level, smooth=width
+                    experiment, args.ckpt, args.channels, args.limit, level,
+                    smooth=width, threshold=args.threshold,
                 )
             except Exception as exc:  # noqa: BLE001 — one bad checkpoint must not stop the sweep
                 print(f"{experiment}: FAILED ({exc!r})", flush=True)
