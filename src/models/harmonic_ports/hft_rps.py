@@ -122,6 +122,22 @@ __all__ = [
 ]
 
 
+def _block_pad_mask(n_real: int, blk: int, rows: int, device) -> torch.Tensor | None:
+    """Key-padding mask for a sequence of ``n_real`` split into ``blk`` blocks.
+
+    ``True`` marks a position that only exists because the axis was padded up to
+    a whole number of blocks. Without it the padding is a real key, and the last
+    block of an axis that does not divide evenly is attended differently from
+    every block that does.
+    """
+    pad = (-n_real) % blk
+    if not pad:
+        return None
+    mask = torch.zeros(n_real + pad, dtype=torch.bool, device=device)
+    mask[n_real:] = True
+    return mask.view(-1, blk).repeat(rows, 1)
+
+
 class PositionwiseFeedforward(nn.Module):
     """hFT's ``PositionwiseFeedforwardLayer``, verbatim."""
 
@@ -220,8 +236,10 @@ class HarmonicCrossAttentionLayer(nn.Module):
         y = x.view(rows, n_g, d)
         if pad:
             y = F.pad(y, (0, 0, 0, pad))
-        y = y.reshape(rows * (y.shape[1] // blk), blk, d)
-        y, _ = self.self_attn(y, y, y, need_weights=False)
+        n_blk = y.shape[1] // blk
+        y = y.reshape(rows * n_blk, blk, d)
+        y, _ = self.self_attn(y, y, y, key_padding_mask=_block_pad_mask(n_g, blk, rows, y.device),
+                              need_weights=False)
         y = y.reshape(rows, -1, d)[:, :n_g]
         return y.reshape(n, d)
 
@@ -279,8 +297,9 @@ class TimeSelfAttentionLayer(nn.Module):
         self.ln_ff = nn.LayerNorm(hid_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        a, _ = self.attn(x, x, x, need_weights=False)
+    def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None
+                ) -> torch.Tensor:
+        a, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
         x = self.ln_attn(x + self.dropout(a))
         return self.ln_ff(x + self.dropout(self.ff(x)))
 
@@ -379,7 +398,8 @@ class BiasedCrossAttentionLayer(nn.Module):
             pad = (-g) % blk
             y = F.pad(x, (0, 0, 0, pad)) if pad else x
             y = y.reshape(n * (y.shape[1] // blk), blk, d)
-            y, _ = self.self_attn(y, y, y, need_weights=False)
+            y, _ = self.self_attn(y, y, y, key_padding_mask=_block_pad_mask(g, blk, n, y.device),
+                                  need_weights=False)
             y = y.reshape(n, -1, d)[:, :g]
             x = self.ln_self(x + self.dropout(y))
 
@@ -726,6 +746,16 @@ class HFTRPS(SalienceRPSPredictor):
         y = y.reshape(rows * n_blk, blk, d)
         pos = self.time_embedding(torch.arange(blk, device=y.device)).unsqueeze(0)
         y = self.dropout(y * self.scale_time + pos)
+        # The last block of a clip whose length does not divide `n_frame` is
+        # part padding. Without a mask those positions are real keys carrying a
+        # position embedding, so the final frames of a validation clip would be
+        # attended differently from any frame ever seen in training — a
+        # train/eval mismatch that appears only at the clip lengths that differ.
+        mask = None
+        if pad:
+            mask = torch.zeros(n_blk * blk, dtype=torch.bool, device=y.device)
+            mask[t:] = True
+            mask = mask.view(n_blk, blk).repeat(rows, 1)
         for layer in self.time_layers:
-            y = layer(y)
+            y = layer(y, key_padding_mask=mask)
         return y.reshape(rows, n_blk * blk, d)[:, :t]
