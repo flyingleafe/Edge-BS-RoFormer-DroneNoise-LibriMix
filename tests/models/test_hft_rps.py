@@ -118,3 +118,50 @@ def test_time_axis_is_preserved_across_block_boundaries(n_samples):
     with torch.no_grad():
         y = m(torch.randn(1, n_samples))
     assert y.shape[-1] == m.num_grid_frames(n_samples)
+
+
+# ── variant (ii): gather-as-bias ────────────────────────────────────────────
+
+BIAS = dict(SMALL, attn_mode="bias", n_enc_layers=2)
+
+
+def test_bias_variant_shapes_and_gradients():
+    """Variant (ii) keeps hFT's frequency encoder and softens the mask.
+
+    The attention is now over the POOLED frequency tokens, so its last axis is
+    ``n_bin`` and not ``k_max`` — and nothing is masked, which is the whole
+    difference from variant (i).
+    """
+    torch.manual_seed(0)
+    m = HFTRPS(**BIAS)
+    y = m(torch.randn(2, 16000), return_attention=True)
+    assert y.shape == (2, 300, m.num_grid_frames(16000))
+    assert m.last_attention.shape == (2, y.shape[-1], 2, 300, 256)
+    mass = m.last_attention.sum(-1)
+    assert torch.allclose(mass, torch.ones_like(mass), atol=1e-5)
+    target = torch.zeros_like(y)
+    target[:, 120, :] = 1.0
+    salience_bce_loss(y, target).backward()
+    for name, p in m.named_parameters():
+        assert p.grad is not None and torch.isfinite(p.grad).all(), name
+        assert float(p.grad.abs().sum()) > 0.0, name
+
+
+def test_bias_initialization_prefers_the_rates_own_harmonics():
+    """The learned bias must START at the gather's read positions.
+
+    ``bias_scale * log1p(incidence)`` where incidence counts the harmonics of
+    rate g falling in pooled token j. So every token a hard mask would keep
+    carries a positive bias and every other token carries exactly zero.
+    """
+    m = HFTRPS(**BIAS).eval()
+    bias = m.layers[0].bias[0].detach()  # (G, n_bin)
+    df = 16000 / 4096
+    grid = m.output_freqs()
+    for g in (60, 120, 240):
+        rate = grid[g]
+        hot = torch.nonzero(bias[g] > 0).ravel().tolist()
+        for tok in hot:
+            lo, hi = tok * m.pool * df, (tok + 1) * m.pool * df
+            assert any(lo <= k * rate < hi for k in range(1, m.k_max + 1)), (rate, tok)
+        assert len(hot) > 4

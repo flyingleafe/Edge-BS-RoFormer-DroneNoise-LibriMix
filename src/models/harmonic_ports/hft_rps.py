@@ -113,7 +113,13 @@ from models.comb_salience import CombGather, local_floor_torch
 from models.multif0.utils import linear_freq_grid
 from models.salience_rps import SalienceRPSPredictor
 
-__all__ = ["HFTRPS", "HarmonicCrossAttentionLayer", "TimeSelfAttentionLayer"]
+__all__ = [
+    "HFTRPS",
+    "HarmonicCrossAttentionLayer",
+    "BiasedCrossAttentionLayer",
+    "FrequencyEncoder",
+    "TimeSelfAttentionLayer",
+]
 
 
 class PositionwiseFeedforward(nn.Module):
@@ -279,6 +285,118 @@ class TimeSelfAttentionLayer(nn.Module):
         return self.ln_ff(x + self.dropout(self.ff(x)))
 
 
+class FrequencyEncoder(nn.Module):
+    """hFT's ``Encoder_SPEC2MIDI``, on a POOLED linear STFT (variant (ii) only).
+
+    hFT's encoder gives every one of its ``n_bin`` log-frequency bins a token
+    and runs self-attention across frequency. On the linear axis this port must
+    use, ``n_bin`` is 2049 and that attention is 4.2e6 entries per frame. The
+    pooling is what buys it back: contiguous groups of ``2048 / n_bin``
+    linear bins are averaged into ``n_bin`` tokens, which at the default 256
+    restores hFT's own ``n_bin`` exactly. Pooling is lossy about WHERE inside a
+    group a line sits — which is why variant (i), the hard gather, does not
+    pool — but variant (ii) does not ask the token to carry that: the position
+    information is supplied separately, as the learned bias.
+    """
+
+    def __init__(self, n_bin: int, hid_dim: int, n_layers: int, n_heads: int,
+                 pf_dim: int, dropout: float, cnn_channel: int, cnn_kernel: int):
+        super().__init__()
+        self.n_bin = int(n_bin)
+        self.ctx = nn.Conv1d(1, cnn_channel, cnn_kernel, padding=cnn_kernel // 2)
+        with torch.no_grad():
+            self.ctx.weight.zero_()
+            self.ctx.weight[0, 0, cnn_kernel // 2] = 1.0
+            self.ctx.bias.zero_()
+            if cnn_channel > 1:
+                nn.init.normal_(self.ctx.weight[1:], std=0.2)
+        self.tok_embedding = nn.Linear(cnn_channel, hid_dim)
+        self.pos_embedding = nn.Embedding(self.n_bin, hid_dim)
+        self.scale = math.sqrt(hid_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.layers = nn.ModuleList(
+            [TimeSelfAttentionLayer(hid_dim, n_heads, pf_dim, dropout) for _ in range(n_layers)]
+        )
+
+    def forward(self, zf: torch.Tensor) -> torch.Tensor:
+        """``(B, n_bin, T)`` log-elevation -> ``(B*T, n_bin, D)`` frequency tokens."""
+        b, f, t = zf.shape
+        u = self.ctx(zf.reshape(b * f, 1, t))                       # (B*F, C, T)
+        u = u.view(b, f, -1, t).permute(0, 3, 1, 2)                 # (B, T, F, C)
+        x = self.tok_embedding(u.reshape(b * t, f, -1)) * self.scale
+        x = self.dropout(x + self.pos_embedding.weight.unsqueeze(0))
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+
+class BiasedCrossAttentionLayer(nn.Module):
+    """hFT's ``DecoderLayer``, unchanged, plus a learned HARMONIC BIAS.
+
+    Variant (ii) of `docs/harmonic-ports-design.md`: keep the attention over a
+    reduced frequency token set and add a learned bias favouring each rate's
+    own harmonics, instead of masking everything else away. The bias is
+    ``(n_heads, n_grid, n_bin)`` and is initialized from the SAME read positions
+    ``CombGather`` computes — ``bias_scale * log1p(number of harmonics of rate g
+    falling in token j)`` — so the layer starts where variant (i) is forced to
+    stay, and can leave it if a rate is better explained by a bin its own comb
+    does not predict.
+    """
+
+    def __init__(self, hid_dim: int, n_heads: int, pf_dim: int, dropout: float,
+                 n_grid: int, n_bin: int, bias_init: torch.Tensor,
+                 self_attention: bool = False, rate_block: int = 64):
+        super().__init__()
+        if hid_dim % n_heads:
+            raise ValueError("hid_dim must divide by n_heads")
+        self.hid_dim, self.n_heads = hid_dim, n_heads
+        self.head_dim = hid_dim // n_heads
+        self.scale = math.sqrt(self.head_dim)
+        self.rate_block = int(rate_block)
+        self.fc_q = nn.Linear(hid_dim, hid_dim)
+        self.fc_k = nn.Linear(hid_dim, hid_dim)
+        self.fc_v = nn.Linear(hid_dim, hid_dim)
+        self.fc_o = nn.Linear(hid_dim, hid_dim)
+        self.bias = nn.Parameter(bias_init.unsqueeze(0).repeat(n_heads, 1, 1).clone())
+        self.self_attn = (
+            nn.MultiheadAttention(hid_dim, n_heads, dropout=dropout, batch_first=True)
+            if self_attention
+            else None
+        )
+        self.ff = PositionwiseFeedforward(hid_dim, pf_dim, dropout)
+        self.ln_self = nn.LayerNorm(hid_dim) if self_attention else None
+        self.ln_attn = nn.LayerNorm(hid_dim)
+        self.ln_ff = nn.LayerNorm(hid_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, enc: torch.Tensor,
+                return_attention: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """``x`` ``(N, G, D)`` rate tokens, ``enc`` ``(N, S, D)`` frequency tokens."""
+        if self.self_attn is not None:
+            assert self.ln_self is not None
+            n, g, d = x.shape
+            blk = min(self.rate_block, g)
+            pad = (-g) % blk
+            y = F.pad(x, (0, 0, 0, pad)) if pad else x
+            y = y.reshape(n * (y.shape[1] // blk), blk, d)
+            y, _ = self.self_attn(y, y, y, need_weights=False)
+            y = y.reshape(n, -1, d)[:, :g]
+            x = self.ln_self(x + self.dropout(y))
+
+        n, g, d = x.shape
+        s = enc.shape[1]
+        q = self.fc_q(x).view(n, g, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.fc_k(enc).view(n, s, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.fc_v(enc).view(n, s, self.n_heads, self.head_dim).transpose(1, 2)
+        e = torch.matmul(q, k.transpose(-1, -2)) / self.scale + self.bias.unsqueeze(0)
+        attn = torch.softmax(e, dim=-1)
+        out = torch.matmul(self.dropout(attn), v)                   # (N, H, G, dh)
+        out = self.fc_o(out.transpose(1, 2).reshape(n, g, d))
+        x = self.ln_attn(x + self.dropout(out))
+        x = self.ln_ff(x + self.dropout(self.ff(x)))
+        return x, (attn if return_attention else None)
+
+
 class HFTRPS(SalienceRPSPredictor):
     """Audio -> rotor-rate salience logits ``(B, G, T)`` on a LINEAR rate grid.
 
@@ -315,6 +433,17 @@ class HFTRPS(SalienceRPSPredictor):
             cross-attention layers after the first.
         n_time_layers: SAtime layers; hFT uses ``n_layers`` of them.
         floor_hz: width of the running-median floor along frequency.
+        attn_mode: ``"gather"`` is variant (i) of the design note — hard
+            sparsity, a rate token sees ONLY its own K harmonics.
+            ``"bias"`` is variant (ii) — hFT's frequency self-attention encoder
+            is restored over a POOLED ``n_bin``-token spectrum and the gather
+            becomes a learned additive bias on the cross-attention instead of a
+            mask. (ii) costs more (its score tensor is ``B*T*G*n_bin*heads``
+            against ``B*T*G*k_max*heads``, 8x at the defaults) and can attend
+            outside a hypothesis's own comb; (i) cannot.
+        n_bin, n_enc_layers, bias_scale: variant (ii) only — the pooled
+            frequency token count (256 is hFT's own), the encoder depth, and
+            the scale of the log-incidence bias initialization.
     """
 
     def __init__(
@@ -341,6 +470,10 @@ class HFTRPS(SalienceRPSPredictor):
         n_frame: int = 128,
         rate_block: int = 64,
         floor_hz: float = 120.0,
+        attn_mode: str = "gather",
+        n_bin: int = 256,
+        n_enc_layers: int = 3,
+        bias_scale: float = 2.0,
     ):
         super().__init__(n_fft, hop_length, num_rotors)
         self.sr, self.k_max = int(sr), int(k_max)
@@ -353,6 +486,10 @@ class HFTRPS(SalienceRPSPredictor):
         # torch.stft(center=True) emits n // hop + 1 frames and nothing pools
         # along time, so the salience rate IS the STFT rate.
         self.spec_sr, self.spec_hop = int(sr), int(hop_length)
+
+        if attn_mode not in ("gather", "bias"):
+            raise ValueError(f"unknown attn_mode {attn_mode!r}")
+        self.attn_mode = attn_mode
 
         df = float(sr) / float(n_fft)
         self.floor_bins = max(3, int(round(floor_hz / df)) | 1)
@@ -384,13 +521,17 @@ class HFTRPS(SalienceRPSPredictor):
         # (deviation 3). Channel 0 is initialized to a delta so it passes the
         # raw log-elevation through: an untrained token then reads the same
         # evidence the classical Whittle scan reads.
-        self.ctx = nn.Conv1d(1, self.cnn_channel, cnn_kernel, padding=cnn_kernel // 2)
-        with torch.no_grad():
-            self.ctx.weight.zero_()
-            self.ctx.weight[0, 0, cnn_kernel // 2] = 1.0
-            self.ctx.bias.zero_()
-            if self.cnn_channel > 1:
-                nn.init.normal_(self.ctx.weight[1:], std=0.2)
+        # Variant (ii) has its own copy of this convolution inside
+        # `FrequencyEncoder`; building it here too would leave a dead parameter.
+        self.ctx: nn.Conv1d | None = None
+        if attn_mode == "gather":
+            self.ctx = nn.Conv1d(1, self.cnn_channel, cnn_kernel, padding=cnn_kernel // 2)
+            with torch.no_grad():
+                self.ctx.weight.zero_()
+                self.ctx.weight[0, 0, cnn_kernel // 2] = 1.0
+                self.ctx.bias.zero_()
+                if self.cnn_channel > 1:
+                    nn.init.normal_(self.ctx.weight[1:], std=0.2)
 
         # hFT's `pos_embedding_freq(n_note)`: the output tokens' initial query
         # is a pure learned embedding, one per candidate rate. All data enters
@@ -400,23 +541,64 @@ class HFTRPS(SalienceRPSPredictor):
         self.scale_time = math.sqrt(self.hid_dim)
         self.dropout = nn.Dropout(dropout)
 
+        self.encoder: FrequencyEncoder | None = None
         # hFT: DecoderLayer_Zero (cross-attention only) then n_layers-1
         # DecoderLayers (self-attention + cross-attention).
-        self.layers = nn.ModuleList(
-            [
-                HarmonicCrossAttentionLayer(
-                    self.hid_dim,
-                    n_heads,
-                    pf_dim,
-                    dropout,
-                    self.k_max,
-                    self.cnn_channel,
-                    self_attention=(i > 0),
-                    rate_block=rate_block,
-                )
-                for i in range(int(n_layers))
-            ]
-        )
+        if attn_mode == "gather":
+            self.layers = nn.ModuleList(
+                [
+                    HarmonicCrossAttentionLayer(
+                        self.hid_dim,
+                        n_heads,
+                        pf_dim,
+                        dropout,
+                        self.k_max,
+                        self.cnn_channel,
+                        self_attention=(i > 0),
+                        rate_block=rate_block,
+                    )
+                    for i in range(int(n_layers))
+                ]
+            )
+        else:
+            n_f = n_fft // 2 + 1
+            self.n_bin = int(n_bin)
+            self.pool = (n_f - 1) // self.n_bin
+            self.encoder = FrequencyEncoder(
+                self.n_bin,
+                self.hid_dim,
+                int(n_enc_layers),
+                n_heads,
+                pf_dim,
+                dropout,
+                self.cnn_channel,
+                cnn_kernel,
+            )
+            # THE BIAS INITIALIZATION. `CombGather` has already computed where
+            # harmonic k of rate g reads; pooling maps each read to its token.
+            # The incidence count is what a hard mask would keep, so
+            # `bias_scale * log1p(incidence)` starts the layer at variant (i)'s
+            # preference without variant (i)'s prohibition.
+            tok = (self.gather.bin_lo // self.pool).clamp(0, self.n_bin - 1)  # (K, G)
+            inc = torch.zeros(self.n_grid, self.n_bin)
+            inc.scatter_add_(1, tok.t(), band.t().to(inc.dtype))
+            bias0 = float(bias_scale) * torch.log1p(inc)
+            self.layers = nn.ModuleList(
+                [
+                    BiasedCrossAttentionLayer(
+                        self.hid_dim,
+                        n_heads,
+                        pf_dim,
+                        dropout,
+                        self.n_grid,
+                        self.n_bin,
+                        bias0,
+                        self_attention=(i > 0),
+                        rate_block=rate_block,
+                    )
+                    for i in range(int(n_layers))
+                ]
+            )
         n_t = int(n_layers if n_time_layers is None else n_time_layers)
         self.time_layers = nn.ModuleList(
             [TimeSelfAttentionLayer(self.hid_dim, n_heads, pf_dim, dropout) for _ in range(n_t)]
@@ -472,10 +654,13 @@ class HFTRPS(SalienceRPSPredictor):
     # ── forward ─────────────────────────────────────────────────────────────
 
     def forward(self, audio: torch.Tensor, return_attention: bool = False) -> torch.Tensor:
+        if self.attn_mode == "bias":
+            return self._forward_bias(audio, return_attention)
         z = self.evidence(self.spectrum(audio))  # (B, K, G, T)
         b, k, g, t = z.shape
 
         # Temporal context, shared across every (harmonic, rate) token.
+        assert self.ctx is not None
         u = self.ctx(z.reshape(b * k * g, 1, t))  # (B*K*G, C, T)
         u = u.view(b, k, g, self.cnn_channel, t).permute(0, 4, 2, 1, 3).contiguous()
         u = u.reshape(b * t * g, k, self.cnn_channel)  # (N, K, C)
@@ -504,6 +689,31 @@ class HFTRPS(SalienceRPSPredictor):
         y = self._time_stack(y)
         logits = self.fc_mpe(y).view(b, g, t)
         return logits
+
+    def _forward_bias(self, audio: torch.Tensor, return_attention: bool) -> torch.Tensor:
+        """Variant (ii): pooled frequency tokens + a learned harmonic bias."""
+        assert self.encoder is not None
+        pw = self.spectrum(audio)
+        floor = local_floor_torch(pw, self.floor_bins).detach()
+        b, n_f, t = pw.shape
+        used = self.pool * self.n_bin
+        zf = torch.log1p(pw[:, :used] / floor[:, :used].clamp_min(1e-12))
+        zf = zf.view(b, self.n_bin, self.pool, t).mean(2)             # (B, n_bin, T)
+        enc = self.encoder(zf)                                        # (B*T, n_bin, D)
+
+        g = self.n_grid
+        x = self.rate_embedding.weight.unsqueeze(0).expand(b * t, g, self.hid_dim)
+        x = self.dropout(x)
+        attn = None
+        for i, layer in enumerate(self.layers):
+            want = return_attention and i == len(self.layers) - 1
+            x, a = layer(x, enc, return_attention=want)
+            if a is not None:
+                attn = a.view(b, t, self.n_heads, g, self.n_bin)
+        self.last_attention = attn                                    # (B, T, H, G, n_bin)
+
+        y = x.view(b, t, g, self.hid_dim).permute(0, 2, 1, 3).reshape(b * g, t, self.hid_dim)
+        return self.fc_mpe(self._time_stack(y)).view(b, g, t)
 
     def _time_stack(self, y: torch.Tensor) -> torch.Tensor:
         """``(B*G, T, D)`` -> same, self-attended along T in ``n_frame`` blocks."""

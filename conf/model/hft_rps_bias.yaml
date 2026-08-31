@@ -1,0 +1,95 @@
+# hFT-Transformer ported to rotor-rate salience — VARIANT (ii) of
+# docs/harmonic-ports-design.md, gather-as-BIAS. conf/model/hft_rps.yaml is
+# variant (i), gather-as-hard-sparsity, and carries the shared argument; this
+# file states only what moves.
+#
+# WHAT MOVES. Variant (i) deletes hFT's frequency self-attention encoder,
+# because a rate token that can only see its own harmonics has no use for a
+# representation of the other 2017 bins. Variant (ii) restores that encoder
+# over a POOLED spectrum — 2048 linear bins averaged in groups of 8 into
+# n_bin 256, which is hFT's own n_bin — and turns the gather into a LEARNED
+# ADDITIVE BIAS on the cross-attention instead of a mask. The bias is
+# initialized to `bias_scale * log1p(incidence)` from the same read positions
+# CombGather computes, so the layer starts where variant (i) is forced to stay
+# and can leave it if a rate is better explained by a bin its comb does not
+# predict.
+#
+# WHAT IT COSTS. The cross-attention score tensor is B*T*G*n_bin*heads against
+# variant (i)'s B*T*G*k_max*heads — 8x at these defaults — plus the encoder's
+# own 256x256 frequency self-attention per frame and a (heads, 300, 256) bias
+# per layer. 6.37M parameters against variant (i)'s 3.46M.
+#
+# Pooling is lossy about WHERE inside a 31.25 Hz group a line sits, which is
+# exactly the information variant (i) refuses to give up. Variant (ii) does
+# not ask the token to carry it: the position information arrives as the bias.
+# See docs/harmonic-ports-design.md and the module docstring of
+# `models.harmonic_ports.hft_rps` for the substitution and its arithmetic.
+#
+# THE GRID. Output = input = the candidate-rate axis: linear 0 -> 150 rev/s in
+# 300 bins, 0.5017 rev/s per bin. The design note's recovery-error table puts
+# the discretization cost at 0.013 rev/s at 40 dB and 0.13 at 20 dB with
+# three-point parabolic peak interpolation, under the campaign's 0.2 rev/s
+# honest floor and far under DREGON's own +-0.6 rev/s label jitter. 150 covers
+# the synthetic curricula's augmented top (cruise ~100 x freq_scale 1.3 = 130).
+#
+# THE FRONT END. Linear STFT, n_fft 4096 / hop 512 at 16 kHz = 3.906 Hz bins
+# over a 0.256 s window. That window separates 0.85 rev/s from harmonic 5,
+# 0.39 from 11 and 0.13 from 31 — the reason the note rejects a log axis, where
+# the harmonic index cancels out of the separability ratio.
+#
+# TWO CUTS THAT A RATE GRID REACHING 0 FORCES, both measured on single-comb
+# clips through this model's own `evidence()`:
+#   f_min 30 Hz drops harmonics inside the analysis window's DC mainlobe.
+#   r_min = sr/n_fft = 3.906 rev/s drops whole CANDIDATES whose consecutive
+#     harmonics are closer than one STFT bin, so their K reads are the same few
+#     bins rather than a comb. Without it the classical read of a 37 rev/s comb
+#     peaks at 1.51 rev/s and a 45 rev/s comb does the same; with it 37, 45, 60,
+#     84.5 and 120 all recover to within one grid bin. `r_min: null` in this
+#     config means "one STFT bin"; the 8 output bins below it carry no evidence
+#     and emit a constant, which is the honest reading of what this front end
+#     can resolve.
+#
+# WIDTHS are hFT's own: hid_dim 256, 3 cross-attention layers, 3 SAtime layers,
+# 4 heads, pf_dim 512, cnn_channel 4. n_frame 128 is the SAtime block length
+# (hFT's fixed segment length, applied here as a partition — an 8 s validation
+# clip is 251 frames). rate_block 64 bounds the rate-axis self-attention that
+# stands in for hFT's decoder self-attention.
+#
+# frame_rate is [16000, 512]: nothing pools along time, so the salience time
+# grid IS the STFT frame grid.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: hft_rps
+  n_fft: 4096
+  hop_length: 512
+  sr: 16000
+  num_rotors: 4
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  f_min: 30.0
+  r_min: null  # -> sr/n_fft = 3.906 rev/s
+  hid_dim: 256
+  n_layers: 3
+  n_time_layers: 3
+  n_heads: 4
+  pf_dim: 512
+  dropout: 0.1
+  cnn_channel: 4
+  cnn_kernel: 5
+  n_frame: 128
+  rate_block: 64
+  floor_hz: 120.0
+  attn_mode: bias
+  n_bin: 256
+  n_enc_layers: 3
+  bias_scale: 2.0
+model_type: null
+legacy_config_path: null
