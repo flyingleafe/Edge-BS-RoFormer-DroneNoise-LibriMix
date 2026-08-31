@@ -320,12 +320,22 @@ the offending slot is not at a multiple of anything.
 
 A relocation move was added for exactly that: re-solve one slot against the
 others' claims and keep it only if union evidence rises. It is coordinate ascent
-on the right objective and it recovers only a small part of the gap
-(`wide` 2.719 -> 2.632, `typical` 1.488 -> 1.430, static unchanged at 0.041).
-Single-slot moves are not enough, because with the truth winning only 81% of
-frames the re-solve often lands on a decoy rather than the uncovered rotor. That
-is the honest state of it: right objective, insufficient search, and the next
-move to try is a joint one over two slots rather than one.
+on the right objective, and how much it recovers scales with how bad the
+duplicate problem is in the first place:
+
+| family | without relocation | with relocation |
+|---|---|---|
+| static | 0.523 | 0.523 (unchanged) |
+| stochastic, coherent | 2.944 | **2.800** |
+| stochastic, Rayleigh | 4.716 | **3.834** |
+
+Nothing on the static comb, where duplicates are not the failure; 5% on coherent
+lines; **19% on Rayleigh lines**, the weakest-margin family and the one where
+slots most often pile onto the same rotor. It does not close the gap, because with
+the truth winning only 64 to 81% of frames the re-solve often lands on a decoy
+rather than on the uncovered rotor. That is the honest state of it: right
+objective, insufficient search, and the next move to try is a joint one over two
+slots rather than one at a time.
 
 ### Training on the stochastic family: it helps, then it diverges
 
@@ -379,7 +389,7 @@ many it has. That is the phase wall the seeding campaign identified, reached
 rather than pushed.
 
 **Stochastic comb, stochastic-only validation: partly solved, with the gap
-measured.** Geomean 2.800 with coherent line realization and 4.696 with the
+measured.** Geomean 2.800 with coherent line realization and 3.834 with the
 Rayleigh one, against 9.571 and 10.737 for the deployed peel and 8.67 for this
 project's trained regression networks on the family's own distribution. So the
 family is roughly three times more solvable than anything previously applied to
@@ -404,8 +414,8 @@ wall and was fixed by replacing the objective. Every stochastic cell is a search
 wall — union evidence at the truth exceeds the returned answer on all six clips
 tested — so the remaining stochastic error is not a statement about the
 information in the signal. The failure shape is a duplicate slot; single-slot
-relocation recovers part of the gap (2.944 -> 2.800) and a joint two-slot move is
-the untried next step.
+relocation recovers part of the gap (2.944 -> 2.800 coherent, 4.716 -> 3.834
+Rayleigh) and a joint two-slot move is the untried next step.
 
 **Open, and stated rather than smoothed.** The crossing wall needs phase. The
 stochastic search wall needs a better move set. And the CRF loss is not
