@@ -323,15 +323,17 @@ others' claims and keep it only if union evidence rises. It is coordinate ascent
 on the right objective, and how much it recovers scales with how bad the
 duplicate problem is in the first place:
 
-| family | without relocation | with relocation |
-|---|---|---|
-| static | 0.523 | 0.523 (unchanged) |
-| stochastic, coherent | 2.944 | **2.800** |
-| stochastic, Rayleigh | 4.716 | **3.834** |
+| family | score margin | without relocation | with relocation | gain |
+|---|---|---|---|---|
+| static | 1.652 nats | 0.507 | **0.487** | 4% |
+| stochastic, coherent | 0.105 nats | 2.944 | **2.800** | 5% |
+| stochastic, Rayleigh | 0.038 nats | 4.696 | **3.834** | **19%** |
 
-Nothing on the static comb, where duplicates are not the failure; 5% on coherent
-lines; **19% on Rayleigh lines**, the weakest-margin family and the one where
-slots most often pile onto the same rotor. It does not close the gap, because with
+The gain grows as the margin shrinks, which is a confirmation of the diagnosis
+rather than a tuning result: the weaker the evidence, the more often two slots
+pile onto one rotor, and the more a move that can only fix duplicates is worth.
+(An earlier single-cell probe suggested the static gain was zero; the full sweep
+says 4%, and the corrected figure is the one above.) It does not close the gap, because with
 the truth winning only 64 to 81% of frames the re-solve often lands on a decoy
 rather than on the uncovered rotor. That is the honest state of it: right
 objective, insufficient search, and the next move to try is a joint one over two
@@ -376,7 +378,7 @@ floor of 0.029 rev/s RMS. Everything training can reach, it reaches.
 ## Summary against the goal
 
 **Static comb, static-only validation: solved.** One blind configuration, no
-per-cell choices, geomean of per-cell PIT-RMSE **0.507** rev/s untrained against
+per-cell choices, geomean of per-cell PIT-RMSE **0.487** rev/s untrained against
 0.772 for the deployed peel — and against 0.532 for the previous family with its
 octave gate hand-picked per cell, which this configuration does not need.
 Training through the CRF takes it to **0.392**, a 34% improvement, where the
@@ -414,8 +416,8 @@ wall and was fixed by replacing the objective. Every stochastic cell is a search
 wall — union evidence at the truth exceeds the returned answer on all six clips
 tested — so the remaining stochastic error is not a statement about the
 information in the signal. The failure shape is a duplicate slot; single-slot
-relocation recovers part of the gap (2.944 -> 2.800 coherent, 4.716 -> 3.834
-Rayleigh) and a joint two-slot move is the untried next step.
+relocation recovers part of the gap (2.944 -> 2.800 coherent, 4.696 -> 3.834
+Rayleigh, 0.507 -> 0.487 static) and a joint two-slot move is the untried next step.
 
 **Open, and stated rather than smoothed.** The crossing wall needs phase. The
 stochastic search wall needs a better move set. And the CRF loss is not
@@ -425,3 +427,31 @@ that was stable on the static family for 400 steps. Where the margin is 1.65 nat
 descending this loss finds rotors; where it is 0.105 nats the same descent finds
 ways to sharpen the surface that do not correspond to rotors. Nothing here has run
 on a real recording.
+
+
+## The trained head on the full benchmark
+
+The training run above selected on four validation clips per cell. Scored on the
+full eight, with training seeds (0-999) disjoint from evaluation seeds (1000+):
+
+| cell | untrained | trained |
+|---|---|---|
+| identical | 1.323 | 1.305 |
+| tight | 0.847 | 0.823 |
+| close | 0.475 | **0.397** |
+| typical | 0.043 | **0.032** |
+| wide | 0.025 | 0.024 |
+| typical-fast | **2.617** | 4.311 |
+| typical-idle | 6.184 | **1.992** |
+| **geomean** | 0.513 | **0.432** |
+
+**16% better on held-out clips**, so the training gain is not an artifact of the
+small validation set. Five cells improve, `wide` is at the grid floor, and one
+cell gets worse: `typical-fast` goes 2.617 to 4.311. That cell is the crossing
+wall, where the head has nothing useful to learn, so what training does there is
+trade it for the cells it CAN move. Reporting the geometric mean alone would hide
+that, which is the reason to print the cells.
+
+This is the best static-comb figure in the campaign: **0.432**, against 0.772 for
+the deployed peel and 0.532 for the previous family with its octave gate
+hand-picked per cell.
