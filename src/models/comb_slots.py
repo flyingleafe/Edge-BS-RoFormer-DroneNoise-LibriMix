@@ -330,8 +330,45 @@ class SlotCombNet(nn.Module):
                 break
         return scores, paths
 
+    def _relocate_moves(self, pw, floor, gfloor, scores, paths, rounds: int = 2):
+        """Re-solve one slot against the others, and keep it iff coverage improves.
+
+        This is coordinate ascent on `union_evidence`, and it exists because the
+        measured stochastic failure is a DUPLICATE: on the `wide` cell two slots
+        settled near 78 rev/s while the rotor at 71.6 went uncovered. No octave
+        move can express that — the offending slot is not at a multiple of
+        anything, it is simply in the wrong place — and the joint sweeps do not
+        repair it either, because they use soft posteriors and accept whatever
+        the mean field converges to instead of asking whether coverage went up.
+
+        The move is worth making because the diagnostic says the information is
+        present: on every stochastic clip tested, the union evidence at the TRUTH
+        exceeds the union evidence of the decoded solution, which makes these
+        cells a search wall rather than an evidence wall.
+        """
+        claims = self._claims_from(paths, scores[0])
+        best = self.union_evidence(pw, floor, claims)
+        for _ in range(rounds):
+            improved = False
+            for i in range(self.n_rot):
+                others = claims.clone()
+                others[:, i] = 0.0
+                s_i = self._score(self._residual(pw, floor, others, None), gfloor)
+                cand = comb_crf.viterbi(s_i, self.span, self.pen)
+                trial = claims.clone()
+                trial[:, i] = self._claims_from([cand], scores[0])[:, 0]
+                j = self.union_evidence(pw, floor, trial)
+                if bool((j > best + 1e-6).all()):
+                    claims, best = trial, j
+                    paths = list(paths); paths[i] = cand
+                    scores = list(scores); scores[i] = s_i
+                    improved = True
+            if not improved:
+                break
+        return scores, paths
+
     def decode(self, audio: torch.Tensor, subgrid: bool = True,
-               octave: bool = True) -> torch.Tensor:
+               octave: bool = True, relocate: bool = True) -> torch.Tensor:
         """``(B, R, T)`` rates in rev/s, sorted ascending per frame."""
         pw = self.spectrum(audio)
         floor = local_floor_torch(pw, self.floor_bins).detach()
@@ -339,8 +376,13 @@ class SlotCombNet(nn.Module):
         scores, _ = self.forward(audio)
         scores = [scores[:, i] for i in range(scores.shape[1])]
         paths, _ = self._solve(scores)
-        if octave:
-            scores, paths = self._octave_moves(pw, floor, gfloor, scores, paths)
+        for _ in range(2):
+            if relocate:
+                scores, paths = self._relocate_moves(pw, floor, gfloor, scores, paths)
+            if octave:
+                scores, paths = self._octave_moves(pw, floor, gfloor, scores, paths)
+            if not relocate:
+                break
         grid = self.grid.to(scores[0].dtype)
         out = []
         for s, path in zip(scores, paths):
