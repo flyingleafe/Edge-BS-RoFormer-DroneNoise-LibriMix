@@ -673,10 +673,23 @@ class HFTRPS(SalienceRPSPredictor):
 
     # ── forward ─────────────────────────────────────────────────────────────
 
+    def _front_end(self, audio: torch.Tensor) -> torch.Tensor:
+        """Audio -> log-elevation ``(B, K, G, T)``, always in float32.
+
+        The training loop runs under AMP. STFT POWER of a unit-scaled clip at
+        n_fft 4096 reaches ~1e6, which is past fp16's 65504, and the floor
+        division that follows would then be inf/inf. The front end is a fixed
+        transform with no parameters, so forcing it to fp32 costs a cast and
+        removes the overflow entirely; everything downstream of it is ordinary
+        matmul work that AMP is for.
+        """
+        with torch.autocast(device_type=audio.device.type, enabled=False):
+            return self.evidence(self.spectrum(audio.float()))
+
     def forward(self, audio: torch.Tensor, return_attention: bool = False) -> torch.Tensor:
         if self.attn_mode == "bias":
             return self._forward_bias(audio, return_attention)
-        z = self.evidence(self.spectrum(audio))  # (B, K, G, T)
+        z = self._front_end(audio)  # (B, K, G, T)
         b, k, g, t = z.shape
 
         # Temporal context, shared across every (harmonic, rate) token.
@@ -713,12 +726,13 @@ class HFTRPS(SalienceRPSPredictor):
     def _forward_bias(self, audio: torch.Tensor, return_attention: bool) -> torch.Tensor:
         """Variant (ii): pooled frequency tokens + a learned harmonic bias."""
         assert self.encoder is not None
-        pw = self.spectrum(audio)
-        floor = local_floor_torch(pw, self.floor_bins).detach()
-        b, n_f, t = pw.shape
-        used = self.pool * self.n_bin
-        zf = torch.log1p(pw[:, :used] / floor[:, :used].clamp_min(1e-12))
-        zf = zf.view(b, self.n_bin, self.pool, t).mean(2)             # (B, n_bin, T)
+        with torch.autocast(device_type=audio.device.type, enabled=False):
+            pw = self.spectrum(audio.float())
+            floor = local_floor_torch(pw, self.floor_bins).detach()
+            b, n_f, t = pw.shape
+            used = self.pool * self.n_bin
+            zf = torch.log1p(pw[:, :used] / floor[:, :used].clamp_min(1e-12))
+            zf = zf.view(b, self.n_bin, self.pool, t).mean(2)         # (B, n_bin, T)
         enc = self.encoder(zf)                                        # (B*T, n_bin, D)
 
         g = self.n_grid
