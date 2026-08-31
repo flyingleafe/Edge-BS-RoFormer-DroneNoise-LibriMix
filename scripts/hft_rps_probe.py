@@ -26,8 +26,13 @@ from models.harmonic_ports.hft_rps import HFTRPS  # noqa: E402
 from models.multif0.utils import salience_target_from_resampled_rps  # noqa: E402
 
 
-def comb_clip(rates: np.ndarray, n: int, sr: int = 16000, k_max: int = 40,
-              rng: np.random.Generator | None = None) -> np.ndarray:
+def comb_clip(
+    rates: np.ndarray,
+    n: int,
+    sr: int = 16000,
+    k_max: int = 40,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
     """One analytic static comb per rotor, plus white noise."""
     rng = rng or np.random.default_rng(0)
     t = np.arange(n) / sr
@@ -94,11 +99,13 @@ def main() -> int:
     report["grad"] = {
         "no_grad": [k for k, p in model.named_parameters() if p.grad is None],
         "nonfinite": [
-            k for k, p in model.named_parameters()
+            k
+            for k, p in model.named_parameters()
             if p.grad is not None and not torch.isfinite(p.grad).all()
         ],
         "zero": [
-            k for k, p in model.named_parameters()
+            k
+            for k, p in model.named_parameters()
             if p.grad is not None and float(p.grad.abs().sum()) == 0.0
         ],
     }
@@ -116,8 +123,9 @@ def main() -> int:
     for step in range(args.steps):
         opt.zero_grad(set_to_none=True)
         logits = model(audio)
-        rps_g = torch.nn.functional.interpolate(rps, size=logits.shape[-1], mode="linear",
-                                                align_corners=False)
+        rps_g = torch.nn.functional.interpolate(
+            rps, size=logits.shape[-1], mode="linear", align_corners=False
+        )
         target = salience_target_from_resampled_rps(rps_g, freqs, blur_bins=1)
         loss = salience_bce_loss(logits, target, pos_weight=pw)
         loss.backward()
@@ -130,6 +138,7 @@ def main() -> int:
         pred = model.predict_rps(audio, chunk_size=0)
     # per-frame permutation-invariant absolute error, the campaign's metric
     from itertools import permutations
+
     err = []
     p_np, t_np = pred.cpu().numpy(), rps.cpu().numpy()
     width = min(p_np.shape[-1], t_np.shape[-1])
@@ -151,8 +160,7 @@ def main() -> int:
     # (4) MEMORY / STEP TIME at the training and validation shapes
     if dev.type == "cuda":
         mem = {}
-        for tag, rows, dur in (("train", args.batch, args.dur),
-                               ("valid", 8, args.valid_dur)):
+        for tag, rows, dur in (("train", args.batch, args.dur), ("valid", 8, args.valid_dur)):
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
             xb = torch.randn(rows, int(dur * 16000), device=dev)

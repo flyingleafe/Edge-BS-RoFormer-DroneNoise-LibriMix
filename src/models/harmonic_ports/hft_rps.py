@@ -238,8 +238,9 @@ class HarmonicCrossAttentionLayer(nn.Module):
             y = F.pad(y, (0, 0, 0, pad))
         n_blk = y.shape[1] // blk
         y = y.reshape(rows * n_blk, blk, d)
-        y, _ = self.self_attn(y, y, y, key_padding_mask=_block_pad_mask(n_g, blk, rows, y.device),
-                              need_weights=False)
+        y, _ = self.self_attn(
+            y, y, y, key_padding_mask=_block_pad_mask(n_g, blk, rows, y.device), need_weights=False
+        )
         y = y.reshape(rows, -1, d)[:, :n_g]
         return y.reshape(n, d)
 
@@ -297,8 +298,9 @@ class TimeSelfAttentionLayer(nn.Module):
         self.ln_ff = nn.LayerNorm(hid_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None
-                ) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         a, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
         x = self.ln_attn(x + self.dropout(a))
         return self.ln_ff(x + self.dropout(self.ff(x)))
@@ -318,8 +320,17 @@ class FrequencyEncoder(nn.Module):
     information is supplied separately, as the learned bias.
     """
 
-    def __init__(self, n_bin: int, hid_dim: int, n_layers: int, n_heads: int,
-                 pf_dim: int, dropout: float, cnn_channel: int, cnn_kernel: int):
+    def __init__(
+        self,
+        n_bin: int,
+        hid_dim: int,
+        n_layers: int,
+        n_heads: int,
+        pf_dim: int,
+        dropout: float,
+        cnn_channel: int,
+        cnn_kernel: int,
+    ):
         super().__init__()
         self.n_bin = int(n_bin)
         self.ctx = nn.Conv1d(1, cnn_channel, cnn_kernel, padding=cnn_kernel // 2)
@@ -340,8 +351,8 @@ class FrequencyEncoder(nn.Module):
     def forward(self, zf: torch.Tensor) -> torch.Tensor:
         """``(B, n_bin, T)`` log-elevation -> ``(B*T, n_bin, D)`` frequency tokens."""
         b, f, t = zf.shape
-        u = self.ctx(zf.reshape(b * f, 1, t))                       # (B*F, C, T)
-        u = u.view(b, f, -1, t).permute(0, 3, 1, 2)                 # (B, T, F, C)
+        u = self.ctx(zf.reshape(b * f, 1, t))  # (B*F, C, T)
+        u = u.view(b, f, -1, t).permute(0, 3, 1, 2)  # (B, T, F, C)
         x = self.tok_embedding(u.reshape(b * t, f, -1)) * self.scale
         x = self.dropout(x + self.pos_embedding.weight.unsqueeze(0))
         for layer in self.layers:
@@ -362,9 +373,18 @@ class BiasedCrossAttentionLayer(nn.Module):
     does not predict.
     """
 
-    def __init__(self, hid_dim: int, n_heads: int, pf_dim: int, dropout: float,
-                 n_grid: int, n_bin: int, bias_init: torch.Tensor,
-                 self_attention: bool = False, rate_block: int = 64):
+    def __init__(
+        self,
+        hid_dim: int,
+        n_heads: int,
+        pf_dim: int,
+        dropout: float,
+        n_grid: int,
+        n_bin: int,
+        bias_init: torch.Tensor,
+        self_attention: bool = False,
+        rate_block: int = 64,
+    ):
         super().__init__()
         if hid_dim % n_heads:
             raise ValueError("hid_dim must divide by n_heads")
@@ -388,8 +408,9 @@ class BiasedCrossAttentionLayer(nn.Module):
         self.ln_ff = nn.LayerNorm(hid_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, enc: torch.Tensor,
-                return_attention: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(
+        self, x: torch.Tensor, enc: torch.Tensor, return_attention: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """``x`` ``(N, G, D)`` rate tokens, ``enc`` ``(N, S, D)`` frequency tokens."""
         if self.self_attn is not None:
             assert self.ln_self is not None
@@ -398,8 +419,9 @@ class BiasedCrossAttentionLayer(nn.Module):
             pad = (-g) % blk
             y = F.pad(x, (0, 0, 0, pad)) if pad else x
             y = y.reshape(n * (y.shape[1] // blk), blk, d)
-            y, _ = self.self_attn(y, y, y, key_padding_mask=_block_pad_mask(g, blk, n, y.device),
-                                  need_weights=False)
+            y, _ = self.self_attn(
+                y, y, y, key_padding_mask=_block_pad_mask(g, blk, n, y.device), need_weights=False
+            )
             y = y.reshape(n, -1, d)[:, :g]
             x = self.ln_self(x + self.dropout(y))
 
@@ -410,7 +432,7 @@ class BiasedCrossAttentionLayer(nn.Module):
         v = self.fc_v(enc).view(n, s, self.n_heads, self.head_dim).transpose(1, 2)
         e = torch.matmul(q, k.transpose(-1, -2)) / self.scale + self.bias.unsqueeze(0)
         attn = torch.softmax(e, dim=-1)
-        out = torch.matmul(self.dropout(attn), v)                   # (N, H, G, dh)
+        out = torch.matmul(self.dropout(attn), v)  # (N, H, G, dh)
         out = self.fc_o(out.transpose(1, 2).reshape(n, g, d))
         x = self.ln_attn(x + self.dropout(out))
         x = self.ln_ff(x + self.dropout(self.ff(x)))
@@ -732,8 +754,8 @@ class HFTRPS(SalienceRPSPredictor):
             b, n_f, t = pw.shape
             used = self.pool * self.n_bin
             zf = torch.log1p(pw[:, :used] / floor[:, :used].clamp_min(1e-12))
-            zf = zf.view(b, self.n_bin, self.pool, t).mean(2)         # (B, n_bin, T)
-        enc = self.encoder(zf)                                        # (B*T, n_bin, D)
+            zf = zf.view(b, self.n_bin, self.pool, t).mean(2)  # (B, n_bin, T)
+        enc = self.encoder(zf)  # (B*T, n_bin, D)
 
         g = self.n_grid
         x = self.rate_embedding.weight.unsqueeze(0).expand(b * t, g, self.hid_dim)
@@ -744,7 +766,7 @@ class HFTRPS(SalienceRPSPredictor):
             x, a = layer(x, enc, return_attention=want)
             if a is not None:
                 attn = a.view(b, t, self.n_heads, g, self.n_bin)
-        self.last_attention = attn                                    # (B, T, H, G, n_bin)
+        self.last_attention = attn  # (B, T, H, G, n_bin)
 
         y = x.view(b, t, g, self.hid_dim).permute(0, 2, 1, 3).reshape(b * g, t, self.hid_dim)
         return self.fc_mpe(self._time_stack(y)).view(b, g, t)
