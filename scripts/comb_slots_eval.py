@@ -57,7 +57,7 @@ def worker(unit: Unit) -> dict:
             out = decode_peel_viterbi(net, au, octave_mode=p.get("octave", "scored"))
     else:
         net = SlotCombNet(head_mode=p.get("head", "classical"), n_iter=p["iters"],
-                          use_checkpoint=False)
+                          union_mode=p.get("union", "noisyor"), use_checkpoint=False)
         if ckpt:
             net.head.load_state_dict(torch.load(ckpt, map_location="cpu"))
         net.eval()
@@ -83,6 +83,7 @@ def main() -> int:
                     choices=("stochastic", "coherent"),
                     help="stochastic family only: Rayleigh realization or coherent tones")
     ap.add_argument("--gamma", default="", help="stochastic only: 'g0lo,g0hi,slo,shi' in Hz")
+    ap.add_argument("--union", default="noisyor", choices=("sum", "max", "noisyor"))
     ap.add_argument("--out", default="results/comb_slots")
     add_gridrun_args(ap, jobs=6)
     args = ap.parse_args()
@@ -106,7 +107,8 @@ def main() -> int:
                             "tag": m, "method": "peel" if m == "peel" else "slots",
                             "iters": 0 if m == "peel" else int(m[5:]),
                             "head": args.head, "ckpt": args.ckpt,
-                            "threads": args.threads, "stoch_kw": stoch_kw}))
+                            "threads": args.threads, "stoch_kw": stoch_kw,
+                            "union": args.union}))
     res = gridrun_from_args(args, units, worker, args.out, mp_context="spawn")
     rows = [json.loads(p.read_text()) for p in sorted((res.out_dir / "raw").glob("*.json"))]
     tags = [m for m in args.methods.split(",")]

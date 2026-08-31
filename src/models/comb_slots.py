@@ -107,10 +107,12 @@ class SlotCombNet(nn.Module):
         floor_hz: float = 120.0, n_rot: int = 4, n_iter: int = 2,
         notch_width: float = 1.5, slew: float = 12.0, stiff: float = 40.0,
         use_checkpoint: bool = True, mask_k_max: int | None = None,
+        union_mode: str = "noisyor",
     ):
         super().__init__()
         self.sr, self.n_fft, self.hop_length = int(sr), int(n_fft), int(hop_length)
         self.n_rot, self.n_iter = int(n_rot), int(n_iter)
+        self.union_mode = str(union_mode)
         self.use_checkpoint = bool(use_checkpoint)
         self.floor_bins = max(3, int(round(floor_hz / (sr / n_fft))) | 1)
         self.gather = CombGather(r_lo, r_hi, n_grid, k_max, sr, n_fft, f_max)
@@ -245,12 +247,22 @@ class SlotCombNet(nn.Module):
         (1619 against 1508, 1665 against 1590, 1752 against 1609), which made
         that cell an objective wall rather than a search wall.
         """
-        # MAXIMUM over slots, not a clamped sum. The claims are soft Gaussians
-        # with tails, so a clamped sum lets a DUPLICATE slot double those tails
-        # and raise the total (measured: 1.335e8 -> 2.116e8 for one slot copied),
-        # which is exactly the duplicate-rewarding failure this objective exists
-        # to avoid. A maximum is idempotent, so a duplicate adds nothing at all.
-        c = claims.amax(dim=1)
+        # How the slots' claims combine into one coverage map. The three rules
+        # trade, and the trade is measured rather than argued -- see
+        # `docs/experiments/comb-slot-crf.md`:
+        #   "max"     idempotent, so a duplicate slot adds exactly nothing, but
+        #             two ADJACENT rotors that genuinely share a bin get credit
+        #             for only the louder of them.
+        #   "sum"     lets partial claims add, and lets a duplicate inflate the
+        #             Gaussian tails (measured 1.335e8 -> 2.116e8 for one copy).
+        #   "noisyor" 1 - prod(1 - d): saturating, so duplicates of a claimed
+        #             line add nothing, while partial claims still combine.
+        if self.union_mode == "max":
+            c = claims.amax(dim=1)
+        elif self.union_mode == "noisyor":
+            c = 1.0 - (1.0 - claims.clamp(0.0, 1.0)).prod(dim=1)
+        else:
+            c = claims.sum(dim=1).clamp(0.0, 1.0)
         u = (pw / floor).clamp_min(1e-9)
         return (c * (u - 1.0 - u.log()).clamp_min(0.0)).sum(dim=(1, 2))
 
