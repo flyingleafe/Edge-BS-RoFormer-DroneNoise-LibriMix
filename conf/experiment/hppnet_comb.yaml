@@ -30,8 +30,8 @@
 defaults:
   - override /data: sal_comb_synthval
   - override /model: hppnet_rps
-  - override /loss: salience_bce_hppnet
-  - override /metrics: salience_bce_hppnet
+  - override /loss: salience_bce_r150
+  - override /metrics: salience_bce_r150
 
 experiment_name: hppnet_comb
 epochs: 200

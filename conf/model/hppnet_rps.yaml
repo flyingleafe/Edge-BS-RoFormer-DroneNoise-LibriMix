@@ -9,7 +9,7 @@
 #
 #   1. THE OUTPUT GRID (r_lo/r_hi/n_grid = 0 / 150 / 300, i.e. 0.5017 rev/s per
 #      bin) is ALSO the candidate-rate grid the gather reads at. It must match
-#      conf/loss/salience_bce_hppnet.yaml and conf/metrics/salience_bce_hppnet.yaml
+#      conf/loss/salience_bce_r150.yaml and conf/metrics/salience_bce_r150.yaml
 #      exactly (out_fmin/out_fmax/out_bins) — the model and the loss each build
 #      it with models.multif0.utils.linear_freq_grid, so equal arguments give a
 #      bit-identical axis and the BCE target lands on the model's own bins.

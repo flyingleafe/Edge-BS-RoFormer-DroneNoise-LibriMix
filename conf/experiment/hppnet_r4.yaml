@@ -34,8 +34,8 @@
 defaults:
   - override /data: m3cur_s2
   - override /model: hppnet_rps
-  - override /loss: salience_bce_hppnet
-  - override /metrics: salience_bce_hppnet
+  - override /loss: salience_bce_r150
+  - override /metrics: salience_bce_r150
 
 experiment_name: hppnet_r4
 checkpoint: r2://ml-data/artifacts/hppnet_comb/checkpoints/best.ckpt
