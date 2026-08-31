@@ -109,11 +109,14 @@ class SlotCombNet(nn.Module):
         notch_width: float = 1.5, slew: float = 12.0, stiff: float = 40.0,
         use_checkpoint: bool = True, mask_k_max: int | None = None,
         union_mode: str = "noisyor", read_width: int = 0,
+        k_refine: int | None = None, refine_band: float = 3.0,
+        multichannel: bool = True,
     ):
         super().__init__()
         self.sr, self.n_fft, self.hop_length = int(sr), int(n_fft), int(hop_length)
         self.n_rot, self.n_iter = int(n_rot), int(n_iter)
         self.union_mode = str(union_mode)
+        self.multichannel = bool(multichannel)
         # HOW MANY BINS ONE HARMONIC IS READ OVER. The gather reads a single
         # interpolated bin, which is right for a delta-thin line and wrong for a
         # Lorentzian one: the stochastic family's linewidth is
@@ -126,10 +129,26 @@ class SlotCombNet(nn.Module):
         # The optimum is family-dependent, which is what makes this a front-end
         # parameter worth LEARNING rather than a constant worth tuning.
         self.read_width = int(read_width)
+        # TWO HARMONIC COUNTS, BECAUSE THEY WANT OPPOSITE THINGS. Measured on the
+        # real beat-VK windows: a candidate only pays for its empty gaps if its
+        # harmonic list spans the whole band, so a SHORT list lets the half-rate
+        # win (FLY124 cruise, truth beaten 6/7 windows at k_max=32, winning 6/7
+        # at 200). But a LONG list drags in the decohered high harmonics of a
+        # real rotor, and precision falls with it (DREGON nosource w2, 0.94 at
+        # k_max=32 against 1.92 at 200). One number cannot serve both, so the
+        # octave is settled with the long list and the rate is then refined with
+        # the short one, inside a band around the settled path -- the seed-then-
+        # refine split the classical pipeline already uses for the same reason.
+        self.k_refine = int(k_refine) if k_refine else 0
+        self.refine_band = float(refine_band)
         self.use_checkpoint = bool(use_checkpoint)
         self.floor_bins = max(3, int(round(floor_hz / (sr / n_fft))) | 1)
         self.gather = CombGather(r_lo, r_hi, n_grid, k_max, sr, n_fft, f_max)
         self.head = CombScoreHead(k_max, head_mode)
+        if self.k_refine:
+            self.gather_lo = CombGather(grid=self.gather.grid, k_max=self.k_refine,
+                                        sr=sr, n_fft=n_fft, f_max=f_max)
+            self.head_lo = CombScoreHead(self.k_refine, "classical")
         # THE CLAIM SPANS THE WHOLE BAND, THE SCORE DOES NOT. Scoring stops at
         # `k_max` harmonics, but a rotor radiates lines all the way up, so
         # explaining one away must remove all of them. With the claim truncated
@@ -152,12 +171,25 @@ class SlotCombNet(nn.Module):
         return self.gather.grid
 
     def spectrum(self, audio: torch.Tensor) -> torch.Tensor:
+        """``(B, T)`` or ``(C, T)`` -> ``(B, F, T)`` power, averaging over channels.
+
+        A multi-microphone input is averaged in POWER, never in waveform. The mics
+        sit metres apart, so summing their waveforms comb-filters exactly the lines
+        being read; averaging ``|STFT|^2`` leaves the mean spectrum alone and
+        divides the per-bin variance by the channel count. On real recordings that
+        variance is what the score margin is made of -- the truth outscores the
+        best decoy by about 0.03 nats there, against 1.65 on the synthetic static
+        comb, so variance reduction is the lever with the most room in it.
+        """
         if audio.dim() == 3:
             audio = audio.squeeze(1)
+        multi = audio.dim() == 2 and audio.shape[0] > 1 and self.multichannel
         spec = torch.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length,
                           window=self.window.to(audio.dtype), center=True,
                           return_complex=True)
         pw = spec.real.pow(2) + spec.imag.pow(2)
+        if multi:
+            pw = pw.mean(dim=0, keepdim=True)
         if self.read_width > 0:
             k = 2 * self.read_width + 1
             pw = F.avg_pool1d(pw.transpose(1, 2), k, 1, self.read_width,
@@ -401,6 +433,8 @@ class SlotCombNet(nn.Module):
                 scores, paths = self._octave_moves(pw, floor, gfloor, scores, paths)
             if not relocate:
                 break
+        if self.k_refine:
+            scores, paths = self._refine_band(pw, floor, scores, paths)
         grid = self.grid.to(scores[0].dtype)
         out = []
         for s, path in zip(scores, paths):
@@ -409,6 +443,29 @@ class SlotCombNet(nn.Module):
                 r = r + self._parabolic(s, path)
             out.append(r)
         return torch.stack(out, dim=1).sort(dim=1).values
+
+    def _refine_band(self, pw, floor, scores, paths):
+        """Re-solve each slot with the SHORT harmonic list, near its settled path.
+
+        The band is what makes this safe: the short list is the more precise
+        scorer and the more octave-prone one, so it is only ever allowed to move
+        a rotor by `refine_band` rev/s, never to another octave.
+        """
+        gfloor_lo = self.gather_lo(floor).clamp_min(1e-12)
+        claims = self._claims_from(paths, scores[0])
+        grid = self.grid.to(pw.dtype)
+        n_band = max(1, int(round(self.refine_band / float(grid[1] - grid[0]))))
+        ar = torch.arange(len(grid), device=pw.device)[None, :, None]
+        out_s, out_p = [], []
+        for i, path in enumerate(paths):
+            res = self._residual(pw, floor, claims, i)
+            h = self.gather_lo(res)
+            s_lo = self.head_lo(h, gfloor_lo, self.gather_lo.count, grid)
+            keep = (ar - path.unsqueeze(1)).abs() <= n_band
+            s_lo = torch.where(keep, s_lo, torch.full_like(s_lo, -1e30))
+            out_s.append(s_lo)
+            out_p.append(comb_crf.viterbi(s_lo, self.span, self.pen))
+        return out_s, out_p
 
     def _parabolic(self, s: torch.Tensor, path: torch.Tensor) -> torch.Tensor:
         """Sub-grid offset of the path, in rev/s, by a three-point parabolic fit.
