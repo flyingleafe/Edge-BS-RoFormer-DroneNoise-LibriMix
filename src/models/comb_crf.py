@@ -37,10 +37,28 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-__all__ = ["band_penalty", "viterbi", "log_partition", "path_score",
-           "posterior_marginals", "crf_nll"]
+__all__ = [
+    "band_penalty",
+    "viterbi",
+    "log_partition",
+    "path_score",
+    "posterior_marginals",
+    "crf_nll",
+]
 
 NEG = -1e30  # a finite stand-in for -inf: -inf * 0 = nan in the backward pass
+
+
+def _neg(dtype: torch.dtype) -> float:
+    """`NEG`, clipped to something the dtype can actually hold.
+
+    Under AMP the scores arrive as float16, whose largest finite magnitude is
+    65504, so padding with -1e30 raises "value cannot be converted to type
+    at::Half without overflow". A quarter of the dtype's minimum is still far
+    below any reachable path score (log-sigmoid emissions summed over a clip),
+    so it blocks the out-of-grid transitions exactly as -1e30 does in float32.
+    """
+    return max(NEG, float(torch.finfo(dtype).min) / 4.0)
 
 
 def band_penalty(step_free: float, stiff: float, device=None, dtype=torch.float32):
@@ -63,7 +81,7 @@ def _shifted(prev: torch.Tensor, span: int) -> torch.Tensor:
 
     Out-of-range sources are `NEG`, so a path cannot enter or leave the grid.
     """
-    padded = F.pad(prev, (span, span), value=NEG)
+    padded = F.pad(prev, (span, span), value=_neg(prev.dtype))
     return padded.unfold(-1, prev.shape[-1], 1)
 
 
@@ -85,7 +103,7 @@ def viterbi(scores: torch.Tensor, span: int, pen: torch.Tensor) -> torch.Tensor:
     path = scores.new_zeros((b, n_t), dtype=torch.long)
     path[:, -1] = best.argmax(dim=1)
     for t in range(n_t - 1, 0, -1):
-        path[:, t - 1] = back[t].gather(1, path[:, t: t + 1]).squeeze(1)
+        path[:, t - 1] = back[t].gather(1, path[:, t : t + 1]).squeeze(1)
     return path
 
 
@@ -98,8 +116,9 @@ def log_partition(scores: torch.Tensor, span: int, pen: torch.Tensor) -> torch.T
     return torch.logsumexp(a, dim=1)
 
 
-def path_score(scores: torch.Tensor, span: int, pen: torch.Tensor,
-               path: torch.Tensor) -> torch.Tensor:
+def path_score(
+    scores: torch.Tensor, span: int, pen: torch.Tensor, path: torch.Tensor
+) -> torch.Tensor:
     """Score of one given path: ``(B, G, T)``, ``(B, T)`` -> ``(B,)``.
 
     Steps outside the band are impossible under the model, so they are charged
@@ -138,7 +157,6 @@ def posterior_marginals(scores: torch.Tensor, span: int, pen: torch.Tensor) -> t
     return torch.softmax(fwd + bwd, dim=1)
 
 
-def crf_nll(scores: torch.Tensor, span: int, pen: torch.Tensor,
-            path: torch.Tensor) -> torch.Tensor:
+def crf_nll(scores: torch.Tensor, span: int, pen: torch.Tensor, path: torch.Tensor) -> torch.Tensor:
     """``log Z - score(gold)``, per batch item. Always non-negative up to float error."""
     return log_partition(scores, span, pen) - path_score(scores, span, pen, path)

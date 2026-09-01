@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import tdseries as td
 import torch
 
 from losses.salience_crf_layers import LayerPITCRFLoss, gold_indices, layer_pit_crf_nll
@@ -95,3 +96,32 @@ def test_frame_adapter_matches_the_functional_form():
     scores, gold = loss.scores_and_gold(logits, rps)
     assert scores.shape == (1, R, G, T)
     assert torch.equal(gold, gold_indices(rps, grid))
+
+
+def test_half_precision_inputs_do_not_overflow_the_neg_sentinel():
+    """AMP feeds float16 scores; -1e30 is not representable in half."""
+    grid, span, pen = _setup(max_step=8.0)
+    rps = _trajectory(seed=5)
+    gold = gold_indices(rps, grid)
+    scores = torch.log(gaussian_layer_target(rps, grid, sigma_bins=1.0).clamp_min(1e-30)).half()
+    out = layer_pit_crf_nll(scores, gold, span, pen.half())
+    assert torch.isfinite(out), out
+
+
+def test_frame_adapter_runs_under_autocast():
+    """The loss must be float32 inside, whatever autocast is doing outside."""
+    rps = _trajectory(seed=6)
+    loss = LayerPITCRFLoss(out_fmin=FMIN, out_fmax=FMAX, out_bins=G, n_layers=R, max_step_rev_s=8.0)
+    pred = td.Frame(
+        {
+            "salience": td.uniform(
+                torch.randn(1, R * G, T).numpy(), 100, dims=("batch", "freq", "time"), t_start=0.0
+            )
+        }
+    )
+    tgt = td.Frame(
+        {"rps": td.uniform(rps.numpy(), 100, dims=("batch", "rotor", "time"), t_start=0.0)}
+    )
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=True):
+        out = loss(pred, tgt)
+    assert out.dtype == torch.float32 and torch.isfinite(out), (out.dtype, out)

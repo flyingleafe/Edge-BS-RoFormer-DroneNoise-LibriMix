@@ -171,5 +171,12 @@ class LayerPITCRFLoss:
     def __call__(self, pred: td.Frame, target: td.Frame) -> torch.Tensor:
         logits = get_tensor(pred, self.pred_key)
         rps = get_tensor(target, self.target_key).float()
-        scores, gold = self.scores_and_gold(logits, rps)
-        return layer_pit_crf_nll(scores, gold, self._span, self._pen)
+        # FLOAT32, AUTOCAST OFF. The forward algorithm accumulates a logsumexp
+        # over ~2*span+1 candidates once per frame for the whole clip, so a
+        # 250-frame clip is a 250-deep chain. float16 has neither the range for
+        # the running total nor the precision for the differences that decide
+        # the path, and its 65504 ceiling also breaks the -inf stand-in that
+        # blocks out-of-grid transitions.
+        with torch.autocast(device_type=logits.device.type, enabled=False):
+            scores, gold = self.scores_and_gold(logits.float(), rps)
+            return layer_pit_crf_nll(scores, gold, self._span, self._pen)
