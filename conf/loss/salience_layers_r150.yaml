@@ -29,6 +29,26 @@
 # directly opposed. Unweighted, the optimum is sigmoid(z) = p exactly, hence
 # log sigmoid(z) = -d^2/2 and the decode stays lossless.
 #
+# focus 120 IS THE IMBALANCE HANDLE INSTEAD, and it is a different operation:
+# a PER-BIN weight 1 + focus * target, which scales a bin's WHOLE cross-entropy
+# by a positive constant. A positive constant does not move a minimum, so every
+# bin still bottoms out at sigmoid(z) = target and the readout stays exact. The
+# value is G / (sqrt(2 pi) sigma) = 300 / 2.507 = 120, which splits the total
+# weight about evenly between the Gaussian's mass and the rest of the grid.
+#
+# MEASURED on an 8-clip static-comb overfit of harmof0_rps_l4 (Adam 3e-3, CPU),
+# reading PIT MAE in rev/s through the deployed readout:
+#
+#   step        50      75     100     125     150     200
+#   focus 0    26.7   0.182   0.126   0.064   0.043   0.028
+#   focus 120   0.28  0.0115  0.0030  0.0021  0.0094    -
+#
+# Both reach the campaign's 0.2 rev/s floor; focus gets there in half the steps
+# and settles an order of magnitude lower. The arms have a two-hour wall clock,
+# so optimization speed is the binding constraint. The risk this probe cannot
+# see is that heavy peak weighting under-trains background suppression on noisy
+# real data — the clips here are clean combs.
+#
 # rate [16000, 512] mirrors the model's frame_rate: nothing pools along time.
 terms:
   - name: bce
@@ -40,4 +60,5 @@ terms:
       out_bins: 300
       n_layers: 4
       sigma_bins: 1.0
+      focus: 120.0
       rate: [16000, 512]

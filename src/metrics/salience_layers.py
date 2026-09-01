@@ -76,6 +76,7 @@ class _LayerGridMetric:
         out_bins: int = 300,
         n_layers: int = 4,
         sigma_bins: float = 1.0,
+        focus: float = 0.0,
         rate: tuple[int, int] | None = None,
         pred_key: str = "salience",
         target_key: str = "rps",
@@ -83,6 +84,7 @@ class _LayerGridMetric:
         self._freqs = linear_freq_grid(out_fmin, out_fmax, out_bins)
         self.n_layers = int(n_layers)
         self.sigma_bins = float(sigma_bins)
+        self.focus = float(focus)
         self.pred_key = pred_key
         self.target_key = target_key
         self.requires_pred = FrameSpec(
@@ -113,7 +115,7 @@ class LayerPITSalienceBCEMetric(_LayerGridMetric):
     def __call__(self, pred: td.Frame, target: td.Frame) -> float:
         layers, rps_grid = self._unpack(pred, target)
         tgt = gaussian_layer_target(rps_grid, self._freqs, sigma_bins=self.sigma_bins)
-        return float(layer_pit_bce(layers, tgt).item())
+        return float(layer_pit_bce(layers, tgt, focus=self.focus).item())
 
 
 class LayerPeakRPSMetric(_LayerGridMetric):

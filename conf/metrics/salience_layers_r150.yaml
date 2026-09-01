@@ -19,6 +19,7 @@ terms:
       out_bins: 300
       n_layers: 4
       sigma_bins: 1.0
+      focus: 120.0  # mirrors the loss; `rps_mae` is focus-free by construction
       rate: [16000, 512]
   - name: rps_mae
     _target_: metrics.LayerPeakRPSMetric
