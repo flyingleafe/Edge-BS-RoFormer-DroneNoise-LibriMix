@@ -417,9 +417,53 @@ class SlotCombNet(nn.Module):
                 break
         return scores, paths
 
+    def contrast(self, scores) -> torch.Tensor:
+        """Per-frame ``max - median`` over the candidate grid: ``(B, T)``.
+
+        The "is any rotor turning at all" statistic, and it has to be a CONTRAST
+        rather than a level. The salience is a mean of ``log1p(power/floor)``, so
+        its absolute value tracks how peaky the spectrum happens to be; measured
+        on 8 s clips it reads 1.02 on white noise and 1.03 at the 5th percentile
+        of real DREGON cruise, which no threshold can separate. The gap between
+        the best candidate and the median candidate does not have that problem —
+        it asks whether ONE rate explains the spectrum better than the rest do,
+        which is what "a rotor is turning" means.
+
+        Calibrated on 8 s clips, per-frame, mean (p05, p95):
+
+            no rotors, white noise      0.240  (0.188, 0.305)
+            no rotors, pink-ish         0.244  (0.194, 0.306)
+            no rotors, near-silence     0.240  (0.190, 0.305)
+            static comb, typical cell   2.782  (2.341, 3.235)
+            stochastic comb, coherent   0.423  (0.292, 0.571)
+            real DREGON cruise          0.416 to 0.549
+            real FLY124 WARM-UP         0.294  (0.220, 0.376)
+
+        The three no-rotor cases agree to three digits across a 10^6 range of
+        input level, which is the floor-independence doing its job. The honest
+        limit is the last row: a slowly turning rotor produces almost no contrast,
+        so the zero and low regimes OVERLAP for any comb-based method, and a
+        threshold that catches silence also silences part of the warm-up. That is
+        a property of the signal, not of this statistic — a rotor at 3 rev/s puts
+        its harmonics 3 Hz apart, below one 3.9 Hz analysis bin.
+        """
+        stack = scores if torch.is_tensor(scores) else torch.stack(scores, dim=1)
+        if stack.dim() == 4:                      # (B, R, G, T) -> best slot
+            stack = stack.amax(dim=1)
+        return stack.max(dim=1).values - stack.median(dim=1).values
+
     def decode(self, audio: torch.Tensor, subgrid: bool = True,
-               octave: bool = True, relocate: bool = True) -> torch.Tensor:
-        """``(B, R, T)`` rates in rev/s, sorted ascending per frame."""
+               octave: bool = True, relocate: bool = True,
+               zero_contrast: float = 0.0) -> torch.Tensor:
+        """``(B, R, T)`` rates in rev/s, sorted ascending per frame.
+
+        ``zero_contrast`` > 0 emits 0.0 for every slot in frames whose contrast
+        falls below it — the project-wide "silence means zero rotor speed"
+        convention that `salience_to_rps_segmented` already applies on the
+        salience side. 0.30 is the 95th percentile of the no-rotor distribution
+        above. The default is 0.0 (OFF), so every number measured before this
+        existed still reproduces.
+        """
         pw = self.spectrum(audio)
         floor = local_floor_torch(pw, self.floor_bins).detach()
         gfloor = self.gather(floor).clamp_min(1e-12)
@@ -442,7 +486,11 @@ class SlotCombNet(nn.Module):
             if subgrid:
                 r = r + self._parabolic(s, path)
             out.append(r)
-        return torch.stack(out, dim=1).sort(dim=1).values
+        rates = torch.stack(out, dim=1).sort(dim=1).values
+        if zero_contrast > 0.0:
+            quiet = self.contrast(scores) < float(zero_contrast)   # (B, T)
+            rates = rates.masked_fill(quiet.unsqueeze(1), 0.0)
+        return rates
 
     def _refine_band(self, pw, floor, scores, paths):
         """Re-solve each slot with the SHORT harmonic list, near its settled path.

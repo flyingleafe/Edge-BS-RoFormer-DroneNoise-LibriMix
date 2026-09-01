@@ -78,7 +78,7 @@ def main() -> int:
     print(f"{len(wins)} windows", flush=True)
 
     name, _, vals = args.sweep.partition("=")
-    cast = {"channel": str, "notch_width": float}.get(name, lambda s: int(float(s)))
+    cast = {"channel": str, "notch_width": float, "slew": float}.get(name, lambda s: int(float(s)))
     print(f"{name:>12}  " + "  ".join(f"{w['rid'][:9]}w{w['idx']}" for w in wins) + "     MEAN")
     for v in vals.split(","):
         kw = {name: cast(v)}
@@ -87,7 +87,8 @@ def main() -> int:
                           read_width=kw.pop("read_width", 0), r_hi=kw.pop("r_hi", 100.0),
                           n_fft=kw.pop("n_fft", 4096),
                           k_refine=kw.pop("k_refine", 0),
-                          notch_width=kw.pop("notch_width", 1.5), use_checkpoint=False).eval()
+                          notch_width=kw.pop("notch_width", 1.5),
+                          slew=kw.pop("slew", 12.0), use_checkpoint=False).eval()
         hop_s = net.hop_length / net.sr
         errs = []
         for w in wins:
