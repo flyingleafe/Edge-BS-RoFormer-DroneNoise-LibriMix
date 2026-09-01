@@ -1298,7 +1298,7 @@ class FixedSynthFrameDataset(Dataset):
 
     def __init__(
         self,
-        path: str,
+        path: str | Any,
         n: int = 64,
         base_seed: int = 990001,
         duration_s: float | None = 8.0,
@@ -1307,7 +1307,7 @@ class FixedSynthFrameDataset(Dataset):
         flight_reuse: int | None = None,
         speech: bool | None = None,
     ):
-        cfg = OmegaConf.load(path)
+        cfg = OmegaConf.load(path) if isinstance(path, str) else path
         cfg.base_seed = int(base_seed)
         if duration_s is not None:
             cfg.duration_s = float(duration_s)
@@ -1414,6 +1414,102 @@ class SpeechPairedSynthValidDataset(Dataset):
         self.no_speech = _half(False)
         self.with_speech = _half(True)
         self._inner = ConcatFrameDataset([self.no_speech, self.with_speech])
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        return self._inner[idx]
+
+
+class MixtureMatchedValidDataset(Dataset):
+    """Validation whose SOURCE MIX reproduces the training policy's.
+
+    WHY. The mixed-training arms (`m3abl_mixed_*`, real 50 / generated 25 /
+    comb 25) validated on the REAL split alone and stopped at 25 epochs. The
+    same family validated on a set that contains its own synthetic sources
+    (`stoch_long_scv2`, `MixedRealSynthValidDataset`) reached 228. That is a
+    9x difference in training length produced by the validation set, not by the
+    model or the data, so the mixed arms' verdict was never a fair one.
+
+    This class removes the remaining mismatch in that fix. `MixedRealSynthValid`
+    is half real and half synthetic regardless of what the policy trains on;
+    here the proportions are READ FROM THE POLICY, so the monitored number is an
+    estimate of the training objective's own risk. With the real frozen split at
+    296 frames and a 50/25/25 policy, that is 296 real + 148 generated + 148
+    comb.
+
+    THE REAL PART IS THE WHOLE FROZEN SPLIT, never a subsample: it is the number
+    every other row in the project is quoted against, and shrinking it would
+    make this arm incomparable.
+
+    Each synthetic part is drawn from a copy of the policy holding ONE source,
+    so the parts keep the policy's SNR range, speech and excitation. A
+    ``generated`` source is forced to ``refresh: false`` (a fixed bank) because
+    a live producer is not reproducible, and its buffer is shrunk -- a few dozen
+    clips do not need 512 slots beside the training producer's.
+    """
+
+    #: sources that are the REAL pool; everything else is synthetic and is
+    #: sized relative to them.
+    REAL_KINDS = ("frames",)
+
+    def __init__(
+        self,
+        policy_path: str,
+        real_data_dir: str = "dload:DREGON-LM-V4-michaels-valid-full",
+        base_seed: int = 970001,
+        duration_s: float = 8.0,
+        augment: bool = False,
+        flatten_channels: bool = True,
+        flight_reuse: int | None = 1,
+        n_fft: int = 2048,
+        hop_length: int = 512,
+        sample_rate: int = 16000,
+    ):
+        self.real = DregonLMFrameDataset(
+            data_dir=real_data_dir,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            sample_rate=sample_rate,
+            flatten_channels=flatten_channels,
+        )
+        cfg = OmegaConf.load(policy_path)
+        sources = list(cfg.sources.noise)
+        real_w = sum(
+            float(src.get("weight", 1.0)) for src in sources if src.get("kind") in self.REAL_KINDS
+        )
+        if real_w <= 0:
+            raise ValueError(f"{policy_path} has no `kind: frames` source to scale against")
+
+        parts: list[Any] = [self.real]
+        self.counts: dict[str, int] = {"real": len(self.real)}
+        for i, src in enumerate(sources):
+            kind = str(src.get("kind"))
+            if kind in self.REAL_KINDS:
+                continue
+            n_k = int(round(len(self.real) * float(src.get("weight", 1.0)) / real_w))
+            if n_k <= 0:
+                continue
+            sub = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+            one = OmegaConf.create(OmegaConf.to_container(src, resolve=False))
+            if kind == "generated":
+                one.refresh = False
+                one.buffer = {"slots": 64, "warmup": 8}
+            sub.sources.noise = [one]
+            parts.append(
+                FixedSynthFrameDataset(
+                    path=sub,
+                    n=n_k,
+                    base_seed=int(base_seed) + i,
+                    duration_s=duration_s,
+                    augment=augment,
+                    flatten_channels=flatten_channels,
+                    flight_reuse=flight_reuse,
+                )
+            )
+            self.counts[f"{kind}[{i}]"] = n_k
+        self._inner = ConcatFrameDataset(parts)
 
     def __len__(self) -> int:
         return len(self._inner)

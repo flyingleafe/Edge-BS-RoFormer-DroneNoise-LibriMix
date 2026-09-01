@@ -1,0 +1,52 @@
+# The m3abl_mixed training stream, validated on a set that MATCHES ITS MIXTURE.
+#
+# Same training stream as conf/data/m3abl_mixed.yaml, byte for byte
+# (conf/online_mix/m3abl_mixed_dload.yaml — real 50 / generated 25 / comb 25).
+# Only the validation set changes, and the reason is measured.
+#
+# THE MEASUREMENT. `m3abl_mixed_scv2` validated on the REAL split alone and its
+# completed run stopped at 25 epochs. The stochastic family validated on a set
+# containing its own synthetic sources (`stoch_long_scv2`,
+# MixedRealSynthValidDataset) reached 228 epochs on a plateau. A 9x difference
+# in training length, produced by the validation set rather than by the model or
+# the data. Every mixed arm was therefore judged on 25 epochs against curriculum
+# arms that had 40 plus a full pre-training, and "mixed training is worse" was
+# never a fair comparison.
+#
+# WHY MATCHED AND NOT HALF-AND-HALF. MixedRealSynthValidDataset is 50/50
+# whatever the policy trains on. MixtureMatchedValidDataset reads the
+# proportions from the policy itself, so the monitored number estimates the risk
+# of the objective actually being minimized: 296 real (the WHOLE frozen split,
+# never subsampled, so the real column stays comparable with every other row in
+# the project) + 148 generated + 148 static comb = 592 frames at 50/25/25.
+#
+# The generated part is forced to `refresh: false` — a live producer is not
+# reproducible and a validation set must be.
+#
+# MONITOR `mae_frame`, NOT `mse`. On these runs val/mse carries 16-55% relative
+# jitter between adjacent epochs while val/mae_frame carries 10-39%, because
+# squaring hands the whole signal to a few catastrophic frames. Selecting on mse
+# picks the bottom of that oscillation, which is a lucky draw rather than a
+# model.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/m3abl_mixed_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.MixtureMatchedValidDataset
+  params:
+    policy_path: conf/online_mix/m3abl_mixed_dload.yaml
+    real_data_dir: "dload:DREGON-LM-V4-michaels-valid-full"
+    base_seed: 970001
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+    flight_reuse: 1
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+  iterable: false
+batch_size: null
+num_workers: null

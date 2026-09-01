@@ -1,0 +1,42 @@
+# @package _global_
+# MIXED training re-run with a MIXTURE-MATCHED validation set — the IF-front-end transformer.
+#
+# Supersedes `m3abl_mixed_transformer`, which scored 103.8 / 6.37 at 25 epochs and was read
+# as evidence that one-stage mixed training loses to the curriculum. That
+# reading is not safe, and the reason is a measurement rather than an argument.
+#
+# THE STOPPING RULE, NOT THE METHOD. `m3abl_mixed_transformer` validated on the REAL
+# split alone and stopped at 25 epochs. The stochastic family validated on a set
+# containing its own synthetic sources (`stoch_long_scv2`) reached 228 epochs on
+# a plateau — a 9x difference in training length produced by the validation set.
+# The mixed arms were then compared against curriculum arms that had 40 epochs
+# PLUS a full pre-training stage.
+#
+# WHAT CHANGES, AND ONLY THIS:
+#   1. data -> m3mix_matchedval. The SAME training stream
+#      (conf/online_mix/m3abl_mixed_dload.yaml, real 50 / generated 25 /
+#      comb 25), validated on 296 real + 148 generated + 148 comb frames — the
+#      policy's own proportions, with the whole frozen real split kept intact.
+#   2. monitor -> mae_frame. val/mse carries 16-55% relative jitter on these
+#      runs against 10-39% for val/mae_frame, because squaring hands the signal
+#      to a few catastrophic frames; selecting on mse picks the bottom of an
+#      oscillation rather than a model.
+#   3. patience 20 -> 30, epochs 200 -> 300. The point is to let it converge.
+#
+# batch_size, samples_per_validation, optimizer and the stream are `m3abl_mixed_transformer`'s
+# verbatim, so the pair isolates the stopping rule.
+defaults:
+  - override /data: m3mix_matchedval
+  - override /model: simple_conv_v2_transformer_if
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: m3mixv2_transformer
+epochs: 300
+patience: 30
+batch_size: 128  # frames (= 16 chunks x 8 mics), m3abl_mixed_transformer's value
+num_workers: 6
+samples_per_validation: 40000  # frames, m3abl_mixed_transformer's value
+optim:
+  monitor: mae_frame
+  monitor_mode: min
