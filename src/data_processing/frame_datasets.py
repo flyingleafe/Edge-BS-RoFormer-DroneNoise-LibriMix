@@ -50,6 +50,7 @@ import glob
 import json
 import os
 import zlib
+from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -400,6 +401,49 @@ def _corrupt_frame(
     )
 
 
+def apply_speech_override(cfg: Any, speech: bool | None) -> Any:
+    """Turn the speech pool of an online-mix policy on or off in place.
+
+    The salv2 grid asks one question -- does mixed-in speech help or hurt the
+    rotor-speed task -- and the only honest way to ask it is for the two arms to
+    share every other byte of their policy. So the with/without switch lives
+    here rather than in a second, hand-copied YAML that would drift.
+
+    ``speech=False`` deletes ``sources.speech`` (which makes ``speech_present``
+    False in ``online_mixing``, so no utterance is drawn at all) AND sets every
+    stage's ``source_prob`` to 0. Either alone suffices; both together mean the
+    intent survives a later reader of the merged config.
+    """
+    if speech is None:
+        return cfg
+    if speech:
+        if "speech" not in cfg.sources:
+            raise ValueError("policy has no sources.speech to enable")
+        return cfg
+    if "speech" in cfg.sources:
+        del cfg.sources["speech"]
+    for stage in cfg.policy.stages:
+        stage.source_prob = 0.0
+    return cfg
+
+
+def apply_flight_reuse(cfg: Any, flight_reuse: int | None) -> Any:
+    """Override ``sources.noise[*].rps.flight_reuse`` in place.
+
+    The policy value (32) is a TRAINING economy: one full flight is generated
+    and then windowed 32 times. On a fixed validation set that is a defect --
+    ``n`` counts frames AFTER the per-mic flat_map, so with 8 mics n=96 is 12
+    clips, and 12 < 32 makes all of them windows of ONE trajectory. Validation
+    sets pass 1, and then every clip is its own flight.
+    """
+    if flight_reuse is None:
+        return cfg
+    for src in cfg.sources.noise:
+        if "rps" in src:
+            src.rps.flight_reuse = int(flight_reuse)
+    return cfg
+
+
 class OnlineMixFrameDataset(IterableDataset):
     """The online-mix training stream: a compiled policy pipeline as a torch
     IterableDataset.
@@ -478,6 +522,8 @@ class OnlineMixFrameDataset(IterableDataset):
         *,
         flatten_channels: bool = False,
         rps_corruption: dict[str, Any] | None = None,
+        speech: bool | None = None,
+        flight_reuse: int | None = None,
     ) -> OnlineMixFrameDataset:
         """Load an online-mix policy YAML (e.g. ``conf/online_mix/online_mix_*.yaml``)
         and build the dataset from it — the ``_target_`` this module's
@@ -486,8 +532,11 @@ class OnlineMixFrameDataset(IterableDataset):
         ``flatten_channels`` sits next to ``path`` in the Hydra ``params``."""
         from omegaconf import OmegaConf
 
+        cfg = OmegaConf.load(path)
+        apply_speech_override(cfg, speech)
+        apply_flight_reuse(cfg, flight_reuse)
         return cls.from_config(
-            OmegaConf.load(path),
+            cfg,
             flatten_channels=flatten_channels,
             rps_corruption=rps_corruption,
         )
@@ -1255,6 +1304,8 @@ class FixedSynthFrameDataset(Dataset):
         duration_s: float | None = 8.0,
         augment: bool = False,
         flatten_channels: bool = True,
+        flight_reuse: int | None = None,
+        speech: bool | None = None,
     ):
         cfg = OmegaConf.load(path)
         cfg.base_seed = int(base_seed)
@@ -1265,6 +1316,8 @@ class FixedSynthFrameDataset(Dataset):
                 for key in ("augmentations", "noise_augmentations", "noise_time_warp"):
                     if key in stage:
                         del stage[key]
+        apply_flight_reuse(cfg, flight_reuse)
+        apply_speech_override(cfg, speech)
         stream = OnlineMixFrameDataset.from_config(cfg, flatten_channels=flatten_channels)
         self._frames: list[td.Frame] = []
         for frame in stream:
@@ -1277,6 +1330,96 @@ class FixedSynthFrameDataset(Dataset):
 
     def __getitem__(self, idx: int) -> td.Frame:
         return self._frames[int(idx)]
+
+
+class ConcatFrameDataset(Dataset):
+    """Concatenate several finite Frame datasets into one validation set.
+
+    The with-speech arms of the salv2 grid validate on BOTH conditions at once:
+    a model trained on mixtures has to keep working when the speech is absent,
+    and one number that averages the two says whether it does. Each part is an
+    ordinary ``_target_`` block in the Hydra config, so the parts are declared
+    where they are used and nothing here knows what they contain.
+
+    The parts are NOT reweighted -- keep them the same length, or the longer one
+    sets the average.
+    """
+
+    def __init__(self, parts: Sequence[Any]):
+        self.parts: list[Any] = list(parts)
+        if not self.parts:
+            raise ValueError("ConcatFrameDataset needs at least one part")
+        self._lens = [len(p) for p in self.parts]
+
+    def __len__(self) -> int:
+        return sum(self._lens)
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        i = int(idx)
+        for part, n in zip(self.parts, self._lens):
+            if i < n:
+                return part[i]
+            i -= n
+        raise IndexError(idx)
+
+
+class SpeechPairedSynthValidDataset(Dataset):
+    """Validation on BOTH conditions: half the clips without speech, half with.
+
+    The salv2 grid asks whether mixed-in speech helps or hurts rotor-speed
+    estimation. A model trained WITH speech must be scored on both halves, or
+    the number cannot say whether it merely learned to ignore a talker that is
+    always there. The two halves are equal in size, so neither sets the average
+    on its own.
+
+    Both halves come from ONE policy file at the SAME seed, which is what makes
+    this a matched pair rather than two samples: measured, the two halves come
+    back with byte-identical RPS labels and byte-identical rotor noise, and the
+    only difference in the audio is the added speech (residual RMS 0.0063
+    against 0.100 of noise, present in every frame). The speech contrast is
+    therefore free of trajectory variance -- the same flight is scored twice,
+    once quiet and once with a talker over it.
+
+    ``n`` counts frames AFTER the per-mic flat_map and is split evenly, so with
+    8 microphones ``n=512`` is 32 clips without speech and 32 with. Pass
+    ``flight_reuse=1`` (the default here, unlike the training policy) or the
+    clips collapse onto a handful of trajectories -- see
+    :func:`apply_flight_reuse`.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        n: int = 512,
+        base_seed: int = 880101,
+        duration_s: float | None = 8.0,
+        augment: bool = False,
+        flatten_channels: bool = True,
+        flight_reuse: int | None = 1,
+    ):
+        half = int(n) // 2
+
+        def _half(speech: bool) -> FixedSynthFrameDataset:
+            return FixedSynthFrameDataset(
+                path=path,
+                n=half,
+                base_seed=int(base_seed),
+                duration_s=duration_s,
+                augment=augment,
+                flatten_channels=flatten_channels,
+                flight_reuse=flight_reuse,
+                speech=speech,
+            )
+
+        self.no_speech = _half(False)
+        self.with_speech = _half(True)
+        self._inner = ConcatFrameDataset([self.no_speech, self.with_speech])
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+    def __getitem__(self, idx: int) -> td.Frame:
+        return self._inner[idx]
 
 
 class MixedRealSynthValidDataset(Dataset):

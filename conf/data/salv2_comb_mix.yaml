@@ -1,0 +1,35 @@
+# SALV2 comb — WITH SPEECH. LibriSpeech mixed in at -30 to 0 dB SNR.
+#
+# Policy: conf/online_mix/salv2_comb.yaml, byte for byte the file the
+# without-speech twin (salv2_comb_nomix.yaml) reads. Only `speech` differs.
+#
+# THE VALIDATION SET IS COMBINED, and that is the point. A model trained on
+# mixtures is scored on 32 clips WITHOUT speech and 32 clips WITH it, equally
+# weighted (data_processing.frame_datasets.SpeechPairedSynthValidDataset). One
+# number then answers the question the arm exists to ask: a model that merely
+# learned to ignore an always-present talker scores badly on the silent half,
+# and a model that needs the talker scores badly there too.
+#
+# `n: 512` is 512 frames after the 8-microphone flat_map, split evenly: 32
+# clips per condition, each its own flight (`flight_reuse: 1`). Both halves use
+# ONE seed, so the same 32 flights are scored twice — quiet and with a talker.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/salv2_comb.yaml
+    flatten_channels: true
+    speech: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.SpeechPairedSynthValidDataset
+  params:
+    path: conf/online_mix/salv2_comb.yaml
+    n: 512
+    base_seed: 880121
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+    flight_reuse: 1
+  iterable: false
+batch_size: null
+num_workers: null

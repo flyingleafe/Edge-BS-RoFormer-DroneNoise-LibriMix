@@ -1,0 +1,81 @@
+# SALV2 — the STOCHASTIC rotor-noise family, rebuilt for the salience/CRF grid.
+#
+# The stochastic twin of conf/online_mix/salv2_comb.yaml, and every argument in
+# that file's header applies here unchanged: no `freq_scale` and no time warp
+# (they made the training and validation distributions different, and the
+# fixed validation set deleted them), two excitations instead of one, and
+# `rps_scale_range` at generation time as the exact replacement for resampling
+# finished audio.
+#
+# Supersedes conf/online_mix/stoch_s1_dload.yaml for this campaign.
+#
+# THE SOURCE. `kind: stochastic` is a smooth colored floor plus one Lorentzian
+# line per harmonic of every rotor, every amplitude drifting as a Gaussian
+# process, so each window draws its own timbre, floor color, linewidths and
+# wander rates. It is the widest synthetic family the project has.
+#
+# THE `silence` ARM STAYS, at weight 0.2. The stochastic pool goes to true
+# digital silence at zero speed and a real recording never does, so without it
+# the model would learn that zero speed means an empty signal. Note this is
+# also the one source with no `rps` block, hence nothing for the validation
+# sets' `flight_reuse: 1` override to touch.
+#
+# `snr_ref_floor_rms: 0.02` keeps a quiet noise chunk from dragging the whole
+# sample down through the speech scaling. It is inert in the without-speech
+# arm and harmless there.
+
+sample_rate: 16000
+duration_s: 4.0
+base_seed: 20260901
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 0.4
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.45, 1.20]
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+    - kind: stochastic
+      weight: 0.4
+      n_harmonics: 80
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.45, 1.20]
+      rps:
+        kind: synthetic_intermittent
+        aggressiveness: 1.0
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}

@@ -33,6 +33,7 @@ from losses.salience import (
     auto_pos_weight,
     salience_bce_loss,
 )
+from losses.salience_crf_layers import LayerPITCRFLoss
 from losses.salience_layers import (
     LayerPITSalienceBCELoss,
     layer_pit_bce,
@@ -79,6 +80,7 @@ __all__ = [
     "si_sdr_loss",
     "SalienceBCELoss",
     "SalienceRPSBCELoss",
+    "LayerPITCRFLoss",
     "LayerPITSalienceBCELoss",
     "layer_pit_bce",
     "auto_pos_weight",

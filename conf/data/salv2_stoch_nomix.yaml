@@ -1,0 +1,40 @@
+# SALV2 stoch — WITHOUT SPEECH. Training stream and validation set both carry
+# rotor noise only, so this arm measures the rotor-speed task on its own.
+#
+# Policy: conf/online_mix/salv2_stoch.yaml, with `speech: false` deleting the
+# speech pool. The with-speech twin (salv2_stoch_mix.yaml) reads the SAME policy
+# file with `speech: true`, so the pair differs in speech and nothing else.
+#
+# THE VALIDATION SET IS SIZED AGAINST A MEASURED DEFECT. Its predecessor
+# (conf/data/sal_stoch_synthval.yaml) asked for `n: 96` and got twelve clips:
+# `n` counts frames AFTER the per-mic flat_map, so 96 frames over 8 microphones
+# is 12 clips, and 12 is less than the policy's `flight_reuse: 32`, so all of
+# them were windows of ONE trajectory. Here `flight_reuse: 1` makes every clip
+# its own flight and `n: 256` is 32 clips, thus 32 distinct flights. Clip means
+# span 32-96 rev/s through the policy's `rps_scale_range`.
+#
+# 8 s and unaugmented in validation against 4 s in training is deliberate and is
+# the ONE remaining difference: 8 s matches every other synthetic figure in the
+# project, and the augmentations that remain (gain, polarity) are a level offset
+# and a sign flip.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/salv2_stoch.yaml
+    flatten_channels: true
+    speech: false
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.FixedSynthFrameDataset
+  params:
+    path: conf/online_mix/salv2_stoch.yaml
+    n: 256
+    base_seed: 881101
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+    flight_reuse: 1
+    speech: false
+  iterable: false
+batch_size: null
+num_workers: null
