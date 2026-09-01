@@ -1,4 +1,12 @@
+---
+experiment: stoch_s1id_trmed
+training_config: conf/experiment/stoch_s1id_trmed.yaml
+batch: docs/experiments/stochastic-transfer.md
+---
+
 # stoch_s1id_trmed — a 4 x 128 transformer head (2.21M params) on arm ID's stochastic stream
+
+## Motivation
 
 Arm ID's stream and `simple_conv_v2`'s encoder, with the BiGRU temporal head
 replaced by a 4 x 128 transformer head (2.21M params).
@@ -36,3 +44,7 @@ the campaign's best synthetic-only model.
 
 Policy: `conf/online_mix/stoch_s1id_dload.yaml`.
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Synthetic-only transfer with the stochastic noise family](../../docs/experiments/stochastic-transfer.md).

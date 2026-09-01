@@ -1,4 +1,12 @@
+---
+experiment: stoch_long_scv2
+training_config: conf/experiment/stoch_long_scv2.yaml
+batch: docs/experiments/stochastic-transfer.md
+---
+
 # stoch_long_scv2 — trained to convergence, selected on synthetic
+
+## Motivation
 
 ## The two things every earlier arm got wrong
 
@@ -29,3 +37,7 @@ earlier ladder said no, but every point on it was cut off.
 Both are floors from truncated runs, not converged results.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Synthetic-only transfer with the stochastic noise family](../../docs/experiments/stochastic-transfer.md).

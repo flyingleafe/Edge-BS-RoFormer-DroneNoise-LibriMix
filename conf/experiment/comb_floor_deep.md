@@ -1,4 +1,12 @@
+---
+experiment: comb_floor_deep
+training_config: conf/experiment/comb_floor_deep.yaml
+batch: docs/experiments/e8-static-comb.md
+---
+
 # comb_floor_deep — 2x DEPTH - 4 layers x d_model 64, 4 heads (head 0.241M)
+
+## Motivation
 
 One of three arms that train the transformer to saturation on the analytic
 static comb, validated on the same distribution.
@@ -34,3 +42,7 @@ limited by the data. The reference is **1.29 all-MAE**, what
   permutation-invariant over frequency.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [E8 — Static-Comb Noise Model (force harmonic tracking)](../../docs/experiments/e8-static-comb.md).

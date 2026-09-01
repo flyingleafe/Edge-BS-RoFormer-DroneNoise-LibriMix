@@ -1,4 +1,12 @@
+---
+experiment: r9hb_scv2_lr3e4
+training_config: conf/experiment/r9hb_scv2_lr3e4.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r9hb_scv2 — the three-stage curriculum, and a withdrawn gate
+
+## Motivation
 
 Comb → stochastic → real. This is the arm that uses the stochastic family in a
 configuration the evidence now supports, and it exists because a gate I wrote
@@ -42,3 +50,7 @@ is the unknown, so both are run: `r9hb_scv2_lr1e3` and `r9hb_scv2_lr3e4`.
   no place in this recipe.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

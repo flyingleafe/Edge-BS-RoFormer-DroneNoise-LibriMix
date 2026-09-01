@@ -1,4 +1,12 @@
+---
+experiment: r7hb_scv2
+training_config: conf/experiment/r7hb_scv2.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r7hb_scv2 — the stochastic family as a permanent part of the pool
+
+## Motivation
 
 The joint counterpart of R6. Both put the stochastic family into the mixed
 regime that produced this project's best result; they differ in *where*.
@@ -38,3 +46,7 @@ the CPU, whereas `kind: generated` starts a CUDA producer.
 
 Stream check: PASS (determinism 4/4 bit-identical).
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

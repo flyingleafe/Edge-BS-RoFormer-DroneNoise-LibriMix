@@ -1,0 +1,65 @@
+---
+experiment: hft_stoch_l4
+training_config: conf/experiment/hft_stoch_l4.yaml
+batch: docs/experiments/harmonic-multipitch-ports.md
+---
+
+# `hft_stoch_l4`
+
+## Motivation
+
+ARM B — hFT-Transformer (ported) on the STOCHASTIC rotor-noise curriculum,
+validated on a HELD-OUT DRAW OF THAT SAME FAMILY.
+
+THE QUESTION, and why it is not arm A's. The static comb of `hft_comb` has
+lines with no width at all. The stochastic family is the widest synthetic
+family the project has: per-harmonic amplitude wander, a broadband floor that
+does not follow the rotors, and — the one knob measured to move comb contrast
+monotonically — lines that broaden with their own order
+(docs/experiments/synthetic-solvability-limits.md). Arm A says whether the
+architecture can read a comb; arm B says whether it can still read one when
+the lines are not delta functions, which is the property the real recordings
+actually have.
+
+Stream conf/online_mix/stoch_s1_dload.yaml, validation a fresh base_seed on
+the same policy at 8 s and unaugmented (conf/data/sal_stoch_synthval.yaml) —
+`sal150_stoch`'s pairing, unchanged, so this row and the LateDeep salience
+row differ in the MODEL and nothing else.
+
+batch_size 8, not 16: the cross-attention map is
+(batch, frame, head, rate, harmonic) and is linear in the batch.
+`grad_accum_steps: 2` restores the effective batch to sal150_stoch's 16
+frames — 8 frames is one chunk's eight microphone rows, i.e. eight views of
+one acoustic scene, which is not a batch.
+
+─── THE L4 VARIANT ───────────────────────────────────────────────────────
+This row is its `_l4`-less twin with the OUTPUT REPRESENTATION replaced, and
+nothing else: same stream, same validation draw, same epoch budget, patience,
+batch size, workers and monitor. Three files change together and they must:
+model   -> conf/model/*_rps_l4.yaml   (n_maps 4: one salience layer per rotor)
+loss    -> conf/loss/salience_layers_r150.yaml     (Gaussian layers, PIT BCE)
+metrics -> conf/metrics/salience_layers_r150.yaml  (the same, plus rps_mae)
+
+WHY. `models.salience_crf` encoded real training telemetry into the shared
+salience map and decoded it back — a PERFECT target, no model involved — and
+got the trajectory back 8.24 rev/s away on average, with 39-45% of frames more
+than half a bin off. Gaussian per-rotor layers with the CRF readout return
+2.22e-16. The old number is an ORACLE FLOOR: no model reading that
+representation could have scored better, so every `_l4`-less row above was
+measuring the representation as much as the architecture. This row removes
+that ceiling and leaves the architecture question intact.
+
+At eval the decode is `models.harmonic_ports.layer_readout.LayerCRFReadout` —
+one CRF best path per layer, NO threshold and NO Hungarian step. A stopped
+rotor is the path sitting at bin 0, which is a value; the old decoder had to
+call it an absence, which is what forced the threshold.
+
+Full batch context: [Harmonic multi-pitch architectures ported to the linear STFT](../../docs/experiments/harmonic-multipitch-ports.md).
+
+## Setup
+
+Hydra wiring — data `sal_stoch_synthval` · model `hft_rps_l4` · loss `salience_layers_r150` · metrics `salience_layers_r150`. Train with `python train.py experiment=hft_stoch_l4`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Harmonic multi-pitch architectures ported to the linear STFT](../../docs/experiments/harmonic-multipitch-ports.md).

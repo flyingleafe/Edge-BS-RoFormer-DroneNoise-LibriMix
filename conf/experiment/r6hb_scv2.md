@@ -1,4 +1,12 @@
+---
+experiment: r6hb_scv2
+training_config: conf/experiment/r6hb_scv2.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r6hb_scv2 — the stochastic curriculum as stage 1 of the winning mixed recipe
+
+## Motivation
 
 `r4hb_scv2` at **2.67** all-MAE is this project's best result on the frozen
 split. It is not a real-only run: it is a comb stage 1 plus a real stage 2. R6
@@ -38,3 +46,7 @@ half) is the natural follow-up if sequential wins, and the more interesting arm
 if it does not.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

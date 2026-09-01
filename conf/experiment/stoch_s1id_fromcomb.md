@@ -1,4 +1,12 @@
+---
+experiment: stoch_s1id_fromcomb
+training_config: conf/experiment/stoch_s1id_fromcomb.yaml
+batch: docs/experiments/stochastic-transfer.md
+---
+
 # stoch_s1id_fromcomb — stage 1.5 of the three-stage curriculum
+
+## Motivation
 
 Arm ID's stochastic stream, warm-started from the comb stage-1 checkpoint.
 One line differs from `stoch_s1id_scv2`. This run exists to produce the
@@ -37,3 +45,7 @@ stochastic stream and R9 should not be run.
 
 Policy: `conf/online_mix/stoch_s1id_dload.yaml`.
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Synthetic-only transfer with the stochastic noise family](../../docs/experiments/stochastic-transfer.md).

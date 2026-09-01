@@ -1,4 +1,12 @@
+---
+experiment: r4a_lr3e4
+training_config: conf/experiment/r4a_lr3e4.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r4a_lr3e4 — learning-rate ladder on the mixed curriculum
+
+## Motivation
 
 See the header of `conf/experiment/r4a_lr3e4.yaml` for the arm's role.
 
@@ -33,3 +41,7 @@ trunk, the loss, the patience, the validation split — is unchanged from
 `r4hb_scv2`, so within each pair exactly one line differs.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

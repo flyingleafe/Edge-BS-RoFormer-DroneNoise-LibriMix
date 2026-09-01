@@ -1,4 +1,12 @@
+---
+experiment: r8hb_scv2
+training_config: conf/experiment/r8hb_scv2.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r8hb_scv2 — the record holder, with the stochastic family in its fine-tune pool
+
+## Motivation
 
 ## Where this sits
 
@@ -46,3 +54,7 @@ things are deliberately NOT copied from arm ID's policy:
 
 Stream check: PASS (determinism 4/4 bit-identical).
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

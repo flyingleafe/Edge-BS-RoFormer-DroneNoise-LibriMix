@@ -1,4 +1,12 @@
+---
+experiment: stoch_s1id_trxl
+training_config: conf/experiment/stoch_s1id_trxl.yaml
+batch: docs/experiments/stochastic-transfer.md
+---
+
 # stoch_s1id_trxl — scale the whole trunk, not just the head
+
+## Motivation
 
 ## Why this arm exists
 
@@ -42,3 +50,7 @@ The number to beat is **8.63 all-MAE on held-out synthetic**. If capacity is
 the binding constraint, that falls as width rises.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Synthetic-only transfer with the stochastic noise family](../../docs/experiments/stochastic-transfer.md).

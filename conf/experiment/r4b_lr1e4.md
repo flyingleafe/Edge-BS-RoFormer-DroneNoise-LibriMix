@@ -1,4 +1,12 @@
+---
+experiment: r4b_lr1e4
+training_config: conf/experiment/r4b_lr1e4.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r4b_lr1e4 — the third point on the winning ladder
+
+## Motivation
 
 `r4a_lr3e4` took the record by lowering the fine-tune rate on the comb
 initialization. That ladder has two points; this is the third.
@@ -17,3 +25,7 @@ and the ladder's later points have been measuring patience rather than
 learning rate.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

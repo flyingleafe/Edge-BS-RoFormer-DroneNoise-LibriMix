@@ -1,4 +1,12 @@
+---
+experiment: r6c_lr3e3
+training_config: conf/experiment/r6c_lr3e3.yaml
+batch: docs/experiments/unified-baseline-eval.md
+---
+
 # r6c_lr3e3 — overwrite the stochastic initialization harder
+
+## Motivation
 
 The other end of the ladder from `r6a_lr3e4`, and a prediction rather than a
 sweep point.
@@ -24,3 +32,7 @@ a poor initialization at every rate, no schedule rescues it, and the
 stage-1-family question is closed.
 
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Unified baseline evaluation on the frozen validation split](../../docs/experiments/unified-baseline-eval.md).

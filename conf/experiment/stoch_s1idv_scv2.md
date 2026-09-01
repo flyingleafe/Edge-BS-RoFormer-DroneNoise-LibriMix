@@ -1,4 +1,12 @@
+---
+experiment: stoch_s1idv_scv2
+training_config: conf/experiment/stoch_s1idv_scv2.yaml
+batch: docs/experiments/stochastic-transfer.md
+---
+
 # stoch_s1idv_scv2 — arm IDV: cover both line-visibility regimes
+
+## Motivation
 
 Arm ID with FOUR knobs widened and nothing else changed. It targets the two
 cells that hold the whole remaining gap to the real-only target, Michael's ramp
@@ -42,3 +50,7 @@ distribution better than the written values (total variation 0.254 against
 
 Policy: `conf/online_mix/stoch_s1idv_dload.yaml`.
 Batch doc: `docs/experiments/stochastic-transfer.md`.
+
+## Conclusion
+
+This arm's outcome is recorded in the batch write-up: [Synthetic-only transfer with the stochastic noise family](../../docs/experiments/stochastic-transfer.md).
