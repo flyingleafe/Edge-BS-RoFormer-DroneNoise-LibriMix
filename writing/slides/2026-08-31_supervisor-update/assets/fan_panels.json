@@ -1,0 +1,56 @@
+{
+ "fan_panels": {
+  "left": {
+   "experiment": "stoch_s1id_scv2",
+   "ckpt": "last",
+   "data": "comb_bench_stochastic.stoch_comb_clip",
+   "seed": 115,
+   "spread": 42.75,
+   "duration_s": 8.0,
+   "true_spread_mean": 42.742604153089786,
+   "true_spread_min": 36.07359313964844,
+   "true_spread_max": 50.0412712097168,
+   "true_spread_std": 3.6305428390161474,
+   "pred_spread_mean": 11.036305856894687,
+   "pred_spread_min": 10.482765197753906,
+   "pred_spread_max": 11.240768432617188,
+   "pred_spread_std": 0.15206687901164884,
+   "spread_pearson_r": 0.5377691808070947,
+   "pit_mae": 10.614174462884545
+  },
+  "right": {
+   "experiment": "r4hb_scv2",
+   "ckpt": "best",
+   "data": "dload:DREGON-LM-V4-michaels-valid-full",
+   "clip": 20,
+   "channel": 0,
+   "true_spread_mean": 9.831766379306991,
+   "true_spread_min": 6.971260070800781,
+   "true_spread_max": 12.641700744628906,
+   "true_spread_std": 1.134907372202728,
+   "pred_spread_mean": 8.488439066001618,
+   "pred_spread_min": 8.219795227050781,
+   "pred_spread_max": 8.684761047363281,
+   "pred_spread_std": 0.11228250213057696,
+   "spread_pearson_r": -0.28082852646053885,
+   "pit_mae": 2.1962459001883095
+  }
+ },
+ "fan_counterexample_right": {
+  "experiment": "r4hb_scv2",
+  "ckpt": "best",
+  "data": "dload:DREGON-LM-V4-michaels-valid-full",
+  "clip": 27,
+  "channel": 0,
+  "true_spread_mean": 17.528160004026862,
+  "true_spread_min": 12.258018493652344,
+  "true_spread_max": 27.51667022705078,
+  "true_spread_std": 2.491716602690651,
+  "pred_spread_mean": 17.53244702464556,
+  "pred_spread_min": 15.4749755859375,
+  "pred_spread_max": 19.506301879882812,
+  "pred_spread_std": 1.0656695154416738,
+  "spread_pearson_r": 0.782229799287525,
+  "pit_mae": 1.9028556261404577
+ }
+}

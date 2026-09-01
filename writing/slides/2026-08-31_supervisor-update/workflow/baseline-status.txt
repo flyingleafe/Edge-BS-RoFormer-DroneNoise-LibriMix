@@ -1,0 +1,2 @@
+ M src/models/harmonic_ports/hft_rps.py
+?? writing/slides/2026-08-31_supervisor-update/

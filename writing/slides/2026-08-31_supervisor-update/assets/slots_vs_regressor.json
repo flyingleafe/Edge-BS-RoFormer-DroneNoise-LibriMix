@@ -1,0 +1,50 @@
+{
+ "static": {
+  "seed": 1000,
+  "cell": {
+   "centre": 75.0,
+   "spread": 11.0,
+   "excursion": 1.5
+  },
+  "slots_pit_rmse": 2.248929795190159,
+  "regressor": "m3abl_comb_scv2_s1",
+  "regressor_ckpt": "best",
+  "regressor_pit_rmse": 2.6407768933583196,
+  "cell_means_over_seeds_1000_1007": {
+   "slots": 2.754,
+   "m3abl_comb_scv2_s1": 3.079,
+   "comb_floor_deep": 4.979
+  },
+  "cell_means_source": [
+   "results/ou_static",
+   "results/ou_static_reg"
+  ]
+ },
+ "coherent": {
+  "seed": 1000,
+  "cell": {
+   "centre": 75.0,
+   "spread": 11.0,
+   "excursion": 1.5
+  },
+  "slots_pit_rmse": 2.8594967397037916,
+  "regressor": "stoch_long_scv2",
+  "regressor_ckpt": "best",
+  "regressor_pit_rmse": 3.3948091930643423,
+  "cell_means_over_seeds_1000_1007": {
+   "slots": 8.974,
+   "stoch_long_scv2": 6.723,
+   "stoch_s1id_scv2": 4.956
+  },
+  "cell_means_source": [
+   "results/ou_stoch_coh",
+   "results/ou_stoch_reg"
+  ]
+ },
+ "config": {
+  "slot_net": "SlotCombNet(head_mode='classical', n_iter=1, k_max=32)",
+  "trained_parameters": 0,
+  "data": "comb_bench.comb_clip / comb_bench_stochastic.stoch_comb_clip",
+  "trajectory": "ou (DREGON-calibrated); sinusoid draw retired 2026-09-01"
+ }
+}
