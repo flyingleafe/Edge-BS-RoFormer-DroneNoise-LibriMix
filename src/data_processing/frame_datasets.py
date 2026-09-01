@@ -1494,8 +1494,17 @@ class MixtureMatchedValidDataset(Dataset):
             sub = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
             one = OmegaConf.create(OmegaConf.to_container(src, resolve=False))
             if kind == "generated":
+                # A LIVE PRODUCER IS NOT REPRODUCIBLE, so the bank is filled once.
                 one.refresh = False
-                one.buffer = {"slots": 64, "warmup": 8}
+                # AND IT MUST BE SMALL. The producer renders `gen_batch` clips at
+                # once on the GPU, and a validation clip is 8 s where a training
+                # clip is 1 s -- so the policy's `gen_batch: 32` asks for 8x the
+                # per-clip work at the same batch. Measured: it tried to allocate
+                # 12.21 GiB BESIDE the training stream's own producer (12.61 GiB)
+                # and the job died with CUDA OOM. At `gen_batch: 1` the second
+                # producer costs about 3 GiB, and it fills a few dozen clips once.
+                one.gen_batch = 1
+                one.buffer = {"slots": 32, "warmup": 4}
             sub.sources.noise = [one]
             parts.append(
                 FixedSynthFrameDataset(
