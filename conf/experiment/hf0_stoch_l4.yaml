@@ -1,0 +1,54 @@
+# @package _global_
+# ARM B — harmof0_rps on the STOCHASTIC rotor-noise curriculum, validated on a
+# held-out draw of the same family.
+#
+# conf/experiment/hf0_comb.yaml with the stream swapped from the analytic
+# static comb to conf/online_mix/stoch_s1_dload.yaml (a smooth colored floor
+# plus one Lorentzian line per harmonic of every rotor, every amplitude
+# drifting as a Gaussian process — the widest synthetic family the project
+# has). Everything else is arm A verbatim, so the pair isolates the FAMILY.
+#
+# WHY THE PAIR MATTERS FOR THIS MODEL IN PARTICULAR. The gather reads the
+# spectrum at exactly k*r. On the static comb that read lands on a line of zero
+# width; on the stochastic family the line has a Lorentzian width that varies
+# per window, so the same read lands on a shoulder as often as on a peak. The
+# arm measures how much of the gather's advantage survives a line that is not a
+# delta — which is the question that decides whether the port is worth taking
+# to real recordings at all.
+#
+# ─── THE L4 VARIANT ───────────────────────────────────────────────────────
+# This row is its `_l4`-less twin with the OUTPUT REPRESENTATION replaced, and
+# nothing else: same stream, same validation draw, same epoch budget, patience,
+# batch size, workers and monitor. Three files change together and they must:
+#   model   -> conf/model/*_rps_l4.yaml   (n_maps 4: one salience layer per rotor)
+#   loss    -> conf/loss/salience_layers_r150.yaml     (Gaussian layers, PIT BCE)
+#   metrics -> conf/metrics/salience_layers_r150.yaml  (the same, plus rps_mae)
+#
+# WHY. `models.salience_crf` encoded real training telemetry into the shared
+# salience map and decoded it back — a PERFECT target, no model involved — and
+# got the trajectory back 8.24 rev/s away on average, with 39-45% of frames more
+# than half a bin off. Gaussian per-rotor layers with the CRF readout return
+# 2.22e-16. The old number is an ORACLE FLOOR: no model reading that
+# representation could have scored better, so every `_l4`-less row above was
+# measuring the representation as much as the architecture. This row removes
+# that ceiling and leaves the architecture question intact.
+#
+# At eval the decode is `models.harmonic_ports.layer_readout.LayerCRFReadout` —
+# one CRF best path per layer, NO threshold and NO Hungarian step. A stopped
+# rotor is the path sitting at bin 0, which is a value; the old decoder had to
+# call it an absence, which is what forced the threshold.
+defaults:
+  - override /data: sal_stoch_synthval
+  - override /model: harmof0_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: hf0_stoch_l4
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — arm A's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: bce
+  monitor_mode: min

@@ -48,10 +48,13 @@ DELIBERATE DEVIATIONS FROM THE PAPER, all forced by that axis change:
    harmonic), which is what ``MRDConv`` reduces to at one input channel.
 4. OUTPUT. HarmoF0 emits a sigmoid; this emits LOGITS, which is what the
    ``salience_rps`` task and ``losses.SalienceRPSBCELoss`` expect.
-5. MULTI-PITCH. HarmoF0 is monophonic (one map, one peak). Here the target is
-   MULTI-HOT — four rotors, four bumps on one map — which needs no framework
-   change. Per-rotor maps (``n_maps > 1``) are a further step that needs a
-   permutation-invariant loss; the head can emit them, nothing trains them yet.
+5. MULTI-PITCH. HarmoF0 is monophonic (one map, one peak). ``n_maps=1`` keeps
+   the multi-hot single-map reading — four rotors, four bumps on one map.
+   ``n_maps=4`` emits ONE MAP PER ROTOR, which is the only lossless encoding of
+   this task (`models.salience_crf`: the shared map loses 8.24 rev/s on a
+   PERFECT target, per-rotor Gaussian layers lose 2.22e-16), and it comes with
+   the permutation-invariant `losses.LayerPITSalienceBCELoss` and the CRF
+   readout of `models.harmonic_ports.layer_readout`.
 """
 
 from __future__ import annotations
@@ -63,6 +66,7 @@ import torch
 import torch.nn as nn
 
 from models.comb_salience import CombGather, local_floor_torch
+from models.harmonic_ports.layer_readout import LayerCRFReadout
 from models.multif0.utils import linear_freq_grid
 from models.salience_rps import SalienceRPSPredictor
 
@@ -127,7 +131,7 @@ class RateContextBlock(nn.Module):
         return self.bn(self.act(self.dil(self.act(self.conv(x)))))
 
 
-class HarmoF0RPS(SalienceRPSPredictor):
+class HarmoF0RPS(LayerCRFReadout, SalienceRPSPredictor):
     """Audio -> rotor-rate salience logits ``(B, G, T)`` on a LINEAR rate grid.
 
     The ``salience_rps`` contract: ``forward(audio) -> (B, F, T)`` logits,

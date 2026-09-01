@@ -1,0 +1,36 @@
+# hppnet_rps with FOUR PER-ROTOR SALIENCE LAYERS instead of one shared map.
+#
+# conf/model/hppnet_rps.yaml verbatim apart from `n_maps: 4`. See
+# conf/model/harmof0_rps_l4.yaml for the measurement that forces the change
+# (shared map + triangular kernel + Hungarian loses 8.24 rev/s on a PERFECT
+# target; Gaussian layers + CRF lose 2.22e-16) and that file`s twin for the
+# grid arguments.
+#
+# ONE COST SPECIFIC TO THIS TRUNK: `FreqGroupLSTM` runs B*G sequences and its
+# output width is `n_maps`, so four layers change the head`s output projection
+# only — the recurrence, which is the memory knob, is untouched.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: hppnet_rps
+  n_fft: 4096
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  c_har: 16
+  embedding: 128
+  dilations: [8, 2]
+  lstm_size: 64
+  floor_hz: 120.0
+  n_maps: 4
+model_type: null
+legacy_config_path: null

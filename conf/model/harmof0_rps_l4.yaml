@@ -1,0 +1,49 @@
+# harmof0_rps with FOUR PER-ROTOR SALIENCE LAYERS instead of one shared map.
+#
+# conf/model/harmof0_rps.yaml verbatim apart from `n_maps: 4`, so the pair
+# isolates the OUTPUT REPRESENTATION and nothing else. Read that file for the
+# grid, the front end and the harmonic cuts; only the layer count is argued
+# here.
+#
+# WHY FOUR LAYERS. `models.salience_crf` measured the shared-map representation
+# by encoding real training telemetry and decoding it again — a perfect target,
+# no model involved — on a 0-150 rev/s grid at 0.5 rev/s:
+#
+#   triangular kernel, ONE map, Hungarian     mean err 8.24 rev/s
+#   Gaussian per-rotor layers, CRF readout    mean err 2.22e-16 rev/s
+#
+# 8.24 rev/s on a PERFECT target is an oracle floor: no model reading that
+# representation can score better, however well it predicts. Three causes, and
+# the layer count is the first — DREGON`s rotor pairs sit 0.13-0.86 rev/s
+# apart, INSIDE one 0.5 rev/s bin, so one map has fewer peaks than the airframe
+# has rotors and the tracker assigns several rotors to one peak. Four layers
+# leave nothing to merge.
+#
+# The layers ride the codec`s `(batch, freq, time)` wire format stacked along
+# the output axis, so the width is 4 x 300 = 1200 bins. The loss
+# (conf/loss/salience_layers_r150.yaml) and the decoder
+# (`models.harmonic_ports.layer_readout`) split them back out. The layers have
+# no canonical order, hence the loss is permutation invariant.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: harmof0_rps
+  n_fft: 4096
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  f_min: 30.0
+  channels: [32, 64, 128, 128]
+  dilations: [4, 8, 16]
+  n_maps: 4
+model_type: null
+legacy_config_path: null

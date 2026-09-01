@@ -1,0 +1,43 @@
+# Permutation-invariant BCE over FOUR PER-ROTOR Gaussian salience layers, on the
+# candidate-rate grid of conf/model/*_rps_l4.yaml: linear 0 -> 150 rev/s in 300
+# bins (0.5017 rev/s per bin), four layers stacked along the output axis, so the
+# model's output width is 1200.
+#
+# THE REPLACEMENT FOR conf/loss/salience_bce_r150.yaml, and the reason is a
+# measurement, not a preference. `models.salience_crf` encodes real training
+# telemetry into a salience map and decodes it back — a PERFECT target, no model
+# involved — on this exact grid:
+#
+#   triangular kernel, ONE shared map, Hungarian    mean err 8.24 rev/s
+#   Gaussian per-rotor layers, CRF readout          mean err 2.22e-16 rev/s
+#
+# and 39-45% of frames land more than half a bin off under the old pair. That is
+# an oracle floor. Three causes, and this file fixes all three: four layers (one
+# map cannot hold four rotors whose pairs sit 0.13-0.86 rev/s apart, inside one
+# bin), a Gaussian kernel (its log is a parabola globally, so a three-point fit
+# recovers the sub-bin peak exactly — a triangular kernel has no such property),
+# and a peak at bin 0 for a stopped rotor instead of a dark column.
+#
+# sigma_bins 1.0, not 2: the design note's recovery error is LINEAR in the blur
+# width, and one bin here is already 0.5 rev/s.
+#
+# pos_weight IS ABSENT AND MUST STAY ABSENT (weight 1). Weighted BCE against a
+# soft target p is minimized at sigmoid(z) = w p / (w p + 1 - p), not at p. At
+# the `auto` weight this grid would take (about 119 for a single Gaussian layer)
+# that saturates every bin within 2.2 sigma of the peak, which FLATTENS the
+# parabola the readout fits: the imbalance correction and the exact readout are
+# directly opposed. Unweighted, the optimum is sigmoid(z) = p exactly, hence
+# log sigmoid(z) = -d^2/2 and the decode stays lossless.
+#
+# rate [16000, 512] mirrors the model's frame_rate: nothing pools along time.
+terms:
+  - name: bce
+    _target_: losses.LayerPITSalienceBCELoss
+    weight: 1.0
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      n_layers: 4
+      sigma_bins: 1.0
+      rate: [16000, 512]

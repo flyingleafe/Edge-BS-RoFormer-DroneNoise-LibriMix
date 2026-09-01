@@ -97,6 +97,7 @@ import torch
 import torch.nn as nn
 
 from models.comb_salience import CombGather, local_floor_torch
+from models.harmonic_ports.layer_readout import LayerCRFReadout
 from models.multif0.utils import linear_freq_grid
 from models.salience_rps import SalienceRPSPredictor
 
@@ -251,7 +252,7 @@ class CombCNNTrunk(nn.Module):
         return self.block_8(self.block_7(self.block_6(x)))
 
 
-class HPPNetRPS(SalienceRPSPredictor):
+class HPPNetRPS(LayerCRFReadout, SalienceRPSPredictor):
     """Audio -> rotor-rate salience logits ``(B, G, T)`` on a LINEAR rate grid.
 
     The ``salience_rps`` contract: ``forward(audio) -> (B, F, T)`` logits,

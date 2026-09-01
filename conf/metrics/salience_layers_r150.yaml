@@ -1,0 +1,31 @@
+# Validation twin of conf/loss/salience_layers_r150.yaml. That file carries the
+# grid argument and the reason `pos_weight` is absent.
+#
+# `bce` mirrors the training objective exactly, so `optim.monitor: bce` selects
+# on the object being fitted rather than on a second, misaligned scalar.
+#
+# `rps_mae` is the same layers read in rev/s: each layer's peak refined by the
+# three-point log-parabolic fit, PIT-aligned to the label. It is the number to
+# compare arms on. It is NOT the deployed decoder — that is a CRF best path per
+# layer (`models.harmonic_ports.layer_readout`), which adds a temporal model and
+# costs about 15 s per clip on CPU, where metrics run. On a correct layer the
+# two agree; the CRF additionally survives a frame whose own peak is wrong.
+terms:
+  - name: bce
+    _target_: metrics.LayerPITSalienceBCEMetric
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      n_layers: 4
+      sigma_bins: 1.0
+      rate: [16000, 512]
+  - name: rps_mae
+    _target_: metrics.LayerPeakRPSMetric
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      n_layers: 4
+      sigma_bins: 1.0
+      rate: [16000, 512]

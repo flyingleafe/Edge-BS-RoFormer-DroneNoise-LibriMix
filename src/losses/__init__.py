@@ -33,6 +33,10 @@ from losses.salience import (
     auto_pos_weight,
     salience_bce_loss,
 )
+from losses.salience_layers import (
+    LayerPITSalienceBCELoss,
+    layer_pit_bce,
+)
 from losses.sisdr import SISDRLoss, si_sdr_loss
 from losses.spatial_likelihood import (
     SpatialLikelihood,
@@ -75,6 +79,8 @@ __all__ = [
     "si_sdr_loss",
     "SalienceBCELoss",
     "SalienceRPSBCELoss",
+    "LayerPITSalienceBCELoss",
+    "layer_pit_bce",
     "auto_pos_weight",
     "salience_bce_loss",
     "AuraMRSTFTLoss",

@@ -21,6 +21,11 @@ from metrics.rps import (
     rps_rmse,
 )
 from metrics.salience import SalienceBCEMetric
+from metrics.salience_layers import (
+    LayerPeakRPSMetric,
+    LayerPITSalienceBCEMetric,
+    peak_readout,
+)
 from metrics.separation import (
     AuraMRSTFTMetric,
     AuraSTFTMetric,
@@ -86,6 +91,9 @@ __all__ = [
     "rps_metric_suite",
     # salience
     "SalienceBCEMetric",
+    "LayerPITSalienceBCEMetric",
+    "LayerPeakRPSMetric",
+    "peak_readout",
     # perf
     "compute_rtf",
     "measure_inference",

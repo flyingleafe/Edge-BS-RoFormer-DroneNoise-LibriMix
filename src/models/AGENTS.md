@@ -194,6 +194,24 @@ linearly with `k`. The output axis is therefore the CANDIDATE RATE, not
 frequency, and it is **linear** (a log rate grid spends its resolution at the
 coarse end, where nothing needs it).
 
+**Per-rotor layers (`n_maps: 4`) are the default for new rows.** The framework's
+shared salience map is not a lossless encoding of this task: `models.salience_crf`
+encodes real training telemetry and decodes it back — a PERFECT target, no model
+involved — and returns it **8.24 rev/s** away on average, with 39-45% of frames
+more than half a bin off, against **2.22e-16** for Gaussian per-rotor layers read
+by a CRF plus log-parabolic fit. Three causes: one map cannot hold four rotors
+whose pairs sit inside one 0.5 rev/s bin; a triangular kernel has no exact
+sub-bin readout; and `active = rps_grid > 0.1` encodes a stopped rotor as an
+ABSENCE, which is what forces a decode threshold. The `_l4` model configs
+(`conf/model/{harmof0,hppnet,hft}_rps_l4.yaml`) set `n_maps: 4` and must be paired
+with `conf/loss/salience_layers_r150.yaml` and
+`conf/metrics/salience_layers_r150.yaml`; `models.harmonic_ports.layer_readout`
+then overrides `predict_rps` with one CRF best path per layer — no threshold, no
+Hungarian step. The layers ride the codec's `(batch, freq, time)` wire format
+stacked along the output axis (width `4 * 300`), because a 4-D model output does
+not type-check through `SalienceRPSCodec`. With `n_maps: 1` everything falls back
+to the old shared-map path unchanged.
+
 They satisfy the ordinary `salience_rps` contract — `forward(audio) -> (B, G, T)`
 logits, `outputs_salience = True`, BCE through `losses.SalienceRPSBCELoss`,
 Hungarian tracking through the inherited `predict_rps` — by declaring the rate

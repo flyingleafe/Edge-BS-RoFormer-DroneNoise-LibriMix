@@ -1,0 +1,58 @@
+# @package _global_
+# ARM A — harmof0_rps on the analytic STATIC-COMB curriculum, validated on a
+# held-out draw of the same family.
+#
+# This is conf/experiment/sal150_comb.yaml with the MODEL swapped and nothing
+# else. That row is multif0_salience (a LateDeep CNN over an HCQT) on a 0-150
+# rev/s super-resolution output grid; this row is HarmoF0 with its
+# log-frequency harmonic shift replaced by a gather at k*r on the linear STFT
+# (conf/model/harmof0_rps.yaml). Stream, validation draw, epoch budget,
+# patience, batch size, worker count, monitor and samples_per_validation are
+# sal150_comb's verbatim, so the pair isolates the ARCHITECTURE.
+#
+# The output grid differs in resolution only (300 bins at 0.5017 rev/s against
+# 1000 at 0.1502) and the reason is in conf/model/harmof0_rps.yaml: the design
+# note's error table makes 0.5 rev/s cost 0.013-0.13 rev/s of discretization,
+# under the campaign's 0.2 rev/s honest floor, and here every bin costs a
+# gather.
+#
+# WHY THIS ARM EXISTS. The static comb is the family the gather is exactly
+# right for: lines at k*r and nothing else. If a harmonic-gather architecture
+# cannot beat an HCQT CNN here, the substitution buys nothing anywhere.
+#
+# ─── THE L4 VARIANT ───────────────────────────────────────────────────────
+# This row is its `_l4`-less twin with the OUTPUT REPRESENTATION replaced, and
+# nothing else: same stream, same validation draw, same epoch budget, patience,
+# batch size, workers and monitor. Three files change together and they must:
+#   model   -> conf/model/*_rps_l4.yaml   (n_maps 4: one salience layer per rotor)
+#   loss    -> conf/loss/salience_layers_r150.yaml     (Gaussian layers, PIT BCE)
+#   metrics -> conf/metrics/salience_layers_r150.yaml  (the same, plus rps_mae)
+#
+# WHY. `models.salience_crf` encoded real training telemetry into the shared
+# salience map and decoded it back — a PERFECT target, no model involved — and
+# got the trajectory back 8.24 rev/s away on average, with 39-45% of frames more
+# than half a bin off. Gaussian per-rotor layers with the CRF readout return
+# 2.22e-16. The old number is an ORACLE FLOOR: no model reading that
+# representation could have scored better, so every `_l4`-less row above was
+# measuring the representation as much as the architecture. This row removes
+# that ceiling and leaves the architecture question intact.
+#
+# At eval the decode is `models.harmonic_ports.layer_readout.LayerCRFReadout` —
+# one CRF best path per layer, NO threshold and NO Hungarian step. A stopped
+# rotor is the path sitting at bin 0, which is a value; the old decoder had to
+# call it an absence, which is what forced the threshold.
+defaults:
+  - override /data: sal_comb_synthval
+  - override /model: harmof0_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: hf0_comb_l4
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — sal150_comb's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: bce
+  monitor_mode: min

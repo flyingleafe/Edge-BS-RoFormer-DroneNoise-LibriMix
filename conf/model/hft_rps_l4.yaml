@@ -1,0 +1,42 @@
+# hft_rps with FOUR PER-ROTOR SALIENCE LAYERS instead of one shared map.
+#
+# conf/model/hft_rps.yaml verbatim apart from `n_maps: 4`. See
+# conf/model/harmof0_rps_l4.yaml for the measurement that forces it.
+#
+# ONE COST SPECIFIC TO THIS TRUNK: the layers come out of `fc_mpe`, a Linear on
+# the rate token`s hidden state, so four layers widen ONE projection from
+# 256x1 to 256x4. The cross-attention map, which is what this model actually
+# pays for, is unchanged.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: hft_rps
+  n_fft: 4096
+  hop_length: 512
+  sr: 16000
+  num_rotors: 4
+  r_lo: 0.0
+  r_hi: 150.0
+  n_grid: 300
+  k_max: 32
+  f_max: 7500.0
+  f_min: 30.0
+  r_min: null  # -> sr/n_fft = 3.906 rev/s
+  hid_dim: 256
+  n_layers: 3
+  n_time_layers: 3
+  n_heads: 4
+  pf_dim: 512
+  dropout: 0.1
+  cnn_channel: 4
+  cnn_kernel: 5
+  n_frame: 32
+  rate_block: 64
+  floor_hz: 120.0
+  n_maps: 4
+model_type: null
+legacy_config_path: null

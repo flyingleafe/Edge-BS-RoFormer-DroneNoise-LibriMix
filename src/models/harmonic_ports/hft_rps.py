@@ -110,6 +110,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.comb_salience import CombGather, local_floor_torch
+from models.harmonic_ports.layer_readout import LayerCRFReadout
 from models.multif0.utils import linear_freq_grid
 from models.salience_rps import SalienceRPSPredictor
 
@@ -439,7 +440,7 @@ class BiasedCrossAttentionLayer(nn.Module):
         return x, (attn if return_attention else None)
 
 
-class HFTRPS(SalienceRPSPredictor):
+class HFTRPS(LayerCRFReadout, SalienceRPSPredictor):
     """Audio -> rotor-rate salience logits ``(B, G, T)`` on a LINEAR rate grid.
 
     The ``salience_rps`` contract: ``forward(audio) -> (B, F, T)`` logits,
@@ -522,11 +523,13 @@ class HFTRPS(SalienceRPSPredictor):
         n_bin: int = 256,
         n_enc_layers: int = 3,
         bias_scale: float = 2.0,
+        n_maps: int = 1,
     ):
         super().__init__(n_fft, hop_length, num_rotors)
         self.sr, self.k_max = int(sr), int(k_max)
         self.hid_dim, self.n_heads = int(hid_dim), int(n_heads)
         self.cnn_channel, self.n_frame = int(cnn_channel), int(n_frame)
+        self.n_maps = int(n_maps)
 
         grid = linear_freq_grid(r_lo, r_hi, n_grid)
         self.out_freqs = grid
@@ -651,7 +654,7 @@ class HFTRPS(SalienceRPSPredictor):
         self.time_layers = nn.ModuleList(
             [TimeSelfAttentionLayer(self.hid_dim, n_heads, pf_dim, dropout) for _ in range(n_t)]
         )
-        self.fc_mpe = nn.Linear(self.hid_dim, 1)
+        self.fc_mpe = nn.Linear(self.hid_dim, self.n_maps)
         self.last_attention: torch.Tensor | None = None
 
     # ── grid ────────────────────────────────────────────────────────────────
@@ -748,8 +751,7 @@ class HFTRPS(SalienceRPSPredictor):
         # partitioned into hFT-sized blocks.
         y = x.view(b, t, g, self.hid_dim).permute(0, 2, 1, 3).reshape(b * g, t, self.hid_dim)
         y = self._time_stack(y)
-        logits = self.fc_mpe(y).view(b, g, t)
-        return logits
+        return self._emit(self.fc_mpe(y), b, g, t)
 
     def _forward_bias(self, audio: torch.Tensor, return_attention: bool) -> torch.Tensor:
         """Variant (ii): pooled frequency tokens + a learned harmonic bias."""
@@ -775,7 +777,18 @@ class HFTRPS(SalienceRPSPredictor):
         self.last_attention = attn  # (B, T, H, G, n_bin)
 
         y = x.view(b, t, g, self.hid_dim).permute(0, 2, 1, 3).reshape(b * g, t, self.hid_dim)
-        return self.fc_mpe(self._time_stack(y)).view(b, g, t)
+        return self._emit(self.fc_mpe(self._time_stack(y)), b, g, t)
+
+    def _emit(self, y: torch.Tensor, b: int, g: int, t: int) -> torch.Tensor:
+        """``(B*G, T, n_maps)`` -> the codec's flat ``(B, n_maps*G, T)`` wire format.
+
+        The rotor layers are stacked ALONG THE OUTPUT AXIS, not returned as a
+        fourth dimension, because the ``salience_rps`` codec declares
+        ``("batch", "freq", "time")``. `models.harmonic_ports.layer_readout`
+        splits them back out.
+        """
+        m = self.n_maps
+        return y.view(b, g, t, m).permute(0, 3, 1, 2).reshape(b, m * g, t)
 
     def _time_stack(self, y: torch.Tensor) -> torch.Tensor:
         """``(B*G, T, D)`` -> same, self-attended along T in ``n_frame`` blocks."""
