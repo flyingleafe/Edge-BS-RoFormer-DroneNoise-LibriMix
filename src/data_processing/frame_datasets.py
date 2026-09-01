@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import zlib
 from collections.abc import Sequence
@@ -70,6 +71,8 @@ from data_processing.streams import (
     resolve_source,
     stretch_rps_to_frames,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "DregonLMFrameDataset",
@@ -1519,6 +1522,12 @@ class MixtureMatchedValidDataset(Dataset):
             )
             self.counts[f"{kind}[{i}]"] = n_k
         self._inner = ConcatFrameDataset(parts)
+        total = len(self._inner)
+        logger.info(
+            "MixtureMatchedValid: %d frames = %s",
+            total,
+            ", ".join(f"{k} {v} ({v / max(total, 1):.0%})" for k, v in self.counts.items()),
+        )
 
     def __len__(self) -> int:
         return len(self._inner)
