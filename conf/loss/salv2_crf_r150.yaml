@@ -1,0 +1,46 @@
+# Structured CRF loss over the four per-rotor salience layers — training
+# THROUGH the decoder rather than beside it.
+#
+# The alternative in this campaign is conf/loss/salience_layers_r150.yaml, which
+# fits each frame on its own with BCE while `layer_readout.LayerCRFReadout`
+# deploys a Viterbi path. Those are different objects, and the mismatch has
+# already cost the campaign once: the trained head's advantage over the
+# untrained one did not survive the switch from an argmax decoder to a Viterbi
+# decoder (`close` 0.459 -> 0.669). Nothing in per-frame BCE rewards a
+# trajectory the decoder can actually follow.
+#
+# This loss is `log Z - score(gold)` under the SAME emissions (`log sigmoid(z)`)
+# and the SAME hinge band the decoder uses, so training, checkpoint selection
+# and deployment are one object by construction.
+#
+# `max_step_rev_s: 25.0` MUST equal `layer_readout.MAX_STEP_REV_S`, or the two
+# part company again. It is the per-frame change the band makes FREE and the
+# band is truncated at four times it, which on this grid is span 199. It is also
+# the cost knob, and the cost was measured (A100-80, 4 s clips, batch 32):
+#
+#   model     bce        crf@25     crf@8
+#   harmof0   6.09 GiB   12.46 GiB  7.64 GiB
+#   hppnet    17.18      17.18      17.18
+#
+# The full band doubles harmof0's memory and is free for hppnet, whose
+# FreqGroupLSTM dominates its peak so completely that the CRF is invisible. At
+# batch 32 both fit with room, so the band stays matched to the decoder rather
+# than trimmed for a saving the grid does not need.
+#
+# There is no `crf` entry in conf/metrics: the forward algorithm costs about
+# 15 s per clip on CPU and metrics run per sample on CPU. It is not needed —
+# `val/loss` IS this objective on the validation set, because the training loop
+# scores the SAME loss_fn there (`training/loop.py`), and `rps_mae` from
+# conf/metrics/salience_layers_r150.yaml is the selection number.
+terms:
+  - name: crf
+    _target_: losses.LayerPITCRFLoss
+    weight: 1.0
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      n_layers: 4
+      max_step_rev_s: 25.0
+      stiff: 40.0
+      rate: [16000, 512]

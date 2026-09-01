@@ -1,0 +1,55 @@
+# @package _global_
+# SALV2 grid — HPPNet on the analytic STATIC COMB, WITH speech mixed in at -30 to 0 dB SNR.
+#
+# One cell of a 20-cell grid: {HarmoF0, HPPNet, SimpleConvV2} x {static comb,
+# stochastic} x {without speech, with speech}, plus a CRF-objective arm for
+# the two salience ports. Every cell shares this file's optimizer, batch size,
+# epoch size and monitor, so a difference between cells is the axis and nothing
+# else.
+#
+# THE DATA IS REBUILT, and the reason is measured. The predecessor streams fired
+# `freq_scale` (resampling audio AND labels) on every training sample while the
+# fixed validation set deleted all augmentation, so train and valid were never
+# the same distribution; and `n: 96` over 8 microphones was 12 clips against
+# `flight_reuse: 32`, so every validation frame came from ONE trajectory. See
+# conf/online_mix/salv2_comb.yaml and conf/data/salv2_comb_mix.yaml.
+#
+# BATCH SIZE 32 IS MEASURED, NOT INHERITED (A100-80, 4 s clips, peak allocated):
+#
+#   model     bce/mse     crf@25
+#   harmof0    6.09 GiB   12.46 GiB
+#   hppnet    17.18       17.18
+#   scv2       4.75        --
+#
+# HPPNet is the binding constraint at every objective -- its FreqGroupLSTM runs
+# B*G sequences and its peak does not move when the loss changes -- so 32 is the
+# largest power of two that keeps the worst cell inside a 24 GB card, and it
+# leaves 2.3x headroom on the 40 GB+ parts these jobs request.
+#
+# MONITOR IS `rps_mae`, NOT THE OBJECTIVE. Selecting on the training loss was
+# measured to be actively wrong here: on the l4 arms `val/bce` rose while
+# `val/rps_mae` fell, because cross-entropy is unbounded and punishes a
+# confident near-miss that a bounded argmax error barely notices. Both `rps_mae`
+# and `mae_frame` are PIT per-frame absolute error in rev/s, so all 20 cells are
+# selected on -- and comparable through -- one number.
+#
+# THIS CELL TRAINS ON THE CRF NLL, not per-frame BCE. `log Z - score(gold)`
+# under the same emissions and the same hinge band
+# `layer_readout.LayerCRFReadout` decodes with, so the objective, the selection
+# and the deployed decoder become one object. Its BCE twin is `salv2_hppnet_comb_mix`, identical
+# in every other field, so the pair isolates the objective.
+defaults:
+  - override /data: salv2_comb_mix
+  - override /model: hppnet_rps_l4
+  - override /loss: salv2_crf_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: salv2_hppnet_comb_mix_crf
+epochs: 200
+patience: 20
+batch_size: 32  # frames (= 4 chunks x 8 mics at 4 s)
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: rps_mae
+  monitor_mode: min
