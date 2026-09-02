@@ -58,7 +58,14 @@ submit_segment() {
       --env PYTHONPATH=src --env "RESULTS_ROOT=$RESULTS_ROOT" \
       -- python train.py "experiment=$EXPERIMENT" resume=true 2>&1)
     local id
-    id=$(printf '%s\n' "$out" | grep -oE "${name}-[a-f0-9]+" | head -1)
+    # Parse omnirun's OWN "submitted <id> -> <backend>" line rather than
+    # matching against "$name": omnirun TRUNCATES a long job name before
+    # appending its hash, so a name like `ch-salv2-hppnet-stoch-nomix-1`
+    # comes back as `ch-salv2-hppnet-stoch-no-1ff7c4` and never matches.
+    # The old regex then read a successful submit as a failure and retried --
+    # measured, it queued FOUR concurrent segments for one chain, all of which
+    # would have trained the same run dir at once.
+    id=$(printf '%s\n' "$out" | grep -oE "submitted [^ ]+" | head -1 | awk '{print $2}')
     if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
     # The daemon's SSH ControlMaster expires and the first call after that
     # fails with "unknown backend"; `backends check` revives it.
