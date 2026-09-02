@@ -67,6 +67,18 @@ submit_segment() {
     # would have trained the same run dir at once.
     id=$(printf '%s\n' "$out" | grep -oE "submitted [^ ]+" | head -1 | awk '{print $2}')
     if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
+    # THE SUBMIT MAY HAVE SUCCEEDED ANYWAY. The daemon intermittently times out
+    # client-side (`cannot reach the omnirun daemon ... (timed out)`) while
+    # still creating the job, so a retry queues a SECOND segment against the
+    # same run dir -- measured, three concurrent segments for one chain. Look
+    # the job up by name before retrying; only submit again if it truly is not
+    # there. `COLUMNS` widens the table so the id is not printed truncated.
+    sleep 30
+    id=$(COLUMNS=220 $OR queue 2>/dev/null | grep -oE "${name}-[a-f0-9]{6}" | head -1)
+    if [ -n "$id" ]; then
+      echo "CHAIN $PREFIX: recovered in-flight $id after an unreadable submit" >&2
+      printf '%s' "$id"; return 0
+    fi
     # The daemon's SSH ControlMaster expires and the first call after that
     # fails with "unknown backend"; `backends check` revives it.
     $OR backends check >/dev/null 2>&1
