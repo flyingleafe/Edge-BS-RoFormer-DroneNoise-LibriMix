@@ -238,3 +238,67 @@ def test_resume_after_early_stop_exits_without_training(tmp_path, monkeypatch):
 
     assert [row for row in fake_wandb.logged if "epoch" in row] == []  # no epoch ran
     assert math.isfinite(result["best_mse"])
+
+
+# ── resuming a preemptible box from R2 ──────────────────────────────────────
+
+
+def test_fetch_train_state_returns_none_when_r2_is_unreachable(tmp_path, monkeypatch):
+    """A run that cannot reach the store starts fresh instead of dying.
+
+    Same defensive contract as the upload side: `ArtifactStore` swallows its own
+    failures, so the resume path must too.
+    """
+    from training import loop as loop_mod
+
+    def boom(_uri):
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(loop_mod, "resolve_checkpoint_uri", boom)
+    store = loop_mod.ArtifactStore(experiment_name="nope")
+    got = loop_mod._fetch_train_state(store, tmp_path / "train_state.pt", tmp_path / "last.ckpt")
+    assert got is None
+
+
+def test_fetch_train_state_uses_the_experiment_checkpoints_prefix(tmp_path, monkeypatch):
+    """The two files must be looked up under <prefix>/<experiment>/checkpoints/."""
+    from training import loop as loop_mod
+
+    asked: list[str] = []
+
+    def fake_resolve(uri):
+        asked.append(uri)
+        p = tmp_path / uri.rsplit("/", 1)[-1]
+        p.write_bytes(b"x")
+        return str(p)
+
+    monkeypatch.setattr(loop_mod, "resolve_checkpoint_uri", fake_resolve)
+    store = loop_mod.ArtifactStore(experiment_name="expt")
+    got = loop_mod._fetch_train_state(store, tmp_path / "train_state.pt", tmp_path / "last.ckpt")
+    assert got is not None
+    assert asked == [
+        f"r2://{store.bucket}/{store.prefix}/expt/checkpoints/train_state.pt",
+        f"r2://{store.bucket}/{store.prefix}/expt/checkpoints/last.ckpt",
+    ]
+
+
+def test_load_train_state_without_a_store_is_local_only(tmp_path):
+    """No store (uploads disabled) must not attempt any network access."""
+    import torch
+
+    from training import loop as loop_mod
+
+    model = torch.nn.Linear(2, 2)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt)
+    scaler = loop_mod.GradScaler(enabled=False)
+    got = loop_mod._load_train_state(
+        tmp_path,
+        model=model,
+        optimizer=opt,
+        scheduler=sched,
+        scaler=scaler,
+        device=torch.device("cpu"),
+        store=None,
+    )
+    assert got == (0, None, 0)

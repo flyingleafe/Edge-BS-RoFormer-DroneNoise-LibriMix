@@ -30,16 +30,16 @@ from typing import Any
 
 import tdseries as td
 import torch
-import wandb
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import tqdm
 
+import wandb
 from data_processing.collate import batch_size as frame_batch_size
 from data_processing.collate import frame_collate, slice_sample
 from tasks.codecs import Codec
 from tasks.task import Task
-from training.artifacts import ArtifactStore
+from training.artifacts import ArtifactStore, resolve_checkpoint_uri
 from training.config import (
     build_dataset,
     build_losses,
@@ -341,6 +341,27 @@ def _save_train_state(
     tmp.replace(path)  # atomic: a job killed mid-save leaves the old state intact
 
 
+def _fetch_train_state(
+    store: ArtifactStore, state_path: Path, weights_path: Path
+) -> tuple[Path, Path] | None:
+    """Pull ``train_state.pt`` + ``last.ckpt`` from R2. ``None`` if unavailable.
+
+    Never raises: a run that cannot reach the store must start from scratch
+    rather than die, which is the same defensive contract the upload side has.
+    """
+    root = f"r2://{store.bucket}/{store.prefix}/{store.experiment_name}/checkpoints"
+    try:
+        local_state = Path(resolve_checkpoint_uri(f"{root}/{state_path.name}"))
+        local_weights = Path(resolve_checkpoint_uri(f"{root}/{weights_path.name}"))
+    except Exception:
+        logger.info("no resumable state in R2 for %s; starting fresh", store.experiment_name)
+        return None
+    if not (local_state.exists() and local_weights.exists()):
+        return None
+    logger.info("resuming %s from R2 (%s)", store.experiment_name, root)
+    return local_state, local_weights
+
+
 def _load_train_state(
     run_dir: Path,
     *,
@@ -349,6 +370,7 @@ def _load_train_state(
     scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
     scaler: GradScaler,
     device: torch.device,
+    store: ArtifactStore | None = None,
 ) -> tuple[int, float | None, int]:
     """Restore an interrupted run in place; return ``(start_epoch, best, no_improve)``.
 
@@ -358,6 +380,19 @@ def _load_train_state(
     """
     state_path = run_dir / TRAIN_STATE_NAME
     weights_path = run_dir / "last.ckpt"
+    if (not state_path.exists() or not weights_path.exists()) and store is not None:
+        # THE RUN DIR IS GONE, WHICH IS THE NORMAL CASE ON A PREEMPTIBLE BOX.
+        # Kaggle, Colab and a reclaimed vast instance all hand back an empty
+        # filesystem, so "resume" there means "resume from R2 or not at all".
+        # Measured: `salv2_hf0_comb_mix` was killed at the 12 h session cap on
+        # epoch 101 of ~105, and only `last.ckpt`/`best.ckpt` had been uploaded
+        # -- the optimizer, the plateau scheduler (its LR had decayed 1e-3 ->
+        # 8e-6 over seven reductions), the epoch counter and the early-stop
+        # counter were all on the dead VM.
+        fetched = _fetch_train_state(store, state_path, weights_path)
+        if not fetched:
+            return 0, None, 0
+        state_path, weights_path = fetched
     if not state_path.exists() or not weights_path.exists():
         return 0, None, 0
     state = torch.load(state_path, map_location=device, weights_only=False)
@@ -541,6 +576,7 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
             scheduler=scheduler,
             scaler=scaler,
             device=device,
+            store=store if cfg.artifacts.upload_checkpoints else None,
         )
         if cfg.resume
         else (0, None, 0)
@@ -671,14 +707,27 @@ def run_training(cfg: Any, *, artifact_store: ArtifactStore | None = None) -> di
         # Written last, and atomically: it is the marker that `last.ckpt` for
         # this epoch is complete, so a job killed mid-epoch resumes from the
         # previous one rather than from half-written weights.
+        train_state_path = run_dir / TRAIN_STATE_NAME
         _save_train_state(
-            run_dir / TRAIN_STATE_NAME,
+            train_state_path,
             optimizer=optimizer,
             scheduler=scheduler,
             scaler=scaler,
             epoch=epoch,
             best_metric=best_metric,
             no_improve=no_improve,
+        )
+        # Uploaded AFTER `last.ckpt`, mirroring the local write order: the
+        # remote copy of this file is likewise the marker that the remote
+        # `last.ckpt` is complete. Without it a preemptible box can only WARM
+        # START from weights -- optimizer moments, the decayed LR and the
+        # early-stop counter all reset, which silently restarts the schedule.
+        _upload_checkpoint_and_record(
+            store=store,
+            upload_enabled=cfg.artifacts.upload_checkpoints,
+            path=train_state_path,
+            run=run,
+            summary_key="r2/train_state",
         )
 
         if no_improve >= cfg.patience:
