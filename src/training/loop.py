@@ -343,23 +343,27 @@ def _save_train_state(
 
 def _fetch_train_state(
     store: ArtifactStore, state_path: Path, weights_path: Path
-) -> tuple[Path, Path] | None:
-    """Pull ``train_state.pt`` + ``last.ckpt`` from R2. ``None`` if unavailable.
+) -> tuple[Path | None, Path | None]:
+    """Pull ``train_state.pt`` and ``last.ckpt`` from R2, INDEPENDENTLY.
 
-    Never raises: a run that cannot reach the store must start from scratch
-    rather than die, which is the same defensive contract the upload side has.
+    Each element is ``None`` when that file is not in the store. They are
+    resolved separately because "no weights at all" (a genuine first launch)
+    and "weights but no bookkeeping" (a partially uploaded run) need opposite
+    responses, and a combined result cannot tell the caller which it has.
+
+    Never raises: an unreachable store must degrade to "nothing found" rather
+    than kill the run, the same defensive contract the upload side has.
     """
     root = f"r2://{store.bucket}/{store.prefix}/{store.experiment_name}/checkpoints"
-    try:
-        local_state = Path(resolve_checkpoint_uri(f"{root}/{state_path.name}"))
-        local_weights = Path(resolve_checkpoint_uri(f"{root}/{weights_path.name}"))
-    except Exception:
-        logger.info("no resumable state in R2 for %s; starting fresh", store.experiment_name)
-        return None
-    if not (local_state.exists() and local_weights.exists()):
-        return None
-    logger.info("resuming %s from R2 (%s)", store.experiment_name, root)
-    return local_state, local_weights
+
+    def one(name: str) -> Path | None:
+        try:
+            local = Path(resolve_checkpoint_uri(f"{root}/{name}"))
+        except Exception:
+            return None
+        return local if local.exists() else None
+
+    return one(state_path.name), one(weights_path.name)
 
 
 def _load_train_state(
@@ -380,7 +384,9 @@ def _load_train_state(
     """
     state_path = run_dir / TRAIN_STATE_NAME
     weights_path = run_dir / "last.ckpt"
-    if (not state_path.exists() or not weights_path.exists()) and store is not None:
+    state_local = state_path if state_path.exists() else None
+    weights_local = weights_path if weights_path.exists() else None
+    if (state_local is None or weights_local is None) and store is not None:
         # THE RUN DIR IS GONE, WHICH IS THE NORMAL CASE ON A PREEMPTIBLE BOX.
         # Kaggle, Colab and a reclaimed vast instance all hand back an empty
         # filesystem, so "resume" there means "resume from R2 or not at all".
@@ -389,12 +395,30 @@ def _load_train_state(
         # -- the optimizer, the plateau scheduler (its LR had decayed 1e-3 ->
         # 8e-6 over seven reductions), the epoch counter and the early-stop
         # counter were all on the dead VM.
-        fetched = _fetch_train_state(store, state_path, weights_path)
-        if not fetched:
-            return 0, None, 0
-        state_path, weights_path = fetched
-    if not state_path.exists() or not weights_path.exists():
-        return 0, None, 0
+        remote_state, remote_weights = _fetch_train_state(store, state_path, weights_path)
+        state_local = state_local or remote_state
+        weights_local = weights_local or remote_weights
+    if state_local is None and weights_local is None:
+        return 0, None, 0  # a genuine first launch: nothing to resume from
+    if state_local is None or weights_local is None:
+        # WEIGHTS WITHOUT BOOKKEEPING (or the reverse) MUST NOT START FRESH.
+        # `best_metric` would come back None, and the epoch loop treats a None
+        # best as "improved", so the very next epoch OVERWRITES `best.ckpt`
+        # with a worse model and resets `no_improve` -- losing both the best
+        # checkpoint and the early-stop counter, silently. Measured on
+        # `m3mixv2_scv2`: its best sat at epoch 8 (val/mse 48.09) and the
+        # `best.ckpt` left on R2 scores 85.4, its epoch-77 value, while the run
+        # continued 69 epochs past a patience of 20. Refusing is strictly
+        # better than destroying a run's best weights.
+        missing = TRAIN_STATE_NAME if state_local is None else weights_path.name
+        present = weights_path.name if state_local is None else TRAIN_STATE_NAME
+        raise RuntimeError(
+            f"cannot resume {run_dir.name}: found {present} but no {missing}. "
+            f"Starting fresh here would overwrite best.ckpt with a worse model "
+            f"and reset early stopping. Either restore {missing}, or run under a "
+            f"new experiment_name, or set `resume=false` to start deliberately."
+        )
+    state_path, weights_path = state_local, weights_local
     state = torch.load(state_path, map_location=device, weights_only=False)
     model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=False))
     optimizer.load_state_dict(state["optimizer"])

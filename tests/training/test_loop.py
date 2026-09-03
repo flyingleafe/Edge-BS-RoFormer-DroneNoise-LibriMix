@@ -257,7 +257,7 @@ def test_fetch_train_state_returns_none_when_r2_is_unreachable(tmp_path, monkeyp
     monkeypatch.setattr(loop_mod, "resolve_checkpoint_uri", boom)
     store = loop_mod.ArtifactStore(experiment_name="nope")
     got = loop_mod._fetch_train_state(store, tmp_path / "train_state.pt", tmp_path / "last.ckpt")
-    assert got is None
+    assert got == (None, None)
 
 
 def test_fetch_train_state_uses_the_experiment_checkpoints_prefix(tmp_path, monkeypatch):
@@ -275,7 +275,7 @@ def test_fetch_train_state_uses_the_experiment_checkpoints_prefix(tmp_path, monk
     monkeypatch.setattr(loop_mod, "resolve_checkpoint_uri", fake_resolve)
     store = loop_mod.ArtifactStore(experiment_name="expt")
     got = loop_mod._fetch_train_state(store, tmp_path / "train_state.pt", tmp_path / "last.ckpt")
-    assert got is not None
+    assert all(g is not None for g in got)
     assert asked == [
         f"r2://{store.bucket}/{store.prefix}/expt/checkpoints/train_state.pt",
         f"r2://{store.bucket}/{store.prefix}/expt/checkpoints/last.ckpt",
@@ -298,6 +298,62 @@ def test_load_train_state_without_a_store_is_local_only(tmp_path):
         optimizer=opt,
         scheduler=sched,
         scaler=scaler,
+        device=torch.device("cpu"),
+        store=None,
+    )
+    assert got == (0, None, 0)
+
+
+def test_load_train_state_refuses_weights_without_bookkeeping(tmp_path):
+    """`last.ckpt` but no `train_state.pt` must RAISE, not start fresh.
+
+    The silent fresh start is what destroyed `m3mixv2_scv2`: `best_metric` came
+    back None, the epoch loop reads a None best as "improved", and the next
+    epoch overwrote `best.ckpt` (its epoch-8 model, val/mse 48.09) with the
+    current one (85.4) while resetting `no_improve`, so the run also sailed 69
+    epochs past a patience of 20. Losing a run's best weights is worse than
+    refusing to start.
+    """
+    import pytest
+    import torch
+
+    from training import loop as loop_mod
+
+    model = torch.nn.Linear(2, 2)
+    torch.save(model.state_dict(), tmp_path / "last.ckpt")  # weights, no state
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt)
+    with pytest.raises(RuntimeError, match="no train_state.pt"):
+        loop_mod._load_train_state(
+            tmp_path,
+            model=model,
+            optimizer=opt,
+            scheduler=sched,
+            scaler=loop_mod.GradScaler(enabled=False),
+            device=torch.device("cpu"),
+            store=None,
+        )
+
+
+def test_load_train_state_starts_fresh_when_nothing_exists(tmp_path):
+    """An empty run dir is a genuine first launch and must still start at 0.
+
+    The guard above must not break `resume=true` as the default on preemptible
+    queues, which is the setting every cluster job uses.
+    """
+    import torch
+
+    from training import loop as loop_mod
+
+    model = torch.nn.Linear(2, 2)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt)
+    got = loop_mod._load_train_state(
+        tmp_path,
+        model=model,
+        optimizer=opt,
+        scheduler=sched,
+        scaler=loop_mod.GradScaler(enabled=False),
         device=torch.device("cpu"),
         store=None,
     )
