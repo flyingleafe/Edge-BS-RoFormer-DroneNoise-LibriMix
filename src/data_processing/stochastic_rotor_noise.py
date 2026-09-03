@@ -442,6 +442,7 @@ def sample_params(
     *,
     n_rotors: int = 4,
     n_harmonics: int = 80,
+    n_harmonics_range: tuple[int, int] | None = None,
     band_taper_frac: float = 0.0,
     sample_rate: int = 16000,
     line_bin_integrate: bool = False,
@@ -451,8 +452,28 @@ def sample_params(
     The four rotors share ``rotor_similarity`` of one drone timbre and keep the
     rest of their own, so a clip can be four rotors of one aircraft or four
     unrelated sources.
+
+    ``n_harmonics_range`` makes the comb PARTIALLY OBSERVED: the comb length is
+    drawn uniformly from ``[lo, hi]`` per clip instead of being fixed at
+    ``n_harmonics``. The caller (:meth:`StochasticNoisePool.render`) otherwise
+    sizes the comb so its last line lands at Nyquist, so every synthetic clip
+    carries the FULL series while a real rotor's harmonics die out at some
+    order that changes with the clip, the microphone and the speed. A model
+    trained on full combs only can read the speed as a plain mean over
+    harmonics, and on a short real comb the half rate — which covers every true
+    line and pockets the empty bins between them — scores better than the truth.
+
+    A random draw is also what keeps the band edge from becoming a speed cue.
+    ``band_taper_frac`` documents the measured defect: a comb that stops dead at
+    ``n_harmonics * rps`` puts its edge at a frequency proportional to the speed
+    being predicted. With the length drawn per clip and independent of the
+    trajectory, the edge position carries the PRODUCT of two unknowns and no
+    longer identifies either. Use the taper on top when a soft edge is wanted.
     """
     ranges = ranges or StochasticRanges()
+    if n_harmonics_range is not None:
+        lo, hi = int(n_harmonics_range[0]), int(n_harmonics_range[1])
+        n_harmonics = int(rng.integers(lo, hi + 1))
 
     drone = _profile_db(rng, ranges, n_harmonics=n_harmonics)
     similarity = float(rng.uniform(*ranges.rotor_similarity))
@@ -974,6 +995,7 @@ class StochasticNoisePool:
         sample_rate: int = 16000,
         duration_s: float = 1.0,
         n_harmonics: int = 80,
+        n_harmonics_range: tuple[int, int] | None = None,
         n_harm_max: int = 200,
         n_mics: int = 8,
         n_rotors: int = 4,
@@ -1003,6 +1025,13 @@ class StochasticNoisePool:
         self.sample_rate = int(sample_rate)
         self.chunk_s = float(duration_s)
         self.n_harmonics = int(n_harmonics)
+        # A PARTIALLY OBSERVED comb: the length drawn per clip from this range
+        # instead of the Nyquist-filling default. See ``sample_params``.
+        self.n_harmonics_range = (
+            None
+            if n_harmonics_range is None
+            else (int(n_harmonics_range[0]), int(n_harmonics_range[1]))
+        )
         self.n_harm_max = int(n_harm_max)
         self.n_mics = int(n_mics)
         self.n_rotors = int(n_rotors)
@@ -1107,6 +1136,11 @@ class StochasticNoisePool:
             sample_rate=sample_rate,
             duration_s=duration_s,
             n_harmonics=int(g("n_harmonics", 80)),
+            n_harmonics_range=(
+                None
+                if g("n_harmonics_range") is None
+                else (int(g("n_harmonics_range")[0]), int(g("n_harmonics_range")[1]))
+            ),
             n_harm_max=int(g("n_harm_max", 200)),
             n_mics=int(g("n_mics", 8)),
             n_rotors=int(g("n_rotors", 4)),
@@ -1256,6 +1290,7 @@ class StochasticNoisePool:
             self.ranges,
             n_rotors=rps.shape[0],
             n_harmonics=n_harm,
+            n_harmonics_range=self.n_harmonics_range,
             sample_rate=self.sample_rate,
             band_taper_frac=self.band_taper_frac,
             line_bin_integrate=self.line_bin_integrate,

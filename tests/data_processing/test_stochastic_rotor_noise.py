@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -257,7 +259,9 @@ def test_flight_level_mode_keeps_the_silence_cue():
     # A real recorder holds one gain for a whole flight, so a stopped-rotor
     # window is quiet and a cruise window is loud. Normalizing every window
     # instead throws that away, and the silence cue with it.
-    common = dict(sample_rate=SR, duration_s=1.0, n_harmonics=30, n_mics=1, rps_kind="full_flight")
+    common: dict[str, Any] = dict(
+        sample_rate=SR, duration_s=1.0, n_harmonics=30, n_mics=1, rps_kind="full_flight"
+    )
     levels: dict[str, list[tuple[float, float]]] = {}
     for mode in ("window", "flight"):
         pool = srn.StochasticNoisePool(**common, level_mode=mode)
@@ -350,3 +354,47 @@ def test_coherent_mode_runs_through_the_pool():
     assert audio.shape == (2, SR)
     assert np.isfinite(audio).all()
     assert float(np.abs(audio).max()) > 0.0
+
+
+def test_n_harmonics_range_draws_the_comb_length_per_clip():
+    """``n_harmonics_range`` makes the comb partially observed; absent, nothing moves."""
+    lo, hi = 10, 30
+    drawn = [
+        srn.sample_params(
+            np.random.default_rng(s),
+            n_rotors=4,
+            n_harmonics=80,
+            n_harmonics_range=(lo, hi),
+            sample_rate=SR,
+        ).n_harmonics
+        for s in range(24)
+    ]
+    assert all(lo <= k <= hi for k in drawn)
+    assert len(set(drawn)) > 1  # a fresh length per clip, not one fixed value
+    # The profile is sized by the drawn length, so the comb really is shorter.
+    params = srn.sample_params(
+        np.random.default_rng(0),
+        n_rotors=4,
+        n_harmonics=80,
+        n_harmonics_range=(lo, hi),
+        sample_rate=SR,
+    )
+    assert params.profile_db.shape == (4, params.n_harmonics)
+    # Without the key the value is exactly `n_harmonics`.
+    assert (
+        srn.sample_params(
+            np.random.default_rng(0), n_rotors=4, n_harmonics=80, sample_rate=SR
+        ).n_harmonics
+        == 80
+    )
+
+
+def test_n_harmonics_range_reaches_the_pool_and_shortens_the_comb():
+    pool = srn.StochasticNoisePool(
+        sample_rate=SR, duration_s=1.0, n_harmonics_range=(8, 16), n_mics=1, n_rotors=4
+    )
+    _, _, params, _ = pool.render(np.random.default_rng(7), 1.0)
+    assert 8 <= params.n_harmonics <= 16
+    plain = srn.StochasticNoisePool(sample_rate=SR, duration_s=1.0, n_mics=1, n_rotors=4)
+    _, _, plain_params, _ = plain.render(np.random.default_rng(7), 1.0)
+    assert plain_params.n_harmonics > 16  # the default comb still fills the band
