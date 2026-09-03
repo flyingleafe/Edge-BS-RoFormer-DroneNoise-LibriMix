@@ -1451,6 +1451,12 @@ class MixtureMatchedValidDataset(Dataset):
     ``generated`` source is forced to ``refresh: false`` (a fixed bank) because
     a live producer is not reproducible, and its buffer is shrunk -- a few dozen
     clips do not need 512 slots beside the training producer's.
+
+    ``skip_kinds`` drops named source kinds from the concatenation so the parts
+    can be scored one at a time (a ``generated`` part needs the producer's GPU;
+    ``real`` and ``static_comb`` do not). The source index that seeds each part
+    still comes from the FULL policy list, so a part built with a sibling
+    skipped is bit-identical to the same part in the whole set.
     """
 
     #: sources that are the REAL pool; everything else is synthetic and is
@@ -1469,6 +1475,7 @@ class MixtureMatchedValidDataset(Dataset):
         n_fft: int = 2048,
         hop_length: int = 512,
         sample_rate: int = 16000,
+        skip_kinds: Sequence[str] = (),
     ):
         self.real = DregonLMFrameDataset(
             data_dir=real_data_dir,
@@ -1487,12 +1494,20 @@ class MixtureMatchedValidDataset(Dataset):
 
         parts: list[Any] = [self.real]
         self.counts: dict[str, int] = {"real": len(self.real)}
+        skip = {str(k) for k in skip_kinds}
         for i, src in enumerate(sources):
             kind = str(src.get("kind"))
             if kind in self.REAL_KINDS:
                 continue
             n_k = int(round(len(self.real) * float(src.get("weight", 1.0)) / real_w))
             if n_k <= 0:
+                continue
+            if kind in skip:
+                # Scoring one part at a time on a machine without the GPU a
+                # `generated` producer needs. `i` still comes from the FULL
+                # source list, so every part kept here is seeded exactly as it
+                # is when the whole set is built - the clips are identical.
+                self.counts[f"{kind}[{i}]"] = 0
                 continue
             sub = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
             one = OmegaConf.create(OmegaConf.to_container(src, resolve=False))
