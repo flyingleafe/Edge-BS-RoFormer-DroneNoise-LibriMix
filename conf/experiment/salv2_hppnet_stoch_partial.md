@@ -56,4 +56,38 @@ real,stoch,comb`, against the parent's dumps under `results/rps_dump/`.
 
 ## Conclusion
 
-Pending — the cell is running.
+**REFUTED at this budget.** A partially observed training comb does NOT remove the
+half-speed reading on real audio.
+
+The run (W&B `goec5fzn`) trained 26 epochs from the warm start, best `val/rps_mae`
+**3.3144** at epoch 19 against the parent's 2.6463 — the monitor is the parent's
+full-comb validation set, which the model no longer trains on, so a rise was
+expected. Predictions dumped with `scripts/rps_dump.py`, scored against
+`results/rps_dump/`:
+
+| real part | n | PIT MAE | median | within 10% of HALF | median rel. bias |
+|---|---|---|---|---|---|
+| `_nomix` ground | 32 | 51.83 | 47.42 | 0.0% | +2757% |
+| `_partial` ground | 32 | 53.64 | 48.77 | 0.0% | +3428% |
+| `_nomix` ramp | 56 | 28.13 | 24.54 | 22.0% | -42.5% |
+| `_partial` ramp | 56 | 29.61 | 28.10 | 22.1% | -42.1% |
+| `_nomix` cruise | 208 | 34.61 | 38.73 | 38.6% | -50.3% |
+| `_partial` cruise | 208 | 39.19 | 37.59 | 35.7% | -50.5% |
+| `_nomix` all | 296 | 35.25 | 38.84 | -- | -- |
+| `_partial` all | 296 | 38.94 | 37.49 | -- | -- |
+
+The cruise prediction-to-label ratio stays on one half: quartiles 0.418 / **0.497** /
+0.573 before and 0.252 / **0.495** / 0.564 after. The synthetic parts move the way a
+distribution shift moves them: `stoch` 2.645 -> 3.313 and `comb` 2.803 -> 7.670.
+
+Two limits on this verdict. The budget was 26 epochs, not 40 — vast could not
+provision an instance (9 failed rentals) and the fallback was a 1 h Slurm queue,
+so the run was stopped 7 epochs after its best. And the monitor stayed on the
+full-comb set by design, so the selected epoch was chosen on a distribution the
+model no longer saw; selection on a partial-comb set could pick a different epoch.
+
+One measurement is worth keeping whatever the verdict. The `n_harmonics: 80` in
+the stochastic source configs was **inert**: `render` sizes the comb from Nyquist,
+so the full family draws 89 to 181 harmonics and its top line sits at 3.6 to
+8.0 kHz. The partial family draws 11 to 77 and its top line sits at 0.4 to
+4.3 kHz, so the change did what it says.
