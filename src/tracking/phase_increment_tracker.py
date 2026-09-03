@@ -629,7 +629,10 @@ def _pair_joint_obs(
 
 
 def _rw_kalman_rts(
-    info: np.ndarray, mean_info: np.ndarray, q_step: float, p0: float,
+    info: np.ndarray,
+    mean_info: np.ndarray,
+    q_step: float,
+    p0: float,
     trust_info: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Scalar random-walk Kalman filter + RTS smoother, information-fed.
@@ -725,10 +728,7 @@ def _seam(y32: np.ndarray, table: Mapping[Any, np.ndarray] | None, key: Any) -> 
     The peel seam of :func:`pi_kalman_refine`: one pass sees a different
     signal from the rest of the call. Nothing else about the pass changes.
     """
-    if table is None:
-        return y32
-    alt = table.get(key)
-    return y32 if alt is None else np.asarray(alt, dtype=np.float32)
+    return np.asarray(table.get(key, y32), dtype=np.float32) if table is not None else y32
 
 
 def _rotor_pass(
@@ -1012,7 +1012,15 @@ def _rotor_pass(
                     extra[2][m] /= lowk_weight  # down-weight joint low-k obs too
     # Pass A (q_k = 0) -> data-driven q_k from the robust residual excess.
     m0, _ = _smooth_delta(
-        dpsi, var_meas, valid, h, q_step, p0, ess=ess, extra=extra, scale=scale,
+        dpsi,
+        var_meas,
+        valid,
+        h,
+        q_step,
+        p0,
+        ess=ess,
+        extra=extra,
+        scale=scale,
         trust_info=trust_info,
     )
     resid = dpsi - h[None, :, None] * m0[None, None, :]
