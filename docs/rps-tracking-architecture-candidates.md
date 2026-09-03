@@ -337,8 +337,9 @@ with a per-clip random harmonic cutoff (10-80) and tooth dropout, warm-started
 from the trained port, then score it zero-shot on real audio. If the
 half-speed reading disappears, partial observation is a training-distribution
 problem and the port stays a candidate; if it does not, the explicit
-reliability model of C1/C2 is required. Running on vast at the time of
-writing.
+reliability model of C1/C2 is required. Result (probe E):
+refuted. The half-speed reading stayed at -50% and the lower tail got
+worse; the port family is out as a seed.
 
 ## 5. Preliminary probes (2026-09-03)
 
@@ -429,8 +430,21 @@ floor and becomes 0.528 (K = 20, channel 0) with the 61-bin running median.
 Reading: the seed reads magnitude with a local floor and eight mics; phase
 is the refinement channel.
 
-**E. HPPNet-l4 trained on the partial-comb family, zero-shot on real.**
-Pending (vast job).
+**E. HPPNet-l4 trained on the partial-comb family, zero-shot on real
+(gpushort, 26 epochs, warm start from the stochastic port; branch
+`partial-comb`, run goec5fzn).** The training comb was drawn per clip
+between the 11th and 77th harmonic with up to 8 teeth dropped (verified on
+the built streams: top comb line 0.4-4.3 kHz against 3.6-8.0 kHz before).
+Real cruise: PIT MAE 34.6 -> 39.2, median relative bias -50.3% -> -50.5%,
+rotor-frames within 10% of half 38.6% -> 35.7%, within 10% of the truth
+13.0% -> 10.4%, ratio p25 0.42 -> 0.25. Synthetic stoch part 2.65 -> 3.31,
+comb part 2.80 -> 7.67. Reading: REFUTED at this budget. The port learned
+that the comb can be short and now answers with fewer, wider-spaced lines;
+the half-speed reading is not a training-distribution artifact that data
+alone repairs. Incidental: `n_harmonics: 80` in the stochastic source was
+inert (the pool sizes the comb from Nyquist, 89-181 harmonics), so every
+stochastic-family result so far was trained on a far longer comb than its
+config states; `n_harmonics_range` is the first key that shortens it.
 
 ## 6. Shortlist and what decides between the candidates
 
@@ -462,11 +476,10 @@ not drift out) before it is put behind C1. A day of one GPU. If it fails,
 the classical pi_kalman pass stays as the precision stage behind C1, which
 already reaches 0.97-1.22 against a tachometer from a good seed.
 
-**Control: the CNN port on partial-comb data (E).** If the port trained on
-a randomly truncated comb reads real cruise near the truth zero-shot, the
-port family stays a candidate for the seed and the question becomes which of
-the two seeds trains better on real windows; if it still halves, the
-explicit reliability of C1 is required, not optional.
+**Control, closed: the CNN port on partial-comb data (E).** The port
+trained on a randomly truncated comb still halves real cruise (-50.5%), so
+the explicit reliability of C1 is required, not optional, and the port
+family is out as a seed.
 
 What is closed by today's measurements: phase as a seed signal (P5); the
 odd/even ratio as an octave test on real audio (P2); the k^2 weight law for
