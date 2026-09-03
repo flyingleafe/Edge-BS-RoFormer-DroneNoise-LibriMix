@@ -13,11 +13,12 @@ without the models.
         --sets comb=conf/data/salv2_comb_nomix.yaml,real=conf/data/m3cur_s2.yaml \\
         --experiments salv2_hppnet_comb_nomix,m3mixv2_scv2 --device cuda
 
-A set is the `valid` block of a Hydra data yaml, built exactly as training
-builds it (`training.config.build_dataset`), with optional `key=value`
-overrides after colons -- so the with-speech twin of a synthetic set is
-`comb_speech=conf/data/salv2_comb_nomix.yaml:speech=true` and a smoke is
-`comb=conf/data/salv2_comb_nomix.yaml:n=8`.
+A set is a name from `experiments.rps_bench.PARTS` (`comb`, `stoch`, `real`,
+`comb_speech`, `stoch_speech`) or the `valid` block of a Hydra data yaml,
+built exactly as training builds it, with optional `key=value` overrides after
+colons -- a smoke is `comb=conf/data/salv2_comb_nomix.yaml:n=8`. The set
+builder and the readout live in `experiments.rps_bench`, which the notebook
+browser shares.
 
 Layout under --out:
 
@@ -43,49 +44,18 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-import yaml
-from omegaconf import OmegaConf
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import zoo  # noqa: E402
 from data_processing.frames import meta_dict  # noqa: E402
-from metrics import RPSMetric  # noqa: E402
+from experiments.rps_bench import Readout, build_set, parse_sets  # noqa: E402
 from metrics._common import get_array  # noqa: E402
-from metrics.salience_layers import LayerPeakRPSMetric, peak_readout  # noqa: E402
-from models.multif0.utils import linear_freq_grid  # noqa: E402
-from training.config import build_dataset  # noqa: E402
-
-
-def parse_sets(spec: str) -> list[tuple[str, str, dict[str, Any]]]:
-    """``name=path[:key=value...]`` items, comma separated -> (name, path, overrides)."""
-    out = []
-    for item in filter(None, spec.split(",")):
-        name, _, rest = item.partition("=")
-        path, *overrides = rest.split(":")
-        kv: dict[str, Any] = {}
-        for ov in overrides:
-            k, _, v = ov.partition("=")
-            kv[k] = yaml.safe_load(v)  # `true` -> True, `8` -> 8, text stays text
-        out.append((name.strip(), path.strip(), kv))
-    if not out:
-        raise SystemExit("--sets is empty")
-    return out
-
-
-def build_set(path: str, overrides: dict[str, Any]) -> Any:
-    cfg = OmegaConf.load(path)
-    spec: dict[str, Any] = dict(cast(dict, OmegaConf.to_container(cfg.valid, resolve=True)))
-    params: dict[str, Any] = dict(spec.get("params") or {})
-    params.update(overrides)
-    spec["params"] = params
-    return build_dataset(spec)
 
 
 def pad_stack(arrs: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -95,36 +65,6 @@ def pad_stack(arrs: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     for i, a in enumerate(arrs):
         out[i, :, : a.shape[-1]] = a
     return out, n_t
-
-
-class Reader:
-    """Turn a model's output Frame into ``(R, T)`` rev/s plus the monitored metric."""
-
-    def __init__(self, fmin: float, fmax: float, bins: int, n_layers: int, rate: tuple[int, int]):
-        self.grid = np.asarray(linear_freq_grid(fmin, fmax, bins), dtype=np.float64)
-        self.n_layers = n_layers
-        self.reg_metric = RPSMetric("mae_frame", rate=rate)
-        self.sal_metric = LayerPeakRPSMetric(
-            out_fmin=fmin, out_fmax=fmax, out_bins=bins, n_layers=n_layers, rate=rate
-        )
-
-    def __call__(self, pred: Any, frame: Any) -> tuple[np.ndarray, float]:
-        if "rps_pred" in pred:
-            arr = np.asarray(get_array(pred, "rps_pred"), dtype=np.float32)
-            return arr, float(self.reg_metric(pred, frame))
-        if "salience" in pred:
-            metric = float(self.sal_metric(pred, frame))
-            logits = torch.as_tensor(get_array(pred, "salience")).unsqueeze(0)  # (1, R*G, T)
-            _, fg, n_t = logits.shape
-            if fg != self.n_layers * len(self.grid):
-                raise ValueError(
-                    f"model emits {fg} bins; expected "
-                    f"{self.n_layers} layers x {len(self.grid)} bins"
-                )
-            layers = logits.reshape(1, self.n_layers, len(self.grid), n_t).double()
-            speeds = peak_readout(F.logsigmoid(layers), self.grid)[0].numpy()
-            return speeds.astype(np.float32), metric
-        raise KeyError(f"no rps_pred or salience in {list(pred.keys())}")
 
 
 def main() -> None:
@@ -148,7 +88,7 @@ def main() -> None:
     a = ap.parse_args()
 
     fmin, fmax, bins = (float(x) for x in a.grid.split(","))
-    reader = Reader(fmin, fmax, int(bins), a.n_layers, rate=(16000, 512))
+    reader = Readout(fmin, fmax, int(bins), a.n_layers, rate=(16000, 512))
     out = Path(a.out)
 
     # Every set's frames are held in memory once (a few hundred 8 s mono clips)

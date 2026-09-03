@@ -32,12 +32,18 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from itertools import permutations
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from experiments.rps_bench import resample_like_metric  # noqa: E402
 
 # ─── Thresholds (rev/s) ───────────────────────────────────────────────────────
 BAD_ROTOR = 1.0  # a rotor track with MAE above this is "failed"
@@ -77,16 +83,6 @@ def parse_name(exp: str) -> dict[str, str]:
     if m:
         return dict(arch=m.group(1), train="comb>real", speech="mix", objective="bce")
     return dict(arch=exp, train="?", speech="?", objective="?")
-
-
-def resample_like_metric(gt: np.ndarray, n_t: int) -> np.ndarray:
-    """``(R, Tg)`` -> ``(R, n_t)``, torch's linear ``align_corners=False``."""
-    tg = gt.shape[-1]
-    if tg == n_t:
-        return gt
-    pos = (np.arange(n_t) + 0.5) * tg / n_t - 0.5
-    pos = np.clip(pos, 0, tg - 1)
-    return np.stack([np.interp(pos, np.arange(tg), row) for row in gt])
 
 
 def pit_mae(pred: np.ndarray, gt: np.ndarray) -> tuple[np.ndarray, tuple[int, ...]]:
