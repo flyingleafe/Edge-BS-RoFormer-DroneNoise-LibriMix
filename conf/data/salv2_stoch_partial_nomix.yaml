@@ -1,0 +1,35 @@
+# SALV2 stoch PARTIAL — WITHOUT SPEECH. The `salv2_stoch_nomix` data config with
+# ONE line changed: the training policy is conf/online_mix/salv2_stoch_partial.yaml
+# (comb length drawn per clip, plus tooth dropout) instead of
+# conf/online_mix/salv2_stoch.yaml.
+#
+# THE VALIDATION BLOCK IS UNCHANGED — same policy file (salv2_stoch.yaml), same
+# `n: 256`, same `base_seed: 881101`, same 8 s unaugmented clips at
+# `flight_reuse: 1`. The monitored `val/rps_mae` therefore measures both runs on
+# the SAME 256 frames of the full-comb family, so it stays comparable with
+# `salv2_hppnet_stoch_nomix` (best 2.646). It is deliberately NOT the training
+# distribution any more: the partial-comb question is whether a wider training
+# family keeps the port honest on real audio, and the answer to that is read off
+# the real benchmark part, not off this number. Watch this number for a
+# regression, not for the result.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/salv2_stoch_partial.yaml
+    flatten_channels: true
+    speech: false
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.FixedSynthFrameDataset
+  params:
+    path: conf/online_mix/salv2_stoch.yaml
+    n: 256
+    base_seed: 881101
+    duration_s: 8.0
+    augment: false
+    flatten_channels: true
+    flight_reuse: 1
+    speech: false
+  iterable: false
+batch_size: null
+num_workers: null

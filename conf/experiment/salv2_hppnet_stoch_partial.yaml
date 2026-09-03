@@ -1,0 +1,49 @@
+# @package _global_
+# PARTIAL COMB — `salv2_hppnet_stoch_nomix` continued on a partially observed
+# stochastic family.
+#
+# THE QUESTION. That run's port reads REAL drone audio at about HALF the true
+# speed on cruise (PIT MAE near 35 rev/s, median relative bias -48%), while it
+# scores 2.646 rev/s on its own synthetic validation set. The suspected cause is
+# that the synthetic family always renders the comb up to Nyquist and a real
+# rotor does not: real harmonics die into the floor at an order that changes
+# with the clip, the microphone and the speed, the four rotors mask each other,
+# and the lines are broad. On a FULL comb a plain mean over harmonics is a
+# sufficient readout; on a SHORT one the half rate beats the truth, because it
+# covers every true line and pockets the empty bins between them at no cost.
+#
+# THE TEST. Make the training family partially observed and read the real part
+# again, zero-shot. Two changes, both inside
+# conf/online_mix/salv2_stoch_partial.yaml: the comb length is drawn uniformly
+# per clip from `n_harmonics_range: [10, 80]`, and `tooth_dropout` fires at
+# probability 0.5 to punch up to 8 teeth (k <= 40) out of the MIDDLE of the comb.
+# Nothing else moves.
+#
+# THE VALIDATION SET IS THE OLD ONE. conf/data/salv2_stoch_partial_nomix.yaml
+# keeps the `salv2_stoch.yaml` validation block, seed and all, so `val/rps_mae`
+# measures both runs on the same 256 full-comb frames and stays comparable with
+# the 2.646 of the parent run. It is a REGRESSION guard, not the result — the
+# result is the real benchmark part, dumped by scripts/rps_dump.py afterwards.
+#
+# WARM START, not a fresh run. `checkpoint:` loads the parent's best weights
+# (`strict=False`, weights only — the optimizer and the epoch counter start
+# fresh), so this measures what the wider family does TO the trained port rather
+# than re-running a 200-epoch cell. Hence the short budget: 40 epochs, patience
+# 15. Everything else — batch size 32, 16000 frames per validation, monitor
+# `rps_mae` — is the grid's, unchanged.
+defaults:
+  - override /data: salv2_stoch_partial_nomix
+  - override /model: hppnet_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: salv2_hppnet_stoch_partial
+checkpoint: r2://ml-data/artifacts/salv2_hppnet_stoch_nomix/checkpoints/best.ckpt
+epochs: 40
+patience: 15
+batch_size: 32  # frames (= 4 chunks x 8 mics at 4 s)
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: rps_mae
+  monitor_mode: min

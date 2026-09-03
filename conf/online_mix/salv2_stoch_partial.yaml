@@ -1,0 +1,115 @@
+# SALV2 stoch, PARTIALLY OBSERVED — the same stochastic family with a comb
+# that stops before the top of the band.
+#
+# THE QUESTION. A salience port (HPPNet with a comb-gather front end) trained on
+# conf/online_mix/salv2_stoch.yaml reads REAL drone audio at about HALF the true
+# speed on cruise: PIT MAE near 35 rev/s and a median relative bias of -48%.
+#
+# THE SUSPECTED MECHANISM. A real rotor exposes only PART of its comb. The
+# harmonics die into the broadband floor above an order that changes with the
+# clip, the microphone and the speed, the four rotors' lines mask each other,
+# and the lines are broad. The stochastic family renders the FULL series: the
+# pool sizes the comb so its last line lands at Nyquist, so every synthetic
+# clip carries every harmonic. A port trained on full combs can score the speed
+# as a plain mean over harmonics — and on a SHORT comb that score picks the half
+# rate, because half the true speed puts a candidate line on every true line and
+# spends its remaining candidates on empty bins that cost nothing.
+#
+# WHAT CHANGED against conf/online_mix/salv2_stoch.yaml, and nothing else:
+#
+#   - `n_harmonics_range: [10, 80]` on BOTH stochastic sources. The comb length
+#     is drawn uniformly per clip instead of filling the band, so the training
+#     family spans combs that end anywhere from the 10th to the 80th harmonic.
+#     Drawing it per clip is also what keeps the band edge from becoming a speed
+#     cue: a comb of FIXED length stops at `n_harmonics * rps`, an edge
+#     frequency proportional to the speed being predicted (see the
+#     `band_taper_frac` note in data_processing.stochastic_rotor_noise). With
+#     the length random and independent of the trajectory, the edge position is
+#     the product of two unknowns and identifies neither.
+#   - `tooth_dropout` at probability 0.5 in a `noise_augmentations` block, in the
+#     placement conf/online_mix/g7_ramp_dload.yaml uses. It zeroes +-2 STFT bins
+#     around up to 8 teeth `k * rps_r(t)` with `k <= 40`, so lines go missing
+#     from the MIDDLE of the comb as well as from its end — the masking a real
+#     four-rotor mixture does to itself. The block runs on the noise chunk
+#     before mixing, which is where the labels are, and it is the only
+#     augmentation family this policy adds.
+#
+# `scripts/check_stream.py --experiment salv2_hppnet_stoch_partial` REPORTS ONE
+# FAILURE on this policy, and it is a false alarm. Its rule says a
+# `noise_augmentations` block whose every choice is label-preserving must leave
+# the labels bit-identical, and `tooth_dropout` does return its label untouched.
+# The augmentation PATH re-grids the label track onto the 100 Hz uniform grid of
+# `data_processing.time_warp`, and the stochastic pool emits its labels at the
+# AUDIO rate, so a fired sample's labels differ by the decimation alone.
+# Measured over 8 clips per arm, on the model's own 31.25 Hz frame grid: 0.069
+# rev/s RMS (0.31 rev/s worst) on the intermittent arm and 0.001 rev/s RMS
+# (0.02 worst) on the full-flight arm, against a monitored error of 2.6 rev/s.
+#
+# Everything else — the two excitations, the silence arm at weight 0.2, the
+# `rps_scale_range`, the SNR range, the post-mix gain/polarity augmentations —
+# is byte-identical to salv2_stoch.yaml, so a difference between the two runs is
+# the partial comb and nothing else. The VALIDATION set of the paired data
+# config still reads salv2_stoch.yaml, so the monitored number stays comparable
+# with `salv2_hppnet_stoch_nomix`.
+
+sample_rate: 16000
+duration_s: 4.0
+base_seed: 20260901
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: stochastic
+      weight: 0.4
+      n_harmonics: 80
+      n_harmonics_range: [10, 80]
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.45, 1.20]
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+    - kind: stochastic
+      weight: 0.4
+      n_harmonics: 80
+      n_harmonics_range: [10, 80]
+      n_mics: 8
+      n_rotors: 4
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.45, 1.20]
+      rps:
+        kind: synthetic_intermittent
+        aggressiveness: 1.0
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      noise_augmentations:
+        probability: 0.5
+        choices:
+          - tooth_dropout: {max_teeth: 8, max_harmonic: 40, halfwidth_bins: 2}
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}
