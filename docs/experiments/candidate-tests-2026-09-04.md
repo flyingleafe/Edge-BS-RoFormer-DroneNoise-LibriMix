@@ -246,18 +246,122 @@ decoder (below): DREGON cruise 0.904 -> 0.932 -> 0.954 -> 0.973 over three
 passes, FLY124 13.27 -> 13.24, so the classical refiner has nothing to add to
 a seed that already sits at the label floor, and it walks away from it slowly.
 
+## C1 against the neural models, by regime
+
+This is the fair comparison the first report did not make. Every model in
+these tables reads ONE microphone, except the two columns labelled "8 mics".
+
+**Conditions.** The score is the PIT MAE in rev/s per mono frame, which is
+the neural models' own protocol: `rps_bench.part("real")` = the 37 clips of
+the frozen split, one frame per microphone (296 frames); `part("comb")` =
+256 static-comb frames; `part("stoch")` = 256 stochastic-comb frames. The
+predictions of the neural models are their dumps in `results/rps_dump`
+(`scripts/rps_dump.py`). The C1 columns are dumps of `scripts/slot_dump.py
+--part {comb,stoch,real_mono,real8}` in the same format.
+
+- **C1 A8 (1 mic)** is the A6b recipe (parts `reliability`, `empty_tooth`,
+  `floor_mix`; real windows only; 1500 steps, batch 2, 2 s crops, lr 1e-3)
+  trained with `--mono`: one microphone per crop, drawn uniformly. The
+  `channels` part is dropped because a mono input has one channel. Selected
+  on 48 mono windows (best 3.83 at step 1300, from 12.29 at step 0); two
+  non-finite steps hit the restore guard. Decoded per mono frame with the
+  P1c decode (sub-grid, relocate ON, octave OFF). 0.55 s per training step
+  on an A100; the whole arm fits one gpushort segment.
+- **C1 corner (1 mic)** is the same decoder with no trained part.
+- **C1 corner / A6b (8 mics)** are the eight-microphone rows of the arm
+  table, repeated over the eight frames of each clip.
+- Regimes: `zero-frames` = every rotor at or below 0.5 rev/s; `below-30` =
+  some rotor between 0.5 and 30 rev/s (outside the C1 grid); `in-grid` = the
+  rest; `ramp`, `cruise` and `ground` by the clip rule of the protocol
+  section; the rig by the clip's recording. The number of frames follows the
+  regime. Bold = best in the row.
+
+Static comb:
+
+| regime (frames) | regressor `r4hb_scv2` (1 mic) | `hppnet_r4_l4` (1 mic) | `m3mixv2_unigru128` (1 mic) | `salv2_hppnet_stoch_nomix` (1 mic) | C1 corner (1 mic) | C1 A8 (1 mic) |
+|---|---|---|---|---|---|---|
+| zero-frames (8032) | 12.58 | **0.02** | 40.56 | **0.02** | 73.47 | 85.71 |
+| below-30 (5456) | 16.46 | 25.55 | **1.42** | 2.82 | 25.10 | 21.09 |
+| ramp:in-grid (14624) | 21.95 | 61.94 | **1.81** | 6.46 | 6.39 | 9.39 |
+| cruise:in-grid (36144) | 13.18 | 55.44 | **1.62** | 1.94 | 5.09 | 8.33 |
+| all (64256) | 15.38 | 47.45 | 6.52 | **2.80** | 15.63 | 19.33 |
+
+Stochastic comb:
+
+| regime (frames) | regressor `r4hb_scv2` (1 mic) | `hppnet_r4_l4` (1 mic) | `m3mixv2_unigru128` (1 mic) | `salv2_hppnet_stoch_nomix` (1 mic) | C1 corner (1 mic) | C1 A8 (1 mic) |
+|---|---|---|---|---|---|---|
+| zero-frames (16432) | 1.47 | **0.02** | 28.43 | 0.09 | 73.29 | 89.21 |
+| below-30 (5744) | 37.55 | 19.45 | 31.80 | **7.97** | 48.36 | 66.58 |
+| ramp:in-grid (11960) | 36.31 | 60.93 | 22.44 | **3.22** | 13.04 | 19.36 |
+| cruise:in-grid (30120) | 37.55 | 53.43 | 31.53 | **2.80** | 20.34 | 35.17 |
+| all (64256) | 28.09 | 38.13 | 29.07 | **2.65** | 35.03 | 48.85 |
+
+Real split:
+
+| regime (frames) | regressor `r4hb_scv2` (1 mic) | `hppnet_r4_l4` (1 mic) | `m3mixv2_unigru128` (1 mic) | `salv2_hppnet_stoch_nomix` (1 mic) | C1 corner (1 mic) | C1 A8 (1 mic) | C1 corner (8 mics) | C1 A6b (8 mics) |
+|---|---|---|---|---|---|---|---|---|
+| zero-frames (9296) | **2.86** | 8.93 | 6.31 | 48.39 | 69.85 | 73.20 | 66.79 | 62.47 |
+| below-30 (2728) | **7.77** | 27.38 | 14.38 | 24.42 | 53.16 | 56.95 | 45.65 | 54.60 |
+| DREGON:ramp:in-grid (4176) | **4.43** | 17.14 | 5.94 | 29.61 | 14.45 | 11.82 | 10.66 | 10.28 |
+| FLY124:ramp:in-grid (5888) | **3.12** | 11.96 | 3.95 | 29.15 | 29.28 | 30.07 | 27.49 | 26.07 |
+| DREGON:cruise:all (32128) | 2.92 | 3.77 | 3.59 | 31.42 | 6.32 | 2.65 | 1.49 | **0.76** |
+| FLY124:cruise:all (20080) | **1.24** | 1.40 | 1.46 | 39.72 | 19.05 | 11.93 | 21.56 | 11.63 |
+| ramp:all (14056) | **5.11** | 16.48 | 9.51 | 28.13 | 33.16 | 33.23 | 29.08 | 31.07 |
+| ground:all (8032) | 1.60 | 8.47 | **1.53** | 51.83 | 69.85 | 74.09 | 67.61 | 60.93 |
+| all (74296) | **2.74** | 6.04 | 3.91 | 35.25 | 21.71 | 18.67 | 19.28 | 15.93 |
+
+**Reading.**
+
+1. **At one microphone C1 wins one regime, DREGON cruise, by 9 %.** A8 reads
+   2.65 against the regressor's 2.92, from one seed. Everywhere else the
+   regressor wins: FLY124 cruise 1.24 against 11.9 (the double-rate reading
+   on the two 36 rev/s hover clips survives the mono training exactly as it
+   survived the 8-mic training), the in-grid ramp frames 4.4 and 3.1 against
+   11.8 and 30.1, the zero frames 2.9 against 73, and all frames 2.74 against
+   18.7. C1 has no zero state and no grid below 30 rev/s, so a third of the
+   real frames are lost before any emission is read.
+2. **Training moves the corner where the grid covers the truth, and nowhere
+   else.** From the corner to A8, at one microphone: DREGON cruise 6.32 to
+   2.65, FLY124 cruise 19.1 to 11.9, all frames 21.7 to 18.7. Ramps, ground
+   and below-30 frames do not move, because they are outside the loss and
+   the grid.
+3. **The 8-mic advantage of the first report is a microphone advantage.**
+   The corner goes from 6.32 (1 mic) to 1.49 (8 mics) on DREGON cruise, A8 to
+   A6b from 2.65 to 0.76. The neural models never see more than one
+   microphone, so the 0.76 is not evidence about the architecture. A fair
+   8-mic comparison needs multi-microphone neural baselines, which do not
+   exist in this project.
+4. **On the synthetic parts C1 wins nothing, and training on real windows
+   makes it worse than its own corner.** Static comb, in-grid cruise: corner
+   5.09, A8 8.33, `m3mixv2_unigru128` 1.62. Stochastic comb: corner 20.3, A8
+   35.2, `salv2_hppnet_stoch_nomix` 2.80. The learned warp and per-order
+   weights fit the real rotors' harmonic profile and move away from the
+   delta-thin equal-weight comb the corner was built for. The zero and
+   below-30 frames of the synthetic parts are lost as on the real split.
+5. **What survives.** The mechanism reaches the label floor on DREGON cruise
+   with eight microphones and parity with the regressor with one, at 135
+   parameters and one gpushort segment of training. Its losses are all of
+   one kind: states the model cannot represent (zero, below 30, a fast
+   ramp) or a hypothesis nothing in the unary charges (a multiple). Those
+   are addressed inside the same mechanism in `docs/slot-comb-v2-design.md`.
+
 ## Conclusions
 
-**C1 passes its gate and is the architecture to carry forward.** A 135-
-parameter emission trained through the CRF on 2 s real 8-mic windows takes
-the zero-parameter corner from 1.49 to 0.76 on DREGON cruise (every
-rotor-frame within 10 %, signed error -0.43 % = the telemetry bias, so it is
-at the label floor W7) and from 21.6 to 11.6 on FLY124 cruise, an unseen rig,
-with the half-rate reading gone (0.25 -> 0.00). No arm trades one rig for the
-other, so the kill criterion of the synthesis doc (rig-specific harmonic caps)
-does not fire. Against the trained neural models of the error-profile
-campaign on the same clips, C1 is better on DREGON cruise (0.76 per clip at
-8 mics against 2.92 per mono frame for the best regressor).
+**C1 passes its gate on DREGON cruise and fails the fair comparison
+everywhere else.** A 135-parameter emission trained through the CRF on 2 s
+real windows takes the zero-parameter corner from 1.49 to 0.76 on DREGON
+cruise at eight microphones (every rotor-frame within 10 %, signed error
+-0.43 % = the telemetry bias, so it is at the label floor W7) and from 6.32
+to 2.65 at one microphone, where the best single-microphone regressor reads
+2.92. That is the only regime C1 wins at equal input, by 9 % from one seed.
+It loses FLY124 cruise (11.9 against 1.24: the double-rate reading on two
+36 rev/s hover clips), the in-grid ramp frames (12 and 30 against 4 and 3),
+the zero frames (73 against 2.9) and both synthetic parts, where training on
+real windows makes it worse than its own corner. No arm trades one rig for
+the other, so the kill criterion of the synthesis doc (rig-specific harmonic
+caps) does not fire; but the gate "beats the trained models" is passed only
+where the evidence is rich and the state is inside the grid. The tables are
+in "C1 against the neural models, by regime" above.
 
 CORRECTION (2026-09-04, after the first report). Two claims of the first
 report were wrong and are withdrawn. (1) "11.6 against 45 for the regressors
