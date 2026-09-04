@@ -324,3 +324,8 @@ load-bearing" rather than as a ranking among them; the two effects above the
 seed noise are the trained emission against the corner and real-only data
 against real + synthetic. A seed sweep of A6b is the next measurement if a
 ranking is wanted.
+
+**Next design.** `docs/slot-comb-v2-design.md` maps each regime C1 loses
+(zero frames, frames below 30 rev/s, ramps, the FLY124 double rate, the
+single-microphone precision) to one parameter group that contains the
+current setting at initialization, and gives the ablation order.

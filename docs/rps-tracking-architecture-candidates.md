@@ -487,3 +487,8 @@ detection over a grid (P5); the plain harmonic sum (P2); iteration of the v1
 refiner (M5); a mean over harmonics at k_max beyond the observed comb (P2,
 P2b); a wide floor (P1c, P5).
 
+**Next design (2026-09-04):** `slot-comb-v2-design.md` gives C1 more
+learnable parameters with the same mechanism (an OFF state, a grid from
+10 rev/s, a learned transition, a gap gather, a cross-order emission
+network, a pairwise rate prior). The campaign that motivates it is
+`experiments/candidate-tests-2026-09-04.md`.
