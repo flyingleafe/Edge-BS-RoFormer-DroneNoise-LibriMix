@@ -145,6 +145,15 @@ def main() -> int:
         default=0.0,
         help="wall-clock budget; save and print CHAIN: continue before it",
     )
+    ap.add_argument(
+        "--init",
+        action="append",
+        default=[],
+        metavar="PARAM=VALUE",
+        help="overwrite one trainable parameter at build time (a scalar fills the "
+        "tensor), e.g. --init emit.lam_raw=0.0 starts the empty-tooth charge ON "
+        "instead of at softplus(-8); repeatable; ignored on resume",
+    )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--threads", type=int, default=0)
     args = ap.parse_args()
@@ -158,6 +167,14 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     dev = args.device
     net, parts = build_model(args, dev)
+    named = dict(net.named_parameters())
+    for item in args.init:
+        name, _, value = item.partition("=")
+        if name not in named:
+            raise SystemExit(f"--init: no trainable parameter {name!r}; have {sorted(named)}")
+        with torch.no_grad():
+            named[name].fill_(float(value))
+        print(f"init override {name} = {float(value)}", flush=True)
     params = trainable(net)
     n_par = sum(p.numel() for p in params)
     print(
