@@ -43,6 +43,14 @@ def main() -> None:
         metavar="NAME=PATH.npy",
         help="extra M2/M5 conditioning, (N, 4, 251) rev/s in the frames' order; repeatable",
     )
+    ap.add_argument(
+        "--cond-experiment",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="zoo experiment used as an M2/M5 conditioning (dump if present, else "
+        "regenerated); repeatable; default r4hb_scv2",
+    )
     ap.add_argument("--passes", type=int, default=3, help="M5 iteration depth")
     ap.add_argument("--out", required=True, type=Path, help="output directory")
     ap.add_argument(
@@ -62,6 +70,7 @@ def main() -> None:
     results = run(
         args.experiment,
         extra_conds=extra or None,
+        cond_experiments=tuple(args.cond_experiment or ["r4hb_scv2"]),
         passes=args.passes,
         out_dir=args.out,
         n_frames=args.n_frames,

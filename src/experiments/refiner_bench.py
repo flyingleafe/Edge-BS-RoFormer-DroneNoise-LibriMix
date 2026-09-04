@@ -190,6 +190,23 @@ class _Refiner:
         return out
 
 
+def _predict(experiment: str, frames: list, device: str) -> np.ndarray:
+    """Regenerate a conditioning: ``zoo.load(experiment)`` over the frames.
+
+    Same readout as ``scripts/rps_dump.py`` (a regressor's ``rps_pred`` as is,
+    a salience port through the peak readout), resampled onto the 251-frame
+    label grid so the refiner sees the track its dump would have held.
+    """
+    fm = zoo.load(experiment, device=device)
+    reader = rb.Readout()
+    out = np.empty((len(frames), 4, T_GT))
+    for i, f in enumerate(frames):
+        p, _ = reader(fm(f), f)
+        a = np.nan_to_num(np.asarray(p, dtype=np.float64), nan=0.0)
+        out[i] = _resample_to(a, T_GT)
+    return out
+
+
 def _load_dump(name: str, n: int) -> np.ndarray | None:
     """``results/rps_dump/real/<name>.npz`` as ``(N, 4, 251)``, or None."""
     path = DUMP / f"{name}.npz"
@@ -208,6 +225,7 @@ def run(
     experiment: str,
     *,
     extra_conds: dict[str, np.ndarray] | None = None,
+    cond_experiments: tuple[str, ...] = ("r4hb_scv2",),
     passes: int = 3,
     out_dir: Path,
     n_frames: int | None = None,
@@ -223,8 +241,12 @@ def run(
         An experiment name ``zoo.load`` can resolve, e.g. ``hb_hgckla_ref_v2``.
     extra_conds :
         Extra conditionings for M2 and M5, ``{name: (N, 4, 251) rev/s}`` in
-        the frames' own order. The dumped ``r4hb_scv2`` track is always
-        included when the dump is present.
+        the frames' own order.
+    cond_experiments :
+        Zoo experiments whose prediction on the frames is a conditioning
+        (M2 and M5). The dump ``results/rps_dump/real/<name>.npz`` is used
+        when it exists (the laptop); otherwise the prediction is regenerated
+        with ``zoo.load`` (a cluster job has no dumps, only R2).
     passes : int
         Iteration depth of M5 (the refiner is applied to its own output).
     out_dir : Path
@@ -285,9 +307,9 @@ def run(
 
     # ── M2: realistic initializations ─────────────────────────────────────
     conds: dict[str, np.ndarray] = {}
-    dumped = _load_dump("r4hb_scv2", n)
-    if dumped is not None:
-        conds["r4hb_scv2"] = dumped
+    for name in cond_experiments:
+        dumped = _load_dump(name, n)
+        conds[name] = dumped if dumped is not None else _predict(name, frames, device)
     for name, arr in (extra_conds or {}).items():
         a = np.asarray(arr, dtype=np.float64)
         if a.shape != (n, 4, T_GT):
