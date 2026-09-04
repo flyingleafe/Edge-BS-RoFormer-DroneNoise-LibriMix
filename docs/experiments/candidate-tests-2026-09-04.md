@@ -256,9 +256,21 @@ at the label floor W7) and from 21.6 to 11.6 on FLY124 cruise, an unseen rig,
 with the half-rate reading gone (0.25 -> 0.00). No arm trades one rig for the
 other, so the kill criterion of the synthesis doc (rig-specific harmonic caps)
 does not fire. Against the trained neural models of the error-profile
-campaign on the same clips, C1 is 3x better on DREGON cruise (0.76 against
-2.28 for the best regressor) and is the first learned model that reads the
-unseen rig at all (11.6 against 45 for the regressors).
+campaign on the same clips, C1 is better on DREGON cruise (0.76 per clip at
+8 mics against 2.92 per mono frame for the best regressor).
+
+CORRECTION (2026-09-04, after the first report). Two claims of the first
+report were wrong and are withdrawn. (1) "11.6 against 45 for the regressors
+on FLY124": the best regressor reads FLY124 cruise at 1.24 per mono frame,
+so C1 LOSES there by a factor of nine; FLY124 is an unseen recording but not
+an unseen rig (FLY125, the same aircraft, is in the training pool), and the
+45 was a cross-rig number from another campaign, quoted from memory in error.
+(2) The comparison itself was unfair: C1 reads all eight microphones (power-
+averaged), the neural models read one. At one microphone the untrained C1
+corner reads DREGON cruise at 8.0 and FLY124 at 18.8 (P1c), both worse than
+the regressor. The regressor also wins ramps (5.1 against 31) and ground (1.6
+against 61). The fair, regime-split comparison with a single-microphone C1
+arm is in the section "C1 against the neural models, by regime" below.
 
 **What C1 learned is a soft order statistic, not the rules that were
 written for it.** The per-mic channels, the floor mixture and the explicit
