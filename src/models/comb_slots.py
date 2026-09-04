@@ -42,9 +42,23 @@ THE SOFT ASSIGNMENT IS A CRF POSTERIOR, not a per-frame softmax: `p_i` comes
 from forward-backward over the same chain the Viterbi decoder maximizes, so a
 frame whose own evidence is ambiguous inherits its neighbours' certainty. That
 is also what makes selection and deployment the same object.
+
+THE EMISSION IS SWITCHABLE — candidate C1 of
+`docs/rps-tracking-architecture-candidates.md`. The zero-parameter corner
+(`head_mode="classical"`, `n_iter=0`, eight microphones power-averaged, a
+15-bin running-median floor) reads real DREGON cruise at 1.49 rev/s, ahead of
+every trained model on that protocol (probe P1c), and its remaining failures
+are the octave on FLY124 (a short comb), ramps and ground. `emission="partial"`
+replaces the mean over harmonic orders with `PartialEmission` — a learned
+reliability over (order, channel), the empty-tooth octave charge, and a learned
+floor width. Every part starts at zero effect, so the corner stays inside the
+family and training can only leave it by lowering the CRF loss.
 """
 
 from __future__ import annotations
+
+import math
+from typing import NamedTuple, cast
 
 import numpy as np
 import torch
@@ -55,7 +69,15 @@ from torch.utils.checkpoint import checkpoint
 from models import comb_crf
 from models.comb_salience import CombGather, CombScoreHead, local_floor_torch
 
-__all__ = ["CombMaskBank", "SlotCombNet"]
+__all__ = ["PARTIAL_PARTS", "CombMaskBank", "PartialEmission", "SlotCombNet"]
+
+#: Every part of the learned partial-observation emission. Each is switchable on
+#: its own, so an ablation is a command-line argument and not a code change.
+PARTIAL_PARTS = ("reliability", "channels", "empty_tooth", "floor_mix")
+
+#: `softplus(_SOFTPLUS_ONE) == 1`: the per-order weight starts at the weight the
+#: classical mean over harmonics gives every order.
+_SOFTPLUS_ONE = math.log(math.e - 1.0)
 
 
 class CombMaskBank(nn.Module):
@@ -66,8 +88,18 @@ class CombMaskBank(nn.Module):
     where two harmonics of one comb fall in the same bin a sum would exceed it.
     """
 
-    def __init__(self, grid: torch.Tensor, n_fft: int, sr: int, k_max: int,
-                 f_max: float, width_bins: float = 1.5, n_freq: int | None = None):
+    bank: torch.Tensor
+
+    def __init__(
+        self,
+        grid: torch.Tensor,
+        n_fft: int,
+        sr: int,
+        k_max: int,
+        f_max: float,
+        width_bins: float = 1.5,
+        n_freq: int | None = None,
+    ):
         super().__init__()
         n_freq = n_freq if n_freq is not None else n_fft // 2 + 1
         df = float(sr) / float(n_fft)
@@ -78,7 +110,7 @@ class CombMaskBank(nn.Module):
         # six-worker evaluation pool outright.
         for k0 in range(1, k_max + 1, 16):
             ks = torch.arange(k0, min(k0 + 16, k_max + 1), dtype=torch.float32)
-            fk = ks[None, :] * grid.to(torch.float32)[:, None]        # (G, kc)
+            fk = ks[None, :] * grid.to(torch.float32)[:, None]  # (G, kc)
             d = (fbin[None, None, :] - (fk / df)[:, :, None]) / float(width_bins)
             bump = torch.exp(-0.5 * d * d) * (fk < float(f_max))[:, :, None]
             bank = torch.maximum(bank, bump.amax(dim=1))
@@ -87,6 +119,229 @@ class CombMaskBank(nn.Module):
     def forward(self, p: torch.Tensor) -> torch.Tensor:
         """``(B, G, T)`` rate distribution -> ``(B, F, T)`` claim in ``[0, 1]``."""
         return torch.einsum("bgt,gf->bft", p, self.bank.to(p.dtype)).clamp(0.0, 1.0)
+
+
+class PartialEmission(nn.Module):
+    """A learned reliability over (order, channel), in place of the mean over orders.
+
+    WHY EACH PART EXISTS. The measurements are in
+    `docs/rps-tracking-architecture-candidates.md`; the short form is that the
+    classical emission `mean_k log1p(P/floor)` makes three assumptions real
+    drone audio breaks.
+
+    * ORDERS ARE NOT EQUALLY INFORMATIVE. Track energy is 97.5% in orders 1-9,
+      and above k ~ 25 a line is not separable from its own local floor in a
+      128 ms STFT (tooth contrast 0.13 dB at k 25-49, 0.01 dB at 50-80). A mean
+      over 40 orders therefore averages three informative reads into 37 noise
+      reads, and a coincidence can outvote a quiet rotor. `softplus(a_k)` is the
+      per-order weight that lets the useless orders drop out; the MLP makes the
+      weight depend on WHAT WAS READ, which is what turns a mean into a learned
+      order statistic (`reliability`).
+    * MICROPHONES ARE NOT INTERCHANGEABLE. Eight mics power-averaged take the
+      zero-parameter decoder from 8.03 to 1.49 rev/s on DREGON cruise, the
+      largest single lever measured, but the residual is 90% per-mic incoherent
+      with an 8.5 dB per-mic spread, so a per-mic read carries information the
+      average has already destroyed. `sigmoid(b_c)` weights the mean channel
+      against the individual mics, starting at 0.99966 against 3.35e-4 each, so
+      the model begins at the measured optimum (`channels`).
+    * A PREDICTED LINE THAT LANDS ON THE FLOOR MUST COST SOMETHING. The octave
+      is exactly nested — the comb at r/2 contains every line of the comb at r —
+      so no amount of evidence at the true lines rejects it, and on real audio
+      the odd/even level ratio is blind (0.64 at the truth against 0.63 at the
+      half on FLY124). The empty-tooth hinge charges `relu(tau - z)` per order,
+      which the half rate pays at every odd order and the truth does not
+      (`empty_tooth`).
+    * THE FLOOR WIDTH IS A FIRST-ORDER DESIGN CHOICE, not a constant. On the
+      decoded output the same decoder reads DREGON cruise at 4.3 rev/s with a
+      31-bin running median and 41.3 with a 307-bin one. A geometric mixture
+      over widths makes that choice a parameter (`floor_mix`).
+
+    AT INITIALIZATION THIS IS THE CLASSICAL SCORE. `softplus(a_k) = 1`, the
+    MLP's last layer is zero, the warp's knot slopes are zero, `lambda` is
+    3.35e-4 and the floor mixture puts 0.99933 on the 15-bin median. What is
+    left is the ~2.7e-3 of weight the eight per-mic gates hold, which is the
+    only reason the parity test has a tolerance at all.
+    """
+
+    def __init__(
+        self,
+        k_max: int = 40,
+        n_mic: int = 8,
+        parts: tuple[str, ...] = PARTIAL_PARTS,
+        hidden: int = 8,
+        n_knots: int = 8,
+        z_max: float = 12.0,
+        floor_widths: tuple[int, ...] = (15, 31, 61),
+    ):
+        super().__init__()
+        bad = set(parts) - set(PARTIAL_PARTS)
+        if bad:
+            raise ValueError(f"unknown emission parts {sorted(bad)}")
+        self.k_max, self.n_mic = int(k_max), int(n_mic)
+        self.parts = tuple(parts)
+        self.floor_widths = tuple(max(3, int(w) | 1) for w in floor_widths)
+        # The warp phi is the head's existing piecewise-linear one, reused rather
+        # than reimplemented so "the classical score is a point in this family"
+        # keeps meaning the same thing. Its per-order weight `w` is frozen at
+        # zero: `a_k` below is the per-order weight here, and two of them would
+        # be one parameter written twice.
+        self.warp = CombScoreHead(k_max, "learned", n_knots=n_knots, z_max=z_max)
+        self.warp.w.requires_grad_(False)
+        self.a = nn.Parameter(torch.full((int(k_max),), _SOFTPLUS_ONE))
+        # Channel 0 is the power MEAN, channels 1..n_mic are the microphones.
+        self.b = nn.Parameter(torch.cat([torch.full((1,), 8.0), torch.full((int(n_mic),), -8.0)]))
+        # SEVEN INPUTS, HIDDEN 8, AND NOTHING WIDER. The readings live on a
+        # (batch, channel, order, rate, frame) grid — 9 x 40 x 700 x 63 cells for
+        # one 2 s crop — so every hidden unit costs 16 MB per batch item. A
+        # reliability that needs more capacity than this is a different design,
+        # not a bigger MLP.
+        self.mlp = nn.Sequential(nn.Linear(7, int(hidden)), nn.GELU(), nn.Linear(int(hidden), 1))
+        nn.init.zeros_(cast(nn.Linear, self.mlp[2]).weight)
+        nn.init.zeros_(cast(nn.Linear, self.mlp[2]).bias)
+        self.lam_raw = nn.Parameter(torch.tensor(-8.0))
+        self.tau = nn.Parameter(torch.tensor(math.log(2.0)))
+        self.floor_logits = nn.Parameter(torch.tensor([8.0, 0.0, 0.0][: len(self.floor_widths)]))
+
+    @property
+    def use_mics(self) -> bool:
+        return "channels" in self.parts
+
+    # ── The floor ────────────────────────────────────────────────────────────
+
+    def local_floor(self, x: torch.Tensor, default_bins: int) -> torch.Tensor:
+        """``(B, C, F, T)`` power -> its floor, per channel.
+
+        The medians are DETACHED — a running median sets the scale and is data,
+        not a fit, exactly as in the classical scan. What is learned is only how
+        the widths are mixed, so the gradient reaches the floor WIDTH without
+        ever reaching the floor LEVEL.
+        """
+        b, c, n_f, n_t = x.shape
+        flat = x.reshape(b * c, n_f, n_t)
+        if "floor_mix" not in self.parts:
+            out = local_floor_torch(flat, default_bins).detach()
+        else:
+            # Geometric, not arithmetic: a floor is a level, so the mixture is
+            # linear in dB. That also keeps the mixture positive without a clamp.
+            w = torch.softmax(self.floor_logits, dim=0).to(flat.dtype)
+            logs = torch.stack(
+                [local_floor_torch(flat, wd).detach().log() for wd in self.floor_widths]
+            )
+            out = torch.exp((w[:, None, None, None] * logs).sum(dim=0))
+        return out.reshape(b, c, n_f, n_t)
+
+    # ── The emission ─────────────────────────────────────────────────────────
+
+    def _features(
+        self, z: torch.Tensor, gf: torch.Tensor, valid: torch.Tensor, is_mean: float
+    ) -> torch.Tensor:
+        """The reliability's inputs: ``(B, K, G, T) -> (B, K, G, T, 7)``.
+
+        The two rate neighbours and the three-frame average are what let the
+        weight ask whether a read is a LINE or a lucky bin: a real harmonic is
+        wide enough to raise its neighbours and persists across frames, while a
+        noise bin does neither. The floor level enters normalized, so a gain
+        change cannot move it — the family must not be able to read level.
+        """
+        zl = torch.cat([z[:, :, :1], z[:, :, :-1]], dim=2)
+        zr = torch.cat([z[:, :, 1:], z[:, :, -1:]], dim=2)
+        zt = (
+            torch.cat([z[..., :1], z[..., :-1]], dim=-1)
+            + z
+            + torch.cat([z[..., 1:], z[..., -1:]], dim=-1)
+        ) / 3.0
+        lf = gf.clamp_min(1e-12).log()
+        n = valid.sum() * z.shape[-1]
+        mu = (lf * valid).sum(dim=(1, 2, 3), keepdim=True) / n.clamp_min(1.0)
+        var = (((lf - mu) * valid) ** 2).sum(dim=(1, 2, 3), keepdim=True) / n.clamp_min(1.0)
+        lfn = ((lf - mu) / var.clamp_min(1e-12).sqrt()) * valid
+        k = (torch.arange(1, self.k_max + 1, device=z.device, dtype=z.dtype) / self.k_max)[
+            None, :, None, None
+        ]
+        return torch.stack(
+            torch.broadcast_tensors(
+                z, zl, zr, zt, lfn, k.expand_as(z), torch.full_like(z, float(is_mean))
+            ),
+            dim=-1,
+        )
+
+    def _channel(
+        self, x_c: torch.Tensor, xf_c: torch.Tensor, gather: CombGather, c: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One channel's weighted evidence: ``(B, G, T)`` numerator, weight, hinge."""
+        h = gather(x_c)  # (B, K, G, T)
+        gf = gather(xf_c).clamp_min(1e-12)
+        z = torch.log1p(h / gf)
+        valid = cast(torch.Tensor, gather.valid).to(z.dtype)[None, :, :, None]
+        w = F.softplus(self.a).to(z.dtype)[None, :, None, None] * torch.sigmoid(self.b[c])
+        if "reliability" in self.parts:
+            w = w * (
+                1.0 + self.mlp(self._features(z, gf, valid, 1.0 if c == 0 else 0.0)).squeeze(-1)
+            )
+        g = w * valid
+        num = (g * self.warp._warp(z)).sum(dim=1)
+        den = g.sum(dim=1).expand_as(num)
+        # The hinge is read on the MEAN channel only: it is a statement about the
+        # comb, and eight noisy copies of it would only add variance.
+        empty = (
+            ((self.tau - z).clamp_min(0.0) * valid).sum(dim=1) if c == 0 else torch.zeros_like(num)
+        )
+        return num, den, empty
+
+    def forward(
+        self, x: torch.Tensor, xfloor: torch.Tensor, gather: CombGather, use_ckpt: bool = False
+    ) -> torch.Tensor:
+        """``(B, C, F, T)`` power and floor -> salience ``(B, G, T)``.
+
+        Channels are accumulated ONE AT A TIME, each under its own checkpoint.
+        The readings are (B, C, K, G, T) — 9 x 40 x 700 x 63 cells for a 2 s crop
+        — and the reliability's features multiply that by seven, so holding every
+        channel's activations at once would cost nine times the peak. Measured
+        end to end: one loss step at batch 2 with 2 s crops adds 1.35 GB.
+        """
+        num = den = empty = None
+        for c in range(x.shape[1]):
+            args = (x[:, c], xfloor[:, c], gather, c)
+            if use_ckpt:
+                n_c, d_c, e_c = cast(
+                    tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+                    checkpoint(self._channel, *args, use_reentrant=False),
+                )
+            else:
+                n_c, d_c, e_c = self._channel(*args)
+            num = n_c if num is None else num + n_c
+            den = d_c if den is None else den + d_c
+            empty = e_c if empty is None else empty
+        assert num is not None and den is not None and empty is not None
+        s = num / den.clamp_min(1e-12)
+        if "empty_tooth" in self.parts:
+            cnt = cast(torch.Tensor, gather.count).to(s.dtype)[None, :, None]
+            s = s - F.softplus(self.lam_raw) * empty / cnt
+        return s
+
+
+class _Evidence(NamedTuple):
+    """What one pass reads, split by WHO reads it.
+
+    ``pw``/``floor`` are the power-mean channel and its single running-median
+    floor. `union_evidence`, `_odd_even` and `contrast` read those and nothing
+    else, so the coverage objective, the octave test and the zero decision stay
+    the quantities the zero-parameter corner was measured with.
+
+    ``x``/``xfloor`` are what the emission reads and what `_residual` explains
+    away — the same two tensors in the classical corner, and the per-channel
+    stack with its learned floor mixture under ``emission="partial"``.
+    ``efloor`` is that floor in the form the emission wants it: gathered at
+    every harmonic of every candidate (classical), or still per channel and
+    ungathered (partial, where the gather happens per channel inside the memory
+    checkpoint).
+    """
+
+    pw: torch.Tensor
+    floor: torch.Tensor
+    x: torch.Tensor
+    xfloor: torch.Tensor
+    efloor: torch.Tensor
 
 
 class SlotCombNet(nn.Module):
@@ -98,25 +353,56 @@ class SlotCombNet(nn.Module):
             ``0`` reproduces the deployed peel-plus-Viterbi decoder.
         head_mode: ``"classical"`` (no parameters, the Whittle score),
             ``"learned"`` or ``"learned_cond"``.
+        emission: ``"classical"`` (the mean over harmonic orders of the
+            power-mean channel) or ``"partial"`` (`PartialEmission`, candidate
+            C1). ``"partial"`` at initialization equals ``"classical"`` up to
+            the per-mic gates' 2.7e-3 of weight.
+        parts: which parts of the partial emission are active; read only when
+            ``emission="partial"``.
+        n_mic: how many microphones the per-channel weights are sized for.
         slew, stiff: the hinge transition, in the classical units.
     """
 
+    pen: torch.Tensor
+    window: torch.Tensor
+
     def __init__(
-        self, sr: int = 16000, n_fft: int = 4096, hop_length: int = 512,
-        r_lo: float = 30.0, r_hi: float = 100.0, n_grid: int = 700,
-        k_max: int = 32, f_max: float = 7500.0, head_mode: str = "classical",
-        floor_hz: float = 120.0, n_rot: int = 4, n_iter: int = 2,
-        notch_width: float = 1.5, slew: float = 12.0, stiff: float = 40.0,
-        use_checkpoint: bool = True, mask_k_max: int | None = None,
-        union_mode: str = "noisyor", read_width: int = 0,
-        k_refine: int | None = None, refine_band: float = 3.0,
+        self,
+        sr: int = 16000,
+        n_fft: int = 4096,
+        hop_length: int = 512,
+        r_lo: float = 30.0,
+        r_hi: float = 100.0,
+        n_grid: int = 700,
+        k_max: int = 32,
+        f_max: float = 7500.0,
+        head_mode: str = "classical",
+        floor_hz: float = 120.0,
+        n_rot: int = 4,
+        n_iter: int = 2,
+        notch_width: float = 1.5,
+        slew: float = 12.0,
+        stiff: float = 40.0,
+        use_checkpoint: bool = True,
+        mask_k_max: int | None = None,
+        union_mode: str = "noisyor",
+        read_width: int = 0,
+        k_refine: int | None = None,
+        refine_band: float = 3.0,
         multichannel: bool = True,
+        emission: str = "classical",
+        parts: tuple[str, ...] = PARTIAL_PARTS,
+        n_mic: int = 8,
+        floor_widths: tuple[int, ...] | None = None,
     ):
         super().__init__()
+        if emission not in ("classical", "partial"):
+            raise ValueError(f"unknown emission {emission!r}")
         self.sr, self.n_fft, self.hop_length = int(sr), int(n_fft), int(hop_length)
         self.n_rot, self.n_iter = int(n_rot), int(n_iter)
         self.union_mode = str(union_mode)
         self.multichannel = bool(multichannel)
+        self.emission = str(emission)
         # HOW MANY BINS ONE HARMONIC IS READ OVER. The gather reads a single
         # interpolated bin, which is right for a delta-thin line and wrong for a
         # Lorentzian one: the stochastic family's linewidth is
@@ -145,9 +431,22 @@ class SlotCombNet(nn.Module):
         self.floor_bins = max(3, int(round(floor_hz / (sr / n_fft))) | 1)
         self.gather = CombGather(r_lo, r_hi, n_grid, k_max, sr, n_fft, f_max)
         self.head = CombScoreHead(k_max, head_mode)
+        # THE MIXTURE IS ANCHORED ON THIS MODEL'S OWN FLOOR. The first width is
+        # `floor_bins` and carries 0.99933 of the weight at initialization, so
+        # the partial emission starts at the floor the classical corner uses
+        # whatever `floor_hz` is. At the C1 corner (60 Hz) that is (15, 31, 61).
+        fb = self.floor_bins
+        widths = floor_widths if floor_widths is not None else (fb, 2 * fb + 1, 4 * fb + 1)
+        self.emit = (
+            PartialEmission(k_max, n_mic=n_mic, parts=parts, floor_widths=widths)
+            if self.emission == "partial"
+            else None
+        )
+        grid = cast(torch.Tensor, self.gather.grid)
         if self.k_refine:
-            self.gather_lo = CombGather(grid=self.gather.grid, k_max=self.k_refine,
-                                        sr=sr, n_fft=n_fft, f_max=f_max)
+            self.gather_lo = CombGather(
+                grid=grid, k_max=self.k_refine, sr=sr, n_fft=n_fft, f_max=f_max
+            )
             self.head_lo = CombScoreHead(self.k_refine, "classical")
         # THE CLAIM SPANS THE WHOLE BAND, THE SCORE DOES NOT. Scoring stops at
         # `k_max` harmonics, but a rotor radiates lines all the way up, so
@@ -155,12 +454,12 @@ class SlotCombNet(nn.Module):
         # to 32 harmonics a rotor at 34.6 rev/s was only notched to 1107 Hz, and
         # a slot at 68.5 then fed on the SAME rotor's surviving even harmonics
         # above that — which is the measured `typical-idle` failure.
-        self.mask_k_max = int(mask_k_max if mask_k_max is not None
-                              else np.ceil(f_max / max(r_lo, 1e-6)))
-        self.masks = CombMaskBank(self.gather.grid, n_fft, sr, self.mask_k_max,
-                                  f_max, notch_width)
+        self.mask_k_max = int(
+            mask_k_max if mask_k_max is not None else np.ceil(f_max / max(r_lo, 1e-6))
+        )
+        self.masks = CombMaskBank(grid, n_fft, sr, self.mask_k_max, f_max, notch_width)
         self.register_buffer("window", torch.hann_window(int(n_fft)), persistent=False)
-        step = float(self.gather.grid[1] - self.gather.grid[0])
+        step = float(grid[1] - grid[0])
         self.step_free = max(slew * (hop_length / sr) / step, 1e-9)
         span, pen = comb_crf.band_penalty(self.step_free, stiff)
         self.span = span
@@ -168,10 +467,10 @@ class SlotCombNet(nn.Module):
 
     @property
     def grid(self) -> torch.Tensor:
-        return self.gather.grid
+        return cast(torch.Tensor, self.gather.grid)
 
-    def spectrum(self, audio: torch.Tensor) -> torch.Tensor:
-        """``(B, T)`` or ``(C, T)`` -> ``(B, F, T)`` power, averaging over channels.
+    def spectrum(self, audio: torch.Tensor, per_channel: bool = False):
+        """``(B, T)``, ``(C, T)`` or ``(B, C, T)`` -> ``(B, F, T)`` mean power.
 
         A multi-microphone input is averaged in POWER, never in waveform. The mics
         sit metres apart, so summing their waveforms comb-filters exactly the lines
@@ -180,55 +479,118 @@ class SlotCombNet(nn.Module):
         variance is what the score margin is made of -- the truth outscores the
         best decoy by about 0.03 nats there, against 1.65 on the synthetic static
         comb, so variance reduction is the lever with the most room in it.
+
+        ``per_channel=True`` also returns the per-channel power ``(B, C, F, T)``,
+        which the partial emission reads: the residual is 90% per-mic incoherent
+        on DREGON, so a mic carries evidence the average has already destroyed.
+        The default return value is the mean alone, so every existing caller and
+        every number measured before the partial emission existed reproduces.
         """
         if audio.dim() == 3:
-            audio = audio.squeeze(1)
-        multi = audio.dim() == 2 and audio.shape[0] > 1 and self.multichannel
-        spec = torch.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length,
-                          window=self.window.to(audio.dtype), center=True,
-                          return_complex=True)
+            n_b, n_c = int(audio.shape[0]), int(audio.shape[1])
+            flat = audio.reshape(n_b * n_c, -1)
+        elif audio.dim() == 2 and audio.shape[0] > 1 and self.multichannel:
+            n_b, n_c, flat = 1, int(audio.shape[0]), audio
+        else:
+            n_b, n_c, flat = int(audio.shape[0]), 1, audio
+        spec = torch.stft(
+            flat,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            window=self.window.to(flat.dtype),
+            center=True,
+            return_complex=True,
+        )
         pw = spec.real.pow(2) + spec.imag.pow(2)
-        if multi:
-            pw = pw.mean(dim=0, keepdim=True)
         if self.read_width > 0:
             k = 2 * self.read_width + 1
-            pw = F.avg_pool1d(pw.transpose(1, 2), k, 1, self.read_width,
-                              count_include_pad=False).transpose(1, 2) * k
-        return pw
+            pw = (
+                F.avg_pool1d(
+                    pw.transpose(1, 2), k, 1, self.read_width, count_include_pad=False
+                ).transpose(1, 2)
+                * k
+            )
+        pw = pw.reshape(n_b, n_c, pw.shape[-2], pw.shape[-1])
+        mean = pw.mean(dim=1)
+        return (pw, mean) if per_channel else mean
 
-    def _score(self, pw: torch.Tensor, gfloor: torch.Tensor) -> torch.Tensor:
-        """One slot's salience from an already-residualized spectrum."""
+    def _evidence(self, audio: torch.Tensor) -> _Evidence:
+        """The spectra and floors one decode pass needs, computed once."""
+        if self.emit is None:
+            pw = cast(torch.Tensor, self.spectrum(audio))
+            floor = local_floor_torch(pw, self.floor_bins).detach()
+            return _Evidence(pw, floor, pw, floor, self.gather(floor).clamp_min(1e-12))
+        pwc, pw = cast(tuple[torch.Tensor, torch.Tensor], self.spectrum(audio, per_channel=True))
+        floor = local_floor_torch(pw, self.floor_bins).detach()
+        # A mono input has nothing to add: its one channel IS the mean, and
+        # listing it twice would only halve the mean channel's weight.
+        x = (
+            torch.cat([pw.unsqueeze(1), pwc], dim=1)
+            if self.emit.use_mics and pwc.shape[1] > 1
+            else pw.unsqueeze(1)
+        )
+        if x.shape[1] > self.emit.n_mic + 1:
+            raise ValueError(f"{x.shape[1] - 1} microphones, weights sized for {self.emit.n_mic}")
+        xfloor = self.emit.local_floor(x, self.floor_bins)
+        return _Evidence(pw, floor, x, xfloor, xfloor)
+
+    def _score(self, pw: torch.Tensor, efloor: torch.Tensor) -> torch.Tensor:
+        """One slot's salience from an already-residualized spectrum.
+
+        ``efloor`` is `_Evidence.efloor`: the gathered floor for the classical
+        head, the per-channel floor stack for the partial emission. A mean-only
+        input (what the relocate and octave moves hand back) is read as the ONE
+        mean channel, so those moves rescore with the same emission the loss
+        trains — the alternative, a classical rescore inside a learned decoder,
+        would put two different score surfaces in one decode.
+        """
+        if self.emit is not None:
+            if pw.dim() == 3:  # a mean-channel-only spectrum
+                pw = pw.unsqueeze(1)
+                efloor = efloor[:, :1] if efloor.dim() == 4 else efloor.unsqueeze(1)
+            return self.emit(pw, efloor, self.gather, use_ckpt=self._ckpt_on())
         h = self.gather(pw)
-        return self.head(h, gfloor, self.gather.count, self.gather.grid)
+        return self.head(h, efloor, cast(torch.Tensor, self.gather.count), self.grid)
 
-    def _score_ckpt(self, pw, gfloor):
-        if self.use_checkpoint and self.training and torch.is_grad_enabled():
-            return checkpoint(self._score, pw, gfloor, use_reentrant=False)
-        return self._score(pw, gfloor)
+    def _ckpt_on(self) -> bool:
+        return bool(self.use_checkpoint and self.training and torch.is_grad_enabled())
+
+    def _score_ckpt(self, pw: torch.Tensor, efloor: torch.Tensor) -> torch.Tensor:
+        # The partial emission checkpoints itself, one channel at a time, which
+        # is the granularity that keeps its (B, C, K, G, T) readings affordable.
+        if self.emit is None and self._ckpt_on():
+            return cast(torch.Tensor, checkpoint(self._score, pw, efloor, use_reentrant=False))
+        return self._score(pw, efloor)
 
     def _residual(self, pw, floor, claims, skip: int | None):
-        """Remove every slot's claim except ``skip``'s. ``claims`` is ``(B, R, F, T)``."""
+        """Remove every slot's claim except ``skip``'s. ``claims`` is ``(B, R, F, T)``.
+
+        A per-channel stack is residualized against ITS OWN floor: a claim is a
+        share of a bin and does not depend on the microphone, so the same share
+        broadcasts over the channel axis.
+        """
         if claims is None or claims.shape[1] == 0:
             return pw
         c = claims.sum(dim=1)
         mine = claims[:, skip] if skip is not None else torch.zeros_like(c)
         other = ((c - mine) / c.clamp_min(1.0)).clamp(0.0, 1.0)
+        if pw.dim() == 4:
+            other = other.unsqueeze(1)
         return pw * (1.0 - other) + floor * other
 
     def forward(self, audio: torch.Tensor, hard_init: bool = True):
         """Returns ``(scores, p)``: ``(B, R, G, T)`` salience and rate posteriors."""
-        pw = self.spectrum(audio)
-        floor = local_floor_torch(pw, self.floor_bins).detach()
-        gfloor = self.gather(floor).clamp_min(1e-12)
-        b, _, n_t = pw.shape
-        n_g = self.gather.n_grid
+        return self._forward_ev(self._evidence(audio), hard_init)
+
+    def _forward_ev(self, e: _Evidence, hard_init: bool = True):
+        b, n_f, n_t = e.pw.shape
 
         # ── Sequential initialization: this IS the deployed peel ──────────────
-        claims = pw.new_zeros((b, 0, pw.shape[1], n_t))
+        claims = e.pw.new_zeros((b, 0, n_f, n_t))
         scores, posts = [], []
-        for i in range(self.n_rot):
-            res = self._residual(pw, floor, claims if claims.shape[1] else None, None)
-            s = self._score_ckpt(res, gfloor)
+        for _ in range(self.n_rot):
+            res = self._residual(e.x, e.xfloor, claims if claims.shape[1] else None, None)
+            s = self._score_ckpt(res, e.efloor)
             scores.append(s)
             if hard_init:
                 path = comb_crf.viterbi(s.detach(), self.span, self.pen)
@@ -242,8 +604,8 @@ class SlotCombNet(nn.Module):
         for _ in range(self.n_iter):
             scores = []
             for i in range(self.n_rot):
-                res = self._residual(pw, floor, claims, i)
-                scores.append(self._score_ckpt(res, gfloor))
+                res = self._residual(e.x, e.xfloor, claims, i)
+                scores.append(self._score_ckpt(res, e.efloor))
             posts = [comb_crf.posterior_marginals(s, self.span, self.pen) for s in scores]
             claims = torch.stack([self.masks(p) for p in posts], dim=1)
 
@@ -251,9 +613,11 @@ class SlotCombNet(nn.Module):
 
     # ── Decoding ─────────────────────────────────────────────────────────────
 
-    def _rescore(self, pw, floor, gfloor, claims):
-        return [self._score(self._residual(pw, floor, claims, i), gfloor)
-                for i in range(self.n_rot)]
+    def _rescore(self, e: _Evidence, claims):
+        return [
+            self._score(self._residual(e.x, e.xfloor, claims, i), e.efloor)
+            for i in range(self.n_rot)
+        ]
 
     def _claims_from(self, paths, like):
         """One-hot claims from a list of ``(B, T)`` index paths."""
@@ -275,8 +639,7 @@ class SlotCombNet(nn.Module):
         `docs/experiments/synthetic-solvability-limits.md`, "The joint score".
         """
         paths = [comb_crf.viterbi(s, self.span, self.pen) for s in scores]
-        tot = sum(comb_crf.path_score(s, self.span, self.pen, p)
-                  for s, p in zip(scores, paths))
+        tot = sum(comb_crf.path_score(s, self.span, self.pen, p) for s, p in zip(scores, paths))
         return paths, tot
 
     def union_evidence(self, pw, floor, claims) -> torch.Tensor:
@@ -323,15 +686,13 @@ class SlotCombNet(nn.Module):
         harmonics fall in the gaps. Ported from `comb_salience.octave_fix`.
         """
         from models.comb_salience import _gather_at
-        h, ok = _gather_at(pw, r, self.gather.k_max, self.sr, self.n_fft,
-                           self.gather.f_max)
-        fh, _ = _gather_at(floor, r, self.gather.k_max, self.sr, self.n_fft,
-                           self.gather.f_max)
+
+        h, ok = _gather_at(pw, r, self.gather.k_max, self.sr, self.n_fft, self.gather.f_max)
+        fh, _ = _gather_at(floor, r, self.gather.k_max, self.sr, self.n_fft, self.gather.f_max)
         lev = torch.log1p(h / fh.clamp_min(1e-12)) * ok
         return (lev[:, 0::2].mean(dim=1) / lev[:, 1::2].mean(dim=1).clamp_min(1e-9)).mean(dim=1)
 
-    def _octave_moves(self, pw, floor, gfloor, scores, paths, rounds: int = 2,
-                      ratio: float = 0.6):
+    def _octave_moves(self, e: _Evidence, scores, paths, rounds: int = 2, ratio: float = 0.6):
         """Halve or double one slot, judged where each direction's information is.
 
         The two directions need DIFFERENT discriminators, and conflating them is
@@ -354,7 +715,7 @@ class SlotCombNet(nn.Module):
         lo, hi, n_g = float(grid[0]), float(grid[-1]), len(grid)
         step = float(grid[1] - grid[0])
         claims = self._claims_from(paths, scores[0])
-        best = self.union_evidence(pw, floor, claims)
+        best = self.union_evidence(e.pw, e.floor, claims)
         for _ in range(rounds):
             improved = False
             for i in range(self.n_rot):
@@ -362,25 +723,25 @@ class SlotCombNet(nn.Module):
                     r = grid[paths[i]] * factor
                     if bool(((r < lo) | (r > hi)).any()):
                         continue
-                    if factor < 1.0 and bool((self._odd_even(pw, floor, r) < ratio).all()):
-                        continue                       # a real subharmonic: refuse
+                    if factor < 1.0 and bool((self._odd_even(e.pw, e.floor, r) < ratio).all()):
+                        continue  # a real subharmonic: refuse
                     prop = ((r - lo) / step).round().long().clamp(0, n_g - 1)
                     trial = claims.clone()
                     trial[:, i] = self._claims_from([prop], scores[0])[:, 0]
-                    if not bool((self.union_evidence(pw, floor, trial) > best + 1e-6).all()):
+                    if not bool((self.union_evidence(e.pw, e.floor, trial) > best + 1e-6).all()):
                         continue
                     # Accepted: let every other slot re-solve against the new claim.
-                    t_scores = self._rescore(pw, floor, gfloor, trial)
+                    t_scores = self._rescore(e, trial)
                     paths, _ = self._solve(t_scores)
                     scores = t_scores
                     claims = self._claims_from(paths, scores[0])
-                    best = self.union_evidence(pw, floor, claims)
+                    best = self.union_evidence(e.pw, e.floor, claims)
                     improved = True
             if not improved:
                 break
         return scores, paths
 
-    def _relocate_moves(self, pw, floor, gfloor, scores, paths, rounds: int = 2):
+    def _relocate_moves(self, e: _Evidence, scores, paths, rounds: int = 2):
         """Re-solve one slot against the others, and keep it iff coverage improves.
 
         This is coordinate ascent on `union_evidence`, and it exists because the
@@ -397,21 +758,23 @@ class SlotCombNet(nn.Module):
         cells a search wall rather than an evidence wall.
         """
         claims = self._claims_from(paths, scores[0])
-        best = self.union_evidence(pw, floor, claims)
+        best = self.union_evidence(e.pw, e.floor, claims)
         for _ in range(rounds):
             improved = False
             for i in range(self.n_rot):
                 others = claims.clone()
                 others[:, i] = 0.0
-                s_i = self._score(self._residual(pw, floor, others, None), gfloor)
+                s_i = self._score(self._residual(e.x, e.xfloor, others, None), e.efloor)
                 cand = comb_crf.viterbi(s_i, self.span, self.pen)
                 trial = claims.clone()
                 trial[:, i] = self._claims_from([cand], scores[0])[:, 0]
-                j = self.union_evidence(pw, floor, trial)
+                j = self.union_evidence(e.pw, e.floor, trial)
                 if bool((j > best + 1e-6).all()):
                     claims, best = trial, j
-                    paths = list(paths); paths[i] = cand
-                    scores = list(scores); scores[i] = s_i
+                    paths = list(paths)
+                    paths[i] = cand
+                    scores = list(scores)
+                    scores[i] = s_i
                     improved = True
             if not improved:
                 break
@@ -448,13 +811,18 @@ class SlotCombNet(nn.Module):
         its harmonics 3 Hz apart, below one 3.9 Hz analysis bin.
         """
         stack = scores if torch.is_tensor(scores) else torch.stack(scores, dim=1)
-        if stack.dim() == 4:                      # (B, R, G, T) -> best slot
+        if stack.dim() == 4:  # (B, R, G, T) -> best slot
             stack = stack.amax(dim=1)
         return stack.max(dim=1).values - stack.median(dim=1).values
 
-    def decode(self, audio: torch.Tensor, subgrid: bool = True,
-               octave: bool = True, relocate: bool = True,
-               zero_contrast: float = 0.0) -> torch.Tensor:
+    def decode(
+        self,
+        audio: torch.Tensor,
+        subgrid: bool = True,
+        octave: bool = True,
+        relocate: bool = True,
+        zero_contrast: float = 0.0,
+    ) -> torch.Tensor:
         """``(B, R, T)`` rates in rev/s, sorted ascending per frame.
 
         ``zero_contrast`` > 0 emits 0.0 for every slot in frames whose contrast
@@ -464,21 +832,19 @@ class SlotCombNet(nn.Module):
         above. The default is 0.0 (OFF), so every number measured before this
         existed still reproduces.
         """
-        pw = self.spectrum(audio)
-        floor = local_floor_torch(pw, self.floor_bins).detach()
-        gfloor = self.gather(floor).clamp_min(1e-12)
-        scores, _ = self.forward(audio)
+        e = self._evidence(audio)
+        scores, _ = self._forward_ev(e)
         scores = [scores[:, i] for i in range(scores.shape[1])]
         paths, _ = self._solve(scores)
         for _ in range(2):
             if relocate:
-                scores, paths = self._relocate_moves(pw, floor, gfloor, scores, paths)
+                scores, paths = self._relocate_moves(e, scores, paths)
             if octave:
-                scores, paths = self._octave_moves(pw, floor, gfloor, scores, paths)
+                scores, paths = self._octave_moves(e, scores, paths)
             if not relocate:
                 break
         if self.k_refine:
-            scores, paths = self._refine_band(pw, floor, scores, paths)
+            scores, paths = self._refine_band(e, scores, paths)
         grid = self.grid.to(scores[0].dtype)
         out = []
         for s, path in zip(scores, paths):
@@ -488,25 +854,25 @@ class SlotCombNet(nn.Module):
             out.append(r)
         rates = torch.stack(out, dim=1).sort(dim=1).values
         if zero_contrast > 0.0:
-            quiet = self.contrast(scores) < float(zero_contrast)   # (B, T)
+            quiet = self.contrast(scores) < float(zero_contrast)  # (B, T)
             rates = rates.masked_fill(quiet.unsqueeze(1), 0.0)
         return rates
 
-    def _refine_band(self, pw, floor, scores, paths):
+    def _refine_band(self, e: _Evidence, scores, paths):
         """Re-solve each slot with the SHORT harmonic list, near its settled path.
 
         The band is what makes this safe: the short list is the more precise
         scorer and the more octave-prone one, so it is only ever allowed to move
         a rotor by `refine_band` rev/s, never to another octave.
         """
-        gfloor_lo = self.gather_lo(floor).clamp_min(1e-12)
+        gfloor_lo = self.gather_lo(e.floor).clamp_min(1e-12)
         claims = self._claims_from(paths, scores[0])
-        grid = self.grid.to(pw.dtype)
+        grid = self.grid.to(e.pw.dtype)
         n_band = max(1, int(round(self.refine_band / float(grid[1] - grid[0]))))
-        ar = torch.arange(len(grid), device=pw.device)[None, :, None]
+        ar = torch.arange(len(grid), device=e.pw.device)[None, :, None]
         out_s, out_p = [], []
         for i, path in enumerate(paths):
-            res = self._residual(pw, floor, claims, i)
+            res = self._residual(e.pw, e.floor, claims, i)
             h = self.gather_lo(res)
             s_lo = self.head_lo(h, gfloor_lo, self.gather_lo.count, grid)
             keep = (ar - path.unsqueeze(1)).abs() <= n_band
@@ -543,13 +909,12 @@ class SlotCombNet(nn.Module):
         """
         scores, _ = self.forward(audio)
         grid = self.grid.to(scores.dtype)
-        gold = (rps.unsqueeze(-1) - grid).abs().argmin(dim=-1)        # (B, R, T)
+        gold = (rps.unsqueeze(-1) - grid).abs().argmin(dim=-1)  # (B, R, T)
         b, r = scores.shape[0], scores.shape[1]
         cost = scores.new_zeros((b, r, r))
         for i in range(r):
             for j in range(r):
-                cost[:, i, j] = comb_crf.crf_nll(scores[:, i], self.span, self.pen,
-                                                 gold[:, j])
+                cost[:, i, j] = comb_crf.crf_nll(scores[:, i], self.span, self.pen, gold[:, j])
         return _min_assignment(cost).mean()
 
 
@@ -560,6 +925,7 @@ def _min_assignment(cost: torch.Tensor) -> torch.Tensor:
     solver would be the same answer with a dependency and a device transfer.
     """
     import itertools
+
     r = cost.shape[1]
     ar = torch.arange(r, device=cost.device)
     perms = torch.tensor(list(itertools.permutations(range(r))), device=cost.device)
