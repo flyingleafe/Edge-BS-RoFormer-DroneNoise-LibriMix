@@ -57,6 +57,42 @@ Deviations from the design document, and why:
   ``SpectralFrontEnd`` contract untouched; sharing one STFT with a trunk
   front-end is an optimization for the end-to-end mode, where a trunk exists.
 
+v2 (2026-09-04): three opt-in fixes, all OFF by default
+-------------------------------------------------------
+
+Probe P4 measured the trained v1 refiner (``hb_hgckla_ref``) on the frozen
+real split and found three defects. Each flag below repairs one of them. With
+every flag off the module is bit-identical to v1, so the flat v1 run stays
+reproducible.
+
+- ``state_features`` — **the cell cannot see its own state.** v1 feeds the
+  cell the innovation phasors only, so one call is a memoryless map from the
+  measurement to an increment: P4/M4 measured a FIXED ~40 % pull of any smooth
+  offset inside +-2 rev/s, the same fraction at 0.25 and at 2 rev/s. A cell
+  that cannot tell "the state already moved" from "the state never moved"
+  cannot stop. The flag adds four scalars per (rotor, frame), the KalmanNet
+  F2/F4 differences: the state's own time difference, the correction
+  accumulated by the previous cells, the previous cell's physics estimate, and
+  the previous cell's measurement scatter. ``n_feat`` grows by 4.
+- ``kalman_gain`` — **the gain is predicted, not carried.** v1 multiplies the
+  measurement by ``sigmoid(head)``, a per-frame number with no memory of how
+  much evidence came before it. The flag replaces it by a scalar random-walk
+  Kalman filter over frames whose measurement variance starts at the PHYSICAL
+  scatter of the per-harmonic rate errors, with a zero-initialized learned
+  correction on its log. An untrained cell is then the classical filter.
+- ``smoother`` — **the pass is forward-only.** P4/M5 iterated v1 and it walked
+  out: real cruise 2.09 -> 2.12 -> 2.17 rev/s over three passes, with 71 % of
+  cruise frames worse at pass 2 than at pass 1. A forward-only filter lags
+  every turn, and the lag is what the next pass re-measures. The flag adds the
+  backward Rauch-Tung-Striebel recursion on the same scalar state — the
+  "smoother (RTS) over frames" of design §2 step 4, which v1 never had. It
+  needs no parameters and requires ``kalman_gain``.
+
+The gate these fixes must pass is the P4/M3 number: from a PERFECT
+initialization v1 walks 0.41 rev/s away at cruise, on 96.6 % of frames, which
+is the size of the error a precision stage exists to remove. A fixed point at
+the truth means that drift falls well below 0.41.
+
 Cost note: the gather materializes ``2 (B, R, K, W, T)`` values per cell —
 the current and the delayed spectrogram — with ``W = 2 ceil(trunc sigma) + 1``
 (13 at the defaults). The anneal schedule is therefore also a memory
@@ -79,12 +115,18 @@ __all__ = [
     "HGCKLARefiner",
     "harmonic_positions",
     "innovation_phasors",
+    "measurement_variance",
     "physics_rate_error",
     "soft_gather",
     "twin_gate",
 ]
 
 _TINY = 1e-12
+
+
+def _inv_softplus(value: float) -> Tensor:
+    """Scalar ``x`` with ``softplus(x) == value`` — a positive-parameter init."""
+    return torch.log(torch.expm1(torch.tensor(float(value))))
 
 
 def harmonic_positions(f: Tensor, n_harmonics: int, n_fft: int, sample_rate: float) -> Tensor:
@@ -289,6 +331,58 @@ def physics_rate_error(
     return num / den.clamp(min=_TINY)
 
 
+def measurement_variance(
+    arg_u: Tensor,
+    weights: Tensor,
+    df_phys: Tensor,
+    hop_length: int,
+    sample_rate: float,
+    r_min: float = 1e-4,
+    r_none: float = 1e3,
+) -> Tensor:
+    """Physical variance of the fused rate error, rev/s^2 (v2 ``kalman_gain``).
+
+    The harmonics of one rotor are K estimates of the SAME rate error, so
+    their scatter around the fused value measures how good that value is, with
+    no noise model and no extra parameter. This is the data-driven form of
+    design §2 step 3 ("per-measurement variance... estimated FROM THE DATA").
+
+    ``R = var_w / n_eff + r_min`` with ``var_w`` the weighted variance of
+    ``per_k = arg(u_k) / (2 pi k dt)`` around *df_phys*, and
+    ``n_eff = (sum w)^2 / sum w^2`` the effective harmonic count — the usual
+    variance of a weighted mean when the per-term variance is estimated from
+    the scatter itself. ``r_min`` is the floor: a single surviving harmonic
+    has zero scatter, and without a floor the filter would trust it fully.
+
+    Parameters
+    ----------
+    arg_u : (B, R, K, T)
+        Innovation angles, from :func:`innovation_phasors`.
+    weights : (B, R, K, T)
+        The same gated weights :func:`physics_rate_error` fused with.
+    df_phys : (B, R, T)
+        The fused estimate, BEFORE any clamp (the weighted mean itself).
+    r_min, r_none : float
+        Variance floor, and the value returned where the mask left no
+        harmonic at all (a large number, so the filter ignores that frame).
+
+    Returns
+    -------
+    (B, R, T) positive variances in rev/s^2.
+    """
+    n_harm = arg_u.shape[2]
+    k = torch.arange(1, n_harm + 1, device=arg_u.device, dtype=arg_u.dtype)
+    dt = hop_length / sample_rate
+    per_k = arg_u / (2.0 * math.pi * k.view(1, 1, -1, 1) * dt)
+    resid = per_k - df_phys.unsqueeze(2)
+    sw = weights.sum(dim=2)
+    sw2 = (weights * weights).sum(dim=2)
+    var = (weights * resid * resid).sum(dim=2) / sw.clamp(min=_TINY)
+    n_eff = sw * sw / sw2.clamp(min=_TINY)
+    r = var / n_eff.clamp(min=1.0) + r_min
+    return torch.where(sw > _TINY, r, torch.full_like(r, r_none))
+
+
 def twin_gate(f: Tensor, n_harmonics: int, band_hz: Tensor | float, tau_hz: Tensor) -> Tensor:
     """Soft twin gate: down-weight harmonics collided with another rotor.
 
@@ -354,6 +448,18 @@ class HGCKLACell(nn.Module):
     wrap_guard :
         Drop innovation angles above ``wrap_guard * pi`` (the classical wrap
         guard: near ``pi`` the increment is ambiguous).
+    state_features, kalman_gain, smoother :
+        The three v2 fixes (module docstring). All default to ``False``, and
+        with all three off this class is bit-identical to v1, down to the
+        state-dict keys — the extra parameters are only built when their flag
+        is on.
+    r_min, r_none :
+        Variance floor and no-harmonic sentinel of
+        :func:`measurement_variance` (``kalman_gain`` only).
+    q_init, p0_init :
+        Initial process noise (rev/s^2 per frame) and initial state variance
+        of the scalar filter (``kalman_gain`` only). Both learnable through a
+        softplus.
     """
 
     def __init__(
@@ -373,6 +479,13 @@ class HGCKLACell(nn.Module):
         rotation: bool = True,
         readout: str = "phase_unit",
         mlp_ratio: int = 4,
+        state_features: bool = False,
+        kalman_gain: bool = False,
+        smoother: bool = False,
+        r_min: float = 1e-4,
+        r_none: float = 1e3,
+        q_init: float = 0.05,
+        p0_init: float = 1.0,
     ):
         super().__init__()
         self.k_cap = int(k_cap)
@@ -384,6 +497,13 @@ class HGCKLACell(nn.Module):
         self.max_step = float(max_step)
         self.wrap_guard = float(wrap_guard)
         self.band_hz = float(band_bins) * self.sample_rate / self.n_fft
+        self.state_features = bool(state_features)
+        self.kalman_gain = bool(kalman_gain)
+        self.smoother = bool(smoother)
+        if self.smoother and not self.kalman_gain:
+            raise ValueError("smoother=True needs kalman_gain=True (it smooths that filter)")
+        self.r_min = float(r_min)
+        self.r_none = float(r_none)
 
         # WP18 weight law: 1/v_k ~ k^2, normalized to mean 1 and kept positive
         # by softplus. Learnable — the law is the init, not a constraint.
@@ -395,7 +515,9 @@ class HGCKLACell(nn.Module):
             torch.log(torch.expm1(torch.tensor(max(self.band_hz / 2.0, 1e-2))))
         )
 
-        n_feat = 3 * self.k_cap + 2  # [Re u, Im u, log|X|] per harmonic + 2 scalars
+        # [Re u, Im u, log|X|] per harmonic + 2 scalars, + 4 state scalars
+        # when the cell is allowed to see its own state (v2 fix 1).
+        n_feat = 3 * self.k_cap + 2 + (4 if self.state_features else 0)
         self.in_proj = nn.Linear(n_feat, d_model)
         self.block = CKLABlock(
             d_model,
@@ -410,16 +532,57 @@ class HGCKLACell(nn.Module):
         # Near-zero weight + positive gain bias: the cell starts as the
         # classical pass (gain sigmoid(1) = 0.73 of the physics estimate, no
         # learned correction), and the small non-zero weight keeps the whole
-        # stack in the gradient from the first step.
+        # stack in the gradient from the first step. With ``kalman_gain`` the
+        # gain logit is unused — the carried variance sets the gain — and only
+        # the correction output of this head survives.
         nn.init.normal_(self.head.weight, std=1e-3)
         with torch.no_grad():
             self.head.bias.copy_(torch.tensor([1.0, 0.0]))
 
-    def measure(self, x_re: Tensor, x_im: Tensor, f: Tensor) -> dict[str, Tensor]:
+        if self.kalman_gain:
+            # ZERO init, so an untrained cell measures R = softplus(log R_phys)
+            # ~= R_phys and behaves as the classical filter. The learned head
+            # can only rescale that on the log axis.
+            self.head_r = nn.Linear(d_model, 1)
+            nn.init.zeros_(self.head_r.weight)
+            nn.init.zeros_(self.head_r.bias)
+            self.q_raw = nn.Parameter(_inv_softplus(q_init))
+            self.p0_raw = nn.Parameter(_inv_softplus(p0_init))
+
+    def _state_scalars(self, f: Tensor, carry: dict[str, Tensor] | None) -> list[Tensor]:
+        """The four v2 state features, each (B, R, T) and O(1) in size.
+
+        A memoryless cell applies the same fraction of any offset (P4/M4:
+        ~40 % at 0.25 rev/s and at 2 rev/s alike), because nothing tells it
+        that the state already moved. These are the differences that do.
+        """
+        zero = torch.zeros_like(f)
+        # 1. The state's own time difference — the turn the state is taking.
+        f_diff = F.pad(f[..., 1:] - f[..., :-1], (1, 0)) / self.max_step
+        carry = carry or {}
+        # 2. What the previous cells already corrected (bounded: the refiner
+        #    hands over (f - cond) / max_delta, which is tanh(acc / max_delta)).
+        acc = carry.get("acc", zero)
+        # 3. The previous cell's physics estimate: what the measurement said
+        #    before this cell re-gathered at the moved state.
+        df_prev = carry.get("df_prev", zero) / self.max_step
+        # 4. How reliable that estimate was. DETACHED: d log10(R)/dR is 4e3 at
+        #    R = 1e-4 rev/s^2, the working scale, and this is a descriptor of
+        #    reliability, not a path the loss should shape.
+        r_prev = carry.get("R_prev")
+        r_feat = zero if r_prev is None else torch.log10(r_prev.detach().clamp(min=1e-6)) / 3.0
+        return [f_diff, acc, df_prev, r_feat]
+
+    def measure(
+        self, x_re: Tensor, x_im: Tensor, f: Tensor, carry: dict[str, Tensor] | None = None
+    ) -> dict[str, Tensor]:
         """The measurement operator: gather, innovate, weight, fuse.
 
-        Returns a dict with ``feats`` (B, R, 3K+2, T), ``df_phys`` (B, R, T)
-        and the intermediate ``mask``/``arg_u`` (diagnostics and tests).
+        Returns a dict with ``feats`` (B, R, 3K+2 [+4], T), ``df_phys``
+        (B, R, T) and the intermediate ``mask``/``arg_u`` (diagnostics and
+        tests), plus ``R_phys`` (B, R, T) when either v2 flag that needs it is
+        on. *carry* holds the previous cell's outputs (``acc``, ``df_prev``,
+        ``R_prev``); it is ignored unless ``state_features`` is on.
         """
         pos = harmonic_positions(f, self.k_cap, self.n_fft, self.sample_rate)
         # The delayed spectrogram rides through the SAME gather, so both
@@ -436,24 +599,93 @@ class HGCKLACell(nn.Module):
 
         weights = F.softplus(self.w_param).view(1, 1, -1, 1) * mask
         df_phys = physics_rate_error(arg_u, weights, self.hop_length, self.sample_rate)
+        out: dict[str, Tensor] = {"mask": mask, "arg_u": arg_u}
+        if self.state_features or self.kalman_gain:
+            # The scatter is taken around the UNCLAMPED weighted mean, which
+            # is the value the harmonics actually agree or disagree on.
+            out["R_phys"] = measurement_variance(
+                arg_u, weights, df_phys, self.hop_length, self.sample_rate, self.r_min, self.r_none
+            )
         df_phys = df_phys.clamp(-self.max_step, self.max_step)
 
-        scalars = torch.stack([df_phys / self.max_step, mask.mean(dim=2)], dim=2)
-        feats = torch.cat([u_re * mask, u_im * mask, log_mag * mask, scalars], dim=2)
-        return {"feats": feats, "df_phys": df_phys, "mask": mask, "arg_u": arg_u}
+        rows = [df_phys / self.max_step, mask.mean(dim=2)]
+        if self.state_features:
+            rows = rows + self._state_scalars(f, carry)
+        scalars = torch.stack(rows, dim=2)
+        out["feats"] = torch.cat([u_re * mask, u_im * mask, log_mag * mask, scalars], dim=2)
+        out["df_phys"] = df_phys
+        return out
 
-    def forward(self, x_re: Tensor, x_im: Tensor, f: Tensor) -> Tensor:
-        """``(B, F, T)`` STFT + ``(B, R, T)`` state -> ``(B, R, T)`` increment."""
-        m = self.measure(x_re, x_im, f)
+    def _filter(self, m: Tensor, r: Tensor) -> tuple[Tensor, Tensor]:
+        """Scalar random-walk Kalman filter over frames (v2 fixes 2 and 3).
+
+        ``m``/``r`` are (B, R, T): the measurement and its variance. The state
+        is the rate error itself, one scalar per (batch, rotor), and the
+        recursion is the textbook one for ``x_t = x_{t-1} + w``,
+        ``m_t = x_t + v``. The loop is over T only (T <= 251 here); every
+        operation inside it is elementwise on (B, R).
+
+        Returns ``(x, K)``, both (B, R, T). ``x`` is the RTS-smoothed state
+        when ``smoother`` is on, else the filtered state.
+        """
+        q = F.softplus(self.q_raw)
+        p = torch.zeros_like(m[..., 0]) + F.softplus(self.p0_raw)
+        x = torch.zeros_like(p)
+        xs: list[Tensor] = []
+        ps: list[Tensor] = []
+        ks: list[Tensor] = []
+        for t in range(m.shape[-1]):
+            p_minus = p + q
+            k_t = p_minus / (p_minus + r[..., t])
+            x = x + k_t * (m[..., t] - x)
+            p = (1.0 - k_t) * p_minus
+            xs.append(x)
+            ps.append(p)
+            ks.append(k_t)
+        gains = torch.stack(ks, dim=-1)
+        if not self.smoother:
+            return torch.stack(xs, dim=-1), gains
+        # RTS: the prediction of t+1 from t is x_t itself (random walk), so
+        # P_minus_{t+1} = P_t + q and C_t = P_t / (P_t + q).
+        smooth = list(xs)
+        for t in range(len(xs) - 2, -1, -1):
+            c = ps[t] / (ps[t] + q)
+            smooth[t] = xs[t] + c * (smooth[t + 1] - xs[t])
+        return torch.stack(smooth, dim=-1), gains
+
+    def forward(
+        self, x_re: Tensor, x_im: Tensor, f: Tensor, carry: dict[str, Tensor] | None = None
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """``(B, F, T)`` STFT + ``(B, R, T)`` state -> increment + diagnostics.
+
+        The second return value carries what the next cell needs (``df_phys``,
+        ``R_phys``) and what the probe and the tests read (``R``, ``K``).
+        """
+        m = self.measure(x_re, x_im, f, carry)
         b, n_rotor, _, t = m["feats"].shape
         # Rotors fold into the batch: the cell is shared across rotors, and
         # the twin gate is the only cross-rotor coupling.
         h = m["feats"].permute(0, 1, 3, 2).reshape(b * n_rotor, t, -1)
         h = self.block(self.in_proj(h))
-        out = self.head(self.norm(h)).view(b, n_rotor, t, 2).float()
-        gain = torch.sigmoid(out[..., 0])
+        hn = self.norm(h)
+        out = self.head(hn).view(b, n_rotor, t, 2).float()
         corr = self.max_step * torch.tanh(out[..., 1])
-        return gain * (m["df_phys"] + corr)
+        info: dict[str, Tensor] = {"df_phys": m["df_phys"]}
+        if "R_phys" in m:
+            info["R_phys"] = m["R_phys"]
+        if not self.kalman_gain:
+            gain = torch.sigmoid(out[..., 0])
+            return gain * (m["df_phys"] + corr), info
+        # softplus(log R) == R to within 0.01 % for R < 1e-2 rev/s^2, the
+        # working scale of a fused rate error; the no-harmonic sentinel 1e3
+        # compresses to 6.9, which is still ~5 orders above it, so the frame
+        # is still ignored.
+        r_log = self.head_r(hn).view(b, n_rotor, t).float()
+        r_t = F.softplus(r_log + torch.log(m["R_phys"].clamp(min=_TINY)))
+        x, gains = self._filter(m["df_phys"] + corr, r_t)
+        info["R"] = r_t
+        info["K"] = gains
+        return x.clamp(-self.max_step, self.max_step), info
 
 
 class HGCKLARefiner(nn.Module):
@@ -476,6 +708,10 @@ class HGCKLARefiner(nn.Module):
 
     ``k_caps`` is the classical coarse-to-fine schedule (one cell per entry);
     the harmonic count is ``max(k_caps)``.
+
+    ``state_features`` / ``kalman_gain`` / ``smoother`` are the three v2 fixes
+    (module docstring). They pass straight through to every cell and default
+    to ``False``: with all three off this class is bit-identical to v1.
     """
 
     def __init__(
@@ -496,6 +732,12 @@ class HGCKLARefiner(nn.Module):
         p_init: float = 1.0,
         rotation: bool = True,
         readout: str = "phase_unit",
+        state_features: bool = False,
+        kalman_gain: bool = False,
+        smoother: bool = False,
+        r_min: float = 1e-4,
+        q_init: float = 0.05,
+        p0_init: float = 1.0,
     ):
         super().__init__()
         self.n_fft = int(n_fft)
@@ -503,6 +745,7 @@ class HGCKLARefiner(nn.Module):
         self.num_rotors = int(num_rotors)
         self.sample_rate = float(sample_rate)
         self.max_delta = float(max_delta)
+        self.state_features = bool(state_features)
         self.k_caps = tuple(int(c) for c in k_caps)
         if not self.k_caps or min(self.k_caps) < 1:
             raise ValueError(
@@ -526,6 +769,12 @@ class HGCKLARefiner(nn.Module):
                 p_init=p_init,
                 rotation=rotation,
                 readout=readout,
+                state_features=state_features,
+                kalman_gain=kalman_gain,
+                smoother=smoother,
+                r_min=r_min,
+                q_init=q_init,
+                p0_init=p0_init,
             )
             for cap in self.k_caps
         )
@@ -568,7 +817,19 @@ class HGCKLARefiner(nn.Module):
 
         f = c
         acc = torch.zeros_like(c)
+        carry: dict[str, Tensor] | None = None
         for cell in self.cells:
-            acc = acc + cell(x_re, x_im, f)
+            df, info = cell(x_re, x_im, f, carry)
+            acc = acc + df
             f = c + self.max_delta * torch.tanh(acc / self.max_delta)
+            if self.state_features:
+                # The next cell re-gathers at the moved state, so it must be
+                # told how far the state moved and how good the reading that
+                # moved it was (v2 fix 1). ``f - c`` is the bounded form of
+                # the accumulator: max_delta * tanh(acc / max_delta).
+                carry = {
+                    "acc": (f - c) / self.max_delta,
+                    "df_prev": info["df_phys"],
+                    "R_prev": info["R_phys"],
+                }
         return f

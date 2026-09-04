@@ -1,0 +1,35 @@
+# hg_ckla_refiner_v2 — the same HG-CKLA cell stack as hg_ckla_refiner, with
+# the three v2 fixes turned on (models/hg_ckla.py, module docstring "v2").
+# Probe P4 measured v1 on the frozen real split and found three defects:
+# from a PERFECT initialization it drifts 0.41 rev/s away at cruise (its own
+# floor); iterating it walks out (cruise 2.09 -> 2.12 -> 2.17 rev/s); and its
+# pull is a fixed ~40 % of any offset inside +-2 rev/s. The flags repair one
+# defect each — the cell sees its own state differences, the gain comes from
+# a carried variance instead of a predicted sigmoid, and the scan runs both
+# ways (filter, then RTS smoother). Everything else is identical to
+# hg_ckla_refiner, so the two rows differ by the fixes alone.
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+  use_cond: true
+_target_: models.registry.build_model
+params:
+  name: hg_ckla_refiner
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  sample_rate: 16000
+  k_caps: [10, 25, 40]
+  d_model: 64
+  n_state: 16
+  sigma: 1.5
+  band_bins: 3.0
+  max_delta: 5.0
+  p_init: 1.0
+  state_features: true
+  kalman_gain: true
+  smoother: true
+model_type: null
+legacy_config_path: null

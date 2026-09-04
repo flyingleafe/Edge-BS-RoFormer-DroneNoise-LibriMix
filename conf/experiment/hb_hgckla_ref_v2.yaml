@@ -1,0 +1,30 @@
+# @package _global_
+# HG-CKLA conditional refiner, v2 (docs/pikalman-ckla-design.md §5, and the
+# "v2" paragraph of models/hg_ckla.py): hb_hgckla_ref with the three
+# KalmanNet-shaped fixes on — state differences in the cell, a Kalman gain
+# from a carried variance, and a backward RTS pass. Data, loss, metrics and
+# every optimizer knob are identical to hb_hgckla_ref, so the two rows differ
+# by the model flags alone. Only the schedule changes: the v1 run was flat
+# from epoch 1 to epoch 21, so 40 epochs is a ceiling, not a budget.
+defaults:
+  - override /data: ckla_refiner
+  - override /model: hg_ckla_refiner_v2
+  - override /loss: mse_cond
+  - override /metrics: rps
+
+experiment_name: hb_hgckla_ref_v2
+epochs: 40
+patience: 8
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+grad_clip: 1.0  # atan2 on a dying phasor: the guard makes it finite, not small
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
