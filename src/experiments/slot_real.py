@@ -14,6 +14,10 @@ scoring seam it needs:
 * :func:`score_real` / :func:`table` — the probe's reporting format, kept so a
   trained emission is read against 1.49 / 21 / 36 / 76 (DREGON cruise / FLY124
   cruise / ramp / ground) line for line.
+* :func:`score_real_mono` — the SAME clips and the same aggregate, one
+  microphone at a time. Eight microphones power-averaged is a lever no neural
+  baseline has, so the eight-microphone table is not a comparison with them;
+  the mono table is, frame for frame with `rps_bench.part("real")`.
 * :func:`windows` — training crops from an online-mix policy, eight channels
   wide and label-aligned.
 * :func:`select_set` — a FIXED set of real windows, drawn from the same policy
@@ -51,6 +55,7 @@ __all__ = [
     "real_clips",
     "score_part",
     "score_real",
+    "score_real_mono",
     "select_set",
     "table",
     "windows",
@@ -303,6 +308,69 @@ def score_real(
 
 
 @torch.no_grad()
+def score_real_mono(
+    net,
+    clips: list[dict[str, Any]],
+    device: str = "cpu",
+    name: str = "model",
+    quiet: bool = False,
+    **decode_kw,
+) -> dict[str, Any]:
+    """Decode every frozen clip ONE MICROPHONE AT A TIME and aggregate per frame.
+
+    WHY THIS EXISTS. Every neural model this decoder is read against sees ONE
+    microphone and is scored per mono frame — `rps_bench.part("real")` is 296
+    mono frames, eight per clip. The eight-microphone power average of
+    :func:`score_real` is a lever those models do not have, so its table is not
+    a comparison with them. This function keeps the clips, the labels and the
+    aggregate of :func:`score_real` and changes only the input: 8 decodes per
+    clip, 296 rows, directly comparable with the per-frame neural numbers.
+
+    ``decode_kw`` defaults to the P1c decode, as in :func:`score_real`.
+    """
+    from experiments.rps_bench import pit_mae
+
+    kw = {"subgrid": True, "octave": False, "relocate": True, **decode_kw}
+    was_training = net.training
+    net.eval()
+    rows = []
+    for clip in clips:
+        for m in range(int(clip["audio"].shape[0])):
+            t0 = time.time()
+            # `(1, N)`: one microphone, and the channel axis kept, so `spectrum`
+            # reads it as one item of one channel and not as one item of N.
+            au = torch.as_tensor(clip["audio"][m : m + 1], device=device)
+            pred = net.decode(au, **kw)[0].cpu().numpy().astype(np.float64)
+            mae = pit_mae(pred, clip["rps"])
+            _, gt = _align(pred, clip["rps"])
+            rows.append(
+                {
+                    "clip": clip["clip"],
+                    "mic": m,
+                    "phase": clip["phase"],
+                    "rig": clip["rig"],
+                    "mae": float(mae),
+                    "wall": time.time() - t0,
+                    "pred": pred,
+                    "gt": gt,
+                }
+            )
+    net.train(was_training)
+    out = table(rows, name=name, floor_bins=int(net.floor_bins), quiet=quiet)
+    # `table` keys `per_clip` by the clip, and there are eight rows per clip
+    # here, so it would keep the last microphone alone. The clip's number is
+    # the mean over its microphones.
+    per_clip: dict[int, list[float]] = {}
+    for r in rows:
+        per_clip.setdefault(int(r["clip"]), []).append(r["mae"])
+    out["per_clip"] = {c: round(float(np.mean(v)), 3) for c, v in per_clip.items()}
+    # The predictions stay in the rows: the dump writes them, and the labels do
+    # not (they are `real_clips()` and the caller already holds them).
+    out["rows"] = [{k: v for k, v in r.items() if k != "gt"} for r in rows]
+    return out
+
+
+@torch.no_grad()
 def score_part(
     net, name: str, device: str = "cpu", n: int | None = None, **decode_kw
 ) -> dict[str, Any]:
@@ -351,6 +419,12 @@ class WindowStream:
     frame of it — see the module docstring for why. `seen` and `kept` carry the
     acceptance fraction, which is worth logging: the honest real pool spends
     most of its chunks on ground, silence and the low half of a ramp.
+
+    ``mono=True`` keeps ONE microphone of each accepted crop, drawn uniformly
+    at random per crop, and still yields ``(1, n)`` — the channel axis stays so
+    that a batch is ``(B, 1, N)`` and `SlotCombNet.spectrum` reads it as B items
+    of one channel. This is the input the neural baselines get, so a model
+    trained on it is comparable with them.
     """
 
     def __init__(
@@ -364,6 +438,7 @@ class WindowStream:
         epoch: int = 0,
         hop: int = HOP,
         sr: int = SR,
+        mono: bool = False,
     ):
         from omegaconf import OmegaConf
 
@@ -382,6 +457,7 @@ class WindowStream:
         self.n_crop = int(round(float(crop_s) * self.sr))
         self.t_crop = self.n_crop // self.hop + 1
         self.r_lo, self.r_hi = float(r_lo), float(r_hi)
+        self.mono = bool(mono)
         self.rng = np.random.default_rng(int(seed))
         self.seen = self.kept = 0
         self._it = iter(self.ds)
@@ -416,6 +492,9 @@ class WindowStream:
             if not bool(((g >= self.r_lo) & (g <= self.r_hi)).all()):
                 continue
             self.kept += 1
+            if self.mono:
+                m = int(self.rng.integers(0, a.shape[0]))
+                a = a[m : m + 1]
             return np.ascontiguousarray(a), g.astype(np.float32)
 
 
@@ -438,17 +517,23 @@ def select_set(
     path: str = POLICY_REAL,
     base_seed: int = 777_000,
     cache: bool = True,
+    mono: bool = False,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """A FIXED set of real windows for checkpoint selection.
 
     Drawn once from the training policy with a DIFFERENT ``base_seed``, so it is
     the same distribution as training and none of the same chunks, and cached so
     every run and every restart selects on identical audio.
+
+    The mono set is cached under its own name. The two sets are different audio
+    at the same settings, and one silently read as the other would compare a
+    one-microphone model against an eight-microphone selection number.
     """
-    disk = CACHE / f"select_n{n}_c{crop_s:g}_b{base_seed}.pkl"
+    stem = "select_mono" if mono else "select"
+    disk = CACHE / f"{stem}_n{n}_c{crop_s:g}_b{base_seed}.pkl"
     if cache and disk.exists():
         return pickle.loads(disk.read_bytes())
-    st = windows(path, crop_s=crop_s, seed=seed, base_seed=base_seed)
+    st = windows(path, crop_s=crop_s, seed=seed, base_seed=base_seed, mono=mono)
     out = [next(st) for _ in range(int(n))]
     if cache:
         CACHE.mkdir(parents=True, exist_ok=True)
@@ -460,7 +545,12 @@ def select_set(
 def score_windows(
     net, wins: list[tuple[np.ndarray, np.ndarray]], device: str = "cpu", **decode_kw
 ) -> float:
-    """Mean PIT MAE of the deployed decoder over a fixed window set."""
+    """Mean PIT MAE of the deployed decoder over a fixed window set.
+
+    The window shape is whatever the stream yields — ``(8, n)`` or the mono
+    ``(1, n)``. `SlotCombNet.spectrum` reads both as ONE item, so no branch is
+    needed here.
+    """
     from experiments.rps_bench import pit_mae
 
     kw = {"subgrid": True, "octave": False, "relocate": True, **decode_kw}

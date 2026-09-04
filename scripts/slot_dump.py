@@ -1,7 +1,8 @@
 #!/usr/bin/env python
-"""Decode the frozen real split with a trained (or untrained) C1 arm and dump it.
+"""Decode a benchmark part with a trained (or untrained) C1 arm and dump it.
 
-Writes, under ``--out``:
+``--part real8`` (the default) is the eight-microphone read of the frozen real
+split. It writes, under ``--out``:
 
 * ``pred_clips.npy``  ``(37, 4, 251)`` rev/s, one row per clip (eight mics
   decoded jointly), rotor rows sorted ascending as ``SlotCombNet.decode`` emits
@@ -11,6 +12,17 @@ Writes, under ``--out``:
   ``experiments.refiner_bench`` takes as an ``extra_conds`` entry, so the C2
   refiner can be run behind C1;
 * ``table.json``: the P1c table of ``experiments.slot_real.score_real``.
+
+The other three parts write the format `scripts/rps_dump.py` writes, so a C1
+arm reads on the same tables and in the same notebook as every neural model:
+``<out>/<set>/<name>.npz`` with ``pred`` ``(N, 4, T)`` NaN-padded, ``n_t`` and
+the per-frame PIT MAE ``metric``. ``--out`` defaults to ``results/rps_dump``
+there, and the set's ``_gt.npz`` / ``_meta.json`` are left alone.
+
+* ``real_mono`` — the 296 mono frames of ``rps_bench.part("real")``, one
+  microphone at a time; the set is ``real``. This is the FAIR comparison: the
+  neural models never see the eight-microphone average.
+* ``comb`` / ``stoch`` — the 256 mono 8 s frames of each synthetic part.
 
 ``--best`` is the trainer's ``best.pt`` (trainable parameters only); omit it
 for the zero-parameter corner (``--parts none``).
@@ -38,7 +50,25 @@ def main() -> int:
     ap.add_argument("--best", default="", help="best.pt of the trained arm (optional)")
     ap.add_argument("--k-max", type=int, default=40)
     ap.add_argument("--floor-hz", type=float, default=60.0)
-    ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--part",
+        default="real8",
+        choices=("real8", "real_mono", "comb", "stoch"),
+        help="real8 = the eight-microphone frozen split (pred_clips/pred_frames/table); "
+        "the others write one rps_dump-format npz per set",
+    )
+    ap.add_argument(
+        "--out",
+        default="",
+        help="real8: the output directory (required). Otherwise the dump ROOT, "
+        "default results/rps_dump, written as <out>/<set>/<name>.npz",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="frames per set (0 = all); the rps_dump-format parts only, for smokes",
+    )
     ap.add_argument("--name", default="arm")
     ap.add_argument(
         "--octave",
@@ -52,22 +82,66 @@ def main() -> int:
     if args.threads:
         torch.set_num_threads(args.threads)
 
+    from rps_dump import pad_stack
     from train_slot_real import build_model
 
+    from experiments import rps_bench as rb
     from experiments import slot_real as sr
+    from metrics._common import get_array
 
     net, parts = build_model(args, args.device)
     if args.best:
         missing = net.load_state_dict(torch.load(args.best, map_location=args.device), strict=False)
         print(f"loaded {args.best}: unexpected {missing.unexpected_keys}", flush=True)
+    net.eval()
+    kw = {"subgrid": True, "octave": bool(args.octave), "relocate": True}  # P1c: octave off
+
+    if args.part != "real8":
+        # The neural models' own format and their own frames, so a C1 arm joins
+        # `results/rps_dump` and every reader of it without a second layout.
+        name = "real" if args.part == "real_mono" else args.part
+        if args.limit and args.part in ("comb", "stoch"):
+            # A synthetic part is SYNTHESIZED on demand, so a smoke asks for the
+            # frames it wants and never pays for the other 253.
+            frames = rb.part(name, n=args.limit)
+        else:
+            frames = rb.part(name)
+            if args.limit:
+                frames = frames[: args.limit]
+        d = Path(args.out or "results/rps_dump") / name
+        d.mkdir(parents=True, exist_ok=True)
+        preds, metrics = [], []
+        with torch.no_grad():
+            for f in frames:
+                # `(1, N)`: one microphone with its channel axis kept, so the
+                # decoder reads one item of one channel.
+                au = torch.as_tensor(
+                    np.asarray(f["mixture"].data, dtype=np.float32).ravel()[None],
+                    device=args.device,
+                )
+                pred = net.decode(au, **kw)[0].cpu().numpy().astype(np.float64)
+                gt = np.asarray(get_array(f, "rps"), dtype=np.float64)
+                preds.append(pred.astype(np.float32))
+                metrics.append(rb.pit_mae(pred, gt))
+        pred, n_t = pad_stack(preds)
+        metric = np.asarray(metrics, dtype=np.float64)
+        np.savez(d / f"{args.name}.npz", pred=pred, n_t=n_t, metric=metric)
+        print(
+            f"wrote {d / args.name}.npz pred={pred.shape} n_t={n_t.shape} "
+            f"metric={metric.shape}  mean={metric.mean():.4f} "
+            f"median={np.median(metric):.4f}",
+            flush=True,
+        )
+        return 0
+
+    if not args.out:
+        raise SystemExit("--part real8 needs --out")
     clips = sr.real_clips()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    net.eval()
     preds = []
     rows = []
-    kw = {"subgrid": True, "octave": bool(args.octave), "relocate": True}  # P1c: octave off
     with torch.no_grad():
         for clip in clips:
             t0 = time.time()

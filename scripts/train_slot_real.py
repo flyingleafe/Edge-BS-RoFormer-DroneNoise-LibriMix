@@ -21,6 +21,15 @@ FIXED set of real windows drawn from the training policy with a different base
 seed (`experiments.slot_real.select_set`). The frozen split is scored at every
 validation FOR THE RECORD.
 
+`--mono` MAKES THE COMPARISON FAIR. Eight microphones power-averaged is a
+lever no neural baseline in this campaign has: they read ONE microphone and are
+scored on the 296 mono frames of `rps_bench.part("real")`. With `--mono` the
+training crops, the selection windows and the frozen-split scoring all use one
+microphone, so the arm is read on the neural models' own protocol
+(`experiments.slot_real.score_real_mono`). The `channels` part is meaningless
+there — a mono input has one channel and it IS the power mean — so it is
+stripped with a note.
+
 THE DECODE CONFIGURATION IS FIXED at validation: `subgrid=True, octave=False,
 relocate=True`. The decoder's own octave move costs FLY124 heavily (22.4 ->
 31.1) and buys nothing at eight microphones, so it is off, and the empty-tooth
@@ -42,6 +51,12 @@ def build_model(args, device: str):
     from models.comb_slots import SlotCombNet
 
     parts = tuple(p for p in args.parts.split(",") if p and p != "none")
+    if getattr(args, "mono", False) and "channels" in parts:
+        # A mono input has ONE channel and it is already the power mean, so the
+        # per-mic candidates the `channels` part adds do not exist. Keeping it
+        # would only carry dead gates through the checkpoint.
+        parts = tuple(p for p in parts if p != "channels")
+        print("--mono: dropped the 'channels' part (a mono input has no extra mics)", flush=True)
     net = SlotCombNet(
         sr=16000,
         n_fft=4096,
@@ -96,7 +111,11 @@ def validate(net, sel, clips, device, args, step: int, frozen: bool = True) -> d
         flush=True,
     )
     if clips and frozen:
-        row["frozen"] = sr.score_real(net, clips, device=device, name=f"step {step}")
+        mono = bool(getattr(args, "mono", False))
+        scorer = sr.score_real_mono if mono else sr.score_real
+        how = "score_real_mono (296 mono frames)" if mono else "score_real (8 mics per clip)"
+        print(f"    frozen split: {how}", flush=True)
+        row["frozen"] = scorer(net, clips, device=device, name=f"step {step}")
         row["frozen"].pop("rows", None)
     if args.val_parts:
         for name in ("comb", "stoch"):
@@ -119,6 +138,12 @@ def main() -> int:
         help="comma list; 'none' is the zero-parameter classical corner (eval only)",
     )
     ap.add_argument("--data", default="both", choices=("real", "partial", "both"))
+    ap.add_argument(
+        "--mono",
+        action="store_true",
+        help="train, select and score on ONE microphone per crop, which is the "
+        "protocol every neural baseline is read on; 'channels' is stripped",
+    )
     ap.add_argument("--steps", type=int, default=1500)
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--crop-s", type=float, default=2.0)
@@ -195,22 +220,36 @@ def main() -> int:
         print(f"resumed from {state_path} at step {step0} (best {best:.4f})", flush=True)
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    sel = sr.select_set(n=args.select_n, crop_s=args.crop_s)
+    sel = sr.select_set(n=args.select_n, crop_s=args.crop_s, mono=args.mono)
     clips = sr.real_clips()
     if args.val_clips:
         # Spread, not the first n: clips 0 and 1 are a ground clip and a ramp,
         # so a smoke that takes the head of the list never sees a cruise number.
         clips = clips[:: max(1, len(clips) // args.val_clips)][: args.val_clips]
-    print(f"selection {len(sel)} windows, frozen split {len(clips)} clips", flush=True)
+    print(
+        f"selection {len(sel)} windows ({'mono' if args.mono else '8 mic'}), "
+        f"frozen split {len(clips)} clips",
+        flush=True,
+    )
 
     streams, order = [], []
     if args.data in ("real", "both"):
         order.append(len(streams))
-        streams.append(sr.windows(sr.POLICY_REAL, crop_s=args.crop_s, seed=args.seed, epoch=step0))
+        streams.append(
+            sr.windows(
+                sr.POLICY_REAL, crop_s=args.crop_s, seed=args.seed, epoch=step0, mono=args.mono
+            )
+        )
     if args.data in ("partial", "both"):
         order.append(len(streams))
         streams.append(
-            sr.windows(sr.POLICY_PARTIAL, crop_s=args.crop_s, seed=args.seed + 1, epoch=step0)
+            sr.windows(
+                sr.POLICY_PARTIAL,
+                crop_s=args.crop_s,
+                seed=args.seed + 1,
+                epoch=step0,
+                mono=args.mono,
+            )
         )
 
     # ── Step 0 ───────────────────────────────────────────────────────────────
@@ -303,12 +342,14 @@ def main() -> int:
     # ── Report at the best checkpoint ────────────────────────────────────────
     if (out / "best.pt").exists():
         net.load_state_dict(torch.load(out / "best.pt", map_location=dev), strict=False)
-    final = sr.score_real(net, clips, device=dev, name=f"{args.name} best")
+    scorer = sr.score_real_mono if args.mono else sr.score_real
+    final = scorer(net, clips, device=dev, name=f"{args.name} best")
     final.pop("rows", None)
     report = {
         "name": args.name,
         "parts": list(parts),
         "data": args.data,
+        "mono": bool(args.mono),
         "steps": done,
         "trainable": n_par,
         "select_best": best,
