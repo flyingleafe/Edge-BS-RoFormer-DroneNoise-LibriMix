@@ -79,7 +79,57 @@ test split. Trainer: `scripts/train_slot_real.py`, chained on gpushort with
 FLY124 cruise and the ramp; a trade of DREGON for FLY124 is the kill criterion
 of the synthesis doc (the two rigs would need different harmonic caps).
 
-**Results.** _Pending._
+**Results, interim** (arms A1, A3, A6, A7 still running; per-clip PIT MAE
+in rev/s at the checkpoint the selection set picked; "sel" is the selection
+metric; the cruise ratio columns are the fraction of rotor-frames within 10 %
+of the truth / within 5 % of half / within 20 % of double):
+
+| arm | parts | data | sel | ground | ramp | cruise | DREGON cruise | FLY124 cruise | all | med | FLY 1x / half / 2x |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| A0 | none (corner) | – | 13.00 | 67.6 | 29.1 | 9.21 | 1.49 | 21.56 | 19.28 | 16.1 | 0.40 / 0.25 / 0.09 |
+| A4 | reliability + channels + empty_tooth | both | 5.09 | 67.9 | 31.0 | 5.66 | **0.90** | **13.27** | 17.18 | 3.86 | 0.58 / 0.075 / 0.04 |
+| A2 | reliability + empty_tooth + floor_mix | both | 5.74 | 67.3 | 33.8 | 6.81 | 1.04 | 16.03 | 18.44 | 9.80 | 0.56 / 0.18 / 0.09 |
+| A5 | channels + empty_tooth + floor_mix (no reliability) | both | 8.51 | 62.8 | 23.8 | 6.52 | 0.86 | 15.58 | 15.87 | 9.91 | 0.54 / 0.17 / 0.13 |
+| A6 (first run) | all four | real | 8.22 | 75.4 | 37.0 | 10.57 | 0.92 | 26.02 | 22.57 | 12.8 | 0.31 / 0.19 / 0.12 |
+| A4, octave move ON at decode | as A4 | – | – | 69.1 | 32.4 | 10.50 | 0.86 | 25.91 | 20.98 | 20.6 | 0.21 / 0.36 / 0.10 |
+
+Notes on the interim rows.
+
+- Every trained arm takes DREGON cruise from 1.49 to 0.86-1.04 and FLY124
+  cruise from 21.6 to 13-16, so the gate holds: no arm trades one rig for the
+  other. On DREGON the signed error of A4 is -0.48 % (median over rotor-
+  frames), which is the known telemetry bias; A4's DREGON error is at the
+  label floor (W7) and cannot be scored lower against these labels.
+- What A4 learned (`results/slot_real/A4/best.pt`): the per-mic channel gates
+  stayed closed (sigmoid(b) 5e-4 for every mic, 1.0 for the power mean), the
+  empty-tooth charge stayed off (lambda 7e-4 from a softplus(-8) start), the
+  per-order weights barely moved (1.01 at k 1-9, 0.98 at 10-24, 0.89 at
+  25-40), and the work is in the convex warp of the readings (knot slopes
+  0.54 / 0.34 / 0.34 / 0.26 / 0.13 / -0.09 / 0 / 0 at z = 0..12) and the
+  reliability network's modulation. So the emission learned to amplify strong
+  readings over weak ones, a soft order statistic, and not an explicit octave
+  rule or a harmonic cap.
+- The selection curve is not converged at 1500 steps (A4: 13.0 -> 15.0 at
+  step 200 -> 5.09 at 1500, still falling). An extension to 3000 steps is
+  running.
+- The remaining FLY124 error of A4 has two parts: the two 36 rev/s hover clips
+  are read at exactly twice the rate (median ratio 2.00; 7.3 of the 13.3 mean
+  come from these two clips), and on the 80 rev/s clips one rotor of four
+  sits off the truth ("other" ratio 0.21-0.26 of rotor-frames). The
+  empty-tooth term cannot charge a multiple (its teeth all land on true
+  lines); the decoder's coverage-judged octave move is the rule for that
+  case, and switching it on costs 13.3 -> 25.9 (half-rate fraction 0.075 ->
+  0.36), the same failure P1c measured on the untrained corner. The multiple
+  needs a discriminator that real audio does not give the union rule.
+- The mono synthetic parts get WORSE under every trained arm (comb 50 -> 57-60,
+  stoch 39 -> 45; means dominated by stopped-rotor and below-grid frames), so
+  the real-window emission does not keep the synthetic performance; the
+  parts are out of scope for this test and are reported as the control they
+  were meant to be.
+- Two arms (A3, A6) went non-finite near step 400 (reliability + channels +
+  floor_mix; the reliability factor `1 + MLP` is unbounded below, so the
+  weight sum can reach zero and the CRF overflows). The trainer now skips
+  non-finite steps and restores the last best head; both arms are rerun.
 
 ## C2: the HG-CKLA refiner with the three fixes
 
