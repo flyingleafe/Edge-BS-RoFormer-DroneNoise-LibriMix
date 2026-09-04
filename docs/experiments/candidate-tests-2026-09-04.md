@@ -1,6 +1,6 @@
 # Testing the two shortlisted architectures (2026-09-04)
 
-Status: CLOSED 2026-09-04 (A3b, the guarded rerun of A3, lands last; see its row). The shortlist comes from
+Status: CLOSED 2026-09-04. The shortlist comes from
 `docs/rps-tracking-architecture-candidates.md` (2026-09-03): C1, the slot-comb
 CRF with a learned partial-observation emission, and C2, the HG-CKLA refiner
 with three fixes. This document records the test protocol, every arm, and the
@@ -90,7 +90,7 @@ job logs, `results/slot_real/<arm>/report.json` where pulled):
 | A0 | none (the corner) | – | 0 | 13.00 | 67.6 | 29.1 | 9.21 | 1.49 | 21.56 | 19.28 | 16.1 | 0.40 / 0.25 / 0.09 |
 | A1 | all four | both | 1500 | 5.98 | 68.1 | 33.7 | 7.52 | 0.91 | 18.10 | 19.02 | 9.8 | 0.48 / 0.17 / 0.10 |
 | A2 | no `channels` | both | 1500 | 5.74 | 67.3 | 33.8 | 6.81 | 1.04 | 16.03 | 18.44 | 9.8 | 0.56 / 0.18 / 0.09 |
-| A3b | no `empty_tooth` (guarded rerun) | both | 1500 | _pending_ | | | | | | | | |
+| A3b | no `empty_tooth` (guarded rerun) | both | 1500 | 8.82 | 66.3 | 30.6 | 10.10 | 1.51 | 23.86 | 20.06 | 12.8 | 0.35 / 0.21 / 0.11 |
 | A4 | no `floor_mix` | both | 1500 | 5.09 | 67.9 | 31.0 | 5.66 | 0.90 | 13.27 | 17.18 | 3.9 | 0.58 / 0.075 / 0.04 |
 | A4 | no `floor_mix`, extended | both | 3000 | 4.17 | 64.6 | 32.0 | 5.10 | 0.90 | 11.80 | 16.62 | 4.1 | 0.59 / 0.025 / 0.13 |
 | A5 | no `reliability` | both | 1500 | 8.51 | 62.8 | 23.8 | 6.52 | 0.86 | 15.58 | 15.87 | 9.9 | 0.54 / 0.17 / 0.13 |
@@ -102,7 +102,13 @@ job logs, `results/slot_real/<arm>/report.json` where pulled):
 The checkpoint-to-checkpoint scatter of FLY124 cruise inside one run is
 about +-3 rev/s (two or three clips change octave state between validations),
 so differences below that between arms are not readable; DREGON cruise is
-stable to +-0.1.
+stable to +-0.1. The arms are single seeds, and A3b shows the seed-level
+spread: it differs from A1 only by a term that was inactive in every arm that
+had it (lambda 7e-4), yet it is the slowest run of the set (selection 8.8
+against 6.0 at 1500 steps, FLY124 23.9 against 18.1, DREGON 1.51 at its
+selected checkpoint against 0.98 at its last). So between-arm differences of
+that size are seed noise (W6), and only two effects stand above it: every
+trained arm against the corner, and the real-only arm A6b against the rest.
 
 Notes.
 
@@ -299,6 +305,10 @@ batch 2 (2 s crops, 8 mics), 0.8 s per 8 s clip at decode (classical corner)
 and about 2 s with the partial emission on GPU (47-79 s on CPU). C2: 222k
 parameters, 2 minutes per epoch, 18 epochs.
 
-**Pending at closing time:** A3b (the guarded rerun of the no-`empty_tooth`
-arm); its row completes the ablation but cannot change the conclusions above,
-because A4 and A7 already bracket the charge's effect.
+**Caveat.** One seed per arm. A3b, which differs from A1 only by an
+inactive term, lands 2.8 selection points and 6 rev/s of FLY124 away from it,
+so the part-by-part ablation reads as "none of the three optional parts is
+load-bearing" rather than as a ranking among them; the two effects above the
+seed noise are the trained emission against the corner and real-only data
+against real + synthetic. A seed sweep of A6b is the next measurement if a
+ranking is wanted.
