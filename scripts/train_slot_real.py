@@ -226,15 +226,39 @@ def main() -> int:
     budget = args.max_minutes * 60.0 if args.max_minutes > 0 else float("inf")
     net.train()
     t0, done = time.time(), step0
+    n_skipped = n_restored = 0
     for step in range(step0 + 1, args.steps + 1):
         if opt is None:
             break
         au, gt = batch(streams, order, step, args.batch, dev)
         loss = net.loss(au, gt)
         opt.zero_grad(set_to_none=True)
+        # NaN GUARD. Two arms (A3, A6: reliability + channels + floor_mix)
+        # went non-finite near step 400 and every later validation read NaN,
+        # so the run lost 1100 steps. A non-finite loss skips the step; a
+        # non-finite parameter after the step restores the last best head
+        # and resets the optimizer state.
+        if not torch.isfinite(loss):
+            n_skipped += 1
+            print(
+                f"step {step:5d}  loss non-finite -> step skipped ({n_skipped} so far)", flush=True
+            )
+            continue
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 5.0)
         opt.step()
+        if not all(bool(torch.isfinite(p).all()) for p in params):
+            n_restored += 1
+            print(
+                f"step {step:5d}  non-finite parameter -> restored best.pt ({n_restored} so far)",
+                flush=True,
+            )
+            if (out / "best.pt").exists():
+                net.load_state_dict(torch.load(out / "best.pt", map_location=dev), strict=False)
+            else:
+                for p in params:
+                    p.data = torch.nan_to_num(p.data, nan=0.0, posinf=0.0, neginf=0.0)
+            opt.state.clear()
         done = step
         if step % 25 == 0 or step == step0 + 1:
             acc = " ".join(f"{s.kept}/{s.seen}" for s in streams)
