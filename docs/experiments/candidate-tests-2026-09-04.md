@@ -102,7 +102,51 @@ labels, M2 behind `r4hb_scv2` and behind the best C1 arm, M3 oracle drift
 one classical `pi_kalman` pass (`experiments.classical_pass`, the flagship
 protocol row) from the same initializations.
 
-**Results.** _Pending._
+**Training.** 18 epochs on an A100 (early stop, patience 8), 2 minutes per
+epoch, best at epoch 9. On its own validation (the corrupted-label task) v2
+matches v1 and does not beat it: per-frame MAE 1.001 against v1's 1.005.
+
+**Results** (`results/refiner_bench/hb_hgckla_ref_v2/REPORT.md`, per-frame
+protocol: 296 mono frames, PIT MAE in rev/s):
+
+| test | phase | v1 (P4) | v2 |
+|---|---|---|---|
+| M2 one pass behind `r4hb_scv2` | cruise | 2.28 -> 2.09 (-8 %) | 2.28 -> **1.85 (-19 %)**, 1 % of frames hurt |
+| M2 one pass behind `r4hb_scv2` | all | 2.74 -> 2.59 | 2.74 -> 2.41 |
+| M5 passes 1 / 2 / 3 behind `r4hb_scv2` | cruise | 2.09 / 2.12 / 2.17 (walks out) | **1.85 / 1.79 / 1.73** (keeps improving) |
+| M3 oracle drift (own floor) | cruise | 0.41 (median 0.39, p90 0.59) | **0.55** (median 0.55, p90 0.68); signed -0.19 % |
+| M5 passes from the oracle | cruise | 0.41 / 0.61 / 0.73 (walks out) | 0.55 / 0.75 / 0.88 (walks out) |
+| M2 one pass behind the C1 arm A4 | cruise | 5.66 -> 5.63 (-0.5 %) | 5.66 -> 5.68 (+0.4 %), 25 % of frames hurt |
+| M2 one pass behind A4 | DREGON cruise (per clip, classical pass) | 0.90 -> 0.93 | – |
+| M4 pull at +1 / +2 / +4 rev/s | cruise | ~40 % fixed | 66 % / 57 % / 37 % |
+| M1 corrupted labels | all | 1.16 -> 1.00 | 1.16 -> 1.00 |
+
+(The v1 column is the same harness re-run in `results/refiner_bench/hb_hgckla_ref_behindA4/`; it reproduces P4.)
+
+Behind the C1 seed neither refiner adds anything: A4's cruise error is made of
+octave and assignment failures on FLY124, which lie outside any refiner's
+capture, and its DREGON error sits at the label floor. So the refiner
+question only matters behind a regressor seed.
+
+Reading. The three fixes change the refiner's character: the carried gain
+pulls harder (66 % of a 1 rev/s offset in one pass against 40 %) and the pass
+behind a real seed now converges under iteration instead of walking out. But
+the fixed point is still not the truth: from a perfect initialization v2
+moves 0.55 rev/s at cruise, more than v1's 0.41, and iterating from the truth
+walks out to 0.88. The signed part of that drift is -0.19 % at cruise, the
+direction of the DREGON label bias, so a small part of the "drift" is the
+acoustic truth; the rest is scatter. On the corrupted-label task the two
+versions tie, which is why the training loss could not select for the
+fixed-point property. Verdict: C2 v2 is the better coarse puller behind a
+regressor (2.3x the one-pass gain, safe to iterate) and is NOT a precision
+stage below 0.5 rev/s. The gate "oracle drift well below 0.41" fails.
+
+**The classical pass on the same clips** (`experiments.classical_pass`,
+per-clip protocol, 8 mics): behind `r4hb_scv2` cruise 2.24 -> 2.16 (-3 %),
+from the oracle 0.35 at cruise (0.29 DREGON, 0.43 FLY124). Behind the A4 slot
+decoder (below): DREGON cruise 0.904 -> 0.932 -> 0.954 -> 0.973 over three
+passes, FLY124 13.27 -> 13.24, so the classical refiner has nothing to add to
+a seed that already sits at the label floor, and it walks away from it slowly.
 
 ## Conclusions
 
