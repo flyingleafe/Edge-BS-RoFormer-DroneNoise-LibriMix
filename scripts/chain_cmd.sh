@@ -57,7 +57,10 @@ submit_segment() {
     id=$(printf '%s\n' "$out" | grep -oE "submitted [^ ]+" | head -1 | awk '{print $2}')
     if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
     sleep 30
-    id=$(COLUMNS=220 $OR queue 2>/dev/null | grep -oE "${name}-[a-f0-9]{6}" | head -1)
+    # omnirun lowercases the job id it derives from the name, so the lookup
+    # must be case-insensitive; a case-sensitive grep missed "c1-a1-1-61b549"
+    # for the name "c1-A1-1" and queued a duplicate segment on the same state.
+    id=$(COLUMNS=220 $OR queue 2>/dev/null | grep -ioE "${name}-[a-f0-9]{6}" | head -1 | tr 'A-Z' 'a-z')
     if [ -n "$id" ]; then
       echo "CHAIN $PREFIX: recovered in-flight $id after an unreadable submit" >&2
       printf '%s' "$id"; return 0
@@ -69,7 +72,21 @@ submit_segment() {
 }
 
 LAST_STATE=""
-for i in $(seq 1 "$MAX_SEGMENTS"); do
+START_AT=1
+# Attach to a segment already in flight (CHAIN_WAIT_FOR=<job id>) instead of
+# starting a second one against the same state directory.
+if [ -n "${CHAIN_WAIT_FOR:-}" ]; then
+  echo "CHAIN $PREFIX: waiting on in-flight segment $CHAIN_WAIT_FOR"
+  wait_for "$CHAIN_WAIT_FOR"
+  logs=$($OR logs "$CHAIN_WAIT_FOR" 2>/dev/null)
+  if printf '%s' "$logs" | grep -qa "CHAIN: done"; then echo "CHAIN $PREFIX: run complete"; exit 0; fi
+  if [ "$LAST_STATE" = cancelled ]; then echo "CHAIN $PREFIX: attached segment cancelled — stopping"; exit 0; fi
+  if ! printf '%s' "$logs" | grep -qa "CHAIN: continue"; then
+    echo "CHAIN $PREFIX: attached segment ended without a CHAIN marker ($LAST_STATE) — stopping"; exit 1
+  fi
+  START_AT=${CHAIN_START_AT:-2}
+fi
+for i in $(seq "$START_AT" "$MAX_SEGMENTS"); do
   job=$(submit_segment "${PREFIX}-${i}" "$@")
   if [ -z "$job" ]; then echo "CHAIN $PREFIX: submit failed at segment $i"; exit 1; fi
   echo "CHAIN $PREFIX: segment $i = $job"
