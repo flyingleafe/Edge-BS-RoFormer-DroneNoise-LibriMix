@@ -191,7 +191,7 @@ def main() -> int:
         if opt is not None and st.get("opt"):
             opt.load_state_dict(st["opt"])
         step0, best, hist = st["step"], st["best"], st["history"]
-        torch.set_rng_state(st["torch_rng"])
+        torch.set_rng_state(st["torch_rng"].cpu())  # a CUDA map_location makes it a cuda tensor
         print(f"resumed from {state_path} at step {step0} (best {best:.4f})", flush=True)
 
     # ── Data ─────────────────────────────────────────────────────────────────
