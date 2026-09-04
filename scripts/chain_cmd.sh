@@ -50,6 +50,7 @@ wait_for() {
 
 submit_segment() {
   local name=$1 out id
+  shift
   for attempt in $(seq 1 10); do
     out=$($OR submit --backend "$BACKEND" --gpus 1 --time "$TIME_LIMIT" --name "$name" \
       --env PYTHONPATH=src -- "$@" 2>&1)
