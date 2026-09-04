@@ -40,6 +40,12 @@ def main() -> int:
     ap.add_argument("--floor-hz", type=float, default=60.0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--name", default="arm")
+    ap.add_argument(
+        "--octave",
+        action="store_true",
+        help="turn the decoder's coverage-judged octave move ON (the P1c protocol "
+        "keeps it off: at eight mics it cost the untrained FLY124 22.4 -> 31.1)",
+    )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--threads", type=int, default=0)
     args = ap.parse_args()
@@ -61,7 +67,7 @@ def main() -> int:
     net.eval()
     preds = []
     rows = []
-    kw = {"subgrid": True, "octave": False, "relocate": True}  # the P1c optimum
+    kw = {"subgrid": True, "octave": bool(args.octave), "relocate": True}  # P1c: octave off
     with torch.no_grad():
         for clip in clips:
             t0 = time.time()
