@@ -384,6 +384,25 @@ schedule artifact and is not used. Together with the synthetic pairs (2x on
 the stochastic family, 1.0-1.65x on the static comb), claim 5 reads "1.3-2x,
 family-dependent", not "2x for all models and regimes".
 
+### Batches 8-9: the static-comb cells of all four trunks (salv2 streams; single seed)
+
+PIT MAE on the salv2 comb validation set; "comb+sp" = the same 32 flights with
+a LibriSpeech talker at -30..0 dB at evaluation.
+
+| trained without speech | comb | comb+sp | ratio | trained with speech | comb | comb+sp | ratio |
+|---|---|---|---|---|---|---|---|
+| `salv2_scv2_comb_nomix` | 0.91 | 1.60 | 1.8 | `salv2_scv2_comb_mix` | 0.83 | 0.87 | 1.05 |
+| `salv2_tr_comb_nomix` | 1.22 | 2.32 | 1.9 | `salv2_tr_comb_mix` | 1.34 | 1.42 | 1.06 |
+| `salv2_hppnet_comb_nomix` | 0.46 | 1.42 | 3.1 | `salv2_hppnet_comb_mix` | 0.48 | 0.55 | 1.15 |
+| `salv2_hf0_comb_nomix` | 1.19 | 2.02 | 1.7 | `salv2_hf0_comb_mix` | 0.87 | 0.98 | 1.13 |
+
+Every comb-trained row scores 36-38 on the stochastic part and 37-66 on real
+audio: no transfer across synthetic families or to real data. Claim 5, final
+form across synthetic and real data: a talker makes the task 1.7-3x harder
+for a model that never saw speech, and 1.05-1.4x for a model trained with
+mixed speech, which stays as precise on clean input. Speech in training is a
+robustness ingredient, not a handicap.
+
 ## Conclusion
 
 Pending.
