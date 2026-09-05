@@ -1,0 +1,29 @@
+# @package _global_
+# SPEECH A/B ON REAL DATA, noise-only arm WITH the warm-up stage — the BiGRU head
+# (`hb_scv2_mag_nogate`). The exact twin of the R2 row (`hb_scv2_mag_nogate` /
+# `tm_r2hb_nogate` / `r2hb_gru_nogate`): stream conf/online_mix/hb_silence_nomix_dload.yaml
+# = hb_silence_dload.yaml with `source_prob: 0.0` in both stages. It replaces
+# `r2hb_scv2_nomix` (warm-up-free pool) as the A/B arm, because the warm-up-free
+# schedule itself moved the with-speech scv2 row from 2.77 to 4.59
+# (`real_r4_scv2`). Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: hb_scv2_mag_nogate
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r2hb_scv2_nomix_wu
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_nomix_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
