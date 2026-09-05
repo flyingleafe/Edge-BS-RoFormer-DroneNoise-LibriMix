@@ -467,10 +467,20 @@ sources:
     - kind: frames
       dataset: michaels-frames
       recording_ids: [FLY125]       # bare published ids (not michaels_FLY125)
+      channels: [0]                 # optional microphone filter (see below)
 ```
 
 Also accepts `split` (singular), `recording_ids`, and `take` (cap the number
-of recordings). A real source (`dregon`/`michaels`/`frames`) that sets an
+of recordings). **`channels`** (an int or a list of ints) keeps only
+those audio channels of every decoded chunk, applied BEFORE augmentation and
+mixing, so the microphone count is a per-source property — the knob the
+reality ladder uses to read a 1-microphone rung and an 8-microphone rung off
+one recording pool (`conf/online_mix/real_r1_dload.yaml` vs `real_r2`). The
+speech-lane ceiling follows the kept count, thus a mono source draws ONE
+speech lane and `flatten_channels=True` yields ONE training frame per chunk.
+Engine sources are unaffected except `kind: silence`, whose own `n_channels`
+now sets its contribution to that ceiling (leave it at 8 and a mono real pool
+still gets 8 lanes). A real source (`dregon`/`michaels`/`frames`) that sets an
 **explicit `weight`** becomes its own sub-pool in a `MixedNoisePool` at that
 pool-level weight instead of joining the duration-weighted real merge (whose
 weight stays 1.0 per unweighted item) — the knob that lets a long auxiliary

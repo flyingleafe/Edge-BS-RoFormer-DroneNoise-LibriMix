@@ -1,0 +1,39 @@
+# @package _global_
+# REALITY LADDER, RUNG 3 — TWO rigs (DREGON + Michael's FLY125), ALL 8 microphones — on
+# the magnitude-front-end transformer (`simple_conv_v2_transformer`).
+#
+# THE LADDER (full argument in conf/online_mix/real_r3_dload.yaml):
+#   R1 DREGON, 1 microphone   R2 DREGON, 8 microphones
+#   R3 + Michael's FLY125     R4 + freq_scale and the time warp (hb_m3s2)
+# One real ingredient per rung, so a gain has one cause. R1 to R3 carry NO
+# label-transforming augmentation: `freq_scale` and the time warp resample the
+# noise and multiply the labels, thus they manufacture rotor speeds the rig
+# never flew.
+#
+# TWO differences from `tm_r2hb_nogate`: the training stream (this rung's
+# policy) and `optim.monitor: mae_frame`, which is PIT per-frame absolute error
+# in rev/s — the one number every row of the regime matrix is compared on.
+# Model, loss, metrics, batch size, epoch budget and the frozen REAL validation
+# split are that file verbatim.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: real_r3_tm
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/real_r3_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mae_frame
+  monitor_mode: min

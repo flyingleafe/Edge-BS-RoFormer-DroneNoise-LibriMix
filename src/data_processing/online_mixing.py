@@ -276,12 +276,26 @@ def interpolate_rps_to_stft_grid(
 # =============================================================================
 
 
+def _spec_channels(spec: Mapping[str, Any]) -> tuple[int, ...] | None:
+    """The optional ``channels: [0, 3]`` microphone selection of a source spec.
+
+    ``None`` (the key absent) keeps every channel — the historical behaviour.
+    """
+    channels = _cfg_get(spec, "channels", None)
+    if channels is None:
+        return None
+    if isinstance(channels, int):
+        channels = [channels]
+    return tuple(int(c) for c in channels)
+
+
 def _load_real_records(
     spec: Mapping[str, Any], *, sample_rate: int, window_s: float
 ) -> list[dict[str, Any]]:
     """Load one real source spec (``kind: frames``) into chunkable records."""
     frames = mixing.load_noise_source_frames([dict(spec)], sample_rate=sample_rate)
     min_motor_rps = float(_cfg_get(spec, "min_motor_rps", 30.0))
+    channels = _spec_channels(spec)
     records: list[dict[str, Any]] = []
     for tf in frames:
         if "audio" not in tf:
@@ -299,7 +313,14 @@ def _load_real_records(
                 valid_start = max(valid_start, flight_start)
                 valid_end = min(valid_end, flight_end)
             if valid_end - valid_start >= window_s:
-                records.append({"tf": tf, "valid_start": valid_start, "valid_end": valid_end})
+                records.append(
+                    {
+                        "tf": tf,
+                        "valid_start": valid_start,
+                        "valid_end": valid_end,
+                        "channels": channels,
+                    }
+                )
         except Exception as exc:
             print(f"Warning: skipping noise frame {get_meta(tf, 'recording_id', '?')}: {exc}")
     if not records:
@@ -308,10 +329,20 @@ def _load_real_records(
 
 
 def _cut_record_window(record: dict[str, Any], window_s: float, u: float) -> td.Frame:
-    """Cut a uniform-random ``window_s`` chunk from a record's valid span."""
+    """Cut a uniform-random ``window_s`` chunk from a record's valid span.
+
+    A source spec's ``channels`` selection is applied here, i.e. on the decoded
+    chunk and BEFORE any augmentation or mixing, so every downstream stage
+    (and the speech lane count) sees only the kept microphones.
+    """
     vs, ve = float(record["valid_start"]), float(record["valid_end"])
     start = vs + float(u) * max(0.0, (ve - vs) - window_s)
-    return record["tf"].time[start : start + window_s]
+    chunk = record["tf"].time[start : start + window_s]
+    channels = record.get("channels")
+    audio = chunk["audio"]
+    if channels is not None and "mic" in audio.dims:
+        chunk = chunk.with_entry("audio", audio.take_dim("mic", list(channels)))
+    return chunk
 
 
 def _engine_chunk(engine: NoiseEngine, window_s: float, u: float) -> td.Frame:
@@ -622,7 +653,9 @@ def build_noise_stream(
         else:
             engine = _build_engine(c, window_s=window_s, sample_rate=sample_rate)
             streams.append(dload.random_stream(cseed).map(partial(_engine_chunk, engine, window_s)))
-            ceiling = max(ceiling, 8)  # the project rigs are 8-mic
+            # The project rigs are 8-mic; the silence arm renders whatever
+            # `n_channels` asks for, so a mono real pool can get a mono floor.
+            ceiling = max(ceiling, int(_cfg_get(c, "n_channels", 8)) if kind == "silence" else 8)
         weights.append(float(_cfg_get(c, "weight", 1.0)))
 
     if not streams:
@@ -639,7 +672,11 @@ def _records_channels(records: list[dict[str, Any]]) -> int:
     n = 1
     for rec in records:
         audio = rec["tf"]["audio"]
-        n = max(n, int(audio.dim_size("mic")) if "mic" in audio.dims else 1)
+        kept = int(audio.dim_size("mic")) if "mic" in audio.dims else 1
+        channels = rec.get("channels")
+        if channels is not None:
+            kept = min(kept, len(channels))
+        n = max(n, kept)
     return n
 
 

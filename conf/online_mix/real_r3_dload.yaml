@@ -1,0 +1,59 @@
+# REALITY LADDER, RUNG 3 — TWO rigs, ALL 8 microphones, no label-transforming
+# augmentation. Rung 2 plus a second airframe.
+#
+# THE ONE DIFFERENCE FROM `real_r2_dload.yaml`: Michael's FLY125 joins the
+# noise pool. Both real sources are unweighted, so they merge into one
+# duration-weighted stream whose pool weight is the NUMBER of merged items —
+# 2.0 — and the silence arm therefore doubles to 0.4 to hold its share at
+# 0.4 / 2.4 = 16.7 %, the same fraction rungs 1 and 2 carry.
+#
+# WHAT THE PAIR MEASURES. R2 to R3 is the only place in the matrix where the
+# number of RIGS moves on its own. DREGON and the Matrice 100 differ in
+# airframe, rotor count geometry, microphone ring and telemetry rate, so the
+# difference is cross-rig variety and not simply more seconds of one drone.
+#
+# THIS IS ALSO `hb_m3s2_dload.yaml` MINUS ITS TWO AUGMENTATION BLOCKS. Rung 4
+# of the ladder is that file itself, thus R3 to R4 isolates `freq_scale` and
+# the time warp.
+#
+# THE LADDER and WHAT IS REMOVED: see the header of real_r1_dload.yaml.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+
+sample_rate: 16000
+duration_s: 1.0
+base_seed: 20260712
+snr_ref_floor_rms: 0.02
+
+sources:
+  noise:
+    - kind: frames
+      dataset: DREGON-frames
+      splits: [in_flight_noise]
+      exclude_recording_ids:
+        - free-flight_nosource_room1
+      # WHOLE envelope: keep the ground/warm-up/take-off ramp (and landing).
+      min_motor_rps: 0.0
+    - kind: frames
+      dataset: michaels-frames
+      recording_ids: [FLY125]
+      min_motor_rps: 0.0
+    - kind: silence
+      weight: 0.4
+      n_channels: 8
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+policy:
+  stages:
+    # ONE stage, no warm-up: mixtures and the post-mix block from sample 1.
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}

@@ -1,0 +1,34 @@
+# @package _global_
+# REALITY LADDER, RUNG 2 — ONE rig (DREGON), ALL 8 microphones — on the salience port
+# HPPNet (`hppnet_rps_l4`).
+#
+# THE LADDER (full argument in conf/online_mix/real_r2_dload.yaml):
+#   R1 DREGON, 1 microphone   R2 DREGON, 8 microphones
+#   R3 + Michael's FLY125     R4 + freq_scale and the time warp (hb_m3s2)
+# One real ingredient per rung, so a gain has one cause. R1 to R3 carry NO
+# label-transforming augmentation.
+#
+# The ONE difference from `hppnet_r2hb_l4` is the training stream. The
+# model, the layer loss and metrics, the monitor (`rps_mae`), the batch size,
+# the epoch budget and the frozen REAL validation split are that file verbatim,
+# and there is still no warm start.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: hppnet_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: real_r2_hppnet
+data:
+  train:
+    params:
+      path: conf/online_mix/real_r2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — the salience rows' value
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: rps_mae
+  monitor_mode: min

@@ -61,8 +61,10 @@ from __future__ import annotations
 
 import io
 import json
+import ssl
+import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -74,6 +76,7 @@ import torch
 import torch.nn.functional as F
 from dload.torch import as_iterable_dataset
 from torch.utils.data import IterableDataset
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from data_processing.frames import audio_series, get_meta, rps_series, with_meta
 
@@ -119,6 +122,49 @@ DEFAULT_HOP_LENGTH = 512
 DEFAULT_SAMPLE_RATE = 16000
 
 _repository: dload.Repository | None = None
+
+#: Shard-open attempts before a transient network failure becomes fatal.
+SHARD_OPEN_ATTEMPTS = 5
+#: Network exceptions worth another try. ``ssl.SSLError`` is an ``OSError``;
+#: urllib3's own SSL/protocol/timeout errors are not, so they are listed too.
+_RETRY_ERRORS: tuple[type[BaseException], ...] = (OSError, ssl.SSLError, Urllib3HTTPError)
+
+
+def install_shard_open_retry() -> None:
+    """Retry ``dload.Repository.open_shard`` on a transient network failure.
+
+    dload 0.3.0 opens a shard through ``open_shard`` -> ``cache.ensure`` with
+    NO retry, so one dropped TLS connection inside a DataLoader worker kills
+    the whole training job (seen on vast.ai as a urllib3 ``SSLError``). The
+    fix belongs on our side until dload retries by itself. Backoff doubles
+    from 1 s and is capped at 16 s; only network errors are caught.
+    """
+    original = getattr(dload.Repository.open_shard, "__wrapped__", None)
+    if original is not None:  # already installed
+        return
+    original = dload.Repository.open_shard
+
+    @wraps(original)
+    def open_shard(self: Any, shard: Any) -> Any:
+        for attempt in range(SHARD_OPEN_ATTEMPTS):
+            try:
+                return original(self, shard)
+            except _RETRY_ERRORS as exc:
+                if attempt == SHARD_OPEN_ATTEMPTS - 1:
+                    raise
+                delay = min(2.0**attempt, 16.0)
+                print(
+                    f"[dload] shard open failed ({exc!r}); "
+                    f"retry {attempt + 1}/{SHARD_OPEN_ATTEMPTS - 1} in {delay:.0f}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    dload.Repository.open_shard = open_shard
+
+
+install_shard_open_retry()
 
 
 def open_repository() -> dload.Repository:

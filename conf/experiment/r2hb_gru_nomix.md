@@ -28,6 +28,16 @@ speech-bearing set; making the validation set speech-free too would answer a
 different question and would also make the two arms incomparable to every other
 row of the matrix.
 
+**Read the A/B against `real_r4_gru`, not against the source row.** The
+source row's stream is `conf/online_mix/hb_silence_dload.yaml`, which is
+`hb_m3s2_dload.yaml` PLUS a 50k-sample unaugmented warm-up stage (that is the
+only difference between the two files). This row's stream is the nomix twin of
+`hb_m3s2_dload.yaml`, so it differs from its source in TWO ways: no speech and
+no warm-up. The exact with-speech twin would be `gru` on
+`hb_m3s2_dload.yaml` with no warm start, which the matrix does not contain yet
+for this trunk — `real_r4_sc` is the only rung-4 row of that shape, and it is
+SimpleConv.
+
 Train: `python train.py experiment=r2hb_gru_nomix`.
 
 ## Conclusion

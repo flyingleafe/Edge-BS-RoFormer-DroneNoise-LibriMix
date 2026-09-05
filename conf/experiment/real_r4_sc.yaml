@@ -1,0 +1,35 @@
+# @package _global_
+# REALITY LADDER, RUNG 4 — the full honest-base pool
+# (conf/online_mix/hb_m3s2_dload.yaml: two rigs, 8 microphones, `freq_scale`
+# and the time warp) — on SimpleConv (`simple_conv`), the small June trunk.
+#
+# WHY ONLY SimpleConv AT R4. The other three trunks already have an R4 row —
+# `hb_scv2_mag_nogate`-family runs on this pool exist — but SimpleConv has
+# never been trained on it, so its ladder would stop at rung 3. This row closes
+# the column and makes R3 to R4 (what augmentation buys) readable on all four
+# trunks.
+#
+# TWO differences from `hb_scv2_mag_nogate`: the model and
+# `optim.monitor: mae_frame`. The stream is the R4 pool itself.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: real_r4_sc
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mae_frame
+  monitor_mode: min
