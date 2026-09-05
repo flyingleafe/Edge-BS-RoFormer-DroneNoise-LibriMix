@@ -541,6 +541,23 @@ Batch 15b, `salv2_gru_comb_nomix` on the corrected checkpoint: comb 0.70
 58.8. The GRU pair joins the batches 8-9 speech table above: with speech in
 training the ratio falls from 2.2 to 1.02 at a comb cost of 0.70 -> 0.91.
 
+### Batch 15c: SimpleConv rung 1 (the last regressor rung; single seed)
+
+`real_r1_sc` had no dump until now. All mics: zero 5.29 | below-30 11.77 |
+DREGON ramp 7.60 | FLY124 ramp 29.14 | DREGON cruise 5.74 | FLY124 cruise
+35.40 | all 15.88; comb 35.6, stoch 23.6; probe 0.16 / 0.05. Microphone
+split at DREGON cruise: ch 0 3.56, ch 1-7 6.06.
+
+Reading. The June SimpleConv is the one mic-0 model that IS worse on the
+other DREGON microphones at cruise (3.56 -> 6.06, 1.7x), where the scv2,
+transformer and GRU mic-0 rows are not (2.73 / 2.73, 2.37 / 2.27, 2.40 /
+2.29). The unseen drone fails for all of them (FLY124 cruise 35.4 here).
+The complete SimpleConv ladder, all-mic MAE / DREGON cruise / FLY124
+cruise: rung 1 15.88 / 5.74 / 35.40, rung 2 8.03 / 3.55 / 11.46, rung 3
+2.77 / 2.27 / 1.30, rung 4 3.28 / 2.93 / 2.00. Rung 3 is its best real
+split, as for every other trunk, and rung 4 buys the probe (0.93) and the
+static comb (10.9) with real-split precision.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
