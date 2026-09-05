@@ -63,6 +63,7 @@ re-derived, which would upload a near-duplicate copy. See
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -87,6 +88,7 @@ PARENTS = {
     "michaels-frames": "dload:michaels-frames@fdef818432e99f0909762b9a9d45b76ae95ef3d1f1b7b9aa8012bcc91cd9200a",
     "AVQ": "dload:AVQ@50dd53d1a6c0ab81fe02e4a40a57557a0a2b1c1b85152470edd12aa6d0725f39",
     "AVQ-egonoise": "dload:AVQ-egonoise@b43b374b007a0d5c9575dd2feacd31a05097d0c436629819b936273f17cf7703",
+    "DREGON-LM-V4-michaels-valid-full": "dload:DREGON-LM-V4-michaels-valid-full@9604f3ffc2c935e2ba2be52bd96c602d02a6999f1d683ee89fa1b0e28fafc4a9",
 }
 
 
@@ -237,6 +239,44 @@ def generate_dregon_lm_split(gen: dict[str, Any]) -> Iterator[Sample]:
             },
         )
 
+    yield "_meta", {"metadata": dload.codecs.json_bytes({split: metadata_list})}
+
+
+def generate_dregon_lm_subset(gen: dict[str, Any]) -> Iterator[Sample]:
+    """Yield a byte-verbatim subset of a published ``sample-dir-v1`` split.
+
+    ``gen``: ``parent`` (the pinned ``dload:NAME@sha`` of the split),
+    ``split`` (the key of the parent's ``metadata.json``), ``fields``
+    (field -> filename, copied as they are) and ``keep_source_types`` (the
+    per-clip ``source_type`` values to keep). Kept clips are renumbered from
+    zero in parent order and each row keeps its parent id under ``source_id``.
+
+    Every field is copied as bytes, never decoded and re-encoded, so a subset
+    clip is bit-identical to its parent clip. That is the point: a twin whose
+    audio or labels moved would not be comparable with the set it is cut from,
+    and the parent's own generator no longer reproduces its labels (the
+    published DREGON-LM-V4 valid sets predate both the michaels telemetry
+    calibration of 2026-07-31 and the ``motors_measured`` preference of
+    2026-08-05).
+    """
+    from data_processing.streams import resolve_source
+
+    root = Path(resolve_source(gen["parent"]))
+    split = gen["split"]
+    fields = dict(gen["fields"])
+    keep = {str(t) for t in gen["keep_source_types"]}
+
+    rows = json.loads((root / "metadata.json").read_text())[split]
+    metadata_list = []
+    for idx, row in enumerate(r for r in rows if str(r.get("source_type")) in keep):
+        sample_id = f"sample_{idx:05d}"
+        metadata_list.append({**row, "id": sample_id, "source_id": row["id"]})
+        yield (
+            sample_id,
+            {name: (root / row["id"] / fname).read_bytes() for name, fname in fields.items()},
+        )
+    if not metadata_list:
+        raise ValueError(f"no {split} clip of {gen['parent']} has source_type in {sorted(keep)}")
     yield "_meta", {"metadata": dload.codecs.json_bytes({split: metadata_list})}
 
 
@@ -1271,6 +1311,29 @@ SPECS: dict[str, dict[str, Any]] = {
             "params": {**_V4_VALID_PARAMS, "min_motor_rps": 0.0, "max_non_overlapping": True},
         },
     },
+    "DREGON-LM-V4-michaels-valid-full-nospeech": {
+        "generator": "dregon_lm_subset",
+        "fields": _REAL_VALID_FIELDS,
+        "adopt_only": False,
+        "note": "Noise-only twin of DREGON-LM-V4-michaels-valid-full: its 23 "
+        "source_type=nosource clips (free-flight_nosource_room1 + michaels "
+        "FLY124), copied byte for byte, so audio and rps match the full set "
+        "exactly. real_valid does no mixing, so a clip's mixture IS the raw "
+        "8-mic recording; the speech and the white noise of the other 14 clips "
+        "are a loudspeaker in the room during the DREGON in_flight_source "
+        "flights, and no noise-only version of those windows exists. Cut from "
+        "the published bytes and not re-derived, because the parent's own "
+        "generator no longer reproduces its labels (it predates the michaels "
+        "calibration of 2026-07-31 and the motors_measured preference of "
+        "2026-08-05).",
+        "gen": {
+            "recipe_version": 1,
+            "parent": PARENTS["DREGON-LM-V4-michaels-valid-full"],
+            "split": "valid",
+            "fields": _REAL_VALID_FIELDS,
+            "keep_source_types": ["nosource"],
+        },
+    },
     # ── DN-LM (derived; recipe_version 1 materialized 2026-07) ──────────────
     # Noise source = drone-only: `drone_audio/Binary_Drone_Audio/yes_drone`
     # (the 1332 label-1 recordings) — the raw tree mixes ESC-50/WN/silence
@@ -1677,6 +1740,7 @@ HISTORICAL_PINS = {
 _GENERATORS = {
     "decomp_frames": generate_decomp_frames,
     "dregon_lm": generate_dregon_lm_split,
+    "dregon_lm_subset": generate_dregon_lm_subset,
     "dn_lm": generate_dn_lm_split,
     "source_frames": generate_source_frames,
     "frame_subset": generate_frame_subset,
@@ -1691,6 +1755,7 @@ _GENERATORS = {
 _LAYOUTS = {
     "decomp_frames": "tdframe-v1",
     "dregon_lm": "sample-dir-v1",
+    "dregon_lm_subset": "sample-dir-v1",
     "dn_lm": "sample-dir-v1",
     "source_frames": "tdframe-v1",
     "frame_subset": "tdframe-v1",

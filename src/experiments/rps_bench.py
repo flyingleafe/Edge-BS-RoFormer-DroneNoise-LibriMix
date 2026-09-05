@@ -78,6 +78,7 @@ PARTS: dict[str, tuple[str, dict[str, Any]]] = {
     "comb": ("conf/data/salv2_comb_nomix.yaml", {}),
     "stoch": ("conf/data/salv2_stoch_nomix.yaml", {}),
     "real": ("conf/data/m3cur_s2.yaml", {}),
+    "real_nospeech": ("conf/data/m3cur_s2_nospeech.yaml", {}),
     "comb_speech": ("conf/data/salv2_comb_nomix.yaml", {"speech": True}),
     "stoch_speech": ("conf/data/salv2_stoch_nomix.yaml", {"speech": True}),
 }

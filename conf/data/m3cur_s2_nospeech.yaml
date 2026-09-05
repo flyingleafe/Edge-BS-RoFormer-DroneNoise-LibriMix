@@ -1,0 +1,22 @@
+# M3CUR stage 2 with the NOISE-ONLY real validation split: the 23 source-free
+# clips of DREGON-LM-V4-michaels-valid-full (free-flight_nosource_room1 +
+# michaels FLY124), byte for byte. Train block = conf/data/m3cur_s2.yaml.
+# Read it against m3cur_s2.yaml to price what the co-recorded speech and white
+# noise of the other 14 clips cost.
+train:
+  _target_: data_processing.frame_datasets.OnlineMixFrameDataset.from_yaml
+  params:
+    path: conf/online_mix/m3cur_s2_dload.yaml
+    flatten_channels: true
+  iterable: true
+valid:
+  _target_: data_processing.frame_datasets.DregonLMFrameDataset
+  params:
+    data_dir: "dload:DREGON-LM-V4-michaels-valid-full-nospeech"
+    n_fft: 2048
+    hop_length: 512
+    sample_rate: 16000
+    flatten_channels: true
+  iterable: false
+batch_size: null
+num_workers: null
