@@ -102,6 +102,48 @@ Pitch have no such convolutions).
 | HarmoF0 | `hb_sal_hf0_orig` | — | (optional) | `hf0_r2hb_l4` |
 | HPPNet | `hb_sal_hppnet_orig` | — | (optional) | `hppnet_r2hb_l4` |
 
+### L0 for HarmoF0 and HPPNet: what "the published architecture" is
+
+`src/models/harmonic_ports/{harmof0,hppnet}_orig.py`, registry keys
+`harmof0_orig` and `hppnet_orig`. Both keep the paper's harmonic device and the
+paper's frequency axis, which is the pair of things the L3 ports replaced:
+
+- HarmoF0 — `WaveformToLogSpecgram` (a 1024-point STFT at 16 kHz, linearly
+  interpolated onto the log bins), `MRDConv` at 12 harmonics, the three
+  octave-dilated context blocks, the two 1x1 convolutions.
+- HPPNet — the nnAudio CQT, `HarmonicDilatedConv` (eight branches at
+  `round(log2(k) * 48)`), `CNNTrunk`, `FreqGroupLSTM`, the FRAME head only.
+
+Both emit a bit-identical 352-bin grid — 48 bins per octave from 27.5 Hz — so
+`conf/loss/salience_bce_orig.yaml` and `conf/metrics/salience_bce_orig.yaml`
+serve both arms and the two differ only in the trunk and the front end. The
+harmonic blocks are checked bit-identical against the upstream source in
+`tests/models/test_harmonic_orig.py`.
+
+The grid is 4 bins per semitone, not one: HarmoF0 emits its 352-bin map
+directly, and HPPNet's `[1, 4]` frequency pool (which is what makes its output a
+88-bin piano roll) is OFF, because a semitone bin is 5.95% of the rate — 2.4
+rev/s at 40 rev/s, an order of magnitude past the campaign's 0.2 rev/s floor —
+and the arm would read as a measurement of the pool. `freq_pool: 4` restores it.
+The other deviations are seam-level (the hop-512 frame grid, logits instead of a
+sigmoid, HPPNet's half-rate frame-subnet time pool, the dropped
+onset/offset/velocity heads) and each is listed in the module docstrings.
+
+Under `f0 = rps` this axis spans 27.5-4371 rev/s. Rotors occupy bins 0-118 of
+352; the other 233 hold no fundamental, a stopped rotor has no bin at all (the
+same dark-column convention `hb_sal_multif0` trains under), and one bin is 1.45%
+of the rate — 0.40 rev/s at 27.5, 0.58 at 40, 2.2 at 150 — against the ports'
+uniform 0.5017. HPPNet's CQT has the resolution but not the window: a
+48-bin-per-octave filter at 27.5 Hz needs 2.5 s and the chunks are 1 s.
+
+The monitor is `bce`, and it is the only one available: `SalienceBCEMetric` is
+the whole shared-map metric surface, and `LayerPeakRPSMetric` reads per-rotor
+layers, which is level L2. Rotor-speed error comes from `scripts/rps_dump.py`
+and the PIT suite, as for every other L0 row. Batch 16 frames, as
+`hb_sal_multif0`: a forward+backward probe at 1 s clips retains 1.72 GiB for
+`harmof0_orig` and 2.80 GiB for `hppnet_orig`, against 2.03 GiB for `hppnet_rps`
+under the same probe.
+
 ## Protocol
 
 - Every checkpoint is dumped with `scripts/rps_dump.py` on the parts `comb`,

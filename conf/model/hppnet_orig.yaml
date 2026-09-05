@@ -1,0 +1,71 @@
+# hppnet_orig — HPPNet (Wei et al., ISMIR 2022) UNMODIFIED: the control for
+# conf/model/hppnet_rps.yaml. That row replaced `HarmonicDilatedConv`'s eight
+# log-axis dilated branches with a gather at k*r, the CQT with a linear STFT and
+# the semitone grid with a 0-150 rev/s linear grid; this row changes none of the
+# three. The module docstring of src/models/harmonic_ports/hppnet_orig.py
+# carries the seven deviations; none is repeated here.
+#
+# THE OUTPUT GRID IS BIT-IDENTICAL TO conf/model/harmof0_orig.yaml — 352 bins,
+# 48 per octave, from 27.5 Hz — so one conf/loss/salience_bce_orig.yaml serves
+# both arms and the two are read on one axis. Read that file for what the axis
+# means in rev/s; it is the same axis.
+#
+# THE TWO PUBLISHED POOLS ARE OFF, and each is a deliberate choice this file
+# makes rather than a property of the architecture:
+#
+#   freq_pool 1. HPPNet's block_4 max-pools frequency by 4, taking the grid to
+#   88 bins — one per SEMITONE, because its output is a piano roll. That is
+#   5.95% per bin, 2.4 rev/s at 40 rev/s, an order of magnitude past the
+#   campaign's 0.2 rev/s floor; the arm would measure the pool instead of the
+#   log axis. Set it to 4 to get the published trunk back (the model then emits
+#   88 bins and needs its own loss grid).
+#
+#   time_pooling false. HPPNet's frame subnet halves the frame rate and
+#   bilinearly upsamples the head's output. A one-bin salience bump survives
+#   that as a blend on every odd frame, and on this 32 ms grid a rotor moves up
+#   to 23.8 rev/s per frame.
+#
+# THE FRONT END. nnAudio CQT2010v2, not nnAudio's plain CQT: at fmin 27.5 with
+# 48 bins per octave the single-kernel CQT needs n_fft 65536 and raises on any
+# clip under 4.1 s, and this project's training clips are 1 s. Same grid, same
+# output, computed octave by octave. The cost is real and belongs in the
+# read-out: the bottom bin's analysis window is 2.5 s, which a 1 s clip has not
+# got, so the lowest octaves are mostly edge padding.
+#
+# lstm_size 128 is HPPNet's own `Head(model_size)` value (BiLSTM 64 per
+# direction). It is the memory knob — FreqGroupLSTM runs B*F sequences and F is
+# 352 here against HPPNet's pooled 88. Measured at batch 16 on 1 s clips:
+# 2.80 GiB of retained activations, against 2.03 for hppnet_rps under the same
+# probe (whose config records ~2 GB measured on GPU).
+#
+# dilations [48, 12] are HPPNet's own numbers for block_4 and block_5. They read
+# as "one octave" only with the frequency pool on: block_5's 12 is an octave on
+# the 12-bin-per-octave axis the pool makes, and with the pool off it walks a
+# quarter octave. The number is kept rather than the meaning, so that this row
+# carries one deviation and not two; [48, 48] restores the meaning.
+#
+# frame_rate [16000, 512] is the CQT hop, and nothing pools along time.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: hppnet_orig
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  fmin: 27.5
+  n_bins: 352
+  bins_per_octave: 48
+  c_har: 16
+  embedding: 128
+  lstm_size: 128
+  dilations: [48, 12]
+  freq_pool: 1
+  time_pooling: false
+  n_maps: 1
+model_type: null
+legacy_config_path: null

@@ -1,0 +1,53 @@
+# harmof0_orig — HarmoF0 (Wei et al., ISMIR 2022) UNMODIFIED: the control for
+# conf/model/harmof0_rps.yaml. That row replaced `MRDConv`'s log-axis harmonic
+# SHIFT with a gather at k*r on a linear STFT and its 352-bin semitone grid with
+# a 0-150 rev/s linear grid; this row changes neither, so the pair says what the
+# two substitutions buy. The module docstring of
+# src/models/harmonic_ports/harmof0_orig.py carries the four deviations (hop,
+# logits, batch axis, n_maps) and the note on the upstream's swapped
+# interpolation weights; none is repeated here.
+#
+# THE OUTPUT GRID IS THE PAPER'S: 352 bins, 48 per octave, from 27.5 Hz — thus
+# 27.5 to 4371 Hz, and under this project's f0 = rps convention that reads as
+# 27.5 to 4371 REV/S. Two consequences the read-out of this arm has to carry:
+#
+#   Coverage. Rotors live in 0-150 rev/s, which is bins 0-118. The other 233
+#   bins can hold no fundamental, and a stopped rotor has no bin at all (the
+#   target builder marks a rotor active only above 0.1 Hz, so it becomes a dark
+#   column — the same convention conf/model/multif0_salience.yaml trains under).
+#
+#   Resolution. 1.45% of the rate per bin: 0.40 rev/s at 27.5, 0.58 at 40, 2.2
+#   at 150 — against the port's uniform 0.5017. A log grid spends its resolution
+#   where the rate is low, and this task's rates are not low.
+#
+# THE FRONT END IS THE PAPER'S: n_freq 512, thus n_fft 1024 = 15.625 Hz per bin
+# at 16 kHz. Only 5 FFT bins carry the grid's first two octaves (the bottom log
+# bin lands at FFT index 1.76), which is the resolution claim the ports' design
+# note disputes, left in place so the arm can measure it.
+#
+# frame_rate is [16000, 512]: the front end is framed by torch.stft(center=True)
+# at hop 512, the project's grid, and nothing pools along time. HarmoF0's own
+# 10 ms hop is dropped for it (deviation 1).
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+_target_: models.registry.build_model
+params:
+  name: harmof0_orig
+  n_fft: 1024
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  n_freq: 512
+  fmin: 27.5
+  bins_per_octave: 48
+  freq_bins: 352
+  n_har: 12
+  channels: [32, 64, 128, 128]
+  dilation_rates: [48, 48, 48, 48]
+  published_interp: true
+  n_maps: 1
+model_type: null
+legacy_config_path: null

@@ -140,6 +140,8 @@ salience/multif0 variants, from `registry.py::RPS_MODEL_REGISTRY` — the single
 | `harmof0_rps` | HarmoF0 (Wei et al. ISMIR 2022) with its log-frequency harmonic SHIFT replaced by a gather at `k*r` on the linear STFT → salience logits on a linear CANDIDATE-RATE grid (`harmonic_ports/harmof0_rps.py`) |
 | `hppnet_rps` | HPPNet (Wei et al. ISMIR 2022) with `HarmonicDilatedConv` (eight log-axis dilated branches) replaced by the same gather at `k*r`; `CNNTrunk` and `FreqGroupLSTM` kept, MPE head only (`harmonic_ports/hppnet_rps.py`) |
 | `hft_rps` | hFT-Transformer (Toyama et al. ISMIR 2023) with its per-note decoder tokens made CANDIDATE RATES and its cross-attention hard-masked to each rate's own harmonics, read at `k*r`; MPE head only (`harmonic_ports/hft_rps.py`) |
+| `harmof0_orig` | HarmoF0 (Wei et al. ISMIR 2022) UNMODIFIED — its own log-interpolated STFT front end, `MRDConv`, the octave-dilated blocks 2-4, and a 352-bin log salience map at 48 bins/octave from 27.5 Hz. The CONTROL for `harmof0_rps` (`harmonic_ports/harmof0_orig.py`) |
+| `hppnet_orig` | HPPNet (Wei et al. ISMIR 2022) UNMODIFIED — nnAudio CQT, `HarmonicDilatedConv`, `CNNTrunk`, `FreqGroupLSTM`, frame head only, on the same 352-bin log grid. The CONTROL for `hppnet_rps` (`harmonic_ports/hppnet_orig.py`) |
 
 All SimpleConv* models now accept a `frontend=` kwarg.  Old checkpoints are
 loadable via automatic `window` → `frontend.window` remap.
@@ -218,6 +220,25 @@ Hungarian tracking through the inherited `predict_rps` — by declaring the rate
 grid as `SalienceRPSPredictor.out_freqs`, the hook that already exists for a
 salience axis decoupled from a log-spaced input CQT. Nothing in the task, the
 codec, the loss or the tracker changes.
+
+**The two controls.** `harmof0_orig` and `hppnet_orig` are the same two papers
+with NOTHING replaced — the published harmonic device, the published front end,
+and a 352-bin log grid at 48 bins/octave from 27.5 Hz — wired into the same
+`salience_rps` task. They exist because every port row so far has been read
+against the direct REGRESSORS, which share neither the trunk nor the output
+representation, so no measurement yet separates the substitution from the trunk.
+Both emit a bit-identical grid, so `conf/loss/salience_bce_orig.yaml` and
+`conf/metrics/salience_bce_orig.yaml` serve both arms; the experiments are
+`hb_sal_{hf0,hppnet}_orig` and the batch doc is
+`docs/experiments/paper-regime-matrix.md` § "Block S", where they are level L0
+of the multi-pitch adaptation ladder and the `*_rps` ports are level L3. Their harmonic blocks are
+checked bit-identical against the upstream source in
+`tests/models/test_harmonic_orig.py`; the remaining deviations are seam-level
+(the hop-512 frame grid, logits instead of a sigmoid, HPPNet's piano-specific
+heads and its two pools) and are listed in the two module docstrings. Under
+`f0 = rps` that log grid spans 27.5-4371 rev/s, of which rotors occupy bins
+0-118 of 352, at 1.45% of the rate per bin — which is the cost the pair is there
+to measure.
 
 | Model | Paper | What was replaced |
 |-------|-------|-------------------|

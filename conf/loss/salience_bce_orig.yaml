@@ -1,0 +1,35 @@
+# BCE-on-RPS-derived-salience on the PUBLISHED LOG GRID of
+# conf/model/{harmof0,hppnet}_orig.yaml: 352 bins, 48 per octave, from 27.5 Hz.
+# Both arms emit that grid bit-identically, so one file serves both and the two
+# controls are read on one axis.
+#
+# THE GRID IS GIVEN AS n_bins + bins_per_octave, not as n_octaves +
+# over_sample, because 352 / 48 is 7.333 octaves and the octave-count form
+# cannot say that. losses.SalienceRPSBCELoss passes both through to
+# models.multif0.utils.cqt_freq_grid, which is what the models call, so the
+# target lands on the model's own bins.
+#
+# blur_bins 1, against the 2 of conf/loss/salience_bce_multif0.yaml. The design
+# note's recovery error is LINEAR in the blur width, so the width that matters
+# is the one in rev/s, not in bins. One bin here is 1.45% of the rate — 0.40
+# rev/s at 27.5, 0.87 at 60 — where one bin on the multif0 row's 60-per-octave
+# grid is 1.16% and it takes 2 of them. Thus +-1 bin here is already
+# slightly wider in rev/s than that row's +-2, and it is the closest match to
+# conf/loss/salience_bce_r150.yaml's uniform +-0.5 rev/s, which is what the
+# ports these arms control for are trained against.
+#
+# pos_weight auto = (352 - 4*3) / (4*3) = 28.33.
+#
+# rate [16000, 512] mirrors the models' frame_rate: nothing pools along time.
+terms:
+  - name: bce
+    _target_: losses.SalienceRPSBCELoss
+    weight: 1.0
+    params:
+      fmin: 27.5
+      n_bins: 352
+      bins_per_octave: 48
+      blur_bins: 1
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 512]

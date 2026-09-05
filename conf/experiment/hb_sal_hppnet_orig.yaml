@@ -1,0 +1,53 @@
+# @package _global_
+# BLOCK S, LEVEL L0 — HPPNet AS PUBLISHED on the honest-base stream. The
+# control for conf/experiment/hppnet_*.yaml, which is the same paper with its
+# harmonic organ, its front end and its frequency axis all replaced.
+#
+# docs/experiments/paper-regime-matrix.md § "Block S" is the ladder this row
+# is the bottom of: L0 the published architecture, L1 a finer output grid, L2
+# per-rotor Gaussian layers with the CRF readout, L3 the comb gather on the
+# linear STFT. L0 and L3 differ in exactly the two things the ports replaced —
+# the harmonic device and the frequency axis — so the pair is what makes the
+# ports' claim readable.
+#
+# WHY THIS ROW EXISTS. Same argument as conf/experiment/hb_sal_hf0_orig.yaml,
+# read that file first. HPPNet carries a second question HarmoF0 does not: its
+# front end is a CQT, so this arm also measures whether a true constant-Q
+# analysis rescues the log axis that a log-interpolated STFT cannot. The answer
+# has a known cost — a 48-bin-per-octave CQT at 27.5 Hz needs a 2.5 s window at
+# its bottom bin and the training clips are 1 s.
+#
+# WHAT IT IS. conf/experiment/hb_sal_multif0.yaml with the model, loss and
+# metrics swapped, and nothing else. Its loss and metrics are the SAME FILES
+# arm 1 uses (conf/{loss,metrics}/salience_bce_orig.yaml), because the two
+# models emit bit-identical 352-bin grids — so the two controls differ only in
+# the trunk and the front end.
+#
+# THE MONITOR IS `bce` for the same reason as arm 1: HPPNet's frame head is a
+# piano roll, one shared map, and the rev/s metric reads per-rotor layers.
+#
+# batch_size 16 frames (2 chunks x 8 mics) — hb_sal_multif0's value, kept, which
+# is also conf/experiment/hppnet_r4_l4.yaml's. At 1 s clips the model retains
+# 2.80 GiB of activations under a forward+backward probe, against 2.03 GiB for
+# hppnet_rps under the same probe (whose config records ~2 GB measured on GPU):
+# the frequency pool is off, so FreqGroupLSTM runs 352 sequences per row instead
+# of 88. 16 fits a 24 GB card with a wide margin.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: hppnet_orig
+  - override /loss: salience_bce_orig
+  - override /metrics: salience_bce_orig
+
+experiment_name: hb_sal_hppnet_orig
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — hb_sal_multif0's value, kept
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  monitor: bce
+  monitor_mode: min

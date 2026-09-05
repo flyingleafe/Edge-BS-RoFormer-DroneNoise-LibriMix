@@ -1,0 +1,22 @@
+# Validation twin of conf/loss/salience_bce_orig.yaml — same grid, same blur,
+# same pos_weight — so `optim.monitor: bce` selects on the object being fitted.
+# That file carries the grid argument.
+#
+# `bce` is the ONLY term, and thus the only monitor these two arms can have.
+# metrics.SalienceBCEMetric is the whole shared-map metric surface; the PIT
+# rev/s metric metrics.LayerPeakRPSMetric reads PER-ROTOR LAYERS and needs
+# n_maps 4, which these rows do not set (HarmoF0 is monophonic and HPPNet's
+# frame head is a piano roll — one map is what both papers emit). Rotor-speed
+# error for these arms comes from eval.py's PIT suite over `predict_rps`, as it
+# does for conf/metrics/salience_bce_multif0.yaml.
+terms:
+  - name: bce
+    _target_: metrics.SalienceBCEMetric
+    params:
+      fmin: 27.5
+      n_bins: 352
+      bins_per_octave: 48
+      blur_bins: 1
+      pos_weight: auto
+      num_rotors: 4
+      rate: [16000, 512]

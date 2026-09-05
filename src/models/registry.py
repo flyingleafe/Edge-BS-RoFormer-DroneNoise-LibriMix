@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from models.generative.propagation import MicEQ
 from models.ckla import SimpleConvV2CKLA, SimpleConvV2CKLACond
 from models.fkla import FKLARPSModel
-from models.harmonic_ports import HFTRPS, HarmoF0RPS, HPPNetRPS
+from models.harmonic_ports import HFTRPS, HarmoF0Orig, HarmoF0RPS, HPPNetOrig, HPPNetRPS
 from models.hg_ckla import HGCKLARefiner
 from models.multif0.rps_predictor import MultiF0RPSPredictor
 from models.rps_predictor import (
@@ -213,6 +213,11 @@ RPS_MODEL_REGISTRY: dict[str, Any] = {
     # replaced by a gather at k*r on the linear STFT; FreqGroupLSTM kept —
     # docs/harmonic-ports-design.md.
     "hppnet_rps": HPPNetRPS,
+    # The two CONTROLS for those substitutions: HarmoF0 and HPPNet as
+    # published, on their own 352-bin log-frequency grid, so the ablation can
+    # say what the comb gather and the linear rate grid actually buy.
+    "harmof0_orig": HarmoF0Orig,
+    "hppnet_orig": HPPNetOrig,
 }
 
 

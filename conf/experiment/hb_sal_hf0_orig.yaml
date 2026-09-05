@@ -1,0 +1,59 @@
+# @package _global_
+# BLOCK S, LEVEL L0 — HarmoF0 AS PUBLISHED on the honest-base stream. The
+# control for conf/experiment/hf0_*.yaml, which is the same paper with its
+# harmonic organ and its frequency axis both replaced.
+#
+# docs/experiments/paper-regime-matrix.md § "Block S" is the ladder this row
+# is the bottom of: L0 the published architecture, L1 a finer output grid, L2
+# per-rotor Gaussian layers with the CRF readout, L3 the comb gather on the
+# linear STFT. L0 and L3 differ in exactly the two things the ports replaced —
+# the harmonic device and the frequency axis — so the pair is what makes the
+# ports' claim readable.
+#
+# WHY THIS ROW EXISTS. The ports rest on one claim: that HarmoF0's log-axis
+# harmonic SHIFT has to become a gather at k*r on a LINEAR STFT, because a log
+# grid's separation-to-bandwidth ratio for two rotors D apart is
+# D / (r * (2^(1/B) - 1)), in which the harmonic index cancels
+# (docs/harmonic-ports-design.md). Every port row so far has been read against
+# the REGRESSORS, which share neither the architecture nor the representation,
+# so the substitution and the trunk have never been separated. This row holds
+# the trunk fixed and puts the paper's own axis back.
+#
+# WHAT IT IS. conf/experiment/hb_sal_multif0.yaml with the model, loss and
+# metrics swapped for the 352-bin log grid, and nothing else: the same
+# honest-base online stream (conf/online_mix/hb_silence_dload.yaml — real
+# full-envelope pool, 16.7% zero-labeled silence arm, SNR reference floor,
+# freq-scale/time-warp/gain augmentations), the same frozen real validation
+# split, the same epoch budget, patience, workers and monitor. So this row is
+# directly comparable with hb_sal_multif0 and hb_sal_bp, which are also shared
+# single-map salience rows, and it is the honest-base entry point for the two
+# controls.
+#
+# THE MONITOR IS `bce`, not a rev/s metric, and that is forced: the shared-map
+# metric surface is metrics.SalienceBCEMetric alone. The per-rotor PIT metric
+# metrics.LayerPeakRPSMetric needs n_maps 4 layers, which a monophonic HarmoF0
+# does not emit. Rotor-speed error comes from eval.py's PIT suite afterwards.
+#
+# batch_size 16 frames (2 chunks x 8 mics) — hb_sal_multif0's value, kept. At 1 s
+# clips the model retains 1.72 GiB of activations under a forward+backward probe
+# (hppnet_rps measures 2.03 GiB under the same probe and its config records
+# ~2 GB measured on GPU), so 16 fits a 24 GB card with a wide margin.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: harmof0_orig
+  - override /loss: salience_bce_orig
+  - override /metrics: salience_bce_orig
+
+experiment_name: hb_sal_hf0_orig
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — hb_sal_multif0's value, kept
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  monitor: bce
+  monitor_mode: min
