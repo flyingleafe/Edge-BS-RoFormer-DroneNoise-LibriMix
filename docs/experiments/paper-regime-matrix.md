@@ -504,7 +504,7 @@ L0 rows score 12-27 at the full comb.
 | row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | probe full / local |
 |---|---|---|---|---|---|---|---|---|
 | `real_r4_sc` (SimpleConv, rung 4 recipe, no warm-up) | 3.92 | 8.68 | 5.96 | 4.11 | 2.93 | 2.00 | 3.28 | 0.91 / 0.93 |
-| `real_r3_sc` (rung 3, for comparison) | 3.27 | 8.20 | 5.29 | 3.98 | 2.77 | 2.36 | 2.77 | -0.09 / -0.32 |
+| `real_r3_sc` (rung 3, for comparison) | 4.37 | 8.06 | 5.39 | 3.62 | 2.27 | 1.30 | 2.77 | -0.09 / -0.32 |
 | `real_r3_hf0` (HarmoF0 port, rung 3) | 6.15 | 21.58 | 21.84 | 17.11 | 5.38 | 2.38 | 7.11 | 0.61 / 0.24 |
 | `hf0_r2hb_l4` (HarmoF0 port, rung 4, for comparison) | 13.96 | 24.28 | 16.62 | 12.90 | 6.22 | 2.29 | 7.90 | 1.01 / 0.95 |
 
@@ -518,7 +518,8 @@ Readings. The SimpleConv obeys the ladder rule of the other regressors: the
 label-transforming augmentations of rung 4 make it read frequency (local
 slope -0.32 -> 0.93) and transfer to the static comb (31.5 -> 10.9), and
 they cost precision on the real split (all 2.77 -> 3.28, DREGON cruise
-2.77 -> 2.93; FLY124 cruise improves 2.36 -> 2.00). HarmoF0 reaches its
+2.27 -> 2.93, FLY124 cruise 1.30 -> 2.00; only the zero frames improve,
+4.37 -> 3.92). HarmoF0 reaches its
 rung-4 level at rung 3 already (7.11 against 7.90), so for this port the
 augmentations buy no real-split precision; they only move the probe from
 0.61 / 0.24 to 1.01 / 0.95. The HarmoF0 ladder (all-mic MAE): rung 1 37.05,
