@@ -191,7 +191,58 @@ Filled as jobs land: experiment, job id, backend, epochs, truncated, spend.
 
 ## Results
 
-Pending.
+### Batch 1 (2026-09-05, six cells; single seed)
+
+Per-frame PIT MAE (rev/s) on the frozen real split, all 8 microphones, by regime
+and rig. `r4hb_scv2` is the paper's best row, for reference.
+
+| regime (frames) | r4hb_scv2 | r2hb_scv2_nomix | real_r1_scv2 | real_r1_tm | real_r1_gru | real_r2_sc | real_r3_sc |
+|---|---|---|---|---|---|---|---|
+| zero-frames (9296) | 2.86 | 6.24 | 0.41 | 4.07 | 5.32 | 10.20 | 4.37 |
+| below-30 (2728) | 7.77 | 12.18 | 14.22 | 20.13 | 19.56 | 12.82 | 8.06 |
+| DREGON:ramp:in-grid (4176) | 4.43 | 4.51 | 4.32 | 8.52 | 3.70 | 7.18 | 5.39 |
+| FLY124:ramp:in-grid (5888) | 3.12 | 4.05 | 53.99 | 22.78 | 27.09 | 15.75 | 3.62 |
+| DREGON:cruise:all (32128) | 2.92 | 3.93 | 2.73 | 2.28 | 2.30 | 3.55 | 2.27 |
+| FLY124:cruise:all (20080) | 1.24 | 1.68 | 65.88 | 8.60 | 10.19 | 11.46 | 1.30 |
+| all (74296) | 2.74 | 3.95 | 24.08 | 6.84 | 7.49 | 8.03 | 2.77 |
+
+Microphone split (ch 0 / ch 1-7): the mic-0 models are NOT worse on the other
+DREGON microphones at cruise (`real_r1_scv2` 2.73 / 2.73, `real_r1_tm` 2.37 /
+2.27, `real_r1_gru` 2.40 / 2.29). The microphone effect appears on the unseen
+drone only (`real_r1_tm` FLY124 cruise 4.45 on ch 0 against 9.19 on ch 1-7).
+The unseen-drone failure is large for the convolutional trunk (65.9) and
+moderate for the transformer and GRU heads (8.6, 10.2). Adding FLY125 (rung 3)
+closes it even for SimpleConv, whose rung-3 row (2.77 all frames) ties the
+paper's best row (2.74). Full table with the mic axis:
+`results/rps_profile/ladder_batch1_real.csv`.
+
+Other parts (mean PIT MAE over all frames; comb / stoch / comb+speech /
+stoch+speech / real / real_nospeech):
+
+| model | comb | stoch | comb+sp | stoch+sp | real | real_nospeech |
+|---|---|---|---|---|---|---|
+| r4hb_scv2 | 15.4 | 28.1 | 14.1 | 28.5 | 2.76 | pending |
+| r2hb_scv2_nomix | 11.8 | 31.3 | 14.7 | 31.6 | 3.96 | 3.59 |
+| real_r1_scv2 | 45.7 | 32.9 | 45.0 | 32.8 | 24.1 | 37.1 |
+| real_r1_tm | 32.6 | 26.4 | 29.4 | 26.6 | 6.85 | 8.43 |
+| real_r1_gru | 39.0 | 27.6 | 38.3 | 27.7 | 7.49 | 9.97 |
+| real_r2_sc | 14.6 | 23.2 | 14.8 | 23.3 | 8.03 | 8.78 |
+| real_r3_sc | 31.5 | 25.1 | 28.6 | 24.8 | 2.77 | 2.36 |
+
+No real-only cell transfers to either synthetic family (claim 1, "and so on").
+
+Frequency-scaling probe (slope over the full range / within +-4 %): rung 1-3
+cells are flat (`real_r1_scv2` 0.12 / 0.00, `real_r1_tm` 0.07 / 0.21,
+`real_r1_gru` 0.04 / 0.18, `real_r2_sc` 0.10 / -0.18, `real_r3_sc` -0.09 /
+-0.32); the no-speech rung-4 cell follows the shift (`r2hb_scv2_nomix` 1.03 /
+1.32) where its with-speech sibling does not (`hb_scv2_mag_nogate` 0.89 /
+0.14). The harmonic-cutoff probe is uninformative for real-only cells: they
+already score 23-34 on the stochastic part at the full comb.
+
+Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
+(3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
+warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
+clean pair.
 
 ## Conclusion
 
