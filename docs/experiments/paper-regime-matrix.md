@@ -358,10 +358,25 @@ augmentations on from the first step the model reads frequency (local slope
 warm-up rows keep the prior (0.14 / 0.25 / 0.00). The transformer's rung 3
 (`real_r3_tm`) was interrupted on vast at epoch ~100 and resumes there.
 
-Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
-(3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
-warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
-clean pair.
+### Batch 6: the speech A/B on real data (R2 schedule; single seed)
+
+| model | whole split (37 clips) | 23 clean clips | 14 loudspeaker clips | probe full / local |
+|---|---|---|---|---|
+| scv2, trained with mixed speech (`hb_scv2_mag_nogate`) | 2.77 | 2.43 | 3.38 | 0.89 / 0.14 |
+| scv2, trained without (`r2hb_scv2_nomix_wu`) | 2.98 | 2.64 | 3.54 | 0.81 / 0.36 |
+| transformer-IF with speech (`r2hb_tr_nogate`) | 3.39 | 2.98 | 4.09 | 0.54 / 0.25 |
+| transformer-mag without (`r2hb_tm_nomix_wu`) | 3.30 | 2.92 | 3.95 | 0.01 / 0.02 |
+
+The loudspeaker-clip number is the pooled mean implied by the whole split
+and the clean subset (14 clips). Readings: on real data, training with mixed
+speech helps the convolutional trunk by about 7 % on every subset, and the
+acoustic loudspeaker makes a clip about 1.4x harder for either model. The
+transformer pair is confounded by the front-end (its with-speech R2 row is
+the IF variant) until `tm_r2hb_nogate` lands. The warm-up-free pair
+(`r2hb_scv2_nomix` 3.95 vs `real_r4_scv2` 4.61) is a schedule artifact and is
+not used. Together with the synthetic pairs (2x on the stochastic family,
+1.0-1.65x on the static comb), claim 5 reads "1.4-2x, family-dependent", not
+"2x for all models and regimes".
 
 ## Conclusion
 
