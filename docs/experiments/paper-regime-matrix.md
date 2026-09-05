@@ -482,6 +482,23 @@ multi-pitch baselines is set by their harmonic device before any adaptation.
 The rung-2 HPPNet has the best DREGON cruise of the ports (2.41) and, like
 every rung-1/2 row, no transfer to the unseen drone.
 
+Frequency-scaling probe on the block-S rows (slope full / within +-4 %):
+`hb_sal_hppnet_orig` 1.01 / 0.98, `hppnet_r2hb_l4` 0.97 / 0.97,
+`hppnet_r2hb_nomix` 0.97 / 0.99, `real_r2_hppnet` 0.83 / 0.55,
+`real_r1_hppnet` 0.38 / 0.71; `hb_sal_hf0_orig` 0.34 / -0.14,
+`hf0_r2hb_l4` 1.01 / 0.95; `hb_sal_multif0` 0.11 / 0.43,
+`hb_sal_multif0_nsr` 0.38 / -0.57, `hb_sal_bp` 0.12 / -1.28.
+
+Reading: HPPNet reads frequency as published and as a port, on real data
+alone (the harmonic dilated convolutions on the log axis are a comb by
+construction, so the probe answers 1 with no synthetic data). The
+published HarmoF0 does not (0.34), and its port does (1.01): the comb
+gather on the linear STFT is what makes it read frequency. LateDeep and
+Basic Pitch do not read frequency in any adaptation. The harmonic-cutoff
+probe is not informative for these real-only rows: `real_r2_hppnet`
+returns zero on the synthetic probe clip (MAE 57 at every cutoff) and the
+L0 rows score 12-27 at the full comb.
+
 ## Conclusion
 
 Pending.
