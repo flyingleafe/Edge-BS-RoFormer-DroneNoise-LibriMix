@@ -109,3 +109,170 @@ def test_brickwall_highpass_removes_slow_common_term():
     y = E._brickwall(slow + fast, 4.0, fs, high=True)
     assert np.var(y) < 0.1 * np.var(slow)
     assert np.var(y) == pytest.approx(np.var(fast) * (1 - 4.0 / (fs / 2)), rel=0.25)
+
+
+# ---------------------------------------------------------------------------
+# The stochastic comb model's four readings: line width, line shape,
+# cross-harmonic correlation, residual shape.
+
+
+def _wiener_tone(gamma_hz, fs=500.0, dur_s=60.0, n_real=8, noise=1e-4, seed=11):
+    """Complex envelopes of a tone whose phase is a Wiener process.
+
+    Diffusion ``D = 4 pi gamma`` gives a Lorentzian line of half width
+    ``gamma``: the phase increment variance over a lag is ``D lag``, so
+    ``E[z(t+lag) conj z(t)] = exp(-D lag / 2) = exp(-2 pi gamma lag)``.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(round(dur_s * fs))
+    d = 4.0 * np.pi * gamma_hz
+    steps = rng.normal(0.0, np.sqrt(d / fs), (n_real, n))
+    phi = np.cumsum(steps, axis=-1)
+    z = np.exp(1j * phi)
+    z += np.sqrt(noise / 2.0) * (rng.normal(size=z.shape) + 1j * rng.normal(size=z.shape))
+    return z, fs
+
+
+def test_wiener_tone_recovers_its_lorentzian_half_width():
+    for gamma in (1.0, 4.0):
+        z, fs = _wiener_tone(gamma)
+        got = E.linewidth(z, fs, max_lag_s=1.0)
+        assert not got["censored"]
+        assert got["gamma_hz"] == pytest.approx(gamma, rel=0.20)
+        # tau and gamma are the same statement, so they must agree exactly.
+        assert got["tau_s"] == pytest.approx(1.0 / (2 * np.pi * got["gamma_hz"]), rel=1e-9)
+
+
+def test_wiener_tone_reads_as_a_lorentzian_line():
+    z, fs = _wiener_tone(2.0, dur_s=60.0)
+    f, p = E.welch_envelope(z, fs)
+    shape = E.fit_line_shape(f, p, hwhm0=2.0)
+    assert shape["verdict"] == "lorentz"
+    assert shape["log_resid_ratio"] > 0.05
+    assert shape["lorentz"]["hwhm_hz"] == pytest.approx(2.0, rel=0.3)
+
+
+def test_gaussian_jittered_tone_reads_as_a_gaussian_line():
+    """A tone whose frequency is drawn from a Gaussian and then held — the
+    inhomogeneous broadening whose line shape is Gaussian, not Lorentzian."""
+    rng = np.random.default_rng(3)
+    fs, dur_s, n_real, sigma_f = 500.0, 20.0, 128, 2.0
+    n = int(round(dur_s * fs))
+    t = np.arange(n) / fs
+    f_c = rng.normal(0.0, sigma_f, n_real)
+    z = np.exp(2j * np.pi * f_c[:, None] * t[None, :])
+    z += 1e-2 * (rng.normal(size=z.shape) + 1j * rng.normal(size=z.shape))
+    f, p = E.welch_envelope(z, fs)
+    hwhm = sigma_f * np.sqrt(2.0 * np.log(2.0))
+    shape = E.fit_line_shape(f, p, hwhm0=hwhm)
+    assert shape["verdict"] == "gauss"
+    assert shape["log_resid_ratio"] < 0.0
+
+
+def test_linewidth_law_fit_recovers_gamma0_and_slope():
+    k = np.arange(1, 31, dtype=float)
+    gamma = 0.4 + 0.6 * k
+    got = E.fit_linewidth_law(k, gamma)
+    assert got["gamma0_hz"] == pytest.approx(0.4, abs=1e-9)
+    assert got["slope_hz_per_k"] == pytest.approx(0.6, abs=1e-9)
+    assert got["resid_rms_hz"] < 1e-9
+
+
+def test_censored_coherence_time_is_reported_and_not_invented():
+    """A tone with no phase noise never crosses exp(-1); the width is a BOUND."""
+    fs, n = 500.0, 5000
+    z = np.exp(2j * np.pi * 0.05 * np.arange(n) / fs)[None, :]
+    got = E.linewidth(z, fs, max_lag_s=2.0)
+    assert got["censored"]
+    assert not np.isfinite(got["gamma_hz"])
+    assert got["gamma_bound_hz"] == pytest.approx(1.0 / (2 * np.pi * 2.0), rel=1e-6)
+
+
+# --- the cross-harmonic correlation, end to end through demod_rotor --------
+
+
+def _comb_audio(mode, *, rate=60.0, k_max=12, dur_s=10.0, sr=16000, sigma=0.02, seed=17):
+    """One rotor's comb whose harmonics share a shaft jitter, or do not.
+
+    ``mode="shared"``: the SHAFT phase random-walks, so harmonic ``k`` carries
+    ``k`` times that walk and every rate opinion is the same number.
+    ``mode="independent"``: each harmonic carries its own walk.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(round(dur_s * sr))
+    t = np.arange(n) / sr
+    ks = np.arange(1, k_max + 1)
+    walk_n = 1 if mode == "shared" else k_max
+    steps = rng.normal(0.0, sigma / np.sqrt(sr), (walk_n, n))
+    walk = np.cumsum(steps, axis=-1)  # revolutions
+    x = np.zeros(n)
+    for i, k in enumerate(ks):
+        extra = walk[0] * k if mode == "shared" else walk[i]
+        x += (1.0 / k) * np.cos(2 * np.pi * (k * rate * t + extra))
+    x += 0.01 * rng.normal(size=n)
+    ft = np.arange(0.0, dur_s, 0.032)
+    return x[None, :], np.full((1, len(ft)), rate), ft
+
+
+def _series(mode, arm):
+    audio, r_ft, ft = _comb_audio(mode)
+    dm = E.demod_rotor(audio, r_ft, ft, 0, k_max=12, b_wide=20.0)
+    assert dm is not None
+    return dm, E.arm_increments(dm, arm)
+
+
+def test_shared_shaft_jitter_gives_rho_one_and_a_rank_one_covariance():
+    arm = E.Arm("fixB1.5", "fixed", 1.5)
+    dm, ser = _series("shared", arm)
+    corr = E.cross_harmonic_correlation(ser)
+    assert corr["n_keep"] >= 8
+    assert np.nanmin(corr["rho_k"]) > 0.9
+    fit = E.arm_covariance(dm, arm, series=ser)["cov"]["0"]
+    assert fit["rank1_energy_frac"] > 0.9
+
+
+def test_independent_per_harmonic_jitter_gives_rho_near_zero():
+    arm = E.Arm("fixB1.5", "fixed", 1.5)
+    dm, ser = _series("independent", arm)
+    corr = E.cross_harmonic_correlation(ser)
+    assert corr["n_keep"] >= 8
+    assert abs(corr["rho_mean"]) < 0.15
+    fit = E.arm_covariance(dm, arm, series=ser)["cov"]["0"]
+    assert fit["rank1_energy_frac"] < 0.6
+
+
+def test_arm_increments_leaves_arm_covariance_bit_identical():
+    """The extraction is a refactor: passing the series in changes nothing."""
+    arm = E.Arm("fixB3", "fixed", 3.0)
+    dm, ser = _series("shared", arm)
+    a = E.arm_covariance(dm, arm)
+    b = E.arm_covariance(dm, arm, series=ser)
+    assert a["cov"]["0"]["sigma_c2_mean"] == b["cov"]["0"]["sigma_c2_mean"]
+    assert a["keep"] == b["keep"]
+    assert a["snr"] == b["snr"]
+
+
+# --- the residual shape ----------------------------------------------------
+
+
+def test_residual_tail_stats_separates_a_cauchy_from_a_gaussian():
+    rng = np.random.default_rng(23)
+    g = E.residual_tail_stats(rng.normal(0.0, 1.0, 20000))
+    assert g["verdict"] == "gauss"
+    assert abs(g["excess_kurtosis"]) < 0.5
+    c = E.residual_tail_stats(rng.standard_cauchy(20000))
+    assert c["verdict"] == "cauchy"
+    assert c["llr_per_sample"] > 0.1
+    assert c["excess_kurtosis"] > 5.0
+
+
+def test_shared_rate_opinion_removes_the_common_term():
+    """With a shared shaft jitter the residual ``delta_k - c`` must collapse."""
+    arm = E.Arm("fixB1.5", "fixed", 1.5)
+    dm, ser = _series("shared", arm)
+    cov = E.arm_covariance(dm, arm, series=ser)
+    c, mask = E.shared_rate_opinion(ser, np.asarray(cov["v_k_used"]), np.asarray(cov["k_used"]))
+    idx = np.where(ser.keep)[0]
+    e = ser.delta[:, idx, :] - c[:, None, :]
+    keep_frames = mask[None, None, :] & ser.valid[idx][None, :, :]
+    assert np.nanstd(e[keep_frames]) < 0.5 * np.nanstd(ser.delta[:, idx, :][keep_frames])

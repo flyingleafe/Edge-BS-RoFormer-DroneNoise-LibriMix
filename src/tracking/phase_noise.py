@@ -441,18 +441,57 @@ def fit_rank_one(c: np.ndarray, bands: np.ndarray, se: np.ndarray | None = None)
     return out
 
 
-def arm_covariance(
-    dm: RotorDemod,
-    arm: Arm,
-    *,
-    cutoffs: tuple[float, ...] = CUTOFFS,
-    channels: int | None = None,
-    n_blocks: int = 6,
-) -> dict[str, Any]:
-    """One arm on one rotor: per-channel covariances at every usable cutoff.
+@dataclass
+class ArmSeries:
+    """One arm's per-harmonic rate opinions, with the gates already applied.
 
-    ``v_k`` is always read at ``f_c = 0`` (see the module docstring); the
-    ``sigma_c^2`` curve is read at every cutoff whose band leaves usable width.
+    The first half of :func:`arm_covariance`, extracted so a second reading of
+    the SAME opinions (the cross-harmonic correlation, the residual shape) does
+    not rebuild them and cannot drift from them.
+    """
+
+    arm: str
+    ks: list[int]
+    bands: np.ndarray  # (K,) the arm's half band per harmonic
+    delta: np.ndarray  # (C, K, n_m) rate opinions, rev/s
+    valid: np.ndarray  # (K, n_m) bool — twin gate and edge trim
+    keep: np.ndarray  # (K,) bool — the admitted harmonics
+    snr: np.ndarray  # (K,) in-band power over the off-comb floor
+    p_sig: np.ndarray
+    n_pow: np.ndarray
+    wrap_frac: np.ndarray
+    valid_frac: np.ndarray
+    fs_env: float
+    n_trim: int
+    n_channels: int
+    gates: dict[str, int]
+
+    @property
+    def report(self) -> dict[str, Any]:
+        """The per-harmonic block every reading of this arm carries."""
+        return {
+            "arm": self.arm,
+            "bands": self.bands.round(3).tolist(),
+            "ks": list(self.ks),
+            "keep": self.keep.tolist(),
+            "n_keep": int(self.keep.sum()),
+            "snr": np.round(self.snr, 4).tolist(),
+            "p_sig": self.p_sig.tolist(),
+            "n_pow": self.n_pow.tolist(),
+            "wrap_frac": np.round(self.wrap_frac, 4).tolist(),
+            "valid_frac": np.round(self.valid_frac, 4).tolist(),
+            "n_channels": int(self.n_channels),
+            **self.gates,
+        }
+
+
+def arm_increments(dm: RotorDemod, arm: Arm, *, channels: int | None = None) -> ArmSeries:
+    """One arm's per-harmonic rate opinions ``delta_k(t)``, gated.
+
+    Brickwall the wide-band bank down to this arm's band, form
+    ``delta_k[t] = arg(z_k[t+1] conj(z_k[t])) fs_env / (2 pi k)``, then apply
+    the four deterministic gates (twin collisions, phase-wrap fraction,
+    envelope SNR, and "the band resolves the window").
     """
     n_ch = dm.z.shape[0] if channels is None else min(channels, dm.z.shape[0])
     ks = dm.ks
@@ -515,21 +554,52 @@ def arm_covariance(
         "lost_snr": int(np.sum(g_twin & g_wrap & ~g_snr)),
         "lost_resolution": int(np.sum(~g_res)),
     }
+    return ArmSeries(
+        arm=arm.name,
+        ks=list(ks),
+        bands=bands,
+        delta=delta,
+        valid=valid,
+        keep=keep,
+        snr=snr,
+        p_sig=p_sig,
+        n_pow=n_pow,
+        wrap_frac=wrapfrac,
+        valid_frac=validfrac,
+        fs_env=fs_e,
+        n_trim=n_trim,
+        n_channels=n_ch,
+        gates=gates,
+    )
 
-    out: dict[str, Any] = {
-        "arm": arm.name,
-        "bands": bands.round(3).tolist(),
-        "ks": ks,
-        "keep": keep.tolist(),
-        "n_keep": int(keep.sum()),
-        "snr": np.round(snr, 4).tolist(),
-        "p_sig": p_sig.tolist(),
-        "n_pow": n_pow.tolist(),
-        "wrap_frac": np.round(wrapfrac, 4).tolist(),
-        "valid_frac": np.round(validfrac, 4).tolist(),
-        "n_channels": int(n_ch),
-        **gates,
-    }
+
+def arm_covariance(
+    dm: RotorDemod,
+    arm: Arm,
+    *,
+    cutoffs: tuple[float, ...] = CUTOFFS,
+    channels: int | None = None,
+    n_blocks: int = 6,
+    series: ArmSeries | None = None,
+) -> dict[str, Any]:
+    """One arm on one rotor: per-channel covariances at every usable cutoff.
+
+    ``v_k`` is always read at ``f_c = 0`` (see the module docstring); the
+    ``sigma_c^2`` curve is read at every cutoff whose band leaves usable width.
+    ``series`` lets a caller that already built the opinions
+    (:func:`arm_increments`) hand them over instead of rebuilding them.
+    """
+    ser = arm_increments(dm, arm, channels=channels) if series is None else series
+    n_ch = ser.n_channels
+    ks = ser.ks
+    bands = ser.bands
+    fs_e = ser.fs_env
+    n_env = dm.z.shape[-1]
+    n_m = n_env - 1
+    delta, valid, keep = ser.delta, ser.valid, ser.keep
+    snr, p_sig, n_pow = ser.snr, ser.p_sig, ser.n_pow
+
+    out: dict[str, Any] = ser.report
     if keep.sum() < 4:
         out["failed"] = f"only {int(keep.sum())} harmonics survive the gates"
         return out
@@ -726,3 +796,386 @@ def channel_coherence(dm: RotorDemod, arm: Arm, fc: float | None = None) -> dict
         "chan_coherence_max": float(np.max(off)),
         "n_channels": int(n_ch),
     }
+
+
+# ---------------------------------------------------------------------------
+# line width, line shape, cross-harmonic correlation, residual shape
+#
+# The four readings the stochastic comb model needs (see the module docstring
+# of ``data_processing.stochastic_rotor_noise``): a Lorentzian line per
+# harmonic whose half width grows as ``gamma_k = gamma_0 + s k``.  Everything
+# below is pure array code on the SAME envelopes WP18 measures its covariance
+# on, so the two readings cannot disagree about what a harmonic is.
+
+#: The autocorrelation level whose lag IS the coherence time.  A Lorentzian of
+#: half width ``gamma`` has envelope autocorrelation ``exp(-2 pi gamma |lag|)``,
+#: so the lag at ``exp(-1)`` is ``1 / (2 pi gamma)`` exactly.
+ACF_LEVEL = float(np.exp(-1.0))
+#: Bands the per-harmonic readings are pooled into for the report.
+K_BANDS: tuple[tuple[str, int, int], ...] = (("k1_5", 1, 5), ("k6_15", 6, 15), ("k16_30", 16, 30))
+#: Cap on the samples a Cauchy/Gaussian maximum-likelihood fit sees.  The two
+#: fits are optimizers, and a million samples buys no precision the verdict can
+#: use.
+TAIL_FIT_MAX_N = 50000
+
+
+def envelope_acf(
+    z: np.ndarray,
+    fs_env: float,
+    *,
+    max_lag_s: float = 2.0,
+    noise_power: float | np.ndarray = 0.0,
+    noise_band_hz: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Lags (s) and the normalized magnitude autocorrelation of an envelope.
+
+    ``z`` is ``(..., n)`` complex — the leading axes are microphones. The
+    unbiased estimator ``R(l) = mean_t z[t+l] conj(z[t])`` is taken along the
+    last axis and averaged over the leading ones. A per-channel constant
+    propagation phase cancels in ``z(t+l) conj(z(t))``, so the average is
+    taken COMPLEX (which averages the estimator noise down) and the magnitude
+    is read at the end.
+
+    ``z`` is NOT mean removed. A tone with no phase noise has a flat ``|R|``
+    and an infinite coherence time, which is the answer this measurement must
+    give; removing the mean would make every line read as white.
+
+    The demodulation band is a brickwall, so a flat floor of power
+    ``noise_power`` inside a half band ``noise_band_hz`` contributes
+    ``noise_power * sinc(2 B l)`` — subtracted at EVERY lag rather than only at
+    lag 0, which is what an oversampled envelope grid needs (on a critically
+    sampled one the sinc vanishes at every non-zero lag by itself).
+    """
+    x = np.atleast_2d(np.asarray(z))
+    n = int(x.shape[-1])
+    n_lag = int(min(int(round(max_lag_s * fs_env)), n - 2))
+    if n_lag < 2:
+        raise ValueError(f"window of {n} samples at {fs_env} Hz is too short for an ACF")
+    n_fft = 1 << int(np.ceil(np.log2(2 * n)))
+    spec = np.fft.fft(x, n=n_fft, axis=-1)
+    acf = np.fft.ifft(np.abs(spec) ** 2, axis=-1)[..., : n_lag + 1]
+    lags = np.arange(n_lag + 1) / float(fs_env)
+    acf = acf / (n - np.arange(n_lag + 1))
+    npw = np.asarray(noise_power, dtype=np.float64)
+    if noise_band_hz is not None and np.any(npw > 0):
+        acf = acf - npw.reshape(npw.shape + (1,) * (acf.ndim - npw.ndim)) * np.sinc(
+            2.0 * float(noise_band_hz) * lags
+        )
+    r = acf.reshape(-1, n_lag + 1).mean(axis=0)
+    p0 = float(np.real(r[0]))
+    if not np.isfinite(p0) or p0 <= 0:
+        return lags, np.full(n_lag + 1, np.nan)
+    return lags, np.abs(r) / p0
+
+
+def coherence_time(lags: np.ndarray, rho: np.ndarray, *, level: float = ACF_LEVEL) -> float:
+    """First lag where ``rho`` falls below ``level``, linearly interpolated.
+
+    ``nan`` when the curve never falls that far inside the lags given — the
+    coherence time is then CENSORED at ``lags[-1]``, not measured, and the
+    caller must say so rather than report the last lag as an answer.
+    """
+    r = np.asarray(rho, dtype=np.float64)
+    below = np.where(np.isfinite(r[1:]) & (r[1:] < level))[0]
+    if below.size == 0:
+        return float("nan")
+    i = int(below[0]) + 1
+    r0, r1 = float(r[i - 1]), float(r[i])
+    if not np.isfinite(r0) or r0 <= r1:
+        return float(lags[i])
+    frac = (r0 - level) / (r0 - r1)
+    return float(lags[i - 1] + frac * (lags[i] - lags[i - 1]))
+
+
+def linewidth(
+    z: np.ndarray,
+    fs_env: float,
+    *,
+    max_lag_s: float = 2.0,
+    noise_power: float | np.ndarray = 0.0,
+    noise_band_hz: float | None = None,
+) -> dict[str, Any]:
+    """Coherence time and Lorentzian half width of one harmonic's envelope."""
+    lags, rho = envelope_acf(
+        z,
+        fs_env,
+        max_lag_s=max_lag_s,
+        noise_power=noise_power,
+        noise_band_hz=noise_band_hz,
+    )
+    tau = coherence_time(lags, rho)
+    censored = not np.isfinite(tau)
+    gamma = float("nan") if censored else 1.0 / (2.0 * np.pi * tau)
+    return {
+        "tau_s": float(tau),
+        "gamma_hz": gamma,
+        "censored": bool(censored),
+        "max_lag_s": float(lags[-1]),
+        # The floor the width would take if the curve had crossed at the very
+        # last lag — the honest bound a censored harmonic reports.
+        "gamma_bound_hz": float(1.0 / (2.0 * np.pi * lags[-1])),
+        "acf_at_max_lag": float(rho[-1]),
+    }
+
+
+def fit_linewidth_law(
+    k: np.ndarray, gamma: np.ndarray, weights: np.ndarray | None = None
+) -> dict[str, Any]:
+    """Least squares ``gamma_k = gamma_0 + s k`` over the admitted harmonics."""
+    kk = np.asarray(k, dtype=np.float64).reshape(-1)
+    gg = np.asarray(gamma, dtype=np.float64).reshape(-1)
+    ok = np.isfinite(kk) & np.isfinite(gg)
+    kk, gg = kk[ok], gg[ok]
+    w = None if weights is None else np.asarray(weights, dtype=np.float64).reshape(-1)[ok]
+    out: dict[str, Any] = {"n": int(kk.size)}
+    if kk.size < 3 or np.std(kk) == 0:
+        return {**out, "gamma0_hz": float("nan"), "slope_hz_per_k": float("nan")}
+    design = np.stack([np.ones_like(kk), kk], axis=1)
+    if w is None:
+        coef, *_ = np.linalg.lstsq(design, gg, rcond=None)
+    else:
+        sw = np.sqrt(np.maximum(w, 0.0))
+        coef, *_ = np.linalg.lstsq(design * sw[:, None], gg * sw, rcond=None)
+    pred = design @ coef
+    resid = gg - pred
+    ss = float(np.sum((gg - np.mean(gg)) ** 2))
+    out.update(
+        {
+            "gamma0_hz": float(coef[0]),
+            "slope_hz_per_k": float(coef[1]),
+            "resid_rms_hz": float(np.sqrt(np.mean(resid**2))),
+            "resid_rel": float(np.sqrt(np.mean(resid**2)) / max(float(np.mean(gg)), 1e-12)),
+            "r2": float(1.0 - np.sum(resid**2) / ss) if ss > 0 else float("nan"),
+        }
+    )
+    return out
+
+
+def welch_envelope(
+    z: np.ndarray, fs_env: float, *, nperseg: int | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Two-sided averaged periodogram of a complex envelope, DC centered.
+
+    A complex envelope is NOT conjugate symmetric — the line's two flanks carry
+    different information — so the spectrum is two sided and stays that way.
+    Microphones are averaged in POWER, which is right here and wrong for the
+    autocorrelation: a spectrum has no phase to preserve.
+    """
+    from scipy.signal import welch
+
+    x = np.atleast_2d(np.asarray(z))
+    n = int(x.shape[-1])
+    nps = int(nperseg) if nperseg else max(64, n // 4)
+    nps = min(nps, n)
+    f, p = welch(
+        x, fs=fs_env, nperseg=nps, return_onesided=False, detrend=False, scaling="density", axis=-1
+    )
+    order = np.argsort(f)
+    f = np.asarray(f)[order]
+    p = np.asarray(p)[..., order]
+    return f, p.reshape(-1, f.size).mean(axis=0)
+
+
+def _shape_model(kind: str, u: np.ndarray) -> np.ndarray:
+    """Unit-peak line profile at ``u = (f - f0) / hwhm``. Both have HWHM 1."""
+    if kind == "lorentz":
+        return 1.0 / (1.0 + u**2)
+    return np.exp(-np.log(2.0) * u**2)
+
+
+def _fit_one_shape(
+    kind: str, f: np.ndarray, p: np.ndarray, hwhm0: float, f0: float
+) -> dict[str, Any]:
+    from scipy.optimize import least_squares
+
+    logp = np.log10(np.maximum(p, 1e-300))
+    floor0 = max(float(np.median(p[np.abs(f - f0) > 0.6 * float(np.abs(f).max())])), 1e-300)
+    amp0 = max(float(np.max(p)) - floor0, floor0)
+
+    def resid(theta: np.ndarray) -> np.ndarray:
+        amp, cen, hw, flr = 10.0 ** theta[0], theta[1], 10.0 ** theta[2], 10.0 ** theta[3]
+        model = amp * _shape_model(kind, (f - cen) / max(hw, 1e-9)) + flr
+        return logp - np.log10(np.maximum(model, 1e-300))
+
+    x0 = np.array([np.log10(amp0), f0, np.log10(max(hwhm0, 1e-6)), np.log10(floor0)])
+    span = float(np.abs(f).max())
+    bounds = (
+        np.array([x0[0] - 6.0, -span, np.log10(max(hwhm0, 1e-6)) - 2.0, x0[3] - 8.0]),
+        np.array([x0[0] + 6.0, span, np.log10(max(hwhm0, 1e-6)) + 2.0, x0[3] + 8.0]),
+    )
+    try:
+        sol = least_squares(resid, x0, bounds=bounds, max_nfev=400)
+    except Exception:  # noqa: BLE001 — a failed fit is a result, not a crash
+        return {"resid_rms_log10": float("nan"), "hwhm_hz": float("nan"), "ok": False}
+    r = resid(sol.x)
+    return {
+        "resid_rms_log10": float(np.sqrt(np.mean(r**2))),
+        "hwhm_hz": float(10.0 ** sol.x[2]),
+        "center_hz": float(sol.x[1]),
+        "floor_frac": float(10.0 ** (sol.x[3] - sol.x[0])),
+        "ok": bool(sol.success),
+        "n_points": int(f.size),
+    }
+
+
+def fit_line_shape(
+    f: np.ndarray, p: np.ndarray, *, hwhm0: float, span_factor: float = 10.0
+) -> dict[str, Any]:
+    """Lorentzian against Gaussian on one line, both fitted in the log domain.
+
+    Both profiles are written with the SAME parameter — a half width at half
+    maximum — so the discriminator is the TAIL and not the width: a Lorentzian
+    falls as ``1 / u^2`` where a Gaussian falls as ``exp(-u^2)``. Each model
+    fits its own amplitude, center, half width and additive floor by least
+    squares on ``log10`` power, and the verdict is the residual ratio.
+
+    The fit band is ``span_factor`` half widths around DC, clipped to the
+    spectrum. Too narrow and the two shapes are the same parabola; too wide and
+    the fit is scoring the noise floor rather than the line.
+    """
+    fa = np.asarray(f, dtype=np.float64)
+    pa = np.asarray(p, dtype=np.float64)
+    span = min(float(np.abs(fa).max()), max(span_factor * float(hwhm0), 3.0 * float(hwhm0)))
+    sel = np.abs(fa) <= span
+    if int(sel.sum()) < 12:
+        return {"verdict": "", "n_points": int(sel.sum())}
+    fs_, ps_ = fa[sel], pa[sel]
+    f0 = float(fs_[int(np.argmax(ps_))])
+    lor = _fit_one_shape("lorentz", fs_, ps_, hwhm0, f0)
+    gau = _fit_one_shape("gauss", fs_, ps_, hwhm0, f0)
+    rl, rg = lor["resid_rms_log10"], gau["resid_rms_log10"]
+    verdict = ""
+    if np.isfinite(rl) and np.isfinite(rg):
+        verdict = "lorentz" if rl < rg else "gauss"
+    return {
+        "lorentz": lor,
+        "gauss": gau,
+        "verdict": verdict,
+        # Positive => the Lorentzian fits better. A ratio of residual rms in
+        # the log domain, so it is dimensionless and poolable across harmonics.
+        "log_resid_ratio": float(np.log10(rg / rl)) if np.isfinite(rl) and rl > 0 else float("nan"),
+        "span_hz": float(span),
+        "n_points": int(sel.sum()),
+    }
+
+
+def cross_harmonic_correlation(series: ArmSeries) -> dict[str, Any]:
+    """Correlation across the admitted harmonics' rate opinions.
+
+    The covariance is the pairwise-complete one :func:`arm_covariance` fits its
+    rank-one model to, converted to a CORRELATION so the per-harmonic numbers
+    are comparable across harmonics whose own variances differ by orders of
+    magnitude. ``rho_k`` is harmonic ``k``'s mean correlation with the other
+    admitted harmonics: 1 means one shared disturbance, 0 means independent
+    per-harmonic phase noise.
+    """
+    idx = np.where(series.keep)[0]
+    out: dict[str, Any] = {"arm": series.arm, "n_keep": int(idx.size)}
+    if idx.size < 3:
+        return {**out, "failed": "fewer than 3 admitted harmonics"}
+    kk = np.asarray(series.ks)[idx]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        cs = [
+            _pairwise_cov(series.delta[c, idx], series.valid[idx])[0]
+            for c in range(series.n_channels)
+        ]
+        cmat = np.nanmean(np.stack(cs), axis=0)
+        d = np.sqrt(np.clip(np.diag(cmat), 1e-30, None))
+        corr = cmat / np.outer(d, d)
+        off = ~np.eye(idx.size, dtype=bool)
+        rho_k = np.array([np.nanmean(corr[a][off[a]]) for a in range(idx.size)])
+        rho_all = float(np.nanmean(corr[off]))
+    return {
+        **out,
+        "k": kk.tolist(),
+        "rho_k": np.round(rho_k, 5).tolist(),
+        "rho_mean": rho_all,
+        "var_k": np.round(np.diag(cmat), 10).tolist(),
+    }
+
+
+def shared_rate_opinion(
+    series: ArmSeries, v_k: np.ndarray, k_used: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """The inverse-variance weighted mean opinion ``c(t)``, per channel.
+
+    ``v_k`` / ``k_used`` are :func:`arm_covariance`'s own per-harmonic variances
+    at ``f_c = 0`` and the harmonics they belong to, so the weights are the ones
+    the fusion stage would really use. Returns ``(c, mask)`` — ``c`` is
+    ``(C, n_m)`` and ``mask`` marks the frames where any harmonic was admitted.
+    """
+    ks = np.asarray(series.ks)
+    pos = np.array([int(np.where(ks == k)[0][0]) for k in np.asarray(k_used).reshape(-1)])
+    v = np.asarray(v_k, dtype=np.float64).reshape(-1)
+    good = np.isfinite(v) & (v > 0)
+    pos, v = pos[good], v[good]
+    n_ch, _, n_m = series.delta.shape
+    if pos.size < 2:
+        return np.full((n_ch, n_m), np.nan), np.zeros(n_m, dtype=bool)
+    w = (1.0 / v)[:, None] * series.valid[pos].astype(np.float64)  # (K', n_m)
+    wsum = w.sum(axis=0)
+    mask = wsum > 0
+    num = np.einsum("kt,ckt->ct", w, series.delta[:, pos, :])
+    c = np.where(mask[None, :], num / np.where(mask, wsum, 1.0)[None, :], np.nan)
+    return c, mask
+
+
+def residual_tail_stats(e: np.ndarray, *, max_n: int = TAIL_FIT_MAX_N) -> dict[str, Any]:
+    """Excess kurtosis and the Cauchy-against-Gaussian per-sample LLR.
+
+    ``e`` is pooled over frames and over the harmonics of one band. It is
+    standardized by the median absolute deviation (not the standard deviation,
+    which a heavy tail owns), then the two maximum-likelihood fits are compared.
+    A positive LLR favours the Cauchy — that is, a jitter whose per-harmonic
+    part is heavy tailed rather than Gaussian.
+
+    Note that a wrapped phase increment is BOUNDED by ``pi / (2 pi k dt)``
+    rev/s, so the tails of a high-``k`` residual are clipped by construction and
+    this LLR UNDERSTATES the Cauchy case there.
+    """
+    from scipy.stats import cauchy, norm
+
+    x = np.asarray(e, dtype=np.float64).reshape(-1)
+    x = x[np.isfinite(x)]
+    out: dict[str, Any] = {"n": int(x.size)}
+    if x.size < 200:
+        return {**out, "failed": "fewer than 200 pooled samples"}
+    med = float(np.median(x))
+    mad = float(np.median(np.abs(x - med)))
+    scale = mad / 0.6744897501960817 if mad > 0 else float(np.std(x))
+    if not np.isfinite(scale) or scale <= 0:
+        return {**out, "failed": "degenerate scale"}
+    z = (x - med) / scale
+    m2 = float(np.mean(z**2))
+    out["mad_scale"] = scale
+    out["excess_kurtosis"] = float(np.mean(z**4) / m2**2 - 3.0) if m2 > 0 else float("nan")
+    # A deterministic stride, so a re-run of the same unit gives the same fit.
+    step = max(1, int(np.ceil(x.size / max_n)))
+    s = z[::step]
+    try:
+        c_loc, c_scale = cauchy.fit(s)
+        n_loc, n_scale = norm.fit(s)
+        llr = float(
+            np.mean(cauchy.logpdf(s, c_loc, c_scale)) - np.mean(norm.logpdf(s, n_loc, n_scale))
+        )
+    except Exception:  # noqa: BLE001 — a failed fit is a result, not a crash
+        return {**out, "failed": "maximum-likelihood fit did not converge"}
+    out.update(
+        {
+            "llr_per_sample": llr,
+            "verdict": "cauchy" if llr > 0 else "gauss",
+            "cauchy_scale": float(c_scale),
+            "gauss_scale": float(n_scale),
+            "n_fit": int(s.size),
+        }
+    )
+    return out
+
+
+def band_of(k: int) -> str:
+    """The reporting band of harmonic ``k`` (``""`` when it is outside them)."""
+    for name, lo, hi in K_BANDS:
+        if lo <= k <= hi:
+            return name
+    return ""
