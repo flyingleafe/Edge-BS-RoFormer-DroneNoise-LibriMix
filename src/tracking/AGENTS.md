@@ -146,10 +146,12 @@ It also holds the four readings the STOCHASTIC COMB model is written from — a 
 | `envelope_acf(z, fs_env, ...)` | normalized complex autocorrelation of an envelope, with the brickwall floor removed as `noise_power * sinc(2 B lag)` at EVERY lag |
 | `coherence_time` / `linewidth` | the `exp(-1)` crossing and `gamma = 1 / (2 pi tau)`, plus the CENSORING flag and the secondary `acf_slope_width` |
 | `acf_slope_width` | the width from the LOG SLOPE of the same curve — the estimator a line too narrow to cross still has |
-| `fit_linewidth_law(k, gamma)` | least squares `gamma_k = gamma_0 + s k` |
+| `fit_linewidth_law(k, gamma, method=)` | `gamma_k = gamma_0 + s k`, by least squares or by Theil-Sen |
+| `median_by_k(k, gamma, min_count=)` | the per-harmonic MEDIAN width and its count — what the law is fitted on |
+| `gap_filter(x, valid, band_hz, fs_env, high=)` | THE brickwall of a gated series, gaps interpolated over; both cutoff sweeps read through it |
 | `welch_envelope(z, fs_env, target_df=)` | the two-sided averaged periodogram of a complex envelope, NOT detrended |
 | `fit_line_shape(f, p, hwhm0=)` | Lorentzian against Gaussian at the SAME half width, fitted in the log domain — the verdict is about the TAIL |
-| `cross_harmonic_correlation(series)` | the covariance as a CORRELATION, and `rho_k` — harmonic `k` against the other admitted ones |
+| `cross_harmonic_correlation(series, smooth_hz=)` | the covariance as a CORRELATION, and `rho_k` — harmonic `k` against the other admitted ones, at one LOW-pass smoothing bandwidth |
 | `shared_rate_opinion(series, v_k, k_used)` | the inverse-variance weighted mean `c(t)`, so `e_k = delta_k - c` is definable |
 | `residual_tail_stats(e)` | excess kurtosis plus the per-sample Cauchy-against-Gaussian LLR of the pooled residual |
 | `K_BANDS` | the reporting bands `k1_5` / `k6_15` / `k16_30` |
@@ -158,9 +160,11 @@ Three things a caller must know:
 
 - **The line measurement needs its OWN envelope grid.** At `gamma_k = 0.6 k` the k=30 line has a coherence time of 8.8 ms, which is half a sample on WP18's 62.5 Hz grid. `scripts/phase_coherence_probe.py` demodulates twice per rotor — once at 500 Hz for the width and the shape, once at `FS_ENV` for the covariance — rather than moving WP18's grid.
 - **A censored reading is not a measurement.** A bench motor held at a setpoint stays correlated past 1 s, so `gamma_hz` is `nan` and `gamma_bound_hz` is an UPPER bound. Report the censored fraction beside the fitted law, and read `gamma_slope_hz` where the crossing is absent.
+- **`rho_k` is a CURVE in a smoothing bandwidth, and `cross_harmonic_correlation`'s `smooth_hz` LOW-passes where `arm_covariance`'s `cutoffs` HIGH-pass.** The two directions answer different questions. WP18 high-passes because the trajectory error and the shaft jitter are confounded at low frequency, so the fast band is where a common term can only be jitter. A shared SHAFT disturbance is itself slow, so at the raw 62.5 Hz frame rate it sits under the per-harmonic measurement noise: the first full run of the probe read `rho_k` ~ 0.001 in every condition. Smoothing to `B` Hz averages that noise down by about `sqrt(fs_env / 2B)`. Quote the bandwidth with the number or the number says nothing.
+- **The law is fitted on per-harmonic MEDIANS, robustly.** A pooled least squares over the raw width cloud is owned by the harmonics that were measured once: on the DREGON motor set `k` = 1 and `k` = 9 read 10-11 Hz off one window each and took the slope to 0.014 Hz per order at an R squared of 0.003, while the medians of the harmonics measured five times or more rise cleanly from 0.22 Hz at `k` = 8 to 1.47 Hz at `k` = 30. `median_by_k` then `fit_linewidth_law(method="theilsen")`.
 - **The width estimate wants a stricter SNR gate than the covariance does.** The autocorrelation is normalized by the line power AFTER the floor is subtracted, so at SNR ~ 1 that denominator is a small difference of similar numbers and the curve reads above 1. The probe gates at SNR 3 (measured: at 1.3 the curve reached 1.85), against WP18's `MIN_SNR` = 1.
 
-Driver: `scripts/phase_coherence_probe.py` — one gridrun unit per (condition, recording, window, rotor) over the DREGON motor bench, the four-motor bench, and the TRAIN-split free flight (DREGON room 2 + FLY125).
+Driver: `scripts/phase_coherence_probe.py` — one gridrun unit per (condition, recording, window, rotor) over the DREGON motor bench, the four-motor bench, and the TRAIN-split free flight (DREGON room 2 + FLY125). Two things it learned the hard way, both now in the driver's own constants: the LINE BAND sets the twin-collision gate, so a 25 Hz band on a four-rotor recording admits 0-3 harmonics per rotor against 4-20 at 10 Hz (measured on its own refined references); and four rotors within about 1 rev/s are ONE comb at any band a 20 s window resolves, so that condition is measured on the mean of the four refined rates with no gate at all.
 
 
 ### Constants
