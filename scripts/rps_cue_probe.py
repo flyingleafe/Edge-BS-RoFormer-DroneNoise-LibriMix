@@ -102,7 +102,18 @@ def speeds(fm: Any, frame: Any, grid: np.ndarray) -> np.ndarray:
     logits = torch.as_tensor(get_array(out, "salience")).unsqueeze(0)  # (1, R*G, T)
     _, fg, n_t = logits.shape
     if fg != N_LAYERS * len(grid):
-        raise ValueError(f"model emits {fg} bins; expected {N_LAYERS} x {len(grid)}")
+        # A shared-map salience baseline (LateDeep, Basic Pitch, the published
+        # HarmoF0 / HPPNet; block S levels L0-L1) emits one map on its own
+        # grid: read it by its own threshold + Hungarian decode, as rps_dump does.
+        key = "mixture" if "mixture" in frame else "audio"
+        audio = torch.as_tensor(np.asarray(get_array(frame, key), dtype=np.float32))
+        if audio.ndim == 1:
+            audio = audio[None]
+        with torch.no_grad():
+            return np.asarray(
+                fm.model.predict_rps(audio.to(fm.device))[0].detach().cpu().numpy(),
+                dtype=np.float64,
+            )
     layers = logits.reshape(1, N_LAYERS, len(grid), n_t).double()
     return np.asarray(peak_readout(F.logsigmoid(layers), grid)[0].numpy(), dtype=np.float64)
 
