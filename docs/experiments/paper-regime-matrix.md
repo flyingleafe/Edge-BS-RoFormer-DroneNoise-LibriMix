@@ -398,6 +398,7 @@ a LibriSpeech talker at -30..0 dB at evaluation.
 | `salv2_tr_comb_nomix` | 1.22 | 2.32 | 1.9 | `salv2_tr_comb_mix` | 1.34 | 1.42 | 1.06 |
 | `salv2_hppnet_comb_nomix` | 0.46 | 1.42 | 3.1 | `salv2_hppnet_comb_mix` | 0.48 | 0.55 | 1.15 |
 | `salv2_hf0_comb_nomix` | 1.19 | 2.02 | 1.7 | `salv2_hf0_comb_mix` | 0.87 | 0.98 | 1.13 |
+| `salv2_gru_comb_nomix` (batch 15b) | 0.70 | 1.56 | 2.2 | `salv2_gru_comb_mix` (batch 15) | 0.91 | 0.93 | 1.02 |
 
 Every comb-trained row scores 36-38 on the stochastic part and 37-66 on real
 audio: no transfer across synthetic families or to real data. Claim 5, final
@@ -534,6 +535,11 @@ the batch-15 dump scored that fragment (comb 1.08). The cluster run's
 (the vast fragment is kept in `checkpoints_vast_ep32/`), and the cell was
 dumped again as batch 15b. `salv2_gru_stoch_nomix` (Slurm 25550718) has the
 same condition and gets the same treatment when it finishes.
+
+Batch 15b, `salv2_gru_comb_nomix` on the corrected checkpoint: comb 0.70
+(W&B best 0.699, last 0.701), comb+sp 1.56 (ratio 2.2), stoch 37.6, real
+58.8. The GRU pair joins the batches 8-9 speech table above: with speech in
+training the ratio falls from 2.2 to 1.02 at a comb cost of 0.70 -> 0.91.
 
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
