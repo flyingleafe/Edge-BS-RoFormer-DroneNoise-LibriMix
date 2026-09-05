@@ -54,7 +54,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import zoo  # noqa: E402
 from data_processing.frames import meta_dict  # noqa: E402
-from experiments.rps_bench import Readout, build_set, parse_sets  # noqa: E402
+from experiments.rps_bench import Readout, build_set, parse_sets, pit_mae  # noqa: E402
 from metrics._common import get_array  # noqa: E402
 
 
@@ -65,6 +65,29 @@ def pad_stack(arrs: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     for i, a in enumerate(arrs):
         out[i, :, : a.shape[-1]] = a
     return out, n_t
+
+
+def _shared_map(pred: Any, reader: Readout) -> bool:
+    """True for a salience model that emits ONE shared map, not R layers."""
+    if "salience" not in pred:
+        return False
+    fg = int(np.asarray(get_array(pred, "salience")).shape[-2])
+    return fg != reader.n_layers * len(reader.grid)
+
+
+def shared_map_readout(fm: Any, frame: Any, device: str) -> tuple[np.ndarray, float]:
+    """The June salience baselines (LateDeep, Basic Pitch; block S level L0)
+    emit one shared map on their own grid, so they are read by their own
+    ``predict_rps`` (sigmoid -> threshold -> Hungarian tracking), the decode
+    their published numbers used. The metric is the same per-frame PIT MAE."""
+    key = "mixture" if "mixture" in frame else "audio"
+    audio = torch.as_tensor(np.asarray(get_array(frame, key), dtype=np.float32))
+    if audio.ndim == 1:
+        audio = audio[None]
+    with torch.no_grad():
+        speeds = fm.model.predict_rps(audio.to(device))[0].detach().cpu().numpy()
+    gt = np.asarray(get_array(frame, "rps"), dtype=np.float64)
+    return speeds.astype(np.float32), float(pit_mae(speeds.astype(np.float64), gt))
 
 
 def main() -> None:
@@ -116,7 +139,11 @@ def main() -> None:
         for name, frames in todo:
             preds, metrics = [], []
             for f in frames:
-                p, m = reader(fm(f), f)
+                out_frame = fm(f)
+                if _shared_map(out_frame, reader):
+                    p, m = shared_map_readout(fm, f, a.device)
+                else:
+                    p, m = reader(out_frame, f)
                 preds.append(p)
                 metrics.append(m)
             pred, n_t = pad_stack(preds)
