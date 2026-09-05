@@ -667,6 +667,21 @@ rotors, telemetry refined by `pi_kalman`; FLY125, 7 windows x 4 rotors,
 refined sidecar). Job `phase-coherence-4fe127` on `uni-cpu`; outputs
 `results/phase_coherence/{summary.csv,conditions.csv,report.md}`.
 
+### Batch 19: the HPPNet port's rung 3 (gpushort chain, 4 segments; all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | ch0 / ch1-7 | comb / stoch | probe full / local |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `real_r3_hppnet` (+ FLY125) | 6.96 | 29.22 | 9.09 | 6.74 | 2.22 | 0.93 | 4.20 | 2.50 / 2.18 | 47.0 / 38.1 | 0.43 / 0.73 |
+| `hppnet_r2hb_l4` (rung 4) | 5.95 | 26.65 | 9.83 | 4.77 | 2.95 | 0.92 | 4.18 | 3.04 / 2.94 | 39.1 / 34.1 | 0.97 / 0.97 |
+
+The HPPNet ladder (all-mic MAE / DREGON cruise / FLY124 cruise / probe
+local): rung 1 26.86 / 2.91 / 71.2 / 0.71, rung 2 26.48 / 2.41 / 71.2 /
+0.55, rung 3 4.20 / 2.22 / 0.93 / 0.73, rung 4 4.18 / 2.95 / 0.92 / 0.97.
+Rung 3 is the port's best real cell and the best unseen-drone cell of the
+whole ladder (FLY124 cruise 0.93 against 1.30-2.28 for the regressors at
+rung 3); rung 4 buys only the probe (0.73 -> 0.97) at a DREGON cruise
+cost of 2.22 -> 2.95. Both papers' claim-2 paragraph now says so.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
