@@ -1,0 +1,33 @@
+# @package _global_
+# RUNG 4 OF THE REAL LADDER, the BiGRU head (`hb_scv2_mag_nogate`): DREGON + FLY125,
+# all 8 mics, silence arm, speech at -30..0 dB, freq-scale + time-warp +
+# gain/polarity, NO warm-up stage and NO warm start.
+#
+# It is the with-speech twin of `r2hb_scv2_nomix` (same file, stream
+# `conf/online_mix/hb_m3s2_dload.yaml` in place of the nomix policy) and the
+# rung-4 row that rungs 1-3 (`real_r1..3_scv2`) step up to: those policies are
+# this stream with the label-transforming blocks removed. The older R2 row
+# (`hb_scv2_mag_nogate` / `tm_r2hb_nogate` / `r2hb_gru_nogate`) differs only
+# by a 50k-sample unaugmented warm-up stage and stays as a cross-check.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: hb_scv2_mag_nogate
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: real_r4_scv2
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
