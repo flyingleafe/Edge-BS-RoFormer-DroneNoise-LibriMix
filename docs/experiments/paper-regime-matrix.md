@@ -642,6 +642,7 @@ true spread over all cruise time-frames: 1 = the model tracks four lines,
 | frames | 200 | 4928 | 22384 | 3872 | 528 | |
 | `salv2_scv2_stoch_nomix` | 5.16 | 7.12 | 8.04 | 9.15 | 6.22 | 0.13 |
 | `salv2_scv2_stoch_mix` | 6.00 | 7.38 | 7.77 | 8.86 | 5.75 | 0.10 |
+| `salv2_tr_stoch_mix` (batch 17) | 6.31 | 8.10 | 8.51 | 9.78 | 6.25 | 0.10 |
 | `salv2_hppnet_stoch_nomix` | 0.06 | 10.98 | 6.56 | 7.68 | 14.86 | 0.16 |
 | `salv2_hppnet_stoch_mix` | 0.08 | 9.27 | 6.53 | 8.05 | 12.74 | 0.21 |
 | `salv2_hf0_stoch_nomix` | 0.38 | 15.71 | 9.18 | 10.14 | 7.26 | -0.36 |
@@ -657,6 +658,7 @@ each class of failed rotor track; `classes.csv`):
 |---|---|---|---|---|---|---|---|---|
 | `salv2_scv2_stoch_nomix` | 2.99 | 2.05 | 8.39 | 0.26 | 0.22 | 0.00 | 0.36 | 0.00 |
 | `salv2_scv2_stoch_mix` | 4.20 | 2.99 | 9.72 | 0.43 | 0.07 | 0.02 | 0.32 | 0.00 |
+| `salv2_tr_stoch_mix` (batch 17) | 3.90 | 2.05 | 12.72 | 0.38 | 0.08 | 0.00 | 0.26 | 0.00 |
 | `salv2_hppnet_stoch_nomix` | 2.65 | 1.68 | 5.39 | 0.07 | 0.00 | 0.24 | 0.57 | 0.00 |
 | `salv2_hppnet_stoch_mix` | 3.16 | 1.62 | 6.81 | 0.12 | 0.00 | 0.23 | 0.48 | 0.00 |
 | `salv2_hf0_stoch_nomix` | 9.13 | 4.66 | 23.16 | 0.02 | 0.02 | 0.01 | 0.69 | 0.00 |
@@ -679,8 +681,14 @@ true spread above 2) and 69 % of its error is wander. The curriculum rows
 (comb -> real) return near-zero on the stochastic part (missed 37-41 %),
 and the static-comb-only rows return zero outright (missed 91-97 %, fan
 0.0-0.6): no transfer from the static comb to the stochastic family. The
-transformer and GRU stochastic cells of this campaign join this table when
-they land.
+transformer trained on the stochastic family with speech (batch 17,
+`salv2_tr_stoch_mix`: stoch 3.90, +speech 3.86, comb 5.9, real 30.2,
+probe 0.89 / 1.37) shows the same fixed fan as the convolutional
+regressor, 6.3-9.8 rev/s at every true spread with slope 0.10, and the
+same error mix (offsets 38 %, wander 26 %, the 5/4 alias 8 %, no
+octaves): the fan is a property of the regression readout, not of one
+trunk. The GRU cells and the transformer without speech join the table
+when they land.
 
 ## Conclusion
 
