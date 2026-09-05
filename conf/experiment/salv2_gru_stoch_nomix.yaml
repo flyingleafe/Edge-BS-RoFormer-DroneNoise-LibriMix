@@ -12,6 +12,13 @@
 # other two trunks of the trio, so the synthetic column and the real column are
 # read on one set of architectures.
 # Batch doc: docs/experiments/paper-regime-matrix.md.
+# STABILIZED RECIPE (2026-09-05). Under the framework defaults (amp true,
+# grad_clip 5.0) the causal GRU diverges on the 4 s stochastic stream: the
+# first run dropped non-finite batches from epoch 1 step 85 on and its NaNs
+# reached the Hungarian matcher at epoch 22 (`salv2_gru_stoch_nomix`, W&B).
+# The comb cells of the same trunk and every transformer cell were clean. This
+# file therefore carries the E5 uni-GRU recipe, `amp: false` + `grad_clip: 0.5`
+# (docs/experiments/e5-timewarp.md), and nothing else changes.
 defaults:
   - override /data: salv2_stoch_nomix
   - override /model: simple_conv_v2_uni_gru128

@@ -25,3 +25,7 @@ training objective, exactly as in the source row. Train:
 ## Conclusion
 
 Pending.
+
+## Recipe note (2026-09-05)
+
+This cell runs with `amp: false` and `grad_clip: 0.5` (the E5 uni-GRU recipe). Under the defaults the causal GRU dropped non-finite batches from epoch 1 on the stochastic stream, and the first run died at epoch 22 with NaN predictions in the Hungarian matcher. The comb cells of this trunk and every transformer cell did not need it.
