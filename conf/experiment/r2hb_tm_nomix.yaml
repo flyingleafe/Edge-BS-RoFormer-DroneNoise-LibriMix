@@ -1,0 +1,35 @@
+# @package _global_
+# SPEECH A/B ON REAL DATA, noise-only arm — the magnitude transformer (`simple_conv_v2_transformer`)
+# trained on the honest real pool with NO speech mixed in.
+#
+# The ONE difference from `tm_r2hb_nogate` is the training stream:
+# conf/online_mix/hb_m3s2_nomix_dload.yaml (`policy.source_prob: 0.0`) in place
+# of the speech-bearing pool. Model, loss, metrics, optimizer, batch size,
+# epoch budget and the frozen REAL validation split are that file verbatim.
+#
+# VALIDATION KEEPS THE SPEECH. Selection stays on
+# `dload:DREGON-LM-V4-michaels-valid-full`, so both arms of the A/B are read on
+# one number and the question stays "does training speech help a model that
+# must work under speech".
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r2hb_tm_nomix
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_nomix_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

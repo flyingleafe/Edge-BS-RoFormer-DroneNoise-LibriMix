@@ -1,0 +1,34 @@
+# @package _global_
+# R7, TRUNK EXTENSION — the MIXED ONE-STAGE regime with the STOCHASTIC
+# family as the synthetic half, on the causal unidirectional-GRU head (`simple_conv_v2_uni_gru128`).
+#
+# The ONE difference from `r7hb_scv2` is the model. The pool
+# (`conf/online_mix/hb_stochmixed_dload.yaml`: real 45.5%, silence 9.1%,
+# stochastic 22.7%, static comb 22.7%), the loss, the metrics, the optimizer,
+# the batch size, the epoch budget and the frozen REAL validation split are
+# that file verbatim. There is no stage 2 and no warm start.
+#
+# This stream runs on a CPU-only box: the stochastic source renders on the CPU,
+# whereas `kind: generated` would start a CUDA producer.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3abl_mixed
+  - override /model: simple_conv_v2_uni_gru128
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: r7hb_gru
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_stochmixed_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

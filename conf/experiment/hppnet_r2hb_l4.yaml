@@ -1,0 +1,37 @@
+# @package _global_
+# SALIENCE PORT, REGIME R2 — HPPNet (`hppnet_rps_l4`) on the honest real
+# pool `conf/online_mix/hb_m3s2_dload.yaml`, trained FROM SCRATCH.
+#
+# TWO differences from `hppnet_r4_l4`, and both are named:
+# (1) NO WARM START. The `checkpoint:` line is gone, so this row is the
+#     real-only R2 cell of the salience column rather than the stage 2 of a
+#     comb-only curriculum. It therefore does not wait for a synthetic stage-1
+#     job and can be submitted immediately.
+# (2) MONITOR `rps_mae`, NOT `bce`. Selecting on cross-entropy was measured to
+#     be wrong on the l4 arms — `val/bce` rose while `val/rps_mae` fell,
+#     because cross-entropy is unbounded and punishes a confident near-miss
+#     that a bounded argmax error barely notices. The bce-selected
+#     `hf0_r4_l4` checkpoint came out broken for exactly this reason.
+#
+# Stream, loss, metrics, batch size, epoch budget and the frozen REAL
+# validation split are the source file verbatim.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: hppnet_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: hppnet_r2hb_l4
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — the salience rows' value
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: rps_mae
+  monitor_mode: min

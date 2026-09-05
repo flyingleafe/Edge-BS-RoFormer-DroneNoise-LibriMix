@@ -1,0 +1,29 @@
+# @package _global_
+# SALV2 grid, TRUNK EXTENSION — the magnitude-front-end transformer (`simple_conv_v2_transformer`) on
+# the STOCHASTIC rotor-noise family, WITH speech mixed in at -30 to 0 dB SNR.
+#
+# The ONE difference from `salv2_scv2_stoch_mix` is the model. Data config, loss,
+# metrics, optimizer, batch size (32 frames, measured), epoch size and monitor
+# (`mae_frame`, not the objective) are that file verbatim, so the trunk is the
+# only axis between the three rows of this cell.
+#
+# WHY THE EXTENSION. The published SALV2 grid measured one regressor,
+# SimpleConvV2. The paper regime matrix needs the same synthetic cells on the
+# other two trunks of the trio, so the synthetic column and the real column are
+# read on one set of architectures.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: salv2_stoch_mix
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: salv2_tr_stoch_mix
+epochs: 200
+patience: 20
+batch_size: 32  # frames (= 4 chunks x 8 mics at 4 s)
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: mae_frame
+  monitor_mode: min

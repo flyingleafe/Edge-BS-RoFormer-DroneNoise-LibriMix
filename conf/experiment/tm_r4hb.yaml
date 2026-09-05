@@ -1,0 +1,34 @@
+# @package _global_
+# TM, REGIME R4 — the comb-only curriculum, stage 2, on the R2 honest real
+# base, at the MAGNITUDE front end (`simple_conv_v2_transformer`).
+#
+# The ONE difference from `r4hb_tr` is the model, and the warm start that
+# follows from it: `tm_comb_s1` in place of `m3abl_comb_transformer_s1`,
+# because an IF-front-end checkpoint cannot be loaded into a magnitude trunk.
+# The fine-tune stream stays `conf/online_mix/hb_m3s2_dload.yaml` and the
+# validation split stays the frozen real one.
+#
+# SUBMIT AFTER `tm_comb_s1` has written its best.ckpt to the artifact store.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: tm_r4hb
+checkpoint: r2://ml-data/artifacts/tm_comb_s1/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

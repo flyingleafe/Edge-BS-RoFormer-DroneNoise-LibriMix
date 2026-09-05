@@ -1,0 +1,29 @@
+# @package _global_
+# TM STAGE 1 — the static-comb pre-training of the transformer trunk, read at
+# the MAGNITUDE front end (`simple_conv_v2_transformer`).
+#
+# The ONE difference from `m3abl_comb_transformer_s1` is the model: the paper
+# drops the instantaneous-frequency front end, so every transformer row of the
+# regime matrix has to be re-grown from a magnitude stage 1. Stream, loss,
+# metrics, optimizer, batch size and epoch budget are that file verbatim.
+#
+# THIS ROW IS A DEPENDENCY, not a result. `tm_r4hb` warm-starts from its
+# `best.ckpt`, so submit it first and let it finish.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3abl_comb_s1
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: tm_comb_s1
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics — legacy-equivalent epoch)
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min

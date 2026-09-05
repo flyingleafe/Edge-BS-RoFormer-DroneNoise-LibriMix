@@ -1,0 +1,31 @@
+# @package _global_
+# SPEECH A/B ON REAL DATA, noise-only arm — HarmoF0 (`harmof0_rps_l4`) on the
+# honest real pool with NO speech mixed in.
+#
+# The ONE difference from `hf0_r2hb_l4` is the training stream:
+# conf/online_mix/hb_m3s2_nomix_dload.yaml (`policy.source_prob: 0.0`) in place
+# of the speech-bearing pool. Model, loss, metrics, monitor (`rps_mae`), batch
+# size, epoch budget and the frozen REAL validation split are that file
+# verbatim, and there is still no warm start.
+#
+# VALIDATION KEEPS THE SPEECH, for the reason given in the twin's doc.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: harmof0_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: hf0_r2hb_nomix
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_nomix_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — arm A's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: rps_mae
+  monitor_mode: min

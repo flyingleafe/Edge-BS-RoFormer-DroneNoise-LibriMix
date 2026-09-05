@@ -1,0 +1,34 @@
+# @package _global_
+# HF0 R4, RE-RUN ON THE CORRECT MONITOR — `hf0_r4_l4` with
+# `optim.monitor: rps_mae` in place of `bce`, and nothing else changed.
+#
+# WHY. Cross-entropy is unbounded and punishes a confident near-miss that a
+# bounded argmax error barely notices, so `val/bce` can rise while
+# `val/rps_mae` falls. On `hf0_r4_l4` it did, and the checkpoint the bce
+# monitor kept came out broken. `rps_mae` is also the number the regime matrix
+# compares every row on, so selecting on it removes a second, misaligned
+# scalar from the comparison.
+#
+# The warm start, the stream, the loss, the metrics and the frozen REAL
+# validation split are `hf0_r4_l4` verbatim.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: m3cur_s2
+  - override /model: harmof0_rps_l4
+  - override /loss: salience_layers_r150
+  - override /metrics: salience_layers_r150
+
+experiment_name: hf0_r4_l4_v2
+checkpoint: r2://ml-data/artifacts/hf0_comb_l4/checkpoints/best.ckpt
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_m3s2_dload.yaml
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — arm A's value, kept
+num_workers: 6
+samples_per_validation: 16000
+optim:
+  monitor: rps_mae
+  monitor_mode: min

@@ -1,0 +1,30 @@
+# @package _global_
+# TM, REGIME R2 — the real-only honest base (silence arm + SNR reference
+# floor, `conf/online_mix/hb_silence_dload.yaml`) at the MAGNITUDE front end
+# (`simple_conv_v2_transformer`), with no voicing gate.
+#
+# The ONE difference from `r2hb_tr_nogate` is the model: the paper drops the
+# instantaneous-frequency front end, so the R2 transformer row is re-measured
+# at the magnitude one. No warm start, single stage.
+# Batch doc: docs/experiments/paper-regime-matrix.md.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: simple_conv_v2_transformer
+  - override /loss: pit_mse
+  - override /metrics: rps
+
+experiment_name: tm_r2hb_nogate
+epochs: 200
+patience: 20
+batch_size: 128  # frames (= 16 chunks x 8 mics — legacy-equivalent effective batch)
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  lr: 0.001
+  weight_decay: 0.0001
+  monitor: mse
+  monitor_mode: min
