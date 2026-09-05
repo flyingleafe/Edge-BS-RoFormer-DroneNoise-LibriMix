@@ -439,6 +439,28 @@ of all on silence (14-20 vs 2.9, phantom rotors) and on cruise (4.7-6.2 vs
 2.65); on the mic-0 rung it is not usable even on DREGON cruise (19.4).
 Speech in training is a wash for it (7.90 vs 8.09).
 
+### Batch 13: HPPNet speech pair, transformer comb curriculum, Basic Pitch l4 (all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | DREGON clean / loudspeaker | probe full / local |
+|---|---|---|---|---|---|---|---|---|---|
+| `hppnet_r2hb_l4` (rung 4 pool, with speech) | 5.95 | 26.65 | 9.83 | 4.77 | 2.95 | 0.92 | 4.18 | 4.64 / 5.65 | 0.97 / 0.97 |
+| `hppnet_r2hb_nomix` (no speech) | 2.90 | 27.62 | 10.48 | 3.07 | 2.65 | 0.80 | 3.57 | 3.90 / 4.86 | 0.97 / 0.99 |
+| `tm_r4hb` (magnitude transformer, comb -> rung 4) | 5.14 | 12.91 | 8.30 | 3.20 | 2.65 | 1.43 | 3.37 | 3.05 / 4.28 | 0.89 / 1.40 |
+| `tm_r2hb_nogate` (magnitude transformer, rung 4) | 4.65 | 13.05 | 6.22 | 3.33 | 2.79 | 1.21 | 3.21 | 3.06 / 4.04 | 0.40 / 0.40 |
+| `hb_sal_bp_l4` (Basic Pitch, L2) | 0.50 | 18.02 | 48.57 | 32.42 | 43.88 | 9.47 | 27.56 | 36.6 / 37.4 | 2.31 / 3.08 |
+| `hb_sal_bp` (Basic Pitch, L0) | 33.86 | 38.68 | 35.45 | 16.54 | 26.39 | 25.65 | 27.30 | — | — |
+
+Readings: (1) mixed speech in training HURTS the HPPNet port on every regime,
+the loudspeaker clips included (5.65 vs 4.86): the opposite of the
+convolutional regressor. (2) The comb curriculum does not help the magnitude
+transformer (3.37 vs 3.21), as it did not help the IF one (3.78 vs 3.40); it
+makes the model read frequency (local slope 1.40 vs 0.40) at the same
+precision. (3) Basic Pitch with the per-rotor layers is as unusable as the
+published one (27.6 vs 27.3): it decides silence perfectly (0.50) and cannot
+place cruise speeds (43.9). Its problem is the input representation, which
+its architecture gives no handle on (no harmonic convolutions to replace), so
+block S ends for it at L2.
+
 ## Conclusion
 
 Pending.
