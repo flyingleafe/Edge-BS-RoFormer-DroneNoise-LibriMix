@@ -358,25 +358,31 @@ augmentations on from the first step the model reads frequency (local slope
 warm-up rows keep the prior (0.14 / 0.25 / 0.00). The transformer's rung 3
 (`real_r3_tm`) was interrupted on vast at epoch ~100 and resumes there.
 
-### Batch 6: the speech A/B on real data (R2 schedule; single seed)
+### Batch 6-7: the speech A/B on real data (R2 schedule; single seed)
 
-| model | whole split (37 clips) | 23 clean clips | 14 loudspeaker clips | probe full / local |
-|---|---|---|---|---|
-| scv2, trained with mixed speech (`hb_scv2_mag_nogate`) | 2.77 | 2.43 | 3.38 | 0.89 / 0.14 |
-| scv2, trained without (`r2hb_scv2_nomix_wu`) | 2.98 | 2.64 | 3.54 | 0.81 / 0.36 |
-| transformer-IF with speech (`r2hb_tr_nogate`) | 3.39 | 2.98 | 4.09 | 0.54 / 0.25 |
-| transformer-mag without (`r2hb_tm_nomix_wu`) | 3.30 | 2.92 | 3.95 | 0.01 / 0.02 |
+Split of the frozen real set by clip origin: DREGON room 1 with a loudspeaker
+playing (clips 0-13, 14 clips), DREGON room 1 without a source (clips 14-21,
+8 clips), FLY124 (clips 22-36, 15 clips). PIT MAE over all 8 mics.
 
-The loudspeaker-clip number is the pooled mean implied by the whole split
-and the clean subset (14 clips). Readings: on real data, training with mixed
-speech helps the convolutional trunk by about 7 % on every subset, and the
-acoustic loudspeaker makes a clip about 1.4x harder for either model. The
-transformer pair is confounded by the front-end (its with-speech R2 row is
-the IF variant) until `tm_r2hb_nogate` lands. The warm-up-free pair
-(`r2hb_scv2_nomix` 3.95 vs `real_r4_scv2` 4.61) is a schedule artifact and is
-not used. Together with the synthetic pairs (2x on the stochastic family,
-1.0-1.65x on the static comb), claim 5 reads "1.4-2x, family-dependent", not
-"2x for all models and regimes".
+| model | DREGON clean (8) | DREGON loudspeaker (14) | ratio | FLY124 (15) | whole split | probe full / local |
+|---|---|---|---|---|---|---|
+| scv2 with mixed speech (`hb_scv2_mag_nogate`) | 2.52 | 3.37 | 1.34 | 2.39 | 2.77 | 0.89 / 0.14 |
+| scv2 without (`r2hb_scv2_nomix_wu`) | 2.78 | 3.54 | 1.27 | 2.56 | 2.98 | 0.81 / 0.36 |
+| GRU with (`r2hb_gru_nogate`) | 2.97 | 2.98 | 1.00 | 6.08 | 4.23 | 0.02 / 0.00 |
+| GRU without (`r2hb_gru_nomix_wu`) | 2.55 | 4.33 | 1.70 | 3.51 | 3.61 | 0.71 / 0.26 |
+| transformer-IF with (`r2hb_tr_nogate`) | 2.94 | 4.10 | 1.39 | 3.00 | 3.39 | 0.54 / 0.25 |
+| transformer-mag without (`r2hb_tm_nomix_wu`) | 3.02 | 3.95 | 1.31 | 2.86 | 3.30 | 0.01 / 0.02 |
+
+Readings: an acoustic talker or noise source in the room costs 1.3-1.4x for
+models trained with mixed speech and 1.7x for the one model that never saw
+speech (the causal GRU), which the training speech makes immune to it (1.00)
+at the price of its FLY124 cell (6.08 vs 3.51; single seed). Training with
+mixed speech helps the convolutional trunk by 5-10 % on every subset. The
+transformer pair is confounded by the front-end until `tm_r2hb_nogate` lands.
+The warm-up-free pair (`r2hb_scv2_nomix` 3.95 vs `real_r4_scv2` 4.61) is a
+schedule artifact and is not used. Together with the synthetic pairs (2x on
+the stochastic family, 1.0-1.65x on the static comb), claim 5 reads "1.3-2x,
+family-dependent", not "2x for all models and regimes".
 
 ## Conclusion
 
