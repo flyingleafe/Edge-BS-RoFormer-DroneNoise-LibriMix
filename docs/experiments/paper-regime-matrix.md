@@ -339,6 +339,25 @@ paper is the existing R2 rows (with warm-up); the warm-up-free `real_r4_*`
 rows are a schedule ablation; the speech A/B arms are re-run with the warm-up
 (`r2hb_{scv2,tm,gru}_nomix_wu`, policy `hb_silence_nomix_dload.yaml`).
 
+### Batch 5 (rung-4 transformer and GRU without warm-up; all mics)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | probe full / local |
+|---|---|---|---|---|---|---|---|---|
+| `real_r1_tm` | 4.07 | 20.13 | 8.52 | 22.78 | 2.28 | 8.60 | 6.84 | 0.07 / 0.21 |
+| `real_r2_tm` | 6.48 | 16.03 | 8.75 | 15.13 | 2.74 | 8.53 | 6.58 | 0.06 / 0.03 |
+| `real_r4_tm` (augmentations from step 0, magnitude) | 4.27 | 15.36 | 8.36 | 4.31 | 2.99 | 1.96 | 3.73 | 0.93 / 1.01 |
+| `r2hb_tr_nogate` (old R2 row, IF, warm-up) | 5.46 | 15.34 | 6.73 | 3.39 | 2.59 | 1.41 | 3.39 | 0.54 / 0.25 |
+| `r4hb_tr` (comb -> R2, IF) | 5.94 | 12.73 | 8.01 | 4.06 | 3.22 | 1.51 | 3.78 | 1.03 / 1.26 |
+| `real_r4_gru` (augmentations from step 0) | 5.23 | 14.28 | 4.93 | 4.34 | 3.55 | 2.42 | 3.99 | 0.73 / 0.54 |
+| `r2hb_gru_nogate` (old R2 row, warm-up) | 6.05 | 13.75 | 11.04 | 5.44 | 2.13 | 3.64 | 4.22 | 0.02 / 0.00 |
+
+The schedule ablation holds on all three trunks: with the label-transforming
+augmentations on from the first step the model reads frequency (local slope
+0.92 / 1.01 / 0.54 for scv2 / transformer / GRU) and pays on DREGON cruise
+(4.40 / 2.99 / 3.55 against 2.62 / 2.59 / 2.13 for the warm-up rows); the
+warm-up rows keep the prior (0.14 / 0.25 / 0.00). The transformer's rung 3
+(`real_r3_tm`) was interrupted on vast at epoch ~100 and resumes there.
+
 Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
 (3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
 warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
