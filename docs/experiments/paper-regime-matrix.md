@@ -729,6 +729,22 @@ per sample), as a Lorentzian line implies. Together (1), (3) and (4)
 are the stochastic comb's assumptions: Lorentzian lines, independent
 per harmonic, widths growing with order.
 
+### Batch 20: the HarmoF0 comb curriculum (gpushort chain, 2 segments; all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | comb / stoch |
+|---|---|---|---|---|---|---|---|---|
+| `hf0_r4_l4_v2` (comb -> R4, monitored on rps_mae) | 13.31 | 26.86 | 19.80 | 22.94 | 5.94 | 5.45 | 9.63 | 44.4 / 35.4 |
+| `hf0_r2hb_l4` (R4, no warm start) | 13.96 | 24.28 | 16.62 | 12.90 | 6.22 | 2.29 | 7.90 | 39.3 / 33.1 |
+| `hppnet_r4_l4` (comb -> R4, for comparison) | 8.93 | 27.38 | 17.14 | 11.96 | 3.77 | 1.40 | 6.04 | 47.5 / 38.1 |
+| `hppnet_r2hb_l4` (R4) | 5.95 | 26.65 | 9.83 | 4.77 | 2.95 | 0.92 | 4.18 | 39.1 / 34.1 |
+
+Reading: the static-comb curriculum, the best recipe for every
+regressor, hurts both salience ports (HarmoF0 7.90 -> 9.63, HPPNet 4.18
+-> 6.04 all-frame; FLY124 cruise 2.29 -> 5.45 and 0.92 -> 1.40). The
+ports read frequency by construction, so the curriculum has nothing to
+teach them and its stage-1 optimum is a worse start than random. The
+probe of this cell follows (batch 20b).
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
