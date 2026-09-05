@@ -568,6 +568,20 @@ cruise: rung 1 15.88 / 5.74 / 35.40, rung 2 8.03 / 3.55 / 11.46, rung 3
 split, as for every other trunk, and rung 4 buys the probe (0.93) and the
 static comb (10.9) with real-split precision.
 
+### Batch 16a: the transformer in the one-pool mix (real + comb + stoch, no curriculum; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | comb / stoch | probe full / local |
+|---|---|---|---|---|---|---|---|---|---|
+| `r7hb_tm` (gpushort chain, 4 segments, 25 epochs) | 4.77 | 13.85 | 19.78 | 12.87 | 4.87 | 7.73 | 7.43 | 4.9 / 18.9 | 1.04 / 1.11 |
+| `r7hb_scv2` (old row, for comparison) | 13.23 | 11.98 | 8.49 | 10.05 | 2.88 | 5.31 | 6.05 | 4.9 / 10.9 | 0.83 / 1.58 |
+
+Reading: the one-pool mix reads frequency and is the only regime that
+transfers to both synthetic families at once (comb 4.9, stoch 11-19), and
+it pays for that on the real split: all 7.43 against 3.21 for the
+transformer's rung-4 row, DREGON cruise 4.87 against 2.79, FLY124 cruise
+7.73 against 1.21. The staging of the curricula (C1: 3.37 all, 2.65 / 1.43
+cruise) is what keeps the real precision. `r7hb_gru` is pending.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
