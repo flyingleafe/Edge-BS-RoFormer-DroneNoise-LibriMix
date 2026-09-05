@@ -745,6 +745,24 @@ ports read frequency by construction, so the curriculum has nothing to
 teach them and its stage-1 optimum is a worse start than random. The
 probe of this cell follows (batch 20b).
 
+### Batch 21: HarmoF0 rung 2 (gpushort chain, 1 segment, early stop at epoch 42); the curriculum probe
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | ch0 / ch1-7 | comb / stoch | probe full / local |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `real_r2_hf0` (DREGON, 8 mics) | 18.71 | 34.35 | 13.56 | 54.61 | 3.45 | 63.91 | 27.46 | 5.13 / 3.21 | 43.3 / 35.4 | 0.39 / 0.28 |
+| `hf0_r4_l4_v2` (comb -> R4; probe only new) | 13.31 | 26.86 | 19.80 | 22.94 | 5.94 | 5.45 | 9.63 | 9.21 / 5.47 | 44.4 / 35.4 | 1.06 / 1.04 |
+
+The HarmoF0 ladder (all-mic MAE / DREGON cruise / FLY124 cruise / probe
+local): rung 1 37.05 / 19.43 / 71.6 / 0.28, rung 2 27.46 / 3.45 / 63.9 /
+0.28, rung 3 7.11 / 5.38 / 2.38 / 0.24, rung 4 7.90 / 6.22 / 2.29 / 0.95.
+Same shape as every other trunk: the second drone fixes the unseen rig,
+the augmentations fix the probe (0.24 -> 0.95) and cost DREGON cruise
+(5.38 -> 6.22). Its comb curriculum reads frequency (1.06 / 1.04) at the
+worst real split of the column (9.63). With this batch every rung of
+every trunk is scored except `salv2_tr_stoch_nomix`,
+`salv2_gru_stoch_{nomix,mix}` (running on sae) and `hb_sal_multif0_l4`
+(gpushort chain).
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
