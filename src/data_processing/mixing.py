@@ -436,7 +436,9 @@ def load_noise_source_frames(specs: list[dict[str, Any]], *, sample_rate: int) -
 
     frames: list[td.Frame] = []
     for spec in specs:
-        dataset = str(spec["dataset"])
+        # ``dataset`` is a bare name, ``NAME@version``, or the pinned
+        # ``dload:NAME@version`` URI the derivation specs carry.
+        dataset = str(spec["dataset"]).removeprefix("dload:")
         name, _, version = dataset.partition("@")
         splits = spec.get("splits")
         if splits is None and spec.get("split") is not None:

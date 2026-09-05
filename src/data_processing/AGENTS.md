@@ -34,7 +34,7 @@ The data layer has three layers, each declared exactly once — see
 
 | File | Purpose |
 |------|---------|
-| `derivations.py` | **Every** derived dataset as a frozen dload pipeline spec (`SPECS`) + its module-level generator: `generate_dregon_lm_split` / `generate_dn_lm_split` (LibriMix-style `sample-dir-v1` mixes), `generate_source_frames` (any sources builder as a derivation), `generate_frame_subset`, `generate_raw_subset`, `generate_pcm16_mono`, `generate_beatvk_valid`, `generate_se_valid`. Also `PARENTS` (pinned parent URIs, drift-guarded by tests), `SE_CATEGORY_NOISE`/`SE_HELDOUT_SPEAKERS`, `HISTORICAL_PINS`, and `build_pipeline`/`dataset_meta`/`fingerprint`. Torch-free. Driver: `scripts/derive.py` (`list`/`derive`/`adopt`). |
+| `derivations.py` | **Every** derived dataset as a frozen dload pipeline spec (`SPECS`) + its module-level generator: `generate_dregon_lm_split` / `generate_dn_lm_split` (LibriMix-style `sample-dir-v1` mixes), `generate_dregon_lm_subset` (a byte-verbatim clip subset of a published split), `generate_source_frames` (any sources builder as a derivation), `generate_frame_subset`, `generate_raw_subset`, `generate_pcm16_mono`, `generate_beatvk_valid`, `generate_se_valid`. Also `PARENTS` (pinned parent URIs, drift-guarded by tests), `SE_CATEGORY_NOISE`/`SE_HELDOUT_SPEAKERS`, `HISTORICAL_PINS`, and `build_pipeline`/`dataset_meta`/`fingerprint`. Torch-free. Driver: `scripts/derive.py` (`list`/`derive`/`adopt`). |
 | `mixing.py` | The **single copy** of the per-sample mixing math (torch-free, disk-free): `load_audio`/`adjust_length`/`normalize_audio`, `scale_noise_to_snr`/`mix_audio`/`mix_at_snr`/`calculate_snr` (offline LibriMix convention — speech is the reference), `scale_source_to_snr`/`mix_at_source_to_noise_snr`/`is_silent` (online/streaming convention — noise is the reference), `resolve_motor_tracks`/`find_inflight_window`/`extract_multichannel_noise_chunk`, `load_noise_source_frames`, `render_multichannel_sample`, `iter_real_valid_clips`, `mix_dn_lm`. |
 | `canonical.py` | The canonical entry vocabulary (`CANONICAL_ENTRIES`, `ENTRY_ALIASES`) and `coerce_frame(frame, **overrides)`, which renames source-specific entry names (`motors_command`, `motor_speed`, `waveform`, …) onto it and warns once per applied mapping. The rotor-speed alias order **is** `frames.PUBLISHED_RPS_KEYS`, so a frame plots under the track the pipeline reads. `plots.dwym` calls it on the way in. |
 | `frames.py` | Shared `td.Frame` conventions: `audio_series`/`rps_series`/`resample_audio_series`, `get_meta`/`meta_dict`/`with_meta`, `adapt_recording_frame` (rich published recording → the minimal audio+rps noise Frame), `make_recording_frame`. |
@@ -164,6 +164,32 @@ recipe but the mixing RNG is not byte-stable across machines).
 - Shared V4 knobs (`_V4_PARAMS`): 1 s train / 8 s valid, 16 kHz,
   SNR U[−30, 0], `speech_per_channel: independent`,
   `source_white_noise_prob: 0.3`, `min_motor_rps: 30.0`.
+
+#### The noise-only twin (`DREGON-LM-V4-michaels-valid-full-nospeech`)
+
+`DREGON-LM-V4-michaels-valid-full` is 37 real 8 s clips, and 14 of them are
+**not** rotor noise only: `free-flight_speech-low_room1` (7 clips) and
+`free-flight_whitenoise-low_room1` (7 clips) play a loudspeaker into the room
+during the flight. `real_valid` mode mixes nothing — `mixture` IS the raw
+8-mic recording, and `snr_range` / `source_white_noise_prob` are inert there —
+so that source is acoustic and cannot be removed. The twin therefore **drops**
+those 14 clips instead of un-mixing them: it is the 23 `source_type: nosource`
+clips (`free-flight_nosource_room1` 8 + michaels FLY124 15), copied **byte for
+byte** by the `dregon_lm_subset` generator. Audio, `rps` and clip order are
+identical to the parent's samples 00014-00036 (measured: max abs difference
+0.0 on both, per-clip RMS ratio 1.000000), and each row keeps its parent id
+under `source_id`. Read it against `DREGON-LM-V4-michaels-valid-full` to price
+what the speech costs — parts `real_nospeech` vs `real` in
+`experiments.rps_bench.PARTS`, configs `conf/data/m3cur_s2_nospeech.yaml` vs
+`conf/data/m3cur_s2.yaml`.
+
+The subset is cut from the published bytes, **not** re-derived, because the
+parent is a stale artifact: re-running its own generator on today's pinned
+parents moves the labels (DREGON `rps` by up to 16 rev/s, because
+`adapt_recording_frame` has preferred `motors_measured` since 2026-08-05, while
+the parent was cut from `motors_command`) and moves the FLY124 audio (the
+2026-07-31 telemetry calibration changed the alignment). A twin whose labels
+had moved would not be comparable with the set it is cut from.
 
 ### Superseded variants
 
@@ -767,15 +793,16 @@ across machines), so `derive.py adopt <NAME>` instead points the derivation ref
 at the existing `dload.lock` pin (dry-run by default; `--commit` to write).
 
 
-### Catalog (pinned in `dload.lock` — 43 datasets)
+### Catalog (pinned in `dload.lock` — 49 datasets)
 
 - **Raw sources** (7, CLI convention, from `data/`): `DREGON`, `librispeech`,
   `drone_audio`, `music`, `new-drone-noises`, `recording_with_motor_speed`,
   `zenodo_drone_noises`.
-- **Derived DREGON-LM** (16, sample-dir convention, per split):
+- **Derived DREGON-LM** (17, sample-dir convention, per split):
   `DREGON-LM-{train,valid}`, `DREGON-LM-V2-{train,valid}`,
   `DREGON-LM-V3-{train,valid}`, `DREGON-LM-V4-{train,valid}`,
   `DREGON-LM-V4-michaels-{train,valid}`, `DREGON-LM-V4-michaels-valid-full`,
+  `DREGON-LM-V4-michaels-valid-full-nospeech` (its noise-only twin),
   `DREGON-LM-test-{train,valid}`,
   `DREGON-LM-rps_{eval_long,eval_specific,train_specific}_samples`.
 - **DN-LM** (2, sample-dir; dload *derived datasets* — `derivations.py`):

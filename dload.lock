@@ -15,6 +15,7 @@ DREGON-LM-V3-valid = "ecf5b40815371ef315081f91c997ccacb23229d253d57ef869fc6d0e46
 DREGON-LM-V4-michaels-train = "d34491ac66c6542d265f317cffe9514a12941ae1f6b85c6c4e4aecc092a7c4e4"
 DREGON-LM-V4-michaels-valid = "b6ece43d7cef2745972681d732cd61d5cc71eb24b0f32c17d126433fc95b7d6e"
 DREGON-LM-V4-michaels-valid-full = "9604f3ffc2c935e2ba2be52bd96c602d02a6999f1d683ee89fa1b0e28fafc4a9"
+DREGON-LM-V4-michaels-valid-full-nospeech = "01dfb417af7b0852d2e35db004ba3b1b4d79b50facae70fe0d875aa3c6cf5880"
 DREGON-LM-V4-train = "4977b1636e883ff3e9a732d414082beaaee1ef3dfb529f1745e8d619a867b6d5"
 DREGON-LM-V4-valid = "a9b95f6a7e3116522bbdfcad185dc0be6a9b2042eaf4cbf2dfad6fe69cc270eb"
 DREGON-LM-rps_eval_long_samples = "23cec06d3d72393e0de87d73921d3839855aaf139565c26351a0ba7aebb13a2b"
