@@ -455,7 +455,21 @@ def main() -> int:
         help="BLAS threads per process (read before numpy; 1 keeps a --recompute pool honest)",
     )
     ap.add_argument("--force", action="store_true", help="overwrite a row that already exists")
+    ap.add_argument(
+        "--recompute-only",
+        action="store_true",
+        help="run the estimator grid into --cache and stop, without a dump directory "
+        "(for a remote CPU job; assemble the row later on a machine that has the dump)",
+    )
+    ap.add_argument("--n-clips", type=int, default=37, help="clips of the split (--recompute-only)")
+    ap.add_argument("--n-channels", type=int, default=8, help="microphones (--recompute-only)")
     args = ap.parse_args()
+
+    if args.recompute_only:
+        for name in args.names:
+            out = recompute(name, Path(args.cache), args.n_clips, args.n_channels, args.jobs)
+            print(f"{name:24s} units in {out}", flush=True)
+        return 0
 
     dump = Path(args.dump)
     gt, n_t, order, clip_ids = read_dump(dump)
