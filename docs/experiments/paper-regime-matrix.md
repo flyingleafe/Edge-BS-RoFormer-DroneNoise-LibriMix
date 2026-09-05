@@ -499,6 +499,97 @@ probe is not informative for these real-only rows: `real_r2_hppnet`
 returns zero on the synthetic probe clip (MAE 57 at every cutoff) and the
 L0 rows score 12-27 at the full comb.
 
+### Batch 15: SimpleConv rung 4, HarmoF0 rung 3, GRU static comb with speech (all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | probe full / local |
+|---|---|---|---|---|---|---|---|---|
+| `real_r4_sc` (SimpleConv, rung 4 recipe, no warm-up) | 3.92 | 8.68 | 5.96 | 4.11 | 2.93 | 2.00 | 3.28 | 0.91 / 0.93 |
+| `real_r3_sc` (rung 3, for comparison) | 3.27 | 8.20 | 5.29 | 3.98 | 2.77 | 2.36 | 2.77 | -0.09 / -0.32 |
+| `real_r3_hf0` (HarmoF0 port, rung 3) | 6.15 | 21.58 | 21.84 | 17.11 | 5.38 | 2.38 | 7.11 | 0.61 / 0.24 |
+| `hf0_r2hb_l4` (HarmoF0 port, rung 4, for comparison) | 13.96 | 24.28 | 16.62 | 12.90 | 6.22 | 2.29 | 7.90 | 1.01 / 0.95 |
+
+Synthetic parts: `real_r4_sc` comb 10.9 / stoch 22.9 (rung 3: 31.5 / 25.1),
+`real_r3_hf0` comb 47.8 / stoch 36.2. The GRU static-comb cell trained with
+speech, `salv2_gru_comb_mix`: comb 0.91, comb+sp 0.93 (ratio 1.02), stoch
+37.6, real 58.5; its probe is meaningless (the base prediction on the real
+clips is garbage).
+
+Readings. The SimpleConv obeys the ladder rule of the other regressors: the
+label-transforming augmentations of rung 4 make it read frequency (local
+slope -0.32 -> 0.93) and transfer to the static comb (31.5 -> 10.9), and
+they cost precision on the real split (all 2.77 -> 3.28, DREGON cruise
+2.77 -> 2.93; FLY124 cruise improves 2.36 -> 2.00). HarmoF0 reaches its
+rung-4 level at rung 3 already (7.11 against 7.90), so for this port the
+augmentations buy no real-split precision; they only move the probe from
+0.61 / 0.24 to 1.01 / 0.95. The HarmoF0 ladder (all-mic MAE): rung 1 37.05,
+rung 3 7.11, rung 4 7.90; rung 2 is pending.
+
+Checkpoint incident. The first cluster run of `salv2_gru_comb_nomix` (Slurm
+25550715) started without R2 credentials: it could not restore the vast
+fragment, trained from scratch (134 epochs, W&B best 0.699) and uploaded
+nothing, so the R2 `best.ckpt` was still the vast fragment (epoch 32) and
+the batch-15 dump scored that fragment (comb 1.08). The cluster run's
+`best.ckpt`, `last.ckpt` and `train_state.pt` were copied to R2 by hand
+(the vast fragment is kept in `checkpoints_vast_ep32/`), and the cell was
+dumped again as batch 15b. `salv2_gru_stoch_nomix` (Slurm 25550718) has the
+same condition and gets the same treatment when it finishes.
+
+### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
+
+The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
+cruise time-frames of the stochastic validation set (true mean speed of
+the four rotors at least 45 rev/s), the predicted rotor spread (max minus
+min over the four predicted tracks) against the true spread, in buckets of
+true spread. `fan_slope` is the least-squares slope of predicted against
+true spread over all cruise time-frames: 1 = the model tracks four lines,
+0 = a fixed fan.
+
+| true spread bucket (rev/s) | 0-2 | 2-5 | 5-10 | 10-20 | 20+ | slope |
+|---|---|---|---|---|---|---|
+| true spread (mean) | 0.35 | 4.43 | 7.36 | 11.81 | 21.96 | 1 |
+| frames | 200 | 4928 | 22384 | 3872 | 528 | |
+| `salv2_scv2_stoch_nomix` | 5.16 | 7.12 | 8.04 | 9.15 | 6.22 | 0.13 |
+| `salv2_scv2_stoch_mix` | 6.00 | 7.38 | 7.77 | 8.86 | 5.75 | 0.10 |
+| `salv2_hppnet_stoch_nomix` | 0.06 | 10.98 | 6.56 | 7.68 | 14.86 | 0.16 |
+| `salv2_hppnet_stoch_mix` | 0.08 | 9.27 | 6.53 | 8.05 | 12.74 | 0.21 |
+| `salv2_hf0_stoch_nomix` | 0.38 | 15.71 | 9.18 | 10.14 | 7.26 | -0.36 |
+| `salv2_hf0_stoch_mix` | 0.22 | 14.16 | 9.51 | 11.07 | 6.81 | -0.22 |
+| `r4hb_scv2` (comb -> real) | 7.17 | 3.03 | 5.55 | 7.42 | 8.25 | 0.46 |
+| `r4hb_gru` (comb -> real) | 10.21 | 2.81 | 5.27 | 5.39 | 8.83 | 0.32 |
+| `salv2_scv2_comb_nomix`, `salv2_tr_comb_nomix`, `salv2_gru_comb_mix`, `hppnet_r4_l4` | 0.1-6.6 | 0.1-0.6 | 0.0-0.4 | 0.1-1.2 | 0.0-0.7 | 0.0 |
+
+Error classes on the same part (share of the model's total error carried by
+each class of failed rotor track; `classes.csv`):
+
+| row | MAE | median | p90 | offset | alias 5/4 | alias 2 (octave) | wander | missed |
+|---|---|---|---|---|---|---|---|---|
+| `salv2_scv2_stoch_nomix` | 2.99 | 2.05 | 8.39 | 0.26 | 0.22 | 0.00 | 0.36 | 0.00 |
+| `salv2_scv2_stoch_mix` | 4.20 | 2.99 | 9.72 | 0.43 | 0.07 | 0.02 | 0.32 | 0.00 |
+| `salv2_hppnet_stoch_nomix` | 2.65 | 1.68 | 5.39 | 0.07 | 0.00 | 0.24 | 0.57 | 0.00 |
+| `salv2_hppnet_stoch_mix` | 3.16 | 1.62 | 6.81 | 0.12 | 0.00 | 0.23 | 0.48 | 0.00 |
+| `salv2_hf0_stoch_nomix` | 9.13 | 4.66 | 23.16 | 0.02 | 0.02 | 0.01 | 0.69 | 0.00 |
+| `salv2_hf0_stoch_mix` | 10.65 | 6.42 | 26.71 | 0.08 | 0.00 | 0.08 | 0.64 | 0.00 |
+| `r4hb_scv2` | 28.09 | 27.19 | 54.09 | 0.49 | 0.00 | 0.03 | 0.02 | 0.37 |
+| comb-only rows | 36.8-37.8 | 44.7 | 69.5-69.9 | 0.02-0.08 | 0.00 | 0.00 | 0.00-0.01 | 0.91-0.97 |
+
+Readings. The convolutional regressor trained on the stochastic family
+predicts a 5-9 rev/s fan whatever the true spread (slope 0.13, 0.10 with
+speech): at a true spread of 0.35 rev/s it still asserts 5.2, and at 22 it
+asserts 6.2. This is the fixed fan: the model reads the mean speed and
+places four lines around it at the spread the training distribution
+favors. Its error is offsets (26 %) and the 5/4 alias (22 %), the
+signature of a fan line landing on a neighbor's harmonic, and no octaves.
+The salience ports fail differently: HPPNet collapses the four tracks onto
+one line when the rotors are within 2 rev/s (0.06), overshoots at 2-5
+(11.0), and carries 24 % of its error in whole-clip octave locks (alias 2)
+and 57 % in wander; HarmoF0 spreads its lines too wide (9-16 rev/s at every
+true spread above 2) and 69 % of its error is wander. The curriculum rows
+(comb -> real) return near-zero on the stochastic part (missed 37-41 %),
+and the static-comb-only rows return zero outright (missed 91-97 %, fan
+0.0-0.6): no transfer from the static comb to the stochastic family. The
+transformer and GRU stochastic cells of this campaign join this table when
+they land.
+
 ## Conclusion
 
 Pending.
