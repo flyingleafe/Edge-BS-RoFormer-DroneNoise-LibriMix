@@ -177,8 +177,12 @@ under the same probe.
   (six DREGON cruise clips, α ∈ [0.7, 1.3], slopes over the full range and
   within ±4 %) and the harmonic-cutoff probe (orders 80/40/20/10 on the
   stochastic part; MAE, true-rate and half-rate fractions).
-- Error classes and the predicted-spread statistic:
-  `scripts/rps_error_profile.py`, `scripts/spread_eval.py`.
+- Error classes and the predicted-spread ("fan") statistic:
+  `scripts/rps_error_profile.py` (`fan.csv`, `fan_slope`), `scripts/spread_eval.py`.
+- Every claim table is emitted by `python scripts/rps_claim_tables.py` into
+  `results/paper_regime_matrix/` (`ladder.csv`, `speech_ab.csv`, `blocks.csv`,
+  `stochastic.csv`, `missing.txt`, `claims.md`); the tables in the batches
+  below were typed from the same tool outputs and are reproduced by it.
 
 ## Compute
 

@@ -123,12 +123,16 @@ def mic_group(channel: int | None) -> str:
     return "ch0" if channel == 0 else "ch1-7"
 
 
-def rig_by_clip(n_clips: int, dataset: str) -> dict[int, str] | None:
-    """Clip index -> rig name, from the source dataset's ``metadata.json``.
+def recording_by_clip(n_clips: int, dataset: str) -> dict[int, str] | None:
+    """Clip index -> source ``recording_id``, from the dataset ``metadata.json``.
 
-    Returns ``None`` when the dataset is unreachable or holds a different
-    number of clips than the dump (a synthetic part), so the rig axis is
-    simply dropped instead of being guessed.
+    The dump tags each frame with its sample directory (``sample_00007``), which
+    says nothing about the flight. The source dataset keeps the flight name, and
+    the dump is in dataset order, so the index is the join key.
+
+    Returns ``None`` when the dataset is unreachable or holds a different number
+    of clips than the dump (a synthetic part), so the caller drops the axis
+    instead of a guess.
     """
     try:
         from data_processing.streams import ensure_local
@@ -146,9 +150,21 @@ def rig_by_clip(n_clips: int, dataset: str) -> dict[int, str] | None:
             file=sys.stderr,
         )
         return None
+    return {i: str(row.get("recording_id", "")) for i, row in enumerate(rows)}
+
+
+def rig_by_clip(n_clips: int, dataset: str) -> dict[int, str] | None:
+    """Clip index -> rig name, from the source dataset's ``metadata.json``.
+
+    Returns ``None`` when the dataset is unreachable or holds a different
+    number of clips than the dump (a synthetic part), so the rig axis is
+    simply dropped instead of being guessed.
+    """
+    recordings = recording_by_clip(n_clips, dataset)
+    if recordings is None:
+        return None
     out = {}
-    for i, row in enumerate(rows):
-        rid = str(row.get("recording_id", ""))
+    for i, rid in recordings.items():
         upper = rid.upper()
         out[i] = upper.split("_")[-1] if "FLY" in upper else "DREGON"
     return out
