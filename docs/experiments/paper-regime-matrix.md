@@ -239,6 +239,32 @@ cells are flat (`real_r1_scv2` 0.12 / 0.00, `real_r1_tm` 0.07 / 0.21,
 0.14). The harmonic-cutoff probe is uninformative for real-only cells: they
 already score 23-34 on the stochastic part at the full comb.
 
+Frequency-scaling probe over every row probed so far (slope full / within
++-4 %). Read only where the base prediction is sane: a model that returns
+near-zero or garbage on these clips gives a meaningless relative change
+(`salv2_scv2_comb_nomix` 25 / 7, `xrig_michaels_only` 19 / 18).
+
+| row | recipe | full | local |
+|---|---|---|---|
+| `real_r1_scv2`, `real_r1_tm`, `real_r1_gru` | rung 1, no label-transforming augs | 0.12, 0.07, 0.04 | 0.00, 0.21, 0.18 |
+| `real_r2_sc`, `real_r3_sc` | rungs 2-3 | 0.10, -0.09 | -0.18, -0.32 |
+| `c9_simple_conv_v2_8ch` (June, the paper's "no augmentation" curve) | fixed mixtures | 0.03 | 0.16 |
+| `scv2_fs_v2`, `r2hb_gru_nogate` | R2 recipe (freq-scale + time-warp), with speech | 0.05, 0.02 | 0.00, 0.00 |
+| `r2hb_tr_nogate`, `hb_scv2_mag_nogate` | R2 recipe, with speech | 0.54, 0.89 | 0.25, 0.14 |
+| `r2hb_scv2_nomix` | R2 recipe, no speech | 1.03 | 1.32 |
+| `r4hb_scv2`, `r4hb_tr`, `r4hb_gru` | comb -> R2 curriculum | 1.04, 1.03, 1.01 | 1.02, 1.26, 1.35 |
+| `r6hb_scv2`, `r7hb_scv2`, `xrig_dregon_only` | stoch -> R2; real+stoch+comb pool; comb -> DREGON only | 0.99, 0.83, 0.91 | 1.22, 1.58, 1.30 |
+| `m3mixv2_scv2`, `m3mixv2_transformer`, `m3mixv2_unigru128` | real+gen+comb pool | 0.98, 0.90, 0.96 | 1.06, 1.61, 1.52 |
+| `hppnet_r4_l4`, `hf0_r4_l4` | salience ports, comb -> R2 | 0.87, 0.80 | 0.87, 1.46 |
+
+Reading: no real-only rung reads frequency; the label-transforming
+augmentations alone give an inconsistent response across trunks (0.02-0.89
+full, 0.00-0.25 local, with speech); every row that saw a synthetic comb
+(curriculum or pool) reads frequency (0.83-1.04 full), the salience ports
+included. The no-speech R2 cell reads frequency where its with-speech twin
+does not; `real_r4_scv2` (with speech, no warm-up) decides whether that is
+the speech or the warm-up stage.
+
 Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
 (3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
 warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
