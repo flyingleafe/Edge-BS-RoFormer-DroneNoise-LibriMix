@@ -312,6 +312,33 @@ the extremes) and does not transfer to the synthetic parts (comb 39.7, stoch
 28.2). On the 23 noise-only clips it scores 2.77. `real_r4_scv2` (rung 4
 without the warm-up stage) is running on gpushort.
 
+### Batch 4 (rung-3 GRU, rung-4 scv2 without warm-up; all mics)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | probe full / local |
+|---|---|---|---|---|---|---|---|---|
+| `real_r1_gru` | 5.32 | 19.56 | 3.70 | 27.09 | 2.30 | 10.19 | 7.49 | 0.04 / 0.18 |
+| `real_r2_gru` | 5.10 | 15.35 | 6.77 | 26.85 | 3.86 | 10.75 | 8.28 | 0.00 / 0.00 |
+| `real_r3_gru` | 6.82 | 16.33 | 4.71 | 6.75 | 2.15 | 2.28 | 3.80 | 0.01 / 0.00 |
+| `r2hb_gru_nogate` (rung 4, old R2 row) | 6.05 | 13.75 | 11.04 | 5.44 | 2.13 | 3.64 | 4.22 | 0.02 / 0.00 |
+| `r4hb_gru` (comb -> rung 4) | 6.14 | 12.11 | 5.10 | 4.44 | 3.16 | 1.45 | 3.61 | 1.01 / 1.35 |
+| `real_r4_scv2` (rung 4, augmentations from step 0) | 3.07 | 10.19 | 5.18 | 6.47 | 4.40 | 4.25 | 4.61 | 0.84 / 0.92 |
+| `hb_scv2_mag_nogate` (rung 4, old R2 row, 50k warm-up) | 3.30 | 10.83 | 3.98 | 3.38 | 2.62 | 1.25 | 2.77 | 0.89 / 0.14 |
+
+Readings. (1) For the causal GRU the label-transforming augmentations buy
+nothing on real data: rung 3 beats the R2 row on FLY124 cruise (2.28 vs 3.64)
+and on all frames (3.80 vs 4.22); only the comb curriculum moves it (1.45).
+(2) The augmentation SCHEDULE decides what the convolutional model reads. With
+the augmentations on from the first step (`real_r4_scv2`) the model reads
+frequency (local slope 0.92) and loses precision everywhere (DREGON cruise
+4.40 against 2.15 at rung 3; validation stalled at 4.6 from epoch 5 and
+early-stopped at 29). With the old R2 schedule (a 50k-sample unaugmented
+warm-up, about one epoch) the model stays prior-driven (0.14) and precise
+(2.62 / 1.25 / 2.77). This is the precision-for-generality trade of claim 2
+as a mechanism, on single seeds. Consequence for the matrix: rung 4 of the
+paper is the existing R2 rows (with warm-up); the warm-up-free `real_r4_*`
+rows are a schedule ablation; the speech A/B arms are re-run with the warm-up
+(`r2hb_{scv2,tm,gru}_nomix_wu`, policy `hb_silence_nomix_dload.yaml`).
+
 Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
 (3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
 warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
