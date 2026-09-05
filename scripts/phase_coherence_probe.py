@@ -205,7 +205,7 @@ def _load_dregon_motor(rid: str, source: str) -> dict[str, Any]:
         raise KeyError(f"{rid} not found under {ddir}")
     sample = by_id[rid]
     frame = load_timeframe(sample, geometry=get_geometry(ddir), target_sr=SR)
-    audio = np.asarray(frame["audio"].data, dtype=np.float64)
+    audio = np.asarray(frame["audio"].data, dtype=np.float32)
     nominal = float(sample["motor_speed"])
     n_rotors = 4 if rid == BENCH_RID else 1
     ft = frame_grid(audio.shape[-1])
@@ -246,7 +246,7 @@ def _load_dregon_flight(rid: str, source: str) -> dict[str, Any]:
     if rid not in by_id:
         raise KeyError(f"{rid} not found under {ddir}")
     frame = load_timeframe(by_id[rid], geometry=get_geometry(ddir), target_sr=SR)
-    audio = np.asarray(frame["audio"].data, dtype=np.float64)
+    audio = np.asarray(frame["audio"].data, dtype=np.float32)
     t0 = float(frame["audio"].tindex.t_start)
     command = np.asarray(frame["motors_command"].data)
     mt = np.asarray(frame["motors_command"].tindex.abs_stamps) - t0
@@ -300,7 +300,7 @@ def _load_michaels(rid: str, spec: str, label_dir: str | Path) -> dict[str, Any]
         if str(meta_dict(frame).get("recording_id") or "") != rid:
             continue
         audio_s = frame["audio"]
-        audio = np.atleast_2d(np.asarray(audio_s.data, dtype=np.float64))
+        audio = np.atleast_2d(np.asarray(audio_s.data, dtype=np.float32))
         rps_s = frame[src.rps_key]
         # Tick-exact relative seconds: the published frames sit at absolute
         # epoch ticks (~1e18) that float64 subtraction cannot hold.
@@ -320,7 +320,9 @@ def _load_michaels(rid: str, spec: str, label_dir: str | Path) -> dict[str, Any]
 
 
 #: Per-process recording cache. Under a fork start method a worker inherits the
-#: parent's copy and decodes nothing.
+#: parent's copy and decodes nothing. The audio is held as float32 — the whole
+#: motor set plus every flight recording is about 700 MB that way — and the
+#: window a worker actually measures is widened to float64 on the way in.
 _RECORDINGS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
