@@ -887,6 +887,40 @@ def coherence_time(lags: np.ndarray, rho: np.ndarray, *, level: float = ACF_LEVE
     return float(lags[i - 1] + frac * (lags[i] - lags[i - 1]))
 
 
+def acf_slope_width(
+    lags: np.ndarray, rho: np.ndarray, *, lo: float = 0.2, hi: float = 0.95
+) -> dict[str, Any]:
+    """Half width from the LOG SLOPE of the autocorrelation — the censored case.
+
+    The exp(-1) crossing is the primary estimator and it is the one the model
+    is written in, but a line narrower than ``1 / (2 pi max_lag)`` never crosses
+    and the reading is then censored, not measured. A Lorentzian's
+    autocorrelation is exactly ``exp(-2 pi gamma lag)``, so its LOG is a
+    straight line through the origin whatever the lags reach, and the slope over
+    the usable part of the curve gives the width anyway.
+
+    Usable is ``lo <= rho <= hi``: above ``hi`` the curve is dominated by the
+    estimator's own scatter, and below ``lo`` by the noise pedestal the
+    subtraction leaves behind. A fit through fewer than 8 such lags is refused.
+    """
+    lg = np.asarray(lags, dtype=np.float64)
+    r = np.asarray(rho, dtype=np.float64)
+    m = np.isfinite(r) & (r >= lo) & (r <= hi) & (lg > 0)
+    out: dict[str, Any] = {"slope_n": int(m.sum())}
+    if int(m.sum()) < 8:
+        return {**out, "gamma_slope_hz": float("nan"), "slope_r2": float("nan")}
+    y = np.log(r[m])
+    x = lg[m]
+    b, a = np.polyfit(x, y, 1)
+    pred = a + b * x
+    ss = float(np.sum((y - np.mean(y)) ** 2))
+    return {
+        **out,
+        "gamma_slope_hz": float(-b / (2.0 * np.pi)),
+        "slope_r2": float(1.0 - np.sum((y - pred) ** 2) / ss) if ss > 0 else float("nan"),
+    }
+
+
 def linewidth(
     z: np.ndarray,
     fs_env: float,
@@ -895,7 +929,14 @@ def linewidth(
     noise_power: float | np.ndarray = 0.0,
     noise_band_hz: float | None = None,
 ) -> dict[str, Any]:
-    """Coherence time and Lorentzian half width of one harmonic's envelope."""
+    """Coherence time and Lorentzian half width of one harmonic's envelope.
+
+    ``gamma_hz`` is the primary reading — the exp(-1) crossing, ``nan`` when the
+    curve does not cross inside ``max_lag_s``. ``gamma_slope_hz`` is the
+    secondary one (:func:`acf_slope_width`), which a censored harmonic still
+    has. Report both: on a resolved line they agree, and where they disagree the
+    line is not a single Lorentzian.
+    """
     lags, rho = envelope_acf(
         z,
         fs_env,
@@ -915,6 +956,7 @@ def linewidth(
         # last lag — the honest bound a censored harmonic reports.
         "gamma_bound_hz": float(1.0 / (2.0 * np.pi * lags[-1])),
         "acf_at_max_lag": float(rho[-1]),
+        **acf_slope_width(lags, rho),
     }
 
 
@@ -952,7 +994,11 @@ def fit_linewidth_law(
 
 
 def welch_envelope(
-    z: np.ndarray, fs_env: float, *, nperseg: int | None = None
+    z: np.ndarray,
+    fs_env: float,
+    *,
+    nperseg: int | None = None,
+    target_df: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Two-sided averaged periodogram of a complex envelope, DC centered.
 
@@ -960,15 +1006,36 @@ def welch_envelope(
     different information — so the spectrum is two sided and stays that way.
     Microphones are averaged in POWER, which is right here and wrong for the
     autocorrelation: a spectrum has no phase to preserve.
+
+    The envelope is NOT detrended, for the same reason the autocorrelation does
+    not remove its mean: the coherent part of the line IS the mean.
+
+    ``target_df`` asks for a frequency resolution (Hz) instead of a segment
+    length, which is what a line-shape fit wants — a resolution coarser than the
+    line's own half width fits the analysis window, not the line. It is clipped
+    to at least three segments, so a request that the window cannot afford
+    becomes the finest resolution it can afford and not an unaveraged
+    periodogram.
     """
     from scipy.signal import welch
 
     x = np.atleast_2d(np.asarray(z))
     n = int(x.shape[-1])
-    nps = int(nperseg) if nperseg else max(64, n // 4)
+    if nperseg:
+        nps = int(nperseg)
+    elif target_df and target_df > 0:
+        nps = int(np.clip(round(fs_env / float(target_df)), 64, max(64, n // 3)))
+    else:
+        nps = max(64, n // 4)
     nps = min(nps, n)
     f, p = welch(
-        x, fs=fs_env, nperseg=nps, return_onesided=False, detrend=False, scaling="density", axis=-1
+        x,
+        fs=fs_env,
+        nperseg=nps,
+        return_onesided=False,
+        detrend=False,  # pyright: ignore[reportArgumentType]
+        scaling="density",
+        axis=-1,
     )
     order = np.argsort(f)
     f = np.asarray(f)[order]
@@ -1019,7 +1086,12 @@ def _fit_one_shape(
 
 
 def fit_line_shape(
-    f: np.ndarray, p: np.ndarray, *, hwhm0: float, span_factor: float = 10.0
+    f: np.ndarray,
+    p: np.ndarray,
+    *,
+    hwhm0: float,
+    span_factor: float = 10.0,
+    min_points: int = 32,
 ) -> dict[str, Any]:
     """Lorentzian against Gaussian on one line, both fitted in the log domain.
 
@@ -1031,11 +1103,16 @@ def fit_line_shape(
 
     The fit band is ``span_factor`` half widths around DC, clipped to the
     spectrum. Too narrow and the two shapes are the same parabola; too wide and
-    the fit is scoring the noise floor rather than the line.
+    the fit is scoring the noise floor rather than the line. ``min_points``
+    widens the band when the spectrum's resolution is too coarse to put that
+    many bins in it — a very narrow line otherwise gets a band of four bins,
+    which no shape fit can read.
     """
     fa = np.asarray(f, dtype=np.float64)
     pa = np.asarray(p, dtype=np.float64)
-    span = min(float(np.abs(fa).max()), max(span_factor * float(hwhm0), 3.0 * float(hwhm0)))
+    df = float(np.median(np.diff(fa))) if fa.size > 1 else 0.0
+    span = max(span_factor * float(hwhm0), 3.0 * float(hwhm0), 0.5 * min_points * df)
+    span = min(float(np.abs(fa).max()), span)
     sel = np.abs(fa) <= span
     if int(sel.sum()) < 12:
         return {"verdict": "", "n_points": int(sel.sum())}
