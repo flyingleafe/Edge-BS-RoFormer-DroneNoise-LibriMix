@@ -294,6 +294,24 @@ Block S level L0 on the same protocol (all mics): `hb_sal_multif0` all 12.65
 20.7); `hb_sal_multif0_nsr` 11.82; `hb_sal_bp` 27.30 (cruise 26); the HPPNet
 port after the comb curriculum (`hppnet_r4_l4`, level L3) 6.04.
 
+### Batch 3 (rung-3 scv2): the convolutional ladder end to end (all mics)
+
+| rung | zero-frames | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all |
+|---|---|---|---|---|---|---|---|
+| `real_r1_scv2` (mic 0) | 0.41 | 14.22 | 4.32 | 53.99 | 2.73 | 65.88 | 24.08 |
+| `real_r2_scv2` (8 mics) | 3.26 | 13.62 | 4.34 | 17.31 | 2.58 | 10.39 | 6.45 |
+| `real_r3_scv2` (+ FLY125) | 4.46 | 9.07 | 3.96 | 3.81 | 2.15 | 2.27 | 2.96 |
+| `hb_scv2_mag_nogate` (rung 4, old R2 row) | 3.30 | 10.83 | 3.98 | 3.38 | 2.62 | 1.25 | 2.77 |
+| `r4hb_scv2` (comb -> rung 4) | 2.86 | 7.77 | 4.43 | 3.12 | 2.92 | 1.24 | 2.74 |
+
+Claim 2 in one column: from rung 3 on, every step that buys generality
+(FLY124 cruise 2.27 -> 1.25 -> 1.24, ramps, below-30) costs DREGON cruise
+precision (2.15 -> 2.62 -> 2.92). Rung 3 stays flat to the frequency probe
+near the operating point (local 0.00; the full-range 1.18 is the breakdown at
+the extremes) and does not transfer to the synthetic parts (comb 39.7, stoch
+28.2). On the 23 noise-only clips it scores 2.77. `real_r4_scv2` (rung 4
+without the warm-up stage) is running on gpushort.
+
 Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
 (3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
 warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
