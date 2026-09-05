@@ -842,9 +842,10 @@ def per_condition_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict
                 float((r.get("shape_bands") or {}).get(name, {}).get("lorentz_frac", np.nan))
                 for r in got
             ]
-            row[f"lorentz_frac_{name}"] = _med(fr)
+            frac = _med(fr)
+            row[f"lorentz_frac_{name}"] = frac
             row[f"shape_{name}"] = (
-                "lorentz" if np.isfinite(_med(fr)) and _med(fr) >= 0.5 else "gauss"
+                "" if not np.isfinite(frac) else ("lorentz" if frac >= 0.5 else "gauss")
             )
         for arm, tag in ((arm_fix, "fixed"), (arm_ks, "kscaled")):
             row[f"rho_mean_{tag}"] = _med(
@@ -928,6 +929,11 @@ def main() -> None:
         action="store_true",
         help="one motor recording, 5 s, k <= 10 — the laptop check",
     )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="build and print the units (which recordings, which windows), then stop",
+    )
     add_gridrun_args(ap, jobs=4)
     args = ap.parse_args()
 
@@ -964,6 +970,15 @@ def main() -> None:
     if not units:
         raise SystemExit("no units — check --conditions / --recording")
     print(f"[phase_coherence_probe] {len(units)} units -> {out}", flush=True)
+    if args.dry_run:
+        for u in units:
+            q = u.params
+            print(
+                f"  {u.uid}  {q['start_s'] if 'start_s' in q else q['a0'] / SR:.1f}"
+                f"-{q['a1'] / SR:.1f} s",
+                flush=True,
+            )
+        return
 
     def summarize(raw: list[dict[str, Any]]) -> dict[str, Any]:
         harm = per_harmonic_rows(raw, arms)
