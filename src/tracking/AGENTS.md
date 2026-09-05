@@ -138,6 +138,31 @@ expected to REBUILD rather than call.
 
 **`phase_noise.py`** — WP18 rank-one-plus-diagonal covariance of the per-harmonic rate opinions: `Arm`, `demod_rotor`, `arm_covariance`, `fit_rank_one`, `channel_coherence`, plus `brickwall` — THE whole-window FFT filter of the package, which `fitness` and `telemetry_refit.presmooth` both read through. Measures the harmonic-common jitter term `sigma_J^2` against the per-harmonic terms `v_k` — the evidence behind the `VKConfig.freq_weight` shape. Its data side (recordings + window selection) is injected by the caller — the WP18 campaign's own window builder was retired with the campaign, so a new caller must supply its own windows. Record: `docs/experiments/rps-refine-precision.md`.
 
+It also holds the four readings the STOCHASTIC COMB model is written from — a Lorentzian line per harmonic with `gamma_k = gamma_0 + s k` (`data_processing.stochastic_rotor_noise`). They read the same envelopes, so the two measurements cannot disagree about what a harmonic is:
+
+| Primitive | Purpose |
+|---|---|
+| `arm_increments(dm, arm) -> ArmSeries` | the first half of `arm_covariance`, extracted: one arm's gated `delta_k(t)`. `arm_covariance(..., series=)` takes it back, so a second reading of the same opinions rebuilds nothing |
+| `envelope_acf(z, fs_env, ...)` | normalized complex autocorrelation of an envelope, with the brickwall floor removed as `noise_power * sinc(2 B lag)` at EVERY lag |
+| `coherence_time` / `linewidth` | the `exp(-1)` crossing and `gamma = 1 / (2 pi tau)`, plus the CENSORING flag and the secondary `acf_slope_width` |
+| `acf_slope_width` | the width from the LOG SLOPE of the same curve — the estimator a line too narrow to cross still has |
+| `fit_linewidth_law(k, gamma)` | least squares `gamma_k = gamma_0 + s k` |
+| `welch_envelope(z, fs_env, target_df=)` | the two-sided averaged periodogram of a complex envelope, NOT detrended |
+| `fit_line_shape(f, p, hwhm0=)` | Lorentzian against Gaussian at the SAME half width, fitted in the log domain — the verdict is about the TAIL |
+| `cross_harmonic_correlation(series)` | the covariance as a CORRELATION, and `rho_k` — harmonic `k` against the other admitted ones |
+| `shared_rate_opinion(series, v_k, k_used)` | the inverse-variance weighted mean `c(t)`, so `e_k = delta_k - c` is definable |
+| `residual_tail_stats(e)` | excess kurtosis plus the per-sample Cauchy-against-Gaussian LLR of the pooled residual |
+| `K_BANDS` | the reporting bands `k1_5` / `k6_15` / `k16_30` |
+
+Three things a caller must know:
+
+- **The line measurement needs its OWN envelope grid.** At `gamma_k = 0.6 k` the k=30 line has a coherence time of 8.8 ms, which is half a sample on WP18's 62.5 Hz grid. `scripts/phase_coherence_probe.py` demodulates twice per rotor — once at 500 Hz for the width and the shape, once at `FS_ENV` for the covariance — rather than moving WP18's grid.
+- **A censored reading is not a measurement.** A bench motor held at a setpoint stays correlated past 1 s, so `gamma_hz` is `nan` and `gamma_bound_hz` is an UPPER bound. Report the censored fraction beside the fitted law, and read `gamma_slope_hz` where the crossing is absent.
+- **The width estimate wants a stricter SNR gate than the covariance does.** The autocorrelation is normalized by the line power AFTER the floor is subtracted, so at SNR ~ 1 that denominator is a small difference of similar numbers and the curve reads above 1. The probe gates at SNR 3 (measured: at 1.3 the curve reached 1.85), against WP18's `MIN_SNR` = 1.
+
+Driver: `scripts/phase_coherence_probe.py` — one gridrun unit per (condition, recording, window, rotor) over the DREGON motor bench, the four-motor bench, and the TRAIN-split free flight (DREGON room 2 + FLY125).
+
+
 ### Constants
 
 **`rotors.py`** — Quadrotor control-allocation constants: `MIXER`, `NUM_ROTORS`, `MODE_NAMES`, `modes_from_rps`, `rps_from_modes`. `data_processing.rps_synthesis` re-exports them.
@@ -594,6 +619,7 @@ set is small enough to list:
 | `scripts/refine_dregon_rps.py` | the windowed L-BFGS telemetry refit of the GENERATOR's DREGON recordings -> the committed `src/data_processing/refined_labels/` sidecars |
 | `scripts/vk_decompose.py` | the windowed VK decomposition -> per-recording `envelopes.npz` / `residual.npz` / `report.json` (the pooled MAP objective is `report.json` -> `objective`; `--stochastic` adds regime 3 and the gate reading `order_cell.residual_final`; `--v4` selects the unified model, implies `--joint`, refuses `--stochastic`, and adds the `h_power` line table to the unit `.npz` plus a `v4` block to the report) |
 | `scripts/joint_rescore.py` | the decomposition AS A MEASURE: one window x one trajectory hypothesis (telemetry, the committed `refined` sidecar of `scripts/refine_dregon_rps.py`, or a step-5 arm of `scripts/fvk_arms.py`) -> the converged MAP objective, at a `k_hi` pinned by the telemetry so the hypotheses share their cells. `--marginal` ranks by the marginal total and prints both orders; `--h-aware` ranks by `total_h` (the stochastic comb in the data term) and prints every column; `--v4` ranks by `total_v4` and REPLACES both, being a different model rather than a correction |
+| `scripts/phase_coherence_probe.py` | the phase behaviour of ONE rotor's comb in three conditions (single motor, four-motor bench, TRAIN-split free flight) — line width, line shape, cross-harmonic correlation, residual shape. The measurement behind the stochastic comb model |
 | `scripts/rps_refine_lab.py` | the blind-seed arm ladder (M1/M2/M3, the oracle floor) — the one research surface not yet promoted |
 | `scripts/jb_probe.py`, `sr_dp_probe.py` | the joint-tracker and single-rotor-DP probes (WP19/WP20 closed; WP21 open, so both are held) |
 
