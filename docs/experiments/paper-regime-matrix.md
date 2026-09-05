@@ -265,6 +265,35 @@ included. The no-speech R2 cell reads frequency where its with-speech twin
 does not; `real_r4_scv2` (with speech, no warm-up) decides whether that is
 the speech or the warm-up stage.
 
+### Batch 2 (rung 2 regressors, gpushort chains; single seed)
+
+| regime (frames) | real_r1_scv2 | real_r2_scv2 | real_r1_gru | real_r2_gru | real_r1_tm | real_r2_tm | real_r3_sc | r4hb_scv2 |
+|---|---|---|---|---|---|---|---|---|
+| zero-frames (9296) | 0.41 | 3.26 | 5.32 | 5.10 | 4.07 | 6.48 | 4.37 | 2.86 |
+| below-30 (2728) | 14.22 | 13.62 | 19.56 | 15.35 | 20.13 | 16.03 | 8.06 | 7.77 |
+| DREGON:ramp:in-grid (4176) | 4.32 | 4.34 | 3.70 | 6.77 | 8.52 | 8.75 | 5.39 | 4.43 |
+| FLY124:ramp:in-grid (5888) | 53.99 | 17.31 | 27.09 | 26.85 | 22.78 | 15.13 | 3.62 | 3.12 |
+| DREGON:cruise:all (32128) | 2.73 | 2.58 | 2.30 | 3.86 | 2.28 | 2.74 | 2.27 | 2.92 |
+| FLY124:cruise:all (20080) | 65.88 | 10.39 | 10.19 | 10.75 | 8.60 | 8.53 | 1.30 | 1.24 |
+| all (74296) | 24.08 | 6.45 | 7.49 | 8.28 | 6.84 | 6.58 | 2.77 | 2.74 |
+
+Rung 1 -> rung 2 (one microphone -> eight, same drone): DREGON cruise moves
+little (scv2 2.73 -> 2.58, tm 2.28 -> 2.74, gru 2.30 -> 3.86); the unseen-drone
+cruise error falls from 66 to 10 for the convolutional trunk and stays at
+8.5-10.8 for the transformer and GRU heads. Rung 3 (+ FLY125) is what closes
+it (SimpleConv 1.30). Microphone split at cruise: identical on ch 0 and ch 1-7
+for every rung-1 and rung-2 cell on DREGON; on FLY124 the transformer reads
+mic 0 better than the others at both rungs (4.45 / 9.19 and 4.30 / 9.14), so
+that asymmetry belongs to the FLY124 array, not to the training microphones.
+Frequency-scaling probe, rung 2: 0.01 / 0.01 (scv2), 0.00 / 0.00 (gru),
+0.06 / 0.03 (tm) — flat, as at rung 1. Table with the mic axis:
+`results/rps_profile/ladder_batch2_real.csv`.
+
+Block S level L0 on the same protocol (all mics): `hb_sal_multif0` all 12.65
+(zero 52.6, below-30 35.6, DREGON cruise 2.96, FLY124 cruise 4.46, ramps
+20.7); `hb_sal_multif0_nsr` 11.82; `hb_sal_bp` 27.30 (cruise 26); the HPPNet
+port after the comb curriculum (`hppnet_r4_l4`, level L3) 6.04.
+
 Speech A/B, first pair: `r2hb_scv2_nomix` scores 3.96 on the frozen split
 (3.59 on its 23 noise-only clips) against 2.74 for the with-speech recipe; the
 warm-up-free with-speech twin `real_r4_scv2` is pending, so this is not yet the
