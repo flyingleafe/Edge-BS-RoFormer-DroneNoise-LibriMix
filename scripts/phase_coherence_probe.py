@@ -25,11 +25,14 @@ three is a claim about rotors and not about one recording:
     speed of these runs) and is refined by
     ``tracking.phase_increment_tracker.pi_kalman_refine``. One 20 s segment
     from the middle of each recording.
-``bench``
-    All four motors at nominal 70 on the ground (``motor_allMotors_70``).
-    Same treatment with four rotor tracks, and the inits are STAGGERED —
-    four identical constants are not separable, so refinement cannot engage
-    from them.
+``bench`` — "four rotors, bench (merged comb)"
+    All four motors at nominal 70 on the ground (``motor_allMotors_70``). The
+    inits are STAGGERED for the refinement (four identical constants are not
+    separable, so refinement cannot engage from them), but the four rotors end
+    within about 1 rev/s of each other, so their lines are not separable at any
+    band a 20 s window resolves. The window is therefore measured as ONE merged
+    comb: the reference is the mean of the four refined rates, there is no twin
+    gate, and the window is one unit rather than four.
 ``flight_dregon`` / ``flight_fly125``
     Free flight, TRAIN split only. The five DREGON room-2 recordings carry a
     commanded rotor speed and no measured one, so their reference is the
@@ -49,23 +52,36 @@ Everything is computed by ``tracking.phase_noise`` on the harmonics ``k = 1..K``
 of one rotor along its reference trajectory. This script is the DATA side only.
 
 **1. Line width and line shape.** From the wide-band complex envelope
-``z_k(t)`` (``demod_rotor`` at a band of ``min(40, 0.45 x rate)`` Hz on a
-500 Hz envelope grid) the normalized complex autocorrelation is taken out to
-``--max-lag-s``. The coherence time ``tau_k`` is the lag where its magnitude
-falls to ``exp(-1)`` and the half width is ``gamma_k = 1 / (2 pi tau_k)``,
-because a Lorentzian of half width ``gamma`` has envelope autocorrelation
-``exp(-2 pi gamma |lag|)`` exactly. ``gamma_k = gamma_0 + s k`` is then fitted
-by least squares over the admitted harmonics. Separately the averaged
-periodogram of ``z_k`` is fitted, in the log domain, by a Lorentzian and by a
-Gaussian of the SAME half width at half maximum, so the verdict is about the
-tail and not about the width.
+``z_k(t)`` (``demod_rotor`` at a band of ``min(B, 0.45 x rate)`` Hz on a 500 Hz
+envelope grid, ``B`` per condition — ``B_LINE_MAX_BY_CONDITION``) the normalized
+complex autocorrelation is taken out to ``--max-lag-s``. The coherence time
+``tau_k`` is the lag where its magnitude falls to ``exp(-1)`` and the half width
+is ``gamma_k = 1 / (2 pi tau_k)``, because a Lorentzian of half width ``gamma``
+has envelope autocorrelation ``exp(-2 pi gamma |lag|)`` exactly.
+``gamma_k = gamma_0 + s k`` is then fitted on the per-harmonic MEDIANS over the
+condition's windows (a harmonic needs ``LAW_MIN_COUNT`` windows to contribute
+one) by Theil-Sen, over all admitted ``k`` and again over ``k >= LAW_K_LOW``;
+the pooled least-squares fit is reported beside it and is not the law of record.
+Separately the averaged periodogram of ``z_k`` is fitted, in the log domain, by
+a Lorentzian and by a Gaussian of the SAME half width at half maximum, so the
+verdict is about the tail and not about the width.
 
-**2. Cross-harmonic correlation.** The WP18 estimator, unchanged: the per-frame
-rate opinions ``delta_k = arg(z_k[t+1] conj(z_k[t])) fs_env / (2 pi k)`` on the
+Each admitted order also carries ``nearest_other_line_hz`` — the distance to the
+nearest line ``j * r_m`` of any OTHER rotor, ``j <= CLEAR_J_MAX``, from the
+refined rates — and the flag ``clear_of_other_lines``. The condition rows report
+the admitted even and odd counts twice, once raw and once restricted to the
+clear orders.
+
+**2. Cross-harmonic correlation.** The WP18 estimator: the per-frame rate
+opinions ``delta_k = arg(z_k[t+1] conj(z_k[t])) fs_env / (2 pi k)`` on the
 62.5 Hz grid, at the fixed 1.5 Hz arm and at a k-scaled arm. Reported as the
 correlation of harmonic ``k`` with the other admitted harmonics (``rho_k``),
 the rank-one share of the off-diagonal energy, and ``sigma_J^2`` against the
-median per-harmonic variance ``v_k``.
+median per-harmonic variance ``v_k``. ``rho_k`` and the rank-one share are a
+CURVE in a low-pass smoothing bandwidth (``SMOOTH_HZ``: raw, 4, 1 and 0.25 Hz)
+rather than one number, because a slow shared term sits under the per-harmonic
+noise at the raw frame rate. Note that this smoothing is a LOW pass and is the
+opposite of ``arm_covariance``'s ``cutoffs``, which high-pass.
 
 **3. Residual shape.** ``e_k(t) = delta_k(t) - c(t)``, where ``c(t)`` is the
 inverse-variance weighted mean of the admitted opinions at that frame. Pooled
@@ -74,6 +90,40 @@ absolute deviation, and reported as an excess kurtosis plus the per-sample log
 likelihood ratio of a Cauchy fit against a Gaussian fit. A wrapped increment is
 BOUNDED by ``pi / (2 pi k dt)`` rev/s, so at high ``k`` the tails are clipped by
 construction and this ratio understates the Cauchy case.
+
+What the first full run measured (81 units, 2026-09-05)
+-------------------------------------------------------
+Two findings are already in, and both are reasons the readings are shaped the
+way they are:
+
+* **The bench motor admits EVEN orders only.** Of the 302 admitted harmonics of
+  the 20 single-motor runs, the harmonics carrying a measured width sit on even
+  ``k`` (``k`` = 8, 10, 12, ... 30 with 5 to 16 windows each) while the odd ones
+  are measured once or not at all. The admitted counts are reported per
+  condition as ``n_even`` / ``n_odd``, and beside them ``n_even_clear`` /
+  ``n_odd_clear`` — the same counts restricted to orders whose nearest line of
+  any other rotor is farther than ``CLEAR_BAND_FACTOR`` line bands — plus the
+  median distance to that nearest line for each parity. The multi-rotor
+  conditions have not been re-measured since the fix, so how many odd orders
+  they admit, and how many of those are clear, is open.
+* **The merged bench comb has a low envelope SNR.** On the first run's bench
+  window only 2 of 30 harmonics reached SNR 3 against the off-comb probe
+  (1.0-2.5 elsewhere, against 5-180 on the even orders of a single motor). The
+  probe sits half an order from the carrier, and the merged cluster at harmonic
+  ``k`` is ``k x rotor_spread`` Hz wide, so above about ``k`` 15 the cluster
+  reaches into the probe band. ``cluster_spread_hz`` and ``cluster_fits_band``
+  are reported per harmonic beside the SNR.
+* **The single-motor width slope is about a tenth of the flight law.** The
+  per-harmonic medians of the single-motor condition rise from 0.22 Hz at
+  ``k`` = 8 to 1.47 Hz at ``k`` = 30, so about 0.06 Hz per order, against the
+  0.6 Hz per order this project's flight-derived band law uses
+  (``tracking.joint_decompose.line_half_widths``).
+
+The first run also measured two failures, and both are now fixed rather than
+worked around: a wide line band made the twin-collision gate reject every
+harmonic of every multi-rotor condition (see ``B_LINE_MAX_BY_CONDITION``), and
+the raw per-frame ``rho_k`` read about 0.001 everywhere because a shared shaft
+disturbance is slow (see ``SMOOTH_HZ``).
 
 Outputs
 -------
@@ -106,6 +156,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXP
 import argparse  # noqa: E402
 import csv  # noqa: E402
 import sys  # noqa: E402
+import warnings  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -136,6 +187,23 @@ FLIGHT_DREGON_RIDS = (
 )
 FLY_RID = "FLY125"
 CONDITIONS = ("single", "bench", "flight_dregon", "flight_fly125")
+#: What each condition IS, for the report. ``bench`` is not four rotors here —
+#: see ``MERGED_CONDITIONS``.
+CONDITION_LABELS = {
+    "single": "one rotor, bench",
+    "bench": "four rotors, bench (merged comb)",
+    "flight_dregon": "free flight, DREGON room 2",
+    "flight_fly125": "free flight, FLY125",
+}
+#: Conditions whose rotors are NOT separable and are measured as ONE comb. The
+#: four bench motors sit within about 1 rev/s of each other, so at every
+#: harmonic their four lines land inside one another's band at any band a
+#: 20 s window can resolve. Treating them as four rotors makes the twin gate
+#: reject every harmonic and measures nothing; treating them as one comb
+#: measures the thing that is actually there. The reference is the MEAN of the
+#: four refined rates, there is no twin gate (one row cannot collide with
+#: itself), and the window is ONE unit instead of four.
+MERGED_CONDITIONS = ("bench",)
 
 DREGON_SOURCE = "dload:DREGON"
 MICHAELS_SPEC = "frames:michaels-frames"
@@ -162,10 +230,32 @@ REFINE_K_MAX = 40
 #: an order of magnitude faster than the covariance grid. The band is
 #: oversampled, not aliased: the brickwall stays at ``b_wide``.
 FS_LINE = 500.0
-#: The widest band the line measurement demodulates, and the fraction of the
-#: rotor rate it is capped at. The cap is what keeps the NEXT tooth out of the
-#: band; the absolute maximum is what keeps the transform honest.
-B_LINE_MAX = 40.0
+#: The widest band the line measurement demodulates, PER CONDITION, and the
+#: fraction of the rotor rate it is capped at.
+#:
+#: The band is what the twin-collision gate is derived from, and that is why it
+#: is not one number. A 40 Hz band on a four-rotor recording puts every other
+#: rotor's line inside the band at every harmonic, so the gate rejects all 30
+#: of them and the first full run measured nothing at all in the multi-rotor
+#: conditions (``valid_frac`` 0.0, ``n_admitted`` 0, all three). At 10 Hz the
+#: gate admits harmonic ``k`` once ``k x (rotor separation) > 11`` Hz, which on
+#: DREGON room 2 (rotors 2.1-7.2 rev/s apart) starts around k=6. Measured on the
+#: first run's own refined references: 0-3 harmonics per rotor survive the gate
+#: at 25 Hz, and 4-20 (typically 9-14) survive it at 10 Hz.
+#:
+#: ``bench`` keeps the wide band although it is a four-rotor recording, because
+#: it is measured as ONE merged comb: there is no gate to defeat, and the merged
+#: cluster at harmonic ``k`` is ``k x spread`` Hz wide (about 1.2 rev/s spread,
+#: so ~36 Hz at k=30), which a narrow band would cut in half rather than
+#: measure. ``cluster_spread_hz`` is reported per harmonic so a reader can see
+#: where the band stops containing the cluster.
+B_LINE_MAX_BY_CONDITION = {
+    "single": 25.0,
+    "bench": 25.0,
+    "flight_dregon": 10.0,
+    "flight_fly125": 10.0,
+}
+B_LINE_MAX_DEFAULT = 25.0
 B_LINE_FRAC = 0.45
 MAX_LAG_S = 2.0
 #: The line measurement's own envelope-SNR gate, and it is STRICTER than
@@ -178,6 +268,28 @@ LINE_MIN_SNR = 3.0
 #: The two arms of reading 2: WP18's main fixed band, and the k-scaled arm
 #: whose band matches the fixed one at k = 3.
 DEFAULT_ARMS = ("fixB1.5", "kscale0.5")
+#: Reading 2 is a CURVE in the smoothing bandwidth, not one number. The first
+#: full run read ``rho_k`` ~ 0.001 in every condition at the raw 62.5 Hz frame
+#: rate, where a slow shared term sits under the per-harmonic noise. Low-passing the opinions to ``B`` Hz averages that noise
+#: down by about ``sqrt(fs_env / 2B)``, and the shared part emerges. 0.25 Hz is
+#: a ~2 s smoothing, the scale WP18 quotes. ``None`` is the raw reading, kept so
+#: the curve has its own zero.
+SMOOTH_HZ: tuple[tuple[str, float | None], ...] = (
+    ("raw", None),
+    ("4", 4.0),
+    ("1", 1.0),
+    ("0.25", 0.25),
+)
+#: The law is fitted on per-harmonic MEDIANS, and a harmonic needs this many
+#: windows before it contributes one.
+LAW_MIN_COUNT = 3
+#: The second law fit skips the low harmonics.
+LAW_K_LOW = 8
+#: An order counts as CLEAR of the other rotors when the nearest line of any
+#: other rotor is farther than this many line bands away.
+CLEAR_BAND_FACTOR = 1.5
+#: Interferer orders searched when measuring that distance.
+CLEAR_J_MAX = 60
 
 
 # ---------------------------------------------------------------------------
@@ -423,8 +535,44 @@ def reference_trajectory(
 # the unit
 
 
-def _line_readings(pn: Any, dm: Any, b_line: float, max_lag_s: float) -> list[dict[str, Any]]:
-    """Per-harmonic coherence time, half width and line shape."""
+def _nearest_other_lines(
+    r_all: np.ndarray, r_carrier: np.ndarray, rot: int, ks: list[int]
+) -> np.ndarray:
+    """Hz to the nearest line of any OTHER rotor, per harmonic of the carrier.
+
+    ``k * r_carrier`` against ``j * r_m`` for every other rotor ``m`` and every
+    order ``j`` up to :data:`CLEAR_J_MAX`, taken as the median over frames. This
+    is a MEASUREMENT of where the other rotors' lines fall, not a gate: the twin
+    gate has already run inside ``demod_rotor``, and this number says how far a
+    surviving order sits from the nearest foreign line. ``rot = -1`` excludes
+    nothing, which is what a merged comb needs. No other rotor -> ``inf``.
+    """
+    from tracking.comb_displacement import nearest_interloper_hz
+
+    if r_all.shape[0] <= 1 and rot >= 0:
+        return np.full(len(ks), np.inf)
+    f_max = float(CLEAR_J_MAX) * float(np.max(r_all))
+    d = nearest_interloper_hz(r_all, r_carrier, rot, ks, f_max=f_max)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.median(d, axis=-1)
+
+
+def _line_readings(
+    pn: Any,
+    dm: Any,
+    b_line: float,
+    max_lag_s: float,
+    cluster_spread: float = 0.0,
+    nearest_hz: np.ndarray | None = None,
+) -> list[dict[str, Any]]:
+    """Per-harmonic coherence time, half width and line shape.
+
+    ``cluster_spread`` is the rev/s spread of a MERGED comb's rotors; harmonic
+    ``k`` of the merged comb is a cluster ``k * cluster_spread`` Hz wide, and a
+    band narrower than that measures a piece of the cluster rather than the
+    cluster. It is reported, never used to gate.
+    """
     n_env = int(dm.z.shape[-1])
     n_trim = max(1, int(round(pn.EDGE_TRIM_S * dm.fs_env)))
     interior = slice(n_trim, max(n_trim + 1, n_env - n_trim))
@@ -441,6 +589,13 @@ def _line_readings(pn: Any, dm: Any, b_line: float, max_lag_s: float) -> list[di
             "valid_frac": round(valid_frac, 4),
             "admitted": admitted,
         }
+        if cluster_spread > 0:
+            row["cluster_spread_hz"] = round(float(k) * cluster_spread, 4)
+            row["cluster_fits_band"] = bool(float(k) * cluster_spread <= 2.0 * b_line)
+        if nearest_hz is not None:
+            near = float(nearest_hz[a])
+            row["nearest_other_line_hz"] = near if np.isfinite(near) else None
+            row["clear_of_other_lines"] = bool(near > CLEAR_BAND_FACTOR * b_line)
         if admitted:
             lw = pn.linewidth(
                 z, dm.fs_env, max_lag_s=max_lag_s, noise_power=npw, noise_band_hz=b_line
@@ -455,6 +610,12 @@ def _line_readings(pn: Any, dm: Any, b_line: float, max_lag_s: float) -> list[di
                     "gamma_slope_hz": lw["gamma_slope_hz"],
                     "slope_n": lw["slope_n"],
                     "slope_r2": lw["slope_r2"],
+                    # A half width past about a third of the band is measured
+                    # through a brickwall that has already cut the line's
+                    # flanks, so it reads LOW. Flagged, not dropped.
+                    "band_limited": bool(
+                        np.isfinite(lw["gamma_hz"]) and lw["gamma_hz"] > b_line / 3.0
+                    ),
                 }
             )
             # The shape fit needs a starting width and a resolution finer than
@@ -583,6 +744,17 @@ def _probe(unit: Unit) -> dict[str, Any]:
     r_init = np.stack([np.interp(ft_w + a0 / SR, rec["ft"], row) for row in rec["r_init"]])
 
     r_ref, ref_diag = reference_trajectory(rec, audio, ft_w, r_init, p)
+    per_rotor = [round(float(np.mean(row)), 5) for row in r_ref]
+    spread = float(max(per_rotor) - min(per_rotor)) if len(per_rotor) > 1 else 0.0
+    merged = cond in MERGED_CONDITIONS
+    r_all = r_ref
+    if merged:
+        # ONE comb: the four rotors are within about 1 rev/s, so their lines are
+        # not separable at any band a 20 s window resolves. The mean of the
+        # refined rates is the carrier of the cluster; the cluster's own width
+        # at harmonic k is k * spread, reported per harmonic below.
+        r_ref = r_ref.mean(axis=0, keepdims=True)
+        rotor = 0
     mean_rate = float(np.mean(r_ref[rotor]))
     out: dict[str, Any] = {
         "condition": cond,
@@ -594,9 +766,13 @@ def _probe(unit: Unit) -> dict[str, Any]:
         "n_channels": int(audio.shape[0]),
         "reference": {
             **ref_diag,
+            "merged": merged,
             "mean_rps": round(mean_rate, 5),
-            "mean_rps_per_rotor": [round(float(np.mean(row)), 5) for row in r_ref],
-            "init_mean_rps": round(float(np.mean(r_init[rotor])), 5),
+            "mean_rps_per_rotor": per_rotor,
+            "rotor_spread_rev_s": round(spread, 5),
+            "init_mean_rps": round(
+                float(np.mean(r_init.mean(axis=0) if merged else r_init[rotor])), 5
+            ),
         },
     }
     if mean_rate < pn.MIN_RATE:
@@ -604,21 +780,25 @@ def _probe(unit: Unit) -> dict[str, Any]:
 
     # --- 1. line width and line shape -------------------------------------
     k_max = int(p["k_max"])
-    b_line = float(min(B_LINE_MAX, B_LINE_FRAC * mean_rate))
+    b_max = float(p.get("b_line_max") or B_LINE_MAX_BY_CONDITION.get(cond, B_LINE_MAX_DEFAULT))
+    b_line = float(min(b_max, B_LINE_FRAC * mean_rate))
     dm = pn.demod_rotor(
         audio, r_ref, ft_w, rotor, sr=SR, fs_env=FS_LINE, k_max=k_max, b_wide=b_line
     )
     if dm is None:
         return {**out, "failed": "demod_rotor rejected the rotor"}
-    rows = _line_readings(pn, dm, b_line, float(p["max_lag_s"]))
+    nearest = _nearest_other_lines(r_all, r_ref[rotor], -1 if merged else rotor, list(dm.ks))
+    rows = _line_readings(pn, dm, b_line, float(p["max_lag_s"]), spread if merged else 0.0, nearest)
     out["line"] = {
         "b_wide_hz": round(b_line, 4),
+        "b_line_max_hz": b_max,
         "fs_env": float(dm.fs_env),
         "max_lag_s": float(p["max_lag_s"]),
         "k_top": int(dm.diag["k_top"]),
         "n_admitted": int(sum(1 for r in rows if r["admitted"])),
         "n_censored": int(sum(1 for r in rows if r.get("censored"))),
         "min_snr": LINE_MIN_SNR,
+        "clear_band_factor": CLEAR_BAND_FACTOR,
         "harmonics": rows,
     }
     # The law is fitted on the crossing estimator, and AGAIN on the log-slope
@@ -640,7 +820,11 @@ def _probe(unit: Unit) -> dict[str, Any]:
             arm = arms_by_name[name]
             ser = pn.arm_increments(dm_wp, arm)
             cov = pn.arm_covariance(dm_wp, arm, series=ser)
-            corr = pn.cross_harmonic_correlation(ser)
+            # Reading 2 is a curve in the smoothing bandwidth: a shared SHAFT
+            # disturbance is slow, so at the raw frame rate it sits under the
+            # per-harmonic measurement noise.
+            sweep = {tag: pn.cross_harmonic_correlation(ser, smooth_hz=hz) for tag, hz in SMOOTH_HZ}
+            corr = sweep["raw"]
             fit0 = cov.get("cov", {}).get("0", {})
             v_used = np.asarray(cov.get("v_k_used", []), dtype=float)
             v_med = float(np.nanmedian(v_used)) if v_used.size else float("nan")
@@ -664,6 +848,18 @@ def _probe(unit: Unit) -> dict[str, Any]:
                     else float("nan")
                 ),
                 "failed": cov.get("failed"),
+                "smoothed": {
+                    tag: {
+                        "smooth_hz": c.get("smooth_hz"),
+                        "k": c.get("k"),
+                        "rho_k": c.get("rho_k"),
+                        "rho_mean": c.get("rho_mean"),
+                        "rank1_energy_frac": c.get("rank1_energy_frac"),
+                        "sigma_j2": c.get("sigma_j2"),
+                        "v_k_median": c.get("v_k_median"),
+                    }
+                    for tag, c in sweep.items()
+                },
             }
             if i == 0:  # the residual shape is read off the WP18 main arm
                 residual = _residual_bands(pn, ser, cov)
@@ -681,6 +877,7 @@ def build_units(conditions: list[str], args: argparse.Namespace) -> list[Unit]:
         "k_max": int(args.k_max),
         "max_lag_s": float(args.max_lag_s),
         "refine_k_max": int(args.refine_k_max),
+        "b_line_max": float(args.b_line_max) if args.b_line_max else None,
         "arms": list(args.arms),
         "out": str(args.out),
         "dregon_source": str(args.dregon_source),
@@ -708,7 +905,8 @@ def build_units(conditions: list[str], args: argparse.Namespace) -> list[Unit]:
         rec = get_recording(cond, rid, common)
         for i, (a0, a1) in enumerate(plan_windows(rec, cond, float(args.window_s))):
             wuid = f"{cond}__{rid}__w{i}"
-            for rotor in range(int(rec["r_init"].shape[0])):
+            n_units = 1 if cond in MERGED_CONDITIONS else int(rec["r_init"].shape[0])
+            for rotor in range(n_units):
                 units.append(
                     Unit(
                         uid=f"{wuid}__r{rotor}",
@@ -736,17 +934,37 @@ def _med(values: list[float]) -> float:
     return float(np.median(v)) if v else float("nan")
 
 
-def _rho_map(row: dict[str, Any], arm: str) -> dict[int, float]:
+def _rho_map(row: dict[str, Any], arm: str, tag: str = "raw") -> dict[int, float]:
+    """``{k: rho_k}`` of one arm at one smoothing bandwidth."""
     a = (row.get("arms") or {}).get(arm) or {}
-    ks, rho = a.get("k"), a.get("rho_k")
+    src = a if tag == "" else (a.get("smoothed") or {}).get(tag) or {}
+    ks, rho = src.get("k"), src.get("rho_k")
     if not ks or not rho:
         return {}
     return {int(k): float(r) for k, r in zip(ks, rho) if r is not None and np.isfinite(float(r))}
 
 
-def _acc() -> dict[str, list[float]]:
+#: The rho columns: the fixed arm at every smoothing bandwidth, then the
+#: k-scaled arm raw.
+def _rho_keys(arm_fix: str, arm_ks: str) -> list[tuple[str, str, str]]:
+    """``(accumulator key, arm, smoothing tag)`` for every rho column."""
+    out = [(f"fc{tag}", arm_fix, tag) for tag, _hz in SMOOTH_HZ]
+    out.append(("ks", arm_ks, "raw"))
+    return out
+
+
+def _acc(arm_fix: str = "", arm_ks: str = "") -> dict[str, list[float]]:
     """The per-(condition, harmonic) accumulator of :func:`per_harmonic_rows`."""
-    return {"gamma": [], "gamma_slope": [], "tau": [], "cens": [], "fix": [], "ks": [], "lor": []}
+    base: dict[str, list[float]] = {
+        "gamma": [],
+        "gamma_slope": [],
+        "tau": [],
+        "cens": [],
+        "lor": [],
+    }
+    for key, _a, _t in _rho_keys(arm_fix, arm_ks):
+        base[key] = []
+    return base
 
 
 def per_harmonic_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict[str, Any]]:
@@ -762,7 +980,7 @@ def per_harmonic_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict[
         for h in (r.get("line") or {}).get("harmonics", []):
             if not h["admitted"]:
                 continue
-            acc = cell.setdefault(int(h["k"]), _acc())
+            acc = cell.setdefault(int(h["k"]), _acc(arm_fix, arm_ks))
             if h.get("gamma_hz") is not None and np.isfinite(h["gamma_hz"]):
                 acc["gamma"].append(float(h["gamma_hz"]))
                 acc["tau"].append(float(h["tau_s"]))
@@ -772,31 +990,82 @@ def per_harmonic_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict[
             v = (h.get("shape") or {}).get("verdict")
             if v:
                 acc["lor"].append(1.0 if v == "lorentz" else 0.0)
-        for arm, key in ((arm_fix, "fix"), (arm_ks, "ks")):
-            for k, rho in _rho_map(r, arm).items():
-                cell.setdefault(int(k), _acc())[key].append(rho)
+        for key, arm, tag in _rho_keys(arm_fix, arm_ks):
+            for k, rho in _rho_map(r, arm, tag).items():
+                cell.setdefault(int(k), _acc(arm_fix, arm_ks))[key].append(rho)
     out: list[dict[str, Any]] = []
     for cond in sorted(by_cond):
         for k in sorted(by_cond[cond]):
             acc = by_cond[cond][k]
-            out.append(
-                {
-                    "condition": cond,
-                    "k": k,
-                    "n_gamma": len(acc["gamma"]),
-                    "gamma_hz_median": _med(acc["gamma"]),
-                    "tau_s_median": _med(acc["tau"]),
-                    "censored_frac": _med(acc["cens"]) if acc["cens"] else float("nan"),
-                    "n_gamma_slope": len(acc["gamma_slope"]),
-                    "gamma_slope_hz_median": _med(acc["gamma_slope"]),
-                    "lorentz_frac": _med(acc["lor"]) if acc["lor"] else float("nan"),
-                    "n_rho_fixed": len(acc["fix"]),
-                    f"rho_k_{arm_fix}": _med(acc["fix"]),
-                    "n_rho_kscaled": len(acc["ks"]),
-                    f"rho_k_{arm_ks}": _med(acc["ks"]),
-                }
-            )
+            row = {
+                "condition": cond,
+                "k": k,
+                "n_gamma": len(acc["gamma"]),
+                "gamma_hz_median": _med(acc["gamma"]),
+                "tau_s_median": _med(acc["tau"]),
+                "censored_frac": _med(acc["cens"]) if acc["cens"] else float("nan"),
+                "n_gamma_slope": len(acc["gamma_slope"]),
+                "gamma_slope_hz_median": _med(acc["gamma_slope"]),
+                "lorentz_frac": _med(acc["lor"]) if acc["lor"] else float("nan"),
+                "n_rho": len(acc["fcraw"]),
+            }
+            for tag, _hz in SMOOTH_HZ:
+                row[f"rho_k_fc{tag}"] = _med(acc[f"fc{tag}"])
+            row["n_rho_kscaled"] = len(acc["ks"])
+            row[f"rho_k_{arm_ks}"] = _med(acc["ks"])
+            out.append(row)
     return out
+
+
+def _parity_stats(harm: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    """Admitted even and odd shaft orders, with the foreign-line control.
+
+    ``*_clear`` counts only the orders whose nearest line of any other rotor is
+    farther than ``CLEAR_BAND_FACTOR`` line bands, and the two median distances
+    say how far the admitted orders of each parity sit from that nearest line.
+    A one-rotor condition has no other rotor, so every order is clear and the
+    distances are infinite.
+    """
+    got = [
+        h
+        for h in harm
+        if h["admitted"] and h.get(key) is not None and np.isfinite(h.get(key, np.nan))
+    ]
+    out: dict[str, Any] = {}
+    for name, want_even in (("even", True), ("odd", False)):
+        sel = [h for h in got if (int(h["k"]) % 2 == 0) is want_even]
+        near = [
+            float(h["nearest_other_line_hz"])
+            for h in sel
+            if h.get("nearest_other_line_hz") is not None
+        ]
+        out[f"n_{name}"] = len(sel)
+        out[f"n_{name}_clear"] = sum(1 for h in sel if h.get("clear_of_other_lines"))
+        out[f"{name}_nearest_hz_median"] = float(np.median(near)) if near else float("inf")
+    return out
+
+
+def _median_law(
+    pn: Any,
+    harm: list[dict[str, Any]],
+    key: str,
+    *,
+    k_min: int = 0,
+    parity: str = "",
+) -> dict[str, Any]:
+    """Theil-Sen ``gamma_k = gamma_0 + s k`` on the per-harmonic MEDIANS."""
+    kk, gg = _law_inputs(harm, key)
+    if kk.size == 0:
+        return {"n": 0}
+    ks, med, _cnt = pn.median_by_k(kk, gg, min_count=LAW_MIN_COUNT)
+    sel = ks >= k_min
+    if parity == "even":
+        sel &= ks % 2 == 0
+    elif parity == "odd":
+        sel &= ks % 2 == 1
+    if int(sel.sum()) < 3:
+        return {"n": int(sel.sum())}
+    return pn.fit_linewidth_law(ks[sel], med[sel], method="theilsen")
 
 
 def per_condition_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict[str, Any]]:
@@ -816,8 +1085,18 @@ def per_condition_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict
         law = pn.fit_linewidth_law(*_law_inputs(harm, "gamma_hz"))
         law_slope = pn.fit_linewidth_law(*_law_inputs(harm, "gamma_slope_hz"))
         adm = [h for h in harm if h["admitted"]]
+        # THE law of record: per-harmonic medians over the condition's windows,
+        # fitted robustly. A raw pooled least squares is owned by the handful of
+        # harmonics that were measured once (measured: k=1 and k=9 of the motor
+        # set read 10-11 Hz off one window each, taking the slope to 0.014 Hz/k
+        # at R^2 0.003 while the medians rise cleanly 0.22 -> 1.47 Hz).
+        ts = _median_law(pn, harm, "gamma_hz")
+        ts8 = _median_law(pn, harm, "gamma_hz", k_min=LAW_K_LOW)
+        even = _median_law(pn, harm, "gamma_hz", parity="even")
+        parity = _parity_stats(harm, "gamma_hz")
         row: dict[str, Any] = {
             "condition": cond,
+            "label": CONDITION_LABELS.get(cond, cond),
             "n_windows": len({(r["recording"], r["window"]) for r in got}),
             "n_rotors": len({(r["recording"], r["window"], r["rotor"]) for r in got}),
             "n_recordings": len({r["recording"] for r in got}),
@@ -838,6 +1117,26 @@ def per_condition_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict
             "slope_slope_hz_per_k": law_slope.get("slope_hz_per_k", float("nan")),
             "fit_slope_resid_rms_hz": law_slope.get("resid_rms_hz", float("nan")),
             "n_points_slope": law_slope.get("n", 0),
+            # Theil-Sen on the per-k medians — the law of record.
+            "ts_gamma0_hz": ts.get("gamma0_hz", float("nan")),
+            "ts_slope_hz_per_k": ts.get("slope_hz_per_k", float("nan")),
+            "ts_slope_lo": ts.get("slope_lo_hz_per_k", float("nan")),
+            "ts_slope_hi": ts.get("slope_hi_hz_per_k", float("nan")),
+            "ts_resid_rms_hz": ts.get("resid_rms_hz", float("nan")),
+            "ts_n_k": ts.get("n", 0),
+            f"ts{LAW_K_LOW}_gamma0_hz": ts8.get("gamma0_hz", float("nan")),
+            f"ts{LAW_K_LOW}_slope_hz_per_k": ts8.get("slope_hz_per_k", float("nan")),
+            f"ts{LAW_K_LOW}_n_k": ts8.get("n", 0),
+            # Even against odd shaft orders, with the foreign-line control.
+            **parity,
+            "odd_even_ratio": (
+                round(parity["n_odd"] / parity["n_even"], 4)
+                if parity["n_even"]
+                else (float("nan") if not parity["n_odd"] else float("inf"))
+            ),
+            "gamma0_even_hz": even.get("gamma0_hz", float("nan")),
+            "slope_even_hz_per_k": even.get("slope_hz_per_k", float("nan")),
+            "ts_even_n_k": even.get("n", 0),
         }
         for name, _lo, _hi in pn.K_BANDS:
             fr = [
@@ -849,6 +1148,14 @@ def per_condition_rows(rows: list[dict[str, Any]], arms: list[str]) -> list[dict
             row[f"shape_{name}"] = (
                 "" if not np.isfinite(frac) else ("lorentz" if frac >= 0.5 else "gauss")
             )
+        # Reading 2 as a CURVE in the smoothing bandwidth, on the fixed arm.
+        for tag, _hz in SMOOTH_HZ:
+            sw = [
+                ((r.get("arms") or {}).get(arm_fix, {}).get("smoothed") or {}).get(tag, {})
+                for r in got
+            ]
+            row[f"rho_mean_fc{tag}"] = _med([c.get("rho_mean") for c in sw])
+            row[f"rank1_share_fc{tag}"] = _med([c.get("rank1_energy_frac") for c in sw])
         for arm, tag in ((arm_fix, "fixed"), (arm_ks, "kscaled")):
             row[f"rho_mean_{tag}"] = _med(
                 [(r.get("arms") or {}).get(arm, {}).get("rho_mean") for r in got]
@@ -917,6 +1224,12 @@ def main() -> None:
     ap.add_argument("--window-s", type=float, default=20.0)
     ap.add_argument("--max-lag-s", type=float, default=MAX_LAG_S)
     ap.add_argument("--refine-k-max", type=int, default=REFINE_K_MAX)
+    ap.add_argument(
+        "--b-line-max",
+        type=float,
+        default=0.0,
+        help=f"override the per-condition line band (default {B_LINE_MAX_BY_CONDITION})",
+    )
     ap.add_argument(
         "--arms",
         default=",".join(DEFAULT_ARMS),
@@ -1002,9 +1315,15 @@ def main() -> None:
                     "max_lag_s": float(args.max_lag_s),
                     "refine_k_max": int(args.refine_k_max),
                     "fs_line": FS_LINE,
-                    "b_line_max_hz": B_LINE_MAX,
+                    "b_line_max_hz": B_LINE_MAX_BY_CONDITION,
                     "b_line_frac": B_LINE_FRAC,
                     "cruise_rev_s": CRUISE_REV_S,
+                    "smooth_hz": [hz for _t, hz in SMOOTH_HZ],
+                    "law_min_count": LAW_MIN_COUNT,
+                    "law_k_low": LAW_K_LOW,
+                    "clear_band_factor": CLEAR_BAND_FACTOR,
+                    "clear_j_max": CLEAR_J_MAX,
+                    "merged_conditions": list(MERGED_CONDITIONS),
                 },
             }
         )

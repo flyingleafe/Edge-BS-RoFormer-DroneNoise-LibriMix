@@ -616,19 +616,12 @@ def arm_covariance(
     for fc in cutoffs:
         if fc > 0 and fc > CUTOFF_BAND_FRAC * b_min:
             continue
-        xs: list[np.ndarray] = []
-        for c in range(n_ch):
-            x = delta[c, idx]
-            if fc > 0:
-                # gaps filled by interpolation so the FFT filter sees a
-                # continuous series; the gap frames stay excluded below.
-                xf = np.empty_like(x)
-                tt = np.arange(n_m, dtype=float)
-                for a in range(len(idx)):
-                    v = valid[idx[a]]
-                    xf[a] = np.interp(tt, tt[v], x[a][v]) if v.any() else 0.0
-                x = brickwall(xf, fc, fs_e, high=True)
-            xs.append(x)
+        # Gaps filled by interpolation so the FFT filter sees a continuous
+        # series; the gap frames stay excluded below.
+        xs: list[np.ndarray] = [
+            gap_filter(delta[c, idx], valid[idx], fc if fc > 0 else None, fs_e, high=True)
+            for c in range(n_ch)
+        ]
         # Block bootstrap in TIME: the per-entry standard error is what makes
         # "are the off-diagonals constant?" answerable.  Channels are averaged
         # inside each block because the common term is shared across mics, so
@@ -960,18 +953,80 @@ def linewidth(
     }
 
 
+def median_by_k(
+    k: np.ndarray, gamma: np.ndarray, *, min_count: int = 3
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-harmonic MEDIAN width over many windows, and the counts behind it.
+
+    The law must be fitted on these, not on the raw cloud. One window's width at
+    one harmonic is a single realization of a noisy estimator, and a handful of
+    harmonics that were measured once carry decade-sized outliers (measured on
+    the DREGON motor set: k=1 and k=9 read 10-11 Hz off ONE window each, while
+    the medians of the harmonics measured seven times or more rise cleanly from
+    0.22 Hz at k=8 to 1.47 Hz at k=30). ``min_count`` drops a harmonic that no
+    number of windows agreed on.
+
+    Returns ``(ks, medians, counts)``, ascending in ``k``.
+    """
+    kk = np.asarray(k, dtype=np.float64).reshape(-1)
+    gg = np.asarray(gamma, dtype=np.float64).reshape(-1)
+    ok = np.isfinite(kk) & np.isfinite(gg)
+    kk, gg = kk[ok], gg[ok]
+    ks: list[float] = []
+    med: list[float] = []
+    cnt: list[int] = []
+    for key in np.unique(kk):
+        sel = kk == key
+        if int(sel.sum()) < min_count:
+            continue
+        ks.append(float(key))
+        med.append(float(np.median(gg[sel])))
+        cnt.append(int(sel.sum()))
+    return np.asarray(ks), np.asarray(med), np.asarray(cnt, dtype=int)
+
+
 def fit_linewidth_law(
-    k: np.ndarray, gamma: np.ndarray, weights: np.ndarray | None = None
+    k: np.ndarray,
+    gamma: np.ndarray,
+    weights: np.ndarray | None = None,
+    *,
+    method: str = "ols",
 ) -> dict[str, Any]:
-    """Least squares ``gamma_k = gamma_0 + s k`` over the admitted harmonics."""
+    """Fit ``gamma_k = gamma_0 + s k`` over the admitted harmonics.
+
+    ``method="ols"`` is ordinary (or weighted) least squares.
+    ``method="theilsen"`` is the median of pairwise slopes — the robust fit, and
+    the one a pooled width cloud needs, because one decade-sized outlier at a
+    single harmonic swings a least-squares slope by more than the whole law.
+    Theil-Sen takes no weights and reports a slope confidence interval instead
+    of an R squared.
+    """
     kk = np.asarray(k, dtype=np.float64).reshape(-1)
     gg = np.asarray(gamma, dtype=np.float64).reshape(-1)
     ok = np.isfinite(kk) & np.isfinite(gg)
     kk, gg = kk[ok], gg[ok]
     w = None if weights is None else np.asarray(weights, dtype=np.float64).reshape(-1)[ok]
-    out: dict[str, Any] = {"n": int(kk.size)}
+    out: dict[str, Any] = {"n": int(kk.size), "method": method}
     if kk.size < 3 or np.std(kk) == 0:
         return {**out, "gamma0_hz": float("nan"), "slope_hz_per_k": float("nan")}
+    if method == "theilsen":
+        from scipy.stats import theilslopes
+
+        slope, intercept, lo, hi = np.asarray(theilslopes(gg, kk), dtype=np.float64)
+        resid = gg - (intercept + slope * kk)
+        return {
+            **out,
+            "gamma0_hz": float(intercept),
+            "slope_hz_per_k": float(slope),
+            "slope_lo_hz_per_k": float(lo),
+            "slope_hi_hz_per_k": float(hi),
+            "resid_rms_hz": float(np.sqrt(np.mean(resid**2))),
+            "resid_rel": float(np.sqrt(np.mean(resid**2)) / max(float(np.mean(gg)), 1e-12)),
+            "k_min": float(kk.min()),
+            "k_max": float(kk.max()),
+        }
+    if method != "ols":
+        raise ValueError(f"unknown method {method!r}; use 'ols' or 'theilsen'")
     design = np.stack([np.ones_like(kk), kk], axis=1)
     if w is None:
         coef, *_ = np.linalg.lstsq(design, gg, rcond=None)
@@ -1136,7 +1191,32 @@ def fit_line_shape(
     }
 
 
-def cross_harmonic_correlation(series: ArmSeries) -> dict[str, Any]:
+def gap_filter(
+    x: np.ndarray, valid: np.ndarray, band_hz: float | None, fs_env: float, *, high: bool = False
+) -> np.ndarray:
+    """Brickwall a gated series along time, with the gates interpolated over.
+
+    ``brickwall`` is a whole-window FFT filter, so it cannot see a gap: the
+    frames the twin gate rejects are filled by linear interpolation first, and
+    the caller still excludes them from whatever it computes next. ``band_hz``
+    ``None`` returns ``x`` unchanged. THE one implementation — both the
+    high-pass sweep of :func:`arm_covariance` and the low-pass sweep of
+    :func:`cross_harmonic_correlation` read through it.
+    """
+    if band_hz is None:
+        return x
+    n = x.shape[-1]
+    tt = np.arange(n, dtype=float)
+    xf = np.empty_like(x)
+    for a in range(x.shape[0]):
+        v = valid[a]
+        xf[a] = np.interp(tt, tt[v], x[a][v]) if v.any() else 0.0
+    return brickwall(xf, float(band_hz), fs_env, high=high)
+
+
+def cross_harmonic_correlation(
+    series: ArmSeries, *, smooth_hz: float | None = None
+) -> dict[str, Any]:
     """Correlation across the admitted harmonics' rate opinions.
 
     The covariance is the pairwise-complete one :func:`arm_covariance` fits its
@@ -1145,16 +1225,36 @@ def cross_harmonic_correlation(series: ArmSeries) -> dict[str, Any]:
     magnitude. ``rho_k`` is harmonic ``k``'s mean correlation with the other
     admitted harmonics: 1 means one shared disturbance, 0 means independent
     per-harmonic phase noise.
+
+    ``smooth_hz`` LOW-passes every opinion to that bandwidth first, and this is
+    the opposite of :func:`arm_covariance`'s ``cutoffs``, which HIGH-pass. The
+    two answer different questions and the direction is load bearing. WP18
+    high-passes because ``delta`` (the trajectory error, slow) and ``J`` (the
+    shaft jitter) are confounded at low frequency, so the fast band is where a
+    common term can only be ``J``. A shared SHAFT disturbance is itself slow,
+    so at the raw frame rate it is buried under per-harmonic measurement noise
+    and ``rho_k`` reads near zero; smoothing to a bandwidth ``B`` averages that
+    noise down by about ``sqrt(fs_env / 2B)`` and the shared part emerges. So
+    ``rho_k`` against ``smooth_hz`` is a CURVE, and reading one number off it
+    without naming the bandwidth says nothing.
     """
     idx = np.where(series.keep)[0]
-    out: dict[str, Any] = {"arm": series.arm, "n_keep": int(idx.size)}
+    out: dict[str, Any] = {
+        "arm": series.arm,
+        "n_keep": int(idx.size),
+        "smooth_hz": None if smooth_hz is None else float(smooth_hz),
+    }
     if idx.size < 3:
         return {**out, "failed": "fewer than 3 admitted harmonics"}
     kk = np.asarray(series.ks)[idx]
+    bands_k = series.bands[idx]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         cs = [
-            _pairwise_cov(series.delta[c, idx], series.valid[idx])[0]
+            _pairwise_cov(
+                gap_filter(series.delta[c, idx], series.valid[idx], smooth_hz, series.fs_env),
+                series.valid[idx],
+            )[0]
             for c in range(series.n_channels)
         ]
         cmat = np.nanmean(np.stack(cs), axis=0)
@@ -1163,12 +1263,16 @@ def cross_harmonic_correlation(series: ArmSeries) -> dict[str, Any]:
         off = ~np.eye(idx.size, dtype=bool)
         rho_k = np.array([np.nanmean(corr[a][off[a]]) for a in range(idx.size)])
         rho_all = float(np.nanmean(corr[off]))
+    fit = fit_rank_one(cmat, bands_k)
     return {
         **out,
         "k": kk.tolist(),
         "rho_k": np.round(rho_k, 5).tolist(),
         "rho_mean": rho_all,
         "var_k": np.round(np.diag(cmat), 10).tolist(),
+        "rank1_energy_frac": fit.get("rank1_energy_frac"),
+        "sigma_j2": fit.get("sigma_c2_mean"),
+        "v_k_median": float(np.nanmedian(np.asarray(fit.get("v_k", [np.nan]), dtype=float))),
     }
 
 

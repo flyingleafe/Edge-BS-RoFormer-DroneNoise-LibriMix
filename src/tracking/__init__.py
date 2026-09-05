@@ -135,7 +135,9 @@ from tracking.phase_noise import (
     fit_line_shape,
     fit_linewidth_law,
     fit_rank_one,
+    gap_filter,
     linewidth,
+    median_by_k,
     residual_tail_stats,
     shared_rate_opinion,
     welch_envelope,
@@ -247,6 +249,7 @@ from tracking.vk_tracking import (
 from tracking.warp_refinement import iter_warp_refine
 
 __all__ = [
+    "gap_filter",
     "line_separations",
     "linewidth",
     "base_bandwidths",
@@ -272,6 +275,7 @@ __all__ = [
     "fit_floor_powers",
     "floor_penalty",
     "masked_smooth_psd",
+    "median_by_k",
     "order_cell_bands",
     "order_cell_profile",
     "phase_split_stage",

@@ -276,3 +276,54 @@ def test_shared_rate_opinion_removes_the_common_term():
     e = ser.delta[:, idx, :] - c[:, None, :]
     keep_frames = mask[None, None, :] & ser.valid[idx][None, :, :]
     assert np.nanstd(e[keep_frames]) < 0.5 * np.nanstd(ser.delta[:, idx, :][keep_frames])
+
+
+def test_median_by_k_drops_the_harmonics_measured_once():
+    """The law is fitted on medians, so a harmonic nobody agreed on is dropped."""
+    k = np.array([8, 8, 8, 8, 10, 10, 10, 9, 1])
+    g = np.array([0.2, 0.25, 0.22, 0.9, 0.3, 0.32, 0.28, 11.0, 10.0])
+    ks, med, cnt = E.median_by_k(k, g, min_count=3)
+    assert ks.tolist() == [8.0, 10.0]
+    assert med[0] == pytest.approx(0.235, abs=1e-9)
+    assert cnt.tolist() == [4, 3]
+
+
+def test_theilsen_law_survives_an_outlier_that_breaks_least_squares():
+    k = np.arange(8, 31, 2, dtype=float)
+    gamma = 0.1 + 0.06 * k
+    spoiled = gamma.copy()
+    spoiled[0] = 11.0  # one decade-sized outlier at the lowest harmonic
+    ols = E.fit_linewidth_law(k, spoiled)
+    ts = E.fit_linewidth_law(k, spoiled, method="theilsen")
+    assert ts["slope_hz_per_k"] == pytest.approx(0.06, rel=0.15)
+    assert ols["slope_hz_per_k"] < 0.0  # the outlier flips the least-squares sign
+    assert ts["slope_lo_hz_per_k"] <= ts["slope_hz_per_k"] <= ts["slope_hi_hz_per_k"]
+    assert E.fit_linewidth_law(k, gamma, method="theilsen")["slope_hz_per_k"] == pytest.approx(
+        0.06, rel=1e-6
+    )
+
+
+def test_gap_filter_is_a_no_op_without_a_band():
+    x = np.random.default_rng(31).normal(size=(3, 200))
+    valid = np.ones(x.shape, dtype=bool)
+    assert E.gap_filter(x, valid, None, 62.5) is x
+
+
+def test_smoothing_reveals_a_slow_shared_term_the_raw_rate_hides():
+    """The shared SHAFT disturbance is slow, so ``rho_k`` is a curve in the
+    smoothing bandwidth — the WP18 covariance at the raw frame rate does not
+    see it, and that is a property of the estimator, not of the aircraft."""
+    arm = E.Arm("fixB1.5", "fixed", 1.5)
+    audio, r_ft, ft = _comb_audio("shared", sigma=0.004, seed=41)
+    rng = np.random.default_rng(42)
+    audio = audio + 0.30 * rng.normal(size=audio.shape)  # per-harmonic measurement noise
+    dm = E.demod_rotor(audio, r_ft, ft, 0, k_max=12, b_wide=20.0)
+    assert dm is not None
+    ser = E.arm_increments(dm, arm)
+    raw = E.cross_harmonic_correlation(ser)
+    smoothed = E.cross_harmonic_correlation(ser, smooth_hz=0.25)
+    mid = E.cross_harmonic_correlation(ser, smooth_hz=1.0)
+    assert raw["rho_mean"] < mid["rho_mean"] < smoothed["rho_mean"]
+    assert smoothed["rho_mean"] > raw["rho_mean"] + 0.2
+    assert smoothed["smooth_hz"] == pytest.approx(0.25)
+    assert raw["smooth_hz"] is None
