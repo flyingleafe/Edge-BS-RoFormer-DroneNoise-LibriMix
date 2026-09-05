@@ -626,6 +626,24 @@ five claims; every table is generated from the claim CSVs by
 `make_tables.py`, the probe figure by `make_probe_fig.py`, and pending
 cells print as dashes until their dumps land.
 
+### Batch 18: the transformer's rung 3 (gpushort chain, 5 segments; all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | comb / stoch | probe full / local |
+|---|---|---|---|---|---|---|---|---|---|
+| `real_r3_tm` (+ FLY125, no label-transforming augs) | 4.91 | 14.93 | 5.88 | 3.65 | 2.42 | 1.48 | 3.23 | 28.1 / 27.3 | -0.17 / 0.21 |
+| `tm_r2hb_nogate` (rung 4, warm-up) | 4.65 | 13.05 | 6.22 | 3.33 | 2.79 | 1.21 | 3.21 | 18.1 / 31.4 | 0.40 / 0.40 |
+| `real_r4_tm` (rung 4, augs from step 0) | 4.27 | 15.36 | 8.36 | 4.31 | 2.99 | 1.96 | 3.73 | 9.1 / 29.3 | 0.93 / 1.01 |
+
+The transformer ladder (all-mic MAE / DREGON cruise / FLY124 cruise /
+probe local): rung 1 6.84 / 2.28 / 8.60 / 0.21, rung 2 6.58 / 2.74 / 8.53
+/ 0.03, rung 3 3.23 / 2.42 / 1.48 / 0.21, rung 4 3.21 / 2.79 / 1.21 /
+0.40. For this trunk rung 3 already reaches the rung-4 all-frame error,
+so the label-transforming augmentations buy only the probe (0.21 -> 0.40
+with warm-up, 1.01 from step 0) at a DREGON cruise cost of 2.42 -> 2.79
+(-> 2.99 from step 0). Same shape as the convolutional ladder: the second
+drone is the ingredient that fixes the unseen rig (FLY124 cruise 8.5 ->
+1.5), the augmentations are the ingredient that fixes the probe.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
