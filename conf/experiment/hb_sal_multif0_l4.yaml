@@ -1,0 +1,62 @@
+# @package _global_
+# Level L2 of the LateDeep row in Block S of docs/experiments/paper-regime-matrix.md
+# ("the adaptation ladder of the multi-pitch baselines"): per-rotor Gaussian
+# layers on the 0-150 rev/s grid with the CRF readout, ORIGINAL INPUT.
+#
+# conf/experiment/hb_sal_multif0.yaml with the OUTPUT REPRESENTATION replaced,
+# and nothing else: the same honest-base online stream
+# (conf/online_mix/hb_silence_dload.yaml — real full-envelope pool + 16.7%
+# zero-labeled silence arm + SNR reference floor + freq-scale/time-warp/gain
+# augmentations), the same frozen real validation split
+# `dload:DREGON-LM-V4-michaels-valid-full`, the same epoch budget, patience,
+# batch size and workers. The model's INPUT is untouched too — same HCQT (fmin
+# 32.7, 6 octaves, over_sample 5), same LateDeep trunk, same [16000, 256] time
+# grid. Only the head widens.
+#
+# Three files change together and they must:
+#   model   -> conf/model/multif0_salience_l4.yaml       (n_maps 4, linear 0-150 grid)
+#   loss    -> conf/loss/salience_layers_r150_h256.yaml     (Gaussian layers, PIT BCE)
+#   metrics -> conf/metrics/salience_layers_r150_h256.yaml  (the same, plus rps_mae)
+#
+# WHY. `models.salience_crf` encoded real training telemetry into the shared
+# salience map and decoded it back — a PERFECT target, no model involved — and
+# got the trajectory back 8.24 rev/s away on average, with 39-45% of frames
+# more than half a bin off. Gaussian per-rotor layers with the CRF readout
+# return 2.22e-16. The old number is an ORACLE FLOOR: hb_sal_multif0 was
+# measuring the representation as much as the architecture. This row removes
+# that ceiling and leaves the architecture question intact.
+#
+# THE `_h256` LOSS AND METRICS are the hop-256 twins of salience_layers_r150,
+# and the only value that differs is the declared frame rate. The ports emit
+# salience at hop 512, this trunk at hop 256, and the hop is an input.
+#
+# MONITOR: `rps_mae`, not `bce`. The layer BCE is the training objective and it
+# is scale-free; `rps_mae` is the same layers read in rev/s through the
+# log-parabolic vertex fit, which is the quantity every other RPS row is ranked
+# on. Selecting on it keeps this row comparable with the regressors.
+#
+# At eval the decode is `models.harmonic_ports.layer_readout.LayerCRFReadout` —
+# one CRF best path per layer, NO threshold and NO Hungarian step. A stopped
+# rotor is the path sitting at bin 0, which is a value; the old decoder had to
+# call it an absence, which is what forced the threshold.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: multif0_salience_l4
+  - override /loss: salience_layers_r150_h256
+  - override /metrics: salience_layers_r150_h256
+
+experiment_name: hb_sal_multif0_l4
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — hb_sal_multif0's value, and
+                # hppnet_r4_l4's; the head widens by 603 parameters, thus the
+                # per-frame memory does not move and the batch does not either
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  monitor: rps_mae
+  monitor_mode: min

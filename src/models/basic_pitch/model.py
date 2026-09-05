@@ -83,9 +83,16 @@ class BasicPitch(nn.Module):
         fmin: float = ANNOTATIONS_BASE_FREQUENCY,
         bins_per_semitone: int = CONTOURS_BINS_PER_SEMITONE,
         n_contour_semitones: int = ANNOTATIONS_N_SEMITONES,
+        n_maps: int = 1,
     ):
         super().__init__()
         self.no_contours = no_contours
+        # Contour maps emitted. 1 is the paper model. `n_maps > 1` widens
+        # `contour_out` only, so the branch emits ONE MAP PER SOURCE — the
+        # per-rotor salience layers of `models.salience_rps`. The parameter
+        # name is unchanged, thus n_maps=1 stays weight-identical to the
+        # released Basic Pitch checkpoint.
+        self.n_maps = int(n_maps)
         # Contour (salience) grid — configurable for a narrow rotor band.
         self.fmin = fmin
         self.bins_per_semitone = bins_per_semitone
@@ -114,7 +121,7 @@ class BasicPitch(nn.Module):
         self.contour_conv1 = Conv2dSame(n_h, CONTOUR_FILTERS_2, CONTOUR_KERNEL_SIZE_2)
         self.contour_bn = nn.BatchNorm2d(CONTOUR_FILTERS_2, eps=BN_EPSILON)
         if not no_contours:
-            self.contour_out = Conv2dSame(CONTOUR_FILTERS_2, 1, CONTOUR_KERNEL_SIZE_3)
+            self.contour_out = Conv2dSame(CONTOUR_FILTERS_2, self.n_maps, CONTOUR_KERNEL_SIZE_3)
 
         # --- note branch -----------------------------------------------------
         notes_in = 1 if not no_contours else CONTOUR_FILTERS_2
@@ -131,6 +138,13 @@ class BasicPitch(nn.Module):
         self.onset_out = Conv2dSame(n_filters_onsets + 1, 1, ONSET_KERNEL_SIZE_2)
 
     def forward(self, audio: torch.Tensor) -> dict[str, torch.Tensor]:
+        # The note and onset branches read ONE contour map, thus the full
+        # transcription forward is defined for n_maps == 1 only. A multi-map
+        # head is a salience model and calls `contour_logits` instead.
+        if not self.no_contours and self.n_maps != 1:
+            raise ValueError(
+                "the note/onset branches take one contour map; n_maps > 1 needs contour_logits()"
+            )
         # audio: (B, n_samples) at 22050 Hz
         x = self.cqt(audio)  # (B, 1, time, n_bins)
         x = self.cqt_bn(x)
@@ -163,11 +177,13 @@ class BasicPitch(nn.Module):
         return out
 
     def contour_logits(self, audio: torch.Tensor) -> torch.Tensor:
-        """Pre-sigmoid contour posteriorgram, ``(B, time, 264)``.
+        """Pre-sigmoid contour posteriorgram, ``(B, time, n_maps * 264)``.
 
         Runs only the CQT → harmonic-stacking → contour branch (skipping the
         note/onset heads and the final sigmoid), for use as raw salience logits
-        with ``BCEWithLogitsLoss``. Requires ``no_contours=False``.
+        with ``BCEWithLogitsLoss``. Requires ``no_contours=False``. With
+        ``n_maps > 1`` the maps are stacked along the frequency axis, map-major
+        (see :func:`flatten_freq_ch`).
         """
         if self.no_contours:
             raise ValueError("contour_logits requires no_contours=False")
@@ -175,8 +191,8 @@ class BasicPitch(nn.Module):
         x = self.cqt_bn(x)
         x = self.harmonic_stacking(x)  # (B, n_h, time, 264)
         xc = F.relu(self.contour_bn(self.contour_conv1(x)))
-        logits = self.contour_out(xc)  # (B, 1, time, 264) — no sigmoid
-        return flatten_freq_ch(logits)  # (B, time, 264)
+        logits = self.contour_out(xc)  # (B, n_maps, time, 264) — no sigmoid
+        return flatten_freq_ch(logits)  # (B, time, n_maps * 264)
 
     # ------------------------------------------------------------------ weights
     @torch.no_grad()
@@ -199,6 +215,9 @@ class BasicPitch(nn.Module):
                 convs.setdefault(base, {})["bias"] = arr
             elif param in ("gamma", "beta", "moving_mean", "moving_variance"):
                 bns.setdefault(base, {})[param] = arr
+
+        if self.n_maps != 1:
+            raise ValueError("the released weights hold a single contour map (n_maps=1)")
 
         conv_by_shape = {tuple(v["kernel"].shape): v for v in convs.values()}
         bn_by_ch = {v["gamma"].shape[0]: v for v in bns.values()}

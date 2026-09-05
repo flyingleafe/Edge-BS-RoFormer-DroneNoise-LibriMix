@@ -1,0 +1,46 @@
+# @package _global_
+# Level L2 of the Basic Pitch row in Block S of docs/experiments/paper-regime-matrix.md
+# ("the adaptation ladder of the multi-pitch baselines"): per-rotor Gaussian
+# layers on the 0-150 rev/s grid with the CRF readout, ORIGINAL INPUT.
+#
+# conf/experiment/hb_sal_bp.yaml with the OUTPUT REPRESENTATION replaced, and
+# nothing else: the same honest-base online stream
+# (conf/online_mix/hb_silence_dload.yaml — real full-envelope pool + 16.7%
+# zero-labeled silence arm + SNR reference floor + freq-scale/time-warp/gain
+# augmentations), the same frozen real validation split
+# `dload:DREGON-LM-V4-michaels-valid-full`, the same epoch budget, patience,
+# batch size and workers. The model's INPUT is untouched too — same CQT and
+# harmonic stacking at native 16 kHz, same 264-bin contour trunk, same
+# [16000, 256] time grid. Only the head widens.
+#
+# Three files change together and they must:
+#   model   -> conf/model/basic_pitch_salience_l4.yaml   (n_maps 4, linear 0-150 grid)
+#   loss    -> conf/loss/salience_layers_r150_h256.yaml     (Gaussian layers, PIT BCE)
+#   metrics -> conf/metrics/salience_layers_r150_h256.yaml  (the same, plus rps_mae)
+#
+# WHY, THE `_h256` PAIR, THE MONITOR AND THE DECODE: identical to
+# conf/experiment/hb_sal_multif0_l4.yaml, which carries the long form. The
+# short version is that the shared salience map loses 8.24 rev/s on a PERFECT
+# target and per-rotor Gaussian layers with the CRF readout lose 2.22e-16, so
+# hb_sal_bp was measuring the representation as much as the architecture.
+defaults:
+  - override /data: e12_real_fullflight
+  - override /model: basic_pitch_salience_l4
+  - override /loss: salience_layers_r150_h256
+  - override /metrics: salience_layers_r150_h256
+
+experiment_name: hb_sal_bp_l4
+epochs: 200
+patience: 20
+batch_size: 16  # frames (= 2 chunks x 8 mics) — hb_sal_bp's value, and
+                # hppnet_r4_l4's; the head widens by 1182 parameters, thus the
+                # per-frame memory does not move and the batch does not either
+num_workers: 6
+samples_per_validation: 40000  # frames (= 5000 chunks/epoch at 8 mics)
+data:
+  train:
+    params:
+      path: conf/online_mix/hb_silence_dload.yaml
+optim:
+  monitor: rps_mae
+  monitor_mode: min

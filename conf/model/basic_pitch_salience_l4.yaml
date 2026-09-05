@@ -1,0 +1,57 @@
+# basic_pitch_salience with FOUR PER-ROTOR SALIENCE LAYERS instead of one
+# shared map, read on a LINEAR 0-150 rev/s output grid.
+#
+# conf/model/basic_pitch_salience.yaml verbatim apart from the output block, so
+# the pair isolates the OUTPUT REPRESENTATION and nothing else. The INPUT does
+# not move: the same CQT and harmonic stacking at native 16 kHz, the same
+# library defaults (bp_fmin 27.5, bins_per_semitone 3, n_contour_semitones 88
+# -> 264 contour bins at 36 bins per octave), the same contour trunk, the same
+# [16000, 256] time grid.
+#
+# WHY FOUR LAYERS, and why the output grid moves with them: see
+# conf/model/multif0_salience_l4.yaml, which carries the same argument and the
+# same measurement (shared map + triangular kernel + Hungarian loses 8.24 rev/s
+# on a PERFECT target; Gaussian layers + CRF lose 2.22e-16), and
+# conf/model/harmof0_rps_l4.yaml for the long form.
+#
+# ONE KNOWN LIMIT, and it belongs to L2's "original input" rule, not to this
+# file. `FreqSuperResHead` interpolates the input logits onto the output grid
+# and CLAMPS outside the input span, thus every output bin below the input
+# `fmin` reads the SAME input bin. This input spans 27.5 -> 4478 Hz (fmin 27.5,
+# 264 bins at 36 per octave), so the output bins under 27.5 rev/s carry no
+# independent evidence and the convolution stack has to separate them on
+# context alone. That band is not empty: conf/model/multif0_salience_nsr_hb.yaml
+# reports 4.9% of the frozen split's rotor-frames nonzero and under 55 rev/s,
+# which bounds the under-27.5 share from above. Moving the input would buy the
+# band; L2 may not, because it isolates the output representation. L3 (the comb
+# gather on the linear STFT) is the level that fixes it, and Basic Pitch has no
+# L3.
+#
+# Only `BasicPitch.contour_out` and the super-resolution head widen to four
+# channels. The layers ride the codec's `(batch, freq, time)` wire format
+# stacked along the output axis, thus the output width is 4 x 300 = 1200 bins.
+#
+# frame_rate STAYS [16000, 256]: FFT_HOP is 256 always in
+# models.basic_pitch.cqt, independent of the sample rate. That is the one
+# declaration in which this row differs from conf/model/hppnet_rps_l4.yaml (hop
+# 512), hence the loss and the metrics are the `_h256` twins of
+# salience_layers_r150.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: basic_pitch_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  sr: 16000
+  superres_out: true
+  out_fmin: 0.0
+  out_fmax: 150.0
+  out_bins: 300
+  n_maps: 4
+model_type: null
+legacy_config_path: null

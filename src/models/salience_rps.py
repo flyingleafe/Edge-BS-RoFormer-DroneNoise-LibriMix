@@ -21,6 +21,30 @@ them to the BCE/tracking path. Two concrete baselines:
     BasicPitchSalience  — Bittner et al. ICASSP 2022 contour branch (264-bin
                           grid, fmin 27.5, 36 bins/oct). Trained from scratch at
                           native 16 kHz; pretrained/22.05 kHz path is deferred.
+
+PER-ROTOR LAYERS (``n_maps``). Both baselines take ``n_maps=R``, which is the
+same option the harmonic ports carry, and it changes the OUTPUT ONLY — the
+front end, the trunk and every input grid stay as they are. `models.
+salience_crf` measured why it exists: encode real training telemetry into ONE
+shared salience map and decode it again — a PERFECT target, no model involved —
+and the trajectory comes back 8.24 rev/s away on average, against 2.22e-16 for
+Gaussian per-rotor layers read by a CRF plus a log-parabolic fit. 8.24 rev/s is
+an oracle floor, thus every shared-map row measured the representation as much
+as the architecture.
+
+``n_maps > 1`` widens the OUTPUT HEAD and nothing else — the trunk's final 1x1
+map convolution, plus the channel width the super-resolution head carries — and
+stacks the maps along the codec's ``(batch, freq, time)`` output axis, width
+``n_maps * out_bins``, because a 4-D model output does not type-check through
+``tasks.codecs.SalienceRPSCodec``. Pair it with
+``conf/loss/salience_layers_r150_h256.yaml`` and
+``conf/metrics/salience_layers_r150_h256.yaml`` — the hop-256 twins of the
+ports' r150 pair, because both front ends here emit salience at hop 256.
+`models.harmonic_ports.layer_readout.LayerCRFReadout` then decodes one CRF best
+path per layer, with no threshold and no Hungarian step. It needs an explicit
+LINEAR output grid (``superres_out=True``), because the log-parabolic readout
+and the CRF band are both defined on a uniform axis. ``n_maps=1`` is the old
+model exactly: same parameter names, same shapes, same shared-map decoder.
 """
 
 import numpy as np
@@ -28,6 +52,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.harmonic_ports.layer_readout import LayerCRFReadout
 from models.multif0.utils import (
     cqt_freq_grid,
     linear_freq_grid,
@@ -71,6 +96,12 @@ class FreqSuperResHead(nn.Module):
     frequency grid to an arbitrary output grid (e.g. a fine *linear* 55–110 Hz
     grid); a small ``(kernel, 1)`` conv stack then learns to deconvolve/sharpen the
     peak on the fine grid. The time axis is untouched, so output ``T`` == input ``T``.
+
+    ``n_maps`` carries per-rotor salience layers through: the maps ride the
+    channel axis of the conv stack, thus the first layer MIXES them (a rotor's
+    layer can use what the others hold) and the last layer emits one refined
+    map each. At ``n_maps=1`` both convolutions keep their old shapes and
+    names, so a checkpoint of the single-map head loads unchanged.
     """
 
     def __init__(
@@ -80,12 +111,14 @@ class FreqSuperResHead(nn.Module):
         hidden: int = 32,
         kernel: int = 5,
         n_layers: int = 2,
+        n_maps: int = 1,
     ):
         super().__init__()
         self.register_buffer("W", torch.from_numpy(_freq_interp_matrix(in_freqs, out_freqs)))
+        self.n_maps = int(n_maps)
         pad = kernel // 2
         layers: list[nn.Module] = []
-        ch_in = 1
+        ch_in = self.n_maps
         for _ in range(n_layers):
             layers += [
                 nn.Conv2d(ch_in, hidden, (kernel, 1), padding=(pad, 0)),
@@ -93,14 +126,20 @@ class FreqSuperResHead(nn.Module):
                 nn.ReLU(inplace=True),
             ]
             ch_in = hidden
-        layers += [nn.Conv2d(ch_in, 1, (1, 1))]
+        layers += [nn.Conv2d(ch_in, self.n_maps, (1, 1))]
         self.net = nn.Sequential(*layers)
 
     def forward(self, logits_in: torch.Tensor) -> torch.Tensor:
-        """``(B, F_in, T)`` salience logits → ``(B, F_out, T)`` on the output grid."""
-        x = torch.einsum("oi,bit->bot", self.W, logits_in)  # (B, F_out, T)
-        x = self.net(x.unsqueeze(1))  # (B, 1, F_out, T)
-        return x.squeeze(1)  # (B, F_out, T)
+        """``(B, M, F_in, T)`` salience logits → ``(B, M, F_out, T)`` on the output grid.
+
+        The resampling is per map, thus the maps fold into the batch axis for
+        it; at ``M == 1`` that fold is a no-op and the arithmetic is the old
+        one, bit for bit.
+        """
+        b, m, _f_in, t = logits_in.shape
+        x = torch.einsum("oi,bit->bot", self.W, logits_in.reshape(b * m, _f_in, t))
+        x = self.net(x.reshape(b, m, -1, t))  # (B, M, F_out, T)
+        return x
 
 
 class SalienceRPSPredictor(nn.Module):
@@ -316,7 +355,7 @@ class SalienceRPSPredictor(nn.Module):
         return rps_grid
 
 
-class LateDeepSalience(SalienceRPSPredictor):
+class LateDeepSalience(LayerCRFReadout, SalienceRPSPredictor):
     """LateDeep multi-F0 CNN over an HCQT front-end, emitting salience logits.
 
     Native 16 kHz: with the default ``fmin=27.5`` the HCQT front-end auto-derives
@@ -329,6 +368,14 @@ class LateDeepSalience(SalienceRPSPredictor):
     below 32.7 Hz. The grid descriptor (fmin/n_bins/...) is read back from the
     front-end, so lowering it automatically reshapes the salience target and the
     Hungarian tracker — no other changes needed.
+
+    ``n_maps=R`` (the ``_l4`` option, see the module docstring) makes the model
+    emit ONE SALIENCE LAYER PER ROTOR instead of one shared map. The INPUT is
+    untouched: same HCQT, same trunk, same time grid. Only ``LateDeep``'s final
+    1x1 convolution and the super-resolution head widen to ``R`` channels, and
+    the output is ``(B, R * out_bins, T)``. It requires ``superres_out=True``,
+    and it pairs with `losses.LayerPITSalienceBCELoss` plus the CRF readout
+    this class inherits from `models.harmonic_ports.layer_readout`.
     """
 
     def __init__(
@@ -349,9 +396,17 @@ class LateDeepSalience(SalienceRPSPredictor):
         out_bins: int = 360,
         head_hidden: int = 32,
         head_kernel: int = 5,
+        n_maps: int = 1,
         **frontend_kwargs,
     ):
         super().__init__(n_fft, hop_length, num_rotors)
+        self.n_maps = int(n_maps)
+        if self.n_maps > 1 and not superres_out:
+            raise ValueError(
+                "per-rotor layers need an explicit LINEAR output grid: the "
+                "log-parabolic readout and the CRF band are both defined on a "
+                "uniform axis. Set superres_out=True."
+            )
         from typing import cast
 
         from models.frontends import build_frontend
@@ -366,7 +421,9 @@ class LateDeepSalience(SalienceRPSPredictor):
         fe = cast(HCQTFrontEnd, frontend)
 
         self.n_harmonics = fe.out_channels // 2 if fe.use_phase else fe.out_channels
-        self.cnn = LateDeep(n_harmonics=self.n_harmonics, fused_branches=fused_branches)
+        self.cnn = LateDeep(
+            n_harmonics=self.n_harmonics, fused_branches=fused_branches, n_maps=self.n_maps
+        )
 
         # Grid descriptor (HCQT input params)
         self.fmin = fe.fmin
@@ -384,7 +441,7 @@ class LateDeepSalience(SalienceRPSPredictor):
             out_freqs = linear_freq_grid(out_fmin, out_fmax, out_bins)
             self.out_freqs = out_freqs
             self.head = FreqSuperResHead(
-                in_freqs, out_freqs, hidden=head_hidden, kernel=head_kernel
+                in_freqs, out_freqs, hidden=head_hidden, kernel=head_kernel, n_maps=self.n_maps
             )
 
     def num_grid_frames(self, n_samples: int) -> int:
@@ -403,11 +460,13 @@ class LateDeepSalience(SalienceRPSPredictor):
         else:
             mag = feats
             dphase = torch.zeros_like(mag)
-        logits = self.cnn(mag, dphase, return_logits=True)  # (B, 1, F_in, T)
-        logits = logits.squeeze(1)  # (B, F_in, T)
+        logits = self.cnn(mag, dphase, return_logits=True)  # (B, M, F_in, T)
         if self.head is not None:
-            logits = self.head(logits)  # (B, F_out, T) on the fine linear grid
-        return logits
+            logits = self.head(logits)  # (B, M, F_out, T) on the fine linear grid
+        # The codec's wire format is 3-D, thus the maps stack along the output
+        # axis; `layer_readout.split_maps` reads them back.
+        b, m, g, t = logits.shape
+        return logits.reshape(b, m * g, t)
 
     def to(self, *args, **kwargs):
         # HCQT nnAudio modules are not plain submodules — move them explicitly.
@@ -416,11 +475,20 @@ class LateDeepSalience(SalienceRPSPredictor):
         return super().to(*args, **kwargs)
 
 
-class BasicPitchSalience(SalienceRPSPredictor):
+class BasicPitchSalience(LayerCRFReadout, SalienceRPSPredictor):
     """Basic Pitch contour branch as a salience-map RPS baseline.
 
     Uses the 264-bin contour grid (fmin 27.5, 36 bins/oct). Trained from scratch
     at native 16 kHz. The pretrained/22.05 kHz path is stubbed but deferred.
+
+    ``n_maps=R`` (the ``_l4`` option, see the module docstring) makes the model
+    emit ONE SALIENCE LAYER PER ROTOR instead of one shared map. The INPUT is
+    untouched: same CQT, same harmonic stacking, same contour trunk. Only
+    ``BasicPitch.contour_out`` and the super-resolution head widen to ``R``
+    channels, and the output is ``(B, R * out_bins, T)``. It requires
+    ``superres_out=True``, and it pairs with `losses.LayerPITSalienceBCELoss`
+    plus the CRF readout this class inherits from
+    `models.harmonic_ports.layer_readout`.
     """
 
     def __init__(
@@ -444,10 +512,19 @@ class BasicPitchSalience(SalienceRPSPredictor):
         out_bins: int = 360,
         head_hidden: int = 32,
         head_kernel: int = 5,
+        n_maps: int = 1,
     ):
         super().__init__(n_fft, hop_length, num_rotors)
         from models.basic_pitch.cqt import FFT_HOP
         from models.basic_pitch.model import BasicPitch
+
+        self.n_maps = int(n_maps)
+        if self.n_maps > 1 and not superres_out:
+            raise ValueError(
+                "per-rotor layers need an explicit LINEAR output grid: the "
+                "log-parabolic readout and the CRF band are both defined on a "
+                "uniform axis. Set superres_out=True."
+            )
 
         if pretrained:
             # Deferred: pretrained kernels assume 22.05 kHz CQT input.
@@ -462,6 +539,7 @@ class BasicPitchSalience(SalienceRPSPredictor):
             fmin=bp_fmin,
             bins_per_semitone=bins_per_semitone,
             n_contour_semitones=n_contour_semitones,
+            n_maps=self.n_maps,
         )
         if freeze:
             for p in self.net.parameters():
@@ -483,7 +561,7 @@ class BasicPitchSalience(SalienceRPSPredictor):
             out_freqs = linear_freq_grid(out_fmin, out_fmax, out_bins)
             self.out_freqs = out_freqs
             self.head = FreqSuperResHead(
-                in_freqs, out_freqs, hidden=head_hidden, kernel=head_kernel
+                in_freqs, out_freqs, hidden=head_hidden, kernel=head_kernel, n_maps=self.n_maps
             )
 
     def num_grid_frames(self, n_samples: int) -> int:
@@ -492,8 +570,12 @@ class BasicPitchSalience(SalienceRPSPredictor):
         return n_samples // self.spec_hop + 1
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        logits = self.net.contour_logits(audio)  # (B, time, contour_bins)
-        logits = logits.transpose(1, 2)  # (B, contour_bins, time)
+        logits = self.net.contour_logits(audio)  # (B, time, M * contour_bins)
+        logits = logits.transpose(1, 2)  # (B, M * contour_bins, time)
+        b, mg, t = logits.shape
+        x = logits.reshape(b, self.n_maps, mg // self.n_maps, t)
         if self.head is not None:
-            logits = self.head(logits)  # (B, F_out, time) on the fine linear grid
-        return logits
+            x = self.head(x)  # (B, M, F_out, time) on the fine linear grid
+        # The codec's wire format is 3-D, thus the maps stack along the output
+        # axis; `layer_readout.split_maps` reads them back.
+        return x.reshape(b, x.shape[1] * x.shape[2], t)

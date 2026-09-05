@@ -1,0 +1,28 @@
+# conf/metrics/salience_layers_r150.yaml on the HOP-256 time grid, the
+# validation twin of conf/loss/salience_layers_r150_h256.yaml. Read the r150
+# pair for the argument; `rate` is the only value that differs, and
+# conf/loss/salience_layers_r150_h256.yaml says why.
+#
+# `bce` mirrors the training objective exactly. `rps_mae` is the same layers
+# read in rev/s — each layer's peak refined by the three-point log-parabolic
+# fit, PIT-aligned to the label — and it is the number to compare arms on.
+terms:
+  - name: bce
+    _target_: metrics.LayerPITSalienceBCEMetric
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      n_layers: 4
+      sigma_bins: 1.0
+      focus: 120.0  # mirrors the loss; `rps_mae` is focus-free by construction
+      rate: [16000, 256]
+  - name: rps_mae
+    _target_: metrics.LayerPeakRPSMetric
+    params:
+      out_fmin: 0.0
+      out_fmax: 150.0
+      out_bins: 300
+      n_layers: 4
+      sigma_bins: 1.0
+      rate: [16000, 256]

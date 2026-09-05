@@ -1,0 +1,71 @@
+# multif0_salience with FOUR PER-ROTOR SALIENCE LAYERS instead of one shared
+# map, read on a LINEAR 0-150 rev/s output grid.
+#
+# conf/model/multif0_salience.yaml verbatim apart from the output block, so the
+# pair isolates the OUTPUT REPRESENTATION and nothing else. The INPUT does not
+# move: the same HCQT front end (fmin 32.7 = C1, 6 octaves, over_sample 5 — the
+# class reads the grid back from the front end), the same LateDeep trunk, the
+# same [16000, 256] time grid.
+#
+# WHY FOUR LAYERS. `models.salience_crf` measured the shared-map representation
+# by encoding real training telemetry and decoding it again — a perfect target,
+# no model involved — on a 0-150 rev/s grid at 0.5 rev/s:
+#
+#   triangular kernel, ONE map, Hungarian     mean err 8.24 rev/s
+#   Gaussian per-rotor layers, CRF readout    mean err 2.22e-16 rev/s
+#
+# 8.24 rev/s on a PERFECT target is an ORACLE FLOOR: no model reading that
+# representation can score better, however well it predicts. DREGON's rotor
+# pairs sit 0.13-0.86 rev/s apart, INSIDE one bin, so one map has fewer peaks
+# than the airframe has rotors and the tracker assigns several rotors to one
+# peak. Four layers leave nothing to merge. Same argument, same numbers, as
+# conf/model/harmof0_rps_l4.yaml — read that file for the long form.
+#
+# WHY THE OUTPUT GRID MOVES TOO. The CRF band and the three-point
+# log-parabolic vertex fit are both defined on a UNIFORM axis, and the HCQT
+# grid is log-spaced. `superres_out: true` is therefore mandatory here, and it
+# costs no new machinery: `models.salience_rps.FreqSuperResHead` already
+# resamples the log input grid onto an arbitrary output grid and sharpens it
+# with a small (5, 1) convolution stack. It now carries four channels. The grid
+# is the ports' own — linear 0 -> 150 rev/s in 300 bins, 0.5017 rev/s per bin —
+# thus this row's `rps_mae` is directly comparable with harmof0/hppnet/hft _l4.
+#
+# ONE KNOWN LIMIT, and it belongs to L2's "original input" rule, not to this
+# file. `FreqSuperResHead` interpolates the input logits onto the output grid
+# and CLAMPS outside the input span, thus every output bin below the input
+# `fmin` reads the SAME input bin. This input spans 32.7 -> 2092.8 Hz (fmin
+# 32.7, 6 octaves), so the output bins under 32.7 rev/s carry no independent
+# evidence and the convolution stack has to separate them on context alone.
+# That band is not empty: conf/model/multif0_salience_nsr_hb.yaml reports 4.9%
+# of the frozen split's rotor-frames nonzero and under 55 rev/s, which bounds
+# the under-32.7 share from above. `hb_sal_multif0_nsr` (L1) buys the band by
+# moving the input; L2 may not, because it isolates the output representation.
+# L3 (the comb gather on the linear STFT) is the level that fixes it, and
+# LateDeep has no L3.
+#
+# The layers ride the codec's `(batch, freq, time)` wire format stacked along
+# the output axis, thus the model's output width is 4 x 300 = 1200 bins.
+#
+# frame_rate STAYS [16000, 256], the HCQT front end's native time grid — an
+# INPUT, and this row changes no input. That is the one declaration in which it
+# differs from conf/model/hppnet_rps_l4.yaml (hop 512), hence the loss and the
+# metrics are the `_h256` twins of salience_layers_r150.
+task: salience_rps
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 256]
+_target_: models.registry.build_model
+params:
+  name: multif0_salience
+  n_fft: 2048
+  hop_length: 512
+  num_rotors: 4
+  fmin: 32.7
+  superres_out: true
+  out_fmin: 0.0
+  out_fmax: 150.0
+  out_bins: 300
+  n_maps: 4
+model_type: null
+legacy_config_path: null

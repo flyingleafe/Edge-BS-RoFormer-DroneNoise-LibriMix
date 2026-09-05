@@ -281,6 +281,35 @@ tracking, `--track_threshold`) → STFT grid, so the existing global-PIT metrics
 (PIT MSE/RMSE/MAE/R²) apply unchanged and stay comparable to the SimpleConv family.
 Both run natively at 16 kHz. The RPS↔salience helpers live in `multif0/utils.py`.
 
+**Per-rotor layers (`n_maps`) — the `_l4` rows.** Both baselines take the same
+`n_maps` option the three harmonic ports carry, and it changes the OUTPUT ONLY:
+the front end, the trunk and every input grid stay as they are. `n_maps > 1`
+widens the trunk's final 1x1 map convolution (`LateDeep.squishy[1]`,
+`BasicPitch.contour_out`) and the channel width of `FreqSuperResHead`, then
+stacks the maps along the codec's `(batch, freq, time)` output axis, width
+`n_maps * out_bins`. It REQUIRES an explicit linear output grid
+(`superres_out=True`), because the CRF band and the log-parabolic vertex fit are
+both defined on a uniform axis and both input grids are log-spaced; the
+constructor raises otherwise. The configs are
+`conf/model/{multif0,basic_pitch}_salience_l4.yaml`, paired with
+`conf/{loss,metrics}/salience_layers_r150_h256.yaml` — the hop-256 twins of the
+ports' `salience_layers_r150`, because these front ends emit salience at hop 256
+and the ports at hop 512. `models.harmonic_ports.layer_readout.LayerCRFReadout`
+is mixed in before `SalienceRPSPredictor`, so `predict_rps` becomes one CRF best
+path per layer with no threshold and no Hungarian step. `n_maps=1` is the old
+model exactly — same parameter names, same shapes, same shared-map decoder — and
+that identity is locked by `tests/models/test_salience_baseline_layers.py`.
+Widening costs 603 parameters for `multif0_salience` and 1182 for
+`basic_pitch_salience`. Motivation and measurement: the "Per-rotor layers"
+paragraph of the harmonic-ports section above.
+
+Mixing the readout in made `models.harmonic_ports.__init__` import its five
+models LAZILY (PEP 562 `__getattr__`): each of them imports
+`models.salience_rps` for its base class, and `models.salience_rps` now imports
+`LayerCRFReadout` back out of that package. `layer_readout` itself depends on
+nothing in the package, so exporting it eagerly and the models lazily removes
+the cycle and leaves every import path unchanged.
+
 **The zero convention (both directions).** A stopped rotor (`rps <= 0.1`) is the
 only case the *target* leaves dark — a rotor that is slow but running is
 quantized ONTO the lowest bin, not dropped, so a grid whose `fmin` sits above

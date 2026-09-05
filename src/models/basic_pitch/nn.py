@@ -71,12 +71,17 @@ class HarmonicStacking(nn.Module):
 def flatten_freq_ch(x: torch.Tensor) -> torch.Tensor:
     """Flatten the channel dimension into the frequency dimension.
 
-    TF input ``(B, time, freq, ch)`` -> ``(B, time, freq * ch)`` with ``ch``
-    varying fastest.  In the model this is only ever applied to single-channel
-    tensors (the contour / note / onset heads), so it reduces to squeezing the
-    channel axis.
+    NCHW input ``(B, C, time, freq)`` -> ``(B, time, C * freq)``. The note and
+    onset heads are single-channel, so ``C == 1`` reduces to squeezing the
+    channel axis, exactly as before.
 
-    NCHW input ``(B, 1, time, freq)`` -> ``(B, time, freq)``.
+    THE CHANNEL IS THE SLOW AXIS. A multi-map contour head (``BasicPitch(
+    n_maps=R)``, the per-rotor salience layers) stacks its maps here, and the
+    consumer is ``models.harmonic_ports.layer_readout.split_maps``, which reads
+    ``(B, R*G, T)`` back as ``(B, R, G, T)``. That is map-major, thus each map
+    keeps its ``freq`` bins contiguous.
     """
-    assert x.shape[1] == 1, "flatten_freq_ch is only used on single-channel heads"
-    return x[:, 0, :, :]
+    b, c, t, f = x.shape
+    if c == 1:
+        return x[:, 0, :, :]
+    return x.permute(0, 2, 1, 3).reshape(b, t, c * f)

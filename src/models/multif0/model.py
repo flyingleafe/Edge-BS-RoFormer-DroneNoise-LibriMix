@@ -365,11 +365,19 @@ class LateDeep(MultiF0Estimator):
     launch per layer instead of two, and the concat becomes free. Checkpoints
     convert transparently between the two layouts via a load-state-dict pre-hook,
     so a model trained one way loads either way.
+
+    ``n_maps`` is the number of output maps. 1 is the paper model — one shared
+    multi-hot salience map. ``n_maps > 1`` widens the final 1x1 convolution
+    only, so the trunk emits ONE MAP PER SOURCE; `models.salience_rps` uses it
+    for the per-rotor salience layers (the ``_l4`` rows). The parameter name
+    stays ``squishy.1``, thus a ``n_maps=1`` model is weight-identical to every
+    checkpoint made before this option existed.
     """
 
-    def __init__(self, n_harmonics: int = 5, fused_branches: bool = False):
+    def __init__(self, n_harmonics: int = 5, fused_branches: bool = False, n_maps: int = 1):
         super().__init__()
         self.fused_branches = fused_branches
+        self.n_maps = int(n_maps)
 
         if fused_branches:
             self.fused_branch = _fused_base_branch(n_harmonics)
@@ -396,7 +404,7 @@ class LateDeep(MultiF0Estimator):
 
         self.squishy = nn.Sequential(
             nn.BatchNorm2d(8),
-            _same_conv2d(8, 1, (1, 1)),
+            _same_conv2d(8, self.n_maps, (1, 1)),
             nn.Sigmoid(),
         )
 
@@ -436,8 +444,8 @@ class LateDeep(MultiF0Estimator):
             # Pre-sigmoid logits for BCEWithLogitsLoss. squishy = [BN, Conv(1×1),
             # Sigmoid]; replay BN + Conv and skip the final activation. Indexing the
             # Sequential (rather than restructuring it) keeps checkpoints loadable.
-            return self.squishy[1](self.squishy[0](x))  # (B, 1, F, T) logits
-        x = self.squishy(x)  # (B, 1, F, T)
+            return self.squishy[1](self.squishy[0](x))  # (B, n_maps, F, T) logits
+        x = self.squishy(x)  # (B, n_maps, F, T)
         return x
 
 
