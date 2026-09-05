@@ -424,6 +424,21 @@ unseen drone like the regressors (71) but already half-reads frequency
 (0.71 local) without any augmentation, which the regressors never do. The
 HarmoF0 port trails HPPNet by 2x on the same recipe.
 
+### Batch 12: HarmoF0 rungs (all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | probe full / local |
+|---|---|---|---|---|---|---|---|---|
+| `real_r1_hf0` (mic 0, DREGON) | 18.09 | 31.21 | 26.15 | 55.91 | 19.43 | 71.55 | 37.05 | 0.32 / 0.28 |
+| `hf0_r2hb_l4` (rung 4 pool, with speech) | 13.96 | 24.28 | 16.62 | 12.90 | 6.22 | 2.29 | 7.90 | 1.01 / 0.95 |
+| `hf0_r2hb_nomix` (rung 4 pool, no speech) | 19.64 | 31.97 | 16.38 | 11.44 | 4.65 | 2.31 | 8.09 | 1.03 / 1.12 |
+| `real_r1_hppnet` (reference, same rung) | 2.86 | 29.28 | 10.68 | 54.49 | 2.91 | 71.22 | 26.86 | 0.38 / 0.71 |
+| `hppnet_r2hb_nomix` (reference, same pool) | 2.90 | 27.62 | 10.48 | 3.07 | 2.65 | 0.80 | 3.57 | 0.97 / 0.99 |
+
+Readings: HarmoF0 loses to HPPNet on every regime of the same recipe, most
+of all on silence (14-20 vs 2.9, phantom rotors) and on cruise (4.7-6.2 vs
+2.65); on the mic-0 rung it is not usable even on DREGON cruise (19.4).
+Speech in training is a wash for it (7.90 vs 8.09).
+
 ## Conclusion
 
 Pending.
