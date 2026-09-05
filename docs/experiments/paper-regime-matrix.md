@@ -72,12 +72,18 @@ Experiment names per cell. "old" marks a row that predates this campaign.
 | R2 | `real_r2_sc` | `real_r2_scv2` | `real_r2_tm` | `real_r2_gru` | `real_r2_hppnet` | `real_r2_hf0` |
 | R3 | `real_r3_sc` | `real_r3_scv2` | `real_r3_tm` | `real_r3_gru` | `real_r3_hppnet` | `real_r3_hf0` |
 | R4 | `real_r4_sc` | `real_r4_scv2` (old: `hb_scv2_mag_nogate`) | `real_r4_tm` (old: `tm_r2hb_nogate`; IF: `r2hb_tr_nogate`) | `real_r4_gru` (old: `r2hb_gru_nogate`) | `hppnet_r2hb_l4` | `hf0_r2hb_l4` |
-| R4 nomix | — | `r2hb_scv2_nomix` | `r2hb_tm_nomix` | `r2hb_gru_nomix` | `hppnet_r2hb_nomix` | `hf0_r2hb_nomix` |
+| R4 nomix | — | `r2hb_scv2_nomix_wu` (warm-up-free: `r2hb_scv2_nomix`) | `r2hb_tm_nomix_wu` | `r2hb_gru_nomix_wu` | `hppnet_r2hb_nomix` | `hf0_r2hb_nomix` |
 | S1 nomix / mix | — | old `salv2_scv2_comb_{nomix,mix}` | `salv2_tr_comb_{nomix,mix}` | `salv2_gru_comb_{nomix,mix}` | old `salv2_hppnet_comb_{nomix,mix}` | old `salv2_hf0_comb_{nomix,mix}` |
 | S2 nomix / mix | — | old `salv2_scv2_stoch_{nomix,mix}` | `salv2_tr_stoch_{nomix,mix}` | `salv2_gru_stoch_{nomix,mix}` | old `salv2_hppnet_stoch_{nomix,mix}` | old `salv2_hf0_stoch_{nomix,mix}` |
 | C1 comb → R4 | — | old `r4hb_scv2` (+ `r4hb_seed1/2`) | `tm_comb_s1` → `tm_r4hb` (IF: `r4hb_tr`) | old `r4hb_gru` | old `hppnet_r4_l4` | `hf0_r4_l4_v2` (old `hf0_r4_l4` was BCE-selected) |
 | C2 stoch → R4 | — | old `r6hb_scv2` | — | — | — | — |
 | M | — | old `r7hb_scv2` | `r7hb_tm` | `r7hb_gru` | — | — |
+
+The no-speech regressor rows are the `_wu` twins (with the 50k warm-up of
+the old R4 rows, so that the speech A/B compares like with like); the
+warm-up-free `r2hb_tm_nomix` and `r2hb_gru_nomix` were planned but never
+trained, and `r2hb_scv2_nomix` (warm-up-free) stays as the schedule
+ablation's no-speech arm.
 
 The old rows `hb_scv2_mag_nogate`, `r2hb_gru_nogate` and `r2hb_tr_nogate`
 trained on `hb_silence_dload.yaml`, which adds a 50k-sample unaugmented warm-up
