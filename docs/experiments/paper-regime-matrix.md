@@ -644,6 +644,29 @@ with warm-up, 1.01 from step 0) at a DREGON cruise cost of 2.42 -> 2.79
 drone is the ingredient that fixes the unseen rig (FLY124 cruise 8.5 ->
 1.5), the augmentations are the ingredient that fixes the probe.
 
+### The optimal-transport row and the phase-coherence probe (2026-09-05, evening)
+
+`otmp` (inverse harmonic clustering) was recomputed on `uni-cpu`
+(`eval-otmp-a7e0c7`, 296 per-channel units, resampled from its 1 s frames
+to the 2048/512 grid) and assembled locally: zero 69.2 | below-30 49.1 |
+ramp 18.7 | DREGON cruise 14.4 | FLY124 cruise 18.6 | all 24.2 (the doc's
+own-protocol all-frame value was 24.5). The leaderboard's training-free
+side is complete under the one script.
+
+For the journal version (OJSP), a phase-coherence probe of the harmonics
+of one rotor was built on the WP18 covariance estimator
+(`scripts/phase_coherence_probe.py`, statistics in
+`src/tracking/phase_noise.py`: envelope autocorrelation -> coherence time
+and Lorentzian half width per harmonic, Lorentzian-vs-Gaussian line-shape
+fit, cross-harmonic correlation of the rate opinions and the rank-one
+share, Cauchy-vs-Gaussian tail statistics of the per-harmonic residual).
+Conditions: single motor on the bench (DREGON `motor_Motor{1-4}_{50..90}`,
+20 units), all four motors on the bench (`motor_allMotors_70`, 4 units),
+free flight from the TRAINING split only (DREGON room 2, 7 windows x 4
+rotors, telemetry refined by `pi_kalman`; FLY125, 7 windows x 4 rotors,
+refined sidecar). Job `phase-coherence-4fe127` on `uni-cpu`; outputs
+`results/phase_coherence/{summary.csv,conditions.csv,report.md}`.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
