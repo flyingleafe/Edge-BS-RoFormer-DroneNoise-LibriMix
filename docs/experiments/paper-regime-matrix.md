@@ -461,6 +461,27 @@ place cruise speeds (43.9). Its problem is the input representation, which
 its architecture gives no handle on (no harmonic convolutions to replace), so
 block S ends for it at L2.
 
+### Batch 14: block S, the published architectures against their ports; HPPNet rung 2 (all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all |
+|---|---|---|---|---|---|---|---|
+| `hb_sal_hppnet_orig` (HPPNet as published, L0) | 17.48 | 17.52 | 40.14 | 7.50 | 3.81 | 1.63 | 7.77 |
+| `hppnet_r2hb_l4` (HPPNet port, L3, same pool) | 5.95 | 26.65 | 9.83 | 4.77 | 2.95 | 0.92 | 4.18 |
+| `hb_sal_hf0_orig` (HarmoF0 as published, L0) | 14.77 | 18.92 | 37.65 | 8.13 | 11.50 | 1.92 | 10.79 |
+| `hf0_r2hb_l4` (HarmoF0 port, L3, same pool) | 13.96 | 24.28 | 16.62 | 12.90 | 6.22 | 2.29 | 7.90 |
+| `hb_sal_multif0` (LateDeep, L0) | 52.57 | 35.63 | 14.22 | 18.66 | 2.96 | 4.46 | 12.65 |
+| `hb_sal_bp` (Basic Pitch, L0) | 33.86 | 38.68 | 35.45 | 16.54 | 26.39 | 25.65 | 27.30 |
+| `real_r2_hppnet` (HPPNet port, rung 2) | 1.77 | 25.85 | 13.16 | 54.28 | 2.41 | 71.15 | 26.48 |
+
+Readings: the modifications (comb gather on the linear STFT + per-rotor layers
+with the CRF readout) halve HPPNet's error (7.77 -> 4.18), mostly on silence
+(17.5 -> 6.0) and DREGON ramps (40 -> 10), and cut HarmoF0's DREGON cruise
+error in half (11.5 -> 6.2). Both published log-axis models are already far
+ahead of LateDeep and Basic Pitch on this task, so the ranking of the
+multi-pitch baselines is set by their harmonic device before any adaptation.
+The rung-2 HPPNet has the best DREGON cruise of the ports (2.41) and, like
+every rung-1/2 row, no transfer to the unseen drone.
+
 ## Conclusion
 
 Pending.
