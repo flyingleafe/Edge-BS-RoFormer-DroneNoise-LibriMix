@@ -105,9 +105,23 @@ Pitch have no such convolutions).
 ## Protocol
 
 - Every checkpoint is dumped with `scripts/rps_dump.py` on the parts `comb`,
-  `stoch`, `real`, `comb_speech`, `stoch_speech` and `real_nospeech` (the
-  noise-only twin of the frozen real split), and the dump must reproduce the
-  W&B monitored value to three decimals.
+  `stoch`, `real`, `comb_speech`, `stoch_speech` and `real_nospeech`, and the
+  dump must reproduce the W&B monitored value to three decimals.
+- The frozen real split carries NO mixed LibriSpeech: `mode: real_valid` cuts
+  the raw recordings. Its speech is acoustic. 14 of the 37 clips come from the
+  DREGON `free-flight_speech-low_room1` and `free-flight_whitenoise-low_room1`
+  flights, where a loudspeaker played into the room; the other 23 clips
+  (`free-flight_nosource_room1` and FLY124) are rotor noise only.
+  `real_nospeech` = `dload:DREGON-LM-V4-michaels-valid-full-nospeech`, the 23
+  noise-only clips cut byte for byte from the published set (pin
+  `01dfb417af7b…`). The speech A/B on real data therefore reads each pair
+  (trained with / without mixed speech) on the 23 clean clips and on the 14
+  loudspeaker clips separately.
+- Caveat: re-deriving the published split from today's pinned frames does not
+  reproduce it (DREGON labels moved by up to 16 rev/s when the frame adapter
+  started to prefer `motors_measured`; the FLY124 audio alignment changed with
+  the 2026-07-31 calibration). Every row of this campaign is scored on the
+  published bytes, as every earlier row was.
 - The real split is reported by rig (DREGON room1 / FLY124) × regime
   (zero-frames / below-30 / ramp in-grid / cruise in-grid / ground) ×
   microphone group (ch 0 / ch 1–7 / all) with `scripts/rps_regime_table.py`.
