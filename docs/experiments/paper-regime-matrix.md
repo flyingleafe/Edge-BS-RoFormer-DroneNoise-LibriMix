@@ -682,6 +682,53 @@ whole ladder (FLY124 cruise 0.93 against 1.30-2.28 for the regressors at
 rung 3); rung 4 buys only the probe (0.73 -> 0.97) at a DREGON cruise
 cost of 2.22 -> 2.95. Both papers' claim-2 paragraph now says so.
 
+### Phase-coherence probe, run 2 (`phase-coherence-2-4617a1`, 78 units): what the harmonics of one rotor do
+
+Estimator: `scripts/phase_coherence_probe.py` on `tracking.phase_noise`
+(demodulate orders k = 1..30 along the refined reference, envelope
+autocorrelation -> coherence time and Lorentzian half width, line-shape
+verdict, per-order rate opinions -> cross-harmonic correlation under
+low-pass smoothing, residual tails). Conditions: one motor on the bench
+(20 recordings, 4 motors x 5 setpoints), four motors on the bench (one
+merged comb, the rotors within 1.2 rev/s), free flight of the TRAINING
+split (DREGON room 2, 7 windows x 4 rotors; FLY125, 7 x 4).
+
+| condition | admitted orders | even / odd (clear of other rotors' lines) | width law (Theil-Sen, Hz per order) | Lorentzian verdict | rho at raw / 4 / 1 / 0.25 Hz | rank-1 share | kurtosis k6-15 | Cauchy-vs-Gauss LLR k1-5 / 6-15 / 16-30 |
+|---|---|---|---|---|---|---|---|---|
+| one rotor, bench | 329 (56 % censored at 2 s lag) | 140 / 6 (all clear) | 0.042 [0.027, 0.055]; k >= 8: 0.042 | 100 % at every band | 0.001 / 0.001 / 0.001 / 0.001 | 0.28-0.31 | 133 | 1.50 / 0.83 / 0.58 |
+| four rotors, bench (merged) | 8 | 6 / 2 (0 / 0) | n/a (clusters k x 1.2 rev/s wide) | 67 % (k6-15), 20 % (k16-30) | 0.002 / 0.003 / 0.007 / 0.009 | 0.23-0.26 | 87 | 0.90 / 0.43 / 0.38 |
+| free flight, DREGON room 2 | 0 (every order within the 10 Hz band of another rotor's line) | - | n/a | - | 0.000 / 0.001 / 0.002 / -0.003 | 0.29-0.31 | 86 | 0.55 / 0.48 / 0.36 |
+| free flight, FLY125 | 47 | 37 / 1 (1 / 0) | n/a: flat 3-4 Hz plateau, 0.04 s coherence, Gaussian verdict = the band and the neighbours, not the line | 0 % | 0.002 / 0.004 / 0.005 / 0.011 | 0.22-0.25 | 102 | 0.53 / 0.48 / 0.35 |
+
+Per-order medians, one rotor: gamma 0.22 Hz (k 8), 0.30 (10), 0.20 (12),
+0.37 (14), 0.40 (16), 0.45 (18), 0.46 (20), 0.65 (22), 0.97 (24), 1.01
+(26), 0.88 (28), 1.19 (30); coherence times 0.74 s -> 0.13 s.
+
+Readings. (1) A single two-blade rotor at a fixed setpoint radiates the
+blade-passage orders (even shaft orders, 140 admitted against 6 odd);
+after the shaft rate is tracked, each order is a Lorentzian line whose
+residual half width grows with order at 0.042 Hz per order, ten times
+below the flight-time law of the tracking work (about 0.6 Hz per order,
+measured against telemetry, which includes the shaft jitter the refined
+reference here absorbs). (2) The envelope-autocorrelation width is
+measurable only where one comb is alone: with four combs 2-7 rev/s
+apart, another rotor's line sits inside the demodulation band of nearly
+every order, and the estimator reads the band or the neighbour (flat
+3-9 Hz plateaus with Gaussian verdicts). Flight-time per-order widths
+therefore stay with the phase-increment variance law of the tracking
+work (WP18), not with this estimator. (3) After the shared rate error
+is fitted out by the refinement, the per-order rate opinions are
+uncorrelated across harmonics at every smoothing scale in every
+condition (rho <= 0.011, rank-one share 0.22-0.31), so the phase noise
+has a per-harmonic component independent across orders; this probe
+cannot size the shared term (the reference absorbs it; WP18 put it at
+12-27 % of the off-diagonal energy against a telemetry reference). (4)
+The per-harmonic residuals are heavy-tailed in every condition and band
+(excess kurtosis 86-133; a Cauchy fit beats a Gaussian by 0.35-1.5 nats
+per sample), as a Lorentzian line implies. Together (1), (3) and (4)
+are the stochastic comb's assumptions: Lorentzian lines, independent
+per harmonic, widths growing with order.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
