@@ -406,6 +406,24 @@ for a model that never saw speech, and 1.05-1.4x for a model trained with
 mixed speech, which stays as precise on clean input. Speech in training is a
 robustness ingredient, not a handicap.
 
+### Batch 11: first salience rungs (all mics; single seed)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | probe full / local |
+|---|---|---|---|---|---|---|---|---|
+| `real_r1_hppnet` (mic 0, DREGON) | 2.86 | 29.28 | 10.68 | 54.49 | 2.91 | 71.22 | 26.86 | 0.38 / 0.71 |
+| `hppnet_r2hb_nomix` (rung 4 pool, no speech, no warm start) | 2.90 | 27.62 | 10.48 | 3.07 | 2.65 | 0.80 | 3.57 | 0.97 / 0.99 |
+| `hppnet_r4_l4` (comb -> rung 4, old) | 8.93 | 27.38 | 17.14 | 11.96 | 3.77 | 1.40 | 6.04 | 0.87 / 0.87 |
+| `hf0_r2hb_l4` (rung 4 pool with speech, no warm start) | 13.96 | 24.28 | 16.62 | 12.90 | 6.22 | 2.29 | 7.90 | 1.01 / 0.95 |
+| `hf0_r4_l4` (comb -> rung 4, BCE-selected, old) | 1.49 | 17.46 | 58.27 | 27.77 | 51.79 | 8.16 | 30.91 | 0.80 / 1.46 |
+
+Readings: the HPPNet port trained on the real pool alone (no comb stage, no
+speech) is the best salience row and the best FLY124-cruise cell of the
+campaign (0.80), reads frequency, and beats its comb-curriculum twin on every
+regime: the synthetic stage hurt the port. The mic-0 HPPNet fails on the
+unseen drone like the regressors (71) but already half-reads frequency
+(0.71 local) without any augmentation, which the regressors never do. The
+HarmoF0 port trails HPPNet by 2x on the same recipe.
+
 ## Conclusion
 
 Pending.
