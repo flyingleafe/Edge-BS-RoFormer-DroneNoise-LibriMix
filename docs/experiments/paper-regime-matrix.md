@@ -370,15 +370,18 @@ playing (clips 0-13, 14 clips), DREGON room 1 without a source (clips 14-21,
 | scv2 without (`r2hb_scv2_nomix_wu`) | 2.78 | 3.54 | 1.27 | 2.56 | 2.98 | 0.81 / 0.36 |
 | GRU with (`r2hb_gru_nogate`) | 2.97 | 2.98 | 1.00 | 6.08 | 4.23 | 0.02 / 0.00 |
 | GRU without (`r2hb_gru_nomix_wu`) | 2.55 | 4.33 | 1.70 | 3.51 | 3.61 | 0.71 / 0.26 |
-| transformer-IF with (`r2hb_tr_nogate`) | 2.94 | 4.10 | 1.39 | 3.00 | 3.39 | 0.54 / 0.25 |
-| transformer-mag without (`r2hb_tm_nomix_wu`) | 3.02 | 3.95 | 1.31 | 2.86 | 3.30 | 0.01 / 0.02 |
+| transformer-mag with (`tm_r2hb_nogate`, the R2 rerun) | 3.06 | 4.04 | 1.32 | 2.53 | 3.21 | 0.40 / 0.40 |
+| transformer-mag without (`r2hb_tm_nomix_wu`) | 3.02 | 3.95 | 1.31 | 2.86 | 3.31 | 0.01 / 0.02 |
+| transformer-IF with (`r2hb_tr_nogate`, old R2 row) | 2.94 | 4.10 | 1.39 | 3.00 | 3.40 | 0.54 / 0.25 |
 
 Readings: an acoustic talker or noise source in the room costs 1.3-1.4x for
 models trained with mixed speech and 1.7x for the one model that never saw
 speech (the causal GRU), which the training speech makes immune to it (1.00)
 at the price of its FLY124 cell (6.08 vs 3.51; single seed). Training with
-mixed speech helps the convolutional trunk by 5-10 % on every subset. The
-transformer pair is confounded by the front-end until `tm_r2hb_nogate` lands.
+mixed speech helps the convolutional trunk by 5-10 % on every subset; for the
+transformer it helps on FLY124 only (2.53 vs 2.86) and is a wash on DREGON.
+The magnitude transformer beats its IF predecessor on the same regime (3.21
+vs 3.40 all frames), which settles decision 5.
 The warm-up-free pair (`r2hb_scv2_nomix` 3.95 vs `real_r4_scv2` 4.61) is a
 schedule artifact and is not used. Together with the synthetic pairs (2x on
 the stochastic family, 1.0-1.65x on the static comb), claim 5 reads "1.3-2x,
