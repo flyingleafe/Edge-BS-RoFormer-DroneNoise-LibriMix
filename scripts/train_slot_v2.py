@@ -75,6 +75,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 #: `read_width_learned`. The model's own spelling is always accepted.
 V2_ALIASES = {"read_width": "read_width_learned", "claim_width": "claim_width_learned"}
 #: The two values the warm start moves off the corner (see the module docstring).
+WARM_OFF_THETA0 = 0.0
+WARM_OFF_THETA1 = 1.0
+WARM_OFF_C = 1.0
 WARM_GAP_MU, WARM_READ_SIGMA = -2.0, 0.7
 #: The grid floor under which the below-grid mask is turned on by default.
 GRID_FLOOR = 30.0
@@ -205,6 +208,27 @@ def build_model(kw: dict[str, Any], device: str, warm: bool = False):
 
     check_signature(kw)
     net = sv.build_from_config({"model": kw}, device=device)
+    if warm and kw.get("off_state"):
+        # THE OFF STATE MUST START REACHABLE TO TRAIN. At the corner
+        # `theta0 = -1e4` prices a gold OFF frame at 1e4 nats, so a crop with
+        # stopped rotors returns a loss near 1e6 and dominates every gradient,
+        # while Adam moves `theta0` by about the learning rate per step (a
+        # 1e7-step climb). Measured 2026-09-06 on the static-comb stage:
+        # selection 17.4 -> 11.2 -> 18.8 with losses of 1e6 at steps 275 and
+        # 375. The warm start puts the OFF unary at minus the contrast
+        # statistic (`theta0 = 0`, `theta1 = 1`): below the best ON score on
+        # a rotor frame (contrast 1-2) and near it on a no-rotor frame
+        # (contrast 0.24-0.30), with one nat to enter or leave.
+        with torch.no_grad():
+            net.theta0.fill_(WARM_OFF_THETA0)
+            net.theta1.fill_(WARM_OFF_THETA1)
+            net.c1.fill_(WARM_OFF_C)
+            net.c2.fill_(WARM_OFF_C)
+        print(
+            f"warm start: OFF state theta0={WARM_OFF_THETA0} theta1={WARM_OFF_THETA1} "
+            f"c1=c2={WARM_OFF_C}",
+            flush=True,
+        )
     if warm and kw.get("emission") == "v2":
         from models.comb_slots_emission_v2 import PartialEmissionV2
         from models.comb_slots_emission_v2 import warm_start as warm_start_emission
@@ -558,7 +582,16 @@ def main(argv: list[str] | None = None) -> int:
     }
     sv.save_config(out, config)
 
-    opt = torch.optim.Adam(params, lr=args.lr) if params else None
+    # The chain scalars (OFF unary, transitions, the transition vector) move
+    # by O(1) nats and Adam moves each by about `lr` per step, so they get ten
+    # times the learning rate of the emission weights.
+    chain_names = {"theta0", "theta1", "c1", "c2", "trans.d"}
+    chain = [q for n, q in net.named_parameters() if q.requires_grad and n in chain_names]
+    rest = [q for n, q in net.named_parameters() if q.requires_grad and n not in chain_names]
+    groups = [{"params": rest, "lr": args.lr}]
+    if chain:
+        groups.append({"params": chain, "lr": 10.0 * args.lr})
+    opt = torch.optim.Adam(groups) if params else None
     step0, best, hist = 0, float("inf"), []
     state_path = out / "state.pt"
     if state_path.exists():
