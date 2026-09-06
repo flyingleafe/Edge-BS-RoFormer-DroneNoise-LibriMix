@@ -22,7 +22,8 @@ for stage in ("s1", "s2"):
     selected = cue["flight_frames"](frames, 16)
     assert clips and selected, "Existing fixed set has no eligible cue-probe coverage"
     checkpoint = resolve_checkpoint_uri(
-        f"r2://ml-data/artifacts/{experiment}/checkpoints/best.ckpt"
+        f"r2://ml-data/artifacts/{experiment}/checkpoints/best.ckpt",
+        cache_dir="results/checkpoints",
     )
     model = load_campaign_model(cfg, checkpoint, device="cuda")
     result = {

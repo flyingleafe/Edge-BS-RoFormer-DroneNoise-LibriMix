@@ -8,7 +8,8 @@ from utils.checkpoints import resolve_checkpoint_uri
 for stage in ("s1", "s2"):
     experiment = f"jhtr_cond_{stage}_nomix"
     checkpoint = resolve_checkpoint_uri(
-        f"r2://ml-data/artifacts/{experiment}/checkpoints/best.ckpt"
+        f"r2://ml-data/artifacts/{experiment}/checkpoints/best.ckpt",
+        cache_dir="results/checkpoints",
     )
     subprocess.run(
         [
