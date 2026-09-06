@@ -112,6 +112,8 @@ def windows(
     accept: tuple[float, float] = FULL_RANGE,
     base_seed: int | None = None,
     mono: bool = True,
+    min_in_grid: float = 0.0,
+    grid: tuple[float, float] | None = None,
 ):
     """One infinite stream of mono crops from a named policy.
 
@@ -130,6 +132,8 @@ def windows(
         base_seed=base_seed,
         epoch=epoch,
         mono=bool(mono),
+        min_in_grid=float(min_in_grid),
+        grid=grid,
     )
 
 
@@ -141,6 +145,8 @@ def streams_for_mode(
     epoch: int = 0,
     accept: tuple[float, float] = FULL_RANGE,
     mono: bool = True,
+    min_in_grid: float = 0.0,
+    grid: tuple[float, float] | None = None,
 ) -> list[Any]:
     """One stream per policy of the mode, each with its own seed.
 
@@ -149,7 +155,16 @@ def streams_for_mode(
     granularity `scripts/train_slot_real.py` used for real + partial.
     """
     return [
-        windows(p, crop_s=crop_s, seed=seed + i, epoch=epoch, accept=accept, mono=mono)
+        windows(
+            p,
+            crop_s=crop_s,
+            seed=seed + i,
+            epoch=epoch,
+            accept=accept,
+            mono=mono,
+            min_in_grid=min_in_grid,
+            grid=grid,
+        )
         for i, p in enumerate(mode_policies(mode))
     ]
 

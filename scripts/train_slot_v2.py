@@ -224,13 +224,15 @@ class _WandB:
         except Exception:  # noqa: BLE001
             pass
 
-    def validation(self, step: int, row: dict) -> None:
+    def validation(self, step: int, row: dict, net=None) -> None:
         if self.run is None:
             return
         try:
             import wandb
 
             data: dict[str, Any] = {"val/select": row.get("select")}
+            if net is not None:
+                data.update(param_summary(net))
             for part in ("comb", "stoch"):
                 if isinstance(row.get(part), dict):
                     data[f"val/{part}_mean"] = row[part].get("mean")
@@ -256,6 +258,35 @@ class _WandB:
             wandb.finish()
         except Exception:  # noqa: BLE001
             pass
+
+
+def param_summary(net) -> dict[str, float]:
+    """A few scalars per parameter group, so a run's curve says WHICH group moved."""
+    out: dict[str, float] = {}
+    for name in ("theta0", "theta1", "c1", "c2"):
+        q = getattr(net, name, None)
+        if isinstance(q, torch.Tensor):
+            out[f"param/{name}"] = float(q.detach())
+    tr = getattr(net, "trans", None)
+    if tr is not None and hasattr(tr, "d"):
+        out["param/trans_d_sum"] = float(torch.nn.functional.softplus(tr.d.detach()).sum())
+    em = getattr(net, "emit", None)
+    if em is not None:
+        for name in ("mu", "s0", "s1"):
+            q = getattr(em, name, None)
+            if isinstance(q, torch.Tensor) and q.numel() == 1:
+                out[f"param/emit_{name}"] = float(q.detach())
+        for name in ("alpha", "a"):
+            q = getattr(em, name, None)
+            if isinstance(q, torch.Tensor):
+                out[f"param/emit_{name}_mean"] = float(q.detach().float().mean())
+        mb = getattr(em, "masks", None)
+        if mb is not None and hasattr(mb, "width_raw"):
+            out["param/claim_width_raw"] = float(mb.width_raw.detach())
+    pr = getattr(net, "rate_prior", None)
+    if pr is not None and hasattr(pr, "v"):
+        out["param/prior_v_abs_sum"] = float(pr.v.detach().abs().sum())
+    return out
 
 
 def use_warm_start(args) -> bool:
@@ -565,6 +596,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="torch CPU threads. 4 by default: a CPU smoke must leave the box usable",
     )
     t.add_argument("--no-wandb", action="store_true", help="file logging only")
+    t.add_argument(
+        "--min-in-grid",
+        type=float,
+        default=0.5,
+        help="keep a crop only if this fraction of its rotor-frames is inside the grid "
+        "(the balance rule against silence-heavy pools; 0 = keep every crop)",
+    )
 
     v = ap.add_argument_group("validation and selection")
     v.add_argument("--val-every", type=int, default=100)
@@ -669,16 +707,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     sv.save_config(out, config)
 
-    # The chain scalars (OFF unary, transitions, the transition vector) move
-    # by O(1) nats and Adam moves each by about `lr` per step, so they get ten
-    # times the learning rate of the emission weights.
-    chain_names = {"theta0", "theta1", "c1", "c2", "trans.d"}
-    chain = [q for n, q in net.named_parameters() if q.requires_grad and n in chain_names]
-    rest = [q for n, q in net.named_parameters() if q.requires_grad and n not in chain_names]
-    groups = [{"params": rest, "lr": args.lr}]
-    if chain:
-        groups.append({"params": chain, "lr": 10.0 * args.lr})
-    opt = torch.optim.Adam(groups) if params else None
+    # ONE learning rate. A 10x group for the chain scalars (tried 2026-09-06)
+    # let theta0 run away within 250 steps on the real pool.
+    opt = torch.optim.Adam(params, lr=args.lr) if params else None
     step0, best, hist = 0, float("inf"), []
     state_path = out / "state.pt"
     if state_path.exists():
@@ -715,6 +746,8 @@ def main(argv: list[str] | None = None) -> int:
         epoch=step0,
         accept=accept,
         mono=not args.multi_mic,
+        min_in_grid=args.min_in_grid,
+        grid=(float(kw["r_lo"]), float(kw["r_hi"])),
     )
     order = list(range(len(streams)))
 
@@ -790,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"step {step:5d} select={row['select']:.4f}{star}", flush=True)
             (out / "history.json").write_text(json.dumps(hist, indent=1))
             row["step"] = step
-            wb.validation(step, row)
+            wb.validation(step, row, net)
             net.train()
         if time.time() - t_start > budget and step < args.steps:
             save_state(out, net, opt, step, best, hist)

@@ -609,8 +609,16 @@ class SlotCombNet(nn.Module):
         if not self.off_state:
             return None
         ct = self.contrast(s.detach()).to(s.dtype)
+        # NON-NEGATIVE BY CONSTRUCTION. `theta1` is the slope that makes OFF less
+        # likely with more contrast, and `c1`, `c2` are switch COSTS. Trained
+        # freely (2026-09-06, the real-only arm) they went negative and the
+        # chain switched to OFF for free everywhere: selection froze at the
+        # mean true rate with a loss of 4.8. A clamp keeps the corner's exact
+        # zeros and floors the three at zero.
         return comb_crf.Off(
-            self.theta0.to(s.dtype) - self.theta1.to(s.dtype) * ct, self.c1, self.c2
+            self.theta0.to(s.dtype) - self.theta1.clamp_min(0.0).to(s.dtype) * ct,
+            self.c1.clamp_min(0.0),
+            self.c2.clamp_min(0.0),
         )
 
     def _onehot(self, path: torch.Tensor, like: torch.Tensor) -> torch.Tensor:

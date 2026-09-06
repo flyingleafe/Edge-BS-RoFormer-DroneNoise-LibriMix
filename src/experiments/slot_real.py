@@ -434,6 +434,8 @@ class WindowStream:
         seed: int = 0,
         r_lo: float = 31.0,
         r_hi: float = 99.0,
+        min_in_grid: float = 0.0,
+        grid: tuple[float, float] | None = None,
         base_seed: int | None = None,
         epoch: int = 0,
         hop: int = HOP,
@@ -457,6 +459,13 @@ class WindowStream:
         self.n_crop = int(round(float(crop_s) * self.sr))
         self.t_crop = self.n_crop // self.hop + 1
         self.r_lo, self.r_hi = float(r_lo), float(r_hi)
+        # THE BALANCE RULE. With the acceptance window open (the OFF state and
+        # the extended grid need the zero and below-grid frames), a pool with
+        # a 0.4 silence arm feeds the CRF mostly stopped rotors, and the chain
+        # learns that OFF is the answer everywhere (2026-09-06). A crop is kept
+        # only if at least `min_in_grid` of its rotor-frames sit inside `grid`.
+        self.min_in_grid = float(min_in_grid)
+        self.grid = (float(grid[0]), float(grid[1])) if grid else (self.r_lo, self.r_hi)
         self.mono = bool(mono)
         self.rng = np.random.default_rng(int(seed))
         self.seen = self.kept = 0
@@ -491,6 +500,10 @@ class WindowStream:
                 continue
             if not bool(((g >= self.r_lo) & (g <= self.r_hi)).all()):
                 continue
+            if self.min_in_grid > 0.0:
+                inside = (g >= self.grid[0]) & (g <= self.grid[1])
+                if float(inside.mean()) < self.min_in_grid:
+                    continue
             self.kept += 1
             if self.mono:
                 m = int(self.rng.integers(0, a.shape[0]))
