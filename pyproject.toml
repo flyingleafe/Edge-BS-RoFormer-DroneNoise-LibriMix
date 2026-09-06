@@ -2,7 +2,6 @@
 name = "edge-bs-roformer-dronenoise-librimix"
 version = "0.1.0"
 description = "Add your description here"
-readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "typer>=0.15.0",
@@ -92,7 +91,7 @@ packages = [
     "src/models",
     "src/data_processing",
     "src/tracking",
-    "src/zoo",
+    "src/experiments",
     "src/plots",
     "src/losses",
     "src/metrics",
