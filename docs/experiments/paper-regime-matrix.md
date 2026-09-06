@@ -871,6 +871,28 @@ regressors (2.49 -> 3.90, 2.50 -> 3.58, 3.00 -> 4.21) and 1.2x for the
 ports. Six stochastic regressor cells, six fixed fans (slopes 0.09-0.14).
 Only `hb_sal_multif0_l4` remains (sae, resumed at epoch 49).
 
+### Batch 25: LateDeep L2, the last cell (gpushort chain to epoch 49, then the sae copy to epoch 72, early stop)
+
+| row | zero | below-30 | DREGON ramp | FLY124 ramp | DREGON cruise | FLY124 cruise | all | comb / stoch | probe full / local |
+|---|---|---|---|---|---|---|---|---|---|
+| `hb_sal_multif0_l4` (LateDeep, L2: per-rotor layers + CRF readout, original HCQT input) | 4.98 | 15.76 | 9.48 | 7.99 | 2.32 | 1.69 | 3.83 | 25.2 / 33.9 | 1.17 / 0.28 |
+| `hb_sal_multif0` (L0) | 52.57 | 35.63 | 14.22 | 18.66 | 2.96 | 4.46 | 12.65 | 31.3 / 39.3 | 0.11 / 0.43 |
+| `hb_sal_multif0_nsr` (L1) | 48.50 | 25.82 | 23.80 | 11.95 | 3.53 | 3.66 | 11.82 | 24.1 / 30.0 | 0.38 / -0.57 |
+| `hb_sal_bp_l4` (Basic Pitch, L2) | 0.50 | 18.02 | 48.57 | 32.42 | 43.88 | 9.47 | 27.56 | 42.6 / 37.3 | 2.31 / 3.08 |
+
+Reading: the per-rotor layers with the joint readout rescue LateDeep
+completely (12.65 -> 3.83, the best salience row of the frozen split,
+better than the HPPNet port's rung-4 row 4.18 and within the regressor
+band 2.7-4.2) and do nothing for Basic Pitch (27.30 -> 27.56, which
+learns silence only). Block S's message changes accordingly: which
+modification a music model needs depends on what it already has (the
+harmonic architectures need the comb-gather input, the harmonic-stacking
+CNN needs the readout, Basic Pitch responds to neither). LateDeep L2 does
+not read frequency locally (0.28), so it is a precise prior-driven model
+like the rung-3 regressors. Both papers' block-S paragraphs are updated.
+With this batch every cell of the matrix is scored: `missing.txt` lists
+no cell without a dump.
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
@@ -943,8 +965,7 @@ when they land.
 
 ## Conclusion
 
-Written 2026-09-06 with two cells still training (`salv2_gru_stoch_mix`,
-`hb_sal_multif0_l4`); neither can change the verdicts below.
+Written 2026-09-06; every cell of the matrix is trained and scored.
 
 1. **Narrow data gives precise models that do not transfer.** Every
    trunk trained on DREGON alone reaches its best DREGON cruise cell of
@@ -994,8 +1015,9 @@ Block S: the harmonic device decides the ranking before any adaptation
 (published HPPNet 7.77 and HarmoF0 10.79 against LateDeep 12.65 and
 Basic Pitch 27.30); the comb gather with per-rotor layers halves
 HPPNet's error (4.18, silence 17.5 -> 6.0) and HarmoF0's DREGON cruise
-error (11.5 -> 6.2); output resolution alone (L1) changes little, and the
-per-rotor layers alone (L2) do not rescue Basic Pitch (27.56).
+error (11.5 -> 6.2); output resolution alone (L1) changes little; the
+per-rotor layers with the joint readout (L2) rescue LateDeep completely
+(3.83, the best salience row) and do not rescue Basic Pitch (27.56).
 
 Leaderboard: the blind tracker remains the most precise DREGON cruise
 method (0.92) at forty times a regressor's cost, loses on FLY124 (9.2)
