@@ -148,8 +148,8 @@ Engineering evidence from the dedicated worktree:
 
 Raw evidence is under `results/jhtr/`: `cpu-smoke.json`, `check-s1.json`,
 `check-s2.json`, `check-s1-mix.json`, `check-s2-mix.json`, and
-`all-recipe-parity.json`. GPU memory, learning curves and selected-checkpoint
-precision/capture/oracle measurements remain pending.
+`all-recipe-parity.json`. GPU fit and early learning evidence are recorded below.
+Final selected-checkpoint precision/capture/oracle measurements remain pending.
 
 The real checkpoint-loading/evaluator CLI also passed an explicitly **untrained**
 one-example smoke: seven saved block states `(1,7,4,251)`, four complete-operator
@@ -221,6 +221,40 @@ The now-redundant queued A100 profile was cancelled after the P100 fit passed.
 **Live-rental safety:** do not `omnirun pull` an active Vast job: the backend's
 `pull_outputs` unconditionally auto-terminates after pulling. Use streamed logs
 and W&B during training; pull after terminal state and verify `reaped`.
+
+Canonical evaluator GPU smoke `jhtr-kaggle-evaluator-369641` succeeded for both
+pilot checkpoints: **32 examples / 4 groups**, inference batch 32, standard and
+oracle cases, seven block states `(32,7,4,251)`, three complete applications plus
+input `(32,4,4,251)`, finite arrays and recorded checkpoint hashes. The n32 subset
+is explicitly **engineering smoke**, not precision or selection evidence.
+`results/jhtr/kaggle-evaluator-smoke.json` records the pulled artifact checks.
+The complete canonical evaluator exceeds Kaggle's embedded-source cap; the thin
+deployment instead downloads an immutable private R2 source archive, verifies
+its SHA-256, installs the original `uv.lock`, and runs the unchanged CLI. Source:
+`cf35c33a10f5`, archive hash
+`acf00f0d75bab0629a89850f74bf09d79ed509f2b2b014ae10283cf098005fab`.
+Kaggle emitted a nonfatal `sitecustomize` missing-`wrapt` warning; both canonical
+evaluations still completed successfully. No warning suppression or lock change
+was used.
+
+Early learning snapshots are not final results. Complete fixed-set identity
+MAE-frame baselines are **1.050398 (S1)** and **0.871646 (S2)**. Epoch-zero
+monitor values were 0.876673 and 0.774290; the first ten completed S1 epochs
+reached 0.5665, while the first eight S2 epochs reached 0.6941. S1's epoch-zero
+optimizer state records **497 actual updates from 500 batches**, with AMP scale
+8192. Histories and native baseline arrays are under `results/jhtr/`; no oracle,
+signed-offset, fixed-point or mechanism conclusion follows from these monitors.
+
+The existing paper cue-probe helpers originally discarded `rps_cond` when
+rebuilding filtered/resampled Frames. Both reproduced `KeyError: rps_cond` with
+the native conditional codec. `scripts/rps_cue_probe.py` now retains a supplied
+prior without frequency scaling, crops it to the frequency probe's shared
+physical span, and preserves the waveform's absolute time origin. Existing
+alpha/cutoff grids and readouts are unchanged. Two native-model regressions
+(frequency and cutoff, including a 17.25 s time translation) failed before the
+fix and passed after it. Ruff passed; direct Pyright completed successfully
+after the shorter LSP/CLI checks timed out. This changes evaluation helpers only,
+not the running pilots or their data/optimization.
 
 ## Conclusion and failure strategy
 

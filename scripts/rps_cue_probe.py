@@ -168,12 +168,19 @@ def freq_probe(fm: Any, frames: list, clips: list[int], n_ch: int, alphas: list[
     for a in alphas:
         vals = []
         for c in clips:
-            audio = np.asarray(frames[c * n_ch]["mixture"].data, dtype=np.float64)
+            source = frames[c * n_ch]
+            audio = np.asarray(source["mixture"].data, dtype=np.float64)
             if audio.ndim > 1:
                 audio = audio[0]
             scaled = resample_poly(audio, 1000, int(round(a * 1000)))
             keep = int(len(audio) / keep_ratio)
-            f = td.Frame({"mixture": audio_series(scaled[:keep][None].astype(np.float32), SR)})
+            signal = audio_series(scaled[:keep][None].astype(np.float32), SR).shift(
+                source["mixture"].t_start
+            )
+            f = td.Frame({"mixture": signal})
+            if "rps_cond" in source:
+                # Hold the prior's values fixed; only crop to the shared read span.
+                f = f.with_entry("rps_cond", source["rps_cond"].time[signal.t_start : signal.t_end])
             vals.append(float(speeds(fm, f, grid).mean()))
         means.append(float(np.mean(vals)))
         print(f"    alpha {a:5.3f}  mean speed {means[-1]:8.4f}", flush=True)
@@ -258,11 +265,15 @@ def cutoff_probe(fm: Any, frames: list, sel: list[int], k_cuts: list[int], how: 
                 applied = True
             g = td.Frame(
                 {
-                    "mixture": audio_series(xf[None, :].astype(np.float32), SR),
+                    "mixture": audio_series(xf[None, :].astype(np.float32), SR).shift(
+                        f["mixture"].t_start
+                    ),
                     "rps": f["rps"],
                     "meta": f["meta"],
                 }
             )
+            if "rps_cond" in f:
+                g = g.with_entry("rps_cond", f["rps_cond"])
             pred = speeds(fm, g, grid)
             mae, aligned = pit(pred, gt)
             m = aligned > RATIO_FLOOR
