@@ -858,6 +858,19 @@ chain's "nothing to resume" detection failed and it kept submitting
 segment 1. Remaining: `salv2_gru_stoch_mix` (sae, 12 h wall) and
 `hb_sal_multif0_l4` (gpushort chain).
 
+### Batch 24: GRU on the stochastic family with speech (sae direct, early stop; the stochastic family is complete)
+
+`salv2_gru_stoch_mix`: stoch 3.58, +speech 3.52 (ratio 0.98), comb 16.7,
+real 31.8; probe 0.73 / 0.74; fan 6.1 / 7.7 / 8.1 / 9.1 / 6.5, slope
+0.09; classes offset 32 %, wander 24 %, 5/4 alias 7 %, no octave. The
+speech A/B on the stochastic family, final: trained without speech a
+talker costs 1.13 (tm) / 1.48 (gru) / 1.64 (scv2) / 1.77 (HarmoF0) /
+4.48 (HPPNet); trained with speech 0.97-0.99 for the three regressors
+and 1.12-1.18 for the ports, at a clean-input price of 1.4-1.6x for the
+regressors (2.49 -> 3.90, 2.50 -> 3.58, 3.00 -> 4.21) and 1.2x for the
+ports. Six stochastic regressor cells, six fixed fans (slopes 0.09-0.14).
+Only `hb_sal_multif0_l4` remains (sae, resumed at epoch 49).
+
 ### Claim 4: the stochastic limit (stochastic part, cruise time-frames; regressor rows for tm / gru pending)
 
 The fan statistic of `scripts/rps_error_profile.py` (`fan.csv`): on the
@@ -877,6 +890,7 @@ true spread over all cruise time-frames: 1 = the model tracks four lines,
 | `salv2_tr_stoch_mix` (batch 17) | 6.31 | 8.10 | 8.51 | 9.78 | 6.25 | 0.10 |
 | `salv2_gru_stoch_nomix` (batch 22) | 6.31 | 7.36 | 7.75 | 8.62 | 6.28 | 0.14 |
 | `salv2_tr_stoch_nomix` (batch 23) | 4.31 | 6.70 | 8.05 | 8.93 | 5.71 | 0.11 |
+| `salv2_gru_stoch_mix` (batch 24) | 6.14 | 7.73 | 8.07 | 9.08 | 6.47 | 0.09 |
 | `salv2_hppnet_stoch_nomix` | 0.06 | 10.98 | 6.56 | 7.68 | 14.86 | 0.16 |
 | `salv2_hppnet_stoch_mix` | 0.08 | 9.27 | 6.53 | 8.05 | 12.74 | 0.21 |
 | `salv2_hf0_stoch_nomix` | 0.38 | 15.71 | 9.18 | 10.14 | 7.26 | -0.36 |
@@ -895,6 +909,7 @@ each class of failed rotor track; `classes.csv`):
 | `salv2_tr_stoch_mix` (batch 17) | 3.90 | 2.05 | 12.72 | 0.38 | 0.08 | 0.00 | 0.26 | 0.00 |
 | `salv2_gru_stoch_nomix` (batch 22) | 2.50 | 1.84 | 5.60 | 0.37 | 0.00 | 0.00 | 0.40 | 0.00 |
 | `salv2_tr_stoch_nomix` (batch 23) | 2.48 | 1.63 | 5.64 | 0.25 | 0.07 | 0.00 | 0.42 | 0.00 |
+| `salv2_gru_stoch_mix` (batch 24) | 3.58 | 2.16 | 10.61 | 0.32 | 0.07 | 0.00 | 0.24 | 0.00 |
 | `salv2_hppnet_stoch_nomix` | 2.65 | 1.68 | 5.39 | 0.07 | 0.00 | 0.24 | 0.57 | 0.00 |
 | `salv2_hppnet_stoch_mix` | 3.16 | 1.62 | 6.81 | 0.12 | 0.00 | 0.23 | 0.48 | 0.00 |
 | `salv2_hf0_stoch_nomix` | 9.13 | 4.66 | 23.16 | 0.02 | 0.02 | 0.01 | 0.69 | 0.00 |
