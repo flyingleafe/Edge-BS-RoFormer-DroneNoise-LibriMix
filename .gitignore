@@ -3,3 +3,4 @@ results/
 wandb/
 .cache/
 *.log
+.env
