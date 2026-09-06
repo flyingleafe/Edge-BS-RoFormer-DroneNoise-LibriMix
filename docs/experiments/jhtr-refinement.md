@@ -151,6 +151,25 @@ Raw evidence is under `results/jhtr/`: `cpu-smoke.json`, `check-s1.json`,
 `all-recipe-parity.json`. GPU memory, learning curves and selected-checkpoint
 precision/capture/oracle measurements remain pending.
 
+The real checkpoint-loading/evaluator CLI also passed an explicitly **untrained**
+one-example smoke: seven saved block states `(1,7,4,251)`, four complete-operator
+states `(1,4,4,251)`, exact timestamps, NPZ/JSON output, and correctly unestablished
+one-group uncertainty. `results/jhtr/evaluator-smoke.json` records the integration
+proof; disposable untrained weights/output arrays were removed. Smoke output
+explicitly makes no parent-monitor selection or learned-performance claim.
+
+Measured unchanged-parent coverage (`results/jhtr/parent-coverage.json`): S1 spans
+0–103.688 rev/s with 12.50% stopped rotor-frames; S2 spans 0–107.462 rev/s with
+25.57% stopped rotor-frames. All four truth rows coincide at 28.77% of S1 and
+35.42% of S2 timestamps (including stopped states); entire coincident clips are
+21.875% and 31.25%, respectively. These are retained, not filtered out. The first
+smoke example happens to have coincident rows; it is not representative evidence
+of four-track separation.
+
+GPU numerical/matched-batch profile job: `jhtr-gpu-gate-068355`, free
+`uni-gpushort` A100-80 allocation requested at revision `e190333`; not yet a
+completed profile or permission to claim GPU fit.
+
 ## Conclusion and failure strategy
 
 No effectiveness conclusion yet. If a numerical gate fails, inspect interpolation, integration, normalization, masking, padding and gradients before training. If optimization fails, inspect actual processed exposure, gradient finiteness and final-only inherited loss; do not add rescue objectives/curricula. If full-set learning improves but conditional precision drifts, examine noisy local phase, interference, collisions, identity ambiguity and synthetic/real mismatch. Preserve the selected checkpoint and report failure; do not select an oracle-friendly epoch or silently widen the network.

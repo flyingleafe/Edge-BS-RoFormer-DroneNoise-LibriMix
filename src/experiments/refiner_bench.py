@@ -892,7 +892,11 @@ def evaluate_jhtr(
             "rotor_frames": int(np.sum(observable)) if observable is not None else 0,
             "reason": "Existing Frames do not retain per-source order powers/floors; mixture peaks cannot certify attribution.",
         },
-        "selection": "parent-monitor selected checkpoint; diagnostics never select another epoch",
+        "selection": (
+            "engineering smoke; checkpoint is not selection evidence"
+            if smoke
+            else "caller-supplied checkpoint; verify parent-monitor selection from training records"
+        ),
         "cases": {},
     }
     masks = {"all": np.ones_like(gt, bool), "stopped": gt <= 0.5, "below30": (gt > 0.5) & (gt < 30)}
