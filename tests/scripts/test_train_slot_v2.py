@@ -222,12 +222,14 @@ def test_load_arm_reads_config_and_best_pt(tmp_path: Path):
     a = _args(["--rate-prior", "--n-grid", "90", "--k-max", "8"])
     kw = {**train_slot_v2.model_kwargs(a), "mask_k_max": 64, "use_checkpoint": False}
     net = train_slot_v2.build_model(kw, "cpu")
+    assert net.rate_prior is not None
     with torch.no_grad():
         net.rate_prior.v.fill_(0.25)
     sv.save_config(tmp_path, {"script": "test", "name": "t", "model": kw})
     torch.save(train_slot_v2.state_dict_trainable(net), tmp_path / "best.pt")
 
     back = sv.load_arm(tmp_path)
+    assert back.rate_prior is not None
     assert float(back.rate_prior.v[0]) == 0.25
     assert not back.training  # an arm comes back in eval mode
 

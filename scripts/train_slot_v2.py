@@ -206,8 +206,10 @@ def build_model(kw: dict[str, Any], device: str, warm: bool = False):
     check_signature(kw)
     net = sv.build_from_config({"model": kw}, device=device)
     if warm and kw.get("emission") == "v2":
+        from models.comb_slots_emission_v2 import PartialEmissionV2
         from models.comb_slots_emission_v2 import warm_start as warm_start_emission
 
+        assert isinstance(net.emit, PartialEmissionV2)
         warm_start_emission(net.emit, gap_mu=WARM_GAP_MU, read_sigma=WARM_READ_SIGMA)
         print(
             f"warm start: gap_mu={WARM_GAP_MU} read_sigma={WARM_READ_SIGMA} "
