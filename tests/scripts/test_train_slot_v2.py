@@ -90,14 +90,23 @@ def test_no_v2_flag_is_the_c1_corner():
     assert kw["head_mode"] == "classical" and kw["emission"] == "partial"
     # mono drops `channels`: a mono input has one channel and it IS the mean
     assert kw["parts"] == ["reliability", "empty_tooth", "floor_mix"]
-    assert not any(k in kw for k in ("off_state", "learned_transition", "rate_prior", "v2_parts"))
+    assert not any(
+        k in kw for k in ("off_state", "learned_transition", "rate_prior", "mask_below_grid")
+    )
+    # ... and every keyword is one the model really takes
+    train_slot_v2.check_signature(kw)
 
 
 def test_every_v2_group_reaches_the_constructor():
+    """One `parts` list over both vocabularies, and each chain flag by name."""
+    from models.comb_slots_emission_v2 import PARTIAL_V2_PARTS
+
     a = _args(
         [
             "--off-state",
             "--learned-transition",
+            "--trans-slew",
+            "40",
             "--rate-prior",
             "--grid-lo",
             "10",
@@ -106,14 +115,49 @@ def test_every_v2_group_reaches_the_constructor():
             "--emission",
             "v2",
             "--v2-parts",
-            "gap,cross_order",
+            "gap,cross_order,read_width,claim_width",
         ]
     )
     kw = train_slot_v2.model_kwargs(a)
     assert kw["off_state"] is True and kw["learned_transition"] is True
-    assert kw["rate_prior"] is True
+    assert kw["trans_slew"] == 40.0 and kw["rate_prior"] is True
     assert kw["r_lo"] == 10.0 and kw["n_grid"] == 900
-    assert kw["emission"] == "v2" and kw["v2_parts"] == ["gap", "cross_order"]
+    assert kw["emission"] == "v2" and kw["zero_rps"] == 0.5
+    # the short names resolve to the model's own spelling, and every part is one
+    assert "read_width_learned" in kw["parts"] and "claim_width_learned" in kw["parts"]
+    assert set(kw["parts"]) <= set(PARTIAL_V2_PARTS)
+    train_slot_v2.check_signature(kw)
+
+
+def test_the_below_grid_mask_follows_the_grid_floor():
+    """A grid under 30 rev/s needs the mask; the C1 grid does not."""
+    assert train_slot_v2.mask_below_grid(_args(["--grid-lo", "10"])) is True
+    assert train_slot_v2.mask_below_grid(_args([])) is False
+    assert train_slot_v2.mask_below_grid(_args(["--mask-below-grid"])) is True
+    assert (
+        train_slot_v2.mask_below_grid(_args(["--grid-lo", "10", "--no-mask-below-grid"])) is False
+    )
+
+
+def test_the_warm_start_is_on_for_a_v2_emission():
+    """The gap charge and the read width have no gradient at the exact corner."""
+    assert train_slot_v2.use_warm_start(_args(["--emission", "v2"])) is True
+    assert train_slot_v2.use_warm_start(_args([])) is False
+    assert train_slot_v2.use_warm_start(_args(["--warm-start"])) is True
+    assert train_slot_v2.use_warm_start(_args(["--emission", "v2", "--no-warm-start"])) is False
+
+
+def test_the_warm_start_moves_the_two_knobs_off_the_corner():
+    """`--emission v2` must not leave `mu` and `s0` where the gradient vanishes."""
+    from models.comb_slots_emission_v2 import _inv_softplus
+
+    a = _args(["--emission", "v2", "--n-grid", "60", "--k-max", "6"])
+    kw = {**train_slot_v2.model_kwargs(a), "mask_k_max": 48, "use_checkpoint": False}
+    cold = train_slot_v2.build_model(kw, "cpu", warm=False)
+    warm = train_slot_v2.build_model(kw, "cpu", warm=True)
+    assert float(cold.emit.mu) == -16.0
+    assert float(warm.emit.mu) == train_slot_v2.WARM_GAP_MU
+    assert abs(float(warm.emit.s0) - _inv_softplus(train_slot_v2.WARM_READ_SIGMA)) < 1e-6
 
 
 def test_model_kwarg_passes_any_keyword_through():
@@ -125,23 +169,24 @@ def test_model_kwarg_passes_any_keyword_through():
 
 
 def test_check_signature_names_the_missing_keyword():
-    """A group that has not landed must fail readably, before anything is built."""
-    train_slot_v2.check_signature({"n_grid": 90, "rate_prior": True})  # both exist
+    """A keyword the model does not take must fail readably, before a build."""
+    train_slot_v2.check_signature({"n_grid": 90, "rate_prior": True, "off_state": True})
     with pytest.raises(SystemExit) as e:
         train_slot_v2.check_signature({"a_group_that_never_landed": True})
     assert "--model-kwarg" in str(e.value)
 
 
+def _accept(argv: list[str]) -> tuple[float, float]:
+    a = _args(argv)
+    return train_slot_v2.acceptance(a, train_slot_v2.model_kwargs(a))
+
+
 def test_the_off_state_opens_the_acceptance_window():
     """Zero and below-grid frames reach the loss only with an OFF state."""
-    base = _args([])
-    assert train_slot_v2.acceptance(base, train_slot_v2.model_kwargs(base)) == (31.0, 99.0)
-    on = _args(["--off-state"])
-    assert train_slot_v2.acceptance(on, train_slot_v2.model_kwargs(on)) == sv.FULL_RANGE
-    forced = _args(["--off-state", "--grid-range"])
-    assert train_slot_v2.acceptance(forced, train_slot_v2.model_kwargs(forced)) == (31.0, 99.0)
-    opened = _args(["--full-range", "--grid-lo", "10", "--n-grid", "900"])
-    assert train_slot_v2.acceptance(opened, train_slot_v2.model_kwargs(opened)) == sv.FULL_RANGE
+    assert _accept([]) == (31.0, 99.0)
+    assert _accept(["--off-state"]) == sv.FULL_RANGE
+    assert _accept(["--off-state", "--grid-range"]) == (31.0, 99.0)
+    assert _accept(["--full-range", "--grid-lo", "10", "--n-grid", "900"]) == sv.FULL_RANGE
 
 
 def test_smoke_shrinks_every_cost():
@@ -157,7 +202,7 @@ def test_smoke_shrinks_every_cost():
 
 def test_config_json_rebuilds_the_same_model(tmp_path: Path):
     """What the trainer writes is what a dump and a probe rebuild."""
-    a = _args(["--rate-prior", "--grid-lo", "10", "--n-grid", "90", "--k-max", "8"])
+    a = _args(["--rate-prior", "--off-state", "--grid-lo", "10", "--n-grid", "90", "--k-max", "8"])
     kw = {**train_slot_v2.model_kwargs(a), "mask_k_max": 64, "use_checkpoint": False}
     net = train_slot_v2.build_model(kw, "cpu")
     sv.save_config(tmp_path, {"script": "test", "name": "t", "model": kw})

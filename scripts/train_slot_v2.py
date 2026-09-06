@@ -9,11 +9,11 @@ and the corner is every flag off. With no v2 flag this script IS
 `scripts/train_slot_real.py --mono`: the same model, the same policy, the same
 selection set size, the same chain markers.
 
-    --off-state              § 3.1  one OFF state per chain; zero frames
-    --grid-lo 10 --n-grid 900 § 3.2  the grid below 30 rev/s
-    --learned-transition     § 3.3  the hinge becomes a learned penalty
-    --emission v2 --v2-parts § 3.4/3.5/3.7  gap gather, cross-order net, widths
-    --rate-prior             § 3.6  the pairwise prior across slots
+    --off-state                     § 3.1  one OFF state per chain; zero frames
+    --grid-lo 10 --n-grid 900       § 3.2  the grid below 30 rev/s
+    --learned-transition            § 3.3  the hinge becomes a learned penalty
+    --emission v2 --v2-parts ...    § 3.4/3.5/3.7  gap, cross-order net, widths
+    --rate-prior                    § 3.6  the pairwise prior across slots
 
 THE LOSS NOW COVERS EVERY FRAME. C1 rejected any crop in which a rotor left the
 30-100 rev/s grid, so ground, warm-up and the low half of every ramp never
@@ -37,12 +37,21 @@ arm's OWN training policy with a different base seed. The 37-clip split is the
 test set and FLY124 is an unseen rig; it is scored at every validation FOR THE
 RECORD only.
 
-THE CONSTRUCTOR NAMES OF THE OTHER TWO GROUPS ARE ASSUMED. `off_state` and
-`learned_transition` are written by the chain branch and `emission="v2"` /
-`v2_parts` by the emission branch. This script checks the signature of
-`SlotCombNet` before it builds anything and says exactly which keyword is
-missing, and `--model-kwarg NAME=VALUE` passes any keyword through without an
-edit, so a renamed group costs one command-line argument and not a merge.
+TWO SETTINGS A V2 ARM MUST NOT FORGET, both defaulted here.
+
+* `--warm-start` (ON whenever the emission is v2). At the exact corner the gap
+  charge and the read width have vanishing gradients — about 1e-7 and 1e-13 —
+  so an arm that must LEARN them starts at `gap_mu = -2.0` and
+  `read_sigma = 0.7`, which is the decision campaign arm A7 made for the octave
+  charge. `--no-warm-start` keeps the exact corner, for a parity test.
+* `--mask-below-grid` (ON whenever the grid floor is under 30 rev/s). A frame
+  between `zero_rps` and the grid floor has no gold cell, so it leaves the gold
+  path instead of being charged at the grid edge. Evaluation still counts it as
+  an error.
+
+`--model-kwarg NAME=VALUE` passes any `SlotCombNet` keyword through, and the
+signature is checked before anything is built, so a group that is renamed
+costs one command-line argument and not an edit.
 """
 
 from __future__ import annotations
@@ -62,18 +71,13 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-#: our flag -> the `SlotCombNet` keyword we assume the other two branches used.
-#: Checked against the real signature at build time; `--model-kwarg` overrides.
-V2_KEYWORDS = {
-    "off_state": "off_state",  # branch slotcomb-v2-chain, § 3.1
-    "learned_transition": "learned_transition",  # branch slotcomb-v2-chain, § 3.3
-    "rate_prior": "rate_prior",  # this branch, § 3.6
-    "v2_parts": "v2_parts",  # branch slotcomb-v2-emission, § 3.4/3.5/3.7
-}
-#: the parts of the v2 emission, in the order of the design's sections
-V2_PARTS = ("gap", "cross_order", "read_width", "claim_width")
-#: the C1 emission parts. `channels` is dropped in mono, where it is meaningless
-C1_PARTS = ("reliability", "channels", "empty_tooth", "floor_mix")
+#: Short aliases for the v2 emission parts, so `--v2-parts read_width` names
+#: `read_width_learned`. The model's own spelling is always accepted.
+V2_ALIASES = {"read_width": "read_width_learned", "claim_width": "claim_width_learned"}
+#: The two values the warm start moves off the corner (see the module docstring).
+WARM_GAP_MU, WARM_READ_SIGMA = -2.0, 0.7
+#: The grid floor under which the below-grid mask is turned on by default.
+GRID_FLOOR = 30.0
 
 
 # ─── The model ───────────────────────────────────────────────────────────────
@@ -90,18 +94,31 @@ def parse_kv(items: list[str], what: str) -> dict[str, Any]:
     return out
 
 
+def emission_parts(args) -> list[str]:
+    """The one ``parts`` tuple `SlotCombNet` takes, over both vocabularies.
+
+    `PartialEmissionV2` reads ONE list holding the four C1 parts and the four v2
+    parts, so `--parts` and `--v2-parts` are two selectors over one vocabulary
+    and not two arguments. The v2 half is added only when the emission is v2.
+    """
+    parts = [p for p in args.parts.split(",") if p and p != "none"]
+    if args.emission == "v2":
+        parts += [V2_ALIASES.get(p, p) for p in args.v2_parts.split(",") if p and p != "none"]
+    if not args.multi_mic and "channels" in parts:
+        # A mono input has ONE channel and it is already the power mean, so the
+        # per-mic candidates the `channels` part adds do not exist.
+        parts = [p for p in parts if p != "channels"]
+        print("mono: dropped the 'channels' part (a mono input has no extra mics)", flush=True)
+    return parts
+
+
 def model_kwargs(args) -> dict[str, Any]:
     """The full `SlotCombNet` constructor call, as a JSON-safe dict.
 
     This dict IS `config.json`'s ``model`` block, so what trains and what a dump
     or a probe rebuilds cannot drift.
     """
-    parts = tuple(p for p in args.parts.split(",") if p and p != "none")
-    if not args.multi_mic and "channels" in parts:
-        # A mono input has ONE channel and it is already the power mean, so the
-        # per-mic candidates the `channels` part adds do not exist.
-        parts = tuple(p for p in parts if p != "channels")
-        print("mono: dropped the 'channels' part (a mono input has no extra mics)", flush=True)
+    parts = emission_parts(args)
     kw: dict[str, Any] = {
         "sr": 16000,
         "n_fft": 4096,
@@ -120,20 +137,43 @@ def model_kwargs(args) -> dict[str, Any]:
         "multichannel": True,
         "use_checkpoint": True,
         "emission": args.emission if parts or args.emission == "v2" else "classical",
-        "parts": list(parts),
+        "parts": parts,
+        "zero_rps": float(args.zero_rps),
     }
     if args.mask_k_max:
         kw["mask_k_max"] = int(args.mask_k_max)
     if args.off_state:
-        kw[V2_KEYWORDS["off_state"]] = True
+        kw["off_state"] = True
     if args.learned_transition:
-        kw[V2_KEYWORDS["learned_transition"]] = True
+        kw["learned_transition"] = True
+        kw["trans_slew"] = float(args.trans_slew)
     if args.rate_prior:
-        kw[V2_KEYWORDS["rate_prior"]] = True
-    if args.emission == "v2":
-        kw[V2_KEYWORDS["v2_parts"]] = [p for p in args.v2_parts.split(",") if p and p != "none"]
+        kw["rate_prior"] = True
+    if mask_below_grid(args):
+        kw["mask_below_grid"] = True
     kw.update(parse_kv(args.model_kwarg, "model-kwarg"))
     return kw
+
+
+def mask_below_grid(args) -> bool:
+    """Whether the frames between ``zero_rps`` and the grid floor leave the loss.
+
+    ON by default whenever the grid reaches under 30 rev/s, because that is the
+    only reason to extend it: those frames have no gold cell, so charging them
+    at the grid edge would teach the edge. ``--no-mask-below-grid`` forces it
+    off, and it is meaningless at the C1 grid, where the sampler rejects such a
+    crop anyway.
+    """
+    if args.no_mask_below_grid:
+        return False
+    return bool(args.mask_below_grid or float(args.grid_lo) < GRID_FLOOR)
+
+
+def use_warm_start(args) -> bool:
+    """Whether the two gradient-starved emission knobs start off the corner."""
+    if args.no_warm_start:
+        return False
+    return bool(args.warm_start or args.emission == "v2")
 
 
 def check_signature(kw: dict[str, Any]) -> None:
@@ -154,11 +194,27 @@ def check_signature(kw: dict[str, Any]) -> None:
         )
 
 
-def build_model(kw: dict[str, Any], device: str):
+def build_model(kw: dict[str, Any], device: str, warm: bool = False):
+    """`SlotCombNet` from the constructor keywords, warm-started if asked.
+
+    `SlotCombNet.__init__` does not forward keywords to its emission, so the
+    warm start is a call on the built object — see the module docstring for why
+    a v2 arm needs one.
+    """
     from experiments import slot_v2 as sv
 
     check_signature(kw)
-    return sv.build_from_config({"model": kw}, device=device)
+    net = sv.build_from_config({"model": kw}, device=device)
+    if warm and kw.get("emission") == "v2":
+        from models.comb_slots_emission_v2 import warm_start as warm_start_emission
+
+        warm_start_emission(net.emit, gap_mu=WARM_GAP_MU, read_sigma=WARM_READ_SIGMA)
+        print(
+            f"warm start: gap_mu={WARM_GAP_MU} read_sigma={WARM_READ_SIGMA} "
+            "(the corner's gradients on these two are ~1e-7 and ~1e-13)",
+            flush=True,
+        )
+    return net
 
 
 def trainable(net) -> list[torch.nn.Parameter]:
@@ -199,24 +255,31 @@ def acceptance(args, kw: dict[str, Any]) -> tuple[float, float]:
     """The rotor-rate window a training crop must stay inside.
 
     Full range with an OFF state, because that is the whole point of § 3.1 and
-    § 3.2: the zero and below-grid frames must reach the loss. Without one, the
-    C1 window, one grid step inside each edge.
+    § 3.2: the zero and below-grid frames must reach the loss, and
+    `SlotCombNet.loss` is what decides what each of them means. Without an OFF
+    state, the C1 window, one grid step inside each edge — a model that cannot
+    express a zero would otherwise learn to put it at the grid edge.
     """
     from experiments.slot_v2 import FULL_RANGE
 
-    if args.full_range or (args.off_state and not args.grid_range):
-        if not args.off_state:
-            # An honest warning, not a refusal: a full-range smoke is a useful
-            # check of the sampler. But without an OFF state `SlotCombNet.loss`
-            # has no gold cell for a stopped rotor and puts it at the grid edge,
-            # so a real arm trained this way learns the wrong thing.
-            print(
-                "WARNING: --full-range without --off-state. A zero-rate frame has no gold "
-                "state, so the loss will put it at the grid edge. Use --off-state.",
-                flush=True,
-            )
-        return FULL_RANGE
-    return (float(kw["r_lo"]) + 1.0, float(kw["r_hi"]) - 1.0)
+    if args.grid_range or not (args.full_range or kw.get("off_state")):
+        return (float(kw["r_lo"]) + 1.0, float(kw["r_hi"]) - 1.0)
+    # Two honest warnings, not refusals: a full-range smoke is a useful check of
+    # the sampler, and an arm may want one of the two masks alone.
+    if not kw.get("off_state"):
+        print(
+            "WARNING: --full-range without --off-state. A zero-rate frame has no gold "
+            "state, so the loss will put it at the grid edge. Use --off-state.",
+            flush=True,
+        )
+    elif not kw.get("mask_below_grid"):
+        print(
+            f"WARNING: --off-state without the below-grid mask. A frame between "
+            f"{kw.get('zero_rps', 0.5)} and {kw['r_lo']:g} rev/s is charged at the grid "
+            "edge. Use --mask-below-grid, or lower --grid-lo.",
+            flush=True,
+        )
+    return FULL_RANGE
 
 
 def batch(streams, order: list[int], step: int, size: int, device: str):
@@ -270,23 +333,68 @@ def build_parser() -> argparse.ArgumentParser:
     from experiments.slot_v2 import DATA_MODES
 
     g = ap.add_argument_group("the v2 parameter groups (every one off by default)")
+    from models.comb_slots import PARTIAL_PARTS
+    from models.comb_slots_emission_v2 import V2_PARTS
+
     g.add_argument("--off-state", action="store_true", help="§ 3.1 one OFF state per chain")
     g.add_argument("--learned-transition", action="store_true", help="§ 3.3 learned penalty")
+    g.add_argument(
+        "--trans-slew",
+        type=float,
+        default=30.0,
+        help="§ 3.3 the slew, in rev/s^2, that sets the learned band's WIDTH. The "
+        "hinge the parameters start at still comes from --slew",
+    )
     g.add_argument("--rate-prior", action="store_true", help="§ 3.6 pairwise prior across slots")
     g.add_argument(
         "--emission",
         default="partial",
         choices=("classical", "partial", "v2"),
-        help="partial = the C1 emission (default); v2 adds the groups of --v2-parts",
+        help="partial = the C1 emission (default); v2 adds the parts of --v2-parts",
     )
-    g.add_argument("--v2-parts", default=",".join(V2_PARTS), help="comma list, or 'none'")
-    g.add_argument("--parts", default=",".join(C1_PARTS), help="C1 emission parts, or 'none'")
+    g.add_argument(
+        "--v2-parts",
+        default=",".join(V2_PARTS),
+        help=f"comma list of {list(V2_PARTS)}, or 'none'; read only with --emission v2. "
+        "'read_width' and 'claim_width' are accepted as short names",
+    )
+    g.add_argument(
+        "--parts",
+        default=",".join(PARTIAL_PARTS),
+        help=f"C1 emission parts {list(PARTIAL_PARTS)}, or 'none'",
+    )
     g.add_argument("--grid-lo", type=float, default=30.0, help="§ 3.2 the grid floor, rev/s")
     g.add_argument("--grid-hi", type=float, default=100.0)
     g.add_argument("--n-grid", type=int, default=700, help="§ 3.2 use 900 with --grid-lo 10")
+    g.add_argument(
+        "--zero-rps",
+        type=float,
+        default=0.5,
+        help="a true rate at or under this is a stopped rotor: the gold state is OFF",
+    )
+    g.add_argument(
+        "--mask-below-grid",
+        action="store_true",
+        help="§ 3.2 drop the frames between --zero-rps and the grid floor from the "
+        "gold path. ON by default when --grid-lo is under 30",
+    )
+    g.add_argument("--no-mask-below-grid", action="store_true", help="force the mask off")
+    g.add_argument(
+        "--warm-start",
+        action="store_true",
+        help="start the gap charge and the read width off the corner. ON by "
+        "default with --emission v2, where their corner gradients are ~1e-7 and ~1e-13",
+    )
+    g.add_argument("--no-warm-start", action="store_true", help="keep the exact corner")
     g.add_argument("--k-max", type=int, default=40)
     g.add_argument("--floor-hz", type=float, default=60.0)
-    g.add_argument("--mask-k-max", type=int, default=0, help="0 = f_max / grid_lo, as the model")
+    g.add_argument(
+        "--mask-k-max",
+        type=int,
+        default=0,
+        help="0 = the model's own f_max / grid_lo. At --grid-lo 10 that is 750 "
+        "harmonics and a 121 s bank build, so cap it for a short run",
+    )
     g.add_argument(
         "--model-kwarg",
         action="append",
@@ -403,7 +511,8 @@ def main(argv: list[str] | None = None) -> int:
     dev = args.device
     kw = model_kwargs(args)
     accept = acceptance(args, kw)
-    net = build_model(kw, dev)
+    warm = use_warm_start(args)
+    net = build_model(kw, dev, warm=warm)
     named = dict(net.named_parameters())
     for name, value in parse_kv(args.init_param, "init-param").items():
         if name not in named:
@@ -418,7 +527,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"device={dev} data={args.data} emission={kw['emission']} parts={kw['parts']} "
         f"grid={kw['r_lo']:g}-{kw['r_hi']:g} x {kw['n_grid']} accept={accept} "
-        f"trainable={n_par}",
+        f"off_state={kw.get('off_state', False)} "
+        f"mask_below_grid={kw.get('mask_below_grid', False)} "
+        f"learned_transition={kw.get('learned_transition', False)} "
+        f"rate_prior={kw.get('rate_prior', False)} trainable={n_par}",
         flush=True,
     )
 
@@ -438,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
             "seed": args.seed,
             "select_n": args.select_n,
             "init": args.init,
+            "warm_start": warm,
             "smoke": bool(args.smoke),
         },
     }

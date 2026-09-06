@@ -963,6 +963,45 @@ octaves): the fan is a property of the regression readout, not of one
 trunk. The GRU cells and the transformer without speech join the table
 when they land.
 
+## Slot-comb v2 test (2026-09-06, user request: implement and test `docs/slot-comb-v2-design.md`, synthetic first)
+
+Implementation (merged into main, commits 1ae441f and 47e5e77, plumbing to
+follow): all seven parameter groups of the design as opt-in flags of
+`SlotCombNet`, each containing the C1 corner at initialization (init
+equivalence tested to <= 2.4e-7 on the score and 1 float32 ULP on the
+loss): `off_state` (3.1), `r_lo=10, n_grid=900, mask_below_grid` (3.2),
+`learned_transition` with `trans_slew=30` (3.3), `emission="v2"` with the
+parts `gap` (3.4), `cross_order` (3.5), `read_width_learned` and
+`claim_width_learned` (3.7) in `src/models/comb_slots_emission_v2.py`,
+and `rate_prior` (3.6, `src/models/comb_slots_prior.py`). Two findings
+from the implementation: the gap and read-width groups have vanishing
+gradients at the exact corner (interior "off" limits), so the trained
+arms start from `warm_start(gap_mu=-2, read_sigma=...)`, one step off the
+corner; and the wider chain (900 points, 81-wide band, OFF scalar) costs
+1.4x per training step end to end (the emission dominates).
+
+Arms, all at ONE microphone (the fair comparison of the C1 campaign),
+2 s crops, batch 2-4, lr 1e-3, selection on 48 windows of the training
+policy, the trainer's non-finite guard, gpushort chains:
+
+| arm | data | init | what it tests |
+|---|---|---|---|
+| `v2_comb` | S1 static comb (mono, `salv2_comb`) | corner + warm start | the mechanism on its home family with every group on |
+| `v2_stoch` | S2 stochastic comb (mono, `salv2_stoch`) | `v2_comb` best | the stochastic limit (claim 4) for the CRF family |
+| `v2_real` | R4 real mono pool (`slot_real_dload`, silence arm) | `v2_stoch` best | the curriculum synthetic -> real, the paper's C1/C2 analogue |
+| `v2_real_scratch` | R4 real mono pool | corner + warm start | the A8 recipe with the v2 groups, no synthetic stage |
+
+Scoring: `scripts/slot_dump.py` on the six parts into `results/rps_dump`
+(the paper's format), `scripts/rps_regime_table.py`, the cue probes,
+`scripts/rps_error_profile.py` (fan and classes on the stochastic part).
+
+Decision rule (user, 2026-09-06): the paper is restructured around v2
+only if it beats the tested models ACROSS splits, i.e. the best regressor
+and port rows of the ladder on the real split (all-frame 2.74, DREGON
+cruise 2.1-2.9, FLY124 cruise 0.9-1.2, zero 1.6-2.9, ramps 3-5) and the
+best synthetic rows on their own parts (static comb 0.46-0.9, stochastic
+2.48-2.65), at one microphone; otherwise v2 is not mentioned.
+
 ## Conclusion
 
 Written 2026-09-06; every cell of the matrix is trained and scored.

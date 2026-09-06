@@ -36,7 +36,7 @@ import math
 import torch
 import torch.nn as nn
 
-__all__ = ["RatePrior", "add_prior", "prior_term"]
+__all__ = ["RatePrior", "add_prior", "path_rates", "prior_term"]
 
 
 class RatePrior(nn.Module):
@@ -91,6 +91,20 @@ class RatePrior(nn.Module):
         return (self.v.to(d.dtype) * torch.exp(-0.5 * z * z)).sum(dim=-1)
 
 
+def path_rates(grid: torch.Tensor, path: torch.Tensor) -> torch.Tensor:
+    """A chain path ``(B, T)`` -> its rates in rev/s, an OFF frame as NaN.
+
+    The OFF state is grid index ``G``, one past the last grid point. A stopped
+    rotor is not a rotor AT a rate, so it must not pull the prior at all:
+    :func:`prior_term` gives a NaN frame a zero contribution. Zero rev/s would
+    instead make ``psi`` a prior on the ABSOLUTE rate, which is the one thing
+    section 3.6 says this term must not become.
+    """
+    n_g = int(grid.numel())
+    r = grid[path.clamp(max=n_g - 1)]
+    return torch.where(path >= n_g, torch.full_like(r, float("nan")), r)
+
+
 def prior_term(prior: RatePrior, grid: torch.Tensor, prev_paths_rps: torch.Tensor) -> torch.Tensor:
     """``sum_j psi(r_g - r_j(t))`` for one slot: ``(B, J, T)`` -> ``(B, G, T)``.
 
@@ -98,18 +112,22 @@ def prior_term(prior: RatePrior, grid: torch.Tensor, prev_paths_rps: torch.Tenso
         prior: the shared :class:`RatePrior`.
         grid: the rate grid ``(G,)`` in rev/s.
         prev_paths_rps: the decoded rates of the earlier slots, ``(B, J, T)`` in
-            rev/s. They are constants of slot ``i``'s chain, so this function
-            does not care how they were decoded.
+            rev/s, an OFF frame as NaN. They are constants of slot ``i``'s
+            chain, so this function does not care how they were decoded.
 
     The slots are accumulated one at a time, so the ``n_centers`` axis exists
-    for one slot at a time and not for all of them together.
+    for one slot at a time and not for all of them together. A NaN frame is
+    substituted BEFORE the prior reads it and zeroed after, so no NaN reaches
+    the backward pass.
     """
     if prev_paths_rps.dim() != 3:
         raise ValueError(f"prev_paths_rps must be (B, J, T), got {tuple(prev_paths_rps.shape)}")
     r = grid.to(prev_paths_rps.dtype)[None, :, None]  # (1, G, 1)
     out: torch.Tensor | None = None
     for j in range(int(prev_paths_rps.shape[1])):
-        term = prior(r - prev_paths_rps[:, j][:, None, :])  # (B, G, T)
+        d = r - prev_paths_rps[:, j][:, None, :]  # (B, G, T)
+        on = torch.isfinite(d)
+        term = torch.where(on, prior(torch.where(on, d, torch.zeros_like(d))), torch.zeros_like(d))
         out = term if out is None else out + term
     if out is None:  # no earlier slot: the prior has nothing to say
         n_b, n_t = int(prev_paths_rps.shape[0]), int(prev_paths_rps.shape[2])

@@ -14,6 +14,9 @@ src/models/
   basic_pitch/          Basic Pitch note transcription, PyTorch port (Bittner et al. ICASSP 2022)
   harmonic_ports/       Multi-pitch architectures ported to rotor-rate salience on a LINEAR STFT
   rps_predictor.py      SimpleConv* family + DCUNet/DCCRN encoders (RPS)
+  comb_salience.py      CombGather / CombScoreHead — hypothesis scoring at k*r
+  comb_crf.py           Linear-chain CRF over the rate grid (the deployed decoder)
+  comb_slots.py         SlotCombNet — R slots that ALLOCATE bins (candidate C1)
   ckla.py               Complex Kalman Linear Attention head + SimpleConvV2CKLA (docs/ckla-design.md)
   dcunet.py             DCUNet (speech enhancement)
   dccrn.py              DCCRN
@@ -265,6 +268,82 @@ reaches 0 and both handled inside `harmof0_rps.py`:
    (default `sr / n_fft`) drops every harmonic of such a candidate, and with it
    the untrained read of a 37 rev/s comb moves from 1.51 rev/s to 37.12; 45, 60,
    84.5 and 120 also land within one grid bin.
+
+### The slot-comb CRF emission (`comb_slots.py`, `comb_slots_emission_v2.py`)
+
+`SlotCombNet(emission=...)` selects what turns the harmonic readings into a
+score. `"classical"` is the zero-parameter Whittle mean over orders,
+`"partial"` is `PartialEmission` (candidate C1), and **`"v2"` is
+`PartialEmissionV2`** in `comb_slots_emission_v2.py` — the EMISSION groups of
+`docs/slot-comb-v2-design.md`, sections 3.4, 3.5 and 3.7. The chain groups (the
+OFF state, the grid from 10 rev/s, the learned transition, the pairwise rate
+prior) are not in that class. `parts=` takes the four `PARTIAL_PARTS` plus
+`V2_PARTS = ("gap", "cross_order", "read_width_learned", "claim_width_learned")`;
+`PARTIAL_V2_PARTS` is all eight, and `emission="v2"` with no v2 part named is
+the partial emission exactly.
+
+* `gap` — a second gather at the half-integer orders `k + 1/2`
+  (`OffsetCombGather`), read as a MULTIPLE discriminator (a hypothesis at twice
+  the rate has full gaps, which no test on the teeth can see) and as a
+  comb-conditioned FLOOR (the running median measures the comb itself below
+  about 20 rev/s).
+* `cross_order` — a 3-layer 1-D convolution ALONG THE ORDER AXIS at every
+  (rate, frame), emitting a weight logit and an evidence per order. Its 1826
+  parameters are the capacity lever; its activations are the only v2 cost that
+  is not negligible (145 MB per crop per layer at K=40, G=900, T=63; measured
+  3.6 GB peak for one forward and backward at batch 4, mono, on CPU).
+* `read_width_learned` — the read of one harmonic becomes a Gaussian of learned
+  width `softplus(s0 + s1 k)`, applied as K smoothed copies before the gather.
+* `claim_width_learned` — `LearnedCombMaskBank` replaces `CombMaskBank`. The
+  maximum over harmonics of equal-width Gaussians is one Gaussian of the
+  MINIMUM distance, so the chunked pass over 250-750 harmonics runs once at
+  construction and each forward is one exponential over `(G, F)`.
+
+Two traps this family pays for, both from the "each group contains the current
+setting at initialization" rule. **A knob that starts off has a gradient that
+starts off too**: `gap_mu_init=-16` and `read_sigma_init=0.15` reproduce the
+corner to 1e-6 but send about 1e-7 and 1e-13 of gradient, so a run that must
+LEARN those groups starts them at about -2 and 0.7, exactly as campaign arm A7
+started the octave charge ON. And **the weight is bounded below by zero**
+(`softplus`, never `1 + MLP`), because a `1 + MLP` weight sum reaching zero is
+what took arms A3 and A6 non-finite.
+
+### The slot-comb CRF (`comb_slots.py`, `comb_crf.py`)
+
+`SlotCombNet` is candidate C1: R slots over one rate grid, each scored by a
+gather at `k*r`, each decoded by Viterbi over the same chain the CRF loss
+trains. Bins are ALLOCATED between slots rather than copied, so two slots on one
+rotor score less than one slot there plus one on an uncovered rotor. The
+zero-parameter corner (`head_mode="classical"`, `n_iter=0`, eight microphones
+power-averaged) reads real DREGON cruise at 1.49 rev/s, ahead of every trained
+model on that protocol. `emission="partial"` relaxes the mean over harmonic
+orders into `PartialEmission` (135 parameters), starting at that corner.
+
+**The v2 chain options** (`docs/slot-comb-v2-design.md` sections 3.1 to 3.3, all
+default off). The regime table says the corner's largest failures are the
+regimes the CHAIN cannot express, not the ones the emission cannot read: 60.9
+rev/s on ground and zero frames, where the model has no "no rotor" state, and
+19.5 to 31.1 on ramps, where the hinge cannot follow and the grid stops at 30.
+Three constructor flags make each of those a family that holds the current model
+at initialization.
+
+| Flag | New parameters | What it adds |
+|------|----------------|--------------|
+| `off_state=True` | `theta0`, `theta1`, `c1`, `c2` | One OFF state per frame beside the banded ON states. Its unary is `theta0 - theta1 * contrast(t)`, an affine function of `SlotCombNet.contrast` (max minus median of that slot's own score over the grid) and of nothing that reads level. `theta0 = -1e4` makes it unreachable, so the decoder is bit-for-bit the measured one. `decode` emits 0 rev/s there, and `loss` makes OFF the gold state where the true rate is under `zero_rps` (0.5 rev/s). This is the hand-set `zero_contrast` threshold, made a state of the same CRF, so an ambiguous frame inherits its neighbours' state |
+| `learned_transition=True` | `trans.d`, one per band offset (38 by default) | `pen(j) = sum_{i<=j} softplus(d_i)`, mirrored — symmetric, zero at the origin, non-decreasing, so it stays a cost. `d` starts at the hinge, and the band is widened from `trans_slew` (30 rev/s^2) so the learned cost has room to let a rotor ramp |
+| `mask_below_grid=True` | none | Frames whose true rate is between `zero_rps` and the grid's low end leave the gold path: `comb_crf.crf_nll` then charges neither their emission nor the two transitions that touch them. This is what a grid from 10 rev/s needs (`r_lo=10, n_grid=900`). Nothing decodes such a frame, so EVALUATION still counts it as an error |
+
+The OFF index is `G`, one past the last grid index, in every path `comb_crf`
+returns or reads. `posterior_marginals` with an `Off` returns `G+1` rows; the
+slot model drops the last one, because a stopped rotor claims no bins.
+
+Costs, measured on four CPU threads at B=2, T=63: `log_partition` is 71 ms at
+(G=700, span=15) and 238 ms at (G=900, span=40), which is the `G x band` work
+ratio and nothing else; the OFF state adds about 60% to that. At `r_lo=10` the
+mask bank's `mask_k_max` defaults to 750 harmonics and takes 121 s to build
+against 53 s at 30 rev/s — pass `mask_k_max` to cap it. Neither is the loss's
+bottleneck: a `loss` plus `backward` on 2 s crops at batch 2 with the partial
+emission is 19.5 s at the corner and 26.9 s with all three v2 options on.
 
 ### Salience-map RPS baselines (`salience_rps.py`)
 

@@ -3,10 +3,18 @@
 #
 #   scripts/slot_v2_chain.sh <arm> [max-segments] -- <train_slot_v2 flags...>
 #
+#   # 3.1 alone, on real windows
 #   scripts/slot_v2_chain.sh B1 10 -- --data real --off-state
-#   scripts/slot_v2_chain.sh B2 20 -- --data comb --off-state --grid-lo 10 --n-grid 900
+#   # 3.1 + 3.2: the grid from 10 rev/s. The mask bank is 750 harmonics there
+#   # and takes 121 s to build, so cap it.
+#   scripts/slot_v2_chain.sh B2 20 -- --data comb --off-state \
+#       --grid-lo 10 --n-grid 900 --mask-k-max 250
+#   # the curriculum: the real stage warm-started from the comb stage
 #   scripts/slot_v2_chain.sh B3 20 -- --data real --off-state \
 #       --init /data/scratch/acw592/results/slot_v2/B2/best.pt
+#   # every group at once
+#   scripts/slot_v2_chain.sh B9 30 -- --data real --off-state --learned-transition \
+#       --rate-prior --emission v2 --grid-lo 10 --n-grid 900 --mask-k-max 250
 #
 # WHY A WRAPPER. `scripts/chain_cmd.sh` already drives a resumable command as a
 # chain of short GPU jobs, and it is not replaced here. What this file adds is

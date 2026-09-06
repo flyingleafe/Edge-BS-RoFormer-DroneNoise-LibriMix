@@ -65,3 +65,7 @@ Tests import `src` packages by name (`from tracking import ...`) — never
 through a `sys.path` hack into `scripts/` or `notebooks/`. The two exceptions
 are deliberate and documented in place: `tests/scripts/conftest.py` (the thin
 CLIs are not importable packages) and `tests/test_geom_calibration.py`.
+
+## CPU cap
+
+`tests/conftest.py` caps torch and OpenMP threads at half the machine's cores (`HNS_TEST_THREADS` overrides it). The comb-slot and CRF tests are CPU-bound and would otherwise take every core for minutes. Run heavy suites with `nice -n 15` as well, and never two at once.

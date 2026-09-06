@@ -53,6 +53,16 @@ replaces the mean over harmonic orders with `PartialEmission` — a learned
 reliability over (order, channel), the empty-tooth octave charge, and a learned
 floor width. Every part starts at zero effect, so the corner stays inside the
 family and training can only leave it by lowering the CRF loss.
+
+THE CHAIN IS SWITCHABLE TOO — v2 sections 3.1 to 3.3 of
+`docs/slot-comb-v2-design.md`. ``off_state=True`` gives every slot an OFF state,
+which is what the regime table says the model needs most: on ground and zero
+frames the eight-microphone corner reads 60.9 rev/s, because it has no way to
+say that no rotor turns. ``learned_transition=True`` makes the hinge a learned,
+symmetric, non-decreasing cost over a wider band, because a real ramp runs at 20
+to 40 rev/s^2 and the hinge charges about 90 nats per frame to follow it.
+``mask_below_grid=True`` takes the frames whose true rate is under the grid out
+of the loss, which is what a grid from 10 rev/s needs. All three default to off.
 """
 
 from __future__ import annotations
@@ -68,7 +78,7 @@ from torch.utils.checkpoint import checkpoint
 
 from models import comb_crf
 from models.comb_salience import CombGather, CombScoreHead, local_floor_torch
-from models.comb_slots_prior import RatePrior, add_prior
+from models.comb_slots_prior import RatePrior, add_prior, path_rates
 
 __all__ = ["PARTIAL_PARTS", "CombMaskBank", "PartialEmission", "SlotCombNet"]
 
@@ -362,6 +372,51 @@ class SlotCombNet(nn.Module):
             ``emission="partial"``.
         n_mic: how many microphones the per-channel weights are sized for.
         slew, stiff: the hinge transition, in the classical units.
+        off_state: give every slot's chain an OFF state (v2 section 3.1). Adds
+            four scalars — ``theta0``, ``theta1``, ``c1``, ``c2``. Default False.
+        learned_transition: replace the fixed hinge by `comb_crf.BandPenalty`
+            (v2 section 3.3). Adds ``trans.d``, one scalar per band offset.
+            Default False.
+        trans_slew: the slew, in rev/s^2, that sets the WIDTH of the learned
+            band. Read only when ``learned_transition=True``.
+        mask_below_grid: drop the frames whose true rate is between ``zero_rps``
+            and the grid's low end out of the loss (v2 section 3.2). Default
+            False.
+        zero_rps: the true rate, in rev/s, below which a rotor counts as
+            stopped. It is the boundary between the OFF gold state and the
+            masked band.
+
+    THE V2 CHAIN OPTIONS, AND WHAT THEY COST. `docs/slot-comb-v2-design.md`
+    sections 3.1 to 3.3. Each is a family that CONTAINS the current model at
+    initialization, so a run that helps can be told from a run that only moved.
+
+    * ``off_state`` adds one state per frame next to the banded ON states. Its
+      unary is ``theta0 - theta1 * contrast(t)``, an affine function of the
+      max-minus-median statistic of the same scores the chain reads, and of
+      nothing that reads level. At ``theta0 = -1e4`` the state is unreachable
+      and the decoder is bit-for-bit the one measured without it. `decode` emits
+      0 rev/s in an OFF frame. This is the hand-set ``zero_contrast`` threshold,
+      made a state of the same CRF, so a frame whose contrast is ambiguous
+      inherits its neighbours' state instead of being cut alone.
+    * ``r_lo=10, n_grid=900`` is a supported grid (v2 section 3.2). The grid
+      step stays 0.1 rev/s, so ``step_free`` (3.836) and the hinge span (15) do
+      not move, and ``k_max=32`` still reads 32 harmonics at every rate, because
+      32 x 100 rev/s is under ``f_max``. What grows is `CombMaskBank`:
+      ``mask_k_max`` defaults to ``ceil(f_max / r_lo)``, which is 750 harmonics
+      at 10 rev/s against 250 at 30. Measured on four CPU threads, the bank
+      takes 121 s to build against 53 s, once per process. Pass ``mask_k_max``
+      to cap it. Two front-end facts also change at 10 rev/s, and neither is
+      repaired here: consecutive harmonics are 2.6 STFT bins apart at
+      ``n_fft=4096``, and a 15-bin running median then spans six of them, so the
+      floor IS the comb. Section 3.4 of the design is the floor that does not
+      have that problem.
+    * ``learned_transition`` keeps the hinge as the initial value and lets the
+      CRF log-partition train its shape. The band is widened to ``trans_slew``
+      first, which takes the span from 15 to 38 at the default 30 rev/s^2
+      against 12, and the banded logsumexp of `comb_crf.log_partition` grows
+      with it. Measured at B=2, T=63: 71 ms at (G=700, span=15) against 238 ms
+      at (G=900, span=40), which is the ``G x band`` work ratio of 3.4 and
+      nothing else.
     """
 
     pen: torch.Tensor
@@ -395,10 +450,15 @@ class SlotCombNet(nn.Module):
         parts: tuple[str, ...] = PARTIAL_PARTS,
         n_mic: int = 8,
         floor_widths: tuple[int, ...] | None = None,
+        off_state: bool = False,
+        learned_transition: bool = False,
+        trans_slew: float = 30.0,
+        mask_below_grid: bool = False,
+        zero_rps: float = 0.5,
         rate_prior: bool = False,
     ):
         super().__init__()
-        if emission not in ("classical", "partial"):
+        if emission not in ("classical", "partial", "v2"):
             raise ValueError(f"unknown emission {emission!r}")
         self.sr, self.n_fft, self.hop_length = int(sr), int(n_fft), int(hop_length)
         self.n_rot, self.n_iter = int(n_rot), int(n_iter)
@@ -463,16 +523,106 @@ class SlotCombNet(nn.Module):
         # Section 3.6: a learned pairwise prior over the rate DIFFERENCE to the
         # slots already peeled. Zero at initialization, so the corner is unchanged.
         self.rate_prior = RatePrior() if rate_prior else None
+        if self.emission == "v2":
+            # The v2 emission groups of `docs/slot-comb-v2-design.md`, sections
+            # 3.4, 3.5 and 3.7. Imported here, not at the top, because that
+            # module subclasses `PartialEmission`.
+            from models.comb_slots_emission_v2 import attach_v2_emission
+
+            attach_v2_emission(
+                self,
+                k_max=k_max,
+                n_mic=n_mic,
+                parts=parts,
+                floor_widths=widths,
+                f_max=f_max,
+                notch_width=notch_width,
+                sr=sr,
+                n_fft=n_fft,
+            )
         self.register_buffer("window", torch.hann_window(int(n_fft)), persistent=False)
         step = float(grid[1] - grid[0])
         self.step_free = max(slew * (hop_length / sr) / step, 1e-9)
         span, pen = comb_crf.band_penalty(self.step_free, stiff)
+        self.trans: comb_crf.BandPenalty | None = None
+        if learned_transition:
+            # THE BAND IS WIDER THAN THE HINGE NEEDS. `trans_slew` sets the span,
+            # `slew` still sets the hinge the parameters start at, and the hinge
+            # continues past its own truncation by the same quadratic law. So the
+            # learned cost has room to let a rotor ramp, and it starts where the
+            # measured decoder is.
+            free = max(float(trans_slew) * (hop_length / sr) / step, 1e-9)
+            span = max(1, int(round(4.0 * free)))
+            half = comb_crf.hinge_half(self.step_free, stiff, span)
+            pen = torch.cat([half.flip(0)[:-1], half]).to(torch.float32)
+            self.trans = comb_crf.BandPenalty(span, half)
         self.span = span
+        # With a learned transition this buffer is the INITIAL band. `_pen` is
+        # what every decode and every loss reads.
         self.register_buffer("pen", pen, persistent=False)
+        self.off_state = bool(off_state)
+        self.mask_below_grid = bool(mask_below_grid)
+        self.zero_rps = float(zero_rps)
+        if self.off_state:
+            # `theta0 = -1e4` puts the OFF state 1e4 nats down, so no path
+            # reaches it and the decoder is the one measured without it. The
+            # gradient of the loss on `theta0` is the count of gold OFF frames
+            # minus their expected count, so data that holds stopped rotors
+            # lifts it and data that does not leaves it alone. `c1` and `c2`
+            # start with NO gradient at all: they charge the two switches, the
+            # model makes none while OFF is unreachable, and a gold trajectory
+            # that is stopped for a whole crop makes none either. They start to
+            # move as soon as `theta0` has risen far enough for the chain to
+            # switch, or as soon as a crop holds a rotor that stops in it.
+            self.theta0 = nn.Parameter(torch.tensor(-1e4))
+            self.theta1 = nn.Parameter(torch.tensor(0.0))
+            self.c1 = nn.Parameter(torch.tensor(0.0))
+            self.c2 = nn.Parameter(torch.tensor(0.0))
 
     @property
     def grid(self) -> torch.Tensor:
         return cast(torch.Tensor, self.gather.grid)
+
+    def _pen(self, dtype: torch.dtype | None = None) -> torch.Tensor:
+        """The transition band every chain reads: the hinge, or the learned one."""
+        dtype = self.pen.dtype if dtype is None else dtype
+        return self.pen.to(dtype) if self.trans is None else self.trans(dtype)
+
+    def _off(self, s: torch.Tensor) -> comb_crf.Off | None:
+        """The OFF state of one slot's chain, from that slot's own scores.
+
+        THE CONTRAST IS DETACHED. `contrast` is the max minus the median of the
+        score over the grid, so a gradient through it would let the model change
+        the OFF decision by moving its own score surface up or down. That is a
+        lever on the salience that explains no spectrum, and it points the wrong
+        way: the cheapest route to a low loss on a silent frame would be to flatten
+        the surface everywhere. Detached, `theta0` and `theta1` calibrate a
+        STATISTIC of the scores, exactly as the hand-set threshold did, and the
+        scores keep learning from the ON path alone. Both parameters still get
+        their gradient, because the contrast is their input and not their output.
+
+        THE STATISTIC IS PER SLOT. `contrast` over a stack of slots takes the
+        best slot, which is the right question for "is the aircraft silent". Here
+        the question is "does THIS slot have a rotor", because one rotor can stop
+        while the others turn, so each chain reads its own score matrix.
+        """
+        if not self.off_state:
+            return None
+        ct = self.contrast(s.detach()).to(s.dtype)
+        return comb_crf.Off(
+            self.theta0.to(s.dtype) - self.theta1.to(s.dtype) * ct, self.c1, self.c2
+        )
+
+    def _onehot(self, path: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
+        """``(B, T)`` path -> ``(B, G, T)`` indicator. An OFF frame claims nothing.
+
+        A stopped rotor radiates no comb, so it must not take a share of any bin
+        away from the slots that do. The OFF row is built and then dropped, which
+        is what leaves the frame empty.
+        """
+        n_g = like.shape[1]
+        p = like.new_zeros((like.shape[0], n_g + 1, like.shape[2]))
+        return p.scatter_(1, path.unsqueeze(1), 1.0)[:, :n_g]
 
     def spectrum(self, audio: torch.Tensor, per_channel: bool = False):
         """``(B, T)``, ``(C, T)`` or ``(B, C, T)`` -> ``(B, F, T)`` mean power.
@@ -599,13 +749,15 @@ class SlotCombNet(nn.Module):
             s = add_prior(self.rate_prior, self.grid, prev, self._score_ckpt(res, e.efloor))
             scores.append(s)
             if hard_init:
-                path = comb_crf.viterbi(s.detach(), self.span, self.pen)
-                p = torch.zeros_like(s).scatter_(1, path.unsqueeze(1), 1.0)
+                path = comb_crf.viterbi(s.detach(), self.span, self._pen(s.dtype), self._off(s))
+                p = self._onehot(path, s)
             else:
-                p = comb_crf.posterior_marginals(s, self.span, self.pen)
-                path = p.argmax(dim=1)
+                p = comb_crf.posterior_marginals(s, self.span, self._pen(s.dtype), self._off(s))[
+                    :, : s.shape[1]
+                ]
+                path = p.argmax(dim=1)  # the ON states only: the OFF row is gone
             posts.append(p)
-            prev.append(self.grid.to(s.dtype)[path].detach())
+            prev.append(path_rates(self.grid.to(s.dtype), path).detach())
             claims = torch.cat([claims, self.masks(p).unsqueeze(1)], dim=1)
 
         # ── Joint sweeps: every slot now sees every OTHER slot's claim ────────
@@ -614,7 +766,12 @@ class SlotCombNet(nn.Module):
             for i in range(self.n_rot):
                 res = self._residual(e.x, e.xfloor, claims, i)
                 scores.append(self._score_ckpt(res, e.efloor))
-            posts = [comb_crf.posterior_marginals(s, self.span, self.pen) for s in scores]
+            posts = [
+                comb_crf.posterior_marginals(s, self.span, self._pen(s.dtype), self._off(s))[
+                    :, : s.shape[1]
+                ]
+                for s in scores
+            ]
             claims = torch.stack([self.masks(p) for p in posts], dim=1)
 
         return torch.stack(scores, dim=1), torch.stack(posts, dim=1)
@@ -629,11 +786,7 @@ class SlotCombNet(nn.Module):
 
     def _claims_from(self, paths, like):
         """One-hot claims from a list of ``(B, T)`` index paths."""
-        cl = []
-        for path in paths:
-            p = torch.zeros_like(like).scatter_(1, path.unsqueeze(1), 1.0)
-            cl.append(self.masks(p))
-        return torch.stack(cl, dim=1)
+        return torch.stack([self.masks(self._onehot(path, like)) for path in paths], dim=1)
 
     def _solve(self, scores):
         """Viterbi every slot and return the paths with their total path score.
@@ -646,8 +799,12 @@ class SlotCombNet(nn.Module):
         found the union one is the only one that survives both incentives —
         `docs/experiments/synthetic-solvability-limits.md`, "The joint score".
         """
-        paths = [comb_crf.viterbi(s, self.span, self.pen) for s in scores]
-        tot = sum(comb_crf.path_score(s, self.span, self.pen, p) for s, p in zip(scores, paths))
+        pen = self._pen(scores[0].dtype)
+        offs = [self._off(s) for s in scores]
+        paths = [comb_crf.viterbi(s, self.span, pen, o) for s, o in zip(scores, offs)]
+        tot = sum(
+            comb_crf.path_score(s, self.span, pen, p, o) for s, p, o in zip(scores, paths, offs)
+        )
         return paths, tot
 
     def union_evidence(self, pw, floor, claims) -> torch.Tensor:
@@ -728,12 +885,17 @@ class SlotCombNet(nn.Module):
             improved = False
             for i in range(self.n_rot):
                 for factor in (0.5, 2.0):
-                    r = grid[paths[i]] * factor
-                    if bool(((r < lo) | (r > hi)).any()):
+                    # An OFF frame is not moved and is not read: it holds no
+                    # rate, so halving or doubling it means nothing.
+                    on = paths[i] < n_g
+                    base = grid[paths[i].clamp(max=n_g - 1)]
+                    r = torch.where(on, base * factor, base)
+                    if bool((((r < lo) | (r > hi)) & on).any()):
                         continue
                     if factor < 1.0 and bool((self._odd_even(e.pw, e.floor, r) < ratio).all()):
                         continue  # a real subharmonic: refuse
                     prop = ((r - lo) / step).round().long().clamp(0, n_g - 1)
+                    prop = torch.where(on, prop, paths[i])
                     trial = claims.clone()
                     trial[:, i] = self._claims_from([prop], scores[0])[:, 0]
                     if not bool((self.union_evidence(e.pw, e.floor, trial) > best + 1e-6).all()):
@@ -773,7 +935,7 @@ class SlotCombNet(nn.Module):
                 others = claims.clone()
                 others[:, i] = 0.0
                 s_i = self._score(self._residual(e.x, e.xfloor, others, None), e.efloor)
-                cand = comb_crf.viterbi(s_i, self.span, self.pen)
+                cand = comb_crf.viterbi(s_i, self.span, self._pen(s_i.dtype), self._off(s_i))
                 trial = claims.clone()
                 trial[:, i] = self._claims_from([cand], scores[0])[:, 0]
                 j = self.union_evidence(e.pw, e.floor, trial)
@@ -837,8 +999,12 @@ class SlotCombNet(nn.Module):
         falls below it — the project-wide "silence means zero rotor speed"
         convention that `salience_to_rps_segmented` already applies on the
         salience side. 0.30 is the 95th percentile of the no-rotor distribution
-        above. The default is 0.0 (OFF), so every number measured before this
+        above. The default is 0.0 (off), so every number measured before this
         existed still reproduces.
+
+        With ``off_state=True`` the chain has its own OFF state and already emits
+        0.0 there. The two are independent, and ``zero_contrast`` then only zeros
+        MORE frames, all slots at once. Use one or the other.
         """
         e = self._evidence(audio)
         scores, _ = self._forward_ev(e)
@@ -854,12 +1020,14 @@ class SlotCombNet(nn.Module):
         if self.k_refine:
             scores, paths = self._refine_band(e, scores, paths)
         grid = self.grid.to(scores[0].dtype)
+        n_g = int(grid.numel())
         out = []
         for s, path in zip(scores, paths):
-            r = grid[path]
+            on = path.clamp(max=n_g - 1)
+            r = grid[on]
             if subgrid:
-                r = r + self._parabolic(s, path)
-            out.append(r)
+                r = r + self._parabolic(s, on)
+            out.append(torch.where(path >= n_g, torch.zeros_like(r), r))
         rates = torch.stack(out, dim=1).sort(dim=1).values
         if zero_contrast > 0.0:
             quiet = self.contrast(scores) < float(zero_contrast)  # (B, T)
@@ -878,15 +1046,21 @@ class SlotCombNet(nn.Module):
         grid = self.grid.to(e.pw.dtype)
         n_band = max(1, int(round(self.refine_band / float(grid[1] - grid[0]))))
         ar = torch.arange(len(grid), device=e.pw.device)[None, :, None]
+        n_g = len(grid)
         out_s, out_p = [], []
         for i, path in enumerate(paths):
             res = self._residual(e.pw, e.floor, claims, i)
             h = self.gather_lo(res)
             s_lo = self.head_lo(h, gfloor_lo, self.gather_lo.count, grid)
-            keep = (ar - path.unsqueeze(1)).abs() <= n_band
+            on = path.clamp(max=n_g - 1)
+            keep = (ar - on.unsqueeze(1)).abs() <= n_band
             s_lo = torch.where(keep, s_lo, torch.full_like(s_lo, -1e30))
             out_s.append(s_lo)
-            out_p.append(comb_crf.viterbi(s_lo, self.span, self.pen))
+            # The refinement chain has no OFF state: the short harmonic list is a
+            # different scorer, so its contrast is not the one `theta1` was
+            # calibrated on. An OFF frame stays OFF and is not refined.
+            new = comb_crf.viterbi(s_lo, self.span, self._pen(s_lo.dtype))
+            out_p.append(torch.where(path >= n_g, path, new))
         return out_s, out_p
 
     def _parabolic(self, s: torch.Tensor, path: torch.Tensor) -> torch.Tensor:
@@ -914,15 +1088,47 @@ class SlotCombNet(nn.Module):
         assignment that minimizes total NLL — a permutation, resolved once, with
         no squared error anywhere, so nothing pushes a slot toward the mean of
         two rotors the way PIT-MSE does.
+
+        THE GOLD STATE OF A STOPPED ROTOR IS OFF. With ``off_state=True`` a true
+        rate below ``zero_rps`` (0.5 rev/s) becomes the OFF index, so the frames
+        the project calls "silence means zero" are IN the loss instead of being
+        clamped onto the bottom of the grid, where they taught the model a rate
+        that is not there.
+
+        A RATE BELOW THE GRID IS NOT A LABEL. With ``mask_below_grid=True`` a
+        true rate between ``zero_rps`` and the grid's low end is masked out of the
+        gold path: `crf_nll` then charges neither its emission nor the two
+        transitions that touch it, so the trajectory is scored on its observed
+        part only. Nothing is decoded for such a frame either, so EVALUATION
+        counts it as an error, and the only way to make it right is to lower the
+        grid. The default is False, which keeps the clamp every earlier
+        measurement was made with.
         """
         scores, _ = self.forward(audio)
         grid = self.grid.to(scores.dtype)
+        n_g = int(grid.numel())
+        rps = rps.to(scores.dtype)
         gold = (rps.unsqueeze(-1) - grid).abs().argmin(dim=-1)  # (B, R, T)
+        mask = None
+        if self.off_state:
+            gold = torch.where(rps < self.zero_rps, torch.full_like(gold, n_g), gold)
+        if self.mask_below_grid:
+            mask = ~((rps >= self.zero_rps) & (rps < float(grid[0])))
+        pen = self._pen(scores.dtype)
         b, r = scores.shape[0], scores.shape[1]
         cost = scores.new_zeros((b, r, r))
         for i in range(r):
+            # `log Z` is a function of slot i's scores alone, so it comes out of
+            # the j loop. It is the whole cost of the chain — a banded logsumexp
+            # over every frame — while `path_score` is one gather. Computing it
+            # once per slot instead of once per pair is a four-fold saving on the
+            # loss at R = 4, and it changes no number.
+            si = scores[:, i]
+            off = self._off(si)
+            lz = comb_crf.log_partition(si, self.span, pen, off)
             for j in range(r):
-                cost[:, i, j] = comb_crf.crf_nll(scores[:, i], self.span, self.pen, gold[:, j])
+                m = None if mask is None else mask[:, j]
+                cost[:, i, j] = lz - comb_crf.path_score(si, self.span, pen, gold[:, j], off, m)
         return _min_assignment(cost).mean()
 
 
