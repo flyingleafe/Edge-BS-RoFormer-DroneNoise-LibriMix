@@ -1,6 +1,6 @@
 {
-  "source_uri": "r2://ml-data/artifacts/jhtr-campaign/source/evaluator-source-cf35c33a10f5.tar.gz",
-  "source_commit": "cf35c33a10f5b9a8a5eb3af4ad50a6177a56c854",
-  "sha256": "acf00f0d75bab0629a89850f74bf09d79ed509f2b2b014ae10283cf098005fab",
+  "source_uri": "r2://ml-data/artifacts/jhtr-campaign/source/evaluator-source-d5e4e7c97c56.tar.gz",
+  "source_commit": "d5e4e7c97c560ad45ea63b3370244183106c7ee9",
+  "sha256": "aa4d26995dde0e6ed2ba6949bdae94c064508773412ce95123d33f6d8772afca",
   "url_expiry_seconds": 604800
 }
