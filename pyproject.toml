@@ -1,0 +1,222 @@
+[project]
+name = "edge-bs-roformer-dronenoise-librimix"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15.0",
+    "audiomentations==0.41.0",
+    "auraloss==0.4.0",
+    "beartype==0.20.2",
+    "einops==0.8.1",
+    "librosa==0.10.2.post1",
+    "loralib==0.1.2",
+    "matplotlib==3.10.3",
+    "ml-collections==1.1.0",
+    "numpy==2.2.5",
+    "omegaconf==2.3.0",
+    "packaging==25.0",
+    "pandas==2.2.3",
+    "pedalboard==0.9.16",
+    "pesq==0.0.4",
+    "pystoi==0.4.1",
+    "pyyaml==6.0.2",
+    "rotary-embedding-torch==0.8.6",
+    "soundfile==0.13.1",
+    "thop==0.1.1.post2209072238",
+    "torch==2.7",
+    "torch-log-wmse==0.3.0",
+    "torchaudio==2.7",
+    "tqdm==4.67.1",
+    "wandb[media]>=0.22.3",
+    "python-dotenv==1.0.1",
+    "demucs>=4.0.1",
+    "openpyxl>=3.1.5",
+    "ipykernel>=7.1.0",
+    "pip>=25.3",
+    "ipython>=9.9.0",
+    "jupyter>=1.1.1",
+    "seaborn>=0.13.2",
+    "datasets>=4.5.0",
+    "torchcodec==0.5",
+    "boto3>=1.34",
+    "playwright>=1.52.0",
+    "nnaudio>=0.3.4",
+    "tdseries>=0.2.0",
+    "hydra-core>=1.3.2",
+    "dload-ml>=0.3.0",
+    "requests>=2.32",
+    "gdown>=5.2",
+    "gpytorch>=1.15.2",
+    "pywavelets>=1.9.0",
+    "anywidget>=0.11.0",
+]
+
+[project.scripts]
+evaluate-rps = "tasks.cli:main"
+make-plot = "plots.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -m \"not slow and not network\""
+markers = [
+    "slow: heavy tests, excluded by default",
+    "network: touches real remote services (opt-in)",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "frogmouth>=0.9.2",
+    "hypothesis>=6.100",
+    "import-linter>=2.13",
+    "ipympl>=0.10.0",
+    "jupyter>=1.1.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
+    "torchlens",
+    "torchsummary",
+    "torchviz",
+    "visualtorch",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/utils",
+    "src/framespec",
+    "src/tasks",
+    "src/models",
+    "src/data_processing",
+    "src/tracking",
+    "src/zoo",
+    "src/plots",
+    "src/losses",
+    "src/metrics",
+    "src/training",
+]
+
+[tool.importlinter]
+root_packages = [
+    "utils",
+    "framespec",
+    "data_processing",
+    "tracking",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+    "zoo",
+    "experiments",
+]
+include_external_packages = false
+
+# Contracts per docs/refactor-2026-08-plan.md § 3.5.
+# NOTE: "utils is a leaf" is deliberately absent — utils.get_model_from_config
+# lazily imports models.*, so that contract cannot pass until the Phase 3
+# registry dict-ification.
+
+# Higher layers may import lower ones, never the reverse. experiments is
+# fenced separately below.
+[[tool.importlinter.contracts]]
+name = "core layers"
+type = "layers"
+layers = [
+    "zoo",
+    "training",
+    "plots",
+    "tasks",
+    "metrics",
+    "losses",
+    "data_processing",
+    "models",
+    "tracking",
+    "framespec",
+    "utils",
+]
+
+[[tool.importlinter.contracts]]
+name = "tracking stays pure"
+type = "forbidden"
+source_modules = ["tracking"]
+forbidden_modules = [
+    "data_processing",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+]
+
+[[tool.importlinter.contracts]]
+name = "nothing imports experiments"
+type = "forbidden"
+source_modules = [
+    "utils",
+    "framespec",
+    "data_processing",
+    "tracking",
+    "models",
+    "tasks",
+    "losses",
+    "metrics",
+    "plots",
+    "training",
+    "zoo",
+]
+forbidden_modules = ["experiments"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Archival restores stay verbatim - never lint or reformat them.
+extend-exclude = ["writing/reports/2026-05-29_classical-baselines"]
+
+[tool.ruff.lint]
+select = [
+    "E",  "W",  # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "SIM",      # flake8-simplify
+]
+ignore = [
+    "E501",   # line-length handled by formatter
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip() without explicit strict= parameter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["utils", "framespec", "tasks", "models", "data_processing", "tracking"]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone report/slide scripts bootstrap sys.path / os.chdir / matplotlib
+# backend before imports; E402 is structural there.
+"writing/**" = ["E402"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+# Pin the interpreter environment: pre-commit scrubs VIRTUAL_ENV, and without
+# it pyright silently type-checks against no site-packages (everything
+# Unknown), diverging from editor/hook runs.
+venvPath = "."
+venv = ".venv"
+# Resolve the project's own packages from THIS checkout's src/ first. The venv's
+# editable-install .pth points at the main checkout, so inside a git worktree
+# pyright would otherwise type-check every `from models import ...` against the
+# other tree's code (and flag anything added on the branch as missing).
+extraPaths = ["src"]
+# writing/** holds frozen report/slide scripts pinned to their publication
+# date; they reference since-refactored APIs by design (same rationale as
+# the ruff E402 exemption above).
+exclude = [".venv", "node_modules", ".direnv", "**/notebooks/**", "**/.ipynb_checkpoints/**", "writing"]
+reportMissingImports = false
+reportMissingTypeStubs = false

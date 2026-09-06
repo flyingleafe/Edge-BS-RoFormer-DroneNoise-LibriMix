@@ -1,0 +1,98 @@
+# SALV2 — the analytic STATIC COMB, rebuilt for the salience/CRF grid.
+#
+# Supersedes conf/online_mix/m3abl_comb_s1_dload.yaml for this campaign. Three
+# things changed, and all three are the consequence of one measurement.
+#
+# 1. NO `freq_scale`, NO `noise_time_warp`. The old policy fired `freq_scale`
+#    (alpha ~ U(0.7, 1.3), RESAMPLING the audio and multiplying the labels) on
+#    EVERY sample, and the time warp on half of them. The fixed validation set
+#    was built with `augment: false`, which DELETES all three augmentation
+#    blocks, so train and valid did not share a distribution and their loss
+#    curves were never comparable. Trajectory diversity now comes from the
+#    generator, where it is exact and where validation gets it too.
+#
+# 2. TWO EXCITATIONS, NOT ONE. `full_flight` spans ground -> warm-up -> takeoff
+#    -> cruise -> landing -> ground, so it supplies the zero-RPS regime and the
+#    ramps; `synthetic_intermittent` is the cruise-only OU maneuvering model.
+#    Half and half, so the stream carries both the transitions and a dense
+#    sample of steady flight.
+#
+# 3. `rps_scale_range` IS THE REPLACEMENT FOR `freq_scale`. It scales the whole
+#    trajectory at GENERATION time, so the comb is rendered at the scaled speed
+#    and the label is exact -- where `freq_scale` resampled finished audio.
+#    The range is bounded by the grid, not by taste: trajectories are clamped
+#    to the profile ceiling `rps_max` = 120 rev/s, and the output grid stops at
+#    150, so 1.20 is the largest factor that cannot put a label off the grid
+#    (120 * 1.20 = 144). The low end gives hover means near 32 rev/s.
+#
+# `flight_reuse: 32` is a training economy -- one flight generated, 32 windows
+# taken. The validation sets override it to 1 (see conf/data/salv2_*.yaml).
+# Speech is toggled from the data config (`speech: true|false`), so the
+# with-mixture and without-mixture arms share this file byte for byte.
+
+sample_rate: 16000
+duration_s: 4.0
+base_seed: 20260901
+
+sources:
+  noise:
+    - kind: static_comb
+      weight: 0.5
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.45, 1.20]
+      rps:
+        kind: full_flight
+        aggressiveness: 1.0
+        flight_reuse: 32
+    - kind: static_comb
+      weight: 0.5
+      n_harmonics: 100
+      n_mics: 8
+      n_rotors: 4
+      min_harm_above_floor: 0.30
+      drone_profile_range: [0.0, 1.0]
+      mic_gain_db: [-12.0, 0.0]
+      amp_rps_exponent: 2.5
+      amp_rps_ref: 80.0
+      rps_scale_range: [0.45, 1.20]
+      rps:
+        kind: synthetic_intermittent
+        aggressiveness: 1.0
+    # MEASURED, NOT ASSUMED. Without this arm the comb stream carries almost no
+    # stopped-rotor frames: over 60 clips the zero fraction is 0.001 and NO clip
+    # is majority-zero, because a 4 s window lands in a full flight's ground
+    # phase only rarely and `synthetic_intermittent` is cruise-only. The
+    # stochastic family gets its zeros from the same arm at the same weight, so
+    # this also puts the two families on equal footing for the "a stopped rotor
+    # is bin 0, not an absence" property the layer target exists to encode.
+    - kind: silence
+      weight: 0.2
+      n_channels: 8
+
+  speech:
+    - dataset: librispeech
+      subpath: LibriSpeech/train-clean-100
+
+policy:
+  stages:
+    # `random_gain` and `random_polarity` STAY: a level offset and a sign flip
+    # are not the two transforms that broke train/valid comparability, and
+    # polarity is an exact no-op for a magnitude front end anyway.
+    - until: null
+      source_prob: 1.0
+      snr_db:
+        uniform: {low: -30.0, high: 0.0}
+      speech_per_channel: independent
+      snr_per_channel: false
+      augmentations:
+        probability: 0.5
+        choices:
+          - random_gain: {min_db: -6.0, max_db: 6.0}
+          - random_polarity: {}

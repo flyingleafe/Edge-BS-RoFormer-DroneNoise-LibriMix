@@ -1,0 +1,9 @@
+[job]
+outputs = ["results/**"]
+
+[job.resources]
+gpus = 1
+time = "6h"
+
+[job.env]
+kind = "system"
