@@ -173,8 +173,19 @@ environment imported a different checkout. All subsequent jobs explicitly set
 `invalid configuration argument`. `_AttentionFF` now chunks its **independent
 sequence batch axis** to bound CUDA launch dimensions; neither the training
 batch, trajectory/time attention domain, loss nor schedule changes. A large-batch
-value/gradient equivalence regression covers the boundary. GPU re-verification
-is still required; this is not a fit claim.
+value/gradient equivalence regression covers the boundary. Matched-batch A100
+re-verification is still required; this is not a fit claim.
+
+Free Kaggle gate `jhtr-kaggle-cuda-baf7fe` passed **39 tests**, including both CUDA
+regressions. Full-model batch-one / 1 s FP16-autocast forward/backward passed on a
+Tesla P100 (PyTorch 2.7.0+cu126): **1.732 s**, **212,417,024 bytes** peak allocated,
+finite predictions and gradients. This is a small smoke, not a matched-batch fit
+or steady-state throughput measurement. Pulled evidence: `cuda-tests.xml` and
+`cuda-smoke.json` under `results/jhtr/`. The slim deployment branch
+`research/jhtr-kaggle-validation` checks source hashes against implementation
+`7a29a301ec79b247d2e7ebcc5042bc5ae80bb826`; publishing that branch was necessary
+for the remote omnirun daemon to transport it. Local omnirun has no configured
+Kaggle backend. Use Kaggle first for these small CUDA gates, not the cluster queue.
 
 **User-authorized compute:** at most **$30 combined** for paid S1/S2 pilots, after
 the free GPU gate passes. Paid ablations require further approval. Current offers
