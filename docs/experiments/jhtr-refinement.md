@@ -281,9 +281,68 @@ hash is `4ab55ff5abf6185a91f9037e5ed7635d35acb51c2118880d6fa903f581afbf27`.
 Do not equate the earlier cue checkpoint with that newer state. The disposable
 evaluation launchers now cache downloaded weights under `results/checkpoints`
 so canonical and cue evaluations share identical, preserved checkpoint bytes.
+The e10 file was recovered through SSH/rsync without pulling or terminating the
+live Vast rental; its downloaded SHA-256 matches the worker. It is preserved at
+`r2://ml-data/artifacts/jhtr-campaign/checkpoints/4ab55ff5abf6185a91f9037e5ed7635d35acb51c2118880d6fa903f581afbf27.ckpt`.
+S2 resumed epoch 11 without a restart or training change. Both workers' original
+Hydra `config.yaml` files were separately recovered: the trainer's ordinary
+`results/**` output collection does not include Hydra's default `outputs/**`
+directory. Their fully resolved mappings exactly equal the current campaign
+configs. Hash-pinned R2 copies and local paths are recorded in
+`results/jhtr/as-run-config-parity.json`; the selected snapshot receipt is
+`results/jhtr/preliminary-s2-e10-checkpoint.json`.
+
+### Complete fixed-set diagnostics on preliminary selected snapshots
+
+`jhtr-kaggle-full-live-d096ed` completed all **18 cases × 256 examples × two
+models**, with 32 original source groups per model, batch 32 and three complete
+operator applications per case. Both checkpoint hashes match their cue-run
+hashes; all 36 NPZ files have finite trajectories, repeats, targets and metrics,
+matching fingerprints/groups, seven block states and exact saved timestamps.
+These are full-set measurements, **not completed-training results**. S1 uses
+`a48932ec…a873e`; S2 uses the newer `9464a39f…6941b0` snapshot.
+
+| Measurement | S1 | S2 |
+|---|---:|---:|
+| Standard-corruption MAE-frame, input → output | 1.050398 → 0.566554 | 0.871646 → 0.686291 |
+| Applicable signed-offset relative correction, range over all eight offsets | 21.0–74.3% | −4.1–6.2% |
+| Oracle-input ordered MAE after one / two / three applications | 0.323 / 0.443 / 0.530 | 0.228 / 0.377 / 0.481 |
+| Oracle displacement p95 after one / three applications | 0.987 / 1.758 | 0.715 / 1.493 |
+| Local frequency-response slope, same evaluated weights | 0.625630 | 0.000840 |
+
+S1's eight signed-offset mean improvements all have original-group bootstrap
+intervals above zero. Thus **S1 learns genuine coarse correction**, not merely
+a lower standard-corruption score. S2 does not approach the predeclared 20%
+correction target on any signed offset. Oracle deterioration is also measured:
+95% original-group bootstrap intervals for one-pass MAE increase are
+**[0.263, 0.381] (S1)** and **[0.174, 0.278] (S2)**. Reapplication increases,
+rather than removes, this drift. These full-set results do not establish the
+separately certified observable-subset precision gate: its required source
+metadata remains unavailable, and the evaluator correctly reports
+`unestablished`, not a fabricated pass/fail on a favorable subset.
+
+Neither model improves all-four recovery over its input guesses on the half,
+double, all-collapse, missing-active or false-active probes. The false-active
+probe retains a 100% false-active rate over its applicable stopped rotor-frames.
+Duplicate-seed gains are not significant under the recorded group intervals;
+the conditional symmetry limitation above remains structural. The untrained
+audio-only locator diagnostic is not an audio-only training comparison.
+Power/frozen/independent controls have not been trained, so no causal advantage
+of phase products, re-reading or joint slots is claimed.
+
+Artifact recovery required the native Kaggle SDK: the first `omnirun pull`
+reported an unpublished tar, and the next returned an empty cached directory
+despite a complete 558 MB kernel archive. Direct download recovered all data.
+Only redundant nested collector copies were omitted from the verified evidence
+bundle; no examples, cases or metrics were removed. The 292,783,724-byte bundle
+contains both evaluated checkpoints, all NPZ/JSON/config files and verification
+receipts, and is preserved at
+`r2://ml-data/artifacts/jhtr-campaign/evaluations/2b322d0407309bde79b08e366d264704e9d63f314e4c9459d6d9164eac44cd06.tar.gz`.
+Its filename is its SHA-256. Local receipts:
+`results/jhtr/full-live-diagnostics.json` and `full-live-evidence.json`.
 
 ## Conclusion and failure strategy
 
-No effectiveness conclusion yet. If a numerical gate fails, inspect interpolation, integration, normalization, masking, padding and gradients before training. If optimization fails, inspect actual processed exposure, gradient finiteness and final-only inherited loss; do not add rescue objectives/curricula. If full-set learning improves but conditional precision drifts, examine noisy local phase, interference, collisions, identity ambiguity and synthetic/real mismatch. Preserve the selected checkpoint and report failure; do not select an oracle-friendly epoch or silently widen the network.
+Preliminary verdict: S1 is a useful coarse conditional corrector on the tested synthetic set; S2 shows little systematic audio-driven correction. Neither evaluated snapshot demonstrates the intended oracle-preserving precision refinement. Training remains incomplete, so this is not a converged architecture verdict. If a numerical gate fails, inspect interpolation, integration, normalization, masking, padding and gradients before training. If optimization fails, inspect actual processed exposure, gradient finiteness and final-only inherited loss; do not add rescue objectives/curricula. If full-set learning improves but conditional precision drifts, examine noisy local phase, interference, collisions, identity ambiguity and synthetic/real mismatch. Preserve the selected checkpoint and report failure; do not select an oracle-friendly epoch or silently widen the network.
 
 A precision pass without acquisition supports a conditional refiner only. A power/frozen tie rejects the corresponding phase/re-reading claim and favors the simpler control. Downstream real/audio-only compute remains gated on these decisions. Scientific failure with saved evidence is a completed outcome, not unfinished implementation.
