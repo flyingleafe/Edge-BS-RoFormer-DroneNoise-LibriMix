@@ -59,8 +59,10 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -170,6 +172,90 @@ def mask_below_grid(args) -> bool:
     if args.no_mask_below_grid:
         return False
     return bool(args.mask_below_grid or float(args.grid_lo) < GRID_FLOOR)
+
+
+# ── W&B ───────────────────────────────────────────────────────────────────────
+# The C1 trainer logged to files only. A v2 arm logs to W&B like train.py:
+# one run per arm (`slotv2_<name>`), resumed across chain segments through
+# the run id stored next to best.pt, with the file history backfilled on the
+# first init so a segment that starts logging late shows the whole curve.
+# Every call is guarded: a W&B failure never stops a training segment.
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "flyingleafe")
+WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "harmonic-noise-suppression")
+
+
+class _WandB:
+    def __init__(self, args, out: Path, kw: dict[str, Any], hist: list[dict]):
+        self.run = None
+        if getattr(args, "no_wandb", False):
+            return
+        try:
+            import wandb
+
+            id_path = out / "wandb_run_id.txt"
+            fresh = not id_path.exists()
+            run_id = uuid.uuid4().hex[:8] if fresh else id_path.read_text().strip()
+            self.run = wandb.init(
+                entity=WANDB_ENTITY,
+                project=WANDB_PROJECT,
+                name=f"slotv2_{args.name}",
+                id=run_id,
+                resume="allow",
+                group="slot_v2",
+                tags=["slot_v2", args.data],
+                config={"model": kw, "train": vars(args)},
+                dir=str(out),
+            )
+            if fresh:
+                id_path.write_text(run_id)
+                for i, row in enumerate(hist):
+                    self.validation(row.get("step", i * args.val_every), row)
+        except Exception as exc:  # noqa: BLE001
+            print(f"wandb: disabled ({exc})", flush=True)
+            self.run = None
+
+    def step(self, step: int, loss: float, s_per_step: float) -> None:
+        if self.run is None:
+            return
+        try:
+            import wandb
+
+            wandb.log({"train/loss": loss, "train/s_per_step": s_per_step}, step=step)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def validation(self, step: int, row: dict) -> None:
+        if self.run is None:
+            return
+        try:
+            import wandb
+
+            data: dict[str, Any] = {"val/select": row.get("select")}
+            for part in ("comb", "stoch"):
+                if isinstance(row.get(part), dict):
+                    data[f"val/{part}_mean"] = row[part].get("mean")
+            fr = row.get("frozen")
+            if isinstance(fr, dict):
+                for k, v in fr.items():
+                    if isinstance(v, (int, float)):
+                        data[f"frozen/{k}"] = v
+            if row.get("loss") is not None:
+                data["train/loss_at_val"] = row["loss"]
+            wandb.log({k: v for k, v in data.items() if v is not None}, step=step)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def finish(self, best: float, done: bool) -> None:
+        if self.run is None:
+            return
+        try:
+            import wandb
+
+            self.run.summary["select_best"] = best
+            self.run.summary["chain_done"] = done
+            wandb.finish()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def use_warm_start(args) -> bool:
@@ -478,6 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=4,
         help="torch CPU threads. 4 by default: a CPU smoke must leave the box usable",
     )
+    t.add_argument("--no-wandb", action="store_true", help="file logging only")
 
     v = ap.add_argument_group("validation and selection")
     v.add_argument("--val-every", type=int, default=100)
@@ -640,6 +727,8 @@ def main(argv: list[str] | None = None) -> int:
         torch.save(state_dict_trainable(net), out / "best.pt")
         (out / "history.json").write_text(json.dumps(hist, indent=1))
 
+    wb = _WandB(args, out, kw, hist)
+
     # ── Train ────────────────────────────────────────────────────────────────
     budget = args.max_minutes * 60.0 if args.max_minutes > 0 else float("inf")
     net.train()
@@ -685,6 +774,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"crop accept {acc}",
                 flush=True,
             )
+            wb.step(step, float(loss.item()), (time.time() - t0) / max(1, step - step0))
         if step % args.val_every == 0:
             n_val = step // args.val_every
             frozen = bool(args.frozen_every) and n_val % max(1, args.frozen_every) == 0
@@ -699,10 +789,13 @@ def main(argv: list[str] | None = None) -> int:
                 star = "  *"
             print(f"step {step:5d} select={row['select']:.4f}{star}", flush=True)
             (out / "history.json").write_text(json.dumps(hist, indent=1))
+            row["step"] = step
+            wb.validation(step, row)
             net.train()
         if time.time() - t_start > budget and step < args.steps:
             save_state(out, net, opt, step, best, hist)
             print(f"CHAIN: continue  (step {step}/{args.steps}, best {best:.4f})", flush=True)
+            wb.finish(best, done=False)
             return 0
 
     # ── Report at the best checkpoint ────────────────────────────────────────
@@ -730,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
     (out / "history.json").write_text(json.dumps(hist, indent=1))
     if opt is not None:
         save_state(out, net, opt, done, best, hist)
+    wb.finish(best, done=True)
     print(f"CHAIN: done  (best selection {best:.4f}) -> {out}", flush=True)
     return 0
 
