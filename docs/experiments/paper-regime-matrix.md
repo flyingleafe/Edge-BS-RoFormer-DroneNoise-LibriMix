@@ -1073,8 +1073,8 @@ was left to finish for the record. The `v2_real` chain was cancelled in
 its first segment (`v2-v2-real-1-073d4c`) and the queued Kaggle arm
 `v2_comb_lr2e3` was cancelled before it started, so the learning-rate
 question stays open and is not worth the compute. `v2_stoch_scratch` on
-Kaggle was at step 1700 with a best of 15.12 when its 330-minute budget
-ran out. Trainer, flags and checkpoints stay in the tree
+Kaggle ended at step 1800 (18.86) when its 330-minute budget ran out,
+best 15.12 at step 300. Trainer, flags and checkpoints stay in the tree
 (`scripts/train_slot_v2.py`, `results/slot_v2/*` on scratch, dumps under
 `results/rps_dump/*/v2_*.npz`); `docs/slot-comb-v2-design.md` carries the
 archive note.
