@@ -1,0 +1,12 @@
+defaults:
+  - salv2_stoch_nomix
+  - _self_
+
+train:
+  params:
+    rps_corruption:
+      seed: 20260729
+valid:
+  params:
+    rps_corruption:
+      seed: 777

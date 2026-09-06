@@ -1,0 +1,7 @@
+# @package _global_
+defaults:
+  - real_r2_scv2
+  - override /model: jhtr
+  - _self_
+
+experiment_name: jhtr_real_r2

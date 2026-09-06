@@ -45,7 +45,7 @@ The data layer has three layers, each declared exactly once — see
 |------|---------|
 | `streams.py` | dload ↔ tdseries bridge: `DloadFrameDataset`, the generic `tdframe-v1` Frame codec (`frame_to_sample`/`sample_to_frame`), pipeline combinators (`to_frames`/`frame_windows`/`mix_frames`/`resample_frames`), `ensure_local`/`resolve_source` (`dload:` URIs), `iter_published_frames`, `open_repository`/`local_repository`. |
 | `online_mixing.py` | The online-mix **compiler**: a policy YAML → one infinite `dload.Pipeline` of per-sample `td.Frame`s (`build_online_mix_pipeline`), built from `build_noise_stream` (real `kind: frames` records, synthetic engines, `kind: audio_pool`) and `build_speech_stream` (`include`/`exclude` speaker filters). Curriculum staging + per-sample-id augmentation RNG (`make_rng`) are unchanged. |
-| `frame_datasets.py` | torch `Dataset` adapters: `DregonLMFrameDataset`, `DNLMFrameDataset`, `SEValidFrameDataset`, `OnlineMixFrameDataset` (thin wrapper over the compiled pipeline; `flatten_channels` = a `flat_map` stage, `rps_corruption` = a `map` stage), `NoiseGenFrameDataset`, `DecompFrameDataset` (stride-aligned chunks of the published VK decompositions — amplitude envelopes + residual + carrier; the amplitude-target arms. `dataset` takes a **list** of published datasets and concatenates their records — the v3 solve is published per rig, and each record keeps its own `drone` id, which is the rig id the model's propagation head is keyed by), `StaticCombGenDataset` (the Phase-7 label-sensitivity probe: a frozen-profile comb whose target is always the TRUE trajectory and whose *conditioning* is switched by `label_mode`). |
+| `frame_datasets.py` | torch `Dataset` adapters: `DregonLMFrameDataset`, `DNLMFrameDataset`, `SEValidFrameDataset`, `OnlineMixFrameDataset` (thin wrapper over the compiled pipeline; `flatten_channels` = a `flat_map` stage, `rps_corruption` = a post-pipeline transform in `__iter__`), `NoiseGenFrameDataset`, `DecompFrameDataset` (stride-aligned chunks of the published VK decompositions — amplitude envelopes + residual + carrier; the amplitude-target arms. `dataset` takes a **list** of published datasets and concatenates their records — the v3 solve is published per rig, and each record keeps its own `drone` id, which is the rig id the model's propagation head is keyed by), `StaticCombGenDataset` (the Phase-7 label-sensitivity probe: a frozen-profile comb whose target is always the TRUE trajectory and whose *conditioning* is switched by `label_mode`). |
 | `noise_rps_dataset.py` | `NoiseRPSDataset` — combined chunkable dataset over DREGON `in_flight_noise` + Michael's (accepts `frames:NAME[@VER]` specs, `dload:` URIs, or local paths). |
 | `generated_noise.py` | `GeneratedNoisePool` — a trained `PositionalHarmonicNoiseGen` as a noise **source** (`kind: generated`). One background **spawn** producer process renders chunks into a shared-memory ring buffer; fork DataLoader workers read finished chunks (lock-free seqlock). See § "Generated noise source". |
 | `gp_noise.py` | `GPRotorNoisePool` — a trained per-drone egonoise GP as a noise **source** (`kind: gp`, G3). See § "GP rotor-noise source". |
@@ -249,6 +249,22 @@ Fresh-session map for online RPS training:
 5. Validation remains fixed via the `valid:` entry of the `conf/data/*.yaml` config
    (a plain `DregonLMFrameDataset` over `<dataset>/valid`); do **not** use an
    advancing online validation stream for early stopping.
+
+Conditional refinement uses `OnlineMixFrameDataset(rps_corruption=...)` **after**
+iteration of the unchanged audio/flatten pipeline, not a `pipe.map` node.
+`FixedSynthFrameDataset` freezes that same stream; `SpeechPairedSynthValidDataset`
+forwards the same option to both halves. Corruption still uses its own seed and
+`sample_id * 256 + channel`, with the established swap/twin target alignment.
+The dload adapter still owns epoch handling and worker sharding; conditioning
+does not advance an extra stream sample or consume waveform-generation RNG draws.
+
+This boundary matters because dload salts `Random`/`Shuffle`/`Mix` RNGs with
+preorder node ids: adding a corruption `map` root shifts upstream RNG identities,
+changing crop, noise-engine/source-choice and speech draws despite unchanged
+seeds. Removing that root restores parity with the unconditioned parent pipeline
+for both training and fixed validation. **Historical conditional streams created
+with the extra node are not byte-replayed by this bug fix**; their exact draw
+sequence changes, while recipes and the corruption distribution remain unchanged.
 
 Source/cache interface rules:
 - Public interface is config-in/stream-out. Do not add source-cache prep scripts

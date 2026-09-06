@@ -1,0 +1,7 @@
+# @package _global_
+defaults:
+  - hb_hgckla_ref_v2
+  - override /model: jhtr_cond
+  - _self_
+
+experiment_name: jhtr_cond_real

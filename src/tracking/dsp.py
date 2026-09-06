@@ -60,9 +60,11 @@ import numpy as np
 
 __all__ = [
     "PAD_MODES",
+    "analytic_signal_tensor",
     "band_bins",
     "boxcar",
     "demod",
+    "demodulate_trajectories",
     "dsp_config",
     "padded_n_env",
     "resolve",
@@ -434,6 +436,170 @@ def zoom_bands(
     xt = torch.as_tensor(np.ascontiguousarray(np.asarray(x, dtype=np.complex64))).to(dev)
     low, probe = _zoom_torch(xt, stride, n_env, bb, sb, n_envp, dev)
     return low.cpu().numpy(), (None if probe is None else probe.cpu().numpy())
+
+
+# ---------------------------------------------------------------------------
+# differentiable trajectory reads (tensor seams, no NumPy driver round trip)
+
+
+def analytic_signal_tensor(audio: Any, *, pad_samples: int = 8000) -> Any:
+    """Zero-pad real ``(B, N)`` audio, then form its complex64 analytic signal.
+
+    Padding precedes the Hilbert transform: its imaginary part is generally
+    nonzero over the pad. The returned length is exactly ``N + 2 * pad_samples``.
+    This tensor-only seam preserves gradients to the original waveform, even
+    under neural AMP; the transform itself always runs in float32/complex64.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    if audio.ndim != 2 or audio.shape[-1] == 0 or audio.is_complex():
+        raise ValueError("audio must be a nonempty real (B, N) tensor")
+    if not isinstance(pad_samples, int) or pad_samples < 0:
+        raise ValueError("pad_samples must be a nonnegative integer")
+    padded = F.pad(audio.to(torch.float32), (pad_samples, pad_samples))
+    n = padded.shape[-1]
+    bins = torch.arange(n, device=audio.device)
+    # DC and (for even lengths) Nyquist are singletons; strictly positive
+    # frequencies double, and negative frequencies disappear.
+    weight = torch.where(
+        (bins == 0) | ((n % 2 == 0) & (bins == n // 2)),
+        1.0,
+        torch.where((bins > 0) & (bins <= (n - 1) // 2), 2.0, 0.0),
+    ).to(torch.float32)
+    return torch.fft.ifft(torch.fft.fft(padded, dim=-1) * weight, dim=-1)
+
+
+def _rates_at_samples(rates: Any, samples: Any, hop_length: int) -> Any:
+    """Linear interpolation at physical audio-sample positions, ends held."""
+    position = (samples.to(dtype=rates.dtype) / hop_length).clamp(0, rates.shape[-1] - 1)
+    left = position.floor().long()
+    right = (left + 1).clamp_max(rates.shape[-1] - 1)
+    weight = position - left
+    a = rates.index_select(-1, left)
+    return a + weight * (rates.index_select(-1, right) - a)
+
+
+def demodulate_trajectories(
+    analytic: Any,
+    rates: Any,
+    orders: Any,
+    *,
+    n_samples: int,
+    sample_rate: int = 16000,
+    hop_length: int = 512,
+    envelope_rate: int = 500,
+    half_bandwidths: tuple[float, ...] = (8.0, 32.0, 128.0),
+    pad_samples: int = 8000,
+    harmonic_chunk: int = 4,
+) -> tuple[Any, Any]:
+    """Read differentiable complex basebands around ``(B, R, T)`` shaft rates.
+
+    Rates are at ``j * hop_length / sample_rate`` with endpoint holding, not
+    stretched to the waveform ends. Output ``(B, R, K, W, M)`` is sampled at
+    ``m / envelope_rate``, including the final grid point when the crop length
+    is an exact multiple of the stride. ``orders`` is a 1-D tensor.
+
+    The bool mask has the same shape and excludes the first/last 0.25 s of the
+    crop, stopped candidates (<= 0.5 rev/s), nonpositive orders, and bands
+    touching DC or Nyquist. It describes geometry, NOT energy or confidence.
+    Callers must additionally mask silent crops and unavailable lag partners.
+    Invalid envelopes are retained rather than clamped onto valid frequencies.
+
+    Shaft phase is trapezoid-integrated in float64 with phase zero at original
+    sample zero; harmonic phase is reduced modulo 2pi before complex64 carrier
+    synthesis. Each harmonic chunk's demodulated FFT serves every bandwidth.
+    Zoom-IFFTs share the existing band-selection primitive and stride scaling.
+    The zero pad limits, but does not eliminate, brickwall boundary leakage.
+    """
+    import math
+
+    import torch
+
+    if not isinstance(n_samples, int) or n_samples <= 0:
+        raise ValueError("n_samples must be a positive integer")
+    if not isinstance(pad_samples, int) or pad_samples < 0:
+        raise ValueError("pad_samples must be a nonnegative integer")
+    if sample_rate <= 0 or envelope_rate <= 0 or sample_rate % envelope_rate:
+        raise ValueError("sample_rate must be a positive integer multiple of envelope_rate")
+    if hop_length <= 0 or not isinstance(harmonic_chunk, int) or harmonic_chunk < 1:
+        raise ValueError("hop_length and harmonic_chunk must be positive")
+    if (
+        analytic.ndim != 2
+        or not analytic.is_complex()
+        or analytic.shape[-1] != n_samples + 2 * pad_samples
+    ):
+        raise ValueError("analytic must have shape (B, n_samples + 2 * pad_samples)")
+    if rates.ndim != 3 or rates.shape[0] != analytic.shape[0] or rates.shape[-1] == 0:
+        raise ValueError("rates must have shape (B, R, T) with T >= 1")
+    if orders.ndim != 1 or orders.numel() == 0:
+        raise ValueError("orders must be a nonempty one-dimensional tensor")
+    if rates.device != analytic.device or orders.device != analytic.device:
+        raise ValueError("analytic, rates and orders must share a device")
+    if not half_bandwidths or any(
+        not math.isfinite(b) or b <= 0 or b >= envelope_rate / 2 for b in half_bandwidths
+    ):
+        raise ValueError("half_bandwidths must lie strictly between zero and envelope Nyquist")
+
+    stride = int(sample_rate // envelope_rate)
+    n_padded = analytic.shape[-1]
+    # A multiple of stride makes the zoom grid exactly envelope_rate, including
+    # for arbitrary crop lengths. This extra transform pad is less than stride.
+    n_envp = (n_padded + stride - 1) // stride
+    n_fft = n_envp * stride
+    m = n_samples // stride + 1
+    dev = analytic.device
+    sample_positions = torch.arange(n_padded, device=dev) - pad_samples
+    rates64 = rates.to(torch.float64)
+    r_audio = _rates_at_samples(rates64, sample_positions, hop_length)
+    increments = (r_audio[..., 1:] + r_audio[..., :-1]) * (math.pi / sample_rate)
+    phase = torch.cat((torch.zeros_like(r_audio[..., :1]), increments.cumsum(-1)), dim=-1)
+    phase = phase - phase[..., pad_samples : pad_samples + 1]
+
+    env_samples = torch.arange(m, device=dev) * stride
+    r_env = _rates_at_samples(rates64, env_samples, hop_length)
+    interior = (env_samples >= sample_rate * 0.25) & (env_samples <= n_samples - sample_rate * 0.25)
+    bandwidths = torch.tensor(half_bandwidths, dtype=torch.float64, device=dev)
+    # _take_band assumes both +/- bins fit, with no envelope-Nyquist bin.
+    bins = [min(math.floor(b * n_fft / sample_rate), (n_envp - 1) // 2) for b in half_bandwidths]
+    crop_indices = (torch.arange(m, device=dev) + pad_samples // stride) % n_envp
+    fractional_shift = pad_samples % stride
+    if fractional_shift:
+        # Move the zoom grid by the remainder so even non-stride-aligned pads
+        # read original sample zero, not the nearest envelope-grid neighbour.
+        freq = torch.fft.fftfreq(n_envp, d=1.0 / envelope_rate, device=dev)
+        angle = freq * (2 * math.pi * fractional_shift / sample_rate)
+        grid_shift = torch.polar(torch.ones_like(angle), angle)
+    else:
+        grid_shift = None
+
+    chunks = []
+    masks = []
+    analytic64 = analytic.to(torch.complex64)
+    for start in range(0, orders.numel(), harmonic_chunk):
+        order = orders[start : start + harmonic_chunk].to(torch.float64)
+        angle = torch.remainder(phase.unsqueeze(2) * order[None, None, :, None], 2 * math.pi)
+        angle = angle.to(torch.float32)
+        carrier = torch.polar(torch.ones_like(angle), -angle)
+        spec = torch.fft.fft(analytic64[:, None, None, :] * carrier, n=n_fft, dim=-1)
+        bands = []
+        for b in bins:
+            band = _take_band(spec, b, 0, n_envp, str(dev))
+            if grid_shift is not None:
+                band = band * grid_shift
+            envelope = torch.fft.ifft(band, dim=-1) / float(stride)
+            bands.append(envelope.index_select(-1, crop_indices))
+        chunks.append(torch.stack(bands, dim=3))
+        center = r_env.unsqueeze(2) * order[None, None, :, None]
+        width = bandwidths[None, None, None, :, None]
+        masks.append(
+            (center.unsqueeze(3) > width)
+            & (center.unsqueeze(3) + width < sample_rate / 2)
+            & (r_env[:, :, None, None, :] > 0.5)
+            & (order[None, None, :, None, None] > 0)
+            & interior
+        )
+    return torch.cat(chunks, dim=2), torch.cat(masks, dim=2)
 
 
 # ---------------------------------------------------------------------------

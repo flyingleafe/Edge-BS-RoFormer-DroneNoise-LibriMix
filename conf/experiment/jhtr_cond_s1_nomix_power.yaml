@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - jhtr_cond_s1_nomix
+  - _self_
+
+experiment_name: jhtr_cond_s1_nomix_power
+model:
+  params:
+    phase_products: false

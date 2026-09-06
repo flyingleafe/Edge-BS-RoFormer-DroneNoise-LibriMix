@@ -51,8 +51,7 @@ import json
 import logging
 import os
 import zlib
-from collections.abc import Sequence
-from functools import partial
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -455,10 +454,11 @@ class OnlineMixFrameDataset(IterableDataset):
     :func:`data_processing.online_mixing.build_online_mix_pipeline` (the
     policy YAML compiles to one infinite ``dload.Pipeline`` of per-sample
     Frames). ``flatten_channels=True`` appends the per-mic expansion as a
-    ``flat_map`` stage; ``rps_corruption`` (the conditional-refiner seam,
-    ``data_processing.rps_corruption``) appends the corruption as a ``map``
-    stage reading ids from each frame's own metadata (``meta.sample_id`` +
-    ``meta.channel``).
+    ``flat_map`` stage. ``rps_corruption`` (the conditional-refiner seam,
+    ``data_processing.rps_corruption``) runs after pipeline iteration, reading
+    ids from each frame's metadata (``meta.sample_id`` + ``meta.channel``).
+    It must not add a pipeline node: dload salts upstream RNGs with preorder
+    node ids, so an extra root would change the underlying audio draws.
     """
 
     #: sub-id stride for (chunk id, channel) -> corruption sample id; any
@@ -496,16 +496,6 @@ class OnlineMixFrameDataset(IterableDataset):
         pipe = build_online_mix_pipeline(cfg)
         if self.flatten_channels and self.task != "speech_enhancement":
             pipe = pipe.flat_map(_flatten_frame_channels)
-        if self._corruption is not None:
-            pipe = pipe.map(
-                partial(
-                    _corrupt_frame,
-                    self._corruption,
-                    self.sample_rate,
-                    self.hop_length,
-                    self._COND_ID_STRIDE,
-                )
-            )
         self._inner = as_iterable_dataset(pipe)
 
     @classmethod
@@ -547,8 +537,18 @@ class OnlineMixFrameDataset(IterableDataset):
     def set_epoch(self, epoch: int) -> None:
         self._inner.set_epoch(int(epoch))
 
-    def __iter__(self):
-        yield from self._inner
+    def __iter__(self) -> Iterator[td.Frame]:
+        if self._corruption is None:
+            yield from self._inner
+            return
+        for frame in self._inner:
+            yield _corrupt_frame(
+                self._corruption,
+                self.sample_rate,
+                self.hop_length,
+                self._COND_ID_STRIDE,
+                frame,
+            )
 
 
 def _resolve_noise_dir(d: str | Path | None) -> str | Path | None:
@@ -1297,6 +1297,9 @@ class FixedSynthFrameDataset(Dataset):
     synthetic validation number is directly comparable with a real one. Set
     ``augment=True`` to select on the augmented task the model actually
     optimizes.
+
+    Optional ``rps_corruption`` uses the stream's post-pipeline, post-flattening
+    conditioning seam before freezing samples; ``None`` leaves them unchanged.
     """
 
     def __init__(
@@ -1309,6 +1312,7 @@ class FixedSynthFrameDataset(Dataset):
         flatten_channels: bool = True,
         flight_reuse: int | None = None,
         speech: bool | None = None,
+        rps_corruption: dict[str, Any] | None = None,
     ):
         cfg = OmegaConf.load(path) if isinstance(path, str) else path
         cfg.base_seed = int(base_seed)
@@ -1321,7 +1325,9 @@ class FixedSynthFrameDataset(Dataset):
                         del stage[key]
         apply_flight_reuse(cfg, flight_reuse)
         apply_speech_override(cfg, speech)
-        stream = OnlineMixFrameDataset.from_config(cfg, flatten_channels=flatten_channels)
+        stream = OnlineMixFrameDataset.from_config(
+            cfg, flatten_channels=flatten_channels, rps_corruption=rps_corruption
+        )
         self._frames: list[td.Frame] = []
         for frame in stream:
             self._frames.append(frame)
@@ -1388,6 +1394,9 @@ class SpeechPairedSynthValidDataset(Dataset):
     ``flight_reuse=1`` (the default here, unlike the training policy) or the
     clips collapse onto a handful of trajectories -- see
     :func:`apply_flight_reuse`.
+
+    ``rps_corruption`` is shared by both halves, so corresponding sample/channel
+    ids receive identical guesses and target alignment despite the speech change.
     """
 
     def __init__(
@@ -1399,6 +1408,7 @@ class SpeechPairedSynthValidDataset(Dataset):
         augment: bool = False,
         flatten_channels: bool = True,
         flight_reuse: int | None = 1,
+        rps_corruption: dict[str, Any] | None = None,
     ):
         half = int(n) // 2
 
@@ -1412,6 +1422,7 @@ class SpeechPairedSynthValidDataset(Dataset):
                 flatten_channels=flatten_channels,
                 flight_reuse=flight_reuse,
                 speech=speech,
+                rps_corruption=rps_corruption,
             )
 
         self.no_speech = _half(False)

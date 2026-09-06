@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - salv2_scv2_stoch_mix
+  - override /data: jhtr_cond_s2_mix
+  - override /model: jhtr_cond
+  - override /loss: mse_cond
+  - _self_
+
+experiment_name: jhtr_cond_s2_mix

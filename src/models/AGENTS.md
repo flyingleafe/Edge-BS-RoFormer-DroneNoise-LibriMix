@@ -182,6 +182,68 @@ backbone such as SMoLnet to RPS prediction, run the cleanest body-only ablation
 first (body + SimpleConv-style mean-pool Conv1d head) before adding stronger
 TCN/GRU/attention heads; otherwise body and head effects are confounded.
 
+### Joint Harmonic Trajectory Refinement (`jhtr.py`)
+
+`models.jhtr.JHTR` is a native Hydra `_target_`, not a new registry alias.
+It is an offline mono 16 kHz model with four continuous 0–150 rev/s
+trajectories on physical hop-512 timestamps. `forward(audio, cond=None)`
+returns `(B,4,N//512+1)`; `forward_with_diagnostics` additionally returns
+`{"trajectories": ...}` shaped `(B,7,4,T)` for the default six blocks, including
+initialization. Each call resets persistent trajectory state. Intermediate
+outputs are diagnostics, not additional training objectives.
+
+The trainable magnitude path uses the established `CombGather` and median
+floor at integer candidates 1–150, with centre/near-tooth/half-order-gap reads.
+An order-axis encoder retains explicit rate/order/time coordinates in a
+64-dimensional candidate memory. Learned slots read that memory, communicate
+across time and slots, and select a categorical **mode**, not a centroid,
+plus a bounded half-bin offset (zero for OFF). A straight-through softmax
+surrogate supplies the locator's final-loss gradient. Supplied conditioning
+bypasses the slot initializer, not the magnitude memory. Conditional updates
+are row-equivariant: there are no learned row identities, sorting or PIT
+assignments inside that path.
+
+Tensor DSP is owned by `tracking.dsp`: padded analytic audio is computed once;
+each block demodulates orders 1–32 around current continuous trajectories at
+three bandwidths (8/32/128 Hz). Power and complex products at 1/4/16/64
+500-Hz-sample lags share the unpadded analytic crop power reference. Energy,
+boundary, band and lag-predecessor validity remain explicit; zero energy
+cannot create a division by zero. Convolutions with kernels 9/7/7 and strides
+4/4/1 encode exactly 129 envelope samples centred at `m=16j`, avoiding a
+129-fold raw patch expansion. They retain signed patch-relative positions.
+Spectral floors and numerical filter/order/time descriptors are separate
+inputs; normalized product magnitude is **not** labelled rotor confidence.
+
+Six untied blocks apply time/order/slot attention to local order tokens,
+aggregate into carried `(slot,time,128)` states, and cross-attend to all
+coarse candidates with signed candidate-minus-current-rate coordinates.
+Signed interloper geometry uses arithmetic nearest-tooth/count calculations,
+not an enumerated order bank: foreign orders above 32 and same-rotor adjacent
+teeth are included, own central teeth and stopped sources are excluded.
+Per-source shared encoding/pooling preserves conditional row equivariance.
+Updates are additive and clipped only to the physical range; no seed tube,
+fixed slew penalty, activity classifier, or auxiliary loss is introduced.
+
+Ablation contracts: `phase_products=False` zeros only product inputs while
+retaining their channel dimensions, masks and envelope power. `reread=False`
+caches the initial raw envelopes and their local/geometry descriptors, but
+all six untied patch encoders and update blocks still train. `joint_slots=False`
+removes slot attention from both initializer and updater, plus all foreign
+trajectory descriptors; same-slot neighbors and the common audio-only memory
+remain. Harmonic chunks, candidate chunks and non-reentrant activation
+checkpoints bound intermediate storage without changing the experiment batch,
+crop length or update schedule. FFT/carrier/features stay float32/complex64
+with DSP float64 phase accumulation; neural operations follow caller AMP.
+Actual matched-batch memory and runtime must be profiled, not inferred.
+
+Numerical/behavioral regression checks are in `tests/models/test_jhtr.py`:
+modal lookup, actual reader/encoder gradients, final-loss training with
+checkpointed fresh/frozen reads, physical frame counts, exact local receptive
+field, zero/duplicate/OFF conditioning, conditional row equivariance,
+independent-slot isolation, phase-product removal, high-order interlopers,
+no seed tube, state reset and CPU neural AMP. These are engineering checks,
+not evidence of trained precision, oracle preservation or transfer.
+
 ### Harmonic ports (`harmonic_ports/`)
 
 Paper multi-pitch architectures, each with ONE organ replaced: the

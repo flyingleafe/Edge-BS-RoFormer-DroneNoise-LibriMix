@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - jhtr_cond_s2_nomix
+  - _self_
+
+experiment_name: jhtr_cond_s2_nomix_independent
+model:
+  params:
+    joint_slots: false

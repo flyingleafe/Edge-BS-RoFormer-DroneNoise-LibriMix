@@ -1,0 +1,23 @@
+task: rps_prediction
+task_params:
+  n_channels: null
+  sr: [16000, 1]
+  frame_rate: [16000, 512]
+  use_cond: false
+_target_: models.jhtr.JHTR
+params:
+  n_fft: 4096
+  hop_length: 512
+  num_rotors: 4
+  sample_rate: 16000
+  n_blocks: 6
+  d_model: 128
+  n_heads: 4
+  k_max: 32
+  harmonic_chunk: 4
+  checkpoint_blocks: true
+  phase_products: true
+  reread: true
+  joint_slots: true
+model_type: null
+legacy_config_path: null

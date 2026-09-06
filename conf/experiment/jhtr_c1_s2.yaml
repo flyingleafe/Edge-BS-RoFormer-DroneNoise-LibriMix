@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - r4hb_scv2
+  - override /model: jhtr
+  - _self_
+
+experiment_name: jhtr_c1_s2
+checkpoint: r2://ml-data/artifacts/jhtr_c1_s1/checkpoints/best.ckpt
