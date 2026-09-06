@@ -15,6 +15,7 @@ from torch import nn
 
 from models.jhtr import (
     JHTR,
+    _AttentionFF,
     _interloper_geometry,
     _LocalPatchEncoder,
     _modal_rates,
@@ -274,3 +275,27 @@ def test_cpu_neural_amp_keeps_finite_rates_and_backward():
     block = cast(_RefinementBlock, model.blocks[0])
     gradient = cast(nn.Conv1d, block.patch.network[0]).weight.grad
     assert gradient is not None and torch.isfinite(gradient).all()
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"),
+        ),
+    ],
+)
+def test_large_attention_batch_preserves_independent_sequences_and_gradients(device):
+    # Exceeds CUDA's 65535 grid-axis limit and leaves a one-sequence final chunk.
+    layer = _AttentionFF(16, 2).to(device).train()
+    inputs = torch.randn(65537, 4, 16, device=device, requires_grad=True)
+    with torch.autocast(device, enabled=device == "cuda", dtype=torch.float16):
+        actual = layer(inputs)
+        expected = torch.cat([layer(part) for part in inputs.split(1024)], dim=0)
+    torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
+    actual_grad = torch.autograd.grad(actual.sum(), inputs)[0]
+    expected_grad = torch.autograd.grad(expected.sum(), inputs)[0]
+    assert torch.isfinite(actual_grad).all()
+    torch.testing.assert_close(actual_grad, expected_grad, atol=5e-3, rtol=5e-3)

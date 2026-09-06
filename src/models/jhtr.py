@@ -112,7 +112,20 @@ class _AttentionFF(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         normalized = self.norm(x)
-        x = x + self.attention(normalized, normalized, normalized, need_weights=False)[0]
+        # CUDA SDPA kernels have bounded launch-grid axes. Rotor attention folds
+        # batch × time × order into independent sequences; chunk only that axis.
+        chunk_size = max(1, 16384 // self.attention.num_heads)
+        if normalized.shape[0] <= chunk_size:
+            attended = self.attention(normalized, normalized, normalized, need_weights=False)[0]
+        else:
+            attended = torch.cat(
+                [
+                    self.attention(part, part, part, need_weights=False)[0]
+                    for part in normalized.split(chunk_size, dim=0)
+                ],
+                dim=0,
+            )
+        x = x + attended
         return x + self.ff(self.ff_norm(x))
 
 

@@ -166,9 +166,19 @@ Measured unchanged-parent coverage (`results/jhtr/parent-coverage.json`): S1 spa
 smoke example happens to have coincident rows; it is not representative evidence
 of four-track separation.
 
-GPU numerical/matched-batch profile job: `jhtr-gpu-gate-068355`, free
-`uni-gpushort` A100-80 allocation requested at revision `e190333`; not yet a
-completed profile or permission to claim GPU fit.
+GPU gate `jhtr-gpu-gate-068355` failed before tests: the shared cluster editable
+environment imported a different checkout. All subsequent jobs explicitly set
+`PYTHONPATH=src`. Source-pinned gate `jhtr-gpu-gate-src-b55d6c` passed **37 tests**
+(including the CUDA reader check), then failed in full-batch CUDA SDPA with
+`invalid configuration argument`. `_AttentionFF` now chunks its **independent
+sequence batch axis** to bound CUDA launch dimensions; neither the training
+batch, trajectory/time attention domain, loss nor schedule changes. A large-batch
+value/gradient equivalence regression covers the boundary. GPU re-verification
+is still required; this is not a fit claim.
+
+**User-authorized compute:** at most **$30 combined** for paid S1/S2 pilots, after
+the free GPU gate passes. Paid ablations require further approval. Current offers
+are roughly $0.95–$1.03/A100-80-hour; no paid jobs have been launched yet.
 
 ## Conclusion and failure strategy
 
