@@ -928,4 +928,71 @@ when they land.
 
 ## Conclusion
 
-Pending.
+Written 2026-09-06 with two cells still training (`salv2_gru_stoch_mix`,
+`hb_sal_multif0_l4`); neither can change the verdicts below.
+
+1. **Narrow data gives precise models that do not transfer.** Every
+   trunk trained on DREGON alone reaches its best DREGON cruise cell of
+   the ladder at rung 1 or 2 (regressors 2.3-2.7, HPPNet port 2.4) and
+   fails on the unseen drone (FLY124 cruise 8.5-72); one flight of that
+   drone (rung 3) fixes it (1.2-2.4). The microphone boundary is crossed
+   by the recurrent and attention heads and by the ports (ch 0 = ch 1-7
+   at DREGON cruise) and not by the plain SimpleConv (3.56 -> 6.06). No
+   real rung crosses into either synthetic family and no synthetic cell
+   crosses back.
+2. **Generality is bought with precision.** Rung 3 is every trunk's
+   best real split. The label-transforming augmentations (rung 4) buy
+   the probe and static-comb transfer at a DREGON cruise cost of
+   0.3-0.7 rev/s with a warm-up and 0.5-2.3 rev/s from step 0; the
+   comb curriculum C1 is the cheapest frequency-reading recipe for the
+   regressors (probe 1.0-1.4 at all-frame 2.74-3.61) and hurts both
+   salience ports. The one-pool mix reads frequency and loses 2-4 rev/s
+   on the real split for every trunk.
+3. **No model reads harmonic positions unless forced.** Real-only
+   regressors sit at |slope| <= 0.3; the augmentations raise it
+   inconsistently (0.0-0.4 with a warm-up, 0.5-1.0 from step 0), the
+   comb curriculum reliably (1.0-1.4); HPPNet reads frequency at every
+   rung and as published (its log-axis dilated convolutions are a comb
+   by construction), the published HarmoF0 does not and its comb-gather
+   port does, LateDeep and Basic Pitch never do.
+4. **The stochastic limit.** All three regressor trunks predict a
+   fixed 5-9 rev/s fan of the four rotors whatever the true spread
+   (slopes 0.10-0.14) with offsets and the 5/4 alias as their error and
+   no octaves; the salience ports fail by octave locks (HPPNet, 24 %) and
+   wander (HarmoF0, 69 %); nothing learned on the static comb transfers
+   (missed 91-97 %). The phase-coherence probe grounds the stochastic
+   comb: a single rotor's blade-passage orders are Lorentzian lines whose
+   residual width grows with order (0.042 Hz per order after shaft
+   tracking), the per-harmonic residuals are uncorrelated across orders
+   at every smoothing scale and Cauchy-tailed in every condition; widths
+   in flight are not separable by the envelope estimator and rest on the
+   tracking work's variance law (0.6 Hz per order).
+5. **Speech.** An evaluation-time talker costs a model that never saw
+   speech 1.6-2.2x on the static comb and 1.1-4.5x on the stochastic
+   comb (transformer 1.13 ... HPPNet 4.48), and 1.0-1.2x for the same
+   trunk trained with mixed speech; on real audio the loudspeaker clips
+   cost 1.3-2.0x without and 1.0-1.3x with speech in training, at
+   0-40 % on clean input. "Twice as hard" holds for models that never saw
+   speech.
+
+Block S: the harmonic device decides the ranking before any adaptation
+(published HPPNet 7.77 and HarmoF0 10.79 against LateDeep 12.65 and
+Basic Pitch 27.30); the comb gather with per-rotor layers halves
+HPPNet's error (4.18, silence 17.5 -> 6.0) and HarmoF0's DREGON cruise
+error (11.5 -> 6.2); output resolution alone (L1) changes little, and the
+per-rotor layers alone (L2) do not rescue Basic Pitch (27.56).
+
+Leaderboard: the blind tracker remains the most precise DREGON cruise
+method (0.92) at forty times a regressor's cost, loses on FLY124 (9.2)
+and has no silence decision without its gates; the best learned cells
+are C1 Conv+BiGRU (all 2.74) and the HPPNet port at rung 3 on the unseen
+drone (FLY124 cruise 0.93). Training-free estimators stay above 11 rev/s
+at cruise.
+
+Deliverables: `writing/papers/2026-08_wrapup` (ICASSP `src/index.tex`,
+4 + 1 pages; OJSP `src/journal.tex`, 8 + 1 pages), every table generated
+from the dumps (`scripts/rps_claim_tables.py`, `make_tables.py`,
+`make_phase_table.py`), the figures from `make_probe_fig.py` and
+`make_phase_fig.py`. Lessons for the next campaign are in the session
+memory: credentials in direct sbatch jobs, chain runners and dirty
+trees, vast egress, subagents and local compute.
