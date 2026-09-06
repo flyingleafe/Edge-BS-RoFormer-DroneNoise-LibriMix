@@ -173,8 +173,8 @@ environment imported a different checkout. All subsequent jobs explicitly set
 `invalid configuration argument`. `_AttentionFF` now chunks its **independent
 sequence batch axis** to bound CUDA launch dimensions; neither the training
 batch, trajectory/time attention domain, loss nor schedule changes. A large-batch
-value/gradient equivalence regression covers the boundary. Matched-batch A100
-re-verification is still required; this is not a fit claim.
+value/gradient equivalence regression covers the boundary. The subsequent P100
+gates below establish fit on that device; the queued A100 profile is separate.
 
 Free Kaggle gate `jhtr-kaggle-cuda-baf7fe` passed **39 tests**, including both CUDA
 regressions. Full-model batch-one / 1 s FP16-autocast forward/backward passed on a
@@ -187,9 +187,26 @@ or steady-state throughput measurement. Pulled evidence: `cuda-tests.xml` and
 for the remote omnirun daemon to transport it. Local omnirun has no configured
 Kaggle backend. Use Kaggle first for these small CUDA gates, not the cluster queue.
 
-**User-authorized compute:** at most **$30 combined** for paid S1/S2 pilots, after
-the free GPU gate passes. Paid ablations require further approval. Current offers
-are roughly $0.95–$1.03/A100-80-hour; no paid jobs have been launched yet.
+The unchanged **batch-32** profile also passed on Kaggle
+(`jhtr-kaggle-profile-9a55a5`): 1 s training used **3.403 GiB** allocated,
+4 s training **13.280 GiB** (14.475 GiB reserved), and 8 s validation
+**6.453 GiB**. Cold forward/backward times were 5.756/4.628 s and
+4.295/14.736 s for the two training sizes; validation forward was 8.500 s.
+The portable probe uses the canonical profile loop and resolved configuration,
+with only native JHTR construction made dependency-light and completed rows
+printed. No optimizer step or data loading is included in those times.
+Pulled evidence: `results/jhtr/kaggle-matched-profile.json`.
+
+**User-authorized compute:** at most **$30 combined** for paid S1/S2 pilots.
+Paid ablations require further approval. Since the matched profile fits 16 GiB,
+24 GiB RTX 4090 offers ($0.22–$0.32/hour) are preferable to A100-80 offers
+($1.00–$1.04/hour). Reserve at most **$12.50 per pilot** against a 36 h estimate,
+wrap each complete preflight/training command in a **34 h hard runtime cutoff**,
+and monitor/release both rentals. The $5 unreserved margin covers setup/teardown;
+`omnirun --max-cost` is a placement estimate, **not** a runtime billing cap.
+No epochs, patience, sample exposure per validation, or batch settings change.
+If a runtime cutoff interrupts inherited training, report incomplete exposure,
+not convergence or scientific model failure. No paid jobs have been launched yet.
 
 ## Conclusion and failure strategy
 
