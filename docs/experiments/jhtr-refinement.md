@@ -256,6 +256,32 @@ fix and passed after it. Ruff passed; direct Pyright completed successfully
 after the shorter LSP/CLI checks timed out. This changes evaluation helpers only,
 not the running pilots or their data/optimization.
 
+Preliminary cue job `jhtr-kaggle-cues-live-a4d4f1` completed and was pulled.
+It uses each pilot's unchanged synthetic fixed set, **not** the paper's real
+frequency-probe part: six original cruise-selected clips, all 13 established
+alphas, and the existing FIR/n16 cutoff selector. Conditioning stays fixed.
+Checkpoint hashes are S1 `a48932ecdeb14432c7d2768589441383e75fe6e2c88ecc3084ba8f76422a873e`
+and S2 `5c0c8fd745078cfe10c1eb5a3e8c69416415f050bf2602118287e7d537fbabb5`.
+Local/full mean-rate response slopes are **0.625630/0.082057 (S1)** and
+**0.000166/−0.000003 (S2)**. Because the selected trajectories are not perfectly
+constant, the exact time-warp reference is `alpha * RPS(alpha * t)` at the same
+cropped STFT timestamps; its local/full slopes are **0.970929/0.990648 (S1)**
+and **1.014426/1.027471 (S2)**. Thus the flat S2 mean response is not explained
+by the trajectories' natural time variation. This is a mean-response diagnostic,
+not proof that every individual output ignores audio or a converged mechanism
+verdict. FIR cutoff 80→10 changes subset MAE 0.701044→0.673373 (S1) and
+0.997105→0.998449 (S2); neither exhibits half-rate outputs on this prior-supplied
+subset. Arrays/summaries are in `results/jhtr/preliminary-cue-probes.json` and
+`cue-physics-reference.json`. Training and monitor selection remain unchanged.
+
+After this probe, S2's epoch-10 monitor improved to **0.689835**, but its
+`best.ckpt` multipart R2 upload timed out. An R2 `best.ckpt` URI therefore need
+not denote the latest local monitor-selected state. The live worker's e10 file
+hash is `4ab55ff5abf6185a91f9037e5ed7635d35acb51c2118880d6fa903f581afbf27`.
+Do not equate the earlier cue checkpoint with that newer state. The disposable
+evaluation launchers now cache downloaded weights under `results/checkpoints`
+so canonical and cue evaluations share identical, preserved checkpoint bytes.
+
 ## Conclusion and failure strategy
 
 No effectiveness conclusion yet. If a numerical gate fails, inspect interpolation, integration, normalization, masking, padding and gradients before training. If optimization fails, inspect actual processed exposure, gradient finiteness and final-only inherited loss; do not add rescue objectives/curricula. If full-set learning improves but conditional precision drifts, examine noisy local phase, interference, collisions, identity ambiguity and synthetic/real mismatch. Preserve the selected checkpoint and report failure; do not select an oracle-friendly epoch or silently widen the network.
