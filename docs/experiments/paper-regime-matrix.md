@@ -186,18 +186,88 @@ under the same probe.
 
 ## Compute
 
-One burst on vast.ai (A100-80 instances, `omnirun --backend vast`), with the
-two `uni-gpushort` slots for the SimpleConv rows. Every vast job prefetches
-`DREGON-frames`, `michaels-frames` and `librispeech` with `dload pull` before
-training, so the DataLoader workers read local shards (dload 0.3.0 has no retry
-in its shard-open path; `data_processing.streams` adds one as a second guard).
-Real-regime jobs get 4 h, salience real-regime jobs 8 h, synthetic-family
-regressor jobs 10 h; a job cut by its time limit keeps its `best.ckpt`, and the
-ledger marks it truncated.
+Plan: one 10-12 h burst on vast.ai A100-80 instances (`omnirun --backend
+vast`, every job prefetching `DREGON-frames`, `michaels-frames` and
+`librispeech` with `dload pull`), with the two `uni-gpushort` slots for
+the SimpleConv rows. What happened (2026-09-05): the vast account ran dry
+after about $180 (eight runs interrupted with `best.ckpt` and
+`train_state.pt` on R2), ~60 % of vast placements failed on slow hosts
+until `ssh_wait_timeout_s`/`provision_attempts` were raised, and a
+follow-up $10 plan on 4090 hosts lost 9 of 17 rows to Cloudflare R2
+egress failures. The free cluster carried the campaign instead: the
+`uni-gpushort` partition as chains of 55-minute segments
+(`scripts/chain_train.sh`, `resume=true` restoring optimizer state, two
+chains at a time) and the `sae` partition by direct `sbatch` (the daemon
+keeps only four `uni` jobs in flight). Two direct `sae` jobs started
+without R2 credentials (a `set -a` omission), trained from scratch and
+uploaded nothing; their checkpoints were copied to R2 by hand (the vast
+fragments kept in `checkpoints_vast_ep32/` and `checkpoints_prev/`).
+Total spend on vast.ai: about $200; every other row cost nothing.
+Time-boxing: a run cut by its wall keeps `best.ckpt`; the one such case
+(`salv2_tr_stoch_nomix` at the 10 h wall, epoch 180) was resumed from R2
+by a gpushort chain and early-stopped at epoch 186.
 
 ## Job ledger
 
-Filled as jobs land: experiment, job id, backend, epochs, truncated, spend.
+Final backend of every trained row, from the host name of its W&B run
+(25 cluster gpushort chain, 15 cluster sae, 8 vast.ai; the vast rows are the survivors of the two bursts, the
+rest of the vast attempts were resumed or restarted on the cluster).
+Epochs are the W&B epoch count of the surviving run; "W&B runs" counts
+runs under the name (interrupted or crashed attempts included).
+Evaluation jobs: 23 dump batches on `uni-gpushort`, 23 probe batches on
+`uni-cpu`, the OT recompute and two phase-probe runs on `uni-cpu`
+(`burst/eval_ledger.tsv` in the session scratchpad).
+
+| group | experiment | final backend | GPU | epochs | W&B runs |
+|---|---|---|---|---|---|
+| Real ladder, regressors | `real_r1_sc` | cluster gpushort chain | V100-16 | 38 | 1 |
+| Real ladder, regressors | `real_r1_scv2` | cluster gpushort chain | A100-80 | 36 | 1 |
+| Real ladder, regressors | `real_r1_tm` | vast.ai | A100-80 | 29 | 1 |
+| Real ladder, regressors | `real_r1_gru` | cluster gpushort chain | A100-80 | 33 | 1 |
+| Real ladder, regressors | `real_r2_sc` | cluster gpushort chain | A100-80 | 30 | 1 |
+| Real ladder, regressors | `real_r2_scv2` | cluster gpushort chain | A100-40 | 39 | 1 |
+| Real ladder, regressors | `real_r2_tm` | cluster gpushort chain | A100-40 | 36 | 1 |
+| Real ladder, regressors | `real_r2_gru` | cluster gpushort chain | A100-80 | 21 | 1 |
+| Real ladder, regressors | `real_r3_sc` | cluster gpushort chain | A100-40 | 106 | 1 |
+| Real ladder, regressors | `real_r3_scv2` | cluster gpushort chain | A100-80 | 27 | 1 |
+| Real ladder, regressors | `real_r3_tm` | cluster sae | A100-80 | 36 | 3 |
+| Real ladder, regressors | `real_r3_gru` | cluster gpushort chain | A100-80 | 27 | 1 |
+| Real ladder, regressors | `real_r4_sc` | cluster gpushort chain | A100-40 | 50 | 1 |
+| Real ladder, regressors | `real_r4_scv2` | cluster gpushort chain | A100-80 | 28 | 1 |
+| Real ladder, regressors | `real_r4_tm` | cluster gpushort chain | V100-32 | 29 | 1 |
+| Real ladder, regressors | `real_r4_gru` | cluster gpushort chain | V100-16 | 25 | 1 |
+| Real ladder, salience ports | `real_r1_hppnet` | vast.ai | RTX 4090 | 26 | 1 |
+| Real ladder, salience ports | `real_r1_hf0` | vast.ai | RTX 4090 | 45 | 1 |
+| Real ladder, salience ports | `real_r2_hppnet` | vast.ai | RTX 4090 | 35 | 1 |
+| Real ladder, salience ports | `real_r2_hf0` | cluster gpushort chain | A100-40 | 42 | 2 |
+| Real ladder, salience ports | `real_r3_hppnet` | cluster gpushort chain | A100-80 | 40 | 2 |
+| Real ladder, salience ports | `real_r3_hf0` | vast.ai | RTX 4090 | 38 | 1 |
+| Real ladder, salience ports | `hppnet_r2hb_l4` | cluster sae | A100-80 | 41 | 1 |
+| Real ladder, salience ports | `hf0_r2hb_l4` | vast.ai | RTX 4090 | 61 | 1 |
+| No-speech twins | `r2hb_scv2_nomix` | vast.ai | A100-80 | 48 | 1 |
+| No-speech twins | `r2hb_scv2_nomix_wu` | cluster gpushort chain | V100-16 | 53 | 1 |
+| No-speech twins | `r2hb_tm_nomix_wu` | cluster gpushort chain | A100-40 | 26 | 1 |
+| No-speech twins | `r2hb_gru_nomix_wu` | cluster gpushort chain | A100-40 | 62 | 1 |
+| No-speech twins | `hppnet_r2hb_nomix` | cluster sae | A100-80 | 72 | 1 |
+| No-speech twins | `hf0_r2hb_nomix` | cluster sae | A100-80 | 43 | 2 |
+| Synthetic cells | `salv2_tr_comb_nomix` | cluster sae | A100-80 | 42 | 2 |
+| Synthetic cells | `salv2_tr_comb_mix` | cluster sae | A100-80 | 40 | 2 |
+| Synthetic cells | `salv2_gru_comb_nomix` | cluster sae | A100-80 | 134 | 2 |
+| Synthetic cells | `salv2_gru_comb_mix` | cluster sae | A100-80 | 100 | 1 |
+| Synthetic cells | `salv2_tr_stoch_nomix` | cluster gpushort chain | A100-80 | 185 | 2 |
+| Synthetic cells | `salv2_tr_stoch_mix` | cluster sae | A100-80 | 98 | 2 |
+| Synthetic cells | `salv2_gru_stoch_nomix` | cluster sae | A100-80 | 123 | 2 |
+| Synthetic cells | `salv2_gru_stoch_mix` | cluster sae | A100-80 | 133 (running) | 2 |
+| Curricula and pools | `tm_comb_s1` | cluster sae | A100-80 | 42 | 2 |
+| Curricula and pools | `tm_r4hb` | cluster sae | A100-80 | 43 | 1 |
+| Curricula and pools | `tm_r2hb_nogate` | cluster gpushort chain | V100-16 | 50 | 1 |
+| Curricula and pools | `hf0_r4_l4_v2` | cluster gpushort chain | A100-40 | 26 | 2 |
+| Curricula and pools | `r7hb_tm` | cluster gpushort chain | A100-40 | 24 | 1 |
+| Curricula and pools | `r7hb_gru` | cluster gpushort chain | A100-40 | 33 | 1 |
+| Block S | `hb_sal_multif0_l4` | cluster gpushort chain | A100-80 | 37 (running) | 3 |
+| Block S | `hb_sal_bp_l4` | cluster sae | A100-80 | 40 | 1 |
+| Block S | `hb_sal_hf0_orig` | cluster sae | A100-80 | 32 | 1 |
+| Block S | `hb_sal_hppnet_orig` | vast.ai | RTX 4090 | 33 | 1 |
 
 ## Results
 
