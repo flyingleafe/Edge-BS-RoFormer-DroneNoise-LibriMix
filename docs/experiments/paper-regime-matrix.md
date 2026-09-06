@@ -1065,6 +1065,20 @@ learning-rate artefact. Verdict so far under the decision rule: v2 beats
 no tested model across splits, so the papers do not mention it; the
 pending arms can only change the synthetic-stochastic reading.
 
+**Closed 2026-09-06 (user decision): the architecture is archived as an
+unsuccessful experiment.** The stochastic stage `v2_stoch` finished at
+step 3000 with a best selection of 15.64 (start 17.65 from the comb
+checkpoint; flat 16-19 throughout); its dump job `v2dump-v2-stoch-452ecb`
+was left to finish for the record. The `v2_real` chain was cancelled in
+its first segment (`v2-v2-real-1-073d4c`) and the queued Kaggle arm
+`v2_comb_lr2e3` was cancelled before it started, so the learning-rate
+question stays open and is not worth the compute. `v2_stoch_scratch` on
+Kaggle was at step 1700 with a best of 15.12 when its 330-minute budget
+ran out. Trainer, flags and checkpoints stay in the tree
+(`scripts/train_slot_v2.py`, `results/slot_v2/*` on scratch, dumps under
+`results/rps_dump/*/v2_*.npz`); `docs/slot-comb-v2-design.md` carries the
+archive note.
+
 ## Conclusion
 
 Written 2026-09-06; every cell of the matrix is trained and scored.

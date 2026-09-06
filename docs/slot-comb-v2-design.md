@@ -1,8 +1,19 @@
 # Slot-comb CRF v2: more learnable parameters, the same mechanism (2026-09-04)
 
-Status: design. Nothing here is implemented. The measurements it starts from
-are in `docs/experiments/candidate-tests-2026-09-04.md` (the C1 campaign) and
-the mechanism it keeps is `src/models/comb_slots.py` (`SlotCombNet`,
+Status: ARCHIVED, unsuccessful (user decision, 2026-09-06). Every group
+below is implemented as an opt-in flag of `SlotCombNet`
+(`src/models/comb_slots.py`, `comb_slots_emission_v2.py`,
+`comb_slots_prior.py`; trainer `scripts/train_slot_v2.py`) and was trained
+on the paper's splits: the arms lose to the trained neural rows by an order
+of magnitude on every split (static comb 5.09 vs 0.46, stochastic 15.6 vs
+2.48 on selection, real all-frame 12.7 vs 2.74), the OFF state never fires,
+and the arms drift away from their early best while the CRF likelihood
+keeps falling. The record, the numbers and the reading are in
+`docs/experiments/paper-regime-matrix.md` § "Slot-comb v2 test". The
+papers do not mention v2. The design text below is kept as written; the
+measurements it starts from are in
+`docs/experiments/candidate-tests-2026-09-04.md` (the C1 campaign) and the
+mechanism it keeps is `src/models/comb_slots.py` (`SlotCombNet`,
 `PartialEmission`).
 
 ## 1. What "the same mechanism" means
