@@ -396,7 +396,7 @@ class SlotCombNet(nn.Module):
         floor_widths: tuple[int, ...] | None = None,
     ):
         super().__init__()
-        if emission not in ("classical", "partial"):
+        if emission not in ("classical", "partial", "v2"):
             raise ValueError(f"unknown emission {emission!r}")
         self.sr, self.n_fft, self.hop_length = int(sr), int(n_fft), int(hop_length)
         self.n_rot, self.n_iter = int(n_rot), int(n_iter)
@@ -458,6 +458,23 @@ class SlotCombNet(nn.Module):
             mask_k_max if mask_k_max is not None else np.ceil(f_max / max(r_lo, 1e-6))
         )
         self.masks = CombMaskBank(grid, n_fft, sr, self.mask_k_max, f_max, notch_width)
+        if self.emission == "v2":
+            # The v2 emission groups of `docs/slot-comb-v2-design.md`, sections
+            # 3.4, 3.5 and 3.7. Imported here, not at the top, because that
+            # module subclasses `PartialEmission`.
+            from models.comb_slots_emission_v2 import attach_v2_emission
+
+            attach_v2_emission(
+                self,
+                k_max=k_max,
+                n_mic=n_mic,
+                parts=parts,
+                floor_widths=widths,
+                f_max=f_max,
+                notch_width=notch_width,
+                sr=sr,
+                n_fft=n_fft,
+            )
         self.register_buffer("window", torch.hann_window(int(n_fft)), persistent=False)
         step = float(grid[1] - grid[0])
         self.step_free = max(slew * (hop_length / sr) / step, 1e-9)
