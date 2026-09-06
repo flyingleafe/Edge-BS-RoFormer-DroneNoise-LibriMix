@@ -26,6 +26,18 @@ there, and the set's ``_gt.npz`` / ``_meta.json`` are left alone.
 
 ``--best`` is the trainer's ``best.pt`` (trainable parameters only); omit it
 for the zero-parameter corner (``--parts none``).
+
+``--v2 <dir>`` reads a `scripts/train_slot_v2.py` arm instead: the directory
+holds ``config.json`` (the constructor keywords the arm trained with) and
+``best.pt``, so the dump rebuilds the SAME model — the same grid, the same
+emission, the same v2 groups — and cannot read a checkpoint with the wrong
+one. ``--part all`` then writes every part of `experiments.rps_bench`
+(``comb``, ``stoch``, ``comb_speech``, ``stoch_speech``, ``real``,
+``real_nospeech``), each in the `scripts/rps_dump.py` layout, so
+`scripts/rps_claim_tables.py` and `scripts/rps_regime_table.py` read a v2 row
+with no change:
+
+    python scripts/slot_dump.py --v2 results/slot_v2/B1 --part all
 """
 
 from __future__ import annotations
@@ -43,19 +55,78 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+#: every part of `experiments.rps_bench`, in the dump's own set names.
+#: ``real_mono`` is the old spelling of ``real`` and is kept for the C1 runs.
+BENCH_PARTS = ("comb", "stoch", "comb_speech", "stoch_speech", "real", "real_nospeech")
+#: the parts a set builder SYNTHESIZES on demand, so a smoke can ask for `n`
+#: frames and never pay for the other 250. The two real parts are materialized
+#: datasets whose builder has no ``n``, so they are sliced after the build.
+SYNTH_PARTS = ("comb", "stoch", "comb_speech", "stoch_speech")
 
-def main() -> int:
+
+def dump_part(net, name: str, out_root: Path, arm: str, limit: int, kw: dict, device: str) -> dict:
+    """Decode one benchmark part MONO and write it in the `rps_dump` layout.
+
+    A frame of every part is ONE microphone of one clip, and the decoder reads
+    it as one item of one channel. That is the fair protocol: the neural models
+    never see the eight-microphone power average.
+    """
+    from rps_dump import write_predictions, write_set_gt
+
+    from experiments import rps_bench as rb
+    from metrics._common import get_array
+
+    if limit and name in SYNTH_PARTS:
+        frames = rb.part(name, n=limit)
+    else:
+        frames = rb.part(name)
+        if limit:
+            frames = frames[:limit]
+    d = out_root / name
+    d.mkdir(parents=True, exist_ok=True)
+    write_set_gt(d, frames)
+    t0 = time.time()
+    preds, metrics = [], []
+    with torch.no_grad():
+        for f in frames:
+            # `(1, N)`: one microphone with its channel axis kept, so the
+            # decoder reads one item of one channel and not one item of N.
+            au = torch.as_tensor(
+                np.asarray(f["mixture"].data, dtype=np.float32).ravel()[None], device=device
+            )
+            pred = net.decode(au, **kw)[0].cpu().numpy().astype(np.float64)
+            gt = np.asarray(get_array(f, "rps"), dtype=np.float64)
+            preds.append(pred.astype(np.float32))
+            metrics.append(rb.pit_mae(pred, gt))
+    pred, n_t, metric = write_predictions(d, arm, preds, metrics)
+    print(
+        f"wrote {d / arm}.npz pred={pred.shape} n_t={n_t.shape} metric={metric.shape}  "
+        f"mean={metric.mean():.4f} median={np.median(metric):.4f} "
+        f"({time.time() - t0:.0f} s)",
+        flush=True,
+    )
+    return {"n": len(frames), "mean": float(metric.mean()), "median": float(np.median(metric))}
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--parts", default="none", help="comma list, or 'none' for the corner")
     ap.add_argument("--best", default="", help="best.pt of the trained arm (optional)")
     ap.add_argument("--k-max", type=int, default=40)
     ap.add_argument("--floor-hz", type=float, default=60.0)
     ap.add_argument(
+        "--v2",
+        default="",
+        help="a scripts/train_slot_v2.py arm directory (config.json + best.pt). "
+        "The model comes from its config, so --parts/--best/--k-max/--floor-hz "
+        "are ignored and the arm cannot be rebuilt wrong",
+    )
+    ap.add_argument(
         "--part",
         default="real8",
-        choices=("real8", "real_mono", "comb", "stoch"),
+        choices=("real8", "real_mono", "all", *BENCH_PARTS),
         help="real8 = the eight-microphone frozen split (pred_clips/pred_frames/table); "
-        "the others write one rps_dump-format npz per set",
+        "'all' = every part of rps_bench; the others write one rps_dump-format npz per set",
     )
     ap.add_argument(
         "--out",
@@ -77,61 +148,50 @@ def main() -> int:
         "keeps it off: at eight mics it cost the untrained FLY124 22.4 -> 31.1)",
     )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--threads", type=int, default=0)
-    args = ap.parse_args()
-    if args.threads:
+    ap.add_argument(
+        "--threads",
+        type=int,
+        default=4,
+        help="torch CPU threads. 4 by default: a CPU dump must leave the box usable",
+    )
+    args = ap.parse_args(argv)
+    if args.threads and not args.device.startswith("cuda"):
         torch.set_num_threads(args.threads)
 
-    from rps_dump import pad_stack
     from train_slot_real import build_model
 
-    from experiments import rps_bench as rb
     from experiments import slot_real as sr
-    from metrics._common import get_array
+    from experiments import slot_v2 as sv
 
-    net, parts = build_model(args, args.device)
-    if args.best:
-        missing = net.load_state_dict(torch.load(args.best, map_location=args.device), strict=False)
-        print(f"loaded {args.best}: unexpected {missing.unexpected_keys}", flush=True)
+    if args.v2:
+        net = sv.load_arm(args.v2, device=args.device)
+        # `parts` is a label for the table, and the v2 emission is another
+        # branch's class, so it is read defensively rather than assumed.
+        parts = list(getattr(getattr(net, "emit", None), "parts", []) or [])
+        if args.name == "arm":
+            # The arm's DIRECTORY names it, which is the tables' column. `--v2`
+            # also takes the checkpoint itself, whose name is always best.pt.
+            d = Path(args.v2)
+            args.name = (d if d.is_dir() else d.parent).resolve().name
+    else:
+        net, parts = build_model(args, args.device)
+        if args.best:
+            report = net.load_state_dict(
+                torch.load(args.best, map_location=args.device), strict=False
+            )
+            print(f"loaded {args.best}: unexpected {report.unexpected_keys}", flush=True)
     net.eval()
     kw = {"subgrid": True, "octave": bool(args.octave), "relocate": True}  # P1c: octave off
 
-    if args.part != "real8":
-        # The neural models' own format and their own frames, so a C1 arm joins
-        # `results/rps_dump` and every reader of it without a second layout.
-        name = "real" if args.part == "real_mono" else args.part
-        if args.limit and args.part in ("comb", "stoch"):
-            # A synthetic part is SYNTHESIZED on demand, so a smoke asks for the
-            # frames it wants and never pays for the other 253.
-            frames = rb.part(name, n=args.limit)
-        else:
-            frames = rb.part(name)
-            if args.limit:
-                frames = frames[: args.limit]
-        d = Path(args.out or "results/rps_dump") / name
-        d.mkdir(parents=True, exist_ok=True)
-        preds, metrics = [], []
-        with torch.no_grad():
-            for f in frames:
-                # `(1, N)`: one microphone with its channel axis kept, so the
-                # decoder reads one item of one channel.
-                au = torch.as_tensor(
-                    np.asarray(f["mixture"].data, dtype=np.float32).ravel()[None],
-                    device=args.device,
-                )
-                pred = net.decode(au, **kw)[0].cpu().numpy().astype(np.float64)
-                gt = np.asarray(get_array(f, "rps"), dtype=np.float64)
-                preds.append(pred.astype(np.float32))
-                metrics.append(rb.pit_mae(pred, gt))
-        pred, n_t = pad_stack(preds)
-        metric = np.asarray(metrics, dtype=np.float64)
-        np.savez(d / f"{args.name}.npz", pred=pred, n_t=n_t, metric=metric)
-        print(
-            f"wrote {d / args.name}.npz pred={pred.shape} n_t={n_t.shape} "
-            f"metric={metric.shape}  mean={metric.mean():.4f} "
-            f"median={np.median(metric):.4f}",
-            flush=True,
-        )
+    if args.part in ("all", "real_mono", *BENCH_PARTS):
+        root = Path(args.out or "results/rps_dump")
+        # `real_mono` is the C1 spelling of the mono real set, and the set is
+        # `real` on disk, so the two names must not make two directories.
+        names = list(BENCH_PARTS) if args.part == "all" else [args.part.replace("_mono", "")]
+        summary = {
+            n: dump_part(net, n, root, args.name, args.limit, kw, args.device) for n in names
+        }
+        print(json.dumps(summary, indent=1), flush=True)
         return 0
 
     if not args.out:
@@ -171,7 +231,7 @@ def main() -> int:
     np.save(out / "pred_clips.npy", pc)
     np.save(out / "pred_frames.npy", pf)
     res["parts"] = list(parts)
-    res["best"] = args.best
+    res["best"] = args.v2 or args.best
     (out / "table.json").write_text(json.dumps(res, indent=1, default=float))
     print(f"wrote {out}/pred_clips.npy {pc.shape}, pred_frames.npy {pf.shape}", flush=True)
     return 0

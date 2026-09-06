@@ -67,6 +67,31 @@ def pad_stack(arrs: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     return out, n_t
 
 
+def write_set_gt(d: Path, frames: list[Any]) -> None:
+    """``_gt.npz`` and ``_meta.json`` of one set, written only when they are absent.
+
+    A set's labels and metadata are the SAME for every model, so the first
+    writer owns them and every later one leaves them alone. Split out of
+    :func:`main` because `scripts/slot_dump.py` writes the same two files for
+    the slot-comb arms, and one dump layout must have one writer.
+    """
+    if (d / "_gt.npz").exists():
+        return
+    gt, n_t = pad_stack([np.asarray(get_array(f, "rps"), dtype=np.float32) for f in frames])
+    np.savez(d / "_gt.npz", rps=gt, n_t=n_t)
+    (d / "_meta.json").write_text(json.dumps([meta_dict(f) for f in frames], default=str))
+
+
+def write_predictions(
+    d: Path, name: str, preds: list[np.ndarray], metrics: list[float]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``<name>.npz`` of one model on one set: ``pred``, ``n_t``, ``metric``."""
+    pred, n_t = pad_stack(preds)
+    metric = np.asarray(metrics, dtype=np.float64)
+    np.savez(d / f"{name}.npz", pred=pred, n_t=n_t, metric=metric)
+    return pred, n_t, metric
+
+
 def _shared_map(pred: Any, reader: Readout) -> bool:
     """True for a salience model that emits ONE shared map, not R layers."""
     if "salience" not in pred:
@@ -125,10 +150,7 @@ def main() -> None:
         n = len(ds) if not a.limit else min(len(ds), a.limit)
         frames = [ds[i] for i in range(n)]
         sets.append((name, frames))
-        if not (d / "_gt.npz").exists():
-            gt, n_t = pad_stack([np.asarray(get_array(f, "rps"), dtype=np.float32) for f in frames])
-            np.savez(d / "_gt.npz", rps=gt, n_t=n_t)
-            (d / "_meta.json").write_text(json.dumps([meta_dict(f) for f in frames], default=str))
+        write_set_gt(d, frames)
         print(f"set {name:14s} {n:4d} frames  <- {path} {overrides or ''}", flush=True)
 
     for exp in (e.strip() for e in a.experiments.split(",") if e.strip()):
@@ -146,9 +168,7 @@ def main() -> None:
                     p, m = reader(out_frame, f)
                 preds.append(p)
                 metrics.append(m)
-            pred, n_t = pad_stack(preds)
-            metric = np.asarray(metrics, dtype=np.float64)
-            np.savez(out / name / f"{exp}.npz", pred=pred, n_t=n_t, metric=metric)
+            metric = write_predictions(out / name, exp, preds, metrics)[2]
             print(
                 f"  {exp:32s} {name:14s} mae={metric.mean():8.4f} "
                 f"median={np.median(metric):8.4f} p90={np.percentile(metric, 90):8.4f}",

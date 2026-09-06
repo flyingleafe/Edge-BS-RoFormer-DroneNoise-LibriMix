@@ -27,6 +27,15 @@ the true rate and at half the true rate.
 
     python scripts/rps_cue_probe.py cutoff --exp salv2_hppnet_stoch_nomix
 
+A model is named either ``<experiment>`` (a `zoo` checkpoint) or
+``slot:<dir>`` — a `scripts/train_slot_v2.py` arm directory holding
+``config.json`` and ``best.pt``. The slot arm is put behind the same Frame
+interface (`experiments.slot_v2.SlotFrameModel`), so both probes read a CRF
+decoder and a regressor through one code path, and the cache file of
+``slot:results/slot_v2/B1`` is ``slot_B1.json``.
+
+    python scripts/rps_cue_probe.py freq --exp slot:results/slot_v2/B1
+
 Both probes cache one JSON per experiment under
 ``results/rps_probe/<probe>/<exp>.json`` and skip an experiment that already
 has one, so a killed run resumes. ``--force`` recomputes. A non-default
@@ -72,6 +81,34 @@ RATIO_FLOOR = 1.0  # rotor-frames whose truth is at or below this carry no ratio
 
 
 # ─── Shared ───────────────────────────────────────────────────────────────────
+
+
+def probe_name(spec: str) -> str:
+    """The cache and table name of a model spec.
+
+    ``slot:results/slot_v2/B1`` -> ``slot_B1``. A raw path holds separators and
+    a colon, which no file name wants, and the prefix keeps an arm from
+    colliding with a `zoo` experiment that happens to share the directory name.
+    """
+    if spec.startswith("slot:"):
+        d = Path(spec[len("slot:") :])
+        return "slot_" + (d if d.is_dir() else d.parent).resolve().name
+    return spec
+
+
+def load_model(spec: str, ckpt: str = "best", device: str = "cpu") -> Any:
+    """A model behind the Frame interface: a `zoo` checkpoint or a slot arm.
+
+    Both return an object that maps a `td.Frame` to a `td.Frame` carrying
+    ``rps_pred`` or ``salience``, which is all :func:`speeds` reads.
+    """
+    if spec.startswith("slot:"):
+        from experiments.slot_v2 import SlotFrameModel, load_arm
+
+        return SlotFrameModel(load_arm(spec[len("slot:") :], device=device), device=device)
+    import zoo
+
+    return zoo.load(spec, ckpt=ckpt, device=device)
 
 
 def rate_grid() -> np.ndarray:
@@ -323,7 +360,6 @@ def summarize(rows: list[dict], k_cuts: list[int]) -> dict:
 
 
 def run_freq(a: argparse.Namespace, out_dir: Path) -> None:
-    import zoo
     from experiments import rps_bench as rb
 
     tag = variant(a)
@@ -333,12 +369,13 @@ def run_freq(a: argparse.Namespace, out_dir: Path) -> None:
     print(f"{a.part}: {len(frames)} frames, {n_ch} mics; cruise clips {clips}", flush=True)
 
     res = {}
-    for exp in a.exp:
+    for spec in a.exp:
+        exp = probe_name(spec)
         hit = load_cached(out_dir, exp, tag, a.force, {"clips": clips})
         if hit is None:
             t0 = time.time()
             print(f"  {exp}", flush=True)
-            fm = zoo.load(exp, ckpt=a.ckpt, device="cpu")
+            fm = load_model(spec, ckpt=a.ckpt, device="cpu")
             hit = freq_probe(fm, frames, clips, n_ch, list(ALPHAS))
             hit["experiment"], hit["seconds"] = exp, round(time.time() - t0, 1)
             (out_dir / f"{exp}{tag}.json").write_text(json.dumps(hit, indent=1))
@@ -365,7 +402,6 @@ def run_freq(a: argparse.Namespace, out_dir: Path) -> None:
 
 
 def run_cutoff(a: argparse.Namespace, out_dir: Path) -> None:
-    import zoo
     from experiments import rps_bench as rb
 
     tag = variant(a)
@@ -379,12 +415,13 @@ def run_cutoff(a: argparse.Namespace, out_dir: Path) -> None:
     )
 
     res = {}
-    for exp in a.exp:
+    for spec in a.exp:
+        exp = probe_name(spec)
         hit = load_cached(out_dir, exp, tag, a.force, {"lowpass": a.lowpass, "frames": sel})
         if hit is None:
             t0 = time.time()
             print(f"  {exp}", flush=True)
-            fm = zoo.load(exp, ckpt=a.ckpt, device="cpu")
+            fm = load_model(spec, ckpt=a.ckpt, device="cpu")
             hit = cutoff_probe(fm, frames, sel, list(K_CUTS), a.lowpass)
             hit["experiment"], hit["seconds"] = exp, round(time.time() - t0, 1)
             (out_dir / f"{exp}{tag}.json").write_text(json.dumps(hit, indent=1))
@@ -445,7 +482,12 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("probe", choices=("freq", "cutoff"))
-    ap.add_argument("--exp", nargs="+", required=True, help="zoo experiment names")
+    ap.add_argument(
+        "--exp",
+        nargs="+",
+        required=True,
+        help="zoo experiment names, or slot:<dir> for a train_slot_v2 arm",
+    )
     ap.add_argument("--ckpt", default="best")
     ap.add_argument("--out", default="results/rps_probe", help="cache root")
     ap.add_argument("--part", default=None, help="rps_bench part (freq: real, cutoff: stoch)")

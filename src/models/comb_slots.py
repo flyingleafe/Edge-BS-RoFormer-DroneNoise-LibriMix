@@ -68,6 +68,7 @@ from torch.utils.checkpoint import checkpoint
 
 from models import comb_crf
 from models.comb_salience import CombGather, CombScoreHead, local_floor_torch
+from models.comb_slots_prior import RatePrior, add_prior
 
 __all__ = ["PARTIAL_PARTS", "CombMaskBank", "PartialEmission", "SlotCombNet"]
 
@@ -394,6 +395,7 @@ class SlotCombNet(nn.Module):
         parts: tuple[str, ...] = PARTIAL_PARTS,
         n_mic: int = 8,
         floor_widths: tuple[int, ...] | None = None,
+        rate_prior: bool = False,
     ):
         super().__init__()
         if emission not in ("classical", "partial"):
@@ -458,6 +460,9 @@ class SlotCombNet(nn.Module):
             mask_k_max if mask_k_max is not None else np.ceil(f_max / max(r_lo, 1e-6))
         )
         self.masks = CombMaskBank(grid, n_fft, sr, self.mask_k_max, f_max, notch_width)
+        # Section 3.6: a learned pairwise prior over the rate DIFFERENCE to the
+        # slots already peeled. Zero at initialization, so the corner is unchanged.
+        self.rate_prior = RatePrior() if rate_prior else None
         self.register_buffer("window", torch.hann_window(int(n_fft)), persistent=False)
         step = float(grid[1] - grid[0])
         self.step_free = max(slew * (hop_length / sr) / step, 1e-9)
@@ -588,16 +593,19 @@ class SlotCombNet(nn.Module):
         # ── Sequential initialization: this IS the deployed peel ──────────────
         claims = e.pw.new_zeros((b, 0, n_f, n_t))
         scores, posts = [], []
+        prev: list[torch.Tensor] = []  # the peeled slots' rates in rev/s (section 3.6)
         for _ in range(self.n_rot):
             res = self._residual(e.x, e.xfloor, claims if claims.shape[1] else None, None)
-            s = self._score_ckpt(res, e.efloor)
+            s = add_prior(self.rate_prior, self.grid, prev, self._score_ckpt(res, e.efloor))
             scores.append(s)
             if hard_init:
                 path = comb_crf.viterbi(s.detach(), self.span, self.pen)
                 p = torch.zeros_like(s).scatter_(1, path.unsqueeze(1), 1.0)
             else:
                 p = comb_crf.posterior_marginals(s, self.span, self.pen)
+                path = p.argmax(dim=1)
             posts.append(p)
+            prev.append(self.grid.to(s.dtype)[path].detach())
             claims = torch.cat([claims, self.masks(p).unsqueeze(1)], dim=1)
 
         # ── Joint sweeps: every slot now sees every OTHER slot's claim ────────
