@@ -1002,6 +1002,69 @@ cruise 2.1-2.9, FLY124 cruise 0.9-1.2, zero 1.6-2.9, ramps 3-5) and the
 best synthetic rows on their own parts (static comb 0.46-0.9, stochastic
 2.48-2.65), at one microphone; otherwise v2 is not mentioned.
 
+### Results (2026-09-06, batch 26; arms `v2_stoch`, `v2_stoch_scratch`, `v2_comb_lr2e3` pending)
+
+Trainer as run (after three false starts): the OFF state warm-started
+at `theta0=0, theta1=1, c1=c2=1` (the design's `theta0=-1e4` is
+untrainable), `theta1/c1/c2` clamped at zero (negative switch costs made
+the real arm collapse to OFF), one Adam group at lr 3e-4 (the 10x group
+on the chain scalars oscillated), batch 4, crops kept only when at least
+half their frames are in the 10-100 rev/s grid (`--min-in-grid 0.5`),
+selection every 100 steps on 48 windows of the same policy, 3000 steps.
+W&B runs `slotv2_<arm>`; `results/slot_v2/<arm>` on scratch; dumps
+`results/rps_dump/<part>/<arm>.npz` (jobs `v2dump-v2-real-scratch-7cbf21`,
+`v2dump-v2-comb-dddec9`). A third arm, `v2_stoch_scratch`, runs on Kaggle
+from the slim snapshot (branch `kaggle-slim-v2`: the trainer's import
+closure, 110 files) and `v2_comb_lr2e3` (lr 2e-3) is queued there,
+because the W&B parameter curves show every parameter moved by less than
+0.1 in 1000 steps at 3e-4.
+
+Selection curves (48 windows, one microphone, PIT MAE rev/s):
+
+| arm | step 0 | best (step) | step 3000 | shape |
+|---|---|---|---|---|
+| `v2_comb` | 17.41 | 6.21 (400) | 13.7 | falls in 400 steps, then drifts up to 2x the best |
+| `v2_real_scratch` | 31.33 | 18.61 (2900) | 19.4 | plateau at 24-25 for 2000 steps, then slow fall |
+| `v2_stoch` (from `v2_comb` best) | - | 16.94 (1500) | running | flat 17-21 |
+| `v2_stoch_scratch` (Kaggle) | 24.66 | 15.12 (300) | running | falls, then 16-19 |
+
+Dump on the six parts (mean per-frame PIT MAE, all frames, the paper's
+format; the bar is the best trained row of the matrix):
+
+| part | `v2_comb` | `v2_real_scratch` | bar |
+|---|---|---|---|
+| comb | 5.09 (median 1.44) | 24.7 | 0.46 (`salv2_hppnet_comb_nomix`) |
+| comb_speech | 5.50 | 24.4 | 0.77 |
+| stoch | 23.7 | 29.4 | 2.48 (transformer nomix) |
+| stoch_speech | 25.0 | - | 4.78 |
+| real | 30.3 | 12.67 (median 3.95) | 2.74 |
+| real_nospeech | 22.2 | 9.18 | - |
+
+`v2_real_scratch` on the real split by regime (rps_regime_table), eight
+microphones / microphone 0: DREGON cruise 4.50 / 2.77, FLY124 cruise
+2.38 / 2.02, ramps 18.1 / 17.7, zero frames 59.7 / 60.9, ground 61.5 /
+62.4, all frames 12.8 / 11.8. The rung-1 scv2 sits at 2.73 DREGON
+cruise, HPPNet rung 4 at 1.40 FLY124 cruise, the ladder rows at 0.1-3
+on ground.
+
+Reading. (1) The mechanism is not the bottleneck it was in v1: at one
+microphone `v2_real_scratch` reaches 2.77 DREGON cruise and 2.02 FLY124
+cruise, against 2.65 and 11.9 for the v1 corner A8 at eight microphones,
+so the learned groups repair the v1 cross-rig failure at cruise. (2) It
+loses everywhere else: the OFF state never fires (silence and ground
+decode at about 60 rev/s, because both the training crops and the
+selection windows keep at least half their frames in the grid), ramps
+are 2.4x the ladder, and the arm returns garbage on both synthetic
+families. (3) On its home family the comb arm is 11x behind the HPPNet
+port (5.09 vs 0.46; the median 1.44 says the mean is a tail of failed
+windows), and it does not transfer to the stochastic part (23.7). (4)
+Both arms drift away from their best after a few hundred steps while the
+CRF likelihood keeps falling (real arm 32k to 15k), so the objective and
+the decoded MAE disagree; the lr 2e-3 arm tests whether this is a
+learning-rate artefact. Verdict so far under the decision rule: v2 beats
+no tested model across splits, so the papers do not mention it; the
+pending arms can only change the synthetic-stochastic reading.
+
 ## Conclusion
 
 Written 2026-09-06; every cell of the matrix is trained and scored.
