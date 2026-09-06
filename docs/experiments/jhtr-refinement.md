@@ -206,7 +206,21 @@ and monitor/release both rentals. The $5 unreserved margin covers setup/teardown
 `omnirun --max-cost` is a placement estimate, **not** a runtime billing cap.
 No epochs, patience, sample exposure per validation, or batch settings change.
 If a runtime cutoff interrupts inherited training, report incomplete exposure,
-not convergence or scientific model failure. No paid jobs have been launched yet.
+not convergence or scientific model failure.
+
+Pilots launched from `1fea49e75d30`: S1 `jhtr-s1-pilot-e21bc1` and S2
+`jhtr-s2-pilot-c4f64d`, both RTX 4090. Selected 36 h reservations are
+**$11.1200** and **$8.0267** (**$19.1467 combined**); these are estimates, not
+billed spend. The omnirun field named `Placement.cost_actual` is populated with
+the placement estimate, so it must not be reported as an invoice. Accounting
+snapshot: `results/jhtr/paid-pilot-ledger.json`. S1 passed its 39-test CUDA
+preflight and canonical matched profile, then entered the real trainer; early
+observed throughput is approximately **4.1 s/batch**, not a convergence result.
+The now-redundant queued A100 profile was cancelled after the P100 fit passed.
+
+**Live-rental safety:** do not `omnirun pull` an active Vast job: the backend's
+`pull_outputs` unconditionally auto-terminates after pulling. Use streamed logs
+and W&B during training; pull after terminal state and verify `reaped`.
 
 ## Conclusion and failure strategy
 
