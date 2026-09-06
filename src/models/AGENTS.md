@@ -14,6 +14,9 @@ src/models/
   basic_pitch/          Basic Pitch note transcription, PyTorch port (Bittner et al. ICASSP 2022)
   harmonic_ports/       Multi-pitch architectures ported to rotor-rate salience on a LINEAR STFT
   rps_predictor.py      SimpleConv* family + DCUNet/DCCRN encoders (RPS)
+  comb_salience.py      CombGather / CombScoreHead — hypothesis scoring at k*r
+  comb_crf.py           Linear-chain CRF over the rate grid (the deployed decoder)
+  comb_slots.py         SlotCombNet — R slots that ALLOCATE bins (candidate C1)
   ckla.py               Complex Kalman Linear Attention head + SimpleConvV2CKLA (docs/ckla-design.md)
   dcunet.py             DCUNet (speech enhancement)
   dccrn.py              DCCRN
@@ -265,6 +268,43 @@ reaches 0 and both handled inside `harmof0_rps.py`:
    (default `sr / n_fft`) drops every harmonic of such a candidate, and with it
    the untrained read of a 37 rev/s comb moves from 1.51 rev/s to 37.12; 45, 60,
    84.5 and 120 also land within one grid bin.
+
+### The slot-comb CRF (`comb_slots.py`, `comb_crf.py`)
+
+`SlotCombNet` is candidate C1: R slots over one rate grid, each scored by a
+gather at `k*r`, each decoded by Viterbi over the same chain the CRF loss
+trains. Bins are ALLOCATED between slots rather than copied, so two slots on one
+rotor score less than one slot there plus one on an uncovered rotor. The
+zero-parameter corner (`head_mode="classical"`, `n_iter=0`, eight microphones
+power-averaged) reads real DREGON cruise at 1.49 rev/s, ahead of every trained
+model on that protocol. `emission="partial"` relaxes the mean over harmonic
+orders into `PartialEmission` (135 parameters), starting at that corner.
+
+**The v2 chain options** (`docs/slot-comb-v2-design.md` sections 3.1 to 3.3, all
+default off). The regime table says the corner's largest failures are the
+regimes the CHAIN cannot express, not the ones the emission cannot read: 60.9
+rev/s on ground and zero frames, where the model has no "no rotor" state, and
+19.5 to 31.1 on ramps, where the hinge cannot follow and the grid stops at 30.
+Three constructor flags make each of those a family that holds the current model
+at initialization.
+
+| Flag | New parameters | What it adds |
+|------|----------------|--------------|
+| `off_state=True` | `theta0`, `theta1`, `c1`, `c2` | One OFF state per frame beside the banded ON states. Its unary is `theta0 - theta1 * contrast(t)`, an affine function of `SlotCombNet.contrast` (max minus median of that slot's own score over the grid) and of nothing that reads level. `theta0 = -1e4` makes it unreachable, so the decoder is bit-for-bit the measured one. `decode` emits 0 rev/s there, and `loss` makes OFF the gold state where the true rate is under `zero_rps` (0.5 rev/s). This is the hand-set `zero_contrast` threshold, made a state of the same CRF, so an ambiguous frame inherits its neighbours' state |
+| `learned_transition=True` | `trans.d`, one per band offset (38 by default) | `pen(j) = sum_{i<=j} softplus(d_i)`, mirrored — symmetric, zero at the origin, non-decreasing, so it stays a cost. `d` starts at the hinge, and the band is widened from `trans_slew` (30 rev/s^2) so the learned cost has room to let a rotor ramp |
+| `mask_below_grid=True` | none | Frames whose true rate is between `zero_rps` and the grid's low end leave the gold path: `comb_crf.crf_nll` then charges neither their emission nor the two transitions that touch them. This is what a grid from 10 rev/s needs (`r_lo=10, n_grid=900`). Nothing decodes such a frame, so EVALUATION still counts it as an error |
+
+The OFF index is `G`, one past the last grid index, in every path `comb_crf`
+returns or reads. `posterior_marginals` with an `Off` returns `G+1` rows; the
+slot model drops the last one, because a stopped rotor claims no bins.
+
+Costs, measured on four CPU threads at B=2, T=63: `log_partition` is 71 ms at
+(G=700, span=15) and 238 ms at (G=900, span=40), which is the `G x band` work
+ratio and nothing else; the OFF state adds about 60% to that. At `r_lo=10` the
+mask bank's `mask_k_max` defaults to 750 harmonics and takes 121 s to build
+against 53 s at 30 rev/s — pass `mask_k_max` to cap it. Neither is the loss's
+bottleneck: a `loss` plus `backward` on 2 s crops at batch 2 with the partial
+emission is 19.5 s at the corner and 26.9 s with all three v2 options on.
 
 ### Salience-map RPS baselines (`salience_rps.py`)
 
