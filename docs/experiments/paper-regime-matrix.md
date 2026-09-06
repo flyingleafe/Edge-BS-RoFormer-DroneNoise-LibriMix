@@ -1031,14 +1031,14 @@ Selection curves (48 windows, one microphone, PIT MAE rev/s):
 Dump on the six parts (mean per-frame PIT MAE, all frames, the paper's
 format; the bar is the best trained row of the matrix):
 
-| part | `v2_comb` | `v2_real_scratch` | bar |
-|---|---|---|---|
-| comb | 5.09 (median 1.44) | 24.7 | 0.46 (`salv2_hppnet_comb_nomix`) |
-| comb_speech | 5.50 | 24.4 | 0.77 |
-| stoch | 23.7 | 29.4 | 2.48 (transformer nomix) |
-| stoch_speech | 25.0 | - | 4.78 |
-| real | 30.3 | 12.67 (median 3.95) | 2.74 |
-| real_nospeech | 22.2 | 9.18 | - |
+| part | `v2_comb` | `v2_stoch` (from `v2_comb`) | `v2_real_scratch` | bar |
+|---|---|---|---|---|
+| comb | 5.09 (median 1.44) | 7.32 (median 2.11) | 24.7 | 0.46 (`salv2_hppnet_comb_nomix`) |
+| comb_speech | 5.50 | 7.40 | 24.4 | 0.77 |
+| stoch | 23.7 | 15.87 (median 11.7) | 29.4 | 2.48 (transformer nomix) |
+| stoch_speech | 25.0 | 15.99 | - | 4.78 |
+| real | 30.3 | 29.8 | 12.67 (median 3.95) | 2.74 |
+| real_nospeech | 22.2 | 34.2 | 9.18 | - |
 
 `v2_real_scratch` on the real split by regime (rps_regime_table), eight
 microphones / microphone 0: DREGON cruise 4.50 / 2.77, FLY124 cruise
@@ -1069,7 +1069,7 @@ pending arms can only change the synthetic-stochastic reading.
 unsuccessful experiment.** The stochastic stage `v2_stoch` finished at
 step 3000 with a best selection of 15.64 (start 17.65 from the comb
 checkpoint; flat 16-19 throughout); its dump job `v2dump-v2-stoch-452ecb`
-was left to finish for the record. The `v2_real` chain was cancelled in
+finished: dump row in the table above (stochastic 15.87 mean vs the 2.48 bar; median 11.7). The `v2_real` chain was cancelled in
 its first segment (`v2-v2-real-1-073d4c`) and the queued Kaggle arm
 `v2_comb_lr2e3` was cancelled before it started, so the learning-rate
 question stays open and is not worth the compute. `v2_stoch_scratch` on
